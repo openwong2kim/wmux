@@ -42,6 +42,27 @@ export function transcriptTurnEnd(
 }
 
 /**
+ * The first turn end recorded at or after `since`, whatever follows it: a
+ * turn that ended and was followed by the next prompt still ended. `idle` is
+ * an interrupt, `complete` an end_turn reply. Undefined when none is in the
+ * scanned tail.
+ */
+export function firstTurnEndSince(
+  events: readonly TurnEvent[] | undefined,
+  since: number,
+): { status: AgentStatus; at: number } | undefined {
+  if (!events) return undefined;
+  let found: { status: AgentStatus; at: number } | undefined;
+  for (let i = events.length - 1; i >= Math.max(0, events.length - END_SCAN_LIMIT * 4); i--) {
+    const event = events[i];
+    if (event.ts !== undefined && event.ts < since) break;
+    const status = turnEndStatus(event);
+    if (status && event.ts !== undefined) found = { status, at: event.ts };
+  }
+  return found;
+}
+
+/**
  * When the transcript confirms the turn a stop hook reports as ended: the
  * latest recorded end, and — when both name a turn — the same turn. Undefined
  * when nothing confirms it (no transcript yet, no end yet, another turn).

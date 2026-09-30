@@ -126,6 +126,8 @@ import {
 import type { TranscriptCursor } from '../../shared/transcript/turnEvents';
 import { cursorMatches, decodeChatCursor, encodeChatCursor, type ReadSource } from './chatCursor';
 import { ChatLaunchReceiptStore, type LaunchReceiptState } from './chatLaunchReceipts';
+import { cancelEventBody, cancelReceiptResponse } from './chatCancelOutcome';
+import type { ChatCancelEvent } from '../chat/chatCancelObserver';
 import {
   buildChatObject,
   cancelResponse,
@@ -2396,6 +2398,8 @@ export class WebTerminalServer {
               // `/chat/cancel`.
               decisionForms: this.decisionForms(),
               chatCancel: this.mayInput(principal),
+              // Contract v-next item 3: `cancel` progress, its receipt route and SSE `chat.cancel`.
+              ...(this.mayInput(principal) && this.deps.chat?.()?.cancelOutcomeEnabled?.() === true ? { chatCancelOutcome: true } : {}),
               // Whether this caller's `chat-queue` sends are held by the daemon.
               chatQueue: this.mayInput(principal) && this.deps.chat?.()?.queueEnabled?.() === true,
             }
@@ -2436,6 +2440,7 @@ export class WebTerminalServer {
           if (req.method === 'DELETE' && rawReceipt !== undefined) return this.handleChatDequeue(res, rawId, rawReceipt, principal);
         } else if (kind === 'cancel') {
           if (req.method === 'POST' && rawReceipt === undefined) return this.handleChatCancel(req, res, rawId, url, principal);
+          if (req.method === 'GET' && rawReceipt !== undefined) return this.handleChatCancelReceipt(res, rawId, rawReceipt, principal);
         } else if (req.method === 'POST' && rawReceipt === undefined) {
           return kind === 'messages'
             ? this.handleChatSend(req, res, rawId, url, principal)
@@ -4083,7 +4088,7 @@ export class WebTerminalServer {
    */
   private deliverChatEvent(
     sessionId: string,
-    viewFor: (caps: ClientCaps) => { event: 'chat.blocked' | 'chat.unblocked' | 'chat.queue'; body: string },
+    viewFor: (caps: ClientCaps) => { event: 'chat.blocked' | 'chat.unblocked' | 'chat.queue' | 'chat.cancel'; body: string },
     only?: (principal: WebPrincipal) => boolean,
   ): void {
     const watchers = this.transcriptWatchers.get(sessionId);
@@ -4434,6 +4439,16 @@ export class WebTerminalServer {
         this.json(res, wire.status, wire.body);
       })().catch((err: unknown) => this.failRequest(res, err));
     }, CHAT_CANCEL_MAX_BODY_BYTES);
+  }
+
+  /** `GET /api/sessions/:id/chat/cancel/:clientCancelId`: transcript, not input; owner- and pane-bound (chatCancelOutcome.ts). */
+  private handleChatCancelReceipt(res: http.ServerResponse, rawId: string, rawCancelId: string, principal: WebPrincipal): void {
+    res.setHeader('Cache-Control', 'no-store');
+    if (this.opts?.allowTranscript !== true) return this.refuseTranscript(res);
+    const id = decodePathSegment(rawId);
+    if (id === null || !this.readableSession(id)) return this.json(res, 404, { error: 'pane-not-found' });
+    const wire = cancelReceiptResponse(this.deps.chat?.() ?? null, chatOwner(principal), id, decodePathSegment(rawCancelId) ?? '');
+    return this.json(res, wire.status, wire.body);
   }
 
   /**
@@ -7228,6 +7243,13 @@ export class WebTerminalServer {
     const body = JSON.stringify({ sessionId: event.sessionId, clientMessageId: event.clientMessageId, state: event.state,
       ...(event.reason ? { reason: event.reason } : {}), at: event.at });
     this.deliverChatEvent(event.sessionId, () => ({ event: 'chat.queue', body }), (principal) => chatOwner(principal) === event.owner);
+  }
+
+  /** SSE `chat.cancel`: a cancel's progress changed. Live-only, only to its owner among the pane's watchers. */
+  emitChatCancel(event: ChatCancelEvent): void {
+    if (!this.server || this.opts?.allowTranscript !== true) return;
+    const body = cancelEventBody(event);
+    this.deliverChatEvent(event.sessionId, () => ({ event: 'chat.cancel', body }), (principal) => chatOwner(principal) === event.owner);
   }
 
   emitTranscriptNudge(sessionId: string): void {

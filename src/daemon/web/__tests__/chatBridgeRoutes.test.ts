@@ -29,6 +29,7 @@ import {
   type ChatTurn,
 } from '../../chat/chatBridge';
 import type { ChatSkillCatalog } from '../../../shared/transcript/chatSkills';
+import type { ChatCancelProgress } from '../../../shared/phoneChatCancelOutcome';
 
 /**
  * Phone native chat routes (contract v0.3.1) against a FAKE ChatBridge: the
@@ -840,9 +841,9 @@ describe('native chat routes (contract v0.3.1)', () => {
       res = await postJson(url(), device('dev-1'), cancelBody());
       expect(res.status).toBe(503);
       chatWired = true;
-      // No cancel receipt route: a GET is not a launch or send receipt read.
+      // A GET is the cancel receipt (unavailable on a bridge without it), never a launch or send receipt read.
       res = await fetch(`${url()}/${freshId()}`, { headers: device('dev-1') });
-      expect(res.status).not.toBe(200);
+      expect(res.status).toBe(503);
       expect(chat.cancel).not.toHaveBeenCalled();
       expect(chat.receipt).not.toHaveBeenCalled();
     });
@@ -1580,6 +1581,106 @@ describe('native chat routes (contract v0.3.1)', () => {
       expect((await config(device('ro', false))).chatQueue).toBe(false);
       fns.queueEnabled.mockReturnValue(false);
       expect((await config(bearer(info.token as string))).chatQueue).toBe(false);
+    });
+  });
+
+  describe('chat cancel outcome (contract v-next item 3)', () => {
+    const wireOutcome = () => {
+      const receipts = new Map<string, ChatCancelProgress>();
+      const fns = {
+        cancelOutcomeEnabled: vi.fn(() => true),
+        cancelOutcome: vi.fn((owner: ChatOwner, id: string, cid: string): ChatCancelProgress | undefined | null => receipts.get(`${owner}|${id}|${cid}`)),
+      };
+      Object.assign(chat, fns);
+      return { receipts, fns };
+    };
+    const receipt = (id: string, cid: string, h: Record<string, string>) => fetch(`${base()}/api/sessions/${id}/chat/cancel/${cid}`, { headers: h });
+    const config = async (h: Record<string, string>) => (await fetch(`${base()}/api/config`, { headers: h })).json() as Promise<Record<string, unknown>>;
+
+    it('/api/config: chatCancelOutcome only for a caller that may cancel, and only with a loaded store (omitted, never false)', async () => {
+      const info = await start();
+      expect('chatCancelOutcome' in await config(bearer(info.token as string))).toBe(false);
+      const { fns } = wireOutcome();
+      expect((await config(bearer(info.token as string))).chatCancelOutcome).toBe(true);
+      expect((await config(device('dev-1'))).chatCancelOutcome).toBe(true);
+      expect('chatCancelOutcome' in await config(device('ro', false))).toBe(false);
+      fns.cancelOutcomeEnabled.mockReturnValue(false);
+      expect('chatCancelOutcome' in await config(bearer(info.token as string))).toBe(false);
+      await server.stop();
+      fns.cancelOutcomeEnabled.mockReturnValue(true);
+      const ro = await start({ allowInput: false });
+      expect('chatCancelOutcome' in await config(bearer(ro.token as string))).toBe(false);
+    });
+
+    it('GET receipt: transcript not input; owner- and pane-bound; brain or missing pane 404; no store 503', async () => {
+      const off = await start({ allowTranscript: false });
+      const { receipts, fns } = wireOutcome();
+      const cid = freshId();
+      let res = await receipt('s1', cid, bearer(off.token as string));
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toMatch(/^transcript-disabled:/);
+      await server.stop();
+      await start();
+      const progress: ChatCancelProgress = { state: 'ended', turnId: 't1:abc.3', endedAs: 'interrupted', evidence: 'transcript', requestedAt: 10, at: 20 };
+      receipts.set(`device:ro|s1|${cid}`, progress);
+      // A device whose input grant was withdrawn still learns what its cancel did.
+      res = await receipt('s1', cid, device('ro', false));
+      expect(res.status).toBe(200);
+      expect(res.headers.get('cache-control')).toBe('no-store');
+      expect(await res.json()).toEqual({ clientCancelId: cid, ...progress });
+      // Another device, another pane, an unknown id: none.
+      for (const [id, h, which] of [['s1', device('dev-2'), cid], ['s2', device('ro', false), cid], ['s1', device('ro', false), freshId()]] as const) {
+        res = await receipt(id, which, h);
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ clientCancelId: which, state: 'none' });
+      }
+      for (const id of ['nope', 'brain-1']) {
+        res = await receipt(id, cid, device('ro', false));
+        expect(res.status).toBe(404);
+        expect(await res.json()).toEqual({ error: 'pane-not-found' });
+      }
+      fns.cancelOutcome.mockReturnValue(null);
+      res = await receipt('s1', cid, device('ro', false));
+      expect(res.status).toBe(503);
+      expect(chat.cancel).not.toHaveBeenCalled();
+    });
+
+    it('the 202 carries cancel progress', async () => {
+      await start();
+      chatBox.cancel = async (req) => ({ clientCancelId: req.clientCancelId, replayed: false, effect: 'interrupt-requested', turnId: 't1:abc.3',
+        cancel: { state: 'requested', turnId: 't1:abc.3', requestedAt: 7, at: 7 } });
+      const res = await postJson(`${base()}/api/sessions/s1/chat/cancel`, device('dev-1'),
+        { agentSessionId: 'sess-a', turnId: 't1:abc.3', clientCancelId: freshId() });
+      expect(res.status).toBe(202);
+      expect((await res.json()).cancel).toEqual({ state: 'requested', turnId: 't1:abc.3', requestedAt: 7, at: 7 });
+    });
+
+    it('SSE chat.cancel: live-only, to the owner among the pane watchers only, in the narrow frame', async () => {
+      await start();
+      const mine = device('dev-1');
+      const events = await openEvents(mine);
+      const otherWatcher = await openEvents(device('dev-2'));
+      const notWatching = await openEvents(device('dev-3'));
+      try {
+        await turns(mine);
+        await turns(device('dev-2'));
+        const cid = freshId();
+        server.emitChatCancel({ owner: 'device:dev-1', sessionId: 's1', clientCancelId: cid, state: 'ended', turnId: 't1:abc.3', endedAs: 'interrupted', at: 9 });
+        await until(() => events.box.wire.includes('event: chat.cancel'));
+        const frame = events.box.wire.slice(events.box.wire.indexOf('event: chat.cancel'));
+        expect(JSON.parse(frame.split('\n')[1].slice('data: '.length)))
+          .toEqual({ sessionId: 's1', clientCancelId: cid, state: 'ended', turnId: 't1:abc.3', endedAs: 'interrupted', at: 9 });
+        expect(events.box.wire).not.toMatch(/id: [^\n]*\nevent: chat\.cancel/);
+        server.emitChatCancel({ owner: 'device:dev-1', sessionId: 's1', clientCancelId: cid, state: 'not-ended', at: 10 });
+        await until(() => events.box.wire.split('event: chat.cancel').length === 3);
+        const second = events.box.wire.slice(events.box.wire.lastIndexOf('event: chat.cancel'));
+        expect(JSON.parse(second.split('\n')[1].slice('data: '.length))).toEqual({ sessionId: 's1', clientCancelId: cid, state: 'not-ended', at: 10 });
+        await new Promise((r) => setTimeout(r, 50));
+        expect(otherWatcher.box.wire).not.toContain('chat.cancel');
+        expect(notWatching.box.wire).not.toContain('chat.cancel');
+        const backlog = await (await fetch(`${base()}/api/events`, { headers: mine })).json();
+        expect(JSON.stringify(backlog)).not.toContain('chat.cancel');
+      } finally { events.close(); otherWatcher.close(); notWatching.close(); }
     });
   });
 });

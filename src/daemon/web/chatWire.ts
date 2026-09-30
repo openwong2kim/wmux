@@ -424,7 +424,8 @@ export function cancelResponse(outcome: ChatCancelOutcome): WireResponse {
   const { clientCancelId, effect } = outcome;
   let response: WireResponse;
   if (!outcome.error) {
-    response = { status: 202, body: { result: 'sent', replayed: false, ...(outcome.turnId ? { turnId: outcome.turnId } : {}), clientCancelId, effect } };
+    response = { status: 202, body: { result: 'sent', replayed: false, ...(outcome.turnId ? { turnId: outcome.turnId } : {}), clientCancelId, effect,
+      ...(outcome.cancel ? { cancel: outcome.cancel } : {}) } };
   } else {
     response = {
       status: cancelStatus(outcome.error),
@@ -446,5 +447,6 @@ export function cancelResponse(outcome: ChatCancelOutcome): WireResponse {
   // A replayed success is 200; a replayed failure keeps its status (an
   // uncertain ESC stays 500) and only gains `replayed:true`.
   if (!outcome.replayed) return response;
-  return { status: outcome.error ? response.status : 200, body: { ...response.body, replayed: true } };
+  return { status: outcome.error ? response.status : 200,
+    body: { ...response.body, replayed: true, ...(outcome.cancel ? { cancel: outcome.cancel } : {}) } };
 }

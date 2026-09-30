@@ -618,9 +618,10 @@ describe('cancel', () => {
   it('writes one ESC for the named running turn and replays the same id without writing again', async () => {
     const f = running();
     const req = phoneCancel();
-    expect(await f.bridge.cancel(req)).toEqual({ clientCancelId: req.clientCancelId, replayed: false, effect: 'interrupt-requested', turnId: 't1:n.3' });
+    const requested = { state: 'requested', turnId: 't1:n.3', requestedAt: expect.any(Number), at: expect.any(Number) };
+    expect(await f.bridge.cancel(req)).toEqual({ clientCancelId: req.clientCancelId, replayed: false, effect: 'interrupt-requested', turnId: 't1:n.3', cancel: requested });
     expect(f.written).toEqual(['\x1b']);
-    expect(await f.bridge.cancel(req)).toEqual({ clientCancelId: req.clientCancelId, replayed: true, effect: 'interrupt-requested', turnId: 't1:n.3' });
+    expect(await f.bridge.cancel(req)).toEqual({ clientCancelId: req.clientCancelId, replayed: true, effect: 'interrupt-requested', turnId: 't1:n.3', cancel: requested });
     expect(await f.bridge.cancel({ ...req, turnId: 't1:n.4' })).toMatchObject({ error: 'cancel-id-conflict', effect: 'none' });
     // A second id in the same turn is refused: the turn already has its ESC.
     expect(await f.bridge.cancel(phoneCancel())).toMatchObject({ error: 'turn-already-interrupted', turnId: 't1:n.3', effect: 'none' });
@@ -794,6 +795,129 @@ describe('cancel', () => {
   });
 });
 
+describe('cancel outcome (Esc path)', () => {
+  const EPOCH = fileHistoryEpoch('claude', 'conv', 'a.jsonl');
+  const T0 = 1_760_000_000_000;
+  const RUNNING = ['✢ Ruminating… (8s · ↓ 238 tokens)', '─'.repeat(40), '❯ ', '─'.repeat(40)];
+  afterEach(() => { vi.useRealTimers(); });
+  const setup = () => {
+    vi.useFakeTimers({ now: T0 });
+    const f = fixture(); f.liveClaude();
+    const startedAt = Date.now() - 5_000;
+    f.state.agent = { ...f.state.agent, agentStatus: 'running', turn: { id: 't1:n.3', state: 'running', startedAt } };
+    f.state.screen = RUNNING;
+    const events: import('../chatCancelObserver').ChatCancelEvent[] = [];
+    let transcript: import('../../../shared/transcript/turnEvents').TurnEvent[] = [];
+    const bridge = createChatBridge({ ...f.deps,
+      projector: { status: () => f.state.projector, snapshot: () => ({ ...page('e'), events: transcript }) },
+      onCancelEvent: (event) => { events.push(event); } });
+    const req = { owner: 'device:a' as const, id: 'pane', agentSessionId: 'conv', historyEpoch: EPOCH, turnId: 't1:n.3', clientCancelId: msgId() };
+    const outcome = (cid = req.clientCancelId) => bridge.cancelOutcome?.('device:a', 'pane', cid);
+    const setTranscript = (rows: typeof transcript) => { transcript = rows; };
+    return { ...f, bridge, events, req, outcome, startedAt, setTranscript };
+  };
+  const meta = (subtype: 'turn_aborted' | 'turn_started' | 'turn_complete', ts: number) => ({ id: `${subtype}-${ts}`, kind: 'meta' as const, subtype, label: subtype, ts });
+
+  it('requested → ended (interrupted, transcript) once the interrupt record lands, even if a new turn follows it', async () => {
+    const f = setup();
+    const answer = await f.bridge.cancel(f.req);
+    expect(answer.cancel).toEqual({ state: 'requested', turnId: 't1:n.3', requestedAt: T0, at: T0 });
+    expect(cancelResponse(answer).body).toMatchObject({ cancel: { state: 'requested', turnId: 't1:n.3' } });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(f.outcome()).toMatchObject({ state: 'requested' });
+    // The interrupt record, then the user's next prompt, inside the window.
+    f.setTranscript([meta('turn_aborted', T0 + 1200), meta('turn_started', T0 + 1500)]);
+    f.state.agent.turn = { id: 't1:n.4', state: 'running', startedAt: T0 + 1500 };
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(f.outcome()).toEqual({ state: 'ended', turnId: 't1:n.3', endedAs: 'interrupted', evidence: 'transcript', requestedAt: T0, at: T0 + 2000 });
+    expect(f.events).toEqual([
+      { owner: 'device:a', sessionId: 'pane', clientCancelId: f.req.clientCancelId, state: 'requested', turnId: 't1:n.3', at: T0 },
+      { owner: 'device:a', sessionId: 'pane', clientCancelId: f.req.clientCancelId, state: 'ended', turnId: 't1:n.3', endedAs: 'interrupted', at: T0 + 2000 },
+    ]);
+    // A replay carries the progress as it is now.
+    expect((await f.bridge.cancel(f.req)).cancel).toMatchObject({ state: 'ended', endedAs: 'interrupted' });
+  });
+
+  it('a turn that finished on its own first reads ended/completed', async () => {
+    const f = setup();
+    await f.bridge.cancel(f.req);
+    f.setTranscript([meta('turn_complete', T0 + 300)]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(f.outcome()).toMatchObject({ state: 'ended', endedAs: 'completed', evidence: 'transcript' });
+  });
+
+  it('not-ended exactly 15 s after the write, and a later end does not revise it', async () => {
+    const f = setup();
+    await f.bridge.cancel(f.req);
+    await vi.advanceTimersByTimeAsync(14_900);
+    expect(f.outcome()).toMatchObject({ state: 'requested' });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(f.outcome()).toMatchObject({ state: 'not-ended', at: T0 + 15000 });
+    f.setTranscript([meta('turn_aborted', T0 + 16000)]);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(f.outcome()).toMatchObject({ state: 'not-ended', at: T0 + 15000 });
+    expect(f.events.map((event) => event.state)).toEqual(['requested', 'not-ended']);
+  });
+
+  it('screen evidence: the turn stopped running and the title went idle during it', async () => {
+    const f = setup();
+    await f.bridge.cancel(f.req);
+    f.state.agent.turn = { id: 't1:n.3', state: 'idle', startedAt: f.startedAt };
+    f.shell.title = { title: '✳ Claude Code', at: Date.now() };
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(f.outcome()).toMatchObject({ state: 'ended', endedAs: 'unspecified', evidence: 'screen' });
+  });
+
+  it('a turn that stopped running with no proof settles unknown (no reason) at the deadline', async () => {
+    const f = setup();
+    await f.bridge.cancel(f.req);
+    f.state.agent.turn = { id: 't1:n.3', state: 'idle', startedAt: f.startedAt };
+    await vi.advanceTimersByTimeAsync(14_000);
+    expect(f.outcome()).toMatchObject({ state: 'requested' });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(f.outcome()).toEqual({ state: 'unknown', turnId: 't1:n.3', requestedAt: T0, at: T0 + 15000 });
+  });
+
+  it('pane closed or conversation changed: unknown with the reason', async () => {
+    const closed = setup();
+    await closed.bridge.cancel(closed.req);
+    closed.state.pane = undefined;
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(closed.outcome()).toMatchObject({ state: 'unknown', reason: 'pane-closed' });
+    vi.useRealTimers();
+    const changed = setup();
+    await changed.bridge.cancel(changed.req);
+    changed.state.projector = { ...changed.state.projector, agentSessionId: 'other' };
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(changed.outcome()).toMatchObject({ state: 'unknown', reason: 'session-changed' });
+  });
+
+  it('an uncertain write starts unknown (write-uncertain) and is not observed', async () => {
+    const f = setup();
+    const bridge = createChatBridge({ ...f.deps, write: () => { throw new Error('EIO'); }, onCancelEvent: (event) => { f.events.push(event); } });
+    const answer = await bridge.cancel(f.req);
+    expect(answer.cancel).toBeUndefined();
+    expect(bridge.cancelOutcome?.('device:a', 'pane', f.req.clientCancelId)).toMatchObject({ state: 'unknown', reason: 'write-uncertain' });
+    // The replay carries it, keeping its 500.
+    const replay = cancelResponse(await bridge.cancel(f.req));
+    expect(replay.status).toBe(500);
+    expect(replay.body).toMatchObject({ replayed: true, cancel: { state: 'unknown', reason: 'write-uncertain' } });
+    expect(f.events.map((event) => event.state)).toEqual(['unknown']);
+  });
+
+  it('the receipt read is owner- and pane-bound; no receipt is none (undefined); no store is null', async () => {
+    const f = setup();
+    await f.bridge.cancel(f.req);
+    expect(f.bridge.cancelOutcome?.('device:b', 'pane', f.req.clientCancelId)).toBeUndefined();
+    expect(f.bridge.cancelOutcome?.('device:a', 'other-pane', f.req.clientCancelId)).toBeUndefined();
+    expect(f.outcome(msgId())).toBeUndefined();
+    expect(f.bridge.cancelOutcomeEnabled?.()).toBe(true);
+    const off = createChatBridge({ ...f.deps, cancelReceipts: null });
+    expect(off.cancelOutcomeEnabled?.()).toBe(false);
+    expect(off.cancelOutcome?.('device:a', 'pane', f.req.clientCancelId)).toBeNull();
+  });
+});
+
 describe('cancel (OpenCode plugin abort)', () => {
   const TURN = 't1:oc.0123456789abcdef01234567';
   const RAW = 'raw:1:ses_one';
@@ -823,7 +947,10 @@ describe('cancel (OpenCode plugin abort)', () => {
     const authorized = vi.fn(async () => true);
     const req = tuiCancel({ authorized });
     const first = await f.bridge.cancel(req);
-    expect(first).toEqual({ clientCancelId: req.clientCancelId, replayed: false, effect: 'interrupt-requested', turnId: TURN });
+    // Nothing observes an OpenCode abort yet: its outcome is unknown from the start.
+    expect(first).toEqual({ clientCancelId: req.clientCancelId, replayed: false, effect: 'interrupt-requested', turnId: TURN,
+      cancel: { state: 'unknown', turnId: TURN, at: expect.any(Number) } });
+    expect(f.bridge.cancelOutcome?.('device:a', 'pane', req.clientCancelId)).toMatchObject({ state: 'unknown' });
     expect(cancelResponse(first).status).toBe(202);
     expect(f.abort).toHaveBeenCalledWith('pane', 'ses_one', expect.objectContaining({ expectedRawEpoch: RAW, turnId: TURN,
       read: expect.objectContaining({ page: expect.objectContaining({ cursor: expect.objectContaining({ historyEpoch: RAW }) }) }) }));
