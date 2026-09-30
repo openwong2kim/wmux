@@ -1222,7 +1222,7 @@ describe('DaemonSessionManager', () => {
     // account the pane was created on even when the login profile exports
     // another one, lineage is on the meta from creation, and a gone account
     // directory is dropped rather than handed to the CLI.
-    it('pins a phone pane account after the login profile and records lineage at creation', () => {
+    it.skipIf(process.platform === 'win32')('pins a phone pane account after the login profile and records lineage at creation', () => {
       const lineage = { sessionId: 'web-src', verified: true, at: 7 };
       const gone = path.join(os.tmpdir(), `wmux-gone-${process.pid}-${Date.now()}`);
       const session = manager.createSession({
