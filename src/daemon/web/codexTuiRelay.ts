@@ -36,7 +36,12 @@ export type CodexAnswerOutcome = 'ok' | 'not-found' | 'unavailable' | 'uncertain
 const ANSWER_CONFIRM_MS = 5000;
 /** Threads whose running turn the relay remembers, and ended turns kept for a cancel's later look. */
 const MAX_ACTIVE_TURNS = 64;
-const MAX_ENDED_TURNS = 32;
+/** Ended turns are kept at least this long (past a cancel's 15 s observation
+ * window), and dropped oldest-first past the soft bound only once older than
+ * it; the hard bound caps memory whatever their age. */
+const ENDED_TURN_KEEP_MS = 60_000;
+const MAX_ENDED_TURNS = 256;
+const MAX_ENDED_TURNS_HARD = 1024;
 /** A turn's final `status` on `turn/completed` (`completed`, `interrupted`, `failed`), verbatim. */
 export type CodexTurnEnd = string;
 
@@ -105,7 +110,7 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
   // with their final status. Only this stream proves a turn ended; the
   // answer to a `turn/interrupt` never does.
   const activeTurns = new Map<string,string>();
-  const endedTurns = new Map<string,CodexTurnEnd>();
+  const endedTurns = new Map<string,{status:CodexTurnEnd; at:number}>();
   const turnWaiters = new Map<string,Set<(status:CodexTurnEnd | undefined)=>void>>();
   const turnKey = (threadId:string, turnId:string) => `${threadId}\n${turnId}`;
   const settleTurnWaiters = (key:string, status:CodexTurnEnd | undefined) => {
@@ -366,8 +371,12 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
           const status = typeof turn.status === 'string' && /^[A-Za-z]{1,32}$/.test(turn.status) ? turn.status : 'unknown';
           const key = turnKey(message.params.threadId,turn.id);
           endedTurns.delete(key);
-          endedTurns.set(key,status);
-          if (endedTurns.size > MAX_ENDED_TURNS) endedTurns.delete(endedTurns.keys().next().value as string);
+          const at = Date.now();
+          endedTurns.set(key,{status,at});
+          for (const [old,ended] of endedTurns) {
+            if (endedTurns.size <= MAX_ENDED_TURNS || endedTurns.size <= MAX_ENDED_TURNS_HARD && at - ended.at < ENDED_TURN_KEEP_MS) break;
+            endedTurns.delete(old);
+          }
           settleTurnWaiters(key,status);
         }
       }
@@ -415,7 +424,7 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
       /** The thread's running turn as this pane's stream last reported it. */
       activeTurn:(threadId:string):string | undefined => retired ? undefined : activeTurns.get(threadId),
       /** How a recently ended turn ended, as this pane's stream reported it. */
-      turnEnded:(threadId:string,turnId:string):CodexTurnEnd | undefined => endedTurns.get(turnKey(threadId,turnId)),
+      turnEnded:(threadId:string,turnId:string):CodexTurnEnd | undefined => endedTurns.get(turnKey(threadId,turnId))?.status,
       /**
        * The turn's final status once this pane's stream reports `turn/completed`
        * for it; undefined when `ms` passes, `cancel` is called or the relay closes.
@@ -424,7 +433,7 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
         const key = turnKey(threadId,turnId);
         let done:((status:CodexTurnEnd | undefined)=>void) | undefined;
         const ended = new Promise<CodexTurnEnd | undefined>(resolve=>{
-          const seen = endedTurns.get(key);
+          const seen = endedTurns.get(key)?.status;
           if (retired || seen !== undefined) { resolve(seen);return; }
           const finish = (status:CodexTurnEnd | undefined) => {
             clearTimeout(timer);

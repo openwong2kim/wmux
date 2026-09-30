@@ -273,6 +273,11 @@ export interface ChatCancelOutcome {
   historyEpoch?: string;
   /** What happened after the write (contract v-next item 3): on a fresh success and on a replay. */
   cancel?: ChatCancelProgress;
+  /**
+   * Fresh success only: a Codex native interrupt that may have landed was
+   * followed by a fallback ESC the daemon refused, for this reason.
+   */
+  escRefused?: ChatCancelTag;
 }
 
 export interface DangerousLaunchTrace {

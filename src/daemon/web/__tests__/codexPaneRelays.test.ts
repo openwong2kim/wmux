@@ -258,49 +258,69 @@ describe('Codex pane relay native interrupt',()=>{
     const connection=relay();const registry=new CodexPaneRelays(async()=>connection);
     const lease=await registry.prepare('pane');const pane=owner();lease.commit(pane);
     connection.state.active='turn-aimed';
-    return {connection,registry,pane};
+    const aimed=registry.activeTurn('pane',pane)!;
+    return {connection,registry,pane,aimed};
   }
-  it('is interrupted only when the pane\'s own stream reports the aimed turn interrupted',async()=>{
-    const {connection,registry,pane}=await live();
+  it('is interrupted only when the pane\'s own stream reports the pinned turn interrupted',async()=>{
+    const {connection,registry,pane,aimed}=await live();
+    expect(aimed).toEqual({relayId:expect.any(String),threadId:'thread',turnId:'turn-aimed'});
+    const answered=vi.fn();
     connection.interrupt.mockImplementation(async()=>{connection.complete('turn-aimed','interrupted');return {};});
-    const result=await registry.interrupt('pane',pane,1000);
-    expect(result).toEqual({outcome:'interrupted',turn:{relayId:expect.any(String),threadId:'thread',turnId:'turn-aimed'}});
+    const result=await registry.interrupt('pane',pane,aimed,{timeoutMs:1000,answered});
+    expect(result).toEqual({outcome:'interrupted',turn:aimed});
     expect(connection.interrupt).toHaveBeenCalledWith('thread','turn-aimed',1000);
-    expect(registry.turnEnded('pane',result.turn!)).toBe('interrupted');
+    expect(registry.turnEnded('pane',aimed)).toBe('interrupted');
+    await vi.waitFor(()=>expect(answered).toHaveBeenCalledOnce());
     await registry.shutdown();
   });
   it('never counts {} alone, nor a late {} after another turn\'s interrupt, as ended',async()=>{
-    const {connection,registry,pane}=await live();
-    // The server answers {} while the stream reports nothing for the aimed turn,
-    // only another turn's interrupt.
+    const {connection,registry,pane,aimed}=await live();
     connection.interrupt.mockImplementation(async()=>{connection.complete('turn-other','interrupted');return {};});
-    await expect(registry.interrupt('pane',pane,50)).resolves.toMatchObject({outcome:'uncertain'});
+    await expect(registry.interrupt('pane',pane,aimed,{timeoutMs:50})).resolves.toMatchObject({outcome:'uncertain'});
     await registry.shutdown();
   });
   it('bounds an interrupt that never answers (the hang guard) and reports uncertain, not ended',async()=>{
-    const {connection,registry,pane}=await live();
-    connection.interrupt.mockImplementation(()=>new Promise((_resolve,reject)=>setTimeout(()=>reject(new CodexUpstreamError('uncertain','Codex query timed out')),40)));
+    const {connection,registry,pane,aimed}=await live();
+    connection.interrupt.mockImplementation(()=>new Promise(()=>{ /* held forever, as the server does */ }));
     const started=Date.now();
-    await expect(registry.interrupt('pane',pane,40)).resolves.toMatchObject({outcome:'uncertain'});
+    await expect(registry.interrupt('pane',pane,aimed,{timeoutMs:40})).resolves.toMatchObject({outcome:'uncertain'});
     expect(Date.now()-started).toBeLessThan(1000);
+    await registry.shutdown();
+  });
+  it('returns at once when the turn ends some other way, without waiting for a held request',async()=>{
+    const {connection,registry,pane,aimed}=await live();
+    connection.interrupt.mockImplementation(()=>{connection.complete('turn-aimed','completed');return new Promise(()=>{ /* held */ });});
+    const started=Date.now();
+    await expect(registry.interrupt('pane',pane,aimed,{timeoutMs:5000})).resolves.toMatchObject({outcome:'uncertain'});
+    expect(Date.now()-started).toBeLessThan(1000);
+    await registry.shutdown();
+  });
+  it('sends nothing for a pinned turn that already ended or was replaced (the server would hold it)',async()=>{
+    const {connection,registry,pane,aimed}=await live();
+    connection.complete('turn-aimed','completed');
+    await expect(registry.interrupt('pane',pane,aimed,{timeoutMs:5000})).resolves.toEqual({outcome:'not-written',turn:aimed});
+    expect(registry.stillRunning('pane',pane,aimed)).toBe(false);
+    // A newer turn is running now: the pinned one is still not sent, nor is the newer one.
+    connection.state.active='turn-newer';
+    await expect(registry.interrupt('pane',pane,aimed,{timeoutMs:5000})).resolves.toEqual({outcome:'not-written',turn:aimed});
+    expect(registry.stillRunning('pane',pane,aimed)).toBe(false);
+    expect(connection.interrupt).not.toHaveBeenCalled();
     await registry.shutdown();
   });
   it('reports not-written for a refused request (wrong turn, unknown thread) without waiting out the bound',async()=>{
-    const {connection,registry,pane}=await live();
+    const {connection,registry,pane,aimed}=await live();
     connection.interrupt.mockRejectedValue(new CodexUpstreamError('refused'));
     const started=Date.now();
-    await expect(registry.interrupt('pane',pane,5000)).resolves.toMatchObject({outcome:'not-written'});
+    await expect(registry.interrupt('pane',pane,aimed,{timeoutMs:5000})).resolves.toMatchObject({outcome:'not-written'});
     expect(Date.now()-started).toBeLessThan(1000);
     await registry.shutdown();
   });
-  it('writes nothing without a live owned relay, a foreground thread and a running turn',async()=>{
-    const {connection,registry,pane}=await live();
-    connection.state.active=undefined;
-    await expect(registry.interrupt('pane',pane,50)).resolves.toEqual({outcome:'not-written'});
-    connection.state.active='turn-aimed';connection.state.selected=false;
-    await expect(registry.interrupt('pane',pane,50)).resolves.toEqual({outcome:'not-written'});
+  it('writes nothing without a live owned relay on the pinned thread',async()=>{
+    const {connection,registry,pane,aimed}=await live();
+    connection.state.selected=false;
+    await expect(registry.interrupt('pane',pane,aimed,{timeoutMs:50})).resolves.toMatchObject({outcome:'not-written'});
     connection.state.selected=true;
-    await expect(registry.interrupt('pane',owner('other'),50)).resolves.toEqual({outcome:'not-written'});
+    await expect(registry.interrupt('pane',owner('other'),aimed,{timeoutMs:50})).resolves.toMatchObject({outcome:'not-written'});
     expect(connection.interrupt).not.toHaveBeenCalled();
     await registry.shutdown();
   });

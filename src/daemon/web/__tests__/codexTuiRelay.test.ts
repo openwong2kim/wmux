@@ -742,6 +742,16 @@ describe.skipIf(process.platform === 'win32')('Codex relay turn identity and nat
       expect(f.relay.activeTurn(threadId)).toBeUndefined();
     } finally {await f.cleanup();}
   });
+  it('keeps a recently ended turn through a burst of other turns (a cancel\'s observation window)',async()=>{
+    const f=await fixture();
+    try {
+      const client=await f.connect();await select(client,1);
+      await deliver(f,client,{method:'turn/completed',params:{threadId,turn:{id:'turn-aimed',status:'interrupted'}}});
+      for(let i=0;i<300;i++)await deliver(f,client,{method:'turn/completed',params:{threadId:otherThreadId,turn:{id:`burst-${i}`,status:'completed'}}});
+      expect(f.relay.turnEnded(threadId,'turn-aimed')).toBe('interrupted');
+      client.terminate();
+    } finally {await f.cleanup();}
+  });
   it('sends turn/interrupt on a side connection: an error answer is a refusal, silence is bounded, {} is only an answer',async()=>{
     const interrupts:Array<Record<string,unknown>|undefined>=[];
     const f=await fixture({respond:request=>{

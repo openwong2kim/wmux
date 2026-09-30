@@ -635,6 +635,16 @@ export class DaemonPTYBridge extends EventEmitter {
     return this.lastEscAt;
   }
 
+  /**
+   * The agent's own interrupt reached this pane's turn without a key (Codex
+   * `turn/interrupt`): recorded like a lone Esc, so the once-per-turn latch
+   * and the cooldown hold for every later Stop, phone or desktop. Nothing
+   * else a key would change (input revision, answered prompts) moves.
+   */
+  noteInterrupt(): void {
+    this.lastEscAt = Date.now();
+  }
+
   /** The latest window title the program set, and when (`at` 0 = never). */
   getTitle(): { title: string; at: number } {
     return { title: this.lastTitle, at: this.lastTitleAt };

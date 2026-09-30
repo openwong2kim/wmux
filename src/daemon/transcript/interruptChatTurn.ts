@@ -43,6 +43,12 @@ export interface ChatInterruptDeps {
    * gate again before the ESC.
    */
   native?: () => Promise<'interrupted' | 'not-written' | 'uncertain'>;
+  /** Read synchronously right before the fallback ESC: false when the turn the native request was aimed at ended or was replaced. */
+  nativeStillAimed?: () => boolean;
+  /** A native interrupt reached the turn without an ESC: record it as the pane's interrupt of this turn. */
+  noteInterrupt?: () => void;
+  /** A native request that may have landed was followed by a refused ESC; its verdict. */
+  fallbackRefused?: (verdict: ChatInterruptVerdict) => void;
 }
 
 /**
@@ -115,13 +121,19 @@ export async function interruptChatTurn(agentSessionId: string, deps: ChatInterr
   if (deps.native) {
     let native: 'interrupted' | 'not-written' | 'uncertain';
     try { native = await deps.native(); } catch { native = 'uncertain'; }
-    if (native === 'interrupted') return 'sent';
+    if (native === 'interrupted') { deps.noteInterrupt?.(); return 'sent'; }
     // Up to the native bound passed: every gate again, for the same turn,
-    // before the ESC. A refusal after a native request that may have landed
-    // is still a written interrupt (`sent`), which the caller observes.
-    const third = await lastGate(aimed.id);
-    if (third) return native === 'uncertain' ? 'sent' : third;
-    try { return deps.write('\x1b') ? 'sent' : native === 'uncertain' ? 'sent' : 'unavailable'; } catch { return 'error'; }
+    // before the ESC, and the native target must still be the running turn.
+    // A refusal after a native request that may have landed is still a
+    // written interrupt (`sent`), which the caller observes.
+    const third = await lastGate(aimed.id) ?? (deps.nativeStillAimed && !deps.nativeStillAimed() ? 'not_running' : null);
+    const landed = (verdict: ChatInterruptVerdict): ChatInterruptVerdict => {
+      deps.noteInterrupt?.();
+      try { deps.fallbackRefused?.(verdict); } catch { /* a notice cannot change the outcome */ }
+      return 'sent';
+    };
+    if (third) return native === 'uncertain' ? landed(third) : third;
+    try { return deps.write('\x1b') ? 'sent' : native === 'uncertain' ? landed('unavailable') : 'unavailable'; } catch { return 'error'; }
   }
   try { return deps.write('\x1b') ? 'sent' : 'unavailable'; } catch { return 'error'; }
 }

@@ -33,7 +33,8 @@ function fixture() {
   const pane: ChatPane = {
     meta: { id: 'pane', state: 'attached', pid: 100, cwd: '/live', env: {}, spawnCwd: '/spawn', incarnationId: 'inc' },
     bridge: { isEmptyShellPrompt: () => shell.empty, getInputRevision: () => shell.revision,
-      noteInput: (data: string) => { shell.revision++; shell.empty = false; if (data === '\x1b') shell.escAt = Date.now(); }, getLastEscAt: () => shell.escAt, getTitle: () => shell.title },
+      noteInput: (data: string) => { shell.revision++; shell.empty = false; if (data === '\x1b') shell.escAt = Date.now(); }, getLastEscAt: () => shell.escAt, getTitle: () => shell.title,
+      noteInterrupt: () => { shell.escAt = Date.now(); } },
     promptLog: { size: 3, isCommandRunning: () => false },
     ptyProcess: { write: (data) => { typed.push(data); } },
   };
@@ -1052,7 +1053,8 @@ describe('cancel outcome (Codex native turn/interrupt)', () => {
   const AIMED = { relayId: 'relay-1', threadId: 'thread-1', turnId: 'codex-turn-a' };
   afterEach(() => { vi.useRealTimers(); });
   type Native = 'interrupted' | 'not-written' | 'uncertain';
-  const setup = (native: Native, onInterrupt: (f: ReturnType<typeof fixture>) => void = () => undefined) => {
+  type Relay = { active: typeof AIMED | undefined; ended: Map<string, string>; interrupts: number; pinned: (typeof AIMED)[]; eventsAtAnswer: number };
+  const setup = (native: Native, onInterrupt: (f: ReturnType<typeof fixture>, relay: Relay) => void = () => undefined) => {
     vi.useFakeTimers({ now: T0 });
     const f = fixture();
     f.state.projector = { ...FILE, terminal: { ...FILE.terminal!, agent: 'codex' } };
@@ -1060,21 +1062,25 @@ describe('cancel outcome (Codex native turn/interrupt)', () => {
     f.state.agent = { ...f.state.agent, agentName: 'Codex CLI', agentVerified: true, agentStatus: 'running',
       turn: { id: 't1:c.1', state: 'running', startedAt } };
     f.state.screen = RUNNING;
-    const relay = { active: AIMED as typeof AIMED | undefined, ended: new Map<string, string>(), interrupts: 0 };
+    const relay: Relay = { active: AIMED, ended: new Map<string, string>(), interrupts: 0, pinned: [], eventsAtAnswer: -1 };
     const events: import('../chatCancelObserver').ChatCancelEvent[] = [];
     const bridge = createChatBridge({ ...f.deps,
       projector: { status: () => f.state.projector, snapshot: () => ({ ...page('e'), events: [] }) },
       onCancelEvent: (event) => { events.push(event); },
       relays: { ...f.deps.relays,
         activeTurn: () => relay.active,
-        interrupt: async () => {
+        interrupt: async (_id, _pane, turn, opts) => {
           relay.interrupts++;
+          relay.pinned.push(turn);
+          // The server acknowledges a request it accepted; a refusal is not an acknowledgement.
+          if (native !== 'not-written') { opts?.answered?.(); relay.eventsAtAnswer = events.length; }
           // The native wait takes time under the pane lock.
           await vi.advanceTimersByTimeAsync(500);
-          onInterrupt(f);
-          if (native === 'interrupted') relay.ended.set(AIMED.turnId, 'interrupted');
-          return { outcome: native, turn: AIMED };
+          onInterrupt(f, relay);
+          if (native === 'interrupted') { relay.ended.set(turn.turnId, 'interrupted'); relay.active = undefined; }
+          return { outcome: native, turn };
         },
+        stillRunning: (_id, _pane, turn) => relay.active?.turnId === turn.turnId && !relay.ended.has(turn.turnId),
         turnEnded: (_id, ref) => relay.ended.get(ref.turnId) } });
     const req = { owner: 'device:a' as const, id: 'pane', agentSessionId: 'conv', historyEpoch: EPOCH, turnId: 't1:c.1', clientCancelId: msgId() };
     const outcome = () => bridge.cancelOutcome?.('device:a', 'pane', req.clientCancelId);
@@ -1156,6 +1162,44 @@ describe('cancel outcome (Codex native turn/interrupt)', () => {
     expect(calls).toBe(2);
     expect(escs(f)).toBe(0);
     expect(answer).toMatchObject({ effect: 'none', error: 'authorization-expired' });
+  });
+
+  it('announces requested as soon as the server acknowledges the request, not after the wait', async () => {
+    const f = setup('uncertain');
+    await f.bridge.cancel(f.req);
+    expect(f.relay.eventsAtAnswer).toBe(1);
+    expect(f.events[0]).toMatchObject({ state: 'requested', turnId: 't1:c.1', at: T0 });
+    // Announced once, even though the ESC fallback then went out too.
+    expect(f.events.filter((event) => event.state === 'requested')).toHaveLength(1);
+  });
+
+  it('pins the Codex turn at entry: a turn that replaced it during the wait gets no ESC', async () => {
+    const f = setup('uncertain', (_fx, relay) => { relay.active = { ...AIMED, turnId: 'codex-turn-b' }; });
+    const answer = await f.bridge.cancel(f.req);
+    expect(f.relay.pinned).toEqual([AIMED]);
+    expect(escs(f)).toBe(0);
+    // The request may have landed: the receipt stays, and the refused fallback says why.
+    expect(answer).toMatchObject({ effect: 'interrupt-requested', escRefused: 'turn-not-running', cancel: { state: 'requested' } });
+    expect(cancelResponse(answer).body).toMatchObject({ escRefused: 'turn-not-running' });
+  });
+
+  it('a refused fallback after a request that may have landed names its reason', async () => {
+    const f = setup('uncertain');
+    let calls = 0;
+    const answer = await f.bridge.cancel({ ...f.req, authorized: async () => ++calls === 1 });
+    expect(escs(f)).toBe(0);
+    expect(answer).toMatchObject({ effect: 'interrupt-requested', escRefused: 'authorization-expired' });
+  });
+
+  it('a native stop latches the turn: another cancel or a desktop Stop sends no second interrupt', async () => {
+    const f = setup('interrupted');
+    await f.bridge.cancel(f.req);
+    // The episode still reads running for a moment after the stop.
+    const again = await f.bridge.cancel({ ...f.req, clientCancelId: msgId() });
+    expect(again).toMatchObject({ effect: 'none', error: 'turn-already-interrupted' });
+    expect(await f.bridge.desktopInterrupt('pane', 'conv')).toBe('not_running');
+    expect(escs(f)).toBe(0);
+    expect(f.relay.interrupts).toBe(1);
   });
 
   it('without a running turn on the pane\'s relay it is the plain ESC path', async () => {

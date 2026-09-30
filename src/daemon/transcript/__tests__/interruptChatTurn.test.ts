@@ -233,6 +233,28 @@ describe('native interrupt before the ESC (Codex turn/interrupt)', () => {
     await expect(interruptChatTurn('conversation-1', { ...g.deps, native: uncertain })).resolves.toBe('sent');
     expect(g.write).not.toHaveBeenCalled();
   });
+  it('latches the pane on a proven native stop, and on a landed request whose ESC is refused, naming the refusal', async () => {
+    const f = fixture();
+    const noteInterrupt = vi.fn();
+    await interruptChatTurn('conversation-1', { ...f.deps, native: async () => 'interrupted' as const, noteInterrupt });
+    expect(noteInterrupt).toHaveBeenCalledOnce();
+    const g = fixture();
+    const refused = vi.fn();
+    const gNote = vi.fn();
+    // The pinned native target is no longer the running turn: no ESC.
+    await expect(interruptChatTurn('conversation-1', { ...g.deps, native: async () => 'uncertain' as const,
+      nativeStillAimed: () => false, noteInterrupt: gNote, fallbackRefused: refused })).resolves.toBe('sent');
+    expect(g.write).not.toHaveBeenCalled();
+    expect(gNote).toHaveBeenCalledOnce();
+    expect(refused).toHaveBeenCalledWith('not_running');
+    // Nothing written natively and the target is gone: a plain refusal, no latch.
+    const h = fixture();
+    const hNote = vi.fn();
+    await expect(interruptChatTurn('conversation-1', { ...h.deps, native: async () => 'not-written' as const,
+      nativeStillAimed: () => false, noteInterrupt: hNote })).resolves.toBe('not_running');
+    expect(h.write).not.toHaveBeenCalled();
+    expect(hNote).not.toHaveBeenCalled();
+  });
   it('a native failure that throws counts as uncertain and still passes the gates before the ESC', async () => {
     const f = fixture();
     await expect(interruptChatTurn('conversation-1', { ...f.deps, native: async () => { throw new Error('socket'); } })).resolves.toBe('sent');

@@ -1703,24 +1703,35 @@ pane about once a second for 15 s after the write. Nothing is `ended` while
 the aimed `chat.turn` still reads `running`.
 
 **Codex panes with a daemon-owned relay** (phone-created Codex panes on Unix)
-stop the turn natively first: once every check above has passed and the
-receipt is on disk, the daemon sends the app-server's own `turn/interrupt`
-for the turn the pane's relay stream reported running, on a side connection,
-bounded at 5 s. Only the pane's own stream reporting `turn/completed` with
-`status: "interrupted"` for that turn counts as proof; the request's `{}`
-answer never does (the server can answer `{}` for a request it held and
-then released when some other turn was interrupted). When no proof arrives
-in time, every check (credential, pane, conversation, running turn, screen)
-runs again and the Esc goes out if the same turn still runs. `requestedAt` is
-the time of the first write, and the 15 s window counts from it. A receipt
-is never dropped once the native request may have reached the server, even
-when the Esc is then refused. The Codex turn id never leaves the daemon; the
-receipt's `turnId` is the `chat.turn.id` as for the Esc path.
+stop the turn natively first. The Codex turn the pane's relay stream reports
+running is pinned when the cancel arrives. Once every check above has passed
+and the receipt is on disk, the daemon sends the app-server's own
+`turn/interrupt` for exactly that turn, on a side connection, bounded at 5 s.
+Nothing is sent when that turn has already ended or another turn replaced it:
+the server holds an interrupt for a finished turn without answering. Only the
+pane's own stream reporting `turn/completed` with `status: "interrupted"` for
+the pinned turn counts as proof; the request's `{}` answer never does (the
+server can answer `{}` for a request it held and then released when some other
+turn was interrupted). A turn that ends any other way ends the wait at once.
+When no proof arrives, every check (credential, pane, conversation, running
+turn, screen) runs again, and the Esc goes out only if the pinned turn is
+still the running one. `requestedAt` is the time of the first write, and the
+15 s window counts from it; the `chat.cancel` `requested` frame goes out as
+soon as the server acknowledges the request. A receipt is never dropped once
+the native request may have reached the server: when the Esc is then refused,
+the 202 still reads `interrupt-requested` and adds `escRefused` with the
+refusal the Esc got (`authorization-expired`, `prompt-active`,
+`turn-not-running`, …; fresh answers only, not replays). A native stop counts
+as the turn's one interrupt, like an Esc: a later Stop of the same turn, from
+the phone or the desktop, is refused as already interrupted. The Codex turn
+id never leaves the daemon; the receipt's `turnId` is the `chat.turn.id` as
+for the Esc path.
 
 - `evidence: "native"`: the aimed turn is no longer running, and the pane's
-  own Codex stream reported it `interrupted` (from the native request or the
-  Esc; either way the agent's own protocol proved the end).
-  `endedAs: "interrupted"`.
+  own Codex stream reported it `interrupted`. This is about the proof, not the
+  key: it is also sent when the fallback Esc is what stopped the turn (the
+  Codex TUI turns an Esc into the same protocol interrupt), so it does not
+  tell a native stop from a fallback. `endedAs: "interrupted"`.
 
 - `evidence: "transcript"`: the first record written **after the interrupt**
   is an interrupt or end record. The daemon notes where the transcript stood
