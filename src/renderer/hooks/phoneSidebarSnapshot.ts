@@ -30,7 +30,8 @@ import {
   PHONE_LAYOUT_SURFACE_KINDS,
   PHONE_SIDEBAR_LIMITS,
   clampSidebarString,
-  hasUnsafeSidebarText,
+  equalLayoutSizes,
+  isSidebarId,
   normalizeLayoutSizes,
   type PhoneLayoutNode,
   type PhoneLayoutSurface,
@@ -68,30 +69,40 @@ function projectLayout(ws: StoreState['workspaces'][number]): PhoneSidebarLayout
   let surfaceCount = 0;
   const leafIds = new Set<string>();
   const ptyIds = new Set<string>();
+  const surfaceIds = new Set<string>();
 
-  const projectSurface = (surface: Surface): PhoneLayoutSurface => {
+  /** Null when the tab has no usable id: a reader keys tabs by it, so the tree cannot go out. */
+  const projectSurface = (surface: Surface): PhoneLayoutSurface | null => {
+    const surfaceId = surface.id;
+    if (!isSidebarId(surfaceId) || surfaceIds.has(surfaceId)) return null;
+    surfaceIds.add(surfaceId);
     const type = surface.surfaceType ?? 'terminal';
     const kind: PhoneLayoutSurfaceKind = (PHONE_LAYOUT_SURFACE_KINDS as readonly string[]).includes(type) ? type : 'other';
     if (kind === 'terminal') {
       // Same rule as the pane rows: no brain session, and only an id the
       // parsers accept; a slot without one still holds its tab position.
       const ptyId = surface.ptyId;
-      if (!ptyId || isBrainPtyId(ptyId) || ptyId.length > PHONE_SIDEBAR_LIMITS.id || hasUnsafeSidebarText(ptyId) || ptyIds.has(ptyId)) return { kind };
+      if (!isSidebarId(ptyId) || isBrainPtyId(ptyId) || ptyIds.has(ptyId)) return { surfaceId, kind };
       ptyIds.add(ptyId);
-      return { kind, ptyId };
+      return { surfaceId, kind, ptyId };
     }
     const title = clampSidebarString(surface.title, PHONE_SIDEBAR_LIMITS.surfaceTitle);
-    return title ? { kind, title } : { kind };
+    return title ? { surfaceId, kind, title } : { surfaceId, kind };
   };
 
   const walk = (pane: Pane, depth: number): PhoneLayoutNode | null => {
     if (depth > bounds.depth || ++nodes > bounds.nodes) return null;
     if (pane.type === 'leaf') {
-      if (++leaves > bounds.leaves || leafIds.has(pane.id) || pane.surfaces.length > bounds.surfacesPerLeaf) return null;
+      if (++leaves > bounds.leaves || !isSidebarId(pane.id) || leafIds.has(pane.id) || pane.surfaces.length > bounds.surfacesPerLeaf) return null;
       surfaceCount += pane.surfaces.length;
       if (surfaceCount > bounds.surfaces) return null;
       leafIds.add(pane.id);
-      const surfaces = pane.surfaces.map(projectSurface);
+      const surfaces: PhoneLayoutSurface[] = [];
+      for (const surface of pane.surfaces) {
+        const projected = projectSurface(surface);
+        if (!projected) return null;
+        surfaces.push(projected);
+      }
       const active = pane.surfaces.findIndex((surface) => surface.id === pane.activeSurfaceId);
       return { kind: 'leaf', paneId: pane.id, surfaces, ...(surfaces.length > 0 ? { activeIndex: Math.max(active, 0) } : {}) };
     }
@@ -104,9 +115,7 @@ function projectLayout(ws: StoreState['workspaces'][number]): PhoneSidebarLayout
     }
     // `sizes` is optional and may not match the children (a split mid-update):
     // the desktop then renders an equal split, and so does the phone.
-    const sizes = normalizeLayoutSizes(pane.sizes, children.length)
-      ?? normalizeLayoutSizes(children.map(() => 1), children.length)
-      ?? [];
+    const sizes = normalizeLayoutSizes(pane.sizes, children.length) ?? equalLayoutSizes(children.length);
     return { kind: 'split', direction: pane.direction, sizes, children };
   };
 

@@ -120,7 +120,7 @@ describe('phone workspace bridge', () => {
   it('drops layout trees first, largest first, and never keeps one once pane data is cut', () => {
     const base = { workspaces: [{ id: 'ws-big', name: 'Big', sessionId: 'pty-0' }] };
     const tree = (n: number, prefix: string) => ({
-      root: { kind: 'split' as const, direction: 'horizontal' as const, sizes: Array(n).fill(100 / n), children: Array.from({ length: n }, (_, i) => ({ kind: 'leaf' as const, paneId: `${prefix}-${i}`, surfaces: [{ kind: 'terminal' as const, ptyId: `${prefix}-pty-${i}` }], activeIndex: 0 })) },
+      root: { kind: 'split' as const, direction: 'horizontal' as const, sizes: Array(n).fill(100 / n), children: Array.from({ length: n }, (_, i) => ({ kind: 'leaf' as const, paneId: `${prefix}-${i}`, surfaces: [{ surfaceId: `${prefix}-s-${i}`, kind: 'terminal' as const, ptyId: `${prefix}-pty-${i}` }], activeIndex: 0 })) },
     });
     const sidebar: PhoneSidebarSnapshot = {
       activeWorkspaceId: null,

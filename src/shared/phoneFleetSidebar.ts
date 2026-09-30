@@ -130,6 +130,8 @@ export type PhoneLayoutSurfaceKind = (typeof PHONE_LAYOUT_SURFACE_KINDS)[number]
  * stay the desktop's.
  */
 export interface PhoneLayoutSurface {
+  /** Desktop surface id: stable across polls while the tab exists, unique in the tree. */
+  surfaceId: string;
   kind: PhoneLayoutSurfaceKind;
   ptyId?: string;
   title?: string;
@@ -216,6 +218,11 @@ function boundedString(value: unknown, max: number): string | undefined {
 function idString(value: unknown): string | undefined {
   const id = boundedString(value, PHONE_SIDEBAR_LIMITS.id);
   return id !== undefined && !RESERVED_KEYS.has(id) ? id : undefined;
+}
+
+/** True when the parsers accept `value` as an id; the producer checks with this. */
+export function isSidebarId(value: unknown): value is string {
+  return idString(value) !== undefined;
 }
 
 function count(value: unknown): number | undefined {
@@ -317,17 +324,47 @@ function parseWorkspace(value: unknown, drop: SidebarDropReporter): PhoneSidebar
   return row;
 }
 
+/** Hundredths of a percent: split shares are whole units of 0.01. */
+const SIZE_UNITS = 10_000;
+
 /**
- * Split shares as the phone reads them: one positive percent per child,
- * normalised to sum 100 and rounded to two decimals (never below 0.01). Null
- * when `sizes` is not one finite, positive number per child.
+ * Positive weights as percent shares in whole hundredths that sum to exactly
+ * 100 (10 000 hundredths), each at least 0.01. Largest remainder: floor every
+ * share, then hand the leftover hundredths to the largest fractions; when the
+ * 0.01 floor overshoots, take the excess back from the largest shares.
+ */
+function distributeSizes(weights: readonly number[]): number[] {
+  const total = weights.reduce((sum, weight) => sum + weight, 0);
+  const exact = weights.map((weight) => (weight / total) * SIZE_UNITS);
+  const units = exact.map((share) => Math.max(1, Math.floor(share)));
+  let left = SIZE_UNITS - units.reduce((sum, unit) => sum + unit, 0);
+  const byFraction = exact.map((share, i) => ({ i, fraction: share - Math.floor(share) })).sort((a, b) => b.fraction - a.fraction || a.i - b.i);
+  for (let k = 0; left > 0; k = (k + 1) % byFraction.length, left -= 1) units[byFraction[k].i] += 1;
+  while (left < 0) {
+    let largest = 0;
+    for (let i = 1; i < units.length; i += 1) if (units[i] > units[largest]) largest = i;
+    units[largest] -= 1;
+    left += 1;
+  }
+  return units.map((unit) => unit / 100);
+}
+
+/** An equal split of `count` children, in the same units as `normalizeLayoutSizes`. */
+export function equalLayoutSizes(count: number): number[] {
+  return distributeSizes(Array.from({ length: count }, () => 1));
+}
+
+/**
+ * Split shares as the phone reads them: one positive percent per child, in
+ * whole hundredths that sum to exactly 100, none below 0.01. Null when
+ * `sizes` is not one finite, positive number per child.
  */
 export function normalizeLayoutSizes(sizes: unknown, count: number): number[] | null {
-  if (!Array.isArray(sizes) || count === 0 || sizes.length !== count) return null;
+  if (!Array.isArray(sizes) || count === 0 || count > SIZE_UNITS || sizes.length !== count) return null;
   if (!sizes.every((size) => typeof size === 'number' && Number.isFinite(size) && size > 0)) return null;
   const total = (sizes as number[]).reduce((sum, size) => sum + size, 0);
   if (!Number.isFinite(total)) return null;
-  return (sizes as number[]).map((size) => Math.max(0.01, Math.round((size / total) * 10_000) / 100));
+  return distributeSizes(sizes as number[]);
 }
 
 class LayoutRefusal extends Error {
@@ -338,7 +375,7 @@ class LayoutRefusal extends Error {
 
 /**
  * Strict parse of one workspace's split tree. All or nothing: a tree over a
- * bound, with bad sizes, a duplicate pane or session id, an unsafe title or an
+ * bound, with bad sizes, a missing or duplicate pane, tab or session id, an unsafe title or an
  * out-of-range `activeIndex` is refused whole (the row and the flat `panes`
  * list stay), because a partial tree would draw a layout the desktop does not
  * have. Two things degrade instead: an unknown surface kind reads as 'other',
@@ -351,6 +388,7 @@ function parseLayout(value: unknown, drop: SidebarDropReporter): PhoneSidebarLay
   let surfaceCount = 0;
   const paneIds = new Set<string>();
   const ptyIds = new Set<string>();
+  const surfaceIds = new Set<string>();
   const refuse = (reason: string): never => {
     throw new LayoutRefusal(reason);
   };
@@ -360,16 +398,19 @@ function parseLayout(value: unknown, drop: SidebarDropReporter): PhoneSidebarLay
     const kind: PhoneLayoutSurfaceKind = (PHONE_LAYOUT_SURFACE_KINDS as readonly string[]).includes(raw.kind)
       ? (raw.kind as PhoneLayoutSurfaceKind)
       : 'other';
+    const surfaceId = idString(raw.surfaceId);
+    if (surfaceId === undefined || surfaceIds.has(surfaceId)) return refuse('surfaceId');
+    surfaceIds.add(surfaceId);
     if (kind === 'terminal') {
-      if (raw.ptyId === undefined) return { kind };
+      if (raw.ptyId === undefined) return { surfaceId, kind };
       const ptyId = idString(raw.ptyId);
       if (ptyId === undefined || ptyIds.has(ptyId)) return refuse('ptyId');
       ptyIds.add(ptyId);
-      return { kind, ptyId };
+      return { surfaceId, kind, ptyId };
     }
-    if (raw.title === undefined) return { kind };
+    if (raw.title === undefined) return { surfaceId, kind };
     const title = boundedString(raw.title, PHONE_SIDEBAR_LIMITS.surfaceTitle);
-    return title !== undefined ? { kind, title } : refuse('title');
+    return title !== undefined ? { surfaceId, kind, title } : refuse('title');
   };
 
   const parseNode = (raw: unknown, depth: number): PhoneLayoutNode => {
@@ -536,7 +577,7 @@ export function phoneWorkspaceLayout(layout: PhoneSidebarLayout, listed: readonl
       ...node,
       surfaces: node.surfaces.map((surface) => {
         if (surface.ptyId === undefined) return surface;
-        if (!live.has(surface.ptyId)) return { kind: surface.kind };
+        if (!live.has(surface.ptyId)) return { surfaceId: surface.surfaceId, kind: surface.kind };
         placed.add(surface.ptyId);
         return surface;
       }),

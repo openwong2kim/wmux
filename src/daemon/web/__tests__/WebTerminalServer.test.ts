@@ -8739,9 +8739,9 @@ describe('WebTerminalServer', () => {
           root: {
             kind: 'split', direction: 'horizontal', sizes: [60, 40], children: [
               // s2 is live but runs in ws-legacy by the daemon's own record.
-              { kind: 'leaf', paneId: 'pa', activeIndex: 2, surfaces: [{ kind: 'terminal', ptyId: 's1' }, { kind: 'terminal', ptyId: 's2' }, { kind: 'browser', title: 'Docs' }] },
+              { kind: 'leaf', paneId: 'pa', activeIndex: 2, surfaces: [{ surfaceId: 't1', kind: 'terminal', ptyId: 's1' }, { surfaceId: 't2', kind: 'terminal', ptyId: 's2' }, { surfaceId: 't3', kind: 'browser', title: 'Docs' }] },
               // A brain session and one that is not live.
-              { kind: 'leaf', paneId: 'pb', activeIndex: 0, surfaces: [{ kind: 'terminal', ptyId: 'brain-abc' }, { kind: 'terminal', ptyId: 'ghost' }] },
+              { kind: 'leaf', paneId: 'pb', activeIndex: 0, surfaces: [{ surfaceId: 't4', kind: 'terminal', ptyId: 'brain-abc' }, { surfaceId: 't5', kind: 'terminal', ptyId: 'ghost' }] },
             ],
           },
           activePaneId: 'pb',
@@ -8755,8 +8755,8 @@ describe('WebTerminalServer', () => {
         expect(ws1.layout).toEqual({
           root: {
             kind: 'split', direction: 'horizontal', sizes: [60, 40], children: [
-              { kind: 'leaf', paneId: 'pa', activeIndex: 2, surfaces: [{ kind: 'terminal', ptyId: 's1' }, { kind: 'terminal' }, { kind: 'browser', title: 'Docs' }] },
-              { kind: 'leaf', paneId: 'pb', activeIndex: 0, surfaces: [{ kind: 'terminal' }, { kind: 'terminal' }] },
+              { kind: 'leaf', paneId: 'pa', activeIndex: 2, surfaces: [{ surfaceId: 't1', kind: 'terminal', ptyId: 's1' }, { surfaceId: 't2', kind: 'terminal' }, { surfaceId: 't3', kind: 'browser', title: 'Docs' }] },
+              { kind: 'leaf', paneId: 'pb', activeIndex: 0, surfaces: [{ surfaceId: 't4', kind: 'terminal' }, { surfaceId: 't5', kind: 'terminal' }] },
             ],
           },
           activePaneId: 'pb',

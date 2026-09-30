@@ -84,7 +84,8 @@ describe('buildPhoneSidebarSnapshot — workspace rows', () => {
     const snap = buildPhoneSidebarSnapshot(state({ workspaces: [a, b], pinned: ['b'], activeWorkspaceId: 'b' }));
     expect(snap.activeWorkspaceId).toBe('b');
     const single = (paneId: string, ptyId: string) => ({
-      root: { kind: 'leaf', paneId, surfaces: [{ kind: 'terminal', ptyId }], activeIndex: 0 },
+      // The fixture names a pane `p<x>` and its tab `s<x>`.
+      root: { kind: 'leaf', paneId, surfaces: [{ surfaceId: `s${paneId.slice(1)}`, kind: 'terminal', ptyId }], activeIndex: 0 },
       activePaneId: paneId,
     });
     expect(snap.workspaces).toEqual([
@@ -328,11 +329,15 @@ describe('buildPhoneSidebarSnapshot — layout tree', () => {
     expect(layout).toEqual({
       root: {
         kind: 'split', direction: 'horizontal', sizes: [70, 30], children: [
-          { kind: 'leaf', paneId: 'pa', activeIndex: 2, surfaces: [{ kind: 'terminal', ptyId: 'pty-1' }, { kind: 'terminal', ptyId: 'pty-2' }, { kind: 'browser', title: 'Docs home' }] },
+          { kind: 'leaf', paneId: 'pa', activeIndex: 2, surfaces: [
+            { surfaceId: 's1', kind: 'terminal', ptyId: 'pty-1' },
+            { surfaceId: 's2', kind: 'terminal', ptyId: 'pty-2' },
+            { surfaceId: 's3', kind: 'browser', title: 'Docs home' },
+          ] },
           { kind: 'split', direction: 'vertical', sizes: [50, 50], children: [
-            { kind: 'leaf', paneId: 'pb', surfaces: [{ kind: 'terminal', ptyId: 'pty-b' }], activeIndex: 0 },
+            { kind: 'leaf', paneId: 'pb', surfaces: [{ surfaceId: 'sb', kind: 'terminal', ptyId: 'pty-b' }], activeIndex: 0 },
             // The brain session keeps its tab slot but never its id.
-            { kind: 'leaf', paneId: 'pc', surfaces: [{ kind: 'terminal' }], activeIndex: 0 },
+            { kind: 'leaf', paneId: 'pc', surfaces: [{ surfaceId: 'sc', kind: 'terminal' }], activeIndex: 0 },
           ] },
         ],
       },
@@ -350,8 +355,29 @@ describe('buildPhoneSidebarSnapshot — layout tree', () => {
     ])]);
     expect(layoutOf(ws).layout?.root).toEqual({
       kind: 'leaf', paneId: 'pa', activeIndex: 0,
-      surfaces: [{ kind: 'browser', title: 'Search' }, { kind: 'remote-terminal', title: 'build box' }, { kind: 'other' }],
+      surfaces: [{ surfaceId: 's1', kind: 'browser', title: 'Search' }, { surfaceId: 's2', kind: 'remote-terminal', title: 'build box' }, { surfaceId: 's3', kind: 'other' }],
     });
+  });
+
+  it('drops only a ptyId the parsers would refuse, keeping the tab slot and the tree', () => {
+    const bad = [' pty-pad', 'pty-pad ', '__proto__', 'constructor', 'x'.repeat(129), 'pty‮evil', 'pty\u0007bell'];
+    const ws = workspace('a', [leaf('pa', [surface('s0', 'pty-ok'), ...bad.map((ptyId, i) => surface(`s${i + 1}`, ptyId))])]);
+    const reasons: string[] = [];
+    const { snap, layout } = layoutOf(ws, reasons);
+    expect(layout?.root).toEqual({
+      kind: 'leaf', paneId: 'pa', activeIndex: 0,
+      surfaces: [{ surfaceId: 's0', kind: 'terminal', ptyId: 'pty-ok' }, ...bad.map((_, i) => ({ surfaceId: `s${i + 1}`, kind: 'terminal' }))],
+    });
+    expect(reasons.filter((r) => r.startsWith('workspace.layout'))).toEqual([]);
+    expect(parsePhoneSidebarSnapshot(JSON.parse(JSON.stringify(snap)))?.workspaces[0].layout).toEqual(layout);
+  });
+
+  it('projects no tree when a tab has no usable surface id (a reader keys tabs by it)', () => {
+    const reasons: string[] = [];
+    const dup = workspace('a', [leaf('pa', [surface('same', 'p1')]), leaf('pb', [surface('same', 'p2')])]);
+    expect(layoutOf(dup, reasons).layout).toBeUndefined();
+    expect(layoutOf(workspace('b', [leaf('pa', [surface('__proto__', 'p1')])])).layout).toBeUndefined();
+    expect(reasons).toContain('workspace.layout.bounds');
   });
 
   it('normalises unequal sizes and falls back to an equal split for missing, mismatched or bad ones', () => {
@@ -360,7 +386,7 @@ describe('buildPhoneSidebarSnapshot — layout tree', () => {
       workspace('w', three, { rootPane: { id: 'r', type: 'branch', direction: 'vertical', children: three, ...(sizes ? { sizes } : {}) } });
     const sizesOf = (ws: Workspace) => { const root = layoutOf(ws).layout?.root; return root?.kind === 'split' ? root.sizes : null; };
     expect(sizesOf(withSizes([2, 1, 1]))).toEqual([50, 25, 25]);
-    for (const bad of [undefined, [50, 50], [0, 50, 50], [NaN, 1, 1]]) expect(sizesOf(withSizes(bad))).toEqual([33.33, 33.33, 33.33]);
+    for (const bad of [undefined, [50, 50], [0, 50, 50], [NaN, 1, 1]]) expect(sizesOf(withSizes(bad))).toEqual([33.34, 33.33, 33.33]);
   });
 
   it('falls back to the first tab when the active surface is gone, and omits a focused pane that is stashed', () => {

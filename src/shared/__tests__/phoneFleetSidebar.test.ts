@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { clampSidebarString, createSidebarDropLog, hasUnsafeSidebarText, parsePhoneSidebarSnapshot, phoneTaskNesting, PHONE_SIDEBAR_LIMITS } from '../phoneFleetSidebar';
+import { clampSidebarString, createSidebarDropLog, equalLayoutSizes, normalizeLayoutSizes, hasUnsafeSidebarText, parsePhoneSidebarSnapshot, phoneTaskNesting, PHONE_SIDEBAR_LIMITS } from '../phoneFleetSidebar';
 
 const valid = {
   activeWorkspaceId: 'ws-1',
@@ -258,8 +258,9 @@ describe('real fan-out data and per-item drops', () => {
 });
 
 describe('workspace layout tree', () => {
-  const leafNode = (paneId: string, surfaces: unknown[], activeIndex: number | undefined = surfaces.length > 0 ? 0 : undefined) => ({
-    kind: 'leaf', paneId, surfaces, ...(activeIndex !== undefined ? { activeIndex } : {}),
+  // Each tab gets a surfaceId `<paneId>-t<i>` unless the case sets its own.
+  const leafNode = (paneId: string, surfaces: object[], activeIndex: number | undefined = surfaces.length > 0 ? 0 : undefined) => ({
+    kind: 'leaf', paneId, surfaces: surfaces.map((s, i) => ({ surfaceId: `${paneId}-t${i}`, ...s })), ...(activeIndex !== undefined ? { activeIndex } : {}),
   });
   const goodLayout = {
     root: {
@@ -310,9 +311,35 @@ describe('workspace layout tree', () => {
     }
   });
 
+  it('normalises sizes to whole hundredths summing to exactly 100, none below 0.01', () => {
+    const hundredths = (sizes: number[]) => sizes.reduce((sum, size) => sum + Math.round(size * 100), 0);
+    const cases: number[][] = [
+      [1, 1, 1],
+      [1, 1, 1, 1, 1, 1, 1],
+      // The 0.01 floor used to push these over 100.
+      [1e-9, 1e-9, 1e-9, 1],
+      [...Array(63).fill(1e-9), 1],
+      [0.3, 0.3, 0.4],
+      [33.333, 33.333, 33.334],
+      Array(64).fill(1),
+    ];
+    for (const weights of cases) {
+      const sizes = normalizeLayoutSizes(weights, weights.length)!;
+      expect(hundredths(sizes)).toBe(10_000);
+      expect(sizes.every((size) => size >= 0.01 && Number.isInteger(Math.round(size * 100)) && Math.abs(size * 100 - Math.round(size * 100)) < 1e-6)).toBe(true);
+    }
+    expect(normalizeLayoutSizes([1, 1, 1], 3)).toEqual([33.34, 33.33, 33.33]);
+    expect(normalizeLayoutSizes([60, 40], 2)).toEqual([60, 40]);
+    expect(equalLayoutSizes(3)).toEqual([33.34, 33.33, 33.33]);
+    expect(hundredths(equalLayoutSizes(7))).toBe(10_000);
+    // Re-normalising a normalised split changes nothing (every hop parses).
+    const once = normalizeLayoutSizes([2, 7, 11], 3)!;
+    expect(normalizeLayoutSizes(once, 3)).toEqual(once);
+  });
+
   it('reads an unknown surface kind as other, and refuses an unknown node kind', () => {
     const { row } = parseLayout({ root: leafNode('a', [{ kind: 'hologram', title: 'Future tab', extra: 1 }]) });
-    expect(row?.layout?.root).toEqual({ kind: 'leaf', paneId: 'a', surfaces: [{ kind: 'other', title: 'Future tab' }], activeIndex: 0 });
+    expect(row?.layout?.root).toEqual({ kind: 'leaf', paneId: 'a', surfaces: [{ surfaceId: 'a-t0', kind: 'other', title: 'Future tab' }], activeIndex: 0 });
     expect(parseLayout({ root: { kind: 'grid', children: [] } }).dropped).toBe('workspace.layout.kind×1');
   });
 
@@ -322,7 +349,17 @@ describe('workspace layout tree', () => {
     expect(parseLayout(two(leafNode('a', []), leafNode('a', []))).dropped).toBe('workspace.layout.paneId×1');
     expect(parseLayout(two(leafNode('a', [{ kind: 'terminal', ptyId: 'p' }]), leafNode('b', [{ kind: 'terminal', ptyId: 'p' }]))).dropped).toBe('workspace.layout.ptyId×1');
     expect(parseLayout({ root: leafNode('a', [{ kind: 'terminal', ptyId: 'p' }], 1) }).dropped).toBe('workspace.layout.activeIndex×1');
-    expect(parseLayout({ root: { kind: 'leaf', paneId: 'a', surfaces: [{ kind: 'terminal', ptyId: 'p' }] } }).dropped).toBe('workspace.layout.activeIndex×1');
+    expect(parseLayout({ root: { kind: 'leaf', paneId: 'a', surfaces: [{ surfaceId: 's', kind: 'terminal', ptyId: 'p' }] } }).dropped).toBe('workspace.layout.activeIndex×1');
+  });
+
+  it('refuses a tab without a valid surfaceId, and a surfaceId used twice in the tree', () => {
+    for (const surfaceId of [undefined, '', ' s', '__proto__', 'x'.repeat(129), 's‮']) {
+      expect(parseLayout({ root: leafNode('a', [{ surfaceId, kind: 'terminal' }]) }).dropped).toBe('workspace.layout.surfaceId×1');
+    }
+    const two = { root: { kind: 'split', direction: 'horizontal', sizes: [1, 1], children: [
+      leafNode('a', [{ surfaceId: 'same', kind: 'terminal' }]), leafNode('b', [{ surfaceId: 'same', kind: 'browser' }]),
+    ] } };
+    expect(parseLayout(two).dropped).toBe('workspace.layout.surfaceId×1');
   });
 
   it('drops only an activePaneId that is not a leaf of the tree', () => {
