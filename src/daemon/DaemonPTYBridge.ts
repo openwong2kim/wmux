@@ -404,6 +404,12 @@ export class DaemonPTYBridge extends EventEmitter {
     // An answer resumes the episode it interrupted; a submit into a running
     // turn is queued by the agent's own composer. Anything else starts one.
     if (!wasAwaiting) {
+      // #1670 — with no turn evidence since the program launched, an open
+      // episode can only be the boot burst's own byte promotion (the TUI
+      // painting itself), not a turn. The first submit starts the first turn,
+      // so a key sent before it (a lone Esc dismissing a notice) is never
+      // read as an interrupt of that turn.
+      if (this.turnOpen && this.codexBootWindow) this.closeTurn();
       if (this.turnOpen && this.sessionId) {
         const endedAt = DaemonPTYBridge.transcriptTurnEndProbe?.(this.sessionId);
         if (endedAt !== undefined) this.noteTranscriptTurnEnd(endedAt);
