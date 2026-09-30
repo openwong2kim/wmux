@@ -1,6 +1,6 @@
 import {
   CHAT_CANCEL_OBSERVE_MS,
-  type ChatCancelEndedAs, type ChatCancelEvidence, type ChatCancelOutcomeState, type StoredCancelProgress,
+  type ChatCancelEndedAs, type ChatCancelEventFrame, type ChatCancelEvidence, type StoredCancelProgress,
 } from '../../shared/phoneChatCancelOutcome';
 import type { ChatCancelReceiptStore } from './ChatCancelReceiptStore';
 import type { ChatOwner } from './chatBridge';
@@ -38,15 +38,9 @@ export type CancelProbe =
   | { kind: 'unprovable' } | { kind: 'transient' }
   | { kind: 'ended'; endedAs: ChatCancelEndedAs; evidence: ChatCancelEvidence };
 
-/** SSE `chat.cancel`: narrower than the receipt (no evidence, reason or requestedAt). */
-export interface ChatCancelEvent {
+/** SSE `chat.cancel` (`ChatCancelEventFrame`), plus the owner it is delivered to. */
+export interface ChatCancelEvent extends ChatCancelEventFrame {
   owner: ChatOwner;
-  sessionId: string;
-  clientCancelId: string;
-  state: ChatCancelOutcomeState;
-  turnId?: string;
-  endedAs?: ChatCancelEndedAs;
-  at: number;
 }
 
 export interface ChatCancelObserverDeps<W extends WatchedCancel> {

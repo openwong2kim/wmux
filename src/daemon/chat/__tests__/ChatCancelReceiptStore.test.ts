@@ -45,7 +45,8 @@ describe('ChatCancelReceiptStore', () => {
     const store = new ChatCancelReceiptStore(dir, { now: () => 5_000 });
     const cid = id();
     store.insertPending('device:a', cid, { paneId: 'pane', fingerprint: fp });
-    expect(store.progress('device:a', cid)).toBeUndefined();
+    // In flight: the write is under way.
+    expect(store.progress('device:a', cid)).toMatchObject({ state: 'requested' });
     expect(store.complete('device:a', cid, { effect: 'interrupt-requested', turnId: 't1:n.1' }, { state: 'requested', at: 5_000 })).toBe(true);
     expect(store.progress('device:a', cid)).toEqual({ state: 'requested', turnId: 't1:n.1', requestedAt: 5_000, at: 5_000 });
     expect(store.progress('device:b', cid)).toBeUndefined();
@@ -119,33 +120,37 @@ describe('ChatCancelReceiptStore', () => {
     }
   });
 
-  it('a progress from a newer daemon never disables the store: unknown values normalize, malformed progress is dropped', () => {
+  it('a progress from a newer daemon never disables the store: it reads through the shared normalizer', () => {
     const dir = tmp();
     const store = new ChatCancelReceiptStore(dir);
-    const [future, bad, junk] = [id(), id(), id()];
-    for (const cid of [future, bad, junk]) {
+    const ids = [id(), id(), id(), id()];
+    for (const cid of ids) {
       store.insertPending('operator', cid, { paneId: 'pane', fingerprint: fp });
       store.complete('operator', cid, { effect: 'interrupt-requested' }, { state: 'requested', at: 1 });
     }
     const file = path.join(dir, 'chat-cancel-receipts.json');
     const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
-    const keys = Object.keys(saved.entries);
-    const progress = [
+    const stored = [
       { state: 'ended', endedAs: 'handed-off', evidence: 'telepathy', reason: 'later', at: 7 },
       { state: 'cancelled-natively', at: 8 },
+      { state: 'unknown', reason: 'agent-restarted', at: 9 },
       { state: 'ended', at: 'x' },
     ];
-    keys.forEach((key, i) => { saved.entries[key].progress = progress[i]; });
+    Object.keys(saved.entries).forEach((key, i) => { saved.entries[key].progress = stored[i]; });
     fs.writeFileSync(file, JSON.stringify(saved));
     const reloaded = new ChatCancelReceiptStore(dir, { now: () => 9_000 });
-    const views = [future, bad, junk].map((cid) => reloaded.progress('operator', cid));
     // Which id got which row follows key order; compare as a set.
+    const views = ids.map((cid) => reloaded.progress('operator', cid));
     expect(views).toEqual(expect.arrayContaining([
+      // Unknown values and fields that do not belong to the state are dropped.
       { state: 'ended', at: 7 },
+      // A state outside the union reads unknown.
       { state: 'unknown', at: 8 },
-      // Dropped: the entry's effect decides (`requested`), which a restart settles.
-      { state: 'unknown', reason: 'daemon-restart', at: 9_000 },
+      // `reason` is an open set.
+      { state: 'unknown', reason: 'agent-restarted', at: 9 },
     ]));
+    // A malformed `at` falls back to the entry's own time.
+    expect(views.some((v) => v?.state === 'ended' && v.at > 1_000_000_000_000)).toBe(true);
     expect(reloaded.insertPending('operator', id(), { paneId: 'pane', fingerprint: fp })).toBe('inserted');
   });
 

@@ -1740,10 +1740,12 @@ at}`. An entry without it reads as `requested` when its outcome is
 final `uncertain` one also sets `progress` to `unknown` (`daemon-restart`), and
 a `requested` progress becomes `unknown` (`daemon-restart`) the same way; the
 result is written once, so its `at` does not move on later restarts. An older
-daemon reading the file ignores the field. A `progress` never makes an entry
-invalid: a state this daemon does not know reads `unknown`, an unknown
-`endedAs`, `evidence` or `reason` value is left out, and a malformed
-`progress` is ignored.
+daemon reading the file ignores the field. While the write is still in flight
+(`pending`, no outcome yet) an entry reads `requested`. A stored `progress` is
+normalized on read (`normalizeCancelProgress`) and never makes an entry
+invalid: a state outside the union reads `unknown`, fields that do not belong
+to the state or fail their check are dropped (`reason` is an open set), and a
+malformed `at` falls back to the entry's own time.
 
 **SSE.**
 
@@ -1756,7 +1758,9 @@ On every change, the first `requested` (or the `write-uncertain` `unknown`)
 included, and only once the change is on disk (a failed write is retried, not
 announced). Live-only (no `id:`, never in the backlog) and sent only to the
 cancel's owner among the callers that read the pane's `/turns`. The receipt is
-authoritative after a reconnect.
+authoritative after a reconnect. The frame carries no `evidence` or `reason`
+(`ChatCancelEventFrame`): when it reports a final `state` and you need those,
+read the receipt.
 
 ### Chat queue
 

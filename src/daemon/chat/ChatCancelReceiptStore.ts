@@ -49,33 +49,6 @@ function validOutcome(value: unknown): value is StoredCancelOutcome {
     (row.turnId === undefined || typeof row.turnId === 'string' && row.turnId.length <= 128);
 }
 
-const PROGRESS_STATES: readonly string[] = ['requested', 'ended', 'not-ended', 'unknown'];
-const ENDED_AS: readonly string[] = ['interrupted', 'completed', 'failed', 'unspecified'];
-const EVIDENCE: readonly string[] = ['native', 'transcript', 'screen'];
-const UNKNOWN_REASONS: readonly string[] = ['write-uncertain', 'daemon-restart', 'pane-closed', 'session-changed'];
-
-/**
- * A stored progress as this build reads it. `progress` is an optional,
- * additive field, so it never makes an entry invalid: a malformed one is
- * dropped (the entry's effect decides), a state this build does not know
- * (written by a newer daemon) reads `unknown` without a reason, and an
- * unknown optional value is left out.
- */
-function normalizeProgress(value: unknown): StoredCancelProgress | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  const row = value as Record<string, unknown>;
-  if (!Number.isSafeInteger(row.at)) return undefined;
-  const at = row.at as number;
-  if (!PROGRESS_STATES.includes(String(row.state))) return { state: 'unknown', at };
-  const pick = <T extends string>(field: unknown, allowed: readonly string[]) =>
-    allowed.includes(String(field)) ? field as T : undefined;
-  const endedAs = pick<NonNullable<StoredCancelProgress['endedAs']>>(row.endedAs, ENDED_AS);
-  const evidence = pick<NonNullable<StoredCancelProgress['evidence']>>(row.evidence, EVIDENCE);
-  const reason = pick<NonNullable<StoredCancelProgress['reason']>>(row.reason, UNKNOWN_REASONS);
-  return { state: row.state as StoredCancelProgress['state'], ...(endedAs ? { endedAs } : {}), ...(evidence ? { evidence } : {}),
-    ...(reason ? { reason } : {}), at };
-}
-
 function validEntry(key: string, value: unknown): value is ChatCancelReceipt {
   if (!/^[a-f0-9]{64}$/.test(key) || !value || typeof value !== 'object' || Array.isArray(value)) return false;
   const row = value as Record<string, unknown>;
@@ -114,12 +87,13 @@ export class ChatCancelReceiptStore {
     for (const [key, value] of Object.entries(saved.entries)) {
       if (!validEntry(key, value)) throw new Error('Invalid chat cancel receipt entry');
       const { progress: raw, ...rest } = value as ChatCancelReceipt & { progress?: unknown };
-      const stored = normalizeProgress(raw);
       // Nothing observes a cancel across a restart: a `requested` progress,
       // and the `pending` entry that becomes a final `uncertain` one here,
       // both settle `unknown` (`daemon-restart`). Read from the entry as
-      // loaded, before the conversion, so a crashed `pending` keeps that reason.
-      const progress = effectiveCancelProgress({ ...rest, ...(stored ? { progress: stored } : {}) }, true, now);
+      // loaded, before the conversion, so a crashed `pending` keeps that
+      // reason. The shared reader normalizes the untrusted stored value, so a
+      // `progress` never makes an entry invalid.
+      const progress = effectiveCancelProgress({ ...rest, ...(raw !== undefined ? { progress: raw as StoredCancelProgress } : {}) }, true, now);
       if (JSON.stringify(progress) !== JSON.stringify(raw)) changed = true;
       this.entries[key] = rest.state === 'pending' ? { ...rest, state: 'final', outcome: RESTART_UNCERTAIN, progress } : { ...rest, progress };
     }
@@ -181,10 +155,11 @@ export class ChatCancelReceiptStore {
     return 'saved';
   }
 
-  /** The progress of a cancel that reached the write, or undefined (none, pending, expired, another owner). */
+  /** The progress of a cancel, or undefined (none, refused, expired, another owner). */
   progress(owner: ChatOwner, clientCancelId: string): ChatCancelProgressView | undefined {
     const entry = this.lookup(owner, clientCancelId);
-    if (!entry || entry.state !== 'final') return undefined;
+    // A `pending` entry (the write in flight under the pane lock) reads `requested`.
+    if (!entry) return undefined;
     const { endedAs, evidence, reason, state, at } = effectiveCancelProgress(entry, false, this.now());
     const requestedAt = this.requestedAt.get(this.key(owner, clientCancelId));
     return {

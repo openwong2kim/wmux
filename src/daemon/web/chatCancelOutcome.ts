@@ -1,5 +1,6 @@
 import type { ChatBridge, ChatOwner } from '../chat/chatBridge';
 import type { ChatCancelEvent } from '../chat/chatCancelObserver';
+import type { ChatCancelEventFrame, ChatCancelReceiptView } from '../../shared/phoneChatCancelOutcome';
 
 /**
  * Wire shapes for the chat cancel outcome (docs/phone-client-contract.md,
@@ -18,7 +19,7 @@ export function cancelReceiptResponse(
   owner: ChatOwner,
   id: string,
   clientCancelId: string,
-): { status: number; body: Record<string, unknown> } {
+): { status: 200; body: ChatCancelReceiptView } | { status: 503; body: { error: 'chat-persist-failed' } } {
   const progress = chat?.cancelOutcome?.(owner, id, clientCancelId);
   if (progress === null || progress === undefined && !chat?.cancelOutcome) return { status: 503, body: { error: 'chat-persist-failed' } };
   return { status: 200, body: progress ? { clientCancelId, ...progress } : { clientCancelId, state: 'none' } };
@@ -26,8 +27,9 @@ export function cancelReceiptResponse(
 
 /** SSE `chat.cancel` body: `{sessionId, clientCancelId, state, turnId?, endedAs?, at}`. */
 export function cancelEventBody(event: ChatCancelEvent): string {
-  return JSON.stringify({
+  const frame: ChatCancelEventFrame = {
     sessionId: event.sessionId, clientCancelId: event.clientCancelId, state: event.state,
     ...(event.turnId ? { turnId: event.turnId } : {}), ...(event.endedAs ? { endedAs: event.endedAs } : {}), at: event.at,
-  });
+  };
+  return JSON.stringify(frame);
 }
