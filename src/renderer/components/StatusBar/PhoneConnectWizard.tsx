@@ -352,7 +352,7 @@ export function PhoneWizardView(p: PhoneWizardViewProps) {
           {p.errorLines.length > 0 ? <Lines lines={p.errorLines} onOpenLink={p.onOpenLink} /> : null}
         </PopoverSection>
         {footer(
-          <Button variant={p.busy ? 'secondary' : 'primary'} size="md" onClick={p.onConnect} disabled={!canGo}>
+          <Button variant={canGo ? 'primary' : 'secondary'} size="md" onClick={p.onConnect} disabled={!canGo}>
             {p.busy ? t('web.wizardPreparing') : t('web.wizardShowQr')}
           </Button>,
           <Button variant="ghost" size="md" onClick={p.onBack} disabled={p.busy}>
@@ -558,8 +558,8 @@ export default function PhoneConnectWizard({
   }, [step, readRoster]);
 
   const impacts = useMemo(() => sharedImpacts(info, roster, remote, upload), [info, roster, remote, upload]);
-  // A confirmation covers the choices it was given for, not later ones.
-  useEffect(() => setAcknowledged(false), [remote, upload]);
+  // A confirmation covers one attempt with the choices it was given for.
+  useEffect(() => setAcknowledged(false), [remote, upload, step]);
 
   /** Put back what this pairing changed server-wide. Best effort. */
   const restoreGrants = useCallback(
