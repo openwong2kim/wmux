@@ -179,16 +179,18 @@ Identity probe. Stable shape; new fields may be added in minors.
 ### `input.send`
 
 **Method:** `input.send`
-**Params:** `{ text: string, paneId?, workspaceId? }`
-**Returns:** `{ ok: true, ... }` — every other field is optional and additive within v3.x.
+**Params:** `{ text: string, ptyId?, workspaceId?, submit?: boolean, raw?: boolean }`
+**Returns:** `{ ok: true }`
 
 Sends literal text to a pane's PTY. Targeting falls back to the active pane in the active workspace.
 
+The reply can carry more fields; only `ok` is covered by this document. The role-enforcement fields below are **`experimental`** (see [`inventory.md`](./inventory.md)): they may change within v3.x.
+
 When a submitted line launches an agent in a pane whose role has a binding (Settings → Roles), wmux may rewrite the line before writing it. The reply then says what it added:
 
-- `enforcedModel?: string` — the model whose flag was added. Absent when the line already chose a model.
-- `enforcedOptions?: { effort?: string; skipPermissions?: true }` — the launch options whose flags were added (`--effort <level>` or codex `-c model_reasoning_effort=<level>`; the agent's skip-permissions flag). Present only when at least one was added. A flag already on the line or in the role's extra args is not reported, and neither is a skip the line overrides with its own permission flag.
-- `note?: string` — why part of a binding did not apply (for example, the line makes its own permission choice).
+- `enforcedModel?: string` (experimental): the model whose flag was added. Absent whenever no model flag was added: the line already chose a model, the binding names no agent or a different one, or the agent has no verified `--model` flag.
+- `enforcedOptions?: { effort?: string; skipPermissions?: true }` (experimental): the launch options whose flags were added (`--effort <level>` or codex `-c model_reasoning_effort=<level>`; the agent's skip-permissions flag). Present only when at least one was added. A flag already on the line or in the role's extra args is not reported, and neither is a skip the line overrides with its own permission flag.
+- `note?: string` (experimental): human-readable; the wording is not stable. Says why part of a binding did not apply (for example, the line makes its own permission choice).
 
 ### `input.sendKey`
 

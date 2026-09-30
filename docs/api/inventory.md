@@ -78,7 +78,7 @@ Validation limits live in `src/shared/types.ts` (PANE_METADATA_MAX_BYTES, PANE_M
 
 | Method | Params | Tier | Notes |
 |---|---|---|---|
-| `input.send` | `{ text, paneId?, workspaceId? }` | stable | Send literal text to a pane's PTY. |
+| `input.send` | `{ text, ptyId?, workspaceId?, submit?, raw? }` | stable | Send literal text to a pane's PTY. The role-enforcement reply fields `enforcedModel`, `enforcedOptions` and `note` are **experimental** (#1681); see [`stability.md`](./stability.md#inputsend). |
 | `input.sendKey` | `{ key, paneId?, workspaceId? }` | stable | Send a control key sequence. |
 | `input.readScreen` | `{ paneId?, workspaceId? }` | stable | Read the current visible terminal buffer. |
 | `terminal.readEvents` | `{ paneId?, workspaceId?, sinceSeq? }` | stable | Read structured terminal output events (prompt detection, etc.). |
