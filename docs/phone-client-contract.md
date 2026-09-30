@@ -2529,6 +2529,7 @@ type Node =
   | { kind: 'split'; direction: 'horizontal' | 'vertical'; sizes: number[]; children: Node[] }
   | { kind: 'leaf'; paneId: string; surfaces: Surface[]; activeIndex?: number };
 type Surface = {
+  surfaceId: string;       // desktop tab id: stable across polls, unique in the tree
   kind: 'terminal' | 'browser' | 'editor' | 'diff' | 'git' | 'review' | 'remote-terminal' | 'other';
   ptyId?: string;          // terminal only: a sessionId of this same row's panes[]
   title?: string;          // non-terminal only: at most 100 characters, one line
@@ -2537,13 +2538,24 @@ type Surface = {
 
 - `direction` uses the desktop's word: `horizontal` lays the children side by
   side (columns), `vertical` stacks them (rows).
-- `sizes` has one entry per child, in percent: finite, > 0, summing to 100
-  within rounding (two decimals). A desktop split with no or mismatched sizes
-  arrives as an equal split, which is what the desktop draws for it.
+- `sizes` has one entry per child, in percent, in whole hundredths (0.01)
+  that sum to exactly 100, none below 0.01. A desktop split with no or
+  mismatched sizes arrives as an equal split (e.g. 33.34 / 33.33 / 33.33),
+  which is what the desktop draws for it.
 - A leaf's `paneId` is the same value `panes[].paneId` carries. `surfaces` are
   the pane's tabs in the desktop's order; `activeIndex` is the tab the pane
-  shows, present whenever `surfaces` is non-empty. The shown tab may be a
-  browser or editor tab.
+  focuses, present whenever `surfaces` is non-empty. It may be a browser or
+  editor tab.
+- `surfaceId` is the desktop's own tab id. It stays the same across polls for
+  as long as the tab exists, so key tabs (and any per-tab view state) by it;
+  a tab that moves to another pane keeps it.
+- A pane holding both terminal and browser tabs is drawn by the desktop as a
+  side-by-side split inside the pane: the terminal side shows the focused
+  terminal tab (else the first terminal tab), the browser side shows the
+  focused browser tab (else the first browser tab), and a focused
+  diff/editor/remote tab covers both. That split starts at 50/50 and its
+  ratio is not stored anywhere, so `kind`, order and `activeIndex` are all a
+  reader needs to reproduce it.
 - A terminal tab carries `ptyId` only — its title is that session's
   `surfaceTitle` on `GET /api/sessions`. A terminal tab **without** `ptyId`
   is a slot whose session this row does not list: still spawning, the
@@ -2564,8 +2576,10 @@ type Surface = {
 Bounds, enforced by the desktop and again by the daemon: depth ≤ 16 (the root
 is 1), ≤ 512 splits and leaves together, ≤ 64 leaves, ≤ 64 children per split,
 ≤ 64 tabs per leaf and ≤ 512 tabs per tree. A tree over any bound, with bad
-sizes, a duplicate pane or session id, an out-of-range `activeIndex` or an
-unsafe title is not sent at all; the row and its flat `panes[]` stay.
+sizes, a missing or duplicate `surfaceId`, a duplicate pane or session id, an
+out-of-range `activeIndex` or an unsafe title is not sent at all; the row and
+its flat `panes[]` stay. A single terminal tab whose session id the desktop
+cannot send safely loses only its `ptyId`.
 
 Size budget: the layout trees are the first thing cut when the desktop's reply
 is over its budget, largest tree first, before pane placement, titles and pane
