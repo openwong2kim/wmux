@@ -24,6 +24,9 @@ export interface CodexPaneRelayHooks {
   decisionPending?:(id:string,owner:ManagedSession,ref:CodexDecisionRef,request:CodexDecisionRequest)=>void;
   /** A request reported by `decisionPending` is over without `answer`. */
   decisionSettled?:(id:string,ref:CodexDecisionRef,reason:CodexDecisionSettledReason)=>void;
+  /** The account server under pane `id`'s committed TUI went away (a restart):
+   * a turn it was running is over, with no Stop hook or transcript end. */
+  upstreamLost?:(id:string)=>void;
 }
 /** One Codex request, keyed by (relay incarnation, thread, server request id). */
 export interface CodexDecisionRef {relayId:string; threadId:string; requestId:string; method?:string}
@@ -87,7 +90,11 @@ export class CodexPaneRelays {
       // The account server went away under the TUI: a new relay incarnation,
       // so no turn or request pinned to the old server link matches any more
       // (request ids restart on the new link).
-      onUpstreamLost:()=>{ if (!entry.retired && this.entries.get(id) === entry) entry.relayId = randomUUID(); },
+      onUpstreamLost:()=>{
+        if (entry.retired || this.entries.get(id) !== entry) return;
+        entry.relayId = randomUUID();
+        if (entry.owner) try {this.hooks.upstreamLost?.(id);} catch {/* A notice cannot keep the old link. */}
+      },
       ensureUpstream:async()=>{
         if (entry.retired || this.entries.get(id) !== entry) return;
         try {await this.hooks.ensureRuntime?.(id,codeHome);} catch {/* The next dial decides. */}

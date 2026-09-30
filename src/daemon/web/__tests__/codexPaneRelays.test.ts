@@ -330,8 +330,9 @@ describe('Codex pane relay after the account server restarts (#1671)',()=>{
     let options:RelayOptions|undefined;const connection=relay();
     const pending=vi.fn();const settled=vi.fn();
     const runtime=vi.fn(async(_id:string,_codeHome?:string)=> { /* the runtime start */ });
+    const serverLost=vi.fn();
     const registry=new CodexPaneRelays((async(o:RelayOptions)=>{options=o;return connection;}) as unknown as typeof createCodexTuiRelay,undefined,undefined,
-      {ensureRuntime:runtime,decisionPending:pending,decisionSettled:settled});
+      {ensureRuntime:runtime,decisionPending:pending,decisionSettled:settled,upstreamLost:serverLost});
     const lease=await registry.prepare('pane','/h/.codex');const pane=owner();lease.commit(pane);
     options!.policy!.recordOwner('thread');
     options!.policy!.decisionPending?.('0',{method:'item/commandExecution/requestApproval',threadId:'thread',question:'Run?',toolName:'command'});
@@ -343,6 +344,8 @@ describe('Codex pane relay after the account server restarts (#1671)',()=>{
     options!.policy!.decisionSettled?.('0','thread','pane-gone');
     expect(settled).toHaveBeenCalledWith('pane',{relayId:ref.relayId,threadId:'thread',requestId:'0'},'pane-gone');
     options!.onUpstreamLost?.();
+    // The pane's own episode is told the turn is over (no Stop hook comes for it).
+    expect(serverLost).toHaveBeenCalledExactlyOnceWith('pane');
     expect(registry.stillRunning('pane',pane,aimed)).toBe(false);
     await expect(registry.interrupt('pane',pane,aimed,{timeoutMs:50})).resolves.toMatchObject({outcome:'not-written'});
     await expect(registry.answer(ref,'approve')).resolves.toBe('not-found');
@@ -358,9 +361,10 @@ describe('Codex pane relay after the account server restarts (#1671)',()=>{
     expect(runtime).toHaveBeenCalledWith('pane','/h/.codex');
     await registry.shutdown();
     // A retired entry neither rotates nor starts anything.
-    runtime.mockClear();
+    runtime.mockClear();serverLost.mockClear();
     options!.onUpstreamLost?.();
     await options!.ensureUpstream?.();
     expect(runtime).not.toHaveBeenCalled();
+    expect(serverLost).not.toHaveBeenCalled();
   });
 });
