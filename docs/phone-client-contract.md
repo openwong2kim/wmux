@@ -3757,8 +3757,8 @@ turn is over, so `idle` is the truthful state, and a client that ignores
 
 The route reads the pane's shared Codex app-server over a second,
 short-lived connection that starts no thread work. A spike on codex-cli
-0.159.2 confirmed that such a connection is answered (0.157.1 has the same
-request and response types). Only panes with a daemon-owned relay qualify
+0.159.2 and a live run on 0.157.1 confirmed that such a connection is
+answered. Only panes with a daemon-owned relay qualify
 (phone-created Codex panes on Unix): the relay proves which account server
 the pane talks to.
 
