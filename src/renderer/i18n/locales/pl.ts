@@ -2509,6 +2509,14 @@ export const pl = {
   'worktask.cleanup.noPaneForCommit': 'To zadanie nie ma aktywnego panelu, w którym można przygotować commit. Otwórz worktree.',
   'worktask.cleanup.commitNeedsShell': 'Panel tego zadania uruchamia agenta, nie powłokę — wpisana tam komenda git stanie się wiadomością czatu. Otwórz worktree.',
   'worktask.cleanup.openWorktreeFailed': 'Nie udało się otworzyć worktree: {error}',
+  'worktask.cleanup.remove': 'Usuń',
+  'worktask.cleanup.removing': 'Usuwanie…',
+  'worktask.cleanup.removed': 'Worktree usunięty.',
+  'worktask.cleanup.removeFailed': 'Usuwanie nie powiodło się: {error}',
+  'worktask.cleanup.removeInUse': 'W tym worktree nadal działa panel — najpierw go zamknij.',
+  'worktask.cleanup.removeDirtyConfirm': 'Ten worktree ma niezatwierdzone zmiany. Usunąć go i odrzucić zmiany?',
+  'worktask.cleanup.removeUnregisteredConfirm': 'Git nie śledzi tego katalogu jako worktree (przerwane tworzenie). Usunąć katalog?',
+  'worktask.cleanup.deleteBranchConfirm': 'Usunąć także gałąź {branch}?',
 
   // ─── Workspace item: task worktree boundary warning ──────────────────────
   'workspace.cwdDeparted': 'cwd panelu opuścił granicę worktree zadania: {cwd}',

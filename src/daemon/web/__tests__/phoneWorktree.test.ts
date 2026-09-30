@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -202,9 +202,11 @@ describe('phone worktree creation', { timeout: 60_000 }, () => {
     const real = createGitRunner();
     const old: GitRunner = async (args, cwd) => (args[0] === 'version' ? { ok: true, stdout: 'git version 2.39.5\n', stderr: '' } : real(args, cwd));
     expect((await create(service({ git: old }), repo, 'old')).receipt).toMatchObject({ state: 'refused', error: 'git-version-unsupported' });
-    const deep = init(path.join(root, 'deep'), { [`${'d'.repeat(100)}/${'e'.repeat(100)}/f.txt`]: 'x' });
-    expect((await create(service({ platform: 'win32' }), deep, 'deep')).receipt).toMatchObject({ state: 'refused', error: 'path-too-long' });
-    expect((await create(service({ platform: 'linux' }), deep, 'deep2')).receipt).toMatchObject({ state: 'created' });
+    // The scan reports the longest tree path; a real one this long cannot even
+    // be committed on a Windows runner, so the length is the scan's answer.
+    const longTree = async () => ({ filters: 'unused' as const, longest: 250 });
+    expect((await create(service({ platform: 'win32', scan: longTree }), repo, 'deep')).receipt).toMatchObject({ state: 'refused', error: 'path-too-long' });
+    expect((await create(service({ platform: 'linux', scan: longTree }), repo, 'deep2')).receipt).toMatchObject({ state: 'created' });
   });
 
   it('refuses an add that failed and left nothing, and cleans its empty project directory', async () => {
@@ -322,8 +324,10 @@ describe('phone worktree creation', { timeout: 60_000 }, () => {
     const first = submit(repo, 'first', 'device:1');
     const second = submit(linked, 'second', 'device:2');
     expect(submit(other, 'third', 'device:3').status).toBe(429);
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    expect(gated).not.toBeNull();
+    // Windows runners take seconds to reach the add; then give the other job
+    // ample time to get there too, which it must not.
+    await vi.waitFor(() => expect(gated).not.toBeNull(), { timeout: 30_000, interval: 50 });
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
     expect(events).toEqual([`start ${gated}`]);
     release();
     await Promise.all([first.done, second.done]);
