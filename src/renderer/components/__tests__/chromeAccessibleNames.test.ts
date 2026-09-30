@@ -44,15 +44,17 @@ const CHROME_FILES = [
   'Pane/SurfaceTabs.tsx',
   'Deck/DeckTabs.tsx',
   'Deck/DeckToggle.tsx',
+  'StatusBar/PhoneConnectWizard.tsx',
 ];
 
 /**
  * Buttons whose visible text is data, not a translation key, so the `t(` rule
  * cannot see it. Each one really does render a readable label:
  *   - the "open with" rows render `folderAppLabel(t, app)` — an app name;
- *   - the remote host rows render `host.label` — the host's own name.
+ *   - the remote host rows render `host.label` — the host's own name;
+ *   - the phone wizard's quoted tailscale links render the URL itself.
  */
-const NAMED_BY_DATA = [/folderAppLabel\(/, /\{host\.label\}/];
+const NAMED_BY_DATA = [/folderAppLabel\(/, /\{host\.label\}/, /\{url\}/];
 
 interface ButtonSite {
   line: number;
