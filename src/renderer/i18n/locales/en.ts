@@ -245,6 +245,12 @@ export const en = {
   'sidebar.orphanDispose': 'Kill this session',
   'sidebar.orphanKillConfirm': 'Kill?',
   'sidebar.blankSinglePane': 'Blank single pane',
+  // #1323 — the + menu's remote twin of "Empty". The "— remote" suffix is the
+  // ⋮ menu's grammar ("Split right — remote"); the label doubles as the host
+  // picker's heading. Not "remote workspace": the workspace is local (#1091),
+  // only its pane runs on the other computer.
+  'sidebar.emptyRemote': 'Empty — remote',
+  'sidebar.blankSingleRemotePane': 'Blank single pane on a paired computer',
 
   // Workspace layout presets (the + menu)
   'preset.single.name': 'Single Pane',

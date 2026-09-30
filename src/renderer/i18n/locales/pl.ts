@@ -252,6 +252,8 @@ export const pl = {
   'sidebar.orphanDispose': 'Zakończ tę sesję',
   'sidebar.orphanKillConfirm': 'Zakończyć?',
   'sidebar.blankSinglePane': 'Pusty pojedynczy panel',
+  'sidebar.emptyRemote': 'Pusty — zdalnie',
+  'sidebar.blankSingleRemotePane': 'Pusty pojedynczy panel na sparowanym komputerze',
 
   // Workspace layout presets (the + menu)
   'preset.single.name': 'Pojedynczy panel',

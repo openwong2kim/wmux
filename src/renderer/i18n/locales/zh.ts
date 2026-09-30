@@ -75,6 +75,8 @@ export const zh = {
   'sidebar.browseFolderDesc': '选择磁盘上的任意文件夹',
   'sidebar.emptyWorkspace': '空',
   'sidebar.blankSinglePane': '空白单面板',
+  'sidebar.emptyRemote': '空 — 远程',
+  'sidebar.blankSingleRemotePane': '已配对计算机上的空白单面板',
 
   // Workspace layout presets (the + menu)
   'preset.single.name': '单面板',
