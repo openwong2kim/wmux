@@ -65,6 +65,13 @@ describe('GitSyncStatusCache', () => {
     expect(exec).toHaveBeenCalledTimes(2); // TTL expired
   });
 
+  it('skips submodule work trees so status stays fast in repos with many submodules', async () => {
+    const exec = vi.fn().mockResolvedValue({ stdout: CLEAN });
+    const cache = new GitSyncStatusCache(() => 0, exec);
+    await cache.get('D:\\repo');
+    expect(exec.mock.calls[0][1]).toContain('--ignore-submodules=dirty');
+  });
+
   it('normalizes the cwd key (separators/trailing slash collapse onto one entry)', async () => {
     const exec = vi.fn().mockResolvedValue({ stdout: CLEAN });
     const cache = new GitSyncStatusCache(() => 0, exec);
