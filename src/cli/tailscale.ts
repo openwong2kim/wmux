@@ -37,7 +37,7 @@ const TAILSCALE_MAX_BUFFER = 4 * 1024 * 1024;
 export type TailscaleExec = (
   cmd: string,
   args: string[],
-  opts: { timeout: number; windowsHide: boolean; maxBuffer: number; env?: NodeJS.ProcessEnv },
+  opts: { timeout: number; windowsHide: boolean; maxBuffer: number; env?: NodeJS.ProcessEnv; signal?: AbortSignal },
 ) => Promise<{ stdout: string; stderr: string }>;
 
 export type TailscaleProblem =
@@ -234,7 +234,17 @@ export function decideTailscaleBinding(opts: {
  * of `wmux web`'s output: what went wrong, what to do about it, and — last —
  * the reassurance that nothing was left half-configured.
  */
-export function describeTailscaleProblem(problem: TailscaleProblem, detail?: string): string[] {
+export function describeTailscaleProblem(
+  problem: TailscaleProblem,
+  detail?: string,
+  /**
+   * `check`: the copy for a read-only readiness check, which started and
+   * refused nothing — so no "Refusing to overwrite it" and no closing "was NOT
+   * started" line, both of which describe a start that never happened.
+   */
+  opts: { context?: 'start' | 'check' } = {},
+): string[] {
+  const check = opts.context === 'check';
   const lines: string[] = [];
   const push = (...l: string[]): void => {
     lines.push(...l);
@@ -279,7 +289,7 @@ export function describeTailscaleProblem(problem: TailscaleProblem, detail?: str
     case 'port-taken':
       push(
         'Error: `tailscale serve` already publishes something else on this port.',
-        '  Refusing to overwrite it — a serve config is one shared slot per port.',
+        ...(check ? [] : ['  Refusing to overwrite it — a serve config is one shared slot per port.']),
         '  • Inspect it with `tailscale serve status`.',
         '  • Free it with `tailscale serve --https=443 off`, or run `wmux web`',
         '    without --tailscale.',
@@ -338,7 +348,7 @@ export function describeTailscaleProblem(problem: TailscaleProblem, detail?: str
       for (const line of said) push(`    ${line}`);
     }
   }
-  push('', '  wmux web was NOT started and no serve configuration was left behind.');
+  if (!check) push('', '  wmux web was NOT started and no serve configuration was left behind.');
   return lines;
 }
 
@@ -360,13 +370,15 @@ export async function diagnoseTailscale(opts: {
   webPort: number;
   servePort?: number;
   exec?: TailscaleExec;
+  /** Aborting kills a tailscale read still running (the caller's deadline). */
+  signal?: AbortSignal;
 }): Promise<TailscaleDiagnosis> {
   const exec = opts.exec ?? (execFileAsync as unknown as TailscaleExec);
   const servePort = opts.servePort ?? DEFAULT_SERVE_PORT;
 
   let statusOut: string;
   try {
-    statusOut = (await runTailscale(exec, ['status', '--json'])).stdout;
+    statusOut = (await runTailscale(exec, ['status', '--json'], opts.signal)).stdout;
   } catch (err) {
     return { ok: false, problem: classifyStatusError(err), detail: errText(err) };
   }
@@ -375,7 +387,7 @@ export async function diagnoseTailscale(opts: {
 
   let ownership: ServeOwnership;
   try {
-    ownership = classifyServeConfig((await runTailscale(exec, ['serve', 'status', '--json'])).stdout, {
+    ownership = classifyServeConfig((await runTailscale(exec, ['serve', 'status', '--json'], opts.signal)).stdout, {
       servePort,
       webPort: opts.webPort,
     });
@@ -494,7 +506,11 @@ export function tailscaleCandidates(): string[] {
   return ['tailscale'];
 }
 
-async function runTailscale(exec: TailscaleExec, args: string[]): Promise<{ stdout: string; stderr: string }> {
+async function runTailscale(
+  exec: TailscaleExec,
+  args: string[],
+  signal?: AbortSignal,
+): Promise<{ stdout: string; stderr: string }> {
   let lastErr: unknown = new Error('tailscale not found');
   for (const bin of tailscaleCandidates()) {
     try {
@@ -503,6 +519,7 @@ async function runTailscale(exec: TailscaleExec, args: string[]): Promise<{ stdo
         windowsHide: true,
         maxBuffer: TAILSCALE_MAX_BUFFER,
         env: getExecEnv(),
+        ...(signal ? { signal } : {}),
       });
     } catch (err) {
       // Only a missing binary is worth trying the next candidate for; a real

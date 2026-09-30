@@ -178,6 +178,60 @@ export function registerWebHandlers(
     }),
   );
 
+  /**
+   * One readiness check at a time: a second request while one runs gets the
+   * same answer rather than a second pair of tailscale processes.
+   */
+  let diagnoseInFlight: Promise<WebDiagnosis> | null = null;
+
+  const diagnose = async (): Promise<WebDiagnosis> => {
+    // ONE deadline from entry, covering the daemon RPC and both tailscale
+    // reads. On expiry the abort kills a tailscale read still running instead
+    // of leaving it to its own 15s exec timeout.
+    const abort = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => {
+        abort.abort();
+        resolve('timeout');
+      }, WEB_DIAGNOSE_TIMEOUT_MS);
+    });
+    const timedOutProbe = {
+      ok: false as const,
+      problem: 'status-unreadable' as const,
+      detail: 'tailscale did not answer in time',
+    };
+    try {
+      const info = await Promise.race([call('daemon.web.status', {}), deadline]);
+      if (info === 'timeout') {
+        return {
+          tailscale: { ok: false, problem: timedOutProbe.problem, lines: describeTailscaleProblem(timedOutProbe.problem, timedOutProbe.detail, { context: 'check' }) },
+          web: { running: false, error: 'the background daemon did not answer in time' },
+        };
+      }
+      const probe = await Promise.race([
+        diagnoseTailscale({
+          webPort: info.port ?? WEB_DEFAULT_PORT,
+          signal: abort.signal,
+          ...(exec ? { exec } : {}),
+        }),
+        deadline.then(() => timedOutProbe),
+      ]);
+      return {
+        tailscale: probe.ok
+          ? { ok: true, serve: probe.serve }
+          : {
+              ok: false,
+              problem: probe.problem,
+              lines: describeTailscaleProblem(probe.problem, probe.detail, { context: 'check' }),
+            },
+        web: withFront(info),
+      };
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
   ipcMain.removeHandler(IPC.WEB_DIAGNOSE);
   ipcMain.handle(
     IPC.WEB_DIAGNOSE,
@@ -186,24 +240,10 @@ export function registerWebHandlers(
       // status reads, nothing else. `frontState` is deliberately not written
       // either — it is folded into every later WEB_STATUS reply, so updating it
       // here would be a state change made by a "check".
-      const info = await call('daemon.web.status', {});
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const timedOut = new Promise<{ ok: false; problem: 'status-unreadable'; detail: string }>((resolve) => {
-        timer = setTimeout(
-          () => resolve({ ok: false, problem: 'status-unreadable', detail: 'tailscale did not answer in time' }),
-          WEB_DIAGNOSE_TIMEOUT_MS,
-        );
+      diagnoseInFlight ??= diagnose().finally(() => {
+        diagnoseInFlight = null;
       });
-      const probe = await Promise.race([
-        diagnoseTailscale({ webPort: info.port ?? WEB_DEFAULT_PORT, ...(exec ? { exec } : {}) }),
-        timedOut,
-      ]).finally(() => clearTimeout(timer));
-      return {
-        tailscale: probe.ok
-          ? { ok: true, serve: probe.serve }
-          : { ok: false, problem: probe.problem, lines: describeTailscaleProblem(probe.problem, probe.detail) },
-        web: withFront(info),
-      };
+      return diagnoseInFlight;
     }),
   );
 

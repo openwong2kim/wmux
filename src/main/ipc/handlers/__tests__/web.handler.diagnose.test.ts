@@ -189,16 +189,66 @@ describe('describeTailscaleProblem — all 11 kinds have copy', () => {
 });
 
 describe('WEB_DIAGNOSE — bounded and graceful', () => {
-  it('a tailscale that never answers resolves status-unreadable at the ceiling', async () => {
+  it('a tailscale that never answers resolves status-unreadable at the ceiling, and is killed', async () => {
     vi.useFakeTimers();
-    const hung: TailscaleExec = (_c, args) => {
+    const signals: AbortSignal[] = [];
+    const hung: TailscaleExec = (_c, args, opts) => {
       calls.push(args);
+      if (opts.signal) signals.push(opts.signal);
       return new Promise(() => undefined);
     };
     const pending = diagnose(hung);
     await vi.advanceTimersByTimeAsync(WEB_DIAGNOSE_TIMEOUT_MS + 1);
     const res = await pending;
     expect(res.tailscale).toMatchObject({ ok: false, problem: 'status-unreadable' });
+    expect(signals.length).toBe(1);
+    expect(signals[0].aborted).toBe(true);
+  });
+
+  it('the deadline covers the daemon RPC too: a hung status RPC still answers at the ceiling', async () => {
+    vi.useFakeTimers();
+    rpc = vi.fn(() => new Promise(() => undefined));
+    const dc = { rpc, isConnected: true } as unknown as DaemonClient;
+    registerWebHandlers(() => dc, execWith(() => LOGGED_IN));
+    const fn = handlers.get(IPC.WEB_DIAGNOSE);
+    if (!fn) throw new Error('WEB_DIAGNOSE not registered');
+    const pending = fn({}) as Promise<WebDiagnosis>;
+    await vi.advanceTimersByTimeAsync(WEB_DIAGNOSE_TIMEOUT_MS + 1);
+    const res = await pending;
+    expect(res.web.running).toBe(false);
+    expect(res.web.error).toMatch(/in time/);
+    expect(calls).toEqual([]);
+  });
+
+  it('concurrent checks share one run (single flight)', async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const slow: TailscaleExec = async (_c, args) => {
+      calls.push(args);
+      await gate;
+      return { stdout: args[0] === 'status' ? LOGGED_IN : '{}', stderr: '' };
+    };
+    rpc = vi.fn(async () => ({ running: false }));
+    const dc = { rpc, isConnected: true } as unknown as DaemonClient;
+    registerWebHandlers(() => dc, slow);
+    const fn = handlers.get(IPC.WEB_DIAGNOSE);
+    if (!fn) throw new Error('WEB_DIAGNOSE not registered');
+    const a = fn({}) as Promise<WebDiagnosis>;
+    const b = fn({}) as Promise<WebDiagnosis>;
+    release();
+    const [ra, rb] = await Promise.all([a, b]);
+    expect(ra).toBe(rb);
+    expect(calls.filter((c) => c[0] === 'status')).toHaveLength(1);
+  });
+
+  it('check copy never claims a start was refused or rolled back', async () => {
+    const res = await diagnose(execWith(() => LOGGED_IN, () => FOREIGN));
+    if (res.tailscale.ok) throw new Error('expected a problem');
+    const text = res.tailscale.lines.join('\n');
+    expect(text).not.toMatch(/Refusing to overwrite/);
+    expect(text).not.toMatch(/was NOT started/);
   });
 
   it('no daemon → still answers, with the server-side error and a tailscale verdict', async () => {
