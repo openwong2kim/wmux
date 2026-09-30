@@ -31,7 +31,9 @@ const init = (dir: string, files: Record<string, string> | null = { 'a.txt': 'a'
   if (files) commit(dir, files, 'base');
   return dir;
 };
-const projectId = (dir: string) => createHash('sha256').update(fs.realpathSync(dir)).digest('hex').slice(0, 12);
+// The desktop's repoHash: realpathSync of git's own toplevel (Windows spells the
+// temp dir with its long name there, not os.tmpdir()'s 8.3 short name).
+const projectId = (dir: string) => createHash('sha256').update(fs.realpathSync(run(dir, 'rev-parse', '--show-toplevel'))).digest('hex').slice(0, 12);
 const slots = () => { let used = 0; return { acquire: () => { if (used >= 4) return false; used += 1; return true; }, release: () => { used -= 1; }, get used() { return used; } }; };
 const service = (over: Partial<PhoneWorktreeOptions> = {}) =>
   new PhoneWorktreeService({ wmuxDir, git: createGitRunner(), audit: (d, r) => { audit.push([d, r]); }, ...over });
