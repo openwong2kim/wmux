@@ -732,3 +732,34 @@ describe('role skip permissions versus an explicit permission choice (#1681)', (
     );
   });
 });
+
+// #1681 — the caller learns which launch options were really spliced in.
+describe('applyRoleBinding — optionsInjected reports only what was added', () => {
+  it('reports effort and skip when both were injected', () => {
+    expect(applyRoleBinding('claude', { agent: 'claude', effort: 'low', skipPermissions: true }).optionsInjected)
+      .toEqual({ effort: 'low', skipPermissions: true });
+    expect(applyRoleBinding('codex', { agent: 'codex', effort: 'high' }).optionsInjected).toEqual({ effort: 'high' });
+    expect(applyRoleBinding('codex', { agent: 'codex', skipPermissions: true }).optionsInjected)
+      .toEqual({ skipPermissions: true });
+  });
+
+  it('is absent when nothing was injected', () => {
+    for (const [cmd, b, opts] of [
+      ['claude', { agent: 'claude', model: 'haiku' }, undefined],
+      ['claude --effort max --dangerously-skip-permissions', { agent: 'claude', effort: 'low', skipPermissions: true }, undefined],
+      ['claude', { agent: 'claude', skipPermissions: true, args: '--dangerously-skip-permissions' }, undefined],
+      ['claude --permission-mode plan', { agent: 'claude', skipPermissions: true }, undefined],
+      ['claude', { agent: 'claude', skipPermissions: true, args: '--verbose' }, { suppressSkipPermissions: true }],
+      ['agy', { agent: 'agy', effort: 'low' }, undefined],
+      ['claude', { effort: 'low', skipPermissions: true }, undefined],
+    ] as const) {
+      expect(applyRoleBinding(cmd, b as RoleBinding, opts).optionsInjected).toBeUndefined();
+    }
+  });
+
+  it('reports the effort alone when the skip was withheld by a permission flag', () => {
+    const r = applyRoleBinding('claude --permission-mode plan', { agent: 'claude', effort: 'low', skipPermissions: true });
+    expect(r.command).toBe('claude --effort low --permission-mode plan');
+    expect(r.optionsInjected).toEqual({ effort: 'low' });
+  });
+});

@@ -495,7 +495,8 @@ function dropArgTokens(args: string, drop: (value: string) => boolean): string {
  *    flag and drops the skip spellings from `binding.args`; the other args stay.
  *
  * `modelInjected` reports whether the model flag was ACTUALLY spliced in, so a
- * caller never advertises an enforced model when only `args` changed.
+ * caller never advertises an enforced model when only `args` changed;
+ * `optionsInjected` does the same for effort and skip permissions.
  *
  * Idempotent: re-applying never double-adds the model flag (an explicit
  * `--model` short-circuits) nor the args (token-boundary trailing check).
@@ -538,11 +539,28 @@ export interface ApplyRoleBindingOptions {
   suppressSkipPermissions?: boolean;
 }
 
+/** The launch options a rewrite ACTUALLY spliced in, each present only when it
+ *  was (a flag already on the line or in the args, or a withheld skip, is not
+ *  reported). The sibling of `modelInjected`. */
+export interface InjectedLaunchOptions {
+  /** The effort level whose flag was added. */
+  effort?: string;
+  /** The agent's skip-permissions flag was added. */
+  skipPermissions?: true;
+}
+
 export function applyRoleBinding(
   command: string,
   binding: RoleBinding | undefined,
   options?: ApplyRoleBindingOptions,
-): { command: string; changed: boolean; modelInjected: boolean; note?: string } {
+): {
+  command: string;
+  changed: boolean;
+  modelInjected: boolean;
+  /** Present only when at least one launch option was injected. */
+  optionsInjected?: InjectedLaunchOptions;
+  note?: string;
+} {
   const unchanged = { command, changed: false, modelInjected: false };
   if (!binding) return unchanged;
   const model = binding.model?.trim() || undefined;
@@ -628,14 +646,17 @@ export function applyRoleBinding(
   const launch = binding.agent ? stemGrammar : undefined;
   const present = [...tokens, ...(args ? tokenize(args) : [])].map((t) => t.value);
   const optionTokens: string[] = [];
+  const optionsInjected: InjectedLaunchOptions = {};
   if (effort && launch?.effortFlag && !present.some((v) => launch.hasEffort?.(v))) {
     optionTokens.push(...launch.effortFlag(effort));
+    optionsInjected.effort = effort;
   }
   if (
     skipPermissions && launch?.skipPermissionsFlag &&
     !present.some((v) => isSkipPermissionsToken(launch, v) || isPermissionFlagToken(launch, v))
   ) {
     optionTokens.push(launch.skipPermissionsFlag);
+    optionsInjected.skipPermissions = true;
   }
 
   let out = command;
@@ -656,6 +677,7 @@ export function applyRoleBinding(
     command: out,
     changed: out !== command,
     modelInjected: injectModel,
+    ...(optionTokens.length > 0 ? { optionsInjected } : {}),
     ...(note ? { note } : {}),
   };
 }

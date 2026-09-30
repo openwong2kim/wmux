@@ -12,7 +12,7 @@ import {
   type GatedSubmitRefusal,
   type GatedSubmitResult,
 } from '../../../shared/ptyMessageDelivery';
-import { applyRoleBinding, type RoleBinding } from '../../../shared/orchestratorRole';
+import { applyRoleBinding, type InjectedLaunchOptions, type RoleBinding } from '../../../shared/orchestratorRole';
 import { isGateHeldOn } from '../../deck/stopGateState';
 import {
   approvalBlockMessage,
@@ -1003,6 +1003,7 @@ export function registerInputRpc(
     // left alone. Fail OPEN on any resolver error so a role lookup that races
     // can never block a legitimate send.
     let enforcedModel: string | undefined;
+    let enforcedOptions: InjectedLaunchOptions | undefined;
     let enforcementNote: string | undefined;
     // ESC joins the line terminators here: a line carrying terminal control
     // sequences is not a plain command and must not be spliced into.
@@ -1020,6 +1021,8 @@ export function registerInputRpc(
             // Report the model ONLY when the flag was actually injected —
             // args-only rewrites leave whatever model the line already names.
             if (rewrite.modelInjected) enforcedModel = binding.model;
+            // Same rule for effort / skip permissions: only what was spliced in.
+            enforcedOptions = rewrite.optionsInjected;
           }
           if (rewrite.note) enforcementNote = rewrite.note;
         }
@@ -1156,9 +1159,11 @@ export function registerInputRpc(
         : {}),
       ...(receipt?.screenTail ? { screenTail: receipt.screenTail, ...untrustedLabel(access) } : {}),
       // D2 — surface enforcement on the payload (callRpc stringifies it into the
-      // tool result, so the orchestrator sees which model was pinned). The pane
-      // also shows the rewritten command directly — the primary indication.
+      // tool result, so the orchestrator sees which model was pinned and which
+      // launch options were added, #1681). The pane also shows the rewritten
+      // command directly — the primary indication.
       ...(enforcedModel ? { enforcedModel } : {}),
+      ...(enforcedOptions ? { enforcedOptions } : {}),
       ...(enforcementNote || pasteNote
         ? { note: [enforcementNote, pasteNote].filter(Boolean).join(' ') }
         : {}),

@@ -180,9 +180,15 @@ Identity probe. Stable shape; new fields may be added in minors.
 
 **Method:** `input.send`
 **Params:** `{ text: string, paneId?, workspaceId? }`
-**Returns:** `{ ok: true }`
+**Returns:** `{ ok: true, ... }` — every other field is optional and additive within v3.x.
 
 Sends literal text to a pane's PTY. Targeting falls back to the active pane in the active workspace.
+
+When a submitted line launches an agent in a pane whose role has a binding (Settings → Roles), wmux may rewrite the line before writing it. The reply then says what it added:
+
+- `enforcedModel?: string` — the model whose flag was added. Absent when the line already chose a model.
+- `enforcedOptions?: { effort?: string; skipPermissions?: true }` — the launch options whose flags were added (`--effort <level>` or codex `-c model_reasoning_effort=<level>`; the agent's skip-permissions flag). Present only when at least one was added. A flag already on the line or in the role's extra args is not reported, and neither is a skip the line overrides with its own permission flag.
+- `note?: string` — why part of a binding did not apply (for example, the line makes its own permission choice).
 
 ### `input.sendKey`
 
