@@ -2,6 +2,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { defaultSessionPath, handleRole, resolveRole } from '../role';
 import { dataSuffix } from '../../../shared/constants';
+import type { RoleBinding } from '../../../shared/orchestratorRole';
 
 const SESSION = JSON.stringify({
   orchestratorRoleBindings: {
@@ -45,6 +46,25 @@ describe('wmux role resolve', () => {
     expect(JSON.parse((await run(['resolve', 'Planner'])).out[0]).argv).toEqual([
       'claude', '--model', 'claude-sonnet-5-5', '--effort', 'medium', '--verbose',
     ]);
+  });
+
+  // Review of #1681: `skipPermissions` said true for a launch whose argv has
+  // no skip flag (the role's args make their own permission choice).
+  it('reports skipPermissions as the argv launches it', () => {
+    const cases: Array<[RoleBinding, boolean]> = [
+      [{ agent: 'claude', skipPermissions: true }, true],
+      [{ agent: 'claude', skipPermissions: true, args: '--permission-mode acceptEdits' }, false],
+      [{ agent: 'codex', skipPermissions: true, args: '-s workspace-write' }, false],
+      [{ agent: 'codex', args: '--yolo' }, true],
+      [{ agent: 'claude', model: 'haiku' }, false],
+    ];
+    for (const [binding, skips] of cases) {
+      const r = resolveRole('R', binding);
+      expect(r.skipPermissions).toBe(skips);
+      const argvSkips = r.argv.some((v) =>
+        ['--dangerously-skip-permissions', '--dangerously-bypass-approvals-and-sandbox', '--yolo'].includes(v));
+      expect(argvSkips).toBe(skips);
+    }
   });
 
   it('drops an unsafe model through the app normalizer', async () => {

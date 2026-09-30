@@ -779,9 +779,24 @@ describe('bindingEnforcesSkipPermissions / bindingSkipPermissionsFlag', () => {
   it('counts a skip spelling in the role args', () => {
     expect(bindingSkipPermissionsFlag({ agent: 'claude', args: '--verbose --dangerously-skip-permissions' }))
       .toBe('--dangerously-skip-permissions');
-    expect(bindingSkipPermissionsFlag({ agent: 'codex', args: '--yolo' }))
-      .toBe('--dangerously-bypass-approvals-and-sandbox');
+    // The spelling the args actually use, so the tooltip names what runs.
+    expect(bindingSkipPermissionsFlag({ agent: 'codex', args: '--yolo' })).toBe('--yolo');
     expect(bindingEnforcesSkipPermissions({ agent: 'claude', args: '--allow-dangerously-skip-permissions' })).toBe(false);
+  });
+
+  // Review of #1681: the badge said "bypass" on a launch the rewrite leaves in
+  // the role's own permission mode.
+  it('is undefined for a role skip when the role args make a permission choice', () => {
+    expect(bindingSkipPermissionsFlag({ agent: 'claude', skipPermissions: true, args: '--permission-mode acceptEdits' }))
+      .toBeUndefined();
+    expect(bindingSkipPermissionsFlag({ agent: 'codex', skipPermissions: true, args: '-s workspace-write' }))
+      .toBeUndefined();
+    expect(bindingSkipPermissionsFlag({ agent: 'codex', skipPermissions: true, args: '-c approval_policy=never' }))
+      .toBeUndefined();
+    // ...but a skip spelling in the args still runs bypass beside that mode.
+    expect(bindingSkipPermissionsFlag({
+      agent: 'claude', skipPermissions: true, args: '--permission-mode acceptEdits --dangerously-skip-permissions',
+    })).toBe('--dangerously-skip-permissions');
   });
 
   it('is false without an agent, without a skip grammar, or without a skip', () => {
@@ -797,6 +812,11 @@ describe('bindingEnforcesSkipPermissions / bindingSkipPermissionsFlag', () => {
       { agent: 'claude', skipPermissions: true },
       { agent: 'codex', skipPermissions: true },
       { agent: 'claude', args: '--dangerously-skip-permissions' },
+      { agent: 'codex', args: '--yolo' },
+      { agent: 'claude', skipPermissions: true, args: '--permission-mode acceptEdits' },
+      { agent: 'codex', skipPermissions: true, args: '-s workspace-write' },
+      { agent: 'codex', skipPermissions: true, args: '--config sandbox_mode=read-only' },
+      { agent: 'claude', skipPermissions: true, args: '--permission-mode acceptEdits --dangerously-skip-permissions' },
       { skipPermissions: true },
       { agent: 'gemini', skipPermissions: true },
       { agent: 'claude', model: 'haiku' },
@@ -807,5 +827,88 @@ describe('bindingEnforcesSkipPermissions / bindingSkipPermissionsFlag', () => {
       const launched = applyRoleBinding(stem, binding).command.split(' ');
       expect(launched.includes(flag ?? '\u0000')).toBe(flag !== undefined);
     }
+  });
+});
+
+// Review of #1681 — codex permission choices made through config count like
+// `-a` / `-s`, in every spelling codex 0.158 accepts.
+describe('codex config permission choices (-c approval_policy / sandbox_mode)', () => {
+  const fixpoint = (cmd: string, b: RoleBinding): string => {
+    const once = applyRoleBinding(cmd, b).command;
+    expect(applyRoleBinding(once, b).command).toBe(once);
+    return once;
+  };
+  const spellings = [
+    '-c approval_policy=never', '-c=approval_policy=never', '-capproval_policy=never',
+    '--config approval_policy=on-request', '--config=sandbox_mode=read-only', '-c sandbox_mode=workspace-write',
+    '-c "approval_policy=never"',
+  ];
+
+  it('on the typed line: withholds the role bypass and drops the skip from the role args', () => {
+    for (const flags of spellings) {
+      const r = applyRoleBinding(`codex ${flags}`, { agent: 'codex', effort: 'high', skipPermissions: true });
+      expect(r.command).toBe(`codex -c model_reasoning_effort=high ${flags}`);
+      expect(r.optionsInjected).toEqual({ effort: 'high' });
+      expect(fixpoint(`codex ${flags}`, { agent: 'codex', skipPermissions: true, args: '--yolo --search' }))
+        .toBe(`codex ${flags} --search`);
+    }
+  });
+
+  it('in the role args: the role config, so no injected bypass', () => {
+    for (const flags of spellings) {
+      const b: RoleBinding = { agent: 'codex', skipPermissions: true, args: flags };
+      expect(fixpoint('codex', b)).toBe(`codex ${flags}`);
+    }
+  });
+
+  it('other config keys are not permission choices', () => {
+    for (const flags of ['-c model_reasoning_effort=high', '-c model="o3"', '--config features.x=true', '-c approval_policy_extra=1']) {
+      expect(applyRoleBinding(`codex ${flags}`, { agent: 'codex', skipPermissions: true }).command)
+        .toBe(`codex --dangerously-bypass-approvals-and-sandbox ${flags}`);
+    }
+  });
+});
+
+// Review of #1681 — a permission flag typed on the line beats one in the role
+// args: the args are appended after it, and the last one wins.
+describe('a typed permission flag drops the conflicting role-args permission flags', () => {
+  const fixpoint = (cmd: string, b: RoleBinding, opts?: Parameters<typeof applyRoleBinding>[2]): string => {
+    const once = applyRoleBinding(cmd, b, opts).command;
+    expect(applyRoleBinding(once, b, opts).command).toBe(once);
+    return once;
+  };
+
+  it('claude: --permission-mode in the args (both spellings) gives way, unrelated args stay', () => {
+    for (const roleMode of ['--permission-mode acceptEdits', '--permission-mode=acceptEdits']) {
+      const b: RoleBinding = { agent: 'claude', args: `--verbose ${roleMode} --dangerously-skip-permissions --add-dir /x` };
+      const r = applyRoleBinding('claude --permission-mode plan', b);
+      expect(r.command).toBe('claude --permission-mode plan --verbose --add-dir /x');
+      expect(r.note).toMatch(/own permission choice/);
+      expect(fixpoint('claude --permission-mode plan', b)).toBe(r.command);
+    }
+  });
+
+  it('codex: -a / -s / --approve-for-me / -c permission keys in the args give way', () => {
+    const b: RoleBinding = {
+      agent: 'codex', effort: 'low',
+      args: '-a on-request --search -s workspace-write --approve-for-me -c sandbox_mode=read-only -c model_verbosity=low',
+    };
+    expect(fixpoint('codex -a never', b)).toBe('codex -c model_reasoning_effort=low -a never --search -c model_verbosity=low');
+    expect(fixpoint('codex --config=approval_policy=never', b))
+      .toBe('codex -c model_reasoning_effort=low --config=approval_policy=never --search -c model_verbosity=low');
+  });
+
+  it('keeps the role args permission flags when the line makes no choice', () => {
+    const b: RoleBinding = { agent: 'claude', args: '--permission-mode acceptEdits' };
+    expect(fixpoint('claude', b)).toBe('claude --permission-mode acceptEdits');
+    // The toggle-OFF fallback has no captured mode: nothing typed to beat it.
+    expect(fixpoint('claude --continue', b, { suppressSkipPermissions: true }))
+      .toBe('claude --continue --permission-mode acceptEdits');
+  });
+
+  it('the resume chip OFF path restores the captured mode over the role args mode', () => {
+    const b: RoleBinding = { agent: 'claude', args: '--permission-mode acceptEdits --verbose' };
+    expect(fixpoint('claude --permission-mode plan --resume S', b, { suppressSkipPermissions: true }))
+      .toBe('claude --permission-mode plan --resume S --verbose');
   });
 });

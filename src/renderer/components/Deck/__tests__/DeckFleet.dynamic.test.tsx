@@ -153,10 +153,12 @@ describe('DeckFleet role dropdown', () => {
   // #1681 — a role that skips permission prompts was invisible here unless it
   // also pinned a model. The skip leads in red so truncation keeps it.
   it.each([
-    ['the role skip', { agent: 'claude', skipPermissions: true }, 'bypass · claude'],
-    ['a skip flag in the role args', { agent: 'codex', args: '--yolo' }, 'bypass · codex'],
-    ['a model and the skip', { agent: 'claude', model: 'haiku', skipPermissions: true }, 'bypass · claude · haiku'],
-  ])('shows the skip on the chip for %s', (_label, binding, text) => {
+    ['the role skip', { agent: 'claude', skipPermissions: true }, 'bypass · claude', '--dangerously-skip-permissions'],
+    // The tooltip names the spelling the args actually use.
+    ['a skip flag in the role args', { agent: 'codex', args: '--yolo' }, 'bypass · codex', '--yolo'],
+    ['a model and the skip', { agent: 'claude', model: 'haiku', skipPermissions: true }, 'bypass · claude · haiku',
+      '--dangerously-skip-permissions'],
+  ])('shows the skip on the chip for %s', (_label, binding, text, flag) => {
     seedStore({ p1: 'Reviewer' });
     act(() => useStore.setState({ orchestratorRoleBindings: { Reviewer: binding } }));
     mount();
@@ -165,7 +167,19 @@ describe('DeckFleet role dropdown', () => {
     const skip = q<HTMLSpanElement>('[data-deck-fleet-skip]');
     expect(skip.className).toContain('text-[var(--accent-red)]');
     expect(chip.firstElementChild).toBe(skip);
-    expect(chip.getAttribute('title')).toMatch(/skips permission prompts \(--dangerously-(skip-permissions|bypass-approvals-and-sandbox)\)/);
+    expect(chip.getAttribute('title')).toContain(`skips permission prompts (${flag})`);
+  });
+
+  // Review of #1681: a role whose args make their own permission choice
+  // launches without the skip, so the chip must not say "bypass".
+  it('shows no skip when the role args make their own permission choice', () => {
+    seedStore({ p1: 'Reviewer' });
+    act(() => useStore.setState({
+      orchestratorRoleBindings: { Reviewer: { agent: 'claude', model: 'haiku', skipPermissions: true, args: '--permission-mode acceptEdits' } },
+    }));
+    mount();
+    expect(q<HTMLSpanElement>('[data-deck-fleet-binding]').textContent).toBe('claude · haiku');
+    expect(container.querySelector('[data-deck-fleet-skip]')).toBeNull();
   });
 
   it('shows no skip on the chip when the skip has no agent to apply to', () => {

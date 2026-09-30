@@ -16,7 +16,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { dataSuffix } from '../../shared/constants';
-import { applyRoleBinding, normalizeRoleBindings, type RoleBinding } from '../../shared/orchestratorRole';
+import {
+  applyRoleBinding, bindingEnforcesSkipPermissions, normalizeRoleBindings, type RoleBinding,
+} from '../../shared/orchestratorRole';
 import { tokenize } from '../../shared/agentResume';
 import { agyEffortOf } from '../../shared/modelCatalog';
 
@@ -60,7 +62,9 @@ export function resolveRole(role: string, binding: RoleBinding): ResolvedRole {
     ...(agent ? { agent } : {}),
     ...(binding.model ? { model: binding.model } : {}),
     ...(effort ? { effort } : {}),
-    skipPermissions: !!binding.skipPermissions,
+    // What the launch in `argv` does, not the stored setting: a permission
+    // flag in the role's args withholds the skip, a skip flag in them adds it.
+    skipPermissions: bindingEnforcesSkipPermissions(binding),
     argv,
     flags: argv.slice(1),
   };

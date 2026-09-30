@@ -205,6 +205,20 @@ describe('SurfaceTabs — the header badges never cover the view toggle', () => 
     expect(badge()!.getAttribute('title')).not.toContain('permission');
   });
 
+  // Review of #1681: the role's args make their own permission choice, so the
+  // launch carries no skip and the badge must not say "bypass".
+  it('shows no skip when the role args make their own permission choice', () => {
+    mount({ binding: { agent: 'codex', model: 'gpt-5.5', skipPermissions: true, args: '-s workspace-write' } });
+    expect(badge()!.textContent).toBe('gpt-5.5');
+    expect(badge()!.querySelector('[data-pane-enforced-skip]')).toBeNull();
+  });
+
+  it('names the skip spelling the role args use', () => {
+    mount({ binding: { agent: 'codex', args: '--yolo' } });
+    expect(badge()!.textContent).toBe('bypass');
+    expect(badge()!.getAttribute('title')).toContain('skips permission prompts (--yolo)');
+  });
+
   it('draws no badge for a skip with no agent to apply it to', () => {
     mount({ binding: { skipPermissions: true } });
     expect(badge()).toBeNull();

@@ -1,6 +1,6 @@
 import { launcherStem, tokenize } from './agentResume';
 import {
-  EFFORT_TOKEN_RE, isPermissionFlagToken, isSkipPermissionsToken, launchGrammarFor,
+  EFFORT_TOKEN_RE, hasPermissionChoice, isSkipPermissionsToken, launchGrammarFor, permissionChoiceIndexes,
 } from './agentLaunchOptions';
 
 // Orchestrator pane role (soft, operator-assigned "preferred role").
@@ -218,24 +218,32 @@ export function bindingEnforcesModel(binding: RoleBinding | undefined): boolean 
  * contract: an affordance claiming "this pane skips permission prompts" gates
  * on this, never on the setting merely being stored.
  *
- * Mirrors applyRoleBinding: the binding must name the agent and the agent must
- * have a verified skip grammar (agentLaunchOptions). The skip comes from
- * `skipPermissions` or from a skip spelling in the role's own `args`, which are
- * appended just the same. Returns the canonical flag either way. An agentless
- * binding answers undefined even when its args carry a skip spelling: the args
- * still apply to any agent launched, but no grammar says which spelling is the
- * skip. A line that
- * makes its own permission choice can still withhold it for that one launch
- * (#1681); this answers for the role, not for a particular line.
+ * Mirrors applyRoleBinding on a fresh launch of the bound agent. The binding
+ * must name the agent, and the agent must have a verified skip grammar
+ * (agentLaunchOptions). Then, in order:
+ *  1. a skip spelling in the role's `args` → that spelling. The args are
+ *     appended as written, and a skip flag next to a permission flag on one
+ *     line still runs bypass.
+ *  2. `skipPermissions` with a permission flag in the args → none. The args are
+ *     the role's own permission choice, so the rewrite adds no skip flag.
+ *  3. `skipPermissions` → the agent's skip flag.
+ *
+ * An agentless binding answers undefined even when its args carry a skip
+ * spelling: the args still apply to any agent launched, but no grammar says
+ * which spelling is the skip. A line that makes its own permission choice can
+ * still withhold the skip for that one launch (#1681); this answers for the
+ * role, not for a particular line.
  */
 export function bindingSkipPermissionsFlag(binding: RoleBinding | undefined): string | undefined {
   const agent = binding?.agent;
   const launch = agent ? launchGrammarFor(agent) : undefined;
   const flag = launch?.skipPermissionsFlag;
   if (!binding || !launch || !flag) return undefined;
-  if (binding.skipPermissions) return flag;
-  const args = binding.args?.trim();
-  return args && tokenize(args).some((t) => isSkipPermissionsToken(launch, t.value)) ? flag : undefined;
+  const argValues = tokenize(binding.args?.trim() ?? '').map((t) => t.value);
+  const inArgs = argValues.find((v) => isSkipPermissionsToken(launch, v));
+  if (inArgs) return inArgs;
+  if (!binding.skipPermissions || hasPermissionChoice(launch, argValues)) return undefined;
+  return flag;
 }
 
 /** Does a launch in this role skip permission prompts? See {@link bindingSkipPermissionsFlag}. */
@@ -473,17 +481,17 @@ function alreadyEndsWithArgs(command: string, args: string): boolean {
   return tail.every((v, i) => v === argTokens[i]);
 }
 
-/** `args` without the tokens `drop` matches, the rest kept as written (quotes
- *  included). `args` is normalized to single spaces, so rejoining with one
- *  space loses nothing. */
-function dropArgTokens(args: string, drop: (value: string) => boolean): string {
+/** `args` without the tokens `drop` matches (by value and index), the rest
+ *  kept as written (quotes included). `args` is normalized to single spaces, so
+ *  rejoining with one space loses nothing. */
+function dropArgTokens(args: string, drop: (value: string, index: number) => boolean): string {
   const kept: string[] = [];
   let start = 0;
-  for (const tkn of tokenize(args)) {
+  tokenize(args).forEach((tkn, i) => {
     const raw = args.slice(start, tkn.end).trim();
     start = tkn.end;
-    if (!drop(tkn.value)) kept.push(raw);
-  }
+    if (!drop(tkn.value, i)) kept.push(raw);
+  });
   return kept.join(' ');
 }
 
@@ -523,7 +531,9 @@ function dropArgTokens(args: string, drop: (value: string) => boolean): string {
  *  - An explicit permission choice wins over the role's skip (#1681):
  *    {@link ApplyRoleBindingOptions.suppressSkipPermissions} (a toggle the user
  *    set OFF) or a permission flag typed on the line itself withholds the skip
- *    flag and drops the skip spellings from `binding.args`; the other args stay.
+ *    flag and drops the skip spellings from `binding.args`. A typed permission
+ *    flag also drops the permission flags in `binding.args`, so the user's
+ *    mode is the one that runs. The other args stay.
  *
  * `modelInjected` reports whether the model flag was ACTUALLY spliced in, so a
  * caller never advertises an enforced model when only `args` changed;
@@ -637,35 +647,48 @@ export function applyRoleBinding(
   }
 
   // Permission precedence (owner decision, #1681): an explicit, user-stated
-  // permission choice wins over the role's skip. Two sources count as explicit:
-  // the caller's suppressSkipPermissions (a toggle the user set OFF) and a
+  // permission choice wins over the role's. Two sources count as explicit: the
+  // caller's suppressSkipPermissions (a toggle the user set OFF) and a
   // permission flag the user typed on the line itself (`--permission-mode plan`,
-  // codex `-a never`). Either one withholds the role's skip flag AND drops the
-  // skip spellings from the role's args, which would otherwise override the
-  // choice (claude runs bypass when both flags are on one line). A permission
-  // flag inside the role's args is the role's own config, not the user's: it
-  // only stops the injection below. The role's args already trailing the line
-  // (a re-apply) are the role's too, so they are not read as the user's.
+  // codex `-a never`, `-c approval_policy=never`).
+  //  - Either one withholds the role's skip flag AND drops the skip spellings
+  //    from the role's args, which would otherwise override the choice (claude
+  //    runs bypass when both flags are on one line).
+  //  - A typed permission flag also drops the permission flags (and their
+  //    values) from the role's args: they are appended after the user's, and
+  //    the last one wins.
+  // A permission flag inside the role's args is otherwise the role's own
+  // config, not the user's: it only stops the skip injection below. The role's
+  // args already trailing the line (a re-apply) are the role's too, so they are
+  // not read as the user's.
   const stemGrammar = launchGrammarFor(stem);
   const userTokens = roleArgs && alreadyEndsWithArgs(command, roleArgs)
     ? tokens.slice(0, tokens.length - tokenize(roleArgs).length)
     : tokens;
   const userChosePermission = !!stemGrammar &&
-    userTokens.slice(1).some((t) => isPermissionFlagToken(stemGrammar, t.value));
+    hasPermissionChoice(stemGrammar, userTokens.slice(1).map((t) => t.value));
   const withholdRoleSkip = !!options?.suppressSkipPermissions || userChosePermission;
   let args = roleArgs;
-  let argsSkipDropped = false;
+  let argsPermissionDropped = false;
   if (args && withholdRoleSkip && stemGrammar) {
-    const kept = dropArgTokens(args, (v) => isSkipPermissionsToken(stemGrammar, v));
+    const argValues = tokenize(args).map((t) => t.value);
+    const choices = userChosePermission ? permissionChoiceIndexes(stemGrammar, argValues) : [];
+    const kept = dropArgTokens(
+      args,
+      (v, i) => isSkipPermissionsToken(stemGrammar, v) || choices.indexOf(i) !== -1,
+    );
     if (kept !== args) {
-      argsSkipDropped = true;
+      argsPermissionDropped = true;
       args = kept || undefined;
     }
   }
   const skipPermissions = !!binding.skipPermissions && !withholdRoleSkip;
-  if (userChosePermission && !options?.suppressSkipPermissions && ((binding.skipPermissions && binding.agent) || argsSkipDropped)) {
+  if (
+    userChosePermission && !options?.suppressSkipPermissions &&
+    ((binding.skipPermissions && binding.agent) || argsPermissionDropped)
+  ) {
     const withheld =
-      "The role's skip permissions were not applied: the command makes its own permission choice.";
+      "The role's permission settings were not applied: the command makes its own permission choice.";
     note = note ? `${note} ${withheld}` : withheld;
   }
 
@@ -684,7 +707,7 @@ export function applyRoleBinding(
   }
   if (
     skipPermissions && launch?.skipPermissionsFlag &&
-    !present.some((v) => isSkipPermissionsToken(launch, v) || isPermissionFlagToken(launch, v))
+    !present.some((v) => isSkipPermissionsToken(launch, v)) && !hasPermissionChoice(launch, present)
   ) {
     optionTokens.push(launch.skipPermissionsFlag);
     optionsInjected.skipPermissions = true;
