@@ -57,6 +57,7 @@ export interface WebSessionRow {
   id: string;
   surfaceTitle?: string;
   paneName?: string;
+  paneId?: string;
 }
 
 export interface WebSessionsReply {
@@ -69,6 +70,20 @@ export interface WebHydratedState {
   activeWorkspaceId: string;
   sidebarPinnedIds: string[];
   surfaceAgent: Record<string, { name: string; status: AgentStatus }>;
+  /** Pane names the user typed on the desktop (not auto names), by pane id. */
+  paneLabel: Record<string, string>;
+}
+
+/**
+ * The desktop's pane name (`/api/sessions` `paneName`) is either its auto name
+ * `w<ws>-<pane>` (with an optional `(<agent>)` suffix) or a user label. The
+ * auto name carries the two ordinals the tab strip rebuilds it from.
+ */
+const AUTO_PANE_NAME = /^w(\d+)-(\d+)(?:\(.*\))?$/;
+export function parsePaneName(name: string | undefined): { wsOrdinal: number; ordinal: number } | { label: string } | null {
+  if (!name) return null;
+  const m = AUTO_PANE_NAME.exec(name);
+  return m ? { wsOrdinal: Number(m[1]), ordinal: Number(m[2]) } : { label: name };
 }
 
 /** Server-side selection seen on the previous poll, keyed per workspace / pane. */
@@ -113,18 +128,23 @@ function toPane(
   depth: number,
   panes: Map<string, WebPaneRow>,
   titles: Map<string, string>,
+  ordinals: Map<string, number>,
 ): Pane {
   if (node.kind === 'leaf') {
     const surfaces = node.surfaces.map((s) => toSurface(s, panes, titles));
     const active = surfaces[node.activeIndex ?? 0] ?? surfaces[0];
-    return { id: node.paneId, type: 'leaf', surfaces, activeSurfaceId: active?.id ?? '' };
+    const ordinal = ordinals.get(node.paneId);
+    return {
+      id: node.paneId, type: 'leaf', surfaces, activeSurfaceId: active?.id ?? '',
+      ...(ordinal !== undefined ? { ordinal } : {}),
+    };
   }
   return {
     id: `web-split:${firstLeafId(node)}:${depth}`,
     type: 'branch',
     direction: node.direction,
     sizes: node.sizes,
-    children: node.children.map((c) => toPane(c, depth + 1, panes, titles)),
+    children: node.children.map((c) => toPane(c, depth + 1, panes, titles, ordinals)),
   };
 }
 
@@ -152,9 +172,22 @@ function gitSyncOf(row: WebWorkspaceRow): GitSyncStatus | undefined {
   return { dirty: 0, ahead: row.gitSync.ahead, behind: row.gitSync.behind, hasUpstream: row.gitSync.hasUpstream };
 }
 
-function buildWorkspace(row: WebWorkspaceRow, titles: Map<string, string>): Workspace {
+function buildWorkspace(
+  row: WebWorkspaceRow,
+  titles: Map<string, string>,
+  paneNames: Map<string, string>,
+): Workspace {
   const panes = new Map(row.panes.map((p) => [p.sessionId, p]));
-  const rootPane = row.layout ? toPane(row.layout.root, 0, panes, titles) : flatPane(row, titles);
+  const ordinals = new Map<string, number>();
+  let wsOrdinal: number | undefined;
+  for (const [paneId, name] of paneNames) {
+    const parsed = parsePaneName(name);
+    if (parsed && 'ordinal' in parsed) {
+      ordinals.set(paneId, parsed.ordinal);
+      wsOrdinal ??= parsed.wsOrdinal;
+    }
+  }
+  const rootPane = row.layout ? toPane(row.layout.root, 0, panes, titles, ordinals) : flatPane(row, titles);
   const leafIds = leaves(rootPane).map((l) => l.id);
   const activePaneId = row.layout?.activePaneId && leafIds.includes(row.layout.activePaneId)
     ? row.layout.activePaneId
@@ -165,6 +198,7 @@ function buildWorkspace(row: WebWorkspaceRow, titles: Map<string, string>): Work
     name: row.name || 'Workspace',
     rootPane,
     activePaneId,
+    ...(wsOrdinal !== undefined ? { wsOrdinal } : {}),
     ...(row.color && COLOR_IDS.has(row.color) ? { color: row.color as WorkspaceColorId } : {}),
     metadata: {
       ...(row.gitBranch ? { gitBranch: row.gitBranch } : {}),
@@ -233,17 +267,31 @@ export interface HydrationInput {
 export function hydrateWebState(input: HydrationInput): { state: WebHydratedState; server: ServerSelection } {
   const { workspacesReply, sessionsReply, current, lastServer, cache } = input;
   const titles = new Map<string, string>();
+  const paneNameBySession = new Map<string, { paneId: string; name: string }>();
+  const paneLabel: Record<string, string> = {};
   for (const s of sessionsReply?.sessions ?? []) {
     if (s.surfaceTitle) titles.set(s.id, s.surfaceTitle);
+    if (s.paneId && s.paneName) {
+      paneNameBySession.set(s.id, { paneId: s.paneId, name: s.paneName });
+      const parsed = parsePaneName(s.paneName);
+      if (parsed && 'label' in parsed) paneLabel[s.paneId] = parsed.label;
+    }
   }
   const server: ServerSelection = { activeWorkspaceId: workspacesReply.activeWorkspaceId, activePane: {}, activeSurface: {} };
   const currentById = new Map(current.workspaces.map((w) => [w.id, w]));
   const rows = sortRows(workspacesReply.workspaces);
   const workspaces = rows.map((row) => {
-    const rowTitles = new Map(row.panes.flatMap((p) => (titles.has(p.sessionId) ? [[p.sessionId, titles.get(p.sessionId)!]] : [])));
-    const key = JSON.stringify([row, [...rowTitles]]);
+    const rowTitles = new Map<string, string>();
+    const rowPaneNames = new Map<string, string>();
+    for (const p of row.panes) {
+      const title = titles.get(p.sessionId);
+      if (title !== undefined) rowTitles.set(p.sessionId, title);
+      const named = paneNameBySession.get(p.sessionId);
+      if (named) rowPaneNames.set(named.paneId, named.name);
+    }
+    const key = JSON.stringify([row, [...rowTitles], [...rowPaneNames]]);
     const hit = cache.get(row.id);
-    const built = hit && hit.key === key ? hit.built : buildWorkspace(row, rowTitles);
+    const built = hit && hit.key === key ? hit.built : buildWorkspace(row, rowTitles, rowPaneNames);
     cache.set(row.id, { key, built });
     const merged = mergeSelection(built, currentById.get(row.id), lastServer, server);
     // Nothing changed: hand back the very object the store already holds so
@@ -275,6 +323,7 @@ export function hydrateWebState(input: HydrationInput): { state: WebHydratedStat
       activeWorkspaceId,
       sidebarPinnedIds: rows.filter((r) => r.pinned).map((r) => r.id),
       surfaceAgent,
+      paneLabel,
     },
     server,
   };

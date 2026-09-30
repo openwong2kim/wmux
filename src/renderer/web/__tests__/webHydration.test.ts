@@ -21,7 +21,7 @@ const reply = (activeIndex = 0, activePaneId = 'p1'): WebWorkspacesReply => ({
 });
 
 function run(r: WebWorkspacesReply, current: { workspaces: Workspace[]; activeWorkspaceId: string }, lastServer: ServerSelection, cache = new Map()) {
-  return hydrateWebState({ workspacesReply: r, sessionsReply: { sessions: [{ id: 'pty-1', surfaceTitle: 'claude' }] }, current, lastServer, cache });
+  return hydrateWebState({ workspacesReply: r, sessionsReply: { sessions: [{ id: 'pty-1', surfaceTitle: 'claude', paneId: 'p1', paneName: 'w3-2(claude)' }, { id: 'pty-9', paneId: 'web-pane:w0', paneName: 'Build box' }] }, current, lastServer, cache });
 }
 const leaf = (ws: Workspace, id: string) => (ws.rootPane.type === 'branch'
   ? ws.rootPane.children.find((c) => c.id === id) : ws.rootPane) as PaneLeaf;
@@ -43,6 +43,10 @@ describe('hydrateWebState', () => {
     expect(leaf(w1, 'p2').surfaces[0].surfaceType).toBe('placeholder');
     expect(state.activeWorkspaceId).toBe('w1');
     expect(state.surfaceAgent).toEqual({ 'pty-1': { name: 'Claude', status: 'running' } });
+    // The desktop's auto pane name gives back its ordinals; a typed name is a label.
+    expect(w1.wsOrdinal).toBe(3);
+    expect(p1.ordinal).toBe(2);
+    expect(state.paneLabel).toEqual({ 'web-pane:w0': 'Build box' });
     // A workspace with no layout tree still gets a pane, without mounting a PTY-less terminal.
     expect(leaf(state.workspaces[0], 'web-pane:w0').surfaces[0].ptyId).toBe('pty-9');
   });
