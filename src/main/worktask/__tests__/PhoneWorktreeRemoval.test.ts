@@ -2,8 +2,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
-import { deletePhoneBranch, phoneWorktreeDir, removePhoneWorktree } from '../PhoneWorktreeRemoval';
+import { execFileSync, spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { deletePhoneBranch, phoneWorktreeDir, removePhoneWorktree, windowsDirectoryHold, type DirectoryHold } from '../PhoneWorktreeRemoval';
 
 const HASH = 'abc123def456';
 let base: string;
@@ -61,6 +62,64 @@ describe('removing a phone worktree from the desktop cleanup list', { timeout: 3
     expect(await deletePhoneBranch(removed.repo, 'main')).toMatchObject({ ok: false });
     expect(await deletePhoneBranch(removed.repo, 'phone/work')).toEqual({ ok: true });
     expect(git(repo, 'branch', '--list', 'phone/work')).toBe('');
+  });
+
+  // A shell that `cd`'d into the worktree without its cwd being reported (a
+  // cmd.exe prompt is not scraped) still holds it on Windows: git would delete
+  // every file and then fail on the directory itself.
+  it.runIf(process.platform === 'win32')('refuses a worktree a process holds, in it or below it, unreported', async () => {
+    fs.mkdirSync(path.join(repo, 'src'));
+    fs.writeFileSync(path.join(repo, 'src', 'kept.txt'), 'kept');
+    git(repo, 'add', 'src/kept.txt');
+    git(repo, 'commit', '-q', '-m', 'file');
+    const dir = add('held');
+    const deps = { root, livePaneCwds: async () => [] };
+    const intact = () => {
+      expect(fs.readFileSync(path.join(dir, 'src', 'kept.txt'), 'utf8')).toBe('kept');
+      expect(git(repo, 'worktree', 'list', '--porcelain')).toContain('phone-held');
+    };
+    for (const [cwd, answer] of [
+      [dir, { ok: false, reason: 'in-use' }],
+      [path.join(dir, 'src'), { ok: false, reason: 'error', error: expect.stringContaining('Windows will not delete') }],
+    ] as const) {
+      const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { cwd, stdio: 'ignore' });
+      try {
+        await once(holder, 'spawn');
+        expect(await removePhoneWorktree(dir, false, deps)).toEqual(answer);
+        expect(await removePhoneWorktree(dir, true, deps)).toEqual(answer);
+        intact();
+      } finally {
+        holder.kill();
+        await once(holder, 'exit');
+      }
+    }
+    expect(await removePhoneWorktree(dir, false, deps)).toMatchObject({ ok: true, branch: 'phone/held' });
+    expect(fs.existsSync(dir)).toBe(false);
+  });
+
+  it('asks the directory probe after the pane check, and removes nothing it holds or refuses', async () => {
+    const dir = add('probed');
+    const seen: string[] = [];
+    const probe = (hold: DirectoryHold) => async (d: string) => { seen.push(d); return hold; };
+    expect(await removePhoneWorktree(dir, true, { root, livePaneCwds: async () => [], directoryHold: probe('in-use') }))
+      .toEqual({ ok: false, reason: 'in-use' });
+    expect(await removePhoneWorktree(dir, true, { root, livePaneCwds: async () => [], directoryHold: probe('refused') }))
+      .toEqual({ ok: false, reason: 'error', error: expect.stringContaining('Windows will not delete') });
+    expect(git(repo, 'worktree', 'list', '--porcelain')).toContain('phone-probed');
+    expect(await removePhoneWorktree(dir, false, { root, livePaneCwds: async () => [dir], directoryHold: probe('free') }))
+      .toEqual({ ok: false, reason: 'in-use' });
+    expect(seen).toEqual([dir, dir]);
+    expect(await removePhoneWorktree(dir, false, { root, livePaneCwds: async () => [], directoryHold: probe('free') }))
+      .toMatchObject({ ok: true, branch: 'phone/probed' });
+  });
+
+  it('probes with a no-op rename: an idle directory is free and unchanged, a missing one is not a hold', async () => {
+    const dir = add('idle');
+    const before = fs.statSync(dir, { bigint: true });
+    expect(await windowsDirectoryHold(dir)).toBe('free');
+    const after = fs.statSync(dir, { bigint: true });
+    expect([after.mtimeNs, after.ctimeNs, after.birthtimeNs, after.mode]).toEqual([before.mtimeNs, before.ctimeNs, before.birthtimeNs, before.mode]);
+    expect(await windowsDirectoryHold(path.join(root, HASH, 'phone-gone'))).toBe('free');
   });
 
   it('removes a clean worktree without asking, and a leftover directory only when forced', async () => {

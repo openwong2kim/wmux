@@ -30,7 +30,12 @@ export interface PhoneWorktreeRemoveDeps {
   /** The working directories of every live pane (spawn and current). */
   livePaneCwds: () => Promise<string[]>;
   git?: PhoneGit;
+  /** Whether the directory may be deleted now. Defaults to `windowsDirectoryHold` on Windows, `free` elsewhere. */
+  directoryHold?: (dir: string) => Promise<DirectoryHold>;
 }
+
+/** `in-use`: a process holds the directory itself. `refused`: a handle below it, or an ACL. */
+export type DirectoryHold = 'free' | 'in-use' | 'refused';
 
 const defaultGit: PhoneGit = (args, cwd) => new Promise((resolve) => {
   execFile('git', ['-c', 'core.fsmonitor=false', '-c', 'protocol.allow=never', ...args],
@@ -39,7 +44,37 @@ const defaultGit: PhoneGit = (args, cwd) => new Promise((resolve) => {
 });
 
 const canonical = (p: string) => { try { return fs.realpathSync.native(p); } catch { return path.resolve(p); } };
-const BRANCH = new RegExp(`^${PHONE_WORKTREE_BRANCH_PREFIX}${PHONE_WORKTREE_SLUG.source.slice(1)}`);
+
+/**
+ * Windows: anything that stops the directory itself from being deleted makes
+ * `git worktree remove` delete every file and then fail on the directory. A
+ * rename to the same path opens the directory for DELETE and, when that
+ * succeeds, changes nothing (no timestamp, attribute, ACL or change
+ * notification). When it fails:
+ * - EBUSY: a process holds the directory itself, e.g. a shell whose current
+ *   directory it is; a cmd.exe prompt is not scraped, so that pane's cwd is
+ *   never reported;
+ * - EPERM / EACCES: a handle below it (a shell in a subdirectory, a file some
+ *   program has open) or an ACL that forbids deleting it.
+ * Anything else (ENOENT: already gone) is no hold, and the removal proceeds.
+ */
+export async function windowsDirectoryHold(dir: string): Promise<DirectoryHold> {
+  try {
+    await fs.promises.rename(dir, dir);
+    return 'free';
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    return code === 'EBUSY' ? 'in-use' : code === 'EPERM' || code === 'EACCES' ? 'refused' : 'free';
+  }
+}
+
+const defaultDirectoryHold = async (dir: string): Promise<DirectoryHold> =>
+  process.platform === 'win32' ? windowsDirectoryHold(dir) : 'free';
+
+/** A handle below the directory and a missing delete permission look the same from here. */
+const HOLD_REFUSED = 'Windows will not delete this worktree right now: a program has a file or folder in it open, or the folder may not be deleted. Close what is using it and try again.';
+
+const BRANCH =new RegExp(`^${PHONE_WORKTREE_BRANCH_PREFIX}${PHONE_WORKTREE_SLUG.source.slice(1)}`);
 
 /** The canonical phone worktree directory, or null when `worktreePath` is not one. */
 export function phoneWorktreeDir(root: string, worktreePath: string): string | null {
@@ -75,6 +110,9 @@ export async function removePhoneWorktree(worktreePath: string, force: boolean, 
     return real === dir || real.startsWith(dir + path.sep);
   });
   if (inUse) return { ok: false, reason: 'in-use' };
+  const hold = await (deps.directoryHold ?? defaultDirectoryHold)(dir);
+  if (hold === 'in-use') return { ok: false, reason: 'in-use' };
+  if (hold === 'refused') return { ok: false, reason: 'error', error: HOLD_REFUSED };
 
   const top = await git(['rev-parse', '--show-toplevel'], dir);
   const registered = top.ok && canonical(top.stdout.trim()) === dir;
