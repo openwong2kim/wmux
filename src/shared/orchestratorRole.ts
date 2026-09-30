@@ -1,5 +1,7 @@
 import { launcherStem, tokenize } from './agentResume';
-import { EFFORT_TOKEN_RE, launchGrammarFor } from './agentLaunchOptions';
+import {
+  EFFORT_TOKEN_RE, isPermissionFlagToken, isSkipPermissionsToken, launchGrammarFor,
+} from './agentLaunchOptions';
 
 // Orchestrator pane role (soft, operator-assigned "preferred role").
 //
@@ -440,6 +442,20 @@ function alreadyEndsWithArgs(command: string, args: string): boolean {
   return tail.every((v, i) => v === argTokens[i]);
 }
 
+/** `args` without the tokens `drop` matches, the rest kept as written (quotes
+ *  included). `args` is normalized to single spaces, so rejoining with one
+ *  space loses nothing. */
+function dropArgTokens(args: string, drop: (value: string) => boolean): string {
+  const kept: string[] = [];
+  let start = 0;
+  for (const tkn of tokenize(args)) {
+    const raw = args.slice(start, tkn.end).trim();
+    start = tkn.end;
+    if (!drop(tkn.value)) kept.push(raw);
+  }
+  return kept.join(' ');
+}
+
 /**
  * Pure transform: given a launch command + a role's binding, return the command
  * with the bound agent's model (and any extra args) enforced.
@@ -471,8 +487,12 @@ function alreadyEndsWithArgs(command: string, args: string): boolean {
  *    normalized `binding.args` at the end.
  *  - `binding.effort` / `binding.skipPermissions` splice the agent's own flag
  *    (agentLaunchOptions) next to the model, unless that flag is already on the
- *    line; {@link ApplyRoleBindingOptions.suppressSkipPermissions} withholds the
- *    skip flag for a launch whose toggle the user explicitly set OFF.
+ *    line or in the args. A permission flag in the args (`--permission-mode`)
+ *    also stops the skip injection: the role's own config wins.
+ *  - An explicit permission choice wins over the role's skip (#1681):
+ *    {@link ApplyRoleBindingOptions.suppressSkipPermissions} (a toggle the user
+ *    set OFF) or a permission flag typed on the line itself withholds the skip
+ *    flag and drops the skip spellings from `binding.args`; the other args stay.
  *
  * `modelInjected` reports whether the model flag was ACTUALLY spliced in, so a
  * caller never advertises an enforced model when only `args` changed.
@@ -511,8 +531,9 @@ export interface ApplyRoleBindingOptions {
    * Do not inject the binding's skip-permissions flag on this launch. Set by the
    * resume chip and the recovery pill when the user explicitly turned their
    * "skip permissions" toggle OFF: that per-launch choice wins over the role
-   * (owner decision, #1677). Model, effort and args are still applied, and a
-   * skip flag already on the line is left alone.
+   * (owner decision, #1677). The skip spellings in the binding's args are
+   * dropped too (#1681); model, effort and the other args are still applied,
+   * and a skip flag already on the line is left alone.
    */
   suppressSkipPermissions?: boolean;
 }
@@ -525,10 +546,11 @@ export function applyRoleBinding(
   const unchanged = { command, changed: false, modelInjected: false };
   if (!binding) return unchanged;
   const model = binding.model?.trim() || undefined;
-  const args = binding.args?.trim() || undefined;
+  const roleArgs = binding.args?.trim() || undefined;
   const effort = binding.effort && EFFORT_TOKEN_RE.test(binding.effort) ? binding.effort : undefined;
-  const skipPermissions = !!binding.skipPermissions && !options?.suppressSkipPermissions;
-  if (!model && !args && !effort && !skipPermissions) return unchanged;
+  if (!model && !roleArgs && !effort && !(binding.skipPermissions && !options?.suppressSkipPermissions)) {
+    return unchanged;
+  }
 
   const tokens = tokenize(command);
   if (tokens.length === 0) return unchanged;
@@ -565,19 +587,55 @@ export function applyRoleBinding(
     }
   }
 
+  // Permission precedence (owner decision, #1681): an explicit, user-stated
+  // permission choice wins over the role's skip. Two sources count as explicit:
+  // the caller's suppressSkipPermissions (a toggle the user set OFF) and a
+  // permission flag the user typed on the line itself (`--permission-mode plan`,
+  // codex `-a never`). Either one withholds the role's skip flag AND drops the
+  // skip spellings from the role's args, which would otherwise override the
+  // choice (claude runs bypass when both flags are on one line). A permission
+  // flag inside the role's args is the role's own config, not the user's: it
+  // only stops the injection below. The role's args already trailing the line
+  // (a re-apply) are the role's too, so they are not read as the user's.
+  const stemGrammar = launchGrammarFor(stem);
+  const userTokens = roleArgs && alreadyEndsWithArgs(command, roleArgs)
+    ? tokens.slice(0, tokens.length - tokenize(roleArgs).length)
+    : tokens;
+  const userChosePermission = !!stemGrammar &&
+    userTokens.slice(1).some((t) => isPermissionFlagToken(stemGrammar, t.value));
+  const withholdRoleSkip = !!options?.suppressSkipPermissions || userChosePermission;
+  let args = roleArgs;
+  let argsSkipDropped = false;
+  if (args && withholdRoleSkip && stemGrammar) {
+    const kept = dropArgTokens(args, (v) => isSkipPermissionsToken(stemGrammar, v));
+    if (kept !== args) {
+      argsSkipDropped = true;
+      args = kept || undefined;
+    }
+  }
+  const skipPermissions = !!binding.skipPermissions && !withholdRoleSkip;
+  if (userChosePermission && !options?.suppressSkipPermissions && ((binding.skipPermissions && binding.agent) || argsSkipDropped)) {
+    const withheld =
+      "The role's skip permissions were not applied: the command makes its own permission choice.";
+    note = note ? `${note} ${withheld}` : withheld;
+  }
+
   // Launch options (effort, skip permissions) use the agent's verified grammar
   // and, like the model, need the binding to name the agent. A flag already on
   // the line OR in the binding's own args wins (D-4 for options): the args are
-  // appended below, so checking the line alone put two `--effort` on it.
-  const launch = binding.agent ? launchGrammarFor(stem) : undefined;
+  // appended below, so checking the line alone put two `--effort` on it. A
+  // permission flag in the args counts too: the role's own permission choice.
+  const launch = binding.agent ? stemGrammar : undefined;
   const present = [...tokens, ...(args ? tokenize(args) : [])].map((t) => t.value);
   const optionTokens: string[] = [];
   if (effort && launch?.effortFlag && !present.some((v) => launch.hasEffort?.(v))) {
     optionTokens.push(...launch.effortFlag(effort));
   }
-  if (skipPermissions && launch?.skipPermissionsFlag) {
-    const spellings = [launch.skipPermissionsFlag, ...(launch.skipPermissionsAliases ?? [])];
-    if (!present.some((v) => spellings.includes(v))) optionTokens.push(launch.skipPermissionsFlag);
+  if (
+    skipPermissions && launch?.skipPermissionsFlag &&
+    !present.some((v) => isSkipPermissionsToken(launch, v) || isPermissionFlagToken(launch, v))
+  ) {
+    optionTokens.push(launch.skipPermissionsFlag);
   }
 
   let out = command;

@@ -198,6 +198,26 @@ describe('buildPaneResumeCommand — role skipPermissions vs the toggle', () => 
     );
     expect(out?.command).toBe('codex --dangerously-bypass-approvals-and-sandbox resume sess-77');
   });
+
+  // #1681 — a skip flag in the role's args used to survive an explicit OFF.
+  it('toggle OFF also drops the skip flag from the role args, keeping the other args', () => {
+    const argsRole = { agent: 'claude', model: 'haiku', args: '--dangerously-skip-permissions --verbose' };
+    const exact = buildPaneResumeCommand(claude({ permissionMode: 'plan' }), ['/Users/me/proj'], false, argsRole);
+    expect(exact?.command).toBe(`claude --model haiku --permission-mode plan --resume ${SID} --verbose`);
+    const fallback = buildPaneResumeCommand(claude(), ['/Users/me/OTHER'], false, argsRole);
+    expect(fallback?.command).toBe('claude --model haiku --continue --verbose');
+    expect(countSkip(fallback?.command)).toBe(0);
+  });
+
+  it('codex (no toggle) keeps a skip flag in the role args', () => {
+    const out = buildPaneResumeCommand(
+      claude({ agent: 'codex', sessionId: 'sess-77' }),
+      ['/Users/me/proj'],
+      false,
+      { agent: 'codex', args: '--yolo' },
+    );
+    expect(out?.command).toBe('codex resume sess-77 --yolo');
+  });
 });
 
 describe('ResumeInfoChip render smoke', () => {

@@ -39,8 +39,8 @@ import { applyRoleBinding, type RoleBinding } from '../../../shared/orchestrator
  * Codex takes no permission flag, so the toggle is inert there.
  *
  * A role binding's `skipPermissions` does NOT override an explicit OFF: when the
- * toggle is offered (Claude) and off, the role's skip flag is withheld, so the
- * restored mode is what runs (`--dangerously-skip-permissions` beats
+ * toggle is offered (Claude) and off, the role's skip flag is withheld (and
+ * dropped from the role's args, #1681), so the restored mode is what runs (`--dangerously-skip-permissions` beats
  * `--permission-mode` on the same line). The role's model, effort and args still
  * apply. Where the toggle is inert (Codex) the role's skip flag applies as usual.
  *
