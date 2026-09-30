@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -78,13 +78,18 @@ describe('removing a phone worktree from the desktop cleanup list', { timeout: 3
       expect(fs.readFileSync(path.join(dir, 'src', 'kept.txt'), 'utf8')).toBe('kept');
       expect(git(repo, 'worktree', 'list', '--porcelain')).toContain('phone-held');
     };
-    for (const [cwd, answer] of [
-      [dir, { ok: false, reason: 'in-use' }],
-      [path.join(dir, 'src'), { ok: false, reason: 'held' }],
+    // A new process holds its current directory a moment after it starts, and
+    // lets go a moment after it exits: wait for Windows to say so each time.
+    const holding = (hold: DirectoryHold) =>
+      vi.waitFor(async () => expect(await windowsDirectoryHold(dir)).toBe(hold), { timeout: 10_000, interval: 50 });
+    for (const [cwd, hold, answer] of [
+      [dir, 'in-use', { ok: false, reason: 'in-use' }],
+      [path.join(dir, 'src'), 'refused', { ok: false, reason: 'held' }],
     ] as const) {
       const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { cwd, stdio: 'ignore' });
       try {
         await once(holder, 'spawn');
+        await holding(hold);
         expect(await removePhoneWorktree(dir, false, deps)).toEqual(answer);
         expect(await removePhoneWorktree(dir, true, deps)).toEqual(answer);
         intact();
@@ -92,6 +97,7 @@ describe('removing a phone worktree from the desktop cleanup list', { timeout: 3
         holder.kill();
         await once(holder, 'exit');
       }
+      await holding('free');
     }
     expect(await removePhoneWorktree(dir, false, deps)).toMatchObject({ ok: true, branch: 'phone/held' });
     expect(fs.existsSync(dir)).toBe(false);
