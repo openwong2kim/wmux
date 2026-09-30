@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { gitArgv, type GitRunner } from './sessionDiff';
@@ -48,6 +49,12 @@ export type GhJsonRunner = (args: readonly string[], maxBuffer?: number) => Prom
 
 const failed = () => new SessionGitError(409, 'git-operation-failed');
 const realpathOr = async (p: string) => fs.realpath(p).catch(() => path.resolve(p));
+/**
+ * The desktop's `repoHash` realpath exactly: the JS `realpathSync`, raw path on
+ * failure. The native realpath differs on Windows (it expands 8.3 short
+ * names), and a different string is a different projectId and directory.
+ */
+const repoHashRealpath = (p: string) => { try { return realpathSync(p); } catch { return p; } };
 
 /**
  * The same derivation as the desktop's task worktrees (`resolveRepoInfo` in
@@ -69,7 +76,7 @@ export async function resolvePhoneGitRepo(cwd: string, git: GitRunner): Promise<
     if (main.ran === false) throw failed();
     return null;
   }
-  const mainRoot = await realpathOr(main.stdout.trimEnd());
+  const mainRoot = repoHashRealpath(main.stdout.trimEnd());
   const head = await git(gitArgv('symbolic-ref', '-q', '--short', 'HEAD'), cwd);
   if (!head.ok && head.code !== 1) throw failed();
   return {
@@ -78,7 +85,7 @@ export async function resolvePhoneGitRepo(cwd: string, git: GitRunner): Promise<
     mainRoot,
     commonDir,
     branch: head.ok && head.stdout.trim() ? head.stdout.trim() : null,
-    linkedWorktree: await realpathOr(top) !== mainRoot,
+    linkedWorktree: repoHashRealpath(top) !== mainRoot,
   };
 }
 
