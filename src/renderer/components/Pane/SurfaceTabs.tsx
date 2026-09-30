@@ -379,6 +379,9 @@ export default function SurfaceTabs({
     paneRoleName ? s.orchestratorRoleBindings[paneRoleName] : undefined,
   );
   const mode: PaneActionsMode = actionsMode ?? (paneActionsSetting ? 'full' : 'none');
+  // Browser mirror (wmux web /app): tabs switch, nothing else — no close,
+  // rename, drag, pane move or action menu.
+  const readOnly = useStore((s) => s.readOnly);
   // X8 — this pane's supervision state. The ⟳ badge it draws is laid out in
   // this strip (it used to be absolutely positioned over the corner, where it
   // covered whatever flow chrome happened to be underneath — the same defect
@@ -457,7 +460,7 @@ export default function SurfaceTabs({
   // at any width. Suppressed when the operator turned pane actions OFF in
   // Settings: that is a deliberate no-pane-chrome choice.
   const handleHeaderContextMenu = useCallback((e: React.MouseEvent) => {
-    if (mode === 'none' && !paneActionsSetting) return;
+    if (readOnly || (mode === 'none' && !paneActionsSetting)) return;
     // A rename field keeps its NATIVE context menu: claiming right-click on an
     // <input> would trade cut/copy/paste for verbs that cannot apply to text.
     if ((e.target as HTMLElement).closest('input, textarea')) return;
@@ -471,7 +474,7 @@ export default function SurfaceTabs({
       right: e.clientX + PANE_ACTIONS_MENU_WIDTH,
       bottom: e.clientY,
     });
-  }, [mode, paneActionsSetting, openMenuAt]);
+  }, [readOnly, mode, paneActionsSetting, openMenuAt]);
   // P2: pane-level identity + rename (distinct from the per-surface tab rename
   // below). The pane's display name is its user label (paneLabel mirror) or the
   // stable auto coordinate `w<ws>-<pane>(<agent>)`. Narrowed to THIS pane's
@@ -725,7 +728,7 @@ export default function SurfaceTabs({
       {/* #645 — pane move grip. First in the strip, OUTSIDE the scroll region,
           so it stays reachable however many tabs there are. Never on a tab
           itself: tabs own an HTML5 drag that exports terminal text. */}
-      <PaneDragGrip paneId={paneId} workspaceId={workspace.id} />
+      {!readOnly && <PaneDragGrip paneId={paneId} workspaceId={workspace.id} />}
 
       {/* Workspace tag dot — outside the scroll region so it stays visible
           however many tabs there are (it identifies the workspace, not a tab). */}
@@ -779,7 +782,7 @@ export default function SurfaceTabs({
         <span
           data-pane-label
           className="shrink-0 px-2 h-full flex items-center text-[10px] font-mono text-[var(--text-muted)] hover:text-[var(--text-sub)] border-r border-[var(--bg-surface)] cursor-pointer select-none truncate max-w-[170px]"
-          onDoubleClick={startPaneRename}
+          onDoubleClick={readOnly ? undefined : startPaneRename}
           title={paneDisplay}
           {...tokenAttrs('textMuted', 'text')}
         >
@@ -789,7 +792,7 @@ export default function SurfaceTabs({
       {surfaces.map((s) => (
         <div
           key={s.id}
-          draggable={editingId !== s.id}
+          draggable={!readOnly && editingId !== s.id}
           onDragStart={handleDragStart}
           onDragEnd={() => setTerminalTextDropDragActive(false)}
           className={`group flex items-center gap-2 px-3 h-full cursor-pointer text-[13px] border-r border-[var(--bg-surface)] transition-colors ${
@@ -800,7 +803,7 @@ export default function SurfaceTabs({
           {...tokenAttrs('bgBase', 'bg')}
           {...tokenAttrs('textMain', 'text')}
           onClick={() => handleTabClick(s.id)}
-          onDoubleClick={() => startRename(s)}
+          onDoubleClick={readOnly ? undefined : () => startRename(s)}
           // Hover shows the terminal's working directory (cwd is always present
           // once the shell renders its first prompt; before that, the name).
           // A remote tab leads with WHERE it runs: its title is an OSC title
@@ -843,7 +846,7 @@ export default function SurfaceTabs({
               input when the tab is being renamed — so a click meant for the end
               of the name would close the tab instead. The 36px strip absorbs
               the height, so no vertical refund is needed either. */}
-          <button
+          {!readOnly && <button
             data-surface-tab-close
             className={`${HIT_TARGET_24} ${FOCUS_RING} ui-icon-btn ui-icon-btn-danger -mr-1.5 leading-none`}
             onClick={(e) => { e.stopPropagation(); onClose(s.id); }}
@@ -856,7 +859,7 @@ export default function SurfaceTabs({
             {...tokenAttrs('danger', 'accent')}
           >
             ✕
-          </button>
+          </button>}
         </div>
       ))}
       {/* OFF by default, and deliberately so. #451 removed the discoverable
@@ -868,7 +871,7 @@ export default function SurfaceTabs({
           This opt-in exists for the people who asked for it and is labelled
           experimental in Settings for exactly that reason: turning it on is
           choosing to break the rule for your own layout. */}
-      {newTerminalButtonVisible && (
+      {newTerminalButtonVisible && !readOnly && (
         <button
           className={`ui-icon-btn ${FOCUS_RING} w-6 h-6 shrink-0`}
           onClick={(e) => { e.stopPropagation(); onAddTerminal(); }}
@@ -883,7 +886,7 @@ export default function SurfaceTabs({
 
       {(() => {
         const surface = surfaces.find((s) => s.id === activeSurfaceId);
-        if (!chatViewEnabled || !surface || (surface.surfaceType && surface.surfaceType !== 'terminal')) return null;
+        if (!chatViewEnabled || readOnly || !surface || (surface.surfaceType && surface.surfaceType !== 'terminal')) return null;
         return <div className="wmux-chat-toggle" role="group" aria-label={t('chat.viewMode')}>
           {(['terminal', 'chat'] as const).map((view) => <button key={view} type="button"
             className={FOCUS_RING} data-surface-view={view}

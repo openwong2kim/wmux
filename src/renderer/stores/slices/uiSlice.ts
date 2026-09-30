@@ -153,6 +153,14 @@ export interface UISlice {
   paneGate: 'pending' | 'ready';
   setPaneGate: (state: 'pending' | 'ready') => void;
 
+  /**
+   * The browser build (wmux web `/app`) mirrors the desktop's layout without
+   * owning it: structure-changing chrome (close, rename, reorder, split,
+   * presets, account menus, divider drag) is hidden while this is true. Never
+   * set by the desktop app, so every desktop render path is unchanged.
+   */
+  readOnly: boolean;
+
   sidebarVisible: boolean;
   toggleSidebar: () => void;
   setSidebarVisible: (visible: boolean) => void;
@@ -962,6 +970,8 @@ function handOffBeforeLeavingGrid(state: StoreState, wsId: string): void {
 export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]], [], UISlice> = (set, get) => ({
   // ─── Startup gate (Fix 0) ─────────────────────────────────────────────
   paneGate: 'pending',
+
+  readOnly: false,
 
   setPaneGate: (gate) => set((state) => {
     state.paneGate = gate;

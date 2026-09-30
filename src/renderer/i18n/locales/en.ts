@@ -149,6 +149,7 @@ export const en = {
 
   // App lifecycle
   'app.restoringPanes': 'Restoring panes…',
+  'web.surfacePlaceholder': 'Not shown in the browser yet',
 
   // Common
   'common.cancel': 'Cancel',

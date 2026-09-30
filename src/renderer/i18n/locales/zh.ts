@@ -1,6 +1,7 @@
 export const zh = {
   // App lifecycle
   'app.restoringPanes': '正在恢复面板…',
+  'web.surfacePlaceholder': '浏览器中暂不显示',
 
   // Common
   'common.cancel': '取消',

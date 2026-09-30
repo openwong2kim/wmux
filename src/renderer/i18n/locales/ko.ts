@@ -149,6 +149,7 @@ export const ko = {
 
   // App lifecycle
   'app.restoringPanes': '패널 복원 중…',
+  'web.surfacePlaceholder': '브라우저에서는 아직 표시되지 않습니다',
 
   // Common
   'common.undo': '되돌리기',

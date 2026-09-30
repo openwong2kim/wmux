@@ -358,6 +358,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   // Sidebar reorder source index lives in the store, not in dataTransfer.
   // See uiSlice.draggedWorkspaceIndex for why this is out-of-band.
   const setWorkspaceColor = useStore((s) => s.setWorkspaceColor);
+  // Browser mirror (wmux web /app): no rename, reorder, context menu or row actions.
+  const readOnly = useStore((s) => s.readOnly);
   const setDraggedWorkspaceIndex = useStore((s) => s.setDraggedWorkspaceIndex);
   // Needs-you-first ordering is display-only, so a drop judged against the
   // DISPLAY order would move the row to a different ARRAY index than the
@@ -788,6 +790,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   };
 
   const handleDoubleClick = () => {
+    if (readOnly) return;
     // 드래그 직후 더블클릭 이벤트 무시
     if (Date.now() - dragStartTimeRef.current < 300) return;
     setEditName(workspace?.name ?? '');
@@ -797,6 +800,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   const handleContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
+    if (readOnly) return;
     setWdOpen(false);
     setMenuPos({ x: e.clientX, y: e.clientY });
   };
@@ -887,7 +891,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
 
       <div
         // Not while renaming: a text drag inside the input must stay a text drag.
-        draggable={!!workspace && !editing}
+        draggable={!!workspace && !editing && !readOnly}
         {...tokenAttrs('bgSurface', 'bg')}
         className={`${hover.group} sidebar-row px-3 py-1.5 cursor-pointer rounded-md select-none ${needsYou ? 'sidebar-row-needs' : ''} ${
           isActive
@@ -1134,7 +1138,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
             the cluster's content box, and a clipped refund is a smaller target.
             No negative left margin here: hitArea.ts forbids one on a cluster
             (chromeHitArea.test.ts asserts it), so this one item keeps its gap. */}
-        <div
+        {!readOnly && <div
           data-workspace-actions
           className={`${HIT_TARGET_24_CLUSTER} flex-shrink-0 opacity-0 pointer-events-none max-w-0 overflow-hidden transition-opacity duration-150 ${hover.cluster} focus-within:opacity-100 focus-within:pointer-events-auto focus-within:max-w-none focus-within:overflow-visible`}
         >
@@ -1173,7 +1177,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           >
             <IconX size={11} />
           </button>
-        </div>
+        </div>}
         </div>
         {/* Mounted only when expanded: a collapsed list would subscribe to the
             whole roster projection to render nothing. */}

@@ -164,6 +164,7 @@ export const pl = {
   'deck.recoveryTitle': '{count} sesji agenta gotowych do przywrócenia.',
   // App lifecycle
   'app.restoringPanes': 'Przywracanie paneli…',
+  'web.surfacePlaceholder': 'Jeszcze niewidoczne w przeglądarce',
 
   // Common
   'common.cancel': 'Anuluj',

@@ -77,7 +77,9 @@ function projectLayout(ws: StoreState['workspaces'][number]): PhoneSidebarLayout
     if (!isSidebarId(surfaceId) || surfaceIds.has(surfaceId)) return null;
     surfaceIds.add(surfaceId);
     const type = surface.surfaceType ?? 'terminal';
-    const kind: PhoneLayoutSurfaceKind = (PHONE_LAYOUT_SURFACE_KINDS as readonly string[]).includes(type) ? type : 'other';
+    const kind: PhoneLayoutSurfaceKind = (PHONE_LAYOUT_SURFACE_KINDS as readonly string[]).includes(type)
+      ? type as PhoneLayoutSurfaceKind
+      : 'other';
     if (kind === 'terminal') {
       // Same rule as the pane rows: no brain session, and only an id the
       // parsers accept; a slot without one still holds its tab position.
