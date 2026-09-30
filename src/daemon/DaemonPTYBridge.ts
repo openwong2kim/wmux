@@ -143,11 +143,12 @@ export class DaemonPTYBridge extends EventEmitter {
    */
   private turnSoftClosed = false;
   /**
-   * #1670 — the episode was opened by a byte promotion while the boot window
-   * was open (a program launched, no submit or hook since): the TUI painting
-   * itself, or a first turn started from the command line. A submit or a
-   * running hook proves which; until then a submit that finds no running turn
-   * on the title replaces it (see `startAnsweredTurn`).
+   * #1670 — the episode was opened while the boot window was open (a program
+   * launched, no submit or hook since), by a byte promotion or by the first
+   * Enter: the TUI painting itself or a dialog answered, or a real first turn.
+   * A running hook, or a submit joining it while it runs, proves a turn; until
+   * then a submit that finds no running turn on the title replaces it (see
+   * `startAnsweredTurn`).
    */
   private bootEpisode = false;
 
@@ -413,11 +414,13 @@ export class DaemonPTYBridge extends EventEmitter {
     // An answer resumes the episode it interrupted; a submit into a running
     // turn is queued by the agent's own composer. Anything else starts one.
     if (!wasAwaiting) {
-      // #1670 — an episode the boot burst opened is the TUI painting itself
-      // unless the agent shows a running turn (a first turn started from the
-      // command line). The first submit starts the first turn, so a key sent
-      // before it (a lone Esc dismissing a notice, an answered trust dialog)
-      // is never read as an interrupt of that turn.
+      // #1670 — an episode opened at boot (by the boot burst, or by the first
+      // Enter after a launch, which may only have answered a dialog the
+      // detector does not see, such as Codex's folder-trust prompt) is not a
+      // turn unless the agent shows one running (a first turn started from
+      // the command line, or the first prompt still working). Otherwise the
+      // next submit starts the turn, so a key sent before it (a lone Esc
+      // dismissing a notice) is never read as an interrupt of that turn.
       if (this.turnOpen && this.bootEpisode && !this.titleShowsRunningTurn()) this.closeTurn();
       if (this.turnOpen && this.sessionId) {
         const endedAt = DaemonPTYBridge.transcriptTurnEndProbe?.(this.sessionId);
@@ -425,9 +428,10 @@ export class DaemonPTYBridge extends EventEmitter {
       }
       // Still open = no settle and no recorded end since it began: a prompt
       // typed into the running turn, however long the turn has been quiet.
+      const joined = this.turnOpen;
       this.turnSoftClosed = false;
       this.openTurn();
-      this.bootEpisode = false;
+      if (joined) this.bootEpisode = false;
     }
     this.lastTurnStartedAt = Date.now();
     this.preTurn = false;

@@ -136,6 +136,18 @@ describe('DaemonPTYBridge — #1670 first turn starts at the submit', () => {
     expect(await stop('codex')).toBe('sent');
   });
 
+  it('a trust dialog the detector does not see, answered with Enter: same', async () => {
+    feed(CODEX_MODES + BANNER + BIG); // boot burst
+    vi.advanceTimersByTime(1000);
+    bridge.noteInput('\r'); // "Trust this folder?" -> Trust and continue: no turn starts
+    const trusted = turn();
+    vi.advanceTimersByTime(100);
+    feed(BIG); // the composer paints
+    await escThenFirstPrompt();
+    expect(turn().id).not.toBe(trusted.id);
+    expect(await stop('codex')).toBe('sent');
+  });
+
   it('a first turn started from the command line keeps its id and its Esc through a queued prompt', async () => {
     const working = (frame: string) => feed(`\x1b]0;${frame} Working\x07` + BIG);
     // `codex "task"` with no hooks: the boot burst is the first turn, and it runs.
@@ -159,9 +171,13 @@ describe('DaemonPTYBridge — #1670 first turn starts at the submit', () => {
     vi.advanceTimersByTime(1000);
     bridge.noteInput('first\r');
     vi.advanceTimersByTime(100);
-    feed(BIG);
+    feed('\x1b]0;⠋ Working\x07' + BIG); // Codex's running spinner title
     const first = turn();
     bridge.noteInput('also this\r');
+    expect(turn().id).toBe(first.id);
+    // Once joined, the turn is confirmed: a later quiet stretch does not split it.
+    vi.advanceTimersByTime(10_000);
+    bridge.noteInput('and this\r');
     expect(turn().id).toBe(first.id);
   });
 });
