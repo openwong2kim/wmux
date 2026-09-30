@@ -6,7 +6,8 @@ import path from 'node:path';
 // Both are keyed on something the desktop never has (the clipboard bridge's
 // `nativePaste`, the `fixedGeometry` option), which is what keeps the desktop
 // unchanged; these pin that keying.
-const src = fs.readFileSync(path.join(__dirname, '..', 'useTerminal.ts'), 'utf-8');
+// Checked out with CRLF on Windows runners: compare with LF.
+const src = fs.readFileSync(path.join(__dirname, '..', 'useTerminal.ts'), 'utf-8').replace(/\r\n/g, '\n');
 
 describe('browser build: paste through the browser', () => {
   it('each clipboard-reading paste chord steps aside when the bridge pastes natively', () => {
