@@ -2750,8 +2750,11 @@ whose app page was not built serves the classic page at `/`.
   page lands on `/` again (and an old browser falls straight back).
 - Terminals are the desktop's own `Terminal` component over the web routes:
   - A pane's stream (`GET /api/stream`, with a stream ticket for a device
-    credential, `?token=` for the operator token) is open only while the pane is
-    shown and its terminal reports itself visible; it closes on hide.
+    credential — `<deviceId>.<secret>` — and `?token=` for the operator token,
+    which never asks for a ticket) is open only while the pane is shown and its
+    terminal reports itself visible; it closes on hide.
+  - Inline images (sixel / iTerm2) are off in the browser: the image decoder
+    needs WebAssembly, which the page's CSP does not allow.
   - At most **4** panes stream at once (the daemon allows 8 streams per
     principal, the browser 6 HTTP/1.1 connections per origin). A shown pane
     beyond that shows a placeholder with "Show live", which takes the slot of
