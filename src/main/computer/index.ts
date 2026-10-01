@@ -2,7 +2,6 @@
 // helper this OS runs and where the build put it.
 
 import { app, globalShortcut, ipcMain } from 'electron';
-import * as path from 'path';
 import { platformChoice } from '../../shared/platform';
 import { IPC } from '../../shared/constants';
 import { readComputerUseEnabled, type ComputerUseSettingsPayload } from '../../shared/computer/config';
@@ -10,13 +9,7 @@ import { helperStatus, writeComputerUseEnabled } from './settings';
 import { ComputerService, type ConsentRequester, type HelperLike } from './ComputerService';
 import { HelperProcess } from './HelperProcess';
 import { StopKey } from './stopKey';
-
-interface HelperSpec {
-  /** Directory under resources/ (packaged) or native/ (dev build output). */
-  dir: string;
-  /** Executable path relative to `dir`. */
-  exe: string;
-}
+import { resolveHelperPathFor, type HelperSpec } from './helperPath';
 
 // The macOS helper is a separately signed .app so TCC grants attach to it and
 // survive wmux updates; main execs its binary directly so the helper, not
@@ -28,18 +21,18 @@ const HELPER_SPEC = platformChoice<HelperSpec | null>({
 });
 
 /**
- * Packaged builds ship the helper as an extraResource; dev builds look in the
- * helper project's publish output. Overridable with WMUX_COMPUTER_HELPER for
- * testing a locally built helper.
+ * Packaged builds run only the helper they ship (an extraResource); dev builds
+ * look in the helper project's publish output and may point
+ * WMUX_COMPUTER_HELPER at a locally built helper (helperPath.ts).
  */
 export function resolveHelperPath(): string | null {
-  const override = process.env.WMUX_COMPUTER_HELPER;
-  if (override) return override;
-  if (!HELPER_SPEC) return null;
-  const base = app.isPackaged
-    ? path.join(process.resourcesPath, HELPER_SPEC.dir)
-    : path.join(app.getAppPath(), 'native', HELPER_SPEC.dir, 'dist');
-  return path.join(base, HELPER_SPEC.exe);
+  return resolveHelperPathFor({
+    spec: HELPER_SPEC,
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    appPath: app.getAppPath(),
+    env: process.env,
+  });
 }
 
 /**

@@ -278,6 +278,11 @@ by localized message text.
 - **The helper must be Authenticode-signed with the installer's identity.**
   Unsigned input-injecting AOT exes are a known Defender ML false-positive
   profile. No packers, no PowerShell.
+- **Packaged builds spawn only the bundled helper.** The `WMUX_COMPUTER_HELPER`
+  override (an absolute path to a locally built helper) works only in dev
+  builds, so an environment variable cannot swap the input-injecting process
+  in an installed wmux. Main does not verify the helper's signature before
+  spawning it yet; that publisher check belongs to the helper PR.
 
 ## Performance targets (spike acceptance)
 
