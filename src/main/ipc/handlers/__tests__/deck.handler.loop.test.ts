@@ -1049,6 +1049,8 @@ describe("regression — yesterday's frozen fork now composes a resolve-first tu
     expect(sys).toContain('the [policy]');
     // The exact qualifier that reclassifies yesterday's fork as self-resolvable.
     expect(sys).toContain('A choice that a standing rule already answers is NOT a genuine choice');
+    // #1680 — the terminal brain gets the same new-task rule as the SDK brain.
+    expect(sys).toContain('NEW TASK = FRESH START');
   });
 
   it('a danger turn on the frozen fork carries authority + the binding worktree rule + the decision', async () => {

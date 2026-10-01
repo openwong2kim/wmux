@@ -323,6 +323,18 @@ describe('ClaudeSdkAdapter', () => {
     expect((await canUseTool('mcp__wmux__pane_close', { paneId: 'p1' })).behavior).toBe('deny');
   });
 
+  // #1680 — the brain marks task boundaries itself; wmux decides whether that
+  // pane's role clears the conversation.
+  it('tells the brain to mark a new task with new_task, and never a follow-up', () => {
+    const prompt = buildCommanderSystemPrompt();
+    expect(prompt).toContain('NEW TASK = FRESH START');
+    expect(prompt).toContain('new_task: true');
+    expect(prompt).toContain('leave new_task off');
+    expect(prompt).toContain('Never type `/clear` or `/new` into a pane yourself');
+    expect(prompt).toContain('the task was NOT sent');
+    expect(prompt).toContain('a rework request on the stage it just did is not');
+  });
+
   it('grounds real-pane agent launches in the system prompt (no theater)', () => {
     const prompt = buildCommanderSystemPrompt();
     expect(prompt).toContain('LAUNCHING AN AGENT');
