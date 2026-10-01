@@ -40,6 +40,24 @@ describe('HookSignalRouter', () => {
     expect(router.promptSubmitAtFor('p1')).toBeUndefined();
   });
 
+  it('records session-start receipts on main time, exact pane only (#1680)', () => {
+    const signal = makeSignal({ kind: 'agent.session_start', ptyId: 'p1', payload: { source: 'clear' } });
+    // Another pane, an unrouted signal and another kind are not evidence.
+    router.noteSessionStart('p2', signal, 1100);
+    expect(router.sessionStartFor('p2')).toBeUndefined();
+    router.noteSessionStart('p1', { ...signal, ptyId: undefined }, 1100);
+    expect(router.sessionStartFor('p1')).toBeUndefined();
+    router.noteSessionStart('p1', { ...signal, kind: 'agent.user_prompt_submit' }, 1100);
+    expect(router.sessionStartFor('p1')).toBeUndefined();
+    router.noteSessionStart('p1', signal, 1100);
+    expect(router.sessionStartFor('p1')).toEqual({ at: 1100, agent: 'claude', source: 'clear' });
+    // A later one replaces it; a missing source is recorded without one.
+    router.noteSessionStart('p1', { ...signal, agent: 'codex', payload: {} }, 1300);
+    expect(router.sessionStartFor('p1')).toEqual({ at: 1300, agent: 'codex' });
+    router.dropPty('p1');
+    expect(router.sessionStartFor('p1')).toBeUndefined();
+  });
+
   describe('dedup matrix', () => {
     it('hook-then-detector (same kind, within window): detector deduped', () => {
       const ptyId = 'p1';

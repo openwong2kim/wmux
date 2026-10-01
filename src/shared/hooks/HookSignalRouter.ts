@@ -89,6 +89,16 @@ interface LedgerEntry {
  */
 export type RouteDecision = 'emit' | 'dedup';
 
+/** A session-start hook as main received it (see noteSessionStart). */
+export interface SessionStartReceipt {
+  /** Epoch ms on main's clock. */
+  at: number;
+  /** The agent slug the bridge reported. */
+  agent: string;
+  /** SessionStart `source` (`startup`, `resume`, `clear`, …), when sent. */
+  source?: string;
+}
+
 /**
  * Has the pane's hook bridge taken over its lifecycle yet?
  *
@@ -166,6 +176,8 @@ export class HookSignalRouter {
   /** Submit receipts retain evidence separately from the running-state latch:
    * the daemon-unreachable hook path must not claim lifecycle ownership. */
   private readonly promptSubmitAt = new Map<string, number>();
+  /** ptyId → the latest session-start hook (fresh-context evidence, #1680). */
+  private readonly sessionStart = new Map<string, SessionStartReceipt>();
   /** ptyId → the pending expiry for that pane's open turn latch. See
    *  `setTurnExpiryListener`. */
   private readonly turnExpiryTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -286,6 +298,33 @@ export class HookSignalRouter {
   /** Latest observed prompt-submit hook, for input delivery receipts only. */
   promptSubmitAtFor(ptyId: string): number | undefined {
     return this.promptSubmitAt.get(ptyId);
+  }
+
+  /**
+   * The session-start twin of {@link notePromptSubmit}: evidence that a
+   * fresh-context command (`/clear`, `/new`) finished (#1680). Stamped with
+   * main's clock and recorded for every source; the reader decides which
+   * sources count (isFreshSessionSource).
+   *
+   * Exact ptyId only, no cwd or unique-pane fallback: Codex 0.157+ can run
+   * hooks from a shared server whose environment names another pane (#1523),
+   * so a receipt that merely resolves to this pane is not evidence about it.
+   */
+  noteSessionStart(ptyId: string, signal: AgentSignal, receivedAt = Date.now()): void {
+    if (signal.kind !== 'agent.session_start') return;
+    if (!ptyId || signal.ptyId !== ptyId) return;
+    const source = signal.payload?.['source'];
+    this.sessionStart.set(ptyId, {
+      at: receivedAt,
+      agent: signal.agent,
+      ...(typeof source === 'string' ? { source } : {}),
+    });
+  }
+
+  /** Latest observed session-start hook for this pane, for fresh-context
+   *  evidence only. */
+  sessionStartFor(ptyId: string): SessionStartReceipt | undefined {
+    return this.sessionStart.get(ptyId);
   }
 
   /** Read side of the turn latch's owner — testing aid, not a contract. */
@@ -619,6 +658,7 @@ export class HookSignalRouter {
     this.authority.clear();
     for (const ptyId of [...this.turnExpiryTimers.keys()]) this.clearTurnExpiry(ptyId);
     this.turnStart.clear();
+    this.sessionStart.clear();
   }
 
   /**
@@ -640,6 +680,7 @@ export class HookSignalRouter {
     // detector-backstop behavior immediately if the id is ever reused.
     this.authority.delete(ptyId);
     this.promptSubmitAt.delete(ptyId);
+    this.sessionStart.delete(ptyId);
     // Same rule for the turn-start latch: a reused id must not inherit the
     // dead pane's "the hook owns my running dot" claim, which would leave the
     // new pane's heuristic muted with no bridge to replace it.

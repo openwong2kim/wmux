@@ -72,6 +72,7 @@ function stubHookRouter(): StubRouter {
     touchAuthority: vi.fn(),
     noteHookTurnStart: vi.fn(),
     notePromptSubmit: vi.fn(),
+    noteSessionStart: vi.fn(),
     isGovernedFor: vi.fn().mockReturnValue(false),
     governsDetectorStatus: vi.fn().mockReturnValue(false),
     getLatencyMeter: () => ({
@@ -734,6 +735,22 @@ describe('hooks.signal — agent.user_prompt_submit turns the pane running', () 
     expect(stub.router.noteHookTurnStart).not.toHaveBeenCalled();
     expect(stub.router.notePromptSubmit).toHaveBeenCalledWith('pty-1',
       expect.objectContaining({ kind: 'agent.user_prompt_submit' }), expect.any(Number), true);
+  });
+
+  it('records a session start as fresh-context evidence (#1680)', async () => {
+    const stub = stubHookRouter();
+    const router = new RpcRouter();
+    registerHooksRpc(router, () => fakeWindow(), stub.router);
+
+    await router.dispatch({
+      id: 'ss-1',
+      method: 'hooks.signal',
+      params: signal({ kind: 'agent.session_start', payload: { source: 'clear' } }) as unknown as Record<string, unknown>,
+    });
+
+    expect(stub.router.noteSessionStart).toHaveBeenCalledWith('pty-1',
+      expect.objectContaining({ kind: 'agent.session_start' }), expect.any(Number));
+    expect(stub.router.notePromptSubmit).not.toHaveBeenCalled();
   });
 
   it('does not tag the broadcast with a hookKind, so the renderer latch stays shut', async () => {
