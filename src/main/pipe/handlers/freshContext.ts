@@ -236,15 +236,30 @@ function showsCodexBanner(screen: string): boolean {
 
 /**
  * Does a Codex screen show a conversation with nothing in it yet: its banner,
- * and above the input line no transcript row? Codex draws a submitted prompt
- * as `› …` and the agent's items as `• …` (0.157.1 capture). A heuristic, used
- * only to allow the unchanged-screen fallback, never to skip the clear.
+ * and no submitted user prompt above the input line?
+ *
+ * Codex draws a submitted prompt as a `› text` row and the agent's items as
+ * `• …` rows (0.157.1 capture, src/daemon/approvals/__tests__/fixtures/
+ * terminal-prompts/codex-approval-exec-01.json). Only the `›` row decides:
+ * every conversation starts with a user prompt, while `•` rows are not proof
+ * of one — a freshly launched Codex may show tips or notices in that style.
+ * The fresh-launch shape is NOT verified against a real capture (none exists in
+ * the repo, and one cannot be taken without real credentials), so the rule is
+ * the one that cannot make a just-launched pane read as a conversation: if it
+ * did, the unchanged screen after `/new` would never count and the first task
+ * to that pane would time out unsent, every time. The residual is the other
+ * side: an answer long enough to push its prompt out of the read window reads
+ * as empty, and the unchanged screen counts after the still hold.
+ *
+ * The cursor row is the input line itself, so it is not looked at; an empty
+ * `›` row (no text) is a composer, not a prompt. A heuristic, used only to
+ * allow the unchanged-screen fallback, never to skip the clear.
  */
 export function codexConversationLooksEmpty(screen: string): boolean {
   if (!showsCodexBanner(screen)) return false;
   return !screenLines(screen)
     .slice(0, -1)
-    .some((line) => /^\s*[›•]/.test(line));
+    .some((line) => /^\s*›\s*\S/.test(line));
 }
 
 const skip = (

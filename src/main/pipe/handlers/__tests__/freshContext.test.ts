@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import {
   codexConversationLooksEmpty,
   commandOnCursorRow,
@@ -21,7 +23,7 @@ const CLAUDE_IDLE = [
   '> ',
 ].join('\n');
 const CLAUDE_CLEARED = ['────────────────────────────', '> Try "fix the build"'].join('\n');
-const CODEX_IDLE = ['│ >_ OpenAI Codex (v0.158.0) │', '', '• did the previous task', '', '› '].join('\n');
+const CODEX_IDLE = ['│ >_ OpenAI Codex (v0.158.0) │', '', '› the previous task', '', '• did the previous task', '', '› '].join('\n');
 const CODEX_EMPTY = ['╭──────────────────────────────╮', '│ >_ OpenAI Codex (v0.158.0) │', '╰──────────────────────────────╯', '', '  To get started, describe a task', '', '› '].join('\n');
 const CODEX_NEW = ['│ >_ OpenAI Codex (v0.158.0) │', '', '› Ask Codex to do anything'].join('\n');
 
@@ -367,11 +369,55 @@ describe('runFreshContext — evidence after Enter', () => {
     });
   });
 
-  it('codexConversationLooksEmpty reads the banner and the transcript markers', () => {
+  // Review D1: only a submitted `›` prompt row makes a conversation; `•` rows
+  // (tips or notices a fresh launch may draw) do not.
+  it('codexConversationLooksEmpty decides on a user-prompt row above the input line', () => {
     expect(codexConversationLooksEmpty(CODEX_EMPTY)).toBe(true);
     expect(codexConversationLooksEmpty(CODEX_IDLE)).toBe(false);
-    expect(codexConversationLooksEmpty(['› earlier prompt', '', '› '].join('\n'))).toBe(false);
+    // A just-launched screen with `•` tip and notice rows is still empty.
+    const freshWithTips = [
+      '╭──────────────────────────────╮',
+      '│ >_ OpenAI Codex (v0.158.0) │',
+      '╰──────────────────────────────╯',
+      '',
+      '• Tip: use /init to create an AGENTS.md',
+      '• Notice: a new version is available',
+      '',
+      '─'.repeat(40),
+      '› ',
+    ].join('\n');
+    expect(codexConversationLooksEmpty(freshWithTips)).toBe(true);
+    // The input line itself, and an empty `›` composer row, are not prompts.
+    expect(codexConversationLooksEmpty([CODEX_EMPTY, '› typed but not sent'].join('\n'))).toBe(true);
+    expect(codexConversationLooksEmpty(['│ >_ OpenAI Codex (v0.158.0) │', '› ', '› '].join('\n'))).toBe(true);
+    // A long answer whose prompt is still inside the read window.
+    const longAnswer = [
+      '│ >_ OpenAI Codex (v0.158.0) │',
+      '› explain the parser',
+      ...Array.from({ length: 150 }, (_, i) => `• line ${i}`),
+      '› ',
+    ].join('\n');
+    expect(codexConversationLooksEmpty(longAnswer)).toBe(false);
     expect(codexConversationLooksEmpty('› ')).toBe(false);
+  });
+
+  it('the real Codex 0.157.1 after-turn capture reads as a conversation', () => {
+    const capture = JSON.parse(
+      readFileSync(
+        path.join(__dirname, '../../../../daemon/approvals/__tests__/fixtures/terminal-prompts/codex-approval-exec-01.json'),
+        'utf8',
+      ),
+    ) as { screen: string[] };
+    expect(codexConversationLooksEmpty(capture.screen.join('\n'))).toBe(false);
+  });
+
+  it('a fresh-launch screen with tip rows lets an unchanged screen count after the hold', async () => {
+    const fresh = [CODEX_EMPTY.replace('  To get started, describe a task', '• Tip: try /init'), ''].join('');
+    const pane = scriptedPane({ agent: 'Codex CLI', screen: fresh, cleared: fresh, sessionStartSource: null });
+    expect(await runFreshContext(CODEX, pane.probe, pane.opts)).toMatchObject({
+      freshContext: 'applied',
+      freshContextReason: expect.stringMatching(/screen_unchanged/),
+    });
   });
 
   it('a changed screen is taken as soon as it settles', async () => {
