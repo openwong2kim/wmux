@@ -40,7 +40,8 @@ export function makeLogger(agent) {
   return (event, fields = {}) => {
     if (!path) return;
     try {
-      appendFileSync(path, `${JSON.stringify({ t: Date.now(), agent, pid: process.pid, event, ...fields })}\n`);
+      // The logger's own keys go last, so a field can never overwrite them.
+      appendFileSync(path, `${JSON.stringify({ ...fields, t: Date.now(), agent, pid: process.pid, event })}\n`);
     } catch {
       // A log that cannot be written must not take the fake down.
     }

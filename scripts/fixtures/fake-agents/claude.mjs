@@ -96,10 +96,10 @@ function fireHook(event, conversation, extra = {}) {
       env: { ...process.env, CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT, CLAUDE_CODE_ENTRYPOINT: 'cli' },
     });
     const timer = setTimeout(() => child.kill(), 10_000);
-    child.on('error', (err) => log('hook_error', { event, error: String(err) }));
+    child.on('error', (err) => log('hook_error', { hookEvent: event, error: String(err) }));
     child.on('exit', (code) => {
       clearTimeout(timer);
-      log('hook', { event, source: extra.source, code, ms: Date.now() - started });
+      log('hook', { hookEvent: event, source: extra.source, code, ms: Date.now() - started });
     });
     child.stdin.end(JSON.stringify(payload));
   }
