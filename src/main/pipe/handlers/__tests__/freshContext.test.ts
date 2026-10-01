@@ -139,6 +139,19 @@ describe('commandOnCursorRow', () => {
     expect(commandOnCursorRow('x\n> /clear trailing', '/clear')).toBe('with_draft');
     expect(commandOnCursorRow('> /clear\n> ', '/clear')).toBe('absent');
   });
+
+  // Composer rows as real captures draw them (src/daemon/approvals/__tests__/
+  // fixtures/terminal-prompts: Claude Code 2.1.283 `❯ make the button blue`
+  // between rules, Codex 0.157.1 `› CMD one`), with the command typed instead.
+  it('reads the real composer row shapes', () => {
+    const rule = '─'.repeat(100);
+    const claude = ['  ◐ medium · /effort', rule, '❯ /clear'].join('\n');
+    expect(commandOnCursorRow(claude, '/clear')).toBe('alone');
+    expect(commandOnCursorRow([rule, '❯ make the button blue/clear'].join('\n'), '/clear')).toBe('with_draft');
+    expect(commandOnCursorRow([rule, '❯'].join('\n'), '/clear')).toBe('absent');
+    expect(commandOnCursorRow(['• Running touch out.txt', '', '› /new'].join('\n'), '/new')).toBe('alone');
+    expect(commandOnCursorRow(['› CMD one/new'].join('\n'), '/new')).toBe('with_draft');
+  });
 });
 
 describe('runFreshContext — not_bound / skipped before anything is typed', () => {

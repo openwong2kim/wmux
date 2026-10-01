@@ -6,6 +6,7 @@ import { COMMANDER_TOOL_SURFACE, COMMANDER_ONLY_TOOLS } from '../shared/commande
 import { CORE_TOOL_SURFACE } from '../shared/coreSurface';
 import type { RpcMethod } from '../shared/rpc';
 import { EXECUTE_SEND_CLIENT_TIMEOUT_MS } from '../shared/executeApprovalBounds';
+import { NEW_TASK_SEND_CLIENT_TIMEOUT_MS, TERMINAL_SEND_NEW_TASK_TIMEOUT_MS } from '../shared/freshContext';
 import {
   claimPinnedRoute,
   clearPinnedRoute,
@@ -133,6 +134,7 @@ const TERMINAL_SEND_SHAPE = {
   text: z.string().describe('Text to send to the terminal'),
   ptyId: z.string().optional().describe('Target a specific terminal by PTY ID (surface_list()). Omit for the active terminal.'),
   submit: z.boolean().optional().describe('Append a carriage return (\\r) after the text so it is committed — the same as pressing Enter. Use it for shell commands and TUI chat prompts. Default false.'),
+  new_task: z.boolean().optional().describe('Set true (with submit) when the text hands this pane a NEW, unrelated task — never for a follow-up, an answer or a correction. If the pane\'s role asks for fresh context, wmux first types the agent\'s fresh-context command (/clear, /new) so the previous task\'s conversation does not carry over; read `freshContext` in the reply. If that command never finishes, the call fails and the text is NOT sent.'),
 };
 
 const TERMINAL_SEND_KEY_SHAPE = {
@@ -1217,7 +1219,7 @@ server.tool(
   'terminal_send',
   'Send text to a terminal. By default it is written with no Enter (multi-line text to an agent as one paste), so a shell command or TUI chat prompt sits on the input line uncommitted — pass `submit: true` to commit it. `ok` means the bytes were WRITTEN, never that anything was submitted: with `submit`, read `accepted` — true only when the pane was observed to move (its turn started, or the input line cleared). `accepted:false` (with `agentStatusAfter` and the pane\'s last screen lines) means the prompt is probably still sitting uncommitted; do not report progress on it. Omit ptyId for the active terminal. To message OTHER workspaces use send_message or a2a_broadcast instead.',
   TERMINAL_SEND_SHAPE,
-  async ({ text, ptyId, submit }) => {
+  async ({ text, ptyId, submit, new_task }) => {
     const route = await resolveTerminalRouteBound(ptyId);
     const base: Record<string, unknown> = { text, workspaceId: route.workspaceId };
     if (route.ptyId) base.ptyId = route.ptyId;
@@ -1232,6 +1234,11 @@ server.tool(
     if (senderPtyId) base.senderPtyId = senderPtyId;
     if (submit) base.submit = true;
     addCallerPtyId(base);
+    // A new task may first wait out the pane's fresh-context step (#1680).
+    if (new_task) {
+      base.newTask = true;
+      return callRpc('input.send', base, TERMINAL_SEND_NEW_TASK_TIMEOUT_MS);
+    }
     return callRpc('input.send', base);
   },
 );
@@ -1638,9 +1645,13 @@ const sendMessageHandler = async ({ to, pane_id, surface_id, title, task_id, mes
   }
   // A new execute send waits on a person (#1462): outwait main, so the agent
   // reads the verdict instead of timing out and retrying into a second prompt.
+  // A new task's delivery may first wait out the target pane's fresh-context
+  // step (#1680): outwait main's budget for it. A reply keeps the default.
   return execute && !task_id
     ? callRpc('a2a.task.send', params, EXECUTE_SEND_CLIENT_TIMEOUT_MS)
-    : callRpc('a2a.task.send', params);
+    : !task_id
+      ? callRpc('a2a.task.send', params, NEW_TASK_SEND_CLIENT_TIMEOUT_MS)
+      : callRpc('a2a.task.send', params);
 };
 
 server.tool(

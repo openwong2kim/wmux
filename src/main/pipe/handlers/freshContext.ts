@@ -263,6 +263,11 @@ export async function runFreshContext(
     return erase('command_not_seen: the typed command never showed on the cursor row; it was erased',
       'skipped_unobservable');
   }
+  // Ordering note: the command went out on the session's data pipe and this
+  // read goes over the daemon's control pipe, so the transport does not order
+  // them. The echo wait above does: the renderer shows the command only after
+  // the daemon took the write (and counted it). If live use ever reports
+  // `input_interleaved` with nobody typing, look here first.
   const typed = await probe.readAgentState();
   if (!typed || typed.incarnationId !== state.incarnationId) {
     return erase('session_changed: the pane changed while the command was typed');
