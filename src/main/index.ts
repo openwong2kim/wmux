@@ -891,7 +891,7 @@ registerMetaRpc(rpcRouter, () => mainWindow);
 registerSystemRpc(rpcRouter);
 registerPerfRpc(rpcRouter);
 // Desktop computer use. Built on first call, so an install that never opts in
-// (computerUse.enabled) never constructs it or spawns a helper. Consent rides
+// (Settings › Computer use) never constructs it or spawns a helper. Consent rides
 // the approval queue, which is created further down — hence the late binding.
 let computerService: ComputerService | null = null;
 let computerConsentQueue: ApprovalQueue | null = null;

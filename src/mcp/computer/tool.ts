@@ -1,8 +1,8 @@
 // The `computer` MCP tool: one tool, an `action` enum, backed by main's
 // computer.* RPCs (src/main/pipe/handlers/computer.rpc.ts).
 //
-// Registered only when the user has opted in (computerUse.enabled in
-// ~/.wmux/config.json), and only in the `full` profile, so everyone else pays
+// Registered only when the user has opted in (Settings › Computer use, stored
+// in ~/.wmux/computer-use.json), and only in the `full` profile, so everyone else pays
 // nothing in their tools/list and the published surface baseline is unchanged.
 // Main re-checks the switch on every call.
 

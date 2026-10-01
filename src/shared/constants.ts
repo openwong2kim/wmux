@@ -524,8 +524,8 @@ export const IPC = {
   AUTOSTART_GET: 'autostart:get',
   AUTOSTART_SET: 'autostart:set',
   // Desktop computer use (Settings › Computer use). GET returns
-  // { enabled, helper, stopKey }; SET writes computerUse.enabled in
-  // ~/.wmux/config.json and returns the same shape. Turning it off also stops
+  // { enabled, helper, stopKey }; SET writes the switch to
+  // ~/.wmux/computer-use.json and returns the same shape. Turning it off also stops
   // anything in flight.
   COMPUTER_USE_GET: 'computer-use:get',
   COMPUTER_USE_SET: 'computer-use:set',

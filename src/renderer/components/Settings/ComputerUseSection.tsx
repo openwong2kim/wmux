@@ -21,7 +21,7 @@ export function formatStopKey(accelerator: string, mac: boolean): string {
 const isMac = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform);
 
 // ─── Computer use tab — whether agents may see and drive other desktop apps ───
-// The switch lives in ~/.wmux/config.json (main owns the write), because the
+// The switch lives in ~/.wmux/computer-use.json (main owns the write), because the
 // MCP server reads it too when it builds an agent's tool list. Read on mount,
 // flipped optimistically, reconciled with what main says is on disk.
 export function TabComputerUse() {

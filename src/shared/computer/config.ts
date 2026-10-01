@@ -1,4 +1,9 @@
-// Opt-in switch for computer use: `computerUse.enabled` in ~/.wmux/config.json.
+// Opt-in switch for computer use: `enabled` in ~/.wmux/computer-use.json.
+//
+// Its own file, owned by main, rather than a key in the daemon's config.json:
+// the daemon rewrites config.json from the copy it loaded at boot (LanLink
+// settings), which silently dropped the key or, worse, turned a switch the
+// user had just turned off back on.
 //
 // Read by two processes on purpose. The MCP server reads it when it builds its
 // tool list, so the `computer` tool does not exist for anyone who has not opted
@@ -15,7 +20,7 @@ import * as path from 'path';
 import { dataSuffix } from '../constants';
 
 export function computerUseConfigPath(): string {
-  return path.join(os.homedir(), `.wmux${dataSuffix()}`, 'config.json');
+  return path.join(os.homedir(), `.wmux${dataSuffix()}`, 'computer-use.json');
 }
 
 export function readComputerUseEnabled(configPath: string = computerUseConfigPath()): boolean {
@@ -34,9 +39,7 @@ export function readComputerUseEnabled(configPath: string = computerUseConfigPat
     return false;
   }
   if (!parsed || typeof parsed !== 'object') return false;
-  const section = (parsed as Record<string, unknown>).computerUse;
-  if (!section || typeof section !== 'object') return false;
-  return (section as Record<string, unknown>).enabled === true;
+  return (parsed as Record<string, unknown>).enabled === true;
 }
 
 /** What Settings › Computer use shows, over IPC. */

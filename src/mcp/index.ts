@@ -1853,7 +1853,7 @@ registerPaneLifecycleTools(
 // handlers even on a profile whose tools/list omits them.
 registerReplTools(server, MCP_CATALOG_OPTIONS, browserTools);
 
-// Desktop computer use: opt-in (computerUse.enabled in ~/.wmux/config.json),
+// Desktop computer use: opt-in (~/.wmux/computer-use.json, Settings › Computer use),
 // full profile only, and appended after every other full-profile tool so the
 // default surface the probe pins is byte-identical for everyone who has not
 // opted in. Read once per server; main re-checks the switch on every call.

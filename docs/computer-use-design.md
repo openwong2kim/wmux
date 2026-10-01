@@ -179,10 +179,12 @@ by localized message text.
 
 ## Safety
 
-- **Off by default.** Turned on with `"computerUse": { "enabled": true }` in
-  `~/.wmux/config.json`. The MCP server reads it when it builds its tool list,
-  so `computer` is absent for everyone else. Main re-reads it on every call.
-  **Settings › Computer use** writes the same key. Its switch description says
+- **Off by default.** Turned on with `{ "enabled": true }` in
+  `~/.wmux/computer-use.json`, a file only main writes. It is not a key in the
+  daemon's `config.json`, because the daemon rewrites that file from the copy
+  it loaded at boot and would drop or resurrect the switch. The MCP server
+  reads it when it builds its tool list, so `computer` is absent for everyone
+  else. Main re-reads it on every call. **Settings › Computer use** writes it. Its switch description says
   that screenshots and window text go to the agent's model provider. The tab
   also shows the helper status and the stop key. Turning the switch off also
   aborts whatever is in flight. Running agents see the tool appear or vanish

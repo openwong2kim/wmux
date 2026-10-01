@@ -359,7 +359,7 @@ const electronAPI = {
     set: (enabled: boolean) => ipcRenderer.invoke(IPC.AUTOSTART_SET, enabled) as Promise<{ enabled: boolean }>,
   },
   // Desktop computer use (Settings › Computer use). The switch lives in
-  // ~/.wmux/config.json so the MCP server can read it too; `helper` says
+  // ~/.wmux/computer-use.json so the MCP server can read it too; `helper` says
   // whether this build has the native helper for this OS.
   computerUse: {
     get: () => ipcRenderer.invoke(IPC.COMPUTER_USE_GET) as Promise<ComputerUseSettingsPayload>,

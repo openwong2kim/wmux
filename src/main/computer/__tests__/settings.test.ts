@@ -2,11 +2,12 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { describe, expect, it } from 'vitest';
-import { readComputerUseEnabled } from '../../../shared/computer/config';
+import { computerUseConfigPath, readComputerUseEnabled } from '../../../shared/computer/config';
+import { getConfigPath } from '../../../daemon/config';
 import { helperStatus, writeComputerUseEnabled } from '../settings';
 
 function tempConfig(content?: string): string {
-  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-cu-')), 'config.json');
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-cu-')), 'computer-use.json');
   if (content !== undefined) fs.writeFileSync(file, content);
   return file;
 }
@@ -15,29 +16,42 @@ describe('computer use settings', () => {
   it('reads anything but a literal true as off', () => {
     expect(readComputerUseEnabled(tempConfig())).toBe(false);
     expect(readComputerUseEnabled(tempConfig('{ nope'))).toBe(false);
-    expect(readComputerUseEnabled(tempConfig('{"computerUse":{"enabled":"true"}}'))).toBe(false);
-    expect(readComputerUseEnabled(tempConfig('{"computerUse":{"enabled":true}}'))).toBe(true);
+    expect(readComputerUseEnabled(tempConfig('{"enabled":"true"}'))).toBe(false);
+    expect(readComputerUseEnabled(tempConfig('{"enabled":true}'))).toBe(true);
   });
 
-  it('writes the switch and keeps every other key in the file', () => {
-    const file = tempConfig(JSON.stringify({ version: 1, daemon: { pipeName: 'p' }, mcp: { firstPartyClients: ['x'] } }));
+  it('writes the switch atomically and keeps other keys', () => {
+    const file = tempConfig(JSON.stringify({ enabled: false, note: 'kept' }));
     expect(writeComputerUseEnabled(true, file)).toBe(true);
-    const after = JSON.parse(fs.readFileSync(file, 'utf8'));
-    expect(after).toEqual({
-      version: 1,
-      daemon: { pipeName: 'p' },
-      mcp: { firstPartyClients: ['x'] },
-      computerUse: { enabled: true },
-    });
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toEqual({ enabled: true, note: 'kept' });
     expect(writeComputerUseEnabled(false, file)).toBe(false);
     expect(fs.existsSync(`${file}.tmp`)).toBe(false);
   });
 
-  it('refuses to write a file the daemon would reset', () => {
-    expect(() => writeComputerUseEnabled(true, tempConfig())).toThrow(/missing or not valid JSON/);
+  it('creates a missing file and replaces an unreadable one', () => {
+    const missing = tempConfig();
+    expect(writeComputerUseEnabled(true, missing)).toBe(true);
     const broken = tempConfig('{ nope');
-    expect(() => writeComputerUseEnabled(true, broken)).toThrow();
-    expect(fs.readFileSync(broken, 'utf8')).toBe('{ nope');
+    expect(writeComputerUseEnabled(true, broken)).toBe(true);
+    expect(JSON.parse(fs.readFileSync(broken, 'utf8'))).toEqual({ enabled: true });
+  });
+
+  it('lives beside the daemon config, never in it, under any data suffix', () => {
+    // The daemon rewrites config.json from the copy it loaded at boot, so the
+    // switch must not share that file — and main and the MCP server must both
+    // resolve the same suffixed directory.
+    const prev = process.env.WMUX_DATA_SUFFIX;
+    try {
+      for (const suffix of ['', '-cu']) {
+        process.env.WMUX_DATA_SUFFIX = suffix;
+        expect(computerUseConfigPath()).toBe(path.join(os.homedir(), `.wmux${suffix}`, 'computer-use.json'));
+        expect(computerUseConfigPath()).not.toBe(getConfigPath());
+        expect(path.dirname(computerUseConfigPath())).toBe(path.dirname(getConfigPath()));
+      }
+    } finally {
+      if (prev === undefined) delete process.env.WMUX_DATA_SUFFIX;
+      else process.env.WMUX_DATA_SUFFIX = prev;
+    }
   });
 
   it('reports the helper as ready, missing, or unsupported', () => {

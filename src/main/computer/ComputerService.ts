@@ -3,7 +3,7 @@
 // reach it at all.
 //
 // Order of checks for anything that touches an app:
-//   1. opt-in switch (computerUse.enabled) — read per call, not cached
+//   1. opt-in switch (~/.wmux/computer-use.json) — read per call, not cached
 //   2. blocklist, on the helper-resolved app identity (exe path / bundle id)
 //   3. per (agent, app) consent from the person, remembered for this run
 // and, for input, additionally:
@@ -117,7 +117,7 @@ export class ComputerService {
 
   private ensureReady(): HelperLike {
     if (!this.deps.isEnabled()) {
-      fail('helper_unavailable', 'computer use is turned off. The user enables it with computerUse.enabled in ~/.wmux/config.json');
+      fail('helper_unavailable', 'computer use is turned off. The user turns it on in Settings › Computer use');
     }
     if (!this.deps.createHelper) {
       fail('unsupported_platform', `computer use is not available on ${process.platform}`);

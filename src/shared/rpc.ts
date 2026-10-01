@@ -407,7 +407,7 @@ export type RpcMethod =
   // for `wmux doctor --performance`. Read-only, no terminal content.
   | 'perf.status'
   // Desktop computer use (docs/computer-use-design.md). Off unless the user
-  // sets computerUse.enabled; `act` is the only input-injecting method.
+  // turns it on in Settings › Computer use; `act` is the only input-injecting method.
   | 'computer.capabilities'
   | 'computer.listApps'
   | 'computer.listWindows'

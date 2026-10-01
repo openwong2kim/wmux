@@ -137,7 +137,7 @@ Validation limits live in `src/shared/types.ts` (PANE_METADATA_MAX_BYTES, PANE_M
 
 ### Computer use surface
 
-Desktop computer use ([design](../computer-use-design.md)). Off unless the user sets `computerUse.enabled` (Settings › Computer use). Every app an agent observes or drives also needs the person's per-app consent, and password managers, terminals and agent apps, wmux itself and OS credential prompts are always refused. Errors cross the wire as `[code] message` with a code from `src/shared/computer/errors.ts`.
+Desktop computer use ([design](../computer-use-design.md)). Off unless the user turns it on in Settings › Computer use (stored in `~/.wmux/computer-use.json`). Every app an agent observes or drives also needs the person's per-app consent, and password managers, terminals and agent apps, wmux itself and OS credential prompts are always refused. Errors cross the wire as `[code] message` with a code from `src/shared/computer/errors.ts`.
 
 | Method | Params | Tier | Notes |
 |---|---|---|---|
@@ -262,7 +262,7 @@ Two of the six have a direct workspace-level equivalent. The other four do not �
 
 | MCP tool | Count | Notes |
 |---|---|---|
-| `computer` | 1 | One tool with an `action` enum (`capabilities`, `listApps`, `listWindows`, `getAppState`, `click`, `setValue`, `type`, `pressKey`, `hotkey`, `scroll`) over the `computer.*` RPCs. Registered only in the `full` profile and only when `computerUse.enabled` is set, so the default tool surface is unchanged. Strict input: unknown options are rejected. |
+| `computer` | 1 | One tool with an `action` enum (`capabilities`, `listApps`, `listWindows`, `getAppState`, `click`, `setValue`, `type`, `pressKey`, `hotkey`, `scroll`) over the `computer.*` RPCs. Registered only in the `full` profile and only when computer use is turned on, so the default tool surface is unchanged. Strict input: unknown options are rejected. |
 
 ---
 
