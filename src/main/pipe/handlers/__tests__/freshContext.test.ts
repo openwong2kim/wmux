@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  codexConversationLooksEmpty,
   commandOnCursorRow,
   FreshContextBusy,
   FreshContextTimeout,
@@ -21,6 +22,7 @@ const CLAUDE_IDLE = [
 ].join('\n');
 const CLAUDE_CLEARED = ['────────────────────────────', '> Try "fix the build"'].join('\n');
 const CODEX_IDLE = ['│ >_ OpenAI Codex (v0.158.0) │', '', '• did the previous task', '', '› '].join('\n');
+const CODEX_EMPTY = ['╭──────────────────────────────╮', '│ >_ OpenAI Codex (v0.158.0) │', '╰──────────────────────────────╯', '', '  To get started, describe a task', '', '› '].join('\n');
 const CODEX_NEW = ['│ >_ OpenAI Codex (v0.158.0) │', '', '› Ask Codex to do anything'].join('\n');
 
 interface ScriptOptions {
@@ -262,8 +264,19 @@ describe('runFreshContext — the typed command', () => {
     expect(pane.writes).not.toContain('\r');
   });
 
-  it('erases the command and skips when other input arrived while it was typed', async () => {
+  // Review P3-4: erasing after a human keystroke would delete THEIR last
+  // characters and leave a fragment such as `/c` for the task to land on.
+  it('fails with nothing more written when someone typed alongside the command', async () => {
     const pane = scriptedPane({ extraTypingRevisions: 1 });
+    const err = await runFreshContext(CLAUDE, pane.probe, pane.opts).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FreshContextTimeout);
+    expect(err).toMatchObject({ code: 'input_interleaved' });
+    expect((err as Error).message).toMatch(/nothing further was written/);
+    expect(pane.writes).toEqual(['/clear']);
+  });
+
+  it('an older daemon cannot tell a key from a pointer, so it erases and skips as before', async () => {
+    const pane = scriptedPane({ extraTypingRevisions: 1, keyCounter: false });
     const out = await runFreshContext(CLAUDE, pane.probe, pane.opts);
     expect(out).toMatchObject({ freshContext: 'skipped_busy', freshContextReason: expect.stringMatching(/^input_interleaved/) });
     expect(pane.writes).toEqual(['/clear', '\x7f'.repeat(6)]);
@@ -324,16 +337,41 @@ describe('runFreshContext — evidence after Enter', () => {
 
   // Review P2-A: the banner is usually still on screen before `/new`, and an
   // emptied composer under the OLD transcript is not a new conversation.
-  it('a screen that still looks as before is taken only after a long still hold', async () => {
-    const pane = scriptedPane({ agent: 'Codex CLI', screen: CODEX_IDLE, cleared: CODEX_IDLE, sessionStartSource: null });
-    const started = pane.opts.now();
-    const out = await runFreshContext(CODEX, pane.probe, pane.opts);
-    expect(out).toMatchObject({
+  it('an unchanged Codex screen counts only when its conversation was already empty', async () => {
+    const empty = scriptedPane({ agent: 'Codex CLI', screen: CODEX_EMPTY, cleared: CODEX_EMPTY, sessionStartSource: null });
+    const started = empty.opts.now();
+    expect(await runFreshContext(CODEX, empty.probe, empty.opts)).toMatchObject({
       freshContext: 'applied',
       freshContextSignal: 'screen',
       freshContextReason: expect.stringMatching(/screen_unchanged/),
     });
-    expect(pane.opts.now() - started).toBeGreaterThanOrEqual(500 + 3_000);
+    expect(empty.opts.now() - started).toBeGreaterThanOrEqual(500 + 3_000);
+    // The old conversation still on screen: never taken, the step times out.
+    const stale = scriptedPane({ agent: 'Codex CLI', screen: CODEX_IDLE, cleared: CODEX_IDLE, sessionStartSource: null });
+    await expect(runFreshContext(CODEX, stale.probe, stale.opts)).rejects.toMatchObject({ code: 'timeout' });
+    expect(stale.writes).toEqual(['/new', '\r']);
+  });
+
+  // Review N1: hooks confirmed working means the SessionStart comes in the
+  // legitimate case; an unchanged screen is not taken in its place.
+  it('an unchanged screen never counts when the daemon confirms the hooks work', async () => {
+    const unchanged = scriptedPane({ cleared: CLAUDE_IDLE, sessionStartSource: null, hookReports: true });
+    await expect(runFreshContext(CLAUDE, unchanged.probe, unchanged.opts)).rejects.toMatchObject({ code: 'timeout' });
+    // ...while the hook, or a changed screen after the grace, still applies.
+    const hook = scriptedPane({ cleared: CLAUDE_IDLE, sessionStartSource: 'clear', hookReports: true });
+    expect((await runFreshContext(CLAUDE, hook.probe, hook.opts)).freshContextSignal).toBe('session_start');
+    // Claude without hooks: an unchanged screen still counts after the hold.
+    const noHooks = scriptedPane({ cleared: CLAUDE_IDLE, sessionStartSource: null });
+    expect(await runFreshContext(CLAUDE, noHooks.probe, noHooks.opts)).toMatchObject({
+      freshContextReason: expect.stringMatching(/screen_unchanged/),
+    });
+  });
+
+  it('codexConversationLooksEmpty reads the banner and the transcript markers', () => {
+    expect(codexConversationLooksEmpty(CODEX_EMPTY)).toBe(true);
+    expect(codexConversationLooksEmpty(CODEX_IDLE)).toBe(false);
+    expect(codexConversationLooksEmpty(['› earlier prompt', '', '› '].join('\n'))).toBe(false);
+    expect(codexConversationLooksEmpty('› ')).toBe(false);
   });
 
   it('a changed screen is taken as soon as it settles', async () => {

@@ -379,8 +379,9 @@ const DELIVERY_REFUSED_HINTS: Record<GatedSubmitRefusal['reason'], string> = {
     'find it with a2a_task_query.',
   fresh_context_timeout:
     "The target pane's role starts each task in a fresh conversation. wmux typed the agent's fresh-context " +
-    'command, but did not see it finish in time, so the message was NOT pasted. The task is stored; the ' +
-    'receiver can find it with a2a_task_query. Read the pane before sending again.',
+    'command but could not confirm it finished (it did not finish in time, or other input reached the pane), ' +
+    'so the message was NOT pasted, and the pane may hold the command or already be cleared. The task is ' +
+    'stored; the receiver can find it with a2a_task_query. Read the pane before sending again.',
   fresh_context_busy:
     'Another new task was still being delivered to the target pane, so nothing was written to it. The task is ' +
     'stored; the receiver can find it with a2a_task_query. Send again in a few seconds.',

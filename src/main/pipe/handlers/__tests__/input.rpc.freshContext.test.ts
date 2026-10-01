@@ -34,6 +34,7 @@ interface PaneOptions {
   lockWaitMs?: number;
   /** The daemon task read waits for this (holds a delivery inside the lock). */
   holdDaemonQuery?: Promise<void>;
+  humanTypesDuringCommand?: boolean;
 }
 
 const DIALOG = [' Bash command', '', '   touch probe.txt', '', ' Do you want to proceed?', ' ❯ 1. Yes', '   2. No'].join('\n');
@@ -64,6 +65,8 @@ function scriptedPane(opts: PaneOptions = {}) {
     writeToSession: (_id: string, data: string) => {
       writes.push(data);
       revision += 1;
+      // A human key lands while the command is typed.
+      if (opts.humanTypesDuringCommand && data === '/clear') revision += 1;
       if (data === '\r') {
         if (composer === '/clear') {
           if (!opts.clearNeverLands) {
@@ -161,6 +164,17 @@ describe('input.send newTask (#1680)', () => {
       .map(([, , params]) => (params as { tail_lines?: number; endAtCursor?: boolean }));
     expect(tails).toContainEqual(expect.objectContaining({ tail_lines: 200, endAtCursor: true }));
     expect(tails).toContainEqual(expect.objectContaining({ tail_lines: 20, endAtCursor: true }));
+  });
+
+  it('a human key landing while the command is typed fails the send with nothing more written', async () => {
+    const { router, writes } = scriptedPane({ binding: FRESH, hooks: true, humanTypesDuringCommand: true });
+    const res = await send(router, { text: 'build the parser', submit: true, newTask: true });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).toMatch(/nothing further was written/);
+      expect(res.error).toMatch(/NOT sent/);
+    }
+    expect(writes).toEqual(['/clear']);
   });
 
   it('a command that never finishes fails the send and writes nothing after its Enter', async () => {

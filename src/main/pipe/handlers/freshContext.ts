@@ -28,7 +28,9 @@
 //      a prompt glyph and the command: anything else is a draft someone left in
 //      the composer, so the command is erased again and the text delivered
 //      without a clear (`skipped_busy`). The daemon's key-input counter must
-//      have moved by exactly our one write, else someone typed alongside us.
+//      have moved by exactly our one write. If someone typed alongside us,
+//      the send fails with nothing more written: erasing would delete their
+//      characters, not ours.
 //   6. Enter. Then wait for the evidence (below). No evidence within
 //      FRESH_CONTEXT_TIMEOUT_MS: FreshContextTimeout, and the caller writes
 //      NOTHING else — the pane may still be clearing, and text typed now could
@@ -54,7 +56,9 @@
 //     gone), and Codex must show its banner (it redraws it for a new chat,
 //     #1610). A screen that looks exactly as before (an already-empty
 //     conversation) counts only after holding still for
-//     FRESH_CONTEXT_UNCHANGED_HOLD_MS (reason `screen_unchanged`).
+//     FRESH_CONTEXT_UNCHANGED_HOLD_MS (reason `screen_unchanged`), and never
+//     when the daemon confirms the agent's hooks work, nor on a Codex pane
+//     that showed a conversation before the command.
 //   - Claude's hooks report `/clear` as SessionStart(clear), so a pane whose
 //     CURRENT agent has reported hooks (main holds a receipt from it, and the
 //     daemon, when it can tell, says that agent's hooks reported) waits for
@@ -230,6 +234,19 @@ function showsCodexBanner(screen: string): boolean {
   return screenLines(screen).some((line) => drawsCodexBanner(line));
 }
 
+/**
+ * Does a Codex screen show a conversation with nothing in it yet: its banner,
+ * and above the input line no transcript row? Codex draws a submitted prompt
+ * as `› …` and the agent's items as `• …` (0.157.1 capture). A heuristic, used
+ * only to allow the unchanged-screen fallback, never to skip the clear.
+ */
+export function codexConversationLooksEmpty(screen: string): boolean {
+  if (!showsCodexBanner(screen)) return false;
+  return !screenLines(screen)
+    .slice(0, -1)
+    .some((line) => /^\s*[›•]/.test(line));
+}
+
 const skip = (
   freshContext: FreshContextReply['freshContext'],
   reason: string,
@@ -319,6 +336,13 @@ export async function runFreshContext(
   // daemon's flag, when present, says the current agent's hooks reported.
   const prior = probe.readSessionStart();
   const preferHook = grammar.evidence === 'session_start' && prior?.agent === agent && state.hookReports !== false;
+  // May a screen that looks exactly as before count, after a long still hold?
+  // Not when the daemon confirms the current agent's hooks work: then the
+  // fresh SessionStart arrives in the legitimate case, so wait for it (or a
+  // changed screen). Not for Codex unless the conversation was already empty:
+  // its banner usually stays on screen, so "unchanged" proves nothing there.
+  const unchangedAllowed =
+    state.hookReports !== true && (agent !== 'codex' || codexConversationLooksEmpty(before));
 
   // 5. Type the command, without Enter, and check what it landed next to.
   const erase = (reason: string, result: FreshContextReply['freshContext'] = 'skipped_busy'): FreshContextReply => {
@@ -356,7 +380,20 @@ export async function runFreshContext(
     return erase('session_changed: the pane changed while the command was typed');
   }
   if (revision(typed) !== revision(state) + 1) {
-    return erase('input_interleaved: other input reached the pane while the command was typed');
+    // An older daemon counts every write, so this may be just a pointer or a
+    // focus report: erase our command and deliver without a clear, as before.
+    if (!useKeyCounter) {
+      return erase('input_interleaved: other input reached the pane while the command was typed');
+    }
+    // Someone TYPED alongside the command. Erasing would remove their last
+    // characters, not ours, and leave a fragment such as `/c` for the task to
+    // land on. So nothing more is written, and the send fails.
+    throw new FreshContextTimeout(
+      `typed ${command}, and other key input reached the pane before its Enter; nothing further was written ` +
+        '(the command may still be in the input line)',
+      command,
+      'input_interleaved',
+    );
   }
 
   // 6. Enter, then wait for the evidence.
@@ -412,6 +449,7 @@ export async function runFreshContext(
     }
     if (agent === 'codex' && !showsCodexBanner(screen)) continue;
     const changed = aboveCursorRow(screen) !== beforeAbove;
+    if (!changed && !unchangedAllowed) continue;
     const needed = Math.max(changed ? settleMs : unchangedHoldMs, preferHook ? settleMs + hookGraceMs : 0);
     if (held < needed) continue;
     const reasons = [
