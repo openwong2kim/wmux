@@ -60,6 +60,7 @@ function scriptedPane(opts: { binding?: RoleBinding; hooks?: boolean; clearNever
       } else if (data.startsWith('\x7f')) {
         composer = composer.slice(0, composer.length - data.length);
       } else {
+        // eslint-disable-next-line no-control-regex -- the bracketed-paste markers
         composer += data.replace(/\x1b\[20[01]~/g, '');
       }
       return true;

@@ -236,7 +236,13 @@ export async function runFreshContext(
   if (mirrorStatus && BUSY_MIRROR_STATUSES.has(mirrorStatus)) {
     return skip('skipped_busy', `agent_busy: the pane shows ${mirrorStatus}`);
   }
-  if (!(await probe.readScreen())) {
+  // A few tries: one slow renderer read should not cost the whole step.
+  let readable = false;
+  for (let attempt = 0; attempt < 3 && !readable; attempt++) {
+    if (attempt > 0) await sleep(pollMs);
+    readable = (await probe.readScreen()) !== '';
+  }
+  if (!readable) {
     return skip('skipped_unobservable', 'screen_unreadable: the pane screen could not be read');
   }
   // Decided before typing: a hook-backed pane is held to the hook.
