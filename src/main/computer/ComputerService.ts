@@ -99,6 +99,12 @@ export class ComputerService {
   private readonly consentInflight = new Map<string, Promise<boolean>>();
   private lock: { clientName: string; lastUsedAt: number } | null = null;
   private abortedUntil = 0;
+  /**
+   * Bumped by abort(). A call captures it on entry and re-checks after every
+   * await, so a call that was parked on a consent prompt (or a helper reply)
+   * when the person pressed stop cannot carry on afterwards.
+   */
+  private generation = 0;
   private readonly controlLog = new Map<string, number[]>();
 
   constructor(deps: ComputerServiceDeps) {
@@ -166,8 +172,10 @@ export class ComputerService {
     const mode = params.mode ?? 'both';
     if (!OBSERVATION_MODES.includes(mode)) fail('invalid_argument', `mode must be one of ${OBSERVATION_MODES.join(', ')}`);
 
+    const generation = this.generation;
     const target = await helper.request('resolveTarget', { app: params.app, ...(params.window && { window: params.window }) });
-    await this.vet(clientName, target.app, target.window);
+    this.assertCurrent(generation);
+    await this.vet(clientName, target.app, target.window, generation);
 
     const state = await helper.request('getAppState', {
       app: target.app.id,
@@ -176,9 +184,13 @@ export class ComputerService {
       maxNodes: TREE_MAX_NODES,
       maxDepth: TREE_MAX_DEPTH,
     });
+    this.assertCurrent(generation);
     // The helper answered for a window; re-vet in case it is not the one we
-    // resolved (a window selector can go stale between the two calls).
-    if (state.app.id !== target.app.id) await this.vet(clientName, state.app, state.window);
+    // resolved (a window selector can go stale between the two calls). The
+    // window matters on its own: elevation is per window, not per app.
+    if (state.app.id !== target.app.id || state.window.id !== target.window.id) {
+      await this.vet(clientName, state.app, state.window, generation);
+    }
 
     this.recordSnapshot(state.snapshotId, {
       clientName,
@@ -196,13 +208,16 @@ export class ComputerService {
     const helper = this.ensureReady();
     const now = this.now();
     if (now < this.abortedUntil) fail('aborted', 'computer use was just stopped by the user');
+    const generation = this.generation;
 
     if (!params.snapshotId) fail('invalid_argument', 'snapshotId is required; call getAppState first');
     const snap = this.snapshots.get(params.snapshotId);
     if (!snap || snap.expiresAt < now) fail('snapshot_unknown', `snapshot ${params.snapshotId} is unknown or expired`);
     if (snap.clientName !== clientName) fail('snapshot_unknown', 'that snapshot belongs to another agent');
     // Consent may have been revoked (abort clears grants) since the snapshot.
-    await this.vet(clientName, snap.app, snap.window);
+    await this.vet(clientName, snap.app, snap.window, generation);
+    // Consent can take minutes; the clock and the stop key may both have moved.
+    this.assertCurrent(generation);
 
     this.takeInputLock(clientName, now);
     this.checkRate(clientName, now);
@@ -259,9 +274,13 @@ export class ComputerService {
    * action cannot slip in right behind the stop.
    */
   abort(): void {
+    this.generation += 1;
     this.helper?.abort('stopped by the user');
     this.lock = null;
     this.grants.clear();
+    // A prompt raised before the stop must not grant anything afterwards; a
+    // new call asks again (the approval queue coalesces the same question).
+    this.consentInflight.clear();
     this.abortedUntil = this.now() + ABORT_COOLDOWN_MS;
   }
 
@@ -277,7 +296,11 @@ export class ComputerService {
     this.snapshots.clear();
   }
 
-  private async vet(clientName: string, app: AppInfo, window: WindowInfo): Promise<void> {
+  private assertCurrent(generation: number): void {
+    if (generation !== this.generation) fail('aborted', 'computer use was stopped by the user');
+  }
+
+  private async vet(clientName: string, app: AppInfo, window: WindowInfo, generation: number): Promise<void> {
     const reason = blockReasonFor(app, this.deps.blockContext());
     if (reason) fail('app_blocked', `${app.name}: ${BLOCK_REASON_TEXT[reason]}`);
     if (window.elevated) {
@@ -297,8 +320,10 @@ export class ComputerService {
     try {
       approved = await pending;
     } finally {
-      this.consentInflight.delete(key);
+      if (this.consentInflight.get(key) === pending) this.consentInflight.delete(key);
     }
+    // An answer that arrives after a stop belongs to the world before it.
+    this.assertCurrent(generation);
     this.grants.set(key, approved);
     if (!approved) fail('app_blocked', `the user declined computer use of ${app.name} for this agent`);
   }

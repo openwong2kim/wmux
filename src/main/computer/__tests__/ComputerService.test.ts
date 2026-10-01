@@ -210,6 +210,42 @@ describe('ComputerService', () => {
     expect(consent).toHaveBeenCalledTimes(2);
   });
 
+  it('a call parked on a consent prompt cannot continue after the stop key', async () => {
+    let release!: (v: boolean) => void;
+    const { service, calls, consent } = makeService({
+      consent: () => new Promise<boolean>((r) => { release = r; }),
+    });
+    const pending = service.getAppState('agent-a', { app: 'Notepad' });
+    await new Promise((r) => setTimeout(r, 0));
+    service.abort();
+    release(true);
+    expect(await codeOf(pending)).toBe('aborted');
+    expect(calls.map((c) => c.method)).not.toContain('getAppState');
+    // The late "yes" was not kept: the next call asks again.
+    const again = service.getAppState('agent-a', { app: 'Notepad' });
+    await new Promise((r) => setTimeout(r, 0));
+    release(true);
+    await again;
+    expect(consent).toHaveBeenCalledTimes(2);
+  });
+
+  it('re-vets when the helper answers for a different window of the same app', async () => {
+    const { service, calls } = makeService();
+    const realRequest = (service as unknown as { ensureReady: () => { request: (...a: unknown[]) => Promise<unknown> } })
+      .ensureReady();
+    const original = realRequest.request.bind(realRequest);
+    realRequest.request = async (method: unknown, params: unknown) => {
+      const result = await original(method, params);
+      if (method === 'getAppState') {
+        const state = result as AppState;
+        return { ...state, window: { ...state.window, id: 'w-other', elevated: true } };
+      }
+      return result;
+    };
+    expect(await codeOf(service.getAppState('agent-a', { app: 'Notepad' }))).toBe('target_elevated');
+    expect(calls.map((c) => c.method)).toEqual(['resolveTarget', 'getAppState']);
+  });
+
   it('caps input actions per minute', async () => {
     const { service } = makeService();
     const { snapshotId } = await service.getAppState('agent-a', { app: 'Notepad' });

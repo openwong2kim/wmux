@@ -110,6 +110,31 @@ describe('HelperProcess', () => {
     expect(requests()).toEqual(['click', 'releaseInput', 'listApps']);
   });
 
+  it('drops a request queued behind the one in flight when abort runs', async () => {
+    const { helper, requests } = makeHelper('hang', { timeoutFor: () => 5_000 });
+    const click = helper.request('click', {
+      snapshotId: 's', index: 1, button: 'left', clickCount: 1, modifiers: [],
+    });
+    const queued = helper.request('type', { snapshotId: 's', text: 'secret' });
+    await new Promise((r) => setTimeout(r, 300));
+    helper.abort();
+    expect(await codeOf(click)).toBe('aborted');
+    expect(await codeOf(queued)).toBe('aborted');
+    expect(requests()).toEqual(['click']);
+  });
+
+  it('decodes a multibyte character split across stdout chunks', async () => {
+    const { helper } = makeHelper('split-utf8');
+    const { apps } = await helper.request('listApps', {});
+    expect(apps[0].name).toBe('메모장');
+  });
+
+  it('survives a helper that exits on the first request', async () => {
+    const { helper } = makeHelper('exit');
+    expect(await codeOf(helper.request('listApps', {}))).toBe('helper_unavailable');
+    expect(await codeOf(helper.request('listApps', {}))).toBe('helper_unavailable');
+  });
+
   it('refuses work after dispose', async () => {
     const { helper } = makeHelper('ok');
     helper.dispose();

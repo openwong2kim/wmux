@@ -6,6 +6,9 @@
 //   hang        says hello, never answers `click`
 //   garbage     answers the first request with a non-JSON line
 //   wrong-id    answers with an id nobody asked for
+//   split-utf8  answers listApps with a Korean name split mid-character
+//               across two writes
+//   exit        exits as soon as a request arrives, without answering
 // Every request is appended to the file named by argv[3] (if given), so tests
 // can see what the helper received, including across restarts.
 import fs from 'node:fs';
@@ -35,6 +38,14 @@ rl.on('line', (line) => {
   if (mode === 'garbage') return process.stdout.write('not json\n');
   if (mode === 'wrong-id') return send({ id: req.id + 100, ok: true, result: {} });
   if (mode === 'hang' && req.method === 'click') return;
+  if (mode === 'exit') process.exit(3);
+  if (mode === 'split-utf8' && req.method === 'listApps') {
+    const bytes = Buffer.from(JSON.stringify({ id: req.id, ok: true, result: { apps: [{ name: '메모장' }] } }) + '\n');
+    const cut = bytes.indexOf(Buffer.from('메')) + 1; // inside the first character
+    process.stdout.write(bytes.subarray(0, cut));
+    setTimeout(() => process.stdout.write(bytes.subarray(cut)), 50);
+    return;
+  }
   switch (req.method) {
     case 'capabilities':
       return send({ id: req.id, ok: true, result: { actions: ['click'], modes: ['ax'], permissions: { accessibility: true, screenRecording: true } } });

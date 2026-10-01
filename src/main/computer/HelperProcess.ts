@@ -67,6 +67,8 @@ export class HelperProcess {
   private starting: Promise<Running> | null = null;
   private pending: Pending | null = null;
   private queue: Promise<unknown> = Promise.resolve();
+  /** Bumped by abort(); a request queued before the stop must never run. */
+  private abortGeneration = 0;
   private nextId = 1;
   private needsRelease = false;
   private idleTimer: NodeJS.Timeout | null = null;
@@ -87,12 +89,19 @@ export class HelperProcess {
   }
 
   request<M extends HelperMethod>(method: M, params: HelperMethods[M]['params']): Promise<HelperMethods[M]['result']> {
+    const generation = this.abortGeneration;
+    const assertCurrent = () => {
+      if (generation !== this.abortGeneration) throw new ComputerError('aborted', 'stopped by the user');
+    };
     const run = async (): Promise<HelperMethods[M]['result']> => {
       if (this.disposed) throw new ComputerError('helper_unavailable', 'computer use is shutting down');
+      assertCurrent();
       const running = await this.ensureRunning();
+      assertCurrent();
       if (this.needsRelease && method !== 'releaseInput') {
         this.needsRelease = false;
         await this.send(running, 'releaseInput', {}).catch(() => undefined);
+        assertCurrent();
       }
       return (await this.send(running, method, params)) as HelperMethods[M]['result'];
     };
@@ -107,6 +116,7 @@ export class HelperProcess {
    * releasing held input.
    */
   abort(reason = 'stopped by the user'): void {
+    this.abortGeneration += 1;
     if (!this.running && !this.starting) return;
     if (this.pending) {
       if (isControlAction(this.pending.method)) this.needsRelease = true;
@@ -167,12 +177,23 @@ export class HelperProcess {
         }
       };
 
-      child.stderr.on('data', (chunk: Buffer) => {
-        this.stderrTail = (this.stderrTail + chunk.toString('utf8')).slice(-STDERR_TAIL_BYTES);
+      // Decode as a stream: a multibyte character (Korean titles, emoji) can
+      // straddle two chunks, and per-chunk decoding would turn it into U+FFFD.
+      child.stdout.setEncoding('utf8');
+      child.stderr.setEncoding('utf8');
+      // A helper that dies mid-write raises EPIPE here; unhandled, it would
+      // crash main.
+      child.stdin.on('error', (err) => {
+        this.log(`helper stdin error: ${err.message}`);
+        this.failPending(new ComputerError('helper_unavailable', `computer-use helper input failed: ${err.message}`));
       });
 
-      child.stdout.on('data', (chunk: Buffer) => {
-        buffer += chunk.toString('utf8');
+      child.stderr.on('data', (chunk: string) => {
+        this.stderrTail = (this.stderrTail + chunk).slice(-STDERR_TAIL_BYTES);
+      });
+
+      child.stdout.on('data', (chunk: string) => {
+        buffer += chunk;
         if (buffer.length > HELPER_MAX_LINE_BYTES) {
           this.log('helper line exceeded the size cap; killing it');
           this.failPending(new ComputerError('internal', 'the computer-use helper sent an oversized reply'));
