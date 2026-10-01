@@ -14,7 +14,8 @@
 //                             keeps redrawing forever, and no hook fires
 //   FAKE_TURN_MS              length of an ordinary turn (400); `work N` runs N s
 //   FAKE_NO_HOOKS             1 = never run a hook command
-//   FAKE_AGENT_LOG            append one JSON line per event to this file
+//   FAKE_AGENT_LOG            append one JSON line per event to this file,
+//                             every raw input read included
 
 import { appendFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
@@ -250,6 +251,9 @@ export function runFakeTui(spec) {
   /** Feed raw input: bracketed pastes go into the composer whole (a newline
    *  inside one is text, not Enter); escape sequences are dropped. */
   function feed(data) {
+    // Every raw read, JSON-escaped: a dogfood run can see focus, mouse and
+    // terminal query replies arriving next to the keys wmux typed.
+    log('input', { data: data.slice(0, 200), bytes: data.length });
     let s = state.pending + data;
     state.pending = '';
     while (s.length > 0) {

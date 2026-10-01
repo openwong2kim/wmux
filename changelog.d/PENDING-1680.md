@@ -15,7 +15,11 @@
   agent than the role names, or which still has other open agent tasks gets
   the task without a clear, and the reply says why. If the command does not
   finish within 8 seconds, the task is not sent and the call fails, so the
-  text never lands in the old conversation. The `input.send` param `newTask`
-  and the reply fields `freshContext`, `freshContextCommand`,
-  `freshContextSignal` and `freshContextReason` are experimental.
+  text never lands in the old conversation. Open agent tasks are read from
+  the daemon's task store, so they still count after an app restart, and a
+  pointer moving over the pane is not mistaken for someone typing. A second
+  new task for a pane that is still receiving one waits up to 4 seconds,
+  then fails with nothing written. The `input.send` param `newTask` and the
+  reply fields `freshContext`, `freshContextCommand`, `freshContextSignal`
+  and `freshContextReason` are experimental.
   `wmux role resolve` reports `freshContext` for a role. (#1680)

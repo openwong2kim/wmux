@@ -196,15 +196,15 @@ When a submitted line launches an agent in a pane whose role has a binding (Sett
 
 - `freshContext` (experimental): one of
   - `applied`: the command ran and finished; the text went to a fresh conversation.
-  - `skipped_busy`: the agent was working, input had just arrived, the composer held a draft, or other input arrived while the command was typed. The text was sent without a clear.
+  - `skipped_busy`: the agent was working, key input had just arrived, the composer held a draft, or other key input arrived while the command was typed. The text was sent without a clear. (Focus and pointer-motion reports do not count as input.)
   - `skipped_mismatch`: the agent running in the pane is not the role's bound agent. Sent without a clear.
   - `skipped_unobservable`: wmux could not see the pane well enough to type into it safely (no daemon state for it, or an unreadable screen). Sent without a clear.
   - `not_bound`: the role does not ask for fresh context, or its agent has no verified command. Sent as usual.
 - `freshContextCommand?: string` (experimental): the command typed, with `applied`.
-- `freshContextSignal?: 'session_start' | 'screen'` (experimental): with `applied`, what showed the command finished — the agent's SessionStart hook, or the screen.
-- `freshContextReason?: string` (experimental): why it was skipped. Starts with a short code (`agent_busy`, `input_active`, `draft_in_composer`, `agent_mismatch`, …); the rest of the wording is not stable.
+- `freshContextSignal?: 'session_start' | 'screen'` (experimental): with `applied`, what showed the command finished — the agent's SessionStart hook, or the screen. The screen counts once the old conversation is gone from it and it holds still; a pane that looks exactly as before (an already-empty conversation) must hold still for 3 seconds. A pane whose agent's hooks report SessionStart is given 2.5 seconds more for the hook before the screen is used.
+- `freshContextReason?: string` (experimental): why it was skipped, or, with `applied`, which fallback was used. Starts with a short code (`agent_busy`, `input_active`, `draft_in_composer`, `input_interleaved`, `agent_mismatch`, `screen_unreadable`, `state_unreadable`, `open_a2a_task`, `a2a_tasks_unknown`, `session_start_missing`, `screen_unchanged`, …); the rest of the wording is not stable.
 
-When the command was typed but not seen to finish within 8 seconds, the call fails and **the text is not sent**; read the pane before sending it again. An `a2a.task.send` that creates a new task applies the same rule to its delivery, reports the same fields on its `delivery` receipt (`not_bound` is left out there), and is refused with reason `fresh_context_timeout` when the command does not finish. A pane that still has other open A2A tasks pinned to it keeps its conversation (`skipped_busy`, reason `open_a2a_task`). Replies, status updates and broadcasts never clear a pane.
+When the command was typed but not seen to finish within 8 seconds, the call fails and **the text is not sent**; read the pane before sending it again. New-task sends to one pane run one at a time; a send that cannot get the pane within 4 seconds fails before writing anything. An `a2a.task.send` that creates a new task applies the same rules to its delivery, reports the same fields on its `delivery` receipt (`not_bound` is left out there), and is refused with reason `fresh_context_timeout` when the command does not finish, or `fresh_context_busy` when the pane stayed held. A pane that still has other open A2A tasks pinned to it, as receiver or sender, keeps its conversation (`skipped_busy`, reason `open_a2a_task`); wmux checks the daemon's task store for this, and when the open tasks cannot be read the pane is kept too (`a2a_tasks_unknown`). Replies, status updates and broadcasts never clear a pane. `input.send` with `newTask` does not check A2A tasks: the caller declared the boundary itself.
 
 ### `input.sendKey`
 

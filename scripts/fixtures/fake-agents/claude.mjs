@@ -20,13 +20,12 @@
 //     how a dogfood run sees whether the conversation was cleared;
 //   - `/exit`, Ctrl+D on an empty composer, or Ctrl+C twice exits.
 //
-// Hooks run ONLY when pointed at explicitly — never from the home directory,
-// so a stray run cannot fire the operator's real hooks:
+// Hooks run ONLY when pointed at explicitly — never from the home directory or
+// CLAUDE_CONFIG_DIR (wmux sets that for account panes, which would make it the
+// operator's real config), so a stray run cannot fire real hooks:
 //   FAKE_CLAUDE_HOOKS          a settings.json or plugin hooks.json; its
 //                              `hooks.SessionStart / UserPromptSubmit / Stop`
 //                              command entries (matcher "" only) are run
-//   CLAUDE_CONFIG_DIR          used as <dir>/settings.json when
-//                              FAKE_CLAUDE_HOOKS is not set
 //   FAKE_CLAUDE_PLUGIN_ROOT    value for ${CLAUDE_PLUGIN_ROOT} (default: the
 //                              folder above hooks/hooks.json)
 //   FAKE_NO_HOOKS=1            run none
@@ -43,9 +42,7 @@ import { envFlag, makeLogger, runFakeTui } from './fakeAgentTui.mjs';
 const log = makeLogger('claude');
 
 function hooksFile() {
-  if (process.env.FAKE_CLAUDE_HOOKS) return process.env.FAKE_CLAUDE_HOOKS;
-  if (process.env.CLAUDE_CONFIG_DIR) return path.join(process.env.CLAUDE_CONFIG_DIR, 'settings.json');
-  return undefined;
+  return process.env.FAKE_CLAUDE_HOOKS || undefined;
 }
 
 function loadHooks() {
