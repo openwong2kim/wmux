@@ -1,3 +1,146 @@
+## [3.65.0] — 2026-10-01
+
+### Added
+
+- **Orchestrator effort picker.** Settings → Orchestrator has an effort row
+  (low / medium / high / xhigh / max, or the CLI default). It reaches both
+  Claude brains — the SDK brain as `options.effort`, the terminal brain as
+  `--effort` — and, like the model, applies from the next turn: an idle brain
+  is swapped, a busy one finishes its turn first. (#1677)
+
+- **Model discovery for agent CLIs.** Main can now ask an agent CLI which
+  models it runs — `agy models` for the Antigravity CLI, `codex debug models`
+  for Codex (with each model's supported reasoning levels), and a built-in list
+  for Claude — through `electronAPI.agentModels.list(agent, refresh)`. Results
+  are cached for 24 hours in `model-catalog.json` in the wmux data folder;
+  discovery runs only when asked, never at startup, and a missing CLI or
+  unreadable output yields an empty `unavailable` result instead of an error. (#1677)
+
+- **Roles & fan-out: models to pick, effort and permission options.** Each
+  role row's model field now opens the models its agent CLI reports (`agy
+  models`, `codex debug models`, Claude's list), filters as you type, still
+  takes any id by hand, and has a Refresh models button. Under the row: an
+  effort selector (Claude `--effort`, Codex `-c model_reasoning_effort=…`,
+  and for agy the effort variant of the chosen model, since agy encodes it in
+  the model id), a Skip permissions checkbox that uses each CLI's own flag
+  (`--dangerously-skip-permissions`, `--dangerously-bypass-approvals-and-sandbox`),
+  and a mono preview of the launch the binding produces. A flag already typed
+  on a launch, or in the role's extra args, still wins, and turning Skip
+  permissions off on the resume chip or the recovery pill wins over the
+  role's Skip permissions for that launch. The model list is keyboard-operable
+  (arrow keys, Enter, Escape). (#1677)
+
+- **`wmux role resolve <Role> [--json]`.** Prints what a role is bound to in
+  Settings → Roles & fan-out — agent, model, effort and exec-ready `argv` /
+  `flags` in each CLI's own grammar — so a project's own dispatch scripts can
+  follow the same bindings as the panes wmux launches. It reads the app's
+  `session.json` directly (works with wmux closed), normalizes it the way the
+  app does, and exits 2 when the role is not bound. (#1677)
+
+- **Desktop computer use, opt-in (groundwork).** Agents running in wmux can be
+  allowed to see and control other desktop apps through one `computer` MCP tool.
+  Turn it on in the new Settings › Computer use tab. It is off by default, and
+  the tool does not exist for anyone who leaves it off. wmux asks you once per
+  agent and app. Password managers, terminals and other agent apps, wmux
+  itself, and system sign-in or administrator prompts are always refused.
+  `Ctrl/Cmd+Alt+Shift+Esc` stops every agent at once; wmux holds that
+  shortcut only while computer use is on, and if another app already owns it,
+  agents can look but not act until it is free. This release carries
+  the tool, the consent prompts and the settings. The small helper program
+  that reads and drives apps on Windows and macOS ships separately; until it
+  does, the tab shows "Not in this build yet". (#1683)
+
+- **A role can start each new task in a fresh conversation.** Settings →
+  Roles now offers "Fresh context per task" for roles bound to Claude Code or
+  Codex. When the orchestrator hands such a pane a NEW task
+  (`terminal_send` with the new `new_task` flag), or another agent sends it a
+  new task with `send_message`, wmux first types the agent's own
+  fresh-context command (`/clear` for Claude Code, `/new` for Codex), waits
+  until the pane shows it finished, and only then delivers the task. Before,
+  a long-lived worker pane carried every earlier task's conversation into the
+  next one. Both keys are needed: the role's setting and the caller's
+  new-task signal, so a follow-up, a reply or a status update never clears a
+  pane, and no agent can clear a pane whose role did not opt in. A pane whose
+  agent is working, whose input box holds a draft, which runs a different
+  agent than the role names, or which still has other open agent tasks gets
+  the task without a clear, and the reply says why. If the command does not
+  finish within 8 seconds, or someone types into the pane while it is being
+  typed, the task is not sent and the call fails, so the text never lands in
+  the old conversation. Open agent tasks are read from
+  the daemon's task store, so they still count after an app restart, and a
+  pointer moving over the pane is not mistaken for someone typing. A second
+  new task for a pane that is still receiving one waits up to 4 seconds,
+  then fails with nothing written. The `input.send` param `newTask` and the
+  reply fields `freshContext`, `freshContextCommand`, `freshContextSignal`
+  and `freshContextReason` are experimental.
+  `wmux role resolve` reports `freshContext` for a role. (#1684)
+
+### Changed
+
+- **Opus 5.5 and Sonnet 5.5 in every Claude model picker.** The deck chip, the
+  Settings orchestrator picker and the role-binding suggestions now share one
+  list with the full ids (`claude-opus-5-5`, `claude-sonnet-5-5`,
+  `claude-haiku-4-5-20251001`) next to the `opus` / `sonnet` / `haiku` aliases,
+  which follow whatever the installed claude maps them to. A model id not in
+  the list shows as itself instead of as "Default". (#1677)
+
+- **The `input.send` reply reports the launch options a role added.** When a
+  role binding rewrites a launch line, the reply now carries
+  `enforcedOptions: { effort?, skipPermissions? }` next to `enforcedModel`:
+  the effort flag (`--effort`, or Codex `-c model_reasoning_effort=…`) and
+  the skip-permissions flag it actually added. Before, a pipe or MCP caller
+  (the orchestrator's `terminal_send`) could not tell that its line had
+  gained either. The field is optional, appears only when something was
+  added, and is experimental for now, like `enforcedModel` and `note`. (#1682)
+
+- **A pane shows when its role skips permission prompts.** The role badge on
+  the pane's tab strip and the chip in the Fleet roster used to appear only
+  for a role that pins a model, so a role that launches with
+  `--dangerously-skip-permissions` (or Codex's bypass flag) looked like no
+  role at all. They now also show for such a role, leading with a red
+  "bypass", and the tooltip names the flag the launch carries. A role whose
+  own extra args set a permission mode shows no "bypass", since its launch
+  does not skip. `wmux role resolve` reports `skipPermissions` the same
+  way. (#1682)
+
+- **`npm run typecheck` also checks the MCP, CLI and daemon builds.** Those
+  builds target older JavaScript versions (ES2020 for MCP) than the main
+  type check, so a newer API such as `Object.hasOwn` in a shared file passed
+  the type check and only failed when the MCP bundle was built. (#1682)
+
+### Fixed
+
+- **An Esc before the first prompt no longer makes the first turn uncancellable.** Pressing Esc in a Codex or Claude pane before its first prompt (for example to dismiss Codex's update notice) was counted as an interrupt of the first turn, so the phone's cancel answered "turn already interrupted" and the desktop Stop did nothing. The first turn now starts when the prompt is submitted. (#1673)
+
+- **The role model field showed only the current value when reopened.** The
+  native datalist filtered by what was already in the field; the new combobox
+  shows the full list on open and filters only while typing. (#1677)
+
+- **The sidebar git sync badge works in repos with many submodules.** Its
+  `git status` scanned every submodule's working tree. In a repo with 66
+  nested submodules that took 73 seconds, far past the 10-second timeout, so
+  the badge never appeared and a new git process started about every 25
+  seconds while the killed ones' submodule children kept running. Status now
+  skips submodule working trees (227 ms in the same repo). A top-level
+  submodule checked out at a different commit still counts as a change;
+  uncommitted edits inside a submodule, and pointer changes of nested
+  submodules, no longer do. (#1678)
+
+- **An explicit permission choice now wins over a role's skip permissions.**
+  With "skip permissions" turned off on the resume chip or the recovery pill,
+  a `--dangerously-skip-permissions` in the role's extra args was still
+  appended, so the pane resumed in bypass mode anyway; it is now dropped, and
+  the role's other args stay. A permission flag typed on the launch line
+  itself (`claude --permission-mode plan`, Codex `-a`/`--ask-for-approval`,
+  `-s`/`--sandbox`, `--approve-for-me`, or `-c approval_policy=…` /
+  `-c sandbox_mode=…`) now keeps the role's skip flag off that line too, and
+  drops the permission flags in the role's extra args, which used to be
+  appended after the typed one and win. With no permission flag typed, one in
+  the role's own args counts as the role's choice and stops the skip flag
+  from being added. (#1682)
+
+- **The titlebar no longer scrolls out of view.** The window chrome could intermittently sit about 36px too high. The titlebar, which is the only window drag region, slid under the native window buttons and stayed there through resizes. The cause was a caret reveal, focus or scroll-into-view near the bottom edge scrolling the app shell into the space the auto-hidden agent toolbar leaves below it. The shell is now pinned at the top. (#1687)
+
 ## [3.64.0] — 2026-10-01
 
 ### Added
