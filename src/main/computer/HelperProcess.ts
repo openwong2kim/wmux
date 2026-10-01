@@ -30,6 +30,8 @@ import {
 } from '../../shared/computer/protocol';
 
 const STDERR_TAIL_BYTES = 4096;
+/** How long an idle helper gets to exit on stdin EOF before it is killed. */
+const IDLE_KILL_GRACE_MS = 5_000;
 
 export type SpawnHelper = (command: string, args: readonly string[]) => ChildProcessWithoutNullStreams;
 
@@ -39,6 +41,7 @@ export interface HelperProcessOptions {
   spawn?: SpawnHelper;
   helloTimeoutMs?: number;
   idleExitMs?: number;
+  idleKillGraceMs?: number;
   /** Per-method timeout override, mainly for tests. */
   timeoutFor?: (method: HelperMethod) => number;
   log?: (message: string) => void;
@@ -326,10 +329,19 @@ export class HelperProcess {
     const idleMs = this.opts.idleExitMs ?? HELPER_IDLE_EXIT_MS;
     this.idleTimer = setTimeout(() => {
       if (!this.pending) {
-        // Closing stdin asks the helper to exit on its own.
+        // Closing stdin asks the helper to exit on its own. A helper stuck in
+        // a native call never reads that EOF, so it is killed after a grace
+        // period instead of lingering as an orphan until wmux quits.
         const running = this.running;
         this.running = null;
-        running?.child.stdin.end();
+        if (running) {
+          const { child } = running;
+          child.stdin.end();
+          const grace = setTimeout(() => {
+            if (child.exitCode === null && child.signalCode === null) child.kill();
+          }, this.opts.idleKillGraceMs ?? IDLE_KILL_GRACE_MS);
+          grace.unref?.();
+        }
       }
     }, idleMs);
     this.idleTimer.unref?.();

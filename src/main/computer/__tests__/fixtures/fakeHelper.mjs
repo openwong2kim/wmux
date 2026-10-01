@@ -9,6 +9,8 @@
 //   split-utf8  answers listApps with a Korean name split mid-character
 //               across two writes
 //   exit        exits as soon as a request arrives, without answering
+//   deaf        answers normally but ignores stdin EOF (a helper stuck in a
+//               native call), so only a kill ends it
 // Every request is appended to the file named by argv[3] (if given), so tests
 // can see what the helper received, including across restarts.
 import fs from 'node:fs';
@@ -55,4 +57,7 @@ rl.on('line', (line) => {
       return send({ id: req.id, ok: true, result: { method: 'synthetic', verification: 'unverified', echo: req.method } });
   }
 });
-rl.on('close', () => process.exit(0));
+rl.on('close', () => {
+  if (mode === 'deaf') setInterval(() => undefined, 1_000);
+  else process.exit(0);
+});

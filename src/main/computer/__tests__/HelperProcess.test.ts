@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ComputerError } from '../../../shared/computer/errors';
 import { HelperProcess } from '../HelperProcess';
@@ -133,6 +134,21 @@ describe('HelperProcess', () => {
     const { helper } = makeHelper('exit');
     expect(await codeOf(helper.request('listApps', {}))).toBe('helper_unavailable');
     expect(await codeOf(helper.request('listApps', {}))).toBe('helper_unavailable');
+  });
+
+  it('kills an idle helper that ignores stdin EOF', async () => {
+    let child: ChildProcessWithoutNullStreams | undefined;
+    const { helper } = makeHelper('deaf', {
+      idleExitMs: 50,
+      idleKillGraceMs: 50,
+      spawn: (cmd, args) => (child = spawn(cmd, [...args], { stdio: 'pipe' })),
+    });
+    await helper.request('listApps', {});
+    const exited = await new Promise<boolean>((resolve) => {
+      child?.once('exit', () => resolve(true));
+      setTimeout(() => resolve(false), 2_000);
+    });
+    expect(exited).toBe(true);
   });
 
   it('refuses work after dispose', async () => {
