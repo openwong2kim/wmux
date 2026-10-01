@@ -102,12 +102,16 @@ export const FRESH_CONTEXT_LOCK_WAIT_MS = 4_000;
  * Main's renderer budget for an a2a new-task send. The renderer's delivery can
  * now include a fresh-context step (up to FRESH_CONTEXT_TIMEOUT_MS after the
  * command, plus the reads before it and the paste after it), which the 5 s
- * bridge default would cut off mid-clear.
+ * bridge default would cut off mid-clear. Worst case with every read at its
+ * own timeout: lock wait 4 s + task-store read 2 s + gates + echo 1.5 s + wait
+ * about 9 s + paste — about 21 s, so 25 s leaves headroom; a renderer that
+ * outlives main's wait would still deliver after main gave up, and a retry
+ * would then send the task twice.
  */
-export const NEW_TASK_SEND_MAIN_TIMEOUT_MS = 20_000;
+export const NEW_TASK_SEND_MAIN_TIMEOUT_MS = 25_000;
 
 /** The MCP client's budget for a new-task `send_message`: outwaits main. */
-export const NEW_TASK_SEND_CLIENT_TIMEOUT_MS = 25_000;
+export const NEW_TASK_SEND_CLIENT_TIMEOUT_MS = 30_000;
 
 /** The MCP client's budget for `terminal_send` with `new_task`: the fresh
  *  context step plus the ordinary submit receipt. */

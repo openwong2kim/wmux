@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
+  FRESH_CONTEXT_LOCK_WAIT_MS,
   FRESH_CONTEXT_TIMEOUT_MS,
   NEW_TASK_SEND_CLIENT_TIMEOUT_MS,
   NEW_TASK_SEND_MAIN_TIMEOUT_MS,
@@ -45,5 +46,15 @@ describe('MCP fresh context per task (#1680)', () => {
     expect(NEW_TASK_SEND_CLIENT_TIMEOUT_MS).toBeGreaterThan(NEW_TASK_SEND_MAIN_TIMEOUT_MS);
     // input.send: the step plus the ordinary 2 s submit receipt.
     expect(TERMINAL_SEND_NEW_TASK_TIMEOUT_MS).toBeGreaterThan(FRESH_CONTEXT_TIMEOUT_MS + 5_000);
+    // Worst cases with every read at its own timeout (review N3): lock wait,
+    // the a2a task-store read (2 s), the echo wait (1.5 s), the step, and a
+    // few seconds of gates, reads, paste or submit receipt.
+    const slack = 4_000;
+    expect(NEW_TASK_SEND_MAIN_TIMEOUT_MS).toBeGreaterThanOrEqual(
+      FRESH_CONTEXT_LOCK_WAIT_MS + 2_000 + 1_500 + FRESH_CONTEXT_TIMEOUT_MS + slack,
+    );
+    expect(TERMINAL_SEND_NEW_TASK_TIMEOUT_MS).toBeGreaterThanOrEqual(
+      FRESH_CONTEXT_LOCK_WAIT_MS + 1_500 + FRESH_CONTEXT_TIMEOUT_MS + 2_000 + slack,
+    );
   });
 });
