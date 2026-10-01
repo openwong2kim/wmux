@@ -21,7 +21,8 @@
 //   3. Refuses a notification spawned by a shared Codex app-server whose env
 //      claims a wmux pane: nothing is sent or spooled under that identity.
 //   4. Builds a canonical, metadata-only AgentSignal envelope
-//      (agent:'codex', kind:'agent.stop'); prompt and assistant content is never
+//      (agent:'codex', kind:'agent.stop', or 'agent.subagent_stop' under the root
+//      thread's id for a sub-agent thread — #1696); prompt and assistant content is never
 //      logged or forwarded.
 //   5. Sends the envelope to the first wmux endpoint that owns the request: the
 //      DAEMON control pipe (`daemon.hooks.signal`, suffix-scoped daemon token —
@@ -47,7 +48,7 @@
 
 import {
   readFileSync, existsSync, mkdirSync, appendFileSync, writeFileSync, renameSync, unlinkSync,
-  realpathSync,
+  realpathSync, readdirSync, openSync, readSync, closeSync,
 } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -63,7 +64,9 @@ const AGENT_TURN_COMPLETE = 'agent-turn-complete';
 //   0.3.0 — official payload routing + suffix-isolated endpoint/state paths.
 //   0.4.0 — refuse a notification spawned by a shared Codex app-server whose
 //           env claims a wmux pane (#1523).
-const BRIDGE_VERSION = '0.4.0';
+//   0.5.0 — a sub-agent thread's turn-complete is sent as agent.subagent_stop
+//           under its root thread's id, not as the pane's own turn (#1696).
+const BRIDGE_VERSION = '0.5.0';
 const CONNECT_RETRY_BACKOFFS_MS = [100, 250];
 const TRANSIENT_CONNECT_CODES = new Set([
   'EPERM', 'ECONNREFUSED', 'ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'EBUSY', 'EAGAIN',
@@ -607,6 +610,153 @@ function readAncestorChain(startPid = process.ppid) {
   return chain;
 }
 
+// ----- Sub-agent threads (#1696) -------------------------------------------
+//
+// A Codex sub-agent (`spawn_agent`) runs as its own thread inside the pane's
+// Codex process. It inherits the pane env, so its `agent-turn-complete`
+// arrives pane-exact, exactly like the main thread's. Sent as agent.stop it
+// (a) replaces the pane's resume binding with a thread the user cannot type
+// into ("Viewing sub-agent — direct input is disabled"), (b) raises a
+// "Task finished" toast the Subagent mute never catches, and (c) reads as the
+// lead turn ending. The notify payload does not say which kind of thread it
+// is; the thread's rollout does. Its first line is `session_meta`, and a
+// sub-agent's carries `source: { subagent: … }` plus the root thread's id
+// (`session_id`, and `thread_spawn.parent_thread_id` one level up).
+//
+// Such a completion goes out as agent.subagent_stop under the ROOT thread's
+// id: the same shape Claude's SubagentStop has (its session_id is the
+// parent's), so the resume capture keeps the conversation the user works in,
+// the notification lands in the `subagent` category, and the pane's own turn
+// is not ended. Anything this cannot read fails open to today's agent.stop.
+
+const THREAD_ID_RE = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+const DAY_MS = 24 * 60 * 60 * 1000;
+// session_meta carries the base instructions, measured ~20 KB; this cap only
+// bounds a malformed file.
+const SESSION_META_MAX_BYTES = 1024 * 1024;
+const MAX_PARENT_HOPS = 8;
+
+function codexSessionsRoot(env) {
+  return join(nonEmptyStr(env.CODEX_HOME) ?? join(getHomeDir(), '.codex'), 'sessions');
+}
+
+/** Creation time of a UUIDv7 thread id (ms), else undefined. */
+export function uuidV7Millis(id) {
+  if (!THREAD_ID_RE.test(id) || id[14] !== '7') return undefined;
+  return parseInt(id.slice(0, 8) + id.slice(9, 13), 16);
+}
+
+/**
+ * The rollout file of `id` under `sessionsRoot`, else undefined. Codex files a
+ * rollout under `YYYY/MM/DD` of its local creation time, which a UUIDv7 id
+ * carries, so this lists at most three day directories (±1 day absorbs a
+ * timezone or midnight edge) instead of walking the whole history.
+ */
+export function findRolloutFile(id, sessionsRoot) {
+  const created = uuidV7Millis(id);
+  if (created === undefined) return undefined;
+  const suffix = `-${id}.jsonl`;
+  for (const offset of [0, -DAY_MS, DAY_MS]) {
+    const d = new Date(created + offset);
+    const dir = join(
+      sessionsRoot,
+      String(d.getFullYear()),
+      String(d.getMonth() + 1).padStart(2, '0'),
+      String(d.getDate()).padStart(2, '0'),
+    );
+    let names;
+    try {
+      names = readdirSync(dir);
+    } catch {
+      continue;
+    }
+    const hit = names.find((name) => name.startsWith('rollout-') && name.endsWith(suffix));
+    if (hit) return join(dir, hit);
+  }
+  return undefined;
+}
+
+function readFirstLine(file) {
+  const fd = openSync(file, 'r');
+  try {
+    const chunk = Buffer.alloc(64 * 1024);
+    const parts = [];
+    let total = 0;
+    while (total < SESSION_META_MAX_BYTES) {
+      const n = readSync(fd, chunk, 0, chunk.length, total);
+      if (n <= 0) break;
+      const nl = chunk.subarray(0, n).indexOf(0x0a);
+      if (nl >= 0) {
+        parts.push(Buffer.from(chunk.subarray(0, nl)));
+        return Buffer.concat(parts).toString('utf8');
+      }
+      parts.push(Buffer.from(chunk.subarray(0, n)));
+      total += n;
+    }
+    return total < SESSION_META_MAX_BYTES ? Buffer.concat(parts).toString('utf8') : undefined;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * Read a rollout's first line as `session_meta`. Returns
+ * `{ subagent: false }` for a top-level thread, `{ subagent: true, rootId,
+ * parentId }` for a sub-agent (either id may be undefined), or undefined when
+ * the line is not a session_meta record.
+ */
+export function parseSessionMeta(line) {
+  let record;
+  try {
+    record = JSON.parse(line);
+  } catch {
+    return undefined;
+  }
+  if (!record || record.type !== 'session_meta' || !record.payload || typeof record.payload !== 'object') {
+    return undefined;
+  }
+  const meta = record.payload;
+  const subagent = meta.source && typeof meta.source === 'object' ? meta.source.subagent : undefined;
+  if (subagent === undefined || subagent === null) return { subagent: false };
+  const validId = (v) => (typeof v === 'string' && THREAD_ID_RE.test(v) ? v : undefined);
+  const ownId = validId(meta.id);
+  const sessionId = validId(meta.session_id);
+  const spawn = typeof subagent === 'object' ? subagent.thread_spawn : undefined;
+  return {
+    subagent: true,
+    rootId: sessionId && sessionId !== ownId ? sessionId : undefined,
+    parentId: spawn && typeof spawn === 'object' ? validId(spawn.parent_thread_id) : undefined,
+  };
+}
+
+/**
+ * Classify thread `id`: `{ subagent: false, rootId: id }` for a top-level
+ * thread (or one whose rollout cannot be read — fail open), else
+ * `{ subagent: true, rootId }` where rootId is the top-level thread it belongs
+ * to, or undefined when no rollout names one.
+ */
+export function classifyCodexThread(id, sessionsRoot) {
+  let current = id;
+  let subagent = false;
+  for (let hop = 0; hop < MAX_PARENT_HOPS; hop++) {
+    const file = findRolloutFile(current, sessionsRoot);
+    if (!file) break;
+    let meta;
+    try {
+      const line = readFirstLine(file);
+      meta = line === undefined ? undefined : parseSessionMeta(line);
+    } catch {
+      meta = undefined;
+    }
+    if (!meta || !meta.subagent) break;
+    subagent = true;
+    if (meta.rootId) return { subagent, rootId: meta.rootId };
+    if (!meta.parentId) return { subagent, rootId: undefined };
+    current = meta.parentId;
+  }
+  return { subagent, rootId: current };
+}
+
 // ----- Main ---------------------------------------------------------------
 
 function nonEmptyStr(v) {
@@ -652,7 +802,21 @@ async function main() {
   }
   const turnId = nonEmptyStr(payload['turn-id']);
   const cwd = nonEmptyStr(payload.cwd) ?? process.cwd();
-  const transcriptPath = nonEmptyStr(payload.transcript_path);
+  // #1696: a sub-agent thread reports as a subagent_stop of its root thread.
+  // Its own transcript_path (legacy payloads) names the sub-agent's rollout,
+  // so it must not ride along as the root's.
+  let thread = { subagent: false, rootId: sessionId };
+  try {
+    thread = classifyCodexThread(sessionId, codexSessionsRoot(process.env));
+  } catch {
+    // Fail open: an unreadable history is today's agent.stop.
+  }
+  const bindingId = thread.rootId;
+  const transcriptPath = thread.subagent ? undefined : nonEmptyStr(payload.transcript_path);
+  const signalKind = thread.subagent ? 'agent.subagent_stop' : 'agent.stop';
+  const threadLog = thread.subagent
+    ? { subagent: true, ...(bindingId ? { rootSessionId: bindingId } : {}) }
+    : {};
 
   const envPtyId = nonEmptyStr(process.env.WMUX_PTY_ID);
   const envWorkspaceId = nonEmptyStr(process.env.WMUX_WORKSPACE_ID);
@@ -673,19 +837,24 @@ async function main() {
   if (targets.length === 0) {
     logEvent('no-auth-token', { origin, paths: [getDaemonAuthTokenPath(), getAuthTokenPath()] });
     // Still spool so a later daemon boot reconciles the capture.
-    if (envPtyId) spoolResumeBinding({ ptyId: envPtyId, agent: 'codex', sessionId, cwd, transcriptPath, ts: Date.now() });
+    if (envPtyId && bindingId) {
+      spoolResumeBinding({ ptyId: envPtyId, agent: 'codex', sessionId: bindingId, cwd, transcriptPath, ts: Date.now() });
+    }
     return;
   }
 
   // Canonical AgentSignal envelope. kind 'agent.stop' = a turn completed (the
   // strongest "task done" signal); it triggers the agent-agnostic resume-binding
-  // capture in hooks.rpc.ts. Only non-sensitive, allowlisted metadata rides in
+  // capture in hooks.rpc.ts. A sub-agent thread's turn is 'agent.subagent_stop'
+  // under the root thread's id (see "Sub-agent threads" above), and carries no
+  // agentSessionId at all when no root could be named, so it binds nothing.
+  // Only non-sensitive, allowlisted metadata rides in
   // signal.payload: official turn-id and the legacy transcript_path used by the
   // binding's D5 liveness probe. Native input/assistant content is never copied.
   const envelope = {
-    kind: 'agent.stop',
+    kind: signalKind,
     agent: 'codex',
-    agentSessionId: sessionId,
+    ...(bindingId ? { agentSessionId: bindingId } : {}),
     ...(envWorkspaceId ? { workspaceId: envWorkspaceId } : {}),
     ...(envSurfaceId ? { surfaceId: envSurfaceId } : {}),
     ...(envPtyId ? { ptyId: envPtyId } : {}),
@@ -711,10 +880,11 @@ async function main() {
   const innerOk = outerOk && rpcResult.result && rpcResult.result.ok === true;
 
   if (innerOk) {
-    logEvent('ok', { sessionId, target: target?.name, origin });
+    logEvent('ok', { sessionId, ...threadLog, target: target?.name, origin });
   } else {
     logEvent(outerOk ? 'rpc-rejected' : 'rpc-failed', {
       origin,
+      ...threadLog,
       target: target?.name,
       reason: rpcResult?.result?.reason,
       error: rpcResult?.error,
@@ -722,8 +892,8 @@ async function main() {
     });
     // Anything but a durable success would lose the capture. Spool it (needs
     // the exact per-pane key) so the daemon reconciles it on its next boot.
-    if (envPtyId) {
-      spoolResumeBinding({ ptyId: envPtyId, agent: 'codex', sessionId, cwd, transcriptPath, ts: envelope.ts });
+    if (envPtyId && bindingId) {
+      spoolResumeBinding({ ptyId: envPtyId, agent: 'codex', sessionId: bindingId, cwd, transcriptPath, ts: envelope.ts });
     }
   }
 }
