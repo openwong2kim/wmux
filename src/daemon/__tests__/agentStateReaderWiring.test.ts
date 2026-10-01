@@ -53,8 +53,21 @@ describe('readDaemonAgentState wiring (#1303)', () => {
     for (const method of ['daemon.getAgentName', 'daemon.getAgentState']) {
       const at = src.indexOf(`pipeServer.onRpc('${method}'`);
       expect(at).toBeGreaterThan(-1);
-      expect(src.slice(at, src.indexOf('});', at))).toMatch(/return readDaemonAgentState\(id\);/);
+      expect(src.slice(at, src.indexOf('});', at))).toMatch(
+        /return readDaemonAgentState\(id\);|const state = readDaemonAgentState\(id\);/,
+      );
     }
+  });
+
+  // #1680 — getAgentState adds the key-only input counter, its quiet flag and
+  // the current agent's hook flag on top of the shared reader, additively.
+  it('adds the key-input and hook fields to daemon.getAgentState only', () => {
+    const at = src.indexOf("pipeServer.onRpc('daemon.getAgentState'");
+    const body = src.slice(at, src.indexOf('});', at));
+    expect(body).toMatch(/\.\.\.state,/);
+    expect(body).toMatch(/keyInputRevision: bridge\.getKeyInputRevision\(\)/);
+    expect(body).toMatch(/keyInputQuiet: bridge\.isKeyInputQuiet\(\)/);
+    expect(body).toMatch(/hookReports: bridge\.hasHookReports\(\)/);
   });
 
   // #1307 — scheduled delivery must require agentVerified and re-check the

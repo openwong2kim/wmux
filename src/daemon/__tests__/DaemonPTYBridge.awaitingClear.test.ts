@@ -191,6 +191,29 @@ describe('DaemonPTYBridge — fence input revision', () => {
   });
 });
 
+// #1680 — the fresh-context step reads this quiet flag: a pointer over the pane
+// or a focus change must not read as someone typing, a key must.
+describe('DaemonPTYBridge — key input quiet', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('stays quiet through motion and focus reports, breaks on a key, and recovers', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(100_000);
+    const bridge = new DaemonPTYBridge();
+    expect(bridge.isKeyInputQuiet()).toBe(true);
+    bridge.noteInput('\x1b[<35;40;12M\x1b[I\x1b[O');
+    expect(bridge.isInputQuiet()).toBe(false);
+    expect(bridge.isKeyInputQuiet()).toBe(true);
+    bridge.noteInput('x');
+    expect(bridge.isKeyInputQuiet()).toBe(false);
+    vi.setSystemTime(103_001);
+    expect(bridge.isKeyInputQuiet()).toBe(true);
+    bridge.noteInput('/clear', { selfWrite: true });
+    expect(bridge.isKeyInputQuiet()).toBe(false);
+    bridge.cleanup();
+  });
+});
+
 describe('DaemonPTYBridge — the stepwise driver\'s own keys', () => {
   it('move the key revision and return it, but are not a human answering; noteSubmitted is', () => {
     const h = makeHarness();

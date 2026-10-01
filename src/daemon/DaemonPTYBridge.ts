@@ -197,6 +197,9 @@ export class DaemonPTYBridge extends EventEmitter {
    * pane is not someone answering the dialog, but a click may be.
    */
   private keyInputRevision = 0;
+  /** When `keyInputRevision` last moved (#1680): `isKeyInputQuiet` reads it so
+   *  a pointer drifting over the pane does not read as someone typing. */
+  private lastKeyInputAt = 0;
   private emptyShellPrompt = false;
   private completedShellCommand = false;
   private shellCommandRunning = false;
@@ -295,6 +298,7 @@ export class DaemonPTYBridge extends EventEmitter {
         this.lastInputAt = Date.now();
         this.inputRevision += 1;
         this.keyInputRevision += 1;
+        this.lastKeyInputAt = this.lastInputAt;
         this.emptyShellPrompt = false;
         this.completedShellCommand = false;
       }
@@ -315,6 +319,7 @@ export class DaemonPTYBridge extends EventEmitter {
       if (active === '\x1b' && !this.inputInBracketedPaste) this.lastEscAt = this.lastInputAt;
       if (active.length > 0) {
         this.keyInputRevision += 1;
+        this.lastKeyInputAt = this.lastInputAt;
         // Sizes nothing, carries nothing: a remote terminal-prompt answer that
         // a key or click has overtaken is refreshed off this.
         if (this.sessionId) this.emit('fenceInput', { sessionId: this.sessionId });
@@ -560,6 +565,12 @@ export class DaemonPTYBridge extends EventEmitter {
   /** Stdin generation counting only writes that can act on the screen (see the field). */
   getKeyInputRevision(): number {
     return this.keyInputRevision;
+  }
+
+  /** `isInputQuiet` for writes that can act on the screen only: focus and
+   *  pointer-motion reports do not break the quiet (#1680). */
+  isKeyInputQuiet(): boolean {
+    return Date.now() - this.lastKeyInputAt >= DaemonPTYBridge.INPUT_ECHO_QUIET_MS;
   }
 
   /** Actual submitted input/hook work, excluding terminal redraw activity. */
@@ -1224,6 +1235,7 @@ export class DaemonPTYBridge extends EventEmitter {
     this.lastInputAt = 0;
     this.inputRevision = 0;
     this.keyInputRevision = 0;
+    this.lastKeyInputAt = 0;
     this.shellCommandRunning = false;
     this.emptyShellPrompt = false;
     this.completedShellCommand = false;

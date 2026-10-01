@@ -4221,7 +4221,20 @@ function registerRpcHandlers(
   });
   pipeServer.onRpc('daemon.getAgentState', async (params) => {
     const id = typeof params['id'] === 'string' ? params['id'] : '';
-    return readDaemonAgentState(id);
+    const state = readDaemonAgentState(id);
+    const bridge = sessionManager.getSession(id)?.bridge;
+    if (!bridge) return state;
+    // #1680 — additive, for main's fresh-context step: the key-only input
+    // counter and quiet flag (focus and pointer-motion reports do not move
+    // them), and whether the CURRENT agent's hooks have reported (reset when
+    // the agent ends). Kept out of readDaemonAgentState, which also answers
+    // the web roster.
+    return {
+      ...state,
+      keyInputRevision: bridge.getKeyInputRevision(),
+      keyInputQuiet: bridge.isKeyInputQuiet(),
+      hookReports: bridge.hasHookReports(),
+    };
   });
   // #1594 — what main's terminal_send needs to paste into a session: the agent
   // and DECSET 2004 from the live output stream. A hidden pane's renderer xterm

@@ -584,6 +584,14 @@ export class DaemonClient extends EventEmitter {
     inputQuiet: boolean;
     inputRevision: number;
     incarnationId: string;
+    /** #1680 — the key-only input counter: focus and pointer-motion reports do
+     *  not move it. Absent on an older daemon. */
+    keyInputRevision?: number;
+    /** #1680 — `inputQuiet` for key input only. Absent on an older daemon. */
+    keyInputQuiet?: boolean;
+    /** #1680 — the pane's CURRENT agent has delivered a hook (reset when that
+     *  agent ends). Absent on an older daemon. */
+    hookReports?: boolean;
   } | null> {
     try {
       const result = await (opts.timeoutMs !== undefined
@@ -595,6 +603,9 @@ export class DaemonClient extends EventEmitter {
         inputQuiet?: unknown;
         inputRevision?: unknown;
         incarnationId?: unknown;
+        keyInputRevision?: unknown;
+        keyInputQuiet?: unknown;
+        hookReports?: unknown;
       };
       const validStatuses: AgentStatus[] = [
         'running',
@@ -623,6 +634,13 @@ export class DaemonClient extends EventEmitter {
         inputQuiet: result.inputQuiet,
         inputRevision: result.inputRevision,
         incarnationId: result.incarnationId,
+        ...(typeof result.keyInputRevision === 'number' &&
+        Number.isInteger(result.keyInputRevision) &&
+        result.keyInputRevision >= 0
+          ? { keyInputRevision: result.keyInputRevision }
+          : {}),
+        ...(typeof result.keyInputQuiet === 'boolean' ? { keyInputQuiet: result.keyInputQuiet } : {}),
+        ...(typeof result.hookReports === 'boolean' ? { hookReports: result.hookReports } : {}),
       };
     } catch {
       return null;
