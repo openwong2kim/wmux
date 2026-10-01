@@ -111,6 +111,41 @@ describe('computer MCP tool', () => {
     expect(computerCalls()).toEqual([['computer.act', { action: 'click', snapshotId: 's7', index: 3, senderPtyId: 'pty-walked' }, expect.any(Number)]]);
   });
 
+  it('keeps one identity for concurrent first calls (they share a single pane walk)', async () => {
+    enabled.value = true;
+    reply = () => ({ method: 'synthetic', verification: 'unverified' });
+    let walks = 0;
+    mockSendRpc.mockImplementation(async (method: string) => {
+      if (method === 'a2a.resolve.identity') {
+        walks++;
+        await new Promise((r) => setTimeout(r, 30)); // a slow walk: the second call arrives meanwhile
+        return { mappings: {}, resolved: { workspaceId: 'ws-walked', ptyId: 'pty-walked' } };
+      }
+      return method.startsWith('computer.') ? reply(method) : {};
+    });
+    const server = createWmuxServer({
+      envWorkspaceHint: 'ws-env',
+      envPtyHint: 'pty-env-inherited',
+      commanderToken: undefined,
+      commanderMode: false,
+      coreMode: false,
+      callerPid: process.pid,
+      callerPpid: null,
+    });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'test-client', version: '1.0.0' }, { capabilities: {} });
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    await Promise.all([
+      client.callTool({ name: 'computer', arguments: { action: 'getAppState', app: 'Notepad' } }),
+      client.callTool({ name: 'computer', arguments: { action: 'click', snapshotId: 's7', index: 3 } }),
+    ]);
+    await client.close();
+    const ids = computerCalls().map((c) => (c[1] as { senderPtyId?: string; callerInstance?: string }));
+    expect(ids).toHaveLength(2);
+    expect(ids.every((p) => p.senderPtyId === 'pty-walked' && p.callerInstance === undefined)).toBe(true);
+    expect(walks).toBe(1);
+  });
+
   it('a caller cannot name a pane itself: senderPtyId is not a tool argument', async () => {
     enabled.value = true;
     const client = await connect();
