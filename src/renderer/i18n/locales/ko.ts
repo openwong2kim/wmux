@@ -702,6 +702,12 @@ export const ko = {
   'settings.roleBindingEffortLabel': '{role} effort',
   'settings.roleBindingEffortDefault': 'Effort: 기본',
   'settings.roleBindingSkipPermissions': '권한 확인 건너뛰기',
+  // #1680 — a pane's agent is "에이전트"; the orchestrator brain stays "agent" (owner rule above).
+  'settings.roleBindingFreshContext': '작업마다 새 대화',
+  'settings.roleBindingFreshContextTooltip':
+    '이 pane에 새 작업이 전달되면(agent의 new_task 포함 terminal_send, 또는 다른 에이전트의 새 send_message) wmux가 먼저 {command}를 입력해 이전 작업의 대화가 이어지지 않게 합니다. 후속 지시나 답장에는 적용되지 않습니다. 에이전트가 작업 중이거나 pane에 아직 열린 에이전트 작업이 있으면 건너뜁니다.',
+  'settings.roleBindingHintFreshContextInert':
+    '작업마다 새 대화는 claude 또는 codex 에이전트에서만 동작합니다. 이 역할에는 아무 효과가 없습니다.',
   'settings.roleBindingRefreshModels': '모델 새로고침',
   'deck.fleet.enforcedLaunch': '강제 실행: {binding}',
   'pane.enforcedLaunch': '역할이 강제한 실행: {binding}',

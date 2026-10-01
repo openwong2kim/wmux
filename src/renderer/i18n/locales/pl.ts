@@ -1170,10 +1170,15 @@ export const pl = {
     'Wybierz też agenta — sam model nie jest wymuszany (wmux nie wie, czyją flagą --model to jest).',
   'settings.roleBindingHintNoGrammar':
     'wmux nie ma zweryfikowanej flagi --model dla {agent}, więc model jest ignorowany. Dodatkowe argumenty nadal obowiązują.',
-  'settings.roleBindingHintInert': 'Dodaj model, effort, pomijanie uprawnień lub dodatkowe argumenty — sam agent nic nie wymusza.',
+  'settings.roleBindingHintInert': 'Dodaj model, effort, pomijanie uprawnień, świeży kontekst lub dodatkowe argumenty — sam agent nic nie wymusza.',
+  'settings.roleBindingHintFreshContextInert':
+    'Świeży kontekst dla każdego zadania działa tylko z agentem claude lub codex; dla tej roli nic nie robi.',
   'settings.roleBindingEffortLabel': 'Effort: {role}',
   'settings.roleBindingEffortDefault': 'Effort: domyślny',
   'settings.roleBindingSkipPermissions': 'Pomijaj uprawnienia',
+  'settings.roleBindingFreshContext': 'Świeży kontekst dla każdego zadania',
+  'settings.roleBindingFreshContextTooltip':
+    'Gdy ten panel dostaje NOWE zadanie (terminal_send orkiestratora z new_task albo nowe send_message od innego agenta), wmux najpierw wpisuje {command}, aby rozmowa z poprzedniego zadania nie przechodziła dalej. Nigdy przy kontynuacji ani odpowiedzi. Pomijane, gdy agent pracuje albo panel ma jeszcze inne otwarte zadania agentów.',
   'settings.roleBindingRefreshModels': 'Odśwież modele',
   // D2 — enforced-launch affordances (Fleet roster chip + pane badge).
   'deck.fleet.enforcedLaunch': 'Wymuszone uruchomienie: {binding}',

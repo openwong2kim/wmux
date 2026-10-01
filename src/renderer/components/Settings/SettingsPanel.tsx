@@ -58,7 +58,7 @@ import {
   type CatalogModel,
   type ModelCatalogResult,
 } from '../../../shared/modelCatalog';
-import { launchGrammarFor } from '../../../shared/agentLaunchOptions';
+import { freshContextGrammarFor, launchGrammarFor } from '../../../shared/agentLaunchOptions';
 import { ModelCombobox } from './ModelCombobox';
 import { MULTIVIEW_ARRANGEMENTS } from '../../utils/multiviewGrid';
 import type { NicInfo, LanLinkNic, LanLinkStatus, LanLinkPeerSummary } from '../../../shared/lanlink';
@@ -660,7 +660,13 @@ export function roleBindingHint(b: RoleBinding):
   if (b.model && b.agent && !launcherSupportsModelFlag(b.agent)) {
     return { key: 'settings.roleBindingHintNoGrammar', params: { agent: b.agent } };
   }
-  if (b.agent && !b.model && !b.args && !b.effort && !b.skipPermissions) {
+  // #1680 — the checkbox is only offered for an agent with a verified command,
+  // so a stored `freshContext` left behind by an agent change is invisible
+  // unless the row says so.
+  if (b.freshContext && !freshContextGrammarFor(b.agent)) {
+    return { key: 'settings.roleBindingHintFreshContextInert' };
+  }
+  if (b.agent && !b.model && !b.args && !b.effort && !b.skipPermissions && !b.freshContext) {
     return { key: 'settings.roleBindingHintInert' };
   }
   return undefined;
@@ -837,6 +843,21 @@ export function RoleBindingsView({ bindings, onChange, t, catalog, onRefreshMode
                       aria-label={t('settings.roleBindingSkipPermissions')}
                     />
                     {t('settings.roleBindingSkipPermissions')}
+                  </label>
+                )}
+                {/* #1680 — only for an agent whose fresh-context command is verified. */}
+                {grammar?.freshContext && (
+                  <label
+                    className="flex items-center gap-1.5 text-[12px] text-[var(--text-sub)]"
+                    title={t('settings.roleBindingFreshContextTooltip', { command: grammar.freshContext.command })}
+                    data-role-binding-fresh-context={role}
+                  >
+                    <Checkbox
+                      checked={!!b.freshContext}
+                      onCheckedChange={(v) => update(role, { freshContext: v || undefined })}
+                      aria-label={t('settings.roleBindingFreshContext')}
+                    />
+                    {t('settings.roleBindingFreshContext')}
                   </label>
                 )}
                 {onRefreshModels && b.agent !== 'claude' && (

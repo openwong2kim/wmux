@@ -1189,10 +1189,15 @@ export const en = {
     'Pick an agent too — a model on its own is not enforced (wmux can’t tell whose --model flag it is).',
   'settings.roleBindingHintNoGrammar':
     'wmux has no verified --model flag for {agent}, so the model is ignored. Extra args still apply.',
-  'settings.roleBindingHintInert': 'Add a model, an effort, skip permissions or extra args — an agent alone enforces nothing.',
+  'settings.roleBindingHintInert': 'Add a model, an effort, skip permissions, fresh context or extra args — an agent alone enforces nothing.',
+  'settings.roleBindingHintFreshContextInert':
+    'Fresh context per task works only with claude or codex as the agent; for this role it does nothing.',
   'settings.roleBindingEffortLabel': '{role} effort',
   'settings.roleBindingEffortDefault': 'Effort: default',
   'settings.roleBindingSkipPermissions': 'Skip permissions',
+  'settings.roleBindingFreshContext': 'Fresh context per task',
+  'settings.roleBindingFreshContextTooltip':
+    'When this pane is handed a NEW task (the orchestrator’s terminal_send with new_task, or a new send_message from another agent), wmux first types {command} so the previous task’s conversation does not carry over. Never on a follow-up or a reply. Skipped while the agent is busy or the pane still has other open agent tasks.',
   'settings.roleBindingRefreshModels': 'Refresh models',
   // D2 — enforced-launch affordances (Fleet roster chip + pane badge).
   'deck.fleet.enforcedLaunch': 'Enforced launch: {binding}',

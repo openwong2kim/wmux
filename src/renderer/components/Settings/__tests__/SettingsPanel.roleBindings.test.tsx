@@ -36,6 +36,18 @@ describe('roleBindingHint — a row never lies about what it enforces (P2-4)', (
     expect(roleBindingHint({ agent: 'codex', skipPermissions: true })).toBeUndefined();
   });
 
+  // #1680 — fresh context counts as enforced only where it can run.
+  it('counts fresh context as enforced for claude/codex, and flags it anywhere else', () => {
+    expect(roleBindingHint({ agent: 'claude', freshContext: true })).toBeUndefined();
+    expect(roleBindingHint({ agent: 'codex', freshContext: true })).toBeUndefined();
+    expect(roleBindingHint({ agent: 'opencode', freshContext: true })?.key).toBe(
+      'settings.roleBindingHintFreshContextInert',
+    );
+    expect(roleBindingHint({ freshContext: true })?.key).toBe('settings.roleBindingHintFreshContextInert');
+    // The other hints keep their precedence.
+    expect(roleBindingHint({ model: 'haiku', freshContext: true })?.key).toBe('settings.roleBindingHintNoAgent');
+  });
+
   it('is silent for a fully valid binding', () => {
     expect(roleBindingHint({ agent: 'claude', model: 'haiku' })).toBeUndefined();
     expect(roleBindingHint({ agent: 'codex', model: 'gpt-5.5', args: '--verbose' })).toBeUndefined();
@@ -116,6 +128,38 @@ describe('RoleBindingsView render', () => {
     const agy = render({ Builder: { agent: 'agy' } });
     expect(agy).toContain('Skip permissions');
     expect(render()).not.toContain('data-role-binding-options');
+  });
+
+  // #1680 — the checkbox appears only for an agent with a verified command, and
+  // its tooltip names that command.
+  it('offers fresh context per task for claude and codex only', () => {
+    const claude = render({ Builder: { agent: 'claude' } });
+    expect(claude).toContain('data-role-binding-fresh-context="Builder"');
+    expect(claude).toContain('Fresh context per task');
+    expect(claude).toContain('first types /clear');
+    expect(render({ Builder: { agent: 'codex' } })).toContain('first types /new');
+    for (const agent of ['opencode', 'gemini', 'agy']) {
+      expect(render({ Builder: { agent } })).not.toContain('data-role-binding-fresh-context');
+    }
+  });
+
+  it('a stale fresh-context flag on an agent without the command shows its hint', () => {
+    const html = render({ Tester: { agent: 'gemini', args: '--x', freshContext: true } });
+    expect(html).toContain('data-role-binding-hint="Tester"');
+    expect(html).toContain('works only with claude or codex');
+  });
+
+  it('toggling fresh context merges onto the binding', () => {
+    const onChange = vi.fn();
+    const tree = RoleBindingsView({ bindings: { Builder: { agent: 'claude', model: 'haiku' } }, onChange, t: translate });
+    const box = findByAriaLabel(tree, 'Fresh context per task') as unknown as
+      | { props: { onCheckedChange: (v: boolean) => void } }
+      | undefined;
+    expect(box).toBeDefined();
+    box?.props.onCheckedChange(true);
+    expect(onChange).toHaveBeenLastCalledWith('Builder', { agent: 'claude', model: 'haiku', freshContext: true });
+    box?.props.onCheckedChange(false);
+    expect(onChange).toHaveBeenLastCalledWith('Builder', { agent: 'claude', model: 'haiku', freshContext: undefined });
   });
 
   it('previews the launch the binding produces', () => {
