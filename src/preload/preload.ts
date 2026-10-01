@@ -493,6 +493,8 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.GATED_SUBMIT, ptyId, text, agent ?? null, {
         newTask: opts?.newTask === true,
         ...(opts?.keepContext ? { keepContext: opts.keepContext } : {}),
+        ...(opts?.taskId ? { taskId: opts.taskId } : {}),
+        ...(opts?.pane ? { pane: opts.pane } : {}),
       }) as Promise<
         import('../shared/ptyMessageDelivery').GatedSubmitResult
       >,

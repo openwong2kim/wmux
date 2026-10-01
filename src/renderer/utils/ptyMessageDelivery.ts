@@ -71,6 +71,8 @@ export async function gatedSubmitToPty(
       ? await submit(ptyId, text, options.agent ?? null, {
           newTask: true,
           ...(options.keepContext ? { keepContext: options.keepContext } : {}),
+          ...(options.taskId ? { taskId: options.taskId } : {}),
+          ...(options.pane ? { pane: options.pane } : {}),
         })
       : await submit(ptyId, text, options.agent ?? null);
     return result && typeof result === 'object' && 'ok' in result

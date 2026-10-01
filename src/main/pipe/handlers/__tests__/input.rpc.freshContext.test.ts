@@ -10,7 +10,7 @@ import type { PTYManager } from '../../../pty/PTYManager';
 import type { DaemonClient } from '../../../DaemonClient';
 import type { RoleBinding } from '../../../../shared/orchestratorRole';
 import type { SessionStartReceipt } from '../../../../shared/hooks/HookSignalRouter';
-import type { GatedSubmitResult } from '../../../../shared/ptyMessageDelivery';
+import type { GatedSubmitOptions, GatedSubmitResult } from '../../../../shared/ptyMessageDelivery';
 
 const { sendToRendererMock } = vi.hoisted(() => ({ sendToRendererMock: vi.fn() }));
 vi.mock('../_bridge', () => ({ sendToRenderer: sendToRendererMock }));
@@ -22,13 +22,30 @@ const fakeWindow = {} as BrowserWindow;
  * `/clear` + Enter clears the screen (and fires SessionStart when `hooks`),
  * any other text + Enter moves it into the transcript.
  */
-function scriptedPane(opts: { binding?: RoleBinding; hooks?: boolean; clearNeverLands?: boolean; local?: boolean } = {}) {
+interface PaneOptions {
+  binding?: RoleBinding;
+  hooks?: boolean;
+  clearNeverLands?: boolean;
+  local?: boolean;
+  /** The daemon's tasks for the pane's workspace; null = unreadable. */
+  daemonTasks?: unknown[] | null;
+  /** The approval gate's screen read with this 1-based index shows a dialog. */
+  dialogOnGateRead?: number;
+  lockWaitMs?: number;
+  /** The daemon task read waits for this (holds a delivery inside the lock). */
+  holdDaemonQuery?: Promise<void>;
+}
+
+const DIALOG = [' Bash command', '', '   touch probe.txt', '', ' Do you want to proceed?', ' ❯ 1. Yes', '   2. No'].join('\n');
+
+function scriptedPane(opts: PaneOptions = {}) {
   const writes: string[] = [];
   let revision = 1;
   let composer = '';
   let transcript = ['● earlier task, done'];
   let receipt: SessionStartReceipt | undefined = opts.hooks ? { at: 1, agent: 'claude', source: 'startup' } : undefined;
   let clock = 5_000_000;
+  let gateReads = 0;
   const screen = (): string => [...transcript, '', '──────────', `> ${composer}`].join('\n');
   const dc = {
     isConnected: true,
@@ -41,6 +58,8 @@ function scriptedPane(opts: { binding?: RoleBinding; hooks?: boolean; clearNever
       inputQuiet: true,
       inputRevision: revision,
       incarnationId: 'inc-1',
+      keyInputRevision: revision,
+      keyInputQuiet: true,
     })),
     writeToSession: (_id: string, data: string) => {
       writes.push(data);
@@ -89,7 +108,12 @@ function scriptedPane(opts: { binding?: RoleBinding; hooks?: boolean; clearNever
       readSessionStart: () => receipt,
       sleep: async () => undefined,
       answerPolicy: async () => ({ allowed: false, reason: 'autonomy-off' }),
-      readScreenText: async () => screen(),
+      readScreenText: async () => (++gateReads === opts.dialogOnGateRead ? DIALOG : screen()),
+      queryDaemonTasks: async () => {
+        await opts.holdDaemonQuery;
+        return opts.daemonTasks === undefined ? [] : opts.daemonTasks;
+      },
+      ...(opts.lockWaitMs !== undefined ? { freshContextLockWaitMs: opts.lockWaitMs } : {}),
       freshContextOptions: {
         sleep: async (ms) => {
           clock += ms;
@@ -167,6 +191,36 @@ describe('input.send newTask (#1680)', () => {
     expect(res.result).toMatchObject({ freshContext: 'skipped_unobservable' });
   });
 
+  // Review P2-B: the gate ran before this send waited for the pane's lock; it
+  // runs again right before the command is typed.
+  it('re-checks the approval gate before typing the command', async () => {
+    // Read 1 is the handler's own gate; read 2 is the one inside the lock.
+    const { router, writes } = scriptedPane({ binding: FRESH, hooks: true, dialogOnGateRead: 2 });
+    const res = await send(router, { text: 'build the parser', submit: true, newTask: true });
+    expect(res.ok).toBe(false);
+    expect(writes).toEqual([]);
+  });
+
+  it('re-checks the gate before the text and says the pane was already cleared', async () => {
+    const { router, writes } = scriptedPane({ binding: FRESH, hooks: true, dialogOnGateRead: 3 });
+    const res = await send(router, { text: 'build the parser', submit: true, newTask: true });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/already cleared/);
+    expect(writes).toEqual(['/clear', '\r']);
+  });
+
+  it('a second new-task send that cannot get the pane fails with nothing written', async () => {
+    const { router, writes } = scriptedPane({ binding: FRESH, hooks: true, lockWaitMs: 0 });
+    const [first, second] = await Promise.all([
+      send(router, { text: 'first task', submit: true, newTask: true }),
+      send(router, { text: 'second task', submit: true, newTask: true }),
+    ]);
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(false);
+    if (!second.ok) expect(second.error).toMatch(/nothing was written/);
+    expect(writes.join('')).not.toContain('second task');
+  });
+
   it('an ordinary send never carries freshContext fields and never clears', async () => {
     const { router, writes } = scriptedPane({ binding: FRESH, hooks: true });
     const res = await send(router, { text: 'and also the lexer', submit: true });
@@ -184,16 +238,27 @@ describe('gated submit, new-task delivery (#1680)', () => {
     return r as Extract<GatedSubmitResult, { ok: true }>;
   };
 
+  const PANE = { workspaceId: 'ws-self', paneId: 'pane-a', surfaceId: 'surf-a' };
+  const NEW = { newTask: true, taskId: 'task-new', pane: PANE } as const;
+  const openTask = (id: string, side: 'to' | 'from', state = 'working') => ({
+    id,
+    status: { state },
+    metadata: {
+      to: side === 'to' ? { workspaceId: 'ws-self', paneId: 'pane-a' } : { workspaceId: 'ws-peer' },
+      from: side === 'from' ? { workspaceId: 'ws-self', surfaceId: 'surf-a' } : { workspaceId: 'ws-peer' },
+    },
+  });
+
   it('clears before the paste and reports it', async () => {
     const { gatedSubmit, writes } = scriptedPane({ binding: FRESH, hooks: true });
-    const res = ok(await gatedSubmit('pty-a', 'new task', 'Claude Code', { newTask: true }));
+    const res = ok(await gatedSubmit('pty-a', 'new task', 'Claude Code', NEW));
     expect(writes).toEqual(['/clear', '\r', '\x1b[200~new task\x1b[201~', '\r']);
     expect(res).toMatchObject({ freshContext: 'applied', freshContextSignal: 'session_start' });
   });
 
   it('refuses with fresh_context_timeout and pastes nothing when the command never finishes', async () => {
     const { gatedSubmit, writes } = scriptedPane({ binding: FRESH, hooks: true, clearNeverLands: true });
-    const res = await gatedSubmit('pty-a', 'new task', 'Claude Code', { newTask: true });
+    const res = await gatedSubmit('pty-a', 'new task', 'Claude Code', NEW);
     expect(res).toMatchObject({ ok: false, reason: 'fresh_context_timeout' });
     expect(res).not.toHaveProperty('pasted');
     expect(writes).toEqual(['/clear', '\r']);
@@ -204,6 +269,63 @@ describe('gated submit, new-task delivery (#1680)', () => {
     const res = ok(await gatedSubmit('pty-a', 'new task', 'Claude Code', { newTask: true, keepContext: 'open_a2a_task' }));
     expect(writes).toEqual(['\x1b[200~new task\x1b[201~', '\r']);
     expect(res).toMatchObject({ freshContext: 'skipped_busy', freshContextReason: expect.stringMatching(/^open_a2a_task/) });
+  });
+
+  // Review P2-C: the renderer's task list is not reloaded after a restart, so
+  // main also asks the daemon's store, and never clears when it cannot.
+  it('keeps the conversation when the daemon store has another open task on the pane', async () => {
+    for (const task of [openTask('t-old', 'to'), openTask('t-sent', 'from', 'submitted')]) {
+      const { gatedSubmit, writes } = scriptedPane({ binding: FRESH, hooks: true, daemonTasks: [task] });
+      const res = ok(await gatedSubmit('pty-a', 'new task', 'Claude Code', NEW));
+      expect(writes).toEqual(['\x1b[200~new task\x1b[201~', '\r']);
+      expect(res).toMatchObject({ freshContext: 'skipped_busy', freshContextReason: expect.stringMatching(/^open_a2a_task/) });
+    }
+  });
+
+  it('ignores ended tasks, other panes and the task being delivered', async () => {
+    const daemonTasks = [
+      openTask('t-done', 'to', 'completed'),
+      openTask('task-new', 'to'),
+      { id: 't-elsewhere', status: { state: 'working' }, metadata: { to: { workspaceId: 'ws-self', paneId: 'pane-b' }, from: { workspaceId: 'ws-peer' } } },
+    ];
+    const { gatedSubmit, writes } = scriptedPane({ binding: FRESH, hooks: true, daemonTasks });
+    const res = ok(await gatedSubmit('pty-a', 'new task', 'Claude Code', NEW));
+    expect(writes[0]).toBe('/clear');
+    expect(res).toMatchObject({ freshContext: 'applied' });
+  });
+
+  it('never clears when the open tasks cannot be known', async () => {
+    const cases: Array<[unknown[] | null, GatedSubmitOptions]> = [
+      [null, NEW],
+      [[], { newTask: true, taskId: 'task-new' }],
+    ];
+    for (const [daemonTasks, options] of cases) {
+      const { gatedSubmit, writes } = scriptedPane({ binding: FRESH, hooks: true, daemonTasks });
+      const res = ok(await gatedSubmit('pty-a', 'new task', 'Claude Code', options));
+      expect(writes).not.toContain('/clear');
+      expect(res).toMatchObject({ freshContext: 'skipped_busy', freshContextReason: expect.stringMatching(/^a2a_tasks_unknown/) });
+    }
+  });
+
+  it('an unbound pane costs no daemon task lookup', async () => {
+    const { gatedSubmit } = scriptedPane({ binding: undefined, daemonTasks: null });
+    const res = ok(await gatedSubmit('pty-a', 'new task', 'Claude Code', NEW));
+    expect(res).toMatchObject({ freshContext: 'not_bound' });
+  });
+
+  // Review P2-D: a second new task waits a bounded time, then gives up with
+  // nothing written.
+  it('refuses with fresh_context_busy when the pane stays held', async () => {
+    let release: () => void = () => undefined;
+    const holdDaemonQuery = new Promise<void>((resolve) => { release = resolve; });
+    const { gatedSubmit, writes } = scriptedPane({ binding: FRESH, hooks: true, lockWaitMs: 20, holdDaemonQuery });
+    const firstP = gatedSubmit('pty-a', 'first task', 'Claude Code', NEW);
+    const second = await gatedSubmit('pty-a', 'second task', 'Claude Code', NEW);
+    release();
+    const first = await firstP;
+    expect(first.ok).toBe(true);
+    expect(second).toMatchObject({ ok: false, reason: 'fresh_context_busy', detail: expect.stringMatching(/nothing was written/) });
+    expect(writes.join('')).not.toContain('second task');
   });
 
   it('a reply (no newTask) is delivered exactly as before', async () => {

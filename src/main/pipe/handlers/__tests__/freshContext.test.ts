@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   commandOnCursorRow,
+  FreshContextBusy,
   FreshContextTimeout,
   runFreshContext,
   withFreshContextLock,
@@ -46,6 +47,15 @@ interface ScriptOptions {
   afterEnter?: { ms: number; patch: Partial<FreshContextAgentState> };
   /** Report awaiting_input until this many ms after Enter. */
   awaitingUntilMs?: number;
+  /** false = an older daemon without the key-only counter and flags. */
+  keyCounter?: boolean;
+  /** The daemon's key-only quiet flag. */
+  keyInputQuiet?: boolean;
+  /** The daemon's flag: the current agent's hooks have reported. */
+  hookReports?: boolean;
+  /** A pointer moving over the pane: every state read sees one more focus or
+   *  motion report (the all-writes counter moves, the key counter does not). */
+  pointerMoving?: boolean;
 }
 
 function scriptedPane(o: ScriptOptions = {}) {
@@ -58,6 +68,10 @@ function scriptedPane(o: ScriptOptions = {}) {
     inputQuiet: o.inputQuiet ?? true,
     inputRevision: 10,
     incarnationId: 'inc-1',
+    ...(o.keyCounter === false
+      ? {}
+      : { keyInputRevision: 10, keyInputQuiet: o.keyInputQuiet ?? true }),
+    ...(o.hookReports !== undefined ? { hookReports: o.hookReports } : {}),
   };
   let screen = o.screen ?? CLAUDE_IDLE;
   let receipt: SessionStartReceipt | undefined = o.priorReceipt;
@@ -88,6 +102,7 @@ function scriptedPane(o: ScriptOptions = {}) {
   const probe: FreshContextProbe = {
     readAgentState: async () => {
       tick();
+      if (o.pointerMoving) state.inputRevision += 1;
       return state.agentName === undefined ? null : { ...state };
     },
     readMirrorStatus: async () => o.mirror ?? null,
@@ -99,6 +114,7 @@ function scriptedPane(o: ScriptOptions = {}) {
     write: (data) => {
       writes.push(data);
       state.inputRevision += 1;
+      if (state.keyInputRevision !== undefined) state.keyInputRevision += 1;
       if (data === '\r') {
         enterAt = clock;
         return;
@@ -108,6 +124,7 @@ function scriptedPane(o: ScriptOptions = {}) {
       } else {
         composer += data;
         state.inputRevision += o.extraTypingRevisions ?? 0;
+        if (state.keyInputRevision !== undefined) state.keyInputRevision += o.extraTypingRevisions ?? 0;
       }
       if (!o.noEcho) screen = withRow(`${glyph}${composer}`);
     },
@@ -141,14 +158,22 @@ describe('commandOnCursorRow', () => {
   });
 
   // Composer rows as real captures draw them (src/daemon/approvals/__tests__/
-  // fixtures/terminal-prompts: Claude Code 2.1.283 `❯ make the button blue`
-  // between rules, Codex 0.157.1 `› CMD one`), with the command typed instead.
+  // fixtures/terminal-prompts), with the command typed in. Claude Code 2.1.283
+  // draws its `❯` row between rules; in claude-ask-single-03 the row reads
+  // `❯ make the button blue`, but that is a PROMPT SUGGESTION (ghost text after
+  // the caret at column 2, keysSent "3"), not typed input. Typing replaces the
+  // suggestion, so the typed row is `❯ /clear`. Codex 0.157.1: `› CMD one`.
   it('reads the real composer row shapes', () => {
     const rule = '─'.repeat(100);
     const claude = ['  ◐ medium · /effort', rule, '❯ /clear'].join('\n');
     expect(commandOnCursorRow(claude, '/clear')).toBe('alone');
+    // A real draft (typed text) before the command, in the same row shape.
+    // The read is plain text: ghost text left NEXT TO a typed command would
+    // read the same way, and is conservatively treated as a draft too.
     expect(commandOnCursorRow([rule, '❯ make the button blue/clear'].join('\n'), '/clear')).toBe('with_draft');
     expect(commandOnCursorRow([rule, '❯'].join('\n'), '/clear')).toBe('absent');
+    // After the clear, a fresh suggestion on the empty composer is not the command.
+    expect(commandOnCursorRow([rule, '❯ make the button blue'].join('\n'), '/clear')).toBe('absent');
     expect(commandOnCursorRow(['• Running touch out.txt', '', '› /new'].join('\n'), '/new')).toBe('alone');
     expect(commandOnCursorRow(['› CMD one/new'].join('\n'), '/new')).toBe('with_draft');
   });
@@ -188,12 +213,43 @@ describe('runFreshContext — not_bound / skipped before anything is typed', () 
   });
 
   it('skipped_busy when the agent works, input is active, or the renderer shows it busy', async () => {
-    for (const o of [{ status: 'running' }, { status: 'awaiting_input' }, { inputQuiet: false }, { mirror: 'running' }]) {
+    for (const o of [{ status: 'running' }, { status: 'awaiting_input' }, { keyInputQuiet: false }, { mirror: 'running' }]) {
       const pane = scriptedPane(o);
       const out = await runFreshContext(CLAUDE, pane.probe, pane.opts);
       expect(out.freshContext).toBe('skipped_busy');
       expect(pane.writes).toEqual([]);
     }
+  });
+
+  // Review P1-A: agents turn on focus and any-motion mouse reporting, so the
+  // all-writes counter moves whenever the pointer crosses the pane.
+  it('a pointer over the pane is not someone typing; an older daemon stays conservative', async () => {
+    const pointer = scriptedPane({ inputQuiet: false, pointerMoving: true, sessionStartSource: null });
+    expect((await runFreshContext(CLAUDE, pointer.probe, pointer.opts)).freshContext).toBe('applied');
+    const oldDaemon = scriptedPane({ inputQuiet: false, keyCounter: false });
+    expect(await runFreshContext(CLAUDE, oldDaemon.probe, oldDaemon.opts)).toMatchObject({
+      freshContext: 'skipped_busy',
+      freshContextReason: expect.stringMatching(/^input_active/),
+    });
+  });
+
+  it('asks a keepContext function only when the role asks for fresh context', async () => {
+    let asked = 0;
+    const keepContext = async () => {
+      asked++;
+      return 'a2a_tasks_unknown' as const;
+    };
+    const unbound = scriptedPane();
+    const notBound = await runFreshContext({ agent: 'claude' }, unbound.probe, { ...unbound.opts, keepContext });
+    expect(notBound.freshContext).toBe('not_bound');
+    expect(asked).toBe(0);
+    const bound = scriptedPane();
+    expect(await runFreshContext(CLAUDE, bound.probe, { ...bound.opts, keepContext })).toMatchObject({
+      freshContext: 'skipped_busy',
+      freshContextReason: expect.stringMatching(/^a2a_tasks_unknown/),
+    });
+    expect(asked).toBe(1);
+    expect(bound.writes).toEqual([]);
   });
 });
 
@@ -232,18 +288,71 @@ describe('runFreshContext — evidence after Enter', () => {
     expect(pane.writes).toEqual(['/clear', '\r']);
   });
 
-  it('claude with hooks but no SessionStart: times out, nothing written after Enter', async () => {
+  // Review P1-B: a receipt from an earlier run of claude in this pane, and a
+  // relaunch whose hooks never reach wmux. The hook is preferred, never
+  // required: after the grace window the settled screen is taken.
+  it('claude relaunched without hooks: waits out the grace window, then takes the screen', async () => {
     const pane = scriptedPane({ priorReceipt: { at: 1, agent: 'claude', source: 'startup' }, sessionStartSource: null });
-    const err = await runFreshContext(CLAUDE, pane.probe, pane.opts).catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(FreshContextTimeout);
-    expect((err as FreshContextTimeout).code).toBe('timeout');
-    expect((err as Error).message).toContain('SessionStart hook');
+    const started = pane.opts.now();
+    const out = await runFreshContext(CLAUDE, pane.probe, pane.opts);
+    expect(out).toMatchObject({
+      freshContext: 'applied',
+      freshContextSignal: 'screen',
+      freshContextReason: expect.stringMatching(/^session_start_missing/),
+    });
+    const elapsed = pane.opts.now() - started;
+    expect(elapsed).toBeGreaterThanOrEqual(500 + 300 + 2_500);
+    expect(elapsed).toBeLessThan(8_000);
     expect(pane.writes).toEqual(['/clear', '\r']);
   });
 
-  it('a compact or startup-before-Enter receipt is not evidence', async () => {
+  it("does not wait for the hook when the daemon says the current agent's hooks never reported", async () => {
+    const pane = scriptedPane({
+      priorReceipt: { at: 1, agent: 'claude', source: 'startup' }, sessionStartSource: null, hookReports: false,
+    });
+    const started = pane.opts.now();
+    const out = await runFreshContext(CLAUDE, pane.probe, pane.opts);
+    expect(out).toEqual({ freshContext: 'applied', freshContextCommand: '/clear', freshContextSignal: 'screen' });
+    expect(pane.opts.now() - started).toBeLessThan(2_000);
+  });
+
+  it('a compact receipt is not evidence', async () => {
     const pane = scriptedPane({ priorReceipt: { at: 1, agent: 'claude', source: 'startup' }, sessionStartSource: 'compact' });
-    await expect(runFreshContext(CLAUDE, pane.probe, pane.opts)).rejects.toBeInstanceOf(FreshContextTimeout);
+    const out = await runFreshContext(CLAUDE, pane.probe, pane.opts);
+    expect(out).toMatchObject({ freshContextSignal: 'screen', freshContextReason: expect.stringMatching(/^session_start_missing/) });
+  });
+
+  // Review P2-A: the banner is usually still on screen before `/new`, and an
+  // emptied composer under the OLD transcript is not a new conversation.
+  it('a screen that still looks as before is taken only after a long still hold', async () => {
+    const pane = scriptedPane({ agent: 'Codex CLI', screen: CODEX_IDLE, cleared: CODEX_IDLE, sessionStartSource: null });
+    const started = pane.opts.now();
+    const out = await runFreshContext(CODEX, pane.probe, pane.opts);
+    expect(out).toMatchObject({
+      freshContext: 'applied',
+      freshContextSignal: 'screen',
+      freshContextReason: expect.stringMatching(/screen_unchanged/),
+    });
+    expect(pane.opts.now() - started).toBeGreaterThanOrEqual(500 + 3_000);
+  });
+
+  it('a changed screen is taken as soon as it settles', async () => {
+    const pane = scriptedPane({ agent: 'Codex CLI', screen: CODEX_IDLE, cleared: CODEX_NEW, sessionStartSource: null });
+    const started = pane.opts.now();
+    await runFreshContext(CODEX, pane.probe, pane.opts);
+    expect(pane.opts.now() - started).toBeLessThan(1_500);
+  });
+
+  it('a state read that fails after typing erases the command (state_unreadable)', async () => {
+    const pane = scriptedPane();
+    const read = pane.probe.readAgentState;
+    let reads = 0;
+    pane.probe.readAgentState = async () => (++reads === 2 ? null : read());
+    expect(await runFreshContext(CLAUDE, pane.probe, pane.opts)).toMatchObject({
+      freshContext: 'skipped_unobservable',
+      freshContextReason: expect.stringMatching(/^state_unreadable/),
+    });
+    expect(pane.writes).toEqual(['/clear', '\x7f'.repeat(6)]);
   });
 
   it('claude without hooks: applied on the settled screen', async () => {
@@ -302,9 +411,22 @@ describe('runFreshContext — evidence after Enter', () => {
   it('fails when the session changes or someone types after the Enter', async () => {
     const changed = scriptedPane({ clearMs: 2_000, afterEnter: { ms: 200, patch: { incarnationId: 'inc-2' } } });
     await expect(runFreshContext(CLAUDE, changed.probe, changed.opts)).rejects.toMatchObject({ code: 'session_changed' });
-    const typed = scriptedPane({ clearMs: 2_000, afterEnter: { ms: 200, patch: { inputRevision: 99 } } });
+    const typed = scriptedPane({ clearMs: 2_000, afterEnter: { ms: 200, patch: { keyInputRevision: 99 } } });
     await expect(runFreshContext(CLAUDE, typed.probe, typed.opts)).rejects.toMatchObject({ code: 'input_interleaved' });
     expect(typed.writes).toEqual(['/clear', '\r']);
+  });
+
+  it('a pointer moving over the pane during the wait does not fail it', async () => {
+    const pane = scriptedPane({ pointerMoving: true, sessionStartSource: null });
+    expect((await runFreshContext(CLAUDE, pane.probe, pane.opts)).freshContext).toBe('applied');
+    // An older daemon cannot tell, and stays conservative: the command is
+    // erased before its Enter and the task goes in without a clear.
+    const old = scriptedPane({ pointerMoving: true, keyCounter: false, sessionStartSource: null });
+    expect(await runFreshContext(CLAUDE, old.probe, old.opts)).toMatchObject({
+      freshContext: 'skipped_busy',
+      freshContextReason: expect.stringMatching(/^input_interleaved/),
+    });
+    expect(old.writes).not.toContain('\r');
   });
 });
 
@@ -329,6 +451,23 @@ describe('withFreshContextLock', () => {
     releaseFirst();
     await Promise.all([first, second]);
     expect(order).toEqual(['first:start', 'other', 'first:end', 'second']);
+  });
+
+  // Review P2-D: a queued send must never outlive its caller.
+  it('gives up after the bounded wait, before writing anything, and keeps the queue intact', async () => {
+    let releaseFirst: () => void = () => undefined;
+    const first = withFreshContextLock('p4', () => new Promise<void>((resolve) => { releaseFirst = resolve; }));
+    let ran = false;
+    await expect(withFreshContextLock('p4', async () => { ran = true; }, 20)).rejects.toBeInstanceOf(FreshContextBusy);
+    expect(ran).toBe(false);
+    const order: string[] = [];
+    const third = withFreshContextLock('p4', async () => { order.push('third'); });
+    await Promise.resolve();
+    expect(order).toEqual([]);
+    releaseFirst();
+    await first;
+    await third;
+    expect(order).toEqual(['third']);
   });
 
   it('releases the pane when the work throws', async () => {

@@ -73,6 +73,32 @@ export const FRESH_CONTEXT_POLL_MS = 100;
 export const FRESH_CONTEXT_SETTLE_MS = 300;
 
 /**
+ * How much longer a pane whose agent's hooks report SessionStart is given for
+ * that hook, once the screen already shows the command finished. Past it the
+ * screen is accepted (`freshContextSignal: 'screen'`, reason
+ * `session_start_missing`): a pane whose current agent runs without the hooks
+ * (another config dir, hooks removed) must not wait forever on a receipt left
+ * by an earlier run.
+ */
+export const FRESH_CONTEXT_HOOK_GRACE_MS = 2_500;
+
+/**
+ * How long the screen must hold unchanged when it looks the same as before the
+ * command (an already-empty conversation, e.g. a just-launched agent) before
+ * that counts as finished (reason `screen_unchanged`). A screen that changed
+ * needs only FRESH_CONTEXT_SETTLE_MS.
+ */
+export const FRESH_CONTEXT_UNCHANGED_HOLD_MS = 3_000;
+
+/**
+ * How long a new-task send waits for another new-task send to the same pane to
+ * finish before it gives up with nothing written. Well under the callers'
+ * budgets below, so a queued send never outlives its caller and then delivers
+ * behind a retry.
+ */
+export const FRESH_CONTEXT_LOCK_WAIT_MS = 4_000;
+
+/**
  * Main's renderer budget for an a2a new-task send. The renderer's delivery can
  * now include a fresh-context step (up to FRESH_CONTEXT_TIMEOUT_MS after the
  * command, plus the reads before it and the paste after it), which the 5 s

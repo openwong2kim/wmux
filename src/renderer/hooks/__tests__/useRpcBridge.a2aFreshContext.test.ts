@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PaneLeaf, Surface, Workspace } from '../../../shared/types';
 import { useStore } from '../../stores';
 import { handleRpcMethod } from '../useRpcBridge';
-import { paneHasOtherOpenA2aTask } from '../a2aFreshContext';
+import { paneAddressOfPty, paneHasOtherOpenA2aTask } from '../a2aFreshContext';
 
 const PTY = 'pty-fresh-target';
 const BODY = 'implement the parser';
@@ -32,6 +32,14 @@ type Result = { ok?: boolean; taskId?: string; delivery?: Record<string, unknown
 
 const send = async (params: Record<string, unknown>): Promise<Result> =>
   (await handleRpcMethod('a2a.task.send', { workspaceId: SENDER.id, to: TARGET.id, message: BODY, ...params })) as Result;
+
+/** What a new-task delivery asks main for: the step, the task, and where the
+ *  pane sits (main checks the daemon's open tasks for it). */
+const NEW_TASK = {
+  newTask: true,
+  taskId: expect.stringMatching(/^task-/),
+  pane: { workspaceId: TARGET.id, paneId: `pane-${TARGET.id}`, surfaceId: `surf-pane-${TARGET.id}` },
+};
 
 /** The options main was asked for on each gated submit to the target. */
 const gateOptions = (): unknown[] => gate.mock.calls.filter(([pty]) => pty === PTY).map((c) => c[3]);
@@ -57,7 +65,7 @@ describe('a2a fresh context (#1680)', () => {
   it('a new task asks main for the fresh-context step and reports what it did', async () => {
     gateAnswer = { ok: true, freshContext: 'applied', freshContextCommand: '/clear', freshContextSignal: 'session_start' };
     const result = await send({ silent: false });
-    expect(gateOptions()).toEqual([{ newTask: true }]);
+    expect(gateOptions()).toEqual([NEW_TASK]);
     expect(result.delivery).toMatchObject({
       notified: true,
       freshContext: 'applied',
@@ -69,7 +77,7 @@ describe('a2a fresh context (#1680)', () => {
   it('the one-line nudge to a live agent is a new task too', async () => {
     useStore.getState().hydrateAgentAlive({ [PTY]: true });
     await send({});
-    expect(gateOptions()).toEqual([{ newTask: true }]);
+    expect(gateOptions()).toEqual([NEW_TASK]);
   });
 
   it('a role that never asked adds nothing to the receipt (not_bound)', async () => {
@@ -108,7 +116,7 @@ describe('a2a fresh context (#1680)', () => {
     expect(earlier.taskId).toBeDefined();
     gate.mockClear();
     await send({ silent: false });
-    expect(gateOptions()).toEqual([{ newTask: true, keepContext: 'open_a2a_task' }]);
+    expect(gateOptions()).toEqual([{ ...NEW_TASK, keepContext: 'open_a2a_task' }]);
   });
 
   it('an ended task does not hold the pane', async () => {
@@ -124,7 +132,18 @@ describe('a2a fresh context (#1680)', () => {
     }));
     gate.mockClear();
     await send({ silent: false });
-    expect(gateOptions()).toEqual([{ newTask: true }]);
+    expect(gateOptions()).toEqual([NEW_TASK]);
+  });
+});
+
+describe('paneAddressOfPty', () => {
+  it('places a pty in its workspace, pane and surface', () => {
+    expect(paneAddressOfPty([SENDER, TARGET], PTY)).toEqual({
+      workspaceId: TARGET.id,
+      paneId: `pane-${TARGET.id}`,
+      surfaceId: `surf-pane-${TARGET.id}`,
+    });
+    expect(paneAddressOfPty([SENDER, TARGET], 'pty-nowhere')).toBeUndefined();
   });
 });
 

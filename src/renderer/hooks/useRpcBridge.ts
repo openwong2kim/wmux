@@ -54,7 +54,7 @@ import {
 import { gatedSubmitToPty, submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
 import type { GatedSubmitRefusal, GatedSubmitResult } from '../../shared/ptyMessageDelivery';
 import type { FreshContextReply } from '../../shared/freshContext';
-import { paneHasOtherOpenA2aTask } from './a2aFreshContext';
+import { paneAddressOfPty, paneHasOtherOpenA2aTask } from './a2aFreshContext';
 import { publishA2aTask } from '../events/publisher';
 import { isReceiverPaneGone } from '../../shared/a2aOrphanedTask';
 import { resolvePaneAddress, activePaneTerminalPty, resolveUnaddressedDelivery, paneHasDetectedAgent, describeAmbiguousDelivery, wsMetadataMayStandIn, NO_AGENT_PANE_HINT, decideSameWsSend, decideReplyDelivery, REPLY_SUPPRESS_HINTS, submitReceiptFields, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, detectedAgentTuiSlug, type PaneAddress } from './a2aAddressing';
@@ -352,9 +352,12 @@ async function deliverA2aText(
     newTask && paneHasOtherOpenA2aTask(Object.values(s.a2aTasks), s.workspaces, ptyId, newTask.taskId)
       ? ({ keepContext: 'open_a2a_task' } as const)
       : {};
+  // Main also asks the daemon's task store (this list is not reloaded after a
+  // restart), keyed by where the pane sits; a pane it cannot place is kept.
+  const pane = newTask ? paneAddressOfPty(s.workspaces, ptyId) : undefined;
   const result = await gatedSubmitToPty(ptyId, text, {
     agent: ptyAgent(ptyId).name,
-    ...(newTask ? { newTask: true, ...keep } : {}),
+    ...(newTask ? { newTask: true, taskId: newTask.taskId, ...keep, ...(pane ? { pane } : {}) } : {}),
   });
   if (!result.ok) return { ptyId: null, refused: result };
   const fresh = freshContextOf(result);
@@ -378,6 +381,9 @@ const DELIVERY_REFUSED_HINTS: Record<GatedSubmitRefusal['reason'], string> = {
     "The target pane's role starts each task in a fresh conversation. wmux typed the agent's fresh-context " +
     'command, but did not see it finish in time, so the message was NOT pasted. The task is stored; the ' +
     'receiver can find it with a2a_task_query. Read the pane before sending again.',
+  fresh_context_busy:
+    'Another new task was still being delivered to the target pane, so nothing was written to it. The task is ' +
+    'stored; the receiver can find it with a2a_task_query. Send again in a few seconds.',
 };
 
 /** The `delivery` receipt for a refused write. */

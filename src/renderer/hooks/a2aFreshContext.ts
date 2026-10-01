@@ -10,7 +10,20 @@
 import type { Task, Workspace } from '../../shared/types';
 import { TERMINAL_STATES } from '../../shared/types';
 import { getWorkspaceLeafPanes } from '../../shared/paneUtils';
-import { resolvePaneAddress } from './a2aAddressing';
+import { resolvePaneAddress, resolveSenderPaneAddress } from './a2aAddressing';
+
+/** Where a pty sits — workspace, pane and surface — so main can match the
+ *  daemon's task anchors against it. Undefined when no workspace holds it. */
+export function paneAddressOfPty(
+  workspaces: readonly Workspace[],
+  ptyId: string,
+): { workspaceId: string; paneId: string; surfaceId: string } | undefined {
+  for (const ws of workspaces) {
+    const addr = resolveSenderPaneAddress(getWorkspaceLeafPanes(ws), ptyId);
+    if (addr) return { workspaceId: ws.id, paneId: addr.paneId, surfaceId: addr.surfaceId };
+  }
+  return undefined;
+}
 
 type Side = Task['metadata']['to'];
 

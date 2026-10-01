@@ -199,12 +199,14 @@ export function resolveAgentSlug(agent?: string | null): AgentSlug | undefined {
  * front of the pane, send again once it is answered. `gate_unavailable`: the
  * gate could not decide (screen unreadable, IPC failure), retry shortly.
  * `pasted`: the text reached the composer but the Enter was withheld.
+ * `fresh_context_busy` (#1680): another new-task delivery held the pane too
+ * long; nothing was written.
  * `fresh_context_timeout` (#1680): a new-task delivery typed the pane's
  * fresh-context command and never saw it finish, so the text was not written.
  */
 export interface GatedSubmitRefusal {
   ok: false;
-  reason: 'approval_pending' | 'gate_unavailable' | 'write_failed' | 'fresh_context_timeout';
+  reason: 'approval_pending' | 'gate_unavailable' | 'write_failed' | 'fresh_context_timeout' | 'fresh_context_busy';
   detail: string;
   pasted?: boolean;
 }
@@ -225,4 +227,9 @@ export interface GatedSubmitOptions {
    * Reported as `skipped_busy` when the role asks for fresh context.
    */
   keepContext?: 'open_a2a_task';
+  /** With `newTask`: the task being delivered, left out of the open-task check. */
+  taskId?: string;
+  /** With `newTask`: where the delivered pane sits, so main can check the
+   *  daemon's open tasks for it (a pane it cannot place is never cleared). */
+  pane?: { workspaceId: string; paneId: string; surfaceId: string };
 }

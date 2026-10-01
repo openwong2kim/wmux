@@ -17,12 +17,15 @@ import { applyRoleBinding, type InjectedLaunchOptions, type RoleBinding } from '
 import type { FreshContextReply } from '../../../shared/freshContext';
 import type { SessionStartReceipt } from '../../../shared/hooks/HookSignalRouter';
 import {
+  FreshContextBusy,
   FreshContextTimeout,
   runFreshContext,
   withFreshContextLock,
   type FreshContextOptions,
   type FreshContextProbe,
+  type KeepContextCode,
 } from './freshContext';
+import { daemonOpenTaskOnPane, makeDaemonTaskQuery } from './a2aOpenTasks';
 import { isGateHeldOn } from '../../deck/stopGateState';
 import {
   approvalBlockMessage,
@@ -804,8 +807,8 @@ export async function gatedPasteSubmit(
    * A new-task delivery's fresh-context step (#1680), run after the first gate
    * check and before the paste. When it typed the command and never saw it
    * finish (FreshContextTimeout), nothing is pasted: the refusal is
-   * `fresh_context_timeout`. When it applied, the gate runs again, since the
-   * pane redrew.
+   * `fresh_context_timeout`. Whatever it did, the gate runs again before the
+   * paste: the step takes seconds, and a dialog can open meanwhile.
    */
   freshContext?: () => Promise<FreshContextReply>,
 ): Promise<GatedSubmitResult> {
@@ -816,14 +819,18 @@ export async function gatedPasteSubmit(
     try {
       fresh = await freshContext();
     } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
       if (err instanceof FreshContextTimeout) {
-        return { ok: false, reason: 'fresh_context_timeout', detail: `delivery: ${err.message}` };
+        return { ok: false, reason: 'fresh_context_timeout', detail: `delivery: ${detail}` };
       }
-      return { ok: false, reason: 'gate_unavailable', detail: err instanceof Error ? err.message : String(err) };
+      // The step's own writes failed (the pane went away): nothing was pasted.
+      return { ok: false, reason: 'write_failed', detail };
     }
-    if (fresh.freshContext === 'applied') {
-      const afterClear = await deliveryGateCheck(gate, ptyId);
-      if (afterClear) return afterClear;
+    const afterStep = await deliveryGateCheck(gate, ptyId);
+    if (afterStep) {
+      return fresh.freshContext === 'applied'
+        ? { ...afterStep, detail: `${afterStep.detail} The pane's conversation was already cleared (fresh context).` }
+        : afterStep;
     }
   }
   try {
@@ -887,6 +894,11 @@ export interface InputRpcDeps {
   readSessionStart?: (ptyId: string) => SessionStartReceipt | undefined;
   /** Injected in tests; the fresh-context step's clock and windows. */
   freshContextOptions?: FreshContextOptions;
+  /** Injected in tests; how long a new-task send waits for its pane's lock. */
+  freshContextLockWaitMs?: number;
+  /** Injected in tests; the daemon's open a2a tasks for a workspace (see
+   *  a2aOpenTasks). Defaults to the daemon's `a2a.task.query`. */
+  queryDaemonTasks?: (workspaceId: string) => Promise<unknown[] | null>;
 }
 
 /** Budget for one daemon state read while a fresh-context step polls. */
@@ -936,7 +948,7 @@ export function registerInputRpc(
     binding: RoleBinding | undefined,
     workspaceId: string | undefined,
     write: (data: string) => void,
-    keepContext?: string,
+    keepContext?: FreshContextOptions['keepContext'],
   ): Promise<FreshContextReply> => {
     const screenProbe = makeSubmitProbe(
       getWindow,
@@ -1199,6 +1211,9 @@ export function registerInputRpc(
       // never seen to finish fails the send with NOTHING further written.
       let fresh: FreshContextReply | undefined;
       if (newTask) {
+        // The gate above ran before this send may have waited for the pane's
+        // lock; check again right before anything is typed.
+        await assertNotTypingAtAnApproval(approvalGate, ctx, ptyId, 'input.send');
         try {
           fresh = await runFreshContextOn(ptyId, binding, receiptWs, writeChunk);
         } catch (err) {
@@ -1208,9 +1223,13 @@ export function registerInputRpc(
               'The task text was NOT sent; read the pane (terminal_read) before sending it again.',
           );
         }
-        // The pane redrew: an approval may be on it now.
-        if (fresh.freshContext === 'applied') {
+        // And again before the text: the step takes seconds, and a dialog can
+        // open meanwhile (an applied clear also redrew the pane).
+        try {
           await assertNotTypingAtAnApproval(approvalGate, ctx, ptyId, 'input.send');
+        } catch (err) {
+          if (fresh.freshContext !== 'applied' || !(err instanceof Error)) throw err;
+          throw new Error(`${err.message} The pane's conversation was already cleared (fresh context).`);
         }
       }
 
@@ -1310,8 +1329,15 @@ export function registerInputRpc(
     };
 
     // A new task holds its pane from the fresh-context command through the
-    // text's Enter (see withFreshContextLock).
-    return newTask ? withFreshContextLock(ptyId, deliver) : deliver();
+    // text's Enter (see withFreshContextLock). A send that cannot get the pane
+    // in time fails before writing anything.
+    if (!newTask) return deliver();
+    try {
+      return await withFreshContextLock(ptyId, deliver, deps.freshContextLockWaitMs);
+    } catch (err) {
+      if (!(err instanceof FreshContextBusy)) throw err;
+      throw new Error(`input.send: pane "${ptyId}": ${err.message}. Send the task again once the pane is free.`);
+    }
   });
 
   /**
@@ -1513,6 +1539,8 @@ export function registerInputRpc(
     return { ptyId, ...result, ...untrustedLabel(access) };
   });
 
+  const queryDaemonTasks = deps.queryDaemonTasks ?? makeDaemonTaskQuery(getDaemonClient);
+
   // The gated submit writes through the same routing input.send uses.
   const writeToPty = (ptyId: string, data: string): void => {
     noteInterruptInput?.(ptyId, data);
@@ -1528,19 +1556,30 @@ export function registerInputRpc(
     gatedSubmit: (ptyId, text, agent, opts) => {
       if (!opts?.newTask) return gatedPasteSubmit(approvalGate, writeToPty, ptyId, text, agent, deps.sleep);
       // #1680 — a new task: the fresh-context step runs inside the gated
-      // delivery, and the pane is held through the text's Enter.
-      return withFreshContextLock(ptyId, () =>
-        gatedPasteSubmit(approvalGate, writeToPty, ptyId, text, agent, deps.sleep, async () => {
-          const workspaceId = (await resolvePtyOwnerWorkspace(getWindow, ptyId).catch(() => null)) ?? undefined;
-          return runFreshContextOn(
-            ptyId,
-            await bindingFor(ptyId),
-            workspaceId,
-            (data) => writeToPty(ptyId, data),
-            opts.keepContext,
-          );
-        }),
-      );
+      // delivery, and the pane is held through the text's Enter. The pane's
+      // conversation is kept when the renderer knows of other open tasks on it,
+      // or the daemon's task store does (or cannot be read) — asked only when
+      // the role does ask for fresh context.
+      const keepContext = async (): Promise<KeepContextCode | undefined> =>
+        opts.keepContext ?? daemonOpenTaskOnPane(queryDaemonTasks, ptyId, opts.pane, opts.taskId);
+      return withFreshContextLock(
+        ptyId,
+        () =>
+          gatedPasteSubmit(approvalGate, writeToPty, ptyId, text, agent, deps.sleep, async () => {
+            const workspaceId = (await resolvePtyOwnerWorkspace(getWindow, ptyId).catch(() => null)) ?? undefined;
+            return runFreshContextOn(
+              ptyId,
+              await bindingFor(ptyId),
+              workspaceId,
+              (data) => writeToPty(ptyId, data),
+              keepContext,
+            );
+          }),
+        deps.freshContextLockWaitMs,
+      ).catch((err: unknown): GatedSubmitResult => {
+        if (!(err instanceof FreshContextBusy)) throw err;
+        return { ok: false, reason: 'fresh_context_busy', detail: `delivery: ${err.message}` };
+      });
     },
   };
 }
