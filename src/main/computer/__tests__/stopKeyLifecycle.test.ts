@@ -39,6 +39,9 @@ vi.mock('../HelperProcess', () => ({
     dispose() { /* nothing to stop */ }
   },
 }));
+// A helper path on every OS, so the lifecycle runs the same on Linux CI (whose
+// real path resolves to null → unsupported_platform before the stop key).
+vi.mock('../helperPath', () => ({ resolveHelperPathFor: () => 'C:/wmux/fake-helper.exe' }));
 vi.mock('../settings', () => ({
   helperStatus: () => 'missing',
   writeComputerUseEnabled: (enabled: boolean) => { h.enabled.value = enabled; return enabled; },
