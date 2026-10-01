@@ -430,10 +430,10 @@ describe('ComputerService with the real approval queue', () => {
   });
 
   it('a call after the stop never joins the pre-stop prompt, and is not failed at its deadline', async () => {
-    const deadlineMs = 300;
+    const deadlineMs = 1_000;
     const { service, queue, opened, dedupeKeys, advance } = realQueueService(deadlineMs);
     const a = service.getAppState(AGENT_A, { app: 'Notepad' });
-    await sleep(deadlineMs * 0.3);
+    await sleep(deadlineMs * 0.7); // stop at t=700 ms, as in the review's repro2
     service.abort();
     // Right after the stop (the agent retries at once): refused, no prompt.
     const b = service.getAppState(AGENT_A, { app: 'Notepad' });
@@ -446,8 +446,8 @@ describe('ComputerService with the real approval queue', () => {
     await sleep(0);
     expect(opened).toHaveLength(2);
     expect(dedupeKeys[1]).not.toBe(dedupeKeys[0]);
-    // A's old deadline passes; C's prompt is still up and C still waits.
-    await sleep(deadlineMs * 0.8);
+    // A's old deadline (t=1000 ms) passes; C's own (about t=1700 ms) has not: C still waits.
+    await sleep(deadlineMs * 0.45);
     expect(queue.inflightCount()).toBe(1);
     await queue.resolvePrompt(opened[1].promptId, true);
     expect(await codeOf(c)).toBe('resolved');
