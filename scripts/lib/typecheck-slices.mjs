@@ -172,3 +172,33 @@ export function assertSlicesExist(names, dir = SLICE_DIR) {
     if (!fs.existsSync(checkConfig(n, dir))) throw new Error(`unknown type-check slice "${n}" (have: ${CHECKS.join(', ')})`);
   }
 }
+
+/**
+ * The checks a command line asks for: the named ones, or every check when none
+ * is named, minus any listed in `--skip a,b`.
+ *
+ * Only build programs can be skipped. The one reason to skip a check is that
+ * something else compiles the same tsconfig anyway (CI's build steps run
+ * `tsc -p` on mcp and daemon); nothing else compiles a slice. So a slice or an
+ * unknown name in --skip throws rather than silently checking less.
+ */
+export function selectChecks(argv) {
+  const named = [];
+  const skip = [];
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--skip') {
+      if (i + 1 >= argv.length) throw new Error('--skip needs a comma-separated list of build programs');
+      skip.push(...argv[++i].split(','));
+    } else if (argv[i].startsWith('-')) {
+      throw new Error(`unknown option "${argv[i]}"`);
+    } else {
+      named.push(argv[i]);
+    }
+  }
+  for (const n of skip) {
+    if (!Object.prototype.hasOwnProperty.call(PROGRAMS, n)) {
+      throw new Error(`--skip takes build programs only (${Object.keys(PROGRAMS).join(', ')}), not "${n}"`);
+    }
+  }
+  return (named.length > 0 ? named : CHECKS).filter((n) => !skip.includes(n));
+}

@@ -57,8 +57,15 @@ jobs:
           npm install --package-lock-only --ignore-scripts
           git diff --exit-code package-lock.json
 
+      # Every type-check program except mcp and daemon, which CI compiles with
+      # the same tsconfig anyway: `build:mcp` below and `build:daemon` in
+      # validate-runtime both start with `tsc -p` (so a daemon type error
+      # fails validate-runtime). cli has no build step here, so it is checked.
+      # Locally, `npm run typecheck` still runs all of them.
+      # scripts/__tests__/typecheckSlices.test.mjs ties this list to those
+      # build steps.
       - name: Type check
-        run: npm run typecheck
+        run: node scripts/typecheck.mjs --skip mcp,daemon
 
       - name: Build and probe MCP protocol
         run: npm run build:mcp && npm run probe:mcp

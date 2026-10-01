@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 // Type-check the root project as a sequence of smaller programs.
 //
-//   node scripts/typecheck.mjs                 every slice, then the build programs (what CI runs)
+//   node scripts/typecheck.mjs                 every slice, then the build programs
 //   node scripts/typecheck.mjs src tests-main  only the named slices
 //   node scripts/typecheck.mjs mcp             only the named build program
+//   node scripts/typecheck.mjs --skip mcp,daemon
+//                                              all but those build programs (what CI
+//                                              runs: its build steps compile them)
 //
 // The slices live in scripts/typecheck/*.json; why they exist is in
 // scripts/lib/typecheck-slices.mjs. The checks before and around tsc stand in
@@ -19,8 +22,8 @@ import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import {
-  ROOT, ROOT_CONFIG, SLICES, CHECKS, sliceConfig, checkConfig, coverageGaps, assertSlicesExist,
-  sliceConfigProblems, scopeProblems, casingMismatches,
+  ROOT, ROOT_CONFIG, SLICES, sliceConfig, checkConfig, coverageGaps, assertSlicesExist,
+  sliceConfigProblems, scopeProblems, casingMismatches, selectChecks,
 } from './lib/typecheck-slices.mjs';
 
 const require = createRequire(import.meta.url);
@@ -32,8 +35,12 @@ function fail(header, lines) {
 }
 
 function main() {
-  const asked = process.argv.slice(2);
-  const names = asked.length > 0 ? asked : CHECKS;
+  let names;
+  try {
+    names = selectChecks(process.argv.slice(2));
+  } catch (err) {
+    fail('bad arguments', [err.message]);
+  }
   assertSlicesExist(names);
 
   const configProblems = sliceConfigProblems(SLICES);
