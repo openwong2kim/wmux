@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import type { RpcRouter } from '../../RpcRouter';
 import type { RpcContext } from '../../../../shared/rpc';
 import { ComputerError, parseComputerErrorMessage } from '../../../../shared/computer/errors';
-import type { ComputerService } from '../../../computer/ComputerService';
+import { ComputerService, type ComputerAgent, type HelperLike } from '../../../computer/ComputerService';
+import type { AppInfo, AppState, WindowInfo } from '../../../../shared/computer/protocol';
 import { registerComputerRpc } from '../computer.rpc';
 
 type Handler = (params: Record<string, unknown>, ctx?: RpcContext) => Promise<unknown>;
@@ -12,14 +13,21 @@ const INSTANCE_1 = '11111111-2222-4333-8444-555555555555';
 const INSTANCE_2 = '66666666-7777-4888-9999-aaaaaaaaaaaa';
 const PANES: Record<string, string> = { 'pty-a1': 'ws-a', 'pty-a2': 'ws-a', 'pty-b1': 'ws-b' };
 
+const WORKSPACE_NAMES: Record<string, string> = { 'ws-a': 'api', 'ws-b': 'web "prod"\nX', 'ws-c': 'claimed' };
+
 function setup(service: Partial<ComputerService>) {
   const handlers = new Map<string, Handler>();
   const router = { register: (method: string, handler: Handler) => handlers.set(method, handler) } as unknown as RpcRouter;
   const getService = vi.fn(() => service as ComputerService);
-  registerComputerRpc(router, getService, async (ptyId) => {
-    if (ptyId === 'pty-throws') throw new Error('renderer gone');
-    return PANES[ptyId] ?? null;
-  });
+  registerComputerRpc(
+    router,
+    getService,
+    async (ptyId) => {
+      if (ptyId === 'pty-throws') throw new Error('renderer gone');
+      return PANES[ptyId] ?? null;
+    },
+    (workspaceId) => WORKSPACE_NAMES[workspaceId],
+  );
   const call = (method: string, params: Record<string, unknown>, ctx?: Partial<RpcContext>) =>
     handlers.get(method)!(params, ctx as RpcContext);
   return { handlers, call, getService };
@@ -61,7 +69,8 @@ describe('computer.rpc', () => {
     await as({ callerInstance: INSTANCE_1 }); // two processes with no pane
     await as({ callerInstance: INSTANCE_2 });
     await as({ callerInstance: INSTANCE_1 }, { workspaceClaim: { kind: 'bound', workspaceId: 'ws-c' } });
-    const keys = getAppState.mock.calls.map((c) => (c as unknown[])[0] as string);
+    const agents = getAppState.mock.calls.map((c) => (c as unknown[])[0] as ComputerAgent);
+    const keys = agents.map((a) => a.key);
     expect(keys.slice(0, 5)).toEqual([
       'claude-code @ ws-a/pty-a1',
       'claude-code @ ws-a/pty-a2',
@@ -75,6 +84,18 @@ describe('computer.rpc', () => {
     // The key never carries the raw instance id another agent could present.
     expect(keys[5]).not.toContain(INSTANCE_1.slice(0, 8));
     expect(keys[7]).toMatch(/^claude-code @ ws-c #[0-9a-f]{12}$/);
+    // What the person sees: the client name and the workspace by its name, no ids.
+    expect(agents.map((a) => a.label)).toEqual([
+      'claude-code in workspace "api"',
+      'claude-code in workspace "api"',
+      // A workspace name cannot close the quotes or break the line.
+      "claude-code in workspace \"web 'prod' X\"",
+      'claude-code in workspace "api"',
+      'claude-code orchestrating workspace "api"',
+      'claude-code (outside wmux panes)',
+      'claude-code (outside wmux panes)',
+      'claude-code in workspace "claimed"',
+    ]);
   });
 
   it('refuses a caller it cannot pin to a pane or process instead of sharing an identity', async () => {
@@ -113,7 +134,10 @@ describe('computer.rpc', () => {
     const { call } = setup({ control } as never);
     expect((await errorOf(call('computer.act', { action: 'getAppState', senderPtyId: 'pty-a1' }, { clientName: 'c' })))?.code).toBe('invalid_argument');
     await call('computer.act', { action: 'click', snapshotId: 's1', index: 2, senderPtyId: 'pty-a1' }, { clientName: 'c' });
-    expect(control).toHaveBeenCalledWith('c @ ws-a/pty-a1', { action: 'click', snapshotId: 's1', index: 2 });
+    expect(control).toHaveBeenCalledWith(
+      { key: 'c @ ws-a/pty-a1', label: 'c in workspace "api"' },
+      { action: 'click', snapshotId: 's1', index: 2 },
+    );
   });
 
   it('encodes service errors as [code] message and wraps unknown ones as internal', async () => {
@@ -123,5 +147,58 @@ describe('computer.rpc', () => {
     } as never);
     expect(await errorOf(call('computer.listApps', {}, { clientName: 'c' }))).toEqual({ code: 'permission_missing', message: 'accessibility' });
     expect(await errorOf(call('computer.capabilities', {}, { clientName: 'c' }))).toEqual({ code: 'internal', message: 'boom' });
+  });
+});
+
+// End to end through the real ComputerService: the review's repro S3 (pane B
+// acting on pane A's snapshot with no prompt) must not reproduce.
+describe('computer.rpc with the real service', () => {
+  const notepad: AppInfo = { id: 'c:\\windows\\notepad.exe', name: 'Notepad', pid: 10, path: 'C:\\Windows\\notepad.exe' };
+  const notepadWindow: WindowInfo = { id: 'w1', appId: notepad.id, pid: 10, title: 'notes', bounds: { x: 0, y: 0, width: 100, height: 100 } };
+
+  function realSetup() {
+    let seq = 0;
+    const helper: HelperLike = {
+      request: (async (method: string) => {
+        if (method === 'resolveTarget') return { app: notepad, window: notepadWindow };
+        if (method === 'getAppState') {
+          const state: AppState = { snapshotId: `s${++seq}`, app: notepad, window: notepadWindow, tree: '0 window', screenshotStatus: { status: 'skipped' } };
+          return state;
+        }
+        return { method: 'synthetic', verification: 'unverified' };
+      }) as HelperLike['request'],
+      abort: vi.fn(),
+      dispose: vi.fn(),
+    };
+    const prompts: Array<{ key: string; label: string }> = [];
+    const service = new ComputerService({
+      isEnabled: () => true,
+      createHelper: () => helper,
+      requestConsent: async ({ agent }) => {
+        prompts.push(agent);
+        return 'approved';
+      },
+      blockContext: () => ({}),
+    });
+    const { call } = setup(service);
+    return { call, prompts };
+  }
+
+  it('two panes of one client name share no consent, snapshot or input lock', async () => {
+    const { call, prompts } = realSetup();
+    const ctx = { clientName: 'claude-code' };
+    const a = (await call('computer.getAppState', { app: 'Notepad', senderPtyId: 'pty-a1' }, ctx)) as AppState;
+    expect(prompts).toHaveLength(1);
+    // Pane B (same client name, same workspace, another pane) is asked for itself.
+    const b = (await call('computer.getAppState', { app: 'Notepad', senderPtyId: 'pty-a2' }, ctx)) as AppState;
+    expect(prompts).toHaveLength(2);
+    expect(prompts[0].key).not.toBe(prompts[1].key);
+    // B cannot act on A's snapshot.
+    expect((await errorOf(call('computer.act', { action: 'click', snapshotId: a.snapshotId, index: 1, senderPtyId: 'pty-a2' }, ctx)))?.code)
+      .toBe('snapshot_unknown');
+    // A drives; B is held off by A's lock, and told who holds it by name only.
+    await call('computer.act', { action: 'click', snapshotId: a.snapshotId, index: 1, senderPtyId: 'pty-a1' }, ctx);
+    const busy = await errorOf(call('computer.act', { action: 'click', snapshotId: b.snapshotId, index: 1, senderPtyId: 'pty-a2' }, ctx));
+    expect(busy).toEqual({ code: 'input_busy', message: 'claude-code in workspace "api" is using the desktop' });
   });
 });

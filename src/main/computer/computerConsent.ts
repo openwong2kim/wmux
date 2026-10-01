@@ -8,7 +8,7 @@
 
 import type { ApprovalQueue } from '../mcp/ApprovalQueue';
 import type { AppInfo, WindowInfo } from '../../shared/computer/protocol';
-import type { ConsentAnswer, ConsentRequester } from './ComputerService';
+import type { ComputerAgent, ConsentAnswer, ConsentRequester } from './ComputerService';
 
 export const COMPUTER_CONSENT_DEADLINE_MS = 120_000;
 const TITLE_PART_MAX_CHARS = 80;
@@ -20,9 +20,20 @@ function clean(text: string): string {
   return text.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/"/g, "'").trim().slice(0, TITLE_PART_MAX_CHARS);
 }
 
-export function computerConsentTitle(clientName: string, app: AppInfo, window: WindowInfo): string {
+/**
+ * The headline names the asking session by its label (client name and the
+ * workspace by its name, computer.rpc.ts), so the person can tell which of
+ * several agents of one kind is asking.
+ */
+export function computerConsentTitle(agent: Pick<ComputerAgent, 'label'>, app: AppInfo, window: WindowInfo): string {
   const title = clean(window.title);
-  return `${clean(clientName) || 'An agent'} wants to see and control ${clean(app.name) || 'an app'}${title ? ` ("${title}")` : ''}`;
+  return `${cleanLabel(agent.label) || 'An agent'} wants to see and control ${clean(app.name) || 'an app'}${title ? ` ("${title}")` : ''}`;
+}
+
+/** Labels quote a workspace name; keep the quotes, drop control characters. */
+function cleanLabel(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, TITLE_PART_MAX_CHARS * 2);
 }
 
 export function createComputerConsentRequester(deps: {
@@ -30,7 +41,7 @@ export function createComputerConsentRequester(deps: {
   deadlineMs?: number;
 }): ConsentRequester {
   const deadlineMs = deps.deadlineMs ?? COMPUTER_CONSENT_DEADLINE_MS;
-  return async ({ clientName, app, window, epoch, signal }): Promise<ConsentAnswer> => {
+  return async ({ agent, app, window, epoch, signal }): Promise<ConsentAnswer> => {
     if (signal.aborted) return 'withdrawn';
     const queue = deps.queue();
     if (!queue) return 'unavailable';
@@ -41,9 +52,10 @@ export function createComputerConsentRequester(deps: {
         // The epoch (bumped by the stop key) keeps a call made after a stop
         // from ever joining a prompt raised before it, even if withdrawing
         // that prompt raced with the new call.
-        dedupeKey: `${clientName}::${app.id}::${epoch}`,
-        clientName,
-        title: computerConsentTitle(clientName, app, window),
+        // Keyed on the agent session, never the label two sessions can share.
+        dedupeKey: `${agent.key}::${app.id}::${epoch}`,
+        clientName: cleanLabel(agent.label),
+        title: computerConsentTitle(agent, app, window),
         deadlineAt: Date.now() + deadlineMs,
       });
     } catch {

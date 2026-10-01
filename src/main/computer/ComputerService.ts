@@ -52,8 +52,21 @@ export interface HelperLike {
  */
 export type ConsentAnswer = 'approved' | 'denied' | 'expired' | 'withdrawn' | 'unavailable';
 
+/**
+ * Who is calling, as main resolved it (computer.rpc.ts). Consent grants,
+ * snapshot ownership, the input lock and the rate cap are keyed on `key`, which
+ * names one agent session (its pane, commander workspace or MCP server
+ * process), never the bare client name every Claude Code pane shares. `label`
+ * is what the person and other agents are shown: the client name and the
+ * workspace by its name, with no ids in it.
+ */
+export interface ComputerAgent {
+  key: string;
+  label: string;
+}
+
 export type ConsentRequester = (request: {
-  clientName: string;
+  agent: ComputerAgent;
   app: AppInfo;
   window: WindowInfo;
   /** Bumped by every stop; part of the prompt's dedupe key. */
@@ -70,11 +83,11 @@ export interface ComputerServiceDeps {
   blockContext: () => BlockContext;
   now?: () => number;
   /** Fires on every accepted control action (drives the agent-cursor overlay). */
-  onControl?: (event: { clientName: string; action: ComputerControlAction; window: WindowInfo }) => void;
+  onControl?: (event: { agent: ComputerAgent; action: ComputerControlAction; window: WindowInfo }) => void;
 }
 
 interface SnapshotRecord {
-  clientName: string;
+  agentKey: string;
   app: AppInfo;
   window: WindowInfo;
   image?: { width: number; height: number; scale: number };
@@ -116,7 +129,7 @@ export class ComputerService {
   private readonly consentInflight = new Map<string, Promise<ConsentAnswer>>();
   /** Aborted (and replaced) by every stop: withdraws the open consent prompts. */
   private consentAbort = new AbortController();
-  private lock: { clientName: string; lastUsedAt: number } | null = null;
+  private lock: { agentKey: string; label: string; lastUsedAt: number } | null = null;
   private abortedUntil = 0;
   /**
    * Bumped by abort(). A call captures it on entry and re-checks after every
@@ -185,7 +198,7 @@ export class ComputerService {
     };
   }
 
-  async getAppState(clientName: string, params: { app: string; window?: string; mode?: ObservationMode }): Promise<AppState> {
+  async getAppState(agent: ComputerAgent, params: { app: string; window?: string; mode?: ObservationMode }): Promise<AppState> {
     const helper = this.ensureReady();
     if (!params.app) fail('invalid_argument', 'app is required');
     const mode = params.mode ?? 'both';
@@ -194,7 +207,7 @@ export class ComputerService {
     const generation = this.generation;
     const target = await helper.request('resolveTarget', { app: params.app, ...(params.window && { window: params.window }) });
     this.assertCurrent(generation);
-    await this.vet(clientName, target.app, target.window, generation);
+    await this.vet(agent, target.app, target.window, generation);
 
     const state = await helper.request('getAppState', {
       app: target.app.id,
@@ -208,11 +221,11 @@ export class ComputerService {
     // resolved (a window selector can go stale between the two calls). The
     // window matters on its own: elevation is per window, not per app.
     if (state.app.id !== target.app.id || state.window.id !== target.window.id) {
-      await this.vet(clientName, state.app, state.window, generation);
+      await this.vet(agent, state.app, state.window, generation);
     }
 
     this.recordSnapshot(state.snapshotId, {
-      clientName,
+      agentKey: agent.key,
       app: state.app,
       window: state.window,
       ...(state.screenshot && {
@@ -223,7 +236,7 @@ export class ComputerService {
     return state;
   }
 
-  async control(clientName: string, params: ControlParams): Promise<ActionResult> {
+  async control(agent: ComputerAgent, params: ControlParams): Promise<ActionResult> {
     const helper = this.ensureReady();
     const now = this.now();
     if (now < this.abortedUntil) fail('aborted', 'computer use was just stopped by the user');
@@ -232,18 +245,18 @@ export class ComputerService {
     if (!params.snapshotId) fail('invalid_argument', 'snapshotId is required; call getAppState first');
     const snap = this.snapshots.get(params.snapshotId);
     if (!snap || snap.expiresAt < now) fail('snapshot_unknown', `snapshot ${params.snapshotId} is unknown or expired`);
-    if (snap.clientName !== clientName) fail('snapshot_unknown', 'that snapshot belongs to another agent');
+    if (snap.agentKey !== agent.key) fail('snapshot_unknown', 'that snapshot belongs to another agent');
     // Consent may have been revoked (abort clears grants) since the snapshot.
-    await this.vet(clientName, snap.app, snap.window, generation);
+    await this.vet(agent, snap.app, snap.window, generation);
     // Consent can take minutes; the clock and the stop key may both have moved.
     this.assertCurrent(generation);
 
-    this.takeInputLock(clientName, now);
-    this.checkRate(clientName, now);
+    this.takeInputLock(agent, now);
+    this.checkRate(agent.key, now);
 
     const point = this.resolvePoint(params, snap);
     const snapshotId = params.snapshotId;
-    this.deps.onControl?.({ clientName, action: params.action, window: snap.window });
+    this.deps.onControl?.({ agent, action: params.action, window: snap.window });
 
     switch (params.action) {
       case 'click':
@@ -306,7 +319,7 @@ export class ComputerService {
   /** Who holds desktop input right now, for the overlay and status UI. */
   inputHolder(): string | null {
     if (!this.lock || this.now() - this.lock.lastUsedAt > INPUT_LOCK_IDLE_MS) return null;
-    return this.lock.clientName;
+    return this.lock.label;
   }
 
   dispose(): void {
@@ -330,13 +343,13 @@ export class ComputerService {
     if (generation !== this.generation) fail('aborted', 'computer use was stopped by the user');
   }
 
-  private async vet(clientName: string, app: AppInfo, window: WindowInfo, generation: number): Promise<void> {
+  private async vet(agent: ComputerAgent, app: AppInfo, window: WindowInfo, generation: number): Promise<void> {
     const reason = blockReasonFor(app, this.deps.blockContext());
     if (reason) fail('app_blocked', `${app.name}: ${BLOCK_REASON_TEXT[reason]}`);
     if (window.elevated) {
       fail('target_elevated', `${app.name} runs as administrator; Windows blocks input from wmux into it`);
     }
-    const key = `${clientName}\u0000${app.id}`;
+    const key = `${agent.key}\u0000${app.id}`;
     const granted = this.grants.get(key);
     if (granted === true) return;
     if (granted === false) fail('app_blocked', `the user declined computer use of ${app.name} for this agent`);
@@ -349,7 +362,7 @@ export class ComputerService {
         fail('aborted', `computer use was just stopped by the user; no new request for ${Math.ceil(coolingMs / 1000)} s`);
       }
       pending = this.deps
-        .requestConsent({ clientName, app, window, epoch: this.generation, signal: this.consentAbort.signal })
+        .requestConsent({ agent, app, window, epoch: this.generation, signal: this.consentAbort.signal })
         .catch((): ConsentAnswer => 'unavailable');
       this.consentInflight.set(key, pending);
     }
@@ -381,22 +394,23 @@ export class ComputerService {
     }
   }
 
-  private takeInputLock(clientName: string, now: number): void {
-    if (this.lock && this.lock.clientName !== clientName && now - this.lock.lastUsedAt <= INPUT_LOCK_IDLE_MS) {
-      fail('input_busy', `${this.lock.clientName} is using the desktop`);
+  private takeInputLock(agent: ComputerAgent, now: number): void {
+    if (this.lock && this.lock.agentKey !== agent.key && now - this.lock.lastUsedAt <= INPUT_LOCK_IDLE_MS) {
+      // The label, never the key: the key carries pane ids.
+      fail('input_busy', `${this.lock.label} is using the desktop`);
     }
-    this.lock = { clientName, lastUsedAt: now };
+    this.lock = { agentKey: agent.key, label: agent.label, lastUsedAt: now };
   }
 
-  private checkRate(clientName: string, now: number): void {
+  private checkRate(agentKey: string, now: number): void {
     const windowStart = now - 60_000;
-    const recent = (this.controlLog.get(clientName) ?? []).filter((t) => t > windowStart);
+    const recent = (this.controlLog.get(agentKey) ?? []).filter((t) => t > windowStart);
     if (recent.length >= CONTROL_RATE_PER_MINUTE) {
-      this.controlLog.set(clientName, recent);
+      this.controlLog.set(agentKey, recent);
       fail('input_busy', `more than ${CONTROL_RATE_PER_MINUTE} input actions in a minute; slow down and check the app state`);
     }
     recent.push(now);
-    this.controlLog.set(clientName, recent);
+    this.controlLog.set(agentKey, recent);
   }
 
   private resolvePoint(params: ControlParams, snap: SnapshotRecord): { x: number; y: number } | undefined {

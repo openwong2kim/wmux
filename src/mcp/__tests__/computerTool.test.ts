@@ -86,6 +86,40 @@ describe('computer MCP tool', () => {
     expect(computerCalls()).toEqual([['computer.getAppState', { app: 'Notepad', window: undefined, mode: undefined, callerInstance: expect.stringMatching(UUID_RE) }, expect.any(Number)]]);
   });
 
+  it('identifies an in-pane caller by its walked pane, never by the env pty hint', async () => {
+    enabled.value = true;
+    reply = () => ({ method: 'synthetic', verification: 'unverified' });
+    // main's server-side walk answers with this process's pane.
+    mockSendRpc.mockImplementation(async (method: string) => {
+      if (method === 'a2a.resolve.identity') return { mappings: {}, resolved: { workspaceId: 'ws-walked', ptyId: 'pty-walked' } };
+      return method.startsWith('computer.') ? reply(method) : {};
+    });
+    const server = createWmuxServer({
+      envWorkspaceHint: 'ws-env',
+      envPtyHint: 'pty-env-inherited',
+      commanderToken: undefined,
+      commanderMode: false,
+      coreMode: false,
+      callerPid: process.pid,
+      callerPpid: null,
+    });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'test-client', version: '1.0.0' }, { capabilities: {} });
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    await client.callTool({ name: 'computer', arguments: { action: 'click', snapshotId: 's7', index: 3 } });
+    await client.close();
+    expect(computerCalls()).toEqual([['computer.act', { action: 'click', snapshotId: 's7', index: 3, senderPtyId: 'pty-walked' }, expect.any(Number)]]);
+  });
+
+  it('a caller cannot name a pane itself: senderPtyId is not a tool argument', async () => {
+    enabled.value = true;
+    const client = await connect();
+    const res = await client.callTool({ name: 'computer', arguments: { action: 'click', snapshotId: 's7', index: 3, senderPtyId: 'pty-other' } });
+    await client.close();
+    expect(res.isError).toBe(true);
+    expect(computerCalls()).toEqual([]);
+  });
+
   it('sends input actions to computer.act without observation-only fields', async () => {
     enabled.value = true;
     reply = () => ({ method: 'synthetic', verification: 'unverified' });

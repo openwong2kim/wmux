@@ -34,8 +34,9 @@ agent ──MCP──> wmux MCP server ──pipe RPC──> main: computer.rpc.
   OS-agnostic; OS-specific facts reach the agent as shared error codes and
   the helper's `hello.capabilities`.
 - **MCP is the primary surface.** Screenshots go back inline as MCP image
-  content, the calling agent is identified by its MCP `clientName`, and the
-  helper stays resident (no process spawn per action). Protocol overhead is a
+  content, the calling agent is identified by its MCP `clientName` and the
+  pane it runs in (see Approvals), and the helper stays resident (no process
+  spawn per action). Protocol overhead is a
   few milliseconds; the slowness seen in other Windows MCP servers comes from
   per-call interpreter start-up and uncached cross-process UIA walks, which
   this design avoids.
@@ -205,20 +206,30 @@ by localized message text.
   the existing enforcer. On top of that, every agent needs the person's consent
   per app, asked through the approval queue (`computer-app` prompt, both the
   modal and the Fleet inbox) and remembered for the run.
-  - The agent identity is the MCP client name, narrowed by a server-verified
-    workspace claim. A caller-supplied `workspaceId` is not trusted.
+  - Consent, snapshot ownership, the input lock and the rate cap are per agent
+    session, not per client name (every Claude Code pane reports the same
+    name). The MCP server stamps the pane from its own PID-map walk (hit only,
+    never the `WMUX_PTY_ID` env hint), and main resolves it to the workspace
+    that owns it; an orchestrator brain is keyed on its commander workspace;
+    a caller with no pane is keyed on a random id its MCP server process
+    mints once. A pane that does not resolve is refused. The tool's input
+    schema has no identity field, so a prompt-injected model cannot pick
+    one, and a caller-supplied `workspaceId` is not trusted.
+  - The prompt names the asking session by client name and workspace name
+    (`claude-code in workspace "api"`). Ids stay out of anything shown to the
+    person or to other agents.
   - Consent is fail-closed: a prompt nobody answers within 2 minutes refuses
     that call (`timeout`). Only an explicit Deny is remembered; an unanswered,
     withdrawn or unshowable prompt is not, so the next call asks again.
-- **Input lock.** One agent at a time holds desktop input. Another agent that
-  tries gets `input_busy`, with the holder's name.
+- **Input lock.** One agent session at a time holds desktop input. Another
+  that tries gets `input_busy`, with the holder's client and workspace name.
 - **Abort.** A global shortcut (default `Ctrl+Alt+Shift+Escape`) cancels the
   in-flight request, releases modifiers, takes down every open consent prompt
   (the calls parked on them fail with `aborted` at once), drops the input lock
   and every consent given this run, and for 5 s rejects control actions and
   opens no new prompt. A call after the stop never joins a prompt raised
   before it: each stop starts a new prompt epoch.
-- **Rate cap.** 120 control actions per minute per agent.
+- **Rate cap.** 120 control actions per minute per agent session.
 - **Elevation (Windows).** Before injecting input, the helper compares token
   integrity levels. An elevated target returns `target_elevated`; UIPI would
   otherwise drop the input silently. The UAC secure desktop is never

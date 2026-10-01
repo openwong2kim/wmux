@@ -27,7 +27,7 @@ function queueResolving(approved: boolean | 'never' | 'reject' | 'throw') {
 
 const ask = (queue: ReturnType<typeof queueResolving> | null, opts: { deadlineMs?: number; signal?: AbortSignal; epoch?: number } = {}) =>
   createComputerConsentRequester({ queue: () => queue, ...(opts.deadlineMs !== undefined && { deadlineMs: opts.deadlineMs }) })({
-    clientName: 'a',
+    agent: { key: 'a @ ws-1/pty-1', label: 'a' },
     app,
     window,
     epoch: opts.epoch ?? 0,
@@ -35,10 +35,10 @@ const ask = (queue: ReturnType<typeof queueResolving> | null, opts: { deadlineMs
   });
 
 describe('computer consent', () => {
-  it('asks with a computer-app prompt keyed on agent, app and stop epoch', async () => {
+  it('asks with a computer-app prompt keyed on the session, app and stop epoch, naming the workspace', async () => {
     const queue = queueResolving(true);
     const answer = await createComputerConsentRequester({ queue: () => queue })({
-      clientName: 'claude-code @ ws-1',
+      agent: { key: 'claude-code @ ws-1/pty-7', label: 'claude-code in workspace "api"' },
       app,
       window,
       epoch: 3,
@@ -47,8 +47,10 @@ describe('computer consent', () => {
     expect(answer).toBe('approved');
     expect(queue.requestConsent).toHaveBeenCalledWith(expect.objectContaining({
       kind: 'computer-app',
-      dedupeKey: 'claude-code @ ws-1::c:\\notepad.exe::3',
-      title: 'claude-code @ ws-1 wants to see and control Notepad ("notes.txt - Notepad")',
+      dedupeKey: 'claude-code @ ws-1/pty-7::c:\\notepad.exe::3',
+      // The person sees the label; the ids stay in the dedupe key.
+      clientName: 'claude-code in workspace "api"',
+      title: 'claude-code in workspace "api" wants to see and control Notepad ("notes.txt - Notepad")',
     }));
   });
 
@@ -84,7 +86,7 @@ describe('computer consent', () => {
   });
 
   it('does not let a window title forge the prompt headline', () => {
-    const title = computerConsentTitle('agent', app, { ...window, title: 'x") and control "Bank\nline' });
+    const title = computerConsentTitle({ label: 'agent' }, app, { ...window, title: 'x") and control "Bank\nline' });
     expect(title).not.toContain('\n');
     expect(title).toBe('agent wants to see and control Notepad ("x\') and control \'Bank line")');
   });

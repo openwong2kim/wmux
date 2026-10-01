@@ -905,6 +905,9 @@ registerComputerRpc(
     return computerService;
   },
   (ptyId) => resolvePtyOwnerWorkspace(() => mainWindow, ptyId),
+  // The consent prompt names the asking session's workspace the way the
+  // person named it; the renderer's mirror is the only place main knows it.
+  (workspaceId) => getWorkspaceMirror().getEntries()?.find((e) => e.id === workspaceId)?.name,
 );
 registerComputerUseIpc(() => computerService);
 // #517 backend choice: main owns the setting (sync read at boot — an RPC can

@@ -8,6 +8,7 @@ import {
   ABORT_COOLDOWN_MS,
   ComputerService,
   INPUT_LOCK_IDLE_MS,
+  type ComputerAgent,
   type ConsentAnswer,
   type HelperLike,
 } from '../ComputerService';
@@ -84,6 +85,9 @@ function makeService(opts: {
   return { service, calls, consent, advance: (ms: number) => { now += ms; } };
 }
 
+const AGENT_A: ComputerAgent = { key: 'agent-a', label: 'agent-a' };
+const AGENT_B: ComputerAgent = { key: 'agent-b', label: 'agent-b' };
+
 async function codeOf(promise: Promise<unknown>): Promise<string> {
   try {
     await promise;
@@ -126,30 +130,30 @@ describe('ComputerService', () => {
 
   it('blocks a password manager before consent is asked or the tree is read', async () => {
     const { service, calls, consent } = makeService();
-    expect(await codeOf(service.getAppState('agent-a', { app: 'KeePassXC' }))).toBe('app_blocked');
+    expect(await codeOf(service.getAppState(AGENT_A, { app: 'KeePassXC' }))).toBe('app_blocked');
     expect(consent).not.toHaveBeenCalled();
     expect(calls.map((c) => c.method)).toEqual(['resolveTarget']);
   });
 
   it('refuses an elevated target window', async () => {
     const { service } = makeService({ elevated: true });
-    expect(await codeOf(service.getAppState('agent-a', { app: 'Notepad' }))).toBe('target_elevated');
+    expect(await codeOf(service.getAppState(AGENT_A, { app: 'Notepad' }))).toBe('target_elevated');
   });
 
   it('asks consent once per agent and app, and remembers it', async () => {
     const { service, consent } = makeService();
-    await service.getAppState('agent-a', { app: 'Notepad' });
-    await service.getAppState('agent-a', { app: 'Notepad' });
+    await service.getAppState(AGENT_A, { app: 'Notepad' });
+    await service.getAppState(AGENT_A, { app: 'Notepad' });
     expect(consent).toHaveBeenCalledTimes(1);
-    await service.getAppState('agent-b', { app: 'Notepad' });
+    await service.getAppState(AGENT_B, { app: 'Notepad' });
     expect(consent).toHaveBeenCalledTimes(2);
   });
 
   it('coalesces concurrent consent requests for the same agent and app', async () => {
     let release!: (v: ConsentAnswer) => void;
     const { service, consent } = makeService({ consent: () => new Promise<ConsentAnswer>((r) => { release = r; }) });
-    const a = service.getAppState('agent-a', { app: 'Notepad' });
-    const b = service.getAppState('agent-a', { app: 'Notepad' });
+    const a = service.getAppState(AGENT_A, { app: 'Notepad' });
+    const b = service.getAppState(AGENT_A, { app: 'Notepad' });
     await new Promise((r) => setTimeout(r, 0));
     release('approved');
     await Promise.all([a, b]);
@@ -158,68 +162,68 @@ describe('ComputerService', () => {
 
   it('treats an explicit Deny as a block and does not ask again', async () => {
     const { service, consent } = makeService({ consent: 'denied' });
-    expect(await codeOf(service.getAppState('agent-a', { app: 'Notepad' }))).toBe('app_blocked');
-    expect(await codeOf(service.getAppState('agent-a', { app: 'Notepad' }))).toBe('app_blocked');
+    expect(await codeOf(service.getAppState(AGENT_A, { app: 'Notepad' }))).toBe('app_blocked');
+    expect(await codeOf(service.getAppState(AGENT_A, { app: 'Notepad' }))).toBe('app_blocked');
     expect(consent).toHaveBeenCalledTimes(1);
   });
 
   it('requires a snapshot this agent took before any input', async () => {
     const { service } = makeService();
-    expect(await codeOf(service.control('agent-a', { action: 'click', index: 1 }))).toBe('invalid_argument');
-    expect(await codeOf(service.control('agent-a', { action: 'click', snapshotId: 'nope', index: 1 }))).toBe('snapshot_unknown');
-    const state = await service.getAppState('agent-a', { app: 'Notepad' });
-    expect(await codeOf(service.control('agent-b', { action: 'click', snapshotId: state.snapshotId, index: 1 }))).toBe('snapshot_unknown');
+    expect(await codeOf(service.control(AGENT_A, { action: 'click', index: 1 }))).toBe('invalid_argument');
+    expect(await codeOf(service.control(AGENT_A, { action: 'click', snapshotId: 'nope', index: 1 }))).toBe('snapshot_unknown');
+    const state = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    expect(await codeOf(service.control(AGENT_B, { action: 'click', snapshotId: state.snapshotId, index: 1 }))).toBe('snapshot_unknown');
   });
 
   it('expires snapshots', async () => {
     const { service, advance } = makeService();
-    const state = await service.getAppState('agent-a', { app: 'Notepad' });
+    const state = await service.getAppState(AGENT_A, { app: 'Notepad' });
     advance(121_000);
-    expect(await codeOf(service.control('agent-a', { action: 'click', snapshotId: state.snapshotId, index: 1 }))).toBe('snapshot_unknown');
+    expect(await codeOf(service.control(AGENT_A, { action: 'click', snapshotId: state.snapshotId, index: 1 }))).toBe('snapshot_unknown');
   });
 
   it('converts screenshot pixels to window points using the snapshot scale', async () => {
     const { service, calls } = makeService();
-    const state = await service.getAppState('agent-a', { app: 'Notepad' });
-    await service.control('agent-a', { action: 'click', snapshotId: state.snapshotId, x: 400, y: 200 });
+    const state = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    await service.control(AGENT_A, { action: 'click', snapshotId: state.snapshotId, x: 400, y: 200 });
     const click = calls.find((c) => c.method === 'click')!;
     expect(click.params).toMatchObject({ point: { x: 500, y: 250 }, button: 'left', clickCount: 1, modifiers: [] });
   });
 
   it('refuses coordinates outside the screenshot and index+coordinates together', async () => {
     const { service } = makeService();
-    const state = await service.getAppState('agent-a', { app: 'Notepad' });
-    expect(await codeOf(service.control('agent-a', { action: 'click', snapshotId: state.snapshotId, x: 1280, y: 10 }))).toBe('invalid_argument');
-    expect(await codeOf(service.control('agent-a', { action: 'click', snapshotId: state.snapshotId, x: 1, y: 1, index: 2 }))).toBe('invalid_argument');
+    const state = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    expect(await codeOf(service.control(AGENT_A, { action: 'click', snapshotId: state.snapshotId, x: 1280, y: 10 }))).toBe('invalid_argument');
+    expect(await codeOf(service.control(AGENT_A, { action: 'click', snapshotId: state.snapshotId, x: 1, y: 1, index: 2 }))).toBe('invalid_argument');
   });
 
   it('validates per-action arguments', async () => {
     const { service } = makeService();
-    const { snapshotId } = await service.getAppState('agent-a', { app: 'Notepad' });
-    expect(await codeOf(service.control('agent-a', { action: 'setValue', snapshotId, value: 'x' }))).toBe('invalid_argument');
-    expect(await codeOf(service.control('agent-a', { action: 'type', snapshotId, text: '' }))).toBe('invalid_argument');
-    expect(await codeOf(service.control('agent-a', { action: 'click', snapshotId, index: 1, modifiers: ['hyper' as never] }))).toBe('invalid_argument');
-    expect(await codeOf(service.control('agent-a', { action: 'setValue', snapshotId, index: 3, value: '안녕' }))).toBe('resolved');
+    const { snapshotId } = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    expect(await codeOf(service.control(AGENT_A, { action: 'setValue', snapshotId, value: 'x' }))).toBe('invalid_argument');
+    expect(await codeOf(service.control(AGENT_A, { action: 'type', snapshotId, text: '' }))).toBe('invalid_argument');
+    expect(await codeOf(service.control(AGENT_A, { action: 'click', snapshotId, index: 1, modifiers: ['hyper' as never] }))).toBe('invalid_argument');
+    expect(await codeOf(service.control(AGENT_A, { action: 'setValue', snapshotId, index: 3, value: '안녕' }))).toBe('resolved');
   });
 
   it('lets one agent drive at a time until its lock goes idle', async () => {
     const { service, advance } = makeService();
-    const a = await service.getAppState('agent-a', { app: 'Notepad' });
-    const b = await service.getAppState('agent-b', { app: 'Notepad' });
-    await service.control('agent-a', { action: 'pressKey', snapshotId: a.snapshotId, key: 'Enter' });
-    expect(await codeOf(service.control('agent-b', { action: 'pressKey', snapshotId: b.snapshotId, key: 'Enter' }))).toBe('input_busy');
+    const a = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    const b = await service.getAppState(AGENT_B, { app: 'Notepad' });
+    await service.control(AGENT_A, { action: 'pressKey', snapshotId: a.snapshotId, key: 'Enter' });
+    expect(await codeOf(service.control(AGENT_B, { action: 'pressKey', snapshotId: b.snapshotId, key: 'Enter' }))).toBe('input_busy');
     expect(service.inputHolder()).toBe('agent-a');
     advance(INPUT_LOCK_IDLE_MS + 1);
-    expect(await codeOf(service.control('agent-b', { action: 'pressKey', snapshotId: b.snapshotId, key: 'Enter' }))).toBe('resolved');
+    expect(await codeOf(service.control(AGENT_B, { action: 'pressKey', snapshotId: b.snapshotId, key: 'Enter' }))).toBe('resolved');
   });
 
   it('abort stops the helper, refuses input for a cooldown, and asks consent again', async () => {
     const { service, consent, advance } = makeService();
-    const { snapshotId } = await service.getAppState('agent-a', { app: 'Notepad' });
+    const { snapshotId } = await service.getAppState(AGENT_A, { app: 'Notepad' });
     service.abort();
-    expect(await codeOf(service.control('agent-a', { action: 'pressKey', snapshotId, key: 'a' }))).toBe('aborted');
+    expect(await codeOf(service.control(AGENT_A, { action: 'pressKey', snapshotId, key: 'a' }))).toBe('aborted');
     advance(ABORT_COOLDOWN_MS + 1);
-    expect(await codeOf(service.control('agent-a', { action: 'pressKey', snapshotId, key: 'a' }))).toBe('resolved');
+    expect(await codeOf(service.control(AGENT_A, { action: 'pressKey', snapshotId, key: 'a' }))).toBe('resolved');
     expect(consent).toHaveBeenCalledTimes(2);
   });
 
@@ -228,7 +232,7 @@ describe('ComputerService', () => {
     const { service, calls, consent, advance } = makeService({
       consent: () => new Promise<ConsentAnswer>((r) => { release = r; }),
     });
-    const pending = service.getAppState('agent-a', { app: 'Notepad' });
+    const pending = service.getAppState(AGENT_A, { app: 'Notepad' });
     await new Promise((r) => setTimeout(r, 0));
     service.abort();
     release('approved');
@@ -236,7 +240,7 @@ describe('ComputerService', () => {
     expect(calls.map((c) => c.method)).not.toContain('getAppState');
     // The late "yes" was not kept: the next call (after the cooldown) asks again.
     advance(ABORT_COOLDOWN_MS + 1);
-    const again = service.getAppState('agent-a', { app: 'Notepad' });
+    const again = service.getAppState(AGENT_A, { app: 'Notepad' });
     await new Promise((r) => setTimeout(r, 0));
     release('approved');
     await again;
@@ -256,16 +260,50 @@ describe('ComputerService', () => {
       }
       return result;
     };
-    expect(await codeOf(service.getAppState('agent-a', { app: 'Notepad' }))).toBe('target_elevated');
+    expect(await codeOf(service.getAppState(AGENT_A, { app: 'Notepad' }))).toBe('target_elevated');
     expect(calls.map((c) => c.method)).toEqual(['resolveTarget', 'getAppState']);
+  });
+
+  it('keeps two sessions of one client apart even when the person sees the same label', async () => {
+    const { service, consent } = makeService();
+    const paneA: ComputerAgent = { key: 'claude-code @ ws-1/pty-1', label: 'claude-code in workspace "api"' };
+    const paneB: ComputerAgent = { key: 'claude-code @ ws-1/pty-2', label: 'claude-code in workspace "api"' };
+    const a = await service.getAppState(paneA, { app: 'Notepad' });
+    // Consent is per session: B is asked for itself.
+    const b = await service.getAppState(paneB, { app: 'Notepad' });
+    expect(consent).toHaveBeenCalledTimes(2);
+    expect(consent.mock.calls.map((c) => (c as unknown as [{ agent: ComputerAgent }])[0].agent.key)).toEqual([paneA.key, paneB.key]);
+    // Snapshots are per session.
+    expect(await codeOf(service.control(paneB, { action: 'click', snapshotId: a.snapshotId, index: 1 }))).toBe('snapshot_unknown');
+    // The input lock is per session, and the holder is named by label, never by key.
+    await service.control(paneA, { action: 'pressKey', snapshotId: a.snapshotId, key: 'Enter' });
+    const busy = await service.control(paneB, { action: 'pressKey', snapshotId: b.snapshotId, key: 'Enter' }).catch((e: unknown) => e);
+    expect(busy).toBeInstanceOf(ComputerError);
+    expect((busy as ComputerError).code).toBe('input_busy');
+    expect((busy as ComputerError).message).toBe('claude-code in workspace "api" is using the desktop');
+    expect((busy as ComputerError).message).not.toContain('pty-');
+    expect(service.inputHolder()).toBe('claude-code in workspace "api"');
+  });
+
+  it('keeps the rate cap per session', async () => {
+    const { service } = makeService();
+    const paneA: ComputerAgent = { key: 'c @ ws-1/pty-1', label: 'c' };
+    const paneB: ComputerAgent = { key: 'c @ ws-1/pty-2', label: 'c' };
+    const { snapshotId } = await service.getAppState(paneA, { app: 'Notepad' });
+    for (let i = 0; i < 120; i++) await service.control(paneA, { action: 'pressKey', snapshotId, key: 'a' });
+    expect(await codeOf(service.control(paneA, { action: 'pressKey', snapshotId, key: 'a' }))).toBe('input_busy');
+    const b = await service.getAppState(paneB, { app: 'Notepad' });
+    // B is not throttled by A's actions (only by A's lock, which has gone idle here).
+    (service as unknown as { lock: unknown }).lock = null;
+    expect(await codeOf(service.control(paneB, { action: 'pressKey', snapshotId: b.snapshotId, key: 'a' }))).toBe('resolved');
   });
 
   it('does not remember an unanswered or unshowable prompt: the next call asks again', async () => {
     const answers: ConsentAnswer[] = ['expired', 'unavailable', 'approved'];
     const { service, consent } = makeService({ consent: async () => answers.shift() ?? 'approved' });
-    expect(await codeOf(service.getAppState('agent-a', { app: 'Notepad' }))).toBe('timeout');
-    expect(await codeOf(service.getAppState('agent-a', { app: 'Notepad' }))).toBe('internal');
-    expect(await codeOf(service.getAppState('agent-a', { app: 'Notepad' }))).toBe('resolved');
+    expect(await codeOf(service.getAppState(AGENT_A, { app: 'Notepad' }))).toBe('timeout');
+    expect(await codeOf(service.getAppState(AGENT_A, { app: 'Notepad' }))).toBe('internal');
+    expect(await codeOf(service.getAppState(AGENT_A, { app: 'Notepad' }))).toBe('resolved');
     expect(consent).toHaveBeenCalledTimes(3);
   });
 
@@ -277,28 +315,28 @@ describe('ComputerService', () => {
         return 'approved';
       },
     });
-    expect(await codeOf(service.getAppState('agent-a', { app: 'Notepad' }))).toBe('internal');
-    expect(await codeOf(service.getAppState('agent-a', { app: 'Notepad' }))).toBe('resolved');
+    expect(await codeOf(service.getAppState(AGENT_A, { app: 'Notepad' }))).toBe('internal');
+    expect(await codeOf(service.getAppState(AGENT_A, { app: 'Notepad' }))).toBe('resolved');
     expect(consent).toHaveBeenCalledTimes(2);
   });
 
   it('opens no new consent prompt during the stop cooldown', async () => {
     const { service, consent, advance } = makeService();
     service.abort();
-    expect(await codeOf(service.getAppState('agent-a', { app: 'Notepad' }))).toBe('aborted');
+    expect(await codeOf(service.getAppState(AGENT_A, { app: 'Notepad' }))).toBe('aborted');
     expect(consent).not.toHaveBeenCalled();
     advance(ABORT_COOLDOWN_MS + 1);
-    expect(await codeOf(service.getAppState('agent-a', { app: 'Notepad' }))).toBe('resolved');
+    expect(await codeOf(service.getAppState(AGENT_A, { app: 'Notepad' }))).toBe('resolved');
     expect(consent).toHaveBeenCalledTimes(1);
   });
 
   it('caps input actions per minute', async () => {
     const { service } = makeService();
-    const { snapshotId } = await service.getAppState('agent-a', { app: 'Notepad' });
+    const { snapshotId } = await service.getAppState(AGENT_A, { app: 'Notepad' });
     for (let i = 0; i < 120; i++) {
-      await service.control('agent-a', { action: 'pressKey', snapshotId, key: 'a' });
+      await service.control(AGENT_A, { action: 'pressKey', snapshotId, key: 'a' });
     }
-    expect(await codeOf(service.control('agent-a', { action: 'pressKey', snapshotId, key: 'a' }))).toBe('input_busy');
+    expect(await codeOf(service.control(AGENT_A, { action: 'pressKey', snapshotId, key: 'a' }))).toBe('input_busy');
   });
 });
 
@@ -333,9 +371,9 @@ describe('ComputerService with the real approval queue', () => {
 
   it('a timeout then a retry asks again instead of reporting a refusal', async () => {
     const { service, queue, opened } = realQueueService(30);
-    expect(await codeOf(service.getAppState('agent-a', { app: 'Notepad' }))).toBe('timeout');
+    expect(await codeOf(service.getAppState(AGENT_A, { app: 'Notepad' }))).toBe('timeout');
     expect(queue.inflightCount()).toBe(0);
-    const retry = service.getAppState('agent-a', { app: 'Notepad' });
+    const retry = service.getAppState(AGENT_A, { app: 'Notepad' });
     await sleep(0);
     expect(opened).toHaveLength(2);
     await queue.resolvePrompt(opened[1].promptId, true);
@@ -344,17 +382,17 @@ describe('ComputerService with the real approval queue', () => {
 
   it('remembers an explicit Deny without asking again', async () => {
     const { service, queue, opened } = realQueueService(60_000);
-    const first = service.getAppState('agent-a', { app: 'Notepad' });
+    const first = service.getAppState(AGENT_A, { app: 'Notepad' });
     await sleep(0);
     await queue.resolvePrompt(opened[0].promptId, false);
     expect(await codeOf(first)).toBe('app_blocked');
-    expect(await codeOf(service.getAppState('agent-a', { app: 'Notepad' }))).toBe('app_blocked');
+    expect(await codeOf(service.getAppState(AGENT_A, { app: 'Notepad' }))).toBe('app_blocked');
     expect(opened).toHaveLength(1);
   });
 
   it('the stop key takes the prompt down and fails the parked call at once', async () => {
     const { service, queue, opened, closed } = realQueueService(60_000);
-    const parked = service.getAppState('agent-a', { app: 'Notepad' });
+    const parked = service.getAppState(AGENT_A, { app: 'Notepad' });
     await sleep(0);
     expect(queue.inflightCount()).toBe(1);
     const stoppedAt = Date.now();
@@ -369,17 +407,17 @@ describe('ComputerService with the real approval queue', () => {
   it('a call after the stop never joins the pre-stop prompt, and is not failed at its deadline', async () => {
     const deadlineMs = 300;
     const { service, queue, opened, dedupeKeys, advance } = realQueueService(deadlineMs);
-    const a = service.getAppState('agent-a', { app: 'Notepad' });
+    const a = service.getAppState(AGENT_A, { app: 'Notepad' });
     await sleep(deadlineMs * 0.3);
     service.abort();
     // Right after the stop (the agent retries at once): refused, no prompt.
-    const b = service.getAppState('agent-a', { app: 'Notepad' });
+    const b = service.getAppState(AGENT_A, { app: 'Notepad' });
     expect(await codeOf(a)).toBe('aborted');
     expect(await codeOf(b)).toBe('aborted');
     expect(opened).toHaveLength(1);
     // After the cooldown: a fresh prompt with its own dedupe key.
     advance(ABORT_COOLDOWN_MS + 1);
-    const c = service.getAppState('agent-a', { app: 'Notepad' });
+    const c = service.getAppState(AGENT_A, { app: 'Notepad' });
     await sleep(0);
     expect(opened).toHaveLength(2);
     expect(dedupeKeys[1]).not.toBe(dedupeKeys[0]);
@@ -392,7 +430,7 @@ describe('ComputerService with the real approval queue', () => {
 
   it('dispose also takes open prompts down', async () => {
     const { service, queue } = realQueueService(60_000);
-    const parked = service.getAppState('agent-a', { app: 'Notepad' });
+    const parked = service.getAppState(AGENT_A, { app: 'Notepad' });
     await sleep(0);
     service.dispose();
     expect(await codeOf(parked)).toBe('aborted');
