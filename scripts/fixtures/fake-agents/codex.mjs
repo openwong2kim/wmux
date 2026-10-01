@@ -103,6 +103,9 @@ runFakeTui({
   agent: 'codex',
   header: banner,
   promptGlyph: '›',
+  // Codex runs full-screen (mode 1049 in the 0.157.1 capture), composer at
+  // the bottom: after `/new` the banner is far above the cursor row.
+  fullScreen: true,
   footer: ['  ⏎ send   ⌃J newline   ⌃T transcript   ⌃C quit'],
   freshCommands: ['/new', '/clear'],
   headerOnFresh: true,

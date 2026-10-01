@@ -259,6 +259,13 @@ describe('runFreshContext — evidence after Enter', () => {
     expect(pane.writes).toEqual(['/new', '\r']);
   });
 
+  it('codex: the banner counts anywhere in the read, far above a bottom-pinned composer', async () => {
+    const tall = ['│ >_ OpenAI Codex (v0.158.0) │', ...Array<string>(30).fill(''), '› '].join('\n');
+    const pane = scriptedPane({ agent: 'Codex CLI', screen: CODEX_IDLE, cleared: tall, sessionStartSource: null });
+    const out = await runFreshContext(CODEX, pane.probe, pane.opts);
+    expect(out).toMatchObject({ freshContext: 'applied', freshContextSignal: 'screen' });
+  });
+
   it('codex: a SessionStart is used when it arrives, never required', async () => {
     const pane = scriptedPane({
       agent: 'Codex CLI', screen: CODEX_IDLE, cleared: CODEX_NEW, sessionStartSource: 'startup',

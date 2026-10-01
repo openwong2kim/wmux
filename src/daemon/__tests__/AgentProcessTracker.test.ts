@@ -69,6 +69,14 @@ describe('resolveAgentSlug', () => {
     expect(resolveAgentSlug(undefined)).toBeUndefined();
   });
 
+  // #1680 — the live-dogfood fake agents are attributed only when launched by
+  // path (their header says so); a bare script name is the user's own file.
+  it('attributes the fake agent fixtures launched by path, not by bare name', () => {
+    expect(resolveAgentSlug('"C:\\Program Files\\nodejs\\node.exe" D:\\wmux-work\\w1680\\scripts\\fixtures\\fake-agents\\claude.mjs')).toBe('claude');
+    expect(resolveAgentSlug('node D:/wmux-work/w1680/scripts/fixtures/fake-agents/codex.mjs')).toBe('codex');
+    expect(resolveAgentSlug('node claude.mjs')).toBeUndefined();
+  });
+
   it('never matches arbitrary ancestor directories or trailing positionals', () => {
     expect(resolveAgentSlug('node /work/claude/scratch.js')).toBeUndefined();
     expect(resolveAgentSlug('node demo.js claude')).toBeUndefined();

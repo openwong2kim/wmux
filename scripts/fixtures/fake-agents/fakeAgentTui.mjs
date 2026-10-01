@@ -54,6 +54,8 @@ export function makeLogger(agent) {
  *   promptGlyph      composer prompt glyph (`❯`, `›`)
  *   footer           rows drawn under the composer
  *   freshCommands    composer lines that start a new conversation
+ *   fullScreen       draw on the alternate screen with the composer pinned to
+ *                    the bottom row block (Codex); inline otherwise (Claude)
  *   onSessionStart(source)          a conversation started
  *   onFreshCommand()                the fresh-context command landed; returns
  *                                   nothing
@@ -95,6 +97,12 @@ export function runFakeTui(spec) {
       lines.push(`${SPINNER[state.clearing.frame % SPINNER.length]} Starting a new conversation… (frame ${state.clearing.frame})`);
     }
     lines.push('');
+    // A full-screen TUI (Codex) keeps its composer at the bottom of the
+    // terminal, so the banner can sit far above the cursor row.
+    if (spec.fullScreen) {
+      const below = 3 + spec.footer.length;
+      while (lines.length + below < rows()) lines.push('');
+    }
     const rule = '─'.repeat(Math.min(100, (process.stdout.columns || 100) - 1));
     lines.push(rule);
     const composerIndex = lines.length;
@@ -203,7 +211,7 @@ export function runFakeTui(spec) {
 
   function quit(reason) {
     log('exit', { reason });
-    out(`${ESC}[?2004l\r\n`);
+    out(`${ESC}[?2004l${spec.fullScreen ? `${ESC}[?1049l` : ''}\r\n`);
     process.exit(0);
   }
 
@@ -287,8 +295,9 @@ export function runFakeTui(spec) {
     }
   }
 
-  // Bracketed paste on, so wmux pastes multi-line text as one block.
-  out(`${ESC}[?2004h`);
+  // Bracketed paste on, so wmux pastes multi-line text as one block; a
+  // full-screen TUI also switches to the alternate screen, as Codex does.
+  out(`${spec.fullScreen ? `${ESC}[?1049h` : ''}${ESC}[?2004h`);
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
   process.stdin.setEncoding('utf8');
   process.stdin.on('data', feed);

@@ -130,6 +130,13 @@ describe('input.send newTask (#1680)', () => {
       freshContextCommand: '/clear',
       freshContextSignal: 'session_start',
     });
+    // The step reads a wide window ending at the cursor (a full-screen Codex
+    // draws its banner far above the composer); the submit receipt keeps 20.
+    const tails = sendToRendererMock.mock.calls
+      .filter(([, method]) => method === 'input.readScreen')
+      .map(([, , params]) => (params as { tail_lines?: number; endAtCursor?: boolean }));
+    expect(tails).toContainEqual(expect.objectContaining({ tail_lines: 200, endAtCursor: true }));
+    expect(tails).toContainEqual(expect.objectContaining({ tail_lines: 20, endAtCursor: true }));
   });
 
   it('a command that never finishes fails the send and writes nothing after its Enter', async () => {

@@ -580,6 +580,7 @@ function makeSubmitProbe(
   ptyId: string,
   workspaceId: string | undefined,
   readTurnStartedAt?: (ptyId: string) => number | undefined,
+  tailLines: number = SUBMIT_RECEIPT_READ_LINES,
 ): SubmitProbe {
   return {
     readScreen: async (): Promise<string> => {
@@ -589,7 +590,7 @@ function makeSubmitProbe(
           // Bounded on both axes: the composer lives in the last handful of
           // rows, and a viewport we cannot get in 300ms is a poll to skip, not
           // a submit to stall.
-          tail_lines: SUBMIT_RECEIPT_READ_LINES,
+          tail_lines: tailLines,
           // Composer rows are counted up from the cursor row; the statusline
           // and hints a TUI draws below it must not push the needle out (#1595).
           endAtCursor: true,
@@ -891,6 +892,14 @@ export interface InputRpcDeps {
 /** Budget for one daemon state read while a fresh-context step polls. */
 const FRESH_CONTEXT_STATE_READ_TIMEOUT_MS = 500;
 
+/**
+ * Rows a fresh-context read takes, ending at the cursor. Wider than the submit
+ * receipt's: Codex draws full-screen (alternate screen), so after `/new` its
+ * banner sits at the TOP of a tall pane while the cursor is on the composer at
+ * the bottom — a 20-row tail would never contain the banner the step waits for.
+ */
+const FRESH_CONTEXT_READ_LINES = 200;
+
 export function registerInputRpc(
   router: RpcRouter,
   ptyManager: PTYManager,
@@ -929,7 +938,13 @@ export function registerInputRpc(
     write: (data: string) => void,
     keepContext?: string,
   ): Promise<FreshContextReply> => {
-    const screenProbe = makeSubmitProbe(getWindow, ptyId, workspaceId, deps.readTurnStartedAt);
+    const screenProbe = makeSubmitProbe(
+      getWindow,
+      ptyId,
+      workspaceId,
+      deps.readTurnStartedAt,
+      FRESH_CONTEXT_READ_LINES,
+    );
     const probe: FreshContextProbe = {
       readAgentState: async () => {
         if (ptyManager.get(ptyId)) return null;
