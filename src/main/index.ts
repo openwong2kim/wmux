@@ -56,6 +56,7 @@ import { registerWorkspaceRpc } from './pipe/handlers/workspace.rpc';
 import { registerSurfaceRpc } from './pipe/handlers/surface.rpc';
 import { registerPaneRpc } from './pipe/handlers/pane.rpc';
 import { registerInputRpc, makeRoleBindingResolver } from './pipe/handlers/input.rpc';
+import { gatedSubmitTaskContext } from './pipe/handlers/a2aOpenTasks';
 import { registerApprovalsRpc } from './pipe/handlers/approvals.rpc';
 import { registerDeckRpc } from './pipe/handlers/deck.rpc';
 import { registerNotifyRpc } from './pipe/handlers/notify.rpc';
@@ -861,15 +862,26 @@ const inputRpc = registerInputRpc(
   () => daemonClient,
   makeRoleBindingResolver(() => mainWindow),
   (ptyId, data) => ptyBridge.noteInterruptInput(ptyId, data),
-  { readTurnStartedAt: (ptyId) => hookSignalRouter?.promptSubmitAtFor(ptyId) },
+  {
+    readTurnStartedAt: (ptyId) => hookSignalRouter?.promptSubmitAtFor(ptyId),
+    readSessionStart: (ptyId) => hookSignalRouter?.sessionStartFor(ptyId),
+  },
 );
 // Non-operator deliveries (A2A, company, channel mention nudges) are pasted
 // and submitted here, behind the same approval guard as `input.send`, checked
 // again right before the Enter. Registered once, beside the router, so
 // crash-recovery handler reloads do not double-register it.
-ipcMain.handle(IPC.GATED_SUBMIT, async (_e, ptyId: unknown, text: unknown, agent: unknown) =>
+// `opts.newTask` (#1680): only the a2a new-task branch sets it, so the pane's
+// role may get its fresh-context command before the text.
+ipcMain.handle(IPC.GATED_SUBMIT, async (_e, ptyId: unknown, text: unknown, agent: unknown, opts: unknown) =>
   typeof ptyId === 'string' && ptyId && typeof text === 'string'
-    ? inputRpc.gatedSubmit(ptyId, text, typeof agent === 'string' ? agent : null)
+    ? inputRpc.gatedSubmit(ptyId, text, typeof agent === 'string' ? agent : null, {
+        newTask: typeof opts === 'object' && opts !== null && (opts as { newTask?: unknown }).newTask === true,
+        ...(typeof opts === 'object' && opts !== null && (opts as { keepContext?: unknown }).keepContext === 'open_a2a_task'
+          ? { keepContext: 'open_a2a_task' as const }
+          : {}),
+        ...gatedSubmitTaskContext(opts),
+      })
     : { ok: false, reason: 'write_failed', detail: 'delivery: missing target pty or text' },
 );
 registerApprovalsRpc(rpcRouter, () => daemonClient);

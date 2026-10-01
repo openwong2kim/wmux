@@ -224,8 +224,12 @@ export function planRecoveryPillType(args: {
   // Re-assert the bound model on a launcher-prefixed line. The stage-2
   // continuation is NOT launcher-prefixed, so it is typed verbatim (the model
   // already rode the stage-0 base) — matching input.send / buildPaneResumeCommand.
+  // With the skip toggle offered (Claude) and OFF, the user's explicit choice
+  // wins over the role's skipPermissions: the role's skip flag is withheld (and
+  // dropped from the role's args, #1681) so the restored mode is what runs. forceSkip is exactly `canSkip && toggle`.
+  const toggledOff = !forceSkip && agentSupportsPermissionFlag(launcher);
   const rewrite = (cmd: string): { text: string; rewritten: boolean } => {
-    const r = applyRoleBinding(cmd, roleBinding);
+    const r = applyRoleBinding(cmd, roleBinding, { suppressSkipPermissions: toggledOff });
     return { text: r.command, rewritten: r.changed };
   };
   const resumeArg = sessionId ? grammar.withId(sessionId) : grammar.fallback;

@@ -19,6 +19,7 @@ import { registerFontHandlers } from './handlers/fonts.handler';
 import { registerMetadataHandlers } from './handlers/metadata.handler';
 import { startLocalContextWatch } from '../metadata/localContextWatch';
 import { registerClipboardHandlers } from './handlers/clipboard.handler';
+import { registerAgentModelsHandlers } from './handlers/agentModels.handler';
 import { registerHooksBridgeHandlers } from './handlers/hooksBridge.handler';
 import { registerStatuslineBridgeHandlers } from './handlers/statuslineBridge.handler';
 import { registerFsHandlers } from './handlers/fs.handler';
@@ -166,6 +167,7 @@ export function registerAllHandlers(
     localPtyOwnership: !daemonClient,
   });
   registerClipboardHandlers();
+  registerAgentModelsHandlers();
   registerHooksBridgeHandlers();
   registerStatuslineBridgeHandlers();
   const cleanupFs = registerFsHandlers();

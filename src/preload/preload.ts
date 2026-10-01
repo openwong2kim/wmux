@@ -491,8 +491,19 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.CHANNEL_MUTATE_LOCAL, method, params),
     // Paste + submit a non-operator delivery through main's approval gate.
     // Renderer-only; see IPC.GATED_SUBMIT.
-    gatedSubmit: (ptyId: string, text: string, agent?: string | null) =>
-      ipcRenderer.invoke(IPC.GATED_SUBMIT, ptyId, text, agent ?? null) as Promise<
+    // `opts.newTask`: an a2a new task, whose pane may get a fresh context (#1680).
+    gatedSubmit: (
+      ptyId: string,
+      text: string,
+      agent?: string | null,
+      opts?: import('../shared/ptyMessageDelivery').GatedSubmitOptions,
+    ) =>
+      ipcRenderer.invoke(IPC.GATED_SUBMIT, ptyId, text, agent ?? null, {
+        newTask: opts?.newTask === true,
+        ...(opts?.keepContext ? { keepContext: opts.keepContext } : {}),
+        ...(opts?.taskId ? { taskId: opts.taskId } : {}),
+        ...(opts?.pane ? { pane: opts.pane } : {}),
+      }) as Promise<
         import('../shared/ptyMessageDelivery').GatedSubmitResult
       >,
   },
@@ -647,6 +658,13 @@ const electronAPI = {
       return () => { ipcRenderer.removeListener(IPC.AUTOMATION_OPEN_RUN, listener); };
     },
   },
+  agentModels: {
+    /** Models an agent CLI reports; `refresh` bypasses main's cache. */
+    list: (agent: string, refresh = false) =>
+      ipcRenderer.invoke(IPC.AGENT_MODELS_LIST, { agent, refresh }) as Promise<
+        import('../shared/modelCatalog').ModelCatalogResult
+      >,
+  },
   deck: {
     // M1.5: one orchestrator per workspace — every call names the workspace
     // whose brain it addresses. `model` is the orchestrator model override
@@ -798,10 +816,11 @@ const electronAPI = {
     },
     // Orchestrator model picker → main-side authority, so scheduled and
     // event-woken turns (and the composer-less terminal brain) all see it.
-    modelSet: (model: string) =>
-      ipcRenderer.invoke(IPC.DECK_MODEL_SET, { model }) as Promise<{
+    modelSet: (model: string, effort?: string) =>
+      ipcRenderer.invoke(IPC.DECK_MODEL_SET, { model, effort }) as Promise<{
         ok: true;
         model: string;
+        effort: string;
       }>,
     // The operator's `/clear` — resets one workspace orchestrator's brain
     // context (fresh SDK conversation on the next turn). Transcript stays.

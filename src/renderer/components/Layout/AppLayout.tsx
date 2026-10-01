@@ -384,6 +384,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     defaultShell: state.defaultShell,
     defaultWslDistro: state.defaultWslDistro,
     deckBrainModel: state.deckBrainModel || undefined,
+    deckBrainEffort: state.deckBrainEffort || undefined,
     orchestratorRoleBindings:
       Object.keys(state.orchestratorRoleBindings).length > 0 ? state.orchestratorRoleBindings : undefined,
     // Persisted explicitly (not `|| undefined`): an explicit false survives
@@ -1544,9 +1545,10 @@ export default function AppLayout() {
   // but that path does not exist for the terminal brain (no composer — the TUI
   // is the input) and never covered scheduled / event-woken turns.
   const deckBrainModelLive = useStore((s) => s.deckBrainModel);
+  const deckBrainEffortLive = useStore((s) => s.deckBrainEffort);
   useEffect(() => {
-    void window.electronAPI?.deck?.modelSet?.(deckBrainModelLive);
-  }, [deckBrainModelLive]);
+    void window.electronAPI?.deck?.modelSet?.(deckBrainModelLive, deckBrainEffortLive);
+  }, [deckBrainModelLive, deckBrainEffortLive]);
 
   // ─── First-run onboarding (spotlight) detection ─────────────────────
   // D8: spotlight stays gated behind firstRunCompleted so the wizard always

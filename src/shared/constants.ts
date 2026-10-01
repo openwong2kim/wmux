@@ -211,6 +211,11 @@ export const IPC = {
   //                   automation-driven turns spawned brains on whatever model
   //                   the last typed turn happened to leave behind.
   DECK_MODEL_SET: 'deck:model:set',
+  //   AGENT_MODELS_LIST (invoke) renderer → main: the models an agent CLI
+  //                   reports (`agy models`, `codex debug models`, claude's
+  //                   static list), cached in main. `{ agent, refresh? }` →
+  //                   ModelCatalogResult. Never rejects for a missing CLI.
+  AGENT_MODELS_LIST: 'agents:models:list',
   //   DECK_BRAIN_PTY  (send) main → renderer: the `claude-pty` brain just
   //                   spawned its interactive TUI in daemon session <ptyId>.
   //                   One-way and additive to DECK_STREAM (which carries only

@@ -80,7 +80,8 @@ describe('A2A delivery approval gate', () => {
   it('a new task to a pane behind an approval writes nothing, stays stored, and says why', async () => {
     const result = await send({ silent: false });
     expect(writesToTarget()).toEqual([]);
-    expect(gate).toHaveBeenCalledWith(PTY, expect.stringContaining(BODY), 'Claude Code');
+    // A new task is a task boundary: main may run the pane's fresh-context step (#1680).
+    expect(gate).toHaveBeenCalledWith(PTY, expect.stringContaining(BODY), 'Claude Code', expect.objectContaining({ newTask: true }));
     expect(result.ok).toBe(true);
     expect(result.delivery).toMatchObject({ stored: true, notified: false, reason: 'approval_pending' });
     expect(useStore.getState().getTask(result.taskId!)).toBeDefined();

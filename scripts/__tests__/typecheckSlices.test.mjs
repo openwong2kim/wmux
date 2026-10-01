@@ -6,7 +6,8 @@
 // check actually reports a missing directory.
 import { describe, expect, it } from 'vitest';
 import {
-  ROOT_CONFIG, SLICES, sliceConfig, coverageGaps, rootFiles, sliceConfigProblems, scopeProblems, casingMismatches,
+  ROOT, ROOT_CONFIG, SLICES, PROGRAMS, CHECKS, sliceConfig, checkConfig, assertSlicesExist, coverageGaps, rootFiles,
+  sliceConfigProblems, scopeProblems, casingMismatches, selectChecks,
 } from '../lib/typecheck-slices.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -95,6 +96,56 @@ describe('typecheck slices', () => {
       expect(found).toEqual(caseInsensitive ? [{ listed: 'widget.ts', onDisk: 'Widget.ts' }] : []);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // #1681 — the MCP bundle targets ES2020, so an ES2022 API in a shared file
+  // passed every slice (tsconfig.json targets ESNext) and only failed its build.
+  it('also runs the build programs, each with its own tsconfig', () => {
+    expect(Object.keys(PROGRAMS)).toEqual(['mcp', 'cli', 'daemon']);
+    expect(CHECKS).toEqual([...SLICES, 'mcp', 'cli', 'daemon']);
+    for (const name of Object.keys(PROGRAMS)) {
+      const config = checkConfig(name);
+      expect(path.dirname(config)).toBe(ROOT);
+      expect(fs.existsSync(config), `${config} is missing`).toBe(true);
+    }
+    expect(checkConfig('mcp')).toBe(path.join(ROOT, 'tsconfig.mcp.json'));
+    expect(checkConfig('src')).toBe(sliceConfig('src'));
+    expect(() => assertSlicesExist(CHECKS)).not.toThrow();
+    expect(() => assertSlicesExist(['nope'])).toThrow(/unknown type-check slice "nope"/);
+  });
+
+  it('selects named checks, or all of them, minus --skip build programs', () => {
+    expect(selectChecks([])).toEqual(CHECKS);
+    expect(selectChecks(['src', 'mcp'])).toEqual(['src', 'mcp']);
+    expect(selectChecks(['--skip', 'mcp,daemon'])).toEqual([...SLICES, 'cli']);
+    expect(selectChecks(['--skip', 'mcp', '--skip', 'cli'])).toEqual([...SLICES, 'daemon']);
+    expect(selectChecks(['src', 'mcp', '--skip', 'mcp'])).toEqual(['src']);
+    // Skipping only makes sense for a program something else compiles; a
+    // slice or a typo must not quietly check less.
+    expect(() => selectChecks(['--skip', 'src'])).toThrow(/build programs only/);
+    expect(() => selectChecks(['--skip', 'mcp,'])).toThrow(/build programs only/);
+    expect(() => selectChecks(['--skip'])).toThrow(/needs a comma-separated list/);
+    expect(() => selectChecks(['--except', 'mcp'])).toThrow(/unknown option "--except"/);
+    expect(() => selectChecks(['mcp', '--skip', 'mcp'])).toThrow(/nothing left to check/);
+  });
+
+  // #1685 — CI skips a build program in its type check only because a CI step
+  // compiles the same tsconfig anyway. Pin that: every program ci.yml skips
+  // must have a `build:<name>` script that starts with `tsc -p <its tsconfig>`,
+  // and ci.yml must run that script.
+  it('skips in CI only the programs a CI build step compiles', () => {
+    const ci = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
+    const step = /^\s*run:\s*node scripts\/typecheck\.mjs\b(.*)$/m.exec(ci);
+    expect(step, 'ci.yml no longer runs scripts/typecheck.mjs').toBeTruthy();
+    const skipped = CHECKS.filter((n) => !selectChecks(step[1].trim().split(/\s+/).filter(Boolean)).includes(n));
+
+    const scripts = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).scripts;
+    for (const name of skipped) {
+      const tsconfig = PROGRAMS[name].replace(/\./g, '\\.');
+      expect(scripts[`build:${name}`], `build:${name} no longer compiles ${PROGRAMS[name]}`)
+        .toMatch(new RegExp(`^tsc -p ${tsconfig}(\\s|$)`));
+      expect(ci, `ci.yml no longer runs build:${name}`).toMatch(new RegExp(`npm run build:${name}(?![\\w:-])`));
     }
   });
 

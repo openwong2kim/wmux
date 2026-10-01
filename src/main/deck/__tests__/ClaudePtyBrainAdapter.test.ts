@@ -455,6 +455,18 @@ describe('buildBrainLaunchCommand', () => {
     expect(cmd).toContain('--model "opus"');
   });
 
+  it('carries the orchestrator effort override, and omits the flag when unset', () => {
+    const base = {
+      executable: 'claude',
+      settingsPath: '/tmp/s.json',
+      mcpConfigPath: null,
+      allowedTools: [],
+      platform: 'darwin' as const,
+    };
+    expect(buildBrainLaunchCommand({ ...base, effort: 'low' })).toContain('--effort "low"');
+    expect(buildBrainLaunchCommand(base)).not.toContain('--effort');
+  });
+
   it('makes the command RUNNABLE under the daemon\'s pwsh exec wrapper', () => {
     // `pwsh -Command "\"C:\\...\\claude.exe\" --settings …"` parses a leading
     // quoted token as a STRING, prints it and exits 0 — nothing launches. The

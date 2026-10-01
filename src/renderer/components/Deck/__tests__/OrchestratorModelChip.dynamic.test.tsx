@@ -45,13 +45,19 @@ describe('OrchestratorModelChip', () => {
   });
 
   it('reflects a set model as its display name', () => {
-    act(() => useStore.setState({ deckBrainModel: 'opus' }));
+    act(() => useStore.setState({ deckBrainModel: 'claude-opus-5-5' }));
     mount();
-    expect(chipButton().textContent).toContain('Opus 4.8');
+    expect(chipButton().textContent).toContain('Opus 5.5');
+  });
+
+  it('shows an id missing from the list as itself, not as Default', () => {
+    act(() => useStore.setState({ deckBrainModel: 'claude-future-9' }));
+    mount();
+    expect(chipButton().textContent).toContain('claude-future-9');
   });
 
   it('opens the picker on click and marks the current model selected', () => {
-    act(() => useStore.setState({ deckBrainModel: 'haiku' }));
+    act(() => useStore.setState({ deckBrainModel: 'claude-haiku-4-5-20251001' }));
     mount();
     expect(container.querySelector('[role="listbox"]')).toBeNull();
     click(chipButton());
@@ -67,10 +73,10 @@ describe('OrchestratorModelChip', () => {
     const options = Array.from(
       container.querySelectorAll('[role="option"]'),
     ) as HTMLButtonElement[];
-    const sonnet = options.find((o) => o.textContent?.includes('Sonnet 5'));
+    const sonnet = options.find((o) => o.textContent?.includes('Sonnet 5.5'));
     expect(sonnet).toBeTruthy();
     click(sonnet as HTMLButtonElement);
-    expect(useStore.getState().deckBrainModel).toBe('sonnet');
+    expect(useStore.getState().deckBrainModel).toBe('claude-sonnet-5-5');
     expect(container.querySelector('[role="listbox"]')).toBeNull();
   });
 });

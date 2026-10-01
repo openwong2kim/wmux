@@ -1185,6 +1185,10 @@ export const en = {
   'settings.orchestratorModelDesc':
     'The Claude model the Command Deck orchestrator runs on. Changes apply from your next command; the conversation carries over.',
   'settings.orchestratorModelDefault': 'Default (subscription model)',
+  'settings.orchestratorEffort': 'Orchestrator effort',
+  'settings.orchestratorEffortDesc':
+    'How much the orchestrator thinks per turn (claude --effort). Lower is faster and uses fewer tokens. Applies from your next command.',
+  'settings.orchestratorEffortDefault': 'Default (CLI setting)',
   'settings.orchestratorFullPower': 'Full-power mode',
   'settings.orchestratorFullPowerDesc':
     'Load your Claude Code skills, CLAUDE.md and hooks into orchestrator turns. Your hooks run inside brain turns (your own code, outside any wmux sandbox), tool calls may get slower, and the brain cannot write its memory notes while this is on. Applies from the next brain turn.',
@@ -1204,10 +1208,23 @@ export const en = {
     'Pick an agent too — a model on its own is not enforced (wmux can’t tell whose --model flag it is).',
   'settings.roleBindingHintNoGrammar':
     'wmux has no verified --model flag for {agent}, so the model is ignored. Extra args still apply.',
-  'settings.roleBindingHintInert': 'Add a model or extra args — an agent alone enforces nothing.',
+  'settings.roleBindingHintInert': 'Add a model, an effort, skip permissions, fresh context or extra args — an agent alone enforces nothing.',
+  'settings.roleBindingHintFreshContextInert':
+    'Fresh context per task works only with claude or codex as the agent; for this role it does nothing.',
+  'settings.roleBindingEffortLabel': '{role} effort',
+  'settings.roleBindingEffortDefault': 'Effort: default',
+  'settings.roleBindingSkipPermissions': 'Skip permissions',
+  'settings.roleBindingFreshContext': 'Fresh context per task',
+  'settings.roleBindingFreshContextTooltip':
+    'When this pane is handed a NEW task (the orchestrator’s terminal_send with new_task, or a new send_message from another agent), wmux first types {command} so the previous task’s conversation does not carry over. Never on a follow-up or a reply. Skipped while the agent is busy or the pane still has other open agent tasks.',
+  'settings.roleBindingRefreshModels': 'Refresh models',
   // D2 — enforced-launch affordances (Fleet roster chip + pane badge).
   'deck.fleet.enforcedLaunch': 'Enforced launch: {binding}',
   'pane.enforcedLaunch': 'Role-enforced launch: {binding}',
+  // #1681 — a role that skips permission prompts: the badge word (red) and
+  // the tooltip part naming the flag.
+  'pane.enforcedSkipBadge': 'bypass',
+  'pane.enforcedSkipPermissions': 'skips permission prompts ({flag})',
   // M3: surfaced subscription rate-limit notices in the orchestrator thread.
   // Sentences are assembled from optional fragments ({on}/{util}/{reset}) that
   // formatLimitNotice blanks when the field is absent — keep the leading spaces.

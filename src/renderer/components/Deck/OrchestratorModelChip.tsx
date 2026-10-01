@@ -17,15 +17,11 @@ import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
+import { CLAUDE_MODEL_OPTIONS, claudeModelLabel, type ClaudeModelOption } from '../../../shared/claudeModels';
 
-// Display names track the shipped model ids (Opus 4.8 / Sonnet 5 / Haiku 4.5).
-// Exported so the Agent 탭 인라인 드롭다운(DeckTabs)이 같은 목록·라벨을 재사용한다.
-export const MODEL_OPTIONS: { value: string; label: string }[] = [
-  { value: '', label: 'Default' },
-  { value: 'opus', label: 'Opus 4.8' },
-  { value: 'sonnet', label: 'Sonnet 5' },
-  { value: 'haiku', label: 'Haiku 4.5' },
-];
+// The list lives in shared/claudeModels (one source for every Claude picker).
+// Re-exported under the old name so DeckTabs / ChannelDock keep their import.
+export const MODEL_OPTIONS: readonly ClaudeModelOption[] = CLAUDE_MODEL_OPTIONS;
 
 export function OrchestratorModelChip({ openUp = false }: { openUp?: boolean } = {}): React.ReactElement {
   const t = useT();
@@ -50,7 +46,6 @@ export function OrchestratorModelChip({ openUp = false }: { openUp?: boolean } =
     };
   }, [open]);
 
-  const current = MODEL_OPTIONS.find((o) => o.value === model) ?? MODEL_OPTIONS[0];
 
   return (
     <div ref={ref} className="relative" data-orchestrator-model-chip>
@@ -64,7 +59,7 @@ export function OrchestratorModelChip({ openUp = false }: { openUp?: boolean } =
         className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium text-[var(--text-sub)] hover:text-[var(--text-main)] transition-colors ${FOCUS_RING}`}
         {...tokenAttrs('textSub', 'text')}
       >
-        <span>{current.value === '' ? t('deck.orchestratorModelDefault') : current.label}</span>
+        <span>{model === '' ? t('deck.orchestratorModelDefault') : claudeModelLabel(model)}</span>
         <span aria-hidden="true" className="text-[10px] opacity-70">▾</span>
       </button>
       {open && (

@@ -1625,6 +1625,82 @@ describe('native chat routes (contract v0.3.1)', () => {
       expect('chatCancelOutcome' in await config(bearer(ro.token as string))).toBe(false);
     });
 
+    it('advertise == route: chatCancel and chatCancelOutcome appear exactly when POST /chat/cancel passes the caller gates', async () => {
+      const { receipts } = wireOutcome();
+      for (const allowTranscript of [true, false]) {
+        const info = await start({ allowTranscript });
+        const callers = [
+          ['operator', () => bearer(info.token as string)],
+          ['device with input', () => device('dev-1')],
+          ['device without input', () => device('ro', false)],
+        ] as const;
+        for (const [who, headers] of callers) {
+          const body = await config(headers());
+          const res = await postJson(`${base()}/api/sessions/s1/chat/cancel`, headers(),
+            { agentSessionId: 'sess-a', turnId: 't1:abc.3', clientCancelId: freshId() });
+          const served = res.status === 202;
+          expect({ who, allowTranscript, chatCancel: body.chatCancel }).toEqual({ who, allowTranscript, chatCancel: served });
+          expect({ who, allowTranscript, outcome: 'chatCancelOutcome' in body }).toEqual({ who, allowTranscript, outcome: served });
+          if (!served) expect(res.status).toBe(403);
+        }
+        // Receipts need the transcript grant and the owner, not input and not the
+        // key: a device without input reads its own receipt while the key is absent.
+        const cid = freshId();
+        receipts.set(`device:ro|s1|${cid}`, { state: 'requested', turnId: 't1:abc.3', requestedAt: 1, at: 1 });
+        const read = await receipt('s1', cid, device('ro', false));
+        expect(read.status).toBe(allowTranscript ? 200 : 403);
+        if (allowTranscript) expect('chatCancelOutcome' in await config(device('ro', false))).toBe(false);
+        // No chat bridge: the route answers 503, so neither key is shown.
+        chatWired = false;
+        const bare = await config(bearer(info.token as string));
+        expect(bare.chatCancel).toBe(false);
+        expect('chatCancelOutcome' in bare).toBe(false);
+        chatWired = true;
+        await server.stop();
+      }
+    });
+
+    it('advertise == route: chatSend, chatLaunch and chatQueue appear exactly when their routes pass the caller gates', async () => {
+      Object.assign(chat, { queueEnabled: vi.fn(() => true), queue: vi.fn(() => []), dequeue: vi.fn(() => ({ ok: true })) });
+      const url = (tail: string) => `${base()}/api/sessions/s1/chat/${tail}`;
+      const probes = (h: Record<string, string>) => ({
+        chatSend: [() => postJson(url('messages'), h, sendBody())],
+        chatLaunch: [() => postJson(url('launch'), h, launchBody())],
+        chatQueue: [
+          () => postJson(url('messages'), { ...h, 'x-wmux-client-caps': 'chat-queue' }, sendBody()),
+          () => fetch(url(`queue/${freshId()}`), { method: 'DELETE', headers: h }),
+        ],
+      });
+      for (const [allowTranscript, wired] of [[true, true], [false, true], [true, false]] as const) {
+        chatWired = wired;
+        const info = await start({ allowTranscript });
+        const callers = [
+          ['operator', () => bearer(info.token as string)],
+          ['device with input', () => device('dev-1')],
+          ['device without input', () => device('ro', false)],
+        ] as const;
+        for (const [who, headers] of callers) {
+          const body = await config(headers());
+          for (const [key, requests] of Object.entries(probes(headers()))) {
+            for (const request of requests) {
+              const status = (await request()).status;
+              // Past the caller gates and the bridge means anything but 403 / 503.
+              const served = status !== 403 && status !== 503;
+              expect({ who, allowTranscript, wired, key, advertised: body[key] === true })
+                .toEqual({ who, allowTranscript, wired, key, advertised: served });
+            }
+          }
+        }
+        await server.stop();
+      }
+      chatWired = true;
+      // A queue without `dequeue` cannot answer DELETE …/chat/queue/:id (503): not advertised.
+      const info = await start();
+      delete (chat as { dequeue?: unknown }).dequeue;
+      expect((await config(bearer(info.token as string))).chatQueue).toBe(false);
+      expect((await fetch(url(`queue/${freshId()}`), { method: 'DELETE', headers: bearer(info.token as string) })).status).toBe(503);
+    });
+
     it('GET receipt: transcript not input; owner- and pane-bound; brain or missing pane 404; no store 503', async () => {
       const off = await start({ allowTranscript: false });
       const { receipts, fns } = wireOutcome();

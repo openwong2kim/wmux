@@ -837,6 +837,9 @@ export function registerHooksRpc(
       // attention window. These kinds return here, so this is their only feed
       // site on the local path.
       alarm?.observe(ptyId, signal.agent, normalizeHookCue(signal));
+      // #1680 — fresh-context evidence, the daemon-unreachable twin of
+      // DaemonNotificationRouter's session_start replay.
+      if (signal.kind === 'agent.session_start') hookRouter.noteSessionStart(ptyId, signal, receivedAt);
       // Turn START. The daemon-unreachable twin of HookIngest's metadata-kind
       // broadcast: a prompt submitted means this pane is working RIGHT NOW, so
       // the status dot lights immediately instead of waiting for the byte-rate

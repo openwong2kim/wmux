@@ -18,7 +18,9 @@ import { IconSplitRight, IconSplitDown, IconBrowser, IconExternalLink, IconEyeOf
 import { displayPath } from '../../utils/displayPath';
 import { workspaceColorHex } from '../../../shared/workspaceColors';
 import PaneActionsMenu, { PANE_ACTIONS_MENU_WIDTH, type PaneActionItem } from './PaneActionsMenu';
-import { bindingEnforcesModel, type RoleBinding } from '../../../shared/orchestratorRole';
+import {
+  bindingEnforcesModel, bindingEnforcesSkipPermissions, bindingSkipPermissionsFlag, type RoleBinding,
+} from '../../../shared/orchestratorRole';
 import { paneHeaderTailGap } from './paneChrome';
 
 /** D2 — only a terminal surface can launch an agent, so only a terminal surface
@@ -29,22 +31,28 @@ export function isTerminalSurfaceType(surfaceType: string | undefined): boolean 
 }
 
 /**
- * D2 — may this pane display a "role-enforced launch" model badge?
+ * D2 — may this pane display a "role-enforced launch" badge?
  *
  * Both halves are load-bearing and neither is obvious at the call site, which is
  * why this is a named predicate rather than an inline `&&`:
- *  - the binding must REALLY inject the model (bindingEnforcesModel). A
+ *  - the binding must REALLY put the model or the skip-permissions flag on the
+ *    launch (bindingEnforcesModel / bindingEnforcesSkipPermissions). A
  *    model-only binding, or one naming an agent whose `--model` grammar wmux has
  *    not verified, is stored and shown in Settings but never applied — badging it
  *    would tell the operator a pane is pinned to a model while the launch goes
- *    out on the default.
+ *    out on the default. A role that skips permission prompts is badged even
+ *    without a model (#1681): that is the launch an operator most needs to see.
  *  - the surface must be a terminal, since nothing else launches an agent.
+ *
+ * The name predates the skip half; the badge is still the "enforced model"
+ * badge in the header width arithmetic (paneHeaderExtraChromeWidth).
  */
 export function showsEnforcedModelBadge(opts: {
   binding: RoleBinding | undefined;
   surfaceType: string | undefined;
 }): boolean {
-  return bindingEnforcesModel(opts.binding) && isTerminalSurfaceType(opts.surfaceType);
+  return (bindingEnforcesModel(opts.binding) || bindingEnforcesSkipPermissions(opts.binding))
+    && isTerminalSurfaceType(opts.surfaceType);
 }
 
 /** Rendered width (px) of the pane-action half of the cluster (split / browser /
@@ -390,24 +398,26 @@ export default function SurfaceTabs({
     const ptyId = surfaces.find((sf) => sf.id === activeSurfaceId)?.ptyId;
     return ptyId ? s.supervisionByPtyId[ptyId] : undefined;
   });
-  const enforcedModel = useMemo(() => {
+  const enforcedLaunch = useMemo(() => {
     const surfaceType = surfaces.find((s) => s.id === activeSurfaceId)?.surfaceType;
-    // showsEnforcedModelBadge already implies a non-empty `model` (that is what
-    // bindingEnforcesModel checks), but the narrowing does not survive the
-    // predicate call, so the model is re-read defensively rather than asserted.
-    const model = paneRoleBinding?.model;
-    if (!model || !showsEnforcedModelBadge({ binding: paneRoleBinding, surfaceType })) return undefined;
+    if (!showsEnforcedModelBadge({ binding: paneRoleBinding, surfaceType })) return undefined;
     return {
-      model,
-      binding: [paneRoleBinding?.agent, model].filter(Boolean).join(' · '),
+      model: bindingEnforcesModel(paneRoleBinding) ? paneRoleBinding?.model : undefined,
+      skipFlag: bindingSkipPermissionsFlag(paneRoleBinding),
     };
   }, [paneRoleBinding, surfaces, activeSurfaceId]);
   // Both badges are labels, so each carries the SAME string as tooltip and as
   // accessible name — a screen reader gets what the pointer gets. (The old
   // absolute spans set `pointer-events: none`, which silently suppressed the
   // title tooltip they went to the trouble of setting.)
-  const enforcedLaunchLabel = enforcedModel
-    ? t('pane.enforcedLaunch', { binding: enforcedModel.binding })
+  const enforcedLaunchLabel = enforcedLaunch
+    ? t('pane.enforcedLaunch', {
+        binding: [
+          paneRoleBinding?.agent,
+          enforcedLaunch.model,
+          enforcedLaunch.skipFlag ? t('pane.enforcedSkipPermissions', { flag: enforcedLaunch.skipFlag }) : undefined,
+        ].filter(Boolean).join(' · '),
+      })
     : '';
   const supervisionLabel = !supervision
     ? ''
@@ -937,7 +947,7 @@ export default function SurfaceTabs({
           {supervision.status === 'stopped' ? '⟳!' : '⟳'}
         </span>
       )}
-      {enforcedModel && (
+      {enforcedLaunch && (
         <span
           data-pane-enforced-model
           // Shrinkable and capped, NOT shrink-0. A shrink-0 badge of unbounded
@@ -954,7 +964,17 @@ export default function SurfaceTabs({
           {...tokenAttrs('textMuted', 'text')}
           {...tokenAttrs('bgSurface', 'bg')}
         >
-          {enforcedModel.model}
+          {/* The skip leads, so truncation eats the model id first: of the
+              two, "this pane runs without permission prompts" is the fact the
+              operator must not lose. Red text only, no fill — the destructive
+              tint DESIGN.md allows at rest, as on the Deck mode chip's Danger. */}
+          {enforcedLaunch.skipFlag && (
+            <span data-pane-enforced-skip className="text-[var(--accent-red)]" {...tokenAttrs('danger', 'text')}>
+              {t('pane.enforcedSkipBadge')}
+            </span>
+          )}
+          {enforcedLaunch.skipFlag && enforcedLaunch.model ? ' · ' : ''}
+          {enforcedLaunch.model}
         </span>
       )}
 

@@ -323,6 +323,18 @@ describe('ClaudeSdkAdapter', () => {
     expect((await canUseTool('mcp__wmux__pane_close', { paneId: 'p1' })).behavior).toBe('deny');
   });
 
+  // #1680 — the brain marks task boundaries itself; wmux decides whether that
+  // pane's role clears the conversation.
+  it('tells the brain to mark a new task with new_task, and never a follow-up', () => {
+    const prompt = buildCommanderSystemPrompt();
+    expect(prompt).toContain('NEW TASK = FRESH START');
+    expect(prompt).toContain('new_task: true');
+    expect(prompt).toContain('leave new_task off');
+    expect(prompt).toContain('Never type `/clear` or `/new` into a pane yourself');
+    expect(prompt).toContain('the task was NOT sent');
+    expect(prompt).toContain('a rework request on the stage it just did is not');
+  });
+
   it('grounds real-pane agent launches in the system prompt (no theater)', () => {
     const prompt = buildCommanderSystemPrompt();
     expect(prompt).toContain('LAUNCHING AN AGENT');
@@ -753,5 +765,35 @@ describe('ClaudeSdkAdapter', () => {
     } finally {
       logSpy.mockRestore();
     }
+  });
+});
+
+describe('ClaudeSdkAdapter model + effort options', () => {
+  const run = async (deps: { model?: string; effort?: 'low' | 'max' }) => {
+    const calls: Array<{ options: Record<string, unknown> }> = [];
+    const adapter = new ClaudeSdkAdapter({
+      queryFn: (p) => {
+        calls.push(p as { options: Record<string, unknown> });
+        return fakeHandle([{ type: 'result', subtype: 'success', session_id: 's' }]);
+      },
+      mcpBundlePath: '/fake/mcp.js',
+      loadMemory: () => '',
+      ...deps,
+    });
+    adapter.start({ systemPrompt: 'SYS' });
+    await collect(adapter.send('go'));
+    return calls[0].options;
+  };
+
+  it('passes model and effort to query()', async () => {
+    const options = await run({ model: 'claude-opus-5-5', effort: 'low' });
+    expect(options.model).toBe('claude-opus-5-5');
+    expect(options.effort).toBe('low');
+  });
+
+  it('leaves both unset for the CLI defaults', async () => {
+    const options = await run({});
+    expect(options).not.toHaveProperty('model');
+    expect(options).not.toHaveProperty('effort');
   });
 });

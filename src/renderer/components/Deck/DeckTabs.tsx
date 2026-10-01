@@ -33,7 +33,7 @@ export interface DeckTabsProps {
   commanderModelLabel?: string;
   /** 모델 드롭다운 옵션(OrchestratorModelChip.MODEL_OPTIONS 재사용). ChannelDock이
    *  store에서 주입하고, DeckTabs는 순수 컴포넌트로 유지된다. */
-  commanderModelOptions?: { value: string; label: string }[];
+  commanderModelOptions?: readonly { value: string; label: string }[];
   /** 현재 선택된 모델 값(옵션의 value; '' = Default). 선택 표시용. */
   commanderModelValue?: string;
   /** 모델 선택 콜백. 있으면 활성 Agent 탭 재클릭 시 드롭다운이 열린다. */

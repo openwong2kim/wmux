@@ -786,6 +786,8 @@ export interface SessionData {
   /** Orchestrator (deck brain) model override — '' / absent = the
    *  subscription's default model. A claude model alias or full id. */
   deckBrainModel?: string;
+  /** Orchestrator effort (claude --effort level). Absent = the CLI default. */
+  deckBrainEffort?: string;
   /** D2 — global operator role→model enforcement map. Absent = no bindings.
    *  Keyed by role name; re-normalized on load (session.json is hand-editable). */
   orchestratorRoleBindings?: OrchestratorRoleBindings;

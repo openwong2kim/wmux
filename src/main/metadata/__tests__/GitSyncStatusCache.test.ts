@@ -19,6 +19,18 @@ describe('parsePorcelainV2', () => {
     expect(parsePorcelainV2(stdout)).toEqual({ dirty: 5, ahead: 2, behind: 1, hasUpstream: true });
   });
 
+  it('counts submodule pointer changes (what --ignore-submodules=dirty still reports)', () => {
+    const stdout = [
+      '# branch.oid deadbeef',
+      '# branch.head main',
+      // checked out at a different commit than recorded, unstaged and staged
+      '1 .M SC.. 160000 160000 160000 abc abc libs/one',
+      '1 M. S... 160000 160000 160000 abc def libs/two',
+      '',
+    ].join('\n');
+    expect(parsePorcelainV2(stdout)).toEqual({ dirty: 2, ahead: 0, behind: 0, hasUpstream: false });
+  });
+
   it('no upstream → hasUpstream false, ahead/behind zero', () => {
     const stdout = [
       '# branch.oid deadbeef',
@@ -63,6 +75,13 @@ describe('GitSyncStatusCache', () => {
     now = 20_000;
     await cache.get('D:\\repo');
     expect(exec).toHaveBeenCalledTimes(2); // TTL expired
+  });
+
+  it('skips submodule work trees so status stays fast in repos with many submodules', async () => {
+    const exec = vi.fn().mockResolvedValue({ stdout: CLEAN });
+    const cache = new GitSyncStatusCache(() => 0, exec);
+    await cache.get('D:\\repo');
+    expect(exec.mock.calls[0][1]).toContain('--ignore-submodules=dirty');
   });
 
   it('normalizes the cwd key (separators/trailing slash collapse onto one entry)', async () => {

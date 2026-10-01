@@ -12,6 +12,7 @@ import {
   isMultilinePtyPayload,
   sanitizeBracketedPastePayload,
   submitProfileForAgent,
+  type GatedSubmitOptions,
   type GatedSubmitResult,
 } from '../../shared/ptyMessageDelivery';
 
@@ -56,16 +57,24 @@ export function submitBracketedPasteToPty(
 export async function gatedSubmitToPty(
   ptyId: string,
   text: string,
-  options: { agent?: string | null } = {},
+  options: { agent?: string | null } & GatedSubmitOptions = {},
 ): Promise<GatedSubmitResult> {
   const submit = (window.electronAPI?.rpc as { gatedSubmit?: unknown } | undefined)?.gatedSubmit as
-    | ((id: string, body: string, agent?: string | null) => Promise<GatedSubmitResult>)
+    | ((id: string, body: string, agent?: string | null, opts?: GatedSubmitOptions) => Promise<GatedSubmitResult>)
     | undefined;
   if (typeof submit !== 'function') {
     return { ok: false, reason: 'gate_unavailable', detail: 'delivery: approval gate unavailable' };
   }
   try {
-    const result = await submit(ptyId, text, options.agent ?? null);
+    // `newTask` only when set, so every other delivery calls exactly as before.
+    const result = options.newTask
+      ? await submit(ptyId, text, options.agent ?? null, {
+          newTask: true,
+          ...(options.keepContext ? { keepContext: options.keepContext } : {}),
+          ...(options.taskId ? { taskId: options.taskId } : {}),
+          ...(options.pane ? { pane: options.pane } : {}),
+        })
+      : await submit(ptyId, text, options.agent ?? null);
     return result && typeof result === 'object' && 'ok' in result
       ? result
       : { ok: false, reason: 'gate_unavailable', detail: 'delivery: approval gate returned no answer' };

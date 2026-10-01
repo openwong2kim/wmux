@@ -1324,9 +1324,22 @@ v1 paths.
 | Key | Meaning |
 | --- | --- |
 | `decisionForms` | The form kinds this daemon produces now: any of `permission`, `plan`, `questions`. `plan` while the daemon's `phoneDecisions.stepwise` switch is on (see Plan dialog); `permission` and `questions` (agent-native, OpenCode; see below) while `phoneDecisions.native` is on. Offer a v2 answer only for a kind listed here |
-| `chatCancel` | Whether this caller may use `POST /api/sessions/<id>/chat/cancel` (its input grant) |
+| `chatCancel` | Whether this caller may use `POST /api/sessions/<id>/chat/cancel`: the server runs with `--allow-transcript`, the caller has the input grant, and the chat bridge is wired |
 | `chatCancelOutcome` | `true` when `chatCancel` is true and the cancel receipt store loaded; omitted otherwise (never `false`). Advertises `cancel` on the cancel answer, the cancel receipt route and SSE `chat.cancel` (see Chat cancel outcome) |
-| `chatQueue` | Whether this caller's `chat-queue` sends are held by the daemon queue (its input grant, and a queue that loaded) |
+| `chatQueue` | Whether this caller's `chat-queue` sends are held by the daemon queue, and `DELETE …/chat/queue/<clientMessageId>` is open to it: the same condition as `chatSend`, plus a queue that loaded |
+
+**Advertised = accepted.** The chat write keys (`chatSend`, `chatLaunch`,
+`chatQueue`, `chatCancel`, `chatCancelOutcome`) are computed from the same
+caller gates their routes (`POST …/chat/messages`, `…/chat/launch`,
+`…/chat/cancel`, `DELETE …/chat/queue/<id>`) check before they look at the
+pane: `--allow-transcript`, then the input grant, plus a wired chat bridge.
+The keys are a snapshot taken when `/api/config` is read: a caller that saw a
+key is not refused that write with 403 for the grants it held then, or 503
+for a missing bridge. Still possible per request: a grant that changed since
+(the re-authorization during the request answers 401 `authorization-expired`,
+or 403 read-only "Input permission changed"), and the per-pane and per-turn
+answers (404, and the refusals such as 409 `turn-already-interrupted`).
+Reading a cancel receipt needs none of these keys (see Chat cancel outcome).
 
 **The record.** For a `decision-v2` caller, a record that can still be
 answered may carry:
@@ -1691,12 +1704,23 @@ still learns what its cancel did. `none` means there is no receipt for this
 owner, pane and id: it was never written, or it was refused (a refusal stores
 nothing).
 
+**When a receipt can be read.** Reading needs `--allow-transcript` (the
+`allowTranscript` key in `/api/config`) and the same owner: the credential
+that sent the cancel, i.e. the operator token or that device id. It does not
+need the input grant and it is not signalled by `chatCancelOutcome`, which
+stays tied to `chatCancel` and so disappears when input is withdrawn. There
+is no separate discovery key for receipt reads: remember that you sent a
+cancel to a daemon that advertised `chatCancelOutcome` at the time, and read
+its receipt by `clientCancelId` afterwards. A daemon without a receipt store
+answers 503 `chat-persist-failed`.
+
 | `state` | Meaning | Client |
 | --- | --- | --- |
 | `requested` | written; the aimed turn has not been seen to end | keep "Stopping…", poll every 2 s or wait for `chat.cancel` |
 | `ended` | the aimed turn ended after the write | final. `endedAs: "completed"` means it finished on its own first |
-| `not-ended` | still running 15 s after the write | final: it never changes, even if the turn ends later. Re-read `/turns` for the turn's current state; offer Stop again (a new `clientCancelId`) or Terminal |
+| `not-ended` | still running 15 s after the write | final: it never changes, even if the turn ends later. Do **not** offer Stop again for this turn: a turn gets one interrupt (an Esc or a native stop), so a second cancel aimed at it is refused with 409 `turn-already-interrupted`. Re-read `/turns`. If the same turn is still running, force-interrupt it with `chat/interrupt` (key `chatInterrupt`; **planned, not served yet**: no daemon has this route today). On a daemon that does not advertise `chatInterrupt` (every daemon today) there is no force interrupt: tell the user the turn is still running and keep following `/turns`. A different running turn (a new `chat.turn.id`, started after the write) can be stopped with a new `clientCancelId`. Terminal is only a secondary fallback |
 | `unknown` | cannot be known | final; check Terminal |
+| `none` | no receipt for this owner, pane and id: never written, refused, expired, or the POST has not reached the daemon yet | not a progress state. If the POST answered, its answer stands (a refusal wrote nothing); otherwise nothing is known to be written. Re-read `/turns` |
 
 What counts as `ended` today (Claude and Codex): the daemon looks at the
 pane about once a second for 15 s after the write. Nothing is `ended` while
@@ -3638,15 +3662,23 @@ nothing itself.
 
 ---
 
-## Proposed: contract v-next (NOT SERVED YET)
+## Proposed: contract v-next (partly served)
 
-> **Status: design, engineering review GO (conditional).** Unlike every
-> section above, nothing here is extracted from serving code: no daemon serves
-> these routes or fields yet. Do not ship a client path that depends on them
-> until the matching `/api/config` key (below) appears on a real daemon.
-> **Served so far: items 2, 3 and 4** (`codexAccountStatus`,
-> `chatCancelOutcome`, `paneAccount`, `paneHandoff`). Items 1 and 5 are still
-> design only.
+> **Status: partly served on `main`, the rest proposed.**
+>
+> - **Served** (described from serving code): item 2, Codex account status
+>   (`codexAccountStatus`; #1668); item 3, the chat cancel outcome on the Esc
+>   path and the native Codex path (`chatCancelOutcome`; #1665, #1669);
+>   item 4, account per pane and handoff lineage (`paneAccount`,
+>   `paneHandoff`; #1664); and item 5's read routes,
+>   `GET /api/git/projects`, `GET …/git/branches` and `GET …/git/checks`
+>   (`gitProjects`, `gitChecks`; #1663).
+> - **Proposed — on hold pending client review:** item 1, typed turn failure
+>   (`turnFailure`), and item 5's worktree creation, `POST …/git/worktree` and
+>   its receipt (`gitWorktrees`). No daemon serves these. Do not ship a client
+>   path that depends on them until the matching `/api/config` key (below)
+>   appears on a real daemon.
+>
 > Shared types: `src/shared/phoneTurnFailure.ts`,
 > `src/shared/phoneCodexAccountStatus.ts`, `src/shared/phoneChatCancelOutcome.ts`,
 > `src/shared/phonePaneAccount.ts`, `src/shared/phoneGitV1.ts`.
@@ -3702,6 +3734,8 @@ when an `accountId` was sent.
   worktrees (item 5).
 
 ### 1. Typed turn failure
+
+> **Proposed — on hold pending client review.** Not served.
 
 When a turn ends in failure the daemon reports only what the provider said,
 in structured form:
@@ -3988,7 +4022,8 @@ cannot pick a model or effort.
 
 > **Served:** `GET /api/git/projects`, `GET …/git/branches` and
 > `GET …/git/checks` (keys `gitProjects`, `gitChecks`;
-> `src/daemon/web/phoneGitRead.ts`). Worktree creation is not served yet.
+> `src/daemon/web/phoneGitRead.ts`). Worktree creation (`gitWorktrees`) is
+> proposed — on hold pending client review; no daemon serves it.
 
 Every request names a session (`/api/sessions/<id>/…`), except the project
 list, whose rows hand you one. The daemon derives the repository from that

@@ -786,6 +786,67 @@ describe('input.send — role→model enforcement (D2)', () => {
     expect(payload.enforcedModel).toBeUndefined();
   });
 
+  // #1681 — an injected effort / skip flag changes the line too, so the reply
+  // says so; absent when nothing was added.
+  it('reports enforcedOptions for an injected effort and skip flag', async () => {
+    const { router, writeMock } = setupWithResolver(
+      bind({ agent: 'codex', effort: 'high', skipPermissions: true }),
+    );
+    const res = await router.dispatch({
+      id: '10b',
+      method: 'input.send',
+      params: { text: 'codex', ptyId: 'pty-a', workspaceId: 'ws-self', submit: true },
+    });
+    expect(writeMock.mock.calls[0]).toEqual([
+      'pty-a',
+      'codex -c model_reasoning_effort=high --dangerously-bypass-approvals-and-sandbox',
+    ]);
+    const payload = res.ok ? (res.result as { enforcedModel?: string; enforcedOptions?: unknown }) : {};
+    expect(payload.enforcedOptions).toEqual({ effort: 'high', skipPermissions: true });
+    expect(payload.enforcedModel).toBeUndefined();
+  });
+
+  it('reports only the injected effort when the line makes its own permission choice', async () => {
+    const { router, writeMock } = setupWithResolver(
+      bind({ agent: 'claude', model: 'haiku', effort: 'low', skipPermissions: true }),
+    );
+    const res = await router.dispatch({
+      id: '10c',
+      method: 'input.send',
+      params: { text: 'claude --permission-mode plan', ptyId: 'pty-a', workspaceId: 'ws-self', submit: true },
+    });
+    expect(writeMock.mock.calls[0]).toEqual(['pty-a', 'claude --model haiku --effort low --permission-mode plan']);
+    const payload = res.ok
+      ? (res.result as { enforcedModel?: string; enforcedOptions?: unknown; note?: string })
+      : {};
+    expect(payload.enforcedModel).toBe('haiku');
+    expect(payload.enforcedOptions).toEqual({ effort: 'low' });
+    expect(payload.note).toMatch(/own permission choice/);
+  });
+
+  it('omits enforcedOptions when the options were already on the line', async () => {
+    const { router, writeMock } = setupWithResolver(
+      bind({ agent: 'claude', model: 'haiku', effort: 'low', skipPermissions: true }),
+    );
+    const res = await router.dispatch({
+      id: '10d',
+      method: 'input.send',
+      params: {
+        text: 'claude --effort max --dangerously-skip-permissions',
+        ptyId: 'pty-a',
+        workspaceId: 'ws-self',
+        submit: true,
+      },
+    });
+    expect(writeMock.mock.calls[0]).toEqual([
+      'pty-a',
+      'claude --model haiku --effort max --dangerously-skip-permissions',
+    ]);
+    const payload = res.ok ? (res.result as Record<string, unknown>) : {};
+    expect(payload.enforcedModel).toBe('haiku');
+    expect('enforcedOptions' in payload).toBe(false);
+  });
+
   // P1-1 — the handler runs on EVERY submitted line in a bound pane.
   it('leaves a shell command in a bound pane byte-identical', async () => {
     const { router, writeMock } = setupWithResolver(

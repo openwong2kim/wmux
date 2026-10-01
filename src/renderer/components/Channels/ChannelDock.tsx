@@ -34,6 +34,7 @@ import { CommanderView } from '../Deck/CommanderView';
 import { GitTab } from '../Deck/GitTab';
 import { ReviewTab } from '../Deck/ReviewTab';
 import { MODEL_OPTIONS } from '../Deck/OrchestratorModelChip';
+import { claudeModelLabel } from '../../../shared/claudeModels';
 
 // ─── Command Deck (Phase 1 P1a) ───────────────────────────────────────────────
 //
@@ -59,10 +60,8 @@ export default function ChannelDock(): React.ReactElement {
   const t = useT();
   const deckBrainModel = useStore((s) => s.deckBrainModel);
   const setDeckBrainModel = useStore((s) => s.setDeckBrainModel);
-  const commanderModelLabel = (() => {
-    const o = MODEL_OPTIONS.find((x) => x.value === deckBrainModel) ?? MODEL_OPTIONS[0];
-    return o.value === '' ? t('deck.orchestratorModelDefault') : o.label;
-  })();
+  const commanderModelLabel =
+    deckBrainModel === '' ? t('deck.orchestratorModelDefault') : claudeModelLabel(deckBrainModel);
   const showChannelsView = activeDeckTab === 'channels' && channelsTabVisible;
   // git 탭(오너 결정 2026-07-20 — 덱 복귀, Review는 Git 탭 하단 섹션으로 병합).
   const showGitView = activeDeckTab === 'git';

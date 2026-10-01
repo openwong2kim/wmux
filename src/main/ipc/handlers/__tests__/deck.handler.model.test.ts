@@ -77,6 +77,8 @@ class FakeAdapter implements BrainAdapter {
 }
 
 let adapters: FakeAdapter[];
+/** The effort each default-factory adapter was created with, by index. */
+let efforts: (string | undefined)[];
 let cleanup: (() => void) | null = null;
 let emitted: { workspaceId: string; event: BrainEvent }[];
 
@@ -98,6 +100,7 @@ function register(
       ((opts) => {
         const a = new FakeAdapter(opts.model, opts.workspaceId, opts.fullPower);
         adapters.push(a);
+        efforts.push(opts.effort);
         return a;
       }),
   });
@@ -129,6 +132,7 @@ const wake = (workspaceId = 'ws-1') =>
 beforeEach(() => {
   captured.clear();
   adapters = [];
+  efforts = [];
   emitted = [];
   cleanup?.();
   register();
@@ -271,6 +275,38 @@ describe('deck:send — orchestrator model override', () => {
     await send({ text: 'hi', model: 'opus; rm -rf /' });
     expect(adapters).toHaveLength(1);
     expect(adapters[0].model).toBeUndefined();
+  });
+});
+
+describe('deck orchestrator effort — MAIN-side authority', () => {
+  const setModelEffort = (model: string, effort?: unknown) =>
+    captured.get(IPC.DECK_MODEL_SET)!(
+      {},
+      effort === undefined ? { model } : { model, effort },
+    ) as Promise<{ model: string; effort: string }>;
+
+  it('creates the brain with the set effort and swaps an idle brain on change', async () => {
+    await setModelEffort('claude-sonnet-5-5', 'low');
+    await wake();
+    expect(efforts[0]).toBe('low');
+    await setModelEffort('claude-sonnet-5-5', 'high');
+    expect(adapters[0].disposed).toBe(true);
+    await wake();
+    expect(efforts[1]).toBe('high');
+    expect(adapters[1].model).toBe('claude-sonnet-5-5');
+  });
+
+  it('keeps the current effort when an older renderer sends only the model', async () => {
+    await setModelEffort('opus', 'medium');
+    const r = await setModelEffort('sonnet');
+    expect(r.effort).toBe('medium');
+  });
+
+  it('drops an unknown effort to the CLI default', async () => {
+    const r = await setModelEffort('opus', 'ultra; rm -rf /');
+    expect(r.effort).toBe('');
+    await wake();
+    expect(efforts[0]).toBeUndefined();
   });
 });
 

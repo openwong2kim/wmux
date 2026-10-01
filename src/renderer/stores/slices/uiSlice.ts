@@ -1,5 +1,6 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
+import { sanitizeClaudeEffort } from '../../../shared/claudeModels';
 import { setLocale as i18nSetLocale, t, type Locale } from '../../i18n';
 import { collectLeafIds, findPane, getLeafPanes, getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import { canStashPaneSurfaces } from '../../../shared/paneStash';
@@ -276,6 +277,10 @@ export interface UISlice {
   // id) passed to the Agent SDK. Applied between turns — see deck.handler.
   deckBrainModel: string;
   setDeckBrainModel: (model: string) => void;
+  // Orchestrator effort ('' = the CLI default). Rides with the model to main
+  // (SDK options.effort / TUI --effort); applied between turns like the model.
+  deckBrainEffort: string;
+  setDeckBrainEffort: (effort: string) => void;
 
   // D2 — global operator-level role→model enforcement map. Keyed by role name
   // (Builder/Reviewer/Tester/Planner ∪ custom). An agent launched in a pane
@@ -1229,6 +1234,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setDeckBrainModel: (model) => set((state) => {
     state.deckBrainModel = model;
+  }),
+
+  deckBrainEffort: '',
+
+  setDeckBrainEffort: (effort) => set((state) => {
+    state.deckBrainEffort = sanitizeClaudeEffort(effort);
   }),
 
   orchestratorRoleBindings: {},

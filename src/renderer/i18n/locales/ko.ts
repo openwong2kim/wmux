@@ -713,6 +713,24 @@ export const ko = {
   'settings.orchestratorModelDesc':
     '커맨드 데크 agent가 사용할 Claude 모델. 변경은 다음 지시부터 적용되고 대화는 이어집니다.',
   'settings.orchestratorModelDefault': '기본 (구독 기본 모델)',
+  'settings.orchestratorEffort': 'agent effort',
+  'settings.orchestratorEffortDesc':
+    '턴마다 agent가 생각하는 양(claude --effort). 낮을수록 빠르고 토큰을 덜 씁니다. 다음 지시부터 적용됩니다.',
+  'settings.orchestratorEffortDefault': '기본 (CLI 설정)',
+  'settings.roleBindingEffortLabel': '{role} effort',
+  'settings.roleBindingEffortDefault': 'Effort: 기본',
+  'settings.roleBindingSkipPermissions': '권한 확인 건너뛰기',
+  // #1680 — a pane's agent is "에이전트"; the orchestrator brain stays "agent" (owner rule above).
+  'settings.roleBindingFreshContext': '작업마다 새 대화',
+  'settings.roleBindingFreshContextTooltip':
+    '이 pane에 새 작업이 전달되면(agent의 new_task 포함 terminal_send, 또는 다른 에이전트의 새 send_message) wmux가 먼저 {command}를 입력해 이전 작업의 대화가 이어지지 않게 합니다. 후속 지시나 답장에는 적용되지 않습니다. 에이전트가 작업 중이거나 pane에 아직 열린 에이전트 작업이 있으면 건너뜁니다.',
+  'settings.roleBindingHintFreshContextInert':
+    '작업마다 새 대화는 claude 또는 codex 에이전트에서만 동작합니다. 이 역할에는 아무 효과가 없습니다.',
+  'settings.roleBindingRefreshModels': '모델 새로고침',
+  'deck.fleet.enforcedLaunch': '강제 실행: {binding}',
+  'pane.enforcedLaunch': '역할이 강제한 실행: {binding}',
+  'pane.enforcedSkipBadge': '바이패스',
+  'pane.enforcedSkipPermissions': '권한 확인 건너뜀 ({flag})',
   'settings.orchestratorFullPower': '풀파워 모드',
   'settings.orchestratorFullPowerDesc':
     'Claude Code의 스킬·CLAUDE.md·훅을 agent 턴에 로드합니다. 개인 훅이 agent 턴 안에서 실행되고(wmux 샌드박스 밖의 본인 코드), 툴 호출이 느려질 수 있으며, 켜져 있는 동안 agent는 메모리 노트를 쓸 수 없습니다. 다음 agent 턴부터 적용됩니다.',

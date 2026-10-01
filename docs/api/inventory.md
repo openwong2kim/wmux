@@ -78,7 +78,7 @@ Validation limits live in `src/shared/types.ts` (PANE_METADATA_MAX_BYTES, PANE_M
 
 | Method | Params | Tier | Notes |
 |---|---|---|---|
-| `input.send` | `{ text, paneId?, workspaceId? }` | stable | Send literal text to a pane's PTY. |
+| `input.send` | `{ text, ptyId?, workspaceId?, submit?, raw?, newTask? }` | stable | Send literal text to a pane's PTY. The role-enforcement reply fields `enforcedModel`, `enforcedOptions` and `note` are **experimental** (#1681), and so are the `newTask` param and the `freshContext`, `freshContextCommand`, `freshContextSignal` and `freshContextReason` reply fields (#1680); see [`stability.md`](./stability.md#inputsend). |
 | `input.sendKey` | `{ key, paneId?, workspaceId? }` | stable | Send a control key sequence. |
 | `input.readScreen` | `{ paneId?, workspaceId? }` | stable | Read the current visible terminal buffer. |
 | `terminal.readEvents` | `{ paneId?, workspaceId?, sinceSeq? }` | stable | Read structured terminal output events (prompt detection, etc.). |
@@ -197,7 +197,7 @@ The surface a server registers is chosen once, by a launch argument in the host 
 | `pane_unstash` | `pane.unstash` | Unlisted pre-merge alias of `pane_stash {restore:true}` — still callable via `tools/call` for one release. |
 | `terminal_read` | `input.readScreen` | |
 | `terminal_read_events` | `terminal.readEvents` | Structured prompt-detected events. |
-| `terminal_send` | `input.send` | |
+| `terminal_send` | `input.send` | `new_task` (experimental, #1680) maps to `input.send` `newTask`. |
 | `terminal_send_key` | `input.sendKey` | |
 | `wmux_events_poll` | `events.poll` | Pull-based event stream. |
 | `wmux_search_panes` | `pane.search` | |

@@ -284,6 +284,41 @@ describe('DaemonClient', () => {
       await mockServer.stop();
     });
 
+    it('passes the key-input and hook fields through, and omits malformed ones (#1680)', async () => {
+      const pipeName = testPipeName('agent-state-key-input');
+      let extra: Record<string, unknown> = { keyInputRevision: 7, keyInputQuiet: false, hookReports: true };
+      mockServer = createMockDaemonServer(pipeName, AUTH_TOKEN, {
+        'daemon.getAgentState': () => ({
+          agentName: 'Claude Code',
+          agentVerified: true,
+          agentStatus: 'idle',
+          inputQuiet: true,
+          inputRevision: 12,
+          incarnationId: 'incarnation-1',
+          ...extra,
+        }),
+      });
+      await mockServer.start();
+
+      client = new DaemonClient(pipeName, AUTH_TOKEN);
+      await client.connect();
+      await expect(client.getAgentState('sess-1')).resolves.toMatchObject({
+        inputRevision: 12,
+        keyInputRevision: 7,
+        keyInputQuiet: false,
+        hookReports: true,
+      });
+      extra = { keyInputRevision: -1, keyInputQuiet: 'no', hookReports: 1 };
+      const malformed = await client.getAgentState('sess-1');
+      expect(malformed).not.toBeNull();
+      expect(malformed).not.toHaveProperty('keyInputRevision');
+      expect(malformed).not.toHaveProperty('keyInputQuiet');
+      expect(malformed).not.toHaveProperty('hookReports');
+
+      await client.disconnect();
+      await mockServer.stop();
+    });
+
     it('parses agentVerified as false, never null, when an older daemon omits it (#1307)', async () => {
       const pipeName = testPipeName('agent-state-unverified-field');
       mockServer = createMockDaemonServer(pipeName, AUTH_TOKEN, {

@@ -747,6 +747,10 @@ export class DaemonNotificationRouter {
               pendingQuestion: '',
               lastMessage: '',
             });
+            // #1680 — the receipt a fresh-context step waits on after typing
+            // `/clear` (Claude) or `/new` (Codex): both bridges reach the daemon
+            // and are replayed here. Exact pane only; the engine filters sources.
+            if (ev.signal) this.getHookRouter?.()?.noteSessionStart(payload.sessionId, ev.signal, receivedAt);
             // #1463 — a fresh session (startup, resume, `/clear`) means the
             // turn before it is over. `/clear` typed mid-turn runs right after
             // the Stop, and its SessionStart cancels the Stop still held in the

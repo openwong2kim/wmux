@@ -521,6 +521,8 @@ export function buildBrainLaunchCommand(opts: {
   resumeSessionId?: string | null;
   /** Model override (`--model`), or empty/absent for the CLI default. */
   model?: string | null;
+  /** Effort override (`--effort`), or empty/absent for the CLI default. */
+  effort?: string | null;
   /**
    * How the TUI is launched with respect to permission prompts — the workspace
    * AGENT MODE, expressed in claude's own flags (owner decision 2026-08-01):
@@ -555,6 +557,7 @@ export function buildBrainLaunchCommand(opts: {
   // The orchestrator's model picker applies to this brain too: the TUI takes
   // the same `--model <alias|full-name>` flag the SDK adapter's option maps to.
   if (opts.model) parts.push('--model', q(opts.model));
+  if (opts.effort) parts.push('--effort', q(opts.effort));
   // The workspace mode, as a launch flag. Before `--resume` so the permission
   // posture is set for the whole session including the resumed transcript.
   if (opts.permissionMode === 'acceptEdits') {
@@ -587,6 +590,8 @@ export interface ClaudePtyBrainAdapterDeps {
   /** Model override from the deck's model picker (`--model`). Empty/absent
    *  leaves the TUI on whatever model the user's claude defaults to. */
   model?: string;
+  /** Effort from the deck's effort picker (`--effort`); empty/absent = default. */
+  effort?: string;
   /**
    * This workspace's AGENT MODE, read fresh at every spawn.
    *
@@ -1110,6 +1115,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
       resumeSessionId,
       permissionMode,
       ...(this.deps.model ? { model: this.deps.model } : {}),
+      ...(this.deps.effort ? { effort: this.deps.effort } : {}),
     });
     // Held locally as well as on the instance: a dispose() racing this spawn
     // nulls the field (killPty), and awaiting the field would then throw

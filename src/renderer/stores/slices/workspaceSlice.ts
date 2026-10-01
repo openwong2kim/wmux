@@ -1,5 +1,6 @@
 import { isPhoneWorkspaceId, PHONE_WORKSPACE_REQUEST_LIMIT } from '../../../shared/phoneWorkspaceRequests';
 import type { StateCreator } from 'zustand';
+import { sanitizeClaudeEffort } from '../../../shared/claudeModels';
 import type { StoreState } from '../index';
 import { createWorkspace, clonePaneTreeFresh, assignPaneOrdinals, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, buildDefaultCustomKeybindings, upgradeDefaultKeybindingsForPlatform, TERMINAL_STATES, NOTIFICATION_CATEGORIES, type ArchivedWorkspace, type Pane, type PaneLeaf, type SessionData, type StashedPane, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
 import { normalizeWorkspaceProfile } from '../../../shared/workspaceProfile';
@@ -1220,6 +1221,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         window.electronAPI?.settings?.setDefaultWslDistro?.(state.defaultWslDistro ?? null);
       }
       if (typeof data.deckBrainModel === 'string') state.deckBrainModel = data.deckBrainModel;
+      state.deckBrainEffort = sanitizeClaudeEffort(data.deckBrainEffort);
       // D2 — re-normalize on load (session.json is hand-editable / untrusted).
       state.orchestratorRoleBindings = normalizeRoleBindings(data.orchestratorRoleBindings);
       // Fail closed to raw mode: only an explicit true enables full power.

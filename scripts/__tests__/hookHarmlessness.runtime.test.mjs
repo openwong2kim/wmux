@@ -13,7 +13,8 @@
 // Every case runs a CONTROL (a no-op hook) and a TREATMENT (the real hook,
 // invoked the way the integration's own manifest invokes it) and compares what
 // the host would observe. The measurement lives in
-// scripts/lib/hookHarmlessness.mjs; the pass criteria live here.
+// scripts/lib/hookHarmlessness.mjs; the pass criteria live here, except the
+// rule for re-measuring a latency-only failure (settleLatency, in the lib).
 //
 // Two properties keep this from decaying into a green no-op:
 //   - the matrix is DERIVED from hooks.json, so a hook added to a manifest is
@@ -41,6 +42,7 @@ import {
   isHarnessAddress,
   runHookCase,
   classifyDecision,
+  settleLatency,
 } from '../lib/hookHarmlessness.mjs';
 
 // Kill budget. Well above any honest hook; a hang lands here.
@@ -51,8 +53,11 @@ const KILL_BUDGET_MS = 15_000;
 // nothing. The band sits deliberately BELOW the bridges' own 2s transport cap
 // (HOOK_TIMEOUT_MS) — a hook that waits out a dead daemon on the host's thread
 // is the stall this criterion forbids, so a budget above 2s could not fail it.
-// Measured headroom: every hook lands within ~110ms of the control locally.
-// (Review: Grok, P1.)
+// Measured headroom (locally, 2026-10-01): most hooks land within ~160ms of
+// the control; codex:notify within ~400ms.
+// (Review: Grok, P1.) A loaded CI runner has gone past it on noise alone, so a
+// case whose only violation is latency is re-measured once with a fresh
+// control and fails only if it is over the cap both times (settleLatency).
 const MAX_ADDED_MS = 1_500;
 // A descendant still holding the host's stdout/stderr this long after the hook
 // exited is a survivor, not scheduling noise.
@@ -94,9 +99,15 @@ afterAll(async () => {
   }
 });
 
-/** Apply the three pass criteria; returns human-readable violations. */
+/**
+ * Apply the three pass criteria. Returns human-readable violations, with the
+ * added-latency one kept apart (`latency`) because only that one is
+ * re-measured before it fails; see settleLatency.
+ */
 function violations(id, result, decision, control) {
   const found = [];
+  const latency = [];
+  const addedMs = control ? result.wallMs - control.wallMs : null;
   // Criterion 1 — the host's decision is the control's decision.
   if (decision !== 'none') found.push(`${id}: decision=${decision}`);
   // Stricter form of the same thing, and the precise #898 pin: an observation
@@ -117,8 +128,8 @@ function violations(id, result, decision, control) {
 
   // Criterion 2 — completion and added latency.
   if (result.timedOut) found.push(`${id}: timed out`);
-  if (control && result.wallMs > control.wallMs + MAX_ADDED_MS) {
-    found.push(`${id}: +${Math.round(result.wallMs - control.wallMs)}ms over control (cap ${MAX_ADDED_MS})`);
+  if (addedMs !== null && addedMs > MAX_ADDED_MS) {
+    latency.push(`${id}: +${Math.round(addedMs)}ms over control (cap ${MAX_ADDED_MS})`);
   }
 
   // Criterion 3 — nothing outlives the hook holding the host's stdio. Fail
@@ -129,7 +140,29 @@ function violations(id, result, decision, control) {
   } else if (result.survivorGapMs > MAX_SURVIVOR_GAP_MS) {
     found.push(`${id}: survivor held host stdio for ${Math.round(result.survivorGapMs)}ms`);
   }
-  return found;
+  return { strict: found, latency, addedMs };
+}
+
+/** The no-op control for a scenario, asserted clean before anything is compared to it. */
+async function measureControl(scenario) {
+  const control = await runHookCase({
+    script: fixtures.noop,
+    env: scenario.env,
+    payload: { hook_event_name: 'Stop' },
+    budgetMs: KILL_BUDGET_MS,
+  });
+  // Asserted on the raw observation rather than through one contract: exit 0
+  // with empty stdout is "no opinion" under every contract in the table, so
+  // the control needs no per-agent interpretation to be a control. A dirty
+  // control would bless every treatment compared against it. (Review: Grok, P3.)
+  expect(control.exitCode).toBe(0);
+  expect(control.stdout).toBe('');
+  return control;
+}
+
+async function measureCase(testCase, scenario, control) {
+  const result = await runHookCase({ ...testCase, env: scenario.env, budgetMs: KILL_BUDGET_MS });
+  return violations(testCase.id, result, classifyDecision(testCase.contract, result), control);
 }
 
 // ---------------------------------------------------------------------------
@@ -384,23 +417,26 @@ describe('every installed hook is indistinguishable from a no-op', () => {
   ]) {
     it(`${scenarioId}: no hook has an opinion, adds latency, or survives`, async () => {
       const scenario = scenarios.find((s) => s.id === scenarioId);
-      const control = await runHookCase({
-        script: fixtures.noop,
-        env: scenario.env,
-        payload: { hook_event_name: 'Stop' },
-        budgetMs: KILL_BUDGET_MS,
-      });
-      // Asserted on the raw observation rather than through one contract:
-      // exit 0 with empty stdout is "no opinion" under every contract in the
-      // table, so the control needs no per-agent interpretation to be a
-      // control. (Review: Grok, P3.)
-      expect(control.exitCode).toBe(0);
-      expect(control.stdout).toBe('');
+      const control = await measureControl(scenario);
 
       const found = [];
       for (const testCase of cases) {
-        const result = await runHookCase({ ...testCase, env: scenario.env, budgetMs: KILL_BUDGET_MS });
-        found.push(...violations(testCase.id, result, classifyDecision(testCase.contract, result), control));
+        const first = await measureCase(testCase, scenario, control);
+        // Latency alone is re-measured against a fresh control; everything
+        // else fails on first sight.
+        const { violations: settled, second } = await settleLatency(
+          first,
+          async () => measureCase(testCase, scenario, await measureControl(scenario)),
+        );
+        if (second && settled.length === 0) {
+          // Passed on the re-measure. Say so, so a runner that keeps needing
+          // the second look is visible in the log rather than silently green.
+          console.warn(
+            `hookHarmlessness: ${scenarioId} ${testCase.id} was +${Math.round(first.addedMs)}ms over control, `
+            + `${Math.round(second.addedMs)}ms on re-measure (cap ${MAX_ADDED_MS}); passing`,
+          );
+        }
+        found.push(...settled);
       }
       expect(found, `${scenarioId} — ${scenario.why}`).toEqual([]);
     }, 180_000);

@@ -955,3 +955,34 @@ export function classifyDecision(contract, result) {
   if (result.timedOut) return 'timeout';
   return HOST_CONTRACTS[contract](result.exitCode, result.stdout ?? '');
 }
+
+/**
+ * Settle one case's verdict, re-measuring once when added latency is its ONLY
+ * violation (#1685).
+ *
+ * Every other criterion is about what the hook DID (a decision, a byte on a
+ * stream, a non-zero exit, a survivor, a timeout), and one sighting proves it.
+ * Added latency is the difference of two wall clocks on a shared runner, and
+ * a loaded runner can push an honest hook past the cap by itself: CI once
+ * failed at +1514ms against the 1500ms cap and passed on rerun. So a
+ * latency-only verdict is measured again, with a fresh control, and fails
+ * only if it is over the cap both times. A hook that really is slow is slow
+ * both times.
+ *
+ * `first`, and what `remeasure()` resolves to, have the shape
+ * `{ strict: string[], latency: string[] }`. Resolves to `{ violations, second }`:
+ * the violations to report (empty means pass) and the re-measured verdict, or
+ * null when nothing was re-measured. A strict violation on the re-measure fails
+ * too: it is new evidence, not noise.
+ */
+export async function settleLatency(first, remeasure) {
+  if (first.strict.length > 0 || first.latency.length === 0) {
+    return { violations: [...first.strict, ...first.latency], second: null };
+  }
+  const second = await remeasure();
+  const again = [...second.strict, ...second.latency];
+  return {
+    violations: again.length === 0 ? [] : [...first.latency, ...again.map((v) => `${v} (re-measured)`)],
+    second,
+  };
+}

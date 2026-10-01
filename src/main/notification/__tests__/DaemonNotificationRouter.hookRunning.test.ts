@@ -80,6 +80,7 @@ function stubHookRouter(runningGoverned: boolean): HookSignalRouter {
   return {
     noteHookTurnStart: vi.fn(),
     notePromptSubmit: vi.fn(),
+    noteSessionStart: vi.fn(),
     releaseHookTurnStart: vi.fn(),
     governsRunningState: vi.fn().mockReturnValue(runningGoverned),
     noteAgentOnPane: vi.fn(),
@@ -440,6 +441,7 @@ describe('DaemonNotificationRouter — a settle is marked, and survives its own 
     return {
       noteHookTurnStart: vi.fn(() => { governed = true; }),
       notePromptSubmit: vi.fn(),
+      noteSessionStart: vi.fn(),
       releaseHookTurnStart: vi.fn(() => { governed = false; }),
       governsRunningState: vi.fn(() => governed),
       noteAgentOnPane: vi.fn(),
@@ -617,6 +619,7 @@ describe('DaemonNotificationRouter — #1463 a fresh session closes the turn it 
     return {
       noteHookTurnStart: vi.fn(() => { governed = true; }),
       notePromptSubmit: vi.fn(),
+      noteSessionStart: vi.fn(),
       releaseHookTurnStart: vi.fn(() => { governed = false; }),
       governsRunningState: vi.fn(() => governed),
       noteAgentOnPane: vi.fn(),
@@ -637,6 +640,15 @@ describe('DaemonNotificationRouter — #1463 a fresh session closes the turn it 
     broadcastMetadataUpdateMock.mockClear();
     metadataHandlerMocks.lastBroadcastAgentStatus.delete(PTY);
     clearSuppression(PTY);
+  });
+
+  it('records the session start as fresh-context evidence on main time (#1680)', () => {
+    const hookRouter = latchedRouter();
+    const { router, captured } = makeRouter(hookRouter, [], 0, () => 7000);
+    const event = sessionStart('clear');
+    captured.agent?.(event);
+    expect(hookRouter.noteSessionStart).toHaveBeenCalledWith(PTY, event.event.signal, 7000);
+    router.stop();
   });
 
   it('settles the pane when SessionStart(clear) follows a turn whose Stop never arrived', () => {

@@ -5,6 +5,7 @@ import { registerA2aRpc } from '../a2a.rpc';
 import type { ClaudeWorker } from '../../../a2a/ClaudeWorker';
 import type { RpcContext } from '../../../../shared/rpc';
 import { EXECUTE_SEND_MAIN_TIMEOUT_MS } from '../../../../shared/executeApprovalBounds';
+import { FRESH_CONTEXT_TIMEOUT_MS, NEW_TASK_SEND_MAIN_TIMEOUT_MS } from '../../../../shared/freshContext';
 
 const { sendToRendererMock } = vi.hoisted(() => ({
   sendToRendererMock: vi.fn(),
@@ -101,7 +102,7 @@ describe('a2a.rpc — execute confirmation gate', () => {
 
   // #1462 — the renderer holds an execute reply until the user answers the
   // approval prompt (30 s auto-deny). The 5 s bridge default gave up first.
-  it('waits past the approval window for a new execute send, and only for that', async () => {
+  it('waits past the approval window for a new execute send, past a fresh-context step for a new task (#1680)', async () => {
     sendToRendererMock
       .mockResolvedValueOnce({ ok: false, error: 'denied' })
       .mockResolvedValueOnce({ ok: true, taskId: 't', toWorkspaceId: 'ws-to' });
@@ -120,7 +121,11 @@ describe('a2a.rpc — execute confirmation gate', () => {
       method: 'a2a.task.send',
       params: { workspaceId: 'ws-from', to: 'ws-to', message: 'hi' },
     });
-    expect(sendToRendererMock.mock.calls[1][3]).toBeUndefined();
+    // A plain NEW task may run the target pane's fresh-context step first.
+    expect((sendToRendererMock.mock.calls[1][3] as { timeoutMs?: number }).timeoutMs).toBe(
+      NEW_TASK_SEND_MAIN_TIMEOUT_MS,
+    );
+    expect(NEW_TASK_SEND_MAIN_TIMEOUT_MS).toBeGreaterThan(FRESH_CONTEXT_TIMEOUT_MS + 5_000);
   });
 
   it('skips worker and does not cancel when renderer denies before task creation', async () => {
@@ -169,6 +174,8 @@ describe('a2a.rpc — execute confirmation gate', () => {
     expect(worker.execute).not.toHaveBeenCalled();
     const methods = sendToRendererMock.mock.calls.map((c) => c[1]);
     expect(methods).toEqual(['a2a.task.send']);
+    // A reply is never a task boundary: the bridge default applies (#1680).
+    expect(sendToRendererMock.mock.calls[0][3]).toBeUndefined();
   });
 
   it('ignores truthy non-boolean execute values', async () => {
@@ -371,6 +378,8 @@ describe('a2a.task.send — commander binding is stamped, never trusted from the
       expect.anything(),
       'a2a.task.send',
       expect.objectContaining({ commanderWorkspaceId: 'ws-brain' }),
+      // A new task's budget (#1680).
+      { timeoutMs: NEW_TASK_SEND_MAIN_TIMEOUT_MS },
     );
   });
 

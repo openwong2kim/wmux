@@ -15,9 +15,13 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Two jobs, run in parallel: `validate` (type checks, builds, the unit suite)
+  # and `validate-runtime` (the runtime suite). Together they run exactly what
+  # `npm test` does (test:parallel, then test:runtime), so wall time is the
+  # slower job rather than the sum (#1685).
   validate:
     runs-on: windows-latest
-    # validate takes ~14 min; a hung step must not hold a runner for the 6 h default.
+    # validate takes ~10 min; a hung step must not hold a runner for the 6 h default.
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -53,8 +57,15 @@ jobs:
           npm install --package-lock-only --ignore-scripts
           git diff --exit-code package-lock.json
 
+      # Every type-check program except mcp and daemon, which CI compiles with
+      # the same tsconfig anyway: `build:mcp` below and `build:daemon` in
+      # validate-runtime both start with `tsc -p` (so a daemon type error
+      # fails validate-runtime). cli has no build step here, so it is checked.
+      # Locally, `npm run typecheck` still runs all of them.
+      # scripts/__tests__/typecheckSlices.test.mjs ties this list to those
+      # build steps.
       - name: Type check
-        run: npm run typecheck
+        run: node scripts/typecheck.mjs --skip mcp,daemon
 
       - name: Build and probe MCP protocol
         run: npm run build:mcp && npm run probe:mcp
@@ -80,16 +91,38 @@ jobs:
           git fetch --unshallow --no-tags --quiet origin HEAD || true
           node scripts/locale-drift-report.mjs --check
 
-      # `npm test` ends in `test:runtime`, and two of those suites drive the
-      # REAL bundled daemon (#546 boot marker, #596 web restore). Both skip
-      # when `dist/daemon-bundle/index.js` is absent — which it always was
-      # here, so neither has ever run in CI. A skip reads as green, so this
-      # step is what gives those suites any signal at all.
+      # The runtime suites (`*.runtime.test.*`) run in validate-runtime below.
+      - name: Test (unit suite)
+        run: npm run test:parallel
+
+  validate-runtime:
+    runs-on: windows-latest
+    # The runtime suite takes ~4-5 min plus setup; the cap only stops a hang.
+    timeout-minutes: 25
+    steps:
+      # Same pins and toolchain as validate; see the comments there.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Use npm 11
+        run: npm install -g npm@11
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Two runtime suites drive the REAL bundled daemon (#546 boot marker,
+      # #596 web restore). Both skip when `dist/daemon-bundle/index.js` is
+      # absent, and a skip reads as green, so this step is what gives those
+      # suites any signal at all.
       - name: Build daemon bundle (the runtime suites drive it)
         run: npm run build:daemon
 
-      - name: Test
-        run: npm test
+      - name: Test (runtime suite)
+        run: npm run test:runtime
         env:
           # Tells those suites the bundle was promised, so removing the step
           # above fails a test instead of silently retiring both files.

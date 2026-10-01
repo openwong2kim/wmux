@@ -1166,6 +1166,10 @@ export const pl = {
   'settings.orchestratorModelDesc':
     'Model Claude, na którym działa orkiestrator Command Deck. Zmiany obowiązują od następnego polecenia; rozmowa przechodzi dalej.',
   'settings.orchestratorModelDefault': 'Domyślny (model subskrypcji)',
+  'settings.orchestratorEffort': 'Effort orkiestratora',
+  'settings.orchestratorEffortDesc':
+    'Ile orkiestrator myśli w każdej turze (claude --effort). Niżej = szybciej i mniej tokenów. Działa od następnego polecenia.',
+  'settings.orchestratorEffortDefault': 'Domyślny (ustawienie CLI)',
   'settings.orchestratorFullPower': 'Tryb pełnej mocy',
   'settings.orchestratorFullPowerDesc':
     'Wczytaj Twoje skille Claude Code, CLAUDE.md i hooki do tur orkiestratora. Twoje hooki uruchamiają się wewnątrz tur mózgu (Twój własny kod, poza jakimkolwiek sandboxem wmuxa), wywołania narzędzi mogą być wolniejsze, a mózg nie może zapisywać swoich notatek pamięci, gdy to jest włączone. Obowiązuje od następnej tury mózgu.',
@@ -1185,10 +1189,21 @@ export const pl = {
     'Wybierz też agenta — sam model nie jest wymuszany (wmux nie wie, czyją flagą --model to jest).',
   'settings.roleBindingHintNoGrammar':
     'wmux nie ma zweryfikowanej flagi --model dla {agent}, więc model jest ignorowany. Dodatkowe argumenty nadal obowiązują.',
-  'settings.roleBindingHintInert': 'Dodaj model lub dodatkowe argumenty — sam agent nic nie wymusza.',
+  'settings.roleBindingHintInert': 'Dodaj model, effort, pomijanie uprawnień, świeży kontekst lub dodatkowe argumenty — sam agent nic nie wymusza.',
+  'settings.roleBindingHintFreshContextInert':
+    'Świeży kontekst dla każdego zadania działa tylko z agentem claude lub codex; dla tej roli nic nie robi.',
+  'settings.roleBindingEffortLabel': 'Effort: {role}',
+  'settings.roleBindingEffortDefault': 'Effort: domyślny',
+  'settings.roleBindingSkipPermissions': 'Pomijaj uprawnienia',
+  'settings.roleBindingFreshContext': 'Świeży kontekst dla każdego zadania',
+  'settings.roleBindingFreshContextTooltip':
+    'Gdy ten panel dostaje NOWE zadanie (terminal_send orkiestratora z new_task albo nowe send_message od innego agenta), wmux najpierw wpisuje {command}, aby rozmowa z poprzedniego zadania nie przechodziła dalej. Nigdy przy kontynuacji ani odpowiedzi. Pomijane, gdy agent pracuje albo panel ma jeszcze inne otwarte zadania agentów.',
+  'settings.roleBindingRefreshModels': 'Odśwież modele',
   // D2 — enforced-launch affordances (Fleet roster chip + pane badge).
   'deck.fleet.enforcedLaunch': 'Wymuszone uruchomienie: {binding}',
   'pane.enforcedLaunch': 'Uruchomienie wymuszone rolą: {binding}',
+  'pane.enforcedSkipBadge': 'bypass',
+  'pane.enforcedSkipPermissions': 'pomija pytania o uprawnienia ({flag})',
   // M3: surfaced subscription rate-limit notices in the orchestrator thread.
   // Sentences are assembled from optional fragments ({on}/{util}/{reset}) that
   // formatLimitNotice blanks when the field is absent — keep the leading spaces.

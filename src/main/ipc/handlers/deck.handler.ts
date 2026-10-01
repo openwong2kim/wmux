@@ -20,6 +20,7 @@
 // format-checked because it keys maps and persisted files.
 
 import { ipcMain, app, type BrowserWindow } from 'electron';
+import { sanitizeClaudeEffort, type ClaudeEffort } from '../../../shared/claudeModels';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import type { BrainAdapter, BrainEvent } from '../../deck/BrainAdapter';
@@ -158,6 +159,8 @@ export interface RegisterDeckHandlerOptions {
    *  serves. */
   createAdapter?: (opts: {
     model?: string;
+    /** Orchestrator effort (claude --effort level); absent = CLI default. */
+    effort?: ClaudeEffort;
     workspaceId: string;
     fullPower?: boolean;
     vendor?: BrainVendor;
@@ -312,6 +315,7 @@ export function registerDeckHandler(
     opts.createAdapter ??
     ((adapterOpts: {
       model?: string;
+      effort?: ClaudeEffort;
       workspaceId: string;
       fullPower?: boolean;
       vendor?: BrainVendor;
@@ -405,6 +409,7 @@ export function registerDeckHandler(
             // fullPower is SDK-only (it tunes canUseTool/allowedTools, which
             // an interactive session has no equivalent for).
             ...(adapterOpts.model ? { model: adapterOpts.model } : {}),
+            ...(adapterOpts.effort ? { effort: adapterOpts.effort } : {}),
           });
         }
         console.warn(
@@ -421,6 +426,7 @@ export function registerDeckHandler(
       return new ClaudeSdkAdapter({
         workspaceId: adapterOpts.workspaceId,
         ...(adapterOpts.model ? { model: adapterOpts.model } : {}),
+        ...(adapterOpts.effort ? { effort: adapterOpts.effort } : {}),
         ...(adapterOpts.fullPower ? { fullPower: true } : {}),
       });
     });
@@ -431,6 +437,8 @@ export function registerDeckHandler(
     manager: CommanderSessionManager;
     /** The model the manager's adapter was created with ('' = SDK default). */
     model: string;
+    /** The effort the adapter was created with ('' = CLI default). */
+    effort: ClaudeEffort | '';
     /** Whether the adapter was created in full-power mode (BYOB approach A). */
     fullPower: boolean;
     /** The brain vendor the adapter was created for (BYOB M0). */
@@ -482,6 +490,9 @@ export function registerDeckHandler(
   // brains on whatever the last typed turn happened to leave cached — or on
   // the SDK default when nothing had been typed yet.
   let brainModel = '';
+  // Orchestrator effort, set with the model through DECK_MODEL_SET. Read by
+  // ensureManager directly (every turn path gets the same answer).
+  let brainEffort: ClaudeEffort | '' = '';
 
   /** Sanitize a model override to a plausible token. It ends up on the brain
    *  subprocess command line (`--model`), so anything outside this alphabet is
@@ -753,8 +764,9 @@ export function registerDeckHandler(
     //               interactive session has no equivalent for.
     // An ACP brain ignores both.
     const modelApplies = vendor === 'claude' || vendor === 'claude-pty';
+    const effort = brainEffort;
     const claudeSettingsChanged = existing
-      ? (modelApplies && model !== existing.model) ||
+      ? (modelApplies && (model !== existing.model || effort !== existing.effort)) ||
         (vendor === 'claude' && fullPower !== existing.fullPower)
       : false;
     if (
@@ -802,6 +814,7 @@ export function registerDeckHandler(
           managerRef?.notifyForeignSessionId(sessionId);
         },
         ...(model ? { model } : {}),
+        ...(effort ? { effort } : {}),
         ...(fullPower ? { fullPower: true } : {}),
       }),
       sink: (event) => emit(workspaceId, event),
@@ -833,7 +846,7 @@ export function registerDeckHandler(
       onIdle: () => coalescer?.notifyIdle(workspaceId),
     });
     managerRef = manager;
-    managers.set(workspaceId, { manager, model, fullPower, vendor });
+    managers.set(workspaceId, { manager, model, effort, fullPower, vendor });
     // Lane F: a brain now exists for this workspace — replay the worker
     // events parked while it had none (the manager's first idle flushes them).
     coalescer?.notifyBrainBooted(workspaceId);
@@ -1149,13 +1162,16 @@ export function registerDeckHandler(
     wrapHandler(IPC.DECK_MODEL_SET, async (
       _event: Electron.IpcMainInvokeEvent,
       raw: unknown,
-    ): Promise<{ ok: true; model: string }> => {
+    ): Promise<{ ok: true; model: string; effort: string }> => {
       const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
         ? (raw as Record<string, unknown>)
         : {};
       const model = sanitizeModel(req.model);
-      if (model !== brainModel) {
+      // An older renderer sends no effort: keep the current one.
+      const effort = 'effort' in req ? sanitizeClaudeEffort(req.effort) : brainEffort;
+      if (model !== brainModel || effort !== brainEffort) {
         brainModel = model;
+        brainEffort = effort;
         // Retire IDLE managers on the stale model so the next turn on ANY path
         // spawns on the new one. Busy managers finish their in-flight turn and
         // ensureManager swaps them on their next (never-swap-mid-turn). Gated
@@ -1165,7 +1181,7 @@ export function registerDeckHandler(
           const modelApplies = entry.vendor === 'claude' || entry.vendor === 'claude-pty';
           if (
             modelApplies &&
-            entry.model !== model &&
+            (entry.model !== model || entry.effort !== effort) &&
             entry.manager.getStatus().status !== 'busy'
           ) {
             entry.manager.dispose();
@@ -1176,7 +1192,7 @@ export function registerDeckHandler(
           }
         }
       }
-      return { ok: true, model };
+      return { ok: true, model, effort };
     }),
   );
 

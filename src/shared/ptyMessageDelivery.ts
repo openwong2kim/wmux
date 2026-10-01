@@ -1,6 +1,7 @@
 /** Utilities for safe PTY delivery of structured inter-agent messages. */
 
 import { agentDisplayToSlug, isAgentSlug, type AgentSlug } from './agentIdentity';
+import type { FreshContextReply } from './freshContext';
 
 const BRACKETED_PASTE_START = '\x1b[200~';
 const BRACKETED_PASTE_END = '\x1b[201~';
@@ -198,11 +199,37 @@ export function resolveAgentSlug(agent?: string | null): AgentSlug | undefined {
  * front of the pane, send again once it is answered. `gate_unavailable`: the
  * gate could not decide (screen unreadable, IPC failure), retry shortly.
  * `pasted`: the text reached the composer but the Enter was withheld.
+ * `fresh_context_busy` (#1680): another new-task delivery held the pane too
+ * long; nothing was written.
+ * `fresh_context_timeout` (#1680): a new-task delivery typed the pane's
+ * fresh-context command and never saw it finish, so the text was not written.
  */
 export interface GatedSubmitRefusal {
   ok: false;
-  reason: 'approval_pending' | 'gate_unavailable' | 'write_failed';
+  reason: 'approval_pending' | 'gate_unavailable' | 'write_failed' | 'fresh_context_timeout' | 'fresh_context_busy';
   detail: string;
   pasted?: boolean;
 }
-export type GatedSubmitResult = { ok: true } | GatedSubmitRefusal;
+/** A delivered submit. A new-task delivery also says what its fresh-context
+ *  step did (shared/freshContext). */
+export type GatedSubmitSuccess = { ok: true } & Partial<FreshContextReply>;
+export type GatedSubmitResult = GatedSubmitSuccess | GatedSubmitRefusal;
+
+/** Options for a gated submit. */
+export interface GatedSubmitOptions {
+  /** The delivery starts a NEW task (a2a new-task branch only), so the pane's
+   *  role may ask for a fresh conversation first. Never set for a reply. */
+  newTask?: boolean;
+  /**
+   * With `newTask`: the pane's conversation must be kept anyway, and why.
+   * `open_a2a_task` — the pane has other open a2a tasks pinned to it (owner
+   * decision, #1680), so clearing it would drop a thread still in flight.
+   * Reported as `skipped_busy` when the role asks for fresh context.
+   */
+  keepContext?: 'open_a2a_task';
+  /** With `newTask`: the task being delivered, left out of the open-task check. */
+  taskId?: string;
+  /** With `newTask`: where the delivered pane sits, so main can check the
+   *  daemon's open tasks for it (a pane it cannot place is never cleared). */
+  pane?: { workspaceId: string; paneId: string; surfaceId: string };
+}

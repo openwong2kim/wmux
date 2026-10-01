@@ -21,6 +21,7 @@
 // turn at a time, so a single `_active` handle is enough for `interrupt()`.
 
 import * as fs from 'fs';
+import type { ClaudeEffort } from '../../shared/claudeModels';
 import * as path from 'path';
 import * as os from 'os';
 import { pathToFileURL } from 'url';
@@ -166,6 +167,8 @@ export interface ClaudeSdkAdapterDeps {
   allowedTools?: string[];
   /** Model id; defaults to the SDK default (subscription's default model). */
   model?: string;
+  /** Effort level (SDK `options.effort` -> claude `--effort`); absent = default. */
+  effort?: ClaudeEffort;
   /** Per-turn ceiling on agentic tool loops. */
   maxTurns?: number;
   /** Non-default backend (GLM/Z.ai). Omit for Claude subscription. */
@@ -538,6 +541,15 @@ export function buildCommanderSystemPrompt(
     '  pane only when no existing pane is free, or the work genuinely needs to run',
     '  in parallel with everything already running. Spawning when an idle pane',
     '  exists wastes the operator\'s screen and resources.',
+    '- NEW TASK = FRESH START: when you give a pane that finished other work a NEW,',
+    '  unrelated task, send it with terminal_send({ text, submit: true, new_task: true }).',
+    '  If the operator turned on fresh context for that pane\'s role, wmux first clears',
+    '  the agent\'s conversation (`/clear`, `/new`) so the old task does not leak into',
+    '  the new one; the reply\'s `freshContext` says whether it did. A follow-up, an',
+    '  answer to the pane\'s question or a correction of the SAME task is never a new',
+    '  task: leave new_task off. Never type `/clear` or `/new` into a pane yourself. If',
+    '  the send fails because the clear did not finish, the task was NOT sent: read the',
+    '  pane once, then send it again.',
     '- RESOLVE BEFORE YOU ESCALATE. Before you EVER call deck_ask_decision, try to settle',
     '  the fork yourself. Check, IN ORDER: (1) the binding policy rules in the [policy]',
     '  block of this turn, (2) the standing project conventions and prior operator',
@@ -574,7 +586,9 @@ export function buildCommanderSystemPrompt(
     '  change a pane\'s "orchestrator.role" yourself — it is the operator\'s to assign.',
     '  A role-bound pane auto-applies its enforced agent+model when you launch an',
     '  agent there — just terminal_send the bare launcher (e.g. `claude`); do NOT',
-    '  pass `--model` yourself, wmux rewrites it to the bound model for you.',
+    '  pass `--model` yourself, wmux rewrites it to the bound model for you. Each',
+    '  stage you dispatch to a role\'s pane is a new task for it (new_task: true, see',
+    '  NEW TASK = FRESH START); a rework request on the stage it just did is not.',
     '- YOU are the only router between panes. Worker panes cannot see or message each',
     '  other, so NEVER tell a pane to "hand off to the Builder/Reviewer when ready" —',
     '  that instruction is impossible for the worker to follow, and it will quietly do',
@@ -636,6 +650,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
   /** BYOB approach A — see ClaudeSdkAdapterDeps.fullPower. */
   private readonly fullPower: boolean;
   private readonly model?: string;
+  private readonly effort?: ClaudeEffort;
   private readonly maxTurns: number;
   private readonly profile?: BrainEndpointProfile;
   private readonly loadMemory: () => string;
@@ -675,6 +690,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     this.fullPower = deps.fullPower ?? false;
     this.allowedTools = deps.allowedTools ?? DEFAULT_ALLOWED_TOOLS;
     this.model = deps.model;
+    this.effort = deps.effort;
     this.maxTurns = deps.maxTurns ?? DEFAULT_MAX_TURNS;
     this.profile = deps.profile;
     // Default loader layers both partitions for THIS workspace (M1c). Bound to
@@ -834,6 +850,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
         : this._systemPrompt;
     }
     if (this.model) options.model = this.model;
+    if (this.effort) options.effort = this.effort;
     if (this.mcpBundlePath) {
       // Spawn the MCP bundle with wmux's own Electron binary in Node mode
       // (ELECTRON_RUN_AS_NODE) instead of assuming a `node` on the END USER'S

@@ -52,7 +52,9 @@ import {
   type SearchableBuffer,
 } from '../utils/searchEngine';
 import { gatedSubmitToPty, submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
-import type { GatedSubmitRefusal } from '../../shared/ptyMessageDelivery';
+import type { GatedSubmitRefusal, GatedSubmitResult } from '../../shared/ptyMessageDelivery';
+import type { FreshContextReply } from '../../shared/freshContext';
+import { paneAddressOfPty, paneHasOtherOpenA2aTask } from './a2aFreshContext';
 import { publishA2aTask } from '../events/publisher';
 import { isReceiverPaneGone } from '../../shared/a2aOrphanedTask';
 import { resolvePaneAddress, activePaneTerminalPty, resolveUnaddressedDelivery, paneHasDetectedAgent, describeAmbiguousDelivery, wsMetadataMayStandIn, NO_AGENT_PANE_HINT, decideSameWsSend, decideReplyDelivery, REPLY_SUPPRESS_HINTS, submitReceiptFields, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, detectedAgentTuiSlug, type PaneAddress } from './a2aAddressing';
@@ -307,16 +309,59 @@ function a2aOperatorOrigin(params: RpcParams): boolean {
 export interface A2aPtyWrite {
   ptyId: string | null;
   refused?: GatedSubmitRefusal;
+  /** What a new-task delivery's fresh-context step did (#1680). Absent for
+   *  every other delivery, and when the pane's role does not ask for one. */
+  freshContext?: FreshContextReply;
+}
+
+/**
+ * A NEW task's delivery (#1680): main may give the pane a fresh conversation
+ * first, when its role asks for one. Only the new-task branch of a2a.task.send
+ * passes this — a reply, a status update or a broadcast never does.
+ */
+interface NewTaskDelivery {
+  taskId: string;
+}
+
+/** The fields a new-task delivery's receipt carries about the fresh-context
+ *  step. `not_bound` is left out: a role that never asked has nothing to say. */
+function freshContextOf(result: GatedSubmitResult): FreshContextReply | undefined {
+  if (!result.ok || !result.freshContext || result.freshContext === 'not_bound') return undefined;
+  return {
+    freshContext: result.freshContext,
+    ...(result.freshContextCommand ? { freshContextCommand: result.freshContextCommand } : {}),
+    ...(result.freshContextSignal ? { freshContextSignal: result.freshContextSignal } : {}),
+    ...(result.freshContextReason ? { freshContextReason: result.freshContextReason } : {}),
+  };
 }
 
 /** The single A2A write path in this file. */
-async function deliverA2aText(ptyId: string, text: string, operator: boolean): Promise<A2aPtyWrite> {
+async function deliverA2aText(
+  ptyId: string,
+  text: string,
+  operator: boolean,
+  newTask?: NewTaskDelivery,
+): Promise<A2aPtyWrite> {
+  // The operator's own deliveries are excluded from fresh context in v1.
   if (operator) {
     submitToPty(ptyId, text);
     return { ptyId };
   }
-  const result = await gatedSubmitToPty(ptyId, text, { agent: ptyAgent(ptyId).name });
-  return result.ok ? { ptyId } : { ptyId: null, refused: result };
+  const s = useStore.getState();
+  const keep =
+    newTask && paneHasOtherOpenA2aTask(Object.values(s.a2aTasks), s.workspaces, ptyId, newTask.taskId)
+      ? ({ keepContext: 'open_a2a_task' } as const)
+      : {};
+  // Main also asks the daemon's task store (this list is not reloaded after a
+  // restart), keyed by where the pane sits; a pane it cannot place is kept.
+  const pane = newTask ? paneAddressOfPty(s.workspaces, ptyId) : undefined;
+  const result = await gatedSubmitToPty(ptyId, text, {
+    agent: ptyAgent(ptyId).name,
+    ...(newTask ? { newTask: true, taskId: newTask.taskId, ...keep, ...(pane ? { pane } : {}) } : {}),
+  });
+  if (!result.ok) return { ptyId: null, refused: result };
+  const fresh = freshContextOf(result);
+  return fresh ? { ptyId, freshContext: fresh } : { ptyId };
 }
 
 /** Sender-facing hints for a delivery the gate withheld, by reason. */
@@ -332,6 +377,14 @@ const DELIVERY_REFUSED_HINTS: Record<GatedSubmitRefusal['reason'], string> = {
   write_failed:
     'The write to the target pane failed (it may have just closed). The task is stored; the receiver can ' +
     'find it with a2a_task_query.',
+  fresh_context_timeout:
+    "The target pane's role starts each task in a fresh conversation. wmux typed the agent's fresh-context " +
+    'command but could not confirm it finished (it did not finish in time, or other input reached the pane), ' +
+    'so the message was NOT pasted, and the pane may hold the command or already be cleared. The task is ' +
+    'stored; the receiver can find it with a2a_task_query. Read the pane before sending again.',
+  fresh_context_busy:
+    'Another new task was still being delivered to the target pane, so nothing was written to it. The task is ' +
+    'stored; the receiver can find it with a2a_task_query. Send again in a few seconds.',
 };
 
 /** The `delivery` receipt for a refused write. */
@@ -558,6 +611,7 @@ export async function deliverPtyNotification(
   message: string,
   explicitPtyId?: string,
   operator = false,
+  newTask?: NewTaskDelivery,
 ): Promise<A2aPtyWrite> {
   // getWorkspaceLeafPanes puts VISIBLE leaves first, so the "first leaf with a
   // live terminal" fallback still prefers something on screen (#977); a stashed
@@ -569,6 +623,7 @@ export async function deliverPtyNotification(
       ptyId,
       formatA2aMessage(senderName, targetWs.name, message, undefined, a2aFormatOptionsFor(ptyId)),
       operator,
+      newTask,
     );
   }
   return { ptyId: null };
@@ -590,13 +645,14 @@ async function deliverPtyNudge(
   nudge: string | ((ptyId: string) => string),
   explicitPtyId?: string,
   operator = false,
+  newTask?: NewTaskDelivery,
 ): Promise<A2aPtyWrite> {
   // getWorkspaceLeafPanes puts VISIBLE leaves first, so the "first leaf with a
   // live terminal" fallback still prefers something on screen (#977); a stashed
   // pane only catches the message when nothing visible can take it, which beats
   // dropping it.
   const ptyId = explicitPtyId ?? activePaneTerminalPty(getWorkspaceLeafPanes(targetWs), targetWs.activePaneId);
-  if (ptyId) return deliverA2aText(ptyId, typeof nudge === 'function' ? nudge(ptyId) : nudge, operator);
+  if (ptyId) return deliverA2aText(ptyId, typeof nudge === 'function' ? nudge(ptyId) : nudge, operator, newTask);
   return { ptyId: null };
 }
 
@@ -3049,9 +3105,11 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
         // onto the EventBus below, so the receiver can still poll it.
         mode = 'no-agent-pane';
       } else if (!silentExplicit && isLiveTuiAgent(liveMeta)) {
-        write = await deliverPtyNudge(target, (pty) => buildA2aNudge(newTaskId, fromName, 'new', a2aFormatOptionsFor(pty).multiline ? title : undefined), explicitPty, operator);
+        // #1680 — this branch is the task boundary: the pane's role may ask
+        // for a fresh conversation before the task lands (both modes).
+        write = await deliverPtyNudge(target, (pty) => buildA2aNudge(newTaskId, fromName, 'new', a2aFormatOptionsFor(pty).multiline ? title : undefined), explicitPty, operator, { taskId: newTaskId });
       } else {
-        write = await deliverPtyNotification(target, fromName, message, explicitPty, operator);
+        write = await deliverPtyNotification(target, fromName, message, explicitPty, operator, { taskId: newTaskId });
         mode = 'notification';
       }
       const wrotePty = write.ptyId;
@@ -3060,7 +3118,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
         : write.refused
         ? refusedDelivery(mode, write.refused)
         : wrotePty
-        ? { stored: true, notified: true, mode, ...submitReceiptFields(ptyAgent(wrotePty)) }
+        ? { stored: true, notified: true, mode, ...submitReceiptFields(ptyAgent(wrotePty)), ...(write.freshContext ?? {}) }
         : {
             stored: true,
             notified: false,

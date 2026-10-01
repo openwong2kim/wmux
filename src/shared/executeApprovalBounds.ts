@@ -21,6 +21,15 @@ export const EXECUTE_APPROVAL_LAYER_MARGIN_MS = 5_000;
 /**
  * How long main waits on the renderer for a new execute send. Fixed, so the
  * renderer can bound a prompt against it (below).
+ *
+ * Known limit (#1680, not changed): an execute send is also a NEW task, so
+ * after the approval its delivery may run the target pane's fresh-context step
+ * (shared/freshContext.ts) — up to about 21 s with every read at its own
+ * timeout. A prompt that stays pending close to the hard cap (40 s) plus that
+ * worst case can outlast this wait. Main then answers with a timeout while the
+ * renderer still creates and delivers the task; its worker is not spawned, and
+ * a caller that retries raises a second request. In practice the step takes a
+ * second or two and a prompt is answered well before the cap.
  */
 export const EXECUTE_SEND_MAIN_TIMEOUT_MS = 45_000;
 

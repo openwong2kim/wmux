@@ -17,6 +17,7 @@ import { handleMcp } from './commands/mcp';
 import { handleSetupHooks } from './commands/setupHooks';
 import { handleSetupStatusline } from './commands/setupStatusline';
 import { handleDoctor } from './commands/doctor';
+import { handleRole } from './commands/role';
 import { handleChannel } from './commands/channel';
 import { handleWeb } from './commands/web';
 import { handleDaemon } from './commands/daemon';
@@ -139,6 +140,11 @@ DIAGNOSTICS
                                     stats (last reveal, 5-min + since-boot
                                     counters) from the running app.
 
+ROLES
+  role resolve <Role>               Print what a role is bound to in Settings
+             [--json]               {agent, model, effort, argv, flags}; exit 2 if unbound
+             [--session <path>]     Read another session.json (default: the app's)
+
 BROWSER COMMANDS
   browser navigate <url>            Navigate your workspace's browser surface
   browser close                     Close the browser panel
@@ -184,6 +190,7 @@ EXAMPLES
   wmux doctor
   wmux doctor --json
   wmux doctor --performance
+  wmux role resolve Builder --json
 `.trimStart();
 
 const WORKSPACE_CMDS = new Set([
@@ -260,6 +267,8 @@ async function main(): Promise<void> {
       await handleSetupStatusline(rest, jsonMode);
     } else if (cmd === 'doctor') {
       await handleDoctor(rest, jsonMode);
+    } else if (cmd === 'role') {
+      await handleRole(rest, jsonMode);
     } else if (cmd === 'channel') {
       await handleChannel(rest[0], rest.slice(1), jsonMode);
     } else {

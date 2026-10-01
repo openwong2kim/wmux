@@ -14,7 +14,7 @@ import {
 } from '../../stores/selectors/fleet';
 import type { AgentStatus } from '../../../shared/types';
 import { shellDisplayName } from '../../utils/ptyCreateOptions';
-import { ORCH_ROLES, bindingEnforcesModel } from '../../../shared/orchestratorRole';
+import { ORCH_ROLES, bindingEnforcesModel, bindingSkipPermissionsFlag } from '../../../shared/orchestratorRole';
 
 /**
  * Bridge P2① — the Fleet roster inside the deck's Orchestrator tab.
@@ -176,10 +176,21 @@ export default function DeckFleet({
           // chip here, because a chip reading "gemini · flash" is indistinguishable
           // from an enforced one while the launch is untouched. Settings is where
           // an inert row explains itself; this roster only states facts about the
-          // launch. Consequence: an args-only binding shows no chip either.
+          // launch. Consequence: an args-only binding shows no chip either —
+          // unless its args skip permission prompts, which, like the role's
+          // skipPermissions, is shown when the role names its agent (#1681;
+          // without one wmux cannot tell which spelling is the skip flag).
           const binding = role ? roleBindings[role] : undefined;
-          const bindingLabel = bindingEnforcesModel(binding)
-            ? [binding?.agent, binding?.model].filter(Boolean).join(' · ')
+          const enforcesModel = bindingEnforcesModel(binding);
+          const skipFlag = bindingSkipPermissionsFlag(binding);
+          const bindingLabel = enforcesModel || skipFlag
+            ? [binding?.agent, enforcesModel ? binding?.model : undefined].filter(Boolean).join(' · ')
+            : '';
+          const bindingTitle = bindingLabel
+            ? t('deck.fleet.enforcedLaunch', {
+                binding: [bindingLabel, skipFlag ? t('pane.enforcedSkipPermissions', { flag: skipFlag }) : '']
+                  .filter(Boolean).join(' · '),
+              })
             : '';
           return (
             // Row = flex container so the jump button and the role <select> are
@@ -241,10 +252,19 @@ export default function DeckFleet({
                   stays reserved for alive+focus per DESIGN.md. */}
               {bindingLabel && (
                 <span
+                  data-deck-fleet-binding
                   className="shrink-0 font-mono text-[10px] leading-none text-[var(--text-muted)] max-w-[92px] truncate"
                   {...tokenAttrs('textMuted', 'text')}
-                  title={t('deck.fleet.enforcedLaunch', { binding: bindingLabel })}
+                  title={bindingTitle}
                 >
+                  {/* Skip leads, in red text (the pane badge's convention), so
+                      the 92px truncation eats the model id before it. */}
+                  {skipFlag && (
+                    <span data-deck-fleet-skip className="text-[var(--accent-red)]" {...tokenAttrs('danger', 'text')}>
+                      {t('pane.enforcedSkipBadge')}
+                    </span>
+                  )}
+                  {skipFlag ? ' · ' : ''}
                   {bindingLabel}
                 </span>
               )}

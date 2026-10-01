@@ -121,8 +121,10 @@ jobs:
       # disk-dependent case, an import whose casing differs from the file, is
       # checked by scripts/typecheck.mjs against the disk itself. Running it on
       # three runners added no signal, and on macos-14 (7 GB RAM) the old
-      # single-program check ran out of the default V8 heap. ci.yml's validate
-      # job type-checks once with `npm run typecheck`.
+      # single-program check ran out of the default V8 heap. ci.yml type-checks
+      # once with scripts/typecheck.mjs; the mcp program is compiled by
+      # validate's build:mcp step and the daemon program by validate-runtime's
+      # build:daemon step.
 
       # ADVISORY ONLY — this step is expected to fail and never gates the job.
       # The repo-wide lint carries a pre-existing baseline of 238 errors /

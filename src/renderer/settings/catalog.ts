@@ -133,6 +133,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
 
   { id: 'brain', tab: 'orchestrator', labelKey: 'settings.orchestratorBrain', descKey: 'settings.orchestratorBrainDesc', synonyms: 'orchestrator brain hermes claude acp' },
   { id: 'model', tab: 'orchestrator', labelKey: 'settings.orchestratorModel', descKey: 'settings.orchestratorModelDesc', synonyms: 'model opus sonnet haiku' },
+  { id: 'effort', tab: 'orchestrator', labelKey: 'settings.orchestratorEffort', descKey: 'settings.orchestratorEffortDesc', synonyms: 'effort thinking reasoning budget low medium high max' },
   { id: 'autowake', tab: 'orchestrator', labelKey: 'settings.autoWake', descKey: 'settings.autoWakeDesc', synonyms: 'autowake wake event push tokens' },
   { id: 'fullpower', tab: 'orchestrator', labelKey: 'settings.orchestratorFullPower', synonyms: 'full power sdk settings sources tools' },
   { id: 'ledgergate', tab: 'orchestrator', labelKey: 'settings.ledgerGate', descKey: 'settings.ledgerGateDesc', synonyms: 'ledger gate stop task orchestrator delegated experimental' },
