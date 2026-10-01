@@ -191,6 +191,70 @@ describe('DaemonPTYBridge — fence input revision', () => {
   });
 });
 
+// #1680 — replies the terminal writes back to the app's queries are not keys.
+// A redraw after `/clear` or `/new` may ask; counting the reply failed the
+// fresh-context step with `input_interleaved` after the clear had run.
+describe('DaemonPTYBridge — terminal replies are not key input', () => {
+  const ESC = '\x1b';
+  const ST = `${ESC}\\`;
+  const BEL = '\x07';
+
+  it.each([
+    ['DA1 (xterm.js)', `${ESC}[?1;2c`],
+    ['DA1 VT102 form', `${ESC}[?6c`],
+    ['DA2 (xterm.js)', `${ESC}[>0;276;0c`],
+    ['DSR status OK', `${ESC}[0n`],
+    ['CPR, row > 1', `${ESC}[24;80R`],
+    ['CPR, row 1 past column 16', `${ESC}[1;40R`],
+    ['DECXCPR', `${ESC}[?12;5R`],
+    ['DECRQM, DEC private', `${ESC}[?2004;1$y`],
+    ['DECRQM, ANSI', `${ESC}[4;2$y`],
+    ['window size report (chars)', `${ESC}[8;40;120t`],
+    ['window size report (pixels)', `${ESC}[4;800;1200t`],
+    ['cell size report', `${ESC}[6;17;9t`],
+    ['DECRQSS', `${ESC}P1$r0m${ST}`],
+    ['DECRQSS invalid', `${ESC}P0$r${ST}`],
+    ['DA3', `${ESC}P!|00000000${ST}`],
+    ['XTVERSION', `${ESC}P>|xterm.js(6.0.0)${ST}`],
+    ['OSC 11 background, ST', `${ESC}]11;rgb:1e1e/1e1e/1e1e${ST}`],
+    ['OSC 10 foreground, BEL', `${ESC}]10;rgb:cccc/cccc/cccc${BEL}`],
+    ['OSC 12 cursor', `${ESC}]12;rgb:ffff/ffff/ffff${ST}`],
+    ['OSC 4 palette', `${ESC}]4;1;rgb:cd00/0000/0000${ST}`],
+    ['kitty keyboard flags', `${ESC}[?1u`],
+    ['several at once, with focus and motion', `${ESC}[I${ESC}[?1;2c${ESC}[24;80R${ESC}[<35;4;4M`],
+  ])('%s does not advance it', (_label, chunk) => {
+    const bridge = new DaemonPTYBridge();
+    bridge.noteInput(chunk);
+    expect(bridge.getKeyInputRevision()).toBe(0);
+    expect(bridge.getInputRevision()).toBe(1);
+    bridge.cleanup();
+  });
+
+  it.each([
+    ['a letter', 'x'],
+    ['Enter', '\r'],
+    ['Esc', ESC],
+    ['an arrow', `${ESC}[A`],
+    ['an SS3 arrow', `${ESC}OA`],
+    ['F3', `${ESC}OR`],
+    // Modified F3 is `CSI 1 ; m R` (m 2..16): it looks like a row-1 CPR, so
+    // that range keeps counting.
+    ['Shift+F3', `${ESC}[1;2R`],
+    ['Ctrl+F3', `${ESC}[1;5R`],
+    ['Ctrl+Alt+Shift+Meta+F3', `${ESC}[1;16R`],
+    ['Ctrl+F1', `${ESC}[1;5P`],
+    ['F5', `${ESC}[15~`],
+    ['Alt+Shift+P (ESC P, no terminator)', `${ESC}P`],
+    ['a reply glued to a key', `${ESC}[?1;2cx`],
+    ['a key glued to a CPR', `y${ESC}[24;80R`],
+  ])('%s still advances it', (_label, chunk) => {
+    const bridge = new DaemonPTYBridge();
+    bridge.noteInput(chunk);
+    expect(bridge.getKeyInputRevision()).toBe(1);
+    bridge.cleanup();
+  });
+});
+
 // #1680 — the fresh-context step reads this quiet flag: a pointer over the pane
 // or a focus change must not read as someone typing, a key must.
 describe('DaemonPTYBridge — key input quiet', () => {
