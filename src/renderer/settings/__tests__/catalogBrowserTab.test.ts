@@ -24,9 +24,9 @@ describe('settings catalog — Browser tab', () => {
     ]);
   });
 
-  it('lists browser last in the Agents nav group', () => {
+  it('lists browser in the Agents nav group, followed only by computer use', () => {
     const agents = SETTINGS_NAV_GROUPS.find((g) => g.id === 'agents');
-    expect(agents?.tabs).toEqual(['claude-integration', 'accounts', 'orchestrator', 'roles', 'browser']);
+    expect(agents?.tabs).toEqual(['claude-integration', 'accounts', 'orchestrator', 'roles', 'browser', 'computer-use']);
     const elsewhere = SETTINGS_NAV_GROUPS.filter((g) => g.id !== 'agents').flatMap((g) => g.tabs);
     expect(elsewhere).not.toContain('browser');
   });

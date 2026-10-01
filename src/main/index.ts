@@ -63,7 +63,7 @@ import { registerMetaRpc } from './pipe/handlers/meta.rpc';
 import { registerSystemRpc } from './pipe/handlers/system.rpc';
 import { registerPerfRpc } from './pipe/handlers/perf.rpc';
 import { registerComputerRpc } from './pipe/handlers/computer.rpc';
-import { createComputerService } from './computer';
+import { createComputerService, registerComputerUseIpc } from './computer';
 import { createComputerConsentRequester } from './computer/computerConsent';
 import type { ComputerService } from './computer/ComputerService';
 import { revealStatsAggregator } from './perf/revealStatsAggregator';
@@ -889,6 +889,7 @@ registerComputerRpc(rpcRouter, () => {
   });
   return computerService;
 });
+registerComputerUseIpc(() => computerService);
 // #517 backend choice: main owns the setting (sync read at boot — an RPC can
 // arrive before the renderer has pushed anything, so renderer-push authority
 // would race and fail open to builtin).

@@ -38,3 +38,14 @@ export function readComputerUseEnabled(configPath: string = computerUseConfigPat
   if (!section || typeof section !== 'object') return false;
   return (section as Record<string, unknown>).enabled === true;
 }
+
+/** What Settings › Computer use shows, over IPC. */
+export interface ComputerUseSettingsPayload {
+  enabled: boolean;
+  /** `missing`: this build has no helper binary yet; `unsupported`: no helper exists for this OS. */
+  helper: 'ready' | 'missing' | 'unsupported';
+  /** The global stop key, as an Electron accelerator. */
+  stopKey: string;
+  /** Set when the last write failed; the switch shows the state on disk. */
+  error?: string;
+}

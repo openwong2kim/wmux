@@ -518,6 +518,12 @@ export const IPC = {
   // the post-op state. No-op returning { enabled: false } off-Windows.
   AUTOSTART_GET: 'autostart:get',
   AUTOSTART_SET: 'autostart:set',
+  // Desktop computer use (Settings › Computer use). GET returns
+  // { enabled, helper, stopKey }; SET writes computerUse.enabled in
+  // ~/.wmux/config.json and returns the same shape. Turning it off also stops
+  // anything in flight.
+  COMPUTER_USE_GET: 'computer-use:get',
+  COMPUTER_USE_SET: 'computer-use:set',
   // Window control
   WINDOW_HIDE: 'window:hide',
   // Windows taskbar attention recall. Renderer asks main to flash the

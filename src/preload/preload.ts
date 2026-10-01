@@ -10,6 +10,7 @@ import type {
 import { isFileDrag } from '../shared/dragDrop';
 import { parseWindowsBuildNumber } from '../shared/platform';
 import type { NotificationCategory } from '../shared/types';
+import type { ComputerUseSettingsPayload } from '../shared/computer/config';
 import type { ResumeBinding } from '../shared/agentResume';
 import type { DeadPaneRecovery } from '../shared/ptyRecovery';
 import type { AgentSlug } from '../shared/events';
@@ -356,6 +357,13 @@ const electronAPI = {
   autostart: {
     get: () => ipcRenderer.invoke(IPC.AUTOSTART_GET) as Promise<{ enabled: boolean }>,
     set: (enabled: boolean) => ipcRenderer.invoke(IPC.AUTOSTART_SET, enabled) as Promise<{ enabled: boolean }>,
+  },
+  // Desktop computer use (Settings › Computer use). The switch lives in
+  // ~/.wmux/config.json so the MCP server can read it too; `helper` says
+  // whether this build has the native helper for this OS.
+  computerUse: {
+    get: () => ipcRenderer.invoke(IPC.COMPUTER_USE_GET) as Promise<ComputerUseSettingsPayload>,
+    set: (enabled: boolean) => ipcRenderer.invoke(IPC.COMPUTER_USE_SET, enabled) as Promise<ComputerUseSettingsPayload>,
   },
   notification: {
     // ptyId may be null for app-level notifications (e.g. external MCP

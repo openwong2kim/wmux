@@ -11,6 +11,7 @@ export type SettingsTabId =
   | 'orchestrator'
   | 'roles'
   | 'browser'
+  | 'computer-use'
   | 'remote'
   | 'lanlink'
   | 'about';
@@ -43,7 +44,7 @@ export const SETTINGS_NAV_GROUPS: {
   {
     id: 'agents',
     labelKey: 'settings.navGroupAgents',
-    tabs: ['claude-integration', 'accounts', 'orchestrator', 'roles', 'browser'],
+    tabs: ['claude-integration', 'accounts', 'orchestrator', 'roles', 'browser', 'computer-use'],
   },
   {
     id: 'connections',
@@ -147,6 +148,9 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'browserbackend', tab: 'browser', labelKey: 'settings.browserBackend', descKey: 'settings.browserBackendDesc', synonyms: 'browser chrome chromium external builtin' },
   { id: 'browserlight', tab: 'browser', labelKey: 'settings.browserLightweight', descKey: 'settings.browserLightweightDesc', synonyms: 'browser throttle cpu lightweight' },
   { id: 'sitememory', tab: 'browser', labelKey: 'settings.siteMemory', descKey: 'settings.siteMemoryDesc', synonyms: 'browser site memory domain replay failure remember' },
+  { id: 'computeruse', tab: 'computer-use', labelKey: 'settings.computerUse', descKey: 'settings.computerUseDesc', synonyms: 'computer use desktop control apps screenshot click automation 컴퓨터 사용 데스크톱 조작' },
+  { id: 'computerusehelper', tab: 'computer-use', labelKey: 'settings.computerUseHelper', descKey: 'settings.computerUseHelperDesc', synonyms: 'computer use helper native uia accessibility 헬퍼' },
+  { id: 'computerusestop', tab: 'computer-use', labelKey: 'settings.computerUseStopKey', descKey: 'settings.computerUseStopKeyDesc', synonyms: 'computer use stop abort kill emergency hotkey 정지 중단' },
   { id: 'siteguides', tab: 'browser', labelKey: 'settings.siteGuides', descKey: 'settings.siteGuidesDesc', synonyms: 'browser site guides notes chrome agent' },
 
   { id: 'paireddevices', tab: 'remote', labelKey: 'web.devicesTitle', descKey: 'web.devicesSubtitle', synonyms: 'phone mobile device paired revoke remote web 휴대폰 기기' },

@@ -1,10 +1,12 @@
 // Electron wiring for computer use: the one place that knows which native
 // helper this OS runs and where the build put it.
 
-import { app, globalShortcut } from 'electron';
+import { app, globalShortcut, ipcMain } from 'electron';
 import * as path from 'path';
 import { platformChoice } from '../../shared/platform';
-import { readComputerUseEnabled } from '../../shared/computer/config';
+import { IPC } from '../../shared/constants';
+import { readComputerUseEnabled, type ComputerUseSettingsPayload } from '../../shared/computer/config';
+import { helperStatus, writeComputerUseEnabled } from './settings';
 import { ComputerService, type ConsentRequester, type HelperLike } from './ComputerService';
 import { HelperProcess } from './HelperProcess';
 
@@ -78,4 +80,34 @@ export function createComputerService(deps: { requestConsent: ConsentRequester }
     }),
   });
   return service;
+}
+
+/**
+ * Settings › Computer use. `getService` returns the service only if one was
+ * ever built, so opening Settings never spawns a helper; turning the switch
+ * off stops whatever an agent is doing right now instead of waiting for its
+ * next call to notice.
+ */
+export function registerComputerUseIpc(getExistingService: () => ComputerService | null): void {
+  const snapshot = (error?: string): ComputerUseSettingsPayload => ({
+    enabled: readComputerUseEnabled(),
+    helper: helperStatus(resolveHelperPath()),
+    stopKey: COMPUTER_ABORT_ACCELERATOR,
+    ...(error && { error }),
+  });
+
+  ipcMain.removeHandler(IPC.COMPUTER_USE_GET);
+  ipcMain.handle(IPC.COMPUTER_USE_GET, () => snapshot());
+
+  ipcMain.removeHandler(IPC.COMPUTER_USE_SET);
+  ipcMain.handle(IPC.COMPUTER_USE_SET, (_event, enabled: unknown) => {
+    if (typeof enabled !== 'boolean') throw new Error('enabled must be a boolean');
+    try {
+      writeComputerUseEnabled(enabled);
+    } catch (err) {
+      return snapshot(err instanceof Error ? err.message : String(err));
+    }
+    if (!enabled) getExistingService()?.abort();
+    return snapshot();
+  });
 }

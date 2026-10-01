@@ -182,8 +182,11 @@ by localized message text.
 - **Off by default.** Turned on with `"computerUse": { "enabled": true }` in
   `~/.wmux/config.json`. The MCP server reads it when it builds its tool list,
   so `computer` is absent for everyone else. Main re-reads it on every call.
-  The Settings toggle ships with the Windows helper. It must state that
-  screenshots of other apps are sent to the agent's model provider.
+  **Settings › Computer use** writes the same key. Its switch description says
+  that screenshots and window text go to the agent's model provider. The tab
+  also shows the helper status and the stop key. Turning the switch off also
+  aborts whatever is in flight. Running agents see the tool appear or vanish
+  only after they restart.
 - **Window titles.** `listApps` and `listWindows` need no per-app consent, so
   blocked apps are marked, and their window titles are blanked.
 - **Hard blocklist in main, not only in the helper.** It covers:

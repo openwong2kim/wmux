@@ -44,6 +44,10 @@ const EXPLICIT: Record<string, unknown> = {
   shell: { list: resolved([{ name: 'zsh', path: '/bin/zsh' }]), wslDistros: resolved([]) },
   fonts: { list: resolved([]) },
   autostart: { get: resolved({ enabled: false }), set: echoEnabled },
+  computerUse: {
+    get: resolved({ enabled: false, helper: 'missing', stopKey: 'CommandOrControl+Alt+Shift+Escape' }),
+    set: resolved({ enabled: false, helper: 'missing', stopKey: 'CommandOrControl+Alt+Shift+Escape' }),
+  },
   updater: {
     onUpdateAvailable: () => () => undefined,
     onUpdateProgress: () => () => undefined,
@@ -168,7 +172,7 @@ describe('Settings tabs', () => {
   it('lists every tab once, in the owner-reviewed order', () => {
     expect(ALL_TABS).toEqual([
       'general', 'appearance', 'terminal', 'shortcuts', 'notifications',
-      'claude-integration', 'accounts', 'orchestrator', 'roles', 'browser',
+      'claude-integration', 'accounts', 'orchestrator', 'roles', 'browser', 'computer-use',
       'remote', 'lanlink',
       'about',
     ]);

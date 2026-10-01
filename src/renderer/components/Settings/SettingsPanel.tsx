@@ -61,7 +61,8 @@ import { AccountsSection } from './AccountsSection';
 import { FanoutPresetsSection } from './FanoutPresetsSection';
 import { terminalFontFamilyCss } from '../../utils/terminalFont';
 import { hasBareFunctionKeyBinding } from '../../utils/functionKeyBinding';
-import { Icon, IconX, IconCheck, IconChevron, IconExternalLink, IconBrowser, IconUsers, IconRobot, IconRemoteDevices, IconPlus, IconWarning } from '../icons';
+import { Icon, IconX, IconCheck, IconChevron, IconExternalLink, IconBrowser, IconComputer, IconUsers, IconRobot, IconRemoteDevices, IconPlus, IconWarning } from '../icons';
+import { TabComputerUse } from './ComputerUseSection';
 import PairedDevicesModal from '../StatusBar/PairedDevicesModal';
 import { FOCUS_RING } from '../focusRing';
 import { SETTINGS_CATALOG, SETTINGS_NAV_GROUPS, resolveSettingsTab, type SettingsTabId } from '../../settings/catalog';
@@ -5187,6 +5188,7 @@ export default function SettingsPanel({ initialTab }: { initialTab?: string }) {
     orchestrator:         { label: t('settings.tabOrchestrator'),  icon: <IconAgents /> },
     roles:                { label: t('settings.tabRoles'),         icon: <IconRobot /> },
     browser:              { label: t('settings.tabBrowser'),       icon: <IconBrowser /> },
+    'computer-use':       { label: t('settings.tabComputerUse'),   icon: <IconComputer /> },
     remote:               { label: t('settings.tabRemote'),        icon: <IconRemoteDevices /> },
     lanlink:              { label: t('settings.tabLan'),           icon: <IconLanLink /> },
     about:                { label: t('settings.tabAbout'),         icon: <IconAbout /> },
@@ -5368,6 +5370,7 @@ export default function SettingsPanel({ initialTab }: { initialTab?: string }) {
                     {activeTab === 'orchestrator'       && <TabOrchestrator />}
                     {activeTab === 'roles'              && <TabRoles />}
                     {activeTab === 'browser'            && <TabBrowser />}
+                    {activeTab === 'computer-use'       && <TabComputerUse />}
                     {activeTab === 'remote'             && <TabRemote />}
                     {activeTab === 'lanlink'            && <><LanLinkSection /><LanLinkPairingSection /></>}
                     {activeTab === 'about'              && <TabAbout />}
