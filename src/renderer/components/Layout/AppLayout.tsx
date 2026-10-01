@@ -1922,11 +1922,13 @@ export default function AppLayout() {
   return (
     <ErrorBoundary name="AppLayout">
     <div
-      // Pinned at scrollTop 0 (#1679): the hidden agent toolbar leaves scroll
-      // range below this box, and a caret reveal or scrollIntoView must not
-      // slide the titlebar under the native window controls.
+      // Clip rather than hide overflow (#1688). The sheet (.wmux-shell-body)
+      // already clips the parked agent toolbar; the titlebar and the icon rail
+      // sit outside it, and a rail taller than a short window must not give
+      // this box a scroll range a focus or caret reveal can move. Keep the
+      // scroll pin as a backstop against the titlebar sliding away (#1679).
       data-pin-scroll
-      className="wmux-app-root flex flex-col h-screen w-screen bg-[var(--bg-base)] overflow-hidden"
+      className="wmux-app-root flex flex-col h-screen w-screen bg-[var(--bg-base)] overflow-clip"
       style={{
         ...(prefixMode ? {
           boxShadow: 'inset 0 0 0 2px var(--accent-red)',
