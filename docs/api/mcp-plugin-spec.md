@@ -159,6 +159,8 @@ browser.navigate    browser.click       browser.type
 browser.screenshot  browser.evaluate    browser.read
 browser.cookies     browser.emulate
 
+computer.observe    computer.control
+
 a2a.send            a2a.execute         a2a.read
 
 ui.sidebar          ui.statusbar        ui.pane-decoration
