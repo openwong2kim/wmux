@@ -483,8 +483,17 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.CHANNEL_MUTATE_LOCAL, method, params),
     // Paste + submit a non-operator delivery through main's approval gate.
     // Renderer-only; see IPC.GATED_SUBMIT.
-    gatedSubmit: (ptyId: string, text: string, agent?: string | null) =>
-      ipcRenderer.invoke(IPC.GATED_SUBMIT, ptyId, text, agent ?? null) as Promise<
+    // `opts.newTask`: an a2a new task, whose pane may get a fresh context (#1680).
+    gatedSubmit: (
+      ptyId: string,
+      text: string,
+      agent?: string | null,
+      opts?: import('../shared/ptyMessageDelivery').GatedSubmitOptions,
+    ) =>
+      ipcRenderer.invoke(IPC.GATED_SUBMIT, ptyId, text, agent ?? null, {
+        newTask: opts?.newTask === true,
+        ...(opts?.keepContext ? { keepContext: opts.keepContext } : {}),
+      }) as Promise<
         import('../shared/ptyMessageDelivery').GatedSubmitResult
       >,
   },

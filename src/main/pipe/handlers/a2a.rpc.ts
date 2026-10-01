@@ -10,6 +10,7 @@ import * as fs from 'fs';
 import { getPidMapDir } from '../../../shared/constants';
 import { validateMessage } from '../../../shared/types';
 import { EXECUTE_SEND_MAIN_TIMEOUT_MS } from '../../../shared/executeApprovalBounds';
+import { NEW_TASK_SEND_MAIN_TIMEOUT_MS } from '../../../shared/freshContext';
 import { flagOrphanedTask, isPagedTaskQuery, pagedTaskId, shapeTaskQueryResult, summarizeTask } from '../../../shared/a2aTaskQueryView';
 import { defaultSnapshot } from '../../pty/portWatch';
 import type { PortSnapshot, SnapshotFn } from '../../pty/portWatch';
@@ -647,9 +648,14 @@ export function registerA2aRpc(
       if ('response' in prepared) return prepared.response;
       sendParams = prepared.params;
     }
+    // A NEW task's delivery may run the target pane's fresh-context step
+    // (#1680): its command, up to FRESH_CONTEXT_TIMEOUT_MS of waiting, then
+    // the paste. Replies never do, and keep the default.
     const result = awaitsApproval
       ? await sendToRenderer(getWindow, 'a2a.task.send', sendParams, { timeoutMs: EXECUTE_SEND_MAIN_TIMEOUT_MS })
-      : await sendToRenderer(getWindow, 'a2a.task.send', sendParams);
+      : !params.taskId
+        ? await sendToRenderer(getWindow, 'a2a.task.send', sendParams, { timeoutMs: NEW_TASK_SEND_MAIN_TIMEOUT_MS })
+        : await sendToRenderer(getWindow, 'a2a.task.send', sendParams);
 
     // 데몬 정본 미러-생성(신규 태스크 브랜치에서만 — 렌더러가 task 스냅샷 동반).
     // 실패는 soft-degrade: 이후 전이가 'task not found'로 렌더러 폴백을 탄다.
