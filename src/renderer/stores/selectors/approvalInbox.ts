@@ -106,10 +106,13 @@ export function selectApprovalInbox(state: ApprovalInboxState): InboxItem[] {
     if (!info) continue;
     // isCritical drives keyboard safety (guard #5): Enter approves non-critical
     // only. Reuses the dialog's pure grouping fn so the classification matches
-    // exactly what the prompt would render.
-    const isCritical = groupCapabilities(info.declaredCapabilities).some(
-      (g) => g.copy.severity === 'critical',
-    );
+    // exactly what the prompt would render. A computer-use consent prompt
+    // ("let this agent see and control Outlook", risk class `computer`) is
+    // critical by kind: it declares no capabilities, so the grouping alone
+    // would read it as benign and let a stray Enter approve it.
+    const isCritical =
+      info.kind === 'computer-app' ||
+      groupCapabilities(info.declaredCapabilities).some((g) => g.copy.severity === 'critical');
     items.push({
       source: 'mcp',
       key: `mcp:${info.promptId}`,

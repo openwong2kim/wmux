@@ -193,6 +193,31 @@ describe('selectApprovalInbox', () => {
     if (item.source === 'mcp') expect(item.isCritical).toBe(true);
   });
 
+  it('flags a computer-use consent prompt as critical, so Enter cannot approve it', () => {
+    const items = selectApprovalInbox(
+      fixture({
+        mcpPrompts: {
+          p1: mcpPrompt('p1', [], { kind: 'computer-app', title: 'claude-code in workspace "api" wants to see and control Outlook' }),
+        },
+        mcpPromptOrder: ['p1'],
+      }),
+    );
+    const item = items[0];
+    expect(item.source).toBe('mcp');
+    if (item.source === 'mcp') expect(item.isCritical).toBe(true);
+  });
+
+  it('leaves a browser-borrow prompt as it was (not critical by kind)', () => {
+    const items = selectApprovalInbox(
+      fixture({
+        mcpPrompts: { p1: mcpPrompt('p1', [], { kind: 'browser-borrow', title: 'lend a tab' }) },
+        mcpPromptOrder: ['p1'],
+      }),
+    );
+    const item = items[0];
+    if (item.source === 'mcp') expect(item.isCritical).toBe(false);
+  });
+
   it('flags isCritical=false for a benign metadata capability (meta.read)', () => {
     const items = selectApprovalInbox(
       fixture({
