@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   applyRoleAgent,
   applyRoleBinding,
+  bindingEnforcesFreshContext,
   bindingEnforcesModel,
   bindingEnforcesSkipPermissions,
   bindingSkipPermissionsFlag,
@@ -613,17 +614,46 @@ describe('role binding launch options (effort, skip permissions)', () => {
     expect(normalizeRoleBinding({ effort: 'medium' })).toEqual({ effort: 'medium' });
   });
 
-  // An earlier draft of this feature stored `freshContext`; a session.json that
-  // still carries it loads as if the field were never there.
-  it('drops a stale freshContext field from an old session.json', () => {
+});
+
+// #1680 — fresh context per dispatched task: a strict-true opt-in, inert unless
+// the bound agent has a verified fresh-context command.
+describe('role binding freshContext (#1680)', () => {
+  it('normalizes strictly: only a literal true is kept', () => {
     expect(normalizeRoleBinding({ agent: 'codex', effort: 'high', freshContext: true })).toEqual({
       agent: 'codex',
       effort: 'high',
+      freshContext: true,
     });
-    expect(normalizeRoleBinding({ freshContext: true })).toBeUndefined();
+    expect(normalizeRoleBinding({ agent: 'claude', freshContext: 'true' })).toEqual({ agent: 'claude' });
+    expect(normalizeRoleBinding({ agent: 'claude', freshContext: 1 })).toEqual({ agent: 'claude' });
+    expect(normalizeRoleBinding({ agent: 'claude', freshContext: false })).toEqual({ agent: 'claude' });
+    // A binding holding only the flag is kept (Settings shows why it is inert).
+    expect(normalizeRoleBinding({ freshContext: true })).toEqual({ freshContext: true });
     expect(normalizeRoleBindings({ Builder: { agent: 'claude', freshContext: true } })).toEqual({
-      Builder: { agent: 'claude' },
+      Builder: { agent: 'claude', freshContext: true },
     });
+  });
+
+  it('is enforced only for an agent with a verified command (claude, codex)', () => {
+    expect(bindingEnforcesFreshContext({ agent: 'claude', freshContext: true })).toBe(true);
+    expect(bindingEnforcesFreshContext({ agent: 'codex', freshContext: true })).toBe(true);
+    expect(bindingEnforcesFreshContext({ agent: 'agy', freshContext: true })).toBe(false);
+    expect(bindingEnforcesFreshContext({ agent: 'opencode', freshContext: true })).toBe(false);
+    expect(bindingEnforcesFreshContext({ freshContext: true })).toBe(false);
+    expect(bindingEnforcesFreshContext({ agent: 'claude' })).toBe(false);
+    expect(bindingEnforcesFreshContext(undefined)).toBe(false);
+  });
+
+  it('is not a launch option: the launch rewrite ignores it', () => {
+    expect(applyRoleBinding('claude', { agent: 'claude', freshContext: true })).toEqual({
+      command: 'claude',
+      changed: false,
+      modelInjected: false,
+    });
+    expect(applyRoleBinding('claude', { agent: 'claude', model: 'haiku', freshContext: true }).command).toBe(
+      'claude --model haiku',
+    );
   });
 });
 

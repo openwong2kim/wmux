@@ -26,6 +26,29 @@
 //                   config in every spelling clap takes: `-c k=v`, `-c=k=v`,
 //                   `-ck=v`, `--config k=v`, `--config=k=v` (a bogus value in
 //                   each one fails with "unknown variant … in `approval_policy`").
+//
+// Verified 2026-10-01 (fresh context per task, #1680):
+//   claude 2.1.285  `/clear` is a local slash command (aliases `reset`, `new`):
+//                   it starts a new conversation without a model turn, and the
+//                   hooks bridge reports it as SessionStart with source `clear`
+//                   (#1463).
+//   codex 0.158.0   `/new` "start a new chat during a conversation". Codex
+//                   draws its `>_ OpenAI Codex` banner again for the new chat
+//                   (#1610). `/clear` also clears the terminal; `/new` is the
+//                   one that only starts a new chat.
+
+/** How an agent starts a fresh conversation inside a running session. */
+export interface FreshContextGrammar {
+  /** The slash command typed into the agent's composer. */
+  command: string;
+  /**
+   * What says the command finished. `session_start`: the agent's hooks report
+   * a SessionStart for it, and wmux waits for that report on a pane whose hooks
+   * have reported a SessionStart before (the screen otherwise). `screen`: the
+   * screen only; a SessionStart that arrives anyway is still accepted.
+   */
+  evidence: 'session_start' | 'screen';
+}
 
 export interface AgentLaunchGrammar {
   /** Tokens that set the effort, or absent when effort is not a flag. */
@@ -47,6 +70,8 @@ export interface AgentLaunchGrammar {
   permissionConfig?: { flags: readonly string[]; keys: readonly string[] };
   /** Effort is encoded in the model id suffix (agy). */
   effortInModelId?: boolean;
+  /** The agent's fresh-conversation command, or absent when none is verified. */
+  freshContext?: FreshContextGrammar;
 }
 
 export const LAUNCH_GRAMMAR_BY_AGENT: Readonly<Record<string, AgentLaunchGrammar>> = {
@@ -57,6 +82,7 @@ export const LAUNCH_GRAMMAR_BY_AGENT: Readonly<Record<string, AgentLaunchGrammar
     // available as an option (claude --help), it does not switch it on.
     skipPermissionsFlag: '--dangerously-skip-permissions',
     permissionFlags: ['--permission-mode'],
+    freshContext: { command: '/clear', evidence: 'session_start' },
   },
   codex: {
     effortFlag: (e) => ['-c', `model_reasoning_effort=${e}`],
@@ -66,6 +92,7 @@ export const LAUNCH_GRAMMAR_BY_AGENT: Readonly<Record<string, AgentLaunchGrammar
     permissionFlags: ['-a', '--ask-for-approval', '-s', '--sandbox'],
     permissionSwitches: ['--approve-for-me'],
     permissionConfig: { flags: ['-c', '--config'], keys: ['approval_policy', 'sandbox_mode'] },
+    freshContext: { command: '/new', evidence: 'screen' },
   },
   agy: {
     skipPermissionsFlag: '--dangerously-skip-permissions',
@@ -79,6 +106,12 @@ export function launchGrammarFor(agent: string | undefined): AgentLaunchGrammar 
   return agent && Object.prototype.hasOwnProperty.call(LAUNCH_GRAMMAR_BY_AGENT, agent)
     ? LAUNCH_GRAMMAR_BY_AGENT[agent]
     : undefined;
+}
+
+/** The agent's verified fresh-conversation command, or undefined (agy, and
+ *  every agent without a grammar entry). */
+export function freshContextGrammarFor(agent: string | undefined): FreshContextGrammar | undefined {
+  return launchGrammarFor(agent)?.freshContext;
 }
 
 /** Is this argument one of the agent's skip-permissions spellings? */

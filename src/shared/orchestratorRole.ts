@@ -1,6 +1,7 @@
 import { launcherStem, tokenize } from './agentResume';
 import {
-  EFFORT_TOKEN_RE, hasPermissionChoice, isSkipPermissionsToken, launchGrammarFor, permissionChoiceIndexes,
+  EFFORT_TOKEN_RE, freshContextGrammarFor, hasPermissionChoice, isSkipPermissionsToken, launchGrammarFor,
+  permissionChoiceIndexes,
 } from './agentLaunchOptions';
 
 // Orchestrator pane role (soft, operator-assigned "preferred role").
@@ -97,6 +98,15 @@ export interface RoleBinding {
   effort?: string;
   /** Launch with the agent's own skip-permission-prompts flag. */
   skipPermissions?: boolean;
+  /**
+   * Start each dispatched task in a fresh conversation (#1680): when a caller
+   * marks a send as a NEW task (`input.send` `newTask`, or the new-task branch
+   * of an a2a send), wmux types the bound agent's fresh-context command
+   * (agentLaunchOptions) first. The operator's half of a two-key opt-in: it
+   * does nothing without the caller's signal, and the caller's signal does
+   * nothing without it. Not a launch option, so applyRoleBinding ignores it.
+   */
+  freshContext?: boolean;
 }
 
 /** Operator-level, cross-workspace. Keyed by role name (ORCH_ROLES ∪ custom). */
@@ -251,6 +261,16 @@ export function bindingEnforcesSkipPermissions(binding: RoleBinding | undefined)
   return bindingSkipPermissionsFlag(binding) !== undefined;
 }
 
+/**
+ * Does a new task sent to a pane in this role start a fresh conversation?
+ * Same contract as {@link bindingEnforcesModel}: the setting alone is not
+ * enough, the bound agent must also have a verified fresh-context command
+ * (claude, codex). A stored `freshContext` on any other agent is inert.
+ */
+export function bindingEnforcesFreshContext(binding: RoleBinding | undefined): boolean {
+  return binding?.freshContext === true && freshContextGrammarFor(binding.agent) !== undefined;
+}
+
 /** Launcher stems wmux recognizes as agent CLIs. This is applyRoleBinding's
  *  OUTER gate: a command whose stem is absent here is never rewritten in any
  *  way, so `git commit -m "wip"` and `npm test` in a bound pane come back
@@ -351,7 +371,7 @@ export function normalizeRoleBinding(input: unknown): RoleBinding | undefined {
   if (input === null || typeof input !== 'object' || Array.isArray(input)) return undefined;
   const src = input as {
     agent?: unknown; model?: unknown; args?: unknown;
-    effort?: unknown; skipPermissions?: unknown;
+    effort?: unknown; skipPermissions?: unknown; freshContext?: unknown;
   };
   const binding: RoleBinding = {};
   // Agent normalizes to a launcher stem so it compares cleanly against a live
@@ -366,9 +386,10 @@ export function normalizeRoleBinding(input: unknown): RoleBinding | undefined {
   if (typeof src.effort === 'string' && EFFORT_TOKEN_RE.test(src.effort)) binding.effort = src.effort;
   // Strict booleans only: a hand-edited "true" string does not switch it on.
   if (src.skipPermissions === true) binding.skipPermissions = true;
+  if (src.freshContext === true) binding.freshContext = true;
   if (
     binding.agent === undefined && binding.model === undefined && binding.args === undefined &&
-    binding.effort === undefined && !binding.skipPermissions
+    binding.effort === undefined && !binding.skipPermissions && !binding.freshContext
   ) {
     return undefined;
   }
