@@ -572,8 +572,9 @@ export class DaemonClient extends EventEmitter {
     }
   }
 
-  /** Current daemon-owned agent identity and status for reconnect-safe actions. */
-  async getAgentState(sessionId: string): Promise<{
+  /** Current daemon-owned agent identity and status for reconnect-safe actions.
+   *  `opts.timeoutMs` bounds one read for a caller that polls (#1680). */
+  async getAgentState(sessionId: string, opts: { timeoutMs?: number } = {}): Promise<{
     agentName: string | null;
     /** #1307 — true when a live attributed process backs this pane.
      *  Missing or non-boolean parses to false, so an older daemon
@@ -585,7 +586,9 @@ export class DaemonClient extends EventEmitter {
     incarnationId: string;
   } | null> {
     try {
-      const result = await this.rpc('daemon.getAgentState', { id: sessionId }) as {
+      const result = await (opts.timeoutMs !== undefined
+        ? this.rpc('daemon.getAgentState', { id: sessionId }, { timeoutMs: opts.timeoutMs })
+        : this.rpc('daemon.getAgentState', { id: sessionId })) as {
         agentName?: unknown;
         agentVerified?: unknown;
         agentStatus?: unknown;

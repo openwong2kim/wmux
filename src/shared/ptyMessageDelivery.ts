@@ -218,4 +218,11 @@ export interface GatedSubmitOptions {
   /** The delivery starts a NEW task (a2a new-task branch only), so the pane's
    *  role may ask for a fresh conversation first. Never set for a reply. */
   newTask?: boolean;
+  /**
+   * With `newTask`: the pane's conversation must be kept anyway, and why.
+   * `open_a2a_task` — the pane has other open a2a tasks pinned to it (owner
+   * decision, #1680), so clearing it would drop a thread still in flight.
+   * Reported as `skipped_busy` when the role asks for fresh context.
+   */
+  keepContext?: 'open_a2a_task';
 }

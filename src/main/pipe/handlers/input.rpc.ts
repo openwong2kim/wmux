@@ -9,10 +9,20 @@ import {
   formatBracketedPastePayload,
   isMultilinePtyPayload,
   submitProfileForAgent,
+  type GatedSubmitOptions,
   type GatedSubmitRefusal,
   type GatedSubmitResult,
 } from '../../../shared/ptyMessageDelivery';
 import { applyRoleBinding, type InjectedLaunchOptions, type RoleBinding } from '../../../shared/orchestratorRole';
+import type { FreshContextReply } from '../../../shared/freshContext';
+import type { SessionStartReceipt } from '../../../shared/hooks/HookSignalRouter';
+import {
+  FreshContextTimeout,
+  runFreshContext,
+  withFreshContextLock,
+  type FreshContextOptions,
+  type FreshContextProbe,
+} from './freshContext';
 import { isGateHeldOn } from '../../deck/stopGateState';
 import {
   approvalBlockMessage,
@@ -789,9 +799,32 @@ export async function gatedPasteSubmit(
   text: string,
   agent: string | null | undefined,
   sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  /**
+   * A new-task delivery's fresh-context step (#1680), run after the first gate
+   * check and before the paste. When it typed the command and never saw it
+   * finish (FreshContextTimeout), nothing is pasted: the refusal is
+   * `fresh_context_timeout`. When it applied, the gate runs again, since the
+   * pane redrew.
+   */
+  freshContext?: () => Promise<FreshContextReply>,
 ): Promise<GatedSubmitResult> {
   const before = await deliveryGateCheck(gate, ptyId);
   if (before) return before;
+  let fresh: FreshContextReply | undefined;
+  if (freshContext) {
+    try {
+      fresh = await freshContext();
+    } catch (err) {
+      if (err instanceof FreshContextTimeout) {
+        return { ok: false, reason: 'fresh_context_timeout', detail: `delivery: ${err.message}` };
+      }
+      return { ok: false, reason: 'gate_unavailable', detail: err instanceof Error ? err.message : String(err) };
+    }
+    if (fresh.freshContext === 'applied') {
+      const afterClear = await deliveryGateCheck(gate, ptyId);
+      if (afterClear) return afterClear;
+    }
+  }
   try {
     write(ptyId, formatBracketedPastePayload(text));
   } catch (err) {
@@ -805,7 +838,7 @@ export async function gatedPasteSubmit(
   } catch (err) {
     return { ok: false, reason: 'write_failed', detail: err instanceof Error ? err.message : String(err), pasted: true };
   }
-  return { ok: true };
+  return fresh ? { ok: true, ...fresh } : { ok: true };
 }
 
 /**
@@ -848,7 +881,15 @@ export interface InputRpcDeps {
   readScreenText?: (ptyId: string) => Promise<string | null>;
   /** Injected in tests; the gated submit's wait between paste and Enter. */
   sleep?: (ms: number) => Promise<void>;
+  /** The latest SessionStart hook main received for a pane: the evidence a
+   *  fresh-context step waits for (#1680). */
+  readSessionStart?: (ptyId: string) => SessionStartReceipt | undefined;
+  /** Injected in tests; the fresh-context step's clock and windows. */
+  freshContextOptions?: FreshContextOptions;
 }
+
+/** Budget for one daemon state read while a fresh-context step polls. */
+const FRESH_CONTEXT_STATE_READ_TIMEOUT_MS = 500;
 
 export function registerInputRpc(
   router: RpcRouter,
@@ -865,8 +906,57 @@ export function registerInputRpc(
    */
   noteInterruptInput?: (ptyId: string, data: string) => void,
   deps: InputRpcDeps = {},
-): { gatedSubmit: (ptyId: string, text: string, agent?: string | null) => Promise<GatedSubmitResult> } {
+): {
+  gatedSubmit: (
+    ptyId: string,
+    text: string,
+    agent?: string | null,
+    opts?: GatedSubmitOptions,
+  ) => Promise<GatedSubmitResult>;
+} {
   const ledgerOf = deps.getLedger ?? getTaskLedger;
+
+  /**
+   * The fresh-context step for one new-task send (#1680), against the live
+   * pane: the daemon's state (a local, pre-adoption pty has none, so it reads
+   * as unobservable), the renderer's status and cursor-anchored screen, and
+   * main's session-start receipt. `workspaceId` keys the mirror read.
+   */
+  const runFreshContextOn = async (
+    ptyId: string,
+    binding: RoleBinding | undefined,
+    workspaceId: string | undefined,
+    write: (data: string) => void,
+    keepContext?: string,
+  ): Promise<FreshContextReply> => {
+    const screenProbe = makeSubmitProbe(getWindow, ptyId, workspaceId, deps.readTurnStartedAt);
+    const probe: FreshContextProbe = {
+      readAgentState: async () => {
+        if (ptyManager.get(ptyId)) return null;
+        const dc = getDaemonClient?.();
+        if (!dc?.isConnected) return null;
+        return dc.getAgentState(ptyId, { timeoutMs: FRESH_CONTEXT_STATE_READ_TIMEOUT_MS });
+      },
+      readMirrorStatus: async () => (await screenProbe.readAgentStatus())?.status ?? null,
+      readScreen: screenProbe.readScreen,
+      readSessionStart: () => deps.readSessionStart?.(ptyId),
+      write,
+    };
+    return runFreshContext(binding, probe, {
+      ...deps.freshContextOptions,
+      ...(keepContext ? { keepContext } : {}),
+    });
+  };
+
+  /** The role binding for a pane, or undefined on any miss (fail open). */
+  const bindingFor = async (ptyId: string): Promise<RoleBinding | undefined> => {
+    if (!resolveRoleBinding) return undefined;
+    try {
+      return await resolveRoleBinding(ptyId);
+    } catch {
+      return undefined;
+    }
+  };
   const approvalGate: ApprovalInputGate = {
     getDaemonClient,
     answerPolicy:
@@ -949,6 +1039,15 @@ export function registerInputRpc(
 
     const callerWs = typeof params['workspaceId'] === 'string' ? params['workspaceId'] : undefined;
 
+    // #1680 — the caller says this text starts a NEW task, so a pane whose role
+    // asks for fresh context gets the agent's fresh-context command first. It
+    // only makes sense for a committed prompt: the command is typed and
+    // Entered, and the text follows it as the new conversation's first turn.
+    const newTask = params['newTask'] === true;
+    if (newTask && (params['submit'] !== true || params['raw'] === true)) {
+      throw new Error('input.send: "newTask" needs "submit": true and cannot be combined with "raw"');
+    }
+
     let ptyId: string;
 
     if (typeof params['ptyId'] === 'string' && params['ptyId'].length > 0) {
@@ -1011,21 +1110,20 @@ export function registerInputRpc(
     const NON_COMMAND_CHARS = /[\n\r\x1b]/;
     const rewritable =
       params['submit'] === true && params['raw'] !== true && !NON_COMMAND_CHARS.test(safeText);
-    if (rewritable && resolveRoleBinding) {
+    // A new task needs the binding too, for its fresh-context step (#1680).
+    const binding = rewritable || newTask ? await bindingFor(ptyId) : undefined;
+    if (rewritable && binding) {
       try {
-        const binding = await resolveRoleBinding(ptyId);
-        if (binding) {
-          const rewrite = applyRoleBinding(safeText, binding);
-          if (rewrite.changed) {
-            safeText = rewrite.command;
-            // Report the model ONLY when the flag was actually injected —
-            // args-only rewrites leave whatever model the line already names.
-            if (rewrite.modelInjected) enforcedModel = binding.model;
-            // Same rule for effort / skip permissions: only what was spliced in.
-            enforcedOptions = rewrite.optionsInjected;
-          }
-          if (rewrite.note) enforcementNote = rewrite.note;
+        const rewrite = applyRoleBinding(safeText, binding);
+        if (rewrite.changed) {
+          safeText = rewrite.command;
+          // Report the model ONLY when the flag was actually injected —
+          // args-only rewrites leave whatever model the line already names.
+          if (rewrite.modelInjected) enforcedModel = binding.model;
+          // Same rule for effort / skip permissions: only what was spliced in.
+          enforcedOptions = rewrite.optionsInjected;
         }
+        if (rewrite.note) enforcementNote = rewrite.note;
       } catch {
         // fail-open — enforcement is best-effort at the input layer.
       }
@@ -1067,107 +1165,138 @@ export function registerInputRpc(
     // ran a shell command and then an empty line.
     const submitRequested = params['submit'] === true;
     const bodyText = submitRequested ? stripTrailingEnter(safeText) : safeText;
-    // Multi-line or long text for an agent goes in as one bracketed paste, and
-    // a submit into an agent waits its submit profile (#1594). The daemon
-    // answers from its live streams; asked before the first write, like the
-    // receipt workspace below, so the round-trip never lands between the text
-    // and its Enter. A local (pre-adoption) pty has no daemon state: typed, as
-    // before.
-    const rawWrite = params['raw'] === true;
-    const daemon = ptyManager.get(ptyId) ? null : getDaemonClient?.();
-    let sendTarget: SendTarget | null = null;
-    if (daemon?.isConnected && (submitRequested || isPasteCandidate(bodyText, rawWrite))) {
-      try {
-        sendTarget = await daemon.getSendTarget(ptyId);
-      } catch {
-        sendTarget = null; // fail soft: typed, as before
-      }
-    }
-    const pasted = shouldPasteBody(bodyText, rawWrite, sendTarget);
-    const payload = pasted ? bracketedPasteBody(bodyText) : bodyText;
-    let receipt: SubmitReceipt | undefined;
-    let pasteNote: string | undefined;
-    if (submitRequested) {
-      // Resolve the receipt workspace BEFORE the first write so its round-trip
-      // never lands inside the text→Enter gap the delay above protects.
-      // On the owner lane the pane lives in the TASK workspace, which is where
-      // the mirror keeps its agent status — not the caller's.
-      const receiptWs =
-        access.lane === 'task-owner'
-          ? access.taskWorkspaceId
-          : (callerWs ??
-            (await resolvePtyOwnerWorkspace(getWindow, ptyId).catch(() => null)) ??
-            undefined);
-      const probe = makeSubmitProbe(getWindow, ptyId, receiptWs, deps.readTurnStartedAt);
+    // Resolve the receipt workspace BEFORE the first write so its round-trip
+    // never lands inside the text→Enter gap the delay below protects (nor
+    // between a fresh-context command and the text). On the owner lane the pane
+    // lives in the TASK workspace, which is where the mirror keeps its agent
+    // status — not the caller's.
+    const receiptWs = submitRequested
+      ? access.lane === 'task-owner'
+        ? access.taskWorkspaceId
+        : (callerWs ??
+          (await resolvePtyOwnerWorkspace(getWindow, ptyId).catch(() => null)) ??
+          undefined)
+      : undefined;
 
-      if (bodyText) writeChunk(payload);
-      await delay(
-        pasted
-          ? pasteSubmitDelayMs(sendTarget?.agent ?? null, bodyText.length)
-          : sendTarget?.agent
-            ? submitProfileForAgent(sendTarget.agent).submitDelayMs
-            : SUBMIT_ENTER_DELAY_MS,
-      );
-      // Snapshot the pane while the text sits UNCOMMITTED on the input line —
-      // this is the "before" the composer diff is measured against.
-      const beforeReading = await probe.readAgentStatus();
-      const before = {
-        screen: await probe.readScreen(),
-        agentStatus: beforeReading?.status ?? null,
-        turnStartedAt: beforeReading?.turnStartedAt,
-      };
-      writeChunk('\r');
-      const enterAt = Date.now();
-      // A collapsed paste shows a placeholder, not the text: watch that leave.
-      const needle = submitNeedle(bodyText);
-      receipt = await awaitSubmitReceipt(
-        probe,
-        pasted ? composerMarker(before.screen, needle) : needle,
-        before,
-        () => writeChunk('\r'),
-        { enterAt },
-      );
-      // A pasted body may well have been submitted with no receipt seen; a
-      // caller that re-sends it on `accepted:false` delivers it twice.
-      if (pasted && !receipt.accepted) {
-        receipt = {
-          ...receipt,
-          signal: receipt.signal === 'running_unconfirmed' ? receipt.signal : 'paste_unconfirmed',
+    const deliver = async (): Promise<Record<string, unknown>> => {
+      // #1680 — a new task's fresh-context step, before the text. Skipped
+      // results deliver the text without a clear; a command that was typed and
+      // never seen to finish fails the send with NOTHING further written.
+      let fresh: FreshContextReply | undefined;
+      if (newTask) {
+        try {
+          fresh = await runFreshContextOn(ptyId, binding, receiptWs, writeChunk);
+        } catch (err) {
+          if (!(err instanceof FreshContextTimeout)) throw err;
+          throw new Error(
+            `input.send: fresh context did not finish on pane "${ptyId}": ${err.message}. ` +
+              'The task text was NOT sent; read the pane (terminal_read) before sending it again.',
+          );
+        }
+        // The pane redrew: an approval may be on it now.
+        if (fresh.freshContext === 'applied') {
+          await assertNotTypingAtAnApproval(approvalGate, ctx, ptyId, 'input.send');
+        }
+      }
+
+      // Multi-line or long text for an agent goes in as one bracketed paste,
+      // and a submit into an agent waits its submit profile (#1594). The
+      // daemon answers from its live streams; asked before the first write,
+      // like the receipt workspace above, so the round-trip never lands
+      // between the text and its Enter. A local (pre-adoption) pty has no
+      // daemon state: typed, as before.
+      const rawWrite = params['raw'] === true;
+      const daemon = ptyManager.get(ptyId) ? null : getDaemonClient?.();
+      let sendTarget: SendTarget | null = null;
+      if (daemon?.isConnected && (submitRequested || isPasteCandidate(bodyText, rawWrite))) {
+        try {
+          sendTarget = await daemon.getSendTarget(ptyId);
+        } catch {
+          sendTarget = null; // fail soft: typed, as before
+        }
+      }
+      const pasted = shouldPasteBody(bodyText, rawWrite, sendTarget);
+      const payload = pasted ? bracketedPasteBody(bodyText) : bodyText;
+      let receipt: SubmitReceipt | undefined;
+      let pasteNote: string | undefined;
+      if (submitRequested) {
+        const probe = makeSubmitProbe(getWindow, ptyId, receiptWs, deps.readTurnStartedAt);
+
+        if (bodyText) writeChunk(payload);
+        await delay(
+          pasted
+            ? pasteSubmitDelayMs(sendTarget?.agent ?? null, bodyText.length)
+            : sendTarget?.agent
+              ? submitProfileForAgent(sendTarget.agent).submitDelayMs
+              : SUBMIT_ENTER_DELAY_MS,
+        );
+        // Snapshot the pane while the text sits UNCOMMITTED on the input line —
+        // this is the "before" the composer diff is measured against.
+        const beforeReading = await probe.readAgentStatus();
+        const before = {
+          screen: await probe.readScreen(),
+          agentStatus: beforeReading?.status ?? null,
+          turnStartedAt: beforeReading?.turnStartedAt,
         };
-        pasteNote = PASTE_UNCONFIRMED_NOTE;
+        writeChunk('\r');
+        const enterAt = Date.now();
+        // A collapsed paste shows a placeholder, not the text: watch that leave.
+        const needle = submitNeedle(bodyText);
+        receipt = await awaitSubmitReceipt(
+          probe,
+          pasted ? composerMarker(before.screen, needle) : needle,
+          before,
+          () => writeChunk('\r'),
+          { enterAt },
+        );
+        // A pasted body may well have been submitted with no receipt seen; a
+        // caller that re-sends it on `accepted:false` delivers it twice.
+        if (pasted && !receipt.accepted) {
+          receipt = {
+            ...receipt,
+            signal: receipt.signal === 'running_unconfirmed' ? receipt.signal : 'paste_unconfirmed',
+          };
+          pasteNote = PASTE_UNCONFIRMED_NOTE;
+        }
+      } else {
+        writeChunk(payload);
       }
-    } else {
-      writeChunk(payload);
-    }
 
-    return {
-      ok: true,
-      ptyId,
-      // `submitted` reports only that an Enter was WRITTEN. `accepted` is the
-      // receipt: whether the pane was observed to move. A caller that needs to
-      // know the agent got the prompt must read `accepted` — and when no
-      // receipt was attempted at all (submit:false) the field is ABSENT rather
-      // than a hard false, which would read as "we looked and it did not land".
-      submitted: submitRequested,
-      ...(receipt
-        ? {
-            accepted: receipt.accepted,
-            agentStatusAfter: receipt.agentStatusAfter,
-            receiptSignal: receipt.signal,
-            enterRetried: receipt.retried,
-          }
-        : {}),
-      ...(receipt?.screenTail ? { screenTail: receipt.screenTail, ...untrustedLabel(access) } : {}),
-      // D2 — surface enforcement on the payload (callRpc stringifies it into the
-      // tool result, so the orchestrator sees which model was pinned and which
-      // launch options were added, #1681). The pane also shows the rewritten
-      // command directly — the primary indication.
-      ...(enforcedModel ? { enforcedModel } : {}),
-      ...(enforcedOptions ? { enforcedOptions } : {}),
-      ...(enforcementNote || pasteNote
-        ? { note: [enforcementNote, pasteNote].filter(Boolean).join(' ') }
-        : {}),
+      return {
+        ok: true,
+        ptyId,
+        // `submitted` reports only that an Enter was WRITTEN. `accepted` is the
+        // receipt: whether the pane was observed to move. A caller that needs to
+        // know the agent got the prompt must read `accepted` — and when no
+        // receipt was attempted at all (submit:false) the field is ABSENT rather
+        // than a hard false, which would read as "we looked and it did not land".
+        submitted: submitRequested,
+        ...(receipt
+          ? {
+              accepted: receipt.accepted,
+              agentStatusAfter: receipt.agentStatusAfter,
+              receiptSignal: receipt.signal,
+              enterRetried: receipt.retried,
+            }
+          : {}),
+        ...(receipt?.screenTail ? { screenTail: receipt.screenTail, ...untrustedLabel(access) } : {}),
+        // D2 — surface enforcement on the payload (callRpc stringifies it into the
+        // tool result, so the orchestrator sees which model was pinned and which
+        // launch options were added, #1681). The pane also shows the rewritten
+        // command directly — the primary indication.
+        ...(enforcedModel ? { enforcedModel } : {}),
+        ...(enforcedOptions ? { enforcedOptions } : {}),
+        ...(enforcementNote || pasteNote
+          ? { note: [enforcementNote, pasteNote].filter(Boolean).join(' ') }
+          : {}),
+        // #1680 — what the fresh-context step did (experimental).
+        ...(fresh ?? {}),
+      };
     };
+
+    // A new task holds its pane from the fresh-context command through the
+    // text's Enter (see withFreshContextLock).
+    return newTask ? withFreshContextLock(ptyId, deliver) : deliver();
   });
 
   /**
@@ -1381,7 +1510,22 @@ export function registerInputRpc(
     dc.writeToSession(ptyId, data);
   };
   return {
-    gatedSubmit: (ptyId, text, agent) =>
-      gatedPasteSubmit(approvalGate, writeToPty, ptyId, text, agent, deps.sleep),
+    gatedSubmit: (ptyId, text, agent, opts) => {
+      if (!opts?.newTask) return gatedPasteSubmit(approvalGate, writeToPty, ptyId, text, agent, deps.sleep);
+      // #1680 — a new task: the fresh-context step runs inside the gated
+      // delivery, and the pane is held through the text's Enter.
+      return withFreshContextLock(ptyId, () =>
+        gatedPasteSubmit(approvalGate, writeToPty, ptyId, text, agent, deps.sleep, async () => {
+          const workspaceId = (await resolvePtyOwnerWorkspace(getWindow, ptyId).catch(() => null)) ?? undefined;
+          return runFreshContextOn(
+            ptyId,
+            await bindingFor(ptyId),
+            workspaceId,
+            (data) => writeToPty(ptyId, data),
+            opts.keepContext,
+          );
+        }),
+      );
+    },
   };
 }
