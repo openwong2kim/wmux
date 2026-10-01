@@ -113,13 +113,22 @@ describe('wmux role resolve', () => {
     expect(defaultSessionPath({ XDG_CONFIG_HOME: '/x' }, 'linux')).toBe(path.join('/x', `wmux${dataSuffix()}`, 'session.json'));
   });
 
-  it('ignores a stale freshContext field in session.json', async () => {
+  // #1680 (owner decision 7) — resolve reports whether a new task starts fresh;
+  // it is not a launch flag, so the argv is unchanged.
+  it('reports freshContext as the role applies it, without touching the argv', async () => {
     const session = JSON.stringify({
-      orchestratorRoleBindings: { Builder: { agent: 'claude', effort: 'low', freshContext: true } },
+      orchestratorRoleBindings: {
+        Builder: { agent: 'claude', effort: 'low', freshContext: true },
+        Reviewer: { agent: 'codex', freshContext: 'true' },
+        Tester: { agent: 'gemini', args: '--x', freshContext: true },
+      },
     });
-    const r = JSON.parse((await run(['resolve', 'Builder'], true, () => session)).out[0]);
-    expect(r).not.toHaveProperty('freshContext');
-    expect(r.argv).toEqual(['claude', '--effort', 'low']);
+    const builder = JSON.parse((await run(['resolve', 'Builder'], true, () => session)).out[0]);
+    expect(builder.freshContext).toBe(true);
+    expect(builder.argv).toEqual(['claude', '--effort', 'low']);
+    // A non-boolean is not an opt-in; an agent without the command cannot apply it.
+    expect(JSON.parse((await run(['resolve', 'Reviewer'], true, () => session)).out[0]).freshContext).toBe(false);
+    expect(JSON.parse((await run(['resolve', 'Tester'], true, () => session)).out[0]).freshContext).toBe(false);
   });
 
   it('resolveRole reports fields without an agent', () => {

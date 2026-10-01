@@ -17,7 +17,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { dataSuffix } from '../../shared/constants';
 import {
-  applyRoleBinding, bindingEnforcesSkipPermissions, normalizeRoleBindings, type RoleBinding,
+  applyRoleBinding, bindingEnforcesFreshContext, bindingEnforcesSkipPermissions, normalizeRoleBindings,
+  type RoleBinding,
 } from '../../shared/orchestratorRole';
 import { tokenize } from '../../shared/agentResume';
 import { agyEffortOf } from '../../shared/modelCatalog';
@@ -45,6 +46,9 @@ export interface ResolvedRole {
   /** For agy this is the model id suffix, never a separate flag. */
   effort?: string;
   skipPermissions: boolean;
+  /** A new task sent to a pane in this role starts a fresh conversation
+   *  (#1680): the setting is on AND the agent has a verified command. */
+  freshContext: boolean;
   /** The full launch, launcher first, as exec-ready tokens. */
   argv: string[];
   /** Flags only (argv without the launcher), for scripts that own the launcher. */
@@ -65,6 +69,7 @@ export function resolveRole(role: string, binding: RoleBinding): ResolvedRole {
     // What the launch in `argv` does, not the stored setting: a permission
     // flag in the role's args withholds the skip, a skip flag in them adds it.
     skipPermissions: bindingEnforcesSkipPermissions(binding),
+    freshContext: bindingEnforcesFreshContext(binding),
     argv,
     flags: argv.slice(1),
   };
