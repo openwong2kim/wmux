@@ -280,9 +280,9 @@ export function runFakeTui(spec) {
         continue;
       }
       if (s[0] === ESC) {
-        // eslint-disable-next-line no-control-regex -- ESC is the byte being parsed
         // Parameter bytes are the full CSI range 0x30-0x3F, so SGR mouse
         // reports (`ESC[<35;10;5M`) are consumed whole, not typed.
+        // eslint-disable-next-line no-control-regex -- ESC is the byte being parsed
         const m = /^\x1b(?:\[[0-?]*[ -/]*[@-~]|O[A-Za-z])/.exec(s);
         if (m) {
           s = s.slice(m[0].length);
