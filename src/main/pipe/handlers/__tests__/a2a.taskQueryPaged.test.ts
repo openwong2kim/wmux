@@ -230,3 +230,33 @@ describe('a2a.task.query view: page — #1598 orphaned tasks', () => {
     expect(list.tasks.some((t: Rec) => t.orphaned)).toBe(false);
   });
 });
+
+// #1680 review Q1 — `view: 'anchors'` is main's own open-task read, sent
+// straight to the daemon. The public pipe method keeps only `page`.
+describe('a2a.task.query — only the public views reach the task sources', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("drops view: 'anchors' (and any unknown view) from a pipe caller", async () => {
+    const rows = store.slice(0, 3);
+    const seen: Rec[] = [];
+    const { router } = setup(rows, rows);
+    const base = sendToRendererMock.getMockImplementation();
+    sendToRendererMock.mockImplementation(async (w: unknown, m: string, params: Rec) => {
+      seen.push(params);
+      return base?.(w, m, params);
+    });
+    for (const view of ['anchors', 'bogus']) {
+      const result = await query(router, { view });
+      // Full tasks, exactly as a call without a view gets.
+      expect(result.tasks).toHaveLength(3);
+      expect(result.tasks[0].history).toHaveLength(6);
+    }
+    expect(seen.every((p) => !('view' in p))).toBe(true);
+  });
+
+  it("keeps view: 'page'", async () => {
+    const { router } = setup(store.slice(0, 3), store.slice(0, 3));
+    const list = await query(router, { view: 'page' });
+    expect(list.tasks[0]).not.toHaveProperty('history');
+  });
+});

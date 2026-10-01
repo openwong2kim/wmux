@@ -449,6 +449,10 @@ export function registerA2aRpc(
     // pane list main reads here. Never taken from the wire.
     const params: Record<string, unknown> = { ...rawParams };
     delete params.livePaneIds;
+    // `page` is the only public view. `anchors` (#1680) is main's own
+    // open-task read, sent straight to the daemon; a pipe caller cannot ask for
+    // it, nor for any other value, which would reach both task sources as-is.
+    if (params.view !== 'page') delete params.view;
     if (paged && typeof params.workspaceId === 'string' && params.workspaceId) {
       const panes = await readWorkspacePanes(getWindow, params.workspaceId);
       if (panes) params.livePaneIds = panes.map((pane) => pane.id as string);
