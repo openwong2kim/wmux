@@ -42,12 +42,27 @@ describe('daemonOpenTaskOnPane (#1680)', () => {
     const rpc = vi.fn(async () => ({ ok: true, tasks: [{ id: 'x' }] }));
     const dc = { isConnected: true, rpc } as unknown as DaemonClient;
     expect(await makeDaemonTaskQuery(() => dc)('ws-1')).toEqual([{ id: 'x' }]);
-    expect(rpc).toHaveBeenCalledWith('a2a.task.query', { workspaceId: 'ws-1' }, { timeoutMs: 2_000 });
+    expect(rpc).toHaveBeenCalledWith('a2a.task.query', { workspaceId: 'ws-1', view: 'anchors' }, { timeoutMs: 2_000 });
     rpc.mockResolvedValueOnce({ ok: false, error: 'task log unavailable' } as never);
     expect(await makeDaemonTaskQuery(() => dc)('ws-1')).toBeNull();
     rpc.mockRejectedValueOnce(new Error('pipe closed'));
     expect(await makeDaemonTaskQuery(() => dc)('ws-1')).toBeNull();
     expect(await makeDaemonTaskQuery(() => null)('ws-1')).toBeNull();
+  });
+});
+
+describe('an older daemon that ignores the anchors view (#1680 review N2)', () => {
+  it('answers with full tasks, which are read the same way', async () => {
+    const fullTask = {
+      kind: 'task',
+      id: 'old',
+      status: { state: 'working', timestamp: 't' },
+      history: [{ role: 'user', parts: [{ kind: 'text', text: 'long history' }] }],
+      artifacts: [],
+      metadata: { title: 'x', to: { workspaceId: 'ws-1', name: 'W', paneId: 'pane-1' }, from: { workspaceId: 'ws-2', name: 'S' } },
+    };
+    const dc = { isConnected: true, rpc: vi.fn(async () => ({ ok: true, tasks: [fullTask] })) } as unknown as DaemonClient;
+    expect(await daemonOpenTaskOnPane(makeDaemonTaskQuery(() => dc), 'pty-1', PANE, 'new')).toBe('open_a2a_task');
   });
 });
 

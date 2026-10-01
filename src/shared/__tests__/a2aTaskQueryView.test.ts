@@ -148,3 +148,45 @@ describe('applyTaskQueryView — what one task source returns', () => {
     expect(TASK_QUERY_CAP_BYTES).toBe(DEFAULT_RESULT_CAP_BYTES);
   });
 });
+
+// #1680 review N2 — the light view main's fresh-context step reads.
+describe("view: 'anchors'", () => {
+  const full = (id: string, state: string | undefined) => ({
+    kind: 'task',
+    id,
+    ...(state ? { status: { state, timestamp: 't', message: { parts: [{ text: 'x'.repeat(5000) }] } } } : {}),
+    history: [{ role: 'user', parts: [{ kind: 'text', text: 'y'.repeat(10_000) }] }],
+    artifacts: [{ parts: [{ text: 'z' }] }],
+    metadata: {
+      title: 'big',
+      to: { workspaceId: 'ws-1', name: 'W', paneId: 'p-1', surfaceId: 's-1', ptyId: 'pty-1' },
+      from: { workspaceId: 'ws-2', name: 'S', paneId: 'p-2' },
+      createdAt: 'c',
+      updatedAt: 'u',
+    },
+  });
+
+  it('keeps open tasks only, each reduced to id, state and the pane anchors', () => {
+    const rows = applyTaskQueryView(
+      [full('open', 'working'), full('done', 'completed'), full('gone', 'canceled'), full('nostate', undefined)],
+      { view: 'anchors' },
+    );
+    expect(rows).toEqual([
+      {
+        id: 'open',
+        status: { state: 'working' },
+        metadata: {
+          to: { workspaceId: 'ws-1', paneId: 'p-1', surfaceId: 's-1', ptyId: 'pty-1' },
+          from: { workspaceId: 'ws-2', paneId: 'p-2' },
+        },
+      },
+      expect.objectContaining({ id: 'nostate', status: {} }),
+    ]);
+    expect(JSON.stringify(rows).length).toBeLessThan(600);
+  });
+
+  it('leaves the other views alone', () => {
+    const tasks = [full('open', 'working')];
+    expect(applyTaskQueryView(tasks, {})).toEqual(tasks);
+  });
+});

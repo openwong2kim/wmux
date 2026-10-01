@@ -47,7 +47,9 @@ export function gatedSubmitTaskContext(opts: unknown): { taskId?: string; pane?:
 const DAEMON_TASK_QUERY_TIMEOUT_MS = 2_000;
 
 /** The daemon's tasks involving a workspace (either side), or null when they
- *  cannot be read. */
+ *  cannot be read. Asked for in the light `anchors` view (open tasks only, no
+ *  history), so a busy workspace cannot outgrow the 1 MiB daemon line; a daemon
+ *  that predates the view answers with full tasks, which read the same way. */
 export function makeDaemonTaskQuery(
   getDaemonClient: (() => DaemonClient | null) | undefined,
 ): (workspaceId: string) => Promise<unknown[] | null> {
@@ -55,7 +57,7 @@ export function makeDaemonTaskQuery(
     const dc = getDaemonClient?.();
     if (!dc?.isConnected) return null;
     try {
-      const res = (await dc.rpc('a2a.task.query', { workspaceId }, { timeoutMs: DAEMON_TASK_QUERY_TIMEOUT_MS })) as
+      const res = (await dc.rpc('a2a.task.query', { workspaceId, view: 'anchors' }, { timeoutMs: DAEMON_TASK_QUERY_TIMEOUT_MS })) as
         | { ok?: unknown; tasks?: unknown }
         | null;
       return res && res.ok === true && Array.isArray(res.tasks) ? res.tasks : null;

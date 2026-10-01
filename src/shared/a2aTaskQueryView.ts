@@ -243,11 +243,52 @@ export function flagOrphanedTask(row: Rec, task: Rec, params: Rec): Rec {
 }
 
 /**
+ * #1680 — `view: 'anchors'`: the open tasks only (not completed, failed or
+ * canceled; a task with no readable state counts as open), each reduced to its
+ * id, state and the pane anchors of both sides. Main's fresh-context step asks
+ * the daemon for this to learn whether a pane is mid-thread; full tasks carry
+ * their whole history and a busy workspace's list can outgrow the 1 MiB daemon
+ * line. A source that predates the view ignores it and answers in full.
+ */
+export function isAnchorTaskQuery(params: Rec): boolean {
+  return params.view === 'anchors';
+}
+
+const ANCHOR_KEYS = ['workspaceId', 'paneId', 'surfaceId', 'ptyId'] as const;
+
+function anchorsOf(side: unknown): Rec {
+  const out: Rec = {};
+  if (!side || typeof side !== 'object') return out;
+  for (const key of ANCHOR_KEYS) {
+    const value = (side as Rec)[key];
+    if (typeof value === 'string') out[key] = value;
+  }
+  return out;
+}
+
+export function taskAnchorRows<T extends object>(tasks: readonly T[]): Rec[] {
+  const rows: Rec[] = [];
+  for (const task of tasks as readonly Rec[]) {
+    const status = task.status && typeof task.status === 'object' ? (task.status as Rec) : undefined;
+    const state = status?.state;
+    if (typeof state === 'string' && (TERMINAL_STATES as readonly string[]).indexOf(state) !== -1) continue;
+    const metadata = task.metadata && typeof task.metadata === 'object' ? (task.metadata as Rec) : {};
+    rows.push({
+      id: task.id,
+      status: typeof state === 'string' ? { state } : {},
+      metadata: { to: anchorsOf(metadata.to), from: anchorsOf(metadata.from) },
+    });
+  }
+  return rows;
+}
+
+/**
  * What one task source returns for a query: every task in full without
  * `view` (the legacy contract), and for `view: 'page'` either the named task in
  * full or a summary of each task, flagged when orphaned.
  */
 export function applyTaskQueryView<T extends object>(tasks: readonly T[], params: Rec): unknown[] {
+  if (isAnchorTaskQuery(params)) return taskAnchorRows(tasks);
   if (!isPagedTaskQuery(params)) return [...tasks];
   const taskId = pagedTaskId(params);
   if (taskId) {
