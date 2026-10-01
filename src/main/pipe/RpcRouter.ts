@@ -8,6 +8,7 @@ import type {
 } from '../../shared/rpc';
 import { sanitizeClientDisplayName } from '../../shared/rpc';
 import { check as enforcerCheck } from '../mcp/PermissionEnforcer';
+import { isAlwaysEnforcedMethod } from '../mcp/methodCapabilityMap';
 import { isLocalExternalWireContext } from '../mcp/rpcProvenance';
 import { commanderTokenWorkspace } from '../deck/commanderTrust';
 import { COMMANDER_TEARDOWN_DENY } from '../../shared/commanderSurface';
@@ -545,8 +546,13 @@ export class RpcRouter {
     // Pre-commit 6: enforce-mode short-circuit. When mode is 'enforce',
     // a non-allow outcome turns into an RPC failure response — the handler
     // is NOT invoked. In 'shadow' mode (dogfood default), we still call
-    // the handler after logging, preserving pre-2.2 behavior.
-    if (outcome.kind !== 'allow' && this.enforcementMode === 'enforce') {
+    // the handler after logging, preserving pre-2.2 behavior — except for the
+    // always-enforced risk classes (desktop computer use), which, like the
+    // commander gate above, must never ride the shadow semantics.
+    if (
+      outcome.kind !== 'allow' &&
+      (this.enforcementMode === 'enforce' || isAlwaysEnforcedMethod(request.method))
+    ) {
       let rejection: RpcRejection = outcome.rejection;
       // For unconfirmed identity with a non-empty declaration, surface an
       // approval prompt and thread the synchronously-minted promptId into

@@ -107,6 +107,21 @@ export function resolveRequiredCapability(
   return typeof entry.capability === 'function' ? entry.capability(params) : entry.capability;
 }
 
+/**
+ * Risk classes the enforcer's verdict is binding for in EVERY mode. In shadow
+ * mode a non-allow outcome is normally only logged; for these it is refused,
+ * like the commander gate in RpcRouter. `computer` reads other apps' windows
+ * and injects input into them, so an unapproved named client must never reach
+ * it just because a build (or `mcp.mode: "shadow"`) runs the enforcer advisory.
+ */
+const ALWAYS_ENFORCED_RISK_CLASSES: ReadonlySet<RiskClass> = new Set<RiskClass>(['computer']);
+
+/** Whether a non-allow verdict on `method` is refused even in shadow mode. */
+export function isAlwaysEnforcedMethod(method: string): boolean {
+  const entry = (METHOD_CAPABILITY as Record<string, RequiredCapability | undefined>)[method];
+  return entry?.riskClass !== undefined && ALWAYS_ENFORCED_RISK_CLASSES.has(entry.riskClass);
+}
+
 // === Path extractors ===
 //
 // Pulled out as named functions so a stack trace in shadow-mode rejection

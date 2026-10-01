@@ -203,7 +203,8 @@ by localized message text.
   refuses before it forwards the action.
 - **Approvals.** Plugins need the `computer.observe` capability (list,
   inspect) and the `computer.control` capability (input), both granted through
-  the existing enforcer. On top of that, every agent needs the person's consent
+  the existing enforcer, whose verdict on the `computer` risk class is binding
+  even in shadow mode (like the commander gate). On top of that, every agent needs the person's consent
   per app, asked through the approval queue (`computer-app` prompt, both the
   modal and the Fleet inbox) and remembered for the run.
   - Consent, snapshot ownership, the input lock and the rate cap are per agent
