@@ -1911,6 +1911,10 @@ export default function AppLayout() {
   return (
     <ErrorBoundary name="AppLayout">
     <div
+      // Pinned at scrollTop 0 (#1679): the hidden agent toolbar leaves scroll
+      // range below this box, and a caret reveal or scrollIntoView must not
+      // slide the titlebar under the native window controls.
+      data-pin-scroll
       className="flex flex-col h-screen w-screen bg-[var(--bg-base)] overflow-hidden"
       style={{
         ...(prefixMode ? {

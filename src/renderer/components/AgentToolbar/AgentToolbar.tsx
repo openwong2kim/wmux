@@ -168,7 +168,8 @@ export default function AgentToolbar({ barHandlers, revealed, onHoldChange, onFo
       // affordances discoverable). See globals.css.
       // No overflow clipping here: the popovers open upward (`bottom-full`)
       // out of this box. html/body already clip, so the hidden bar's
-      // translateY cannot produce a scrollbar.
+      // translateY cannot produce a scrollbar — but it does leave programmatic
+      // scroll range below the app shell, which pinChromeScroll undoes (#1679).
       className="wmux-toolbar absolute inset-x-0 bottom-0 z-30 flex items-center gap-2 h-9 px-2.5 border-t border-[var(--bg-surface)] bg-[var(--bg-mantle)] transition-transform duration-150 ease-out"
       style={{
         transform: revealed ? 'translateY(0)' : `translateY(${AGENT_TOOLBAR_HEIGHT}px)`,
