@@ -179,7 +179,7 @@ Identity probe. Stable shape; new fields may be added in minors.
 ### `input.send`
 
 **Method:** `input.send`
-**Params:** `{ text: string, ptyId?, workspaceId?, submit?: boolean, raw?: boolean }`
+**Params:** `{ text: string, ptyId?, workspaceId?, submit?: boolean, raw?: boolean, newTask?: boolean }`
 **Returns:** `{ ok: true }`
 
 Sends literal text to a pane's PTY. Targeting falls back to the active pane in the active workspace.
@@ -191,6 +191,20 @@ When a submitted line launches an agent in a pane whose role has a binding (Sett
 - `enforcedModel?: string` (experimental): the model whose flag was added. Absent whenever no model flag was added: the line already chose a model, the binding names no agent or a different one, or the agent has no verified `--model` flag.
 - `enforcedOptions?: { effort?: string; skipPermissions?: true }` (experimental): the launch options whose flags were added (`--effort <level>` or codex `-c model_reasoning_effort=<level>`; the agent's skip-permissions flag). Present only when at least one was added. A flag already on the line or in the role's extra args is not reported, and neither is a skip the line overrides with its own permission flag.
 - `note?: string` (experimental): human-readable; the wording is not stable. Says why part of a binding did not apply (for example, the line makes its own permission choice).
+
+**Fresh context per task (experimental, #1680).** `newTask: true` (MCP `terminal_send` `new_task`) says the text starts a NEW task for the pane. It needs `submit: true` and cannot be combined with `raw`. When the pane's role has "Fresh context per task" turned on (Settings → Roles) and its agent is `claude` or `codex`, wmux first types the agent's fresh-context command (`/clear` or `/new`), waits for it to finish, and then sends the text. Without `newTask`, or for a role without the setting, nothing changes. The reply then carries:
+
+- `freshContext` (experimental): one of
+  - `applied`: the command ran and finished; the text went to a fresh conversation.
+  - `skipped_busy`: the agent was working, input had just arrived, the composer held a draft, or other input arrived while the command was typed. The text was sent without a clear.
+  - `skipped_mismatch`: the agent running in the pane is not the role's bound agent. Sent without a clear.
+  - `skipped_unobservable`: wmux could not see the pane well enough to type into it safely (no daemon state for it, or an unreadable screen). Sent without a clear.
+  - `not_bound`: the role does not ask for fresh context, or its agent has no verified command. Sent as usual.
+- `freshContextCommand?: string` (experimental): the command typed, with `applied`.
+- `freshContextSignal?: 'session_start' | 'screen'` (experimental): with `applied`, what showed the command finished — the agent's SessionStart hook, or the screen.
+- `freshContextReason?: string` (experimental): why it was skipped. Starts with a short code (`agent_busy`, `input_active`, `draft_in_composer`, `agent_mismatch`, …); the rest of the wording is not stable.
+
+When the command was typed but not seen to finish within 8 seconds, the call fails and **the text is not sent**; read the pane before sending it again. An `a2a.task.send` that creates a new task applies the same rule to its delivery, reports the same fields on its `delivery` receipt (`not_bound` is left out there), and is refused with reason `fresh_context_timeout` when the command does not finish. A pane that still has other open A2A tasks pinned to it keeps its conversation (`skipped_busy`, reason `open_a2a_task`). Replies, status updates and broadcasts never clear a pane.
 
 ### `input.sendKey`
 
