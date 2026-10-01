@@ -61,7 +61,10 @@ export const COMPUTER_ERROR_NEXT_STEPS: Record<ComputerErrorCode, readonly strin
   ],
   input_busy: ['Another agent holds desktop input. Wait for it to finish, then retry.'],
   aborted: ['The user stopped computer use. Do not retry; ask the user how to continue.'],
-  timeout: ['The app did not answer in time. Call getAppState to check its state before retrying.'],
+  timeout: [
+    'The app, or the user on a consent prompt, did not answer in time. Call getAppState to check the app\'s state before retrying.',
+    'An unanswered consent prompt is not a refusal: tell the user what you need, then call again to ask once more.',
+  ],
   screenshot_failed: ['Use mode "ax" (accessibility tree only), or retry once.'],
   helper_unavailable: ['Computer use is not available right now. Tell the user; do not loop on retries.'],
   helper_incompatible: ['The computer-use helper does not match this wmux build. Tell the user to reinstall or update wmux.'],

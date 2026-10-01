@@ -207,12 +207,17 @@ by localized message text.
   modal and the Fleet inbox) and remembered for the run.
   - The agent identity is the MCP client name, narrowed by a server-verified
     workspace claim. A caller-supplied `workspaceId` is not trusted.
-  - Consent is fail-closed: no answer within 2 minutes means no.
+  - Consent is fail-closed: a prompt nobody answers within 2 minutes refuses
+    that call (`timeout`). Only an explicit Deny is remembered; an unanswered,
+    withdrawn or unshowable prompt is not, so the next call asks again.
 - **Input lock.** One agent at a time holds desktop input. Another agent that
   tries gets `input_busy`, with the holder's name.
 - **Abort.** A global shortcut (default `Ctrl+Alt+Shift+Escape`) cancels the
-  in-flight request, releases modifiers, drops the input lock, and rejects
-  control actions for 5 s.
+  in-flight request, releases modifiers, takes down every open consent prompt
+  (the calls parked on them fail with `aborted` at once), drops the input lock
+  and every consent given this run, and for 5 s rejects control actions and
+  opens no new prompt. A call after the stop never joins a prompt raised
+  before it: each stop starts a new prompt epoch.
 - **Rate cap.** 120 control actions per minute per agent.
 - **Elevation (Windows).** Before injecting input, the helper compares token
   integrity levels. An elevated target returns `target_elevated`; UIPI would

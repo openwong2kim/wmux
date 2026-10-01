@@ -43,7 +43,24 @@ export interface HelperLike {
   dispose(): void;
 }
 
-export type ConsentRequester = (request: { clientName: string; app: AppInfo; window: WindowInfo }) => Promise<boolean>;
+/**
+ * How a consent prompt ended. Only `approved` and `denied` are the person's
+ * answer, and only those are remembered. `expired` (nobody answered in time),
+ * `withdrawn` (the stop key took the prompt down) and `unavailable` (no
+ * approval queue yet, or it threw) refuse this one call and nothing more: the
+ * next call asks again.
+ */
+export type ConsentAnswer = 'approved' | 'denied' | 'expired' | 'withdrawn' | 'unavailable';
+
+export type ConsentRequester = (request: {
+  clientName: string;
+  app: AppInfo;
+  window: WindowInfo;
+  /** Bumped by every stop; part of the prompt's dedupe key. */
+  epoch: number;
+  /** Aborted by the stop key: withdraw the prompt and answer `withdrawn`. */
+  signal: AbortSignal;
+}) => Promise<ConsentAnswer>;
 
 export interface ComputerServiceDeps {
   isEnabled: () => boolean;
@@ -96,7 +113,9 @@ export class ComputerService {
   private helper: HelperLike | null = null;
   private readonly snapshots = new Map<string, SnapshotRecord>();
   private readonly grants = new Map<string, boolean>();
-  private readonly consentInflight = new Map<string, Promise<boolean>>();
+  private readonly consentInflight = new Map<string, Promise<ConsentAnswer>>();
+  /** Aborted (and replaced) by every stop: withdraws the open consent prompts. */
+  private consentAbort = new AbortController();
   private lock: { clientName: string; lastUsedAt: number } | null = null;
   private abortedUntil = 0;
   /**
@@ -269,18 +288,18 @@ export class ComputerService {
   }
 
   /**
-   * The user's stop key. Kills in-flight work, drops the input lock and every
-   * consent given this run, and refuses input for a short cooldown so a queued
-   * action cannot slip in right behind the stop.
+   * The user's stop key. Kills in-flight work, takes down every consent prompt
+   * this service raised (their parked calls fail with `aborted` right away),
+   * drops the input lock and every consent given this run, and refuses input
+   * and new prompts for a short cooldown so a queued action cannot slip in
+   * right behind the stop.
    */
   abort(): void {
     this.generation += 1;
+    this.withdrawConsentPrompts();
     this.helper?.abort('stopped by the user');
     this.lock = null;
     this.grants.clear();
-    // A prompt raised before the stop must not grant anything afterwards; a
-    // new call asks again (the approval queue coalesces the same question).
-    this.consentInflight.clear();
     this.abortedUntil = this.now() + ABORT_COOLDOWN_MS;
   }
 
@@ -291,9 +310,20 @@ export class ComputerService {
   }
 
   dispose(): void {
+    this.generation += 1;
+    this.withdrawConsentPrompts();
     this.helper?.dispose();
     this.helper = null;
     this.snapshots.clear();
+  }
+
+  private withdrawConsentPrompts(): void {
+    // A prompt raised before the stop must not grant anything afterwards, and
+    // must not stay on screen: aborting the signal makes each requester cancel
+    // its prompt in the approval queue.
+    this.consentAbort.abort();
+    this.consentAbort = new AbortController();
+    this.consentInflight.clear();
   }
 
   private assertCurrent(generation: number): void {
@@ -313,19 +343,42 @@ export class ComputerService {
 
     let pending = this.consentInflight.get(key);
     if (!pending) {
-      pending = this.deps.requestConsent({ clientName, app, window }).catch(() => false);
+      // Right after a stop no new prompt goes up: the person just said stop.
+      const coolingMs = this.abortedUntil - this.now();
+      if (coolingMs > 0) {
+        fail('aborted', `computer use was just stopped by the user; no new request for ${Math.ceil(coolingMs / 1000)} s`);
+      }
+      pending = this.deps
+        .requestConsent({ clientName, app, window, epoch: this.generation, signal: this.consentAbort.signal })
+        .catch((): ConsentAnswer => 'unavailable');
       this.consentInflight.set(key, pending);
     }
-    let approved: boolean;
+    let answer: ConsentAnswer;
     try {
-      approved = await pending;
+      answer = await pending;
     } finally {
       if (this.consentInflight.get(key) === pending) this.consentInflight.delete(key);
     }
     // An answer that arrives after a stop belongs to the world before it.
     this.assertCurrent(generation);
-    this.grants.set(key, approved);
-    if (!approved) fail('app_blocked', `the user declined computer use of ${app.name} for this agent`);
+    switch (answer) {
+      case 'approved':
+        this.grants.set(key, true);
+        return;
+      case 'denied':
+        // Only an explicit Deny is remembered.
+        this.grants.set(key, false);
+        return fail('app_blocked', `the user declined computer use of ${app.name} for this agent`);
+      case 'expired':
+        return fail(
+          'timeout',
+          `nobody answered the consent prompt for ${app.name} in time. That is not a refusal and was not remembered: the next call asks again`,
+        );
+      case 'withdrawn':
+        return fail('aborted', 'computer use was stopped by the user');
+      default:
+        return fail('internal', `wmux could not show the consent prompt for ${app.name}; nothing was remembered`);
+    }
   }
 
   private takeInputLock(clientName: string, now: number): void {

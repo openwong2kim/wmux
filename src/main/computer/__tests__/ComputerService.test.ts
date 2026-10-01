@@ -1,7 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ComputerError } from '../../../shared/computer/errors';
 import type { AppInfo, AppState, HelperMethod, WindowInfo } from '../../../shared/computer/protocol';
-import { ABORT_COOLDOWN_MS, ComputerService, INPUT_LOCK_IDLE_MS, type HelperLike } from '../ComputerService';
+import { ApprovalQueue } from '../../mcp/ApprovalQueue';
+import type { PluginTrustStore } from '../../mcp/PluginTrustStore';
+import { createComputerConsentRequester } from '../computerConsent';
+import {
+  ABORT_COOLDOWN_MS,
+  ComputerService,
+  INPUT_LOCK_IDLE_MS,
+  type ConsentAnswer,
+  type HelperLike,
+} from '../ComputerService';
 
 const notepad: AppInfo = { id: 'c:\\windows\\notepad.exe', name: 'Notepad', pid: 10, path: 'C:\\Windows\\notepad.exe' };
 const keepass: AppInfo = { id: 'c:\\keepassxc.exe', name: 'KeePassXC', pid: 11, path: 'C:\\KeePassXC.exe' };
@@ -51,7 +60,11 @@ function fakeHelper(apps: Record<string, { app: AppInfo; window: WindowInfo }>) 
   return { helper, calls };
 }
 
-function makeService(opts: { enabled?: boolean; consent?: boolean | (() => Promise<boolean>); elevated?: boolean } = {}) {
+function makeService(opts: {
+  enabled?: boolean;
+  consent?: ConsentAnswer | (() => Promise<ConsentAnswer>);
+  elevated?: boolean;
+} = {}) {
   let now = 1_000_000;
   const { helper, calls } = fakeHelper({
     Notepad: { app: notepad, window: win(notepad, { elevated: opts.elevated }) },
@@ -59,7 +72,7 @@ function makeService(opts: { enabled?: boolean; consent?: boolean | (() => Promi
   });
   const consent = vi.fn(async () => {
     if (typeof opts.consent === 'function') return opts.consent();
-    return opts.consent ?? true;
+    return opts.consent ?? 'approved';
   });
   const service = new ComputerService({
     isEnabled: () => opts.enabled ?? true,
@@ -91,7 +104,7 @@ describe('ComputerService', () => {
     const service = new ComputerService({
       isEnabled: () => true,
       createHelper: null,
-      requestConsent: async () => true,
+      requestConsent: async () => 'approved',
       blockContext: () => ({}),
     });
     expect(await codeOf(service.capabilities())).toBe('unsupported_platform');
@@ -133,18 +146,18 @@ describe('ComputerService', () => {
   });
 
   it('coalesces concurrent consent requests for the same agent and app', async () => {
-    let release!: (v: boolean) => void;
-    const { service, consent } = makeService({ consent: () => new Promise<boolean>((r) => { release = r; }) });
+    let release!: (v: ConsentAnswer) => void;
+    const { service, consent } = makeService({ consent: () => new Promise<ConsentAnswer>((r) => { release = r; }) });
     const a = service.getAppState('agent-a', { app: 'Notepad' });
     const b = service.getAppState('agent-a', { app: 'Notepad' });
     await new Promise((r) => setTimeout(r, 0));
-    release(true);
+    release('approved');
     await Promise.all([a, b]);
     expect(consent).toHaveBeenCalledTimes(1);
   });
 
-  it('treats a declined consent as a block and does not ask again', async () => {
-    const { service, consent } = makeService({ consent: false });
+  it('treats an explicit Deny as a block and does not ask again', async () => {
+    const { service, consent } = makeService({ consent: 'denied' });
     expect(await codeOf(service.getAppState('agent-a', { app: 'Notepad' }))).toBe('app_blocked');
     expect(await codeOf(service.getAppState('agent-a', { app: 'Notepad' }))).toBe('app_blocked');
     expect(consent).toHaveBeenCalledTimes(1);
@@ -211,20 +224,21 @@ describe('ComputerService', () => {
   });
 
   it('a call parked on a consent prompt cannot continue after the stop key', async () => {
-    let release!: (v: boolean) => void;
-    const { service, calls, consent } = makeService({
-      consent: () => new Promise<boolean>((r) => { release = r; }),
+    let release!: (v: ConsentAnswer) => void;
+    const { service, calls, consent, advance } = makeService({
+      consent: () => new Promise<ConsentAnswer>((r) => { release = r; }),
     });
     const pending = service.getAppState('agent-a', { app: 'Notepad' });
     await new Promise((r) => setTimeout(r, 0));
     service.abort();
-    release(true);
+    release('approved');
     expect(await codeOf(pending)).toBe('aborted');
     expect(calls.map((c) => c.method)).not.toContain('getAppState');
-    // The late "yes" was not kept: the next call asks again.
+    // The late "yes" was not kept: the next call (after the cooldown) asks again.
+    advance(ABORT_COOLDOWN_MS + 1);
     const again = service.getAppState('agent-a', { app: 'Notepad' });
     await new Promise((r) => setTimeout(r, 0));
-    release(true);
+    release('approved');
     await again;
     expect(consent).toHaveBeenCalledTimes(2);
   });
@@ -246,6 +260,38 @@ describe('ComputerService', () => {
     expect(calls.map((c) => c.method)).toEqual(['resolveTarget', 'getAppState']);
   });
 
+  it('does not remember an unanswered or unshowable prompt: the next call asks again', async () => {
+    const answers: ConsentAnswer[] = ['expired', 'unavailable', 'approved'];
+    const { service, consent } = makeService({ consent: async () => answers.shift() ?? 'approved' });
+    expect(await codeOf(service.getAppState('agent-a', { app: 'Notepad' }))).toBe('timeout');
+    expect(await codeOf(service.getAppState('agent-a', { app: 'Notepad' }))).toBe('internal');
+    expect(await codeOf(service.getAppState('agent-a', { app: 'Notepad' }))).toBe('resolved');
+    expect(consent).toHaveBeenCalledTimes(3);
+  });
+
+  it('a requester that throws is treated as unanswered, not as a refusal', async () => {
+    let first = true;
+    const { service, consent } = makeService({
+      consent: async () => {
+        if (first) { first = false; throw new Error('queue gone'); }
+        return 'approved';
+      },
+    });
+    expect(await codeOf(service.getAppState('agent-a', { app: 'Notepad' }))).toBe('internal');
+    expect(await codeOf(service.getAppState('agent-a', { app: 'Notepad' }))).toBe('resolved');
+    expect(consent).toHaveBeenCalledTimes(2);
+  });
+
+  it('opens no new consent prompt during the stop cooldown', async () => {
+    const { service, consent, advance } = makeService();
+    service.abort();
+    expect(await codeOf(service.getAppState('agent-a', { app: 'Notepad' }))).toBe('aborted');
+    expect(consent).not.toHaveBeenCalled();
+    advance(ABORT_COOLDOWN_MS + 1);
+    expect(await codeOf(service.getAppState('agent-a', { app: 'Notepad' }))).toBe('resolved');
+    expect(consent).toHaveBeenCalledTimes(1);
+  });
+
   it('caps input actions per minute', async () => {
     const { service } = makeService();
     const { snapshotId } = await service.getAppState('agent-a', { app: 'Notepad' });
@@ -253,5 +299,103 @@ describe('ComputerService', () => {
       await service.control('agent-a', { action: 'pressKey', snapshotId, key: 'a' });
     }
     expect(await codeOf(service.control('agent-a', { action: 'pressKey', snapshotId, key: 'a' }))).toBe('input_busy');
+  });
+});
+
+// The review's repro scenarios, run against the real ApprovalQueue and the real
+// consent requester rather than a stubbed answer.
+describe('ComputerService with the real approval queue', () => {
+  function realQueueService(deadlineMs: number) {
+    let now = 5_000_000;
+    const opened: Array<{ promptId: string; title?: string }> = [];
+    const closed: string[] = [];
+    const queue = new ApprovalQueue({} as PluginTrustStore, {
+      openPrompt: (p) => { opened.push({ promptId: p.promptId, title: p.title }); },
+      closePrompt: (id) => { closed.push(id); },
+    });
+    const dedupeKeys: string[] = [];
+    const realRequestConsent = queue.requestConsent.bind(queue);
+    queue.requestConsent = (input) => {
+      dedupeKeys.push(input.dedupeKey);
+      return realRequestConsent(input);
+    };
+    const { helper } = fakeHelper({ Notepad: { app: notepad, window: win(notepad) } });
+    const service = new ComputerService({
+      isEnabled: () => true,
+      createHelper: () => helper,
+      requestConsent: createComputerConsentRequester({ queue: () => queue, deadlineMs }),
+      blockContext: () => ({}),
+      now: () => now,
+    });
+    return { service, queue, opened, closed, dedupeKeys, advance: (ms: number) => { now += ms; } };
+  }
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  it('a timeout then a retry asks again instead of reporting a refusal', async () => {
+    const { service, queue, opened } = realQueueService(30);
+    expect(await codeOf(service.getAppState('agent-a', { app: 'Notepad' }))).toBe('timeout');
+    expect(queue.inflightCount()).toBe(0);
+    const retry = service.getAppState('agent-a', { app: 'Notepad' });
+    await sleep(0);
+    expect(opened).toHaveLength(2);
+    await queue.resolvePrompt(opened[1].promptId, true);
+    expect(await codeOf(retry)).toBe('resolved');
+  });
+
+  it('remembers an explicit Deny without asking again', async () => {
+    const { service, queue, opened } = realQueueService(60_000);
+    const first = service.getAppState('agent-a', { app: 'Notepad' });
+    await sleep(0);
+    await queue.resolvePrompt(opened[0].promptId, false);
+    expect(await codeOf(first)).toBe('app_blocked');
+    expect(await codeOf(service.getAppState('agent-a', { app: 'Notepad' }))).toBe('app_blocked');
+    expect(opened).toHaveLength(1);
+  });
+
+  it('the stop key takes the prompt down and fails the parked call at once', async () => {
+    const { service, queue, opened, closed } = realQueueService(60_000);
+    const parked = service.getAppState('agent-a', { app: 'Notepad' });
+    await sleep(0);
+    expect(queue.inflightCount()).toBe(1);
+    const stoppedAt = Date.now();
+    service.abort();
+    expect(await codeOf(parked)).toBe('aborted');
+    // Not at the prompt's own 60 s deadline: right away.
+    expect(Date.now() - stoppedAt).toBeLessThan(1_000);
+    expect(queue.inflightCount()).toBe(0);
+    expect(closed).toEqual([opened[0].promptId]);
+  });
+
+  it('a call after the stop never joins the pre-stop prompt, and is not failed at its deadline', async () => {
+    const deadlineMs = 300;
+    const { service, queue, opened, dedupeKeys, advance } = realQueueService(deadlineMs);
+    const a = service.getAppState('agent-a', { app: 'Notepad' });
+    await sleep(deadlineMs * 0.3);
+    service.abort();
+    // Right after the stop (the agent retries at once): refused, no prompt.
+    const b = service.getAppState('agent-a', { app: 'Notepad' });
+    expect(await codeOf(a)).toBe('aborted');
+    expect(await codeOf(b)).toBe('aborted');
+    expect(opened).toHaveLength(1);
+    // After the cooldown: a fresh prompt with its own dedupe key.
+    advance(ABORT_COOLDOWN_MS + 1);
+    const c = service.getAppState('agent-a', { app: 'Notepad' });
+    await sleep(0);
+    expect(opened).toHaveLength(2);
+    expect(dedupeKeys[1]).not.toBe(dedupeKeys[0]);
+    // A's old deadline passes; C's prompt is still up and C still waits.
+    await sleep(deadlineMs * 0.8);
+    expect(queue.inflightCount()).toBe(1);
+    await queue.resolvePrompt(opened[1].promptId, true);
+    expect(await codeOf(c)).toBe('resolved');
+  });
+
+  it('dispose also takes open prompts down', async () => {
+    const { service, queue } = realQueueService(60_000);
+    const parked = service.getAppState('agent-a', { app: 'Notepad' });
+    await sleep(0);
+    service.dispose();
+    expect(await codeOf(parked)).toBe('aborted');
+    expect(queue.inflightCount()).toBe(0);
   });
 });
