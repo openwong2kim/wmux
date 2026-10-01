@@ -200,5 +200,8 @@ export function selectChecks(argv) {
       throw new Error(`--skip takes build programs only (${Object.keys(PROGRAMS).join(', ')}), not "${n}"`);
     }
   }
-  return (named.length > 0 ? named : CHECKS).filter((n) => !skip.includes(n));
+  const selected = (named.length > 0 ? named : CHECKS).filter((n) => !skip.includes(n));
+  // Skipping everything that was named would check nothing and still pass.
+  if (selected.length === 0) throw new Error('nothing left to check after --skip');
+  return selected;
 }

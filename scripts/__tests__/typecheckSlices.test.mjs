@@ -127,6 +127,7 @@ describe('typecheck slices', () => {
     expect(() => selectChecks(['--skip', 'mcp,'])).toThrow(/build programs only/);
     expect(() => selectChecks(['--skip'])).toThrow(/needs a comma-separated list/);
     expect(() => selectChecks(['--except', 'mcp'])).toThrow(/unknown option "--except"/);
+    expect(() => selectChecks(['mcp', '--skip', 'mcp'])).toThrow(/nothing left to check/);
   });
 
   // #1685 — CI skips a build program in its type check only because a CI step

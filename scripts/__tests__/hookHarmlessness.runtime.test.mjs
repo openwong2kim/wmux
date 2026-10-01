@@ -53,7 +53,8 @@ const KILL_BUDGET_MS = 15_000;
 // nothing. The band sits deliberately BELOW the bridges' own 2s transport cap
 // (HOOK_TIMEOUT_MS) — a hook that waits out a dead daemon on the host's thread
 // is the stall this criterion forbids, so a budget above 2s could not fail it.
-// Measured headroom: every hook lands within ~110ms of the control locally.
+// Measured headroom (locally, 2026-10-01): most hooks land within ~160ms of
+// the control; codex:notify within ~400ms.
 // (Review: Grok, P1.) A loaded CI runner has gone past it on noise alone, so a
 // case whose only violation is latency is re-measured once with a fresh
 // control and fails only if it is over the cap both times (settleLatency).
