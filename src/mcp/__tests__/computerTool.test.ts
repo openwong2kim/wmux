@@ -48,6 +48,8 @@ beforeEach(() => {
   enabled.value = false;
 });
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 describe('computer MCP tool', () => {
   it('is absent unless the user opted in', async () => {
     expect(await toolNames()).not.toContain('computer');
@@ -80,7 +82,8 @@ describe('computer MCP tool', () => {
     expect(content[0].text).toContain('"snapshotId":"s7"');
     expect(content[0].text).toContain('1 edit Text, Value: hi');
     expect(content[1]).toMatchObject({ data: 'QUJD', mimeType: 'image/jpeg' });
-    expect(computerCalls()).toEqual([['computer.getAppState', { app: 'Notepad', window: undefined, mode: undefined }, expect.any(Number)]]);
+    // Outside any pane the server identifies itself by its instance id, never the env pty hint.
+    expect(computerCalls()).toEqual([['computer.getAppState', { app: 'Notepad', window: undefined, mode: undefined, callerInstance: expect.stringMatching(UUID_RE) }, expect.any(Number)]]);
   });
 
   it('sends input actions to computer.act without observation-only fields', async () => {
@@ -92,7 +95,7 @@ describe('computer MCP tool', () => {
       arguments: { action: 'click', snapshotId: 's7', index: 3, app: 'Notepad' },
     });
     await client.close();
-    expect(computerCalls()).toEqual([['computer.act', { action: 'click', snapshotId: 's7', index: 3 }, expect.any(Number)]]);
+    expect(computerCalls()).toEqual([['computer.act', { action: 'click', snapshotId: 's7', index: 3, callerInstance: expect.stringMatching(UUID_RE) }, expect.any(Number)]]);
     expect((res.content as Array<{ text: string }>)[0].text).toContain('Unverified: call getAppState');
   });
 

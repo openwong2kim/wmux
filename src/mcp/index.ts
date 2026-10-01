@@ -23,6 +23,7 @@ import { registerInspectionTools } from './playwright/tools/inspection';
 import { registerStateTools } from './playwright/tools/state';
 import { registerWaitTools } from './playwright/tools/wait';
 import { registerHelpTools } from './playwright/tools/help';
+import { randomUUID } from 'node:crypto';
 import { registerComputerTools } from './computer/tool';
 import { readComputerUseEnabled } from '../shared/computer/config';
 import { registerReplayTools } from './browser-replay/tool';
@@ -1857,9 +1858,29 @@ registerReplTools(server, MCP_CATALOG_OPTIONS, browserTools);
 // full profile only, and appended after every other full-profile tool so the
 // default surface the probe pins is byte-identical for everyone who has not
 // opted in. Read once per server; main re-checks the switch on every call.
+const COMPUTER_CALLER_INSTANCE = randomUUID();
+let computerWalkTried = false;
 registerComputerTools(server, MCP_CATALOG_OPTIONS, {
   enabled: readComputerUseEnabled(),
-  rpc: (method, params, timeoutMs) => sendRpc(method, params, timeoutMs),
+  rpc: async (method, params, timeoutMs) => {
+    // Main keys consent, the input lock and snapshot ownership on who is
+    // calling (computer.rpc.ts callerName): our pane from the PID-map walk
+    // (hit only — never the WMUX_PTY_ID env hint, which a child can inherit
+    // from another pane), else this process's random instance id. The walk is
+    // warmed once: nothing sets MY_PTY_ID until something asks who we are, and
+    // a miss would otherwise re-walk on every click.
+    if (method !== 'computer.getAppState' && method !== 'computer.act') return sendRpc(method, params, timeoutMs);
+    if (!MY_PTY_ID && !computerWalkTried) {
+      computerWalkTried = true;
+      try {
+        await requireWorkspaceId();
+      } catch {
+        // No pane: the instance id keeps this caller to itself.
+      }
+    }
+    const identity = MY_PTY_ID ? { senderPtyId: MY_PTY_ID } : { callerInstance: COMPUTER_CALLER_INSTANCE };
+    return sendRpc(method, { ...params, ...identity }, timeoutMs);
+  },
 });
 
 // === Commander-only registration lane ===

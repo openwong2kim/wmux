@@ -64,6 +64,7 @@ import { registerMetaRpc } from './pipe/handlers/meta.rpc';
 import { registerSystemRpc } from './pipe/handlers/system.rpc';
 import { registerPerfRpc } from './pipe/handlers/perf.rpc';
 import { registerComputerRpc } from './pipe/handlers/computer.rpc';
+import { resolvePtyOwnerWorkspace } from './workspace/ptyOwnership';
 import { createComputerService, registerComputerUseIpc } from './computer';
 import { createComputerConsentRequester } from './computer/computerConsent';
 import type { ComputerService } from './computer/ComputerService';
@@ -895,12 +896,16 @@ registerPerfRpc(rpcRouter);
 // the approval queue, which is created further down — hence the late binding.
 let computerService: ComputerService | null = null;
 let computerConsentQueue: ApprovalQueue | null = null;
-registerComputerRpc(rpcRouter, () => {
-  computerService ??= createComputerService({
-    requestConsent: createComputerConsentRequester({ queue: () => computerConsentQueue }),
-  });
-  return computerService;
-});
+registerComputerRpc(
+  rpcRouter,
+  () => {
+    computerService ??= createComputerService({
+      requestConsent: createComputerConsentRequester({ queue: () => computerConsentQueue }),
+    });
+    return computerService;
+  },
+  (ptyId) => resolvePtyOwnerWorkspace(() => mainWindow, ptyId),
+);
 registerComputerUseIpc(() => computerService);
 // #517 backend choice: main owns the setting (sync read at boot — an RPC can
 // arrive before the renderer has pushed anything, so renderer-push authority
