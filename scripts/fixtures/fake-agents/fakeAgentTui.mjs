@@ -14,6 +14,8 @@
 //                             keeps redrawing forever, and no hook fires
 //   FAKE_TURN_MS              length of an ordinary turn (400); `work N` runs N s
 //   FAKE_NO_HOOKS             1 = never run a hook command
+//   FAKE_MOUSE                1 = turn on any-motion mouse and focus reporting
+//                             (as the real TUIs do); the reports are consumed
 //   FAKE_AGENT_LOG            append one JSON line per event to this file,
 //                             every raw input read included
 
@@ -68,6 +70,7 @@ export function runFakeTui(spec) {
   const clearMs = envMs('FAKE_CLEAR_MS', 300);
   const turnMs = envMs('FAKE_TURN_MS', 400);
   const neverSettles = envFlag('FAKE_CLEAR_NEVER_SETTLES');
+  const mouse = envFlag('FAKE_MOUSE');
 
   const state = {
     transcript: [],
@@ -212,7 +215,7 @@ export function runFakeTui(spec) {
 
   function quit(reason) {
     log('exit', { reason });
-    out(`${ESC}[?2004l${spec.fullScreen ? `${ESC}[?1049l` : ''}\r\n`);
+    out(`${mouse ? `${ESC}[?1004l${ESC}[?1006l${ESC}[?1003l` : ''}${ESC}[?2004l${spec.fullScreen ? `${ESC}[?1049l` : ''}\r\n`);
     process.exit(0);
   }
 
@@ -278,7 +281,9 @@ export function runFakeTui(spec) {
       }
       if (s[0] === ESC) {
         // eslint-disable-next-line no-control-regex -- ESC is the byte being parsed
-        const m = /^\x1b(?:\[[0-9;?]*[ -/]*[@-~]|O[A-Za-z])/.exec(s);
+        // Parameter bytes are the full CSI range 0x30-0x3F, so SGR mouse
+        // reports (`ESC[<35;10;5M`) are consumed whole, not typed.
+        const m = /^\x1b(?:\[[0-?]*[ -/]*[@-~]|O[A-Za-z])/.exec(s);
         if (m) {
           s = s.slice(m[0].length);
           continue;
@@ -286,7 +291,7 @@ export function runFakeTui(spec) {
         // A CSI cut off at the end of a read waits for the rest; anything else
         // after ESC is a lone Escape key, which is dropped.
         // eslint-disable-next-line no-control-regex -- ESC is the byte being parsed
-        if (/^\x1b(?:\[[0-9;?]*[ -/]*|O)?$/.test(s) && s.length < 16) {
+        if (/^\x1b(?:\[[0-?]*[ -/]*|O)?$/.test(s) && s.length < 16) {
           state.pending = s;
           break;
         }
@@ -301,7 +306,10 @@ export function runFakeTui(spec) {
 
   // Bracketed paste on, so wmux pastes multi-line text as one block; a
   // full-screen TUI also switches to the alternate screen, as Codex does.
-  out(`${spec.fullScreen ? `${ESC}[?1049h` : ''}${ESC}[?2004h`);
+  // FAKE_MOUSE: also turn on any-motion mouse (SGR) and focus reporting, as
+  // the real Claude and Codex TUIs do, so pointer movement over the pane sends
+  // input the agent must ignore (the #1680 key-only interleave check).
+  out(`${spec.fullScreen ? `${ESC}[?1049h` : ''}${ESC}[?2004h${mouse ? `${ESC}[?1003h${ESC}[?1006h${ESC}[?1004h` : ''}`);
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
   process.stdin.setEncoding('utf8');
   process.stdin.on('data', feed);
