@@ -49,6 +49,11 @@ export interface ComputerUseSettingsPayload {
   helper: 'ready' | 'missing' | 'unsupported';
   /** The global stop key, as an Electron accelerator. */
   stopKey: string;
+  /**
+   * Whether main holds the stop key: `off` while computer use is off,
+   * `unavailable` when another app owns the chord (input is then refused).
+   */
+  stopKeyStatus: 'off' | 'held' | 'unavailable';
   /** Set when the last write failed; the switch shows the state on disk. */
   error?: string;
 }

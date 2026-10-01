@@ -46,6 +46,8 @@ export function TabComputerUse() {
       .catch((err: unknown) => setState({ ...state, error: err instanceof Error ? err.message : String(err) }));
   };
 
+  const stopKeyUnavailable = state?.stopKeyStatus === 'unavailable';
+
   const helperBadge = state && (
     state.helper === 'ready'
       ? <Badge tone="success">{t('settings.computerUseHelperReady')}</Badge>
@@ -66,10 +68,26 @@ export function TabComputerUse() {
         <SettingRow id="computerusehelper" label={t('settings.computerUseHelper')} description={t('settings.computerUseHelperDesc')}>
           {helperBadge}
         </SettingRow>
-        <SettingRow id="computerusestop" label={t('settings.computerUseStopKey')} description={t('settings.computerUseStopKeyDesc')}>
-          {state && <span className="ui-code">{formatStopKey(state.stopKey, isMac)}</span>}
+        {/* An unavailable stop key is never advertised as working: input is
+            refused until wmux can hold it (main fails closed). */}
+        <SettingRow
+          id="computerusestop"
+          label={t('settings.computerUseStopKey')}
+          description={t(stopKeyUnavailable ? 'settings.computerUseStopKeyUnavailableDesc' : 'settings.computerUseStopKeyDesc')}
+        >
+          {state && (
+            <>
+              <span className="ui-code">{formatStopKey(state.stopKey, isMac)}</span>
+              {stopKeyUnavailable && <Badge tone="danger">{t('settings.computerUseStopKeyUnavailable')}</Badge>}
+            </>
+          )}
         </SettingRow>
       </SettingsSection>
+      {stopKeyUnavailable && state && (
+        <SettingNote tone="danger">
+          {t('settings.computerUseStopKeyUnavailableNote', { key: formatStopKey(state.stopKey, isMac) })}
+        </SettingNote>
+      )}
       {state?.error && <SettingNote tone="danger">{t('settings.computerUseSaveFailed', { error: state.error })}</SettingNote>}
       <SettingsSection title={t('settings.computerUseSafety')}>
         <SettingRow label={t('settings.computerUseConsent')} description={t('settings.computerUseConsentDesc')} />

@@ -80,6 +80,12 @@ export interface ComputerServiceDeps {
   /** Null when this OS has no helper (unsupported_platform). */
   createHelper: (() => HelperLike) | null;
   requestConsent: ConsentRequester;
+  /**
+   * The global stop key (stopKey.ts). Held while computer use is on: armed on
+   * every call, released when a call finds the switch off. `arm()` returning
+   * false refuses input (fail closed); observation still works.
+   */
+  stopKey: { arm(): boolean; release(): void };
   blockContext: () => BlockContext;
   now?: () => number;
   /** Fires on every accepted control action (drives the agent-cursor overlay). */
@@ -149,11 +155,15 @@ export class ComputerService {
 
   private ensureReady(): HelperLike {
     if (!this.deps.isEnabled()) {
+      // Turned off, possibly by editing the file by hand: give the chord back.
+      this.deps.stopKey.release();
       fail('helper_unavailable', 'computer use is turned off. The user turns it on in Settings › Computer use');
     }
     if (!this.deps.createHelper) {
       fail('unsupported_platform', `computer use is not available on ${process.platform}`);
     }
+    // Hold the stop key for as long as computer use is on (idempotent).
+    this.deps.stopKey.arm();
     if (!this.helper) this.helper = this.deps.createHelper();
     return this.helper;
   }
@@ -238,6 +248,13 @@ export class ComputerService {
 
   async control(agent: ComputerAgent, params: ControlParams): Promise<ActionResult> {
     const helper = this.ensureReady();
+    // No input without a working emergency stop.
+    if (!this.deps.stopKey.arm()) {
+      fail(
+        'stop_key_unavailable',
+        'the computer-use stop key could not be registered (another app probably uses the same shortcut), so wmux does not let agents drive other apps',
+      );
+    }
     const now = this.now();
     if (now < this.abortedUntil) fail('aborted', 'computer use was just stopped by the user');
     const generation = this.generation;

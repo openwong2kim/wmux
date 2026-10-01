@@ -9,7 +9,12 @@ beforeAll(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 });
 
-const base: ComputerUseSettingsPayload = { enabled: false, helper: 'missing', stopKey: 'CommandOrControl+Alt+Shift+Escape' };
+const base: ComputerUseSettingsPayload = {
+  enabled: false,
+  helper: 'missing',
+  stopKey: 'CommandOrControl+Alt+Shift+Escape',
+  stopKeyStatus: 'off',
+};
 
 let root: Root | null = null;
 let container: HTMLElement | null = null;
@@ -49,6 +54,22 @@ describe('Settings › Computer use', () => {
     for (const id of ['computeruse', 'computerusehelper', 'computerusestop']) {
       expect(el.querySelector(`[data-setting-id="${id}"]`), id).not.toBeNull();
     }
+  });
+
+  it('does not advertise a stop key it could not take, and says why input is refused', async () => {
+    const unavailable: ComputerUseSettingsPayload = { ...base, enabled: true, stopKeyStatus: 'unavailable' };
+    const el = await render({ get: async () => unavailable, set: async () => unavailable });
+    expect(el.textContent).toContain('Unavailable');
+    expect(el.textContent).toContain('Another app is using this shortcut');
+    expect(el.textContent).toContain('Agents cannot control apps while the stop key is unavailable');
+    expect(el.textContent).not.toContain('Press it anywhere to stop all agents');
+  });
+
+  it('advertises the stop key while it is held', async () => {
+    const held: ComputerUseSettingsPayload = { ...base, enabled: true, stopKeyStatus: 'held' };
+    const el = await render({ get: async () => held, set: async () => held });
+    expect(el.textContent).toContain('Press it anywhere to stop all agents');
+    expect(el.textContent).not.toContain('Unavailable');
   });
 
   it('turns it on through main and shows what main saved', async () => {

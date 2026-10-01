@@ -65,7 +65,7 @@ import { registerSystemRpc } from './pipe/handlers/system.rpc';
 import { registerPerfRpc } from './pipe/handlers/perf.rpc';
 import { registerComputerRpc } from './pipe/handlers/computer.rpc';
 import { resolvePtyOwnerWorkspace } from './workspace/ptyOwnership';
-import { createComputerService, registerComputerUseIpc } from './computer';
+import { createComputerService, disposeComputerUse, registerComputerUseIpc } from './computer';
 import { createComputerConsentRequester } from './computer/computerConsent';
 import type { ComputerService } from './computer/ComputerService';
 import { revealStatsAggregator } from './perf/revealStatsAggregator';
@@ -2454,6 +2454,14 @@ app.on('before-quit', async (e) => {
   // Broker dies with the app: shims exit and hosts mark the server down,
   // same visible behavior as the old per-agent child dying with wmux.
   mcpBrokerSupervisor.stop();
+
+  // Computer use: stop the helper, take down consent prompts, release the
+  // global stop key. Synchronous, before anything below can stall.
+  try {
+    disposeComputerUse(computerService);
+  } catch (err) {
+    console.error('[Main] before-quit computer-use dispose failed:', err);
+  }
 
   // macOS 로그아웃/재시작/종료 대응(P4): win32의 'session-end' flushSync와 동등한
   // 동기 세션 flush. macOS는 WM_ENDSESSION 대신 Apple Event로 quit을 보내고

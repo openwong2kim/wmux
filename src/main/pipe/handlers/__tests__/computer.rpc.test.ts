@@ -178,6 +178,7 @@ describe('computer.rpc with the real service', () => {
         prompts.push(agent);
         return 'approved';
       },
+      stopKey: { arm: () => true, release: () => undefined },
       blockContext: () => ({}),
     });
     const { call } = setup(service);

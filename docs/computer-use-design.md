@@ -171,9 +171,9 @@ The error codes live in `src/shared/computer/errors.ts`. Each code carries
 `app_not_found`, `app_blocked`, `window_not_found`, `window_not_focused`,
 `element_not_found`, `element_stale`, `action_not_supported`,
 `value_not_settable`, `snapshot_unknown`, `permission_missing`,
-`target_elevated`, `input_busy`, `aborted`, `timeout`, `screenshot_failed`,
-`helper_unavailable`, `helper_incompatible`, `unsupported_platform`,
-`invalid_argument`, `internal`.
+`target_elevated`, `input_busy`, `stop_key_unavailable`, `aborted`, `timeout`,
+`screenshot_failed`, `helper_unavailable`, `helper_incompatible`,
+`unsupported_platform`, `invalid_argument`, `internal`.
 
 Errors are classified by stable identifiers (HRESULTs, AXError values), never
 by localized message text.
@@ -187,7 +187,7 @@ by localized message text.
   reads it when it builds its tool list, so `computer` is absent for everyone
   else. Main re-reads it on every call. **Settings › Computer use** writes it. Its switch description says
   that screenshots and window text go to the agent's model provider. The tab
-  also shows the helper status and the stop key. Turning the switch off also
+  also shows the helper status and the stop key, or that the key is unavailable. Turning the switch off also
   aborts whatever is in flight. Running agents see the tool appear or vanish
   only after they restart.
 - **Window titles.** `listApps` and `listWindows` need no per-app consent, so
@@ -229,6 +229,13 @@ by localized message text.
   and every consent given this run, and for 5 s rejects control actions and
   opens no new prompt. A call after the stop never joins a prompt raised
   before it: each stop starts a new prompt epoch.
+  - The shortcut is held only while computer use is on: taken on the first
+    call (or when Settings shows the switch on), given back when the switch
+    goes off and on quit, when the service is also disposed.
+  - It fails closed: while the shortcut cannot be registered (another app
+    owns the chord), every input action is refused with
+    `stop_key_unavailable`, and Settings shows the key as unavailable instead
+    of advertising it. Observation still works.
 - **Rate cap.** 120 control actions per minute per agent session.
 - **Elevation (Windows).** Before injecting input, the helper compares token
   integrity levels. An elevated target returns `target_elevated`; UIPI would

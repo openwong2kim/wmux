@@ -61,16 +61,22 @@ function fakeHelper(apps: Record<string, { app: AppInfo; window: WindowInfo }>) 
   return { helper, calls };
 }
 
+function fakeStopKey(holds = true) {
+  return { arm: vi.fn(() => holds), release: vi.fn() };
+}
+
 function makeService(opts: {
   enabled?: boolean;
   consent?: ConsentAnswer | (() => Promise<ConsentAnswer>);
   elevated?: boolean;
+  stopKeyHolds?: boolean;
 } = {}) {
   let now = 1_000_000;
   const { helper, calls } = fakeHelper({
     Notepad: { app: notepad, window: win(notepad, { elevated: opts.elevated }) },
     KeePassXC: { app: keepass, window: win(keepass) },
   });
+  const stopKey = fakeStopKey(opts.stopKeyHolds ?? true);
   const consent = vi.fn(async () => {
     if (typeof opts.consent === 'function') return opts.consent();
     return opts.consent ?? 'approved';
@@ -79,10 +85,11 @@ function makeService(opts: {
     isEnabled: () => opts.enabled ?? true,
     createHelper: () => helper,
     requestConsent: consent,
+    stopKey,
     blockContext: () => ({ selfPids: new Set([1]) }),
     now: () => now,
   });
-  return { service, calls, consent, advance: (ms: number) => { now += ms; } };
+  return { service, calls, consent, stopKey, advance: (ms: number) => { now += ms; } };
 }
 
 const AGENT_A: ComputerAgent = { key: 'agent-a', label: 'agent-a' };
@@ -98,10 +105,26 @@ async function codeOf(promise: Promise<unknown>): Promise<string> {
 }
 
 describe('ComputerService', () => {
-  it('refuses everything while computer use is turned off', async () => {
-    const { service, calls } = makeService({ enabled: false });
+  it('refuses everything while computer use is turned off, and gives the stop key back', async () => {
+    const { service, calls, stopKey } = makeService({ enabled: false });
     expect(await codeOf(service.listApps())).toBe('helper_unavailable');
     expect(calls).toHaveLength(0);
+    expect(stopKey.release).toHaveBeenCalled();
+    expect(stopKey.arm).not.toHaveBeenCalled();
+  });
+
+  it('holds the stop key while computer use is on', async () => {
+    const { service, stopKey } = makeService();
+    await service.listApps();
+    expect(stopKey.arm).toHaveBeenCalled();
+    expect(stopKey.release).not.toHaveBeenCalled();
+  });
+
+  it('refuses input, but not observation, while the stop key cannot be held', async () => {
+    const { service, calls } = makeService({ stopKeyHolds: false });
+    const { snapshotId } = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    expect(await codeOf(service.control(AGENT_A, { action: 'click', snapshotId, index: 1 }))).toBe('stop_key_unavailable');
+    expect(calls.map((c) => c.method)).not.toContain('click');
   });
 
   it('reports an unsupported platform when there is no helper', async () => {
@@ -109,6 +132,7 @@ describe('ComputerService', () => {
       isEnabled: () => true,
       createHelper: null,
       requestConsent: async () => 'approved',
+      stopKey: fakeStopKey(),
       blockContext: () => ({}),
     });
     expect(await codeOf(service.capabilities())).toBe('unsupported_platform');
@@ -362,6 +386,7 @@ describe('ComputerService with the real approval queue', () => {
       isEnabled: () => true,
       createHelper: () => helper,
       requestConsent: createComputerConsentRequester({ queue: () => queue, deadlineMs }),
+      stopKey: fakeStopKey(),
       blockContext: () => ({}),
       now: () => now,
     });

@@ -17,6 +17,7 @@ export const COMPUTER_ERROR_CODES = [
   'permission_missing',
   'target_elevated',
   'input_busy',
+  'stop_key_unavailable',
   'aborted',
   'timeout',
   'screenshot_failed',
@@ -60,6 +61,10 @@ export const COMPUTER_ERROR_NEXT_STEPS: Record<ComputerErrorCode, readonly strin
     'The target runs as administrator, and Windows blocks input from a normal process. Ask the user to do this step.',
   ],
   input_busy: ['Another agent holds desktop input. Wait for it to finish, then retry.'],
+  stop_key_unavailable: [
+    'Input is refused while the emergency stop key is unavailable. Tell the user: another app is using the shortcut shown in Settings › Computer use; closing it lets wmux take the key on the next call.',
+    'Observation (listApps, getAppState) still works. Do not loop on retries.',
+  ],
   aborted: ['The user stopped computer use. Do not retry; ask the user how to continue.'],
   timeout: [
     'The app, or the user on a consent prompt, did not answer in time. Call getAppState to check the app\'s state before retrying.',

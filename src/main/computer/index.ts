@@ -9,6 +9,7 @@ import { readComputerUseEnabled, type ComputerUseSettingsPayload } from '../../s
 import { helperStatus, writeComputerUseEnabled } from './settings';
 import { ComputerService, type ConsentRequester, type HelperLike } from './ComputerService';
 import { HelperProcess } from './HelperProcess';
+import { StopKey } from './stopKey';
 
 interface HelperSpec {
   /** Directory under resources/ (packaged) or native/ (dev build output). */
@@ -43,43 +44,62 @@ export function resolveHelperPath(): string | null {
 
 /**
  * The stop key. Global because the person is, by definition, looking at some
- * other app while an agent drives it. Registered on first helper start rather
- * than at boot, so installs that never use computer use never claim the chord.
+ * other app while an agent drives it. Held only while computer use is on
+ * (stopKey.ts): taken on the first call or when Settings shows the switch on,
+ * given back when the switch goes off and on quit, so installs that never use
+ * computer use never claim the chord. While it cannot be held, input is
+ * refused.
  */
 export const COMPUTER_ABORT_ACCELERATOR = 'CommandOrControl+Alt+Shift+Escape';
 
+let stopKey: StopKey | null = null;
+let liveService: ComputerService | null = null;
+
+/** Only touched from IPC handlers and RPC calls, i.e. after `ready`. */
+function computerStopKey(): StopKey {
+  stopKey ??= new StopKey({
+    registry: globalShortcut,
+    accelerator: COMPUTER_ABORT_ACCELERATOR,
+    onPress: () => liveService?.abort(),
+    log: (m) => console.warn(m),
+  });
+  return stopKey;
+}
+
 export function createComputerService(deps: { requestConsent: ConsentRequester }): ComputerService {
   const helperPath = resolveHelperPath();
-  let abortKeyRegistered = false;
 
   // A missing helper binary surfaces on first use (the spawn fails with
   // helper_unavailable), not at boot: most installs never enable computer use.
   const createHelper: (() => HelperLike) | null = helperPath
-    ? () => {
-        if (!abortKeyRegistered) {
-          abortKeyRegistered = true;
-          try {
-            if (!globalShortcut.register(COMPUTER_ABORT_ACCELERATOR, () => service.abort())) {
-              console.warn(`[computer] could not register the stop key ${COMPUTER_ABORT_ACCELERATOR}`);
-            }
-          } catch (err) {
-            console.warn('[computer] stop key registration failed', err);
-          }
-        }
-        return new HelperProcess({ command: helperPath, log: (m) => console.warn(m) });
-      }
+    ? () => new HelperProcess({ command: helperPath, log: (m) => console.warn(m) })
     : null;
 
   const service = new ComputerService({
     isEnabled: () => readComputerUseEnabled(),
     createHelper,
     requestConsent: deps.requestConsent,
+    stopKey: computerStopKey(),
     blockContext: () => ({
       selfPids: new Set(app.getAppMetrics().map((m) => m.pid).concat(process.pid)),
       selfExePath: process.execPath.toLowerCase(),
     }),
   });
+  liveService = service;
   return service;
+}
+
+/**
+ * App quit: stop the helper (a helper stuck in a native call would otherwise
+ * outlive wmux), take down open consent prompts, and give the chord back.
+ */
+export function disposeComputerUse(service: ComputerService | null): void {
+  try {
+    service?.dispose();
+  } finally {
+    stopKey?.release();
+    liveService = null;
+  }
 }
 
 /**
@@ -89,12 +109,23 @@ export function createComputerService(deps: { requestConsent: ConsentRequester }
  * next call to notice.
  */
 export function registerComputerUseIpc(getExistingService: () => ComputerService | null): void {
-  const snapshot = (error?: string): ComputerUseSettingsPayload => ({
-    enabled: readComputerUseEnabled(),
-    helper: helperStatus(resolveHelperPath()),
-    stopKey: COMPUTER_ABORT_ACCELERATOR,
-    ...(error && { error }),
-  });
+  const snapshot = (error?: string): ComputerUseSettingsPayload => {
+    const enabled = readComputerUseEnabled();
+    const helper = helperStatus(resolveHelperPath());
+    // The key is held exactly while the switch is on. Taking it here (Settings
+    // is open, so the app is ready) lets the tab say whether the chord is free
+    // before any agent calls; turning the switch off gives it back.
+    const key = computerStopKey();
+    if (enabled && helper !== 'unsupported') key.arm();
+    else key.release();
+    return {
+      enabled,
+      helper,
+      stopKey: COMPUTER_ABORT_ACCELERATOR,
+      stopKeyStatus: key.status(),
+      ...(error && { error }),
+    };
+  };
 
   ipcMain.removeHandler(IPC.COMPUTER_USE_GET);
   ipcMain.handle(IPC.COMPUTER_USE_GET, () => snapshot());
