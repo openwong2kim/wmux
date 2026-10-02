@@ -69,8 +69,13 @@ is needed.
   tried for each). A helper tracks every key and button it pressed, not
   only modifiers, and releases all of them on stdin EOF or a termination
   signal; on quit main closes stdin and waits briefly before killing it. A
-  fresh helper does not know what the dead one pressed, so `releaseInput`
-  sends an up event for every vocabulary key and mouse button.
+  fresh helper does not know what the dead one pressed. Main sends one request
+  at a time, so only the cut-off request can have left input down, and main
+  names what it sent: `releaseInput { keys?, modifiers?, buttons? }` (its
+  `pressKey` key, its `hotkey` modifiers and key, its `click` button and
+  modifiers). With no fields the helper releases the modifiers and mouse
+  buttons only, never a blanket list of ordinary keys: a stray key-up lands in
+  the foreground window, and pages act on key-up.
 - **Key vocabulary.** `pressKey` and `hotkey` carry only canonical names
   from `protocol.ts`: `Enter`, `Tab`, `Escape`, `Backspace`, `Delete`,
   `Space`, `ArrowUp/Down/Left/Right`, `Home`, `End`, `PageUp`, `PageDown`,

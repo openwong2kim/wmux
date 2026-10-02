@@ -274,12 +274,25 @@ export interface ControlTarget {
  * modifiers and mouse buttons). On stdin EOF or a termination signal it
  * releases all of them before exiting. A helper that was killed outright
  * cannot, so main starts a fresh one and sends `releaseInput` at once
- * (HelperProcess). A fresh process has no record of what the dead one
- * pressed, so `releaseInput` sends an up event for every key in the
- * vocabulary and every mouse button (an up for a key that is not down is
- * harmless), and answers `released: true` only when all of them were sent.
+ * (HelperProcess). Main sends one request at a time, so only the request that
+ * was cut off can have left input down, and main names what it sent:
+ * `releaseInput { keys?, modifiers?, buttons? }`.
+ *   - A helper releases every key and button it tracked itself, plus the
+ *     listed ones (a fresh process tracked nothing, so the list is what
+ *     counts).
+ *   - With no fields at all (nothing known), it releases the four modifiers
+ *     and the three mouse buttons, never a blanket list of ordinary keys: a
+ *     stray key-up lands in whatever window is in front, and pages act on
+ *     key-up (Enter submits a search field).
+ *   - `released: true` means every up event it meant to send was posted.
  * Main fails control requests closed until a release answers true.
  */
+export interface ReleaseInputParams {
+  keys?: Key[];
+  modifiers?: Modifier[];
+  buttons?: MouseButton[];
+}
+
 export interface HelperMethods {
   capabilities: { params: Record<string, never>; result: HelperCapabilities };
   listApps: { params: Record<string, never>; result: { apps: AppInfo[] } };
@@ -319,8 +332,8 @@ export interface HelperMethods {
     };
     result: ActionResult;
   };
-  /** Up events for every vocabulary key and mouse button (see Held input above). Always safe. */
-  releaseInput: { params: Record<string, never>; result: { released: boolean } };
+  /** Up events for what the helper tracked plus the listed input (see Held input above). Always safe. */
+  releaseInput: { params: ReleaseInputParams; result: { released: boolean } };
 }
 
 export type HelperMethod = keyof HelperMethods;
