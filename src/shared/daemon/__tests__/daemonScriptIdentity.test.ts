@@ -171,9 +171,9 @@ describe('argvIdentifiesDaemonScript — unit (#1025/#1028)', () => {
  * actually uses and still be deterministic.
  *
  * #1274: on win32 `getProcessArgv` shells out to PowerShell + Get-CimInstance
- * with a 5 s timeout and returns null on failure, and a null cmdline under
- * `definitiveOnly: false` is DOCUMENTED to proceed to SIGKILL — so on a loaded
- * runner these tests killed their own sleeper. Asserting them under
+ * with a 5 s timeout and returns null on failure. The former relaxed shutdown
+ * policy proceeded to SIGKILL on null — so on a loaded runner these tests
+ * killed their own sleeper. Asserting them under
  * `definitiveOnly: true` instead would make them tautologies on exactly the
  * platform that flaked: production returns false on ANY indeterminate probe
  * before `argvIdentifiesDaemonScript` is ever called, so the #1025
@@ -272,13 +272,10 @@ describe('killVerifiedDaemonPid — execution (#1025/#1028)', () => {
     // old 5 s default was only ever missed by the image lookup plus spawn.
   }, 15_000);
 
-  // #1274: the other half of the split — the documented indeterminate branch.
-  // When the argv probe cannot resolve and the caller is in the before-quit
-  // mode (`definitiveOnly: false`, what `killDaemonByPidFile` uses), a null
-  // cmdline next to a non-mismatching image is INTENDED to proceed to
-  // SIGKILL. The probe is stubbed (execFileSync throws, /proc reads throw) so
-  // the assertion never waits on the real 5 s WMI timeout.
-  it('proceeds to SIGKILL when the argv probe cannot resolve and definitiveOnly is false', async () => {
+  // Both shutdown modes now require script identity. A probe failure does not
+  // prove this unrelated same-image process is a wmux daemon. Stub the probes
+  // so the refusal never depends on the real 5 s WMI timeout.
+  it('keeps an unrelated process alive when the identity probes cannot resolve in either mode', async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-identity-indeterminate-'));
     const pid = await spawnSleeper(path.join(tmpDir, 'someone-elses-app', 'daemon', 'index.js'));
 
@@ -286,7 +283,7 @@ describe('killVerifiedDaemonPid — execution (#1025/#1028)', () => {
     // Kill every OS probe the module can use to read an image or a cmdline:
     // `execFileSync` covers win32 (tasklist / PowerShell) and macOS (`ps`),
     // and the /proc guard covers Linux. Everything else passes through, so
-    // the real `process.kill` still does the killing.
+    // isAlive checks the real process and afterEach reaps the owned sleeper.
     vi.doMock('child_process', async () => {
       const actual = await vi.importActual<typeof import('child_process')>('child_process');
       const execFileSync = () => { throw new Error('stubbed probe failure (#1274)'); };
@@ -303,20 +300,13 @@ describe('killVerifiedDaemonPid — execution (#1025/#1028)', () => {
       return { ...actual, default: { ...actual, readFileSync }, readFileSync };
     });
 
-    let survivorPid = 0;
     try {
       const stubbed = await import('../daemonLauncherCore');
-      expect(stubbed.killVerifiedDaemonPid(pid, { definitiveOnly: false })).toBe(true);
-      // ...and the same indeterminate reading REFUSES under definitiveOnly.
-      survivorPid = await spawnSleeper(path.join(tmpDir, 'second', 'daemon', 'index.js'));
-      expect(stubbed.killVerifiedDaemonPid(survivorPid, { definitiveOnly: true })).toBe(false);
-      expect(isAlive(survivorPid)).toBe(true);
+      expect(stubbed.killVerifiedDaemonPid(pid, { definitiveOnly: false })).toBe(false);
+      expect(isAlive(pid)).toBe(true);
+      expect(stubbed.killVerifiedDaemonPid(pid, { definitiveOnly: true })).toBe(false);
+      expect(isAlive(pid)).toBe(true);
     } finally {
-      // afterEach only tracks the LAST spawned child, and a failed expect
-      // above would skip the survivor spawn entirely — reap both by hand so a
-      // red run cannot orphan 30 s sleepers on the runner.
-      try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
-      if (survivorPid) { try { process.kill(survivorPid, 'SIGKILL'); } catch { /* already gone */ } }
       undoModuleStubs();
     }
   }, 15_000);

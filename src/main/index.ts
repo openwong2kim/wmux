@@ -2675,8 +2675,8 @@ app.on('before-quit', async (e) => {
   // Only an explicit "Shut down wmux (close all sessions)" from the tray flips
   // fullShutdownRequested → the teardown branch: ask the daemon to shut down
   // gracefully (it dumps RingBuffers + saves state), and if that RPC doesn't
-  // land in time, pid-kill it so a wedged daemon can't survive a teardown the
-  // user explicitly asked for.
+  // land in time, attempt a verified pid-kill. Unavailable script identity
+  // refuses that backstop and can leave the daemon running for recovery.
   //
   // `clientAtQuit` captures the reference BEFORE any await: the daemon may
   // close its socket mid-teardown, firing the module-level 'disconnected'
@@ -2732,8 +2732,8 @@ app.on('before-quit', async (e) => {
       // client to it — the daemon dropped/respawn-exhausted into local mode while
       // daemon.pid still points at a live daemon. Without this the user's
       // close-all request silently leaves that daemon and its PTYs running. The
-      // pid-kill is verify-before-kill (image + cmdline), so a recycled PID is
-      // never signalled. A normal Quit (fullShutdownRequested=false) still leaves
+      // pid-kill requires script identity; an unavailable probe refuses rather
+      // than guessing from the persisted PID. A normal Quit still leaves
       // any such daemon alone — that is the persistence promise.
       if (fullShutdownRequested) {
         const killed = killDaemonByPidFile();
@@ -2743,10 +2743,9 @@ app.on('before-quit', async (e) => {
   } catch (err) {
     console.error('[Main] before-quit daemon teardown threw — continuing to quit:', err);
     logLine('error', 'main', `before-quit daemon teardown threw: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
-    // Close-all must still complete even if the graceful path above threw: a
-    // verified pid-kill is the last-resort backstop so an explicit shutdown
-    // can't leave the daemon + PTYs running. verify-before-kill (image +
-    // cmdline), and a normal Quit skips this entirely.
+    // Try the verified pid-kill even if the graceful path threw. Missing
+    // script identity refuses the backstop and can leave the daemon + PTYs
+    // running; a normal Quit skips this entirely.
     if (fullShutdownRequested) {
       safeStep('full-shutdown pid-kill (post-throw backstop)', () => {
         const killed = killDaemonByPidFile();
