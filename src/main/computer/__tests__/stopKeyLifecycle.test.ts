@@ -46,6 +46,8 @@ vi.mock('../HelperProcess', () => ({
 // A helper path on every OS, so the lifecycle runs the same on Linux CI (whose
 // real path resolves to null → unsupported_platform before the stop key).
 vi.mock('../helperPath', () => ({ resolveHelperPathFor: () => 'C:/wmux/fake-helper.exe' }));
+// CI's Windows runner is an elevated admin; these tests are about the stop key.
+vi.mock('../selfElevation', () => ({ isSelfElevated: () => false }));
 vi.mock('../settings', () => ({
   helperStatus: () => h.helper.value,
   writeComputerUseEnabled: (enabled: boolean) => { h.enabled.value = enabled; return enabled; },
