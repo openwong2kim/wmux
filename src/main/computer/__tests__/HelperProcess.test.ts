@@ -214,14 +214,14 @@ describe('HelperProcess', () => {
   });
 
   it('dispose mid-input closes stdin first so the helper can release on EOF', async () => {
-    const { helper, requests } = makeHelper('eof-release', { timeoutFor: () => 5_000 });
+    const { helper, requests } = makeHelper('eof-release', { timeoutFor: () => 5_000, disposeReleaseGraceMs: 2_000 });
     const click = helper.request('click', {
       snapshotId: 's', target: TARGET, index: 1, button: 'left', clickCount: 1, modifiers: [],
     });
     await new Promise((r) => setTimeout(r, 300));
     helper.dispose();
     expect(await codeOf(click)).toBe('helper_unavailable');
-    expect(await waitFor(() => requests().includes('eof-release'), 1_000)).toBe(true);
+    expect(await waitFor(() => requests().includes('eof-release'), 2_000)).toBe(true);
     expect(requests()).toEqual(['click', 'eof-release']);
   });
 

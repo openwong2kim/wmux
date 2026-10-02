@@ -56,6 +56,8 @@ export interface HelperProcessOptions {
   helloTimeoutMs?: number;
   idleExitMs?: number;
   idleKillGraceMs?: number;
+  /** dispose() mid-input: stdin-EOF grace before the kill. */
+  disposeReleaseGraceMs?: number;
   /** Per-method timeout override, mainly for tests. */
   timeoutFor?: (method: HelperMethod) => number;
   log?: (message: string) => void;
@@ -170,7 +172,7 @@ export class HelperProcess {
       // Mid-input, stdin EOF first: the helper releases what it holds on EOF,
       // and no fresh helper may be started for it any more.
       const midInput = this.pending !== null && this.pending.child === this.running.child && holdsInput(this.pending.method);
-      this.terminate(this.running.child, error, midInput ? DISPOSE_RELEASE_GRACE_MS : 0);
+      this.terminate(this.running.child, error, midInput ? (this.opts.disposeReleaseGraceMs ?? DISPOSE_RELEASE_GRACE_MS) : 0);
     }
     this.failPending(error);
     this.startingChild?.kill();
