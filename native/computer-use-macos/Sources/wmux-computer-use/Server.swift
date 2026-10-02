@@ -7,8 +7,9 @@ import ComputerUseCore
 /// src/shared/computer/protocol.ts COMPUTER_PROTOCOL_VERSION.
 let protocolVersion = 2
 let idleExitSeconds: TimeInterval = 5 * 60
-/// Above the 15 s main allows getAppState, minus headroom for the screenshot.
-let walkBudgetSeconds: TimeInterval = 9
+/// Inside the 15 s main allows getAppState, leaving room for the 2 s
+/// screen-recording recheck and the capture.
+let walkBudgetSeconds: TimeInterval = 8
 
 let agentActions = [
     "capabilities", "listApps", "listWindows", "getAppState",
@@ -74,11 +75,11 @@ final class Server {
         let params = object["params"] as? JSON ?? [:]
         do {
             let result = try await dispatch(method, params)
-            Wire.send(["id": id, "ok": true, "result": result])
+            Wire.send(["id": id, "ok": true, "result": result], id: id)
         } catch let error as HelperError {
-            Wire.send(["id": id, "ok": false, "error": ["code": error.code, "message": error.message]])
+            Wire.send(["id": id, "ok": false, "error": ["code": error.code, "message": error.message]], id: id)
         } catch {
-            Wire.send(["id": id, "ok": false, "error": ["code": "internal", "message": String(describing: error)]])
+            Wire.send(["id": id, "ok": false, "error": ["code": "internal", "message": String(describing: error)]], id: id)
         }
     }
 
@@ -227,8 +228,10 @@ final class Server {
     }
 }
 
-/// Releases anything held, then exits. Safe from any thread.
+/// Releases anything held and puts back a clipboard a paste was using, then
+/// exits. Safe from any thread.
 func shutdown(code: Int32 = 0) -> Never {
     Input.shared.releaseAll()
+    Clipboard.restoreIfUnchanged()
     exit(code)
 }

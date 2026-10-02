@@ -141,8 +141,10 @@ enum Apps {
     /// the caller can give the app a moment to build the tree.
     static func enableElectronAccessibility(_ app: ResolvedApp) -> Bool {
         guard app.isElectron, !manualAccessibilityPids.contains(app.pid) else { return false }
-        manualAccessibilityPids.insert(app.pid)
         let rc = AXUIElementSetAttributeValue(AX.app(app.pid), "AXManualAccessibility" as CFString, kCFBooleanTrue)
-        return rc == .success
+        // A failure (an app still launching) is retried on the next call.
+        guard rc == .success else { return false }
+        manualAccessibilityPids.insert(app.pid)
+        return true
     }
 }

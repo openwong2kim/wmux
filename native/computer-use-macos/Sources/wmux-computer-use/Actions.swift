@@ -21,14 +21,17 @@ struct ControlTarget {
     }
 }
 
-private let concealedType = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
-private let transientType = NSPasteboard.PasteboardType("org.nspasteboard.TransientType")
-
 enum Focus {
+    struct Hit {
+        let pid: pid_t
+        let windowID: CGWindowID
+        let layer: Int
+    }
+
     /// The window under a screen point, front to back, skipping fully
     /// transparent windows and wmux's own click-through, content-protected
     /// overlay (it belongs to our parent process).
-    static func owner(at point: CGPoint) -> pid_t? {
+    static func hit(at point: CGPoint) -> Hit? {
         guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
             return nil
         }
@@ -41,9 +44,21 @@ enum Focus {
             let pid = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value ?? -1
             let sharing = (info[kCGWindowSharingState as String] as? NSNumber)?.intValue ?? 1
             if pid == parent && sharing == 0 { continue }
-            return pid
+            return Hit(
+                pid: pid,
+                windowID: (info[kCGWindowNumber as String] as? NSNumber)?.uint32Value ?? 0,
+                layer: (info[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0
+            )
         }
         return nil
+    }
+
+    /// The point lands on the target window, or on a menu, popover or other
+    /// above-normal window of the same app (a menu the previous click opened).
+    /// Another normal window of the same app does not count.
+    static func pointerHitsTarget(_ target: ControlTarget, at point: CGPoint) -> Bool {
+        guard let hit = hit(at: point), hit.pid == target.pid else { return false }
+        return String(hit.windowID) == target.windowID || hit.layer != 0
     }
 
     static func requireKeyboard(_ target: ControlTarget) throws {
@@ -56,21 +71,27 @@ enum Focus {
         }
     }
 
+    /// Cheap per-keystroke re-check inside a batch: the person may switch
+    /// apps or focus a password field while a long string is being typed.
+    static func stillSafeToType(_ target: ControlTarget) -> Bool {
+        NSWorkspace.shared.frontmostApplication?.processIdentifier == target.pid && !IsSecureEventInputEnabled()
+    }
+
     /// Brings the target window forward (AX, not input) if another window
     /// covers the point, then requires the point to land on the target.
     static func requirePointer(_ target: ControlTarget, window: AXUIElement, at point: CGPoint) async throws {
-        if owner(at: point) == target.pid { return }
+        if pointerHitsTarget(target, at: point) { return }
         AXUIElementSetAttributeValue(AX.app(target.pid), kAXFrontmostAttribute as CFString, kCFBooleanTrue)
         AXUIElementPerformAction(window, kAXRaiseAction as CFString)
         for _ in 0..<10 {
             try await Task.sleep(nanoseconds: 50_000_000)
-            if owner(at: point) == target.pid { return }
+            if pointerHitsTarget(target, at: point) { return }
         }
         throw HelperError("window_not_focused", "another window covers that point; nothing was clicked")
     }
 
     /// Secure input (a password field anywhere has focus, or the focused
-    /// element of the target is a secure text field): keystrokes are refused.
+    /// element of the target is a password field): keystrokes are refused.
     static func refuseSecureInput(_ pid: pid_t) throws {
         if IsSecureEventInputEnabled() {
             throw HelperError("app_blocked", "secure keyboard entry is on (a password field has focus); wmux does not type into it")
@@ -80,8 +101,14 @@ enum Focus {
         }
     }
 
+    /// AXSecureTextField, or a field whose label says it holds a secret — the
+    /// same rule that redacts its value in the tree.
     static func isSecure(_ el: AXUIElement) -> Bool {
-        AX.string(el, kAXSubroleAttribute) == "AXSecureTextField"
+        let subrole = AX.string(el, kAXSubroleAttribute)
+        let label = [kAXTitleAttribute, kAXDescriptionAttribute, kAXPlaceholderValueAttribute]
+            .compactMap { AX.string(el, $0) }
+            .joined(separator: " ")
+        return isSensitive(subrole: subrole, name: label)
     }
 }
 
@@ -185,65 +212,77 @@ enum Actions {
             let el = try snap.element(at: index)
             if Focus.isSecure(el) { throw HelperError("app_blocked", "that is a password field; wmux does not type into it") }
             AXUIElementSetAttributeValue(el, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+            // Typing into whatever else has focus would put the text in the wrong field.
+            let focused = AX.element(AX.app(target.pid), kAXFocusedUIElementAttribute)
+            guard let focused, CFEqual(focused, el) else {
+                throw HelperError("action_not_supported", "element \(index) did not take keyboard focus; nothing was typed. Click it first")
+            }
         }
         try Focus.requireKeyboard(target)
         try Focus.refuseSecureInput(target.pid)
 
+        let before = focusedValue(target.pid)
         if text.count < 64 {
-            Input.shared.typeUnicode(text)
-            let verified = await waitForValue(containing: text, pid: target.pid, timeout: 0.3)
+            try typeChecked(text, target: target)
+            let verified = await waitForEffect(of: text, before: before, pid: target.pid, timeout: 0.3)
             return result("synthetic", verified: verified)
         }
-        return try await paste(text, target: target)
+        return try await paste(text, target: target, before: before)
+    }
+
+    /// Types `text`, re-checking before every character that the target is
+    /// still in front and no password field took focus.
+    private static func typeChecked(_ text: String, target: ControlTarget) throws {
+        let typed = Input.shared.typeUnicode(text) { Focus.stillSafeToType(target) }
+        if typed < text.count {
+            throw HelperError(
+                "window_not_focused",
+                "focus left the target (or a password field took it) after \(typed) of \(text.count) characters; the rest was not typed"
+            )
+        }
     }
 
     /// Long text goes through the pasteboard, marked concealed + transient so
     /// clipboard managers skip it. The previous contents come back afterwards,
-    /// unless something else wrote the pasteboard in the meantime.
-    private static func paste(_ text: String, target: ControlTarget) async throws -> JSON {
-        let pb = NSPasteboard.general
-        let saved: [[(NSPasteboard.PasteboardType, Data)]] = (pb.pasteboardItems ?? []).map { item in
-            item.types.compactMap { type in item.data(forType: type).map { (type, $0) } }
+    /// unless something else wrote the pasteboard in the meantime. If the
+    /// current contents cannot be saved completely (a promised or unreadable
+    /// type), the text is typed instead: the clipboard is not ours to lose.
+    private static func paste(_ text: String, target: ControlTarget, before: String?) async throws -> JSON {
+        guard let saved = Clipboard.snapshot() else {
+            try typeChecked(text, target: target)
+            let verified = await waitForEffect(of: text, before: before, pid: target.pid, timeout: 0.5)
+            return result("synthetic", verified: verified, note: "typed, because the clipboard could not be saved")
         }
-        pb.clearContents()
-        let item = NSPasteboardItem()
-        item.setString(text, forType: .string)
-        item.setData(Data(), forType: concealedType)
-        item.setData(Data(), forType: transientType)
-        pb.writeObjects([item])
-        let ours = pb.changeCount
-
+        guard Clipboard.write(text, saved: saved) else {
+            Clipboard.restoreIfUnchanged()
+            throw HelperError("internal", "could not write the pasteboard")
+        }
         let vKey = KeyCodes.keyCode(for: "v", layout: Input.shared.layoutKeyCode) ?? CGKeyCode(kVK_ANSI_V)
+        guard Focus.stillSafeToType(target) else {
+            Clipboard.restoreIfUnchanged()
+            throw HelperError("window_not_focused", "focus left the target before the paste; nothing was pasted")
+        }
         Input.shared.withModifiers([KeyCodes.modifier(named: "meta")!]) { flags in
             Input.shared.tap(key: vKey, flags: flags)
         }
-        // The app reads the pasteboard asynchronously; wait until the text
-        // shows up (or a short grace period) before restoring it.
-        let verified = await waitForValue(containing: text, pid: target.pid, timeout: 1.0)
-        if !verified { try? await Task.sleep(nanoseconds: 300_000_000) }
-
-        var restored = false
-        if pb.changeCount == ours {
-            pb.clearContents()
-            let items: [NSPasteboardItem] = saved.map { entries in
-                let it = NSPasteboardItem()
-                for (type, data) in entries { it.setData(data, forType: type) }
-                return it
-            }
-            if !items.isEmpty { pb.writeObjects(items) }
-            restored = true
-        }
+        // The app reads the pasteboard asynchronously. Restore only once the
+        // field visibly changed to hold the text, or after a grace period.
+        let verified = await waitForEffect(of: text, before: before, pid: target.pid, timeout: 1.0)
+        if !verified { try? await Task.sleep(nanoseconds: 500_000_000) }
+        let restored = Clipboard.restoreIfUnchanged()
         return result(
             "clipboard", verified: verified,
             note: restored ? "pasted; the previous clipboard was restored" : "pasted; the clipboard changed meanwhile, so it was not restored"
         )
     }
 
-    private static func waitForValue(containing text: String, pid: pid_t, timeout: TimeInterval) async -> Bool {
+    /// Verified only when the focused element's value changed and now holds
+    /// the end of the text (untrimmed, so whitespace-only text counts too).
+    private static func waitForEffect(of text: String, before: String?, pid: pid_t, timeout: TimeInterval) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
-        let needle = String(text.suffix(32)).trimmingCharacters(in: .whitespacesAndNewlines)
+        let needle = String(text.suffix(32))
         repeat {
-            if let v = focusedValue(pid), needle.isEmpty ? true : v.contains(needle) { return true }
+            if let v = focusedValue(pid), v != before, v.contains(needle) { return true }
             try? await Task.sleep(nanoseconds: 50_000_000)
         } while Date() < deadline
         return false
@@ -261,7 +300,10 @@ enum Actions {
         try Focus.requireKeyboard(target)
         try Focus.refuseSecureInput(target.pid)
         let flags = KeyCodes.intrinsicFlags(for: key)
-        for _ in 0..<repeatCount {
+        for n in 0..<repeatCount {
+            if n > 0 && !Focus.stillSafeToType(target) {
+                throw HelperError("window_not_focused", "focus left the target after \(n) of \(repeatCount) presses; the rest were not sent")
+            }
             Input.shared.tap(key: code, flags: flags)
             usleep(4_000)
         }

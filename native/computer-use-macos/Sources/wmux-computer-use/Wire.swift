@@ -22,12 +22,16 @@ enum Wire {
 
     /// One line to stdout, written unbuffered: a pipe would otherwise hold the
     /// hello back until the buffer fills, and main's hello timer would fire.
-    static func send(_ object: JSON) {
-        let data: Data
-        do {
-            data = try JSONSerialization.data(withJSONObject: object, options: [.withoutEscapingSlashes])
-        } catch {
-            data = Data(#"{"id":-1,"ok":false,"error":{"code":"internal","message":"unencodable reply"}}"#.utf8)
+    /// `id` keeps a reply that cannot be encoded (a non-finite number from an
+    /// app, say) answering its request: main kills a helper that answers an
+    /// id it is not waiting for.
+    static func send(_ object: JSON, id: Int? = nil) {
+        var data: Data
+        if JSONSerialization.isValidJSONObject(object),
+           let encoded = try? JSONSerialization.data(withJSONObject: object, options: [.withoutEscapingSlashes]) {
+            data = encoded
+        } else {
+            data = Data(#"{"id":\#(id ?? -1),"ok":false,"error":{"code":"internal","message":"the helper could not encode its reply"}}"#.utf8)
         }
         lock.lock()
         defer { lock.unlock() }

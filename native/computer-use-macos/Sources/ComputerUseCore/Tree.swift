@@ -171,12 +171,22 @@ private let sensitiveNamePattern = try! NSRegularExpression(
     options: [.caseInsensitive]
 )
 
+/// Labels in other languages, matched as substrings (no word boundaries in
+/// CJK). Korean, Japanese, Chinese, German, French, Spanish, Portuguese,
+/// Italian, Russian.
+private let sensitiveNameFragments = [
+    "비밀번호", "암호", "인증번호", "パスワード", "暗証番号", "密码", "密碼", "口令", "验证码",
+    "passwort", "kennwort", "mot de passe", "contraseña", "senha", "password", "пароль",
+]
+
 /// A field whose value must never reach the model: AXSecureTextField, or a
 /// name that says it holds a secret.
 public func isSensitive(subrole: String?, name: String) -> Bool {
     if subrole == "AXSecureTextField" { return true }
     let range = NSRange(name.startIndex..., in: name)
-    return sensitiveNamePattern.firstMatch(in: name, range: range) != nil
+    if sensitiveNamePattern.firstMatch(in: name, range: range) != nil { return true }
+    let lower = name.lowercased()
+    return sensitiveNameFragments.contains { lower.contains($0) }
 }
 
 private let windowControlNames: [String: String] = [

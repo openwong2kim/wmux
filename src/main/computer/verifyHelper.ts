@@ -29,13 +29,14 @@ export interface CodesignResult {
 }
 
 export type RunCodesign = (args: readonly string[]) => Promise<CodesignResult>;
-export type ReadMtime = (path: string) => Promise<number>;
+/** Identity of the file on disk: changes whenever the binary is replaced or modified. */
+export type ReadFileIdentity = (path: string) => Promise<string>;
 
 export interface HelperVerifierOptions {
   platform: NodeJS.Platform;
   isPackaged: boolean;
   runCodesign?: RunCodesign;
-  mtime?: ReadMtime;
+  fileIdentity?: ReadFileIdentity;
 }
 
 /** The .app bundle around `…/X.app/Contents/MacOS/<exe>`, or null. */
@@ -52,17 +53,22 @@ const runCodesignDefault: RunCodesign = (args) =>
     });
   });
 
-const mtimeDefault: ReadMtime = async (p) => (await fs.stat(p)).mtimeMs;
+// Device, inode, size and ctime, not mtime: mtime can be set back with
+// utimes (`touch -r`) after swapping the binary, ctime cannot.
+const fileIdentityDefault: ReadFileIdentity = async (p) => {
+  const st = await fs.stat(p, { bigint: true });
+  return `${st.dev}:${st.ino}:${st.size}:${st.ctimeNs}`;
+};
 
 /**
  * Returns `verify(exePath)`, which resolves when the helper may be spawned and
  * rejects with `helper_unavailable` otherwise. Verdicts are cached by path and
- * modification time, so the codesign call (tens of ms) runs once per helper
+ * file identity (device, inode, size, ctime), so the codesign call (tens of ms) runs once per helper
  * binary, not per spawn.
  */
 export function createHelperVerifier(opts: HelperVerifierOptions): (exePath: string) => Promise<void> {
   const runCodesign = opts.runCodesign ?? runCodesignDefault;
-  const readMtime = opts.mtime ?? mtimeDefault;
+  const readIdentity = opts.fileIdentity ?? fileIdentityDefault;
   const cache = new Map<string, string | null>();
 
   return async (exePath) => {
@@ -72,14 +78,14 @@ export function createHelperVerifier(opts: HelperVerifierOptions): (exePath: str
     if (!bundle) {
       throw new ComputerError('helper_unavailable', 'the computer-use helper is not inside its signed app bundle');
     }
-    let mtime: number;
+    let identity: string;
     try {
-      mtime = await readMtime(exePath);
+      identity = await readIdentity(exePath);
     } catch {
       throw new ComputerError('helper_unavailable', 'the computer-use helper is missing from this wmux build');
     }
 
-    const key = `${exePath}\u0000${mtime}`;
+    const key = `${exePath}\u0000${identity}`;
     let failure = cache.get(key);
     if (failure === undefined) {
       // The bundle, not the bare binary, so Info.plist is covered by the seal.

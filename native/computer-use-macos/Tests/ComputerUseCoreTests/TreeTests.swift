@@ -99,6 +99,10 @@ final class TreeTests: XCTestCase {
             renderLine(index: 3, info: NodeInfo(role: "AXTextField", title: "Spinner speed", value: "3")),
             "3 text field Spinner speed, Value: 3"
         )
+        for label in ["비밀번호", "パスワード", "Mot de passe", "Kennwort"] {
+            XCTAssertTrue(isSensitive(subrole: nil, name: label), label)
+        }
+        XCTAssertFalse(isSensitive(subrole: nil, name: "Search"))
     }
 
     func testPreviewCollapsesWhitespaceAndCaps() {

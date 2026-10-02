@@ -53,7 +53,8 @@ enum AX {
         guard CFGetTypeID(position) == AXValueGetTypeID(), CFGetTypeID(size) == AXValueGetTypeID() else { return nil }
         var p = CGPoint.zero
         var s = CGSize.zero
-        guard AXValueGetValue(position as! AXValue, .cgPoint, &p), AXValueGetValue(size as! AXValue, .cgSize, &s) else {
+        guard AXValueGetValue(position as! AXValue, .cgPoint, &p), AXValueGetValue(size as! AXValue, .cgSize, &s),
+              [p.x, p.y, s.width, s.height].allSatisfy(\.isFinite) else {
             return nil
         }
         return CGRect(origin: p, size: s)

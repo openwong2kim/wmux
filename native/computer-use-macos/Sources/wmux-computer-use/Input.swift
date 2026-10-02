@@ -5,8 +5,8 @@
 // Held input: every key-down and mouse button-down is recorded before
 // it is posted and cleared after its up event. A batch always sends its ups
 // (defer), even when it fails part-way. On stdin EOF and SIGTERM, `releaseAll`
-// releases what this process holds (and what a dead helper recorded in the
-// small pid-keyed state file). `releaseInput` adds the keys, modifiers and
+// releases what this process holds (and what a dead helper recorded in its
+// small per-pid state file). `releaseInput` adds the keys, modifiers and
 // buttons main lists from the request that was cut off; with nothing listed,
 // it releases the modifiers and mouse buttons only.
 
@@ -34,8 +34,14 @@ final class Input: @unchecked Sendable {
         return src
     }()
 
-    private static let stateFile: URL = FileManager.default.temporaryDirectory
-        .appendingPathComponent("com.electron.wmux.computer-use.held.json")
+    /// One small file per helper pid, so two helpers (two wmux instances)
+    /// never overwrite each other's record.
+    private static let stateDir: URL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("com.electron.wmux.computer-use.held", isDirectory: true)
+
+    private static func stateFile(_ pid: pid_t) -> URL {
+        stateDir.appendingPathComponent("\(pid).json")
+    }
 
     // MARK: Held-state bookkeeping
 
@@ -51,24 +57,31 @@ final class Input: @unchecked Sendable {
     }
 
     private func persist(_ snapshot: Set<HeldInput>) {
-        var all = Self.readState().filter { $0.key != getpid() }
-        if !snapshot.isEmpty { all[getpid()] = Array(snapshot) }
-        if all.isEmpty {
-            try? FileManager.default.removeItem(at: Self.stateFile)
-        } else if let data = try? JSONEncoder().encode(all.map { StateEntry(pid: $0.key, held: $0.value) }) {
-            try? data.write(to: Self.stateFile, options: .atomic)
+        let file = Self.stateFile(getpid())
+        let lasting = snapshot.filter {
+            if case .key(let code) = $0 { return KeyCodes.modifiers.contains { $0.keyCode == code } }
+            return true
+        }
+        if lasting.isEmpty {
+            try? FileManager.default.removeItem(at: file)
+            return
+        }
+        try? FileManager.default.createDirectory(at: Self.stateDir, withIntermediateDirectories: true)
+        if let data = try? JSONEncoder().encode(Array(lasting)) {
+            try? data.write(to: file, options: .atomic)
         }
     }
 
-    private struct StateEntry: Codable {
-        let pid: pid_t
-        let held: [HeldInput]
-    }
-
-    private static func readState() -> [pid_t: [HeldInput]] {
-        guard let data = try? Data(contentsOf: stateFile),
-              let entries = try? JSONDecoder().decode([StateEntry].self, from: data) else { return [:] }
-        return Dictionary(entries.map { ($0.pid, $0.held) }, uniquingKeysWith: { a, _ in a })
+    /// Records left by this process or by helpers that are no longer running.
+    private static func orphanedState() -> [(URL, [HeldInput])] {
+        let files = (try? FileManager.default.contentsOfDirectory(at: stateDir, includingPropertiesForKeys: nil)) ?? []
+        return files.compactMap { file in
+            guard let pid = pid_t(file.deletingPathExtension().lastPathComponent),
+                  pid == getpid() || kill(pid, 0) != 0,
+                  let data = try? Data(contentsOf: file),
+                  let held = try? JSONDecoder().decode([HeldInput].self, from: data) else { return nil }
+            return (file, held)
+        }
     }
 
     /// Releases what this helper holds, what a dead helper recorded in the
@@ -80,10 +93,8 @@ final class Input: @unchecked Sendable {
         var toRelease = held.union(extra)
         held.removeAll()
         lock.unlock()
-        let state = Self.readState()
-        for (pid, entries) in state where pid == getpid() || kill(pid, 0) != 0 {
-            toRelease.formUnion(entries)
-        }
+        let orphaned = Self.orphanedState()
+        for (_, entries) in orphaned { toRelease.formUnion(entries) }
         let location = CGEvent(source: nil)?.location ?? .zero
         var ok = true
         for input in toRelease {
@@ -95,13 +106,9 @@ final class Input: @unchecked Sendable {
                 ok = post(mouse: Self.upType(button), at: location, button: button, flags: [], clickState: 1) && ok
             }
         }
-        // Drop our entry and those of dead helpers; a live sibling keeps its own.
-        let survivors = state.filter { $0.key != getpid() && kill($0.key, 0) == 0 }
-        if survivors.isEmpty {
-            try? FileManager.default.removeItem(at: Self.stateFile)
-        } else if let data = try? JSONEncoder().encode(survivors.map { StateEntry(pid: $0.key, held: $0.value) }) {
-            try? data.write(to: Self.stateFile, options: .atomic)
-        }
+        // Our record and dead helpers' are settled; a live sibling keeps its own.
+        for (file, _) in orphaned { try? FileManager.default.removeItem(at: file) }
+        try? FileManager.default.removeItem(at: Self.stateFile(getpid()))
         return ok
     }
 
@@ -177,8 +184,12 @@ final class Input: @unchecked Sendable {
     /// Types one string through the Unicode payload of a key event (bypasses
     /// the layout; an IME is bypassed too, so this suits ASCII and precomposed
     /// text). Newline and tab go as real Return / Tab keys.
-    func typeUnicode(_ text: String) {
+    /// `shouldContinue` runs before each character; typing stops when it
+    /// says no. Returns how many characters were typed.
+    func typeUnicode(_ text: String, shouldContinue: () -> Bool) -> Int {
+        var typed = 0
         for ch in text {
+            guard shouldContinue() else { return typed }
             if ch == "\n" || ch == "\r\n" || ch == "\r" {
                 tap(key: CGKeyCode(kVK_Return), flags: [])
             } else if ch == "\t" {
@@ -194,8 +205,10 @@ final class Input: @unchecked Sendable {
                 }
                 setHeld(.key(0), false)
             }
+            typed += 1
             usleep(2_000)
         }
+        return typed
     }
 
     func click(at point: CGPoint, button: CGMouseButton, count: Int, flags: CGEventFlags) {
@@ -227,18 +240,27 @@ final class Input: @unchecked Sendable {
 
     // MARK: Layout
 
-    /// Character → key code on the current ASCII-capable layout, built once.
-    private lazy var layoutMap: [Character: CGKeyCode] = Self.buildLayoutMap()
+    /// Character → key code on the current ASCII-capable layout, rebuilt
+    /// when the person switches layouts (a stale map would send the wrong
+    /// shortcut).
+    private var layoutMap: [Character: CGKeyCode] = [:]
+    private var layoutID: String?
 
     func layoutKeyCode(for ch: Character) -> CGKeyCode? {
+        guard let source = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue() else { return nil }
+        let id = TISGetInputSourceProperty(source, kTISPropertyInputSourceID)
+            .map { Unmanaged<CFString>.fromOpaque($0).takeUnretainedValue() as String }
         lock.lock()
         defer { lock.unlock() }
+        if id != layoutID || layoutMap.isEmpty {
+            layoutMap = Self.buildLayoutMap(source)
+            layoutID = id
+        }
         return layoutMap[ch]
     }
 
-    private static func buildLayoutMap() -> [Character: CGKeyCode] {
-        guard let source = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue(),
-              let raw = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else { return [:] }
+    private static func buildLayoutMap(_ source: TISInputSource) -> [Character: CGKeyCode] {
+        guard let raw = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else { return [:] }
         let data = Unmanaged<CFData>.fromOpaque(raw).takeUnretainedValue() as Data
         var map: [Character: CGKeyCode] = [:]
         data.withUnsafeBytes { bytes in

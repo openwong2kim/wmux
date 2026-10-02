@@ -41,9 +41,9 @@ function fakeCodesign(sig: FakeSignature): RunCodesign & { calls: string[][] } {
   return Object.assign(run, { calls });
 }
 
-const verifier = (sig: FakeSignature, mtime = async () => 1) => {
+const verifier = (sig: FakeSignature, fileIdentity = async () => 'dev:ino:1') => {
   const runCodesign = fakeCodesign(sig);
-  return { verify: createHelperVerifier({ platform: 'darwin', isPackaged: true, runCodesign, mtime }), runCodesign };
+  return { verify: createHelperVerifier({ platform: 'darwin', isPackaged: true, runCodesign, fileIdentity }), runCodesign };
 };
 
 async function refusal(promise: Promise<void>): Promise<ComputerError> {
@@ -93,16 +93,16 @@ describe('computer-use helper signature check', () => {
     expect((await refusal(verify(EXE))).message).toContain('missing');
   });
 
-  it('caches the verdict by path and mtime', async () => {
-    let mtime = 1;
+  it('caches the verdict by path and file identity', async () => {
+    let identity = 'dev:ino:1';
     const { verify, runCodesign } = verifier(
       { signed: true, team: '8RGHH2F237', identifier: 'com.electron.wmux.computer-use' },
-      async () => mtime,
+      async () => identity,
     );
     await verify(EXE);
     await verify(EXE);
     expect(runCodesign.calls).toHaveLength(1);
-    mtime = 2; // the binary was replaced
+    identity = 'dev:ino2:1'; // the binary was replaced
     await verify(EXE);
     expect(runCodesign.calls).toHaveLength(2);
   });

@@ -144,9 +144,11 @@ the Windows helper can match them:
   descended into, because AX exposes every item of every menu even while it
   is closed. A subtree whose frame lies wholly outside the window is skipped.
 - Secure text fields, and fields whose name says password, passcode, PIN,
-  one-time, OTP, verification code or security code, show `Value: [redacted]`.
+  one-time, OTP, verification code or security code (plus the usual words in
+  Korean, Japanese, Chinese, German, French, Spanish, Portuguese and
+  Russian), show `Value: [redacted]`.
 - Text is whitespace-collapsed and capped at 120 characters (`…`). The caps
-  are 800 indexed elements and 40 levels of AX depth, with a 9 s walk budget
+  are 800 indexed elements and 40 levels of AX depth, with an 8 s walk budget
   inside main's 15 s timeout; any cap sets `truncated: true`.
 
 The screenshot is the window alone, captured with ScreenCaptureKit
@@ -167,33 +169,43 @@ is not re-walked.
   into an agent's keystroke. Local-event suppression is set to 0, so the
   person's own mouse is never frozen.
 - Targets (`ControlTarget`, per protocol): keyboard batches need the target
-  window to be the focused window of the frontmost app; pointer batches need
-  the target's window under the point. A covered window is first raised
-  through AX (`AXFrontmost`, `AXRaise`; neither counts as input). When the
-  check fails, nothing is sent and the call returns `window_not_focused`.
+  window to be the focused window of the frontmost app. Pointer batches need
+  the target window itself under the point, or a menu or popover of the same
+  app (a window above the normal layer); another normal window of the same app
+  does not count. A covered window is first raised through AX (`AXFrontmost`,
+  `AXRaise`; neither counts as input). When the check fails, nothing is sent
+  and the call returns `window_not_focused`. While a batch types, the frontmost
+  app and secure input are re-checked before every character and every
+  repeated key, and the batch stops there.
 - Action ladder: a plain left click on an element with `AXPress` is pressed
   through accessibility. `setValue` is `AXValue` followed by a read-back, which
   counts as `verified`. Everything else is synthetic.
-- `type`: text shorter than 64 characters is typed as Unicode key events, with
-  `\n` and `\t` sent as Return and Tab. Longer text is pasted. The pasteboard
-  item carries `org.nspasteboard.ConcealedType` and `TransientType`, so
-  clipboard managers skip it. The previous clipboard is put back only if the
-  pasteboard's `changeCount` has not moved since the paste. The result is
-  `verified` once the focused element's value shows the text.
+- `type`: with an index, the element must actually take keyboard focus, or
+  nothing is typed. Text shorter than 64 characters is typed as Unicode key
+  events, with `\n` and `\t` sent as Return and Tab. Longer text is pasted.
+  The pasteboard item carries `org.nspasteboard.ConcealedType` and
+  `TransientType`, so clipboard managers skip it. The previous clipboard is put
+  back only if the pasteboard's `changeCount` has not moved since the paste;
+  that also happens on SIGTERM in the middle of a paste. If the current
+  clipboard cannot be saved completely (a promised or unreadable type), the
+  text is typed instead. The result is `verified` only when the focused
+  element's value changed and now ends with the text. The clipboard is
+  restored as soon as that happens, otherwise after 1.5 s.
 - Keystrokes (`type`, `pressKey`, `hotkey`) and `setValue` are refused with
   `app_blocked` while secure keyboard entry is on (`IsSecureEventInputEnabled`)
-  or the focused element is an `AXSecureTextField`.
+  or the focused element is a password field: an `AXSecureTextField`, or a
+  field whose label matches the redaction rule above.
 - Keys: the closed vocabulary of `protocol.ts`. Letters and digits use the key
   that types them on the current ASCII-capable layout (AZERTY `a` is the key
   labelled A), and named keys are positional. Arrows carry the NumericPad and
   Fn flags, and Home, End, PageUp, PageDown, Delete and F1 to F12 carry Fn, as
-  on a real keyboard.
+  on a real keyboard. The layout map is rebuilt when the input source changes.
 - Held input: every key-down and button-down is recorded before it is posted
   and cleared after its up event, and every batch sends its ups from a
   `defer`. Stdin EOF and SIGTERM/SIGINT/SIGHUP release what this process holds.
   Modifiers and buttons, the only input held across a batch, are also recorded
-  in `$TMPDIR/com.electron.wmux.computer-use.held.json` (keyed by pid) and are
-  released on exit even if a helper died holding them.
+  in `$TMPDIR/com.electron.wmux.computer-use.held/<pid>.json`. The next helper
+  releases what a dead helper recorded there.
 - `releaseInput { keys?, modifiers?, buttons? }` releases what this helper
   tracked, what a dead helper recorded, and whatever main lists from the
   request that was cut off. With no fields at all it releases the four
@@ -203,7 +215,8 @@ is not re-walked.
 
 ## Process
 
-Requests are handled one at a time on the main thread; the main run loop keeps
+A single AX messaging timeout of 1.5 s is set on the system-wide element, so
+it covers every element. Requests are handled one at a time on the main thread; the main run loop keeps
 `NSWorkspace`'s app list current. The helper exits on stdin EOF and after
 5 minutes without a request, releasing held input first. stdout is written
 unbuffered, one JSON line per message. stderr carries short diagnostics only.

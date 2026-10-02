@@ -2,6 +2,7 @@
 // of src/shared/computer/protocol.ts over stdio; see docs/computer-use-macos.md.
 
 import AppKit
+import ApplicationServices
 import Foundation
 
 // Own TCC identity first: nothing below may touch AX or capture as wmux.
@@ -13,6 +14,11 @@ if CommandLine.arguments.contains("--request-permissions") {
     Permissions.requestInteractively()
     exit(0)
 }
+
+// One messaging timeout for every AX element (the system-wide element sets
+// the global value), not just application elements: a hung app must not
+// stall a tree walk for AX's default 6 s per call.
+AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), axMessagingTimeout)
 
 // Main writes into a pipe it may close; a write then fails instead of killing us mid-batch.
 signal(SIGPIPE, SIG_IGN)
