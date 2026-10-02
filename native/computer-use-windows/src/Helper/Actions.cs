@@ -558,22 +558,15 @@ internal static unsafe class Actions
         {
             try
             {
-                // The full check (focused element, password field, integrity)
-                // runs before the first chunk and again after every Enter or
-                // Tab, the keys that move focus. Between text chunks the fast
-                // Win32 check inside Post, right before SendInput, requires
-                // the same foreground window and the same focused HWND as at
-                // the last full check.
+                // The full check (focused element, password field with
+                // unknown refused, integrity) before every chunk; the first
+                // chunk reuses the one made just above. The fast Win32 check
+                // inside Post, right before SendInput, then requires the same
+                // foreground window and focused HWND.
                 preflight ??= Focus.RequireKeyboard(target);
-                if (chunk.Text != null)
-                {
-                    Input.TypeText(chunk.Text, preflight);
-                }
-                else
-                {
-                    Input.Tap(Key(chunk.Key!), [], preflight);
-                    preflight = null;
-                }
+                if (chunk.Text != null) Input.TypeText(chunk.Text, preflight);
+                else Input.Tap(Key(chunk.Key!), [], preflight);
+                preflight = null;
             }
             catch (HelperError e)
             {
