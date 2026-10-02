@@ -79,6 +79,17 @@ function chmodSpawnHelpers(root: string): void {
   }
 }
 
+// The macOS computer-use helper, staged by `npm run build:computer-use-macos`
+// (native/computer-use-macos/build.sh) and shipped as
+// Resources/computer-use-macos/wmux Computer Use.app. It is signed by its own
+// build script — hardened runtime, no entitlements, its permanent identifier —
+// because TCC grants are bound to that identity, so signMacAppIfConfigured
+// must not re-sign it: osxSign's optionsForFile would hand it the Electron
+// entitlements (allow-dyld-environment-variables, disable-library-validation).
+const COMPUTER_USE_MAC_STAGE = path.join(__dirname, 'dist', 'computer-use-macos');
+const COMPUTER_USE_MAC_RESOURCE = `${path.sep}Contents${path.sep}Resources${path.sep}computer-use-macos${path.sep}`;
+const shipsComputerUseMac = process.platform === 'darwin' && fs.existsSync(COMPUTER_USE_MAC_STAGE);
+
 // macOS Developer ID signing + notarization은 packagerConfig가 아니라 아래
 // postPackage hook의 "맨 끝"에서 직접 수행한다(signMacAppIfConfigured).
 //
@@ -109,6 +120,8 @@ async function signMacAppIfConfigured(appPath: string): Promise<void> {
   console.log('[postPackage] 코드 서명 (Developer ID, hardened runtime)...');
   await signAsync({
     app: appPath,
+    // The computer-use helper keeps the signature build.sh gave it.
+    ignore: (filePath: string) => filePath.includes(COMPUTER_USE_MAC_RESOURCE),
     optionsForFile: () => ({
       hardenedRuntime: true,
       entitlements: path.join(__dirname, 'build', 'entitlements.mac.plist'),
@@ -220,7 +233,7 @@ const config: ForgeConfig = {
     // targets the user's own claude install via pathToClaudeCodeExecutable).
     // ./dist/daemon-web ships as a sibling of daemon-bundle so the detached
     // daemon resolves terminal.html at `__dirname/../daemon-web` (wmux web).
-    extraResource: ['./dist/mcp-bundle', './dist/daemon-bundle', './dist/daemon-web', './dist/cli-bundle', './node_modules/@anthropic-ai/claude-agent-sdk', './assets/icon.ico', './assets/icon.icns', './assets/icon.png', './assets/trayTemplate.png', './assets/trayTemplate@2x.png', './LICENSE', './THIRD_PARTY_NOTICES', './src/main/pty/shell-hooks'],
+    extraResource: ['./dist/mcp-bundle', './dist/daemon-bundle', './dist/daemon-web', './dist/cli-bundle', './node_modules/@anthropic-ai/claude-agent-sdk', './assets/icon.ico', './assets/icon.icns', './assets/icon.png', './assets/trayTemplate.png', './assets/trayTemplate@2x.png', './LICENSE', './THIRD_PARTY_NOTICES', './src/main/pty/shell-hooks', ...(shipsComputerUseMac ? [COMPUTER_USE_MAC_STAGE] : [])],
     // macOS 서명/노타라이즈는 packagerConfig가 아니라 postPackage hook 끝에서
     // 수행한다(signMacAppIfConfigured 주석 참고). 여기서 서명하면 postPackage의
     // node-pty 복사가 서명을 깨뜨리기 때문이다.

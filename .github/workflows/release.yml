@@ -343,6 +343,36 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null
           rm -f "$RUNNER_TEMP/cert.p12"
 
+      # The computer-use helper is signed on its own, before forge packages it
+      # (native/computer-use-macos/build.sh): TCC grants bind to its identity,
+      # and forge's osxSign skips it so it never gets the Electron
+      # entitlements. Without the cert secret the helper is ad-hoc signed, and
+      # a packaged wmux refuses to spawn it (src/main/computer/verifyHelper.ts).
+      # The release runner's default Xcode must build Swift tools 5.9.
+      - name: Build the computer-use helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          IDENTITY=-
+          if [ -n "$APPLE_CERT_P12_BASE64" ]; then
+            # By SHA-1 and team, like the DMG signing in forge.config.ts: a name
+            # match could pick a stale or foreign-team certificate.
+            IDENTITY="$(security find-identity -v -p codesigning \
+              | awk -v team="($APPLE_TEAM_ID)" '/"Developer ID Application: / && index($0, team) { print $2 }' \
+              | sort -u)"
+            if [ "$(printf '%s\n' "$IDENTITY" | grep -c .)" -ne 1 ]; then
+              echo "::error::expected exactly one Developer ID Application identity for team $APPLE_TEAM_ID"
+              exit 1
+            fi
+          fi
+          xcrun swift --version
+          npm run build:computer-use-macos -- --identity "$IDENTITY"
+          if [ "$IDENTITY" = "-" ]; then
+            native/computer-use-macos/check-signature.sh "dist/computer-use-macos/wmux Computer Use.app"
+          else
+            native/computer-use-macos/check-signature.sh "dist/computer-use-macos/wmux Computer Use.app" --release
+          fi
+
       # Forge signs + notarizes inside `make` only when Apple creds are present
       # (see macSignConfig in forge.config.ts); otherwise it builds unsigned.
       #
@@ -353,6 +383,23 @@ jobs:
       - name: Build & Make
         run: npm run make
         timeout-minutes: 60
+
+      # The packaged helper must still carry its own signature: a forge change
+      # that re-signed it would hand it wmux's entitlements, and a missing one
+      # would ship a macOS build where computer use can never start.
+      - name: Check the packaged computer-use helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          HELPERS="$(find out -type d -name 'wmux Computer Use.app' -path '*/Contents/Resources/computer-use-macos/*')"
+          [ -n "$HELPERS" ] || { echo "::error::no computer-use helper in the packaged app"; exit 1; }
+          while IFS= read -r helper; do
+            if [ -n "$APPLE_CERT_P12_BASE64" ]; then
+              native/computer-use-macos/check-signature.sh "$helper" --release
+            else
+              native/computer-use-macos/check-signature.sh "$helper"
+            fi
+          done <<<"$HELPERS"
 
       # Append the .zip/.dmg to the release the `build` job already created.
       #
