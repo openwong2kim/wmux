@@ -391,7 +391,13 @@ const BORROWED_SOURCES = [
       '    shellIntent, streamText)\n' +
       '  src/features/sessions/model/session.ts, contextUsage.ts, taskList.ts,\n' +
       '    userQuestion.ts and their tests (contextUsage, taskList, userQuestion)\n' +
-      '  src/shared/lib/paths.ts',
+      '  src/shared/lib/paths.ts\n' +
+      'Usage-limit pause (src/shared/usageLimit.ts, src/daemon/usageLimit,\n' +
+      'src/renderer/components/Pane/UsageLimitChip.tsx) from:\n' +
+      '  src/features/sessions/model/usageLimit.ts\n' +
+      '  src/features/providers/model/rateLimits.ts\n' +
+      '  src/features/sessions/ui/UsageLimitNotice.tsx\n' +
+      '  src/app/App.tsx (the usage-limit resume scheduler)',
   },
 ];
 lines.push('BORROWED IMPLEMENTATION TECHNIQUES');

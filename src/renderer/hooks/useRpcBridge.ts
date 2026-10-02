@@ -385,6 +385,10 @@ const DELIVERY_REFUSED_HINTS: Record<GatedSubmitRefusal['reason'], string> = {
   fresh_context_busy:
     'Another new task was still being delivered to the target pane, so nothing was written to it. The task is ' +
     'stored; the receiver can find it with a2a_task_query. Send again in a few seconds.',
+  usage_limited:
+    "The target pane hit its provider's usage limit and is held until the limit resets, so nothing was " +
+    'written to it. The task is stored; the receiver can find it with a2a_task_query. Send again after the ' +
+    'reset (the detail names the reset time when it is known).',
 };
 
 /** The `delivery` receipt for a refused write. */

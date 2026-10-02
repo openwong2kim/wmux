@@ -203,10 +203,12 @@ export function resolveAgentSlug(agent?: string | null): AgentSlug | undefined {
  * long; nothing was written.
  * `fresh_context_timeout` (#1680): a new-task delivery typed the pane's
  * fresh-context command and never saw it finish, so the text was not written.
+ * `usage_limited`: the pane hit its provider's usage limit and is held until
+ * the window resets (shared/usageLimit); nothing was written.
  */
 export interface GatedSubmitRefusal {
   ok: false;
-  reason: 'approval_pending' | 'gate_unavailable' | 'write_failed' | 'fresh_context_timeout' | 'fresh_context_busy';
+  reason: 'approval_pending' | 'gate_unavailable' | 'write_failed' | 'fresh_context_timeout' | 'fresh_context_busy' | 'usage_limited';
   detail: string;
   pasted?: boolean;
 }

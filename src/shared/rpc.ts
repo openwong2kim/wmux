@@ -842,6 +842,9 @@ export interface DaemonEvent {
     //                           restartCount, consecutiveFailures }
     | 'session.restarted'
     | 'supervision.changed'
+    // A pane's usage-limit hold changed (shared/usageLimit).
+    //   usage.limit.changed → { limit: PaneUsageLimit | null }  (null = cleared)
+    | 'usage.limit.changed'
     | 'session.output'
     | 'phone.request'
     | 'agent.event'

@@ -511,6 +511,13 @@ export const IPC = {
   // "지금 새로고침" button). Triggers an immediate poll regardless of
   // interval timing. Caller enforces a UI-side cooldown (5 min).
   USAGE_REFRESH: 'usage:refresh',
+  // Pane usage-limit pause (shared/usageLimit). Main → renderer push of one
+  // pane's limit (`{ ptyId, limit: PaneUsageLimit | null }`, null = cleared),
+  // renderer → main list on boot, and renderer → main edits (auto-resume,
+  // dismiss, resume now) relayed to the daemon, which owns the state.
+  USAGE_LIMIT_CHANGED: 'usageLimit:changed',
+  USAGE_LIMIT_LIST: 'usageLimit:list',
+  USAGE_LIMIT_UPDATE: 'usageLimit:update',
   // EventBus publish — renderer→main one-way for pane lifecycle events
   EVENTS_PUBLISH: 'events:publish',
   // Total app memory (renderer → main, invoke). Returns the summed

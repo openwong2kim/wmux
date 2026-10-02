@@ -11530,6 +11530,12 @@ Chat v2 model and fold (src/shared/chatv2) from:
   src/features/sessions/model/session.ts, contextUsage.ts, taskList.ts,
     userQuestion.ts and their tests (contextUsage, taskList, userQuestion)
   src/shared/lib/paths.ts
+Usage-limit pause (src/shared/usageLimit.ts, src/daemon/usageLimit,
+src/renderer/components/Pane/UsageLimitChip.tsx) from:
+  src/features/sessions/model/usageLimit.ts
+  src/features/providers/model/rateLimits.ts
+  src/features/sessions/ui/UsageLimitNotice.tsx
+  src/app/App.tsx (the usage-limit resume scheduler)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

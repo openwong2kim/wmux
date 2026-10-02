@@ -12,6 +12,7 @@ import { parseWindowsBuildNumber } from '../shared/platform';
 import type { NotificationCategory } from '../shared/types';
 import type { ComputerUseSettingsPayload } from '../shared/computer/config';
 import type { ResumeBinding } from '../shared/agentResume';
+import type { PaneUsageLimit, PaneUsageLimitPatch } from '../shared/usageLimit';
 import type { DeadPaneRecovery } from '../shared/ptyRecovery';
 import type { AgentSlug } from '../shared/events';
 import type { BrowserHelpOutcome, BrowserHelpRequestInfo } from '../shared/browserHelp';
@@ -1326,6 +1327,20 @@ const electronAPI = {
     setEnabled: (enabled: boolean) => ipcRenderer.send(IPC.USAGE_TOGGLE, enabled),
     /** Manual refresh. UI is responsible for the 5-minute cooldown. */
     refresh: () => ipcRenderer.send(IPC.USAGE_REFRESH),
+  },
+  // Pane usage-limit pause (shared/usageLimit). The daemon owns the state;
+  // `list` hydrates on boot, `onChanged` streams per-pane changes (null =
+  // cleared), `update` edits one pane (auto-resume, dismiss, resume now).
+  usageLimit: {
+    list: () => ipcRenderer.invoke(IPC.USAGE_LIMIT_LIST) as Promise<PaneUsageLimit[]>,
+    onChanged: (callback: (payload: { ptyId: string; limit: PaneUsageLimit | null }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: { ptyId: string; limit: PaneUsageLimit | null }) =>
+        callback(payload);
+      ipcRenderer.on(IPC.USAGE_LIMIT_CHANGED, listener);
+      return () => { ipcRenderer.removeListener(IPC.USAGE_LIMIT_CHANGED, listener); };
+    },
+    update: (ptyId: string, patch: PaneUsageLimitPatch) =>
+      ipcRenderer.invoke(IPC.USAGE_LIMIT_UPDATE, { ptyId, patch }) as Promise<{ ok: boolean }>,
   },
   window: {
     hide: () => ipcRenderer.send(IPC.WINDOW_HIDE),
