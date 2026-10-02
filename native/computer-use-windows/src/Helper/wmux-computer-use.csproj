@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The Windows computer-use helper: one NativeAOT exe, no runtime to install.
+       See docs/computer-use-windows.md. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <AssemblyName>wmux-computer-use</AssemblyName>
+    <RootNamespace>WmuxComputerUse</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PublishAot>true</PublishAot>
+    <IsAotCompatible>true</IsAotCompatible>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <UseSystemResourceKeys>true</UseSystemResourceKeys>
+    <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- The manifest declares Windows 10 and 11 as the only supported OS; the
+       platform analyzer only knows the TFM's Windows 7 floor. -->
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
+    <!-- Size and start-up: no debugger metadata or stack-trace strings in the
+       shipped exe, and no packer of any kind (Defender heuristics). -->
+    <DebugType>none</DebugType>
+    <StackTraceSupport>false</StackTraceSupport>
+    <Version>0.0.0</Version>
+    <InformationalVersion>dev</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Windows.CsWin32" Version="0.3.335">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Core\WmuxComputerUse.Core.csproj" />
+  </ItemGroup>
+</Project>
