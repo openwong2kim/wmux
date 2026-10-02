@@ -11,7 +11,7 @@ import { BrowserWindow, screen } from 'electron';
 import * as path from 'path';
 import { normalizeDevServerUrl } from '../window/createWindow';
 
-const WIDTH = 600;
+const WIDTH = 680;
 const INITIAL_HEIGHT = 168;
 const MAX_HEIGHT = 520;
 /** Down from the top of the work area, like Spotlight. */
@@ -80,6 +80,15 @@ function place(win: BrowserWindow): void {
     width: WIDTH,
     height,
   });
+}
+
+/**
+ * Build the hidden panel ahead of the first press, so the page is mounted and
+ * the first keystrokes after the shortcut land in the prompt instead of being
+ * typed into a window that is still loading.
+ */
+export function prepareQuickLaunch(): void {
+  if (!quickLaunchWindow()) panel = build();
 }
 
 export function showQuickLaunch(onShown: (win: BrowserWindow) => void): void {

@@ -38,7 +38,7 @@ import { startGuiFanOut } from '../ipc/handlers/fanout.handler';
 import { workerLaunchCommand, type FanOutService } from '../worktask/FanOutService';
 import { readQuickLaunchConfig, writeQuickLaunchConfig } from './config';
 import { QuickLaunchHotkey } from './hotkey';
-import { destroyQuickLaunch, fitQuickLaunch, hideQuickLaunch, quickLaunchWindow, toggleQuickLaunch } from './window';
+import { destroyQuickLaunch, fitQuickLaunch, hideQuickLaunch, prepareQuickLaunch, quickLaunchWindow, toggleQuickLaunch } from './window';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -162,6 +162,10 @@ export function initQuickLaunch(deps: { getMainWindow: GetWindow; fanOutService:
   });
   const initial = readQuickLaunchConfig();
   hotkey.apply(initial.enabled, initial.accelerator);
+  // Off the boot path: the main window loads first.
+  const prepareTimer = setTimeout(() => {
+    if (readQuickLaunchConfig().enabled) prepareQuickLaunch();
+  }, 5000);
 
   const snapshot = (error?: string): QuickLaunchSettingsPayload => {
     const config = readQuickLaunchConfig();
@@ -204,7 +208,8 @@ export function initQuickLaunch(deps: { getMainWindow: GetWindow; fanOutService:
       hotkey.apply(current.enabled, current.accelerator);
       return snapshot(`Could not save: ${(err as Error).message}`);
     }
-    if (!next.enabled) hideQuickLaunch();
+    if (next.enabled) prepareQuickLaunch();
+    else hideQuickLaunch();
     return snapshot();
   });
 
@@ -246,6 +251,7 @@ export function initQuickLaunch(deps: { getMainWindow: GetWindow; fanOutService:
 
   return {
     dispose() {
+      clearTimeout(prepareTimer);
       hotkey.release();
       destroyQuickLaunch();
       for (const channel of [
