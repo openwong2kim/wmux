@@ -36,7 +36,12 @@ export interface WatchedCancel {
 export type CancelProbe =
   | { kind: 'gone' } | { kind: 'session-changed' } | { kind: 'running' } | { kind: 'idle' }
   | { kind: 'unprovable' } | { kind: 'transient' }
-  | { kind: 'ended'; endedAs: ChatCancelEndedAs; evidence: ChatCancelEvidence } & Pick<StoredCancelProgress, 'promptRestored' | 'inputCleared'>;
+  | { kind: 'ended'; endedAs: ChatCancelEndedAs; evidence: ChatCancelEvidence;
+    /** The end is proven but a check on it is not done yet: settle only at the deadline. */
+    pending?: true;
+    /** Screen evidence was Claude's Stop-hook row: the turn completed rather than took the interrupt. */
+    stopHook?: true;
+  } & Pick<StoredCancelProgress, 'promptRestored' | 'inputCleared' | 'restoredMessageId'>;
 
 /** SSE `chat.cancel` (`ChatCancelEventFrame`), plus the owner it is delivered to. */
 export interface ChatCancelEvent extends ChatCancelEventFrame {
@@ -112,9 +117,11 @@ export function createChatCancelObserver<W extends WatchedCancel>(deps: ChatCanc
         case 'gone': progress = { state: 'unknown', reason: 'pane-closed', at }; break;
         case 'session-changed': progress = { state: 'unknown', reason: 'session-changed', at }; break;
         case 'ended':
+          if (seen.pending && !final) break;
           progress = { state: 'ended', endedAs: seen.endedAs, evidence: seen.evidence,
             ...(seen.promptRestored !== undefined ? { promptRestored: seen.promptRestored } : {}),
-            ...(seen.inputCleared !== undefined ? { inputCleared: seen.inputCleared } : {}), at };
+            ...(seen.inputCleared !== undefined ? { inputCleared: seen.inputCleared } : {}),
+            ...(seen.restoredMessageId !== undefined ? { restoredMessageId: seen.restoredMessageId } : {}), at };
           break;
         case 'unprovable': progress = { state: 'unknown', at }; break;
         default:

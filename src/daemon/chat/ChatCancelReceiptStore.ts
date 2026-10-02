@@ -160,7 +160,7 @@ export class ChatCancelReceiptStore {
     const entry = this.lookup(owner, clientCancelId);
     // A `pending` entry (the write in flight under the pane lock) reads `requested`.
     if (!entry) return undefined;
-    const { endedAs, evidence, reason, promptRestored, inputCleared, state, at } = effectiveCancelProgress(entry, false, this.now());
+    const { endedAs, evidence, reason, promptRestored, inputCleared, restoredMessageId, state, at } = effectiveCancelProgress(entry, false, this.now());
     const requestedAt = this.requestedAt.get(this.key(owner, clientCancelId));
     return {
       state,
@@ -170,6 +170,7 @@ export class ChatCancelReceiptStore {
       ...(reason ? { reason } : {}),
       ...(promptRestored !== undefined ? { promptRestored } : {}),
       ...(inputCleared !== undefined ? { inputCleared } : {}),
+      ...(restoredMessageId !== undefined ? { restoredMessageId } : {}),
       ...(requestedAt !== undefined ? { requestedAt } : {}),
       at,
     };

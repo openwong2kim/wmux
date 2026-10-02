@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { claudeComposerEmpty, claudeComposerText, codexComposerEmpty, deliverChatPrompt, type ChatDeliveryDeps } from '../deliverChatPrompt';
+import { claudeComposerEmpty, claudeComposerRows, claudeComposerShows, codexComposerEmpty, deliverChatPrompt, type ChatDeliveryDeps } from '../deliverChatPrompt';
 import type { ScheduledPromptAgentState } from '../../sessionPromptDelivery';
 import { generateTextSnapshot } from '../../HeadlessSnapshot';
 
@@ -160,16 +160,35 @@ describe('Claude\'s dimmed next-prompt suggestion', () => {
   });
 });
 
-describe('Claude composer text', () => {
+describe('Claude composer rows and the exact match', () => {
   const RULE = '─'.repeat(40);
-  it('joins wrapped and multi-line rows, reads empty as empty, and refuses anything that is not the composer', () => {
-    expect(claudeComposerText(['● done', RULE, '❯ fix the login', '  bug now', RULE, '  ⏸ manual mode on'])).toBe('fix the login\nbug now');
-    expect(claudeComposerText([RULE, '❯ ', RULE])).toBe('');
-    expect(claudeComposerText([RULE, '❯ Try "how does <filepath> work?"', RULE])).toBe('');
-    expect(claudeComposerText([RULE, '❯ draft', 'not indented', RULE])).toBeNull();
-    expect(claudeComposerText([RULE, '❯ draft'])).toBeNull();
-    expect(claudeComposerText([RULE, '❯ draft', RULE, 'Esc to cancel'])).toBeNull();
-    expect(claudeComposerText(null)).toBeNull();
+  const shows = (rows: string[], text: string, prefix = false) => {
+    const shown = claudeComposerRows(rows);
+    return !!shown && claudeComposerShows(shown, text, prefix);
+  };
+  it('reads rows, empty as none, and refuses anything that is not the composer', () => {
+    expect(claudeComposerRows(['● done', RULE, '❯ fix the login', '  bug now', RULE, '  ⏸ manual mode on'])).toEqual({ rows: ['fix the login', 'bug now'], width: 40 });
+    expect(claudeComposerRows([RULE, '❯ ', RULE])).toEqual({ rows: [], width: 40 });
+    expect(claudeComposerRows([RULE, '❯ Try "how does <filepath> work?"', RULE])).toEqual({ rows: [], width: 40 });
+    expect(claudeComposerRows([RULE, '❯ draft', 'not indented', RULE])).toBeNull();
+    expect(claudeComposerRows([RULE, '❯ draft'])).toBeNull();
+    expect(claudeComposerRows([RULE, '❯ draft', RULE, 'Esc to cancel'])).toBeNull();
+    expect(claudeComposerRows(null)).toBeNull();
+  });
+  it('counts spaces and line breaks; only a soft wrap the next word forced is undone', () => {
+    expect(shows([RULE, '❯ a b', RULE], 'a b')).toBe(true);
+    expect(shows([RULE, '❯ a b', RULE], 'ab')).toBe(false);
+    expect(shows([RULE, '❯ ab', RULE], 'a b')).toBe(false);
+    expect(shows([RULE, '❯ one', '  two', RULE], 'one\ntwo')).toBe(true);
+    // Two short rows are a line break the user typed, not a wrap.
+    expect(shows([RULE, '❯ one', '  two', RULE], 'one two')).toBe(false);
+    // 36 chars + prefix leave no room for the next word: a wrap at the dropped space.
+    const long = 'x'.repeat(30) + ' yyyyy';
+    expect(shows([RULE, `❯ ${long}`, '  zzzz', RULE], `${long} zzzz`)).toBe(true);
+    expect(shows([RULE, `❯ ${long}`, '  zzzz', RULE], `${long}zzzz`)).toBe(true);
+    expect(shows([RULE, '❯ one two', RULE], 'one two three')).toBe(false);
+    expect(shows([RULE, '❯ one two', RULE], 'one two three', true)).toBe(true);
+    expect(shows([RULE, '❯ one tw', RULE], 'one two', true)).toBe(true);
   });
 });
 

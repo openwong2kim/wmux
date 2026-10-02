@@ -41,21 +41,30 @@ export interface ChatCancelProgress {
   /** `unknown` only. */
   reason?: ChatCancelUnknownReason;
   /**
-   * `ended` only, Claude only, and only when the daemon itself sent the aimed
-   * turn's text. Claude puts a prompt interrupted before any output back into
+   * `ended` only. Claude puts a prompt interrupted before any output back into
    * its input box, which then refuses every send (`input-not-provably-empty`).
-   * `true`: once the turn ended, the input box held exactly that text.
-   * `false`: it was read and did not (empty, or other text). Absent: not checked
-   * (no daemon-sent text for the turn, the screen unreadable, a dialog up, or
-   * another send in flight).
+   * Checked only for a Claude turn that ended by the interrupt (not a completed
+   * or failed one), opened by a daemon send (phone send or queue delivery, not
+   * one Claude queued mid-turn), with no key typed into the pane since the Esc.
+   * `true`: the input box held exactly that send's text (spaces and line
+   * breaks included; only the screen's soft wrapping is undone).
+   * `false`: the box was read and did not hold it (empty, or other text);
+   * nothing was written. Absent: not checked (any condition above unmet, or no
+   * conclusive read before the observation window closed).
    */
   promptRestored?: boolean;
   /**
    * Present only with `promptRestored: true`. `true`: the daemon cleared the
    * restored text (Ctrl-U, which Claude can undo with Ctrl-Y) and a re-read
-   * showed the input box empty. `false`: it is not proven empty; check Terminal.
+   * showed the input box empty. `false`: it stopped short (a key typed in the
+   * pane meanwhile, a dialog, a screen it could not prove); check Terminal.
    */
   inputCleared?: boolean;
+  /**
+   * Present only with `promptRestored: true`, when the restored message was
+   * sent by the same owner: its `clientMessageId`. That message never ran.
+   */
+  restoredMessageId?: string;
   /** Epoch ms the interrupt was written. */
   requestedAt?: number;
   /** Epoch ms the state last changed. */
@@ -90,6 +99,7 @@ export interface StoredCancelProgress {
   reason?: ChatCancelUnknownReason;
   promptRestored?: boolean;
   inputCleared?: boolean;
+  restoredMessageId?: string;
   at: number;
 }
 
@@ -121,6 +131,7 @@ const STATES: ReadonlySet<string> = new Set<ChatCancelOutcomeState>(['requested'
 const ENDED_AS: ReadonlySet<string> = new Set<ChatCancelEndedAs>(['interrupted', 'completed', 'failed', 'unspecified']);
 const EVIDENCE: ReadonlySet<string> = new Set<ChatCancelEvidence>(['native', 'transcript', 'screen']);
 const REASON = /^[a-z][a-z0-9-]{0,63}$/;
+const MESSAGE_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 
 /**
  * A stored or received progress value, checked field by field. A state
@@ -136,7 +147,9 @@ export function normalizeCancelProgress(value: unknown, fallbackAt: number): Sto
       ...(typeof v.endedAs === 'string' && ENDED_AS.has(v.endedAs) ? { endedAs: v.endedAs as ChatCancelEndedAs } : {}),
       ...(typeof v.evidence === 'string' && EVIDENCE.has(v.evidence) ? { evidence: v.evidence as ChatCancelEvidence } : {}),
       ...(typeof v.promptRestored === 'boolean' ? { promptRestored: v.promptRestored } : {}),
-      ...(v.promptRestored === true && typeof v.inputCleared === 'boolean' ? { inputCleared: v.inputCleared } : {}) };
+      ...(v.promptRestored === true && typeof v.inputCleared === 'boolean' ? { inputCleared: v.inputCleared } : {}),
+      ...(v.promptRestored === true && typeof v.restoredMessageId === 'string' && MESSAGE_ID.test(v.restoredMessageId)
+        ? { restoredMessageId: v.restoredMessageId } : {}) };
   }
   if (state === 'unknown') {
     return { state, at, ...(typeof v.reason === 'string' && REASON.test(v.reason) ? { reason: v.reason as ChatCancelUnknownReason } : {}) };
@@ -154,6 +167,7 @@ export interface ChatCancelReceiptView {
   reason?: ChatCancelUnknownReason;
   promptRestored?: boolean;
   inputCleared?: boolean;
+  restoredMessageId?: string;
   requestedAt?: number;
   at?: number;
 }

@@ -11,7 +11,7 @@ import { withChosenAccountEnv } from '../phone/paneAccountSpawn';
 import { codexCdOperand, withCodexRemote } from '../web/recoverCodexPane';
 import type { CodexNativeInterrupt, CodexTurnRef } from '../web/codexPaneRelays';
 import { screenBlocksChatSend, screenShowsRunningTurn, screenShowsTurnEnding, titleShowsFinishedTurn } from '../transcript/chatScreenGate';
-import { claudeComposerText, deliverChatPrompt, type ChatScreenRows } from '../transcript/deliverChatPrompt';
+import { claudeComposerRows, claudeComposerShows, deliverChatPrompt, type ChatScreenRows } from '../transcript/deliverChatPrompt';
 import { INTERRUPT_COOLDOWN_MS, interruptChatTurn, type ChatInterruptVerdict } from '../transcript/interruptChatTurn';
 import { codexRuntimeEnv, terminalLaunchCommand } from '../transcript/terminalLaunch';
 import type { TerminalChatFailure, TerminalChatService } from '../transcript/TerminalChatService';
@@ -20,7 +20,7 @@ import { ChatSendReceiptStore, type StoredChatOutcome } from './ChatSendReceiptS
 import { ChatCancelReceiptStore } from './ChatCancelReceiptStore';
 import { createChatCancelObserver, type CancelProbe, type ChatCancelEvent, type WatchedCancel } from './chatCancelObserver';
 import { turnEndAfter, type TranscriptBoundary } from '../transcript/chatAgentStatus';
-import type { StoredCancelProgress } from '../../shared/phoneChatCancelOutcome';
+import { CHAT_CANCEL_OBSERVE_MS, type StoredCancelProgress } from '../../shared/phoneChatCancelOutcome';
 import { isActiveQueueState, type ChatQueueReason, type ChatQueueRecord, type ChatQueueState, type ChatQueueStore } from './ChatQueue';
 import {
   CHAT_LAUNCH_MAX_UNITS, CHAT_MESSAGE_RETENTION_MS, CHAT_SEND_MAX_UNITS, OPENCODE_MAX_SEND_BYTES, OPENCODE_REQUEST_MAX_BYTES,
@@ -49,6 +49,8 @@ export interface ChatPane {
   };
   bridge: {
     isEmptyShellPrompt(): boolean; getInputRevision(): number; noteInput(data: string): void;
+    /** Like `getInputRevision`, counting only writes that can act on the screen (no focus or mouse reports). */
+    getKeyInputRevision?(): number;
     /** When a lone ESC last reached the pane, from any source (0 = never). */
     getLastEscAt(): number;
     /** A native interrupt reached the running turn without a key: latch it like a lone ESC. */
@@ -198,11 +200,12 @@ const QUEUE_TURN_GATE_STALE_MS = 30_000;
 const QUEUE_PREVIEW_CHARS = 80;
 /** Ctrl-U: Claude deletes back to the start of the visual row (Ctrl-Y restores it). Never Ctrl-C. */
 const CLEAR_ROW_KEY = '\x15';
-/** Between two clearing keys: long enough for Claude to repaint before the re-read. */
-const CLEAR_STEP_MS = 150;
-/** Clearing keys per cancel at most (a row, or the empty line a row leaves, each). */
+/** Between two re-reads while waiting for Claude to repaint after a clearing key. */
+const CLEAR_FRAME_MS = 50;
+/** Clearing keys per cancel at most; the composer's row count bounds it first. */
 const CLEAR_MAX_KEYS = 32;
-const squash = (text: string) => text.replace(/\s+/g, '');
+/** Screen re-reads after one clearing key, waiting for the frame to change. */
+const CLEAR_FRAME_POLLS = 8;
 const DELIVERED_KEEP = 32;
 const slugOf = (state: ChatAgentState) => agentDisplayToSlug(state.agentName ?? '');
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -231,10 +234,12 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     incarnationId?: string; agentSessionId: string; slug: string; boundary: TranscriptBoundary;
     /** The Codex turn a native interrupt was aimed at (never on the wire). */
     codexTurn?: CodexTurnRef;
-    /** The text of the one daemon send delivered into the aimed turn (memory only). */
-    sentText?: string;
-    /** The restored-prompt check, once run: a settle retry must not repeat it. */
-    promptCheck?: Pick<StoredCancelProgress, 'promptRestored' | 'inputCleared'>;
+    /** The one daemon send that opened the aimed turn (memory only). */
+    sent?: { text: string; owner: ChatOwner; clientMessageId: string };
+    /** The pane's key revision right after the ESC: any key since then makes the box the user's. */
+    escRevision?: number;
+    /** The restored-prompt verdict, once conclusive: a settle retry must not repeat it. */
+    promptCheck?: Pick<StoredCancelProgress, 'promptRestored' | 'inputCleared' | 'restoredMessageId'>;
   }): Promise<CancelProbe> => {
     const id = cancel.paneId;
     const where = (): 'live' | 'gone' | 'transient' => {
@@ -272,25 +277,41 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     if (aimedRunning()) return { kind: 'running' };
     let title: { title: string; at: number } | null = null;
     try { title = deps.pane(id)?.bridge.getTitle() ?? null; } catch { /* no title = no title evidence */ }
-    if (titleShowsFinishedTurn(title, cancel.slug, cancel.requestedAt) || screenShowsTurnEnding(rows, cancel.slug)) {
-      return { kind: 'ended', endedAs: 'unspecified', evidence: 'screen' };
+    const stopHook = screenShowsTurnEnding(rows, cancel.slug);
+    if (stopHook || titleShowsFinishedTurn(title, cancel.slug, cancel.requestedAt)) {
+      return { kind: 'ended', endedAs: 'unspecified', evidence: 'screen', ...(stopHook ? { stopHook: true as const } : {}) };
     }
     return { kind: 'idle' };
   };
   type ObservedCancel = Parameters<typeof probeCancel>[0];
 
+  const keyRevision = (id: string): number | undefined => {
+    const bridge = deps.pane(id)?.bridge;
+    return bridge?.getKeyInputRevision?.() ?? bridge?.getInputRevision();
+  };
+
   /**
    * Claude puts a prompt interrupted before any output back into its input
    * box, and every later send is refused until it is empty. Once the aimed
-   * turn ended, the box is cleared only when it is PROVEN to hold exactly the
-   * text the daemon sent for that turn; anything else is left untouched. Each
-   * key is followed by a re-read: the rest must still be a prefix of that text.
-   * Runs under the pane's send lock, so no send or Stop interleaves.
+   * turn ended by the interrupt, the box is cleared only when it is PROVEN to
+   * hold exactly the text of the daemon send that opened the turn, and no key
+   * reached the pane since the ESC; anything else is left untouched.
+   *
+   * `retry`: nothing conclusive yet (another send holds the lock, a dialog or
+   * the running turn is on screen, the screen is unreadable); the observer
+   * looks again and settles `ended` only once this is conclusive or at its
+   * deadline. Each key is checked synchronously against the key revision
+   * pinned at the proof (or after the daemon's own previous key), then the
+   * screen is re-read until it changes: the rest must still be the start of
+   * that text. Runs under the pane's send lock, so no send or Stop interleaves.
    */
-  const clearRestoredPrompt = async (cancel: ObservedCancel): Promise<NonNullable<ObservedCancel['promptCheck']>> => {
+  const clearRestoredPrompt = async (cancel: ObservedCancel, seen: Extract<CancelProbe, { kind: 'ended' }>): Promise<NonNullable<ObservedCancel['promptCheck']> | 'retry'> => {
     const id = cancel.paneId;
-    const want = cancel.sentText === undefined ? '' : squash(cancel.sentText);
-    if (cancel.slug !== 'claude' || !want || sending.has(id)) return {};
+    const sent = cancel.sent;
+    // Only an end by the interrupt: a completed turn's box holding the same text was typed again.
+    const interrupted = seen.endedAs === 'interrupted' || seen.endedAs === 'unspecified' && !seen.stopHook;
+    if (cancel.slug !== 'claude' || !sent || !interrupted || cancel.escRevision === undefined) return {};
+    if (sending.has(id)) return 'retry';
     sending.add(id);
     let keys = 0;
     try {
@@ -300,49 +321,82 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
           deps.projector.status(id).agentSessionId === cancel.agentSessionId &&
           deps.chatAgentState(id).turn?.state !== 'running' && !hasOpenApproval(id);
       };
-      // What the composer holds, or null when the pane is no longer ours to type into.
-      const look = async (): Promise<string | null> => {
+      // The composer as drawn, or null when the pane is not ours to type into right now.
+      const look = async (): Promise<NonNullable<ReturnType<typeof claudeComposerRows>> | null> => {
         let rows: ChatScreenRows | null = null;
         try { rows = await deps.readScreen(id); } catch { /* unreadable = no evidence */ }
         if (!owned() || screenShowsRunningTurn(rows, 'claude')) return null;
-        return claudeComposerText(rows);
+        return claudeComposerRows(rows);
       };
-      const shown = await look();
-      if (shown === null) return {};
-      if (squash(shown) !== want) return { promptRestored: false };
-      // A key right after a lone ESC would read as Alt+key.
+      // A key right after a lone ESC would read as Alt+key: wait first, then prove.
       const sinceEsc = lastEscAt(id) > 0 ? now() - lastEscAt(id) : Infinity;
       if (sinceEsc < ESC_QUIET_MS) await (deps.delay ?? sleep)(ESC_QUIET_MS - sinceEsc);
-      // A key may only join an empty line (no visible change); two in a row means the keys do nothing.
-      let before = want;
+      if (keyRevision(id) !== cancel.escRevision) return {};
+      const shown = await look();
+      if (shown === null) return 'retry';
+      if (keyRevision(id) !== cancel.escRevision) return {};
+      if (!claudeComposerShows(shown, sent.text)) return { promptRestored: false };
+      const restored = { promptRestored: true as const,
+        ...(sent.owner === cancel.owner ? { restoredMessageId: sent.clientMessageId } : {}) };
+      // One key per row, and one more per line break it may have to join.
+      const maxKeys = Math.min(CLEAR_MAX_KEYS, 2 * shown.rows.length + 1);
+      let pinned: number | undefined = cancel.escRevision;
+      let before = shown.rows.join('\n');
       let stalled = 0;
-      while (keys < CLEAR_MAX_KEYS && stalled < 2) {
-        if (!owned()) break;
+      while (keys < maxKeys && stalled < 2) {
+        // Synchronous with the write: a key typed since the last proof stops it.
+        if (!owned() || keyRevision(id) !== pinned) break;
         keys++;
         if (!deps.write(id, CLEAR_ROW_KEY)) break;
-        await (deps.delay ?? sleep)(CLEAR_STEP_MS);
-        const left = await look();
-        if (left === null) break;
-        if (left === '') return { promptRestored: true, inputCleared: true };
-        const rest = squash(left);
-        if (!want.startsWith(rest)) break;
-        stalled = rest === before ? stalled + 1 : 0;
-        before = rest;
+        pinned = keyRevision(id);
+        let left: Awaited<ReturnType<typeof look>> = null;
+        for (let frame = 0; frame < CLEAR_FRAME_POLLS; frame++) {
+          await (deps.delay ?? sleep)(CLEAR_FRAME_MS);
+          left = await look();
+          if (left === null || left.rows.join('\n') !== before) break;
+        }
+        if (left === null || keyRevision(id) !== pinned) break;
+        if (left.rows.length === 0) return { ...restored, inputCleared: true };
+        if (!claudeComposerShows(left, sent.text, true)) break;
+        const drawn = left.rows.join('\n');
+        stalled = drawn === before ? stalled + 1 : 0;
+        before = drawn;
       }
-      return { promptRestored: true, inputCleared: false };
+      return { ...restored, inputCleared: false };
     } catch (error) {
       deps.log('warn', `[chat] clearing the restored prompt in ${id} failed: ${error instanceof Error ? error.message : String(error)}`);
-      return keys > 0 ? { promptRestored: true, inputCleared: false } : {};
+      return keys > 0 ? { promptRestored: true, inputCleared: false } : 'retry';
     } finally { sending.delete(id); }
+  };
+
+  /** Cancels whose restored-prompt check is still open, per pane: the queue holds its head meanwhile. */
+  const restoreWatches = new Map<string, Set<ObservedCancel>>();
+  const observeMs = deps.cancelObserveMs ?? CHAT_CANCEL_OBSERVE_MS;
+  const restorePending = (id: string): boolean => {
+    const open = restoreWatches.get(id);
+    for (const cancel of open ?? []) {
+      if (cancel.promptCheck || now() > cancel.requestedAt + observeMs) open!.delete(cancel);
+    }
+    if (open?.size === 0) restoreWatches.delete(id);
+    return !!open?.size;
+  };
+  const closeRestoreCheck = (cancel: ObservedCancel, verdict: NonNullable<ObservedCancel['promptCheck']>) => {
+    cancel.promptCheck = verdict;
+    if (!restorePending(cancel.paneId)) void kickQueue(cancel.paneId);
   };
 
   const cancelObserver = deps.cancelReceipts ? createChatCancelObserver<ObservedCancel>({
     store: deps.cancelReceipts,
     probe: async (cancel) => {
       const seen = await probeCancel(cancel);
-      if (seen.kind !== 'ended' || cancel.sentText === undefined) return seen;
-      cancel.promptCheck ??= await clearRestoredPrompt(cancel);
-      return { ...seen, ...cancel.promptCheck };
+      if (cancel.sent === undefined || cancel.promptCheck) return seen.kind === 'ended' ? { ...seen, ...cancel.promptCheck } : seen;
+      // Final without an end: no check will run.
+      if (seen.kind === 'gone' || seen.kind === 'session-changed' || seen.kind === 'unprovable') { closeRestoreCheck(cancel, {}); return seen; }
+      if (seen.kind !== 'ended') return seen;
+      const verdict = await clearRestoredPrompt(cancel, seen);
+      if (verdict === 'retry') return { ...seen, pending: true };
+      closeRestoreCheck(cancel, verdict);
+      return { ...seen, ...verdict };
     },
     emit: (event) => deps.onCancelEvent?.(event),
     log: (message) => deps.log('warn', message),
@@ -694,7 +748,11 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       outcome = { result: 'unconfirmed', effect: 'uncertain', error: 'delivery-unconfirmed' };
     }
     if (store && !store.complete(owner, clientMessageId, outcome)) deps.log('warn', `[chat] send receipt for ${req.id} not persisted`);
-    if (outcome.result === 'sent' && !outcome.error && owner !== 'desktop') noteDelivered(req.id, owner, clientMessageId, req.text);
+    if (outcome.result === 'sent' && !outcome.error && owner !== 'desktop') {
+      // The Enter opens the episode synchronously; a prompt Claude queued mid-turn opened none.
+      const opened = resolution.source === 'file' && !outcome.queued ? deps.chatAgentState(req.id).turn?.id : undefined;
+      noteDelivered(req.id, owner, clientMessageId, req.text, opened);
+    }
     return { clientMessageId, replayed: false, ...outcome };
   };
 
@@ -729,23 +787,20 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
   const draining = new Map<string, Promise<void>>();
   const rerun = new Set<string>();
   const lastDelivered = new Map<string, { turnId?: string; at: number; sawRunning: boolean }>();
-  const deliveredLog = new Map<string, Array<ChatDeliveredMessage & { owner: ChatOwner }>>();
+  /** `turnId`: the episode the send's Enter opened (none for one Claude queued mid-turn). Never on the wire. */
+  const deliveredLog = new Map<string, Array<ChatDeliveredMessage & { owner: ChatOwner; turnId?: string }>>();
   let queueTick: ReturnType<typeof setInterval> | undefined;
 
-  const noteDelivered = (id: string, owner: ChatOwner, clientMessageId: string, text: string) => {
+  const noteDelivered = (id: string, owner: ChatOwner, clientMessageId: string, text: string, turnId?: string) => {
     const list = deliveredLog.get(id) ?? [];
-    list.push({ owner, clientMessageId, text, at: now() });
+    list.push({ owner, clientMessageId, text, at: now(), ...(turnId !== undefined ? { turnId } : {}) });
     deliveredLog.set(id, list.slice(-DELIVERED_KEEP));
   };
 
-  /**
-   * The text of the one daemon send delivered into the aimed turn: the one that
-   * started it, or one Claude queued mid-turn. None when zero or several fit.
-   */
-  const sentTextFor = (id: string, turnStartedAt: number, requestedAt: number): string | undefined => {
-    const fits = (deliveredLog.get(id) ?? []).filter((entry) =>
-      entry.at >= turnStartedAt - CANCEL_CLOCK_SKEW_MS && entry.at <= requestedAt);
-    return fits.length === 1 ? fits[0].text : undefined;
+  /** The one daemon send whose Enter opened the aimed turn; none when zero or several did. */
+  const sendThatOpened = (id: string, turnId: string): ObservedCancel['sent'] => {
+    const fits = (deliveredLog.get(id) ?? []).filter((entry) => entry.turnId === turnId);
+    return fits.length === 1 ? { text: fits[0].text, owner: fits[0].owner, clientMessageId: fits[0].clientMessageId } : undefined;
   };
 
   const queueOutcome = (record: Readonly<ChatQueueRecord>, replayed: boolean): ChatSendOutcome =>
@@ -901,6 +956,8 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       if (!pane) { cancelQueued((record) => record.paneId === id, 'pane-closed'); return; }
       if (memo.retryAt !== undefined && now() < memo.retryAt) return;
       if (sending.has(id)) return;
+      // A cancel may have left the sent prompt in the box: its check runs first (it kicks the queue after).
+      if (restorePending(id)) return;
       // The lifetime counts only while the item waits on an agent that is not
       // working (idle, or blocked on a dialog): a long turn never expires it.
       const expired = () => {
@@ -1019,7 +1076,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
         // The episode this delivery opened (the Enter bumps it synchronously).
         const opened = resolution.source === 'file' ? deps.chatAgentState(id).turn : undefined;
         lastDelivered.set(id, { turnId: opened?.id, at: now(), sawRunning: opened?.state === 'running' });
-        noteDelivered(id, head.owner, head.clientMessageId, text);
+        noteDelivered(id, head.owner, head.clientMessageId, text, opened?.id);
         settle(head, verdict.state, verdict.reason);
         // At most one delivery per pass: the next waits for this one's turn.
         return;
@@ -1096,7 +1153,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
   const interruptLocked = async (id: string, agentSessionId: string,
     opts: { turnId?: string; authorized?: () => Promise<boolean>; beforeWrite?: (turn: { id: string; startedAt: number }) => boolean;
       native?: () => Promise<'interrupted' | 'not-written' | 'uncertain'>; nativeStillAimed?: () => boolean;
-      fallbackRefused?: (verdict: ChatInterruptVerdict) => void; escWriting?: () => void } = {},
+      fallbackRefused?: (verdict: ChatInterruptVerdict) => void; escWriting?: () => void; escWritten?: () => void } = {},
   ): Promise<ChatInterruptVerdict | 'busy'> => {
     if (sending.has(id)) return 'busy';
     sending.add(id);
@@ -1112,7 +1169,11 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
         },
         write: (data) => {
           opts.escWriting?.();
-          try { return deps.write(id, data); } catch (error) {
+          try {
+            const wrote = deps.write(id, data);
+            if (wrote) opts.escWritten?.();
+            return wrote;
+          } catch (error) {
             // The ESC may have reached the PTY: latch it anyway, so no other
             // Stop in this turn (or within the cooldown) presses a second one.
             try { deps.pane(id)?.bridge.noteInput(data); } catch { /* best effort */ }
@@ -1298,6 +1359,8 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     // path's own evidence rules decide.
     let nativeOutcome: 'interrupted' | 'not-written' | 'uncertain' | undefined;
     let escWritten = false;
+    // The key revision right after the ESC landed (the ESC itself counted).
+    let escRevision: number | undefined;
     const native = codexTurn && interruptNative
       ? async (): Promise<'interrupted' | 'not-written' | 'uncertain'> =>
         (nativeOutcome = (await interruptNative(id, deps.pane(id), codexTurn, { answered: markRequested })).outcome)
@@ -1324,7 +1387,8 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     try {
       verdict = await interruptLocked(id, req.agentSessionId, { ...(req.turnId !== undefined ? { turnId: req.turnId } : {}),
         ...(req.authorized ? { authorized: req.authorized } : {}), beforeWrite,
-        ...(native && nativeStillAimed ? { native, nativeStillAimed, fallbackRefused, escWriting: () => { escWritten = true; } } : {}) });
+        ...(native && nativeStillAimed ? { native, nativeStillAimed, fallbackRefused, escWriting: () => { escWritten = true; } } : {}),
+        escWritten: () => { escRevision = keyRevision(id); } });
     } catch (error) {
       // Nothing that throws out of here runs after the write (the write's own
       // failure is the `error` verdict), so the id is freed for a retry. Only
@@ -1353,12 +1417,17 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
         cancelObserver?.announce(watched, progress);
       }
       if (verdict === 'sent' && aimed && aimedPane) {
-        const sentText = sentTextFor(id, aimedStartedAt, requestedAt);
-        cancelObserver?.watch({ ...watched, turnId: aimed, turnStartedAt: aimedStartedAt, requestedAt,
+        const sent = agent === 'claude' && escRevision !== undefined ? sendThatOpened(id, aimed) : undefined;
+        const observed: ObservedCancel = { ...watched, turnId: aimed, turnStartedAt: aimedStartedAt, requestedAt,
           incarnationId: aimedPane.meta.incarnationId, agentSessionId: req.agentSessionId, slug: agent,
           boundary: { ...(lastEventId !== undefined ? { lastEventId } : {}), since: requestedAt - CANCEL_CLOCK_SKEW_MS },
-          ...(agent === 'claude' && sentText !== undefined ? { sentText } : {}),
-          ...(codexTurn && !escWritten && (nativeOutcome === 'interrupted' || requestedEarly) ? { codexTurn } : {}) } satisfies ObservedCancel);
+          ...(sent ? { sent, escRevision } : {}),
+          ...(codexTurn && !escWritten && (nativeOutcome === 'interrupted' || requestedEarly) ? { codexTurn } : {}) };
+        if (sent) {
+          const open = restoreWatches.get(id) ?? new Set<ObservedCancel>();
+          restoreWatches.set(id, open.add(observed));
+        }
+        cancelObserver?.watch(observed);
       } else if (verdict === 'sent') {
         // The pane was already gone at the write: nothing can be observed.
         cancelObserver?.settle(watched, { state: 'unknown', reason: 'pane-closed', at: now() });

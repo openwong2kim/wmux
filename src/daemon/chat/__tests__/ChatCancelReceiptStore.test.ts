@@ -68,12 +68,13 @@ describe('ChatCancelReceiptStore', () => {
       store.insertPending('device:a', cid, { paneId: 'pane', fingerprint: fp });
       store.complete('device:a', cid, { effect: 'interrupt-requested' }, { state: 'requested', at: 5_000 });
     }
-    store.setProgress('device:a', cleared, { state: 'ended', endedAs: 'unspecified', evidence: 'screen', promptRestored: true, inputCleared: true, at: 6_000 });
-    // `inputCleared` means nothing without a restored prompt.
-    store.setProgress('device:a', odd, { state: 'ended', endedAs: 'unspecified', evidence: 'screen', promptRestored: false, inputCleared: true, at: 6_000 });
+    store.setProgress('device:a', cleared, { state: 'ended', endedAs: 'unspecified', evidence: 'screen', promptRestored: true, inputCleared: true, restoredMessageId: 'm-1', at: 6_000 });
+    // `inputCleared` and `restoredMessageId` mean nothing without a restored prompt.
+    store.setProgress('device:a', odd, { state: 'ended', endedAs: 'unspecified', evidence: 'screen', promptRestored: false, inputCleared: true, restoredMessageId: 'm-1', at: 6_000 });
     const reloaded = new ChatCancelReceiptStore(dir, { now: () => 7_000 });
-    expect(reloaded.progress('device:a', cleared)).toEqual({ state: 'ended', endedAs: 'unspecified', evidence: 'screen', promptRestored: true, inputCleared: true, at: 6_000 });
+    expect(reloaded.progress('device:a', cleared)).toEqual({ state: 'ended', endedAs: 'unspecified', evidence: 'screen', promptRestored: true, inputCleared: true, restoredMessageId: 'm-1', at: 6_000 });
     expect(reloaded.progress('device:a', odd)).toEqual({ state: 'ended', endedAs: 'unspecified', evidence: 'screen', promptRestored: false, at: 6_000 });
+    expect(normalizeCancelProgress({ state: 'ended', promptRestored: true, restoredMessageId: 'bad id!', at: 1 }, 0)).toEqual({ state: 'ended', promptRestored: true, at: 1 });
     expect(normalizeCancelProgress({ state: 'unknown', promptRestored: true, inputCleared: true, at: 1 }, 0)).toEqual({ state: 'unknown', at: 1 });
   });
 

@@ -1035,85 +1035,151 @@ describe('cancel outcome (Esc path)', () => {
   describe('a prompt Claude restored into its input box', () => {
     const RULE = '─'.repeat(40);
     const composer = (...lines: string[]) => [RULE, `❯ ${lines[0] ?? ''}`.trimEnd(), ...lines.slice(1).map((line) => `  ${line}`), RULE];
-    /** A phone send that starts the aimed turn, then the cancel; Ctrl-U drops the composer's last row. */
-    const sendThenCancel = async (text: string, restored: string[] | null, opts: { ignoreKeys?: boolean } = {}) => {
+    /**
+     * A phone send whose Enter opens the aimed turn, then the cancel, then the
+     * turn ends by the interrupt (screen evidence) with `restored` in the box.
+     * Ctrl-U drops the composer's last row; `onKey` may also act per key.
+     */
+    const sendThenCancel = async (text: string, restored: string[] | null,
+      opts: { ignoreKeys?: boolean; opens?: string; onKey?: (f: ReturnType<typeof fixture>) => void; queue?: boolean } = {}) => {
       let shown: string[] = [];
-      const f = setup((fx) => ({ write: (id, data) => {
-        if (data === '\x15' && !opts.ignoreKeys) { shown = shown.slice(0, -1); fx.state.screen = composer(...shown); }
-        return fx.deps.write(id, data);
-      } }));
+      let fx!: ReturnType<typeof fixture>;
+      const f = setup((base) => { fx = base; return { write: (id, data) => {
+        if (/^\r+$/.test(data)) base.state.agent = { ...base.state.agent, agentStatus: 'running', turn: { id: opts.opens ?? 't1:n.3', state: 'running', startedAt: Date.now() } };
+        if (data === '\x15') {
+          opts.onKey?.(fx);
+          if (!opts.ignoreKeys) { shown = shown.slice(0, -1); base.state.screen = composer(...shown); }
+        }
+        return base.deps.write(id, data);
+      }, ...(opts.queue ? { queue: new ChatQueueStore(base.dir), queueTickMs: 3_600_000 } : {}) }; });
       f.state.agent = { ...f.state.agent, agentStatus: 'complete', turn: undefined };
       f.state.screen = composer();
-      expect(await f.bridge.send(phoneSend(text))).toMatchObject({ result: 'sent' });
+      const first = phoneSend(text);
+      expect(await f.bridge.send(first)).toMatchObject({ result: 'sent' });
       f.state.agent = { ...f.state.agent, agentStatus: 'running', turn: { id: 't1:n.3', state: 'running', startedAt: Date.now() } };
       f.state.screen = RUNNING;
       expect(await f.bridge.cancel(f.req)).toMatchObject({ effect: 'interrupt-requested' });
-      // Esc before any output: the turn ends with no transcript record and the text back in the box.
-      f.state.agent.turn = { id: 't1:n.3', state: 'idle', startedAt: f.startedAt };
-      f.shell.title = { title: '✳ Claude Code', at: Date.now() };
-      shown = restored ?? [];
-      f.state.screen = composer(...shown);
-      f.written.length = 0;
-      return f;
+      const end = () => {
+        // Esc before any output: no transcript record, the text back in the box.
+        f.state.agent = { ...f.state.agent, agentStatus: 'complete', turn: { id: 't1:n.3', state: 'idle', startedAt: f.startedAt } };
+        f.shell.title = { title: '✳ Claude Code', at: Date.now() };
+        shown = restored ?? [];
+        f.state.screen = composer(...shown);
+        f.written.length = 0;
+      };
+      return { ...f, first, end };
     };
 
-    it('is cleared with Ctrl-U once proven equal to the sent text, and the next send goes through', async () => {
+    it('is cleared with Ctrl-U once proven equal to the sent text, names the message, and the next send goes through', async () => {
       const f = await sendThenCancel('fix the login bug', ['fix the login bug']);
+      f.end();
       await vi.advanceTimersByTimeAsync(1_000);
-      expect(f.outcome()).toMatchObject({ state: 'ended', evidence: 'screen', promptRestored: true, inputCleared: true });
+      expect(f.outcome()).toMatchObject({ state: 'ended', evidence: 'screen', promptRestored: true, inputCleared: true,
+        restoredMessageId: f.first.clientMessageId });
       expect(f.written).toEqual(['\x15']);
-      expect(f.events.at(-1)).toMatchObject({ state: 'ended' });
       expect(await f.bridge.send(phoneSend('next'))).toMatchObject({ result: 'sent' });
     });
 
     it('takes one key per wrapped or multi-line row, re-reading after each', async () => {
-      const f = await sendThenCancel('first line\nsecond line that wraps', ['first line', 'second line that', 'wraps']);
+      const f = await sendThenCancel('first line\nsecond line', ['first line', 'second line']);
+      f.end();
       await vi.advanceTimersByTimeAsync(1_000);
       expect(f.outcome()).toMatchObject({ promptRestored: true, inputCleared: true });
-      expect(f.written).toEqual(['\x15', '\x15', '\x15']);
-    });
-
-    it('other text in the box, or an empty one, is never touched', async () => {
-      const other = await sendThenCancel('fix the login bug', ['fix the login bug and also the logout one']);
-      await vi.advanceTimersByTimeAsync(1_000);
-      expect(other.outcome()).toMatchObject({ state: 'ended', promptRestored: false });
-      expect(other.outcome()).not.toHaveProperty('inputCleared');
-      expect(other.written).toEqual([]);
-      vi.useRealTimers();
-      const empty = await sendThenCancel('fix the login bug', null);
-      await vi.advanceTimersByTimeAsync(1_000);
-      expect(empty.outcome()).toMatchObject({ state: 'ended', promptRestored: false });
-      expect(empty.written).toEqual([]);
-    });
-
-    it('keys that change nothing stop after two and report the box not cleared', async () => {
-      const f = await sendThenCancel('fix the login bug', ['fix the login bug'], { ignoreKeys: true });
-      await vi.advanceTimersByTimeAsync(1_000);
-      expect(f.outcome()).toMatchObject({ promptRestored: true, inputCleared: false });
       expect(f.written).toEqual(['\x15', '\x15']);
     });
 
-    it('no daemon send for the aimed turn, or a dialog on screen: nothing checked, nothing written', async () => {
-      const f = setup();
-      await f.bridge.cancel(f.req);
-      f.state.agent.turn = { id: 't1:n.3', state: 'idle', startedAt: f.startedAt };
-      f.shell.title = { title: '✳ Claude Code', at: Date.now() };
-      f.state.screen = composer('typed in Terminal');
-      f.written.length = 0;
+    it('edited text (even only its spaces), or an empty box, is never touched', async () => {
+      for (const [text, box] of [['fix the login bug', ['fix the login bug and more']], ['fix thelogin bug', ['fix the login bug']],
+        ['fix the login bug', null]] as const) {
+        vi.useRealTimers();
+        const f = await sendThenCancel(text, box === null ? null : [...box]);
+        f.end();
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(f.outcome()).toMatchObject({ state: 'ended', promptRestored: false });
+        expect(f.outcome()).not.toHaveProperty('inputCleared');
+        expect(f.written).toEqual([]);
+      }
+    });
+
+    it('a key typed in the pane since the Esc, or between two clearing keys, stops it', async () => {
+      const typed = await sendThenCancel('fix the login bug', ['fix the login bug']);
+      typed.end();
+      typed.shell.revision++;
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(typed.outcome()).toMatchObject({ state: 'ended' });
+      expect(typed.outcome()).not.toHaveProperty('promptRestored');
+      expect(typed.written).toEqual([]);
+      vi.useRealTimers();
+      const between = await sendThenCancel('first line\nsecond line', ['first line', 'second line'], { onKey: (fx) => { queueMicrotask(() => { fx.shell.revision++; }); } });
+      between.end();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(between.outcome()).toMatchObject({ promptRestored: true, inputCleared: false });
+      expect(between.written).toEqual(['\x15']);
+    });
+
+    it('a turn that completed (transcript or Stop-hook row) is never checked', async () => {
+      const done = await sendThenCancel('fix the login bug', ['fix the login bug']);
+      done.end();
+      done.setTranscript([meta('turn_complete', T0 + 300)]);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(done.outcome()).toMatchObject({ state: 'ended', endedAs: 'completed' });
+      expect(done.outcome()).not.toHaveProperty('promptRestored');
+      expect(done.written).toEqual([]);
+      vi.useRealTimers();
+      const hook = await sendThenCancel('fix the login bug', ['fix the login bug']);
+      hook.end();
+      hook.shell.title = { title: '', at: 0 };
+      hook.state.screen = ['✻ Musing… (running Stop hooks… 0/2 · 2s)', ...composer('fix the login bug')];
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(hook.outcome()).toMatchObject({ state: 'ended', endedAs: 'unspecified' });
+      expect(hook.outcome()).not.toHaveProperty('promptRestored');
+      expect(hook.written).toEqual([]);
+    });
+
+    it('only the send that opened the aimed turn counts, not one that opened another', async () => {
+      const f = await sendThenCancel('fix the login bug', ['fix the login bug'], { opens: 't1:n.2' });
+      f.end();
       await vi.advanceTimersByTimeAsync(1_000);
       expect(f.outcome()).toMatchObject({ state: 'ended' });
       expect(f.outcome()).not.toHaveProperty('promptRestored');
       expect(f.written).toEqual([]);
-      vi.useRealTimers();
-      const dialog = await sendThenCancel('fix the login bug', ['fix the login bug']);
-      dialog.state.screen = [...composer('fix the login bug'), 'Esc to cancel'];
+    });
+
+    it('an inconclusive look (a dialog) holds the settle and looks again; the deadline settles ended without it', async () => {
+      const f = await sendThenCancel('fix the login bug', ['fix the login bug']);
+      f.end();
+      f.state.screen = [...composer('fix the login bug'), 'Esc to cancel'];
       await vi.advanceTimersByTimeAsync(1_000);
-      expect(dialog.outcome()).not.toHaveProperty('promptRestored');
-      expect(dialog.written).toEqual([]);
+      expect(f.outcome()).toMatchObject({ state: 'requested' });
+      f.state.screen = composer('fix the login bug');
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(f.outcome()).toMatchObject({ state: 'ended', promptRestored: true, inputCleared: true });
+      vi.useRealTimers();
+      const stuck = await sendThenCancel('fix the login bug', ['fix the login bug']);
+      stuck.end();
+      stuck.state.screen = [...composer('fix the login bug'), 'Esc to cancel'];
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(stuck.outcome()).toMatchObject({ state: 'ended', evidence: 'screen' });
+      expect(stuck.outcome()).not.toHaveProperty('promptRestored');
+      expect(stuck.written).toEqual([]);
+    });
+
+    it('a queued phone message waits for the check instead of failing on the restored prompt', async () => {
+      const f = await sendThenCancel('fix the login bug', ['fix the login bug'], { queue: true });
+      const later = phoneSend('then do this', { queue: { authorized: async () => true } });
+      expect(await f.bridge.send(later)).toMatchObject({ queueState: 'queued' });
+      f.end();
+      await f.bridge.kickQueue?.('pane');
+      expect(f.written).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(f.outcome()).toMatchObject({ promptRestored: true, inputCleared: true });
+      expect(f.written[0]).toBe('\x15');
+      expect(f.written).toContain('\x1b[200~then do this\x1b[201~');
     });
 
     it('a settle retry does not clear twice', async () => {
       const f = await sendThenCancel('fix the login bug', ['fix the login bug']);
+      f.end();
       const store = f.deps.cancelReceipts!;
       const real = store.setProgress.bind(store);
       let fail = 1;
