@@ -105,7 +105,7 @@ internal static class Server
             case "resolveTarget":
             {
                 var (app, window) = Apps.ResolveTarget(p.RequireString("app"), p.String("window"));
-                return new JsonObject { ["app"] = app.Json(), ["window"] = window.Json(app) };
+                return new JsonObject { ["app"] = app.Json(), ["window"] = Apps.WindowJson(app, window) };
             }
             case "getAppState": return Observe.GetAppState(p);
             case "click": return Actions.Click(p);

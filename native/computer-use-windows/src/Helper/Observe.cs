@@ -27,7 +27,7 @@ internal static unsafe class Observe
         {
             ["snapshotId"] = snapshotId,
             ["app"] = app.Json(),
-            ["window"] = window.Json(app),
+            ["window"] = Apps.WindowJson(app, window),
         };
         var elements = new List<nint>();
         var runtimeIds = new List<int[]>();

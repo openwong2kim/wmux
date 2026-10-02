@@ -113,3 +113,13 @@ GlobalSize
 SHGetKnownFolderPath
 FOLDERID_LocalAppData
 CreateFile
+IShellWindows
+IWebBrowserApp
+IServiceProvider
+IShellBrowser
+IShellView
+IFolderView
+IPersistFolder2
+SHGetNameFromIDList
+SIGDN
+SID_STopLevelBrowser

@@ -45,11 +45,14 @@ internal static unsafe class Win
         return true;
     }
 
-    /// <summary>The windows a person can see and switch to: visible, unowned, not cloaked, not tool windows.</summary>
+    /// <summary>
+    /// The top-level windows a person can see: visible, not cloaked, not tool
+    /// windows, not the desktop or taskbars. Owned windows (dialogs, owned
+    /// popups) count too; WindowEntry reports their owner.
+    /// </summary>
     public static bool IsAppWindow(HWND hwnd)
     {
         if (!PInvoke.IsWindowVisible(hwnd)) return false;
-        if (PInvoke.GetWindow(hwnd, GET_WINDOW_CMD.GW_OWNER) != HWND.Null) return false;
         var exStyle = (WINDOW_EX_STYLE)(uint)PInvoke.GetWindowLongPtr(hwnd, WINDOW_LONG_PTR_INDEX.GWL_EXSTYLE);
         if ((exStyle & WINDOW_EX_STYLE.WS_EX_TOOLWINDOW) != 0) return false;
         if (IsCloaked(hwnd)) return false;
