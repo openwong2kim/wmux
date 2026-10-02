@@ -6,7 +6,9 @@ import ComputerUseCore
 
 /// src/shared/computer/protocol.ts COMPUTER_PROTOCOL_VERSION.
 let protocolVersion = 2
-let idleExitSeconds: TimeInterval = 5 * 60
+/// Longer than main's 5-minute idle timer, so main always closes an idle
+/// helper first and never sends a request into one that is exiting.
+let idleExitSeconds: TimeInterval = 6 * 60
 /// Inside the 15 s main allows getAppState, leaving room for the 2 s
 /// screen-recording recheck and the capture.
 let walkBudgetSeconds: TimeInterval = 8
@@ -134,31 +136,35 @@ final class Server {
             guard let list = v as? [String] else { throw HelperError("invalid_argument", "\(key) must be a list of names") }
             return list
         }
-        var extra = Set<HeldInput>()
+        var keys = Set<CGKeyCode>()
         for key in try names("keys") {
             guard let code = KeyCodes.keyCode(for: key, layout: Input.shared.layoutKeyCode) else {
                 throw HelperError("invalid_argument", "\"\(key.prefix(20))\" is not a canonical key name")
             }
-            extra.insert(.key(code))
+            keys.insert(code)
             // The key may have gone down on the ANSI position before a layout change.
-            if let ansi = KeyCodes.keyCode(for: key) { extra.insert(.key(ansi)) }
+            if let ansi = KeyCodes.keyCode(for: key) { keys.insert(ansi) }
         }
         guard let mods = KeyCodes.orderedModifiers(try names("modifiers")) else {
             throw HelperError("invalid_argument", "modifiers must be ctrl, alt, shift or meta")
         }
-        extra.formUnion(mods.map { .key($0.keyCode) })
+        keys.formUnion(mods.map(\.keyCode))
+        var buttons: [CGMouseButton] = []
         for button in try names("buttons") {
             switch button {
-            case "left": extra.insert(.mouse(Int32(CGMouseButton.left.rawValue)))
-            case "right": extra.insert(.mouse(Int32(CGMouseButton.right.rawValue)))
-            case "middle": extra.insert(.mouse(Int32(CGMouseButton.center.rawValue)))
+            case "left": buttons.append(.left)
+            case "right": buttons.append(.right)
+            case "middle": buttons.append(.center)
             default: throw HelperError("invalid_argument", "buttons must be left, right or middle")
             }
         }
         let listed = p["keys"] != nil || p["modifiers"] != nil || p["buttons"] != nil
         // Nothing known: the modifiers and buttons only, never ordinary keys.
-        if !listed { extra.formUnion(Input.modifiersAndButtons) }
-        return Input.shared.releaseAll(extra: extra)
+        if !listed {
+            keys.formUnion(Input.modifiersAndButtons.keys)
+            buttons = [.left, .right, .center]
+        }
+        return Input.shared.releaseAll(extra: HeldState(keys: keys.sorted()), extraButtons: buttons)
     }
 
     private func getAppState(_ p: JSON) async throws -> JSON {
@@ -230,10 +236,22 @@ final class Server {
     }
 }
 
-/// Releases anything held and puts back a clipboard a paste was using, then
-/// exits. Safe from any thread.
+private let shutdownLock = NSLock()
+private var shuttingDown = false
+
+/// The one way out (stdin EOF, idle, SIGTERM/SIGINT/SIGHUP), safe from any
+/// thread: stop all posting first (waiting out an in-flight post), then
+/// release held input once, then exit. A second caller — EOF racing a signal —
+/// parks instead of exiting in the middle of the release.
 func shutdown(code: Int32 = 0) -> Never {
-    Input.shared.releaseAll()
-    Clipboard.restoreIfUnchanged()
+    shutdownLock.lock()
+    if shuttingDown {
+        shutdownLock.unlock()
+        while true { pause() }
+    }
+    shuttingDown = true
+    shutdownLock.unlock()
+    Input.shared.stopPosting()
+    Input.shared.releaseAll(releasing: true)
     exit(code)
 }

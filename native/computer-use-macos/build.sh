@@ -6,6 +6,7 @@
 #
 #   npm run build:computer-use-macos                     # ad-hoc signature
 #   npm run build:computer-use-macos -- --identity <id>  # Apple Development / Developer ID
+#   npm run build:computer-use-macos -- --dev-any-parent # let an unsigned (dev) wmux drive it
 #
 # The helper is signed here, inside-out, on its own: hardened runtime, a
 # secure timestamp (real identities), the permanent identifier and NO
@@ -18,11 +19,15 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 IDENTIFIER="com.electron.wmux.computer-use"
 APP_NAME="wmux Computer Use.app"
 IDENTITY="${WMUX_COMPUTER_USE_IDENTITY:--}"
+# A release helper runs only under signed wmux (Sources/wmux-computer-use/Parent.swift).
+# Dev wmux is unsigned, so dev builds of the helper opt out explicitly.
+SWIFT_FLAGS=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --identity) IDENTITY="$2"; shift 2 ;;
     --identity=*) IDENTITY="${1#--identity=}"; shift ;;
+    --dev-any-parent) SWIFT_FLAGS=(-Xswiftc -DWMUX_ALLOW_ANY_PARENT); shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -35,8 +40,8 @@ fi
 VERSION="$(node -p "require('$ROOT/package.json').version")"
 
 echo "[computer-use-macos] swift build (release, arm64)"
-swift build --package-path "$HERE" -c release --arch arm64 --product wmux-computer-use
-BIN="$(swift build --package-path "$HERE" -c release --arch arm64 --show-bin-path)/wmux-computer-use"
+swift build --package-path "$HERE" -c release --arch arm64 --product wmux-computer-use ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"}
+BIN="$(swift build --package-path "$HERE" -c release --arch arm64 --show-bin-path ${SWIFT_FLAGS[@]+"${SWIFT_FLAGS[@]}"})/wmux-computer-use"
 
 APP="$HERE/dist/$APP_NAME"
 rm -rf "$APP"

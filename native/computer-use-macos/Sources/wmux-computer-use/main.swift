@@ -5,6 +5,10 @@ import AppKit
 import ApplicationServices
 import Foundation
 
+// Only signed wmux may drive this helper (Parent.swift); checked before the
+// trampoline, while the parent is still the process that spawned us.
+Parent.enforce()
+
 // Own TCC identity first: nothing below may touch AX or capture as wmux.
 Trampoline.ensureSelfResponsible()
 

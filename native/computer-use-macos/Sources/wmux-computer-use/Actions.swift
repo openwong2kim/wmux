@@ -29,21 +29,20 @@ enum Focus {
     }
 
     /// The window under a screen point, front to back, skipping fully
-    /// transparent windows and wmux's own click-through, content-protected
-    /// overlay (it belongs to our parent process).
+    /// transparent windows only. No window is skipped for being wmux's: a
+    /// click-through overlay (the planned agent cursor) would have to be named
+    /// explicitly by main, because "content-protected window of our parent"
+    /// also matches real wmux windows a click must never land on.
     static func hit(at point: CGPoint) -> Hit? {
         guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
             return nil
         }
-        let parent = getppid()
         for info in list {
             guard let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
                   let bounds = CGRect(dictionaryRepresentation: boundsDict),
                   bounds.contains(point) else { continue }
             if let alpha = info[kCGWindowAlpha as String] as? Double, alpha <= 0 { continue }
             let pid = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value ?? -1
-            let sharing = (info[kCGWindowSharingState as String] as? NSNumber)?.intValue ?? 1
-            if pid == parent && sharing == 0 { continue }
             return Hit(
                 pid: pid,
                 windowID: (info[kCGWindowNumber as String] as? NSNumber)?.uint32Value ?? 0,
@@ -71,11 +70,14 @@ enum Focus {
         }
     }
 
-    /// Cheap per-keystroke re-check inside a batch: the person may switch
-    /// apps or focus a password field while a long string is being typed.
-    static func stillSafeToType(_ target: ControlTarget) -> Bool {
-        NSWorkspace.shared.frontmostApplication?.processIdentifier == target.pid && !IsSecureEventInputEnabled()
-            && !Session.isLocked
+    /// The re-check before every typed chunk and every key press: the target
+    /// app is in front, its focused window is the target window, the screen is
+    /// not locked, and no password field has focus (secure input or a secure
+    /// focused element). Throws the error that stops the batch.
+    static func requireStillSafe(_ target: ControlTarget) throws {
+        if Session.isLocked { throw HelperError("window_not_focused", "the screen locked; the rest was not sent") }
+        try requireKeyboard(target)
+        try refuseSecureInput(target.pid)
     }
 
     /// Brings the target window forward (AX, not input) if another window
@@ -223,58 +225,30 @@ enum Actions {
         try Focus.refuseSecureInput(target.pid)
 
         let before = focusedValue(target.pid)
-        if text.count < 64 {
-            try typeChecked(text, target: target)
-            let verified = await waitForEffect(of: text, before: before, pid: target.pid, timeout: 0.3)
-            return result("synthetic", verified: verified)
-        }
-        return try await paste(text, target: target, before: before)
+        try typeChecked(text, target: target)
+        let verified = await waitForEffect(of: text, before: before, pid: target.pid, timeout: text.count < 64 ? 0.3 : 1.0)
+        return result("synthetic", verified: verified)
     }
 
-    /// Types `text`, re-checking before every character that the target is
-    /// still in front and no password field took focus.
+    /// Types `text` in short Unicode chunks (no clipboard), re-checking the
+    /// target and password-field focus before every chunk.
     private static func typeChecked(_ text: String, target: ControlTarget) throws {
-        let typed = Input.shared.typeUnicode(text) { Focus.stillSafeToType(target) }
+        var stop: HelperError?
+        let typed = Input.shared.typeUnicode(text) {
+            do {
+                try Focus.requireStillSafe(target)
+                return true
+            } catch let e as HelperError {
+                stop = e
+                return false
+            } catch {
+                return false
+            }
+        }
         if typed < text.count {
-            throw HelperError(
-                "window_not_focused",
-                "focus left the target (or a password field took it) after \(typed) of \(text.count) characters; the rest was not typed"
-            )
+            let why = stop ?? HelperError("window_not_focused", "focus left the target")
+            throw HelperError(why.code, "\(why.message) (after \(typed) of \(text.count) characters; the rest was not typed)")
         }
-    }
-
-    /// Long text goes through the pasteboard, marked concealed + transient so
-    /// clipboard managers skip it. The previous contents come back afterwards,
-    /// unless something else wrote the pasteboard in the meantime. If the
-    /// current contents cannot be saved completely (a promised or unreadable
-    /// type), the text is typed instead: the clipboard is not ours to lose.
-    private static func paste(_ text: String, target: ControlTarget, before: String?) async throws -> JSON {
-        guard let saved = Clipboard.snapshot() else {
-            try typeChecked(text, target: target)
-            let verified = await waitForEffect(of: text, before: before, pid: target.pid, timeout: 0.5)
-            return result("synthetic", verified: verified, note: "typed, because the clipboard could not be saved")
-        }
-        guard Clipboard.write(text, saved: saved) else {
-            Clipboard.restoreIfUnchanged()
-            throw HelperError("internal", "could not write the pasteboard")
-        }
-        let vKey = KeyCodes.keyCode(for: "v", layout: Input.shared.layoutKeyCode) ?? CGKeyCode(kVK_ANSI_V)
-        guard Focus.stillSafeToType(target) else {
-            Clipboard.restoreIfUnchanged()
-            throw HelperError("window_not_focused", "focus left the target before the paste; nothing was pasted")
-        }
-        Input.shared.withModifiers([KeyCodes.modifier(named: "meta")!]) { flags in
-            Input.shared.tap(key: vKey, flags: flags)
-        }
-        // The app reads the pasteboard asynchronously. Restore only once the
-        // field visibly changed to hold the text, or after a grace period.
-        let verified = await waitForEffect(of: text, before: before, pid: target.pid, timeout: 1.0)
-        if !verified { try? await Task.sleep(nanoseconds: 500_000_000) }
-        let restored = Clipboard.restoreIfUnchanged()
-        return result(
-            "clipboard", verified: verified,
-            note: restored ? "pasted; the previous clipboard was restored" : "pasted; the clipboard changed meanwhile, so it was not restored"
-        )
     }
 
     /// Verified only when the focused element's value changed and now holds
@@ -302,8 +276,12 @@ enum Actions {
         try Focus.refuseSecureInput(target.pid)
         let flags = KeyCodes.intrinsicFlags(for: key)
         for n in 0..<repeatCount {
-            if n > 0 && !Focus.stillSafeToType(target) {
-                throw HelperError("window_not_focused", "focus left the target after \(n) of \(repeatCount) presses; the rest were not sent")
+            if n > 0 {
+                do {
+                    try Focus.requireStillSafe(target)
+                } catch let e as HelperError {
+                    throw HelperError(e.code, "\(e.message) (after \(n) of \(repeatCount) presses; the rest were not sent)")
+                }
             }
             Input.shared.tap(key: code, flags: flags)
             usleep(4_000)
@@ -345,7 +323,14 @@ enum Actions {
         }
         let (point, _) = try screenPoint(snap, index: p.int("index"), point: try p.point("point"))
         try await Focus.requirePointer(target, window: snap.window, at: point)
-        Input.shared.scroll(at: point, dx: dx, dy: dy, notches: amount)
+        // Re-run the hit-test before every notch: a window that moves over
+        // the point mid-scroll must not receive the rest.
+        let sent = Input.shared.scroll(at: point, dx: dx, dy: dy, notches: amount) {
+            !Session.isLocked && Focus.pointerHitsTarget(target, at: point)
+        }
+        if sent < amount {
+            throw HelperError("window_not_focused", "another window covered the point after \(sent) of \(amount) notches; the rest was not sent")
+        }
         return result("synthetic", verified: false)
     }
 }

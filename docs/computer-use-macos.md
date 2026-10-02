@@ -15,6 +15,7 @@ before it tries.
 ```
 npm run build:computer-use-macos                      # ad-hoc signature
 npm run build:computer-use-macos -- --identity <id>   # Apple Development / Developer ID
+npm run build:computer-use-macos -- --dev-any-parent  # dev wmux may drive it (never for release)
 npm run test:computer-use-macos                       # Swift unit tests
 ```
 
@@ -190,25 +191,29 @@ is not re-walked.
   window to be the focused window of the frontmost app. Pointer batches need
   the target window itself under the point, or a menu or popover of the same
   app (a window above the normal layer); another normal window of the same app
-  does not count. A covered window is first raised through AX (`AXFrontmost`,
-  `AXRaise`; neither counts as input). When the check fails, nothing is sent
-  and the call returns `window_not_focused`. While a batch types, the frontmost
-  app and secure input are re-checked before every character and every
-  repeated key, and the batch stops there.
+  does not count. No window is skipped for being wmux's: when the agent-cursor
+  overlay lands, main must name its window ids, because "content-protected
+  window of the parent" also matches real wmux windows. A covered window is
+  first raised through AX (`AXFrontmost`, `AXRaise`; neither counts as input).
+  When the check fails, nothing is sent and the call returns
+  `window_not_focused`.
+- Re-checks inside a batch: before every typed chunk and every repeated key,
+  the helper checks again that the screen is not locked, the target app is in
+  front, its focused window is the target window, and no password field has
+  focus. Before every scroll notch, the point must still hit the target. The
+  batch stops at the first failure and says how far it got.
 - Action ladder: a plain left click on an element with `AXPress` is pressed
   through accessibility. `setValue` is `AXValue` followed by a read-back, which
   counts as `verified`. Everything else is synthetic.
 - `type`: with an index, the element must actually take keyboard focus, or
-  nothing is typed. Text shorter than 64 characters is typed as Unicode key
-  events, with `\n` and `\t` sent as Return and Tab. Longer text is pasted.
-  The pasteboard item carries `org.nspasteboard.ConcealedType` and
-  `TransientType`, so clipboard managers skip it. The previous clipboard is put
-  back only if the pasteboard's `changeCount` has not moved since the paste;
-  that also happens on SIGTERM in the middle of a paste. If the current
-  clipboard cannot be saved completely (a promised or unreadable type), the
-  text is typed instead. The result is `verified` only when the focused
-  element's value changed and now ends with the text. The clipboard is
-  restored as soon as that happens, otherwise after 1.5 s.
+  nothing is typed. Text of any length is typed as Unicode key events. Each
+  event carries at most 16 UTF-16 units, and graphemes are never split, so a
+  composed Hangul syllable or an emoji arrives whole. `\n` and `\t` are sent as
+  Return and Tab presses. The clipboard is never used: no leak to clipboard
+  managers, no restore race, and nothing of the person's clipboard can be
+  pasted into the target. (`TYPE_PASTE_THRESHOLD` in protocol.ts does not
+  apply to this helper.) The result is `verified` only when the focused
+  element's value changed and now ends with the text.
 - Keystrokes (`type`, `pressKey`, `hotkey`) and `setValue` are refused with
   `app_blocked` while secure keyboard entry is on (`IsSecureEventInputEnabled`)
   or the focused element is a password field: an `AXSecureTextField`, or a
@@ -218,28 +223,63 @@ is not re-walked.
   labelled A), and named keys are positional. Arrows carry the NumericPad and
   Fn flags, and Home, End, PageUp, PageDown, Delete and F1 to F12 carry Fn, as
   on a real keyboard. The layout map is rebuilt when the input source changes.
-- Held input: every key-down and button-down is recorded before it is posted
-  and cleared after its up event, and every batch sends its ups from a
-  `defer`. Stdin EOF and SIGTERM/SIGINT/SIGHUP release what this process holds.
-  Modifiers and buttons, the only input held across a batch, are also recorded
-  in `$TMPDIR/com.electron.wmux.computer-use.held/<pid>.json`. The next helper
-  releases what a dead helper recorded there.
+- Held input: every key-down and button-down, including the key behind a
+  Unicode event, is recorded before it is posted and cleared after its up
+  event. Every batch sends its ups from a `defer`. The record is also kept in a
+  file per helper pid, so the next helper can release what a crashed one left
+  down:
+  - the directory is `<per-user temp>/com.electron.wmux.computer-use.held`,
+    found through `confstr(_CS_DARWIN_USER_TEMP_DIR)` rather than `$TMPDIR`;
+  - it must be a real directory owned by the user with mode 0700; a looser
+    mode is tightened, anything else turns persistence off;
+  - files are created 0600 with `O_NOFOLLOW`, and read back only when the user
+    owns them and they are small regular files;
+  - their entries become up events only for keys a helper can press (the main
+    key block, the named keys, the modifiers) and the three buttons. A button
+    goes up where it went down.
 - `releaseInput { keys?, modifiers?, buttons? }` releases what this helper
   tracked, what a dead helper recorded, and whatever main lists from the
-  request that was cut off. With no fields at all it releases the four
-  modifiers and the three mouse buttons only. It never sweeps plain keys, because a stray
-  key-up reaches keyup handlers in the app in front. `released: true` means
-  every up event was created and posted (CGEventPost itself reports nothing).
+  request that was cut off. For a cut-off `type`, main lists Enter, Tab and
+  the modifiers. With no fields at all it releases the four modifiers and the
+  three mouse buttons only. It never sweeps plain keys, because a stray key-up
+  reaches keyup handlers in the app in front. `released: true` means every up
+  event was created and posted (CGEventPost itself reports nothing).
+- Shutdown (stdin EOF, idle, SIGTERM/SIGINT/SIGHUP) goes through one gate.
+  Posting stops first, under the lock every post takes, so a post already
+  under way finishes and no later one starts. Held input is released after
+  that, exactly once. A second trigger, such as EOF racing a signal, parks
+  instead of exiting in the middle of the release.
 
 While the screen is locked, AX reports no windows for any app and the lock
 screen owns the keyboard. Every method except `capabilities`, `listApps` and
 `releaseInput` then answers `window_not_focused` and says the screen is
-locked. Typing batches also stop between characters if the screen locks.
+locked.
+
+## Who may drive the helper
+
+The helper owns its own grants and does what its stdin says. Without a check,
+any process of the same user could exec it and drive the desktop with none of
+wmux's consent prompts, blocklist or stop key. So before anything else,
+before the TCC trampoline, it checks the code signature of its parent process
+against:
+
+```
+anchor apple generic and certificate leaf[subject.OU] = "8RGHH2F237" and identifier "com.electron.wmux"
+```
+
+If the check fails, it exits with code 71 (70 is the trampoline failing). Dev wmux (Electron from
+`node_modules`) is not signed that way, so a helper built with
+`build.sh --dev-any-parent` (Swift flag `WMUX_ALLOW_ANY_PARENT`) skips the check
+and logs that it did. The release job never passes the flag, and
+`check-signature.sh --release` fails a binary that carries the dev marker.
 
 ## Process
 
 A single AX messaging timeout of 1.5 s is set on the system-wide element, so
-it covers every element. Requests are handled one at a time on the main thread; the main run loop keeps
-`NSWorkspace`'s app list current. The helper exits on stdin EOF and after
-5 minutes without a request, releasing held input first. stdout is written
+it covers every element. NSApplication is initialized with the prohibited
+activation policy, because ScreenCaptureKit needs a window-server connection.
+Requests are handled one at a time on the main thread; the main run loop keeps
+`NSWorkspace`'s app list current. The helper exits on stdin EOF, and after
+6 minutes without a request, releasing held input first. That is longer than
+main's 5-minute idle timer, so main always closes an idle helper first. stdout is written
 unbuffered, one JSON line per message. stderr carries short diagnostics only.

@@ -3,7 +3,8 @@
 # src/main/computer/verifyHelper.ts expect:
 #   - identifier com.electron.wmux.computer-use, hardened runtime;
 #   - NO entitlements (never wmux's Electron ones);
-#   - with --release: signed by the wmux team (the requirement main checks).
+#   - with --release: signed by the wmux team (the requirement main checks)
+#     and not a --dev-any-parent build.
 #
 #   check-signature.sh "<path>/wmux Computer Use.app" [--release]
 set -euo pipefail
@@ -27,5 +28,9 @@ ENTITLEMENTS="$(codesign -d --entitlements - "$APP" 2>/dev/null || true)"
 
 if [ "$RELEASE" = "--release" ]; then
   codesign --verify --strict "-R=$REQUIREMENT" "$APP" || fail "does not satisfy: $REQUIREMENT"
+  # A dev build (--dev-any-parent) lets any process drive the helper.
+  if grep -q WMUX_COMPUTER_USE_DEV_ANY_PARENT "$APP/Contents/MacOS/wmux-computer-use"; then
+    fail "is a dev build (--dev-any-parent)"
+  fi
 fi
 echo "computer-use helper signature ok: $APP"
