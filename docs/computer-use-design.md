@@ -191,7 +191,7 @@ The error codes live in `src/shared/computer/errors.ts`. Each code carries
 `app_not_found`, `app_blocked`, `window_not_found`, `window_not_focused`,
 `element_not_found`, `element_stale`, `action_not_supported`,
 `value_not_settable`, `snapshot_unknown`, `permission_missing`,
-`target_elevated`, `input_busy`, `stop_key_unavailable`, `aborted`, `timeout`,
+`target_elevated`, `input_busy`, `shortcut_blocked`, `stop_key_unavailable`, `aborted`, `timeout`,
 `screenshot_failed`, `helper_unavailable`, `helper_incompatible`,
 `unsupported_platform`, `invalid_argument`, `internal`.
 
@@ -238,7 +238,8 @@ by localized message text.
   The helper reports the process path and bundle ID of each target; main
   refuses before it forwards the action.
 - **OS-wide chords.** Main refuses a chord that acts on the whole system
-  rather than the vetted window, before consent, the lock or the helper:
+  rather than the vetted window with `shortcut_blocked` (a main-only code
+  helpers never send), before consent, the lock or the helper:
   - everywhere: Escape with Ctrl+Alt (the stop key and its neighbours);
   - Windows: any Windows-key chord, Alt+Tab, Alt+Esc, Ctrl+Esc,
     Ctrl+Shift+Esc, Ctrl+Alt+Delete;

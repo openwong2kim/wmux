@@ -408,7 +408,7 @@ export class ComputerService {
     const why = osChordRefusal(this.deps.platform ?? process.platform, modifiers, key);
     if (why) {
       const chord = [...modifiers, key].join('+');
-      fail('invalid_argument', `${chord} is refused because ${why}. It is not an argument mistake: do not retry it; ask the user if that step is needed`);
+      fail('shortcut_blocked', `${chord} is refused because ${why}`);
     }
   }
 

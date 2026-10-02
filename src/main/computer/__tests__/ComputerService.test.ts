@@ -284,7 +284,7 @@ describe('ComputerService', () => {
     for (const keys of [['win', 'r'], ['meta', 'd'], ['alt', 'tab'], ['alt', 'shift', 'Tab'], ['alt', 'esc'], ['ctrl', 'Escape'], ['ctrl', 'shift', 'esc'], ['ctrl', 'alt', 'shift', 'esc'], ['ctrl', 'alt', 'delete']]) {
       const err = await service.control(AGENT_A, { action: 'hotkey', snapshotId, keys }).catch((e: unknown) => e);
       expect(err, keys.join('+')).toBeInstanceOf(ComputerError);
-      expect((err as ComputerError).message).toMatch(/refused because/);
+      expect((err as ComputerError).code).toBe('shortcut_blocked');
     }
     expect(calls.length).toBe(before);
     expect(service.inputHolder()).toBeNull();
@@ -298,7 +298,7 @@ describe('ComputerService', () => {
     const { service } = makeService({ platform: 'darwin' });
     const { snapshotId } = await service.getAppState(AGENT_A, { app: 'Notepad' });
     for (const keys of [['cmd', 'tab'], ['cmd', 'space'], ['ctrl', 'space'], ['cmd', 'option', 'esc'], ['ctrl', 'cmd', 'q'], ['cmd', 'shift', 'q'], ['cmd', 'opt', 'd'], ['cmd', 'shift', '4'], ['ctrl', 'up'], ['ctrl', 'F2'], ['ctrl', 'alt', 'shift', 'esc']]) {
-      expect(await codeOf(service.control(AGENT_A, { action: 'hotkey', snapshotId, keys })), keys.join('+')).toBe('invalid_argument');
+      expect(await codeOf(service.control(AGENT_A, { action: 'hotkey', snapshotId, keys })), keys.join('+')).toBe('shortcut_blocked');
     }
     for (const keys of [['cmd', 's'], ['cmd', 'q'], ['ctrl', 'cmd', 'f'], ['cmd', 'shift', 't'], ['alt', 'tab']]) {
       expect(await codeOf(service.control(AGENT_A, { action: 'hotkey', snapshotId, keys })), keys.join('+')).toBe('resolved');
