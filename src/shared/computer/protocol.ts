@@ -13,7 +13,9 @@
 
 import { isComputerErrorCode, type ComputerErrorPayload } from './errors';
 
-export const COMPUTER_PROTOCOL_VERSION = 1;
+// 2: closed key vocabulary, `hotkey` as { modifiers, key }, and `target` on
+// every control request (#1689). No helper ever spoke 1 in a release.
+export const COMPUTER_PROTOCOL_VERSION = 2;
 
 /** Accessibility-tree caps. Both helpers enforce the same numbers. */
 export const TREE_MAX_NODES = 800;
@@ -92,29 +94,31 @@ export type Key = NamedKey | string;
 const KEY_BY_LOWER = new Map<string, Key>(
   [...NAMED_KEYS, ...LETTER_KEYS, ...DIGIT_KEYS].map((k) => [k.toLowerCase(), k]),
 );
-const KEY_ALIASES: Record<string, Key> = {
+// Maps, not object literals: agent text such as "constructor" or "__proto__"
+// must not resolve through Object.prototype.
+const KEY_ALIASES = new Map<string, Key>(Object.entries({
   return: 'Enter', esc: 'Escape', del: 'Delete', back: 'Backspace', spacebar: 'Space', ' ': 'Space',
   up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight',
   pgup: 'PageUp', pgdn: 'PageDown', pagedn: 'PageDown',
-};
-const MODIFIER_ALIASES: Record<string, Modifier> = {
+}));
+const MODIFIER_ALIASES = new Map<string, Modifier>(Object.entries({
   ctrl: 'ctrl', control: 'ctrl',
   alt: 'alt', option: 'alt', opt: 'alt',
   shift: 'shift',
   meta: 'meta', cmd: 'meta', command: 'meta', win: 'meta', windows: 'meta', super: 'meta',
-};
+}) as Array<[string, Modifier]>);
 
 /** The canonical spelling of a key, or null when it is not in the vocabulary. */
 export function normalizeKey(name: string): Key | null {
   if (typeof name !== 'string') return null;
   const lower = name === ' ' ? ' ' : name.trim().toLowerCase();
-  return KEY_BY_LOWER.get(lower) ?? KEY_ALIASES[lower] ?? null;
+  return KEY_BY_LOWER.get(lower) ?? KEY_ALIASES.get(lower) ?? null;
 }
 
 /** The canonical modifier for a name (`cmd`, `Control`, `option`, …), or null. */
 export function normalizeModifier(name: string): Modifier | null {
   if (typeof name !== 'string') return null;
-  return MODIFIER_ALIASES[name.trim().toLowerCase()] ?? null;
+  return MODIFIER_ALIASES.get(name.trim().toLowerCase()) ?? null;
 }
 
 export function isKey(value: unknown): value is Key {
@@ -265,11 +269,16 @@ export interface ControlTarget {
  * Methods a helper implements. Coordinates here are window logical points.
  *
  * Held input: every control batch sends its own key-up / button-up events,
- * even when it fails part-way. On stdin EOF or a termination signal the helper
- * releases anything it still holds before exiting. A helper that was killed
- * outright cannot, so main starts a fresh one and sends `releaseInput` at
- * once (HelperProcess). `releaseInput` releases only what a helper of this
- * kind may have pressed: the four modifiers and the three mouse buttons.
+ * even when it fails part-way. The helper tracks every key and button it has
+ * pressed and not yet released (named keys, letters and digits as well as
+ * modifiers and mouse buttons). On stdin EOF or a termination signal it
+ * releases all of them before exiting. A helper that was killed outright
+ * cannot, so main starts a fresh one and sends `releaseInput` at once
+ * (HelperProcess). A fresh process has no record of what the dead one
+ * pressed, so `releaseInput` sends an up event for every key in the
+ * vocabulary and every mouse button (an up for a key that is not down is
+ * harmless), and answers `released: true` only when all of them were sent.
+ * Main fails control requests closed until a release answers true.
  */
 export interface HelperMethods {
   capabilities: { params: Record<string, never>; result: HelperCapabilities };
@@ -310,7 +319,7 @@ export interface HelperMethods {
     };
     result: ActionResult;
   };
-  /** Releases every modifier and mouse button the helper may hold. Always safe. */
+  /** Up events for every vocabulary key and mouse button (see Held input above). Always safe. */
   releaseInput: { params: Record<string, never>; result: { released: boolean } };
 }
 

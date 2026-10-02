@@ -26,7 +26,7 @@ function send(obj) {
 if (mode !== 'silent') {
   send({
     type: 'hello',
-    protocolVersion: mode === 'old' ? 0 : 1,
+    protocolVersion: mode === 'old' ? 0 : 2,
     os: 'win32',
     helperVersion: 'fake',
     capabilities: { actions: ['click'], modes: ['ax'], permissions: { accessibility: true, screenRecording: true } },

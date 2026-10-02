@@ -78,7 +78,7 @@ describe('helper protocol', () => {
   it('parses a hello line', () => {
     const line = JSON.stringify({
       type: 'hello',
-      protocolVersion: 1,
+      protocolVersion: 2,
       os: 'win32',
       helperVersion: '0.1.0',
       capabilities: { actions: ['click'], modes: ['ax'], permissions: { accessibility: true, screenRecording: true } },
@@ -158,6 +158,11 @@ describe('key vocabulary', () => {
   it('refuses names outside the vocabulary', () => {
     for (const bad of ['F13', 'PrintScreen', 'é', 'ab', '', 'ctrl', '/', 'Insert']) {
       expect(normalizeKey(bad)).toBeNull();
+    }
+    // Prototype names never resolve through the alias tables.
+    for (const proto of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) {
+      expect(normalizeKey(proto), proto).toBeNull();
+      expect(normalizeModifier(proto), proto).toBeNull();
     }
     expect(isKey('Enter')).toBe(true);
     expect(isKey('enter')).toBe(false);

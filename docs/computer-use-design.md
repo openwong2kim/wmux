@@ -51,7 +51,7 @@ stdio pipes belong to the parent alone, so no socket, token file or peer check
 is needed.
 
 - The helper's first line is
-  `{"type":"hello","protocolVersion":1,"os":"win32","helperVersion":"…","capabilities":{…}}`.
+  `{"type":"hello","protocolVersion":2,"os":"win32","helperVersion":"…","capabilities":{…}}`.
   A request is replayed after a crash only if `hello` was never seen for it.
 - Request: `{"id":7,"method":"getAppState","params":{…}}`.
 - Response: `{"id":7,"ok":true,"result":{…}}` or
@@ -65,8 +65,12 @@ is needed.
   buttons it held, so when the killed request was an input action (timeout,
   stop key, crash) main starts a fresh helper at once and sends
   `releaseInput`, without waiting for the next request. Until a release
-  succeeds, every request sends one first. A helper that gets stdin EOF or a
-  termination signal releases what it holds before it exits.
+  answers `released: true`, control requests fail closed (a fresh helper is
+  tried for each). A helper tracks every key and button it pressed, not
+  only modifiers, and releases all of them on stdin EOF or a termination
+  signal; on quit main closes stdin and waits briefly before killing it. A
+  fresh helper does not know what the dead one pressed, so `releaseInput`
+  sends an up event for every vocabulary key and mouse button.
 - **Key vocabulary.** `pressKey` and `hotkey` carry only canonical names
   from `protocol.ts`: `Enter`, `Tab`, `Escape`, `Backspace`, `Delete`,
   `Space`, `ArrowUp/Down/Left/Right`, `Home`, `End`, `PageUp`, `PageDown`,
@@ -81,8 +85,9 @@ is needed.
   helper checks that the foreground window (keyboard) or the window under
   the point (pointer) belongs to it, and otherwise sends nothing and answers
   `window_not_focused`. Only the helper can do this check without a race.
-- The wire shape was revised before any helper shipped (key vocabulary,
-  `target`, `hotkey` as `{ modifiers, key }`), so `protocolVersion` stays 1.
+- Protocol version 2: the key vocabulary, `target` and `hotkey` as
+  `{ modifiers, key }` replaced the version-1 shape incompatibly. No helper
+  ever shipped speaking 1.
 - Idle exit after 5 minutes. The helper also exits when stdin closes, so it
   never outlives wmux.
 - The maximum line length is 24 MB (base64 screenshots). stderr keeps a 4 KB
