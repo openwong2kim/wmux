@@ -5,17 +5,35 @@
 // releaseInput against a Notepad it starts itself, then checks the helper
 // exits on stdin EOF.
 //
-//   node native/computer-use-windows/smoke.mjs native/computer-use-windows/dist/wmux-computer-use.exe
+//   node smoke.mjs <exe>                                   # as the current user
+//   node smoke.mjs <exe> --limited <RunLimited.exe> --require-full
+//
+// Hosted CI runners run jobs as an elevated administrator, and the helper
+// refuses to run elevated (exit 72 before hello). Without --limited, that
+// refusal counts as a passed check (the full run is skipped unless
+// --require-full). With --limited, Notepad and the helper are both started
+// through tools/RunLimited at Medium integrity (Notepad must be Medium too, or
+// UIPI keeps UIA out and it reads as elevated); first-hello latency then
+// includes the launcher's start-up.
 //
 // Prints one JSON line of timings, and a markdown table to $GITHUB_STEP_SUMMARY.
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-const exe = process.argv[2] && resolve(process.argv[2]);
-if (!exe) {
-  console.error('usage: node smoke.mjs <path to wmux-computer-use.exe>');
+const argv = process.argv.slice(2);
+let exe = null;
+let launcher = null;
+let requireFull = false;
+for (let i = 0; i < argv.length; i++) {
+  if (argv[i] === '--limited') launcher = argv[++i] && resolve(argv[i]);
+  else if (argv[i] === '--require-full') requireFull = true;
+  else if (!exe) exe = resolve(argv[i]);
+  else { console.error(`unknown argument ${argv[i]}`); process.exit(2); }
+}
+if (!exe || (argv.includes('--limited') && !launcher)) {
+  console.error('usage: node smoke.mjs <wmux-computer-use.exe> [--limited <RunLimited.exe>] [--require-full]');
   process.exit(2);
 }
 if (process.platform !== 'win32') {
@@ -25,7 +43,7 @@ if (process.platform !== 'win32') {
 
 const timings = {};
 let stderrTail = '';
-let notepad = null;
+let notepadPid = null;
 let helper = null;
 
 function fail(message) {
@@ -38,7 +56,7 @@ function fail(message) {
 function cleanup() {
   try { helper?.kill(); } catch { /* gone */ }
   // Only the Notepad this script started.
-  try { if (notepad?.pid) process.kill(notepad.pid); } catch { /* gone */ }
+  try { if (notepadPid) process.kill(notepadPid); } catch { /* gone */ }
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -50,6 +68,7 @@ let lineWaiter = null;
 let buffer = '';
 let exited = null;
 
+// Resolves null when the helper exits first.
 function nextLine(timeoutMs) {
   if (lines.length) return Promise.resolve(lines.shift());
   return new Promise((resolveLine, rejectLine) => {
@@ -65,6 +84,7 @@ async function call(method, params = {}, timeoutMs = 15000) {
   helper.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
   const line = await nextLine(timeoutMs).catch((e) => fail(`${method}: ${e.message}`));
   const ms = Math.round(performance.now() - started);
+  if (line === null) fail(`${method}: the helper exited (code ${exited?.code}) before answering`);
   let msg;
   try { msg = JSON.parse(line); } catch { fail(`${method}: reply is not JSON: ${line.slice(0, 200)}`); }
   if (msg.id !== id) fail(`${method}: reply id ${msg.id}, expected ${id}`);
@@ -73,13 +93,35 @@ async function call(method, params = {}, timeoutMs = 15000) {
 
 // --- run -------------------------------------------------------------------
 
-notepad = spawn('notepad.exe', [], { stdio: 'ignore', detached: false });
-notepad.on('error', (e) => fail(`could not start Notepad: ${e.message}`));
+function writeSummary() {
+  console.log(JSON.stringify(timings));
+  if (process.env.GITHUB_STEP_SUMMARY) {
+    const rows = Object.entries(timings).filter(([, v]) => v !== undefined).map(([k, v]) => `| ${k} | ${v} |`);
+    const title = launcher ? 'computer-use-windows smoke (through RunLimited, Medium integrity)' : 'computer-use-windows smoke';
+    appendFileSync(process.env.GITHUB_STEP_SUMMARY, [`### ${title}`, '', '| metric | value |', '| --- | --- |', ...rows, ''].join('\n'));
+  }
+}
+
+timings.mode = launcher ? 'limited (Medium integrity via RunLimited; hello latency includes the launcher)' : 'as invoked';
+if (launcher) {
+  const r = spawnSync(launcher, ['--no-wait', 'notepad.exe'], { encoding: 'utf8', windowsHide: true });
+  notepadPid = Number.parseInt(String(r.stdout).trim(), 10);
+  if (r.status !== 0 || !Number.isInteger(notepadPid)) fail(`RunLimited could not start Notepad: ${r.stderr || r.error?.message}`);
+} else {
+  const notepad = spawn('notepad.exe', [], { stdio: 'ignore', detached: false });
+  notepad.on('error', (e) => fail(`could not start Notepad: ${e.message}`));
+  notepadPid = notepad.pid;
+}
 
 const spawnedAt = performance.now();
-helper = spawn(exe, [], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+helper = launcher
+  ? spawn(launcher, [exe], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+  : spawn(exe, [], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
 helper.on('error', (e) => fail(`could not start the helper: ${e.message}`));
-helper.on('exit', (code, signal) => { exited = { code, signal }; });
+helper.on('exit', (code, signal) => {
+  exited = { code, signal };
+  if (lineWaiter) lineWaiter(null);
+});
 helper.stderr.setEncoding('utf8');
 helper.stderr.on('data', (d) => { stderrTail = (stderrTail + d).slice(-4096); });
 helper.stdout.setEncoding('utf8');
@@ -93,7 +135,19 @@ helper.stdout.on('data', (d) => {
   }
 });
 
-const helloLine = await nextLine(10000).catch((e) => fail(`hello: ${e.message}${exited ? ` (exited with ${exited.code})` : ''}`));
+const helloLine = await nextLine(10000).catch((e) => fail(`hello: ${e.message}`));
+if (helloLine === null) {
+  // Let stderr drain before judging it.
+  await sleep(200);
+  if (exited?.code === 72 && /refusing to run elevated/.test(stderrTail)) {
+    timings.elevatedRefusal = 'pass (exit 72, "refusing to run elevated")';
+    if (requireFull) fail('the helper refused to run elevated; run with --limited for the full smoke');
+    writeSummary();
+    cleanup();
+    process.exit(0);
+  }
+  fail(`no hello (exited with ${exited?.code})`);
+}
 timings.firstHelloMs = Math.round(performance.now() - spawnedAt);
 const hello = JSON.parse(helloLine);
 if (hello.type !== 'hello' || hello.protocolVersion !== 2 || hello.os !== 'win32') fail(`unexpected hello: ${helloLine}`);
@@ -109,7 +163,7 @@ while (!app && performance.now() < deadline) {
   const r = await call('listApps');
   if (!r.msg.ok) fail(`listApps: ${JSON.stringify(r.msg.error)}`);
   timings.listAppsMs = r.ms;
-  app = r.msg.result.apps.find((a) => a.pid === notepad.pid) ??
+  app = r.msg.result.apps.find((a) => a.pid === notepadPid) ??
     r.msg.result.apps.find((a) => /\\notepad\.exe$/i.test(a.path));
   if (!app) await sleep(250);
 }
@@ -151,10 +205,6 @@ while (!exited && performance.now() < exitDeadline) await sleep(50);
 if (!exited) fail('the helper did not exit within 5 s of stdin EOF');
 timings.exitCode = exited.code;
 
-console.log(JSON.stringify(timings));
-if (process.env.GITHUB_STEP_SUMMARY) {
-  const rows = Object.entries(timings).filter(([, v]) => v !== undefined).map(([k, v]) => `| ${k} | ${v} |`);
-  appendFileSync(process.env.GITHUB_STEP_SUMMARY, ['### computer-use-windows smoke', '', '| metric | value |', '| --- | --- |', ...rows, ''].join('\n'));
-}
+writeSummary();
 cleanup();
 process.exit(exited.code === 0 ? 0 : 1);

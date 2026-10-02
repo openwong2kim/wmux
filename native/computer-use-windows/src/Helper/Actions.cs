@@ -83,19 +83,27 @@ internal static unsafe class Focus
     }
 
     /// <summary>
-    /// The point lands on the target window, or on a popup or menu of the same
-    /// app (a menu the previous click opened). Another normal window of the
-    /// same app does not count.
+    /// The point lands on the target window, on a menu of the same app (a
+    /// menu the previous click opened), or on a window the target owns (a
+    /// dropdown or dialog it opened). WS_POPUP alone does not count: frameless
+    /// Chromium / Electron top-level windows are WS_POPUP too, and another
+    /// normal window of the same app must never take the click.
     /// </summary>
     public static bool PointerHitsTarget(ControlTarget target, double x, double y)
     {
         var hit = PInvoke.WindowFromPoint(new System.Drawing.Point((int)Math.Round(x), (int)Math.Round(y)));
         if (hit == HWND.Null) return false;
         var root = Win.Root(hit);
-        if (root == target.Window) return true;
         if (Win.EffectivePid(root) != target.Pid && Win.OwnerPid(root) != target.Pid) return false;
-        var style = (WINDOW_STYLE)(uint)PInvoke.GetWindowLongPtr(root, WINDOW_LONG_PTR_INDEX.GWL_STYLE);
-        return (style & WINDOW_STYLE.WS_POPUP) != 0 || Win.ClassName(root) == "#32768";
+        if (root == target.Window || Win.ClassName(root) == "#32768") return true;
+        var owner = root;
+        for (int i = 0; i < 16; i++)
+        {
+            owner = PInvoke.GetWindow(owner, GET_WINDOW_CMD.GW_OWNER);
+            if (owner == HWND.Null) return false;
+            if (owner == target.Window) return true;
+        }
+        return false;
     }
 
     /// <summary>
