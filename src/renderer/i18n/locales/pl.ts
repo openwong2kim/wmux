@@ -1123,6 +1123,8 @@ export const pl = {
   'settings.computerUseBlocked': 'Nigdy niedozwolone',
   'settings.computerUseBlockedDesc': 'Menedżery haseł, terminale i inne aplikacje agentów, sam wmux oraz systemowe okna logowania i uprawnień administratora.',
   'settings.computerUseRestartNote': 'Działający już agenci uwzględnią zmianę po ponownym uruchomieniu.',
+  'settings.computerUseNoHelperNote': 'Ta wersja wmux nie zawiera jeszcze programu pomocniczego dla tego systemu, więc nie można włączyć sterowania komputerem. Pojawi się w późniejszym wydaniu.',
+  'settings.computerUseUnsupportedNote': 'wmux nie ma programu pomocniczego dla tego systemu, więc nie można włączyć sterowania komputerem.',
   'settings.computerUseSaveFailed': 'Nie udało się zapisać ustawienia: {error}',
   'settings.tabAccounts': 'Konta',
   'settings.tabNetwork': 'Sieć',

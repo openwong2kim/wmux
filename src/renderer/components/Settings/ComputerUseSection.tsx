@@ -37,8 +37,12 @@ export function TabComputerUse() {
     return () => { cancelled = true; };
   }, []);
 
+  // Without a helper the switch can only go off: on, the tool would appear
+  // and every call would fail.
+  const noHelper = state ? state.helper !== 'ready' : false;
+
   const onChange = (next: boolean) => {
-    if (!state) return;
+    if (!state || (next && noHelper)) return;
     setState({ ...state, enabled: next, error: undefined }); // optimistic
     window.electronAPI.computerUse
       ?.set(next)
@@ -62,7 +66,7 @@ export function TabComputerUse() {
             checked={state?.enabled ?? false}
             onCheckedChange={onChange}
             aria-label={t('settings.computerUse')}
-            disabled={!state}
+            disabled={!state || (noHelper && !state.enabled)}
           />
         </SettingRow>
         <SettingRow id="computerusehelper" label={t('settings.computerUseHelper')} description={t('settings.computerUseHelperDesc')}>
@@ -83,6 +87,11 @@ export function TabComputerUse() {
           )}
         </SettingRow>
       </SettingsSection>
+      {noHelper && state && (
+        <SettingNote>
+          {t(state.helper === 'missing' ? 'settings.computerUseNoHelperNote' : 'settings.computerUseUnsupportedNote')}
+        </SettingNote>
+      )}
       {stopKeyUnavailable && state && (
         <SettingNote tone="danger">
           {t('settings.computerUseStopKeyUnavailableNote', { key: formatStopKey(state.stopKey, isMac) })}

@@ -13,6 +13,7 @@ const h = vi.hoisted(() => {
     shortcuts,
     chordFree: { value: true },
     enabled: { value: false },
+    helper: { value: 'ready' as 'ready' | 'missing' | 'unsupported' },
     register: vi.fn((accel: string, cb: () => void) => {
       if (!h.chordFree.value) return false;
       shortcuts.set(accel, cb);
@@ -43,11 +44,12 @@ vi.mock('../HelperProcess', () => ({
 // real path resolves to null → unsupported_platform before the stop key).
 vi.mock('../helperPath', () => ({ resolveHelperPathFor: () => 'C:/wmux/fake-helper.exe' }));
 vi.mock('../settings', () => ({
-  helperStatus: () => 'missing',
+  helperStatus: () => h.helper.value,
   writeComputerUseEnabled: (enabled: boolean) => { h.enabled.value = enabled; return enabled; },
 }));
 
-const ACCEL = 'CommandOrControl+Alt+Shift+Escape';
+// Control, not Cmd, on macOS (Cmd+Option+Shift+Esc force-quits the front app).
+const ACCEL = process.platform === 'darwin' ? 'Control+Alt+Shift+Escape' : 'CommandOrControl+Alt+Shift+Escape';
 
 async function load() {
   vi.resetModules();
@@ -76,6 +78,7 @@ beforeEach(() => {
   h.unregister.mockClear();
   h.chordFree.value = true;
   h.enabled.value = false;
+  h.helper.value = 'ready';
 });
 
 describe('computer-use stop key lifecycle', () => {
@@ -130,5 +133,53 @@ describe('computer-use stop key lifecycle', () => {
     mod.disposeComputerUse(service);
     expect(dispose).toHaveBeenCalledTimes(1);
     expect(h.unregister).toHaveBeenCalledWith(ACCEL);
+  });
+
+  it('stays free while this build has no helper, even with the switch on', async () => {
+    h.helper.value = 'missing';
+    h.enabled.value = true;
+    const { get, create } = await load();
+    expect(get()).toMatchObject({ enabled: true, stopKeyStatus: 'off' });
+    const service = create();
+    await service.listApps().catch(() => undefined);
+    await service.control({ key: 'k', label: 'k' }, { action: 'click', snapshotId: 's', index: 1 }).catch(() => undefined);
+    expect(h.register).not.toHaveBeenCalled();
+  });
+
+  it('cannot be switched on without a helper, but can be switched off', async () => {
+    h.helper.value = 'missing';
+    const { set } = await load();
+    const refused = set(true) as { enabled: boolean; error?: string };
+    expect(refused.enabled).toBe(false);
+    expect(refused.error).toMatch(/does not include the computer-use helper/);
+    h.enabled.value = true; // already on from 3.65.0
+    expect(set(false)).toMatchObject({ enabled: false, stopKeyStatus: 'off' });
+  });
+});
+
+describe('computer use without a helper binary', () => {
+  it('fails every call with helper_unavailable and a plain message, no path', async () => {
+    h.helper.value = 'missing';
+    h.enabled.value = true;
+    const { create } = await load();
+    const service = create();
+    for (const call of [
+      () => service.listApps(),
+      () => service.capabilities(),
+      () => service.control({ key: 'k', label: 'k' }, { action: 'click', snapshotId: 's', index: 1 }),
+    ]) {
+      const err = (await call().catch((e: unknown) => e)) as { code?: string; message?: string };
+      expect(err.code).toBe('helper_unavailable');
+      expect(err.message).toMatch(/does not include the computer-use helper .* later release/);
+      expect(err.message).toMatch(/do not try other ways to control the desktop/);
+      expect(err.message).not.toMatch(/[\\/]|ENOENT|fake-helper/);
+    }
+  });
+
+  it('uses a stop chord macOS does not treat as force quit', async () => {
+    const { mod } = await load();
+    expect(mod.stopKeyAcceleratorFor('darwin')).toBe('Control+Alt+Shift+Escape');
+    expect(mod.stopKeyAcceleratorFor('win32')).toBe('CommandOrControl+Alt+Shift+Escape');
+    expect(mod.stopKeyAcceleratorFor('linux')).toBe('CommandOrControl+Alt+Shift+Escape');
   });
 });

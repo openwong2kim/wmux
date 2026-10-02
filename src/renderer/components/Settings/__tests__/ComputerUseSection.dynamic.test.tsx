@@ -16,6 +16,8 @@ const base: ComputerUseSettingsPayload = {
   stopKeyStatus: 'off',
 };
 
+const ready: ComputerUseSettingsPayload = { ...base, helper: 'ready' };
+
 let root: Root | null = null;
 let container: HTMLElement | null = null;
 
@@ -41,6 +43,8 @@ describe('formatStopKey', () => {
   it('names the keys a person presses on each OS', () => {
     expect(formatStopKey('CommandOrControl+Alt+Shift+Escape', false)).toBe('Ctrl+Alt+Shift+Esc');
     expect(formatStopKey('CommandOrControl+Alt+Shift+Escape', true)).toBe('Cmd+Option+Shift+Esc');
+    // The macOS chord (Cmd would force-quit the front app).
+    expect(formatStopKey('Control+Alt+Shift+Escape', true)).toBe('Control+Option+Shift+Esc');
   });
 });
 
@@ -72,9 +76,30 @@ describe('Settings › Computer use', () => {
     expect(el.textContent).not.toContain('Unavailable');
   });
 
-  it('turns it on through main and shows what main saved', async () => {
+  it('cannot be turned on without a helper, and says why', async () => {
     const set = vi.fn(async (enabled: boolean) => ({ ...base, enabled }));
     const el = await render({ get: async () => base, set });
+    const sw = el.querySelector('[role="switch"]') as HTMLButtonElement;
+    expect(sw.disabled).toBe(true);
+    await act(async () => { sw.click(); });
+    expect(set).not.toHaveBeenCalled();
+    expect(el.textContent).toContain('does not include the helper for this OS yet');
+  });
+
+  it('can still be turned off when it was on without a helper', async () => {
+    const set = vi.fn(async (enabled: boolean) => ({ ...base, enabled }));
+    const el = await render({ get: async () => ({ ...base, enabled: true }), set });
+    const sw = el.querySelector('[role="switch"]') as HTMLButtonElement;
+    expect(sw.disabled).toBe(false);
+    await act(async () => { sw.click(); });
+    expect(set).toHaveBeenCalledWith(false);
+    expect(sw.getAttribute('aria-checked')).toBe('false');
+    expect(sw.disabled).toBe(true);
+  });
+
+  it('turns it on through main and shows what main saved', async () => {
+    const set = vi.fn(async (enabled: boolean) => ({ ...ready, enabled }));
+    const el = await render({ get: async () => ready, set });
     const sw = el.querySelector('[role="switch"]') as HTMLButtonElement;
     await act(async () => { sw.click(); });
     expect(set).toHaveBeenCalledWith(true);
@@ -83,8 +108,8 @@ describe('Settings › Computer use', () => {
 
   it('falls back to the state on disk and explains a failed save', async () => {
     const el = await render({
-      get: async () => base,
-      set: async () => ({ ...base, enabled: false, error: 'config.json is missing' }),
+      get: async () => ready,
+      set: async () => ({ ...ready, enabled: false, error: 'config.json is missing' }),
     });
     const sw = el.querySelector('[role="switch"]') as HTMLButtonElement;
     await act(async () => { sw.click(); });

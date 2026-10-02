@@ -1139,6 +1139,8 @@ export const en = {
   'settings.computerUseBlocked': 'Never allowed',
   'settings.computerUseBlockedDesc': 'Password managers, terminals and other agent apps, wmux itself, and system sign-in or administrator prompts.',
   'settings.computerUseRestartNote': 'Agents that are already running pick up the change when they restart.',
+  'settings.computerUseNoHelperNote': 'This wmux build does not include the helper for this OS yet, so computer use cannot be turned on. It comes in a later release.',
+  'settings.computerUseUnsupportedNote': 'wmux has no helper for this OS, so computer use cannot be turned on.',
   'settings.computerUseSaveFailed': 'Could not save the setting: {error}',
   'settings.tabAccounts': 'Accounts',
   'settings.tabNetwork': 'Network',

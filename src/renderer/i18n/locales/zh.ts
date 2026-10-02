@@ -1228,6 +1228,8 @@ export const zh = {
   'settings.computerUseBlocked': '始终禁止',
   'settings.computerUseBlockedDesc': '密码管理器、终端和其他代理应用、wmux 本身，以及系统登录和管理员权限提示。',
   'settings.computerUseRestartNote': '已经在运行的代理需要重启后才会应用此更改。',
+  'settings.computerUseNoHelperNote': '此 wmux 版本尚未包含适用于此系统的辅助程序，因此无法开启电脑操控。它将在后续版本中提供。',
+  'settings.computerUseUnsupportedNote': 'wmux 没有适用于此系统的辅助程序，因此无法开启电脑操控。',
   'settings.computerUseSaveFailed': '无法保存设置：{error}',
   'settings.tabKeyboard': '键盘',
   'settings.tabClaudeCode': 'Claude Code',

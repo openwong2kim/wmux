@@ -669,6 +669,8 @@ export const ko = {
   'settings.computerUseBlocked': '항상 차단',
   'settings.computerUseBlockedDesc': '비밀번호 관리자, 터미널과 다른 에이전트 앱, wmux 자신, 시스템 로그인·관리자 권한 창.',
   'settings.computerUseRestartNote': '이미 실행 중인 에이전트는 다시 시작해야 변경 사항이 적용됩니다.',
+  'settings.computerUseNoHelperNote': '이 wmux 빌드에는 아직 이 OS용 헬퍼가 없어 컴퓨터 사용을 켤 수 없습니다. 이후 릴리스에서 제공됩니다.',
+  'settings.computerUseUnsupportedNote': '이 OS용 헬퍼가 없어 컴퓨터 사용을 켤 수 없습니다.',
   'settings.computerUseSaveFailed': '설정을 저장하지 못했습니다: {error}',
   'settings.tabAccounts': '계정',
   'settings.tabNetwork': '네트워크',
