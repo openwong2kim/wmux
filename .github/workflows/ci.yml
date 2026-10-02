@@ -127,3 +127,30 @@ jobs:
           # Tells those suites the bundle was promised, so removing the step
           # above fails a test instead of silently retiring both files.
           WMUX_REQUIRE_DAEMON_BUNDLE: '1'
+
+  # The native Windows computer-use helper (native/computer-use-windows): the
+  # C# unit tests, the NativeAOT publish main spawns in dev builds, and a smoke
+  # run against Notepad on the runner's desktop (hello latency, listApps,
+  # getAppState). Its own job, so a .NET problem never hides the TS suite.
+  computer-use-windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Unit tests (tree, keys, unicode chunks, held-state file)
+        run: dotnet test native/computer-use-windows/tests/WmuxComputerUse.Core.Tests -c Release
+
+      - name: NativeAOT publish
+        run: node native/computer-use-windows/build.mjs --no-stage
+
+      - name: Smoke run (hello, capabilities, listApps with Notepad open)
+        run: node native/computer-use-windows/smoke.mjs native/computer-use-windows/dist/wmux-computer-use.exe

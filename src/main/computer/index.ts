@@ -6,11 +6,12 @@ import { platformChoice } from '../../shared/platform';
 import { IPC } from '../../shared/constants';
 import { readComputerUseEnabled, type ComputerUseSettingsPayload } from '../../shared/computer/config';
 import { ComputerError } from '../../shared/computer/errors';
-import { helperStatus, writeComputerUseEnabled } from './settings';
+import { helperStatus as rawHelperStatus, writeComputerUseEnabled, type ComputerHelperStatus } from './settings';
 import { ComputerService, computerUseShutDown, type ConsentRequester, type HelperLike } from './ComputerService';
 import { HelperProcess } from './HelperProcess';
 import { StopKey } from './stopKey';
 import { createHelperVerifier } from './verifyHelper';
+import { WINDOWS_HELPER_PIN, effectiveHelperStatus } from './helperPin';
 import { resolveHelperPathFor, type HelperSpec } from './helperPath';
 
 // The macOS helper is a separately signed .app so TCC grants attach to it and
@@ -74,7 +75,9 @@ export function helperMissingError(): ComputerError {
  * after the check, or not executable). HelperProcess puts the OS error, path
  * included, into the message; the agent gets helperMissingError instead.
  */
-const SPAWN_FAILURE = /\b(ENOENT|EACCES|EPERM)\b|could not start the computer-use helper/;
+// UNKNOWN: Defender quarantining the exe fails the spawn with
+// ERROR_VIRUS_INFECTED (225), which libuv reports as UNKNOWN.
+const SPAWN_FAILURE = /\b(ENOENT|EACCES|EPERM|UNKNOWN)\b|could not start the computer-use helper/;
 
 /**
  * The helper as ComputerService sees it. Readiness is re-checked on every
@@ -114,10 +117,24 @@ function lazyHelper(command: string, ready: () => boolean): HelperLike & { reset
 }
 
 /**
- * Packaged macOS builds spawn the helper only after its code signature checks
- * out (verifyHelper.ts); one verifier, so its verdict cache is shared.
+ * Packaged builds spawn the helper only after it checks out (verifyHelper.ts):
+ * its code signature on macOS, its build-time SHA-256 pin on Windows. One
+ * verifier, so its verdict cache is shared.
  */
-const verifyHelper = createHelperVerifier({ platform: process.platform, isPackaged: app.isPackaged });
+const verifyHelper = createHelperVerifier({
+  platform: process.platform,
+  isPackaged: app.isPackaged,
+  windowsPin: WINDOWS_HELPER_PIN,
+});
+
+/** settings.ts's file check, plus the packaged-Windows signing gate (helperPin.ts). */
+function helperStatus(helperPath: string | null): ComputerHelperStatus {
+  return effectiveHelperStatus(rawHelperStatus(helperPath), {
+    platform: process.platform,
+    isPackaged: app.isPackaged,
+    pin: WINDOWS_HELPER_PIN,
+  });
+}
 
 let stopKey: StopKey | null = null;
 let liveService: ComputerService | null = null;

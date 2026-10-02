@@ -1,6 +1,9 @@
-// Code-signature check of the bundled macOS computer-use helper, run before
-// main spawns it. Electron-free so the rule is unit-testable; the codesign
-// call and the stat are injectable.
+// Integrity checks of the bundled computer-use helper, run before main spawns
+// it. Electron-free so the rules are unit-testable; the codesign call, the
+// hash and the stat are injectable.
+//
+// macOS: the code signature (below). Windows: a SHA-256 pinned at build time
+// (see verifyWindowsHelper).
 //
 // Packaged builds only: a dev build runs whatever helper the developer built
 // (ad-hoc signed), and helperPath.ts already refuses the env override in
@@ -10,7 +13,8 @@
 // fails the requirement, so computer use is unavailable there by design.
 
 import { execFile } from 'node:child_process';
-import { promises as fs } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { createReadStream, promises as fs } from 'node:fs';
 import { ComputerError } from '../../shared/computer/errors';
 
 export const HELPER_TEAM_ID = '8RGHH2F237';
@@ -33,11 +37,26 @@ export type RunCodesign = (args: readonly string[]) => Promise<CodesignResult>;
 /** Identity of the file on disk: changes whenever the binary is replaced or modified. */
 export type ReadFileIdentity = (path: string) => Promise<string>;
 
+/** Lower-case hex SHA-256 of a file. */
+export type HashFile = (path: string) => Promise<string>;
+
+/**
+ * What a packaged Windows build baked in about the helper it ships
+ * (helperPin.ts): the SHA-256 of the final, signed bytes, and whether those
+ * bytes carry a release (not test) signature.
+ */
+export interface WindowsHelperPin {
+  sha256: string;
+  releaseSigned: boolean;
+}
+
 export interface HelperVerifierOptions {
   platform: NodeJS.Platform;
   isPackaged: boolean;
   runCodesign?: RunCodesign;
   fileIdentity?: ReadFileIdentity;
+  windowsPin?: WindowsHelperPin;
+  hashFile?: HashFile;
 }
 
 /** The .app bundle around `…/X.app/Contents/MacOS/<exe>`, or null. */
@@ -61,9 +80,69 @@ const fileIdentityDefault: ReadFileIdentity = async (p) => {
   return `${st.dev}:${st.ino}:${st.size}:${st.ctimeNs}`;
 };
 
+const hashFileDefault: HashFile = (p) =>
+  new Promise((resolve, reject) => {
+    const hash = createHash('sha256');
+    createReadStream(p)
+      .on('data', (chunk) => hash.update(chunk))
+      .on('error', reject)
+      .on('end', () => resolve(hash.digest('hex')));
+  });
+
+/**
+ * Windows, packaged builds. The helper must be release-signed (until the
+ * signing policy is a real one, computer use stays off in packaged builds) and
+ * its bytes must hash to the SHA-256 baked into the main bundle at build time.
+ *
+ * The pin detects corruption, a partial update and antivirus tampering. It is
+ * NOT a security boundary: everything under the install directory
+ * (%LOCALAPPDATA%\wmux) is writable by the same user, who could rewrite the
+ * main bundle and its pin as easily as the helper, and any same-user process
+ * can call SendInput itself anyway (docs/computer-use-windows.md, trust model).
+ * For the same reason the gap between this check and the spawn (a swap right
+ * after hashing) is accepted. Hashed on every spawn, not cached: a few
+ * milliseconds for a helper that starts at most once per idle period.
+ */
+async function verifyWindowsHelper(
+  exePath: string,
+  pin: WindowsHelperPin | undefined,
+  readIdentity: ReadFileIdentity,
+  hashFile: HashFile,
+): Promise<void> {
+  if (!pin?.releaseSigned) {
+    throw new ComputerError('helper_unavailable', 'this wmux build does not include a release-signed computer-use helper');
+  }
+  if (!/^[0-9a-f]{64}$/.test(pin.sha256)) {
+    throw new ComputerError('helper_unavailable', 'this wmux build carries no fingerprint for its computer-use helper');
+  }
+  let before: string;
+  let digest: string;
+  try {
+    before = await readIdentity(exePath);
+    digest = (await hashFile(exePath)).toLowerCase();
+  } catch {
+    throw new ComputerError('helper_unavailable', 'the computer-use helper is missing from this wmux build');
+  }
+  let after: string | null = null;
+  try {
+    after = await readIdentity(exePath);
+  } catch {
+    // Gone or unreadable now; refused below.
+  }
+  if (after !== before) {
+    throw new ComputerError('helper_unavailable', 'the computer-use helper changed while it was being checked');
+  }
+  if (digest !== pin.sha256) {
+    throw new ComputerError(
+      'helper_unavailable',
+      'the computer-use helper does not match this wmux build (damaged, partly updated or changed by antivirus); reinstall wmux',
+    );
+  }
+}
+
 /**
  * Returns `verify(exePath)`, which resolves when the helper may be spawned and
- * rejects with `helper_unavailable` otherwise. Verdicts are cached by path and
+ * rejects with `helper_unavailable` otherwise. macOS verdicts are cached by path and
  * file identity (device, inode, size, ctime), so the codesign call (tens of ms) runs once per helper
  * binary, not per spawn.
  */
@@ -73,7 +152,11 @@ export function createHelperVerifier(opts: HelperVerifierOptions): (exePath: str
   const cache = new Map<string, string | null>();
 
   return async (exePath) => {
-    if (opts.platform !== 'darwin' || !opts.isPackaged) return;
+    if (!opts.isPackaged) return;
+    if (opts.platform === 'win32') {
+      return verifyWindowsHelper(exePath, opts.windowsPin, readIdentity, opts.hashFile ?? hashFileDefault);
+    }
+    if (opts.platform !== 'darwin') return;
 
     const bundle = helperBundlePath(exePath);
     if (!bundle) {

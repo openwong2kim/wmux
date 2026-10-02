@@ -40,6 +40,11 @@ jobs:
       #      SIGNPATH_ARTIFACT_CONFIGURATION_SLUG (from the SignPath project UI)
       # See docs.signpath.io/trusted-build-systems/github.
       SIGNPATH_ENABLED: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
+      # The computer-use helper is a separate SignPath artifact (an inner exe,
+      # signed before forge packages it), so it needs its own artifact
+      # configuration: repo VARIABLE SIGNPATH_HELPER_ARTIFACT_CONFIGURATION_SLUG.
+      # No-op until both are configured.
+      HELPER_SIGNING_ENABLED: ${{ secrets.SIGNPATH_API_TOKEN != '' && vars.SIGNPATH_HELPER_ARTIFACT_CONFIGURATION_SLUG != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -58,8 +63,95 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # ── Windows computer-use helper ──────────────────────────────────────
+      # Order is load-bearing (scripts/__tests__/computerHelperRelease.test.mjs
+      # enforces it): build -> sign -> stage -> make -> check. `make` bakes the
+      # staged exe's SHA-256 into the main bundle (vite.main.config.ts) and a
+      # packaged wmux refuses a helper that does not match it, so signing after
+      # staging would fail computer use closed for every user. The pin detects
+      # corruption, partial updates and antivirus tampering; it is not a
+      # security boundary (docs/computer-use-windows.md).
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Build the computer-use helper
+        run: npm run build:computer-use-windows -- --no-stage
+
+      - name: Upload unsigned computer-use helper for signing
+        id: upload-helper-unsigned
+        if: env.HELPER_SIGNING_ENABLED == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wmux-computer-use-unsigned
+          path: native/computer-use-windows/dist/wmux-computer-use.exe
+          if-no-files-found: error
+
+      - name: Sign computer-use helper via SignPath
+        if: env.HELPER_SIGNING_ENABLED == 'true'
+        uses: signpath/github-action-submit-signing-request@b9d91eadd323de506c0c81cf0c7fe7438f3360fd # v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_HELPER_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.upload-helper-unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: out/signed-helper
+
+      # Only a release-signing policy with a Valid chain marks the helper
+      # release-signed. Without that mark a packaged wmux reports the helper as
+      # missing and computer use cannot be turned on (src/main/computer/helperPin.ts);
+      # a test-signed or unsigned helper still ships, for the dogfood.
+      - name: Replace the unsigned helper with the signed one
+        if: env.HELPER_SIGNING_ENABLED == 'true'
+        shell: pwsh
+        env:
+          SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+        run: |
+          $signed = Get-ChildItem "out/signed-helper" -Recurse -Filter "wmux-computer-use.exe" | Select-Object -First 1
+          if (-not $signed) { Write-Error "SignPath returned no signed computer-use helper"; exit 1 }
+          $dest = "native/computer-use-windows/dist/wmux-computer-use.exe"
+          Copy-Item $signed.FullName $dest -Force
+          $sig = Get-AuthenticodeSignature $dest
+          if (-not $sig.SignerCertificate) { Write-Error "Signed helper carries no signature: $($sig.Status)"; exit 1 }
+          if ($env:SIGNING_POLICY_SLUG -eq 'release-signing') {
+            if ($sig.Status -ne 'Valid') { Write-Error "Production helper signature is not Valid: $($sig.Status)"; exit 1 }
+            "WMUX_WIN_HELPER_RELEASE_SIGNED=true" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          }
+          Write-Host "Signed helper in place (status=$($sig.Status), publisher: $($sig.SignerCertificate.Subject))"
+
+      - name: Stage the computer-use helper
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "dist/computer-use-windows" | Out-Null
+          Copy-Item "native/computer-use-windows/dist/wmux-computer-use.exe" "dist/computer-use-windows/wmux-computer-use.exe" -Force
+          $hash = (Get-FileHash "dist/computer-use-windows/wmux-computer-use.exe" -Algorithm SHA256).Hash.ToLower()
+          "WMUX_WIN_HELPER_SHA256=$hash" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          Write-Host "Staged helper sha256=$hash (release-signed: $([bool]$env:WMUX_WIN_HELPER_RELEASE_SIGNED))"
+
       - name: Build & Make
         run: npm run make
+
+      # The packaged helper must be byte-identical to the one the main bundle
+      # pins, and the pin must be in the bundle: otherwise this build ships a
+      # wmux whose computer use can never start.
+      - name: Check the packaged computer-use helper
+        shell: pwsh
+        run: |
+          $helpers = @(Get-ChildItem out -Recurse -Filter "wmux-computer-use.exe" | Where-Object { $_.FullName -match '\\resources\\computer-use-windows\\' })
+          if ($helpers.Count -eq 0) { Write-Error "no computer-use helper in the packaged app"; exit 1 }
+          foreach ($h in $helpers) {
+            $hash = (Get-FileHash $h.FullName -Algorithm SHA256).Hash.ToLower()
+            if ($hash -ne $env:WMUX_WIN_HELPER_SHA256) { Write-Error "packaged helper $($h.FullName) hashes to $hash, staged $env:WMUX_WIN_HELPER_SHA256"; exit 1 }
+          }
+          $asar = Get-ChildItem out -Recurse -Filter "app.asar" | Select-Object -First 1
+          if (-not $asar) { Write-Error "no app.asar in the packaged app"; exit 1 }
+          if (-not (Select-String -Path $asar.FullName -SimpleMatch $env:WMUX_WIN_HELPER_SHA256 -Quiet)) {
+            Write-Error "the main bundle does not carry the helper's SHA-256 pin"; exit 1
+          }
+          Write-Host "Packaged helper matches the pin ($env:WMUX_WIN_HELPER_SHA256)"
 
       # ── Authenticode code signing (SignPath Foundation, OSS) ─────────────
       # No-op until SIGNPATH_ENABLED is true (see job env). Signs the prebuilt

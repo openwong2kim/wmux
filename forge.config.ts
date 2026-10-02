@@ -90,6 +90,14 @@ const COMPUTER_USE_MAC_STAGE = path.join(__dirname, 'dist', 'computer-use-macos'
 const COMPUTER_USE_MAC_RESOURCE = `${path.sep}Contents${path.sep}Resources${path.sep}computer-use-macos${path.sep}`;
 const shipsComputerUseMac = process.platform === 'darwin' && fs.existsSync(COMPUTER_USE_MAC_STAGE);
 
+// The Windows computer-use helper, staged by `npm run build:computer-use-windows`
+// (native/computer-use-windows/build.mjs) and shipped as
+// resources/computer-use-windows/wmux-computer-use.exe. release.yml signs it
+// before staging, and vite.main.config.ts pins the staged bytes' SHA-256 into
+// the main bundle, so nothing here may touch the exe after staging.
+const COMPUTER_USE_WIN_STAGE = path.join(__dirname, 'dist', 'computer-use-windows');
+const shipsComputerUseWin = process.platform === 'win32' && fs.existsSync(COMPUTER_USE_WIN_STAGE);
+
 // macOS Developer ID signing + notarization은 packagerConfig가 아니라 아래
 // postPackage hook의 "맨 끝"에서 직접 수행한다(signMacAppIfConfigured).
 //
@@ -233,7 +241,7 @@ const config: ForgeConfig = {
     // targets the user's own claude install via pathToClaudeCodeExecutable).
     // ./dist/daemon-web ships as a sibling of daemon-bundle so the detached
     // daemon resolves terminal.html at `__dirname/../daemon-web` (wmux web).
-    extraResource: ['./dist/mcp-bundle', './dist/daemon-bundle', './dist/daemon-web', './dist/cli-bundle', './node_modules/@anthropic-ai/claude-agent-sdk', './assets/icon.ico', './assets/icon.icns', './assets/icon.png', './assets/trayTemplate.png', './assets/trayTemplate@2x.png', './LICENSE', './THIRD_PARTY_NOTICES', './src/main/pty/shell-hooks', ...(shipsComputerUseMac ? [COMPUTER_USE_MAC_STAGE] : [])],
+    extraResource: ['./dist/mcp-bundle', './dist/daemon-bundle', './dist/daemon-web', './dist/cli-bundle', './node_modules/@anthropic-ai/claude-agent-sdk', './assets/icon.ico', './assets/icon.icns', './assets/icon.png', './assets/trayTemplate.png', './assets/trayTemplate@2x.png', './LICENSE', './THIRD_PARTY_NOTICES', './src/main/pty/shell-hooks', ...(shipsComputerUseMac ? [COMPUTER_USE_MAC_STAGE] : []), ...(shipsComputerUseWin ? [COMPUTER_USE_WIN_STAGE] : [])],
     // macOS 서명/노타라이즈는 packagerConfig가 아니라 postPackage hook 끝에서
     // 수행한다(signMacAppIfConfigured 주석 참고). 여기서 서명하면 postPackage의
     // node-pty 복사가 서명을 깨뜨리기 때문이다.

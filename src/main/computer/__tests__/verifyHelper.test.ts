@@ -152,7 +152,8 @@ describe('computer-use helper signature check', () => {
   it('does not check dev builds or other platforms', async () => {
     const runCodesign = vi.fn<RunCodesign>();
     await createHelperVerifier({ platform: 'darwin', isPackaged: false, runCodesign })(EXE);
-    await createHelperVerifier({ platform: 'win32', isPackaged: true, runCodesign })('C:\\wmux\\helper.exe');
+    await createHelperVerifier({ platform: 'linux', isPackaged: true, runCodesign })('/opt/wmux/helper');
+    await createHelperVerifier({ platform: 'win32', isPackaged: false, runCodesign })('C:\\wmux\\helper.exe');
     expect(runCodesign).not.toHaveBeenCalled();
   });
 
@@ -168,6 +169,77 @@ describe('computer-use helper signature check', () => {
     await fs.writeFile(exe, '#!/bin/sh\n', { mode: 0o755 });
     try {
       await refusal(createHelperVerifier({ platform: 'darwin', isPackaged: true })(exe));
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Windows helper pin', () => {
+  const WIN_EXE = 'C:\\Users\\me\\AppData\\Local\\wmux\\app-1.0.0\\resources\\computer-use-windows\\wmux-computer-use.exe';
+  const GOOD = 'a'.repeat(64);
+
+  const winVerifier = (
+    pin: { sha256: string; releaseSigned: boolean } | undefined,
+    digest: () => Promise<string> = async () => GOOD,
+    fileIdentity: () => Promise<string> = async () => 'dev:ino:1',
+  ) => {
+    const hashFile = vi.fn(digest);
+    return { verify: createHelperVerifier({ platform: 'win32', isPackaged: true, windowsPin: pin, hashFile, fileIdentity }), hashFile };
+  };
+
+  it('accepts a release-signed helper whose bytes match the pin, hashing on every spawn', async () => {
+    const { verify, hashFile } = winVerifier({ sha256: GOOD, releaseSigned: true });
+    await verify(WIN_EXE);
+    await verify(WIN_EXE);
+    expect(hashFile).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails closed on a one-byte mismatch', async () => {
+    const { verify } = winVerifier({ sha256: GOOD, releaseSigned: true }, async () => `${'a'.repeat(63)}b`);
+    expect((await refusal(verify(WIN_EXE))).message).toContain('reinstall');
+  });
+
+  it('refuses a build whose helper is not release-signed, without hashing', async () => {
+    const { verify, hashFile } = winVerifier({ sha256: GOOD, releaseSigned: false });
+    expect((await refusal(verify(WIN_EXE))).message).toContain('release-signed');
+    expect(hashFile).not.toHaveBeenCalled();
+  });
+
+  it('refuses a build with no pin', async () => {
+    await refusal(winVerifier(undefined).verify(WIN_EXE));
+    await refusal(winVerifier({ sha256: '', releaseSigned: true }).verify(WIN_EXE));
+  });
+
+  it('refuses a missing helper', async () => {
+    const { verify } = winVerifier({ sha256: GOOD, releaseSigned: true }, async () => {
+      throw new Error('ENOENT');
+    });
+    expect((await refusal(verify(WIN_EXE))).message).toContain('missing');
+  });
+
+  it('refuses a helper replaced while it was hashed', async () => {
+    let identity = 'dev:ino:1';
+    const { verify } = winVerifier(
+      { sha256: GOOD, releaseSigned: true },
+      async () => {
+        identity = 'dev:ino2:1';
+        return GOOD;
+      },
+      async () => identity,
+    );
+    expect((await refusal(verify(WIN_EXE))).message).toContain('changed');
+  });
+
+  it('hashes real bytes with SHA-256', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'wmux-pin-'));
+    const exe = path.join(dir, 'helper.exe');
+    await fs.writeFile(exe, 'abc');
+    const pin = { sha256: 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad', releaseSigned: true };
+    try {
+      await expect(createHelperVerifier({ platform: 'win32', isPackaged: true, windowsPin: pin })(exe)).resolves.toBeUndefined();
+      await fs.writeFile(exe, 'abd');
+      await refusal(createHelperVerifier({ platform: 'win32', isPackaged: true, windowsPin: pin })(exe));
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }

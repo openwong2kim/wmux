@@ -21,6 +21,8 @@
     "build:mcp": "tsc -p tsconfig.mcp.json && node scripts/build-mcp.js",
     "build:computer-use-macos": "bash native/computer-use-macos/build.sh",
     "test:computer-use-macos": "swift test --package-path native/computer-use-macos",
+    "build:computer-use-windows": "node native/computer-use-windows/build.mjs",
+    "test:computer-use-windows": "dotnet test native/computer-use-windows/tests/WmuxComputerUse.Core.Tests",
     "probe:mcp": "node scripts/probe-commander-surface.mjs",
     "mcp": "node dist/mcp/mcp/entry.js",
     "notices": "node scripts/generate-notices.mjs",
