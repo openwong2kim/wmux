@@ -109,15 +109,23 @@ jobs:
         shell: pwsh
         env:
           SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          # SHA-1 thumbprint of the release signing certificate (repo variable);
+          # required for the release mark, so another valid certificate cannot
+          # stand in for ours.
+          EXPECTED_THUMBPRINT: ${{ vars.SIGNPATH_RELEASE_SIGNER_THUMBPRINT }}
         run: |
-          $signed = Get-ChildItem "out/signed-helper" -Recurse -Filter "wmux-computer-use.exe" | Select-Object -First 1
-          if (-not $signed) { Write-Error "SignPath returned no signed computer-use helper"; exit 1 }
+          # Exactly the file we uploaded, not the first match anywhere in the output.
+          $signed = "out/signed-helper/wmux-computer-use.exe"
+          if (-not (Test-Path -LiteralPath $signed -PathType Leaf)) { Write-Error "SignPath returned no $signed"; exit 1 }
           $dest = "native/computer-use-windows/dist/wmux-computer-use.exe"
-          Copy-Item $signed.FullName $dest -Force
+          Copy-Item -LiteralPath $signed $dest -Force
           $sig = Get-AuthenticodeSignature $dest
           if (-not $sig.SignerCertificate) { Write-Error "Signed helper carries no signature: $($sig.Status)"; exit 1 }
           if ($env:SIGNING_POLICY_SLUG -eq 'release-signing') {
             if ($sig.Status -ne 'Valid') { Write-Error "Production helper signature is not Valid: $($sig.Status)"; exit 1 }
+            if (-not $env:EXPECTED_THUMBPRINT -or $sig.SignerCertificate.Thumbprint -ne $env:EXPECTED_THUMBPRINT.ToUpper()) {
+              Write-Error "Helper signer $($sig.SignerCertificate.Thumbprint) is not the expected release certificate"; exit 1
+            }
             "WMUX_WIN_HELPER_RELEASE_SIGNED=true" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
           }
           Write-Host "Signed helper in place (status=$($sig.Status), publisher: $($sig.SignerCertificate.Subject))"

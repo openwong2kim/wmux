@@ -45,10 +45,19 @@ describe('release.yml computer-use helper order', () => {
   });
 
   it('touches the helper exe nowhere after staging', () => {
-    const stage = at('Stage the computer-use helper');
-    const job = RELEASE.slice(RELEASE.indexOf('- name: Stage the computer-use helper'), RELEASE.indexOf('\n  winget:\n'));
-    const later = job.slice(job.indexOf('\n      - ', 1));
-    expect(stage).toBeGreaterThan(0);
-    expect(later).not.toMatch(/Copy-Item[^\n]*wmux-computer-use\.exe/);
+    expect(at('Stage the computer-use helper')).toBeGreaterThan(0);
+    const start = RELEASE.indexOf('- name: Stage the computer-use helper');
+    const next = RELEASE.indexOf('\n      - ', start + 1);
+    const after = RELEASE.slice(next, RELEASE.indexOf('\n  winget:\n'));
+    // Any line after staging that names the helper may only read it.
+    const writes =
+      /\b(Copy-Item|Move-Item|Rename-Item|Remove-Item|New-Item|Set-Content|Add-Content|Out-File|Clear-Content|signtool|cp|mv|rm)\b|>\s*\S|\[IO\.File\]::(Write|Copy|Move|Delete)/i;
+    const offending = after
+      .split('\n')
+      .filter((line) => /computer-use/i.test(line) && writes.test(line));
+    expect(offending).toEqual([]);
+    // And no helper signing request runs after staging (the Setup.exe one does,
+    // and it signs only the outer installer).
+    expect(after).not.toMatch(/SIGNPATH_HELPER_|wmux-computer-use-unsigned/);
   });
 });
