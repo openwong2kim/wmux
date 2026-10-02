@@ -184,8 +184,9 @@ export class BoundedLogWriter {
    * Staleness is a guess: a live holder that ran long can be declared stale and
    * have its lock taken, and it must not then delete the new owner's lock on
    * the way out — that would put two processes inside the rotation at once,
-   * which is the race the lock exists to prevent. (Windows may report `ino` as
-   * 0 for both, in which case the check passes and behaviour is unchanged.)
+   * which is the race the lock exists to prevent. Compare descriptor stats on
+   * both sides: Windows path-based stat can report dev=0 for the same file whose
+   * descriptor reports a volume id. Bigints preserve full-width file ids.
    */
   private withRotationLock(filePath: string, fn: () => void): boolean {
     const lockPath = `${filePath}.lock`;
@@ -202,9 +203,9 @@ export class BoundedLogWriter {
         return false;
       }
     }
-    let owned: fs.Stats | null;
+    let owned: fs.BigIntStats | null;
     try {
-      owned = fs.fstatSync(fd);
+      owned = fs.fstatSync(fd, { bigint: true });
     } catch {
       owned = null; // cannot identify it; fall back to unconditional release
     }
@@ -214,8 +215,15 @@ export class BoundedLogWriter {
     } finally {
       try { fs.closeSync(fd); } catch { /* already closed */ }
       try {
-        const current = fs.statSync(lockPath);
-        if (!owned || (current.ino === owned.ino && current.dev === owned.dev)) {
+        const currentFd = fs.openSync(lockPath, 'r');
+        let stillOwned: boolean;
+        try {
+          const current = fs.fstatSync(currentFd, { bigint: true });
+          stillOwned = !owned || (current.ino === owned.ino && current.dev === owned.dev);
+        } finally {
+          fs.closeSync(currentFd);
+        }
+        if (stillOwned) {
           fs.unlinkSync(lockPath);
         }
       } catch { /* already reaped */ }

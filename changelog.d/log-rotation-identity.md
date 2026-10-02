@@ -1,0 +1,3 @@
+### Fixed
+
+- **Log rotation releases its own lock correctly on Windows.** Path-based and descriptor-based file stats can report different device ids for the same file, leaving a completed rotation's lock behind and delaying later rotations. Ownership comparisons now use descriptor stats on both sides and preserve full-width file ids, so a different holder's identity is not rounded into the old holder's.
