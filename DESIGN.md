@@ -26,6 +26,215 @@ Terminals are the bridge's windows (the hero). Premium feel comes from warmth,
 glows, or effects. (Lineage: orca's "recede and frame", Warp's warm-minimal
 discipline, Zed's quiet chrome, Codex's instrument footer.)
 
+## Proposal — Modern neutral look (2026-10-03, pending owner approval)
+
+> **Status: proposal.** Nothing below is in force until the owner approves it;
+> until then every contract elsewhere in this file stands. No renderer code
+> changes with this revision. Where a proposed rule would replace a current
+> one, the current rule is named. Items marked **(owner pick)** are open
+> choices with a recommended default.
+
+Direction: keep the bridge thesis (terminals are the hero, chrome recedes,
+one lit instrument) but drop the warm-graphite and machined-bevel finish for
+a cooler, calmer surface: zero-saturation greys, fills instead of borders,
+small type with generous spacing, soft rounded rows, borderless chip
+controls, and on macOS a translucent sidebar. Amber stays the *only* warm
+thing on screen and keeps exactly its alive/attention job; steel keeps
+focus and navigation.
+
+Borrowed values below are marked †.
+† Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/styles/index.css,
+src/features/sessions/ui/Composer.tsx, src/features/sessions/ui/ModelPicker.tsx,
+src/features/sessions/ui/AgentTranscript.tsx, src/app/shell/Sidebar.tsx,
+src/features/settings/ui/SettingsView.tsx, src/shared/ui/Popover.tsx,
+src-tauri/src/macos.rs), MIT License, Copyright (c) 2026 Nick
+
+### N1. Neutral token base †
+
+All neutrals derive from two lightness values on a zero-saturation hue, and
+every fill/line is a percentage of the content colour over the base — so one
+pair of numbers defines a theme and light/dark share the recipe.
+
+| Token | Dark | Light | Recipe |
+|---|---|---|---|
+| `--bg-base` | `#171717` | `#F7F7F7` | `hsl(240 0% 9%)` / `hsl(240 0% 97%)` † |
+| `--text-main` (content) | `#EBEBEB` | `#2E2E2E` | `hsl(240 0% 92%)` / `hsl(240 0% 18%)` † |
+| `--bg-mantle` (sidebar, dock) | `#151515` | = base | `color-mix(base 90%, black)`; light uses base † |
+| `--text-sub` | content 50% | content 55% | `color-mix(content N%, transparent)` |
+| `--text-muted` | content 40% | content 45% | (footer, meta, separators) † |
+| `--stroke` | content 7% | content 7% | the only structural line † |
+| `--sel-subtle / --sel / --sel-strong / --sel-hover / --sel-emphasis` | 8 / 10 / 12 / 15 / 20% | 5 / 6 / 7 / 10 / 14% | content mixed into transparent † |
+
+- **Fills replace borders.** Controls, chips, rows and the selected state are
+  told by a `--sel*` fill, not by an outline. Hairlines (`--stroke`) remain
+  for structure only: panel seams, the composer box, segmented tracks,
+  popovers. *Replaces* the 2026-07-15 raised/recessed "machined" treatment
+  (top inset highlight, 0.5px sink) in chrome.
+- **Warmth moves out of the neutrals.** The amber theme's warm-graphite
+  `#151517 / #19191C / #202024` and warm text `#EFEEEC / #A5A29C / #66645F`
+  are replaced by the neutral pair above. Other themes keep their own
+  palettes; they adopt only the fill/stroke recipe.
+- **Light counterpart.** A neutral light theme (base 97%, content 18%) ships
+  beside the dark default and follows the same grammar. Glass is off in
+  light (N6).
+
+### N2. Accent grammar under the neutral look
+
+- **Amber (`--accent`) = alive + attention, nothing else:** running dots and
+  spinners, the terminal cursor, unread/needs-you emphasis, the warning hue.
+  The 5±2 budget stands; with the CTA no longer warm (below), a quiet screen
+  should land at 2–4.
+- **Steel (`--accent-blue`) = focus + navigation:** focus rings, links,
+  focused-pane edge, active tab underline. Unchanged.
+- **Selected ≠ coloured.** A selected row, tab or segment is `--sel` (10%)
+  fill only — never an accent wash (the no-wash rule).
+- **Primary action (owner pick).** *Recommended:* the one primary per surface
+  becomes a **neutral solid** — `--text-main` fill, `--bg-base` label (white
+  on dark, ink on light); hover = fill at 90%; disabled = fill at 30% † — and
+  the composer send button uses it. *Alternative:* keep the 2026-07-15
+  "Action = warm" rule (solid amber primary). The recommendation *replaces*
+  "Primary action = solid warm fill" (Component Rules, Dialogs & forms "One
+  primary per surface") and the warm send action in Channels; the
+  one-primary-per-surface rule itself is unchanged.
+
+### N3. Chip buttons (composer pickers) †
+
+Model, effort and permission pickers in a composer toolbar, and any
+"current value + chevron" control in chrome.
+
+- Height 26px (`h-6.5`), padding 0 6px, gap 4px, `max-width` 160px (permission
+  208px, small selects 112px), label truncates.
+- **Borderless.** Rest = `--sel` fill, hover = `--sel-hover`; open = rest
+  (the popover is the open signal; the chevron rotates 180°).
+- Label 11px `--text-main`; a secondary value (e.g. effort level next to the
+  model) 11px `--text-muted`. Leading icon 14px at 1.75 stroke; trailing
+  chevron 12px `--text-muted`.
+- Shape **(owner pick):** *recommended* 6px radius (it reads soft, not
+  pill, at 26px); *alternative* full-round.
+  Today's rule already says "full-round for chips"; whichever is picked
+  becomes the single chip shape.
+- An icon-only sibling (attach, tools) is a 26px square with the same fills;
+  "on" = `--sel-emphasis` fill, off = `--sel` with `--text-muted` glyph.
+- The toolbar row: chips left, send right, `gap 4px`, `padding 0 8px 8px`; it
+  scrolls horizontally rather than wrapping, and under 220px chips drop their
+  labels to icon + chevron.
+- A risky value (full-access permission) tints its **icon only** with the
+  warning hue; the chip stays neutral.
+
+### N4. Composer box †
+
+`--bg-base` mixed with content 3%, 1px `--stroke`-class line at content 10%
+(20% while focused), 8px radius (surface scale), text 13px with 22px line
+height, `max-height` 160px. No shadow in dark; in light a two-layer soft
+shadow (`0 6px 24px content 9%`, `0 2px 6px content 6%`) lifts it off the
+page. Send = 26px square, 6px radius, the neutral primary (N2), arrow glyph
+14px at 2.25 stroke; Stop while a turn runs = the same solid neutral (never
+amber, unchanged from Chat feedback).
+
+### N5. Card rows (session / agent lists) †
+
+For lists where each row is a *thing with state* — sessions, fan-out tasks,
+Fleet rows, channel task records. Grouped settings rows keep the one-container
+rule (Dialogs & forms).
+
+- Row: 6px radius, padding 8px 10px (compact 6px 10px), **no dividers and no
+  border** — spacing separates rows, the hover fill (content 5%) groups them.
+  Selected = `--sel`; the active-but-not-selected row = `--sel-subtle`.
+- Three lines, all left-aligned:
+  1. **Meta** 11px `--text-muted`: agent kind · model, and right-aligned status
+     (11px, tabular): running = amber spinner + "Working…", needs you = the
+     red ring, done = green check, idle = elapsed time.
+  2. **Title** 13px/600 `--text-main`, one line, 4px above and below.
+  3. **Context** 11px `--text-muted`: branch icon (12px) + branch, then
+     `+N −M` or PR when known.
+- Row actions (archive, ⋮) appear on hover/focus as 20px ghost buttons
+  (24px hit area), never at rest.
+- *Coexists with* the sidebar workspace-row contract (status mark · name ·
+  summary): the workspace row keeps its glance-board content and only takes
+  the radius, fills and spacing; the three-line card is for the agent and
+  task rows under it, Fleet rows and channel task records.
+
+### N6. Window vibrancy (macOS, dark only) †
+
+- **Where:** the sidebar column and the tools dock only (the `--bg-mantle`
+  regions). The terminal grid, its tab strips, dialogs' bodies and every
+  WebGL canvas stay **opaque `--bg-base`** — translucency under glyphs costs
+  legibility and GPU compositing, and the hero must not change with the
+  desktop wallpaper.
+- **Tint:** mantle at 85% opacity over the system material
+  (`hsl(... / 0.85)`, user-adjustable 0.6–1.0 later) †. Popovers may add
+  `backdrop-filter: blur(24px)` over a content-2% tint †.
+- **Dark only.** In light mode the window is opaque (a translucent light
+  sidebar washes out text) †. Turning glass on settles the window first and
+  adds the CSS class second; turning it off removes the class, waits one
+  transition (120ms), then makes the window opaque — so neither side shows
+  through the gap †.
+- **Electron (macOS):** `vibrancy: 'sidebar'` (or `'under-window'`) with
+  `visualEffectState: 'active'` and a transparent window background
+  (`backgroundColor: '#00000000'`); the page paints `--bg-base` everywhere
+  except the mantle regions. This *amends* the Window Chrome rule
+  "`backgroundColor` must match `bgBase`": the no-white-flash goal is kept by
+  painting `--bg-base` on the opaque regions on first frame, and the
+  vibrancy is switched (`setVibrancy`) only after the first paint and only in
+  dark.
+- **Electron (Windows 11 22H2+):** `backgroundMaterial: 'acrylic'` (or
+  `'mica'`) is the analogue. Its interaction with `titleBarOverlay` and the
+  WebGL terminal must be proven in a spike before it is promised; until then
+  Windows stays opaque. Linux stays opaque.
+- Blur strength stays the system material's; no private window-server API.
+
+### N7. Segmented tabs †
+
+- Track: 6px radius, 1px line at content 10%, 2px padding, 2px gap; no fill
+  (or content 10% fill when it floats over content).
+- Segment: 5px radius, padding 4px 10px, 11px label (13px in Settings rows).
+  Active = `--sel` fill + `--text-main`; inactive = `--text-sub`, hover
+  `--text-main`. No underline, no accent.
+- *Replaces* "Segmented controls are a full-round track with the active pill
+  filled neutral" (Dialogs & forms) — one segmented shape for chrome and
+  surfaces. Pane tab strips keep their steel underline for the focused pane
+  (focus is steel's job); unfocused active tabs use `--sel`.
+
+### N8. Message footer (chat view) †
+
+One muted line under an assistant turn:
+`[copy] · Opus 5.5 worked for 4m 3s · 14:02`
+
+- 11px, `--text-muted` (content 40%); the clock time a step quieter (35%).
+  Separators are 3px dots at content 25%. Tabular figures.
+- Always visible for the latest turn (it is the turn's receipt); on earlier
+  turns it shows on row hover/focus, fading in over 120ms.
+- Actions are 24px ghost icon buttons (copy, jump to terminal); hover fill
+  content 8%, glyph to content 70%. No accent, no labels.
+- Duration format: `Ns` under a minute, `Nm Ns` under an hour, `Nh Nm` after.
+  A turn still running shows no footer (the amber spinner is the signal).
+- User messages: `--sel` fill, no border, 13px, 8px 12px padding, fully round
+  when one line and 12px radius when it wraps, max 36rem wide †. User-message
+  actions (time, edit, copy) are hover-revealed beneath the bubble.
+
+### N9. Type and spacing mapping
+
+The four-step scale (10 / 11 / 13 / 14, plus the 16px dialog title) **is
+kept**; the lint rule stays. "Small type with
+generous spacing" comes from spacing, not from new sizes, so 12px maps to
+13px for titles and control labels and to 11px for meta: rows 32–48px for
+two/three-line cards, 4px between a row's lines, 8–10px horizontal padding,
+6px gaps between chips. The 36px chrome module is kept.
+
+### N10. Radii and elevation under the proposal
+
+Chrome 5/6/7 → **5 (segments) / 6 (chips, rows, buttons) / 8 (composer)**;
+surfaces stay 8/12/14. Elevation stays three levels; the popover/menu shadow
+becomes one soft layer (`0 20px 25px -5px rgb(0 0 0/.1), 0 8px 10px -6px
+rgb(0 0 0/.1)`) †, with the glass tint in dark.
+
+### What this proposal deliberately leaves alone
+
+Terminal-first identity, the 36px module, amber/steel jobs, the danger
+wash and two-rendition attention rule, status-mark shapes, tool calls as
+flat mono log lines, the four-step type scale, motion limits, and the
+terminal's own ANSI palette.
+
 ## Window Chrome (the "app, not a webpage in a window" layer)
 
 - **No native menu bar visible.** `autoHideMenuBar: true` (Alt still reveals;
@@ -390,6 +599,7 @@ from the Dialogs & forms primitives plus `Settings/SettingsLayout.tsx`
 | 2026-09-27 | Owner decision: fan-out tasks nest under the pane that requested them, not in one block under the workspace — `Workspace › roster pane row (fold chevron + ⑂ count) › tasks`, plus one trailing `From closed pane` group for tasks whose requesting pane is gone or unknown (GUI, orchestrator, legacy stamps); the workspace-level `From closed workspace` group stays. Fold state, rollup and Close finished move to the pane; the task row's `by …` line and the roster's `N requested` count are removed; Fleet keeps its requester text. No new amber: the count is muted, needs-you is red only while folded | With two agent panes fanning out, one block under the workspace plus a `by …` line on every task made the eye join rows to panes by reading. The tree says it by position, costs no extra line per task, and Fleet — which has no tree — is the one place the text is still needed |
 | 2026-09-27 | Owner decision: attached remote workspaces join the one workspace list instead of a bordered section under it. In Attention they sort with the local rows by their most urgent agent pane on the same scale (a stale mirror counts as idle, its status is frozen); in Manual and Recent they follow the local rows in attach order. Never pinned, dragged or given a Ctrl+N hint. The host line leads with a muted server glyph (no new amber), a mirror whose agent needs you carries the local row's needs-you wash, red dot and label, a stale row is dimmed, and the header count and workspace search include remote rows | One glance board: a remote agent that needs you was invisible below every local row. The glyph says "another machine" without a host header, and dimming is already the convention for not live |
 | 2026-10-01 | Owner decision: Settings gains a **Computer use** tab, last in the Agents group after Browser. It holds the opt-in switch (off by default; its description states that screenshots and window text go to the agent's model provider), the native helper's status as a Badge (success when ready, neutral otherwise — never amber), the global stop key as `ui-code`, and two read-only rows saying what is asked per app and what is never allowed. No primary button on the tab | Letting agents drive other apps is its own question — it is not about the agent browser, and folding it into Browser would bury a new security boundary under unrelated rows. The state lives in its own `~/.wmux/computer-use.json` (main-owned, not the daemon's `config.json`) because the MCP server reads it too |
+| 2026-10-03 | **Proposed, pending owner approval:** modern neutral look — zero-saturation grey tokens with a fill ladder instead of borders, borderless 26px chip pickers, three-line card rows, one segmented shape, a muted message footer, macOS dark-only vibrancy on sidebar and dock (terminal grid stays opaque); primary action neutral solid (owner pick vs. warm), chip radius 6px (owner pick vs. full-round). Amber keeps alive/attention, steel keeps focus/navigation; type scale and 36px module unchanged. See "Proposal — Modern neutral look" | Owner asked for a calmer, more modern surface: neutral greys with very few accent points, soft rounded rows and chip controls, small type with generous spacing. Moving the CTA off amber leaves amber with one job, which is the thesis the amber diet was protecting; fills instead of bevels remove the heaviest chrome texture without adding a colour |
 
 ### Desktop conversation view
 
