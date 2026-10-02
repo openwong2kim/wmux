@@ -33,6 +33,9 @@ export interface ScheduledPromptDeliveryDeps {
   submitKeys?: '\r';
   /** Chat only: the agent's composer queues a prompt typed during a turn. */
   acceptRunning?: boolean;
+  /** The usage-limit continue only: a turn that died on the limit leaves the
+   *  pane at `error`, which is an idle composer for this purpose. */
+  acceptError?: boolean;
   /** Chat only: pasted one by one before the prompt (image paths). */
   leadingPastes?: readonly string[];
   /** Caller re-authorization, run immediately before the first write
@@ -77,7 +80,8 @@ export async function deliverScheduledPrompt(
   if (!before || before.slug !== expectedSlug) return 'unavailable';
   if (before.incarnationId !== expectedIncarnationId) return 'session_changed';
   const running = !!deps.acceptRunning && before.status === 'running';
-  if (!(isReady(before.status) || running) || !before.inputQuiet) return 'busy';
+  const failed = !!deps.acceptError && before.status === 'error';
+  if (!(isReady(before.status) || running || failed) || !before.inputQuiet) return 'busy';
   const leading = deps.leadingPastes ?? [];
 
   // A fresh read of the tracked pid, closing the gap between
@@ -140,7 +144,8 @@ export async function deliverScheduledPrompt(
     !after ||
     after.slug !== expectedSlug ||
     after.incarnationId !== expectedIncarnationId ||
-    !(isSafeAfterPaste(before.status, after.status) || running && after.status === 'running') ||
+    !(isSafeAfterPaste(before.status, after.status) || running && after.status === 'running' ||
+      failed && (after.status === 'error' || after.status === 'running')) ||
     after.inputRevision !== before.inputRevision + leading.length + 1
   ) {
     // The paste may already be visible. Never retry or press Enter after the

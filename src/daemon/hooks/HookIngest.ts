@@ -707,11 +707,6 @@ export class HookIngest {
     } catch (err) {
       this.deps.log?.('warn', `[hooks] authority-touch callback failed for ${sessionId}: ${String(err)}`);
     }
-    try {
-      this.deps.onResolvedSignal?.(sessionId, signal);
-    } catch (err) {
-      this.deps.log?.('warn', `[hooks] resolved-signal callback failed for ${sessionId}: ${String(err)}`);
-    }
 
     // Verdict-gate feed (R4): PreToolUse never reaches `handle()` — the RPC
     // interceptor routes awaiting_permission straight here — so this is the
@@ -864,6 +859,11 @@ export class HookIngest {
       this.deps.onAuthorityTouched?.(sessionId);
     } catch (err) {
       this.deps.log?.('warn', `[hooks] authority-touch callback failed for ${sessionId}: ${String(err)}`);
+    }
+    try {
+      this.deps.onResolvedSignal?.(sessionId, signal);
+    } catch (err) {
+      this.deps.log?.('warn', `[hooks] resolved-signal callback failed for ${sessionId}: ${String(err)}`);
     }
 
     // User answered a pending approval locally — no turn boundary, just expire the request.

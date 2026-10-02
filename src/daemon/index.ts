@@ -4345,10 +4345,12 @@ function registerRpcHandlers(
     id: string, agentSlug: AgentSlug, incarnationId: string, prompt: string, bypassUsageHold = false,
   ): Promise<SessionPromptScheduleResult> => {
     if (!bypassUsageHold && usageLimits?.holds(id)) return 'busy';
-    return deliverPromptToSessionNow(id, agentSlug, incarnationId, prompt);
+    // The continue follows a turn that died on the limit, which leaves `error`.
+    return deliverPromptToSessionNow(id, agentSlug, incarnationId, prompt, bypassUsageHold);
   };
-  const deliverPromptToSessionNow = (id: string, agentSlug: AgentSlug, incarnationId: string, prompt: string) =>
+  const deliverPromptToSessionNow = (id: string, agentSlug: AgentSlug, incarnationId: string, prompt: string, acceptError: boolean) =>
     deliverScheduledPrompt(agentSlug, incarnationId, prompt, {
+      acceptError,
       getAgentState: () => {
         const current = readDaemonAgentState(id);
         const slug = current.agentName ? agentDisplayToSlug(current.agentName) : undefined;

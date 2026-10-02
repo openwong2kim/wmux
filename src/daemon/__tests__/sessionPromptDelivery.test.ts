@@ -59,6 +59,24 @@ describe('deliverScheduledPrompt', () => {
     expect(writes).toEqual(['\x1b[200~continue\x1b[201~', '\r']);
   });
 
+  it('lets the usage-limit continue through the error status a limited turn leaves', async () => {
+    let current = state({ status: 'error' });
+    const writes: string[] = [];
+    const deps = {
+      getAgentState: () => current,
+      isAgentProcessAlive: alwaysAlive,
+      write: (data: string) => {
+        writes.push(data);
+        current = { ...current, inputRevision: current.inputRevision + 1 };
+        return true;
+      },
+      delay: async () => undefined,
+    };
+    await expect(deliverScheduledPrompt('codex', 'incarnation-1', 'continue', deps)).resolves.toBe('busy');
+    await expect(deliverScheduledPrompt('codex', 'incarnation-1', 'continue', { ...deps, acceptError: true })).resolves.toBe('sent');
+    expect(writes).toEqual(['\x1b[200~continue\x1b[201~', '\r']);
+  });
+
   it('waits through running, approval, error, and recent human input states', async () => {
     const cases: Array<Partial<ScheduledPromptAgentState>> = [
       { status: 'running' },

@@ -103,6 +103,16 @@ describe('HookIngest', () => {
     vi.useRealTimers();
   });
 
+  it('hands every resolved signal, payload intact, to onResolvedSignal', () => {
+    const seen: Array<[string, AgentSignal]> = [];
+    const withHook = new HookIngest({ ...fixture.deps, onResolvedSignal: (id: string, signal: AgentSignal) => { seen.push([id, signal]); } });
+    const failure = makeSignal({ ptyId: 'pty-a', kind: 'agent.stop_failure', payload: { error: 'rate_limit', last_assistant_message: "You've hit your limit" } });
+    withHook.handle(failure);
+    expect(seen).toEqual([['pty-a', failure]]);
+    withHook.handle(makeSignal({ ptyId: 'nobody' , cwd: '/elsewhere' }));
+    expect(seen).toHaveLength(1);
+  });
+
   describe('envelope validation', () => {
     it('rejects anything that is not a canonical AgentSignal', () => {
       expect(ingest.handle(null).reason).toBe('invalid-envelope');
