@@ -52,6 +52,7 @@ import {
   runFanoutSetup,
   type FanoutSetupSkipReason,
 } from './fanoutEnvironment';
+import { workerTempEnv } from './fanoutTempDir';
 import { inheritTaskAutonomy } from './taskAutonomy';
 import { getFanOutGuards, type FanOutGuards } from './fanoutGuards';
 import { loadFanoutWorkerPermissionMode } from './fanoutWorkerPolicy';
@@ -350,6 +351,19 @@ export interface FanOutServiceOptions {
   ledger?: Pick<TaskLedger, 'get' | 'onTransition'>;
   /** dependsOn — wait deadline (tests shorten it). */
   dependencyWaitMs?: number;
+  /** Per-worker private temp dir (TMPDIR/TMP/TEMP). Absent = feature off
+   *  (tests); production wires the fanoutTempDir module. */
+  workerTempDirs?: WorkerTempDirPort;
+}
+
+/** Create / hand over / discard a worker's private temp dir. */
+export interface WorkerTempDirPort {
+  /** Make a fresh owner-only dir and return its absolute path. */
+  create(): string;
+  /** The task's workspace exists — record it as the dir's owner for cleanup. */
+  register(workspaceId: string, dir: string): void;
+  /** The worker never launched — remove the dir now. */
+  remove(dir: string): void;
 }
 
 /** `<wmux data>/outputs` — where worktree:false tasks write. */
@@ -403,6 +417,7 @@ export class FanOutService {
   private pendingLaunches: Promise<void>[] = [];
   /** dependsOn — fan-out key → drop its still-waiting tasks. */
   private readonly waitingDependents = new Map<string, (reason: string) => number>();
+  private readonly workerTempDirs?: WorkerTempDirPort;
 
   /** §2 G1 멱등: 키 → 완료 결과 LRU. 동일 키 재호출은 직전 결과 반환. */
   private readonly results = new Map<string, FanOutResult>();
@@ -421,6 +436,7 @@ export class FanOutService {
     this.lineage = opts.lineage;
     this.workerPermissionMode = opts.workerPermissionMode ?? (() => loadFanoutWorkerPermissionMode());
     this.outputsRoot = opts.outputsRoot ?? defaultOutputsRoot();
+    this.workerTempDirs = opts.workerTempDirs;
     this.ledger = opts.ledger;
     this.dependencyWaitMs = opts.dependencyWaitMs ?? FANOUT_DEPENDENCY_WAIT_MS;
   }
@@ -1043,6 +1059,22 @@ export class FanOutService {
     // 디렉토리(worktree 밖 — diff 청정성 §4)에 쓴다. task.json(J3 §1 CL5)은 projection
     // GC 이후에도 전용 루트의 worktree를 taskId·title로 역추적하게 하는 디스크 정본
     // 사이드카다.
+    // Private temp dir for this worker (TMPDIR/TMP/TEMP), made before the
+    // prompt so the prompt can name it. A failure costs isolation, not the
+    // task: the worker falls back to the system temp dir.
+    let tempDir: string | undefined;
+    if (this.workerTempDirs) {
+      try {
+        tempDir = this.workerTempDirs.create();
+      } catch (err) {
+        console.warn(`[fanout] worker temp dir create failed: ${(err as Error).message}`);
+      }
+    }
+    // Every failure below this point never launches the worker.
+    const discardTempDir = (): void => {
+      if (tempDir) this.workerTempDirs?.remove(tempDir);
+    };
+
     let promptPath: string | undefined;
     try {
       fs.mkdirSync(metaDir, { recursive: true });
@@ -1059,7 +1091,13 @@ export class FanOutService {
         const outputNote = ctx.output
           ? `\n\n---\n\nWrite every file you produce into your current directory (${cwd}); that folder is what gets compared. It is not a git repository — there is no branch to commit to.`
           : '';
-        fs.writeFileSync(promptPath, ctx.prompt + outputNote + taskNote + WORKER_DELIVERY_PREAMBLE, 'utf8');
+        // Wording adapted from MonoCode (hardbeat920/monocode@6bd432ca,
+        // src/features/orchestration/model/orchestration.ts), MIT License,
+        // Copyright (c) 2026 Nick.
+        const tempNote = tempDir
+          ? `\n\n---\n\nYour private scratch directory is ${tempDir}; TMPDIR, TMP and TEMP point there. Put temporary helpers and test output there, not anywhere else outside the project.`
+          : '';
+        fs.writeFileSync(promptPath, ctx.prompt + outputNote + taskNote + tempNote + WORKER_DELIVERY_PREAMBLE, 'utf8');
       }
       const stamp: WorkTaskMetaStamp = {
         taskId,
@@ -1069,6 +1107,7 @@ export class FanOutService {
       };
       fs.writeFileSync(path.join(metaDir, WORKTASK_META_FILENAME), JSON.stringify(stamp), 'utf8');
     } catch (err) {
+      discardTempDir();
       await this.compensate(taskId, ctx.verifiedWorkspaceId, plan);
       return { ...base, error: `prompt file write failed: ${(err as Error).message}`, ...preserved };
     }
@@ -1079,6 +1118,7 @@ export class FanOutService {
       taskEnv[FANOUT_TASK_PORT_ENV] = String(ctx.port);
       base.port = ctx.port;
     }
+    if (tempDir) Object.assign(taskEnv, workerTempEnv(tempDir));
 
     // T2 — worktree setup 훅(신뢰된 wmux.json에서만 도달). 에이전트 기동 **전**에
     // 돌린다. 실패는 태스크 실패로 취급하고 페인을 열지 않는다 — 의존성이 안 깔린
@@ -1088,6 +1128,7 @@ export class FanOutService {
       if (!setupRun.ok) {
         // 이 태스크만 보상한다 — 훅 타임아웃/실패는 fan-out 전체를 접지 않고,
         // 호출부 루프가 다음 태스크를 그대로 이어간다.
+        discardTempDir();
         await this.compensate(taskId, ctx.verifiedWorkspaceId, plan);
         // 페인이 뜨지 않았으니 포트는 이 태스크의 것이 아니다 — 결과에서 뺀다
         // (run()이 예약도 함께 반납한다).
@@ -1132,6 +1173,7 @@ export class FanOutService {
         workerPermissionMode: ctx.workerMode,
       });
       if ('error' in spawned) {
+        discardTempDir();
         await this.compensate(taskId, ctx.verifiedWorkspaceId, plan);
         return { ...base, error: `renderer spawn failed: ${spawned.error}`, ...preserved };
       }
@@ -1142,10 +1184,20 @@ export class FanOutService {
       // 한다 — 아니면 재발사가 역할의 에이전트·모델을 조용히 잃는다.
       if (spawned.initialCommand) base.initialCommand = spawned.initialCommand;
     } catch (err) {
+      // No discardTempDir() here: a timeout does not prove the pane never
+      // spawned, and a live worker's TMPDIR must not vanish. It leaks instead.
       await this.compensate(taskId, ctx.verifiedWorkspaceId, plan);
       return { ...base, error: `renderer spawn threw: ${(err as Error).message}`, ...preserved };
     }
     base.workspaceId = workspaceId;
+    if (tempDir) {
+      try {
+        this.workerTempDirs?.register(workspaceId, tempDir);
+      } catch (err) {
+        // Unregistered = never swept: a leaked dir under the system temp root.
+        console.warn(`[fanout] could not register worker temp dir ${tempDir}: ${String(err)}`);
+      }
+    }
     // The renderer already stamped the lineage before the agent launched; this
     // second write is idempotent and covers a renderer that did not. It carries
     // the same origin the spawn did and never replaces one already recorded.

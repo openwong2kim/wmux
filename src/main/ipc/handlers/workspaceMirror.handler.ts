@@ -14,6 +14,7 @@ import { ipcMain } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { getWorkspaceMirror } from '../../workspace/WorkspaceMirror';
 import { reconcileWorkspaceClaims } from '../../workspace/workspaceClaimTrust';
+import { reconcileWorkerTempDirs } from '../../worktask/fanoutTempDir';
 import type {
   WorkspaceListEntry,
   FleetSnapshot,
@@ -153,6 +154,10 @@ export function parseWorkspaceMirrorPayload(raw: unknown): WorkspaceMirrorPushPa
   return out;
 }
 
+/** Minimum spacing between fan-out temp-dir sweeps (see onPush). */
+const TEMPDIR_SWEEP_INTERVAL_MS = 10_000;
+let lastTempDirSweep = 0;
+
 /**
  * Register the fire-and-forget WORKSPACE_MIRROR_PUSH listener. Idempotent
  * (removeAllListeners first) so an HMR reload / re-registration never
@@ -175,6 +180,18 @@ export function registerWorkspaceMirrorHandler(): () => void {
       reconcileWorkspaceClaims(payload.entries.map((e) => e.id));
     } catch {
       /* claim bookkeeping must never affect the mirror */
+    }
+    // Fan-out worker temp dirs whose task workspace is gone. Status pushes
+    // arrive every few hundred ms; the sweep's own grace is a minute, so it
+    // reads the registry at most every TEMPDIR_SWEEP_INTERVAL_MS.
+    const now = Date.now();
+    if (now - lastTempDirSweep >= TEMPDIR_SWEEP_INTERVAL_MS) {
+      lastTempDirSweep = now;
+      try {
+        reconcileWorkerTempDirs(payload.entries.map((e) => e.id), now);
+      } catch {
+        /* temp-dir bookkeeping must never affect the mirror */
+      }
     }
   };
   ipcMain.removeAllListeners(IPC.WORKSPACE_MIRROR_PUSH);
