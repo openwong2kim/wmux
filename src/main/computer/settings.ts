@@ -16,7 +16,13 @@ export interface ComputerUseSettings {
 
 export function helperStatus(helperPath: string | null): ComputerHelperStatus {
   if (!helperPath) return 'unsupported';
-  return fs.existsSync(helperPath) ? 'ready' : 'missing';
+  // Executable, not just present: a file without the exec bit fails to spawn.
+  try {
+    fs.accessSync(helperPath, fs.constants.X_OK);
+    return 'ready';
+  } catch {
+    return 'missing';
+  }
 }
 
 /**

@@ -72,12 +72,17 @@ export function TabComputerUse() {
         <SettingRow id="computerusehelper" label={t('settings.computerUseHelper')} description={t('settings.computerUseHelperDesc')}>
           {helperBadge}
         </SettingRow>
-        {/* An unavailable stop key is never advertised as working: input is
-            refused until wmux can hold it (main fails closed). */}
+        {/* A stop key that is not held is never advertised as working: input
+            is refused until wmux can hold it (main fails closed). */}
         <SettingRow
           id="computerusestop"
           label={t('settings.computerUseStopKey')}
-          description={t(stopKeyUnavailable ? 'settings.computerUseStopKeyUnavailableDesc' : 'settings.computerUseStopKeyDesc')}
+          description={t(
+            stopKeyUnavailable ? 'settings.computerUseStopKeyUnavailableDesc'
+              : noHelper ? 'settings.computerUseStopKeyNoHelperDesc'
+                : state?.stopKeyStatus === 'held' ? 'settings.computerUseStopKeyDesc'
+                  : 'settings.computerUseStopKeyOffDesc',
+          )}
         >
           {state && (
             <>
@@ -89,7 +94,8 @@ export function TabComputerUse() {
       </SettingsSection>
       {noHelper && state && (
         <SettingNote>
-          {t(state.helper === 'missing' ? 'settings.computerUseNoHelperNote' : 'settings.computerUseUnsupportedNote')}
+          {t(state.enabled ? 'settings.computerUseOnWithoutHelperNote'
+            : state.helper === 'missing' ? 'settings.computerUseNoHelperNote' : 'settings.computerUseUnsupportedNote')}
         </SettingNote>
       )}
       {stopKeyUnavailable && state && (

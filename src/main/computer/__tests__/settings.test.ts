@@ -56,8 +56,19 @@ describe('computer use settings', () => {
 
   it('reports the helper as ready, missing, or unsupported', () => {
     const present = tempConfig('');
+    fs.chmodSync(present, 0o755);
     expect(helperStatus(present)).toBe('ready');
     expect(helperStatus(path.join(os.tmpdir(), 'no-such-helper'))).toBe('missing');
+    expect(helperStatus(null)).toBe('unsupported');
+  });
+
+  it.skipIf(process.platform === 'win32')('treats a helper without the exec bit as missing', () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-cu-')), 'helper');
+    fs.writeFileSync(file, '#!/bin/sh\n', { mode: 0o644 });
+    expect(helperStatus(file)).toBe('missing');
+    fs.chmodSync(file, 0o755);
+    expect(helperStatus(file)).toBe('ready');
+    expect(helperStatus(`${file}-nope`)).toBe('missing');
     expect(helperStatus(null)).toBe('unsupported');
   });
 });

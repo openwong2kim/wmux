@@ -68,12 +68,49 @@ export function helperMissingError(): ComputerError {
   );
 }
 
-/** Stands in for the helper while its binary is missing: every request fails plainly. */
-const MISSING_HELPER: HelperLike = {
-  request: () => Promise.reject(helperMissingError()),
-  abort: () => undefined,
-  dispose: () => undefined,
-};
+/**
+ * A spawn that fails for want of a runnable binary (deleted or quarantined
+ * after the check, or not executable). HelperProcess puts the OS error, path
+ * included, into the message; the agent gets helperMissingError instead.
+ */
+const SPAWN_FAILURE = /\b(ENOENT|EACCES|EPERM)\b|could not start the computer-use helper/;
+
+/**
+ * The helper as ComputerService sees it. Readiness is re-checked on every
+ * request, so a helper that appears later is used and one that disappears
+ * stops the running process; spawn failures read as a missing helper.
+ */
+function lazyHelper(command: string, ready: () => boolean): HelperLike & { reset(): boolean } {
+  let proc: HelperProcess | null = null;
+  const reset = () => {
+    const had = proc !== null;
+    proc?.dispose();
+    proc = null;
+    return had;
+  };
+  return {
+    async request(method, params) {
+      if (!ready()) {
+        reset();
+        throw helperMissingError();
+      }
+      proc ??= new HelperProcess({ command, log: (m) => console.warn(m) });
+      try {
+        return await proc.request(method, params);
+      } catch (err) {
+        if (err instanceof ComputerError && err.code === 'helper_unavailable' && SPAWN_FAILURE.test(err.message)) {
+          console.warn(`[computer] ${err.message}`);
+          reset();
+          throw helperMissingError();
+        }
+        throw err;
+      }
+    },
+    abort: (reason) => proc?.abort(reason),
+    dispose: () => { reset(); },
+    reset,
+  };
+}
 
 let stopKey: StopKey | null = null;
 let liveService: ComputerService | null = null;
@@ -94,21 +131,22 @@ export function createComputerService(deps: { requestConsent: ConsentRequester }
 
   // Checked per call, not at boot: most installs never enable computer use.
   const helperReady = () => helperStatus(helperPath) === 'ready';
-  const createHelper: (() => HelperLike) | null = helperPath
-    ? () => (helperReady() ? new HelperProcess({ command: helperPath, log: (m) => console.warn(m) }) : MISSING_HELPER)
-    : null;
+  const helper = helperPath ? lazyHelper(helperPath, helperReady) : null;
   const key = computerStopKey();
 
-  const service = new ComputerService({
+  const service: ComputerService = new ComputerService({
     isEnabled: () => readComputerUseEnabled(),
-    createHelper,
+    createHelper: helper && (() => helper),
     requestConsent: deps.requestConsent,
     // No helper, no chord. Every call arms the key before it reaches the
     // helper, so refusing here keeps the chord free and gives the agent the
-    // plain answer instead of stop_key_unavailable.
+    // plain answer instead of stop_key_unavailable. If the helper vanished
+    // while in use, stop its work before the key goes: input must never run
+    // without a held stop key.
     stopKey: {
       arm: () => {
         if (!helperReady()) {
+          if (key.status() === 'held' || helper?.reset()) service.abort();
           key.release();
           throw helperMissingError();
         }
@@ -154,7 +192,11 @@ export function registerComputerUseIpc(getExistingService: () => ComputerService
     // gives it back.
     const key = computerStopKey();
     if (enabled && helper === 'ready') key.arm();
-    else key.release();
+    else {
+      // The helper went away while the key was held: stop agents first.
+      if (enabled && key.status() === 'held') getExistingService()?.abort();
+      key.release();
+    }
     return {
       enabled,
       helper,
@@ -170,11 +212,10 @@ export function registerComputerUseIpc(getExistingService: () => ComputerService
   ipcMain.removeHandler(IPC.COMPUTER_USE_SET);
   ipcMain.handle(IPC.COMPUTER_USE_SET, (_event, enabled: unknown) => {
     if (typeof enabled !== 'boolean') throw new Error('enabled must be a boolean');
-    // Settings disables the switch too; this covers any other caller. Turning
+    // Settings disables the switch too; this covers any other caller, which
+    // sees `enabled: false` with the helper status that explains it. Turning
     // it off is always allowed.
-    if (enabled && helperStatus(resolveHelperPath()) !== 'ready') {
-      return snapshot('this wmux build does not include the computer-use helper, so computer use cannot be turned on');
-    }
+    if (enabled && helperStatus(resolveHelperPath()) !== 'ready') return snapshot();
     try {
       writeComputerUseEnabled(enabled);
     } catch (err) {

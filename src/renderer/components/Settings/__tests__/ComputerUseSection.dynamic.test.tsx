@@ -70,7 +70,7 @@ describe('Settings › Computer use', () => {
   });
 
   it('advertises the stop key while it is held', async () => {
-    const held: ComputerUseSettingsPayload = { ...base, enabled: true, stopKeyStatus: 'held' };
+    const held: ComputerUseSettingsPayload = { ...ready, enabled: true, stopKeyStatus: 'held' };
     const el = await render({ get: async () => held, set: async () => held });
     expect(el.textContent).toContain('Press it anywhere to stop all agents');
     expect(el.textContent).not.toContain('Unavailable');
@@ -84,6 +84,20 @@ describe('Settings › Computer use', () => {
     await act(async () => { sw.click(); });
     expect(set).not.toHaveBeenCalled();
     expect(el.textContent).toContain('does not include the helper for this OS yet');
+  });
+
+  it('does not advertise a stop key that is not held', async () => {
+    const el = await render({ get: async () => base, set: async () => base });
+    expect(el.textContent).toContain('Not held: this build has no helper');
+    expect(el.textContent).not.toContain('Press it anywhere');
+    const off = await render({ get: async () => ready, set: async () => ready });
+    expect(off.textContent).toContain('Held only while computer use is on');
+  });
+
+  it('tells people who turned it on without a helper to turn it off', async () => {
+    const el = await render({ get: async () => ({ ...base, enabled: true }), set: async () => base });
+    expect(el.textContent).toContain('Turn it off for now');
+    expect(el.textContent).not.toContain('does not include the helper for this OS yet');
   });
 
   it('can still be turned off when it was on without a helper', async () => {
