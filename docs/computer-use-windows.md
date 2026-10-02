@@ -175,8 +175,9 @@ monitors at negative coordinates work.
     and a button goes up where it went down.
 - `releaseInput { keys?, modifiers?, buttons? }` releases what this helper
   tracked, what a dead helper recorded, and what main lists. With no fields
-  it releases the modifiers that are down and the three buttons, never plain
-  keys. A held Windows key is released behind an unassigned key press, so the
+  it releases only the modifiers and mouse buttons that are actually down,
+  never plain keys (a stray right-button up opens a context menu on
+  Windows). A held Windows key is released behind an unassigned key press, so the
   Start menu does not open.
 - Shutdown (stdin EOF, 6 minutes idle, a console control event) goes through
   one gate: posting stops first, then held input is released once, then the
