@@ -231,7 +231,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     incarnationId?: string; agentSessionId: string; slug: string; boundary: TranscriptBoundary;
     /** The Codex turn a native interrupt was aimed at (never on the wire). */
     codexTurn?: CodexTurnRef;
-    /** The text the daemon sent for the aimed turn, when exactly one send started it (memory only). */
+    /** The text of the one daemon send delivered into the aimed turn (memory only). */
     sentText?: string;
     /** The restored-prompt check, once run: a settle retry must not repeat it. */
     promptCheck?: Pick<StoredCancelProgress, 'promptRestored' | 'inputCleared'>;
@@ -738,7 +738,10 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     deliveredLog.set(id, list.slice(-DELIVERED_KEEP));
   };
 
-  /** The text of the one daemon send that started the aimed turn; none when zero or several fit. */
+  /**
+   * The text of the one daemon send delivered into the aimed turn: the one that
+   * started it, or one Claude queued mid-turn. None when zero or several fit.
+   */
   const sentTextFor = (id: string, turnStartedAt: number, requestedAt: number): string | undefined => {
     const fits = (deliveredLog.get(id) ?? []).filter((entry) =>
       entry.at >= turnStartedAt - CANCEL_CLOCK_SKEW_MS && entry.at <= requestedAt);
