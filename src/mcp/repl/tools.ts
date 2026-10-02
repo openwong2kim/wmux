@@ -227,7 +227,7 @@ export function createReplToolCatalog(
       const hostCwd = cwd === undefined ? undefined : fromAgentPath(cwd);
       if (hostCwd === null) {
         return text(
-          `cwd "${cwd}" is inside the WSL distro; the REPL runs on Windows and can only start ` +
+          `cwd "${cwd}" is not an absolute /mnt/<drive>/ path; the REPL runs on Windows and can only start ` +
             'in a drive-mount directory (/mnt/<drive>/...).',
           true,
         );

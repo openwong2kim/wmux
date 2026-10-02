@@ -292,7 +292,7 @@ describe('repl_run cwd for a WSL caller', () => {
     };
 
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toContain('"/home/me/proj" is inside the WSL distro');
+    expect(res.content[0].text).toContain('"/home/me/proj" is not an absolute /mnt/<drive>/ path');
   });
 
   it('names a missing drive-mount cwd in the WSL spelling', async () => {

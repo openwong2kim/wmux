@@ -240,6 +240,12 @@ describe.skipIf(process.platform === 'win32')('WSL Codex per-launch wmux MCP ser
     expect(result.stderr).toBe('');
   });
 
+  it.each(['app-server', 'mcp-server'])('does not stamp this pane on a shared %s', (mode) => {
+    const result = fixture(MCP_ENTRY).run([mode]);
+    expect(result.args).toEqual(['-c', expect.stringMatching(/^notify=/), mode]);
+    expect(result.stderr).toBe('');
+  });
+
   it('leaves other MCP servers to Codex', () => {
     const f = fixture(MCP_ENTRY);
     fs.writeFileSync(path.join(f.home, '.codex/config.toml'), '[mcp_servers.other]\ncommand = "x"\n');

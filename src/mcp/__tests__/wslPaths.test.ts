@@ -79,9 +79,13 @@ describe('fromAgentPath', () => {
     expect(fromAgentPath('/cfoo/x', wsl('/c/'))).toBeNull();
   });
 
-  it('passes relative and Windows paths through for a WSL caller', () => {
+  it('passes Windows paths through and refuses relative ones for a WSL caller', () => {
     const env = wsl('/mnt/c/');
-    expect(fromAgentPath('a.png', env)).toBe('a.png');
     expect(fromAgentPath('C:\\x\\a.png', env)).toBe('C:\\x\\a.png');
+    expect(fromAgentPath('\\\\server\\share\\a.png', env)).toBe('\\\\server\\share\\a.png');
+    // Relative to the agent's Linux cwd, which the Windows server cannot know.
+    expect(fromAgentPath('a.png', env)).toBeNull();
+    expect(fromAgentPath('./proj', env)).toBeNull();
+    expect(fromAgentPath('a.png', {})).toBe('a.png');
   });
 });

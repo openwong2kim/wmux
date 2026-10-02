@@ -181,7 +181,7 @@ function validateUploadPath(input: string): string {
   const hostInput = fromAgentPath(input);
   if (hostInput === null) {
     throw new Error(
-      `browser_file_upload blocked: "${input}" is inside the WSL distro, which the browser cannot open. ` +
+      `browser_file_upload blocked: "${input}" is not an absolute /mnt/<drive>/ path, so the Windows browser cannot open it. ` +
       `Copy the file under the upload root (${displayRoot(root)}) and pass that path.`,
     );
   }

@@ -170,9 +170,11 @@ collect_configs() {
 # Only this short-lived helper needs Electron's Node mode. Do not leak it to
 # Codex or other Linux applications. It never runs on the daemon event loop.
 # Bounded like the Claude shim's PATH lookup: a stalled interop call falls back
-# to launching Codex unchanged instead of hanging the launch.
+# to launching Codex unchanged instead of hanging the launch. 30 s, the MCP
+# server's own startup budget: on antivirus-scanned machines this helper is the same
+# cold Electron start, and a timeout here drops notify and MCP together.
 wmux_guard=
-command -v timeout >/dev/null 2>&1 && wmux_guard="timeout -k 1 10"
+command -v timeout >/dev/null 2>&1 && wmux_guard="timeout -k 1 30"
 # The helper prints one line per key that no configuration layer owns.
 free=$(collect_configs | ELECTRON_RUN_AS_NODE=1 \
   WSLENV="\${WSLENV:+$WSLENV:}ELECTRON_RUN_AS_NODE/w" \
@@ -184,6 +186,8 @@ while IFS= read -r line; do
 done <<< "$free"
 overrides=()
 [ -z "$notify" ] || overrides+=(-c "$notify")
+# Server modes may serve other panes; never stamp this pane's identity on them.
+case \${1:-} in app-server|mcp-server) mcp= ;; esac
 if [ -n "$mcp" ] && [ -n "\${WMUX_WSL_MCP:-}" ]; then
   # TOML literal strings keep Windows backslashes as-is but cannot hold a
   # quote or control character. Codex refuses to start on an override it

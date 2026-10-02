@@ -51,13 +51,17 @@ export function toAgentPath(hostPath: string, env: NodeJS.ProcessEnv = process.e
  *
  * Returns null for a WSL caller's POSIX absolute path outside the drive mount
  * (`/home/me/x`): it names a file inside the distro that has no drive-letter
- * equivalent here. Relative paths, and every path for a non-WSL caller, come
- * back unchanged. `..` segments are left for the caller's own path.resolve so
- * that any sandbox check sees them exactly as before.
+ * equivalent here. Also null for a WSL caller's relative path: it is relative
+ * to the agent's Linux cwd, which this Windows process cannot know, and
+ * resolving it against our own cwd would silently name some other directory.
+ * Windows drive and UNC paths, and every path for a non-WSL caller, come back
+ * unchanged. `..` segments are left for the caller's own path.resolve so that
+ * any sandbox check sees them exactly as before.
  */
 export function fromAgentPath(agentPath: string, env: NodeJS.ProcessEnv = process.env): string | null {
   const root = wslMountRoot(env);
-  if (root === null || !agentPath.startsWith('/')) return agentPath;
+  if (root === null || /^[A-Za-z]:[\\/]/.test(agentPath) || agentPath.startsWith('\\\\')) return agentPath;
+  if (!agentPath.startsWith('/')) return null;
   if (agentPath.startsWith(root)) {
     // The letter must be a whole segment: with root `/`, `/home` and `/cfoo`
     // are distro paths, not drives.
