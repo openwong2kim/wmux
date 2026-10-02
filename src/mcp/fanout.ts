@@ -104,6 +104,16 @@ const FANOUT_START_SHAPE = {
     .max(FANOUT_MAX_TASKS)
     .optional()
     .describe('Per-task agent CLI slug (+ model), one per title. At most one of roles, preset, agents.'),
+  files: z
+    .array(z.array(z.string().min(1).max(256)).max(32))
+    .max(FANOUT_MAX_TASKS)
+    .optional()
+    .describe('Per-task write scope (repo-relative globs), index-aligned. Overlapping scopes are refused.'),
+  depends_on: z
+    .array(z.array(z.number().int().min(0)).max(FANOUT_MAX_TASKS))
+    .max(FANOUT_MAX_TASKS)
+    .optional()
+    .describe('Per-task 0-based indices of tasks that must reach review_requested/completed before this one is spawned from a fresh origin commit.'),
 };
 
 /** Register the fan-out tool on the given MCP server. */
@@ -132,7 +142,7 @@ export function registerFanOutTools(server: McpServer, deps: FanOutToolDeps): vo
       'Repository and owning workspace come from your verified identity — fan-out runs in YOUR repository, the tasks are owned by you, and it is refused without that identity. A preset may skip the worktree: each task then writes into its own folder. ' +
       'An accept or the completed poll may carry `warnings` (also printed as WARNING lines): the fan-out ran, but something will stop its reports reaching you or the tasks did not start from a fresh origin commit — act on it.',
     FANOUT_START_SHAPE,
-    async ({ idempotency_key, titles, prompt, task_prompts, roles, preset, agents }) => {
+    async ({ idempotency_key, titles, prompt, task_prompts, roles, preset, agents, files, depends_on }) => {
       const params: Record<string, unknown> = {
         idempotencyKey: idempotency_key,
         titles,
@@ -142,6 +152,8 @@ export function registerFanOutTools(server: McpServer, deps: FanOutToolDeps): vo
       if (roles !== undefined) params['roles'] = roles;
       if (preset !== undefined) params['preset'] = preset;
       if (agents !== undefined) params['agents'] = agents;
+      if (files !== undefined) params['files'] = files;
+      if (depends_on !== undefined) params['dependsOn'] = depends_on;
       // The verified ptyId is the whole identity basis for this call — the
       // handler resolves it to the owning workspace and refuses without it.
       // Resolve identity FIRST: the walk that produces that ptyId is a side

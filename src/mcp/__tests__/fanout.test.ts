@@ -90,6 +90,8 @@ describe('fanout_start: tool surface', () => {
   it('exposes exactly the inputs a caller may choose', () => {
     expect(Object.keys(shapes.get('fanout_start') ?? {}).sort()).toEqual([
       'agents',
+      'depends_on',
+      'files',
       'idempotency_key',
       'preset',
       'prompt',
@@ -132,6 +134,18 @@ describe('fanout_start: request mapping', () => {
       titles: ['a', 'b'],
       prompt: 'shared',
       taskPrompts: ['pa', 'pb'],
+      senderPtyId: 'pty-mine',
+    });
+  });
+
+  it('maps files and depends_on onto the wire as files and dependsOn', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true, status: 'accepted', taskCount: 2 });
+    await fanoutStart({ idempotency_key: 'k2', titles: ['a', 'b'], files: [['src/a/**'], []], depends_on: [[], [0]] });
+    expect(mockSendRpc).toHaveBeenCalledWith('task.fanout.start', {
+      idempotencyKey: 'k2',
+      titles: ['a', 'b'],
+      files: [['src/a/**'], []],
+      dependsOn: [[], [0]],
       senderPtyId: 'pty-mine',
     });
   });

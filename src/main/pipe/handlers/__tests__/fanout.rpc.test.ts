@@ -434,6 +434,32 @@ describe('roles choose the agent per task, without naming one', () => {
   });
 });
 
+describe('files and dependsOn travel with the tasks', () => {
+  it('forwards normalized scopes and dependencies, and shows them in the approval', async () => {
+    const h = setup();
+    await h.call(goodParams({ titles: ['a', 'b'], files: [['./src/a/'], ['src/b/**']], dependsOn: [[], [0]] }));
+    await h.flush();
+    expect(h.request().files).toEqual([['src/a'], ['src/b/**']]);
+    expect(h.request().dependsOn).toEqual([[], [0]]);
+    expect(h.preview()).toContain('[files: src/b/**] [after: task 1]');
+  });
+
+  it('refuses overlapping scopes and cycles before asking anyone', async () => {
+    const h = setup();
+    const overlap = await h.call(goodParams({ titles: ['a', 'b'], files: [['src'], ['src/x.ts']] }));
+    expect(errorOf(overlap).code).toBe('INVALID_ARGUMENT');
+    const cycle = await h.call(goodParams({ idempotencyKey: 'k-cycle', titles: ['a', 'b'], dependsOn: [[1], [0]] }));
+    expect(errorOf(cycle).code).toBe('INVALID_ARGUMENT');
+    expect(h.approvalCount()).toBe(0);
+  });
+
+  it('refuses an empty title when indices would shift', async () => {
+    const h = setup();
+    const res = await h.call(goodParams({ titles: ['a', ' ', 'c'], dependsOn: [[], [], [0]] }));
+    expect(errorOf(res).code).toBe('INVALID_ARGUMENT');
+  });
+});
+
 // ── accept-then-poll ──────────────────────────────────────────────────────
 //
 // The MCP client's RPC deadline is 10s (src/mcp/wmux-client.ts) and a single
