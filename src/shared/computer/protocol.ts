@@ -58,8 +58,100 @@ export function isControlAction(action: string): action is ComputerControlAction
 export type ObservationMode = 'ax' | 'vision' | 'both';
 export const OBSERVATION_MODES: readonly ObservationMode[] = ['ax', 'vision', 'both'];
 
+// === Key vocabulary ===
+//
+// The only key names that ever reach a helper. Main normalizes what the agent
+// wrote (case, aliases such as `Return`, `Esc`, `cmd`) into these canonical
+// spellings and refuses anything else with `invalid_argument`, so a helper
+// maps a closed set to virtual-key codes / CGKeyCodes and never parses free
+// text. A helper that receives a name outside this set must answer
+// `invalid_argument`, not guess.
+
+/**
+ * `meta` is the Windows key on Windows and Command on macOS; `alt` is Option
+ * on macOS. Modifiers are never sent as a key on their own (a bare Win key
+ * opens Start), only alongside one.
+ */
 export type Modifier = 'ctrl' | 'alt' | 'shift' | 'meta';
 export const MODIFIERS: readonly Modifier[] = ['ctrl', 'alt', 'shift', 'meta'];
+
+export const NAMED_KEYS = [
+  'Enter', 'Tab', 'Escape', 'Backspace', 'Delete', 'Space',
+  'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+  'Home', 'End', 'PageUp', 'PageDown',
+  'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12',
+] as const;
+/** Letters are lower case on the wire; Shift is a modifier, not a spelling. */
+export const LETTER_KEYS = 'abcdefghijklmnopqrstuvwxyz'.split('') as readonly string[];
+export const DIGIT_KEYS = '0123456789'.split('') as readonly string[];
+
+export type NamedKey = (typeof NAMED_KEYS)[number];
+/** A canonical key: a NamedKey, a lower-case letter a–z or a digit 0–9. */
+export type Key = NamedKey | string;
+
+const KEY_BY_LOWER = new Map<string, Key>(
+  [...NAMED_KEYS, ...LETTER_KEYS, ...DIGIT_KEYS].map((k) => [k.toLowerCase(), k]),
+);
+const KEY_ALIASES: Record<string, Key> = {
+  return: 'Enter', esc: 'Escape', del: 'Delete', back: 'Backspace', spacebar: 'Space', ' ': 'Space',
+  up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight',
+  pgup: 'PageUp', pgdn: 'PageDown', pagedn: 'PageDown',
+};
+const MODIFIER_ALIASES: Record<string, Modifier> = {
+  ctrl: 'ctrl', control: 'ctrl',
+  alt: 'alt', option: 'alt', opt: 'alt',
+  shift: 'shift',
+  meta: 'meta', cmd: 'meta', command: 'meta', win: 'meta', windows: 'meta', super: 'meta',
+};
+
+/** The canonical spelling of a key, or null when it is not in the vocabulary. */
+export function normalizeKey(name: string): Key | null {
+  if (typeof name !== 'string') return null;
+  const lower = name === ' ' ? ' ' : name.trim().toLowerCase();
+  return KEY_BY_LOWER.get(lower) ?? KEY_ALIASES[lower] ?? null;
+}
+
+/** The canonical modifier for a name (`cmd`, `Control`, `option`, …), or null. */
+export function normalizeModifier(name: string): Modifier | null {
+  if (typeof name !== 'string') return null;
+  return MODIFIER_ALIASES[name.trim().toLowerCase()] ?? null;
+}
+
+export function isKey(value: unknown): value is Key {
+  return typeof value === 'string' && KEY_BY_LOWER.get(value.toLowerCase()) === value;
+}
+
+export function isModifier(value: unknown): value is Modifier {
+  return typeof value === 'string' && (MODIFIERS as readonly string[]).includes(value);
+}
+
+/**
+ * Parses an agent's hotkey (`["ctrl", "shift", "t"]`, any order of modifiers)
+ * into modifiers plus exactly one key. Returns a reason string when the chord
+ * is not expressible in the vocabulary.
+ */
+export function parseHotkey(keys: readonly unknown[]): { modifiers: Modifier[]; key: Key } | { error: string } {
+  const modifiers: Modifier[] = [];
+  let key: Key | null = null;
+  for (const raw of keys) {
+    if (typeof raw !== 'string') return { error: 'hotkey keys must be strings' };
+    const mod = normalizeModifier(raw);
+    if (mod) {
+      if (!modifiers.includes(mod)) modifiers.push(mod);
+      continue;
+    }
+    const k = normalizeKey(raw);
+    if (!k) return { error: `unknown key "${raw.slice(0, 20)}"` };
+    if (key) return { error: 'a hotkey has exactly one non-modifier key' };
+    key = k;
+  }
+  if (!key) return { error: 'a hotkey needs one non-modifier key, e.g. ["ctrl","s"]' };
+  return { modifiers: MODIFIERS.filter((m) => modifiers.includes(m)), key };
+}
+
+/** For error messages and the tool description. */
+export const KEY_VOCABULARY_TEXT =
+  'Enter, Tab, Escape, Backspace, Delete, Space, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown, F1–F12, a–z, 0–9; modifiers ctrl, alt (option), shift, meta (cmd / Windows key)';
 
 export type MouseButton = 'left' | 'right' | 'middle';
 export type ScrollDirection = 'up' | 'down' | 'left' | 'right';
@@ -152,7 +244,33 @@ export interface HelperHello {
   capabilities: HelperCapabilities;
 }
 
-/** Methods a helper implements. Coordinates here are window logical points. */
+/**
+ * The window main vetted for a control request (the snapshot's window). Sent
+ * with every control method so the helper re-checks it right before each
+ * input batch, where only the helper can do it without a race:
+ *   - keyboard batches (type, pressKey, hotkey, synthetic setValue): the
+ *     foreground window must be `windowId`, owned by `pid`;
+ *   - pointer batches at a point (click, scroll): the window under the point
+ *     must be owned by `pid`.
+ * Otherwise the helper sends nothing and answers `window_not_focused`.
+ * Semantic actions on an element (UIA patterns, AXPress, AXSetValue) only
+ * need the element to still belong to `pid`.
+ */
+export interface ControlTarget {
+  pid: number;
+  windowId: string;
+}
+
+/**
+ * Methods a helper implements. Coordinates here are window logical points.
+ *
+ * Held input: every control batch sends its own key-up / button-up events,
+ * even when it fails part-way. On stdin EOF or a termination signal the helper
+ * releases anything it still holds before exiting. A helper that was killed
+ * outright cannot, so main starts a fresh one and sends `releaseInput` at
+ * once (HelperProcess). `releaseInput` releases only what a helper of this
+ * kind may have pressed: the four modifiers and the three mouse buttons.
+ */
 export interface HelperMethods {
   capabilities: { params: Record<string, never>; result: HelperCapabilities };
   listApps: { params: Record<string, never>; result: { apps: AppInfo[] } };
@@ -166,6 +284,7 @@ export interface HelperMethods {
   click: {
     params: {
       snapshotId: string;
+      target: ControlTarget;
       index?: number;
       point?: { x: number; y: number };
       button: MouseButton;
@@ -174,13 +293,16 @@ export interface HelperMethods {
     };
     result: ActionResult;
   };
-  setValue: { params: { snapshotId: string; index: number; value: string }; result: ActionResult };
-  type: { params: { snapshotId: string; index?: number; text: string }; result: ActionResult };
-  pressKey: { params: { snapshotId: string; key: string; repeat: number }; result: ActionResult };
-  hotkey: { params: { snapshotId: string; keys: string[] }; result: ActionResult };
+  setValue: { params: { snapshotId: string; target: ControlTarget; index: number; value: string }; result: ActionResult };
+  type: { params: { snapshotId: string; target: ControlTarget; index?: number; text: string }; result: ActionResult };
+  /** `key` is canonical (normalizeKey); never a modifier on its own. */
+  pressKey: { params: { snapshotId: string; target: ControlTarget; key: Key; repeat: number }; result: ActionResult };
+  /** Modifiers down in MODIFIERS order, `key` down/up, modifiers up in reverse. */
+  hotkey: { params: { snapshotId: string; target: ControlTarget; modifiers: Modifier[]; key: Key }; result: ActionResult };
   scroll: {
     params: {
       snapshotId: string;
+      target: ControlTarget;
       index?: number;
       point?: { x: number; y: number };
       direction: ScrollDirection;

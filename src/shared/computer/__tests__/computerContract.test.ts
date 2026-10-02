@@ -7,7 +7,7 @@ import {
   parseComputerErrorMessage,
 } from '../errors';
 import { computeScreenshotScale, scaledSize, screenshotPointToWindow } from '../scale';
-import { COMPUTER_ACTIONS, isControlAction, parseHelperLine } from '../protocol';
+import { COMPUTER_ACTIONS, isControlAction, isKey, normalizeKey, normalizeModifier, parseHelperLine, parseHotkey } from '../protocol';
 import { blockReasonFor } from '../blocklist';
 
 describe('computer errors', () => {
@@ -140,5 +140,43 @@ describe('blocklist', () => {
   it('allows ordinary apps', () => {
     expect(blockReasonFor(app('C:\\Windows\\System32\\notepad.exe'))).toBeNull();
     expect(blockReasonFor(app('/System/Applications/TextEdit.app', 'com.apple.TextEdit'))).toBeNull();
+  });
+});
+
+describe('key vocabulary', () => {
+  it('normalizes case and aliases to the canonical spelling', () => {
+    expect(normalizeKey('enter')).toBe('Enter');
+    expect(normalizeKey('Return')).toBe('Enter');
+    expect(normalizeKey('esc')).toBe('Escape');
+    expect(normalizeKey('PGDN')).toBe('PageDown');
+    expect(normalizeKey('f12')).toBe('F12');
+    expect(normalizeKey('A')).toBe('a');
+    expect(normalizeKey('7')).toBe('7');
+    expect(normalizeKey(' ')).toBe('Space');
+  });
+
+  it('refuses names outside the vocabulary', () => {
+    for (const bad of ['F13', 'PrintScreen', 'é', 'ab', '', 'ctrl', '/', 'Insert']) {
+      expect(normalizeKey(bad)).toBeNull();
+    }
+    expect(isKey('Enter')).toBe(true);
+    expect(isKey('enter')).toBe(false);
+  });
+
+  it('maps OS modifier names onto the four wire modifiers', () => {
+    expect(normalizeModifier('Cmd')).toBe('meta');
+    expect(normalizeModifier('win')).toBe('meta');
+    expect(normalizeModifier('option')).toBe('alt');
+    expect(normalizeModifier('Control')).toBe('ctrl');
+    expect(normalizeModifier('hyper')).toBeNull();
+  });
+
+  it('parses a hotkey into ordered modifiers and exactly one key', () => {
+    expect(parseHotkey(['S', 'shift', 'cmd'])).toEqual({ modifiers: ['shift', 'meta'], key: 's' });
+    expect(parseHotkey(['ctrl', 'ctrl', 'Tab'])).toEqual({ modifiers: ['ctrl'], key: 'Tab' });
+    expect(parseHotkey(['ctrl', 'shift'])).toHaveProperty('error');
+    expect(parseHotkey(['a', 'b'])).toHaveProperty('error');
+    expect(parseHotkey(['ctrl', 'PrintScreen'])).toHaveProperty('error');
+    expect(parseHotkey(['ctrl', 3])).toHaveProperty('error');
   });
 });

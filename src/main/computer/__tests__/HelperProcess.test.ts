@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { ComputerError } from '../../../shared/computer/errors';
 import { HelperProcess } from '../HelperProcess';
 
+const TARGET = { pid: 1, windowId: 'w1' };
 const FAKE = path.join(__dirname, 'fixtures', 'fakeHelper.mjs');
 
 const helpers: HelperProcess[] = [];
@@ -80,7 +81,7 @@ describe('HelperProcess', () => {
   it('kills a hung helper on timeout and releases input on the next one', async () => {
     const { helper, requests } = makeHelper('hang', { timeoutFor: () => 300 });
     const click = helper.request('click', {
-      snapshotId: 's', index: 1, button: 'left', clickCount: 1, modifiers: ['ctrl'],
+      snapshotId: 's', target: TARGET, index: 1, button: 'left', clickCount: 1, modifiers: ['ctrl'],
     });
     expect(await codeOf(click)).toBe('timeout');
     await helper.request('listApps', {});
@@ -101,7 +102,7 @@ describe('HelperProcess', () => {
   it('abort fails the in-flight request and the next call starts fresh', async () => {
     const { helper, requests } = makeHelper('hang', { timeoutFor: () => 5_000 });
     const click = helper.request('click', {
-      snapshotId: 's', index: 1, button: 'left', clickCount: 1, modifiers: [],
+      snapshotId: 's', target: TARGET, index: 1, button: 'left', clickCount: 1, modifiers: [],
     });
     // Let the request reach the helper before stopping it.
     await new Promise((r) => setTimeout(r, 300));
@@ -114,9 +115,9 @@ describe('HelperProcess', () => {
   it('drops a request queued behind the one in flight when abort runs', async () => {
     const { helper, requests } = makeHelper('hang', { timeoutFor: () => 5_000 });
     const click = helper.request('click', {
-      snapshotId: 's', index: 1, button: 'left', clickCount: 1, modifiers: [],
+      snapshotId: 's', target: TARGET, index: 1, button: 'left', clickCount: 1, modifiers: [],
     });
-    const queued = helper.request('type', { snapshotId: 's', text: 'secret' });
+    const queued = helper.request('type', { snapshotId: 's', target: TARGET, text: 'secret' });
     await new Promise((r) => setTimeout(r, 300));
     helper.abort();
     expect(await codeOf(click)).toBe('aborted');

@@ -230,6 +230,29 @@ describe('ComputerService', () => {
     expect(await codeOf(service.control(AGENT_A, { action: 'setValue', snapshotId, index: 3, value: '안녕' }))).toBe('resolved');
   });
 
+  it('sends only canonical keys, with the vetted window as the target', async () => {
+    const { service, calls } = makeService();
+    const { snapshotId } = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    await service.control(AGENT_A, { action: 'pressKey', snapshotId, key: 'return' });
+    await service.control(AGENT_A, { action: 'hotkey', snapshotId, keys: ['S', 'Control'] });
+    const sent = calls.filter((c) => c.method === 'pressKey' || c.method === 'hotkey').map((c) => c.params);
+    expect(sent).toEqual([
+      { snapshotId, target: { pid: notepad.pid, windowId: `w-${notepad.pid}` }, key: 'Enter', repeat: 1 },
+      { snapshotId, target: { pid: notepad.pid, windowId: `w-${notepad.pid}` }, modifiers: ['ctrl'], key: 's' },
+    ]);
+  });
+
+  it('refuses keys outside the vocabulary before they reach the helper', async () => {
+    const { service, calls } = makeService();
+    const { snapshotId } = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    const before = calls.length;
+    expect(await codeOf(service.control(AGENT_A, { action: 'pressKey', snapshotId, key: 'PrintScreen' }))).toBe('invalid_argument');
+    expect(await codeOf(service.control(AGENT_A, { action: 'pressKey', snapshotId, key: 'meta' }))).toBe('invalid_argument');
+    expect(await codeOf(service.control(AGENT_A, { action: 'hotkey', snapshotId, keys: ['ctrl', 'shift'] }))).toBe('invalid_argument');
+    expect(await codeOf(service.control(AGENT_A, { action: 'hotkey', snapshotId, keys: ['ctrl', 'a', 'b'] }))).toBe('invalid_argument');
+    expect(calls.length).toBe(before);
+  });
+
   it('lets one agent drive at a time until its lock goes idle', async () => {
     const { service, advance } = makeService();
     const a = await service.getAppState(AGENT_A, { app: 'Notepad' });

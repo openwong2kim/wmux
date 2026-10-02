@@ -21,6 +21,9 @@ import {
   SNAPSHOT_TTL_MS,
   TREE_MAX_DEPTH,
   TREE_MAX_NODES,
+  KEY_VOCABULARY_TEXT,
+  normalizeKey,
+  parseHotkey,
   type ActionResult,
   type AppInfo,
   type AppState,
@@ -273,6 +276,8 @@ export class ComputerService {
 
     const point = this.resolvePoint(params, snap);
     const snapshotId = params.snapshotId;
+    // The helper re-checks this window right before each input batch.
+    const target = { pid: snap.window.pid, windowId: snap.window.id };
     this.deps.onControl?.({ agent, action: params.action, window: snap.window });
 
     switch (params.action) {
@@ -280,6 +285,7 @@ export class ComputerService {
         this.requireTarget(params, point);
         return helper.request('click', {
           snapshotId,
+          target,
           ...(params.index !== undefined && { index: params.index }),
           ...(point && { point }),
           button: params.button ?? 'left',
@@ -289,24 +295,31 @@ export class ComputerService {
       case 'setValue':
         if (params.index === undefined) fail('invalid_argument', 'setValue needs an element index');
         if (typeof params.value !== 'string') fail('invalid_argument', 'setValue needs a string value');
-        return helper.request('setValue', { snapshotId, index: params.index, value: params.value });
+        return helper.request('setValue', { snapshotId, target, index: params.index, value: params.value });
       case 'type':
         if (typeof params.text !== 'string' || params.text.length === 0) fail('invalid_argument', 'type needs text');
         return helper.request('type', {
           snapshotId,
+          target,
           ...(params.index !== undefined && { index: params.index }),
           text: params.text,
         });
-      case 'pressKey':
-        if (!params.key) fail('invalid_argument', 'pressKey needs a key');
-        return helper.request('pressKey', { snapshotId, key: params.key, repeat: clampInt(params.repeat ?? 1, 1, 50) });
-      case 'hotkey':
+      case 'pressKey': {
+        const key = typeof params.key === 'string' ? normalizeKey(params.key) : null;
+        if (!key) fail('invalid_argument', `pressKey needs one key from: ${KEY_VOCABULARY_TEXT}. Use hotkey for chords`);
+        return helper.request('pressKey', { snapshotId, target, key, repeat: clampInt(params.repeat ?? 1, 1, 50) });
+      }
+      case 'hotkey': {
         if (!Array.isArray(params.keys) || params.keys.length === 0) fail('invalid_argument', 'hotkey needs keys');
-        return helper.request('hotkey', { snapshotId, keys: params.keys.map(String) });
+        const chord = parseHotkey(params.keys);
+        if ('error' in chord) fail('invalid_argument', `${chord.error}. Keys: ${KEY_VOCABULARY_TEXT}`);
+        return helper.request('hotkey', { snapshotId, target, modifiers: chord.modifiers, key: chord.key });
+      }
       case 'scroll':
         this.requireTarget(params, point);
         return helper.request('scroll', {
           snapshotId,
+          target,
           ...(params.index !== undefined && { index: params.index }),
           ...(point && { point }),
           direction: params.direction ?? 'down',
