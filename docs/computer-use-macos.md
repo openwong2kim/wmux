@@ -100,6 +100,22 @@ runtime:
   the system prompts, which add "wmux Computer Use" to both lists. Settings is
   expected to run it on an explicit button press.
 
+A grant stays on whatever signature the helper had when its row was created.
+An ad-hoc row is pinned to a cdhash. If a rebuild, or a switch between ad-hoc
+and a real identity, leaves the switch on but the helper still reports
+`permission_missing`, the TCC log shows `Failed to match existing code
+requirement for subject com.electron.wmux.computer-use`. To fix it, remove
+the row:
+
+```
+tccutil reset Accessibility com.electron.wmux.computer-use
+tccutil reset ScreenCapture com.electron.wmux.computer-use
+tccutil reset PostEvent com.electron.wmux.computer-use
+```
+
+Then run `--request-permissions` and grant again. Builds signed with a real
+identity get a requirement-based row, which survives rebuilds.
+
 Electron apps build their accessibility tree only on request, so the helper
 sets `AXManualAccessibility` once per process instance of an Electron app,
 then waits 300 ms.
