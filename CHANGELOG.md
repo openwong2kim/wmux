@@ -1,3 +1,66 @@
+## [3.66.0] — 2026-10-02
+
+### Added
+
+- **The phone can read your channels.** A paired phone can now list the
+  channels you can see, page through their messages and mark them read. A
+  phone allowed to type can also take your seat in a channel. The phone and
+  the desktop share that seat, so a channel you read on one surface is read on
+  the other. A message that mentions you arrives on the phone's event stream as
+  `channel.mention`, and a busy channel cannot crowd pending approvals out of
+  that stream. The daemon advertises `channels: true` in `/api/config` so the
+  app knows the feature is there. You still cannot post from the phone.
+
+- **Computer use on macOS.** wmux now includes "wmux Computer Use", a small
+  helper app that lets agents you approve read and operate other Mac apps
+  through their accessibility tree, window screenshots, the mouse and the
+  keyboard. Computer use is still off by default. On a Mac it needs macOS 14
+  or later, Apple silicon, and two permissions you give in System Settings ›
+  Privacy & Security: Accessibility, and Screen & System Audio Recording for
+  screenshots. The permissions go to "wmux Computer Use" itself, not to wmux,
+  so the shells and agents running in wmux do not get them. The helper runs
+  only when wmux itself starts it. It never types into password fields, and it
+  types text directly instead of going through your clipboard.
+
+### Fixed
+
+- **Computer use says plainly that this build has no helper.** 3.65.0 let you turn computer use on before any native helper shipped; agents then got a raw spawn error with a file path and tried to work around it. Now they are told the helper is not in this build yet and not to try other ways to control the desktop, wmux does not claim the stop key, and Settings cannot turn the switch on (it can still turn it off). (#1698)
+
+- **The macOS stop key no longer force-quits apps.** It is now Control+Option+Shift+Esc on macOS: Cmd+Option+Shift+Esc held down force-quits the frontmost app, so a panicked press would have killed the document an agent was editing. Windows and Linux keep Ctrl+Alt+Shift+Esc. (#1698)
+
+- **Phone chat no longer gets stuck after Stop right after a send.** If you
+  stopped a Claude Code turn from the phone before it printed anything, Claude
+  put your message back into its input box. Every later phone message was then
+  refused until someone cleared that box in Terminal. Now the daemon clears it,
+  but only after a Stop that interrupted the turn, when the box holds exactly
+  the message the daemon sent to start that turn, and nobody has typed in the
+  pane since. It uses Ctrl-U, which you can undo in Terminal with Ctrl-Y. A
+  queued phone message waits for this instead of failing. The cancel receipt
+  reports it as `promptRestored`, `inputCleared` and `restoredMessageId`.
+
+- **Keys are released right away when computer use is stopped.** A modifier
+  or mouse button held by an input action that timed out, crashed or was
+  stopped with the stop key is now released at once. Before, it stayed held
+  until the agent's next request.
+
+- **Quitting wmux ends computer use for good.** A request that arrives while
+  wmux is quitting no longer starts a new helper or takes the stop key again.
+
+### Security
+
+- **Computer use refuses system-wide shortcuts and more system apps.** Agents
+  can no longer send shortcuts that act on the whole system instead of the app
+  they were given: Windows-key chords, Alt+Tab, Ctrl+Esc and Ctrl+Shift+Esc on
+  Windows, and Cmd+Tab, Cmd+Space, Force Quit, lock screen and log out on
+  macOS. These are refused before any consent prompt. System Settings, Task
+  Manager, Registry Editor, Script Editor, Automator, Shortcuts, Activity
+  Monitor and more shells and terminals are now on the blocklist.
+
+- **Window titles wait for consent.** Listing windows no longer sends an app's
+  window titles to the agent's model provider until you have allowed that
+  agent to use the app. Until then, only the window ids and positions are
+  sent.
+
 ## [3.65.0] — 2026-10-01
 
 ### Added
