@@ -2,12 +2,12 @@
 // set on every event so a Cmd or Shift the person is physically holding never
 // merges into an agent's keystroke (and vice versa).
 //
-// Held input: every modifier key-down and mouse button-down is recorded before
+// Held input: every key-down and mouse button-down is recorded before
 // it is posted and cleared after its up event. A batch always sends its ups
-// (defer), even when it fails part-way. `releaseAll` (releaseInput, stdin EOF,
-// SIGTERM) releases only what a helper pressed — this process, or a helper
-// that died holding something (the record is also kept in a small file,
-// keyed by pid) — never a key the person holds.
+// (defer), even when it fails part-way. On stdin EOF and SIGTERM, `releaseAll`
+// releases what this process holds (and what a dead helper recorded in the
+// small pid-keyed state file). `releaseInput` follows protocol 2 and posts an
+// up for every vocabulary key and button (`releaseEverything`).
 
 import AppKit
 import Carbon.HIToolbox
@@ -43,6 +43,9 @@ final class Input: @unchecked Sendable {
         if down { held.insert(input) } else { held.remove(input) }
         let snapshot = held
         lock.unlock()
+        // Only modifiers and buttons stay down across a batch; a plain key's
+        // down and up are back to back, so a file write per keystroke buys nothing.
+        if case .key(let code) = input, !KeyCodes.modifiers.contains(where: { $0.keyCode == code }) { return }
         persist(snapshot)
     }
 
@@ -99,6 +102,42 @@ final class Input: @unchecked Sendable {
         return toRelease.count
     }
 
+    /// `releaseInput` (protocol 2): a fresh helper cannot be sure what a
+    /// killed one held, so it posts an up event for every key it could ever
+    /// press (the whole vocabulary, on both the current layout and ANSI) and
+    /// every mouse button. An up for a key that is not down is harmless.
+    /// Returns true only when every event was created and posted.
+    func releaseEverything() -> Bool {
+        lock.lock()
+        held.removeAll()
+        lock.unlock()
+        var codes = Set(KeyCodes.named.values).union(KeyCodes.ansiCharacters.values)
+        codes.formUnion(KeyCodes.modifiers.map(\.keyCode))
+        for ch in KeyCodes.ansiCharacters.keys {
+            if let code = layoutKeyCode(for: ch) { codes.insert(code) }
+        }
+        var ok = true
+        for code in codes {
+            guard let e = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false) else {
+                ok = false
+                continue
+            }
+            e.flags = []
+            e.post(tap: .cghidEventTap)
+        }
+        let location = CGEvent(source: nil)?.location ?? .zero
+        for button in [CGMouseButton.left, .right, .center] {
+            guard let e = CGEvent(mouseEventSource: source, mouseType: Self.upType(button), mouseCursorPosition: location, mouseButton: button) else {
+                ok = false
+                continue
+            }
+            e.flags = []
+            e.post(tap: .cghidEventTap)
+        }
+        try? FileManager.default.removeItem(at: Self.stateFile)
+        return ok
+    }
+
     // MARK: Posting
 
     private func post(keyboard code: CGKeyCode, down: Bool, flags: CGEventFlags) {
@@ -152,8 +191,10 @@ final class Input: @unchecked Sendable {
     }
 
     func tap(key code: CGKeyCode, flags: CGEventFlags) {
+        setHeld(.key(code), true)
         post(keyboard: code, down: true, flags: flags)
         post(keyboard: code, down: false, flags: flags)
+        setHeld(.key(code), false)
     }
 
     /// Types one string through the Unicode payload of a key event (bypasses
@@ -167,12 +208,14 @@ final class Input: @unchecked Sendable {
                 tap(key: CGKeyCode(kVK_Tab), flags: [])
             } else {
                 let units = Array(String(ch).utf16)
+                setHeld(.key(0), true)
                 for down in [true, false] {
                     guard let e = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: down) else { continue }
                     e.flags = []
                     e.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
                     e.post(tap: .cghidEventTap)
                 }
+                setHeld(.key(0), false)
             }
             usleep(2_000)
         }

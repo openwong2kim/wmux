@@ -188,13 +188,18 @@ is not re-walked.
   labelled A), and named keys are positional. Arrows carry the NumericPad and
   Fn flags, and Home, End, PageUp, PageDown, Delete and F1 to F12 carry Fn, as
   on a real keyboard.
-- Held input: modifier key-downs and button-downs are recorded before they are
-  posted and cleared after their up event, and every batch sends its ups from a
-  `defer`. `releaseInput`, stdin EOF and SIGTERM/SIGINT/SIGHUP release what is
-  held. The record is also kept in
-  `$TMPDIR/com.electron.wmux.computer-use.held.json`, keyed by pid, so a fresh
-  helper's `releaseInput` also releases what a killed helper left down. Only
-  what a helper pressed is released, never a key the person holds.
+- Held input: every key-down and button-down is recorded before it is posted
+  and cleared after its up event, and every batch sends its ups from a
+  `defer`. Stdin EOF and SIGTERM/SIGINT/SIGHUP release what this process holds.
+  Modifiers and buttons, the only input held across a batch, are also recorded
+  in `$TMPDIR/com.electron.wmux.computer-use.held.json` (keyed by pid) and are
+  released on exit even if a helper died holding them.
+- `releaseInput` (protocol 2) posts an up for every key in the vocabulary (on
+  the current layout and on ANSI), the four modifiers and all three mouse
+  buttons, because a fresh helper cannot be sure what a killed one held. It
+  answers `released: true` only when every event was posted. Main sends it
+  after a helper died mid-action. The cost is that it also lifts a modifier
+  the person happens to be holding at that moment.
 
 ## Process
 

@@ -4,7 +4,8 @@ import AppKit
 import ApplicationServices
 import ComputerUseCore
 
-let protocolVersion = 1
+/// src/shared/computer/protocol.ts COMPUTER_PROTOCOL_VERSION.
+let protocolVersion = 2
 let idleExitSeconds: TimeInterval = 5 * 60
 /// Above the 15 s main allows getAppState, minus headroom for the screenshot.
 let walkBudgetSeconds: TimeInterval = 9
@@ -115,8 +116,7 @@ final class Server {
             try await Permissions.require(.accessibility)
             return try await Actions.scroll(p, snapshots)
         case "releaseInput":
-            Input.shared.releaseAll()
-            return ["released": true]
+            return ["released": Input.shared.releaseEverything()]
         default:
             throw HelperError("action_not_supported", "unknown method \"\(method.prefix(40))\"")
         }
