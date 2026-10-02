@@ -1,6 +1,6 @@
 // Window-only screenshots: PrintWindow with PW_RENDERFULLCONTENT (works for a
-// covered window and for DirectComposition / GPU content), falling back to a
-// BitBlt of the screen when PrintWindow comes back black; cropped to DWM's
+// covered window and for DirectComposition / GPU content), never a copy of
+// the screen; cropped to DWM's
 // extended frame bounds (no invisible border, no shadow), scaled to the shared
 // screenshot budget and encoded as JPEG quality 80, all through GDI and WIC.
 //
@@ -54,8 +54,7 @@ internal static unsafe class Capture
         var crop = new Rect(frame.X - outer.X, frame.Y - outer.Y, frame.Width, frame.Height).Intersection(new Rect(0, 0, w, h));
         if (crop.IsEmpty) crop = new Rect(0, 0, w, h);
 
-        var screen = PInvoke.GetDC(HWND.Null);
-        var mem = PInvoke.CreateCompatibleDC(screen);
+        var mem = PInvoke.CreateCompatibleDC(HDC.Null);
         HBITMAP bitmap = default;
         HGDIOBJ previous = default;
         try
@@ -73,20 +72,12 @@ internal static unsafe class Capture
             previous = PInvoke.SelectObject(mem, (HGDIOBJ)bitmap.Value);
 
             int stride = w * 4;
-            bool printed = PInvoke.PrintWindow(hwnd, mem, (PRINT_WINDOW_FLAGS)2 /* PW_RENDERFULLCONTENT */);
-            if (!printed || IsBlack((byte*)bits, stride, crop))
+            // The window's own rendering only. The screen is never copied: a
+            // screen copy shows whatever covers the window, a blocked app
+            // included. A window that renders nothing comes back black.
+            if (!PInvoke.PrintWindow(hwnd, mem, (PRINT_WINDOW_FLAGS)2 /* PW_RENDERFULLCONTENT */))
             {
-                // Some windows render nothing through PrintWindow. A copy of
-                // the screen shows whatever covers the window (a blocked app,
-                // say), so it is used only when nothing does.
-                if (IsCovered(hwnd, frame))
-                {
-                    throw new HelperError("screenshot_failed", "the window did not render for capture and another window covers it; bring it to the front and retry");
-                }
-                if (!PInvoke.BitBlt(mem, 0, 0, w, h, screen, (int)outer.X, (int)outer.Y, ROP_CODE.SRCCOPY | ROP_CODE.CAPTUREBLT))
-                {
-                    throw new HelperError("screenshot_failed", "the window could not be captured");
-                }
+                throw new HelperError("screenshot_failed", "the window could not be captured");
             }
             return Encode((byte*)bits, stride, crop);
         }
@@ -95,40 +86,7 @@ internal static unsafe class Capture
             if (!previous.IsNull) PInvoke.SelectObject(mem, previous);
             if (!bitmap.IsNull) PInvoke.DeleteObject((HGDIOBJ)bitmap.Value);
             PInvoke.DeleteDC(mem);
-            PInvoke.ReleaseDC(HWND.Null, screen);
         }
-    }
-
-    /// <summary>A visible window above `hwnd` in z-order overlaps `frame`.</summary>
-    private static bool IsCovered(HWND hwnd, Rect frame)
-    {
-        foreach (var other in Win.TopLevelWindows())
-        {
-            if (other == hwnd) return false;
-            if (!PInvoke.IsWindowVisible(other) || PInvoke.IsIconic(other) || Win.IsCloaked(other)) continue;
-            if (Win.Bounds(other).Intersects(frame)) return true;
-        }
-        return false;
-    }
-
-    /// <summary>
-    /// Every sampled pixel of the visible frame is exactly black (PrintWindow
-    /// drew nothing). Samples across the whole frame, about a million points,
-    /// so a dark window with any detail is not mistaken for an empty one.
-    /// </summary>
-    private static bool IsBlack(byte* bits, int stride, Rect crop)
-    {
-        int stepX = Math.Max(1, (int)crop.Width / 1024), stepY = Math.Max(1, (int)crop.Height / 1024);
-        for (int y = (int)crop.Y; y < (int)crop.Bottom; y += stepY)
-        {
-            var row = bits + (long)y * stride;
-            for (int x = (int)crop.X; x < (int)crop.Right; x += stepX)
-            {
-                var px = row + x * 4;
-                if (px[0] != 0 || px[1] != 0 || px[2] != 0) return false;
-            }
-        }
-        return true;
     }
 
     private static JsonObject Encode(byte* bits, int stride, Rect crop)

@@ -83,14 +83,11 @@ DispatchMessage
 SetConsoleCtrlHandler
 // Capture
 PrintWindow
-GetDC
-ReleaseDC
 CreateCompatibleDC
 CreateDIBSection
 SelectObject
 DeleteObject
 DeleteDC
-BitBlt
 CLSID_WICImagingFactory
 IWICImagingFactory
 IWICBitmap

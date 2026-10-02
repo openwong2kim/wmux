@@ -101,6 +101,19 @@ public class TreeTests
     }
 
     [Fact]
+    public void ACutChildListIsTruncatedEvenWhenItsChildrenWereSkipped()
+    {
+        var rows = Enumerable.Range(0, 5).Select(i => N("ListItem", $"hidden {i}", offscreen: true))
+            .Concat([N("ListItem", "visible")]).ToArray();
+        var root = N("Window", "w", children: [N("List", children: rows)]);
+        // Budget 3: the root and the list are indexed, so the list's children
+        // are asked for with limit 2 and both come back off-screen.
+        var result = Walk(root, maxNodes: 3);
+        Assert.Equal(["0 window w", "\t1 list"], result.Lines);
+        Assert.True(result.Truncated);
+    }
+
+    [Fact]
     public void AsksForNoMoreChildrenThanTheBudget()
     {
         var source = new FakeSource();

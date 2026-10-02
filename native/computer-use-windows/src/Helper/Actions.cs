@@ -44,12 +44,12 @@ internal static unsafe class Focus
     }
 
     /// <summary>
-    /// The fast keyboard check, run under the input lock immediately before
-    /// SendInput: the normal input desktop, the target window in the
-    /// foreground and owned by the target pid, and keyboard focus inside it.
-    /// Anything that cannot be confirmed refuses.
+    /// The fast keyboard check: the normal input desktop, the target window
+    /// in the foreground and owned by the target pid, and keyboard focus
+    /// inside it. Anything that cannot be confirmed refuses. Returns the
+    /// window that has keyboard focus.
     /// </summary>
-    public static void KeyboardPreflight(ControlTarget target)
+    public static HWND KeyboardPreflight(ControlTarget target)
     {
         InputDesktop.Require();
         var foreground = PInvoke.GetForegroundWindow();
@@ -74,18 +74,22 @@ internal static unsafe class Focus
         {
             throw new HelperError("window_not_focused", "keyboard focus is outside the target window; nothing was sent");
         }
+        return keyboardWindow;
     }
 
     /// <summary>
     /// The full check before a keyboard batch: the fast one, the integrity
     /// level, and the focused element, which must be confirmed not to be a
-    /// password field (unknown counts as no). Returns a preflight for Post
-    /// that repeats the fast check and requires focus to still be on that
-    /// same element.
+    /// password field (unknown counts as no). Returns a preflight for Post,
+    /// run under the input lock right before SendInput, that repeats the fast
+    /// check and requires keyboard focus to still be on the same window
+    /// (HWND) as at this check. That is window-level: a move between
+    /// windowless controls inside one HWND (most Chromium, WPF and XAML
+    /// content) is caught only by the element check here, not at SendInput.
     /// </summary>
     public static Action RequireKeyboard(ControlTarget target)
     {
-        KeyboardPreflight(target);
+        var focusWindow = KeyboardPreflight(target);
         RequireNotElevated(target);
         var secrecy = Uia.FocusSecrecy(out var focusedId);
         if (secrecy == Uia.Secrecy.Secret)
@@ -101,7 +105,13 @@ internal static unsafe class Focus
         {
             throw new HelperError("window_not_focused", "focus moved while it was being checked; nothing was sent");
         }
-        return () => KeyboardPreflight(target);
+        return () =>
+        {
+            if (KeyboardPreflight(target) != focusWindow)
+            {
+                throw new HelperError("window_not_focused", "keyboard focus moved to another control; nothing was sent");
+            }
+        };
     }
 
     /// <summary>

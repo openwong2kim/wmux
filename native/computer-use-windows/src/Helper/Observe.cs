@@ -75,6 +75,8 @@ internal static unsafe class Observe
     private static Walked WalkWindow(WindowEntry window, int maxNodes, int maxDepth)
     {
         bool chromium = window.ClassName.StartsWith("Chrome_WidgetWin", StringComparison.Ordinal);
+        // One budget for the whole walk, the Chromium re-query included.
+        long deadline = Environment.TickCount64 + WalkBudgetMs;
         for (int attempt = 0; ; attempt++)
         {
             var source = new UiaTreeSource();
@@ -92,10 +94,9 @@ internal static unsafe class Observe
                 }
                 if (root == null) throw new HelperError("window_not_found", "the window has no accessibility element");
                 var rootNode = source.Adopt(root);
-                long deadline = Environment.TickCount64 + WalkBudgetMs;
                 var result = Tree.Walk(source, [new WalkRoot<nint>(rootNode, 0, window.Bounds)], maxNodes, maxDepth,
                     () => Environment.TickCount64 >= deadline);
-                if (chromium && attempt == 0 && source.SawEmptyDocument)
+                if (chromium && attempt == 0 && source.SawEmptyDocument && Environment.TickCount64 + ChromiumSettleMs < deadline)
                 {
                     // Chromium switches its accessibility tree on when a UIA
                     // client first asks; the content arrives a moment later.

@@ -282,7 +282,12 @@ public static class Tree
                 lines.Add(new string('\t', depth) + RenderLine(index, info));
                 childDepth = depth + 1;
             }
-            foreach (var child in source.Children(node, info, Math.Max(0, maxNodes - elements.Count) + 1))
+            int limit = Math.Max(0, maxNodes - elements.Count) + 1;
+            var children = source.Children(node, info, limit);
+            // A list that reached the limit may have been cut, even if what
+            // came back was pruned or skipped and never filled the budget.
+            if (children.Count >= limit) truncated = true;
+            foreach (var child in children)
             {
                 Visit(child, rawDepth + 1, childDepth, clip, false);
                 if (truncated && elements.Count >= maxNodes) return;
