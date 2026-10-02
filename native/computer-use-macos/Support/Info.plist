@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The bundle identifier is PERMANENT: TCC grants attach to it (and to the
+  signing identity). Changing either forces every user to grant
+  Accessibility and Screen Recording again. build.sh fills in the version.
+-->
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>com.electron.wmux.computer-use</string>
+  <key>CFBundleName</key>
+  <string>wmux Computer Use</string>
+  <key>CFBundleDisplayName</key>
+  <string>wmux Computer Use</string>
+  <key>CFBundleExecutable</key>
+  <string>wmux-computer-use</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleShortVersionString</key>
+  <string>__VERSION__</string>
+  <key>CFBundleVersion</key>
+  <string>__VERSION__</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>14.0</string>
+  <!-- A background helper: no Dock icon, no menu bar. -->
+  <key>LSUIElement</key>
+  <true/>
+  <key>NSHumanReadableCopyright</key>
+  <string>Part of wmux. Lets agents you approve see and control other apps.</string>
+</dict>
+</plist>

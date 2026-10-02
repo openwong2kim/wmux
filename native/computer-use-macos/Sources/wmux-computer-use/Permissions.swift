@@ -1,0 +1,71 @@
+// TCC checks. Runtime calls never prompt: a missing grant is reported as
+// `permission_missing` with the System Settings deep link, and the person
+// grants it there. `--request-permissions` (onboarding, run on an explicit
+// user action) is the only path that shows the system prompts.
+
+import ApplicationServices
+import CoreGraphics
+import Foundation
+
+enum Permission {
+    case accessibility
+    case screenRecording
+
+    var settingsURL: String {
+        switch self {
+        case .accessibility: return "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+        case .screenRecording: return "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+        }
+    }
+
+    var paneName: String {
+        switch self {
+        case .accessibility: return "Accessibility"
+        case .screenRecording: return "Screen & System Audio Recording"
+        }
+    }
+
+    /// One check, no prompt. Posting input needs Accessibility as well, which
+    /// AXIsProcessTrusted covers; CGPreflightPostEventAccess is checked too so
+    /// a partial grant is not reported as working.
+    var granted: Bool {
+        switch self {
+        case .accessibility: return AXIsProcessTrusted() && CGPreflightPostEventAccess()
+        case .screenRecording: return CGPreflightScreenCaptureAccess()
+        }
+    }
+
+    var missingError: HelperError {
+        HelperError(
+            "permission_missing",
+            "macOS has not granted \(paneName) to \"wmux Computer Use\". Open System Settings › Privacy & Security › \(paneName) (\(settingsURL)) and turn on \"wmux Computer Use\"."
+        )
+    }
+}
+
+enum Permissions {
+    /// A grant can read as denied for about 2 s after the person gives it, so a
+    /// `false` is re-checked every 100 ms for up to 2 s before it is reported.
+    static func require(_ permission: Permission) async throws {
+        if try await check(permission) { return }
+        throw permission.missingError
+    }
+
+    static func check(_ permission: Permission) async throws -> Bool {
+        if permission.granted { return true }
+        for _ in 0..<20 {
+            try await Task.sleep(nanoseconds: 100_000_000)
+            if permission.granted { return true }
+        }
+        return false
+    }
+
+    /// Onboarding only (`--request-permissions`): shows the system prompts,
+    /// which add the helper to both Settings lists.
+    static func requestInteractively() {
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(options)
+        _ = CGRequestPostEventAccess()
+        _ = CGRequestScreenCaptureAccess()
+    }
+}
