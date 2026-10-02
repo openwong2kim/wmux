@@ -109,6 +109,22 @@ done
 exit 0
 `;
 
+// The MCP server runs in the Windows runtime, like the hook bridge: named-pipe
+// auth, CDP on Windows loopback and Playwright all stay where they already work.
+// One interop spawn per agent session, never per tool call. The server also
+// learns which distro called it and where Windows drives are mounted (`wslpath
+// -u 'C:\'`, e.g. /mnt/c/), so file tools can speak the agent's paths.
+export const WSL_MCP_LAUNCH = 'export ELECTRON_RUN_AS_NODE=1 WMUX_WSL_DISTRO="$WSL_DISTRO_NAME"'
+  + ' WMUX_WSL_MOUNT="$(wslpath -u \'C:\\\' 2>/dev/null)"'
+  + ' WSLENV="${WSLENV:+$WSLENV:}ELECTRON_RUN_AS_NODE/w:WMUX_WSL_DISTRO/w:WMUX_WSL_MOUNT/w";'
+  + ' exec "$WMUX_WSL_NODE" "$WMUX_WSL_MCP"';
+
+const shellQuote = (text: string) => `'${text.replace(/'/g, `'\\''`)}'`;
+// Codex gets the same server through -c. JSON string syntax is valid TOML.
+// Codex starts MCP servers with a sanitized environment (PATH, HOME, ...), so
+// the shim appends env={...} with the pane's own values as literal strings.
+const WSL_CODEX_MCP = `mcp_servers.wmux={command="/bin/sh",args=["-c",${JSON.stringify(WSL_MCP_LAUNCH)}]`;
+
 export const WSL_CODEX_SHIM = `#!/bin/bash
 old_ifs=$IFS
 IFS=:
@@ -155,14 +171,39 @@ collect_configs() {
 # to launching Codex unchanged instead of hanging the launch.
 wmux_guard=
 command -v timeout >/dev/null 2>&1 && wmux_guard="timeout -k 1 10"
-override=$(collect_configs | ELECTRON_RUN_AS_NODE=1 \
+# The helper prints one line per key that no configuration layer owns.
+free=$(collect_configs | ELECTRON_RUN_AS_NODE=1 \
   WSLENV="\${WSLENV:+$WSLENV:}ELECTRON_RUN_AS_NODE/w" \
   $wmux_guard "$WMUX_WSL_NODE" "$WMUX_WSL_CODEX_CONFIG" "$WMUX_WSL_CODEX_HOOK" "$@")
-if [ $? = 0 ] && [ -n "$override" ]; then
-  exec "$real" -c "$override" "$@"
+[ $? = 0 ] || free=
+notify= mcp=
+while IFS= read -r line; do
+  case $line in notify=*) notify=$line ;; mcp) mcp=1 ;; esac
+done <<< "$free"
+overrides=()
+if [ -n "$notify" ]; then
+  overrides+=(-c "$notify")
+else
+  printf '%s\\n' 'wmux: Codex resume capture not injected (existing notify, unreadable configuration, or unavailable bridge); launching Codex unchanged.' >&2
 fi
-printf '%s\\n' 'wmux: Codex resume capture not injected (existing notify, unreadable configuration, or unavailable bridge); launching Codex unchanged.' >&2
-exec "$real" "$@"
+if [ -n "$mcp" ] && [ -n "\${WMUX_WSL_MCP:-}" ]; then
+  # TOML literal strings keep Windows backslashes as-is but cannot hold a
+  # quote or control character. Codex refuses to start on an override it
+  # cannot parse, so any such value skips the server instead.
+  mcp_env=
+  for name in WMUX_WSL_NODE WMUX_WSL_MCP WMUX_PTY_ID WMUX_WORKSPACE_ID WMUX_SURFACE_ID \
+      WMUX_DATA_SUFFIX WSLENV WSL_DISTRO_NAME WSL_INTEROP; do
+    [ -n "\${!name+set}" ] || continue
+    case \${!name} in *"'"*|*[[:cntrl:]]*) mcp=; break ;; esac
+    mcp_env="\${mcp_env:+$mcp_env,}$name='\${!name}'"
+  done
+  if [ -n "$mcp" ]; then
+    overrides+=(-c ${shellQuote(WSL_CODEX_MCP)}",env={$mcp_env}}")
+  else
+    printf '%s\\n' 'wmux: wmux MCP server not mounted (a pane value cannot be passed to Codex safely); launching Codex without it.' >&2
+  fi
+fi
+exec "$real" "\${overrides[@]}" "$@"
 `;
 
 function findUp(startDir: string, rels: string[]): string | null {
@@ -184,16 +225,6 @@ function findBridge(startDir: string, basename = 'wmux-bridge.mjs', agent = 'cla
   if (!found) throw new Error(`WSL integration: bundled ${agent} bridge ${basename} is missing`);
   return found;
 }
-
-// The MCP server runs in the Windows runtime, like the hook bridge: named-pipe
-// auth, CDP on Windows loopback and Playwright all stay where they already work.
-// One interop spawn per agent session, never per tool call. The server also
-// learns which distro called it and where Windows drives are mounted (`wslpath
-// -u 'C:\'`, e.g. /mnt/c/), so file tools can speak the agent's paths.
-export const WSL_MCP_LAUNCH = 'export ELECTRON_RUN_AS_NODE=1 WMUX_WSL_DISTRO="$WSL_DISTRO_NAME"'
-  + ' WMUX_WSL_MOUNT="$(wslpath -u \'C:\\\' 2>/dev/null)"'
-  + ' WSLENV="${WSLENV:+$WSLENV:}ELECTRON_RUN_AS_NODE/w:WMUX_WSL_DISTRO/w:WMUX_WSL_MOUNT/w";'
-  + ' exec "$WMUX_WSL_NODE" "$WMUX_WSL_MCP"';
 
 function wslMcpConfig(): string {
   return JSON.stringify({ mcpServers: { wmux: { type: 'stdio', command: '/bin/sh', args: ['-c', WSL_MCP_LAUNCH] } } });
