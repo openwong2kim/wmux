@@ -11,6 +11,7 @@ import {
   GEN_CURE_STREAK_LIMIT,
   FALLBACK_MAX_PAGES,
 } from '../atlasGuard';
+import { initAtlasWakeRecovery, CONTEXT_RESTORED_DEBOUNCE_MS } from '../atlasWakeRecovery';
 
 // Minimal stand-ins for the addon-webgl internals the guard walks:
 // addon._renderer._charAtlas.{pages, clearTexture, constructor.maxAtlasPages}.
@@ -1040,6 +1041,55 @@ describe('atlasGuard', () => {
       vi.advanceTimersByTime(GUARD_POLL_MS * 2);
       expect(pane.refreshes()).toBe(afterRecover);
       expect(atlas.clearCalls).toBe(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a webglcontextrestored burst triggers exactly one rebuild, and no poll rebuild after it', () => {
+    // GPU-process crash: every pane's canvas restores, the shared atlas's pages
+    // come back blank. One coherent rebuild must follow, and its own generation
+    // bump must not read as a self-eviction on the next polls.
+    const atlas = new CoherentFakeAtlas(3);
+    atlas.occupyAll();
+    const listeners: EventListener[] = [];
+    const doc = {
+      visibilityState: 'visible' as DocumentVisibilityState,
+      addEventListener: (type: string, cb: EventListener) => {
+        if (type === 'webglcontextrestored') listeners.push(cb);
+      },
+      removeEventListener: () => undefined,
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const guard = createAtlasGuard();
+      const a = makePane(atlas);
+      const b = makePane(atlas);
+      guard.register(a.entry);
+      guard.register(b.entry);
+      vi.advanceTimersByTime(GUARD_POLL_MS);
+      const teardown = initAtlasWakeRecovery({
+        onSystemResumed: () => () => undefined,
+        platform: 'darwin',
+        recoverNow: (reason) => guard.recoverNow(reason),
+        documentRef: doc,
+      });
+
+      const target = { closest: () => ({}) };
+      for (const cb of listeners) cb({ target } as unknown as Event);
+      for (const cb of listeners) cb({ target } as unknown as Event);
+      vi.advanceTimersByTime(CONTEXT_RESTORED_DEBOUNCE_MS);
+
+      expect(atlas.clearCalls).toBe(1);
+      expect(a.modelClears()).toBe(1);
+      expect(b.modelClears()).toBe(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('[wmux:atlas-guard] recover (context-restored)'));
+
+      vi.advanceTimersByTime(GUARD_POLL_MS * 3);
+      expect(atlas.clearCalls).toBe(1);
+      expect(a.refreshes()).toBe(1);
+      expect(b.refreshes()).toBe(1);
+      teardown();
     } finally {
       warn.mockRestore();
     }

@@ -33,6 +33,25 @@
 // The two triggers routinely fire together on a real wake; the throttle
 // collapses them into one rebuild.
 //
+//   - context restored — a pane's WebGL canvas fired `webglcontextrestored`.
+//                        A GPU-process crash/reset blanks the GPU-backed 2D
+//                        canvases that hold the shared atlas's PAGES, while
+//                        the atlas's glyph cache still points into them.
+//                        xterm's own restore handler rebuilds only its GL
+//                        objects, re-uploads the now-empty pages, and every
+//                        cached glyph renders blank; only glyphs rasterised
+//                        after the crash show up. Its onContextLoss (our DOM
+//                        fallback) fires only when the context is NOT
+//                        restored within 3 s, so a quick restore had no
+//                        repair at all. Reproduced live with CDP
+//                        `Browser.crashGpuProcess` (a synthetic
+//                        WEBGL_lose_context round-trip does not blank the
+//                        2D pages and renders clean). The event does not
+//                        bubble, so it is caught in the capture phase — which
+//                        runs BEFORE xterm's target-phase handler — and the
+//                        rebuild is deferred past it and debounced, since
+//                        every pane restores in the same burst.
+//
 // THE VISIBILITY TRIGGER IS LATCHED BY RESUME, NOT FIRED ON ITS OWN (#1234).
 //
 // A previous measurement on Electron 41 concluded that Windows never fires
@@ -115,6 +134,9 @@ import { atlasGuard } from './atlasGuard';
 /** Minimum gap between rebuilds. Resume + visibilitychange arrive within
  *  milliseconds of each other on a real wake; one rebuild covers both. */
 export const WAKE_RECOVER_THROTTLE_MS = 1_000;
+/** Debounce for the context-restored trigger. Long enough to run after xterm's
+ *  own restore handler and to collapse every pane's restore into one rebuild. */
+export const CONTEXT_RESTORED_DEBOUNCE_MS = 200;
 
 export interface AtlasWakeRecoveryDeps {
   /** Subscribe to main's system-resumed push; returns the unsubscribe. */
@@ -129,6 +151,8 @@ export interface AtlasWakeRecoveryDeps {
     visibilityState: DocumentVisibilityState;
   };
   now?: () => number;
+  setTimeoutFn?: (cb: () => void, ms: number) => unknown;
+  clearTimeoutFn?: (handle: unknown) => void;
 }
 
 /** Wire the wake triggers; returns the teardown. Called once from App. */
@@ -139,6 +163,8 @@ export function initAtlasWakeRecovery(deps: AtlasWakeRecoveryDeps): () => void {
     recoverNow = (reason) => atlasGuard.recoverNow(reason),
     documentRef = document,
     now = Date.now,
+    setTimeoutFn = (cb, ms) => setTimeout(cb, ms),
+    clearTimeoutFn = (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
   } = deps;
 
   let lastRecoverAt = -Infinity;
@@ -191,8 +217,24 @@ export function initAtlasWakeRecovery(deps: AtlasWakeRecoveryDeps): () => void {
   };
   documentRef.addEventListener('visibilitychange', onVisibilityChange);
 
+  let contextRestoredTimer: unknown = null;
+  const onContextRestored = (e: Event): void => {
+    // Only terminal canvases share the glyph atlas.
+    const target = e.target as { closest?: (selector: string) => unknown } | null;
+    if (typeof target?.closest !== 'function' || !target.closest('.xterm')) return;
+    if (contextRestoredTimer !== null) clearTimeoutFn(contextRestoredTimer);
+    contextRestoredTimer = setTimeoutFn(() => {
+      contextRestoredTimer = null;
+      // A real invalidation, not a speculative one: exempt from the throttle.
+      recover('context-restored', true);
+    }, CONTEXT_RESTORED_DEBOUNCE_MS);
+  };
+  documentRef.addEventListener('webglcontextrestored', onContextRestored, true);
+
   return () => {
     unsubscribeResumed();
     documentRef.removeEventListener('visibilitychange', onVisibilityChange);
+    documentRef.removeEventListener('webglcontextrestored', onContextRestored, true);
+    if (contextRestoredTimer !== null) clearTimeoutFn(contextRestoredTimer);
   };
 }

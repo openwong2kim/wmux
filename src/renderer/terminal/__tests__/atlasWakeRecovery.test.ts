@@ -1,16 +1,30 @@
-import { describe, it, expect } from 'vitest';
-import { initAtlasWakeRecovery, WAKE_RECOVER_THROTTLE_MS } from '../atlasWakeRecovery';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import {
+  initAtlasWakeRecovery,
+  WAKE_RECOVER_THROTTLE_MS,
+  CONTEXT_RESTORED_DEBOUNCE_MS,
+} from '../atlasWakeRecovery';
 
 type Listener = () => void;
 
 function makeFakeDocument(initial: DocumentVisibilityState = 'hidden') {
-  const listeners = new Set<Listener>();
+  const listeners = new Map<string, Set<EventListener>>();
+  const of = (type: string): Set<EventListener> => {
+    let set = listeners.get(type);
+    if (!set) listeners.set(type, (set = new Set()));
+    return set;
+  };
   return {
     visibilityState: initial,
-    addEventListener: (_type: string, cb: EventListener) => { listeners.add(cb as Listener); },
-    removeEventListener: (_type: string, cb: EventListener) => { listeners.delete(cb as Listener); },
+    addEventListener: (type: string, cb: EventListener) => { of(type).add(cb); },
+    removeEventListener: (type: string, cb: EventListener) => { of(type).delete(cb); },
     fire(): void {
-      for (const cb of [...listeners]) cb();
+      for (const cb of [...of('visibilitychange')]) cb(new Event('visibilitychange'));
+    },
+    /** A pane's canvas restoring its WebGL context; `inXterm` = inside `.xterm`. */
+    fireContextRestored(inXterm = true): void {
+      const target = { closest: (sel: string) => (inXterm && sel === '.xterm' ? {} : null) };
+      for (const cb of [...of('webglcontextrestored')]) cb({ target } as unknown as Event);
     },
     show(): void {
       this.visibilityState = 'visible';
@@ -20,7 +34,7 @@ function makeFakeDocument(initial: DocumentVisibilityState = 'hidden') {
       this.visibilityState = 'hidden';
       this.fire();
     },
-    listenerCount: () => listeners.size,
+    listenerCount: () => [...listeners.values()].reduce((n, set) => n + set.size, 0),
   };
 }
 
@@ -43,6 +57,8 @@ function setup(
     platform,
     documentRef: doc,
     now: () => now,
+    setTimeoutFn: (cb, ms) => setTimeout(cb, ms),
+    clearTimeoutFn: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
   });
   return {
     doc,
@@ -186,5 +202,49 @@ describe('atlasWakeRecovery', () => {
     expect(s.doc.listenerCount()).toBe(0);
     s.doc.show();
     expect(s.recovered).toEqual([]);
+  });
+
+  describe('context restored', () => {
+    afterEach(() => { vi.useRealTimers(); });
+
+    it('recovers exactly once per restore burst, after xterm\'s own handler', () => {
+      vi.useFakeTimers();
+      const s = setup(0, 'visible', 'darwin');
+      // Two panes restore together (the field log: two events in the same second).
+      s.doc.fireContextRestored();
+      s.doc.fireContextRestored();
+      // Deferred: the capture listener runs BEFORE xterm rebuilds its GL state.
+      expect(s.recovered).toEqual([]);
+      vi.advanceTimersByTime(CONTEXT_RESTORED_DEBOUNCE_MS);
+      expect(s.recovered).toEqual(['context-restored']);
+      vi.advanceTimersByTime(CONTEXT_RESTORED_DEBOUNCE_MS * 10);
+      expect(s.recovered).toEqual(['context-restored']);
+    });
+
+    it('is not swallowed by the wake throttle', () => {
+      vi.useFakeTimers();
+      const s = setup(0, 'visible', 'darwin');
+      s.fireResume();
+      s.doc.fireContextRestored();
+      vi.advanceTimersByTime(CONTEXT_RESTORED_DEBOUNCE_MS);
+      expect(s.recovered).toEqual(['system-resumed', 'context-restored']);
+    });
+
+    it('ignores canvases outside a terminal', () => {
+      vi.useFakeTimers();
+      const s = setup(0, 'visible', 'darwin');
+      s.doc.fireContextRestored(false);
+      vi.advanceTimersByTime(CONTEXT_RESTORED_DEBOUNCE_MS);
+      expect(s.recovered).toEqual([]);
+    });
+
+    it('teardown cancels a pending recovery', () => {
+      vi.useFakeTimers();
+      const s = setup(0, 'visible', 'darwin');
+      s.doc.fireContextRestored();
+      s.teardown();
+      vi.advanceTimersByTime(CONTEXT_RESTORED_DEBOUNCE_MS);
+      expect(s.recovered).toEqual([]);
+    });
   });
 });
