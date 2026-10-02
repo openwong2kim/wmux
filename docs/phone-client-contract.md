@@ -2240,11 +2240,15 @@ parallel "phone operator" identity is ever created.
 ```
 GET  /api/channels                        → {channels: [...]}
 GET  /api/channels/<id>/messages?since=<seq>&limit=<n>
-                                          → {messages: [...], nextSince}
+                                          → {messages: [...], nextSince, oldestRetainedSeq, gap?}
 POST /api/channels/<id>/ack   body: {lastReadSeq: <n>}
                                           → {lastReadSeq: <clamped>}
 POST /api/channels/<id>/join              → {lastReadSeq: <seq>, alreadyMember: bool}
+                                            (needs this caller's input grant)
 ```
+
+Both `GET` routes answer with `Cache-Control: no-store`: unread counts and
+cursors are live state, and a cached copy is a wrong badge.
 
 **Discovery: `channels` in `/api/config`.** A daemon that serves these four
 routes says `channels: true` in `GET /api/config`. The key is **omitted, not
@@ -2252,7 +2256,9 @@ routes says `channels: true` in `GET /api/config`. The key is **omitted, not
 (the channels seam is not wired) — which is also the shape a pre-channels
 daemon serves. Hide the channel UI when the key is absent; never probe the
 routes to find out. It is the same answer for every caller on a daemon (no
-grant decides it, see below). Additive — no protocol version bump.
+grant decides it, see below). Join is the one route that also needs a grant:
+offer it only when the same `/api/config` says `allowInput: true` for this
+caller. Additive — no protocol version bump.
 
 Reading is deliberately **not behind a grant of its own**: the terminal
 mirror, the diff route and approvals are all default-on for a paired device,
@@ -2260,6 +2266,17 @@ and channel messages are narrower than the transcript (the one read that IS
 gated, because it carries whole files and thinking). The phone is the same
 human principal the desktop is, and this route exposes nothing the desktop's
 channel view does not already show that principal.
+
+**Which routes need the input grant.** List, messages and **ack** work for a
+read-only device and on a server started without `--allow-input`: marking what
+you have read is part of reading, and the cursor it moves is the human's own.
+Ack re-authenticates the caller after its body arrives, so a device revoked
+while the request was in flight gets `401 {error: 'authorization-expired'}`
+and the cursor does not move. **Join is a write** — it plants a permanent seat
+and an `operator-join` system message every member sees — so it needs this
+caller's input grant, exactly like typing. Without it the answer is the same
+`403` every input route gives (`{error: 'read-only: …', detail}`; the `error`
+says which gate refused, server or device; show `detail` verbatim).
 
 `GET /api/channels` — every channel the human workspace can **observe**
 (same W1 rule the desktop uses): public channels, channels the human has
@@ -2274,6 +2291,7 @@ row:
   "visibility": "public",
   "lastSeq": 142,
   "lastPost": { "seq": 142, "memberName": "worker", "postedAt": 1757700000000 },
+  "oldestRetainedSeq": 1,
   "lastReadSeq": 138,
   "unread": 3,
   "unreadMentions": 1
@@ -2285,7 +2303,16 @@ a **seat** (member row) in that channel, and `unread`/`unreadMentions` are
 computed server-side against that seat — the phone never derives them from raw
 messages. A channel observed without a seat carries `"observed": true` and
 omits the cursor fields: render it read-only with no badge, mirroring the
-desktop's observed-channel treatment. The human takes a seat **explicitly** —
+desktop's observed-channel treatment. An **archived** channel keeps reporting
+its seat's real `unread`/`unreadMentions` (archiving freezes a channel; it does
+not read it for you), and acking it works as on any other channel.
+
+**Retention.** A channel keeps its most recent 5000 messages; older ones are
+evicted. `oldestRetainedSeq` is the oldest seq the channel still holds
+(`lastSeq + 1` when it holds none). On a seated row, `gap: true` means messages
+past the human's cursor were evicted before they were read: `unread` and
+`unreadMentions` count only what is still retained, so show that more was
+missed than the number says. The key is omitted when there is no gap. The human takes a seat **explicitly** —
 at the desktop GUI, or from the phone via the join route below — never
 implicitly as a side effect of reading.
 **The seat is a precondition for mentions, not just for badges:** a post's
@@ -2302,7 +2329,7 @@ the same constant `(ws-human)` row with **full history** (`historyFromSeq`
 0) and a cursor starting at the channel head, so the operator's unread is 0
 at the moment of joining — only what is posted after the join counts as
 unread. A server-published `operator-join` system message is appended
-atomically with the seat; it creates no unread for anyone. The join is
+atomically with the seat; it creates no unread for anyone. It needs this caller's input grant (see above). The join is
 **idempotent from the phone**: joining when the seat already exists answers
 `200 {lastReadSeq, alreadyMember: true}` rather than an error — two surfaces
 racing to seat the one human is normal, not a conflict. An archived channel
@@ -2312,8 +2339,16 @@ posting remains behind the future `--allow-channel-post`.
 
 `GET /api/channels/<id>/messages` — cursor-paginated like every other list in
 this contract: `since` is the last `seq` the client has (0 for the first
-fetch), `limit` caps the page (default 50, max 200). Messages are oldest-first
-within a page. Observed channels are floored at the seat's `historyFromSeq`
+fetch) and the page starts **after** it, `limit` caps the page (default 50,
+max 200). Both must be non-negative safe integers (`Number.isSafeInteger`), or
+the answer is `400 invalid-cursor`. Messages are oldest-first within a page.
+`nextSince` is the last seq on the page; an empty page hands back `since`,
+clamped to the channel head, so a cursor from above the head is never echoed
+as if it were real. A page shorter than `limit` means you have caught up.
+`oldestRetainedSeq` is the same value the list row carries, and `gap: true`
+(omitted otherwise) means messages between `since` and the first message on
+this page were evicted: the page does **not** continue from your cursor, so
+do not render it as if it did. A seat's own history floor is not a gap. Observed channels are floored at the seat's `historyFromSeq`
 where one exists, the same floor the desktop renderer applies. Each message:
 
 ```json
@@ -2335,8 +2370,9 @@ indistinguishable from a missing one (404), the same collapse `get()` applies.
 `POST /api/channels/<id>/ack` — advances the human seat's `lastReadSeq`.
 The value is clamped to the channel head and the cursor is advance-only:
 acking backwards is a no-op that returns the current cursor, not an error.
-No 409 — reading is idempotent. A seatless (observed-only) channel has no
-cursor to advance: it answers 400 `{error: 'no-seat'}`.
+No 409 — reading is idempotent. `lastReadSeq` must be a non-negative safe
+integer, or the answer is `400 invalid-body`. A seatless (observed-only)
+channel has no cursor to advance: it answers 400 `{error: 'no-seat'}`.
 
 ### `channel.mention` — a recorded SSE event, unlike the nudges
 
@@ -2371,6 +2407,17 @@ replay. Emission is mention-only for exactly this reason: a busy channel's
 ordinary traffic must not churn the bounded ring and push a pending `approval`
 out of it.
 
+The ring also bounds mentions directly, so they can never push a pending
+`approval` out of the window:
+
+- **One per channel.** A new mention for a channel supersedes that channel's
+  previous one in the backlog. Nothing is lost — both say "refetch this
+  channel" — so this never triggers a `reset`.
+- **At most 20 at once** across all channels. Past that, the oldest other
+  channel's mention is dropped, and a client whose cursor is behind it gets
+  the standard `reset` (refetch `/api/channels`, whose unread is durable),
+  never a silent hole. Approvals are never the entries that make room.
+
 `tier` is server-decided and preserved by the client. Because emission is
 restricted to human-workspace mentions, the value is always `act` today;
 `info` is reserved for possible future non-mention echoes and must never fail
@@ -2386,7 +2433,8 @@ version bump.
 | --- | --- | --- |
 | 200 | route-specific | Listed / paged / acked (clamped) |
 | 400 | `{error: 'invalid-cursor' \| 'invalid-body' \| 'no-seat' \| 'archived'}` | `since`/`limit` malformed, an ack body that is not a non-negative integer, an ack against a seatless observed channel, or a join against an archived channel |
-| 401 | auth failure | Bearer credential missing or rejected — same as every route |
+| 401 | auth failure | Bearer credential missing or rejected — same as every route; an ack whose device was revoked mid-request answers `{error: 'authorization-expired'}` |
+| 403 | `{error: 'read-only: …', detail}` | Join without this caller's input grant (server or device); same shape as every input route |
 | 404 | `{error: 'not-found'}` | No such channel, or one the principal cannot observe — indistinguishable by design |
 | 503 | `{error: 'channels-unavailable'}` | The daemon was started without the channels seam wired. Do not retry in a loop; surface it |
 
@@ -2402,6 +2450,8 @@ version bump.
   value: before it, the channel renders observed (read-only, no badge) and its
   mentions of the human are dropped at post time. After it, unread and
   `channel.mention` begin from the join point.
+- On `gap: true` (a list row or a page), say that older messages are gone;
+  never render the retained tail as if it were contiguous with your cursor.
 - Posting from the phone does not exist yet. There is no route to try, and
   building one out of `--allow-input` keystrokes is the same "looks like an
   approval" bypass §11 warns about — do not.
@@ -2414,8 +2464,8 @@ version bump.
   waiting to be filled. It fires on printed output, so it can never be a remote
   approve button; the `approval` kind is. See the `critical` section above.
 - **Channel posting from the phone** — deliberately behind a future
-  `--allow-channel-post` grant. Reading and acking (§9) are all this contract
-  offers today.
+  `--allow-channel-post` grant. Reading, acking and joining (§9) are all this
+  contract offers today.
 - **The relay is not deployed.** Until `WMUX_PUSH_RELAY_URL` and
   `WMUX_PUSH_RELAY_SECRET` are set on a daemon, push is inert by design — not an
   error, just nothing sent.
