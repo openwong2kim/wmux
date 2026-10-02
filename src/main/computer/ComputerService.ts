@@ -14,7 +14,15 @@
 // into acting on an app main never vetted.
 
 import { ComputerError } from '../../shared/computer/errors';
-import { BLOCK_REASON_TEXT, blockReasonFor, osChordRefusal, osPointerModifierRefusal, type BlockContext } from '../../shared/computer/blocklist';
+import {
+  BLOCK_REASON_TEXT,
+  blockReasonFor,
+  osChordRefusal,
+  osPointerModifierRefusal,
+  windowBlockReasonFor,
+  windowRuleDependsOnLocation,
+  type BlockContext,
+} from '../../shared/computer/blocklist';
 import {
   MODIFIERS,
   OBSERVATION_MODES,
@@ -229,9 +237,18 @@ export class ComputerService {
     }
     return {
       windows: windows.map((w) => {
-        const blocked = blockedByPid.get(w.pid) ?? (ctx.selfPids?.has(w.pid) ? BLOCK_REASON_TEXT.wmux : undefined);
-        if (blocked) return { ...w, title: '', blocked };
-        return agent.key && this.grants.get(grantKey(agent, w.appId)) === true ? w : { ...w, title: '' };
+        // appId is the lower-cased exe path on Windows, which is all the
+        // per-window rule needs.
+        const windowReason = windowBlockReasonFor({ path: w.appId }, w);
+        const blocked =
+          blockedByPid.get(w.pid) ??
+          (ctx.selfPids?.has(w.pid) ? BLOCK_REASON_TEXT.wmux : undefined) ??
+          (windowReason ? BLOCK_REASON_TEXT[windowReason] : undefined);
+        if (!blocked && agent.key && this.grants.get(grantKey(agent, w.appId)) === true) return w;
+        // A folder location says as much as a title, so it needs the same consent.
+        const hidden: WindowInfo & { blocked?: string } = { ...w, title: '', ...(blocked && { blocked }) };
+        delete hidden.shellLocation;
+        return hidden;
       }),
     };
   }
@@ -300,6 +317,14 @@ export class ComputerService {
     const keys = this.resolveKeys(params);
     // Consent may have been revoked (abort clears grants) since the snapshot.
     await this.vet(agent, snap.app, snap.window, generation);
+    // A folder window can navigate (same window, new location) after the
+    // snapshot, so where the rule depends on the location, vet it live.
+    if (windowRuleDependsOnLocation(snap.app)) {
+      const live = await helper.request('resolveTarget', { app: `pid:${snap.window.pid}`, window: snap.window.id });
+      assertConsistent(live.app, live.window);
+      if (live.window.id !== snap.window.id) fail('window_not_found', 'the snapshot\'s window is gone; call getAppState again');
+      await this.vet(agent, live.app, live.window, generation);
+    }
     // Consent can take minutes; the clock and the stop key may both have
     // moved, so the snapshot and the cooldown are checked again on a fresh
     // clock before the lock and the rate slot are taken.
@@ -445,7 +470,7 @@ export class ComputerService {
   }
 
   private async vet(agent: ComputerAgent, app: AppInfo, window: WindowInfo, generation: number): Promise<void> {
-    const reason = blockReasonFor(app, this.deps.blockContext());
+    const reason = blockReasonFor(app, this.deps.blockContext()) ?? windowBlockReasonFor(app, window);
     if (reason) fail('app_blocked', `${app.name}: ${BLOCK_REASON_TEXT[reason]}`);
     if (window.elevated) {
       fail('target_elevated', `${app.name} runs as administrator; Windows blocks input from wmux into it`);

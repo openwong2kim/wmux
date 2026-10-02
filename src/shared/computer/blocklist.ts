@@ -14,18 +14,17 @@
 //     runners (Script Editor, Automator, Shortcuts, Registry Editor) and
 //     process managers (Activity Monitor, Task Manager and its "Run new task").
 //
-// Known residue, covered by per-app consent and chord refusal instead:
-// Explorer's Run dialog and Control Panel windows belong to explorer.exe,
-// which cannot be blocked wholesale (Win+R is refused as a meta chord;
-// control.exe only launches the panel). The Windows helper must close this by
-// reporting the shell namespace / window class of Explorer windows so main
-// can refuse those two. Terminals inside an IDE and password managers inside
-// a browser share their host's process.
+// explorer.exe is both the Windows shell and File Explorer, so it is judged
+// per window (windowBlockReasonFor): only folder windows on a filesystem path
+// may be driven; every other shell window (the desktop, the taskbar, the Run
+// dialog, Control Panel and other shell-namespace locations, a folder window
+// whose location is unknown) is a shell system surface. Terminals inside an
+// IDE and password managers inside a browser share their host's process.
 //
 // Matching is by Windows executable basename and macOS bundle id — stable
 // identifiers, not window titles an app controls.
 
-import type { AppInfo, Key, Modifier } from './protocol';
+import type { AppInfo, Key, Modifier, WindowInfo } from './protocol';
 
 export type BlockReason = 'password-manager' | 'wmux' | 'terminal' | 'credential-prompt' | 'system-tool';
 
@@ -186,6 +185,38 @@ export function blockReasonFor(app: Pick<AppInfo, 'pid' | 'path' | 'bundleId'>, 
     if (app.bundleId && entry.bundle?.some((p) => bundleMatches(p, app.bundleId as string))) return entry.reason;
   }
   return null;
+}
+
+/** File Explorer's folder window classes. */
+const FOLDER_WINDOW_CLASSES: ReadonlySet<string> = new Set(['CabinetWClass', 'ExploreWClass']);
+
+/** `C:\…` or `\\server\share\…`; not `\\?\` or `\\.\` device paths, not `::{GUID}` locations. */
+export function isFilesystemLocation(location: string | undefined): boolean {
+  if (!location) return false;
+  return /^[A-Za-z]:\\/.test(location) || /^\\\\[^\\?.][^\\]*\\[^\\]+/.test(location);
+}
+
+/**
+ * Why one window of an app that is not blocked as a whole must still not be
+ * driven, or null. Windows only: explorer.exe windows are allowed only as
+ * folder windows (CabinetWClass / ExploreWClass) whose `shellLocation` the
+ * helper reported as a filesystem path; everything else explorer.exe shows is
+ * a shell system surface. Fails closed when the class or location is missing.
+ */
+export function windowBlockReasonFor(
+  app: Pick<AppInfo, 'path' | 'bundleId'>,
+  window: Pick<WindowInfo, 'className' | 'shellLocation'>,
+): BlockReason | null {
+  if (!windowRuleDependsOnLocation(app)) return null;
+  if (window.className && FOLDER_WINDOW_CLASSES.has(window.className) && isFilesystemLocation(window.shellLocation)) {
+    return null;
+  }
+  return 'system-tool';
+}
+
+/** Whether windowBlockReasonFor's answer for this app can change while a window stays open. */
+export function windowRuleDependsOnLocation(app: Pick<AppInfo, 'path' | 'bundleId'>): boolean {
+  return !app.bundleId && basename(app.path) === 'explorer.exe';
 }
 
 export const BLOCK_REASON_TEXT: Record<BlockReason, string> = {

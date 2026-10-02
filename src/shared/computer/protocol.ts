@@ -196,6 +196,15 @@ export interface WindowInfo {
   minimized?: boolean;
   /** Windows only: the owning process runs at a higher integrity level. */
   elevated?: boolean;
+  /** Windows only: the window class (`CabinetWClass` for a File Explorer folder window). */
+  className?: string;
+  /**
+   * Windows only, File Explorer folder windows: the folder shown, as a
+   * filesystem path or a shell parse name (`::{GUID}`). Absent when unknown.
+   */
+  shellLocation?: string;
+  /** Windows only: the owner window's id, for an owned window such as a dialog. */
+  ownerId?: string;
 }
 
 export interface Screenshot {

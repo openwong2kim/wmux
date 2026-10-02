@@ -601,3 +601,51 @@ describe('ComputerService with the real approval queue', () => {
     expect(queue.inflightCount()).toBe(0);
   });
 });
+
+describe('explorer.exe windows', () => {
+  const explorer: AppInfo = { id: 'c:\\windows\\explorer.exe', name: 'Explorer', pid: 20, path: 'C:\\Windows\\explorer.exe' };
+  const folder = win(explorer, { className: 'CabinetWClass', shellLocation: 'C:\\Users\\me\\Documents' });
+  const controlPanel = win(explorer, { id: 'w-21', className: 'CabinetWClass', shellLocation: '::{26EE0668-A00A-44D7-9371-BEB064C98683}' });
+  const runDialog = win(explorer, { id: 'w-22', className: '#32770', ownerId: '65552' });
+
+  function explorerService(live: () => WindowInfo) {
+    const { helper, calls } = fakeHelper({ Explorer: { app: explorer, window: folder } });
+    const request = helper.request;
+    helper.request = (async (method: HelperMethod, params: Record<string, unknown>) => {
+      if (method === 'listWindows') return { windows: [folder, controlPanel, runDialog] };
+      if (method === 'resolveTarget' && String(params.app).startsWith('pid:')) {
+        calls.push({ method, params });
+        return { app: explorer, window: live() };
+      }
+      return (request as (m: HelperMethod, p: unknown) => Promise<unknown>)(method, params);
+    }) as HelperLike['request'];
+    const service = new ComputerService({
+      isEnabled: () => true,
+      createHelper: () => helper,
+      requestConsent: vi.fn(async () => 'approved' as ConsentAnswer),
+      stopKey: fakeStopKey(),
+      blockContext: () => ({}),
+      platform: 'win32',
+    });
+    return { service, calls };
+  }
+
+  it('lists only folder windows on a filesystem path as usable, and keeps locations behind consent', async () => {
+    const { service } = explorerService(() => folder);
+    const { windows } = await service.listWindows(AGENT_A);
+    expect(windows.find((w) => w.id === folder.id)?.blocked).toBeUndefined();
+    expect(windows.find((w) => w.id === controlPanel.id)?.blocked).toBeTruthy();
+    expect(windows.find((w) => w.id === runDialog.id)?.blocked).toBeTruthy();
+    expect(windows.every((w) => w.shellLocation === undefined && w.title === '')).toBe(true);
+  });
+
+  it('re-checks the live location before input, since a folder window can navigate', async () => {
+    let live = folder;
+    const { service, calls } = explorerService(() => live);
+    const state = await service.getAppState(AGENT_A, { app: 'Explorer' });
+    expect(await codeOf(service.control(AGENT_A, { action: 'click', snapshotId: state.snapshotId, index: 1 }))).toBe('resolved');
+    live = { ...folder, shellLocation: controlPanel.shellLocation };
+    expect(await codeOf(service.control(AGENT_A, { action: 'click', snapshotId: state.snapshotId, index: 1 }))).toBe('app_blocked');
+    expect(calls.filter((c) => c.method === 'click')).toHaveLength(1);
+  });
+});
