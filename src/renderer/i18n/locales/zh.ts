@@ -1377,6 +1377,8 @@ export const zh = {
   'settings.fanoutRequireApproval': '代理 fan-out 前询问',
   'settings.fanoutRequireApprovalDesc': '默认关闭：代理发起的 fan-out 无需提示即运行——仅一层、最多 8 个同时运行且每小时 24 个，并记录日志。开启后，每个管道/MCP fan-out 都会等待你的批准。',
   'fanout.autoRunToast': '未经批准接受 fan-out：{repo} 中 {count} 个任务',
+  'checkout.foreignAgentToast': '{agent} 在 fan-out 任务“{task}”拥有的检出目录中启动。同一工作树中的两个代理会互相覆盖更改。点击打开该任务的工作区。',
+  'checkout.continueHere': '在此继续',
   'fleet.approvals.recentAutoRuns': '最近的无人值守 fan-out',
   'fleet.approvals.autoRunRow': '来自 {workspace} 的 {count} 个任务 · {repo}',
   'settings.fanoutWorkers': 'Fan-out 工作者',

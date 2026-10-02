@@ -854,6 +854,8 @@ export const ko = {
   'settings.fanoutRequireApproval': '에이전트 fan-out 전에 묻기',
   'settings.fanoutRequireApprovalDesc': '기본 꺼짐: 에이전트가 시작한 fan-out은 확인 없이 실행됩니다 — 한 단계까지, 동시 8개·시간당 24개 이하, 기록 남김. 켜면 모든 파이프/MCP fan-out이 승인을 기다립니다.',
   'fanout.autoRunToast': '승인 없이 fan-out 수락: {repo}에서 태스크 {count}개',
+  'checkout.foreignAgentToast': '{agent}가 fan-out 태스크 “{task}” 소유의 체크아웃에서 시작됐습니다. 한 워킹 트리의 두 에이전트는 서로의 변경을 덮어씁니다. 클릭하면 태스크 워크스페이스로 이동합니다.',
+  'checkout.continueHere': '여기서 계속',
   'fleet.approvals.recentAutoRuns': '최근 무인 fan-out',
   'fleet.approvals.autoRunRow': '{workspace}에서 태스크 {count}개 · {repo}',
   'settings.fanoutWorkers': 'Fan-out 워커',

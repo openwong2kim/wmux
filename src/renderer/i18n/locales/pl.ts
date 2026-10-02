@@ -1338,6 +1338,8 @@ export const pl = {
   'settings.fanoutRequireApproval': 'Pytaj, zanim agent uruchomi fan-out',
   'settings.fanoutRequireApprovalDesc': 'Domyślnie wyłączone: fan-out uruchomiony przez agenta działa bez pytania — jeden poziom, najwyżej 8 aktywnych i 24 na godzinę, z zapisem w dzienniku. Włączone: każdy fan-out z potoku/MCP czeka na Twoją zgodę.',
   'fanout.autoRunToast': 'Fan-out przyjęty bez zgody: zadania ({count}) w {repo}',
+  'checkout.foreignAgentToast': '{agent} uruchomiono w kopii roboczej należącej do zadania fan-out „{task}”. Dwóch agentów w jednym drzewie roboczym nadpisuje sobie zmiany. Kliknij, aby otworzyć obszar roboczy zadania.',
+  'checkout.continueHere': 'Kontynuuj tutaj',
   'fleet.approvals.recentAutoRuns': 'Ostatnie fan-outy bez nadzoru',
   'fleet.approvals.autoRunRow': 'Zadania ({count}) z {workspace} w {repo}',
   'settings.fanoutWorkers': 'Wykonawcy fan-out',

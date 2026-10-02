@@ -1361,6 +1361,8 @@ export const en = {
   'settings.fanoutRequireApproval': 'Ask before an agent fans out',
   'settings.fanoutRequireApprovalDesc': 'Off by default: a fan-out an agent starts runs without a prompt — one level deep, at most 8 live and 24 per hour, and logged. On: every pipe/MCP fan-out waits for your approval.',
   'fanout.autoRunToast': 'Fan-out accepted without approval: {count} tasks in {repo}',
+  'checkout.foreignAgentToast': '{agent} started in a checkout that fan-out task “{task}” owns. Two agents in one working tree overwrite each other\'s changes. Click to open the task\'s workspace.',
+  'checkout.continueHere': 'Continue here',
   'fleet.approvals.recentAutoRuns': 'Recent unattended fan-outs',
   'fleet.approvals.autoRunRow': '{count} tasks from {workspace} in {repo}',
   'settings.fanoutWorkers': 'Fan-out workers',
