@@ -42,6 +42,18 @@ internal static unsafe class Sta
         {
             Wire.Log($"CoInitializeEx failed (0x{hr.Value:x8})");
         }
+        // Warm up after hello, while main is still reading it: the automation
+        // object and the held-input directory would otherwise cost the first
+        // request tens of milliseconds.
+        try
+        {
+            _ = Uia.Automation;
+        }
+        catch (HelperError e)
+        {
+            Wire.Log(e.Message);
+        }
+        _ = HeldStore.Directory;
         var handle = new HANDLE(Signal.SafeWaitHandle.DangerousGetHandle());
         var lastActivity = Environment.TickCount64;
         while (true)

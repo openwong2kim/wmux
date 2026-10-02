@@ -125,7 +125,7 @@ internal static unsafe class Focus
                 }
             }
         }
-        catch (COMException)
+        catch (Exception e) when (e is not HelperError)
         {
         }
         if (!PointerHitsTarget(target, x, y)) PInvoke.SetForegroundWindow(target.Window);
@@ -200,7 +200,7 @@ internal static unsafe class Actions
         {
             return el->GetCurrentPatternAs((UIA_PATTERN_ID)patternId, &iid);
         }
-        catch (COMException)
+        catch (Exception e) when (e is not HelperError)
         {
             return null;
         }
@@ -218,7 +218,7 @@ internal static unsafe class Actions
         {
             type = (int)el->CurrentControlType;
         }
-        catch (COMException)
+        catch (Exception e) when (e is not HelperError)
         {
             return null;
         }
@@ -232,7 +232,7 @@ internal static unsafe class Actions
                     invoke->Invoke();
                     return "pressed through accessibility (Invoke)";
                 }
-                catch (COMException)
+                catch (Exception e) when (e is not HelperError)
                 {
                 }
                 finally
@@ -249,7 +249,7 @@ internal static unsafe class Actions
                 toggle->Toggle();
                 return "toggled through accessibility (Toggle)";
             }
-            catch (COMException)
+            catch (Exception e) when (e is not HelperError)
             {
             }
             finally
@@ -265,7 +265,7 @@ internal static unsafe class Actions
                 select->Select();
                 return "selected through accessibility (SelectionItem)";
             }
-            catch (COMException)
+            catch (Exception e) when (e is not HelperError)
             {
             }
             finally
@@ -282,7 +282,7 @@ internal static unsafe class Actions
                 else expand->Collapse();
                 return "expanded or collapsed through accessibility (ExpandCollapse)";
             }
-            catch (COMException)
+            catch (Exception e) when (e is not HelperError)
             {
             }
             finally
@@ -347,7 +347,7 @@ internal static unsafe class Actions
             {
                 pattern->SetValue(new BSTR((char*)bstr));
             }
-            catch (COMException e)
+            catch (Exception e) when (e is not HelperError)
             {
                 if (Uia.IsGone(e.HResult)) throw new HelperError("element_stale", $"element {index} went away");
                 throw new HelperError("value_not_settable", $"the app refused the value (0x{e.HResult:x8})");
@@ -361,7 +361,7 @@ internal static unsafe class Actions
             {
                 readBack = Uia.Take(pattern->CurrentValue);
             }
-            catch (COMException)
+            catch (Exception e) when (e is not HelperError)
             {
                 readBack = null;
             }
@@ -384,7 +384,7 @@ internal static unsafe class Actions
         {
             return Uia.CurrentString(el, Uia.ValueValueProperty);
         }
-        catch (COMException)
+        catch (Exception e) when (e is not HelperError)
         {
             return null;
         }
@@ -410,7 +410,7 @@ internal static unsafe class Actions
                 }
                 el->SetFocus();
             }
-            catch (COMException e)
+            catch (Exception e) when (e is not HelperError)
             {
                 if (Uia.IsGone(e.HResult)) throw new HelperError("element_stale", $"element {index} went away");
             }
@@ -423,7 +423,7 @@ internal static unsafe class Actions
                 {
                     same = Uia.CurrentRuntimeId(focused).AsSpan().SequenceEqual(snap.RuntimeIds[index]);
                 }
-                catch (COMException)
+                catch (Exception e) when (e is not HelperError)
                 {
                 }
                 finally

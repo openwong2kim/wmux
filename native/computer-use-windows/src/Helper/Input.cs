@@ -177,8 +177,8 @@ internal static unsafe class Input
     /// <summary>
     /// releaseInput `{keys?, modifiers?, buttons?}`: what this helper tracked,
     /// what dead helpers recorded, plus what main lists from the request that
-    /// was cut off. With no fields at all: the modifiers that are down and
-    /// the three mouse buttons — never ordinary keys, because a stray key-up
+    /// was cut off. With no fields at all: the modifiers and mouse buttons
+    /// that are down — never ordinary keys, because a stray key-up
     /// lands in whatever window is in front and pages act on key-up.
     /// </summary>
     public static bool ReleaseInput(Params p)
@@ -210,10 +210,18 @@ internal static unsafe class Input
             {
                 if ((PInvoke.GetAsyncKeyState(m.Vk) & 0x8000) != 0) keys.Add(m.Vk);
             }
-            buttons.AddRange([0, 1, 2]);
+            // Only buttons that are down: on Windows a stray right-button up
+            // makes DefWindowProc open the context menu under the cursor.
+            // Left and right are both checked for each, because with swapped
+            // buttons the async state names the physical one.
+            bool left = Down(0x01), right = Down(0x02);
+            if (left || right) buttons.AddRange([0, 1]);
+            if (Down(0x04)) buttons.Add(2);
         }
         return ReleaseAll(keys, buttons);
     }
+
+    private static bool Down(int vk) => (PInvoke.GetAsyncKeyState(vk) & 0x8000) != 0;
 
     /// <summary>
     /// Releases what this helper holds, what dead helpers recorded, and the

@@ -107,7 +107,7 @@ internal static unsafe class Uia
                 {
                     req->AddProperty((UIA_PROPERTY_ID)id);
                 }
-                catch (COMException)
+                catch (Exception e) when (e is not HelperError)
                 {
                     // An older Windows 10 lacks a property (FullDescription
                     // arrived in 1703); the tree simply goes without it.
@@ -262,7 +262,7 @@ internal static unsafe class Uia
         {
             return Automation->GetFocusedElement();
         }
-        catch (COMException)
+        catch (Exception e) when (e is not HelperError)
         {
             return null;
         }
@@ -280,7 +280,7 @@ internal static unsafe class Uia
         {
             return el->CurrentIsPassword || Tree.IsSensitive(false, Take(el->CurrentName));
         }
-        catch (COMException)
+        catch (Exception e) when (e is not HelperError)
         {
             return false;
         }
@@ -362,7 +362,7 @@ internal sealed unsafe class UiaTreeSource : ITreeSource<nint>, IDisposable
                 Frame = rect.IsEmpty ? null : rect,
             };
         }
-        catch (COMException)
+        catch (Exception e) when (e is not HelperError)
         {
             return null;
         }
@@ -376,7 +376,7 @@ internal sealed unsafe class UiaTreeSource : ITreeSource<nint>, IDisposable
         {
             arr = el->GetCachedChildren();
         }
-        catch (COMException)
+        catch (Exception e) when (e is not HelperError)
         {
             return [];
         }
