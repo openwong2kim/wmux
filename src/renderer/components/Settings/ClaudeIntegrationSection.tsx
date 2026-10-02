@@ -35,7 +35,7 @@ import { IconCheck, IconWarning } from '../icons';
 import Button from '../ui/Button';
 import Field from '../ui/Field';
 import Switch from '../ui/Switch';
-import { SettingsSection } from './SettingsLayout';
+import { SettingRow, SettingsSection } from './SettingsLayout';
 
 export const STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24h
 
@@ -151,6 +151,8 @@ function UsageCard({
   const enabled = useStore((s) => s.anthropicUsageEnabled);
   const setEnabled = useStore((s) => s.setAnthropicUsageEnabled);
   const usage = useStore((s) => s.anthropicUsage);
+  const limitAutoResume = useStore((s) => s.usageLimitAutoResume);
+  const setLimitAutoResume = useStore((s) => s.setUsageLimitAutoResume);
   const [lastRefreshAtMs, setLastRefreshAtMs] = useState<number>(0);
   const now = useNowEverySec();
   const cooldownRemainingMs = Math.max(0, lastRefreshAtMs + REFRESH_COOLDOWN_MS - now);
@@ -193,6 +195,19 @@ function UsageCard({
           </div>
         </div>
       )}
+      {/* Applies to every agent pane (Claude and Codex), independent of the
+          meter above: useUsageLimitBridge arms panes nobody decided for. */}
+      <SettingRow
+        id="usagelimitresume"
+        label={t('claudeIntegration.usageLimit.autoResume')}
+        description={t('claudeIntegration.usageLimit.autoResumeDesc')}
+      >
+        <Switch
+          checked={limitAutoResume}
+          onCheckedChange={setLimitAutoResume}
+          aria-label={t('claudeIntegration.usageLimit.autoResume')}
+        />
+      </SettingRow>
     </SettingsSection>
   );
 }

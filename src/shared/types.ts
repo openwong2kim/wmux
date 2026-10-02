@@ -937,6 +937,8 @@ export interface SessionData {
   notificationRingEnabled?: boolean;
   /** Whether the user opted in to Anthropic usage polling (#896). No credentials are persisted. */
   anthropicUsageEnabled?: boolean;
+  /** Arm a pane held at a usage limit to continue after the reset, unless the pane decided otherwise. */
+  usageLimitAutoResume?: boolean;
   /** Categories whose surface actions are suppressed (#516). */
   mutedNotificationCategories?: NotificationCategory[];
   customKeybindings?: CustomKeybinding[];

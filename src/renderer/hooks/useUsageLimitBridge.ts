@@ -1,0 +1,89 @@
+import { useEffect } from 'react';
+import { useStore } from '../stores';
+import type { PaneUsageLimit, PaneUsageLimitPatch } from '../../shared/usageLimit';
+
+// ─── Usage-limit bridge ──────────────────────────────────────────────────────
+//
+// The single owner of the `usageLimit` IPC subscription, mounted once in
+// AppLayout. Hydrates the slice from `list()` on mount and on every
+// `daemon:connected`, then follows `onChanged`.
+//
+// It also applies the global "continue after a usage limit resets" setting:
+// a limit whose `autoResume` is still undefined (nobody decided for that pane)
+// is armed once while the setting is on. It runs on both inputs — the limits
+// map AND the setting — because at boot `list()` can resolve before the saved
+// session restores the setting. Each ptyId+detectedAt is applied at most once,
+// so a pane the user later disarms is never re-armed for the same limit.
+
+/** Dedup key of one limit occurrence. */
+export function usageLimitApplyKey(limit: Pick<PaneUsageLimit, 'ptyId' | 'detectedAt'>): string {
+  return `${limit.ptyId}:${limit.detectedAt}`;
+}
+
+/**
+ * The ptyIds to arm with the global setting. Pure: marks what it returns in
+ * `applied` and forgets keys whose limit is gone, so the caller only sends.
+ */
+export function planUsageLimitAutoResume(
+  limits: Record<string, PaneUsageLimit>,
+  settingOn: boolean,
+  applied: Set<string>,
+): string[] {
+  const live = new Set<string>();
+  const out: string[] = [];
+  for (const limit of Object.values(limits)) {
+    const key = usageLimitApplyKey(limit);
+    live.add(key);
+    if (!settingOn || limit.autoResume !== undefined || applied.has(key)) continue;
+    applied.add(key);
+    out.push(limit.ptyId);
+  }
+  for (const key of applied) if (!live.has(key)) applied.delete(key);
+  return out;
+}
+
+/** Send one patch; failures are logged (main may not have the handler yet). */
+export function updateUsageLimit(ptyId: string, patch: PaneUsageLimitPatch): void {
+  const api = window.electronAPI?.usageLimit;
+  if (!api) return;
+  void api.update(ptyId, patch).catch((err: unknown) => {
+    console.warn('[usageLimit] update failed', err);
+  });
+}
+
+export function useUsageLimitBridge(): void {
+  useEffect(() => {
+    const api = window.electronAPI?.usageLimit;
+    if (!api) return; // older preload bundles do not expose this channel
+
+    const hydrate = () => {
+      void api.list().then((limits) => {
+        useStore.getState().hydrateUsageLimits(Array.isArray(limits) ? limits : []);
+      }).catch(() => { /* best-effort — the next daemon:connected retries */ });
+    };
+    hydrate();
+    const offConnected = window.electronAPI.daemon?.onConnected?.(hydrate);
+    const offChanged = api.onChanged(({ ptyId, limit }) => {
+      useStore.getState().setUsageLimit(ptyId, limit);
+    });
+
+    const applied = new Set<string>();
+    const apply = (state: ReturnType<typeof useStore.getState>) => {
+      for (const ptyId of planUsageLimitAutoResume(state.usageLimits, state.usageLimitAutoResume, applied)) {
+        updateUsageLimit(ptyId, { autoResume: true });
+      }
+    };
+    apply(useStore.getState());
+    const offStore = useStore.subscribe((state, prev) => {
+      if (state.usageLimits !== prev.usageLimits || state.usageLimitAutoResume !== prev.usageLimitAutoResume) {
+        apply(state);
+      }
+    });
+
+    return () => {
+      offConnected?.();
+      offChanged();
+      offStore();
+    };
+  }, []);
+}

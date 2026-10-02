@@ -1,18 +1,20 @@
 import { memo } from 'react';
 import type { FleetPane, FleetRow } from '../../stores/selectors/fleet';
-import { fleetRow, selectLatestCompletionEvidenceTask } from '../../stores/selectors/fleet';
+import { fleetRow, fleetTargetPtyId, selectLatestCompletionEvidenceTask } from '../../stores/selectors/fleet';
 import type { WorkTask } from '../../../shared/workTask';
 import type { Task } from '../../../shared/types';
 import { isVerifiedItem } from '../../../shared/completionEvidence';
 import { AGENT_STATUS_ICON } from '../Sidebar/agentStatusIcon';
 import { useT } from '../../hooks/useT';
-import { t } from '../../i18n';
+import { getLocale, t } from '../../i18n';
 import { useStore } from '../../stores';
 import { IconCheck, IconChevronDir, IconExternalLink } from '../icons';
 import { fleetTitle } from './fleetPresentation';
 import { fleetRequesterText } from '../../utils/fanoutProvenance';
 import { useShallow } from 'zustand/react/shallow';
 import { formatIdle, IDLE_SHOW_AFTER_MS } from '../../utils/idleTime';
+import { useUsageLimitNow } from '../Pane/UsageLimitChip';
+import { usageLimitFleetDetail, usageLimitView } from '../Pane/usageLimitPresentation';
 
 interface FleetCardProps {
   card: FleetPane;
@@ -154,7 +156,12 @@ function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onF
   // the pane still claims to be working, nothing backs the claim.
   const statusColor = card.unverifiable ? 'var(--accent-cursor)'
     : card.agentStatus === 'idle' || quietWaiting ? 'var(--text-sub)' : icon.dotVar;
-  const detail = row.detail ?? t(row.detailKey);
+  // A pane held at its usage limit says so instead of a generic error detail.
+  const usageLimit = useStore((s) => s.usageLimits[fleetTargetPtyId(card)] ?? (card.ptyId ? s.usageLimits[card.ptyId] : undefined));
+  const limitNow = useUsageLimitNow(!!usageLimit);
+  const detail = usageLimit
+    ? usageLimitFleetDetail(usageLimitView(usageLimit, limitNow, getLocale()), t)
+    : row.detail ?? t(row.detailKey);
   const elapsed = row.idleForMs !== undefined && row.idleForMs >= IDLE_SHOW_AFTER_MS
     ? formatIdle(row.idleForMs) : undefined;
   const action = isAwaitingInput ? t('fleet.action.respond')
@@ -228,8 +235,10 @@ function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onF
         {requester && <span className="wmux-fleet-requester" data-fleet-requester title={requester.text}>{requester.text}</span>}
       </span>
       <span className="wmux-fleet-progress">
-        <span className={`wmux-fleet-detail${showActivity ? ' is-activity' : ''}`}
-          data-fleet-activity={showActivity || undefined} title={detail}>{detail}</span>
+        <span className={`wmux-fleet-detail${showActivity && !usageLimit ? ' is-activity' : ''}`}
+          data-fleet-activity={(showActivity && !usageLimit) || undefined}
+          data-fleet-usage-limit={usageLimit ? 'true' : undefined}
+          title={usageLimit?.message ? `${detail}\n${usageLimit.message}` : detail}>{detail}</span>
         <span className="wmux-fleet-meta">
           {card.agentStatus === 'complete' && <FleetCardEvidenceBadge task={evidenceTask} />}
           {elapsed && <span data-fleet-elapsed>{elapsed}</span>}

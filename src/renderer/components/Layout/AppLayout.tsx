@@ -56,6 +56,7 @@ import { useWorkspaceMirrorPush } from '../../hooks/useWorkspaceMirrorPush';
 import { useResizeGuard } from '../../hooks/useResizeGuard';
 import { useApprovalInboxBridge } from '../../hooks/useApprovalInboxBridge';
 import { useBrowserHelpBridge } from '../../hooks/useBrowserHelpBridge';
+import { useUsageLimitBridge } from '../../hooks/useUsageLimitBridge';
 import { useRemoteInboxBridge } from '../../hooks/useRemoteInboxBridge';
 import { useRemoteAttachmentsLifecycle } from '../../hooks/useRemoteAttachmentsLifecycle';
 import { useDeckStream } from '../../hooks/useDeckStream';
@@ -427,6 +428,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     toastEnabled: state.toastEnabled,
     notificationRingEnabled: state.notificationRingEnabled,
     anthropicUsageEnabled: state.anthropicUsageEnabled,
+    usageLimitAutoResume: state.usageLimitAutoResume,
     mutedNotificationCategories: state.mutedNotificationCategories,
     customKeybindings: state.customKeybindings,
     shortcutOverrides: state.shortcutOverrides,
@@ -845,6 +847,7 @@ export default function AppLayout() {
   // Always-on for the same reason as the approval bridge: a request must land in
   // the store (and jump to its pane) whichever surface the operator is on.
   useBrowserHelpBridge();
+  useUsageLimitBridge();
   // LanLink PR-2 — own the remote-inbox subscription (always-on, mounted once)
   // so remote peer messages accumulate in the store before any surface opens.
   useRemoteInboxBridge();
