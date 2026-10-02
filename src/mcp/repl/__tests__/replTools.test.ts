@@ -294,4 +294,18 @@ describe('repl_run cwd for a WSL caller', () => {
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toContain('"/home/me/proj" is inside the WSL distro');
   });
+
+  it('names a missing drive-mount cwd in the WSL spelling', async () => {
+    process.env.WMUX_WSL_DISTRO = 'Ubuntu';
+    process.env.WMUX_WSL_MOUNT = '/mnt/c/';
+    const run = createReplToolCatalog()[0];
+
+    const res = (await run.invoke({ code: '1', cwd: '/mnt/c/wmux-no-such-dir' }, {} as never)) as {
+      content: { type: string; text: string }[];
+      isError?: boolean;
+    };
+
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('cwd does not exist: /mnt/c/wmux-no-such-dir');
+  });
 });

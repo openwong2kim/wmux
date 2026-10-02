@@ -238,7 +238,9 @@ export function createReplToolCatalog(
       try {
         acquired = registry.acquire(name, hostCwd ?? process.cwd());
       } catch (error) {
-        return text(String(error instanceof Error ? error.message : error), true);
+        const message = String(error instanceof Error ? error.message : error);
+        // A bad cwd is reported in the spelling the caller passed, not the host's.
+        return text(cwd && hostCwd && hostCwd !== cwd ? message.split(hostCwd).join(cwd) : message, true);
       }
       if (acquired.created) {
         if (acquired.previousDeath) {
