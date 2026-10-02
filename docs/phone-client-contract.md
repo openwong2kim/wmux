@@ -160,6 +160,11 @@ POST /api/stream-ticket        (Authorization header, as always)
 - Renew on 401 from any stream: take a fresh ticket, reopen, resume from your
   cursor.
 
+Both streams send their response headers as soon as they open, so a `200` means
+the stream is live even when there is nothing to replay; `/api/events` also
+writes a `: open` comment first. A comment `: ping` follows every 25 s. SSE
+comments carry no event; ignore them.
+
 ### `GET /api/stream?session=<id>&ticket=<t>` — one pane
 
 | Event | Data |

@@ -1830,6 +1830,27 @@ describe('WebTerminalServer', () => {
     expect(out.text).toContain('"body":"missed-it"');
   });
 
+  it('answers at once when a reconnect has nothing to replay, without waiting for the heartbeat', async () => {
+    const info = await startRO();
+    const token = info.token as string;
+    emitNotify('s2', 'already-seen');
+    const epoch = (await backlog(token)).epoch;
+
+    // Cursor at the head: nothing to replay, so before the fix no byte (and
+    // no headers) left the daemon until the first 25 s heartbeat.
+    const started = Date.now();
+    const out = await readEventStream(
+      `${base()}/api/events?token=${encodeURIComponent(token)}`,
+      /: open\n\n/,
+      { 'Last-Event-ID': `${epoch}:1` },
+    );
+    expect(out.status).toBe(200);
+    expect(out.text).toContain(': open\n\n');
+    expect(out.text).not.toContain('event: reset');
+    expect(out.text).not.toContain('already-seen');
+    expect(Date.now() - started).toBeLessThan(700);
+  });
+
   it('resumes from Last-Event-ID, which the browser resends on reconnect', async () => {
     const info = await startRO();
     const token = info.token as string;

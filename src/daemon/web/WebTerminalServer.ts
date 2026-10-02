@@ -5845,6 +5845,9 @@ export class WebTerminalServer {
       'X-Accel-Buffering': 'no',
       ...this.securityHeaders(),
     });
+    // Headers out at once, like /api/events: a 200 is the client's "stream is
+    // live" signal, and it must not wait on the snapshot work below.
+    res.flushHeaders();
 
     // The headers are already out, so there is no status code left to send on
     // failure — but `readAll()` + `Buffer.concat` on a ring of up to 64 MB can
@@ -8080,6 +8083,12 @@ export class WebTerminalServer {
       'X-Accel-Buffering': 'no',
       ...this.securityHeaders(),
     });
+    // Send the headers and a first byte now. Node holds the headers until the
+    // first body write, and a reconnect with nothing to replay would otherwise
+    // write nothing until the first heartbeat (25 s): the phone treats the
+    // stream as open only once the 200 arrives, so it sat "not connected".
+    res.flushHeaders();
+    res.write(': open\n\n');
 
     // EventSource's own resume header wins; `?since=` covers a page RELOAD,
     // where the browser starts a fresh EventSource with no memory of the id.
