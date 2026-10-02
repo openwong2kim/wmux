@@ -152,5 +152,15 @@ jobs:
       - name: NativeAOT publish
         run: node native/computer-use-windows/build.mjs --no-stage
 
-      - name: Smoke run (hello, capabilities, listApps with Notepad open)
+      # Hosted runners run as an elevated admin, where the helper must refuse
+      # to start (exit 72): checked first. The full smoke then runs helper and
+      # Notepad under a de-elevated, medium-integrity token (tools/RunLimited,
+      # CI only, never shipped).
+      - name: Build the de-elevating launcher (CI only)
+        run: dotnet build native/computer-use-windows/tools/RunLimited -c Release -o native/computer-use-windows/tools/dist
+
+      - name: Smoke run, elevated (the helper refuses to start)
         run: node native/computer-use-windows/smoke.mjs native/computer-use-windows/dist/wmux-computer-use.exe
+
+      - name: Smoke run (hello, capabilities, listApps with Notepad open)
+        run: node native/computer-use-windows/smoke.mjs native/computer-use-windows/dist/wmux-computer-use.exe --limited native/computer-use-windows/tools/dist/RunLimited.exe --require-full
