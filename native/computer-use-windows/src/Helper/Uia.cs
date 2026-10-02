@@ -1,10 +1,12 @@
 // UI Automation through CsWin32's unmanaged COM structs (no runtime
 // marshalling, so NativeAOT-safe). STA thread only.
 //
-// A tree is read with one CacheRequest over the window's whole control-view
-// subtree: one cross-process round-trip, then the walk reads cached values
-// only. Elements stay in Full mode, so the ones a snapshot keeps can still be
-// acted on later.
+// A tree is read level by level: one FindAllBuildCache(Children) per parent,
+// each returning its children with every property the walk needs already
+// cached. A whole-subtree cache would pull a huge window (a long list, a big
+// document) across before the node cap could stop it; this way the walk asks
+// only while it still has node budget and time. Elements stay in Full mode,
+// so the ones a snapshot keeps can still be acted on later.
 
 using System.Runtime.InteropServices;
 using Windows.Win32;
@@ -54,6 +56,8 @@ internal static unsafe class Uia
     private const int UIA_E_ELEMENTNOTAVAILABLE = unchecked((int)0x80040201);
     private const int UIA_E_ELEMENTNOTENABLED = unchecked((int)0x80040200);
     private const int UIA_E_NOTSUPPORTED = unchecked((int)0x80040204);
+    private const int UIA_E_INVALIDOPERATION = unchecked((int)0x80131509);
+    private const int E_NOTIMPL = unchecked((int)0x80004001);
     private const int UIA_E_TIMEOUT = unchecked((int)0x80131505);
     private const int E_ACCESSDENIED = unchecked((int)0x80070005);
     private const int RPC_E_DISCONNECTED = unchecked((int)0x80010108);
@@ -64,6 +68,8 @@ internal static unsafe class Uia
 
     private static IUIAutomation2* automation;
     private static IUIAutomationCacheRequest* walkCache;
+    private static IUIAutomationCondition* controlView;
+    private static IUIAutomationTreeWalker* rawWalker;
 
     private static readonly Guid ClsidCUIAutomation8 = new(0xE22AD333, 0xB25F, 0x460C, 0x83, 0xD0, 0x05, 0x81, 0x10, 0x73, 0x95, 0xC9);
 
@@ -87,7 +93,12 @@ internal static unsafe class Uia
         }
     }
 
-    /// <summary>One cache request for the whole tree walk.</summary>
+    /// <summary>The control view: the usual UIA interactive set, without raw-view noise.</summary>
+    public static IUIAutomationCondition* ControlView => controlView != null ? controlView : controlView = Automation->ControlViewCondition;
+
+    private static IUIAutomationTreeWalker* RawWalker => rawWalker != null ? rawWalker : rawWalker = Automation->RawViewWalker;
+
+    /// <summary>The properties every walked element is fetched with (TreeScope_Element: one element at a time).</summary>
     public static IUIAutomationCacheRequest* WalkCache
     {
         get
@@ -113,8 +124,6 @@ internal static unsafe class Uia
                     // arrived in 1703); the tree simply goes without it.
                 }
             }
-            req->TreeScope = TreeScope.TreeScope_Subtree;
-            // The default filter is the control view, the usual UIA interactive set.
             walkCache = req;
             return walkCache;
         }
@@ -268,21 +277,29 @@ internal static unsafe class Uia
         }
     }
 
+    public enum Secrecy { Safe, Secret, Unknown }
+
     /// <summary>
-    /// The focused element is a password field: IsPassword, or a name that
-    /// says it holds a secret (the rule that redacts its value in the tree).
+    /// Whether the focused element is a password field (IsPassword, or a
+    /// name that says it holds a secret: the rule that redacts its value in
+    /// the tree), and its RuntimeId. Anything that cannot be read — no
+    /// focused element, a timeout, a failed property — is Unknown, which
+    /// callers refuse like Secret.
     /// </summary>
-    public static bool FocusIsSecret()
+    public static Secrecy FocusSecrecy(out int[] runtimeId)
     {
+        runtimeId = [];
         var el = Focused();
-        if (el == null) return false;
+        if (el == null) return Secrecy.Unknown;
         try
         {
-            return el->CurrentIsPassword || Tree.IsSensitive(false, Take(el->CurrentName));
+            runtimeId = CurrentRuntimeId(el);
+            if (runtimeId.Length == 0) return Secrecy.Unknown;
+            return el->CurrentIsPassword || Tree.IsSensitive(false, Take(el->CurrentName)) ? Secrecy.Secret : Secrecy.Safe;
         }
         catch (Exception e) when (e is not HelperError)
         {
-            return false;
+            return Secrecy.Unknown;
         }
         finally
         {
@@ -290,7 +307,57 @@ internal static unsafe class Uia
         }
     }
 
+    /// <summary>The RuntimeId of the focused element, or empty when it cannot be read.</summary>
+    public static int[] FocusedRuntimeId()
+    {
+        var el = Focused();
+        if (el == null) return [];
+        try
+        {
+            return CurrentRuntimeId(el);
+        }
+        catch (Exception e) when (e is not HelperError)
+        {
+            return [];
+        }
+        finally
+        {
+            el->Release();
+        }
+    }
+
+    /// <summary>
+    /// The top-level window an element lives in: the first ancestor (itself
+    /// included) with a native window handle, through the raw view. HWND.Null
+    /// when none is found within a sane depth.
+    /// </summary>
+    public static HWND TopWindowOf(IUIAutomationElement* el)
+    {
+        el->AddRef();
+        var current = el;
+        try
+        {
+            for (int depth = 0; depth < 64 && current != null; depth++)
+            {
+                var hwnd = current->CurrentNativeWindowHandle;
+                if (hwnd != HWND.Null) return Win.Root(hwnd);
+                var parent = RawWalker->GetParentElement(current);
+                current->Release();
+                current = parent;
+            }
+            return HWND.Null;
+        }
+        finally
+        {
+            if (current != null) current->Release();
+        }
+    }
+
     // MARK: Errors
+
+    /// <summary>The call certainly did nothing: the pattern or operation is not available.</summary>
+    public static bool NotExecuted(int hr) =>
+        hr is UIA_E_NOTSUPPORTED or UIA_E_ELEMENTNOTENABLED or UIA_E_INVALIDOPERATION or E_NOTIMPL;
 
     public static bool IsGone(int hr) =>
         hr is UIA_E_ELEMENTNOTAVAILABLE or RPC_E_DISCONNECTED or RPC_E_SERVER_DIED or CO_E_OBJNOTCONNECTED;
@@ -368,13 +435,13 @@ internal sealed unsafe class UiaTreeSource : ITreeSource<nint>, IDisposable
         }
     }
 
-    public IReadOnlyList<nint> Children(nint node, NodeInfo info)
+    public IReadOnlyList<nint> Children(nint node, NodeInfo info, int limit)
     {
         var el = (IUIAutomationElement*)node;
         IUIAutomationElementArray* arr;
         try
         {
-            arr = el->GetCachedChildren();
+            arr = el->FindAllBuildCache(TreeScope.TreeScope_Children, Uia.ControlView, Uia.WalkCache);
         }
         catch (Exception e) when (e is not HelperError)
         {
@@ -387,8 +454,10 @@ internal sealed unsafe class UiaTreeSource : ITreeSource<nint>, IDisposable
         }
         try
         {
-            int n = arr->Length;
-            if (n == 0 && info.Role == "Document") SawEmptyDocument = true;
+            int length = arr->Length;
+            if (length == 0 && info.Role == "Document") SawEmptyDocument = true;
+            // The count comes from the target app: never more than the budget.
+            int n = Math.Clamp(length, 0, limit);
             var children = new List<nint>(n);
             for (int i = 0; i < n; i++)
             {

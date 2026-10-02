@@ -4,17 +4,24 @@
 // down, key down/up, modifiers up; move, button down/up), so between calls
 // nothing the helper pressed stays down, and no other input interleaves with
 // a batch. Keys and buttons are still recorded (in memory and in the per-pid
-// file of HeldStore.cs) before the call and cleared after it: if SendInput
-// inserts only part of a batch, the ups for whatever is recorded go out at
-// once, and a helper killed outright (TerminateProcess runs no handler)
-// leaves a record the next helper's `releaseInput` turns into up events.
+// file of HeldStore.cs) before the call:
+//   - if SendInput inserts only part of a batch, exactly what that prefix
+//     left down (Core Batch.HeldAfter, Unicode units included) goes up at
+//     once, main key first, then modifiers in reverse; the record is cleared
+//     only when those ups were inserted, and the batch reports an error
+//     either way so main can schedule a releaseInput;
+//   - a helper killed outright (TerminateProcess runs no handler) leaves a
+//     record that the next helper releases before its first control request.
+//
+// The safety checks run twice per batch: the slow ones (UIA focus, password
+// field) just before Post, and the fast Win32 ones (input desktop,
+// foreground window, keyboard focus, or the window under the point) inside
+// Post, under the lock, immediately before SendInput.
 //
 // Shutdown goes through one gate (Shutdown.Run): posting stops first, under
 // the lock every SendInput takes, and only then is held input released.
 
-using System.Runtime.InteropServices;
 using Windows.Win32;
-using Windows.Win32.Foundation;
 using Windows.Win32.UI.Input.KeyboardAndMouse;
 using Windows.Win32.UI.WindowsAndMessaging;
 using WmuxComputerUse.Core;
@@ -30,6 +37,8 @@ internal static unsafe class Input
     private static readonly HashSet<ushort> HeldKeys = [];
     private static readonly Dictionary<int, (double X, double Y)> HeldButtons = [];
     private static bool stopping;
+    /// <summary>Whether what dead helpers recorded has been released (checked before every control request).</summary>
+    private static bool orphansReleased;
 
     // MARK: Event builders
 
@@ -77,37 +86,100 @@ internal static unsafe class Input
         _ => MOUSE_EVENT_FLAGS.MOUSEEVENTF_MIDDLEUP,
     };
 
+    private static INPUT ToInput(InputEvent e) => e.Kind switch
+    {
+        InputKind.Key => Key(e.Code, e.Up),
+        InputKind.Unicode => Unicode((char)e.Code, e.Up),
+        InputKind.Button => Mouse(e.X, e.Y, ButtonFlag(e.Code, e.Up)),
+        _ => Mouse(e.X, e.Y, 0),
+    };
+
+    /// <summary>A batch: the INPUTs to send and, in parallel, what each one presses or lifts.</summary>
+    private sealed class BatchBuilder
+    {
+        public List<InputEvent> Events { get; } = [];
+        public List<INPUT> Inputs { get; } = [];
+
+        public BatchBuilder Add(InputEvent e)
+        {
+            Events.Add(e);
+            Inputs.Add(ToInput(e));
+            return this;
+        }
+
+        /// <summary>An event that presses nothing (a move or a wheel notch).</summary>
+        public BatchBuilder AddRaw(INPUT input, double x, double y)
+        {
+            Events.Add(InputEvent.Move(x, y));
+            Inputs.Add(input);
+            return this;
+        }
+    }
+
     // MARK: Posting (everything goes through Post)
 
-    /// <summary>
-    /// Records `keys` / `button` as held, sends the batch, and clears them
-    /// again. Returns false when posting has stopped (nothing sent) or the
-    /// batch was cut short, in which case the ups for what was recorded have
-    /// already gone out.
-    /// </summary>
-    private static bool Post(INPUT[] batch, IReadOnlyCollection<ushort> keys, (int Button, double X, double Y)? button = null)
+    /// <summary>Throws once shutdown has begun: no new input, semantic actions included.</summary>
+    public static void ThrowIfStopping()
     {
         lock (Lock)
         {
-            if (stopping) return false;
-            foreach (var k in keys) HeldKeys.Add(k);
-            if (button is { } b) HeldButtons[b.Button] = (b.X, b.Y);
-            if (keys.Count > 0 || button != null) Persist();
-            uint sent = PInvoke.SendInput(batch, sizeof(INPUT));
-            bool complete = sent == batch.Length;
-            if (!complete)
-            {
-                // Some downs may be in without their ups: release now.
-                var ups = new List<INPUT>();
-                foreach (var k in keys) ups.Add(Key(k, up: true));
-                if (button is { } bb) ups.Add(Mouse(bb.X, bb.Y, ButtonFlag(bb.Button, up: true)));
-                PInvoke.SendInput(ups.ToArray(), sizeof(INPUT));
-            }
-            foreach (var k in keys) HeldKeys.Remove(k);
-            if (button is { } c) HeldButtons.Remove(c.Button);
-            if (keys.Count > 0 || button != null) Persist();
-            return complete;
+            if (stopping) throw new HelperError("internal", "the helper is shutting down; nothing was sent");
         }
+    }
+
+    /// <summary>
+    /// Sends one batch. `events` describe the presses in it (moves and wheel
+    /// notches are `Other`), `inputs` are the matching INPUTs. `preflight`
+    /// runs under the lock right before SendInput and throws to send nothing.
+    /// </summary>
+    private static void Post(BatchBuilder batch, Action preflight)
+    {
+        var events = batch.Events;
+        var inputs = batch.Inputs.ToArray();
+        lock (Lock)
+        {
+            if (stopping) throw new HelperError("internal", "the helper is shutting down; nothing was sent");
+            preflight();
+            var recorded = events.Where(e => !e.Up && e.Kind is InputKind.Key or InputKind.Button).ToList();
+            foreach (var e in recorded) Record(e);
+            if (recorded.Count > 0) Persist();
+
+            uint sent = PInvoke.SendInput(inputs, sizeof(INPUT));
+            if (sent == inputs.Length)
+            {
+                foreach (var e in recorded) Forget(e);
+                if (recorded.Count > 0) Persist();
+                return;
+            }
+
+            // Part of the batch went in: lift exactly what that prefix left down.
+            var held = Batch.HeldAfter(events, (int)sent);
+            var ups = Batch.ReleaseSequence(held);
+            bool released = ups.Count == 0 || PInvoke.SendInput(ups.Select(ToInput).ToArray(), sizeof(INPUT)) == ups.Count;
+            foreach (var e in recorded)
+            {
+                // Keep the record of anything still possibly down until an up is confirmed.
+                if (released || !held.Any(h => h.Kind == e.Kind && h.Code == e.Code)) Forget(e);
+            }
+            Persist();
+            if (released)
+            {
+                throw new HelperError("internal", $"Windows accepted only {sent} of {inputs.Length} input events (another app may have blocked input); what went down was released. Check the app state before retrying");
+            }
+            throw new HelperError("internal", $"Windows accepted only {sent} of {inputs.Length} input events and refused the releases; keys or buttons may still be held");
+        }
+    }
+
+    private static void Record(InputEvent e)
+    {
+        if (e.Kind == InputKind.Key) HeldKeys.Add(e.Code);
+        else if (e.Kind == InputKind.Button) HeldButtons[e.Code] = (e.X, e.Y);
+    }
+
+    private static void Forget(InputEvent e)
+    {
+        if (e.Kind == InputKind.Key) HeldKeys.Remove(e.Code);
+        else if (e.Kind == InputKind.Button) HeldButtons.Remove(e.Code);
     }
 
     private static void Persist() =>
@@ -118,58 +190,43 @@ internal static unsafe class Input
         lock (Lock) stopping = true;
     }
 
-    private static void Require(bool posted)
-    {
-        if (!posted) throw new HelperError("internal", "the input was not delivered (the helper is shutting down, or Windows refused part of it)");
-    }
-
     // MARK: Batches
 
     /// <summary>`mods` down in protocol order, the key down and up, `mods` up in reverse — one batch.</summary>
-    public static void Tap(KeySpec key, IReadOnlyList<ModifierKey> mods)
+    public static void Tap(KeySpec key, IReadOnlyList<ModifierKey> mods, Action preflight)
     {
-        var batch = new List<INPUT>();
-        foreach (var m in mods) batch.Add(Key(m.Vk, up: false));
-        batch.Add(Key(key.Vk, up: false));
-        batch.Add(Key(key.Vk, up: true));
-        for (int i = mods.Count - 1; i >= 0; i--) batch.Add(Key(mods[i].Vk, up: true));
-        Require(Post([.. batch], [.. mods.Select(m => m.Vk), key.Vk]));
+        var b = new BatchBuilder();
+        foreach (var m in mods) b.Add(InputEvent.KeyDown(m.Vk));
+        b.Add(InputEvent.KeyDown(key.Vk)).Add(InputEvent.KeyUp(key.Vk));
+        for (int i = mods.Count - 1; i >= 0; i--) b.Add(InputEvent.KeyUp(mods[i].Vk));
+        Post(b, preflight);
     }
 
     /// <summary>One run of text as KEYEVENTF_UNICODE down/up pairs; never the clipboard.</summary>
-    public static void TypeText(string text)
+    public static void TypeText(string text, Action preflight)
     {
-        var batch = new INPUT[text.Length * 2];
-        for (int i = 0; i < text.Length; i++)
-        {
-            batch[2 * i] = Unicode(text[i], up: false);
-            batch[2 * i + 1] = Unicode(text[i], up: true);
-        }
-        // A Unicode event holds no virtual key; nothing to record.
-        Require(Post(batch, []));
+        var b = new BatchBuilder();
+        foreach (var unit in text) b.Add(InputEvent.UnitDown(unit)).Add(InputEvent.UnitUp(unit));
+        Post(b, preflight);
     }
 
     /// <summary>Move, then `count` clicks with `mods` held around them, at a screen pixel — one batch.</summary>
-    public static void Click(double x, double y, int button, int count, IReadOnlyList<ModifierKey> mods)
+    public static void Click(double x, double y, int button, int count, IReadOnlyList<ModifierKey> mods, Action preflight)
     {
-        var batch = new List<INPUT> { Mouse(x, y, 0) };
-        foreach (var m in mods) batch.Add(Key(m.Vk, up: false));
-        for (int n = 0; n < count; n++)
-        {
-            batch.Add(Mouse(x, y, ButtonFlag(button, up: false)));
-            batch.Add(Mouse(x, y, ButtonFlag(button, up: true)));
-        }
-        for (int i = mods.Count - 1; i >= 0; i--) batch.Add(Key(mods[i].Vk, up: true));
-        Require(Post([.. batch], [.. mods.Select(m => m.Vk)], (button, x, y)));
+        var b = new BatchBuilder().AddRaw(Mouse(x, y, 0), x, y);
+        foreach (var m in mods) b.Add(InputEvent.KeyDown(m.Vk));
+        for (int n = 0; n < count; n++) b.Add(InputEvent.ButtonDown(button, x, y)).Add(InputEvent.ButtonUp(button, x, y));
+        for (int i = mods.Count - 1; i >= 0; i--) b.Add(InputEvent.KeyUp(mods[i].Vk));
+        Post(b, preflight);
     }
 
     /// <summary>One wheel notch at a screen pixel (WHEEL_DELTA, about three lines).</summary>
-    public static void Wheel(double x, double y, int dx, int dy)
+    public static void Wheel(double x, double y, int dx, int dy, Action preflight)
     {
-        var batch = new List<INPUT> { Mouse(x, y, 0) };
-        if (dy != 0) batch.Add(Mouse(x, y, MOUSE_EVENT_FLAGS.MOUSEEVENTF_WHEEL, dy * WheelDelta));
-        if (dx != 0) batch.Add(Mouse(x, y, MOUSE_EVENT_FLAGS.MOUSEEVENTF_HWHEEL, dx * WheelDelta));
-        Require(Post([.. batch], []));
+        var b = new BatchBuilder().AddRaw(Mouse(x, y, 0), x, y);
+        if (dy != 0) b.AddRaw(Mouse(x, y, MOUSE_EVENT_FLAGS.MOUSEEVENTF_WHEEL, dy * WheelDelta), x, y);
+        if (dx != 0) b.AddRaw(Mouse(x, y, MOUSE_EVENT_FLAGS.MOUSEEVENTF_HWHEEL, dx * WheelDelta), x, y);
+        Post(b, preflight);
     }
 
     // MARK: Release
@@ -225,9 +282,12 @@ internal static unsafe class Input
 
     /// <summary>
     /// Releases what this helper holds, what dead helpers recorded, and the
-    /// extras (extra buttons go up at the cursor). Returns true when every up
-    /// event was inserted. `releasing` is the shutdown path, the one caller
-    /// allowed to post after StopPosting.
+    /// extras (extra buttons go up at the cursor): ordinary keys first, then
+    /// meta, shift, alt, ctrl, then buttons where they went down. Returns true
+    /// only when every up event was inserted; otherwise the records (in
+    /// memory and on disk) stay, so the next release tries again. `releasing`
+    /// is the shutdown path, the one caller allowed to post after
+    /// StopPosting.
     /// </summary>
     public static bool ReleaseAll(IEnumerable<ushort>? extraKeys = null, IEnumerable<int>? extraButtons = null, bool releasing = false)
     {
@@ -249,24 +309,34 @@ internal static unsafe class Input
                 foreach (var b in extraButtons) buttons.TryAdd(b, (cursor.X, cursor.Y));
             }
 
-            var ups = new List<INPUT>();
-            // A Win key that goes up with nothing pressed in between opens
-            // Start; an unassigned key in between stops the shell from
-            // treating it as a lone tap.
-            if (keys.Contains(Keys.VkLWin) && (PInvoke.GetAsyncKeyState(Keys.VkLWin) & 0x8000) != 0)
-            {
-                ups.Add(Key(Keys.VkStartMenuMask, up: false));
-                ups.Add(Key(Keys.VkStartMenuMask, up: true));
-            }
-            foreach (var k in keys) ups.Add(Key(k, up: true));
-            foreach (var (button, at) in buttons) ups.Add(Mouse(at.X, at.Y, ButtonFlag(button, up: true)));
-            bool ok = ups.Count == 0 || PInvoke.SendInput(ups.ToArray(), sizeof(INPUT)) == ups.Count;
+            var pressed = Batch.AsPressed(keys, buttons.Select(kv => new HeldButton(kv.Key, kv.Value.X, kv.Value.Y)));
+            var ups = Batch.ReleaseSequence(pressed);
+            bool ok = ups.Count == 0 || PInvoke.SendInput(ups.Select(ToInput).ToArray(), sizeof(INPUT)) == ups.Count;
+            if (!ok) return false;
 
             HeldKeys.Clear();
             HeldButtons.Clear();
             foreach (var (path, _) in orphaned) HeldStore.Remove(path);
             HeldStore.RemoveOwn();
-            return ok;
+            orphansReleased = true;
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Before the first control request (and every one after, until it
+    /// works): release what a dead helper recorded. A helper that cannot
+    /// sends no new input.
+    /// </summary>
+    public static void EnsureOrphansReleased()
+    {
+        lock (Lock)
+        {
+            if (orphansReleased) return;
+        }
+        if (!ReleaseAll())
+        {
+            throw new HelperError("internal", "keys or buttons a previous helper left down could not be released, so no input is sent. Retry once; if it fails again, tell the user");
         }
     }
 }

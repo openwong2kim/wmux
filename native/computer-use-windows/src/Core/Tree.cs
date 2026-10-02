@@ -58,7 +58,12 @@ public interface ITreeSource<TNode>
 {
     /// <summary>null when the element is gone; the walker skips it.</summary>
     NodeInfo? Info(TNode node);
-    IReadOnlyList<TNode> Children(TNode node, NodeInfo info);
+    /// <summary>
+    /// At most `limit` children (the walker's remaining node budget plus one,
+    /// so a cut list still shows up as truncated). A child
+    /// count comes from the target app, so it is never trusted as a size.
+    /// </summary>
+    IReadOnlyList<TNode> Children(TNode node, NodeInfo info, int limit);
 }
 
 public readonly record struct WalkRoot<TNode>(TNode Node, int Depth, Rect? Clip);
@@ -191,8 +196,10 @@ public static class Tree
         if (info.Role == "Text")
         {
             // Static text carries its text as its name; a value that only
-            // repeats it is noise.
+            // repeats it is noise. Text that reads like a secret (a one-time
+            // code shown on screen) is redacted like a password field.
             if (name.Length == 0) name = Preview(info.Value);
+            if (IsSensitive(info.IsPassword, name)) name = "[redacted]";
         }
         else if (IsSensitive(info.IsPassword, name))
         {
@@ -275,7 +282,7 @@ public static class Tree
                 lines.Add(new string('\t', depth) + RenderLine(index, info));
                 childDepth = depth + 1;
             }
-            foreach (var child in source.Children(node, info))
+            foreach (var child in source.Children(node, info, Math.Max(0, maxNodes - elements.Count) + 1))
             {
                 Visit(child, rawDepth + 1, childDepth, clip, false);
                 if (truncated && elements.Count >= maxNodes) return;

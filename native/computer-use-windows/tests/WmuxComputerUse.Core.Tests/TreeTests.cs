@@ -12,7 +12,12 @@ public sealed class FakeNode(NodeInfo? info, params FakeNode[] children)
 public sealed class FakeSource : ITreeSource<FakeNode>
 {
     public NodeInfo? Info(FakeNode node) => node.Info;
-    public IReadOnlyList<FakeNode> Children(FakeNode node, NodeInfo info) => node.Children;
+    public List<int> Limits { get; } = [];
+    public IReadOnlyList<FakeNode> Children(FakeNode node, NodeInfo info, int limit)
+    {
+        Limits.Add(limit);
+        return node.Children.Take(limit).ToList();
+    }
 }
 
 public class TreeTests
@@ -85,6 +90,25 @@ public class TreeTests
         Assert.True(Tree.IsSensitive(false, "Mot de passe"));
         Assert.False(Tree.IsSensitive(false, "Spinning wheel")); // no word "pin"
         Assert.False(Tree.IsSensitive(false, "Shipping address"));
+    }
+
+    [Fact]
+    public void RedactsSecretLookingStaticText()
+    {
+        Assert.Equal("0 text [redacted]", Tree.RenderLine(0, new NodeInfo { Role = "Text", Name = "Your one-time code is 482913" }));
+        Assert.Equal("1 text [redacted]", Tree.RenderLine(1, new NodeInfo { Role = "Text", Value = "인증번호 482913" }));
+        Assert.Equal("2 text Saved", Tree.RenderLine(2, new NodeInfo { Role = "Text", Name = "Saved" }));
+    }
+
+    [Fact]
+    public void AsksForNoMoreChildrenThanTheBudget()
+    {
+        var source = new FakeSource();
+        var root = N("Window", "w", children: Enumerable.Range(0, 50).Select(i => N("Button", $"b{i}")).ToArray());
+        var result = Tree.Walk(source, [new WalkRoot<FakeNode>(root, 0, null)], 10, 40);
+        Assert.Equal(10, source.Limits[0]);
+        Assert.Equal(10, result.Elements.Count);
+        Assert.True(result.Truncated);
     }
 
     [Fact]

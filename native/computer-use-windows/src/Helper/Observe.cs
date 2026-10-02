@@ -10,7 +10,7 @@ namespace WmuxComputerUse;
 internal static unsafe class Observe
 {
     /// <summary>Inside the 15 s main allows getAppState, leaving room for the capture.</summary>
-    private const int WalkBudgetMs = 8000;
+    private const int WalkBudgetMs = 7000;
     /// <summary>Chromium builds its tree after the first UIA query; one re-query after this long.</summary>
     private const int ChromiumSettleMs = 300;
 

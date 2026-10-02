@@ -54,6 +54,16 @@ internal static unsafe class Sta
             Wire.Log(e.Message);
         }
         _ = HeldStore.Directory;
+        // A helper killed mid-batch may have left keys down; lift them now
+        // rather than at the first control request (which retries if this fails).
+        try
+        {
+            Input.EnsureOrphansReleased();
+        }
+        catch (HelperError e)
+        {
+            Wire.Log(e.Message);
+        }
         var handle = new HANDLE(Signal.SafeWaitHandle.DangerousGetHandle());
         var lastActivity = Environment.TickCount64;
         while (true)

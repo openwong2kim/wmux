@@ -92,6 +92,8 @@ internal static class Server
         // Never act on the lock screen or a UAC / Ctrl+Alt+Del secure
         // desktop, and say why windows "vanished".
         if (method is not ("capabilities" or "listApps" or "releaseInput")) InputDesktop.Require();
+        // A dead helper's held keys go up before this one sends anything.
+        if (method is "click" or "setValue" or "type" or "pressKey" or "hotkey" or "scroll") Input.EnsureOrphansReleased();
         switch (method)
         {
             case "capabilities": return Capabilities();

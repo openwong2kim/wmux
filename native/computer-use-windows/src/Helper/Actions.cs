@@ -43,8 +43,13 @@ internal static unsafe class Focus
         }
     }
 
-    /// <summary>The target window is the foreground window and owns keyboard focus.</summary>
-    public static void RequireKeyboard(ControlTarget target)
+    /// <summary>
+    /// The fast keyboard check, run under the input lock immediately before
+    /// SendInput: the normal input desktop, the target window in the
+    /// foreground and owned by the target pid, and keyboard focus inside it.
+    /// Anything that cannot be confirmed refuses.
+    /// </summary>
+    public static void KeyboardPreflight(ControlTarget target)
     {
         InputDesktop.Require();
         var foreground = PInvoke.GetForegroundWindow();
@@ -59,27 +64,44 @@ internal static unsafe class Focus
         }
         uint thread = PInvoke.GetWindowThreadProcessId(foreground);
         var info = new GUITHREADINFO { cbSize = (uint)sizeof(GUITHREADINFO) };
-        if (PInvoke.GetGUIThreadInfo(thread, &info) && info.hwndFocus != HWND.Null && Win.Root(info.hwndFocus) != target.Window)
+        if (thread == 0 || !PInvoke.GetGUIThreadInfo(thread, &info))
+        {
+            throw new HelperError("window_not_focused", "could not confirm which window has keyboard focus; nothing was sent");
+        }
+        // No focused control: keys go to the active window, which must be the target.
+        var keyboardWindow = info.hwndFocus != HWND.Null ? info.hwndFocus : info.hwndActive;
+        if (keyboardWindow == HWND.Null || Win.Root(keyboardWindow) != target.Window)
         {
             throw new HelperError("window_not_focused", "keyboard focus is outside the target window; nothing was sent");
         }
-        RequireNotElevated(target);
     }
 
-    /// <summary>Keystrokes never go into a password field.</summary>
-    public static void RefuseSecret()
+    /// <summary>
+    /// The full check before a keyboard batch: the fast one, the integrity
+    /// level, and the focused element, which must be confirmed not to be a
+    /// password field (unknown counts as no). Returns a preflight for Post
+    /// that repeats the fast check and requires focus to still be on that
+    /// same element.
+    /// </summary>
+    public static Action RequireKeyboard(ControlTarget target)
     {
-        if (Uia.FocusIsSecret())
+        KeyboardPreflight(target);
+        RequireNotElevated(target);
+        var secrecy = Uia.FocusSecrecy(out var focusedId);
+        if (secrecy == Uia.Secrecy.Secret)
         {
             throw new HelperError("app_blocked", "the focused field is a password field; wmux does not type into it");
         }
-    }
-
-    /// <summary>The re-check before every typed chunk and every repeated key.</summary>
-    public static void RequireStillSafe(ControlTarget target)
-    {
-        RequireKeyboard(target);
-        RefuseSecret();
+        if (secrecy == Uia.Secrecy.Unknown)
+        {
+            throw new HelperError("app_blocked", "wmux could not confirm that the focused field is not a password field, so nothing was typed. Click the field first, then retry");
+        }
+        // Focus may have moved during the (slow) password check.
+        if (!Uia.FocusedRuntimeId().AsSpan().SequenceEqual(focusedId))
+        {
+            throw new HelperError("window_not_focused", "focus moved while it was being checked; nothing was sent");
+        }
+        return () => KeyboardPreflight(target);
     }
 
     /// <summary>
@@ -87,14 +109,15 @@ internal static unsafe class Focus
     /// menu the previous click opened), or on a window the target owns (a
     /// dropdown or dialog it opened). WS_POPUP alone does not count: frameless
     /// Chromium / Electron top-level windows are WS_POPUP too, and another
-    /// normal window of the same app must never take the click.
+    /// normal window of the same app must never take the click. The window
+    /// actually hit must belong to the target pid right now (a window handle
+    /// can be reused by another process).
     /// </summary>
     public static bool PointerHitsTarget(ControlTarget target, double x, double y)
     {
         var hit = PInvoke.WindowFromPoint(new System.Drawing.Point((int)Math.Round(x), (int)Math.Round(y)));
-        if (hit == HWND.Null) return false;
+        if (hit == HWND.Null || Win.OwnerPid(hit) != target.Pid) return false;
         var root = Win.Root(hit);
-        if (Win.EffectivePid(root) != target.Pid && Win.OwnerPid(root) != target.Pid) return false;
         if (root == target.Window || Win.ClassName(root) == "#32768") return true;
         var owner = root;
         for (int i = 0; i < 16; i++)
@@ -106,18 +129,29 @@ internal static unsafe class Focus
         return false;
     }
 
+    /// <summary>The fast pointer check, run under the input lock immediately before SendInput.</summary>
+    public static void PointerPreflight(ControlTarget target, double x, double y)
+    {
+        InputDesktop.Require();
+        if (!PointerHitsTarget(target, x, y))
+        {
+            throw new HelperError("window_not_focused", "another window covers that point; nothing was sent");
+        }
+    }
+
     /// <summary>
     /// Requires the point to land on the target. A covered target is asked to
     /// come forward once (UIA SetFocus on its window, then SetForegroundWindow,
     /// which Windows may refuse to a background process); never
     /// AttachThreadInput or Alt-key tricks. If it still does not hit, nothing
-    /// is sent.
+    /// is sent. Returns the preflight for Post.
     /// </summary>
-    public static void RequirePointer(ControlTarget target, double x, double y)
+    public static Action RequirePointer(ControlTarget target, double x, double y)
     {
         InputDesktop.Require();
         RequireNotElevated(target);
-        if (PointerHitsTarget(target, x, y)) return;
+        Action preflight = () => PointerPreflight(target, x, y);
+        if (PointerHitsTarget(target, x, y)) return preflight;
         try
         {
             var el = Uia.Automation->ElementFromHandle(target.Window);
@@ -139,10 +173,45 @@ internal static unsafe class Focus
         if (!PointerHitsTarget(target, x, y)) PInvoke.SetForegroundWindow(target.Window);
         for (int i = 0; i < 10; i++)
         {
-            if (PointerHitsTarget(target, x, y)) return;
+            if (PointerHitsTarget(target, x, y)) return preflight;
             Sta.Sleep(50);
         }
         throw new HelperError("window_not_focused", "another window covers that point; nothing was clicked");
+    }
+
+    /// <summary>
+    /// Before every UIA pattern call (Invoke, Toggle, SetValue, SetFocus…).
+    /// Parity with the macOS helper: AXPress works on a covered background
+    /// window, so a semantic action here does not need the target in front
+    /// either; it is not input. But it still needs the normal input desktop,
+    /// a target that is not elevated, a helper that is not shutting down, and
+    /// the element itself still in the target process and inside the target
+    /// window.
+    /// </summary>
+    public static void RequireSemantic(ControlTarget target, IUIAutomationElement* el)
+    {
+        Input.ThrowIfStopping();
+        InputDesktop.Require();
+        RequireNotElevated(target);
+        if (!PInvoke.IsWindow(target.Window) || Win.EffectivePid(target.Window) != target.Pid)
+        {
+            throw new HelperError("window_not_found", "the target window is gone");
+        }
+        int pid;
+        HWND top;
+        try
+        {
+            pid = el->CurrentProcessId;
+            top = Uia.TopWindowOf(el);
+        }
+        catch (Exception e) when (e is not HelperError)
+        {
+            throw new HelperError("element_stale", "the element went away");
+        }
+        if (pid != target.Pid || top != target.Window)
+        {
+            throw new HelperError("element_stale", "the element is no longer in the target window");
+        }
     }
 }
 
@@ -215,11 +284,24 @@ internal static unsafe class Actions
     }
 
     /// <summary>
+    /// A pattern call failed. If it certainly did nothing (not supported,
+    /// disabled, not implemented) the ladder may try the next way; anything
+    /// else may have run (a timeout on a call the app is still executing), so
+    /// the action ends here rather than doing it a second way.
+    /// </summary>
+    private static void EndIfAmbiguous(Exception e, string call)
+    {
+        if (Uia.NotExecuted(e.HResult)) return;
+        throw new HelperError(Uia.ErrorCode(e) is "action_not_supported" ? "internal" : Uia.ErrorCode(e),
+            $"{call} failed after it was sent ({Uia.Describe(e)}); it may have taken effect. Call getAppState before retrying");
+    }
+
+    /// <summary>
     /// The action ladder for a plain left click on an element: its primary
     /// UIA pattern (Invoke; Toggle for a check box; SelectionItem; then
-    /// ExpandCollapse). Null when none applies or the app refused.
+    /// ExpandCollapse). Null when no pattern applies; then the caller clicks.
     /// </summary>
-    private static string? ClickSemantically(IUIAutomationElement* el)
+    private static string? ClickSemantically(ControlTarget target, IUIAutomationElement* el)
     {
         int type;
         try
@@ -237,11 +319,13 @@ internal static unsafe class Actions
             {
                 try
                 {
+                    Focus.RequireSemantic(target, el);
                     invoke->Invoke();
                     return "pressed through accessibility (Invoke)";
                 }
                 catch (Exception e) when (e is not HelperError)
                 {
+                    EndIfAmbiguous(e, "Invoke");
                 }
                 finally
                 {
@@ -254,11 +338,13 @@ internal static unsafe class Actions
         {
             try
             {
+                Focus.RequireSemantic(target, el);
                 toggle->Toggle();
                 return "toggled through accessibility (Toggle)";
             }
             catch (Exception e) when (e is not HelperError)
             {
+                EndIfAmbiguous(e, "Toggle");
             }
             finally
             {
@@ -270,11 +356,13 @@ internal static unsafe class Actions
         {
             try
             {
+                Focus.RequireSemantic(target, el);
                 select->Select();
                 return "selected through accessibility (SelectionItem)";
             }
             catch (Exception e) when (e is not HelperError)
             {
+                EndIfAmbiguous(e, "Select");
             }
             finally
             {
@@ -286,12 +374,26 @@ internal static unsafe class Actions
         {
             try
             {
-                if (expand->CurrentExpandCollapseState == ExpandCollapseState.ExpandCollapseState_Collapsed) expand->Expand();
-                else expand->Collapse();
-                return "expanded or collapsed through accessibility (ExpandCollapse)";
-            }
-            catch (Exception e) when (e is not HelperError)
-            {
+                bool collapsed;
+                try
+                {
+                    collapsed = expand->CurrentExpandCollapseState == ExpandCollapseState.ExpandCollapseState_Collapsed;
+                }
+                catch (Exception e) when (e is not HelperError)
+                {
+                    return null;
+                }
+                try
+                {
+                    Focus.RequireSemantic(target, el);
+                    if (collapsed) expand->Expand();
+                    else expand->Collapse();
+                    return "expanded or collapsed through accessibility (ExpandCollapse)";
+                }
+                catch (Exception e) when (e is not HelperError)
+                {
+                    EndIfAmbiguous(e, collapsed ? "Expand" : "Collapse");
+                }
             }
             finally
             {
@@ -317,12 +419,26 @@ internal static unsafe class Actions
 
         if (element != 0 && button == 0 && count == 1 && mods.Count == 0)
         {
-            var note = ClickSemantically((IUIAutomationElement*)element);
+            var note = ClickSemantically(target, (IUIAutomationElement*)element);
             if (note != null) return Result("accessibility", false, note);
         }
-        Focus.RequirePointer(target, x, y);
-        Input.Click(x, y, button, count, mods);
+        var preflight = Focus.RequirePointer(target, x, y);
+        Input.Click(x, y, button, count, mods, preflight);
         return Result("synthetic", false);
+    }
+
+    /// <summary>The element is a password field (IsPassword or a secret-looking name); unreadable counts as yes.</summary>
+    private static bool IsSecretElement(IUIAutomationElement* el, int index)
+    {
+        try
+        {
+            return el->CurrentIsPassword || Tree.IsSensitive(false, Uia.Take(el->CurrentName));
+        }
+        catch (Exception e) when (e is not HelperError)
+        {
+            if (Uia.IsGone(e.HResult)) throw new HelperError("element_stale", $"element {index} went away");
+            return true;
+        }
     }
 
     public static JsonObject SetValue(Params p)
@@ -331,25 +447,25 @@ internal static unsafe class Actions
         var index = p.Int("index") ?? throw new HelperError("invalid_argument", "setValue needs an element index");
         var value = p.RequireString("value");
         var el = snap.Element(index);
-        bool secret;
-        try
+        if (IsSecretElement(el, index))
         {
-            secret = el->CurrentIsPassword || Tree.IsSensitive(false, Uia.Take(el->CurrentName));
+            throw new HelperError("app_blocked", "that is a password field (or wmux could not tell); wmux does not fill it");
         }
-        catch (Exception e) when (Uia.IsGone(e.HResult))
-        {
-            throw new HelperError("element_stale", $"element {index} went away");
-        }
-        if (secret || Uia.FocusIsSecret())
-        {
-            throw new HelperError("app_blocked", "that is a password field (or one has focus); wmux does not fill it");
-        }
-        Focus.RequireNotElevated(target);
         var pattern = (IUIAutomationValuePattern*)Pattern(el, Uia.ValuePattern, IUIAutomationValuePattern.IID_Guid);
         if (pattern == null) throw new HelperError("value_not_settable", $"element {index} does not accept a value through accessibility");
         try
         {
-            if (pattern->CurrentIsReadOnly) throw new HelperError("value_not_settable", $"element {index} is read-only");
+            bool readOnly;
+            try
+            {
+                readOnly = pattern->CurrentIsReadOnly;
+            }
+            catch (Exception e) when (e is not HelperError)
+            {
+                throw new HelperError(Uia.IsGone(e.HResult) ? "element_stale" : "value_not_settable", $"element {index}: {Uia.Describe(e)}");
+            }
+            if (readOnly) throw new HelperError("value_not_settable", $"element {index} is read-only");
+            Focus.RequireSemantic(target, el);
             var bstr = Marshal.StringToBSTR(value);
             try
             {
@@ -357,8 +473,8 @@ internal static unsafe class Actions
             }
             catch (Exception e) when (e is not HelperError)
             {
-                if (Uia.IsGone(e.HResult)) throw new HelperError("element_stale", $"element {index} went away");
-                throw new HelperError("value_not_settable", $"the app refused the value (0x{e.HResult:x8})");
+                EndIfAmbiguous(e, "SetValue");
+                throw new HelperError("value_not_settable", $"the app refused the value ({Uia.Describe(e)})");
             }
             finally
             {
@@ -410,12 +526,10 @@ internal static unsafe class Actions
         if (p.Int("index") is int index)
         {
             var el = snap.Element(index);
+            if (IsSecretElement(el, index)) throw new HelperError("app_blocked", "that is a password field (or wmux could not tell); wmux does not type into it");
             try
             {
-                if (el->CurrentIsPassword || Tree.IsSensitive(false, Uia.Take(el->CurrentName)))
-                {
-                    throw new HelperError("app_blocked", "that is a password field; wmux does not type into it");
-                }
+                Focus.RequireSemantic(target, el);
                 el->SetFocus();
             }
             catch (Exception e) when (e is not HelperError)
@@ -423,30 +537,14 @@ internal static unsafe class Actions
                 if (Uia.IsGone(e.HResult)) throw new HelperError("element_stale", $"element {index} went away");
             }
             // Typing into whatever else has focus would put the text in the wrong field.
-            var focused = Uia.Focused();
-            bool same = false;
-            if (focused != null)
-            {
-                try
-                {
-                    same = Uia.CurrentRuntimeId(focused).AsSpan().SequenceEqual(snap.RuntimeIds[index]);
-                }
-                catch (Exception e) when (e is not HelperError)
-                {
-                }
-                finally
-                {
-                    focused->Release();
-                }
-            }
-            if (!same)
+            if (!Uia.FocusedRuntimeId().AsSpan().SequenceEqual(snap.RuntimeIds[index]))
             {
                 throw new HelperError("action_not_supported", $"element {index} did not take keyboard focus; nothing was typed. Click it first");
             }
         }
-        Focus.RequireKeyboard(target);
-        Focus.RefuseSecret();
 
+        // Checked before anything is sent; FocusedValue below is the baseline for verification.
+        Focus.RequireKeyboard(target);
         var before = FocusedValue();
         var chunks = Chunks.Unicode(text);
         int total = chunks.Sum(c => c.GraphemeCount), typed = 0;
@@ -454,14 +552,16 @@ internal static unsafe class Actions
         {
             try
             {
-                Focus.RequireStillSafe(target);
+                // The full check (focus, password field) before every chunk;
+                // the fast one again inside Post, right before SendInput.
+                var preflight = Focus.RequireKeyboard(target);
+                if (chunk.Text != null) Input.TypeText(chunk.Text, preflight);
+                else Input.Tap(Key(chunk.Key!), [], preflight);
             }
             catch (HelperError e)
             {
                 throw new HelperError(e.Code, $"{e.Message} (after {typed} of {total} characters; the rest was not typed)");
             }
-            if (chunk.Text != null) Input.TypeText(chunk.Text);
-            else Input.Tap(Key(chunk.Key!), []);
             typed += chunk.GraphemeCount;
         }
         bool verified = WaitForEffect(text, before, total < 64 ? 300 : 1000);
@@ -490,23 +590,17 @@ internal static unsafe class Actions
         var (_, target) = Begin(p);
         var key = Key(p.RequireString("key"));
         int repeat = Math.Clamp(p.Int("repeat") ?? 1, 1, 50);
-        Focus.RequireKeyboard(target);
-        Focus.RefuseSecret();
         for (int n = 0; n < repeat; n++)
         {
-            if (n > 0)
+            if (n > 0) Sta.Sleep(4);
+            try
             {
-                try
-                {
-                    Focus.RequireStillSafe(target);
-                }
-                catch (HelperError e)
-                {
-                    throw new HelperError(e.Code, $"{e.Message} (after {n} of {repeat} presses; the rest were not sent)");
-                }
-                Sta.Sleep(4);
+                Input.Tap(key, [], Focus.RequireKeyboard(target));
             }
-            Input.Tap(key, []);
+            catch (HelperError e) when (n > 0)
+            {
+                throw new HelperError(e.Code, $"{e.Message} (after {n} of {repeat} presses; the rest were not sent)");
+            }
         }
         return Result("synthetic", false);
     }
@@ -516,9 +610,7 @@ internal static unsafe class Actions
         var (_, target) = Begin(p);
         var key = Key(p.RequireString("key"));
         var mods = Modifiers(p);
-        Focus.RequireKeyboard(target);
-        Focus.RefuseSecret();
-        Input.Tap(key, mods);
+        Input.Tap(key, mods, Focus.RequireKeyboard(target));
         return Result("synthetic", false);
     }
 
@@ -535,17 +627,20 @@ internal static unsafe class Actions
             _ => throw new HelperError("invalid_argument", "direction must be up, down, left or right"),
         };
         var (x, y, _) = ScreenPoint(snap, p.Int("index"), p.Point("point"));
-        Focus.RequirePointer(target, x, y);
+        // The preflight re-runs the hit-test before every notch: a window that
+        // moves over the point mid-scroll must not receive the rest.
+        var preflight = Focus.RequirePointer(target, x, y);
         for (int n = 0; n < amount; n++)
         {
-            // Re-run the hit-test before every notch: a window that moves over
-            // the point mid-scroll must not receive the rest.
-            if (n > 0 && (!InputDesktop.IsDefault() || !Focus.PointerHitsTarget(target, x, y)))
+            if (n > 0) Sta.Sleep(8);
+            try
             {
-                throw new HelperError("window_not_focused", $"another window covered the point after {n} of {amount} notches; the rest was not sent");
+                Input.Wheel(x, y, dx, dy, preflight);
             }
-            Input.Wheel(x, y, dx, dy);
-            Sta.Sleep(8);
+            catch (HelperError e) when (n > 0)
+            {
+                throw new HelperError(e.Code, $"{e.Message} (after {n} of {amount} notches; the rest was not sent)");
+            }
         }
         return Result("synthetic", false);
     }
