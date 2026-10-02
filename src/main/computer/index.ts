@@ -10,6 +10,7 @@ import { helperStatus, writeComputerUseEnabled } from './settings';
 import { ComputerService, computerUseShutDown, type ConsentRequester, type HelperLike } from './ComputerService';
 import { HelperProcess } from './HelperProcess';
 import { StopKey } from './stopKey';
+import { createHelperVerifier } from './verifyHelper';
 import { resolveHelperPathFor, type HelperSpec } from './helperPath';
 
 // The macOS helper is a separately signed .app so TCC grants attach to it and
@@ -94,7 +95,7 @@ function lazyHelper(command: string, ready: () => boolean): HelperLike & { reset
         reset();
         throw helperMissingError();
       }
-      proc ??= new HelperProcess({ command, log: (m) => console.warn(m) });
+      proc ??= new HelperProcess({ command, verify: verifyHelper, log: (m) => console.warn(m) });
       try {
         return await proc.request(method, params);
       } catch (err) {
@@ -111,6 +112,12 @@ function lazyHelper(command: string, ready: () => boolean): HelperLike & { reset
     reset,
   };
 }
+
+/**
+ * Packaged macOS builds spawn the helper only after its code signature checks
+ * out (verifyHelper.ts); one verifier, so its verdict cache is shared.
+ */
+const verifyHelper = createHelperVerifier({ platform: process.platform, isPackaged: app.isPackaged });
 
 let stopKey: StopKey | null = null;
 let liveService: ComputerService | null = null;

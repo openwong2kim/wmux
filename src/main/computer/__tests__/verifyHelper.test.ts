@@ -114,6 +114,41 @@ describe('computer-use helper signature check', () => {
     expect(runCodesign.calls).toHaveLength(1);
   });
 
+  it('refuses a helper swapped while codesign ran, and does not cache that', async () => {
+    let identity = 'dev:ino:1';
+    const runCodesign = fakeCodesign({ signed: true, team: '8RGHH2F237', identifier: 'com.electron.wmux.computer-use' });
+    const verify = createHelperVerifier({
+      platform: 'darwin',
+      isPackaged: true,
+      fileIdentity: async () => identity,
+      runCodesign: async (args) => {
+        const result = await runCodesign(args);
+        identity = 'dev:ino2:1'; // replaced mid-check
+        return result;
+      },
+    });
+    expect((await refusal(verify(EXE))).message).toContain('changed');
+    // The new binary is checked on its own next time.
+    await expect(verify(EXE)).resolves.toBeUndefined();
+    expect(runCodesign.calls).toHaveLength(2);
+  });
+
+  it('does not cache a codesign timeout or signal', async () => {
+    let calls = 0;
+    const verify = createHelperVerifier({
+      platform: 'darwin',
+      isPackaged: true,
+      fileIdentity: async () => 'dev:ino:1',
+      runCodesign: async () => {
+        calls += 1;
+        return { code: -1, stderr: '' };
+      },
+    });
+    await refusal(verify(EXE));
+    await refusal(verify(EXE));
+    expect(calls).toBe(2);
+  });
+
   it('does not check dev builds or other platforms', async () => {
     const runCodesign = vi.fn<RunCodesign>();
     await createHelperVerifier({ platform: 'darwin', isPackaged: false, runCodesign })(EXE);

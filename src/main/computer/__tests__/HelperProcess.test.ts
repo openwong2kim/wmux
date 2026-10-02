@@ -86,6 +86,22 @@ describe('HelperProcess', () => {
     expect(await codeOf(helper.request('capabilities', {}))).toBe('helper_unavailable');
   });
 
+  it('verifies the binary before every spawn and never spawns a refused one', async () => {
+    const checked: string[] = [];
+    let refuse = true;
+    const { helper, requests } = makeHelper('ok', {
+      verify: async (command) => {
+        checked.push(command);
+        if (refuse) throw new ComputerError('helper_unavailable', 'the computer-use helper failed its code-signature check');
+      },
+    });
+    expect(await codeOf(helper.request('capabilities', {}))).toBe('helper_unavailable');
+    expect(requests()).toEqual([]);
+    refuse = false;
+    expect(await codeOf(helper.request('capabilities', {}))).toBe('resolved');
+    expect(checked).toEqual([process.execPath, process.execPath]);
+  });
+
   it('reports a missing helper binary as unavailable', async () => {
     const helper = new HelperProcess({ command: path.join(os.tmpdir(), 'no-such-helper-binary') });
     helpers.push(helper);

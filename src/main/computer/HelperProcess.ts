@@ -61,6 +61,11 @@ export interface HelperProcessOptions {
   idleKillGraceMs?: number;
   /** dispose() mid-input: stdin-EOF grace before the kill. */
   disposeReleaseGraceMs?: number;
+  /**
+   * Awaited before every spawn; a rejection means the binary must not run
+   * (verifyHelper.ts: the packaged macOS helper's code signature).
+   */
+  verify?: (command: string) => Promise<void>;
   /** Per-method timeout override, mainly for tests. */
   timeoutFor?: (method: HelperMethod) => number;
   log?: (message: string) => void;
@@ -92,9 +97,9 @@ const MOUSE_BUTTONS: readonly MouseButton[] = ['left', 'right', 'middle'];
 
 /**
  * What a cut-off request may have left down, named from what main sent it
- * (protocol.ts, Held input). Actions whose keys main does not name (type may
- * paste with Ctrl/Cmd+V, setValue and scroll may fall back to synthetic
- * input) get the modifiers and buttons, never a list of ordinary keys.
+ * (protocol.ts, Held input). Actions whose keys main does not name (setValue
+ * and scroll may fall back to synthetic input) get the modifiers and buttons,
+ * never a list of ordinary keys.
  */
 function releaseSpecFor(method: HelperMethod, params: unknown): ReleaseInputParams {
   const p = (params ?? {}) as Record<string, unknown>;
@@ -106,6 +111,11 @@ function releaseSpecFor(method: HelperMethod, params: unknown): ReleaseInputPara
       return { keys: typeof p.key === 'string' ? [p.key] : [] };
     case 'hotkey':
       return { keys: typeof p.key === 'string' ? [p.key] : [], modifiers: list(p.modifiers) };
+    case 'type':
+      // Typing presses Enter and Tab for line breaks and tabs; the key behind
+      // a Unicode event is in the helper's own crash record. A helper that
+      // pastes uses a modifier chord.
+      return { keys: ['Enter', 'Tab'], modifiers: [...MODIFIERS] };
     case 'releaseInput':
       return { keys: list(p.keys), modifiers: list(p.modifiers), buttons: list(p.buttons) };
     default:
@@ -329,7 +339,15 @@ export class HelperProcess {
     return this.starting;
   }
 
-  private start(): Promise<Running> {
+  private async start(): Promise<Running> {
+    if (this.opts.verify) {
+      await this.opts.verify(this.opts.command);
+      if (this.disposed) throw new ComputerError('helper_unavailable', 'computer use is shutting down');
+    }
+    return this.spawnHelper();
+  }
+
+  private spawnHelper(): Promise<Running> {
     const spawnFn: SpawnHelper = this.opts.spawn ?? ((cmd, args) => nodeSpawn(cmd, [...args], { stdio: 'pipe', windowsHide: true }));
     let child: ChildProcessWithoutNullStreams;
     try {

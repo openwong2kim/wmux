@@ -21,6 +21,7 @@ export const HELPER_REQUIREMENT =
 /** Absolute path: a PATH lookup inside a security check is a hijack vector. */
 const CODESIGN = '/usr/bin/codesign';
 const CODESIGN_TIMEOUT_MS = 10_000;
+const DEFINITIVE_EXIT_CODES: ReadonlySet<number> = new Set([0, 1, 3]);
 
 export interface CodesignResult {
   /** 0 = valid and satisfies the requirement; 1 = not signed / invalid; 3 = requirement failed. */
@@ -90,8 +91,22 @@ export function createHelperVerifier(opts: HelperVerifierOptions): (exePath: str
     if (failure === undefined) {
       // The bundle, not the bare binary, so Info.plist is covered by the seal.
       const { code, stderr } = await runCodesign(['--verify', '--strict', `-R=${HELPER_REQUIREMENT}`, bundle]);
+      // The file codesign judged must be the file we spawn: a swap during the
+      // check fails it, and that verdict is not cached.
+      let after: string | null = null;
+      try {
+        after = await readIdentity(exePath);
+      } catch {
+        // Gone or unreadable now; refused below.
+      }
+      if (after !== identity) {
+        throw new ComputerError('helper_unavailable', 'the computer-use helper changed while its signature was being checked');
+      }
       failure = code === 0 ? null : (stderr.trim().split('\n')[0] || `codesign exited with ${code}`);
-      cache.set(key, failure);
+      // Only codesign's verdicts are cached: 0 valid, 1 not signed or broken,
+      // 3 requirement not met. A timeout or a signal says nothing about the
+      // binary, so the next spawn checks again.
+      if (DEFINITIVE_EXIT_CODES.has(code)) cache.set(key, failure);
     }
     if (failure !== null) {
       throw new ComputerError(
