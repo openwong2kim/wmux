@@ -116,10 +116,46 @@ final class Server {
             try await Permissions.require(.accessibility)
             return try await Actions.scroll(p, snapshots)
         case "releaseInput":
-            return ["released": Input.shared.releaseEverything()]
+            return ["released": try releaseInput(p)]
         default:
             throw HelperError("action_not_supported", "unknown method \"\(method.prefix(40))\"")
         }
+    }
+
+    /// releaseInput `{keys?, modifiers?, buttons?}`: what this helper tracked,
+    /// plus what main lists from the request that was cut off. With no fields
+    /// at all it releases the four modifiers and three mouse buttons.
+    private func releaseInput(_ p: JSON) throws -> Bool {
+        func names(_ key: String) throws -> [String] {
+            guard let v = p[key] else { return [] }
+            guard let list = v as? [String] else { throw HelperError("invalid_argument", "\(key) must be a list of names") }
+            return list
+        }
+        var extra = Set<HeldInput>()
+        for key in try names("keys") {
+            guard let code = KeyCodes.keyCode(for: key, layout: Input.shared.layoutKeyCode) else {
+                throw HelperError("invalid_argument", "\"\(key.prefix(20))\" is not a canonical key name")
+            }
+            extra.insert(.key(code))
+            // The key may have gone down on the ANSI position before a layout change.
+            if let ansi = KeyCodes.keyCode(for: key) { extra.insert(.key(ansi)) }
+        }
+        guard let mods = KeyCodes.orderedModifiers(try names("modifiers")) else {
+            throw HelperError("invalid_argument", "modifiers must be ctrl, alt, shift or meta")
+        }
+        extra.formUnion(mods.map { .key($0.keyCode) })
+        for button in try names("buttons") {
+            switch button {
+            case "left": extra.insert(.mouse(Int32(CGMouseButton.left.rawValue)))
+            case "right": extra.insert(.mouse(Int32(CGMouseButton.right.rawValue)))
+            case "middle": extra.insert(.mouse(Int32(CGMouseButton.center.rawValue)))
+            default: throw HelperError("invalid_argument", "buttons must be left, right or middle")
+            }
+        }
+        let listed = p["keys"] != nil || p["modifiers"] != nil || p["buttons"] != nil
+        // Nothing known: the modifiers and buttons only, never ordinary keys.
+        if !listed { extra.formUnion(Input.modifiersAndButtons) }
+        return Input.shared.releaseAll(extra: extra)
     }
 
     private func getAppState(_ p: JSON) async throws -> JSON {

@@ -194,12 +194,12 @@ is not re-walked.
   Modifiers and buttons, the only input held across a batch, are also recorded
   in `$TMPDIR/com.electron.wmux.computer-use.held.json` (keyed by pid) and are
   released on exit even if a helper died holding them.
-- `releaseInput` (protocol 2) posts an up for every key in the vocabulary (on
-  the current layout and on ANSI), the four modifiers and all three mouse
-  buttons, because a fresh helper cannot be sure what a killed one held. It
-  answers `released: true` only when every event was posted. Main sends it
-  after a helper died mid-action. The cost is that it also lifts a modifier
-  the person happens to be holding at that moment.
+- `releaseInput { keys?, modifiers?, buttons? }` releases what this helper
+  tracked, what a dead helper recorded, and whatever main lists from the
+  request that was cut off. With no fields at all it releases the four
+  modifiers and the three mouse buttons only. It never sweeps plain keys, because a stray
+  key-up reaches keyup handlers in the app in front. `released: true` means
+  every up event was created and posted (CGEventPost itself reports nothing).
 
 ## Process
 

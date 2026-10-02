@@ -6,8 +6,9 @@
 // it is posted and cleared after its up event. A batch always sends its ups
 // (defer), even when it fails part-way. On stdin EOF and SIGTERM, `releaseAll`
 // releases what this process holds (and what a dead helper recorded in the
-// small pid-keyed state file). `releaseInput` follows protocol 2 and posts an
-// up for every vocabulary key and button (`releaseEverything`).
+// small pid-keyed state file). `releaseInput` adds the keys, modifiers and
+// buttons main lists from the request that was cut off; with nothing listed,
+// it releases the modifiers and mouse buttons only.
 
 import AppKit
 import Carbon.HIToolbox
@@ -70,12 +71,13 @@ final class Input: @unchecked Sendable {
         return Dictionary(entries.map { ($0.pid, $0.held) }, uniquingKeysWith: { a, _ in a })
     }
 
-    /// Releases what this helper holds, plus what a dead helper left held.
+    /// Releases what this helper holds, what a dead helper recorded in the
+    /// state file, and `extra`. Returns true when every up event was posted.
     /// Thread-safe: the SIGTERM handler calls it off the main thread.
     @discardableResult
-    func releaseAll() -> Int {
+    func releaseAll(extra: Set<HeldInput> = []) -> Bool {
         lock.lock()
-        var toRelease = held
+        var toRelease = held.union(extra)
         held.removeAll()
         lock.unlock()
         let state = Self.readState()
@@ -83,13 +85,14 @@ final class Input: @unchecked Sendable {
             toRelease.formUnion(entries)
         }
         let location = CGEvent(source: nil)?.location ?? .zero
+        var ok = true
         for input in toRelease {
             switch input {
             case .key(let code):
-                post(keyboard: code, down: false, flags: [])
+                ok = post(keyboard: code, down: false, flags: []) && ok
             case .mouse(let raw):
                 let button = CGMouseButton(rawValue: UInt32(raw)) ?? .left
-                post(mouse: Self.upType(button), at: location, button: button, flags: [], clickState: 1)
+                ok = post(mouse: Self.upType(button), at: location, button: button, flags: [], clickState: 1) && ok
             }
         }
         // Drop our entry and those of dead helpers; a live sibling keeps its own.
@@ -99,58 +102,32 @@ final class Input: @unchecked Sendable {
         } else if let data = try? JSONEncoder().encode(survivors.map { StateEntry(pid: $0.key, held: $0.value) }) {
             try? data.write(to: Self.stateFile, options: .atomic)
         }
-        return toRelease.count
-    }
-
-    /// `releaseInput` (protocol 2): a fresh helper cannot be sure what a
-    /// killed one held, so it posts an up event for every key it could ever
-    /// press (the whole vocabulary, on both the current layout and ANSI) and
-    /// every mouse button. An up for a key that is not down is harmless.
-    /// Returns true only when every event was created and posted.
-    func releaseEverything() -> Bool {
-        lock.lock()
-        held.removeAll()
-        lock.unlock()
-        var codes = Set(KeyCodes.named.values).union(KeyCodes.ansiCharacters.values)
-        codes.formUnion(KeyCodes.modifiers.map(\.keyCode))
-        for ch in KeyCodes.ansiCharacters.keys {
-            if let code = layoutKeyCode(for: ch) { codes.insert(code) }
-        }
-        var ok = true
-        for code in codes {
-            guard let e = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false) else {
-                ok = false
-                continue
-            }
-            e.flags = []
-            e.post(tap: .cghidEventTap)
-        }
-        let location = CGEvent(source: nil)?.location ?? .zero
-        for button in [CGMouseButton.left, .right, .center] {
-            guard let e = CGEvent(mouseEventSource: source, mouseType: Self.upType(button), mouseCursorPosition: location, mouseButton: button) else {
-                ok = false
-                continue
-            }
-            e.flags = []
-            e.post(tap: .cghidEventTap)
-        }
-        try? FileManager.default.removeItem(at: Self.stateFile)
         return ok
     }
 
+    /// The four modifiers and three mouse buttons: what releaseInput releases
+    /// when main lists nothing. Never plain keys — a stray key-up
+    /// reaches keyup handlers in whatever app is in front.
+    static let modifiersAndButtons: Set<HeldInput> = Set(KeyCodes.modifiers.map { .key($0.keyCode) })
+        .union([CGMouseButton.left, .right, .center].map { .mouse(Int32($0.rawValue)) })
+
     // MARK: Posting
 
-    private func post(keyboard code: CGKeyCode, down: Bool, flags: CGEventFlags) {
-        guard let e = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down) else { return }
+    @discardableResult
+    private func post(keyboard code: CGKeyCode, down: Bool, flags: CGEventFlags) -> Bool {
+        guard let e = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down) else { return false }
         e.flags = flags
         e.post(tap: .cghidEventTap)
+        return true
     }
 
-    private func post(mouse type: CGEventType, at point: CGPoint, button: CGMouseButton, flags: CGEventFlags, clickState: Int64) {
-        guard let e = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: point, mouseButton: button) else { return }
+    @discardableResult
+    private func post(mouse type: CGEventType, at point: CGPoint, button: CGMouseButton, flags: CGEventFlags, clickState: Int64) -> Bool {
+        guard let e = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: point, mouseButton: button) else { return false }
         e.flags = flags
         e.setIntegerValueField(.mouseEventClickState, value: clickState)
         e.post(tap: .cghidEventTap)
+        return true
     }
 
     private static func downType(_ b: CGMouseButton) -> CGEventType {
