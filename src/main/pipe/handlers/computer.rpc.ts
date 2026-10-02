@@ -20,14 +20,20 @@ export function registerComputerRpc(
   /** The name the person gave a workspace, for the consent prompt. */
   workspaceName: (workspaceId: string) => string | undefined = () => undefined,
 ): void {
-  // Observation of the app list needs no identity beyond a named client;
-  // getAppState and act are what consent, the lock and snapshots key on.
-  const wrap = <T>(fn: (params: Record<string, unknown>, agent: ComputerAgent) => Promise<T>, identified = false) =>
+  // Listing apps needs no identity beyond a named client; getAppState and act
+  // are what consent, the lock and snapshots key on. listWindows uses the
+  // identity when the caller sends one (titles of consented apps) and
+  // otherwise gets an agent with an empty key, for which every title is blank.
+  type Identity = 'none' | 'required' | 'optional';
+  const wrap = <T>(fn: (params: Record<string, unknown>, agent: ComputerAgent) => Promise<T>, identity: Identity = 'none') =>
     async (params: Record<string, unknown>, ctx?: RpcContext): Promise<T> => {
       try {
-        const agent = identified
+        const name = requireClient(ctx);
+        const sendsIdentity = typeof params.senderPtyId === 'string' || typeof params.callerInstance === 'string'
+          || Boolean(ctx?.commanderWorkspace);
+        const agent = identity === 'required' || (identity === 'optional' && sendsIdentity)
           ? await callerAgent(ctx, params, resolvePtyWorkspace, workspaceName)
-          : unkeyed(requireClient(ctx));
+          : identity === 'optional' ? { key: '', label: name } : unkeyed(name);
         return await fn(params, agent);
       } catch (err) {
         if (err instanceof ComputerError) throw new Error(encodeComputerErrorMessage(err.toPayload()));
@@ -39,8 +45,8 @@ export function registerComputerRpc(
 
   router.register('computer.listApps', wrap(() => getService().listApps()));
 
-  router.register('computer.listWindows', wrap((params) =>
-    getService().listWindows(typeof params.app === 'string' ? params.app : undefined)));
+  router.register('computer.listWindows', wrap((params, agent) =>
+    getService().listWindows(agent, typeof params.app === 'string' ? params.app : undefined), 'optional'));
 
   router.register('computer.getAppState', wrap((params, agent) => {
     if (typeof params.app !== 'string' || params.app.length === 0) {
@@ -51,7 +57,7 @@ export function registerComputerRpc(
       ...(typeof params.window === 'string' && { window: params.window }),
       ...(typeof params.mode === 'string' && { mode: params.mode as ObservationMode }),
     });
-  }, true));
+  }, 'required'));
 
   router.register('computer.act', wrap((params, agent) => {
     if (typeof params.action !== 'string' || !isControlAction(params.action)) {
@@ -61,7 +67,7 @@ export function registerComputerRpc(
     delete control.senderPtyId;
     delete control.callerInstance;
     return getService().control(agent, control as unknown as ControlParams);
-  }, true));
+  }, 'required'));
 }
 
 const INSTANCE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;

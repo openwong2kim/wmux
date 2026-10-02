@@ -120,6 +120,19 @@ describe('computer.rpc', () => {
     expect(listApps).toHaveBeenCalled();
   });
 
+  it('passes listWindows the caller identity when it sends one, and an empty key otherwise', async () => {
+    const listWindows = vi.fn(async () => ({ windows: [] }));
+    const { call } = setup({ listWindows } as never);
+    await call('computer.listWindows', { senderPtyId: 'pty-a1', app: 'Notepad' }, { clientName: 'claude-code' });
+    await call('computer.listWindows', {}, { clientName: 'claude-code' });
+    const calls = listWindows.mock.calls as unknown as Array<[ComputerAgent, string | undefined]>;
+    expect(calls[0]).toEqual([expect.objectContaining({ key: 'claude-code @ ws-a/pty-a1' }), 'Notepad']);
+    // No identity: an empty key, for which the service blanks every title.
+    expect(calls[1][0].key).toBe('');
+    // A pane that does not resolve is refused, not silently demoted.
+    expect((await errorOf(call('computer.listWindows', { senderPtyId: 'pty-gone' }, { clientName: 'claude-code' })))?.code).toBe('invalid_argument');
+  });
+
   it('refuses an anonymous caller and a stale workspace claim', async () => {
     const { call } = setup({ getAppState: vi.fn() } as never);
     expect((await errorOf(call('computer.getAppState', { app: 'x' }, {})))?.code).toBe('invalid_argument');

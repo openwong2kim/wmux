@@ -8,7 +8,7 @@ import {
 } from '../errors';
 import { computeScreenshotScale, scaledSize, screenshotPointToWindow } from '../scale';
 import { COMPUTER_ACTIONS, isControlAction, isKey, normalizeKey, normalizeModifier, parseHelperLine, parseHotkey } from '../protocol';
-import { blockReasonFor } from '../blocklist';
+import { blockReasonFor, osChordRefusal } from '../blocklist';
 
 describe('computer errors', () => {
   it('gives every code at least one next step', () => {
@@ -178,5 +178,43 @@ describe('key vocabulary', () => {
     expect(parseHotkey(['a', 'b'])).toHaveProperty('error');
     expect(parseHotkey(['ctrl', 'PrintScreen'])).toHaveProperty('error');
     expect(parseHotkey(['ctrl', 3])).toHaveProperty('error');
+  });
+});
+
+describe('blocklist additions', () => {
+  const app = (path: string, bundleId?: string) => ({ pid: 99, path, ...(bundleId && { bundleId }) });
+
+  it('blocks system settings, script runners and process managers on both OSes', () => {
+    for (const exe of ['C:\\Windows\\System32\\Taskmgr.exe', 'C:\\Windows\\regedit.exe', 'C:\\Windows\\ImmersiveControlPanel\\SystemSettings.exe']) {
+      expect(blockReasonFor(app(exe)), exe).toBe('system-tool');
+    }
+    for (const id of ['com.apple.systempreferences', 'com.apple.ScriptEditor2', 'com.apple.Automator', 'com.apple.shortcuts', 'com.apple.ActivityMonitor']) {
+      expect(blockReasonFor(app(`/Applications/${id}.app`, id)), id).toBe('system-tool');
+    }
+  });
+
+  it('blocks more shells and terminals', () => {
+    expect(blockReasonFor(app('C:\\Windows\\System32\\wsl.exe'))).toBe('terminal');
+    expect(blockReasonFor(app('C:\\Program Files\\Git\\git-bash.exe'))).toBe('terminal');
+    expect(blockReasonFor(app('/Applications/Warp.app', 'dev.warp.Warp-Preview'))).toBe('terminal');
+    expect(blockReasonFor(app('/Applications/Rio.app', 'com.raphaelamorim.rio'))).toBe('terminal');
+  });
+
+  it('still lets ordinary apps through', () => {
+    expect(blockReasonFor(app('C:\\Windows\\notepad.exe'))).toBeNull();
+    expect(blockReasonFor(app('/System/Applications/TextEdit.app', 'com.apple.TextEdit'))).toBeNull();
+  });
+});
+
+describe('OS-wide chord refusal', () => {
+  it('has no rules for bare keys', () => {
+    for (const key of ['Escape', 'Tab', 'Enter', 'F11', 'a']) {
+      expect(osChordRefusal('win32', [], key)).toBeNull();
+      expect(osChordRefusal('darwin', [], key)).toBeNull();
+    }
+  });
+
+  it('refuses the stop key on every platform', () => {
+    expect(osChordRefusal('linux', ['ctrl', 'alt', 'shift'], 'Escape')).not.toBeNull();
   });
 });

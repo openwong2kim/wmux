@@ -39,7 +39,7 @@ export function isComputerErrorCode(value: unknown): value is ComputerErrorCode 
 export const COMPUTER_ERROR_NEXT_STEPS: Record<ComputerErrorCode, readonly string[]> = {
   app_not_found: ['Call listApps and use an app name or id exactly as listed.'],
   app_blocked: [
-    'This app is blocked for computer use (password managers, terminals, wmux itself). Do not retry.',
+    'This app is blocked for computer use (password managers, terminals, wmux itself, system settings and script or process tools). Do not retry.',
     'Ask the user to do this step themselves.',
   ],
   window_not_found: ['Call listWindows for the app and pass a window id from the result.'],

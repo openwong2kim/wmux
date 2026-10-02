@@ -34,6 +34,15 @@ async function codeOf(promise: Promise<unknown>): Promise<string> {
   }
 }
 
+async function waitFor(check: () => boolean, ms = 3_000): Promise<boolean> {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    if (check()) return true;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  return check();
+}
+
 afterEach(() => {
   for (const h of helpers.splice(0)) h.dispose();
 });
@@ -78,14 +87,16 @@ describe('HelperProcess', () => {
     expect(await codeOf(helper.request('capabilities', {}))).toBe('helper_unavailable');
   });
 
-  it('kills a hung helper on timeout and releases input on the next one', async () => {
+  it('kills a hung helper on timeout and releases held input at once, without a next request', async () => {
     const { helper, requests } = makeHelper('hang', { timeoutFor: () => 300 });
     const click = helper.request('click', {
       snapshotId: 's', target: TARGET, index: 1, button: 'left', clickCount: 1, modifiers: ['ctrl'],
     });
     expect(await codeOf(click)).toBe('timeout');
+    // A replacement helper is started just to release held input.
+    expect(await waitFor(() => requests().length === 2)).toBe(true);
+    expect(requests()).toEqual(['click', 'releaseInput']);
     await helper.request('listApps', {});
-    // The replacement helper was told to release held input before anything else.
     expect(requests()).toEqual(['click', 'releaseInput', 'listApps']);
   });
 
@@ -108,6 +119,8 @@ describe('HelperProcess', () => {
     await new Promise((r) => setTimeout(r, 300));
     helper.abort();
     expect(await codeOf(click)).toBe('aborted');
+    expect(await waitFor(() => requests().length === 2)).toBe(true);
+    expect(requests()).toEqual(['click', 'releaseInput']);
     await helper.request('listApps', {});
     expect(requests()).toEqual(['click', 'releaseInput', 'listApps']);
   });
@@ -122,7 +135,10 @@ describe('HelperProcess', () => {
     helper.abort();
     expect(await codeOf(click)).toBe('aborted');
     expect(await codeOf(queued)).toBe('aborted');
-    expect(requests()).toEqual(['click']);
+    // The queued type never reaches a helper; only the release does.
+    expect(await waitFor(() => requests().length === 2)).toBe(true);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(requests()).toEqual(['click', 'releaseInput']);
   });
 
   it('decodes a multibyte character split across stdout chunks', async () => {
@@ -150,6 +166,37 @@ describe('HelperProcess', () => {
       setTimeout(() => resolve(false), 2_000);
     });
     expect(exited).toBe(true);
+  });
+
+  it('starts no helper to release input once disposed', async () => {
+    let spawns = 0;
+    const { helper, requests } = makeHelper('hang', {
+      timeoutFor: () => 5_000,
+      spawn: (cmd, args) => { spawns += 1; return spawn(cmd, [...args], { stdio: 'pipe' }); },
+    });
+    const click = helper.request('click', {
+      snapshotId: 's', target: TARGET, index: 1, button: 'left', clickCount: 1, modifiers: [],
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    helper.dispose();
+    helper.abort();
+    expect(await codeOf(click)).toBe('helper_unavailable');
+    await new Promise((r) => setTimeout(r, 300));
+    expect(spawns).toBe(1);
+    expect(requests()).toEqual(['click']);
+  });
+
+  it('kills a helper that was still starting when dispose ran', async () => {
+    let child: ChildProcessWithoutNullStreams | undefined;
+    const { helper } = makeHelper('ok', {
+      spawn: (cmd, args) => (child = spawn(cmd, [...args], { stdio: 'pipe' })),
+    });
+    const pending = helper.request('listApps', {});
+    await waitFor(() => child !== undefined);
+    helper.dispose();
+    expect(await codeOf(pending)).toBe('helper_unavailable');
+    expect(await waitFor(() => child?.exitCode !== null || child?.signalCode !== null)).toBe(true);
+    expect(helper.hello).toBeNull();
   });
 
   it('refuses work after dispose', async () => {

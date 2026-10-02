@@ -9,13 +9,22 @@
 //   - terminals and agent hosts: driving one runs shell commands outside every
 //     approval wmux and the agent CLIs enforce.
 //   - OS credential / elevation prompts: consent must come from the person.
+//   - system tools: System Settings / Windows Settings (an agent on the
+//     Privacy & Security pane could grant itself permissions), script
+//     runners (Script Editor, Automator, Shortcuts, Registry Editor) and
+//     process managers (Activity Monitor, Task Manager and its "Run new task").
+//
+// Known residue, covered by per-app consent and chord refusal instead:
+// Explorer's Run dialog belongs to explorer.exe, which cannot be blocked
+// wholesale (Win+R is refused as a meta chord); terminals inside an IDE and
+// password managers inside a browser share their host's process.
 //
 // Matching is by Windows executable basename and macOS bundle id — stable
 // identifiers, not window titles an app controls.
 
-import type { AppInfo } from './protocol';
+import type { AppInfo, Key, Modifier } from './protocol';
 
-export type BlockReason = 'password-manager' | 'wmux' | 'terminal' | 'credential-prompt';
+export type BlockReason = 'password-manager' | 'wmux' | 'terminal' | 'credential-prompt' | 'system-tool';
 
 interface BlockEntry {
   reason: BlockReason;
@@ -81,17 +90,36 @@ const BLOCKLIST: readonly BlockEntry[] = [
       'kitty.exe',
       'claude.exe',
       'codex.exe',
+      'chatgpt.exe',
+      'bash.exe',
+      'wsl.exe',
+      'wslhost.exe',
+      'git-bash.exe',
+      'nu.exe',
+      'conemu.exe',
+      'conemu64.exe',
+      'cmder.exe',
+      'putty.exe',
+      'termius.exe',
+      'ghostty.exe',
+      'rio.exe',
+      'waveterm.exe',
     ],
     bundle: [
       'com.apple.Terminal',
       'com.googlecode.iterm2',
-      'dev.warp.Warp-Stable',
+      'dev.warp.Warp*',
       'com.github.wez.wezterm',
       'io.alacritty',
+      'org.alacritty',
       'net.kovidgoyal.kitty',
       'co.zeit.hyper',
       'org.tabby',
       'com.mitchellh.ghostty',
+      'com.raphaelamorim.rio',
+      'dev.commandline.waveterm',
+      'com.termius-dmg.mac',
+      'com.panic.prompt3',
       'com.anthropic.claudefordesktop',
       'com.openai.chat',
       'com.openai.codex',
@@ -101,6 +129,17 @@ const BLOCKLIST: readonly BlockEntry[] = [
     reason: 'credential-prompt',
     exe: ['consent.exe', 'credentialuibroker.exe', 'logonui.exe', 'lockapp.exe'],
     bundle: ['com.apple.SecurityAgent', 'com.apple.systemuiserver', 'com.apple.loginwindow'],
+  },
+  {
+    reason: 'system-tool',
+    exe: ['taskmgr.exe', 'regedit.exe', 'mmc.exe', 'systemsettings.exe', 'control.exe'],
+    bundle: [
+      'com.apple.systempreferences',
+      'com.apple.ScriptEditor2',
+      'com.apple.Automator',
+      'com.apple.shortcuts',
+      'com.apple.ActivityMonitor',
+    ],
   },
 ];
 
@@ -139,4 +178,52 @@ export const BLOCK_REASON_TEXT: Record<BlockReason, string> = {
   wmux: 'wmux cannot drive its own windows',
   terminal: 'terminals and agent apps are blocked because they would bypass command approvals',
   'credential-prompt': 'system credential and elevation prompts need the person, not an agent',
+  'system-tool': 'system settings, script runners and process managers can grant permissions or run code, so they need the person',
 };
+
+// === OS-wide key chords ===
+//
+// A chord that acts on the whole system rather than the vetted window
+// (switching apps, opening Start or Spotlight, locking the screen, the stop key
+// itself) would escape per-app consent, so main refuses it before the helper
+// sees it. App-level chords stay allowed even when they change the window:
+// Alt+F4 / Cmd+Q close the vetted app, Ctrl+Cmd+F toggles its full screen.
+
+type ChordPlatform = 'win32' | 'darwin';
+
+const has = (mods: readonly Modifier[], ...want: Modifier[]) => want.every((m) => mods.includes(m));
+
+/**
+ * Why a chord must not be sent, or null when it may. `key` and `modifiers`
+ * are canonical (protocol.ts). Platforms other than Windows and macOS have no
+ * helper, so they get no rule.
+ */
+export function osChordRefusal(platform: string, modifiers: readonly Modifier[], key: Key): string | null {
+  // The stop key (Ctrl+Alt+Shift+Escape) and every Escape chord near it.
+  if (key === 'Escape' && has(modifiers, 'ctrl', 'alt')) return 'it is the computer-use stop key or an OS shortcut';
+  if ((platform as ChordPlatform) === 'win32') {
+    if (modifiers.includes('meta')) return 'Windows-key shortcuts act on the whole system';
+    if (key === 'Tab' && modifiers.includes('alt')) return 'Alt+Tab switches to another app';
+    if (key === 'Escape' && (modifiers.includes('ctrl') || modifiers.includes('alt'))) {
+      return 'Ctrl+Esc, Alt+Esc and Ctrl+Shift+Esc open Start, switch apps or open Task Manager';
+    }
+    if (key === 'Delete' && has(modifiers, 'ctrl', 'alt')) return 'Ctrl+Alt+Delete is the secure attention sequence';
+    return null;
+  }
+  if ((platform as ChordPlatform) === 'darwin') {
+    if (key === 'Tab' && modifiers.includes('meta')) return 'Cmd+Tab switches to another app';
+    if (key === 'Space' && (modifiers.includes('meta') || modifiers.includes('ctrl'))) {
+      return 'Cmd+Space and Ctrl+Space open Spotlight or switch the input source';
+    }
+    if (key === 'Escape' && modifiers.includes('meta')) return 'Cmd+Opt+Esc opens Force Quit';
+    if (key === 'q' && (has(modifiers, 'meta', 'ctrl') || has(modifiers, 'meta', 'shift'))) {
+      return 'Ctrl+Cmd+Q locks the screen and Cmd+Shift+Q logs out';
+    }
+    if ((key === 'd' || key === 'h') && has(modifiers, 'meta', 'alt')) return 'it hides the Dock or every other app';
+    if (['3', '4', '5', '6'].includes(key) && has(modifiers, 'meta', 'shift')) return 'it captures or records the whole screen';
+    if (key.startsWith('Arrow') && modifiers.includes('ctrl')) return 'Ctrl+arrow opens Mission Control or switches Spaces';
+    if (/^F\d+$/.test(key) && modifiers.includes('ctrl')) return 'Ctrl+F-keys move keyboard focus to the menu bar, Dock or other system UI';
+    return null;
+  }
+  return null;
+}

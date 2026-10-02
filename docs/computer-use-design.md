@@ -61,8 +61,28 @@ is needed.
 - Only one request is in flight at a time, because UIA and AX calls run on
   one STA / main thread anyway.
 - Timeouts: 15 s for `getAppState`, 8 s for other calls. On timeout the
-  helper is killed, not waited on, and its held modifiers are released
-  (see Safety).
+  helper is killed, not waited on. Killing a helper does not lift keys or
+  buttons it held, so when the killed request was an input action (timeout,
+  stop key, crash) main starts a fresh helper at once and sends
+  `releaseInput`, without waiting for the next request. Until a release
+  succeeds, every request sends one first. A helper that gets stdin EOF or a
+  termination signal releases what it holds before it exits.
+- **Key vocabulary.** `pressKey` and `hotkey` carry only canonical names
+  from `protocol.ts`: `Enter`, `Tab`, `Escape`, `Backspace`, `Delete`,
+  `Space`, `ArrowUp/Down/Left/Right`, `Home`, `End`, `PageUp`, `PageDown`,
+  `F1`–`F12`, lower-case `a`–`z` and `0`–`9`, plus the modifiers `ctrl`,
+  `alt` (Option), `shift` and `meta` (Command / Windows key). Main
+  normalizes the agent's spelling (`Return`, `Esc`, `cmd`, `win`) and refuses
+  the rest with `invalid_argument`, so a helper maps a closed set and never
+  parses free text. `hotkey` is `{ modifiers, key }` with exactly one key; a
+  modifier is never sent alone.
+- **Control target.** Every control request carries `target: { pid,
+  windowId }`, the window main vetted. Right before each input batch the
+  helper checks that the foreground window (keyboard) or the window under
+  the point (pointer) belongs to it, and otherwise sends nothing and answers
+  `window_not_focused`. Only the helper can do this check without a race.
+- The wire shape was revised before any helper shipped (key vocabulary,
+  `target`, `hotkey` as `{ modifiers, key }`), so `protocolVersion` stays 1.
 - Idle exit after 5 minutes. The helper also exits when stdin closes, so it
   never outlives wmux.
 - The maximum line length is 24 MB (base64 screenshots). stderr keeps a 4 KB
@@ -190,17 +210,44 @@ by localized message text.
   also shows the helper status and the stop key, or that the key is unavailable. Turning the switch off also
   aborts whatever is in flight. Running agents see the tool appear or vanish
   only after they restart.
-- **Window titles.** `listApps` and `listWindows` need no per-app consent, so
-  blocked apps are marked, and their window titles are blanked.
+- **Window titles.** `listApps` and `listWindows` need no per-app consent,
+  so `listWindows` sends a window's title only when the calling agent already
+  has the person's consent for its app (matched on the window's `appId`);
+  every other window keeps its id and bounds with a blank title. Blocked apps
+  are marked. A caller that sends no identity gets no titles at all.
 - **Hard blocklist in main, not only in the helper.** It covers:
   - password managers;
   - wmux itself;
-  - terminals and other agent hosts (driving them would bypass shell
+  - terminals, shells and other agent hosts (driving them would bypass shell
     approvals);
-  - on Windows, Credential UI / UAC consent.
+  - OS credential prompts: Credential UI / UAC consent on Windows,
+    SecurityAgent and the login window on macOS;
+  - system tools: Windows Settings, Control Panel, Task Manager (which also
+    owns "Run new task"), Registry Editor and MMC; on macOS System Settings
+    (System Preferences), Script Editor, Automator, Shortcuts and Activity
+    Monitor. System Settings is blocked whole rather than pane by pane: an
+    agent on Privacy & Security could grant itself, or any app,
+    accessibility and screen-recording permission, and the panes share one
+    bundle id.
+
+  Known residue, left to per-app consent and chord refusal: Explorer's Run
+  dialog is part of explorer.exe, which cannot be blocked wholesale (Win+R is
+  refused as a meta chord); terminals inside an IDE and password managers
+  inside a browser share their host's process.
 
   The helper reports the process path and bundle ID of each target; main
   refuses before it forwards the action.
+- **OS-wide chords.** Main refuses a chord that acts on the whole system
+  rather than the vetted window, before consent, the lock or the helper:
+  - everywhere: Escape with Ctrl+Alt (the stop key and its neighbours);
+  - Windows: any Windows-key chord, Alt+Tab, Alt+Esc, Ctrl+Esc,
+    Ctrl+Shift+Esc, Ctrl+Alt+Delete;
+  - macOS: Cmd+Tab, Cmd+Space and Ctrl+Space, Cmd+Opt+Esc, Ctrl+Cmd+Q,
+    Cmd+Shift+Q, Cmd+Opt+D, Cmd+Opt+H, Cmd+Shift+3/4/5/6, Ctrl+arrows
+    (Mission Control, Spaces), Ctrl+F-keys (keyboard focus to system UI).
+
+  App-level chords stay allowed even when they change the window: Alt+F4 and
+  Cmd+Q close the vetted app, and Ctrl+Cmd+F toggles its full screen.
 - **Approvals.** Plugins need the `computer.observe` capability (list,
   inspect) and the `computer.control` capability (input), both granted through
   the existing enforcer, whose verdict on the `computer` risk class is binding
@@ -232,7 +279,9 @@ by localized message text.
   before it: each stop starts a new prompt epoch.
   - The shortcut is held only while computer use is on: taken on the first
     call (or when Settings shows the switch on), given back when the switch
-    goes off and on quit, when the service is also disposed.
+    goes off and on quit, when the service is also disposed. Disposal is
+    final: a call that arrives during quit starts no helper and does not
+    take the shortcut again.
   - It fails closed: while the shortcut cannot be registered (another app
     owns the chord), every input action is refused with
     `stop_key_unavailable`, and Settings shows the key as unavailable instead

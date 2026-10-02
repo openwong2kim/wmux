@@ -8,9 +8,13 @@
 //     the stream is out of sync and the helper is killed.
 //   - A request that times out kills the helper instead of waiting on it: a
 //     hung UIA call does not come back. The next request spawns a fresh one.
-//   - If a helper died while a control request was in flight it may have left
-//     a modifier or mouse button pressed, so the next helper's first request is
-//     `releaseInput`.
+//   - If a helper died while a control request was in flight (timeout, the stop
+//     key, a crash) it may have left a modifier or mouse button pressed, and
+//     killing it does not lift them. A fresh helper is started right away to
+//     send `releaseInput`, without waiting for the next request; until one
+//     succeeds, every request sends it first.
+//   - dispose() is final: nothing starts a helper after it, and a helper that
+//     was still starting is killed when it says hello.
 //   - Closing stdin (idle, dispose) is the helper's signal to exit, so it never
 //     outlives wmux.
 
@@ -77,6 +81,8 @@ export class HelperProcess {
   private idleTimer: NodeJS.Timeout | null = null;
   private stderrTail = '';
   private disposed = false;
+  /** The child between spawn and hello, so dispose() can kill it too. */
+  private startingChild: ChildProcessWithoutNullStreams | null = null;
 
   constructor(opts: HelperProcessOptions) {
     this.opts = opts;
@@ -102,11 +108,12 @@ export class HelperProcess {
       const running = await this.ensureRunning();
       assertCurrent();
       if (this.needsRelease && method !== 'releaseInput') {
-        this.needsRelease = false;
-        await this.send(running, 'releaseInput', {}).catch(() => undefined);
+        await this.send(running, 'releaseInput', {}).then(() => { this.needsRelease = false; }, () => undefined);
         assertCurrent();
       }
-      return (await this.send(running, method, params)) as HelperMethods[M]['result'];
+      const result = (await this.send(running, method, params)) as HelperMethods[M]['result'];
+      if (method === 'releaseInput') this.needsRelease = false;
+      return result;
     };
     const result = this.queue.then(run, run);
     this.queue = result.catch(() => undefined);
@@ -121,11 +128,10 @@ export class HelperProcess {
   abort(reason = 'stopped by the user'): void {
     this.abortGeneration += 1;
     if (!this.running && !this.starting) return;
-    if (this.pending) {
-      if (isControlAction(this.pending.method)) this.needsRelease = true;
-      this.failPending(new ComputerError('aborted', reason));
-    }
+    const heldInput = this.pending !== null && isControlAction(this.pending.method);
+    if (this.pending) this.failPending(new ComputerError('aborted', reason));
     this.kill();
+    if (heldInput) this.releaseHeldInput();
   }
 
   dispose(): void {
@@ -133,9 +139,33 @@ export class HelperProcess {
     this.clearIdle();
     this.failPending(new ComputerError('helper_unavailable', 'computer use is shutting down'));
     this.kill();
+    this.startingChild?.kill();
+    this.startingChild = null;
+  }
+
+  /**
+   * Lifts whatever a killed helper may have held, now rather than on the next
+   * request: the person may be typing into another app meanwhile. Queued, so
+   * it runs before any later request; a failure leaves `needsRelease` set and
+   * the next request tries again.
+   */
+  private releaseHeldInput(): void {
+    this.needsRelease = true;
+    if (this.disposed) return;
+    const run = async (): Promise<void> => {
+      if (this.disposed || !this.needsRelease) return;
+      const running = await this.ensureRunning();
+      if (this.disposed || !this.needsRelease) return;
+      await this.send(running, 'releaseInput', {});
+      this.needsRelease = false;
+    };
+    this.queue = this.queue.then(run, run).catch((err: unknown) => {
+      this.log(`could not release held input: ${err instanceof Error ? err.message : String(err)}`);
+    });
   }
 
   private ensureRunning(): Promise<Running> {
+    if (this.disposed) return Promise.reject(new ComputerError('helper_unavailable', 'computer use is shutting down'));
     if (this.running) return Promise.resolve(this.running);
     if (!this.starting) {
       this.starting = this.start()
@@ -163,6 +193,7 @@ export class HelperProcess {
       return Promise.reject(new ComputerError('helper_unavailable', `could not start the computer-use helper: ${String(err)}`));
     }
     this.stderrTail = '';
+    this.startingChild = child;
 
     return new Promise<Running>((resolve, reject) => {
       let settled = false;
@@ -173,6 +204,7 @@ export class HelperProcess {
 
       const fail = (error: ComputerError) => {
         clearTimeout(helloTimer);
+        if (this.startingChild === child) this.startingChild = null;
         if (!settled) {
           settled = true;
           child.kill();
@@ -218,7 +250,12 @@ export class HelperProcess {
               ));
               return;
             }
+            if (this.disposed) {
+              fail(new ComputerError('helper_unavailable', 'computer use is shutting down'));
+              return;
+            }
             settled = true;
+            if (this.startingChild === child) this.startingChild = null;
             this.running = { child, hello };
             this.armIdle();
             resolve(this.running);
@@ -274,9 +311,9 @@ export class HelperProcess {
       const timeoutMs = this.opts.timeoutFor?.(method) ?? defaultTimeout(method);
       const timer = setTimeout(() => {
         if (this.pending?.id !== id) return;
-        if (isControlAction(method)) this.needsRelease = true;
         this.failPending(new ComputerError('timeout', `${method} did not finish within ${timeoutMs} ms`));
         this.kill();
+        if (isControlAction(method)) this.releaseHeldInput();
       }, timeoutMs);
       this.pending = {
         id,
@@ -300,9 +337,10 @@ export class HelperProcess {
     this.running = null;
     this.clearIdle();
     if (this.pending) {
-      if (isControlAction(this.pending.method)) this.needsRelease = true;
+      const heldInput = isControlAction(this.pending.method);
       const tail = this.stderrTail.trim().split('\n').slice(-1)[0] ?? '';
       this.failPending(new ComputerError('helper_unavailable', `the computer-use helper exited${tail ? `: ${tail}` : ''}`));
+      if (heldInput) this.releaseHeldInput();
     }
   }
 
