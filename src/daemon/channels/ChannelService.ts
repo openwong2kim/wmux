@@ -167,6 +167,10 @@ export interface PhoneChannelRow {
   lastPost: { seq: number; memberName: string; postedAt: number } | null;
   /** A private channel observed without a seat (W1 observed): render read-only. */
   observed?: true;
+  /** The oldest seq this channel still retains (lastSeq + 1 when it holds none). */
+  oldestRetainedSeq: number;
+  /** Seated only: messages past the cursor were evicted unread; `unread` counts the retained ones. */
+  gap?: true;
   lastReadSeq?: number;
   unread?: number;
   unreadMentions?: number;
@@ -3192,6 +3196,7 @@ export class ChannelService {
   unreadFor(
     verifiedWorkspaceId: string,
     memberId?: string,
+    opts?: { includeArchived?: boolean },
   ): Array<{
     channelId: string;
     name: string;
@@ -3217,7 +3222,7 @@ export class ChannelService {
       oldestUnreadBody?: string;
     }> = [];
     for (const channel of this.state.channels) {
-      if (channel.status === 'archived') continue;
+      if (channel.status === 'archived' && opts?.includeArchived !== true) continue;
       const rows = (this.state.members[channel.id] ?? []).filter(
         (m) => m.workspaceId === verifiedWorkspaceId && (memberId === undefined || m.memberId === memberId),
       );
@@ -3316,7 +3321,12 @@ export class ChannelService {
    */
   listForPhone(): PhoneChannelRow[] {
     const unreadByChannel = new Map(
-      this.unreadFor(HUMAN_WORKSPACE_ID, HUMAN_MEMBER_ID).map((e) => [e.channelId, e]),
+      // Archived channels included: archiving freezes a channel, it does not
+      // read it for you — a seat with unread messages keeps reporting them.
+      this.unreadFor(HUMAN_WORKSPACE_ID, HUMAN_MEMBER_ID, { includeArchived: true }).map((e) => [
+        e.channelId,
+        e,
+      ]),
     );
     const rows: PhoneChannelRow[] = [];
     // list() already applies the isObservableBy filter and the observed stamp —
@@ -3336,17 +3346,19 @@ export class ChannelService {
         lastPost: last
           ? { seq: last.seq, memberName: last.memberName, postedAt: last.postedAt }
           : null,
+        oldestRetainedSeq: msgs.length > 0 ? msgs[0].seq : channel.nextSeq,
       };
       if (seat) {
-        // unreadFor computes active channels only (archived are skipped). A
-        // seated archived channel reports the seat's cursor and 0 unread —
-        // archived is read-only, so a badge would mean nothing.
         const unread = unreadByChannel.get(channel.id);
         row.lastReadSeq =
           unread?.lastReadSeq ??
           (typeof seat.lastReadSeq === 'number' ? seat.lastReadSeq : channel.nextSeq - 1);
         row.unread = unread?.unread ?? 0;
         row.unreadMentions = unread?.mentionUnread ?? 0;
+        // Messages past the cursor were evicted before the human read them, so
+        // unread counts only what is still retained — say so rather than let
+        // the under-count pass as the whole truth.
+        if ((unread?.trimmedBeforeCursor ?? 0) > 0) row.gap = true;
       } else if (channel.observed === true) {
         row.observed = true;
       }
@@ -3367,7 +3379,7 @@ export class ChannelService {
     channelId: string,
     since: number | undefined,
     limit: number | undefined,
-  ): Result<{ messages: PhoneChannelMessage[]; nextSince: number }> {
+  ): Result<{ messages: PhoneChannelMessage[]; nextSince: number; oldestRetainedSeq: number; gap: boolean }> {
     const channel = this.state.channels.find((c) => c.id === channelId);
     if (!channel || !this.isObservableByPhone(channel)) {
       return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: 'No such channel' } };
@@ -3387,12 +3399,27 @@ export class ChannelService {
       postedAt: m.postedAt,
       mentions: m.mentions ?? [],
     }));
+    const head = channel.nextSeq - 1;
+    const all = this.state.messages[channelId] ?? [];
+    const oldestRetainedSeq = all.length > 0 ? all[0].seq : channel.nextSeq;
+    // The first seq this page should have started at. A seat's historyFromSeq
+    // floor is visibility, not loss, so it moves the start rather than count
+    // as a gap.
+    const seat = (this.state.members[channelId] ?? []).find((m) => m.workspaceId === HUMAN_WORKSPACE_ID);
+    let start = (since ?? 0) + 1;
+    if (channel.visibility !== 'public' && seat) start = Math.max(start, seat.historyFromSeq);
     return {
       ok: true,
       messages,
-      // An empty page hands the cursor back unchanged (idempotent no-op) — the
-      // client treats a page shorter than `limit` as exhausted.
-      nextSince: messages.length > 0 ? messages[messages.length - 1].seq : (since ?? 0),
+      // An empty page hands the cursor back (idempotent no-op), clamped to the
+      // head so a cursor from above it is not echoed back as if it were real.
+      // The client treats a page shorter than `limit` as exhausted.
+      nextSince: messages.length > 0 ? messages[messages.length - 1].seq : Math.min(since ?? 0, head),
+      oldestRetainedSeq,
+      // Messages between the cursor and the oldest retained one were evicted
+      // (the per-channel retention cap): the page does not continue from
+      // `since`, and the client must not render it as if it did.
+      gap: start <= head && oldestRetainedSeq > start,
     };
   }
 

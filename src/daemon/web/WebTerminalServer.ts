@@ -282,11 +282,12 @@ function decodeTurnCursor(
  *   POST /api/channels/:id/ack  advance the human seat's read cursor
  *                              (clamped, advance-only; no-seat → 400)
  *   POST /api/channels/:id/join take the human seat (idempotent, full
- *                              history, archived → 400)
+ *                              history, archived → 400); input grant required
  *
- * The four channel routes are read-side only and, like approvals, work on a
- * read-only server — posting stays behind its own future grant. They answer
- * 503 `channels-unavailable` when the `channels` seam is not wired.
+ * List, messages and ack are read-side and, like approvals, work on a
+ * read-only server and for a read-only device. Join plants a seat, so it needs
+ * the caller's input grant. Posting stays behind its own future grant. All four
+ * answer 503 `channels-unavailable` when the `channels` seam is not wired.
  */
 
 export interface WebTerminalStartOptions {
@@ -858,6 +859,13 @@ const ATTENTION_CAP = 100;
 /** Attention entries older than this are dropped even if the cap allows them. */
 const ATTENTION_TTL_MS = 30 * 60 * 1000;
 /**
+ * Phone channel Inbox (§9) — how many `channel.mention` entries the replay
+ * window may hold at once. Mentions are already coalesced to one per channel;
+ * this bounds the many-channels case, so mention traffic can never take more
+ * than this share of ATTENTION_CAP and push pending approvals out of the ring.
+ */
+const ATTENTION_MENTION_CAP = 20;
+/**
  * #782 — coalescing window for the non-recording transcript nudge. A single
  * turn raises several hook signals in quick succession (activity then stop),
  * and the phone refetches on every nudge, so one-per-second is the floor that
@@ -1375,6 +1383,15 @@ export class WebTerminalServer {
   private readonly attentionEpoch = crypto.randomUUID();
   private attentionSeq = 0;
   private attentionLog: AttentionEntry[] = [];
+  /**
+   * Highest id whose event was LOST (evicted by the cap or the TTL, or dropped
+   * by the mention cap) — the replay continuity watermark. A cursor below it
+   * missed something and gets a `reset`. Held separately rather than read off
+   * the log's oldest entry because a superseded `channel.mention` is removed
+   * from the middle of the log without losing anything (its channel's newer
+   * mention is still held), and that removal must not look like a gap.
+   */
+  private attentionLostThrough = 0;
 
   // Pairing state (single active code per running server).
   private pairCode = '';
@@ -2754,9 +2771,9 @@ export class WebTerminalServer {
           : 'gate off — the next tool call proceeds without prompting',
       });
     }
-    // Phone channel Inbox (contract §9) — read, read cursor and join. Works on a
-    // read-only server too (the same carve-out approvals have: it only reads
-    // what the service verified).
+    // Phone channel Inbox (contract §9) — read, read cursor and join. Reading and
+    // acking work on a read-only server and for a read-only device (marking what
+    // you read is part of reading); join is a write and needs the input grant.
     if (req.method === 'GET' && p === '/api/channels') {
       return this.handleChannelsList(res);
     }
@@ -2766,10 +2783,10 @@ export class WebTerminalServer {
         return this.handleChannelsMessages(res, url, rest.slice(0, -'/messages'.length));
       }
       if (req.method === 'POST' && rest.endsWith('/ack')) {
-        return this.handleChannelsAck(req, res, rest.slice(0, -'/ack'.length));
+        return this.handleChannelsAck(req, res, url, principal, rest.slice(0, -'/ack'.length));
       }
       if (req.method === 'POST' && rest.endsWith('/join')) {
-        return this.handleChannelsJoin(res, rest.slice(0, -'/join'.length));
+        return this.handleChannelsJoin(res, principal, rest.slice(0, -'/join'.length));
       }
     }
     return this.json(res, 404, { error: 'not found' });
@@ -7279,7 +7296,8 @@ export class WebTerminalServer {
   private handleChannelsList(res: http.ServerResponse): void {
     const channels = this.deps.channels;
     if (!channels) return this.json(res, 503, { error: 'channels-unavailable' });
-    return this.json(res, 200, channels.list());
+    // Unread counts and cursors are live state: never let a cache answer for them.
+    return this.json(res, 200, channels.list(), { 'Cache-Control': 'no-store' });
   }
 
   /** `GET /api/channels/:id/messages?since=&limit=` — cursor-paged messages. */
@@ -7303,36 +7321,84 @@ export class WebTerminalServer {
         ...(result.error.detail ? { detail: result.error.detail } : {}),
       });
     }
-    return this.json(res, 200, { messages: result.messages, nextSince: result.nextSince });
+    return this.json(
+      res,
+      200,
+      {
+        messages: result.messages,
+        nextSince: result.nextSince,
+        oldestRetainedSeq: result.oldestRetainedSeq,
+        ...(result.gap ? { gap: true } : {}),
+      },
+      { 'Cache-Control': 'no-store' },
+    );
   }
 
-  /** `POST /api/channels/:id/ack` — advance the human seat's read cursor. */
-  private async handleChannelsAck(
+  /**
+   * `POST /api/channels/:id/ack` — advance the human seat's read cursor.
+   * Allowed without the input grant: marking what you read is part of reading.
+   * The body arrives after header auth, so the caller is re-authenticated in
+   * the body callback, right before the cursor moves — a device revoked while
+   * its body was in flight gets 401, not an ack.
+   */
+  private handleChannelsAck(
     req: http.IncomingMessage,
     res: http.ServerResponse,
+    url: URL,
+    principal: WebPrincipal,
     rawId: string,
-  ): Promise<void> {
+  ): void {
     const channels = this.deps.channels;
     if (!channels) return this.json(res, 503, { error: 'channels-unavailable' });
     const id = decodePathSegment(rawId);
     if (!id) return this.json(res, 404, { error: 'not-found' });
-    // readJsonBody never calls back for a request it already answered.
-    this.readJsonBody(req, res, async (body) => {
-      const result = await channels.ack(id, body);
-      if (!result.ok) {
-        return this.json(res, result.error.status, {
-          error: result.error.error,
-          ...(result.error.detail ? { detail: result.error.detail } : {}),
-        });
-      }
-      return this.json(res, 200, { lastReadSeq: result.lastReadSeq });
+    // readJsonBody never calls back for a request it already answered, and it
+    // does not await the callback — so a rejection is caught here, or the
+    // request would hang with no answer.
+    this.readJsonBody(req, res, (body) => {
+      void this.ackChannel(req, res, url, principal, channels, id, body)
+        .catch((err: unknown) => this.failRequest(res, err));
     });
   }
 
-  /** `POST /api/channels/:id/join` — take the human seat (idempotent). */
-  private async handleChannelsJoin(res: http.ServerResponse, rawId: string): Promise<void> {
+  private async ackChannel(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    url: URL,
+    principal: WebPrincipal,
+    channels: ChannelPhoneApi,
+    id: string,
+    body: unknown,
+  ): Promise<void> {
+    const fresh = await this.authenticate(req, url, false).catch(() => ({ ok: false as const }));
+    if (!fresh.ok || !sameCaller(principal, fresh.principal)) {
+      return this.json(res, 401, { error: 'authorization-expired' });
+    }
+    const result = await channels.ack(id, body);
+    if (!result.ok) {
+      return this.json(res, result.error.status, {
+        error: result.error.error,
+        ...(result.error.detail ? { detail: result.error.detail } : {}),
+      });
+    }
+    return this.json(res, 200, { lastReadSeq: result.lastReadSeq });
+  }
+
+  /**
+   * `POST /api/channels/:id/join` — take the human seat (idempotent). A write:
+   * it plants a permanent seat and an `operator-join` system message, so it
+   * needs this caller's input grant like every other write route.
+   */
+  private async handleChannelsJoin(
+    res: http.ServerResponse,
+    principal: WebPrincipal,
+    rawId: string,
+  ): Promise<void> {
     const channels = this.deps.channels;
     if (!channels) return this.json(res, 503, { error: 'channels-unavailable' });
+    if (!this.mayInput(principal)) {
+      return this.refuseInput(res, principal, 'Joining a channel requires input permission');
+    }
     const id = decodePathSegment(rawId);
     if (!id) return this.json(res, 404, { error: 'not-found' });
     const result = await channels.join(id);
@@ -7563,6 +7629,7 @@ export class WebTerminalServer {
    * that makes a resume ambiguous.
    */
   private publish(kind: EventKind, payload: Record<string, unknown>): AttentionEntry {
+    if (kind === 'channel.mention') this.coalesceChannelMention(payload['channelId']);
     const entry: AttentionEntry = {
       id: ++this.attentionSeq,
       at: this.now(),
@@ -7874,13 +7941,38 @@ export class WebTerminalServer {
   /** Drop entries past the cap (oldest first) and anything past the TTL. */
   private evictAttention(): void {
     if (this.attentionLog.length > ATTENTION_CAP) {
-      this.attentionLog.splice(0, this.attentionLog.length - ATTENTION_CAP);
+      this.markAttentionLost(this.attentionLog.splice(0, this.attentionLog.length - ATTENTION_CAP));
     }
     const cutoff = this.now() - ATTENTION_TTL_MS;
     // Entries are appended in time order, so the expired ones are a prefix.
     let drop = 0;
     while (drop < this.attentionLog.length && this.attentionLog[drop].at < cutoff) drop += 1;
-    if (drop > 0) this.attentionLog.splice(0, drop);
+    if (drop > 0) this.markAttentionLost(this.attentionLog.splice(0, drop));
+  }
+
+  private markAttentionLost(dropped: AttentionEntry[]): void {
+    for (const e of dropped) this.attentionLostThrough = Math.max(this.attentionLostThrough, e.id);
+  }
+
+  /**
+   * Phone channel Inbox (§9) — make room for a new `channel.mention`. The
+   * channel's previous mention is superseded, not lost: the new one carries the
+   * same instruction (refetch that channel), so removing it moves no watermark.
+   * Past ATTENTION_MENTION_CAP the oldest other-channel mention is genuinely
+   * dropped, so it does move the watermark — a client behind it gets `reset`
+   * (refetch `/api/channels`, whose seat unread is durable) instead of a silent
+   * hole. Either way approvals are never the entries that make room.
+   */
+  private coalesceChannelMention(channelId: unknown): void {
+    this.attentionLog = this.attentionLog.filter(
+      (e) => e.kind !== 'channel.mention' || e.payload['channelId'] !== channelId,
+    );
+    const mentions = this.attentionLog.filter((e) => e.kind === 'channel.mention');
+    const excess = mentions.length - (ATTENTION_MENTION_CAP - 1);
+    if (excess <= 0) return;
+    const dropped = new Set(mentions.slice(0, excess));
+    this.markAttentionLost([...dropped]);
+    this.attentionLog = this.attentionLog.filter((e) => !dropped.has(e));
   }
 
   private now(): number {
@@ -7954,11 +8046,11 @@ export class WebTerminalServer {
     if (!cursor || cursor.epoch !== this.attentionEpoch) {
       return { reset: true, entries: this.attentionLog.slice() };
     }
-    const oldest = this.attentionLog.length > 0 ? this.attentionLog[0].id : null;
-    // With entries held, continuity survives only if the cursor's NEXT id is one
-    // we still have. With none held, it survives only if nothing was issued
-    // after the cursor — an empty log is "quiet", not "lost", until it isn't.
-    const gap = oldest === null ? cursor.id < this.headId() : cursor.id < oldest - 1;
+    // Continuity survives only if nothing after the cursor was lost. With pure
+    // prefix eviction this is the old "the cursor's NEXT id is still held" test
+    // (lostThrough = oldest - 1, or headId once the log is empty); the explicit
+    // watermark also stays right when a superseded mention left the middle.
+    const gap = cursor.id < this.attentionLostThrough;
     // A cursor above every id we ever issued cannot be positioned either; it did
     // not come from us in this epoch.
     if (gap || cursor.id > this.headId()) {

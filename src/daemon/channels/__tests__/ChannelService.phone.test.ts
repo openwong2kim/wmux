@@ -520,3 +520,51 @@ describe('phone channel Inbox — review-fix regressions (trash filter, TOCTOU, 
     expect(seen).toHaveLength(0);
   });
 });
+
+describe('phone channel Inbox — panel-review fixes (retention gap, archived unread, head clamp)', () => {
+  it('a cursor below the oldest retained seq reports gap — on the page and on the seated list row', async () => {
+    const seed = makeService();
+    const id = await createChannel(seed.svc, 'busy', 'public');
+    await takeSeat(seed.svc, id); // seq 1 = operator-join, cursor 1
+    for (let i = 0; i < 10; i += 1) await post(seed.svc, id, `m${i + 2}`); // seqs 2..11
+    // Simulate the per-channel retention cap: everything below seq 7 was evicted.
+    const state = seed.writer.load();
+    state.messages[id] = state.messages[id].filter((m) => m.seq >= 7);
+    const { svc } = makeService(state);
+
+    const page = svc.messagesForPhone(id, 1, 50);
+    expect(page).toMatchObject({ ok: true, oldestRetainedSeq: 7, gap: true, nextSince: 11 });
+    if (!page.ok) throw new Error('unreachable');
+    expect(page.messages.map((m) => m.seq)).toEqual([7, 8, 9, 10, 11]);
+    // Continuing from a retained cursor is contiguous again.
+    expect(svc.messagesForPhone(id, 8, 50)).toMatchObject({ ok: true, gap: false });
+
+    const row = svc.listForPhone().find((r) => r.channelId === id)!;
+    expect(row).toMatchObject({ oldestRetainedSeq: 7, gap: true, unread: 5 });
+
+    await svc.ackAsPhone(id, 11);
+    const caughtUp = svc.listForPhone().find((r) => r.channelId === id)!;
+    expect(caughtUp.unread).toBe(0);
+    expect('gap' in caughtUp).toBe(false);
+  });
+
+  it('an archived seated channel keeps reporting its real unread and mentions, and can be acked', async () => {
+    const { svc } = makeService();
+    const id = await createChannel(svc, 'done', 'private');
+    await takeSeat(svc, id);
+    await post(svc, id, 'a');
+    await post(svc, id, '@operator look', [{ workspaceId: HUMAN_WORKSPACE_ID }]);
+    const archived = await svc.archive({ channelId: id, archivedBy: AGENT.workspaceId, verifiedWorkspaceId: AGENT.workspaceId });
+    expect(archived.ok).toBe(true);
+    expect(svc.listForPhone().find((r) => r.channelId === id)).toMatchObject({ unread: 2, unreadMentions: 1 });
+    await expect(svc.ackAsPhone(id, 99)).resolves.toMatchObject({ ok: true });
+    expect(svc.listForPhone().find((r) => r.channelId === id)).toMatchObject({ unread: 0, unreadMentions: 0 });
+  });
+
+  it('an empty page clamps nextSince to the channel head instead of echoing a cursor above it', async () => {
+    const { svc } = makeService();
+    const id = await createChannel(svc, 'quiet', 'public');
+    await post(svc, id, 'only'); // seq 1
+    expect(svc.messagesForPhone(id, 500, 50)).toMatchObject({ ok: true, messages: [], nextSince: 1, gap: false });
+  });
+});

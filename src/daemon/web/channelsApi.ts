@@ -42,6 +42,14 @@ export type PhoneChannelsError =
 /** Success/failure union. A route handler only translates it to a status + JSON. */
 export type PhoneChannelsResult<T> = ({ ok: true } & T) | { ok: false; error: PhoneChannelsError };
 
+/** A `GET /api/channels/<id>/messages` page (`gap` only when true on the wire). */
+export interface PhoneChannelsPage {
+  messages: PhoneChannelMessage[];
+  nextSince: number;
+  oldestRetainedSeq: number;
+  gap: boolean;
+}
+
 /**
  * The phone channel seam WebTerminalServer consumes. `onMention` follows the
  * approvals `onEvent(listener) → unsubscribe` shape: the web server subscribes
@@ -60,7 +68,7 @@ export interface ChannelPhoneApi {
     channelId: string,
     since: string | null,
     limit: string | null,
-  ): PhoneChannelsResult<{ messages: PhoneChannelMessage[]; nextSince: number }>;
+  ): PhoneChannelsResult<PhoneChannelsPage>;
   /**
    * `POST /api/channels/<id>/ack`. `body` is the parsed JSON as-is and is
    * validated here (anything but a non-negative integer lastReadSeq → 400
@@ -80,7 +88,10 @@ function parseNonNegativeInt(raw: string | null): number | null | 'invalid' {
   if (raw === null) return null;
   const trimmed = raw.trim();
   if (!/^\d+$/.test(trimmed)) return 'invalid';
-  return Number(trimmed);
+  // Digits alone are not enough: a long run parses to an unsafe integer or
+  // Infinity, which would come back as a rounded or `null` nextSince.
+  const value = Number(trimmed);
+  return Number.isSafeInteger(value) ? value : 'invalid';
 }
 
 /** Service error code → its §9 HTTP row. */
@@ -130,7 +141,13 @@ export function makeChannelPhoneApi(service: ChannelService): ChannelPhoneApi {
         parsedLimit ?? PHONE_MESSAGES_DEFAULT_LIMIT,
       );
       if (!res.ok) return { ok: false, error: mapServiceError(res.error) };
-      return { ok: true, messages: res.messages, nextSince: res.nextSince };
+      return {
+        ok: true,
+        messages: res.messages,
+        nextSince: res.nextSince,
+        oldestRetainedSeq: res.oldestRetainedSeq,
+        gap: res.gap,
+      };
     },
 
     ack: async (channelId, body) => {
@@ -138,7 +155,7 @@ export function makeChannelPhoneApi(service: ChannelService): ChannelPhoneApi {
         body !== null && typeof body === 'object' && 'lastReadSeq' in body
           ? (body as { lastReadSeq?: unknown }).lastReadSeq
           : undefined;
-      if (typeof lastReadSeq !== 'number' || !Number.isInteger(lastReadSeq) || lastReadSeq < 0) {
+      if (typeof lastReadSeq !== 'number' || !Number.isSafeInteger(lastReadSeq) || lastReadSeq < 0) {
         return {
           ok: false,
           error: { status: 400, error: 'invalid-body', detail: 'lastReadSeq must be a non-negative integer' },

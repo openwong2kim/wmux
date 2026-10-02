@@ -10,7 +10,12 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import os from 'node:os';
 import { EventEmitter } from 'node:events';
 import { WebTerminalServer } from '../WebTerminalServer';
-import { makeChannelPhoneApi, type ChannelPhoneApi, type PhoneChannelsResult } from '../channelsApi';
+import {
+  makeChannelPhoneApi,
+  type ChannelPhoneApi,
+  type PhoneChannelsPage,
+  type PhoneChannelsResult,
+} from '../channelsApi';
 import {
   ChannelService,
   type ChannelMentionNotification,
@@ -52,7 +57,7 @@ function makeChannelsFake() {
   const listeners = new Set<(n: ChannelMentionNotification) => void>();
   const box = {
     listBody: { channels: [] as unknown[] },
-    messagesResult: null as PhoneChannelsResult<{ messages: PhoneChannelMessage[]; nextSince: number }> | null,
+    messagesResult: null as PhoneChannelsResult<PhoneChannelsPage> | null,
     ackResult: null as PhoneChannelsResult<{ lastReadSeq: number }> | null,
     joinResult: null as PhoneChannelsResult<{ lastReadSeq: number; alreadyMember: boolean }> | null,
   };
@@ -114,11 +119,11 @@ afterEach(async () => {
   }
 });
 
-async function start(server: WebTerminalServer) {
+async function start(server: WebTerminalServer, allowInput = false) {
   const info = await server.start({
     port: 0,
     host: '127.0.0.1',
-    allowInput: false,
+    allowInput,
     allowUpload: false,
   });
   return {
@@ -191,10 +196,12 @@ describe('phone channels routes — seam result → HTTP mapping', () => {
       ok: true,
       messages: [{ seq: 5 }] as unknown as PhoneChannelMessage[],
       nextSince: 5,
+      oldestRetainedSeq: 1,
+      gap: false,
     };
     const res = await fetch(`${base}/api/channels/ch-1/messages?since=4&limit=7`, { headers });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ messages: [{ seq: 5 }], nextSince: 5 });
+    expect(await res.json()).toEqual({ messages: [{ seq: 5 }], nextSince: 5, oldestRetainedSeq: 1 });
     // The route does not parse — raw strings as-is (null when absent).
     expect(calls.messages).toEqual([['ch-1', '4', '7']]);
   });
@@ -202,7 +209,7 @@ describe('phone channels routes — seam result → HTTP mapping', () => {
   it('404 not-found / 400 no-seat (+detail) / 400 archived / join success shape', async () => {
     const { channels, box } = makeChannelsFake();
     const server = makeServer(channels);
-    const { base, headers } = await start(server);
+    const { base, headers } = await start(server, true);
 
     box.messagesResult = { ok: false, error: { status: 404, error: 'not-found' } };
     const missing = await fetch(`${base}/api/channels/ch-x/messages`, { headers });
@@ -297,6 +304,10 @@ describe('makeChannelPhoneApi — query validation and paging (D3)', () => {
     expect(api.messages('ch-x', null, '0')).toMatchObject(invalid);
     expect(api.messages('ch-x', null, '201')).toMatchObject(invalid);
     expect(api.messages('ch-x', null, 'x')).toMatchObject(invalid);
+    // Digits past Number.MAX_SAFE_INTEGER (and runs long enough to parse to
+    // Infinity) are refused, not rounded or serialized as a null nextSince.
+    expect(api.messages('ch-x', '9007199254740993', null)).toMatchObject(invalid);
+    expect(api.messages('ch-x', '9'.repeat(400), null)).toMatchObject(invalid);
     // Within bounds (1..200) passes validation — then falls through to the service 404.
     expect(api.messages('ch-x', '5', '200')).toMatchObject({
       ok: false,
@@ -310,6 +321,7 @@ describe('makeChannelPhoneApi — query validation and paging (D3)', () => {
     await expect(api.ack('ch-x', { lastReadSeq: -1 })).resolves.toMatchObject(invalid);
     await expect(api.ack('ch-x', { lastReadSeq: '3' })).resolves.toMatchObject(invalid);
     await expect(api.ack('ch-x', { lastReadSeq: 1.5 })).resolves.toMatchObject(invalid);
+    await expect(api.ack('ch-x', { lastReadSeq: 2 ** 60 })).resolves.toMatchObject(invalid);
     await expect(api.ack('ch-x', {})).resolves.toMatchObject(invalid);
     await expect(api.ack('ch-x', null)).resolves.toMatchObject(invalid);
   });
