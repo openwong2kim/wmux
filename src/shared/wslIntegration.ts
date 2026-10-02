@@ -72,7 +72,8 @@ if [ -z "$real" ]; then
   exit 127
 fi
 # Retain the pane PATH for subprocesses; only command lookup excludes the shim.
-exec "$real" --settings "$WMUX_WSL_SETTINGS" "$@"
+# --mcp-config is variadic: the = form keeps it from swallowing a prompt argument.
+exec "$real" --settings "$WMUX_WSL_SETTINGS" \${WMUX_WSL_MCP_CONFIG:+--mcp-config="$WMUX_WSL_MCP_CONFIG"} "$@"
 `;
 
 export const WSL_CODEX_HOOK = `#!/bin/sh
@@ -164,10 +165,10 @@ printf '%s\\n' 'wmux: Codex resume capture not injected (existing notify, unread
 exec "$real" "$@"
 `;
 
-function findBridge(startDir: string, basename = 'wmux-bridge.mjs', agent = 'claude'): string {
+function findUp(startDir: string, rels: string[]): string | null {
   let dir = startDir;
   for (let i = 0; i < 8; i++) {
-    for (const rel of [`cli-bundle/${basename}`, `integrations/${agent}/bin/${basename}`, `dist/cli-bundle/${basename}`]) {
+    for (const rel of rels) {
       const candidate = path.join(dir, rel);
       if (fs.existsSync(candidate)) return candidate;
     }
@@ -175,7 +176,21 @@ function findBridge(startDir: string, basename = 'wmux-bridge.mjs', agent = 'cla
     if (parent === dir) break;
     dir = parent;
   }
-  throw new Error(`WSL integration: bundled ${agent} bridge ${basename} is missing`);
+  return null;
+}
+
+function findBridge(startDir: string, basename = 'wmux-bridge.mjs', agent = 'claude'): string {
+  const found = findUp(startDir, [`cli-bundle/${basename}`, `integrations/${agent}/bin/${basename}`, `dist/cli-bundle/${basename}`]);
+  if (!found) throw new Error(`WSL integration: bundled ${agent} bridge ${basename} is missing`);
+  return found;
+}
+
+// The MCP server runs in the Windows runtime, like the hook bridge: named-pipe
+// auth, CDP on Windows loopback and Playwright all stay where they already work.
+// One interop spawn per Claude session, never per tool call.
+function wslMcpConfig(): string {
+  const launch = 'export ELECTRON_RUN_AS_NODE=1 WSLENV="${WSLENV:+$WSLENV:}ELECTRON_RUN_AS_NODE/w"; exec "$WMUX_WSL_NODE" "$WMUX_WSL_MCP"';
+  return JSON.stringify({ mcpServers: { wmux: { type: 'stdio', command: '/bin/sh', args: ['-c', launch] } } });
 }
 
 export function buildWslInjection(options: {
@@ -189,6 +204,8 @@ export function buildWslInjection(options: {
   bridgePath?: string;
   codexBridgePath?: string;
   codexConfigPath?: string;
+  /** Windows MCP entry; null skips MCP. Missing bundle also skips, never fails the pane. */
+  mcpEntryPath?: string | null;
 }): { args: string[]; env: Record<string, string> } {
   const { target, cwd, integrationDir } = options;
   const dir = path.join(integrationDir, 'wsl');
@@ -205,6 +222,10 @@ export function buildWslInjection(options: {
     matcher: '', hooks: [{ type: 'command', command: `/bin/sh "$WMUX_WSL_HOOK" ${event}`, timeout: 10 }],
   }]]));
   write(path.join(dir, 'claude-settings.json'), JSON.stringify({ hooks }));
+  const mcpEntry = options.mcpEntryPath === undefined
+    ? findUp(__dirname, ['mcp-bundle/index.js', 'dist/mcp/mcp/entry.js'])
+    : options.mcpEntryPath;
+  if (mcpEntry) write(path.join(dir, 'claude-mcp.json'), wslMcpConfig());
   write(path.join(dir, 'bashrc.integration'), options.bashInit);
   write(path.join(dir, 'bashrc'), `
 # Keep the user's shell setup even when wmux hooks are disabled.
@@ -234,12 +255,14 @@ fi
     WMUX_WSL_SETTINGS: path.join(dir, 'claude-settings.json'),
     WMUX_WSL_BIN: bin,
     WMUX_WSL_BASHRC: path.join(dir, 'bashrc'),
+    ...(mcpEntry ? { WMUX_WSL_MCP: mcpEntry, WMUX_WSL_MCP_CONFIG: path.join(dir, 'claude-mcp.json') } : {}),
   };
   const entries = [
     'WMUX_PTY_ID', 'WMUX_WORKSPACE_ID', 'WMUX_SURFACE_ID', 'WMUX_DATA_SUFFIX',
     'WMUX_WSL_NODE/p', 'WMUX_WSL_BRIDGE/u', 'WMUX_WSL_HOOK/p',
     'WMUX_WSL_CODEX_BRIDGE/u', 'WMUX_WSL_CODEX_CONFIG/u', 'WMUX_WSL_CODEX_HOOK/p',
     'WMUX_WSL_CWD/u', 'WMUX_WSL_SETTINGS/p', 'WMUX_WSL_BIN/p', 'WMUX_WSL_BASHRC/p', 'WMUX_SHELL_INTEGRATION',
+    ...(mcpEntry ? ['WMUX_WSL_MCP/u', 'WMUX_WSL_MCP_CONFIG/p'] : []),
   ];
   env.WSLENV = mergeWslEnv(env.WSLENV, entries);
   // WSL runs bash explicitly so --rcfile reaches Linux, never wsl.exe. The
