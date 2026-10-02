@@ -3,7 +3,7 @@
 //   ok          normal helper
 //   old         reports protocolVersion 0
 //   silent      never says hello
-//   hang        says hello, never answers `click`
+//   hang        says hello, never answers `click`, `pressKey` or `hotkey`
 //   garbage     answers the first request with a non-JSON line
 //   wrong-id    answers with an id nobody asked for
 //   split-utf8  answers listApps with a Korean name split mid-character
@@ -16,7 +16,8 @@
 //   eof-release hangs on click; on stdin EOF logs "eof-release" before exiting
 //               (a helper releasing held input on EOF)
 // Every request is appended to the file named by argv[3] (if given), so tests
-// can see what the helper received, including across restarts.
+// can see what the helper received, including across restarts; releaseInput
+// params go to `<argv[3]>.params`, one JSON line each.
 import fs from 'node:fs';
 import readline from 'node:readline';
 
@@ -41,9 +42,10 @@ const rl = readline.createInterface({ input: process.stdin });
 rl.on('line', (line) => {
   const req = JSON.parse(line);
   if (logFile) fs.appendFileSync(logFile, req.method + '\n');
+  if (logFile && req.method === 'releaseInput') fs.appendFileSync(`${logFile}.params`, JSON.stringify(req.params) + '\n');
   if (mode === 'garbage') return process.stdout.write('not json\n');
   if (mode === 'wrong-id') return send({ id: req.id + 100, ok: true, result: {} });
-  if (mode.startsWith('hang') && req.method === 'click') return;
+  if (mode.startsWith('hang') && ['click', 'pressKey', 'hotkey'].includes(req.method)) return;
   if (mode === 'eof-release' && req.method === 'click') return;
   if (mode === 'hang-releasehang' && req.method === 'releaseInput') return;
   if (req.method === 'releaseInput') return send({ id: req.id, ok: true, result: { released: mode !== 'hang-norelease', echo: req.method } });

@@ -24,7 +24,10 @@ function makeHelper(mode: string, extra: Partial<ConstructorParameters<typeof He
   });
   helpers.push(helper);
   const requests = () => (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8').trim().split('\n') : []);
-  return { helper, requests };
+  const releases = () => (fs.existsSync(`${logFile}.params`)
+    ? fs.readFileSync(`${logFile}.params`, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>)
+    : []);
+  return { helper, requests, releases };
 }
 
 async function codeOf(promise: Promise<unknown>): Promise<string> {
@@ -118,7 +121,7 @@ describe('HelperProcess', () => {
       snapshotId: 's', target: TARGET, index: 1, button: 'left', clickCount: 1, modifiers: [],
     });
     // Let the request reach the helper before stopping it.
-    await new Promise((r) => setTimeout(r, 300));
+    expect(await waitFor(() => requests().includes('click'))).toBe(true);
     helper.abort();
     expect(await codeOf(click)).toBe('aborted');
     expect(await waitFor(() => requests().length === 2)).toBe(true);
@@ -133,7 +136,7 @@ describe('HelperProcess', () => {
       snapshotId: 's', target: TARGET, index: 1, button: 'left', clickCount: 1, modifiers: [],
     });
     const queued = helper.request('type', { snapshotId: 's', target: TARGET, text: 'secret' });
-    await new Promise((r) => setTimeout(r, 300));
+    expect(await waitFor(() => requests().length > 0)).toBe(true);
     helper.abort();
     expect(await codeOf(click)).toBe('aborted');
     expect(await codeOf(queued)).toBe('aborted');
@@ -205,7 +208,7 @@ describe('HelperProcess', () => {
     const click = helper.request('click', {
       snapshotId: 's', target: TARGET, index: 1, button: 'left', clickCount: 1, modifiers: [],
     });
-    await new Promise((r) => setTimeout(r, 300));
+    expect(await waitFor(() => requests().length > 0)).toBe(true);
     helper.abort();
     expect(await codeOf(click)).toBe('aborted');
     expect(await waitFor(() => requests().includes('releaseInput'))).toBe(true);
@@ -218,7 +221,7 @@ describe('HelperProcess', () => {
     const click = helper.request('click', {
       snapshotId: 's', target: TARGET, index: 1, button: 'left', clickCount: 1, modifiers: [],
     });
-    await new Promise((r) => setTimeout(r, 300));
+    expect(await waitFor(() => requests().length > 0)).toBe(true);
     helper.dispose();
     expect(await codeOf(click)).toBe('helper_unavailable');
     expect(await waitFor(() => requests().includes('eof-release'), 2_000)).toBe(true);
@@ -259,6 +262,34 @@ describe('HelperProcess', () => {
     expect(await codeOf(apps)).toBe('resolved');
   });
 
+  it('names exactly what the cut-off request sent in the release, never a blanket key list', async () => {
+    const cases: Array<[string, () => Promise<unknown>, Record<string, unknown>]> = [];
+    const hotkey = makeHelper('hang', { timeoutFor: () => 200 });
+    cases.push(['hotkey', () => hotkey.helper.request('hotkey', { snapshotId: 's', target: TARGET, modifiers: ['ctrl', 'shift'], key: 't' }), { keys: ['t'], modifiers: ['ctrl', 'shift'] }]);
+    const press = makeHelper('hang', { timeoutFor: () => 200 });
+    cases.push(['pressKey', () => press.helper.request('pressKey', { snapshotId: 's', target: TARGET, key: 'Enter', repeat: 1 }), { keys: ['Enter'] }]);
+    const click = makeHelper('hang', { timeoutFor: () => 200 });
+    cases.push(['click', () => click.helper.request('click', { snapshotId: 's', target: TARGET, index: 1, button: 'right', clickCount: 1, modifiers: ['alt'] }), { modifiers: ['alt'], buttons: ['right'] }]);
+    const helpersByCase = [hotkey, press, click];
+    for (const [i, [name, run, expected]] of cases.entries()) {
+      expect(await codeOf(run()), name).toBe('timeout');
+      expect(await waitFor(() => helpersByCase[i].releases().length === 1), name).toBe(true);
+      expect(helpersByCase[i].releases()[0], name).toEqual(expected);
+    }
+  });
+
+  it('a release cut off by a second stop carries the same keys to the next one', async () => {
+    const { helper, requests, releases } = makeHelper('hang-releasehang', { timeoutFor: () => 5_000 });
+    const hk = helper.request('hotkey', { snapshotId: 's', target: TARGET, modifiers: ['meta'], key: 's' });
+    expect(await waitFor(() => requests().length > 0)).toBe(true);
+    helper.abort();
+    expect(await codeOf(hk)).toBe('aborted');
+    expect(await waitFor(() => releases().length === 1)).toBe(true);
+    helper.abort();
+    expect(await waitFor(() => releases().length === 2)).toBe(true);
+    expect(releases()).toEqual([{ keys: ['s'], modifiers: ['meta'] }, { keys: ['s'], modifiers: ['meta'] }]);
+  });
+
   it('starts no helper to release input once disposed', async () => {
     let spawns = 0;
     const { helper, requests } = makeHelper('hang', {
@@ -268,7 +299,7 @@ describe('HelperProcess', () => {
     const click = helper.request('click', {
       snapshotId: 's', target: TARGET, index: 1, button: 'left', clickCount: 1, modifiers: [],
     });
-    await new Promise((r) => setTimeout(r, 300));
+    expect(await waitFor(() => requests().length > 0)).toBe(true);
     helper.dispose();
     helper.abort();
     expect(await codeOf(click)).toBe('helper_unavailable');

@@ -31,7 +31,10 @@ import {
   HELPER_TIMEOUT_MS,
   encodeHelperRequest,
   isControlAction,
+  MODIFIERS,
   parseHelperLine,
+  type MouseButton,
+  type ReleaseInputParams,
   type HelperHello,
   type HelperMethod,
   type HelperMethods,
@@ -66,6 +69,8 @@ export interface HelperProcessOptions {
 interface Pending {
   id: number;
   method: HelperMethod;
+  /** What was sent, so a cut-off input action can name what to release. */
+  params: unknown;
   /** The helper this request was written to. */
   child: ChildProcessWithoutNullStreams;
   resolve: (value: unknown) => void;
@@ -83,6 +88,42 @@ function holdsInput(method: HelperMethod): boolean {
   return isControlAction(method) || method === 'releaseInput';
 }
 
+const MOUSE_BUTTONS: readonly MouseButton[] = ['left', 'right', 'middle'];
+
+/**
+ * What a cut-off request may have left down, named from what main sent it
+ * (protocol.ts, Held input). Actions whose keys main does not name (type may
+ * paste with Ctrl/Cmd+V, setValue and scroll may fall back to synthetic
+ * input) get the modifiers and buttons, never a list of ordinary keys.
+ */
+function releaseSpecFor(method: HelperMethod, params: unknown): ReleaseInputParams {
+  const p = (params ?? {}) as Record<string, unknown>;
+  const list = <T>(value: unknown): T[] => (Array.isArray(value) ? (value as T[]) : []);
+  switch (method) {
+    case 'click':
+      return { modifiers: list(p.modifiers), buttons: typeof p.button === 'string' ? [p.button as MouseButton] : [...MOUSE_BUTTONS] };
+    case 'pressKey':
+      return { keys: typeof p.key === 'string' ? [p.key] : [] };
+    case 'hotkey':
+      return { keys: typeof p.key === 'string' ? [p.key] : [], modifiers: list(p.modifiers) };
+    case 'releaseInput':
+      return { keys: list(p.keys), modifiers: list(p.modifiers), buttons: list(p.buttons) };
+    default:
+      return { modifiers: [...MODIFIERS], buttons: [...MOUSE_BUTTONS] };
+  }
+}
+
+function mergeRelease(a: ReleaseInputParams | null, b: ReleaseInputParams): ReleaseInputParams {
+  const union = <T>(x: T[] | undefined, y: T[] | undefined): T[] | undefined => {
+    const all = [...new Set([...(x ?? []), ...(y ?? [])])];
+    return all.length > 0 ? all : undefined;
+  };
+  const keys = union(a?.keys, b.keys);
+  const modifiers = union(a?.modifiers, b.modifiers);
+  const buttons = union(a?.buttons, b.buttons);
+  return { ...(keys && { keys }), ...(modifiers && { modifiers }), ...(buttons && { buttons }) };
+}
+
 function defaultTimeout(method: HelperMethod): number {
   return method === 'getAppState' ? HELPER_TIMEOUT_MS.getAppState : HELPER_TIMEOUT_MS.default;
 }
@@ -96,7 +137,8 @@ export class HelperProcess {
   /** Bumped by abort(); a request queued before the stop must never run. */
   private abortGeneration = 0;
   private nextId = 1;
-  private needsRelease = false;
+  /** What still has to be released, or null when nothing is held. */
+  private heldInput: ReleaseInputParams | null = null;
   private backgroundReleases = 0;
   private idleTimer: NodeJS.Timeout | null = null;
   private stderrTail = '';
@@ -125,7 +167,7 @@ export class HelperProcess {
     const run = async (): Promise<HelperMethods[M]['result']> => {
       if (this.disposed) throw new ComputerError('helper_unavailable', 'computer use is shutting down');
       assertCurrent();
-      if (this.needsRelease && method !== 'releaseInput') {
+      if (this.heldInput && method !== 'releaseInput') {
         let released = false;
         for (let attempt = 0; attempt < RELEASE_ATTEMPTS_BEFORE_CONTROL && !released; attempt++) {
           const helper = await this.ensureRunning();
@@ -144,7 +186,11 @@ export class HelperProcess {
       }
       const running = await this.ensureRunning();
       assertCurrent();
-      const result = (await this.send(running, method, params)) as HelperMethods[M]['result'];
+      // An explicit release also carries whatever is still known to be held.
+      const sent = method === 'releaseInput' && this.heldInput
+        ? mergeRelease(this.heldInput, params as ReleaseInputParams)
+        : params;
+      const result = (await this.send(running, method, sent)) as HelperMethods[M]['result'];
       if (method === 'releaseInput' && (result as { released?: unknown })?.released === true) this.markReleased();
       return result;
     };
@@ -171,7 +217,8 @@ export class HelperProcess {
     if (this.running) {
       // Mid-input, stdin EOF first: the helper releases what it holds on EOF,
       // and no fresh helper may be started for it any more.
-      const midInput = this.pending !== null && this.pending.child === this.running.child && holdsInput(this.pending.method);
+      const pending = this.pending;
+      const midInput = pending !== null && pending.child === this.running.child && holdsInput(pending.method);
       this.terminate(this.running.child, error, midInput ? (this.opts.disposeReleaseGraceMs ?? DISPOSE_RELEASE_GRACE_MS) : 0);
     }
     this.failPending(error);
@@ -187,7 +234,7 @@ export class HelperProcess {
    */
   private terminate(child: ChildProcessWithoutNullStreams, error: ComputerError, graceMs = 0): void {
     const pending = this.pending?.child === child ? this.pending : null;
-    const heldInput = pending !== null && holdsInput(pending.method);
+    const held = pending !== null && holdsInput(pending.method) ? releaseSpecFor(pending.method, pending.params) : null;
     if (pending) this.failPending(error);
     if (this.running?.child === child) {
       this.running = null;
@@ -204,7 +251,7 @@ export class HelperProcess {
         child.kill();
       }
     }
-    if (heldInput) this.releaseHeldInput();
+    if (held) this.releaseHeldInput(held);
   }
 
   /**
@@ -216,7 +263,7 @@ export class HelperProcess {
   private async tryRelease(running: Running): Promise<'released' | 'refused' | 'failed'> {
     let result: unknown;
     try {
-      result = await this.send(running, 'releaseInput', {});
+      result = await this.send(running, 'releaseInput', this.heldInput ?? {});
     } catch {
       return 'failed';
     }
@@ -230,18 +277,18 @@ export class HelperProcess {
   }
 
   private markReleased(): void {
-    this.needsRelease = false;
+    this.heldInput = null;
     this.backgroundReleases = 0;
   }
 
   /**
    * Lifts whatever a killed helper may have held, now rather than on the next
    * request: the person may be typing into another app meanwhile. Queued, so
-   * it runs before any later request; a failure leaves `needsRelease` set and
-   * the next request tries again.
+   * it runs before any later request; a failure leaves `heldInput` set and
+   * the next request tries again. `spec` names what the cut-off request sent.
    */
-  private releaseHeldInput(): void {
-    this.needsRelease = true;
+  private releaseHeldInput(spec?: ReleaseInputParams): void {
+    this.heldInput = mergeRelease(this.heldInput, spec ?? {});
     if (this.disposed) return;
     // Bounded: a helper that hangs on every release must not respawn forever.
     // Past the cap the next request retries, and control fails closed.
@@ -251,9 +298,9 @@ export class HelperProcess {
     }
     this.backgroundReleases += 1;
     const run = async (): Promise<void> => {
-      if (this.disposed || !this.needsRelease) return;
+      if (this.disposed || !this.heldInput) return;
       const running = await this.ensureRunning();
-      if (this.disposed || !this.needsRelease) return;
+      if (this.disposed || !this.heldInput) return;
       // `failed` was rescheduled by terminate(); `refused` is rescheduled here.
       if ((await this.tryRelease(running)) === 'refused') this.releaseHeldInput();
     };
@@ -414,6 +461,7 @@ export class HelperProcess {
       this.pending = {
         id,
         method,
+        params,
         child: running.child,
         resolve: (value) => {
           this.armIdle();
