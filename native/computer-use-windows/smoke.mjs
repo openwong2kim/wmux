@@ -41,13 +41,24 @@ if (process.platform !== 'win32') {
   process.exit(0);
 }
 
+// The whole run is bounded: a hung helper, launcher or Notepad fails the job
+// with the step it was on instead of holding a runner until the job timeout.
+const WATCHDOG_MS = 120_000;
+const STEP_MS = 30_000;
+
 const timings = {};
+let step = 'start';
+
+function log(next) {
+  step = next;
+  console.error(`[smoke] ${next}`);
+}
 let stderrTail = '';
 let notepadPid = null;
 let helper = null;
 
 function fail(message) {
-  console.error(`computer-use-windows smoke: FAILED: ${message}`);
+  console.error(`computer-use-windows smoke: FAILED at "${step}": ${message}`);
   if (stderrTail) console.error(`helper stderr (tail):\n${stderrTail}`);
   cleanup();
   process.exit(1);
@@ -60,6 +71,22 @@ function cleanup() {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const watchdog = setTimeout(() => fail(`watchdog: no finish within ${WATCHDOG_MS / 1000} s`), WATCHDOG_MS);
+watchdog.unref?.();
+
+/** Runs a short-lived command with a hard timeout and echoes its stderr. */
+function runBounded(cmd, args) {
+  const r = spawnSync(cmd, args, { encoding: 'utf8', windowsHide: true, timeout: STEP_MS, stdio: ['ignore', 'pipe', 'pipe'] });
+  if (r.stderr) process.stderr.write(r.stderr);
+  if (r.error) fail(`${cmd}: ${r.error.message}`);
+  return r;
+}
+
+/** A .dll launcher (framework-dependent build output) runs through `dotnet`. */
+function launcherCommand(args) {
+  return /\.dll$/i.test(launcher) ? ['dotnet', [launcher, ...args]] : [launcher, args];
+}
 
 // --- helper plumbing -------------------------------------------------------
 
@@ -79,6 +106,7 @@ function nextLine(timeoutMs) {
 
 let nextId = 1;
 async function call(method, params = {}, timeoutMs = 15000) {
+  log(`request ${method}`);
   const id = nextId++;
   const started = performance.now();
   helper.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
@@ -104,26 +132,34 @@ function writeSummary() {
 
 timings.mode = launcher ? 'limited (Medium integrity via RunLimited; hello latency includes the launcher)' : 'as invoked';
 if (launcher) {
-  const r = spawnSync(launcher, ['--no-wait', 'notepad.exe'], { encoding: 'utf8', windowsHide: true });
+  log('start Notepad through RunLimited --no-wait');
+  const [cmd, args] = launcherCommand(['--no-wait', 'notepad.exe']);
+  const r = runBounded(cmd, args);
+  log('read the Notepad pid');
   notepadPid = Number.parseInt(String(r.stdout).trim(), 10);
   if (r.status !== 0 || !Number.isInteger(notepadPid)) fail(`RunLimited could not start Notepad: ${r.stderr || r.error?.message}`);
 } else {
+  log('start Notepad');
   const notepad = spawn('notepad.exe', [], { stdio: 'ignore', detached: false });
   notepad.on('error', (e) => fail(`could not start Notepad: ${e.message}`));
   notepadPid = notepad.pid;
 }
 
+log(launcher ? 'spawn the helper through RunLimited' : 'spawn the helper');
 const spawnedAt = performance.now();
-helper = launcher
-  ? spawn(launcher, [exe], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
-  : spawn(exe, [], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+const [helperCmd, helperArgs] = launcher ? launcherCommand([exe]) : [exe, []];
+helper = spawn(helperCmd, helperArgs, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
 helper.on('error', (e) => fail(`could not start the helper: ${e.message}`));
 helper.on('exit', (code, signal) => {
   exited = { code, signal };
   if (lineWaiter) lineWaiter(null);
 });
 helper.stderr.setEncoding('utf8');
-helper.stderr.on('data', (d) => { stderrTail = (stderrTail + d).slice(-4096); });
+helper.stderr.on('data', (d) => {
+  stderrTail = (stderrTail + d).slice(-4096);
+  // The helper's and the launcher's diagnostics, live.
+  process.stderr.write(d);
+});
 helper.stdout.setEncoding('utf8');
 helper.stdout.on('data', (d) => {
   buffer += d;
@@ -135,6 +171,7 @@ helper.stdout.on('data', (d) => {
   }
 });
 
+log('wait for hello');
 const helloLine = await nextLine(10000).catch((e) => fail(`hello: ${e.message}`));
 if (helloLine === null) {
   // Let stderr drain before judging it.
@@ -199,12 +236,14 @@ if (!release.msg.ok || release.msg.result.released !== true) fail(`releaseInput:
 timings.releaseInputMs = release.ms;
 
 // stdin EOF: the helper must exit on its own.
+log('close stdin and wait for exit');
 helper.stdin.end();
 const exitDeadline = performance.now() + 5000;
 while (!exited && performance.now() < exitDeadline) await sleep(50);
 if (!exited) fail('the helper did not exit within 5 s of stdin EOF');
 timings.exitCode = exited.code;
 
+log('done');
 writeSummary();
 cleanup();
 process.exit(exited.code === 0 ? 0 : 1);

@@ -11,5 +11,9 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <NoWarn>$(NoWarn);CA1416</NoWarn>
+    <!-- Always emit RunLimited.exe next to the dll, whatever the host OS. -->
+    <UseAppHost>true</UseAppHost>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
   </PropertyGroup>
 </Project>

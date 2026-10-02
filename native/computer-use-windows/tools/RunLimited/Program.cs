@@ -3,8 +3,12 @@
 // Starts <exe> with a de-elevated copy of this process's token: a restricted
 // token (DISABLE_MAX_PRIVILEGE | LUA_TOKEN) labelled Medium integrity. The
 // child inherits this process's standard handles, so pipes from the caller
-// (node's spawn) reach it. Waits and exits with the child's exit code, or with
-// --no-wait prints the child's pid on stdout and exits 0.
+// (node's spawn) reach it. Waits and exits with the child's exit code.
+//
+// --no-wait (a GUI app such as Notepad): no handles are inherited at all, the
+// pid goes to stdout and RunLimited exits right after CreateProcessAsUser. A
+// child that inherited the caller's stdout pipe would keep it open for its
+// whole life, and the caller would wait for EOF forever.
 //
 // CI only (hosted Windows runners run jobs as an elevated administrator, and
 // the helper refuses to run elevated). Not shipped.
@@ -73,15 +77,20 @@ internal static unsafe class Program
             if (!ConvertStringSidToSidW("S-1-16-8192", out var medium)) Fail("ConvertStringSidToSid");
             var label = new SID_AND_ATTRIBUTES { Sid = medium, Attributes = SE_GROUP_INTEGRITY };
             if (!SetTokenInformation(token, TokenIntegrityLevel, &label, (uint)sizeof(SID_AND_ATTRIBUTES) + GetLengthSid(medium))) Fail("SetTokenInformation(TokenIntegrityLevel)");
+            Console.Error.WriteLine($"[RunLimited] starting {rest[0]}{(noWait ? " (no wait)" : "")}");
             Console.Error.WriteLine($"[RunLimited] child token: integrity 0x{Integrity(token):x}, elevated {Elevated(token)}");
 
-            // The caller's pipes must be inheritable to reach the child.
-            var si = new STARTUPINFOW { cb = sizeof(STARTUPINFOW), dwFlags = STARTF_USESTDHANDLES };
-            si.hStdInput = Inheritable(GetStdHandle(-10));
-            si.hStdOutput = Inheritable(GetStdHandle(-11));
-            si.hStdError = Inheritable(GetStdHandle(-12));
+            var si = new STARTUPINFOW { cb = sizeof(STARTUPINFOW) };
+            if (!noWait)
+            {
+                // The caller's pipes must be inheritable to reach the child.
+                si.dwFlags = STARTF_USESTDHANDLES;
+                si.hStdInput = Inheritable(GetStdHandle(-10));
+                si.hStdOutput = Inheritable(GetStdHandle(-11));
+                si.hStdError = Inheritable(GetStdHandle(-12));
+            }
             var cmd = new StringBuilder(string.Join(' ', rest.Select(Quote)));
-            if (!CreateProcessAsUserW(token, null, cmd, 0, 0, true, 0, 0, null, ref si, out var pi)) Fail("CreateProcessAsUser");
+            if (!CreateProcessAsUserW(token, null, cmd, 0, 0, !noWait, 0, 0, null, ref si, out var pi)) Fail("CreateProcessAsUser");
             CloseHandle(pi.hThread);
             if (noWait)
             {
