@@ -26,7 +26,7 @@ agent ──MCP──> wmux MCP server ──pipe RPC──> main: computer.rpc.
                               ┌───────────────────┴──────────────────┐
                  native/computer-use-windows            native/computer-use-macos
                  C# NativeAOT exe (CsWin32 UIA,          Swift .app (AXUIElement,
-                 SendInput, PrintWindow/BitBlt)          CGEvent, ScreenCaptureKit)
+                 SendInput, PrintWindow)                 CGEvent, ScreenCaptureKit)
 ```
 
 - **One OS switch.** `ComputerService` picks the helper binary once through
@@ -351,8 +351,8 @@ and never uses the clipboard.
   NativeAOT.
 - UIA3 through a CacheRequest: one round-trip per subtree, all UIA work on one
   STA thread.
-- Capture order: PrintWindow with `PW_RENDERFULLCONTENT`, then BitBlt of the
-  window rectangle when PrintWindow returns black. Windows.Graphics.Capture is
+- Capture: PrintWindow with `PW_RENDERFULLCONTENT` only, never a screen copy
+  (it could include covering windows). Windows.Graphics.Capture is
   not used because an unpackaged exe cannot hide its yellow border. DWM
   extended frame bounds are used to avoid shadow trim.
 - **The helper must be Authenticode-signed with the installer's identity.**

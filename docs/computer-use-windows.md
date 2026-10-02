@@ -112,8 +112,10 @@ monitors at negative coordinates work.
 ## Observation
 
 - The tree is read one level at a time: one cached children query per parent
-  (control view), capped by the remaining node budget, inside a 7 s walk
-  budget. A huge window (Chromium, Office) is cut off with `truncated: true`
+  (control view), capped by the remaining node budget, inside one 7 s walk
+  budget that also covers the Chromium re-query below. A child list cut at
+  the cap sets `truncated: true` even when pruned children leave the budget
+  unfilled. A huge window (Chromium, Office) is cut off with `truncated: true`
   instead of timing out before the caps apply. All UIA and COM
   work runs on one dedicated STA thread with a message pump. `IUIAutomation2`
   timeouts are 2 s to connect and 6 s per transaction, below main's 15 s and
@@ -128,21 +130,40 @@ monitors at negative coordinates work.
   more.
 - Staleness: an indexed action re-reads that element's RuntimeId and process
   id; a mismatch is `element_stale`.
-- Screenshots: `PrintWindow` with `PW_RENDERFULLCONTENT`, then `BitBlt` from
-  the screen when that comes back entirely black (every sample exactly 0), but
-  only when no other visible window above the target overlaps it, so a
-  covering window (a password manager, say) is never captured; otherwise
-  `screenshotStatus` reports the window as covered. Windows over 40 MP are
-  refused. Cropped to the DWM extended frame
+- Screenshots: `PrintWindow` with `PW_RENDERFULLCONTENT` only. The helper
+  never copies the screen, because a screen copy can include windows that
+  cover the target (a blocked app or a password manager). When `PrintWindow`
+  fails, `screenshotStatus` reports `screenshot_failed`; a window that renders
+  black through it (some GPU or DRM-protected surfaces) comes back black, and
+  the agent can still use `mode: "ax"`. Windows over 40 MP are refused.
+  Cropped to the DWM extended frame
   bounds (no shadow), scaled with the shared formula and encoded as JPEG
   (quality 80) through WIC. A minimized window reports
-  `screenshotStatus: failed` instead of capturing garbage.
+  `screenshotStatus: failed` instead of capturing garbage. So does a window
+  that is not responding (`IsHungAppWindow`, then a 500 ms `WM_NULL`):
+  `PrintWindow` would block on its thread, so it runs on its own thread with
+  a 2 s deadline and the request loop never waits on it.
 - Apps hosted by `ApplicationFrameHost.exe` (Settings, Calculator) are
   reported as the process behind their `CoreWindow`, so the blocklist sees
   `SystemSettings.exe`, not the host.
-- Each window also carries `className`, a diagnostic field outside the
-  protocol type, so Explorer's Run dialog and Control Panel windows can be
-  told apart from file windows (see the dogfood list).
+- `listWindows` covers every visible top-level window, owned ones (dialogs)
+  included with their `ownerId`. Each window carries its `className`; File
+  Explorer folder windows (`CabinetWClass`, `ExploreWClass`) also carry
+  `shellLocation`, the folder shown, read through `IShellWindows` with a
+  1.5 s deadline: a filesystem path or a `::{GUID}` shell parse name, absent
+  when unknown.
+- An app name or exe name covers every process of that app: `listWindows`
+  lists the windows of all of them and a window id is found in any of them.
+  A name or title that matches windows in more than one process answers
+  `invalid_argument`; pass a window id from `listWindows` or `pid:N`.
+- Main judges explorer.exe per window (`windowBlockReasonFor` in
+  `src/shared/computer/blocklist.ts`): only folder windows whose
+  `shellLocation` is a filesystem path may be driven; every other shell
+  window is a shell system surface and is refused, as is a folder window
+  whose location cannot be read. Before input, main re-reads the live
+  location, because a folder window can navigate after the snapshot.
+  `listWindows` hides a folder's location, like its title, until the person
+  consented to Explorer.
 
 ## Input
 
@@ -153,9 +174,12 @@ monitors at negative coordinates work.
 - Before every batch, and again before every typed chunk, repeated key and
   scroll notch, the helper requires the following. The slow checks
   (password field, focused element) run first; the fast Win32 ones (input
-  desktop, foreground window and pid, keyboard focus) run again under the
-  input lock immediately before each `SendInput`, so an Alt+Tab during the
-  slow check sends nothing:
+  desktop, foreground window and pid, and the focused window handle, which
+  must still be the one recorded at the check) run again under the input
+  lock immediately before each `SendInput`, so an Alt+Tab or a focus move
+  during the slow check sends nothing. That last check is per window
+  handle: focus moving between windowless controls inside one window is not
+  caught there:
   - the input desktop to be the normal one (`OpenInputDesktop` succeeds and is
     named `Default`). A locked screen, the UAC secure desktop or
     Ctrl+Alt+Delete is refused with `window_not_focused`, never reported as
@@ -187,6 +211,14 @@ monitors at negative coordinates work.
   UTF-16 units, never splitting a surrogate pair or a grapheme; newline and
   tab are Enter and Tab presses. **The clipboard is never used**, whatever
   the length (`TYPE_PASTE_THRESHOLD` does not apply to either helper).
+  `verified` means the focused value after equals the value before with
+  exactly the typed text inserted at one position; text that was already
+  there never verifies a failed insert.
+- Secret fields are refused on the target element itself as well as on the
+  focused one: `setValue` and `type` with an index answer `app_blocked` for an
+  `IsPassword` field, a Win32 `ES_PASSWORD` edit, a secret-like name,
+  AutomationId or class, or an element whose properties cannot be read,
+  focused or not.
 - Held input: every key and button is recorded before its batch and cleared
   after its up event, in memory and in
   `%LOCALAPPDATA%\wmux\computer-use\held\<pid>.json`:
@@ -234,7 +266,12 @@ that did not happen) in chat only, never in a public issue.
 
 ### 0. Build and start
 
-1. Install the .NET 10 SDK, then from the repo root:
+1. Get the helper. Either download the artifact
+   `wmux-computer-use-<head sha>` from the PR's `computer-use-windows` CI job
+   (the NativeAOT exe plus its `.sha256`, kept 7 days; check the hash with
+   `Get-FileHash`) and put it at
+   `native\computer-use-windows\dist\wmux-computer-use.exe`, or build it:
+   install the .NET 10 SDK, then from the repo root:
    `npm ci`, `npm run test:computer-use-windows`, `npm run build:computer-use-windows`.
    Expect `native\computer-use-windows\dist\wmux-computer-use.exe`.
 2. `node native\computer-use-windows\smoke.mjs native\computer-use-windows\dist\wmux-computer-use.exe`.
@@ -303,19 +340,33 @@ node native\computer-use-windows\probe.mjs <exe> getAppState '{"app":"notepad","
    `window_not_focused` and nothing is sent.
 8. **Settings app.** `listApps` reports Settings as `SystemSettings.exe`
    (not `ApplicationFrameHost.exe`), and the agent gets `app_blocked` for it.
-9. **Hung target.** Make a window hang (a small WinForms app that sleeps on
-   its UI thread after a click, or any app stopped in a debugger). Run
-   `getAppState` on it through `probe.mjs`: the helper answers with an error
-   within about 8 s and stays alive for the next request.
+9. **Hung target.** Run `native\computer-use-windows\tools\HangWindow`
+   (`dotnet build` it; it stops responding 3 s after it shows), or any app
+   stopped in a debugger. Through `probe.mjs`, `getAppState` with `mode`
+   `ax`, `vision` and `both` each answers within about 8 s (vision and both
+   with `screenshotStatus: failed`, "not responding"), and the helper answers
+   the next request.
+10. **Unfocused password field.** In the Edge page above, without focusing
+    the field, `setValue` and `type` with its index answer `app_blocked`.
+11. **Typing verification.** Type `abc` three times into a Notepad document
+    that already contains `abc`; every `verified` matches one new `abc` in
+    the file. Report any `verified` without its text landing.
 
-### 4. Control Panel and the Run dialog (#1689)
+### 4. Explorer windows
 
-Explorer's Run dialog and Control Panel belong to `explorer.exe`, so main
-cannot block them by executable. Open the Run dialog (Win+R by hand), Control
-Panel (`control`) and an ordinary File Explorer window, then run
-`probe.mjs <exe> listWindows '{"app":"explorer.exe"}'`. Report each window's
-`title` and `className`, and for Control Panel the address-bar location.
-Main will block on these fields.
+Open the Run dialog (Win+R by hand), Control Panel (`control`), a File
+Explorer window on a drive folder and one on This PC. Then:
+
+1. `probe.mjs <exe> listWindows '{}'` lists all four, the Run dialog with
+   its `ownerId`; report each window's `className` and `shellLocation`.
+2. `probe.mjs <exe> listWindows '{"app":"explorer.exe"}'` lists the windows
+   of every explorer.exe process, and `getAppState` with `app: "explorer.exe"`
+   and no window answers `invalid_argument` when more than one process has
+   windows.
+3. Through an agent (dev wmux): the drive folder can be driven; the Run
+   dialog, Control Panel and This PC answer `app_blocked`. Navigate the
+   allowed folder window to Control Panel by hand, then let the agent click
+   with its old snapshot: `app_blocked`, nothing clicked.
 
 ### 5. DPI and monitors
 
