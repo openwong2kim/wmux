@@ -240,6 +240,23 @@ describe('AgentDetector', () => {
     });
   });
 
+  describe('usage-limit rows', () => {
+    it('reports a Codex limit row with the reset from a wrapped row, and only on a Codex pane', () => {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onUsageLimit(cb);
+      det.feed("■ You've hit your usage limit. Upgrade to Pro or\n");
+      expect(cb).not.toHaveBeenCalled(); // no Codex gate yet: someone else's text
+
+      det.feed('│ >_ OpenAI Codex (v0.145.0)\n');
+      det.feed("\x1b[31m■\x1b[0m You've hit your usage limit. Upgrade to Pro or\n");
+      det.feed('try again in 2 hours.\n');
+      expect(cb).toHaveBeenCalledTimes(2);
+      expect(cb.mock.calls[0][0]).toMatchObject({ provider: 'codex' });
+      expect(cb.mock.calls[1][0].resetsAt).toBeGreaterThan(Date.now() + 7_000_000);
+    });
+  });
+
   describe('Codex approval prompts (Phase 2 — clean-room transcribed from Codex CLI 0.145.0)', () => {
     const gated = () => {
       const det = new AgentDetector();

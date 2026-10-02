@@ -9,6 +9,7 @@
 // normal shell output. False positives are worse than missed detections.
 
 import { CRITICAL_PATTERNS } from '../../shared/criticalPatterns';
+import { CodexUsageLimitLineScanner } from '../../shared/usageLimit';
 import type { AgentStatus } from '../../shared/types';
 import type { AgentSlug } from '../../shared/agentIdentity';
 export type { AgentSlug };
@@ -60,6 +61,15 @@ export interface CriticalEvent {
 
 type AgentEventCallback = (event: AgentEvent) => void;
 type CriticalEventCallback = (event: CriticalEvent) => void;
+
+/** A usage-limit row on screen (shared/usageLimit). An update repeats the
+ *  detection with the reset time a wrapped following row supplied. */
+export interface UsageLimitLineEvent {
+  provider: 'codex';
+  resetsAt?: number;
+  message?: string;
+}
+type UsageLimitLineCallback = (event: UsageLimitLineEvent) => void;
 
 interface AgentPattern {
   /** Display name. Surfaced in UI ("Claude Code", "Codex CLI"). */
@@ -609,6 +619,8 @@ function isGrokChrome(line: string): boolean {
 export class AgentDetector {
   private callbacks: AgentEventCallback[] = [];
   private criticalCallbacks: CriticalEventCallback[] = [];
+  private usageLimitCallbacks: UsageLimitLineCallback[] = [];
+  private readonly codexLimitScanner = new CodexUsageLimitLineScanner();
   private lineBuffer = '';
   // Per (agent:status) and (critical:label) dedup: stores the last matched
   // string for each key. Same key + same match = skip emit. New active cycle
@@ -676,6 +688,19 @@ export class AgentDetector {
     return () => {
       const idx = this.criticalCallbacks.indexOf(callback);
       if (idx >= 0) this.criticalCallbacks.splice(idx, 1);
+    };
+  }
+
+  /**
+   * Subscribe to a Codex pane's usage-limit row. Codex has no turn-failure
+   * hook, so its screen is the only source; Claude Code's limit arrives as a
+   * StopFailure hook instead and is never read off the screen here.
+   */
+  onUsageLimit(callback: UsageLimitLineCallback): () => void {
+    this.usageLimitCallbacks.push(callback);
+    return () => {
+      const idx = this.usageLimitCallbacks.indexOf(callback);
+      if (idx >= 0) this.usageLimitCallbacks.splice(idx, 1);
     };
   }
 
@@ -1009,6 +1034,15 @@ export class AgentDetector {
 
     const clean = line.replace(ANSI_STRIP, '').trim();
     if (!clean) return;
+
+    // Only on a pane Codex owns: another agent quoting the message (a review
+    // of this very detector) must not hold its pane. The row regex is also
+    // anchored at the line start.
+    if (this.usageLimitCallbacks.length > 0 &&
+      (this.lastAgent === 'Codex CLI' || (this.lastAgent === null && this.activeAgents.has('Codex CLI')))) {
+      const hit = this.codexLimitScanner.feed(clean);
+      if (hit) for (const cb of this.usageLimitCallbacks) cb({ provider: 'codex', ...hit });
+    }
 
     // Check critical patterns first
     for (const cp of CRITICAL_PATTERNS) {

@@ -26,6 +26,7 @@ import { titleShowsRunningTurn } from './transcript/chatScreenGate';
  *  - 'agent'    → { sessionId: string, event: AgentEvent }
  *  - 'notification' → { sessionId, event: TerminalNotification & { ts } }
  *  - 'critical' → { sessionId: string, event: CriticalEvent }
+ *  - 'usageLimit' → { sessionId: string, event: UsageLimitLineEvent }
  *  - 'active'   → { sessionId, agentName?, likelyRepaint? } — onActive cycle
  *                 start; likelyRepaint marks a passive burst inside the
  *                 resize-redraw guard window (alarm feeds must ignore it)
@@ -52,6 +53,7 @@ export class DaemonPTYBridge extends EventEmitter {
   private activeUnsubscribe: (() => void) | null = null;
   private agentUnsubscribe: (() => void) | null = null;
   private criticalUnsubscribe: (() => void) | null = null;
+  private usageLimitUnsubscribe: (() => void) | null = null;
   private resizeGuardTimer: ReturnType<typeof setTimeout> | null = null;
   private sessionId: string | null = null;
   /**
@@ -1081,6 +1083,9 @@ export class DaemonPTYBridge extends EventEmitter {
     this.criticalUnsubscribe = agentDetector.onCritical((criticalEvent) => {
       this.emit('critical', { sessionId, event: criticalEvent });
     });
+    this.usageLimitUnsubscribe = agentDetector.onUsageLimit((event) => {
+      this.emit('usageLimit', { sessionId, event });
+    });
 
     // Prompt-based CWD detection state
     let lastDetectedCwd = '';
@@ -1298,6 +1303,8 @@ export class DaemonPTYBridge extends EventEmitter {
     this.agentUnsubscribe = null;
     this.criticalUnsubscribe?.();
     this.criticalUnsubscribe = null;
+    this.usageLimitUnsubscribe?.();
+    this.usageLimitUnsubscribe = null;
 
     // Stop activity monitor to clear timers and state
     if (this.activityMonitor && this.sessionId) {

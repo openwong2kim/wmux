@@ -163,6 +163,9 @@ import type { AgentSlug } from '../shared/events';
 import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
 import { deliverScheduledPrompt } from './sessionPromptDelivery';
+import { UsageLimitRegistry } from './usageLimit/UsageLimitRegistry';
+import type { SessionPromptScheduleResult } from '../shared/sessionPromptSchedule';
+import { USAGE_LIMIT_CONTINUE_PROMPT, type PaneUsageLimitPatch } from '../shared/usageLimit';
 import { chatAgentStatus, confirmedStopAt, transcriptTurnEnd } from './transcript/chatAgentStatus';
 import { DaemonPTYBridge } from './DaemonPTYBridge';
 import { createCodexSharedRuntime, runCodexDaemon } from './transcript/codexSharedRuntime';
@@ -214,6 +217,8 @@ function recordHistory(work: (store: RunHistoryStore) => void): void {
   catch (error) { log('warn', 'Phone run history could not be saved:', error); }
 }
 let hookIngest: HookIngest | null = null;
+/** Panes held at a provider usage limit (shared/usageLimit). Built once delivery exists. */
+let usageLimits: UsageLimitRegistry | null = null;
 /** Scheduled runs. Built in registerRpcHandlers once the session RPCs exist. */
 let automationEngine: AutomationEngine | null = null;
 // Outbound webhook/ntfy notifications. Module-scoped for the same reason
@@ -3976,6 +3981,7 @@ function registerRpcHandlers(
       // Chat View P1 — the tail nudge rides the existing hook signals rather
       // than a new hook. Fired for every resolved kind; a no-op for panes with
       // no Chat surface open.
+      onResolvedSignal: (sessionId, signal) => usageLimits?.noteHookSignal(sessionId, signal),
       onTranscriptNudge: (sessionId, kind, agentSessionId) => {
         projector.nudge(sessionId, kind, agentSessionId);
         // #782 — phone turn-view nudge. Non-recording: bypasses attentionLog so
@@ -4331,7 +4337,17 @@ function registerRpcHandlers(
   // daemon's v1 handler would ignore the additive incarnationId parameter and
   // write anyway; v2 makes mixed versions fail with Unknown method pre-write.
   // Named so scheduled runs (automation engine) paste through the same proof.
-  const deliverPromptToSession = (id: string, agentSlug: AgentSlug, incarnationId: string, prompt: string) =>
+  // Scheduled prompts and automation runs are automatic input: a pane held at
+  // a usage limit answers 'busy', which the schedulers retry on their next
+  // tick, so the prompt lands after the reset instead of into a dead turn.
+  // Only the registry's own continue message passes `bypassUsageHold`.
+  const deliverPromptToSession = async (
+    id: string, agentSlug: AgentSlug, incarnationId: string, prompt: string, bypassUsageHold = false,
+  ): Promise<SessionPromptScheduleResult> => {
+    if (!bypassUsageHold && usageLimits?.holds(id)) return 'busy';
+    return deliverPromptToSessionNow(id, agentSlug, incarnationId, prompt);
+  };
+  const deliverPromptToSessionNow = (id: string, agentSlug: AgentSlug, incarnationId: string, prompt: string) =>
     deliverScheduledPrompt(agentSlug, incarnationId, prompt, {
       getAgentState: () => {
         const current = readDaemonAgentState(id);
@@ -4381,6 +4397,39 @@ function registerRpcHandlers(
     const result = await deliverPromptToSession(id, agentSlug, incarnationId, prompt);
     return { result };
   });
+
+  usageLimits = new UsageLimitRegistry({
+    broadcast: (event) => pipeServer.broadcast(event),
+    deliverContinue: async (id) => {
+      const state = readDaemonAgentState(id);
+      const slug = state.agentName ? agentDisplayToSlug(state.agentName) : undefined;
+      if (!slug || !state.incarnationId) return 'unavailable';
+      return deliverPromptToSession(id, slug, state.incarnationId, USAGE_LIMIT_CONTINUE_PROMPT, true);
+    },
+    log: (message) => log('info', message),
+  });
+  pipeServer.onRpc('daemon.usageLimit.list', async () => ({ limits: usageLimits?.list() ?? [] }));
+  pipeServer.onRpc('daemon.usageLimit.update', async (params) => {
+    const id = typeof params['id'] === 'string' ? params['id'] : '';
+    const raw = params['patch'];
+    if (!id || !raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false };
+    const p = raw as Record<string, unknown>;
+    const patch: PaneUsageLimitPatch = {
+      ...(typeof p['autoResume'] === 'boolean' ? { autoResume: p['autoResume'] } : {}),
+      ...(typeof p['resetsAt'] === 'number' ? { resetsAt: p['resetsAt'] } : {}),
+      ...(p['dismiss'] === true ? { dismiss: true as const } : {}),
+      ...(p['resumeNow'] === true ? { resumeNow: true as const } : {}),
+    };
+    return { ok: (await usageLimits?.update(id, patch)) === true };
+  });
+  sessionManager.on('session:usageLimit', (payload: { sessionId: string; event: { provider: 'codex'; resetsAt?: number; message?: string } }) => {
+    usageLimits?.noteScreenLimit(payload.sessionId, payload.event.provider, payload.event);
+  });
+  sessionManager.on('session:active', (payload: { sessionId: string; likelyRepaint?: boolean }) => {
+    if (!payload.likelyRepaint) usageLimits?.noteActive(payload.sessionId);
+  });
+  sessionManager.on('session:died', (payload: { id: string }) => usageLimits?.drop(payload.id));
+  sessionManager.on('session:destroyed', (payload: { id: string }) => usageLimits?.drop(payload.id));
 
   // Scheduled runs. Every effect goes through the same session RPCs and
   // readers a GUI pane uses; the engine owns only its store and run state.
@@ -7320,6 +7369,7 @@ async function main(): Promise<void> {
     // A nudge ends with an Enter; an approval waiting on a human is quiet, so
     // the quiet gate alone would press it. Hold on a pending approval record,
     // a pane blocked on a human, or a dialog on the visible screen.
+    usageLimited: (id) => usageLimits?.holds(id) === true,
     approvalBlocked: (id) =>
       sessionManager.getSession(id)?.bridge.isAwaitingHuman() === true
       || approvalRegistry?.list().pending.some((request) => request.sessionId === id) === true,

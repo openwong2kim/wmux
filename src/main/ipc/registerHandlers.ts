@@ -1,4 +1,5 @@
 import { registerQuickCommandHandlers } from './handlers/quickCommand.handler';
+import { registerUsageLimitHandlers } from '../usageLimit/usageLimit.handler';
 import { ipcMain, type BrowserWindow } from 'electron';
 import { PTYManager } from '../pty/PTYManager';
 import { PTYBridge } from '../pty/PTYBridge';
@@ -155,6 +156,7 @@ export function registerAllHandlers(
   options: RegisterHandlersOptions = {},
 ): () => void {
   const cleanupPty = registerPTYHandlers(ptyManager, ptyBridge, daemonClient, getWindow);
+  const cleanupUsageLimit = registerUsageLimitHandlers(daemonClient, getWindow);
   // session/scrollback handlers: installed elsewhere (module-load in
   // main/index.ts) and intentionally NOT in this swap cycle. See the
   // import-block note above for the race rationale.
@@ -480,6 +482,7 @@ export function registerAllHandlers(
 
   return () => {
     cleanupPty();
+    cleanupUsageLimit();
     // cleanupSession deliberately omitted — session/scrollback handlers
     // live outside this swap cycle (see import-block note above).
     cleanupShell();

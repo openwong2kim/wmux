@@ -221,6 +221,12 @@ export interface HookIngestDeps {
    *
    * Optional: only the daemon supplies it, and no hook behaviour depends on it.
    */
+  /**
+   * Every resolved signal with its payload, for consumers that read a field
+   * the event shapes drop (the usage-limit registry reads a StopFailure's
+   * `error` and `last_assistant_message`). Optional; only the daemon supplies it.
+   */
+  onResolvedSignal?: (sessionId: string, signal: AgentSignal) => void;
   onTranscriptNudge?: (
     sessionId: string,
     kind: AgentSignalKind,
@@ -700,6 +706,11 @@ export class HookIngest {
       this.deps.onAuthorityTouched?.(sessionId);
     } catch (err) {
       this.deps.log?.('warn', `[hooks] authority-touch callback failed for ${sessionId}: ${String(err)}`);
+    }
+    try {
+      this.deps.onResolvedSignal?.(sessionId, signal);
+    } catch (err) {
+      this.deps.log?.('warn', `[hooks] resolved-signal callback failed for ${sessionId}: ${String(err)}`);
     }
 
     // Verdict-gate feed (R4): PreToolUse never reaches `handle()` — the RPC

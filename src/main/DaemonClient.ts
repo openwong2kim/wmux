@@ -1,4 +1,5 @@
 import net from 'node:net';
+import type { PaneUsageLimit, PaneUsageLimitPatch } from '../shared/usageLimit';
 import { EventEmitter } from 'node:events';
 import crypto from 'node:crypto';
 import type { RpcResponse, DaemonEvent } from '../shared/rpc';
@@ -671,6 +672,28 @@ export class DaemonClient extends EventEmitter {
     }
   }
 
+  /** The daemon's pane usage-limit holds; empty when it is unreachable or predates them. */
+  async listUsageLimits(): Promise<PaneUsageLimit[]> {
+    if (!this.isConnected) return [];
+    try {
+      const response = await this.rpc('daemon.usageLimit.list', {}) as { limits?: unknown };
+      return Array.isArray(response.limits) ? response.limits as PaneUsageLimit[] : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Edit one pane's usage-limit hold (auto-resume, dismiss, resume now, reset fill). */
+  async updateUsageLimit(id: string, patch: PaneUsageLimitPatch): Promise<boolean> {
+    if (!this.isConnected) return false;
+    try {
+      const response = await this.rpc('daemon.usageLimit.update', { id, patch }) as { ok?: unknown };
+      return response.ok === true;
+    } catch {
+      return false;
+    }
+  }
+
   /** Daemon-owned identity/input-atomic scheduled prompt delivery. */
   async deliverScheduledPrompt(args: {
     id: string;
@@ -845,6 +868,12 @@ export class DaemonClient extends EventEmitter {
             restartCount: data?.restartCount ?? 0,
             consecutiveFailures: data?.consecutiveFailures ?? 0,
           });
+          break;
+        }
+        case 'usage.limit.changed': {
+          // A pane's usage-limit hold changed (shared/usageLimit); null = cleared.
+          const data = event.data as { limit?: PaneUsageLimit | null } | null;
+          this.emit('usageLimit:changed', { sessionId: event.sessionId, limit: data?.limit ?? null });
           break;
         }
         case 'activity.idle': {
