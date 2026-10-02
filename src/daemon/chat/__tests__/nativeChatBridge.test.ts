@@ -1032,6 +1032,98 @@ describe('cancel outcome (Esc path)', () => {
     expect(f.events.map((event) => event.state)).toEqual(['unknown']);
   });
 
+  describe('a prompt Claude restored into its input box', () => {
+    const RULE = '─'.repeat(40);
+    const composer = (...lines: string[]) => [RULE, `❯ ${lines[0] ?? ''}`.trimEnd(), ...lines.slice(1).map((line) => `  ${line}`), RULE];
+    /** A phone send that starts the aimed turn, then the cancel; Ctrl-U drops the composer's last row. */
+    const sendThenCancel = async (text: string, restored: string[] | null, opts: { ignoreKeys?: boolean } = {}) => {
+      let shown: string[] = [];
+      const f = setup((fx) => ({ write: (id, data) => {
+        if (data === '\x15' && !opts.ignoreKeys) { shown = shown.slice(0, -1); fx.state.screen = composer(...shown); }
+        return fx.deps.write(id, data);
+      } }));
+      f.state.agent = { ...f.state.agent, agentStatus: 'complete', turn: undefined };
+      f.state.screen = composer();
+      expect(await f.bridge.send(phoneSend(text))).toMatchObject({ result: 'sent' });
+      f.state.agent = { ...f.state.agent, agentStatus: 'running', turn: { id: 't1:n.3', state: 'running', startedAt: Date.now() } };
+      f.state.screen = RUNNING;
+      expect(await f.bridge.cancel(f.req)).toMatchObject({ effect: 'interrupt-requested' });
+      // Esc before any output: the turn ends with no transcript record and the text back in the box.
+      f.state.agent.turn = { id: 't1:n.3', state: 'idle', startedAt: f.startedAt };
+      f.shell.title = { title: '✳ Claude Code', at: Date.now() };
+      shown = restored ?? [];
+      f.state.screen = composer(...shown);
+      f.written.length = 0;
+      return f;
+    };
+
+    it('is cleared with Ctrl-U once proven equal to the sent text, and the next send goes through', async () => {
+      const f = await sendThenCancel('fix the login bug', ['fix the login bug']);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(f.outcome()).toMatchObject({ state: 'ended', evidence: 'screen', promptRestored: true, inputCleared: true });
+      expect(f.written).toEqual(['\x15']);
+      expect(f.events.at(-1)).toMatchObject({ state: 'ended' });
+      expect(await f.bridge.send(phoneSend('next'))).toMatchObject({ result: 'sent' });
+    });
+
+    it('takes one key per wrapped or multi-line row, re-reading after each', async () => {
+      const f = await sendThenCancel('first line\nsecond line that wraps', ['first line', 'second line that', 'wraps']);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(f.outcome()).toMatchObject({ promptRestored: true, inputCleared: true });
+      expect(f.written).toEqual(['\x15', '\x15', '\x15']);
+    });
+
+    it('other text in the box, or an empty one, is never touched', async () => {
+      const other = await sendThenCancel('fix the login bug', ['fix the login bug and also the logout one']);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(other.outcome()).toMatchObject({ state: 'ended', promptRestored: false });
+      expect(other.outcome()).not.toHaveProperty('inputCleared');
+      expect(other.written).toEqual([]);
+      vi.useRealTimers();
+      const empty = await sendThenCancel('fix the login bug', null);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(empty.outcome()).toMatchObject({ state: 'ended', promptRestored: false });
+      expect(empty.written).toEqual([]);
+    });
+
+    it('keys that change nothing stop after two and report the box not cleared', async () => {
+      const f = await sendThenCancel('fix the login bug', ['fix the login bug'], { ignoreKeys: true });
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(f.outcome()).toMatchObject({ promptRestored: true, inputCleared: false });
+      expect(f.written).toEqual(['\x15', '\x15']);
+    });
+
+    it('no daemon send for the aimed turn, or a dialog on screen: nothing checked, nothing written', async () => {
+      const f = setup();
+      await f.bridge.cancel(f.req);
+      f.state.agent.turn = { id: 't1:n.3', state: 'idle', startedAt: f.startedAt };
+      f.shell.title = { title: '✳ Claude Code', at: Date.now() };
+      f.state.screen = composer('typed in Terminal');
+      f.written.length = 0;
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(f.outcome()).toMatchObject({ state: 'ended' });
+      expect(f.outcome()).not.toHaveProperty('promptRestored');
+      expect(f.written).toEqual([]);
+      vi.useRealTimers();
+      const dialog = await sendThenCancel('fix the login bug', ['fix the login bug']);
+      dialog.state.screen = [...composer('fix the login bug'), 'Esc to cancel'];
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(dialog.outcome()).not.toHaveProperty('promptRestored');
+      expect(dialog.written).toEqual([]);
+    });
+
+    it('a settle retry does not clear twice', async () => {
+      const f = await sendThenCancel('fix the login bug', ['fix the login bug']);
+      const store = f.deps.cancelReceipts!;
+      const real = store.setProgress.bind(store);
+      let fail = 1;
+      vi.spyOn(store, 'setProgress').mockImplementation((...args) => (fail-- > 0 ? 'unsaved' : real(...args)));
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(f.outcome()).toMatchObject({ promptRestored: true, inputCleared: true });
+      expect(f.written).toEqual(['\x15']);
+    });
+  });
+
   it('the receipt read is owner- and pane-bound; no receipt is none (undefined); no store is null', async () => {
     const f = setup();
     await f.bridge.cancel(f.req);

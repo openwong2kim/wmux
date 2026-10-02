@@ -36,7 +36,7 @@ export interface WatchedCancel {
 export type CancelProbe =
   | { kind: 'gone' } | { kind: 'session-changed' } | { kind: 'running' } | { kind: 'idle' }
   | { kind: 'unprovable' } | { kind: 'transient' }
-  | { kind: 'ended'; endedAs: ChatCancelEndedAs; evidence: ChatCancelEvidence };
+  | { kind: 'ended'; endedAs: ChatCancelEndedAs; evidence: ChatCancelEvidence } & Pick<StoredCancelProgress, 'promptRestored' | 'inputCleared'>;
 
 /** SSE `chat.cancel` (`ChatCancelEventFrame`), plus the owner it is delivered to. */
 export interface ChatCancelEvent extends ChatCancelEventFrame {
@@ -111,7 +111,11 @@ export function createChatCancelObserver<W extends WatchedCancel>(deps: ChatCanc
       switch (seen.kind) {
         case 'gone': progress = { state: 'unknown', reason: 'pane-closed', at }; break;
         case 'session-changed': progress = { state: 'unknown', reason: 'session-changed', at }; break;
-        case 'ended': progress = { state: 'ended', endedAs: seen.endedAs, evidence: seen.evidence, at }; break;
+        case 'ended':
+          progress = { state: 'ended', endedAs: seen.endedAs, evidence: seen.evidence,
+            ...(seen.promptRestored !== undefined ? { promptRestored: seen.promptRestored } : {}),
+            ...(seen.inputCleared !== undefined ? { inputCleared: seen.inputCleared } : {}), at };
+          break;
         case 'unprovable': progress = { state: 'unknown', at }; break;
         default:
           if (final) {

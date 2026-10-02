@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ChatCancelReceiptStore } from '../ChatCancelReceiptStore';
 import { ChatSendReceiptStore } from '../ChatSendReceiptStore';
+import { normalizeCancelProgress } from '../../../shared/phoneChatCancelOutcome';
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
@@ -57,6 +58,23 @@ describe('ChatCancelReceiptStore', () => {
     expect(saved.version).toBe(1);
     expect(Object.values(saved.entries)[0]).toMatchObject({ state: 'final', outcome: { effect: 'interrupt-requested' },
       progress: { state: 'ended', endedAs: 'interrupted', evidence: 'transcript', at: 6_000 } });
+  });
+
+  it('keeps the restored-prompt check on an ended progress across a reload, and drops it anywhere else', () => {
+    const dir = tmp();
+    const store = new ChatCancelReceiptStore(dir, { now: () => 5_000 });
+    const [cleared, odd] = [id(), id()];
+    for (const cid of [cleared, odd]) {
+      store.insertPending('device:a', cid, { paneId: 'pane', fingerprint: fp });
+      store.complete('device:a', cid, { effect: 'interrupt-requested' }, { state: 'requested', at: 5_000 });
+    }
+    store.setProgress('device:a', cleared, { state: 'ended', endedAs: 'unspecified', evidence: 'screen', promptRestored: true, inputCleared: true, at: 6_000 });
+    // `inputCleared` means nothing without a restored prompt.
+    store.setProgress('device:a', odd, { state: 'ended', endedAs: 'unspecified', evidence: 'screen', promptRestored: false, inputCleared: true, at: 6_000 });
+    const reloaded = new ChatCancelReceiptStore(dir, { now: () => 7_000 });
+    expect(reloaded.progress('device:a', cleared)).toEqual({ state: 'ended', endedAs: 'unspecified', evidence: 'screen', promptRestored: true, inputCleared: true, at: 6_000 });
+    expect(reloaded.progress('device:a', odd)).toEqual({ state: 'ended', endedAs: 'unspecified', evidence: 'screen', promptRestored: false, at: 6_000 });
+    expect(normalizeCancelProgress({ state: 'unknown', promptRestored: true, inputCleared: true, at: 1 }, 0)).toEqual({ state: 'unknown', at: 1 });
   });
 
   it('a daemon restart turns requested and crashed pending entries into unknown (daemon-restart); settled ones stay', () => {

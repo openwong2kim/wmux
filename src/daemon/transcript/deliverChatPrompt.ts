@@ -105,6 +105,25 @@ export function claudeComposerVisible(rows: ChatScreenRows | null): boolean {
   return at > 0 && rule(tail[at - 1]) && rule(tail[at + 1]);
 }
 
+/**
+ * The text in Claude's composer, its rows joined with `\n` (`''` when empty),
+ * or null when no composer is on screen. A long line wraps into indented
+ * continuation rows, so a caller compares without whitespace.
+ */
+export function claudeComposerText(rows: ChatScreenRows | null): string | null {
+  if (!rows || screenBlocksChatSend(rows)) return null;
+  if (claudeComposerEmpty(rows)) return '';
+  const tail = rows.map(row => row.trim());
+  const rule = (row: string | undefined) => !!row && /^─{8,}$/.test(row);
+  let at = -1;
+  tail.forEach((row, index) => { if (/^❯(?:\s|$)/.test(row)) at = index; });
+  if (at <= 0 || !rule(tail[at - 1])) return null;
+  const end = tail.findIndex((row, index) => index > at && rule(row));
+  // Continuation rows are indented under the `❯`; anything else is not the composer.
+  if (end < 0 || rows.slice(at + 1, end).some(row => !/^\s{2}/.test(row) && row.trim())) return null;
+  return [tail[at].replace(/^❯\s?/, ''), ...tail.slice(at + 1, end)].join('\n');
+}
+
 /** The Codex composer is on screen (a `›` row over its model/cwd footer), empty or not. */
 export function codexComposerVisible(rows: ChatScreenRows | null): boolean {
   if (!rows || codexScreenBlocked(rows)) return false;

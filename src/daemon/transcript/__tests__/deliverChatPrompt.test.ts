@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { claudeComposerEmpty, codexComposerEmpty, deliverChatPrompt, type ChatDeliveryDeps } from '../deliverChatPrompt';
+import { claudeComposerEmpty, claudeComposerText, codexComposerEmpty, deliverChatPrompt, type ChatDeliveryDeps } from '../deliverChatPrompt';
 import type { ScheduledPromptAgentState } from '../../sessionPromptDelivery';
 import { generateTextSnapshot } from '../../HeadlessSnapshot';
 
@@ -157,6 +157,19 @@ describe('Claude\'s dimmed next-prompt suggestion', () => {
     draft.deps.readScreen = async () => typedRows;
     expect(await deliverChatPrompt('conversation-1', 'next', draft.deps)).toBe('unconfirmed');
     expect(draft.write).not.toHaveBeenCalled();
+  });
+});
+
+describe('Claude composer text', () => {
+  const RULE = '─'.repeat(40);
+  it('joins wrapped and multi-line rows, reads empty as empty, and refuses anything that is not the composer', () => {
+    expect(claudeComposerText(['● done', RULE, '❯ fix the login', '  bug now', RULE, '  ⏸ manual mode on'])).toBe('fix the login\nbug now');
+    expect(claudeComposerText([RULE, '❯ ', RULE])).toBe('');
+    expect(claudeComposerText([RULE, '❯ Try "how does <filepath> work?"', RULE])).toBe('');
+    expect(claudeComposerText([RULE, '❯ draft', 'not indented', RULE])).toBeNull();
+    expect(claudeComposerText([RULE, '❯ draft'])).toBeNull();
+    expect(claudeComposerText([RULE, '❯ draft', RULE, 'Esc to cancel'])).toBeNull();
+    expect(claudeComposerText(null)).toBeNull();
   });
 });
 

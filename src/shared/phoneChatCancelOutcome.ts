@@ -40,6 +40,22 @@ export interface ChatCancelProgress {
   evidence?: ChatCancelEvidence;
   /** `unknown` only. */
   reason?: ChatCancelUnknownReason;
+  /**
+   * `ended` only, Claude only, and only when the daemon itself sent the aimed
+   * turn's text. Claude puts a prompt interrupted before any output back into
+   * its input box, which then refuses every send (`input-not-provably-empty`).
+   * `true`: once the turn ended, the input box held exactly that text.
+   * `false`: it was read and did not (empty, or other text). Absent: not checked
+   * (no daemon-sent text for the turn, the screen unreadable, a dialog up, or
+   * another send in flight).
+   */
+  promptRestored?: boolean;
+  /**
+   * Present only with `promptRestored: true`. `true`: the daemon cleared the
+   * restored text (Ctrl-U, which Claude can undo with Ctrl-Y) and a re-read
+   * showed the input box empty. `false`: it is not proven empty; check Terminal.
+   */
+  inputCleared?: boolean;
   /** Epoch ms the interrupt was written. */
   requestedAt?: number;
   /** Epoch ms the state last changed. */
@@ -72,6 +88,8 @@ export interface StoredCancelProgress {
   endedAs?: ChatCancelEndedAs;
   evidence?: ChatCancelEvidence;
   reason?: ChatCancelUnknownReason;
+  promptRestored?: boolean;
+  inputCleared?: boolean;
   at: number;
 }
 
@@ -116,7 +134,9 @@ export function normalizeCancelProgress(value: unknown, fallbackAt: number): Sto
   if (state === 'ended') {
     return { state, at,
       ...(typeof v.endedAs === 'string' && ENDED_AS.has(v.endedAs) ? { endedAs: v.endedAs as ChatCancelEndedAs } : {}),
-      ...(typeof v.evidence === 'string' && EVIDENCE.has(v.evidence) ? { evidence: v.evidence as ChatCancelEvidence } : {}) };
+      ...(typeof v.evidence === 'string' && EVIDENCE.has(v.evidence) ? { evidence: v.evidence as ChatCancelEvidence } : {}),
+      ...(typeof v.promptRestored === 'boolean' ? { promptRestored: v.promptRestored } : {}),
+      ...(v.promptRestored === true && typeof v.inputCleared === 'boolean' ? { inputCleared: v.inputCleared } : {}) };
   }
   if (state === 'unknown') {
     return { state, at, ...(typeof v.reason === 'string' && REASON.test(v.reason) ? { reason: v.reason as ChatCancelUnknownReason } : {}) };
@@ -132,6 +152,8 @@ export interface ChatCancelReceiptView {
   endedAs?: ChatCancelEndedAs;
   evidence?: ChatCancelEvidence;
   reason?: ChatCancelUnknownReason;
+  promptRestored?: boolean;
+  inputCleared?: boolean;
   requestedAt?: number;
   at?: number;
 }

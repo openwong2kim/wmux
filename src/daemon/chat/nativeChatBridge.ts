@@ -10,8 +10,8 @@ import { buildAgentLaunch } from '../web/agentLaunch';
 import { withChosenAccountEnv } from '../phone/paneAccountSpawn';
 import { codexCdOperand, withCodexRemote } from '../web/recoverCodexPane';
 import type { CodexNativeInterrupt, CodexTurnRef } from '../web/codexPaneRelays';
-import { screenBlocksChatSend, screenShowsTurnEnding, titleShowsFinishedTurn } from '../transcript/chatScreenGate';
-import { deliverChatPrompt, type ChatScreenRows } from '../transcript/deliverChatPrompt';
+import { screenBlocksChatSend, screenShowsRunningTurn, screenShowsTurnEnding, titleShowsFinishedTurn } from '../transcript/chatScreenGate';
+import { claudeComposerText, deliverChatPrompt, type ChatScreenRows } from '../transcript/deliverChatPrompt';
 import { INTERRUPT_COOLDOWN_MS, interruptChatTurn, type ChatInterruptVerdict } from '../transcript/interruptChatTurn';
 import { codexRuntimeEnv, terminalLaunchCommand } from '../transcript/terminalLaunch';
 import type { TerminalChatFailure, TerminalChatService } from '../transcript/TerminalChatService';
@@ -196,6 +196,13 @@ const QUEUE_PERSIST_ATTEMPTS = 3;
  */
 const QUEUE_TURN_GATE_STALE_MS = 30_000;
 const QUEUE_PREVIEW_CHARS = 80;
+/** Ctrl-U: Claude deletes back to the start of the visual row (Ctrl-Y restores it). Never Ctrl-C. */
+const CLEAR_ROW_KEY = '\x15';
+/** Between two clearing keys: long enough for Claude to repaint before the re-read. */
+const CLEAR_STEP_MS = 150;
+/** Clearing keys per cancel at most (a row, or the empty line a row leaves, each). */
+const CLEAR_MAX_KEYS = 32;
+const squash = (text: string) => text.replace(/\s+/g, '');
 const DELIVERED_KEEP = 32;
 const slugOf = (state: ChatAgentState) => agentDisplayToSlug(state.agentName ?? '');
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -224,6 +231,10 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     incarnationId?: string; agentSessionId: string; slug: string; boundary: TranscriptBoundary;
     /** The Codex turn a native interrupt was aimed at (never on the wire). */
     codexTurn?: CodexTurnRef;
+    /** The text the daemon sent for the aimed turn, when exactly one send started it (memory only). */
+    sentText?: string;
+    /** The restored-prompt check, once run: a settle retry must not repeat it. */
+    promptCheck?: Pick<StoredCancelProgress, 'promptRestored' | 'inputCleared'>;
   }): Promise<CancelProbe> => {
     const id = cancel.paneId;
     const where = (): 'live' | 'gone' | 'transient' => {
@@ -267,9 +278,72 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     return { kind: 'idle' };
   };
   type ObservedCancel = Parameters<typeof probeCancel>[0];
+
+  /**
+   * Claude puts a prompt interrupted before any output back into its input
+   * box, and every later send is refused until it is empty. Once the aimed
+   * turn ended, the box is cleared only when it is PROVEN to hold exactly the
+   * text the daemon sent for that turn; anything else is left untouched. Each
+   * key is followed by a re-read: the rest must still be a prefix of that text.
+   * Runs under the pane's send lock, so no send or Stop interleaves.
+   */
+  const clearRestoredPrompt = async (cancel: ObservedCancel): Promise<NonNullable<ObservedCancel['promptCheck']>> => {
+    const id = cancel.paneId;
+    const want = cancel.sentText === undefined ? '' : squash(cancel.sentText);
+    if (cancel.slug !== 'claude' || !want || sending.has(id)) return {};
+    sending.add(id);
+    let keys = 0;
+    try {
+      const owned = (): boolean => {
+        const pane = deps.pane(id);
+        return !!pane && pane.meta.incarnationId === cancel.incarnationId && liveState(pane) &&
+          deps.projector.status(id).agentSessionId === cancel.agentSessionId &&
+          deps.chatAgentState(id).turn?.state !== 'running' && !hasOpenApproval(id);
+      };
+      // What the composer holds, or null when the pane is no longer ours to type into.
+      const look = async (): Promise<string | null> => {
+        let rows: ChatScreenRows | null = null;
+        try { rows = await deps.readScreen(id); } catch { /* unreadable = no evidence */ }
+        if (!owned() || screenShowsRunningTurn(rows, 'claude')) return null;
+        return claudeComposerText(rows);
+      };
+      const shown = await look();
+      if (shown === null) return {};
+      if (squash(shown) !== want) return { promptRestored: false };
+      // A key right after a lone ESC would read as Alt+key.
+      const sinceEsc = lastEscAt(id) > 0 ? now() - lastEscAt(id) : Infinity;
+      if (sinceEsc < ESC_QUIET_MS) await (deps.delay ?? sleep)(ESC_QUIET_MS - sinceEsc);
+      // A key may only join an empty line (no visible change); two in a row means the keys do nothing.
+      let before = want;
+      let stalled = 0;
+      while (keys < CLEAR_MAX_KEYS && stalled < 2) {
+        if (!owned()) break;
+        keys++;
+        if (!deps.write(id, CLEAR_ROW_KEY)) break;
+        await (deps.delay ?? sleep)(CLEAR_STEP_MS);
+        const left = await look();
+        if (left === null) break;
+        if (left === '') return { promptRestored: true, inputCleared: true };
+        const rest = squash(left);
+        if (!want.startsWith(rest)) break;
+        stalled = rest === before ? stalled + 1 : 0;
+        before = rest;
+      }
+      return { promptRestored: true, inputCleared: false };
+    } catch (error) {
+      deps.log('warn', `[chat] clearing the restored prompt in ${id} failed: ${error instanceof Error ? error.message : String(error)}`);
+      return keys > 0 ? { promptRestored: true, inputCleared: false } : {};
+    } finally { sending.delete(id); }
+  };
+
   const cancelObserver = deps.cancelReceipts ? createChatCancelObserver<ObservedCancel>({
     store: deps.cancelReceipts,
-    probe: probeCancel,
+    probe: async (cancel) => {
+      const seen = await probeCancel(cancel);
+      if (seen.kind !== 'ended' || cancel.sentText === undefined) return seen;
+      cancel.promptCheck ??= await clearRestoredPrompt(cancel);
+      return { ...seen, ...cancel.promptCheck };
+    },
     emit: (event) => deps.onCancelEvent?.(event),
     log: (message) => deps.log('warn', message),
     now,
@@ -662,6 +736,13 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     const list = deliveredLog.get(id) ?? [];
     list.push({ owner, clientMessageId, text, at: now() });
     deliveredLog.set(id, list.slice(-DELIVERED_KEEP));
+  };
+
+  /** The text of the one daemon send that started the aimed turn; none when zero or several fit. */
+  const sentTextFor = (id: string, turnStartedAt: number, requestedAt: number): string | undefined => {
+    const fits = (deliveredLog.get(id) ?? []).filter((entry) =>
+      entry.at >= turnStartedAt - CANCEL_CLOCK_SKEW_MS && entry.at <= requestedAt);
+    return fits.length === 1 ? fits[0].text : undefined;
   };
 
   const queueOutcome = (record: Readonly<ChatQueueRecord>, replayed: boolean): ChatSendOutcome =>
@@ -1269,9 +1350,11 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
         cancelObserver?.announce(watched, progress);
       }
       if (verdict === 'sent' && aimed && aimedPane) {
+        const sentText = sentTextFor(id, aimedStartedAt, requestedAt);
         cancelObserver?.watch({ ...watched, turnId: aimed, turnStartedAt: aimedStartedAt, requestedAt,
           incarnationId: aimedPane.meta.incarnationId, agentSessionId: req.agentSessionId, slug: agent,
           boundary: { ...(lastEventId !== undefined ? { lastEventId } : {}), since: requestedAt - CANCEL_CLOCK_SKEW_MS },
+          ...(agent === 'claude' && sentText !== undefined ? { sentText } : {}),
           ...(codexTurn && !escWritten && (nativeOutcome === 'interrupted' || requestedEarly) ? { codexTurn } : {}) } satisfies ObservedCancel);
       } else if (verdict === 'sent') {
         // The pane was already gone at the write: nothing can be observed.
