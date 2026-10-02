@@ -75,6 +75,7 @@ enum Focus {
     /// apps or focus a password field while a long string is being typed.
     static func stillSafeToType(_ target: ControlTarget) -> Bool {
         NSWorkspace.shared.frontmostApplication?.processIdentifier == target.pid && !IsSecureEventInputEnabled()
+            && !Session.isLocked
     }
 
     /// Brings the target window forward (AX, not input) if another window

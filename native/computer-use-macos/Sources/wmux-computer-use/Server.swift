@@ -84,6 +84,8 @@ final class Server {
     }
 
     private func dispatch(_ method: String, _ p: JSON) async throws -> Any {
+        // Never type into the lock screen, and say why windows "vanished".
+        if !["capabilities", "listApps", "releaseInput"].contains(method) { try Session.requireUnlocked() }
         switch method {
         case "capabilities":
             return capabilities()

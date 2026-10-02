@@ -231,6 +231,11 @@ is not re-walked.
   key-up reaches keyup handlers in the app in front. `released: true` means
   every up event was created and posted (CGEventPost itself reports nothing).
 
+While the screen is locked, AX reports no windows for any app and the lock
+screen owns the keyboard. Every method except `capabilities`, `listApps` and
+`releaseInput` then answers `window_not_focused` and says the screen is
+locked. Typing batches also stop between characters if the screen locks.
+
 ## Process
 
 A single AX messaging timeout of 1.5 s is set on the system-wide element, so

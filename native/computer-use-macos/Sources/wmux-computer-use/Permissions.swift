@@ -69,3 +69,21 @@ enum Permissions {
         _ = CGRequestScreenCaptureAccess()
     }
 }
+
+enum Session {
+    /// While the screen is locked, AX reports no windows for any app and the
+    /// lock screen owns the keyboard: nothing may be observed or driven.
+    static var isLocked: Bool {
+        guard let info = CGSessionCopyCurrentDictionary() as? [String: Any] else { return false }
+        return (info["CGSSessionScreenIsLocked"] as? Bool) == true
+    }
+
+    static func requireUnlocked() throws {
+        if isLocked {
+            throw HelperError(
+                "window_not_focused",
+                "the screen is locked; macOS hides every window until the person unlocks it. Nothing was read or sent"
+            )
+        }
+    }
+}
