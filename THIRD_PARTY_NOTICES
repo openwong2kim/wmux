@@ -11521,11 +11521,12 @@ Repository: https://github.com/hardbeat920/monocode
 Copyright (c) 2026 Nick
 
 Design token values and component style recipes, adapted at commit
-6bd432ca into the wmux design system (DESIGN.md): the neutral grey
-lightness pair, the content-over-base fill and stroke percentages, the
-composer chip, card-row, segmented-control and message-footer
-measurements, the popover shadow, and the dark-only window-glass
-sequencing. Each adapted block names the source file it came from.
+6bd432ca into the wmux design system (DESIGN.md): the neutral colour
+tokens and content-mix fill ladder, status and accent colours, type
+scale, radii, shadows, chip, card-row, tab, segmented-control,
+composer, transcript and message-footer recipes, motion timings, and
+the dark-only window-glass sequencing. Icons are not taken. Each
+adapted block names the source file it came from.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

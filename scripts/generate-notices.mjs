@@ -383,11 +383,12 @@ const BORROWED_SOURCES = [
     copyright: 'Copyright (c) 2026 Nick',
     what:
       'Design token values and component style recipes, adapted at commit\n' +
-      '6bd432ca into the wmux design system (DESIGN.md): the neutral grey\n' +
-      'lightness pair, the content-over-base fill and stroke percentages, the\n' +
-      'composer chip, card-row, segmented-control and message-footer\n' +
-      'measurements, the popover shadow, and the dark-only window-glass\n' +
-      'sequencing. Each adapted block names the source file it came from.',
+      '6bd432ca into the wmux design system (DESIGN.md): the neutral colour\n' +
+      'tokens and content-mix fill ladder, status and accent colours, type\n' +
+      'scale, radii, shadows, chip, card-row, tab, segmented-control,\n' +
+      'composer, transcript and message-footer recipes, motion timings, and\n' +
+      'the dark-only window-glass sequencing. Icons are not taken. Each\n' +
+      'adapted block names the source file it came from.',
   },
 ];
 lines.push('BORROWED IMPLEMENTATION TECHNIQUES');
