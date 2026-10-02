@@ -157,6 +157,7 @@ import { DeviceStore, type DeviceBatchRevocationCause } from './web/DeviceStore'
 import { revokeDeviceAndDisconnect } from './web/deviceRevoke';
 import { withActivity } from './web/deviceActivity';
 import { buildWebPaneEnv } from './web/webPaneEnv';
+import { makeChannelPhoneApi, type ChannelPhoneApi } from './web/channelsApi';
 import type { ApprovalDecision, DecisionFormKind, NativeDecisionOutcome, NativeDecisionRef, NativeDecisionReply } from './approvals/types';
 import type { AgentSlug } from '../shared/events';
 import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
@@ -389,6 +390,13 @@ let approvalRegistry: ApprovalRegistry | null = null;
 // over this binding instead and resolves whatever is here per request, which is
 // null (→ the key is omitted) until the pusher exists.
 let liveActivityPusher: LiveActivityPusher | null = null;
+
+// Phone channel Inbox (contract §9) — the phone projection of the channel
+// service. Same module-scoped lazy ref as approvalRegistry: both web server
+// construction sites (registerRpcHandlers and the boot restore) read it.
+// main() fills it right after building channelService, so in production both
+// sites are always wired (only test/legacy construction paths lack it → 503).
+let channelPhoneApi: ChannelPhoneApi | null = null;
 
 // The press-scope fact table main pushes down (see approvals/workspaceFacts.ts).
 // Module-scoped for the same reason the registry is: the RPC handler writes it,
@@ -714,6 +722,10 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         // construction sites: main() builds the registry before it registers
         // RPC handlers and before it kicks off this restore.
         ...(approvalRegistry ? { approvals: approvalRegistry } : {}),
+        // Phone channel Inbox (§9) — the four /api/channels* routes answer 503
+        // without this. main() fills it right after building channelService, so
+        // it always exists by restore time (the guard mirrors test/legacy paths).
+        ...(channelPhoneApi ? { channels: channelPhoneApi } : {}),
         // Where POST /api/upload writes photos. Under ~/.wmux/uploads, which
         // the Playwright sandbox already allowlists, so an uploaded photo is
         // reachable by browser_file_upload without a second policy.
@@ -3016,6 +3028,10 @@ function registerRpcHandlers(
       // M2 — see the restore path: the approval routes need the registry, and
       // it exists by the time either site runs.
       ...(approvalRegistry ? { approvals: approvalRegistry } : {}),
+      // Phone channel Inbox (§9) — see the restore path. registerRpcHandlers
+      // takes channelService as a parameter, but the seam reads the module ref
+      // so both construction sites keep the same shape.
+      ...(channelPhoneApi ? { channels: channelPhoneApi } : {}),
       // See the restore path for why this directory and not another.
       uploadsDir: path.join(wmuxDir, 'uploads', 'phone'),
       // See the restore path: lazy projector for the phone turn view (#782).
@@ -7024,6 +7040,12 @@ async function main(): Promise<void> {
       }
     },
   });
+
+  // Phone channel Inbox (contract §9) — the web server's channels seam. Always
+  // filled here: this runs before registerRpcHandlers (one of the two web
+  // server construction sites) and before the boot restore, so both production
+  // sites are always wired.
+  channelPhoneApi = makeChannelPhoneApi(channelService);
 
   // Channel retention sweep — auto-trash (off unless configured) + trash purge.
   // Boot pass plus an hourly timer (same shape as the A2A/WorkTask projection

@@ -149,6 +149,11 @@ import {
   type WireResponse,
 } from './chatWire';
 import { buildWebCsp, WEB_APP_FONT_FILE } from './webCsp';
+// Type only — the channel service implementation stays out of this module.
+// The web server is a STATELESS consumer of its phone projection (§9): it
+// lists, pages, acks, joins and republishes mention notifications. The
+// production adapter lives in channelsApi.ts.
+import type { ChannelMentionNotification, ChannelPhoneApi } from './channelsApi';
 
 /**
  * Opaque cursor for `/api/sessions/:id/turns` (#782). Encodes head+tail offsets
@@ -268,6 +273,20 @@ function decodeTurnCursor(
  *   POST /api/approvals/:id/answer   a `decision-v2` answer, journaled under the
  *                              client's `clientAnswerId`; input grant required
  *   GET  /api/approvals/:id/answer/:clientAnswerId   the caller's own receipt
+ *   GET  /api/channels         every channel the human workspace can observe
+ *                              (§9: public + joined + observed private), with
+ *                              server-computed unread for seated channels
+ *   GET  /api/channels/:id/messages?since=&limit=
+ *                              cursor-paged channel messages (oldest-first,
+ *                              default 50 / max 200)
+ *   POST /api/channels/:id/ack  advance the human seat's read cursor
+ *                              (clamped, advance-only; no-seat → 400)
+ *   POST /api/channels/:id/join take the human seat (idempotent, full
+ *                              history, archived → 400)
+ *
+ * The four channel routes are read-side only and, like approvals, work on a
+ * read-only server — posting stays behind its own future grant. They answer
+ * 503 `channels-unavailable` when the `channels` seam is not wired.
  */
 
 export interface WebTerminalStartOptions {
@@ -694,6 +713,17 @@ interface WebTerminalServerDeps {
    * `/api/config` reports an empty list.
    */
   gateConfig?: () => { gatedTools: string[] };
+  /**
+   * Phone channel Inbox (contract §9) — the daemon's channel service, adapted to the
+   * phone projection. Optional like `approvals`: a daemon that did not wire it
+   * (or a unit test that does not care) still serves every other route, and
+   * the four `/api/channels*` routes answer 503 rather than pretending the
+   * surface exists. The adapter maps the authenticated principal to the
+   * reserved human workspace SERVER-SIDE (no identity field is ever read from
+   * a request), so read state and mentions cannot fork between the desktop
+   * and the phone.
+   */
+  channels?: ChannelPhoneApi;
   /**
    * #783 — runtime escape hatch. `POST /api/gate/off` / `/api/gate/on` call
    * this to disarm or re-arm the permission gate. Turning it off also defers
@@ -1151,7 +1181,7 @@ interface EventClient {
  * while the phone was in a tunnel is exactly the event that must survive the
  * reconnect.
  */
-type EventKind = 'critical' | 'notify' | 'approval';
+type EventKind = 'critical' | 'notify' | 'approval' | 'channel.mention';
 
 /**
  * How much of a human this event is asking for.
@@ -1214,6 +1244,11 @@ interface AttentionEntry {
  * LINE, never the classification.
  */
 function tierFor(kind: EventKind, payload: Record<string, unknown>): EventTier {
+  // A channel.mention fires only for a verified mention of a seated human (§9:
+  // a mention into a channel with no human seat is dropped at post time), so
+  // there is nothing further in the payload to consult — always act. info is
+  // reserved for possible future non-mention echoes.
+  if (kind === 'channel.mention') return 'act';
   if (kind === 'notify') return 'info';
   if (kind === 'critical') return payload['riskLevel'] === 'review' ? 'info' : 'act';
   return payload['phase'] === 'create' ? 'act' : 'info';
@@ -1424,12 +1459,30 @@ export class WebTerminalServer {
   private readonly onSessionNotification = (payload: { sessionId: string; event?: unknown }): void =>
     this.broadcastEvent('notify', payload);
   private readonly onApprovalEvent = (e: ApprovalEvent): void => this.publishApproval(e);
+
+  /**
+   * Phone channel Inbox (§9) — the human-mention promotion listener. Raises a
+   * mention the service verified at post time as a recorded `channel.mention`
+   * attention event; publish() stamps id/epoch/tier last, so only the content
+   * fields are carried here.
+   */
+  private readonly onChannelMention = (n: ChannelMentionNotification): void => {
+    this.publish('channel.mention', {
+      channelId: n.channelId,
+      seq: n.seq,
+      fromMemberName: n.fromMemberName,
+      text: n.text,
+      postedAt: n.postedAt,
+    });
+  };
   /**
    * The registry hands back an unsubscribe closure rather than taking off() —
    * so unlike the sessionManager listeners this one is held, not re-derived.
    * Non-null exactly while the server is running.
    */
   private approvalUnsub: (() => void) | null = null;
+  /** §9 — channels seam's mention subscription; same restart hygiene as above. */
+  private channelMentionUnsub: (() => void) | null = null;
 
   // Static assets, loaded once on start and cached in memory (all small).
   private terminalHtml: Buffer | null = null;
@@ -1656,6 +1709,9 @@ export class WebTerminalServer {
     // Approval lifecycle rides the same channel; same attach point, same
     // restart hygiene (unsubscribed in stop(), so a restart never doubles up).
     this.approvalUnsub = this.deps.approvals?.onEvent(this.onApprovalEvent) ?? null;
+    // §9 — channel.mention rides the same recorded channel; same attach point,
+    // same restart hygiene (unsubscribed in stop(), so a restart never doubles up).
+    this.channelMentionUnsub = this.deps.channels?.onMention(this.onChannelMention) ?? null;
 
     // Record the ACTUAL bound port so status()/urls report it even when the
     // caller requested port 0 (ephemeral — used by the unit tests for a
@@ -1708,6 +1764,8 @@ export class WebTerminalServer {
     this.deps.sessionManager.off('session:notification', this.onSessionNotification);
     this.approvalUnsub?.();
     this.approvalUnsub = null;
+    this.channelMentionUnsub?.();
+    this.channelMentionUnsub = null;
     this.pairCode = '';
     this.pairExpiresAt = 0;
     this.pairAttempts = 0;
@@ -2421,6 +2479,10 @@ export class WebTerminalServer {
         // that they are present now: each field is omitted while the desktop
         // is away. Omitted without a bridge, and by an older daemon.
         ...(this.deps.desktop ? { fleetSidebar: true } : {}),
+        // Phone channel Inbox (§9): the four `/api/channels*` routes answer
+        // here. OMITTED, not false, exactly when they would answer 503
+        // `channels-unavailable` — the shape a pre-channels daemon serves.
+        ...(this.deps.channels ? { channels: true } : {}),
         // Whether `/api/devices` answers here, and how much of the roster this
         // caller may see and act on (see handleDeviceList). OMITTED, not
         // false, when the device store cannot list, revoke and set grants —
@@ -2691,6 +2753,24 @@ export class WebTerminalServer {
           ? 'gate on — gated tools wait for a remote answer again'
           : 'gate off — the next tool call proceeds without prompting',
       });
+    }
+    // Phone channel Inbox (contract §9) — read, read cursor and join. Works on a
+    // read-only server too (the same carve-out approvals have: it only reads
+    // what the service verified).
+    if (req.method === 'GET' && p === '/api/channels') {
+      return this.handleChannelsList(res);
+    }
+    if (p.startsWith('/api/channels/')) {
+      const rest = p.slice('/api/channels/'.length);
+      if (req.method === 'GET' && rest.endsWith('/messages')) {
+        return this.handleChannelsMessages(res, url, rest.slice(0, -'/messages'.length));
+      }
+      if (req.method === 'POST' && rest.endsWith('/ack')) {
+        return this.handleChannelsAck(req, res, rest.slice(0, -'/ack'.length));
+      }
+      if (req.method === 'POST' && rest.endsWith('/join')) {
+        return this.handleChannelsJoin(res, rest.slice(0, -'/join'.length));
+      }
     }
     return this.json(res, 404, { error: 'not found' });
   }
@@ -7190,6 +7270,81 @@ export class WebTerminalServer {
           /* socket already gone */
         }
       });
+    });
+  }
+
+  // --- phone channels (contract §9) -----------------------------------------
+
+  /** `GET /api/channels` — the human workspace' observable channel list. */
+  private handleChannelsList(res: http.ServerResponse): void {
+    const channels = this.deps.channels;
+    if (!channels) return this.json(res, 503, { error: 'channels-unavailable' });
+    return this.json(res, 200, channels.list());
+  }
+
+  /** `GET /api/channels/:id/messages?since=&limit=` — cursor-paged messages. */
+  private handleChannelsMessages(
+    res: http.ServerResponse,
+    url: URL,
+    rawId: string,
+  ): void {
+    const channels = this.deps.channels;
+    if (!channels) return this.json(res, 503, { error: 'channels-unavailable' });
+    const id = decodePathSegment(rawId);
+    if (!id) return this.json(res, 404, { error: 'not-found' });
+    const result = channels.messages(
+      id,
+      url.searchParams.get('since'),
+      url.searchParams.get('limit'),
+    );
+    if (!result.ok) {
+      return this.json(res, result.error.status, {
+        error: result.error.error,
+        ...(result.error.detail ? { detail: result.error.detail } : {}),
+      });
+    }
+    return this.json(res, 200, { messages: result.messages, nextSince: result.nextSince });
+  }
+
+  /** `POST /api/channels/:id/ack` — advance the human seat's read cursor. */
+  private async handleChannelsAck(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    rawId: string,
+  ): Promise<void> {
+    const channels = this.deps.channels;
+    if (!channels) return this.json(res, 503, { error: 'channels-unavailable' });
+    const id = decodePathSegment(rawId);
+    if (!id) return this.json(res, 404, { error: 'not-found' });
+    // readJsonBody never calls back for a request it already answered.
+    this.readJsonBody(req, res, async (body) => {
+      const result = await channels.ack(id, body);
+      if (!result.ok) {
+        return this.json(res, result.error.status, {
+          error: result.error.error,
+          ...(result.error.detail ? { detail: result.error.detail } : {}),
+        });
+      }
+      return this.json(res, 200, { lastReadSeq: result.lastReadSeq });
+    });
+  }
+
+  /** `POST /api/channels/:id/join` — take the human seat (idempotent). */
+  private async handleChannelsJoin(res: http.ServerResponse, rawId: string): Promise<void> {
+    const channels = this.deps.channels;
+    if (!channels) return this.json(res, 503, { error: 'channels-unavailable' });
+    const id = decodePathSegment(rawId);
+    if (!id) return this.json(res, 404, { error: 'not-found' });
+    const result = await channels.join(id);
+    if (!result.ok) {
+      return this.json(res, result.error.status, {
+        error: result.error.error,
+        ...(result.error.detail ? { detail: result.error.detail } : {}),
+      });
+    }
+    return this.json(res, 200, {
+      lastReadSeq: result.lastReadSeq,
+      alreadyMember: result.alreadyMember,
     });
   }
 

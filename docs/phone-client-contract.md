@@ -233,6 +233,7 @@ JSON backlog fetch (Bearer only).
 | `transcript.nudge` | `{sessionId}` — the turn view for that pane has new content; re-fetch |
 | `agent.liveness` | `{sessionId, state, tool?, agent, at}` — what the pane is doing right now |
 | `gate.state` | `{gateEnabled}` — the permission gate was armed or disarmed |
+| `channel.mention` | `{channelId, seq, fromMemberName, text, postedAt, tier}` — a channel message mentioned the operator row; re-fetch `/api/channels` (§9). Recorded, not live-only |
 
 `phase` is `create` / `resolve` / `expire` / `supersede`.
 
@@ -2219,18 +2220,201 @@ There is no offline queue. A failed upload is a notice and a manual retry.
 
 ---
 
-## 9. What is not built yet
+## 9. Channels — reading what the agents said to each other
+
+The daemon's channels are where agents (and the operator, at the desktop)
+talk to each other: durable messages, server-verified senders, `@mention`
+delivery. The phone gets **read access plus a read cursor**. It does not get
+to post — posting is an input channel in disguise (a mention wakes a worker
+agent), so it lives behind its own future grant (`--allow-channel-post`, not
+built yet), exactly as input and upload each have theirs.
+
+The phone's channel identity is derived by the **server** from the
+authenticated principal, never sent in a request body: a paired device or
+operator token maps to the daemon's reserved human workspace (`ws-human`,
+`HUMAN_WORKSPACE_ID`). This is the same identity the desktop GUI observes
+channels with, so read state and mentions cannot fork between surfaces — the
+human is one principal. The client cannot claim a different identity, and no
+parallel "phone operator" identity is ever created.
+
+```
+GET  /api/channels                        → {channels: [...]}
+GET  /api/channels/<id>/messages?since=<seq>&limit=<n>
+                                          → {messages: [...], nextSince}
+POST /api/channels/<id>/ack   body: {lastReadSeq: <n>}
+                                          → {lastReadSeq: <clamped>}
+POST /api/channels/<id>/join              → {lastReadSeq: <seq>, alreadyMember: bool}
+```
+
+Reading is deliberately **not behind a grant of its own**: the terminal
+mirror, the diff route and approvals are all default-on for a paired device,
+and channel messages are narrower than the transcript (the one read that IS
+gated, because it carries whole files and thinking). The phone is the same
+human principal the desktop is, and this route exposes nothing the desktop's
+channel view does not already show that principal.
+
+`GET /api/channels` — every channel the human workspace can **observe**
+(same W1 rule the desktop uses): public channels, channels the human has
+joined, and private channels observed read-only. The list is **not
+cursor-paginated**: W1 observation bounds it to this instance's channels, and
+it grows a cursor only if instances ever grow large enough to need one. Each
+row:
+
+```json
+{
+  "channelId": "mission-x",
+  "visibility": "public",
+  "lastSeq": 142,
+  "lastPost": { "seq": 142, "memberName": "worker", "postedAt": 1757700000000 },
+  "lastReadSeq": 138,
+  "unread": 3,
+  "unreadMentions": 1
+}
+```
+
+`lastReadSeq`/`unread`/`unreadMentions` are present only when the human holds
+a **seat** (member row) in that channel, and `unread`/`unreadMentions` are
+computed server-side against that seat — the phone never derives them from raw
+messages. A channel observed without a seat carries `"observed": true` and
+omits the cursor fields: render it read-only with no badge, mirroring the
+desktop's observed-channel treatment. The human takes a seat **explicitly** —
+at the desktop GUI, or from the phone via the join route below — never
+implicitly as a side effect of reading.
+**The seat is a precondition for mentions, not just for badges:** a post's
+mentions are validated against the channel's current member set, and a mention
+of a workspace that holds no seat is dropped at post time — you cannot ping a
+workspace that isn't in the room. A channel the human only observes therefore
+never raises `channel.mention` and never grows `unreadMentions`: its
+notification value begins the moment the human joins, and not before. The
+reserved human workspace cannot be invited (P5) — the join is always the
+human's own act, on either surface.
+
+`POST /api/channels/<id>/join` — takes the seat the desktop's join takes:
+the same constant `(ws-human)` row with **full history** (`historyFromSeq`
+0) and a cursor starting at the channel head, so the operator's unread is 0
+at the moment of joining — only what is posted after the join counts as
+unread. A server-published `operator-join` system message is appended
+atomically with the seat; it creates no unread for anyone. The join is
+**idempotent from the phone**: joining when the seat already exists answers
+`200 {lastReadSeq, alreadyMember: true}` rather than an error — two surfaces
+racing to seat the one human is normal, not a conflict. An archived channel
+refuses the join (`400 {error: 'archived'}`); a channel the principal cannot
+observe is 404 as everywhere. The route grants a seat and nothing more —
+posting remains behind the future `--allow-channel-post`.
+
+`GET /api/channels/<id>/messages` — cursor-paginated like every other list in
+this contract: `since` is the last `seq` the client has (0 for the first
+fetch), `limit` caps the page (default 50, max 200). Messages are oldest-first
+within a page. Observed channels are floored at the seat's `historyFromSeq`
+where one exists, the same floor the desktop renderer applies. Each message:
+
+```json
+{
+  "channelId": "mission-x",
+  "seq": 139,
+  "memberName": "worker",
+  "text": "@human 배포 완료",
+  "postedAt": 1757700000000,
+  "mentions": [{ "workspaceId": "ws-human", "memberId": "human" }]
+}
+```
+
+`mentions` is the server-verified snapshot — a member that was dropped
+at post time is not in it. `text` is agent-authored prose: render it as text,
+never as markup or instructions. A channel the principal cannot observe is
+indistinguishable from a missing one (404), the same collapse `get()` applies.
+
+`POST /api/channels/<id>/ack` — advances the human seat's `lastReadSeq`.
+The value is clamped to the channel head and the cursor is advance-only:
+acking backwards is a no-op that returns the current cursor, not an error.
+No 409 — reading is idempotent. A seatless (observed-only) channel has no
+cursor to advance: it answers 400 `{error: 'no-seat'}`.
+
+### `channel.mention` — a recorded SSE event, unlike the nudges
+
+When a posted message's server-verified mentions include the human workspace
+and the human holds a seat in that channel, the daemon raises:
+
+```json
+{
+  "channelId": "mission-x",
+  "seq": 139,
+  "fromMemberName": "worker",
+  "text": "배포 완료 — 3 epoch 돌파…",
+  "postedAt": 1757700000000,
+  "id": 42,
+  "epoch": "4f9c2a1e-…",
+  "tier": "act"
+}
+```
+
+`text` is an excerpt (≤200 chars), not the message: the event is the nudge,
+`GET /api/channels/<id>/messages` is the truth — the same division the
+`approval` kind uses. `id` is a number and `epoch` a UUID string, the same
+`<epoch>:<id>` cursor shape as every other recorded event (§4).
+
+This event **is** in the backlog — but replay is delivery, not durability. The
+recorded window is bounded (100 entries / 30 minutes, §4), so a phone that was
+away past the window gets the standard `reset` and nothing from the log. The
+durable record of an unread mention is the **server-side seat cursor**: the
+next `GET /api/channels` reports `unreadMentions` regardless of what the
+backlog still holds. Refetch on reconnect is what must not be skipped, not the
+replay. Emission is mention-only for exactly this reason: a busy channel's
+ordinary traffic must not churn the bounded ring and push a pending `approval`
+out of it.
+
+`tier` is server-decided and preserved by the client. Because emission is
+restricted to human-workspace mentions, the value is always `act` today;
+`info` is reserved for possible future non-mention echoes and must never fail
+a frame (§4 additive rule).
+
+A pre-channels daemon never emits this kind; an old client that receives it
+falls back to its unknown-event path and is unaffected. Additive — no protocol
+version bump.
+
+### Responses
+
+| Status | Body | Meaning |
+| --- | --- | --- |
+| 200 | route-specific | Listed / paged / acked (clamped) |
+| 400 | `{error: 'invalid-cursor' \| 'invalid-body' \| 'no-seat' \| 'archived'}` | `since`/`limit` malformed, an ack body that is not a non-negative integer, an ack against a seatless observed channel, or a join against an archived channel |
+| 401 | auth failure | Bearer credential missing or rejected — same as every route |
+| 404 | `{error: 'not-found'}` | No such channel, or one the principal cannot observe — indistinguishable by design |
+| 503 | `{error: 'channels-unavailable'}` | The daemon was started without the channels seam wired. Do not retry in a loop; surface it |
+
+### Lifecycle you must reflect
+
+- `seq` is per-channel and monotonic; pages are ordered by it, never by time.
+- Fetch `/api/channels` on connect and on every `channel.mention` event; ack
+  when the person has seen the bottom, not on fetch — unread is a human state,
+  not a download state.
+- A channel deleted at the desktop answers 404 on the next fetch; drop it and
+  its unread badge without an error surface.
+- Join is the human's explicit act and the start of a channel's notification
+  value: before it, the channel renders observed (read-only, no badge) and its
+  mentions of the human are dropped at post time. After it, unread and
+  `channel.mention` begin from the join point.
+- Posting from the phone does not exist yet. There is no route to try, and
+  building one out of `--allow-input` keystrokes is the same "looks like an
+  approval" bypass §11 warns about — do not.
+
+---
+
+## 10. What is not built yet
 
 - **`session:critical` is notify-only** — by design, permanently, not as a gap
   waiting to be filled. It fires on printed output, so it can never be a remote
   approve button; the `approval` kind is. See the `critical` section above.
+- **Channel posting from the phone** — deliberately behind a future
+  `--allow-channel-post` grant. Reading and acking (§9) are all this contract
+  offers today.
 - **The relay is not deployed.** Until `WMUX_PUSH_RELAY_URL` and
   `WMUX_PUSH_RELAY_SECRET` are set on a daemon, push is inert by design — not an
   error, just nothing sent.
 
 ---
 
-## 10. Things the browser client got wrong
+## 11. Things the browser client got wrong
 
 Every one of these passed unit tests and a live-daemon harness first, and was
 found only on a real phone. They are the cheapest tests to write on day one.

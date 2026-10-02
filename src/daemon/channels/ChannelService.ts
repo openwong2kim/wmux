@@ -135,12 +135,76 @@ export type ChannelErrorCode =
   /** `destroy` was called on a channel that is not in the trash. Permanent
    *  deletion is reachable only THROUGH the trash, so the undo window can
    *  never be skipped. */
-  | 'CHANNEL_NOT_TRASHED';
+  | 'CHANNEL_NOT_TRASHED'
+  /** Phone channel Inbox (contract §9) — ackAsPhone reached a channel with no
+   *  human seat (observed-only). The cursor belongs to the seat, so there is
+   *  nothing to advance. Observing is legal (distinct from 404); moving the
+   *  cursor presupposes a seat. */
+  | 'NO_SEAT';
 
 export interface ChannelError {
   code: ChannelErrorCode;
   message: string;
 }
+
+// ── Phone channel Inbox (contract §9, docs/phone-client-contract.md) ─────────
+// The service-side projection of the phone client's read API. Identity is never
+// a parameter: the web adapter (src/daemon/web/channelsApi.ts) maps the
+// authenticated principal server-side to the reserved human workspace
+// (HUMAN_WORKSPACE_ID, P5), and the four methods below read through that
+// constant only. That is also why a request body has no identity field — the
+// client cannot claim a different identity, and no separate "phone operator"
+// identity is ever created.
+
+/** A `GET /api/channels` row (contract §9). The cursor fields are present only
+ *  with a human seat; an observed channel (non-member observation, W1) omits
+ *  them and carries `observed: true` instead. */
+export interface PhoneChannelRow {
+  channelId: string;
+  visibility: ChannelVisibility;
+  lastSeq: number;
+  /** The last message the channel holds; null for an empty channel. */
+  lastPost: { seq: number; memberName: string; postedAt: number } | null;
+  /** A private channel observed without a seat (W1 observed): render read-only. */
+  observed?: true;
+  lastReadSeq?: number;
+  unread?: number;
+  unreadMentions?: number;
+}
+
+/** A `GET /api/channels/<id>/messages` row (contract §9). `mentions` is the
+ *  snapshot the server verified at post time — a non-member mention was
+ *  dropped then and never appears in it. */
+export interface PhoneChannelMessage {
+  channelId: string;
+  seq: number;
+  memberName: string;
+  text: string;
+  postedAt: number;
+  mentions: ChannelMention[];
+}
+
+/**
+ * Payload of the mention-promotion hook — the web server publishes it as a
+ * recorded `channel.mention` attention event (contract §4/§9). `text` is an
+ * excerpt (≤`PHONE_MENTION_EXCERPT_MAX`); the truth is the messages route —
+ * the same "the event is the nudge, the route is the truth" split the approval
+ * kind uses. id/epoch/tier are stamped last by the web server, so they are
+ * not here.
+ */
+export interface ChannelMentionNotification {
+  channelId: string;
+  seq: number;
+  fromMemberName: string;
+  text: string;
+  postedAt: number;
+}
+
+/** Page size of the phone messages route (contract §9: default 50, max 200). */
+export const PHONE_MESSAGES_DEFAULT_LIMIT = 50;
+export const PHONE_MESSAGES_MAX_LIMIT = 200;
+/** Excerpt cap of a channel.mention event, in code points (contract §9: ≤200). */
+export const PHONE_MENTION_EXCERPT_MAX = 200;
 
 /**
  * 이벤트로그 백엔드(envelope-design §5, PR3 — 옵셔널 additive).
@@ -528,6 +592,14 @@ export class ChannelService {
     workspaceId: string,
     paneId: string,
   ) => { ptyId?: string } | undefined;
+  /**
+   * Phone channel Inbox — human-mention promotion listeners (the same shape as
+   * the approvals onEvent pattern). Called each time post() commits a verified
+   * mention of the seated human. The web server subscribes in start() and
+   * unsubscribes in stop(). Listener exceptions do not propagate (best-effort —
+   * a failed promotion never rolls back the post).
+   */
+  private readonly mentionListeners = new Set<(n: ChannelMentionNotification) => void>();
 
   /**
    * 1b — derive the server-owned display name for a member row. Principal
@@ -2802,6 +2874,10 @@ export class ChannelService {
         // the persisted recipientSnapshot.
         console.error('[ChannelService] emit failed:', err);
       }
+      // Phone channel Inbox (contract §9) — human-mention promotion. Fires only
+      // on the path where a new post committed (the idempotent-replay branch
+      // returned early above, so there is no duplicate event).
+      this.promoteHumanMention(message, mentions);
       // A2: tail-evict the per-channel history above CHANNEL_MESSAGES_MAX. Done
       // AFTER the successful persist above (pre-persist would lose evicted rows on
       // a rollback), then flushed immediately (below) so a restart before the next
@@ -3211,6 +3287,204 @@ export class ChannelService {
     return out;
   }
 
+  // ── Phone channel Inbox (contract §9) — read, read cursor, join ──────────
+  // None of the four methods takes a caller identity; they read through the
+  // HUMAN_WORKSPACE_ID constant only (see the type block comment above). The
+  // observation gate reuses the desktop's W1 rule (isObservableBy) — the phone
+  // is the same human principal, so read state and mentions cannot fork
+  // between the two surfaces.
+
+  /**
+   * The phone routes' observation gate. isObservableBy/isVisibleTo do not look
+   * at trashedAt — the desktop decides the trash on its own path, because a
+   * trashed channel can be restored. To the phone, the trash (pending delete)
+   * IS deletion: contract §9 promises "a channel deleted at the desktop answers
+   * 404 on the next fetch and is dropped without an error surface", so it is
+   * left out of the list and the detail routes collapse it to CHANNEL_NOT_FOUND.
+   */
+  private isObservableByPhone(channel: Channel): boolean {
+    return channel.trashedAt === undefined && this.isObservableBy(channel, HUMAN_WORKSPACE_ID);
+  }
+
+  /**
+   * `GET /api/channels` — every channel the human workspace can observe (the
+   * same W1 rule list() applies: public + joined + observed private). The
+   * cursor/unread fields reuse unreadFor()'s server-side computation; a private
+   * channel without a seat gets `observed: true` (a public channel without a
+   * seat does not — the same rule as withObservedFlag: the observed marker is
+   * for non-member private channels only).
+   */
+  listForPhone(): PhoneChannelRow[] {
+    const unreadByChannel = new Map(
+      this.unreadFor(HUMAN_WORKSPACE_ID, HUMAN_MEMBER_ID).map((e) => [e.channelId, e]),
+    );
+    const rows: PhoneChannelRow[] = [];
+    // list() already applies the isObservableBy filter and the observed stamp —
+    // reuse it. Only trashed (pending-delete) channels are excluded here (see
+    // isObservableByPhone for why).
+    for (const channel of this.list(HUMAN_WORKSPACE_ID)) {
+      if (channel.trashedAt !== undefined) continue;
+      const seat = (this.state.members[channel.id] ?? []).find(
+        (m) => m.workspaceId === HUMAN_WORKSPACE_ID && m.memberId === HUMAN_MEMBER_ID,
+      );
+      const msgs = this.state.messages[channel.id] ?? [];
+      const last = msgs.length > 0 ? msgs[msgs.length - 1] : null;
+      const row: PhoneChannelRow = {
+        channelId: channel.id,
+        visibility: channel.visibility,
+        lastSeq: channel.nextSeq - 1,
+        lastPost: last
+          ? { seq: last.seq, memberName: last.memberName, postedAt: last.postedAt }
+          : null,
+      };
+      if (seat) {
+        // unreadFor computes active channels only (archived are skipped). A
+        // seated archived channel reports the seat's cursor and 0 unread —
+        // archived is read-only, so a badge would mean nothing.
+        const unread = unreadByChannel.get(channel.id);
+        row.lastReadSeq =
+          unread?.lastReadSeq ??
+          (typeof seat.lastReadSeq === 'number' ? seat.lastReadSeq : channel.nextSeq - 1);
+        row.unread = unread?.unread ?? 0;
+        row.unreadMentions = unread?.mentionUnread ?? 0;
+      } else if (channel.observed === true) {
+        row.observed = true;
+      }
+      rows.push(row);
+    }
+    return rows;
+  }
+
+  /**
+   * `GET /api/channels/<id>/messages` — cursor paging (oldest-first). The
+   * observation gate and the historyFromSeq floor reuse getMessages() as-is
+   * (an observed private channel gets full history as a human observer; a seat
+   * applies its own floor). Unobservable and missing both collapse to
+   * CHANNEL_NOT_FOUND. HTTP validation of `since`/`limit` (400 invalid-cursor)
+   * belongs to the web adapter.
+   */
+  messagesForPhone(
+    channelId: string,
+    since: number | undefined,
+    limit: number | undefined,
+  ): Result<{ messages: PhoneChannelMessage[]; nextSince: number }> {
+    const channel = this.state.channels.find((c) => c.id === channelId);
+    if (!channel || !this.isObservableByPhone(channel)) {
+      return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: 'No such channel' } };
+    }
+    // Given a sinceSeq, getMessages returns the OLDEST `limit` messages above
+    // the floor (commit-consumption semantics) — exactly the phone's forward
+    // paging. But getMessages' floor is inclusive (>=), while §9's `since` is
+    // "the last seq the client has" (an exclusive cursor, like the §4 events
+    // replay's id > cursor), so it is passed +1 — otherwise every page would
+    // resend the cursor message.
+    const page = this.getMessages(channelId, since === undefined ? 0 : since + 1, HUMAN_WORKSPACE_ID, limit);
+    const messages: PhoneChannelMessage[] = page.map((m) => ({
+      channelId: m.channelId,
+      seq: m.seq,
+      memberName: m.memberName,
+      text: m.text,
+      postedAt: m.postedAt,
+      mentions: m.mentions ?? [],
+    }));
+    return {
+      ok: true,
+      messages,
+      // An empty page hands the cursor back unchanged (idempotent no-op) — the
+      // client treats a page shorter than `limit` as exhausted.
+      nextSince: messages.length > 0 ? messages[messages.length - 1].seq : (since ?? 0),
+    };
+  }
+
+  /**
+   * `POST /api/channels/<id>/ack` — advance the human seat's lastReadSeq.
+   * Reuses ack({memberId: HUMAN_MEMBER_ID}): clamped to the head, advance-only
+   * (moving backwards is a no-op that echoes the current cursor), and the read
+   * receipts flip with it. A seatless observed channel is NO_SEAT (400
+   * no-seat) — observing is legal, but the cursor belongs to a seat.
+   */
+  async ackAsPhone(channelId: string, lastReadSeq: number): Promise<Result<{ lastReadSeq: number }>> {
+    const channel = this.state.channels.find((c) => c.id === channelId);
+    if (!channel || !this.isObservableByPhone(channel)) {
+      return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: 'No such channel' } };
+    }
+    const seat = (this.state.members[channelId] ?? []).find(
+      (m) => m.workspaceId === HUMAN_WORKSPACE_ID && m.memberId === HUMAN_MEMBER_ID,
+    );
+    if (!seat) {
+      return {
+        ok: false,
+        error: { code: 'NO_SEAT', message: 'No human seat in this channel' },
+      };
+    }
+    const res = await this.ack({
+      channelId,
+      verifiedWorkspaceId: HUMAN_WORKSPACE_ID,
+      uptoSeq: lastReadSeq,
+      memberId: HUMAN_MEMBER_ID,
+    });
+    if (!res.ok) {
+      // The seat check above is advisory, outside the lock — if the seat goes
+      // away in between (a desktop leave), ack() returns NOT_A_MEMBER. That is
+      // no-seat too (contract §9: 400). Passing it through would hit the web
+      // adapter's default mapping and leak out as a 500 internal, sending the
+      // phone into a retry loop.
+      if (res.error.code === 'NOT_A_MEMBER') {
+        return { ok: false, error: { code: 'NO_SEAT', message: 'No human seat in this channel' } };
+      }
+      return res;
+    }
+    // A member-scoped ack on a confirmed seat always echoes lastReadSeq.
+    return { ok: true, lastReadSeq: res.lastReadSeq ?? Math.min(lastReadSeq, channel.nextSeq - 1) };
+  }
+
+  /**
+   * `POST /api/channels/<id>/join` — reuses operatorJoin() to plant the seat
+   * and the operator-join system message in one commit (historyFromSeq 0,
+   * cursor starting at the head). For the phone the contract is idempotent: an
+   * existing seat answers `{alreadyMember: true, lastReadSeq}` instead of an
+   * error (two surfaces racing to seat the one human is not a conflict).
+   * Archived is an error.
+   */
+  async joinAsPhone(
+    channelId: string,
+  ): Promise<Result<{ lastReadSeq: number; alreadyMember: boolean }>> {
+    const channel = this.state.channels.find((c) => c.id === channelId);
+    if (!channel || !this.isObservableByPhone(channel)) {
+      return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: 'No such channel' } };
+    }
+    const res = await this.operatorJoin({ channelId, verifiedWorkspaceId: HUMAN_WORKSPACE_ID });
+    const seatCursor = (): number => {
+      const seat = (this.state.members[channelId] ?? []).find(
+        (m) => m.workspaceId === HUMAN_WORKSPACE_ID && m.memberId === HUMAN_MEMBER_ID,
+      );
+      const head = (this.state.channels.find((c) => c.id === channelId) ?? channel).nextSeq - 1;
+      return seat && typeof seat.lastReadSeq === 'number' ? seat.lastReadSeq : head;
+    };
+    if (res.ok) {
+      return { ok: true, alreadyMember: false, lastReadSeq: seatCursor() };
+    }
+    if (res.error.code === 'DUPLICATE_MEMBER') {
+      // Phone idempotency: an existing seat answers 200 with its cursor.
+      return { ok: true, alreadyMember: true, lastReadSeq: seatCursor() };
+    }
+    // CHANNEL_ARCHIVED / PERSIST_FAILED etc. pass through (the web adapter
+    // maps them to a status).
+    return { ok: false, error: res.error };
+  }
+
+  /**
+   * Phone channel Inbox — subscribe to human-mention promotion (the approvals
+   * onEvent pattern). Returns the unsubscribe function. The web server
+   * subscribes in start() and unsubscribes in stop().
+   */
+  onMention(listener: (n: ChannelMentionNotification) => void): () => void {
+    this.mentionListeners.add(listener);
+    return () => {
+      this.mentionListeners.delete(listener);
+    };
+  }
+
   /**
    * Record what happened at the PTY for one wake nudge (channelWakeWorker).
    *
@@ -3328,6 +3602,62 @@ export class ChannelService {
     );
     for (let i = 0; i < count && i < entries.length; i++) {
       map.delete(entries[i][0]);
+    }
+  }
+
+  /**
+   * Phone channel Inbox (contract §9) — after a successful post, decide whether
+   * to promote it to `channel.mention`.
+   *
+   * Three conditions: (1) the server-verified mentions include the human
+   * workspace, (2) the post is not the human's own (aligned with unreadFor's
+   * self-authored exemption — below), and (3) a human seat exists. (3) is in
+   * practice a defensive duplicate — post's mention validation drops a mention
+   * of a non-member workspace outright (the not_a_member branch above), so
+   * ws-human in the verified mentions already proves the seat. A ws-human
+   * mention in a seatless channel never reaches `mentions`; it goes back to the
+   * sender only as droppedMentions (D7: droppedMentions raise no event).
+   * memberId matching follows the same rule as unreadFor's mention count.
+   *
+   * The payload text is a ≤PHONE_MENTION_EXCERPT_MAX excerpt — the event is the
+   * nudge, the messages route is the truth. Listener exceptions are swallowed
+   * (best-effort).
+   */
+  private promoteHumanMention(message: ChannelMessage, mentions: ChannelMention[]): void {
+    if (this.mentionListeners.size === 0) return;
+    const mentioned = mentions.some(
+      (mn) =>
+        mn.workspaceId === HUMAN_WORKSPACE_ID &&
+        (mn.memberId === undefined || mn.memberId === HUMAN_MEMBER_ID),
+    );
+    if (!mentioned) return;
+    // Aligned with unreadFor's exemption: a self-authored message is not owed.
+    // A post the human wrote at the desktop (judged by the full row identity —
+    // a mention by a same-workspace sibling is still an event) does not wake
+    // the phone even if it mentions the human. Diverging here would leave
+    // unreadMentions at 0 while a channel.mention still arrives — the badge and
+    // the event forking.
+    if (message.workspaceId === HUMAN_WORKSPACE_ID && message.memberId === HUMAN_MEMBER_ID) return;
+    const hasSeat = (this.state.members[message.channelId] ?? []).some(
+      (m) => m.workspaceId === HUMAN_WORKSPACE_ID && m.memberId === HUMAN_MEMBER_ID,
+    );
+    if (!hasSeat) return;
+    const notification: ChannelMentionNotification = {
+      channelId: message.channelId,
+      seq: message.seq,
+      fromMemberName: message.memberName,
+      // Cut by code point — String.slice counts UTF-16 code units, so a cut in
+      // the middle of a surrogate pair (an emoji) would serialize a lone
+      // surrogate into the JSON, which iOS renders as a replacement character.
+      text: Array.from(message.text).slice(0, PHONE_MENTION_EXCERPT_MAX).join(''),
+      postedAt: message.postedAt,
+    };
+    for (const listener of this.mentionListeners) {
+      try {
+        listener(notification);
+      } catch (err) {
+        console.error('[ChannelService] mention listener failed:', err);
+      }
     }
   }
 

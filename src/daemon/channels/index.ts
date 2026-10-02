@@ -21,6 +21,12 @@ export {
   type LeaveChannelParams,
   type PostMessageParams,
   type SenderRef,
+  type PhoneChannelRow,
+  type PhoneChannelMessage,
+  type ChannelMentionNotification,
+  PHONE_MESSAGES_DEFAULT_LIMIT,
+  PHONE_MESSAGES_MAX_LIMIT,
+  PHONE_MENTION_EXCERPT_MAX,
 } from './ChannelService';
 
 export {
