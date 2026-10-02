@@ -240,10 +240,19 @@ describe.skipIf(process.platform === 'win32')('WSL Codex per-launch wmux MCP ser
     expect(result.stderr).toBe('');
   });
 
-  it.each(['app-server', 'mcp-server'])('does not stamp this pane on a shared %s', (mode) => {
-    const result = fixture(MCP_ENTRY).run([mode]);
-    expect(result.args).toEqual(['-c', expect.stringMatching(/^notify=/), mode]);
+  it.each([
+    [['app-server']],
+    [['mcp-server']],
+    [['-c', 'model="o3"', 'app-server']],
+    [['--profile', 'work', 'mcp-server', '--listen', 'stdio']],
+  ])('does not stamp this pane on a shared server: %j', (args) => {
+    const result = fixture(MCP_ENTRY).run(args);
+    expect(result.args).toEqual(['-c', expect.stringMatching(/^notify=/), ...args]);
     expect(result.stderr).toBe('');
+  });
+
+  it('still mounts MCP when a server word only follows --', () => {
+    expect(mcpOverride(fixture(MCP_ENTRY).run(['--', 'app-server']).args)?.command).toBe('/bin/sh');
   });
 
   it('leaves other MCP servers to Codex', () => {

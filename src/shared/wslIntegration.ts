@@ -144,10 +144,12 @@ if [ "\${WMUX_SHELL_INTEGRATION:-1}" = 0 ]; then exec "$real" "$@"; fi
 # Scan the actual launch directory, including Codex's --cd override. No
 # startup files or user commands are evaluated to inspect configuration.
 launch_dir=$PWD
+server_mode=
 args=("$@")
 for ((i=0; i<\${#args[@]}; i++)); do
   case "\${args[i]}" in
     --) break ;;
+    app-server|mcp-server) server_mode=1 ;;
     -C|--cd) ((i++)); launch_dir=\${args[i]:-} ;;
     --cd=*) launch_dir=\${args[i]#--cd=} ;;
     -C?*) launch_dir=\${args[i]#-C} ;;
@@ -187,7 +189,9 @@ done <<< "$free"
 overrides=()
 [ -z "$notify" ] || overrides+=(-c "$notify")
 # Server modes may serve other panes; never stamp this pane's identity on them.
-case \${1:-} in app-server|mcp-server) mcp= ;; esac
+# Global options may precede the subcommand (codex -c k=v app-server). Any
+# matching word before -- counts: a false match only skips MCP, which is safe.
+[ -z "$server_mode" ] || mcp=
 if [ -n "$mcp" ] && [ -n "\${WMUX_WSL_MCP:-}" ]; then
   # TOML literal strings keep Windows backslashes as-is but cannot hold a
   # quote or control character. Codex refuses to start on an override it
