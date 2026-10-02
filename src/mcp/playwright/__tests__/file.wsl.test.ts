@@ -43,11 +43,13 @@ vi.mock('../../wslPaths', async () => {
     wslMountRoot: (env?: NodeJS.ProcessEnv) => (fakeTranslator.on ? '/mnt/' : actual.wslMountRoot(env)),
     toAgentPath: (p: string, env?: NodeJS.ProcessEnv) => {
       if (!fakeTranslator.on) return actual.toAgentPath(p, env);
-      return p.startsWith(WMUX_DIR) ? AGENT_DRIVE + p.slice(WMUX_DIR.length) : p;
+      // Like the real translator, the agent's spelling uses / only (a Windows
+      // host's path.join gives \).
+      return p.startsWith(WMUX_DIR) ? AGENT_DRIVE + p.slice(WMUX_DIR.length).split(path.sep).join('/') : p;
     },
     fromAgentPath: (p: string, env?: NodeJS.ProcessEnv) => {
       if (!fakeTranslator.on) return actual.fromAgentPath(p, env);
-      if (p.startsWith(`${AGENT_DRIVE}/`)) return WMUX_DIR + p.slice(AGENT_DRIVE.length);
+      if (p.startsWith(`${AGENT_DRIVE}/`)) return WMUX_DIR + p.slice(AGENT_DRIVE.length).split('/').join(path.sep);
       return p.startsWith('/') ? null : p;
     },
   };
