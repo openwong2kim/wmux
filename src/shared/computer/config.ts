@@ -45,8 +45,12 @@ export function readComputerUseEnabled(configPath: string = computerUseConfigPat
 /** What Settings › Computer use shows, over IPC. */
 export interface ComputerUseSettingsPayload {
   enabled: boolean;
-  /** `missing`: this build has no helper binary yet; `unsupported`: no helper exists for this OS. */
-  helper: 'ready' | 'missing' | 'unsupported';
+  /**
+   * `missing`: this build has no helper binary yet; `unsupported`: no helper
+   * exists for this OS; `elevated`: wmux runs as administrator and the helper
+   * refuses to (Windows).
+   */
+  helper: 'ready' | 'missing' | 'unsupported' | 'elevated';
   /** The global stop key, as an Electron accelerator. */
   stopKey: string;
   /**

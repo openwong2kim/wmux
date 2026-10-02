@@ -55,7 +55,8 @@ export function TabComputerUse() {
   const helperBadge = state && (
     state.helper === 'ready'
       ? <Badge tone="success">{t('settings.computerUseHelperReady')}</Badge>
-      : <Badge>{t(state.helper === 'missing' ? 'settings.computerUseHelperMissing' : 'settings.computerUseHelperUnsupported')}</Badge>
+      : <Badge>{t(state.helper === 'missing' ? 'settings.computerUseHelperMissing'
+        : state.helper === 'elevated' ? 'settings.computerUseHelperElevated' : 'settings.computerUseHelperUnsupported')}</Badge>
   );
 
   return (
@@ -95,7 +96,8 @@ export function TabComputerUse() {
       {noHelper && state && (
         <SettingNote>
           {t(state.enabled ? 'settings.computerUseOnWithoutHelperNote'
-            : state.helper === 'missing' ? 'settings.computerUseNoHelperNote' : 'settings.computerUseUnsupportedNote')}
+            : state.helper === 'missing' ? 'settings.computerUseNoHelperNote'
+              : state.helper === 'elevated' ? 'settings.computerUseElevatedNote' : 'settings.computerUseUnsupportedNote')}
         </SettingNote>
       )}
       {stopKeyUnavailable && state && (

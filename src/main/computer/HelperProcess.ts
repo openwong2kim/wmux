@@ -433,7 +433,7 @@ export class HelperProcess {
       });
       child.on('exit', (code, signal) => {
         this.log(`helper exited (code ${code ?? 'null'}, signal ${signal ?? 'null'})`);
-        fail(new ComputerError('helper_unavailable', 'the computer-use helper exited during start-up'));
+        fail(new ComputerError('helper_unavailable', `the computer-use helper exited during start-up (exit code ${code ?? 'none'})`));
         this.onExit(child);
       });
     });

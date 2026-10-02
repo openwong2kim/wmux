@@ -12,6 +12,7 @@ import { HelperProcess } from './HelperProcess';
 import { StopKey } from './stopKey';
 import { createHelperVerifier } from './verifyHelper';
 import { WINDOWS_HELPER_PIN, effectiveHelperStatus } from './helperPin';
+import { isSelfElevated } from './selfElevation';
 import { resolveHelperPathFor, type HelperSpec } from './helperPath';
 
 // The macOS helper is a separately signed .app so TCC grants attach to it and
@@ -96,7 +97,7 @@ function lazyHelper(command: string, ready: () => boolean): HelperLike & { reset
     async request(method, params) {
       if (!ready()) {
         reset();
-        throw helperMissingError();
+        throw notReadyError(command);
       }
       proc ??= new HelperProcess({ command, verify: verifyHelper, log: (m) => console.warn(m) });
       try {
@@ -106,6 +107,10 @@ function lazyHelper(command: string, ready: () => boolean): HelperLike & { reset
           console.warn(`[computer] ${err.message}`);
           reset();
           throw helperMissingError();
+        }
+        if (err instanceof ComputerError && err.code === 'helper_unavailable' && ELEVATED_EXIT.test(err.message)) {
+          reset();
+          throw elevatedError();
         }
         throw err;
       }
@@ -133,7 +138,24 @@ function helperStatus(helperPath: string | null): ComputerHelperStatus {
     platform: process.platform,
     isPackaged: app.isPackaged,
     pin: WINDOWS_HELPER_PIN,
+    selfElevated: process.platform === 'win32' ? isSelfElevated() : null,
   });
+}
+
+/** The helper's own refusal to run elevated (native/computer-use-windows, exit 72). */
+const ELEVATED_EXIT = /\bexit code 72\b|refusing to run elevated/;
+
+/** Why a helper that is not ready cannot be used, in words an agent can relay. */
+function notReadyError(helperPath: string | null): ComputerError {
+  return helperStatus(helperPath) === 'elevated' ? elevatedError() : helperMissingError();
+}
+
+function elevatedError(): ComputerError {
+  return new ComputerError(
+    'helper_unavailable',
+    'wmux is running as administrator, and computer use refuses to run elevated (it could drive administrator apps). ' +
+      'Tell the user to restart wmux without "Run as administrator"; do not try other ways to control the desktop',
+  );
 }
 
 let stopKey: StopKey | null = null;
@@ -172,7 +194,7 @@ export function createComputerService(deps: { requestConsent: ConsentRequester }
         if (!helperReady()) {
           if (key.status() === 'held' || helper?.reset()) service.abort();
           key.release();
-          throw helperMissingError();
+          throw notReadyError(helperPath);
         }
         return key.arm();
       },
