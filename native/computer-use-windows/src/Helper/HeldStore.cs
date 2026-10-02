@@ -6,8 +6,10 @@
 //   - it must be a real directory (no reparse point) owned by the current
 //     user, with a protected DACL that grants only that user; a looser DACL
 //     on a directory we own is replaced, anything else turns persistence off;
-//   - files are opened without following reparse points, must be small
-//     regular files owned by the user, and go through HeldState.Parse, which
+//   - files get the same protected owner-only DACL when written, are opened
+//     without following reparse points (readers share delete, so a writer's
+//     rename over them still succeeds), must be small regular files owned by
+//     the user with that DACL, and go through HeldState.Parse, which
 //     keeps only vocabulary keys, the modifiers and buttons 0–2;
 //   - each file names its process by pid and creation time, so a recycled pid
 //     is not mistaken for a live helper.
@@ -61,17 +63,31 @@ internal static unsafe class HeldStore
         }
     }
 
-    private static DirectorySecurity PrivateSecurity(SecurityIdentifier user)
+    /// <summary>
+    /// A protected, user-only DACL. The owner is named only at creation:
+    /// changing the owner of an existing object needs WRITE_OWNER, which an
+    /// owner does not implicitly hold (and it is already the user, checked).
+    /// </summary>
+    private static DirectorySecurity PrivateSecurity(SecurityIdentifier user, bool withOwner)
     {
         var security = new DirectorySecurity();
-        security.SetOwner(user);
+        if (withOwner) security.SetOwner(user);
         security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
         security.AddAccessRule(new FileSystemAccessRule(user, FileSystemRights.FullControl,
             InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
         return security;
     }
 
-    private static bool IsPrivate(DirectorySecurity security, SecurityIdentifier user)
+    private static FileSecurity PrivateFileSecurity(SecurityIdentifier user)
+    {
+        var security = new FileSecurity();
+        security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+        security.AddAccessRule(new FileSystemAccessRule(user, FileSystemRights.FullControl, AccessControlType.Allow));
+        return security;
+    }
+
+    /// <summary>A protected DACL owned by `user` whose every entry allows `user` only.</summary>
+    private static bool IsPrivate(FileSystemSecurity security, SecurityIdentifier user)
     {
         if (!security.AreAccessRulesProtected) return false;
         if (security.GetOwner(typeof(SecurityIdentifier)) is not SecurityIdentifier owner || owner != user) return false;
@@ -94,7 +110,7 @@ internal static unsafe class HeldStore
             parent.Create();
             if (parent.Attributes.HasFlag(FileAttributes.ReparsePoint)) return Off("its parent is a reparse point");
             var dir = new DirectoryInfo(Path.Combine(parent.FullName, "held"));
-            if (!dir.Exists) dir.Create(PrivateSecurity(user));
+            if (!dir.Exists) dir.Create(PrivateSecurity(user, withOwner: true));
             dir.Refresh();
             if (!dir.Exists || dir.Attributes.HasFlag(FileAttributes.ReparsePoint)) return Off("it is not a real directory");
             var security = dir.GetAccessControl();
@@ -105,7 +121,7 @@ internal static unsafe class HeldStore
             if (!IsPrivate(security, user))
             {
                 // Ours but too open (an older build, a copy): tighten it.
-                dir.SetAccessControl(PrivateSecurity(user));
+                dir.SetAccessControl(PrivateSecurity(user, withOwner: false));
                 if (!IsPrivate(dir.GetAccessControl(), user)) return Off("its access list could not be made private");
             }
             return dir.FullName;
@@ -137,10 +153,12 @@ internal static unsafe class HeldStore
             }
             var data = new HeldState(SelfPid, SelfCreated, keys, buttons).Serialize();
             var tmp = path + ".tmp";
-            using (var handle = Open(tmp, write: true))
+            var handle = Open(tmp, write: true);
+            if (handle == null) return;
+            using (var stream = new FileStream(handle, FileAccess.Write))
             {
-                if (handle == null) return;
-                RandomAccess.Write(handle, data, 0);
+                stream.SetAccessControl(PrivateFileSecurity(User!));
+                stream.Write(data);
             }
             File.Move(tmp, path, overwrite: true);
         }
@@ -192,6 +210,18 @@ internal static unsafe class HeldStore
         {
             return result;
         }
+        // A temp file left by a helper that died between writing and renaming.
+        try
+        {
+            foreach (var tmp in System.IO.Directory.GetFiles(Dir, "*.json.tmp"))
+            {
+                var tmpPid = HeldState.PidFromFileName(Path.GetFileName(tmp)[..^4]);
+                if (tmpPid is int tp && tp != SelfPid && Win.RunningCreationTime((uint)tp) is null) Remove(tmp);
+            }
+        }
+        catch (Exception)
+        {
+        }
         foreach (var path in files)
         {
             var pid = HeldState.PidFromFileName(Path.GetFileName(path));
@@ -222,7 +252,7 @@ internal static unsafe class HeldStore
             if (attributes.HasFlag(FileAttributes.ReparsePoint) || attributes.HasFlag(FileAttributes.Directory)) return null;
             long length = RandomAccess.GetLength(handle);
             if (length <= 0 || length > HeldState.MaxFileBytes) return null;
-            if (stream.GetAccessControl().GetOwner(typeof(SecurityIdentifier)) is not SecurityIdentifier owner || owner != User) return null;
+            if (!IsPrivate(stream.GetAccessControl(), User)) return null;
             var data = new byte[length];
             int read = 0;
             while (read < data.Length)
@@ -243,8 +273,9 @@ internal static unsafe class HeldStore
     private static SafeFileHandle? Open(string path, bool write)
     {
         var handle = PInvoke.CreateFile(path,
-            write ? (uint)GENERIC_ACCESS_RIGHTS.GENERIC_WRITE : (uint)GENERIC_ACCESS_RIGHTS.GENERIC_READ,
-            write ? 0 : FILE_SHARE_MODE.FILE_SHARE_READ,
+            // WRITE_DAC: the writer sets the file's private DACL through this handle.
+            write ? (uint)GENERIC_ACCESS_RIGHTS.GENERIC_WRITE | 0x00040000 /* WRITE_DAC */ : (uint)GENERIC_ACCESS_RIGHTS.GENERIC_READ,
+            write ? 0 : FILE_SHARE_MODE.FILE_SHARE_READ | FILE_SHARE_MODE.FILE_SHARE_DELETE,
             null,
             write ? FILE_CREATION_DISPOSITION.CREATE_ALWAYS : FILE_CREATION_DISPOSITION.OPEN_EXISTING,
             FILE_FLAGS_AND_ATTRIBUTES.FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAGS_AND_ATTRIBUTES.FILE_ATTRIBUTE_NORMAL,

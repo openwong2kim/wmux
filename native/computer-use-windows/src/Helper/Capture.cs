@@ -23,6 +23,8 @@ namespace WmuxComputerUse;
 internal static unsafe class Capture
 {
     private const float JpegQuality = 0.8f;
+    /// <summary>Largest window captured (40 MP: 160 MB of 32-bit pixels); bigger ones fail instead of exhausting memory.</summary>
+    private const long MaxPixels = 40_000_000;
     private static IWICImagingFactory* factory;
 
     private static IWICImagingFactory* Factory
@@ -47,6 +49,7 @@ internal static unsafe class Capture
         var frame = Win.Bounds(hwnd);
         int w = (int)outer.Width, h = (int)outer.Height;
         if (w <= 0 || h <= 0 || w > 16384 || h > 16384) throw new HelperError("screenshot_failed", "the window has no capturable size");
+        if ((long)w * h > MaxPixels) throw new HelperError("screenshot_failed", "the window is too large to capture; make it smaller");
         // The visible frame inside the window rectangle.
         var crop = new Rect(frame.X - outer.X, frame.Y - outer.Y, frame.Width, frame.Height).Intersection(new Rect(0, 0, w, h));
         if (crop.IsEmpty) crop = new Rect(0, 0, w, h);
@@ -73,9 +76,13 @@ internal static unsafe class Capture
             bool printed = PInvoke.PrintWindow(hwnd, mem, (PRINT_WINDOW_FLAGS)2 /* PW_RENDERFULLCONTENT */);
             if (!printed || IsBlack((byte*)bits, stride, crop))
             {
-                // Some windows render nothing through PrintWindow. The screen
-                // copy shows whatever covers the window, so it is the
-                // fallback, never the default.
+                // Some windows render nothing through PrintWindow. A copy of
+                // the screen shows whatever covers the window (a blocked app,
+                // say), so it is used only when nothing does.
+                if (IsCovered(hwnd, frame))
+                {
+                    throw new HelperError("screenshot_failed", "the window did not render for capture and another window covers it; bring it to the front and retry");
+                }
                 if (!PInvoke.BitBlt(mem, 0, 0, w, h, screen, (int)outer.X, (int)outer.Y, ROP_CODE.SRCCOPY | ROP_CODE.CAPTUREBLT))
                 {
                     throw new HelperError("screenshot_failed", "the window could not be captured");
@@ -92,10 +99,26 @@ internal static unsafe class Capture
         }
     }
 
-    /// <summary>Every sampled pixel of the visible frame is black (PrintWindow drew nothing).</summary>
+    /// <summary>A visible window above `hwnd` in z-order overlaps `frame`.</summary>
+    private static bool IsCovered(HWND hwnd, Rect frame)
+    {
+        foreach (var other in Win.TopLevelWindows())
+        {
+            if (other == hwnd) return false;
+            if (!PInvoke.IsWindowVisible(other) || PInvoke.IsIconic(other) || Win.IsCloaked(other)) continue;
+            if (Win.Bounds(other).Intersects(frame)) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Every sampled pixel of the visible frame is exactly black (PrintWindow
+    /// drew nothing). Samples across the whole frame, about a million points,
+    /// so a dark window with any detail is not mistaken for an empty one.
+    /// </summary>
     private static bool IsBlack(byte* bits, int stride, Rect crop)
     {
-        int stepX = Math.Max(1, (int)crop.Width / 32), stepY = Math.Max(1, (int)crop.Height / 32);
+        int stepX = Math.Max(1, (int)crop.Width / 1024), stepY = Math.Max(1, (int)crop.Height / 1024);
         for (int y = (int)crop.Y; y < (int)crop.Bottom; y += stepY)
         {
             var row = bits + (long)y * stride;

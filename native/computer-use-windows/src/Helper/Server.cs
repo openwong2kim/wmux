@@ -39,6 +39,9 @@ internal static class Server
     public static JsonObject Capabilities() => new()
     {
         ["actions"] = new JsonArray(AgentActions.Select(a => (JsonNode)a).ToArray()),
+        // Every method this helper answers, internal ones included; `actions`
+        // stays the agent-facing set, because main passes it to the agent.
+        ["methods"] = new JsonArray(AgentActions.Concat(["resolveTarget", "releaseInput"]).Select(m => (JsonNode)m).ToArray()),
         ["modes"] = new JsonArray("ax", "vision", "both"),
         ["permissions"] = new JsonObject { ["accessibility"] = true, ["screenRecording"] = true },
     };
