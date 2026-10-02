@@ -183,7 +183,7 @@ final class Server {
         var elements: [WalkedElement<AXUIElement>] = []
         if mode != "vision" {
             let appEl = AX.app(app.pid)
-            var roots = [WalkRoot(node: window.element, depth: 0, parentRole: "AXApplication")]
+            var roots = [WalkRoot(node: window.element, depth: 0, parentRole: "AXApplication", clip: window.frame)]
             if let menuBar = AX.element(appEl, kAXMenuBarAttribute) {
                 roots.append(WalkRoot(node: menuBar, depth: 1, parentRole: "AXApplication"))
             }
@@ -192,7 +192,7 @@ final class Server {
                 roots.append(WalkRoot(node: child, depth: 1, parentRole: "AXApplication"))
             }
             let walk = walkTree(
-                source: AXTreeSource(), roots: roots, clip: window.frame,
+                source: AXTreeSource(), roots: roots,
                 maxNodes: maxNodes, maxDepth: maxDepth, deadline: Date().addingTimeInterval(walkBudgetSeconds)
             )
             elements = walk.elements

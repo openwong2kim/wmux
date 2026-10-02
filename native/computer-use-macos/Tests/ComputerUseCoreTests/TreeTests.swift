@@ -31,8 +31,8 @@ private func node(_ role: String, _ children: [FakeNode]) -> FakeNode {
 }
 
 final class TreeTests: XCTestCase {
-    private func walk(_ roots: [WalkRoot<FakeNode>], clip: CGRect? = nil, maxNodes: Int = 800, maxDepth: Int = 40) -> WalkResult<FakeNode> {
-        walkTree(source: FakeSource(), roots: roots, clip: clip, maxNodes: maxNodes, maxDepth: maxDepth)
+    private func walk(_ roots: [WalkRoot<FakeNode>], maxNodes: Int = 800, maxDepth: Int = 40) -> WalkResult<FakeNode> {
+        walkTree(source: FakeSource(), roots: roots, maxNodes: maxNodes, maxDepth: maxDepth)
     }
 
     /// The golden shape from docs/computer-use-design.md, macOS flavour.
@@ -113,6 +113,7 @@ final class TreeTests: XCTestCase {
 
     func testPrunesEmptyStructureButKeepsActionableAndNamed() {
         let root = node("AXWindow", "W", [
+            node("AXRuler", [node("AXRulerMarker", value: "1")]),  // tab stops: skipped whole
             node("AXGroup"),  // empty, no actions: dropped
             node("AXGroup", actions: true),  // actionable: kept
             node("AXGroup", "Sidebar"),  // named: kept
@@ -130,8 +131,13 @@ final class TreeTests: XCTestCase {
             node("AXRow", "below", frame: CGRect(x: 0, y: 500, width: 100, height: 20), [node("AXButton", "inner")]),
             node("AXButton", "no frame"),
         ])
-        let lines = walk([WalkRoot(node: root, depth: 0, parentRole: "AXApplication")], clip: clip).lines
-        XCTAssertEqual(lines, ["0 window W", "\t1 row visible", "\t2 button no frame"])
+        // The menu bar sits outside the window frame; its root is not clipped.
+        let menuBar = node("AXMenuBar", frame: CGRect(x: 0, y: -50, width: 100, height: 20), [node("AXMenuBarItem", "File")])
+        let lines = walk([
+            WalkRoot(node: root, depth: 0, parentRole: "AXApplication", clip: clip),
+            WalkRoot(node: menuBar, depth: 1, parentRole: "AXApplication"),
+        ]).lines
+        XCTAssertEqual(lines, ["0 window W", "\t1 row visible", "\t2 button no frame", "\t3 menu bar", "\t\t4 menu bar item File"])
     }
 
     func testNodeCapTruncates() {

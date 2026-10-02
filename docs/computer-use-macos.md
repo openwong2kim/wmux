@@ -158,7 +158,9 @@ the Windows helper can match them:
     children up a level.
 - Tables and outlines contribute only `AXVisibleRows`. A closed menu is not
   descended into, because AX exposes every item of every menu even while it
-  is closed. A subtree whose frame lies wholly outside the window is skipped.
+  is closed. A subtree of the window whose frame lies wholly outside the window is
+  skipped (the menu bar is not clipped), and so are rulers (a row of tab
+  stops).
 - Secure text fields, and fields whose name says password, passcode, PIN,
   one-time, OTP, verification code or security code (plus the usual words in
   Korean, Japanese, Chinese, German, French, Spanish, Portuguese and

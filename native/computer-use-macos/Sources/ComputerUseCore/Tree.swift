@@ -82,11 +82,15 @@ public struct WalkRoot<Node> {
     public var depth: Int
     /// Role of the element's real AX parent, for its identity.
     public var parentRole: String
+    /// Subtrees wholly outside this rectangle are skipped (the window frame
+    /// for the window; nil for the menu bar, which lives outside it).
+    public var clip: CGRect?
 
-    public init(node: Node, depth: Int, parentRole: String) {
+    public init(node: Node, depth: Int, parentRole: String, clip: CGRect? = nil) {
         self.node = node
         self.depth = depth
         self.parentRole = parentRole
+        self.clip = clip
     }
 }
 
@@ -240,13 +244,13 @@ public func renderHeader(appName: String, pid: Int32, windowTitle: String) -> St
 ///
 /// - Pruned (structural) nodes get no index, but their children are kept one
 ///   level up.
-/// - A subtree whose frame lies wholly outside `clip` is skipped (off-screen rows).
+/// - A subtree whose frame lies wholly outside its root's `clip` is skipped
+///   (off-screen rows), and so is a ruler (a row of tab stops, all noise).
 /// - `maxNodes` caps indexed elements, `maxDepth` the raw AX depth; hitting
 ///   either, or the deadline, sets `truncated`.
 public func walkTree<S: TreeSource>(
     source: S,
     roots: [WalkRoot<S.Node>],
-    clip: CGRect?,
     maxNodes: Int,
     maxDepth: Int,
     deadline: Date? = nil
@@ -255,7 +259,7 @@ public func walkTree<S: TreeSource>(
     var elements: [WalkedElement<S.Node>] = []
     var truncated = false
 
-    func visit(_ node: S.Node, rawDepth: Int, depth: Int, parentRole: String) {
+    func visit(_ node: S.Node, rawDepth: Int, depth: Int, parentRole: String, clip: CGRect?) {
         if elements.count >= maxNodes || rawDepth > maxDepth {
             truncated = true
             return
@@ -264,7 +268,7 @@ public func walkTree<S: TreeSource>(
             truncated = true
             return
         }
-        guard let info = source.info(of: node) else { return }
+        guard let info = source.info(of: node), info.role != "AXRuler" else { return }
         if let clip, let frame = info.frame, frame.width > 0, frame.height > 0, !frame.intersects(clip) {
             return
         }
@@ -291,13 +295,13 @@ public func walkTree<S: TreeSource>(
             childDepth = depth + 1
         }
         for child in source.children(of: node, info: info) {
-            visit(child, rawDepth: rawDepth + 1, depth: childDepth, parentRole: info.role)
+            visit(child, rawDepth: rawDepth + 1, depth: childDepth, parentRole: info.role, clip: clip)
             if truncated && elements.count >= maxNodes { return }
         }
     }
 
     for root in roots {
-        visit(root.node, rawDepth: 0, depth: root.depth, parentRole: root.parentRole)
+        visit(root.node, rawDepth: 0, depth: root.depth, parentRole: root.parentRole, clip: root.clip)
     }
     return WalkResult(lines: lines, elements: elements, truncated: truncated)
 }
