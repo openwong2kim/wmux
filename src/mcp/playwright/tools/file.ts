@@ -16,6 +16,7 @@ import {
   type EffectProbe,
 } from '../resultTrailer';
 import { getWmuxDir } from '../../../daemon/config';
+import { fromAgentPath, toAgentPath, wslMountRoot } from '../../wslPaths';
 
 // Optional surfaceId schema reused across tools
 const optionalSurfaceId = z
@@ -118,8 +119,13 @@ function getUploadRoot(): string {
  * the real root, and nothing outside the home directory is disclosed. Falls
  * back to the absolute path only when the root is not under the home directory
  * at all, where accuracy has to win.
+ *
+ * Accuracy also wins for a WSL caller: its `~` is the Linux home, not the
+ * Windows one this root lives under, so it is told the drive-mount path
+ * (`/mnt/c/Users/me/.wmux/uploads`) it can actually write to.
  */
 function displayRoot(root: string): string {
+  if (wslMountRoot() !== null) return toAgentPath(root);
   let home = os.homedir();
   try {
     home = fs.realpathSync(home);
@@ -169,7 +175,17 @@ function validateUploadPath(input: string): string {
     throw new Error('browser_file_upload blocked: empty path');
   }
   const root = getUploadRoot();
-  const abs = path.resolve(input);
+  // A WSL caller speaks /mnt/<drive>/ paths; every check below runs on the
+  // host path they name. A distro path (`/home/me/x`) has no host spelling,
+  // so it cannot be under the root at all.
+  const hostInput = fromAgentPath(input);
+  if (hostInput === null) {
+    throw new Error(
+      `browser_file_upload blocked: "${input}" is inside the WSL distro, which the browser cannot open. ` +
+      `Copy the file under the upload root (${displayRoot(root)}) and pass that path.`,
+    );
+  }
+  const abs = path.resolve(hostInput);
   let resolved = abs;
   try {
     if (fs.existsSync(abs)) resolved = fs.realpathSync(abs);
@@ -731,7 +747,7 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
               {
                 type: 'text' as const,
                 text:
-                  `Downloaded: ${filePath}\n` +
+                  `Downloaded: ${toAgentPath(filePath)}\n` +
                   `suggestedFilename: ${download.suggestedFilename()}\n` +
                   `url: ${download.url()}`,
               },
@@ -808,7 +824,7 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
                 {
                   suggestedFilename: suggestedName,
                   url: download.url(),
-                  path: downloadPath ?? '(pending)',
+                  path: toAgentPath(downloadPath ?? '(pending)'),
                 },
                 null,
                 2,
