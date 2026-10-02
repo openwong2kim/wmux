@@ -163,4 +163,5 @@ jobs:
         run: node native/computer-use-windows/smoke.mjs native/computer-use-windows/dist/wmux-computer-use.exe
 
       - name: Smoke run (hello, capabilities, listApps with Notepad open)
+        timeout-minutes: 5
         run: node native/computer-use-windows/smoke.mjs native/computer-use-windows/dist/wmux-computer-use.exe --limited native/computer-use-windows/tools/dist/RunLimited.exe --require-full

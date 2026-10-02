@@ -57,8 +57,10 @@ process of the same user, at the same integrity level, can already call
   declares PerMonitorV2 DPI awareness. If its own token is elevated (wmux
   started as administrator), the helper refuses to run: it writes
   `[computer-use] refusing to run elevated` to stderr and exits with code 72
-  before `hello`, which main reports as `helper_unavailable`. An elevated
-  helper could drive elevated apps.
+  before `hello`. An elevated helper could drive elevated apps. Main checks
+  its own token first (`src/main/computer/selfElevation.ts`): Settings shows
+  "Unavailable: wmux runs as administrator", the switch stays off, and agents
+  get `helper_unavailable` saying so. Exit 72 maps to the same answer.
 - **The SHA-256 pin is not a security boundary either.** A packaged wmux
   refuses a helper whose bytes do not hash to the value baked into its main
   bundle at build time (`src/main/computer/verifyHelper.ts`). That catches
@@ -86,7 +88,8 @@ API token secret is not set, so in practice the helper ships **unsigned**.
 - **A packaged Windows wmux keeps computer use off until the helper carries a
   release signature.** The release job marks the helper release-signed only
   when the policy is `release-signing` and `Get-AuthenticodeSignature` says
-  `Valid`. Without that mark, Settings shows the helper as not in this build,
+  `Valid` and the signer's thumbprint equals the repo variable
+  `SIGNPATH_RELEASE_SIGNER_THUMBPRINT`. Without that mark, Settings shows the helper as not in this build,
   the switch cannot turn on, and the spawn is refused. Dev builds are
   unaffected.
 - SmartScreen judges files that carry the Mark of the Web, which is the
@@ -108,8 +111,10 @@ monitors at negative coordinates work.
 
 ## Observation
 
-- One CacheRequest per tree (subtree scope, control view), so the walk is one
-  cross-process round-trip; children are read from the cache. All UIA and COM
+- The tree is read one level at a time: one cached children query per parent
+  (control view), capped by the remaining node budget, inside a 7 s walk
+  budget. A huge window (Chromium, Office) is cut off with `truncated: true`
+  instead of timing out before the caps apply. All UIA and COM
   work runs on one dedicated STA thread with a message pump. `IUIAutomation2`
   timeouts are 2 s to connect and 6 s per transaction, below main's 15 s and
   8 s, so a hung target produces an error reply instead of a killed helper.
@@ -117,14 +122,18 @@ monitors at negative coordinates work.
   `docs/computer-use-macos.md` (what is kept, value vs. name, states).
   Roles are UIA control types humanised (`Edit` → `edit`, `MenuItem` →
   `menu item`). `IsPassword` fields and fields named like a secret show
-  `Value: [redacted]`.
+  `Value: [redacted]`; static text that reads like a secret is redacted too.
 - Chromium and Electron build their UIA tree lazily: when the web root has no
   children on the first query, the helper waits briefly and queries once
   more.
 - Staleness: an indexed action re-reads that element's RuntimeId and process
   id; a mismatch is `element_stale`.
 - Screenshots: `PrintWindow` with `PW_RENDERFULLCONTENT`, then `BitBlt` from
-  the screen when that comes back black, cropped to the DWM extended frame
+  the screen when that comes back entirely black (every sample exactly 0), but
+  only when no other visible window above the target overlaps it, so a
+  covering window (a password manager, say) is never captured; otherwise
+  `screenshotStatus` reports the window as covered. Windows over 40 MP are
+  refused. Cropped to the DWM extended frame
   bounds (no shadow), scaled with the shared formula and encoded as JPEG
   (quality 80) through WIC. A minimized window reports
   `screenshotStatus: failed` instead of capturing garbage.
@@ -142,20 +151,35 @@ monitors at negative coordinates work.
   held between calls. If Windows inserts fewer events than asked, the helper
   sends up events for what it tracked at once.
 - Before every batch, and again before every typed chunk, repeated key and
-  scroll notch, the helper requires:
+  scroll notch, the helper requires the following. The slow checks
+  (password field, focused element) run first; the fast Win32 ones (input
+  desktop, foreground window and pid, keyboard focus) run again under the
+  input lock immediately before each `SendInput`, so an Alt+Tab during the
+  slow check sends nothing:
   - the input desktop to be the normal one (`OpenInputDesktop` succeeds and is
     named `Default`). A locked screen, the UAC secure desktop or
     Ctrl+Alt+Delete is refused with `window_not_focused`, never reported as
     sent;
   - keyboard: the foreground window is `target.windowId`, owned by
-    `target.pid`, and its thread's focus is inside it. Pointer: the window under
-    the point is the target, or a menu or popup of the same process;
+    `target.pid`, and its thread's focus is inside it (a failed
+    `GetGUIThreadInfo` refuses). Pointer: the window under the point, owned by
+    `target.pid` at that moment, is the target, a menu (`#32768`), or a
+    window owned by the target;
   - the target not to run at a higher integrity level than the helper. If its
     integrity cannot be read, it counts as higher. UIPI drops such input
     silently, so this is `target_elevated`;
   - keyboard actions (`type`, `pressKey`, `hotkey`, `setValue`): the focused
-    element is not a password field (`IsPassword` or a secret-like name),
-    else `app_blocked`.
+    element is known not to be a password field. A password field
+    (`IsPassword` or a secret-like name) and a focus that cannot be read
+    (no element, a UIA timeout) are both `app_blocked`.
+- Semantic actions (UIA Invoke, Toggle, SelectionItem, ExpandCollapse,
+  Value) check the input desktop, elevation and that the element's process
+  and top-level window are the target's before every call. Like AXPress on
+  macOS they work on a covered background window, because they are not
+  input. Once a pattern call was made, an ambiguous error (a timeout behind a
+  modal dialog, say) ends the action saying it may have taken effect; the
+  helper falls back to another pattern or a synthetic click only when the
+  pattern is absent or certainly did not run.
 - Foreground: the helper never uses `AttachThreadInput` or Alt-key tricks to
   take the foreground. A covered pointer target gets one UIA focus request;
   if the window still is not in front, the answer is `window_not_focused`.
@@ -173,6 +197,15 @@ monitors at negative coordinates work.
     time (pid reuse), and are sanitized: only vocabulary keys, the four
     modifiers and buttons 0–2 at finite coordinates ever become up events,
     and a button goes up where it went down.
+- A partial batch (Windows inserted fewer events than asked) releases
+  exactly what its prefix left down, Unicode units included: the main key
+  first, then the modifiers in reverse, the Win key behind an unassigned key
+  tap. The records stay in memory and on disk until those ups are confirmed;
+  otherwise the action fails, and main sends `releaseInput` to a fresh
+  helper.
+- At start-up, and before every control request until it succeeds, the
+  helper releases what a dead helper recorded. Until then control requests
+  fail with `internal`.
 - `releaseInput { keys?, modifiers?, buttons? }` releases what this helper
   tracked, what a dead helper recorded, and what main lists. With no fields
   it releases only the modifiers and mouse buttons that are actually down,
@@ -245,20 +278,32 @@ node native\computer-use-windows\probe.mjs <exe> getAppState '{"app":"notepad","
    Ctrl+Alt+Shift+Esc midway. Typing stops. Afterwards, typing by hand in
    Notepad shows no stuck Ctrl, Shift, Alt or Win, and
    `%LOCALAPPDATA%\wmux\computer-use\held` holds no files.
-2. **Password field.** In Edge, open a page with a password input
+2. **Focus race.** Have the agent type a long paragraph into Notepad and
+   Alt+Tab to another app midway. Typing stops with `window_not_focused`
+   ("after N of M characters"); nothing lands in the other app.
+3. **Partial batch / crash recovery.** While the agent holds a chord
+   (`hotkey` ctrl+shift+…) or types, kill the helper from Task Manager
+   (`wmux-computer-use.exe`). The next computer call succeeds, no modifier
+   stays stuck, and the `held` directory is empty afterwards. Then drop a
+   hand-written record there with `Set-Content`
+   (`{"pid":<a dead pid>,"created":0,"keys":[162],"buttons":[]}`): its DACL is
+   not the helper's protected owner-only one, so the next call deletes it
+   without acting on it.
+4. **Password field.** In Edge, open a page with a password input
    (`data:text/html,<input type=password autofocus>`). `getAppState` shows
    `Value: [redacted]`; `type` and `setValue` into it answer `app_blocked`.
-3. **Elevated target.** Start Notepad as administrator. Every control action
+5. **Elevated target.** Start Notepad as administrator. Every control action
    on it answers `target_elevated`; nothing is typed.
-4. **Elevated wmux.** Start wmux as administrator with computer use on. Any
-   call answers `helper_unavailable`; running the exe from an elevated prompt
-   exits with code 72 and the stderr line above.
-5. **Secure desktop.** While a UAC prompt is open, and while the screen is
+6. **Elevated wmux.** Start wmux as administrator. Settings shows
+   "Unavailable: wmux runs as administrator" and the switch cannot turn on;
+   an agent call answers `helper_unavailable` saying so. Running the exe from
+   an elevated prompt exits with code 72 and the stderr line above.
+7. **Secure desktop.** While a UAC prompt is open, and while the screen is
    locked (Win+L, then a timed `probe.mjs` call), control actions answer
    `window_not_focused` and nothing is sent.
-6. **Settings app.** `listApps` reports Settings as `SystemSettings.exe`
+8. **Settings app.** `listApps` reports Settings as `SystemSettings.exe`
    (not `ApplicationFrameHost.exe`), and the agent gets `app_blocked` for it.
-7. **Hung target.** Make a window hang (a small WinForms app that sleeps on
+9. **Hung target.** Make a window hang (a small WinForms app that sleeps on
    its UI thread after a click, or any app stopped in a debugger). Run
    `getAppState` on it through `probe.mjs`: the helper answers with an error
    within about 8 s and stays alive for the next request.
