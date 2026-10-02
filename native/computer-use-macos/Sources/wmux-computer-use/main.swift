@@ -15,6 +15,11 @@ if CommandLine.arguments.contains("--request-permissions") {
     exit(0)
 }
 
+// ScreenCaptureKit asserts that the window-server connection was initialized
+// (CGS_REQUIRE_INIT), which NSApplication does. Prohibited policy: no Dock
+// icon, no menu bar, never activated.
+NSApplication.shared.setActivationPolicy(.prohibited)
+
 // One messaging timeout for every AX element (the system-wide element sets
 // the global value), not just application elements: a hung app must not
 // stall a tree walk for AX's default 6 s per call.
