@@ -4,7 +4,8 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import http from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
-import { buildWslInjection } from '../wslIntegration';
+import { parse } from 'smol-toml';
+import { buildWslInjection, WSL_MCP_LAUNCH } from '../wslIntegration';
 
 const SESSION_ID = '11111111-2222-4333-8444-555555555555';
 const dirs: string[] = [];
@@ -24,7 +25,7 @@ function fakeCodexArgv(dir: string, args: string[]): unknown[] {
 }
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
 
-function fixture() {
+function fixture(mcpEntryPath: string | null = null) {
   // Resolved once: macOS os.tmpdir() is a symlink, and Codex reports the real cwd.
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-codex-')));
   dirs.push(dir);
@@ -64,7 +65,7 @@ writeFileSync(process.env.WMUX_TEST_RESULT, JSON.stringify({
   const resultPath = path.join(dir, 'bridge-result.json');
   const injected = buildWslInjection({
     target: { distribution: 'Ubuntu', user: 'test' }, cwd, integrationDir: dir,
-    bashInit: '# fixture', runtimePath: process.execPath, bridgePath: '/unused-claude', codexBridgePath: bridge,
+    bashInit: '# fixture', runtimePath: process.execPath, bridgePath: '/unused-claude', codexBridgePath: bridge, mcpEntryPath,
     env: { HOME: home, PATH: `${bin}:/usr/bin:/bin`, WMUX_TEST_NODE: process.execPath,
       WMUX_TEST_CAPTURE: capture, WMUX_TEST_RESULT: resultPath, WMUX_PTY_ID: 'pane-one', WMUX_DATA_SUFFIX: '-codex-test' },
   });
@@ -119,6 +120,7 @@ describe.skipIf(process.platform === 'win32')('WSL Codex per-launch notify', () 
     const result = f.run(args);
     expect(result.args).toEqual(args);
     expect(result.stderr).toContain('resume capture not injected');
+    expect(result.stderr).toContain('launching Codex unchanged.');
     expect(fs.existsSync(f.resultPath)).toBe(false);
     expect(fs.readFileSync(config, 'utf8')).toBe(original);
   });
@@ -174,6 +176,110 @@ describe.skipIf(process.platform === 'win32')('WSL Codex per-launch notify', () 
     expect(f.run(['--version'], { WMUX_WSL_CODEX_CONFIG: '/missing-helper' }).args).toEqual(['--version']);
     expect(fs.existsSync(f.resultPath)).toBe(false);
   });
+});
+
+const MCP_ENTRY = 'C:\\Program Files\\wmux\\mcp-bundle\\index.js';
+// The -c value that mounts wmux's MCP server, parsed the way Codex reads it.
+function mcpOverride(args: string[]) {
+  const value = args.find(arg => arg.startsWith('mcp_servers.wmux='));
+  if (value === undefined) return undefined;
+  expect(args[args.indexOf(value) - 1]).toBe('-c');
+  return (parse(value) as { mcp_servers: { wmux: { command: string; args: string[]; startup_timeout_sec: number; env: Record<string, string> } } }).mcp_servers.wmux;
+}
+
+describe.skipIf(process.platform === 'win32')('WSL Codex per-launch wmux MCP server', () => {
+  it('mounts the Claude launch line with the pane values Codex would otherwise strip', () => {
+    const f = fixture(MCP_ENTRY);
+    const result = f.run(['resume', 'x'], { WSL_DISTRO_NAME: 'Ubuntu 日本', WSL_INTEROP: '/run/WSL/12_interop' });
+    expect(result.args.slice(0, 2)).toEqual(['-c', expect.stringMatching(/^notify=/)]);
+    expect(result.args.slice(4)).toEqual(['resume', 'x']);
+    expect(result.stderr).toBe('');
+    expect(mcpOverride(result.args)).toEqual({ command: '/bin/sh', args: ['-c', WSL_MCP_LAUNCH], startup_timeout_sec: 30, env: {
+      WMUX_WSL_NODE: process.execPath, WMUX_WSL_MCP: MCP_ENTRY, WMUX_PTY_ID: 'pane-one', WMUX_DATA_SUFFIX: '-codex-test',
+      WSLENV: f.injected.env.WSLENV, WSL_DISTRO_NAME: 'Ubuntu 日本', WSL_INTEROP: '/run/WSL/12_interop',
+    } });
+  });
+
+  it('keeps the MCP server when notify is user-owned, and notify when MCP is skipped', () => {
+    const f = fixture(MCP_ENTRY);
+    fs.writeFileSync(path.join(f.home, '.codex/config.toml'), 'notify = ["mine"]\n');
+    const kept = f.run(['--version']);
+    expect(kept.args[0]).toBe('-c');
+    expect(mcpOverride(kept.args)?.env.WMUX_WSL_MCP).toBe(MCP_ENTRY);
+    expect(kept.args.slice(2)).toEqual(['--version']);
+    expect(kept.stderr).toContain('resume capture not injected');
+    expect(kept.stderr).toContain('launching Codex with only the wmux MCP server added.');
+    fs.rmSync(path.join(f.home, '.codex/config.toml'));
+    // A value TOML cannot hold literally skips the server, never the notifier.
+    for (const unsafe of ["it's", 'two\nlines']) {
+      const skipped = f.run(['--version'], { WMUX_SURFACE_ID: unsafe });
+      expect(skipped.args).toEqual(['-c', expect.stringMatching(/^notify=/), '--version']);
+      expect(skipped.stderr).toContain('wmux MCP server not mounted');
+      expect(skipped.stderr).not.toContain('resume capture not injected');
+    }
+  });
+
+  it('skips the server without a bundle or with integration disabled', () => {
+    const none = fixture().run(['--version']);
+    expect(none.args).toEqual(['-c', expect.stringMatching(/^notify=/), '--version']);
+    expect(none.stderr).toBe('');
+    const f = fixture(MCP_ENTRY);
+    expect(f.run(['--version'], { WMUX_SHELL_INTEGRATION: '0' }).args).toEqual(['--version']);
+  });
+
+  it.each([
+    ['user', '[mcp_servers.wmux]\ncommand = "mine"\n', []],
+    ['profile', '[profiles.work.mcp_servers.wmux]\ncommand = "mine"\n', []],
+    ['dotted -c', '', ['-c', 'mcp_servers.wmux.command="mine"']],
+    ['whole-table -c', '', ['--config=mcp_servers={}']],
+  ])('respects a %s wmux MCP server', (_kind, config, args) => {
+    const f = fixture(MCP_ENTRY);
+    if (config) fs.writeFileSync(path.join(f.home, '.codex/config.toml'), config);
+    const result = f.run([...args, '--version']);
+    expect(result.args).toEqual(['-c', expect.stringMatching(/^notify=/), ...args, '--version']);
+    expect(result.stderr).toBe('');
+  });
+
+  it('leaves other MCP servers to Codex', () => {
+    const f = fixture(MCP_ENTRY);
+    fs.writeFileSync(path.join(f.home, '.codex/config.toml'), '[mcp_servers.other]\ncommand = "x"\n');
+    expect(mcpOverride(f.run(['--version']).args)?.command).toBe('/bin/sh');
+  });
+});
+
+// Real Codex parses the override and spawns the server with it, without any
+// model call: `debug prompt-input` only renders the prompt, which lists MCP
+// tools, and the provider is a dead loopback port anyway. The fake runtime
+// records the environment Codex left the launch line.
+const realCodex = process.platform === 'win32' ? ''
+  : spawnSync('/bin/sh', ['-c', 'command -v codex'], { encoding: 'utf8' }).stdout.trim();
+describe.runIf(!!realCodex && spawnSync(realCodex, ['debug', 'prompt-input', '--help']).status === 0)('real Codex MCP contract', () => {
+  it('accepts the override and starts the server with the pane values', () => {
+    const f = fixture(MCP_ENTRY);
+    fs.unlinkSync(path.join(f.bin, 'codex'));
+    fs.symlinkSync(realCodex, path.join(f.bin, 'codex'));
+    const envOut = path.join(f.dir, 'mcp-env.txt');
+    const node = path.join(f.dir, 'fake-windows-node');
+    // Answers the config helper as Node; records the MCP launch and exits.
+    fs.writeFileSync(node, `#!/bin/sh\nif [ "$1" = '${MCP_ENTRY}' ]; then env > '${envOut}'; exit 0; fi\nexec '${process.execPath}' "$@"\n`, { mode: 0o755 });
+    const stub = ['-c', 'model_provider="stub"', '-c',
+      'model_providers.stub={name="stub",base_url="http://127.0.0.1:9/v1",wire_api="responses",requires_openai_auth=false}'];
+    const run = (args: string[]) => spawnSync('/bin/bash', [path.join(f.dir, 'wsl/bin/codex'), ...stub, ...args], {
+      cwd: f.cwd, encoding: 'utf8', timeout: 30_000, env: { ...f.env, CODEX_HOME: path.join(f.home, '.codex'),
+        WMUX_WSL_NODE: node, WSL_DISTRO_NAME: 'Ubuntu', PATH: `${f.env.PATH}:${path.dirname(process.execPath)}` } });
+    const get = run(['mcp', 'get', 'wmux', '--json']);
+    expect(get.status, get.stderr).toBe(0);
+    const transport = JSON.parse(get.stdout).transport;
+    expect(transport.args).toEqual(['-c', WSL_MCP_LAUNCH]);
+    expect(JSON.parse(get.stdout).startup_timeout_sec).toBe(30);
+    expect(transport.env).toMatchObject({ WMUX_WSL_MCP: MCP_ENTRY, WMUX_PTY_ID: 'pane-one', WMUX_WSL_NODE: node });
+    const rendered = run(['debug', 'prompt-input', 'hi']);
+    expect(rendered.status, rendered.stderr).toBe(0);
+    const env = Object.fromEntries(fs.readFileSync(envOut, 'utf8').trim().split('\n')
+      .map(line => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
+    expect(env).toMatchObject({ ELECTRON_RUN_AS_NODE: '1', WMUX_PTY_ID: 'pane-one', WMUX_DATA_SUFFIX: '-codex-test',
+      WMUX_WSL_DISTRO: 'Ubuntu', WSLENV: `${f.injected.env.WSLENV}:ELECTRON_RUN_AS_NODE/w:WMUX_WSL_DISTRO/w:WMUX_WSL_MOUNT/w` });
+  }, 60_000);
 });
 
 // Optional real-CLI contract check. The only model endpoint is a loopback stub;
