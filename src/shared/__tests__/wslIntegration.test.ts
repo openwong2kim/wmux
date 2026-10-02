@@ -73,11 +73,15 @@ describe('WSL per-launch Claude integration', () => {
     const injected = buildWslInjection({ target: { distribution: 'test', user: 'test' }, cwd: dir,
       env: {}, integrationDir: dir, bashInit: '', runtimePath: '/unused', bridgePath: '/unused', mcpEntryPath: '/entry.js' });
     const fakeNode = path.join(dir, 'fake-node');
-    fs.writeFileSync(fakeNode, '#!/bin/sh\nprintf "%s|%s|%s" "$ELECTRON_RUN_AS_NODE" "$WSLENV" "$*"\n', { mode: 0o755 });
+    fs.writeFileSync(fakeNode, '#!/bin/sh\nprintf "%s|%s|%s|%s|%s" "$ELECTRON_RUN_AS_NODE" "$WSLENV" "$WMUX_WSL_DISTRO" "$WMUX_WSL_MOUNT" "$*"\n', { mode: 0o755 });
+    const fakeBin = path.join(dir, 'fake-bin'); fs.mkdirSync(fakeBin);
+    // wslpath only exists inside WSL; stand in with what it answers for C:\.
+    fs.writeFileSync(path.join(fakeBin, 'wslpath'), '#!/bin/sh\nprintf "%s|" "$@" > "$0.args"; printf "/mnt/c/"\n', { mode: 0o755 });
     const { args } = JSON.parse(fs.readFileSync(injected.env.WMUX_WSL_MCP_CONFIG, 'utf8')).mcpServers.wmux;
     const out = execFileSync('/bin/sh', args, { encoding: 'utf8',
-      env: { PATH: '/usr/bin:/bin', WMUX_WSL_NODE: fakeNode, WMUX_WSL_MCP: '/entry.js', WSLENV: 'WMUX_PTY_ID' } });
-    expect(out).toBe('1|WMUX_PTY_ID:ELECTRON_RUN_AS_NODE/w|/entry.js');
+      env: { PATH: `${fakeBin}:/usr/bin:/bin`, WMUX_WSL_NODE: fakeNode, WMUX_WSL_MCP: '/entry.js', WSLENV: 'WMUX_PTY_ID', WSL_DISTRO_NAME: 'Ubuntu' } });
+    expect(out).toBe('1|WMUX_PTY_ID:ELECTRON_RUN_AS_NODE/w:WMUX_WSL_DISTRO/w:WMUX_WSL_MOUNT/w|Ubuntu|/mnt/c/|/entry.js');
+    expect(fs.readFileSync(path.join(fakeBin, 'wslpath.args'), 'utf8')).toBe('-u|C:\\|');
   });
   it.skipIf(process.platform === 'win32')('exec units skip noisy interactive startup files and diagnose missing cwd transport', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-exec-')); dirs.push(dir);

@@ -187,10 +187,16 @@ function findBridge(startDir: string, basename = 'wmux-bridge.mjs', agent = 'cla
 
 // The MCP server runs in the Windows runtime, like the hook bridge: named-pipe
 // auth, CDP on Windows loopback and Playwright all stay where they already work.
-// One interop spawn per Claude session, never per tool call.
+// One interop spawn per agent session, never per tool call. The server also
+// learns which distro called it and where Windows drives are mounted (`wslpath
+// -u 'C:\'`, e.g. /mnt/c/), so file tools can speak the agent's paths.
+export const WSL_MCP_LAUNCH = 'export ELECTRON_RUN_AS_NODE=1 WMUX_WSL_DISTRO="$WSL_DISTRO_NAME"'
+  + ' WMUX_WSL_MOUNT="$(wslpath -u \'C:\\\' 2>/dev/null)"'
+  + ' WSLENV="${WSLENV:+$WSLENV:}ELECTRON_RUN_AS_NODE/w:WMUX_WSL_DISTRO/w:WMUX_WSL_MOUNT/w";'
+  + ' exec "$WMUX_WSL_NODE" "$WMUX_WSL_MCP"';
+
 function wslMcpConfig(): string {
-  const launch = 'export ELECTRON_RUN_AS_NODE=1 WSLENV="${WSLENV:+$WSLENV:}ELECTRON_RUN_AS_NODE/w"; exec "$WMUX_WSL_NODE" "$WMUX_WSL_MCP"';
-  return JSON.stringify({ mcpServers: { wmux: { type: 'stdio', command: '/bin/sh', args: ['-c', launch] } } });
+  return JSON.stringify({ mcpServers: { wmux: { type: 'stdio', command: '/bin/sh', args: ['-c', WSL_MCP_LAUNCH] } } });
 }
 
 export function buildWslInjection(options: {
