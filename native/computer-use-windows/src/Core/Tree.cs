@@ -43,6 +43,8 @@ public sealed record NodeInfo
     public string? Value { get; init; }
     public string? Description { get; init; }
     public string? AutomationId { get; init; }
+    /// <summary>The UI framework's class name (`Edit`, `PasswordBox`…).</summary>
+    public string? ClassName { get; init; }
     public bool Enabled { get; init; } = true;
     public bool Selected { get; init; }
     public bool Expanded { get; init; }
@@ -184,6 +186,24 @@ public static class Tree
     }
 
     /// <summary>
+    /// A developer-chosen identifier (AutomationId, class name) that says the
+    /// field holds a secret: `txtPassword`, `PasswordBox`, `pwdField`. Matched
+    /// as substrings, since identifiers have no word boundaries.
+    /// </summary>
+    public static bool IsSensitiveIdentifier(string? identifier)
+    {
+        if (string.IsNullOrEmpty(identifier)) return false;
+        var lower = identifier.ToLowerInvariant();
+        return lower.Contains("password", StringComparison.Ordinal) || lower.Contains("passwd", StringComparison.Ordinal)
+            || lower.Contains("passcode", StringComparison.Ordinal) || lower.Contains("pwd", StringComparison.Ordinal)
+            || lower.Contains("pincode", StringComparison.Ordinal);
+    }
+
+    /// <summary>Everything that marks an element as a secret field, for the tree and for refusing input.</summary>
+    public static bool IsSecretField(NodeInfo info, string? name) =>
+        IsSensitive(info.IsPassword, name) || IsSensitiveIdentifier(info.AutomationId) || IsSensitiveIdentifier(info.ClassName);
+
+    /// <summary>
     /// One rendered line, without indentation:
     /// `&lt;index&gt; &lt;role&gt; &lt;name&gt;[, Value: …][, Description: …][, State: a b]`.
     /// </summary>
@@ -199,9 +219,9 @@ public static class Tree
             // repeats it is noise. Text that reads like a secret (a one-time
             // code shown on screen) is redacted like a password field.
             if (name.Length == 0) name = Preview(info.Value);
-            if (IsSensitive(info.IsPassword, name)) name = "[redacted]";
+            if (IsSecretField(info, name)) name = "[redacted]";
         }
-        else if (IsSensitive(info.IsPassword, name))
+        else if (IsSecretField(info, name))
         {
             value = "[redacted]";
         }

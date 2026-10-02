@@ -31,11 +31,13 @@ internal static unsafe class Observe
         };
         var elements = new List<nint>();
         var runtimeIds = new List<int[]>();
+        var secret = new List<bool>();
         if (mode != "vision")
         {
             var walk = WalkWindow(window, maxNodes, maxDepth);
             elements = walk.Elements;
             runtimeIds = walk.RuntimeIds;
+            secret = walk.Secret;
             var text = new List<string> { Tree.RenderHeader(app.Name, (int)app.Pid, window.Title) };
             text.AddRange(walk.Lines);
             var focus = FocusedIndex(runtimeIds);
@@ -66,11 +68,11 @@ internal static unsafe class Observe
             }
         }
 
-        Snapshots.Add(new Snapshot(snapshotId, app.Pid, window.Hwnd, elements, runtimeIds));
+        Snapshots.Add(new Snapshot(snapshotId, app.Pid, window.Hwnd, elements, runtimeIds, secret));
         return output;
     }
 
-    private sealed record Walked(List<string> Lines, List<nint> Elements, List<int[]> RuntimeIds, bool Truncated);
+    private sealed record Walked(List<string> Lines, List<nint> Elements, List<int[]> RuntimeIds, List<bool> Secret, bool Truncated);
 
     private static Walked WalkWindow(WindowEntry window, int maxNodes, int maxDepth)
     {
@@ -105,7 +107,8 @@ internal static unsafe class Observe
                 }
                 var ids = result.Elements.Select(e => Uia.CachedRuntimeId((IUIAutomationElement*)e)).ToList();
                 source.Keep(result.Elements);
-                return new Walked(result.Lines, result.Elements, ids, result.Truncated);
+                var secret = result.Elements.Select(source.Secrets.Contains).ToList();
+                return new Walked(result.Lines, result.Elements, ids, secret, result.Truncated);
             }
             finally
             {

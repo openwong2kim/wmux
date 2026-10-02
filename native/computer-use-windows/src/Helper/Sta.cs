@@ -29,6 +29,37 @@ internal static unsafe class Sta
         thread.Start();
     }
 
+    /// <summary>
+    /// The first UIA call into another process pays for the connection and
+    /// the provider set-up; make it here, on a window that is up anyway, so
+    /// the first getAppState does not. Errors only cost the warm-up.
+    /// </summary>
+    private static void Warm()
+    {
+        try
+        {
+            var automation = Uia.Automation;
+            _ = Uia.ControlView;
+            var foreground = Win.Root(PInvoke.GetForegroundWindow());
+            if (foreground != HWND.Null)
+            {
+                var el = automation->ElementFromHandleBuildCache(foreground, Uia.WalkCache);
+                if (el != null)
+                {
+                    var children = el->FindAllBuildCache(Windows.Win32.UI.Accessibility.TreeScope.TreeScope_Children, Uia.ControlView, Uia.WalkCache);
+                    if (children != null) children->Release();
+                    el->Release();
+                }
+            }
+            Uia.FocusedRuntimeId();
+        }
+        catch (Exception e)
+        {
+            Wire.Log($"UI Automation warm-up: {e.Message}");
+        }
+        Capture.Warm();
+    }
+
     public static void Post(byte[] line)
     {
         Queue.Enqueue(line);
@@ -45,14 +76,7 @@ internal static unsafe class Sta
         // Warm up after hello, while main is still reading it: the automation
         // object and the held-input directory would otherwise cost the first
         // request tens of milliseconds.
-        try
-        {
-            _ = Uia.Automation;
-        }
-        catch (HelperError e)
-        {
-            Wire.Log(e.Message);
-        }
+        Warm();
         _ = HeldStore.Directory;
         // A helper killed mid-batch may have left keys down; lift them now
         // rather than at the first control request (which retries if this fails).

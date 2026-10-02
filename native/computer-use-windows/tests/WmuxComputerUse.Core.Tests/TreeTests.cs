@@ -93,6 +93,17 @@ public class TreeTests
     }
 
     [Fact]
+    public void RedactsFieldsWhoseIdentifiersSayPassword()
+    {
+        Assert.Equal("0 edit, Value: [redacted]", Tree.RenderLine(0, new NodeInfo { Role = "Edit", AutomationId = "txtPassword", Value = "x" }));
+        Assert.Equal("1 edit Secret, Value: [redacted]", Tree.RenderLine(1, new NodeInfo { Role = "Edit", Name = "Secret", ClassName = "PasswordBox" }));
+        Assert.True(Tree.IsSensitiveIdentifier("pwdField"));
+        Assert.True(Tree.IsSensitiveIdentifier("PinCodeBox"));
+        Assert.False(Tree.IsSensitiveIdentifier("SearchBox"));
+        Assert.False(Tree.IsSensitiveIdentifier(null));
+    }
+
+    [Fact]
     public void RedactsSecretLookingStaticText()
     {
         Assert.Equal("0 text [redacted]", Tree.RenderLine(0, new NodeInfo { Role = "Text", Name = "Your one-time code is 482913" }));

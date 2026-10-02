@@ -437,17 +437,16 @@ internal static unsafe class Actions
         return Result("synthetic", false);
     }
 
-    /// <summary>The element is a password field (IsPassword or a secret-looking name); unreadable counts as yes.</summary>
-    private static bool IsSecretElement(IUIAutomationElement* el, int index)
+    /// <summary>
+    /// Refuses a secret field before anything else is done with it: what the
+    /// snapshot saw (the tree showed it as [redacted]) or what it is now
+    /// (Uia.IsSecretElement; unreadable counts as secret).
+    /// </summary>
+    private static void RefuseSecretElement(Snapshot snap, IUIAutomationElement* el, int index, string what)
     {
-        try
+        if (snap.Secret[index] || Uia.IsSecretElement(el))
         {
-            return el->CurrentIsPassword || Tree.IsSensitive(false, Uia.Take(el->CurrentName));
-        }
-        catch (Exception e) when (e is not HelperError)
-        {
-            if (Uia.IsGone(e.HResult)) throw new HelperError("element_stale", $"element {index} went away");
-            return true;
+            throw new HelperError("app_blocked", $"element {index} is a password field (or wmux could not tell); wmux does not {what} it");
         }
     }
 
@@ -457,10 +456,7 @@ internal static unsafe class Actions
         var index = p.Int("index") ?? throw new HelperError("invalid_argument", "setValue needs an element index");
         var value = p.RequireString("value");
         var el = snap.Element(index);
-        if (IsSecretElement(el, index))
-        {
-            throw new HelperError("app_blocked", "that is a password field (or wmux could not tell); wmux does not fill it");
-        }
+        RefuseSecretElement(snap, el, index, "fill");
         var pattern = (IUIAutomationValuePattern*)Pattern(el, Uia.ValuePattern, IUIAutomationValuePattern.IID_Guid);
         if (pattern == null) throw new HelperError("value_not_settable", $"element {index} does not accept a value through accessibility");
         try
@@ -536,7 +532,7 @@ internal static unsafe class Actions
         if (p.Int("index") is int index)
         {
             var el = snap.Element(index);
-            if (IsSecretElement(el, index)) throw new HelperError("app_blocked", "that is a password field (or wmux could not tell); wmux does not type into it");
+            RefuseSecretElement(snap, el, index, "type into");
             try
             {
                 Focus.RequireSemantic(target, el);
@@ -554,7 +550,7 @@ internal static unsafe class Actions
         }
 
         // Checked before anything is sent; FocusedValue below is the baseline for verification.
-        Focus.RequireKeyboard(target);
+        Action? preflight = Focus.RequireKeyboard(target);
         var before = FocusedValue();
         var chunks = Chunks.Unicode(text);
         int total = chunks.Sum(c => c.GraphemeCount), typed = 0;
@@ -562,11 +558,22 @@ internal static unsafe class Actions
         {
             try
             {
-                // The full check (focus, password field) before every chunk;
-                // the fast one again inside Post, right before SendInput.
-                var preflight = Focus.RequireKeyboard(target);
-                if (chunk.Text != null) Input.TypeText(chunk.Text, preflight);
-                else Input.Tap(Key(chunk.Key!), [], preflight);
+                // The full check (focused element, password field, integrity)
+                // runs before the first chunk and again after every Enter or
+                // Tab, the keys that move focus. Between text chunks the fast
+                // Win32 check inside Post, right before SendInput, requires
+                // the same foreground window and the same focused HWND as at
+                // the last full check.
+                preflight ??= Focus.RequireKeyboard(target);
+                if (chunk.Text != null)
+                {
+                    Input.TypeText(chunk.Text, preflight);
+                }
+                else
+                {
+                    Input.Tap(Key(chunk.Key!), [], preflight);
+                    preflight = null;
+                }
             }
             catch (HelperError e)
             {
@@ -578,21 +585,20 @@ internal static unsafe class Actions
         return Result("synthetic", verified);
     }
 
-    private static string Lines(string s) => s.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
-
-    /// <summary>Verified only when the focused element's value changed and now holds the end of the text.</summary>
+    /// <summary>
+    /// Verified only when the focused element's value is the value before
+    /// with exactly the typed text inserted at one position (Core Verify).
+    /// </summary>
     private static bool WaitForEffect(string text, string? before, int timeoutMs)
     {
-        var normalized = Lines(text);
-        var needle = normalized.Length > 32 ? normalized[^32..] : normalized;
+        if (before == null) return false;
         long deadline = Environment.TickCount64 + timeoutMs;
-        do
+        while (true)
         {
-            var v = FocusedValue();
-            if (v != null && v != before && Lines(v).Contains(needle, StringComparison.Ordinal)) return true;
-            Sta.Sleep(50);
-        } while (Environment.TickCount64 < deadline);
-        return false;
+            if (Verify.Inserted(before, FocusedValue(), text)) return true;
+            if (Environment.TickCount64 >= deadline) return false;
+            Sta.Sleep(15);
+        }
     }
 
     public static JsonObject PressKey(Params p)

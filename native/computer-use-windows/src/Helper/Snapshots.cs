@@ -10,13 +10,15 @@ using WmuxComputerUse.Core;
 
 namespace WmuxComputerUse;
 
-internal sealed unsafe class Snapshot(string id, uint pid, HWND window, List<nint> elements, List<int[]> runtimeIds)
+internal sealed unsafe class Snapshot(string id, uint pid, HWND window, List<nint> elements, List<int[]> runtimeIds, List<bool> secret)
 {
     public string Id { get; } = id;
     public uint Pid { get; } = pid;
     public HWND Window { get; } = window;
     public List<nint> Elements { get; } = elements;
     public List<int[]> RuntimeIds { get; } = runtimeIds;
+    /// <summary>Elements the walk saw as secret fields (rendered as [redacted]).</summary>
+    public List<bool> Secret { get; } = secret;
     public long Created { get; } = Environment.TickCount64;
 
     /// <summary>

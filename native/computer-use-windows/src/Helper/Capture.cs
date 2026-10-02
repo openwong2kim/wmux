@@ -28,6 +28,18 @@ internal static unsafe class Capture
     private const long MaxPixels = 40_000_000;
     private static IWICImagingFactory* factory;
 
+    /// <summary>Creates the WIC factory ahead of the first screenshot.</summary>
+    public static void Warm()
+    {
+        try
+        {
+            _ = Factory;
+        }
+        catch (HelperError)
+        {
+        }
+    }
+
     private static IWICImagingFactory* Factory
     {
         get

@@ -28,6 +28,7 @@ internal static unsafe class Uia
     public const int NameProperty = 30005;
     public const int IsEnabledProperty = 30010;
     public const int AutomationIdProperty = 30011;
+    public const int ClassNameProperty = 30012;
     public const int HelpTextProperty = 30013;
     public const int IsPasswordProperty = 30019;
     public const int IsOffscreenProperty = 30022;
@@ -108,7 +109,7 @@ internal static unsafe class Uia
             foreach (var id in new[]
             {
                 RuntimeIdProperty, BoundingRectangleProperty, ProcessIdProperty, ControlTypeProperty, NameProperty,
-                IsEnabledProperty, AutomationIdProperty, HelpTextProperty, IsPasswordProperty, IsOffscreenProperty,
+                IsEnabledProperty, AutomationIdProperty, ClassNameProperty, HelpTextProperty, IsPasswordProperty, IsOffscreenProperty,
                 IsExpandCollapseAvailableProperty, IsInvokeAvailableProperty, IsSelectionItemAvailableProperty,
                 IsToggleAvailableProperty, IsValueAvailableProperty, ValueValueProperty, ExpandCollapseStateProperty,
                 SelectionItemIsSelectedProperty, FullDescriptionProperty,
@@ -295,7 +296,7 @@ internal static unsafe class Uia
         {
             runtimeId = CurrentRuntimeId(el);
             if (runtimeId.Length == 0) return Secrecy.Unknown;
-            return el->CurrentIsPassword || Tree.IsSensitive(false, Take(el->CurrentName)) ? Secrecy.Secret : Secrecy.Safe;
+            return IsSecretElement(el) ? Secrecy.Secret : Secrecy.Safe;
         }
         catch (Exception e) when (e is not HelperError)
         {
@@ -304,6 +305,34 @@ internal static unsafe class Uia
         finally
         {
             el->Release();
+        }
+    }
+
+    /// <summary>
+    /// The element is a secret field, read live: IsPassword, a secret-looking
+    /// name, AutomationId or class name, or a Win32 edit with ES_PASSWORD.
+    /// An element that cannot be read counts as secret.
+    /// </summary>
+    public static bool IsSecretElement(IUIAutomationElement* el)
+    {
+        try
+        {
+            var info = new NodeInfo
+            {
+                Role = "Edit",
+                IsPassword = el->CurrentIsPassword,
+                AutomationId = Take(el->CurrentAutomationId),
+                ClassName = Take(el->CurrentClassName),
+            };
+            if (Tree.IsSecretField(info, Take(el->CurrentName))) return true;
+            var hwnd = el->CurrentNativeWindowHandle;
+            const uint EsPassword = 0x20;
+            return hwnd != HWND.Null && Win.ClassName(hwnd).Contains("Edit", StringComparison.OrdinalIgnoreCase)
+                && ((uint)PInvoke.GetWindowLongPtr(hwnd, Windows.Win32.UI.WindowsAndMessaging.WINDOW_LONG_PTR_INDEX.GWL_STYLE) & EsPassword) != 0;
+        }
+        catch (Exception e) when (e is not HelperError)
+        {
+            return true;
         }
     }
 
@@ -399,6 +428,9 @@ internal sealed unsafe class UiaTreeSource : ITreeSource<nint>, IDisposable
         return (nint)root;
     }
 
+    /// <summary>Elements the walk saw as secret fields, so a snapshot remembers it.</summary>
+    public HashSet<nint> Secrets { get; } = [];
+
     public NodeInfo? Info(nint node)
     {
         var el = (IUIAutomationElement*)node;
@@ -410,7 +442,7 @@ internal sealed unsafe class UiaTreeSource : ITreeSource<nint>, IDisposable
             var description = Uia.CachedString(el, Uia.FullDescriptionProperty);
             if (string.IsNullOrEmpty(description)) description = Uia.Take(el->CachedHelpText);
             bool password = el->CachedIsPassword;
-            return new NodeInfo
+            var info = new NodeInfo
             {
                 Role = role,
                 Name = Uia.Take(el->CachedName),
@@ -418,6 +450,7 @@ internal sealed unsafe class UiaTreeSource : ITreeSource<nint>, IDisposable
                 Value = password ? null : Uia.CachedString(el, Uia.ValueValueProperty),
                 Description = description,
                 AutomationId = Uia.Take(el->CachedAutomationId),
+                ClassName = Uia.Take(el->CachedClassName),
                 Enabled = el->CachedIsEnabled,
                 Selected = Uia.CachedBool(el, Uia.SelectionItemIsSelectedProperty),
                 Expanded = Uia.CachedInt(el, Uia.ExpandCollapseStateProperty) == 1,
@@ -428,6 +461,9 @@ internal sealed unsafe class UiaTreeSource : ITreeSource<nint>, IDisposable
                     || Uia.CachedBool(el, Uia.IsSelectionItemAvailableProperty),
                 Frame = rect.IsEmpty ? null : rect,
             };
+            if (!Tree.IsSecretField(info, info.Name)) return info;
+            Secrets.Add(node);
+            return info with { Value = null };
         }
         catch (Exception e) when (e is not HelperError)
         {
