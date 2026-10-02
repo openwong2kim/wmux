@@ -181,7 +181,9 @@ export class BrowserReplSession {
     const onIdleDeath = (reason: string) => {
       if (this.activeRunId === null && this.worker === worker) this.killWorker(reason);
     };
-    worker.on('error', (err) => onIdleDeath(`crashed between runs: ${err.message}`));
+    worker.on('error', (err) => onIdleDeath(
+      `crashed between runs: ${err instanceof Error ? err.message : String(err)}`,
+    ));
     worker.on('exit', (code) => onIdleDeath(`exited between runs (code ${code})`));
     this.ready = new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('browser_repl worker did not start')), READY_TIMEOUT_MS);
@@ -388,9 +390,10 @@ export class BrowserReplSession {
             return;
         }
       };
-      const onError = (err: Error) => {
-        this.killWorker(`crashed: ${err.message}`);
-        finish({ ok: false, error: `browser_repl runtime crashed: ${err.message}`, timedOut: false });
+      const onError = (err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        this.killWorker(`crashed: ${message}`);
+        finish({ ok: false, error: `browser_repl runtime crashed: ${message}`, timedOut: false });
       };
       const onExit = (exitCode: number) => {
         if (settled) return;

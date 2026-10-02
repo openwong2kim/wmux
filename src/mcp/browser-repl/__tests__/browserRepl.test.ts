@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import type { Worker } from 'node:worker_threads';
 import { z } from 'zod';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { CollectedTool } from '../../playwright/toolCollector';
@@ -695,6 +696,51 @@ describe('browser_repl session', () => {
     expect(out.ok).toBe(true);
     expect(out.freshRuntime).toBe(true);
     expect(out.previousDeath).toContain('between runs');
+  });
+
+  it.each([
+    ['"background failure"', 'background failure'],
+    ['null', 'null'],
+    ['42', '42'],
+    ['new Error("background error")', 'background error'],
+  ])('reports worker failure %s and starts a fresh runtime', async (expression, reason) => {
+    const bridge = createBrowserBridge(harness().tools, {});
+    const session = newSession();
+    const out = await session.run(
+      // Bypass the snippet-level logger to exercise the host worker error event.
+      `process.removeAllListeners("uncaughtException"); setTimeout(() => { throw ${expression}; }, 0); await new Promise(() => {})`,
+      10_000,
+      bridge,
+    );
+    expect(out.ok).toBe(false);
+    expect(out.error).toContain(reason);
+    expect(out.timedOut).toBe(false);
+
+    const next = await session.run('1', 10_000, bridge);
+    expect(next.ok).toBe(true);
+    expect(next.freshRuntime).toBe(true);
+    expect(next.previousDeath).toContain(reason);
+  });
+
+  it.each([
+    ['idle failure', 'idle failure'],
+    [null, 'null'],
+    [42, '42'],
+    [new Error('idle error'), 'idle error'],
+  ])('preserves idle worker failure %s when starting a fresh runtime', async (failure, reason) => {
+    const bridge = createBrowserBridge(harness().tools, {});
+    const session = newSession();
+    await session.run('let lostState = 1; 1', 10_000, bridge);
+    // Inject the host event after the run has settled, without racing a timer
+    // against message delivery. Active-run failures above use a real throw.
+    const worker = (session as unknown as { worker: Worker }).worker;
+    worker.emit('error', failure);
+
+    const next = await session.run('typeof lostState', 10_000, bridge);
+    expect(next.ok).toBe(true);
+    expect(next.freshRuntime).toBe(true);
+    expect(next.result?.text).toBe('undefined');
+    expect(next.previousDeath).toContain(`crashed between runs: ${reason}`);
   });
 
   it('collects the hint blocks of a run once, deduped, and renders them as their own block', async () => {
