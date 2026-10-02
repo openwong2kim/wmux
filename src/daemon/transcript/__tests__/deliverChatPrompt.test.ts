@@ -177,6 +177,8 @@ describe('Claude composer rows and the exact match', () => {
   });
   it('counts spaces and line breaks; only a soft wrap the next word forced is undone', () => {
     expect(shows([RULE, '❯ a b', RULE], 'a b')).toBe(true);
+    // The live prompt row: `❯` and a no-break space.
+    expect(shows([RULE, '❯\u00a0reply with hello world', RULE], 'reply with hello world')).toBe(true);
     expect(shows([RULE, '❯ a b', RULE], 'ab')).toBe(false);
     expect(shows([RULE, '❯ ab', RULE], 'a b')).toBe(false);
     expect(shows([RULE, '❯ one', '  two', RULE], 'one\ntwo')).toBe(true);

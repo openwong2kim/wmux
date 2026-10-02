@@ -122,8 +122,9 @@ export function claudeComposerRows(rows: ChatScreenRows | null): { rows: string[
   if (end < 0 || rows.slice(at + 1, end).some(row => !/^\s{2}/.test(row) && row.trim())) return null;
   const width = tail[at - 1].length;
   if (claudeComposerEmpty(rows)) return { rows: [], width };
-  const first = rows[at].slice(rows[at].indexOf('❯') + 1).replace(/^ /, '');
-  return { rows: [first, ...rows.slice(at + 1, end).map(row => row.replace(/^ {2}/, ''))].map(row => row.trimEnd()), width };
+  // Claude draws a no-break space after the `❯` (Claude Code 2.1, captured live).
+  const first = rows[at].slice(rows[at].indexOf('❯') + 1).replace(/^[ \u00a0]/, '');
+  return { rows: [first, ...rows.slice(at + 1, end).map(row => row.replace(/^[ \u00a0]{2}/, ''))].map(row => row.trimEnd()), width };
 }
 
 /**
