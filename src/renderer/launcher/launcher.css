@@ -1,0 +1,78 @@
+/* Quick-launch composer (DESIGN.md › Dialogs & forms: a quiet surface).
+   The window is clear and exactly the card, so the card draws the only
+   surface and its rounded corners are the window's. */
+html,
+body,
+#root {
+  margin: 0;
+  background: transparent !important;
+  overflow: hidden;
+}
+
+.quick-launch {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-base);
+  border: 1px solid var(--surface-hairline);
+  border-radius: 14px;
+  color: var(--text-main);
+  font-size: 13px;
+}
+
+.quick-launch-prompt {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  resize: none;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text-main);
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  padding: 16px 16px 8px;
+}
+.quick-launch-prompt::placeholder {
+  color: var(--text-muted);
+}
+
+.quick-launch-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px 12px;
+  border-top: 1px solid var(--surface-hairline);
+}
+
+.quick-launch-select {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 168px;
+}
+.quick-launch-controls .ui-segmented {
+  flex: none;
+}
+.quick-launch-controls .ui-segment {
+  white-space: nowrap;
+}
+
+.quick-launch-status {
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  color: var(--text-sub);
+}
+.quick-launch-status kbd {
+  font-family: inherit;
+  font-size: 11px;
+  padding: 0 4px;
+  border: 1px solid var(--surface-hairline);
+  border-radius: 4px;
+}
+.quick-launch-error {
+  color: var(--accent-red);
+}

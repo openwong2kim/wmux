@@ -875,6 +875,18 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     return buildWorkspaceListEntries(store.workspaces);
   }
 
+  if (method === 'quickLaunch.context') {
+    // The global quick-launch composer (main/quickLaunch): which workspaces it
+    // may start an agent in, and the theme to paint itself in.
+    return {
+      workspaces: store.workspaces.map((w) => ({ id: w.id, name: w.name, cwd: w.metadata?.cwd ?? '' })),
+      activeWorkspaceId: store.activeWorkspaceId,
+      theme: store.theme,
+      locale: store.locale,
+      ...(store.theme === 'custom' ? { customThemeColors: store.customThemeColors } : {}),
+    };
+  }
+
   if (method === 'workspace.phoneSidebar') {
     // Phone Fleet only (reached through main's PhoneWorkspaces, never the
     // public RPC router): the sidebar's own labels, projected and bounded.

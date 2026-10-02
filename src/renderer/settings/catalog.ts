@@ -121,6 +121,8 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'catmute', tab: 'notifications', labelKey: 'settings.notificationCategories', descKey: 'settings.notificationCategoriesDesc', synonyms: 'mute category subagent approval' },
   { id: 'wsmute', tab: 'notifications', labelKey: 'settings.perWorkspaceNotifications', descKey: 'settings.perWorkspaceNotificationsDesc', synonyms: 'mute workspace quiet' },
 
+  { id: 'quicklaunch', tab: 'shortcuts', labelKey: 'settings.quickLaunch', descKey: 'settings.quickLaunchDesc', synonyms: 'quick launch global shortcut hotkey composer spotlight launcher prompt 빠른 실행 전역 단축키' },
+  { id: 'quicklaunchkey', tab: 'shortcuts', labelKey: 'settings.quickLaunchShortcut', descKey: 'settings.quickLaunchShortcutDesc', synonyms: 'quick launch global hotkey cmd shift space 빠른 실행 단축키' },
   { id: 'prefix', tab: 'shortcuts', labelKey: 'settings.prefixKey', synonyms: 'prefix tmux ctrl+b leader' },
   { id: 'customkeys', tab: 'shortcuts', labelKey: 'settings.customKeybindings', synonyms: 'hotkey shortcut keymap bind 단축키' },
 

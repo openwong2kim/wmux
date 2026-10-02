@@ -93,6 +93,7 @@ import { registerRemoteHandlers } from './ipc/handlers/remote.handler';
 import { RemoteHostsStore } from './remote/RemoteHostsStore';
 import { RemoteAttachmentsStore } from './remote/RemoteAttachmentsStore';
 import { registerFanOutHandler } from './ipc/handlers/fanout.handler';
+import { initQuickLaunch } from './quickLaunch';
 import { createFanOutService } from './worktask/createFanOutService';
 import { getWorkerTempDirSweeper, liveTempDirsFromSessions } from './worktask/fanoutTempDir';
 import { registerFanOutRpc } from './pipe/handlers/fanout.rpc';
@@ -1040,6 +1041,7 @@ getWorkerTempDirSweeper().setLiveTempDirs(async () => {
   }>;
   return Array.isArray(sessions) ? liveTempDirsFromSessions(sessions) : null;
 });
+let quickLaunch: ReturnType<typeof initQuickLaunch> | null = null;
 registerFanOutHandler(fanOutService);
 registerFanOutRpc(rpcRouter, fanOutService, () => mainWindow);
 registerLedgerRpc(rpcRouter, () => mainWindow);
@@ -1619,6 +1621,9 @@ app.on('ready', async () => {
   markBoot('plugins-loaded');
 
   mainWindow = createWindow({ deferLoad: true });
+  // Global quick launch: needs `ready` for globalShortcut, and registers from
+  // its own settings file so the chord works before the renderer has loaded.
+  quickLaunch = initQuickLaunch({ getMainWindow: () => mainWindow, fanOutService });
   if (cdpEnabled) {
     const localContents = mainWindow.webContents;
     let retryDelayMs = 2_000;
@@ -2465,6 +2470,13 @@ app.on('before-quit', async (e) => {
   // Broker dies with the app: shims exit and hosts mark the server down,
   // same visible behavior as the old per-agent child dying with wmux.
   mcpBrokerSupervisor.stop();
+
+  // Quick launch: give the global chord back and drop the composer window.
+  try {
+    quickLaunch?.dispose();
+  } catch (err) {
+    console.error('[Main] before-quit quick-launch dispose failed:', err);
+  }
 
   // Computer use: stop the helper, take down consent prompts, release the
   // global stop key. Synchronous, before anything below can stall.
