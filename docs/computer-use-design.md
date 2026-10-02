@@ -342,6 +342,10 @@ by localized message text.
 
 ## Windows specifics (phase 1)
 
+The helper as built, its trust model, signing and the dogfood checklist:
+`docs/computer-use-windows.md`. Like the macOS helper it types Unicode only
+and never uses the clipboard.
+
 - CsWin32 bindings with NativeAOT give a single exe with no runtime
   dependency. FlaUI is not used because its COM interop does not support
   NativeAOT.
@@ -357,8 +361,9 @@ by localized message text.
 - **Packaged builds spawn only the bundled helper.** The `WMUX_COMPUTER_HELPER`
   override (an absolute path to a locally built helper) works only in dev
   builds, so an environment variable cannot swap the input-injecting process
-  in an installed wmux. Main does not verify the helper's signature before
-  spawning it yet; that publisher check belongs to the helper PR.
+  in an installed wmux. A packaged wmux checks the helper against a SHA-256
+  pinned at build time and keeps computer use off until the helper is
+  release-signed (`docs/computer-use-windows.md`).
 
 ## Performance targets (spike acceptance)
 
