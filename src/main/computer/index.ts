@@ -7,7 +7,7 @@ import { IPC } from '../../shared/constants';
 import { readComputerUseEnabled, type ComputerUseSettingsPayload } from '../../shared/computer/config';
 import { ComputerError } from '../../shared/computer/errors';
 import { helperStatus, writeComputerUseEnabled } from './settings';
-import { ComputerService, type ConsentRequester, type HelperLike } from './ComputerService';
+import { ComputerService, computerUseShutDown, type ConsentRequester, type HelperLike } from './ComputerService';
 import { HelperProcess } from './HelperProcess';
 import { StopKey } from './stopKey';
 import { resolveHelperPathFor, type HelperSpec } from './helperPath';
@@ -191,7 +191,9 @@ export function registerComputerUseIpc(getExistingService: () => ComputerService
     // whether the chord is free before any agent calls; turning the switch off
     // gives it back.
     const key = computerStopKey();
-    if (enabled && helper === 'ready') key.arm();
+    // During quit (the service is disposed) Settings must not take the chord
+    // back after disposeComputerUse gave it up.
+    if (enabled && helper === 'ready' && !computerUseShutDown()) key.arm();
     else {
       // The helper went away while the key was held: stop agents first.
       if (enabled && key.status() === 'held') getExistingService()?.abort();

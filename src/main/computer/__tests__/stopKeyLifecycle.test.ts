@@ -140,6 +140,19 @@ describe('computer-use stop key lifecycle', () => {
     expect(h.unregister).toHaveBeenCalledWith(ACCEL);
   });
 
+  it('is not taken again by Settings once quit has disposed the service', async () => {
+    const { mod, get, set, create } = await load();
+    const service = create();
+    set(true);
+    expect(h.shortcuts.has(ACCEL)).toBe(true);
+    mod.disposeComputerUse(service);
+    expect(h.shortcuts.has(ACCEL)).toBe(false);
+    h.register.mockClear();
+    expect(get().stopKeyStatus).not.toBe('held');
+    expect(h.register).not.toHaveBeenCalled();
+    expect(h.shortcuts.has(ACCEL)).toBe(false);
+  });
+
   it('stays free while this build has no helper, even with the switch on', async () => {
     h.helper.value = 'missing';
     h.enabled.value = true;
