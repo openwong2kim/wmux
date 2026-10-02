@@ -152,16 +152,39 @@ jobs:
       - name: NativeAOT publish
         run: node native/computer-use-windows/build.mjs --no-stage
 
+      # The exact exe this commit built, for dogfooding a PR on a real Windows
+      # machine (docs/computer-use-windows.md). Uploaded before the smoke runs,
+      # so a failing smoke still leaves the binary to debug.
+      - name: Record the helper's SHA-256
+        shell: pwsh
+        run: |
+          $exe = "native/computer-use-windows/dist/wmux-computer-use.exe"
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  wmux-computer-use.exe" | Set-Content -NoNewline -Encoding ascii "native/computer-use-windows/dist/wmux-computer-use.exe.sha256"
+          Write-Host "wmux-computer-use.exe sha256=$hash"
+
+      - name: Upload the helper
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wmux-computer-use-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            native/computer-use-windows/dist/wmux-computer-use.exe
+            native/computer-use-windows/dist/wmux-computer-use.exe.sha256
+          retention-days: 7
+          if-no-files-found: error
+
       # Hosted runners run as an elevated admin, where the helper must refuse
       # to start (exit 72): checked first. The full smoke then runs helper and
       # Notepad under a de-elevated, medium-integrity token (tools/RunLimited,
       # CI only, never shipped).
-      - name: Build the de-elevating launcher (CI only)
-        run: dotnet build native/computer-use-windows/tools/RunLimited -c Release -o native/computer-use-windows/tools/dist
+      - name: Build the de-elevating launcher and the hang target (CI only)
+        run: |
+          dotnet build native/computer-use-windows/tools/RunLimited -c Release -o native/computer-use-windows/tools/dist
+          dotnet build native/computer-use-windows/tools/HangWindow -c Release -o native/computer-use-windows/tools/dist
 
       - name: Smoke run, elevated (the helper refuses to start)
         run: node native/computer-use-windows/smoke.mjs native/computer-use-windows/dist/wmux-computer-use.exe
 
       - name: Smoke run (hello, capabilities, listApps with Notepad open)
         timeout-minutes: 5
-        run: node native/computer-use-windows/smoke.mjs native/computer-use-windows/dist/wmux-computer-use.exe --limited native/computer-use-windows/tools/dist/RunLimited.exe --require-full
+        run: node native/computer-use-windows/smoke.mjs native/computer-use-windows/dist/wmux-computer-use.exe --limited native/computer-use-windows/tools/dist/RunLimited.exe --hang native/computer-use-windows/tools/dist/HangWindow.exe --require-full
