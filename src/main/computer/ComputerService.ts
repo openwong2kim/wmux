@@ -14,7 +14,7 @@
 // into acting on an app main never vetted.
 
 import { ComputerError } from '../../shared/computer/errors';
-import { BLOCK_REASON_TEXT, blockReasonFor, osChordRefusal, type BlockContext } from '../../shared/computer/blocklist';
+import { BLOCK_REASON_TEXT, blockReasonFor, osChordRefusal, osPointerModifierRefusal, type BlockContext } from '../../shared/computer/blocklist';
 import {
   MODIFIERS,
   OBSERVATION_MODES,
@@ -129,6 +129,16 @@ export interface ControlParams {
   amount?: number;
 }
 
+let shutDown = false;
+
+/**
+ * True once any ComputerService was disposed (app quit). Settings IPC reads it
+ * so opening Settings during quit does not take the stop key back.
+ */
+export function computerUseShutDown(): boolean {
+  return shutDown;
+}
+
 function fail(code: ConstructorParameters<typeof ComputerError>[0], message: string): never {
   throw new ComputerError(code, message);
 }
@@ -237,6 +247,7 @@ export class ComputerService {
     this.assertCurrent(generation);
     await this.vet(agent, target.app, target.window, generation);
 
+    assertConsistent(target.app, target.window);
     const state = await helper.request('getAppState', {
       app: target.app.id,
       window: target.window.id,
@@ -245,12 +256,12 @@ export class ComputerService {
       maxDepth: TREE_MAX_DEPTH,
     });
     this.assertCurrent(generation);
-    // The helper answered for a window; re-vet in case it is not the one we
-    // resolved (a window selector can go stale between the two calls). The
-    // window matters on its own: elevation is per window, not per app.
-    if (state.app.id !== target.app.id || state.window.id !== target.window.id) {
-      await this.vet(agent, state.app, state.window, generation);
-    }
+    // Always re-vet what the helper answered for, not only when the ids
+    // changed: the app's path, bundle id or the window's elevation can differ
+    // from the resolved pair, and a vetted window must belong to its app. A
+    // consented app costs no prompt here.
+    assertConsistent(state.app, state.window);
+    await this.vet(agent, state.app, state.window, generation);
 
     this.recordSnapshot(state.snapshotId, {
       agentKey: agent.key,
@@ -273,27 +284,33 @@ export class ComputerService {
         'the computer-use stop key could not be registered (another app probably uses the same shortcut), so wmux does not let agents drive other apps',
       );
     }
-    const now = this.now();
-    if (now < this.abortedUntil) fail('aborted', 'computer use was just stopped by the user');
     const generation = this.generation;
-
     if (!params.snapshotId) fail('invalid_argument', 'snapshotId is required; call getAppState first');
-    const snap = this.snapshots.get(params.snapshotId);
-    if (!snap || snap.expiresAt < now) fail('snapshot_unknown', `snapshot ${params.snapshotId} is unknown or expired`);
-    if (snap.agentKey !== agent.key) fail('snapshot_unknown', 'that snapshot belongs to another agent');
-    // Keys are checked before consent or the lock: a refused chord raises no
-    // prompt and takes nothing.
+    const snapshotId = params.snapshotId;
+    const checkSnapshot = (now: number): SnapshotRecord => {
+      if (now < this.abortedUntil) fail('aborted', 'computer use was just stopped by the user');
+      const record = this.snapshots.get(snapshotId);
+      if (!record || record.expiresAt < now) fail('snapshot_unknown', `snapshot ${snapshotId} is unknown or expired`);
+      if (record.agentKey !== agent.key) fail('snapshot_unknown', 'that snapshot belongs to another agent');
+      return record;
+    };
+    const snap = checkSnapshot(this.now());
+    // Keys and modifiers are checked before consent or the lock: a refused
+    // chord raises no prompt and takes nothing.
     const keys = this.resolveKeys(params);
     // Consent may have been revoked (abort clears grants) since the snapshot.
     await this.vet(agent, snap.app, snap.window, generation);
-    // Consent can take minutes; the clock and the stop key may both have moved.
+    // Consent can take minutes; the clock and the stop key may both have
+    // moved, so the snapshot and the cooldown are checked again on a fresh
+    // clock before the lock and the rate slot are taken.
     this.assertCurrent(generation);
+    const now = this.now();
+    checkSnapshot(now);
 
     this.takeInputLock(agent, now);
     this.checkRate(agent.key, now);
 
     const point = this.resolvePoint(params, snap);
-    const snapshotId = params.snapshotId;
     // The helper re-checks this window right before each input batch.
     const target = { pid: snap.window.pid, windowId: snap.window.id };
     this.deps.onControl?.({ agent, action: params.action, window: snap.window });
@@ -369,6 +386,7 @@ export class ComputerService {
 
   dispose(): void {
     this.disposed = true;
+    shutDown = true;
     this.generation += 1;
     this.withdrawConsentPrompts();
     this.helper?.dispose();
@@ -387,6 +405,16 @@ export class ComputerService {
 
   /** Canonical key (and chord) for pressKey / hotkey; null for other actions. */
   private resolveKeys(params: ControlParams): { modifiers: Modifier[]; key: Key } | null {
+    if (params.modifiers !== undefined && params.action !== 'click') {
+      // Dropping them silently would send a different input than asked for.
+      fail('invalid_argument', `${params.action} takes no modifiers; use hotkey for a chord (e.g. ["ctrl","s"]) or click with modifiers`);
+    }
+    if (params.action === 'click') {
+      const modifiers = validModifiers(params.modifiers);
+      const why = osPointerModifierRefusal(this.deps.platform ?? process.platform, modifiers);
+      if (why) fail('shortcut_blocked', `${[...modifiers, 'click'].join('+')} is refused because ${why}`);
+      return null;
+    }
     let resolved: { modifiers: Modifier[]; key: Key };
     if (params.action === 'pressKey') {
       const key = typeof params.key === 'string' ? normalizeKey(params.key) : null;
@@ -508,6 +536,13 @@ export class ComputerService {
       if (value.expiresAt < now || this.snapshots.size > SNAPSHOT_RECORD_LIMIT) this.snapshots.delete(key);
       if (this.snapshots.size <= SNAPSHOT_RECORD_LIMIT) break;
     }
+  }
+}
+
+/** A window the helper reports must belong to the app it reports with it. */
+function assertConsistent(app: AppInfo, window: WindowInfo): void {
+  if (app.pid !== window.pid || app.id !== window.appId) {
+    fail('internal', `the computer-use helper reported a window that does not belong to ${app.name}`);
   }
 }
 

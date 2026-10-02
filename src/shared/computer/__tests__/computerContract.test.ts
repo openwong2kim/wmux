@@ -8,7 +8,7 @@ import {
 } from '../errors';
 import { computeScreenshotScale, scaledSize, screenshotPointToWindow } from '../scale';
 import { COMPUTER_ACTIONS, isControlAction, isKey, normalizeKey, normalizeModifier, parseHelperLine, parseHotkey } from '../protocol';
-import { blockReasonFor, osChordRefusal } from '../blocklist';
+import { blockReasonFor, osChordRefusal, osPointerModifierRefusal } from '../blocklist';
 
 describe('computer errors', () => {
   it('gives every code at least one next step', () => {
@@ -200,6 +200,9 @@ describe('blocklist additions', () => {
 
   it('blocks more shells and terminals', () => {
     expect(blockReasonFor(app('C:\\Windows\\System32\\wsl.exe'))).toBe('terminal');
+    for (const host of ['powershell_ise.exe', 'mshta.exe', 'wscript.exe', 'cscript.exe']) {
+      expect(blockReasonFor(app(`C:\\Windows\\System32\\${host}`)), host).toBe('system-tool');
+    }
     expect(blockReasonFor(app('C:\\Program Files\\Git\\git-bash.exe'))).toBe('terminal');
     expect(blockReasonFor(app('/Applications/Warp.app', 'dev.warp.Warp-Preview'))).toBe('terminal');
     expect(blockReasonFor(app('/Applications/Rio.app', 'com.raphaelamorim.rio'))).toBe('terminal');
@@ -212,11 +215,33 @@ describe('blocklist additions', () => {
 });
 
 describe('OS-wide chord refusal', () => {
-  it('has no rules for bare keys', () => {
-    for (const key of ['Escape', 'Tab', 'Enter', 'F11', 'a']) {
+  it('lets ordinary bare keys through', () => {
+    for (const key of ['Escape', 'Tab', 'Enter', 'F5', 'a']) {
       expect(osChordRefusal('win32', [], key)).toBeNull();
       expect(osChordRefusal('darwin', [], key)).toBeNull();
     }
+    expect(osChordRefusal('win32', [], 'F11')).toBeNull();
+  });
+
+  it('refuses the macOS function keys bound to system UI by default', () => {
+    for (const key of ['F3', 'F4', 'F11', 'F12']) expect(osChordRefusal('darwin', [], key), key).not.toBeNull();
+    expect(osChordRefusal('darwin', ['meta'], 'F3')).not.toBeNull();
+    expect(osChordRefusal('darwin', ['meta'], 'F5')).not.toBeNull();
+    expect(osChordRefusal('darwin', ['meta', 'alt'], 'F5')).not.toBeNull();
+    expect(osChordRefusal('darwin', ['meta', 'alt'], '8')).not.toBeNull();
+    expect(osChordRefusal('darwin', ['ctrl', 'alt', 'meta'], '8')).not.toBeNull();
+    expect(osChordRefusal('darwin', ['meta'], '8')).toBeNull();
+  });
+
+  it('refuses Alt+Space on Windows', () => {
+    expect(osChordRefusal('win32', ['alt'], 'Space')).not.toBeNull();
+    expect(osChordRefusal('win32', ['ctrl'], 'Space')).toBeNull();
+  });
+
+  it('refuses a Windows-key click but not other modified clicks', () => {
+    expect(osPointerModifierRefusal('win32', ['meta'])).not.toBeNull();
+    expect(osPointerModifierRefusal('win32', ['ctrl', 'shift'])).toBeNull();
+    expect(osPointerModifierRefusal('darwin', ['meta'])).toBeNull();
   });
 
   it('refuses the stop key on every platform', () => {

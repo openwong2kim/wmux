@@ -15,9 +15,12 @@
 //     process managers (Activity Monitor, Task Manager and its "Run new task").
 //
 // Known residue, covered by per-app consent and chord refusal instead:
-// Explorer's Run dialog belongs to explorer.exe, which cannot be blocked
-// wholesale (Win+R is refused as a meta chord); terminals inside an IDE and
-// password managers inside a browser share their host's process.
+// Explorer's Run dialog and Control Panel windows belong to explorer.exe,
+// which cannot be blocked wholesale (Win+R is refused as a meta chord;
+// control.exe only launches the panel). The Windows helper must close this by
+// reporting the shell namespace / window class of Explorer windows so main
+// can refuse those two. Terminals inside an IDE and password managers inside
+// a browser share their host's process.
 //
 // Matching is by Windows executable basename and macOS bundle id — stable
 // identifiers, not window titles an app controls.
@@ -132,7 +135,19 @@ const BLOCKLIST: readonly BlockEntry[] = [
   },
   {
     reason: 'system-tool',
-    exe: ['taskmgr.exe', 'regedit.exe', 'mmc.exe', 'systemsettings.exe', 'control.exe'],
+    exe: [
+      'taskmgr.exe',
+      'regedit.exe',
+      'regedt32.exe',
+      'mmc.exe',
+      'systemsettings.exe',
+      'control.exe',
+      // GUI script hosts: each one runs arbitrary code from a window.
+      'powershell_ise.exe',
+      'mshta.exe',
+      'wscript.exe',
+      'cscript.exe',
+    ],
     bundle: [
       'com.apple.systempreferences',
       'com.apple.ScriptEditor2',
@@ -188,10 +203,25 @@ export const BLOCK_REASON_TEXT: Record<BlockReason, string> = {
 // itself) would escape per-app consent, so main refuses it before the helper
 // sees it. App-level chords stay allowed even when they change the window:
 // Alt+F4 / Cmd+Q close the vetted app, Ctrl+Cmd+F toggles its full screen.
+// On macOS the bare F3, F4, F11 and F12 are refused too: by default they open
+// Mission Control, Launchpad, show the desktop and the widgets, and a
+// synthetic key cannot tell whether the person remapped them.
 
 type ChordPlatform = 'win32' | 'darwin';
 
 const has = (mods: readonly Modifier[], ...want: Modifier[]) => want.every((m) => mods.includes(m));
+
+/**
+ * Why modifiers held during a click must not be sent, or null when they may.
+ * A Windows-key click is not an app gesture, so the platform rule for meta
+ * applies to pointer batches too.
+ */
+export function osPointerModifierRefusal(platform: string, modifiers: readonly Modifier[]): string | null {
+  if ((platform as ChordPlatform) === 'win32' && modifiers.includes('meta')) {
+    return 'Windows-key shortcuts act on the whole system';
+  }
+  return null;
+}
 
 /**
  * Why a chord must not be sent, or null when it may. `key` and `modifiers`
@@ -208,6 +238,7 @@ export function osChordRefusal(platform: string, modifiers: readonly Modifier[],
       return 'Ctrl+Esc, Alt+Esc and Ctrl+Shift+Esc open Start, switch apps or open Task Manager';
     }
     if (key === 'Delete' && has(modifiers, 'ctrl', 'alt')) return 'Ctrl+Alt+Delete is the secure attention sequence';
+    if (key === 'Space' && modifiers.includes('alt')) return 'Alt+Space opens the window menu (move, size, close) or system search';
     return null;
   }
   if ((platform as ChordPlatform) === 'darwin') {
@@ -223,6 +254,13 @@ export function osChordRefusal(platform: string, modifiers: readonly Modifier[],
     if (['3', '4', '5', '6'].includes(key) && has(modifiers, 'meta', 'shift')) return 'it captures or records the whole screen';
     if (key.startsWith('Arrow') && modifiers.includes('ctrl')) return 'Ctrl+arrow opens Mission Control or switches Spaces';
     if (/^F\d+$/.test(key) && modifiers.includes('ctrl')) return 'Ctrl+F-keys move keyboard focus to the menu bar, Dock or other system UI';
+    if (/^F\d+$/.test(key) && modifiers.includes('meta')) {
+      return 'Cmd+F-keys mirror displays, show the desktop or toggle VoiceOver and accessibility shortcuts';
+    }
+    if (['F3', 'F4', 'F11', 'F12'].includes(key) && modifiers.length === 0) {
+      return 'F3, F4, F11 and F12 open Mission Control, Launchpad, the desktop or widgets';
+    }
+    if (key === '8' && has(modifiers, 'meta', 'alt')) return 'Cmd+Opt+8 toggles Zoom and Ctrl+Opt+Cmd+8 inverts colours';
     return null;
   }
   return null;

@@ -129,6 +129,9 @@ describe('computer.rpc', () => {
     expect(calls[0]).toEqual([expect.objectContaining({ key: 'claude-code @ ws-a/pty-a1' }), 'Notepad']);
     // No identity: an empty key, for which the service blanks every title.
     expect(calls[1][0].key).toBe('');
+    // A malformed identity is refused, not treated as no identity.
+    expect((await errorOf(call('computer.listWindows', { senderPtyId: 7 }, { clientName: 'claude-code' })))?.code).toBe('invalid_argument');
+    expect((await errorOf(call('computer.getAppState', { app: 'x', callerInstance: {} }, { clientName: 'claude-code' })))?.code).toBe('invalid_argument');
     // A pane that does not resolve is refused, not silently demoted.
     expect((await errorOf(call('computer.listWindows', { senderPtyId: 'pty-gone' }, { clientName: 'claude-code' })))?.code).toBe('invalid_argument');
   });

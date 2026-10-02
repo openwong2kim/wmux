@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ComputerError } from '../../../shared/computer/errors';
-import type { AppInfo, AppState, HelperMethod, WindowInfo } from '../../../shared/computer/protocol';
+import { SNAPSHOT_TTL_MS, type AppInfo, type AppState, type HelperMethod, type WindowInfo } from '../../../shared/computer/protocol';
 import { ApprovalQueue } from '../../mcp/ApprovalQueue';
 import type { PluginTrustStore } from '../../mcp/PluginTrustStore';
 import { createComputerConsentRequester } from '../computerConsent';
@@ -8,6 +8,7 @@ import {
   ABORT_COOLDOWN_MS,
   ComputerService,
   INPUT_LOCK_IDLE_MS,
+  computerUseShutDown,
   type ComputerAgent,
   type ConsentAnswer,
   type HelperLike,
@@ -91,7 +92,7 @@ function makeService(opts: {
     now: () => now,
     platform: opts.platform ?? 'win32',
   });
-  return { service, calls, consent, stopKey, advance: (ms: number) => { now += ms; } };
+  return { service, calls, consent, stopKey, helperRef: helper, advance: (ms: number) => { now += ms; } };
 }
 
 const AGENT_A: ComputerAgent = { key: 'agent-a', label: 'agent-a' };
@@ -305,6 +306,51 @@ describe('ComputerService', () => {
     }
   });
 
+  it('refuses modifiers on actions that would drop them, and a Windows-key click', async () => {
+    const { service, calls } = makeService({ platform: 'win32' });
+    const { snapshotId } = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    const before = calls.length;
+    expect(await codeOf(service.control(AGENT_A, { action: 'pressKey', snapshotId, key: 'a', modifiers: ['ctrl'] }))).toBe('invalid_argument');
+    expect(await codeOf(service.control(AGENT_A, { action: 'type', snapshotId, text: 'x', modifiers: ['shift'] }))).toBe('invalid_argument');
+    expect(await codeOf(service.control(AGENT_A, { action: 'scroll', snapshotId, index: 1, modifiers: ['ctrl'] }))).toBe('invalid_argument');
+    expect(await codeOf(service.control(AGENT_A, { action: 'click', snapshotId, index: 1, modifiers: ['meta'] }))).toBe('shortcut_blocked');
+    expect(calls.length).toBe(before);
+    expect(await codeOf(service.control(AGENT_A, { action: 'click', snapshotId, index: 1, modifiers: ['ctrl'] }))).toBe('resolved');
+  });
+
+  it('re-checks the snapshot and the stop cooldown after a long consent wait', async () => {
+    let resolveConsent: (a: ConsentAnswer) => void = () => undefined;
+    const { service, advance, consent } = makeService();
+    const { snapshotId } = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    // Consent is dropped (as after a stop) and the next prompt waits long.
+    (service as unknown as { grants: Map<string, boolean> }).grants.clear();
+    consent.mockImplementationOnce(() => new Promise<ConsentAnswer>((r) => { resolveConsent = r; }));
+    const parked = service.control(AGENT_A, { action: 'pressKey', snapshotId, key: 'Enter' });
+    await Promise.resolve();
+    advance(SNAPSHOT_TTL_MS + 1);
+    resolveConsent('approved');
+    expect(await codeOf(parked)).toBe('snapshot_unknown');
+    expect(service.inputHolder()).toBeNull();
+  });
+
+  it('always re-vets the window the helper answered for and refuses one that is not the app\'s', async () => {
+    const { service, helperRef } = makeService();
+    const original = helperRef.request;
+    helperRef.request = (async (method: HelperMethod, params: never) => {
+      const result = await original(method as never, params);
+      if (method === 'getAppState') return { ...(result as AppState), window: { ...(result as AppState).window, pid: 999 } };
+      return result;
+    }) as HelperLike['request'];
+    expect(await codeOf(service.getAppState(AGENT_A, { app: 'Notepad' }))).toBe('internal');
+    helperRef.request = (async (method: HelperMethod, params: never) => {
+      const result = await original(method as never, params);
+      if (method === 'getAppState') return { ...(result as AppState), window: { ...(result as AppState).window, elevated: true } };
+      return result;
+    }) as HelperLike['request'];
+    // Same ids as the resolved pair, but now elevated: re-vetted and refused.
+    expect(await codeOf(service.getAppState(AGENT_A, { app: 'Notepad' }))).toBe('target_elevated');
+  });
+
   it('a call during quit starts no helper and does not take the stop key again', async () => {
     let created = 0;
     const stopKey = fakeStopKey();
@@ -316,6 +362,7 @@ describe('ComputerService', () => {
       blockContext: () => ({}),
     });
     service.dispose();
+    expect(computerUseShutDown()).toBe(true);
     expect(await codeOf(service.listApps())).toBe('helper_unavailable');
     expect(await codeOf(service.getAppState(AGENT_A, { app: 'Notepad' }))).toBe('helper_unavailable');
     expect(created).toBe(0);

@@ -29,7 +29,14 @@ export function registerComputerRpc(
     async (params: Record<string, unknown>, ctx?: RpcContext): Promise<T> => {
       try {
         const name = requireClient(ctx);
-        const sendsIdentity = typeof params.senderPtyId === 'string' || typeof params.callerInstance === 'string'
+        // A present but malformed identity is refused, never quietly treated
+        // as no identity.
+        for (const field of ['senderPtyId', 'callerInstance'] as const) {
+          if (params[field] !== undefined && typeof params[field] !== 'string') {
+            throw new ComputerError('invalid_argument', `${field} must be a string`);
+          }
+        }
+        const sendsIdentity = params.senderPtyId !== undefined || params.callerInstance !== undefined
           || Boolean(ctx?.commanderWorkspace);
         const agent = identity === 'required' || (identity === 'optional' && sendsIdentity)
           ? await callerAgent(ctx, params, resolvePtyWorkspace, workspaceName)

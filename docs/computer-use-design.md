@@ -215,6 +215,11 @@ by localized message text.
   also shows the helper status and the stop key, or that the key is unavailable. Turning the switch off also
   aborts whatever is in flight. Running agents see the tool appear or vanish
   only after they restart.
+- **Re-vetting.** `getAppState` vets the app and window the helper answered
+  for every time, not only when they differ from the resolved pair, and
+  refuses a window whose pid or app id does not match its app. A control
+  action that waited on a consent prompt re-checks its snapshot's expiry and
+  the stop cooldown on a fresh clock before it takes the input lock.
 - **Window titles.** `listApps` and `listWindows` need no per-app consent,
   so `listWindows` sends a window's title only when the calling agent already
   has the person's consent for its app (matched on the window's `appId`);
@@ -228,7 +233,8 @@ by localized message text.
   - OS credential prompts: Credential UI / UAC consent on Windows,
     SecurityAgent and the login window on macOS;
   - system tools: Windows Settings, Control Panel, Task Manager (which also
-    owns "Run new task"), Registry Editor and MMC; on macOS System Settings
+    owns "Run new task"), Registry Editor, MMC and the GUI script hosts
+    (PowerShell ISE, mshta, wscript, cscript); on macOS System Settings
     (System Preferences), Script Editor, Automator, Shortcuts and Activity
     Monitor. System Settings is blocked whole rather than pane by pane: an
     agent on Privacy & Security could grant itself, or any app,
@@ -236,9 +242,12 @@ by localized message text.
     bundle id.
 
   Known residue, left to per-app consent and chord refusal: Explorer's Run
-  dialog is part of explorer.exe, which cannot be blocked wholesale (Win+R is
-  refused as a meta chord); terminals inside an IDE and password managers
-  inside a browser share their host's process.
+  dialog and Control Panel windows are part of explorer.exe, which cannot be
+  blocked wholesale (Win+R is refused as a meta chord; blocking control.exe
+  only stops the launcher). **The Windows helper must close this**: it
+  reports the shell namespace / window class of Explorer windows so main can
+  refuse those two. Terminals inside an IDE and password managers inside a
+  browser share their host's process.
 
   The helper reports the process path and bundle ID of each target; main
   refuses before it forwards the action.
@@ -246,11 +255,18 @@ by localized message text.
   rather than the vetted window with `shortcut_blocked` (a main-only code
   helpers never send), before consent, the lock or the helper:
   - everywhere: Escape with Ctrl+Alt (the stop key and its neighbours);
-  - Windows: any Windows-key chord, Alt+Tab, Alt+Esc, Ctrl+Esc,
-    Ctrl+Shift+Esc, Ctrl+Alt+Delete;
+  - Windows: any Windows-key chord (a Windows-key click too), Alt+Tab,
+    Alt+Esc, Ctrl+Esc, Ctrl+Shift+Esc, Ctrl+Alt+Delete, Alt+Space;
   - macOS: Cmd+Tab, Cmd+Space and Ctrl+Space, Cmd+Opt+Esc, Ctrl+Cmd+Q,
     Cmd+Shift+Q, Cmd+Opt+D, Cmd+Opt+H, Cmd+Shift+3/4/5/6, Ctrl+arrows
-    (Mission Control, Spaces), Ctrl+F-keys (keyboard focus to system UI).
+    (Mission Control, Spaces), Ctrl+ and Cmd+F-keys (system UI focus,
+    display mirroring, show desktop, VoiceOver, accessibility shortcuts),
+    Cmd+Opt+8 and Ctrl+Opt+Cmd+8 (Zoom, invert colours), and the bare F3, F4,
+    F11 and F12 (Mission Control, Launchpad, show desktop, widgets by
+    default; a synthetic key cannot tell whether they were remapped).
+
+  Modifiers on `pressKey`, `type` or `scroll` are refused rather than
+  dropped (`hotkey` is the way to send a chord).
 
   App-level chords stay allowed even when they change the window: Alt+F4 and
   Cmd+Q close the vetted app, and Ctrl+Cmd+F toggles its full screen.
