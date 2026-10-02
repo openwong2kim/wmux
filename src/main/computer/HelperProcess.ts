@@ -8,13 +8,17 @@
 //     the stream is out of sync and the helper is killed.
 //   - A request that times out kills the helper instead of waiting on it: a
 //     hung UIA call does not come back. The next request spawns a fresh one.
-//   - If a helper died while a control request was in flight (timeout, the stop
-//     key, a crash) it may have left a modifier or mouse button pressed, and
-//     killing it does not lift them. A fresh helper is started right away to
-//     send `releaseInput`, without waiting for the next request; until one
-//     succeeds, every request sends it first.
+//   - A helper is ended for cause through one path, terminate(). If the
+//     request it was running was an input action (or a release), it may have
+//     left keys or buttons down, and killing it does not lift them: a fresh
+//     helper is started right away to send `releaseInput`, without waiting for
+//     the next request. Until a release answers `released: true`, every
+//     request tries one first, and control requests fail closed.
+//   - The pending request is bound to the child it was written to, so late
+//     output or errors from a dead helper never touch its replacement.
 //   - dispose() is final: nothing starts a helper after it, and a helper that
-//     was still starting is killed when it says hello.
+//     was still starting is killed when it says hello. A helper killed by
+//     dispose mid-input gets a short stdin-EOF grace to release first.
 //   - Closing stdin (idle, dispose) is the helper's signal to exit, so it never
 //     outlives wmux.
 
@@ -36,6 +40,12 @@ import {
 const STDERR_TAIL_BYTES = 4096;
 /** How long an idle helper gets to exit on stdin EOF before it is killed. */
 const IDLE_KILL_GRACE_MS = 5_000;
+/** dispose() mid-input: time for the helper's release-on-EOF before the kill. */
+const DISPOSE_RELEASE_GRACE_MS = 200;
+/** Background releases in a row before waiting for the next request to retry. */
+const MAX_BACKGROUND_RELEASES = 3;
+/** Release attempts (each on a fresh helper) before a control request fails closed. */
+const RELEASE_ATTEMPTS_BEFORE_CONTROL = 2;
 
 export type SpawnHelper = (command: string, args: readonly string[]) => ChildProcessWithoutNullStreams;
 
@@ -54,6 +64,8 @@ export interface HelperProcessOptions {
 interface Pending {
   id: number;
   method: HelperMethod;
+  /** The helper this request was written to. */
+  child: ChildProcessWithoutNullStreams;
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   timer: NodeJS.Timeout;
@@ -62,6 +74,11 @@ interface Pending {
 interface Running {
   child: ChildProcessWithoutNullStreams;
   hello: HelperHello;
+}
+
+/** A request that may leave keys or buttons down if it is cut off. */
+function holdsInput(method: HelperMethod): boolean {
+  return isControlAction(method) || method === 'releaseInput';
 }
 
 function defaultTimeout(method: HelperMethod): number {
@@ -78,6 +95,7 @@ export class HelperProcess {
   private abortGeneration = 0;
   private nextId = 1;
   private needsRelease = false;
+  private backgroundReleases = 0;
   private idleTimer: NodeJS.Timeout | null = null;
   private stderrTail = '';
   private disposed = false;
@@ -105,14 +123,27 @@ export class HelperProcess {
     const run = async (): Promise<HelperMethods[M]['result']> => {
       if (this.disposed) throw new ComputerError('helper_unavailable', 'computer use is shutting down');
       assertCurrent();
+      if (this.needsRelease && method !== 'releaseInput') {
+        let released = false;
+        for (let attempt = 0; attempt < RELEASE_ATTEMPTS_BEFORE_CONTROL && !released; attempt++) {
+          const helper = await this.ensureRunning();
+          assertCurrent();
+          released = (await this.tryRelease(helper)) === 'released';
+          assertCurrent();
+        }
+        // Observation cannot press anything, so it may go ahead; input may not
+        // pile onto keys that might still be down.
+        if (!released && isControlAction(method)) {
+          throw new ComputerError(
+            'internal',
+            'wmux could not confirm that keys held by a stopped computer-use action were released, so it sends no more input. Retry once; if it fails again, tell the user',
+          );
+        }
+      }
       const running = await this.ensureRunning();
       assertCurrent();
-      if (this.needsRelease && method !== 'releaseInput') {
-        await this.send(running, 'releaseInput', {}).then(() => { this.needsRelease = false; }, () => undefined);
-        assertCurrent();
-      }
       const result = (await this.send(running, method, params)) as HelperMethods[M]['result'];
-      if (method === 'releaseInput') this.needsRelease = false;
+      if (method === 'releaseInput' && (result as { released?: unknown })?.released === true) this.markReleased();
       return result;
     };
     const result = this.queue.then(run, run);
@@ -127,20 +158,78 @@ export class HelperProcess {
    */
   abort(reason = 'stopped by the user'): void {
     this.abortGeneration += 1;
-    if (!this.running && !this.starting) return;
-    const heldInput = this.pending !== null && isControlAction(this.pending.method);
-    if (this.pending) this.failPending(new ComputerError('aborted', reason));
-    this.kill();
-    if (heldInput) this.releaseHeldInput();
+    // A release in flight is killed too, and rescheduled by terminate().
+    if (this.running) this.terminate(this.running.child, new ComputerError('aborted', reason));
   }
 
   dispose(): void {
     this.disposed = true;
     this.clearIdle();
-    this.failPending(new ComputerError('helper_unavailable', 'computer use is shutting down'));
-    this.kill();
+    const error = new ComputerError('helper_unavailable', 'computer use is shutting down');
+    if (this.running) {
+      // Mid-input, stdin EOF first: the helper releases what it holds on EOF,
+      // and no fresh helper may be started for it any more.
+      const midInput = this.pending !== null && this.pending.child === this.running.child && holdsInput(this.pending.method);
+      this.terminate(this.running.child, error, midInput ? DISPOSE_RELEASE_GRACE_MS : 0);
+    }
+    this.failPending(error);
     this.startingChild?.kill();
     this.startingChild = null;
+  }
+
+  /**
+   * The one way a helper is ended for cause (timeout, abort, a bad reply, a
+   * broken pipe, an exit). Fails the request written to this child, if any;
+   * a no-op for `pending` when the request belongs to another child. When that
+   * request could have left input down, schedules the release.
+   */
+  private terminate(child: ChildProcessWithoutNullStreams, error: ComputerError, graceMs = 0): void {
+    const pending = this.pending?.child === child ? this.pending : null;
+    const heldInput = pending !== null && holdsInput(pending.method);
+    if (pending) this.failPending(error);
+    if (this.running?.child === child) {
+      this.running = null;
+      this.clearIdle();
+    }
+    if (child.exitCode === null && child.signalCode === null) {
+      child.stdin.end();
+      if (graceMs > 0) {
+        const timer = setTimeout(() => {
+          if (child.exitCode === null && child.signalCode === null) child.kill();
+        }, graceMs);
+        timer.unref?.();
+      } else {
+        child.kill();
+      }
+    }
+    if (heldInput) this.releaseHeldInput();
+  }
+
+  /**
+   * One release on `running`. `refused` means the helper answered but did not
+   * confirm (`released` not true): it is retired so the next try gets a fresh
+   * one. `failed` means the request itself failed; terminate() already took
+   * care of the helper.
+   */
+  private async tryRelease(running: Running): Promise<'released' | 'refused' | 'failed'> {
+    let result: unknown;
+    try {
+      result = await this.send(running, 'releaseInput', {});
+    } catch {
+      return 'failed';
+    }
+    if ((result as { released?: unknown } | null)?.released === true) {
+      this.markReleased();
+      return 'released';
+    }
+    this.log('helper did not confirm releasing held input; retiring it');
+    this.terminate(running.child, new ComputerError('internal', 'release not confirmed'));
+    return 'refused';
+  }
+
+  private markReleased(): void {
+    this.needsRelease = false;
+    this.backgroundReleases = 0;
   }
 
   /**
@@ -152,12 +241,19 @@ export class HelperProcess {
   private releaseHeldInput(): void {
     this.needsRelease = true;
     if (this.disposed) return;
+    // Bounded: a helper that hangs on every release must not respawn forever.
+    // Past the cap the next request retries, and control fails closed.
+    if (this.backgroundReleases >= MAX_BACKGROUND_RELEASES) {
+      this.log('held input is still not released; the next request will retry');
+      return;
+    }
+    this.backgroundReleases += 1;
     const run = async (): Promise<void> => {
       if (this.disposed || !this.needsRelease) return;
       const running = await this.ensureRunning();
       if (this.disposed || !this.needsRelease) return;
-      await this.send(running, 'releaseInput', {});
-      this.needsRelease = false;
+      // `failed` was rescheduled by terminate(); `refused` is rescheduled here.
+      if ((await this.tryRelease(running)) === 'refused') this.releaseHeldInput();
     };
     this.queue = this.queue.then(run, run).catch((err: unknown) => {
       this.log(`could not release held input: ${err instanceof Error ? err.message : String(err)}`);
@@ -220,7 +316,7 @@ export class HelperProcess {
       // crash main.
       child.stdin.on('error', (err) => {
         this.log(`helper stdin error: ${err.message}`);
-        this.failPending(new ComputerError('helper_unavailable', `computer-use helper input failed: ${err.message}`));
+        this.terminate(child, new ComputerError('helper_unavailable', `computer-use helper input failed: ${err.message}`));
       });
 
       child.stderr.on('data', (chunk: string) => {
@@ -231,9 +327,9 @@ export class HelperProcess {
         buffer += chunk;
         if (buffer.length > HELPER_MAX_LINE_BYTES) {
           this.log('helper line exceeded the size cap; killing it');
-          this.failPending(new ComputerError('internal', 'the computer-use helper sent an oversized reply'));
+          buffer = '';
           fail(new ComputerError('internal', 'oversized helper output'));
-          child.kill();
+          this.terminate(child, new ComputerError('internal', 'the computer-use helper sent an oversized reply'));
           return;
         }
         let newline = buffer.indexOf('\n');
@@ -282,17 +378,17 @@ export class HelperProcess {
       onHello(parsed.hello);
       return;
     }
+    // A helper that is no longer the running one has nothing to answer.
+    if (this.running?.child !== child && this.startingChild !== child) return;
     if (parsed.kind === 'invalid') {
       this.log(`invalid helper line (${parsed.reason}); killing it`);
-      this.failPending(new ComputerError('internal', `the computer-use helper sent an invalid reply (${parsed.reason})`));
-      child.kill();
+      this.terminate(child, new ComputerError('internal', `the computer-use helper sent an invalid reply (${parsed.reason})`));
       return;
     }
     const pending = this.pending;
-    if (!pending || pending.id !== parsed.response.id) {
+    if (!pending || pending.child !== child || pending.id !== parsed.response.id) {
       this.log(`helper answered unknown request ${parsed.response.id}; killing it`);
-      this.failPending(new ComputerError('internal', 'the computer-use helper lost track of requests'));
-      child.kill();
+      this.terminate(child, new ComputerError('internal', 'the computer-use helper lost track of requests'));
       return;
     }
     clearTimeout(pending.timer);
@@ -311,13 +407,12 @@ export class HelperProcess {
       const timeoutMs = this.opts.timeoutFor?.(method) ?? defaultTimeout(method);
       const timer = setTimeout(() => {
         if (this.pending?.id !== id) return;
-        this.failPending(new ComputerError('timeout', `${method} did not finish within ${timeoutMs} ms`));
-        this.kill();
-        if (isControlAction(method)) this.releaseHeldInput();
+        this.terminate(running.child, new ComputerError('timeout', `${method} did not finish within ${timeoutMs} ms`));
       }, timeoutMs);
       this.pending = {
         id,
         method,
+        child: running.child,
         resolve: (value) => {
           this.armIdle();
           resolve(value);
@@ -333,15 +428,8 @@ export class HelperProcess {
   }
 
   private onExit(child: ChildProcessWithoutNullStreams): void {
-    if (this.running?.child !== child) return;
-    this.running = null;
-    this.clearIdle();
-    if (this.pending) {
-      const heldInput = isControlAction(this.pending.method);
-      const tail = this.stderrTail.trim().split('\n').slice(-1)[0] ?? '';
-      this.failPending(new ComputerError('helper_unavailable', `the computer-use helper exited${tail ? `: ${tail}` : ''}`));
-      if (heldInput) this.releaseHeldInput();
-    }
+    const tail = this.stderrTail.trim().split('\n').slice(-1)[0] ?? '';
+    this.terminate(child, new ComputerError('helper_unavailable', `the computer-use helper exited${tail ? `: ${tail}` : ''}`));
   }
 
   private failPending(error: Error): void {
@@ -350,16 +438,6 @@ export class HelperProcess {
     clearTimeout(pending.timer);
     this.pending = null;
     pending.reject(error);
-  }
-
-  private kill(): void {
-    const running = this.running;
-    this.running = null;
-    this.clearIdle();
-    if (running) {
-      running.child.stdin.end();
-      running.child.kill();
-    }
   }
 
   private armIdle(): void {

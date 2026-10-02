@@ -11,6 +11,10 @@
 //   exit        exits as soon as a request arrives, without answering
 //   deaf        answers normally but ignores stdin EOF (a helper stuck in a
 //               native call), so only a kill ends it
+//   hang-norelease  like hang, and answers releaseInput with released:false
+//   hang-releasehang  like hang, and never answers releaseInput either
+//   eof-release hangs on click; on stdin EOF logs "eof-release" before exiting
+//               (a helper releasing held input on EOF)
 // Every request is appended to the file named by argv[3] (if given), so tests
 // can see what the helper received, including across restarts.
 import fs from 'node:fs';
@@ -39,7 +43,10 @@ rl.on('line', (line) => {
   if (logFile) fs.appendFileSync(logFile, req.method + '\n');
   if (mode === 'garbage') return process.stdout.write('not json\n');
   if (mode === 'wrong-id') return send({ id: req.id + 100, ok: true, result: {} });
-  if (mode === 'hang' && req.method === 'click') return;
+  if (mode.startsWith('hang') && req.method === 'click') return;
+  if (mode === 'eof-release' && req.method === 'click') return;
+  if (mode === 'hang-releasehang' && req.method === 'releaseInput') return;
+  if (req.method === 'releaseInput') return send({ id: req.id, ok: true, result: { released: mode !== 'hang-norelease', echo: req.method } });
   if (mode === 'exit') process.exit(3);
   if (mode === 'split-utf8' && req.method === 'listApps') {
     const bytes = Buffer.from(JSON.stringify({ id: req.id, ok: true, result: { apps: [{ name: '메모장' }] } }) + '\n');
@@ -59,5 +66,9 @@ rl.on('line', (line) => {
 });
 rl.on('close', () => {
   if (mode === 'deaf') setInterval(() => undefined, 1_000);
+  else if (mode === 'eof-release') {
+    if (logFile) fs.appendFileSync(logFile, 'eof-release\n');
+    process.exit(0);
+  }
   else process.exit(0);
 });

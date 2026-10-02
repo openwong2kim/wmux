@@ -2,6 +2,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
+import { EventEmitter } from 'events';
+import { PassThrough } from 'stream';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ComputerError } from '../../../shared/computer/errors';
 import { HelperProcess } from '../HelperProcess';
@@ -168,6 +170,95 @@ describe('HelperProcess', () => {
     expect(exited).toBe(true);
   });
 
+  it('releases held input when a control request gets an invalid or unknown-id reply', async () => {
+    for (const mode of ['garbage', 'wrong-id']) {
+      const { helper, requests } = makeHelper(mode);
+      const click = helper.request('click', {
+        snapshotId: 's', target: TARGET, index: 1, button: 'left', clickCount: 1, modifiers: [],
+      });
+      expect(await codeOf(click), mode).toBe('internal');
+      expect(await waitFor(() => requests().includes('releaseInput')), mode).toBe(true);
+      expect(requests()[0]).toBe('click');
+    }
+  });
+
+  it('fails input closed while no helper confirms the release, but lets observation through', async () => {
+    const { helper, requests } = makeHelper('hang-norelease', { timeoutFor: () => 300 });
+    const click = () => helper.request('click', {
+      snapshotId: 's', target: TARGET, index: 1, button: 'left', clickCount: 1, modifiers: [],
+    });
+    expect(await codeOf(click())).toBe('timeout');
+    // Background releases are bounded, then the next request retries.
+    await waitFor(() => requests().filter((r) => r === 'releaseInput').length >= 3);
+    await new Promise((r) => setTimeout(r, 200));
+    const before = requests().filter((r) => r === 'releaseInput').length;
+    expect(before).toBe(3);
+    expect(await codeOf(click())).toBe('internal');
+    // Two more release attempts, each on a fresh helper, and no second click.
+    expect(requests().filter((r) => r === 'releaseInput').length).toBe(before + 2);
+    expect(requests().filter((r) => r === 'click')).toHaveLength(1);
+    expect(await codeOf(helper.request('listApps', {}))).toBe('resolved');
+  });
+
+  it('a second stop during the release kills it and schedules another', async () => {
+    const { helper, requests } = makeHelper('hang-releasehang', { timeoutFor: () => 5_000 });
+    const click = helper.request('click', {
+      snapshotId: 's', target: TARGET, index: 1, button: 'left', clickCount: 1, modifiers: [],
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    helper.abort();
+    expect(await codeOf(click)).toBe('aborted');
+    expect(await waitFor(() => requests().includes('releaseInput'))).toBe(true);
+    helper.abort();
+    expect(await waitFor(() => requests().filter((r) => r === 'releaseInput').length === 2)).toBe(true);
+  });
+
+  it('dispose mid-input closes stdin first so the helper can release on EOF', async () => {
+    const { helper, requests } = makeHelper('eof-release', { timeoutFor: () => 5_000 });
+    const click = helper.request('click', {
+      snapshotId: 's', target: TARGET, index: 1, button: 'left', clickCount: 1, modifiers: [],
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    helper.dispose();
+    expect(await codeOf(click)).toBe('helper_unavailable');
+    expect(await waitFor(() => requests().includes('eof-release'), 1_000)).toBe(true);
+    expect(requests()).toEqual(['click', 'eof-release']);
+  });
+
+  it('ignores late output from a dead helper: it never touches the replacement\'s request', async () => {
+    // Scripted children, so the dead one can still talk after it was replaced.
+    const children: Array<{ child: ChildProcessWithoutNullStreams; say: (o: unknown) => void; sent: Array<{ id: number; method: string }>; killed: boolean }> = [];
+    const fakeSpawn = () => {
+      const emitter = new EventEmitter() as unknown as ChildProcessWithoutNullStreams;
+      const stdout = new PassThrough();
+      const stdin = new PassThrough();
+      const entry = { child: emitter, say: (o: unknown) => stdout.write(`${JSON.stringify(o)}\n`), sent: [] as Array<{ id: number; method: string }>, killed: false };
+      stdin.on('data', (d: Buffer) => { for (const line of String(d).split('\n').filter(Boolean)) entry.sent.push(JSON.parse(line)); });
+      Object.assign(emitter, { stdout, stdin, stderr: new PassThrough(), exitCode: null, signalCode: null, kill: () => { entry.killed = true; return true; } });
+      children.push(entry);
+      queueMicrotask(() => entry.say({ type: 'hello', protocolVersion: 2, os: 'darwin', helperVersion: 'x', capabilities: { actions: [], modes: [], permissions: {} } }));
+      return emitter;
+    };
+    const helper = new HelperProcess({ command: 'unused', spawn: fakeSpawn, timeoutFor: () => 100 });
+    helpers.push(helper);
+    const click = helper.request('click', { snapshotId: 's', target: TARGET, index: 1, button: 'left', clickCount: 1, modifiers: [] });
+    expect(await codeOf(click)).toBe('timeout');
+    expect(await waitFor(() => children.length === 2 && children[1].sent.length === 1)).toBe(true);
+    const [dead, live] = children;
+    const release = live.sent[0];
+    expect(release.method).toBe('releaseInput');
+    // The dead helper answers the live one's id, then sends garbage.
+    dead.say({ id: release.id, ok: true, result: { released: true } });
+    dead.say({ nonsense: true });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(live.killed).toBe(false);
+    live.say({ id: release.id, ok: true, result: { released: true } });
+    const apps = helper.request('listApps', {});
+    expect(await waitFor(() => live.sent.length === 2)).toBe(true);
+    live.say({ id: live.sent[1].id, ok: true, result: { apps: [] } });
+    expect(await codeOf(apps)).toBe('resolved');
+  });
+
   it('starts no helper to release input once disposed', async () => {
     let spawns = 0;
     const { helper, requests } = makeHelper('hang', {
@@ -188,7 +279,9 @@ describe('HelperProcess', () => {
 
   it('kills a helper that was still starting when dispose ran', async () => {
     let child: ChildProcessWithoutNullStreams | undefined;
-    const { helper } = makeHelper('ok', {
+    // 'silent' never says hello, so the helper is certainly still starting.
+    const { helper } = makeHelper('silent', {
+      helloTimeoutMs: 10_000,
       spawn: (cmd, args) => (child = spawn(cmd, [...args], { stdio: 'pipe' })),
     });
     const pending = helper.request('listApps', {});
