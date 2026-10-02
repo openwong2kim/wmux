@@ -123,7 +123,9 @@ const shellQuote = (text: string) => `'${text.replace(/'/g, `'\\''`)}'`;
 // Codex gets the same server through -c. JSON string syntax is valid TOML.
 // Codex starts MCP servers with a sanitized environment (PATH, HOME, ...), so
 // the shim appends env={...} with the pane's own values as literal strings.
-const WSL_CODEX_MCP = `mcp_servers.wmux={command="/bin/sh",args=["-c",${JSON.stringify(WSL_MCP_LAUNCH)}]`;
+// 30 s, not Codex's 10 s default: a cold Electron start over interop can take
+// longer on Windows machines that scan every launch (antivirus, endpoint scanning).
+const WSL_CODEX_MCP = `mcp_servers.wmux={command="/bin/sh",args=["-c",${JSON.stringify(WSL_MCP_LAUNCH)}],startup_timeout_sec=30`;
 
 export const WSL_CODEX_SHIM = `#!/bin/bash
 old_ifs=$IFS
@@ -181,11 +183,7 @@ while IFS= read -r line; do
   case $line in notify=*) notify=$line ;; mcp) mcp=1 ;; esac
 done <<< "$free"
 overrides=()
-if [ -n "$notify" ]; then
-  overrides+=(-c "$notify")
-else
-  printf '%s\\n' 'wmux: Codex resume capture not injected (existing notify, unreadable configuration, or unavailable bridge); launching Codex unchanged.' >&2
-fi
+[ -z "$notify" ] || overrides+=(-c "$notify")
 if [ -n "$mcp" ] && [ -n "\${WMUX_WSL_MCP:-}" ]; then
   # TOML literal strings keep Windows backslashes as-is but cannot hold a
   # quote or control character. Codex refuses to start on an override it
@@ -201,6 +199,14 @@ if [ -n "$mcp" ] && [ -n "\${WMUX_WSL_MCP:-}" ]; then
     overrides+=(-c ${shellQuote(WSL_CODEX_MCP)}",env={$mcp_env}}")
   else
     printf '%s\\n' 'wmux: wmux MCP server not mounted (a pane value cannot be passed to Codex safely); launching Codex without it.' >&2
+  fi
+fi
+if [ -z "$notify" ]; then
+  # Without notify, overrides holds only the MCP server, if it was mounted.
+  if [ \${#overrides[@]} = 0 ]; then
+    printf '%s\\n' 'wmux: Codex resume capture not injected (existing notify, unreadable configuration, or unavailable bridge); launching Codex unchanged.' >&2
+  else
+    printf '%s\\n' 'wmux: Codex resume capture not injected (existing notify, unreadable configuration, or unavailable bridge); launching Codex with only the wmux MCP server added.' >&2
   fi
 fi
 exec "$real" "\${overrides[@]}" "$@"

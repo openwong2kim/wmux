@@ -120,6 +120,7 @@ describe.skipIf(process.platform === 'win32')('WSL Codex per-launch notify', () 
     const result = f.run(args);
     expect(result.args).toEqual(args);
     expect(result.stderr).toContain('resume capture not injected');
+    expect(result.stderr).toContain('launching Codex unchanged.');
     expect(fs.existsSync(f.resultPath)).toBe(false);
     expect(fs.readFileSync(config, 'utf8')).toBe(original);
   });
@@ -183,7 +184,7 @@ function mcpOverride(args: string[]) {
   const value = args.find(arg => arg.startsWith('mcp_servers.wmux='));
   if (value === undefined) return undefined;
   expect(args[args.indexOf(value) - 1]).toBe('-c');
-  return (parse(value) as { mcp_servers: { wmux: { command: string; args: string[]; env: Record<string, string> } } }).mcp_servers.wmux;
+  return (parse(value) as { mcp_servers: { wmux: { command: string; args: string[]; startup_timeout_sec: number; env: Record<string, string> } } }).mcp_servers.wmux;
 }
 
 describe.skipIf(process.platform === 'win32')('WSL Codex per-launch wmux MCP server', () => {
@@ -193,7 +194,7 @@ describe.skipIf(process.platform === 'win32')('WSL Codex per-launch wmux MCP ser
     expect(result.args.slice(0, 2)).toEqual(['-c', expect.stringMatching(/^notify=/)]);
     expect(result.args.slice(4)).toEqual(['resume', 'x']);
     expect(result.stderr).toBe('');
-    expect(mcpOverride(result.args)).toEqual({ command: '/bin/sh', args: ['-c', WSL_MCP_LAUNCH], env: {
+    expect(mcpOverride(result.args)).toEqual({ command: '/bin/sh', args: ['-c', WSL_MCP_LAUNCH], startup_timeout_sec: 30, env: {
       WMUX_WSL_NODE: process.execPath, WMUX_WSL_MCP: MCP_ENTRY, WMUX_PTY_ID: 'pane-one', WMUX_DATA_SUFFIX: '-codex-test',
       WSLENV: f.injected.env.WSLENV, WSL_DISTRO_NAME: 'Ubuntu 日本', WSL_INTEROP: '/run/WSL/12_interop',
     } });
@@ -207,6 +208,7 @@ describe.skipIf(process.platform === 'win32')('WSL Codex per-launch wmux MCP ser
     expect(mcpOverride(kept.args)?.env.WMUX_WSL_MCP).toBe(MCP_ENTRY);
     expect(kept.args.slice(2)).toEqual(['--version']);
     expect(kept.stderr).toContain('resume capture not injected');
+    expect(kept.stderr).toContain('launching Codex with only the wmux MCP server added.');
     fs.rmSync(path.join(f.home, '.codex/config.toml'));
     // A value TOML cannot hold literally skips the server, never the notifier.
     for (const unsafe of ["it's", 'two\nlines']) {
@@ -269,6 +271,7 @@ describe.runIf(!!realCodex && spawnSync(realCodex, ['debug', 'prompt-input', '--
     expect(get.status, get.stderr).toBe(0);
     const transport = JSON.parse(get.stdout).transport;
     expect(transport.args).toEqual(['-c', WSL_MCP_LAUNCH]);
+    expect(JSON.parse(get.stdout).startup_timeout_sec).toBe(30);
     expect(transport.env).toMatchObject({ WMUX_WSL_MCP: MCP_ENTRY, WMUX_PTY_ID: 'pane-one', WMUX_WSL_NODE: node });
     const rendered = run(['debug', 'prompt-input', 'hi']);
     expect(rendered.status, rendered.stderr).toBe(0);
