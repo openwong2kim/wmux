@@ -14,6 +14,11 @@ vi.mock('../../shared/computer/config', () => ({ readComputerUseEnabled: () => e
 
 import { createWmuxServer } from '../index';
 import { encodeComputerErrorMessage } from '../../shared/computer/errors';
+import type { AppInfo, HelperMethod, WindowInfo } from '../../shared/computer/protocol';
+import type { RpcContext } from '../../shared/rpc';
+import type { RpcRouter } from '../../main/pipe/RpcRouter';
+import { registerComputerRpc } from '../../main/pipe/handlers/computer.rpc';
+import { ComputerService, type HelperLike } from '../../main/computer/ComputerService';
 
 async function connect(opts: { coreMode?: boolean } = {}) {
   const server = createWmuxServer({
@@ -109,6 +114,55 @@ describe('computer MCP tool', () => {
     await client.callTool({ name: 'computer', arguments: { action: 'click', snapshotId: 's7', index: 3 } });
     await client.close();
     expect(computerCalls()).toEqual([['computer.act', { action: 'click', snapshotId: 's7', index: 3, senderPtyId: 'pty-walked' }, expect.any(Number)]]);
+  });
+
+  it('shows a consented app\'s window titles over MCP and blanks the rest', async () => {
+    enabled.value = true;
+    // The real main side behind the pipe: computer.rpc.ts and ComputerService
+    // over a scripted helper, so the identity the MCP server attaches is what
+    // main keys consent and titles on.
+    const apps: AppInfo[] = [
+      { id: 'com.apple.TextEdit', name: 'TextEdit', pid: 500, path: '/System/Applications/TextEdit.app', bundleId: 'com.apple.TextEdit' },
+      { id: 'com.apple.Notes', name: 'Notes', pid: 501, path: '/System/Applications/Notes.app', bundleId: 'com.apple.Notes' },
+    ];
+    const windows: WindowInfo[] = apps.map((a) => ({ id: `w${a.pid}`, appId: a.id, pid: a.pid, title: `${a.name} secret`, bounds: { x: 0, y: 0, width: 10, height: 10 } }));
+    const helper: HelperLike = {
+      request: (async (method: HelperMethod, params: Record<string, unknown>) => {
+        const i = apps.findIndex((a) => a.name === params.app || a.id === params.app);
+        if (method === 'listApps') return { apps };
+        if (method === 'listWindows') return { windows };
+        if (method === 'resolveTarget') return { app: apps[i], window: windows[i] };
+        if (method === 'getAppState') return { snapshotId: 's1', app: apps[i], window: windows[i], screenshotStatus: { status: 'skipped' } };
+        throw new Error(`unexpected ${method}`);
+      }) as HelperLike['request'],
+      abort: () => undefined,
+      dispose: () => undefined,
+    };
+    const service = new ComputerService({
+      isEnabled: () => true,
+      createHelper: () => helper,
+      requestConsent: async () => 'approved',
+      stopKey: { arm: () => true, release: () => undefined },
+      blockContext: () => ({}),
+    });
+    const handlers = new Map<string, (p: Record<string, unknown>, ctx?: RpcContext) => Promise<unknown>>();
+    registerComputerRpc({ register: (m: string, h: never) => handlers.set(m, h) } as unknown as RpcRouter, () => service, async () => null);
+    mockSendRpc.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      if (!method.startsWith('computer.')) return {};
+      return handlers.get(method)?.(params, { clientName: 'test-client' } as RpcContext);
+    });
+    const client = await connect();
+    const titles = async () => {
+      const result = await client.callTool({ name: 'computer', arguments: { action: 'listWindows' } });
+      const { windows: listed } = JSON.parse((result.content as Array<{ text: string }>)[0].text) as { windows: WindowInfo[] };
+      return Object.fromEntries(listed.map((w) => [w.appId, w.title]));
+    };
+    expect(await titles()).toEqual({ 'com.apple.TextEdit': '', 'com.apple.Notes': '' });
+    await client.callTool({ name: 'computer', arguments: { action: 'getAppState', app: 'TextEdit', mode: 'ax' } });
+    expect(await titles()).toEqual({ 'com.apple.TextEdit': 'TextEdit secret', 'com.apple.Notes': '' });
+    await client.close();
+    const listCall = computerCalls().find((c) => c[0] === 'computer.listWindows');
+    expect(listCall?.[1]).toEqual({ callerInstance: expect.stringMatching(UUID_RE) });
   });
 
   it('keeps one identity for concurrent first calls (they share a single pane walk)', async () => {

@@ -1885,7 +1885,12 @@ function resolveComputerCallerIdentity(): Promise<{ senderPtyId: string } | { ca
 registerComputerTools(server, MCP_CATALOG_OPTIONS, {
   enabled: readComputerUseEnabled(),
   rpc: async (method, params, timeoutMs) => {
-    if (method !== 'computer.getAppState' && method !== 'computer.act') return sendRpc(method, params, timeoutMs);
+    // listWindows carries it too: main sends a window's title only for apps
+    // this caller has consent for, and blanks every title for a caller with
+    // no identity.
+    if (method !== 'computer.getAppState' && method !== 'computer.act' && method !== 'computer.listWindows') {
+      return sendRpc(method, params, timeoutMs);
+    }
     const identity = await resolveComputerCallerIdentity();
     return sendRpc(method, { ...params, ...identity }, timeoutMs);
   },
