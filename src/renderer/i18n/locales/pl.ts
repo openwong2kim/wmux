@@ -1960,6 +1960,7 @@ export const pl = {
   'sessionSchedule.limit': 'Osiągnięto limit harmonogramów.',
   'sessionSchedule.agentUnavailable': 'Ten agent się zmienił lub jest niedostępny. Otwórz harmonogram ponownie z jego aktywnego panelu.',
   'sessionSchedule.error': 'Nie udało się zaktualizować harmonogramów sesji.',
+  'sessionSchedule.resumeUnavailable': 'Nie udało się zweryfikować sesji. Harmonogram pozostaje wstrzymany. Spróbuj wznowić go ponownie, gdy sesja będzie dostępna.',
   'sessionSchedule.needsAgent': 'Uruchom lub wybierz wykrytego agenta AI, zanim zaplanujesz polecenie',
   'sessionSchedule.noAgent': 'Nie wykryto agenta',
   'sessionSchedule.statusWaiting': 'zaplanowano',

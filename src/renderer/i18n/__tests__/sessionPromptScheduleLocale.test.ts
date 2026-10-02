@@ -18,6 +18,7 @@ const KEYS = [
   'sessionSchedule.limit',
   'sessionSchedule.agentUnavailable',
   'sessionSchedule.error',
+  'sessionSchedule.resumeUnavailable',
   'sessionSchedule.needsAgent',
   'sessionSchedule.noAgent',
   'sessionSchedule.statusWaiting',

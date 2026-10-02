@@ -27,6 +27,12 @@ Schedules are stored locally and survive wmux app restarts. The app must be runn
 
 If wmux finds the same PTY id with a different incarnation, it permanently pauses the row as **session changed — recreate** before writing anything. Delete it and create a new schedule from the intended session. Legacy rows created by a development build that did not store an incarnation are marked the same way as soon as they are loaded; wmux does not guess whether their PTY id has been reused.
 
+Resuming a paused schedule also requires a fresh check of its original binding.
+If the daemon cannot verify the session, Resume fails and the row stays paused
+with its binding intact. Reconnect and choose Resume again; wmux rechecks the
+identity before enabling it. An unavailable lookup alone does not mean the
+session changed, and it does not require deleting and recreating the schedule.
+
 Session schedules are different from **Command Deck schedules**. Deck schedules begin a new orchestrator turn for a workspace. Session schedules write only to one existing agent conversation and therefore use stricter PTY and agent-identity checks.
 
 Scheduled prompt text is persisted as local application data, not encrypted. Do not place credentials or other secrets in a schedule.

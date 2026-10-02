@@ -1711,6 +1711,7 @@ export const ko = {
   'sessionSchedule.limit': '예약 한도에 도달했습니다.',
   'sessionSchedule.agentUnavailable': '에이전트가 변경되었거나 더 이상 사용할 수 없습니다. 실행 중인 창에서 예약을 다시 여세요.',
   'sessionSchedule.error': '세션 예약을 업데이트하지 못했습니다.',
+  'sessionSchedule.resumeUnavailable': '세션을 확인할 수 없습니다. 예약은 일시 중지된 상태로 유지됩니다. 세션을 사용할 수 있게 되면 다시 재개하세요.',
   'sessionSchedule.needsAgent': '프롬프트를 예약하려면 먼저 감지된 AI 에이전트를 시작하거나 선택하세요',
   'sessionSchedule.noAgent': '감지된 에이전트 없음',
   'sessionSchedule.statusWaiting': '예약됨',

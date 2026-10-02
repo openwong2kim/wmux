@@ -177,7 +177,13 @@ export default function SessionSchedulesPopover({
         id: schedule.id,
         enabled: !schedule.enabled,
       });
-      if (!result.ok) setError(t('sessionSchedule.error'));
+      if (!result.ok) {
+        setError(result.code === 'agent_unavailable'
+          ? t('sessionSchedule.resumeUnavailable')
+          : result.code === 'daemon_required'
+            ? t('sessionSchedule.daemonRequired')
+            : t('sessionSchedule.error'));
+      }
       await refresh();
     } catch {
       setError(t('sessionSchedule.error'));

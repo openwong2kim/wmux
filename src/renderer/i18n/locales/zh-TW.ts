@@ -422,6 +422,7 @@ export const zhTW = {
   'sessionSchedule.limit': '已達排程數量上限。',
   'sessionSchedule.agentUnavailable': '這個 agent 已變更或目前無法使用。請從其運行中的 pane 重新開啟排程。',
   'sessionSchedule.error': '無法更新 session 排程。',
+  'sessionSchedule.resumeUnavailable': '目前無法確認 session。排程仍維持暫停；請在 session 可用後再次按「繼續」。',
   'sessionSchedule.needsAgent': '請先啟動或聚焦 wmux 已偵測到的 AI agent，再排程提示',
   'sessionSchedule.noAgent': '未偵測到 agent',
   'sessionSchedule.statusWaiting': '已排程',

@@ -1804,6 +1804,7 @@ export const zh = {
   'sessionSchedule.limit': '已达到计划数量上限。',
   'sessionSchedule.agentUnavailable': '此智能体已更改或不可用。请从其运行中的窗格重新打开计划。',
   'sessionSchedule.error': '无法更新会话计划。',
+  'sessionSchedule.resumeUnavailable': '目前无法确认会话。计划仍保持暂停；请在会话可用后再次尝试恢复。',
   'sessionSchedule.needsAgent': '请先启动或选择已检测到的 AI 智能体，再计划提示',
   'sessionSchedule.noAgent': '未检测到智能体',
   'sessionSchedule.statusWaiting': '已计划',

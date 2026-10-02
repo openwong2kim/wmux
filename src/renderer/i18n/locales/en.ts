@@ -2007,6 +2007,7 @@ export const en = {
   'sessionSchedule.limit': 'The schedule limit has been reached.',
   'sessionSchedule.agentUnavailable': 'This agent changed or is no longer available. Reopen the schedule from its live pane.',
   'sessionSchedule.error': 'Could not update session schedules.',
+  'sessionSchedule.resumeUnavailable': 'The session could not be verified. Your schedule is still paused. Try Resume again when the session is available.',
   'sessionSchedule.needsAgent': 'Start or focus a detected AI agent before scheduling a prompt',
   'sessionSchedule.noAgent': 'No agent detected',
   'sessionSchedule.statusWaiting': 'scheduled',

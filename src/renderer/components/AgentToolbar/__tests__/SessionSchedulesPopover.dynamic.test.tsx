@@ -226,6 +226,24 @@ describe('SessionSchedulesPopover', () => {
     expect(container.querySelector('[data-session-schedule-delete]')).not.toBeNull();
   });
 
+  it('explains an unavailable resume and lets the same row recover on retry', async () => {
+    const api = fakeApi([schedule({ enabled: false })]);
+    const update = api.update;
+    api.update = vi.fn(update).mockResolvedValueOnce({ ok: false, code: 'agent_unavailable' });
+    await mount(api);
+
+    await act(async () => { query<HTMLButtonElement>('[data-session-schedule-toggle]').click(); });
+    expect(query<HTMLElement>('[data-session-schedule-error]').textContent)
+      .toContain('Try Resume again');
+    expect(query<HTMLButtonElement>('[data-session-schedule-toggle]').textContent).toContain('Resume');
+    expect(container.textContent).not.toContain('session changed');
+
+    await act(async () => { query<HTMLButtonElement>('[data-session-schedule-toggle]').click(); });
+    expect(query<HTMLButtonElement>('[data-session-schedule-toggle]').textContent).toContain('Pause');
+    expect(container.querySelector('[data-session-schedule-error]')).toBeNull();
+    expect(api.updated).toEqual([{ ptyId: 'pty-codex', id: 'schedule-1', enabled: true }]);
+  });
+
   it('surfaces daemon-only availability while keeping existing rows manageable', async () => {
     const api = fakeApi([schedule()]);
     api.listAll = async () => ({ schedules: [schedule()], available: false });
