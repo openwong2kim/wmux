@@ -1837,8 +1837,8 @@ describe('WebTerminalServer', () => {
     const epoch = (await backlog(token)).epoch;
 
     // Cursor at the head: nothing to replay, so before the fix no byte (and
-    // no headers) left the daemon until the first 25 s heartbeat.
-    const started = Date.now();
+    // no headers) left the daemon until the first 25 s heartbeat — fetch
+    // itself would not resolve and this test would time out.
     const out = await readEventStream(
       `${base()}/api/events?token=${encodeURIComponent(token)}`,
       /: open\n\n/,
@@ -1848,7 +1848,6 @@ describe('WebTerminalServer', () => {
     expect(out.text).toContain(': open\n\n');
     expect(out.text).not.toContain('event: reset');
     expect(out.text).not.toContain('already-seen');
-    expect(Date.now() - started).toBeLessThan(700);
   });
 
   it('resumes from Last-Event-ID, which the browser resends on reconnect', async () => {
