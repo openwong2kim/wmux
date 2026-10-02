@@ -370,7 +370,7 @@ GET /api/events?since=<cursor>     (Bearer)
 
 ```
 GET /api/config    → {allowInput, allowUpload, allowTranscript, liveActivityPush?,
-                      gatedTools, gateEnabled?, fleetSidebar?, terminalPromptDetail?,
+                      gatedTools, gateEnabled?, fleetSidebar?, channels?, terminalPromptDetail?,
                       terminalPromptDecline?, protocolVersion, minProtocolVersion,
                       serverVersion, hostPlatform}
 GET /api/sessions  → {sessions: [{id, cwd, spawnCwd?, cols, rows, state, agent, lastActivity,
@@ -2246,6 +2246,14 @@ POST /api/channels/<id>/ack   body: {lastReadSeq: <n>}
 POST /api/channels/<id>/join              → {lastReadSeq: <seq>, alreadyMember: bool}
 ```
 
+**Discovery: `channels` in `/api/config`.** A daemon that serves these four
+routes says `channels: true` in `GET /api/config`. The key is **omitted, not
+`false`**, exactly when the routes would answer 503 `channels-unavailable`
+(the channels seam is not wired) — which is also the shape a pre-channels
+daemon serves. Hide the channel UI when the key is absent; never probe the
+routes to find out. It is the same answer for every caller on a daemon (no
+grant decides it, see below). Additive — no protocol version bump.
+
 Reading is deliberately **not behind a grant of its own**: the terminal
 mirror, the diff route and approvals are all default-on for a paired device,
 and channel messages are narrower than the transcript (the one read that IS
@@ -2313,7 +2321,7 @@ where one exists, the same floor the desktop renderer applies. Each message:
   "channelId": "mission-x",
   "seq": 139,
   "memberName": "worker",
-  "text": "@human 배포 완료",
+  "text": "@human deploy done",
   "postedAt": 1757700000000,
   "mentions": [{ "workspaceId": "ws-human", "memberId": "human" }]
 }
@@ -2340,7 +2348,7 @@ and the human holds a seat in that channel, the daemon raises:
   "channelId": "mission-x",
   "seq": 139,
   "fromMemberName": "worker",
-  "text": "배포 완료 — 3 epoch 돌파…",
+  "text": "deploy done — past epoch 3…",
   "postedAt": 1757700000000,
   "id": 42,
   "epoch": "4f9c2a1e-…",
