@@ -16,6 +16,11 @@
 // UIPI keeps UIA out and it reads as elevated); first-hello latency then
 // includes the launcher's start-up.
 //
+// With --hang <HangWindow.exe> (tools/HangWindow), it also starts a window
+// that stops responding, and checks that getAppState vision on it answers
+// within 5 s with a failed screenshot and that the helper still answers the
+// next request.
+//
 // Prints one JSON line of timings, and a markdown table to $GITHUB_STEP_SUMMARY.
 
 import { spawn, spawnSync } from 'node:child_process';
@@ -26,14 +31,16 @@ const argv = process.argv.slice(2);
 let exe = null;
 let launcher = null;
 let requireFull = false;
+let hangExe = null;
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '--limited') launcher = argv[++i] && resolve(argv[i]);
   else if (argv[i] === '--require-full') requireFull = true;
+  else if (argv[i] === '--hang') hangExe = argv[++i] && resolve(argv[i]);
   else if (!exe) exe = resolve(argv[i]);
   else { console.error(`unknown argument ${argv[i]}`); process.exit(2); }
 }
 if (!exe || (argv.includes('--limited') && !launcher)) {
-  console.error('usage: node smoke.mjs <wmux-computer-use.exe> [--limited <RunLimited.exe>] [--require-full]');
+  console.error('usage: node smoke.mjs <wmux-computer-use.exe> [--limited <RunLimited.exe>] [--require-full] [--hang <HangWindow.exe>]');
   process.exit(2);
 }
 if (process.platform !== 'win32') {
@@ -55,6 +62,7 @@ function log(next) {
 }
 let stderrTail = '';
 let notepadPid = null;
+let hangPid = null;
 let helper = null;
 
 function fail(message) {
@@ -68,6 +76,7 @@ function cleanup() {
   try { helper?.kill(); } catch { /* gone */ }
   // Only the Notepad this script started.
   try { if (notepadPid) process.kill(notepadPid); } catch { /* gone */ }
+  try { if (hangPid) process.kill(hangPid); } catch { /* gone */ }
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -229,6 +238,43 @@ if (vision.msg.result.screenshot) {
   timings.screenshot = `${s.width}x${s.height} ${s.mime} scale ${Number(s.scale).toFixed(3)}`;
 } else if (vision.msg.result.screenshotStatus?.error) {
   timings.screenshotError = vision.msg.result.screenshotStatus.error.message;
+}
+
+if (hangExe) {
+  // A window that stops answering three seconds after it appears.
+  log(launcher ? 'start the hang target through RunLimited --no-wait' : 'start the hang target');
+  if (launcher) {
+    const [cmd, args] = launcherCommand(['--no-wait', hangExe]);
+    const r = runBounded(cmd, args);
+    hangPid = Number.parseInt(String(r.stdout).trim(), 10);
+    if (r.status !== 0 || !Number.isInteger(hangPid)) fail(`RunLimited could not start the hang target: ${r.stderr || r.error?.message}`);
+  } else {
+    const hang = spawn(hangExe, [], { stdio: 'ignore' });
+    hang.on('error', (e) => fail(`could not start the hang target: ${e.message}`));
+    hangPid = hang.pid;
+  }
+  log('wait for the hang target window');
+  const seenBy = performance.now() + 15000;
+  let seen = false;
+  while (!seen && performance.now() < seenBy) {
+    const r = await call('listApps');
+    seen = r.msg.ok && r.msg.result.apps.some((a) => a.pid === hangPid);
+    if (!seen) await sleep(250);
+  }
+  if (!seen) fail('the hang target never showed a window');
+  // It hangs 3 s after it is shown; give it a margin.
+  await sleep(4500);
+  const hung = await call('getAppState', { app: `pid:${hangPid}`, mode: 'vision', maxNodes: 800, maxDepth: 40 }, 5000);
+  timings.hungCaptureMs = hung.ms;
+  if (!hung.msg.ok) fail(`getAppState on the hung window: ${JSON.stringify(hung.msg.error)}`);
+  const status = hung.msg.result.screenshotStatus;
+  if (status?.status !== 'failed' || status.error?.code !== 'screenshot_failed') {
+    fail(`getAppState on the hung window should fail its screenshot, got ${JSON.stringify(status)}`);
+  }
+  timings.hungCapture = `failed: ${status.error.message}`;
+  const after = await call('capabilities', {}, 5000);
+  if (!after.msg.ok) fail(`capabilities after the hung capture: ${JSON.stringify(after.msg)}`);
+  timings.afterHungMs = after.ms;
 }
 
 const release = await call('releaseInput', {});
