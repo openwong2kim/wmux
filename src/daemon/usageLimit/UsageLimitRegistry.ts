@@ -134,7 +134,7 @@ export class UsageLimitRegistry {
     for (const [id, limit] of [...this.limits]) {
       if (usageLimitResumeDue(limit, now)) {
         await this.resume(id);
-      } else if (limit.autoResume !== true && now >= usageLimitHoldEndsAt(limit) + FORGET_AFTER_HOLD_MS) {
+      } else if (!(limit.autoResume === true && limit.resetsAt != null) && now >= usageLimitHoldEndsAt(limit) + FORGET_AFTER_HOLD_MS) {
         this.clear(id);
       }
     }

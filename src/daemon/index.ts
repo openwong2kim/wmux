@@ -3981,7 +3981,11 @@ function registerRpcHandlers(
       // Chat View P1 — the tail nudge rides the existing hook signals rather
       // than a new hook. Fired for every resolved kind; a no-op for panes with
       // no Chat surface open.
-      onResolvedSignal: (sessionId, signal) => usageLimits?.noteHookSignal(sessionId, signal),
+      // Exact pane identity only: a cwd-resolved guess could hold (or later
+      // type a continue into) a sibling pane in the same directory (#919).
+      onResolvedSignal: (sessionId, signal) => {
+        if (signal.ptyId === sessionId) usageLimits?.noteHookSignal(sessionId, signal);
+      },
       onTranscriptNudge: (sessionId, kind, agentSessionId) => {
         projector.nudge(sessionId, kind, agentSessionId);
         // #782 — phone turn-view nudge. Non-recording: bypasses attentionLog so

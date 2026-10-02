@@ -69,6 +69,15 @@ describe('UsageLimitRegistry', () => {
     expect(registry.get('p1')).toBeUndefined();
   });
 
+  it('forgets a long-ended hold that can never resume, even when armed', async () => {
+    const { registry, advance } = setup();
+    registry.noteScreenLimit('c1', 'codex', {});
+    await registry.update('c1', { autoResume: true });
+    advance(30 * 60 * 60 * 1000);
+    await registry.tick();
+    expect(registry.get('c1')).toBeUndefined();
+  });
+
   it('keeps the hold through output while held, and lets main fill an unknown reset', async () => {
     const { registry } = setup();
     registry.noteScreenLimit('c1', 'codex', { message: "You've hit your usage limit." });
