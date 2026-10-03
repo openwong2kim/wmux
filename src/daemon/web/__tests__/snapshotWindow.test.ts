@@ -209,6 +209,17 @@ describe('capSnapshot — inline image payloads (#1641)', () => {
     expect(text).toContain('alive');
   });
 
+  it('keeps history of output without line feeds that reaches a bell much later', () => {
+    // A progress bar redrawn with CR and no LF, then a bell: not a payload.
+    // The skip is bounded by one line's worth, not by where the bell is.
+    const progress = 'progress 42% [=====     ]\r'.repeat(12 * 1024); // ~300 KB
+    const buf = Buffer.from(`${progress}\x07done\r\n`, 'latin1');
+    const maxBytes = 256 * 1024;
+    const out = capSnapshot(buf, { maxBytes });
+    expect(out.bytes.length).toBeGreaterThanOrEqual(maxBytes - 4096);
+    expect(out.bytes.toString('latin1')).toContain('progress');
+  });
+
   it('leaves ordinary output after the cut alone', () => {
     // Long lines with colour escapes and newlines: no BEL/ST comes first, so
     // nothing is mistaken for a payload tail.
