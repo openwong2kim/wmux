@@ -2517,6 +2517,8 @@ export const pl = {
   'worktask.cleanup.removeHeld': 'Windows nie pozwala teraz usunąć tego worktree: jakiś program ma w nim otwarty plik lub folder albo folderu nie można usunąć. Zamknij go i spróbuj ponownie.',
   'worktask.cleanup.removeDirtyConfirm': 'Ten worktree ma niezatwierdzone zmiany. Usunąć go i odrzucić zmiany?',
   'worktask.cleanup.removeUnregisteredConfirm': 'Git nie śledzi tego katalogu jako worktree (przerwane tworzenie). Usunąć katalog?',
+  'worktask.cleanup.removeLockedConfirm': 'Ten worktree jest zablokowany. Odblokować go i usunąć, odrzucając niezatwierdzone zmiany?',
+  'worktask.cleanup.removeRetryFailed': 'Worktree nadal istnieje ({reason}). Spróbuj ponownie albo usuń go poleceniem git.',
   'worktask.cleanup.deleteBranchConfirm': 'Usunąć także gałąź {branch}?',
 
   // ─── Workspace item: task worktree boundary warning ──────────────────────

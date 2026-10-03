@@ -7,8 +7,8 @@
  * the daemon creates — `{wmux home}/worktrees/<12 hex>/phone-<slug>` — with
  * every component a real directory (no link, no junction) and the realpath
  * equal to the path walked. A pane still running inside it refuses; a
- * worktree with changes, or a leftover directory git does not know, needs the
- * caller's explicit `force` (the UI asks first). The branch is deleted only in
+ * worktree with changes, a locked one, or a leftover directory git does not
+ * know, needs the caller's explicit `force` (the UI asks first). The branch is deleted only in
  * a separate, confirmed call, and only a `phone/<slug>` branch.
  */
 
@@ -21,7 +21,7 @@ import { directoryHold, type DirectoryHold } from '../../shared/directoryHold';
 
 export type PhoneWorktreeRemoveResult =
   | { ok: true; branch?: string; repo?: string }
-  | { ok: false; reason: 'invalid' | 'in-use' | 'held' | 'dirty' | 'unregistered' | 'error'; error?: string };
+  | { ok: false; reason: 'invalid' | 'in-use' | 'held' | 'dirty' | 'locked' | 'unregistered' | 'error'; error?: string };
 
 export type PhoneGit = (args: string[], cwd: string) => Promise<{ ok: boolean; stdout: string; stderr: string }>;
 
@@ -98,6 +98,10 @@ export async function removePhoneWorktree(worktreePath: string, force: boolean, 
   const head = await git(['symbolic-ref', '-q', '--short', 'HEAD'], dir);
   const branch = head.ok && BRANCH.test(head.stdout.trim()) ? head.stdout.trim() : undefined;
   if (!force) {
+    // Git keeps a locked worktree until it is unlocked; with `force` it is unlocked first.
+    const lock = await git(['rev-parse', '--git-path', 'locked'], dir);
+    if (!lock.ok) return { ok: false, reason: 'error', error: lock.stderr.trim() };
+    if (fs.existsSync(path.resolve(dir, lock.stdout.trim()))) return { ok: false, reason: 'locked' };
     const status = await git(['status', '--porcelain', '--untracked-files=all'], dir);
     if (!status.ok) return { ok: false, reason: 'error', error: status.stderr.trim() };
     if (status.stdout.trim()) return { ok: false, reason: 'dirty' };

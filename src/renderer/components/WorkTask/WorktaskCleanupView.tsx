@@ -214,8 +214,9 @@ export default function WorktaskCleanupView() {
   );
 
   // A phone worktree has no task to close: remove it by path. A worktree with
-  // changes, or a directory git does not track, is removed only after the
-  // user confirms; its phone/<slug> branch is deleted only on a second yes.
+  // changes, a locked one, or a directory git does not track, is removed only
+  // after the user confirms; its phone/<slug> branch is deleted only on a
+  // second yes.
   const handleRemovePhone = useCallback(
     async (worktreePath: string) => {
       const api = window.electronAPI.workTask;
@@ -223,10 +224,12 @@ export default function WorktaskCleanupView() {
       setBusyTaskId(worktreePath);
       try {
         let res = await api.removePhone(worktreePath, false);
-        if (!res.ok && (res.reason === 'dirty' || res.reason === 'unregistered')) {
+        if (!res.ok && (res.reason === 'dirty' || res.reason === 'locked' || res.reason === 'unregistered')) {
           const question = res.reason === 'dirty'
             ? t('worktask.cleanup.removeDirtyConfirm')
-            : t('worktask.cleanup.removeUnregisteredConfirm');
+            : res.reason === 'locked'
+              ? t('worktask.cleanup.removeLockedConfirm')
+              : t('worktask.cleanup.removeUnregisteredConfirm');
           if (!window.confirm(question)) return;
           res = await api.removePhone(worktreePath, true);
         }
@@ -240,7 +243,10 @@ export default function WorktaskCleanupView() {
           pushToast({ level: 'warn', message: t('worktask.cleanup.removeInUse') });
         } else if (res.reason === 'held') {
           pushToast({ level: 'warn', message: t('worktask.cleanup.removeHeld') });
-        } else if (res.reason !== 'dirty' && res.reason !== 'unregistered') {
+        } else if (res.reason === 'dirty' || res.reason === 'locked' || res.reason === 'unregistered') {
+          // The confirmed, forced retry came back with the same answer.
+          pushToast({ level: 'error', message: t('worktask.cleanup.removeRetryFailed', { reason: res.reason }) });
+        } else {
           pushToast({ level: 'error', message: t('worktask.cleanup.removeFailed', { error: res.error ?? res.reason }) });
         }
       } catch (e) {

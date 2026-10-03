@@ -129,6 +129,16 @@ describe('removing a phone worktree from the desktop cleanup list', { timeout: 3
     expect(await windowsDirectoryHold(path.join(root, HASH, 'phone-gone'))).toBe('free');
   });
 
+  it('asks before removing a locked worktree, then unlocks and removes it', async () => {
+    const dir = add('locked');
+    git(repo, 'worktree', 'lock', '--reason', 'mine', dir);
+    const deps = { root, livePaneCwds: async () => [] };
+    expect(await removePhoneWorktree(dir, false, deps)).toEqual({ ok: false, reason: 'locked' });
+    expect(git(repo, 'worktree', 'list', '--porcelain')).toContain('locked mine');
+    expect(await removePhoneWorktree(dir, true, deps)).toMatchObject({ ok: true, branch: 'phone/locked' });
+    expect(fs.existsSync(dir)).toBe(false);
+  });
+
   it('removes a clean worktree without asking, and a leftover directory only when forced', async () => {
     const clean = add('clean');
     expect(await removePhoneWorktree(clean, false, { root, livePaneCwds: async () => [] })).toMatchObject({ ok: true, branch: 'phone/clean' });

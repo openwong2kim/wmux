@@ -134,6 +134,29 @@ describe('WorktaskCleanupView', () => {
     confirm.mockRestore();
   });
 
+  it('asks before removing a locked phone worktree, and says so when the confirmed retry fails the same way', async () => {
+    const api = (window as unknown as { electronAPI: { workTask: Record<string, unknown> } }).electronAPI.workTask;
+    api.scan = vi.fn(async () => ({
+      ok: true,
+      scannedRoot: '/wt',
+      entries: [{ category: 'phone-worktree', worktreePath: '/wt/abc123def456/phone-x' }],
+    }));
+    const removePhone = vi.fn()
+      .mockResolvedValueOnce({ ok: false, reason: 'locked' })
+      .mockResolvedValueOnce({ ok: false, reason: 'locked' });
+    api.removePhone = removePhone;
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    act(() => useStore.setState({ toasts: [] } as never));
+    act(() => root.render(createElement(WorktaskCleanupView)));
+    await flush();
+    act(() => button('Remove').click());
+    await flush();
+    expect(confirm).toHaveBeenCalledWith('This worktree is locked. Unlock and remove it, discarding any uncommitted changes?');
+    expect(removePhone.mock.calls).toEqual([['/wt/abc123def456/phone-x', false], ['/wt/abc123def456/phone-x', true]]);
+    expect(useStore.getState().toasts.map((toast) => toast.message)).toEqual(['The worktree is still there (locked). Try again, or remove it with git.']);
+    confirm.mockRestore();
+  });
+
   it('Commit & close leaves focus on the terminal holding the prepared line', async () => {
     act(() => root.render(createElement(WorktaskCleanupView)));
     await flush();

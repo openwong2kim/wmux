@@ -960,6 +960,8 @@ export const zh = {
   'worktask.cleanup.cat.preserved': '已保留（未提交）',
   'worktask.cleanup.cat.orphan': '孤儿目录',
   'worktask.cleanup.cat.phoneWorktree': '手机 worktree',
+  'worktask.cleanup.removeLockedConfirm': '此 worktree 已锁定。要解锁并删除它，同时丢弃未 commit 的更改吗？',
+  'worktask.cleanup.removeRetryFailed': 'worktree 仍然存在（{reason}）。请重试，或使用 git 删除。',
   'palette.cmd.projectPrefix': '项目：',
   'palette.cmd.projectReview': '项目：审阅 wmux.json…',
   'palette.cmd.projectApplyLayout': '项目：应用布局',

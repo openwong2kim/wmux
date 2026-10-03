@@ -2022,6 +2022,8 @@ export const ko = {
   'worktask.cleanup.removeHeld': 'Windows가 지금 이 worktree를 삭제하지 않습니다: 어떤 프로그램이 그 안의 파일이나 폴더를 열어 두었거나, 폴더를 삭제할 수 없습니다. 닫은 뒤 다시 시도하세요.',
   'worktask.cleanup.removeDirtyConfirm': '이 worktree에 커밋하지 않은 변경이 있습니다. 변경을 버리고 제거할까요?',
   'worktask.cleanup.removeUnregisteredConfirm': 'git이 worktree로 인식하지 않는 디렉터리입니다(생성 중단). 디렉터리를 삭제할까요?',
+  'worktask.cleanup.removeLockedConfirm': '이 worktree는 잠겨 있습니다. 잠금을 풀고 커밋하지 않은 변경까지 버린 뒤 제거할까요?',
+  'worktask.cleanup.removeRetryFailed': 'worktree가 아직 남아 있습니다({reason}). 다시 시도하거나 git으로 직접 제거하세요.',
   'worktask.cleanup.deleteBranchConfirm': '{branch} 브랜치도 삭제할까요?',
 
   // ─── Workspace item: task worktree boundary warning ──────────────────────

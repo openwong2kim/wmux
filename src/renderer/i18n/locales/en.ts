@@ -2555,6 +2555,8 @@ export const en = {
   'worktask.cleanup.removeHeld': 'Windows will not delete this worktree right now: a program has a file or folder in it open, or the folder may not be deleted. Close it and try again.',
   'worktask.cleanup.removeDirtyConfirm': 'This worktree has uncommitted changes. Remove it and discard them?',
   'worktask.cleanup.removeUnregisteredConfirm': 'Git does not track this directory as a worktree (an interrupted creation). Delete the directory?',
+  'worktask.cleanup.removeLockedConfirm': 'This worktree is locked. Unlock and remove it, discarding any uncommitted changes?',
+  'worktask.cleanup.removeRetryFailed': 'The worktree is still there ({reason}). Try again, or remove it with git.',
   'worktask.cleanup.deleteBranchConfirm': 'Also delete the branch {branch}?',
 
   // ─── Workspace item: task worktree boundary warning ──────────────────────
