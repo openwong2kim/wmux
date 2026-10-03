@@ -63,6 +63,47 @@
   }
 
   /**
+   * Enforce pixelLimit on the FINISHED sixel image. The decoder's own memory
+   * limit does not bound the canvas the addon builds in unhook (width x height
+   * x 4 bytes), so the size is checked here, before unhook reads the pixels or
+   * creates the canvas, and an image over the limit is dropped like a payload
+   * over sixelSizeLimit.
+   *
+   * Reaches into the addon's private handler map (0.9.x). Returns false when
+   * that shape is missing, and the caller then runs without sixel rather than
+   * without the cap.
+   */
+  function capSixel(addon, pixelLimit) {
+    var handlers = addon && addon._handlers;
+    var handler = handlers && typeof handlers.get === 'function' ? handlers.get('sixel') : null;
+    if (!handler || typeof handler.unhook !== 'function') return false;
+    var unhook = handler.unhook;
+    handler.unhook = function (success) {
+      var dec = handler._dec;
+      if (success && dec && !handler._aborted && dec.width * dec.height > pixelLimit) {
+        handler._aborted = true;
+        try { dec.release(); } catch (e) { /* nothing held */ }
+        return true;
+      }
+      return unhook.call(handler, success);
+    };
+    return true;
+  }
+
+  function activate(term, mod, opts) {
+    var addon = null;
+    try {
+      addon = new mod.ImageAddon(opts);
+      term.loadAddon(addon);
+      return addon;
+    } catch (e) {
+      // A half-activated addon may already hold parser handlers.
+      if (addon && typeof addon.dispose === 'function') dispose(addon);
+      return null;
+    }
+  }
+
+  /**
    * Load the image addon into `term` when it is enabled, present and usable.
    * Returns true when it was loaded. Never throws: the terminal works without
    * images, and a failure here must not take the text with it.
@@ -72,17 +113,16 @@
     var mod = env.ImageAddon;
     if (!mod || typeof mod.ImageAddon !== 'function') return false;
     if (!wasmUsable(env.WebAssembly)) return false;
-    var addon = null;
-    try {
-      addon = new mod.ImageAddon(optionsFor(env));
-      term.loadAddon(addon);
-      if (loaded) loaded.set(term, addon);
-      return true;
-    } catch (e) {
-      // A half-activated addon may already hold parser handlers.
-      if (addon && typeof addon.dispose === 'function') dispose(addon);
-      return false;
+    var opts = optionsFor(env);
+    var addon = activate(term, mod, opts);
+    if (addon && opts.sixelSupport && !capSixel(addon, opts.pixelLimit)) {
+      dispose(addon);
+      opts.sixelSupport = false;
+      addon = activate(term, mod, opts);
     }
+    if (!addon) return false;
+    if (loaded) loaded.set(term, addon);
+    return true;
   }
 
   /**
@@ -102,5 +142,5 @@
     return load(term, env);
   }
 
-  return { OPTIONS: OPTIONS, wasmUsable: wasmUsable, optionsFor: optionsFor, load: load, sync: sync };
+  return { OPTIONS: OPTIONS, wasmUsable: wasmUsable, optionsFor: optionsFor, capSixel: capSixel, load: load, sync: sync };
 });

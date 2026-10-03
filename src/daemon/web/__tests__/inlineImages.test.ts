@@ -18,6 +18,7 @@ interface Gate {
   OPTIONS: Record<string, unknown>;
   wasmUsable: (wa: unknown) => boolean;
   optionsFor: (env: Record<string, unknown>) => Record<string, unknown>;
+  capSixel: (addon: object, pixelLimit: number) => boolean;
   load: (term: object, env: Record<string, unknown>) => boolean;
   sync: (term: object, env: Record<string, unknown>) => boolean;
 }
@@ -39,9 +40,20 @@ beforeAll(() => {
   replies = evaluate<Replies>('deviceReply.js', 'wmuxDeviceReply');
 });
 
+// The addon's sixel handler as far as capSixel touches it (addon 0.9.x).
+class FakeSixelHandler {
+  _aborted = false;
+  _dec = { width: 0, height: 0, release: vi.fn() };
+  /** The addon's own unhook: decodes the pixels and draws the canvas. */
+  draw = vi.fn((_success: boolean) => true);
+  unhook = this.draw;
+}
 class FakeAddon {
   disposed = false;
-  constructor(public opts: Record<string, unknown>) {}
+  _handlers = new Map<string, FakeSixelHandler>();
+  constructor(public opts: Record<string, unknown>) {
+    if (opts.sixelSupport !== false) this._handlers.set('sixel', new FakeSixelHandler());
+  }
   dispose() { this.disposed = true; }
 }
 const addonModule = { ImageAddon: FakeAddon };
@@ -123,6 +135,42 @@ describe('web client inline images', () => {
     const term = { loadAddon: vi.fn(() => { throw new Error('activate failed'); }) };
     expect(gate.load(term, env())).toBe(false);
     expect((term.loadAddon.mock.calls[0] as unknown[])[0]).toMatchObject({ disposed: true });
+  });
+
+  it('drops a finished sixel over pixelLimit before the addon draws it', () => {
+    const term = fakeTerm();
+    expect(gate.load(term, env())).toBe(true);
+    const handler = (term.loadAddon.mock.calls[0][0] as FakeAddon)._handlers.get('sixel')!;
+    const draw = handler.draw;
+    handler._dec.width = 16380;
+    handler._dec.height = 6006;
+    expect(handler.unhook(true)).toBe(true);
+    expect(draw).not.toHaveBeenCalled();
+    expect(handler._dec.release).toHaveBeenCalled();
+    expect(handler._aborted).toBe(true);
+  });
+
+  it('draws a sixel within pixelLimit as before', () => {
+    const term = fakeTerm();
+    gate.load(term, env());
+    const handler = (term.loadAddon.mock.calls[0][0] as FakeAddon)._handlers.get('sixel')!;
+    const draw = handler.draw;
+    handler._dec.width = 2048;
+    handler._dec.height = 2048;
+    handler.unhook(true);
+    expect(draw).toHaveBeenCalledWith(true);
+  });
+
+  it('runs without sixel when the size cap cannot be installed', () => {
+    class Opaque extends FakeAddon {
+      constructor(opts: Record<string, unknown>) { super(opts); this._handlers.clear(); }
+    }
+    const term = fakeTerm();
+    expect(gate.load(term, env({ ImageAddon: { ImageAddon: Opaque } }))).toBe(true);
+    expect(term.loadAddon).toHaveBeenCalledTimes(2);
+    const [first, second] = term.loadAddon.mock.calls.map((c) => c[0] as FakeAddon);
+    expect(first.disposed).toBe(true);
+    expect(second.opts.sixelSupport).toBe(false);
   });
 
   it('keeps iTerm2 images off where createImageBitmap is missing', () => {
