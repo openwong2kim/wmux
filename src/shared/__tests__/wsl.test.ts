@@ -60,6 +60,9 @@ describe('WSL execution target', () => {
     const stat = vi.spyOn(fs, 'existsSync').mockReturnValue(false);
     try {
       expect(recoveryCwd({ cmd: 'wsl.exe', cwd: '~/project' }, 'win32')).toBe('~/project');
+      // #1729 — a cwd stored with a wrapped prompt's line break can never be
+      // entered; recovery starts in home instead of suspending the pane.
+      expect(recoveryCwd({ cmd: 'wsl.exe', cwd: '~/wslt\r\nest' }, 'win32')).toBe('~');
       expect(stat).not.toHaveBeenCalled();
       expect(recoveryCwd({ cmd: 'powershell.exe', cwd: 'C:\\gone' }, 'win32')).toBe(os.homedir());
     } finally { stat.mockRestore(); }

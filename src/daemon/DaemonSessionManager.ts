@@ -26,6 +26,7 @@ import { isMac, parseWindowsBuildNumber } from '../shared/platform';
 import { shouldUseBundledConpty, spawnWithConptyPolicy } from '../shared/conptyWindows';
 import { getWindowsDefaultShell, resolveBareShellName, resolveLaunchableWindowsExe } from '../shared/shellResolution';
 import { ENV_KEYS } from '../shared/constants';
+import { containsControlChars } from '../shared/cwdShape';
 import { createDefaultConfig } from './config';
 import { getProcessStartTime, isPhantomExit, isPidAlive } from './phantomExit';
 
@@ -776,6 +777,9 @@ export class DaemonSessionManager extends EventEmitter {
       // write (and the renderer broadcast) fire on cd, not on every prompt —
       // keeps the immediate cwd persistence cheap (no write amplification).
       if (meta.cwd === payload.cwd) return;
+      // #1729 — OSC 7 percent-decoding or a wrapped prompt can carry a control
+      // character; such a value names no directory and would break recovery.
+      if (containsControlChars(payload.cwd)) return;
       // Only `cwd`. `meta.spawnCwd` stays at the spawn value on purpose — this
       // payload originates in terminal output, which any process in the pane
       // can write, so it may not move a directory anything acts on.

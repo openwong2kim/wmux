@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { isPlausibleCwd } from '../cwdShape';
+import { containsControlChars, isPlausibleCwd } from '../cwdShape';
 
 type BridgeHost = { electronAPI?: { platform?: string } };
 
@@ -96,5 +96,16 @@ describe('isPlausibleCwd — default platform resolution', () => {
     expect(isPlausibleCwd('C:\\Users\\me')).toBe(process.platform === 'win32');
     // A relative token is rejected regardless of which source answered.
     expect(isPlausibleCwd('path')).toBe(false);
+  });
+});
+
+describe('control characters (#1729)', () => {
+  it('rejects a cwd carrying a line break or other control character', () => {
+    expect(containsControlChars('~/wslt\r\nest')).toBe(true);
+    expect(containsControlChars('/home/dev/a\u0007b')).toBe(true);
+    expect(containsControlChars('/home/dev/한글 폴더')).toBe(false);
+    expect(isPlausibleCwd('~/wslt\r\nest', 'win32')).toBe(false);
+    expect(isPlausibleCwd('/home/dev/x\ty', 'linux')).toBe(false);
+    expect(isPlausibleCwd('~/wsltest', 'win32')).toBe(true);
   });
 });

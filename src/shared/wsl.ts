@@ -4,6 +4,7 @@ import os from 'node:os';
 import { execFile } from 'node:child_process';
 
 import { isWslShell, isLinuxCwd, validWslTarget, wslTargetArgs, type WslTarget } from './wslTarget';
+import { containsControlChars } from './cwdShape';
 export { isWslShell, isLinuxCwd, validWslTarget, wslTargetArgs, type WslTarget } from './wslTarget';
 
 /**
@@ -126,7 +127,10 @@ export async function resolveWslCwd(
 
 /** Preserve Linux paths through daemon restart; Windows stat cannot test them. */
 export function recoveryCwd(session: { cmd: string; cwd: string }, platform = process.platform): string {
-  if (isWslShell(session.cmd, platform)) return session.cwd;
+  // #1729 — a cwd stored with a control character (a wrapped prompt, before
+  // capture rejected it) can never be entered; start in home instead of
+  // leaving the pane suspended on an error it has no way out of.
+  if (isWslShell(session.cmd, platform)) return containsControlChars(session.cwd) ? '~' : session.cwd;
   return fs.existsSync(session.cwd) ? session.cwd : os.homedir();
 }
 

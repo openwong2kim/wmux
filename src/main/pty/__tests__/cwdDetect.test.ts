@@ -126,3 +126,11 @@ describe('detectPromptCwd', () => {
     expect(detectPromptCwd('me@host:/home/me/work$', 'darwin')).toBe('/home/me/work');
   });
 });
+
+describe('detectPromptCwd on a prompt wrapped in a narrow pane (#1729)', () => {
+  it('never reports a cwd with the wrap line break inside it', () => {
+    // readline redraws a prompt that does not fit the width with an explicit CR LF.
+    expect(detectPromptCwd('dev@DESKTOP-KRO4QJQ:~/wslt\r\nest$ ', 'win32')).toBeNull();
+    expect(detectPromptCwd('dev@DESKTOP-KRO4QJQ:~/wsltest$ ', 'win32')).toBe('~/wsltest');
+  });
+});
