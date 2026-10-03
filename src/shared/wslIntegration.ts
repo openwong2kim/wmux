@@ -58,6 +58,15 @@ if [ -z "$real" ]; then
   # beats telling the user their installed claude does not exist.
   wmux_bash=/bin/bash
   command -v timeout >/dev/null 2>&1 && wmux_bash="timeout -k 1 10 /bin/bash"
+  # #1721 — and in its OWN session. timeout runs bash in a background process
+  # group; with a controlling terminal, which every real pane has, the
+  # interactive bash tries to take the terminal, is stopped (SIGTTOU), and sits
+  # there until the KILL above. Measured in a WSL pane: 11 s, then the 127
+  # below for a claude that is installed. With no controlling terminal there is
+  # nothing to take, and a startup file cannot read or write the pane's tty.
+  # setsid outside timeout: if setsid has to fork, timeout still bounds bash.
+  # util-linux and busybox both ship setsid; without it, behave as before.
+  command -v setsid >/dev/null 2>&1 && wmux_bash="setsid $wmux_bash"
   # Unquoted on purpose: wmux_bash is a command plus its arguments.
   # shellcheck disable=SC2086
   login_path=$($wmux_bash -ic 'printf "\\nWMUX_RESOLVED_PATH=%s\\n" "$PATH"' </dev/null 2>/dev/null \

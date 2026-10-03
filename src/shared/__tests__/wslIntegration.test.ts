@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { buildWslInjection } from '../wslIntegration';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { BASH_INIT } from '../../daemon/shell-integration';
 
 const dirs: string[] = [];
@@ -138,6 +138,28 @@ describe('WSL per-launch Claude integration', () => {
 
       expect(out).toBe(`claude ran: --settings ${env.WMUX_WSL_SETTINGS} --help`);
       expect(out).not.toContain('MOTD banner');
+    });
+
+    // #1721 — a real pane has a controlling terminal; CI does not, so the test
+    // above passed while every real pane waited out the 10 s bound and then got
+    // 127. `script` gives the shim a pty of its own. util-linux `script` only:
+    // BSD `script` (macOS) takes different arguments.
+    const hasUtilLinuxScript = process.platform === 'linux'
+      && spawnSync('script', ['--version'], { encoding: 'utf8' }).stdout?.includes('util-linux');
+    it.runIf(hasUtilLinuxScript)('finds it promptly under a controlling terminal', () => {
+      const { dir, env } = homeWithInteractiveClaude();
+      const nvmBin = path.join(dir, 'nvm-bin'); fs.mkdirSync(nvmBin);
+      fs.writeFileSync(path.join(nvmBin, 'claude'), '#!/bin/sh\nprintf "claude ran: %s" "$*"\n', { mode: 0o755 });
+      fs.writeFileSync(path.join(dir, '.bashrc'), `export PATH="${nvmBin}:$PATH"\n`);
+
+      const started = Date.now();
+      const out = execFileSync('script', ['-qec', `/bin/sh ${shimOf(dir)} --help`, '/dev/null'], {
+        encoding: 'utf8', env, timeout: 20_000, killSignal: 'SIGKILL',
+      });
+
+      expect(out).toContain(`claude ran: --settings ${env.WMUX_WSL_SETTINGS} --help`);
+      // Stopped on the terminal, the lookup only ends at the 10 s KILL.
+      expect(Date.now() - started).toBeLessThan(5_000);
     });
 
     // --mcp-config is variadic in claude's parser: passed as two words it would
