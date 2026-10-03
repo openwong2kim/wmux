@@ -36,7 +36,7 @@ import {
   saveDeckSchedules,
   loadDeckSchedules,
 } from '../deckScheduleStore';
-import { setHqWorkspaceId } from '../deckHqStore';
+import { setHqWorkspaceId, getDeckHqPath, __resetHqMemoryForTest } from '../deckHqStore';
 import {
   getWorkspaceMirror,
   __resetWorkspaceMirrorForTest,
@@ -365,6 +365,16 @@ describe('deckOrphanReconcile', () => {
 });
 
 describe('deckOrphanReconcile — the HQ workspace', () => {
+  it('sweeps nothing while deck-hq.json is unreadable (the HQ is unknown)', async () => {
+    __resetHqMemoryForTest();
+    await setWorkspaceMode('ws-gone', 'danger', dir);
+    fs.writeFileSync(getDeckHqPath(dir), '{ torn');
+    const report = await reconcileOrphanDeckState(['ws-live'], { dir, log: () => undefined });
+    expect(report.tornDown).toEqual([]);
+    expect(report.skipped).toMatch(/unreadable/);
+    expect(collectDeckWorkspaceIds(dir).has('ws-gone')).toBe(true);
+  });
+
   it('never sweeps the HQ, even when its workspace is gone', async () => {
     await setHqWorkspaceId('ws-hq', dir);
     beginOrContinueDeckWork('ws-hq', 'hq work', dir);

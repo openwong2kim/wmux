@@ -99,26 +99,35 @@ vi.mock('../../../deck/brainPtyHookBus', async (importOriginal) => {
   return { ...actual, registerBrainPty: vi.fn(actual.registerBrainPty) };
 });
 
+import fs from 'node:fs';
 import { registerDeckHandler } from '../deck.handler';
 import { IPC } from '../../../../shared/constants';
 import type { BrainAdapter, BrainEvent } from '../../../deck/BrainAdapter';
 import { CommanderEventCoalescer } from '../../../deck/CommanderEventCoalescer';
+import { GlobalTurnGate } from '../../../deck/globalTurnGate';
 import { eventBus } from '../../../events/EventBus';
 import { getWorkspaceMirror, __resetWorkspaceMirrorForTest } from '../../../workspace/WorkspaceMirror';
 import {
-  __resetHqMirrorMemoryForTest,
+  __resetHqMemoryForTest,
+  getDeckHqPath,
   getHqWorkspaceId,
   isMoaEnabled,
   setHqWorkspaceId,
   setMoaEnabled,
 } from '../../../deck/deckHqStore';
+import { raiseDecision } from '../../../deck/deckDecisionStore';
+import { getTaskLedger } from '../../../deck/taskLedgerHost';
+import { __resetStartupDeckReconcileForTest } from '../../../deck/deckOrphanReconcile';
 import { mintCommanderToken } from '../../../deck/commanderTrust';
 import { registerBrainPty } from '../../../deck/brainPtyHookBus';
 
 class FakeAdapter implements BrainAdapter {
   sessionId: string | null = null;
   disposed = false;
-  constructor(public readonly workspaceId: string) {}
+  constructor(public readonly workspaceId: string) {
+    // Every production adapter mints a commander token at construction.
+    mintCommanderToken(workspaceId);
+  }
   start(): void { /* nothing to start */ }
   async *send(): AsyncIterable<BrainEvent> {
     yield { type: 'turn-end', sessionId: 'sess-1' } as BrainEvent;
@@ -134,16 +143,25 @@ const fakeWindow = {
   webContents: { send: () => undefined },
 } as unknown as import('electron').BrowserWindow;
 
-function register(withFactory = true): void {
-  cleanup = registerDeckHandler(() => fakeWindow, withFactory
-    ? {
-      createAdapter: (opts) => {
-        const a = new FakeAdapter(opts.workspaceId);
+function register(opts: { production?: boolean; turnGate?: GlobalTurnGate; reconcileDelayMs?: number } = {}): void {
+  cleanup = registerDeckHandler(() => fakeWindow, {
+    ...(opts.production ? {} : {
+      createAdapter: (o: { workspaceId: string }) => {
+        const a = new FakeAdapter(o.workspaceId);
         adapters.push(a);
         return a;
       },
-    }
-    : {});
+    }),
+    ...(opts.turnGate ? { turnGate: opts.turnGate } : {}),
+    ...(opts.reconcileDelayMs !== undefined ? { reconcileDelayMs: opts.reconcileDelayMs } : {}),
+  } as Parameters<typeof registerDeckHandler>[1]);
+}
+function reregister(opts: Parameters<typeof register>[0] = {}): void {
+  cleanup?.();
+  cleanup = null;
+  heartbeats.length = 0;
+  schedulers.length = 0;
+  register(opts);
 }
 
 const invoke = (channel: string, payload?: unknown) => captured.get(channel)!({}, payload) as Promise<Record<string, unknown>>;
@@ -152,6 +170,9 @@ const lifecycle = (workspaceId: string) => eventBus.emit({
   type: 'agent.lifecycle', workspaceId, ptyId: `p-${workspaceId}`,
   kind: 'agent.stop', source: 'hook', agent: 'claude', decision: 'emit',
 });
+const a2aDone = (from: string) => eventBus.emit({
+  type: 'a2a.task', workspaceId: from, from, to: 'ws-a', taskId: `task-${from}`, state: 'completed',
+});
 const mirror = (ids: string[]) => getWorkspaceMirror().setSnapshot({
   ts: Date.now(),
   entries: ids.map((id) => ({ id, name: id })),
@@ -159,6 +180,12 @@ const mirror = (ids: string[]) => getWorkspaceMirror().setSnapshot({
   sessionRestored: true,
 });
 const heartbeatTargets = () => (heartbeats.at(-1)!.deps.getWorkspaceIds as () => string[])();
+const scheduledTurn = (ws: string) =>
+  (schedulers.at(-1)!.deps.runTurn as (p: string, w: string) => Promise<Record<string, unknown>>)('scheduled', ws);
+const busSubscribers = (): number => (eventBus as unknown as { subscribers: unknown[] }).subscribers.length;
+const mirrorListeners = (): number =>
+  (getWorkspaceMirror() as unknown as { snapshotListeners: Set<unknown> }).snapshotListeners.size;
+const flush = () => new Promise((r) => setTimeout(r, 0));
 
 let pushSpy: ReturnType<typeof vi.spyOn>;
 let bootSpy: ReturnType<typeof vi.spyOn>;
@@ -176,8 +203,10 @@ beforeEach(async () => {
   routedHasBrain = null;
   mockMode = 'danger';
   __resetWorkspaceMirrorForTest();
-  __resetHqMirrorMemoryForTest();
+  __resetHqMemoryForTest();
+  __resetStartupDeckReconcileForTest();
   vi.spyOn(console, 'log').mockImplementation(() => undefined);
+  vi.spyOn(console, 'warn').mockImplementation(() => undefined);
   await setHqWorkspaceId(null);
   await setMoaEnabled(true);
   vi.mocked(mintCommanderToken).mockClear();
@@ -188,6 +217,9 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  cleanup?.();
+  cleanup = null;
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -206,17 +238,19 @@ describe('HQ unset — today\'s behaviour', () => {
     expect(bootSpy).toHaveBeenCalledWith('ws-c');
   });
 
-  it('DECK_STATUS carries no hq field and the timers are running', async () => {
+  it('DECK_STATUS carries no hq field, the timers run, and there is no turn cap', async () => {
     expect(await invoke(IPC.DECK_STATUS, { workspaceId: 'ws-a' })).toEqual({ status: 'idle', sessionId: null });
     expect(await invoke(IPC.DECK_HQ_GET)).toEqual({ workspaceId: null, state: 'unset' });
     expect(heartbeats.at(-1)!.starts).toBe(1);
     expect(schedulers.at(-1)!.starts).toBe(1);
+    for (let i = 0; i < 15; i++) expect(await scheduledTurn('ws-a')).toMatchObject({ ok: true });
   });
 });
 
 describe('HQ designated — eligibility matrix', () => {
   beforeEach(async () => {
     await setHqWorkspaceId('ws-hq');
+    mirror(['ws-hq', 'ws-a', 'ws-b']);
   });
 
   it('turn entry: a non-HQ workspace never starts a brain, the HQ does', async () => {
@@ -233,12 +267,12 @@ describe('HQ designated — eligibility matrix', () => {
     expect(routedHasBrain!('ws-hq')).toBe(true);
   });
 
-  it('heartbeat reviews only the HQ', async () => {
-    mirror(['ws-hq', 'ws-a', 'ws-b']);
+  it('heartbeat reviews only the HQ', () => {
     expect(heartbeatTargets()).toEqual(['ws-hq']);
   });
 
   it('mode-change replay boots only the HQ', async () => {
+    bootSpy.mockClear();
     await invoke(IPC.DECK_MODE_SET, { workspaceId: 'ws-a', mode: 'assist' });
     expect(bootSpy).not.toHaveBeenCalled();
     await invoke(IPC.DECK_MODE_SET, { workspaceId: 'ws-hq', mode: 'assist' });
@@ -248,46 +282,134 @@ describe('HQ designated — eligibility matrix', () => {
   it('excludes the HQ\'s own pane events but still pushes a2a terminal events to it', () => {
     lifecycle('ws-hq');
     lifecycle('ws-a');
-    eventBus.emit({
-      type: 'a2a.task', workspaceId: 'ws-hq', from: 'ws-hq', to: 'ws-a',
-      taskId: 'task-1', state: 'completed',
-    });
+    a2aDone('ws-hq');
     expect(pushedTo().map((e) => [e.workspaceId, e.kind])).toEqual([
       ['ws-a', 'agent.stop'],
       ['ws-hq', 'a2a.completed'],
     ]);
   });
+
+  it('refuses creating or enabling a non-HQ schedule or loop', async () => {
+    const at = Date.now() + 60_000;
+    expect(await invoke(IPC.DECK_SCHEDULES_CREATE, { workspaceId: 'ws-a', prompt: 'p', nextRunAt: at }))
+      .toEqual({ ok: false, code: 'not_hq' });
+    expect(await invoke(IPC.DECK_LOOP_START, { workspaceId: 'ws-a', objective: 'o' }))
+      .toEqual({ ok: false, code: 'not_hq' });
+    expect(await invoke(IPC.DECK_SCHEDULES_CREATE, { workspaceId: 'ws-hq', prompt: 'p', nextRunAt: at }))
+      .toMatchObject({ ok: true });
+  });
+});
+
+describe('HQ turn cap (common entry for automatic turns)', () => {
+  it('caps the HQ\'s scheduled turns per hour, keeps them retryable, and never caps a human send', async () => {
+    await setHqWorkspaceId('ws-hq');
+    mirror(['ws-hq', 'ws-a']);
+    const file = JSON.parse(fs.readFileSync(getDeckHqPath(), 'utf8'));
+    fs.writeFileSync(getDeckHqPath(), JSON.stringify({ ...file, hqMaxTurnsPerHour: 1 }));
+
+    expect(await scheduledTurn('ws-hq')).toMatchObject({ ok: true });
+    const capped = await scheduledTurn('ws-hq');
+    expect(capped).toMatchObject({ ok: false, code: 'rate_limited' });
+    expect(capped.retryAfterMs as number).toBeGreaterThan(59 * 60_000);
+    expect(await scheduledTurn('ws-hq')).toMatchObject({ code: 'rate_limited' });
+    // Human sends (composer and the Wake button) are never capped.
+    expect(await send('ws-hq')).toMatchObject({ ok: true });
+    expect(await invoke(IPC.DECK_WAKE, { workspaceId: 'ws-hq' })).toMatchObject({ ok: true });
+  });
+});
+
+describe('queued turns re-check eligibility after the slot wait', () => {
+  async function queueResumeTurn(gate: GlobalTurnGate): Promise<string> {
+    const held = gate.tryAcquire('other')!;
+    const d = await raiseDecision('ws-hq', { question: 'q', options: [], context: '' });
+    await invoke(IPC.DECK_DECISION_RESOLVE, { workspaceId: 'ws-hq', id: d!.id, resolution: 'go' });
+    await flush();
+    return held;
+  }
+
+  it.each([
+    ['the master switch goes off', async () => { await invoke(IPC.DECK_MOA_SET, { enabled: false }); }],
+    ['the HQ moves elsewhere', async () => { await setHqWorkspaceId('ws-b'); }],
+  ] as const)('no brain is spawned and no token minted when %s during the wait', async (_label, change) => {
+    // A gate whose cancelWaiters does nothing, so the re-check itself is what is tested.
+    class StickyGate extends GlobalTurnGate {
+      override cancelWaiters(): void { /* keep the waiter */ }
+    }
+    const gate = new StickyGate(1);
+    await setHqWorkspaceId('ws-hq');
+    reregister({ turnGate: gate });
+    mirror(['ws-hq', 'ws-b']);
+    const held = await queueResumeTurn(gate);
+    const before = adapters.length;
+    const mintsBefore = vi.mocked(mintCommanderToken).mock.calls.length;
+
+    await change();
+    gate.release(held);
+    await flush();
+    await flush();
+
+    expect(adapters.length - before).toBe(0);
+    expect(vi.mocked(mintCommanderToken).mock.calls.length - mintsBefore).toBe(0);
+    expect(gate.inFlight).toBe(0);
+  });
+
+  it('turning the switch off cancels the queued waiters', async () => {
+    const gate = new GlobalTurnGate(1);
+    await setHqWorkspaceId('ws-hq');
+    reregister({ turnGate: gate });
+    mirror(['ws-hq']);
+    const cancel = vi.spyOn(gate, 'cancelWaiters');
+    await queueResumeTurn(gate);
+    await invoke(IPC.DECK_MOA_SET, { enabled: false });
+    expect(cancel).toHaveBeenCalled();
+  });
 });
 
 describe('HQ designation retires other brains', () => {
-  it('refuses while the new HQ has a brain, then retires every non-HQ brain', async () => {
+  it('an idle brain does not block it; every non-HQ brain is retired, the HQ\'s kept', async () => {
+    mirror(['ws-a', 'ws-hq']);
     await send('ws-a');
     await send('ws-hq');
-    expect(await setHqWorkspaceId('ws-hq')).toMatchObject({ ok: false, code: 'brain_running' });
-    // Free the HQ, then designate.
-    await invoke(IPC.DECK_MODE_SET, { workspaceId: 'ws-hq', mode: 'off' });
-    mockMode = 'danger';
     expect(await setHqWorkspaceId('ws-hq')).toMatchObject({ ok: true });
-    expect(adapters.map((a) => [a.workspaceId, a.disposed])).toEqual([['ws-a', true], ['ws-hq', true]]);
+    expect(adapters.map((a) => [a.workspaceId, a.disposed])).toEqual([['ws-a', true], ['ws-hq', false]]);
     expect(clearedSessions).toEqual([]); // reversible: no session file touched
   });
 });
 
-describe('hq-missing', () => {
-  it('fails closed: the HQ brain stops, nobody else becomes eligible, status reports it', async () => {
+describe('HQ presence', () => {
+  it('unknown before the first mirror push: the HQ does not run yet', async () => {
     await setHqWorkspaceId('ws-hq');
+    expect(await send('ws-hq')).toEqual({ ok: false, code: 'hq_unknown' });
+    expect(await invoke(IPC.DECK_HQ_GET)).toEqual({ workspaceId: 'ws-hq', state: 'hq-unknown' });
+    mirror(['ws-hq']);
+    expect(await send('ws-hq')).toMatchObject({ ok: true });
+  });
+
+  it('missing: retired on the mirror update itself (no heartbeat), fails closed, parks its receipts', async () => {
+    await setHqWorkspaceId('ws-hq');
+    mirror(['ws-hq', 'ws-a']);
     await send('ws-hq');
+    const park = vi.spyOn(getTaskLedger(), 'recordOrphanedEvent');
     mirror(['ws-a']);
 
+    expect(adapters[0].disposed).toBe(true); // the heartbeat is mocked and never ticked
     expect(heartbeatTargets()).toEqual([]);
-    expect(adapters[0].disposed).toBe(true);
     expect(await send('ws-hq')).toEqual({ ok: false, code: 'hq_missing' });
     expect(await send('ws-a')).toEqual({ ok: false, code: 'not_hq' });
     expect(await invoke(IPC.DECK_STATUS, { workspaceId: 'ws-a' })).toMatchObject({ hq: 'hq-missing' });
     expect(await invoke(IPC.DECK_HQ_GET)).toEqual({ workspaceId: 'ws-hq', state: 'hq-missing' });
-    // Worker events owned by the missing HQ park instead of being consumed.
     lifecycle('ws-a');
     expect(routedHasBrain!('ws-hq')).toBe(false);
+
+    pushSpy.mockClear();
+    a2aDone('ws-hq');
+    expect(pushedTo()).toEqual([]);
+    expect(park).toHaveBeenCalledWith(expect.objectContaining({ ownerWorkspaceId: 'ws-hq' }));
+
+    // Back again: the parked events are replayed.
+    bootSpy.mockClear();
+    mirror(['ws-hq', 'ws-a']);
+    expect(bootSpy).toHaveBeenCalledWith('ws-hq');
   });
 });
 
@@ -296,13 +418,17 @@ describe('master switch (moaEnabled)', () => {
     expect(await invoke(IPC.DECK_MOA_GET)).toEqual({ enabled: true });
   });
 
-  it('off at launch: no timers started, no brain of any vendor, nothing eligible, pushes dropped', async () => {
+  it('off at launch: no timer, subscription, brain, token or hook; nothing eligible', async () => {
     cleanup?.();
     cleanup = null;
     await setMoaEnabled(false);
-    heartbeats.length = 0;
-    schedulers.length = 0;
-    register(false); // the production adapter factory
+    vi.useFakeTimers();
+    const subsBefore = busSubscribers();
+    const listenersBefore = mirrorListeners();
+    reregister({ production: true });
+    expect(vi.getTimerCount()).toBe(0);
+    expect(busSubscribers()).toBe(subsBefore);
+    expect(mirrorListeners()).toBe(listenersBefore);
     expect(heartbeats.at(-1)!.starts).toBe(0);
     expect(schedulers.at(-1)!.starts).toBe(0);
 
@@ -314,16 +440,46 @@ describe('master switch (moaEnabled)', () => {
     expect(mintCommanderToken).not.toHaveBeenCalled();
     expect(registerBrainPty).not.toHaveBeenCalled();
     expect(await invoke(IPC.DECK_STATUS, { workspaceId: 'ws-a' })).toEqual({ status: 'idle', sessionId: null });
-
+    // The bus is not even subscribed, so nothing routes or wakes.
     lifecycle('ws-a');
-    expect(routedHasBrain!('ws-a')).toBe(false);
-    await setHqWorkspaceId('ws-hq');
-    expect(routedHasBrain!('ws-hq')).toBe(false);
-    await invoke(IPC.DECK_MODE_SET, { workspaceId: 'ws-hq', mode: 'assist' });
-    expect(bootSpy).not.toHaveBeenCalled();
+    expect(pushedTo()).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('turning it off retires a running brain and stops the timers; on restores them with nothing deleted', async () => {
+  it('turning it on starts everything and re-arms the startup reconcile once; off tears it all down', async () => {
+    cleanup?.();
+    cleanup = null;
+    await setMoaEnabled(false);
+    vi.useFakeTimers();
+    const subsBefore = busSubscribers();
+    reregister({ reconcileDelayMs: 1234 });
+
+    await invoke(IPC.DECK_MOA_SET, { enabled: true });
+    expect(busSubscribers()).toBe(subsBefore + 1);
+    expect(mirrorListeners()).toBe(1);
+    const armed = vi.getTimerCount(); // ledger reconcile + orphan reconcile + one-shot reconcile
+    expect(armed).toBe(3);
+
+    await invoke(IPC.DECK_MOA_SET, { enabled: false });
+    expect(vi.getTimerCount()).toBe(0);
+    expect(busSubscribers()).toBe(subsBefore);
+    expect(mirrorListeners()).toBe(0);
+
+    // Not fired yet → re-armed by the next on; once fired → never again.
+    // (reconcileDelayMs = 1234 identifies the one-shot among the timers.)
+    const oneShots = vi.spyOn(globalThis, 'setTimeout');
+    const reconcileArms = () => oneShots.mock.calls.filter((c) => c[1] === 1234).length;
+    await invoke(IPC.DECK_MOA_SET, { enabled: true });
+    expect(vi.getTimerCount()).toBe(3);
+    expect(reconcileArms()).toBe(1);
+    await vi.advanceTimersByTimeAsync(1234);
+    await invoke(IPC.DECK_MOA_SET, { enabled: false });
+    await invoke(IPC.DECK_MOA_SET, { enabled: true });
+    expect(reconcileArms()).toBe(1);
+  });
+
+  it('turning it off retires a running brain; on restores, replays parked events, deletes nothing', async () => {
+    mirror(['ws-a']);
     await send('ws-a');
     const hb = heartbeats.at(-1)!;
     const sc = schedulers.at(-1)!;
@@ -336,8 +492,10 @@ describe('master switch (moaEnabled)', () => {
     expect(suspend).toHaveBeenCalledTimes(1);
     expect(await invoke(IPC.DECK_STATUS, { workspaceId: 'ws-a' })).toEqual({ status: 'idle', sessionId: null });
 
+    bootSpy.mockClear();
     expect(await invoke(IPC.DECK_MOA_SET, { enabled: true })).toEqual({ ok: true, enabled: true });
     expect([hb.starts, sc.starts]).toEqual([2, 2]);
+    expect(bootSpy).toHaveBeenCalledWith('ws-a');
     expect(clearedSessions).toEqual([]);
     expect(mockMode).toBe('danger');
     expect(await send('ws-a')).toMatchObject({ ok: true });

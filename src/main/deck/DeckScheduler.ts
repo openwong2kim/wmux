@@ -97,7 +97,8 @@ export class DeckScheduler {
         try {
           // dueSchedules guarantees workspaceId is present.
           const r = await this.deps.runTurn(scheduledPrompt(s), s.workspaceId ?? '');
-          result = r.ok ? 'ok' : r.code === 'busy' ? 'busy' : 'error';
+          // A capped turn (rate_limited) stays due, like busy, and retries.
+          result = r.ok ? 'ok' : r.code === 'busy' || r.code === 'rate_limited' ? 'busy' : 'error';
         } catch {
           result = 'error';
         }

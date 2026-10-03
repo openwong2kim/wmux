@@ -52,7 +52,7 @@ import {
 import { loadCommanderSession, saveCommanderSession, clearCommanderSession } from '../../deck/commanderSessionStore';
 import { DeckScheduler } from '../../deck/DeckScheduler';
 import { DeckHeartbeat } from '../../deck/DeckHeartbeat';
-import { CommanderEventCoalescer } from '../../deck/CommanderEventCoalescer';
+import { CommanderEventCoalescer, type CoalescerInput } from '../../deck/CommanderEventCoalescer';
 import { notifyFanoutCaller, shouldNotifyCaller, installFanoutCallerLedgerNotify } from '../../deck/fanoutCallerNotify';
 import {
   routeWorkerEventToOwner,
@@ -81,8 +81,9 @@ import {
   getHqMaxTurnsPerHour,
   getHqWorkspaceId,
   hqAllowsBrain,
+  hqPresence,
   isHqMigrationDone,
-  isHqWorkspaceMissing,
+  isHqStoreCorrupt,
   isMoaEnabled,
   runNonHqMigration,
   setHqRuntime,
@@ -152,7 +153,7 @@ import {
   saveBriefedSnapshot,
   type DeckBriefingConfig,
 } from '../../deck/deckBriefingStore';
-import { eventBus } from '../../events/EventBus';
+import { eventBus, type EventBusSubscriber } from '../../events/EventBus';
 import {
   loadDeckSchedules,
   mutateDeckSchedules,
@@ -484,6 +485,12 @@ export function registerDeckHandler(
     clearGateCapOut(workspaceId);
     lastBlockedFingerprints.delete(workspaceId);
   };
+  /** The HQ condition DECK_STATUS reports, or null when it is fine or unset. */
+  const hqStatusState = (): 'hq-missing' | 'hq-unknown' | 'hq-store-corrupt' | null => {
+    if (isHqStoreCorrupt()) return 'hq-store-corrupt';
+    const presence = hqPresence(getHqWorkspaceId());
+    return presence === 'missing' ? 'hq-missing' : presence === 'unknown' ? 'hq-unknown' : null;
+  };
   /** Stop a workspace's brain outright (HQ gate). Session files are kept. */
   const retireBrain = (workspaceId: string): void => {
     const entry = managers.get(workspaceId);
@@ -696,7 +703,7 @@ export function registerDeckHandler(
 
   const refuseWhenModeOff = (
     workspaceId: string,
-  ): { ok: false; code: 'moa_off' | 'mode_off' | 'task_workspace' | 'not_hq' | 'hq_missing' } | null => {
+  ): { ok: false; code: 'moa_off' | 'mode_off' | 'task_workspace' | 'not_hq' | 'hq_missing' | 'hq_unknown' } | null => {
     // Master switch (deckHqStore.ts): off means no workspace runs a brain.
     // Every ensureManager call sits behind this check, so with the switch off
     // no brain adapter is ever constructed.
@@ -719,12 +726,15 @@ export function registerDeckHandler(
     // The owner's brain is the only one that drives a task workspace.
     if (isTaskWorkspace(workspaceId)) return { ok: false, code: 'task_workspace' };
     // HQ gate (deckHqStore.ts): with an HQ designated, only the HQ runs a
-    // brain — and not while its workspace is gone (fail closed, so a schedule
-    // or loop cannot respawn a brain for a workspace that no longer exists).
-    // With no HQ designated both checks pass and nothing above changes.
+    // brain — and only while its workspace is known to exist (fail closed, so
+    // a schedule or loop cannot spawn a brain for a workspace that is gone or
+    // not yet observed). With no HQ designated these pass and nothing above
+    // changes.
     const hq = getHqWorkspaceId();
     if (!hqAllowsBrain(workspaceId, hq)) return { ok: false, code: 'not_hq' };
-    if (isHqWorkspaceMissing(hq)) return { ok: false, code: 'hq_missing' };
+    const presence = hqPresence(hq);
+    if (presence === 'missing') return { ok: false, code: 'hq_missing' };
+    if (presence === 'unknown') return { ok: false, code: 'hq_unknown' };
     return null;
   };
 
@@ -1129,7 +1139,8 @@ export function registerDeckHandler(
       const snapshot = mgr?.getStatus() ?? { status: 'idle', sessionId: null };
       // Carried on every workspace's status: the HQ's own workspace is the one
       // the renderer can no longer ask about.
-      return isHqWorkspaceMissing(getHqWorkspaceId()) ? { ...snapshot, hq: 'hq-missing' } : snapshot;
+      const hqState = hqStatusState();
+      return hqState ? { ...snapshot, hq: hqState } : snapshot;
     }),
   );
 
@@ -1244,6 +1255,23 @@ export function registerDeckHandler(
     }),
   );
 
+  // HQ turn cap: automatic turns of the designated HQ (coalescer, scheduler,
+  // loop kickoff, decision resume, re-examine, startup reconcile) per trailing
+  // hour. Human sends never count. No HQ designated → no cap, as before.
+  const HQ_TURN_WINDOW_MS = 60 * 60_000;
+  const hqTurnTimes: number[] = [];
+  /** ms until the HQ may take another automatic turn, or null when it may now. */
+  const hqTurnCapRetryMs = (workspaceId: string): number | null => {
+    if (workspaceId !== getHqWorkspaceId()) return null;
+    const now = Date.now();
+    while (hqTurnTimes.length > 0 && hqTurnTimes[0] <= now - HQ_TURN_WINDOW_MS) hqTurnTimes.shift();
+    if (hqTurnTimes.length < getHqMaxTurnsPerHour()) return null;
+    return Math.max(1, hqTurnTimes[0] + HQ_TURN_WINDOW_MS - now + 1);
+  };
+  const noteHqTurn = (workspaceId: string): void => {
+    if (workspaceId === getHqWorkspaceId()) hqTurnTimes.push(Date.now());
+  };
+
   // Fire ONE main-originated brain turn on a workspace's orchestrator. Shared
   // by the P3d scheduler AND the event-push coalescer — both need the identical
   // "announce-then-send, skip-if-busy" sequence. A main-originated turn has no
@@ -1270,8 +1298,11 @@ export function registerDeckHandler(
       // a stale turn (3-way review P1: the off kill switch must hold across the
       // gate wait, and a replaced decision must not inherit the old re-examine).
       reExamine?: { expectedId: string };
+      // The dock's Wake button: a human press, so the HQ turn cap does not
+      // apply (it caps automatic turns only).
+      human?: boolean;
     } = {},
-  ): Promise<{ ok: boolean; code?: string }> => {
+  ): Promise<{ ok: boolean; code?: string; retryAfterMs?: number }> => {
     if (!WORKSPACE_ID_RE.test(workspaceId)) {
       return { ok: false, code: 'invalid_workspace' as const };
     }
@@ -1282,6 +1313,10 @@ export function registerDeckHandler(
     // routes through here, so this one line is the whole kill switch for them.
     const modeRefusal = refuseWhenModeOff(workspaceId);
     if (modeRefusal) return modeRefusal;
+    if (!runOpts.human) {
+      const retryAfterMs = hqTurnCapRetryMs(workspaceId);
+      if (retryAfterMs !== null) return { ok: false, code: 'rate_limited', retryAfterMs };
+    }
     // Per-workspace busy check BEFORE the fleet-slot acquire (3-way review P3):
     // a workspace already running a turn must not momentarily consume — or, for
     // the queued path, sit and WAIT on — one of the scarce global slots. ensureManager
@@ -1308,6 +1343,14 @@ export function registerDeckHandler(
       return { ok: false, code: 'busy' as const };
     }
     try {
+      // The queued path may have waited up to 120s: the master switch, the HQ
+      // or its presence may have changed meanwhile (turning the switch off is
+      // itself what frees a slot). Re-check BEFORE ensureManager can construct
+      // a brain; the finally releases the slot.
+      const lateRefusal = refuseWhenModeOff(workspaceId);
+      if (lateRefusal) return lateRefusal;
+      const lateRetryMs = runOpts.human ? null : hqTurnCapRetryMs(workspaceId);
+      if (lateRetryMs !== null) return { ok: false, code: 'rate_limited', retryAfterMs: lateRetryMs };
       // The queued path awaited (up to 120s) for the slot — re-resolve the manager
       // and re-check idle now that we hold it: a human/scheduled turn (or a
       // settings-driven manager swap) could have started/retired this workspace's
@@ -1380,6 +1423,7 @@ export function registerDeckHandler(
       // read from the renderer's live global, so a vendor switch racing this
       // event cannot relabel a turn the old brain produced.
       emit(workspaceId, { type: 'turn-start', prompt, vendor: vendorForWorkspace(workspaceId) });
+      if (!runOpts.human) noteHqTurn(workspaceId);
       // Every caller of runTurnForWorkspace is an ambient driver (heartbeat,
       // loop, scheduler, decision resume, startup reconcile) — never a human at
       // the composer. Marking the origin lets the terminal brain re-check for a
@@ -1483,7 +1527,7 @@ export function registerDeckHandler(
       // right away and the human just presses again later. runTurnForWorkspace
       // announces turn-start and prepends the loop/decision context, so the
       // wake renders in the thread exactly like a scheduled run.
-      return runTurnForWorkspace(WAKE_BUTTON_PROMPT, workspaceId);
+      return runTurnForWorkspace(WAKE_BUTTON_PROMPT, workspaceId, { human: true });
     }),
   );
 
@@ -1536,11 +1580,9 @@ export function registerDeckHandler(
   });
   // Periodic pass (lane F): fan-out registration and the unknown-workspace
   // path both feed the ledger, but a task closed or detached elsewhere only
-  // shows up by re-reading WorkTask — so the reconciler also runs on a timer.
-  const ledgerReconcileTimer = setInterval(() => {
-    void reconcileTaskLedger().catch(() => undefined);
-  }, 60_000);
-  ledgerReconcileTimer.unref?.();
+  // shows up by re-reading WorkTask — so the reconciler also runs on a timer
+  // (armed by startRuntime, with the master switch).
+  let ledgerReconcileTimer: ReturnType<typeof setInterval> | null = null;
   // Lane F step 5: every ledger transition is posted to the task's mission
   // channel as the owner workspace, so the channel transcript and the ledger
   // never disagree about what happened.
@@ -1591,7 +1633,7 @@ export function registerDeckHandler(
   // the next brain boot) and nudge the caller rather than reaching a brain
   // that will not run.
   const ownerHasBrain = (owner: string): boolean =>
-    brainEligible(owner) && !isHqWorkspaceMissing(getHqWorkspaceId()) &&
+    brainEligible(owner) &&
     !isTaskWorkspace(owner) && (managers.has(owner) || loadWorkspaceMode(owner) !== 'off');
   // The pane that started a fan-out, told when its workers move and no brain
   // listens (fanoutCallerNotify.ts). One pointer to the renderer, no ack.
@@ -1659,11 +1701,9 @@ export function registerDeckHandler(
       buildFleetTailLine(getWorkspaceMirror().getFleetSnapshot(workspaceId)),
     // Master switch: off drops every push at the entry.
     isEnabled: () => isMoaEnabled(),
-    // With an HQ designated, its wakes also get an hourly cap. No HQ → none.
-    getMaxWakesPerHour: (workspaceId) =>
-      workspaceId === getHqWorkspaceId() ? getHqMaxTurnsPerHour() : null,
   });
-  const offBus = eventBus.subscribe((ev) => {
+  // Subscribed by startRuntime (with the master switch), not here.
+  const onBusEvent: EventBusSubscriber = (ev) => {
     // Cross-workspace task receipts belong to the SENDER commander. The base
     // workspaceId is server-stamped === from, but use `from` explicitly so a
     // future event-shape change cannot wake the receiver or a third workspace.
@@ -1697,7 +1737,7 @@ export function registerDeckHandler(
         : ev.state === 'failed' ? 'a2a.failed' as const
         : ev.state === 'input-required' ? 'a2a.input_required' as const
         : 'a2a.canceled' as const;
-      coalescer?.push({
+      const receipt: CoalescerInput = {
         workspaceId: ev.from,
         ptyId: `a2a:${ev.taskId}`,
         kind,
@@ -1714,7 +1754,18 @@ export function registerDeckHandler(
             ? { verifiedItemCount: ev.verifiedItemCount }
             : {}),
         },
-      });
+      };
+      // An HQ that cannot run right now (workspace gone or not yet observed)
+      // would have its receipt consumed by a refused flush: park it in the
+      // durable backlog instead, replayed when the HQ is seen again.
+      const hq = getHqWorkspaceId();
+      if (hq !== null && ev.from === hq && hqPresence(hq) !== 'present') {
+        void getTaskLedger()
+          .recordOrphanedEvent({ ownerWorkspaceId: hq, seq: ev.seq, payload: receipt })
+          .catch((err) => console.warn(`[deck] could not park an a2a receipt for HQ ${hq}: ${String(err)}`));
+        return;
+      }
+      coalescer?.push(receipt);
       return;
     }
     // AO-style CI feedback (owner decision 2026-07-18): a pane's PR went red.
@@ -1816,7 +1867,7 @@ export function registerDeckHandler(
       // parked but does not nudge the caller a second time.
       ...(shouldNotifyCaller(ev) ? { notifyCaller } : {}),
     });
-  });
+  };
 
   // ── P3d: orchestrator schedules ─────────────────────────────────────────
   // The tick loop fires due schedules as ordinary brain turns on their OWN
@@ -1829,9 +1880,7 @@ export function registerDeckHandler(
     // due and retries once resolved).
     hasPendingDecision: (workspaceId) => hasPendingDecision(workspaceId),
   });
-  // Master switch off at launch: the scheduler and the heartbeat are not
-  // started at all (DECK_MOA_SET starts them when it is turned on).
-  if (isMoaEnabled()) scheduler.start();
+  // Started by startRuntime, with the master switch.
 
   // ── WP4: level-review heartbeat ───────────────────────────────────────────
   // A slow cadence re-reads each armed workspace's CURRENT per-pane state (from
@@ -1861,18 +1910,10 @@ export function registerDeckHandler(
         if (WORKSPACE_ID_RE.test(e.id) && loadWorkspaceMode(e.id) !== 'off') ids.add(e.id);
       }
     }
-    // HQ heartbeat: a designated HQ whose workspace is gone loses its brain
-    // (fail closed — no other workspace becomes eligible) and reports
-    // 'hq-missing' over DECK_STATUS.
-    const hq = getHqWorkspaceId();
-    if (isHqWorkspaceMissing(hq)) {
-      retireBrain(hq as string);
-      return [];
-    }
     // A task workspace is not reviewed, whichever way it got in (a live
     // manager, a live work record, or the mirror): the owner's brain reviews
     // it through the tagged worker events instead. With an HQ designated, only
-    // the HQ is reviewed.
+    // the HQ is reviewed, and only while its workspace is known to exist.
     return [...ids].filter((id) => !isTaskWorkspace(id) && brainEligible(id));
   };
   // WP3 — the instruction the re-examine wake carries as its ORIGINAL prompt (the
@@ -1929,24 +1970,47 @@ export function registerDeckHandler(
     isEnabled: () => loadDeckHeartbeat().enabled,
     intervalMs: heartbeatConfig.intervalMs,
   });
-  if (isMoaEnabled()) heartbeat.start();
+  // Started by startRuntime, with the master switch.
 
   // ── HQ (main bot) ─────────────────────────────────────────────────────────
-  // The HQ store's setter refuses while the old/new HQ has a brain and, once
+  // HQ presence follows the workspace mirror, not the heartbeat: every push
+  // re-evaluates it, so an HQ whose workspace disappears loses its brain at
+  // once even with the heartbeat disabled, and one that reappears gets the
+  // events parked while it was away.
+  let lastHqPresence: string | null = null;
+  const onHqMirrorUpdate = (): void => {
+    const hq = getHqWorkspaceId();
+    const presence = hqPresence(hq);
+    if (hq !== null && presence !== 'present' && managers.has(hq)) retireBrain(hq);
+    if (hq !== null && presence === 'present' && lastHqPresence !== 'present') {
+      coalescer?.notifyBrainBooted(hq);
+    }
+    lastHqPresence = presence;
+  };
+  // The HQ store's setter refuses while the old/new HQ is mid-turn and, once
   // an HQ is designated, retires every other brain — both need the managers.
   const disposeHqRuntime = setHqRuntime({
-    isBrainRunning: (workspaceId) => managers.has(workspaceId),
+    isBrainBusy: (workspaceId) => managers.get(workspaceId)?.manager.getStatus().status === 'busy',
     retireBrainsExcept: (hqWorkspaceId) => {
       for (const workspaceId of [...managers.keys()]) {
         if (workspaceId !== hqWorkspaceId) retireBrain(workspaceId);
       }
     },
+    onHqChanged: () => {
+      // Queued turns were admitted under the old HQ; drop them (each re-checks
+      // eligibility after its wait anyway) and re-evaluate presence now.
+      globalTurnGate.cancelWaiters();
+      lastHqPresence = null;
+      onHqMirrorUpdate();
+    },
   });
-  // A designation whose migration did not finish (crash, IO failure) finishes
-  // now. Every step is idempotent.
+  // A designation whose migration did not finish (crash, IO failure) — or
+  // that never ran for the current HQ — finishes now. Every step is idempotent.
   {
     const hq = getHqWorkspaceId(opts.dir);
-    if (hq !== null && !isHqMigrationDone(opts.dir)) void runNonHqMigration(hq, opts.dir);
+    if (hq !== null && !isHqStoreCorrupt(opts.dir) && !isHqMigrationDone(opts.dir)) {
+      void runNonHqMigration(hq, opts.dir);
+    }
   }
 
   ipcMain.removeHandler(IPC.DECK_HQ_GET);
@@ -1954,17 +2018,19 @@ export function registerDeckHandler(
     IPC.DECK_HQ_GET,
     wrapHandler(IPC.DECK_HQ_GET, async (): Promise<{
       workspaceId: string | null;
-      state: 'unset' | 'ok' | 'hq-missing';
+      state: 'unset' | 'ok' | 'hq-missing' | 'hq-unknown' | 'hq-store-corrupt';
     }> => {
       const hq = getHqWorkspaceId();
+      const bad = hqStatusState();
+      if (bad === 'hq-store-corrupt') return { workspaceId: null, state: bad };
       if (hq === null) return { workspaceId: null, state: 'unset' };
-      return { workspaceId: hq, state: isHqWorkspaceMissing(hq) ? 'hq-missing' : 'ok' };
+      return { workspaceId: hq, state: bad ?? 'ok' };
     }),
   );
 
-  // The master switch (Settings toggle in a later change). Off retires every
-  // brain and stops the heartbeat, the scheduler and pending coalescer
-  // flushes; on restarts the two timers. Nothing is deleted either way.
+  // The master switch (Settings toggle in a later change). Off stops the whole
+  // deck runtime (stopRuntime); on starts it again (startRuntime). Nothing is
+  // deleted either way.
   ipcMain.removeHandler(IPC.DECK_MOA_GET);
   ipcMain.handle(
     IPC.DECK_MOA_GET,
@@ -1976,20 +2042,22 @@ export function registerDeckHandler(
     wrapHandler(IPC.DECK_MOA_SET, async (
       _event: Electron.IpcMainInvokeEvent,
       raw: unknown,
-    ): Promise<{ ok: boolean; enabled?: boolean }> => {
+    ): Promise<{ ok: boolean; enabled?: boolean; code?: string }> => {
       const enabled = (raw && typeof raw === 'object' && !Array.isArray(raw))
         ? (raw as Record<string, unknown>).enabled
         : undefined;
       if (typeof enabled !== 'boolean') return { ok: false };
-      await setMoaEnabled(enabled);
+      if (!(await setMoaEnabled(enabled))) return { ok: false, code: 'store_corrupt' };
       if (enabled) {
-        scheduler.start();
-        heartbeat.start();
+        startRuntime();
+        // Hand every owner that may now run a brain the worker events parked
+        // while the switch was off.
+        const owners = new Set((getWorkspaceMirror().getEntries() ?? []).map((e) => e.id));
+        const hq = getHqWorkspaceId();
+        if (hq !== null) owners.add(hq);
+        for (const owner of owners) if (ownerHasBrain(owner)) coalescer?.notifyBrainBooted(owner);
       } else {
-        scheduler.stop();
-        heartbeat.stop();
-        coalescer?.suspend();
-        for (const workspaceId of [...managers.keys()]) retireBrain(workspaceId);
+        stopRuntime();
       }
       return { ok: true, enabled };
     }),
@@ -1997,22 +2065,32 @@ export function registerDeckHandler(
 
   // WMX-06: startup reconcile of orphan Deck state once renderer workspace mirror is loaded.
   // Retries a bounded number of times (max 5 retries at 2.5s intervals) and on heartbeat tick.
+  // Armed by startRuntime, with the master switch.
   let orphanReconcileRetries = 0;
   const MAX_ORPHAN_RECONCILE_RETRIES = 5;
-  const orphanReconcileTimer = setInterval(() => {
-    if (isStartupDeckReconcileDone() || ++orphanReconcileRetries > MAX_ORPHAN_RECONCILE_RETRIES) {
-      clearInterval(orphanReconcileTimer);
-      if (!isStartupDeckReconcileDone()) {
-        // eslint-disable-next-line no-console
-        console.log('[deck:reconcile] skipped startup reconcile: workspace mirror not ready after retries');
+  let orphanReconcileTimer: ReturnType<typeof setInterval> | null = null;
+  const stopOrphanReconcile = (): void => {
+    if (orphanReconcileTimer) clearInterval(orphanReconcileTimer);
+    orphanReconcileTimer = null;
+  };
+  const armOrphanReconcile = (): void => {
+    if (orphanReconcileTimer || isStartupDeckReconcileDone()) return;
+    orphanReconcileRetries = 0;
+    orphanReconcileTimer = setInterval(() => {
+      if (isStartupDeckReconcileDone() || ++orphanReconcileRetries > MAX_ORPHAN_RECONCILE_RETRIES) {
+        stopOrphanReconcile();
+        if (!isStartupDeckReconcileDone()) {
+          // eslint-disable-next-line no-console
+          console.log('[deck:reconcile] skipped startup reconcile: workspace mirror not ready after retries');
+        }
+        return;
       }
-      return;
-    }
-    void tryStartupDeckReconcile({ dir: opts.dir }).then((done) => {
-      if (done) clearInterval(orphanReconcileTimer);
-    });
-  }, 2500);
-  orphanReconcileTimer.unref?.();
+      void tryStartupDeckReconcile({ dir: opts.dir }).then((done) => {
+        if (done) stopOrphanReconcile();
+      });
+    }, 2500);
+    orphanReconcileTimer.unref?.();
+  };
 
   // Seed the binding operator-policy file once (never overwrites an existing
   // one). Fire-and-forget: a missing policy file just means no policy block, so
@@ -2044,6 +2122,8 @@ export function registerDeckHandler(
         : {};
       const workspaceId = readWorkspaceId(req);
       if (!workspaceId) return { ok: false, code: 'invalid_workspace' };
+      // With an HQ designated a non-HQ schedule could only fail every tick.
+      if (!hqAllowsBrain(workspaceId, getHqWorkspaceId())) return { ok: false, code: 'not_hq' };
       const schedule = createSchedule({
         workspaceId,
         prompt: typeof req.prompt === 'string' ? req.prompt : '',
@@ -2092,6 +2172,11 @@ export function registerDeckHandler(
         if (typeof req.enabled === 'boolean') {
           if (req.enabled && !next.workspaceId) {
             code = 'no_workspace';
+            return null;
+          }
+          // Same HQ rule as create: a non-HQ schedule stays paused.
+          if (req.enabled && !hqAllowsBrain(next.workspaceId as string, getHqWorkspaceId())) {
+            code = 'not_hq';
             return null;
           }
           next = { ...next, enabled: req.enabled };
@@ -2242,6 +2327,8 @@ export function registerDeckHandler(
         : {};
       const workspaceId = readWorkspaceId(req);
       if (!workspaceId) return { ok: false, code: 'invalid_workspace' };
+      // A loop arms a cadence schedule: same HQ rule as schedules.
+      if (!hqAllowsBrain(workspaceId, getHqWorkspaceId())) return { ok: false, code: 'not_hq' };
       const objective = typeof req.objective === 'string' ? req.objective.trim() : '';
       if (!objective) return { ok: false, code: 'invalid' };
       // v1 hard cap: only 'report' | 'continue' exist on this surface.
@@ -2377,6 +2464,7 @@ export function registerDeckHandler(
         : {};
       const workspaceId = readWorkspaceId(req);
       if (!workspaceId) return { ok: false };
+      if (!hqAllowsBrain(workspaceId, getHqWorkspaceId())) return { ok: false };
       const loop = loadWorkspaceLoopState(workspaceId);
       if (!loop) return { ok: false };
       await setLoopStatus(workspaceId, 'running');
@@ -2882,14 +2970,58 @@ export function registerDeckHandler(
       );
     }
   };
-  // Master switch off at launch: this one-shot brain driver is not armed.
-  const reconcileTimer = isMoaEnabled()
-    ? setTimeout(
-      () => void reconcileResolvedDecisions(),
-      opts.reconcileDelayMs ?? DECISION_RECONCILE_DELAY_MS,
-    )
-    : undefined;
-  (reconcileTimer as { unref?: () => void } | undefined)?.unref?.();
+  // One-shot, once per process: armed by startRuntime. A switch turned off
+  // before it fired cancels it, and the next startRuntime re-arms it.
+  let reconcileTimer: ReturnType<typeof setTimeout> | null = null;
+  let startupReconcileFired = false;
+
+  // ── Deck runtime, tied to the master switch ───────────────────────────────
+  // Every deck timer and EventBus/mirror subscription lives here, so with the
+  // switch off (at launch or later) none is registered. The task-ledger
+  // listeners stay: they serve fan-out bookkeeping (mission-channel posts,
+  // task-workspace mode reset), not the brain.
+  let offBus: (() => void) | null = null;
+  let offMirror: (() => void) | null = null;
+  const startRuntime = (): void => {
+    if (!ledgerReconcileTimer) {
+      ledgerReconcileTimer = setInterval(() => {
+        void reconcileTaskLedger().catch(() => undefined);
+      }, 60_000);
+      ledgerReconcileTimer.unref?.();
+    }
+    if (!offBus) offBus = eventBus.subscribe(onBusEvent);
+    if (!offMirror) offMirror = getWorkspaceMirror().onSnapshot(onHqMirrorUpdate);
+    scheduler.start();
+    heartbeat.start();
+    armOrphanReconcile();
+    if (!startupReconcileFired && !reconcileTimer) {
+      reconcileTimer = setTimeout(() => {
+        reconcileTimer = null;
+        startupReconcileFired = true;
+        void reconcileResolvedDecisions();
+      }, opts.reconcileDelayMs ?? DECISION_RECONCILE_DELAY_MS);
+      (reconcileTimer as { unref?: () => void }).unref?.();
+    }
+  };
+  const stopRuntime = (): void => {
+    if (ledgerReconcileTimer) clearInterval(ledgerReconcileTimer);
+    ledgerReconcileTimer = null;
+    offBus?.();
+    offBus = null;
+    offMirror?.();
+    offMirror = null;
+    scheduler.stop();
+    heartbeat.stop();
+    stopOrphanReconcile();
+    if (reconcileTimer) clearTimeout(reconcileTimer);
+    reconcileTimer = null;
+    coalescer?.suspend();
+    // A queued turn must not resume after the switch went off (turning it off
+    // is what frees the slots they wait for).
+    globalTurnGate.cancelWaiters();
+    for (const workspaceId of [...managers.keys()]) retireBrain(workspaceId);
+  };
+  if (isMoaEnabled()) startRuntime();
 
   const disposeAll = (): void => {
     for (const { manager } of managers.values()) manager.dispose();
@@ -2902,10 +3034,11 @@ export function registerDeckHandler(
 
   return () => {
     app.removeListener('before-quit', disposeAll);
-    clearTimeout(reconcileTimer);
-    clearInterval(ledgerReconcileTimer);
-    clearInterval(orphanReconcileTimer);
-    offBus();
+    if (reconcileTimer) clearTimeout(reconcileTimer);
+    if (ledgerReconcileTimer) clearInterval(ledgerReconcileTimer);
+    stopOrphanReconcile();
+    offBus?.();
+    offMirror?.();
     coalescer?.dispose();
     disposeLedgerEmitter();
     disposeLedgerPush();

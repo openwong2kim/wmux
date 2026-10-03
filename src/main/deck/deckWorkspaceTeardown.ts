@@ -19,6 +19,7 @@
 //   - Refuses empty or non-string workspace IDs.
 //   - Refuses the designated HQ workspace (deckHqStore.ts): its Deck state
 //     outlives a removal of its workspace, which then reads as 'hq-missing'.
+//     Refuses every workspace while deck-hq.json is unreadable.
 
 import { atomicReadJSONSync } from '../../daemon/util/atomicWrite';
 import {
@@ -42,7 +43,7 @@ import {
   clearCommanderSession,
   getCommanderSessionPath,
 } from './commanderSessionStore';
-import { getHqWorkspaceId } from './deckHqStore';
+import { getHqWorkspaceId, isHqStoreCorrupt } from './deckHqStore';
 
 const WORKSPACE_ID_RE = /^[A-Za-z0-9._-]{1,80}$/;
 
@@ -148,6 +149,12 @@ export async function teardownWorkspaceDeckState(
 
   if (id === getHqWorkspaceId(dir)) {
     log(`refused teardown of ${id}: it is the HQ workspace`);
+    return { ...emptyReport, workspaceId: id };
+  }
+  // An unreadable deck-hq.json hides which workspace is the HQ: keep the Deck
+  // state (harmless, swept later) rather than risk tearing the HQ down.
+  if (isHqStoreCorrupt(dir)) {
+    log(`refused teardown of ${id}: deck-hq.json is unreadable, so the HQ is unknown`);
     return { ...emptyReport, workspaceId: id };
   }
 

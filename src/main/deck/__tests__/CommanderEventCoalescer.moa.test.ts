@@ -1,5 +1,6 @@
-// The main bot's master switch (isEnabled) and the HQ's optional hourly wake
-// cap (getMaxWakesPerHour), both added for the HQ main bot (deckHqStore.ts).
+// The main bot's master switch (isEnabled) and the handling of a turn the
+// caller refused with `rate_limited` (the HQ's hourly turn cap), both added for
+// the HQ main bot (deckHqStore.ts).
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { CommanderEventCoalescer, type CoalescerInput } from '../CommanderEventCoalescer';
@@ -17,7 +18,7 @@ const settle = async () => {
   await Promise.resolve();
 };
 
-function mk(opts: { enabled?: () => boolean; hourCap?: number | null } = {}) {
+function mk(opts: { enabled?: () => boolean } = {}) {
   const prompts: string[] = [];
   const c = new CommanderEventCoalescer({
     runTurn: async (_ws, prompt) => {
@@ -30,7 +31,6 @@ function mk(opts: { enabled?: () => boolean; hourCap?: number | null } = {}) {
     wakeBudget: 1000,
     maxWakesPerMin: 1000,
     ...(opts.enabled ? { isEnabled: opts.enabled } : {}),
-    ...(opts.hourCap !== undefined ? { getMaxWakesPerHour: () => opts.hourCap ?? null } : {}),
   });
   return { c, prompts };
 }
@@ -80,32 +80,33 @@ describe('CommanderEventCoalescer — master switch', () => {
   });
 });
 
-describe('CommanderEventCoalescer — optional hourly cap', () => {
-  async function fire(h: ReturnType<typeof mk>, seq: number): Promise<void> {
-    h.c.push(stop(seq));
-    h.c.notifyIdle('ws-1');
+describe('CommanderEventCoalescer — a capped turn (rate_limited)', () => {
+  it('keeps the buffer and retries once the cap lifts, instead of consuming the events', async () => {
+    let capped = true;
+    const prompts: string[] = [];
+    const c = new CommanderEventCoalescer({
+      runTurn: async (_ws, prompt) => {
+        if (capped) return { ok: false, code: 'rate_limited', retryAfterMs: 10 * 60_000 };
+        prompts.push(prompt);
+        return { ok: true };
+      },
+      isBusy: () => false,
+      getAutonomy: () => ({ ...AUTO_AUTONOMY }),
+      debounceMs: 50,
+      wakeBudget: 1000,
+      maxWakesPerMin: 1000,
+    });
+    c.push(stop(1));
+    await vi.advanceTimersByTimeAsync(100);
     await settle();
-    // Space wakes past the per-minute window so only the hourly cap binds.
-    await vi.advanceTimersByTimeAsync(61_000);
-  }
-
-  it('caps accepted wakes per trailing hour, then resumes when the hour slides', async () => {
-    const h = mk({ hourCap: 3 });
-    for (const seq of [1, 2, 3]) await fire(h, seq);
-    expect(h.prompts).toHaveLength(3);
-    await fire(h, 4);
-    expect(h.prompts).toHaveLength(3);
-    expect(h.c.getPhase('ws-1')).toBe('rate-limited');
-    // The belt timer retries once the oldest wake leaves the hour window.
-    await vi.advanceTimersByTimeAsync(60 * 60_000);
+    expect(c.getPhase('ws-1')).toBe('rate-limited');
+    expect(c.getWatermark('ws-1')).toBe(0); // not consumed
+    // No retry spin while capped: one belt timer, at the retry time.
+    expect(vi.getTimerCount()).toBe(1);
+    capped = false;
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
     await settle();
-    expect(h.prompts).toHaveLength(4);
-  });
-
-  it('applies no hourly cap when none is configured (today)', async () => {
-    for (const h of [mk(), mk({ hourCap: null })]) {
-      for (let seq = 1; seq <= 15; seq++) await fire(h, seq);
-      expect(h.prompts).toHaveLength(15);
-    }
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain('seq=1');
   });
 });

@@ -39,6 +39,7 @@ import { wrapHandler } from '../wrapHandler';
 import type { DaemonClient } from '../../DaemonClient';
 import type { RpcMethod } from '../../../shared/rpc';
 import { teardownWorkspaceDeckState } from '../../deck/deckWorkspaceTeardown';
+import { getHqWorkspaceId } from '../../deck/deckHqStore';
 import { renderStrandedDeckWorkBlock } from '../../deck/deckWorkStore';
 
 /** Positive allow-list — only channel/principal-mutating methods may ride the
@@ -153,6 +154,19 @@ export function registerChannelLocalHandlers(getDaemonClient: () => DaemonClient
       // forged anchor on this path.
       delete p.senderPtyId;
 
+      // The HQ workspace is app-owned: a whole-workspace purge would drop its
+      // channel memberships and fail its in-flight A2A tasks before the Deck
+      // teardown below (which refuses the HQ) ever ran. Refuse it up front.
+      const isWholeWorkspacePurge =
+        method === 'a2a.channel.purgeMembership' &&
+        typeof p.workspaceId === 'string' &&
+        p.workspaceId.trim().length > 0 &&
+        p.memberId === undefined &&
+        p.principalId === undefined;
+      if (isWholeWorkspacePurge && (p.workspaceId as string).trim() === getHqWorkspaceId()) {
+        return reject(`channels:mutate-local refuses to purge ${String(p.workspaceId)}: it is the HQ workspace`);
+      }
+
       const dc = getDaemonClient();
       if (!dc) throw new Error('Daemon not connected');
       const result = await dc.rpc(method as RpcMethod, p);
@@ -160,15 +174,9 @@ export function registerChannelLocalHandlers(getDaemonClient: () => DaemonClient
       // Whole-workspace removal teardown: when purgeMembership is called for an entire
       // workspace (both memberId and principalId are absent), tear down its Deck stores.
       // Must run AFTER the daemon call has been made, and must never fail the RPC.
-      if (
-        method === 'a2a.channel.purgeMembership' &&
-        typeof p.workspaceId === 'string' &&
-        p.workspaceId.trim().length > 0 &&
-        p.memberId === undefined &&
-        p.principalId === undefined
-      ) {
+      if (isWholeWorkspacePurge) {
         try {
-          const wsId = p.workspaceId.trim();
+          const wsId = (p.workspaceId as string).trim();
           await teardownWorkspaceDeckState(wsId, {
             // Log only: raising a Deck decision here would re-create state for the workspace
             // being removed (the decision step of the teardown runs right after this callback).

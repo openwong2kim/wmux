@@ -37,6 +37,7 @@ export class WorkspaceMirror {
   private setAt = 0;
   private populated = false;
   private sessionRestored = false;
+  private readonly snapshotListeners = new Set<() => void>();
   private readonly now: () => number;
 
   constructor(now: () => number = Date.now) {
@@ -58,6 +59,13 @@ export class WorkspaceMirror {
     // negatively aged or arbitrarily stale.
     this.setAt = this.now();
     this.populated = true;
+    for (const listener of this.snapshotListeners) {
+      try {
+        listener();
+      } catch (err) {
+        console.warn(`[WorkspaceMirror] snapshot listener threw: ${String(err)}`);
+      }
+    }
   }
 
   // Read accessors return a SHALLOW COPY of the stored array so a mutating caller
@@ -66,6 +74,14 @@ export class WorkspaceMirror {
   // renderer-validated value objects and are treated as read-only downstream — a
   // per-read deep-freeze would tax this hot routing path (a hook fires far more
   // often than the tree changes) for no additional list-corruption protection.
+
+  /** Run `listener` after every snapshot push. Returns the unsubscribe. */
+  onSnapshot(listener: () => void): () => void {
+    this.snapshotListeners.add(listener);
+    return () => {
+      this.snapshotListeners.delete(listener);
+    };
+  }
 
   /** The mirrored workspace entries, or null if nothing has ever been pushed. */
   getEntries(): WorkspaceListEntry[] | null {

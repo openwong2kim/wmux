@@ -23,7 +23,7 @@ import { getCommanderSessionPath } from './commanderSessionStore';
 import { getDeckDecisionPath } from './deckDecisionStore';
 import { getDeckSchedulesPath } from './deckScheduleStore';
 import { teardownWorkspaceDeckState } from './deckWorkspaceTeardown';
-import { getHqWorkspaceId } from './deckHqStore';
+import { getHqWorkspaceId, isHqStoreCorrupt } from './deckHqStore';
 import { getWorkspaceMirror } from '../workspace/WorkspaceMirror';
 import { DEFAULT_MAX_SNAPSHOT_AGE_MS } from './stopGate';
 
@@ -227,6 +227,13 @@ export async function reconcileOrphanDeckState(
 
     if (opts?.dryRun) {
       return { orphans, archived: [], tornDown: [], skippedIds: [] };
+    }
+
+    // FAIL CLOSED: an unreadable deck-hq.json hides which workspace is the HQ.
+    if (isHqStoreCorrupt(dir)) {
+      const skipped = 'skipped: deck-hq.json is unreadable';
+      log(skipped);
+      return { orphans, archived: [], tornDown: [], skippedIds: orphans, skipped };
     }
 
     const archived: string[] = [];

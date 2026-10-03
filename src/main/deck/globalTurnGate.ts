@@ -134,6 +134,17 @@ export class GlobalTurnGate {
     return this.slots.size;
   }
 
+  /** Resolve every queued waiter null (each caller then treats it as `busy`),
+   *  keeping the gate usable. Called when the master switch goes off or the
+   *  HQ changes, so no queued turn resumes under the old conditions. */
+  cancelWaiters(): void {
+    for (const w of this.waiters) {
+      clearTimeout(w.timer);
+      w.resolve(null);
+    }
+    this.waiters.length = 0;
+  }
+
   /** Clear all waiters (resolving them null) and slots. Called on handler
    *  teardown so no queued timer keeps the process alive. */
   dispose(): void {

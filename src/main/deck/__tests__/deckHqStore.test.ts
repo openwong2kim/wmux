@@ -5,34 +5,49 @@ import path from 'node:path';
 import {
   brainEligible,
   DEFAULT_HQ_MAX_TURNS_PER_HOUR,
+  getDeckHqPath,
   getHqMaxTurnsPerHour,
   getHqWorkspaceId,
   hqAllowsBrain,
-  isMoaEnabled,
-  setMoaEnabled,
-  __resetHqMirrorMemoryForTest,
+  hqPresence,
   isHqMigrationDone,
-  isHqWorkspaceMissing,
+  isHqStoreCorrupt,
+  isMoaEnabled,
   loadArchivedHqDecisions,
   runNonHqMigration,
   setHqRuntime,
   setHqWorkspaceId,
+  setMoaEnabled,
+  __resetHqMemoryForTest,
 } from '../deckHqStore';
 import { saveDeckSchedules, loadDeckSchedules, mutateDeckSchedules } from '../deckScheduleStore';
 import { startLoop, loadWorkspaceLoopState } from '../deckLoopStateStore';
-import { raiseDecision, loadWorkspaceDecision } from '../deckDecisionStore';
+import * as decisionStore from '../deckDecisionStore';
+import { raiseDecision, loadWorkspaceDecision, resolveDecision } from '../deckDecisionStore';
 import { beginOrContinueDeckWork, loadActiveDeckWork, loadArchivedDeckWorks } from '../deckWorkStore';
+import { getWorkspaceMirror, __resetWorkspaceMirrorForTest } from '../../workspace/WorkspaceMirror';
 
 let dir: string;
 let disposeRuntime: (() => void) | null = null;
 const quiet = (): void => undefined;
 
+const pushMirror = (ids: string[], sessionRestored = true): void =>
+  getWorkspaceMirror().setSnapshot({
+    ts: Date.now(),
+    entries: ids.map((id) => ({ id, name: id })),
+    fleets: [],
+    sessionRestored,
+  });
+
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-hq-test-'));
-  __resetHqMirrorMemoryForTest();
+  __resetHqMemoryForTest();
+  __resetWorkspaceMirrorForTest();
+  vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   disposeRuntime?.();
   disposeRuntime = null;
   fs.rmSync(dir, { recursive: true, force: true });
@@ -53,24 +68,39 @@ describe('deckHqStore — get/set', () => {
     expect(getHqWorkspaceId(dir)).toBeNull();
   });
 
-  it('refuses while a brain runs for the old or the new HQ, and retires every other brain on success', async () => {
-    const running = new Set(['ws-hq']);
+  it('refuses only while the old or new HQ is mid-turn; an idle brain does not block it', async () => {
+    const busy = new Set(['ws-hq']);
     const retired: string[] = [];
+    const changed: number[] = [];
     disposeRuntime = setHqRuntime({
-      isBrainRunning: (ws) => running.has(ws),
+      isBrainBusy: (ws) => busy.has(ws),
       retireBrainsExcept: (hq) => retired.push(hq),
+      onHqChanged: () => changed.push(1),
     });
     expect(await setHqWorkspaceId('ws-hq', dir)).toEqual({ ok: false, code: 'brain_running', workspaceId: 'ws-hq' });
     expect(getHqWorkspaceId(dir)).toBeNull();
+    expect(changed).toEqual([]);
 
-    running.clear();
+    busy.clear(); // the brain exists but is idle
     expect((await setHqWorkspaceId('ws-hq', dir)).ok).toBe(true);
     expect(retired).toEqual(['ws-hq']);
+    expect(changed).toEqual([1]);
 
-    // The OLD HQ's running brain blocks a move too.
-    running.add('ws-hq');
+    busy.add('ws-hq'); // the OLD HQ mid-turn blocks a move too
     expect(await setHqWorkspaceId('ws-other', dir)).toEqual({ ok: false, code: 'brain_running', workspaceId: 'ws-hq' });
     expect(getHqWorkspaceId(dir)).toBe('ws-hq');
+  });
+
+  it('serves repeated reads from the cache and sees an external edit', async () => {
+    await setHqWorkspaceId('ws-hq', dir);
+    getHqWorkspaceId(dir);
+    const read = vi.spyOn(fs, 'readFileSync');
+    for (let i = 0; i < 20; i++) getHqWorkspaceId(dir);
+    expect(read.mock.calls.filter((c) => String(c[0]).endsWith('deck-hq.json'))).toHaveLength(0);
+    read.mockRestore();
+    // An edit by something else changes size/mtime → re-read.
+    fs.writeFileSync(getDeckHqPath(dir), JSON.stringify({ hqWorkspaceId: 'ws-other-hq' }));
+    expect(getHqWorkspaceId(dir)).toBe('ws-other-hq');
   });
 });
 
@@ -84,6 +114,14 @@ describe('deckHqStore — eligibility matrix', () => {
   ] as const)('hqAllowsBrain(%s, hq=%s) = %s', (ws, hq, allowed) => {
     expect(hqAllowsBrain(ws, hq)).toBe(allowed);
   });
+
+  it('brainEligible: unset → everyone; HQ → only the HQ, and only once it is observed', async () => {
+    expect(brainEligible('ws-a', dir)).toBe(true);
+    await setHqWorkspaceId('ws-hq', dir);
+    expect([brainEligible('ws-hq', dir), brainEligible('ws-a', dir)]).toEqual([false, false]); // unknown
+    pushMirror(['ws-hq', 'ws-a']);
+    expect([brainEligible('ws-hq', dir), brainEligible('ws-a', dir)]).toEqual([true, false]);
+  });
 });
 
 describe('deckHqStore — master switch', () => {
@@ -94,6 +132,7 @@ describe('deckHqStore — master switch', () => {
   });
 
   it('brainEligible is false for every workspace while off, and comes back unchanged when on', async () => {
+    pushMirror(['ws-hq', 'ws-a']);
     await setHqWorkspaceId('ws-hq', dir);
     expect([brainEligible('ws-hq', dir), brainEligible('ws-a', dir)]).toEqual([true, false]);
     await setMoaEnabled(false, dir);
@@ -112,35 +151,65 @@ describe('deckHqStore — master switch', () => {
   });
 });
 
-describe('deckHqStore — hq-missing', () => {
+describe('deckHqStore — corrupt store fails closed', () => {
+  it('reads as corrupt: switch off, nothing eligible, every write refused, the file untouched', async () => {
+    fs.writeFileSync(getDeckHqPath(dir), '{ not json');
+    fs.writeFileSync(`${getDeckHqPath(dir)}.bak`, '{"hqWorkspaceId": 42}'); // invalid shape
+    expect(isHqStoreCorrupt(dir)).toBe(true);
+    expect(isMoaEnabled(dir)).toBe(false);
+    expect(brainEligible('ws-a', dir)).toBe(false);
+    expect(await setHqWorkspaceId('ws-hq', dir)).toEqual({ ok: false, code: 'store_corrupt' });
+    expect(await setMoaEnabled(true, dir)).toBe(false);
+    expect((await runNonHqMigration('ws-hq', dir, quiet)).ran).toBe(false);
+    expect(fs.readFileSync(getDeckHqPath(dir), 'utf8')).toBe('{ not json');
+  });
+
+  it('falls back to a valid backup copy', async () => {
+    await setHqWorkspaceId('ws-hq', dir);
+    fs.copyFileSync(getDeckHqPath(dir), `${getDeckHqPath(dir)}.bak`);
+    fs.writeFileSync(getDeckHqPath(dir), '{ torn');
+    expect(isHqStoreCorrupt(dir)).toBe(false);
+    expect(getHqWorkspaceId(dir)).toBe('ws-hq');
+  });
+
+  it('a missing file is not corrupt (today\'s default)', () => {
+    expect(isHqStoreCorrupt(dir)).toBe(false);
+    expect(isMoaEnabled(dir)).toBe(true);
+  });
+});
+
+describe('deckHqStore — HQ presence', () => {
   const mirror = (ids: string[] | null, restored = true, ageMs = 0) => ({
     peek: () => (ids === null ? null : { entries: ids.map((id) => ({ id, name: id })), ageMs }),
     isSessionRestored: () => restored,
   });
 
-  it('is missing only when a trusted mirror does not list the HQ', () => {
-    expect(isHqWorkspaceMissing(null, mirror(['ws-a']))).toBe(false);
-    expect(isHqWorkspaceMissing('ws-hq', mirror(['ws-hq', 'ws-a']))).toBe(false);
-    expect(isHqWorkspaceMissing('ws-hq', mirror(['ws-a']))).toBe(true);
+  it('present when listed, missing when a restored session does not list it', () => {
+    expect(hqPresence(null, mirror(['ws-a']))).toBe('unset');
+    expect(hqPresence('ws-hq', mirror(['ws-hq', 'ws-a']))).toBe('present');
+    expect(hqPresence('ws-hq', mirror(['ws-a']))).toBe('missing');
   });
 
-  it('never reads an untrusted mirror as missing', () => {
-    expect(isHqWorkspaceMissing('ws-hq', mirror(null))).toBe(false); // no push yet
-    expect(isHqWorkspaceMissing('ws-hq', mirror([]))).toBe(false); // empty list
-    expect(isHqWorkspaceMissing('ws-hq', mirror(['ws-a'], false))).toBe(false); // session not restored
-    expect(isHqWorkspaceMissing('ws-hq', mirror(['ws-a'], true, 120_000))).toBe(false); // stale
+  it('stays unknown until something trustworthy is observed', () => {
+    expect(hqPresence('ws-hq', mirror(null))).toBe('unknown'); // no push yet
+    expect(hqPresence('ws-hq', mirror([]))).toBe('unknown'); // empty list
+    expect(hqPresence('ws-hq', mirror(['ws-a'], false))).toBe('unknown'); // nothing restored
+    expect(hqPresence('ws-hq', mirror(['ws-a'], true, 120_000))).toBe('unknown'); // stale
   });
 
-  it('without a restored session, is missing only once this process has seen the HQ listed', () => {
-    expect(isHqWorkspaceMissing('ws-hq', mirror(['ws-a'], false))).toBe(false);
-    expect(isHqWorkspaceMissing('ws-hq', mirror(['ws-hq', 'ws-a'], false))).toBe(false);
-    expect(isHqWorkspaceMissing('ws-hq', mirror(['ws-a'], false))).toBe(true);
-    // Another HQ id is not covered by what was seen for the first.
-    expect(isHqWorkspaceMissing('ws-other', mirror(['ws-a'], false))).toBe(false);
+  it('latches missing until the HQ is listed again (stale or empty mirrors do not clear it)', () => {
+    expect(hqPresence('ws-hq', mirror(['ws-hq'], false))).toBe('present');
+    expect(hqPresence('ws-hq', mirror(['ws-a'], false))).toBe('missing'); // seen before → trustworthy
+    expect(hqPresence('ws-hq', mirror(['ws-a'], false, 120_000))).toBe('missing'); // stale: still missing
+    expect(hqPresence('ws-hq', mirror([]))).toBe('missing');
+    expect(hqPresence('ws-hq', mirror(null))).toBe('missing');
+    expect(hqPresence('ws-hq', mirror(['ws-hq']))).toBe('present');
+    // Another HQ id is not covered by what was observed for the first.
+    expect(hqPresence('ws-other', mirror(['ws-a'], false))).toBe('unknown');
   });
 });
 
-describe('deckHqStore — one-time non-HQ migration', () => {
+describe('deckHqStore — non-HQ migration', () => {
   async function seed(): Promise<void> {
     const now = Date.now();
     await saveDeckSchedules(
@@ -174,13 +243,12 @@ describe('deckHqStore — one-time non-HQ migration', () => {
     expect(loadActiveDeckWork('ws-a', dir)).toBeNull();
     expect(loadActiveDeckWork('ws-hq', dir)).not.toBeNull();
     expect(loadArchivedDeckWorks(dir).map((w) => w.objective)).toEqual(['a work']);
-    expect(isHqMigrationDone(dir)).toBe(true);
   });
 
-  it('runs once: a second designation changes nothing', async () => {
+  it('runs once per HQ: the same HQ changes nothing again, a different HQ re-runs', async () => {
     await seed();
     await runNonHqMigration('ws-hq', dir, quiet);
-    // The operator re-enables a non-HQ schedule and raises a new decision.
+    // The operator re-enables the non-HQ schedule and raises a new decision.
     await mutateDeckSchedules((list) => list.map((s) => ({ ...s, enabled: true })), dir);
     await raiseDecision('ws-a', { question: 'again', options: [], context: '' }, dir);
 
@@ -188,7 +256,43 @@ describe('deckHqStore — one-time non-HQ migration', () => {
     expect(second.ran).toBe(false);
     expect(loadDeckSchedules(dir).every((s) => s.enabled)).toBe(true);
     expect(loadWorkspaceDecision('ws-a', dir)?.question).toBe('again');
+
+    // A new HQ: everything that is not it gets parked, the old HQ included.
+    const moved = await runNonHqMigration('ws-a', dir, quiet);
+    expect(moved.ran).toBe(true);
+    expect(Object.fromEntries(loadDeckSchedules(dir).map((s) => [s.id, s.enabled]))).toEqual({ 's-hq': false, 's-a': true });
+    expect(loadWorkspaceDecision('ws-a', dir)?.question).toBe('again');
+    expect(loadWorkspaceDecision('ws-hq', dir)).toBeNull();
+  });
+
+  it('keeps a decision answered while it was being archived, and re-runs later', async () => {
+    await raiseDecision('ws-a', { question: 'a q', options: [], context: '' }, dir);
+    const real = decisionStore.clearPendingDecisionIfUnchanged;
+    // The human answers between the archive write and the clear.
+    vi.spyOn(decisionStore, 'clearPendingDecisionIfUnchanged').mockImplementationOnce(async (ws, expected, d) => {
+      await resolveDecision(ws, expected.id, 'yes', d);
+      return real(ws, expected, d);
+    });
+    const report = await runNonHqMigration('ws-hq', dir, quiet);
+    expect(report.decisionsArchived).toEqual([]);
+    expect(loadWorkspaceDecision('ws-a', dir)).toMatchObject({ status: 'resolved', resolution: 'yes' });
+    // Not marked done: the next run goes again (and finds nothing pending).
+    const again = await runNonHqMigration('ws-hq', dir, quiet);
+    expect(again.ran).toBe(true);
+    expect(loadWorkspaceDecision('ws-a', dir)).toMatchObject({ status: 'resolved' });
+  });
+
+  it('does not archive the same decision twice after a crash between archive and clear', async () => {
+    await raiseDecision('ws-a', { question: 'a q', options: [], context: '' }, dir);
+    vi.spyOn(decisionStore, 'clearPendingDecisionIfUnchanged').mockRejectedValueOnce(new Error('crash'));
+    await runNonHqMigration('ws-hq', dir, quiet);
     expect(loadArchivedHqDecisions(dir)).toHaveLength(1);
+    expect(loadWorkspaceDecision('ws-a', dir)?.status).toBe('pending');
+
+    const rerun = await runNonHqMigration('ws-hq', dir, quiet);
+    expect(rerun.decisionsArchived).toHaveLength(1);
+    expect(loadArchivedHqDecisions(dir)).toHaveLength(1);
+    expect(loadWorkspaceDecision('ws-a', dir)).toBeNull();
   });
 
   it('is triggered by the first designation and returns the archived decisions', async () => {

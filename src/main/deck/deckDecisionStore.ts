@@ -343,6 +343,30 @@ export async function clearDecision(workspaceId: string, dir?: string): Promise<
   await mutate(workspaceId, () => null, dir);
 }
 
+/** Remove a PENDING decision only while it is still exactly `expected` (same
+ *  id, still pending, same content), inside the store's serialization. A
+ *  decision answered or replaced since `expected` was read is left alone.
+ *  Returns true when it was removed. */
+export async function clearPendingDecisionIfUnchanged(
+  workspaceId: string,
+  expected: WorkspaceDecision,
+  dir?: string,
+): Promise<boolean> {
+  let removed = false;
+  await mutate(
+    workspaceId,
+    (prev) => {
+      if (prev && prev.status === 'pending' && JSON.stringify(prev) === JSON.stringify(expected)) {
+        removed = true;
+        return null;
+      }
+      return prev;
+    },
+    dir,
+  );
+  return removed;
+}
+
 /** Consume-once: drop a decision ONLY if it is already resolved (its resolution
  *  has ridden a turn via `renderDecisionBlock`). A pending decision is left
  *  intact — it must keep blocking.

@@ -200,9 +200,6 @@ interface WsState {
    *  reset by a human send (the ceiling is a raw-frequency guard, independent of
    *  the consecutive budget which the human DOES reset). */
   wakeTimestamps: number[];
-  /** The same accepted wakes over the trailing HOUR, for the optional hourly
-   *  cap (getMaxWakesPerHour). Pruned to the hour on every write. */
-  hourWakeTimestamps: number[];
   /** ptyIds whose `complete` level-state has already been folded into an accepted
    *  (or attempted-and-consumed) snapshot wake. The heartbeat surfaces a finished
    *  pane ONCE — so a dropped agent.stop edge, which shows as `complete` in level
@@ -244,7 +241,9 @@ export interface CoalescerDeps {
   /** Fire ONE orchestrator turn on this workspace's brain. Same verdict shape
    *  as CommanderSessionManager.send / DeckScheduler.runTurn. Must emit
    *  turn-start before send and reject `busy` when a turn is in flight. */
-  runTurn: (workspaceId: string, prompt: string) => Promise<{ ok: boolean; code?: string }>;
+  /** `rate_limited` (with `retryAfterMs`) is a cap the caller enforces on
+   *  automatic turns: the buffer is kept and retried once it lifts. */
+  runTurn: (workspaceId: string, prompt: string) => Promise<{ ok: boolean; code?: string; retryAfterMs?: number }>;
   /** True when this workspace's brain is mid-turn (a flush must wait). */
   isBusy: (workspaceId: string) => boolean;
   /** Resolve this workspace's autonomy caps (fail-closed). */
@@ -318,10 +317,6 @@ export interface CoalescerDeps {
   /** Master switch. False drops every push at the entry, before any per-
    *  workspace state is allocated. Absent = always on. */
   isEnabled?: () => boolean;
-  /** An optional extra ceiling: accepted wakes per trailing hour for this
-   *  workspace, on top of `maxWakesPerMin`. null/absent/throwing = no hourly
-   *  cap (the default). */
-  getMaxWakesPerHour?: (workspaceId: string) => number | null;
 }
 
 const DEFAULT_DEBOUNCE_MS = 1_500;
@@ -334,8 +329,6 @@ const ACTIVE_WORK_WAKE_BUDGET = 12;
 const DEFAULT_MAX_WAKES_PER_MIN = 6;
 /** The rate ceiling's trailing window. */
 const RATE_WINDOW_MS = 60_000;
-/** The optional hourly cap's trailing window. */
-const HOUR_WINDOW_MS = 60 * 60_000;
 /** Cap the rendered lines so a fleet-wide storm can't blow the turn context. */
 const MAX_FLUSH_LINES = 20;
 /** Rate limit for the pending-decision block line, per workspace. */
@@ -543,9 +536,9 @@ export class CommanderEventCoalescer {
 
     // Rate ceiling (rule 7) — snapshot flushes count exactly like edge flushes.
     const now = this.nowFn();
-    if (this.isRateLimited(st, now, workspaceId)) {
+    if (this.isRateLimited(st, now)) {
       st.phase = 'rate-limited';
-      this.armBeltTimer(workspaceId, st, this.rateRetryDelay(st, now, workspaceId));
+      this.armBeltTimer(workspaceId, st, this.rateRetryDelay(st, now));
       return;
     }
     // Busy: a snapshot flush simply drops (level state; next heartbeat re-reads).
@@ -597,7 +590,7 @@ export class CommanderEventCoalescer {
           if (snapshotMaxSeq > st.watermark) st.watermark = snapshotMaxSeq;
           this.pruneBuffer(st, snapshotMaxSeq);
           st.phase = st.buffer.size > 0 ? 'buffering' : 'idle';
-        } else if (r.code === 'busy') {
+        } else if (r.code === 'busy' || r.code === 'rate_limited') {
           // The turn never ran, so the brain never reviewed these — put them back
           // (issue #561 review). The sync isBusy() gate above only sees THIS
           // workspace's manager mid-turn; runTurn rejects `busy` for two more
@@ -766,7 +759,6 @@ export class CommanderEventCoalescer {
         watermark: 0,
         autoWakesUsed: 0,
         wakeTimestamps: [],
-        hourWakeTimestamps: [],
         snapshotSurfacedComplete: new Set(),
         pendingDecisionLoggedAt: -Infinity,
         pendingDecisionLoggedId: null,
@@ -816,36 +808,14 @@ export class CommanderEventCoalescer {
   }
 
   /** True when this workspace has already hit its sliding-window ceiling. */
-  private isRateLimited(st: WsState, now: number, workspaceId: string): boolean {
+  private isRateLimited(st: WsState, now: number): boolean {
     this.pruneWakeTimestamps(st, now);
-    return st.wakeTimestamps.length >= this.maxWakesPerMin || this.isHourLimited(st, now, workspaceId);
-  }
-
-  /** The hourly cap for this workspace, or null when none applies. */
-  private hourCap(workspaceId: string): number | null {
-    try {
-      const cap = this.deps.getMaxWakesPerHour?.(workspaceId) ?? null;
-      return cap !== null && Number.isFinite(cap) && cap >= 1 ? Math.floor(cap) : null;
-    } catch {
-      return null;
-    }
-  }
-
-  private isHourLimited(st: WsState, now: number, workspaceId: string): boolean {
-    const cap = this.hourCap(workspaceId);
-    if (cap === null) return false;
-    const cutoff = now - HOUR_WINDOW_MS;
-    while (st.hourWakeTimestamps.length > 0 && st.hourWakeTimestamps[0] <= cutoff) st.hourWakeTimestamps.shift();
-    return st.hourWakeTimestamps.length >= cap;
+    return st.wakeTimestamps.length >= this.maxWakesPerMin;
   }
 
   /** Record one ACCEPTED wake against the ceiling (edge OR snapshot). */
   private recordWake(st: WsState, now: number): void {
     st.wakeTimestamps.push(now);
-    // Bounded by the per-minute ceiling × 60 even when no hourly cap applies.
-    const cutoff = now - HOUR_WINDOW_MS;
-    while (st.hourWakeTimestamps.length > 0 && st.hourWakeTimestamps[0] <= cutoff) st.hourWakeTimestamps.shift();
-    st.hourWakeTimestamps.push(now);
   }
 
   /** Re-arm the retired-`complete` set against the current level state (issue
@@ -885,10 +855,7 @@ export class CommanderEventCoalescer {
 
   /** ms until the oldest in-window wake ages out and the window next opens.
    *  A small +1 epsilon so the retry lands strictly after the boundary. */
-  private rateRetryDelay(st: WsState, now: number, workspaceId: string): number {
-    if (this.isHourLimited(st, now, workspaceId)) {
-      return Math.max(1, st.hourWakeTimestamps[0] + HOUR_WINDOW_MS - now + 1);
-    }
+  private rateRetryDelay(st: WsState, now: number): number {
     if (st.wakeTimestamps.length === 0) return this.debounceMs;
     return Math.max(1, st.wakeTimestamps[0] + RATE_WINDOW_MS - now + 1);
   }
@@ -1156,9 +1123,9 @@ export class CommanderEventCoalescer {
     // and re-arm a belt timer for exactly when the window next slides — mirroring
     // the budget-blocked posture, but self-healing without a new event.
     const now = this.nowFn();
-    if (this.isRateLimited(st, now, workspaceId)) {
+    if (this.isRateLimited(st, now)) {
       st.phase = 'rate-limited';
-      this.armBeltTimer(workspaceId, st, this.rateRetryDelay(st, now, workspaceId));
+      this.armBeltTimer(workspaceId, st, this.rateRetryDelay(st, now));
       return;
     }
     if (this.deps.isBusy(workspaceId)) {
@@ -1210,6 +1177,10 @@ export class CommanderEventCoalescer {
           // racer's onIdle fires, plus a short belt-timer in case it already did.
           st.phase = 'buffering';
           this.restartDebounce(workspaceId, st);
+        } else if (r.code === 'rate_limited') {
+          // The caller's hourly turn cap: keep the buffer, retry once it lifts.
+          st.phase = 'rate-limited';
+          this.armBeltTimer(workspaceId, st, Math.max(this.debounceMs, r.retryAfterMs ?? this.debounceMs));
         } else {
           // Non-busy failure (invalid_workspace, spawn error): consume to avoid a
           // poison-event loop; advance the watermark so the same events don't

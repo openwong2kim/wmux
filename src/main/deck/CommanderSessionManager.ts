@@ -38,21 +38,23 @@ export interface CommanderSendResult {
    *  the workspace's agent mode is `off`, so the brain must not run at all),
    *  or `task_workspace` (handler-level — a fan-out task workspace never runs
    *  a brain of its own; the owner's brain drives it), or `not_hq` /
-   *  `hq_missing` (handler-level — an HQ is designated and this is not it, or
-   *  the HQ's workspace is gone; deckHqStore.ts), or `moa_off` (handler-level
+   *  `hq_missing` / `hq_unknown` (handler-level — an HQ is designated and this
+   *  is not it, or the HQ's workspace is gone / not yet observed;
+   *  deckHqStore.ts), or `moa_off` (handler-level
    *  — the main bot's master switch is off).
    *  Additionally `errored` rides an ok:true result when the turn RAN but the
    *  adapter threw mid-stream — callers that must distinguish "completed" from
    *  "died mid-turn" (the re-examine consume) check it; everyone else keys off
    *  `ok` alone. */
-  code?: 'busy' | 'disposed' | 'empty' | 'invalid_workspace' | 'moa_off' | 'mode_off' | 'task_workspace' | 'not_hq' | 'hq_missing' | 'errored';
+  code?: 'busy' | 'disposed' | 'empty' | 'invalid_workspace' | 'moa_off' | 'mode_off' | 'task_workspace' | 'not_hq' | 'hq_missing' | 'hq_unknown' | 'errored';
 }
 
 export interface CommanderStatusSnapshot {
   status: CommanderStatus;
   sessionId: string | null;
-  /** Present only while the designated HQ's workspace is gone (deckHqStore.ts). */
-  hq?: 'hq-missing';
+  /** Present only while a designated HQ cannot run: its workspace is gone or
+   *  not yet observed, or deck-hq.json is unreadable (deckHqStore.ts). */
+  hq?: 'hq-missing' | 'hq-unknown' | 'hq-store-corrupt';
 }
 
 export interface CommanderSessionManagerDeps {
