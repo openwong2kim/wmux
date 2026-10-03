@@ -158,6 +158,21 @@ export interface ResumeBinding {
 }
 
 /**
+ * Whether a resume binding read from disk, or received over the wire, has the
+ * fields its consumers read without a check: a non-empty agent, session id and
+ * folder (`cwd`). A stored binding failing this is skipped, never used.
+ */
+export function isUsableResumeBinding(binding: unknown): binding is ResumeBinding {
+  if (binding === null || typeof binding !== 'object') return false;
+  const b = binding as Record<string, unknown>;
+  return (
+    typeof b.agent === 'string' && b.agent.length > 0
+    && typeof b.sessionId === 'string' && b.sessionId.length > 0
+    && typeof b.cwd === 'string' && b.cwd.length > 0
+  );
+}
+
+/**
  * Unquoted tokens that mean "already resuming" or "not a resumable run" →
  * leave the command unchanged. `--continue`/`--resume`/`-c`/`-r` already
  * resume; `-p`/`--print` is a non-interactive one-shot (rewriting it to

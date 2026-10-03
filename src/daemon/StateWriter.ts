@@ -12,6 +12,7 @@ import {
 import { AsyncQueue } from './util/AsyncQueue';
 import { stripCredentialValues } from '../shared/envFilter';
 import { isPidAlive } from './phantomExit';
+import { isUsableResumeBinding } from '../shared/agentResume';
 
 /**
  * 영속 직전 자격증명 *값*을 제거한 DaemonState fresh 사본. 모든 sessions.json write
@@ -477,6 +478,16 @@ export class StateWriter {
       }
       return true; // attached: in active use, never TTL-reaped
     });
+
+    // A stored resume binding missing its folder (or session id) would stop
+    // recovery for every pane. Skip just that binding: the session is still
+    // recovered, only without its resume offer, and the next save drops it.
+    for (const s of state.sessions) {
+      if (s.resumeBinding !== undefined && !isUsableResumeBinding(s.resumeBinding)) {
+        console.warn(`[StateWriter] skipped an incomplete resume binding on session ${s.id}`);
+        delete s.resumeBinding;
+      }
+    }
 
     // If we healed any corrupt timestamp, persist the repaired state so the fix
     // is durable across restarts. Gated on persistHealedOnLoad: only the main

@@ -7,6 +7,7 @@ import {
   mergeResumeBinding,
   isProvisionalCapture,
   normalizeResumeCwd,
+  isUsableResumeBinding,
   resumeGrammarFor,
   PERMISSION_FLAG,
   type ResumeBinding,
@@ -392,6 +393,24 @@ describe('toResumeCommand (X6)', () => {
     it('EXCLUDES supervised units', () => {
       expect(resumeOfferForRecovered({ supervision: { restart: 'always' }, lastDetectedAgent: 'claude' })).toBeUndefined();
     });
+  });
+});
+
+describe('isUsableResumeBinding', () => {
+  it('accepts a complete binding', () => {
+    expect(isUsableResumeBinding(binding())).toBe(true);
+    expect(isUsableResumeBinding({ agent: 'codex', sessionId: 's', cwd: '/x', ts: 0 })).toBe(true);
+  });
+
+  it('rejects a binding missing its folder, session id or agent, or of the wrong shape', () => {
+    const noCwd: Partial<ResumeBinding> = binding();
+    delete noCwd.cwd;
+    expect(isUsableResumeBinding(noCwd)).toBe(false);
+    expect(isUsableResumeBinding(binding({ cwd: '' }))).toBe(false);
+    expect(isUsableResumeBinding({ ...binding(), cwd: 42 })).toBe(false);
+    expect(isUsableResumeBinding(binding({ sessionId: '' }))).toBe(false);
+    expect(isUsableResumeBinding({ ...binding(), agent: undefined })).toBe(false);
+    for (const value of [undefined, null, 'claude', 7, []]) expect(isUsableResumeBinding(value)).toBe(false);
   });
 });
 
