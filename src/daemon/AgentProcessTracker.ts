@@ -52,6 +52,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { AGENT_SLUG_SET, type AgentSlug } from '../shared/agentIdentity';
+import type { WslAgentLocation, WslReportedAgent, WslWatchedAgent } from './wslAgentProcess';
 
 const execFileAsync = promisify(execFile);
 
@@ -512,6 +513,24 @@ interface TrackedAgent {
   pid: number;
   alive: boolean;
   slug?: AgentSlug;
+  /** #1727 — set for an agent inside a WSL pane: `pid` is a LINUX pid, and
+   *  this says where it lives and how to tell it from a reused one. */
+  wsl?: WslWatchedAgent;
+}
+
+/** #1727 — what the tracker needs to follow agents inside WSL panes. All
+ *  optional: without them WSL panes simply stay unattributed. */
+export interface WslTrackingOptions {
+  /** True for a session whose shell is `wsl.exe`. Such a session never takes
+   *  the Windows tree walk: the agent is not in that table, and the walk's
+   *  slugless fallback would pick a Windows interop child instead. */
+  isWslSession?: (sessionId: string) => boolean;
+  watcher?: {
+    watch(key: string, agent: WslWatchedAgent, onDead: () => void): void;
+    unwatch(key: string): void;
+  };
+  /** Fresh delivery-time check (checkWslAgentRunning). */
+  isRunning?: (agent: WslWatchedAgent) => Promise<boolean>;
 }
 
 /** Identity/liveness snapshot handed to the state-change listener. */
@@ -553,7 +572,12 @@ export class AgentProcessTracker {
     private readonly enumerate: () => Promise<ProcessTreeEntry[]> = enumerateProcesses,
     private readonly readImage: (pid: number) => Promise<string | undefined> = readExecutableImage,
     private readonly userHome: string = os.homedir(),
+    private readonly wsl: WslTrackingOptions = {},
   ) {}
+
+  private isWsl(sessionId: string): boolean {
+    return this.wsl.isWslSession?.(sessionId) === true;
+  }
 
   async verifyIdleShell(pid: number): Promise<boolean> {
     return (await this.idleShellState(pid)).ok;
@@ -610,6 +634,7 @@ export class AgentProcessTracker {
    * backoff — the probe runs once per agent LAUNCH, not per hook.
    */
   arm(sessionId: string, shellPid: number): void {
+    if (this.isWsl(sessionId)) return; // attributed by armWsl() instead
     this.shellPids.set(sessionId, shellPid);
     if (this.states.get(sessionId)?.alive) return;
     const failedAt = this.lastFailedAt.get(sessionId);
@@ -628,6 +653,7 @@ export class AgentProcessTracker {
    * nothing new.
    */
   rearm(sessionId: string, shellPid: number): void {
+    if (this.isWsl(sessionId)) return;
     this.shellPids.set(sessionId, shellPid);
     const last = this.lastRearmAt.get(sessionId);
     if (last !== undefined && Date.now() - last < REARM_COOLDOWN_MS) return;
@@ -661,6 +687,7 @@ export class AgentProcessTracker {
    * then and there, and the new agent is named instead of the dead one.
    */
   armIfAgent(sessionId: string, shellPid: number): void {
+    if (this.isWsl(sessionId)) return;
     this.shellPids.set(sessionId, shellPid);
     const blockedUntil = this.slugProbeBlockedUntil.get(sessionId);
     if (blockedUntil !== undefined && Date.now() < blockedUntil) return;
@@ -756,6 +783,32 @@ export class AgentProcessTracker {
     })();
   }
 
+  /**
+   * #1727 — attach to the agent a WSL pane's own hook reported (see
+   * wslAgentProcess.ts). The caller has already checked the report came from
+   * this exact pane and names the hook's own agent. A no-op while that same
+   * process is tracked alive, so a hook storm costs nothing; a different
+   * process (a relaunch) replaces it.
+   */
+  armWsl(sessionId: string, location: WslAgentLocation, agent: WslReportedAgent): void {
+    if (!this.wsl.watcher) return;
+    const cur = this.states.get(sessionId);
+    if (cur?.alive && cur.wsl && cur.pid === agent.pid &&
+        cur.wsl.start === agent.start && cur.wsl.bootId === agent.bootId) return;
+    const key = AgentProcessTracker.watchKey(sessionId);
+    this.watcher.unwatch(key);
+    const watched: WslWatchedAgent = { ...location, pid: agent.pid, start: agent.start, bootId: agent.bootId };
+    const state: TrackedAgent = { pid: agent.pid, alive: true, slug: agent.slug, wsl: watched };
+    this.states.set(sessionId, state);
+    this.wsl.watcher.watch(key, watched, () => {
+      // Only the same tracked process may flip the flag.
+      if (this.states.get(sessionId) !== state) return;
+      state.alive = false;
+      this.emitState(sessionId, { slug: agent.slug, alive: false });
+    });
+    this.emitState(sessionId, { slug: agent.slug, alive: true });
+  }
+
   /** true = agent process observed alive; false = it was observed and DIED
    *  (the edge); undefined = never attributed → caller falls back. */
   statusFor(sessionId: string): boolean | undefined {
@@ -775,7 +828,10 @@ export class AgentProcessTracker {
    *  probe fresher than the cached `alive` flag (a death between
    *  ProcessMonitor polls). undefined = never attributed. */
   pidFor(sessionId: string): number | undefined {
-    return this.states.get(sessionId)?.pid;
+    // Windows pids only: a WSL agent's pid is a Linux pid, and every caller
+    // hands this to a Windows process check (#1727).
+    const s = this.states.get(sessionId);
+    return s?.wsl ? undefined : s?.pid;
   }
 
   /** #1307 — re-picks from a fresh process table: true only while the
@@ -783,6 +839,11 @@ export class AgentProcessTracker {
    *  expected slug, so a reused pid fails. Enumerates, unlike identityFor. */
   async verifyLive(sessionId: string, expectedSlug: AgentSlug): Promise<boolean> {
     const s = this.states.get(sessionId);
+    if (s?.wsl) {
+      if (!s.alive || s.slug !== expectedSlug || !this.wsl.isRunning) return false;
+      const running = await this.wsl.isRunning(s.wsl);
+      return running && this.states.get(sessionId) === s && s.alive;
+    }
     const shellPid = this.shellPids.get(sessionId);
     if (!s?.alive || shellPid === undefined) return false;
     try {
@@ -794,6 +855,24 @@ export class AgentProcessTracker {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * #1727 — the delivery-time liveness check for session prompt scheduling:
+   * the tracked agent is still this pane's `expectedSlug` agent AND running
+   * (a stopped or zombie agent is not). Windows: verifyLive plus a fresh
+   * process check of the pid. WSL: verifyLive already stats the Linux
+   * process, state included.
+   */
+  async isAgentRunning(
+    sessionId: string,
+    expectedSlug: AgentSlug,
+    isRunning: (pid: number) => Promise<boolean>,
+  ): Promise<boolean> {
+    const s = this.states.get(sessionId);
+    if (!s) return false;
+    if (s.wsl) return this.verifyLive(sessionId, expectedSlug);
+    return await this.verifyLive(sessionId, expectedSlug) && await isRunning(s.pid);
   }
 
   /** Exec panes may own the agent as their PTY root, without a shell child.
@@ -812,6 +891,7 @@ export class AgentProcessTracker {
   disarm(sessionId: string): void {
     this.generation.set(sessionId, (this.generation.get(sessionId) ?? 0) + 1);
     this.watcher.unwatch(AgentProcessTracker.watchKey(sessionId));
+    this.wsl.watcher?.unwatch(AgentProcessTracker.watchKey(sessionId));
     this.states.delete(sessionId);
     this.shellPids.delete(sessionId);
     this.lastFailedAt.delete(sessionId);

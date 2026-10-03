@@ -91,6 +91,7 @@ import { WorkTaskService } from './worktask/WorkTaskService';
 import { isTaskState, type AgentStatus, type Message } from '../shared/types';
 import { ProcessMonitor } from './ProcessMonitor';
 import { AgentProcessTracker } from './AgentProcessTracker';
+import { checkWslAgentRunning, parseWslAgentReport, pickReportedAgent, WslPidWatcher } from './wslAgentProcess';
 import { CommandStartAgentProbe } from './commandStartAgentProbe';
 import { resolveCanonicalAgentIdentity, detectorSuppressedBy, reportedAgentName, provesLiveAgent, type CanonicalAgentIdentity } from './canonicalAgent';
 import { Watchdog } from './Watchdog';
@@ -3778,9 +3779,8 @@ function registerRpcHandlers(
         : null;
     },
     agentProcessAlive: async (id, slug) => {
-      const pid = agentProcessTracker.pidFor(id);
-      if (pid === undefined || !isAgentSlug(slug)) return false;
-      return await agentProcessTracker.verifyLive(id, slug) && await ProcessMonitor.isRunning(pid);
+      if (!isAgentSlug(slug)) return false;
+      return agentProcessTracker.isAgentRunning(id, slug, (pid) => ProcessMonitor.isRunning(pid));
     },
     write: (id, data) => {
       const managed = sessionManager.getSession(id);
@@ -4019,9 +4019,23 @@ function registerRpcHandlers(
       // process-corroborated without waiting for a detector banner. arm() is
       // a no-op while a live agent is tracked and backoff-bounded otherwise,
       // so the hot path stays cheap.
-      onAuthorityTouched: (sessionId) => {
+      onAuthorityTouched: (sessionId, signal) => {
         const managed = sessionManager.getSession(sessionId);
-        if (managed) agentProcessTracker.arm(sessionId, managed.meta.pid);
+        if (!managed) return;
+        const wslTarget = managed.meta.wslTarget;
+        if (!wslTarget) {
+          agentProcessTracker.arm(sessionId, managed.meta.pid);
+          return;
+        }
+        // #1727 — a WSL pane: only the pane's own hook may name its agent
+        // process (exact ptyId), and only as the agent the hook speaks for.
+        if (signal.ptyId !== sessionId || !signal.wslAgentProcess) return;
+        const agent = pickReportedAgent(parseWslAgentReport(signal.wslAgentProcess), signal.agent);
+        if (agent) {
+          agentProcessTracker.armWsl(sessionId, {
+            shell: managed.meta.cmd, target: wslTarget, hostPid: managed.meta.pid,
+          }, agent);
+        }
       },
       // #1463 — the agent's own "question answered" signal takes the same
       // release path an answer key does (the `answered` → `session:answered`
@@ -4372,13 +4386,11 @@ function registerRpcHandlers(
         } : null;
       },
       isAgentProcessAlive: async () => {
-        const pid = agentProcessTracker.pidFor(id);
-        if (pid === undefined) return false;
         try {
           // #1307 — a reused pid is no longer the pane's agent descendant, and
-          // a stopped (Ctrl+Z) or zombie agent is not running.
-          return await agentProcessTracker.verifyLive(id, agentSlug) &&
-            await ProcessMonitor.isRunning(pid);
+          // a stopped (Ctrl+Z) or zombie agent is not running. #1727 — a WSL
+          // pane's agent is checked inside its distro the same way.
+          return await agentProcessTracker.isAgentRunning(id, agentSlug, (pid) => ProcessMonitor.isRunning(pid));
         } catch {
           return false;
         }
@@ -7418,7 +7430,13 @@ async function main(): Promise<void> {
   // Resume-chip edge trigger: watches the agent process (claude/codex) inside
   // interactive panes so the chip can gate on process truth instead of the
   // decaying activity heuristic. Rides processMonitor's existing batch.
-  const agentProcessTracker = new AgentProcessTracker(processMonitor);
+  const agentProcessTracker = new AgentProcessTracker(processMonitor, undefined, undefined, undefined, {
+    // #1727 — a WSL pane's agent is a Linux process: attributed from its own
+    // hook's report (onAuthorityTouched), watched from inside the distro.
+    isWslSession: (id) => !!sessionManager.getSession(id)?.meta.wslTarget,
+    watcher: new WslPidWatcher(),
+    isRunning: (agent) => checkWslAgentRunning(agent),
+  });
   // #919 — re-evaluate canonical identity OUTSIDE `session:agent`: the tier
   // inputs change (attribution completes; a watched process dies) while no
   // detector event is in flight, and a wrong label would otherwise sit in

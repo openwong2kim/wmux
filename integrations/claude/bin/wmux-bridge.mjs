@@ -1112,6 +1112,16 @@ async function main() {
       ? process.env.WMUX_PTY_ID
       : undefined;
 
+  // #1727 — set only by the WSL hook (hook.sh): which Linux process the agent
+  // is. Opaque here; the daemon validates it and uses it only for the exact
+  // pane this hook names. Bounded so a bad value cannot bloat the envelope.
+  const wslAgentProcess =
+    typeof process.env.WMUX_WSL_AGENT_PROC === 'string' &&
+    process.env.WMUX_WSL_AGENT_PROC.length > 0 &&
+    process.env.WMUX_WSL_AGENT_PROC.length <= 4096
+      ? process.env.WMUX_WSL_AGENT_PROC
+      : undefined;
+
   // Build the AgentSignal envelope. Schema mirrors
   // integrations/shared/signal-types.ts (kept in sync manually because
   // this is JS-only).
@@ -1131,6 +1141,7 @@ async function main() {
     workspaceId: envWorkspaceId,
     surfaceId: envSurfaceId,
     ptyId: envPtyId,
+    ...(wslAgentProcess ? { wslAgentProcess } : {}),
     cwd: payloadCwd ?? process.cwd(),
     payload: {
       ...(payload ?? {}),

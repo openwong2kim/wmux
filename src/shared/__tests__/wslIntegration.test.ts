@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { buildWslInjection } from '../wslIntegration';
+import { buildWslInjection, WSL_HOOK } from '../wslIntegration';
+import { parseWslAgentReport, pickReportedAgent } from '../../daemon/wslAgentProcess';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { BASH_INIT } from '../../daemon/shell-integration';
 
@@ -241,4 +242,43 @@ describe('WSL per-launch Claude integration', () => {
     });
   });
 
+});
+
+// #1727 — the hook runs inside Linux as the agent's descendant and reports
+// which process the agent is. Linux only: it reads /proc.
+describe.runIf(process.platform === 'linux' && fs.existsSync('/proc/sys/kernel/random/boot_id'))('WSL hook agent-process report (#1727)', () => {
+  it('reports the boot id and the agent among its ancestors, and keeps its own arguments', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-hook-')); dirs.push(dir);
+    const hook = path.join(dir, 'hook.sh');
+    fs.writeFileSync(hook, WSL_HOOK);
+    // The fake Windows runtime records what the bridge would receive.
+    const node = path.join(dir, 'node');
+    fs.writeFileSync(node, `#!/bin/sh\nprintf '%s' "$WMUX_WSL_AGENT_PROC" > '${dir}/report'\nprintf '%s\n' "$WSLENV" "$@" > '${dir}/args'\n`, { mode: 0o755 });
+    // A process whose image stem is `claude` stands in for the agent; the
+    // trailing `true` keeps it from exec-replacing itself with the hook.
+    const claude = path.join(dir, 'claude');
+    fs.symlinkSync('/bin/sh', claude);
+    execFileSync(claude, ['-c', `echo $$ > '${dir}/pid'; /bin/sh '${hook}' SessionStart; true`], {
+      env: { PATH: '/usr/bin:/bin', WMUX_WSL_NODE: node, WMUX_WSL_BRIDGE: '/bridge.mjs' },
+    });
+
+    const report = parseWslAgentReport(fs.readFileSync(path.join(dir, 'report'), 'utf8'));
+    expect(report?.bootId).toBe(fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim());
+    const picked = pickReportedAgent(report, 'claude');
+    expect(picked?.pid).toBe(Number(fs.readFileSync(path.join(dir, 'pid'), 'utf8')));
+    expect(picked?.start).toMatch(/^\d+$/);
+    expect(fs.readFileSync(path.join(dir, 'args'), 'utf8').split('\n').slice(0, 3))
+      .toEqual(['ELECTRON_RUN_AS_NODE/w:WMUX_WSL_AGENT_PROC', '/bridge.mjs', 'SessionStart']);
+  });
+
+  it('still runs the bridge when /proc cannot be read', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsl-hook-')); dirs.push(dir);
+    const hook = path.join(dir, 'hook.sh');
+    // Point the boot-id read at a missing file: the report is skipped.
+    fs.writeFileSync(hook, WSL_HOOK.replace('/proc/sys/kernel/random/boot_id', `${dir}/missing`));
+    const node = path.join(dir, 'node');
+    fs.writeFileSync(node, `#!/bin/sh\nprintf '[%s]' "$WMUX_WSL_AGENT_PROC" > '${dir}/report'\n`, { mode: 0o755 });
+    execFileSync('/bin/sh', [hook, 'Stop'], { env: { PATH: '/usr/bin:/bin', WMUX_WSL_NODE: node, WMUX_WSL_BRIDGE: '/b' } });
+    expect(fs.readFileSync(path.join(dir, 'report'), 'utf8')).toBe('[]');
+  });
 });

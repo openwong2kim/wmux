@@ -5,9 +5,41 @@ import { mergeWslEnv, wslTargetArgs, type WslTarget } from './wsl';
 // Per-launch settings only. Never edit ~/.claude/settings.json in either OS.
 // Use the existing bridge in its Windows runtime: this preserves the named-pipe
 // authentication and pane routing instead of adding a network listener.
+//
+// #1727 — the hook also says WHICH Linux process the agent is. Windows cannot
+// see Linux processes, so the daemon's process-tree walk never finds a WSL
+// pane's agent; but this script runs inside Linux as the agent's descendant.
+// It reports the boot id and up to WSL_AGENT_PROC_HOPS ancestors (pid,
+// starttime, cmdline), RS-separated; the daemon picks the one whose command
+// line names the hook's agent (a `sh -c` may sit in between). Reading /proc
+// here is builtins plus a cat/head/tr per hop: no scan, no extra Windows spawn.
+// Any failure leaves the report empty, and the hook runs as before.
+export const WSL_AGENT_PROC_HOPS = 4;
 export const WSL_HOOK = `#!/bin/sh
 export ELECTRON_RUN_AS_NODE=1
-export WSLENV="\${WSLENV:+$WSLENV:}ELECTRON_RUN_AS_NODE/w"
+wmux_agent_proc() {
+  # A function, so set -- below cannot touch the hook's own arguments.
+  set -f
+  read -r wmux_boot < /proc/sys/kernel/random/boot_id 2>/dev/null || return 0
+  wmux_out="1:$wmux_boot"
+  wmux_p=$PPID
+  wmux_n=0
+  while [ "$wmux_n" -lt ${WSL_AGENT_PROC_HOPS} ] && [ "$wmux_p" -gt 1 ] 2>/dev/null; do
+    wmux_stat=$(cat "/proc/$wmux_p/stat" 2>/dev/null) || break
+    # comm (field 2) may hold spaces and parens: split after the LAST ')'.
+    set -- \${wmux_stat##*) }
+    [ $# -ge 20 ] || break
+    # Arguments are US-separated; RS and US inside them become spaces.
+    wmux_cmd=$(head -c 512 "/proc/$wmux_p/cmdline" 2>/dev/null | tr '\\000\\036\\037' '\\037  ')
+    wmux_out="$wmux_out$(printf '\\036')$wmux_p:\${20}:$wmux_cmd"
+    wmux_p=$2
+    wmux_n=$((wmux_n + 1))
+  done
+  WMUX_WSL_AGENT_PROC=$wmux_out
+}
+wmux_agent_proc
+export WMUX_WSL_AGENT_PROC
+export WSLENV="\${WSLENV:+$WSLENV:}ELECTRON_RUN_AS_NODE/w:WMUX_WSL_AGENT_PROC"
 exec "$WMUX_WSL_NODE" "$WMUX_WSL_BRIDGE" "$@"
 `;
 

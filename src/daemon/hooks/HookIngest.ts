@@ -255,9 +255,10 @@ export interface HookIngestDeps {
    * become corroborable. The session is resolved; the callback owes the caller
    * nothing back and its failure is non-fatal.
    *
-   * Optional: only the daemon supplies it.
+   * Optional: only the daemon supplies it. `signal` is the resolved signal
+   * (#1727: a WSL hook's report of its agent process rides on it).
    */
-  onAuthorityTouched?: (sessionId: string) => void;
+  onAuthorityTouched?: (sessionId: string, signal: AgentSignal) => void;
   /**
    * #1463 — the agent itself reported that the question its pane was blocked
    * on has been answered (`agent.input_answered`, AskUserQuestion's
@@ -703,7 +704,7 @@ export class HookIngest {
     // `exact` (#919): only exact-ptyId routing may decide identity alone.
     this.router.touchAuthority(sessionId, signal.agent, this.now(), signal.ptyId === sessionId, signal.kind);
     try {
-      this.deps.onAuthorityTouched?.(sessionId);
+      this.deps.onAuthorityTouched?.(sessionId, signal);
     } catch (err) {
       this.deps.log?.('warn', `[hooks] authority-touch callback failed for ${sessionId}: ${String(err)}`);
     }
@@ -856,7 +857,7 @@ export class HookIngest {
     // a cwd-prefix-resolved signal may corroborate identity but never stand alone.
     this.router.touchAuthority(sessionId, signal.agent, this.now(), signal.ptyId === sessionId, signal.kind);
     try {
-      this.deps.onAuthorityTouched?.(sessionId);
+      this.deps.onAuthorityTouched?.(sessionId, signal);
     } catch (err) {
       this.deps.log?.('warn', `[hooks] authority-touch callback failed for ${sessionId}: ${String(err)}`);
     }
