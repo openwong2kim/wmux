@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { FanOutService, type FanOutDaemonPort, type FanOutRendererPort } from '../FanOutService';
+import { FanOutService, type FanOutDaemonPort, type FanOutRendererPort, type WorkerTempDirPort } from '../FanOutService';
 import type { TaskWorktreePlan } from '../TaskWorktreeManager';
 import { TaskLedger } from '../../../daemon/ledger/TaskLedger';
 import { setTaskLedgerForTests } from '../../deck/taskLedgerHost';
@@ -36,7 +36,12 @@ function plan(slug: string): TaskWorktreePlan {
   };
 }
 
-function makeService(opts: { dependencyWaitMs?: number; hold?: (n: number) => Promise<void> } = {}) {
+function makeService(opts: {
+  dependencyWaitMs?: number;
+  hold?: (n: number) => Promise<void>;
+  workerTempDirs?: WorkerTempDirPort;
+  failSpawnAt?: number;
+} = {}) {
   let oid = 0;
   const worktrees = {
     preflight: vi.fn(async (_r: string, _t: string, taskId: string) => ({ ok: true as const, plan: plan(taskId.slice(-8)) })),
@@ -56,17 +61,21 @@ function makeService(opts: { dependencyWaitMs?: number; hold?: (n: number) => Pr
       return { ok: true };
     }),
   };
-  const spawned: Array<{ name: string; initialCommand: string }> = [];
+  const spawned: Array<{ name: string; initialCommand: string; env?: Record<string, string> }> = [];
   let ws = 0;
   const renderer: FanOutRendererPort = {
     spawnWorkspace: vi.fn(async (p) => {
       await opts.hold?.(spawned.length);
+      if (opts.failSpawnAt === spawned.length) {
+        spawned.push(p);
+        return { error: 'attach failed' };
+      }
       spawned.push(p);
       ws++;
       return { workspaceId: `ws-task-${ws}`, ptyId: `pty-${ws}` };
     }),
   };
-  const service = new FanOutService({ daemon, renderer, worktrees: worktrees as any, ledger, autonomy: async () => undefined, dependencyWaitMs: opts.dependencyWaitMs });
+  const service = new FanOutService({ daemon, renderer, worktrees: worktrees as any, ledger, autonomy: async () => undefined, dependencyWaitMs: opts.dependencyWaitMs, workerTempDirs: opts.workerTempDirs });
   return { service, worktrees, spawned };
 }
 
@@ -177,5 +186,55 @@ describe('FanOutService task graph', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('FanOutService task graph — private temp dir on a late launch', () => {
+  function tempPort() {
+    const created: string[] = [];
+    const registered: Array<[string, string]> = [];
+    const removed: string[] = [];
+    const port: WorkerTempDirPort = {
+      create: () => {
+        const dir = `/tmp/wmux-task-${created.length + 1}`;
+        created.push(dir);
+        return dir;
+      },
+      register: (owner, dir) => registered.push([owner, dir]),
+      remove: (dir) => removed.push(dir),
+    };
+    return { port, created, registered, removed };
+  }
+
+  async function release(service: FanOutService, taskId: string): Promise<void> {
+    const dep = ledger.get(taskId)!;
+    await ledger.update({ id: dep.id, status: 'review_requested', actor: { kind: 'worker', workspaceId: dep.taskWorkspaceId }, expectedRev: dep.rev });
+    await service.drainDeferredLaunches();
+  }
+
+  it('gives a dependent task its own dir when it launches late, and registers it under its workspace', async () => {
+    const temp = tempPort();
+    const { service, spawned } = makeService({ workerTempDirs: temp.port });
+    const r = await service.start({ ...req, idempotencyKey: 'graph-tmp-1', dependsOn: [[], [0]] });
+    expect(temp.created).toHaveLength(1);
+    await release(service, r.tasks[0].taskId!);
+    expect(spawned).toHaveLength(2);
+    expect(temp.created).toHaveLength(2);
+    const [first, late] = temp.created;
+    expect(spawned[1].env).toMatchObject({ TMPDIR: late, TMP: late, TEMP: late });
+    expect(temp.registered).toEqual([['ws-task-1', first], ['ws-task-2', late]]);
+    expect(temp.removed).toEqual([]);
+  });
+
+  it('hands a failed late spawn\'s dir to the sweep under its task id', async () => {
+    const temp = tempPort();
+    const { service } = makeService({ workerTempDirs: temp.port, failSpawnAt: 1 });
+    const r = await service.start({ ...req, idempotencyKey: 'graph-tmp-2', dependsOn: [[], [0]] });
+    await release(service, r.tasks[0].taskId!);
+    const again = await service.start({ ...req, idempotencyKey: 'graph-tmp-2' });
+    expect(again.tasks[1].ok).toBe(false);
+    const [, late] = temp.created;
+    expect(temp.registered).toContainEqual([`task:${again.tasks[1].taskId}`, late]);
+    expect(temp.removed).toEqual([]);
   });
 });
