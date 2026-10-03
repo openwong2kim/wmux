@@ -144,4 +144,24 @@ describe('turn-end A2A reminder', () => {
     await sweepTurnEndReminders();
     expect(remindedSizeForTest()).toBe(0);
   });
+
+  it('holds a reminder while the pane is at a usage limit and sends it after the reset', async () => {
+    useStore.setState({ a2aTasks: { a: task('a', 'submitted', 'pane-r') } });
+    const resetsAt = Date.now() + 3_600_000;
+    useStore.getState().setUsageLimit(PTY, { ptyId: PTY, provider: 'claude', detectedAt: Date.now(), resetsAt, source: 'hook' });
+    await turnEnd();
+    expect(gatedSubmit).not.toHaveBeenCalled();
+
+    useStore.getState().setUsageLimit(PTY, null);
+    await sweepTurnEndReminders();
+    expect(gatedSubmit).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the turn end when the gate refuses for a usage limit, and retries', async () => {
+    useStore.setState({ a2aTasks: { a: task('a', 'submitted', 'pane-r') } });
+    gatedSubmit.mockResolvedValueOnce({ ok: false, reason: 'usage_limited', detail: 'held' });
+    await turnEnd();
+    await sweepTurnEndReminders();
+    expect(gatedSubmit).toHaveBeenCalledTimes(2);
+  });
 });

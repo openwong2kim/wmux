@@ -91,6 +91,7 @@ import { WorkTaskService } from './worktask/WorkTaskService';
 import { isTaskState, type AgentStatus, type Message } from '../shared/types';
 import { ProcessMonitor } from './ProcessMonitor';
 import { AgentProcessTracker } from './AgentProcessTracker';
+import { checkWslAgentRunning, reportedAgentForPane, WslPidWatcher } from './wslAgentProcess';
 import { CommandStartAgentProbe } from './commandStartAgentProbe';
 import { resolveCanonicalAgentIdentity, detectorSuppressedBy, reportedAgentName, provesLiveAgent, type CanonicalAgentIdentity } from './canonicalAgent';
 import { Watchdog } from './Watchdog';
@@ -162,12 +163,19 @@ import type { ApprovalDecision, DecisionFormKind, NativeDecisionOutcome, NativeD
 import type { AgentSlug } from '../shared/events';
 import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
-import { deliverScheduledPrompt } from './sessionPromptDelivery';
+import { deliverScheduledPrompt, type ScheduledPromptDeliveryDeps } from './sessionPromptDelivery';
+import { UsageLimitRegistry } from './usageLimit/UsageLimitRegistry';
+import type { SessionPromptScheduleResult } from '../shared/sessionPromptSchedule';
+import { USAGE_LIMIT_CONTINUE_PROMPT, type PaneUsageLimitPatch } from '../shared/usageLimit';
 import { chatAgentStatus, confirmedStopAt, transcriptTurnEnd } from './transcript/chatAgentStatus';
 import { DaemonPTYBridge } from './DaemonPTYBridge';
 import { createCodexSharedRuntime, runCodexDaemon } from './transcript/codexSharedRuntime';
 import { validChatAttachments } from '../shared/transcript/chatAttachments';
 import { ChatSessionService } from './chat/ChatSessionService';
+import { createChatV2Host } from './chat/v2/host';
+import { registerChatV2Rpc } from './chat/v2/rpc';
+import type { ChatV2Host } from './chat/v2/types';
+import { CHATV2_DISPOSE_TIMEOUT_MS } from '../shared/chatv2/limits';
 import { chatProviders } from './chat/providers';
 import { record as chatRecord } from './chat/adapter';
 import type { ChatInteractionAnswer } from '../shared/transcript/chatSession';
@@ -210,6 +218,8 @@ function recordHistory(work: (store: RunHistoryStore) => void): void {
   catch (error) { log('warn', 'Phone run history could not be saved:', error); }
 }
 let hookIngest: HookIngest | null = null;
+/** Panes held at a provider usage limit (shared/usageLimit). Built once delivery exists. */
+let usageLimits: UsageLimitRegistry | null = null;
 /** Scheduled runs. Built in registerRpcHandlers once the session RPCs exist. */
 let automationEngine: AutomationEngine | null = null;
 // Outbound webhook/ntfy notifications. Module-scoped for the same reason
@@ -228,6 +238,8 @@ let chatSendReceipts: ChatSendReceiptStore | null | undefined;
 let chatCancelReceipts: ChatCancelReceiptStore | null | undefined;
 let chatQueue: ChatQueueStore | null | undefined;
 let chatSessions: ChatSessionService | null = null;
+// Chat v2: daemon-owned agent drivers bound to an anchor pane (src/shared/chatv2/ipc.ts).
+let chatV2Host: ChatV2Host | null = null;
 let terminalChat: TerminalChatService | null = null;
 /** OpenCode permissions/questions as native records (built with terminalChat). */
 let openCodeDecisions: ReturnType<typeof createOpenCodeDecisions> | null = null;
@@ -499,6 +511,8 @@ function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalR
     answerNative: async (native, reply, sessionId) => {
       const adapters: Partial<Record<NativeDecisionRef['adapter'], (n: NativeDecisionRef, r: NativeDecisionReply) => Promise<NativeDecisionOutcome>>> = {
         codex: (n, r) => codexPaneRelays.answer(n, r.decision),
+        // Chat v2 driver requests are answered by the driver that holds them.
+        claude: (n, r) => chatV2Host?.answerNative(n, r, sessionId) ?? Promise.resolve('unavailable' as const),
         // OpenCode answers go back through the pane's own TUI plugin.
         ...(openCodeDecisions ? { opencode: (n: NativeDecisionRef, r: NativeDecisionReply) => openCodeDecisions!.answer(n, r, sessionId) } : {}),
       };
@@ -3569,6 +3583,45 @@ function registerRpcHandlers(
       });
     } catch { log('error', '[chat] invalid provider configuration; managed chat disabled'); }
   }
+  if (!chatV2Host) {
+    const host = createChatV2Host({
+      wmuxDir,
+      log: (level, message) => log(level, message),
+      now: () => Date.now(),
+      sessionManager,
+      approvals: () => approvalRegistry,
+      // Single writer: a tracked agent can miss a TUI that just started or a
+      // reused pid, so the anchor shell must also have no children at all.
+      paneFree: async (id) => {
+        const pane = sessionManager.getSession(id);
+        if (!pane) return false;
+        const pid = agentProcessTracker.pidFor(id);
+        if (pid !== undefined && await ProcessMonitor.isRunning(pid)) return false;
+        return (await agentProcessTracker.idleShellState(pane.meta.pid, pane.meta.env, true)).ok;
+      },
+      writeToPane: (id, data) => {
+        const pane = sessionManager.getSession(id);
+        if (!pane) return false;
+        pane.ptyProcess.write(data);
+        pane.bridge.noteInput(data);
+        return true;
+      },
+      sendTo: (clientId, event) => pipeServer.sendTo(clientId, event),
+      dropClient: (clientId) => pipeServer.disconnect(clientId),
+      processIdentity: async (pid) => {
+        const [startTime, commandLine] = await Promise.all([
+          getProcessStartTime(pid),
+          agentProcessTracker.commandLineOf(pid),
+        ]);
+        return startTime && commandLine ? { startTime, commandLine } : null;
+      },
+      killTree: (pid) => killProcessTree(pid),
+    });
+    chatV2Host = host;
+    pipeServer.onClientClose((clientId) => host.clientGone(clientId));
+    void host.start().catch((err) => log('error', `[chatv2] start failed: ${String(err)}`));
+  }
+  registerChatV2Rpc((method, handler) => pipeServer.onRpc(method, handler), chatV2Host, firstPartyOnly);
   pipeServer.onRpc('daemon.chat.providers', async (_params, ctx) =>
     firstPartyOnly(ctx.clientId, 'chat.providers') ? chatSessions?.listProviders() ?? [] : []);
   for (const action of ['start', 'reconnect', 'cancel', 'respond', 'close'] as const) {
@@ -3727,9 +3780,8 @@ function registerRpcHandlers(
         : null;
     },
     agentProcessAlive: async (id, slug) => {
-      const pid = agentProcessTracker.pidFor(id);
-      if (pid === undefined || !isAgentSlug(slug)) return false;
-      return await agentProcessTracker.verifyLive(id, slug) && await ProcessMonitor.isRunning(pid);
+      if (!isAgentSlug(slug)) return false;
+      return agentProcessTracker.isAgentRunning(id, slug, (pid) => ProcessMonitor.isRunning(pid));
     },
     write: (id, data) => {
       const managed = sessionManager.getSession(id);
@@ -3927,6 +3979,11 @@ function registerRpcHandlers(
       // #783 — the gated-tools list from daemon config. A GETTER so `wmux gate
       // --add` takes effect on the next tool call without a daemon restart.
       gateConfig: () => coerceGate(loadConfig().gate),
+      // Exact pane identity only: a cwd-resolved guess could hold (or later
+      // type a continue into) a sibling pane in the same directory (#919).
+      onResolvedSignal: (sessionId, signal) => {
+        if (signal.ptyId === sessionId) usageLimits?.noteHookSignal(sessionId, signal);
+      },
       // Chat View P1 — the tail nudge rides the existing hook signals rather
       // than a new hook. Fired for every resolved kind; a no-op for panes with
       // no Chat surface open.
@@ -3963,9 +4020,22 @@ function registerRpcHandlers(
       // process-corroborated without waiting for a detector banner. arm() is
       // a no-op while a live agent is tracked and backoff-bounded otherwise,
       // so the hot path stays cheap.
-      onAuthorityTouched: (sessionId) => {
+      onAuthorityTouched: (sessionId, signal) => {
         const managed = sessionManager.getSession(sessionId);
-        if (managed) agentProcessTracker.arm(sessionId, managed.meta.pid);
+        if (!managed) return;
+        const wslTarget = managed.meta.wslTarget;
+        if (!wslTarget) {
+          agentProcessTracker.arm(sessionId, managed.meta.pid);
+          return;
+        }
+        // #1727 — a WSL pane: only the pane's own hook may name its agent
+        // process (exact ptyId), and only as the agent the hook speaks for.
+        const agent = reportedAgentForPane(sessionId, true, signal);
+        if (agent) {
+          agentProcessTracker.armWsl(sessionId, {
+            shell: managed.meta.cmd, target: wslTarget, hostPid: managed.meta.pid,
+          }, agent);
+        }
       },
       // #1463 — the agent's own "question answered" signal takes the same
       // release path an answer key does (the `answered` → `session:answered`
@@ -4262,6 +4332,24 @@ function registerRpcHandlers(
   });
   const readChatAgentState = (id: string) => {
     const live = readDaemonAgentState(id);
+    // A chat-v2 driver reports its own run state from its stream, not from
+    // hooks or the screen.
+    const driverStatus = chatV2Host?.statusForPane(id);
+    if (driverStatus === 'starting' || driverStatus === 'idle' || driverStatus === 'running' || driverStatus === 'needs-input') {
+      const session = chatV2Host?.sessionForPane(id);
+      const user = session ? [...session.blocks].reverse().find((block) => block.role === 'user') : undefined;
+      const agentStatus: AgentStatus = driverStatus === 'running' ? 'running' : driverStatus === 'needs-input' ? 'awaiting_input' : 'idle';
+      return {
+        ...live,
+        agentName: 'Claude Code',
+        agentStatus,
+        turn: {
+          id: `c2:${session?.id ?? ''}:${user?.id ?? '0'}`,
+          state: agentStatus === 'idle' ? 'idle' as const : 'running' as const,
+          ...(user?.startedAt !== undefined ? { startedAt: user.startedAt } : {}),
+        },
+      };
+    }
     const bridge = sessionManager.getSession(id)?.bridge;
     if (['Claude Code', 'Codex CLI'].includes(live.agentName ?? '') && bridge && live.agentStatus !== 'awaiting_input') {
       const events = projector.snapshot(id)?.events;
@@ -4285,8 +4373,22 @@ function registerRpcHandlers(
   // daemon's v1 handler would ignore the additive incarnationId parameter and
   // write anyway; v2 makes mixed versions fail with Unknown method pre-write.
   // Named so scheduled runs (automation engine) paste through the same proof.
-  const deliverPromptToSession = (id: string, agentSlug: AgentSlug, incarnationId: string, prompt: string) =>
+  // Scheduled prompts and automation runs are automatic input: a pane held at
+  // a usage limit answers 'busy', which the schedulers retry on their next
+  // tick, so the prompt lands after the reset instead of into a dead turn.
+  // Only the registry's own continue message passes `bypassUsageHold`.
+  const deliverPromptToSession = async (
+    id: string, agentSlug: AgentSlug, incarnationId: string, prompt: string, bypassUsageHold = false,
+  ): Promise<SessionPromptScheduleResult> => {
+    if (!bypassUsageHold && usageLimits?.holds(id)) return 'busy';
+    return deliverPromptToSessionNow(id, agentSlug, incarnationId, prompt, {});
+  };
+  const deliverPromptToSessionNow = (
+    id: string, agentSlug: AgentSlug, incarnationId: string, prompt: string,
+    opts: Pick<ScheduledPromptDeliveryDeps, 'acceptError' | 'authorized'>,
+  ) =>
     deliverScheduledPrompt(agentSlug, incarnationId, prompt, {
+      ...opts,
       getAgentState: () => {
         const current = readDaemonAgentState(id);
         const slug = current.agentName ? agentDisplayToSlug(current.agentName) : undefined;
@@ -4302,13 +4404,11 @@ function registerRpcHandlers(
         } : null;
       },
       isAgentProcessAlive: async () => {
-        const pid = agentProcessTracker.pidFor(id);
-        if (pid === undefined) return false;
         try {
           // #1307 — a reused pid is no longer the pane's agent descendant, and
-          // a stopped (Ctrl+Z) or zombie agent is not running.
-          return await agentProcessTracker.verifyLive(id, agentSlug) &&
-            await ProcessMonitor.isRunning(pid);
+          // a stopped (Ctrl+Z) or zombie agent is not running. #1727 — a WSL
+          // pane's agent is checked inside its distro the same way.
+          return await agentProcessTracker.isAgentRunning(id, agentSlug, (pid) => ProcessMonitor.isRunning(pid));
         } catch {
           return false;
         }
@@ -4335,6 +4435,63 @@ function registerRpcHandlers(
     const result = await deliverPromptToSession(id, agentSlug, incarnationId, prompt);
     return { result };
   });
+
+  usageLimits = new UsageLimitRegistry({
+    broadcast: (event) => pipeServer.broadcast(event),
+    // The agent verified on the pane when the limit was seen. The continue
+    // expects exactly that process (slug + incarnation), so a relaunched or
+    // swapped agent answers `session_changed` instead of receiving it.
+    identify: (id) => {
+      const state = readDaemonAgentState(id);
+      const slug = state.agentName ? agentDisplayToSlug(state.agentName) : undefined;
+      return slug && state.agentVerified && state.incarnationId ? { slug, incarnationId: state.incarnationId } : null;
+    },
+    deliverContinue: async (id, expected, stillWanted) => {
+      // A human draft in the composer is a wait, not a failure: answering
+      // 'busy' keeps the pane armed and retries once the draft is sent or cleared.
+      if (sessionManager.getSession(id)?.bridge.hasDraft() === true) return 'busy';
+      return deliverPromptToSessionNow(id, expected.slug, expected.incarnationId, USAGE_LIMIT_CONTINUE_PROMPT, {
+        // A turn that died on the limit leaves the pane at `error`.
+        acceptError: true,
+        // Asked before the paste and before the Enter: the hold must still be
+        // this one and still armed, and no human draft may sit in the
+        // composer (the input-revision proof covers the gap after the paste).
+        authorized: async (stage) => stillWanted()
+          && (stage === 'submit' || sessionManager.getSession(id)?.bridge.hasDraft() !== true),
+      });
+    },
+    log: (message) => log('info', message),
+  });
+  pipeServer.onRpc('daemon.usageLimit.list', async () => ({ limits: usageLimits?.list() ?? [] }));
+  // Edits come from the app only (main relays the renderer's verbs and the
+  // reset fill): an agent holding the daemon token for its hooks must not be
+  // able to dismiss or re-time a hold.
+  pipeServer.onRpc('daemon.usageLimit.update', async (params, ctx) => {
+    if (!pipeServer.isFirstParty(ctx.clientId)) return { ok: false };
+    const id = typeof params['id'] === 'string' ? params['id'] : '';
+    const raw = params['patch'];
+    if (!id || !raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false };
+    const p = raw as Record<string, unknown>;
+    const patch: PaneUsageLimitPatch = {
+      ...(typeof p['autoResume'] === 'boolean' ? { autoResume: p['autoResume'] } : {}),
+      ...(typeof p['resetsAt'] === 'number' ? { resetsAt: p['resetsAt'] } : {}),
+      ...(p['dismiss'] === true ? { dismiss: true as const } : {}),
+      ...(p['resumeNow'] === true ? { resumeNow: true as const } : {}),
+    };
+    return { ok: (await usageLimits?.update(id, patch)) === true };
+  });
+  sessionManager.on('session:usageLimit', (payload: { sessionId: string; event: { provider: 'codex'; resetsAt?: number; message?: string } }) => {
+    // Only while Codex itself is the pane's verified agent: the detector's gate
+    // outlives the process, and a shell printing the same row (cat, a paste)
+    // after Codex exited is not a limit.
+    const state = readDaemonAgentState(payload.sessionId);
+    if (state.agentName !== 'Codex CLI' || !state.agentVerified) return;
+    usageLimits?.noteScreenLimit(payload.sessionId, payload.event.provider, payload.event);
+  });
+  sessionManager.on('session:inputSubmitted', (payload: { sessionId: string }) => usageLimits?.noteSubmitted(payload.sessionId));
+  sessionManager.on('session:interrupted', (payload: { id: string }) => usageLimits?.drop(payload.id));
+  sessionManager.on('session:died', (payload: { id: string }) => usageLimits?.drop(payload.id));
+  sessionManager.on('session:destroyed', (payload: { id: string }) => usageLimits?.drop(payload.id));
 
   // Scheduled runs. Every effect goes through the same session RPCs and
   // readers a GUI pane uses; the engine owns only its store and run state.
@@ -5854,6 +6011,8 @@ function wireEvents(
     // canonical rule had corrected (Codex #5).
     const activeScreenSlug = agentDisplayToSlug(payload.agentName ?? '');
     const activeCanonical = canonicalIdentityFor(agentProcessTracker, payload.sessionId, activeScreenSlug);
+    // Past a usage-limit hold, real output means the agent works again.
+    if (!payload.likelyRepaint) usageLimits?.noteActive(payload.sessionId);
     if (!payload.likelyRepaint) hookIngest?.notePaneWorking(
       payload.sessionId,
       // Canonical undefined + a mappable screen slug IS the residue veto
@@ -6332,6 +6491,14 @@ async function shutdown(
   // response gets a 'defer', and the bridge falls back to the local permission
   // flow instead of dying with a broken pipe.
   gateBroker?.cancelAll('daemon-restart');
+  // Chat v2 drivers are agent processes the daemon owns: tree-kill them, but
+  // never let them hold the shutdown past their own budget.
+  if (chatV2Host) {
+    await Promise.race([
+      chatV2Host.dispose().catch(() => undefined),
+      new Promise<void>((resolve) => setTimeout(resolve, CHATV2_DISPOSE_TIMEOUT_MS).unref()),
+    ]);
+  }
   // Close every transcript fs.watch and poll timer. All of them are unref'd so
   // none held the process open; this just avoids a read firing mid-shutdown.
   chatSessions?.dispose();
@@ -7266,6 +7433,7 @@ async function main(): Promise<void> {
     // A nudge ends with an Enter; an approval waiting on a human is quiet, so
     // the quiet gate alone would press it. Hold on a pending approval record,
     // a pane blocked on a human, or a dialog on the visible screen.
+    usageLimited: (id) => usageLimits?.holds(id) === true,
     approvalBlocked: (id) =>
       sessionManager.getSession(id)?.bridge.isAwaitingHuman() === true
       || approvalRegistry?.list().pending.some((request) => request.sessionId === id) === true,
@@ -7280,7 +7448,13 @@ async function main(): Promise<void> {
   // Resume-chip edge trigger: watches the agent process (claude/codex) inside
   // interactive panes so the chip can gate on process truth instead of the
   // decaying activity heuristic. Rides processMonitor's existing batch.
-  const agentProcessTracker = new AgentProcessTracker(processMonitor);
+  const agentProcessTracker = new AgentProcessTracker(processMonitor, undefined, undefined, undefined, {
+    // #1727 — a WSL pane's agent is a Linux process: attributed from its own
+    // hook's report (onAuthorityTouched), watched from inside the distro.
+    isWslSession: (id) => !!sessionManager.getSession(id)?.meta.wslTarget,
+    watcher: new WslPidWatcher(),
+    isRunning: (agent) => checkWslAgentRunning(agent),
+  });
   // #919 — re-evaluate canonical identity OUTSIDE `session:agent`: the tier
   // inputs change (attribution completes; a watched process dies) while no
   // detector event is in flight, and a wrong label would otherwise sit in
@@ -7294,6 +7468,8 @@ async function main(): Promise<void> {
   agentProcessTracker.setStateChangeListener((sessionId, state) => {
     if (!state.alive) hookIngest?.expireAuthorityFor(sessionId, state.slug);
     if (!state.alive) automationEngine?.onAgentProcessExit(sessionId);
+    // The agent that hit the limit is gone; a relaunch is a new agent.
+    if (!state.alive) usageLimits?.drop(sessionId);
     // A pane whose status the HOOK owns has exactly two settle paths: the Stop
     // hook, and this edge. An agent killed mid-turn (double Ctrl+C, /exit, a
     // crash) sends no Stop, and byte silence no longer clears a hook-governed
@@ -7405,6 +7581,8 @@ async function main(): Promise<void> {
       return !m || m.meta.state === 'dead';
     },
     broadcast: (event) => {
+      // A supervised restart replaces the pane's process: its hold is void.
+      if (event.type === 'session.restarted') usageLimits?.drop(event.sessionId);
       try {
         pipeServer.broadcast(event);
       } catch (err) {

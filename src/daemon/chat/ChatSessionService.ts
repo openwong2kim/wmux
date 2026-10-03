@@ -6,6 +6,7 @@ import type { ChatControlResult, ChatInteraction, ChatInteractionAnswer, Managed
 import type { ChatSendResult, TranscriptPage, TranscriptStatus, TurnEvent } from '../../shared/transcript/turnEvents';
 import { BASE_CAPABILITIES, deadline, type ChatAdapter, type ChatProvider } from './adapter';
 import { managedHistoryEpoch } from './chatBridge';
+import { chatV2OwnsPane } from './v2/paneClaims';
 
 interface StoredSession {
   version: 1;
@@ -248,6 +249,8 @@ export class ChatSessionService {
     this.changed(session); return 'sent';
   }
   async respond(id: string, nativeId: string, requestId: string, answer: ChatInteractionAnswer): Promise<ChatControlResult> {
+    // A chat-v2 pane's decisions are answered through the ApprovalRegistry only.
+    if (chatV2OwnsPane(id)) return { ok: false, error: 'Answer this request in chat' };
     const session = this.get(id); const pending = session?.pending.get(requestId);
     if (!session || session.saved.sessionId !== nativeId || !pending || pending.answering || session.cancelRequested || !session.saved.inFlight) return { ok: false, error: 'Request expired or session changed' };
     if (pending.request.kind === 'permission' && !pending.request.options.some((option) => option.id === answer.optionId)) return { ok: false, error: 'Invalid permission response' };

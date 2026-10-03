@@ -32,6 +32,7 @@ import {
   isValidSessionName,
 } from './replRegistry';
 import type { ReplBrowserBinding, ReplEvalOutcome } from './ReplSession';
+import { fromAgentPath, toAgentPath } from '../wslPaths';
 
 export const DEFAULT_TIMEOUT_MS = 30_000;
 export const MIN_TIMEOUT_MS = 100;
@@ -221,27 +222,39 @@ export function createReplToolCatalog(
       if (!isValidSessionName(name)) {
         return text(`Invalid session name "${name}". Use 1-64 of: letters, digits, dot, underscore, hyphen.`, true);
       }
+      // The runtime runs on the host; a WSL caller's /mnt/<drive>/ cwd is
+      // translated, and a distro path has no host directory to start in.
+      const hostCwd = cwd === undefined ? undefined : fromAgentPath(cwd);
+      if (hostCwd === null) {
+        return text(
+          `cwd "${cwd}" is not an absolute /mnt/<drive>/ path; the REPL runs on Windows and can only start ` +
+            'in a drive-mount directory (/mnt/<drive>/...).',
+          true,
+        );
+      }
       const registry = getReplRegistry();
       const notes: string[] = [];
       let acquired;
       try {
-        acquired = registry.acquire(name, cwd ?? process.cwd());
+        acquired = registry.acquire(name, hostCwd ?? process.cwd());
       } catch (error) {
-        return text(String(error instanceof Error ? error.message : error), true);
+        const message = String(error instanceof Error ? error.message : error);
+        // A bad cwd is reported in the spelling the caller passed, not the host's.
+        return text(cwd && hostCwd && hostCwd !== cwd ? message.split(hostCwd).join(cwd) : message, true);
       }
       if (acquired.created) {
         if (acquired.previousDeath) {
           notes.push(`the previous "${name}" runtime is gone (${acquired.previousDeath}); this is a fresh one with no state`);
         }
-        notes.push(`started a new runtime in ${acquired.session.cwd}`);
+        notes.push(`started a new runtime in ${toAgentPath(acquired.session.cwd)}`);
         if (acquired.session.withheldCredentials.length > 0) {
           notes.push(
             `credential env vars are withheld from the REPL: ${acquired.session.withheldCredentials.join(', ')}`,
           );
         }
-      } else if (cwd && cwd !== acquired.session.cwd) {
+      } else if (hostCwd && hostCwd !== acquired.session.cwd) {
         notes.push(
-          `cwd was ignored — session "${name}" is already running in ${acquired.session.cwd}. ` +
+          `cwd was ignored — session "${name}" is already running in ${toAgentPath(acquired.session.cwd)}. ` +
             'Call repl_reset first, or use a different session name.',
         );
       }
@@ -325,7 +338,7 @@ export function createReplToolCatalog(
           s.busy
             ? 'reclaim held while busy'
             : `reclaim in ${formatDuration(Math.max(0, IDLE_TIMEOUT_MS - (now - s.lastUsed)))}`,
-          s.cwd,
+          toAgentPath(s.cwd),
         ].join(' · '),
       );
       return text([...rows, '', header].join('\n'));

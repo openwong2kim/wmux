@@ -1352,3 +1352,37 @@ describe('fan-out worker first run (A-1)', () => {
     }
   });
 });
+
+describe('per-worker private temp dir', () => {
+  it('points TMPDIR/TMP/TEMP at a dir of its own and hands every spawned or failed-spawn dir to the sweep', async () => {
+    const created: string[] = [];
+    const registered: Array<[string, string]> = [];
+    const removed: string[] = [];
+    const renderer = makeRendererFake({ spawnFailOn: (name) => name.endsWith('Task A') });
+    const svc = new FanOutService({
+      daemon: makeDaemonFake().port,
+      renderer: renderer.port,
+      worktrees: makeWorktreesFake(),
+      workerTempDirs: {
+        create: () => {
+          const dir = `/tmp/wmux-task-${created.length + 1}`;
+          created.push(dir);
+          return dir;
+        },
+        register: (ws, dir) => registered.push([ws, dir]),
+        remove: (dir) => removed.push(dir),
+      },
+    });
+    const res = await svc.start({ ...baseReq(), idempotencyKey: 'k-tmp' });
+    expect(res.tasks.find((t) => t.title === 'Task B')?.workspaceId).toBe('ws-task-1');
+    expect(created).toHaveLength(2);
+    const [dirA, dirB] = created;
+    // Task A's spawn failed, but a failed spawn can still leave a live
+    // session behind: the sweep (which checks live sessions) owns the dir.
+    const taskA = res.tasks.find((t) => t.title === 'Task A')!;
+    expect(removed).toEqual([]);
+    expect(registered).toEqual([[`task:${taskA.taskId}`, dirA], ['ws-task-1', dirB]]);
+    const spawnB = renderer.spawned.find((p) => p.name.endsWith('Task B'))!;
+    expect(spawnB.env).toMatchObject({ TMPDIR: dirB, TMP: dirB, TEMP: dirB });
+  });
+});

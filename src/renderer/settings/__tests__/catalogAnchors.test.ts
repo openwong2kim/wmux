@@ -23,6 +23,7 @@ const SOURCES = [
   'IntegrationSetupSection.tsx',
   'FanoutPresetsSection.tsx',
   'ComputerUseSection.tsx',
+  'QuickLaunchSection.tsx',
 ];
 
 function anchoredIds(): Set<string> {

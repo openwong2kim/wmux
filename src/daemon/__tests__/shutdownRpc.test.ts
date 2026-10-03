@@ -78,10 +78,12 @@ describe('A2 — daemon.shutdown RPC + shutdown() opts (source-level invariants)
     // Match shutdown() definition (named async function).
     const defStart = lines.findIndex((l) => /^async function shutdown\(/.test(l));
     expect(defStart, 'shutdown function not found').toBeGreaterThanOrEqual(0);
-    // Body span until the closing brace of the function. We just need
-    // enough source to verify the opts handling — slice ahead a few hundred
-    // lines.
-    const defBody = lines.slice(defStart, defStart + 200).join('\n');
+    // Body span: up to the function's closing brace (the first column-0 `}`
+    // after the definition), so the checks below see the whole body however
+    // long it grows.
+    const defEnd = lines.findIndex((l, i) => i > defStart && /^}/.test(l));
+    expect(defEnd, 'end of shutdown function not found').toBeGreaterThan(defStart);
+    const defBody = lines.slice(defStart, defEnd + 1).join('\n');
 
     expect(defBody).toMatch(/opts:\s*{\s*skipPipeStop\?:\s*boolean;\s*skipExit\?:\s*boolean\s*}/);
 

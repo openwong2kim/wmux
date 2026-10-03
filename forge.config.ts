@@ -513,6 +513,12 @@ const config: ForgeConfig = {
           config: 'vite.preload.config.ts',
           target: 'preload',
         },
+        {
+          // The quick-launch composer's own, minimal preload (sandboxed window).
+          entry: 'src/preload/quickLaunchPreload.ts',
+          config: 'vite.preload.config.ts',
+          target: 'preload',
+        },
       ],
       renderer: [
         {

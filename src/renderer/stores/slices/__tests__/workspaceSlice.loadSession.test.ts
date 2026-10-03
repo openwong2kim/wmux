@@ -31,6 +31,7 @@ type TestState = WorkspaceSlice & {
   toastEnabled: boolean;
   notificationRingEnabled: boolean;
   anthropicUsageEnabled: boolean;
+  usageLimitAutoResume: boolean;
   customKeybindings: unknown[];
   autoUpdateEnabled: boolean;
   sidebarMode: 'workspaces' | 'company';
@@ -89,6 +90,7 @@ function createTestStore() {
       toastEnabled: true,
       notificationRingEnabled: true,
       anthropicUsageEnabled: false,
+      usageLimitAutoResume: false,
       customKeybindings: [],
       autoUpdateEnabled: true,
       sidebarMode: 'workspaces',
@@ -740,6 +742,35 @@ describe('loadSession — Anthropic usage meter (#896)', () => {
 
     expect(store.getState().anthropicUsageEnabled).toBe(false);
     expect(setUsageEnabled).not.toHaveBeenCalled();
+  });
+});
+
+describe('loadSession — usage-limit auto-resume setting', () => {
+  function sessionWith(value: unknown): SessionData {
+    const ws: Workspace = {
+      id: 'ws-limit',
+      name: 'Limit',
+      rootPane: makeBrowserSurfaceTree('https://example.com'),
+      activePaneId: 'pane-root',
+    };
+    return {
+      workspaces: [ws],
+      activeWorkspaceId: ws.id,
+      sidebarVisible: true,
+      ...(value !== undefined ? { usageLimitAutoResume: value } : {}),
+    } as unknown as SessionData;
+  }
+
+  it('restores a saved boolean and ignores a missing or malformed value', () => {
+    const store = createTestStore();
+    store.getState().loadSession(sessionWith(true));
+    expect(store.getState().usageLimitAutoResume).toBe(true);
+    store.getState().loadSession(sessionWith('true'));
+    expect(store.getState().usageLimitAutoResume).toBe(true);
+    store.getState().loadSession(sessionWith(false));
+    expect(store.getState().usageLimitAutoResume).toBe(false);
+    store.getState().loadSession(sessionWith(undefined));
+    expect(store.getState().usageLimitAutoResume).toBe(false);
   });
 });
 

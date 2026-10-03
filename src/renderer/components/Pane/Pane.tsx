@@ -20,6 +20,8 @@ import SurfaceTabs, {
   paneClusterWidth,
   paneActionsMode,
   paneHeaderExtraChromeWidth,
+  PANE_ACTIONS_MIN_PANE_WIDTH,
+  USAGE_LIMIT_CHIP_FULL_WIDTH,
   isTerminalSurfaceType,
   showsEnforcedModelBadge,
   type PaneActionsMode,
@@ -319,7 +321,10 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
     activeSurfacePtyId ? s.surfacePendingQuestion[activeSurfacePtyId] : undefined,
   );
   const markSurfaceQuestionSeen = useStore((s) => s.markSurfaceQuestionSeen);
-  const completeBlink = !isActive && !!activeSurfaceStatus;
+  // A turn that died on a usage limit is waited out, not flagged: no blink
+  // while the hold stands (shared/usageLimit).
+  const activeUsageWaiting = useStore((s) => !!activeSurfacePtyId && s.usageLimitWaiting[activeSurfacePtyId] === true);
+  const completeBlink = !isActive && !!activeSurfaceStatus && !(activeUsageWaiting && activeSurfaceStatus === 'error');
 
   // Clear the attention status once the user is actually on the pane (covers
   // both "navigated to a blinking pane" and "agent finished while I was
@@ -535,18 +540,21 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   // paneHeaderExtraChromeWidth). Both of these gate on the ACTIVE surface being
   // a terminal, which is the same condition SurfaceTabs draws them under.
   const activeSurfaceType = pane.surfaces.find((s) => s.id === pane.activeSurfaceId)?.surfaceType;
+  const hasUsageLimit = useStore((s) => !!activeSurfacePtyId && !!s.usageLimits[activeSurfacePtyId]);
+  const headerExtraChrome = paneHeaderExtraChromeWidth({
+    chatToggle: chatViewEnabled && isTerminalSurfaceType(activeSurfaceType),
+    enforcedModelBadge: showsEnforcedModelBadge({
+      binding: paneRoleBinding,
+      surfaceType: activeSurfaceType,
+    }),
+    usageLimitChip: hasUsageLimit,
+  });
   const actionsMode: PaneActionsMode = paneActionsSetting && !readOnly
-    ? paneActionsMode(
-        paneWidth,
-        paneHeaderExtraChromeWidth({
-          chatToggle: chatViewEnabled && isTerminalSurfaceType(activeSurfaceType),
-          enforcedModelBadge: showsEnforcedModelBadge({
-            binding: paneRoleBinding,
-            surfaceType: activeSurfaceType,
-          }),
-        }),
-      )
+    ? paneActionsMode(paneWidth, headerExtraChrome)
     : 'none';
+  // The full usage-limit chip needs room beyond the compact floor counted above.
+  const usageLimitCompact = hasUsageLimit && paneWidth != null && paneWidth > 0
+    && paneWidth < PANE_ACTIONS_MIN_PANE_WIDTH + headerExtraChrome + USAGE_LIMIT_CHIP_FULL_WIDTH;
 
   // X8 supervision. Resolve the pane's active-surface ptyId → supervision
   // slice. The ⟳ badge itself is drawn by SurfaceTabs (it belongs to the header
@@ -767,6 +775,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         paneId={pane.id}
         paneActive={isActive}
         actionsMode={actionsMode}
+        usageLimitCompact={usageLimitCompact}
         onSelect={(surfaceId) => setActiveSurface(pane.id, surfaceId)}
         onClose={handleCloseSurface}
         onSplitHorizontal={handleSplitHorizontal}

@@ -26,6 +26,8 @@ import { titleShowsRunningTurn } from './transcript/chatScreenGate';
  *  - 'agent'    → { sessionId: string, event: AgentEvent }
  *  - 'notification' → { sessionId, event: TerminalNotification & { ts } }
  *  - 'critical' → { sessionId: string, event: CriticalEvent }
+ *  - 'usageLimit' → { sessionId: string, event: UsageLimitLineEvent }
+ *  - 'inputSubmitted' → { sessionId: string } (input with a submit boundary)
  *  - 'active'   → { sessionId, agentName?, likelyRepaint? } — onActive cycle
  *                 start; likelyRepaint marks a passive burst inside the
  *                 resize-redraw guard window (alarm feeds must ignore it)
@@ -52,6 +54,9 @@ export class DaemonPTYBridge extends EventEmitter {
   private activeUnsubscribe: (() => void) | null = null;
   private agentUnsubscribe: (() => void) | null = null;
   private criticalUnsubscribe: (() => void) | null = null;
+  private usageLimitUnsubscribe: (() => void) | null = null;
+  /** See noteInput: typed or pasted composer text not yet submitted. */
+  private draftPending = false;
   private resizeGuardTimer: ReturnType<typeof setTimeout> | null = null;
   private sessionId: string | null = null;
   /**
@@ -353,6 +358,19 @@ export class DaemonPTYBridge extends EventEmitter {
     const answerKey = wasAwaiting && !this.inputInBracketedPaste && /^(?:[1-9]|\x1b)$/.test(keyProbe);
     const hasSubmitBoundary = this.scanSubmittedInput(data);
     const answered = forceSubmitted || hasSubmitBoundary || answerKey;
+    // An unsubmitted draft in the composer: typed or pasted text with no Enter
+    // after it. Ctrl+C / Ctrl+U empty the composer. Read by the usage-limit
+    // continue, which must never append to (and submit) a human's half-typed line.
+    // eslint-disable-next-line no-control-regex
+    const clearsComposer = /[\x03\x15]/.test(data);
+    if (forceSubmitted || hasSubmitBoundary) {
+      this.draftPending = false;
+      if (this.sessionId) this.emit('inputSubmitted', { sessionId: this.sessionId });
+    } else if (clearsComposer) {
+      this.draftPending = false;
+    } else if (DaemonPTYBridge.typesDraftText(data)) {
+      this.draftPending = true;
+    }
     // Input that reached a pane still blocked on a human. Carries sizes only,
     // never the text: the daemon logs it (to see what an unrecognised answer
     // looked like) and uses it to schedule a screen check.
@@ -515,6 +533,19 @@ export class DaemonPTYBridge extends EventEmitter {
    * the terminal's own replies to queries (TERMINAL_REPLY, CPR). Presses,
    * releases and wheel reports stay — they can select or dismiss.
    */
+  /** Whether input carries composer text: printable characters once control
+   *  bytes, escape sequences and the paste brackets are removed. */
+  private static typesDraftText(data: string): boolean {
+    // eslint-disable-next-line no-control-regex
+    const text = data.replace(/\x1b\[[0-9;?<>=]*[ -/]*[@-~]|\x1bO.|\x1b[\]P_^][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b./g, '').replace(/[\x00-\x1f\x7f]/g, '');
+    return text.length > 0;
+  }
+
+  /** Whether the composer holds a typed but unsubmitted draft. */
+  hasDraft(): boolean {
+    return this.draftPending;
+  }
+
   private static stripPassiveInput(data: string): string {
     return data
       .replace(DaemonPTYBridge.FOCUS_REPORT, '')
@@ -1081,6 +1112,9 @@ export class DaemonPTYBridge extends EventEmitter {
     this.criticalUnsubscribe = agentDetector.onCritical((criticalEvent) => {
       this.emit('critical', { sessionId, event: criticalEvent });
     });
+    this.usageLimitUnsubscribe = agentDetector.onUsageLimit((event) => {
+      this.emit('usageLimit', { sessionId, event });
+    });
 
     // Prompt-based CWD detection state
     let lastDetectedCwd = '';
@@ -1298,6 +1332,8 @@ export class DaemonPTYBridge extends EventEmitter {
     this.agentUnsubscribe = null;
     this.criticalUnsubscribe?.();
     this.criticalUnsubscribe = null;
+    this.usageLimitUnsubscribe?.();
+    this.usageLimitUnsubscribe = null;
 
     // Stop activity monitor to clear timers and state
     if (this.activityMonitor && this.sessionId) {

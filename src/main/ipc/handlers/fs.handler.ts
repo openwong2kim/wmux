@@ -1,9 +1,10 @@
-import { ipcMain, BrowserWindow } from 'electron';
+import { ipcMain } from 'electron';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
+import { focusedPrimaryWindow, primaryWindow } from '../../window/auxiliaryWindows';
 
 export interface FileEntry {
   name: string;
@@ -175,7 +176,7 @@ export function registerFsHandlers(): () => void {
         }
         debounceTimers.set(resolved, setTimeout(() => {
           debounceTimers.delete(resolved);
-          const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+          const win = focusedPrimaryWindow() ?? primaryWindow();
           if (win && !win.isDestroyed()) {
             win.webContents.send(IPC.FS_CHANGED, resolved);
           }

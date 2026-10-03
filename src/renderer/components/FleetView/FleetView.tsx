@@ -72,6 +72,7 @@ export default function FleetView() {
   const surfaceTurnOpenAt = useStore((s) => s.surfaceTurnOpenAt);
   const commandRunningByPtyId = useStore((s) => s.commandRunningByPtyId);
   const agentAliveByPtyId = useStore((s) => s.agentAliveByPtyId);
+  const usageLimitWaiting = useStore((s) => s.usageLimitWaiting);
   const hookRunningByPtyId = useStore(useShallow(selectHookRunningByPtyId));
   const unverifiableMinutes = useStore(useShallow(selectUnverifiablePaneMinutes));
   const missions = useStore((s) => s.missionByPaneGroup);
@@ -144,8 +145,8 @@ export default function FleetView() {
       surfaceAgent, surfacePendingQuestion, surfaceActivityAt, surfaceTurnOpenAt,
       commandRunningByPtyId, agentAliveByPtyId, hookRunningByPtyId, remoteWorkspaces,
       surfaceLastMessage, surfaceOutputAt: useStore.getState().surfaceOutputAt,
-      unverifiablePaneMinutes: unverifiableMinutes,
-    }, { now, sortMode: fleetSortMode }), [workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, supervisionByPtyId,
+      unverifiablePaneMinutes: unverifiableMinutes, usageLimitWaiting,
+    }, { now, sortMode: fleetSortMode }), [usageLimitWaiting, workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, supervisionByPtyId,
     surfaceAgent, surfacePendingQuestion, surfaceActivityAt, surfaceTurnOpenAt,
     commandRunningByPtyId, agentAliveByPtyId, hookRunningByPtyId, remoteWorkspaces, unverifiableMinutes,
     surfaceLastMessage, now, fleetSortMode]);

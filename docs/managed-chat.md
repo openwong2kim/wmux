@@ -1,11 +1,12 @@
-# Terminal chat and optional managed sessions
+# Terminal chat, chat v2 and optional managed sessions
 
-The default Chat view projects the conversation already running in the pane's
-terminal. Switching Terminal ↔ Chat must not spawn an agent, create a native
-session, resume a second execution owner, or send a prompt. Claude, Codex and
-OpenCode feed the same wmux `TurnEvent` model. ACP is an optional transport for
-separately managed sessions; it does not establish ownership of an existing TUI.
-No competitor implementation code was used.
+wmux has two chat views. Terminal chat projects the conversation already
+running in the pane's terminal: viewing it never spawns an agent or sends a
+prompt, and Claude, Codex and OpenCode feed the same wmux `TurnEvent` model.
+Chat v2 (below) is a conversation the daemon runs itself through the agent's
+structured protocol, bound to the pane with exactly one writer at a time. ACP
+is an optional transport for separately managed sessions; it does not
+establish ownership of an existing TUI.
 
 ## Using terminal chat
 
@@ -233,3 +234,82 @@ the same native session, transcript basename, size and modification time. Change
 files and replacement conversations do not reuse that preview. Sending remains
 blocked until the fresh snapshot and subscription are ready; cached history never
 authorizes input. Providers without a file fingerprint skip this cache.
+
+## Chat v2: driver-owned conversations
+
+Chat v2 runs the agent through its structured protocol instead of projecting a
+terminal. The daemon starts the agent process (a *driver*), streams its replies,
+tool calls, subagent work, approvals and questions, and keeps the folded
+conversation. The wire contract and its rules are in `src/shared/chatv2/ipc.ts`
+(limits in `limits.ts`); the daemon side is `src/daemon/chat/v2/`. This release
+ships the contract only: every `daemon.chatv2.*` method answers
+`not-implemented`. Parts of the event model and fold are adapted from
+MIT-licensed code; each such file names its source in a header, and the license
+is in `THIRD_PARTY_NOTICES`.
+
+### Ownership
+
+- A chat-v2 conversation belongs to one pane. The pane keeps its shell PTY as the
+  anchor (`Surface.ptyId`, hooks, Fleet, identity); the driver is a daemon record
+  keyed by that pane id. There is no surface without a PTY.
+- One writer per pane. A driver starts (and restarts) only when no agent process
+  is tracked in the pane and its shell is idle with no child processes;
+  otherwise `agent-running-in-pane`.
+- The only handoff is chat → terminal: the daemon stops the driver, waits until
+  its process tree is reaped, records the conversation as handed off, and
+  resumes it in the anchor shell's TUI. A handed-off record no longer sends.
+  Terminal → chat is not offered: without proof that the TUI process has exited,
+  both could append to the same conversation file.
+
+### Events, snapshots and seq
+
+- Drivers emit `HarnessEvent`s. The daemon stamps each with a per-session `seq`
+  that never restarts and a time, folds it with `src/shared/chatv2/apply.ts`, and
+  persists the folded session atomically under `chat-sessions/v2/`.
+- The fold is a pure function of the session and the stamped events: block ids
+  are `<seq>.<n>`, turn times come from the stamp, deltas always append, and
+  approvals attach to tool calls by call id only. The daemon and every renderer
+  that folds the same events reach the same blocks, however the events are
+  batched.
+- Each load of a record gets a new random epoch. Renderers subscribe, then load a
+  snapshot (head plus a tail window starting at the open turn when it fits), and
+  fold the pushed events with the same `apply.ts`. A renderer re-snapshots on an
+  epoch change, a seq gap, a change below its window, a fold that does not match
+  the push, and after the app reconnects to the daemon.
+- Deltas are batched every 120 ms; approvals, questions, errors and turn ends
+  flush at once. One push stays under 128 KiB. Block text, tool detail and tool
+  output are capped in bytes; the cut part stays readable through `bodies`.
+
+### Approvals
+
+Driver permission requests and questions are ApprovalRegistry native decisions
+(`adapter: 'claude'`). The desktop answers by request id through
+`daemon.chatv2.answer`; a phone answers through `/api/approvals/:id/answer`. The
+first answer wins and the driver writes exactly one reply per request. A request
+the registry cannot record, or one made while native decisions are switched off,
+is denied at once. Permission replies are allow or deny; question answers use the
+form's option keys.
+
+### Environment and accounts
+
+The driver env is built like a scheduled run's: agent-nesting markers removed,
+the pane's account directory applied, then `WMUX_PTY_ID` set to the anchor pane
+and `WMUX_GATE=0` so the PreToolUse gate does not show a second card for the same
+request. Provider settings exported only in your shell profile (for example
+`CLAUDE_CODE_USE_BEDROCK` or `ANTHROPIC_BASE_URL`) are not inherited; put them in
+the `env` block of the agent's `settings.json` instead. Images are copied into a
+staging folder in the wmux data directory before they are sent.
+
+### Restore
+
+Records survive app and daemon restarts. After a daemon restart a record has no
+process; the next message restarts the driver with the agent's resume option.
+Nothing is resent automatically. On start the daemon stops a driver left from a
+previous run only when its process id, start time and command line all match the
+record, and expires its pending approvals.
+
+### Phone
+
+A phone sees a chat-v2 conversation on `/turns` as `binding: 'managed'` with
+`historyEpoch` `c2:<chatSessionId>:<epoch>`: it can read and approve. Sending
+from the phone stays `409 managed-read-only` until a new capability is agreed.

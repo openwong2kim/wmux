@@ -1,4 +1,5 @@
 import type { BrowserWindow } from 'electron';
+import { usageLimitHoldDetail } from '../../usageLimit/paneUsageLimits';
 import type { RpcRouter } from '../RpcRouter';
 import { isHostedCaller, type RpcContext } from '../../../shared/rpc';
 import type { PTYManager } from '../../pty/PTYManager';
@@ -778,6 +779,10 @@ export async function deliveryGateCheck(
   gate: ApprovalInputGate,
   ptyId: string,
 ): Promise<GatedSubmitRefusal | null> {
+  // A pane held at a usage limit cannot take the turn this delivery would
+  // start; the sender keeps the message and retries after the reset.
+  const held = usageLimitHoldDetail(ptyId);
+  if (held) return { ok: false, reason: 'usage_limited', detail: held };
   try {
     await assertNotTypingAtAnApproval(gate, undefined, ptyId, 'delivery', { refuseUnreadable: true });
     return null;

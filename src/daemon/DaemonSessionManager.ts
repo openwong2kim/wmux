@@ -726,6 +726,14 @@ export class DaemonSessionManager extends EventEmitter {
       this.emit('session:critical', payload);
     });
 
+    bridge.on('usageLimit', (payload) => {
+      this.emit('session:usageLimit', payload);
+    });
+
+    bridge.on('inputSubmitted', (payload) => {
+      this.emit('session:inputSubmitted', payload);
+    });
+
     // A human answered the dialog this pane was blocked on (see noteInput).
     bridge.on('answered', (payload) => {
       this.emit('session:answered', payload);

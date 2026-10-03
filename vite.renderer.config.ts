@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import path from 'node:path';
 import pkg from './package.json';
 
 export default defineConfig({
@@ -22,6 +23,12 @@ export default defineConfig({
     // hangs on the parse barrier. Targeting es2022 keeps `||=` intact.
     target: 'es2022',
     rollupOptions: {
+      // Two pages: the app, and the global quick-launch composer window
+      // (main/quickLaunch), which loads none of the app.
+      input: {
+        main_window: path.resolve(__dirname, 'index.html'),
+        launcher: path.resolve(__dirname, 'launcher.html'),
+      },
       output: {
         // TASK-2: split heavy, stable vendor bundles out of the main chunk so
         // they cache independently and stay off the app's hot rebuild path.

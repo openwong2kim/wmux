@@ -9,6 +9,7 @@ import {
   buildPaneMarkdown,
 } from '../../utils/sessionInfoMarkdown';
 import { tokenAttrs } from '../../themes';
+import UsageLimitChip from './UsageLimitChip';
 import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
 import { findPane } from '../../../shared/paneUtils';
 import PaneDragGrip from './PaneDragGrip';
@@ -178,10 +179,19 @@ export const ENFORCED_MODEL_BADGE_MIN_WIDTH = 12;
 export function paneHeaderExtraChromeWidth(opts: {
   chatToggle: boolean;
   enforcedModelBadge: boolean;
+  /** The active pane is held at a usage limit (UsageLimitChip is drawn). */
+  usageLimitChip?: boolean;
 }): number {
   return (opts.chatToggle ? CHAT_TOGGLE_WIDTH : 0)
-    + (opts.enforcedModelBadge ? ENFORCED_MODEL_BADGE_MIN_WIDTH : 0);
+    + (opts.enforcedModelBadge ? ENFORCED_MODEL_BADGE_MIN_WIDTH : 0)
+    + (opts.usageLimitChip ? USAGE_LIMIT_CHIP_COMPACT_WIDTH : 0);
 }
+
+/** The usage-limit chip in its compact form: clock glyph + countdown. */
+export const USAGE_LIMIT_CHIP_COMPACT_WIDTH = 64;
+/** Rough ceiling of the full chip (label, reset text, toggle and ×). Below
+ *  `cluster + tab strip + other chrome + this`, the chip draws compact. */
+export const USAGE_LIMIT_CHIP_FULL_WIDTH = 300;
 
 /** Whether a pane of `width` can afford the full cluster. Kept as its own
  *  predicate because that is the question the badge offset and the tests ask;
@@ -342,6 +352,9 @@ interface SurfaceTabsProps {
    * back to the setting alone, at full width.
    */
   actionsMode?: PaneActionsMode;
+  /** Draw the usage-limit chip compact (glyph + countdown). Pane.tsx decides it
+   *  from the width it already measures. */
+  usageLimitCompact?: boolean;
 }
 
 export default function SurfaceTabs({
@@ -360,6 +373,7 @@ export default function SurfaceTabs({
   onSplitHorizontalRemote,
   onSplitVerticalRemote,
   actionsMode,
+  usageLimitCompact = false,
 }: SurfaceTabsProps) {
   const t = useT();
   // Same 200ms threshold pattern WorkspaceItem uses so a fast click never
@@ -933,6 +947,10 @@ export default function SurfaceTabs({
           by itself. Both are labels, not controls, so neither takes pointer
           events away from anything — and being in the flow, both now keep
           their own hover tooltip, which `pointer-events: none` used to eat. */}
+      <UsageLimitChip
+        ptyId={surfaces.find((sf) => sf.id === activeSurfaceId)?.ptyId}
+        compact={usageLimitCompact}
+      />
       {supervision && (
         <span
           data-pane-supervision={supervision.status}

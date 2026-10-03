@@ -1,4 +1,5 @@
 import type { ElectronAPI, McpTargetStatusPayload } from '../preload/preload';
+import type { QuickLaunchAPI } from '../preload/quickLaunchPreload';
 import type {
   RemoteInboxItem,
   LanLinkStatus,
@@ -31,6 +32,8 @@ import type {
 
 declare global {
   interface Window {
+    /** Only in the quick-launch composer window (quickLaunchPreload.ts). */
+    quickLaunchAPI: QuickLaunchAPI;
     electronAPI: ElectronAPI & {
       onFileDrop: (callback: (paths: string[]) => void) => () => void;
       fs?: {

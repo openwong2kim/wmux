@@ -12,7 +12,8 @@ import {
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import PaneActionsMenu, { type PaneActionItem } from '../Pane/PaneActionsMenu';
-import { IconChevron, IconEye, IconEyeOff, IconPencil, IconTerminal, IconX } from '../icons';
+import { IconChevron, IconClock, IconEye, IconEyeOff, IconPencil, IconTerminal, IconX } from '../icons';
+import { updateUsageLimit } from '../../hooks/useUsageLimitBridge';
 import { submitBracketedPasteToPty } from '../../utils/ptyMessageDelivery';
 import { disposePanePtys } from '../../utils/paneTeardown';
 import { findParent, findPane } from '../../../shared/paneUtils';
@@ -131,6 +132,11 @@ export function FleetRowMenu({ pane, verbs, focused, onJump, onEdit, onMenuOpenC
   openRef.current = anchor !== null;
   useEffect(() => () => { if (openRef.current) onMenuOpenChange?.(null); }, [onMenuOpenChange]);
 
+  // Usage-limit hold: arm/disarm the continue message while the reset is ahead.
+  const limitPtyId = fleetTargetPtyId(pane);
+  const usageLimit = useStore((s) => s.usageLimits[limitPtyId]);
+  const canArmLimit = !!usageLimit && usageLimit.resetsAt != null && usageLimit.resetsAt > Date.now();
+
   const items: PaneActionItem[] = [
     { key: 'jump', label: t('fleet.verb.jump'), shortcut: 'Enter', icon: <IconChevron size={12} />, onSelect: () => onJump(pane) },
   ];
@@ -153,6 +159,19 @@ export function FleetRowMenu({ pane, verbs, focused, onJump, onEdit, onMenuOpenC
         onSelect: () => toggleFleetStash(pane),
       },
       { key: 'label', label: t('fleet.verb.label'), shortcut: 'L', icon: <IconPencil size={12} />, onSelect: () => onEdit(pane, 'label') },
+    );
+    if (canArmLimit && usageLimit) {
+      const armed = usageLimit.autoResume === true;
+      items.push({
+        key: 'usage-limit-resume',
+        label: armed ? t('usageLimit.resumingAtReset') : t('usageLimit.resumeAtReset'),
+        icon: <IconClock size={12} />,
+        active: armed,
+        title: armed ? t('usageLimit.cancelResumeTitle') : t('usageLimit.resumeAtResetTitle'),
+        onSelect: () => updateUsageLimit(limitPtyId, { autoResume: !armed }),
+      });
+    }
+    items.push(
       {
         key: 'close',
         label: t('fleet.verb.close'),

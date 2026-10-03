@@ -90,6 +90,7 @@ export default function DeckFleet({
   const surfaceTurnOpenAt = useStore((s) => s.surfaceTurnOpenAt);
   const commandRunningByPtyId = useStore((s) => s.commandRunningByPtyId);
   const agentAliveByPtyId = useStore((s) => s.agentAliveByPtyId);
+  const usageLimitWaiting = useStore((s) => s.usageLimitWaiting);
   // ...and the decay clock's VERDICT rather than the clock itself. Subscribing
   // to `agentClockMs` here would re-run the fleet selector and re-render every
   // roster row every 2 s while any agent is fresh, for a tick that usually
@@ -115,6 +116,7 @@ export default function DeckFleet({
       surfaceTurnOpenAt,
       commandRunningByPtyId,
       agentAliveByPtyId,
+      usageLimitWaiting,
     });
     // Roster = live terminal panes of the ACTIVE workspace only (M1.5: the
     // deck is this workspace's orchestrator, so its roster is this
@@ -136,7 +138,7 @@ export default function DeckFleet({
   }, [
     workspaces, activeWorkspaceId, surfaceAgentStatus, surfaceActivity, paneLabel,
     surfaceAgent, surfacePendingQuestion, surfaceActivityAt, hookRunningByPtyId,
-    surfaceTurnOpenAt, commandRunningByPtyId, agentAliveByPtyId,
+    surfaceTurnOpenAt, commandRunningByPtyId, agentAliveByPtyId, usageLimitWaiting,
   ]);
 
   if (panes.length === 0) return null;

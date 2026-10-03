@@ -56,12 +56,14 @@ import { useWorkspaceMirrorPush } from '../../hooks/useWorkspaceMirrorPush';
 import { useResizeGuard } from '../../hooks/useResizeGuard';
 import { useApprovalInboxBridge } from '../../hooks/useApprovalInboxBridge';
 import { useBrowserHelpBridge } from '../../hooks/useBrowserHelpBridge';
+import { useUsageLimitBridge } from '../../hooks/useUsageLimitBridge';
 import { useRemoteInboxBridge } from '../../hooks/useRemoteInboxBridge';
 import { useRemoteAttachmentsLifecycle } from '../../hooks/useRemoteAttachmentsLifecycle';
 import { useDeckStream } from '../../hooks/useDeckStream';
 import { useChannelsEventSubscription } from '../../hooks/useChannelsEventSubscription';
 import { useChannelsHydration } from '../../hooks/useChannelsHydration';
 import { useMissionsPolling } from '../../hooks/useMissionsPolling';
+import { useCheckoutOwnershipWarning } from '../../hooks/useCheckoutOwnershipWarning';
 import { SidebarSeenTracker } from '../../hooks/useSidebarSeenTracker';
 import { useColdParkSweep } from '../../hooks/useColdParkSweep';
 import { usePaneDecorationChannel } from '../../plugins/usePaneDecorationChannel';
@@ -427,6 +429,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     toastEnabled: state.toastEnabled,
     notificationRingEnabled: state.notificationRingEnabled,
     anthropicUsageEnabled: state.anthropicUsageEnabled,
+    usageLimitAutoResume: state.usageLimitAutoResume,
     mutedNotificationCategories: state.mutedNotificationCategories,
     customKeybindings: state.customKeybindings,
     shortcutOverrides: state.shortcutOverrides,
@@ -845,6 +848,7 @@ export default function AppLayout() {
   // Always-on for the same reason as the approval bridge: a request must land in
   // the store (and jump to its pane) whichever surface the operator is on.
   useBrowserHelpBridge();
+  useUsageLimitBridge();
   // LanLink PR-2 — own the remote-inbox subscription (always-on, mounted once)
   // so remote peer messages accumulate in the store before any surface opens.
   useRemoteInboxBridge();
@@ -871,6 +875,8 @@ export default function AppLayout() {
   // 사이드바 "Missions" 섹션 + FleetCard 미션 라인을 채운다(순수 pull, 성긴 폴링 —
   // useMissionsPolling 헤더 참조).
   useMissionsPolling();
+  // Warn when an agent starts in a fan-out task's checkout from another workspace.
+  useCheckoutOwnershipWarning();
   // TASK-9 cold-park: sparse sweep that unmounts terminals of long-hidden
   // workspaces to reclaim renderer RAM (reveal replays from the daemon snapshot).
   useColdParkSweep();

@@ -14,6 +14,7 @@ import { ipcMain } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { getWorkspaceMirror } from '../../workspace/WorkspaceMirror';
 import { reconcileWorkspaceClaims } from '../../workspace/workspaceClaimTrust';
+import { getWorkerTempDirSweeper } from '../../worktask/fanoutTempDir';
 import type {
   WorkspaceListEntry,
   FleetSnapshot,
@@ -175,6 +176,13 @@ export function registerWorkspaceMirrorHandler(): () => void {
       reconcileWorkspaceClaims(payload.entries.map((e) => e.id));
     } catch {
       /* claim bookkeeping must never affect the mirror */
+    }
+    // Fan-out worker temp dirs whose task workspace is gone. In-memory and
+    // cheap; any removal runs on the sweeper's async queue.
+    try {
+      getWorkerTempDirSweeper().reconcile(payload.entries.map((e) => e.id));
+    } catch {
+      /* temp-dir bookkeeping must never affect the mirror */
     }
   };
   ipcMain.removeAllListeners(IPC.WORKSPACE_MIRROR_PUSH);

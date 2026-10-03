@@ -6,7 +6,7 @@ import { remoteAgentKey } from '../../../shared/remoteHosts';
 import { agentDisplayToSlug } from '../../../shared/agentIdentity';
 import type { StoreState } from '../index';
 import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
-import { HOOK_RUNNING_TTL_MS, isHookRunning, pickStashedRepresentativeSurface, resolveRemoteAgent } from './fleet';
+import { HOOK_RUNNING_TTL_MS, isHookRunning, isQuietUsageLimitError, pickStashedRepresentativeSurface, resolveRemoteAgent } from './fleet';
 
 /** One detected agent session, kept attached to the terminal surface that owns it. */
 export interface WorkspaceAgentRosterRow {
@@ -58,6 +58,12 @@ export interface WorkspaceAgentRosterRow {
   stashed?: boolean;
   /** Derived, never stored — see `stashedPaneLiveness`. Stashed rows only. */
   stashedLiveness?: StashedLiveness;
+  /**
+   * The agent is quietly waiting out a provider usage limit: its `error` is
+   * dropped from the status (no red mark, not counted) and the row draws the
+   * waiting mark instead. See fleet.ts isQuietUsageLimitError.
+   */
+  usageLimitWaiting?: true;
   /** When it was stashed, for the "2h ago" trailer. Stashed rows only. */
   stashedAt?: number;
 }
@@ -185,7 +191,9 @@ export function selectWorkspaceAgentRoster(
       if (!agent?.name) return;
 
       const pendingQuestion = nonEmpty(state.surfacePendingQuestion[ptyId]);
-      const attentionStatus = state.surfaceAgentStatus[ptyId];
+      const limitWaiting = state.usageLimitWaiting?.[ptyId] === true;
+      const rawAttention = state.surfaceAgentStatus[ptyId];
+      const attentionStatus = isQuietUsageLimitError(state.usageLimitWaiting, ptyId, rawAttention) ? undefined : rawAttention;
       const activityAt = state.surfaceActivityAt[ptyId] ?? 0;
       const activityIsFresh =
         activityAt > 0 && state.agentClockMs - activityAt <= HOOK_RUNNING_TTL_MS;
@@ -205,7 +213,9 @@ export function selectWorkspaceAgentRoster(
       // or a hook proves the agent is working; otherwise a quiet recovered
       // pane would pulse forever and disagree with the workspace aggregate.
       const lifecycleStatus: AgentStatus =
-        agent.status === 'running' && !hookRunning ? 'idle' : agent.status;
+        (agent.status === 'running' && !hookRunning) || isQuietUsageLimitError(state.usageLimitWaiting, ptyId, agent.status)
+          ? 'idle'
+          : agent.status;
 
       // A transcript-derived pending question is the strongest evidence that
       // this agent needs input. Otherwise an unseen attention state outranks
@@ -251,6 +261,7 @@ export function selectWorkspaceAgentRoster(
           state.activeWorkspaceId === workspaceId &&
           workspace.activePaneId === leaf.id &&
           leaf.activeSurfaceId === surface.id,
+        ...(limitWaiting ? { usageLimitWaiting: true as const } : {}),
       });
     });
   }
@@ -281,7 +292,9 @@ export function selectWorkspaceAgentRoster(
     const liveness = stashedPaneLiveness(leaf);
     const agent = ptyId ? state.surfaceAgent[ptyId] : undefined;
     const pendingQuestion = ptyId ? nonEmpty(state.surfacePendingQuestion[ptyId]) : undefined;
-    const attentionStatus = ptyId ? state.surfaceAgentStatus[ptyId] : undefined;
+    const rawAttention = ptyId ? state.surfaceAgentStatus[ptyId] : undefined;
+    const attentionStatus = isQuietUsageLimitError(state.usageLimitWaiting, ptyId, rawAttention) ? undefined : rawAttention;
+    const limitWaiting = !!ptyId && state.usageLimitWaiting?.[ptyId] === true;
     const activityAt = (ptyId ? state.surfaceActivityAt[ptyId] : 0) ?? 0;
     const activityIsFresh =
       activityAt > 0 && state.agentClockMs - activityAt <= HOOK_RUNNING_TTL_MS;
@@ -304,7 +317,9 @@ export function selectWorkspaceAgentRoster(
       status = 'awaiting_input';
     } else {
       const lifecycle: AgentStatus =
-        agent?.status === 'running' && !hookRunning ? 'idle' : (agent?.status ?? 'idle');
+        (agent?.status === 'running' && !hookRunning) || isQuietUsageLimitError(state.usageLimitWaiting, ptyId, agent?.status)
+          ? 'idle'
+          : (agent?.status ?? 'idle');
       status = attentionStatus ?? lifecycle;
       if (!attentionStatus && lifecycle === 'idle' && hookRunning) status = 'running';
     }
@@ -333,6 +348,7 @@ export function selectWorkspaceAgentRoster(
       needsAttention: liveness === 'exited' || needsAttention(status),
       isFocused: false,
       stashed: true,
+      ...(limitWaiting && liveness !== 'exited' ? { usageLimitWaiting: true as const } : {}),
       stashedLiveness: liveness,
       stashedAt: entry.stashedAt,
     });
@@ -378,6 +394,7 @@ function rowsEqual(
       a.isFocused !== b.isFocused ||
       a.stashed !== b.stashed ||
       a.stashedLiveness !== b.stashedLiveness ||
+      a.usageLimitWaiting !== b.usageLimitWaiting ||
       a.stashedAt !== b.stashedAt ||
       a.remote?.hostId !== b.remote?.hostId ||
       a.remote?.hostLabel !== b.remote?.hostLabel

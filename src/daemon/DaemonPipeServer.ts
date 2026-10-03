@@ -700,6 +700,16 @@ export class DaemonPipeServer {
   }
 
   /**
+   * Close one client's socket. For a subscriber that fell behind (`sendTo`
+   * false): its pushes stopped, so it must reconnect and re-subscribe rather
+   * than wait on a live socket that will never carry them.
+   */
+  disconnect(clientId: string): void {
+    const socket = this.socketsByClientId.get(clientId);
+    if (socket && !socket.destroyed) socket.destroy();
+  }
+
+  /**
    * Mark this client as the first-party app process (the Electron main process).
    *
    * The control pipe has exactly one credential — the daemon auth token — and

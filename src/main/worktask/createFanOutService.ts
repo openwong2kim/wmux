@@ -20,6 +20,7 @@ import type { RpcMethod } from '../../shared/rpc';
 import { sendToRenderer } from '../pipe/handlers/_bridge';
 import { getProjectConfigStore } from '../project/ProjectConfigStore';
 import { FanOutService } from './FanOutService';
+import { createWorkerTempDir, getWorkerTempDirSweeper, removeWorkerTempDir } from './fanoutTempDir';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -90,6 +91,15 @@ export function createFanOutService(
         const dc = getDaemonClient();
         if (!dc?.isConnected) throw new Error('daemon not connected');
         dc.writeToSession(ptyId, sequence);
+      },
+    },
+    // Private TMPDIR per worker, removed once its task workspace is gone
+    // (see fanoutTempDir.ts for the reconcile).
+    workerTempDirs: {
+      create: () => createWorkerTempDir(),
+      register: (owner: string, dir: string) => getWorkerTempDirSweeper().register(owner, dir),
+      remove: (dir: string) => {
+        void removeWorkerTempDir(dir);
       },
     },
   });

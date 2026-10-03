@@ -1,4 +1,5 @@
 // IPC Channel names
+import { QUICK_LAUNCH_IPC } from './quickLaunchIpc';
 export const IPC = {
   PTY_CREATE: 'pty:create',
   PTY_WRITE: 'pty:write',
@@ -511,6 +512,13 @@ export const IPC = {
   // "지금 새로고침" button). Triggers an immediate poll regardless of
   // interval timing. Caller enforces a UI-side cooldown (5 min).
   USAGE_REFRESH: 'usage:refresh',
+  // Pane usage-limit pause (shared/usageLimit). Main → renderer push of one
+  // pane's limit (`{ ptyId, limit: PaneUsageLimit | null }`, null = cleared),
+  // renderer → main list on boot, and renderer → main edits (auto-resume,
+  // dismiss, resume now) relayed to the daemon, which owns the state.
+  USAGE_LIMIT_CHANGED: 'usageLimit:changed',
+  USAGE_LIMIT_LIST: 'usageLimit:list',
+  USAGE_LIMIT_UPDATE: 'usageLimit:update',
   // EventBus publish — renderer→main one-way for pane lifecycle events
   EVENTS_PUBLISH: 'events:publish',
   // Total app memory (renderer → main, invoke). Returns the summed
@@ -529,6 +537,17 @@ export const IPC = {
   // anything in flight.
   COMPUTER_USE_GET: 'computer-use:get',
   COMPUTER_USE_SET: 'computer-use:set',
+  // Global quick launch (Settings › Shortcuts, and the floating composer).
+  // SETTINGS_GET/SET return QuickLaunchSettingsPayload; the rest are the
+  // composer window's own calls, refused from any other sender. The strings
+  // live in quickLaunchIpc.ts for the composer's sandboxed preload.
+  QUICK_LAUNCH_SETTINGS_GET: QUICK_LAUNCH_IPC.SETTINGS_GET,
+  QUICK_LAUNCH_SETTINGS_SET: QUICK_LAUNCH_IPC.SETTINGS_SET,
+  QUICK_LAUNCH_CONTEXT: QUICK_LAUNCH_IPC.CONTEXT,
+  QUICK_LAUNCH_SUBMIT: QUICK_LAUNCH_IPC.SUBMIT,
+  QUICK_LAUNCH_DISMISS: QUICK_LAUNCH_IPC.DISMISS,
+  QUICK_LAUNCH_FIT: QUICK_LAUNCH_IPC.FIT,
+  QUICK_LAUNCH_SHOWN: QUICK_LAUNCH_IPC.SHOWN,
   // Window control
   WINDOW_HIDE: 'window:hide',
   // Windows taskbar attention recall. Renderer asks main to flash the

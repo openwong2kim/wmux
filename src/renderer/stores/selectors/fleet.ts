@@ -54,6 +54,12 @@ export interface FleetPane {
    */
   supervision?: { status: 'armed' | 'stopped'; restartCount: number };
   /**
+   * The pane is quietly waiting out a provider usage limit (shared/usageLimit):
+   * its `error` is not counted as attention and the row reads "Waiting". Unset
+   * once the hold ends, so a reset that passed without a release is attention again.
+   */
+  usageLimitWaiting?: true;
+  /**
    * True when this pane is stashed (#977) — owned and running, but not in the
    * layout. Fleet is deliberately layout-independent (README: "every roster in
    * the app derives from this one selector"), so a stashed agent that starts
@@ -113,6 +119,9 @@ export type FleetSelectorState = Pick<StoreState, 'workspaces' | 'surfaceAgentSt
   /** X8 supervision mirror (per-ptyId). Optional so existing fixtures stay
    *  terse; the live FleetView always passes the real map. */
   supervisionByPtyId?: StoreState['supervisionByPtyId'];
+  /** ptyIds quietly waiting out a usage limit (usageLimitSlice). Optional so
+   *  existing fixtures stay terse. */
+  usageLimitWaiting?: StoreState['usageLimitWaiting'];
   /** Hook-driven 'running' inputs (orca-style). Both optional so existing
    *  fixtures/tests get the pre-existing behavior (no hook-freshness); the live
    *  store always provides them. `agentClockMs` is the read-time clock so a
@@ -389,7 +398,7 @@ const STATUS_RANK: Record<AgentStatus, number> = {
  * complete / waiting / error stays cleared.
  */
 export function surfaceAttentionStatus(
-  state: Pick<FleetSelectorState, 'surfaceAgentStatus' | 'surfaceAgent' | 'surfacePendingQuestion'>,
+  state: Pick<FleetSelectorState, 'surfaceAgentStatus' | 'surfaceAgent' | 'surfacePendingQuestion' | 'usageLimitWaiting'>,
   ptyId: string,
 ): AgentStatus | undefined {
   // #1168 — a transcript-derived pending question outranks whatever the stop
@@ -397,7 +406,21 @@ export function surfaceAttentionStatus(
   // workspaceAgentRoster.
   if (state.surfacePendingQuestion?.[ptyId]?.trim()) return 'awaiting_input';
   if (state.surfaceAgent?.[ptyId]?.status === 'awaiting_input') return 'awaiting_input';
-  return state.surfaceAgentStatus[ptyId];
+  const status = state.surfaceAgentStatus[ptyId];
+  return isQuietUsageLimitError(state.usageLimitWaiting, ptyId, status) ? undefined : status;
+}
+
+/**
+ * A turn that died on a provider usage limit leaves `error`. While the hold
+ * stands that is a pane waiting on a clock, not on the user: it is no
+ * attention status at all. Owner decision 2026-10-03.
+ */
+export function isQuietUsageLimitError(
+  waiting: Record<string, true> | undefined,
+  ptyId: string | undefined,
+  status: AgentStatus | undefined,
+): boolean {
+  return status === 'error' && !!ptyId && waiting?.[ptyId] === true;
 }
 
 /**
@@ -587,6 +610,7 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
       const metaStatus =
         isActivePane && metaMatchesPane
           && wsMeta?.agentStatus !== 'running' && wsMeta?.agentStatus !== 'awaiting_input'
+          && !isQuietUsageLimitError(state.usageLimitWaiting, ptyId, wsMeta?.agentStatus)
           ? wsMeta?.agentStatus
           : undefined;
       const activityAt = ptyId ? state.surfaceActivityAt?.[ptyId] : undefined;
@@ -681,6 +705,7 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
         // pane badge). Only supervised panes have an entry; unsupervised →
         // undefined. An unspawned surface (empty ptyId) never carries one.
         supervision: ptyId ? state.supervisionByPtyId?.[ptyId] : undefined,
+        ...(ptyId && state.usageLimitWaiting?.[ptyId] ? { usageLimitWaiting: true as const } : {}),
         unverifiable,
         ...(unverifiable ? { staleForMs } : {}),
         ...(stashed ? { stashed: true } : {}),
@@ -1304,6 +1329,7 @@ function fleetBoardPanes(
     surfaceActivity: state.surfaceActivity,
     paneLabel: state.paneLabel,
     supervisionByPtyId: state.supervisionByPtyId,
+    usageLimitWaiting: state.usageLimitWaiting,
     surfaceAgent: state.surfaceAgent,
     surfacePendingQuestion: state.surfacePendingQuestion,
     surfaceActivityAt: state.surfaceActivityAt,
@@ -1352,6 +1378,7 @@ export function selectFleetSectionCounts(state: FleetBoardState): FleetSectionCo
     state.workspaces, state.surfaceAgentStatus, state.surfaceActivity, state.paneLabel,
     state.supervisionByPtyId, state.surfaceAgent, state.surfacePendingQuestion, state.surfaceActivityAt,
     state.surfaceTurnOpenAt, state.commandRunningByPtyId, state.agentAliveByPtyId, state.remoteWorkspaces,
+    state.usageLimitWaiting,
   ];
   const memo = sectionCountsMemo;
   if (memo && inputs.every((value, i) => Object.is(value, memo.inputs[i]))

@@ -659,6 +659,12 @@ export interface UISlice {
   // it stays in main process memory during a fetch and is discarded.
   anthropicUsageEnabled: boolean;
   setAnthropicUsageEnabled: (enabled: boolean) => void;
+  // Usage-limit pause: when on, a pane that hits its provider's usage limit
+  // with no per-pane decision yet is armed to receive a short continue
+  // message once the limit resets (useUsageLimitBridge applies it). Off by
+  // default; each pane can override it from its limit chip.
+  usageLimitAutoResume: boolean;
+  setUsageLimitAutoResume: (enabled: boolean) => void;
   anthropicUsage: {
     status:
       | 'idle'
@@ -1680,6 +1686,10 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   }),
 
   // ─── Phase 2 — Anthropic usage meter ────────────────────────────────────
+  usageLimitAutoResume: false,
+  setUsageLimitAutoResume: (enabled) => set((state) => {
+    state.usageLimitAutoResume = enabled;
+  }),
   anthropicUsageEnabled: false,
   setAnthropicUsageEnabled: (enabled) => {
     // Sync to main so the poller starts/stops. The IPC send is fire-and-

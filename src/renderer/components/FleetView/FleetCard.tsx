@@ -1,18 +1,20 @@
 import { memo } from 'react';
 import type { FleetPane, FleetRow } from '../../stores/selectors/fleet';
-import { fleetRow, selectLatestCompletionEvidenceTask } from '../../stores/selectors/fleet';
+import { fleetRow, fleetTargetPtyId, selectLatestCompletionEvidenceTask } from '../../stores/selectors/fleet';
 import type { WorkTask } from '../../../shared/workTask';
 import type { Task } from '../../../shared/types';
 import { isVerifiedItem } from '../../../shared/completionEvidence';
 import { AGENT_STATUS_ICON } from '../Sidebar/agentStatusIcon';
 import { useT } from '../../hooks/useT';
-import { t } from '../../i18n';
+import { getLocale, t } from '../../i18n';
 import { useStore } from '../../stores';
 import { IconCheck, IconChevronDir, IconExternalLink } from '../icons';
 import { fleetTitle } from './fleetPresentation';
 import { fleetRequesterText } from '../../utils/fanoutProvenance';
 import { useShallow } from 'zustand/react/shallow';
 import { formatIdle, IDLE_SHOW_AFTER_MS } from '../../utils/idleTime';
+import { useUsageLimitNow } from '../Pane/UsageLimitChip';
+import { usageLimitFleetDetail, usageLimitView } from '../Pane/usageLimitPresentation';
 
 interface FleetCardProps {
   card: FleetPane;
@@ -147,14 +149,24 @@ function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onF
   // A waiting pane with no question sits in Idle; label and colour it as idle
   // so no red needs-you dot appears inside the Idle section.
   const quietWaiting = card.agentStatus === 'waiting' && row.section === 'idle';
+  // Waiting out a usage limit: a clock, muted — not an error, not a request.
+  const usageWaiting = !!card.usageLimitWaiting && !card.unverifiable
+    && card.agentStatus !== 'running' && card.agentStatus !== 'awaiting_input';
   const statusLabel = card.unverifiable ? t('fleet.status.unconfirmed')
+    : usageWaiting ? t('usageLimit.waiting')
     : card.agentStatus === 'complete' ? t('fleet.status.turnComplete')
     : quietWaiting ? t('workspace.agentIdle') : t(icon.labelKey);
   // Unconfirmed reuses the sidebar's hollow amber ring (.sidebar-dot-unverifiable):
   // the pane still claims to be working, nothing backs the claim.
   const statusColor = card.unverifiable ? 'var(--accent-cursor)'
+    : usageWaiting ? 'var(--text-muted)'
     : card.agentStatus === 'idle' || quietWaiting ? 'var(--text-sub)' : icon.dotVar;
-  const detail = row.detail ?? t(row.detailKey);
+  // A pane held at its usage limit says so instead of a generic error detail.
+  const usageLimit = useStore((s) => s.usageLimits[fleetTargetPtyId(card)] ?? (card.ptyId ? s.usageLimits[card.ptyId] : undefined));
+  const limitNow = useUsageLimitNow(!!usageLimit);
+  const detail = usageLimit
+    ? usageLimitFleetDetail(usageLimitView(usageLimit, limitNow, getLocale()), t)
+    : row.detail ?? t(row.detailKey);
   const elapsed = row.idleForMs !== undefined && row.idleForMs >= IDLE_SHOW_AFTER_MS
     ? formatIdle(row.idleForMs) : undefined;
   const action = isAwaitingInput ? t('fleet.action.respond')
@@ -181,12 +193,19 @@ function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onF
       className="wmux-fleet-card"
     >
       <span className="wmux-fleet-status" style={{ color: statusColor }}>
-        <span
-          aria-hidden="true"
-          className={`wmux-fleet-dot ${card.unverifiable ? 'is-unconfirmed' : icon.glowClass}`}
-          data-shape={icon.shape}
-          style={{ color: statusColor }}
-        >{icon.shape === 'cross' ? '×' : null}</span>
+        {usageWaiting ? (
+          <svg className="flex-none" width="10" height="10" viewBox="0 0 9 9" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" aria-hidden="true" data-shape="clock">
+            <circle cx="4.5" cy="4.5" r="3.6" />
+            <polyline points="4.5,2.5 4.5,4.6 5.9,5.5" />
+          </svg>
+        ) : (
+          <span
+            aria-hidden="true"
+            className={`wmux-fleet-dot ${card.unverifiable ? 'is-unconfirmed' : icon.glowClass}`}
+            data-shape={icon.shape}
+            style={{ color: statusColor }}
+          >{icon.shape === 'cross' ? '×' : null}</span>
+        )}
         <span>{statusLabel}</span>
       </span>
       <span className="wmux-fleet-identity">
@@ -228,8 +247,10 @@ function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onF
         {requester && <span className="wmux-fleet-requester" data-fleet-requester title={requester.text}>{requester.text}</span>}
       </span>
       <span className="wmux-fleet-progress">
-        <span className={`wmux-fleet-detail${showActivity ? ' is-activity' : ''}`}
-          data-fleet-activity={showActivity || undefined} title={detail}>{detail}</span>
+        <span className={`wmux-fleet-detail${showActivity && !usageLimit ? ' is-activity' : ''}`}
+          data-fleet-activity={(showActivity && !usageLimit) || undefined}
+          data-fleet-usage-limit={usageLimit ? 'true' : undefined}
+          title={usageLimit?.message ? `${detail}\n${usageLimit.message}` : detail}>{detail}</span>
         <span className="wmux-fleet-meta">
           {card.agentStatus === 'complete' && <FleetCardEvidenceBadge task={evidenceTask} />}
           {elapsed && <span data-fleet-elapsed>{elapsed}</span>}

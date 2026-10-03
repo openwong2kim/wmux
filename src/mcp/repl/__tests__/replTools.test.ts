@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { z } from 'zod';
 import { toolInputSchema } from '../../toolCatalog';
 import {
@@ -274,3 +274,38 @@ describe('repl_run browser binding', () => {
 function catalogDescription(): string {
   return createReplToolCatalog()[0].description;
 }
+
+describe('repl_run cwd for a WSL caller', () => {
+  afterEach(() => {
+    delete process.env.WMUX_WSL_DISTRO;
+    delete process.env.WMUX_WSL_MOUNT;
+  });
+
+  it('refuses a distro cwd before starting a runtime', async () => {
+    process.env.WMUX_WSL_DISTRO = 'Ubuntu';
+    process.env.WMUX_WSL_MOUNT = '/mnt/c/';
+    const run = createReplToolCatalog()[0];
+
+    const res = (await run.invoke({ code: '1', cwd: '/home/me/proj' }, {} as never)) as {
+      content: { type: string; text: string }[];
+      isError?: boolean;
+    };
+
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('"/home/me/proj" is not an absolute /mnt/<drive>/ path');
+  });
+
+  it('names a missing drive-mount cwd in the WSL spelling', async () => {
+    process.env.WMUX_WSL_DISTRO = 'Ubuntu';
+    process.env.WMUX_WSL_MOUNT = '/mnt/c/';
+    const run = createReplToolCatalog()[0];
+
+    const res = (await run.invoke({ code: '1', cwd: '/mnt/c/wmux-no-such-dir' }, {} as never)) as {
+      content: { type: string; text: string }[];
+      isError?: boolean;
+    };
+
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('cwd does not exist: /mnt/c/wmux-no-such-dir');
+  });
+});

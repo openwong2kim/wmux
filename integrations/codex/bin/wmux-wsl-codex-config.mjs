@@ -4,10 +4,13 @@
 import { readFileSync } from 'node:fs';
 import { parse } from 'smol-toml';
 
-function hasNotify(value) {
+function owns(value, test) {
   if (!value || typeof value !== 'object') return false;
-  return Object.entries(value).some(([key, child]) => key === 'notify' || hasNotify(child));
+  return Object.entries(value).some(([key, child]) => test(key, child) || owns(child, test));
 }
+const ownsNotify = key => key === 'notify';
+// A non-table mcp_servers is a whole-table -c override (its value reads as 0 below).
+const ownsMcp = (key, child) => key === 'mcp_servers' && (!child || typeof child !== 'object' || 'wmux' in child);
 
 try {
   const [hook, ...args] = process.argv.slice(2);
@@ -32,7 +35,8 @@ try {
   }
   const configs = readFileSync(0, 'utf8').split('\0').filter(Boolean);
   // Be conservative about profiles and untrusted project layers: if any could
-  // own notify, leave Codex to resolve them. Never replace a user's notifier.
+  // own notify or mcp_servers.wmux, leave Codex to resolve them. Never replace
+  // a user's notifier or MCP server.
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--') break;
@@ -48,8 +52,14 @@ try {
       configs.push(`${override.slice(0, equal)}=0`);
     }
   }
-  if (!hook || configs.some(config => hasNotify(parse(config)))) process.exit(1);
-  process.stdout.write(`notify=${JSON.stringify(['/bin/sh', hook])}`);
+  if (!hook) process.exit(1);
+  const parsed = configs.map(config => parse(config));
+  // One line per key wmux may set. Notify and MCP are decided independently:
+  // a user's notifier must not cost them the MCP server, nor the reverse.
+  const lines = [];
+  if (!parsed.some(config => owns(config, ownsNotify))) lines.push(`notify=${JSON.stringify(['/bin/sh', hook])}`);
+  if (!parsed.some(config => owns(config, ownsMcp))) lines.push('mcp');
+  process.stdout.write(lines.join('\n'));
 } catch {
   // Missing/unreadable/malformed configuration is not permission to overwrite
   // it. Print no config contents, and let the original Codex command handle it.

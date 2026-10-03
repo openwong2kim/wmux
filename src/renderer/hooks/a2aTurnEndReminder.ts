@@ -22,6 +22,8 @@ import { useStore } from '../stores';
 import { getWorkspaceLeafPanes } from '../../shared/paneUtils';
 import type { Task, Workspace } from '../../shared/types';
 import { gatedSubmitToPty } from '../utils/ptyMessageDelivery';
+import type { GatedSubmitRefusal } from '../../shared/ptyMessageDelivery';
+import { usageLimitHolds } from '../../shared/usageLimit';
 import { paneHasDetectedAgent } from './a2aAddressing';
 
 /** Episode keys already reminded. Pruned every sweep, and capped. */
@@ -68,6 +70,8 @@ function eligibility(ptyId: string): Eligibility {
   if (s.agentAliveByPtyId[ptyId] !== true) return 'never';
   const status = s.surfaceAgent[ptyId]?.status;
   if (status === 'running' || status === 'awaiting_input') return 'wait';
+  // Held at a usage limit: the reminder would be refused; keep it for after the reset.
+  if (usageLimitHolds(s.usageLimits[ptyId], Date.now())) return 'wait';
   return 'write';
 }
 
@@ -86,19 +90,26 @@ function pruneReminded(tasks: Record<string, Task>): void {
 }
 
 async function remind(ptyId: string): Promise<void> {
+  if (await deliverReminder(ptyId) === 'usage_limited') turnEnded.add(ptyId); // retried after the reset
+}
+
+/** One reminder write; the refusal reason when the gate withheld it. */
+async function deliverReminder(ptyId: string): Promise<GatedSubmitRefusal['reason'] | null> {
   const state = useStore.getState();
   const pinned = pinnedSubmittedTasks(ptyId, state.workspaces, state.a2aTasks) ?? [];
   const fresh = pinned.filter((t) => !reminded.has(episodeKey(t)));
   // Only a task not yet reminded triggers a write, but the line counts every
   // task still waiting on this pane.
-  if (fresh.length === 0) return;
+  if (fresh.length === 0) return null;
   const keys = fresh.map(episodeKey);
   // Claim before the await so an overlapping sweep does not write twice.
   for (const k of keys) reminded.add(k);
   const result = await gatedSubmitToPty(ptyId, buildTurnEndReminder(pinned.length), {
     agent: state.surfaceAgent[ptyId]?.name ?? null,
   });
-  if (!result.ok) for (const k of keys) reminded.delete(k);
+  if (result.ok) return null;
+  for (const k of keys) reminded.delete(k);
+  return result.reason;
 }
 
 /** Record an agent turn end (agent.stop from a hook or the detector). */

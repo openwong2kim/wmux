@@ -73,6 +73,7 @@ import { terminalFontFamilyCss } from '../../utils/terminalFont';
 import { hasBareFunctionKeyBinding } from '../../utils/functionKeyBinding';
 import { Icon, IconX, IconCheck, IconChevron, IconExternalLink, IconBrowser, IconComputer, IconUsers, IconRobot, IconRemoteDevices, IconPlus, IconWarning } from '../icons';
 import { TabComputerUse } from './ComputerUseSection';
+import { QuickLaunchSection } from './QuickLaunchSection';
 import PairedDevicesModal from '../StatusBar/PairedDevicesModal';
 import { FOCUS_RING } from '../focusRing';
 import { SETTINGS_CATALOG, SETTINGS_NAV_GROUPS, resolveSettingsTab, type SettingsTabId } from '../../settings/catalog';
@@ -4662,6 +4663,11 @@ export function TabShortcuts() {
 
   return (
     <div className="settings-page">
+      <QuickLaunchSection
+        renderCapture={({ label, record, onCapture, onCancel }) => (
+          <KeyCaptureOverlay label={label} record={record} onCapture={(accelerator) => onCapture(accelerator)} onCancel={onCancel} />
+        )}
+      />
       <SettingsSection
         title={t('settings.shortcuts')}
         action={hasOverrides ? (

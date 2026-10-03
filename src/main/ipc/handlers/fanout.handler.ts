@@ -22,7 +22,7 @@ function asOrchRole(raw: unknown): string {
   const cleaned = sanitizeOrchRole(raw);
   return cleaned && (ORCH_ROLES as readonly string[]).includes(cleaned) ? cleaned : '';
 }
-import type { FanOutRequest, FanOutService } from '../../worktask/FanOutService';
+import type { FanOutRequest, FanOutResult, FanOutService } from '../../worktask/FanOutService';
 import { getFanOutGuards, promptDigest } from '../../worktask/fanoutGuards';
 import {
   loadFanoutRequireApproval,
@@ -102,51 +102,7 @@ export function registerFanOutHandler(service: FanOutService): () => void {
     wrapHandler(IPC.FANOUT_START, async (_event: Electron.IpcMainInvokeEvent, rawReq: unknown) => {
       const req = normalizeRequest(rawReq);
       if ('error' in req) return { ok: false, error: req.error, tasks: [] };
-      // The dialog click is the approval; the audit log still records the
-      // run, the same way and with the same no-record-no-run rule as the wire.
-      const guards = getFanOutGuards();
-      const workerMode = loadFanoutWorkerPermissionMode();
-      const base = {
-        idempotencyKey: req.idempotencyKey,
-        ownerWorkspaceId: req.verifiedWorkspaceId,
-        callerIdentity: 'gui' as const,
-        repoPath: req.repoPath,
-        titles: req.titles,
-        roles: req.roles ?? [],
-        approvedBy: 'human' as const,
-        workerPermissionMode: workerMode,
-      };
-      try {
-        guards.appendAudit({
-          ...base,
-          at: Date.now(),
-          roleCommands: [],
-          promptSha256: req.titles.map((_t, k) =>
-            promptDigest([req.prompt.trim(), (req.taskPrompts?.[k] ?? '').trim()].filter((p) => p.length > 0).join('\n\n')),
-          ),
-        });
-      } catch (err) {
-        return { ok: false, error: `fan-out audit log could not be written: ${(err as Error).message}`, tasks: [] };
-      }
-      const result = await service.start({ ...req, workerPermissionMode: workerMode, caller: { kind: 'gui' } });
-      try {
-        guards.appendAudit({
-          ...base,
-          at: Date.now(),
-          kind: 'launched',
-          roleCommands: [],
-          promptSha256: [],
-          launched: result.tasks.map((t) => ({
-            title: t.title,
-            ...(t.workspaceId ? { workspaceId: t.workspaceId } : {}),
-            ...(t.initialCommand ? { command: t.initialCommand } : {}),
-            ...(t.error ? { error: t.error } : {}),
-          })),
-        });
-      } catch (err) {
-        console.warn(`[fanout] could not append the launch record: ${String(err)}`);
-      }
-      return result;
+      return startGuiFanOut(service, req);
     }),
   );
 
@@ -161,6 +117,57 @@ export function registerFanOutHandler(service: FanOutService): () => void {
     ipcMain.removeHandler(IPC.FANOUT_PRESETS_GET);
     ipcMain.removeHandler(IPC.FANOUT_PRESETS_SET);
   };
+}
+
+/**
+ * A fan-out a person started from the GUI (the dialog, or the quick-launch
+ * composer): the click is the approval, and the audit log still records the
+ * run with the same no-record-no-run rule as the wire.
+ */
+export async function startGuiFanOut(service: FanOutService, req: FanOutRequest): Promise<FanOutResult> {
+  const guards = getFanOutGuards();
+  const workerMode = loadFanoutWorkerPermissionMode();
+  const base = {
+    idempotencyKey: req.idempotencyKey,
+    ownerWorkspaceId: req.verifiedWorkspaceId,
+    callerIdentity: 'gui' as const,
+    repoPath: req.repoPath,
+    titles: req.titles,
+    roles: req.roles ?? [],
+    approvedBy: 'human' as const,
+    workerPermissionMode: workerMode,
+  };
+  try {
+    guards.appendAudit({
+      ...base,
+      at: Date.now(),
+      roleCommands: [],
+      promptSha256: req.titles.map((_t, k) =>
+        promptDigest([req.prompt.trim(), (req.taskPrompts?.[k] ?? '').trim()].filter((p) => p.length > 0).join('\n\n')),
+      ),
+    });
+  } catch (err) {
+    return { ok: false, error: `fan-out audit log could not be written: ${(err as Error).message}`, tasks: [] };
+  }
+  const result = await service.start({ ...req, workerPermissionMode: workerMode, caller: { kind: 'gui' } });
+  try {
+    guards.appendAudit({
+      ...base,
+      at: Date.now(),
+      kind: 'launched',
+      roleCommands: [],
+      promptSha256: [],
+      launched: result.tasks.map((t) => ({
+        title: t.title,
+        ...(t.workspaceId ? { workspaceId: t.workspaceId } : {}),
+        ...(t.initialCommand ? { command: t.initialCommand } : {}),
+        ...(t.error ? { error: t.error } : {}),
+      })),
+    });
+  } catch (err) {
+    console.warn(`[fanout] could not append the launch record: ${String(err)}`);
+  }
+  return result;
 }
 
 /** wire 방어적 파싱 — 렌더러 신뢰이나 형태는 검증한다. export=테스트 전용(리뷰 발견

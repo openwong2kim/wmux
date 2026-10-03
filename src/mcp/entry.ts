@@ -56,6 +56,10 @@ async function main(): Promise<void> {
   };
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
+  // stdin EOF is the client leaving. Under WSL interop the Linux claude's
+  // SIGTERM is not guaranteed to reach this Windows process, so EOF must be
+  // enough to release Playwright and REPL children.
+  process.stdin.once('end', shutdown);
 }
 
 main().catch((err) => {

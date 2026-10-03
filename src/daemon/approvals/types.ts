@@ -277,8 +277,9 @@ export type DecisionChannel = 'hook-verdict' | 'native-rpc' | 'fenced-keys' | 'n
 
 /** The agent-side identity of a `native-rpc` decision. */
 export interface NativeDecisionRef {
-  adapter: 'opencode' | 'codex';
-  /** OpenCode requestID / Codex JSON-RPC server request id. */
+  /** `claude`: a chat-v2 driver's request (src/daemon/chat/v2), answered through its stdio. */
+  adapter: 'opencode' | 'codex' | 'claude';
+  /** OpenCode requestID / Codex JSON-RPC server request id / Claude `control_request.request_id`. */
   requestId: string;
   /** OpenCode sessionID. */
   nativeSessionId?: string;

@@ -147,6 +147,12 @@ export interface ChannelWakeWorkerDeps {
    */
   approvalBlocked?(sessionId: string): boolean;
   /**
+   * Is this session held at a provider usage limit (shared/usageLimit)? The
+   * agent cannot take a turn until the reset, so a nudge would only queue a
+   * dead prompt. Optional.
+   */
+  usageLimited?(sessionId: string): boolean;
+  /**
    * Does the pane's visible screen show an approval or select dialog? Null
    * when it cannot be read, which holds the nudge like a dialog would.
    * Checked before the text write and again before the Enter. Optional.
@@ -510,6 +516,10 @@ export class ChannelWakeWorker {
     wantMention: boolean,
     state: NudgeTrackerEntry,
   ): Promise<void> {
+    if (this.deps.usageLimited?.(target.id) === true) {
+      this.deps.log('debug', `[wake] holding nudge for ${key}: ${target.id} is held at a usage limit`);
+      return;
+    }
     if (!(await this.screenIsFree(target.id, key))) return;
     // The render took time: the pane may have raised an approval since.
     if (this.approvalHold(target.id, key)) return;

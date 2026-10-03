@@ -7,6 +7,7 @@ import { PlaywrightEngine } from '../PlaywrightEngine';
 import { withAutomationLease } from '../automationLease';
 import type { BrowserToolDeps } from '../browserScope';
 import { describeToolError } from '../toolError';
+import { toAgentPath } from '../../wslPaths';
 
 // Optional surfaceId schema reused across tools
 const optionalSurfaceId = z
@@ -52,13 +53,13 @@ export function resolveBrowserExportPath(requestedPath: string | undefined, defa
   const exportRoot = getExportRoot();
   const candidate = requestedPath?.trim() || defaultFileName;
   if (path.isAbsolute(candidate)) {
-    throw new Error(`Absolute output paths are not allowed. Use a relative path under ${exportRoot}`);
+    throw new Error(`Absolute output paths are not allowed. Use a relative path under ${toAgentPath(exportRoot)}`);
   }
 
   const resolved = path.resolve(exportRoot, candidate);
   const relative = path.relative(exportRoot, resolved);
   if (relative.startsWith('..') || path.isAbsolute(relative)) {
-    throw new Error(`Output path escapes the export root. Use a relative path under ${exportRoot}`);
+    throw new Error(`Output path escapes the export root. Use a relative path under ${toAgentPath(exportRoot)}`);
   }
 
   // Walk up the resolved path looking for any existing component that
@@ -74,7 +75,7 @@ export function resolveBrowserExportPath(requestedPath: string | undefined, defa
         const real = fs.realpathSync(probe);
         const realRel = path.relative(exportRoot, real);
         if (realRel.startsWith('..') || path.isAbsolute(realRel)) {
-          throw new Error(`Output path escapes the export root via symlink at ${probe}`);
+          throw new Error(`Output path escapes the export root via symlink at ${toAgentPath(probe)}`);
         }
         break;
       } catch (err) {
@@ -127,7 +128,7 @@ export function registerUtilityTools(server: McpServer, deps: BrowserToolDeps): 
             content: [
               {
                 type: 'text' as const,
-                text: `PDF saved to ${resolvedPath}`,
+                text: `PDF saved to ${toAgentPath(resolvedPath)}`,
               },
             ],
           };
@@ -149,7 +150,7 @@ export function registerUtilityTools(server: McpServer, deps: BrowserToolDeps): 
               content: [
                 {
                   type: 'text' as const,
-                  text: `PDF saved to ${resolvedPath} (via CDP)`,
+                  text: `PDF saved to ${toAgentPath(resolvedPath)} (via CDP)`,
                 },
               ],
             };
@@ -209,7 +210,7 @@ export function registerUtilityTools(server: McpServer, deps: BrowserToolDeps): 
           content: [
             {
               type: 'text' as const,
-              text: `Trace saved to ${resolvedPath}`,
+              text: `Trace saved to ${toAgentPath(resolvedPath)}`,
             },
           ],
         };
