@@ -4416,8 +4416,11 @@ function registerRpcHandlers(
       const slug = state.agentName ? agentDisplayToSlug(state.agentName) : undefined;
       return slug && state.agentVerified && state.incarnationId ? { slug, incarnationId: state.incarnationId } : null;
     },
-    deliverContinue: (id, expected, stillWanted) =>
-      deliverPromptToSessionNow(id, expected.slug, expected.incarnationId, USAGE_LIMIT_CONTINUE_PROMPT, {
+    deliverContinue: async (id, expected, stillWanted) => {
+      // A human draft in the composer is a wait, not a failure: answering
+      // 'busy' keeps the pane armed and retries once the draft is sent or cleared.
+      if (sessionManager.getSession(id)?.bridge.hasDraft() === true) return 'busy';
+      return deliverPromptToSessionNow(id, expected.slug, expected.incarnationId, USAGE_LIMIT_CONTINUE_PROMPT, {
         // A turn that died on the limit leaves the pane at `error`.
         acceptError: true,
         // Asked before the paste and before the Enter: the hold must still be
@@ -4425,7 +4428,8 @@ function registerRpcHandlers(
         // composer (the input-revision proof covers the gap after the paste).
         authorized: async (stage) => stillWanted()
           && (stage === 'submit' || sessionManager.getSession(id)?.bridge.hasDraft() !== true),
-      }),
+      });
+    },
     log: (message) => log('info', message),
   });
   pipeServer.onRpc('daemon.usageLimit.list', async () => ({ limits: usageLimits?.list() ?? [] }));
