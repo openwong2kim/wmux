@@ -3,12 +3,15 @@
 // and the sheet clipped, with the scroll-pin backstop wired before React mounts.
 import fs from 'node:fs';
 import path from 'node:path';
+import postcss from 'postcss';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'components', 'Layout', 'AppLayout.tsx'), 'utf8');
 const entry = fs.readFileSync(path.join(__dirname, '..', 'index.tsx'), 'utf8');
-const uiCss = fs.readFileSync(path.join(__dirname, '..', 'styles', 'ui.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+const stylesDir = path.join(__dirname, '..', 'styles');
+const styles = fs.readdirSync(stylesDir).filter((name) => name.endsWith('.css'))
+  .map((name) => fs.readFileSync(path.join(stylesDir, name), 'utf8')).join('\n');
 const tree = ts.createSourceFile('AppLayout.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 
 function rootShell(): ts.JsxOpeningElement {
@@ -43,20 +46,64 @@ describe('app chrome overflow guard (#1688)', () => {
   });
 
   it('installs the scroll-pin backstop before mounting React', () => {
-    const entryTree = ts.createSourceFile('index.tsx', entry, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-    const install = entryTree.statements.find((node) => ts.isExpressionStatement(node)
-      && ts.isCallExpression(node.expression) && node.expression.expression.getText(entryTree) === 'installChromeScrollPin');
-    if (!install) throw new Error('scroll-pin installation is missing');
-    expect(install.getStart(entryTree)).toBeLessThan(entry.indexOf('createRoot(document.'));
+    expectInstallBeforeMount(entry);
+  });
+
+  it('finds createRoot by AST, so a reformatted mount still passes', () => {
+    expectInstallBeforeMount("installChromeScrollPin();\nconst container = document.getElementById('root')!;\nconst root = createRoot(\n  container,\n);");
+    expect(() => expectInstallBeforeMount("createRoot(\n  el);\ninstallChromeScrollPin();")).toThrow();
+    expect(() => expectInstallBeforeMount('createRoot(el);')).toThrow(/installChromeScrollPin/);
+    expect(() => expectInstallBeforeMount('installChromeScrollPin();')).toThrow(/createRoot/);
   });
 
   it('clips the sheet that holds the parked agent toolbar (#1733)', () => {
-    // Declaration blocks whose selector targets the sheet itself, not a descendant.
-    const blocks = [...uiCss.matchAll(/([^{}]+)\{([^}]*)\}/g)]
-      .filter(([, selector]) => selector.split(',').some((part) => /\.wmux-shell-body(?![\w-])[^\s>+~]*$/.test(part.trim())))
-      .map(([, , body]) => body);
-    expect(blocks.length).toBeGreaterThan(0);
-    expect(blocks.some((body) => /overflow:\s*clip\b/.test(body))).toBe(true);
-    for (const body of blocks) expect(body).not.toMatch(/overflow(-[xy])?:\s*(hidden|visible|scroll|auto)\b/);
+    expectSheetClipped(styles);
+  });
+
+  it('rejects a sheet overflow override inside an at-rule or behind an ancestor selector', () => {
+    const base = '.wmux-shell-body { overflow: clip; }\n';
+    expectSheetClipped(base);
+    expect(() => expectSheetClipped(`${base}@media (max-width: 600px) { .wmux-shell-body { overflow: hidden; } }`)).toThrow();
+    expect(() => expectSheetClipped(`${base}@supports (display: grid) { @container (width > 1px) { .wmux-shell-body.flex-row-reverse { overflow-y: auto; } } }`)).toThrow();
+    expect(() => expectSheetClipped(`${base}html[data-fullscreen] .wmux-shell-body { overflow-x: scroll; }`)).toThrow();
+    expect(() => expectSheetClipped('@media print { .wmux-shell-body { overflow: clip; } }')).toThrow();
+    // A descendant of the sheet is a different box and may scroll.
+    expectSheetClipped(`${base}.wmux-shell-body .wmux-fleet-body { overflow-y: auto; }`);
   });
 });
+
+/** installChromeScrollPin() runs as a top-level statement before the createRoot call. */
+function expectInstallBeforeMount(text: string): void {
+  const file = ts.createSourceFile('index.tsx', text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const install = file.statements.find((node) => ts.isExpressionStatement(node)
+    && ts.isCallExpression(node.expression) && node.expression.expression.getText(file) === 'installChromeScrollPin');
+  let mount: ts.CallExpression | undefined;
+  const visit = (node: ts.Node): void => {
+    if (!mount && ts.isCallExpression(node) && node.expression.getText(file) === 'createRoot') mount = node;
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  if (!install) throw new Error('installChromeScrollPin() is missing from the renderer entry');
+  if (!mount) throw new Error('createRoot() is missing from the renderer entry');
+  expect(install.getStart(file)).toBeLessThan(mount.getStart(file));
+}
+
+/**
+ * Every rule whose selector targets the sheet box itself (the last compound
+ * selector names .wmux-shell-body, any ancestors allowed, at-rules included)
+ * may only set overflow to clip, and an unconditional rule must declare it.
+ */
+function expectSheetClipped(css: string): void {
+  const targetsSheet = (selector: string) =>
+    /\.wmux-shell-body(?![\w-])/.test(selector.trim().split(/\s*[\s>+~]\s*/).pop() ?? '');
+  let clipped = false;
+  postcss.parse(css).walkRules((rule) => {
+    if (!rule.selectors.some(targetsSheet)) return;
+    rule.walkDecls(/^overflow(-[xy])?$/, (decl) => {
+      expect(decl.value.trim().split(/\s+/), `${rule.selector} { ${decl.prop}: ${decl.value} }`).toEqual(
+        decl.value.trim().split(/\s+/).map(() => 'clip'));
+      if (decl.prop === 'overflow' && rule.parent?.type === 'root') clipped = true;
+    });
+  });
+  if (!clipped) throw new Error('no unconditional .wmux-shell-body rule declares overflow: clip');
+}
