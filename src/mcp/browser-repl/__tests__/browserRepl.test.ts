@@ -703,6 +703,7 @@ describe('browser_repl session', () => {
     ['null', 'null'],
     ['42', '42'],
     ['new Error("background error")', 'background error'],
+    ['({ message: "background object" })', 'background object'],
   ])('reports worker failure %s and starts a fresh runtime', async (expression, reason) => {
     const bridge = createBrowserBridge(harness().tools, {});
     const session = newSession();
@@ -727,6 +728,7 @@ describe('browser_repl session', () => {
     [null, 'null'],
     [42, '42'],
     [new Error('idle error'), 'idle error'],
+    [{ message: 'idle object' }, 'idle object'],
   ])('preserves idle worker failure %s when starting a fresh runtime', async (failure, reason) => {
     const bridge = createBrowserBridge(harness().tools, {});
     const session = newSession();

@@ -40,6 +40,14 @@ export {
 /** Worker startup is local and fast; anything slower is a broken runtime. */
 const READY_TIMEOUT_MS = 10_000;
 
+function workerFailureMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (err && typeof err === 'object' && 'message' in err && typeof err.message === 'string') {
+    return err.message;
+  }
+  return String(err);
+}
+
 export interface BrowserReplRunOutcome {
   readonly ok: boolean;
   readonly elapsedMs: number;
@@ -182,7 +190,7 @@ export class BrowserReplSession {
       if (this.activeRunId === null && this.worker === worker) this.killWorker(reason);
     };
     worker.on('error', (err) => onIdleDeath(
-      `crashed between runs: ${err instanceof Error ? err.message : String(err)}`,
+      `crashed between runs: ${workerFailureMessage(err)}`,
     ));
     worker.on('exit', (code) => onIdleDeath(`exited between runs (code ${code})`));
     this.ready = new Promise<void>((resolve, reject) => {
@@ -391,7 +399,7 @@ export class BrowserReplSession {
         }
       };
       const onError = (err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = workerFailureMessage(err);
         this.killWorker(`crashed: ${message}`);
         finish({ ok: false, error: `browser_repl runtime crashed: ${message}`, timedOut: false });
       };
