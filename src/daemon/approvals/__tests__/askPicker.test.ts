@@ -124,7 +124,7 @@ describe('parseAskPicker on the measured screens', () => {
         { key: '4', label: 'Type something', cursor: false, checked: false },
       ],
       multiSelect: true,
-      submitRow: { cursor: false },
+      submitRow: { cursor: false, next: false },
     });
     const ticked = parseAskPicker(MULTI.otherToggled);
     expect(ticked?.view === 'question' && ticked.options.filter((o) => o.checked).map((o) => o.key)).toEqual(['1', '3', '4']);
@@ -134,7 +134,7 @@ describe('parseAskPicker on the measured screens', () => {
     const typed = parseAskPicker(MULTI.otherText);
     expect(typed?.view === 'question' && typed.options[3]).toEqual({ key: '4', label: 'anchovy', cursor: true, checked: true });
     const onSubmit = parseAskPicker(MULTI.submitRow);
-    expect(onSubmit?.view === 'question' && onSubmit.submitRow).toEqual({ cursor: true });
+    expect(onSubmit?.view === 'question' && onSubmit.submitRow).toEqual({ cursor: true, next: false });
     expect(onSubmit?.view === 'question' && onSubmit.options.some((o) => o.cursor)).toBe(false);
   });
 
@@ -265,6 +265,27 @@ describe('askScreenMeets / askPickerUntouched', () => {
     // The review of another answer.
     expect(askScreenMeets(parseAskPicker(MULTI.review), { view: 'review' }, MULTI_QUESTIONS, answers)).toBe(false);
     expect(askScreenMeets(parseAskPicker(MULTI.review), { view: 'review' }, MULTI_QUESTIONS, [{ keys: ['2'] }, { keys: ['1', '3'] }])).toBe(true);
+  });
+
+  it('reads the in-question row as Next only where another question follows', () => {
+    // Claude Code 2.1.288 labels the row `Next` on a multi-select that is not
+    // the last question (measured live); the last one still reads `Submit`.
+    const extra: AskFormQuestion = {
+      id: 'q2', header: 'Extra', text: 'Anything else?', multiSelect: false, allowOther: true,
+      options: [{ key: '1', label: 'No' }, { key: '2', label: 'Yes' }],
+    };
+    const three = [...MULTI_QUESTIONS, extra];
+    const threeTabs = (rows: readonly string[]): string[] =>
+      rows.map((row) => (row.startsWith('←  ☒ Size') ? '←  ☒ Size  ☒ Toppings  ☐ Extra  ✔ Submit  →' : row));
+    const asNext = (rows: readonly string[]): string[] => rows.map((row) => (row === '❯    Submit' ? '❯    Next' : row));
+    const expectOnRow = { view: 'question' as const, q: 1, cursor: 'submit', checked: ['1', '3', '4'], other: 'anchovy' };
+    const answers = [{ keys: ['2'] }, { keys: ['1', '3'], other: 'anchovy' }, { keys: ['1'] }];
+    const parsed = parseAskPicker(asNext(MULTI.submitRow));
+    expect(parsed?.view === 'question' && parsed.submitRow).toEqual({ cursor: true, next: true });
+    expect(askScreenMeets(parseAskPicker(threeTabs(asNext(MULTI.submitRow))), expectOnRow, three, answers)).toBe(true);
+    expect(askScreenMeets(parseAskPicker(threeTabs(MULTI.submitRow)), expectOnRow, three, answers)).toBe(true);
+    // On the last question a `Next` row is not the picker this answer expects.
+    expect(askScreenMeets(parseAskPicker(asNext(MULTI.submitRow)), expectOnRow, MULTI_QUESTIONS, answers.slice(0, 2))).toBe(false);
   });
 });
 

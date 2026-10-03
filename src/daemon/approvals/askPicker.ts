@@ -72,8 +72,11 @@ export interface AskPickerQuestionView extends AskPickerTabs {
   options: AskPickerRow[];
   /** Whether the rows carry checkboxes. */
   multiSelect: boolean;
-  /** Multi-select: the in-question Submit row under the free-text row. */
-  submitRow?: { cursor: boolean };
+  /**
+   * Multi-select: the in-question Submit row under the free-text row. Claude
+   * Code 2.1.288 labels it `Next` on a question that is not the last one.
+   */
+  submitRow?: { cursor: boolean; next: boolean };
 }
 
 export interface AskPickerReviewView extends AskPickerTabs {
@@ -112,7 +115,7 @@ export interface AskAnswer {
 const RULE = /^─{10,}$/;
 const OPTION_ROW = /^(❯ | {2})(\d{1,2})\. (.*)$/;
 const CHECKBOX = /^\[( |✔)\] ?(.*)$/;
-const SUBMIT_ROW = /^(❯| ) {4}Submit$/;
+const SUBMIT_ROW = /^(❯| ) {4}(Submit|Next)$/;
 const FREE_TEXT_PLACEHOLDER = /^Type something\.?$/;
 const ANSWERED_HEADER = "User answered Claude's questions:";
 const ANSWERED_ENTRY = /^(?:⎿\s+)?·\s+(.*)$/;
@@ -192,7 +195,7 @@ function parseQuestionView(rows: readonly string[], start: number, bar: AskPicke
   if (text.length === 0) return null;
   const options: AskPickerRow[] = [];
   let multiSelect: boolean | undefined;
-  let submitRow: { cursor: boolean } | undefined;
+  let submitRow: { cursor: boolean; next: boolean } | undefined;
   let lastOption = -1;
   for (; i < rows.length; i++) {
     const row = rows[i]!;
@@ -216,7 +219,7 @@ function parseQuestionView(rows: readonly string[], start: number, bar: AskPicke
     // multi-select (a single-select description row may read "Submit" too).
     const s = SUBMIT_ROW.exec(row);
     if (s && multiSelect && !submitRow && lastOption === i - 1) {
-      submitRow = { cursor: s[1] === '❯' };
+      submitRow = { cursor: s[1] === '❯', next: s[2] === 'Next' };
       continue;
     }
     // Anything else is an option's description row.
@@ -417,6 +420,9 @@ export function askScreenMeets(
   if (!screen.tabs.every((tab, j) => j === expect.q || tab.answered === j < expect.q)) return false;
   if (screen.multiSelect !== question.multiSelect) return false;
   if (question.multiSelect ? !screen.submitRow : !!screen.submitRow) return false;
+  // `Next` only where another question follows (measured on 2.1.288; 2.1.283
+  // was measured only on the last question, which reads `Submit`).
+  if (screen.submitRow?.next && expect.q === questions.length - 1) return false;
   const otherKey = String(question.options.length + 1);
   if (screen.options.length !== question.options.length + 1) return false;
   const rowsMatch = question.options.every((o, j) => {
