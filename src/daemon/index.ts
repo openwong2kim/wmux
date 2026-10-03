@@ -784,6 +784,8 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         // the Playwright sandbox already allowlists, so an uploaded photo is
         // reachable by browser_file_upload without a second policy.
         uploadsDir: path.join(wmuxDir, 'uploads', 'phone'),
+        // Each file served because an agent sent it with SendUserFile.
+        auditSentFile: (entry) => getDeviceStore().recordSentFile(entry),
         // #782 — the phone turn view. Lazy: the projector is built after the
         // first resume binding, so a getter resolves the live instance per
         // request rather than capturing a null at construction.
@@ -3102,6 +3104,8 @@ function registerRpcHandlers(
       ...(channelPhoneApi ? { channels: channelPhoneApi } : {}),
       // See the restore path for why this directory and not another.
       uploadsDir: path.join(wmuxDir, 'uploads', 'phone'),
+      // See the restore path.
+      auditSentFile: (entry) => getDeviceStore().recordSentFile(entry),
       // See the restore path: lazy projector for the phone turn view (#782).
       projector: () => transcriptProjector,
       chat: () => chatBridge,

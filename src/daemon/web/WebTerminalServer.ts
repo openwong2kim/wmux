@@ -14,6 +14,7 @@ import type { PhoneWorktreeService } from './phoneWorktree';
 import { PHONE_WORKTREE_REQUEST_ID } from '../../shared/phoneGitV1';
 import { sessionFiles, searchSessionFiles, SessionFileError } from './sessionFiles';
 import { openResolvedFile } from './openResolvedFile';
+import { SentFileIndex } from '../transcript/sentFiles';
 import { listFolders, FolderBrowseError, homeIsBrowsable } from './phoneFolders';
 import {
   createSearchCursorCodec,
@@ -690,6 +691,13 @@ interface WebTerminalServerDeps {
    */
   uploadsDir?: string;
   /**
+   * Records one file served because the pane's agent sent it with
+   * `SendUserFile` (the device audit log). Device, pane, basename and size
+   * only — never the full path or the content. `deviceId` is empty for the
+   * operator token.
+   */
+  auditSentFile?: (entry: { deviceId: string; sessionId: string; file: string; bytes: number }) => void;
+  /**
    * Overrides for the upload bounds. Test seam only — production takes the
    * module constants, and there is no operator surface for these. Filling a
    * quota honestly is the only way to test the refusal, and 200 MB of temp
@@ -1313,6 +1321,8 @@ export class WebTerminalServer {
    * keys, not principal objects, so the set stays cheap to consult per nudge.
    */
   private readonly transcriptWatchers = new Map<string, Set<string>>();
+  /** Files each pane's agent sent with `SendUserFile`, read from its transcript. */
+  private readonly sentFiles = new SentFileIndex();
   /** Per-pane coalescing timers for the non-recording transcript nudge. */
   private readonly transcriptNudgeTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Cancels of chat-v2 turns, with their receipts and outcome (the bridge's store covers terminal bindings only). */
@@ -2472,6 +2482,10 @@ export class WebTerminalServer {
         // omitted rather than `false` for the same reason: that is the shape a
         // daemon predating the route serves, and a phone reads both as false.
         ...(this.opts?.allowTranscript === true ? { turnFiles: true } : {}),
+        // Whether those two routes also serve a file the pane's agent sent with
+        // `SendUserFile` (outside the spawn cwd and uploads). Same grant, same
+        // omit-when-off shape; the phone shows chips for those files only on true.
+        ...(this.opts?.allowTranscript === true ? { turnSentFiles: true } : {}),
         // Advertised only when BOTH grants the route needs are held, the same
         // way `agentSettings` is: a phone that reads this as "browsable" and
         // then meets a 403 on every listing is worse off than one that never
@@ -2652,10 +2666,10 @@ export class WebTerminalServer {
         return this.handleSessionCommands(res, rest.slice(0, -'/commands'.length), url, principal);
       }
       if (req.method === 'GET' && rest.endsWith('/turns/image')) {
-        return this.handleSessionTurnImage(req, res, rest.slice(0, -'/turns/image'.length));
+        return this.handleSessionTurnImage(req, res, rest.slice(0, -'/turns/image'.length), principal);
       }
       if (req.method === 'GET' && rest.endsWith('/turns/file')) {
-        return this.handleSessionTurnFile(req, res, rest.slice(0, -'/turns/file'.length));
+        return this.handleSessionTurnFile(req, res, rest.slice(0, -'/turns/file'.length), principal);
       }
       if (req.method === 'GET' && rest.endsWith('/turns/block')) {
         return this.handleSessionTurnBlock(req, res, rest.slice(0, -'/turns/block'.length));
@@ -5273,6 +5287,7 @@ export class WebTerminalServer {
     req: http.IncomingMessage,
     res: http.ServerResponse,
     sessionId: string,
+    principal: WebPrincipal,
   ): Promise<void> {
     res.setHeader('Cache-Control', 'no-store');
     if (this.opts?.allowTranscript !== true) {
@@ -5303,38 +5318,40 @@ export class WebTerminalServer {
     const roots = [managed.meta.spawnCwd, this.deps.uploadsDir].filter(
       (dir): dir is string => typeof dir === 'string' && dir.length > 0,
     );
-    if (roots.length === 0) {
-      this.json(res, 404, { error: 'image not found' });
-      return;
-    }
 
-    let real: string;
-    try {
-      real = await fs.promises.realpath(raw);
-    } catch {
-      // Missing, or a link that does not resolve — indistinguishable from
-      // "outside the boundary" on purpose.
-      this.json(res, 404, { error: 'image not found' });
-      return;
-    }
-    // BOTH sides resolved: `/tmp` is a symlink to `/private/tmp` on macOS, so a
-    // raw root would reject every file under it. And the containment test is
-    // `path.relative`, never a string prefix — `/a/b` is not a prefix test away
-    // from swallowing `/a/bc`.
-    let contained = false;
-    for (const root of roots) {
-      let realRoot: string;
+    // Set only when the path resolves inside a root.
+    let real: string | null = null;
+    if (roots.length > 0) {
+      let resolved: string | null;
       try {
-        realRoot = await fs.promises.realpath(root);
+        resolved = await fs.promises.realpath(raw);
       } catch {
-        continue;
+        // Missing, or a link that does not resolve — indistinguishable from
+        // "outside the boundary" on purpose.
+        resolved = null;
       }
-      const rel = path.relative(realRoot, real);
-      if (rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) continue;
-      contained = true;
-      break;
+      // BOTH sides resolved: `/tmp` is a symlink to `/private/tmp` on macOS, so a
+      // raw root would reject every file under it. And the containment test is
+      // `path.relative`, never a string prefix — `/a/b` is not a prefix test away
+      // from swallowing `/a/bc`.
+      for (const root of resolved === null ? [] : roots) {
+        let realRoot: string;
+        try {
+          realRoot = await fs.promises.realpath(root);
+        } catch {
+          continue;
+        }
+        const rel = path.relative(realRoot, resolved as string);
+        if (rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) continue;
+        real = resolved;
+        break;
+      }
     }
-    if (!contained) {
+    // Outside the roots, a file the pane's agent sent with SendUserFile is the
+    // one other path served. Unlisted, expired and missing all get the same 404.
+    const sent = real === null;
+    if (sent) real = await this.sentFileTarget(sessionId, raw);
+    if (real === null) {
       this.json(res, 404, { error: 'image not found' });
       return;
     }
@@ -5405,6 +5422,7 @@ export class WebTerminalServer {
         this.json(res, 404, { error: 'image not found' });
         return;
       }
+      if (sent) this.auditSentFile(principal, sessionId, raw, stat.size);
       res.writeHead(200, {
         'Content-Type': contentType,
         ...this.securityHeaders(),
@@ -5464,6 +5482,7 @@ export class WebTerminalServer {
     req: http.IncomingMessage,
     res: http.ServerResponse,
     sessionId: string,
+    principal: WebPrincipal,
   ): Promise<void> {
     res.setHeader('Cache-Control', 'no-store');
     if (this.opts?.allowTranscript !== true) {
@@ -5492,32 +5511,32 @@ export class WebTerminalServer {
     const roots = [managed.meta.spawnCwd, this.deps.uploadsDir].filter(
       (dir): dir is string => typeof dir === 'string' && dir.length > 0,
     );
-    if (roots.length === 0) {
-      this.json(res, 404, { error: 'file not found' });
-      return;
-    }
 
-    let real: string;
-    try {
-      real = await fs.promises.realpath(raw);
-    } catch {
-      this.json(res, 404, { error: 'file not found' });
-      return;
-    }
-    let contained = false;
-    for (const root of roots) {
-      let realRoot: string;
+    let real: string | null = null;
+    if (roots.length > 0) {
+      let resolved: string | null;
       try {
-        realRoot = await fs.promises.realpath(root);
+        resolved = await fs.promises.realpath(raw);
       } catch {
-        continue;
+        resolved = null;
       }
-      const rel = path.relative(realRoot, real);
-      if (rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) continue;
-      contained = true;
-      break;
+      for (const root of resolved === null ? [] : roots) {
+        let realRoot: string;
+        try {
+          realRoot = await fs.promises.realpath(root);
+        } catch {
+          continue;
+        }
+        const rel = path.relative(realRoot, resolved as string);
+        if (rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) continue;
+        real = resolved;
+        break;
+      }
     }
-    if (!contained) {
+    // The SendUserFile addition, exactly as on the image route.
+    const sent = real === null;
+    if (sent) real = await this.sentFileTarget(sessionId, raw);
+    if (real === null) {
       this.json(res, 404, { error: 'file not found' });
       return;
     }
@@ -5533,15 +5552,21 @@ export class WebTerminalServer {
         this.json(res, 404, { error: 'file not found' });
         return;
       }
-      const head = Buffer.alloc(IMAGE_MAGIC_BYTES);
-      const { bytesRead } = await handle.read(head, 0, IMAGE_MAGIC_BYTES, 0);
+      // A sent file may also be WebM, whose DocType sits past the first 16 bytes.
+      const headBytes = sent ? SENT_FILE_MAGIC_BYTES : IMAGE_MAGIC_BYTES;
+      const head = Buffer.alloc(headBytes);
+      const { bytesRead } = await handle.read(head, 0, headBytes, 0);
       // The BYTES decide, never the extension — and before the cap, because
       // which cap applies is a fact about the type.
-      const contentType = sniffTurnFileContentType(head.subarray(0, bytesRead));
+      const contentType = sent
+        ? sniffSentFileContentType(head.subarray(0, bytesRead))
+        : sniffTurnFileContentType(head.subarray(0, bytesRead));
       if (!contentType) {
         this.json(res, 415, {
           error: 'unsupported-type',
-          detail: 'leading bytes are not PNG, JPEG, GIF, WebP, MP4 or QuickTime',
+          detail: sent
+            ? 'leading bytes are not PNG, JPEG, GIF, WebP, MP4, QuickTime or WebM'
+            : 'leading bytes are not PNG, JPEG, GIF, WebP, MP4 or QuickTime',
         });
         return;
       }
@@ -5556,6 +5581,7 @@ export class WebTerminalServer {
         return;
       }
 
+      if (sent) this.auditSentFile(principal, sessionId, raw, stat.size);
       // Content-Length before the first byte: the phone's progress bar reads
       // it, and it is the size the gate approved rather than whatever the file
       // turns out to be — the two checks after the stream are what reconcile
@@ -5630,6 +5656,44 @@ export class WebTerminalServer {
       }
     } finally {
       await handle.close().catch(() => { /* already gone — nothing to release */ });
+    }
+  }
+
+  /**
+   * Where to open `raw` when the transcript bound to this pane says its agent
+   * sent that exact path to the user with `SendUserFile` (successfully, under
+   * 24 hours ago), or null.
+   *
+   * The match is on `raw` as the request spelled it, byte for byte against the
+   * transcript's `input.files[]`. Only the PARENT is resolved: the last
+   * component is opened as named, so `openResolvedFile` refuses it when it is a
+   * symlink and checks the handle is the regular file it looked up.
+   */
+  private async sentFileTarget(sessionId: string, raw: string): Promise<string | null> {
+    if (path.normalize(raw) !== raw) return null;
+    const name = path.basename(raw);
+    if (!name || name === '.' || name === '..') return null;
+    const transcript = this.deps.projector?.()?.transcriptPath(sessionId) ?? null;
+    if (!transcript) return null;
+    if (!(await this.sentFiles.isSent(transcript, raw, this.now()))) return null;
+    try {
+      return path.join(await fs.promises.realpath(path.dirname(raw)), name);
+    } catch {
+      return null;
+    }
+  }
+
+  /** One device-audit line for a served sent file: never the full path. */
+  private auditSentFile(principal: WebPrincipal, sessionId: string, raw: string, bytes: number): void {
+    try {
+      this.deps.auditSentFile?.({
+        deviceId: principal.kind === 'device' ? principal.deviceId : '',
+        sessionId,
+        file: path.basename(raw),
+        bytes,
+      });
+    } catch {
+      // Best-effort, like every other audit line.
     }
   }
 
@@ -9458,6 +9522,28 @@ function sniffTurnFileContentType(head: Buffer): string | null {
     }
   }
   return null;
+}
+
+/** Leading bytes read for a sent file: enough to reach a WebM DocType. */
+const SENT_FILE_MAGIC_BYTES = 64;
+
+/** EBML magic, and the DocType element ID that names the Matroska flavour. */
+const EBML_MAGIC = Buffer.from([0x1a, 0x45, 0xdf, 0xa3]);
+const EBML_DOCTYPE = Buffer.from([0x42, 0x82]);
+
+/**
+ * The `Content-Type` for a file served because the agent sent it with
+ * `SendUserFile`: what `/turns/file` serves, plus WebM. Kept apart so the
+ * spawn-cwd and uploads paths keep the exact set they always had.
+ */
+function sniffSentFileContentType(head: Buffer): string | null {
+  const known = sniffTurnFileContentType(head.subarray(0, IMAGE_MAGIC_BYTES));
+  if (known) return known;
+  // An EBML header whose DocType is `webm` (a one-byte size, 0x84, in front).
+  if (head.length < 12 || !head.subarray(0, 4).equals(EBML_MAGIC)) return null;
+  const at = head.indexOf(EBML_DOCTYPE, 4);
+  if (at < 0 || head[at + 2] !== 0x84) return null;
+  return head.subarray(at + 3, at + 7).toString('latin1') === 'webm' ? 'video/webm' : null;
 }
 
 /**

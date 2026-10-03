@@ -510,6 +510,8 @@ describe('WebTerminalServer', () => {
   let clockOffsetMs: number;
   let agentLaunchEnv: NodeJS.ProcessEnv | undefined;
   let settingsCalls: Array<{id:string;choice:unknown}>;
+  /** What the server handed its sent-file audit hook. */
+  let sentFileAudits: Array<{ deviceId: string; sessionId: string; file: string; bytes: number }>;
   let settingsHook: ((authorized:()=>Promise<boolean>)=>Promise<void>) | undefined;
   const settingsRevision = 'a'.repeat(64)+'.'+'b'.repeat(64);
 
@@ -523,6 +525,7 @@ describe('WebTerminalServer', () => {
     clockOffsetMs = 0;
     agentLaunchEnv = undefined;
     settingsCalls = []; settingsHook = undefined;
+    sentFileAudits = [];
     gateArmed = true;
     decisionFormKinds = [];
     liveActivityPushEnabled = true;
@@ -566,6 +569,7 @@ describe('WebTerminalServer', () => {
       lifecycle: deps.lifecycle,
       git: deps.git,
       uploadsDir: deps.uploadsDir,
+      auditSentFile: (entry) => { sentFileAudits.push(entry); },
       runHistory: () => new RunHistoryStore(deps.uploadsDir),
       inputReceipts: () => new InputReceiptStore(deps.uploadsDir),
       answerReceipts: () => answerReceiptStore,
@@ -8812,6 +8816,275 @@ describe('WebTerminalServer', () => {
       expect(onBody).toHaveProperty('turnFiles', true);
       // The older key keeps its meaning; this one is additive.
       expect(onBody).toHaveProperty('turnImages', true);
+    });
+  });
+
+  describe('SendUserFile files on /turns/image and /turns/file', () => {
+    /** The smallest legal PNG: signature, IHDR for 1x1, one IDAT, IEND. */
+    const PNG_1X1 = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      'base64',
+    );
+    /** An EBML header whose DocType is `webm`. */
+    const WEBM_HEAD = Buffer.from([
+      0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x86, 0x81, 0x01, 0x42, 0xf7, 0x81, 0x01,
+      0x42, 0xf2, 0x81, 0x04, 0x42, 0xf3, 0x81, 0x08, 0x42, 0x82, 0x84, 0x77, 0x65, 0x62, 0x6d,
+    ]);
+    let dirs: string[];
+    /** The pane's spawn cwd, and a scratch folder outside it holding the sent files. */
+    let cwd: string;
+    let scratch: string;
+    let transcript: string;
+    const routeUrl = (route: 'image' | 'file', id: string, p: string): string =>
+      `${base()}/api/sessions/${id}/turns/${route}?path=${encodeURIComponent(p)}`;
+    const tmpTree = (): string => {
+      const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-sent-file-')));
+      dirs.push(dir);
+      return dir;
+    };
+    let seq = 0;
+    /** One SendUserFile call and its result, appended to `file`. */
+    const sendUserFile = (
+      file: string,
+      files: string[],
+      opts: { at?: number; isError?: boolean; answered?: boolean } = {},
+    ): void => {
+      const id = `toolu_sent_${++seq}`;
+      const timestamp = new Date(opts.at ?? Date.now()).toISOString();
+      const lines = [JSON.stringify({
+        type: 'assistant', timestamp,
+        message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'SendUserFile', input: { files } }] },
+      })];
+      if (opts.answered !== false) {
+        lines.push(JSON.stringify({
+          type: 'user', timestamp,
+          message: { role: 'user', content: [{
+            type: 'tool_result', tool_use_id: id,
+            content: opts.isError ? 'file not found' : `${files.length} file delivered to user.`,
+            ...(opts.isError ? { is_error: true } : {}),
+          }] },
+        }));
+      }
+      fs.appendFileSync(file, `${lines.join('\n')}\n`);
+    };
+
+    beforeEach(() => {
+      dirs = [];
+      const root = tmpTree();
+      cwd = path.join(root, 'cwd');
+      scratch = path.join(root, 'scratch');
+      fs.mkdirSync(cwd);
+      fs.mkdirSync(scratch);
+      transcript = path.join(root, 'session.jsonl');
+      fs.writeFileSync(transcript, '');
+      managed.meta.spawnCwd = cwd;
+      projectorMock.transcriptPath.mockImplementation((id: string) => (id === 's1' ? transcript : null));
+    });
+    afterEach(() => {
+      vi.restoreAllMocks();
+      for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
+    });
+
+    it('serves a sent PNG outside the spawn cwd on both routes, and audits basename and size only', async () => {
+      const file = path.join(scratch, 'shot.png');
+      fs.writeFileSync(file, PNG_1X1);
+      sendUserFile(transcript, [file]);
+      const info = await startWithTranscript();
+      for (const route of ['image', 'file'] as const) {
+        const res = await fetch(routeUrl(route, 's1', file), { headers: bearer(info.token as string) });
+        expect(res.status).toBe(200);
+        expect(res.headers.get('content-type')).toBe('image/png');
+        expect(res.headers.get('cache-control')).toBe('no-store');
+        expect(Buffer.from(await res.arrayBuffer()).equals(PNG_1X1)).toBe(true);
+      }
+      expect(sentFileAudits).toEqual([
+        { deviceId: '', sessionId: 's1', file: 'shot.png', bytes: PNG_1X1.length },
+        { deviceId: '', sessionId: 's1', file: 'shot.png', bytes: PNG_1X1.length },
+      ]);
+      expect(JSON.stringify(sentFileAudits)).not.toContain(scratch);
+    });
+
+    it('audits the paired device that fetched it', async () => {
+      const file = path.join(scratch, 'shot.png');
+      fs.writeFileSync(file, PNG_1X1);
+      sendUserFile(transcript, [file]);
+      await startWithTranscript();
+      const phone = await pairDevice('Phone', false);
+      const res = await fetch(routeUrl('image', 's1', file), { headers: bearer(phone.token) });
+      expect(res.status).toBe(200);
+      expect(sentFileAudits).toEqual([{ deviceId: phone.deviceId, sessionId: 's1', file: 'shot.png', bytes: PNG_1X1.length }]);
+    });
+
+    it('refuses a path no SendUserFile call named, with the same 404 as any path outside the roots', async () => {
+      const sent = path.join(scratch, 'sent.png');
+      const other = path.join(scratch, 'other.png');
+      fs.writeFileSync(sent, PNG_1X1);
+      fs.writeFileSync(other, PNG_1X1);
+      sendUserFile(transcript, [sent]);
+      // Named only in a different tool's input: not a sent file.
+      fs.appendFileSync(transcript, `${JSON.stringify({
+        type: 'assistant', timestamp: new Date().toISOString(),
+        message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_read', name: 'Read', input: { file_path: other } }] },
+      })}\n`);
+      const info = await startWithTranscript();
+      const h = bearer(info.token as string);
+      const image = await fetch(routeUrl('image', 's1', other), { headers: h });
+      expect(image.status).toBe(404);
+      expect(await image.json()).toEqual({ error: 'image not found' });
+      const media = await fetch(routeUrl('file', 's1', other), { headers: h });
+      expect(media.status).toBe(404);
+      expect(await media.json()).toEqual({ error: 'file not found' });
+      // A spelling that resolves to the sent file is still not the listed string.
+      const respelled = await fetch(routeUrl('image', 's1', `${scratch}/./sent.png`), { headers: h });
+      expect(respelled.status).toBe(404);
+      expect(sentFileAudits).toEqual([]);
+    });
+
+    it('refuses a call whose tool_result is an error, or that has no result yet', async () => {
+      const failed = path.join(scratch, 'failed.png');
+      const pending = path.join(scratch, 'pending.png');
+      fs.writeFileSync(failed, PNG_1X1);
+      fs.writeFileSync(pending, PNG_1X1);
+      sendUserFile(transcript, [failed], { isError: true });
+      sendUserFile(transcript, [pending], { answered: false });
+      const info = await startWithTranscript();
+      for (const file of [failed, pending]) {
+        const res = await fetch(routeUrl('image', 's1', file), { headers: bearer(info.token as string) });
+        expect(res.status).toBe(404);
+        expect(await res.json()).toEqual({ error: 'image not found' });
+      }
+    });
+
+    it('refuses a call older than 24 hours, measured from the tool_use timestamp', async () => {
+      const file = path.join(scratch, 'old.png');
+      fs.writeFileSync(file, PNG_1X1);
+      sendUserFile(transcript, [file]);
+      const info = await startWithTranscript();
+      const h = bearer(info.token as string);
+      clockOffsetMs = 23 * 60 * 60 * 1000;
+      expect((await fetch(routeUrl('image', 's1', file), { headers: h })).status).toBe(200);
+      clockOffsetMs = 24 * 60 * 60 * 1000 + 60_000;
+      const res = await fetch(routeUrl('image', 's1', file), { headers: h });
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'image not found' });
+    });
+
+    it("refuses a file sent in another pane's transcript", async () => {
+      const file = path.join(scratch, 'theirs.png');
+      fs.writeFileSync(file, PNG_1X1);
+      const otherTranscript = path.join(path.dirname(transcript), 'other.jsonl');
+      sendUserFile(otherTranscript, [file]);
+      projectorMock.transcriptPath.mockImplementation((id: string) =>
+        id === 's1' ? transcript : id === 's2' ? otherTranscript : null);
+      const info = await startWithTranscript();
+      const h = bearer(info.token as string);
+      // s2's own agent sent it: served there, not on s1 or s3.
+      expect((await fetch(routeUrl('image', 's2', file), { headers: h })).status).toBe(200);
+      for (const id of ['s1', 's3']) {
+        const res = await fetch(routeUrl('image', id, file), { headers: h });
+        expect(res.status).toBe(404);
+      }
+    });
+
+    it('refuses a sent path whose last component is a symlink', async () => {
+      const target = path.join(scratch, 'real.png');
+      const link = path.join(scratch, 'link.png');
+      fs.writeFileSync(target, PNG_1X1);
+      fs.symlinkSync(target, link);
+      sendUserFile(transcript, [link]);
+      const info = await startWithTranscript();
+      const res = await fetch(routeUrl('image', 's1', link), { headers: bearer(info.token as string) });
+      expect(res.status).toBe(404);
+    });
+
+    it('refuses a sent file swapped for a symlink between the check and the open', async () => {
+      const file = path.join(scratch, 'swap.png');
+      const elsewhere = path.join(path.dirname(scratch), 'elsewhere.png');
+      fs.writeFileSync(file, PNG_1X1);
+      fs.writeFileSync(elsewhere, PNG_1X1);
+      sendUserFile(transcript, [file]);
+      const info = await startWithTranscript();
+      // The swap lands right before the route's open of this one path: the
+      // lstat already saw a regular file.
+      const real = fs.promises.open;
+      let swapped = false;
+      vi.spyOn(fs.promises, 'open').mockImplementation((async (...args: Parameters<typeof fs.promises.open>) => {
+        if (!swapped && String(args[0]) === file) {
+          swapped = true;
+          fs.unlinkSync(file);
+          fs.symlinkSync(elsewhere, file);
+        }
+        return real(...args);
+      }) as never);
+      for (const route of ['image', 'file'] as const) {
+        swapped = false;
+        if (fs.lstatSync(file).isSymbolicLink()) {
+          fs.unlinkSync(file);
+          fs.writeFileSync(file, PNG_1X1);
+        }
+        const res = await fetch(routeUrl(route, 's1', file), { headers: bearer(info.token as string) });
+        expect(swapped).toBe(true);
+        expect(res.status).toBe(404);
+      }
+      expect(sentFileAudits).toEqual([]);
+    });
+
+    it('refuses a sent .env renamed to .png by its leading bytes, with the routes\' existing 415', async () => {
+      const file = path.join(scratch, 'secrets.png');
+      fs.writeFileSync(file, 'API_KEY=not-an-image\n');
+      sendUserFile(transcript, [file]);
+      const info = await startWithTranscript();
+      const h = bearer(info.token as string);
+      const image = await fetch(routeUrl('image', 's1', file), { headers: h });
+      expect(image.status).toBe(415);
+      expect((await image.json()).error).toBe('not-an-image');
+      const media = await fetch(routeUrl('file', 's1', file), { headers: h });
+      expect(media.status).toBe(415);
+      expect((await media.json()).error).toBe('unsupported-type');
+      expect(sentFileAudits).toEqual([]);
+    });
+
+    it('serves a sent WebM on /turns/file only', async () => {
+      const file = path.join(scratch, 'clip.webm');
+      fs.writeFileSync(file, Buffer.concat([WEBM_HEAD, Buffer.alloc(64)]));
+      sendUserFile(transcript, [file]);
+      const info = await startWithTranscript();
+      const h = bearer(info.token as string);
+      const media = await fetch(routeUrl('file', 's1', file), { headers: h });
+      expect(media.status).toBe(200);
+      expect(media.headers.get('content-type')).toBe('video/webm');
+      await media.arrayBuffer();
+      expect((await fetch(routeUrl('image', 's1', file), { headers: h })).status).toBe(415);
+    });
+
+    it('a device on a server without --allow-transcript is refused; a revoked device is refused', async () => {
+      const file = path.join(scratch, 'shot.png');
+      fs.writeFileSync(file, PNG_1X1);
+      sendUserFile(transcript, [file]);
+      await startRO();
+      const phone = await pairDevice('Phone');
+      const off = await fetch(routeUrl('image', 's1', file), { headers: bearer(phone.token) });
+      expect(off.status).toBe(403);
+      expect((await off.json()).error.startsWith('transcript-disabled:')).toBe(true);
+
+      await server.stop();
+      await startWithTranscript();
+      const second = await pairDevice('Second phone');
+      expect((await fetch(routeUrl('image', 's1', file), { headers: bearer(second.token) })).status).toBe(200);
+      const row = deviceRoster.get(second.deviceId);
+      expect(row).toBeDefined();
+      if (row) row.revoked = true;
+      expect((await fetch(routeUrl('image', 's1', file), { headers: bearer(second.token) })).status).toBe(401);
+    });
+
+    it('/api/config advertises turnSentFiles only alongside the transcript grant', async () => {
+      const off = await startRO();
+      const offBody = await (await fetch(`${base()}/api/config`, { headers: bearer(off.token as string) })).json();
+      expect(offBody).not.toHaveProperty('turnSentFiles');
+      await server.stop();
+      const on = await startWithTranscript();
+      const onBody = await (await fetch(`${base()}/api/config`, { headers: bearer(on.token as string) })).json();
+      expect(onBody).toHaveProperty('turnSentFiles', true);
     });
   });
 

@@ -771,7 +771,9 @@ via OSC 7 — and the uploads directory. Anything else is `404 image not found`,
 and so is a symlink inside those directories pointing out of them. Note what the
 boundary implies in practice: a screenshot on the Desktop, or a temp file under
 `/var/folders`, is not servable, and an agent that `cd`s out of its spawn cwd
-does not widen it. Fall back to the filename chip.
+does not widen it. Fall back to the filename chip. The one addition is a file
+the pane's agent explicitly sent to the user — see
+[Files the agent sent with `SendUserFile`](#files-the-agent-sent-with-senduserfile).
 
 **`404 image not found` is deliberately one answer for four situations** —
 outside the boundary, missing, a directory, unreadable. A separate code for
@@ -848,6 +850,66 @@ A file that GREW is not an error and is not cut. You receive the prefix that was
 there when the request was gated, whole, with a `Content-Length` that matches
 it — the extra bytes simply are not in this response. Fetch again if you want
 them.
+
+#### Files the agent sent with `SendUserFile`
+
+```
+GET /api/config → {…, turnSentFiles?: true}
+
+GET /api/sessions/<id>/turns/image?path=<absolute path>   (unchanged shape)
+GET /api/sessions/<id>/turns/file?path=<absolute path>    (unchanged shape, plus video/webm)
+```
+
+A Claude Code agent hands files to its user with the `SendUserFile` tool: a
+`tool_use` named `SendUserFile` whose `input.files` is an array of absolute
+paths. Those files usually live outside the pane's spawn cwd (a session scratch
+folder, a temp directory), so the two routes above serve them as one addition to
+their two directories. Nothing else about either route changes, and the spawn
+cwd and uploads directory behave exactly as described above.
+
+**Gate on `turnSentFiles` from `/api/config`.** It is present (and `true`) only
+alongside `turnImages`/`turnFiles`, behind the same `--allow-transcript` grant.
+A daemon predating the addition omits the key; read a missing key as `false` and
+show no chip for a `SendUserFile` path — on such a daemon those fetches 404.
+
+**When a path is served.** All of these hold, and the daemon checks every one
+on every request:
+
+1. The path appears **byte for byte** in `input.files[]` of a `SendUserFile`
+   `tool_use` in the transcript bound to **that pane** — the one `/turns` reads.
+   The daemon reads the list from the transcript itself; nothing the request
+   carries can add to it. Send the path exactly as the turn page gave it: a
+   different spelling of the same file (`/a/./b.png`, a resolved `/private/tmp`
+   form) is not the listed string.
+2. The matching `tool_result` is a success (no `is_error: true`). A call that has
+   no result yet is not served.
+3. The `tool_use` is in the pane's **current** transcript session (after `/clear`
+   or a new session, earlier sends are no longer listed) and **no older than 24
+   hours**, measured from the `timestamp` of the assistant entry that made the
+   call. The `tool_result` only decides success, never the clock.
+4. The last path component is not a symlink, and the file opened is the regular
+   file that was checked (no swap between check and read).
+5. The leading bytes are an allowed type (below); the extension plays no part.
+6. The caller holds the transcript grant, and the per-device checks apply as on
+   every route: revoking the device stops it at the next request (`401`).
+
+**Same answers as the rest of the route.** A path that is not listed, is listed
+but older than 24 hours, failed, or is missing gets exactly the response any
+path outside the two directories gets: `404 {error: 'image not found'}` on
+`/turns/image`, `404 {error: 'file not found'}` on `/turns/file`. The body does
+not say which case it was. Treat it like the existing 404: one retry is
+reasonable, then show the filename chip.
+
+**Types.** `/turns/image` serves PNG, JPEG, GIF and WebP, as for any other path;
+anything else is `415 {error: 'not-an-image', detail}`. `/turns/file` serves
+those plus MP4 and QuickTime (the brand table above) and, for sent files only,
+WebM (`video/webm`, an EBML header whose DocType is `webm`); anything else is
+`415 {error: 'unsupported-type', detail}`. The caps are unchanged — 8 MiB per
+image, 128 MiB per video — with the same `413` bodies.
+
+**Audit.** Each sent file served writes one line to the daemon's device audit
+log: the device, the pane, the file's basename and its size. Never the full path
+or the content.
 
 ---
 

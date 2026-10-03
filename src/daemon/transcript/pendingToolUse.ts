@@ -28,10 +28,10 @@ export interface PendingToolUse {
 /** How much of the transcript's end is read. A permission wait is at the tail. */
 export const PENDING_TOOL_USE_TAIL_BYTES = 256 * 1024;
 
-type Json = Record<string, unknown>;
-const isObject = (v: unknown): v is Json => typeof v === 'object' && v !== null && !Array.isArray(v);
+export type Json = Record<string, unknown>;
+export const isObject = (v: unknown): v is Json => typeof v === 'object' && v !== null && !Array.isArray(v);
 
-function contentBlocks(entry: Json): Json[] {
+export function contentBlocks(entry: Json): Json[] {
   const message = entry['message'];
   if (!isObject(message)) return [];
   const content = message['content'];
