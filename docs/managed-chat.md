@@ -241,9 +241,9 @@ Chat v2 runs the agent through its structured protocol instead of projecting a
 terminal. The daemon starts the agent process (a *driver*), streams its replies,
 tool calls, subagent work, approvals and questions, and keeps the folded
 conversation. The wire contract and its rules are in `src/shared/chatv2/ipc.ts`
-(limits in `limits.ts`); the daemon side is `src/daemon/chat/v2/`. This release
-ships the contract only: every `daemon.chatv2.*` method answers
-`not-implemented`. Parts of the event model and fold are adapted from
+(limits in `limits.ts`); the daemon side is `src/daemon/chat/v2/`. The daemon
+runs Claude Code this way and a paired phone can read and approve; the desktop
+view that starts and shows these conversations comes later. Parts of the event model and fold are adapted from
 MIT-licensed code; each such file names its source in a header, and the license
 is in `THIRD_PARTY_NOTICES`.
 
@@ -255,9 +255,12 @@ is in `THIRD_PARTY_NOTICES`.
 - One writer per pane. A driver starts (and restarts) only when no agent process
   is tracked in the pane and its shell is idle with no child processes;
   otherwise `agent-running-in-pane`.
-- The only handoff is chat → terminal: the daemon stops the driver, waits until
-  its process tree is reaped, records the conversation as handed off, and
-  resumes it in the anchor shell's TUI. A handed-off record no longer sends.
+- The only handoff is chat → terminal: the daemon stops the driver, proves its
+  process exited, records the conversation as handed off, and types
+  `cd -- '<cwd>' && claude --resume <id>` (with the chat's model and permission
+  mode) into the anchor shell. It needs an idle turn and a shell sitting at an
+  empty prompt, and is not offered on Windows or WSL panes. A handed-off
+  record no longer sends.
   Terminal → chat is not offered: without proof that the TUI process has exited,
   both could append to the same conversation file.
 

@@ -36,6 +36,7 @@ import { CLAUDE_SETTING_SOURCES, CLAUDE_SETTING_SOURCES_PATTERN } from './claude
 import { buildDriverEnv, DriverEnvError } from './env';
 import { boundEvent, EventBatcher } from './eventBatcher';
 import { claimChatV2Pane, releaseChatV2Pane } from './paneClaims';
+import { handOffToTerminal, handedOffRefusal } from './handoff';
 import { ChatV2Store } from './store';
 import {
   CHATV2_DAEMON_EVENT,
@@ -160,6 +161,12 @@ function newEpoch(): string {
 
 function sendDigest(text: string, attachments: readonly string[]): string {
   return createHash('sha256').update([text, ...attachments].join('\u0000')).digest('hex');
+}
+
+/** The id of the user block that opened the last turn, or undefined. */
+function openTurnId(session: Session): string | undefined {
+  for (let i = session.blocks.length - 1; i >= 0; i--) if (session.blocks[i].role === 'user') return session.blocks[i].id;
+  return undefined;
 }
 
 /** Start index of the longest tail of `blocks` within `budget` bytes (at least one block). */
@@ -325,7 +332,7 @@ class Host implements ChatV2Host {
 
   private capabilities(live: Live): ChatV2Capabilities {
     const active = live.record.state === 'active';
-    return { send: active, interrupt: active, approvals: active, questions: active, images: active, toTerminal: false };
+    return { send: active, interrupt: active, approvals: active, questions: active, images: active, toTerminal: active };
   }
 
   private binding(live: Live): ChatV2Binding {
@@ -379,7 +386,7 @@ class Host implements ChatV2Host {
     interrupt: (p) => this.interrupt(p),
     answer: (p) => this.answer(p),
     bodies: async (p) => this.bodies(p),
-    toTerminal: async () => chatV2Error('not-implemented', 'Continuing in the terminal is not available yet.'),
+    toTerminal: (p) => this.toTerminal(p),
     close: (p) => this.close(p),
   };
 
@@ -529,7 +536,8 @@ class Host implements ChatV2Host {
         ? { ok: true, clientMessageId: p.clientMessageId, seq: earlier.seq, duplicate: true }
         : chatV2Error('client-message-conflict', 'This message id was already used for another message.');
     }
-    if (live.record.state === 'handed-off') return chatV2Error('handed-off', 'This conversation continues in the terminal.');
+    const handedOff = handedOffRefusal(live.record);
+    if (handedOff) return handedOff;
     if (sessionNeedsInput(live.record.session)) return chatV2Error('needs-input', 'Answer the pending request first.');
     if (live.record.session.busy || live.sending || live.starting) return chatV2Error('turn-running', 'The agent is still working.');
     if (live.unreaped) return chatV2Error('driver-failed', 'The last agent process has not exited yet.');
@@ -581,7 +589,10 @@ class Host implements ChatV2Host {
   private async interrupt(p: ChatV2ParamsByMethod['interrupt']): Promise<Result<'interrupt'>> {
     const live = this.liveFor(p.paneId, p.chatSessionId);
     if (!live) return chatV2Error('session-not-found', 'No chat for this pane.');
+    // The caller's guards, checked in the same synchronous step as the write.
+    if (p.epoch !== undefined && p.epoch !== live.epoch) return chatV2Error('stale-epoch', 'The transcript changed; load it again.');
     if (!live.driver || !live.record.session.busy) return { ok: true, interrupted: false };
+    if (p.turnId !== undefined && openTurnId(live.record.session) !== p.turnId) return { ok: true, interrupted: false };
     try {
       return { ok: true, interrupted: await live.driver.interrupt() };
     } catch {
@@ -640,6 +651,70 @@ class Host implements ChatV2Host {
     } finally {
       held.answering = false;
     }
+  }
+
+  /**
+   * Hand the conversation to the anchor shell's TUI (handoff.ts). Refused
+   * while a turn runs or waits on the user: stop it first. On success the
+   * record is the `handed-off` tombstone; a refusal after the driver stopped
+   * leaves it `stopped`, and the next send restarts it.
+   */
+  private async toTerminal(p: ChatV2ParamsByMethod['toTerminal']): Promise<Result<'toTerminal'>> {
+    let live = this.liveFor(p.paneId, p.chatSessionId);
+    if (!live) return chatV2Error('session-not-found', 'No chat for this pane.');
+    await live.drained;
+    live = this.liveFor(p.paneId, p.chatSessionId);
+    if (!live) return chatV2Error('session-not-found', 'No chat for this pane.');
+    const handedOff = handedOffRefusal(live.record);
+    if (handedOff) return handedOff;
+    const { session } = live.record;
+    if (session.busy || sessionNeedsInput(session) || live.sending || live.starting) {
+      return chatV2Error('handoff-refused', 'The agent is still working. Stop the turn first.');
+    }
+    const current = live;
+    current.generation += 1;
+    const driver = current.driver;
+    const result = await handOffToTerminal({
+      paneFree: this.deps.paneFree,
+      writeToPane: this.deps.writeToPane,
+      processIdentity: this.deps.processIdentity,
+      ...(this.deps.processProbe ? { probe: this.deps.processProbe } : {}),
+      promptRevision: (paneId) => this.promptRevision(paneId),
+      persist: async (record) => {
+        const previous = current.record;
+        current.record = record;
+        if (!(await this.persistNow(current))) {
+          current.record = previous;
+          throw new Error('save failed');
+        }
+      },
+    }, {
+      record: current.record,
+      driver: driver ? {
+        pid: driver.pid,
+        stop: async () => {
+          if (!(await this.stopDriver(current))) throw new Error('the driver did not stop');
+        },
+      } : null,
+    });
+    if (result.record) current.record = result.record;
+    if (!result.ok) return { ok: false, error: result.error };
+    // A visible boundary, and the push that carries the `handed-off` binding.
+    this.stamp(current, { type: 'status', text: 'Continued in the terminal.' });
+    void this.persistNow(current);
+    return { ok: true };
+  }
+
+  /**
+   * The anchor shell's input revision while it sits at an empty prompt (shell
+   * integration seen, no command running), or null. Not offered where the
+   * resume command's POSIX quoting would not hold (Windows, WSL).
+   */
+  private promptRevision(paneId: string): number | null {
+    if (process.platform === 'win32') return null;
+    const pane = this.deps.sessionManager.getSession(paneId);
+    if (!pane || pane.meta.wslTarget || pane.promptLog.size === 0 || pane.promptLog.isCommandRunning()) return null;
+    return pane.bridge.isEmptyShellPrompt() ? pane.bridge.getInputRevision() : null;
   }
 
   private async close(p: ChatV2ParamsByMethod['close']): Promise<Result<'close'>> {
@@ -732,6 +807,8 @@ class Host implements ChatV2Host {
     const { record } = live;
     const pane = this.deps.sessionManager.getSession(record.paneId);
     if (!pane) return chatV2Error('pane-not-found', 'That pane is gone.');
+    const handedOff = handedOffRefusal(record);
+    if (handedOff) return handedOff;
     if (live.unreaped) return chatV2Error('driver-failed', 'The last agent process has not exited yet.');
     const generation = ++live.generation;
     // A close or dispose that came in while this start was waiting wins.

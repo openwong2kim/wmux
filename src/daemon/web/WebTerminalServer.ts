@@ -4236,8 +4236,9 @@ export class WebTerminalServer {
     // The first observation is recorded without an event, as on the bridge path.
     this.noteChatBlocked(sessionId, binding.agent, blocked);
     const page = session ? chatV2Page(session) : null;
+    const caps = clientCaps(req);
     const chat = buildChatV2Object(binding, session, blocked,
-      { chatCancel: clientCaps(req).chatCancel === true, historyTruncated: page?.truncatedHead === true });
+      { chatCancel: caps.chatCancel === true, chatQueue: caps.chatQueue === true, historyTruncated: page?.truncatedHead === true });
     if (!session || !page) {
       this.json(res, 200, { available: false, reason: 'unreadable', ...(carried ? { reset: true, events: [] } : {}), chat });
       return;

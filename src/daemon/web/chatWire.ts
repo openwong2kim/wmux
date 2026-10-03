@@ -661,17 +661,21 @@ const V2_STATE: Record<Exclude<ChatV2Status, 'handed-off'>, { agentStatus: Agent
 /**
  * `/turns` `chat` for a v2 record: the managed object's keys exactly, plus
  * `streaming:false`. Read + approve only: `send` stays false (the route answers
- * `409 managed-read-only`). `cancel` and `turn` are shown only to a caller that
- * declared `chat-cancel`, as on a terminal binding.
+ * `409 managed-read-only`). As on a terminal binding, `cancel` is shown only to
+ * a caller that declared `chat-cancel`, and `turn` to one that declared
+ * `chat-cancel` or `chat-queue`. `agentStatus` follows the record: `running`
+ * while a turn runs, `awaiting_input` while it waits on an approval or a
+ * question (what a terminal binding reads at a permission prompt).
  */
 export function buildChatV2Object(
   binding: ChatV2Binding,
   session: Readonly<Session> | null,
   blocked: ChatBlocked | undefined,
-  opts: { chatCancel?: boolean; historyTruncated?: boolean } = {},
+  opts: { chatCancel?: boolean; chatQueue?: boolean; historyTruncated?: boolean } = {},
 ): Record<string, unknown> {
   const state = V2_STATE[binding.status === 'handed-off' ? 'stopped' : binding.status];
-  const turn = opts.chatCancel && session ? chatV2Turn(session) : undefined;
+  // As on a terminal binding: `turn` for a caller that declared `chat-cancel` or `chat-queue`.
+  const turn = (opts.chatCancel || opts.chatQueue) && session ? chatV2Turn(session) : undefined;
   return {
     binding: 'managed',
     ...chatV2Identity(binding),

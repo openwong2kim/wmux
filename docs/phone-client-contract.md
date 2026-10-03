@@ -3909,9 +3909,6 @@ nothing itself.
 
 ### Chat v2 records (driver-owned conversations)
 
-**Not served yet.** No daemon runs chat v2 drivers today, so no pane reads
-this way. The rules below are what a phone gets once one does.
-
 A pane can hold a chat-v2 conversation: the daemon runs the agent itself
 through its structured protocol, and the pane's shell stays idle as its anchor
 (see `docs/managed-chat.md`). On the phone such a pane is **read + approve
@@ -3951,9 +3948,13 @@ only**, and every rule above for a `managed` binding applies:
   has a writer. A launch from the phone never creates such a record. A launch
   still in flight when the desktop starts a chat-v2 conversation in the pane is
   refused the same way, before anything is typed.
-- `POST …/chat/cancel` interrupts the running turn. `capabilities.cancel` and
-  `chat.turn` (`id` = the turn's user row id) are shown only to a caller that
-  sent `chat-cancel`, as on a terminal binding. Answers follow the cancel table:
+- `chat.agentStatus` is `running` while a turn runs and `awaiting_input` while
+  it waits on an approval or a question, as a terminal binding reads at a
+  permission prompt; `idle` between turns.
+- `POST …/chat/cancel` interrupts the running turn. As on a terminal binding,
+  `capabilities.cancel` is shown only to a caller that sent `chat-cancel`, and
+  `chat.turn` (`id` = the turn's user row id, the `turnId` a cancel may name)
+  to one that sent `chat-cancel` or `chat-queue`. Answers follow the cancel table:
   202 `interrupt-requested` with `cancel` progress, 409 `turn-not-running`
   `{turn}`, `session-changed`, `turn-already-interrupted`, `cancel-id-conflict`,
   `cancel-cooldown` (the same id is still in flight), 507

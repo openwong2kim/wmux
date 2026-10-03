@@ -38,6 +38,12 @@ interface Rig {
   /** Set to a promise to hold paneFree until it settles. */
   paneGate: { value: Promise<void> | null };
   backends: ChildBackend[];
+  /** What was typed into the anchor shell. */
+  typed: string[];
+  /** The anchor shell's empty-prompt input revision, or null when not at an empty prompt. */
+  prompt: { revision: number | null };
+  /** What signal 0 says about a driver pid. */
+  probe: { value: 'gone' | 'exists' | 'unknown' };
   fake(): FakeClaude;
 }
 
@@ -55,6 +61,9 @@ function rig(options: { registry?: boolean; nativeOn?: boolean; paneEnv?: Record
     dropped: [] as string[],
     paneGate: { value: null },
     backends: [] as ChildBackend[],
+    typed: [] as string[],
+    prompt: { revision: 1 as number | null },
+    probe: { value: 'gone' as 'gone' | 'exists' | 'unknown' },
   } as Rig;
   r.fake = () => r.fakes[r.fakes.length - 1];
   let host: ChatV2Host | null = null;
@@ -72,7 +81,11 @@ function rig(options: { registry?: boolean; nativeOn?: boolean; paneEnv?: Record
     now: () => r.clock.now,
     sessionManager: {
       getSession: ((id: string) => (id === PANE
-        ? { meta: { spawnCwd: dir, env: options.paneEnv ?? PANE_ENV } }
+        ? {
+            meta: { spawnCwd: dir, env: options.paneEnv ?? PANE_ENV },
+            promptLog: { size: 1, isCommandRunning: () => false },
+            bridge: { isEmptyShellPrompt: () => r.prompt.revision !== null, getInputRevision: () => r.prompt.revision ?? 0 },
+          }
         : undefined)) as unknown as ChatV2HostDeps['sessionManager']['getSession'],
     },
     approvals: () => r.registry,
@@ -80,7 +93,8 @@ function rig(options: { registry?: boolean; nativeOn?: boolean; paneEnv?: Record
       await r.paneGate.value;
       return r.paneFree.value;
     },
-    writeToPane: () => true,
+    writeToPane: (_id: string, data: string) => { r.typed.push(data); return true; },
+    processProbe: () => r.probe.value,
     sendTo: (clientId: string, event: DaemonEvent) => {
       if (r.sockets.get(clientId) === false) return false;
       r.pushes.push({ clientId, push: event.data as ChatV2EventsPush });
@@ -506,6 +520,58 @@ describe('chat v2 host', () => {
     const file = path.join(dir, 'chat-sessions', 'v2', `${binding.chatSessionId}.json`);
     await until(() => JSON.parse(fs.readFileSync(file, 'utf8')).providerSessionId === moved);
     expect(JSON.parse(fs.readFileSync(file, 'utf8')).process.marker).toBe(binding.providerSessionId);
+    await r.host.dispose();
+  });
+});
+
+describe('chat v2 host: handoff and interrupt guards', () => {
+  it('hands an idle chat to the terminal: driver reaped, tombstone, resume typed, later sends refused', async () => {
+    const r = rig();
+    await created(r);
+    await sent(r);
+    r.fake().result();
+    await until(() => r.host.statusForPane(PANE) === 'idle');
+    const b = r.host.bindingForPane(PANE)!;
+    expect(b.capabilities.toTerminal).toBe(true);
+    const res = await r.host.call('toTerminal', { paneId: PANE, chatSessionId: b.chatSessionId }, 'main');
+    expect(res).toEqual({ ok: true });
+    expect(r.host.statusForPane(PANE)).toBe('handed-off');
+    expect(r.typed).toEqual([`cd -- '${dir}' && claude --resume ${b.providerSessionId} '--model=haiku'\r`]);
+    const stored = JSON.parse(fs.readFileSync(path.join(dir, 'chat-sessions', 'v2', `${b.chatSessionId}.json`), 'utf8'));
+    expect(stored.state).toBe('handed-off');
+    expect(stored.process).toBeUndefined();
+    expect(await sent(r, 'again', 'msg-00002')).toMatchObject({ ok: false, error: { code: 'handed-off' } });
+    expect(r.fakes).toHaveLength(1);
+    await r.host.dispose();
+  });
+
+  it('refuses a handoff while a turn runs, and when the driver cannot be proven gone', async () => {
+    const r = rig();
+    await created(r);
+    await sent(r);
+    const b = r.host.bindingForPane(PANE)!;
+    expect(await r.host.call('toTerminal', { paneId: PANE, chatSessionId: b.chatSessionId }, 'main'))
+      .toMatchObject({ ok: false, error: { code: 'handoff-refused' } });
+    r.fake().result();
+    await until(() => r.host.statusForPane(PANE) === 'idle');
+    r.probe.value = 'unknown';
+    expect(await r.host.call('toTerminal', { paneId: PANE, chatSessionId: b.chatSessionId }, 'main'))
+      .toMatchObject({ ok: false, error: { code: 'handoff-refused' } });
+    expect(r.typed).toEqual([]);
+    expect(r.host.statusForPane(PANE)).toBe('stopped');
+    await r.host.dispose();
+  });
+
+  it('interrupts only the turn and epoch the caller names', async () => {
+    const r = rig();
+    await created(r);
+    await sent(r);
+    const b = r.host.bindingForPane(PANE)!;
+    const turnId = r.host.sessionForPane(PANE)!.blocks.find((x) => x.role === 'user')!.id;
+    const base = { paneId: PANE, chatSessionId: b.chatSessionId };
+    expect(await r.host.call('interrupt', { ...base, epoch: 'f'.repeat(16) }, 'main')).toMatchObject({ ok: false, error: { code: 'stale-epoch' } });
+    expect(await r.host.call('interrupt', { ...base, epoch: b.epoch, turnId: '9.1' }, 'main')).toEqual({ ok: true, interrupted: false });
+    expect(await r.host.call('interrupt', { ...base, epoch: b.epoch, turnId }, 'main')).toMatchObject({ ok: true });
     await r.host.dispose();
   });
 });

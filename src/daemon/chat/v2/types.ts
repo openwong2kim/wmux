@@ -201,6 +201,11 @@ export interface ChatV2HostDeps {
   killTree: (pid: number) => Promise<void>;
   /** Defaults to the built-in drivers. Tests pass fakes. */
   drivers?: ChatV2DriverFactory;
+  /**
+   * Whether a pid exists, for the handoff's exit proof: `gone` only on proof
+   * (ESRCH). Defaults to signal 0. Tests pass fakes.
+   */
+  processProbe?: (pid: number) => 'gone' | 'exists' | 'unknown';
 }
 
 export interface ChatV2Host {

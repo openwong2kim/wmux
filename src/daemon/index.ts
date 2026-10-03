@@ -749,6 +749,7 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         // request rather than capturing a null at construction.
         projector: () => transcriptProjector,
         chat: () => chatBridge,
+        chatV2: () => chatV2Host,
         // #783 — expose the gated-tools list and the runtime escape hatch at
         // BOTH construction sites (restore + operator start).
         gateConfig: () => coerceGate(loadConfig().gate),
@@ -3051,6 +3052,7 @@ function registerRpcHandlers(
       // See the restore path: lazy projector for the phone turn view (#782).
       projector: () => transcriptProjector,
       chat: () => chatBridge,
+      chatV2: () => chatV2Host,
       // #783 — see the restore path.
       gateConfig: () => coerceGate(loadConfig().gate),
       // See the restore path — the read side of the runtime escape hatch.
