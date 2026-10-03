@@ -18,6 +18,7 @@ import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
 import { renderBrainMarkdown } from '../Deck/BrainMarkdown';
 import Select from '../ui/Select';
+import { Icon } from '../icons';
 import { GhGateNotice, type GhGate } from './GhGateNotice';
 import { relTime } from './PrSection';
 import { ISSUE_DRAG_TYPE, issueRepoFromUrl, serializeIssueRef } from '../../../shared/issueRef';
@@ -324,7 +325,10 @@ export function IssueSection({ repoPath, refreshKey = 0, open, poll = true, lazy
                   )}
                   <span className="wmux-git-issue-meta" title={issue.updatedAt}>
                     {issue.comments > 0 && (
-                      <span aria-label={t('git.issues.comments', { count: issue.comments })}>{issue.comments} · </span>
+                      <span className="wmux-git-issue-comments" aria-label={t('git.issues.comments', { count: issue.comments })}>
+                        <Icon size={11}><path d="M2.5 3h9v6H6l-2.5 2.5V9h-1z" /></Icon>
+                        {issue.comments}
+                      </span>
                     )}
                     {relTime(issue.updatedAt, t)}
                   </span>

@@ -2252,7 +2252,8 @@ html[data-fullscreen] .wmux-shell-body {
   padding: 1px 6px; border-radius: var(--chip-radius, 9999px); background: var(--selection);
   font-size: 11px; color: var(--text-sub);
 }
-.wmux-git-issue-meta { flex-shrink: 0; font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.wmux-git-issue-meta { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.wmux-git-issue-comments { display: inline-flex; align-items: center; gap: 3px; }
 .wmux-git-issue-detail { display: flex; flex-direction: column; gap: 6px; padding: 6px 8px 10px; font-size: 12px; }
 .wmux-git-issue-byline { font-size: 11px; color: var(--text-muted); }
 .wmux-git-issue-labels { display: flex; flex-wrap: wrap; gap: 4px; }
