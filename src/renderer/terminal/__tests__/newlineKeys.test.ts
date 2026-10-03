@@ -12,6 +12,7 @@ import {
   resolveNewlineKeyByte,
   wantsAltEnterNewline,
   foldAtPrompt,
+  foldAtPromptCarry,
   noteCodexEndedByPrompt,
   CODEX_END_GRACE_MS,
   ALT_ENTER,
@@ -322,6 +323,45 @@ describe('foldAtPrompt (#1694)', () => {
   it('reads byte chunks the same as strings', () => {
     expect(foldAtPrompt(false, new TextEncoder().encode(PROMPT))).toBe(true);
     expect(foldAtPrompt(true, new TextEncoder().encode(COMMAND))).toBe(false);
+  });
+});
+
+/** #1751 review — a marker split across two data events still counts. */
+describe('foldAtPromptCarry (#1694)', () => {
+  const PROMPT = '\x1b]133;D;0\x07\x1b]133;A\x07PS C:\\> ';
+  const COMMAND = '\x1b]133;C\x07';
+
+  /** Feeds the chunks through the carry the way useTerminal does. */
+  function run(prev: boolean, chunks: Array<string | Uint8Array>) {
+    let s = { atPrompt: prev, tail: '' };
+    for (const c of chunks) s = foldAtPromptCarry(s.atPrompt, s.tail, c);
+    return s.atPrompt;
+  }
+
+  it.each([1, 3, 6, 7])('a prompt mark split after %i chars still ends the mapping', (cut) => {
+    const at = PROMPT.indexOf('\x1b]133;A') + cut;
+    expect(run(false, [PROMPT.slice(0, at), PROMPT.slice(at)])).toBe(true);
+  });
+
+  it.each([1, 4, 6])('a command mark split after %i chars still starts it', (cut) => {
+    expect(run(true, ['out' + COMMAND.slice(0, cut), COMMAND.slice(cut) + 'more'])).toBe(false);
+  });
+
+  it('a split across byte chunks works the same', () => {
+    const enc = new TextEncoder();
+    expect(run(false, [enc.encode('x\x1b]13'), enc.encode('3;A\x07')])).toBe(true);
+  });
+
+  it('the carried tail never replays a marker the previous chunk already counted', () => {
+    // Chunk 1 ends exactly on a prompt mark; chunk 2 starts a command. The
+    // tail must not hold a whole "133;A" that would outrank the later 133;C.
+    expect(run(false, ['\x1b]133;A', COMMAND])).toBe(false);
+    expect(run(false, [COMMAND, '\x1b]133;A'])).toBe(true);
+  });
+
+  it('marker-free chunks keep the state, as foldAtPrompt does', () => {
+    expect(run(true, ['plain', ' output\r\n'])).toBe(true);
+    expect(run(false, ['\x1b[?9001h', '\x1b[?1004h'])).toBe(false);
   });
 });
 

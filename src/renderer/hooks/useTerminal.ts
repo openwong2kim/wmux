@@ -33,7 +33,7 @@ import {
 } from '../terminal/replayMute';
 import { terminalFontFamilyCss } from '../utils/terminalFont';
 import { createPathLinkProvider } from '../terminal/pathLinkProvider';
-import { resolveNewlineKeyByte, wantsAltEnterNewline, foldAtPrompt, noteCodexEndedByPrompt } from '../terminal/newlineKeys';
+import { resolveNewlineKeyByte, wantsAltEnterNewline, foldAtPromptCarry, noteCodexEndedByPrompt } from '../terminal/newlineKeys';
 import { isWslShell } from '../../shared/imagePaste';
 import { encodeEscape, isBareEscape } from '../terminal/escapeKeys';
 import { resolveCtrlLetterByte } from '../terminal/ctrlLetterKeys';
@@ -104,7 +104,9 @@ export function onTerminalRegistered(listener: (ptyId: string) => void): () => v
 // its pane already learned (a restore mounts many at once) asks nothing.
 const wslByPtyId = new Map<string, boolean>();
 let ptyShellsQueue: Promise<void> = Promise.resolve();
-function learnPtyShells(ptyId: string): void {
+/** A failed lookup is retried, so one transient error doesn't leave a pane unknown. */
+const PTY_SHELLS_RETRY_MS = [1_000, 3_000, 10_000];
+function learnPtyShells(ptyId: string, attempt = 0): void {
   if (wslByPtyId.has(ptyId)) return;
   ptyShellsQueue = ptyShellsQueue
     .then(async () => {
@@ -113,7 +115,10 @@ function learnPtyShells(ptyId: string): void {
         wslByPtyId.set(s.id, isWslShell(s.shell));
       }
     })
-    .catch(() => undefined);
+    .catch(() => {
+      const delay = PTY_SHELLS_RETRY_MS[attempt];
+      if (delay !== undefined) window.setTimeout(() => learnPtyShells(ptyId, attempt + 1), delay);
+    });
 }
 
 function registerTerminal(ptyId: string, terminal: Terminal): void {
@@ -1883,13 +1888,18 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // re-arm it: the prompt edge that ended Codex latches the mapping off until
     // the slug goes (subscription below) or the grace window passes.
     const codexEndedAtRef: { current: number | null } = { current: null };
+    // The unscanned end of the last chunk, so a marker split across two data
+    // events is still seen.
+    const promptTailRef = { current: '' };
     if (hostPlatform() === 'win32') learnPtyShells(ptyId);
     const noteKeyboard = (data: string | Uint8Array) => {
       keyboardRef.current = foldRemoteKeyboardState(keyboardRef.current, data, foldOpts());
       parkedKeyboardByTerminal.set(terminal, keyboardRef.current);
       if (hostPlatform() === 'win32') {
         const wasAtPrompt = atPromptRef.current;
-        atPromptRef.current = foldAtPrompt(wasAtPrompt, data);
+        const folded = foldAtPromptCarry(wasAtPrompt, promptTailRef.current, data);
+        atPromptRef.current = folded.atPrompt;
+        promptTailRef.current = folded.tail;
         codexEndedAtRef.current = noteCodexEndedByPrompt(
           codexEndedAtRef.current,
           wasAtPrompt,

@@ -238,6 +238,24 @@ export function foldAtPrompt(prev: boolean, bytes: string | Uint8Array): boolean
   return prompt > command;
 }
 
+/** Both markers are this long, so a shorter tail can never hold a whole one. */
+const MARK_TAIL = PROMPT_START_MARK.length - 1;
+
+/**
+ * `foldAtPrompt` across chunk boundaries. PTY output can split a marker
+ * between two data events, and neither half matches on its own. The caller
+ * keeps `tail` per pane: the last `MARK_TAIL` characters already scanned,
+ * which is too short to repeat a marker, so nothing is counted twice.
+ */
+export function foldAtPromptCarry(
+  prev: boolean,
+  tail: string,
+  bytes: string | Uint8Array,
+): { atPrompt: boolean; tail: string } {
+  const scan = tail + (typeof bytes === 'string' ? bytes : latin1.decode(bytes));
+  return { atPrompt: foldAtPrompt(prev, scan), tail: scan.slice(-MARK_TAIL) };
+}
+
 /** Enter / NumpadEnter, including an IME that mangled `key` to 'Process'. */
 function isEnterKey(e: NewlineKeyEventLike): boolean {
   return e.key === 'Enter' || e.code === 'Enter' || e.code === 'NumpadEnter';

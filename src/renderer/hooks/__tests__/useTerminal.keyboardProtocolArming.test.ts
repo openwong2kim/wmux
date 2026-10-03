@@ -61,9 +61,17 @@ describe('useTerminal keyboard-protocol arming (#1363)', () => {
   });
 
   it('#1694: every live output chunk feeds the prompt state and the end-of-Codex latch', () => {
-    expect(SRC).toMatch(/atPromptRef\.current = foldAtPrompt\(wasAtPrompt, data\)/);
+    // Folded with the previous chunk's tail, so a marker split across two data
+    // events still counts (#1751 review).
+    expect(SRC).toMatch(/const folded = foldAtPromptCarry\(wasAtPrompt, promptTailRef\.current, data\);\s*atPromptRef\.current = folded\.atPrompt;\s*promptTailRef\.current = folded\.tail;/);
     expect(SRC).toMatch(
       /codexEndedAtRef\.current = noteCodexEndedByPrompt\(\s*codexEndedAtRef\.current,\s*wasAtPrompt,\s*atPromptRef\.current,\s*useStore\.getState\(\)\.surfaceAgent\[ptyId\]\?\.slug,/,
+    );
+  });
+
+  it('#1694: a failed shell lookup is retried, not left unknown for good', () => {
+    expect(SRC).toMatch(
+      /\.catch\(\(\) => \{\s*const delay = PTY_SHELLS_RETRY_MS\[attempt\];\s*if \(delay !== undefined\) window\.setTimeout\(\(\) => learnPtyShells\(ptyId, attempt \+ 1\), delay\);/,
     );
   });
 
