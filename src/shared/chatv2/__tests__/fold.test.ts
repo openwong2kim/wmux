@@ -110,6 +110,30 @@ describe('window fold (renderer holding only the tail)', () => {
     expect(baseIndex + folded.blocks.length).toBe(full.blocks.length);
     expect(folded.blocks).toEqual(full.blocks.slice(baseIndex));
     expect(folded.blocks.at(-1)?.id).toBe(full.blocks.at(-1)?.id);
+    const { blocks: _w, ...windowHead } = folded;
+    const { blocks: _f, ...fullHead } = full;
+    expect(windowHead).toEqual(fullHead);
+  });
+
+  it('applies head-only events without touching blocks', () => {
+    const atSnapshot = applyHarnessEvents(base(), stampAll(turn.slice(0, 6)));
+    const head = applyHarnessEvents(atSnapshot, stampAll([
+      { type: 'background.updated', tasks: ['tests'] },
+      { type: 'context', used: 1200, window: 200_000 },
+      { type: 'usage.limited', resetsAt: 99 },
+    ], 7));
+    expect(blockChangeFrom(atSnapshot, head)).toBe(head.blocks.length);
+    expect(head).toMatchObject({ backgroundTasks: ['tests'], usageLimit: { resetsAt: 99 }, context: { used: 1200 } });
+  });
+
+  it('folds a mid-turn process exit as a failed turn', () => {
+    const exited = applyHarnessEvents(base(), stampAll([
+      { type: 'user.message', text: 'go', clientMessageId: 'client-0004' },
+      { type: 'message.delta', text: 'work' },
+      { type: 'session.ended', code: 1 },
+    ]));
+    expect(exited.busy).toBe(false);
+    expect(exited.blocks[0]!.outcome).toBe('failed');
   });
 
   it('signals a re-snapshot when the turn end touches a user block outside the window', () => {

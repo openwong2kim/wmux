@@ -22,6 +22,10 @@ import type { UserQuestion } from "./userQuestion";
 
 export type HarnessEvent =
   | { type: "session.started" }
+  /**
+   * The agent process is gone. A driver that exits mid-turn emits only this;
+   * the fold closes the open turn as `failed`. Do not also emit `turn.ended`.
+   */
   | { type: "session.ended"; code?: number | null }
   | { type: "session.error"; message: string }
   | { type: "session.providerBound"; providerSessionId: string }

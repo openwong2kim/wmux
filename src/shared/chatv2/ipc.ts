@@ -38,6 +38,13 @@
  *     - `touchedFrom < baseIndex` (an event changed a block it does not hold);
  *     - after folding, `baseIndex + blocks.length !== blockCount` or the last
  *       block's id !== `lastBlockId` (its window fold diverged).
+ *   These two values detect structural divergence only (an append where the
+ *   daemon updated, a lost block). Ids are fixed at creation, so an in-place
+ *   patch never changes them; content agreement comes from the deterministic
+ *   fold plus the `touchedFrom` and window-start rules, not from a check.
+ * - A push applies to the whole session, head included (`busy`,
+ *   `backgroundTasks`, `usageLimit`, `context`, `pendingQuestion`, …). Events
+ *   that change only the head leave `touchedFrom === blockCount`.
  * - Block ids are deterministic (`<seq>.<n>`), so the same stamped events fold
  *   to the same ids in the daemon and in every client.
  *

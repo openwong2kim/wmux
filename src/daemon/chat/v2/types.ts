@@ -57,15 +57,24 @@ export interface ChatV2DriverTurn {
 }
 
 /**
- * A decision the agent is blocked on, in the shape the host turns into an
- * ApprovalRegistry native decision (`adapter: agent`, `requestId`). The
- * driver also emits the matching `approval.requested` / `question.asked`
- * HarnessEvent for the transcript.
+ * A decision the agent is blocked on. The host records it with
+ * `ApprovalRegistry.noteNativeDecision({ sessionId: paneId, agent, native:
+ * { adapter: agent, requestId }, form, question, toolName, summary })`, the
+ * same form shapes the OpenCode adapter uses:
+ *   permission → `{ v: 1, kind: 'permission', actions: [{ id: 'approve',
+ *                label: 'Allow once' }, { id: 'deny', label: 'Reject' }] }`
+ *   questions  → `{ v: 1, kind: 'questions', questions: [{ id: 'q0', … }],
+ *                actions: [{ id: 'submit', label: 'Submit' }, { id: 'deny',
+ *                label: 'Dismiss' }] }`
+ * The driver also emits the matching `approval.requested` / `question.asked`
+ * HarnessEvent for the transcript, with the same `requestId`.
  */
 export type ChatV2DriverDecision =
   | {
       kind: 'permission';
       requestId: string;
+      /** The card's question line, e.g. `Allow Bash?`. */
+      question: string;
       toolName: string;
       /** One line for the card and the phone (command, path, …). */
       summary: string;
@@ -73,10 +82,13 @@ export type ChatV2DriverDecision =
   | {
       kind: 'questions';
       requestId: string;
+      /** `DecisionForm.questions` minus the ids; the host numbers them q0, q1, …. */
       questions: Array<{
         header?: string;
         text: string;
         multiSelect: boolean;
+        /** A free-text answer is accepted besides the options. */
+        allowOther: boolean;
         options: Array<{ key: string; label: string }>;
       }>;
     };
