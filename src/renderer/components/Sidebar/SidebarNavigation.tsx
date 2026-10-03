@@ -96,7 +96,10 @@ export default function SidebarNavigation({ compact = false, home = false }: {
             data-sidebar-nav={id}
             className={`wmux-nav-button ${FOCUS_RING}`}
             aria-label={name}
-            aria-pressed={active}
+            // Rail items are pages (the current one is aria-current); the
+            // in-sheet list's items are toggles.
+            aria-current={home && active ? 'page' : undefined}
+            aria-pressed={home ? undefined : active}
             title={compact ? name : undefined}
             onClick={onClick}
           >

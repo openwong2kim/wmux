@@ -34,14 +34,14 @@ import { ORCH_ROLES, bindingEnforcesModel, bindingSkipPermissionsFlag } from '..
 /** DESIGN.md status-dot vocabulary: amber=running, green=ok, gray=idle, red=needs input. */
 function dotColor(status: AgentStatus): string {
   switch (status) {
-    // Mono look: one accent, for waiting on the user; running and complete
-    // are muted; red is kept for errors.
+    // Waiting on the user is --accent-yellow (as in the sidebar and on the
+    // Fleet board); running and complete are muted; red is kept for errors.
     case 'running':
     case 'complete':
       return 'var(--text-sub)';
     case 'awaiting_input':
     case 'waiting':
-      return 'var(--accent)';
+      return 'var(--accent-yellow)';
     case 'error':
       return 'var(--accent-red)';
     default:

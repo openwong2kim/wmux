@@ -64,14 +64,14 @@
   color: var(--text-main);
   background: var(--hover-fill);
 }
-.wmux-nav-button[aria-pressed="true"] {
+.wmux-nav-button:is([aria-pressed="true"], [aria-current="page"]) {
   color: var(--text-main);
   background: var(--selection);
 }
 .wmux-nav-button[data-sidebar-nav="search"] { margin-bottom: 4px; }
 .wmux-nav-icon { flex-shrink: 0; color: color-mix(in srgb, var(--text-main) 50%, transparent); }
 .wmux-nav-button:hover .wmux-nav-icon { color: color-mix(in srgb, var(--text-main) 70%, transparent); }
-.wmux-nav-button[aria-pressed="true"] .wmux-nav-icon { color: var(--text-main); }
+.wmux-nav-button:is([aria-pressed="true"], [aria-current="page"]) .wmux-nav-icon { color: var(--text-main); }
 /* Fleet shortcut's trailing counts: plain meta text, no chip. Only the
  * needs-you count is amber (the attention signal); running stays muted. */
 .wmux-sidebar-nav { container: wmux-nav / inline-size; }
@@ -1822,7 +1822,7 @@
  * Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/styles/index.css),
  * MIT License, Copyright (c) 2026 Nick. Each consumer reads one variable that
  * THEME_STYLES sets per theme; the :root defaults reproduce the earlier look. */
-.wmux-nav-button[aria-pressed="true"],
+.wmux-nav-button:is([aria-pressed="true"], [aria-current="page"]),
 .wmux-fleet-card[aria-selected="true"] { box-shadow: var(--select-ring); }
 .wmux-surface-tab[data-active="true"],
 .wmux-deck-tab[aria-selected="true"] {
@@ -1964,7 +1964,7 @@ html[data-fullscreen] .wmux-shell-body {
 }
 .wmux-rail .wmux-nav-button svg,
 .wmux-rail button > svg { width: 17px; height: 17px; }
-.wmux-rail .wmux-nav-button[aria-pressed="true"],
+.wmux-rail .wmux-nav-button[aria-current="page"],
 .wmux-rail .wmux-nav-button[aria-expanded="true"] { background: var(--selection); color: var(--text-main); box-shadow: none; }
 .wmux-rail .wmux-nav-button:hover { background: var(--hover-fill); }
 .wmux-rail .wmux-nav-count {
@@ -2004,8 +2004,8 @@ html[data-fullscreen] .wmux-shell-body {
 /* Sidebar header: a plain title with a muted count and icon buttons. */
 .wmux-sidebar-section,
 .wmux-sidebar-section > span:first-child {
-  text-transform: none;
-  letter-spacing: normal;
+  text-transform: var(--group-case);
+  letter-spacing: var(--group-track);
 }
 .wmux-sidebar-section {
   min-height: 44px;
@@ -2057,7 +2057,7 @@ html[data-fullscreen] .wmux-shell-body {
 }
 .wmux-rail .wmux-nav-button svg,
 .wmux-rail button > svg { width: 19px; height: 19px; }
-.wmux-rail .wmux-nav-button[aria-pressed="true"],
+.wmux-rail .wmux-nav-button[aria-current="page"],
 .wmux-rail .wmux-nav-button[aria-expanded="true"] { background: var(--selection); }
 .wmux-rail .wmux-nav-badge { top: 3px; right: 2px; }
 .wmux-rail .wmux-nav-count:not(.wmux-nav-badge) { top: 7px; right: 7px; }

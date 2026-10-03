@@ -37,7 +37,7 @@ describe('sidebar icon rail', () => {
     // Search & commands is a palette (the titlebar pill), not a page.
     expect(navIds()).toEqual(['home', 'fleet', 'schedules', 'remote']);
     // Home is the current page until another is chosen.
-    expect(container.querySelector('[data-sidebar-nav="home"]')?.getAttribute('aria-pressed')).toBe('true');
+    expect(container.querySelector('[data-sidebar-nav="home"]')?.getAttribute('aria-current')).toBe('page');
     for (const b of rail().querySelectorAll('button')) {
       expect(b.getAttribute('aria-label')?.length, b.outerHTML).toBeGreaterThan(0);
     }
@@ -86,7 +86,7 @@ describe('sidebar icon rail', () => {
 
   it('swaps the sheet to each page and marks only that one', async () => {
     await act(async () => root.render(<MiniSidebar rail collapsed={false} />));
-    const pressed = () => [...container.querySelectorAll('[data-sidebar-nav][aria-pressed="true"]')]
+    const pressed = () => [...container.querySelectorAll('[data-sidebar-nav][aria-current="page"]')]
       .map((el) => el.getAttribute('data-sidebar-nav'));
     for (const page of ['fleet', 'schedules', 'remote'] as const) {
       act(() => container.querySelector<HTMLButtonElement>(`[data-sidebar-nav="${page}"]`)!.click());
