@@ -41,6 +41,10 @@ tab (`←  ☐ Fruit  ✔ Submit  →`), and `Enter` on its Submit row draws the
 review screen. A multi-select question that is not the last one labels the
 in-question row `Next` instead of `Submit`; `Enter` there moves to the next
 tab. One single-select question still draws ` ☐ Color` with no Submit tab.
+A long option label wraps onto the description's indent (` ` × 5), and under
+the bottom rule the picker draws only `N. Chat about this` and its key hint.
+The screens are in `claude-2.1.288/` (an 80×24 pane in the main buffer, not
+the alternate screen, so they sit apart from the fixtures above).
 
 ## Claude Code — ExitPlanMode ("Would you like to proceed?")
 
