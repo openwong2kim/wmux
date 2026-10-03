@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { PrStatus } from '../../shared/types';
 import { normalizeWorktreePath } from '../../shared/workTask';
-import { cliPath } from '../github/PrProvider';
+import { getExecEnv } from '../../shared/execEnv';
 
 const execFileAsync = promisify(execFile);
 
@@ -84,8 +84,8 @@ export function mapGhPrView(json: GhPrViewJson): PrStatus | null {
 
 export class PrStatusCache {
   private cache = new Map<string, CacheEntry>();
-  /** Tri-state gh availability: unknown until first probe. */
-  private ghAvailable: boolean | null = null;
+  /** When gh last failed with ENOENT; lookups stay silent until TTL_MS later, then reprobe. */
+  private ghMissingAt: number | null = null;
 
   constructor(
     private now: () => number = Date.now,
@@ -103,10 +103,10 @@ export class PrStatusCache {
    * itself resolves the PR from the checkout.
    */
   async get(cwd: string, branch: string): Promise<PrStatus | null> {
-    if (this.ghAvailable === false) return null;
+    const now = this.now();
+    if (this.ghMissingAt !== null && now - this.ghMissingAt < TTL_MS) return null;
     const key = cacheKey(cwd, branch);
     const entry = this.cache.get(key);
-    const now = this.now();
     if (entry) {
       if (entry.pending) return entry.pending;
       if (now - entry.fetchedAt < TTL_MS) return entry.value;
@@ -156,18 +156,19 @@ export class PrStatusCache {
           cwd,
           timeout: GH_TIMEOUT_MS,
           // Force non-interactive: gh must never block the metadata poll on
-          // a login prompt or pager. PATH comes from cliPath() so a launchd-
-          // started macOS app still finds a Homebrew-installed gh.
-          env: { ...process.env, PATH: cliPath(), GH_PROMPT_DISABLED: '1', GH_PAGER: 'cat', NO_COLOR: '1' },
+          // a login prompt or pager. getExecEnv() so a Dock-launched macOS app
+          // still finds a Homebrew-installed gh.
+          env: { ...getExecEnv(), GH_PROMPT_DISABLED: '1', GH_PAGER: 'cat', NO_COLOR: '1' },
           windowsHide: true,
         },
       );
-      this.ghAvailable = true;
+      this.ghMissingAt = null;
       return mapGhPrView(JSON.parse(stdout) as GhPrViewJson);
     } catch (err) {
-      // ENOENT = gh not installed → permanently silent for this process.
+      // ENOENT = gh not installed → silent for TTL_MS, then probe again
+      // (gh may be installed while wmux is running).
       if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
-        this.ghAvailable = false;
+        this.ghMissingAt = this.now();
       }
       // "no pull requests found" exits 1 — also lands here. Quiet absence.
       return null;

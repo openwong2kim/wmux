@@ -106,30 +106,59 @@ describe('PrStatusCache', () => {
     expect(exec).toHaveBeenCalledTimes(1);
   });
 
-  it('gh missing (ENOENT) disables the cache permanently for this process', async () => {
-    const exec = vi.fn().mockRejectedValue(Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' }));
-    const cache = new PrStatusCache(() => 0, exec);
+  it('gh missing (ENOENT) stays silent for the TTL, then probes again', async () => {
+    let now = 0;
+    const exec = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' }))
+      .mockResolvedValue({ stdout: PR_JSON });
+    const cache = new PrStatusCache(() => now, exec);
     expect(await cache.get('D:\\a', 'main')).toBeNull();
+    now = 5 * 60 * 1000 - 1;
     expect(await cache.get('D:\\b', 'other')).toBeNull();
-    expect(exec).toHaveBeenCalledTimes(1); // never probed again
+    expect(exec).toHaveBeenCalledTimes(1); // not probed within the TTL
+    now = 5 * 60 * 1000;
+    expect((await cache.get('D:\\b', 'other'))?.number).toBe(7); // gh installed meanwhile
+    expect(exec).toHaveBeenCalledTimes(2);
   });
 
-  it('hands gh a PATH with the Homebrew dirs under a launchd PATH (macOS)', async () => {
-    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+  // getExecEnv() reads the platform at import and caches its env, so each case
+  // re-imports PrStatusCache with a mocked platform.
+  async function spawnedPath(platform: { isMac: boolean; isLinux: boolean }, path: string | undefined): Promise<string> {
     const savedPath = process.env.PATH;
-    Object.defineProperty(process, 'platform', { value: 'darwin' });
-    process.env.PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
+    if (path === undefined) delete process.env.PATH;
+    else process.env.PATH = path;
+    vi.resetModules();
+    vi.doMock('../../../shared/platform', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('../../../shared/platform')>()),
+      ...platform,
+    }));
     try {
+      const { PrStatusCache: Fresh } = await import('../PrStatusCache');
       const exec = vi.fn().mockResolvedValue({ stdout: PR_JSON });
-      const cache = new PrStatusCache(() => 0, exec);
-      await cache.get('/repo', 'main');
-      const path = (exec.mock.calls[0][2].env.PATH as string).split(':');
-      expect(path).toContain('/opt/homebrew/bin');
-      expect(path).toContain('/usr/local/bin');
+      await new Fresh(() => 0, exec).get('/repo', 'main');
+      return exec.mock.calls[0][2].env.PATH as string;
     } finally {
-      Object.defineProperty(process, 'platform', platform);
+      vi.doUnmock('../../../shared/platform');
+      vi.resetModules();
       process.env.PATH = savedPath;
     }
+  }
+
+  it('macOS: a launchd PATH reaches gh with the Homebrew dirs added', async () => {
+    const path = await spawnedPath({ isMac: true, isLinux: false }, '/usr/bin:/bin:/usr/sbin:/sbin');
+    expect(path).toContain('/opt/homebrew/bin');
+    expect(path).toContain('/usr/local/bin');
+  });
+
+  it('Linux: keeps the original PATH first, without Homebrew dirs', async () => {
+    const path = await spawnedPath({ isMac: false, isLinux: true }, '/custom/bin:/usr/bin:/bin');
+    expect(path.startsWith('/custom/bin:/usr/bin:/bin')).toBe(true);
+    expect(path).not.toContain('/opt/homebrew/bin');
+  });
+
+  it('Linux: an unset PATH still lets gh resolve from /usr/bin and /bin', async () => {
+    const path = await spawnedPath({ isMac: false, isLinux: true }, undefined);
+    expect(path.startsWith('/usr/bin:/bin')).toBe(true);
   });
 
   it('invalidate() forces a refetch before the TTL', async () => {

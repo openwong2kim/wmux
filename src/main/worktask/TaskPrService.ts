@@ -23,6 +23,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { WORKTASK_PR_URL_RE } from '../../shared/workTask';
+import { getExecEnv } from '../../shared/execEnv';
 
 const execFileAsync = promisify(execFile);
 
@@ -30,7 +31,7 @@ const GH_TIMEOUT_MS = 20_000;
 const GIT_TIMEOUT_MS = 60_000;
 
 /** gh를 대화형으로 절대 멈추지 않게 하는 환경(로그인 프롬프트·pager 봉쇄). */
-const GH_ENV = { ...process.env, GH_PROMPT_DISABLED: '1', GH_PAGER: 'cat', NO_COLOR: '1' };
+const GH_ENV = { ...getExecEnv(), GH_PROMPT_DISABLED: '1', GH_PAGER: 'cat', NO_COLOR: '1' };
 
 /** 데몬 RPC 최소 표면(prUrl 커밋 — 테스트 주입 가능). */
 export interface PrDaemonPort {
@@ -107,7 +108,7 @@ export class TaskPrService {
     return this.exec('git', args, {
       cwd,
       timeout: GIT_TIMEOUT_MS,
-      env: process.env,
+      env: getExecEnv(),
       windowsHide: true,
     });
   }

@@ -55,7 +55,9 @@ export function getExecEnv(): NodeJS.ProcessEnv {
  *  under the env's own HOME); deduplicated. */
 function mergePath(env: NodeJS.ProcessEnv, first: string[]): NodeJS.ProcessEnv {
   const home = env.HOME || os.homedir();
-  const existing = (env.PATH || '').split(':').filter(Boolean);
+  // An unset/empty PATH falls back to the default exec search path; a PATH
+  // holding only the per-user dirs would hide /usr/bin and /bin.
+  const existing = (env.PATH || '/usr/bin:/bin').split(':').filter(Boolean);
   const merged = [...new Set([...first, ...existing, ...(isMac ? MAC_PATH_FALLBACKS : []), path.join(home, '.local', 'bin'),
     // OpenCode's official install script defaults to INSTALL_DIR=$HOME/.opencode/bin.
     path.join(home, '.opencode', 'bin')])];
