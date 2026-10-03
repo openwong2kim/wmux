@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CHATV2_ANSWER_ARM_MS } from '../../../../shared/chatv2/limits';
 import type { Block } from '../../../../shared/chatv2/session';
 import { setChatV2BridgeForTests } from '../bridge';
-import { ApprovalCard } from '../Cards';
+import { ApprovalCard, QuestionCard } from '../Cards';
 import ChatV2View from '../ChatV2View';
 import { createMockHost, type MockHost } from './mockHost';
 
@@ -61,6 +61,22 @@ describe('approval arm', () => {
     const block: Block = { id: '3.1', role: 'tool', text: 'Bash', approval: { requestId: 'r2', requestedAt: 10_000 } };
     await act(async () => root.render(<ApprovalCard block={block} onAnswer={async () => true} />));
     expect([...host.querySelectorAll('button')].every((b) => !b.disabled)).toBe(true);
+  });
+});
+
+describe('question card', () => {
+  it('arms like an approval and answers with the picked option keys and free text', async () => {
+    vi.useFakeTimers({ now: 50_000 });
+    const onAnswer = vi.fn(async () => true);
+    const prompt = { requestId: 'q1', requestedAt: 50_000, questions: [{ id: 'q0', prompt: 'Which format?', multiSelect: false, allowCustom: true, options: [{ id: 'a', label: 'JSON' }, { id: 'b', label: 'YAML' }] }] };
+    await act(async () => root.render(<QuestionCard prompt={prompt} onAnswer={onAnswer} />));
+    const submit = () => [...host.querySelectorAll('button')].find((b) => b.textContent === 'Submit')!;
+    await act(async () => { (host.querySelector('input[type="radio"]') as HTMLInputElement).click(); });
+    expect(submit().disabled).toBe(true);
+    await act(async () => { vi.advanceTimersByTime(CHATV2_ANSWER_ARM_MS); });
+    expect(submit().disabled).toBe(false);
+    await act(async () => { submit().click(); });
+    expect(onAnswer).toHaveBeenCalledWith('q1', 'allow', [{ keys: ['a'] }]);
   });
 });
 

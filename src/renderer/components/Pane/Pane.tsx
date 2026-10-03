@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useState, useMemo, useRef } from 'react';
 import { Panel, Group, Separator } from 'react-resizable-panels';
 import type { PaneLeaf, Workspace } from '../../../shared/types';
 import { maybeDelegateExternalBrowser } from '../../utils/browserPaneActions';
@@ -1047,8 +1047,9 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
  * into the chat never reach the shell; the terminal-projection chat stays
  * inside Terminal. Choosing a view never creates a PTY.
  */
-function TerminalSurface({ surface, chatViewEnabled, isActive, visible, isWorkspaceVisible, onPtyCreated, workspaceId }: {
+function TerminalSurface({ surface, paneId, chatViewEnabled, isActive, visible, isWorkspaceVisible, onPtyCreated, workspaceId }: {
   surface: PaneLeaf['surfaces'][number];
+  paneId: string;
   chatViewEnabled: boolean;
   isActive: boolean;
   visible?: boolean;
@@ -1059,6 +1060,13 @@ function TerminalSurface({ surface, chatViewEnabled, isActive, visible, isWorksp
   const view = useChatSurfaceView(surface.ptyId || undefined, chatViewEnabled, surface.viewMode);
   const chatV2 = view === 'chatv2';
   const shown = visible ?? isActive;
+  // The covered terminal still renders its own search bar (above the chat) when
+  // the global find chord fires in this pane; chat v2 has its own find.
+  const coveredSearch = useStore((s) => chatV2 && isActive && s.searchBarVisible
+    && s.workspaces.find((w) => w.id === workspaceId)?.activePaneId === paneId);
+  useLayoutEffect(() => {
+    if (coveredSearch) useStore.getState().setSearchBarVisible(false);
+  }, [coveredSearch]);
   return (
     <>
       <div style={{ display: 'contents' }} inert={chatV2 || undefined}>
@@ -1195,6 +1203,7 @@ function SplitSurfaceView({
             <TerminalSurface
               key={surface.id}
               surface={surface}
+              paneId={pane.id}
               chatViewEnabled={chatViewEnabled}
               isActive={surface.id === activeSurfaceId}
               isWorkspaceVisible={isWorkspaceVisible}
@@ -1226,6 +1235,7 @@ function SplitSurfaceView({
               <TerminalSurface
                 key={surface.id}
                 surface={surface}
+                paneId={pane.id}
                 chatViewEnabled={chatViewEnabled}
                 isActive={surface.id === activeSurfaceId}
                 visible={surface.id === shownTerminalId}
