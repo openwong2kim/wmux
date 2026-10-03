@@ -1926,7 +1926,10 @@
   border-radius: var(--sheet-radius);
   background: var(--bg-base);
   box-shadow: var(--sheet-shadow);
-  overflow: hidden;
+  /* clip, not hidden: a hidden scroll container still scrolls when focus or
+   * scrollIntoView reaches the agent toolbar parked below its edge, which
+   * slid the whole sheet up under the titlebar. */
+  overflow: clip;
 }
 html[data-fullscreen] .wmux-shell-body {
   margin: 0;
