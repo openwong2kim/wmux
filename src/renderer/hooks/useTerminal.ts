@@ -33,7 +33,7 @@ import {
 } from '../terminal/replayMute';
 import { terminalFontFamilyCss } from '../utils/terminalFont';
 import { createPathLinkProvider } from '../terminal/pathLinkProvider';
-import { resolveNewlineKeyByte, wantsAltEnterNewline, foldAtPrompt } from '../terminal/newlineKeys';
+import { resolveNewlineKeyByte, wantsAltEnterNewline, foldAtPrompt, noteCodexEndedByPrompt } from '../terminal/newlineKeys';
 import { isWslShell } from '../../shared/imagePaste';
 import { encodeEscape, isBareEscape } from '../terminal/escapeKeys';
 import { resolveCtrlLetterByte } from '../terminal/ctrlLetterKeys';
@@ -1879,17 +1879,36 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // mapping at once and 133;C starts it again. The liveness edges above need
     // no hook here: the same hydrate that flips them clears the slug.
     const atPromptRef = { current: false };
+    // ...and a command started before that stale slug is dropped must not
+    // re-arm it: the prompt edge that ended Codex latches the mapping off until
+    // the slug goes (subscription below) or the grace window passes.
+    const codexEndedAtRef: { current: number | null } = { current: null };
     if (hostPlatform() === 'win32') learnPtyShells(ptyId);
     const noteKeyboard = (data: string | Uint8Array) => {
       keyboardRef.current = foldRemoteKeyboardState(keyboardRef.current, data, foldOpts());
       parkedKeyboardByTerminal.set(terminal, keyboardRef.current);
-      if (hostPlatform() === 'win32') atPromptRef.current = foldAtPrompt(atPromptRef.current, data);
+      if (hostPlatform() === 'win32') {
+        const wasAtPrompt = atPromptRef.current;
+        atPromptRef.current = foldAtPrompt(wasAtPrompt, data);
+        codexEndedAtRef.current = noteCodexEndedByPrompt(
+          codexEndedAtRef.current,
+          wasAtPrompt,
+          atPromptRef.current,
+          useStore.getState().surfaceAgent[ptyId]?.slug,
+          Date.now(),
+        );
+      }
     };
     // #1228 review (C1): the fold is liveness-scoped. When process-truth or
     // OSC 133 says the pane's foreground command is gone, any negotiation it
     // armed (?9001h / kitty push) is stale — the next app in the pane starts
     // from a clean slate, not the dead app's encoding. Same edges #1210 uses.
     const unsubscribeKeyboardLiveness = useStore.subscribe((state, prev) => {
+      // #1694: the stale Codex slug is gone, so the end-of-Codex latch has
+      // done its job; a fresh detection arms the mapping straight away.
+      if (codexEndedAtRef.current !== null && state.surfaceAgent[ptyId]?.slug !== 'codex') {
+        codexEndedAtRef.current = null;
+      }
       const gone = (now: boolean | undefined, was: boolean | undefined) =>
         now === false && was !== false;
       if (
@@ -1955,6 +1974,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           isWsl: wslByPtyId.get(ptyId),
           agentSlug: useStore.getState().surfaceAgent[ptyId]?.slug,
           atPrompt: atPromptRef.current,
+          codexEndedAt: codexEndedAtRef.current,
         }),
       });
       if (newlineByte !== null) {

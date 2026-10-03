@@ -54,14 +54,23 @@ describe('useTerminal keyboard-protocol arming (#1363)', () => {
     // The fold above stays untrusting; the newline keys read host, WSL,
     // agent and prompt state per keystroke instead of the win32Input flag.
     expect(SRC).toMatch(
-      /altEnterNewline: wantsAltEnterNewline\(\{\s*hostPlatform: hostPlatform\(\),\s*isWsl: wslByPtyId\.get\(ptyId\),\s*agentSlug: useStore\.getState\(\)\.surfaceAgent\[ptyId\]\?\.slug,\s*atPrompt: atPromptRef\.current,\s*\}\)/,
+      /altEnterNewline: wantsAltEnterNewline\(\{\s*hostPlatform: hostPlatform\(\),\s*isWsl: wslByPtyId\.get\(ptyId\),\s*agentSlug: useStore\.getState\(\)\.surfaceAgent\[ptyId\]\?\.slug,\s*atPrompt: atPromptRef\.current,\s*codexEndedAt: codexEndedAtRef\.current,\s*\}\)/,
     );
     // WSL comes from the pty's real shell, the predicate the clipboard uses.
     expect(SRC).toMatch(/wslByPtyId\.set\(s\.id, isWslShell\(s\.shell\)\)/);
   });
 
-  it('#1694: every live output chunk feeds the prompt state', () => {
-    expect(SRC).toMatch(/atPromptRef\.current = foldAtPrompt\(atPromptRef\.current, data\)/);
+  it('#1694: every live output chunk feeds the prompt state and the end-of-Codex latch', () => {
+    expect(SRC).toMatch(/atPromptRef\.current = foldAtPrompt\(wasAtPrompt, data\)/);
+    expect(SRC).toMatch(
+      /codexEndedAtRef\.current = noteCodexEndedByPrompt\(\s*codexEndedAtRef\.current,\s*wasAtPrompt,\s*atPromptRef\.current,\s*useStore\.getState\(\)\.surfaceAgent\[ptyId\]\?\.slug,/,
+    );
+  });
+
+  it('#1694: the latch clears once the stale Codex slug is dropped', () => {
+    expect(SRC).toMatch(
+      /if \(codexEndedAtRef\.current !== null && state\.surfaceAgent\[ptyId\]\?\.slug !== 'codex'\) \{\s*codexEndedAtRef\.current = null;/,
+    );
   });
 
   it('a prompt start clears state without waiting for the liveness poll', () => {

@@ -12,6 +12,8 @@ import {
   resolveNewlineKeyByte,
   wantsAltEnterNewline,
   foldAtPrompt,
+  noteCodexEndedByPrompt,
+  CODEX_END_GRACE_MS,
   ALT_ENTER,
   type AltEnterNewlineScope,
   type NewlineKeyEventLike,
@@ -320,5 +322,73 @@ describe('foldAtPrompt (#1694)', () => {
   it('reads byte chunks the same as strings', () => {
     expect(foldAtPrompt(false, new TextEncoder().encode(PROMPT))).toBe(true);
     expect(foldAtPrompt(true, new TextEncoder().encode(COMMAND))).toBe(false);
+  });
+});
+
+/**
+ * #1694 Windows verify — the slug outlives Codex by a few seconds, and a
+ * command started in that window used to re-arm the mapping on its 133;C
+ * (measured: a ReadKey logger got `Enter mods=Alt` for Shift+Enter).
+ */
+describe('end-of-Codex latch (#1694)', () => {
+  const PROMPT = '\x1b]133;D;0\x07\x1b]133;A\x07PS C:\\> ';
+  const COMMAND = '\x1b]133;C\x07';
+  const T0 = 1_000_000;
+  const scope = (over: Partial<AltEnterNewlineScope>): AltEnterNewlineScope => ({
+    hostPlatform: 'win32', isWsl: false, agentSlug: 'codex', atPrompt: false, ...over,
+  });
+
+  /** Replays useTerminal's per-chunk fold for one pane. */
+  function replay(chunks: Array<[string, string | undefined, number]>) {
+    let atPrompt = false;
+    let endedAt: number | null = null;
+    for (const [chunk, slug, now] of chunks) {
+      const was = atPrompt;
+      atPrompt = foldAtPrompt(was, chunk);
+      endedAt = noteCodexEndedByPrompt(endedAt, was, atPrompt, slug, now);
+    }
+    return { atPrompt, endedAt };
+  }
+
+  it('a command started while the slug is still codex stays on the old bytes', () => {
+    const s = replay([[PROMPT, 'codex', T0], [COMMAND, 'codex', T0 + 1_500]]);
+    expect(s.atPrompt).toBe(false);
+    expect(s.endedAt).toBe(T0);
+    const altEnter = wantsAltEnterNewline(scope({ atPrompt: s.atPrompt, codexEndedAt: s.endedAt, now: T0 + 2_000 }));
+    expect(altEnter).toBe(false);
+    expect(
+      resolveNewlineKeyByte(ev({ key: 'Enter', code: 'Enter', shiftKey: true }), {
+        shiftEnterFallback: 'lf',
+        altEnterNewline: altEnter,
+      }),
+    ).toBe('\n');
+  });
+
+  it('a slug still codex after the grace window is a Codex that really runs again', () => {
+    const s = replay([[PROMPT, 'codex', T0], [COMMAND, 'codex', T0 + 1_500]]);
+    expect(wantsAltEnterNewline(scope({ codexEndedAt: s.endedAt, now: T0 + CODEX_END_GRACE_MS - 1 }))).toBe(false);
+    expect(wantsAltEnterNewline(scope({ codexEndedAt: s.endedAt, now: T0 + CODEX_END_GRACE_MS }))).toBe(true);
+  });
+
+  it('a cleared latch (slug dropped, then Codex detected again) arms at once', () => {
+    expect(wantsAltEnterNewline(scope({ codexEndedAt: null, now: T0 + 1 }))).toBe(true);
+  });
+
+  it('only a prompt edge that ends a running Codex stamps the latch', () => {
+    // Prompt with no Codex slug: a plain shell, nothing to latch.
+    expect(replay([[PROMPT, undefined, T0]]).endedAt).toBeNull();
+    // Already at a prompt: a second prompt mark is not a new edge.
+    expect(noteCodexEndedByPrompt(null, true, true, 'codex', T0)).toBeNull();
+    // A command start never stamps it.
+    expect(noteCodexEndedByPrompt(null, true, false, 'codex', T0)).toBeNull();
+    // The stamp survives later chunks until the caller clears it.
+    expect(noteCodexEndedByPrompt(T0, false, false, 'codex', T0 + 5)).toBe(T0);
+  });
+
+  it('a pane where Codex starts from a prompt is armed as before', () => {
+    // Fresh pane: prompt (no slug yet), `codex` starts (133;C), slug detected.
+    const s = replay([[PROMPT, undefined, T0], [COMMAND, undefined, T0 + 100]]);
+    expect(s.endedAt).toBeNull();
+    expect(wantsAltEnterNewline(scope({ atPrompt: s.atPrompt, codexEndedAt: s.endedAt, now: T0 + 3_000 }))).toBe(true);
   });
 });

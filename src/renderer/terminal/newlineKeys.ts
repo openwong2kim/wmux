@@ -163,7 +163,22 @@ export interface AltEnterNewlineScope {
   agentSlug: string | undefined;
   /** The shell reported a prompt (OSC 133;A) since the last command start. */
   atPrompt: boolean;
+  /**
+   * When a prompt last ended a running Codex (see `noteCodexEndedByPrompt`),
+   * or null. Cleared as soon as the slug stops being `codex`.
+   */
+  codexEndedAt?: number | null;
+  /** Clock for `codexEndedAt`; defaults to `Date.now()`. */
+  now?: number;
 }
+
+/**
+ * How long a prompt that ended Codex keeps the mapping off, even across a new
+ * command start. The slug is only dropped by a liveness snapshot, and the
+ * slowest of those is the 15 s `pty.list` poll; past that, a slug that is
+ * still `codex` belongs to a Codex that really is running again.
+ */
+export const CODEX_END_GRACE_MS = 16_000;
 
 /**
  * Whether a pane gets `altEnterNewline` (#1694): Codex running natively on a
@@ -174,12 +189,34 @@ export interface AltEnterNewlineScope {
  *   as WSL — LF is the safe side.
  * - `atPrompt`: the detected slug outlives Codex by up to one liveness poll,
  *   so the prompt marker ends the mapping at once.
+ * - `codexEndedAt`: a command started inside that stale window (OSC 133;C)
+ *   must not re-arm it either, or that command gets Alt+Enter for Codex's
+ *   sake. The mapping stays off until the slug is dropped (the latch clears)
+ *   or `CODEX_END_GRACE_MS` has passed with the slug still `codex`.
  */
 export function wantsAltEnterNewline(scope: AltEnterNewlineScope): boolean {
+  const endedRecently = scope.codexEndedAt != null
+    && (scope.now ?? Date.now()) - scope.codexEndedAt < CODEX_END_GRACE_MS;
   return scope.hostPlatform === 'win32'
     && scope.isWsl === false
     && scope.agentSlug === 'codex'
-    && !scope.atPrompt;
+    && !scope.atPrompt
+    && !endedRecently;
+}
+
+/**
+ * Track when a prompt ended a running Codex. A prompt edge (not at a prompt →
+ * at a prompt) while the slug is `codex` stamps `now`; anything else keeps
+ * `prev`. The caller clears the stamp when the slug stops being `codex`.
+ */
+export function noteCodexEndedByPrompt(
+  prev: number | null,
+  wasAtPrompt: boolean,
+  atPrompt: boolean,
+  agentSlug: string | undefined,
+  now: number,
+): number | null {
+  return !wasAtPrompt && atPrompt && agentSlug === 'codex' ? now : prev;
 }
 
 const PROMPT_START_MARK = '\x1b]133;A';
