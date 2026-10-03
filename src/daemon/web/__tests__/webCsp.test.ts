@@ -23,7 +23,7 @@ describe('webCsp', () => {
     expect(blocks.scripts).toEqual(['one();', 'two();']);
     expect(blocks.styles).toEqual(['\n.a { color: red }\n']);
 
-    const policy = buildWebCsp(html);
+    const policy = buildWebCsp(html, { wasm: true });
     const scriptSrc = policy.split('; ').find((d) => d.startsWith('script-src '))!;
     expect(scriptSrc).toBe(`script-src ${cspHash('one();')} ${cspHash('two();')} 'wasm-unsafe-eval'`);
     expect(scriptSrc).not.toContain('unsafe-inline');
@@ -64,16 +64,23 @@ describe('webCsp', () => {
     expect(policy).toContain("default-src 'none'");
   });
 
-  it('serves exactly this policy for a page', () => {
+  it('serves exactly this policy for the terminal page', () => {
     // The whole header, spelled out: a directive added, dropped or loosened
     // anywhere has to change this line on purpose.
-    expect(buildWebCsp(page('<script>x();</script>'))).toBe(
+    expect(buildWebCsp(page('<script>x();</script>'), { wasm: true })).toBe(
       "default-src 'none'; " +
         `script-src ${cspHash('x();')} 'wasm-unsafe-eval'; ` +
         "style-src 'unsafe-inline'; img-src 'self' data:; font-src 'self'; " +
         "connect-src 'self'; worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; " +
         "base-uri 'none'; form-action 'none'",
     );
+  });
+
+  it('gives WebAssembly only to a page that asks for it (/app does not)', () => {
+    const app = buildWebCsp(page('<script>x();</script>'));
+    expect(app).toContain(`script-src ${cspHash('x();')}; `);
+    expect(app).not.toContain('wasm-unsafe-eval');
+    expect(buildWebCsp(null, { wasm: true })).not.toContain('wasm-unsafe-eval');
   });
 
   it('keeps the directives the served page depends on', () => {

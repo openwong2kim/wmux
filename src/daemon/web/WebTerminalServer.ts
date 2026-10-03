@@ -8747,7 +8747,7 @@ export class WebTerminalServer {
     // browser would compute, and every inline block was refused: a blank
     // terminal. Verified in a real browser both ways; buildWebCsp normalizes
     // first.
-    this.csp = buildWebCsp(this.terminalHtml ? this.terminalHtml.toString('utf8') : null);
+    this.csp = buildWebCsp(this.terminalHtml ? this.terminalHtml.toString('utf8') : null, { wasm: true });
     if (!this.terminalHtml) {
       this.deps.log('warn', `[web] terminal.html missing under ${dir} — run \`npm run build:daemon-web\``);
     }

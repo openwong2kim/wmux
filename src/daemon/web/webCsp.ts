@@ -122,6 +122,15 @@ export function extractInlineBlocks(html: string): InlineBlocks {
  */
 const STYLE_SRC = "'unsafe-inline'";
 
+export interface WebCspOptions {
+  /**
+   * Allow WebAssembly compilation (`'wasm-unsafe-eval'`). Only the classic
+   * terminal page (`terminal.html`) sets it, for the inline image decoders;
+   * the browser app (`/app`) compiles no wasm and does not get it.
+   */
+  wasm?: boolean;
+}
+
 /**
  * Build the policy for a page.
  *
@@ -143,16 +152,17 @@ const STYLE_SRC = "'unsafe-inline'";
  * so the page still makes zero external requests. The classic page loads no
  * font file, so the directive grants it nothing it uses.
  *
- * `'wasm-unsafe-eval'` lets the page compile WebAssembly, which the inline
- * image decoders (sixel and base64) are built on (#1641). It allows no string
- * evaluation of JavaScript; that still needs `'unsafe-eval'`, which is absent.
- * A browser without CSP3 ignores the keyword and keeps refusing wasm, so the
- * client probes before loading the image addon. Never added beside `'none'`.
+ * `'wasm-unsafe-eval'` (with `wasm: true`) lets the page compile WebAssembly,
+ * which the inline image decoders (sixel and base64) are built on (#1641). It
+ * allows no string evaluation of JavaScript; that still needs `'unsafe-eval'`,
+ * which is absent. A browser without CSP3 ignores the keyword and keeps
+ * refusing wasm, so the client probes before loading the image addon. Never
+ * added beside `'none'`.
  */
-export function buildWebCsp(html: string | null): string {
+export function buildWebCsp(html: string | null, opts: WebCspOptions = {}): string {
   const blocks = html ? extractInlineBlocks(html) : null;
   const scriptSrc = blocks && blocks.scripts.length > 0
-    ? `${blocks.scripts.map(cspHash).join(' ')} 'wasm-unsafe-eval'`
+    ? `${blocks.scripts.map(cspHash).join(' ')}${opts.wasm ? " 'wasm-unsafe-eval'" : ''}`
     : "'none'";
   return [
     "default-src 'none'",

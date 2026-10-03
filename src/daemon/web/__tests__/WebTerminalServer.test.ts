@@ -1332,6 +1332,9 @@ describe('WebTerminalServer', () => {
       const csp = page.headers.get('content-security-policy') ?? '';
       expect(csp.match(/'sha256-[A-Za-z0-9+/=]+'/g)).toHaveLength(2);
       expect(csp).toContain("font-src 'self'");
+      // The app compiles no WebAssembly; only the classic page's image
+      // decoders need it (#1641).
+      expect(csp).not.toContain('wasm-unsafe-eval');
       // `/` is the app page too, now that it has terminals.
       const root = await fetch(`${base}/`);
       expect(await root.text()).toContain('var app=2;');
@@ -1341,7 +1344,10 @@ describe('WebTerminalServer', () => {
       for (const classicPath of ['/classic', '/pair']) {
         const classic = await fetch(`${base}${classicPath}`);
         expect(await classic.text()).toContain('var a=1;');
-        expect((classic.headers.get('content-security-policy') ?? '').match(/'sha256-/g)).toHaveLength(1);
+        const classicCsp = classic.headers.get('content-security-policy') ?? '';
+        expect(classicCsp.match(/'sha256-/g)).toHaveLength(1);
+        expect(classicCsp).toContain("'wasm-unsafe-eval'");
+        expect(classicCsp).not.toContain("'unsafe-eval'");
       }
 
       const font = await fetch(`${base}/app/assets/Inter-abc123.woff2`);

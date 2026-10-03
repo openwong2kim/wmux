@@ -227,7 +227,7 @@ if (!existsSync(compiledCsp)) {
 }
 const { buildWebCsp, extractInlineBlocks, cspHash } = createRequire(import.meta.url)(compiledCsp);
 
-function gatePage(file, expectedScripts) {
+function gatePage(file, expectedScripts, cspOptions) {
   const written = readFileSync(join(outDir, file), 'utf8');
   const blocks = extractInlineBlocks(written);
   const fail = (msg) => {
@@ -272,7 +272,7 @@ function gatePage(file, expectedScripts) {
 
   const scriptHashes = blocks.scripts.map(cspHash);
   const styleHashes = blocks.styles.map(cspHash);
-  const policy = buildWebCsp(written);
+  const policy = buildWebCsp(written, cspOptions);
 
   // The gate proper: every hash this build computed must actually appear in the
   // header the server will send for this exact file. `style-src` is deliberately
@@ -292,7 +292,8 @@ function gatePage(file, expectedScripts) {
   return { policy, scriptHashes, styleHashes };
 }
 
-const terminalGate = gatePage('terminal.html', 10);
+// Same options WebTerminalServer.loadAssets passes for each page.
+const terminalGate = gatePage('terminal.html', 10, { wasm: true });
 const appGate = gatePage('app.html', 2);
 
 writeFileSync(
