@@ -53,14 +53,22 @@ describe('chat → terminal handoff', () => {
     expect(result.ok).toBe(true);
   });
 
-  it('refuses before stopping anything when the id is not a UUID or the shell is busy', async () => {
+  it('refuses before stopping anything when the id is not a UUID', async () => {
     const { deps } = world(() => false);
     const driver = { pid: 4242, stop: vi.fn(async () => undefined) };
     const bad = await handOffToTerminal(deps, { record: record({ providerSessionId: `${PROVIDER_ID}; rm x` }), driver });
     expect(bad).toMatchObject({ ok: false, error: { code: 'handoff-refused' } });
-    deps.paneFree = vi.fn(async () => false);
-    expect(await handOffToTerminal(deps, { record: record(), driver })).toMatchObject({ ok: false, error: { code: 'handoff-refused' } });
     expect(driver.stop).not.toHaveBeenCalled();
+    expect(deps.writeToPane).not.toHaveBeenCalled();
+  });
+
+  it('checks the shell after the driver exited, and leaves no tombstone when it is busy', async () => {
+    const { deps, steps } = world(() => false);
+    deps.paneFree = vi.fn(async () => { steps.push('paneFree'); return false; });
+    const driver = { pid: 4242, stop: vi.fn(async () => { steps.push('stop'); }) };
+    expect(await handOffToTerminal(deps, { record: record(), driver })).toMatchObject({ ok: false, error: { code: 'handoff-refused', message: 'The terminal is busy.' } });
+    expect(steps).toEqual(['stop', 'paneFree']);
+    expect(deps.persist).not.toHaveBeenCalled();
     expect(deps.writeToPane).not.toHaveBeenCalled();
   });
 

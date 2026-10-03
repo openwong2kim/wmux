@@ -10,7 +10,8 @@ import type { ChatV2Driver, ChatV2HostDeps, ChatV2StoredRecord } from './types';
  * Chat → terminal handoff, the only direction v1 offers (ipc.ts, Ownership).
  * The host calls it for `toTerminal`. The order is the safety argument:
  *
- *   1. stop the driver, then prove by pid that its process is gone;
+ *   1. stop the driver, prove by pid that its process is gone, and check the
+ *      anchor shell is free;
  *   2. persist the record as the `handed-off` tombstone;
  *   3. type `claude --resume <providerSessionId>` into the anchor shell.
  *
@@ -64,8 +65,6 @@ export async function handOffToTerminal(deps: ChatV2HandoffDeps, input: ChatV2Ha
   if (!CHATV2_PROVIDER_SESSION_ID.test(record.providerSessionId)) {
     return refuse('The conversation id cannot be resumed in a terminal.');
   }
-  if (!(await deps.paneFree(record.paneId))) return refuse('The terminal is busy.');
-
   // 1. Stop the driver and prove its process is gone.
   const pid = driver?.pid ?? record.process?.pid;
   if (driver) {
@@ -78,6 +77,10 @@ export async function handOffToTerminal(deps: ChatV2HandoffDeps, input: ChatV2Ha
   if (pid !== undefined && await driverAlive(deps, pid, record)) {
     return refuse('The chat agent is still running.');
   }
+  // Checked once the driver is gone: its own process must not read as the pane
+  // being busy. A refusal here leaves the record active with no process
+  // (`stopped`), which the next send restarts.
+  if (!(await deps.paneFree(record.paneId))) return refuse('The terminal is busy.');
 
   // 2. The tombstone, before anything reaches the shell.
   const tombstone: ChatV2StoredRecord = { ...record, state: 'handed-off' };

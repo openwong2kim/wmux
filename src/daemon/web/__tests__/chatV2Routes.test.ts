@@ -124,8 +124,11 @@ describe('phone chat routes for a chat-v2 record', () => {
     if (server.isRunning) await server.stop();
   });
 
-  const start = (over: Partial<WebTerminalStartOptions> = {}) =>
-    server.start({ port: 0, host: '127.0.0.1', allowInput: true, allowUpload: false, allowTranscript: true, ...over });
+  /** Start the server; resolves to the operator token. */
+  const start = async (over: Partial<WebTerminalStartOptions> = {}): Promise<string> => {
+    const info = await server.start({ port: 0, host: '127.0.0.1', allowInput: true, allowUpload: false, allowTranscript: true, ...over });
+    return info.token ?? '';
+  };
   const base = () => `http://127.0.0.1:${server.status().port}`;
   const auth = (token: string, extra: Record<string, string> = {}) => ({ Authorization: `Bearer ${token}`, ...extra });
   const turns = async (token: string, query = '', headers: Record<string, string> = {}) => {
@@ -141,7 +144,7 @@ describe('phone chat routes for a chat-v2 record', () => {
   const freshId = () => `${Date.now()}-${crypto.randomUUID()}`;
 
   it('serves /turns as a managed binding with the managed key set, plus streaming:false', async () => {
-    const { token } = await start();
+    const token = await start();
     const managed = await (async () => {
       box.binding = null;
       return (await turns(token)).body.chat as Record<string, unknown>;
@@ -162,7 +165,7 @@ describe('phone chat routes for a chat-v2 record', () => {
   });
 
   it('answers a carried cursor with a full snapshot and reset, and dir=back with an empty older page', async () => {
-    const { token } = await start();
+    const token = await start();
     const first = await turns(token);
     const forward = await turns(token, `?cursor=${first.body.cursor}`);
     expect(forward.body).toMatchObject({ mode: 'snapshot', reset: true });
@@ -176,12 +179,12 @@ describe('phone chat routes for a chat-v2 record', () => {
       id: 'apr_1', sessionId: 's1', agent: 'claude', kind: 'terminal_prompt', state: 'pending', createdAt: 1,
       native: { adapter: 'claude', requestId: 'r1', threadId: 'c1', relayId: EPOCH },
     } as unknown as ApprovalRequest);
-    const { token } = await start();
+    const token = await start();
     expect((await turns(token)).body.chat.blocked).toEqual({ by: 'approval', approvalId: 'apr_1' });
   });
 
   it('refuses a send with 409 managed-read-only and never reaches the bridge', async () => {
-    const { token } = await start();
+    const token = await start();
     const clientMessageId = freshId();
     const { status, body } = await post(token, 'messages', { agentSessionId: PROVIDER_ID, historyEpoch: `c2:c1:${EPOCH}`, clientMessageId, text: 'hi' });
     expect(status).toBe(409);
@@ -190,7 +193,7 @@ describe('phone chat routes for a chat-v2 record', () => {
   });
 
   it('refuses a launch into the anchor shell of a v2 pane', async () => {
-    const { token } = await start();
+    const token = await start();
     const clientLaunchId = freshId();
     const { status, body } = await post(token, 'launch', { agent: 'claude', clientLaunchId, prompt: 'hello' });
     expect(status).toBe(409);
@@ -200,7 +203,7 @@ describe('phone chat routes for a chat-v2 record', () => {
   });
 
   it('cancels through the host interrupt and replays a retry', async () => {
-    const { token } = await start();
+    const token = await start();
     const body = { agentSessionId: PROVIDER_ID, clientCancelId: freshId() };
     const first = await post(token, 'cancel', body);
     expect(first).toEqual({ status: 202, body: { result: 'sent', replayed: false, turnId: '1.1', clientCancelId: body.clientCancelId, effect: 'interrupt-requested' } });
@@ -212,7 +215,7 @@ describe('phone chat routes for a chat-v2 record', () => {
   });
 
   it('nudges the pane watchers on a host push', async () => {
-    const { token } = await start();
+    const token = await start();
     await turns(token);
     expect(pushListeners).toHaveLength(1);
     const ac = new AbortController();
@@ -237,7 +240,7 @@ describe('phone chat routes for a chat-v2 record', () => {
 
   it('hands a handed-off record back to the bridge (the TUI now owns the pane)', async () => {
     box.binding = binding({ status: 'handed-off' });
-    const { token } = await start();
+    const token = await start();
     expect((await turns(token)).body.chat.binding).toBe('managed');
     expect(bridge.resolve).toHaveBeenCalled();
     const clientMessageId = freshId();

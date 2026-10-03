@@ -1307,6 +1307,7 @@ export class WebTerminalServer {
   private readonly chatV2CancelReceipts = new ChatV2CancelReceipts();
   /** The chat-v2 host whose pushes nudge phone watchers, subscribed on first use. */
   private chatV2PushHost: ChatV2PhoneHost | null = null;
+  private chatV2PushOff: (() => void) | null = null;
   /** Per-pane coalescing timers for the non-recording liveness event. */
   private readonly livenessTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /**
@@ -1847,6 +1848,9 @@ export class WebTerminalServer {
     // opened ends here rather than polling the plugin until the next start.
     if (this.chatWatchSweep) clearInterval(this.chatWatchSweep);
     this.chatWatchSweep = null;
+    this.chatV2PushOff?.();
+    this.chatV2PushOff = null;
+    this.chatV2PushHost = null;
     const chat = this.deps.chat?.() ?? null;
     for (const id of this.chatWatchReads.keys()) {
       try {
@@ -4184,8 +4188,9 @@ export class WebTerminalServer {
     const host = this.deps.chatV2?.() ?? null;
     if (!host) return null;
     if (this.chatV2PushHost !== host) {
+      this.chatV2PushOff?.();
       this.chatV2PushHost = host;
-      host.onPush((push) => {
+      this.chatV2PushOff = host.onPush((push) => {
         if (this.chatV2PushHost === host) this.emitTranscriptNudge(push.paneId);
       });
     }
