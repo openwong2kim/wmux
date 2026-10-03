@@ -376,12 +376,22 @@ const BORROWED_SOURCES = [
       'hint on navigation rather than as a file on disk, and derives every\n' +
       'field from its own records. No code or prose was taken.',
   },
+  {
+    name: 'MonoCode',
+    license: 'MIT License',
+    repo: 'https://github.com/hardbeat920/monocode',
+    copyright: 'Copyright (c) 2026 Nick',
+    what:
+      'Small pieces adapted from its source at commit 6bd432ca and ported to\n' +
+      'TypeScript. Each adapted file or block carries a header comment naming\n' +
+      'the MonoCode file it came from.',
+  },
 ];
 lines.push('BORROWED IMPLEMENTATION TECHNIQUES');
 lines.push('');
-lines.push('No code from the projects below is bundled with wmux. Their approach was');
-lines.push('reimplemented from the source named at each borrow site, and their license');
-lines.push('terms are reproduced here.');
+lines.push('No package from the projects below is bundled with wmux. Their approach was');
+lines.push('reimplemented, or a small piece adapted, from the source named at each borrow');
+lines.push('site, and their license terms are reproduced here.');
 lines.push('');
 lines.push(SEP);
 lines.push('');

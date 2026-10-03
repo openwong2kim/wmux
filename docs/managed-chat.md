@@ -233,3 +233,76 @@ the same native session, transcript basename, size and modification time. Change
 files and replacement conversations do not reuse that preview. Sending remains
 blocked until the fresh snapshot and subscription are ready; cached history never
 authorizes input. Providers without a file fingerprint skip this cache.
+
+## Chat v2: driver-owned conversations
+
+Chat v2 runs the agent through its structured protocol instead of projecting a
+terminal. The daemon starts the agent process (a *driver*), streams its replies,
+tool calls, subagent work, approvals and questions, and keeps the folded
+conversation. The wire contract is `src/shared/chatv2/ipc.ts`; the daemon side is
+`src/daemon/chat/v2/`. This release ships the contract only: every
+`daemon.chatv2.*` method answers `not-implemented`. Parts of the event model and
+fold are adapted from MIT-licensed code; each such file names its source in a
+header, and the license is in `THIRD_PARTY_NOTICES`.
+
+### Ownership
+
+- A chat-v2 conversation belongs to one pane. The pane keeps its shell PTY as the
+  anchor (`Surface.ptyId`, hooks, Fleet, identity); the driver is a daemon record
+  keyed by that pane id. There is no surface without a PTY.
+- One writer per pane. Creating a driver is refused (`agent-running-in-pane`)
+  while an agent process is alive in the anchor shell.
+- The only handoff is chat → terminal: the daemon stops the driver, waits until
+  its process tree is reaped, and resumes the same conversation in the anchor
+  shell's TUI. Terminal → chat is not offered: without proof that the TUI process
+  has exited, both could append to the same conversation file.
+- The terminal-projection chat described above stays the view for agents that
+  run in the terminal.
+
+### Events, snapshots and seq
+
+- Drivers emit `HarnessEvent`s (`src/shared/chatv2/harnessEvents.ts`). The daemon
+  stamps each with a gapless per-session `seq` and a time, folds it with
+  `src/shared/chatv2/apply.ts`, and persists the folded session under
+  `chat-sessions/v2/`.
+- The fold is a pure function of the session and the stamped events. Block ids
+  are `<seq>.<n>` and turn times come from the stamp, so the daemon and every
+  renderer that folds the same events reach the same blocks.
+- Renderers load a snapshot (session head plus a tail window starting at the
+  open turn's user block when it fits) and fold the pushed events with the same
+  `apply.ts`. A push carries `blockCount`, `lastBlockId` and `touchedFrom`; a
+  renderer re-snapshots on an epoch change, a seq gap, a change below its window,
+  or a fold that does not match those values.
+- Deltas are batched every 120 ms. Approvals, questions, errors and turn ends
+  flush at once. One push stays under 128 KiB.
+
+### Approvals
+
+Driver permission requests and questions are ApprovalRegistry native decisions
+(`adapter: 'claude'`). The desktop answers through `daemon.chatv2.answer`; a phone
+answers through `/api/approvals/:id/answer`. The first answer wins and the driver
+writes exactly one reply per request. A decision made while native decisions are
+switched off is denied. v1 replies are allow or deny for permissions and option
+keys for questions; edited tool input and lasting rules are not offered.
+
+### Environment and accounts
+
+The driver env is built like a scheduled run's: agent-nesting markers removed,
+the pane's account directory applied, then `WMUX_PTY_ID` set to the anchor pane
+and `WMUX_GATE=0` so the PreToolUse gate does not show a second card for the same
+request. Provider settings exported only in your shell profile (for example
+`CLAUDE_CODE_USE_BEDROCK` or `ANTHROPIC_BASE_URL`) are not inherited; put them in
+the `env` block of the agent's `settings.json` instead.
+
+### Restore
+
+Records survive app and daemon restarts. After a daemon restart a record has no
+process; the next message restarts the driver with the agent's resume option.
+Nothing is resent automatically. On start the daemon kills any driver process
+left from a previous run and expires its pending approvals.
+
+### Phone
+
+A phone sees a chat-v2 conversation on `/turns` as `binding: 'managed'` with
+`historyEpoch` `c2:<chatSessionId>:<epoch>`: it can read and approve. Sending
+from the phone stays `409 managed-read-only` until a new capability is agreed.

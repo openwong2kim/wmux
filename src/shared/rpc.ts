@@ -908,7 +908,12 @@ export interface DaemonEvent {
     | 'transcript.appended'
     // Scheduled runs — `data` is an AutomationEvent (src/shared/automation.ts),
     // `sessionId` is ''. Carries names and states only, never prompts or output.
-    | 'automation.event';
+    | 'automation.event'
+    // Chat v2 — stamped events of one pane's driver conversation. UNICAST to
+    // the sockets that called `daemon.chatv2.subscribe`, like
+    // transcript.appended. `sessionId` is the anchor pane id; `data` is
+    // ChatV2EventsPush (src/shared/chatv2/ipc.ts).
+    | 'chatv2.events';
   sessionId: string;
   data: unknown;
 }
