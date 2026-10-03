@@ -248,6 +248,6 @@ export function isAgentSignal(value: unknown): value is AgentSignal {
   if (v['surfaceId'] !== undefined && (typeof v['surfaceId'] !== 'string' || v['surfaceId'].length === 0)) return false;
   if (v['ptyId'] !== undefined && (typeof v['ptyId'] !== 'string' || v['ptyId'].length === 0)) return false;
   if (v['wslAgentProcess'] !== undefined && (typeof v['wslAgentProcess'] !== 'string' ||
-    v['wslAgentProcess'].length === 0 || v['wslAgentProcess'].length > 4096)) return false;
+    v['wslAgentProcess'].length === 0 || v['wslAgentProcess'].length > 8192)) return false;
   return true;
 }

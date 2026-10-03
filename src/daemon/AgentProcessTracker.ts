@@ -793,10 +793,16 @@ export class AgentProcessTracker {
   armWsl(sessionId: string, location: WslAgentLocation, agent: WslReportedAgent): void {
     if (!this.wsl.watcher) return;
     const cur = this.states.get(sessionId);
-    if (cur?.alive && cur.wsl && cur.pid === agent.pid &&
-        cur.wsl.start === agent.start && cur.wsl.bootId === agent.bootId) return;
+    if (cur?.alive && cur.wsl && cur.wsl.bootId === agent.bootId) {
+      if (cur.pid === agent.pid && cur.wsl.start === agent.start) return;
+      // Keep the tracked agent when the report comes from a process nested
+      // inside it (the pane's claude ran `claude -p`, whose hooks also name
+      // this pane), or from an older process (a late hook of the previous run).
+      // Either would read the pane dead when that other process exits.
+      if (agent.ancestors.includes(cur.pid)) return;
+      if (BigInt(agent.start) < BigInt(cur.wsl.start)) return;
+    }
     const key = AgentProcessTracker.watchKey(sessionId);
-    this.watcher.unwatch(key);
     const watched: WslWatchedAgent = { ...location, pid: agent.pid, start: agent.start, bootId: agent.bootId };
     const state: TrackedAgent = { pid: agent.pid, alive: true, slug: agent.slug, wsl: watched };
     this.states.set(sessionId, state);

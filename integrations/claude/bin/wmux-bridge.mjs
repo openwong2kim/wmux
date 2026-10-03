@@ -1118,7 +1118,7 @@ async function main() {
   const wslAgentProcess =
     typeof process.env.WMUX_WSL_AGENT_PROC === 'string' &&
     process.env.WMUX_WSL_AGENT_PROC.length > 0 &&
-    process.env.WMUX_WSL_AGENT_PROC.length <= 4096
+    process.env.WMUX_WSL_AGENT_PROC.length <= 8192
       ? process.env.WMUX_WSL_AGENT_PROC
       : undefined;
 

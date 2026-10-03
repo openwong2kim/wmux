@@ -1,8 +1,10 @@
+import { execFileSync } from 'child_process';
+import fs from 'fs';
 import { describe, expect, it, vi } from 'vitest';
 import { AgentProcessTracker } from '../AgentProcessTracker';
 import {
-  checkWslAgentRunning, parseWslAgentReport, parseWslProbeOutput, pickReportedAgent,
-  WslPidWatcher, type WslProbe, type WslProbeResult, type WslWatchedAgent,
+  checkWslAgentRunning, parseWslAgentReport, parseWslProbeOutput, pickReportedAgent, PROBE_SCRIPT,
+  reportedAgentForPane, WslPidWatcher, type WslProbe, type WslProbeResult, type WslWatchedAgent,
 } from '../wslAgentProcess';
 
 const RS = '\x1e';
@@ -39,7 +41,7 @@ describe('parseWslAgentReport', () => {
     ['pid 1 (init)', report('1:900:init')],
     ['pid beyond pid_max', report('99999999:900:claude')],
     ['missing fields', report('400:claude')],
-    ['oversized', report(`400:900:${'x'.repeat(5000)}`)],
+    ['oversized', report(`400:900:${'x'.repeat(9000)}`)],
   ])('rejects %s', (_label, raw) => {
     expect(parseWslAgentReport(raw)).toBeUndefined();
   });
@@ -48,7 +50,7 @@ describe('parseWslAgentReport', () => {
 describe('pickReportedAgent', () => {
   it('skips a shell hop and picks the nearest ancestor naming the agent', () => {
     const parsed = parseWslAgentReport(report(`512:1000:/bin/sh${US}-c${US}hook`, `400:900:/home/dev/.local/bin/claude`, `300:800:-bash`));
-    expect(pickReportedAgent(parsed, 'claude')).toEqual({ pid: 400, start: '900', bootId: BOOT, slug: 'claude' });
+    expect(pickReportedAgent(parsed, 'claude')).toEqual({ pid: 400, start: '900', bootId: BOOT, slug: 'claude', ancestors: [300] });
   });
 
   it('resolves an npm-installed claude running under node', () => {
@@ -60,6 +62,26 @@ describe('pickReportedAgent', () => {
     expect(pickReportedAgent(parseWslAgentReport(report('400:900:codex')), 'claude')).toBeUndefined();
     expect(pickReportedAgent(parseWslAgentReport(report('400:900:-bash')), 'claude')).toBeUndefined();
     expect(pickReportedAgent(undefined, 'claude')).toBeUndefined();
+  });
+});
+
+describe('reportedAgentForPane (the trust gate)', () => {
+  const raw = report(`512:1000:/bin/sh${US}-c${US}hook`, '400:900:/home/dev/.local/bin/claude');
+  const signal = { ptyId: 'p1', agent: 'claude' as const, wslAgentProcess: raw };
+
+  it('accepts the pane own hook naming its own agent', () => {
+    expect(reportedAgentForPane('p1', true, signal)?.pid).toBe(400);
+  });
+
+  it.each([
+    ['a Windows pane', 'p1', false, signal],
+    ['another pane (non-exact ptyId)', 'p2', true, signal],
+    ['a signal with no ptyId', 'p1', true, { ...signal, ptyId: undefined }],
+    ['a different agent than the hook speaks for', 'p1', true, { ...signal, agent: 'codex' as const }],
+    ['no report', 'p1', true, { ...signal, wslAgentProcess: undefined }],
+    ['a malformed report', 'p1', true, { ...signal, wslAgentProcess: 'junk' }],
+  ])('refuses %s', (_label, id, isWsl, sig) => {
+    expect(reportedAgentForPane(id, isWsl, sig)).toBeUndefined();
   });
 });
 
@@ -182,7 +204,7 @@ describe('AgentProcessTracker in a WSL pane', () => {
     tracker.setStateChangeListener((_id, s) => states.push(s));
     return { tracker, windowsWalk, watches, isRunning, states };
   }
-  const reported = { pid: 4321, start: '991739', bootId: BOOT, slug: 'claude' as const };
+  const reported = { pid: 4321, start: '991739', bootId: BOOT, slug: 'claude' as const, ancestors: [300] };
 
   it('never takes the Windows tree walk', async () => {
     const { tracker, windowsWalk } = setup();
@@ -212,9 +234,27 @@ describe('AgentProcessTracker in a WSL pane', () => {
     const { tracker, watches } = setup();
     tracker.armWsl('wsl-1', LOCATION, reported);
     const oldEdge = watches.get('agent:wsl-1')!;
-    tracker.armWsl('wsl-1', LOCATION, { ...reported, pid: 5000, start: '2' });
+    tracker.armWsl('wsl-1', LOCATION, { ...reported, pid: 5000, start: '999999' });
     oldEdge();
     expect(tracker.statusFor('wsl-1')).toBe(true);
+    expect(watches.size).toBe(1);
+  });
+
+  it('keeps the tracked agent against a nested agent or a late hook from an older one', () => {
+    const { tracker, states } = setup();
+    tracker.armWsl('wsl-1', LOCATION, reported);
+    // `claude -p` run by the pane's claude: the tracked pid is its ancestor.
+    tracker.armWsl('wsl-1', LOCATION, { ...reported, pid: 6000, start: '999999', ancestors: [5999, 4321, 300] });
+    // A late hook from the previous run: an older process.
+    tracker.armWsl('wsl-1', LOCATION, { ...reported, pid: 3000, start: '500' });
+    expect(states).toHaveLength(1);
+  });
+
+  it('a report after a distro restart replaces the tracked agent even with a smaller starttime', () => {
+    const { tracker, states } = setup();
+    tracker.armWsl('wsl-1', LOCATION, reported);
+    tracker.armWsl('wsl-1', LOCATION, { ...reported, pid: 700, start: '10', bootId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' });
+    expect(states).toHaveLength(2);
   });
 
   it('disarm drops the WSL watch', () => {
@@ -244,10 +284,35 @@ describe('AgentProcessTracker in a WSL pane', () => {
     expect(await tracker.isAgentRunning('wsl-1', 'claude', async () => true)).toBe(false);
   });
 
+  it('isAgentRunning on a Windows pane checks the Windows pid', async () => {
+    const windowsCheck = vi.fn(async () => true);
+    const tracker = new AgentProcessTracker({ watch: () => undefined, unwatch: () => undefined },
+      async () => [{ pid: 50, ppid: 1, name: 'bash', cmdline: 'bash' }, { pid: 51, ppid: 50, name: 'claude', cmdline: 'claude' }],
+      async () => undefined, '/home/dev', { isWslSession: () => false });
+    tracker.arm('win-1', 50);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(await tracker.isAgentRunning('win-1', 'claude', windowsCheck)).toBe(true);
+    expect(windowsCheck).toHaveBeenCalledWith(51);
+    windowsCheck.mockResolvedValueOnce(false);
+    expect(await tracker.isAgentRunning('win-1', 'claude', windowsCheck)).toBe(false);
+  });
+
   it('leaves Windows panes on the existing walk', async () => {
     const { tracker, windowsWalk } = setup();
     tracker.arm('win-1', 4068);
     await new Promise((r) => setTimeout(r, 0));
     expect(windowsWalk).toHaveBeenCalledOnce();
+  });
+});
+
+// The real probe script, run the way wsl.exe runs it, against this process.
+describe.runIf(process.platform === 'linux' && fs.existsSync('/proc/sys/kernel/random/boot_id'))('PROBE_SCRIPT on Linux', () => {
+  it('reports the boot id and each live pid with its state and starttime, skipping the gone', () => {
+    const out = parseWslProbeOutput(execFileSync('/bin/sh', ['-c', PROBE_SCRIPT, 'wmux-ps', String(process.pid), '4194303'], { encoding: 'utf8' }));
+    expect(out.bootId).toBe(fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim());
+    const stat = fs.readFileSync(`/proc/${process.pid}/stat`, 'utf8');
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    expect(out.procs.get(process.pid)).toEqual({ state: expect.stringMatching(/^[RS]$/), start: fields[19] });
+    expect(out.procs.has(4194303)).toBe(false);
   });
 });

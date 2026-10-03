@@ -268,7 +268,7 @@ describe.runIf(process.platform === 'linux' && fs.existsSync('/proc/sys/kernel/r
     expect(picked?.pid).toBe(Number(fs.readFileSync(path.join(dir, 'pid'), 'utf8')));
     expect(picked?.start).toMatch(/^\d+$/);
     expect(fs.readFileSync(path.join(dir, 'args'), 'utf8').split('\n').slice(0, 3))
-      .toEqual(['ELECTRON_RUN_AS_NODE/w:WMUX_WSL_AGENT_PROC', '/bridge.mjs', 'SessionStart']);
+      .toEqual(['ELECTRON_RUN_AS_NODE/w:WMUX_WSL_AGENT_PROC/w', '/bridge.mjs', 'SessionStart']);
   });
 
   it('still runs the bridge when /proc cannot be read', () => {

@@ -47,7 +47,7 @@ export interface WslAgentReport {
 
 /** The hook's raw report, or undefined when any part of it is malformed. */
 export function parseWslAgentReport(raw: unknown): WslAgentReport | undefined {
-  if (typeof raw !== 'string' || raw.length === 0 || raw.length > 4096) return undefined;
+  if (typeof raw !== 'string' || raw.length === 0 || raw.length > 8192) return undefined;
   const [head, ...records] = raw.split(RS);
   if (!head?.startsWith('1:')) return undefined;
   const bootId = head.slice(2).trim().toLowerCase();
@@ -72,6 +72,9 @@ export interface WslReportedAgent {
   start: string;
   bootId: string;
   slug: AgentSlug;
+  /** The reported pids ABOVE the agent: a tracked agent among them means this
+   *  one is nested inside it (a `claude -p` run by the pane's own claude). */
+  ancestors: number[];
 }
 
 /** The nearest reported ancestor whose command line names `expected`. A
@@ -79,16 +82,34 @@ export interface WslReportedAgent {
  *  is never accepted in its place. */
 export function pickReportedAgent(report: WslAgentReport | undefined, expected: AgentSlug): WslReportedAgent | undefined {
   if (!report) return undefined;
-  for (const entry of report.chain) {
+  for (const [i, entry] of report.chain.entries()) {
     // The tracker's own identification, applied to this one process as a
     // root (native stem like `claude`, or a runtime naming the agent).
     const name = tokenizeCmdline(entry.cmdline)[0] ?? '';
     const slug = selectAgentProcess([{ pid: entry.pid, ppid: -1, name, cmdline: entry.cmdline }], entry.pid)?.slug;
     if (slug === expected) {
-      return { pid: entry.pid, start: entry.start, bootId: report.bootId, slug: expected };
+      return {
+        pid: entry.pid, start: entry.start, bootId: report.bootId, slug: expected,
+        ancestors: report.chain.slice(i + 1).map((e) => e.pid),
+      };
     }
   }
   return undefined;
+}
+
+/**
+ * The trust gate for a hook signal on a WSL pane (#1727): the reported agent
+ * process, or undefined when this signal may not name one. Only the pane's
+ * own hook (exact ptyId) may, only for a WSL session, and only as the agent
+ * the hook itself speaks for. Pure — exported for tests.
+ */
+export function reportedAgentForPane(
+  sessionId: string,
+  isWslSession: boolean,
+  signal: { ptyId?: string; agent: AgentSlug; wslAgentProcess?: string },
+): WslReportedAgent | undefined {
+  if (!isWslSession || signal.ptyId !== sessionId || !signal.wslAgentProcess) return undefined;
+  return pickReportedAgent(parseWslAgentReport(signal.wslAgentProcess), signal.agent);
 }
 
 /** Where a watched WSL agent lives: the pane's own wsl.exe and its target. */
@@ -111,14 +132,20 @@ export type WslProbe = (shell: string, target: WslTarget, pids: number[]) => Pro
 // One stat read per pid; the function keeps `set --` off the loop's list.
 const PROBE_SCRIPT = `
 st() { set -f; set -- \${1##*) }; printf '%s %s' "$1" "\${20}"; }
-read -r b < /proc/sys/kernel/random/boot_id || exit 3
+{ read -r b < /proc/sys/kernel/random/boot_id; } 2>/dev/null || exit 3
 printf 'B %s\\n' "$b"
 for p; do
   s=$(cat "/proc/$p/stat" 2>/dev/null) || continue
   printf 'P %s %s\\n' "$p" "$(st "$s")"
 done
 `;
+/** The watcher's periodic probe. A delivery check waits less: it holds a
+ *  scheduled prompt, and a slow answer only defers it to the next try. */
 const PROBE_TIMEOUT_MS = 10_000;
+const DELIVERY_PROBE_TIMEOUT_MS = 5_000;
+
+/** Exported for tests: the script, run as `sh -c PROBE_SCRIPT wmux-ps <pid>…`. */
+export { PROBE_SCRIPT };
 
 /** Pure — exported for tests. */
 export function parseWslProbeOutput(stdout: string): WslProbeResult {
@@ -135,10 +162,12 @@ export function parseWslProbeOutput(stdout: string): WslProbeResult {
   return { bootId, procs };
 }
 
-export const probeWslProcesses: WslProbe = (shell, target, pids) => new Promise((resolve, reject) => {
+export const probeWslProcesses = (
+  shell: string, target: WslTarget, pids: number[], timeout = PROBE_TIMEOUT_MS,
+): Promise<WslProbeResult> => new Promise((resolve, reject) => {
   const args = [...wslTargetArgs(target), '--exec', '/bin/sh', '-c', PROBE_SCRIPT, 'wmux-ps', ...pids.map(String)];
   execFile(shell, args, {
-    encoding: 'buffer', timeout: PROBE_TIMEOUT_MS, maxBuffer: 1024 * 1024, windowsHide: true,
+    encoding: 'buffer', timeout, maxBuffer: 1024 * 1024, windowsHide: true,
     cwd: os.homedir(), env: { ...process.env, WSL_UTF8: '1' },
   }, (error, stdout, stderr) => {
     if (error) { reject(new Error(decodeWslOutput(stderr).trim() || error.message)); return; }
@@ -178,7 +207,7 @@ function sameProcess(agent: WslWatchedAgent, result: WslProbeResult): { exists: 
  */
 export async function checkWslAgentRunning(
   agent: WslWatchedAgent,
-  probe: WslProbe = probeWslProcesses,
+  probe: WslProbe = (shell, target, pids) => probeWslProcesses(shell, target, pids, DELIVERY_PROBE_TIMEOUT_MS),
   hostAlive: (pid: number) => boolean = windowsPidAlive,
 ): Promise<boolean> {
   if (!hostAlive(agent.hostPid)) return false;

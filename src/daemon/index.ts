@@ -91,7 +91,7 @@ import { WorkTaskService } from './worktask/WorkTaskService';
 import { isTaskState, type AgentStatus, type Message } from '../shared/types';
 import { ProcessMonitor } from './ProcessMonitor';
 import { AgentProcessTracker } from './AgentProcessTracker';
-import { checkWslAgentRunning, parseWslAgentReport, pickReportedAgent, WslPidWatcher } from './wslAgentProcess';
+import { checkWslAgentRunning, reportedAgentForPane, WslPidWatcher } from './wslAgentProcess';
 import { CommandStartAgentProbe } from './commandStartAgentProbe';
 import { resolveCanonicalAgentIdentity, detectorSuppressedBy, reportedAgentName, provesLiveAgent, type CanonicalAgentIdentity } from './canonicalAgent';
 import { Watchdog } from './Watchdog';
@@ -4029,8 +4029,7 @@ function registerRpcHandlers(
         }
         // #1727 — a WSL pane: only the pane's own hook may name its agent
         // process (exact ptyId), and only as the agent the hook speaks for.
-        if (signal.ptyId !== sessionId || !signal.wslAgentProcess) return;
-        const agent = pickReportedAgent(parseWslAgentReport(signal.wslAgentProcess), signal.agent);
+        const agent = reportedAgentForPane(sessionId, true, signal);
         if (agent) {
           agentProcessTracker.armWsl(sessionId, {
             shell: managed.meta.cmd, target: wslTarget, hostPid: managed.meta.pid,
