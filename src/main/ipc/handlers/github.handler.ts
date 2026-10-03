@@ -72,8 +72,9 @@ async function issueList(repoPath: string, filter: IssueFilter, force: boolean):
   if (!gate.ok) {
     return { ok: false, code: gate.reason === 'cli-missing' ? 'cli-missing' : 'unauthenticated', message: gate.message, provider: 'github' };
   }
-  const key = remote.key ?? repoPath;
-  const res = await ghIssueService.listIssues(repoPath, filter, key, force);
+  // Every read names this repo explicitly (see GhIssueService).
+  if (!remote.key) return { ok: false, code: 'error', message: 'origin is not a GitHub owner/repo remote' };
+  const res = await ghIssueService.listIssues(repoPath, filter, remote.key, force);
   if (res.ok) return { ok: true, issues: res.issues, repo: repoOfKey(remote.key) };
   return res;
 }
@@ -161,7 +162,8 @@ export function registerGithubHandlers(): () => void {
         if (!safeRepo) return { ok: false, code: 'error', message: 'repoPath required' };
         const remote = await detectRemote(safeRepo);
         if (!remote || !isGithubHost(remote.host)) return { ok: false, code: 'error', message: 'Issues are GitHub-only for now' };
-        return ghIssueService.issueDetail(safeRepo, number, typeof updatedAt === 'string' ? updatedAt : '', remote.key ?? safeRepo);
+        if (!remote.key) return { ok: false, code: 'error', message: 'origin is not a GitHub owner/repo remote' };
+        return ghIssueService.issueDetail(safeRepo, number, typeof updatedAt === 'string' ? updatedAt : '', remote.key);
       },
     ),
   );

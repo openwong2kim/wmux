@@ -1,7 +1,8 @@
-// GhIssueService: filter args, gh env, TTL cache, single-flight and the
-// rate-limit breaker (exec mocked, as in GhPrService.test).
+// GhIssueService: the REST list path per filter, explicit repo on every
+// read, gh env, TTL cache, single-flight and the rate-limit breaker (exec
+// mocked, as in GhPrService.test).
 import { describe, it, expect, vi } from 'vitest';
-import { GhIssueService, ghIssueEnv, issueFilterArgs, isRateLimitError, mapGhIssue, mapGhIssueDetail } from '../GhIssueService';
+import { GhIssueService, ghIssueEnv, issueListPath, isRateLimitError, mapRestIssue, mapGhIssueDetail } from '../GhIssueService';
 import { getExecEnv } from '../../../shared/execEnv';
 import type { IssueFilter } from '../../../shared/issueSurface';
 
@@ -10,16 +11,19 @@ const LIST = JSON.stringify([
   {
     number: 7,
     title: 'Crash on launch',
-    state: 'OPEN',
-    author: { login: 'alice' },
+    state: 'open',
+    user: { login: 'alice' },
     labels: [{ name: 'bug' }, { name: '' }],
     assignees: [{ login: 'bob' }],
-    updatedAt: '2026-10-01T00:00:00Z',
-    url: 'https://github.com/O/R/issues/7',
+    updated_at: '2026-10-01T00:00:00Z',
+    html_url: 'https://github.com/O/R/issues/7',
     comments: 3,
   },
+  { number: 8, title: 'a PR', html_url: 'https://github.com/O/R/pull/8', pull_request: { url: 'x' } },
   { title: 'malformed' },
 ]);
+/** The fake gh: the login for `api user`, else the list. */
+const answer = (args: string[]) => (args.includes('user') ? 'me\n' : LIST);
 
 type Opts = { env: NodeJS.ProcessEnv };
 
@@ -40,9 +44,9 @@ const rateLimitErr = () => Object.assign(new Error('Command failed: gh issue lis
 });
 
 describe('issue mapping', () => {
-  it('maps a list item and drops malformed ones', () => {
+  it('maps a REST item and drops pull requests and malformed ones', () => {
     const arr = JSON.parse(LIST);
-    expect(mapGhIssue(arr[0])).toEqual({
+    expect(mapRestIssue(arr[0])).toEqual({
       number: 7,
       title: 'Crash on launch',
       state: 'open',
@@ -53,7 +57,8 @@ describe('issue mapping', () => {
       url: 'https://github.com/O/R/issues/7',
       comments: 3,
     });
-    expect(mapGhIssue(arr[1])).toBeNull();
+    expect(mapRestIssue(arr[1])).toBeNull();
+    expect(mapRestIssue(arr[2])).toBeNull();
   });
 
   it('maps a detail: comments oldest first, HTML comments stripped', () => {
@@ -75,47 +80,66 @@ describe('issue mapping', () => {
   });
 });
 
-describe('issueFilterArgs', () => {
-  const cases: Array<[IssueFilter, string[]]> = [
-    [{ kind: 'all' }, []],
-    [{ kind: 'assigned' }, ['--assignee', '@me']],
-    [{ kind: 'created' }, ['--author', '@me']],
-    [{ kind: 'label', label: '-x bug' }, ['--label=-x bug']],
+describe('list path and explicit repo', () => {
+  const cases: Array<[IssueFilter, string]> = [
+    [{ kind: 'all' }, 'repos/o/r/issues?state=open&per_page=100'],
+    [{ kind: 'assigned' }, 'repos/o/r/issues?state=open&per_page=100&assignee=me'],
+    [{ kind: 'created' }, 'repos/o/r/issues?state=open&per_page=100&creator=me'],
+    [{ kind: 'label', label: 'good first issue' }, 'repos/o/r/issues?state=open&per_page=100&labels=good%20first%20issue'],
   ];
-  it.each(cases)('%j', (filter, args) => {
-    expect(issueFilterArgs(filter)).toEqual(args);
+  it.each(cases)('%j', (filter, path) => {
+    expect(issueListPath('o', 'r', filter, 'me')).toBe(path);
   });
 
-  it('passes the filter and the open/json/jq args to gh', async () => {
-    const { svc, calls } = makeService(() => LIST);
+  it('reads the list from the remote key\'s host and repo, with the signed-in login for assigned', async () => {
+    const { svc, calls } = makeService(answer);
     await svc.listIssues('/repo', { kind: 'assigned' }, KEY);
-    const args = calls[0].args;
-    expect(args.slice(0, 2)).toEqual(['issue', 'list']);
-    expect(args).toEqual(expect.arrayContaining(['--state', 'open', '--assignee', '@me', '--jq', 'map(.comments |= length)']));
-    expect(args[args.indexOf('--json') + 1]).toBe('number,title,state,author,labels,assignees,updatedAt,url,comments');
+    expect(calls[0].args).toEqual(['api', '--hostname', 'github.com', 'user', '--jq', '.login']);
+    expect(calls[1].args).toEqual(['api', '--hostname', 'github.com', 'repos/o/r/issues?state=open&per_page=100&assignee=me']);
+    // The login is cached.
+    await svc.listIssues('/repo', { kind: 'created' }, KEY);
+    expect(calls).toHaveLength(3);
+  });
+
+  it('names the repo on a detail read, and refuses a key that is not host/owner/repo', async () => {
+    const { svc, calls } = makeService(() => JSON.stringify({ number: 7, url: 'u', comments: [] }));
+    await svc.issueDetail('/repo', 7, 'u1', KEY);
+    expect(calls[0].args.slice(0, 5)).toEqual(['issue', 'view', '7', '--repo', KEY]);
+    const bad = await svc.listIssues('/repo', { kind: 'all' }, '/some/path');
+    expect(bad.ok).toBe(false);
+    expect(calls).toHaveLength(1);
   });
 });
 
 describe('gh env', () => {
-  it('is the exec env plus the three non-interactive switches, nothing else', async () => {
-    const env = ghIssueEnv();
-    const base = getExecEnv();
-    expect(Object.keys(env).sort()).toEqual([...new Set([...Object.keys(base), 'GH_PROMPT_DISABLED', 'GH_PAGER', 'NO_COLOR'])].sort());
+  it('is the exec env without GH_REPO, plus the three non-interactive switches', async () => {
+    process.env.GH_REPO = 'evil/other';
+    let env: NodeJS.ProcessEnv;
+    let base: NodeJS.ProcessEnv;
+    try {
+      env = ghIssueEnv();
+      base = getExecEnv();
+    } finally {
+      delete process.env.GH_REPO;
+    }
+    expect(env).not.toHaveProperty('GH_REPO');
+    const baseKeys = Object.keys(base).filter((k) => k !== 'GH_REPO');
+    expect(Object.keys(env).sort()).toEqual([...new Set([...baseKeys, 'GH_PROMPT_DISABLED', 'GH_PAGER', 'NO_COLOR'])].sort());
     expect(env).toMatchObject({ GH_PROMPT_DISABLED: '1', GH_PAGER: 'cat', NO_COLOR: '1', PATH: base.PATH });
-    const { svc, calls } = makeService(() => LIST);
+    const { svc, calls } = makeService(answer);
     await svc.listIssues('/repo', { kind: 'all' }, KEY);
-    expect(calls[0].opts.env).toEqual(env);
+    expect(calls[0].opts.env).toEqual(ghIssueEnv());
   });
 });
 
 describe('list cache', () => {
   it('serves the TTL from cache per filter, and force re-reads', async () => {
-    const { svc, calls, nowRef } = makeService(() => LIST);
+    const { svc, calls, nowRef } = makeService(answer);
     const a = await svc.listIssues('/repo', { kind: 'all' }, KEY);
     expect(a.ok && a.issues.map((i) => i.number)).toEqual([7]);
     await svc.listIssues('/clone', { kind: 'all' }, KEY);
     expect(calls).toHaveLength(1); // same remote, another clone: one read
-    await svc.listIssues('/repo', { kind: 'created' }, KEY);
+    await svc.listIssues('/repo', { kind: 'label', label: 'bug' }, KEY);
     expect(calls).toHaveLength(2); // another filter is another entry
     nowRef.t += 29_000;
     await svc.listIssues('/repo', { kind: 'all' }, KEY);
@@ -123,7 +147,7 @@ describe('list cache', () => {
     await svc.listIssues('/repo', { kind: 'all' }, KEY, true);
     expect(calls).toHaveLength(3);
     nowRef.t += 31_000;
-    await svc.listIssues('/repo', { kind: 'created' }, KEY);
+    await svc.listIssues('/repo', { kind: 'label', label: 'bug' }, KEY);
     expect(calls).toHaveLength(4);
   });
 
@@ -163,7 +187,7 @@ describe('list cache', () => {
 describe('rate-limit breaker', () => {
   it('trips on a rate-limit answer, makes no gh call while open, and backs off further each time', async () => {
     let limited = true;
-    const { svc, calls, nowRef } = makeService(() => (limited ? rateLimitErr() : LIST));
+    const { svc, calls, nowRef } = makeService((args) => (limited ? rateLimitErr() : answer(args)));
     const r1 = await svc.listIssues('/repo', { kind: 'all' }, KEY);
     expect(r1).toEqual({ ok: false, code: 'rate-limited', message: 'GitHub rate limit', retryAt: nowRef.t + 60_000 });
     // Open: no list, no detail, not even forced.
@@ -185,11 +209,22 @@ describe('rate-limit breaker', () => {
   });
 
   it('is per host', async () => {
-    const { svc, calls } = makeService((args) => (args.includes('--author') ? rateLimitErr() : LIST));
+    const { svc, calls } = makeService((args) => (args.some((a) => a.includes('creator=')) ? rateLimitErr() : answer(args)));
     await svc.listIssues('/repo', { kind: 'created' }, KEY);
     const other = await svc.listIssues('/ghe', { kind: 'all' }, 'acme.github.com/o/r');
     expect(other.ok).toBe(true);
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(3); // login, the limited list, the other host's list
+  });
+
+  it('serves a fresh cached list while the breaker is open', async () => {
+    const { svc, calls } = makeService((args) => (args.some((a) => a.includes('creator=')) ? rateLimitErr() : answer(args)));
+    const fresh = await svc.listIssues('/repo', { kind: 'all' }, KEY);
+    await svc.listIssues('/repo', { kind: 'created' }, KEY); // trips github.com
+    expect(svc.retryAt('github.com')).not.toBeNull();
+    expect(await svc.listIssues('/repo', { kind: 'all' }, KEY)).toBe(fresh);
+    const forced = await svc.listIssues('/repo', { kind: 'all' }, KEY, true);
+    expect(!forced.ok && forced.code).toBe('rate-limited');
+    expect(calls).toHaveLength(3);
   });
 
   it('a 403 without "rate limit" is an error, not a rate limit', async () => {
@@ -197,10 +232,26 @@ describe('rate-limit breaker', () => {
     expect(isRateLimitError(sso)).toBe(false);
     expect(isRateLimitError(Object.assign(new Error('x'), { stderr: 'HTTP 429: Too Many Requests' }))).toBe(true);
     expect(isRateLimitError(Object.assign(new Error('x'), { stderr: 'HTTP 403: You have exceeded a secondary rate limit.' }))).toBe(true);
+    expect(isRateLimitError(Object.assign(new Error('x'), { stderr: 'gh: API rate limit exceeded for user ID 1. (HTTP 403)' }))).toBe(true);
+    // The message alone (it holds the argv) never counts.
+    expect(isRateLimitError(new Error('Command failed: gh api … rate limit exceeded'))).toBe(false);
     const { svc, calls } = makeService(() => sso);
     const r = await svc.listIssues('/repo', { kind: 'all' }, KEY);
     expect(!r.ok && r.code).toBe('error');
     await svc.listIssues('/repo', { kind: 'all' }, KEY, true);
+    expect(calls).toHaveLength(2);
+  });
+
+  it('a label named "rate limit" with a plain 403 does not trip the breaker', async () => {
+    const filter: IssueFilter = { kind: 'label', label: 'rate limit' };
+    const err = Object.assign(new Error(`Command failed: gh api --hostname github.com ${issueListPath('o', 'r', filter)} rate limit`), {
+      stderr: 'gh: Resource protected by organization SAML enforcement. (HTTP 403)',
+    });
+    const { svc, calls } = makeService(() => err);
+    const r = await svc.listIssues('/repo', filter, KEY);
+    expect(!r.ok && r.code).toBe('error');
+    expect(svc.retryAt('github.com')).toBeNull();
+    await svc.listIssues('/repo', filter, KEY, true);
     expect(calls).toHaveLength(2);
   });
 });

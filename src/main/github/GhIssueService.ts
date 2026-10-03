@@ -1,16 +1,22 @@
 // GhIssueService: a GitHub repo's open issues and one issue's detail, read
 // through the gh CLI for the Git page's Issues view.
 //
+// Every read names its repo explicitly — `repos/<owner>/<repo>/issues` on the
+// remote's host, `issue view --repo host/owner/repo` — so neither GH_REPO, a gh
+// default repo nor an upstream remote can swap in another repo's issues under
+// the origin's key. The list is the REST issues endpoint: it carries the
+// comment count as a number, so no comment body is read until a detail opens.
+//
 // Same shape as GhPrService's list: keyed by the remote (host/owner/repo), so
 // clones of one repo share a read; a 30s list TTL; an in-flight read is shared
 // (single-flight); a detail is re-read only when the list's updatedAt moves.
 // The gh gate (installed / signed in) is GhPrService's, called by the handler
 // before this service runs.
 //
-// Rate limit: a 429 or a "rate limit" answer trips a per-host breaker that
-// backs off 1, 2, 4 … 15 minutes. While it is open no gh call is made and
-// every read answers 'rate-limited' with the time it retries; the first
-// success closes it.
+// Rate limit: GitHub's rate-limit answer (read from gh's stderr only) trips a
+// per-host breaker that backs off 1, 2, 4 … 15 minutes. While it is open no gh
+// call is made and every read answers 'rate-limited' with the time it retries;
+// the first success closes it.
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { getExecEnv } from '../../shared/execEnv';
@@ -27,16 +33,29 @@ const execFileAsync = promisify(execFile);
 
 const LIST_TTL_MS = 30_000;
 const GH_TIMEOUT_MS = 10_000;
-/** Open issues read per list; exactly this many shows as 100+. */
+/** Items read per list (the endpoint mixes in PRs, which are dropped);
+ *  exactly this many issues shows as 100+. */
 export const ISSUE_LIST_LIMIT = 100;
+/** How long the signed-in login (for assigned/created filters) is believed. */
+const LOGIN_TTL_MS = 5 * 60_000;
 const MAX_ENTRIES = 128;
 const GH_MAX_BUFFER = 16 * 1024 * 1024;
 const BACKOFF_MIN_MS = 60_000;
 const BACKOFF_MAX_MS = 15 * 60_000;
 
-/** gh's env: the GUI exec env plus the three non-interactive switches, nothing else. */
+/** gh's env: the GUI exec env (process env with a fixed-up PATH) minus
+ *  GH_REPO, which would point gh at another repo, plus the three
+ *  non-interactive switches. */
 export function ghIssueEnv(): NodeJS.ProcessEnv {
-  return { ...getExecEnv(), GH_PROMPT_DISABLED: '1', GH_PAGER: 'cat', NO_COLOR: '1' };
+  const { GH_REPO: _repo, ...env } = getExecEnv();
+  return { ...env, GH_PROMPT_DISABLED: '1', GH_PAGER: 'cat', NO_COLOR: '1' };
+}
+
+/** host, owner and repo of a GitHub remote key (host/owner/repo), or null. */
+export function splitRepoKey(key: string): { host: string; owner: string; repo: string } | null {
+  const parts = key.split('/');
+  if (parts.length !== 3 || parts.some((p) => !p || !/^[\w.-]+$/.test(p))) return null;
+  return { host: parts[0], owner: parts[1], repo: parts[2] };
 }
 
 type Exec = (
@@ -45,15 +64,15 @@ type Exec = (
   opts: { cwd: string; timeout: number; env: NodeJS.ProcessEnv; windowsHide: boolean; maxBuffer: number },
 ) => Promise<{ stdout: string }>;
 
-/** gh flags for a filter. A label goes in the `=` form so a name starting
- *  with `-` is never read as a flag. */
-export function issueFilterArgs(filter: IssueFilter): string[] {
-  switch (filter.kind) {
-    case 'assigned': return ['--assignee', '@me'];
-    case 'created': return ['--author', '@me'];
-    case 'label': return [`--label=${filter.label}`];
-    default: return [];
-  }
+/** The REST list path for a filter. `login` is the signed-in user, needed by
+ *  assigned/created (the REST endpoint has no @me). */
+export function issueListPath(owner: string, repo: string, filter: IssueFilter, login = ''): string {
+  const q = new URLSearchParams({ state: 'open', per_page: String(ISSUE_LIST_LIMIT) });
+  if (filter.kind === 'assigned') q.set('assignee', login);
+  else if (filter.kind === 'created') q.set('creator', login);
+  else if (filter.kind === 'label') q.set('labels', filter.label);
+  // URLSearchParams writes a space as '+'; spell it %20 so a label keeps it.
+  return `repos/${owner}/${repo}/issues?${q.toString().replace(/\+/g, '%20')}`;
 }
 
 function filterKey(filter: IssueFilter): string {
@@ -75,8 +94,7 @@ interface GhIssueJson {
   closedAt?: string | null;
   url?: string;
   body?: string;
-  /** A count in the list (reduced by --jq), the comment nodes in a view. */
-  comments?: number | Array<{ author?: { login?: string } | null; body?: string; createdAt?: string; url?: string }>;
+  comments?: Array<{ author?: { login?: string } | null; body?: string; createdAt?: string; url?: string }>;
 }
 
 const labelsOf = (j: GhIssueJson) =>
@@ -85,18 +103,35 @@ const assigneesOf = (j: GhIssueJson) =>
   (j.assignees ?? []).map((a) => a?.login ?? '').filter(Boolean);
 const stateOf = (j: GhIssueJson): 'open' | 'closed' => ((j.state ?? '').toUpperCase() === 'CLOSED' ? 'closed' : 'open');
 
-export function mapGhIssue(j: GhIssueJson): IssueSummary | null {
-  if (typeof j.number !== 'number' || typeof j.url !== 'string') return null;
+interface RestIssueJson {
+  number?: number;
+  title?: string;
+  state?: string;
+  user?: { login?: string } | null;
+  labels?: Array<{ name?: string } | string> | null;
+  assignees?: Array<{ login?: string }> | null;
+  updated_at?: string;
+  html_url?: string;
+  comments?: number;
+  pull_request?: unknown;
+}
+
+/** A REST issues-endpoint item; a pull request (which the endpoint mixes in) is null. */
+export function mapRestIssue(j: RestIssueJson): IssueSummary | null {
+  if (j.pull_request || typeof j.number !== 'number' || typeof j.html_url !== 'string') return null;
   return {
     number: j.number,
     title: j.title ?? '',
-    state: stateOf(j),
-    author: j.author?.login ?? '',
-    labels: labelsOf(j),
-    assignees: assigneesOf(j),
-    updatedAt: j.updatedAt ?? '',
-    url: j.url,
-    comments: typeof j.comments === 'number' ? j.comments : Array.isArray(j.comments) ? j.comments.length : 0,
+    state: (j.state ?? '').toLowerCase() === 'closed' ? 'closed' : 'open',
+    author: j.user?.login ?? '',
+    labels: (j.labels ?? [])
+      .map((l) => (typeof l === 'string' ? l : l?.name ?? ''))
+      .filter(Boolean)
+      .map((name) => ({ name })),
+    assignees: (j.assignees ?? []).map((a) => a?.login ?? '').filter(Boolean),
+    updatedAt: j.updated_at ?? '',
+    url: j.html_url,
+    comments: typeof j.comments === 'number' ? j.comments : 0,
   };
 }
 
@@ -104,7 +139,7 @@ export function mapGhIssueDetail(j: GhIssueJson): IssueDetail | null {
   if (typeof j.number !== 'number' || typeof j.url !== 'string') return null;
   const body = capBody(typeof j.body === 'string' ? j.body : '');
   const comments: IssueComment[] = [];
-  for (const c of Array.isArray(j.comments) ? j.comments : []) {
+  for (const c of j.comments ?? []) {
     if (typeof c?.body !== 'string') continue;
     const { body: text, truncated } = capBody(c.body);
     comments.push({ author: c.author?.login ?? '', body: text, createdAt: c.createdAt ?? '', url: c.url ?? j.url, truncated });
@@ -127,12 +162,18 @@ export function mapGhIssueDetail(j: GhIssueJson): IssueDetail | null {
   };
 }
 
-/** A gh failure that is GitHub's rate limit (primary or secondary). A 403
- *  without "rate limit" is a permission or SSO answer and is not one. */
+/** A gh failure that is GitHub's rate limit (primary or secondary). Read from
+ *  gh's stderr lines only: the error message also holds the argv, where a
+ *  label named "rate limit" would otherwise turn a plain 403 into a trip. A 403
+ *  without a rate-limit body is a permission or SSO answer and is not one. */
 export function isRateLimitError(err: unknown): boolean {
-  const e = err as { stderr?: string; message?: string };
-  const text = `${e?.stderr ?? ''}\n${e?.message ?? ''}`;
-  return /rate limit/i.test(text) || /\bHTTP 429\b/.test(text);
+  const stderr = (err as { stderr?: unknown })?.stderr;
+  if (typeof stderr !== 'string') return false;
+  return stderr.split('\n').some((line) =>
+    /\bHTTP 429\b/.test(line) ||
+    /API rate limit exceeded/i.test(line) ||
+    /secondary rate limit/i.test(line) ||
+    (/\bHTTP 403\b/.test(line) && /rate limit/i.test(line)));
 }
 
 function errorText(err: unknown): string {
@@ -161,6 +202,7 @@ export class GhIssueService {
   private detailPending = new Map<string, Promise<IssueDetailResult>>();
   /** Per host: the breaker's retry time and the backoff that set it. */
   private breaker = new Map<string, { until: number; backoff: number }>();
+  private logins = new Map<string, { login: string; at: number }>();
 
   constructor(
     private now: () => number = Date.now,
@@ -204,20 +246,32 @@ export class GhIssueService {
     }
   }
 
+  /** The signed-in login on `host`, for the assigned/created filters. */
+  private async login(host: string, cwd: string): Promise<string> {
+    const hit = this.logins.get(host);
+    if (hit && this.now() - hit.at < LOGIN_TTL_MS) return hit.login;
+    const login = (await this.gh(host, ['api', '--hostname', host, 'user', '--jq', '.login'], cwd)).trim();
+    if (!login) throw new Error('could not read the signed-in GitHub login');
+    this.logins.set(host, { login, at: this.now() });
+    return login;
+  }
+
   /**
-   * Open issues for the repo at `repoPath`. `key` is the remote identity
-   * (host/owner/repo); its host scopes the breaker. `force` (the page's
-   * refresh) skips the TTL but never an open breaker.
+   * Open issues of the remote `key` (host/owner/repo), read from `repoPath`.
+   * Its host scopes the breaker. `force` (the page's refresh) skips the TTL
+   * but never an open breaker.
    */
   async listIssues(repoPath: string, filter: IssueFilter, key: string, force = false): Promise<ServiceListResult> {
-    const host = key.split('/')[0] || 'github.com';
+    const repo = splitRepoKey(key);
+    if (!repo) return { ok: false, code: 'error', message: 'not a GitHub owner/repo remote' };
     const cacheKey = `${key}\0${filterKey(filter)}`;
     const entry = this.listCache.get(cacheKey);
     if (entry?.pending) return entry.pending;
-    const limited = this.rateLimited(host);
-    if (limited) return limited;
+    // A fresh answer is served even while the breaker is open: it costs no call.
     if (entry?.value && !force && this.now() - entry.fetchedAt < LIST_TTL_MS) return entry.value;
-    const pending = this.fetchList(host, repoPath, filter).then((value) => {
+    const limited = this.rateLimited(repo.host);
+    if (limited) return limited;
+    const pending = this.fetchList(repo, repoPath, filter).then((value) => {
       this.listCache.set(cacheKey, { value, fetchedAt: this.now(), pending: null });
       return value;
     });
@@ -226,45 +280,43 @@ export class GhIssueService {
     return pending;
   }
 
-  private async fetchList(host: string, repoPath: string, filter: IssueFilter): Promise<ServiceListResult> {
+  private async fetchList(
+    repo: { host: string; owner: string; repo: string },
+    repoPath: string,
+    filter: IssueFilter,
+  ): Promise<ServiceListResult> {
     try {
+      const me = filter.kind === 'assigned' || filter.kind === 'created' ? await this.login(repo.host, repoPath) : '';
       const stdout = await this.gh(
-        host,
-        [
-          'issue', 'list',
-          '--state', 'open',
-          '--limit', String(ISSUE_LIST_LIMIT),
-          ...issueFilterArgs(filter),
-          '--json', 'number,title,state,author,labels,assignees,updatedAt,url,comments',
-          // Comments arrive as full nodes; only their count crosses to the page.
-          '--jq', 'map(.comments |= length)',
-        ],
+        repo.host,
+        ['api', '--hostname', repo.host, issueListPath(repo.owner, repo.repo, filter, me)],
         repoPath,
       );
-      const arr = JSON.parse(stdout) as GhIssueJson[];
-      const issues = (Array.isArray(arr) ? arr : []).map(mapGhIssue).filter((i): i is IssueSummary => i !== null);
+      const arr = JSON.parse(stdout) as RestIssueJson[];
+      const issues = (Array.isArray(arr) ? arr : []).map(mapRestIssue).filter((i): i is IssueSummary => i !== null);
       return { ok: true, issues };
     } catch (err) {
-      if (err instanceof RateLimited) return this.rateLimited(host) ?? { ok: false, code: 'error', message: err.message };
+      if (err instanceof RateLimited) return this.rateLimited(repo.host) ?? { ok: false, code: 'error', message: err.message };
       return { ok: false, code: 'error', message: errorText(err) };
     }
   }
 
   /** One issue with its comments; re-read only when `updatedAt` moved. */
   async issueDetail(repoPath: string, number: number, updatedAt: string, key: string): Promise<IssueDetailResult> {
-    const host = key.split('/')[0] || 'github.com';
+    const repo = splitRepoKey(key);
+    if (!repo) return { ok: false, code: 'error', message: 'not a GitHub owner/repo remote' };
     const cacheKey = `${key}\0${number}`;
     const cached = this.detailCache.get(cacheKey);
     if (cached && updatedAt && cached.updatedAt === updatedAt) return { ok: true, detail: cached.value };
     const inFlight = this.detailPending.get(cacheKey);
     if (inFlight) return inFlight;
-    const limited = this.rateLimited(host);
+    const limited = this.rateLimited(repo.host);
     if (limited) return limited;
     const pending = (async (): Promise<IssueDetailResult> => {
       try {
         const stdout = await this.gh(
-          host,
-          ['issue', 'view', String(number), '--json',
+          repo.host,
+          ['issue', 'view', String(number), '--repo', key, '--json',
             'number,title,state,stateReason,author,body,labels,assignees,comments,createdAt,closedAt,updatedAt,url'],
           repoPath,
         );
@@ -274,7 +326,7 @@ export class GhIssueService {
         evict(this.detailCache);
         return { ok: true, detail };
       } catch (err) {
-        if (err instanceof RateLimited) return this.rateLimited(host) ?? { ok: false, code: 'error', message: err.message };
+        if (err instanceof RateLimited) return this.rateLimited(repo.host) ?? { ok: false, code: 'error', message: err.message };
         return { ok: false, code: 'error', message: errorText(err) };
       } finally {
         this.detailPending.delete(cacheKey);
