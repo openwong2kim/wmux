@@ -34,4 +34,14 @@ describe('collectForeignCheckoutAgents', () => {
     const hits = collectForeignCheckoutAgents(workspaces, surfaceAgent, tasks, false);
     expect(hits.map((h) => [h.ptyId, h.workspaceId, h.task.id])).toEqual([['pty-stashed', 'ws-other', 'wtask-1']]);
   });
+
+  it('skips an agent stamp the daemon reported dead or whose shell is back at its prompt', () => {
+    const workspaces = [{ id: 'ws-other', rootPane: leaf('p1', [{ ptyId: 'a', cwd: WT }, { ptyId: 'b', cwd: WT }, { ptyId: 'c', cwd: WT }]) }];
+    const surfaceAgent = { a: { name: 'Claude Code' }, b: { name: 'Claude Code' }, c: { name: 'Claude Code' } };
+    const hits = collectForeignCheckoutAgents(workspaces, surfaceAgent, tasks, false, {
+      agentAlive: { a: false },
+      commandRunning: { b: false, c: true },
+    });
+    expect(hits.map((h) => h.ptyId)).toEqual(['c']);
+  });
 });

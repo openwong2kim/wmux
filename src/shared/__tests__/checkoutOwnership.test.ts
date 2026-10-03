@@ -47,4 +47,9 @@ describe('findForeignCheckoutOwner', () => {
     expect(findForeignCheckoutOwner('/home/u/.wmux/worktrees/abc/fix-login', 'ws-other', [task({ paneGroupId: undefined })], false)).toBeNull();
     expect(findForeignCheckoutOwner('/home/u', 'ws-other', tasks, false)).toBeNull();
   });
+
+  it('still treats a detached task as the owner, and matches a case-only difference when folding', () => {
+    expect(findForeignCheckoutOwner('/home/u/.wmux/worktrees/abc/fix-login', 'ws-other', [task({ status: 'closed', detachedAt: 1 })], false)?.id).toBe('wtask-1');
+    expect(findForeignCheckoutOwner('/HOME/u/.wmux/worktrees/abc/Fix-Login', 'ws-other', tasks, true)?.id).toBe('wtask-1');
+  });
 });

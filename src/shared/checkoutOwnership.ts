@@ -7,15 +7,20 @@
 //
 // The path comparison is adapted from MonoCode (hardbeat920/monocode@6bd432ca,
 // src-tauri/src/control.rs — paths_overlap / comparison_path), MIT License,
-// Copyright (c) 2026 Nick. Unlike there, only the checkout itself and folders
-// inside it count: every worktree lives under the user's home, so a pane
-// sitting in a PARENT folder (home itself) is not sharing any checkout.
+// Copyright (c) 2026 Nick. Only the checkout itself and folders inside it
+// count: every worktree lives under the user's home, so a pane sitting in a
+// PARENT folder (home itself) is not sharing any checkout.
+//
+// A task detached from its orchestrator (closed with `detachedAt`) keeps its
+// worktree and workspace alive, so it still owns the checkout.
 
 /** The WorkTask fields the ownership check reads. */
 export interface CheckoutOwnerTask {
   id: string;
   title: string;
   status: 'open' | 'closed';
+  /** Set when the task was detached rather than harvested — still live. */
+  detachedAt?: number;
   worktreePath?: string;
   /** The task's own workspace. */
   paneGroupId?: string;
@@ -25,7 +30,7 @@ export interface CheckoutOwnerTask {
 
 /**
  * Normalize a path for comparison: forward slashes, no trailing slash, and
- * case-folded only on Windows (POSIX paths must keep their case).
+ * case-folded when the file system ignores case (Windows, default macOS).
  */
 export function comparisonPath(p: string, caseInsensitive: boolean): string {
   let value = p.replace(/\\/g, '/');
@@ -51,7 +56,8 @@ export function findForeignCheckoutOwner<T extends CheckoutOwnerTask>(
   if (!cwd) return null;
   const here = comparisonPath(cwd, caseInsensitive);
   for (const task of tasks) {
-    if (task.status !== 'open' || !task.worktreePath || !task.paneGroupId) continue;
+    if (task.status !== 'open' && task.detachedAt === undefined) continue;
+    if (!task.worktreePath || !task.paneGroupId) continue;
     if (!isSameOrInside(here, comparisonPath(task.worktreePath, caseInsensitive))) continue;
     if (paneWorkspaceId === task.paneGroupId) continue;
     if (paneWorkspaceId === task.owner?.verifiedWorkspaceId) continue;
