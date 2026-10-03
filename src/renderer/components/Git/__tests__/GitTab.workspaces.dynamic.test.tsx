@@ -242,7 +242,20 @@ describe('GitTab — one row per worktree, with the workspaces on it', () => {
     expect(card.querySelector('[data-git-changes]')?.textContent).toContain('clean');
   });
 
-  it('the card reads its changes from the pushed git status when it is about this worktree', async () => {
+  it('the card prefers the worktree\'s fresh read over a stale pushed status', async () => {
+    read.mockImplementation(async (repoPath: string) =>
+      numstatResult(repoPath, repoPath === MAIN ? [{ path: 'x.ts', additions: 51, deletions: 31 }] : []));
+    // The pushed status still says clean.
+    const meta = { gitBranch: 'main', cwd: MAIN, gitSync: { dirty: 0, ahead: 0, behind: 0, hasUpstream: true } };
+    seed([workspace('ws-main', 'main-ws', MAIN, { metadata: meta } as Partial<Workspace>)], 'ws-main');
+    await mount();
+    const changes = container.querySelector('[data-git-changes]')?.textContent ?? '';
+    expect(changes).toContain('+51');
+    expect(changes).toContain('−31');
+  });
+
+  it('without a read, the card falls back to the pushed git status when it is about this worktree', async () => {
+    (window as unknown as { electronAPI: { diff: { read?: unknown } } }).electronAPI.diff.read = undefined;
     const meta = { gitBranch: 'main', cwd: MAIN, gitSync: { dirty: 3, ahead: 0, behind: 0, hasUpstream: true, added: 12, removed: 4 } };
     seed([workspace('ws-main', 'main-ws', MAIN, { metadata: meta } as Partial<Workspace>)], 'ws-main');
     await mount();

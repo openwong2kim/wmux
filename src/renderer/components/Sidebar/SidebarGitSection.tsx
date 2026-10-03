@@ -21,7 +21,7 @@ import { useT } from '../../hooks/useT';
 import { FOCUS_RING } from '../focusRing';
 import { IconChevron, IconRefresh } from '../icons';
 import { GitTab } from '../Git/GitTab';
-import { SIDEBAR_GIT_DEFAULT_HEIGHT, SIDEBAR_GIT_MIN_HEIGHT, clampSidebarGitHeight } from '../../utils/sidebarLayout';
+import { SIDEBAR_GIT_DEFAULT_HEIGHT, SIDEBAR_GIT_MAX_SHARE, SIDEBAR_GIT_MIN_HEIGHT, clampSidebarGitHeight } from '../../utils/sidebarLayout';
 
 const KEY_STEP = 16;
 
@@ -124,7 +124,7 @@ export default function SidebarGitSection() {
 
   const title = t('deck.tabGit') || 'Git';
   const toggleLabel = collapsed ? t('sidebar.git.expand') : t('sidebar.git.collapse');
-  const maxHeight = room > 0 ? clampSidebarGitHeight(Number.POSITIVE_INFINITY, room) : Math.max(height, SIDEBAR_GIT_MIN_HEIGHT);
+  const maxHeight = room > 0 ? Math.max(SIDEBAR_GIT_MIN_HEIGHT, Math.floor(room * SIDEBAR_GIT_MAX_SHARE)) : Math.max(height, SIDEBAR_GIT_MIN_HEIGHT);
   const shownHeight = Math.min(dragHeight ?? height, maxHeight);
 
   return (
@@ -161,35 +161,44 @@ export default function SidebarGitSection() {
         />
       )}
       <div className="wmux-sidebar-section wmux-git-header">
-        <span className="truncate" data-sidebar-git-title>
-          {title}
-          {!collapsed && repo && <span className="wmux-git-repo"> · {repo}</span>}
+        <span className="wmux-git-title" data-sidebar-git-title>
+          <span className="shrink-0">{title}</span>
+          {!collapsed && repo && (
+            <>
+              <span className="wmux-git-repo shrink-0">{' · '}</span>
+              <span className="wmux-git-repo truncate">{repo}</span>
+            </>
+          )}
           {collapsed && summary && (
-            <span className="wmux-git-repo" data-sidebar-git-summary>
-              {' · '}<span className="wmux-git-summary-branch">{summary.branch}</span>
-              {(summary.added > 0 || summary.removed > 0) && (
-                <>
-                  {' · '}
-                  {summary.added > 0 && <span style={{ color: 'var(--accent-green)' }}>+{summary.added}</span>}
-                  {summary.added > 0 && summary.removed > 0 && ' '}
-                  {summary.removed > 0 && <span style={{ color: 'var(--accent-red)' }}>−{summary.removed}</span>}
-                </>
-              )}
-              {summary.pr !== null && (
-                <>
-                  {' · '}PR #{summary.pr}
-                  {summary.checks && (
-                    <span
-                      className="wmux-git-ci-dot"
-                      data-ci={summary.checks}
-                      style={{ background: CHECKS_COLOR[summary.checks] }}
-                      title={t(`workspace.prChecks.${summary.checks}`)}
-                      role="img"
-                      aria-label={t(`workspace.prChecks.${summary.checks}`)}
-                    />
-                  )}
-                </>
-              )}
+            // The branch gives way first, so the changes and the PR stay readable.
+            <span className="wmux-git-repo wmux-git-summary" data-sidebar-git-summary>
+              <span className="shrink-0">{' · '}</span>
+              <span className="wmux-git-summary-branch truncate">{summary.branch}</span>
+              <span className="shrink-0">
+                {(summary.added > 0 || summary.removed > 0) && (
+                  <>
+                    {' · '}
+                    {summary.added > 0 && <span style={{ color: 'var(--accent-green)' }}>+{summary.added}</span>}
+                    {summary.added > 0 && summary.removed > 0 && ' '}
+                    {summary.removed > 0 && <span style={{ color: 'var(--accent-red)' }}>−{summary.removed}</span>}
+                  </>
+                )}
+                {summary.pr !== null && (
+                  <>
+                    {' · '}PR #{summary.pr}
+                    {summary.checks && (
+                      <span
+                        className="wmux-git-ci-dot"
+                        data-ci={summary.checks}
+                        style={{ background: CHECKS_COLOR[summary.checks] }}
+                        title={t(`workspace.prChecks.${summary.checks}`)}
+                        role="img"
+                        aria-label={t(`workspace.prChecks.${summary.checks}`)}
+                      />
+                    )}
+                  </>
+                )}
+              </span>
             </span>
           )}
         </span>

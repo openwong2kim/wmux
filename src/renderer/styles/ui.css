@@ -2126,7 +2126,9 @@ html[data-fullscreen] .wmux-shell-body {
   font-size: 12px;
 }
 .wmux-git-section[data-collapsed] { max-height: none; }
-.wmux-git-summary-branch { font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); font-size: 12px; }
+.wmux-git-title { display: flex; align-items: baseline; min-width: 0; overflow: hidden; white-space: pre; }
+.wmux-git-summary { display: flex; align-items: baseline; min-width: 0; }
+.wmux-git-summary-branch { min-width: 0;  font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); font-size: 12px; }
 .wmux-git-ci-dot { display: inline-block; width: 6px; height: 6px; margin-left: 5px; border-radius: 9999px; vertical-align: middle; }
 .wmux-git-resize {
   position: absolute;

@@ -548,11 +548,13 @@ export function GitTab({ cwd, refreshKey = 0, onRepo }: GitTabProps = {}): React
     && normWorktreePath(metaWorktree, plat) === normWorktreePath(currentWorktree, plat);
   const sync = metaMatches && activeMeta?.gitSync?.hasUpstream ? activeMeta.gitSync : null;
   const cardPr = metaMatches ? activeMeta?.pr ?? null : null;
-  // Uncommitted changes: the pushed git status when it is about this
-  // worktree (no extra git call), else the row's read stat.
-  const cardStat: DiffStat | null = metaMatches && activeMeta?.gitSync
-    ? { files: activeMeta.gitSync.dirty, additions: activeMeta.gitSync.added ?? 0, deletions: activeMeta.gitSync.removed ?? 0, error: null }
-    : currentRow?.stat ?? null;
+  // Uncommitted changes: the row's own read when there is one (it is read
+  // anyway, and fresher than the pushed status), else the pushed git status
+  // when it is about this worktree — never an extra git call for the card.
+  const cardStat: DiffStat | null = currentRow?.stat
+    ?? (metaMatches && activeMeta?.gitSync
+      ? { files: activeMeta.gitSync.dirty, additions: activeMeta.gitSync.added ?? 0, deletions: activeMeta.gitSync.removed ?? 0, error: null }
+      : null);
 
   const renderRow = (row: GitWorktreeRow) => {
     const wt = row.entry;

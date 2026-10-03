@@ -146,6 +146,20 @@ describe('SidebarGitSection', () => {
     expect(Number(sep.getAttribute('aria-valuemax'))).toBeGreaterThanOrEqual(SIDEBAR_GIT_DEFAULT_HEIGHT);
   });
 
+  it('the separator\'s maximum is 45% of the sidebar, even above the default height', async () => {
+    const parent = document.createElement('div');
+    parent.getBoundingClientRect = () => ({ height: 1000 } as DOMRect);
+    container.appendChild(parent);
+    const r2 = createRoot(parent);
+    act(() => useStore.setState({ sidebarGitHeight: 600 }));
+    act(() => r2.render(createElement(SidebarGitSection)));
+    await flush();
+    const sep = parent.querySelector('[data-sidebar-git-resize]')!;
+    expect(sep.getAttribute('aria-valuemax')).toBe('450');
+    expect(sep.getAttribute('aria-valuenow')).toBe('450');
+    act(() => r2.unmount());
+  });
+
   it('a drag up grows the section, within its floor and the 45% share', () => {
     expect(gitHeightForDrag(280, -40, 1000)).toBe(320);
     expect(gitHeightForDrag(280, 400, 1000)).toBe(SIDEBAR_GIT_MIN_HEIGHT);
