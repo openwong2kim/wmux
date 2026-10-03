@@ -164,7 +164,8 @@ export class GitSyncStatusCache {
       const { stdout } = await this.exec(
         'git',
         ['--no-optional-locks', 'diff', 'HEAD', '--shortstat', '--ignore-submodules=dirty'],
-        opts,
+        // parseShortstat reads git's English summary; a translated one would not match.
+        { ...opts, env: { ...opts.env, LC_ALL: 'C' } },
       );
       return { ...status, ...parseShortstat(stdout) };
     } catch {

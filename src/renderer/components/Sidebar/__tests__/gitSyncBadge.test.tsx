@@ -49,6 +49,13 @@ describe('GitSyncBadge', () => {
     expect(dirty.style.color).toBe('var(--text-subtle)');
   });
 
+  it('shows the changed-file count when only untracked files changed (no line counts)', () => {
+    const [dirty] = signals(render(<GitSyncBadge sync={sync({ dirty: 2, added: 0, removed: 0 })} />));
+    expect(dirty.textContent).toBe('·2');
+    const lines = signals(render(<GitSyncBadge sync={sync({ dirty: 2, added: 5, removed: 0 })} />));
+    expect(lines.map((el) => el.textContent)).toEqual(['+5']);
+  });
+
   it('keeps ahead on the steel accent', () => {
     const container = render(<GitSyncBadge sync={sync({ ahead: 2 })} />);
     const [ahead] = signals(container);

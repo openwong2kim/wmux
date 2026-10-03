@@ -77,6 +77,8 @@ describe('GitSyncStatusCache', () => {
     const status = await cache.get('/repo');
     expect(status).toMatchObject({ dirty: 1, added: 84, removed: 31 });
     expect(exec.mock.calls[1][1]).toEqual(['--no-optional-locks', 'diff', 'HEAD', '--shortstat', '--ignore-submodules=dirty']);
+    // The summary is parsed in English whatever the user's locale.
+    expect(exec.mock.calls[1][2].env.LC_ALL).toBe('C');
   });
 
   const CLEAN = '# branch.head main\n# branch.upstream origin/main\n# branch.ab +1 -0\n';

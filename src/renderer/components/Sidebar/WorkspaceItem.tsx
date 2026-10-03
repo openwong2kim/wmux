@@ -135,10 +135,11 @@ export function GitSyncBadge({ sync }: { sync: GitSyncStatus }): React.ReactElem
       {/* Line counts vs HEAD, coloured like a diff. Adapted from MonoCode
           (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx), MIT
           License, Copyright (c) 2026 Nick. The changed-path count stays the
-          fallback when the line counts could not be read. */}
+          fallback when the line counts could not be read, or read none (only
+          untracked files changed). */}
       {(sync.added ?? 0) > 0 && <span data-git-diff="added" style={{ color: 'var(--accent-green)' }}>+{sync.added}</span>}
       {(sync.removed ?? 0) > 0 && <span data-git-diff="removed" style={{ color: 'var(--accent-red)' }}>−{sync.removed}</span>}
-      {sync.dirty > 0 && sync.added === undefined && <span style={{ color: 'var(--text-subtle)' }}>·{sync.dirty}</span>}
+      {sync.dirty > 0 && (sync.added ?? 0) + (sync.removed ?? 0) === 0 && <span style={{ color: 'var(--text-subtle)' }}>·{sync.dirty}</span>}
       {ahead > 0 && <span style={{ color: 'var(--accent-blue)' }}>↑{ahead}</span>}
       {behind > 0 && <span style={{ color: 'var(--accent-red)' }}>↓{behind}</span>}
     </span>
