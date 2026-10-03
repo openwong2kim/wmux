@@ -9067,11 +9067,14 @@ describe('WebTerminalServer', () => {
       sendUserFile(transcript, [file]);
       const info = await startWithTranscript();
       // The swap lands right before the route's open of this one path: the
-      // lstat already saw a regular file.
+      // lstat already saw a regular file. Matched on the spelling the route
+      // opens — the NATIVE realpath of the parent plus the name — which on
+      // Windows differs from `file` (JS realpath keeps 8.3 short names).
+      const opened = path.join(fs.realpathSync.native(scratch), 'swap.png');
       const real = fs.promises.open;
       let swapped = false;
       vi.spyOn(fs.promises, 'open').mockImplementation((async (...args: Parameters<typeof fs.promises.open>) => {
-        if (!swapped && String(args[0]) === file) {
+        if (!swapped && String(args[0]) === opened) {
           swapped = true;
           fs.unlinkSync(file);
           fs.symlinkSync(elsewhere, file);
