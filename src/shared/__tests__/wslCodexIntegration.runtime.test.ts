@@ -98,7 +98,9 @@ describe.skipIf(process.platform === 'win32')('WSL Codex per-launch notify', () 
       notifier: process.platform === 'linux' ? expect.any(String) : undefined,
       wslenv: expect.any(String),
       // #1727: which Linux process this Codex is (needs /proc's boot id).
-      agentProc: process.platform === 'linux' ? expect.stringMatching(/^1:/) : undefined,
+      // Elsewhere there is no boot id: the hook clears the value, and the
+      // bridge ignores an empty one.
+      agentProc: process.platform === 'linux' ? expect.stringMatching(/^1:/) : '',
     });
     if (process.platform === 'linux') expect(handedArgv(recorded.notifier)).toEqual(fakeCodexArgv(f.dir, args));
     expect(fs.readFileSync(config, 'utf8')).toBe('# existing settings\nmodel = "test"\n');
