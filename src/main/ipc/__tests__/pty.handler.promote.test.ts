@@ -130,7 +130,8 @@ describe('daemon.promoteSession — guards', () => {
   });
 
   it('falls back to the home directory when the recorded cwd is gone', () => {
-    expect(promoteRegion()).toMatch(/recoveryCwd\(session\)/);
+    // #1729 — through the wrapper that warns when a WSL pane falls back to home.
+    expect(promoteRegion()).toMatch(/recoveryCwdLogged\(session\)/);
   });
 
   it('reports a spawn failure as a structured error instead of throwing at the pipe', () => {
