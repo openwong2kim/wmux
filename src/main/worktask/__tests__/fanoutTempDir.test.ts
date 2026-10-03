@@ -11,23 +11,27 @@ import * as path from 'node:path';
 import {
   FANOUT_TEMP_ENV_KEYS,
   TEMPDIR_ABSENT_GRACE_MS,
+  TEMPDIR_BOOT_GRACE_MS,
+  WorkerTempDirSweeper,
   createWorkerTempDir,
-  reconcileWorkerTempDirs,
-  registerWorkerTempDir,
+  liveTempDirsFromSessions,
   removeWorkerTempDir,
   workerTempEnv,
 } from '../fanoutTempDir';
 
+let base: string;
 let root: string;
 let registry: string;
 
 beforeEach(() => {
-  root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-tempdir-test-')));
-  registry = path.join(root, 'fanout-tempdirs.json');
+  base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-tempdir-test-')));
+  root = path.join(base, 'tmp');
+  fs.mkdirSync(root);
+  registry = path.join(base, 'fanout-tempdirs.json');
 });
 
 afterEach(() => {
-  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(base, { recursive: true, force: true });
 });
 
 describe('createWorkerTempDir', () => {
@@ -45,54 +49,119 @@ describe('createWorkerTempDir', () => {
 });
 
 describe('removeWorkerTempDir', () => {
-  it('refuses a path without the worker prefix and never follows a symlink', () => {
+  it('removes only a real prefixed dir that is a direct child of the real temp root', async () => {
+    const ours = createWorkerTempDir(root);
+    fs.writeFileSync(path.join(ours, 'scratch.txt'), 'x');
+
     const foreign = path.join(root, 'keep-me');
     fs.mkdirSync(foreign);
-    expect(removeWorkerTempDir(foreign)).toBe(false);
-    expect(fs.existsSync(foreign)).toBe(true);
+    expect(await removeWorkerTempDir(foreign, root)).toBe('refused');
+
+    // Prefixed but nested deeper (a tampered registry entry).
+    const nested = path.join(foreign, 'wmux-task-deep');
+    fs.mkdirSync(nested);
+    expect(await removeWorkerTempDir(nested, root)).toBe('refused');
+    expect(fs.existsSync(nested)).toBe(true);
 
     if (process.platform !== 'win32') {
+      // The dir itself is a symlink.
       const link = path.join(root, 'wmux-task-link');
       fs.symlinkSync(foreign, link);
-      expect(removeWorkerTempDir(link)).toBe(false);
+      expect(await removeWorkerTempDir(link, root)).toBe('refused');
       expect(fs.existsSync(foreign)).toBe(true);
+      // The parent is a symlink that resolves to the temp root.
+      const aliasRoot = path.join(base, 'alias');
+      fs.symlinkSync(root, aliasRoot);
+      expect(await removeWorkerTempDir(path.join(aliasRoot, path.basename(ours)), root)).toBe('refused');
+      expect(fs.existsSync(ours)).toBe(true);
     }
+
+    expect(await removeWorkerTempDir(ours, root)).toBe('removed');
+    expect(fs.existsSync(ours)).toBe(false);
+    expect(await removeWorkerTempDir(ours, root)).toBe('gone');
   });
 });
 
-describe('reconcileWorkerTempDirs', () => {
-  it('removes a closed task workspace dir only after it stays absent for the grace window', () => {
-    const dir = createWorkerTempDir(root);
-    fs.writeFileSync(path.join(dir, 'scratch.txt'), 'x');
-    const t0 = 1_000_000;
-    registerWorkerTempDir('ws-task', dir, t0, registry);
+describe('liveTempDirsFromSessions', () => {
+  it('collects temp vars of non-dead sessions only', () => {
+    const live = liveTempDirsFromSessions([
+      { state: 'detached', env: { TMPDIR: '/t/a' } },
+      { state: 'suspended', env: { TEMP: '/t/b' } },
+      { state: 'dead', env: { TMPDIR: '/t/c' } },
+      { state: 'attached', env: null },
+    ]);
+    expect([...live].sort()).toEqual(['/t/a', '/t/b']);
+  });
+});
 
-    // Still within the registration grace: a push in flight at spawn time.
-    expect(reconcileWorkerTempDirs(['ws-other'], t0 + 1_000, registry)).toBe(0);
-    // First absent observation only starts the clock.
-    const t1 = t0 + TEMPDIR_ABSENT_GRACE_MS;
-    expect(reconcileWorkerTempDirs(['ws-other'], t1, registry)).toBe(0);
-    expect(fs.existsSync(dir)).toBe(true);
-    // Reappearing (a boot frame before the session restore) resets it.
-    expect(reconcileWorkerTempDirs(['ws-task'], t1 + 1_000, registry)).toBe(0);
-    expect(reconcileWorkerTempDirs(['ws-other'], t1 + 2_000, registry)).toBe(0);
-    expect(reconcileWorkerTempDirs(['ws-other'], t1 + 2_000 + TEMPDIR_ABSENT_GRACE_MS - 1, registry)).toBe(0);
-    expect(fs.existsSync(dir)).toBe(true);
-    // Absent for the full window → removed and forgotten.
-    expect(reconcileWorkerTempDirs(['ws-other'], t1 + 2_000 + TEMPDIR_ABSENT_GRACE_MS, registry)).toBe(1);
+describe('WorkerTempDirSweeper', () => {
+  function setup(live: () => Promise<Set<string> | null> = async () => new Set()) {
+    let clock = 1_000_000;
+    const sweeper = new WorkerTempDirSweeper({ file: registry, root, liveTempDirs: live, now: () => clock });
+    return { sweeper, tick: (ms: number) => { clock += ms; } };
+  }
+
+  it('removes a closed task dir only after boot grace and a full absent window, and a returning owner resets it', async () => {
+    const { sweeper, tick } = setup();
+    const dir = createWorkerTempDir(root);
+    sweeper.register('ws-task', dir);
+
+    tick(TEMPDIR_ABSENT_GRACE_MS);
+    expect(sweeper.reconcile(['ws-other'])).toBe(0); // clock starts
+    tick(1_000);
+    expect(sweeper.reconcile(['ws-task'])).toBe(0); // boot frame: back again
+    tick(1_000);
+    expect(sweeper.reconcile(['ws-other'])).toBe(0); // clock restarts
+    tick(TEMPDIR_ABSENT_GRACE_MS);
+    // Absent long enough, but still inside the boot grace.
+    expect(sweeper.reconcile(['ws-other'])).toBe(0);
+    tick(TEMPDIR_BOOT_GRACE_MS);
+    expect(sweeper.reconcile(['ws-other'])).toBe(1);
+    await sweeper.idle();
     expect(fs.existsSync(dir)).toBe(false);
     expect(JSON.parse(fs.readFileSync(registry, 'utf8'))).toEqual({});
   });
 
-  it('ignores an empty live set and a torn registry', () => {
+  it('keeps a dir a live session still uses, and keeps everything when the daemon cannot answer', async () => {
+    const dirLive = createWorkerTempDir(root);
+    const dirUnknown = createWorkerTempDir(root);
+    let answer: Set<string> | null = new Set([dirLive]);
+    const { sweeper, tick } = setup(async () => answer);
+    sweeper.register('ws-a', dirLive);
+    sweeper.register('task:wtask-1', dirUnknown);
+    const past = (): void => tick(TEMPDIR_BOOT_GRACE_MS + TEMPDIR_ABSENT_GRACE_MS);
+
+    answer = null;
+    past();
+    sweeper.reconcile(['ws-other']); // starts the absent clock
+    past();
+    expect(sweeper.reconcile(['ws-other'])).toBe(2);
+    await sweeper.idle();
+    expect(fs.existsSync(dirLive) && fs.existsSync(dirUnknown)).toBe(true);
+
+    answer = new Set([dirLive]);
+    expect(sweeper.reconcile(['ws-other'])).toBe(2);
+    await sweeper.idle();
+    expect(fs.existsSync(dirLive)).toBe(true);
+    expect(fs.existsSync(dirUnknown)).toBe(false);
+    expect(Object.keys(JSON.parse(fs.readFileSync(registry, 'utf8')))).toEqual(['ws-a']);
+  });
+
+  it('ignores an empty live set, a persisted absent clock and a torn registry', async () => {
     const dir = createWorkerTempDir(root);
-    registerWorkerTempDir('ws-task', dir, 0, registry);
-    expect(reconcileWorkerTempDirs([], 10 * TEMPDIR_ABSENT_GRACE_MS, registry)).toBe(0);
-    expect(reconcileWorkerTempDirs([], 20 * TEMPDIR_ABSENT_GRACE_MS, registry)).toBe(0);
+    // A registry from an older build that persisted its absent clock.
+    fs.writeFileSync(registry, JSON.stringify({ 'ws-task': { dir, at: 0, missingSince: 0 } }));
+    const { sweeper, tick } = setup();
+    tick(10 * TEMPDIR_BOOT_GRACE_MS);
+    expect(sweeper.reconcile([])).toBe(0);
+    // First observation after load only starts the in-memory clock.
+    expect(sweeper.reconcile(['ws-other'])).toBe(0);
+    await sweeper.idle();
     expect(fs.existsSync(dir)).toBe(true);
 
     fs.writeFileSync(registry, '{not json');
-    expect(reconcileWorkerTempDirs(['ws-other'], 30 * TEMPDIR_ABSENT_GRACE_MS, registry)).toBe(0);
+    const fresh = setup().sweeper;
+    expect(fresh.reconcile(['ws-other'])).toBe(0);
     expect(fs.existsSync(dir)).toBe(true);
   });
 });

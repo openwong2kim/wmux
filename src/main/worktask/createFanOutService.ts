@@ -20,7 +20,7 @@ import type { RpcMethod } from '../../shared/rpc';
 import { sendToRenderer } from '../pipe/handlers/_bridge';
 import { getProjectConfigStore } from '../project/ProjectConfigStore';
 import { FanOutService } from './FanOutService';
-import { createWorkerTempDir, registerWorkerTempDir, removeWorkerTempDir } from './fanoutTempDir';
+import { createWorkerTempDir, getWorkerTempDirSweeper, removeWorkerTempDir } from './fanoutTempDir';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -97,9 +97,9 @@ export function createFanOutService(
     // (see fanoutTempDir.ts for the reconcile).
     workerTempDirs: {
       create: () => createWorkerTempDir(),
-      register: (workspaceId: string, dir: string) => registerWorkerTempDir(workspaceId, dir),
+      register: (owner: string, dir: string) => getWorkerTempDirSweeper().register(owner, dir),
       remove: (dir: string) => {
-        removeWorkerTempDir(dir);
+        void removeWorkerTempDir(dir);
       },
     },
   });

@@ -17,13 +17,21 @@
 // already limits it to the user; mkdtemp's mode is ignored there and no ACL is
 // written here.
 //
-// Cleanup (wmux's own): a task workspace is closed through the renderer store,
-// and the only lifecycle signal main receives is the workspace mirror push.
-// The registry below maps task workspace id → temp dir on disk (it must survive
-// a restart), and each push reconciles it. Fail-safe direction is to LEAK: a
-// dir is removed only after its workspace has been absent from non-empty
-// snapshots for TEMPDIR_ABSENT_GRACE_MS, so an early boot frame (before the
-// session restore) or a renderer reload never deletes a live worker's files.
+// Cleanup: a task workspace is closed through the renderer store, and the only
+// lifecycle signal main receives is the workspace mirror push. The registry
+// maps an owner key (the task workspace id, or `task:<id>` when the spawn
+// failed and no workspace exists) → temp dir, and is persisted so a restart
+// keeps it. Each push reconciles it. The fail-safe direction is to LEAK:
+//   - nothing is removed within TEMPDIR_BOOT_GRACE_MS of the first push;
+//   - an owner must stay absent for TEMPDIR_ABSENT_GRACE_MS (that clock is
+//     in memory only, so a restart restarts it);
+//   - right before removal the daemon is asked for its live sessions, and a
+//     dir any non-dead session still has as TMPDIR/TMP/TEMP is kept — a
+//     workspace can close while its session lives on, and a failed spawn can
+//     still have created one. No answer from the daemon = keep;
+//   - removal itself only touches a real directory named with our prefix that
+//     is a direct child of the real os.tmpdir(), and runs off the push handler
+//     on an async queue.
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -39,9 +47,11 @@ export const FANOUT_TEMPDIR_PREFIX = 'wmux-task-';
 
 export const FANOUT_TEMPDIR_REGISTRY_FILENAME = 'fanout-tempdirs.json';
 
-/** How long a task workspace must stay absent before its dir is removed. Two
- *  periodic mirror refreshes (30 s each) fit inside it. */
+/** How long an owner must stay absent before its dir is removed. */
 export const TEMPDIR_ABSENT_GRACE_MS = 60_000;
+
+/** No removal at all this soon after the first push (session restore). */
+export const TEMPDIR_BOOT_GRACE_MS = 120_000;
 
 /**
  * Create a fresh owner-only (0700) directory under `root` and return its real
@@ -63,21 +73,47 @@ export function workerTempEnv(dir: string): Record<string, string> {
   return env;
 }
 
+/** Temp dirs that non-dead daemon sessions still point their temp vars at. */
+export function liveTempDirsFromSessions(
+  sessions: ReadonlyArray<{ state?: string; env?: Record<string, string> | null }>,
+): Set<string> {
+  const live = new Set<string>();
+  for (const s of sessions) {
+    if (s.state === 'dead' || !s.env) continue;
+    for (const key of FANOUT_TEMP_ENV_KEYS) {
+      const value = s.env[key];
+      if (typeof value === 'string' && value.length > 0) live.add(value);
+    }
+  }
+  return live;
+}
+
 /**
- * Remove a worker temp dir. Refuses anything that is not a real directory named
- * with our prefix (never follows a symlink planted in its place). Best-effort:
- * returns false instead of throwing.
+ * - 'removed' / 'gone' — the dir no longer exists;
+ * - 'refused' — the path is not one of ours (wrong name, not a direct child of
+ *   the real temp root, a symlink, not a directory) and is never touched;
+ * - 'failed'  — ours, but the delete failed (EBUSY/EPERM…); retry later.
  */
-export function removeWorkerTempDir(dir: string): boolean {
-  if (!path.isAbsolute(dir) || !path.basename(dir).startsWith(FANOUT_TEMPDIR_PREFIX)) return false;
+export type RemoveOutcome = 'removed' | 'gone' | 'refused' | 'failed';
+
+export async function removeWorkerTempDir(dir: string, root: string = os.tmpdir()): Promise<RemoveOutcome> {
+  if (!path.isAbsolute(dir) || !path.basename(dir).startsWith(FANOUT_TEMPDIR_PREFIX)) return 'refused';
+  const parent = path.dirname(dir);
   try {
-    const st = fs.lstatSync(dir);
-    if (!st.isDirectory()) return false;
-    fs.rmSync(dir, { recursive: true, force: true });
-    return true;
+    const [realParent, realRoot] = await Promise.all([fs.promises.realpath(parent), fs.promises.realpath(root)]);
+    // The parent must BE the real temp root, spelled without any link in it:
+    // a registry entry routed through a symlinked parent is refused.
+    if (realParent !== realRoot || parent !== realParent) return 'refused';
+    const st = await fs.promises.lstat(dir);
+    if (!st.isDirectory()) return 'refused';
   } catch (err) {
-    // Already gone is success; anything else is a leak we can live with.
-    return (err as NodeJS.ErrnoException).code === 'ENOENT';
+    return (err as NodeJS.ErrnoException).code === 'ENOENT' ? 'gone' : 'refused';
+  }
+  try {
+    await fs.promises.rm(dir, { recursive: true, force: true });
+    return 'removed';
+  } catch {
+    return 'failed';
   }
 }
 
@@ -85,19 +121,13 @@ interface TempDirEntry {
   dir: string;
   /** When the dir was registered (ms). */
   at: number;
-  /** First reconcile that did not see the workspace (in-memory semantics, but
-   *  persisted so a restart does not reset the clock). */
-  missingSince?: number;
 }
 
 type Registry = Record<string, TempDirEntry>;
 
-function registryPath(): string {
-  return path.join(getWmuxDir(), FANOUT_TEMPDIR_REGISTRY_FILENAME);
-}
-
 /** A torn or unreadable registry reads as empty — the dirs leak, nothing is
- *  deleted on a guess. */
+ *  deleted on a guess. Unknown fields (an older build's `missingSince`) are
+ *  dropped on load. */
 function readRegistry(file: string): Registry {
   try {
     const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as unknown;
@@ -105,9 +135,7 @@ function readRegistry(file: string): Registry {
     const out: Registry = {};
     for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
       const v = value as Partial<TempDirEntry> | null;
-      if (v && typeof v.dir === 'string' && typeof v.at === 'number') {
-        out[id] = { dir: v.dir, at: v.at, ...(typeof v.missingSince === 'number' ? { missingSince: v.missingSince } : {}) };
-      }
+      if (v && typeof v.dir === 'string' && typeof v.at === 'number') out[id] = { dir: v.dir, at: v.at };
     }
     return out;
   } catch {
@@ -115,56 +143,134 @@ function readRegistry(file: string): Registry {
   }
 }
 
-/** Record which task workspace owns `dir`. */
-export function registerWorkerTempDir(
-  workspaceId: string,
-  dir: string,
-  now: number = Date.now(),
-  file: string = registryPath(),
-): void {
-  const reg = readRegistry(file);
-  reg[workspaceId] = { dir, at: now };
-  atomicWriteJSONSync(file, reg);
+export interface WorkerTempDirSweeperOptions {
+  /** Registry file. Defaults to `<wmux dir>/fanout-tempdirs.json`. */
+  file?: string;
+  /** Temp root the dirs must be direct children of. */
+  root?: string;
+  /** Temp dirs live sessions use, or null when that cannot be answered. */
+  liveTempDirs?: () => Promise<Set<string> | null>;
+  now?: () => number;
 }
 
-/**
- * Reconcile the registry against the live workspace ids from a mirror push.
- * Removes the dirs of workspaces that have been gone for the grace window.
- * Returns how many dirs were removed.
- */
-export function reconcileWorkerTempDirs(
-  liveWorkspaceIds: Iterable<string>,
-  now: number = Date.now(),
-  file: string = registryPath(),
-): number {
-  const alive = new Set<string>();
-  for (const id of liveWorkspaceIds) if (typeof id === 'string' && id.length > 0) alive.add(id);
-  // The renderer always keeps one workspace; an empty set is a bad frame.
-  if (alive.size === 0) return 0;
-  if (!fs.existsSync(file)) return 0;
-  const reg = readRegistry(file);
-  let changed = false;
-  let removed = 0;
-  for (const [id, entry] of Object.entries(reg)) {
-    if (alive.has(id)) {
-      if (entry.missingSince !== undefined) {
-        delete entry.missingSince;
+/** Owns the registry: an in-memory copy (loaded once), written through. */
+export class WorkerTempDirSweeper {
+  private readonly file: string;
+  private readonly root: string;
+  private readonly now: () => number;
+  private liveTempDirs: () => Promise<Set<string> | null>;
+  private registry: Registry | null = null;
+  private readonly missingSince = new Map<string, number>();
+  private readonly inFlight = new Set<string>();
+  private firstPushAt: number | null = null;
+  private queue: Promise<void> = Promise.resolve();
+
+  constructor(opts: WorkerTempDirSweeperOptions = {}) {
+    this.file = opts.file ?? path.join(getWmuxDir(), FANOUT_TEMPDIR_REGISTRY_FILENAME);
+    this.root = opts.root ?? os.tmpdir();
+    this.now = opts.now ?? Date.now;
+    this.liveTempDirs = opts.liveTempDirs ?? (async () => null);
+  }
+
+  setLiveTempDirs(fn: () => Promise<Set<string> | null>): void {
+    this.liveTempDirs = fn;
+  }
+
+  private reg(): Registry {
+    if (!this.registry) this.registry = readRegistry(this.file);
+    return this.registry;
+  }
+
+  private persist(): void {
+    try {
+      atomicWriteJSONSync(this.file, this.reg());
+    } catch (err) {
+      console.warn(`[fanout] temp-dir registry write failed: ${String(err)}`);
+    }
+  }
+
+  /** Record `owner` (a task workspace id, or `task:<taskId>`) as the dir's owner. */
+  register(owner: string, dir: string): void {
+    this.reg()[owner] = { dir, at: this.now() };
+    this.missingSince.delete(owner);
+    this.persist();
+  }
+
+  /**
+   * Reconcile against the live workspace ids from one mirror push. Cheap and
+   * synchronous (in-memory), so every push runs it and an owner that comes
+   * back clears its clock at once; removals go to the async queue. Returns how
+   * many removals were queued.
+   */
+  reconcile(liveWorkspaceIds: Iterable<string>): number {
+    const alive = new Set<string>();
+    for (const id of liveWorkspaceIds) if (typeof id === 'string' && id.length > 0) alive.add(id);
+    // The renderer always keeps one workspace; an empty set is a bad frame.
+    if (alive.size === 0) return 0;
+    const now = this.now();
+    if (this.firstPushAt === null) this.firstPushAt = now;
+    const due: Array<[string, TempDirEntry]> = [];
+    for (const [owner, entry] of Object.entries(this.reg())) {
+      if (alive.has(owner)) {
+        this.missingSince.delete(owner);
+        continue;
+      }
+      // A push already in flight when the task spawned describes a tree without it.
+      if (now - entry.at < TEMPDIR_ABSENT_GRACE_MS) continue;
+      const since = this.missingSince.get(owner);
+      if (since === undefined) {
+        this.missingSince.set(owner, now);
+        continue;
+      }
+      if (now - since < TEMPDIR_ABSENT_GRACE_MS) continue;
+      if (now - this.firstPushAt < TEMPDIR_BOOT_GRACE_MS) continue;
+      if (this.inFlight.has(owner)) continue;
+      due.push([owner, entry]);
+    }
+    if (due.length === 0) return 0;
+    for (const [owner] of due) this.inFlight.add(owner);
+    this.queue = this.queue.then(() => this.removeDue(due)).catch((err) => {
+      console.warn(`[fanout] temp-dir sweep failed: ${String(err)}`);
+    });
+    return due.length;
+  }
+
+  /** Test seam: resolves when every queued removal has settled. */
+  idle(): Promise<void> {
+    return this.queue;
+  }
+
+  private async removeDue(due: Array<[string, TempDirEntry]>): Promise<void> {
+    try {
+      let live: Set<string> | null = null;
+      try {
+        live = await this.liveTempDirs();
+      } catch {
+        live = null;
+      }
+      if (!live) return; // cannot prove nothing uses them — keep all
+      let changed = false;
+      for (const [owner, entry] of due) {
+        // Re-read: a register() for the same owner may have replaced it.
+        if (this.reg()[owner] !== entry) continue;
+        if (live.has(entry.dir)) continue;
+        const outcome = await removeWorkerTempDir(entry.dir, this.root);
+        if (outcome === 'failed') continue;
+        delete this.reg()[owner];
+        this.missingSince.delete(owner);
         changed = true;
       }
-      continue;
+      if (changed) this.persist();
+    } finally {
+      for (const [owner] of due) this.inFlight.delete(owner);
     }
-    // A push already in flight when the task spawned describes a tree without it.
-    if (now - entry.at < TEMPDIR_ABSENT_GRACE_MS) continue;
-    if (entry.missingSince === undefined) {
-      entry.missingSince = now;
-      changed = true;
-      continue;
-    }
-    if (now - entry.missingSince < TEMPDIR_ABSENT_GRACE_MS) continue;
-    if (removeWorkerTempDir(entry.dir)) removed++;
-    delete reg[id];
-    changed = true;
   }
-  if (changed) atomicWriteJSONSync(file, reg);
-  return removed;
+}
+
+let sweeper: WorkerTempDirSweeper | null = null;
+
+/** The app-wide sweeper (the registry file is shared by every fan-out). */
+export function getWorkerTempDirSweeper(): WorkerTempDirSweeper {
+  if (!sweeper) sweeper = new WorkerTempDirSweeper();
+  return sweeper;
 }

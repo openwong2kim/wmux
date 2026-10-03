@@ -94,6 +94,7 @@ import { RemoteHostsStore } from './remote/RemoteHostsStore';
 import { RemoteAttachmentsStore } from './remote/RemoteAttachmentsStore';
 import { registerFanOutHandler } from './ipc/handlers/fanout.handler';
 import { createFanOutService } from './worktask/createFanOutService';
+import { getWorkerTempDirSweeper, liveTempDirsFromSessions } from './worktask/fanoutTempDir';
 import { registerFanOutRpc } from './pipe/handlers/fanout.rpc';
 import { registerLedgerRpc } from './pipe/handlers/ledger.rpc';
 import { registerAutomationRpc } from './pipe/handlers/automation.rpc';
@@ -1029,6 +1030,16 @@ registerRemoteHandlers({
 // identity + repo server-side and adds its own approval gate — see
 // pipe/handlers/fanout.rpc.ts.
 const fanOutService = createFanOutService(() => daemonClient, () => mainWindow);
+// Fan-out worker temp dirs are only swept once the daemon confirms no live
+// session still uses them; no daemon answer means nothing is removed.
+getWorkerTempDirSweeper().setLiveTempDirs(async () => {
+  if (!daemonClient?.isConnected) return null;
+  const sessions = (await daemonClient.rpc('daemon.listSessions', { includeSuspended: true })) as Array<{
+    state?: string;
+    env?: Record<string, string> | null;
+  }>;
+  return Array.isArray(sessions) ? liveTempDirsFromSessions(sessions) : null;
+});
 registerFanOutHandler(fanOutService);
 registerFanOutRpc(rpcRouter, fanOutService, () => mainWindow);
 registerLedgerRpc(rpcRouter, () => mainWindow);

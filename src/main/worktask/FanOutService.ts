@@ -360,9 +360,10 @@ export interface FanOutServiceOptions {
 export interface WorkerTempDirPort {
   /** Make a fresh owner-only dir and return its absolute path. */
   create(): string;
-  /** The task's workspace exists — record it as the dir's owner for cleanup. */
-  register(workspaceId: string, dir: string): void;
-  /** The worker never launched — remove the dir now. */
+  /** Hand the dir to the sweep: `owner` is the task workspace id, or
+   *  `task:<taskId>` when the spawn failed and no workspace exists. */
+  register(owner: string, dir: string): void;
+  /** No pane was ever created for the dir — remove it now. */
   remove(dir: string): void;
 }
 
@@ -1070,9 +1071,21 @@ export class FanOutService {
         console.warn(`[fanout] worker temp dir create failed: ${(err as Error).message}`);
       }
     }
-    // Every failure below this point never launches the worker.
+    // Before the spawn: no pane can exist yet, so the dir goes at once.
     const discardTempDir = (): void => {
       if (tempDir) this.workerTempDirs?.remove(tempDir);
+    };
+    // At or after the spawn: a failed spawn can still leave a live session
+    // (the daemon created it, then the attach failed), so the sweep decides,
+    // and it keeps any dir a live session still uses.
+    const handOverTempDir = (owner: string): void => {
+      if (!tempDir) return;
+      try {
+        this.workerTempDirs?.register(owner, tempDir);
+      } catch (err) {
+        // Unregistered = never swept: a leaked dir under the system temp root.
+        console.warn(`[fanout] could not register worker temp dir ${tempDir}: ${String(err)}`);
+      }
     };
 
     let promptPath: string | undefined;
@@ -1173,7 +1186,7 @@ export class FanOutService {
         workerPermissionMode: ctx.workerMode,
       });
       if ('error' in spawned) {
-        discardTempDir();
+        handOverTempDir(`task:${taskId}`);
         await this.compensate(taskId, ctx.verifiedWorkspaceId, plan);
         return { ...base, error: `renderer spawn failed: ${spawned.error}`, ...preserved };
       }
@@ -1184,20 +1197,13 @@ export class FanOutService {
       // 한다 — 아니면 재발사가 역할의 에이전트·모델을 조용히 잃는다.
       if (spawned.initialCommand) base.initialCommand = spawned.initialCommand;
     } catch (err) {
-      // No discardTempDir() here: a timeout does not prove the pane never
-      // spawned, and a live worker's TMPDIR must not vanish. It leaks instead.
+      // A timeout does not prove the pane never spawned either.
+      handOverTempDir(`task:${taskId}`);
       await this.compensate(taskId, ctx.verifiedWorkspaceId, plan);
       return { ...base, error: `renderer spawn threw: ${(err as Error).message}`, ...preserved };
     }
     base.workspaceId = workspaceId;
-    if (tempDir) {
-      try {
-        this.workerTempDirs?.register(workspaceId, tempDir);
-      } catch (err) {
-        // Unregistered = never swept: a leaked dir under the system temp root.
-        console.warn(`[fanout] could not register worker temp dir ${tempDir}: ${String(err)}`);
-      }
-    }
+    handOverTempDir(workspaceId);
     // The renderer already stamped the lineage before the agent launched; this
     // second write is idempotent and covers a renderer that did not. It carries
     // the same origin the spawn did and never replaces one already recorded.
