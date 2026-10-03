@@ -53,8 +53,12 @@ renewal path today, so it keeps the flat 30 days.
 ## Claude resume
 
 Launch `claude` normally inside the pane. wmux adds per-launch Claude settings
-with SessionStart, Stop and StopFailure hooks. Those hooks pass the pane identity
-through WSL interop to wmux's existing authenticated Windows hook bridge. The
+with the same hooks a Windows pane gets: session start and stop, prompt submit,
+subagent stop, permission dialogs, AskUserQuestion, and the remote permission
+gate. Those hooks pass the pane identity through WSL interop to wmux's existing
+authenticated Windows hook bridge. The permission gate runs on every tool call,
+so in WSL it only reaches Windows while `wmux web --allow-input` can answer it;
+otherwise it costs one file check. The
 captured conversation ID and Linux directory let Resume choose
 `claude --resume <session-id>`, including when several panes share one project.
 Closing the window and reattaching to a live daemon keeps the original process;

@@ -92,6 +92,8 @@ import { isTaskState, type AgentStatus, type Message } from '../shared/types';
 import { ProcessMonitor } from './ProcessMonitor';
 import { AgentProcessTracker } from './AgentProcessTracker';
 import { checkWslAgentRunning, reportedAgentForPane, WslPidWatcher } from './wslAgentProcess';
+import { GateFlagFile } from './gateFlagFile';
+import { WSL_GATE_FLAG_FILE } from '../shared/wslIntegration';
 import { CommandStartAgentProbe } from './commandStartAgentProbe';
 import { resolveCanonicalAgentIdentity, detectorSuppressedBy, reportedAgentName, provesLiveAgent, type CanonicalAgentIdentity } from './canonicalAgent';
 import { Watchdog } from './Watchdog';
@@ -426,6 +428,8 @@ let gateBroker: GateBroker | null = null;
 // restart (the operator can re-arm by restarting). The RPC handler checks this
 // before gating; HookIngest.emitToolStarted still fires for liveness.
 let gateRuntimeOff = false;
+/** #1730 — the gate-armed hint a WSL hook tests before spawning the bridge. */
+let gateFlag: GateFlagFile | null = null;
 
 /**
  * A plain-text parse of a session's ring on the shared concurrency-1 snapshot
@@ -764,6 +768,7 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         liveActivityRegistered: () => liveActivityPusher?.onApprovalsChanged(),
         setGateEnabled: (enabled) => {
           gateRuntimeOff = !enabled;
+          gateFlag?.sync();
           log('info', `[gate] runtime escape: gate ${enabled ? 'on' : 'off'}`);
           // Turning it off must also free whatever is blocked right now —
           // otherwise the agent the operator is trying to unstick keeps
@@ -3061,6 +3066,7 @@ function registerRpcHandlers(
       liveActivityRegistered: () => liveActivityPusher?.onApprovalsChanged(),
       setGateEnabled: (enabled) => {
         gateRuntimeOff = !enabled;
+        gateFlag?.sync();
         log('info', `[gate] runtime escape: gate ${enabled ? 'on' : 'off'}`);
         if (!enabled) gateBroker?.cancelAll('gate-disabled');
       },
@@ -6444,6 +6450,7 @@ async function shutdown(
 ): Promise<{ stateSaved: boolean }> {
   if (shuttingDown) return { stateSaved: false };
   shuttingDown = true;
+  gateFlag?.stop();
   sessionManager.cancelPendingCreates();
   log('info', `Received ${signal} — shutting down gracefully`);
 
@@ -6732,6 +6739,10 @@ async function main(): Promise<void> {
 
   // #783 — construct the gate broker BEFORE the registry's first mutation, so
   // the notifyGateResolved/notifyGateDropped callbacks resolve to a live broker.
+  // #1730 — keep the WSL gate hint in step with "a gate could be answered".
+  gateFlag = new GateFlagFile(path.join(getWmuxDir(), WSL_GATE_FLAG_FILE),
+    () => !gateRuntimeOff && webTerminalServer?.canResolveGates === true);
+  gateFlag.start();
   gateBroker = new GateBroker({
     log: (level, msg) => log(level, msg),
     // A deferred gate must also stop being answerable: the tool has already
