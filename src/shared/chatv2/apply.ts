@@ -7,7 +7,10 @@
 // times come from the event's `at`, never from random ids or the wall clock.
 // User turns and turn ends are events (`user.message`, `turn.ended`) instead
 // of direct calls, and the source's orchestration, plan-promotion and steer
-// paths are removed.
+// paths are removed. Deltas always append (a resent snapshot is the driver's
+// to drop, by seq or `snapshotRemainder`), an empty delta is a no-op,
+// approvals attach to a tool block by `callId` only, and per-block byte caps
+// (limits.ts) are part of the fold.
 import type {
   AgentRunMeta,
   AgentStep,
@@ -25,15 +28,39 @@ import {
   mergeToolPreview,
   stubFilePreview,
 } from "./preview";
-import { joinStreamText } from "./streamText";
+import {
+  CHATV2_AGENT_STEP_DETAIL_BYTES,
+  CHATV2_AGENT_STEP_TEXT_BYTES,
+  CHATV2_AGENT_STEPS_MAX,
+  CHATV2_BLOCK_TEXT_BYTES,
+  CHATV2_PREVIEW_OUTPUT_BYTES,
+  CHATV2_TASK_ITEM_BYTES,
+  CHATV2_TASK_ITEMS_MAX,
+  CHATV2_TOOL_DETAIL_BYTES,
+  truncateUtf8,
+} from "./limits";
 import { taskListText } from "./taskList";
 import type { HarnessEvent, StampedHarnessEvent } from "./harnessEvents";
 
 /**
  * Where new blocks get their ids and turn times: the stamp of the event being
- * folded. `n` counts blocks created while folding that one event.
+ * folded. `n` counts blocks created while folding that one event. `uncapped`
+ * skips the byte caps: the daemon keeps one such shadow fold to serve
+ * `bodies`; every snapshot and every renderer uses the capped fold.
  */
-type Fold = { seq: number; at: number; n: number };
+type Fold = { seq: number; at: number; n: number; uncapped: boolean };
+
+export interface FoldOptions {
+  /** Daemon shadow fold for `bodies` only. Never shown, never sent. */
+  uncapped?: boolean;
+}
+
+/** `text` within `maxBytes`, and whether it was cut. */
+function capBytes(fold: Fold, text: string, maxBytes: number): { text: string; cut: boolean } {
+  if (fold.uncapped) return { text, cut: false };
+  const capped = truncateUtf8(text, maxBytes);
+  return { text: capped, cut: capped.length !== text.length };
+}
 
 function newId(fold: Fold): string {
   fold.n += 1;
@@ -48,28 +75,37 @@ function newId(fold: Fold): string {
 export function applyHarnessEvents(
   session: Session,
   events: readonly StampedHarnessEvent[],
+  options: FoldOptions = {},
 ): Session {
+  const uncapped = options.uncapped === true;
   let next = session;
   for (let index = 0; index < events.length; index++) {
     const stamped = events[index];
     const event = stamped.event;
     if (event.type !== "message.delta" && event.type !== "reasoning.delta") {
-      next = applyHarnessEvent(next, stamped);
+      next = applyHarnessEvent(next, stamped, options);
       continue;
     }
+    // A run of same-type deltas folds as one patch. The block it may create
+    // takes the stamp of the run's first non-empty delta, exactly as folding
+    // the run one event at a time would (an empty delta is a no-op).
+    let first: StampedHarnessEvent | undefined = event.text ? stamped : undefined;
     const texts = [event.text];
     while (index + 1 < events.length) {
-      const following = events[index + 1].event;
-      if (following.type !== event.type) break;
-      texts.push(following.text);
+      const following = events[index + 1];
+      if (following.event.type !== event.type) break;
+      const text = (following.event as { text: string }).text;
+      texts.push(text);
+      if (!first && text) first = following;
       index++;
     }
+    if (!first) continue;
     next = patchStreaming(
       next,
       event.type === "message.delta" ? "assistant" : "reasoning",
       texts,
       true,
-      { seq: stamped.seq, at: stamped.at, n: 0 },
+      { seq: first.seq, at: first.at, n: 0, uncapped },
     );
   }
   return next;
@@ -78,8 +114,9 @@ export function applyHarnessEvents(
 export function applyHarnessEvent(
   session: Session,
   stamped: StampedHarnessEvent,
+  options: FoldOptions = {},
 ): Session {
-  const fold: Fold = { seq: stamped.seq, at: stamped.at, n: 0 };
+  const fold: Fold = { seq: stamped.seq, at: stamped.at, n: 0, uncapped: options.uncapped === true };
   const event: HarnessEvent = stamped.event;
   switch (event.type) {
     case "user.message":
@@ -121,12 +158,13 @@ export function applyHarnessEvent(
         agentModel: event.agentModel,
       }, fold);
     case "agent.step":
-      return recordAgentStep(session, event);
+      return recordAgentStep(session, event, fold);
     case "approval.requested":
       return attachApproval(session, event, fold);
     case "approval.resolved": {
+      // A request settles once: a late answer cannot overwrite `cancelled`.
       const blocks = session.blocks.map((block) =>
-        block.approval?.requestId === event.requestId
+        block.approval?.requestId === event.requestId && !block.approval.decided
           ? {
               ...block,
               approval: { ...block.approval, decided: event.decision },
@@ -140,6 +178,7 @@ export function applyHarnessEvent(
         ...session,
         pendingQuestion: {
           requestId: event.requestId,
+          requestedAt: fold.at,
           questions: event.questions,
           ...(event.title ? { title: event.title } : {}),
           ...(event.autoResolveAt != null
@@ -296,14 +335,18 @@ function upsertPlan(
 
   if (existing >= 0) {
     const current = session.blocks[existing];
-    const text = event.append
-      ? joinStreamText(current.text, event.text)
-      : event.text || current.text;
+    const capped = capBytes(
+      fold,
+      event.append ? current.text + event.text : event.text || current.text,
+      CHATV2_BLOCK_TEXT_BYTES,
+    );
+    const text = capped.text;
     const blocks = session.blocks.slice();
     blocks[existing] = {
       ...current,
       text,
       streaming,
+      ...overflowField(current, capped.cut ? { text: true } : {}),
       plan: {
         ...(current.plan ?? { status: streaming ? "streaming" : "ready" }),
         ...(key ? { key } : {}),
@@ -315,15 +358,17 @@ function upsertPlan(
   }
 
   if (!event.text) return session;
+  const capped = capBytes(fold, event.text, CHATV2_BLOCK_TEXT_BYTES);
   return appendBlock(session, {
     id: newId(fold),
     role: "plan",
-    text: event.text,
+    text: capped.text,
     streaming,
+    ...(capped.cut ? { overflow: { text: true } } : {}),
     plan: {
       ...(key ? { key } : {}),
       status: streaming ? "streaming" : "ready",
-      ...(!streaming ? { originalText: event.text } : {}),
+      ...(!streaming ? { originalText: capped.text } : {}),
     },
   });
 }
@@ -352,13 +397,19 @@ function upsertTaskList(
   });
   const previousItems =
     existing >= 0 ? session.blocks[existing].taskList?.items : undefined;
-  const items = previousItems
+  const merged = previousItems
     ? event.merge
       ? mergeTaskListItems(previousItems, event.items)
       : event.authoritative
         ? event.items
         : preserveTaskListLabels(previousItems, event.items)
     : event.items;
+  const items = fold.uncapped
+    ? merged
+    : merged.slice(0, CHATV2_TASK_ITEMS_MAX).map((item) => {
+        const text = truncateUtf8(item.text, CHATV2_TASK_ITEM_BYTES);
+        return text === item.text ? item : { ...item, text };
+      });
 
   if (items.length === 0) {
     if (existing < 0) return session;
@@ -461,12 +512,14 @@ function appendUser(
 ): Session {
   const settled = settlePendingApprovals(session);
   const { usageLimit: _cleared, ...rest } = settled;
+  const capped = capBytes(fold, event.text, CHATV2_BLOCK_TEXT_BYTES);
   return appendBlock(
     { ...rest, busy: true },
     {
       id: newId(fold),
       role: "user",
-      text: event.text,
+      text: capped.text,
+      ...(capped.cut ? { overflow: { text: true } } : {}),
       startedAt: fold.at,
       turnModel: { harness: session.harness, id: session.model },
       clientMessageId: event.clientMessageId,
@@ -683,11 +736,8 @@ function patchStreaming(
   streaming: boolean,
   fold: Fold,
 ): Session {
-  if (
-    role === "reasoning" &&
-    (typeof input === "string" ? !input : input.every((text) => !text))
-  )
-    return session;
+  const chunks = typeof input === "string" ? [input] : input;
+  if (chunks.every((text) => !text)) return session;
   let index = session.blocks.length - 1;
   while (
     index >= 0 &&
@@ -700,27 +750,27 @@ function patchStreaming(
   // even when no tool or status row landed between them; joining the two can
   // turn separate Markdown blocks into text such as `commitConnect`.
   if (last?.role === role && last.streaming) {
-    // Fold against the existing text in order: providers can mix tokens and
-    // full snapshots, so concatenating the incoming chunks would duplicate text.
-    const nextText =
-      typeof input === "string"
-        ? joinStreamText(last.text, input)
-        : input.reduce(joinStreamText, last.text);
-    if (nextText === last.text && last.streaming === streaming) return session;
+    // Deltas append. Once a block hit its cap its inline text cannot grow.
+    if (last.overflow?.text && !fold.uncapped) return session;
+    const capped = capBytes(fold, last.text + chunks.join(""), CHATV2_BLOCK_TEXT_BYTES);
+    if (capped.text === last.text && last.streaming === streaming) return session;
     const blocks = session.blocks.slice();
     blocks[index] = {
       ...last,
-      text: nextText,
+      text: capped.text,
       streaming,
+      ...overflowField(last, capped.cut ? { text: true } : {}),
     };
     return { ...session, blocks };
   }
   const blocks = sealLastStream(session.blocks);
+  const capped = capBytes(fold, chunks.join(""), CHATV2_BLOCK_TEXT_BYTES);
   blocks.push({
     id: newId(fold),
     role,
-    text: typeof input === "string" ? input : input.reduce(joinStreamText, ""),
+    text: capped.text,
     streaming,
+    ...(capped.cut ? { overflow: { text: true } } : {}),
   });
   return { ...session, blocks };
 }
@@ -760,7 +810,7 @@ function attachApproval(
               ...(preview ? { preview } : {}),
             }
           : prev.tool,
-      approval: { requestId: event.requestId },
+      approval: { requestId: event.requestId, requestedAt: fold.at },
     };
     return { ...session, blocks };
   }
@@ -778,7 +828,7 @@ function attachApproval(
       kind: event.kind,
       ...(preview ? { preview } : {}),
     },
-    approval: { requestId: event.requestId },
+    approval: { requestId: event.requestId, requestedAt: fold.at },
   });
 }
 
@@ -786,31 +836,12 @@ function findToolForApproval(
   session: Session,
   event: Extract<HarnessEvent, { type: "approval.requested" }>,
 ): number {
-  if (event.callId) {
-    const byId = session.blocks.findIndex(
-      (block) => block.tool?.callId === event.callId,
-    );
-    if (byId >= 0) return byId;
-  }
-  const needle = normalizeLabel(event.title);
-  const unmatched: number[] = [];
-  for (let i = session.blocks.length - 1; i >= 0; i--) {
-    const block = session.blocks[i];
-    if (block.role !== "tool" || block.approval) continue;
-    unmatched.push(i);
-    const label = normalizeLabel(block.text || block.tool?.title || "");
-    if (needle && label === needle) return i;
-  }
-  return unmatched.length === 1 ? unmatched[0] : -1;
-}
-
-function normalizeLabel(value: string): string {
-  return value
-    .replace(/[→`]/g, "")
-    .replace(/\s*\([^)]*\)\s*$/, "")
-    .replace(/\s*·.*$/, "")
-    .trim()
-    .toLowerCase();
+  // By callId only: guessing by label or by "the one unmatched tool" picks a
+  // different block when a renderer holds only the transcript's tail.
+  if (!event.callId) return -1;
+  return session.blocks.findIndex(
+    (block) => block.tool?.callId === event.callId,
+  );
 }
 
 function upsertTool(
@@ -830,8 +861,17 @@ function upsertTool(
 ): Session {
   const index = findToolIndex(session, patch);
   if (index < 0) {
-    const detail = capToolDetail(patch.detail);
-    const preview = fillPreview(patch.preview, detail, patch.kind, patch.title);
+    const cappedDetail = capToolDetail(fold, patch.detail);
+    const detail = cappedDetail.text;
+    const cappedPreview = capPreviewOutput(
+      fold,
+      fillPreview(patch.preview, detail, patch.kind, patch.title),
+    );
+    const preview = cappedPreview.preview;
+    const over = {
+      ...(cappedDetail.cut ? { detail: true as const } : {}),
+      ...(cappedPreview.cut ? { output: true as const } : {}),
+    };
     const label = finalToolLabel(
       session,
       patch.kind,
@@ -843,6 +883,7 @@ function upsertTool(
       role: "tool",
       text: label,
       streaming: patch.streaming,
+      ...(Object.keys(over).length ? { overflow: over } : {}),
       ...(patch.agentModel
         ? { agentRun: { name: label, model: patch.agentModel, steps: [] } }
         : {}),
@@ -858,13 +899,22 @@ function upsertTool(
     });
   }
   const prev = session.blocks[index];
-  const detail = capToolDetail(patch.detail) ?? prev.tool?.detail;
-  const preview = fillPreview(
-    mergeToolPreview(patch.preview, prev.tool?.preview),
-    detail,
-    patch.kind ?? prev.tool?.kind,
-    patch.title,
+  const cappedDetail = capToolDetail(fold, patch.detail);
+  const detail = cappedDetail.text ?? prev.tool?.detail;
+  const cappedPreview = capPreviewOutput(
+    fold,
+    fillPreview(
+      mergeToolPreview(patch.preview, prev.tool?.preview),
+      detail,
+      patch.kind ?? prev.tool?.kind,
+      patch.title,
+    ),
   );
+  const preview = cappedPreview.preview;
+  const over = {
+    ...(cappedDetail.cut ? { detail: true as const } : {}),
+    ...(cappedPreview.cut ? { output: true as const } : {}),
+  };
   const label = finalToolLabel(
     session,
     patch.kind ?? prev.tool?.kind,
@@ -881,6 +931,7 @@ function upsertTool(
     prev.tool?.kind === kind &&
     prev.tool?.status === status &&
     prev.tool?.detail === detail &&
+    Object.keys(over).length === 0 &&
     (!patch.agentModel || prev.agentRun?.model === patch.agentModel) &&
     (!prev.agentRun || prev.agentRun.name === agentName) &&
     samePreview(prev.tool?.preview, preview)
@@ -892,6 +943,7 @@ function upsertTool(
     ...prev,
     text: label,
     streaming: patch.streaming,
+    ...overflowField(prev, over),
     ...(patch.agentModel || prev.agentRun
       ? {
           agentRun: {
@@ -915,13 +967,30 @@ function upsertTool(
   return { ...session, blocks };
 }
 
-const MAX_TOOL_DETAIL_CHARS = 8_000;
-
-function capToolDetail(value: string | undefined): string | undefined {
+function capToolDetail(fold: Fold, value: string | undefined): { text: string | undefined; cut: boolean } {
   const text = value?.trim();
-  if (!text) return undefined;
-  if (text.length <= MAX_TOOL_DETAIL_CHARS) return text;
-  return `${text.slice(0, MAX_TOOL_DETAIL_CHARS)}\n…`;
+  if (!text) return { text: undefined, cut: false };
+  return capBytes(fold, text, CHATV2_TOOL_DETAIL_BYTES);
+}
+
+function capPreviewOutput(
+  fold: Fold,
+  preview: ToolPreview | undefined,
+): { preview: ToolPreview | undefined; cut: boolean } {
+  if (!preview?.output) return { preview, cut: false };
+  const capped = capBytes(fold, preview.output, CHATV2_PREVIEW_OUTPUT_BYTES);
+  return capped.cut
+    ? { preview: { ...preview, output: capped.text }, cut: true }
+    : { preview, cut: false };
+}
+
+/** Merge newly cut fields into a block's `overflow` (a field stays cut once it was). */
+function overflowField(
+  block: Block,
+  cut: NonNullable<Block["overflow"]>,
+): Pick<Block, "overflow"> | Record<string, never> {
+  if (Object.keys(cut).length === 0) return {};
+  return { overflow: { ...(block.overflow ?? {}), ...cut } };
 }
 
 function samePreview(a?: ToolPreview, b?: ToolPreview): boolean {
@@ -961,13 +1030,10 @@ function fillPreview(
 }
 
 /**
- * How much of a subagent's trail the parent keeps. A delegated run can be
- * thousands of calls long; the transcript only ever shows a window of it, and
- * an unbounded array would grow the saved session without bound.
+ * How much of a subagent's trail the parent keeps (limits.ts). A delegated
+ * run can be thousands of calls long; the transcript only ever shows a window
+ * of it, and an unbounded array would outgrow a snapshot page.
  */
-const MAX_AGENT_STEPS = 300;
-
-const MAX_AGENT_STEP_CHARS = 2_000;
 
 /**
  * Mirrors one subagent action onto its parent Agent tool block. Steps merge by
@@ -977,19 +1043,22 @@ const MAX_AGENT_STEP_CHARS = 2_000;
 function recordAgentStep(
   session: Session,
   event: Extract<HarnessEvent, { type: "agent.step" }>,
+  fold: Fold,
 ): Session {
   const index = session.blocks.findIndex(
     (block) => block.tool?.callId === event.callId,
   );
   if (index < 0) return session;
   const prev = session.blocks[index];
-  const text = capAgentStepText(event.text);
+  const text = capAgentStepText(fold, event.text);
   // A tool step earns a row on its label alone; prose with nothing in it does
   // not.
   if (!text && event.kind !== "tool") return session;
 
   const run = prev.agentRun;
-  const detail = capToolDetail(event.detail);
+  const detail = event.detail?.trim()
+    ? capBytes(fold, event.detail.trim(), CHATV2_AGENT_STEP_DETAIL_BYTES).text
+    : undefined;
   const step: AgentStep = {
     id: event.stepId,
     kind: event.kind,
@@ -1015,8 +1084,8 @@ function recordAgentStep(
     };
   } else {
     steps = [...(run?.steps ?? []), step];
-    if (steps.length > MAX_AGENT_STEPS) {
-      steps = steps.slice(steps.length - MAX_AGENT_STEPS);
+    if (!fold.uncapped && steps.length > CHATV2_AGENT_STEPS_MAX) {
+      steps = steps.slice(steps.length - CHATV2_AGENT_STEPS_MAX);
     }
   }
 
@@ -1058,30 +1127,19 @@ function sameAgentStep(a: AgentStep, b: AgentStep): boolean {
   );
 }
 
-function capAgentStepText(value: string): string {
-  const text = value.trim();
-  if (text.length <= MAX_AGENT_STEP_CHARS) return text;
-  return `${text.slice(0, MAX_AGENT_STEP_CHARS)}\u2026`;
+function capAgentStepText(fold: Fold, value: string): string {
+  return capBytes(fold, value.trim(), CHATV2_AGENT_STEP_TEXT_BYTES).text;
 }
 
 function findToolIndex(
   session: Session,
-  patch: { callId: string; title?: string },
+  patch: { callId: string },
 ): number {
-  if (patch.callId) {
-    const byId = session.blocks.findIndex(
-      (block) => block.tool?.callId === patch.callId,
-    );
-    if (byId >= 0) return byId;
-  }
-  const needle = normalizeLabel(patch.title || "");
-  if (!needle) return -1;
-  return session.blocks.findIndex((block) => {
-    if (block.role !== "tool" || !block.approval || block.tool?.callId) {
-      return false;
-    }
-    return normalizeLabel(block.text || block.tool?.title || "") === needle;
-  });
+  // By callId only, like approvals (see findToolForApproval).
+  if (!patch.callId) return -1;
+  return session.blocks.findIndex(
+    (block) => block.tool?.callId === patch.callId,
+  );
 }
 
 function sealLastStream(blocks: Block[]): Block[] {

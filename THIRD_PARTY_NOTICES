@@ -11370,8 +11370,8 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
 BORROWED IMPLEMENTATION TECHNIQUES
 
 No package from the projects below is bundled with wmux. Their approach was
-reimplemented, or a small piece adapted, from the source named at each borrow
-site, and their license terms are reproduced here.
+reimplemented, or portions copied or adapted, from the source named at each
+borrow site, and their license terms are reproduced here.
 
 ================================================================================
 
@@ -11520,9 +11520,16 @@ Repository: https://github.com/hardbeat920/monocode
 
 Copyright (c) 2026 Nick
 
-Small pieces adapted from its source at commit 6bd432ca and ported to
-TypeScript. Each adapted file or block carries a header comment naming
-the MonoCode file it came from.
+Portions copied or adapted from its source at commit
+6bd432cada0f492f076cc93f7ccb3027f4ff7102. Each copied or adapted file or
+block carries a header comment naming the MonoCode file it came from.
+Chat v2 model and fold (src/shared/chatv2) from:
+  src/integrations/harness/core/apply.ts, preview.ts, shellIntent.ts,
+    streamText.ts, types.ts and their tests (apply, applyBatch, preview,
+    shellIntent, streamText)
+  src/features/sessions/model/session.ts, contextUsage.ts, taskList.ts,
+    userQuestion.ts and their tests (contextUsage, taskList, userQuestion)
+  src/shared/lib/paths.ts
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

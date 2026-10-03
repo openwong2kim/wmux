@@ -137,7 +137,7 @@ describe("approval lifetime", () => {
     expect(tool).toMatchObject({
       streaming: false,
       tool: { status: "cancelled" },
-      approval: { requestId: "7", decided: "cancelled" },
+      approval: { requestId: "7", requestedAt: 0, decided: "cancelled" },
     });
   });
 
@@ -148,7 +148,7 @@ describe("approval lifetime", () => {
       (block) => block.tool?.callId === "shell-1",
     );
 
-    expect(tool?.approval).toEqual({ requestId: "7", decided: "cancelled" });
+    expect(tool?.approval).toEqual({ requestId: "7", requestedAt: 0, decided: "cancelled" });
     expect(session.blocks.at(-1)).toMatchObject({
       role: "user",
       text: "continue",
@@ -206,18 +206,13 @@ describe("streamed markdown", () => {
     ]);
   });
 
-  it("does not double an assistant block when a completed snapshot repeats it", () => {
+  it("appends a repeated delta: dropping a resent snapshot is the driver's job", () => {
     let session = newSession("claude", "/tmp");
-    session = applyHarnessEvent(session, {
-      type: "message.delta",
-      text: "I'll read the file",
-    });
-    session = applyHarnessEvent(session, {
-      type: "message.delta",
-      text: "I'll read the file",
-    });
+    session = applyHarnessEvent(session, { type: "message.delta", text: "ha" });
+    session = applyHarnessEvent(session, { type: "message.delta", text: "ha" });
+    session = applyHarnessEvent(session, { type: "message.delta", text: "" });
     expect(session.blocks).toHaveLength(1);
-    expect(session.blocks[0]?.text).toBe("I'll read the file");
+    expect(session.blocks[0]?.text).toBe("haha");
   });
 
   it("continues open prose through status rows, then completes it", () => {
@@ -802,6 +797,7 @@ describe("clarifying questions", () => {
     });
     expect(session.pendingQuestion).toEqual({
       requestId: "3",
+      requestedAt: 0,
       title: "Which file?",
       questions,
     });
@@ -972,8 +968,8 @@ describe("subagent steps", () => {
     });
 
     const detail = session.blocks[0].agentRun?.steps[0].detail ?? "";
-    expect(detail.length).toBeLessThanOrEqual(8_002);
-    expect(detail.endsWith("…")).toBe(true);
+    expect(new TextEncoder().encode(detail).length).toBeLessThanOrEqual(1_024);
+    expect(detail.startsWith("boom boom")).toBe(true);
   });
 
   it("drops a blank error output rather than carrying it around", () => {

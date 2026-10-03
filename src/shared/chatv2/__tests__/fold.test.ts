@@ -54,7 +54,7 @@ describe('chat-v2 fold determinism', () => {
     });
     expect(session.busy).toBe(false);
     expect(session.providerSessionId).toBe('native-1');
-    expect(session.blocks[3]!.approval).toEqual({ requestId: 'req-1', decided: 'allow' });
+    expect(session.blocks[3]!.approval).toEqual({ requestId: 'req-1', requestedAt: 1_090, decided: 'allow' });
   });
 
   it('cancels a pending approval and fails open tools when the turn fails', () => {
@@ -143,5 +143,115 @@ describe('window fold (renderer holding only the tail)', () => {
     // A window that starts after the open turn's user block (index 0) cannot
     // record the turn's outcome: touchedFrom (0) < baseIndex (2).
     expect(blockChangeFrom(atSnapshot, full)).toBe(0);
+  });
+});
+
+function splits(stamped: StampedHarnessEvent[]): Session[] {
+    const all = applyHarnessEvents(base(), stamped);
+    const single = stamped.reduce((s, e) => applyHarnessEvent(s, e), base());
+    const pairs: Session[] = [];
+    for (let cut = 1; cut < stamped.length; cut++) {
+      pairs.push(applyHarnessEvents(applyHarnessEvents(base(), stamped.slice(0, cut)), stamped.slice(cut)));
+    }
+  return [all, single, ...pairs];
+}
+
+describe('split invariance including ids', () => {
+
+  it('takes a new block id from the first non-empty delta of a run', () => {
+    const stamped = stampAll([
+      { type: 'user.message', text: 'q', clientMessageId: 'client-0005' },
+      { type: 'reasoning.delta', text: '' },
+      { type: 'reasoning.delta', text: 'think' },
+      { type: 'message.delta', text: '' },
+      { type: 'message.delta', text: '' },
+      { type: 'message.delta', text: 'ans' },
+      { type: 'message.delta', text: 'wer' },
+    ]);
+    const [first, ...rest] = splits(stamped);
+    expect(first!.blocks.map((b) => [b.id, b.text])).toEqual([['1.1', 'q'], ['3.1', 'think'], ['6.1', 'answer']]);
+    for (const other of rest) expect(other).toEqual(first);
+  });
+
+  it('never drops text that repeats or extends the existing text', () => {
+    const stamped = stampAll([
+      { type: 'message.delta', text: 'ha' },
+      { type: 'message.delta', text: 'ha' },
+      { type: 'message.delta', text: 'abc' },
+      { type: 'message.delta', text: 'haabcdef' },
+    ]);
+    for (const session of splits(stamped)) expect(session.blocks[0]!.text).toBe('hahaabchaabcdef');
+  });
+});
+
+describe('seq across epochs', () => {
+  it('keeps block ids unique when a reloaded record continues from its persisted seq', () => {
+    const before = stampAll(turn.slice(0, 7));
+    const persisted = applyHarnessEvents(base(), before);
+    const persistedSeq = before.at(-1)!.seq;
+    // A new epoch continues at persistedSeq + 1 (seq never restarts).
+    const after = stampAll([
+      { type: 'turn.ended', outcome: 'interrupted' },
+      { type: 'user.message', text: 'again', clientMessageId: 'client-0006' },
+      { type: 'message.delta', text: 'ok' },
+    ], persistedSeq + 1);
+    const reloaded = applyHarnessEvents(persisted, after);
+    const ids = reloaded.blocks.map((b) => b.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids.slice(-2)).toEqual([`${persistedSeq + 2}.1`, `${persistedSeq + 3}.1`]);
+  });
+});
+
+describe('approvals attach by callId only', () => {
+  it('gives the same content in a full fold and a tail fold when several tools are open', () => {
+    const stamped = stampAll([
+      { type: 'user.message', text: 'go', clientMessageId: 'client-0007' },
+      { type: 'tool.started', callId: 'a', title: 'Read', kind: 'read', status: 'in_progress' },
+      { type: 'message.delta', text: 'between' },
+      { type: 'tool.started', callId: 'b', title: 'Bash', kind: 'execute', status: 'in_progress' },
+      { type: 'approval.requested', requestId: 'r1', title: 'Bash' },
+      { type: 'approval.requested', requestId: 'r2', title: 'Read', callId: 'a' },
+    ]);
+    const snapshotAt = 4;
+    const atSnapshot = applyHarnessEvents(base(), stamped.slice(0, snapshotAt));
+    const baseIndex = 3; // the window holds only tool `b`
+    const window: Session = { ...atSnapshot, blocks: atSnapshot.blocks.slice(baseIndex) };
+    const full = applyHarnessEvents(atSnapshot, stamped.slice(snapshotAt, 5));
+    const tail = applyHarnessEvents(window, stamped.slice(snapshotAt, 5));
+    // No callId: a new approval row, never a guess at tool `b` or `a`.
+    expect(full.blocks.at(-1)).toMatchObject({ role: 'tool', approval: { requestId: 'r1' } });
+    expect(full.blocks[3]!.approval).toBeUndefined();
+    expect(tail.blocks).toEqual(full.blocks.slice(baseIndex));
+    // With a callId outside the window the change is below baseIndex: re-snapshot.
+    const fullNext = applyHarnessEvents(full, stamped.slice(5));
+    expect(blockChangeFrom(full, fullNext)).toBe(1);
+  });
+});
+
+describe('byte caps', () => {
+  it('cuts block text at the same byte in every split and keeps it in the shadow fold', () => {
+    const chunk = '가'.repeat(4_000); // 12,000 bytes
+    const stamped = stampAll([1, 2, 3, 4].map(() => ({ type: 'message.delta', text: chunk }) as HarnessEvent));
+    const sessions = splits(stamped);
+    for (const session of sessions) {
+      expect(session.blocks[0]!.text).toBe(sessions[0]!.blocks[0]!.text);
+      expect(session.blocks[0]!.overflow).toEqual({ text: true });
+    }
+    expect(new TextEncoder().encode(sessions[0]!.blocks[0]!.text).length).toBeLessThanOrEqual(32 * 1024);
+    const shadow = applyHarnessEvents(base(), stamped, { uncapped: true });
+    expect(shadow.blocks[0]!.text).toBe(chunk.repeat(4));
+    expect(shadow.blocks[0]!.overflow).toBeUndefined();
+  });
+
+  it('caps tool detail and preview output with overflow flags', () => {
+    const big = 'x'.repeat(20_000);
+    const session = applyHarnessEvents(base(), stampAll([
+      { type: 'tool.started', callId: 't', title: 'Bash', kind: 'execute', preview: { kind: 'shell', output: big } },
+      { type: 'tool.updated', callId: 't', status: 'completed', detail: big },
+    ]));
+    const block = session.blocks[0]!;
+    expect(block.overflow).toEqual({ output: true, detail: true });
+    expect(block.tool!.detail!.length).toBe(8 * 1024);
+    expect(block.tool!.preview!.output!.length).toBe(4 * 1024);
   });
 });

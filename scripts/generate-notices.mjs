@@ -382,16 +382,23 @@ const BORROWED_SOURCES = [
     repo: 'https://github.com/hardbeat920/monocode',
     copyright: 'Copyright (c) 2026 Nick',
     what:
-      'Small pieces adapted from its source at commit 6bd432ca and ported to\n' +
-      'TypeScript. Each adapted file or block carries a header comment naming\n' +
-      'the MonoCode file it came from.',
+      'Portions copied or adapted from its source at commit\n' +
+      '6bd432cada0f492f076cc93f7ccb3027f4ff7102. Each copied or adapted file or\n' +
+      'block carries a header comment naming the MonoCode file it came from.\n' +
+      'Chat v2 model and fold (src/shared/chatv2) from:\n' +
+      '  src/integrations/harness/core/apply.ts, preview.ts, shellIntent.ts,\n' +
+      '    streamText.ts, types.ts and their tests (apply, applyBatch, preview,\n' +
+      '    shellIntent, streamText)\n' +
+      '  src/features/sessions/model/session.ts, contextUsage.ts, taskList.ts,\n' +
+      '    userQuestion.ts and their tests (contextUsage, taskList, userQuestion)\n' +
+      '  src/shared/lib/paths.ts',
   },
 ];
 lines.push('BORROWED IMPLEMENTATION TECHNIQUES');
 lines.push('');
 lines.push('No package from the projects below is bundled with wmux. Their approach was');
-lines.push('reimplemented, or a small piece adapted, from the source named at each borrow');
-lines.push('site, and their license terms are reproduced here.');
+lines.push('reimplemented, or portions copied or adapted, from the source named at each');
+lines.push('borrow site, and their license terms are reproduced here.');
 lines.push('');
 lines.push(SEP);
 lines.push('');

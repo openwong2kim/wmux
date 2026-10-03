@@ -57,6 +57,11 @@ export type HarnessEvent =
     }
   /** wmux: the turn is over. Settles open streams, approvals and the question. */
   | { type: "turn.ended"; outcome: TurnOutcome }
+  /**
+   * Appended as-is; an empty delta is a no-op. A driver whose agent resends a
+   * whole message drops the part already sent (`snapshotRemainder`) before
+   * emitting.
+   */
   | { type: "message.delta"; text: string }
   | { type: "message.completed" }
   | {
@@ -119,6 +124,10 @@ export type HarnessEvent =
       requestId: string;
       title: string;
       kind?: string;
+      /**
+       * The tool call this gates. The fold attaches by callId only; without
+       * one (or with an unknown one) the approval is its own row.
+       */
       callId?: string;
       preview?: ToolPreview;
     }
@@ -179,11 +188,12 @@ export type HarnessEventType = HarnessEvent["type"];
 export type ApprovalDecision = "allow" | "deny";
 
 /**
- * One event as the daemon recorded it. `seq` is per chat session and per
- * epoch, starting at 1 and gapless; `at` is the daemon's epoch-ms clock when
- * the event was recorded. Both are inputs to the fold (block ids and turn
- * times come from them), which is what makes every fold of the same stamped
- * events identical.
+ * One event as the daemon recorded it. `seq` is per chat session: it starts
+ * at 1, never restarts (a new epoch continues at the persisted seq + 1) and is
+ * gapless within an epoch. `at` is the daemon's epoch-ms clock when the event
+ * was recorded. Both are inputs to the fold (block ids and turn times come
+ * from them), which is what makes every fold of the same stamped events
+ * identical.
  */
 export type StampedHarnessEvent = {
   seq: number;

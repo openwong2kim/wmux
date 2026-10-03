@@ -20,6 +20,8 @@ export type UserQuestion = {
 
 export type UserQuestionPrompt = {
   requestId: string;
+  /** Stamp of the `question.asked` event; answerable from `requestedAt + CHATV2_ANSWER_ARM_MS`. */
+  requestedAt: number;
   title?: string;
   questions: UserQuestion[];
   /** Deadline owned by the harness; interaction can disable automatic skipping. */

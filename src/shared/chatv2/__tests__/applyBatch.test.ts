@@ -1,5 +1,5 @@
 // Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/integrations/harness/core/applyBatch.test.ts), MIT License, Copyright (c) 2026 Nick
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "../session";
 import type { HarnessEvent } from "../harnessEvents";
 import { applyHarnessEvent, applyHarnessEvents, newSession } from "./foldHarness";
@@ -20,6 +20,16 @@ function conversation(): Session {
     ],
   };
 }
+
+// The harness stamps events with Date.now(); pin it so a batch fold and an
+// event-at-a-time fold see the same stamps.
+beforeEach(() => {
+  vi.spyOn(Date, "now").mockReturnValue(0);
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("batched harness events", () => {
   it("preserves mixed snapshots, repeated tokens, whitespace and message boundaries", () => {
@@ -58,7 +68,7 @@ describe("batched harness events", () => {
     expect(session.blocks[1].text).toBe("Hello");
   });
 
-  it("does not treat combined token fragments as a snapshot of existing text", () => {
+  it("appends every fragment, including ones that repeat existing text", () => {
     const session = conversation();
     session.blocks[1].text = "abc";
     const events: HarnessEvent[] = [
@@ -68,7 +78,7 @@ describe("batched harness events", () => {
     expect(applyHarnessEvents(session, events).blocks[1].text).toBe("abcabc");
   });
 
-  it("retains identity for empty reasoning and repeated full snapshots", () => {
+  it("retains identity for empty deltas", () => {
     const session = conversation();
     expect(applyHarnessEvents(session, [])).toBe(session);
     expect(
@@ -79,8 +89,8 @@ describe("batched harness events", () => {
     ).toBe(session);
     expect(
       applyHarnessEvents(session, [
-        { type: "message.delta", text: "Hello" },
-        { type: "message.delta", text: "Hello" },
+        { type: "message.delta", text: "" },
+        { type: "message.delta", text: "" },
       ]),
     ).toBe(session);
   });

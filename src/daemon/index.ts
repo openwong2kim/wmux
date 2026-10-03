@@ -171,6 +171,7 @@ import { ChatSessionService } from './chat/ChatSessionService';
 import { createChatV2Host } from './chat/v2/host';
 import { registerChatV2Rpc } from './chat/v2/rpc';
 import type { ChatV2Host } from './chat/v2/types';
+import { CHATV2_DISPOSE_TIMEOUT_MS } from '../shared/chatv2/limits';
 import { chatProviders } from './chat/providers';
 import { record as chatRecord } from './chat/adapter';
 import type { ChatInteractionAnswer } from '../shared/transcript/chatSession';
@@ -3583,13 +3584,14 @@ function registerRpcHandlers(
       now: () => Date.now(),
       sessionManager,
       approvals: () => approvalRegistry,
-      agentAliveInPane: async (id) => {
-        const pid = agentProcessTracker.pidFor(id);
-        return pid !== undefined && await ProcessMonitor.isRunning(pid);
-      },
-      shellIdle: async (id) => {
+      // Single writer: a tracked agent can miss a TUI that just started or a
+      // reused pid, so the anchor shell must also have no children at all.
+      paneFree: async (id) => {
         const pane = sessionManager.getSession(id);
-        return !!pane && (await agentProcessTracker.idleShellState(pane.meta.pid, pane.meta.env)).ok;
+        if (!pane) return false;
+        const pid = agentProcessTracker.pidFor(id);
+        if (pid !== undefined && await ProcessMonitor.isRunning(pid)) return false;
+        return (await agentProcessTracker.idleShellState(pane.meta.pid, pane.meta.env)).ok;
       },
       writeToPane: (id, data) => {
         const pane = sessionManager.getSession(id);
@@ -3598,7 +3600,14 @@ function registerRpcHandlers(
         pane.bridge.noteInput(data);
         return true;
       },
-      sendTo: (clientId, event) => { pipeServer.sendTo(clientId, event); },
+      sendTo: (clientId, event) => pipeServer.sendTo(clientId, event),
+      processIdentity: async (pid) => {
+        const [startTime, commandLine] = await Promise.all([
+          getProcessStartTime(pid),
+          agentProcessTracker.commandLineOf(pid),
+        ]);
+        return startTime && commandLine ? { startTime, commandLine } : null;
+      },
       killTree: (pid) => killProcessTree(pid),
     });
     chatV2Host = host;
@@ -6365,12 +6374,18 @@ async function shutdown(
   // process open; clearing it just keeps a shutdown from logging one last
   // rolling summary on the way out.
   hookIngest?.dispose();
-  // Chat v2 drivers are agent processes the daemon owns: tree-kill them.
-  await chatV2Host?.dispose().catch(() => undefined);
   // #783 — defer every pending gate waiter so the exit is clean. Each held RPC
   // response gets a 'defer', and the bridge falls back to the local permission
   // flow instead of dying with a broken pipe.
   gateBroker?.cancelAll('daemon-restart');
+  // Chat v2 drivers are agent processes the daemon owns: tree-kill them, but
+  // never let them hold the shutdown past their own budget.
+  if (chatV2Host) {
+    await Promise.race([
+      chatV2Host.dispose().catch(() => undefined),
+      new Promise<void>((resolve) => setTimeout(resolve, CHATV2_DISPOSE_TIMEOUT_MS).unref()),
+    ]);
+  }
   // Close every transcript fs.watch and poll timer. All of them are unref'd so
   // none held the process open; this just avoids a read firing mid-shutdown.
   chatSessions?.dispose();

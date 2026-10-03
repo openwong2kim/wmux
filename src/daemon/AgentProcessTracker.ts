@@ -559,6 +559,12 @@ export class AgentProcessTracker {
     return (await this.idleShellState(pid)).ok;
   }
 
+  /** A live pid's full command line from the process table, or undefined when it is gone. */
+  async commandLineOf(pid: number): Promise<string | undefined> {
+    const entry = (await this.snapshot()).find((e) => e.pid === pid);
+    return entry ? entry.cmdline ?? entry.name : undefined;
+  }
+
   /** Which launch precondition failed, so a phone can be told what to do.
    *  `env` is the pane's spawn env, used only to locate a helper's install. */
   async idleShellState(pid: number, env: NodeJS.ProcessEnv = {}): Promise<{ ok: true } | { ok: false; reason: 'missing' | 'unsupported-shell' | 'shell-has-children' }> {

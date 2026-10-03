@@ -23,7 +23,7 @@ export function registerChatV2Rpc(
 ): void {
   for (const method of Object.keys(CHATV2_RPC) as ChatV2Method[]) {
     onRpc(CHATV2_RPC[method], async (params, ctx) => {
-      if (!firstPartyOnly(ctx.clientId, `chatv2.${method}`) || !host) {
+      if (!firstPartyOnly(ctx.clientId, CHATV2_RPC[method]) || !host) {
         return chatV2Error('unavailable', 'Chat is unavailable.');
       }
       const parsed = parseChatV2Params(method, params);

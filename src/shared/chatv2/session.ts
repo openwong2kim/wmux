@@ -209,8 +209,16 @@ export type Block = {
   approval?: {
     /** The driver's request id (Claude `control_request.request_id`). */
     requestId: string;
+    /** Stamp of the `approval.requested` event; answerable from `requestedAt + CHATV2_ANSWER_ARM_MS`. */
+    requestedAt: number;
     decided?: "allow" | "deny" | "cancelled";
   };
+  /**
+   * Fields a byte cap cut (limits.ts). The full value is served by `bodies`
+   * for this block id: `text` (the block text), `detail` (tool detail),
+   * `output` (tool preview output).
+   */
+  overflow?: { text?: true; detail?: true; output?: true };
   /** Inner activity of a delegated run. Present on Agent/Task tool blocks. */
   agentRun?: AgentRunMeta;
   taskList?: TaskListMeta;
