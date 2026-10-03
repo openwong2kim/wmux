@@ -69,7 +69,15 @@ export const canonicalPath = async (p: string) => fs.realpath(p).catch(() => pat
  */
 const repoHashRealpath = (p: string) => { try { return realpathSync(p); } catch { return p; } };
 
-export interface WorktreeRow { path: string; branch: string | null; locked?: true }
+export interface WorktreeRow {
+  path: string;
+  branch: string | null;
+  locked?: true;
+  /** The lock reason as written (`''` when none); only on a locked row. */
+  lockReason?: string;
+  /** Git reports the worktree's directory as gone. */
+  prunable?: true;
+}
 
 /**
  * `git worktree list --porcelain`: records of `key value` fields, each record
@@ -82,7 +90,10 @@ export function parseWorktreeList(stdout: string, sep = '\0'): WorktreeRow[] {
     if (!field) { if (current) rows.push(current); current = null; continue; }
     if (field.startsWith('worktree ')) current = { path: field.slice('worktree '.length), branch: null };
     else if (current && field.startsWith('branch refs/heads/')) current.branch = field.slice('branch refs/heads/'.length);
-    else if (current && (field === 'locked' || field.startsWith('locked '))) current.locked = true;
+    else if (current && (field === 'locked' || field.startsWith('locked '))) {
+      current.locked = true;
+      current.lockReason = field.slice('locked '.length);
+    } else if (current && (field === 'prunable' || field.startsWith('prunable '))) current.prunable = true;
   }
   if (current) rows.push(current);
   return rows;

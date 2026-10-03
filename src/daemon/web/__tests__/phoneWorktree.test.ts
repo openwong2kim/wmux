@@ -6,9 +6,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { buildGitEnv, createGitRunner, type GitRunner } from '../sessionDiff';
-import { PhoneWorktreeService, scanTree, type PhoneWorktreeOptions } from '../phoneWorktree';
+import { createAddRunner, PhoneWorktreeService, scanTree, type PhoneWorktreeOptions } from '../phoneWorktree';
 import { PHONE_WORKTREE_RECEIPTS_FILE, PHONE_WORKTREE_RECEIPTS_PER_OWNER, PhoneWorktreeReceipts } from '../phoneWorktreeReceipts';
-import { parseWorktreeCreateBody, PHONE_WORKTREE_RETRY_AFTER_MS } from '../../../shared/phoneGitV1';
+import { parseWorktreeCreateBody, PHONE_WORKTREE_RECEIPT_TTL_MS, PHONE_WORKTREE_RETRY_AFTER_MS } from '../../../shared/phoneGitV1';
 import { windowsDirectoryHold } from '../../../shared/directoryHold';
 
 const savedHome = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
@@ -119,7 +119,7 @@ describe('phone worktree creation', { timeout: 60_000 }, () => {
     const filtered = init(path.join(root, 'filtered'), { '.gitattributes': '*.txt filter=mark\n', 'x.txt': 'x' });
     run(filtered, 'config', 'filter.mark.smudge', `node -e "require('fs').writeFileSync(${JSON.stringify(marker)},'')" && cat`);
     // Even if the tree scan were to miss the attribute, no driver runs on checkout.
-    const svc = service({ scan: async () => ({ filters: 'unused', longest: 1 }), addGit: async (args, cwd) => { argv = [...args]; return real(args, cwd); } });
+    const svc = service({ scan: async () => ({ filters: 'unused', longest: 1, longestDir: 0 }), addGit: async (args, cwd) => { argv = [...args]; return real(args, cwd); } });
     expect((await create(svc, filtered, 'no-driver')).receipt).toMatchObject({ state: 'created' });
     expect(fs.existsSync(marker)).toBe(false);
     const value = (key: string) => argv[argv.findIndex((a) => a.startsWith(`${key}=`))]?.slice(key.length + 1);
@@ -206,7 +206,7 @@ describe('phone worktree creation', { timeout: 60_000 }, () => {
     expect((await create(service({ git: old }), repo, 'old')).receipt).toMatchObject({ state: 'refused', error: 'git-version-unsupported' });
     // The scan reports the longest tree path; a real one this long cannot even
     // be committed on a Windows runner, so the length is the scan's answer.
-    const longTree = async () => ({ filters: 'unused' as const, longest: 250 });
+    const longTree = async () => ({ filters: 'unused' as const, longest: 250, longestDir: 0 });
     expect((await create(service({ platform: 'win32', scan: longTree }), repo, 'deep')).receipt).toMatchObject({ state: 'refused', error: 'path-too-long' });
     expect((await create(service({ platform: 'linux', scan: longTree }), repo, 'deep2')).receipt).toMatchObject({ state: 'created' });
   });
@@ -280,6 +280,14 @@ describe('phone worktree creation', { timeout: 60_000 }, () => {
     return { requestId, dir: phoneDir(repo, slug) };
   };
   const retryable = (requestId: string) => ({ requestId, state: 'unknown', error: 'git-outcome-unknown', retryAfterMs: PHONE_WORKTREE_RETRY_AFTER_MS });
+  // The checkout's administrative directory, from its `.git` file.
+  const adminOf = (dir: string) => path.resolve(dir, fs.readFileSync(path.join(dir, '.git'), 'utf8').replace(/^gitdir: /, '').trim());
+  // What the add leaves when it stops before its checkout begins: the `.git`
+  // file and the registration, no index and no file of the tree.
+  const unstarted = (dir: string) => {
+    fs.rmSync(path.join(adminOf(dir), 'index'));
+    for (const name of fs.readdirSync(dir)) if (name !== '.git') fs.rmSync(path.join(dir, name), { recursive: true });
+  };
 
   it('touches nothing in a locked checkout a process still holds, keeps it retryable, then adopts it', async () => {
     for (const hold of ['in-use', 'refused'] as const) {
@@ -301,8 +309,8 @@ describe('phone worktree creation', { timeout: 60_000 }, () => {
       expect((await create(free, repo, slug, { requestId })).receipt).toMatchObject({ state: 'created', cwd: dir, branch: `phone/${slug}` });
       expect(issued(later, 'worktree', 'remove')).toBe(false);
     }
-    // A locked checkout that is not complete is still removed and made again.
-    const partial = await cutOff('partial', (dir) => fs.rmSync(path.join(dir, 'a.txt')));
+    // A locked checkout whose checkout never began is removed and made again.
+    const partial = await cutOff('partial', unstarted);
     const calls: string[][] = [];
     const free = service({ git: recording(calls), directoryHold: async () => 'free' });
     expect((await create(free, repo, 'partial', { requestId: partial.requestId })).receipt).toMatchObject({ state: 'created', cwd: partial.dir });
@@ -320,7 +328,7 @@ describe('phone worktree creation', { timeout: 60_000 }, () => {
 
   it('settles a locked checkout before looking at the main checkout, where a rebase may be stopped', async () => {
     const done = await cutOff('rebasing');
-    const partial = await cutOff('rebasing-partial', (dir) => fs.rmSync(path.join(dir, 'a.txt')));
+    const partial = await cutOff('rebasing-partial', unstarted);
     // A rebase stopped on a conflict in the session's own checkout.
     run(repo, 'checkout', '-q', '-b', 'other');
     commit(repo, { 'a.txt': 'other' }, 'other');
@@ -347,9 +355,9 @@ describe('phone worktree creation', { timeout: 60_000 }, () => {
       (args.includes(word) ? { ok: false, ran: false, stdout: '', stderr: 'timed out' } : real(args, cwd));
     const block = (dir: string) => run(repo, 'worktree', 'list', '--porcelain').split(/\n\n/).find((b) => b.includes(path.basename(dir))) ?? '';
     const stalled = await cutOff('stalled');
-    expect((await create(service({ git: notRunning('prune'), directoryHold: async () => 'free' }), repo, 'stalled', { requestId: stalled.requestId })).receipt)
+    expect((await create(service({ git: notRunning('list'), directoryHold: async () => 'free' }), repo, 'stalled', { requestId: stalled.requestId })).receipt)
       .toEqual(retryable(stalled.requestId));
-    const cut = await cutOff('cut-short', (dir) => fs.rmSync(path.join(dir, 'a.txt')));
+    const cut = await cutOff('cut-short', unstarted);
     expect((await create(service({ git: notRunning('remove'), directoryHold: async () => 'free' }), repo, 'cut-short', { requestId: cut.requestId })).receipt)
       .toEqual(retryable(cut.requestId));
     expect(block(cut.dir)).toContain('locked initializing');
@@ -400,7 +408,7 @@ describe('phone worktree creation', { timeout: 60_000 }, () => {
     const store = new PhoneWorktreeReceipts(wmuxDir);
     const requestId = randomUUID();
     store.begin('device:d1', requestId, 's1', 'crashed');
-    store.journal();
+    store.journal('device:d1', requestId, { phase: 'add', repo: path.join(repo, '.git'), dir: phoneDir(repo, 'crashed'), branch: 'phone/crashed', base: 'a'.repeat(40) });
     const svc = service();
     expect(svc.available).toBe(true);
     expect(svc.receipt('device:d1', 's1', requestId)).toEqual({ requestId, state: 'unknown', error: 'git-outcome-unknown' });
@@ -482,5 +490,176 @@ describe('phone worktree creation', { timeout: 60_000 }, () => {
     const third = submit(other, 'third', 'device:3');
     await third.done;
     expect(branches(other)).toEqual(['phone/third']);
+  });
+
+  it('writes a request to disk only once its add starts, and recovers only what that request created', async () => {
+    const store = new PhoneWorktreeReceipts(wmuxDir);
+    const early = randomUUID();
+    const started = randomUUID();
+    store.begin('device:a', early, 's1', 'early');
+    store.begin('device:b', started, 's1', 'started');
+    store.journal('device:b', started, { phase: 'add', repo: path.join(repo, '.git'), dir: phoneDir(repo, 'started'), branch: 'phone/started', base: run(repo, 'rev-parse', 'HEAD') });
+    const saved = JSON.parse(fs.readFileSync(path.join(wmuxDir, PHONE_WORKTREE_RECEIPTS_FILE), 'utf8')) as { entries: Record<string, { slug: string }> };
+    expect(Object.values(saved.entries).map((e) => e.slug)).toEqual(['started']);
+    // After a restart the request still in its pre-checks is simply gone.
+    const svc = service();
+    expect(svc.receipt('device:a', 's1', early)).toEqual({ requestId: early, state: 'none' });
+    expect(svc.receipt('device:b', 's1', started)).toEqual({ requestId: started, state: 'unknown', error: 'git-outcome-unknown' });
+    // An unknown request with no record of an add: a phone/<slug> branch made elsewhere is not its own.
+    const unrecorded = randomUUID();
+    svc.receipts.begin('operator', unrecorded, 's1', 'theirs');
+    svc.receipts.settle('operator', unrecorded, { state: 'unknown', error: 'git-outcome-unknown' });
+    run(repo, 'branch', 'phone/theirs');
+    expect((await create(svc, repo, 'theirs', { requestId: unrecorded })).receipt).toMatchObject({ state: 'refused', error: 'branch-exists' });
+    // A branch the add created and someone moved since is no longer this request's.
+    const moved = randomUUID();
+    const killed = service({
+      addGit: async () => { run(repo, 'branch', 'phone/moved', 'HEAD'); return { ok: false, ran: false, stdout: '', stderr: 'killed' }; },
+    });
+    expect((await create(killed, repo, 'moved', { requestId: moved })).receipt).toMatchObject({ state: 'unknown' });
+    commit(repo, { 'b.txt': 'b' });
+    run(repo, 'branch', '-f', 'phone/moved', 'HEAD');
+    expect((await create(service(), repo, 'moved', { requestId: moved })).receipt).toMatchObject({ state: 'refused', error: 'branch-exists' });
+    expect(branches(repo)).toEqual(['phone/moved', 'phone/theirs']);
+  });
+
+  it('removes the branch a failed add left even when the repository keeps no reflogs', async () => {
+    run(repo, 'config', 'core.logAllRefUpdates', 'false');
+    const svc = service({
+      addGit: async () => { run(repo, 'branch', 'phone/no-reflog', 'HEAD'); return { ok: false, ran: true, code: 128, stdout: '', stderr: 'fatal: missing object' }; },
+    });
+    expect((await create(svc, repo, 'no-reflog')).receipt).toMatchObject({ state: 'refused', error: 'git-operation-failed' });
+    expect(branches(repo)).toEqual([]);
+    expect((await create(service(), repo, 'no-reflog')).receipt).toMatchObject({ state: 'created' });
+  });
+
+  it('keeps a locked checkout that holds anything but what its own add wrote', async () => {
+    const kept = (requestId: string) => expect.objectContaining({ requestId, state: 'refused', error: 'worktree-path-exists' });
+    const block = (dir: string) => run(repo, 'worktree', 'list', '--porcelain').split(/\n\n/).find((b) => b.includes(path.basename(dir))) ?? '';
+    // Someone else's lock.
+    const mine = await cutOff('user-lock', unstarted);
+    run(repo, 'worktree', 'unlock', mine.dir);
+    run(repo, 'worktree', 'lock', '--reason', 'mine', mine.dir);
+    expect((await create(service(), repo, 'user-lock', { requestId: mine.requestId })).receipt).toEqual(kept(mine.requestId));
+    expect(block(mine.dir)).toContain('locked mine');
+    // A file added to a checkout that never began.
+    const added = await cutOff('user-file', (dir) => { unstarted(dir); fs.writeFileSync(path.join(dir, 'notes.txt'), 'mine'); });
+    expect((await create(service(), repo, 'user-file', { requestId: added.requestId })).receipt).toEqual(kept(added.requestId));
+    expect(fs.readFileSync(path.join(added.dir, 'notes.txt'), 'utf8')).toBe('mine');
+    // A finished checkout with a change in it.
+    const changed = await cutOff('changed', (dir) => fs.rmSync(path.join(dir, 'a.txt')));
+    expect((await create(service(), repo, 'changed', { requestId: changed.requestId })).receipt).toEqual(kept(changed.requestId));
+    expect(block(changed.dir)).toContain('locked initializing');
+    // A session running inside it.
+    const used = await cutOff('in-pane', unstarted);
+    const sub = path.join(used.dir, 'sub');
+    expect((await create(service({ liveCwds: () => [used.dir] }), repo, 'in-pane', { requestId: used.requestId })).receipt).toEqual(kept(used.requestId));
+    expect(fs.existsSync(used.dir)).toBe(true);
+    // A checkout git is still writing: nothing is touched until its index lock is gone.
+    const writing = await cutOff('writing');
+    const lock = path.join(adminOf(writing.dir), 'index.lock');
+    fs.writeFileSync(lock, '');
+    const calls: string[][] = [];
+    expect((await create(service({ git: recording(calls), liveCwds: () => [sub] }), repo, 'writing', { requestId: writing.requestId })).receipt)
+      .toEqual(retryable(writing.requestId));
+    expect(issued(calls, 'worktree', 'unlock') || issued(calls, 'worktree', 'remove')).toBe(false);
+    fs.rmSync(lock);
+    expect((await create(service(), repo, 'writing', { requestId: writing.requestId })).receipt).toMatchObject({ state: 'created', cwd: writing.dir });
+    expect(branches(repo)).toEqual(['phone/changed', 'phone/in-pane', 'phone/user-file', 'phone/user-lock', 'phone/writing']);
+  });
+
+  it('touches no other registration of the repository, and clears its own whose directory is gone', async () => {
+    const elsewhere = path.join(root, 'elsewhere');
+    run(repo, 'worktree', 'add', '-q', '-b', 'side', elsewhere);
+    fs.rmSync(elsewhere, { recursive: true });
+    const gone = await cutOff('gone');
+    run(repo, 'worktree', 'unlock', gone.dir);
+    fs.rmSync(gone.dir, { recursive: true });
+    const lockedGone = await cutOff('locked-gone');
+    fs.rmSync(lockedGone.dir, { recursive: true });
+    for (const { requestId, dir } of [gone, lockedGone]) {
+      const calls: string[][] = [];
+      const slug = path.basename(dir).slice('phone-'.length);
+      expect((await create(service({ git: recording(calls) }), repo, slug, { requestId })).receipt).toMatchObject({ state: 'created', cwd: dir });
+      expect(issued(calls, 'worktree', 'prune')).toBe(false);
+    }
+    expect(run(repo, 'worktree', 'list', '--porcelain')).toContain(`worktree ${elsewhere}`);
+  });
+
+  it('leaves the request retryable when the outcome cannot be decided, and refuses only a confirmed failure', async () => {
+    const real = createGitRunner();
+    const failing = (match: (args: readonly string[]) => boolean, answer: { ran: boolean; code?: number }): GitRunner => async (args, cwd) =>
+      (match(args) ? { ok: false, ...answer, stdout: '', stderr: 'no' } : real(args, cwd));
+    const failedAdd = async () => ({ ok: false, ran: true, code: 128, stdout: '', stderr: 'fatal: no space' });
+    // The worktree list does not answer after a failed add: whether anything is registered is unknown.
+    const unlisted = service({ addGit: failedAdd, git: failing((a) => a.includes('list'), { ran: true, code: 129 }) });
+    expect((await create(unlisted, repo, 'unlisted')).receipt).toMatchObject({ state: 'unknown', error: 'git-outcome-unknown' });
+    // The branch lookup after the add does not run.
+    const unread = service({ addGit: failedAdd, git: failing((a) => a.includes('refs/heads/phone/unread'), { ran: false }) });
+    expect((await create(unread, repo, 'unread')).receipt).toMatchObject({ state: 'unknown', error: 'git-outcome-unknown' });
+    // The reflog read that decides whether a left-over branch is untouched does not run.
+    const noLog = service({
+      addGit: async () => { run(repo, 'branch', 'phone/no-log', 'HEAD'); return failedAdd(); },
+      git: failing((a) => a.includes('reflog'), { ran: false }),
+    });
+    const left = await create(noLog, repo, 'no-log');
+    expect(left.receipt).toEqual(retryable(left.requestId));
+    expect(branches(repo)).toContain('phone/no-log');
+    // Recovery: the worktree list answers with nothing usable.
+    const listless = await cutOff('listless', unstarted);
+    expect((await create(service({ git: failing((a) => a.includes('list'), { ran: true, code: 129 }) }), repo, 'listless', { requestId: listless.requestId })).receipt)
+      .toEqual(retryable(listless.requestId));
+    // Recovery: the removal ran and failed; the next repeat finishes it.
+    const stuck = await cutOff('stuck', unstarted);
+    expect((await create(service({ git: failing((a) => a.includes('remove'), { ran: true, code: 1 }) }), repo, 'stuck', { requestId: stuck.requestId })).receipt)
+      .toEqual(retryable(stuck.requestId));
+    expect((await create(service(), repo, 'stuck', { requestId: stuck.requestId })).receipt).toMatchObject({ state: 'created', cwd: stuck.dir });
+    // Recovery: the configuration whose filter drivers the status disarms cannot be read.
+    const cfg = await cutOff('cfg');
+    expect((await create(service({ git: failing((a) => a.includes('config') && a.includes('--list'), { ran: true, code: 1 }) }), repo, 'cfg', { requestId: cfg.requestId })).receipt)
+      .toEqual(retryable(cfg.requestId));
+    expect(run(repo, 'worktree', 'list', '--porcelain')).toContain('locked initializing');
+    expect((await create(service(), repo, 'cfg', { requestId: cfg.requestId })).receipt).toMatchObject({ state: 'created', cwd: cfg.dir });
+    expect((await create(service(), repo, 'listless', { requestId: listless.requestId })).receipt).toMatchObject({ state: 'created', cwd: listless.dir });
+  });
+
+  it('drops expired receipts before counting, and never evicts an unknown one', () => {
+    let now = 1_000_000;
+    const store = new PhoneWorktreeReceipts(wmuxDir, () => now);
+    const ids = Array.from({ length: PHONE_WORKTREE_RECEIPTS_PER_OWNER }, () => randomUUID());
+    for (const id of ids) {
+      store.begin('device:a', id, 's1', 'x');
+      store.settle('device:a', id, { state: 'unknown', error: 'git-outcome-unknown' });
+    }
+    expect(() => store.begin('device:a', randomUUID(), 's1', 'x')).toThrow('quota');
+    expect(store.find('device:a', ids[0])?.receipt.state).toBe('unknown');
+    // The whole store full of receipts that have all expired takes a new one.
+    for (let owner = 0; owner < 19; owner += 1) {
+      for (let i = 0; i < PHONE_WORKTREE_RECEIPTS_PER_OWNER; i += 1) store.begin(`device:${owner}`, randomUUID(), 's1', 'x');
+    }
+    now += PHONE_WORKTREE_RECEIPT_TTL_MS + 1;
+    expect(() => store.begin('device:new', randomUUID(), 's1', 'x')).not.toThrow();
+  });
+
+  it.runIf(process.platform !== 'win32')('stops every process the add started when it passes its bound', async () => {
+    const pidFile = path.join(root, 'pid');
+    const runner = createAddRunner(1_000);
+    const result = await runner(['-c', `alias.hang=!sh -c 'sleep 30 & echo $! > "${pidFile}"; wait'`, 'hang'], root);
+    expect(result).toMatchObject({ ok: false, ran: false });
+    const pid = Number(fs.readFileSync(pidFile, 'utf8'));
+    await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow(), { timeout: 5_000, interval: 50 });
+  });
+
+  it('scans a tree larger than a pipe buffer, and bounds every directory on Windows', async () => {
+    const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: repo, env: buildGitEnv(), input: 'x' }).toString().trim();
+    const names = Array.from({ length: 3000 }, (_, i) => `${String(i).padStart(4, '0')}-${'n'.repeat(120)}`);
+    const inner = execFileSync('git', ['mktree'], { cwd: repo, env: buildGitEnv(), input: names.map((n) => `100644 blob ${blob}\t${n}\n`).join('') }).toString().trim();
+    const dirName = 'd'.repeat(60);
+    const outer = execFileSync('git', ['mktree'], { cwd: repo, env: buildGitEnv(), input: `040000 tree ${inner}\t${dirName}\n` }).toString().trim();
+    const big = execFileSync('git', ['commit-tree', outer, '-m', 'big'], { cwd: repo, env: buildGitEnv() }).toString().trim();
+    expect(await scanTree(repo, big, [])).toEqual({ filters: 'unused', longest: dirName.length + 1 + names[0].length, longestDir: dirName.length });
+    const deepDirs = async () => ({ filters: 'unused' as const, longest: 10, longestDir: 240 });
+    expect((await create(service({ platform: 'win32', scan: deepDirs }), repo, 'dirs')).receipt).toMatchObject({ state: 'refused', error: 'path-too-long' });
+    expect((await create(service({ platform: 'linux', scan: deepDirs }), repo, 'dirs2')).receipt).toMatchObject({ state: 'created' });
   });
 });

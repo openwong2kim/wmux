@@ -184,6 +184,14 @@ describe('phone Git read parsers', () => {
     expect(parseWorktreeList('worktree /r\0HEAD abc\0branch refs/heads/main\0\0worktree /w\0HEAD def\0detached\0\0'))
       .toEqual([{ path: '/r', branch: 'main' }, { path: '/w', branch: null }]);
   });
+  it('keeps the lock reason and the prunable mark of a worktree record', () => {
+    expect(parseWorktreeList('worktree /a branch refs/heads/x locked initializing  worktree /b locked  worktree /c prunable gitdir file points to non-existent location  '))
+      .toEqual([
+        { path: '/a', branch: 'x', locked: true, lockReason: 'initializing' },
+        { path: '/b', branch: null, locked: true, lockReason: '' },
+        { path: '/c', branch: null, prunable: true },
+      ]);
+  });
 });
 
 describe('phone CI checks', () => {
