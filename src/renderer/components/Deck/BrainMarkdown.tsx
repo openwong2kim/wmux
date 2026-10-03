@@ -5,7 +5,7 @@
 // bold — and rendering them as raw text made every reply read like a diff.
 // This is a deliberately tiny, dependency-free markdown SUBSET renderer for
 // the brain bubble: fenced code blocks, #/##/### headings, bullet + numbered
-// lists, and inline bold / italic / `code` / [links]. Anything else stays
+// lists, GFM tables, and inline bold / italic / `code` / [links]. Anything else stays
 // literal text — no HTML injection surface (everything renders through React
 // text nodes, never dangerouslySetInnerHTML).
 //
@@ -79,6 +79,21 @@ function renderInline(text: string, keyPrefix: string): React.ReactNode[] {
   return parts.length > 0 ? parts : [text];
 }
 
+/** A GFM table delimiter row: `| --- | :--: |`, at least one pipe. */
+const TABLE_SEPARATOR = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+
+/** A table row's cells: outer pipes dropped, split on pipes not escaped as `\|`. */
+function tableCells(line: string): string[] {
+  const body = line.trim().replace(/^\|/, '').replace(/(?<!\\)\|$/, '');
+  return body.split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, '|'));
+}
+
+function tableAlign(cell: string): 'left' | 'center' | 'right' | undefined {
+  const left = cell.startsWith(':');
+  const right = cell.endsWith(':');
+  return left && right ? 'center' : right ? 'right' : left ? 'left' : undefined;
+}
+
 /** Render orchestrator prose as chat-bubble markdown. Pure — safe to call on
  *  every streaming re-render. */
 export function renderBrainMarkdown(source: string): React.ReactNode[] {
@@ -105,6 +120,52 @@ export function renderBrainMarkdown(source: string): React.ReactNode[] {
         >
           {codeLines.join('\n')}
         </pre>,
+      );
+      continue;
+    }
+
+    // GFM table: a header row with a pipe, then a delimiter row, then body
+    // rows until a line without a pipe. Cells are inline text like any line,
+    // and a wide table scrolls inside its own box.
+    if (line.includes('|') && i + 1 < lines.length && lines[i + 1].includes('|') && TABLE_SEPARATOR.test(lines[i + 1])) {
+      const head = tableCells(line);
+      const align = tableCells(lines[i + 1]).map(tableAlign);
+      const rows: string[][] = [];
+      i += 2;
+      while (i < lines.length && lines[i].includes('|') && lines[i].trim() !== '') {
+        rows.push(tableCells(lines[i]));
+        i++;
+      }
+      const key = out.length;
+      out.push(
+        <div key={key} data-brain-md-table className="my-1 max-w-full overflow-x-auto">
+          <table className="border-collapse text-[12px] leading-snug">
+            <thead>
+              <tr>
+                {head.map((c, ci) => (
+                  <th
+                    key={ci}
+                    style={{ textAlign: align[ci] }}
+                    className="px-2 py-1 font-semibold text-left text-[var(--text-main)] border-b border-[var(--line)] whitespace-nowrap"
+                  >
+                    {renderInline(c, `t${key}h${ci}-`)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, ri) => (
+                <tr key={ri} className="border-b border-[var(--border-soft)]">
+                  {head.map((_, ci) => (
+                    <td key={ci} style={{ textAlign: align[ci] }} className="px-2 py-1 align-top">
+                      {renderInline(r[ci] ?? '', `t${key}r${ri}c${ci}-`)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>,
       );
       continue;
     }

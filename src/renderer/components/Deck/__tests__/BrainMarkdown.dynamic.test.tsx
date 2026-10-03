@@ -30,6 +30,48 @@ function render(source: string): void {
 }
 
 describe('renderBrainMarkdown', () => {
+  it('renders a GFM table: header, body rows, alignment, inline markup, in its own scroll box', () => {
+    render([
+      'Seen in CI:',
+      '| Test | Runner | Count |',
+      '|:---|:---:|---:|',
+      '| `a.test.ts` › **times out** | Windows | 3 |',
+      '| b \\| c | macOS |',
+      'after',
+    ].join('\n'));
+    const box = container.querySelector('[data-brain-md-table]') as HTMLElement;
+    expect(box.className).toContain('overflow-x-auto');
+    const table = box.querySelector('table')!;
+    expect([...table.querySelectorAll('th')].map((th) => th.textContent)).toEqual(['Test', 'Runner', 'Count']);
+    const rows = [...table.querySelectorAll('tbody tr')];
+    expect(rows).toHaveLength(2);
+    const first = [...rows[0].querySelectorAll('td')];
+    expect(first[0].querySelector('code')?.textContent).toBe('a.test.ts');
+    expect(first[0].querySelector('strong')?.textContent).toBe('times out');
+    expect((table.querySelectorAll('th')[1] as HTMLElement).style.textAlign).toBe('center');
+    expect((first[2] as HTMLElement).style.textAlign).toBe('right');
+    // An escaped pipe stays in its cell; a short row is padded to the header.
+    const second = [...rows[1].querySelectorAll('td')].map((td) => td.textContent);
+    expect(second).toEqual(['b | c', 'macOS', '']);
+    expect(container.textContent).toContain('Seen in CI:');
+    expect(container.textContent).toContain('after');
+    expect(container.textContent).not.toContain('|---');
+  });
+
+  it('keeps table cells as text: no HTML from a cell reaches the DOM', () => {
+    render('| a | b |\n|---|---|\n| <script>window.__md = 1</script> | <img src=x onerror="window.__md = 2"> |');
+    const table = container.querySelector('table')!;
+    expect(table.querySelector('script, img')).toBeNull();
+    expect(table.textContent).toContain('<script>window.__md = 1</script>');
+    expect((window as unknown as { __md?: unknown }).__md).toBeUndefined();
+  });
+
+  it('leaves pipe text without a delimiter row as a paragraph', () => {
+    render('a | b\nc | d');
+    expect(container.querySelector('table')).toBeNull();
+    expect(container.querySelectorAll('[data-brain-md-p]')).toHaveLength(2);
+  });
+
   it('renders fenced code blocks as <pre>, literal content preserved', () => {
     render('before\n```ts\nconst a = 1;\n**not bold in code**\n```\nafter');
     const pre = container.querySelector('[data-brain-md-code]');
