@@ -66,9 +66,14 @@ describe('app chrome overflow guard (#1688)', () => {
     expect(() => expectSheetClipped(`${base}@media (max-width: 600px) { .wmux-shell-body { overflow: hidden; } }`)).toThrow();
     expect(() => expectSheetClipped(`${base}@supports (display: grid) { @container (width > 1px) { .wmux-shell-body.flex-row-reverse { overflow-y: auto; } } }`)).toThrow();
     expect(() => expectSheetClipped(`${base}html[data-fullscreen] .wmux-shell-body { overflow-x: scroll; }`)).toThrow();
+    expect(() => expectSheetClipped(`${base}.wmux-shell-body:has(.foo .bar) { overflow: hidden; }`)).toThrow();
+    expect(() => expectSheetClipped(`${base}main > .wmux-shell-body:not(:has(.a > .b)) { overflow-y: auto; }`)).toThrow();
     expect(() => expectSheetClipped('@media print { .wmux-shell-body { overflow: clip; } }')).toThrow();
-    // A descendant of the sheet is a different box and may scroll.
+    // A descendant of the sheet is a different box and may scroll, and so may
+    // an ancestor that only mentions the sheet inside :has().
     expectSheetClipped(`${base}.wmux-shell-body .wmux-fleet-body { overflow-y: auto; }`);
+    expectSheetClipped(`${base}.wmux-shell-body:has(.x) .wmux-fleet-body { overflow-y: auto; }`);
+    expectSheetClipped(`${base}.wmux-frame:has(.wmux-shell-body) { overflow: hidden; }`);
   });
 });
 
@@ -94,8 +99,21 @@ function expectInstallBeforeMount(text: string): void {
  * may only set overflow to clip, and an unconditional rule must declare it.
  */
 function expectSheetClipped(css: string): void {
+  // Blank out every parenthesised argument (`:has(.a .b)`, `:not(...)`, nested
+  // too) first, so a combinator inside one cannot be mistaken for the last
+  // compound's boundary.
+  const stripArgs = (selector: string) => {
+    let out = '';
+    let depth = 0;
+    for (const ch of selector) {
+      if (ch === '(') depth++;
+      if (depth === 0) out += ch;
+      if (ch === ')' && depth > 0) depth--;
+    }
+    return out;
+  };
   const targetsSheet = (selector: string) =>
-    /\.wmux-shell-body(?![\w-])/.test(selector.trim().split(/\s*[\s>+~]\s*/).pop() ?? '');
+    /\.wmux-shell-body(?![\w-])/.test(stripArgs(selector).trim().split(/\s*[\s>+~]\s*/).pop() ?? '');
   let clipped = false;
   postcss.parse(css).walkRules((rule) => {
     if (!rule.selectors.some(targetsSheet)) return;
