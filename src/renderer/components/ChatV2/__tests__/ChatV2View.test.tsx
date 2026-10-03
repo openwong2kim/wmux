@@ -120,12 +120,13 @@ describe('ChatV2View', () => {
   });
 
   it('shows New chat on a free pane and never touches a PTY or creates a chat by itself', async () => {
-    mock.nextCwd = '/verified/repo';
+    mock.nextCwd = '/home/me/verified/repo';
     // The pane's own report is only a cue to ask again; the daemon's answer is shown.
     await act(async () => root.render(<ChatV2View paneId="daemon-free" active cwd="/reported/elsewhere" onTerminal={() => undefined} />));
     await flush();
     expect(host.querySelector('[data-chatv2="empty"]')?.textContent).toContain('New chat');
-    expect(host.querySelector('[data-chatv2-runs-in]')?.textContent).toBe('Runs in /verified/repo');
+    expect(host.querySelector('[data-chatv2-runs-in]')?.textContent).toBe('Runs in …/verified/repo');
+    expect(host.querySelector('[data-chatv2-runs-in]')?.getAttribute('title')).toBe('/home/me/verified/repo');
     expect(mock.calls.map((call) => call.method).sort()).toEqual(['bindingForPane', 'subscribe']);
     expect(ptyCalls).toEqual([]);
   });

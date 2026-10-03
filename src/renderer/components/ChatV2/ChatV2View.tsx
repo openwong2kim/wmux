@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { useT } from '../../hooks/useT';
 import type { ChatV2RunMode } from '../../../shared/chatv2/ipc';
-import { Composer, setDraft } from './Composer';
+import { Composer, setDraft, shortDir } from './Composer';
 import { FindBar } from './FindBar';
 import { sessionRows, type RowCache } from './rows';
 import { S } from './strings';
@@ -28,7 +28,7 @@ function RunsIn({ paneId, hint }: { paneId: string; hint?: string }) {
   }, [paneId, hint]);
   return (
     <p className="wmux-chatv2-runs-in" data-chatv2-runs-in title={cwd ?? undefined}>
-      {cwd ? S.runsIn(cwd) : S.runsInUnknown}
+      {cwd ? S.runsIn(shortDir(cwd)) : S.runsInUnknown}
     </p>
   );
 }
