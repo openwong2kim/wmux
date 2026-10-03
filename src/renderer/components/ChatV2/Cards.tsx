@@ -2,12 +2,32 @@ import { useEffect, useState } from 'react';
 import type { Block } from '../../../shared/chatv2/session';
 import { answersFromReply, type FormAnswers } from '../../../shared/chatv2/questions';
 import { isOtherOption, type UserQuestionPrompt, type UserQuestionReply } from '../../../shared/chatv2/userQuestion';
-import { answerArmedAt } from './viewState';
+import { CHATV2_ANSWER_ARM_MS } from '../../../shared/chatv2/limits';
 import { S } from './strings';
 
-/** False until `requestedAt + CHATV2_ANSWER_ARM_MS`, so a card that pops up under the pointer is not answered by accident. */
-export function useArmed(requestedAt: number): boolean {
-  const armedAt = answerArmedAt(requestedAt);
+// When this renderer first saw each request, by request id. The arm counts
+// from here, not from the daemon's stamp, so a clock skew between the two can
+// never arm a card early. Bounded: the oldest entries go first.
+const firstSeen = new Map<string, number>();
+const FIRST_SEEN_MAX = 256;
+
+export function seenAt(requestId: string, now = Date.now()): number {
+  let at = firstSeen.get(requestId);
+  if (at === undefined) {
+    at = now;
+    firstSeen.set(requestId, at);
+    if (firstSeen.size > FIRST_SEEN_MAX) firstSeen.delete(firstSeen.keys().next().value as string);
+  }
+  return at;
+}
+
+/**
+ * False until `CHATV2_ANSWER_ARM_MS` after this renderer first showed the
+ * request, so a card that pops up under the pointer is not answered by
+ * accident (and never before the registry's own arm).
+ */
+export function useArmed(requestId: string): boolean {
+  const armedAt = seenAt(requestId) + CHATV2_ANSWER_ARM_MS;
   const [armed, setArmed] = useState(() => Date.now() >= armedAt);
   useEffect(() => {
     const wait = armedAt - Date.now();
@@ -23,15 +43,18 @@ type Answer = (requestId: string, decision: 'allow' | 'deny', answers?: FormAnsw
 
 export function ApprovalCard({ block, onAnswer }: { block: Block; onAnswer: Answer }) {
   const approval = block.approval!;
-  const armed = useArmed(approval.requestedAt);
+  const armed = useArmed(approval.requestId);
   const [sending, setSending] = useState(false);
-  if (approval.decided) {
-    const label = approval.decided === 'allow' ? S.allowed : approval.decided === 'deny' ? S.denied : S.cancelled;
-    return <div className="wmux-chatv2-decided" data-decision={approval.decided}>{label}</div>;
+  // Answered here and accepted: shown as decided until the resolved push lands.
+  const [answered, setAnswered] = useState<'allow' | 'deny' | null>(null);
+  const decided = approval.decided ?? answered;
+  if (decided) {
+    const label = decided === 'allow' ? S.allowed : decided === 'deny' ? S.denied : S.cancelled;
+    return <div className="wmux-chatv2-decided" data-decision={decided}>{label}</div>;
   }
   const answer = async (decision: 'allow' | 'deny') => {
     setSending(true);
-    try { await onAnswer(approval.requestId, decision); } finally { setSending(false); }
+    try { if (await onAnswer(approval.requestId, decision)) setAnswered(decision); } finally { setSending(false); }
   };
   const disabled = !armed || sending;
   return (
@@ -46,14 +69,17 @@ export function ApprovalCard({ block, onAnswer }: { block: Block; onAnswer: Answ
 }
 
 export function QuestionCard({ prompt, onAnswer }: { prompt: UserQuestionPrompt; onAnswer: Answer }) {
-  const armed = useArmed(prompt.requestedAt);
+  const armed = useArmed(prompt.requestId);
   const [picked, setPicked] = useState<Record<string, string[]>>({});
   const [custom, setCustom] = useState<Record<string, string>>({});
   const [sending, setSending] = useState(false);
+  const [answered, setAnswered] = useState(false);
   const reply: UserQuestionReply = { kind: 'answered', answers: picked, custom };
   const answers = answersFromReply(prompt.questions, reply) ?? [];
   const complete = prompt.questions.every((_, index) => answers[index] && (answers[index].keys.length > 0 || !!answers[index].other));
   const toggle = (questionId: string, optionId: string, multi: boolean) => {
+    // Single choice: an option and a free-text answer exclude each other.
+    if (!multi) setCustom((prev) => ({ ...prev, [questionId]: '' }));
     setPicked((prev) => {
       const current = prev[questionId] ?? [];
       const next = multi ? (current.includes(optionId) ? current.filter((id) => id !== optionId) : [...current, optionId]) : [optionId];
@@ -62,9 +88,9 @@ export function QuestionCard({ prompt, onAnswer }: { prompt: UserQuestionPrompt;
   };
   const send = async (decision: 'allow' | 'deny') => {
     setSending(true);
-    try { await onAnswer(prompt.requestId, decision, decision === 'allow' ? answers : undefined); } finally { setSending(false); }
+    try { if (await onAnswer(prompt.requestId, decision, decision === 'allow' ? answers : undefined)) setAnswered(true); } finally { setSending(false); }
   };
-  const disabled = !armed || sending;
+  const disabled = !armed || sending || answered;
   return (
     <div className="wmux-chatv2-card" role="group" aria-label={prompt.title ?? prompt.questions[0]?.prompt} data-chatv2-question={prompt.requestId}>
       {prompt.questions.map((question) => (
@@ -90,7 +116,11 @@ export function QuestionCard({ prompt, onAnswer }: { prompt: UserQuestionPrompt;
               aria-label={S.answerOther}
               placeholder={S.answerOther}
               value={custom[question.id] ?? ''}
-              onChange={(event) => setCustom((prev) => ({ ...prev, [question.id]: event.target.value }))}
+              onChange={(event) => {
+                const value = event.target.value;
+                setCustom((prev) => ({ ...prev, [question.id]: value }));
+                if (!question.multiSelect && value) setPicked((prev) => ({ ...prev, [question.id]: [] }));
+              }}
             />
           )}
         </fieldset>

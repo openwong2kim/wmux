@@ -72,4 +72,22 @@ describe('sessionRows (fold-to-view mapping)', () => {
     expect(formatElapsed(65_000)).toBe('1m 5s');
     expect(formatElapsed(400)).toBe('1s');
   });
+
+  it('reuses the rows of blocks a push did not change', () => {
+    const events: HarnessEvent[] = [
+      { type: 'user.message', text: 'go', clientMessageId: 'c-00000001' },
+      { type: 'tool.started', callId: 't1', title: 'Read', kind: 'read', status: 'in_progress' },
+      { type: 'tool.updated', callId: 't1', status: 'completed' },
+      { type: 'message.delta', text: 'a' },
+    ];
+    const cache = new WeakMap();
+    const before = fold(events);
+    const first = sessionRows(before, cache);
+    const after = applyHarnessEvents(before, [{ seq: 99, at: 99_000, event: { type: 'message.delta', text: 'b' } }]);
+    const second = sessionRows(after, cache);
+    expect(second[0]).toBe(first[0]);
+    expect(second[1]).toBe(first[1]);
+    expect(second[2]).not.toBe(first[2]);
+    expect(second.at(-1)).toBe(first.at(-1)); // the live footer is unchanged
+  });
 });

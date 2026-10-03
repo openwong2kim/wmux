@@ -91,6 +91,7 @@ import {
   createDeadPaneRecovery,
   type DeadPaneSessionSnapshot,
 } from '../../../shared/ptyRecovery';
+import { isChatV2Covering } from '../ChatV2/coverage';
 
 interface ReconcilePtySession extends DeadPaneSessionSnapshot {
   id: string;
@@ -1030,8 +1031,12 @@ export default function AppLayout() {
       if (!activeSurface || activeSurface.surfaceType === 'browser' || activeSurface.surfaceType === 'editor' || activeSurface.surfaceType === 'diff' || activeSurface.surfaceType === 'remote-terminal') return;
 
       // Chat view shows the drop as a composer chip; typing the path into the
-      // hidden terminal would attach it where the user cannot see it.
-      if (activeSurface.viewMode === 'chat' && state.chatViewEnabled && activeSurface.ptyId && deliverChatDrop(activeSurface.ptyId, paths)) return;
+      // hidden terminal would attach it where the user cannot see it. With no
+      // composer to take it, the drop is dropped — never typed into the PTY.
+      if ((activeSurface.viewMode === 'chat' && state.chatViewEnabled) || isChatV2Covering(activeSurface.ptyId)) {
+        if (activeSurface.ptyId) deliverChatDrop(activeSurface.ptyId, paths);
+        return;
+      }
 
       const text = paths.map((p) => (p.includes(' ') ? `"${p}"` : p)).join(' ');
       // Route the joined path string through the paste chunker. Single-file

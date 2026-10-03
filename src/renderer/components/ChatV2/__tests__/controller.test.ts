@@ -90,4 +90,67 @@ describe('ChatV2Controller snapshot/push race', () => {
     expect(controller.current).toMatchObject({ phase: 'empty', error: { code: 'agent-running-in-pane' } });
     controller.dispose();
   });
+
+  it('subscribes again on resync, and keeps the known binding through a transient failure', async () => {
+    const host = await seeded();
+    const controller = new ChatV2Controller(host, PANE);
+    await controller.start();
+    const subscribes = () => host.calls.filter((call) => call.method === 'subscribe').length;
+    const before = subscribes();
+    host.resync([PANE]);
+    await flush();
+    expect(subscribes()).toBe(before + 1);
+    const known = knownBinding(PANE);
+    const realCall = host.call.bind(host);
+    host.call = (async (method: string, params: unknown) => (method === 'subscribe'
+      ? { ok: false, error: { code: 'unavailable', message: 'down' } }
+      : realCall(method as never, params as never))) as typeof host.call;
+    await controller.reload();
+    expect(controller.current.phase).toBe('unavailable');
+    expect(knownBinding(PANE)).toBe(known);
+    host.call = realCall;
+    await controller.reload();
+    expect(controller.current.phase).toBe('ready');
+    controller.dispose();
+  });
+
+  it('runs one history request at a time and asks again when the page was taken at another seq', async () => {
+    let clock = 9_000;
+    const host = createMockHost({ now: () => (clock += 3), windowBlocks: 2 });
+    await host.call('subscribe', { paneId: 'daemon-hist' });
+    await host.call('create', { paneId: 'daemon-hist', agent: 'claude', mode: 'default' });
+    host.emit('daemon-hist', [
+      { type: 'user.message', text: 'one', clientMessageId: 'c-00000001' },
+      { type: 'message.delta', text: 'a' },
+      { type: 'turn.ended', outcome: 'completed' },
+      { type: 'user.message', text: 'two', clientMessageId: 'c-00000002' },
+    ]);
+    const controller = new ChatV2Controller(host, 'daemon-hist');
+    await controller.start();
+    expect(controller.current.hasEarlier).toBe(true);
+    const realCall = host.call.bind(host);
+    let raced = false;
+    host.call = (async (method: string, params: unknown) => {
+      const result = await realCall(method as never, params as never);
+      if (method === 'history' && !raced) { raced = true; host.emit('daemon-hist', [{ type: 'message.delta', text: 'b' }]); }
+      return result;
+    }) as typeof host.call;
+    await Promise.all([controller.loadEarlier(), controller.loadEarlier()]);
+    const histories = host.calls.filter((call) => call.method === 'history').length;
+    expect(histories).toBe(2); // the raced page was dropped and asked for again; the second click did nothing
+    expect(controller.current.view?.session.blocks).toEqual(host.record('daemon-hist')!.session.blocks);
+    controller.dispose();
+  });
+
+  it('closes a handed-off chat and offers New chat again', async () => {
+    const host = await seeded();
+    host.emit(PANE, [{ type: 'turn.ended', outcome: 'completed' }]);
+    await host.call('toTerminal', { paneId: PANE, chatSessionId: host.record(PANE)!.binding.chatSessionId });
+    const controller = new ChatV2Controller(host, PANE);
+    await controller.start();
+    expect(controller.current.view?.binding.status).toBe('handed-off');
+    expect(await controller.close()).toBe(true);
+    expect(controller.current.phase).toBe('empty');
+    controller.dispose();
+  });
 });

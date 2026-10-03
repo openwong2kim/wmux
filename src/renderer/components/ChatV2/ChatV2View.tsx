@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { useT } from '../../hooks/useT';
 import type { ChatV2RunMode } from '../../../shared/chatv2/ipc';
-import { Composer } from './Composer';
+import { Composer, setDraft } from './Composer';
 import { FindBar } from './FindBar';
-import { sessionRows } from './rows';
+import { sessionRows, type RowCache } from './rows';
 import { S } from './strings';
 import { TranscriptRowView, type TranscriptActions } from './Transcript';
 import { useChatV2 } from './useChatV2';
@@ -16,17 +16,20 @@ const NEAR_BOTTOM_PX = 48;
  */
 export default function ChatV2View({ paneId, active, onTerminal }: { paneId: string; active: boolean; onTerminal: () => void }) {
   const t = useT();
-  const { state, controller } = useChatV2(paneId, active);
+  const { state, controller, retry } = useChatV2(paneId, active);
   const view = state.view;
   const [findOpen, setFindOpen] = useState(false);
   const [findId, setFindId] = useState<string | null>(null);
   const [newModel, setNewModel] = useState('');
   const [newMode, setNewMode] = useState<ChatV2RunMode>('default');
   const [handingOff, setHandingOff] = useState(false);
+  // Bumped to remount the composer when a draft moved under it.
+  const [draftRev, setDraftRev] = useState(0);
   const scroller = useRef<HTMLDivElement>(null);
   const pinned = useRef(true);
 
-  const rows = useMemo(() => (view ? sessionRows(view.session) : []), [view]);
+  const rowCache = useRef<RowCache>(new WeakMap());
+  const rows = useMemo(() => (view ? sessionRows(view.session, rowCache.current) : []), [view]);
   const actions = useMemo<TranscriptActions>(() => ({
     answer: (requestId, decision, answers) => controller?.answer(requestId, decision, answers) ?? Promise.resolve(false),
     body: (blockId, field) => controller?.body(blockId, field) ?? Promise.resolve(null),
@@ -64,7 +67,7 @@ export default function ChatV2View({ paneId, active, onTerminal }: { paneId: str
         <div className="wmux-chatv2-state" role="alert">
           <p>{state.error?.message ?? S.unavailable}</p>
           <div className="wmux-chatv2-card-actions">
-            <button type="button" className="wmux-chatv2-btn" onClick={() => void controller?.reload()}>{S.retry}</button>
+            <button type="button" className="wmux-chatv2-btn" onClick={() => (controller ? void controller.reload() : retry())}>{S.retry}</button>
             <button type="button" className="wmux-chatv2-btn" onClick={onTerminal}>{t('chat.openTerminal')}</button>
           </div>
         </div>
@@ -86,13 +89,23 @@ export default function ChatV2View({ paneId, active, onTerminal }: { paneId: str
         <div className="wmux-chatv2-dock">
           {error}
           <Composer
+            paneId={paneId}
             draftKey={`${paneId}:new`}
             placeholder={S.placeholderNew}
             disabled={false}
             running={false}
             canStop={false}
+            canAttach={false}
             chips={{ model: newModel, effort: '', mode: newMode, editable: true, onModel: setNewModel, onMode: setNewMode }}
-            onSend={async (text) => (await controller.create({ agent: 'claude', mode: newMode, model: newModel })) && controller.send(text)}
+            onSend={async (text, attachments) => {
+              if (!(await controller.create({ agent: 'claude', mode: newMode, model: newModel }))) return false;
+              setDraft(`${paneId}:new`, '');
+              const chatSessionId = controller.current.view?.binding.chatSessionId;
+              if (await controller.send(text, attachments)) return true;
+              // The chat exists but the first message did not go: keep it in that chat's composer.
+              if (chatSessionId) { setDraft(`${paneId}:${chatSessionId}`, text); setDraftRev((rev) => rev + 1); }
+              return false;
+            }}
             onStop={() => undefined}
           />
         </div>
@@ -131,19 +144,23 @@ export default function ChatV2View({ paneId, active, onTerminal }: { paneId: str
       <div className="wmux-chatv2-dock">
         {error}
         {handedOff ? (
-          <div className="wmux-chatv2-notice">
-            {S.handedOff}
+          <div className="wmux-chatv2-notice wmux-chatv2-handed-off">
+            <span>{S.handedOff}</span>
             <button type="button" className="wmux-chatv2-link" onClick={onTerminal}>{t('chat.openTerminal')}</button>
+            <button type="button" className="wmux-chatv2-btn" title={S.startNewChatHint} onClick={() => void controller.close()}>{S.startNewChat}</button>
           </div>
         ) : (
           <Composer
+            key={`${binding.chatSessionId}:${draftRev}`}
+            paneId={paneId}
+            canAttach={binding.capabilities.images}
             draftKey={`${paneId}:${binding.chatSessionId}`}
             placeholder={S.placeholder}
             disabled={!binding.capabilities.send || binding.status === 'failed'}
             running={running}
             canStop={binding.capabilities.interrupt}
             chips={{ model: binding.model, effort: view.session.modelSettings.effort ?? '', mode: binding.mode, editable: false }}
-            onSend={(text) => controller.send(text)}
+            onSend={(text, attachments) => controller.send(text, attachments)}
             onStop={() => void controller.interrupt()}
             extra={canHandOff ? (
               <button type="button" className="wmux-chatv2-btn" title={S.continueInTerminalHint} disabled={handingOff} onClick={() => void continueInTerminal()}>

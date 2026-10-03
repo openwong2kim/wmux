@@ -10,6 +10,7 @@ import type {
   ChatV2BridgeApi,
   ChatV2Error,
   ChatV2EventsPush,
+  ChatV2ResultByMethod,
   ChatV2RunMode,
 } from '../../../shared/chatv2/ipc';
 import { applyPushToView, prependHistory, RESNAPSHOT, stateFromSnapshot, type ChatV2ViewState } from './viewState';
@@ -45,6 +46,10 @@ export function setKnownBinding(paneId: string, binding: KnownBinding): void {
   for (const listener of [...bindingListeners]) listener();
 }
 
+export function forgetKnownBinding(paneId: string): void {
+  if (knownBindings.delete(paneId)) for (const listener of [...bindingListeners]) listener();
+}
+
 export function onKnownBindings(listener: () => void): () => void {
   bindingListeners.add(listener);
   return () => { bindingListeners.delete(listener); };
@@ -65,6 +70,8 @@ export class ChatV2Controller {
   private generation = 0;
   private disposed = false;
   private offs: Array<() => void> = [];
+  private snapshotGeneration = 0;
+  private loadingEarlier = false;
 
   constructor(private readonly bridge: ChatV2BridgeApi, readonly paneId: string) {}
 
@@ -80,8 +87,9 @@ export class ChatV2Controller {
   private set(patch: Partial<ChatV2ControllerState>): void {
     if (this.disposed) return;
     this.state = { ...this.state, ...patch };
-    const { view, phase } = this.state;
-    const known = view ? view.binding : phase === 'empty' ? null : phase === 'unavailable' ? false : undefined;
+    // A transient failure keeps whatever was known; only "no chat-v2 host" pins the projection.
+    const { view, phase, error } = this.state;
+    const known = view ? view.binding : phase === 'empty' ? null : phase === 'unavailable' && error?.code === 'not-implemented' ? false : undefined;
     if (known !== undefined) setKnownBinding(this.paneId, known);
     for (const listener of [...this.listeners]) listener(this.state);
   }
@@ -90,12 +98,27 @@ export class ChatV2Controller {
   async start(): Promise<void> {
     this.offs.push(this.bridge.onEvents((push) => this.onPush(push)));
     this.offs.push(this.bridge.onResync((push) => { if (push.paneIds.includes(this.paneId)) void this.reload(); }));
+    await this.reload();
+  }
+
+  /**
+   * Subscribe (again), then snapshot. Used on start, Retry, resync and a
+   * daemon reconnect: a lost subscription is only recovered by subscribing.
+   */
+  async reload(): Promise<void> {
+    if (this.disposed) return;
     const generation = ++this.generation;
     this.loading = true;
-    const result = await this.bridge.call('subscribe', { paneId: this.paneId });
+    let result: ChatV2ResultByMethod['subscribe'];
+    try {
+      result = await this.bridge.call('subscribe', { paneId: this.paneId });
+    } catch {
+      result = { ok: false, error: { code: 'unavailable', message: 'Chat is unavailable.' } };
+    }
     if (this.disposed || generation !== this.generation) return;
     if (!result.ok) {
       this.loading = false;
+      this.buffer = [];
       this.set({ phase: 'unavailable', error: result.error });
       return;
     }
@@ -121,19 +144,6 @@ export class ChatV2Controller {
     if (buffered.length) void this.snapshot(buffered[buffered.length - 1].chatSessionId);
   }
 
-  /** Re-read everything (daemon reconnect, or a stale epoch from an action). */
-  async reload(): Promise<void> {
-    const chatSessionId = this.state.view?.binding.chatSessionId;
-    if (chatSessionId) return this.snapshot(chatSessionId);
-    const generation = ++this.generation;
-    this.loading = true;
-    const result = await this.bridge.call('bindingForPane', { paneId: this.paneId });
-    if (this.disposed || generation !== this.generation) return;
-    if (result.ok && result.binding) await this.snapshot(result.binding.chatSessionId);
-    else if (result.ok) this.becomeEmpty();
-    else { this.loading = false; this.set({ phase: 'unavailable', error: result.error }); }
-  }
-
   private async snapshot(chatSessionId: string): Promise<void> {
     const generation = ++this.generation;
     this.loading = true;
@@ -146,6 +156,7 @@ export class ChatV2Controller {
       this.set({ phase: 'unavailable', error: result.error });
       return;
     }
+    this.snapshotGeneration += 1;
     let view = stateFromSnapshot(result.snapshot);
     const buffered = this.buffer;
     this.buffer = [];
@@ -188,7 +199,7 @@ export class ChatV2Controller {
     return true;
   }
 
-  async send(text: string): Promise<boolean> {
+  async send(text: string, attachments: string[] = []): Promise<boolean> {
     const view = this.state.view;
     if (!view) return false;
     this.set({ error: null });
@@ -198,6 +209,7 @@ export class ChatV2Controller {
       epoch: view.epoch,
       clientMessageId: clientMessageId(),
       text,
+      ...(attachments.length ? { attachments } : {}),
     });
     if (this.disposed) return false;
     return result.ok ? true : this.fail(result.error);
@@ -235,22 +247,49 @@ export class ChatV2Controller {
     return result.ok ? true : this.fail(result.error);
   }
 
+  /**
+   * Prepend the page before the window. One request at a time; a page taken
+   * at another seq or across a re-snapshot is dropped and asked for again.
+   */
   async loadEarlier(): Promise<void> {
+    if (this.loadingEarlier) return;
+    this.loadingEarlier = true;
+    try {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const view = this.state.view;
+        const first = view?.session.blocks[0];
+        if (!view || !first) return;
+        const generation = this.snapshotGeneration;
+        const result = await this.bridge.call('history', {
+          paneId: this.paneId,
+          chatSessionId: view.binding.chatSessionId,
+          epoch: view.epoch,
+          beforeBlockId: first.id,
+        });
+        if (this.disposed || generation !== this.snapshotGeneration) return;
+        if (!result.ok) { this.fail(result.error); return; }
+        const current = this.state.view;
+        if (!current || result.page.seq !== current.lastSeq || current.session.blocks[0]?.id !== first.id) continue;
+        const next = prependHistory(current, result.page);
+        if (!next) { void this.reload(); return; }
+        this.set({ view: next, hasEarlier: !result.page.reachedStart });
+        return;
+      }
+    } finally {
+      this.loadingEarlier = false;
+    }
+  }
+
+  /** Drop the record (a handed-off tombstone, say); the pane then offers New chat. */
+  async close(): Promise<boolean> {
     const view = this.state.view;
-    const first = view?.session.blocks[0];
-    if (!view || !first) return;
-    const result = await this.bridge.call('history', {
-      paneId: this.paneId,
-      chatSessionId: view.binding.chatSessionId,
-      epoch: view.epoch,
-      beforeBlockId: first.id,
-    });
-    if (this.disposed || this.state.view !== view && this.state.view?.epoch !== view.epoch) return;
-    if (!result.ok) { this.fail(result.error); return; }
-    const current = this.state.view;
-    const next = current && prependHistory(current, result.page);
-    if (!next) { void this.reload(); return; }
-    this.set({ view: next, hasEarlier: !result.page.reachedStart });
+    if (!view) return false;
+    this.set({ error: null });
+    const result = await this.bridge.call('close', { paneId: this.paneId, chatSessionId: view.binding.chatSessionId });
+    if (this.disposed) return false;
+    if (!result.ok) return this.fail(result.error);
+    await this.reload();
+    return true;
   }
 
   async body(blockId: string, field: 'text' | 'detail' | 'output'): Promise<string | null> {

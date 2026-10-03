@@ -39,27 +39,37 @@ afterEach(() => {
 const flush = async () => { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); };
 
 describe('approval arm', () => {
-  it('keeps Allow and Deny disabled until requestedAt + 1.5 s', async () => {
+  it('keeps Allow and Deny disabled for 1.5 s after the card is first shown, whatever the daemon stamp says', async () => {
     vi.useFakeTimers({ now: 100_000 });
     const onAnswer = vi.fn(async () => true);
-    const block: Block = { id: '3.1', role: 'tool', text: 'Write', tool: { callId: 't', title: 'Write' }, approval: { requestId: 'r1', requestedAt: 99_500 } };
+    // Stamped long before "now" by a daemon whose clock runs behind: still armed from local receipt.
+    const block: Block = { id: '3.1', role: 'tool', text: 'Write', tool: { callId: 't', title: 'Write' }, approval: { requestId: 'r-arm-1', requestedAt: 10_000 } };
     await act(async () => root.render(<ApprovalCard block={block} onAnswer={onAnswer} />));
     const buttons = () => [...host.querySelectorAll('button')];
     expect(buttons().map((b) => b.disabled)).toEqual([true, true]);
     act(() => buttons()[0].click());
     expect(onAnswer).not.toHaveBeenCalled();
-    await act(async () => { vi.advanceTimersByTime(CHATV2_ANSWER_ARM_MS - 500 - 1); });
+    await act(async () => { vi.advanceTimersByTime(CHATV2_ANSWER_ARM_MS - 1); });
     expect(buttons()[0].disabled).toBe(true);
     await act(async () => { vi.advanceTimersByTime(1); });
     expect(buttons().map((b) => b.disabled)).toEqual([false, false]);
     await act(async () => { buttons()[0].click(); });
-    expect(onAnswer).toHaveBeenCalledWith('r1', 'allow');
+    expect(onAnswer).toHaveBeenCalledWith('r-arm-1', 'allow');
+    // Accepted: shown as decided until the resolved push arrives, so it cannot be answered twice.
+    expect(host.querySelector('[data-decision="allow"]')).not.toBeNull();
+    expect(host.querySelectorAll('button')).toHaveLength(0);
   });
 
-  it('is armed at once for a request older than the arm window', async () => {
-    vi.useFakeTimers({ now: 100_000 });
-    const block: Block = { id: '3.1', role: 'tool', text: 'Bash', approval: { requestId: 'r2', requestedAt: 10_000 } };
-    await act(async () => root.render(<ApprovalCard block={block} onAnswer={async () => true} />));
+  it('stays armed when a card it already showed mounts again, and unlocks after a refused answer', async () => {
+    vi.useFakeTimers({ now: 200_000 });
+    const block: Block = { id: '4.1', role: 'tool', text: 'Bash', approval: { requestId: 'r-arm-2', requestedAt: 200_000 } };
+    const onAnswer = vi.fn(async () => false);
+    await act(async () => root.render(<ApprovalCard block={block} onAnswer={onAnswer} />));
+    await act(async () => { vi.advanceTimersByTime(CHATV2_ANSWER_ARM_MS); });
+    await act(async () => root.render(<div />));
+    await act(async () => root.render(<ApprovalCard block={block} onAnswer={onAnswer} />));
+    expect([...host.querySelectorAll('button')].every((b) => !b.disabled)).toBe(true);
+    await act(async () => { host.querySelector('button')!.click(); });
     expect([...host.querySelectorAll('button')].every((b) => !b.disabled)).toBe(true);
   });
 });
@@ -68,7 +78,7 @@ describe('question card', () => {
   it('arms like an approval and answers with the picked option keys and free text', async () => {
     vi.useFakeTimers({ now: 50_000 });
     const onAnswer = vi.fn(async () => true);
-    const prompt = { requestId: 'q1', requestedAt: 50_000, questions: [{ id: 'q0', prompt: 'Which format?', multiSelect: false, allowCustom: true, options: [{ id: 'a', label: 'JSON' }, { id: 'b', label: 'YAML' }] }] };
+    const prompt = { requestId: 'q-card-1', requestedAt: 50_000, questions: [{ id: 'q0', prompt: 'Which format?', multiSelect: false, allowCustom: true, options: [{ id: 'a', label: 'JSON' }, { id: 'b', label: 'YAML' }] }] };
     await act(async () => root.render(<QuestionCard prompt={prompt} onAnswer={onAnswer} />));
     const submit = () => [...host.querySelectorAll('button')].find((b) => b.textContent === 'Submit')!;
     await act(async () => { (host.querySelector('input[type="radio"]') as HTMLInputElement).click(); });
@@ -76,7 +86,29 @@ describe('question card', () => {
     await act(async () => { vi.advanceTimersByTime(CHATV2_ANSWER_ARM_MS); });
     expect(submit().disabled).toBe(false);
     await act(async () => { submit().click(); });
-    expect(onAnswer).toHaveBeenCalledWith('q1', 'allow', [{ keys: ['a'] }]);
+    expect(onAnswer).toHaveBeenCalledWith('q-card-1', 'allow', [{ keys: ['a'] }]);
+  });
+
+  it('makes a single-choice option and the free-text answer exclusive', async () => {
+    vi.useFakeTimers({ now: 60_000 });
+    const onAnswer = vi.fn(async () => true);
+    const prompt = { requestId: 'q-card-2', requestedAt: 60_000, questions: [{ id: 'q0', prompt: 'Which?', multiSelect: false, allowCustom: true, options: [{ id: 'a', label: 'A' }] }] };
+    await act(async () => root.render(<QuestionCard prompt={prompt} onAnswer={onAnswer} />));
+    await act(async () => { vi.advanceTimersByTime(CHATV2_ANSWER_ARM_MS); });
+    const radio = host.querySelector('input[type="radio"]') as HTMLInputElement;
+    const other = host.querySelector('input.wmux-chatv2-input-line') as HTMLInputElement;
+    await act(async () => { radio.click(); });
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(other, 'my own');
+      other.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(radio.checked).toBe(false);
+    await act(async () => { radio.click(); });
+    expect(other.value).toBe('');
+    await act(async () => { [...host.querySelectorAll('button')].find((b) => b.textContent === 'Submit')!.click(); });
+    expect(onAnswer).toHaveBeenCalledWith('q-card-2', 'allow', [{ keys: ['a'] }]);
+    // Accepted: the card stays locked until the question resolves.
+    expect([...host.querySelectorAll('button')].every((b) => b.disabled)).toBe(true);
   });
 });
 
@@ -140,6 +172,25 @@ describe('ChatV2View', () => {
     expect(host.querySelector('[data-brain-md-code]')?.textContent).toBe('const a = 1;\nconst b = 2;');
   });
 
+  it('offers the cut tail of a capped reply on request', async () => {
+    await mock.call('subscribe', { paneId: 'daemon-cap' });
+    await mock.call('create', { paneId: 'daemon-cap', agent: 'claude', mode: 'default' });
+    await act(async () => root.render(<ChatV2View paneId="daemon-cap" active onTerminal={() => undefined} />));
+    await flush();
+    await act(async () => {
+      mock.emit('daemon-cap', [
+        { type: 'user.message', text: 'long', clientMessageId: 'c-00000001' },
+        { type: 'message.delta', text: 'x'.repeat(33 * 1024) },
+        { type: 'turn.ended', outcome: 'completed' },
+      ]);
+    });
+    const more = host.querySelector('.wmux-chatv2-assistant [data-truncated]') as HTMLButtonElement;
+    expect(more?.textContent).toBe('Show full text');
+    await act(async () => { more.click(); });
+    await flush();
+    expect(host.querySelector('.wmux-chatv2-assistant')?.textContent).toContain('The full output is no longer kept.');
+  });
+
   it('shows a handed-off chat read-only', async () => {
     await mock.call('subscribe', { paneId: 'daemon-ho' });
     await mock.call('create', { paneId: 'daemon-ho', agent: 'claude', mode: 'default' });
@@ -148,5 +199,9 @@ describe('ChatV2View', () => {
     await flush();
     expect(host.querySelector('textarea')).toBeNull();
     expect(host.textContent).toContain('This conversation moved to Terminal.');
+    // New chat drops the tombstone and brings the composer back.
+    await act(async () => { [...host.querySelectorAll('button')].find((b) => b.textContent === 'New chat')!.click(); });
+    await flush();
+    expect(host.querySelector('[data-chatv2="empty"]')).not.toBeNull();
   });
 });

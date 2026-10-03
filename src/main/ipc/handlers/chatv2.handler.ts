@@ -20,11 +20,17 @@ import {
 import { wrapHandler } from '../wrapHandler';
 
 /**
- * Panes the renderer subscribed, with a count per view. Module level on
- * purpose: registerAllHandlers re-runs on every daemon (re)connect, and the
- * reconnect rule needs the set that outlived the old connection.
+ * Panes the renderer subscribed, each with the generation of its latest
+ * subscribe request (so a late failure of an older request cannot drop a newer
+ * subscription). Subscribing is idempotent per pane. Module level on purpose:
+ * registerAllHandlers re-runs on every daemon (re)connect, and the reconnect
+ * rule needs the set that outlived the old connection.
  */
 const subscribed = new Map<string, number>();
+let generation = 0;
+
+/** Staged images older than this are removed when the next one is staged. */
+const STAGED_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 const unavailable = () => chatV2Error('unavailable', 'Chat is unavailable.');
 
@@ -38,6 +44,7 @@ export async function stageChatV2Attachment(file: unknown, wmuxDir = getWmuxDir(
     if (stat.size > CHAT_IMAGE_MAX_BYTES) return { ok: false, reason: 'too-large' };
     const dir = path.join(wmuxDir, CHATV2_ATTACHMENT_DIR);
     await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+    await pruneStaged(dir);
     const target = path.join(dir, `${randomUUID()}${path.extname(file).toLowerCase()}`);
     await fs.copyFile(file, target);
     await fs.chmod(target, 0o600);
@@ -45,6 +52,19 @@ export async function stageChatV2Attachment(file: unknown, wmuxDir = getWmuxDir(
   } catch {
     return { ok: false, reason: 'missing' };
   }
+}
+
+/** Remove staged images past STAGED_MAX_AGE_MS (best effort, regular files directly in `dir` only). */
+async function pruneStaged(dir: string, now = Date.now()): Promise<void> {
+  let names: string[];
+  try { names = await fs.readdir(dir); } catch { return; }
+  await Promise.all(names.map(async (name) => {
+    const file = path.join(dir, name);
+    try {
+      const stat = await fs.lstat(file);
+      if (stat.isFile() && now - stat.mtimeMs > STAGED_MAX_AGE_MS) await fs.unlink(file);
+    } catch { /* gone or unreadable: leave it */ }
+  }));
 }
 
 /**
@@ -75,6 +95,8 @@ export function registerChatV2Handlers(client: DaemonClient | undefined, getWind
     if (next === wc) return;
     wc?.off('did-start-navigation', onNavigation);
     wc?.off('render-process-gone', clear);
+    // A new window's renderer subscribes for itself.
+    if (wc) clear();
     wc = next;
     wc?.on('did-start-navigation', onNavigation);
     wc?.on('render-process-gone', clear);
@@ -93,14 +115,16 @@ export function registerChatV2Handlers(client: DaemonClient | undefined, getWind
   };
   client?.on('event', onEvent);
 
-  const forward = async (method: ChatV2Method, params: unknown) => {
-    if (disposed || !client?.isConnected) return unavailable();
+  /** `thrown` = no answer (timeout, dropped socket): the daemon's side is unknown. */
+  const call = async (method: ChatV2Method, params: unknown): Promise<{ result: unknown; thrown: boolean }> => {
+    if (disposed || !client?.isConnected) return { result: unavailable(), thrown: false };
     try {
-      return await client.rpc(CHATV2_RPC[method], params as Record<string, unknown>, { timeoutMs: 30_000 });
+      return { result: await client.rpc(CHATV2_RPC[method], params as Record<string, unknown>, { timeoutMs: 30_000 }), thrown: false };
     } catch {
-      return unavailable();
+      return { result: unavailable(), thrown: true };
     }
   };
+  const forward = async (method: ChatV2Method, params: unknown) => (await call(method, params)).result;
 
   const channels: string[] = [];
   for (const method of Object.keys(CHATV2_RPC) as ChatV2Method[]) {
@@ -113,21 +137,18 @@ export function registerChatV2Handlers(client: DaemonClient | undefined, getWind
       if (!params) return chatV2Error('invalid-params', `Invalid ${method} request.`);
       if (method === 'subscribe') {
         const { paneId } = params as { paneId: string };
-        // Count first, so a push that races the reply is already forwarded.
-        subscribed.set(paneId, (subscribed.get(paneId) ?? 0) + 1);
-        const result = await forward(method, params) as { ok?: boolean };
-        if (!result?.ok) {
-          const left = (subscribed.get(paneId) ?? 1) - 1;
-          if (left > 0) subscribed.set(paneId, left); else subscribed.delete(paneId);
+        // Record first, so a push that races the reply is already forwarded.
+        const mine = ++generation;
+        subscribed.set(paneId, mine);
+        const { result, thrown } = await call(method, params);
+        if (!(result as { ok?: boolean })?.ok && subscribed.get(paneId) === mine) {
+          subscribed.delete(paneId);
+          // No answer: the daemon may hold the subscription anyway. Drop it there too.
+          if (thrown && client?.isConnected) void client.rpc(CHATV2_RPC.unsubscribe, { paneId }).catch(() => undefined);
         }
         return result;
       }
-      if (method === 'unsubscribe') {
-        const { paneId } = params as { paneId: string };
-        const left = (subscribed.get(paneId) ?? 0) - 1;
-        if (left > 0) { subscribed.set(paneId, left); return { ok: true }; }
-        subscribed.delete(paneId);
-      }
+      if (method === 'unsubscribe') subscribed.delete((params as { paneId: string }).paneId);
       return forward(method, params);
     }));
   }
@@ -136,11 +157,15 @@ export function registerChatV2Handlers(client: DaemonClient | undefined, getWind
   ipcMain.handle(CHATV2_IPC.stageAttachment, wrapHandler(CHATV2_IPC.stageAttachment, (e: IpcMainInvokeEvent, file: unknown): Promise<ChatV2StageAttachmentResult> =>
     trusted(e) ? stageChatV2Attachment(file) : Promise.resolve({ ok: false, reason: 'missing' })));
 
-  // Reconnect rule: subscribe again for every pane, then tell the renderer to re-snapshot them.
+  // Reconnect rule: subscribe again for every pane, then tell the renderer to
+  // re-snapshot them. A pane whose subscribe failed leaves the set; the
+  // renderer's re-snapshot subscribes it again.
   if (client?.isConnected && subscribed.size) {
-    const panes = [...subscribed.keys()];
-    void Promise.all(panes.map((paneId) => client.rpc(CHATV2_RPC.subscribe, { paneId }).catch(() => undefined)))
-      .then(() => send(CHATV2_IPC.resync, { paneIds: panes }));
+    const panes = [...subscribed.entries()];
+    void Promise.all(panes.map(async ([paneId, gen]) => {
+      const result = await client.rpc(CHATV2_RPC.subscribe, { paneId }, { timeoutMs: 30_000 }).catch(() => null) as { ok?: boolean } | null;
+      if (!result?.ok && subscribed.get(paneId) === gen) subscribed.delete(paneId);
+    })).then(() => send(CHATV2_IPC.resync, { paneIds: panes.map(([paneId]) => paneId) }));
   }
 
   return () => {

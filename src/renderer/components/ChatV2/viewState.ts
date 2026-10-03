@@ -6,7 +6,6 @@
  */
 import { applyHarnessEvents } from '../../../shared/chatv2/apply';
 import type { ChatV2Binding, ChatV2EventsPush, ChatV2HistoryPage, ChatV2Snapshot } from '../../../shared/chatv2/ipc';
-import { CHATV2_ANSWER_ARM_MS } from '../../../shared/chatv2/limits';
 import type { Session } from '../../../shared/chatv2/session';
 
 export interface ChatV2ViewState {
@@ -57,11 +56,6 @@ export function prependHistory(state: ChatV2ViewState, page: ChatV2HistoryPage):
   if (page.epoch !== state.epoch) return null;
   if (page.baseIndex + page.blocks.length !== state.baseIndex) return null;
   return { ...state, baseIndex: page.baseIndex, session: { ...state.session, blocks: [...page.blocks, ...state.session.blocks] } };
-}
-
-/** Buttons on an approval or question card answer from this time (the registry rule). */
-export function answerArmedAt(requestedAt: number): number {
-  return requestedAt + CHATV2_ANSWER_ARM_MS;
 }
 
 /** Which view a terminal surface shows (contract: View selection). */

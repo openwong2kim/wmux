@@ -85,12 +85,30 @@ function footer(session: Session, user: Block, open: boolean): TranscriptRow | n
   };
 }
 
-export function sessionRows(session: Session): TranscriptRow[] {
+/**
+ * Rows built from the same block (or question) object are reused, so a push
+ * that changed one block re-renders one row. Pass one cache per view.
+ */
+export type RowCache = WeakMap<object, TranscriptRow | null>;
+
+// Footers of the previous call per cache (a footer depends on more than its block).
+const footerCache = new WeakMap<RowCache, WeakMap<Block, TranscriptRow | null>>();
+
+function sameFooter(a: TranscriptRow | null | undefined, b: TranscriptRow | null): boolean {
+  if (!a || !b || a.kind !== 'footer' || b.kind !== 'footer') return a === b;
+  return a.live === b.live && a.model === b.model && a.startedAt === b.startedAt && a.durationMs === b.durationMs && a.outcome === b.outcome;
+}
+
+export function sessionRows(session: Session, cache: RowCache = new WeakMap()): TranscriptRow[] {
   const rows: TranscriptRow[] = [];
+  const footers = new WeakMap<Block, TranscriptRow | null>();
   let turn: Block | null = null;
   const close = (open: boolean) => {
     if (!turn) return;
-    const row = footer(session, turn, open);
+    const fresh = footer(session, turn, open);
+    const previous = footerCache.get(cache)?.get(turn);
+    const row = previous !== undefined && sameFooter(previous, fresh) ? previous : fresh;
+    footers.set(turn, row);
     if (row) rows.push(row);
   };
   for (const block of session.blocks) {
@@ -98,11 +116,24 @@ export function sessionRows(session: Session): TranscriptRow[] {
       close(false);
       turn = block;
     }
-    const row = blockRow(block);
+    let row = cache.get(block);
+    if (row === undefined) {
+      row = blockRow(block);
+      cache.set(block, row);
+    }
     if (row) rows.push(row);
   }
-  if (session.pendingQuestion) rows.push({ kind: 'question', key: `q:${session.pendingQuestion.requestId}`, prompt: session.pendingQuestion });
+  const prompt = session.pendingQuestion;
+  if (prompt) {
+    let row = cache.get(prompt);
+    if (row === undefined) {
+      row = { kind: 'question', key: `q:${prompt.requestId}`, prompt };
+      cache.set(prompt, row);
+    }
+    if (row) rows.push(row);
+  }
   close(true);
+  footerCache.set(cache, footers);
   return rows;
 }
 

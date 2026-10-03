@@ -16,6 +16,7 @@ import { runProjectCommand } from '../../utils/projectCommands';
 import { applyProjectLayoutFresh } from '../../utils/projectConfigProbe';
 import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
 import { isRemoteMirrorVisible } from '../../stores/slices/remoteWorkspacesSlice';
+import { isChatV2Covering } from '../ChatV2/coverage';
 
 // ---------------------------------------------------------------------------
 // SVG Icons (inline, no external dependency)
@@ -664,7 +665,8 @@ export default function CommandPalette() {
           const pane = findPaneLeaf(ws.rootPane, ws.activePaneId);
           if (pane) {
             const surface = pane.surfaces.find((s) => s.id === pane.activeSurfaceId);
-            if (surface?.ptyId) {
+            // Never into a shell the chat-v2 view hides.
+            if (surface?.ptyId && !isChatV2Covering(surface.ptyId)) {
               // Route through the paste chunker. Recent commands originate
               // from the user's `inputBuffer`, which accumulates raw paste
               // payloads (`useTerminal.ts: terminal.onData`) — so a

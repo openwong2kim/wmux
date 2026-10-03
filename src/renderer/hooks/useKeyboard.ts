@@ -17,6 +17,7 @@ import {
 import { disposePanePtys } from '../utils/paneTeardown';
 import { mentionKeyClaim } from '../utils/agentMention';
 import { OPEN_MENTION_PICKER_EVENT } from '../utils/agentMentionInsert';
+import { isChatV2Covering } from '../components/ChatV2/coverage';
 
 // Lightweight bookmark toast — reuses the same DOM element pattern as showCopyToast
 let bookmarkToastTimer: ReturnType<typeof setTimeout> | null = null;
@@ -76,6 +77,17 @@ const FONT_SIZE_DEFAULT = 14;
 const FONT_SIZE_STEP = 1;
 
 /** Clamp a candidate terminal font size into the [MIN, MAX] zoom range. */
+
+/** The key came from the chat-v2 view, or the active pane is covered by it. */
+function chatV2OwnsKey(target: EventTarget | null): boolean {
+  if (target instanceof Element && target.closest('[data-chatv2-surface]')) return true;
+  const state = useStore.getState();
+  const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
+  const leaf = ws ? findLeaf(ws.rootPane, ws.activePaneId) : null;
+  const surface = leaf?.surfaces.find((s) => s.id === leaf.activeSurfaceId);
+  return isChatV2Covering(surface?.ptyId);
+}
+
 export function clampFontSize(n: number): number {
   return Math.max(FONT_SIZE_MIN, Math.min(FONT_SIZE_MAX, n));
 }
@@ -571,6 +583,9 @@ export function useKeyboard() {
         const pressed = formatKeyCombo(literalCtrl, shift, alt, key);
         const match = customKeybindings.find((kb) => kb.key === pressed);
         if (!match) return false;
+        // A chat-v2 pane hides its shell: a macro typed there would be input
+        // the user cannot see, so the key is left to the chat.
+        if (chatV2OwnsKey(e.target)) return false;
         e.preventDefault();
         e.stopImmediatePropagation();
         const state = store.getState();
@@ -618,7 +633,7 @@ export function useKeyboard() {
               const leaf = findLeaf(ws.rootPane, ws.activePaneId);
               if (leaf) {
                 const surface = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId);
-                if (surface?.ptyId) {
+                if (surface?.ptyId && !isChatV2Covering(surface.ptyId) && !chatV2OwnsKey(e.target)) {
                   window.electronAPI.pty.write(surface.ptyId, byte);
                 }
               }

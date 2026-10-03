@@ -41,13 +41,33 @@ function PreviewBody({ preview }: { preview: ToolPreview }) {
   return preview.output ? <pre className="wmux-chatv2-pre">{preview.output}</pre> : null;
 }
 
-function FullBody({ block, field, actions }: { block: Block; field: 'detail' | 'output'; actions: TranscriptActions }) {
+/** The part a byte cap cut, fetched on request (`bodies`). undefined = not asked, null = no longer kept. */
+function useFullBody(block: Block, field: 'text' | 'detail' | 'output', actions: TranscriptActions) {
   const [text, setText] = useState<string | null | undefined>(undefined);
-  if (text) return <pre className="wmux-chatv2-pre">{text}</pre>;
+  const load = () => void actions.body(block.id, field).then(setText);
+  return { text, load };
+}
+
+function FullBody({ block, field, actions }: { block: Block; field: 'detail' | 'output'; actions: TranscriptActions }) {
+  const { text, load } = useFullBody(block, field, actions);
+  if (typeof text === 'string') return <pre className="wmux-chatv2-pre">{text}</pre>;
+  if (text === null) return <span className="wmux-chatv2-meta">{S.bodyGone}</span>;
+  return <button type="button" className="wmux-chatv2-link" onClick={load}>{S.showMore}</button>;
+}
+
+/** Block prose, with the cut tail offered on request when the fold capped it. */
+function CappedText({ block, actions, render }: { block: Block; actions: TranscriptActions; render: (text: string) => React.ReactNode }) {
+  const { text, load } = useFullBody(block, 'text', actions);
+  const full = typeof text === 'string' ? text : null;
   return (
-    <button type="button" className="wmux-chatv2-link" onClick={() => void actions.body(block.id, field).then(setText)}>
-      {text === null ? S.bodyGone : S.showMore}
-    </button>
+    <>
+      {render(full ?? block.text)}
+      {block.overflow?.text && full === null && (
+        text === null
+          ? <span className="wmux-chatv2-meta">{S.bodyGone}</span>
+          : <button type="button" className="wmux-chatv2-link" data-truncated onClick={load}>{S.showFullText}</button>
+      )}
+    </>
   );
 }
 
@@ -142,18 +162,18 @@ export const TranscriptRowView = memo(function TranscriptRowView({ row, cwd, act
   const active = { 'data-find-active': findActive || undefined };
   switch (row.kind) {
     case 'user':
-      return <div className="wmux-chatv2-user" data-block-id={row.block.id} {...active}>{row.block.text}</div>;
+      return <div className="wmux-chatv2-user" data-block-id={row.block.id} {...active}><CappedText block={row.block} actions={actions} render={(text) => text} /></div>;
     case 'assistant':
       return (
         <div className="wmux-chatv2-assistant" data-block-id={row.block.id} data-streaming={row.block.streaming || undefined} {...active}>
-          {renderBrainMarkdown(row.block.text)}
+          <CappedText block={row.block} actions={actions} render={renderBrainMarkdown} />
         </div>
       );
     case 'reasoning':
       return (
         <details className="wmux-chatv2-reasoning" data-block-id={row.block.id}>
           <summary>{row.block.streaming ? `${S.thinking}…` : S.thinking}</summary>
-          <div className="wmux-chatv2-reasoning-body">{row.block.text}</div>
+          <div className="wmux-chatv2-reasoning-body"><CappedText block={row.block} actions={actions} render={(text) => text} /></div>
         </details>
       );
     case 'tool':
@@ -177,7 +197,7 @@ export const TranscriptRowView = memo(function TranscriptRowView({ row, cwd, act
       );
     }
     case 'plan':
-      return <div className="wmux-chatv2-plan" data-block-id={row.block.id} {...active}>{renderBrainMarkdown(row.block.text)}</div>;
+      return <div className="wmux-chatv2-plan" data-block-id={row.block.id} {...active}><CappedText block={row.block} actions={actions} render={renderBrainMarkdown} /></div>;
     case 'image':
       return <div className="wmux-chatv2-meta" data-block-id={row.block.id}>{row.block.image?.name ?? row.block.text}</div>;
     case 'notice':

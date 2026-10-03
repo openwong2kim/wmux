@@ -11,6 +11,7 @@ import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import TerminalComponent from '../Terminal/Terminal';
 import { ChatV2Overlay, useChatSurfaceView } from '../ChatV2/ChatSurface';
+import { forgetChatV2Pane } from '../ChatV2/useChatV2';
 import BrowserPanel from '../Browser/BrowserPanel';
 import EditorPanel from '../Editor/EditorPanel';
 import DiffPanel from '../Diff/DiffPanel';
@@ -1067,6 +1068,9 @@ function TerminalSurface({ surface, paneId, chatViewEnabled, isActive, visible, 
   useLayoutEffect(() => {
     if (coveredSearch) useStore.getState().setSearchBarVisible(false);
   }, [coveredSearch]);
+  // The surface closed (or its PTY was replaced): forget its chat drafts and binding.
+  const ptyId = surface.ptyId;
+  useEffect(() => () => { if (ptyId) forgetChatV2Pane(ptyId); }, [ptyId]);
   return (
     <>
       <div style={{ display: 'contents' }} inert={chatV2 || undefined}>
