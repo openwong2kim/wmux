@@ -14,7 +14,7 @@ import type { PhoneWorktreeService } from './phoneWorktree';
 import { PHONE_WORKTREE_REQUEST_ID } from '../../shared/phoneGitV1';
 import { sessionFiles, searchSessionFiles, SessionFileError } from './sessionFiles';
 import { openResolvedFile } from './openResolvedFile';
-import { SentFileIndex } from '../transcript/sentFiles';
+import { SENT_FILE_CLOCK_SKEW_MS, SentFileIndex, sentFileParts } from '../transcript/sentFiles';
 import { listFolders, FolderBrowseError, homeIsBrowsable } from './phoneFolders';
 import {
   createSearchCursorCodec,
@@ -5351,8 +5351,8 @@ export class WebTerminalServer {
     }
     // Outside the roots, a file the pane's agent sent with SendUserFile is the
     // one other path served. Unlisted, expired and missing all get the same 404.
-    const sent = real === null;
-    if (sent) real = await this.sentFileTarget(sessionId, raw);
+    const sent = real === null ? await this.sentFileTarget(sessionId, raw) : null;
+    if (sent) real = sent.real;
     if (real === null) {
       this.json(res, 404, { error: 'image not found' });
       return;
@@ -5373,7 +5373,8 @@ export class WebTerminalServer {
     }
     try {
       const stat = await handle.stat();
-      if (!stat.isFile()) {
+      // A sent file must not have been written after the call that sent it.
+      if (!stat.isFile() || (sent && stat.mtimeMs > sent.sentAt + SENT_FILE_CLOCK_SKEW_MS)) {
         this.json(res, 404, { error: 'image not found' });
         return;
       }
@@ -5424,7 +5425,7 @@ export class WebTerminalServer {
         this.json(res, 404, { error: 'image not found' });
         return;
       }
-      if (sent) this.auditSentFile(principal, sessionId, raw, stat.size);
+      if (sent) this.auditSentFile(principal, sessionId, sent.name, stat.size);
       res.writeHead(200, {
         'Content-Type': contentType,
         ...this.securityHeaders(),
@@ -5537,8 +5538,8 @@ export class WebTerminalServer {
       }
     }
     // The SendUserFile addition, exactly as on the image route.
-    const sent = real === null;
-    if (sent) real = await this.sentFileTarget(sessionId, raw);
+    const sent = real === null ? await this.sentFileTarget(sessionId, raw) : null;
+    if (sent) real = sent.real;
     if (real === null) {
       this.json(res, 404, { error: 'file not found' });
       return;
@@ -5551,7 +5552,7 @@ export class WebTerminalServer {
     }
     try {
       const stat = await handle.stat();
-      if (!stat.isFile()) {
+      if (!stat.isFile() || (sent && stat.mtimeMs > sent.sentAt + SENT_FILE_CLOCK_SKEW_MS)) {
         this.json(res, 404, { error: 'file not found' });
         return;
       }
@@ -5584,7 +5585,6 @@ export class WebTerminalServer {
         return;
       }
 
-      if (sent) this.auditSentFile(principal, sessionId, raw, stat.size);
       // Content-Length before the first byte: the phone's progress bar reads
       // it, and it is the size the gate approved rather than whatever the file
       // turns out to be — the two checks after the stream are what reconcile
@@ -5650,6 +5650,8 @@ export class WebTerminalServer {
       // in the userland buffer: the same good response, truncated or not,
       // depending on timing. A probe whose only possible action is to corrupt a
       // correct answer is not a guard, so there is no probe.
+      // A sent file is audited once every byte promised has gone out.
+      if (sent) this.auditSentFile(principal, sessionId, sent.name, stat.size);
       res.end();
     } catch {
       if (res.headersSent) {
@@ -5665,34 +5667,52 @@ export class WebTerminalServer {
   /**
    * Where to open `raw` when the transcript bound to this pane says its agent
    * sent that exact path to the user with `SendUserFile` (successfully, under
-   * 24 hours ago), or null.
+   * 24 hours ago), with the call's time — or null.
    *
    * The match is on `raw` as the request spelled it, byte for byte against the
-   * transcript's `input.files[]`. Only the PARENT is resolved: the last
+   * transcript's `input.files[]`; `sentFileParts` separately refuses `.`/`..`
+   * segments and doubled separators. Only the PARENT is resolved: the last
    * component is opened as named, so `openResolvedFile` refuses it when it is a
    * symlink and checks the handle is the regular file it looked up.
+   *
+   * The binding is read again after the scan: a `session_start` (or a rebind)
+   * that landed while it ran means the list read belongs to a session the
+   * pane no longer shows, and nothing is served.
    */
-  private async sentFileTarget(sessionId: string, raw: string): Promise<string | null> {
-    if (path.normalize(raw) !== raw) return null;
-    const name = path.basename(raw);
-    if (!name || name === '.' || name === '..') return null;
-    const transcript = this.deps.projector?.()?.transcriptPath(sessionId) ?? null;
-    if (!transcript) return null;
-    if (!(await this.sentFiles.isSent(transcript, raw, this.now()))) return null;
+  private async sentFileTarget(
+    sessionId: string,
+    raw: string,
+  ): Promise<{ real: string; name: string; sentAt: number } | null> {
+    const parts = sentFileParts(raw);
+    if (!parts) return null;
+    const projector = this.deps.projector?.() ?? null;
+    const before = projector?.sentFileBinding(sessionId) ?? null;
+    if (!projector || !before) return null;
+    const sentAt = await this.sentFiles.sentAt(before.transcriptPath, raw, this.now());
+    if (sentAt === null) return null;
+    const after = projector.sentFileBinding(sessionId);
+    if (
+      !after ||
+      after.transcriptPath !== before.transcriptPath ||
+      after.agentSessionId !== before.agentSessionId ||
+      after.generation !== before.generation
+    ) {
+      return null;
+    }
     try {
-      return path.join(await fs.promises.realpath(path.dirname(raw)), name);
+      return { real: path.join(await fs.promises.realpath(parts.dir), parts.name), name: parts.name, sentAt };
     } catch {
       return null;
     }
   }
 
   /** One device-audit line for a served sent file: never the full path. */
-  private auditSentFile(principal: WebPrincipal, sessionId: string, raw: string, bytes: number): void {
+  private auditSentFile(principal: WebPrincipal, sessionId: string, name: string, bytes: number): void {
     try {
       this.deps.auditSentFile?.({
         deviceId: principal.kind === 'device' ? principal.deviceId : '',
         sessionId,
-        file: path.basename(raw),
+        file: name,
         bytes,
       });
     } catch {

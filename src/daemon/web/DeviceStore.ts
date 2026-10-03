@@ -529,16 +529,20 @@ export class DeviceStore {
   /**
    * One file served to a phone because the pane's agent sent it with
    * `SendUserFile`: the device (empty for the operator token), the pane, the
-   * basename and the size. Never the full path or the content.
+   * basename and the size. Never the full path or the content. Repeats of the
+   * same device, pane and file within `SENT_FILE_COALESCE_MS` write one line.
    */
   recordSentFile(entry: { deviceId: string; sessionId: string; file: string; bytes: number }): void {
-    this.audit.append({
-      event: 'sent-file',
-      deviceId: entry.deviceId,
-      sessionId: entry.sessionId,
-      file: entry.file,
-      bytes: entry.bytes,
-    });
+    this.audit.append(
+      {
+        event: 'sent-file',
+        deviceId: entry.deviceId,
+        sessionId: entry.sessionId,
+        file: entry.file,
+        bytes: entry.bytes,
+      },
+      { coalesceKey: JSON.stringify([entry.deviceId, entry.sessionId, entry.file]) },
+    );
   }
 
   /**

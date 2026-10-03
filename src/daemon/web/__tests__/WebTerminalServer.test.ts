@@ -244,6 +244,8 @@ function makeDeps() {
     // `/api/sessions`'s lastAssistantText reads the file itself, so it needs the
     // full path status() deliberately withholds from the wire.
     transcriptPath: vi.fn<(id: string) => string | null>(() => null),
+    // The binding SendUserFile lookups read; null while a new session has not bound.
+    sentFileBinding: vi.fn<(id: string) => { transcriptPath: string; agentSessionId: string; generation: number } | null>(() => null),
     snapshot: vi.fn((): unknown => null),
     delta: vi.fn((): unknown => null),
     codeBlock: vi.fn((): unknown => null),
@@ -8878,7 +8880,8 @@ describe('WebTerminalServer', () => {
       transcript = path.join(root, 'session.jsonl');
       fs.writeFileSync(transcript, '');
       managed.meta.spawnCwd = cwd;
-      projectorMock.transcriptPath.mockImplementation((id: string) => (id === 's1' ? transcript : null));
+      projectorMock.sentFileBinding.mockImplementation((id: string) =>
+        (id === 's1' ? { transcriptPath: transcript, agentSessionId: 'session', generation: 0 } : null));
     });
     afterEach(() => {
       vi.restoreAllMocks();
@@ -8974,8 +8977,9 @@ describe('WebTerminalServer', () => {
       fs.writeFileSync(file, PNG_1X1);
       const otherTranscript = path.join(path.dirname(transcript), 'other.jsonl');
       sendUserFile(otherTranscript, [file]);
-      projectorMock.transcriptPath.mockImplementation((id: string) =>
-        id === 's1' ? transcript : id === 's2' ? otherTranscript : null);
+      projectorMock.sentFileBinding.mockImplementation((id: string) =>
+        id === 's1' ? { transcriptPath: transcript, agentSessionId: 'session', generation: 0 }
+          : id === 's2' ? { transcriptPath: otherTranscript, agentSessionId: 'other', generation: 0 } : null);
       const info = await startWithTranscript();
       const h = bearer(info.token as string);
       // s2's own agent sent it: served there, not on s1 or s3.
@@ -8984,6 +8988,64 @@ describe('WebTerminalServer', () => {
         const res = await fetch(routeUrl('image', id, file), { headers: h });
         expect(res.status).toBe(404);
       }
+    });
+
+    it('refuses a path the transcript itself recorded with a dot segment', async () => {
+      const file = path.join(scratch, 'y.png');
+      fs.writeFileSync(file, PNG_1X1);
+      fs.mkdirSync(path.join(scratch, 'link'));
+      // Byte-identical to what the transcript says, and resolvable to a real
+      // file — refused on shape alone.
+      const recorded = [`${scratch}/./y.png`, `${scratch}/link/../y.png`, `${scratch}//y.png`];
+      sendUserFile(transcript, recorded);
+      const info = await startWithTranscript();
+      for (const p of recorded) {
+        const res = await fetch(routeUrl('image', 's1', p), { headers: bearer(info.token as string) });
+        expect(res.status).toBe(404);
+        expect(await res.json()).toEqual({ error: 'image not found' });
+      }
+    });
+
+    it('refuses the previous session\'s files once a new session has started in the pane', async () => {
+      const file = path.join(scratch, 'shot.png');
+      fs.writeFileSync(file, PNG_1X1);
+      sendUserFile(transcript, [file]);
+      const info = await startWithTranscript();
+      const h = bearer(info.token as string);
+      expect((await fetch(routeUrl('image', 's1', file), { headers: h })).status).toBe(200);
+      // `/clear`: the projector reports no usable binding until the new session binds.
+      projectorMock.sentFileBinding.mockImplementation(() => null);
+      for (const route of ['image', 'file'] as const) {
+        const res = await fetch(routeUrl(route, 's1', file), { headers: h });
+        expect(res.status).toBe(404);
+      }
+    });
+
+    it('refuses when the session changed while the transcript was being read', async () => {
+      const file = path.join(scratch, 'shot.png');
+      fs.writeFileSync(file, PNG_1X1);
+      sendUserFile(transcript, [file]);
+      let reads = 0;
+      projectorMock.sentFileBinding.mockImplementation(() =>
+        ({ transcriptPath: transcript, agentSessionId: 'session', generation: reads++ === 0 ? 0 : 1 }));
+      const info = await startWithTranscript();
+      const res = await fetch(routeUrl('image', 's1', file), { headers: bearer(info.token as string) });
+      expect(reads).toBe(2);
+      expect(res.status).toBe(404);
+    });
+
+    it('refuses a listed file written after the call that sent it', async () => {
+      const file = path.join(scratch, 'later.png');
+      fs.writeFileSync(file, PNG_1X1);
+      sendUserFile(transcript, [file]);
+      const later = new Date(Date.now() + 10 * 60 * 1000);
+      fs.utimesSync(file, later, later);
+      const info = await startWithTranscript();
+      for (const route of ['image', 'file'] as const) {
+        const res = await fetch(routeUrl(route, 's1', file), { headers: bearer(info.token as string) });
+        expect(res.status).toBe(404);
+      }
+      expect(sentFileAudits).toEqual([]);
     });
 
     it('refuses a sent path whose last component is a symlink', async () => {

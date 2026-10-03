@@ -880,21 +880,30 @@ on every request:
    The daemon reads the list from the transcript itself; nothing the request
    carries can add to it. Send the path exactly as the turn page gave it: a
    different spelling of the same file (`/a/./b.png`, a resolved `/private/tmp`
-   form) is not the listed string.
-2. The matching `tool_result` is a success (no `is_error: true`). A call that has
+   form) is not the listed string. A Windows path is matched as written,
+   forward or back slashes alike (`C:/Users/me/shot.png`).
+2. The path has no `.` or `..` segment and no doubled or trailing separator —
+   even when the transcript recorded it that way.
+3. The matching `tool_result` is a success (no `is_error: true`). A call that has
    no result yet is not served.
-3. The `tool_use` is in the pane's **current** transcript session (after `/clear`
-   or a new session, earlier sends are no longer listed) and **no older than 24
-   hours**, measured from the `timestamp` of the assistant entry that made the
-   call. The `tool_result` only decides success, never the clock.
-4. The last path component is not a symlink, and the file opened is the regular
+4. The `tool_use` is in the pane's **current** transcript session and **no older
+   than 24 hours**, measured from the `timestamp` of the assistant entry that
+   made the call. The `tool_result` only decides success, never the clock. From
+   the moment a new session starts in the pane (`/clear`, or a new agent) until
+   that session's transcript is bound, no sent file is served for the pane.
+5. The call and its result are still in the transcript as they were read; a
+   transcript rewritten in place is read again from the start.
+6. The file was not modified after the call (its mtime is no later than the
+   call's timestamp plus five minutes of clock tolerance).
+7. The last path component is not a symlink, and the file opened is the regular
    file that was checked (no swap between check and read).
-5. The leading bytes are an allowed type (below); the extension plays no part.
-6. The caller holds the transcript grant, and the per-device checks apply as on
+8. The leading bytes are an allowed type (below); the extension plays no part.
+9. The caller holds the transcript grant, and the per-device checks apply as on
    every route: revoking the device stops it at the next request (`401`).
 
-**Same answers as the rest of the route.** A path that is not listed, is listed
-but older than 24 hours, failed, or is missing gets exactly the response any
+**Same answers as the rest of the route.** A path that fails any of rules 1–7 —
+not listed, a refused shape, expired, failed, from a superseded session,
+modified after the call, a symlink, or missing — gets exactly the response any
 path outside the two directories gets: `404 {error: 'image not found'}` on
 `/turns/image`, `404 {error: 'file not found'}` on `/turns/file`. The body does
 not say which case it was. Treat it like the existing 404: one retry is
@@ -907,9 +916,11 @@ WebM (`video/webm`, an EBML header whose DocType is `webm`); anything else is
 `415 {error: 'unsupported-type', detail}`. The caps are unchanged — 8 MiB per
 image, 128 MiB per video — with the same `413` bodies.
 
-**Audit.** Each sent file served writes one line to the daemon's device audit
-log: the device, the pane, the file's basename and its size. Never the full path
-or the content.
+**Audit.** A sent file served writes one line to the daemon's device audit log:
+the device, the pane, the file's basename and its size — never the full path or
+the content. Repeats for the same device, pane and file within 10 minutes write
+no further line. On `/turns/file` the line is written once the whole body has
+been sent.
 
 ---
 

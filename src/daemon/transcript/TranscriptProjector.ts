@@ -136,6 +136,15 @@ export class TranscriptProjector {
   private readonly debounceMs: number;
   private readonly pollMs: number;
   private readonly watches = new Map<string, WatchState>();
+  /**
+   * Per pane, the binding a `session_start` superseded, kept whether or not a
+   * client is subscribed (unlike `WatchState.staleAgentSessionId`), plus a
+   * counter bumped on every `session_start`. `sentFileBinding` reads both.
+   * `untilStop` marks a hold whose signal carried no agent session id: it is
+   * released by the next stop instead of by a binding change.
+   */
+  private readonly sessionHolds = new Map<string, { staleId: string; untilStop: boolean }>();
+  private readonly sessionGenerations = new Map<string, number>();
   /** Keys already logged by `warnOnce`. */
   private readonly warned = new Set<string>();
   private disposed = false;
@@ -190,6 +199,30 @@ export class TranscriptProjector {
   transcriptPath(sessionId: string): string | null {
     const resolved = this.resolvePath(sessionId);
     return resolved.ok ? resolved.transcriptPath : null;
+  }
+
+  /**
+   * The transcript a pane's `SendUserFile` lookups may read, or null.
+   *
+   * Null while a `session_start` has superseded the standing binding and the
+   * new session has not bound yet (`/clear`, or a new agent in the same pane):
+   * until then the binding on file still names the previous conversation.
+   * `generation` changes on every `session_start`, so a caller that awaited
+   * between two reads can tell the session moved under it.
+   */
+  sentFileBinding(sessionId: string): { transcriptPath: string; agentSessionId: string; generation: number } | null {
+    const resolved = this.resolvePath(sessionId);
+    if (!resolved.ok) return null;
+    const hold = this.sessionHolds.get(sessionId);
+    if (hold) {
+      if (hold.untilStop || resolved.agentSessionId === hold.staleId) return null;
+      this.sessionHolds.delete(sessionId);
+    }
+    return {
+      transcriptPath: resolved.transcriptPath,
+      agentSessionId: resolved.agentSessionId,
+      generation: this.sessionGenerations.get(sessionId) ?? 0,
+    };
   }
 
   /**
@@ -430,6 +463,7 @@ export class TranscriptProjector {
    * genuinely NEW session apart from a resume of the standing one.
    */
   nudge(sessionId: string, kind: AgentSignalKind, agentSessionId?: string): void {
+    if (!this.disposed) this.noteSessionHold(sessionId, kind, agentSessionId);
     const state = this.watches.get(sessionId);
     if (!state || this.disposed) return;
     if (kind === 'agent.session_start') {
@@ -519,8 +553,31 @@ export class TranscriptProjector {
     return null;
   }
 
+  /**
+   * `sentFileBinding`'s bookkeeping, for every pane whether or not anyone is
+   * subscribed. A `session_start` that names a session other than the bound
+   * one holds the bound one; one that names no session holds until the next
+   * stop; one that names the bound session (a resume) holds nothing.
+   */
+  private noteSessionHold(sessionId: string, kind: AgentSignalKind, agentSessionId?: string): void {
+    if (kind === 'agent.session_start') {
+      this.sessionGenerations.set(sessionId, (this.sessionGenerations.get(sessionId) ?? 0) + 1);
+      const current = this.resolvePath(sessionId);
+      const currentId = current.ok ? current.agentSessionId : '';
+      if (!currentId || currentId === agentSessionId) {
+        this.sessionHolds.delete(sessionId);
+      } else {
+        this.sessionHolds.set(sessionId, { staleId: currentId, untilStop: !agentSessionId });
+      }
+    } else if (kind === 'agent.stop' && this.sessionHolds.get(sessionId)?.untilStop) {
+      this.sessionHolds.delete(sessionId);
+    }
+  }
+
   /** Wire to session:died / session:destroyed — the pane's rows are moot. */
   dropPty(sessionId: string): void {
+    this.sessionHolds.delete(sessionId);
+    this.sessionGenerations.delete(sessionId);
     const state = this.watches.get(sessionId);
     if (!state) return;
     this.teardown(state);

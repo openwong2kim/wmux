@@ -853,3 +853,52 @@ describe('TranscriptProjector — #782 phone turn-view contract (stateless delta
     expect(ev.bytes).toBeGreaterThan(100000);
   });
 });
+
+describe('TranscriptProjector.sentFileBinding', () => {
+  const write = (name: string): string => {
+    const file = path.join(harness.projects, name);
+    fs.writeFileSync(file, '{"type":"system"}\n', 'utf8');
+    return file;
+  };
+
+  it('answers the bound transcript with no subscriber, and null while a new session has not bound yet', () => {
+    const first = write('first-session.jsonl');
+    harness.bindings.set('pty-1', binding({ transcriptPath: first }));
+    const before = harness.projector.sentFileBinding('pty-1');
+    expect(before).toMatchObject({ transcriptPath: first, agentSessionId: 'first-session' });
+
+    // `/clear`: the new session starts before its transcript exists, so the
+    // binding on file still names the previous one.
+    harness.projector.nudge('pty-1', 'agent.session_start', 'second-session');
+    expect(harness.projector.sentFileBinding('pty-1')).toBeNull();
+    harness.projector.nudge('pty-1', 'agent.stop');
+    expect(harness.projector.sentFileBinding('pty-1')).toBeNull();
+
+    const second = write('second-session.jsonl');
+    harness.bindings.set('pty-1', binding({ transcriptPath: second, ts: 2 }));
+    const after = harness.projector.sentFileBinding('pty-1');
+    expect(after).toMatchObject({ transcriptPath: second, agentSessionId: 'second-session' });
+    expect(after?.generation).not.toBe(before?.generation);
+  });
+
+  it('keeps the binding on a resume of the same session, but still moves the generation', () => {
+    const file = write('resumed.jsonl');
+    harness.bindings.set('pty-1', binding({ transcriptPath: file }));
+    const before = harness.projector.sentFileBinding('pty-1');
+    harness.projector.nudge('pty-1', 'agent.session_start', 'resumed');
+    const after = harness.projector.sentFileBinding('pty-1');
+    expect(after).toMatchObject({ transcriptPath: file });
+    expect(after?.generation).toBe((before?.generation ?? 0) + 1);
+  });
+
+  it('holds a session_start that names no session until the next stop', () => {
+    const file = write('anon.jsonl');
+    harness.bindings.set('pty-1', binding({ transcriptPath: file }));
+    harness.projector.nudge('pty-1', 'agent.session_start');
+    expect(harness.projector.sentFileBinding('pty-1')).toBeNull();
+    harness.projector.nudge('pty-1', 'agent.activity');
+    expect(harness.projector.sentFileBinding('pty-1')).toBeNull();
+    harness.projector.nudge('pty-1', 'agent.stop');
+    expect(harness.projector.sentFileBinding('pty-1')).toMatchObject({ transcriptPath: file });
+  });
+});
