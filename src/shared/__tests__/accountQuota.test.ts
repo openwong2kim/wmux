@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { chooseByQuota, envSetsKey, evaluateQuota, heldLaunchNotice, launchInlineEnvKeys, launchStem, UNKNOWN_RESET_BLOCK_MS } from '../accountQuota';
+import { chooseByQuota, envSetsKey, evaluateQuota, heldLaunchNotice, isNewSessionLaunch, launchInlineEnvKeys, launchStem, UNKNOWN_RESET_BLOCK_MS } from '../accountQuota';
 
 const NOW = Date.parse('2026-10-02T12:00:00Z');
 const LATER = NOW + 3 * 3600_000;
@@ -84,5 +84,22 @@ describe('explicit account in a launch', () => {
     expect(envSetsKey({ codex_home: 'C:\\a' }, 'CODEX_HOME', 'win32')).toBe(true);
     expect(envSetsKey({ codex_home: '/a' }, 'CODEX_HOME', 'darwin')).toBe(false);
     expect(envSetsKey({ CODEX_HOME: '' }, 'CODEX_HOME', 'darwin')).toBe(false);
+  });
+});
+
+describe('isNewSessionLaunch', () => {
+  it.each([
+    ['claude', 'claude --model opus "fix the update flow"', true],
+    ['claude', 'FOO=bar claude', true],
+    ['claude', 'claude --resume abc', false],
+    ['claude', 'claude -c', false],
+    ['claude', 'claude mcp list', false],
+    ['claude', 'claude --version', false],
+    ['codex', 'codex -c model=o3 "hi"', true],
+    ['codex', 'codex resume --last', false],
+    ['codex', 'codex exec "x"', false],
+    ['codex', 'codex login', false],
+  ] as const)('%s: %s → %s', (vendor, line, expected) => {
+    expect(isNewSessionLaunch(vendor, line)).toBe(expected);
   });
 });

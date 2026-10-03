@@ -18,7 +18,7 @@ import { resolveSpawnEnv } from '../../pty/resolveSpawnEnv';
 import { withFreshWindowsPath } from '../../../shared/windowsPathEnv';
 import { getAccountStore, VENDOR_ENV_KEYS } from '../../account/accountStore';
 import { getAccountRotationService } from '../../account/AccountRotationService';
-import { envSetsKey, heldLaunchNotice, launchInlineEnvKeys, launchStem } from '../../../shared/accountQuota';
+import { envSetsKey, heldLaunchNotice, isNewSessionLaunch, launchInlineEnvKeys, launchStem } from '../../../shared/accountQuota';
 import { resolveEnvPolicy, type SpawnKind } from '../../../shared/spawnKind';
 import { withheldCredentialNames } from '../../../shared/envFilter';
 import { getShellUtf8Locale } from '../../pty/shellLocale';
@@ -163,7 +163,7 @@ function withWmuxTools(options: PtyCreateOptions | undefined): PtyCreateOptions 
 
 /**
  * Quota gate for a typed Claude or Codex launch. With "Switch accounts by
- * quota" on, the pane runs on a registered account that still has quota when
+ * quota" on, a new session (not a resume or a management subcommand) runs on a registered account that still has quota when
  * the workspace's bound one is out, by setting the account's config dir in
  * this pane's env (applied after the binding). When no account has quota the
  * launch line is replaced with a notice. A launch that already names its
@@ -173,6 +173,7 @@ function withWmuxTools(options: PtyCreateOptions | undefined): PtyCreateOptions 
 async function withAccountQuota(options: PtyCreateOptions | undefined): Promise<PtyCreateOptions | undefined> {
   const stem = launchStem(options?.initialCommand);
   if (!options || (stem !== 'claude' && stem !== 'codex')) return options;
+  if (!isNewSessionLaunch(stem, options.initialCommand)) return options;
   const key = VENDOR_ENV_KEYS[stem];
   if (launchInlineEnvKeys(options.initialCommand).includes(key) || envSetsKey(options.env, key, process.platform)) return options;
   try {
