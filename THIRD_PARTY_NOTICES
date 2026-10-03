@@ -11536,6 +11536,10 @@ src/renderer/components/Pane/UsageLimitChip.tsx) from:
   src/features/providers/model/rateLimits.ts
   src/features/sessions/ui/UsageLimitNotice.tsx
   src/app/App.tsx (the usage-limit resume scheduler)
+Fan-out worker temp dirs and checkout ownership (src/main/worktask,
+src/shared/checkoutOwnership.ts) from:
+  src-tauri/src/control.rs
+  src/features/orchestration/model/orchestration.ts (worker prompt wording)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

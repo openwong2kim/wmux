@@ -397,7 +397,11 @@ const BORROWED_SOURCES = [
       '  src/features/sessions/model/usageLimit.ts\n' +
       '  src/features/providers/model/rateLimits.ts\n' +
       '  src/features/sessions/ui/UsageLimitNotice.tsx\n' +
-      '  src/app/App.tsx (the usage-limit resume scheduler)',
+      '  src/app/App.tsx (the usage-limit resume scheduler)\n' +
+      'Fan-out worker temp dirs and checkout ownership (src/main/worktask,\n' +
+      'src/shared/checkoutOwnership.ts) from:\n' +
+      '  src-tauri/src/control.rs\n' +
+      '  src/features/orchestration/model/orchestration.ts (worker prompt wording)',
   },
 ];
 lines.push('BORROWED IMPLEMENTATION TECHNIQUES');
