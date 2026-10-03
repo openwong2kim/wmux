@@ -179,20 +179,37 @@ describe('chat v2 host', () => {
     await r.host.dispose();
   });
 
-  it('denies at once when there is no registry, and when native decisions are off', async () => {
-    for (const options of [{ registry: false }, { nativeOn: false }]) {
-      dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chatv2-host-'));
-      const r = rig(options);
-      await created(r);
-      await sent(r);
-      r.fake().canUseTool('req-3', 'Bash', { command: 'ls' }, 'toolu_3');
-      await until(() => r.fake().responses('req-3').length === 1);
-      expect(r.fake().responses('req-3')[0]).toMatchObject({ behavior: 'deny' });
-      await until(() => r.host.sessionForPane(PANE)!.blocks.some((b) => b.approval?.decided === 'cancelled'));
-      expect(r.host.statusForPane(PANE)).toBe('running');
-      expect(r.registry?.list().pending ?? []).toHaveLength(0);
-      await r.host.dispose();
-    }
+  async function failClosed(r: Rig) {
+    await r.host.call('subscribe', { paneId: PANE }, 'main');
+    await created(r);
+    await sent(r);
+    r.fake().canUseTool('req-3', 'Bash', { command: 'ls' }, 'toolu_3');
+    await until(() => r.fake().responses('req-3').length === 1);
+    expect(r.fake().responses('req-3')[0]).toMatchObject({ behavior: 'deny' });
+    await until(() => r.host.sessionForPane(PANE)!.blocks.some((b) => b.approval?.decided === 'cancelled'));
+    const types = r.pushes.flatMap((p) => p.push.events.map((e) => e.event.type));
+    const requested = types.indexOf('approval.requested');
+    // The cancel is stamped right after the card, never before it (a no-op).
+    expect(requested).toBeGreaterThan(-1);
+    expect(types[requested + 1]).toBe('approval.resolved');
+    expect(r.host.statusForPane(PANE)).toBe('running');
+    const pushedStatuses = r.pushes.flatMap((p) => (p.push.binding ? [p.push.binding.status] : []));
+    expect(pushedStatuses).not.toContain('needs-input');
+  }
+
+  it('denies at once when there is no registry', async () => {
+    const r = rig({ registry: false });
+    await failClosed(r);
+    expect(r.registry).toBeNull();
+    await r.host.dispose();
+  });
+
+  it('denies at once, and leaves no card, when native decisions are switched off', async () => {
+    const r = rig({ nativeOn: false });
+    await failClosed(r);
+    await until(() => r.registry!.list().pending.length === 0);
+    expect(r.registry!.list().pending).toHaveLength(0);
+    await r.host.dispose();
   });
 
   it('expires pending approvals when the turn ends and when the driver exits', async () => {

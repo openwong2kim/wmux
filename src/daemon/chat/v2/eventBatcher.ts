@@ -58,10 +58,11 @@ export class EventBatcher {
     if (this.events.length + 1 > CHATV2_MAX_EVENTS_PER_PUSH || this.bytes + bytes > CHATV2_PUSH_EVENTS_BUDGET) this.flush();
   }
 
-  push(stamped: StampedHarnessEvent, bytes: number): void {
+  /** `hold`: queue even an urgent event; the next urgent one flushes both in one push. */
+  push(stamped: StampedHarnessEvent, bytes: number, hold = false): void {
     this.events.push(stamped);
     this.bytes += bytes;
-    if (isUrgentEvent(stamped.event)) {
+    if (!hold && isUrgentEvent(stamped.event)) {
       this.flush();
       return;
     }

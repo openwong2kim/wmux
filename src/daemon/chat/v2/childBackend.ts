@@ -89,6 +89,9 @@ export class ChildBackend {
         reject(error);
       });
     });
+    // A later 'error' (a failed signal, a broken pipe on the handle) must not
+    // crash the daemon; the exit handler reports the end.
+    child.on('error', () => undefined);
     child.once('exit', (code, signal) => {
       // stdout may still hold lines after 'exit'; 'close' follows once it ends.
       child.once('close', () => finish(code, signal));

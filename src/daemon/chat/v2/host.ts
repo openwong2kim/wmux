@@ -97,6 +97,10 @@ interface Live {
   decisions: Map<string, HeldDecision>;
   inbox: InboxItem[];
   draining: boolean;
+  /** Resolves when the inbox is empty again. */
+  drained: Promise<void>;
+  /** The driver's end is queued in the inbox: report `stopped` before it is folded. */
+  exitPending: boolean;
   batcher: EventBatcher;
   /** The capped session when the current batch began. */
   batchBase: Session;
@@ -283,7 +287,7 @@ class Host implements ChatV2Host {
   private status(live: Live): ChatV2Status {
     if (live.record.state === 'handed-off') return 'handed-off';
     if (live.starting) return 'starting';
-    if (!live.driver) return live.failed ? 'failed' : 'stopped';
+    if (!live.driver || live.exitPending) return live.failed ? 'failed' : 'stopped';
     if (sessionNeedsInput(live.record.session)) return 'needs-input';
     return live.record.session.busy ? 'running' : 'idle';
   }
@@ -468,7 +472,12 @@ class Host implements ChatV2Host {
   }
 
   private async send(p: ChatV2ParamsByMethod['send']): Promise<Result<'send'>> {
-    const live = this.liveFor(p.paneId, p.chatSessionId);
+    let live = this.liveFor(p.paneId, p.chatSessionId);
+    if (!live) return chatV2Error('session-not-found', 'No chat for this pane.');
+    // Driver output still queued (a decision being recorded, an exit) is
+    // folded first, so a new turn never lands before the end of the last one.
+    await live.drained;
+    live = this.liveFor(p.paneId, p.chatSessionId);
     if (!live) return chatV2Error('session-not-found', 'No chat for this pane.');
     if (p.epoch !== live.epoch) return chatV2Error('stale-epoch', 'The transcript changed; load it again.');
     const attachmentPaths = p.attachments ?? [];
@@ -530,9 +539,10 @@ class Host implements ChatV2Host {
   private async answer(p: ChatV2ParamsByMethod['answer']): Promise<Result<'answer'>> {
     const live = this.liveFor(p.paneId, p.chatSessionId);
     if (!live) return chatV2Error('session-not-found', 'No chat for this pane.');
+    // An answer racing the registry call waits for it, then re-reads: a close
+    // or an exit meanwhile drops the decision.
+    await live.decisions.get(p.requestId)?.recorded;
     const held = live.decisions.get(p.requestId);
-    // An answer racing the registry call waits for it.
-    await held?.recorded;
     const registry = this.deps.approvals();
     if (!held || held.failClosed || !held.registryId || !registry) {
       return chatV2Error('approval-not-found', 'That request is no longer waiting.');
@@ -605,6 +615,8 @@ class Host implements ChatV2Host {
       decisions: new Map(),
       inbox: [],
       draining: false,
+      drained: Promise.resolve(),
+      exitPending: false,
       batcher: new EventBatcher((events) => this.deliver(live, events)),
       batchBase: record.session,
       persistTimer: null,
@@ -682,6 +694,7 @@ class Host implements ChatV2Host {
   private onDriverGone(live: Live, driver: ChatV2Driver, code: number | null | undefined): void {
     if (live.driver !== driver) return;
     live.driver = null;
+    live.exitPending = false;
     delete live.record.process;
     if (!live.stopping) {
       live.error = { code: 'driver-failed', message: code === null || code === undefined ? 'The agent stopped.' : `The agent exited (code ${code}).` };
@@ -694,8 +707,11 @@ class Host implements ChatV2Host {
 
   private enqueue(live: Live, item: InboxItem): void {
     if (live.closed && item.kind !== 'exited') return;
+    if ((item.kind === 'exited' || (item.kind === 'event' && item.event.type === 'session.ended')) && item.driver === live.driver) {
+      live.exitPending = true;
+    }
     live.inbox.push(item);
-    if (!live.draining) void this.drain(live);
+    if (!live.draining) live.drained = this.drain(live);
   }
 
   private async drain(live: Live): Promise<void> {
@@ -743,9 +759,12 @@ class Host implements ChatV2Host {
           live.failed = false;
           live.error = undefined;
         }
-        this.stamp(live, event);
-        if ((event.type === 'approval.requested' || event.type === 'question.asked')) {
-          const held = live.decisions.get(event.requestId);
+        const asked = event.type === 'approval.requested' || event.type === 'question.asked';
+        const held = asked ? live.decisions.get(event.requestId) : undefined;
+        // A card denied at once goes out in one push with its cancel, so no
+        // client ever shows it as waiting.
+        this.stamp(live, event, !!held?.failClosed);
+        if (asked) {
           if (held?.failClosed) {
             live.decisions.delete(event.requestId);
             this.stamp(live, event.type === 'approval.requested'
@@ -834,7 +853,7 @@ class Host implements ChatV2Host {
   // --- stamping, fold, pushes, persistence -------------------------------
 
   /** Stamp, fold (capped and uncapped) and queue one driver or host event. */
-  private stamp(live: Live, event: HarnessEvent): void {
+  private stamp(live: Live, event: HarnessEvent, hold = false): void {
     const { record } = live;
     for (const piece of boundEvent(event)) {
       const full = piece === event || event.type === 'message.delta' || event.type === 'reasoning.delta' ? piece : event;
@@ -846,7 +865,7 @@ class Host implements ChatV2Host {
       const stamped: StampedHarnessEvent = { seq: record.seq, at, event: piece };
       live.shadow = applyHarnessEvent(live.shadow, { seq: record.seq, at, event: full }, { uncapped: true });
       record.session = applyHarnessEvent(record.session, stamped);
-      live.batcher.push(stamped, bytes);
+      live.batcher.push(stamped, bytes, hold);
     }
     switch (event.type) {
       case 'turn.ended':

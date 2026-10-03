@@ -268,7 +268,9 @@ export class ClaudeDriver implements ChatV2Driver {
       await this.write(buildControlResponse(requestId, response));
       return 'ok';
     } catch {
-      // Nothing left the process boundary when the child is gone.
+      // Nothing left the process boundary when the child is gone. A live
+      // child that did not take the write may or may not have it: the card
+      // stays up until the turn ends or Claude drops the request.
       return this.backend.alive ? 'uncertain' : 'not-found';
     }
   }
@@ -393,6 +395,8 @@ export class ClaudeDriver implements ChatV2Driver {
   // --- turn ---------------------------------------------------------------
 
   private resetTurn(): void {
+    // A request id lives for its turn only.
+    this.settled.clear();
     this.emittedAssistant = '';
     this.emittedReasoning = '';
     this.pendingAssistantBoundary = false;
