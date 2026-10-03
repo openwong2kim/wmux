@@ -12,6 +12,7 @@ import Checkbox from '../ui/Checkbox';
 import Input from '../ui/Input';
 import SegmentedControl from '../ui/SegmentedControl';
 import { SettingsSection } from './SettingsLayout';
+import { AccountRotationControls, RotationQuotaBit, useAccountRotation } from './AccountRotationControls';
 import {
   startAccountLogin,
   checkAccountLoginAgain,
@@ -245,6 +246,7 @@ export function AccountsSection(): React.ReactElement | null {
   const [removeNotice, setRemoveNotice] = useState<string | null>(null);
   const [usage, setUsage] = useState<Map<string, AccountUsageEntry>>(new Map());
   const pending = useSyncExternalStore(subscribeAccountLogins, getPendingAccountLogins);
+  const rotation = useAccountRotation();
 
   const reload = useCallback(() => {
     const api = window.electronAPI?.accounts;
@@ -323,6 +325,7 @@ export function AccountsSection(): React.ReactElement | null {
     // No heading: the Accounts page title already names this, its only group.
     <SettingsSection id="claudeacct">
       <p className="settings-note">{t('accounts.intro')}</p>
+      <AccountRotationControls state={rotation.state} reload={rotation.reload} />
       {removeNotice && <p className="settings-note">{removeNotice}</p>}
       {loaded && rows.length === 0 && !adding && (
         <p className="settings-note">{t('accounts.empty')}</p>
@@ -364,6 +367,9 @@ export function AccountsSection(): React.ReactElement | null {
             >
               {t('accounts.loginAgain')}
             </Button>
+          )}
+          {r.vendor === 'codex' && (
+            <RotationQuotaBit row={rotation.state?.rows.find((x) => x.accountId === r.id)} />
           )}
           {r.vendor === 'claude' && (
             <UsageBit

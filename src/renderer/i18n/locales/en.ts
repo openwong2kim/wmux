@@ -1093,6 +1093,14 @@ export const en = {
   'accounts.loginAgain': 'Log in again',
   'accounts.loginAddFailed': 'Could not save “{name}”: {error}',
   'accounts.loginTabFailed': "Couldn't open a login tab here. Copy the command and run it in any terminal.",
+  // Settings — Accounts — quota-driven account choice for Claude/Codex launches
+  'accounts.rotateClaude': "Switch Claude accounts by quota",
+  'accounts.rotateCodex': "Switch Codex accounts by quota",
+  'accounts.rotateDesc': "When the account a workspace is bound to is out of quota, a new Claude or Codex pane in it starts on the registered account with the most quota left; the binding itself stays. When every account is out, the agent is not started until one resets. Panes already running are not touched. Claude quota is read from its usage endpoint (no model request); Codex quota from the limits it records in each account's session files.",
+  'accounts.quotaOut': "Out of quota",
+  'accounts.quotaOutUntil': "Usable again at {time}",
+  'accounts.quotaUnknown': "quota not measured yet",
+  'accounts.quotaLeft': "{pct} left",
   'accounts.loginStatusFailed': "Couldn't check the current login for “{name}”, so a new login can't be detected safely. Try again.",
   'settings.shortcuts': 'Keyboard shortcuts',
   // #1152 — checkbox on each advertised row; unchecked = the built-in is

@@ -17,6 +17,8 @@ import { sanitizePtyText } from '../../../shared/types';
 import { resolveSpawnEnv } from '../../pty/resolveSpawnEnv';
 import { withFreshWindowsPath } from '../../../shared/windowsPathEnv';
 import { getAccountStore } from '../../account/accountStore';
+import { getAccountRotationService } from '../../account/AccountRotationService';
+import { heldLaunchNotice, launchStem } from '../../../shared/accountQuota';
 import { resolveEnvPolicy, type SpawnKind } from '../../../shared/spawnKind';
 import { withheldCredentialNames } from '../../../shared/envFilter';
 import { getShellUtf8Locale } from '../../pty/shellLocale';
@@ -157,6 +159,29 @@ function withWmuxTools(options: PtyCreateOptions | undefined): PtyCreateOptions 
   });
   if (initialCommand !== rest.initialCommand) console.log('[pty:create] wmux tool level applied', { tools: wmuxTools.tools, role: wmuxTools.role });
   return { ...rest, initialCommand };
+}
+
+/**
+ * Quota gate for a typed Claude or Codex launch. With "Switch accounts by
+ * quota" on, the pane runs on a registered account that still has quota when
+ * the workspace's bound one is out, by setting the account's config dir in
+ * this pane's env (applied after the binding). When no account has quota the
+ * launch line is replaced with a notice. Never throws.
+ */
+async function withAccountQuota(options: PtyCreateOptions | undefined): Promise<PtyCreateOptions | undefined> {
+  const stem = launchStem(options?.initialCommand);
+  if (!options || (stem !== 'claude' && stem !== 'codex')) return options;
+  try {
+    const decision = await getAccountRotationService().prepareLaunch(stem, options.workspaceId);
+    if (decision.kind === 'switch') return { ...options, env: { ...options.env, ...decision.env } };
+    if (decision.kind === 'hold') {
+      console.warn(`[account-rotation] ${stem} launch held: every registered ${stem} account is out of quota`);
+      return { ...options, initialCommand: heldLaunchNotice(stem, decision.availableAtMs) };
+    }
+  } catch (err) {
+    console.warn(`[account-rotation] launch gate failed, launching unchanged: ${String(err)}`);
+  }
+  return options;
 }
 
 /** Clamp one runaway-guard bound to its cap; falls back to `def` when absent.
@@ -404,7 +429,7 @@ export function registerPTYHandlers(
       // create and before the PTY (and the agent) exists. A failed stamp fails
       // the create; the renderer rolls the workspace back.
       stampFanoutTaskPane(options);
-      options = withWmuxTools(options);
+      options = await withAccountQuota(withWmuxTools(options));
 
       // X8 exec-style unit: a supervised wmux.json leaf runs its command as the
       // pane's root process under a daemon-chosen wrapper shell (the daemon
@@ -639,7 +664,7 @@ export function registerPTYHandlers(
       // create and before the PTY (and the agent) exists. A failed stamp fails
       // the create; the renderer rolls the workspace back.
       stampFanoutTaskPane(options);
-      options = withWmuxTools(options);
+      options = await withAccountQuota(withWmuxTools(options));
 
       // X8 — supervision lives inside the daemon (decision ②). In local mode it
       // can't be honored, but a silent drop would be a trust violation: the user

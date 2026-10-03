@@ -627,6 +627,17 @@ const electronAPI = {
       return () => { ipcRenderer.removeListener(IPC.ACCOUNT_USAGE_UPDATE, listener); };
     },
   },
+  // Quota-driven account choice for Claude/Codex launches: per-vendor switch
+  // and each registered account's last quota reading (no secrets).
+  accountRotation: {
+    get: () =>
+      ipcRenderer.invoke(IPC.ACCOUNT_ROTATION_GET) as Promise<{
+        settings: import('../main/account/AccountRotationService').RotationSettings;
+        rows: import('../main/account/AccountRotationService').RotationAccountRow[];
+      }>,
+    set: (vendor: 'claude' | 'codex', on: boolean) =>
+      ipcRenderer.invoke(IPC.ACCOUNT_ROTATION_SET, { vendor, on }) as Promise<{ ok: boolean }>,
+  },
   // Scheduled runs. Invokes pass through to the daemon's automation.* RPCs and
   // never reject for a missing daemon (empty lists / `{ ok:false }`). onPush
   // carries daemon events + connect-time snapshots; onOpenRun is an OS toast

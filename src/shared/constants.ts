@@ -371,6 +371,10 @@ export const IPC = {
   ACCOUNT_USAGE_LIST: 'account:usage:list',
   ACCOUNT_USAGE_REFRESH: 'account:usage:refresh',
   ACCOUNT_USAGE_UPDATE: 'account:usage:update',
+  // Quota-driven account choice for Claude and Codex launches (per vendor
+  // switch + quota rows).
+  ACCOUNT_ROTATION_GET: 'account:rotation:get',
+  ACCOUNT_ROTATION_SET: 'account:rotation:set',
   // Clipboard (main process bridge)
   CLIPBOARD_WRITE: 'clipboard:write',
   CLIPBOARD_READ: 'clipboard:read',

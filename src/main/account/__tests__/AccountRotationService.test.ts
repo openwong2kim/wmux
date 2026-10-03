@@ -1,0 +1,132 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { AccountRotationService, claudeReading, codexReading } from '../AccountRotationService';
+import type { Account } from '../accountStore';
+import type { AccountUsageEntry } from '../AccountUsageService';
+import type { RolloutLimits } from '../../quota/codexRollout';
+
+const NOW = Date.parse('2026-10-02T12:00:00Z');
+const RESET_SEC = Math.floor((NOW + 3 * 3600_000) / 1000);
+
+const acct = (id: string, vendor: 'claude' | 'codex'): Account => ({ id, name: id, vendor, configDir: `/acc/${id}`, createdAt: 0 });
+
+function usage(id: string, sessionPct: number, fetchedAtMs = NOW): AccountUsageEntry {
+  return {
+    accountId: id,
+    status: 'ok',
+    snapshot: { sessionPct, sessionResetEpochSec: RESET_SEC, weeklyPct: 10, weeklyResetEpochSec: RESET_SEC + 86400, fetchedAtMs },
+    fetchedAtMs,
+    lastError: null,
+  };
+}
+
+function limits(usedPercent: number): RolloutLimits {
+  return { capturedAtMs: NOW, limitId: 'codex', primary: { usedPercent, windowMinutes: 300, resetsAtMs: NOW + 3600_000 }, secondary: null };
+}
+
+describe('AccountRotationService', () => {
+  let dataDir: string;
+  let usageEntries: AccountUsageEntry[];
+  let refreshNow: ReturnType<typeof vi.fn<(accountId: string) => Promise<void>>>;
+  let codex: Record<string, RolloutLimits | null>;
+  let bindings: Record<string, string>;
+
+  const make = (accounts: Account[]) => new AccountRotationService({
+    dataDir,
+    now: () => NOW,
+    accounts: () => accounts,
+    getBinding: (ws, vendor) => bindings[`${ws}:${vendor}`],
+    claudeUsage: { getAll: () => usageEntries, refreshNow },
+    readCodexLimits: async (dir) => codex[dir] ?? null,
+    dirExists: () => true,
+  });
+
+  beforeEach(() => {
+    dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-rotation-'));
+    usageEntries = [];
+    refreshNow = vi.fn<(accountId: string) => Promise<void>>(async () => undefined);
+    codex = {};
+    bindings = {};
+  });
+  afterEach(() => { fs.rmSync(dataDir, { recursive: true, force: true }); });
+
+  it('does nothing — no reading, no network — while off', async () => {
+    const s = make([acct('a', 'claude'), acct('b', 'claude')]);
+    bindings['ws:claude'] = 'a';
+    usageEntries = [usage('a', 100)];
+    expect(await s.prepareLaunch('claude', 'ws')).toEqual({ kind: 'keep' });
+    expect(refreshNow).not.toHaveBeenCalled();
+  });
+
+  it('switches a Claude pane to the account with quota and records it', async () => {
+    const s = make([acct('a', 'claude'), acct('b', 'claude'), acct('c', 'claude')]);
+    await s.setEnabled('claude', true);
+    bindings['ws:claude'] = 'a';
+    usageEntries = [usage('a', 99), usage('b', 50), usage('c', 20)];
+    const d = await s.prepareLaunch('claude', 'ws');
+    expect(d).toEqual({ kind: 'switch', accountId: 'c', env: { CLAUDE_CONFIG_DIR: '/acc/c' } });
+    expect(s.launchedAccount('ws', 'claude')).toBe('c');
+    expect(refreshNow).not.toHaveBeenCalled(); // readings were fresh
+  });
+
+  it('refreshes a stale Claude reading before deciding', async () => {
+    const s = make([acct('a', 'claude'), acct('b', 'claude')]);
+    await s.setEnabled('claude', true);
+    bindings['ws:claude'] = 'a';
+    usageEntries = [usage('a', 10, NOW - 60 * 60_000), usage('b', 10)];
+    expect(await s.prepareLaunch('claude', 'ws')).toEqual({ kind: 'keep' });
+    expect(refreshNow).toHaveBeenCalledWith('a');
+  });
+
+  it('holds a Codex launch when every account is out', async () => {
+    const s = make([acct('x', 'codex'), acct('y', 'codex')]);
+    await s.setEnabled('codex', true);
+    bindings['ws:codex'] = 'x';
+    codex[path.join('/acc/x', 'sessions')] = limits(100);
+    codex[path.join('/acc/y', 'sessions')] = limits(99);
+    expect(await s.prepareLaunch('codex', 'ws')).toEqual({ kind: 'hold', availableAtMs: NOW + 3600_000 });
+  });
+
+  it('switches a Codex pane via CODEX_HOME', async () => {
+    const s = make([acct('x', 'codex'), acct('y', 'codex')]);
+    await s.setEnabled('codex', true);
+    bindings['ws:codex'] = 'x';
+    codex[path.join('/acc/x', 'sessions')] = limits(100);
+    codex[path.join('/acc/y', 'sessions')] = limits(30);
+    expect(await s.prepareLaunch('codex', 'ws')).toEqual({ kind: 'switch', accountId: 'y', env: { CODEX_HOME: '/acc/y' } });
+  });
+
+  it('leaves an unbound workspace on its default login', async () => {
+    const s = make([acct('a', 'claude')]);
+    await s.setEnabled('claude', true);
+    usageEntries = [usage('a', 100)];
+    expect(await s.prepareLaunch('claude', 'ws')).toEqual({ kind: 'keep' });
+  });
+
+  it('persists the per-vendor switch', async () => {
+    await make([]).setEnabled('codex', true);
+    expect(make([]).getSettings()).toEqual({ claude: false, codex: true });
+  });
+
+  it('rows never refresh', async () => {
+    const s = make([acct('a', 'claude')]);
+    usageEntries = [usage('a', 40, NOW - 60 * 60_000)];
+    const rows = await s.rows('claude');
+    expect(rows[0].verdict.remaining).toBeCloseTo(0.6);
+    expect(refreshNow).not.toHaveBeenCalled();
+  });
+});
+
+describe('readings', () => {
+  it('maps Claude percent used and reset seconds', () => {
+    const r = claudeReading(usage('a', 25));
+    expect(r?.windows[0]).toEqual({ remaining: 0.75, resetAtMs: RESET_SEC * 1000 });
+  });
+
+  it('maps Codex windows and skips missing ones', () => {
+    expect(codexReading(limits(40))?.windows).toEqual([{ remaining: 0.6, resetAtMs: NOW + 3600_000 }]);
+    expect(codexReading(null)).toBeNull();
+  });
+});
