@@ -33,7 +33,7 @@ import {
 } from '../terminal/replayMute';
 import { terminalFontFamilyCss } from '../utils/terminalFont';
 import { createPathLinkProvider } from '../terminal/pathLinkProvider';
-import { resolveNewlineKeyByte } from '../terminal/newlineKeys';
+import { resolveNewlineKeyByte, wantsWin32RecordNewline } from '../terminal/newlineKeys';
 import { encodeEscape, isBareEscape } from '../terminal/escapeKeys';
 import { resolveCtrlLetterByte } from '../terminal/ctrlLetterKeys';
 import { isComposeChord, composeOwnerHost, TERMINAL_PTY_ATTR, COMPOSE_OWNER_ATTR } from '../terminal/composeChord';
@@ -1920,6 +1920,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // Claude Code inside wmux never pushes kitty, so the historical CSI-u
         // default was Escape + garbage and the prompt submitted (#1152).
         shiftEnterFallback: 'lf',
+        // #1694: Codex on Windows takes its newline from a win32 key record.
+        // Keyed on the detected agent, not on `?9001h` — ConPTY emits that
+        // for every pane, so the fold ignores it on a Windows host (#1363).
+        win32RecordNewline: wantsWin32RecordNewline(
+          hostPlatform(),
+          useStore.getState().surfaceAgent[ptyId]?.slug,
+        ),
       });
       if (newlineByte !== null) {
         e.preventDefault();

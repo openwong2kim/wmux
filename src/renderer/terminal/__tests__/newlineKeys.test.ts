@@ -8,7 +8,12 @@
  * so the byte is emitted regardless of IME/layout state.
  */
 import { describe, it, expect } from 'vitest';
-import { resolveNewlineKeyByte, type NewlineKeyEventLike } from '../newlineKeys';
+import {
+  resolveNewlineKeyByte,
+  wantsWin32RecordNewline,
+  SHIFT_ENTER_WIN32,
+  type NewlineKeyEventLike,
+} from '../newlineKeys';
 
 function ev(partial: Partial<NewlineKeyEventLike>): NewlineKeyEventLike {
   return {
@@ -183,5 +188,66 @@ describe('resolveNewlineKeyByte — Ctrl+Enter', () => {
 
   it('ignores a bare Enter (no Ctrl) — plain submit is unchanged', () => {
     expect(resolveNewlineKeyByte(ev({ key: 'Enter' }))).toBeNull();
+  });
+});
+
+/**
+ * #1694 — Codex on a Windows host. ConPTY's own `?9001h` is ignored there
+ * (#1363), so `win32Input` never arms and Shift+Enter fell back to LF, which
+ * ConPTY hands Codex as Ctrl+Enter. The newline now keys off the agent.
+ */
+describe('resolveNewlineKeyByte — Codex on Windows (#1694)', () => {
+  const NEWLINE_KEYS: Array<[string, Partial<NewlineKeyEventLike>]> = [
+    ['Shift+Enter', { key: 'Enter', code: 'Enter', shiftKey: true }],
+    ['Ctrl+Enter', { key: 'Enter', code: 'Enter', ctrlKey: true }],
+    ['Ctrl+J', { key: 'j', code: 'KeyJ', ctrlKey: true }],
+  ];
+  /** Exactly what useTerminal passes, with the host and agent forced. */
+  const opts = (host: string, slug: string | undefined) => ({
+    protocol: { kitty: false, win32Input: false, modifyOtherKeys: 0 as const },
+    shiftEnterFallback: 'lf' as const,
+    win32RecordNewline: wantsWin32RecordNewline(host, slug),
+  });
+
+  it('only a Codex pane on a win32 host gets the record', () => {
+    expect(wantsWin32RecordNewline('win32', 'codex')).toBe(true);
+    expect(wantsWin32RecordNewline('win32', 'claude')).toBe(false);
+    expect(wantsWin32RecordNewline('win32', undefined)).toBe(false);
+    expect(wantsWin32RecordNewline('darwin', 'codex')).toBe(false);
+    expect(wantsWin32RecordNewline('linux', 'codex')).toBe(false);
+    expect(wantsWin32RecordNewline(null, 'codex')).toBe(false);
+  });
+
+  it.each(NEWLINE_KEYS)('%s in a Codex pane on win32 sends the win32 Shift+Enter record', (_, e) => {
+    expect(resolveNewlineKeyByte(ev(e), opts('win32', 'codex'))).toBe(SHIFT_ENTER_WIN32);
+  });
+
+  it.each(NEWLINE_KEYS)('%s in a Claude Code pane on win32 stays LF', (_, e) => {
+    expect(resolveNewlineKeyByte(ev(e), opts('win32', 'claude'))).toBe('\n');
+  });
+
+  it.each(NEWLINE_KEYS)('%s in a plain PowerShell pane on win32 stays LF', (_, e) => {
+    expect(resolveNewlineKeyByte(ev(e), opts('win32', undefined))).toBe('\n');
+  });
+
+  it.each(['darwin', 'linux'])('a Codex pane on %s is unchanged', (host) => {
+    for (const [, e] of NEWLINE_KEYS) {
+      expect(resolveNewlineKeyByte(ev(e), opts(host, 'codex')))
+        .toBe(resolveNewlineKeyByte(ev(e), { protocol: opts(host, 'codex').protocol, shiftEnterFallback: 'lf' }));
+    }
+    expect(resolveNewlineKeyByte(ev(NEWLINE_KEYS[0][1]), opts(host, 'codex'))).toBe('\n');
+  });
+
+  it('still defers to an IME preedit and a custom Ctrl+J binding', () => {
+    const codex = opts('win32', 'codex');
+    expect(resolveNewlineKeyByte(ev({ key: 'Enter', shiftKey: true, isComposing: true }), codex)).toBeNull();
+    expect(resolveNewlineKeyByte(ev({ key: 'Enter', ctrlKey: true, isComposing: true }), codex)).toBeNull();
+    expect(
+      resolveNewlineKeyByte(ev({ key: 'j', code: 'KeyJ', ctrlKey: true }), { ...codex, hasCustomCtrlJBinding: true }),
+    ).toBeNull();
+  });
+
+  it('plain Enter still submits', () => {
+    expect(resolveNewlineKeyByte(ev({ key: 'Enter', code: 'Enter' }), opts('win32', 'codex'))).toBeNull();
   });
 });

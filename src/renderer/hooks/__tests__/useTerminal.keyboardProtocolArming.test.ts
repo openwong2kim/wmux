@@ -50,6 +50,14 @@ describe('useTerminal keyboard-protocol arming (#1363)', () => {
     expect(after).toBe(INITIAL_REMOTE_KEYBOARD_STATE);
   });
 
+  it('#1694: a Codex pane on a Windows host gets its newline from the detected agent', () => {
+    // The fold above stays untrusting; the newline keys read host + agent per
+    // keystroke instead of the win32Input flag ConPTY's ?9001h would set.
+    expect(SRC).toMatch(
+      /win32RecordNewline: wantsWin32RecordNewline\(\s*hostPlatform\(\),\s*useStore\.getState\(\)\.surfaceAgent\[ptyId\]\?\.slug,\s*\)/,
+    );
+  });
+
   it('a prompt start clears state without waiting for the liveness poll', () => {
     const armed = foldRemoteKeyboardState(INITIAL_REMOTE_KEYBOARD_STATE, '\x1b[>1u');
     expect(armed.kitty).toBe(true);

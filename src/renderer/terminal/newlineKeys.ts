@@ -24,6 +24,8 @@
  *     is Escape + `[13;2u` to Claude Code inside wmux (TERM_PROGRAM=wmux is
  *     not on Claude's kitty whitelist), which is why Shift+Enter submitted
  *     after #1228 (#1152 follow-up). LF is the same byte Ctrl+J already sends.
+ *   - Codex on a Windows host → the win32 Shift+Enter record for all three
+ *     keys (see `win32RecordNewline`, #1694).
  *   - Ctrl+Enter → LF (`\n`): same intent as Ctrl+J. With no extended keyboard
  *     protocol enabled, xterm sends a bare CR for Ctrl+Enter — byte-identical
  *     to plain Enter — so an in-pane TUI submits instead of inserting a
@@ -88,6 +90,18 @@ export interface NewlineKeyOptions {
    * Defaults to `'lf'` (local pane). Remote/web pass `'xterm'`.
    */
   shiftEnterFallback?: ShiftEnterFallback;
+  /**
+   * The pane runs Codex on a Windows host (#1694). Shift+Enter, Ctrl+Enter
+   * and Ctrl+J all send the win32 Shift+Enter record instead of LF.
+   *
+   * The protocol flag cannot say this on Windows: every ConPTY session emits
+   * `?9001h` itself, so the fold ignores it there (#1363) and `win32Input`
+   * never arms. Codex reads key records through the console API, and ConPTY
+   * turns a bare LF into Ctrl+Enter, which Codex does not take as a newline.
+   * The record keeps VK_RETURN + SHIFT, which it does. Claude Code panes and
+   * plain shells never set this, so they keep LF.
+   */
+  win32RecordNewline?: boolean;
 }
 
 /** Kitty CSI-u Shift+Enter. Only meaningful after the pane pushed kitty. */
@@ -135,6 +149,19 @@ export function encodeShiftEnter(
   return null;
 }
 
+/**
+ * Whether a pane gets `win32RecordNewline` (#1694): Codex, hosted on Windows.
+ * `hostPlatform` is the pane's host (the daemon's OS in the browser build),
+ * `agentSlug` the pane's detected agent — both read per keystroke, since the
+ * agent changes as the user starts and exits programs.
+ */
+export function wantsWin32RecordNewline(
+  hostPlatform: string | null | undefined,
+  agentSlug: string | undefined,
+): boolean {
+  return hostPlatform === 'win32' && agentSlug === 'codex';
+}
+
 /** Enter / NumpadEnter, including an IME that mangled `key` to 'Process'. */
 function isEnterKey(e: NewlineKeyEventLike): boolean {
   return e.key === 'Enter' || e.code === 'Enter' || e.code === 'NumpadEnter';
@@ -157,6 +184,7 @@ export function resolveNewlineKeyByte(
     !e.altKey &&
     !e.isComposing
   ) {
+    if (opts?.win32RecordNewline) return SHIFT_ENTER_WIN32;
     return encodeShiftEnter(opts?.protocol, opts?.shiftEnterFallback ?? 'lf');
   }
 
@@ -176,7 +204,7 @@ export function resolveNewlineKeyByte(
     !e.metaKey &&
     !e.isComposing
   ) {
-    return '\n';
+    return opts?.win32RecordNewline ? SHIFT_ENTER_WIN32 : '\n';
   }
 
   // Ctrl+J → LF. Match the physical key so it survives a CJK IME where
@@ -202,7 +230,7 @@ export function resolveNewlineKeyByte(
     !e.altKey &&
     !e.metaKey
   ) {
-    return '\n';
+    return opts?.win32RecordNewline ? SHIFT_ENTER_WIN32 : '\n';
   }
 
   return null;
