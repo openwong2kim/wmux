@@ -145,7 +145,10 @@ export class AccountRotationService {
     if (!usage) return null;
     const find = () => usage.getAll().find((e) => e.accountId === account.id);
     const entry = find();
-    const stale = !entry?.fetchedAtMs || this.now() - entry.fetchedAtMs > READING_MAX_AGE_MS;
+    // Age of the last SUCCESSFUL reading: a failed probe also bumps
+    // entry.fetchedAtMs but leaves the old snapshot in place.
+    const readAt = entry?.snapshot?.fetchedAtMs;
+    const stale = !readAt || this.now() - readAt > READING_MAX_AGE_MS;
     if (refresh && stale) await withTimeout(usage.refreshNow(account.id), PROBE_TIMEOUT_MS);
     return claudeReading(find());
   }

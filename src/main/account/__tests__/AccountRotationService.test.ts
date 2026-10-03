@@ -80,6 +80,15 @@ describe('AccountRotationService', () => {
     expect(refreshNow).toHaveBeenCalledWith('a');
   });
 
+  it('counts a reading as stale by its last successful probe, not the last attempt', async () => {
+    const s = make([acct('a', 'claude'), acct('b', 'claude')]);
+    await s.setEnabled('claude', true);
+    bindings['ws:claude'] = 'a';
+    usageEntries = [{ ...usage('a', 10, NOW - 60 * 60_000), fetchedAtMs: NOW }, usage('b', 10)];
+    await s.prepareLaunch('claude', 'ws');
+    expect(refreshNow).toHaveBeenCalledWith('a');
+  });
+
   it('holds a Codex launch when every account is out', async () => {
     const s = make([acct('x', 'codex'), acct('y', 'codex')]);
     await s.setEnabled('codex', true);
