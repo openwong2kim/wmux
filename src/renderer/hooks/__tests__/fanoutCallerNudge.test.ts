@@ -106,6 +106,17 @@ describe('fan-out caller nudge', () => {
     expect(gatedSubmit).not.toHaveBeenCalled();
   });
 
+  it('forgets a queued pointer once its pane closes, even if the pane comes back', async () => {
+    agent('running');
+    receiveFanoutCallerEvent(pointer('t1', 1));
+    useStore.setState({ workspaces: [ws(OWNER, leaf('pane-x', [surface('surf-x', 'pty-x')]))] });
+    await sweepFanoutCallerNudges();
+    useStore.setState({ workspaces: [ws(OWNER, CALLER)] });
+    agent('waiting');
+    await turnEnd();
+    expect(gatedSubmit).not.toHaveBeenCalled();
+  });
+
   it('coalesces N simultaneous stops into one line per pane and accepts each (taskId, seq) once', async () => {
     receiveFanoutCallerEvent(pointer('aaaa1111', 1));
     receiveFanoutCallerEvent(pointer('bbbb2222', 2));

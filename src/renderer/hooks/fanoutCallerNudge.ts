@@ -268,7 +268,12 @@ export function noteFanoutCallerTurnEnd(ptyId: string): void {
 /** Flush armed targets whose pane is writable now. Call on every event poll. */
 export async function sweepFanoutCallerNudges(): Promise<void> {
   for (const [key, t] of [...targets]) {
-    if (!t.armed || t.inFlight) continue;
+    if (t.inFlight) continue;
+    // A pane that closed or moved away takes its pending pointers with it.
+    if (!t.armed) {
+      if (!resolve(t)) drop(key, t);
+      continue;
+    }
     // eslint-disable-next-line no-await-in-loop -- one gated write per pane, in order
     await flush(key);
   }
