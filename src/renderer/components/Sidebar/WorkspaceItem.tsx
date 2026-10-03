@@ -76,7 +76,7 @@ interface WorkspaceItemProps {
  * X1 — PR badge for the current branch. Color encodes state; the trailing
  * dot encodes CI checks. Clicking opens the PR in the default browser.
  */
-function PrBadge({ pr }: { pr: PrStatus }): React.ReactElement {
+export function PrBadge({ pr }: { pr: PrStatus }): React.ReactElement {
   const t = useT();
   const stateColor =
     pr.state === 'open' ? 'var(--accent-green)'

@@ -20,7 +20,7 @@ import { retentionMigrationDone, markRetentionMigrationDone } from '../retention
 import { decUnread } from './notificationSlice';
 import { mergeDeadPaneRecovery, type DeadPaneRecovery } from '../../../shared/ptyRecovery';
 import { stashedPaneLiveness } from '../../../shared/paneStash';
-import { clampSidebarWidth, dropOwnerFoldKeys, movePinned, pinnedFirst, pruneTaskGroupExpanded, resolveSidebarSortMode, sortModeMigratedToAttention, unpinNestedTasks } from '../../utils/sidebarLayout';
+import { clampSidebarGitHeight, clampSidebarWidth, dropOwnerFoldKeys, movePinned, pinnedFirst, pruneTaskGroupExpanded, resolveSidebarSortMode, sortModeMigratedToAttention, unpinNestedTasks } from '../../utils/sidebarLayout';
 import {
   collectLeafIds,
   getLeafPanes,
@@ -1384,6 +1384,8 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       }
       state.sidebarAttentionFirst = state.sidebarSortMode === 'attention';
       if (data.sidebarWidth !== undefined) state.sidebarWidth = clampSidebarWidth(data.sidebarWidth);
+      if (typeof data.sidebarGitCollapsed === 'boolean') state.sidebarGitCollapsed = data.sidebarGitCollapsed;
+      if (data.sidebarGitHeight !== undefined) state.sidebarGitHeight = clampSidebarGitHeight(data.sidebarGitHeight);
       state.sidebarTaskGroupExpanded = pruneTaskGroupExpanded(
         data.sidebarTaskGroupExpanded,
         new Set((data.workspaces ?? []).map((w) => w.id)),

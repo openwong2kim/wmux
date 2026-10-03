@@ -2109,3 +2109,201 @@ html[data-fullscreen] .wmux-shell-body {
 .wmux-chatv2-btn:not([data-variant="primary"]):hover:not(:disabled) { background: var(--selection-hover); }
 .wmux-chatv2-btn[data-variant="primary"],
 .wmux-chatv2-send { background: var(--primary-fill); color: var(--primary-ink); box-shadow: none; }
+
+/* ─── Sidebar Git section (2026-10-03, moved from the tools panel) ────────────
+ * The active repo's git surface at the foot of the sidebar. One hairline seam
+ * between it and the workspace list; never taller than 45% of the column, it
+ * scrolls inside itself. The current-branch card is a fill without a border;
+ * worktree rows are plain rows whose actions float over a faded right edge. */
+.wmux-git-section {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  min-height: 0;
+  max-height: 45%;
+  box-shadow: inset 0 1px 0 var(--stroke);
+  font-size: 12px;
+}
+.wmux-git-section[data-collapsed] { max-height: none; }
+.wmux-git-resize {
+  position: absolute;
+  top: -3px;
+  left: 0;
+  right: 0;
+  height: 7px;
+  z-index: 2;
+  cursor: row-resize;
+}
+.wmux-git-resize:hover,
+.wmux-git-resize[data-dragging] {
+  background: linear-gradient(to bottom, transparent 3px, var(--line-strong) 3px, var(--line-strong) 4px, transparent 4px);
+}
+.wmux-sidebar-section.wmux-git-header {
+  min-height: 40px;
+  margin: 0 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.wmux-git-repo { color: var(--text-muted); font-weight: 400; text-transform: none; letter-spacing: normal; }
+.wmux-git-collapse svg { transform: rotate(90deg); transition: transform var(--motion-feedback, 120ms) ease-out; }
+.wmux-git-section[data-collapsed] .wmux-git-collapse svg { transform: rotate(-90deg); }
+.wmux-git-body { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.wmux-git-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 0 8px 8px; }
+.wmux-git-note { padding: 8px 6px; color: var(--text-muted); }
+
+.wmux-git-branch {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace);
+  font-size: 12px;
+  color: var(--text-main);
+}
+.wmux-git-stat {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 4px;
+  font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+.wmux-git-button {
+  flex-shrink: 0;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 6px;
+  box-shadow: inset 0 0 0 1px var(--line);
+  font-size: 11px;
+  color: var(--text-sub);
+}
+.wmux-git-button:hover:not(:disabled) { background: var(--hover-fill); color: var(--text-main); }
+.wmux-git-button:disabled { opacity: .4; }
+
+.wmux-git-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 0 6px;
+  padding: 6px 8px 6px 10px;
+  border-radius: 10px;
+  background: var(--selection-subtle);
+}
+.wmux-git-card-line { display: flex; align-items: center; gap: 8px; min-height: 26px; }
+.wmux-git-card-changes {
+  display: inline-flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-sub);
+}
+.wmux-git-card-pr { display: inline-flex; flex: 1; align-items: center; gap: 6px; min-width: 0; font-size: 11px; color: var(--text-sub); }
+
+.wmux-git-subhead {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  height: 28px;
+  padding: 0 4px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-align: left;
+}
+.wmux-git-disclosure:hover { background: var(--hover-fill); color: var(--text-main); }
+.wmux-git-chevron { display: inline-flex; transition: transform var(--motion-feedback, 120ms) ease-out; }
+.wmux-git-prs[data-open] .wmux-git-chevron { transform: rotate(90deg); }
+.wmux-git-count { color: var(--text-muted); font-weight: 400; font-variant-numeric: tabular-nums; }
+
+.wmux-git-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 4px 8px;
+  border-radius: 8px;
+}
+.wmux-git-row:hover { background: var(--hover-fill); }
+.wmux-git-dot { width: 6px; height: 6px; flex-shrink: 0; border-radius: 9999px; }
+.wmux-git-dot[data-on] { background: var(--accent); }
+.wmux-git-row-text { display: flex; flex: 1; flex-direction: column; min-width: 0; line-height: 1.35; }
+.wmux-git-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.wmux-git-sub-pr { display: inline-flex; margin-left: 6px; vertical-align: bottom; }
+.wmux-git-link { color: inherit; }
+.wmux-git-link:hover { color: var(--text-main); text-decoration: underline; }
+.wmux-git-main-badge { flex-shrink: 0; font-size: 11px; color: var(--text-muted); }
+.wmux-git-row-actions {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  display: flex;
+  gap: 2px;
+  transform: translateY(-50%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--motion-feedback, 120ms) ease-out;
+}
+.wmux-git-row:is(:hover, :focus-within) .wmux-git-row-actions { opacity: 1; pointer-events: auto; }
+.wmux-git-row:is(:hover, :focus-within) > :is(.wmux-git-stat, .wmux-git-main-badge) { visibility: hidden; }
+.wmux-git-row:is(:hover, :focus-within) [data-git-row-text] {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 176px), transparent calc(100% - 140px));
+  mask-image: linear-gradient(to right, #000 calc(100% - 176px), transparent calc(100% - 140px));
+}
+.wmux-git-action {
+  height: 24px;
+  padding: 0 6px;
+  border-radius: var(--chip-radius, 6px);
+  background: var(--selection);
+  font-size: 11px;
+  color: var(--text-sub);
+}
+.wmux-git-action:hover:not(:disabled) { background: var(--selection-hover); color: var(--text-main); }
+.wmux-git-action:disabled { opacity: .4; }
+.wmux-git-action-danger:hover:not(:disabled) { color: var(--accent-red); }
+
+.wmux-git-create {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  margin-top: 6px;
+  padding: 0 4px 0 8px;
+  border-radius: 6px;
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.wmux-git-create:focus-within { box-shadow: inset 0 0 0 1px var(--line-strong); }
+.wmux-git-create input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  outline: none;
+  font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace);
+  font-size: 11px;
+  color: var(--text-main);
+}
+.wmux-git-create input::placeholder { color: var(--text-muted); }
+.wmux-git-create .wmux-git-button { height: 24px; box-shadow: none; background: var(--selection); }
+.wmux-git-merge {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  gap: 6px;
+  padding: 8px 12px;
+  box-shadow: inset 0 1px 0 var(--stroke);
+  font-size: 11px;
+}

@@ -13,6 +13,7 @@ import RemoteWorkspaceItem from './RemoteWorkspaceItem';
 import OrphanSessions from './OrphanSessions';
 import ArchivedWorkspaces from './ArchivedWorkspaces';
 import MissionsSection from './MissionsSection';
+import SidebarGitSection from './SidebarGitSection';
 import type { Workspace } from '../../../shared/types';
 import { getWorkspacePtyIds } from '../../../shared/paneUtils';
 import { destroyWorkspaceRemoteSessions } from '../../utils/remoteSessionTeardown';
@@ -512,6 +513,11 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
         {!readOnly && <OrphanSessions />}
       </div>
       )}
+
+      {/* The active repo's Git section (2026-10-03, moved from the tools
+          panel). At most 45% of the column; scrolls inside itself. The
+          browser mirror has no git bridge, so it shows none. */}
+      {!readOnly && <SidebarGitSection />}
 
       {/* Plugin sidebar panels (B-1 ui.sidebar contribution point) */}
       {!readOnly && <PluginPanels />}

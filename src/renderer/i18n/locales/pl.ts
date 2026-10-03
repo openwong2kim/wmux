@@ -191,6 +191,9 @@ export const pl = {
   // Sidebar
   'sidebar.workspaces': 'Obszary robocze',
   'sidebar.filterWorkspaces': 'Filtruj obszary robocze',
+  'sidebar.git.collapse': 'Zwiń Git',
+  'sidebar.git.expand': 'Rozwiń Git',
+  'sidebar.git.resize': 'Zmień rozmiar sekcji Git',
   'sidebar.newWorkspace': 'Nowy obszar roboczy',
   'sidebar.newWorkspaceTooltip': 'Nowy obszar roboczy (Ctrl+N)',
   'sidebar.hideTooltip': 'Ukryj pasek boczny (Ctrl+B)',
@@ -2229,6 +2232,7 @@ export const pl = {
   'git.justNow': 'teraz',
   'git.diff': 'Diff',
   'git.diffDesc': 'Otwórz widok diff dla tego worktree',
+  'git.openPr': 'Otwórz PR',
   'deck.hasSignal': 'coś tu Cię potrzebuje',
   'deck.commanderPlaceholder': 'Powiedz orkiestratorowi albo @wspomnij panele…',
   'deck.jumpToPane': 'Przejdź do tego panelu',

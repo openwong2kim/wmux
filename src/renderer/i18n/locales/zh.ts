@@ -27,6 +27,9 @@ export const zh = {
   // Sidebar
   'sidebar.workspaces': '工作区',
   'sidebar.filterWorkspaces': '筛选工作区',
+  'sidebar.git.collapse': '折叠 Git',
+  'sidebar.git.expand': '展开 Git',
+  'sidebar.git.resize': '调整 Git 区域大小',
   'sidebar.newWorkspace': '新建工作区',
   'sidebar.newWorkspaceTooltip': '新建工作区 (Ctrl+N)',
   'sidebar.hideTooltip': '隐藏侧边栏 (Ctrl+B)',
@@ -1770,6 +1773,7 @@ export const zh = {
   'git.justNow': '现在',
   'git.diff': '差异',
   'git.diffDesc': '打开此工作树的差异视图',
+  'git.openPr': '打开 PR',
   'deck.collapseDock': '折叠停靠栏',
   'deck.expandDock': '展开停靠栏',
   'deck.hasSignal': '这里有需要处理的内容',

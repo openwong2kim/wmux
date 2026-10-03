@@ -104,12 +104,12 @@ describe('DeckTabs', () => {
     expect(badge?.textContent).toContain('3');
   });
 
-  it('renders Orchestrator·Git·Channels tabs (owner 2026-07-20: 덱 복귀, Review는 Git에 병합)', () => {
+  it('renders Orchestrator·Channels tabs — Git lives in the sidebar (2026-10-03)', () => {
     mount({ active: 'commander' });
     const ids = Array.from(container.querySelectorAll('[data-deck-tab]')).map((el) =>
       el.getAttribute('data-deck-tab'),
     );
-    expect(ids).toEqual(['commander', 'git', 'channels']);
+    expect(ids).toEqual(['commander', 'channels']);
   });
 
   it('hides the Channels tab (and its badge) when showChannels is false', () => {
@@ -134,7 +134,7 @@ describe('DeckTabs', () => {
     expect(list.querySelector('[data-test-chip]')).toBeNull();
     // Every direct child of the list is a tab.
     const kids = Array.from(list.children);
-    expect(kids.length).toBe(3);
+    expect(kids.length).toBe(2);
     for (const kid of kids) {
       const isTab = kid.getAttribute('role') === 'tab' || kid.querySelector('[role="tab"]') !== null;
       expect(isTab).toBe(true);
@@ -178,7 +178,7 @@ describe('DeckTabs', () => {
     // deck.tabCommander (identity translator returns the key) + ` (Sonnet 5)`.
     expect(tab('commander').getAttribute('aria-label')).toBe('deck.tabCommander (Sonnet 5)');
     expect(tab('commander').getAttribute('title')).toBe('deck.tabCommander (Sonnet 5)');
-    expect(tab('git').getAttribute('aria-label')).toBe('deck.tabGit');
+    expect(tab('channels').getAttribute('aria-label')).toBe('deck.tabChannels');
   });
 
   it('opens the model menu on active-tab re-click and fires the select callback', () => {

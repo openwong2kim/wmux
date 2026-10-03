@@ -3,7 +3,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { tokenAttrs } from '../../themes';
-import { IconRobot, IconGitBranch, IconHash } from '../icons';
+import { IconRobot, IconHash } from '../icons';
 import { formatDeckCount } from './deckIconStyles';
 import type { DeckTab } from '../../stores/slices/deckSlice';
 
@@ -49,7 +49,6 @@ const TABS: {
   Icon: (props: { size?: number }) => React.ReactElement;
 }[] = [
   { id: 'commander', labelKey: 'deck.tabCommander', fallback: 'Orchestrator', Icon: IconRobot },
-  { id: 'git', labelKey: 'deck.tabGit', fallback: 'Git', Icon: IconGitBranch },
   { id: 'channels', labelKey: 'deck.tabChannels', fallback: 'Channels', Icon: IconHash },
 ];
 

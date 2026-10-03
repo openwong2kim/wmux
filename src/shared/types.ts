@@ -934,6 +934,10 @@ export interface SessionData {
   sidebarWidth?: number;
   /** #1481 — owner workspace id → user-chosen expansion of its fan-out task group. */
   sidebarTaskGroupExpanded?: Record<string, boolean>;
+  /** Whether the sidebar's Git section is folded to its header. */
+  sidebarGitCollapsed?: boolean;
+  /** Expanded height of the sidebar's Git section in px. Clamped on load. */
+  sidebarGitHeight?: number;
   /** How the multiview grid arranges its tiles (#746). Whitelisted on load. */
   multiviewArrangement?: 'auto' | 'columns' | 'rows';
   notificationSoundEnabled?: boolean;

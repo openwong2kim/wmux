@@ -25,16 +25,13 @@ import { sumUnread } from '../Channels/ChannelsPanel';
 import { showWorkspaces } from '../../utils/showWorkspaces';
 
 /**
- * Whether the collapsed deck holds anything worth opening it for.
- *
- * Deliberately a boolean, not a total: unread messages and dirty worktrees are
- * different kinds of thing, and adding them ("5") would invent a number that
- * means nothing. The dot says "there is something in here"; which it is comes
- * from opening the deck, one step away. It also keeps the deck honest against
- * DESIGN.md's no-dead-gauges rule — at zero there is no dot at all.
+ * Whether the collapsed deck holds anything worth opening it for: unread
+ * channel messages. Dirty worktrees used to light it too, but Git lives in the
+ * sidebar now (2026-10-03), so opening the deck would not show them. At zero
+ * there is no dot at all (DESIGN.md's no-dead-gauges rule).
  */
-export function deckHasSignal(unread: number, dirtyWorkspaces: number): boolean {
-  return unread > 0 || dirtyWorkspaces > 0;
+export function deckHasSignal(unread: number): boolean {
+  return unread > 0;
 }
 
 export default function DeckToggle() {
@@ -46,13 +43,10 @@ export default function DeckToggle() {
   const setChannelDockVisible = useStore((s) => s.setChannelDockVisible);
   const sidebarPosition = useStore((s) => s.sidebarPosition);
   const channelUnread = useStore((s) => s.channelUnread);
-  const dirtyWsCount = useStore(
-    (s) => s.workspaces.filter((w) => (w.metadata?.gitSync?.dirty ?? 0) > 0).length,
-  );
 
   // Only meaningful while collapsed: with the deck open its contents are on
   // screen, so a dot on the button that closes it would be noise.
-  const signal = !visible && deckHasSignal(sumUnread(channelUnread), dirtyWsCount);
+  const signal = !visible && deckHasSignal(sumUnread(channelUnread));
 
   const deckOnRight = sidebarPosition !== 'right';
 

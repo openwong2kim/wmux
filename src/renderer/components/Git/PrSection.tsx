@@ -1,6 +1,10 @@
-// Git 탭 — Pull Requests 섹션 (gh CLI 기반, 성긴 pull).
+// Sidebar Git section — Pull Requests row (gh CLI 기반, 성긴 pull).
 //
-// "실시간"의 실현 수준: 섹션이 마운트된 동안(=Git 탭이 보일 때)만 30s 폴 +
+// A folded row ("Pull requests · N") under the current-branch card; opening it
+// lists the PRs, and each PR expands to its comments. The Git section's header
+// refresh reaches it through `refreshKey`.
+//
+// "실시간"의 실현 수준: 섹션이 마운트된 동안(=Git 섹션이 펼쳐져 있을 때)만 30s 폴 +
 // 수동 새로고침 + PR 펼침 시 코멘트 즉시 fetch. main 캐시(GhPrService)가
 // 30s TTL·updatedAt 불변 시 코멘트 재fetch 생략으로 rate limit을 상한한다
 // (useMissionsPolling의 push-vs-pull 근거와 동일한 성긴-폴 선택).
@@ -11,7 +15,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useT } from '../../hooks/useT';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
-import { renderBrainMarkdown } from './BrainMarkdown';
+import { renderBrainMarkdown } from '../Deck/BrainMarkdown';
+import { IconChevron } from '../icons';
 import type { PrSummary, PrComment } from '../../../shared/prSurface';
 
 const POLL_MS = 30_000;
@@ -63,9 +68,11 @@ function relTime(iso: string, t: (k: string) => string): string {
   return `${Math.floor(h / 24)}d`;
 }
 
-export function PrSection({ repoPath }: { repoPath: string | null }): React.ReactElement | null {
+export function PrSection({ repoPath, refreshKey = 0 }: { repoPath: string | null; refreshKey?: number }): React.ReactElement | null {
   const t = useT();
   const [state, setState] = useState<ListState>({ kind: 'loading' });
+  // Folded by default: the count is the glance, the list is one click away.
+  const [open, setOpen] = useState(false);
   const [expanded, setExpanded] = useState<number | null>(null);
   const [comments, setComments] = useState<PrComment[] | null>(null);
   const [commentsLoading, setCommentsLoading] = useState(false);
@@ -138,6 +145,15 @@ export function PrSection({ repoPath }: { repoPath: string | null }): React.Reac
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repoPath]);
 
+  // The section header's refresh — a forced re-read past the main-side cache.
+  // Skips the first render: mounting already loaded.
+  const seenRefresh = useRef(refreshKey);
+  useEffect(() => {
+    if (seenRefresh.current === refreshKey) return;
+    seenRefresh.current = refreshKey;
+    void load(true);
+  }, [refreshKey, load]);
+
   const toggleExpand = useCallback(
     async (pr: PrSummary) => {
       if (expanded === pr.number) {
@@ -158,38 +174,22 @@ export function PrSection({ repoPath }: { repoPath: string | null }): React.Reac
   if (!repoPath) return null;
 
   return (
-    <div data-pr-section className="shrink-0 max-h-[55%] overflow-y-auto border-b border-[var(--bg-surface)]" style={{ borderColor: 'var(--border-soft)' }}>
-      {/* Section header — 40px chrome row.
-          Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx), MIT License, Copyright (c) 2026 Nick */}
-      <div
-        className="flex items-center gap-2 h-10 px-3 sticky top-0 bg-[var(--bg-mantle)] border-b border-[var(--bg-surface)]"
-        style={{ borderColor: 'var(--stroke)' }}
-        {...tokenAttrs('bgMantle', 'bg')}
+    <div data-pr-section className="wmux-git-prs" data-open={open ? 'true' : undefined}>
+      <button
+        type="button"
+        className={`wmux-git-subhead wmux-git-disclosure ${FOCUS_RING}`}
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        data-pr-toggle
       >
-        <span className="font-semibold text-[var(--text-main)]" {...tokenAttrs('textMain', 'text')}>
-          {t('git.pullRequests') || 'Pull Requests'}
-        </span>
+        <span className="wmux-git-chevron" aria-hidden="true"><IconChevron size={12} /></span>
+        <span>{t('git.pullRequests') || 'Pull Requests'}</span>
         {state.kind === 'ready' && (
-          <span className="text-[11px] text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
-            ({state.prs.length >= 100 ? '100+' : state.prs.length})
-          </span>
+          <span className="wmux-git-count">· {state.prs.length >= 100 ? '100+' : state.prs.length}</span>
         )}
-        <div className="flex-1" />
-        <button
-          type="button"
-          onClick={() => void load(true)}
-          title={t('git.refresh') || 'Refresh'}
-          aria-label={t('git.refresh') || 'Refresh'}
-          className={`flex items-center justify-center w-6 h-6 rounded-md text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--hover-fill)] transition-colors ${FOCUS_RING}`}
-          {...tokenAttrs('textMuted', 'text')}
-        >
-          <svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-            <path d="M12 7a5 5 0 11-1.5-3.6" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-            <path d="M12 1v2.6H9.4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </button>
-      </div>
+      </button>
 
+      {open && <>
       {state.kind === 'loading' && (
         <div className="px-3 py-3 text-[var(--text-muted)] text-[11px]" {...tokenAttrs('textMuted', 'text')}>
           {t('git.loading') || 'Loading…'}
@@ -310,6 +310,7 @@ export function PrSection({ repoPath }: { repoPath: string | null }): React.Reac
             )}
           </div>
         ))}
+      </>}
     </div>
   );
 }

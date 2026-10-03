@@ -155,7 +155,7 @@ bar is a drag region; each interactive child opts out with `no-drag`.
   it matters, then two 28px icon buttons 4px apart with the same hover fill:
   the **tools-panel toggle** (icon only; its name and open state are in the
   tooltip, accessible name and `aria-expanded`; one dot when the collapsed
-  dock holds unread channels or dirty worktrees) and **Settings** (a gear
+  dock holds unread channels) and **Settings** (a gear
   that swaps the sheet to the Settings page and shows `--selection` while it
   is up).
 - **Windows:** the native window controls sit at the right edge in the
@@ -275,6 +275,29 @@ leaves the page.
 - The glance-board rules (attention order, pin to top, fan-out nesting, the
   changed-since-you-looked dot) are in "Sidebar rows" after the Decisions
   Log.
+- **Git section** (2026-10-03, moved from the tools panel): at the foot of
+  the sidebar, under the workspace list and set off by one `--stroke` seam.
+  A 40px header "Git · <repo>" (the main worktree's folder) with refresh and
+  collapse. The body is scoped to the active pane's repo: a current-branch
+  card (a `--selection-subtle` fill, no border: branch in mono, ahead/behind,
+  uncommitted files `+N −M` with Diff, the PR badge with its CI state and
+  Open PR); a folded "Pull requests · N" row whose PRs expand to their
+  comments; "Worktrees · N", one row per worktree (branch in mono over a
+  muted line naming the workspaces on it — each a link that switches to it —
+  or its folder, and the PR), its diff stat, the accent dot only on the
+  worktree the active pane is in, and Diff / Open / Merge / Remove floating
+  over the faded right edge on hover; the new-worktree line; and, while one
+  runs, the merge session pinned at the bottom. The section is never taller
+  than 45% of the sidebar and scrolls inside itself; its top edge drags to
+  resize. Height and collapse are remembered. Collapsed, the body is not
+  mounted, so nothing is read from git or the PR host (pull-only, as before).
+  The web mirror shows no Git section.
+
+## Tools panel (Workspaces page)
+
+The dock opposite the sidebar, opened and closed from the titlebar toggle.
+Its header strip holds **Orchestrator** (the default) and, once opted in,
+**Channels**. Git is not here: it lives in the sidebar's Git section.
 
 ## The one-boundary rule
 
@@ -528,6 +551,7 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-10-01 | Owner decision: Settings gains a **Computer use** tab, last in the Agents group after Browser. It holds the opt-in switch (off by default; its description states that screenshots and window text go to the agent's model provider), the native helper's status as a Badge (success when ready, neutral otherwise — never amber), the global stop key as `ui-code`, and two read-only rows saying what is asked per app and what is never allowed. No primary button on the tab | Letting agents drive other apps is its own question — it is not about the agent browser, and folding it into Browser would bury a new security boundary under unrelated rows. The state lives in its own `~/.wmux/computer-use.json` (main-owned, not the daemon's `config.json`) because the MCP server reads it too |
 | 2026-10-03 | **Proposed (owner-directed, pending final approval):** neutral glass look — zero-saturation tokens with a content-mix fill ladder, one blue state accent (running/focus), amber = approval, emerald = done, solid white primary, borderless 26px chips, 6/8/12/16px radii, card rows with two muted metadata lines, 40px chrome module, platform UI font with a 10–14px scale, dark-only window glass, always-visible turn footer. Replaces the amber/steel grammar, the bevel surfacing, Inter, the four-step scale and the 36px module; wmux icons are kept. See "Proposal — Neutral glass look" | Owner call after reviewing a first, more conservative draft: adopt the reference look nearly as-is rather than blending it with the existing grammar. Colour carries state only, so the screen reads calm and every coloured mark means something; translucency and fills instead of outlines give the modern finish |
 | 2026-10-03 | **Shipped: the new look.** Five built-in themes (Tint default, Zinc, Graphite, Paper, Amber Line) with per-theme style knobs; a window frame holding one floating rounded sheet; a 48px icon rail of pages (Workspaces, Fleet, Schedules, Remote); a titlebar with a centred search pill and Settings and tools-panel icons at the right; Fleet as a four-column board, Schedules as a list and one-box composer, Remote as a two-column dashboard; a workspace filter in the sidebar (with a Waiting (usage limit) status); the one-boundary rule; a 13px chrome face with 500 emphasis. Supersedes the proposal row above, the amber/steel grammar, the 5±2 amber budget, the machined bevel, the 36px module and the Fleet overlay | Owner approval of the local build after review in every theme. Pages replace overlays so nothing covers a half-visible terminal; one boundary per element and fills instead of outlines keep dense screens calm; colour carries state only, so every coloured mark still means something |
+| 2026-10-03 | Owner decision: Git moves from the tools panel to a collapsible section at the foot of the sidebar; the Git tab's worktrees and the Review list's workspaces become one row per worktree. The deck keeps Orchestrator (and the opt-in Channels). The titlebar toggle's dot no longer counts dirty worktrees. | Git is about the active workspace's repo, so it belongs beside the workspace list; the deck stays the agent's surface. Capping the section at 45% keeps the list usable, and a folded section reads nothing. The dot would have pointed into a panel that no longer shows worktrees. |
 
 ### Desktop conversation view
 

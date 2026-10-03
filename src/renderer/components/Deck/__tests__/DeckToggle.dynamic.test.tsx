@@ -41,11 +41,9 @@ afterEach(() => {
 const mount = () => act(() => root.render(createElement(DeckToggle)));
 
 describe('deckHasSignal', () => {
-  it('is a boolean, not a total — unread and dirty are different things', () => {
-    expect(deckHasSignal(0, 0)).toBe(false);
-    expect(deckHasSignal(3, 0)).toBe(true);
-    expect(deckHasSignal(0, 2)).toBe(true);
-    expect(deckHasSignal(3, 2)).toBe(true);
+  it('is a boolean, lit only by unread channels', () => {
+    expect(deckHasSignal(0)).toBe(false);
+    expect(deckHasSignal(3)).toBe(true);
   });
 });
 
@@ -96,14 +94,14 @@ describe('DeckToggle', () => {
     expect(dot()).not.toBeNull();
   });
 
-  it('shows a dot when a workspace is dirty', () => {
+  it('shows no dot for a dirty workspace — Git lives in the sidebar, not the deck', () => {
     act(() => {
       useStore.setState({
         workspaces: [{ id: 'ws-1', metadata: { gitSync: { dirty: 2 } } }] as never,
       });
     });
     mount();
-    expect(dot()).not.toBeNull();
+    expect(dot()).toBeNull();
   });
 
   it('drops the dot once the deck is open — its contents are on screen', () => {

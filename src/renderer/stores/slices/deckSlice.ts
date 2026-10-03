@@ -29,9 +29,8 @@ import { generateId, type BrainVendor } from '../../../shared/types';
 
 /** Which dock tab is showing. `commander` is the default (the LLM-less
  *  command composer); `channels` is the classic channel list + conversation.
- *  git — 오너 결정(2026-07-20): 좌측 푸터/중앙 표면 시안을 원복하고 우측 덱의
- *  탭으로 복귀. Review는 별도 탭이 아니라 Git 탭 하단 섹션으로 병합(전 ws 집계). */
-export type DeckTab = 'commander' | 'git' | 'channels';
+ *  Git moved out of the dock into the sidebar's Git section (2026-10-03). */
+export type DeckTab = 'commander' | 'channels';
 
 /** One workspace orchestrator's turn state. Distinct from the Phase 1 fan-out
  *  threads (which live in the `#commander` channel): the brain stream is an

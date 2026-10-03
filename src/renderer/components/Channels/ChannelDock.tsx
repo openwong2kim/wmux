@@ -31,8 +31,6 @@ import { ChannelsPanel, sumUnread } from './ChannelsPanel';
 import { ChannelView } from './ChannelView';
 import { DeckTabs } from '../Deck/DeckTabs';
 import { CommanderView } from '../Deck/CommanderView';
-import { GitTab } from '../Deck/GitTab';
-import { ReviewTab } from '../Deck/ReviewTab';
 import { MODEL_OPTIONS } from '../Deck/OrchestratorModelChip';
 import { claudeModelLabel } from '../../../shared/claudeModels';
 
@@ -62,8 +60,6 @@ export default function ChannelDock(): React.ReactElement {
   const commanderModelLabel =
     deckBrainModel === '' ? t('deck.orchestratorModelDefault') : claudeModelLabel(deckBrainModel);
   const showChannelsView = activeDeckTab === 'channels' && channelsTabVisible;
-  // git 탭(오너 결정 2026-07-20 — 덱 복귀, Review는 Git 탭 하단 섹션으로 병합).
-  const showGitView = activeDeckTab === 'git';
 
   // The dock is a floating panel (ui.css .wmux-dock), so it needs no edge
   // border facing the workspace; the shell gap separates them.
@@ -78,7 +74,7 @@ export default function ChannelDock(): React.ReactElement {
       {...tokenAttrs('bgSurface', 'border')}
     >
       <DeckTabs
-        active={showChannelsView ? 'channels' : showGitView ? 'git' : 'commander'}
+        active={showChannelsView ? 'channels' : 'commander'}
         // Pressing the Channels glyph IS the opt-in, exactly as the deleted
         // sidebar Channels row was: `channelsTabVisible` ships FALSE, so
         // hiding the glyph with it left an open deck no way at all to reach
@@ -100,16 +96,7 @@ export default function ChannelDock(): React.ReactElement {
         t={t}
       />
 
-      {showGitView ? (
-        // Git tab — 위: 현재 워크스페이스(워크트리·PR), 아래: 전 워크스페이스
-        // diff 집계(구 Review, 오너 결정 2026-07-20 병합).
-        <div className="flex-1 min-h-0 overflow-y-auto">
-          <GitTab />
-          <div className="border-t" style={{ borderColor: 'var(--border-soft)' }}>
-            <ReviewTab />
-          </div>
-        </div>
-      ) : !showChannelsView ? (
+      {!showChannelsView ? (
         // Commander tab — the LLM-less command composer + fan-out thread.
         <CommanderView />
       ) : (

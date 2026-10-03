@@ -30,14 +30,16 @@ function makeWs(activeCwd: string): Workspace {
 let container: HTMLDivElement;
 let root: Root;
 const resolveRepo = vi.fn((cwd: string) => Promise.resolve({ ok: true as const, repoPath: cwd }));
+const list = vi.fn((repoPath: string) =>
+  Promise.resolve({ ok: true, repoPath, mainPath: repoPath, worktrees: [] }));
 
 beforeEach(() => {
   resolveRepo.mockClear();
+  list.mockClear();
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     diff: { resolveRepo },
     worktree: {
-      list: (repoPath: string) =>
-        Promise.resolve({ ok: true, repoPath, mainPath: repoPath, worktrees: [] }),
+      list,
       add: vi.fn(),
       remove: vi.fn(),
     },
@@ -71,10 +73,13 @@ describe('GitTab — prop cwd takes precedence as the repo base', () => {
     act(() => root.render(createElement(GitTab as FC<{ cwd?: string }>, { cwd: '/central/surface/repo' })));
     await flush();
     expect(resolveRepo).toHaveBeenCalledWith('/central/surface/repo');
-    expect(resolveRepo).not.toHaveBeenCalledWith('/active/pane/cwd');
+    // The repo listed is the prop's. (The active pane's cwd is still resolved
+    // later, as one of the workspaces that may sit on this repo's worktrees.)
+    expect(list).toHaveBeenCalledWith('/central/surface/repo');
+    expect(list).not.toHaveBeenCalledWith('/active/pane/cwd');
   });
 
-  it('falls back to the active pane cwd when there is no prop cwd (deck backward-compat)', async () => {
+  it('falls back to the active pane cwd when there is no prop cwd (the sidebar section)', async () => {
     act(() => root.render(createElement(GitTab)));
     await flush();
     expect(resolveRepo).toHaveBeenCalledWith('/active/pane/cwd');

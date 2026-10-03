@@ -1,0 +1,88 @@
+// ─── Sidebar Git section: one row per worktree ───────────────────────────────
+//
+// The section used to be two lists in the tools panel: the Git tab's worktree
+// roster (path, branch, main / locked / prunable) and the Review section's
+// workspaces on those worktrees (name, PR, uncommitted diff stat). This joins
+// them on the worktree path so each worktree is one row that says which
+// workspaces sit on it. Pure, so the join and the ordering are testable
+// without a renderer.
+
+import type { PrStatus } from '../../../shared/types';
+import type { WorktreeEntry } from '../../../shared/worktreeParse';
+
+/** A `git worktree list` row, plus the merge-session fields main derives. */
+export type WorktreeRowUI = WorktreeEntry & { merging?: boolean; integration?: boolean; conflicts?: number };
+
+/** Uncommitted changes of one worktree (summed `diff:read` numstat). */
+export interface DiffStat {
+  files: number;
+  additions: number;
+  deletions: number;
+  /** The read failed; the stat cell degrades to a dash with this as its title. */
+  error: string | null;
+}
+
+/** A workspace whose repo resolved to one of this repo's worktrees. */
+export interface WorkspaceOnRepo {
+  workspaceId: string;
+  name: string;
+  pr: PrStatus | null;
+  /** Resolved worktree toplevel of the workspace's active pane. */
+  repoPath: string;
+}
+
+export interface GitWorktreeRow {
+  entry: WorktreeRowUI;
+  /** Normalized path — the join key. */
+  key: string;
+  isMain: boolean;
+  /** The worktree the active pane is in (the row's one accent dot). */
+  isCurrent: boolean;
+  workspaces: { workspaceId: string; name: string; pr: PrStatus | null }[];
+  /** Absent until read; only worktrees with a workspace on them are read. */
+  stat: DiffStat | null;
+}
+
+/**
+ * Path identity for the join: trailing separators dropped, backslashes turned
+ * into slashes, and case folded where the file system ignores it.
+ */
+export function normWorktreePath(p: string, platform?: string): string {
+  const s = p.replace(/[/\\]+$/, '').replace(/\\/g, '/');
+  return platform === 'win32' || platform === 'darwin' ? s.toLowerCase() : s;
+}
+
+export function buildWorktreeRows(input: {
+  worktrees: readonly WorktreeRowUI[];
+  mainPath: string;
+  currentPath: string;
+  workspaces: readonly WorkspaceOnRepo[];
+  stats: Readonly<Record<string, DiffStat>>;
+  platform?: string;
+}): GitWorktreeRow[] {
+  const norm = (p: string) => normWorktreePath(p, input.platform);
+  const main = input.mainPath ? norm(input.mainPath) : '';
+  const current = input.currentPath ? norm(input.currentPath) : '';
+  const rows = input.worktrees
+    // Our own merge-session worktree is an implementation detail; the merge
+    // session panel stands in for it.
+    .filter((wt) => !wt.integration)
+    .map((entry): GitWorktreeRow => {
+      const key = norm(entry.path);
+      return {
+        entry,
+        key,
+        isMain: main !== '' && key === main,
+        isCurrent: current !== '' && key === current,
+        workspaces: input.workspaces
+          .filter((ws) => norm(ws.repoPath) === key)
+          .map(({ workspaceId, name, pr }) => ({ workspaceId, name, pr })),
+        stat: input.stats[key] ?? null,
+      };
+    });
+  // Worktrees with uncommitted changes first — the rows you came to review —
+  // then the rest, each group in git's own order (main first).
+  const dirty = rows.filter((r) => (r.stat?.files ?? 0) > 0);
+  const rest = rows.filter((r) => (r.stat?.files ?? 0) === 0);
+  return [...dirty, ...rest];
+}
