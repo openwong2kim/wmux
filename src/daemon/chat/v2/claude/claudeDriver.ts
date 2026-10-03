@@ -21,6 +21,7 @@ import {
   type UserQuestion,
 } from '../../../../shared/chatv2/userQuestion';
 import type { NativeDecisionOutcome, NativeDecisionReply } from '../../../approvals/types';
+import { whichOnPath } from '../../../web/agentLaunch';
 import { ChildBackend } from '../childBackend';
 import type {
   ChatV2Driver,
@@ -121,7 +122,7 @@ type BackgroundTask = {
 export interface ClaudeDriverOptions {
   /** `--setting-sources`, already validated (CLAUDE_SETTING_SOURCES_PATTERN). */
   settingSources: string;
-  /** The executable, resolved through the child env's PATH. */
+  /** The executable. Default: `claude` resolved on the child env's PATH to an absolute path (Windows: by the spawn). */
   command?: string;
   backend?: ChildBackend;
   readImage?: (path: string) => Promise<Buffer>;
@@ -146,7 +147,7 @@ export function rekeyClaudeQuestions(questions: UserQuestion[]): UserQuestion[] 
 export class ClaudeDriver implements ChatV2Driver {
   readonly agent = 'claude' as const;
   private readonly backend: ChildBackend;
-  private readonly command: string;
+  private readonly command: string | undefined;
   private readonly readImage: (path: string) => Promise<Buffer>;
   private sink: ChatV2DriverSink | null = null;
   private claudeSessionId = '';
@@ -184,7 +185,7 @@ export class ClaudeDriver implements ChatV2Driver {
 
   constructor(private readonly options: ClaudeDriverOptions) {
     this.backend = options.backend ?? new ChildBackend();
-    this.command = options.command ?? 'claude';
+    this.command = options.command;
     this.readImage = options.readImage ?? ((path) => fs.readFile(path));
   }
 
@@ -205,11 +206,19 @@ export class ClaudeDriver implements ChatV2Driver {
     const initialized = new Promise<{ ok: boolean; error?: string }>((resolve) => {
       this.initDone = (ok, error) => resolve({ ok, ...(error ? { error } : {}) });
     });
-    await this.backend.start(this.command, args, spec.cwd, spec.env, {
+    const command = this.command
+      ?? (process.platform === 'win32' ? 'claude' : await whichOnPath('claude', spec.env.PATH ?? ''));
+    if (!command) throw new Error('Claude Code is not installed: `claude` was not found on PATH.');
+    await this.backend.start(command, args, spec.cwd, spec.env, {
       line: (line) => this.handleLine(line),
       exit: (info) => this.handleExit(info),
       stderr: (chunk) => { this.stderrTail = (this.stderrTail + chunk).slice(-STDERR_TAIL_BYTES); },
     });
+    // A stop that came in while the process was spawning wins.
+    if (this.stopping) {
+      await this.backend.stop();
+      throw new Error('Claude Code was stopped during startup.');
+    }
     this.initRequestId = this.nextControlId();
     const timer = setTimeout(() => this.initDone?.(false, 'Claude Code did not answer its startup handshake.'), CLAUDE_INIT_TIMEOUT_MS);
     timer.unref();
@@ -255,6 +264,10 @@ export class ClaudeDriver implements ChatV2Driver {
     // Claimed before the write: a second answer for this id never writes.
     this.pending.delete(requestId);
     this.settled.add(requestId);
+    const release = (): void => {
+      this.settled.delete(requestId);
+      this.pending.set(requestId, pending);
+    };
     let response: Record<string, unknown>;
     if (pending.kind === 'questions') {
       const answered = reply.decision === 'approve' ? replyFromAnswers(pending.questions, reply.answers) : { kind: 'skipped' as const };
@@ -268,17 +281,21 @@ export class ClaudeDriver implements ChatV2Driver {
       await this.write(buildControlResponse(requestId, response));
       return 'ok';
     } catch {
-      // Nothing left the process boundary when the child is gone. A live
-      // child that did not take the write may or may not have it: the card
-      // stays up until the turn ends or Claude drops the request.
-      return this.backend.alive ? 'uncertain' : 'not-found';
+      // The claim is released so the request stays answerable, and the caller
+      // learns the reply may or may not have landed. A write that timed out
+      // also killed the child (ChildBackend.write): nothing lands late, and
+      // its exit settles the request.
+      if (!this.backend.alive) return 'not-found';
+      release();
+      return 'uncertain';
     }
   }
 
+  /** Rejects when the process was not seen to exit: it may still be running. */
   async stop(): Promise<void> {
     this.stopping = true;
     this.clearAwaitingResume();
-    await this.backend.stop();
+    if (!(await this.backend.stop())) throw new Error('Claude Code did not exit.');
   }
 
   // --- process ------------------------------------------------------------
@@ -660,17 +677,21 @@ export class ClaudeDriver implements ChatV2Driver {
     }
     const toolName = control.toolName ?? 'tool';
     const input = control.input ?? {};
+    // A request already answered (or already waiting) gets no second reply.
+    if (this.settled.has(control.requestId) || this.pending.has(control.requestId)) return;
     // Fail closed on anything nobody can answer: a stopping driver, or a
-    // request id the answer RPC could not name.
-    if (this.stopping || !this.sink || !ANSWERABLE_REQUEST_ID.test(control.requestId) || this.settled.has(control.requestId)) {
+    // request id the answer RPC could not name. Settled before the write, so
+    // a resend of it is ignored.
+    if (this.stopping || !this.sink || !ANSWERABLE_REQUEST_ID.test(control.requestId)) {
+      this.settled.add(control.requestId);
       await this.write(buildControlResponse(control.requestId, toClaudePermissionResult('deny', input))).catch(() => undefined);
       return;
     }
-    if (this.pending.has(control.requestId)) return;
 
     if (toolName === 'AskUserQuestion') {
       const questions = rekeyClaudeQuestions(questionsFromUnknown(input));
       if (!questions.length) {
+        this.settled.add(control.requestId);
         await this.write(buildControlResponse(control.requestId, toClaudePermissionResult('deny', input))).catch(() => undefined);
         return;
       }

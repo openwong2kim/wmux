@@ -48,15 +48,17 @@ export class ChatV2Store {
     return records;
   }
 
-  save(record: ChatV2StoredRecord): void {
-    fs.mkdirSync(this.directory, { recursive: true, mode: 0o700 });
+  /** Write one record (temp file + rename). Rejects when it did not land. */
+  async save(record: ChatV2StoredRecord): Promise<void> {
+    const json = JSON.stringify(record);
+    await fs.promises.mkdir(this.directory, { recursive: true, mode: 0o700 });
     const target = this.file(record.chatSessionId);
     const temp = `${target}.${randomUUID()}.tmp`;
     try {
-      fs.writeFileSync(temp, JSON.stringify(record), { mode: 0o600 });
-      fs.renameSync(temp, target);
+      await fs.promises.writeFile(temp, json, { mode: 0o600 });
+      await fs.promises.rename(temp, target);
     } catch (error) {
-      try { fs.unlinkSync(temp); } catch { /* never written */ }
+      await fs.promises.unlink(temp).catch(() => undefined);
       throw error;
     }
   }

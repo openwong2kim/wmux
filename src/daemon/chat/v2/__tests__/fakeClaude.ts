@@ -14,14 +14,19 @@ export class FakeClaude {
   env: Record<string, string> = {};
   cwd = '';
   spawns = 0;
+  /** Process groups the backend reaped after an exit. */
+  readonly reaped: number[] = [];
   /** Answer the initialize handshake (false: never answer). */
   handshake = true;
+  /** Ignore stdin EOF and kills (a process that will not die). */
+  stubborn = false;
   private child: (EventEmitter & { stdout: PassThrough; stderr: PassThrough; exitCode: number | null; pid: number }) | null = null;
 
   backend(): ChildBackend {
     return new ChildBackend(
       (_command, args, cwd, env) => this.spawn(args, cwd, env),
-      () => this.exit(null, 'SIGKILL'),
+      () => { if (!this.stubborn) this.exit(null, 'SIGKILL'); },
+      (pid) => this.reaped.push(pid),
     );
   }
 
@@ -49,7 +54,7 @@ export class FakeClaude {
         callback();
       },
     });
-    stdin.on('finish', () => this.exit(0, null));
+    stdin.on('finish', () => { if (!this.stubborn) this.exit(0, null); });
     const child = Object.assign(new EventEmitter(), { stdin, stdout, stderr, pid: nextPid++, exitCode: null as number | null, signalCode: null });
     this.child = child;
     setImmediate(() => child.emit('spawn'));
@@ -65,6 +70,7 @@ export class FakeClaude {
   }
 
   exit(code: number | null, signal: string | null): void {
+    this.stubborn = false;
     const child = this.child;
     if (!child || child.exitCode !== null) return;
     child.exitCode = code ?? -1;

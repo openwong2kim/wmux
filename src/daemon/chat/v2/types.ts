@@ -41,10 +41,11 @@ export interface ChatV2DriverStart {
   /** The anchor pane's cwd when the record was created. */
   cwd: string;
   /**
-   * Final child env, already built by the host: `scrubAgentEnv` +
-   * `resolveAccountEnv` + `buildAutomationEnv`, then `WMUX_PTY_ID` = the
-   * anchor pane id and `WMUX_GATE=0` (no PreToolUse gate card next to the
-   * stream approval). A driver adds nothing to it.
+   * Final child env, already built by the host (`buildDriverEnv`): the pane's
+   * own env without wmux internals and agent-nesting markers, PATH widened
+   * to the login shell's, then `WMUX_PTY_ID` = the anchor pane id and
+   * `WMUX_GATE=0` (no PreToolUse gate card next to the stream approval). A
+   * driver adds nothing to it.
    */
   env: Record<string, string>;
   mode: ChatV2RunMode;
@@ -184,8 +185,16 @@ export interface ChatV2HostDeps {
   paneFree: (paneId: string) => Promise<boolean>;
   /** Type into the anchor shell (toTerminal's resume command). */
   writeToPane: (paneId: string, data: string) => boolean;
-  /** Unicast a DaemonEvent to one pipe client. False = the socket is gone: drop its subscriptions. */
+  /**
+   * Unicast a DaemonEvent to one pipe client. False = the socket is gone or
+   * too far behind: the host drops its subscriptions and calls `dropClient`.
+   */
   sendTo: (clientId: string, event: DaemonEvent) => boolean;
+  /**
+   * Close a client socket that could not take a push, so main reconnects and
+   * re-subscribes instead of waiting on pushes that will never come.
+   */
+  dropClient?: (clientId: string) => void;
   /** Start time and command line of a live pid, or null when it is gone. */
   processIdentity: (pid: number) => Promise<{ startTime: string; commandLine: string } | null>;
   /** Tree kill. Call only after `processIdentity` matched a `ChatV2ProcessIdentity`. */

@@ -8,7 +8,7 @@ const SESSION_ID = '0f1e2d3c-4b5a-4968-8776-655443322110';
 
 function setup(spec: Partial<ChatV2DriverStart> = {}) {
   const fake = new FakeClaude();
-  const driver = new ClaudeDriver({ settingSources: 'project', backend: fake.backend(), readImage: async () => Buffer.from('img') });
+  const driver = new ClaudeDriver({ settingSources: 'project', command: 'claude', backend: fake.backend(), readImage: async () => Buffer.from('img') });
   const events: HarnessEvent[] = [];
   const decisions: ChatV2DriverDecision[] = [];
   const gone: string[] = [];
@@ -152,6 +152,50 @@ describe('ClaudeDriver', () => {
     expect(t.events.some((e) => e.type === 'turn.ended')).toBe(false);
     await expect(t.driver.answer('req-4', { decision: 'approve', formKind: 'permission' })).resolves.toBe('not-found');
   });
+
+  it('never replies twice to a request id, resent or denied at once', async () => {
+    const t = setup();
+    await t.start();
+    await t.driver.send({ text: 'hi', attachments: [] });
+    t.fake.canUseTool('req-5', 'Bash', { command: 'ls' });
+    await until(() => t.decisions.length === 1);
+    await expect(t.driver.answer('req-5', { decision: 'approve', formKind: 'permission' })).resolves.toBe('ok');
+    t.fake.canUseTool('req-5', 'Bash', { command: 'ls' });
+    t.fake.canUseTool('bad id', 'Bash', { command: 'ls' });
+    t.fake.canUseTool('bad id', 'Bash', { command: 'ls' });
+    await until(() => t.fake.responses('bad id').length === 1);
+    await tick(20);
+    expect(t.fake.responses('req-5')).toHaveLength(1);
+    expect(t.fake.responses('bad id')).toHaveLength(1);
+    expect(t.decisions).toHaveLength(1);
+    await t.driver.stop();
+  });
+
+  it('keeps a request answerable when its reply could not be written', async () => {
+    const t = setup();
+    await t.start();
+    await t.driver.send({ text: 'hi', attachments: [] });
+    t.fake.canUseTool('req-6', 'Bash', { command: 'ls' });
+    await until(() => t.decisions.length === 1);
+    const backend = (t.driver as unknown as { backend: { write: (line: string) => Promise<void> } }).backend;
+    const write = backend.write.bind(backend);
+    backend.write = () => Promise.reject(new Error('EAGAIN'));
+    await expect(t.driver.answer('req-6', { decision: 'approve', formKind: 'permission' })).resolves.toBe('uncertain');
+    backend.write = write;
+    await expect(t.driver.answer('req-6', { decision: 'approve', formKind: 'permission' })).resolves.toBe('ok');
+    await tick(10);
+    expect(t.fake.responses('req-6')).toHaveLength(1);
+    await t.driver.stop();
+  });
+
+  it('rejects stop when the process did not exit', async () => {
+    const t = setup();
+    await t.start();
+    t.fake.stubborn = true;
+    await expect(t.driver.stop()).rejects.toThrow(/did not exit/);
+    t.fake.exit(0, null);
+    await until(() => t.exits.length === 1);
+  }, 15_000);
 
   it('denies at once a request id the answer RPC could not name', async () => {
     const t = setup();

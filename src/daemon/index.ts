@@ -3596,7 +3596,7 @@ function registerRpcHandlers(
         if (!pane) return false;
         const pid = agentProcessTracker.pidFor(id);
         if (pid !== undefined && await ProcessMonitor.isRunning(pid)) return false;
-        return (await agentProcessTracker.idleShellState(pane.meta.pid, pane.meta.env)).ok;
+        return (await agentProcessTracker.idleShellState(pane.meta.pid, pane.meta.env, true)).ok;
       },
       writeToPane: (id, data) => {
         const pane = sessionManager.getSession(id);
@@ -3606,6 +3606,7 @@ function registerRpcHandlers(
         return true;
       },
       sendTo: (clientId, event) => pipeServer.sendTo(clientId, event),
+      dropClient: (clientId) => pipeServer.disconnect(clientId),
       processIdentity: async (pid) => {
         const [startTime, commandLine] = await Promise.all([
           getProcessStartTime(pid),

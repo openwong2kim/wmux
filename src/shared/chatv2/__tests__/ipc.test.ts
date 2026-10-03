@@ -76,6 +76,10 @@ describe('parseChatV2Params', () => {
     expect(parseChatV2Params('bodies', { ...session, epoch, blockId: '3.1', field: 'detail' }))
       .toEqual({ ...session, epoch, blockId: '3.1', field: 'detail' });
     expect(parseChatV2Params('bodies', { ...session, epoch, blockId: '3.1', field: 'input' })).toBeNull();
+    expect(parseChatV2Params('bodies', { ...session, epoch, blockId: '3.1', field: 'text', offset: 131072 }))
+      .toEqual({ ...session, epoch, blockId: '3.1', field: 'text', offset: 131072 });
+    expect(parseChatV2Params('bodies', { ...session, epoch, blockId: '3.1', field: 'text', offset: -1 })).toBeNull();
+    expect(parseChatV2Params('bodies', { ...session, epoch, blockId: '3.1', field: 'text', offset: 1.5 })).toBeNull();
   });
 
   it('needs a chat session id where the method names one', () => {

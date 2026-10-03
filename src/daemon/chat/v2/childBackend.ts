@@ -10,6 +10,15 @@ export const CHILD_WRITE_TIMEOUT_MS = 15_000;
 export const CHILD_GRACE_MS = 1_500;
 /** How long `stop` waits for the exit after the tree kill. */
 export const CHILD_REAP_TIMEOUT_MS = 4_000;
+/** After the root exits, its process group gets SIGTERM, then SIGKILL this much later. */
+export const CHILD_GROUP_KILL_DELAY_MS = 1_000;
+
+/** A write that did not drain in time: it may still reach the agent later. */
+export class ChildWriteTimeoutError extends Error {
+  constructor() {
+    super('Agent stdin write timed out');
+  }
+}
 
 export interface ChildHandlers {
   line(line: string): void;
@@ -21,6 +30,23 @@ export interface ChildHandlers {
 
 export type SpawnChild = (command: string, args: string[], cwd: string, env: Record<string, string>) => ChildProcessWithoutNullStreams;
 export type StopChild = (child: ChildProcessWithoutNullStreams) => void;
+/** Signal what is left of a process group whose leader exited. */
+export type ReapGroup = (pid: number) => void;
+
+/**
+ * POSIX: the agent runs as the leader of its own process group (spawnAgent's
+ * `detached`), so tool processes it left behind are still in that group after
+ * it exits. SIGTERM them, then SIGKILL what remains. Windows has no group to
+ * signal once the root is gone; `stop` tree-kills there while the root lives.
+ */
+export function reapProcessGroup(pid: number): void {
+  if (process.platform === 'win32' || pid <= 1) return;
+  const signal = (name: NodeJS.Signals): void => {
+    try { process.kill(-pid, name); } catch { /* the group is empty */ }
+  };
+  signal('SIGTERM');
+  setTimeout(() => signal('SIGKILL'), CHILD_GROUP_KILL_DELAY_MS).unref();
+}
 
 /**
  * One agent process speaking newline-delimited JSON on stdio. Spawned in its
@@ -35,6 +61,7 @@ export class ChildBackend {
   constructor(
     private readonly spawnChild: SpawnChild = spawnAgent,
     private readonly stopChild: StopChild = stopAgent,
+    private readonly reapGroup: ReapGroup = reapProcessGroup,
   ) {}
 
   get pid(): number | undefined {
@@ -78,6 +105,7 @@ export class ChildBackend {
       buffer += decoder.end();
       flushLines(true);
       this.done = true;
+      if (child.pid !== undefined) this.reapGroup(child.pid);
       resolveExit();
       handlers.exit({ code, signal });
     };
@@ -99,14 +127,22 @@ export class ChildBackend {
     });
   }
 
-  /** Write one line. Rejects when the child is gone or the write does not drain in time. */
+  /**
+   * Write one line. Rejects when the child is gone. A write that does not
+   * drain in time rejects with ChildWriteTimeoutError and kills the child:
+   * the line is still queued and would otherwise reach the agent late, after
+   * the caller treated it as failed.
+   */
   write(line: string): Promise<void> {
     const child = this.child;
     if (!child || this.done || child.stdin.destroyed || !child.stdin.writable) {
       return Promise.reject(new Error('Agent process is not running'));
     }
     return new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('Agent stdin write timed out')), CHILD_WRITE_TIMEOUT_MS);
+      const timer = setTimeout(() => {
+        reject(new ChildWriteTimeoutError());
+        if (!this.done) this.stopChild(child);
+      }, CHILD_WRITE_TIMEOUT_MS);
       timer.unref();
       child.stdin.write(`${line}\n`, (error) => {
         clearTimeout(timer);
@@ -119,13 +155,14 @@ export class ChildBackend {
   /**
    * Close stdin (a stream-json agent exits on EOF), give it a moment, then
    * tree-kill whatever is left, and wait until the root process is reaped.
+   * Windows tree-kills at once: its tree can only be walked from a live root.
    * Resolves false when the exit was never observed.
    */
   async stop(): Promise<boolean> {
     const child = this.child;
     if (!child || this.done) return true;
     try { child.stdin.end(); } catch { /* already closed */ }
-    if (await this.waitExit(CHILD_GRACE_MS)) return true;
+    if (process.platform !== 'win32' && await this.waitExit(CHILD_GRACE_MS)) return true;
     this.stopChild(child);
     return this.waitExit(CHILD_REAP_TIMEOUT_MS);
   }

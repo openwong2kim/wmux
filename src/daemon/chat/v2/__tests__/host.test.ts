@@ -1,16 +1,22 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChatV2EventsPush } from '../../../../shared/chatv2/ipc';
 import { ApprovalRegistry } from '../../../approvals/ApprovalRegistry';
 import { DECISION_V2_WEB_ANSWER } from '../../../approvals/types';
 import type { DaemonEvent } from '../../../../shared/rpc';
 import { ChatSessionService } from '../../ChatSessionService';
+import { ChildBackend } from '../childBackend';
 import { ClaudeDriver } from '../claude/claudeDriver';
 import { createChatV2Host } from '../host';
 import type { ChatV2Host, ChatV2HostDeps } from '../types';
 import { FakeClaude, tick, until } from './fakeClaude';
+
+// The login-shell PATH probe would run the user's real shell.
+vi.mock('../../../../shared/execEnv', () => ({
+  agentExecEnv: async (env: NodeJS.ProcessEnv) => ({ ...env, PATH: `${env.PATH ?? ''}:/opt/login/bin` }),
+}));
 
 const PANE = 'pty-chat-1';
 let dir: string;
@@ -28,10 +34,16 @@ interface Rig {
   sockets: Map<string, boolean>;
   identity: { value: { startTime: string; commandLine: string } | null };
   killed: number[];
+  dropped: string[];
+  /** Set to a promise to hold paneFree until it settles. */
+  paneGate: { value: Promise<void> | null };
+  backends: ChildBackend[];
   fake(): FakeClaude;
 }
 
-function rig(options: { registry?: boolean; nativeOn?: boolean } = {}): Rig {
+const PANE_ENV = { PATH: '/usr/bin', WMUX_WORKSPACE_ID: 'ws-1', CLAUDECODE: '1', WMUX_AUTH_TOKEN: 'x' };
+
+function rig(options: { registry?: boolean; nativeOn?: boolean; paneEnv?: Record<string, string>; stubborn?: boolean } = {}): Rig {
   const r = {
     fakes: [] as FakeClaude[],
     pushes: [] as Rig['pushes'],
@@ -40,6 +52,9 @@ function rig(options: { registry?: boolean; nativeOn?: boolean } = {}): Rig {
     sockets: new Map<string, boolean>(),
     identity: { value: { startTime: 'start-1', commandLine: '' } as { startTime: string; commandLine: string } | null },
     killed: [] as number[],
+    dropped: [] as string[],
+    paneGate: { value: null },
+    backends: [] as ChildBackend[],
   } as Rig;
   r.fake = () => r.fakes[r.fakes.length - 1];
   let host: ChatV2Host | null = null;
@@ -57,23 +72,30 @@ function rig(options: { registry?: boolean; nativeOn?: boolean } = {}): Rig {
     now: () => r.clock.now,
     sessionManager: {
       getSession: ((id: string) => (id === PANE
-        ? { meta: { spawnCwd: dir, env: { PATH: '/usr/bin', WMUX_WORKSPACE_ID: 'ws-1', CLAUDECODE: '1', WMUX_AUTH_TOKEN: 'x' } } }
+        ? { meta: { spawnCwd: dir, env: options.paneEnv ?? PANE_ENV } }
         : undefined)) as unknown as ChatV2HostDeps['sessionManager']['getSession'],
     },
     approvals: () => r.registry,
-    paneFree: async () => r.paneFree.value,
+    paneFree: async () => {
+      await r.paneGate.value;
+      return r.paneFree.value;
+    },
     writeToPane: () => true,
     sendTo: (clientId: string, event: DaemonEvent) => {
       if (r.sockets.get(clientId) === false) return false;
       r.pushes.push({ clientId, push: event.data as ChatV2EventsPush });
       return true;
     },
+    dropClient: (clientId) => r.dropped.push(clientId),
     processIdentity: async () => r.identity.value,
     killTree: async (pid) => { r.killed.push(pid); },
     drivers: () => {
       const fake = new FakeClaude();
+      fake.stubborn = options.stubborn ?? false;
       r.fakes.push(fake);
-      return new ClaudeDriver({ settingSources: 'project', backend: fake.backend() });
+      const backend = fake.backend();
+      r.backends.push(backend);
+      return new ClaudeDriver({ settingSources: 'project', command: 'claude', backend });
     },
   };
   host = createChatV2Host(deps);
@@ -204,11 +226,28 @@ describe('chat v2 host', () => {
     await r.host.dispose();
   });
 
-  it('denies at once, and leaves no card, when native decisions are switched off', async () => {
+  it('keeps a card answerable from the desktop when native phone decisions are off', async () => {
     const r = rig({ nativeOn: false });
-    await failClosed(r);
+    const binding = await created(r);
+    await sent(r);
+    r.fake().canUseTool('req-3', 'Bash', { command: 'ls' }, 'toolu_3');
+    await until(() => r.host.statusForPane(PANE) === 'needs-input');
+    expect(r.fake().responses('req-3')).toHaveLength(0);
+    // The phone sees a view-only card it cannot answer.
+    const record = r.registry!.list().pending[0];
+    r.clock.now += 2_000;
+    const phone = await r.registry!.resolve({ id: record.id, decision: 'approve', resolvedBy: 'web', decisionV2Answer: DECISION_V2_WEB_ANSWER, decisionAnswer: { formFingerprint: 'x', clientAnswerId: 'p', action: 'approve' } });
+    expect(phone).toMatchObject({ ok: false, reason: 'answer-in-terminal' });
+    r.clock.now -= 2_000;
+    const answer = (decision: 'allow' | 'deny') => r.host.call('answer', { paneId: PANE, chatSessionId: binding.chatSessionId, requestId: 'req-3', decision }, 'main');
+    expect(await answer('allow')).toMatchObject({ ok: false, error: { message: 'answer-too-soon' } });
+    r.clock.now += 2_000;
+    const [first, second] = await Promise.all([answer('allow'), answer('deny')]);
+    expect([first.ok, second.ok].filter(Boolean)).toHaveLength(1);
+    await tick(10);
+    expect(r.fake().responses('req-3')).toEqual([{ behavior: 'allow', updatedInput: { command: 'ls' } }]);
     await until(() => r.registry!.list().pending.length === 0);
-    expect(r.registry!.list().pending).toHaveLength(0);
+    expect(r.host.sessionForPane(PANE)!.blocks.find((b) => b.approval)!.approval!.decided).toBe('allow');
     await r.host.dispose();
   });
 
@@ -276,6 +315,7 @@ describe('chat v2 host', () => {
     await sent(r);
     await tick(150);
     expect(r.pushes.filter((p) => p.clientId === 'gone')).toHaveLength(0);
+    expect(r.dropped).toContain('gone');
     await r.host.dispose();
   });
 
@@ -302,6 +342,160 @@ describe('chat v2 host', () => {
     const binding = r.host.bindingForPane(PANE)!;
     await r.host.call('close', { paneId: PANE, chatSessionId: binding.chatSessionId }, 'main');
     await expect(service.respond(PANE, 'n', 'req', {})).resolves.toEqual({ ok: false, error: 'Request expired or session changed' });
+    await r.host.dispose();
+  });
+
+  it('keeps full bodies across a turn end, the next save and a reload, served in pages', async () => {
+    const r = rig();
+    const binding = await created(r);
+    await sent(r);
+    const big = Array.from({ length: 300 * 1024 }, (_, i) => String.fromCharCode(97 + (i % 26))).join('');
+    r.fake().out({ type: 'stream_event', session_id: 's', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: big } } });
+    r.fake().result();
+    await until(() => r.host.statusForPane(PANE) === 'idle');
+    // A second turn saves the record again from a rebased (capped) shadow.
+    await sent(r, 'again', 'msg-00002');
+    r.fake().result();
+    await until(() => r.host.statusForPane(PANE) === 'idle');
+    const block = r.host.sessionForPane(PANE)!.blocks.find((b) => b.role === 'assistant')!;
+    const read = async (host: ChatV2Host, epoch: string): Promise<string> => {
+      let text = '';
+      let offset: number | undefined;
+      for (let page = 0; page < 10; page++) {
+        const res = await host.call('bodies', { paneId: PANE, chatSessionId: binding.chatSessionId, epoch, blockId: block.id, field: 'text', ...(offset !== undefined ? { offset } : {}) }, 'main');
+        if (!res.ok) throw new Error(res.error.code);
+        expect(Buffer.byteLength(JSON.stringify(res))).toBeLessThan(1024 * 1024);
+        text += res.text;
+        if (res.nextOffset === undefined) return text;
+        offset = res.nextOffset;
+      }
+      throw new Error('too many pages');
+    };
+    expect(await read(r.host, r.host.bindingForPane(PANE)!.epoch)).toBe(big);
+    await r.host.dispose();
+    const reloaded = rig();
+    await reloaded.host.start();
+    expect(await read(reloaded.host, reloaded.host.bindingForPane(PANE)!.epoch)).toBe(big);
+    await reloaded.host.dispose();
+  });
+
+  it('runs the driver with the pane credentials and endpoint, without nesting markers, on the login PATH', async () => {
+    const r = rig({ paneEnv: {
+      ...PANE_ENV,
+      ANTHROPIC_API_KEY: 'sk-test',
+      ANTHROPIC_BASE_URL: 'https://gateway.example',
+      CLAUDE_CODE_USE_BEDROCK: '1',
+      CLAUDE_CODE_CHILD_SESSION: '1',
+      CLAUDE_CODE_SESSION_ID: 'parent',
+      CLAUDE_CODE_ENTRYPOINT: 'cli',
+      AI_AGENT: 'claude',
+    } });
+    await created(r);
+    const env = r.fake().env;
+    expect(env).toMatchObject({ ANTHROPIC_API_KEY: 'sk-test', ANTHROPIC_BASE_URL: 'https://gateway.example', CLAUDE_CODE_USE_BEDROCK: '1' });
+    for (const key of ['CLAUDECODE', 'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_ENTRYPOINT', 'AI_AGENT', 'WMUX_AUTH_TOKEN']) {
+      expect(env[key]).toBeUndefined();
+    }
+    expect(env.PATH).toBe('/usr/bin:/opt/login/bin');
+    await r.host.dispose();
+  });
+
+  it('refuses to start on a pane account whose folder is gone, instead of the default account', async () => {
+    const r = rig({ paneEnv: { ...PANE_ENV, CLAUDE_CONFIG_DIR: path.join(dir, 'no-such-account') } });
+    const res = await r.host.call('create', { paneId: PANE, agent: 'claude', mode: 'default' }, 'main');
+    expect(res).toMatchObject({ ok: false, error: { code: 'driver-unavailable' } });
+    expect(r.fakes).toHaveLength(0);
+  });
+
+  it('leaves no driver when a close lands while the pane check or the start is pending', async () => {
+    const r = rig();
+    const binding = await created(r);
+    r.fake().exit(1, null);
+    await until(() => r.host.statusForPane(PANE) === 'stopped');
+    let release!: () => void;
+    r.paneGate.value = new Promise<void>((resolve) => { release = resolve; });
+    const sending = sent(r);
+    await tick(10);
+    expect(await r.host.call('close', { paneId: PANE, chatSessionId: binding.chatSessionId }, 'main')).toEqual({ ok: true });
+    release();
+    expect(await sending).toMatchObject({ ok: false });
+    expect(r.fakes).toHaveLength(1);
+
+    // dispose while a create waits on the pane check
+    const other = rig();
+    let releaseOther!: () => void;
+    other.paneGate.value = new Promise<void>((resolve) => { releaseOther = resolve; });
+    const creating = other.host.call('create', { paneId: PANE, agent: 'claude', mode: 'default' }, 'main');
+    await tick(10);
+    await other.host.dispose();
+    releaseOther();
+    expect(await creating).toMatchObject({ ok: false });
+    expect(other.fakes).toHaveLength(0);
+  });
+
+  it('keeps a driver that did not exit, refuses to restart it, and lets go once it exits', async () => {
+    const r = rig({ stubborn: true });
+    const binding = await created(r);
+    const closed = await r.host.call('close', { paneId: PANE, chatSessionId: binding.chatSessionId }, 'main');
+    expect(closed).toMatchObject({ ok: false, error: { code: 'driver-failed' } });
+    expect(r.host.statusForPane(PANE)).toBe('failed');
+    expect(await sent(r)).toMatchObject({ ok: false, error: { code: 'driver-failed' } });
+    const file = path.join(dir, 'chat-sessions', 'v2', `${binding.chatSessionId}.json`);
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).process).toMatchObject({ pid: r.fake().pid });
+    r.fake().exit(0, null);
+    await until(() => r.host.statusForPane(PANE) === 'stopped');
+    expect(await r.host.call('close', { paneId: PANE, chatSessionId: binding.chatSessionId }, 'main')).toEqual({ ok: true });
+  }, 15_000);
+
+  it('records no process identity it could not read', async () => {
+    const r = rig();
+    r.identity.value = null;
+    const binding = await created(r);
+    const file = path.join(dir, 'chat-sessions', 'v2', `${binding.chatSessionId}.json`);
+    await until(() => fs.existsSync(file));
+    await tick(20);
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).process).toBeUndefined();
+    await r.host.dispose();
+  });
+
+  it('takes a send off the ledger when it was not delivered or not saved', async () => {
+    const r = rig();
+    await created(r);
+    const backend = r.backends[0];
+    const write = backend.write.bind(backend);
+    backend.write = (line: string) => (line.includes('"type":"user"') ? Promise.reject(new Error('pipe')) : write(line));
+    expect(await sent(r)).toMatchObject({ ok: false, error: { code: 'driver-failed' } });
+    backend.write = write;
+    // The same id is a new attempt, not a duplicate of a message that never left.
+    const retried = await sent(r);
+    expect(retried).toMatchObject({ ok: true });
+    expect(retried).not.toHaveProperty('duplicate');
+    r.fake().result();
+    await until(() => r.host.statusForPane(PANE) === 'idle');
+
+    const v2 = path.join(dir, 'chat-sessions', 'v2');
+    fs.chmodSync(v2, 0o500);
+    try {
+      const before = r.fake().stdin.filter((l) => l.type === 'user').length;
+      expect(await sent(r, 'unsaved', 'msg-00003')).toMatchObject({ ok: false, error: { code: 'driver-failed' } });
+      expect(r.fake().stdin.filter((l) => l.type === 'user').length).toBe(before);
+    } finally {
+      fs.chmodSync(v2, 0o700);
+    }
+    expect(await sent(r, 'unsaved', 'msg-00003')).toMatchObject({ ok: true });
+    await r.host.dispose();
+  });
+
+  it('follows a new provider session id and keeps the argv marker for the sweep', async () => {
+    const r = rig();
+    const binding = await created(r);
+    await sent(r);
+    const moved = '11111111-2222-4333-8444-555555555555';
+    r.fake().out({ type: 'system', subtype: 'status', session_id: moved });
+    await until(() => r.host.bindingForPane(PANE)!.providerSessionId === moved);
+    const file = path.join(dir, 'chat-sessions', 'v2', `${binding.chatSessionId}.json`);
+    await until(() => JSON.parse(fs.readFileSync(file, 'utf8')).providerSessionId === moved);
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).process.marker).toBe(binding.providerSessionId);
     await r.host.dispose();
   });
 });

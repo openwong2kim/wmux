@@ -27,6 +27,17 @@ describe('idleShellState', () => {
     expect(await tracker([shell]).idleShellState(SHELL)).toEqual({ ok: true });
   });
 
+  it('accepts PowerShell, pwsh and cmd only when the caller never types into the shell', async () => {
+    for (const name of ['powershell.exe', 'pwsh.exe', 'cmd.exe', 'pwsh']) {
+      const winShell = { ...shell, name, cmdline: name };
+      expect(await tracker([winShell]).idleShellState(SHELL)).toEqual({ ok: false, reason: 'unsupported-shell' });
+      expect(await tracker([winShell]).idleShellState(SHELL, ENV, true)).toEqual({ ok: true });
+      expect(await tracker([winShell, { pid: 300, ppid: SHELL, name: 'node.exe', cmdline: 'node x.js' }]).idleShellState(SHELL, ENV, true))
+        .toEqual({ ok: false, reason: 'shell-has-children' });
+    }
+    expect(await tracker([{ ...shell, name: 'fish' }]).idleShellState(SHELL, ENV, true)).toEqual({ ok: false, reason: 'unsupported-shell' });
+  });
+
   it('lets a verified gitstatusd child through, but not a second unknown child', async () => {
     expect(await tracker([shell, helper()]).idleShellState(SHELL, ENV)).toEqual({ ok: true });
     expect(await tracker([shell, helper(), { pid: 300, ppid: SHELL, name: 'sleep', cmdline: 'sleep 99' }]).idleShellState(SHELL, ENV))

@@ -5,6 +5,8 @@ import { applyHarnessEvent, blockChangeFrom } from '../../../shared/chatv2/apply
 import type { HarnessEvent, StampedHarnessEvent } from '../../../shared/chatv2/harnessEvents';
 import {
   CHATV2_ATTACHMENT_DIR,
+  CHATV2_MODEL,
+  CHATV2_PROVIDER_SESSION_ID,
   chatV2Error,
   type ChatV2Binding,
   type ChatV2Capabilities,
@@ -20,15 +22,18 @@ import {
   CHATV2_DISPOSE_TIMEOUT_MS,
   CHATV2_PAGE_BUDGET_BYTES,
   CHATV2_PERSIST_DEBOUNCE_MS,
+  CHATV2_ANSWER_ARM_MS,
   CHATV2_SEND_LEDGER_MAX,
+  truncateUtf8,
   utf8Bytes,
 } from '../../../shared/chatv2/limits';
+import { agentExecEnv } from '../../../shared/execEnv';
 import { newChatSession, sessionNeedsInput, type Attachment, type Block, type Session } from '../../../shared/chatv2/session';
 import { CHAT_IMAGE_EXTENSIONS, CHAT_IMAGE_MAX_BYTES } from '../../../shared/transcript/chatAttachments';
 import type { DecisionForm, NativeDecisionOutcome, NativeDecisionRef, NativeDecisionReply } from '../../approvals/types';
 import { ClaudeDriver } from './claude/claudeDriver';
 import { CLAUDE_SETTING_SOURCES, CLAUDE_SETTING_SOURCES_PATTERN } from './claude/claudeProtocol';
-import { buildDriverEnv } from './env';
+import { buildDriverEnv, DriverEnvError } from './env';
 import { boundEvent, EventBatcher } from './eventBatcher';
 import { claimChatV2Pane, releaseChatV2Pane } from './paneClaims';
 import { ChatV2Store } from './store';
@@ -65,8 +70,18 @@ interface HeldDecision {
   native: NativeDecisionRef;
   /** The registry record, or null when none was made (failed closed). */
   registryId: string | null;
-  /** Denied at once: no registry, no record, or the `none` channel. */
+  /** Denied at once: no registry, or no record. */
   failClosed: boolean;
+  /**
+   * The record landed on the `none` channel (native phone decisions are
+   * off): a view-only card for the phone, answered from the desktop only,
+   * straight to the driver.
+   */
+  desktopOnly: boolean;
+  /** When the host recorded it; a desktop-only answer arms CHATV2_ANSWER_ARM_MS later. */
+  notedAt: number;
+  /** A desktop-only answer is on its way to the driver. */
+  answering: boolean;
   /** Settles once the registry call (and a fail-closed deny) is done. */
   recorded: Promise<void>;
 }
@@ -101,6 +116,14 @@ interface Live {
   drained: Promise<void>;
   /** The driver's end is queued in the inbox: report `stopped` before it is folded. */
   exitPending: boolean;
+  /** A stop did not see the process exit: it may still run, so nothing restarts until it does. */
+  unreaped: boolean;
+  /** Bumped by every start and by close: a start that outlived its generation stops its driver. */
+  generation: number;
+  /** Saves run one at a time, in order. */
+  saveChain: Promise<void>;
+  /** A save that is queued but not yet running; a later persist joins it. */
+  savePending: Promise<boolean> | null;
   batcher: EventBatcher;
   /** The capped session when the current batch began. */
   batchBase: Session;
@@ -124,6 +147,12 @@ const IMAGE_MIME: Record<string, string> = {
   '.gif': 'image/gif',
   '.webp': 'image/webp',
 };
+
+/**
+ * One `bodies` page, in UTF-8 bytes. JSON can grow a byte to six (`\u00XX`), so
+ * a page stays well under the pipe's 1 MiB frame limit whatever the text is.
+ */
+const BODY_PAGE_BYTES = 128 * 1024;
 
 function newEpoch(): string {
   return randomBytes(8).toString('hex');
@@ -201,7 +230,7 @@ class Host implements ChatV2Host {
       if (record.session.busy || sessionNeedsInput(record.session)) {
         this.stamp(live, { type: 'session.ended', code: null });
       }
-      this.persistNow(live);
+      void this.persistNow(live);
     }
   }
 
@@ -240,9 +269,10 @@ class Host implements ChatV2Host {
     this.disposed = true;
     const lives = [...this.byPane.values()];
     const stops = Promise.all(lives.map(async (live) => {
-      await this.stopDriver(live);
+      live.generation += 1;
+      if (!(await this.stopDriver(live))) this.deps.log('warn', `[chatv2] the driver of ${live.record.paneId} did not exit`);
       live.batcher.flush();
-      this.persistNow(live);
+      await this.persistNow(live);
     }));
     let timer: ReturnType<typeof setTimeout> | undefined;
     await Promise.race([
@@ -287,6 +317,7 @@ class Host implements ChatV2Host {
   private status(live: Live): ChatV2Status {
     if (live.record.state === 'handed-off') return 'handed-off';
     if (live.starting) return 'starting';
+    if (live.unreaped) return 'failed';
     if (!live.driver || live.exitPending) return live.failed ? 'failed' : 'stopped';
     if (sessionNeedsInput(live.record.session)) return 'needs-input';
     return live.record.session.busy ? 'running' : 'idle';
@@ -363,6 +394,8 @@ class Host implements ChatV2Host {
     if (this.byPane.has(p.paneId)) return chatV2Error('already-exists', 'This pane already has a chat.');
     const cwd = pane.meta.spawnCwd;
     if (!cwd) return chatV2Error('pane-not-found', 'The pane has no known working directory.');
+    // The RPC layer validated it; the argv rule is checked again where it is used.
+    if (p.model !== undefined && !CHATV2_MODEL.test(p.model)) return chatV2Error('invalid-params', 'Invalid model.');
     const chatSessionId = randomUUID();
     const providerSessionId = randomUUID();
     const model = p.model ?? '';
@@ -385,14 +418,15 @@ class Host implements ChatV2Host {
     // Reserved before the first await, so a second create for the pane is refused.
     this.byPane.set(p.paneId, live);
     const started = await this.startDriver(live);
-    if (!started.ok) {
+    const saved = started.ok && await this.persistNow(live);
+    if (!started.ok || !saved) {
+      if (started.ok) await this.stopDriver(live);
       live.closed = true;
       live.batcher.dispose();
-      this.byPane.delete(p.paneId);
-      return started;
+      if (this.byPane.get(p.paneId) === live) this.byPane.delete(p.paneId);
+      return started.ok ? chatV2Error('driver-failed', 'The chat could not be saved.') : started;
     }
     claimChatV2Pane(p.paneId);
-    this.persistNow(live);
     return { ok: true, binding: this.binding(live) };
   }
 
@@ -433,16 +467,23 @@ class Host implements ChatV2Host {
     if (p.epoch !== live.epoch) return chatV2Error('stale-epoch', 'The transcript changed; load it again.');
     const capped = live.record.session.blocks.find((b) => b.id === p.blockId);
     if (!capped) return chatV2Error('body-gone', 'That text is no longer kept.');
+    let full: string | undefined;
     if (!capped.overflow?.[p.field]) {
-      const value = fieldOf(capped, p.field);
-      return value === undefined ? chatV2Error('body-gone', 'That text is no longer kept.') : { ok: true, text: value };
+      full = fieldOf(capped, p.field);
+    } else {
+      // The shadow holds the full value until the turn that wrote it settles;
+      // after that (a rebased, capped block) the harvested store does.
+      const shadow = live.shadow.blocks.find((b) => b.id === p.blockId);
+      full = (shadow && !shadow.overflow?.[p.field] ? fieldOf(shadow, p.field) : undefined)
+        ?? live.record.bodies[`${p.blockId}:${p.field}`];
     }
-    // The shadow holds the full value until the turn that wrote it settles;
-    // after that (a rebased, capped block) the harvested store does.
-    const shadow = live.shadow.blocks.find((b) => b.id === p.blockId);
-    const full = (shadow && !shadow.overflow?.[p.field] ? fieldOf(shadow, p.field) : undefined)
-      ?? live.record.bodies[`${p.blockId}:${p.field}`];
-    return full === undefined ? chatV2Error('body-gone', 'That text is no longer kept.') : { ok: true, text: full };
+    if (full === undefined) return chatV2Error('body-gone', 'That text is no longer kept.');
+    const offset = Math.min(p.offset ?? 0, full.length);
+    const rest = full.slice(offset);
+    // Never empty while text remains (a code point is at most 4 bytes), so a reader always moves forward.
+    const page = truncateUtf8(rest, BODY_PAGE_BYTES);
+    const next = offset + page.length;
+    return { ok: true, text: page, ...(next < full.length ? { nextOffset: next } : {}) };
   }
 
   private checkAttachments(paths: readonly string[]): Attachment[] | null {
@@ -491,6 +532,7 @@ class Host implements ChatV2Host {
     if (live.record.state === 'handed-off') return chatV2Error('handed-off', 'This conversation continues in the terminal.');
     if (sessionNeedsInput(live.record.session)) return chatV2Error('needs-input', 'Answer the pending request first.');
     if (live.record.session.busy || live.sending || live.starting) return chatV2Error('turn-running', 'The agent is still working.');
+    if (live.unreaped) return chatV2Error('driver-failed', 'The last agent process has not exited yet.');
     const attachments = this.checkAttachments(attachmentPaths);
     if (!attachments) return chatV2Error('attachment-refused', 'An attachment could not be used.');
     live.sending = true;
@@ -508,15 +550,26 @@ class Host implements ChatV2Host {
         clientMessageId: p.clientMessageId,
       });
       const seq = live.record.seq;
-      live.record.sends.push({ clientMessageId: p.clientMessageId, digest, seq });
+      const entry = { clientMessageId: p.clientMessageId, digest, seq };
+      live.record.sends.push(entry);
       if (live.record.sends.length > CHATV2_SEND_LEDGER_MAX) live.record.sends.splice(0, live.record.sends.length - CHATV2_SEND_LEDGER_MAX);
-      this.persistNow(live);
+      // The turn reaches the agent only once it is on disk: a ledger that was
+      // never saved could not answer a retry after a restart.
+      const current = live;
+      const failTurn = (message: string): void => {
+        current.record.sends = current.record.sends.filter((s) => s !== entry);
+        this.stamp(current, { type: 'session.error', message });
+        this.stamp(current, { type: 'turn.ended', outcome: 'failed' });
+      };
+      if (!(await this.persistNow(live))) {
+        failTurn('The message could not be saved, so it was not sent.');
+        return chatV2Error('driver-failed', 'The message could not be saved.');
+      }
       try {
         await driver.send({ text: p.text, attachments: attachments.map((a) => ({ path: a.path, mimeType: a.mimeType })) });
       } catch (error) {
-        this.stamp(live, { type: 'session.error', message: `The message could not be delivered: ${error instanceof Error ? error.message : String(error)}` });
-        this.stamp(live, { type: 'turn.ended', outcome: 'failed' });
-        this.persistNow(live);
+        // Off the ledger: a retry with the same id is a new attempt, not a duplicate.
+        failTurn(`The message could not be delivered: ${error instanceof Error ? error.message : String(error)}`);
         return chatV2Error('driver-failed', 'The message could not be delivered to the agent.');
       }
       return { ok: true, clientMessageId: p.clientMessageId, seq };
@@ -543,6 +596,7 @@ class Host implements ChatV2Host {
     // or an exit meanwhile drops the decision.
     await live.decisions.get(p.requestId)?.recorded;
     const held = live.decisions.get(p.requestId);
+    if (held?.desktopOnly) return this.answerDesktopOnly(live, p, held);
     const registry = this.deps.approvals();
     if (!held || held.failClosed || !held.registryId || !registry) {
       return chatV2Error('approval-not-found', 'That request is no longer waiting.');
@@ -558,15 +612,52 @@ class Host implements ChatV2Host {
     return chatV2Error('approval-refused', result.reason);
   }
 
+  /**
+   * The desktop's answer to a card on the `none` channel: no phone can answer
+   * it, so it goes straight to the driver, under the same arming delay and
+   * one answer at a time; the registry's view-only card is then dropped.
+   */
+  private async answerDesktopOnly(live: Live, p: ChatV2ParamsByMethod['answer'], held: HeldDecision): Promise<Result<'answer'>> {
+    if (this.deps.now() - held.notedAt < CHATV2_ANSWER_ARM_MS) return chatV2Error('approval-refused', 'answer-too-soon');
+    if (held.answering) return chatV2Error('approval-refused', 'already-answered');
+    const driver = live.driver;
+    if (!driver) return chatV2Error('approval-not-found', 'That request is no longer waiting.');
+    held.answering = true;
+    try {
+      const reply: NativeDecisionReply = {
+        decision: p.decision === 'allow' ? 'approve' : 'deny',
+        formKind: held.kind,
+        ...(p.answers && held.kind === 'questions' ? { answers: p.answers } : {}),
+      };
+      const outcome = await this.settleAnswer(live, held, driver, reply);
+      if (outcome === 'ok') {
+        void this.deps.approvals()?.expireNative(live.record.paneId, held.native, 'answered-locally');
+        return { ok: true };
+      }
+      return outcome === 'not-found'
+        ? chatV2Error('approval-not-found', 'That request is no longer waiting.')
+        : chatV2Error('approval-refused', 'answer-uncertain');
+    } finally {
+      held.answering = false;
+    }
+  }
+
   private async close(p: ChatV2ParamsByMethod['close']): Promise<Result<'close'>> {
     const live = this.liveFor(p.paneId, p.chatSessionId);
     if (!live) return chatV2Error('session-not-found', 'No chat for this pane.');
     live.closed = true;
-    await this.stopDriver(live);
+    live.generation += 1;
+    if (!(await this.stopDriver(live))) {
+      // Still running: keep the record (and the process identity the next
+      // daemon start sweeps by) rather than forget a live agent.
+      live.closed = false;
+      return chatV2Error('driver-failed', 'The agent did not stop. Try again.');
+    }
     await this.expireDecisions(live, 'session-start');
     live.batcher.flush();
     if (live.persistTimer) clearTimeout(live.persistTimer);
     live.batcher.dispose();
+    await live.saveChain;
     this.byPane.delete(p.paneId);
     releaseChatV2Pane(p.paneId);
     try {
@@ -585,15 +676,21 @@ class Host implements ChatV2Host {
     if (native.threadId !== live.record.chatSessionId || native.relayId !== live.epoch) return 'not-found';
     const held = live.decisions.get(native.requestId);
     const driver = live.driver;
-    if (!held || held.failClosed || !driver) return 'not-found';
-    const outcome = await driver.answer(native.requestId, reply);
+    if (!held || held.failClosed || held.desktopOnly || !driver) return 'not-found';
+    return this.settleAnswer(live, held, driver, reply);
+  }
+
+  /** Hand one reply to the driver; on `ok` / `not-found` the card settles in the transcript. */
+  private async settleAnswer(live: Live, held: HeldDecision, driver: ChatV2Driver, reply: NativeDecisionReply): Promise<NativeDecisionOutcome> {
+    const requestId = held.native.requestId;
+    const outcome = await driver.answer(requestId, reply);
     if (outcome === 'ok' || outcome === 'not-found') {
-      live.decisions.delete(native.requestId);
+      live.decisions.delete(requestId);
       const answered = reply.decision === 'approve'
         && (reply.answers ?? []).some((a) => a.keys.length > 0 || !!a.other?.trim());
       const event: HarnessEvent = held.kind === 'permission'
-        ? { type: 'approval.resolved', requestId: native.requestId, decision: outcome === 'ok' ? (reply.decision === 'approve' ? 'allow' : 'deny') : 'cancelled' }
-        : { type: 'question.resolved', requestId: native.requestId, decision: outcome === 'ok' ? (answered ? 'answered' : 'skipped') : 'cancelled' };
+        ? { type: 'approval.resolved', requestId, decision: outcome === 'ok' ? (reply.decision === 'approve' ? 'allow' : 'deny') : 'cancelled' }
+        : { type: 'question.resolved', requestId, decision: outcome === 'ok' ? (answered ? 'answered' : 'skipped') : 'cancelled' };
       this.enqueue(live, { kind: 'stamp', event });
     }
     return outcome;
@@ -617,6 +714,10 @@ class Host implements ChatV2Host {
       draining: false,
       drained: Promise.resolve(),
       exitPending: false,
+      unreaped: false,
+      generation: 0,
+      saveChain: Promise.resolve(),
+      savePending: null,
       batcher: new EventBatcher((events) => this.deliver(live, events)),
       batchBase: record.session,
       persistTimer: null,
@@ -631,19 +732,42 @@ class Host implements ChatV2Host {
     const { record } = live;
     const pane = this.deps.sessionManager.getSession(record.paneId);
     if (!pane) return chatV2Error('pane-not-found', 'That pane is gone.');
+    if (live.unreaped) return chatV2Error('driver-failed', 'The last agent process has not exited yet.');
+    const generation = ++live.generation;
+    // A close or dispose that came in while this start was waiting wins.
+    const superseded = (): boolean => live.closed || this.disposed || live.generation !== generation;
     live.starting = true;
     try {
       if (!(await this.deps.paneFree(record.paneId))) {
         return chatV2Error('agent-running-in-pane', 'Something is running in this pane. Finish it first.');
       }
+      if (superseded()) return chatV2Error('session-not-found', 'The chat was closed.');
+      const resume = record.session.blocks.some((b) => b.role === 'user');
+      const fail = (message: string): { ok: false; error: ChatV2Error } => {
+        this.deps.log('warn', `[chatv2] ${record.agent} driver failed to start on ${record.paneId}: ${message}`);
+        live.failed = true;
+        live.error = { code: 'driver-unavailable', message: message || 'The agent could not start.' };
+        live.starting = false;
+        if (record.seq > 0) this.stamp(live, { type: 'session.error', message: live.error.message });
+        return { ok: false, error: { ...live.error } };
+      };
+      let env: Record<string, string>;
+      try {
+        env = buildDriverEnv(record.paneId, pane.meta.env, process.env);
+        // The pane env has the PATH the app was launched with (launchd's, from
+        // Finder or the Dock); the agent needs the login shell's.
+        env.PATH = (await agentExecEnv(env)).PATH ?? env.PATH;
+      } catch (error) {
+        return fail(error instanceof DriverEnvError ? error.message : String(error));
+      }
+      if (superseded()) return chatV2Error('session-not-found', 'The chat was closed.');
       const driver = this.drivers(record.agent);
       if (!driver) return chatV2Error('driver-unavailable', `${record.agent} cannot run in chat.`);
-      const resume = record.session.blocks.some((b) => b.role === 'user');
       live.driver = driver;
       try {
         await driver.start({
           cwd: record.session.cwd,
-          env: buildDriverEnv(record.paneId, pane.meta.env, process.env),
+          env,
           mode: record.mode,
           model: record.model,
           providerSession: { id: record.providerSessionId, mode: resume ? 'resume' : 'new' },
@@ -655,39 +779,48 @@ class Host implements ChatV2Host {
         });
       } catch (error) {
         if (live.driver === driver) live.driver = null;
-        const message = error instanceof Error ? error.message : String(error);
-        this.deps.log('warn', `[chatv2] ${record.agent} driver failed to start on ${record.paneId}: ${message}`);
-        live.failed = true;
-        live.error = { code: 'driver-unavailable', message: message || 'The agent could not start.' };
-        live.starting = false;
-        if (record.seq > 0) this.stamp(live, { type: 'session.error', message: live.error.message });
-        return { ok: false, error: { ...live.error } };
+        return fail(error instanceof Error ? error.message : String(error));
       }
-      if (live.driver !== driver) return chatV2Error('driver-failed', 'The agent exited during startup.');
-      live.failed = false;
-      live.error = undefined;
+      if (live.driver !== driver) {
+        // Stopped (close, dispose) or exited while starting: make sure nothing is left running.
+        await driver.stop().catch(() => undefined);
+        return chatV2Error('driver-failed', 'The agent exited during startup.');
+      }
       const pid = driver.pid;
       if (pid !== undefined) {
         const identity = await this.deps.processIdentity(pid).catch(() => null);
-        record.process = { pid, startTime: identity?.startTime ?? '', marker: record.providerSessionId };
+        // Without a start time the sweep could never prove it is the same process.
+        if (identity?.startTime) record.process = { pid, startTime: identity.startTime, marker: record.providerSessionId };
       }
+      if (superseded()) {
+        live.stopping = true;
+        await this.stopDriver(live);
+        return chatV2Error('session-not-found', 'The chat was closed.');
+      }
+      live.failed = false;
+      live.error = undefined;
       return { ok: true };
     } finally {
       live.starting = false;
-      if (!live.closed) this.persistNow(live);
+      if (!live.closed && !this.disposed) void this.persistNow(live);
     }
   }
 
-  private async stopDriver(live: Live): Promise<void> {
+  /** Stop the driver and wait until it is reaped. False: it did not exit, and it is kept. */
+  private async stopDriver(live: Live): Promise<boolean> {
     const driver = live.driver;
-    if (!driver) return;
+    if (!driver) return !live.unreaped;
     live.stopping = true;
     try {
       await driver.stop();
     } catch (error) {
       this.deps.log('warn', `[chatv2] stopping the driver of ${live.record.paneId} failed: ${String(error)}`);
+      // Kept, with its process identity, until its exit is seen.
+      if (live.driver === driver) live.unreaped = true;
+      return false;
     }
     if (live.driver === driver) this.onDriverGone(live, driver, null);
+    return true;
   }
 
   /** The driver's process is gone (exit or stop). */
@@ -695,6 +828,7 @@ class Host implements ChatV2Host {
     if (live.driver !== driver) return;
     live.driver = null;
     live.exitPending = false;
+    live.unreaped = false;
     delete live.record.process;
     if (!live.stopping) {
       live.error = { code: 'driver-failed', message: code === null || code === undefined ? 'The agent stopped.' : `The agent exited (code ${code}).` };
@@ -747,13 +881,24 @@ class Host implements ChatV2Host {
       }
       case 'exited':
         this.onDriverGone(live, item.driver, null);
-        this.persistNow(live);
+        void this.persistNow(live);
         return;
       case 'event': {
         if (live.closed) return;
         const { event } = item;
         // The binding pushed with these already says `idle` / `stopped`.
         if (event.type === 'session.ended') this.onDriverGone(live, item.driver, event.code);
+        // Claude can move the conversation to a new id; resume follows it. The
+        // sweep keeps matching the id the process was started with (`marker`).
+        if (event.type === 'session.providerBound' && item.driver === live.driver
+          && event.providerSessionId !== live.record.providerSessionId) {
+          if (CHATV2_PROVIDER_SESSION_ID.test(event.providerSessionId)) {
+            live.record.providerSessionId = event.providerSessionId;
+            void this.persistNow(live);
+          } else {
+            this.deps.log('warn', `[chatv2] ignored an unexpected session id on ${live.record.paneId}`);
+          }
+        }
         if (event.type === 'session.started' && item.driver === live.driver) {
           live.starting = false;
           live.failed = false;
@@ -791,6 +936,9 @@ class Host implements ChatV2Host {
       native,
       registryId: null,
       failClosed: false,
+      desktopOnly: false,
+      notedAt: this.deps.now(),
+      answering: false,
       recorded: new Promise<void>((resolve) => { recorded = resolve; }),
     };
     live.decisions.set(decision.requestId, held);
@@ -830,13 +978,18 @@ class Host implements ChatV2Host {
     }
     const channel = id && registry ? registry.nativeDecisionChannel(id) : null;
     held.registryId = id;
-    if (!id || channel !== 'native-rpc') {
+    held.notedAt = this.deps.now();
+    if (id && channel === 'none') {
+      // Native phone decisions are off: the phone shows the card, the desktop answers it.
+      held.desktopOnly = true;
+    } else if (!id || channel !== 'native-rpc') {
       held.failClosed = true;
-      if (id && registry) await registry.expireNative(record.paneId, native, 'answered-locally').catch(() => undefined);
+      if (id && registry) void registry.expireNative(record.paneId, native, 'answered-locally').catch(() => undefined);
       this.deps.log('info', `[chatv2] denied ${decision.kind} ${decision.requestId} on ${record.paneId}: no answer channel`);
-      await driver.answer(decision.requestId, { decision: 'deny', formKind: decision.kind }).catch(() => 'unavailable');
+      // In the background: the inbox moves on (the card and its cancel) while the reply is written.
+      void driver.answer(decision.requestId, { decision: 'deny', formKind: decision.kind }).catch(() => 'unavailable');
     }
-    this.persistNow(live);
+    void this.persistNow(live);
   }
 
   private async expireDecisions(live: Live, reason: 'turn-ended' | 'pane-gone' | 'session-start'): Promise<void> {
@@ -870,15 +1023,17 @@ class Host implements ChatV2Host {
     switch (event.type) {
       case 'turn.ended':
       case 'session.ended':
-        this.persistNow(live);
-        // Settled: the full values left over are in `bodies` now.
+        // Harvest now, while the shadow still holds the full values; the
+        // write itself is queued.
+        this.harvestBodies(live);
+        void this.persistNow(live);
         live.shadow = record.session;
         return;
       case 'approval.requested':
       case 'approval.resolved':
       case 'question.asked':
       case 'question.resolved':
-        this.persistNow(live);
+        void this.persistNow(live);
         return;
       default:
         this.schedulePersist(live);
@@ -904,9 +1059,13 @@ class Host implements ChatV2Host {
     };
     live.batchBase = record.session;
     for (const clientId of [...(this.subscribers.get(record.paneId) ?? [])]) {
-      // Backpressure: a socket that cannot take a push is gone. Drop every
-      // subscription it holds; main re-subscribes after it reconnects.
-      if (!this.deps.sendTo(clientId, { type: CHATV2_DAEMON_EVENT, sessionId: record.paneId, data: push })) this.clientGone(clientId);
+      // Backpressure: a socket that cannot take a push is gone or too far
+      // behind. Drop every subscription it holds and close it, so main
+      // reconnects and re-subscribes instead of waiting on a silent socket.
+      if (!this.deps.sendTo(clientId, { type: CHATV2_DAEMON_EVENT, sessionId: record.paneId, data: push })) {
+        this.clientGone(clientId);
+        this.deps.dropClient?.(clientId);
+      }
     }
     for (const listener of this.pushListeners) {
       try {
@@ -921,36 +1080,57 @@ class Host implements ChatV2Host {
     if (live.persistTimer || live.closed) return;
     live.persistTimer = setTimeout(() => {
       live.persistTimer = null;
-      this.persistNow(live);
+      void this.persistNow(live);
     }, CHATV2_PERSIST_DEBOUNCE_MS);
     live.persistTimer.unref?.();
   }
 
-  private persistNow(live: Live): void {
+  /**
+   * Queue a save of the record. Saves run one at a time; a persist while one
+   * is queued joins it (it writes the latest state). Resolves false when the
+   * write failed.
+   */
+  private persistNow(live: Live): Promise<boolean> {
     if (live.persistTimer) {
       clearTimeout(live.persistTimer);
       live.persistTimer = null;
     }
-    if (live.closed) return;
-    this.harvestBodies(live);
-    live.record.savedAt = this.deps.now();
-    try {
-      this.store.save(live.record);
-    } catch (error) {
-      this.deps.log('error', `[chatv2] could not save ${live.record.chatSessionId}: ${String(error)}`);
-    }
+    if (live.closed) return Promise.resolve(true);
+    if (live.savePending) return live.savePending;
+    const run = live.saveChain.then(async () => {
+      live.savePending = null;
+      if (live.closed) return true;
+      this.harvestBodies(live);
+      live.record.savedAt = this.deps.now();
+      try {
+        await this.store.save(live.record);
+        return true;
+      } catch (error) {
+        this.deps.log('error', `[chatv2] could not save ${live.record.chatSessionId}: ${String(error)}`);
+        return false;
+      }
+    });
+    live.savePending = run;
+    live.saveChain = run.then(() => undefined);
+    return run;
   }
 
-  /** Copy every capped field's full value from the shadow into `bodies`, oldest dropped past the cap. */
+  /**
+   * Copy the full value of every capped field from the shadow into `bodies`,
+   * oldest dropped past the cap. A shadow block that is itself capped (rebased
+   * at a turn end) holds no more than the inline text, so the value already
+   * harvested for it is kept.
+   */
   private harvestBodies(live: Live): void {
     const { record } = live;
     const overflowing = record.session.blocks.filter((b) => b.overflow);
     if (!overflowing.length) return;
     const shadow = new Map(live.shadow.blocks.map((b) => [b.id, b] as const));
     for (const block of overflowing) {
+      const full = shadow.get(block.id);
       for (const field of ['text', 'detail', 'output'] as const) {
-        if (!block.overflow?.[field]) continue;
-        const value = fieldOf(shadow.get(block.id), field);
+        if (!block.overflow?.[field] || !full || full.overflow?.[field]) continue;
+        const value = fieldOf(full, field);
         if (value !== undefined) record.bodies[`${block.id}:${field}`] = value;
       }
     }
