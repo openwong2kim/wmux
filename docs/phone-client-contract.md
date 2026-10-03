@@ -3928,9 +3928,10 @@ only**, and every rule above for a `managed` binding applies:
   starts; that reads as a conversation change.
 - Every read is a full bounded page (`mode:"snapshot"`, `reset:true` when you
   sent a cursor, `hasMore:false`; `dir=back` answers an empty `older` page).
-  `truncatedHead:true` means older rows exist that the phone cannot page to.
-  Tool bodies are inline heads of at most 4 KiB with `truncated:true` when
-  cut; these rows have no `srcOffset`, so `/turns/block` cannot open them.
+  `truncatedHead:true` means older rows exist that the phone cannot page to,
+  and `chat.historyTruncated` is `true` on the same read. Tool bodies always
+  carry `n` and `bytes`; they are inline heads of at most 4 KiB with
+  `truncated:true` when cut; these rows have no `srcOffset`, so `/turns/block` cannot open them.
   When the daemon itself cut a body, `bytes` counts only the part it kept (a
   lower bound).
 - A pending tool permission or question is `chat.blocked`
@@ -3939,13 +3940,17 @@ only**, and every rule above for a `managed` binding applies:
   rules as above. Answer it through `/api/approvals` exactly as
   any other native decision (`POST /api/approvals/<id>` for the v1 Yes/No
   projection, `POST /api/approvals/<id>/answer` with `decision-v2`). The first
-  answer from any device or the desktop wins. A transcript row
-  `Waiting for approval: …` marks it in the conversation; it changes to
-  `Allowed`, `Denied` or `Approval cancelled` once settled.
+  answer from any device or the desktop wins. The record's `sessionId` is the
+  pane id, and it arrives on `/api/approvals` and the `approval` SSE event like
+  any other. A `meta` row `Waiting for approval: …` marks it in the
+  conversation; once settled the row with the **same `id`** reads `Allowed`,
+  `Denied` or `Approval cancelled`.
 - `POST …/chat/messages` answers `409 {error:"managed-read-only"}`
   (`effect:"none"`), and `POST …/chat/launch` answers
   `409 {error:"launch-not-ready", reason:"agent-running"}`: the pane already
-  has a writer.
+  has a writer. A launch from the phone never creates such a record. A launch
+  still in flight when the desktop starts a chat-v2 conversation in the pane is
+  refused the same way, before anything is typed.
 - `POST …/chat/cancel` interrupts the running turn. `capabilities.cancel` and
   `chat.turn` (`id` = the turn's user row id) are shown only to a caller that
   sent `chat-cancel`, as on a terminal binding. Answers follow the cancel table:

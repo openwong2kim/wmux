@@ -668,14 +668,15 @@ export function buildChatV2Object(
   binding: ChatV2Binding,
   session: Readonly<Session> | null,
   blocked: ChatBlocked | undefined,
-  opts: { chatCancel?: boolean } = {},
+  opts: { chatCancel?: boolean; historyTruncated?: boolean } = {},
 ): Record<string, unknown> {
   const state = V2_STATE[binding.status === 'handed-off' ? 'stopped' : binding.status];
   const turn = opts.chatCancel && session ? chatV2Turn(session) : undefined;
   return {
     binding: 'managed',
     ...chatV2Identity(binding),
-    historyTruncated: false,
+    // The phone shows this, not the page's `truncatedHead`: set together.
+    historyTruncated: opts.historyTruncated === true,
     agentStatus: state.agentStatus,
     agentAlive: state.agentAlive,
     capabilities: {

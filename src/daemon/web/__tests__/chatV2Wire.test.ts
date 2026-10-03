@@ -178,6 +178,28 @@ describe('chat v2 → phone rows', () => {
     expect(out[2]).toMatchObject({ kind: 'tool_result', ok: false, bytes: 0 });
   });
 
+  it('keeps the approval row id when it settles, so the phone updates one row', () => {
+    const pending = rows([user(), { type: 'tool.started', callId: 't1', title: 'Write', kind: 'write' },
+      { type: 'approval.requested', requestId: 'r1', title: 'Write', callId: 't1' }]);
+    const settled = rows([user(), { type: 'tool.started', callId: 't1', title: 'Write', kind: 'write' },
+      { type: 'approval.requested', requestId: 'r1', title: 'Write', callId: 't1' },
+      { type: 'approval.resolved', requestId: 'r1', decision: 'allow' }]);
+    const row = (all: typeof pending) => all.find((r) => r.id.endsWith(':approval'));
+    expect(row(pending)).toMatchObject({ id: '2.1:approval', kind: 'meta', label: expect.stringMatching(/^Waiting for approval/) });
+    expect(row(settled)).toMatchObject({ id: '2.1:approval', kind: 'meta', label: 'Allowed' });
+    expect(settled.filter((r) => r.id.endsWith(':approval'))).toHaveLength(1);
+  });
+
+  it('always gives a tool body n and bytes, cut or not', () => {
+    const out = rows([user(), { type: 'tool.started', callId: 't', title: 'Bash', kind: 'shell' },
+      { type: 'tool.updated', callId: 't', status: 'completed', detail: 'z'.repeat(9000), preview: { kind: 'shell', output: 'ok' } }]);
+    for (const r of out) {
+      const body = (r as { input?: { n: number; bytes: number }; output?: { n: number; bytes: number } }).input
+        ?? (r as { output?: { n: number; bytes: number } }).output;
+      if (r.kind === 'tool_use' || r.kind === 'tool_result') expect(body).toMatchObject({ n: 1, bytes: expect.any(Number) });
+    }
+  });
+
   it('marks a body the fold already capped as truncated', () => {
     const session = fold([user(), { type: 'tool.started', callId: 't', title: 'Bash', kind: 'shell' },
       { type: 'tool.updated', callId: 't', status: 'completed', preview: { kind: 'shell', output: 'y'.repeat(6000) } }]);

@@ -225,6 +225,38 @@ describe('phone chat routes for a chat-v2 record', () => {
     return { box, until, close: () => ac.abort() };
   };
 
+  it('marks the history truncated whenever the page starts mid-history', async () => {
+    let session = conversation();
+    for (let i = 0; i < 100; i++) session = applyHarnessEvent(session, { seq: 10 + i, at: 1, event: { type: 'status', text: `s${i}` } });
+    box.session = session;
+    const token = await start();
+    const { body } = await turns(token);
+    expect(body.truncatedHead).toBe(true);
+    expect(body.chat.historyTruncated).toBe(true);
+    box.session = conversation();
+    expect((await turns(token)).body.chat.historyTruncated).toBe(false);
+  });
+
+  it('refuses a launch the desktop overtook with a chat-v2 record, without typing', async () => {
+    box.binding = null;
+    bridge.launch.mockImplementation(async (req: { authorized: (stage: string) => Promise<boolean> }) => {
+      box.binding = binding({ status: 'starting' }); // the desktop's create reserved the pane meanwhile
+      if (!(await req.authorized('first-write'))) return { ok: false, error: 'authorization-expired', effect: 'none' };
+      pane.ptyProcess.write('claude\r');
+      return { ok: true, effect: 'submitted' };
+    });
+    const token = await start();
+    const clientLaunchId = freshId();
+    const { status, body } = await post(token, 'launch', { agent: 'claude', clientLaunchId, prompt: 'hello' });
+    expect(status).toBe(409);
+    expect(body).toMatchObject({ error: 'launch-not-ready', reason: 'agent-running', effect: 'none', clientLaunchId });
+    expect(pane.ptyProcess.write).not.toHaveBeenCalled();
+    const receipt = await fetch(`${base()}/api/sessions/s1/chat/launch/${clientLaunchId}`, { headers: auth(token) });
+    const view = await receipt.json() as { state: string };
+    expect(view.state).not.toBe('submitted');
+    expect(view.state).not.toBe('pending');
+  });
+
   it('cancels through the host interrupt, replays a retry, and serves the receipt and its SSE', async () => {
     const token = await start();
     await turns(token);

@@ -4235,8 +4235,10 @@ export class WebTerminalServer {
     const blocked = this.chatV2Blocked(sessionId, binding);
     // The first observation is recorded without an event, as on the bridge path.
     this.noteChatBlocked(sessionId, binding.agent, blocked);
-    const chat = buildChatV2Object(binding, session, blocked, { chatCancel: clientCaps(req).chatCancel === true });
-    if (!session) {
+    const page = session ? chatV2Page(session) : null;
+    const chat = buildChatV2Object(binding, session, blocked,
+      { chatCancel: clientCaps(req).chatCancel === true, historyTruncated: page?.truncatedHead === true });
+    if (!session || !page) {
       this.json(res, 200, { available: false, reason: 'unreadable', ...(carried ? { reset: true, events: [] } : {}), chat });
       return;
     }
@@ -4246,7 +4248,6 @@ export class WebTerminalServer {
       this.json(res, 200, { available: true, mode: 'older', reset: false, events: [], cursor, hasMore: false, chat });
       return;
     }
-    const page = chatV2Page(session);
     this.json(res, 200, {
       available: true,
       mode: 'snapshot',
@@ -4966,13 +4967,22 @@ export class WebTerminalServer {
         if (begun.kind === 'replay') return this.json(res, 200, { ...begun.body, replayed: true });
         if (begun.kind === 'full') return this.json(res, 429, { error: 'launch-busy', effect: 'none', clientLaunchId });
 
-        const authorized = this.chatWriteAuthorizer(req, res, url, principal, id, pane, incarnation,
+        const authorize = this.chatWriteAuthorizer(req, res, url, principal, id, pane, incarnation,
           () => !dangerous || this.opts?.allowDangerousLaunch === true);
+        // A chat-v2 record created while the launch ran (the desktop reserves the
+        // pane before its first await) refuses it. Checked after the last await:
+        // the bridge types right after this resolves, with no await between.
+        let claimedByChatV2 = false;
+        const authorized = async (stage?: 'first-write' | 'submit'): Promise<boolean> => {
+          const ok = await authorize(stage);
+          if (ok && this.chatV2For(id)) claimedByChatV2 = true;
+          return ok && !claimedByChatV2;
+        };
         let wire: WireResponse;
         let effect: 'none' | 'uncertain' | 'submitted';
         try {
           const outcome = await chat.launch({ id, agent, prompt, mode, refuseConversation: true, authorized });
-          wire = launchResponse(outcome, clientLaunchId);
+          wire = claimedByChatV2 && !outcome.ok ? chatV2LaunchResponse(clientLaunchId) : launchResponse(outcome, clientLaunchId);
           effect = outcome.ok ? 'submitted' : outcome.effect;
           if (outcome.ok) trace('submitted');
           else if (outcome.error === 'launch-unconfirmed') trace('launch-unconfirmed');
