@@ -4463,7 +4463,10 @@ and `info/attributes`; any hit refuses the create
 `filter=` attribute in effect in the tree, is not a refusal. The scan needs
 git 2.40 or later (`git-version-unsupported` otherwise) and has a 30 s
 bound. On Windows the directory plus the longest path in the tree must fit
-260 characters (`path-too-long`); elsewhere only the directory is bounded.
+260 characters, and the directory, as well as the directory plus the longest
+directory in the tree, 247 (Git for Windows creates no longer directory
+without `core.longpaths`); either is `path-too-long`. Elsewhere only the
+directory is bounded.
 
 **The answer is asynchronous.** Checking out a tree can take longer than any
 reasonable request, so the create never runs inside the HTTP request:
@@ -4485,7 +4488,7 @@ GET /api/sessions/<id>/git/worktree/<requestId>
   "cwd": "/Users/me/.wmux/worktrees/a1b2c3d4e5f6/phone-fix-login",   // created
   "leaf": "phone-fix-login",                        // created
   "error": "branch-exists",                         // refused, or unknown ("git-outcome-unknown")
-  "retryAfterMs": 5000                              // unknown only: nothing was changed, or a removal under way is still incomplete; repeat the POST after this
+  "retryAfterMs": 5000                              // unknown only: a step could not run to an answer, git is still writing the checkout, or a removal under way is still incomplete; repeat the POST after this
 }
 ```
 
@@ -4499,6 +4502,7 @@ below). The receipt route needs the input grant, like the POST.
 | --- | --- | --- |
 | 400 | `invalid-git-request` | body shape, extra key, malformed `requestId` |
 | 400 | `invalid-slug` | slug fails the rule |
+| 409 | `not-a-git-repo` | the session has no recorded `spawnCwd` (answered before the body is read) |
 | 409 | `request-id-conflict` | this `requestId` was used with another slug or session |
 | 429 | `git-busy` | this caller already has a creation running, two are running, or this caller holds 100 receipts that are all still pending |
 | 503 | `git-receipts-unavailable` | the receipt store could not be read (the key is also hidden) |
@@ -4506,49 +4510,65 @@ below). The receipt route needs the input grant, like the POST.
 The receipt route answers 400 `invalid-git-request` for an id that is not a
 UUID and 503 `git-receipts-unavailable` like the POST.
 
-**When the add does not finish.** If `git worktree add` ran and did not
-finish cleanly (it failed, was killed by the 120 s bound or a signal, or the
-daemon stopped), the daemon looks at what is there. Nothing left (no
-`phone/<slug>` branch, no directory, no registered worktree) is `refused`
-with `git-operation-failed`, and no empty `<projectId>` directory is left
-behind; when git itself failed the checkout and kept only the branch it had
-just created, untouched, that branch is removed and this is the same
-refusal (a partial clone missing objects is one such case: nothing is
-fetched). Anything left is `unknown` with `git-outcome-unknown`. Repeating the
-same POST then recovers, before anything about the main checkout is checked
-(a merge or rebase in progress there does not stop it):
+**When the add does not finish.** Right before `git worktree add` starts,
+the receipt store durably records what this request is about to create: the
+repository, the base oid, the directory and the branch, both of which were
+just found absent. Recovery acts on that record only, so it never removes
+anything this request did not create. On the 120 s bound the add is stopped
+together with every process it started (the checkout runs as a child
+`git`). If the add ran and did not finish cleanly (it failed, hit the bound
+or a signal, or the daemon stopped), the daemon looks at what is there.
+Nothing left (no `phone/<slug>` branch, no directory, no registered
+worktree) is `refused` with `git-operation-failed`, and no empty
+`<projectId>` directory is left behind; when git itself failed the checkout
+and kept only the branch it had just created, untouched, that branch is
+removed and this is the same refusal (a partial clone missing objects is one
+such case: nothing is fetched). Anything left, or anything the daemon could
+not determine (a `git` that did not answer), is `unknown` with
+`git-outcome-unknown`. Repeating the same POST then recovers, before
+anything about the main checkout is checked (a merge or rebase in progress
+there does not stop it). Only the recorded directory and branch are looked
+at; no other worktree registration of the repository is touched:
 
-- a finished, clean checkout of `phone/<slug>` at the directory is adopted:
-  the receipt becomes `created`, also when git left it locked because the
-  command that made it died first;
-- a locked checkout that a process still holds is left exactly as it is and
-  the receipt stays `unknown`, now with `retryAfterMs`. On Windows that
-  process is usually a `git reset --hard` that outlived a daemon restart
-  (the daemon's process job ends `git worktree add` with the daemon, but not
-  the checkout it started), and once it is done the finished checkout is
-  adopted as above; it can also be a shell in the checkout, a program with a
-  file open in it, or an ACL that forbids deleting it, which do not end on
-  their own. A recovery step that could not run (a `git` that timed out or
-  could not start) leaves the receipt the same way;
-- any other checkout git left locked mid-creation is removed, and a `phone/<slug>`
-  branch that never moved since it was created and is checked out nowhere is
-  deleted; the create then runs again;
-- anything else (a checkout with changes in it, a branch with history) is
-  left alone and refused (`worktree-path-exists`, `branch-exists`); the
-  desktop cleanup list reclaims it.
+- a finished, clean checkout of `phone/<slug>` at the recorded base is
+  adopted: the receipt becomes `created`, also when git left it locked
+  `initializing` because the command that made it died first;
+- a checkout git is still writing (its index lock exists), or one a process
+  still holds on Windows, is left exactly as it is and the receipt stays
+  `unknown`, now with `retryAfterMs`. On Windows that process is usually a
+  `git reset --hard` that outlived a daemon restart, and once it is done the
+  finished checkout is adopted as above; it can also be a shell in the
+  checkout, a program with a file open in it, or an ACL that forbids
+  deleting it, which do not end on their own. A recovery step that could not
+  run to an answer (a `git` that timed out, could not start or could not
+  read the configuration) leaves the receipt the same way, and so does a
+  removal git ran but could not finish;
+- a checkout git left locked `initializing` before its checkout began (no
+  index, nothing in it but its `.git` file) is removed, unless a session
+  runs inside it; a removal that was cut short is finished by the next
+  repeat. A registration whose directory is gone is removed too. The
+  recorded `phone/<slug>` branch, checked out nowhere, still at the recorded
+  base and never moved since it was created, is deleted (in a repository
+  that keeps no reflogs, `core.logAllRefUpdates=false`, the record alone
+  says it is this request's). The create then runs again;
+- anything else (a checkout with changes in it or with anything else added,
+  another branch checked out, a lock with another reason, a session running
+  inside it, a branch with history) is left alone and refused
+  (`worktree-path-exists`, `branch-exists`); the desktop cleanup list
+  reclaims it. A request that never reached the add has no record and
+  recovers nothing: its repeat simply runs the create, whose refusals report
+  whatever is there.
 
-Repeat the same POST after `retryAfterMs` (nothing was changed, or a removal
-that was under way is still incomplete and the next repeat finishes it), a
-bounded number of times: stop after about 12 tries (a minute) and point the
-user at the desktop's cleanup list. If that list shows nothing for the slug,
-the worktree's registration or its `phone/<slug>` branch may be left in the
-repository. Each repeat runs about ten `git` commands on the desktop.
+Repeat the same POST after `retryAfterMs`, a bounded number of times: stop
+after about 12 tries (a minute) and point the user at the desktop's cleanup
+list. If that list shows nothing for the slug, the worktree's registration or
+its `phone/<slug>` branch may be left in the repository. Each repeat runs
+about ten `git` commands on the desktop.
 
-Known limitation: a locked registration whose directory is gone (deleted by
-hand, or a removal that stopped between the directory and its registration)
-keeps answering `unknown`, and a removal git ran but could not finish is
-refused with its directory and branch left; both need
-`git worktree remove -f -f <dir>` and `git branch -D phone/<slug>` by hand.
+Known limitation: a checkout whose writer was killed outright (the whole
+process tree at once, or a power loss) keeps a stale index lock and keeps
+answering `unknown`; the desktop cleanup list removes it (it asks first,
+since the checkout is locked).
 
 Refusals found by the background job land in the receipt as `state:
 "refused"` with `error` one of: `branch-exists` (never auto-suffixed),
@@ -4561,10 +4581,13 @@ Refusals found by the background job land in the receipt as `state:
 **Receipt store.** A new file, `phone-worktree-receipts.json`, `version: 1`,
 mode 0600, written durably. Entries are keyed by a hash of (owner,
 `requestId`), where the owner is `device:<id>` or `operator`, and expire 24 h
-after creation; each owner holds at most 100, the oldest finished ones going
-first. The `pending` entry is on disk before `git worktree add` starts; a
-request refused before that point is recorded afterwards, and a restart in
-between forgets it (nothing was written, so repeating it is harmless). A
+after creation; each owner holds at most 100, the oldest `created` or
+`refused` ones going first (an `unknown` one is kept: its repeat still
+recovers). The `pending` entry is on disk, with its execution record, before
+`git worktree add` starts; a request still in its checks is kept in memory
+only, a request refused before that point is recorded afterwards, and a
+restart in between forgets it (nothing was written, so repeating it is
+harmless). A
 `pending` entry found after a daemon restart becomes `unknown` with `error:
 "git-outcome-unknown"`, which the same POST recovers as above. If the file
 cannot be read or validated at start, the daemon logs one warning, turns the
@@ -4582,8 +4605,9 @@ addressed through it acts on the new branch.
 category of their own, `phone-worktree`, instead of calling them orphans.
 Every `phone-*` directory without a task stamp is listed, clean or not,
 never hidden, with a **Remove** action: it refuses while a pane runs inside,
-asks before discarding uncommitted changes or deleting a directory git does
-not track, runs `git worktree remove`, then offers to delete the
+asks before discarding uncommitted changes, removing a locked worktree
+(it is unlocked first) or deleting a directory git does not track, runs
+`git worktree remove`, then offers to delete the
 `phone/<slug>` branch as a separate confirmation. Worktree removal from the
 phone is not in v1.
 
