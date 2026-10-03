@@ -2089,3 +2089,20 @@ html[data-fullscreen] .wmux-shell-body {
 /* Pane toolbar: groups are set apart by space, the view switch by its fill. */
 .wmux-chat-toggle { margin: 0 6px; }
 .wmux-chat-toggle button { border: 0; box-shadow: none; }
+
+/* ─── Chat v2 in the new look ─────────────────────────────────────────────────
+ * The view keeps its layout; its surfaces follow DESIGN.md. The composer is a
+ * hairline without a fill, cards are a fill without a border, buttons drop the
+ * bevel, and the one solid action is the theme's primary. */
+.wmux-chatv2-composer { border-color: var(--line); background: transparent; }
+.wmux-chatv2-composer:focus-within { border-color: var(--line-strong); }
+.wmux-chatv2-card { border: 0; background: var(--selection-subtle); }
+.wmux-chatv2-pre, .wmux-chatv2-input-line { background: var(--selection-subtle); }
+.wmux-chatv2-input-line { box-shadow: inset 0 0 0 1px var(--line); }
+.wmux-chatv2-steps { box-shadow: inset 1px 0 0 var(--stroke); }
+.wmux-chatv2-find { box-shadow: inset 0 -1px 0 var(--stroke); }
+.wmux-chatv2-user { background: var(--selection); }
+.wmux-chatv2-btn { border-radius: var(--chip-radius); background: var(--selection); box-shadow: none; }
+.wmux-chatv2-btn:not([data-variant="primary"]):hover:not(:disabled) { background: var(--selection-hover); }
+.wmux-chatv2-btn[data-variant="primary"],
+.wmux-chatv2-send { background: var(--primary-fill); color: var(--primary-ink); box-shadow: none; }
