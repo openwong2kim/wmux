@@ -1570,9 +1570,11 @@ runs of spaces or over the form's length limits): it stays the card above.
 - `{answers: [...]}` (no `action`, or `submit`) — one entry per question, as for
   OpenCode questions: the chosen `keys`, plus `other` for typed text; a
   single-select question takes exactly one of them. The daemon types the
-  answer into the picker as Claude Code 2.1.283 was measured to take it: a
-  single-select option's digit; a multi-select's option digits (each toggles
-  its box), then `↓` onto the in-question Submit row and Enter; typed text as
+  answer into the picker as Claude Code 2.1.283 was measured to take it, and
+  as checked live on 2.1.288: a single-select option's digit; a
+  multi-select's option digits (each toggles its box), then `↓` onto the
+  in-question Submit row (labelled `Next` when another question follows) and
+  Enter; typed text as
   the "Type something" row's digit, `↓` onto it where needed, one bracketed
   paste and Enter / `↓`. Several questions end on Claude's review screen,
   where the daemon checks that every question lists exactly the answer given

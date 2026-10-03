@@ -35,6 +35,13 @@ dialogs unboxed: a `────` rule, then the dialog, no `│` frame.
 | Review screen ("Ready to submit your answers?") | `1` | Submit answers |
 | | `2` | Cancel |
 
+Measured live on Claude Code 2.1.288 (#1658), answering through the phone
+routes: one multi-select question also draws the tab bar with a `✔ Submit`
+tab (`←  ☐ Fruit  ✔ Submit  →`), and `Enter` on its Submit row draws the
+review screen. A multi-select question that is not the last one labels the
+in-question row `Next` instead of `Submit`; `Enter` there moves to the next
+tab. One single-select question still draws ` ☐ Color` with no Submit tab.
+
 ## Claude Code — ExitPlanMode ("Would you like to proceed?")
 
 Options measured (default start): `1. Yes, and use auto mode`,
