@@ -1142,7 +1142,7 @@ export const en = {
   'settings.quickLaunchReset': 'Reset',
   'settings.quickLaunchPress': 'Press the new quick launch shortcut',
   'settings.quickLaunchUnavailable': 'Not registered',
-  'settings.quickLaunchUnavailableNote': '{key} could not be registered ({error}). Another app or the system may already use it. Pick a different shortcut.',
+  'settings.quickLaunchUnavailableNote': '{key} could not be registered: {error}. Pick a different shortcut.',
   'settings.quickLaunchSaveFailed': 'Could not change the shortcut: {error}',
   'settings.computerUse': 'Let agents control other apps',
   'settings.computerUseDesc': 'Agents can read other apps\' windows and click, type and press keys in them. Screenshots and window text are sent to the agent\'s model provider. Off by default.',

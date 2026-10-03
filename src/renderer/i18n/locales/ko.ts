@@ -672,7 +672,7 @@ export const ko = {
   'settings.quickLaunchReset': '초기화',
   'settings.quickLaunchPress': '새 빠른 실행 단축키를 누르세요',
   'settings.quickLaunchUnavailable': '등록 안 됨',
-  'settings.quickLaunchUnavailableNote': '{key}를 등록하지 못했습니다({error}). 다른 앱이나 시스템이 이미 쓰고 있을 수 있습니다. 다른 단축키를 고르세요.',
+  'settings.quickLaunchUnavailableNote': '{key}를 등록하지 못했습니다: {error}. 다른 단축키를 고르세요.',
   'settings.quickLaunchSaveFailed': '단축키를 바꾸지 못했습니다: {error}',
   'settings.computerUse': '에이전트가 다른 앱을 조작하도록 허용',
   'settings.computerUseDesc': '에이전트가 다른 앱의 창을 읽고 클릭, 입력, 키 누르기를 할 수 있습니다. 스크린샷과 창의 텍스트는 에이전트의 모델 제공자에게 전송됩니다. 기본값은 꺼짐입니다.',

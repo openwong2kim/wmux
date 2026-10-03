@@ -24,6 +24,7 @@ import { IPC, dataSuffix } from '../../shared/constants';
 import { firstRunEnvForAgent } from '../../shared/agentFirstRun';
 import { reservedAccelerators, resolveForPlatform } from '../../shared/keymap';
 import {
+  formatAccelerator,
   isGlobalAccelerator,
   normalizeQuickLaunchRequest,
   quickLaunchAgentFields,
@@ -80,6 +81,11 @@ function writePromptFile(prompt: string): string {
 export function clashesWithBuiltin(accelerator: string, platform: NodeJS.Platform, otherGlobal: readonly string[] = []): boolean {
   const wanted = resolveForPlatform(accelerator, platform);
   return [...reservedAccelerators(platform), ...otherGlobal].some((own) => resolveForPlatform(own, platform) === wanted);
+}
+
+/** An accelerator as Settings shows it on this OS (`⌘+K`, `Ctrl+K`). */
+function keysOf(accelerator: string): string {
+  return formatAccelerator(accelerator, process.platform === 'darwin');
 }
 
 function fromComposer(event: IpcMainInvokeEvent): boolean {
@@ -211,7 +217,7 @@ export function initQuickLaunch(deps: {
       return snapshot('Use Command or Control with another key.');
     }
     if (typeof patch.accelerator === 'string' && clashes(patch.accelerator)) {
-      return snapshot(`${patch.accelerator} is already a wmux shortcut. Pick another one.`);
+      return snapshot(`${keysOf(patch.accelerator)} is already a wmux shortcut. Pick another one.`);
     }
     const next = {
       enabled: typeof patch.enabled === 'boolean' ? patch.enabled : current.enabled,
@@ -222,7 +228,7 @@ export function initQuickLaunch(deps: {
     if (!hotkey.apply(next.enabled, next.accelerator)) {
       const reason = hotkey.failureReason() ?? 'the shortcut could not be registered';
       applyConfig(current);
-      return snapshot(`${next.accelerator}: ${reason}`);
+      return snapshot(`${keysOf(next.accelerator)}: ${reason}`);
     }
     try {
       writeQuickLaunchConfig(next);

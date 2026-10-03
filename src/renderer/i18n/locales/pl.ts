@@ -1126,7 +1126,7 @@ export const pl = {
   'settings.quickLaunchReset': 'Przywróć',
   'settings.quickLaunchPress': 'Naciśnij nowy skrót szybkiego uruchamiania',
   'settings.quickLaunchUnavailable': 'Niezarejestrowany',
-  'settings.quickLaunchUnavailableNote': 'Nie udało się zarejestrować {key} ({error}). Inna aplikacja lub system może go już używać. Wybierz inny skrót.',
+  'settings.quickLaunchUnavailableNote': 'Nie udało się zarejestrować {key}: {error}. Wybierz inny skrót.',
   'settings.quickLaunchSaveFailed': 'Nie udało się zmienić skrótu: {error}',
   'settings.computerUse': 'Pozwól agentom sterować innymi aplikacjami',
   'settings.computerUseDesc': 'Agenci mogą odczytywać okna innych aplikacji oraz klikać, pisać i naciskać w nich klawisze. Zrzuty ekranu i tekst okien trafiają do dostawcy modelu agenta. Domyślnie wyłączone.',

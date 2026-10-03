@@ -1231,7 +1231,7 @@ export const zh = {
   'settings.quickLaunchReset': '重置',
   'settings.quickLaunchPress': '请按下新的快速启动快捷键',
   'settings.quickLaunchUnavailable': '未注册',
-  'settings.quickLaunchUnavailableNote': '无法注册 {key}（{error}）。其他应用或系统可能已占用它。请选择其他快捷键。',
+  'settings.quickLaunchUnavailableNote': '无法注册 {key}：{error}。请选择其他快捷键。',
   'settings.quickLaunchSaveFailed': '无法更改快捷键：{error}',
   'settings.computerUse': '允许代理操作其他应用',
   'settings.computerUseDesc': '代理可以读取其他应用的窗口，并在其中点击、输入和按键。截图和窗口文本会发送给代理的模型提供方。默认关闭。',
