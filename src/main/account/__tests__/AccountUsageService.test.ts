@@ -255,6 +255,35 @@ describe('AccountUsageService (M2 hook-gated usage)', () => {
   });
 });
 
+describe('AccountUsageService.refreshForLaunch', () => {
+  it('waits for a probe already in flight and reads its result', async () => {
+    const d = deferred<LoadResult>();
+    const load = vi.fn(() => d.promise);
+    const svc = make({ loadCredential: load });
+    const manual = svc.refreshNow('A');
+    let done = false;
+    const launch = svc.refreshForLaunch('A').then(() => { done = true; });
+    await Promise.resolve();
+    expect(done).toBe(false);
+    d.resolve(OK_CRED);
+    await Promise.all([manual, launch]);
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(svc.getAll().find((e) => e.accountId === 'A')?.status).toBe('ok');
+  });
+
+  it('leaves an account in 429 backoff or cooldown alone', async () => {
+    let t = 1000;
+    const fetchImpl = vi.fn()
+      .mockImplementation(async () => new Response('slow', { status: 429 })) as unknown as typeof fetch;
+    const svc = make({ now: () => t, fetchImpl, cooldownMs: 60_000 });
+    await svc.refreshForLaunch('A');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    t += 2 * 60_000; // past the cooldown, inside the 5 min backoff
+    await svc.refreshForLaunch('A');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('AccountUsageService refresh-all timer and 429 backoff', () => {
   const MIN = 60_000;
   afterEach(() => { vi.useRealTimers(); });

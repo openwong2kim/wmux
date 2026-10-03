@@ -30,21 +30,23 @@ describe('AccountRotationService', () => {
   let dataDir: string;
   let usageEntries: AccountUsageEntry[];
   let refreshNow: ReturnType<typeof vi.fn<(accountId: string) => Promise<void>>>;
+  let clock: number;
   let codex: Record<string, RolloutLimits | null>;
   let bindings: Record<string, string>;
 
   const make = (accounts: Account[], extra: AccountRotationDeps = {}) => new AccountRotationService({
     dataDir,
-    now: () => NOW,
+    now: () => clock,
     accounts: () => accounts,
     getBinding: (ws, vendor) => bindings[`${ws}:${vendor}`],
-    claudeUsage: { getAll: () => usageEntries, refreshNow },
+    claudeUsage: { getAll: () => usageEntries, refreshForLaunch: refreshNow },
     readCodexLimits: async (dir) => codex[dir] ?? null,
     dirExists: () => true,
     ...extra,
   });
 
   beforeEach(() => {
+    clock = NOW;
     dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-rotation-'));
     usageEntries = [];
     refreshNow = vi.fn<(accountId: string) => Promise<void>>(async () => undefined);
@@ -105,6 +107,16 @@ describe('AccountRotationService', () => {
     codex[path.join('/acc/x', 'sessions')] = limits(20);
     expect(await c.prepareLaunch('codex', 'ws')).toEqual({ kind: 'keep' });
     expect(read.mock.calls).toEqual([[path.join('/acc/x', 'sessions')]]);
+  });
+
+  it('spends one 3 s budget on the whole decision', async () => {
+    const s = make([acct('a', 'claude'), acct('b', 'claude')]);
+    await s.setEnabled('claude', true);
+    bindings['ws:claude'] = 'a';
+    usageEntries = [usage('a', 100, NOW - 60 * 60_000), usage('b', 10, NOW - 60 * 60_000)];
+    refreshNow.mockImplementation(async () => { clock += 3000; });
+    expect(await s.prepareLaunch('claude', 'ws')).toMatchObject({ kind: 'switch', accountId: 'b' });
+    expect(refreshNow.mock.calls).toEqual([['a']]);
   });
 
   it('holds a Codex launch when every account is out', async () => {

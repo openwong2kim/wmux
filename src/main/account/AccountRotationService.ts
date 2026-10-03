@@ -11,7 +11,8 @@
 // Off by default, and off means untouched: no reading, no network. With it
 // on, Claude readings come from AccountUsageService (a read of the usage
 // endpoint, no model request) and are refreshed before a launch only when
-// older than READING_MAX_AGE_MS, bounded by PROBE_TIMEOUT_MS. Codex readings
+// older than READING_MAX_AGE_MS; one launch decision spends at most
+// PROBE_TIMEOUT_MS on reads and refreshes in total. Codex readings
 // come from the limits Codex writes into each account's session files — no
 // network at all.
 
@@ -33,7 +34,8 @@ const PROBE_TIMEOUT_MS = 3000;
 
 export interface ClaudeUsageSource {
   getAll(): AccountUsageEntry[];
-  refreshNow(accountId: string): Promise<void>;
+  /** Refresh ahead of a launch; skips backoff/cooldown, joins an in-flight probe. */
+  refreshForLaunch(accountId: string): Promise<void>;
 }
 
 export interface RotationSettings {
@@ -137,10 +139,15 @@ export class AccountRotationService {
     return all.filter((a) => a.vendor === vendor && exists(a.configDir));
   }
 
-  private async reading(account: Account, refresh: boolean): Promise<AccountQuotaReading | null> {
+  /** One account's reading. With `deadlineMs` (a launch) a stale Claude
+   *  reading is refreshed first, and nothing waits past the deadline; without
+   *  it (Settings rows) nothing is refreshed. */
+  private async reading(account: Account, deadlineMs?: number): Promise<AccountQuotaReading | null> {
+    const budget = deadlineMs === undefined ? PROBE_TIMEOUT_MS : deadlineMs - this.now();
     if (account.vendor === 'codex') {
+      if (budget <= 0) return null;
       const read = this.deps.readCodexLimits ?? ((dir: string) => readCodexRolloutLimits(dir));
-      return codexReading(await withTimeout(read(path.join(account.configDir, 'sessions')), PROBE_TIMEOUT_MS) ?? null);
+      return codexReading(await withTimeout(read(path.join(account.configDir, 'sessions')), budget) ?? null);
     }
     const usage = this.deps.claudeUsage;
     if (!usage) return null;
@@ -150,7 +157,7 @@ export class AccountRotationService {
     // entry.fetchedAtMs but leaves the old snapshot in place.
     const readAt = entry?.snapshot?.fetchedAtMs;
     const stale = !readAt || this.now() - readAt > READING_MAX_AGE_MS;
-    if (refresh && stale) await withTimeout(usage.refreshNow(account.id), PROBE_TIMEOUT_MS);
+    if (deadlineMs !== undefined && stale && budget > 0) await withTimeout(usage.refreshForLaunch(account.id), budget);
     return claudeReading(find());
   }
 
@@ -160,7 +167,7 @@ export class AccountRotationService {
     if (!this.getSettings()[vendor]) return [];
     const now = this.now();
     return Promise.all(this.accounts(vendor).map(async (a) => {
-      const r = await this.reading(a, false);
+      const r = await this.reading(a);
       return { accountId: a.id, vendor, verdict: evaluateQuota(r, now), capturedAtMs: r?.capturedAtMs ?? null };
     }));
   }
@@ -195,13 +202,16 @@ export class AccountRotationService {
     // registered account wmux can measure: leave it alone.
     if (!bound || !pool.some((a) => a.id === bound)) return { kind: 'keep' };
     const now = this.now();
+    // One budget for the whole decision: the bound read and the fallback
+    // reads share it.
+    const deadline = now + PROBE_TIMEOUT_MS;
     // The bound account first: while it has quota nothing else is read.
     const boundAccount = pool.find((a) => a.id === bound)!;
-    const boundReading = await this.reading(boundAccount, true);
+    const boundReading = await this.reading(boundAccount, deadline);
     if (evaluateQuota(boundReading, now).usable) return { kind: 'keep' };
     const read = [
       { a: boundAccount, reading: boundReading },
-      ...await Promise.all(pool.filter((a) => a !== boundAccount).map(async (a) => ({ a, reading: await this.reading(a, true) }))),
+      ...await Promise.all(pool.filter((a) => a !== boundAccount).map(async (a) => ({ a, reading: await this.reading(a, deadline) }))),
     ];
     // Only a measured account is a switch target; an unmeasured one (no
     // reading, or a Claude account whose last probe failed) is never picked.

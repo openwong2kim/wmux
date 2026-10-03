@@ -97,6 +97,8 @@ export class AccountUsageService {
   /** Accounts with a probe in flight — coalesces a burst of agent.stop across
    *  panes sharing one account into a single request. */
   private readonly inflight = new Set<string>();
+  /** The promise of each in-flight probe, so a launch can wait on it. */
+  private readonly inflightProbes = new Map<string, Promise<void>>();
   private readonly listeners = new Set<(entry: AccountUsageEntry) => void>();
   /** Per-account 429 backoff: automatic probes before `untilMs` are skipped. */
   private readonly rateLimited = new Map<string, { untilMs: number; count: number }>();
@@ -266,7 +268,7 @@ export class AccountUsageService {
     ) {
       return;                                  // a live statusline is feeding it
     }
-    await this.probe(accountId, true);
+    await this.startProbe(accountId, true);
   }
 
   /**
@@ -276,7 +278,30 @@ export class AccountUsageService {
    */
   async refreshNow(accountId: string): Promise<void> {
     if (this.inflight.has(accountId)) return;
-    await this.probe(accountId, false);
+    await this.startProbe(accountId, false);
+  }
+
+  /**
+   * Refresh ahead of a quota-rotated launch. Waits for a probe already in
+   * flight instead of returning before it lands, and leaves an account in 429
+   * backoff or inside the probe cooldown alone (its cached entry stands).
+   */
+  async refreshForLaunch(accountId: string): Promise<void> {
+    const running = this.inflightProbes.get(accountId);
+    if (running) return running;
+    const backoff = this.rateLimited.get(accountId);
+    if (backoff && this.now() < backoff.untilMs) return;
+    const lastProbe = this.httpAtMs.get(accountId);
+    if (lastProbe !== undefined && this.now() - lastProbe < this.cooldownMs) return;
+    await this.startProbe(accountId, false);
+  }
+
+  private startProbe(accountId: string, automatic: boolean): Promise<void> {
+    const p = this.probe(accountId, automatic).finally(() => {
+      if (this.inflightProbes.get(accountId) === p) this.inflightProbes.delete(accountId);
+    });
+    this.inflightProbes.set(accountId, p);
+    return p;
   }
 
   /** The actual read-token → fetch-usage → update-cache work. Shared by
