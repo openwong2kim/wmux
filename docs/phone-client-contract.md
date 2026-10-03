@@ -2831,8 +2831,12 @@ an owner-bound request bridge, never an arbitrary RPC supplied by the phone.
   120-character titles, 16,000-character bodies, and 64 KiB serialized storage.
   Conflicting or unconfirmed writes must refresh before another edit; never retry
   a replacement automatically. Saving or inserting a command does not execute it.
-- `GET /api/desktop-workspaces` returns `{workspaces:[{id,name,sessionId}]}`; a session ID
-  is nullable and must pass the caller's attachable-session check. `POST /api/workspaces` accepts
+- `GET /api/desktop-workspaces` returns `{workspaces:[{id,name,sessionId,settled?,snoozedUntil?}]}`; a session ID
+  is nullable and must pass the caller's attachable-session check. `settled: true` marks a
+  workspace whose work the desktop considers finished (idle for the configured days, or its
+  PR merged/closed, or settled by hand); `snoozedUntil` is the epoch-ms end of a snooze. Both
+  are additive, absent when not set, and visibility hints only: the workspace is still open
+  and every operation on it works as before. `POST /api/workspaces` accepts
   `{requestId,name,cwd?}`. Both require input permission. Creation requires a
   nonempty name and, when supplied, an existing absolute Mac directory. UUID
   request identity becomes the persisted workspace ID, so retrying an existing

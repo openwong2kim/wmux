@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { BrowserWindow } from 'electron';
 import { sendToRenderer } from '../pipe/handlers/_bridge';
+import { getWorkspaceSettleService } from '../workspace/settle/workspaceSettleHost';
 import { createSidebarDropLog, parsePhoneSidebarSnapshot, type PhoneSidebarSnapshot, type SidebarDropReporter } from '../../shared/phoneFleetSidebar';
 
 /** How long the list waits for the optional sidebar projection. */
@@ -40,9 +41,13 @@ export async function handlePhoneWorkspaces(command: string, payload: Record<str
       }),
     ]);
     if (!Array.isArray(rows)) throw new Error('Workspace list unavailable');
-    const reply: { workspaces: Array<{ id: string; name: string; sessionId: string | null }>; sidebar?: PhoneSidebarSnapshot } = {
+    // Settle state is main's own (no renderer round-trip); fields are additive.
+    const settle = getWorkspaceSettleService()?.snapshot().states ?? {};
+    const reply: { workspaces: Array<{ id: string; name: string; sessionId: string | null; settled?: true; snoozedUntil?: number }>; sidebar?: PhoneSidebarSnapshot } = {
       workspaces: rows.filter(row => row && typeof row.id === 'string' && typeof row.name === 'string').map(row => ({
         id: row.id, name: row.name, sessionId: typeof row.activePtyId === 'string' ? row.activePtyId : null,
+        ...(settle[row.id]?.settled ? { settled: true as const } : {}),
+        ...(settle[row.id]?.snoozedUntil !== undefined ? { snoozedUntil: settle[row.id].snoozedUntil } : {}),
       })),
     };
     const sidebar = parsePhoneSidebarSnapshot(sidebarRaw, drops.report);

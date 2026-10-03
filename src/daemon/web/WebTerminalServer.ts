@@ -3683,7 +3683,10 @@ export class WebTerminalServer {
           const rows = (result as {workspaces?: unknown}).workspaces;
           if (!Array.isArray(rows)) throw new Error('invalid workspaces');
           result = {workspaces: rows.map(row => ({id:row.id,name:row.name,
-            sessionId: typeof row.sessionId === 'string' && this.attachableSession(principal,row.sessionId) ? row.sessionId : null}))};
+            sessionId: typeof row.sessionId === 'string' && this.attachableSession(principal,row.sessionId) ? row.sessionId : null,
+            // Additive settle state (visibility only, desktop-owned).
+            ...(row.settled === true ? {settled:true} : {}),
+            ...(typeof row.snoozedUntil === 'number' && Number.isFinite(row.snoozedUntil) ? {snoozedUntil:row.snoozedUntil} : {})}))};
         }
         this.json(res,200,result,{'Cache-Control':'no-store'});
       }).catch(() => this.json(res,503,{error:'workspace-request-unconfirmed'}));

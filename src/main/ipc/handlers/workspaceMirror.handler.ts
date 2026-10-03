@@ -15,6 +15,7 @@ import { IPC } from '../../../shared/constants';
 import { getWorkspaceMirror } from '../../workspace/WorkspaceMirror';
 import { reconcileWorkspaceClaims } from '../../workspace/workspaceClaimTrust';
 import { getWorkerTempDirSweeper } from '../../worktask/fanoutTempDir';
+import { getWorkspaceSettleService } from '../../workspace/settle/workspaceSettleHost';
 import type {
   WorkspaceListEntry,
   FleetSnapshot,
@@ -189,6 +190,12 @@ export function registerWorkspaceMirrorHandler(): () => void {
       getWorkerTempDirSweeper().reconcile(payload.entries.map((e) => e.id));
     } catch {
       /* temp-dir bookkeeping must never affect the mirror */
+    }
+    // Settle rules read agent status and pins from this same push.
+    try {
+      getWorkspaceSettleService()?.noteMirror(payload);
+    } catch (err) {
+      console.error('[workspaceSettle] mirror note failed:', err);
     }
   };
   ipcMain.removeAllListeners(IPC.WORKSPACE_MIRROR_PUSH);
