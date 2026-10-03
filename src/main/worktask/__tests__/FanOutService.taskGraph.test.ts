@@ -36,7 +36,7 @@ function plan(slug: string): TaskWorktreePlan {
   };
 }
 
-function makeService() {
+function makeService(opts: { dependencyWaitMs?: number; hold?: (n: number) => Promise<void> } = {}) {
   let oid = 0;
   const worktrees = {
     preflight: vi.fn(async (_r: string, _t: string, taskId: string) => ({ ok: true as const, plan: plan(taskId.slice(-8)) })),
@@ -60,12 +60,13 @@ function makeService() {
   let ws = 0;
   const renderer: FanOutRendererPort = {
     spawnWorkspace: vi.fn(async (p) => {
+      await opts.hold?.(spawned.length);
       spawned.push(p);
       ws++;
       return { workspaceId: `ws-task-${ws}`, ptyId: `pty-${ws}` };
     }),
   };
-  const service = new FanOutService({ daemon, renderer, worktrees: worktrees as any, ledger, autonomy: async () => undefined });
+  const service = new FanOutService({ daemon, renderer, worktrees: worktrees as any, ledger, autonomy: async () => undefined, dependencyWaitMs: opts.dependencyWaitMs });
   return { service, worktrees, spawned };
 }
 
@@ -100,7 +101,7 @@ describe('FanOutService task graph', () => {
   it('spawns a dependent task only after its dependency requests review, from a fresh base', async () => {
     const { service, worktrees, spawned } = makeService();
     const launched: string[] = [];
-    const r = await service.start({ ...req, dependsOn: [[], [0]], onDeferredLaunch: (t) => launched.push(t.title) });
+    const r = await service.start({ ...req, dependsOn: [[], [0]], onDeferredLaunch: (t, info) => launched.push(`${t.title}:${info.remaining}`) });
     expect(r.ok).toBe(true);
     expect(spawned).toHaveLength(1);
     expect(r.tasks[1].pending).toEqual({ waitingOn: [0] });
@@ -115,7 +116,7 @@ describe('FanOutService task graph', () => {
     await ledger.update({ id: dep.id, status: 'review_requested', actor: { kind: 'worker', workspaceId: dep.taskWorkspaceId }, expectedRev: dep.rev + 1 });
     await service.drainDeferredLaunches();
     expect(spawned).toHaveLength(2);
-    expect(launched).toEqual(['Build UI']);
+    expect(launched).toEqual(['Build UI:0']);
     // The cached result is updated in place, so a re-poll shows the launch.
     const again = await service.start(req);
     expect(again.tasks[1].pending).toBeUndefined();
@@ -134,6 +135,47 @@ describe('FanOutService task graph', () => {
     await service.drainDeferredLaunches();
     expect(spawned).toHaveLength(1);
     expect(r.tasks[1].pending).toBeUndefined();
-    expect(r.tasks[1].error).toMatch(/dependency task 0 was cancelled/);
+    expect(r.tasks[1].error).toMatch(/dependency \(index 0\) was cancelled/);
+  });
+
+  it('drops on a cancelled dependency even while another dependency is still working', async () => {
+    const { service, spawned } = makeService();
+    const r = await service.start({ ...req, titles: ['A', 'B', 'C'], dependsOn: [[], [], [0, 1]] });
+    await ledger.closeTask(r.tasks[1].taskId!);
+    await service.drainDeferredLaunches();
+    expect(spawned).toHaveLength(2);
+    expect(r.tasks[2].error).toMatch(/index 1\) was cancelled/);
+  });
+
+  it('re-checks a queued task when its turn comes, and lets the owner cancel it', async () => {
+    // B and C both wait on A. B's spawn is held; while it is, A is sent back
+    // to work, so C — queued behind B — must not spawn when its turn comes.
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((r) => (release = r));
+    const { service, spawned } = makeService({ hold: async (n) => (n === 1 ? held : undefined) });
+    const r = await service.start({ ...req, titles: ['A', 'B', 'C'], dependsOn: [[], [0], [0]] });
+    const dep = ledger.get(r.tasks[0].taskId!)!;
+    await ledger.update({ id: dep.id, status: 'review_requested', actor: { kind: 'worker', workspaceId: dep.taskWorkspaceId }, expectedRev: 1 });
+    await ledger.update({ id: dep.id, status: 'working', actor: { kind: 'brain', workspaceId: 'ws-owner' }, expectedRev: 2 });
+    release();
+    await service.drainDeferredLaunches();
+    expect(spawned.map((p) => p.name)).toEqual(['wtask: A', 'wtask: B']);
+    expect(r.tasks[2].pending).toBeDefined();
+    expect(service.cancelDependents('graph-1', 'owner said stop')).toBe(1);
+    expect(r.tasks[2].error).toMatch(/owner said stop/);
+    expect(service.cancelDependents('graph-1', 'again')).toBeNull();
+  });
+
+  it('drops waiting tasks at the wait deadline', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { service, spawned } = makeService({ dependencyWaitMs: 1000 });
+      const r = await service.start({ ...req, dependsOn: [[], [0]] });
+      vi.advanceTimersByTime(1001);
+      expect(r.tasks[1].error).toMatch(/did not finish within/);
+      expect(spawned).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

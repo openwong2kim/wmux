@@ -163,17 +163,19 @@ of a pane that already exists is not — that stays the operator's.
 
 ## Give each task its files, and an order when it needs one
 
-\`files\` is index-aligned with \`titles\`: each entry is the repo-relative
-globs that task alone may edit, and the worker is told its scope. Two tasks
-with overlapping scopes are refused before anything spawns — when two jobs must
-touch the same file, make one depend on the other.
+\`files\` is index-aligned with \`titles\`: one non-empty list of repo-relative
+globs per task (\`["."]\` = anything), and each worker is told its scope. Two
+tasks that may run at the same time with overlapping scopes are refused before
+anything spawns — when two jobs must touch the same file, make one depend on
+the other.
 
 \`depends_on\` lists, per task, the 0-based indices it must wait for. Such a
 task is not spawned with the others: its worktree is created from a freshly
 fetched origin commit once every dependency's ledger row is review_requested or
 completed, and its prompt names the dependency branches to merge if they are
-not on origin yet. A cancelled dependency drops it. The wait lives in this wmux
-session only.
+not on origin yet. A cancelled dependency drops it, so does a 12h wait, and so
+does calling again with the same key and \`cancel_pending: true\`. The wait
+lives in this wmux session only.
 
 ## After it spawns
 

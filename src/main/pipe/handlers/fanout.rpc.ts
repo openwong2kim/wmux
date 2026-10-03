@@ -806,6 +806,16 @@ export function registerFanOutRpc(
     // approval prompt — two visually identical dialogs carrying different
     // payloads. Reading the gate and claiming it in one tick makes the second
     // caller a poll instead.
+    // The owner's way to stop tasks that are still waiting on dependencies.
+    // The key is already scoped to the calling workspace, so only the fan-out's
+    // owner can reach its waiting tasks.
+    if (params['cancelPending'] === true) {
+      const dropped = service.cancelDependents(key, 'cancelled by the fan-out owner');
+      if (dropped === null) {
+        return deny('NOT_FOUND', 'no task of this fan-out is waiting on its dependencies');
+      }
+      return { ok: true as const, status: 'pending_cancelled' as const, idempotencyKey: callerKey, dropped };
+    }
     const known = service.statusOf(key);
     if (known.state === 'running') {
       return { ok: true as const, status: 'running' as const, idempotencyKey: callerKey };
@@ -1108,7 +1118,13 @@ export function registerFanOutRpc(
         // await, so there is no window in which the gate says 'started' and the
         // service still says 'unknown'.
         settle(key, { phase: 'started' });
-        guards.commitStart(key);
+        // A task with dependencies is stamped on the hour when it starts, not
+        // now (see stampDeferredStart); its live slot is booked from here on.
+        const isDeferred = (index: number): boolean => (graph.dependsOn[index]?.length ?? 0) > 0;
+        const deferredCount = parsed.titles.filter((_, k) => isDeferred(k)).length;
+        guards.commitStart(key, deferredCount);
+        /** Dependent tasks that passed their start-time cap check (and so hold a stamp). */
+        const stamped = new Set<number>();
         // The second half of the record: the line each task was ACTUALLY
         // launched with (after the role rewrite and the worker flags). Written
         // once for the first wave, then once per dependent task as it launches.
@@ -1146,25 +1162,32 @@ export function registerFanOutRpc(
         try {
           const result = await service.start({
             ...req,
-            // A dependent task that never got a workspace launched nothing, so
-            // it is refunded from the rolling hour like a first-wave failure.
-            onDeferredLaunch: (t) => {
-              if (!t.workspaceId) guards.refundStart(key, 1);
-              appendLaunched([t]);
+            beforeDeferredLaunch: (index) => {
+              const r = guards.stampDeferredStart(key);
+              if (r.ok) stamped.add(index);
+              return r;
+            },
+            // Settled once per task by the service. Only a task that was
+            // stamped and still got no workspace is refunded; one dropped
+            // before its start was never charged.
+            onDeferredLaunch: (t, info) => {
+              if (stamped.delete(t.index) && !t.workspaceId) guards.refundStart(key, 1);
+              appendLaunched([t], info.outputBatchDir);
+              if (info.remaining === 0) guards.settleStarted(key);
             },
           });
           holdsDependents = result.tasks.some((t) => t.pending);
           // Tasks that never got a workspace (the output folder could not be
           // created, a worktree preflight failed) launched nothing, so they
-          // must not keep counting against the rolling hour. A task still
-          // waiting on its dependencies is not one of them yet.
+          // must not keep counting against the rolling hour. Dependent tasks
+          // are settled through onDeferredLaunch instead, never here.
           const unspawned =
             result.tasks.length === 0
-              ? parsed.titles.length
-              : result.tasks.filter((t) => !t.workspaceId && !t.pending).length;
+              ? parsed.titles.length - deferredCount
+              : result.tasks.filter((t) => !t.workspaceId && !isDeferred(t.index)).length;
           if (unspawned > 0) guards.refundStart(key, unspawned);
           appendLaunched(
-            result.tasks.filter((t) => !t.pending),
+            result.tasks.filter((t) => !isDeferred(t.index)),
             result.outputBatchDir,
           );
         } catch (err) {

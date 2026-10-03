@@ -90,6 +90,7 @@ describe('fanout_start: tool surface', () => {
   it('exposes exactly the inputs a caller may choose', () => {
     expect(Object.keys(shapes.get('fanout_start') ?? {}).sort()).toEqual([
       'agents',
+      'cancel_pending',
       'depends_on',
       'files',
       'idempotency_key',

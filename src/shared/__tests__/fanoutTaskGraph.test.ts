@@ -8,6 +8,9 @@ describe('fanout task graph', () => {
     expect(normalizeScopeEntry('/etc/passwd')).toHaveProperty('error');
     expect(normalizeScopeEntry('C:\\x')).toHaveProperty('error');
     expect(normalizeScopeEntry('src/../..')).toHaveProperty('error');
+    expect(normalizeScopeEntry('{../x,src}/**')).toHaveProperty('error');
+    expect(normalizeScopeEntry('@(..|src)/**')).toHaveProperty('error');
+    expect(normalizeScopeEntry('src/a..b.ts')).toEqual({ scope: 'src/a..b.ts' });
   });
 
   it('compares scopes by their fixed directory prefix', () => {
@@ -18,6 +21,22 @@ describe('fanout task graph', () => {
     expect(scopesOverlap('.', 'docs')).toBe(true);
     // Conservative on purpose: same fixed prefix, different extensions.
     expect(scopesOverlap('src/*.ts', 'src/*.md')).toBe(true);
+    // Extglob ends the fixed prefix instead of being read as a directory name.
+    expect(scopesOverlap('@(src|lib)/**', 'src/a.ts')).toBe(true);
+    expect(scopesOverlap('src/+(a|b)/x', 'src/a/x')).toBe(true);
+    // Compared case-insensitively.
+    expect(scopesOverlap('Src/A', 'src/a/x.ts')).toBe(true);
+  });
+
+  it('lets tasks ordered by dependency share a scope', () => {
+    expect(validateFanoutTaskGraph([['src'], ['lib'], ['src/x.ts']], [[], [0], [1]], 3)).toHaveProperty('files');
+    expect(validateFanoutTaskGraph([['src'], ['lib'], ['src/x.ts']], [[], [], [1]], 3)).toHaveProperty('error');
+  });
+
+  it('requires one non-empty scope list per task once files is given', () => {
+    expect(validateFanoutTaskGraph([['src']], undefined, 2)).toHaveProperty('error');
+    expect(validateFanoutTaskGraph([['src'], []], undefined, 2)).toHaveProperty('error');
+    expect(validateFanoutTaskGraph([['src'], null], undefined, 2)).toHaveProperty('error');
   });
 
   it('refuses overlapping scopes across tasks but not within one', () => {

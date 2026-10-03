@@ -145,7 +145,9 @@ function setup(opts?: {
   });
 
   const statusOf = vi.fn((key: string): FanOutStatus => state.get(key) ?? { state: 'unknown' });
-  const service = { start, statusOf } as unknown as FanOutService;
+  // Only the fan-out 'k-wait' has tasks waiting on dependencies.
+  const cancelDependents = vi.fn((key: string): number | null => (key.endsWith('::k-wait') ? 2 : null));
+  const service = { start, statusOf, cancelDependents } as unknown as FanOutService;
 
   const ownerWs = opts?.ownerWorkspaceId === undefined ? CALLER_WS : opts.ownerWorkspaceId;
   let currentCwd = opts?.cwd === undefined ? CALLER_CWD : opts.cwd;
@@ -451,6 +453,39 @@ describe('files and dependsOn travel with the tasks', () => {
     const cycle = await h.call(goodParams({ idempotencyKey: 'k-cycle', titles: ['a', 'b'], dependsOn: [[1], [0]] }));
     expect(errorOf(cycle).code).toBe('INVALID_ARGUMENT');
     expect(h.approvalCount()).toBe(0);
+  });
+
+  it('charges a dependent task on the hour when it starts, refunds it once, and settles the fan-out after the last one', async () => {
+    const guards = new FanOutGuards({
+      dir: fs.mkdtempSync(nodePath.join(os.tmpdir(), 'wmux-fanout-rpc-')),
+      countLiveTasks: () => 0,
+      ledgerTaskOwner: () => null,
+    });
+    const commit = vi.spyOn(guards, 'commitStart');
+    const refund = vi.spyOn(guards, 'refundStart');
+    const settled = vi.spyOn(guards, 'settleStarted');
+    const h = setup({ guards, run: 'hang' });
+    await h.call(goodParams({ titles: ['a', 'b'], dependsOn: [[], [0]] }));
+    await h.flush();
+    expect(commit).toHaveBeenCalledWith(expect.any(String), 1);
+    h.finishRun({ ok: true, tasks: [{ index: 0, title: 'a', ok: true, workspaceId: 'ws-a' }, { index: 1, title: 'b', ok: false, pending: { waitingOn: [0] } }] });
+    await h.flush();
+    // Still waiting: the fan-out keeps its booking.
+    expect(settled).not.toHaveBeenCalled();
+    const req = h.request();
+    expect(req.beforeDeferredLaunch?.(1)).toEqual({ ok: true });
+    req.onDeferredLaunch?.({ index: 1, title: 'b', ok: false, error: 'spawn failed' }, { remaining: 0 });
+    req.onDeferredLaunch?.({ index: 1, title: 'b', ok: false, error: 'spawn failed' }, { remaining: 0 });
+    expect(refund).toHaveBeenCalledTimes(1);
+    expect(settled).toHaveBeenCalled();
+  });
+
+  it('lets the owner drop the tasks still waiting, by key', async () => {
+    const h = setup();
+    const res = await h.call(goodParams({ idempotencyKey: 'k-wait', cancelPending: true }));
+    expect(res).toMatchObject({ ok: true, status: 'pending_cancelled', dropped: 2 });
+    const none = await h.call(goodParams({ idempotencyKey: 'k-other', cancelPending: true }));
+    expect(errorOf(none).code).toBe('NOT_FOUND');
   });
 
   it('refuses an empty title when indices would shift', async () => {

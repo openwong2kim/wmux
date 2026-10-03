@@ -55,6 +55,26 @@ describe('lineage stamp', () => {
 });
 
 describe('global caps', () => {
+  it('stamps a dependent task on the hour when it starts, not when the fan-out is accepted', () => {
+    const dir = tmpDir();
+    let now = 10 * FANOUT_CAP_WINDOW_MS;
+    const g = guards(dir, { now: () => now });
+    expect(g.reserve('dep', 3)).toEqual({ ok: true });
+    g.commitStart('dep', 2); // one first-wave task, two waiting
+    // The live slots are all held while the two wait.
+    expect(g.reserve('other', FANOUT_LIVE_TASK_CAP - 2).ok).toBe(false);
+    // Fill the hour with other starts; the waiting tasks were not charged yet.
+    for (let k = 0; k < FANOUT_HOURLY_TASK_CAP; k++) {
+      if (!g.reserve(`f${k}`, 1).ok) break;
+      g.commitStart(`f${k}`);
+      g.settleStarted(`f${k}`);
+    }
+    expect(g.stampDeferredStart('dep').ok).toBe(false);
+    // An hour later the window has room again, and the start is charged then.
+    now += FANOUT_CAP_WINDOW_MS + 1;
+    expect(g.stampDeferredStart('dep')).toEqual({ ok: true });
+  });
+
   it(`refuses past ${FANOUT_LIVE_TASK_CAP} live tasks, counting ledger rows and in-flight reservations`, () => {
     const g = guards(tmpDir(), { live: () => 5 });
     expect(g.reserve('a', 3)).toEqual({ ok: true });

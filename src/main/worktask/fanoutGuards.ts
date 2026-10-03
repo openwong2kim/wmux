@@ -416,11 +416,42 @@ export class FanOutGuards {
    * reservation that was denied never touched the file. Stamps are only ever
    * appended, never replaced: a key reused after a restart adds to the hour.
    */
-  commitStart(key: string): void {
+  commitStart(key: string, deferred = 0): void {
     const count = this.pending.get(key);
     if (count === undefined) return;
     this.pending.delete(key);
     this.spawning.set(key, (this.spawning.get(key) ?? 0) + count);
+    // Tasks that wait on dependencies are booked live now but stamped on the
+    // hour only when they actually start (stampDeferredStart): stamped now,
+    // one that waited past the window would start uncounted.
+    const stamped = count - Math.max(0, Math.min(deferred, count));
+    if (stamped === 0) return;
+    this.appendStamp(key, stamped);
+  }
+
+  /**
+   * A task that waited on its dependencies is about to start: check the hourly
+   * cap for it NOW and stamp it. Its live slot was booked by commitStart and
+   * is still held, so only the hour is checked.
+   */
+  stampDeferredStart(key: string): CapReservation {
+    const now = this.now();
+    const recorded = this.loadHourly()
+      .filter((s) => s.at > now - FANOUT_CAP_WINDOW_MS)
+      .reduce((sum, s) => sum + s.count, 0);
+    let pendingCount = 0;
+    for (const n of this.pending.values()) pendingCount += n;
+    if (recorded + pendingCount + 1 > FANOUT_HOURLY_TASK_CAP) {
+      return {
+        ok: false,
+        message: `at most ${FANOUT_HOURLY_TASK_CAP} fan-out tasks may start per rolling hour across wmux, and the hour is full`,
+      };
+    }
+    this.appendStamp(key, 1);
+    return { ok: true };
+  }
+
+  private appendStamp(key: string, count: number): void {
     const now = this.now();
     const hourly = this.loadHourly().filter((s) => s.at > now - FANOUT_CAP_WINDOW_MS);
     const next = [...hourly, { id: key, at: now, count }];
