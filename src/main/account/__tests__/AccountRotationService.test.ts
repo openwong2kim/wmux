@@ -70,7 +70,7 @@ describe('AccountRotationService', () => {
     usageEntries = [usage('a', 99), usage('b', 50), usage('c', 20)];
     const d = await s.prepareLaunch('claude', 'ws');
     expect(d).toEqual({ kind: 'switch', accountId: 'c', env: { CLAUDE_CONFIG_DIR: '/acc/c' } });
-    expect(s.launchedAccount('ws', 'claude')).toBe('c');
+    expect(s.launchedAccounts('ws', 'claude')).toEqual(['c']);
     expect(refreshNow).not.toHaveBeenCalled(); // readings were fresh
   });
 
@@ -156,21 +156,23 @@ describe('AccountRotationService', () => {
     expect(await s.prepareLaunch('codex', 'ws')).toEqual({ kind: 'keep' });
   });
 
-  it('forgets the rotated account on a later keep and when switched off', async () => {
-    const s = make([acct('a', 'claude'), acct('b', 'claude')]);
+  it('remembers every rotated account in a workspace until switched off or unregistered', async () => {
+    let accounts = [acct('a', 'claude'), acct('b', 'claude'), acct('c', 'claude')];
+    const s = make([], { accounts: () => accounts });
     await s.setEnabled('claude', true);
     bindings['ws:claude'] = 'a';
-    usageEntries = [usage('a', 100), usage('b', 10)];
-    await s.prepareLaunch('claude', 'ws');
-    expect(s.launchedAccount('ws', 'claude')).toBe('b');
-    usageEntries = [usage('a', 10), usage('b', 10)];
-    await s.prepareLaunch('claude', 'ws');
-    expect(s.launchedAccount('ws', 'claude')).toBeUndefined();
+    usageEntries = [usage('a', 100), usage('b', 10), usage('c', 50)];
+    await s.prepareLaunch('claude', 'ws'); // → b
+    usageEntries = [usage('a', 100), usage('b', 100), usage('c', 50)];
+    await s.prepareLaunch('claude', 'ws'); // → c, b's pane still runs
+    usageEntries = [usage('a', 10), usage('b', 100), usage('c', 50)];
+    await s.prepareLaunch('claude', 'ws'); // keep on a
+    expect(s.launchedAccounts('ws', 'claude').sort()).toEqual(['b', 'c']);
 
-    usageEntries = [usage('a', 100), usage('b', 10)];
-    await s.prepareLaunch('claude', 'ws');
+    accounts = accounts.filter((a) => a.id !== 'b');
+    expect(s.launchedAccounts('ws', 'claude')).toEqual(['c']);
     await s.setEnabled('claude', false);
-    expect(s.launchedAccount('ws', 'claude')).toBeUndefined();
+    expect(s.launchedAccounts('ws', 'claude')).toEqual([]);
   });
 
   it('leaves an unbound workspace on its default login', async () => {

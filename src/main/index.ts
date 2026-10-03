@@ -1156,9 +1156,10 @@ const onClaudeTurnEnd = (workspaceId: string): void => {
   // the hook's ptyId instead of the workspace binding.
   const accountId = getAccountStore().getBinding(workspaceId, 'claude');
   if (accountId) void accountUsageService.maybeProbe(accountId);
-  // A pane that quota rotation moved to another account: refresh that one too.
-  const rotated = getAccountRotationService().launchedAccount(workspaceId, 'claude');
-  if (rotated && rotated !== accountId) void accountUsageService.maybeProbe(rotated);
+  // Panes that quota rotation moved to other accounts: refresh those too.
+  for (const rotated of getAccountRotationService().launchedAccounts(workspaceId, 'claude')) {
+    if (rotated !== accountId) void accountUsageService.maybeProbe(rotated);
+  }
 };
 getAccountRotationService().setClaudeUsage(accountUsageService);
 const disposeHooksRpc = registerHooksRpc(rpcRouter, () => mainWindow, hookSignalRouter, () => daemonClient, onClaudeTurnEnd, getWorkspaceMirror, localCompletionAlarm);

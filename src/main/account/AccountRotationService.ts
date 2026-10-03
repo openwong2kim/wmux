@@ -97,9 +97,10 @@ export class AccountRotationService {
   private readonly filePath: string;
   private readonly now: () => number;
   private settings: RotationSettings | null = null;
-  /** Account a rotated launch put each workspace's pane on, per vendor —
-   *  so a turn end can refresh the account that actually ran. */
-  private readonly launched = new Map<string, Partial<Record<Vendor, string>>>();
+  /** Accounts rotated launches put each workspace's panes on, keyed
+   *  `workspaceId:vendor` — so a turn end can refresh every account that may
+   *  be running there. A later keep/hold for another pane does not remove one. */
+  private readonly launched = new Map<string, Set<string>>();
   private readonly listeners = new Set<() => void>();
 
   constructor(private readonly deps: AccountRotationDeps = {}) {
@@ -129,7 +130,7 @@ export class AccountRotationService {
     const next = { ...this.getSettings(), [vendor]: on };
     await atomicWriteJSON(this.filePath, next);
     this.settings = next;
-    if (!on) for (const ws of this.launched.keys()) this.forgetLaunch(ws, vendor);
+    if (!on) for (const key of [...this.launched.keys()]) if (key.endsWith(`:${vendor}`)) this.launched.delete(key);
     for (const l of this.listeners) { try { l(); } catch { /* listener faults stay local */ } }
   }
 
@@ -175,23 +176,9 @@ export class AccountRotationService {
   /**
    * Decide the account for a typed `vendor` launch in `workspaceId`. Rotation
    * off, no registered account, or a workspace not bound to one → keep (the
-   * launch runs exactly as before). Anything but a switch forgets the
-   * workspace's rotated account, so turn ends stop probing it.
+   * launch runs exactly as before).
    */
   async prepareLaunch(vendor: Vendor, workspaceId: string | undefined): Promise<RotationDecision> {
-    const decision = await this.decideLaunch(vendor, workspaceId);
-    if (decision.kind !== 'switch' && workspaceId) this.forgetLaunch(workspaceId, vendor);
-    return decision;
-  }
-
-  private forgetLaunch(workspaceId: string, vendor: Vendor): void {
-    const entry = this.launched.get(workspaceId);
-    if (!entry) return;
-    delete entry[vendor];
-    if (Object.keys(entry).length === 0) this.launched.delete(workspaceId);
-  }
-
-  private async decideLaunch(vendor: Vendor, workspaceId: string | undefined): Promise<RotationDecision> {
     if (!this.getSettings()[vendor]) return { kind: 'keep' };
     const pool = this.accounts(vendor);
     if (pool.length === 0) return { kind: 'keep' };
@@ -227,14 +214,25 @@ export class AccountRotationService {
     if (choice.kind === 'keep') return { kind: 'keep' };
     const account = pool.find((a) => a.id === choice.id);
     if (!account) return { kind: 'keep' };
-    if (workspaceId) this.launched.set(workspaceId, { ...this.launched.get(workspaceId), [vendor]: account.id });
+    if (workspaceId) {
+      const key = `${workspaceId}:${vendor}`;
+      this.launched.set(key, (this.launched.get(key) ?? new Set<string>()).add(account.id));
+    }
     console.log(`[account-rotation] ${vendor} launch in workspace ${workspaceId} runs on account ${account.id} (bound account is out of quota)`);
     return { kind: 'switch', accountId: account.id, env: { [VENDOR_ENV_KEYS[vendor]]: account.configDir } };
   }
 
-  /** The account a rotated launch last put this workspace's `vendor` pane on. */
-  launchedAccount(workspaceId: string, vendor: Vendor): string | undefined {
-    return this.launched.get(workspaceId)?.[vendor];
+  /** Every still-registered account a rotated launch put a `vendor` pane of
+   *  this workspace on. Unregistered accounts are dropped here. */
+  launchedAccounts(workspaceId: string, vendor: Vendor): string[] {
+    const key = `${workspaceId}:${vendor}`;
+    const ids = this.launched.get(key);
+    if (!ids) return [];
+    const all = this.deps.accounts ? this.deps.accounts() : getAccountStore().listAccounts();
+    const registered = new Set(all.filter((a) => a.vendor === vendor).map((a) => a.id));
+    for (const id of ids) if (!registered.has(id)) ids.delete(id);
+    if (ids.size === 0) this.launched.delete(key);
+    return [...ids];
   }
 }
 
