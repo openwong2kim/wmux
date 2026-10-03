@@ -60,6 +60,12 @@ interface WorkspaceItemProps {
    */
   taskRow?: boolean;
   /**
+   * The row sits in the sidebar's Snoozed or Settled group, out of stored
+   * order, so a Ctrl+N hint would be out of sequence: none is drawn. The
+   * shortcut itself still follows the stored order.
+   */
+  shortcutHintHidden?: boolean;
+  /**
    * 2026-09-27 — this workspace's fan-out tasks (owner rows only). Each one
    * nests under the roster row of the pane that requested it; the rest are
    * Sidebar's "From closed pane" group. Undefined for a row with no tasks,
@@ -344,7 +350,7 @@ function shortenPath(path: string, maxLen = 25): string {
   return `.../${parts.slice(-2).join('/')}`;
 }
 
-function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, onCtrlSelect, onRename, onClose, onArchive, onCopyInfo, onDuplicate, onReorder, taskRow = false, nestedTaskIds, renderTask, onCloseTask }: WorkspaceItemProps) {
+function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, onCtrlSelect, onRename, onClose, onArchive, onCopyInfo, onDuplicate, onReorder, taskRow = false, shortcutHintHidden = false, nestedTaskIds, renderTask, onCloseTask }: WorkspaceItemProps) {
   const t = useT();
   // A1: 자기 ws만 구독 — 배경 ws churn/다른 항목 변경에는 리렌더되지 않는다.
   const workspace = useStore(selectWorkspaceById(workspaceId));
@@ -1124,7 +1130,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
             sequence with the rows around it, so none is drawn — except on a
             pinned row: the pinned group leads the stored order and is shown
             as stored, so its numbers match the screen. */}
-        {!taskRow && (!sortPaused || pinned) && (
+        {!taskRow && !shortcutHintHidden && (!sortPaused || pinned) && (
           <span className={`text-[11px] tabular-nums text-[color-mix(in_srgb,var(--text-main)_35%,transparent)] flex-shrink-0 mt-0.5 ${restHidden}`}>
             {index < 9 ? `^${index + 1}` : ''}
           </span>

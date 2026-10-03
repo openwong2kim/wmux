@@ -4,7 +4,9 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { selectWorkspaceIdName } from '../../stores/selectors/workspaceProjections';
 import { useGlanceBoardOrder } from './useGlanceBoardOrder';
-import { buildSidebarTree, ORPHAN_GROUP_KEY } from './sidebarTree';
+import { buildSidebarTree, ORPHAN_GROUP_KEY, type SidebarTreeNode } from './sidebarTree';
+import { partitionWorkspaceSettle, workspaceSettleGroupOf } from './workspaceSettleGroups';
+import WorkspaceSettleGroup from './WorkspaceSettleGroup';
 import SidebarTaskGroup, { ClosedPaneTaskGroup } from './SidebarTaskGroup';
 import SidebarResizeHandle from './SidebarResizeHandle';
 import { resolveTaskLink } from '../../utils/fanoutProvenance';
@@ -130,6 +132,19 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
     if (!link.ownerId || link.ownerId === id || !liveIds.has(link.ownerId)) return ORPHAN_GROUP_KEY;
     return link.ownerId;
   }, [workspaces, missionByPaneGroup, fanoutLineage, fanoutSpawnOwner]);
+  // Snoozed and settled rows leave the main list for the two groups at its
+  // foot BEFORE the glance-board order, so they take no slot there. Pinned
+  // wins; a nested task goes where its owner goes (workspaceSettleGroups).
+  const settleStates = useStore((s) => s.workspaceSettle.states);
+  const pinnedIds = useStore((s) => s.sidebarPinnedIds);
+  const settleSplit = useMemo(() => {
+    const now = Date.now();
+    return partitionWorkspaceSettle(filteredWorkspaces, {
+      groupOf: (id) => workspaceSettleGroupOf(settleStates[id], now),
+      pinned: new Set(pinnedIds),
+      nestedOwnerOf,
+    });
+  }, [filteredWorkspaces, settleStates, pinnedIds, nestedOwnerOf]);
   // #1329 — rows that only exist to poll a remote-terminal PANE's host are not
   // attachments and must not render here: the user never asked for a mirror,
   // and a row they cannot detach (nothing persists it) would be a ghost.
@@ -169,7 +184,7 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
     onPointerLeave: onListPointerLeave,
     onFocusCapture: onListFocus,
     onBlurCapture: onListBlur,
-  } = useGlanceBoardOrder(filteredWorkspaces, nestedOwnerOf, remoteRows, remoteScores);
+  } = useGlanceBoardOrder(settleSplit.main, nestedOwnerOf, remoteRows, remoteScores);
   // Remote row ids are no workspace: linkOf finds none, so each one is a plain
   // top-level node in its sorted slot.
   const tree = useMemo(() => {
@@ -183,6 +198,16 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
       new Set(workspaces.map((w) => w.id)),
     );
   }, [orderedWorkspaces, workspaces, missionByPaneGroup, fanoutLineage, fanoutSpawnOwner]);
+  // The groups keep the stored order and nest the same way, so a grouped
+  // owner keeps its task group.
+  const settleTrees = useMemo(() => {
+    const liveIds = new Set(workspaces.map((w) => w.id));
+    const linkOf = (id: string) => resolveTaskLink(missionByPaneGroup[id], fanoutLineage[id], fanoutSpawnOwner[id]);
+    return {
+      snoozed: buildSidebarTree(settleSplit.snoozed, linkOf, liveIds),
+      settled: buildSidebarTree(settleSplit.settled, linkOf, liveIds),
+    };
+  }, [settleSplit, workspaces, missionByPaneGroup, fanoutLineage, fanoutSpawnOwner]);
   const activeRemoteKey = useStore((s) => s.activeRemoteKey);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   // While a mirror is on screen the local selection is only remembered, not
@@ -314,6 +339,61 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
     />
   ), [shownActiveId, multiviewIds, workspaces, setActiveWorkspace, handleCtrlSelect, renameWorkspace, handleClose, handleArchive, handleCopySessionInfo, duplicateWorkspace, reorderWorkspace]);
 
+  // One top-level node: a remote mirror, a task row whose owner is filtered
+  // out, or a workspace row with its nested tasks. `inSettleGroup` rows sit
+  // out of stored order, so they draw no Ctrl+N hint.
+  const renderNode = (node: SidebarTreeNode, taskIds: ReadonlySet<string>, inSettleGroup = false) => {
+    const rw = remoteByRowId.get(node.id);
+    if (rw) {
+      return (
+        <RemoteWorkspaceItem
+          key={node.id}
+          workspace={rw}
+          isActive={rw.key === activeRemoteKey}
+          onSelect={setActiveRemoteKey}
+          onDetach={detachRemoteWorkspace}
+        />
+      );
+    }
+    const ws = workspaceById.get(node.id);
+    if (!ws) return null;
+    // A task whose owner is only hidden by the search filter still
+    // renders as a task row (prefix stripped, provenance, no drag).
+    if (taskIds.has(node.id)) return <Fragment key={node.id}>{renderTask(node.id)}</Fragment>;
+    return (
+      <Fragment key={node.id}>
+        <WorkspaceItem
+          workspaceId={ws.id}
+          isActive={ws.id === shownActiveId}
+          isMultiview={multiviewIds.includes(ws.id)}
+          index={workspaces.indexOf(ws)}
+          onSelect={setActiveWorkspace}
+          onCtrlSelect={handleCtrlSelect}
+          onRename={renameWorkspace}
+          onClose={handleClose}
+          onArchive={handleArchive}
+          onCopyInfo={handleCopySessionInfo}
+          onDuplicate={duplicateWorkspace}
+          onReorder={reorderWorkspace}
+          shortcutHintHidden={inSettleGroup}
+          nestedTaskIds={node.taskIds.length > 0 ? node.taskIds : undefined}
+          renderTask={node.taskIds.length > 0 ? renderTask : undefined}
+          onCloseTask={node.taskIds.length > 0 ? handleClose : undefined}
+        />
+        {node.taskIds.length > 0 && (
+          <ClosedPaneTaskGroup
+            ownerId={node.id}
+            ownerName={ws.name}
+            taskIds={node.taskIds}
+            ownerActive={node.id === activeWorkspaceId}
+            renderTask={renderTask}
+            onCloseWorkspace={handleClose}
+          />
+        )}
+      </Fragment>
+    );
+  };
+
   return (
     <div
       className="wmux-sidebar relative flex flex-col h-full shrink-0 bg-[var(--bg-mantle)]"
@@ -435,56 +515,7 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
             the rest in the owner's trailing "From closed pane" group.
             Detached tasks are ordinary rows; tasks whose owner is gone
             collect in the "From closed workspace" group below. */}
-        {tree.top.map((node) => {
-          const rw = remoteByRowId.get(node.id);
-          if (rw) {
-            return (
-              <RemoteWorkspaceItem
-                key={node.id}
-                workspace={rw}
-                isActive={rw.key === activeRemoteKey}
-                onSelect={setActiveRemoteKey}
-                onDetach={detachRemoteWorkspace}
-              />
-            );
-          }
-          const ws = workspaceById.get(node.id);
-          if (!ws) return null;
-          // A task whose owner is only hidden by the search filter still
-          // renders as a task row (prefix stripped, provenance, no drag).
-          if (tree.taskIds.has(node.id)) return <Fragment key={node.id}>{renderTask(node.id)}</Fragment>;
-          return (
-            <Fragment key={node.id}>
-              <WorkspaceItem
-                workspaceId={ws.id}
-                isActive={ws.id === shownActiveId}
-                isMultiview={multiviewIds.includes(ws.id)}
-                index={workspaces.indexOf(ws)}
-                onSelect={setActiveWorkspace}
-                onCtrlSelect={handleCtrlSelect}
-                onRename={renameWorkspace}
-                onClose={handleClose}
-                onArchive={handleArchive}
-                onCopyInfo={handleCopySessionInfo}
-                onDuplicate={duplicateWorkspace}
-                onReorder={reorderWorkspace}
-                nestedTaskIds={node.taskIds.length > 0 ? node.taskIds : undefined}
-                renderTask={node.taskIds.length > 0 ? renderTask : undefined}
-                onCloseTask={node.taskIds.length > 0 ? handleClose : undefined}
-              />
-              {node.taskIds.length > 0 && (
-                <ClosedPaneTaskGroup
-                  ownerId={node.id}
-                  ownerName={ws.name}
-                  taskIds={node.taskIds}
-                  ownerActive={node.id === activeWorkspaceId}
-                  renderTask={renderTask}
-                  onCloseWorkspace={handleClose}
-                />
-              )}
-            </Fragment>
-          );
-        })}
+        {tree.top.map((node) => renderNode(node, tree.taskIds))}
         {/* Until the first lineage + ledger refresh lands, a task whose owner
             is not yet known to be gone is not called orphaned: it waits as a
             plain task row instead of flashing into the group. */}
@@ -501,6 +532,19 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
             onCloseWorkspace={handleClose}
           />
         )}
+
+        {/* Snoozed, then settled: rows main took out of the main list. Still
+            live — nothing is closed; any activity brings a row back. */}
+        {(['snoozed', 'settled'] as const).map((kind) => (
+          <WorkspaceSettleGroup
+            key={kind}
+            kind={kind}
+            count={settleTrees[kind].top.length}
+            containsActive={!!activeWorkspaceId && settleSplit[kind].some((w) => w.id === activeWorkspaceId)}
+          >
+            {settleTrees[kind].top.map((node) => renderNode(node, settleTrees[kind].taskIds, true))}
+          </WorkspaceSettleGroup>
+        ))}
 
         {/* #1011 — put-away workspaces: configuration snapshots, one click
             back to live. Collapsed by default; empty → invisible. */}
