@@ -56,6 +56,7 @@ import { useResizeGuard } from '../../hooks/useResizeGuard';
 import { useApprovalInboxBridge } from '../../hooks/useApprovalInboxBridge';
 import { useBrowserHelpBridge } from '../../hooks/useBrowserHelpBridge';
 import { useUsageLimitBridge } from '../../hooks/useUsageLimitBridge';
+import { useWorkspaceSettleBridge } from '../../hooks/useWorkspaceSettleBridge';
 import { useRemoteInboxBridge } from '../../hooks/useRemoteInboxBridge';
 import { useRemoteAttachmentsLifecycle } from '../../hooks/useRemoteAttachmentsLifecycle';
 import { useDeckStream } from '../../hooks/useDeckStream';
@@ -844,6 +845,9 @@ export default function AppLayout() {
   // the store (and jump to its pane) whichever surface the operator is on.
   useBrowserHelpBridge();
   useUsageLimitBridge();
+  // Workspace settle / snooze — main owns the state; this mirrors it and
+  // raises the Undo toasts.
+  useWorkspaceSettleBridge();
   // LanLink PR-2 — own the remote-inbox subscription (always-on, mounted once)
   // so remote peer messages accumulate in the store before any surface opens.
   useRemoteInboxBridge();
