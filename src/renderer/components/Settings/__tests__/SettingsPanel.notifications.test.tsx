@@ -303,3 +303,31 @@ describe('NotificationsView — existing toggle regressions', () => {
     expect(setter).toHaveBeenCalledWith(false);
   });
 });
+
+// ─── Per-workspace "Wake the agent on PR events" ───────────────────────────
+
+describe('NotificationsView — wake the agent on PR events', () => {
+  it('renders one checkbox per workspace, on unless the workspace turned it off', () => {
+    const workspaces = [
+      { ...workspaceRow('ws-1', 'Workspace 1'), prWake: true },
+      { ...workspaceRow('ws-2', 'Workspace 2'), prWake: false },
+      workspaceRow('ws-3', 'Workspace 3'),
+    ];
+    const html = renderToStaticMarkup(
+      createElement(NotificationsView, makeProps({ workspaces, onChangeWorkspacePrWake: () => undefined })),
+    );
+    expect(html).toContain('per-workspace-pr-wake-section');
+    expect(html.match(/id="workspace-pr-wake-ws-1"[^>]*checked/)).not.toBeNull();
+    expect(html.match(/id="workspace-pr-wake-ws-2"[^>]*checked/)).toBeNull();
+    expect(html.match(/id="workspace-pr-wake-ws-3"[^>]*checked/)).not.toBeNull();
+  });
+
+  it('is absent without a handler or without workspaces', () => {
+    expect(renderToStaticMarkup(createElement(NotificationsView, makeProps({ workspaces: [workspaceRow('ws-1', 'W')] })))).not.toContain(
+      'per-workspace-pr-wake-section',
+    );
+    expect(
+      renderToStaticMarkup(createElement(NotificationsView, makeProps({ workspaces: [], onChangeWorkspacePrWake: () => undefined }))),
+    ).not.toContain('per-workspace-pr-wake-section');
+  });
+});

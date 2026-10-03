@@ -255,6 +255,12 @@ export const IPC = {
   //   DECK_FANOUT_CALLER_SUBMIT (invoke) renderer → main: write the fixed
   //                   nudge line through the delivery gate and the daemon.
   DECK_FANOUT_CALLER_SUBMIT: 'deck:fanout-caller:submit',
+  //   DECK_PR_OWNER (send) main → renderer: a PR event (CI failed, checks
+  //                   passed, review comment, merge conflict) for a workspace
+  //                   with no brain. The renderer finds the one agent pane whose
+  //                   checkout is that PR and writes through
+  //                   DECK_FANOUT_CALLER_SUBMIT (main/deck/prOwnerNotify.ts).
+  DECK_PR_OWNER: 'deck:pr-owner',
   //   DECK_SCHEDULES_* (invoke) renderer → main: CRUD over the persisted
   //                    orchestrator schedules (P3d). Same renderer-only trust
   //                    boundary as DECK_SEND.

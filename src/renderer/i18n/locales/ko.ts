@@ -1233,6 +1233,8 @@ export const ko = {
   'settings.checkFailed': '확인 실패',
   'settings.unknownError': '알 수 없는 오류',
   'settings.notificationBehavior': '알림 동작',
+  'settings.prWake': 'PR 이벤트 때 에이전트 깨우기',
+  'settings.prWakeDesc': '오케스트레이터가 없는 워크스페이스에서 CI가 실패하거나 통과하고, 다른 사람이 코멘트를 달거나, PR에 충돌이 나면 그 PR 브랜치를 체크아웃한 에이전트 페인에 한 줄을 씁니다. 그 줄에는 PR 번호와 무슨 일이 있었는지만 들어갑니다.',
   'settings.soundDesc': 'Web Audio API — 외부 파일 불필요',
   'settings.toast': '토스트 알림',
   'settings.toastDesc': '에이전트 완료 시 오버레이 토스트 표시',

@@ -9,7 +9,13 @@ describe('mapGhPrView', () => {
     expect(mapGhPrView({ ...base, mergeable: 'UNKNOWN' })).not.toHaveProperty('conflicting');
   });
 
-  it('maps an open PR with passing checks', () => {
+  it('carries the head commit only when it looks like one', () => {
+    const base = { number: 7, state: 'OPEN', isDraft: false, url: 'u', statusCheckRollup: [] };
+    expect(mapGhPrView({ ...base, headRefOid: '8f560cbee476d5849458403f7d9685ac8d197e74' })?.headSha).toBe('8f560cbee476d5849458403f7d9685ac8d197e74');
+    expect(mapGhPrView({ ...base, headRefOid: 'not a sha; rm' })).not.toHaveProperty('headSha');
+  });
+
+    it('maps an open PR with passing checks', () => {
     expect(mapGhPrView({
       number: 42,
       state: 'OPEN',

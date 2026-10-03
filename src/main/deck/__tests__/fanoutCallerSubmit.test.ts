@@ -47,7 +47,21 @@ describe('createFanoutCallerSubmit', () => {
     }
   });
 
-  it('session answers only for a verified agent', async () => {
+  it('a PR owner line is written only while the pane still shows that PR', async () => {
+    const PR_LINE = '[wmux] PR #123: CI failed — gh pr checks 123';
+    const ok = make({ prOf: () => ({ number: 123 }) });
+    expect(await ok.api.submit({ ...REQ, text: PR_LINE })).toEqual({ result: 'sent', pasted: true });
+    expect(ok.deliver).toHaveBeenCalledWith({ id: 'pty-c', agentSlug: 'claude', incarnationId: 'inc-1', prompt: PR_LINE });
+    for (const prOf of [() => ({ number: 7 }), () => null, undefined]) {
+      const { api, deliver } = make(prOf ? { prOf } : {});
+      expect(await api.submit({ ...REQ, text: PR_LINE })).toEqual({ result: 'gone', pasted: false });
+      expect(deliver).not.toHaveBeenCalled();
+    }
+    // A fan-out-only line needs no PR.
+    expect(await make().api.submit(REQ)).toEqual({ result: 'sent', pasted: true });
+  });
+
+    it('session answers only for a verified agent', async () => {
     expect(await make().api.session('pty-c')).toEqual({ incarnationId: 'inc-1' });
     expect(await make({ agentState: async () => null }).api.session('pty-c')).toBeNull();
     expect(

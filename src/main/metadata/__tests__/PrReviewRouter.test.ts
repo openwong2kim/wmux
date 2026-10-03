@@ -86,8 +86,39 @@ describe('PrReviewRouter — watermark batch routing', () => {
     await h.router.note('ptyA', CWD, pr());
     expect(h.emits).toEqual([{
       workspaceId: 'ws-1', ptyId: 'ptyA', prNumber: 42, url: 'https://x/pull/42',
-      count: 2, author: 'glm', snippet: 'newest feedback',
+      count: 2, author: 'glm', snippet: 'newest feedback', fromOthers: 2,
     }]);
+  });
+
+  it('counts only someone else: not the PR author, not bots (also a bot login without its suffix)', async () => {
+    const h = mk({ comments: [comment('2026-07-01T00:00:00Z')] });
+    await h.router.note('ptyA', CWD, pr()); // arm
+    h.setComments([
+      comment('2026-07-01T00:00:00Z'),
+      // the PR author ('a' in the fake list) answering their own PR
+      comment('2026-07-02T00:00:00Z', { author: 'A' }),
+      // a review app: REST reports it as a bot, the conversation read drops the suffix
+      comment('2026-07-03T00:00:00Z', { author: 'review-app[bot]', isBot: true }),
+      comment('2026-07-04T00:00:00Z', { author: 'review-app' }),
+    ]);
+    h.tick(60_000);
+    await h.router.note('ptyA', CWD, pr());
+    expect(h.emits).toHaveLength(1);
+    expect(h.emits[0].count).toBe(3);
+    expect(h.emits[0].fromOthers).toBe(0);
+    h.setComments([comment('2026-07-04T00:00:00Z', { author: 'review-app' }), comment('2026-07-05T00:00:00Z', { author: 'reviewer' })]);
+    h.tick(60_000);
+    await h.router.note('ptyA', CWD, pr());
+    expect(h.emits[1].fromOthers).toBe(1);
+  });
+
+  it('carries the head commit when gh reported it', async () => {
+    const h = mk({ comments: [] });
+    await h.router.note('ptyA', CWD, { ...pr(), headSha: 'abc1234' }); // arm
+    h.setComments([comment('2026-07-02T00:00:00Z')]);
+    h.tick(60_000);
+    await h.router.note('ptyA', CWD, { ...pr(), headSha: 'abc1234' });
+    expect(h.emits[0].headSha).toBe('abc1234');
   });
 
   it('does not re-fire for the same comments (watermark advanced)', async () => {

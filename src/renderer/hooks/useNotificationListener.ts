@@ -22,6 +22,7 @@ import { normalizeWorktreePath } from '../../shared/workTask';
 import { isBrainPtyId } from '../../shared/constants';
 import type { AppRoute } from '../stores/slices/uiSlice';
 import { showWorkspaces as revealWorkspaces } from '../utils/showWorkspaces';
+import { notePanePr } from './fanoutCallerNudge';
 
 /**
  * J3 §4 — cwd가 태스크 worktree 경계 안인지(best-effort, OSC 협조 기반). 정규화
@@ -702,6 +703,10 @@ export function useNotificationListener() {
       // Nothing downstream of here is meaningful for a brain, so drop the
       // payload whole.
       if (isBrainPtyId(ptyId)) return;
+
+      // The PR owner nudge needs every pane's PR, not only the active one's
+      // (the workspace record below keeps the active surface's alone).
+      if (ptyId && 'pr' in rest) notePanePr(ptyId, rest.pr);
 
       // P2 (checklist D): a paneId-only payload is the pane-label relay from
       // MetadataStore. Route it to the per-pane label + role mirrors and return

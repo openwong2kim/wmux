@@ -121,6 +121,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'osnotify', tab: 'notifications', labelKey: 'settings.ring', descKey: 'settings.ringDesc', synonyms: 'system toast windows macos banner' },
   { id: 'catmute', tab: 'notifications', labelKey: 'settings.notificationCategories', descKey: 'settings.notificationCategoriesDesc', synonyms: 'mute category subagent approval' },
   { id: 'wsmute', tab: 'notifications', labelKey: 'settings.perWorkspaceNotifications', descKey: 'settings.perWorkspaceNotificationsDesc', synonyms: 'mute workspace quiet' },
+  { id: 'wsprwake', tab: 'notifications', labelKey: 'settings.prWake', descKey: 'settings.prWakeDesc', synonyms: 'pull request ci checks review comment conflict nudge agent' },
 
   { id: 'quicklaunch', tab: 'shortcuts', labelKey: 'settings.quickLaunch', descKey: 'settings.quickLaunchDesc', synonyms: 'quick launch global shortcut hotkey composer spotlight launcher prompt 빠른 실행 전역 단축키' },
   { id: 'quicklaunchkey', tab: 'shortcuts', labelKey: 'settings.quickLaunchShortcut', descKey: 'settings.quickLaunchShortcutDesc', synonyms: 'quick launch global hotkey cmd shift space 빠른 실행 단축키' },

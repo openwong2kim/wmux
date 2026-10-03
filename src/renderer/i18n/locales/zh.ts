@@ -1703,6 +1703,8 @@ export const zh = {
   'settings.perWorkspaceNotificationsDesc': '为单个工作区静音通知。被静音的工作区永远不会产生提示、光环、声音或任务栏闪烁。',
   'settings.perWorkspaceNotificationsEmpty': '还没有工作区。',
   'settings.muteWorkspace': '静音 {name} 的通知',
+  'settings.prWake': '在 PR 事件时唤醒智能体',
+  'settings.prWakeDesc': '当工作区没有编排器时，若 CI 失败或通过、有他人评论或 PR 出现冲突，就向检出该 PR 分支的智能体面板写入一行。这一行只包含 PR 编号和发生的事情。',
   'settings.prefix.movePaneUp': '面板上移',
   'settings.prefix.movePaneDown': '面板下移',
   'settings.prefix.movePaneLeft': '面板左移',

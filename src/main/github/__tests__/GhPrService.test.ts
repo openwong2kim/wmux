@@ -89,7 +89,15 @@ describe('mapGhListItem / mapGhDetail — 매핑 계약', () => {
     expect(out[3]).toMatchObject({ kind: 'review', reviewState: 'CHANGES_REQUESTED', body: '' });
   });
 
-  it('인라인 리뷰 코멘트(gh api)를 파일:라인 앵커와 함께 병합(Codex P2)', () => {
+  it('flags an inline comment whose REST author is a bot', () => {
+    const out = mapGhDetail({ comments: [], reviews: [] }, 'pr-url', [
+      { user: { login: 'review-app[bot]', type: 'Bot' }, body: 'nit', created_at: '2026-07-12T05:00:00Z' },
+      { user: { login: 'rev', type: 'User' }, body: 'real', created_at: '2026-07-12T06:00:00Z' },
+    ]);
+    expect(out.map((c) => c.isBot)).toEqual([true, undefined]);
+  });
+
+    it('인라인 리뷰 코멘트(gh api)를 파일:라인 앵커와 함께 병합(Codex P2)', () => {
     const out = mapGhDetail(
       { comments: [], reviews: [] },
       'pr-url',

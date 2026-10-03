@@ -1791,6 +1791,8 @@ export const en = {
   'settings.perWorkspaceNotificationsDesc': 'Mute notifications for individual workspaces. Muted workspaces never produce toasts, rings, sounds, or taskbar flashes.',
   'settings.perWorkspaceNotificationsEmpty': 'No workspaces yet.',
   'settings.muteWorkspace': 'Mute notifications for {name}',
+  'settings.prWake': 'Wake the agent on PR events',
+  'settings.prWakeDesc': 'When a workspace has no orchestrator, write one line into the agent pane whose checkout is the PR when CI fails or passes, someone else comments, or the PR conflicts. The line holds only the PR number and what happened.',
   'settings.sc.toggleSidebar': 'Toggle sidebar',
   'settings.sc.splitHorizontal': 'Split pane horizontal',
   'settings.sc.splitVertical': 'Split pane vertical',

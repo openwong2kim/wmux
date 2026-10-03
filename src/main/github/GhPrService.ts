@@ -143,7 +143,7 @@ function capBody(raw: string): { body: string; truncated: boolean } {
 // 인라인(파일 라인) 리뷰 코멘트 — `gh pr view`의 comments/reviews가 누락하는
 // 리뷰 스레드 코멘트(Codex P2). `gh api .../pulls/N/comments` 원형.
 interface GhReviewComment {
-  user?: { login?: string };
+  user?: { login?: string; type?: string };
   body?: string;
   created_at?: string;
   html_url?: string;
@@ -199,6 +199,7 @@ export function mapGhDetail(
       kind: 'review',
       reviewState: '',
       truncated,
+      ...(rc.user?.type === 'Bot' ? { isBot: true as const } : {}),
     });
   }
   out.sort((a, b) => a.createdAt.localeCompare(b.createdAt));

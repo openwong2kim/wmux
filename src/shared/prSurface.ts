@@ -31,6 +31,8 @@ export interface PrComment {
   readonly reviewState: string;
   /** 본문이 캡(PR_COMMENT_BODY_CAP)에서 절단됐는가 — UI가 "브라우저에서 보기" 유도. */
   readonly truncated: boolean;
+  /** Set when the host says the author is a bot (REST `user.type`). */
+  readonly isBot?: true;
 }
 
 export interface PrDetail {

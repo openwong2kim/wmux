@@ -1767,6 +1767,8 @@ export const pl = {
   'settings.perWorkspaceNotificationsDesc': 'Wycisz powiadomienia dla pojedynczych obszarów roboczych. Wyciszone obszary robocze nigdy nie generują toastów, obramowań, dźwięków ani migania paska zadań.',
   'settings.perWorkspaceNotificationsEmpty': 'Brak obszarów roboczych.',
   'settings.muteWorkspace': 'Wycisz powiadomienia dla {name}',
+  'settings.prWake': 'Budź agenta przy zdarzeniach PR',
+  'settings.prWakeDesc': 'Gdy obszar roboczy nie ma orkiestratora, wpisz jedną linię do panelu agenta, którego checkout jest gałęzią PR, gdy CI się nie powiedzie lub przejdzie, ktoś inny skomentuje albo PR ma konflikt. Linia zawiera tylko numer PR i to, co się stało.',
   'settings.sc.toggleSidebar': 'Przełącz pasek boczny',
   'settings.sc.splitHorizontal': 'Podziel poziomo',
   'settings.sc.splitVertical': 'Podziel pionowo',
