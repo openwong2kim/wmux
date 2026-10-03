@@ -10,9 +10,9 @@ stop adding new Korean ones. Chat/reports with the owner may stay Korean.
 ## Design System
 
 Always read DESIGN.md before making any visual or UI decisions.
-All chrome/layout contracts, color grammar (amber = alive + focus, 5±2
-points per screen, no washes), typography, and aesthetic direction are
-defined there. Do not deviate without explicit user approval.
+All chrome/layout contracts (frame and sheet, rail pages, titlebar, the
+one-boundary rule), the theme tokens and color grammar (colour carries state
+only, no washes), typography, and aesthetic direction are defined there. Do not deviate without explicit user approval.
 In QA/design-review mode, flag any code that doesn't match DESIGN.md.
 
 ## Versioning & release (owner decision, 2026-07-05)

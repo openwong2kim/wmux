@@ -16,12 +16,10 @@ import { SIDEBAR_COMPACT_WIDTH } from '../../utils/sidebarLayout';
  * The BrowserWindow is created with `titleBarStyle: 'hidden'` (+ Windows
  * `titleBarOverlay`), so this component IS the window's top edge:
  *   - the whole bar is a drag region (`-webkit-app-region: drag`); any
- *     interactive child must opt out with `no-drag` or clicks die silently
- *     (Warp shipped without a drag region and ate weeks of bug reports —
- *     DESIGN.md references).
+ *     interactive child must opt out with `no-drag` or clicks die silently.
  *   - the left segment is tinted `--bg-mantle` and width-matched to the
  *     workspace sidebar so the top-left corner reads as one continuous
- *     panel with the sidebar below it (orca cue).
+ *     panel with the sidebar below it.
  *   - the right side reserves the native window-controls area via the
  *     `titlebar-area-*` CSS env vars (Windows overlay). On macOS the
  *     traffic lights sit top-left instead, so the LEFT edge reserves 72px.

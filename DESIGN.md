@@ -1,589 +1,480 @@
-# Design System — wmux ("Bridge" redesign, 2026-07-11)
+# Design System — wmux
 
 > SSOT for all visual/UI decisions. Read this before making any visual change.
-> Token *values* live in `src/renderer/themes.ts`; this file defines the roles,
-> rules, and layout contracts those tokens serve.
-> Current layout and attention rules verified against the working tree on 2026-09-22.
-> Dated decisions below retain history; the current contracts take precedence.
+> Token *values* live in `src/renderer/themes.ts` (`UI_THEME_TOKENS`,
+> `THEME_STYLES`) and are generated into `src/renderer/styles/globals.css`
+> (locked by `themeParity.test.ts` and `themeStyles.test.ts`); this file
+> defines the roles, rules and layout contracts those tokens serve.
+> Current contracts verified against the working tree on 2026-10-03.
+> The sections before the Decisions Log are the current contract. Dated
+> sections after it keep history; where they disagree with the contract
+> (a colour name, a width, an overlay), the contract wins.
+> Adapted token values and style recipes carry their source attribution in
+> the code headers and in `THIRD_PARTY_NOTICES`.
 
 ## Product Context
 
-- **What this is:** a Windows-first terminal multiplexer for AI coders — runs many
-  terminal-based coding agents (Claude Code, Codex, …) in parallel, with an
-  orchestrator brain, channels, and reboot-surviving supervision.
+- **What this is:** a terminal multiplexer for AI coders on Windows, macOS and
+  Linux. It runs many terminal-based coding agents (Claude Code, Codex, …) in
+  parallel, with an orchestrator brain, channels, schedules, remote pairing
+  and reboot-surviving supervision.
 - **Who it's for:** developers running fleets of CLI agents who need to steer,
-  supervise, and inspect them without losing raw-terminal ground truth.
-- **Identity decision (owner, 2026-07-11):** **terminal-first**. Real terminals are
-  the protagonist; chrome recedes and frames. We deliberately do NOT become a
-  chat-first (Conductor) or dashboard-first app.
+  supervise and inspect them without losing raw-terminal ground truth.
+- **Identity (owner, 2026-07-11):** **terminal-first.** Real terminals are the
+  protagonist; chrome recedes and frames them. wmux is not a chat-first or a
+  dashboard-first app — Fleet, Schedules and Remote are pages you visit and
+  leave, and the terminals are where you come back to.
 
 ## Design Thesis
 
-**"The calm command bridge for a fleet of terminal agents."**
-A dim, warm-graphite cockpit where a single amber is the only lit instrument.
-Terminals are the bridge's windows (the hero). Premium feel comes from warmth,
-1px hairlines, tight radii, and type discipline — never from gradients,
-glows, or effects. (Lineage: orca's "recede and frame", Warp's warm-minimal
-discipline, Zed's quiet chrome, Codex's instrument footer.)
+**"A quiet frame around live terminals."** The window is a dark (or paper)
+frame holding one rounded sheet. Inside, surfaces are told apart by tone,
+not by lines; each element draws at most one boundary; colour appears only
+where it carries state. A theme changes the face, the hue and a handful of
+shape knobs — never the layout or the grammar.
 
-## Proposal — Neutral glass look (2026-10-03, owner-directed, pending final approval)
+## Themes and token roles
 
-> **Status: proposal.** The owner chose this look and authorised it to replace
-> the conflicting rules below (amber grammar, machined bevel, type scale,
-> 36px module). It takes effect when the owner approves this revision; no
-> renderer code changes with it. Where a current rule is replaced, the
-> rule is named. **Icons are not part of this change:** wmux keeps its own
-> icon set (`src/renderer/components/icons.tsx`).
+Five built-in looks ship (owner decision 2026-10-03). **Tint is the default**
+for a session that never chose a theme; a saved choice is always kept.
 
-The look: a dark, mostly colourless window whose sidebar (and optionally the
-body) is translucent on macOS. Greys are told apart by how much of the text
-colour is mixed in, not by borders. Controls are small filled rounded
-rectangles with no outline. Lists are soft rounded cards with two lines of
-small muted metadata. One cool blue accent marks state (running, selected
-count, focus), amber marks approval, green marks done, and the primary
-button is solid white. Terminals stay the hero.
+| Theme | Polarity | Accent | UI face | Chip radius | Selection | Active tab | Glass |
+|---|---|---|---|---|---|---|---|
+| Tint | dark, faint violet | `#9B8CFF` | Geist | 7px | fill (text 9%) | fill | yes |
+| Zinc | dark, neutral | `#FAFAFA` | Geist | 6px | fill + 1px ring | fill | no |
+| Graphite | dark, cool | `#4C8DFF` | IBM Plex Sans | full round | fill (`#1B2433`) | fill + 2px accent underline | no |
+| Paper | light | `#5B5BD6` | Figtree | 7px | fill (`#E4E4EA`) | fill | no |
+| Amber Line | dark, warm | `#E8A33D` | Geist | 6px | 2px accent left bar | fill + 2px accent underline | no |
 
-Every value in this section is adapted from MonoCode unless it names a wmux
-source. Adapted from MonoCode (hardbeat920/monocode@6bd432ca,
-src/styles/index.css, src/app/shell/Sidebar.tsx, src/app/shell/TitleBar.tsx,
-src/features/sessions/ui/Composer.tsx, src/features/sessions/ui/ModelPicker.tsx,
-src/features/sessions/ui/AccessPicker.tsx, src/features/sessions/ui/AgentTranscript.tsx,
-src/features/settings/ui/SettingsView.tsx, src/features/settings/model/appearance.ts,
-src/shared/ui/Popover.tsx, src/shared/ui/Modal.tsx, src/shared/ui/SecondaryButton.tsx,
-src-tauri/src/macos.rs), MIT License, Copyright (c) 2026 Nick
+The earlier themes (Mono, Mono Light, Amber, Catppuccin, Stars & Stripes,
+Red Dynasty, Nightowl, Void, Monochrome, Hinomaru, Taegeuk) and Custom stay
+selectable and keep their own look; they take the `:root` knob defaults.
+Geist, IBM Plex Sans and Figtree are bundled (`src/renderer/assets/fonts`,
+SIL OFL 1.1, listed in `THIRD_PARTY_NOTICES`) so a look never falls back to
+another face.
 
-### G1. Colour tokens
+**Colour tokens** (one set per theme, `UI_THEME_TOKENS`):
 
-Two lightness numbers on a zero-saturation hue define a theme; everything
-else is the content colour mixed into transparent over the base.
-
-| Token | Dark | Light |
+| Token | CSS | Role |
 |---|---|---|
-| `--theme-hue` / `--theme-saturation` | `240` / `0%` | same |
-| `--background-base` | `hsl(240 0% 9%)` = `#171717` | `hsl(240 0% 97%)` = `#F7F7F7` |
-| `--content` | `hsl(240 0% 92%)` = `#EBEBEB` | `hsl(240 0% 18%)` = `#2E2E2E` |
-| `--stroke` (separators) | content 7% | content 7% |
-| `--selection-subtle / --selection / -strong / -hover / -emphasis` | 8 / 10 / 12 / 15 / 20% | 5 / 6 / 7 / 10 / 14% |
-| `--accent` | `hsl(211 92% 62%)` | same |
-| `--link` | `#7DD3FC` | `hsl(211 92% 40%)` |
-| sidebar fill (opaque) | `color-mix(base 90%, black)` | base |
+| `bgBase` | `--bg-base` | the sheet: panes, pages, dock |
+| `bgMantle` | `--bg-mantle` | the sidebar column inside the sheet |
+| `bgSurface` | `--bg-surface` | the look's fill for raised controls |
+| `textMain` / `textSub` / `textMuted` | `--text-main` / `--text-sub` / `--text-muted` | titles and body · secondary lines · metadata, idle, disabled |
+| `accent` | `--accent` (`--accent-cursor`, `--accent-blue`) | selection marks, focus, links, the running column, "needs you" in the sidebar |
+| `success` / `danger` / `warning` | `--accent-green` / `--accent-red` / `--accent-yellow` | done, added lines · errors, removed lines · waits on you (Fleet), caution |
 
-Text emphasis is opacity of `--content`, used in these steps only: 100
-(titles, body) · 80 (idle card text) · 70 (hovered secondary) · 50
-(labels, inactive tabs, chevrons) · 45 (metadata) · 40 (footer, placeholder)
-· 35 (timestamps). Hairlines around controls are content 10% (20% while
-focused); structural separators are `--stroke`.
+**Fill ladder** (theme-independent, `globals.css`): fills, hovers, selection
+and hairlines are the theme's text colour mixed into transparent, so every
+theme (and a custom one) gets the same grammar.
 
-Status and diff colours (Tailwind palette values):
+| Token | Dark | Light | Used for |
+|---|---|---|---|
+| `--stroke` | text 5% | text 5% | structural hairlines and seams |
+| `--line` / `--line-strong` | 10% / 20% | same | control hairlines / focused control hairlines |
+| `--hover-fill` | 5% | 5% | hover on rows, rail items, icon buttons |
+| `--selection-subtle` | 8% | 5% | Fleet cards at rest, header bands |
+| `--selection` | 10% | 6% | the selected row, tab, rail item, chip |
+| `--selection-hover` / `-emphasis` | 15% / 20% | 10% / 14% | hovered chip / pressed or active icon button |
 
-| Meaning | Dark | Light |
-|---|---|---|
-| running / busy (spinner, "Working…", count badges, focus ring) | `--accent` | `--accent` |
-| needs approval / needs you | `#FBBF24` (amber-400) | `#B45309` |
-| done / added lines / untracked | `#34D399` (emerald-400) | `#059669` |
-| error / removed lines | `#F87171` (red-400) | `#DC2626` |
-| modified file mark | amber | amber |
-| idle / draft | content 45% / 55% | same |
+**Style knobs** (`THEME_STYLES` → CSS variables on the theme's block; a knob
+left unset emits nothing and the `:root` default applies): `--font-ui`,
+`--chip-radius`, `--selection` and `--select-ring` (fill, fill + ring, or
+left bar), `--group-case` / `--group-track` (sidebar group labels),
+`--tab-underline` (0 or 2px), `--theme-glass`, `--stroke`, `--primary-fill`
+/ `--primary-ink` (the solid primary button), `--title-weight`, `--frame-bg`
+and `--sheet-edge`. A new knob is added to `ThemeStyle`, emitted by
+`themeStyleCssVars`, and read by exactly one CSS rule per consumer.
 
-**Replaces** the Color section's amber/steel two-accent grammar: amber is no
-longer "alive" (running is blue) and steel `#6E9BC4` is retired (focus and
-links use `--accent` / `--link`). The 5±2 warm-points budget becomes a
-general rule: colour appears only on state marks, diff counts and the count
-badge; surfaces, controls and selection are always neutral. The "no washes"
-rule stays, with one change: a card that needs approval gets a content-20%
-fill and a dashed content-30% border instead of the red wash (red is
-reserved for errors). Terminal content keeps its own ANSI palette.
+**Terminal content owns its palette.** Each look has its own opaque
+terminal palette (`BUILTIN_XTERM_PALETTE`); diffs are green and errors red
+in the terminal whatever the chrome accent.
 
-### G2. Typography
-
-- **Font:** the platform UI font — `system-ui, -apple-system,
-  BlinkMacSystemFont, "Segoe UI", Roboto, …` — and `ui-monospace,
-  SFMono-Regular, Menlo, Monaco, Consolas, …` for code. **Replaces** the
-  bundled Inter.
-- **Scale:** 10 · 11 · 12 · 13 · 14px, plus 20px for dialog titles.
-  11px = metadata, chip labels, footers' secondary text; 12px = tabs,
-  buttons, segmented labels, mono paths; 13px = card titles (600), menu
-  titles, pane titles; 14px (`text-sm`, line height ~1.7) = chat prose,
-  composer input and the message footer. **Replaces** the four-step scale and
-  its lint rule (12px becomes legal).
-- Uppercase tracked labels (12px/600, +0.06em, content 70%) are used for
-  group headers in lists (workspace name, "CHANGES"), nowhere else.
-- Tabular figures for counts, durations and diff stats.
-
-### G3. Geometry
-
-- **Chrome module 40px** (`h-10`): titlebar, sidebar tab header, pane
-  headers, dock header. **Replaces** the 36px module. macOS traffic lights
-  are vertically centred in 40px.
-- Controls 24–28px tall (`h-6`, `h-6.5`, `h-7`), icon 12/14/16px,
-  gaps 4–10px, horizontal padding 6–10px.
-- **Radii:** 5px segment inside a track · **6px** (`rounded-md`) buttons,
-  chips, cards, tabs, inputs · **8px** (`rounded-lg`) composer, user
-  bubble, diff and file cards, menu items · **12px** (`rounded-xl`)
-  popovers · **16px** (`rounded-2xl`) dialogs · full round for count badges,
-  dots and a one-line chat bubble. **Replaces** "chrome 5/6/7; surfaces
-  8/12/14".
-- **Elevation:** no bevels or inset highlights (**replaces** the gpui-style
-  raised/recessed surfacing). Popovers `shadow-xl`, dialogs `shadow-2xl`;
-  in light mode the composer floats on `0 6px 24px content 9%, 0 2px 6px
-  content 6%`. Dark mode composer has no shadow.
-- Sidebar 260px by default (resizable as today).
-
-### G4. Window glass (vibrancy)
-
-- **Dark mode only.** Light mode is always opaque.
-- **Sidebar glass:** the sidebar and the titlebar strip above it paint
-  `hsl(hue sat lightness / 0.85)` (user-adjustable opacity) over the
-  native backdrop. **Body glass** (optional setting): the main area paints
-  base at the same opacity. Terminal canvases always paint an opaque
-  background.
-- **Popover glass:** a `backdrop-filter: blur(24px)` layer behind the panel
-  with a content-2% tint in dark, opaque base in light.
-- **Switching order:** turning glass on makes the window transparent first,
-  then adds the page class; turning it off removes the page class, waits
-  one feedback transition (120ms), then makes the window opaque — neither
-  side shows through the gap. The page fades with `color-mix(base 0%,
-  transparent)`, never the `transparent` keyword (which interpolates
-  through black).
-- **Electron, macOS:** `vibrancy: 'under-window'` (or `'sidebar'`),
-  `visualEffectState: 'active'`, transparent `backgroundColor`
-  (`#00000000`); toggle with `setVibrancy()` after first paint. The first
-  frame paints the base colour on the page so there is still no white
-  flash (**amends** Window Chrome: `backgroundColor` matches `bgBase` only
-  while glass is off). A private window-server blur radius is not used.
-- **Electron, Windows 11 22H2+:** `backgroundMaterial: 'acrylic'` is the
-  analogue, behind a spike that proves it with `titleBarOverlay` and the
-  WebGL terminal. Linux stays opaque.
-
-### G5. Buttons and chips
-
-- **Primary:** solid white, black label (`hover` white 90%, disabled white
-  30% / black 40%); light mode is solid content on base. Used for send,
-  Stop, Commit and each surface's one primary action. **Replaces** "Primary
-  action = solid warm fill".
-- **Secondary:** `rounded-md`, 1px content 10% border, `px-2.5 py-1`, 12px,
-  content 70%, hover content 10% fill. Destructive: red-400 text, red-400/40
-  border and red-400/10 fill on hover.
-- **Chip (composer pickers: model, effort, speed, permission):** 26px tall,
-  `rounded-md`, `px-1.5`, gap 4px, **no border**, fill `--selection`, hover
-  `--selection-hover`; open = same fill + chevron rotated 180°. Label 11px
-  content; a secondary value 11px content 50%; leading icon 14px; chevron
-  12px content 50%. Max width 160px (permission 208px, small selects
-  112px). An off toggle chip (e.g. Fast) shows content 50%. A full-access
-  permission tints only its icon amber.
-- **Icon button:** 26px square, `rounded-md`; active `--selection-emphasis`,
-  inactive `--selection` + content 50% glyph.
-
-### G6. Composer
-
-Container `rounded-lg`, 1px content 10% border (20% when focused), fill
-content 3% with a light backdrop blur; outer padding 6px, no top. Inside:
-a mono 12px context line (folder · path · branch icon · branch, content
-50%), the 14px input (line height 22px, max 160px), then the toolbar
-(`gap-1 px-2 pb-2`: `+` icon button, chips, send at the far right). The
-toolbar scrolls horizontally; under 220px the permission chip drops to its
-icon. A pending-changes strip (`N Files · Undo All · Keep All · Review`)
-can sit directly on top of the composer, sharing its border, with Review as
-a filled secondary.
-
-### G7. Card rows (sessions, agents, fan-out tasks, Fleet rows)
-
-- Card `rounded-md`, `px-2.5 py-2` (compact `py-1.5`), 1px transparent
-  border, 2px between cards, **no dividers**.
-- Line 1 (11px): agent kind/model in content 50%; status right-aligned,
-  tabular — running = accent spinner + "Working…", approval = amber,
-  done = emerald check, otherwise elapsed time in content 45%.
-- Line 2: title 13px/600, one line, `mt-1`.
-- Line 3 (11px, `mt-1`): branch icon 12px + branch in content 45%;
-  right side diff stats (emerald `+N`, red `−M`, mono) or PR in accent.
-- States: idle content 80% with hover content 5% · active `--selection` ·
-  needs approval content 20% + dashed content 30% border · draft dashed
-  content 25% border. Hover-only actions (archive, ⋮) are 20px
-  `rounded-md` ghosts.
-- Group header above a workspace's cards: 36px, `--selection-subtle`
-  fill, icon + uppercase 12px tracked name + a right-aligned 11px pill
-  (`N agents · +949 −10`).
-- **Coexists with** the glance-board rules (attention order, pin, nesting,
-  changed-since-looked dot): those stay; this changes how a row looks.
-
-### G8. Tabs and segmented controls
-
-- **Sidebar header tabs:** two equal halves across the 40px header, 13px;
-  active = content + `--selection-subtle` fill + a 2px content underline;
-  inactive content 50%.
-- **Titlebar workspace tabs:** two lines — 12px title over an 11px content
-  45% subtitle (the active agent's task) — separated by `--stroke`; active
-  tab `--selection-subtle`.
-- **Segmented control:** track `rounded-md`, 1px content 10% border,
-  `p-0.5`, `gap-0.5`, 12px; segment `rounded-[5px] px-2.5 py-1`, active
-  `--selection` + content, inactive content 50% (hover content). A floating
-  variant adds content 10% fill and blur. **Replaces** the full-round
-  segmented pill.
-- Pane header: 40px, drag grip (content 35%), 13px title, close `×` on the
-  right. Focus is shown by the accent focus ring, not a coloured underline.
-
-### G9. Chat transcript and message footer
-
-- Assistant prose: no bubble, 14px, `px-4 pt-3`.
-- User message: `px-3 py-2`, content 10% fill, 1px content 10% border,
-  `rounded-lg`; in the narrow chat layout it is `w-fit`, max 36rem,
-  full-round when one line and `rounded-xl` when it wraps. Its actions
-  (time, copy) appear below it on hover/focus, fading in over 120ms.
-- **Footer (turn receipt), always visible:** `gap-2.5 px-4 pt-1 pb-3`, 14px,
-  content 40%: check icon · `<model> worked for 4m 3s` · a 3px content-25%
-  dot · clock time in content 35% · copy button (`p-1 rounded-md`, content
-  40%, hover content 8% fill and content 70%).
-- Collapsed tool calls read `+N previous tool calls` with a chevron, content
-  40%. Inline diffs are `rounded-lg` cards with a mono header and red/emerald
-  line fills.
-
-### G10. Popovers, menus, dialogs, motion
-
-- Popover `rounded-xl`, 1px content 10% border, `shadow-xl`, glass layer;
-  opens in 170ms from `scale(.94)` and an 8px lift. Menu item `rounded-lg
-  px-2 py-2`: 13px title + 11px content 45% description.
-- Dialog `rounded-2xl`, 1px content 7% border, `shadow-2xl`, base at 55%
-  over glass; backdrop black 40%; title 20px/500. **Replaces** the 14px
-  dialog panel and 16px title in Dialogs & forms (the one-primary rule and
-  focus handling stay).
-- Motion tokens: feedback 120ms, reorder 160ms, tab close 200ms;
-  ease-out `cubic-bezier(0.22, 1, 0.36, 1)`. Reduced motion disables them.
-
-### What stays
-
-Terminal-first identity and the layout contract (sidebar · terminal grid ·
-tools dock), the glance-board and Fleet rules, the two-rendition attention
-rule, status marks told by shape, tool calls as flat mono lines, the
-terminal's own ANSI palette, and wmux's own icons.
-
-## Window Chrome (the "app, not a webpage in a window" layer)
-
-- **No native menu bar visible.** `autoHideMenuBar: true` (Alt still reveals;
-  accelerators keep working). The File/Edit strip was the #1 "looks like a
-  plain window" offender.
-- **Custom titlebar, 36px** (border-box). `titleBarStyle: 'hidden'` +
-  `titleBarOverlay: { color: <bgMantle>, symbolColor: <textSub>, height: 36 }`
-  so Windows draws native snap-layout-capable window controls in theme colors.
-- Titlebar contents: left segment (app mark + workspace name) is **tinted
-  `--bg-mantle` and width-matched to the sidebar** so the top-left reads as one
-  continuous panel with the sidebar (orca cue). Center stays **empty = drag
-  region** (`-webkit-app-region: drag`; interactive children get `no-drag`).
-  No search box in the titlebar (owner decision).
-- `BrowserWindow.backgroundColor` must match the active theme's `bgBase`
-  (no white flash on launch).
-- The titlebar bottom divider is an inset hairline, not a border (keeps the
-  36px content box exact).
-
-## Layout Contract
+## Window: frame and sheet
 
 ```
-┌ titlebar 36px ──────────────────────────────────────────────┐
-│ [mantle: mark + workspace]      (drag)      [native overlay] │
-├───────────┬──────────────────────────────────┬──────────────┤
-│ sidebar   │  terminal grid  (THE HERO,       │ mission      │
-│ 264px     │  largest area; focused pane =    │ control      │
-│ navigation│  steel tab-strip underline)      │ 248–320px    │
-│ + spaces  │                                  │ ┌ tabs ────┐ │
-│ (mantle)  │                                  │ │text tabs │ │
-│           │                                  │ ├ selected ┤ │
-│           │                                  │ │ tab view │ │
-│           │ [agent bar — overlay, on hover]  │ └ busy bar ┘ │
-└───────────┴──────────────────────────────────┴──────────────┘
-     (deck collapsed → that column is gone; reopen from the titlebar)
+┌ frame ─ titlebar 40px ───────────────────────────────────────────────┐
+│ [traffic lights][workspace]   ( Search & commands ⌘K )  [vitals][▣][⚙]│
+├──┬───────────────────────────────────────────────────────────────────┤
+│  │╭ sheet ────────────────────────────────────────────────────────╮ │
+│r │ sidebar   │ pane tab strip                       │ tools dock    │ │
+│a │ 264px     ├──────────────────────────────────────┤ 248–320px     │ │
+│i │ (mantle)  │  terminal grid (THE HERO)            │               │ │
+│l │           │                                      │               │ │
+│48│           │  [agent bar — overlay, on approach]  │               │ │
+│  │╰───────────────────────────────────────────────────────────────╯ │
+└──┴── 8px frame margin ───────────────────────────────────────────────┘
 ```
 
-- **Left sidebar = glance board** (owner decision 2026-09-25, replacing
-  "navigation only"). Global shortcuts at the top, in order: Search, Remote,
-  Fleet; workspace rows under their own heading and add action; settings at
-  the foot. Collapsing keeps the shortcuts as named icon buttons. The list
-  answers "what wants me, and where" at a glance: rows sort by attention by
-  default, each row shows its status mark, agents and a "changed since you
-  last looked" dot, and a click jumps. **Fleet stays the triage surface** —
-  search, filters, bulk verbs, the output preview and the per-row detail live
-  there, not in the sidebar. Both read ONE classification
-  (`fleetAttentionClass`: needs you · finished · running · unconfirmed · idle),
-  which Fleet folds into its three sections, so a pane cannot read differently
-  in the two places. Conversations remain in their owning panels.
-- **Tools dock = opposite the workspace sidebar**, 248–320px wide, with
-  labeled Agent, Git and Channels tabs. Git includes Review; Agent holds the
-  orchestrator conversation. Remote lives in the sidebar. Fleet opens over
-  the dock as a separate overlay without changing terminal dimensions.
-  The titlebar's labeled panel toggle opens and closes the dock.
-- **Collapsed tools-panel signal:** show one warm `--accent` dot when there
-  are unread channel messages or dirty workspaces; hide it when the dock is
-  open or both counts are zero. This is an attention cue, not an error or a
-  task-status dot. Do not sum those different counts. The icon and dot are
-  decorative under an `aria-hidden="true"` wrapper; the button's accessible
-  name includes the attention message, and `aria-expanded` conveys open state.
-- **Fleet vitals = appearing chips in the titlebar status strip** («N running»
-  amber dot · «N need you» danger, click = jump to the most urgent pane).
-  They render ONLY when nonzero — no dead gauges, no extra chrome row.
-  (Owner decision 2026-07-12: the always-on bottom instrument strip read as
-  dead chrome at "0 running" and was removed the same day it landed.)
-- **Agent verbs = one workspace-spanning bar, overlaid on the grid's bottom
-  edge and revealed on approach** (owner decision 2026-08-18, reverting the
-  2026-08-15 split). It takes no layout row, so no PTY is resized when it
-  appears and the grid keeps its full height. Because it sits exactly where the
-  terminal's prompt line lives, the reveal is guarded — a dwell delay,
-  suppressed under a held pointer button and on keystrokes, and a keep-alive
-  band as tall as the bar. The bar's own background is `pointer-events: none`
-  and only its controls claim a hit area, so the two terminal rows it floats
-  over keep their clicks and text selection. A pin toggle makes it the plain
-  always-on strip; ⌘K carries the fan-out and pin commands so a minimal chrome
-  preset (bar off) still reaches them.
-- The terminal grid always gets the largest area. Any new surface must justify
-  itself against "does this shrink the hero?"
+- **Frame:** the titlebar row, the 48px rail and an 8px margin
+  (`--sheet-inset`) on the left, right and bottom, painted `--frame-bg` — a
+  step darker than the sheet in the dark looks, a soft grey in Paper.
+- **Sheet:** one rounded panel (`--sheet-radius` 12px) flush under the
+  titlebar, holding the sidebar, the panes and the tools dock. It is set
+  off by a 1px `--sheet-edge` hairline and a faint `--sheet-shadow`, nothing
+  else. Inside, the sidebar keeps its mantle tone and meets the body at a
+  single seam.
+- **Native fullscreen** (any platform): the sheet drops its margins and
+  radius. The rail stays.
+- **Terminal geometry is untouched** by the frame: margin changes, a sidebar
+  collapse and fullscreen each refit the terminals once, never per frame.
+- **Window glass (macOS, dark looks, `--theme-glass: 1`):** the window gets
+  an under-window vibrancy material behind a transparent background, and
+  `data-glass` on `<html>` makes the **frame only** paint at 85% over it. The
+  sheet, the panes and every terminal stay opaque, so the hero never changes
+  with the wallpaper. Under a dark theme the native appearance is pinned to
+  dark. Light looks, looks with `glass: false`, and Windows and Linux are
+  opaque. The page fades through `color-mix(… 0%, transparent)`, never the
+  `transparent` keyword (which interpolates through black).
+- `BrowserWindow.backgroundColor` follows the default look so the first
+  frame never flashes white; no native menu bar is visible
+  (`autoHideMenuBar`; accelerators keep working).
 
-## Color
+## Titlebar
 
-- **Approach:** restrained. Warm graphite neutrals + a warm amber + a cool
-  steel-blue counter-accent. Values are the `amber` theme tokens in `themes.ts`
-  (`bgBase #151517 · bgMantle #19191C · bgSurface #202024 · textMain #EFEEEC ·
-  textSub #A5A29C · textMuted #66645F · accent #E8A33D · accentSecondary
-  (--accent-blue) #6E9BC4 · success #8FBF7F · danger #D96C6C`).
-- **Two-accent grammar (owner 2026-07-15) — warm amber vs cool steel, each with
-  ONE job.** Splits what was previously amber-overloaded ("alive AND focus AND
-  links AND warning") so each color says exactly one thing:
-  - **Warm accent (`--accent`, cursor variant `--accent-cursor`) = alive +
-    attention + action:** running dots, spinners, terminal cursor, warning,
-    "needs you" emphasis, unread badges, the footer model name — AND primary
-    action (CTA) buttons. Actions are warm because pressing one makes the
-    system DO something (alive), not GO somewhere (nav). A solid warm fill is
-    reserved for the single primary action of a surface + tiny count badges;
-    everything else warm is dots/rings/text. Budget: **5±2 warm meaning-points
-    per screen** (dots of the same class count as one system).
-    The collapsed tools-panel unread/dirty dot follows this attention rule;
-    it does not use danger red. Decorative descendants may inherit
-    `aria-hidden="true"` from their wrapper; repeat the signal in the
-    control's accessible name rather than exposing the dot itself.
-  - **Steel-blue `--accent-blue` #6E9BC4 = navigation + interactive:** links,
-    jump affordances, active-tab underline, focused-pane edge, focus rings,
-    selection highlight. Reads as "where you are / what you click." An even
-    quieter counter-accent than amber; **never fills areas** (same no-wash rule).
-  - Focus moved from amber → steel (it's a "where you are" cue, not an "alive"
-    one). The single `accentSecondary` token drives all of steel, so the hue is
-    a 1-line change like the primary accent.
-  - **Every theme carries the split** (`--accent` warm / `--accent-blue` cool):
-    amber, nightowl, stars-and-stripes, taegeuk got dedicated cool/warm
-    counterparts; catppuccin, red-dynasty, hinomaru already shipped two-tone;
-    monochrome and void are exempt (colorlessness is their identity).
-  - **Alive ≠ warning:** a theme's running/cursor hue must be perceptibly
-    distinct from its warning hue (stars-and-stripes alive `#E89B4A` vs warning
-    `#F2C85B`; taegeuk alive `#B87500` vs warning `#9B6A07`) so "running" never
-    reads as "caution". Amber theme is the deliberate exception (one lit
-    instrument: warning IS the amber).
-- **No area washes.** Amber never fills areas. The only permitted wash is the
-  danger `needs input` row. Accent may *expand* on hover only (links, AI-action
-  buttons); at rest they are neutral.
-- **Attention (danger) grammar:** one event = max 2 renditions (the evidence
-  row + the global footer chip). Never three.
-- **Terminal content owns its ANSI palette** (`amber-graphite` terminal theme):
-  diffs/success are green, errors red — never theme-accent-colored. This keeps
-  the hero visually separate from the chrome.
-- **Hue is swappable by design:** the entire focus/accent identity hangs on the
-  single `accent` token. Candidate alternates evaluated 2026-07-11: copper
-  `#E08A57`, violet `#9E8CFF`, cyan `#5FB6C9`, green `#8FBF7F`. Amber kept for
-  now; revisit freely — it is a 1-line change plus themes.
-- Dark is primary. Light themes (hinomaru/taegeuk) follow the same grammar.
+40px (`TITLEBAR_HEIGHT`, shared with main's `titleBarOverlay`). The whole
+bar is a drag region; each interactive child opts out with `no-drag`.
 
-## Typography
+- **Left:** on macOS an 80px reserve for the traffic lights (centred in the
+  40px row), then the current workspace label. In a fan-out task workspace a
+  muted `↰ <owner>` link follows the name.
+- **Centre: the search pill.** A small filled pill, "Search & commands" with
+  the palette shortcut, centred in the drag gap. It opens the command palette
+  over whatever page is shown; it is not a page. Only the pill opts out of
+  dragging — the gap around it still drags. A narrow titlebar folds it to its
+  icon and shortcut.
+- **Right:** Fleet vitals as appearing chips (`N running`, `N need you`; only
+  when nonzero, and dropped while Fleet is the page), the account usage when
+  it matters, then two 28px icon buttons 4px apart with the same hover fill:
+  the **tools-panel toggle** (icon only; its name and open state are in the
+  tooltip, accessible name and `aria-expanded`; one dot when the collapsed
+  dock holds unread channels or dirty worktrees) and **Settings** (a gear
+  that swaps the sheet to the Settings page and shows `--selection` while it
+  is up).
+- **Windows / Linux:** the native window controls sit at the right edge in
+  the `titleBarOverlay` strip, drawn in the frame colour; the titlebar icons
+  sit left of them inside the area the titlebar already reserves.
+- The bottom divider, when drawn, is an inset hairline so the 40px content
+  box stays exact.
 
-- **UI/prose:** Inter (400/500/600). **Logs/paths/tool lines/terminal:** mono
-  (Cascadia Code / JetBrains Mono). Rule: *prose in sans, logs in mono* — a
-  mono line signals "machine evidence", a sans line signals "someone talking".
-- Scale: 10px uppercase section labels (600, +0.09em) · 11px meta/tool lines ·
-  13px body · 14px titles. Tabular figures for counters. **These four steps
-  are the whole scale** (2026-09-05): no 8/9/10.5/11.5/12.5px anywhere in
-  chrome — a lint rule forbids them. Inter is bundled (400/500/600) so the
-  stack never falls through to `system-ui`. The one exception is the dialog
-  title, which uses the existing 16px display step (`--text-display-size`).
-  Inside dialogs and popovers, labels are sentence case and muted (11–13px);
-  the 10px uppercase tracked label belongs to chrome only.
-- **Hierarchy from typography, not decoration.** Speaker labels differ by
-  weight/color (You = muted 600, Orchestrator = main 700), not by accent color.
+## Rail and pages
 
-## Spacing & Geometry
+The 48px icon rail on the frame is a **page switcher**. One `appRoute` in
+the UI store owns the current page; every entry point — shortcuts, palette
+commands, sidebar links, toast and notification jumps, schedule deep links —
+navigates through it.
 
-- **36px chrome module.** Every horizontal chrome row — titlebar, sidebar
-  header/footer, pane tab strip, deck tabs — is exactly 36px
-  (`h-9`) so hairlines across the three columns land on the same y. A new
-  chrome row must justify deviating from the module. The workspace-spanning
-  agent toolbar keeps the module but **spends none of it**: it overlays the
-  workspace column instead of taking a row (2026-08-18), so the terminals
-  never lose the height and no PTY is resized when it appears.
-- Base unit 4px. Density: compact-leaning (rows 26–30px). **Every interactive
-  element has a hit area of at least 24×24px** (2026-09-05) — extend the hit
-  area with padding or a pseudo-element, never the glyph.
-- Radii: **chrome 5/6/7; surfaces 8/12/14.** Chrome (titlebar, tab strip,
-  sidebar rows and their controls): 5px buttons/controls · 6px inputs · 7px
-  cards/panels, never larger. Surfaces (dialogs, popovers, the grouped
-  containers and inputs inside them): 8px buttons · 10–12px grouped
-  containers and inputs · 14px dialog and popover panels. Full-round for
-  status dots, count badges, chips and segmented pills.
-- Borders: 1px hairline `rgba(255,255,255,.06)` (dark). Panel seams via inset
-  box-shadow hairlines, not borders.
-- Elevation: exactly 3 levels (flat hairline / subtle surface lift / one
-  floating shadow for popovers). Don't add a fourth.
+- **Pages, in order:** Workspaces (home: the sidebar, panes and tools dock)
+  · Fleet · Schedules · Remote. Settings is a page too, opened from the
+  titlebar gear. The sidebar toggle sits at the rail's foot.
+- **Rail item:** a 19px icon on a 40px square. The current page is a soft
+  `--selection` square (plus the look's `--select-ring`); hover is
+  `--hover-fill`; Fleet's needs-you count is a small number badge on the
+  icon's corner. Every button is named, and the arrow keys move between
+  them.
+- **A page fills the sheet.** The Workspaces page stays mounted at full size
+  and **inert** under any other page, so no terminal is resized or unmounted
+  and PTYs, scrollback, the WebGL atlas and IME state survive the round trip.
+  Showing a page drops focus left in the panes, and the focus self-heal runs
+  only on Workspaces, so keys typed on a page never reach a hidden PTY.
+  Coming back hands input focus to the active pane. A jump to a pane (Fleet,
+  notifications, toasts, schedules) or a workspace switch returns to
+  Workspaces.
+- **Collapsing the sidebar** hides only the in-sheet sidebar; the rail stays
+  (also in fullscreen) and carries the workspace list as its compact form,
+  so the collapsed sidebar and the rail are one column.
+- The command palette and the notification panel float over any page
+  without navigating. The web mirror keeps its own sidebar.
+
+### Fleet
+
+A four-column attention board — see "Fleet page" after the Decisions Log
+for the full contract.
+
+### Schedules
+
+A 300px list beside a main pane. The list: the title, New schedule, a filter,
+then one row per schedule (its name over a muted `next run · schedule` line;
+turned-off schedules dimmed). The main pane shows the selected schedule,
+the composer, or — with nothing selected — "Schedule a task" and six
+development templates (repo briefing, nightly tests, dependency audit, flaky
+tests, changelog draft, issue triage) that open the composer filled in.
+
+- **Composer = one prompt box.** The name follows the prompt's first line
+  until it is typed over. A row of chips under the box sets the schedule
+  (daily, weekdays, weekly or picked days, and a time), the folder (the
+  current workspace's by default) and the agent and account, each in a small
+  popover. Permission, model, effort, the missed-run window and the response
+  limit sit behind More options at their defaults. One primary action
+  (Create, Save or Turn on) and Cancel; a problem shows under the part it is
+  about.
+- **Detail:** the name, the on/off switch, the next run, Run now and Edit,
+  then the run history (status dot, start, duration, result, Open for a live
+  run). Dividers are `--stroke` hairlines.
+
+### Remote
+
+The sheet's full width with 28px sides, in two columns (stacking under
+~1100px with This machine on top). Under the title one muted line sums it up
+— `1 of 2 online · Web server on · This computer only · 1 hosts connected` —
+each part only when it has something to say.
+
+- **Left, Connected:** every paired device, host and LAN peer in one grid
+  that fills by row, online first, offline dimmed. A card: name and type, a
+  live dot only while it holds a connection ("Active now", not a stale
+  last-seen), what it has open, whether it may type, and the actions that
+  already exist (Revoke / Remove asking twice, Open, Pair again). Ids show as
+  a six-character stub; tokens and secrets never render.
+- **Right, This machine:** the web server's state, how it is reachable
+  (this computer only, local network or Tailscale), its address without the
+  token with a copy button, whether input is allowed, then Share & pair and
+  Connect to a computer; below, recent activity from what the roster and
+  host list record.
+- With nothing connected, the left column explains pairing.
+
+### Settings
+
+A page with the same tabs and rows as before (see "Settings" under
+Component rules). Escape closes a dialog opened from Settings before it
+leaves the page.
+
+## Sidebar (Workspaces page)
+
+- Opens on a plain **"Workspaces"** title with a muted count and icon
+  buttons (new workspace, filter). 264px by default, resizable 220–400px from
+  the inner edge.
+- **Workspace filter:** the filter button (or Ctrl/Cmd+F) opens a popover —
+  the text search on top, then checks for **status** (Needs you, Running,
+  Waiting (usage limit), Idle — the sidebar's own classification; Waiting
+  applies where the row would otherwise be idle, like its clock mark),
+  **kind** (has an agent, terminal only), **agent** (Claude Code, Codex,
+  other) and **other** (has a PR, has changes, fan-out tasks only, or hide
+  fan-out tasks). Checks in one group widen; groups narrow each other. While
+  anything narrows the list the button carries a dot, the header reads
+  `4 of 9`, and a row of chips under it removes one check at a time or clears
+  them all. Nothing left says "No workspaces match" with Clear filters; a
+  selected workspace the filter hides is called out above the list and stays
+  selected. Arrow keys move through the popover, Space or Enter toggles,
+  Escape closes it. The checks last for the session.
+- **Rows:** a 500-weight title over a 13px meta line. The selected workspace
+  is one 10px-radius `--selection` pill inset 8px from the edges; its agent
+  rows are indented text with no inner box or guide line. Hover is
+  `--hover-fill` with the row actions floating over a faded right edge.
+- The glance-board rules (attention order, pin to top, fan-out nesting, the
+  changed-since-you-looked dot) are in "Sidebar rows" after the Decisions
+  Log.
+
+## The one-boundary rule
+
+**Each element draws at most one boundary, and adjacent elements share it.**
+
+- One seam per edge: the sidebar and the body share one 1px `--stroke` seam
+  from the titlebar down; the pane border lands on the titlebar, sidebar and
+  dock seams instead of beside them; the pane tab strip and the dock header
+  end on the same line.
+- A fill **or** a hairline, never both: user bubbles are fills without a
+  border; composers are a hairline without a fill; Fleet cards and selected
+  rows are fills; the sheet is an edge plus a faint shadow.
+- No boxes inside boxes: no inner card around a selected workspace's agents,
+  no doubled container in the dock, no dividers between toolbar buttons, no
+  rule under the chat session header.
+- A boundary that only appears on demand stays hidden until then: the
+  sidebar's filter field appears from its button and folds away when empty.
+- Before adding a line, ask which existing line it duplicates.
+
+## Colour grammar
+
+Colour carries **state only**. Surfaces, controls, selection and hover are
+always neutral (the fill ladder).
+
+- **Sidebar and pane marks** — shape first, colour second, one shared helper
+  (`AGENT_STATUS_ICON.mark`): running = filled muted dot · needs input =
+  `--accent` ring · error = red ✕ (SVG) · complete = muted check ·
+  unconfirmed = hollow `--accent` ring · usage-limit hold = muted clock ·
+  idle = no mark. Selection is never painted as a status.
+- **Fleet board** — a card's dot takes its column's colour (see Fleet page).
+- **Diff counts** are green `+N` / red `−M`; red is otherwise reserved for
+  errors and destructive actions.
+- **The accent** marks selection edges and underlines (per the look's
+  knobs), focus rings, links, the running column, and "needs you" in the
+  sidebar. It is never an area fill; the one solid fill per surface is the
+  primary button (`--primary-fill`, white on dark looks, ink on Paper, the
+  accent on Graphite and Amber Line).
+- **No washes.** A row that needs you is a content-20% fill with a dashed
+  content-30% border (`ui.css`), not a red wash; the 1px transparent border
+  is reserved at rest so a row never shifts when it starts asking.
+- **Attention renditions:** one event is drawn at most twice (the evidence
+  row plus one global count). The titlebar vitals step aside on the Fleet
+  page, whose summary line already says them.
+- **No dead gauges:** a count, chip or column at zero is not drawn.
+
+## Typography and density
+
+- **Face:** the look's UI face (`--font-ui`: Geist, IBM Plex Sans or
+  Figtree; the platform UI font for the earlier themes). **Monospace only
+  for code, paths, activity lines and terminals** — a mono line means
+  machine evidence, a sans line means someone talking.
+- **Chrome base: 13px / 400**, emphasis **500** (`--title-weight`); no
+  uppercase or tracked labels in chrome except a look's group labels
+  (Graphite's sidebar group heads, via `--group-case` / `--group-track`).
+- **Scale:** 11px metadata, chips and footers · 12px Fleet detail and
+  secondary controls · 13px rows, tabs, menus, body · 14px chat prose and
+  composer input · 16px page and dialog titles (`--text-display-size`).
+  Tabular figures for counts, durations and diff stats.
+- **Icons** cap at 16px in chrome (19px on the rail); wmux's own icon set
+  (`icons.tsx`), never emoji.
+- **Density:** the chrome module is **40px** (titlebar, pane header, dock
+  header, resume row, section headers). Sidebar rows are a single ~30px
+  line (the selected row keeps its git line); controls are 24–28px tall;
+  every interactive element keeps a hit area of at least 24×24px. Base unit
+  4px.
+- **Radii:** 6px controls (or the look's `--chip-radius` for chips and
+  segmented tracks) · 10px cards, selected pills and panels · 12px sheet and
+  popovers · 16px dialogs · full round for dots and count badges.
+- **Elevation:** three levels only — flat (tone), the sheet's faint shadow,
+  and one floating shadow for popovers (`--shadow-popover`) and dialogs
+  (`--shadow-modal`). No bevels or inset highlights.
+
+## Selection, hover and active tab
+
+- **Hover** is `--hover-fill` (text 5%) on rows, rail items and icon
+  buttons. Accent never appears on hover alone except on links.
+- **Selected** is one soft `--selection` fill, drawn the look's way:
+  `fill` (Tint, Paper, Graphite), `fill-ring` (Zinc: fill plus a 1px inset
+  ring), or `left-bar` (Amber Line: a 2px accent bar on the left edge). One
+  selected thing per list; selection is never a status colour.
+- **Active tab** (pane tabs, dock tabs): a square-bottomed cell joined to
+  the body and marked by **one straight 2px bar on the strip's line** — the
+  accent in the focused pane, a quiet tone elsewhere. Looks with
+  `--tab-underline: 2px` draw that bar as the accent underline on every
+  active tab. No full-width focus line under the strip; focus shows as a
+  stronger strip line. Inactive tabs are 50% text with a hover fill.
+- **Pressed / open** controls (a chip whose popover is open, an active icon
+  button) use `--selection-emphasis`, never colour.
+- **Focus rings** are the accent; keyboard focus is always visible.
 
 ## Component Rules
 
-- **Tool calls render as flat mono log lines,** never boxed chips: status glyph
-  (`●` running amber / `✓` ok green / `✕` error red) + tool name + one-line
-  arg summary + right-aligned jump link (muted at rest, accent on hover).
-- **Every claim is one click from its evidence:** anything referencing a pane
-  gets a jump affordance (litmus test inherited from the deck).
-- **gpui-style control surfacing (2026-07-15), chrome only** (dialogs and
-  popovers follow the quiet rules in Dialogs & forms): two physical treatments only.
-  *Raised* (buttons, active segments, menu-item hover chips, cards): faint
-  surface fill + 1px `color-mix(text-main 10%)` hairline + **top 1px inset
-  highlight** (`inset 0 1px 0 color-mix(text-main 6%)`) — the "machined" look;
-  press = 0.5px sink. *Recessed* (inputs, search): slightly-darker-than-base
-  fill + inset shadow + **cool focus ring** (`--accent-blue` border + 3px 22%
-  ring). All values via color-mix on tokens so every theme inherits them.
-- **Primary action = solid warm fill** (`--accent` bg, `--bg-base` text, top
-  inset highlight): the one filled button per surface. Secondary = raised
-  neutral. Destructive = red tint at rest, solid red only for final confirm.
-- Toolbar buttons are text-first, boxless until hover; hover shows a soft
-  raised chip (not a color change alone). AI-directed actions (fan-out,
-  broadcast) stay neutral at rest.
-- No emoji glyphs in chrome; use monochrome glyphs/icons only.
-- Status mark vocabulary (2026-09-24) — shape first, colour second, one shared
-  helper (`AGENT_STATUS_ICON.mark`): running = filled amber dot · needs input =
-  red ring (with the row wash) · error = red ✕ drawn as SVG · complete = green
-  check · unconfirmed = hollow amber ring · idle = no mark. Selection is never
-  painted as a status: an active-but-idle workspace has no dot.
+- **Tool calls render as flat mono log lines,** never boxed chips: status
+  glyph + tool name + one-line arg summary + right-aligned jump link (muted
+  at rest, accent on hover).
+- **Every claim is one click from its evidence:** anything referencing a
+  pane gets a jump affordance.
+- **Buttons:** primary = solid `--primary-fill` / `--primary-ink`, one per
+  surface, on the action that unblocks the user first. Secondary = 6px,
+  `--line` hairline, 12px label, hover `--hover-fill`. Destructive = red
+  text and hairline, solid red only on a final confirm. Icon buttons are
+  26–28px squares.
+- **Chips** (composer pickers, Schedules composer, orchestrator mode and
+  model): 26px, `--chip-radius`, no border, `--selection` fill,
+  `--selection-hover` on hover, a chevron that turns when open. AI-directed
+  actions (fan-out, broadcast) stay neutral at rest.
+- **Composer:** one box with a `--line` hairline (`--line-strong` focused)
+  and no fill; input on top, a toolbar row under it with chips and a solid
+  26px send. The chat, channel and orchestrator composers share it.
+- **User bubble:** a content-10% fill, no border, full round on one line and
+  12px when it wraps; queued messages use the same bubble. Assistant prose
+  has no bubble. Each recorded turn ends in a muted receipt: check, duration
+  (when the transcript carried both times), clock time, copy.
+- **Popovers** 12px, `--line` hairline, `--shadow-popover`; menu rows 6px.
+- No emoji glyphs in chrome; status marks are icons, not text glyphs.
+- **Agent verbs** stay one workspace-spanning bar overlaid on the grid's
+  bottom edge and revealed on approach (2026-08-18); it takes no layout row,
+  so no PTY is resized when it appears.
 
 ### Dialogs & forms
 
 Build every modal, popover and settings row from `src/renderer/components/ui/`
 (`Dialog`, `Button`, `Field`, `Switch`, `Checkbox`, `Select`,
 `SegmentedControl`, `Badge`, `Input`, `MediaPreview`) rather than hand-rolled
-inline styles. Surfaces are **quiet** (owner, 2026-09-24): neutral fills,
-1px low-contrast hairlines, one soft floating shadow on the panel only, no
-top inset highlight and no raised bevel. The machined raised/recessed look
-stays on chrome.
+inline styles. Surfaces are **quiet**: neutral fills, low-contrast hairlines,
+one soft floating shadow on the panel only, no bevel.
 
 - **Dialog anatomy:** backdrop `--backdrop-modal` at `--z-dialog`; panel
-  `--bg-base`, 1px hairline, 14px radius, one soft shadow; 24px padding and
-  12–16px between groups. Header = 16px/600 title + optional 13px `--text-sub`
-  description + a 32px close ×. Body scrolls; Footer is a right-aligned
-  action row with no divider. Focus is trapped while it is inside the panel,
-  comes back if a re-render drops it, and returns to the opener on close.
-  Escape closes the top-most dialog only, never mid-IME, and never reaches
-  what is underneath.
-- **One primary per surface.** At most one solid warm (`--accent`) button per
-  dialog state, chosen by what unblocks the user first. It sits last in the
-  footer, or — when a listed status needs an action — in that row's notice
-  action. Every other action is secondary (flat: subtle neutral fill + hairline,
-  or a hairline outline), ghost (dismiss / skip) or destructive (red tint;
-  solid red only for a final confirm). A disabled or in-flight action is never
-  the primary, and the emphasis does not jump to the next step while one runs;
-  a state with nothing to do has none. Steel is only for focus rings and links.
+  `--bg-base`, 1px hairline, 16px radius, `--shadow-modal`; 24px padding and
+  12–16px between groups. Header = the 16px title + optional 13px
+  `--text-sub` description + a 32px close ×. Body scrolls; Footer is a
+  right-aligned action row with no divider. Focus is trapped while it is
+  inside the panel, comes back if a re-render drops it, and returns to the
+  opener on close. Escape closes the top-most dialog only, never mid-IME,
+  and never reaches what is underneath.
+- **One primary per surface.** At most one solid primary per dialog state,
+  chosen by what unblocks the user first. It sits last in the footer, or —
+  when a listed status needs an action — in that row's notice action. Every
+  other action is secondary, ghost (dismiss / skip) or destructive. A
+  disabled or in-flight action is never the primary; a state with nothing
+  to do has none.
 - **Grouped rows:** a list is ONE rounded container (12px, hairline) with
   inner hairline dividers, not a boxed card per row. Each row is icon +
   13px label + optional 11px muted secondary line.
 - **Notice row:** icon · title + one-line description · vertical hairline ·
-  action on the right. Use it where a status needs an action (hooks not
-  installed → Install hooks), inside a group or on its own.
-- **Popover:** the same quiet panel (14px, hairline, soft shadow) anchored to
-  its trigger. Sections stack inside it: a muted sentence-case header with an
-  optional trailing action (e.g. `+`), icon + label rows beneath, and a
-  hairline between sections. Icon-only toggles on a surface show "on" as a
-  faint filled chip, not a colour.
+  action on the right, where a status needs an action.
 - **Field row:** 13px/500 label + 11px `--text-sub` description on the left,
-  control on the right (`inline`) or underneath (`stacked`, for text inputs).
-  The row wires the label (`htmlFor`, adopting a control's own id, or
-  `aria-labelledby` for groups) and `aria-describedby` into its control.
-- **Controls:** switches and checkboxes are neutral — a dim track / hairline
-  box when off, a light track with a dark knob / light box with a dark check
-  when on; never warm. Segmented controls are a full-round track with the
-  active pill filled neutral. Selects and inputs in surfaces use a subtle
-  neutral fill, 10px radius and the steel focus ring. Badges are full-round
-  and neutral by default; success / warning / danger tint the text and
-  hairline only. There is no action-coloured badge; `warning` uses the
-  theme's warning hue (amber in the amber theme, by the Color rule above).
-- **Type:** Inter inside surfaces. Mono only for machine evidence —
-  commands, paths, error codes (`ui-code`) — never for a whole dialog. Status
-  marks are icons (`IconCheck`, `IconWarning`), not text glyphs.
-- **Media:** a feature explained in a dialog or the tour may show a short muted
-  loop (`MediaPreview`, WebM ≤ ~6 s, ≤ 500 KB) in a fixed 16:10 frame,
-  labelled for assistive tech; under `prefers-reduced-motion` it shows the
-  still poster and never plays. The clip must show what the copy next to it
-  says; when no clip does, the step is text only.
+  control on the right (`inline`) or underneath (`stacked`). The row wires
+  the label and `aria-describedby` into its control.
+- **Controls:** switches and checkboxes are neutral (dim when off, a light
+  track with a dark knob when on); segmented controls are a `--chip-radius`
+  track with the active segment on `--selection`; inputs use a `--line`
+  hairline and the accent focus ring. Badges are neutral by default; success
+  / warning / danger tint the text and hairline only.
+- **Type:** the look's face inside surfaces. Mono only for machine evidence
+  (`ui-code`), never for a whole dialog.
+- **Media:** a feature explained in a dialog or the tour may show a short
+  muted loop (`MediaPreview`, WebM ≤ ~6 s, ≤ 500 KB) in a fixed 16:10 frame;
+  under `prefers-reduced-motion` it shows the still poster and never plays.
 
 ### Settings
 
-Settings is a full-screen surface under the titlebar (`.ui-surface`), built
-from the Dialogs & forms primitives plus `Settings/SettingsLayout.tsx`
-(`SettingsSection`, `SettingRow`, `SettingNote`).
+Settings is a page (the titlebar gear), built from the Dialogs & forms
+primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
+`SettingRow`, `SettingNote`).
 
 - **Information architecture** (owner-reviewed, 2026-09-24). Tabs, in nav
-  order: General (language, updates, startup, tutorial, first-run setup,
-  reset) · Appearance (theme, interface, sidebar, panes, terminal text, agent
-  toolbar) · Terminal (shell, input, rendering and memory, scrollback) ·
-  Keyboard (shortcuts, prefix mode, custom keybindings) · Notifications. Group
-  **Agents**: Claude Code (setup card, plugin signal health, usage meter, MCP
-  registration) · Accounts · Orchestrator · Roles & fan-out (role bindings,
-  A2A, fan-out approval and worker permissions) · Browser · Computer use
-  (opt-in switch, helper status, stop key, what is asked and what is never
-  allowed). Group
-  **Connections**: Remote & phone (paired devices, quick commands; the live
-  serve toggle stays in the sidebar Remote popover) · LAN. Then About. Each
-  tab answers one question; a setting lives on exactly one tab and the search
-  catalog (`settings/catalog.ts`) names that tab. Retired tab ids resolve
-  through `resolveSettingsTab` instead of breaking a deep link.
-- **Nav:** 13px icon + label rows; group headings muted sentence case (the
-  app group and About are unheaded); the selected row is the sidebar's active
-  row — neutral surface + a steel edge. No mono, no uppercase tracking.
-- **Page:** one centered column (720px max); the tab's name as a 16px/600
-  Inter title; sections 28px apart. A section is a muted sentence-case heading
-  over ONE rounded container of rows with hairline dividers — never a card per
-  row. A lead group whose only row names itself carries no heading.
+  order: General · Appearance (theme, interface, sidebar, panes, terminal
+  text, agent toolbar) · Terminal · Keyboard · Notifications. Group
+  **Agents**: Claude Code · Accounts · Orchestrator · Roles & fan-out ·
+  Browser · Computer use. Group **Connections**: Remote & phone · LAN. Then
+  About. Each tab answers one question; a setting lives on exactly one tab
+  and the search catalog (`settings/catalog.ts`) names that tab. Retired tab
+  ids resolve through `resolveSettingsTab`.
+- **Theme picker:** visual cards whose thumbnails show the look's face,
+  chip shape and selection style; selected by a neutral outline + check.
+- **Nav:** 13px icon + label rows; group headings muted sentence case; the
+  selected row uses the selection grammar above.
+- **Page:** one centred column (720px max); the tab's name as the 16px
+  title; sections 28px apart, each a muted sentence-case heading over ONE
+  rounded container of rows.
 - **Row:** label + one-line muted description on the left, control on the
-  right. Copy that overflows its line collapses to one line with a Learn more
-  disclosure (measured, not guessed). A status that needs an action is a
-  notice row (hooks missing → Install); status words are Badges (neutral or
-  success), never amber mono.
-- **Controls:** Switch, Select, SegmentedControl, Input, Checkbox, Button,
-  Badge from `ui/`. At most one primary per tab, on the action that unblocks
-  the user (a staged update's Install, the first missing integration, starting
-  a LAN pairing); a destructive flow is red tint, solid red only on its final
-  confirm. Theme and cursor cards stay visual, on 10px radii and hairlines,
-  selected by a neutral outline + check.
-- **Escape** closes a dialog opened from Settings before Settings itself.
+  right; overflowing copy collapses behind Learn more. Status words are
+  Badges. At most one primary per tab.
 
 ## Motion
 
-- Minimal-functional. Spinners and blink-cursor are the only perpetual motion.
-  Exception (owner, 2026-09-24): the preview clips in the welcome dialog and
-  the onboarding tour loop while they are on screen — they are content shown
-  on request, not chrome — and they never play under reduced motion.
-- Transitions ≤150ms ease-out, only for state changes (hover, expand, theme
-  swap suppressed during switch).
+- Minimal-functional. Spinners and the blinking cursor are the only
+  perpetual motion; the welcome dialog and onboarding tour clips loop only
+  while on screen and never under reduced motion.
+- Tokens: feedback 120ms (`--motion-feedback`), ease-out
+  `cubic-bezier(0.22, 1, 0.36, 1)`; transitions only for state changes
+  (hover, expand, open). Theme swaps are not animated. Reduced motion
+  disables them.
 
 ## References
 
-- Approved mockup: `designs/redesign-20260711-bridge/wmux-redesign-mockup.html`
-  (interactive: layout/hue/accent/density/theme toggles) + `mock-dark-v3.png`
-  (the approved rendition).
-- Prior tokens: `designs/design-system-20260711/wmux-FINAL-amber.html` →
-  encoded in `src/renderer/themes.ts` (amber theme, #405/#406).
-- Research (2026-07-11): orca (custom 36px titlebar, sidebar-tinted top-left,
-  reserved AI-accent), Warp (warm-minimal recipe, drag-region caution), Zed
-  (positionable window controls, quiet chrome), Codex (status-line footer,
-  approval as first-class), Cursor (agents-as-tabs + status column),
-  Conductor (notification-driven supervision), Paperclip (approvals inbox).
+- Token source: `src/renderer/themes.ts`; generated CSS:
+  `src/renderer/styles/globals.css`; component rules: `src/renderer/styles/ui.css`.
+- Earlier approved artefact: `designs/redesign-20260711-bridge/` (the Amber
+  theme's layout).
 
 ## Decisions Log
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
 | 2026-07-11 | Terminal-first + premium chrome (not chat-first, not dashboard) | Raw-terminal ground truth is the moat; chrome was the gap |
-| 2026-07-11 | Custom titlebar 36px, `autoHideMenuBar`, `titleBarOverlay`, no titlebar search | File/Edit strip killed the app feel; center = drag region (Warp cautionary tale) |
+| 2026-07-11 | Custom titlebar 36px, `autoHideMenuBar`, `titleBarOverlay`, no titlebar search | File/Edit strip killed the app feel; center = drag region (a titlebar without one eats every click) |
 | 2026-07-11 | Unified mission control (Fleet + Orchestrator + Channels in right pillar; sidebar = workspaces only) | Agents/orchestrator/channels felt disconnected split across edges (owner feedback) |
 | 2026-07-11 | Amber kept as focus hue; swappable via single `accent` token | Owner unsure on yellow — de-risked by token architecture + amber diet |
 | 2026-07-11 | Amber diet codified (5±2 points, no washes, hover-expansion, diff=green, 2-rendition attention) | v1 mockup overused amber → read as "yellow app", not "one lit instrument" |
-| 2026-07-11 | Status footer instrument strip (model·approval·ctx·cwd·running·needs) | Codex pattern; always-visible agent state |
+| 2026-07-11 | Status footer instrument strip (model·approval·ctx·cwd·running·needs) | Always-visible agent state |
 | 2026-07-15 | Two-accent split: amber (`--accent-cursor`) = alive/attention, steel-blue (`--accent-blue` #6E9BC4) = navigation/interactive; focus moves amber→steel | `--accent-blue` was overloaded (157 renderer usages, all reading amber since accentSecondary==accent); one hue can't say "alive" AND "clickable". Cockpit warm/cool tension; `accentSecondary` token already existed for it |
 | 2026-07-15 | gpui-style component surfacing: buttons/inputs/menus/cards get surface-lift + top inset-highlight (①), inputs recessed + accent focus ring (②); button radius 4→5px | Flat-to-the-point-of-unfinished read as cheap; adds crafted depth within the existing "elevation 3 levels" rule (not gradients/glows). Amber diet unchanged/improved |
 | 2026-07-15 | Action = warm: primary/CTA buttons moved to `--accent` (solid warm fill, the one filled button per surface); new `--accent`/`--accent-rgb` semantic vars in every theme; alive≠warning hues for stars/taegeuk; 4 mono-accent themes gained the warm/cool split | Design review scored "primary=steel" as the brand-weakening flaw: the most important button read cold and amber demoted to a dot. Actions DO (warm), navigation GOES (cool) |
@@ -604,7 +495,7 @@ from the Dialogs & forms primitives plus `Settings/SettingsLayout.tsx`
 | 2026-09-05 | The sidebar's TASKS list is gone; it becomes a one-line summary (`TASKS · N open · M need you`, click = deck task panel) and renders nothing at zero. Per-task rows, their status dots and the task-channel jump live in the deck task panel only (capped at 5 rows + `N more`, expansion remembered) | Restores "left sidebar = navigation only" (2026-07-11): the list repeated the deck panel and the task workspace cards, so twelve tasks were drawn three times and the sidebar stopped being a map. The 2026-08-24 stash-row amendment stands (a stashed pane is a destination); a task row was a status readout, which is the deck's job |
 | 2026-09-05 | Attention grammar applied to approvals: the dialog and the Fleet inbox are the two renditions; the deck header countdown renders only while the Fleet inbox is not on screen. Titlebar vitals follow the no-dead-gauges rule: the memory chip appears above a threshold, the clock is off by default | One pending approval was drawn three times (dialog, deck header badge, Fleet row); `553MB 09:22` sat in the titlebar as a permanent gauge |
 | 2026-09-05 | Inter is bundled after all (400/500/600, OFL), reversing the earlier "not bundled → system-ui" shortcut in globals.css; inline code in the brain transcript is mono on `--text-sub`, never accent; the Mode chip is text + dot at rest, no tinted fill | The audit measured the UI in `system-ui` (the "gave up on typography" signal) and counted amber spent on code spans and a permanent red-tinted pill — the one-lit-instrument thesis fails when prose and a mode label glow |
-| 2026-09-21 | Refine the outer shell first: Orca-inspired global sidebar shortcuts, 13px navigation and pane labels, quieter neutral selections, and an inset terminal frame. Workspace menu descriptions use 11px text. Existing terminal content stays in place; assistant-ui chat is a later phase | Improves readability and navigation while preserving the terminal-first workspace and existing actions |
+| 2026-09-21 | Refine the outer shell first: global sidebar shortcuts, 13px navigation and pane labels, quieter neutral selections, and an inset terminal frame. Workspace menu descriptions use 11px text. Existing terminal content stays in place; assistant-ui chat is a later phase | Improves readability and navigation while preserving the terminal-first workspace and existing actions |
 | 2026-09-21 | Replace the titlebar's ambiguous double-chevron with a 28px-high tools-panel icon + 13px label, explicit open state, and a mirrored panel-side icon. Settings lives in the full/compact sidebar, including its onboarding target. Preserve Minimal/Standard visibility recipes and saved individual preferences | Makes the top-right control explain its target and removes duplicate settings. Minimal remains a supported contributor-requested workflow, with settings always reachable to restore Standard |
 | 2026-09-23 | Fleet becomes a three-section attention board (Needs you / Running / collapsed Idle) with a one-line detail, elapsed time, a changed-since-last-look dot and row verbs; section and detail come from one pure selector | Twelve identical idle cards with no last activity answered nothing. Fleet is triage — what needs me, what is moving, what has gone quiet and for how long — and the sidebar stays the map |
 | 2026-09-24 | Dialogs and forms get shared primitives (Dialog, Field, Switch, Checkbox, Select, SegmentedControl, Badge; Button sizes and a destructive alias) and a "Dialogs & forms" rule set; the welcome dialog and the onboarding tour are the first adopters, with short preview clips. The settings gear becomes a cog | The outer chrome had the Bridge design but every modal still used the old UI: monospace prose, green borders, several amber buttons per dialog and a steel-filled Next. Shared primitives make the grammar the default, and a clip shows what a feature does where text alone did not |
@@ -621,6 +512,7 @@ from the Dialogs & forms primitives plus `Settings/SettingsLayout.tsx`
 | 2026-09-27 | Owner decision: attached remote workspaces join the one workspace list instead of a bordered section under it. In Attention they sort with the local rows by their most urgent agent pane on the same scale (a stale mirror counts as idle, its status is frozen); in Manual and Recent they follow the local rows in attach order. Never pinned, dragged or given a Ctrl+N hint. The host line leads with a muted server glyph (no new amber), a mirror whose agent needs you carries the local row's needs-you wash, red dot and label, a stale row is dimmed, and the header count and workspace search include remote rows | One glance board: a remote agent that needs you was invisible below every local row. The glyph says "another machine" without a host header, and dimming is already the convention for not live |
 | 2026-10-01 | Owner decision: Settings gains a **Computer use** tab, last in the Agents group after Browser. It holds the opt-in switch (off by default; its description states that screenshots and window text go to the agent's model provider), the native helper's status as a Badge (success when ready, neutral otherwise — never amber), the global stop key as `ui-code`, and two read-only rows saying what is asked per app and what is never allowed. No primary button on the tab | Letting agents drive other apps is its own question — it is not about the agent browser, and folding it into Browser would bury a new security boundary under unrelated rows. The state lives in its own `~/.wmux/computer-use.json` (main-owned, not the daemon's `config.json`) because the MCP server reads it too |
 | 2026-10-03 | **Proposed (owner-directed, pending final approval):** neutral glass look — zero-saturation tokens with a content-mix fill ladder, one blue state accent (running/focus), amber = approval, emerald = done, solid white primary, borderless 26px chips, 6/8/12/16px radii, card rows with two muted metadata lines, 40px chrome module, platform UI font with a 10–14px scale, dark-only window glass, always-visible turn footer. Replaces the amber/steel grammar, the bevel surfacing, Inter, the four-step scale and the 36px module; wmux icons are kept. See "Proposal — Neutral glass look" | Owner call after reviewing a first, more conservative draft: adopt the reference look nearly as-is rather than blending it with the existing grammar. Colour carries state only, so the screen reads calm and every coloured mark means something; translucency and fills instead of outlines give the modern finish |
+| 2026-10-03 | **Shipped: the new look.** Five built-in themes (Tint default, Zinc, Graphite, Paper, Amber Line) with per-theme style knobs; a window frame holding one floating rounded sheet; a 48px icon rail of pages (Workspaces, Fleet, Schedules, Remote); a titlebar with a centred search pill and Settings and tools-panel icons at the right; Fleet as a four-column board, Schedules as a list and one-box composer, Remote as a two-column dashboard; a workspace filter in the sidebar (with a Waiting (usage limit) status); the one-boundary rule; a 13px chrome face with 500 emphasis. Supersedes the proposal row above, the amber/steel grammar, the 5±2 amber budget, the machined bevel, the 36px module and the Fleet overlay | Owner approval of the local build after review in every theme. Pages replace overlays so nothing covers a half-visible terminal; one boundary per element and fills instead of outlines keep dense screens calm; colour carries state only, so every coloured mark still means something |
 
 ### Desktop conversation view
 
@@ -780,42 +672,45 @@ Keep approval countdowns visible. Show recovery once while its notice is present
 and restore the recovery shortcut after dismissal. Briefing headlines may wrap
 instead of being clipped between a label and a pane link.
 
-### Fleet overlay (2026-09-21)
+### Fleet page (2026-10-03, replaces the 2026-09-21 overlay)
 
-Fleet opens over the tools dock, at up to 720px wide, without adding a flex
-column or changing terminal dimensions. Mirror its anchoring when the sidebar
-moves right. Keep the covered tools dock mounted and inert so drafts survive
-and keyboard focus cannot enter covered controls. Fleet stays non-modal: visible
-workspace areas remain usable. Selecting an agent closes Fleet by default. The
-header’s session-only “Keep open after jump” option retains Fleet and its filters
-for agent and review-task jumps while handing input focus to the destination.
-Closing later never restores the pre-jump pane. Close, Ctrl+Shift+A and Escape
-inside Fleet still dismiss it; Open diff and browser-help Jump always close it.
-Fleet is an attention board (andon), not a map: one
-single-column list in three sections — Needs you, Running, Idle — decided by one
-pure selector (`groupFleetPanes`) that other consumers reuse. Needs you holds
-input requests, errors, stopped supervision, unconfirmed (no report for 30m+)
-panes and finished turns until the pane is focused; waiting without a question
-is Idle. Section headers are quiet 11px uppercase text and are not drawn when
-their section is empty (no dead gauges). Idle collapses to one `Idle N · oldest
-2d` row that is itself a roving option; when nothing needs you, one plain line
-says so above it. Each row: status dot + label, task/project name (user labels
-and mission titles before terminal titles), a one-line detail (the question,
-the agent's last message, or its tool activity) and elapsed time since the
-newest activity/output/turn stamp. Status colours are the sidebar's dot
-vocabulary (red = needs you/error, amber = running, hollow amber ring =
-unconfirmed); no yellow. A needs-you row whose status changed since Fleet was
-last closed gets a 6px `--text-main` dot, never amber. Row verbs (Jump,
-Message, Stash, Label, Close) live behind a hover/focus ⋮ using the pane
-actions menu, with m / s / l / Backspace on a focused row; Close confirms with
-Cancel as the default; remote rows offer Jump only. Icons come from
-`icons.tsx`, never emoji; the status cross, the supervision ⟳ chip and the ⋮
-trigger keep the glyphs the sidebar and pane header already use. Search and status filters narrow the
-sections without stealing input focus; selection stays attached to pane
-identity across reordering. Raw terminal output belongs in an opt-in preview of
-the selected pane, never in every row. Use 13px row titles, 12px detail and
-11px metadata; at narrow widths the detail stacks under the title and the
-overlay width stays 720px.
+Fleet is a rail page, not an overlay: it fills the sheet while the Workspaces
+page stays mounted, full size and inert underneath. It is an attention board
+(andon), not a map: four columns read from the sidebar's own classification
+(`fleetAttentionClass`), so a pane cannot read differently in the two places.
+
+- **Columns:** Needs you (input requests, errors, stopped supervision,
+  unconfirmed panes) · Running · Ready to review (finished panes and finished
+  fan-out tasks, a task shown once) · Idle, which takes 0.6 of a column and
+  folds to its count with up to five names and their idle time (`+N more`
+  expands it). A column with nothing in it is not drawn; the drawn columns
+  share the width. Plain shells sit only in Idle and never keep the empty
+  state from showing.
+- **Card:** a 10px-radius fill (`--selection-subtle`, `--selection` when
+  hovered or selected) and no border. Line 1: status dot, name, agent,
+  elapsed time (a running turn from its start, anything else from its last
+  sign of life). Line 2: workspace, branch, ahead/behind, and the +/− diff on
+  Ready to review cards. Then one detail line (the question, the last
+  message, or the last activity in mono), chips (approval waiting, ledger
+  status, PR and CI, memory, supervision) and who asked for it. From twenty
+  agents a card drops to two lines and a mission's cards fold under the
+  first.
+- **Board dot colour = its column:** `--accent-yellow` waits on you (a red
+  cross for an error), `--accent` runs, `--accent-green` is ready to review,
+  idle is muted. A pane waiting out a usage limit draws a muted clock and
+  says Waiting with its reset time, on its card and in the folded Idle peek,
+  never in the error grammar.
+- **Summary line** under the title counts each column and shows approvals,
+  LAN messages, account usage, the next schedule and phones watching, each
+  only when it is not zero. While Fleet is the page, the titlebar drops its
+  own running / need you counts and the account usage.
+- **Empty and small fleets:** no agents is one call to action plus the three
+  newest finished tasks; up to three agents is one list with the preview
+  open. The preview at the foot shows the selected agent's last 20 lines.
+- **Keys:** arrows move across and within columns, 1–4 jump to a column,
+  Enter jumps, Space toggles the preview, / searches, a approves the request
+  waiting on the agent; m, s, l, Backspace, d, p and j as before. A jump to a
+  pane returns to the Workspaces page and hands it focus.
 
 **Ready to review (2026-09-25).** Between Needs you and Running, a fourth
 section lists fan-out TASKS, not panes: one row per task whose record is open
@@ -841,7 +736,7 @@ gets no filter chip, tab count or footer badge.
 ### Channel task records (2026-09-22)
 
 The Channels tab groups linked mission records before shared discussions. Use
-Orca-style quiet navigation rows: 13px task titles, 11px secondary context,
+quiet navigation rows: 13px task titles, 11px secondary context,
 neutral selected surfaces and a steel selection edge. Keep original channel
 identity separate from the display title.
 
