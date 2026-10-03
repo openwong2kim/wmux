@@ -142,6 +142,18 @@ describe('routeWorkerEventToOwner', () => {
     expect(calls.map((c) => c[4])).toEqual([1, 2, 3, 4]);
   });
 
+  it('parks a shell command end (osc133) without telling the caller', async () => {
+    const calls: unknown[][] = [];
+    routeWorkerEventToOwner(ev({ source: 'osc133', seq: 9 }), {
+      hasBrain: () => false,
+      push: () => undefined,
+      notifyCaller: (...args) => { calls.push(args); },
+    });
+    await ledger.flush();
+    expect(calls).toHaveLength(0);
+    expect(peekOrphanBacklog('ws-parent').map((e) => e.seq)).toEqual([9]);
+  });
+
   it('a throwing caller notify does not disturb the park', async () => {
     routeWorkerEventToOwner(ev(), {
       hasBrain: () => false,

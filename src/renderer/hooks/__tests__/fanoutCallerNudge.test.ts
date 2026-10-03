@@ -65,12 +65,12 @@ afterEach(() => {
 
 describe('fan-out caller nudge', () => {
   it('delivers one fixed line to an idle caller after the coalescing window', async () => {
-    receiveFanoutCallerEvent(pointer('wtask-abcdef1234', 1));
+    receiveFanoutCallerEvent(pointer('wtask-mus4zme5-hnmmmmxy', 1));
     expect(gatedSubmit).not.toHaveBeenCalled();
     await windowElapses();
     expect(gatedSubmit).toHaveBeenCalledTimes(1);
     expect(gatedSubmit.mock.calls[0][0]).toBe(PTY);
-    expect(gatedSubmit.mock.calls[0][1]).toBe('[wmux] fan-out task wtask-ab updated — channel_mission_list');
+    expect(gatedSubmit.mock.calls[0][1]).toBe('[wmux] fan-out task mus4zme5 updated — channel_mission_list');
   });
 
   it('carries zero bytes of worker text, whatever the payload holds', async () => {

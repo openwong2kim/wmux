@@ -106,7 +106,11 @@ export function resolveOriginPty(
 }
 
 export function buildFanoutCallerNudge(taskIds: readonly string[]): string {
-  const ids = taskIds.map((id) => id.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 8)).filter((id) => id.length > 0);
+  // Every fan-out task id starts with 'wtask-'; the 8 characters after it are
+  // the part that tells tasks apart.
+  const ids = taskIds
+    .map((id) => id.replace(/^wtask-/, '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 8))
+    .filter((id) => id.length > 0);
   if (ids.length <= 1) return `[wmux] fan-out task ${ids[0] ?? '?'} updated — channel_mission_list`;
   const listed = ids.slice(0, LISTED_IDS).join(', ');
   const more = ids.length > LISTED_IDS ? ` +${ids.length - LISTED_IDS}` : '';
