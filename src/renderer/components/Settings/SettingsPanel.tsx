@@ -5386,6 +5386,10 @@ export default function SettingsPanel({ initialTab }: { initialTab?: string }) {
     const handler = (e: KeyboardEvent) => {
       // A dialog Settings opened owns the keyboard (see useOwnedDialog).
       if (ownedDialogs.current > 0) return;
+      // The palette and the notification panel float above every page and
+      // own their keys: Escape closes them first, never Settings underneath.
+      const above = useStore.getState();
+      if (above.commandPaletteVisible || above.notificationPanelVisible) return;
       if ((e.metaKey || e.ctrlKey) && (e.key === 'f' || e.key === 'F')) {
         e.preventDefault();
         e.stopPropagation();

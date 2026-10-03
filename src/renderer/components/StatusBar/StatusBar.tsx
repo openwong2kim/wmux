@@ -18,6 +18,7 @@ import SettingsButton from '../Titlebar/SettingsButton';
 import { FOCUS_RING } from '../focusRing';
 import type { StoreState } from '../../stores';
 import { displayWorkspaceName, resolveTaskLink } from '../../utils/fanoutProvenance';
+import { showWorkspaces } from '../../utils/showWorkspaces';
 
 /**
  * #1481 — when the active workspace is a fan-out task, the workspace that fanned
@@ -187,6 +188,7 @@ export default function StatusBar() {
     // count a pane it cannot take you to and the click would do nothing.
     if (target.stashed) s.unstashPane(target.paneId, target.workspaceId);
     s.setActivePane(target.paneId);
+    showWorkspaces(useStore.getState());
   };
   const toggleNotificationPanel = useStore((s) => s.toggleNotificationPanel);
   // The Fleet page has its own summary line; the titlebar's would repeat it.

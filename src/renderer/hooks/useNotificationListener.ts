@@ -21,6 +21,7 @@ import { FrameCoalescer } from '../utils/frameCoalescer';
 import { normalizeWorktreePath } from '../../shared/workTask';
 import { isBrainPtyId } from '../../shared/constants';
 import type { AppRoute } from '../stores/slices/uiSlice';
+import { showWorkspaces as revealWorkspaces } from '../utils/showWorkspaces';
 
 /**
  * J3 §4 — cwd가 태스크 worktree 경계 안인지(best-effort, OSC 협조 기반). 정규화
@@ -231,9 +232,7 @@ export function focusNotificationTarget(
   payload: { ptyId?: string | null; workspaceId?: string | null; surfaceId?: string | null },
 ): boolean {
   const state = getState();
-  const showWorkspaces = (): void => {
-    if (state.appRoute && state.appRoute !== 'workspaces') state.setAppRoute?.('workspaces');
-  };
+  const showWorkspaces = (): void => revealWorkspaces(state);
   // Shared tail of both resolver branches: jump (workspace + pane +
   // surface + zoom coherence), then mark this surface's unread
   // notifications read and clear the ring iff something was marked.

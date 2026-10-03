@@ -242,7 +242,11 @@ export function useActivePaneFocus(): void {
 
   useEffect(() => {
     if (!onWorkspaces) return;
-    const ptyId = resolveActivePanePtyId(useStore.getState());
+    // An overlay above the page (palette, notifications) keeps the keyboard;
+    // when it closes, the self-heal below hands focus back to the pane.
+    const now = useStore.getState();
+    if (now.commandPaletteVisible || now.notificationPanelVisible) return;
+    const ptyId = resolveActivePanePtyId(now);
     if (!ptyId) return;
     return driveFocusToTerminal(ptyId, {
       getTerminal: (id) => terminalRegistry.get(id),

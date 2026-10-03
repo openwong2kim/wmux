@@ -22,6 +22,7 @@ import { useT } from '../../hooks/useT';
 import { FOCUS_RING } from '../focusRing';
 import { Icon } from '../icons';
 import { sumUnread } from '../Channels/ChannelsPanel';
+import { showWorkspaces } from '../../utils/showWorkspaces';
 
 /**
  * Whether the collapsed deck holds anything worth opening it for.
@@ -38,7 +39,10 @@ export function deckHasSignal(unread: number, dirtyWorkspaces: number): boolean 
 
 export default function DeckToggle() {
   const t = useT();
-  const visible = useStore((s) => s.channelDockVisible);
+  // The dock lives on the Workspaces page; under another page it is not on
+  // screen, whatever its flag says.
+  const onWorkspaces = useStore((s) => s.appRoute === 'workspaces');
+  const visible = useStore((s) => s.channelDockVisible) && onWorkspaces;
   const setChannelDockVisible = useStore((s) => s.setChannelDockVisible);
   const sidebarPosition = useStore((s) => s.sidebarPosition);
   const channelUnread = useStore((s) => s.channelUnread);
@@ -65,7 +69,12 @@ export default function DeckToggle() {
   return (
     <button
       type="button"
-      onClick={() => setChannelDockVisible(!visible)}
+      onClick={() => {
+        // From another page: show the Workspaces page with the dock open, so
+        // it never opens (and resizes the terminals) behind an inert page.
+        showWorkspaces(useStore.getState());
+        setChannelDockVisible(!visible);
+      }}
       className={`wmux-panel-toggle ${FOCUS_RING}`}
       title={accessibleName}
       aria-label={accessibleName}

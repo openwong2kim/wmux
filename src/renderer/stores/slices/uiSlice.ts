@@ -967,6 +967,8 @@ export interface AppRouteFields extends InspectStateFields {
   fleetViewVisible: boolean;
   schedulesViewOpen: boolean;
   settingsPanelVisible: boolean;
+  /** Ends on a page switch: every prefix action works on the panes. */
+  prefixMode?: boolean;
 }
 
 /**
@@ -976,6 +978,7 @@ export interface AppRouteFields extends InspectStateFields {
  */
 export function applyAppRoute(state: AppRouteFields, route: AppRoute): void {
   if (route !== 'settings' && state.inspectModeActive) resetInspectState(state);
+  if (state.appRoute !== route && state.prefixMode) state.prefixMode = false;
   state.appRoute = route;
   state.fleetViewVisible = route === 'fleet';
   state.schedulesViewOpen = route === 'schedules';

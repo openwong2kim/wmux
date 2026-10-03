@@ -28,6 +28,7 @@ beforeEach(() => {
       sidebarPosition: 'left',
       channelUnread: {},
       workspaces: [],
+      appRoute: 'workspaces',
     });
   });
 });
@@ -111,5 +112,15 @@ describe('DeckToggle', () => {
     });
     mount();
     expect(dot()).toBeNull();
+  });
+
+  it('from another page it reads closed and opens the dock on the Workspaces page', () => {
+    act(() => { useStore.setState({ channelDockVisible: true, appRoute: 'fleet' }); });
+    mount();
+    expect(btn().getAttribute('aria-expanded')).toBe('false');
+    act(() => { btn().dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    expect(useStore.getState().appRoute).toBe('workspaces');
+    expect(useStore.getState().channelDockVisible).toBe(true);
+    expect(btn().getAttribute('aria-expanded')).toBe('true');
   });
 });

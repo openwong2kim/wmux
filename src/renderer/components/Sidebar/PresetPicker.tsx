@@ -6,6 +6,7 @@ import { createWorkspaceWithRemotePane } from '../../utils/remotePaneWorkspace';
 import { destroyRemoteSessions } from '../../utils/remoteSessionTeardown';
 import AttachRemoteModal from './AttachRemoteModal';
 import AddRemotePaneModal from '../Remote/AddRemotePaneModal';
+import { showWorkspaces } from '../../utils/showWorkspaces';
 
 interface PresetPickerProps {
   onClose: () => void;
@@ -83,6 +84,7 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
       return;
     }
     createWorkspaceWithRemotePane(useStore.getState, destroyRemoteSessions, { hostId, sessionId, remoteWorkspaceId });
+    showWorkspaces(useStore.getState());
   }, []);
   // After a late onCreated the modal calls onClose too, and onClose is the
   // parent's: one open state per + button. A dismissed picker's call would
@@ -100,6 +102,7 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
     } else {
       addWorkspaceWithPreset(presetId);
     }
+    showWorkspaces(useStore.getState());
     onClose();
   }, [addWorkspace, addWorkspaceWithPreset, onClose]);
 
@@ -109,6 +112,7 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
       const folderPath = folders[0];
       const folderName = folderPath.split(/[/\\]/).filter(Boolean).pop() || 'Workspace';
       addWorkspace(folderName, { startupCwd: folderPath });
+      showWorkspaces(useStore.getState());
       onClose();
     }
   }, [addWorkspace, onClose]);
