@@ -3981,12 +3981,12 @@ only**, and every rule above for a `managed` binding applies:
 >   item 4, account per pane and handoff lineage (`paneAccount`,
 >   `paneHandoff`; #1664); and item 5's read routes,
 >   `GET /api/git/projects`, `GET …/git/branches` and `GET …/git/checks`
->   (`gitProjects`, `gitChecks`; #1663).
+>   (`gitProjects`, `gitChecks`; #1663); and item 5's worktree creation,
+>   `POST …/git/worktree` and its receipt (`gitWorktrees`; #1666).
 > - **Proposed — on hold pending client review:** item 1, typed turn failure
->   (`turnFailure`), and item 5's worktree creation, `POST …/git/worktree` and
->   its receipt (`gitWorktrees`). No daemon serves these. Do not ship a client
->   path that depends on them until the matching `/api/config` key (below)
->   appears on a real daemon.
+>   (`turnFailure`). No daemon serves it. Do not ship a client path that
+>   depends on it until the matching `/api/config` key (below) appears on a
+>   real daemon.
 >
 > Shared types: `src/shared/phoneTurnFailure.ts`,
 > `src/shared/phoneCodexAccountStatus.ts`, `src/shared/phoneChatCancelOutcome.ts`,
