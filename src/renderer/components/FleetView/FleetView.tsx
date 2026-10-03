@@ -958,8 +958,9 @@ export default function FleetView() {
               <button key={item.key} type="button" tabIndex={-1} className="wmux-board-idle-row"
                 onClick={() => jump(item.row.pane)} data-pty-id={item.row.pane.ptyId}>
                 <span className="truncate">{fleetTitle(item.row.pane, missions[item.row.pane.workspaceId])}</span>
-                <span className="wmux-board-elapsed">
-                  {item.row.idleForMs !== undefined && item.row.idleForMs >= IDLE_SHOW_AFTER_MS ? formatIdle(item.row.idleForMs) : ''}
+                <span className="wmux-board-elapsed" data-usage-waiting={item.row.pane.usageLimitWaiting || undefined}>
+                  {item.row.pane.usageLimitWaiting ? t('usageLimit.waiting')
+                    : item.row.idleForMs !== undefined && item.row.idleForMs >= IDLE_SHOW_AFTER_MS ? formatIdle(item.row.idleForMs) : ''}
                 </span>
               </button>
             ) : null))}

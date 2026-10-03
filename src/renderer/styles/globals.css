@@ -152,7 +152,7 @@
 
 /* ─── Theme CSS Variables ────────────────────────────────────────────────── */
 
-/* Mono — the default look (owner decision 2026-10-03). Adapted from MonoCode
+/* Mono look. Adapted from MonoCode
  * (hardbeat920/monocode@6bd432ca, src/styles/index.css), MIT License,
  * Copyright (c) 2026 Nick. Values are generated from UI_THEME_TOKENS.mono /
  * ['mono-light'] in themes.ts (themeParity.test.ts locks them).

@@ -1,14 +1,18 @@
 import { memo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { FleetPane, FleetRow } from '../../stores/selectors/fleet';
+import { fleetTargetPtyId } from '../../stores/selectors/fleet';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
+import { getLocale } from '../../i18n';
 import { AGENT_STATUS_ICON } from '../Sidebar/agentStatusIcon';
 import { IconExternalLink } from '../icons';
 import { fleetTitle } from './fleetPresentation';
 import { fleetRequesterText } from '../../utils/fanoutProvenance';
 import { formatIdle, IDLE_SHOW_AFTER_MS } from '../../utils/idleTime';
 import type { BoardColumn } from './fleetBoardModel';
+import { useUsageLimitNow } from '../Pane/UsageLimitChip';
+import { usageLimitFleetDetail, usageLimitView } from '../Pane/usageLimitPresentation';
 
 /** bytes → "370 MB" / "1.2 GB" (Windows agent RAM). */
 function formatRss(bytes: number): string {
@@ -63,19 +67,29 @@ function FleetBoardCard({
   const title = fleetTitle(card, mission);
   const agentName = card.agentName || (card.surfaceType === 'terminal' ? card.title : card.surfaceType);
   const quietWaiting = card.agentStatus === 'waiting' && row.section === 'idle';
+  // Waiting out a usage limit: a muted clock — not an error, not a request.
+  const usageWaiting = !!card.usageLimitWaiting && !card.unverifiable
+    && card.agentStatus !== 'running' && card.agentStatus !== 'awaiting_input';
   const statusLabel = card.unverifiable ? t('fleet.status.unconfirmed')
+    : usageWaiting ? t('usageLimit.waiting')
     : card.agentStatus === 'complete' ? t('fleet.status.turnComplete')
     : quietWaiting ? t('workspace.agentIdle') : t(icon.labelKey);
   // The board's dot grammar is its columns': amber waits on you (red for an
   // error), accent runs, green is ready to review, idle is muted.
-  const statusColor = card.agentStatus === 'error' ? 'var(--accent-red)'
+  const statusColor = usageWaiting ? 'var(--text-muted)'
+    : card.agentStatus === 'error' ? 'var(--accent-red)'
     : column === 'needsYou' ? 'var(--accent-yellow)'
     : column === 'running' ? 'var(--accent)'
     : column === 'review' ? 'var(--accent-green)'
     : 'var(--text-muted)';
   const elapsedMs = card.agentStatus === 'running' && turnOpenAt ? now - turnOpenAt : row.idleForMs;
   const elapsed = elapsedMs !== undefined && elapsedMs >= IDLE_SHOW_AFTER_MS ? formatIdle(elapsedMs) : '';
-  const detail = row.detail ?? t(row.detailKey);
+  // A pane held at its usage limit says when it resets instead of a generic detail.
+  const usageLimit = useStore((s) => s.usageLimits[fleetTargetPtyId(card)] ?? (card.ptyId ? s.usageLimits[card.ptyId] : undefined));
+  const limitNow = useUsageLimitNow(!!usageLimit);
+  const detail = usageLimit
+    ? usageLimitFleetDetail(usageLimitView(usageLimit, limitNow, getLocale()), t)
+    : row.detail ?? t(row.detailKey);
   const sync = meta.sync;
   const showDiff = column === 'review' && sync && ((sync.added ?? 0) > 0 || (sync.removed ?? 0) > 0);
   const supervisionStopped = card.supervision?.status === 'stopped';
@@ -95,6 +109,7 @@ function FleetBoardCard({
       data-fleet-card
       data-board-key={card.paneId}
       data-status={card.agentStatus}
+      data-usage-waiting={usageWaiting || undefined}
       data-column={column}
       data-dense={dense ? 'true' : undefined}
       data-unverifiable={card.unverifiable || undefined}
@@ -103,17 +118,24 @@ function FleetBoardCard({
       data-workspace-name={card.workspaceName}
     >
       <span className="wmux-board-card-r1">
-        <span
-          className={`wmux-board-dot${card.unverifiable ? ' is-hollow' : ''}`}
-          data-shape={icon.shape}
-          style={{ color: statusColor }}
-          aria-hidden="true"
-        >{icon.shape === 'cross' ? '×' : null}</span>
+        {usageWaiting ? (
+          <svg className="flex-none" width="10" height="10" viewBox="0 0 9 9" fill="none" stroke={statusColor} strokeWidth="1.2" strokeLinecap="round" aria-hidden="true" data-shape="clock">
+            <circle cx="4.5" cy="4.5" r="3.6" />
+            <polyline points="4.5,2.5 4.5,4.6 5.9,5.5" />
+          </svg>
+        ) : (
+          <span
+            className={`wmux-board-dot${card.unverifiable ? ' is-hollow' : ''}`}
+            data-shape={icon.shape}
+            style={{ color: statusColor }}
+            aria-hidden="true"
+          >{icon.shape === 'cross' ? '×' : null}</span>
+        )}
         {card.remote && <span className="wmux-board-remote" data-fleet-remote title={`@${card.remote.hostLabel}`} aria-hidden="true"><IconExternalLink size={10} /></span>}
         <span className="wmux-board-title" title={title}>{title}</span>
         {changed && <span className="wmux-fleet-changed" data-fleet-changed aria-hidden="true" />}
         {agentName && agentName !== title && <span className="wmux-board-agent">{agentName}</span>}
-        <span className="wmux-board-elapsed" data-fleet-elapsed={elapsed || undefined}>{elapsed || statusLabel}</span>
+        <span className="wmux-board-elapsed" data-fleet-elapsed={elapsed || undefined}>{usageWaiting ? statusLabel : elapsed || statusLabel}</span>
       </span>
       {!dense && (
         <span className="wmux-board-card-r2">

@@ -241,7 +241,7 @@ export const UI_THEME_TOKENS: Record<BuiltinThemeId, UIThemeTokens> = {
     textMain: '#F2F0EC', textSub: '#C9C5BD', textMuted: '#85817A',
     accent: '#E8A33D', accentSecondary: '#E8A33D', success: '#7FC98A', danger: '#E8736B', warning: '#E8A33D',
   },
-  // The default look (owner decision 2026-10-03). Adapted from MonoCode
+  // The mono look. Adapted from MonoCode
   // (hardbeat920/monocode@6bd432ca, src/styles/index.css), MIT License,
   // Copyright (c) 2026 Nick. Zero-saturation greys from one lightness pair
   // (base 9% / content 92%, light 97% / 18%); surface = content 7% over the

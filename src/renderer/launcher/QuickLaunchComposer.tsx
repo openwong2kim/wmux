@@ -37,7 +37,7 @@ function saveChoice(choice: ComposerChoice): void {
 }
 
 function applyTheme(ctx: QuickLaunchContext): void {
-  const theme = ctx.theme ?? 'amber';
+  const theme = ctx.theme ?? 'tint';
   document.documentElement.setAttribute('data-theme', theme);
   if (theme === 'custom' && ctx.customThemeColors) applyCustomCssVars(ctx.customThemeColors as CustomThemeColors);
   else clearCustomCssVars();

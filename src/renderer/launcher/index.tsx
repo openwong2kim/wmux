@@ -6,5 +6,5 @@ import '../styles/globals.css';
 import '../styles/ui.css';
 import './launcher.css';
 
-document.documentElement.setAttribute('data-theme', 'amber');
+document.documentElement.setAttribute('data-theme', 'tint');
 createRoot(document.getElementById('root')!).render(<QuickLaunchComposer />);
