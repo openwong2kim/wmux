@@ -58,6 +58,17 @@ describe('pickReportedAgent', () => {
     expect(pickReportedAgent(parsed, 'claude')?.pid).toBe(400);
   });
 
+  // #1727 — npm's codex is a node launcher running the native binary; the
+  // notify hook's parent is the native binary, which dies with the session.
+  it('picks the native codex binary under its node launcher', () => {
+    const parsed = parseWslAgentReport(report(
+      `5001:2000:/home/dev/.npm-global/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex${US}-c${US}notify=x`,
+      `5000:1999:node${US}/home/dev/.npm-global/bin/codex${US}-c${US}notify=x`,
+    ));
+    expect(pickReportedAgent(parsed, 'codex')).toEqual({ pid: 5001, start: '2000', bootId: BOOT, slug: 'codex', ancestors: [5000] });
+    expect(pickReportedAgent(parsed, 'claude')).toBeUndefined();
+  });
+
   it('never accepts a different agent, or a chain without the agent', () => {
     expect(pickReportedAgent(parseWslAgentReport(report('400:900:codex')), 'claude')).toBeUndefined();
     expect(pickReportedAgent(parseWslAgentReport(report('400:900:-bash')), 'claude')).toBeUndefined();

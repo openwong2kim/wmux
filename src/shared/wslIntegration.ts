@@ -16,22 +16,12 @@ import { mergeWslEnv, wslTargetArgs, type WslTarget } from './wsl';
 // Reading /proc here is builtins plus a few tiny filters per hop: no scan, no
 // extra Windows spawn. Any failure leaves the report empty; the hook runs on.
 export const WSL_AGENT_PROC_HOPS = 8;
-export const WSL_HOOK = `#!/bin/sh
-# #1730 — the permission gate fires on EVERY tool call. It is dormant unless
-# someone can answer it (wmux web --allow-input), and the daemon keeps a flag
-# file for exactly that state. Without the flag: no opinion (exit 0, empty
-# stdout), for the cost of one stat, instead of a Windows process per call.
-wmux_gate=
-for wmux_arg; do [ "$wmux_arg" = --permission-gate ] && wmux_gate=1; done
-if [ -n "$wmux_gate" ]; then
-  [ -n "\${WMUX_WSL_GATE_FLAG:-}" ] && [ -e "$WMUX_WSL_GATE_FLAG" ] || exit 0
-  # The per-session opt-out the bridge would honour anyway, without the spawn.
-  [ "\${WMUX_GATE:-}" != 0 ] || exit 0
-fi
-export ELECTRON_RUN_AS_NODE=1
-wmux_agent_proc() {
-  # A function, so set -- below cannot touch the hook's own arguments.
-  set -f
+/** The /proc ancestor report both WSL hooks run (Claude's WSL_HOOK, Codex's
+ *  WSL_CODEX_HOOK); it sets WMUX_WSL_AGENT_PROC for the Windows bridge. */
+const WSL_AGENT_PROC_FN = `wmux_agent_proc() {
+  # A function, so set -- below cannot touch the hook's own arguments. No
+  # set -f: it would outlive the function and break the Codex hook's later
+  # rollout globs, and stat's fields after the last ')' hold no glob characters.
   { read -r wmux_boot < /proc/sys/kernel/random/boot_id; } 2>/dev/null || return 0
   wmux_out="1:$wmux_boot"
   wmux_p=$PPID
@@ -49,7 +39,21 @@ wmux_agent_proc() {
     wmux_n=$((wmux_n + 1))
   done
   WMUX_WSL_AGENT_PROC=$wmux_out
-}
+}`;
+export const WSL_HOOK = `#!/bin/sh
+# #1730 — the permission gate fires on EVERY tool call. It is dormant unless
+# someone can answer it (wmux web --allow-input), and the daemon keeps a flag
+# file for exactly that state. Without the flag: no opinion (exit 0, empty
+# stdout), for the cost of one stat, instead of a Windows process per call.
+wmux_gate=
+for wmux_arg; do [ "$wmux_arg" = --permission-gate ] && wmux_gate=1; done
+if [ -n "$wmux_gate" ]; then
+  [ -n "\${WMUX_WSL_GATE_FLAG:-}" ] && [ -e "$WMUX_WSL_GATE_FLAG" ] || exit 0
+  # The per-session opt-out the bridge would honour anyway, without the spawn.
+  [ "\${WMUX_GATE:-}" != 0 ] || exit 0
+fi
+export ELECTRON_RUN_AS_NODE=1
+${WSL_AGENT_PROC_FN}
 # Per tool call while the gate is armed: skip the /proc walk; other hooks attribute.
 [ -n "$wmux_gate" ] || wmux_agent_proc
 export WMUX_WSL_AGENT_PROC
@@ -145,6 +149,13 @@ if [ -r "/proc/$PPID/cmdline" ]; then
   export WMUX_CODEX_NOTIFIER_ARGV
   export WSLENV="$WSLENV:WMUX_CODEX_NOTIFIER_ARGV/w"
 fi
+# #1727 — which Linux process this pane's Codex is, as Claude's WSL_HOOK
+# reports it. The bridge refuses a shared app-server's notification outright,
+# so a report only ever comes from the Codex that owns this pane.
+${WSL_AGENT_PROC_FN}
+wmux_agent_proc
+export WMUX_WSL_AGENT_PROC
+export WSLENV="$WSLENV:WMUX_WSL_AGENT_PROC/w"
 # Codex also notifies for temporary title-generation and subagent threads.
 # Only a saved top-level CLI session is a valid Resume target. Match the exact
 # reported UUID and inspect its first metadata record; never guess the newest.

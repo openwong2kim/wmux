@@ -613,6 +613,16 @@ function nonEmptyStr(v) {
   return typeof v === 'string' && v.length > 0 ? v : undefined;
 }
 
+/**
+ * #1727 — set only by the WSL Codex hook: which Linux process this Codex is
+ * (boot id + ancestors). Opaque here and bounded like the Claude bridge's; the
+ * daemon validates it and uses it only for the exact pane. Exported for tests.
+ */
+export function wslAgentProcessFromEnv(env) {
+  const value = nonEmptyStr(env.WMUX_WSL_AGENT_PROC);
+  return value && value.length <= 8192 ? value : undefined;
+}
+
 async function main() {
   // Codex appends the notify JSON as the LAST argv token.
   const raw = process.argv[process.argv.length - 1];
@@ -655,6 +665,7 @@ async function main() {
   const transcriptPath = nonEmptyStr(payload.transcript_path);
 
   const envPtyId = nonEmptyStr(process.env.WMUX_PTY_ID);
+  const wslAgentProcess = wslAgentProcessFromEnv(process.env);
   const envWorkspaceId = nonEmptyStr(process.env.WMUX_WORKSPACE_ID);
   const envSurfaceId = nonEmptyStr(process.env.WMUX_SURFACE_ID);
 
@@ -689,6 +700,7 @@ async function main() {
     ...(envWorkspaceId ? { workspaceId: envWorkspaceId } : {}),
     ...(envSurfaceId ? { surfaceId: envSurfaceId } : {}),
     ...(envPtyId ? { ptyId: envPtyId } : {}),
+    ...(wslAgentProcess ? { wslAgentProcess } : {}),
     cwd,
     payload: {
       ...(turnId ? { 'turn-id': turnId } : {}),

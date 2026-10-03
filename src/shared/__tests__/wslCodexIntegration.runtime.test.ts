@@ -6,6 +6,7 @@ import http from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
 import { parse } from 'smol-toml';
 import { buildWslInjection, WSL_MCP_LAUNCH } from '../wslIntegration';
+import { parseWslAgentReport } from '../../daemon/wslAgentProcess';
 
 const SESSION_ID = '11111111-2222-4333-8444-555555555555';
 const dirs: string[] = [];
@@ -60,6 +61,7 @@ writeFileSync(process.env.WMUX_TEST_RESULT, JSON.stringify({
   payload: JSON.parse(process.argv.at(-1)), pane: process.env.WMUX_PTY_ID,
   suffix: process.env.WMUX_DATA_SUFFIX, electron: process.env.ELECTRON_RUN_AS_NODE,
   notifier: process.env.WMUX_CODEX_NOTIFIER_ARGV, wslenv: process.env.WSLENV,
+  agentProc: process.env.WMUX_WSL_AGENT_PROC,
 }));
 `);
   const resultPath = path.join(dir, 'bridge-result.json');
@@ -95,6 +97,8 @@ describe.skipIf(process.platform === 'win32')('WSL Codex per-launch notify', () 
       // #1523: the argv of the Codex that spawned the hook, read from /proc.
       notifier: process.platform === 'linux' ? expect.any(String) : undefined,
       wslenv: expect.any(String),
+      // #1727: which Linux process this Codex is (needs /proc's boot id).
+      agentProc: process.platform === 'linux' ? expect.stringMatching(/^1:/) : undefined,
     });
     if (process.platform === 'linux') expect(handedArgv(recorded.notifier)).toEqual(fakeCodexArgv(f.dir, args));
     expect(fs.readFileSync(config, 'utf8')).toBe('# existing settings\nmodel = "test"\n');
@@ -164,6 +168,19 @@ describe.skipIf(process.platform === 'win32')('WSL Codex per-launch notify', () 
     expect(handedArgv(recorded.notifier)).toEqual(fakeCodexArgv(f.dir, args));
     expect(recorded.pane).toBe('pane-one');
     expect(recorded.wslenv).toContain('WMUX_CODEX_NOTIFIER_ARGV/w');
+  });
+
+  // #1727 — the notify hook also reports which Linux process this Codex is:
+  // the boot id and its ancestors, nearest first. Here the fake Codex (node
+  // running capture.mjs) is the hook's parent. Linux only: it reads /proc.
+  it.runIf(process.platform === 'linux')('reports the Codex process to the bridge', () => {
+    const f = fixture();
+    f.run(['resume', 'old']);
+    const recorded = JSON.parse(fs.readFileSync(f.resultPath, 'utf8'));
+    const report = parseWslAgentReport(recorded.agentProc);
+    expect(report?.bootId).toBe(fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim());
+    expect(report?.chain[0].cmdline).toContain('capture.mjs');
+    expect(recorded.wslenv).toContain('WMUX_WSL_AGENT_PROC/w');
   });
 
   it('honors CODEX_HOME and integration opt-out, and still launches when the helper is unavailable', () => {
