@@ -19,6 +19,9 @@ export class GateFlagFile {
   private timer: NodeJS.Timeout | undefined;
   /** A failure already reported, so a persistent one logs once, not per tick. */
   private failing = false;
+  /** After stop(), a late sync (a web restore finishing during shutdown) must
+   *  not bring the file back. */
+  private stopped = false;
 
   constructor(
     private readonly file: string,
@@ -39,6 +42,7 @@ export class GateFlagFile {
   /** Write or remove the file when the armed state changed. The first call
    *  always acts, which clears a file a crashed daemon left behind. */
   sync(): void {
+    if (this.stopped) return;
     let want: boolean;
     try {
       want = this.armed();
@@ -63,6 +67,8 @@ export class GateFlagFile {
   }
 
   start(intervalMs = 3_000): void {
+    this.stopped = false;
+    this.last = undefined;
     this.sync();
     if (this.timer) return;
     this.timer = setInterval(() => this.sync(), intervalMs);
@@ -71,6 +77,7 @@ export class GateFlagFile {
 
   /** Stop polling and remove the file (daemon shutdown). */
   stop(): void {
+    this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
     try {

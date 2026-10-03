@@ -42,6 +42,15 @@ describe('GateFlagFile (#1730)', () => {
     expect(io.remove).toHaveBeenCalledOnce();
   });
 
+  it('ignores a late sync after stop, so shutdown cannot bring the file back', () => {
+    const { flag, io } = setup(true);
+    flag.start(60_000);
+    flag.stop();
+    flag.sync();
+    expect(io.write).toHaveBeenCalledOnce();
+    expect(io.remove).toHaveBeenCalledOnce();
+  });
+
   it('stop removes the file and the next start re-syncs', () => {
     const { flag, io, set } = setup(true);
     flag.start(60_000);
