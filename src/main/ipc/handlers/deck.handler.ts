@@ -77,12 +77,16 @@ import {
 } from '../../deck/deckAutonomyStore';
 import { loadAutoWakeEnabled, setAutoWakeEnabled } from '../../deck/deckAutoWakeStore';
 import {
+  brainEligible,
+  getHqMaxTurnsPerHour,
   getHqWorkspaceId,
   hqAllowsBrain,
   isHqMigrationDone,
   isHqWorkspaceMissing,
+  isMoaEnabled,
   runNonHqMigration,
   setHqRuntime,
+  setMoaEnabled,
 } from '../../deck/deckHqStore';
 import { loadLedgerGateEnabled, setLedgerGateEnabled } from '../../deck/deckLedgerGateStore';
 import {
@@ -692,7 +696,11 @@ export function registerDeckHandler(
 
   const refuseWhenModeOff = (
     workspaceId: string,
-  ): { ok: false; code: 'mode_off' | 'task_workspace' | 'not_hq' | 'hq_missing' } | null => {
+  ): { ok: false; code: 'moa_off' | 'mode_off' | 'task_workspace' | 'not_hq' | 'hq_missing' } | null => {
+    // Master switch (deckHqStore.ts): off means no workspace runs a brain.
+    // Every ensureManager call sits behind this check, so with the switch off
+    // no brain adapter is ever constructed.
+    if (!isMoaEnabled()) return { ok: false, code: 'moa_off' };
     let mode: AgentMode;
     try {
       mode = loadWorkspaceMode(workspaceId);
@@ -1581,7 +1589,7 @@ export function registerDeckHandler(
   // same goes for a non-HQ owner once an HQ is designated: its workers' events
   // park and nudge the caller rather than reaching a brain that will not run.
   const ownerHasBrain = (owner: string): boolean =>
-    hqAllowsBrain(owner, getHqWorkspaceId()) &&
+    brainEligible(owner) &&
     !isTaskWorkspace(owner) && (managers.has(owner) || loadWorkspaceMode(owner) !== 'off');
   // The pane that started a fan-out, told when its workers move and no brain
   // listens (fanoutCallerNotify.ts). One pointer to the renderer, no ack.
@@ -1647,6 +1655,11 @@ export function registerDeckHandler(
     // (no line) when the mirror is empty or the fleet is all quiescent.
     getFleetTail: (workspaceId) =>
       buildFleetTailLine(getWorkspaceMirror().getFleetSnapshot(workspaceId)),
+    // Master switch: off drops every push at the entry.
+    isEnabled: () => isMoaEnabled(),
+    // With an HQ designated, its wakes also get an hourly cap. No HQ → none.
+    getMaxWakesPerHour: (workspaceId) =>
+      workspaceId === getHqWorkspaceId() ? getHqMaxTurnsPerHour() : null,
   });
   const offBus = eventBus.subscribe((ev) => {
     // Cross-workspace task receipts belong to the SENDER commander. The base
@@ -1814,7 +1827,9 @@ export function registerDeckHandler(
     // due and retries once resolved).
     hasPendingDecision: (workspaceId) => hasPendingDecision(workspaceId),
   });
-  scheduler.start();
+  // Master switch off at launch: the scheduler and the heartbeat are not
+  // started at all (DECK_MOA_SET starts them when it is turned on).
+  if (isMoaEnabled()) scheduler.start();
 
   // ── WP4: level-review heartbeat ───────────────────────────────────────────
   // A slow cadence re-reads each armed workspace's CURRENT per-pane state (from
@@ -1856,7 +1871,7 @@ export function registerDeckHandler(
     // manager, a live work record, or the mirror): the owner's brain reviews
     // it through the tagged worker events instead. With an HQ designated, only
     // the HQ is reviewed.
-    return [...ids].filter((id) => !isTaskWorkspace(id) && hqAllowsBrain(id, hq));
+    return [...ids].filter((id) => !isTaskWorkspace(id) && brainEligible(id));
   };
   // WP3 — the instruction the re-examine wake carries as its ORIGINAL prompt (the
   // stale [decision] block is prepended on the wire by runTurnForWorkspace). Kept
@@ -1912,7 +1927,7 @@ export function registerDeckHandler(
     isEnabled: () => loadDeckHeartbeat().enabled,
     intervalMs: heartbeatConfig.intervalMs,
   });
-  heartbeat.start();
+  if (isMoaEnabled()) heartbeat.start();
 
   // ── HQ (main bot) ─────────────────────────────────────────────────────────
   // The HQ store's setter refuses while the old/new HQ has a brain and, once
@@ -1942,6 +1957,39 @@ export function registerDeckHandler(
       const hq = getHqWorkspaceId();
       if (hq === null) return { workspaceId: null, state: 'unset' };
       return { workspaceId: hq, state: isHqWorkspaceMissing(hq) ? 'hq-missing' : 'ok' };
+    }),
+  );
+
+  // The master switch (Settings toggle in a later change). Off retires every
+  // brain and stops the heartbeat, the scheduler and pending coalescer
+  // flushes; on restarts the two timers. Nothing is deleted either way.
+  ipcMain.removeHandler(IPC.DECK_MOA_GET);
+  ipcMain.handle(
+    IPC.DECK_MOA_GET,
+    wrapHandler(IPC.DECK_MOA_GET, async (): Promise<{ enabled: boolean }> => ({ enabled: isMoaEnabled() })),
+  );
+  ipcMain.removeHandler(IPC.DECK_MOA_SET);
+  ipcMain.handle(
+    IPC.DECK_MOA_SET,
+    wrapHandler(IPC.DECK_MOA_SET, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ ok: boolean; enabled?: boolean }> => {
+      const enabled = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>).enabled
+        : undefined;
+      if (typeof enabled !== 'boolean') return { ok: false };
+      await setMoaEnabled(enabled);
+      if (enabled) {
+        scheduler.start();
+        heartbeat.start();
+      } else {
+        scheduler.stop();
+        heartbeat.stop();
+        coalescer?.suspend();
+        for (const workspaceId of [...managers.keys()]) retireBrain(workspaceId);
+      }
+      return { ok: true, enabled };
     }),
   );
 
@@ -2515,7 +2563,7 @@ export function registerDeckHandler(
       const next = await setWorkspaceMode(workspaceId, mode as AgentMode);
       // Lane F: leaving 'off' means wakes may boot a brain here again — replay
       // the worker events parked while the workspace was off.
-      if (mode !== 'off' && hqAllowsBrain(workspaceId, getHqWorkspaceId())) {
+      if (mode !== 'off' && brainEligible(workspaceId)) {
         coalescer?.notifyBrainBooted(workspaceId);
       }
       // setWorkspaceMode reset caps to the pure mode ceiling. If a loop is still
@@ -2832,11 +2880,14 @@ export function registerDeckHandler(
       );
     }
   };
-  const reconcileTimer = setTimeout(
-    () => void reconcileResolvedDecisions(),
-    opts.reconcileDelayMs ?? DECISION_RECONCILE_DELAY_MS,
-  );
-  (reconcileTimer as { unref?: () => void }).unref?.();
+  // Master switch off at launch: this one-shot brain driver is not armed.
+  const reconcileTimer = isMoaEnabled()
+    ? setTimeout(
+      () => void reconcileResolvedDecisions(),
+      opts.reconcileDelayMs ?? DECISION_RECONCILE_DELAY_MS,
+    )
+    : undefined;
+  (reconcileTimer as { unref?: () => void } | undefined)?.unref?.();
 
   const disposeAll = (): void => {
     for (const { manager } of managers.values()) manager.dispose();
@@ -2864,6 +2915,8 @@ export function registerDeckHandler(
     disposeHqRuntime();
     disposeAll();
     ipcMain.removeHandler(IPC.DECK_HQ_GET);
+    ipcMain.removeHandler(IPC.DECK_MOA_GET);
+    ipcMain.removeHandler(IPC.DECK_MOA_SET);
     ipcMain.removeHandler(IPC.DECK_SEND);
     ipcMain.removeHandler(IPC.DECK_INTERRUPT);
     ipcMain.removeHandler(IPC.DECK_WAKE);

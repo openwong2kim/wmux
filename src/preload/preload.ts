@@ -781,6 +781,12 @@ const electronAPI = {
           state: 'unset' | 'ok' | 'hq-missing';
         }>,
     },
+    // The main bot's master switch (default on).
+    moa: {
+      get: () => ipcRenderer.invoke(IPC.DECK_MOA_GET) as Promise<{ enabled: boolean }>,
+      set: (enabled: boolean) =>
+        ipcRenderer.invoke(IPC.DECK_MOA_SET, { enabled }) as Promise<{ ok: boolean; enabled?: boolean }>,
+    },
     // P3d — persisted orchestrator schedules (fire as ordinary brain turns on
     // their own workspace's orchestrator).
     schedules: {

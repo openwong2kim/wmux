@@ -200,6 +200,9 @@ interface WsState {
    *  reset by a human send (the ceiling is a raw-frequency guard, independent of
    *  the consecutive budget which the human DOES reset). */
   wakeTimestamps: number[];
+  /** The same accepted wakes over the trailing HOUR, for the optional hourly
+   *  cap (getMaxWakesPerHour). Pruned to the hour on every write. */
+  hourWakeTimestamps: number[];
   /** ptyIds whose `complete` level-state has already been folded into an accepted
    *  (or attempted-and-consumed) snapshot wake. The heartbeat surfaces a finished
    *  pane ONCE — so a dropped agent.stop edge, which shows as `complete` in level
@@ -312,6 +315,13 @@ export interface CoalescerDeps {
    *  left no trace anywhere, so "the brain never woke" was indistinguishable
    *  from "no event ever fired". */
   log?: (line: string) => void;
+  /** Master switch. False drops every push at the entry, before any per-
+   *  workspace state is allocated. Absent = always on. */
+  isEnabled?: () => boolean;
+  /** An optional extra ceiling: accepted wakes per trailing hour for this
+   *  workspace, on top of `maxWakesPerMin`. null/absent/throwing = no hourly
+   *  cap (the default). */
+  getMaxWakesPerHour?: (workspaceId: string) => number | null;
 }
 
 const DEFAULT_DEBOUNCE_MS = 1_500;
@@ -324,6 +334,8 @@ const ACTIVE_WORK_WAKE_BUDGET = 12;
 const DEFAULT_MAX_WAKES_PER_MIN = 6;
 /** The rate ceiling's trailing window. */
 const RATE_WINDOW_MS = 60_000;
+/** The optional hourly cap's trailing window. */
+const HOUR_WINDOW_MS = 60 * 60_000;
 /** Cap the rendered lines so a fleet-wide storm can't blow the turn context. */
 const MAX_FLUSH_LINES = 20;
 /** Rate limit for the pending-decision block line, per workspace. */
@@ -357,6 +369,7 @@ export class CommanderEventCoalescer {
    *  (idle) or holds (busy) until a flush point. */
   push(ev: CoalescerInput, opts: { replay?: boolean } = {}): void {
     if (this.disposed) return;
+    if (this.deps.isEnabled && !this.deps.isEnabled()) return;
     if (
       ev.kind !== 'agent.stop' &&
       ev.kind !== 'agent.stop_failure' &&
@@ -530,9 +543,9 @@ export class CommanderEventCoalescer {
 
     // Rate ceiling (rule 7) — snapshot flushes count exactly like edge flushes.
     const now = this.nowFn();
-    if (this.isRateLimited(st, now)) {
+    if (this.isRateLimited(st, now, workspaceId)) {
       st.phase = 'rate-limited';
-      this.armBeltTimer(workspaceId, st, this.rateRetryDelay(st, now));
+      this.armBeltTimer(workspaceId, st, this.rateRetryDelay(st, now, workspaceId));
       return;
     }
     // Busy: a snapshot flush simply drops (level state; next heartbeat re-reads).
@@ -725,6 +738,16 @@ export class CommanderEventCoalescer {
     return ts && ts.length > 0 ? ts[ts.length - 1] : null;
   }
 
+  /** The master switch went off: cancel every pending flush and drop the
+   *  buffered events. Unlike dispose, pushes resume once isEnabled is true. */
+  suspend(): void {
+    for (const st of this.states.values()) {
+      this.clearDebounce(st);
+      st.buffer.clear();
+      st.phase = 'idle';
+    }
+  }
+
   dispose(): void {
     this.disposed = true;
     for (const st of this.states.values()) this.clearDebounce(st);
@@ -743,6 +766,7 @@ export class CommanderEventCoalescer {
         watermark: 0,
         autoWakesUsed: 0,
         wakeTimestamps: [],
+        hourWakeTimestamps: [],
         snapshotSurfacedComplete: new Set(),
         pendingDecisionLoggedAt: -Infinity,
         pendingDecisionLoggedId: null,
@@ -792,14 +816,36 @@ export class CommanderEventCoalescer {
   }
 
   /** True when this workspace has already hit its sliding-window ceiling. */
-  private isRateLimited(st: WsState, now: number): boolean {
+  private isRateLimited(st: WsState, now: number, workspaceId: string): boolean {
     this.pruneWakeTimestamps(st, now);
-    return st.wakeTimestamps.length >= this.maxWakesPerMin;
+    return st.wakeTimestamps.length >= this.maxWakesPerMin || this.isHourLimited(st, now, workspaceId);
+  }
+
+  /** The hourly cap for this workspace, or null when none applies. */
+  private hourCap(workspaceId: string): number | null {
+    try {
+      const cap = this.deps.getMaxWakesPerHour?.(workspaceId) ?? null;
+      return cap !== null && Number.isFinite(cap) && cap >= 1 ? Math.floor(cap) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private isHourLimited(st: WsState, now: number, workspaceId: string): boolean {
+    const cap = this.hourCap(workspaceId);
+    if (cap === null) return false;
+    const cutoff = now - HOUR_WINDOW_MS;
+    while (st.hourWakeTimestamps.length > 0 && st.hourWakeTimestamps[0] <= cutoff) st.hourWakeTimestamps.shift();
+    return st.hourWakeTimestamps.length >= cap;
   }
 
   /** Record one ACCEPTED wake against the ceiling (edge OR snapshot). */
   private recordWake(st: WsState, now: number): void {
     st.wakeTimestamps.push(now);
+    // Bounded by the per-minute ceiling × 60 even when no hourly cap applies.
+    const cutoff = now - HOUR_WINDOW_MS;
+    while (st.hourWakeTimestamps.length > 0 && st.hourWakeTimestamps[0] <= cutoff) st.hourWakeTimestamps.shift();
+    st.hourWakeTimestamps.push(now);
   }
 
   /** Re-arm the retired-`complete` set against the current level state (issue
@@ -839,7 +885,10 @@ export class CommanderEventCoalescer {
 
   /** ms until the oldest in-window wake ages out and the window next opens.
    *  A small +1 epsilon so the retry lands strictly after the boundary. */
-  private rateRetryDelay(st: WsState, now: number): number {
+  private rateRetryDelay(st: WsState, now: number, workspaceId: string): number {
+    if (this.isHourLimited(st, now, workspaceId)) {
+      return Math.max(1, st.hourWakeTimestamps[0] + HOUR_WINDOW_MS - now + 1);
+    }
     if (st.wakeTimestamps.length === 0) return this.debounceMs;
     return Math.max(1, st.wakeTimestamps[0] + RATE_WINDOW_MS - now + 1);
   }
@@ -1107,9 +1156,9 @@ export class CommanderEventCoalescer {
     // and re-arm a belt timer for exactly when the window next slides — mirroring
     // the budget-blocked posture, but self-healing without a new event.
     const now = this.nowFn();
-    if (this.isRateLimited(st, now)) {
+    if (this.isRateLimited(st, now, workspaceId)) {
       st.phase = 'rate-limited';
-      this.armBeltTimer(workspaceId, st, this.rateRetryDelay(st, now));
+      this.armBeltTimer(workspaceId, st, this.rateRetryDelay(st, now, workspaceId));
       return;
     }
     if (this.deps.isBusy(workspaceId)) {

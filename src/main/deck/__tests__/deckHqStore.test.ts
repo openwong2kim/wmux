@@ -3,8 +3,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  brainEligible,
+  DEFAULT_HQ_MAX_TURNS_PER_HOUR,
+  getHqMaxTurnsPerHour,
   getHqWorkspaceId,
   hqAllowsBrain,
+  isMoaEnabled,
+  setMoaEnabled,
   isHqMigrationDone,
   isHqWorkspaceMissing,
   loadArchivedHqDecisions,
@@ -76,6 +81,32 @@ describe('deckHqStore — eligibility matrix', () => {
     ['ws-a', 'ws-hq', false],
   ] as const)('hqAllowsBrain(%s, hq=%s) = %s', (ws, hq, allowed) => {
     expect(hqAllowsBrain(ws, hq)).toBe(allowed);
+  });
+});
+
+describe('deckHqStore — master switch', () => {
+  it('defaults to on with the default HQ turn cap', () => {
+    expect(isMoaEnabled(dir)).toBe(true);
+    expect(getHqMaxTurnsPerHour(dir)).toBe(DEFAULT_HQ_MAX_TURNS_PER_HOUR);
+    expect(DEFAULT_HQ_MAX_TURNS_PER_HOUR).toBe(12);
+  });
+
+  it('brainEligible is false for every workspace while off, and comes back unchanged when on', async () => {
+    await setHqWorkspaceId('ws-hq', dir);
+    expect([brainEligible('ws-hq', dir), brainEligible('ws-a', dir)]).toEqual([true, false]);
+    await setMoaEnabled(false, dir);
+    expect([brainEligible('ws-hq', dir), brainEligible('ws-a', dir)]).toEqual([false, false]);
+    await setHqWorkspaceId(null, dir);
+    expect(brainEligible('ws-a', dir)).toBe(false);
+    await setMoaEnabled(true, dir);
+    expect(brainEligible('ws-a', dir)).toBe(true);
+  });
+
+  it('keeps the HQ designation across a switch round-trip', async () => {
+    await setHqWorkspaceId('ws-hq', dir);
+    await setMoaEnabled(false, dir);
+    await setMoaEnabled(true, dir);
+    expect(getHqWorkspaceId(dir)).toBe('ws-hq');
   });
 });
 

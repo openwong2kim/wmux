@@ -12,6 +12,17 @@
 // One JSON file (`deck-hq.json`) in the wmux data dir, atomic-written and
 // WMUX_DATA_SUFFIX-isolated — the same storage shape as deck-autonomy.json.
 //
+// MASTER SWITCH (`moaEnabled`): the main bot as a whole. Absent = on, which is
+// today's behaviour. Off makes the deck brain fully inert: no workspace is
+// brain-eligible, no brain adapter is constructed (so no process, no commander
+// token, no brain-pty hook registration), and the handler stops the heartbeat
+// and the scheduler. Nothing is deleted, so turning it back on restores the
+// previous state.
+//
+// HQ TURN CAP (`hqMaxTurnsPerHour`): with an HQ designated, its coalescer wakes
+// are capped per trailing hour (default 12) on top of the per-minute ceiling.
+// No HQ designated → no hourly cap, as today.
+//
 // UNREADABLE FILE: atomicReadJSONSync already falls back to the backup copy, so
 // only a file whose primary AND backup are both unreadable lands here. It reads
 // as UNSET (today's behaviour) with one warning, rather than inventing an HQ id
@@ -34,6 +45,9 @@ const WORKSPACE_ID_RE = /^[A-Za-z0-9._-]{1,80}$/;
 /** Non-HQ pending decisions archived by the migration, kept for reference. */
 const MAX_ARCHIVED_DECISIONS = 200;
 
+/** Default hourly cap on the HQ's coalescer wakes. */
+export const DEFAULT_HQ_MAX_TURNS_PER_HOUR = 12;
+
 export interface ArchivedHqDecision {
   workspaceId: string;
   decision: WorkspaceDecision;
@@ -42,6 +56,10 @@ export interface ArchivedHqDecision {
 
 interface HqFile {
   hqWorkspaceId: string | null;
+  /** Master switch; absent = on. */
+  moaEnabled?: boolean;
+  /** Hourly cap on the HQ's coalescer wakes; absent = the default. */
+  hqMaxTurnsPerHour?: number;
   /** Set once the one-time non-HQ migration has completed. */
   migration?: { doneAt: number; hqWorkspaceId: string };
   archivedDecisions?: ArchivedHqDecision[];
@@ -71,6 +89,10 @@ function loadFile(dir?: string): HqFile {
     ? o.hqWorkspaceId
     : null;
   const out: HqFile = { hqWorkspaceId: hq };
+  if (typeof o.moaEnabled === 'boolean') out.moaEnabled = o.moaEnabled;
+  if (typeof o.hqMaxTurnsPerHour === 'number' && Number.isInteger(o.hqMaxTurnsPerHour) && o.hqMaxTurnsPerHour >= 1) {
+    out.hqMaxTurnsPerHour = o.hqMaxTurnsPerHour;
+  }
   const m = o.migration as Record<string, unknown> | undefined;
   if (m && typeof m.doneAt === 'number' && typeof m.hqWorkspaceId === 'string') {
     out.migration = { doneAt: m.doneAt, hqWorkspaceId: m.hqWorkspaceId };
@@ -84,6 +106,25 @@ function loadFile(dir?: string): HqFile {
 /** The designated HQ workspace id, or null when none is designated. Never throws. */
 export function getHqWorkspaceId(dir?: string): string | null {
   return loadFile(dir).hqWorkspaceId;
+}
+
+/** The master switch. Absent or unreadable = on (today's behaviour). */
+export function isMoaEnabled(dir?: string): boolean {
+  return loadFile(dir).moaEnabled !== false;
+}
+
+/** Persist the master switch. Stores only; the handler stops/starts the runtime. */
+export async function setMoaEnabled(enabled: boolean, dir?: string): Promise<boolean> {
+  return serialize(async () => {
+    const file = loadFile(dir);
+    await atomicWriteJSON(getDeckHqPath(dir), { ...file, moaEnabled: enabled });
+    return enabled;
+  });
+}
+
+/** The hourly wake cap for the HQ. */
+export function getHqMaxTurnsPerHour(dir?: string): number {
+  return loadFile(dir).hqMaxTurnsPerHour ?? DEFAULT_HQ_MAX_TURNS_PER_HOUR;
 }
 
 /** True once the one-time non-HQ migration has completed. */
@@ -103,6 +144,16 @@ export function loadArchivedHqDecisions(dir?: string): ArchivedHqDecision[] {
  */
 export function hqAllowsBrain(workspaceId: string, hq: string | null): boolean {
   return hq === null || workspaceId === hq;
+}
+
+/**
+ * The store half of brain eligibility, applied at every site that decides
+ * whether a workspace may run a brain: the master switch, then the HQ gate.
+ * With the switch on and no HQ designated it is true for every workspace.
+ */
+export function brainEligible(workspaceId: string, dir?: string): boolean {
+  const file = loadFile(dir);
+  return file.moaEnabled !== false && hqAllowsBrain(workspaceId, file.hqWorkspaceId);
 }
 
 /**
