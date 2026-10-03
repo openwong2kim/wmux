@@ -1087,6 +1087,7 @@ export const pl = {
   'accounts.quotaOutUntil': "Ponownie dostępne o {time}",
   'accounts.quotaUnknown': "limit jeszcze niezmierzony",
   'accounts.quotaLeft': "pozostało {pct}",
+  'accounts.rotateTerms': "Odpowiadasz za przestrzeganie warunków każdego dostawcy.",
   'accounts.loginStatusFailed': 'Nie udało się sprawdzić bieżącego logowania „{name}”, więc nowego logowania nie da się bezpiecznie wykryć. Spróbuj ponownie.',
   'settings.shortcuts': 'Skróty klawiszowe',
   'settings.shortcutDisableHint': 'Wł.: wmux obsługuje ten klawisz. Wył.: klawisz trafia do terminala.',

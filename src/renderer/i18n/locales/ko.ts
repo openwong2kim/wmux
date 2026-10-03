@@ -2226,6 +2226,7 @@ export const ko = {
   'accounts.quotaOutUntil': "{time}에 다시 사용 가능",
   'accounts.quotaUnknown': "할당량 미측정",
   'accounts.quotaLeft': "{pct} 남음",
+  'accounts.rotateTerms': "각 제공자의 약관 준수는 사용자 책임입니다.",
   'accounts.loginStatusFailed': '“{name}”의 현재 로그인을 확인하지 못해 새 로그인을 안전하게 감지할 수 없습니다. 다시 시도하세요.',
   'remotePage.title': "리모트",
   'remotePage.share': "공유 및 페어링…",

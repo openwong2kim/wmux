@@ -411,6 +411,7 @@ export const zh = {
   'accounts.quotaOutUntil': "{time} 后可再次使用",
   'accounts.quotaUnknown': "尚未测量配额",
   'accounts.quotaLeft': "剩余 {pct}",
+  'accounts.rotateTerms': "遵守各提供方的条款是你自己的责任。",
   'accounts.loginStatusFailed': '无法检查“{name}”当前的登录状态，因此无法可靠地检测新的登录。请重试。',
   'settings.shortcuts': '键盘快捷键',
   'settings.shortcutDisableHint': '开：wmux 处理该按键。关：按键将传递给终端。',

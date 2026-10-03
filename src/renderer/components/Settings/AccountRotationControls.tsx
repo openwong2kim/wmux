@@ -47,6 +47,7 @@ export function AccountRotationControls({ state, reload }: { state: RotationStat
         </div>
       ))}
       <p className="settings-note">{t('accounts.rotateDesc')}</p>
+      <p className="settings-note">{t('accounts.rotateTerms')}</p>
     </>
   );
 }

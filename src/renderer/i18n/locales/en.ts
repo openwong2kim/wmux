@@ -1101,6 +1101,7 @@ export const en = {
   'accounts.quotaOutUntil': "Usable again at {time}",
   'accounts.quotaUnknown': "quota not measured yet",
   'accounts.quotaLeft': "{pct} left",
+  'accounts.rotateTerms': "You are responsible for following each provider's terms.",
   'accounts.loginStatusFailed': "Couldn't check the current login for “{name}”, so a new login can't be detected safely. Try again.",
   'settings.shortcuts': 'Keyboard shortcuts',
   // #1152 — checkbox on each advertised row; unchecked = the built-in is
