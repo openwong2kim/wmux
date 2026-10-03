@@ -102,6 +102,8 @@ export class AccountRotationService {
    *  be running there. A later keep/hold for another pane does not remove one. */
   private readonly launched = new Map<string, Set<string>>();
   private readonly listeners = new Set<() => void>();
+  /** Settings writes run one at a time, each from the previous one's result. */
+  private writes: Promise<void> = Promise.resolve();
 
   constructor(private readonly deps: AccountRotationDeps = {}) {
     this.filePath = path.join(deps.dataDir ?? getWmuxDir(), 'account-rotation.json');
@@ -126,7 +128,13 @@ export class AccountRotationService {
     return { ...this.settings };
   }
 
-  async setEnabled(vendor: Vendor, on: boolean): Promise<void> {
+  setEnabled(vendor: Vendor, on: boolean): Promise<void> {
+    const write = this.writes.then(() => this.writeEnabled(vendor, on));
+    this.writes = write.catch(() => undefined);
+    return write;
+  }
+
+  private async writeEnabled(vendor: Vendor, on: boolean): Promise<void> {
     const next = { ...this.getSettings(), [vendor]: on };
     await atomicWriteJSON(this.filePath, next);
     this.settings = next;

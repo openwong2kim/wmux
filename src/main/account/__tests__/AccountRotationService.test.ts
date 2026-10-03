@@ -182,6 +182,13 @@ describe('AccountRotationService', () => {
     expect(await s.prepareLaunch('claude', 'ws')).toEqual({ kind: 'keep' });
   });
 
+  it('keeps both switches when they are toggled at the same time', async () => {
+    const s = make([]);
+    await Promise.all([s.setEnabled('claude', true), s.setEnabled('codex', true)]);
+    expect(s.getSettings()).toEqual({ claude: true, codex: true });
+    expect(make([]).getSettings()).toEqual({ claude: true, codex: true });
+  });
+
   it('persists the per-vendor switch', async () => {
     await make([]).setEnabled('codex', true);
     expect(make([]).getSettings()).toEqual({ claude: false, codex: true });
