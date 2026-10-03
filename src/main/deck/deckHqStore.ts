@@ -38,7 +38,6 @@ import { loadDeckDecisions, clearDecision, type WorkspaceDecision } from './deck
 import { loadLiveDeckWorks, archiveDeckWork, clearActiveDeckWork } from './deckWorkStore';
 import { loadWorkspaceMode, modeToCaps, setWorkspaceAutonomy } from './deckAutonomyStore';
 import { getWorkspaceMirror } from '../workspace/WorkspaceMirror';
-import { DEFAULT_MAX_SNAPSHOT_AGE_MS } from './stopGate';
 
 const WORKSPACE_ID_RE = /^[A-Za-z0-9._-]{1,80}$/;
 
@@ -156,22 +155,38 @@ export function brainEligible(workspaceId: string, dir?: string): boolean {
   return file.moaEnabled !== false && hqAllowsBrain(workspaceId, file.hqWorkspaceId);
 }
 
+/** How old the workspace mirror may be for an absence to count: three of the
+ *  renderer's 30s periodic refreshes, so timer jitter never flips the answer. */
+const HQ_MIRROR_MAX_AGE_MS = 90_000;
+
+/** The HQ id this process has seen listed in the mirror at least once. */
+let hqSeenInMirror: string | null = null;
+
 /**
- * The HQ is designated but its workspace is gone. Only a mirror that can be
- * trusted to list every workspace answers true — the renderer restored its
- * saved session, pushed a non-empty list, and pushed it recently — so a cold
+ * The HQ is designated but its workspace is gone. Only a recent, non-empty
+ * mirror counts, and its absence must be trustworthy: either the renderer
+ * restored its saved session (so its ids are the ones on disk), or this
+ * process has already seen the HQ listed (so it was removed since). A cold
  * boot (no push yet) or a failed session load never reads as "missing".
  */
 export function isHqWorkspaceMissing(
   hq: string | null,
   mirror: Pick<ReturnType<typeof getWorkspaceMirror>, 'peek' | 'isSessionRestored'> = getWorkspaceMirror(),
-  maxAgeMs: number = DEFAULT_MAX_SNAPSHOT_AGE_MS,
+  maxAgeMs: number = HQ_MIRROR_MAX_AGE_MS,
 ): boolean {
   if (hq === null) return false;
   const peek = mirror.peek();
   if (!peek || peek.entries.length === 0 || peek.ageMs > maxAgeMs) return false;
-  if (!mirror.isSessionRestored()) return false;
-  return !peek.entries.some((e) => e.id === hq);
+  if (peek.entries.some((e) => e.id === hq)) {
+    hqSeenInMirror = hq;
+    return false;
+  }
+  return mirror.isSessionRestored() || hqSeenInMirror === hq;
+}
+
+/** Tests only. */
+export function __resetHqMirrorMemoryForTest(): void {
+  hqSeenInMirror = null;
 }
 
 // ── Runtime hook (registered by the deck handler, which owns the brains) ────

@@ -10,6 +10,7 @@ import {
   hqAllowsBrain,
   isMoaEnabled,
   setMoaEnabled,
+  __resetHqMirrorMemoryForTest,
   isHqMigrationDone,
   isHqWorkspaceMissing,
   loadArchivedHqDecisions,
@@ -28,6 +29,7 @@ const quiet = (): void => undefined;
 
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-hq-test-'));
+  __resetHqMirrorMemoryForTest();
 });
 
 afterEach(() => {
@@ -126,7 +128,15 @@ describe('deckHqStore — hq-missing', () => {
     expect(isHqWorkspaceMissing('ws-hq', mirror(null))).toBe(false); // no push yet
     expect(isHqWorkspaceMissing('ws-hq', mirror([]))).toBe(false); // empty list
     expect(isHqWorkspaceMissing('ws-hq', mirror(['ws-a'], false))).toBe(false); // session not restored
-    expect(isHqWorkspaceMissing('ws-hq', mirror(['ws-a'], true, 60_000), 30_000)).toBe(false); // stale
+    expect(isHqWorkspaceMissing('ws-hq', mirror(['ws-a'], true, 120_000))).toBe(false); // stale
+  });
+
+  it('without a restored session, is missing only once this process has seen the HQ listed', () => {
+    expect(isHqWorkspaceMissing('ws-hq', mirror(['ws-a'], false))).toBe(false);
+    expect(isHqWorkspaceMissing('ws-hq', mirror(['ws-hq', 'ws-a'], false))).toBe(false);
+    expect(isHqWorkspaceMissing('ws-hq', mirror(['ws-a'], false))).toBe(true);
+    // Another HQ id is not covered by what was seen for the first.
+    expect(isHqWorkspaceMissing('ws-other', mirror(['ws-a'], false))).toBe(false);
   });
 });
 

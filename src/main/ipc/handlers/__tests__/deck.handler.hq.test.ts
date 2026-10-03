@@ -105,7 +105,13 @@ import type { BrainAdapter, BrainEvent } from '../../../deck/BrainAdapter';
 import { CommanderEventCoalescer } from '../../../deck/CommanderEventCoalescer';
 import { eventBus } from '../../../events/EventBus';
 import { getWorkspaceMirror, __resetWorkspaceMirrorForTest } from '../../../workspace/WorkspaceMirror';
-import { getHqWorkspaceId, isMoaEnabled, setHqWorkspaceId, setMoaEnabled } from '../../../deck/deckHqStore';
+import {
+  __resetHqMirrorMemoryForTest,
+  getHqWorkspaceId,
+  isMoaEnabled,
+  setHqWorkspaceId,
+  setMoaEnabled,
+} from '../../../deck/deckHqStore';
 import { mintCommanderToken } from '../../../deck/commanderTrust';
 import { registerBrainPty } from '../../../deck/brainPtyHookBus';
 
@@ -170,6 +176,7 @@ beforeEach(async () => {
   routedHasBrain = null;
   mockMode = 'danger';
   __resetWorkspaceMirrorForTest();
+  __resetHqMirrorMemoryForTest();
   vi.spyOn(console, 'log').mockImplementation(() => undefined);
   await setHqWorkspaceId(null);
   await setMoaEnabled(true);
