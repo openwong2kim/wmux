@@ -1,11 +1,14 @@
-// Sidebar Git section — Pull Requests row (gh CLI 기반, 성긴 pull).
+// Git page — a repo's Pull requests (gh CLI 기반, 성긴 pull).
 //
-// A folded row ("Pull requests · N") under the current-branch card; opening it
-// lists the PRs, and each PR expands to its comments. The Git section's header
-// refresh reaches it through `refreshKey`.
+// A disclosure row ("Pull requests · N") over the list; each PR expands to its
+// comments. The page's refresh reaches it through `refreshKey`.
 //
-// How live it is: a 30s poll only while the PR row is open and on screen,
-// plus the manual refresh, plus an immediate comment fetch when a PR opens.
+// How live it is: a 30s poll only while the list is open on the Git page and
+// the window is visible (and only for the active repo: other repos' lists are
+// `lazy`, read once when opened, and never poll), plus the manual refresh,
+// plus an immediate comment fetch when a PR opens. Every response checks a
+// generation that leaving the page or hiding the window bumps, so a late
+// answer neither lands nor starts a follow-up request.
 // main's cache (GhPrService) has a 30s TTL and skips re-fetching comments
 // while updatedAt is unchanged, which bounds the rate limit.
 //
@@ -70,11 +73,15 @@ function relTime(iso: string, t: (k: string) => string): string {
   return `${Math.floor(h / 24)}d`;
 }
 
-export function PrSection({ repoPath, refreshKey = 0, defaultOpen = false }: {
+export function PrSection({ repoPath, refreshKey = 0, defaultOpen = false, poll = true, lazy = false }: {
   repoPath: string | null;
   refreshKey?: number;
   /** Open on mount (the Git page has room for the list). */
   defaultOpen?: boolean;
+  /** Whether the open list polls (only the active repo's does). */
+  poll?: boolean;
+  /** Read nothing until first opened, then once (another repo's list). */
+  lazy?: boolean;
 }): React.ReactElement | null {
   const t = useT();
   const [state, setState] = useState<ListState>({ kind: 'loading' });
@@ -83,6 +90,11 @@ export function PrSection({ repoPath, refreshKey = 0, defaultOpen = false }: {
   // shown to copy instead.
   const [loginFallback, setLoginFallback] = useState(false);
   const [copied, setCopied] = useState(false);
+  // One sign-in tab per click: the button is off while one is opening.
+  const [connecting, setConnecting] = useState(false);
+  // Request generation: bumped on unmount and when the window hides, so a late
+  // response is dropped and starts nothing.
+  const gen = useRef(0);
   const [expanded, setExpanded] = useState<number | null>(null);
   const [comments, setComments] = useState<PrComment[] | null>(null);
   const [commentsLoading, setCommentsLoading] = useState(false);
@@ -102,9 +114,10 @@ export function PrSection({ repoPath, refreshKey = 0, defaultOpen = false }: {
     if (!bridge) return;
     setCommentsLoading(true);
     setCommentsError(null);
+    const g = gen.current;
     const res = await bridge.prDetail(repo, pr.number, pr.updatedAt);
     // repo/expanded가 그새 바뀌었으면 폐기(stale 응답).
-    if (repoRef.current !== repo) return;
+    if (g !== gen.current || repoRef.current !== repo) return;
     setCommentsLoading(false);
     if (res.ok) {
       expandedUpdatedAt.current = pr.updatedAt;
@@ -122,10 +135,11 @@ export function PrSection({ repoPath, refreshKey = 0, defaultOpen = false }: {
     const bridge = getGithubBridge();
     if (!bridge) return;
     inFlight.current = true;
+    const g = gen.current;
     try {
       const res = await bridge.prList(repo, force);
       // repo가 그새 바뀌었으면 옛 결과로 새 화면을 덮지 않는다(Codex P2).
-      if (repoRef.current !== repo) return;
+      if (g !== gen.current || repoRef.current !== repo) return;
       if (res.ok) {
         setState({ kind: 'ready', prs: res.prs });
         // 펼친 PR의 updatedAt이 바뀌었으면 그 코멘트를 재조회(Codex P2).
@@ -141,16 +155,18 @@ export function PrSection({ repoPath, refreshKey = 0, defaultOpen = false }: {
     }
   }, [repoPath, expanded, fetchComments]);
 
-  // One read on mount / repo change, for the count on the folded row.
+  // One read on mount / repo change, for the count — unless lazy, which waits
+  // to be opened.
   useEffect(() => {
     setState({ kind: 'loading' });
     setExpanded(null);
     setComments(null);
     setCommentsError(null);
     expandedUpdatedAt.current = '';
-    if (!repoPath) return;
+    if (!repoPath || lazy) return;
     void load();
   }, [repoPath]);
+  useEffect(() => () => { gen.current++; }, []);
 
   // The 30s poll runs only while someone can see the list: the row is open,
   // the Git page is the one shown, and the window is not hidden. Otherwise
@@ -158,13 +174,23 @@ export function PrSection({ repoPath, refreshKey = 0, defaultOpen = false }: {
   const onGitPage = useStore((s) => s.appRoute === 'git');
   const [windowShown, setWindowShown] = useState(() => !document.hidden);
   useEffect(() => {
-    const onChange = () => setWindowShown(!document.hidden);
+    const onChange = () => {
+      if (document.hidden) gen.current++;
+      setWindowShown(!document.hidden);
+    };
     document.addEventListener('visibilitychange', onChange);
     return () => document.removeEventListener('visibilitychange', onChange);
   }, []);
   const loadRef = useRef(load);
   loadRef.current = load;
-  const polling = !!repoPath && open && onGitPage && windowShown;
+  // A lazy list reads once, the first time it is opened.
+  const lazyRead = useRef(false);
+  useEffect(() => {
+    if (!lazy || !open || lazyRead.current || !repoPath) return;
+    lazyRead.current = true;
+    void loadRef.current();
+  }, [lazy, open, repoPath]);
+  const polling = poll && !!repoPath && open && onGitPage && windowShown;
   useEffect(() => {
     if (!polling) return;
     void loadRef.current();
@@ -223,22 +249,41 @@ export function PrSection({ repoPath, refreshKey = 0, defaultOpen = false }: {
         </div>
       )}
 
-      {state.kind === 'gated' && state.provider === 'github' && (state.code === 'cli-missing' || state.code === 'unauthenticated') && (
+      {state.kind === 'gated' && state.provider === 'github' && state.code === 'cli-missing' && (
+        // gh is not installed: signing in cannot work yet, so only the way to
+        // get it and a re-check (which probes past the main-side cache).
+        <div className="wmux-git-connect" data-git-install>
+          <p className="wmux-git-connect-title">{t('git.connect.installTitle')}</p>
+          <p className="wmux-git-connect-desc">{t('git.connect.installDesc')}</p>
+          <div className="wmux-git-connect-actions">
+            <button type="button" className={`wmux-git-button ${FOCUS_RING}`} onClick={() => void load(true)} data-git-connect-recheck>
+              {t('git.connect.recheck')}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {state.kind === 'gated' && state.provider === 'github' && state.code === 'unauthenticated' && (
         // Not connected: one way in. gh signs in through the browser and keeps
         // the credential itself; nothing is stored here.
         <div className="wmux-git-connect" data-git-connect>
           <p className="wmux-git-connect-title">{t('git.connect.title')}</p>
-          <p className="wmux-git-connect-desc">
-            {state.code === 'cli-missing' ? t('git.ghMissing') : t('git.connect.desc')}
-          </p>
+          <p className="wmux-git-connect-desc">{t('git.connect.desc')}</p>
           <div className="wmux-git-connect-actions">
             <button
               type="button"
               className={`wmux-git-primary ${FOCUS_RING}`}
               data-git-connect-button
+              disabled={connecting}
               onClick={async () => {
-                const ok = await openGithubLoginTab(t('git.connect.tabTitle'));
-                if (!ok) setLoginFallback(true);
+                if (connecting) return;
+                setConnecting(true);
+                try {
+                  const ok = await openGithubLoginTab(t('git.connect.tabTitle'));
+                  if (!ok) setLoginFallback(true);
+                } finally {
+                  setConnecting(false);
+                }
               }}
             >
               {t('git.connect.button')}

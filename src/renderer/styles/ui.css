@@ -2125,6 +2125,9 @@ html[data-fullscreen] .wmux-shell-body {
 .wmux-git-sections { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 28px; align-items: start; }
 @container (max-width: 900px) { .wmux-git-sections { grid-template-columns: minmax(0, 1fr); } }
 .wmux-git-col { min-width: 0; }
+.wmux-git-sections-single { grid-template-columns: minmax(0, 1fr); }
+.wmux-git-checkout + .wmux-git-checkout { margin-top: 16px; }
+.wmux-git-checkout-title { margin: 0 0 4px; padding: 0 4px; font-size: 12px; font-weight: 500; color: var(--text-sub); font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); }
 .wmux-git-groups { display: flex; flex-direction: column; gap: 28px; margin-top: 20px; }
 .wmux-git-group-title { display: flex; align-items: baseline; gap: 8px; margin: 0 0 8px; font-size: 14px; font-weight: 600; color: var(--text-main); }
 .wmux-git-group-meta { font-size: 12px; font-weight: 400; color: var(--text-muted); }

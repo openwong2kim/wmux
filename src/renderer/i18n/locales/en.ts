@@ -2267,6 +2267,8 @@ export const en = {
   'git.connect.copy': 'Copy',
   'git.connect.copied': 'Copied',
   'git.connect.tabTitle': 'GitHub sign-in',
+  'git.connect.installTitle': 'Install the GitHub CLI',
+  'git.connect.installDesc': 'Pull requests come from the GitHub CLI (gh), which is not installed. Install it from cli.github.com, then check again.',
   'statusBar.openGit': 'Open the Git page',
   'git.merge': 'Merge',
   'git.mergeDesc': 'Merge this worktree into the base branch (isolated, verified)',

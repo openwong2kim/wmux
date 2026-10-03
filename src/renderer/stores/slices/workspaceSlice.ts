@@ -1071,6 +1071,12 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       // feeds the union starts empty anyway.
       for (const ws of data.workspaces) {
         if (ws.metadata?.listeningPorts !== undefined) delete ws.metadata.listeningPorts;
+        // The PR status and git sync are live readings too: restored as
+        // saved, an old PR's failing run would light the Git rail dot after a
+        // restart, and a pane that never reports again would keep it forever.
+        // main pushes fresh ones as the panes report.
+        if (ws.metadata?.pr !== undefined) delete ws.metadata.pr;
+        if (ws.metadata?.gitSync !== undefined) delete ws.metadata.gitSync;
       }
 
       state.workspaces = data.workspaces;

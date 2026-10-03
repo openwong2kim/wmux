@@ -2,7 +2,7 @@
 // PrStatusCache 테스트 스타일). + PrProvider의 remote 호스트 분류.
 import { describe, it, expect, vi } from 'vitest';
 import { GhPrService, mapGhListItem, mapGhDetail } from '../GhPrService';
-import { parseRemoteHost, isGithubHost } from '../PrProvider';
+import { parseRemoteHost, parseRemoteKey, isGithubHost } from '../PrProvider';
 import { PR_COMMENT_BODY_CAP } from '../../../shared/prSurface';
 
 type ExecCall = { cmd: string; args: string[] };
@@ -122,12 +122,36 @@ describe('mapGhListItem / mapGhDetail — 매핑 계약', () => {
 });
 
 describe('GhPrService — 게이트', () => {
-  it('gh ENOENT → cli-missing, 프로세스 수명 동안 재프로브 없음', async () => {
+  it('gh ENOENT → cli-missing, believed for the TTL (no re-probe inside it)', async () => {
     const enoent = Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' });
     const { svc, calls } = makeService(() => enoent);
     expect((await svc.gate('D:/r')).ok).toBe(false);
     expect((await svc.gate('D:/r')).ok).toBe(false);
-    expect(calls.length).toBe(1); // 두 번째 gate는 exec 자체를 안 탐.
+    expect(calls.length).toBe(1); // the second gate does not run gh at all
+  });
+
+  it('installing gh after a miss recovers: Check again (force) re-probes, and so does the TTL', async () => {
+    const enoent = Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' });
+    let installed = false;
+    const nowRef = { t: 0 };
+    const { svc } = makeService(() => (installed ? { stdout: 'ok' } : enoent), nowRef);
+    expect(await svc.gate('D:/r')).toMatchObject({ ok: false, reason: 'cli-missing' });
+    installed = true;
+    expect((await svc.gate('D:/r')).ok).toBe(false); // still believed missing
+    expect((await svc.gate('D:/r', undefined, true)).ok).toBe(true); // Check again
+    // A fresh service recovers by itself once the TTL passes.
+    installed = false;
+    const second = makeService(() => (installed ? { stdout: 'ok' } : enoent), nowRef);
+    expect((await second.svc.gate('D:/r')).ok).toBe(false);
+    installed = true;
+    nowRef.t += 5 * 60 * 1000;
+    expect((await second.svc.gate('D:/r')).ok).toBe(true);
+  });
+
+  it('caches the version and auth probes, so many repos cost one of each', async () => {
+    const { svc, calls } = makeService(() => ({ stdout: 'ok' }));
+    for (let i = 0; i < 5; i++) expect((await svc.gate(`D:/r${i}`)).ok).toBe(true);
+    expect(calls.map((c) => c.args[0])).toEqual(['--version', 'auth']);
   });
 
   it('버전 OK + auth 실패 → unauthenticated', async () => {
@@ -208,5 +232,27 @@ describe('parseRemoteHost / isGithubHost — provider 라우팅 재료', () => {
     expect(isGithubHost('github.com')).toBe(true);
     expect(isGithubHost('gitlab.com')).toBe(false);
     expect(isGithubHost('gitlab.company.io')).toBe(false);
+  });
+});
+
+describe('parseRemoteKey', () => {
+  it('gives every spelling of one remote the same key', () => {
+    const want = 'github.com/openwong2kim/wmux';
+    expect(parseRemoteKey('https://github.com/openwong2kim/wmux.git')).toBe(want);
+    expect(parseRemoteKey('git@github.com:OpenWong2kim/wmux.git')).toBe(want);
+    expect(parseRemoteKey('ssh://git@github.com/openwong2kim/wmux')).toBe(want);
+    expect(parseRemoteKey('https://token@github.com/openwong2kim/wmux/')).toBe(want);
+  });
+  it('is null without an owner/repo path', () => {
+    expect(parseRemoteKey('')).toBeNull();
+    expect(parseRemoteKey('https://github.com/')).toBeNull();
+  });
+});
+
+describe('GhPrService — remote-keyed list cache', () => {
+  it('two clones of one repo share one fetch', async () => {
+    const { svc, calls } = makeService((args) => (args[0] === 'pr' ? { stdout: '[]' } : { stdout: '' }));
+    await Promise.all([svc.listPrs('/a/wmux', false, 'github.com/o/wmux'), svc.listPrs('/tmp/clone', false, 'github.com/o/wmux')]);
+    expect(calls.filter((c) => c.args[0] === 'pr').length).toBe(1);
   });
 });

@@ -2244,6 +2244,8 @@ export const pl = {
   'git.connect.copy': 'Kopiuj',
   'git.connect.copied': 'Skopiowano',
   'git.connect.tabTitle': 'Logowanie do GitHub',
+  'git.connect.installTitle': 'Zainstaluj GitHub CLI',
+  'git.connect.installDesc': 'Pull requesty pochodzą z GitHub CLI (gh), który nie jest zainstalowany. Zainstaluj go z cli.github.com i sprawdź ponownie.',
   'statusBar.openGit': 'Otwórz stronę Git',
   'git.merge': 'Scal',
   'git.mergeDesc': 'Scal ten worktree z gałęzią bazową (w izolacji, z weryfikacją)',

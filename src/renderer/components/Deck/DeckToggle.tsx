@@ -26,8 +26,8 @@ import { showWorkspaces } from '../../utils/showWorkspaces';
 
 /**
  * Whether the collapsed deck holds anything worth opening it for: unread
- * channel messages. Dirty worktrees used to light it too, but Git lives in the
- * sidebar now (2026-10-03), so opening the deck would not show them. At zero
+ * channel messages. Dirty worktrees used to light it too, but Git is a page on
+ * the rail now (2026-10-03), so opening the deck would not show them. At zero
  * there is no dot at all (DESIGN.md's no-dead-gauges rule).
  */
 export function deckHasSignal(unread: number): boolean {

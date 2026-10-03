@@ -10,6 +10,7 @@ import { createElement, act, type FC } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { useStore } from '../../../stores';
 import { GitTab } from '../GitTab';
+import { clearGitCaches } from '../repoCache';
 import type { SessionData, Workspace } from '../../../../shared/types';
 
 // The active pane's cwd — if the prop wins, resolveRepo should receive the prop, not this value.
@@ -34,6 +35,7 @@ const list = vi.fn((repoPath: string) =>
   Promise.resolve({ ok: true, repoPath, mainPath: repoPath, worktrees: [] }));
 
 beforeEach(() => {
+  clearGitCaches();
   resolveRepo.mockClear();
   list.mockClear();
   (window as unknown as { electronAPI: unknown }).electronAPI = {

@@ -1,12 +1,13 @@
-// ─── Sidebar Git section body — the active repo's git surface ────────────────
+// ─── Git page body — a repo's git surface ────────────────────────────────────
 //
 // Repo context = the active pane's live cwd (OSC 7-tracked surface.cwd),
 // normalized to its worktree toplevel by diff:resolveRepo — the same
-// resolution the workspace-diff palette command uses. Pull-only: fetch on
-// mount / workspace switch / manual refresh / after each mutation. git is the
-// source of truth on disk, so there is nothing to persist or push here. The
-// section unmounts this body while it is collapsed, so a folded section reads
-// nothing.
+// resolution the workspace-diff palette command uses — or, for an All repos
+// group, a fixed repo path. Pull-only: fetch on mount / workspace switch /
+// manual refresh / after each mutation, and only while the Git page is shown
+// and the window visible (hiding it drops whatever is in flight; showing it
+// again reloads). git is the source of truth on disk, so there is nothing to
+// persist or push here.
 //
 // Lived in the tools panel as the Git tab with the Review section under it
 // until 2026-10-03; the two lists are now one: a row per worktree, saying
@@ -35,13 +36,12 @@ import { PrSection } from './PrSection';
 import { PrBadge } from '../Sidebar/WorkspaceItem';
 import { isPlausibleCwd } from '../../../shared/cwdShape';
 import { showWorkspaces } from '../../utils/showWorkspaces';
+import { resolveRepoCached } from './repoCache';
 import {
   buildWorktreeRows, normWorktreePath, worktreeContaining,
   type DiffStat, type GitWorktreeRow, type WorkspaceOnRepo, type WorktreeRowUI,
 } from './worktreeRows';
 
-/** How long a cwd's resolved repo is trusted before git is asked again. */
-const REPO_CACHE_TTL_MS = 30_000;
 /** Settle time before the per-worktree diff stats are read. */
 export const ROW_STATS_DEBOUNCE_MS = 400;
 
@@ -139,14 +139,6 @@ function getBridges(): { worktree: WorktreeBridge | null; resolveRepo: ResolveRe
   return { worktree: api?.worktree ?? null, resolveRepo: api?.diff?.resolveRepo ?? null, readDiff: api?.diff?.read ?? null };
 }
 
-async function resolveFirstRepo(resolveRepo: ResolveRepo, candidates: string[]): Promise<string | null> {
-  for (const cwd of candidates) {
-    const r = await resolveRepo(cwd);
-    if (r.ok) return r.repoPath;
-  }
-  return null;
-}
-
 /** Diff counts, coloured like a diff; the changed-path count when only untracked files changed. */
 function DiffCounts({ stat, t }: { stat: DiffStat; t: (k: string) => string }): React.ReactElement {
   if (stat.error) {
@@ -170,8 +162,9 @@ export interface GitTabProps {
   /** Tells the page which repo it is showing (the main worktree's folder name). */
   onRepo?: (name: string | null) => void;
   /** full = card, slot, then Pull requests and Worktrees; card = the card and
-   *  the slot only; sections = Pull requests and Worktrees only. */
-  layout?: 'full' | 'card' | 'sections';
+   *  the slot only; sections = Pull requests and Worktrees only; worktrees =
+   *  the Worktrees column only (one checkout inside an All repos group). */
+  layout?: 'full' | 'card' | 'sections' | 'worktrees';
   /** Drawn right under the card (the page's scope filter), repo or not. */
   slot?: React.ReactNode;
   /** The workspaces on this repo, already resolved by the caller (All repos
@@ -179,21 +172,35 @@ export interface GitTabProps {
   workspacesOnRepo?: readonly WorkspaceOnRepo[];
   /** False for a repo the active pane is not in: no row gets the dot. */
   markCurrent?: boolean;
+  /** The worktree that gets the dot when `cwd` pins the repo (All repos):
+   *  the active pane's, passed apart so switching panes within the repo does
+   *  not change `cwd` and reload the group. */
+  currentPath?: string;
 }
 
 export function GitTab({
-  cwd, refreshKey = 0, onRepo, layout = 'full', slot, workspacesOnRepo, markCurrent = true,
+  cwd, refreshKey = 0, onRepo, layout = 'full', slot, workspacesOnRepo, markCurrent = true, currentPath,
 }: GitTabProps = {}): React.ReactElement {
-  const showCard = layout !== 'sections';
+  const showCard = layout === 'full' || layout === 'card';
   const showSections = layout !== 'card';
+  const showPrs = layout === 'full' || layout === 'sections';
+  // Hidden window: nothing is read, and what is in flight is dropped.
+  const [hidden, setHidden] = useState(() => document.hidden);
+  useEffect(() => {
+    const onChange = () => setHidden(document.hidden);
+    document.addEventListener('visibilitychange', onChange);
+    return () => document.removeEventListener('visibilitychange', onChange);
+  }, []);
   const t = useT();
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   // Subscribed so focusing a pane in another repo within the same workspace
   // reloads too. A prop cwd wins outright — no fallback to the active pane.
   const activePaneCwdCandidates = useStore(selectActivePaneCwdCandidates);
   const activeCwdCandidates = cwd != null ? cwd : activePaneCwdCandidates;
-  // Row identity only — names and metadata are re-read inside load().
-  const workspaceIds = useStore((s) => s.workspaces.map((w) => w.id).join('\0'));
+  // Row identity only — names and metadata are re-read inside load(). Only
+  // the full layout resolves the workspace list itself; a group is handed its
+  // workspaces, and the card reads just its own worktree.
+  const workspaceIds = useStore((s) => (layout === 'full' && !workspacesOnRepo ? s.workspaces.map((w) => w.id).join('\0') : ''));
   // The current-branch card's live parts (pushed by main, no polling here).
   const activeMeta = useStore((s) => s.workspaces.find((w) => w.id === s.activeWorkspaceId)?.metadata);
   const pushToast = useStore((s) => s.pushToast);
@@ -222,28 +229,14 @@ export function GitTab({
   const givenWorkspaces = useRef(workspacesOnRepo);
   givenWorkspaces.current = workspacesOnRepo;
   const givenKey = workspacesOnRepo?.map((w) => `${w.workspaceId}\0${w.repoPath}`).join('\n') ?? '';
-  // cwd → resolved toplevel (or null), so a cd or a workspace switch does not
-  // spawn a git process per workspace again. A refresh or a mutation bypasses it.
-  const repoCache = useRef(new Map<string, { repo: string | null; at: number }>());
-
-  const resolveCached = useCallback(async (resolveRepo: ResolveRepo, cwdPath: string, force: boolean): Promise<string | null> => {
-    const hit = repoCache.current.get(cwdPath);
-    if (!force && hit && Date.now() - hit.at < REPO_CACHE_TTL_MS) return hit.repo;
-    let repo: string | null = null;
-    try {
-      const r = await resolveRepo(cwdPath);
-      repo = r.ok ? r.repoPath : null;
-    } catch {
-      repo = null;
-    }
-    repoCache.current.set(cwdPath, { repo, at: Date.now() });
-    return repo;
-  }, []);
 
   const load = useCallback(async (force = false) => {
     if (!mounted.current) return;
+    if (document.hidden) return;
     const seq = ++loadSeq.current;
-    const live = () => mounted.current && seq === loadSeq.current;
+    // Every follow-up IPC checks this: still the newest load, still mounted,
+    // and the window still visible.
+    const live = () => mounted.current && seq === loadSeq.current && !document.hidden;
     setLoading(true);
     setError(null);
     const { worktree, resolveRepo, readDiff } = getBridges();
@@ -254,7 +247,7 @@ export function GitTab({
     }
     let current: string | null = null;
     for (const candidate of activeCwdCandidates.split('\0').filter(Boolean)) {
-      const resolved = await resolveCached(resolveRepo, candidate, force);
+      const resolved = await resolveRepoCached(resolveRepo, candidate, force);
       if (!live()) return; // superseded by a newer load, or unmounted
       if (resolved !== null) { current = resolved; break; }
     }
@@ -288,6 +281,7 @@ export function GitTab({
     // Merge session rehydrate — main derives it from MERGE_HEAD on disk, so an
     // in-flight session survives an app restart.
     if (showSections && worktree.mergeStatus) {
+      if (!live()) return;
       const ms = await worktree.mergeStatus(res.repoPath);
       if (!live()) return;
       if (ms.ok) setSession(ms.status);
@@ -306,11 +300,11 @@ export function GitTab({
     let onRepo: WorkspaceOnRepo[] = [];
     if (givenWorkspaces.current) {
       onRepo = givenWorkspaces.current.filter((w) => keys.has(normWorktreePath(w.repoPath, plat)));
-    } else {
+    } else if (showSections) {
       for (const ws of state.workspaces) {
         let rp: string | null = null;
         for (const candidate of repoCwdCandidates(ws, state.startupDirectory || '', true)) {
-          rp = await resolveCached(resolveRepo, candidate, force);
+          rp = await resolveRepoCached(resolveRepo, candidate, force);
           if (!live()) return;
           if (rp !== null) break;
         }
@@ -322,15 +316,14 @@ export function GitTab({
     setOnRepoWorkspaces(onRepo);
 
     // Uncommitted diff stats for the worktrees a workspace sits on, as the
-    // Review list did; idle worktrees are not read. (The current-branch card
-    // reads the pushed git status instead when it describes this worktree.)
+    // Review list did; idle worktrees are not read. The card alone reads only
+    // its own worktree.
     if (!readDiff) return;
     const paths = new Map<string, string>();
-    const currentKey = normWorktreePath(current, plat);
-    for (const w of onRepo) {
-      const key = normWorktreePath(w.repoPath, plat);
-      // The card alone needs only its own worktree's stat.
-      if (showSections || key === currentKey) paths.set(key, w.repoPath);
+    if (showSections) {
+      for (const w of onRepo) paths.set(normWorktreePath(w.repoPath, plat), w.repoPath);
+    } else {
+      paths.set(normWorktreePath(current, plat), current);
     }
     const next: Record<string, DiffStat> = {};
     for (const [key, path] of paths) {
@@ -353,7 +346,7 @@ export function GitTab({
       next[key] = stat;
     }
     setStats(next);
-  }, [activeCwdCandidates, resolveCached, t, showSections]);
+  }, [activeCwdCandidates, t, showSections]);
 
   useEffect(() => {
     mounted.current = true;
@@ -373,6 +366,10 @@ export function GitTab({
   const lastContext = useRef(context);
   const lastRefresh = useRef(refreshKey);
   useEffect(() => {
+    if (hidden) {
+      loadSeq.current++;
+      return undefined;
+    }
     if (lastContext.current !== context) {
       lastContext.current = context;
       setRepoPath(null);
@@ -390,7 +387,7 @@ export function GitTab({
     return () => {
       loadSeq.current++;
     };
-  }, [load, context, workspaceIds, givenKey, refreshKey]);
+  }, [load, context, workspaceIds, givenKey, refreshKey, hidden]);
 
   const handleCreate = useCallback(async () => {
     const branch = newBranch.trim();
@@ -544,12 +541,14 @@ export function GitTab({
   // Poll the session only through its transient phases (merging/verifying).
   const sessionPhase = session?.phase;
   useEffect(() => {
+    if (hidden) return;
     if (sessionPhase !== 'merging' && sessionPhase !== 'verifying') return;
     const { worktree } = getBridges();
     const mergeStatus = worktree?.mergeStatus;
     if (!mergeStatus || !repoPath) return;
     let cancelled = false;
     const id = setInterval(async () => {
+      if (document.hidden) return;
       const res = await mergeStatus(repoPath);
       if (cancelled) return;
       if (res.ok) setSession(res.status);
@@ -558,13 +557,15 @@ export function GitTab({
       cancelled = true;
       clearInterval(id);
     };
-  }, [sessionPhase, repoPath]);
+  }, [sessionPhase, repoPath, hidden]);
 
   const rows = buildWorktreeRows({
     worktrees,
     mainPath,
-    currentPath: markCurrent ? currentWorktree : '',
-    workspaces: onRepoWorkspaces,
+    currentPath: currentPath ?? (markCurrent ? currentWorktree : ''),
+    // A group's workspaces come live from the page (names and PRs update
+    // without a reload); otherwise the ones this load resolved.
+    workspaces: workspacesOnRepo ?? onRepoWorkspaces,
     stats,
     platform: hostPlatform(),
   });
@@ -747,11 +748,13 @@ export function GitTab({
       {cardEl}
       {slot}
       {repoPath && showSections && (
-        <div className="wmux-git-sections">
-          <section className="wmux-git-col" aria-label={t('git.pullRequests') || 'Pull Requests'}>
-            {/* Pull requests (gh); each PR expands to its comments. */}
-            <PrSection repoPath={repoPath} refreshKey={refreshKey} defaultOpen />
-          </section>
+        <div className={`wmux-git-sections${showPrs ? '' : ' wmux-git-sections-single'}`}>
+          {showPrs && (
+            <section className="wmux-git-col" aria-label={t('git.pullRequests') || 'Pull Requests'}>
+              {/* Pull requests (gh); each PR expands to its comments. */}
+              <PrSection repoPath={repoPath} refreshKey={refreshKey} defaultOpen />
+            </section>
+          )}
           <section className="wmux-git-col" aria-label={t('git.worktrees') || 'Worktrees'}>
             <div className="wmux-git-subhead">
               {t('git.worktrees') || 'Worktrees'} · {rows.length}

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// The sidebar Git section's worktree list joins what used to be two lists in
+// The Git page's worktree list joins what used to be two lists in
 // the tools panel: the Git tab's worktrees and the Review section's workspaces
 // on them. Mounts the real <GitTab/> against a seeded store with mocked
 // worktree + diff bridges. Covers: one row per worktree with its workspaces
@@ -11,6 +11,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createElement, act, type FC } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { GitTab, ROW_STATS_DEBOUNCE_MS, type GitTabProps } from '../GitTab';
+import { clearGitCaches } from '../repoCache';
 import { useStore } from '../../../stores';
 import type { Workspace, Pane, Surface } from '../../../../shared/types';
 
@@ -61,6 +62,7 @@ function numstatResult(repoPath: string, numstat: { path: string; additions: num
 let read: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
+  clearGitCaches();
   read = vi.fn(async (repoPath: string) =>
     repoPath === FEAT
       ? numstatResult(repoPath, [

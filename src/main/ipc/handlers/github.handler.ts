@@ -8,7 +8,7 @@ import { ipcMain } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import { resolveAccessiblePath } from './fs.handler';
-import { detectRemoteHost, isGithubHost } from '../../github/PrProvider';
+import { detectRemote, isGithubHost } from '../../github/PrProvider';
 import type { PrSummary, PrDetail, PrProvider } from '../../github/PrProvider';
 import { ghPrService } from '../../github/GhPrService';
 import { glabPrService } from '../../github/GlabPrService';
@@ -33,10 +33,11 @@ function providerFor(host: string): PrProvider {
 }
 
 async function prList(repoPath: string, force: boolean): Promise<GithubPrListResult> {
-  const host = await detectRemoteHost(repoPath);
-  if (!host) return { ok: false, code: 'no-remote', message: 'no origin remote' };
+  const remote = await detectRemote(repoPath, force);
+  if (!remote) return { ok: false, code: 'no-remote', message: 'no origin remote' };
+  const { host } = remote;
   const provider = providerFor(host);
-  const gate = await provider.gate(repoPath, host);
+  const gate = await provider.gate(repoPath, host, force);
   if (!gate.ok) {
     return {
       ok: false,
@@ -45,7 +46,8 @@ async function prList(repoPath: string, force: boolean): Promise<GithubPrListRes
       provider: isGithubHost(host) ? 'github' : 'gitlab',
     };
   }
-  const res = await provider.listPrs(repoPath, force);
+  // Keyed by the remote, so two clones of one repo share one fetch and cache.
+  const res = await provider.listPrs(repoPath, force, remote.key ?? undefined);
   if (!res.ok) return { ok: false, code: 'error', message: res.error };
   return { ok: true, prs: res.prs };
 }
@@ -88,12 +90,13 @@ export function registerGithubHandlers(): () => void {
         const safeRepo = await resolveAccessiblePath(repoPath);
         if (!safeRepo) return { ok: false, code: 'error', message: 'repoPath required' };
         // 목록과 동일한 provider로 라우팅(호스트 재감지 — 상세는 저빈도라 무해).
-        const host = await detectRemoteHost(safeRepo);
-        if (!host) return { ok: false, code: 'error', message: 'no origin remote' };
-        const res = await providerFor(host).prDetail(
+        const remote = await detectRemote(safeRepo);
+        if (!remote) return { ok: false, code: 'error', message: 'no origin remote' };
+        const res = await providerFor(remote.host).prDetail(
           safeRepo,
           number,
           typeof updatedAt === 'string' ? updatedAt : '',
+          remote.key ?? undefined,
         );
         if (!res.ok) return { ok: false, code: 'error', message: res.error };
         return { ok: true, detail: res.detail };
@@ -101,8 +104,22 @@ export function registerGithubHandlers(): () => void {
     ),
   );
 
+  // The repo's remote identity, so the Git page can put clones of one repo
+  // in one group. No CLI involved: one `git remote get-url`, cached.
+  ipcMain.removeHandler(IPC.GITHUB_REPO_KEY);
+  ipcMain.handle(
+    IPC.GITHUB_REPO_KEY,
+    wrapHandler(IPC.GITHUB_REPO_KEY, async (_e: Electron.IpcMainInvokeEvent, repoPath: unknown): Promise<{ key: string | null }> => {
+      if (typeof repoPath !== 'string' || !repoPath) return { key: null };
+      const safeRepo = await resolveAccessiblePath(repoPath);
+      if (!safeRepo) return { key: null };
+      return { key: (await detectRemote(safeRepo))?.key ?? null };
+    }),
+  );
+
   return () => {
     ipcMain.removeHandler(IPC.GITHUB_PR_LIST);
     ipcMain.removeHandler(IPC.GITHUB_PR_DETAIL);
+    ipcMain.removeHandler(IPC.GITHUB_REPO_KEY);
   };
 }

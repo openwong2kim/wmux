@@ -11,6 +11,7 @@ import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { useStore } from '../../../stores';
 import { GitTab } from '../GitTab';
+import { clearGitCaches } from '../repoCache';
 import type { SessionData, Workspace } from '../../../../shared/types';
 
 interface Deferred<T> {
@@ -57,6 +58,7 @@ let container: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+  clearGitCaches();
   listDeferreds.clear();
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     diff: { resolveRepo: (cwd: string) => Promise.resolve({ ok: true, repoPath: cwd }) },

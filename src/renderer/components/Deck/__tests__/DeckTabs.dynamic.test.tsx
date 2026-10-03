@@ -104,7 +104,7 @@ describe('DeckTabs', () => {
     expect(badge?.textContent).toContain('3');
   });
 
-  it('renders Orchestrator·Channels tabs — Git lives in the sidebar (2026-10-03)', () => {
+  it('renders Orchestrator·Channels tabs — Git is a rail page (2026-10-03)', () => {
     mount({ active: 'commander' });
     const ids = Array.from(container.querySelectorAll('[data-deck-tab]')).map((el) =>
       el.getAttribute('data-deck-tab'),

@@ -1648,6 +1648,8 @@ export const ko = {
   'git.connect.copy': '복사',
   'git.connect.copied': '복사됨',
   'git.connect.tabTitle': 'GitHub 로그인',
+  'git.connect.installTitle': 'GitHub CLI 설치',
+  'git.connect.installDesc': 'PR은 GitHub CLI(gh)로 가져오는데 설치되어 있지 않습니다. cli.github.com에서 설치한 뒤 다시 확인하세요.',
   'statusBar.openGit': 'Git 페이지 열기',
   'git.merge': '머지',
   'git.mergeDesc': '이 워크트리를 기준 브랜치에 머지 (격리, 검증)',

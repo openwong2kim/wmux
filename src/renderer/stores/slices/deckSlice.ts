@@ -29,7 +29,7 @@ import { generateId, type BrainVendor } from '../../../shared/types';
 
 /** Which dock tab is showing. `commander` is the default (the LLM-less
  *  command composer); `channels` is the classic channel list + conversation.
- *  Git moved out of the dock into the sidebar's Git section (2026-10-03). */
+ *  Git moved out of the dock to its own page on the rail (2026-10-03). */
 export type DeckTab = 'commander' | 'channels';
 
 /** One workspace orchestrator's turn state. Distinct from the Phase 1 fan-out

@@ -13,6 +13,7 @@ import { FOCUS_RING } from '../focusRing';
 import { IconRefresh } from '../icons';
 import SegmentedControl from '../ui/SegmentedControl';
 import { GitTab } from './GitTab';
+import { PrSection } from './PrSection';
 import { useRepoGroups } from './repoGroups';
 
 type Scope = 'repo' | 'all';
@@ -81,15 +82,34 @@ function AllRepos({ refreshKey }: { refreshKey: number }) {
         <section key={g.key} className="wmux-git-group" data-git-repo-group={g.name} aria-label={g.name}>
           <h2 className="wmux-git-group-title">
             {g.name}
-            <span className="wmux-git-group-meta">{t('git.allRepos.workspaces', { count: g.workspaces.length })}</span>
+            <span className="wmux-git-group-meta">{t('git.allRepos.workspaces', { count: g.workspaceCount })}</span>
           </h2>
-          <GitTab
-            layout="sections"
-            cwd={g.cwd}
-            workspacesOnRepo={g.workspaces}
-            markCurrent={g.active}
-            refreshKey={refreshKey}
-          />
+          <div className="wmux-git-sections">
+            {/* One PR list per repo, however many clones. Only the active
+                repo's opens and polls; another repo's reads once when opened. */}
+            <section className="wmux-git-col" aria-label={t('git.pullRequests')}>
+              <PrSection repoPath={g.prPath} refreshKey={refreshKey} defaultOpen={g.active} poll={g.active} lazy={!g.active} />
+            </section>
+            <section className="wmux-git-col" aria-label={t('git.worktrees')}>
+              {g.checkouts.map((c) => (
+                <div key={c.mainPath} className="wmux-git-checkout" data-git-checkout={c.label}>
+                  {g.checkouts.length > 1 && (
+                    <h3 className="wmux-git-checkout-title" title={c.mainPath}>{c.label}</h3>
+                  )}
+                  {/* cwd pins the checkout; the active pane's worktree comes
+                      apart, so switching panes inside the repo reloads nothing. */}
+                  <GitTab
+                    layout="worktrees"
+                    cwd={c.mainPath}
+                    currentPath={c.currentPath}
+                    markCurrent={!!c.currentPath}
+                    workspacesOnRepo={c.workspaces}
+                    refreshKey={refreshKey}
+                  />
+                </div>
+              ))}
+            </section>
+          </div>
         </section>
       ))}
     </div>

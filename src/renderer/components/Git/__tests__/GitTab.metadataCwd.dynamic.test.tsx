@@ -13,6 +13,7 @@ import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { useStore } from '../../../stores';
 import { GitTab } from '../GitTab';
+import { clearGitCaches } from '../repoCache';
 import type { SessionData, Workspace } from '../../../../shared/types';
 
 const HOME = '/home/me'; // shell's cwd — NOT a repo
@@ -41,6 +42,7 @@ const resolveRepo = vi.fn((cwd: string) =>
 );
 
 beforeEach(() => {
+  clearGitCaches();
   resolveRepo.mockClear();
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     diff: { resolveRepo },

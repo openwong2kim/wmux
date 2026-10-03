@@ -1,4 +1,4 @@
-// ─── Sidebar Git section: one row per worktree ───────────────────────────────
+// ─── Git page: one row per worktree ─────────────────────────────────────────
 //
 // The section used to be two lists in the tools panel: the Git tab's worktree
 // roster (path, branch, main / locked / prunable) and the Review section's

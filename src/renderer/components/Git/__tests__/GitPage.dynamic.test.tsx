@@ -8,6 +8,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import GitPage from '../GitPage';
+import { clearGitCaches } from '../repoCache';
 import { ROW_STATS_DEBOUNCE_MS } from '../GitTab';
 import { useStore } from '../../../stores';
 import type { Workspace, Pane } from '../../../../shared/types';
@@ -31,13 +32,16 @@ const repos: Record<string, { mainPath: string; worktrees: { path: string; branc
   '/code/alpha': { mainPath: '/code/alpha', worktrees: [{ path: '/code/alpha', branch: 'main' }, { path: '/code/alpha-wt/feat', branch: 'feat' }] },
   '/code/alpha-wt/feat': { mainPath: '/code/alpha', worktrees: [{ path: '/code/alpha', branch: 'main' }, { path: '/code/alpha-wt/feat', branch: 'feat' }] },
   '/code/beta': { mainPath: '/code/beta', worktrees: [{ path: '/code/beta', branch: 'main' }] },
+  '/tmp/alpha-clone': { mainPath: '/tmp/alpha-clone', worktrees: [{ path: '/tmp/alpha-clone', branch: 'fix' }] },
 };
+const remoteOf: Record<string, string | null> = { '/code/alpha': 'github.com/o/alpha', '/tmp/alpha-clone': 'github.com/o/alpha', '/code/beta': null };
 
 let container: HTMLDivElement;
 let root: Root;
 let prList: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
+  clearGitCaches();
   prList = vi.fn(async () => ({ ok: true, prs: [] }));
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     platform: 'linux',
@@ -54,7 +58,7 @@ beforeEach(() => {
       }),
       add: vi.fn(), remove: vi.fn(),
     },
-    github: { prList, prDetail: vi.fn() },
+    github: { prList, prDetail: vi.fn(), repoKey: vi.fn(async (p: string) => ({ key: remoteOf[p] ?? null })) },
   };
   act(() => useStore.setState({
     workspaces: [workspace('a', '/code/alpha'), workspace('b', '/code/alpha-wt/feat'), workspace('c', '/code/beta')],
@@ -131,5 +135,63 @@ describe('Git page', () => {
     expect(st.appRoute).toBe('workspaces');
     const surfaces = (st.workspaces.find((w) => w.id === 'a')!.rootPane as Extract<Pane, { type: 'leaf' }>).surfaces;
     expect(surfaces.some((s) => s.surfaceType === 'diff')).toBe(true);
+  });
+
+  it('All repos folds two clones of one remote into one group: one PR list, each clone\'s worktrees labelled', async () => {
+    act(() => useStore.setState({
+      workspaces: [workspace('a', '/code/alpha'), workspace('b', '/code/alpha-wt/feat'), workspace('c', '/code/beta'), workspace('d', '/tmp/alpha-clone')],
+    }));
+    act(() => root.render(createElement(GitPage)));
+    await settle();
+    act(() => scopeOption('All repos').click());
+    await settle();
+    const groups = [...container.querySelectorAll('[data-git-repo-group]')].map((g) => g.getAttribute('data-git-repo-group'));
+    expect(groups).toEqual(['alpha', 'beta']);
+    const alpha = container.querySelector('[data-git-repo-group="alpha"]')!;
+    expect(alpha.querySelectorAll('[data-pr-section]').length).toBe(1);
+    expect([...alpha.querySelectorAll('[data-git-checkout]')].map((c) => c.getAttribute('data-git-checkout'))).toEqual(['alpha', 'alpha-clone']);
+    expect(alpha.textContent).toContain('3 workspace');
+    // The other repo's PR list waits to be opened.
+    const prCallsFor = (path: string) => prList.mock.calls.filter((c) => c[0] === path).length;
+    expect(prCallsFor('/code/beta')).toBe(0);
+  });
+
+  it('All repos follows a workspace that moves to another repo', async () => {
+    act(() => root.render(createElement(GitPage)));
+    await settle();
+    act(() => scopeOption('All repos').click());
+    await settle();
+    expect(container.querySelector('[data-git-repo-group="beta"]')?.textContent).toContain('1 workspace');
+    // Workspace c's pane cds from beta into alpha.
+    act(() => useStore.setState({ workspaces: [workspace('a', '/code/alpha'), workspace('b', '/code/alpha-wt/feat'), workspace('c', '/code/alpha')] }));
+    await settle();
+    expect(container.querySelector('[data-git-repo-group="beta"]')).toBeNull();
+  });
+
+  it('gh not installed: install guidance and Check again, no Connect', async () => {
+    prList.mockResolvedValue({ ok: false, code: 'cli-missing', message: 'GitHub CLI (gh) is not installed', provider: 'github' });
+    act(() => root.render(createElement(GitPage)));
+    await settle();
+    expect(container.querySelector('[data-git-install]')).not.toBeNull();
+    expect(container.querySelector('[data-git-connect-button]')).toBeNull();
+    expect(container.querySelector('[data-git-connect-recheck]')).not.toBeNull();
+  });
+
+  it('reads nothing while the window is hidden, and loads when it is shown', async () => {
+    const hidden = { value: true };
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden.value });
+    try {
+      const list = (window as unknown as { electronAPI: { worktree: { list: ReturnType<typeof vi.fn> } } }).electronAPI.worktree.list;
+      act(() => root.render(createElement(GitPage)));
+      await settle();
+      expect(list).not.toHaveBeenCalled();
+      hidden.value = false;
+      act(() => { document.dispatchEvent(new Event('visibilitychange')); });
+      await settle();
+      expect(list).toHaveBeenCalled();
+      expect(container.querySelectorAll('[data-git-worktree-row]').length).toBe(2);
+    } finally {
+      delete (document as unknown as { hidden?: boolean }).hidden;
+    }
   });
 });

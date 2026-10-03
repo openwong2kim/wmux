@@ -1116,6 +1116,9 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.GITHUB_PR_DETAIL, repoPath, number, updatedAt) as Promise<
         import('../main/ipc/handlers/github.handler').GithubPrDetailResult
       >,
+    // host/owner/repo of origin (lowercased), or null — groups clones of one repo.
+    repoKey: (repoPath: string) =>
+      ipcRenderer.invoke(IPC.GITHUB_REPO_KEY, repoPath) as Promise<{ key: string | null }>,
   },
   // Deck Git 탭 — worktree list/add/remove(렌더러 전용, 파이프 미노출).
   worktree: {

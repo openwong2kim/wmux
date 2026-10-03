@@ -1785,6 +1785,8 @@ export const zh = {
   'git.connect.copy': '复制',
   'git.connect.copied': '已复制',
   'git.connect.tabTitle': 'GitHub 登录',
+  'git.connect.installTitle': '安装 GitHub CLI',
+  'git.connect.installDesc': '拉取请求来自 GitHub CLI (gh)，但尚未安装。请从 cli.github.com 安装后重新检查。',
   'statusBar.openGit': '打开 Git 页面',
   'git.merge': '合并',
   'git.mergeDesc': '将此工作树合并到基础分支（隔离、已验证）',

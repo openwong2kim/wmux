@@ -24,11 +24,13 @@ export type PrDetailResult = { ok: true; detail: PrDetail } | { ok: false; error
  *  호스트 단위(`glab auth status --hostname`, self-hosted)라 게이트에 필요하다.
  *  gh 구현은 무시한다. */
 export interface PrProvider {
-  /** CLI 존재·인증 게이트. 실패는 사용자 안내 문구를 담아 fail-closed. */
-  gate(repoPath: string, host: string): Promise<PrGate>;
-  /** force=true는 수동 새로고침 — 구현체의 TTL 캐시를 건너뛴다. */
-  listPrs(repoPath: string, force?: boolean): Promise<PrListResult>;
-  prDetail(repoPath: string, number: number, updatedAt: string): Promise<PrDetailResult>;
+  /** CLI 존재·인증 게이트. 실패는 사용자 안내 문구를 담아 fail-closed.
+   *  `force` (an explicit "Check again") skips the gate's TTL caches. */
+  gate(repoPath: string, host: string, force?: boolean): Promise<PrGate>;
+  /** force=true는 수동 새로고침 — 구현체의 TTL 캐시를 건너뛴다. `key` is the
+   *  remote's identity (host/owner/repo), so clones of one repo share a fetch. */
+  listPrs(repoPath: string, force?: boolean, key?: string): Promise<PrListResult>;
+  prDetail(repoPath: string, number: number, updatedAt: string, key?: string): Promise<PrDetailResult>;
 }
 
 /** CLI(gh/glab) 실행용 PATH — macOS GUI 실행은 launchd PATH를 상속해
@@ -62,4 +64,44 @@ export async function detectRemoteHost(repoPath: string): Promise<string | null>
   const r = await git(['remote', 'get-url', 'origin'], repoPath);
   if (r.code !== 0) return null;
   return parseRemoteHost(r.stdout);
+}
+
+/**
+ * A remote's identity, `host/owner/repo` lowercased, from its URL (https,
+ * scp-style or ssh; a trailing `.git` dropped). Two clones of one repo get the
+ * same key. null when the URL has no owner/repo path. Pure.
+ */
+export function parseRemoteKey(url: string): string | null {
+  const host = parseRemoteHost(url);
+  if (!host) return null;
+  const path = url.trim()
+    .replace(/^(?:https?:\/\/(?:[^@/]+@)?|ssh:\/\/(?:[^@/]+@)?)[^/]+\//i, '')
+    .replace(/^git@[^:]+:/i, '')
+    .replace(/\.git$/i, '')
+    .replace(/\/+$/, '');
+  const parts = path.split('/').filter(Boolean);
+  if (parts.length < 2) return null;
+  return `${host}/${parts.join('/')}`.toLowerCase();
+}
+
+export interface RemoteIdentity { host: string; key: string | null }
+
+const REMOTE_TTL_MS = 60_000;
+const remoteCache = new Map<string, { value: RemoteIdentity | null; at: number }>();
+
+/** origin's host and key, cached per repo path for a minute (`force` re-reads). */
+export async function detectRemote(repoPath: string, force = false, now: () => number = Date.now): Promise<RemoteIdentity | null> {
+  const hit = remoteCache.get(repoPath);
+  if (!force && hit && now() - hit.at < REMOTE_TTL_MS) return hit.value;
+  const r = await git(['remote', 'get-url', 'origin'], repoPath);
+  const host = r.code === 0 ? parseRemoteHost(r.stdout) : null;
+  const value = host ? { host, key: parseRemoteKey(r.stdout) } : null;
+  remoteCache.set(repoPath, { value, at: now() });
+  if (remoteCache.size > 256) remoteCache.delete(remoteCache.keys().next().value as string);
+  return value;
+}
+
+/** Test seam. */
+export function clearRemoteCache(): void {
+  remoteCache.clear();
 }

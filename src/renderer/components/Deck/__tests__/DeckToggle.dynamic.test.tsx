@@ -94,7 +94,7 @@ describe('DeckToggle', () => {
     expect(dot()).not.toBeNull();
   });
 
-  it('shows no dot for a dirty workspace — Git lives in the sidebar, not the deck', () => {
+  it('shows no dot for a dirty workspace — Git is a rail page, not in the deck', () => {
     act(() => {
       useStore.setState({
         workspaces: [{ id: 'ws-1', metadata: { gitSync: { dirty: 2 } } }] as never,

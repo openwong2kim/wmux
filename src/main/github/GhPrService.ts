@@ -34,6 +34,10 @@ const MAX_ENTRIES = 128;
 // gh JSON stdout 버퍼 상한 — 큰 리뷰 스레드가 execFile 기본 1MB를 넘겨
 // capBody 전에 터지던 것 방지(Codex P2). 개별 본문은 아래 캡으로 다시 조인다.
 const GH_MAX_BUFFER = 16 * 1024 * 1024;
+/** How long a missing / found gh binary is believed before probing again. */
+const GATE_TTL_MS = 5 * 60 * 1000;
+/** How long `gh auth status` is believed. */
+const AUTH_TTL_MS = 60 * 1000;
 
 // 캐시 키 — 파일시스템 대소문자 정책 반영(Codex P3). POSIX(case-sensitive)는
 // /src/Foo와 /src/foo가 서로 다른 repo다 — 소문자화하면 캐시가 섞인다.
@@ -213,7 +217,13 @@ export class GhPrService implements PrProvider {
   private listCache = new Map<string, ListEntry>();
   /** 상세 캐시 — key = repo\0number, updatedAt이 같으면 재fetch 생략. */
   private detailCache = new Map<string, { updatedAt: string; value: PrDetailResult }>();
-  private ghAvailable: boolean | null = null;
+  /** When gh was last found missing (ENOENT); probed again after GATE_TTL_MS
+   *  or on an explicit Check again, so installing gh needs no restart. */
+  private ghMissingAt: number | null = null;
+  /** When `gh --version` last succeeded. */
+  private ghFoundAt: number | null = null;
+  /** `gh auth status` result and when it was read. */
+  private authAt: { ok: boolean; at: number } | null = null;
 
   constructor(
     private now: () => number = Date.now,
@@ -231,20 +241,33 @@ export class GhPrService implements PrProvider {
   }
 
   // host 인자는 미사용 — gh는 github.com 인증이 곧 게이트(PrProvider 계약 참조).
-  async gate(repoPath: string, _host?: string): Promise<PrGate> {
-    if (this.ghAvailable === false) {
-      return { ok: false, reason: 'cli-missing', message: 'GitHub CLI (gh) is not installed' };
+  // Each probe is TTL-cached so a page full of repos costs one `gh --version`
+  // and one `gh auth status`; `force` (Check again) re-probes both.
+  async gate(repoPath: string, _host?: string, force = false): Promise<PrGate> {
+    const now = this.now();
+    const missing = { ok: false as const, reason: 'cli-missing' as const, message: 'GitHub CLI (gh) is not installed' };
+    if (!force && this.ghMissingAt !== null && now - this.ghMissingAt < GATE_TTL_MS) return missing;
+    if (force || this.ghFoundAt === null || now - this.ghFoundAt >= GATE_TTL_MS) {
+      try {
+        await this.gh(['--version'], repoPath);
+        this.ghMissingAt = null;
+        this.ghFoundAt = this.now();
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') this.ghMissingAt = this.now();
+        this.ghFoundAt = null;
+        return missing;
+      }
     }
-    try {
-      await this.gh(['--version'], repoPath);
-      this.ghAvailable = true;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') this.ghAvailable = false;
-      return { ok: false, reason: 'cli-missing', message: 'GitHub CLI (gh) is not installed' };
+    if (force || this.authAt === null || now - this.authAt.at >= AUTH_TTL_MS) {
+      let ok = true;
+      try {
+        await this.gh(['auth', 'status'], repoPath);
+      } catch {
+        ok = false;
+      }
+      this.authAt = { ok, at: this.now() };
     }
-    try {
-      await this.gh(['auth', 'status'], repoPath);
-    } catch {
+    if (!this.authAt.ok) {
       return {
         ok: false,
         reason: 'unauthenticated',
@@ -256,8 +279,8 @@ export class GhPrService implements PrProvider {
 
   // force=true: 수동 새로고침 — TTL 캐시를 건너뛰고 즉시 gh를 호출한다(Codex P2).
   //   방금 랜딩한 PR/체크를 새로고침 버튼이 관측 못 하던 문제.
-  async listPrs(repoPath: string, force = false): Promise<PrListResult> {
-    const key = cacheKey(repoPath);
+  async listPrs(repoPath: string, force = false, remoteKey?: string): Promise<PrListResult> {
+    const key = remoteKey ?? cacheKey(repoPath);
     const entry = this.listCache.get(key);
     const now = this.now();
     if (entry) {
@@ -307,8 +330,8 @@ export class GhPrService implements PrProvider {
     }
   }
 
-  async prDetail(repoPath: string, number: number, updatedAt: string): Promise<PrDetailResult> {
-    const key = `${cacheKey(repoPath)}\0${number}`;
+  async prDetail(repoPath: string, number: number, updatedAt: string, remoteKey?: string): Promise<PrDetailResult> {
+    const key = `${remoteKey ?? cacheKey(repoPath)}\0${number}`;
     const cached = this.detailCache.get(key);
     // updatedAt 불변 → 코멘트 재fetch 생략(rate limit 상한의 핵심).
     if (cached && cached.updatedAt === updatedAt && cached.value.ok) return cached.value;
