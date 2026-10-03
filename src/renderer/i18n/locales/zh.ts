@@ -2123,6 +2123,7 @@ export const zh = {
   'sidebar.filter.other': "其他",
   'sidebar.filter.status.needsYou': "等待你",
   'sidebar.filter.status.running': "运行中",
+  'sidebar.filter.status.usageWaiting': "等待中（用量上限）",
   'sidebar.filter.status.idle': "空闲",
   'sidebar.filter.kind.agent': "有代理",
   'sidebar.filter.kind.terminal': "仅终端",

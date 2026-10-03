@@ -2302,6 +2302,7 @@ export const ko = {
   'sidebar.filter.other': "기타",
   'sidebar.filter.status.needsYou': "나를 기다림",
   'sidebar.filter.status.running': "실행 중",
+  'sidebar.filter.status.usageWaiting': "대기 중 (사용량 한도)",
   'sidebar.filter.status.idle': "유휴",
   'sidebar.filter.kind.agent': "에이전트 있음",
   'sidebar.filter.kind.terminal': "터미널만",

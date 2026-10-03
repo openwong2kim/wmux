@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
-  EMPTY_FILTER, filterChips, isFilterActive, matchesFilter, statusFacet, toggleFacet,
+  EMPTY_FILTER, factsFromKey, filterChips, isFilterActive, matchesFilter, selectWorkspaceFactKeys, statusFacet, toggleFacet,
   type WorkspaceFacts, type WorkspaceFilter,
 } from '../workspaceFilter';
+import type { StoreState } from '../../../stores';
+import type { Pane, Workspace } from '../../../../shared/types';
 
 const facts = (over: Partial<WorkspaceFacts> = {}): WorkspaceFacts => ({
   status: 'idle', hasAgent: true, agents: ['claude'], hasPr: false, hasChanges: false, isTask: false, ...over,
@@ -52,5 +54,42 @@ describe('workspace filter', () => {
     expect(statusFacet('running', true)).toBe('needsYou');
     expect(statusFacet('running', false)).toBe('running');
     expect(statusFacet('waiting', false)).toBe('idle');
+  });
+
+  it('reads a usage-limit hold as Waiting only where the row would be idle', () => {
+    expect(statusFacet('idle', false, true)).toBe('usageWaiting');
+    expect(statusFacet('waiting', false, true)).toBe('usageWaiting');
+    // A louder status keeps its own facet, like the row's own mark.
+    expect(statusFacet('running', false, true)).toBe('running');
+    expect(statusFacet('awaiting_input', false, true)).toBe('needsYou');
+    expect(statusFacet('idle', false, false)).toBe('idle');
+    const waitingOnly = f({ status: ['usageWaiting'] });
+    expect(matchesFilter(waitingOnly, facts({ status: 'usageWaiting' }))).toBe(true);
+    expect(matchesFilter(waitingOnly, facts({ status: 'idle' }))).toBe(false);
+  });
+
+  it('derives the Waiting facet from the store for a workspace held at its usage limit', () => {
+    const ws = (id: string, ptyId: string): Workspace => {
+      const leaf: Pane = { id: `p-${id}`, type: 'leaf', activeSurfaceId: `s-${id}`,
+        surfaces: [{ id: `s-${id}`, ptyId, title: 'claude', shell: 'zsh', cwd: '/repo', surfaceType: 'terminal' }] };
+      return { id, name: id, rootPane: leaf, activePaneId: leaf.id };
+    };
+    const state = {
+      workspaces: [ws('held', 'pty-held'), ws('free', 'pty-free')],
+      activeWorkspaceId: 'held',
+      surfaceAgent: {
+        'pty-held': { name: 'Claude Code', slug: 'claude', status: 'error' },
+        'pty-free': { name: 'Claude Code', slug: 'claude', status: 'idle' },
+      },
+      // The turn died on the limit: `error`, quieted while the hold stands.
+      surfaceAgentStatus: { 'pty-held': 'error' },
+      surfacePendingQuestion: {}, surfaceQuestionSeen: {}, surfaceActivity: {}, surfaceActivityAt: {},
+      surfaceTurnOpenAt: {}, paneLabel: {}, agentClockMs: 0, remoteWorkspaces: [],
+      missionByPaneGroup: {}, fanoutLineage: {}, fanoutSpawnOwner: {},
+      usageLimitWaiting: { 'pty-held': true },
+    } as unknown as StoreState;
+    const keys = selectWorkspaceFactKeys(state);
+    expect(factsFromKey(keys.held).status).toBe('usageWaiting');
+    expect(factsFromKey(keys.free).status).toBe('idle');
   });
 });

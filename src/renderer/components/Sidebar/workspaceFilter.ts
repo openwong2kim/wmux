@@ -11,8 +11,9 @@ import type { StoreState } from '../../stores';
 import type { AgentStatus } from '../../../shared/types';
 import { getWorkspacePtyIds } from '../../../shared/paneUtils';
 import { resolveTaskLink } from '../../utils/fanoutProvenance';
+import { workspaceHasUsageLimitWaiting } from '../../stores/slices/usageLimitSlice';
 
-export type StatusFacet = 'needsYou' | 'running' | 'idle';
+export type StatusFacet = 'needsYou' | 'running' | 'usageWaiting' | 'idle';
 export type KindFacet = 'agent' | 'terminal';
 export type AgentFacet = 'claude' | 'codex' | 'other';
 export type OtherFacet = 'pr' | 'changes' | 'tasks';
@@ -43,11 +44,16 @@ export interface WorkspaceFacts {
   isTask: boolean;
 }
 
-/** The status facet of a workspace's rolled-up agent status (the sidebar's own). */
-export function statusFacet(agentStatus: AgentStatus, unverifiable: boolean): StatusFacet {
+/**
+ * The status facet of a workspace's rolled-up agent status (the sidebar's own).
+ * `usageWaiting`: a pane of the workspace is waiting out a usage limit. Like
+ * the row's clock mark, it shows only where the row would otherwise be idle;
+ * a louder status keeps its own facet.
+ */
+export function statusFacet(agentStatus: AgentStatus, unverifiable: boolean, usageWaiting = false): StatusFacet {
   const cls = fleetAttentionClass({ agentStatus, unverifiable });
   if (cls === 'running') return 'running';
-  if (cls === 'idle') return 'idle';
+  if (cls === 'idle') return usageWaiting ? 'usageWaiting' : 'idle';
   // Needs you, finished and unconfirmed all want a look.
   return 'needsYou';
 }
@@ -113,7 +119,7 @@ export function selectWorkspaceFactKeys(state: StoreState): Record<string, strin
     const sync = ws.metadata?.gitSync;
     const isTask = resolveTaskLink(state.missionByPaneGroup[ws.id], state.fanoutLineage[ws.id], state.fanoutSpawnOwner[ws.id]) !== null;
     out[ws.id] = [
-      statusFacet(status[ws.id] ?? 'idle', (silent[ws.id] ?? 0) > 0),
+      statusFacet(status[ws.id] ?? 'idle', (silent[ws.id] ?? 0) > 0, workspaceHasUsageLimitWaiting(state, ws.id)),
       agents.join(','),
       ws.metadata?.pr ? 1 : 0,
       sync && (sync.dirty > 0 || sync.ahead > 0) ? 1 : 0,

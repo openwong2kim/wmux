@@ -6,7 +6,8 @@ import type { FilterChip, WorkspaceFilter } from './workspaceFilter';
 
 const GROUPS: { titleKey: string; options: FilterChip[] }[] = [
   { titleKey: 'sidebar.filter.status', options: [
-    { group: 'status', value: 'needsYou' }, { group: 'status', value: 'running' }, { group: 'status', value: 'idle' },
+    { group: 'status', value: 'needsYou' }, { group: 'status', value: 'running' },
+    { group: 'status', value: 'usageWaiting' }, { group: 'status', value: 'idle' },
   ] },
   { titleKey: 'sidebar.filter.kind', options: [{ group: 'kind', value: 'agent' }, { group: 'kind', value: 'terminal' }] },
   { titleKey: 'sidebar.filter.agent', options: [

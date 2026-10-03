@@ -2829,6 +2829,7 @@ export const pl = {
   'sidebar.filter.other': "Inne",
   'sidebar.filter.status.needsYou': "Czeka na Ciebie",
   'sidebar.filter.status.running': "Działa",
+  'sidebar.filter.status.usageWaiting': "Oczekiwanie (limit użycia)",
   'sidebar.filter.status.idle': "Bezczynne",
   'sidebar.filter.kind.agent': "Ma agenta",
   'sidebar.filter.kind.terminal': "Tylko terminal",

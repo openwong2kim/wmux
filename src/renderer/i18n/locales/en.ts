@@ -2867,6 +2867,7 @@ export const en = {
   'sidebar.filter.other': "Other",
   'sidebar.filter.status.needsYou': "Needs you",
   'sidebar.filter.status.running': "Running",
+  'sidebar.filter.status.usageWaiting': "Waiting (usage limit)",
   'sidebar.filter.status.idle': "Idle",
   'sidebar.filter.kind.agent': "Has an agent",
   'sidebar.filter.kind.terminal': "Terminal only",
