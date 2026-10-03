@@ -114,4 +114,26 @@ describe('PrSection polling', () => {
     await tick(0);
     expect(prDetail).toHaveBeenCalledTimes(1);
   });
+
+  it('comment answers arriving B then A leave the comments of B under B', async () => {
+    const pr = (n: number) => ({ number: n, title: `t${n}`, state: 'open', author: 'a', headRefName: 'h', updatedAt: 'u', url: `u${n}`, reviewDecision: '', checks: null, mergeable: '' });
+    const prList = vi.fn(async () => ({ ok: true, prs: [pr(1), pr(2)] }));
+    const pending = new Map<number, (v: unknown) => void>();
+    const prDetail = vi.fn((_r: string, n: number) => new Promise((res) => { pending.set(n, res); }));
+    (window as unknown as { electronAPI: { github: unknown } }).electronAPI.github = { prList, prDetail };
+    act(() => root.render(createElement(PrSection, { repoPath: '/r', defaultOpen: true, poll: false })));
+    await tick(0);
+    const rows = container.querySelectorAll('[data-pr-row] > button');
+    act(() => (rows[0] as HTMLButtonElement).click());
+    act(() => (rows[1] as HTMLButtonElement).click());
+    const answer = (n: number) => ({ ok: true, detail: { number: n, comments: [{ author: 'x', body: `comment on ${n}`, createdAt: '', url: 'c', kind: 'comment', reviewState: '', truncated: false }] } });
+    await act(async () => { pending.get(2)!(answer(2)); });
+    await act(async () => { pending.get(1)!(answer(1)); });
+    await tick(0);
+    const shown = container.querySelectorAll('[data-pr-comments]');
+    expect(shown).toHaveLength(1);
+    expect(shown[0].closest('[data-pr-row]')).toBe(container.querySelectorAll('[data-pr-row]')[1]);
+    expect(shown[0].textContent).toContain('comment on 2');
+    expect(container.textContent).not.toContain('comment on 1');
+  });
 });

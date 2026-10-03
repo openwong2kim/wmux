@@ -109,6 +109,13 @@ export function PrSection({ repoPath, refreshKey = 0, defaultOpen = false, poll 
   // 펼친 PR의 마지막 상세 fetch에 쓴 updatedAt — 목록 폴에서 값이 바뀌면
   // 코멘트를 재조회한다(Codex P2).
   const expandedUpdatedAt = useRef<string>('');
+  const expandedRef = useRef(expanded);
+  expandedRef.current = expanded;
+  // Detail generation: bumped by every comment read, a collapse and a repo
+  // change, so only the newest read for the open PR lands; the PR the shown
+  // comments belong to is kept with them.
+  const detailGen = useRef(0);
+  const [commentsFor, setCommentsFor] = useState<number | null>(null);
 
   const fetchComments = useCallback(async (repo: string, pr: PrSummary) => {
     const bridge = getGithubBridge();
@@ -116,12 +123,14 @@ export function PrSection({ repoPath, refreshKey = 0, defaultOpen = false, poll 
     setCommentsLoading(true);
     setCommentsError(null);
     const g = gen.current;
+    const dg = ++detailGen.current;
     const res = await bridge.prDetail(repo, pr.number, pr.updatedAt);
-    // repo/expanded가 그새 바뀌었으면 폐기(stale 응답).
-    if (g !== gen.current || repoRef.current !== repo) return;
+    // A newer read, a collapse, another PR, a repo change or a hidden window: drop it.
+    if (dg !== detailGen.current || expandedRef.current !== pr.number || g !== gen.current || repoRef.current !== repo) return;
     setCommentsLoading(false);
     if (res.ok) {
       expandedUpdatedAt.current = pr.updatedAt;
+      setCommentsFor(pr.number);
       setComments(res.detail.comments);
     } else {
       // 실패를 빈 코멘트로 뭉개지 않는다 — 진짜 빈 토론과 구분(Codex P2).
@@ -161,8 +170,11 @@ export function PrSection({ repoPath, refreshKey = 0, defaultOpen = false, poll 
   useEffect(() => {
     setState({ kind: 'loading' });
     setExpanded(null);
+    expandedRef.current = null;
+    detailGen.current++;
     setComments(null);
     setCommentsError(null);
+    setCommentsLoading(false);
     expandedUpdatedAt.current = '';
     if (!repoPath || lazy) return;
     void load();
@@ -212,11 +224,15 @@ export function PrSection({ repoPath, refreshKey = 0, defaultOpen = false, poll 
     async (pr: PrSummary) => {
       if (expanded === pr.number) {
         setExpanded(null);
+        expandedRef.current = null;
+        detailGen.current++;
         setComments(null);
         setCommentsError(null);
+        setCommentsLoading(false);
         return;
       }
       setExpanded(pr.number);
+      expandedRef.current = pr.number;
       setComments(null);
       setCommentsError(null);
       if (!repoPath) return;
@@ -327,12 +343,12 @@ export function PrSection({ repoPath, refreshKey = 0, defaultOpen = false, poll 
                     {t('git.commentsFailed') || 'Could not load comments'}: {commentsError}
                   </div>
                 )}
-                {!commentsLoading && !commentsError && comments && comments.length === 0 && (
+                {!commentsLoading && !commentsError && commentsFor === pr.number && comments && comments.length === 0 && (
                   <div className="text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
                     {t('git.noComments') || 'No comments.'}
                   </div>
                 )}
-                {!commentsLoading && !commentsError &&
+                {!commentsLoading && !commentsError && commentsFor === pr.number &&
                   comments?.map((c, i) => (
                     <div key={i} className="group/comment py-1 border-t border-[var(--bg-surface)]" style={{ borderColor: 'var(--border-soft)' }}>
                       <div className="flex items-center gap-1 text-[10px] text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
