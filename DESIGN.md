@@ -257,7 +257,10 @@ button.
   the pushed git status only when that status is about this very worktree.
 - **Scope:** a segmented control, This repo (default, the active pane's
   repo) or All repos (every open workspace grouped by repo, the active repo
-  first, each group headed by the repo name and its workspace count).
+  first, each group headed by the repo name and its workspace count). Clones
+  of one remote are one group: one PR list, and each clone's worktrees under
+  its folder name. Only the active repo's PR list is open and polls; another
+  repo's opens on demand and reads once.
 - **Pull requests | Worktrees** side by side, stacking on a narrow sheet.
   PRs expand to their comments. One row per worktree: the branch in mono
   over the workspaces on it (each a link that switches to it) or its folder,
@@ -266,15 +269,17 @@ button.
   edge on hover; then the new-worktree line and, while one runs, the merge
   session. Anything that lands on a pane (Diff, Open, a workspace link)
   returns to Workspaces.
-- **Not connected:** when gh is missing or signed out for a GitHub remote,
-  the Pull requests column says so with one primary, Connect GitHub, which
-  opens a terminal tab running `gh auth login --web` (or shows the command
-  to copy), and Check again. gh keeps the credential; wmux stores no token.
+- **Not connected:** signed out for a GitHub remote, the Pull requests
+  column says so with one primary, Connect GitHub, which opens a terminal tab
+  running `gh auth login --web` (or shows the command to copy when no tab can
+  show it, e.g. a WSL default shell on Windows), and Check again. gh not
+  installed shows how to get it and Check again only. gh keeps the
+  credential; wmux stores no token.
 - **Cost:** pull-only and only while the page is shown. The PR list polls
   every 30s while it is open on this page and the window is visible.
-- **Rail dot:** a red dot on the Git icon while an open workspace's PR fails
-  its checks or conflicts with its base (pushed PR status only); the button's
-  name says why. Nothing at zero.
+- **Rail dot:** a red dot on the Git icon while an open workspace's open or
+  draft PR fails its checks or conflicts with its base (pushed PR status
+  only, never a saved one); the button's name says why. Nothing at zero.
 
 ### Settings
 
