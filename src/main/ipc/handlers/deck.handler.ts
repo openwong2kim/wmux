@@ -53,6 +53,7 @@ import { loadCommanderSession, saveCommanderSession, clearCommanderSession } fro
 import { DeckScheduler } from '../../deck/DeckScheduler';
 import { DeckHeartbeat } from '../../deck/DeckHeartbeat';
 import { CommanderEventCoalescer } from '../../deck/CommanderEventCoalescer';
+import { notifyFanoutCaller } from '../../deck/fanoutCallerNotify';
 import {
   routeWorkerEventToOwner,
   peekOrphanBacklog,
@@ -1774,6 +1775,15 @@ export function registerDeckHandler(
         !isTaskWorkspace(owner) && (managers.has(owner) || loadWorkspaceMode(owner) !== 'off'),
       push: (copy) => coalescer?.push(copy),
       reconcile: reconcileTaskLedger,
+      notifyCaller: (owner, taskWs, taskId, kind, seq) =>
+        notifyFanoutCaller(owner, taskWs, taskId, kind, seq, {
+          send: (payload) => {
+            const win = getWindow();
+            if (!win || win.isDestroyed()) return false;
+            win.webContents.send(IPC.DECK_FANOUT_CALLER, payload);
+            return true;
+          },
+        }),
     });
   });
 

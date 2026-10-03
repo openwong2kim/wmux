@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { useStore } from '../stores';
+import { receiveFanoutCallerEvent } from './fanoutCallerNudge';
 
 // ─── Command Deck Phase 2 — Commander brain stream bridge ────────────────────
 //
@@ -30,6 +31,9 @@ export function useDeckStream(): void {
       if (!workspaceId) return;
       useStore.getState().setBrainPtyId(workspaceId, ptyId ?? null);
     });
+    // A fan-out worker of a brain-less owner ended its turn: nudge the pane
+    // that started the fan-out (fanoutCallerNudge validates the payload).
+    const offFanoutCaller = api.onFanoutCaller?.((ev) => receiveFanoutCallerEvent(ev));
     // …and hydrate from main's snapshot, because every push that landed
     // before this subscription existed (app start, a renderer reload) is
     // simply gone. Main is the authority; a failed call just leaves the deck
@@ -45,6 +49,7 @@ export function useDeckStream(): void {
       cancelled = true;
       off();
       offPty?.();
+      offFanoutCaller?.();
     };
   }, []);
 }

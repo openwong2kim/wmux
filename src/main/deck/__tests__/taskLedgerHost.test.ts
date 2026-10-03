@@ -98,6 +98,59 @@ describe('routeWorkerEventToOwner', () => {
     expect(pushed).toHaveLength(1);
     expect(pushed[0].task?.taskId).toBe('wtask-2');
   });
+
+  it('tells the caller beside the park, and never when a brain takes the event', async () => {
+    const calls: unknown[][] = [];
+    const notifyCaller = (...args: unknown[]): void => { calls.push(args); };
+    routeWorkerEventToOwner(ev(), { hasBrain: () => true, push: () => undefined, notifyCaller });
+    expect(calls).toHaveLength(0);
+    routeWorkerEventToOwner(ev({ kind: 'agent.stop_failure', seq: 6 }), { hasBrain: () => false, push: () => undefined, notifyCaller });
+    expect(calls).toEqual([['ws-parent', 'ws-task', 'wtask-1', 'agent.stop_failure', 6]]);
+    await ledger.flush();
+    expect(peekOrphanBacklog('ws-parent')).toHaveLength(1);
+  });
+
+  it('a brain booting later replays the park without telling the caller again', async () => {
+    const calls: unknown[][] = [];
+    const notifyCaller = (...args: unknown[]): void => { calls.push(args); };
+    for (let seq = 1; seq <= 3; seq++) {
+      routeWorkerEventToOwner(ev({ seq }), { hasBrain: () => false, push: () => undefined, notifyCaller });
+    }
+    await ledger.flush();
+    expect(calls).toHaveLength(3);
+    // The boot replay reads the backlog; it does not run the router again.
+    expect(peekOrphanBacklog('ws-parent').map((e) => e.seq)).toEqual([1, 2, 3]);
+    expect(calls).toHaveLength(3);
+  });
+
+  it('still tells the caller when the park backlog is over its cap (owner off)', async () => {
+    const cappedDir = path.join(dir, 'capped');
+    fs.mkdirSync(cappedDir);
+    const capped = new TaskLedger({ dir: cappedDir, orphanMaxCount: 2, log: () => undefined });
+    await capped.register({ id: 'wtask-1', taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-parent', title: 'lane' });
+    const calls: unknown[][] = [];
+    for (let seq = 1; seq <= 4; seq++) {
+      routeWorkerEventToOwner(ev({ seq }), {
+        hasBrain: () => false,
+        push: () => undefined,
+        ledger: capped,
+        notifyCaller: (...args) => { calls.push(args); },
+      });
+    }
+    await capped.flush();
+    expect(capped.peekOrphanedEvents('ws-parent').map((o) => o.seq)).toEqual([3, 4]);
+    expect(calls.map((c) => c[4])).toEqual([1, 2, 3, 4]);
+  });
+
+  it('a throwing caller notify does not disturb the park', async () => {
+    routeWorkerEventToOwner(ev(), {
+      hasBrain: () => false,
+      push: () => undefined,
+      notifyCaller: () => { throw new Error('boom'); },
+    });
+    await ledger.flush();
+    expect(peekOrphanBacklog('ws-parent')).toHaveLength(1);
+  });
 });
 
 describe('createWorkTaskReconciler', () => {

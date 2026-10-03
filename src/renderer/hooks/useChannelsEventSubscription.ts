@@ -70,6 +70,7 @@ import { publishA2aTask } from '../events/publisher';
 import { flushMentions, type FlushOpts } from './channelMentionFlush';
 import { gatedSubmitToPty } from '../utils/ptyMessageDelivery';
 import { noteAgentTurnEnd, sweepTurnEndReminders } from './a2aTurnEndReminder';
+import { noteFanoutCallerTurnEnd, sweepFanoutCallerNudges } from './fanoutCallerNudge';
 import {
   createPasteGateState,
   isMentionPasteBusy,
@@ -672,7 +673,10 @@ export function useChannelsEventSubscription(): void {
                 runFlushAll({ onlyPtyId: ev.ptyId });
                 // Only a real turn boundary: an osc133 stop is a shell command
                 // ending, possibly under a still-running agent.
-                if (ev.source !== 'osc133') noteAgentTurnEnd(ev.ptyId);
+                if (ev.source !== 'osc133') {
+                  noteAgentTurnEnd(ev.ptyId);
+                  noteFanoutCallerTurnEnd(ev.ptyId);
+                }
               }
             } else if (event.type === 'channel.catalog') {
               // A1: a channel's catalog/membership changed (create/archive/join/
@@ -718,6 +722,8 @@ export function useChannelsEventSubscription(): void {
           runFlushAll({});
           // A2A turn-end reminders: recorded stops whose pane is idle now.
           void sweepTurnEndReminders();
+          // Fan-out caller nudges queued behind a busy or usage-limited pane.
+          void sweepFanoutCallerNudges();
           // A1: re-hydrate the catalog once per batch when any channel.catalog
           // event arrived. The six non-post mutations now emit this signal; the
           // receiver re-fetches list+members (daemon = source of truth), so a

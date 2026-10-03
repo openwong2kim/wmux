@@ -61,9 +61,10 @@ export function buildTurnEndReminder(count: number): string {
   return `[wmux] ${count} A2A task${count === 1 ? '' : 's'} still waiting for you — a2a_task_query`;
 }
 
-type Eligibility = 'write' | 'wait' | 'never';
+export type Eligibility = 'write' | 'wait' | 'never';
 
-function eligibility(ptyId: string): Eligibility {
+/** Whether wmux may type into `ptyId` now. Shared with fanoutCallerNudge. */
+export function eligibility(ptyId: string): Eligibility {
   const s = useStore.getState();
   const liveness = { agentAlive: s.agentAliveByPtyId, commandRunning: s.commandRunningByPtyId };
   if (!paneHasDetectedAgent(ptyId, s.surfaceAgent, liveness)) return 'never';

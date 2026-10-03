@@ -56,6 +56,9 @@ export interface WorkerEventRoutingPorts {
    *  caller; absent = no second look. */
   reconcile?: () => Promise<void>;
   ledger?: TaskLedger;
+  /** Parked events only: tell the pane that started the fan-out, best effort
+   *  and unacknowledged (fanoutCallerNotify.ts). The park stays the record. */
+  notifyCaller?: (ownerWorkspaceId: string, taskWorkspaceId: string, taskId: string, kind: string, seq: number) => void;
 }
 
 /**
@@ -80,6 +83,12 @@ export function routeWorkerEventToOwner(ev: CoalescerInput, ports: WorkerEventRo
     l.recordOrphanedEvent({ ownerWorkspaceId: entry.ownerWorkspaceId, seq: ev.seq, payload: tagged }).catch(
       (err) => console.warn(`[deck] could not park a worker event for ${entry.ownerWorkspaceId}: ${String(err)}`),
     );
+    // Independent of the park's outcome (a full backlog still nudges).
+    try {
+      ports.notifyCaller?.(entry.ownerWorkspaceId, ev.workspaceId, entry.id, ev.kind, ev.seq);
+    } catch {
+      // best effort
+    }
   };
   const entry = l.findOpenByTaskWorkspace(ev.workspaceId);
   if (entry) {

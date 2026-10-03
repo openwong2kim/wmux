@@ -973,6 +973,18 @@ const electronAPI = {
       ipcRenderer.on(IPC.DECK_BRAIN_PTY, listener);
       return () => { ipcRenderer.removeListener(IPC.DECK_BRAIN_PTY, listener); };
     },
+    // A fan-out worker of a brain-less owner ended its turn: a pointer for
+    // the requester pane's one-line nudge (renderer/hooks/fanoutCallerNudge).
+    onFanoutCaller: (
+      callback: (ev: import('../main/deck/fanoutCallerNotify').FanoutCallerEvent) => void,
+    ) => {
+      const listener = (
+        _e: Electron.IpcRendererEvent,
+        ev: import('../main/deck/fanoutCallerNotify').FanoutCallerEvent,
+      ) => callback(ev);
+      ipcRenderer.on(IPC.DECK_FANOUT_CALLER, listener);
+      return () => { ipcRenderer.removeListener(IPC.DECK_FANOUT_CALLER, listener); };
+    },
   },
   // WorkspaceMirror push — fire-and-forget full snapshot of the workspace tree +
   // per-pane agent status. Keeps the main-process mirror warm so routing / hook
