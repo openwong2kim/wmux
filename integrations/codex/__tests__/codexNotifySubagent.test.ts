@@ -28,6 +28,7 @@ function v7(ms: number, tail: string): string {
 const ROOT = v7(BASE_MS, 'aaa000000000000001');
 const CHILD = v7(BASE_MS + 60_000, 'bbb000000000000002');
 const GRANDCHILD = v7(BASE_MS + 120_000, 'ccc000000000000003');
+const OTHER = v7(BASE_MS + 180_000, 'ddd000000000000004');
 
 function dayDir(sessionsRoot: string, ms: number): string {
   const d = new Date(ms);
@@ -85,6 +86,12 @@ describe('parseSessionMeta', () => {
     expect(parseSessionMeta(meta(CHILD, { subagent: 'review' }))).toEqual({ subagent: true, rootId: undefined, parentId: undefined });
   });
 
+  it('source.subagent: false, or any other empty value, is not a sub-agent (#1697 review)', () => {
+    expect(parseSessionMeta(meta(ROOT, { subagent: false }))).toEqual({ subagent: false });
+    expect(parseSessionMeta(meta(ROOT, { subagent: '' }))).toEqual({ subagent: false });
+    expect(parseSessionMeta(meta(ROOT, { subagent: 0 }))).toEqual({ subagent: false });
+  });
+
   it('anything that is not session_meta is undefined', () => {
     expect(parseSessionMeta('{"type":"turn_context"}')).toBeUndefined();
     expect(parseSessionMeta('not json')).toBeUndefined();
@@ -125,14 +132,53 @@ describe('findRolloutFile / classifyCodexThread', () => {
     expect(classifyCodexThread(GRANDCHILD, sessionsRoot)).toEqual({ subagent: true, rootId: ROOT });
   });
 
-  it('a parent whose rollout is gone is still the best root there is', () => {
+  // #1697 review ("must fix" #1): an unresolved parent must never become the
+  // reported root — it could itself be a sub-agent. This is the exact #1696
+  // failure mode (resume opening a sub-agent), so the walk now reports
+  // "sub-agent, unknown root" instead of guessing.
+  it('an immediate parent whose rollout is gone is a sub-agent with no CONFIRMED root', () => {
     writeRollout(sessionsRoot, CHILD, meta(CHILD, spawnSource(ROOT)));
-    expect(classifyCodexThread(CHILD, sessionsRoot)).toEqual({ subagent: true, rootId: ROOT });
+    expect(classifyCodexThread(CHILD, sessionsRoot)).toEqual({ subagent: true, rootId: undefined });
+  });
+
+  it('a missing INTERMEDIATE rollout (not the immediate parent) also withholds the root', () => {
+    // GRANDCHILD -> CHILD (rollout exists, points further up) -> ROOT (missing).
+    writeRollout(sessionsRoot, GRANDCHILD, meta(GRANDCHILD, spawnSource(CHILD, 2)));
+    writeRollout(sessionsRoot, CHILD, meta(CHILD, spawnSource(ROOT)));
+    expect(classifyCodexThread(GRANDCHILD, sessionsRoot)).toEqual({ subagent: true, rootId: undefined });
+  });
+
+  it('a cycle (A spawned-by B spawned-by A) terminates without a root', () => {
+    writeRollout(sessionsRoot, ROOT, meta(ROOT, spawnSource(CHILD)));
+    writeRollout(sessionsRoot, CHILD, meta(CHILD, spawnSource(ROOT)));
+    expect(classifyCodexThread(ROOT, sessionsRoot)).toEqual({ subagent: true, rootId: undefined });
+  });
+
+  it('exhausting the hop budget withholds the root rather than returning an unconfirmed id', () => {
+    // A chain of MAX_PARENT_HOPS (8) sub-agents, each naming only its direct
+    // parent (no session_id shortcut), with no top-level thread reachable
+    // inside the budget. T0 (never reached) would resolve it if the budget
+    // were unbounded.
+    const chain = Array.from({ length: 9 }, (_, i) => v7(BASE_MS + i * 60_000, `${i}`.padStart(3, '0') + '0'.repeat(15)));
+    writeRollout(sessionsRoot, chain[0], meta(chain[0], 'cli'));
+    for (let i = 1; i < chain.length; i++) {
+      writeRollout(sessionsRoot, chain[i], meta(chain[i], spawnSource(chain[i - 1])));
+    }
+    expect(classifyCodexThread(chain[chain.length - 1], sessionsRoot)).toEqual({ subagent: true, rootId: undefined });
   });
 
   it('a sub-agent with no parent binds nothing', () => {
     writeRollout(sessionsRoot, CHILD, meta(CHILD, { subagent: 'review' }));
     expect(classifyCodexThread(CHILD, sessionsRoot)).toEqual({ subagent: true, rootId: undefined });
+  });
+
+  // #1697 review ("must fix" #2): the rollout found by filename must still
+  // name the thread it was looked up for before it is trusted.
+  it('ignores a rollout whose own session_meta names a different thread', () => {
+    const dir = dayDir(sessionsRoot, uuidV7Millis(CHILD)!);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `rollout-2026-09-30T09-52-21-${CHILD}.jsonl`), `${meta(OTHER, 'cli', OTHER)}\n`);
+    expect(classifyCodexThread(CHILD, sessionsRoot)).toEqual({ subagent: false, rootId: CHILD });
   });
 
   it('fails open to the thread itself when there is no readable history', () => {
@@ -205,16 +251,23 @@ describe('wmux-codex-notify with a sub-agent thread', () => {
 
   const logLines = () => fs.readFileSync(path.join(home, '.wmux', 'codex-notify.log'), 'utf8')
     .trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
+  const spoolFiles = () => {
+    const spool = path.join(home, '.wmux', 'resume-spool');
+    return fs.existsSync(spool) ? fs.readdirSync(spool).filter((f) => f.endsWith('.json')) : [];
+  };
 
-  it('reports a sub-agent turn as a subagent_stop of the root thread', async () => {
+  it('reports a sub-agent turn as subagent_stop with no session id (so it cannot rebind the pane)', async () => {
     const sessions = path.join(codexHome, 'sessions');
     writeRollout(sessions, ROOT, meta(ROOT, 'cli', ROOT));
     writeRollout(sessions, CHILD, meta(CHILD, spawnSource(ROOT), ROOT));
     expect(await run(CHILD)).toBe(0);
     expect(received).toEqual([expect.objectContaining({
       method: 'hooks.signal',
-      params: expect.objectContaining({ kind: 'agent.subagent_stop', agent: 'codex', agentSessionId: ROOT, ptyId: 'pty-1' }),
+      params: expect.objectContaining({ kind: 'agent.subagent_stop', agent: 'codex', ptyId: 'pty-1' }),
     })]);
+    expect(received[0].params).not.toHaveProperty('agentSessionId');
+    // The root is still the best CONFIRMED one (CHILD's session_id names it
+    // directly) and rides along for the log only.
     expect(logLines()).toEqual([expect.objectContaining({ outcome: 'ok', sessionId: CHILD, subagent: true, rootSessionId: ROOT })]);
   }, 20_000);
 
@@ -233,5 +286,23 @@ describe('wmux-codex-notify with a sub-agent thread', () => {
     expect(received).toHaveLength(1);
     expect(received[0].params).toEqual(expect.objectContaining({ kind: 'agent.subagent_stop' }));
     expect(received[0].params).not.toHaveProperty('agentSessionId');
+  }, 20_000);
+
+  // #1697 review ("should fix" #5): a sub-agent completion must never replace
+  // an older, valid agent.stop spool for the same pane — so it is not spooled
+  // at all when no wmux endpoint can be reached.
+  it('does not spool a sub-agent completion when no wmux endpoint exists', async () => {
+    fs.rmSync(path.join(home, '.wmux-auth-token'), { force: true });
+    writeRollout(path.join(codexHome, 'sessions'), CHILD, meta(CHILD, { subagent: 'review' }));
+    expect(await run(CHILD)).toBe(0);
+    expect(spoolFiles()).toEqual([]);
+    expect(logLines()).toEqual([expect.objectContaining({ outcome: 'no-auth-token', subagent: true })]);
+  }, 20_000);
+
+  it('still spools the root thread\'s own turn when no wmux endpoint exists, as before', async () => {
+    fs.rmSync(path.join(home, '.wmux-auth-token'), { force: true });
+    writeRollout(path.join(codexHome, 'sessions'), ROOT, meta(ROOT, 'cli', ROOT));
+    expect(await run(ROOT)).toBe(0);
+    expect(spoolFiles()).toEqual(['pty-1.json']);
   }, 20_000);
 });

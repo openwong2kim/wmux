@@ -48,7 +48,7 @@
 
 import {
   readFileSync, existsSync, mkdirSync, appendFileSync, writeFileSync, renameSync, unlinkSync,
-  realpathSync, readdirSync, openSync, readSync, closeSync,
+  realpathSync, readdirSync, openSync, readSync, closeSync, fstatSync,
 } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -66,7 +66,14 @@ const AGENT_TURN_COMPLETE = 'agent-turn-complete';
 //           env claims a wmux pane (#1523).
 //   0.5.0 — a sub-agent thread's turn-complete is sent as agent.subagent_stop
 //           under its root thread's id, not as the pane's own turn (#1696).
-const BRIDGE_VERSION = '0.5.0';
+//   0.6.0 — #1697 review: a root is only ever a CONFIRMED top-level thread
+//           (own id verified in its own session_meta, cycle-guarded) — never
+//           an unresolved or unverified intermediate; a sub-agent completion
+//           carries no agentSessionId and is never spooled, so an imperfect
+//           root can no longer rebind or replace a pane's resume binding
+//           either way; the rollout scan runs after the shared-server origin
+//           check and reads a bounded number of directory entries.
+const BRIDGE_VERSION = '0.6.0';
 const CONNECT_RETRY_BACKOFFS_MS = [100, 250];
 const TRANSIENT_CONNECT_CODES = new Set([
   'EPERM', 'ECONNREFUSED', 'ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'EBUSY', 'EAGAIN',
@@ -623,11 +630,24 @@ function readAncestorChain(startPid = process.ppid) {
 // sub-agent's carries `source: { subagent: … }` plus the root thread's id
 // (`session_id`, and `thread_spawn.parent_thread_id` one level up).
 //
-// Such a completion goes out as agent.subagent_stop under the ROOT thread's
-// id: the same shape Claude's SubagentStop has (its session_id is the
-// parent's), so the resume capture keeps the conversation the user works in,
-// the notification lands in the `subagent` category, and the pane's own turn
-// is not ended. Anything this cannot read fails open to today's agent.stop.
+// Such a completion goes out as agent.subagent_stop with NO agentSessionId at
+// all (#1697 review, "should fix" #4): the subagent category mute and the
+// pane's own-turn-keeps-running behavior both key on `kind`, neither needs an
+// id, and an imperfect root can therefore never rebind or replace a pane's
+// resume binding — the one failure mode worth being paranoid about. A
+// best-effort root, when one can be CONFIRMED, still rides along in the log
+// line only (`threadLog.rootSessionId`), for operators reading
+// codex-notify.log. Anything this cannot read fails open to today's
+// agent.stop.
+//
+// "Confirmed" is deliberately strict (#1697 review, "must fix" #1/#2): a
+// thread only becomes the reported root after classifyCodexThread has READ
+// that thread's own session_meta and found it has no subagent source, or a
+// sub-agent's session_meta names it directly (`session_id`, Codex's own
+// cross-reference). A parent whose rollout is missing, unreadable, not a
+// regular file, mis-paired with a different thread's id, or past the hop/
+// cycle budget never becomes rootId — the walk reports "sub-agent, unknown
+// root" instead of guessing.
 
 const THREAD_ID_RE = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -635,6 +655,10 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // bounds a malformed file.
 const SESSION_META_MAX_BYTES = 1024 * 1024;
 const MAX_PARENT_HOPS = 8;
+// A day's rollout directory is normally tiny (one account, real usage); this
+// only bounds a pathological or adversarial one so the scan cannot run past
+// the hook's own timeout budget (#1697 review, "bound the lookup").
+const MAX_ROLLOUT_DIR_ENTRIES = 20_000;
 
 function codexSessionsRoot(env) {
   return join(nonEmptyStr(env.CODEX_HOME) ?? join(getHomeDir(), '.codex'), 'sessions');
@@ -650,7 +674,10 @@ export function uuidV7Millis(id) {
  * The rollout file of `id` under `sessionsRoot`, else undefined. Codex files a
  * rollout under `YYYY/MM/DD` of its local creation time, which a UUIDv7 id
  * carries, so this lists at most three day directories (±1 day absorbs a
- * timezone or midnight edge) instead of walking the whole history.
+ * timezone or midnight edge) instead of walking the whole history. Only
+ * regular files are considered — `withFileTypes` reports a symlink or FIFO's
+ * own dirent type without following it, so neither is ever opened as a
+ * rollout (#1697 review).
  */
 export function findRolloutFile(id, sessionsRoot) {
   const created = uuidV7Millis(id);
@@ -664,21 +691,29 @@ export function findRolloutFile(id, sessionsRoot) {
       String(d.getMonth() + 1).padStart(2, '0'),
       String(d.getDate()).padStart(2, '0'),
     );
-    let names;
+    let entries;
     try {
-      names = readdirSync(dir);
+      entries = readdirSync(dir, { withFileTypes: true });
     } catch {
       continue;
     }
-    const hit = names.find((name) => name.startsWith('rollout-') && name.endsWith(suffix));
-    if (hit) return join(dir, hit);
+    let examined = 0;
+    for (const entry of entries) {
+      if (examined++ >= MAX_ROLLOUT_DIR_ENTRIES) break;
+      if (!entry.isFile()) continue;
+      if (entry.name.startsWith('rollout-') && entry.name.endsWith(suffix)) return join(dir, entry.name);
+    }
   }
   return undefined;
 }
 
+/** `file`'s first line, or undefined past `SESSION_META_MAX_BYTES` or for
+ *  anything that isn't a regular file (an fstat check, since a symlink/FIFO
+ *  could in principle replace the path between listing and opening). */
 function readFirstLine(file) {
   const fd = openSync(file, 'r');
   try {
+    if (!fstatSync(fd).isFile()) return undefined;
     const chunk = Buffer.alloc(64 * 1024);
     const parts = [];
     let total = 0;
@@ -700,12 +735,41 @@ function readFirstLine(file) {
 }
 
 /**
- * Read a rollout's first line as `session_meta`. Returns
+ * Classify an already-parsed session_meta `payload`. Returns
  * `{ subagent: false }` for a top-level thread, `{ subagent: true, rootId,
- * parentId }` for a sub-agent (either id may be undefined), or undefined when
- * the line is not a session_meta record.
+ * parentId }` for a sub-agent (either id may be undefined). A falsy
+ * `source.subagent` — `undefined`, `null`, `false`, or any other empty value —
+ * means "not a sub-agent" (#1697 review, "must fix" #3: a future `false`
+ * must not be read as "has a subagent source").
+ */
+function classifyMetaPayload(meta) {
+  const rawSubagent = meta.source && typeof meta.source === 'object' ? meta.source.subagent : undefined;
+  if (!rawSubagent) return { subagent: false };
+  const validId = (v) => (typeof v === 'string' && THREAD_ID_RE.test(v) ? v : undefined);
+  const ownId = validId(meta.id);
+  const sessionId = validId(meta.session_id);
+  const spawn = typeof rawSubagent === 'object' ? rawSubagent.thread_spawn : undefined;
+  return {
+    subagent: true,
+    rootId: sessionId && sessionId !== ownId ? sessionId : undefined,
+    parentId: spawn && typeof spawn === 'object' ? validId(spawn.parent_thread_id) : undefined,
+  };
+}
+
+/**
+ * Read a rollout's first line as `session_meta`. Returns `{ subagent: false }`
+ * for a top-level thread, `{ subagent: true, rootId, parentId }` for a
+ * sub-agent, or undefined when the line is not a session_meta record. Exposed
+ * for tests exercising the record shape directly; classifyCodexThread uses
+ * {@link parseSessionMetaRecord} instead, to also check the record's own id
+ * against the thread it was looked up for.
  */
 export function parseSessionMeta(line) {
+  const record = parseSessionMetaRecord(line);
+  return record?.classification;
+}
+
+function parseSessionMetaRecord(line) {
   let record;
   try {
     record = JSON.parse(line);
@@ -715,46 +779,55 @@ export function parseSessionMeta(line) {
   if (!record || record.type !== 'session_meta' || !record.payload || typeof record.payload !== 'object') {
     return undefined;
   }
-  const meta = record.payload;
-  const subagent = meta.source && typeof meta.source === 'object' ? meta.source.subagent : undefined;
-  if (subagent === undefined || subagent === null) return { subagent: false };
-  const validId = (v) => (typeof v === 'string' && THREAD_ID_RE.test(v) ? v : undefined);
-  const ownId = validId(meta.id);
-  const sessionId = validId(meta.session_id);
-  const spawn = typeof subagent === 'object' ? subagent.thread_spawn : undefined;
+  const { payload } = record;
   return {
-    subagent: true,
-    rootId: sessionId && sessionId !== ownId ? sessionId : undefined,
-    parentId: spawn && typeof spawn === 'object' ? validId(spawn.parent_thread_id) : undefined,
+    id: typeof payload.id === 'string' ? payload.id : undefined,
+    classification: classifyMetaPayload(payload),
   };
 }
 
 /**
- * Classify thread `id`: `{ subagent: false, rootId: id }` for a top-level
- * thread (or one whose rollout cannot be read — fail open), else
- * `{ subagent: true, rootId }` where rootId is the top-level thread it belongs
- * to, or undefined when no rollout names one.
+ * Classify thread `id`: `{ subagent: false, rootId: id }` for a CONFIRMED
+ * top-level thread, or one whose own rollout cannot be read at all (fail
+ * open — nothing here says it is a sub-agent); else `{ subagent: true,
+ * rootId }` where rootId is the CONFIRMED top-level thread it belongs to, or
+ * undefined when the walk cannot confirm one (a missing/unreadable/
+ * mis-paired intermediate rollout, a cycle, or the hop budget running out —
+ * #1697 review, "must fix" #1/#2). `rootId` is never an id whose own
+ * session_meta was not read and found to have no subagent source, except via
+ * a sub-agent's own explicit `session_id` cross-reference.
  */
 export function classifyCodexThread(id, sessionsRoot) {
+  const visited = new Set();
   let current = id;
   let subagent = false;
   for (let hop = 0; hop < MAX_PARENT_HOPS; hop++) {
+    if (visited.has(current)) break; // A→B→A cycle: no further progress possible.
+    visited.add(current);
     const file = findRolloutFile(current, sessionsRoot);
     if (!file) break;
-    let meta;
+    let record;
     try {
       const line = readFirstLine(file);
-      meta = line === undefined ? undefined : parseSessionMeta(line);
+      record = line === undefined ? undefined : parseSessionMetaRecord(line);
     } catch {
-      meta = undefined;
+      record = undefined;
     }
-    if (!meta || !meta.subagent) break;
+    // The file must be the thread it was looked up for — a misplaced or
+    // mis-paired rollout must not attribute another conversation's root here.
+    if (!record || !record.classification || record.id !== current) break;
+    const meta = record.classification;
+    if (!meta.subagent) return { subagent, rootId: current }; // read AND confirmed top-level
     subagent = true;
-    if (meta.rootId) return { subagent, rootId: meta.rootId };
-    if (!meta.parentId) return { subagent, rootId: undefined };
+    if (meta.rootId) return { subagent, rootId: meta.rootId }; // Codex's own cross-reference
+    if (!meta.parentId) return { subagent, rootId: undefined }; // e.g. a review sub-agent
     current = meta.parentId;
   }
-  return { subagent, rootId: current };
+  // Loop exited without confirming a root. subagent is still false only when
+  // hop 0 itself could not be read — the original "unavailable initial-thread
+  // metadata" fallback. Any later exit (missing/mis-paired intermediate,
+  // cycle, or hop budget) already confirmed a sub-agent and must not guess.
+  return { subagent, rootId: subagent ? undefined : id };
 }
 
 // ----- Main ---------------------------------------------------------------
@@ -802,43 +875,50 @@ async function main() {
   }
   const turnId = nonEmptyStr(payload['turn-id']);
   const cwd = nonEmptyStr(payload.cwd) ?? process.cwd();
-  // #1696: a sub-agent thread reports as a subagent_stop of its root thread.
-  // Its own transcript_path (legacy payloads) names the sub-agent's rollout,
-  // so it must not ride along as the root's.
-  let thread = { subagent: false, rootId: sessionId };
-  try {
-    thread = classifyCodexThread(sessionId, codexSessionsRoot(process.env));
-  } catch {
-    // Fail open: an unreadable history is today's agent.stop.
-  }
-  const bindingId = thread.rootId;
-  const transcriptPath = thread.subagent ? undefined : nonEmptyStr(payload.transcript_path);
-  const signalKind = thread.subagent ? 'agent.subagent_stop' : 'agent.stop';
-  const threadLog = thread.subagent
-    ? { subagent: true, ...(bindingId ? { rootSessionId: bindingId } : {}) }
-    : {};
+  const transcriptPathClaimed = nonEmptyStr(payload.transcript_path);
 
   const envPtyId = nonEmptyStr(process.env.WMUX_PTY_ID);
   const envWorkspaceId = nonEmptyStr(process.env.WMUX_WORKSPACE_ID);
   const envSurfaceId = nonEmptyStr(process.env.WMUX_SURFACE_ID);
 
-  // Before anything is sent OR spooled (the no-token branch below spools too):
-  // a shared server's inherited identity is not this turn's pane (#1523). An
-  // environment that claims no pane has nothing to get wrong and is sent as
-  // before, so its ancestors are not even read.
+  // Before anything is sent, spooled, OR READ (#1697 review, "bound the
+  // lookup"): a shared server's inherited identity is not this turn's pane
+  // (#1523), and a refused notification should never pay for the rollout
+  // scan below either. An environment that claims no pane has nothing to get
+  // wrong and is sent as before, so its ancestors are not even read.
   const origin = claimsPaneIdentity(process.env) ? classifyNotifierOrigin(readAncestorChain()) : 'unclaimed';
   if (origin === 'shared-server') {
     logEvent('refused-shared-server', { sessionId, ...(envPtyId ? { claimedPtyId: envPtyId } : {}) });
     return;
   }
 
+  // #1696/#1697: a sub-agent thread reports as agent.subagent_stop with no
+  // agentSessionId (see "Sub-agent threads" above) — never agent.stop under
+  // its own id, which would replace the pane's resume binding with a thread
+  // the user cannot type into.
+  let thread = { subagent: false, rootId: sessionId };
+  try {
+    thread = classifyCodexThread(sessionId, codexSessionsRoot(process.env));
+  } catch {
+    // Fail open: an unreadable history is today's agent.stop.
+  }
+  // A sub-agent's own transcript_path (legacy payloads) names the sub-agent's
+  // rollout and must never ride along under any other thread's signal.
+  const transcriptPath = thread.subagent ? undefined : transcriptPathClaimed;
+  const signalKind = thread.subagent ? 'agent.subagent_stop' : 'agent.stop';
+  const threadLog = thread.subagent
+    ? { subagent: true, ...(thread.rootId ? { rootSessionId: thread.rootId } : {}) }
+    : {};
+
   // Endpoints to try, daemon first (see resolveTargets).
   const targets = resolveTargets();
   if (targets.length === 0) {
-    logEvent('no-auth-token', { origin, paths: [getDaemonAuthTokenPath(), getAuthTokenPath()] });
-    // Still spool so a later daemon boot reconciles the capture.
-    if (envPtyId && bindingId) {
-      spoolResumeBinding({ ptyId: envPtyId, agent: 'codex', sessionId: bindingId, cwd, transcriptPath, ts: Date.now() });
+    logEvent('no-auth-token', { origin, ...threadLog, paths: [getDaemonAuthTokenPath(), getAuthTokenPath()] });
+    // Still spool so a later daemon boot reconciles the capture. A sub-agent
+    // completion carries no id to spool (#1697 review, "should fix" #5): it
+    // must never replace an older, valid agent.stop spool for this pane.
+    if (envPtyId && !thread.subagent) {
+      spoolResumeBinding({ ptyId: envPtyId, agent: 'codex', sessionId, cwd, transcriptPath, ts: Date.now() });
     }
     return;
   }
@@ -846,15 +926,14 @@ async function main() {
   // Canonical AgentSignal envelope. kind 'agent.stop' = a turn completed (the
   // strongest "task done" signal); it triggers the agent-agnostic resume-binding
   // capture in hooks.rpc.ts. A sub-agent thread's turn is 'agent.subagent_stop'
-  // under the root thread's id (see "Sub-agent threads" above), and carries no
-  // agentSessionId at all when no root could be named, so it binds nothing.
-  // Only non-sensitive, allowlisted metadata rides in
+  // with no agentSessionId (see "Sub-agent threads" above), so it binds
+  // nothing. Only non-sensitive, allowlisted metadata rides in
   // signal.payload: official turn-id and the legacy transcript_path used by the
   // binding's D5 liveness probe. Native input/assistant content is never copied.
   const envelope = {
     kind: signalKind,
     agent: 'codex',
-    ...(bindingId ? { agentSessionId: bindingId } : {}),
+    ...(thread.subagent ? {} : { agentSessionId: sessionId }),
     ...(envWorkspaceId ? { workspaceId: envWorkspaceId } : {}),
     ...(envSurfaceId ? { surfaceId: envSurfaceId } : {}),
     ...(envPtyId ? { ptyId: envPtyId } : {}),
@@ -891,9 +970,11 @@ async function main() {
       detail: rpcResult?.detail,
     });
     // Anything but a durable success would lose the capture. Spool it (needs
-    // the exact per-pane key) so the daemon reconciles it on its next boot.
-    if (envPtyId && bindingId) {
-      spoolResumeBinding({ ptyId: envPtyId, agent: 'codex', sessionId: bindingId, cwd, transcriptPath, ts: envelope.ts });
+    // the exact per-pane key) so the daemon reconciles it on its next boot —
+    // except a sub-agent completion, which carries nothing to spool and must
+    // never replace an older, valid agent.stop spool for this pane.
+    if (envPtyId && !thread.subagent) {
+      spoolResumeBinding({ ptyId: envPtyId, agent: 'codex', sessionId, cwd, transcriptPath, ts: envelope.ts });
     }
   }
 }
