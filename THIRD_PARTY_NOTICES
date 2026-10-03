@@ -11546,6 +11546,8 @@ src/shared/quickLaunch.ts) from:
   src/features/quick-composer/ui/QuickComposer.tsx
   src/features/quick-composer/model/quickComposer.ts
   src/features/quick-composer/model/quickComposerShortcut.ts
+Chat v2 Claude driver (src/daemon/chat/v2/claude) from:
+  src/integrations/harness/providers/claude/claude.ts, claudeProtocol.ts
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

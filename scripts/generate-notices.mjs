@@ -407,7 +407,9 @@ const BORROWED_SOURCES = [
       '  src-tauri/src/quick_composer.rs\n' +
       '  src/features/quick-composer/ui/QuickComposer.tsx\n' +
       '  src/features/quick-composer/model/quickComposer.ts\n' +
-      '  src/features/quick-composer/model/quickComposerShortcut.ts',
+      '  src/features/quick-composer/model/quickComposerShortcut.ts\n' +
+      'Chat v2 Claude driver (src/daemon/chat/v2/claude) from:\n' +
+      '  src/integrations/harness/providers/claude/claude.ts, claudeProtocol.ts',
   },
 ];
 lines.push('BORROWED IMPLEMENTATION TECHNIQUES');

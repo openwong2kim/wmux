@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CHATV2_RPC } from '../../../../shared/chatv2/ipc';
 import { createChatV2Host } from '../host';
@@ -8,7 +11,19 @@ type Handler = (params: Record<string, unknown>, ctx: { clientId: string }) => P
 
 function setup(firstParty = true) {
   const handlers = new Map<string, Handler>();
-  const host = createChatV2Host({} as ChatV2HostDeps);
+  const host = createChatV2Host({
+    wmuxDir: fs.mkdtempSync(path.join(os.tmpdir(), 'chatv2-rpc-')),
+    log: () => undefined,
+    now: () => Date.now(),
+    sessionManager: { getSession: () => undefined },
+    approvals: () => null,
+    paneFree: async () => true,
+    writeToPane: () => false,
+    sendTo: () => true,
+    processIdentity: async () => null,
+    killTree: async () => undefined,
+    drivers: () => null,
+  } as unknown as ChatV2HostDeps);
   registerChatV2Rpc((method, handler) => handlers.set(method, handler), host, () => firstParty);
   return { handlers, host };
 }
@@ -18,12 +33,14 @@ describe('registerChatV2Rpc', () => {
     expect([...setup().handlers.keys()].sort()).toEqual(Object.values(CHATV2_RPC).sort());
   });
 
-  it('answers not-implemented from the stub host after validating params', async () => {
+  it('validates params, then hands them to the host', async () => {
     const { handlers } = setup();
     await expect(handlers.get('daemon.chatv2.bindingForPane')!({ paneId: 'pty-1' }, { clientId: 'main' }))
-      .resolves.toEqual({ ok: false, error: { code: 'not-implemented', message: expect.any(String) } });
+      .resolves.toEqual({ ok: true, binding: null });
     await expect(handlers.get('daemon.chatv2.send')!({ paneId: 'pty-1' }, { clientId: 'main' }))
       .resolves.toMatchObject({ ok: false, error: { code: 'invalid-params' } });
+    await expect(handlers.get('daemon.chatv2.create')!({ paneId: 'pty-1', agent: 'claude', mode: 'default' }, { clientId: 'main' }))
+      .resolves.toMatchObject({ ok: false, error: { code: 'pane-not-found' } });
   });
 
   it('refuses a non-first-party client before parsing', async () => {
@@ -39,10 +56,10 @@ describe('registerChatV2Rpc', () => {
       .resolves.toMatchObject({ ok: false, error: { code: 'unavailable' } });
   });
 
-  it('delivers nothing for a claude native answer while the host is a stub', async () => {
+  it('answers a claude native decision it does not hold with not-found', async () => {
     const { host } = setup();
     await expect(host.answerNative({ adapter: 'claude', requestId: 'r1' }, { decision: 'approve', formKind: 'permission' }, 'pty-1'))
-      .resolves.toBe('unavailable');
+      .resolves.toBe('not-found');
     expect(host.bindingForPane('pty-1')).toBeNull();
   });
 });

@@ -4318,6 +4318,24 @@ function registerRpcHandlers(
   });
   const readChatAgentState = (id: string) => {
     const live = readDaemonAgentState(id);
+    // A chat-v2 driver reports its own run state from its stream, not from
+    // hooks or the screen.
+    const driverStatus = chatV2Host?.statusForPane(id);
+    if (driverStatus === 'starting' || driverStatus === 'idle' || driverStatus === 'running' || driverStatus === 'needs-input') {
+      const session = chatV2Host?.sessionForPane(id);
+      const user = session ? [...session.blocks].reverse().find((block) => block.role === 'user') : undefined;
+      const agentStatus: AgentStatus = driverStatus === 'running' ? 'running' : driverStatus === 'needs-input' ? 'awaiting_input' : 'idle';
+      return {
+        ...live,
+        agentName: 'Claude Code',
+        agentStatus,
+        turn: {
+          id: `c2:${session?.id ?? ''}:${user?.id ?? '0'}`,
+          state: agentStatus === 'idle' ? 'idle' as const : 'running' as const,
+          ...(user?.startedAt !== undefined ? { startedAt: user.startedAt } : {}),
+        },
+      };
+    }
     const bridge = sessionManager.getSession(id)?.bridge;
     if (['Claude Code', 'Codex CLI'].includes(live.agentName ?? '') && bridge && live.agentStatus !== 'awaiting_input') {
       const events = projector.snapshot(id)?.events;

@@ -103,6 +103,8 @@ import type {
   ApprovalResolveParams,
   ApprovalResolveResult,
   AnswerRefusalReason,
+  DecisionAnswer,
+  DecisionChannel,
   DecisionForm,
   NativeDecisionOutcome,
   NativeDecisionRef,
@@ -1598,6 +1600,58 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
   }
 
   /**
+   * The channel of a pending native record, or null when no such record is
+   * pending. The chat-v2 host reads it right after `noteNativeDecision` to fail
+   * closed on a record that landed on `none` (native decisions switched off).
+   */
+  nativeDecisionChannel(id: string): DecisionChannel | null {
+    const record = this.requests.find((r) => r.id === id && r.state === 'pending' && r.native !== undefined);
+    return record ? record.channel ?? null : null;
+  }
+
+  /**
+   * The first-party desktop answer to a native decision: the main app's own
+   * chat view, a person at this machine. It goes through the same checks as a
+   * `decision-v2` phone answer (the form, its fingerprint, the answer age, the
+   * one-answer-in-flight claim) and the same adapter call; only the web marker
+   * is replaced by this entry point, which no pipe RPC or MCP tool reaches.
+   * `answers`: questions only, one entry per form question in order.
+   */
+  answerNativeFromDesktop(input: {
+    sessionId: string;
+    native: NativeDecisionRef;
+    decision: ApprovalDecision;
+    answers?: Array<{ keys: string[]; other?: string }>;
+  }): Promise<ApprovalResolveResult> {
+    const key = nativeKey(input.native);
+    const matching = this.requests.filter((r) => r.sessionId === input.sessionId && r.native !== undefined
+      && nativeKey(r.native) === key);
+    // The pending one, else the latest settled one (answered elsewhere → already-resolved).
+    const record = matching.find((r) => r.state === 'pending') ?? matching[matching.length - 1];
+    if (!record) return Promise.resolve({ ok: false, reason: 'not-found' });
+    const questions = record.form?.questions ?? [];
+    const decisionAnswer: DecisionAnswer = {
+      formFingerprint: record.formFingerprint ?? '',
+      clientAnswerId: 'desktop',
+      ...(record.form?.kind === 'questions' && input.decision === 'approve'
+        ? {
+            action: 'submit',
+            answers: (input.answers ?? []).map((answer, index) => ({
+              questionId: questions[index]?.id ?? `q${index}`,
+              keys: [...answer.keys],
+              ...(answer.other !== undefined ? { other: answer.other } : {}),
+            })),
+          }
+        : { action: input.decision }),
+    };
+    return this.resolveNative(
+      { id: record.id, decision: input.decision, resolvedBy: 'desktop', resolver: 'human', decisionAnswer },
+      record,
+      'desktop',
+    );
+  }
+
+  /**
    * Stamp the deadline the GateBroker ACTUALLY armed onto a gate record, so a
    * surface can count down to the moment the tool really gives up rather than
    * to an invented one (see `ApprovalRequest.deadlineAt`).
@@ -2266,8 +2320,13 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
    * caller, the adapter call OUTSIDE the chain (it is I/O), and the settle:
    * `ok` resolves, `not-found` expires (410), `unavailable` releases the claim.
    */
-  private async resolveNative(params: ApprovalResolveParams, record: ApprovalRequest): Promise<ApprovalResolveResult> {
-    const via = params.terminalPromptDecline !== undefined ? 'decline' : params.decisionV2Answer !== undefined ? 'v2' : 'v1';
+  private async resolveNative(
+    params: ApprovalResolveParams,
+    record: ApprovalRequest,
+    origin: 'remote' | 'desktop' = 'remote',
+  ): Promise<ApprovalResolveResult> {
+    const via = origin === 'desktop' ? 'desktop'
+      : params.terminalPromptDecline !== undefined ? 'decline' : params.decisionV2Answer !== undefined ? 'v2' : 'v1';
     const audit = (outcome: string): void => {
       this.deps.log?.(
         'info',
@@ -2298,7 +2357,8 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     if (record.state !== 'pending') return settled();
     const claimKey = record.native ? nativeKey(record.native) : record.id;
     if (this.nativeClaims.has(claimKey)) return refuse('already-answered');
-    const marked = params.decisionV2Answer === DECISION_V2_WEB_ANSWER
+    const marked = origin === 'desktop'
+      || params.decisionV2Answer === DECISION_V2_WEB_ANSWER
       || params.terminalPromptAnswer === TERMINAL_PROMPT_WEB_ANSWER
       || params.terminalPromptDecline === TERMINAL_PROMPT_WEB_DECLINE;
     if ((params.resolver ?? 'human') !== 'human' || !marked) return inTerminal('no-capability');
@@ -2316,7 +2376,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     let choiceKey: string | undefined;
     let answers: Array<{ keys: string[]; other?: string }> | undefined;
     let answerDigest: ApprovalRequest['answerDigest'];
-    if (via === 'v2') {
+    if (via === 'v2' || via === 'desktop') {
       const answer = params.decisionAnswer;
       if (!answer) return refuse('invalid-choice');
       if (answer.formFingerprint !== record.formFingerprint) return refuse('prompt-changed');
