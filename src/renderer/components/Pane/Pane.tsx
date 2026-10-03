@@ -321,7 +321,10 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
     activeSurfacePtyId ? s.surfacePendingQuestion[activeSurfacePtyId] : undefined,
   );
   const markSurfaceQuestionSeen = useStore((s) => s.markSurfaceQuestionSeen);
-  const completeBlink = !isActive && !!activeSurfaceStatus;
+  // A turn that died on a usage limit is waited out, not flagged: no blink
+  // while the hold stands (shared/usageLimit).
+  const activeUsageWaiting = useStore((s) => !!activeSurfacePtyId && s.usageLimitWaiting[activeSurfacePtyId] === true);
+  const completeBlink = !isActive && !!activeSurfaceStatus && !(activeUsageWaiting && activeSurfaceStatus === 'error');
 
   // Clear the attention status once the user is actually on the pane (covers
   // both "navigated to a blinking pane" and "agent finished while I was

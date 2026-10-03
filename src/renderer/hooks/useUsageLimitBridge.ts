@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useStore } from '../stores';
 import type { PaneUsageLimit, PaneUsageLimitPatch } from '../../shared/usageLimit';
+import { nextUsageLimitWaitingChange } from '../stores/slices/usageLimitSlice';
 
 // ─── Usage-limit bridge ──────────────────────────────────────────────────────
 //
@@ -68,6 +69,22 @@ export function useUsageLimitBridge(): void {
       useStore.getState().setUsageLimit(ptyId, limit);
     });
 
+    // Re-derive `usageLimitWaiting` when the next hold ends, so a pane whose
+    // reset passed without a release turns back into attention on time.
+    let waitingTimer: ReturnType<typeof setTimeout> | undefined;
+    const scheduleWaiting = (limits: Record<string, PaneUsageLimit>) => {
+      if (waitingTimer) clearTimeout(waitingTimer);
+      waitingTimer = undefined;
+      const next = nextUsageLimitWaitingChange(limits, Date.now());
+      if (next === null) return;
+      // Capped: a long timer drifts across sleep, and the next pass reschedules.
+      waitingTimer = setTimeout(() => {
+        useStore.getState().refreshUsageLimitWaiting();
+        scheduleWaiting(useStore.getState().usageLimits);
+      }, Math.min(Math.max(next - Date.now() + 50, 1_000), 60_000));
+    };
+    scheduleWaiting(useStore.getState().usageLimits);
+
     const applied = new Set<string>();
     const apply = (state: ReturnType<typeof useStore.getState>) => {
       for (const ptyId of planUsageLimitAutoResume(state.usageLimits, state.usageLimitAutoResume, applied)) {
@@ -84,12 +101,14 @@ export function useUsageLimitBridge(): void {
       if (state.usageLimits !== prev.usageLimits || state.usageLimitAutoResume !== prev.usageLimitAutoResume) {
         apply(state);
       }
+      if (state.usageLimits !== prev.usageLimits) scheduleWaiting(state.usageLimits);
     });
 
     return () => {
       offConnected?.();
       offChanged();
       offStore();
+      if (waitingTimer) clearTimeout(waitingTimer);
     };
   }, []);
 }

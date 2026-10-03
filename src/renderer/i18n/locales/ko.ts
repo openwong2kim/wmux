@@ -1353,6 +1353,7 @@ export const ko = {
   'claudeIntegration.usage.enableLabel': '상태 표시줄에 5h / 7d 사용률 표기',
   'claudeIntegration.usageLimit.autoResume': '사용량 한도가 풀리면 이어서 진행',
   'claudeIntegration.usageLimit.autoResumeDesc': '한도에 걸려 멈춘 에이전트에게 한도가 풀리는 즉시 짧은 이어가기 메시지를 보냅니다. 기본값은 꺼짐이며, 판마다 따로 바꿀 수 있습니다.',
+  'usageLimit.waiting': '대기 중',
   'usageLimit.label': '한도',
   'usageLimit.title': '사용량 한도 도달',
   'usageLimit.resets': '{clock} 해제 · {duration}',

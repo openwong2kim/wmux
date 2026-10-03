@@ -1932,6 +1932,7 @@ export const pl = {
   'claudeIntegration.usage.enableLabel': 'Pokaż wykorzystanie 5h / 7d na pasku stanu',
   'claudeIntegration.usageLimit.autoResume': 'Kontynuuj po odnowieniu limitu użycia',
   'claudeIntegration.usageLimit.autoResumeDesc': 'Wyślij krótką wiadomość „kontynuuj” do wstrzymanego agenta, gdy jego limit się odnowi. Domyślnie wyłączone; każdy panel może to zmienić.',
+  'usageLimit.waiting': 'Oczekiwanie',
   'usageLimit.label': 'Limit',
   'usageLimit.title': 'Osiągnięto limit użycia',
   'usageLimit.resets': 'odnowienie {clock} · {duration}',

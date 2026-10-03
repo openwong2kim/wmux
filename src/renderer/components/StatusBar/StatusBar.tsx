@@ -153,6 +153,7 @@ export default function StatusBar() {
         surfaceAgent: s.surfaceAgent,
         surfacePendingQuestion: s.surfacePendingQuestion,
         remoteWorkspaces: s.remoteWorkspaces,
+        usageLimitWaiting: s.usageLimitWaiting,
       }).filter(isFleetAgentRow);
       return {
         running: panes.filter((p) => p.agentStatus === 'running').length,
@@ -171,6 +172,7 @@ export default function StatusBar() {
         surfaceAgent: s.surfaceAgent,
         surfacePendingQuestion: s.surfacePendingQuestion,
         remoteWorkspaces: s.remoteWorkspaces,
+        usageLimitWaiting: s.usageLimitWaiting,
       }).filter(isFleetAgentRow),
       'attention',
     );

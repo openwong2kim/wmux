@@ -1954,6 +1954,7 @@ export const en = {
   'claudeIntegration.usage.enableLabel': 'Show 5h / 7d utilization in status bar',
   'claudeIntegration.usageLimit.autoResume': 'Continue after a usage limit resets',
   'claudeIntegration.usageLimit.autoResumeDesc': 'Send a short continue message to a paused agent once its limit resets. Off by default; each pane can override it.',
+  'usageLimit.waiting': 'Waiting',
   'usageLimit.label': 'Limit',
   'usageLimit.title': 'Usage limit reached',
   'usageLimit.resets': 'resets {clock} · {duration}',

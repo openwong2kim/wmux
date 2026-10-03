@@ -9,6 +9,7 @@ import type { TranslationKey } from '../../i18n/locales/en';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
 import { StatusMarkView } from './AgentMarks';
 import { selectSidebarUnseenWorkspaces } from '../../stores/selectors/sidebarSeen';
+import { workspaceHasUsageLimitWaiting } from '../../stores/slices/usageLimitSlice';
 import { selectWorkspaceAttentionClasses } from '../../stores/selectors/fleet';
 import { IconCopy, IconX, IconGear, IconChevron, IconBell, IconFolder, IconTerminal, IconExternalLink, IconCheck, IconGitBranch, IconWorktree, IconWarning, IconFanOut, IconPin } from '../icons';
 import { tokenAttrs } from '../../themes';
@@ -398,6 +399,9 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   const attentionClass = useStore((s) => selectWorkspaceAttentionClasses(s)[workspaceId] ?? 'idle');
   const needsYou = attentionClass === 'needsYou' && (agentStatus === 'waiting' || agentStatus === 'awaiting_input');
   const markStatus = agentStatus === 'waiting' && attentionClass !== 'needsYou' ? 'idle' : agentStatus;
+  // A pane here is waiting out a usage limit: when nothing louder is going on
+  // the workspace row draws the waiting clock instead of nothing (or a red ✕).
+  const usageWaiting = useStore((s) => workspaceHasUsageLimitWaiting(s, workspaceId));
   // Glance board (2026-09-25): something here changed since it was last in
   // view, and it wants a look. Fleet's changed-dot rule: --text-main, never amber.
   const unseen = useStore((s) => !!selectSidebarUnseenWorkspaces(s)[workspaceId]);
@@ -918,9 +922,11 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           <StatusMarkView
             status={markStatus}
             unverifiable={unverifiableMinutes > 0}
+            usageWaiting={usageWaiting}
             label={unverifiableMinutes > 0
               ? t('workspace.agentUnverifiable', { time: formatStaleMinutes(unverifiableMinutes) })
-              : markStatus !== 'idle' ? t(AGENT_STATUS_ICON[markStatus].labelKey) : undefined}
+              : markStatus !== 'idle' ? t(AGENT_STATUS_ICON[markStatus].labelKey)
+                : usageWaiting ? t('usageLimit.waiting') : undefined}
           />
         </span>
 

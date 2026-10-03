@@ -532,6 +532,8 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
                     status={row.status === 'waiting' && !row.pendingQuestion ? 'idle' : row.status}
                     unverifiable={!!unverifiableLabel}
                     quiet={!!row.questionSeen && !row.attentionStatus}
+                    usageWaiting={!!row.usageLimitWaiting}
+                    label={row.usageLimitWaiting ? t('usageLimit.waiting') : undefined}
                   />
                   {/* Name and location on one line. The title truncates first;
                       the coordinate (w85-1 etc.) takes at most 40% before it

@@ -67,6 +67,15 @@ describe('FleetCard — task-first rows', () => {
     expect(html).toContain('var(--text-sub)');
   });
 
+  it('shows a pane waiting out a usage limit as a muted Waiting clock, not a red error', () => {
+    const html = render({ card: card({ agentStatus: 'idle', usageLimitWaiting: true }) });
+    expect(html).toContain('Waiting');
+    expect(html).toContain('data-shape="clock"');
+    expect(html).toContain('var(--text-muted)');
+    expect(html).not.toContain('var(--accent-red)');
+    expect(html).not.toContain('Error');
+  });
+
   it('labels response completion without claiming task success', () => {
     const html = render({ card: card({ agentStatus: 'complete' }) });
     expect(html).toContain('Turn complete');

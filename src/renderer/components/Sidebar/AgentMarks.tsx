@@ -11,13 +11,20 @@
 import type { AgentStatus } from '../../../shared/types';
 import { AGENT_STATUS_ICON, type StatusMark } from './agentStatusIcon';
 
-/** The mark a row draws: the status table's mark, or the unconfirmed ring. */
-export type RowStatusMark = StatusMark | 'unconfirmed';
+/** The mark a row draws: the status table's mark, the unconfirmed ring, or
+ *  the usage-limit clock. */
+export type RowStatusMark = StatusMark | 'unconfirmed' | 'waiting';
 
-/** Pure status → mark mapping, so the grammar can be asserted without a DOM. */
-export function rowStatusMark(status: AgentStatus, unverifiable: boolean): RowStatusMark {
+/**
+ * Pure status → mark mapping, so the grammar can be asserted without a DOM.
+ * `usageWaiting`: the agent is waiting out a provider usage limit. It draws a
+ * muted clock where an idle row would draw nothing; any louder status the row
+ * still has (running, needs input, unconfirmed) keeps its own mark.
+ */
+export function rowStatusMark(status: AgentStatus, unverifiable: boolean, usageWaiting = false): RowStatusMark {
   if (unverifiable) return 'unconfirmed';
-  return AGENT_STATUS_ICON[status].mark;
+  const mark = AGENT_STATUS_ICON[status].mark;
+  return usageWaiting && mark === 'none' ? 'waiting' : mark;
 }
 
 interface StatusMarkViewProps {
@@ -30,15 +37,17 @@ interface StatusMarkViewProps {
   /** #1481 review — draw a running dot neutral: a secondary summary must not
    *  spend a second amber point on a workspace whose row dot is already amber. */
   neutralRunning?: boolean;
+  /** The agent is waiting out a usage limit — see rowStatusMark. */
+  usageWaiting?: boolean;
 }
 
 /**
  * A 10px box, the same footprint for every mark, so the name column starts at
  * the same x on every row whatever the status. Idle draws an empty box.
  */
-export function StatusMarkView({ status, unverifiable = false, quiet = false, label, neutralRunning = false }: StatusMarkViewProps) {
+export function StatusMarkView({ status, unverifiable = false, quiet = false, label, neutralRunning = false, usageWaiting = false }: StatusMarkViewProps) {
   const icon = AGENT_STATUS_ICON[status];
-  const mark = rowStatusMark(status, unverifiable);
+  const mark = rowStatusMark(status, unverifiable, usageWaiting);
   const a11y = label ? { role: 'img' as const, 'aria-label': label, title: label } : { 'aria-hidden': true as const };
   let inner: React.ReactNode = null;
   switch (mark) {
@@ -74,6 +83,15 @@ export function StatusMarkView({ status, unverifiable = false, quiet = false, la
       inner = (
         <svg width="9" height="9" viewBox="0 0 9 9" fill="none" stroke={icon.dotVar} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <polyline points="1.4,4.8 3.6,6.9 7.6,2.1" />
+        </svg>
+      );
+      break;
+    case 'waiting':
+      // A muted clock: waiting on time, not on the user — no colour spent.
+      inner = (
+        <svg width="9" height="9" viewBox="0 0 9 9" fill="none" stroke="var(--text-muted)" strokeWidth="1.2" strokeLinecap="round" aria-hidden="true">
+          <circle cx="4.5" cy="4.5" r="3.6" />
+          <polyline points="4.5,2.5 4.5,4.6 5.9,5.5" />
         </svg>
       );
       break;
