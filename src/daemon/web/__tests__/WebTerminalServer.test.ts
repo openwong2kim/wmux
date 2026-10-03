@@ -5318,6 +5318,25 @@ describe('WebTerminalServer', () => {
       ...over,
     });
 
+    it('a Claude question form carries the Other width of its pane; an agent-native one does not', async () => {
+      const info = await startRW();
+      approvalRecords.push(
+        mkApproval({
+          id: 'ap-ask',
+          kind: 'awaiting_input',
+          channel: 'fenced-keys',
+          form: { v: 1, kind: 'questions', actions: [{ id: 'submit', label: 'Submit' }], questions: [{ id: 'q0', header: 'Size', text: 'Which size?', multiSelect: false, allowOther: true, options: [{ key: '1', label: 'Small', description: 'Small size' }] }] },
+          formFingerprint: FP,
+        }),
+        nativeQuestion(),
+      );
+      const listed = await (await fetch(`${base()}/api/approvals`, { headers: { ...bearer(info.token as string), ...V2 } })).json();
+      const byId = (id: string) => listed.pending.find((r: { id: string }) => r.id === id);
+      // s1 is 80 columns: one row of its "Other" field holds 68.
+      expect(byId('ap-ask').form).toMatchObject({ kind: 'questions', otherMaxCells: 68, questions: [{ options: [{ key: '1', label: 'Small', description: 'Small size' }] }] });
+      expect(byId('ap-native-q').form.otherMaxCells).toBeUndefined();
+    });
+
     it('a plan dialog is an informational card to the shipped app; v2 gets its form, question and detail until an answer starts', async () => {
       const info = await server.start({ port: 0, host: '127.0.0.1', allowInput: true, allowUpload: false, allowTranscript: true });
       approvalRecords.push(planTp());
@@ -5536,12 +5555,13 @@ describe('WebTerminalServer', () => {
         ['text over 2000 units', answerBody({ action: 'feedback', text: 'x'.repeat(2001) }), 'invalid-text'],
         ['a malformed fingerprint', answerBody({ formFingerprint: 'nope' }), 'invalid-prompt-fingerprint'],
         ['a malformed answer id', answerBody({ clientAnswerId: 'x' }), 'invalid-body'],
-      ])('400 for %s, before the registry and the journal', async (_label, body, error) => {
+      ])('400 for %s, before the registry and the journal', async (label, body, error) => {
         const info = await startRW();
         approvalRecords.push(nativeTp());
         const res = await postAnswer(info.token as string, body);
         expect(res.status).toBe(400);
-        expect(await res.json()).toEqual({ error });
+        const reason = error !== 'invalid-text' ? undefined : label === 'text over 2000 units' ? 'too-wide' : 'unsafe-text';
+        expect(await res.json()).toEqual({ error, ...(reason ? { reason } : {}) });
         expect(resolveCalls).toEqual([]);
       });
 
@@ -5627,6 +5647,27 @@ describe('WebTerminalServer', () => {
         const res = await postAnswer(phone.token, answerBody({ action: 'feedback', text: 'x' }), V2, 'ap-plan');
         expect(res.status).toBe(400);
         expect(await res.json()).toEqual({ error: 'invalid-text' });
+        // With the registry's reason.
+        approvalBox.result = { ok: false, reason: 'invalid-text', textRefusal: 'too-wide', request: planTp() };
+        const wide = await postAnswer(phone.token, answerBody({ action: 'feedback', text: 'y', clientAnswerId: 'phone-answer-0002' }), V2, 'ap-plan');
+        expect(wide.status).toBe(400);
+        expect(await wide.json()).toEqual({ error: 'invalid-text', reason: 'too-wide' });
+      });
+
+      it('an answer that was not confirmed keeps an uncertain receipt', async () => {
+        await startRW();
+        const phone = await pairDevice('Unconfirmed', true);
+        approvalRecords.push(nativeTp());
+        approvalBox.result = { ok: false, reason: 'answer-uncertain', effect: 'uncertain', request: nativeTp() };
+        const res = await postAnswer(phone.token, answerBody());
+        expect(res.status).toBe(409);
+        expect(await res.json()).toEqual({ error: 'answer-uncertain', effect: 'uncertain' });
+        const receipt = await fetch(`${base()}/api/approvals/ap-native/answer/phone-answer-0001`, { headers: { ...bearer(phone.token), ...V2 } });
+        expect(await receipt.json()).toMatchObject({ state: 'uncertain', effect: 'uncertain', status: 409 });
+        const again = await postAnswer(phone.token, answerBody());
+        expect(again.status).toBe(409);
+        expect(await again.json()).toEqual({ error: 'answer-uncertain', effect: 'uncertain' });
+        expect(resolveCalls).toHaveLength(1);
       });
 
       it('a retry while the answer runs is 202; one running when the daemon stopped is 409 uncertain and never re-run', async () => {

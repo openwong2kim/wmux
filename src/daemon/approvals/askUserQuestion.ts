@@ -170,6 +170,10 @@ export function claudeQuestionsForm(payload: unknown): DecisionForm | null {
     if (!Array.isArray(options) || options.length === 0 || options.length > CLAUDE_FORM_MAX_OPTIONS) return null;
     const labels = options.map((o) => (isObject(o) ? o['label'] : undefined));
     if (!labels.every((label) => showable(label, FORM_LABEL_MAX))) return null;
+    // The description is drawn under the label, and the screen check reads
+    // both (an option is matched by its whole label and description).
+    const descriptions = options.map((o) => (isObject(o) ? o['description'] : undefined));
+    if (!descriptions.every((d) => d === undefined || d === '' || showable(d, FORM_TEXT_MAX))) return null;
     // The screen tells questions apart by their text with every space removed
     // (sameQuestionText): two that read the same that way cannot be.
     const compactText = (text: string): string => text.replace(/\s+/g, '');
@@ -180,7 +184,10 @@ export function claudeQuestionsForm(payload: unknown): DecisionForm | null {
       text: question,
       multiSelect,
       allowOther: true,
-      options: (labels as string[]).map((label, j) => ({ key: String(j + 1), label })),
+      options: (labels as string[]).map((label, j) => {
+        const description = descriptions[j];
+        return { key: String(j + 1), label, ...(typeof description === 'string' && description ? { description } : {}) };
+      }),
     });
   }
   return { v: 1, kind: 'questions', questions, actions: [{ id: 'submit', label: 'Submit' }, { id: 'deny', label: 'Cancel' }] };

@@ -64,6 +64,7 @@ import {
   type AnswerReceiptStore,
 } from '../approvals/AnswerReceiptStore';
 import { parseDecisionAnswerBody } from './decisionAnswer';
+import { askOtherMaxWidth } from '../approvals/askPicker';
 import { decisionForChoiceLabel } from '../approvals/terminalPromptParse';
 // Type only — the projector's implementation (transcript parsing, watch state,
 // fs watching) stays out of this module. The web server is a STATELESS consumer
@@ -6777,8 +6778,15 @@ export class WebTerminalServer {
       || (r.channel === 'native-rpc' && r.state === 'resolved')
       // A plan answered with feedback (stepwise keys, no `pressedAt`).
       || (r.step?.status === 'done' && r.state === 'resolved');
+    // A Claude question form's "Other" width, from the pane's width now (the
+    // answer re-checks it against the width then).
+    const otherMaxCells = (r: ApprovalRequest): number | undefined => {
+      if (r.kind !== 'awaiting_input' || r.form?.kind !== 'questions' || r.channel !== 'fenced-keys') return undefined;
+      const managed = this.deps.sessionManager.getSession(r.sessionId);
+      return askOtherMaxWidth(managed?.ptyProcess.cols ?? managed?.meta.cols);
+    };
     return this.json(res, 200, {
-      pending: listed.pending.filter(visible).map((r) => approvalWire(r, caps)),
+      pending: listed.pending.filter(visible).map((r) => approvalWire(r, caps, otherMaxCells(r))),
       recentlyResolved: listed.recentlyResolved.filter(visible).filter(answeredHere).map((r) => approvalWire(r, caps)),
     });
   }
@@ -7348,7 +7356,7 @@ export class WebTerminalServer {
     this.readJsonBody(req, res, (body) => {
       void (async () => {
         const parsed = parseDecisionAnswerBody(body);
-        if (!parsed.ok) return this.json(res, 400, { error: parsed.error });
+        if (!parsed.ok) return this.json(res, 400, { error: parsed.error, ...(parsed.textRefusal ? { reason: parsed.textRefusal } : {}) });
         const answer = parsed.answer;
         const sameCaller = (now: WebPrincipal): boolean =>
           now.kind === 'operator'
@@ -7430,7 +7438,7 @@ export class WebTerminalServer {
           await receipts.finish(
             owner,
             answer.clientAnswerId,
-            response.status === 200 ? 'done' : partial ? 'partial' : 'refused',
+            response.status === 200 ? 'done' : partial ? 'partial' : response.body['effect'] === 'uncertain' ? 'uncertain' : 'refused',
             response,
           );
         }
@@ -9058,7 +9066,7 @@ function decisionAnswerOutcome(result: ApprovalResolveResult): AnswerReceiptResp
     case 'invalid-choice-key':
       return { status: 400, body: { error: 'invalid-choice' } };
     case 'invalid-text':
-      return { status: 400, body: { error: 'invalid-text' } };
+      return { status: 400, body: { error: 'invalid-text', ...(result.textRefusal ? { reason: result.textRefusal } : {}) } };
     case 'not-found':
       return { status: 404, body: { error: 'not-found' } };
     case 'unauthorized':
@@ -9080,21 +9088,23 @@ function decisionAnswerOutcome(result: ApprovalResolveResult): AnswerReceiptResp
  * client that did not declare `decision-v2`, so every older client's bytes are
  * unchanged.
  */
-function decisionV2Wire(r: ApprovalRequest, caps: ClientCaps): Record<string, unknown> {
+function decisionV2Wire(r: ApprovalRequest, caps: ClientCaps, otherMaxCells?: number): Record<string, unknown> {
   if (!caps.decisionV2) return {};
   // A stepwise answer that started (running, partial or done) leaves nothing to answer.
   const open = r.state === 'pending' && r.pressedAt === undefined && !r.step && !!r.form && !!r.formFingerprint;
   // The plan dialog: its question, and the whole plan at `/detail`.
   const plan = open && r.kind === 'terminal_prompt' && r.form?.kind === 'plan' && !isNativeDecision(r);
   return {
-    ...(open ? { form: r.form, formFingerprint: r.formFingerprint } : {}),
+    ...(open
+      ? { form: otherMaxCells !== undefined ? { ...r.form, otherMaxCells } : r.form, formFingerprint: r.formFingerprint }
+      : {}),
     ...(plan && r.question ? { question: r.question } : {}),
     ...(plan && caps.terminalPromptDetail ? { hasDetail: true } : {}),
     ...(r.step ? { step: { index: r.step.index, total: r.step.total, status: r.step.status } } : {}),
   };
 }
 
-function approvalWire(r: ApprovalRequest, caps: ClientCaps = { terminalPromptAnswer: false }): Record<string, unknown> {
+function approvalWire(r: ApprovalRequest, caps: ClientCaps = { terminalPromptAnswer: false }, otherMaxCells?: number): Record<string, unknown> {
   // The agent's own terminal dialog, projected per caller. An older client (no
   // capability) gets the informational card only — kind, tool, summary — so it
   // can never render controls for a dialog it cannot answer. A capable client
@@ -9128,7 +9138,7 @@ function approvalWire(r: ApprovalRequest, caps: ClientCaps = { terminalPromptAns
       // record is always bound to its call, so it always has one). A native
       // decision has no screen dialog and so no detail.
       ...(answerable && caps.terminalPromptDetail && !isNativeDecision(r) ? { hasDetail: true } : {}),
-      ...decisionV2Wire(r, caps),
+      ...decisionV2Wire(r, caps, otherMaxCells),
       ...(typeof r.pressedAt === 'number' ? { pressedAt: r.pressedAt } : {}),
       ...(r.decision ? { decision: r.decision } : {}),
       ...(r.selectedChoiceKey ? { selectedChoiceKey: r.selectedChoiceKey } : {}),
@@ -9167,7 +9177,7 @@ function approvalWire(r: ApprovalRequest, caps: ClientCaps = { terminalPromptAns
     // shell command with nothing on screen saying which one.
     ...(r.toolName ? { toolName: r.toolName } : {}),
     ...(r.toolInputSummary ? { toolInputSummary: r.toolInputSummary } : {}),
-    ...decisionV2Wire(r, caps),
+    ...decisionV2Wire(r, caps, otherMaxCells),
   };
 }
 

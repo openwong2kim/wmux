@@ -7,7 +7,7 @@
 // has to be enforced structurally rather than described in a prompt.
 
 import { describe, it, expect, vi } from 'vitest';
-import { HookIngest, type HookIngestSession } from '../../hooks/HookIngest';
+import { HookIngest, reportedAnswers, type HookIngestSession } from '../../hooks/HookIngest';
 import type { AgentSignal } from '../../../shared/hooks/signal-types';
 import { DEFAULT_ALARM_WINDOW_MS } from '../../../shared/hooks/CompletionAlarm';
 import type { ApprovalExpiryReason, ApprovalHookSink } from '../types';
@@ -19,7 +19,7 @@ type Created = {
   question?: string;
   options?: string[];
 };
-type Expired = { sessionId: string; reason: ApprovalExpiryReason; kind?: string };
+type Expired = { sessionId: string; reason: ApprovalExpiryReason; kind?: string; answered?: Readonly<Record<string, string>> };
 
 function makeSink(): ApprovalHookSink & {
   created: Created[];
@@ -39,7 +39,7 @@ function makeSink(): ApprovalHookSink & {
     retireStaleQuestion: (sessionId) => { retired.push(sessionId); },
     noteHookAwaitingInput: (input) => { created.push(input); },
     noteGateAwaiting: (input) => { gateCreated.push({ sessionId: input.sessionId, toolName: input.toolName }); return `gate-${gateCreated.length}`; },
-    expireForSession: (sessionId, reason, kind) => { expired.push({ sessionId, reason, ...(kind ? { kind } : {}) }); },
+    expireForSession: (sessionId, reason, kind, answered) => { expired.push({ sessionId, reason, ...(kind ? { kind } : {}), ...(answered ? { answered } : {}) }); },
   };
 }
 
@@ -69,6 +69,33 @@ function makeIngest(sessions: HookIngestSession[] = [
 }
 
 describe('hook → approval registry wiring', () => {
+  it('Claude\'s answered AskUserQuestion passes on the answers it reports', () => {
+    const { ingest, approvals } = makeIngest();
+    ingest.handle(makeSignal({
+      kind: 'agent.input_answered',
+      payload: {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'AskUserQuestion',
+        tool_response: { questions: [], answers: { 'Which size?': 'Medium', 'Which toppings?': 'Cheese, Basil' } },
+      },
+    }));
+    expect(approvals.expired).toEqual([{
+      sessionId: 'pty-a',
+      reason: 'answered-locally',
+      kind: 'awaiting_input',
+      answered: { 'Which size?': 'Medium', 'Which toppings?': 'Cheese, Basil' },
+    }]);
+  });
+
+  it('reads reported answers only in their own shape', () => {
+    expect(reportedAnswers({ tool_response: { answers: { 'Q?': 'A' } } })).toEqual({ 'Q?': 'A' });
+    expect(reportedAnswers({ tool_response: { answers: { 'Q?': 1 } } })).toBeUndefined();
+    expect(reportedAnswers({ tool_response: { answers: [] } })).toBeUndefined();
+    expect(reportedAnswers({ tool_response: { answers: {} } })).toBeUndefined();
+    expect(reportedAnswers({ tool_response: 'done' })).toBeUndefined();
+    expect(reportedAnswers(null)).toBeUndefined();
+  });
+
   it('a submitted prompt expires the pane\'s pending question, and only questions', () => {
     const { ingest, approvals } = makeIngest();
 

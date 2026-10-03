@@ -1,0 +1,38 @@
+{
+  "tui": "claude",
+  "version": "Claude Code 2.1.288",
+  "cols": 80,
+  "rows": 24,
+  "cursor": [
+    0,
+    19
+  ],
+  "keysSent": "2",
+  "note": "Digit 2 answers question 2 and draws the review",
+  "screen": [
+    "  and nothing else. Question 1: header \"Targets\", question \"Which platforms?\",  ",
+    "  multiSelect true, options \"macOS\" (description \"Apple desktop\"), \"Linux\"      ",
+    "  (description \"Open source\"), \"Windows\" (description \"Microsoft desktop\").     ",
+    "  Question 2: header \"License\", question \"Which license?\", multiSelect false,   ",
+    "  options \"MIT\" (description \"Permissive\"), \"Apache-2.0\" (description \"Patent   ",
+    "  grant\"). After the answers, reply RECEIVED: with the answers.                 ",
+    "",
+    "────────────────────────────────────────────────────────────────────────────────",
+    "←  ☒ Targets  ☒ License  ✔ Submit  →",
+    "",
+    "Review your answers",
+    "",
+    " ● Which platforms?",
+    "   → macOS, Windows",
+    " ● Which license?",
+    "   → Apache-2.0",
+    "",
+    "Ready to submit your answers?",
+    "",
+    "❯ 1. Submit answers",
+    "  2. Cancel",
+    "  ",
+    "",
+    ""
+  ]
+}

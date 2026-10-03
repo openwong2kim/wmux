@@ -1,0 +1,38 @@
+{
+  "tui": "claude",
+  "version": "Claude Code 2.1.288",
+  "cols": 80,
+  "rows": 24,
+  "cursor": [
+    0,
+    18
+  ],
+  "keysSent": "Enter",
+  "note": "Enter on the Submit row draws the review",
+  "screen": [
+    "",
+    "",
+    "❯ Call the AskUserQuestion tool exactly once, with exactly one question and     ",
+    "  nothing else: header \"Fruit\", question \"Which fruits?\", multiSelect true,     ",
+    "  options \"Apple\" (description \"Crisp\"), \"Banana\" (description \"Soft\"),         ",
+    "  \"Cherry\" (description \"Tart\"). After the answer, reply RECEIVED: with the     ",
+    "  answer.                                                                       ",
+    "",
+    "────────────────────────────────────────────────────────────────────────────────",
+    "←  ☒ Fruit  ✔ Submit  →",
+    "",
+    "Review your answers",
+    "  ",
+    " ● Which fruits?",
+    "   → Banana",
+    "         ",
+    "Ready to submit your answers?",
+    "         ",
+    "❯ 1. Submit answers",
+    "  2. Cancel",
+    "",
+    "  ",
+    "",
+    ""
+  ]
+}

@@ -880,7 +880,9 @@ export class HookIngest {
         if (this.answeredRequests.size > 1024) this.answeredRequests.delete(this.answeredRequests.values().next().value as string);
         void Promise.resolve(this.deps.approvals.expireHookAwaiting(sessionId, [permId])).catch(() => undefined);
       } else {
-        this.deps.approvals?.expireForSession(sessionId, 'answered-locally', 'awaiting_input');
+        // Claude's AskUserQuestion reports what was answered: an answer the
+        // phone typed but could not confirm is settled by it.
+        this.deps.approvals?.expireForSession(sessionId, 'answered-locally', 'awaiting_input', reportedAnswers(signal.payload));
       }
       // A native request answered at the terminal: the plugin is the judge of
       // which ones are gone (a screen-inferred expiry never touches them).
@@ -1482,4 +1484,28 @@ export class HookIngest {
     clearInterval(this.floodTimer);
     this.alarm.dispose();
   }
+}
+
+/** Most questions an AskUserQuestion answer report is read for (Claude asks at most four). */
+const REPORTED_ANSWERS_MAX = 8;
+
+/**
+ * The answers a Claude AskUserQuestion PostToolUse reports
+ * (`tool_response.answers`: question text → answer), or undefined when the
+ * payload carries none in that shape.
+ */
+export function reportedAnswers(payload: unknown): Readonly<Record<string, string>> | undefined {
+  const response = payload !== null && typeof payload === 'object' ? (payload as Record<string, unknown>)['tool_response'] : undefined;
+  const answers = response !== null && typeof response === 'object' && !Array.isArray(response)
+    ? (response as Record<string, unknown>)['answers']
+    : undefined;
+  if (answers === null || typeof answers !== 'object' || Array.isArray(answers)) return undefined;
+  const entries = Object.entries(answers as Record<string, unknown>);
+  if (entries.length === 0 || entries.length > REPORTED_ANSWERS_MAX) return undefined;
+  const out: Record<string, string> = Object.create(null) as Record<string, string>;
+  for (const [question, answer] of entries) {
+    if (typeof answer !== 'string') return undefined;
+    out[question] = answer;
+  }
+  return out;
 }

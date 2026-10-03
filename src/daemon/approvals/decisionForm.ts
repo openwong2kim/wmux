@@ -44,12 +44,13 @@ export function boundDecisionForm(form: DecisionForm): DecisionForm | null {
       if (!Array.isArray(q.options) || q.options.length > DECISION_FORM_MAX_OPTIONS) return null;
       questionIds.add(q.id);
       const keys = new Set<string>();
-      const options: Array<{ key: string; label: string }> = [];
+      const options: Array<{ key: string; label: string; description?: string }> = [];
       for (const o of q.options) {
         const label = boundRecordText(o?.label, LABEL_MAX);
         if (typeof o?.key !== 'string' || !OPTION_KEY.test(o.key) || keys.has(o.key) || !label) return null;
         keys.add(o.key);
-        options.push({ key: o.key, label });
+        const description = o.description !== undefined ? boundRecordText(o.description, TEXT_MAX) : undefined;
+        options.push({ key: o.key, label, ...(description ? { description } : {}) });
       }
       const header = boundRecordText(q.header, LABEL_MAX);
       questions.push({

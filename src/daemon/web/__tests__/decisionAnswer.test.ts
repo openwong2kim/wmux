@@ -46,7 +46,8 @@ describe('parseDecisionAnswerBody', () => {
     ['text over the limit', { ...ok, text: 'x'.repeat(DECISION_TEXT_MAX_UNITS + 1) }, 'invalid-text'],
     ['a non-string text', { ...ok, text: 5 }, 'invalid-text'],
     ['a newline in an Other answer', { ...ok, answers: [{ questionId: 'q0', keys: [], other: 'a\nb' }] }, 'invalid-text'],
-  ])('400 for %s', (_label, body, error) => {
-    expect(parseDecisionAnswerBody(body)).toEqual({ ok: false, error });
+  ])('400 for %s', (label, body, error) => {
+    const textRefusal = error !== 'invalid-text' ? undefined : label === 'text over the limit' ? 'too-wide' : 'unsafe-text';
+    expect(parseDecisionAnswerBody(body)).toEqual({ ok: false, error, ...(textRefusal ? { textRefusal } : {}) });
   });
 });

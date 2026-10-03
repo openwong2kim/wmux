@@ -1,0 +1,38 @@
+{
+  "tui": "claude",
+  "version": "Claude Code 2.1.288",
+  "cols": 80,
+  "rows": 24,
+  "cursor": [
+    2,
+    20
+  ],
+  "keysSent": "1",
+  "note": "Review 1 submits; the answered block lists the answer",
+  "screen": [
+    "⏺ RECEIVED:",
+    "  - Platforms: macOS, Windows",
+    "  - License: Apache-2.0",
+    "  ",
+    "✻ Baked for 5s · done 4:27 PM",
+    "",
+    "❯ Call the AskUserQuestion tool exactly once, with exactly one question and     ",
+    "  nothing else: header \"Fruit\", question \"Which fruits?\", multiSelect true,     ",
+    "  options \"Apple\" (description \"Crisp\"), \"Banana\" (description \"Soft\"),         ",
+    "  \"Cherry\" (description \"Tart\"). After the answer, reply RECEIVED: with the     ",
+    "  answer.                                                                       ",
+    "",
+    "⏺ User answered Claude's questions:",
+    "  ⎿  · Which fruits? → Banana",
+    "",
+    "⏺ RECEIVED: Banana",
+    "",
+    "✻ Brewed for 3s · done 4:28 PM",
+    "",
+    "────────────────────────────────────────────────────────────────────────────────",
+    "❯ ",
+    "────────────────────────────────────────────────────────────────────────────────",
+    "  Haiku 4.5 · user · ctx 24% · 5h 8% ↺ 21:00 · 7d 41% ↺ 5d23h",
+    "  ⏸ manual mode on · ← 2 agents"
+  ]
+}

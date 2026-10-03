@@ -374,7 +374,7 @@ describe('review fixes: the feedback text and where a stopped answer leaves the 
     for (const text of ['\x1b[201~1\r', 'a\rb', 'a\nb', 'a\x7fb', 'a\u009bb']) {
       const h = makeRegistry();
       const record = await create(h);
-      expect(await answer(h, record, { text }), JSON.stringify(text)).toMatchObject({ ok: false, reason: 'invalid-text' });
+      expect(await answer(h, record, { text }), JSON.stringify(text)).toMatchObject({ ok: false, reason: 'invalid-text', textRefusal: 'unsafe-text' });
       expect(h.stepKeys).toEqual([]);
       expect(h.writes).toEqual([]);
       expect(stored(h, record.id).step).toBeUndefined();
@@ -388,7 +388,7 @@ describe('review fixes: the feedback text and where a stopped answer leaves the 
     const h = makeRegistry();
     h.pane.cols = 40;
     const record = await create(h);
-    expect(await answer(h, record, { text: 'x'.repeat(28 * 26 + 1) })).toMatchObject({ ok: false, reason: 'invalid-text' });
+    expect(await answer(h, record, { text: 'x'.repeat(28 * 26 + 1) })).toMatchObject({ ok: false, reason: 'invalid-text', textRefusal: 'too-wide' });
     // Wide characters count twice.
     expect(await answer(h, record, { text: '가'.repeat(28 * 13 + 1) })).toMatchObject({ ok: false, reason: 'invalid-text' });
     expect(h.stepKeys).toEqual([]);
@@ -497,6 +497,6 @@ describe('review fixes: the feedback text and where a stopped answer leaves the 
   it('the route parser already refuses a paste terminator (400 invalid-text)', () => {
     expect(parseDecisionAnswerBody({
       formFingerprint: 'a'.repeat(32), clientAnswerId: 'answer-0000000001', action: 'feedback', text: '\x1b[201~1\r',
-    })).toEqual({ ok: false, error: 'invalid-text' });
+    })).toEqual({ ok: false, error: 'invalid-text', textRefusal: 'unsafe-text' });
   });
 });

@@ -3,7 +3,7 @@
 // ignored: a field this daemon does not understand may be one the client
 // thinks changes the answer.
 
-import type { DecisionAnswer } from '../approvals/types';
+import type { DecisionAnswer, DecisionTextRefusal } from '../approvals/types';
 
 /** Most UTF-16 units a phone-typed answer text may have. */
 export const DECISION_TEXT_MAX_UNITS = 2000;
@@ -14,7 +14,7 @@ export type DecisionAnswerError = 'invalid-body' | 'invalid-text' | 'invalid-pro
 
 export type DecisionAnswerParse =
   | { ok: true; answer: DecisionAnswer }
-  | { ok: false; error: DecisionAnswerError };
+  | { ok: false; error: DecisionAnswerError; textRefusal?: DecisionTextRefusal };
 
 const BODY_FIELDS: ReadonlySet<string> = new Set(['formFingerprint', 'clientAnswerId', 'action', 'answers', 'text']);
 const ANSWER_FIELDS: ReadonlySet<string> = new Set(['questionId', 'keys', 'other']);
@@ -30,13 +30,17 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * texts.
  */
 export function isValidDecisionText(value: unknown): value is string {
-  return typeof value === 'string'
-    // C0, DEL, C1 (U+009B is a one-byte CSI to many terminals) and the
-    // Unicode line/paragraph separators, which some fields take as a newline.
-    // eslint-disable-next-line no-control-regex -- refusing them is the point
-    && !/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(value)
-    && value.length <= DECISION_TEXT_MAX_UNITS
-    && value.trim().length > 0;
+  return decisionTextRefusal(value) === null;
+}
+
+/** Why `isValidDecisionText` refuses `value`, or null when it accepts it. */
+export function decisionTextRefusal(value: unknown): DecisionTextRefusal | null {
+  if (typeof value !== 'string') return 'unsafe-text';
+  // C0, DEL, C1 (U+009B is a one-byte CSI to many terminals) and the
+  // Unicode line/paragraph separators, which some fields take as a newline.
+  // eslint-disable-next-line no-control-regex -- refusing them is the point
+  if (/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(value) || value.trim().length === 0) return 'unsafe-text';
+  return value.length > DECISION_TEXT_MAX_UNITS ? 'too-wide' : null;
 }
 
 export function parseDecisionAnswerBody(body: unknown): DecisionAnswerParse {
@@ -55,7 +59,7 @@ export function parseDecisionAnswerBody(body: unknown): DecisionAnswerParse {
     return { ok: false, error: 'invalid-body' };
   }
   if (action === undefined && answers === undefined) return { ok: false, error: 'invalid-body' };
-  if (text !== undefined && !isValidDecisionText(text)) return { ok: false, error: 'invalid-text' };
+  if (text !== undefined && !isValidDecisionText(text)) return { ok: false, error: 'invalid-text', textRefusal: decisionTextRefusal(text)! };
 
   let parsedAnswers: DecisionAnswer['answers'];
   if (answers !== undefined) {
@@ -79,7 +83,7 @@ export function parseDecisionAnswerBody(body: unknown): DecisionAnswerParse {
         || new Set(keys).size !== keys.length) {
         return { ok: false, error: 'invalid-body' };
       }
-      if (other !== undefined && !isValidDecisionText(other)) return { ok: false, error: 'invalid-text' };
+      if (other !== undefined && !isValidDecisionText(other)) return { ok: false, error: 'invalid-text', textRefusal: decisionTextRefusal(other)! };
       if (keys.length === 0 && other === undefined) return { ok: false, error: 'invalid-body' };
       parsedAnswers.push({ questionId, keys: [...keys] as string[], ...(other !== undefined ? { other } : {}) });
     }

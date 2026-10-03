@@ -1,0 +1,38 @@
+{
+  "tui": "claude",
+  "version": "Claude Code 2.1.288",
+  "cols": 80,
+  "rows": 24,
+  "cursor": [
+    0,
+    11
+  ],
+  "keysSent": "Enter",
+  "note": "Enter on Next moves to question 2",
+  "screen": [
+    "  and nothing else. Question 1: header \"Targets\", question \"Which platforms?\",  ",
+    "  multiSelect true, options \"macOS\" (description \"Apple desktop\"), \"Linux\"      ",
+    "  (description \"Open source\"), \"Windows\" (description \"Microsoft desktop\").     ",
+    "  Question 2: header \"License\", question \"Which license?\", multiSelect false,   ",
+    "  options \"MIT\" (description \"Permissive\"), \"Apache-2.0\" (description \"Patent   ",
+    "  grant\"). After the answers, reply RECEIVED: with the answers.                 ",
+    "────────────────────────────────────────────────────────────────────────────────",
+    "←  ☒ Targets  ☐ License  ✔ Submit  →",
+    "",
+    "Which license?",
+    "",
+    "❯ 1. MIT",
+    "     Permissive",
+    "  2. Apache-2.0",
+    "     Patent grant",
+    "  3. Type something.",
+    "────────────────────────────────────────────────────────────────────────────────",
+    "  4. Chat about this",
+    "",
+    "Enter to select · Tab/Arrow keys to navigate · Esc to cancel",
+    "  ",
+    "  ",
+    "",
+    ""
+  ]
+}

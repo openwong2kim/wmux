@@ -134,11 +134,14 @@ export class AnswerReceiptStore {
     return { kind: 'replay', response: existing.result, state: existing.state };
   }
 
-  /** Record the final response for a claimed id. A failed write leaves it `uncertain`, never `done`. */
+  /**
+   * Record the final response for a claimed id (`uncertain`: an answer that
+   * may or may not have landed). A failed write leaves it `uncertain`, never `done`.
+   */
   async finish(
     owner: string,
     clientAnswerId: string,
-    state: Exclude<AnswerReceiptState, 'inFlight' | 'uncertain'>,
+    state: Exclude<AnswerReceiptState, 'inFlight'>,
     result: AnswerReceiptResponse,
   ): Promise<void> {
     const key = receiptHash([owner, clientAnswerId]);

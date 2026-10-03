@@ -123,13 +123,21 @@ const MULTI_PAYLOAD = {
         question: 'Which size?',
         header: 'Size',
         multiSelect: false,
-        options: [{ label: 'Small' }, { label: 'Medium' }, { label: 'Large' }],
+        options: [
+          { label: 'Small', description: 'Small size' },
+          { label: 'Medium', description: 'Medium size' },
+          { label: 'Large', description: 'Large size' },
+        ],
       },
       {
         question: 'Which toppings?',
         header: 'Toppings',
         multiSelect: true,
-        options: [{ label: 'Cheese' }, { label: 'Olives' }, { label: 'Basil' }],
+        options: [
+          { label: 'Cheese', description: 'Add cheese' },
+          { label: 'Olives', description: 'Add olives' },
+          { label: 'Basil', description: 'Add basil' },
+        ],
       },
     ],
   },
@@ -142,7 +150,11 @@ const COLOR_PAYLOAD = {
       question: 'Which color should the button be?',
       header: 'Color',
       multiSelect: false,
-      options: [{ label: 'Red' }, { label: 'Green' }, { label: 'Blue' }],
+      options: [
+        { label: 'Red', description: 'warm' },
+        { label: 'Green', description: 'calm' },
+        { label: 'Blue', description: 'cool' },
+      ],
     }],
   },
 };
@@ -383,6 +395,28 @@ describe('answering the picker', () => {
     expect(h.events.map((e) => e.type)).toEqual(['create', 'press', 'resolve']);
   });
 
+  it('looks again when a read fails during the confirmation, and confirms', async () => {
+    const h = makeRegistry({}, SINGLE.initial);
+    const record = await create(h, COLOR_PAYLOAD);
+    h.script = [['3', SINGLE.answered]];
+    let failed = 0;
+    let rows: readonly string[] | null = null;
+    h.onRead.fn = () => {
+      if (h.stepKeys.length !== 1) return;
+      // The first read after the key fails; the next one reads the screen.
+      if (failed === 0) {
+        failed = 1;
+        rows = h.pane.rows;
+        h.pane.rows = null;
+      } else if (h.pane.rows === null) {
+        h.pane.rows = rows;
+      }
+    };
+    const result = await answer(h, record, { answers: [{ questionId: 'q0', keys: ['3'] }] });
+    expect(failed).toBe(1);
+    expect(result).toMatchObject({ ok: true, request: { state: 'resolved' } });
+  });
+
   it('answers a single question with one digit and confirms it', async () => {
     const h = makeRegistry({}, SINGLE.initial);
     const record = await create(h, COLOR_PAYLOAD);
@@ -456,9 +490,22 @@ describe('answering the picker', () => {
         const record = await create(h, TOPPINGS_PAYLOAD);
         h.script = [...upToEnter, [ASK_KEY_ENTER, BLANK_AFTER]];
         expect(await answer(h, record, toppings)).toMatchObject({ reason: 'answer-uncertain' });
-        await h.registry.expireForSession('pty-a', reason);
+        await h.registry.expireForSession('pty-a', reason, undefined, { 'Which toppings?': 'Cheese' });
         expect(stored(h, record.id).state).toBe(state);
       }
+    });
+
+    it('stops partial, not uncertain, when Enter draws a review that lists another answer', async () => {
+      const h = makeRegistry({}, TOPPINGS.initial);
+      const record = await create(h, TOPPINGS_PAYLOAD);
+      const otherReview = replaceRow(TOPPINGS_REVIEW, '   → Cheese', '   → Olives');
+      h.script = [...upToEnter, [ASK_KEY_ENTER, otherReview]];
+      const result = await answer(h, record, toppings);
+      expect(result).toMatchObject({ ok: false, reason: 'prompt-changed', effect: 'partial' });
+      expect(h.stepKeys.at(-1)).toBe(ASK_KEY_ENTER);
+      expect(stored(h, record.id).step?.uncertainBy).toBeUndefined();
+      // Well before the confirmation window: the review said enough.
+      expect(h.clock.now).toBeLessThan(10_000 + TERMINAL_PROMPT_MIN_ANSWER_AGE_MS + ASK_CONFIRM_WAIT_MS);
     });
 
     it('lets another tool\'s dialog in once Enter may have submitted it, although its review key is still planned', async () => {
@@ -515,8 +562,7 @@ describe('answering the picker', () => {
     // The picker closes, but the only block on screen is the old "→ Blue".
     h.script = [['3', [...SINGLE.otherField.slice(0, 20), ...Array.from({ length: 20 }, () => '')]]];
     const result = await answer(h, record, { answers: [{ questionId: 'q0', keys: ['3'] }] });
-    expect(result).toMatchObject({ ok: false, reason: 'answer-uncertain' });
-    expect(result.ok === false && result.effect).toBeUndefined();
+    expect(result).toMatchObject({ ok: false, reason: 'answer-uncertain', effect: 'uncertain' });
     const after = stored(h, record.id);
     expect(after).toMatchObject({ state: 'pending', step: { index: 1, total: 1, status: 'partial' } });
     // Unconfirmed: no decision on the record, in the list or in any event a
@@ -530,9 +576,22 @@ describe('answering the picker', () => {
     expect(await answer(h, record, { answers: [{ questionId: 'q0', keys: ['3'] }] })).toMatchObject({ reason: 'already-answered' });
     expect(await h.registry.resolve({ id: record.id, decision: 'deny', resolvedBy: 'phone' })).toMatchObject({ reason: 'already-answered' });
     expect(h.writes).toEqual([]);
-    // Claude's own word that the question was answered settles it, as this answer.
-    await h.registry.expireForSession('pty-a', 'answered-locally', 'awaiting_input');
+    // Claude's own word that the question was answered, with this answer, settles it as this answer.
+    await h.registry.expireForSession('pty-a', 'answered-locally', 'awaiting_input', { 'Which color should the button be?': 'Blue' });
     expect(stored(h, record.id)).toMatchObject({ state: 'resolved', decision: 'approve', resolvedBy: 'device Test phone (dev-1)' });
+  });
+
+  it('expires an unconfirmed answer that Claude reports answered otherwise, or without its answers', async () => {
+    const reports: Array<Record<string, string> | undefined> = [{ 'Which color should the button be?': 'Green' }, { 'Another question?': 'Blue' }, undefined];
+    for (const answered of reports) {
+      const h = makeRegistry({}, COLOR_AGAIN);
+      const record = await create(h, COLOR_PAYLOAD);
+      h.script = [['3', [...SINGLE.otherField.slice(0, 20), ...Array.from({ length: 20 }, () => '')]]];
+      expect(await answer(h, record, { answers: [{ questionId: 'q0', keys: ['3'] }] })).toMatchObject({ reason: 'answer-uncertain' });
+      await h.registry.expireForSession('pty-a', 'answered-locally', 'awaiting_input', answered);
+      expect(stored(h, record.id), JSON.stringify(answered)).toMatchObject({ state: 'expired' });
+      expect(stored(h, record.id).decision).toBeUndefined();
+    }
   });
 
   it('is answer-uncertain when the last key closes the picker with nothing drawn about it', async () => {
@@ -649,7 +708,7 @@ describe('an answer the screen never confirmed (answer-uncertain)', () => {
     // A stale-question check first, then Claude's own report: the report wins.
     const answered = await colorUncertain((h) => {
       void h.registry.expireForSession('pty-a', 'prompt-gone', 'awaiting_input');
-      void h.registry.expireForSession('pty-a', 'answered-locally', 'awaiting_input');
+      void h.registry.expireForSession('pty-a', 'answered-locally', 'awaiting_input', { 'Which color should the button be?': 'Blue' });
     });
     expect(stored(answered.h, answered.record.id)).toMatchObject({
       state: 'resolved',
@@ -793,14 +852,27 @@ describe('what is refused before any key', () => {
     const record = await create(h);
     const withOther = (other: string): Partial<DecisionAnswer> =>
       ({ answers: [{ questionId: 'q0', keys: ['2'] }, { questionId: 'q1', keys: [], other }] });
-    expect(await answer(h, record, withOther('a\x1b[201~b'))).toMatchObject({ reason: 'invalid-text' });
-    expect(await answer(h, record, withOther('Type something'))).toMatchObject({ reason: 'invalid-text' });
+    expect(await answer(h, record, withOther('a\x1b[201~b'))).toMatchObject({ reason: 'invalid-text', textRefusal: 'unsafe-text' });
+    expect(await answer(h, record, withOther('Type something'))).toMatchObject({ reason: 'invalid-text', textRefusal: 'matches-placeholder' });
     // Read back with its spaces removed, as the echo check does: still the placeholder.
-    expect(await answer(h, record, withOther('Type some thing'))).toMatchObject({ reason: 'invalid-text' });
+    expect(await answer(h, record, withOther('Type some thing'))).toMatchObject({ reason: 'invalid-text', textRefusal: 'matches-placeholder' });
     // One row of a 100-column pane holds 88 columns; a wide character counts two.
-    expect(await answer(h, record, withOther('x'.repeat(89)))).toMatchObject({ reason: 'invalid-text' });
-    expect(await answer(h, record, withOther('漢'.repeat(45)))).toMatchObject({ reason: 'invalid-text' });
+    expect(await answer(h, record, withOther('x'.repeat(89)))).toMatchObject({ reason: 'invalid-text', textRefusal: 'too-wide' });
+    expect(await answer(h, record, withOther('漢'.repeat(45)))).toMatchObject({ reason: 'invalid-text', textRefusal: 'too-wide' });
+    // A row that would start like a checkbox.
+    expect(await answer(h, record, withOther('[ ] later'))).toMatchObject({ reason: 'invalid-text', textRefusal: 'unsafe-text' });
     expect(h.stepKeys).toEqual([]);
+  });
+
+  it('single-select free text that would start like a checkbox, before any key', async () => {
+    const h = makeRegistry({}, SINGLE.initial);
+    const record = await create(h, COLOR_PAYLOAD);
+    for (const other of ['[ ] teal', '[✔] teal']) {
+      expect(await answer(h, record, { answers: [{ questionId: 'q0', keys: [], other }] }))
+        .toMatchObject({ reason: 'invalid-text', textRefusal: 'unsafe-text' });
+    }
+    expect(h.stepKeys).toEqual([]);
+    expect(stored(h, record.id).step).toBeUndefined();
   });
 
   it('a stale fingerprint, a too-early answer, a caller without the web marker', async () => {

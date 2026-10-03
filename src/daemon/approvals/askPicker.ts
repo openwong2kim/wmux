@@ -55,6 +55,8 @@ export interface AskPickerRow {
   checked?: boolean;
   /** The `❯` cursor is on this row. */
   cursor: boolean;
+  /** Question view: the rows under it up to the next one (its wrapped label, then its description), trimmed. */
+  more?: string[];
 }
 
 interface AskPickerTabs {
@@ -119,6 +121,9 @@ const SUBMIT_ROW = /^(❯| ) {4}(Submit|Next)$/;
 const FREE_TEXT_PLACEHOLDER = /^Type something\.?$/;
 const ANSWERED_HEADER = "User answered Claude's questions:";
 const ANSWERED_ENTRY = /^(?:⎿\s+)?·\s+(.*)$/;
+const CHAT_ROW_LABEL = 'Chat about this';
+/** The key hint under a question view (its rows joined with one space). */
+const HINT = /^Enter to select · .+ · Esc to cancel$/;
 
 export const ASK_KEY_DOWN = '\x1b[B';
 export const ASK_KEY_ENTER = '\r';
@@ -149,6 +154,14 @@ export function askOtherMaxWidth(cols: number | undefined): number {
  */
 export function isFreeTextPlaceholder(text: string): boolean {
   return /^Typesomething\.?$/.test(compact(text));
+}
+
+/**
+ * Free text that, typed into the "Other" row, starts the row like a checkbox
+ * (`[ ] `, `[✔] `): the row would no longer read as the free-text row.
+ */
+export function readsAsCheckbox(text: string): boolean {
+  return /^\s*\[( |✔)\]/.test(text);
 }
 
 /**
@@ -222,10 +235,16 @@ function parseQuestionView(rows: readonly string[], start: number, bar: AskPicke
       submitRow = { cursor: s[1] === '❯', next: s[2] === 'Next' };
       continue;
     }
-    // Anything else is an option's description row.
+    // Anything else continues the option above it: its wrapped label, then
+    // its description.
+    if (row.trim()) {
+      if (submitRow || options.length === 0) return null;
+      (options[options.length - 1]!.more ??= []).push(row.trim());
+    }
   }
   // No bottom rule: not a whole picker.
   if (i >= rows.length || options.length === 0) return null;
+  if (!onlyHintBelow(rows, i + 1, String(options.length + 1))) return null;
   if (options.filter((o) => o.cursor).length + (submitRow?.cursor ? 1 : 0) > 1) return null;
   return {
     view: 'question',
@@ -235,6 +254,27 @@ function parseQuestionView(rows: readonly string[], start: number, bar: AskPicke
     multiSelect: multiSelect === true,
     ...(submitRow ? { submitRow } : {}),
   };
+}
+
+/**
+ * Under a question view's bottom rule Claude draws its `N. Chat about this`
+ * row and the key hint, nothing else. Any other row (another menu, an input
+ * prompt) means this is not the question that is up.
+ */
+function onlyHintBelow(rows: readonly string[], from: number, chatKey: string): boolean {
+  const hint: string[] = [];
+  let chat = false;
+  for (let i = from; i < rows.length; i++) {
+    const text = rows[i]!.trim();
+    if (!text) continue;
+    const m = OPTION_ROW.exec(rows[i]!);
+    if (m && !chat && hint.length === 0 && m[2] === chatKey && normalize(m[3]!) === CHAT_ROW_LABEL) {
+      chat = true;
+      continue;
+    }
+    hint.push(text);
+  }
+  return HINT.test(normalize(hint.join(' ')));
 }
 
 function parseReviewView(rows: readonly string[], start: number, bar: AskPickerTabs): AskPickerReviewView | null {
@@ -280,6 +320,14 @@ function parseReviewView(rows: readonly string[], start: number, bar: AskPickerT
   };
 }
 
+/** The row of the LAST tab bar drawn right under a `────` rule, or -1. Rows are right-trimmed. */
+function lastTabBar(rows: readonly string[]): number {
+  for (let bar = rows.length - 1; bar > 0; bar--) {
+    if (RULE.test(rows[bar - 1]!.trim()) && parseTabBar(rows[bar]!)) return bar;
+  }
+  return -1;
+}
+
 /**
  * The AskUserQuestion picker at the bottom of the grid, or null. The picker is
  * the LAST tab bar drawn right under a `────` rule; a question view must end
@@ -287,10 +335,9 @@ function parseReviewView(rows: readonly string[], start: number, bar: AskPickerT
  */
 export function parseAskPicker(rawRows: readonly string[]): AskPickerScreen | null {
   const rows = rawRows.map((row) => row.replace(/\s+$/, ''));
-  for (let bar = rows.length - 1; bar > 0; bar--) {
-    if (!RULE.test(rows[bar - 1]!.trim())) continue;
-    const tabs = parseTabBar(rows[bar]!);
-    if (!tabs) continue;
+  const bar = lastTabBar(rows);
+  if (bar >= 0) {
+    const tabs = parseTabBar(rows[bar]!)!;
     let i = bar + 1;
     while (i < rows.length && !rows[i]!.trim()) i++;
     if (i >= rows.length) return null;
@@ -304,6 +351,37 @@ export function parseAskPicker(rawRows: readonly string[]): AskPickerScreen | nu
 /** How many "User answered Claude's questions:" blocks the grid shows. */
 export function countAnsweredBlocks(rows: readonly string[]): number {
   return rows.filter((row) => row.trim().endsWith(ANSWERED_HEADER)).length;
+}
+
+/**
+ * What the screen showed right before the key that may close the picker:
+ * the last rows drawn above the picker (`anchor`, at most three non-empty
+ * rows) and how many answered blocks were on screen. Claude draws the new
+ * answered block where the picker was, below the anchor.
+ */
+export interface AskConfirmBaseline {
+  anchor: string[];
+  blocks: number;
+}
+
+export function askConfirmBaseline(rawRows: readonly string[]): AskConfirmBaseline {
+  const rows = rawRows.map((row) => row.replace(/\s+$/, ''));
+  const bar = lastTabBar(rows);
+  const above = bar > 0 ? rows.slice(0, bar - 1).filter((row) => row.trim()) : [];
+  return { anchor: above.slice(-3), blocks: countAnsweredBlocks(rows) };
+}
+
+/** The row after the last place the anchor's rows appear in order (blank rows between them skipped), or -1. */
+function afterAnchor(rows: readonly string[], anchor: readonly string[]): number {
+  if (anchor.length === 0) return -1;
+  const filled: number[] = [];
+  rows.forEach((row, i) => { if (row.trim()) filled.push(i); });
+  for (let k = filled.length - anchor.length; k >= 0; k--) {
+    if (anchor.every((text, j) => rows[filled[k + j]!]!.replace(/\s+$/, '') === text)) {
+      return filled[k + anchor.length - 1]! + 1;
+    }
+  }
+  return -1;
 }
 
 /**
@@ -356,13 +434,20 @@ export function answerListMatches(text: string, labels: readonly string[]): bool
   return match(0, wanted.length);
 }
 
-/** `text` equals `full`, or is a prefix of it at least `min` characters long (all of a shorter `full`). */
-function isCutOf(text: string, full: string, min: number): boolean {
-  const cut = normalize(text).replace(/…$/, '').trimEnd();
-  const whole = normalize(full);
-  if (!cut) return false;
-  if (cut === whole) return true;
-  return whole.startsWith(cut) && cut.length >= Math.min(whole.length, min);
+/**
+ * An option row and the rows under it read as exactly this option: whole rows
+ * that are its whole label (Claude wraps a long label onto the description's
+ * indent), then rows that are its whole description, compared with every
+ * space removed. A label Claude cut short does not match.
+ */
+function sameOption(row: AskPickerRow, option: AskFormQuestion['options'][number]): boolean {
+  const rows = [row.label, ...(row.more ?? [])].map(compact);
+  const label = compact(option.label);
+  const description = compact(option.description ?? '');
+  for (let k = 1; k <= rows.length; k++) {
+    if (rows.slice(0, k).join('') === label) return rows.slice(k).join('') === description;
+  }
+  return false;
 }
 
 /** The labels an answer shows as: the chosen options' labels, then the free text. */
@@ -420,18 +505,18 @@ export function askScreenMeets(
   if (!screen.tabs.every((tab, j) => j === expect.q || tab.answered === j < expect.q)) return false;
   if (screen.multiSelect !== question.multiSelect) return false;
   if (question.multiSelect ? !screen.submitRow : !!screen.submitRow) return false;
-  // `Next` only where another question follows (measured on 2.1.288; 2.1.283
-  // was measured only on the last question, which reads `Submit`).
-  if (screen.submitRow?.next && expect.q === questions.length - 1) return false;
+  // The row reads `Next` where another question follows and `Submit` on the
+  // last one (measured on 2.1.288).
+  if (screen.submitRow && screen.submitRow.next !== expect.q < questions.length - 1) return false;
   const otherKey = String(question.options.length + 1);
   if (screen.options.length !== question.options.length + 1) return false;
   const rowsMatch = question.options.every((o, j) => {
     const row = screen.options[j]!;
-    return row.key === o.key && isCutOf(row.label, o.label, 3);
+    return row.key === o.key && sameOption(row, o);
   });
   if (!rowsMatch) return false;
   const free = screen.options[screen.options.length - 1]!;
-  if (free.key !== otherKey) return false;
+  if (free.key !== otherKey || (free.more ?? []).length > 0) return false;
   if (expect.other === null ? !FREE_TEXT_PLACEHOLDER.test(free.label) : compact(free.label) !== compact(expect.other)) return false;
   if (question.multiSelect) {
     const ticked = screen.options.filter((o) => o.checked).map((o) => o.key).sort();
@@ -442,6 +527,11 @@ export function askScreenMeets(
   return expect.cursor === 'submit'
     ? screen.submitRow?.cursor === true
     : screen.options.find((o) => o.cursor)?.key === expect.cursor;
+}
+
+/** The screen is this prompt's review (its tabs, every one answered), whatever answers it lists. */
+export function askReviewOf(screen: AskPickerScreen | null, questions: readonly AskFormQuestion[]): boolean {
+  return !!screen && screen.view === 'review' && tabsMatch(screen, questions) && screen.tabs.every((tab) => tab.answered);
 }
 
 /**
@@ -458,21 +548,24 @@ export function askPickerUntouched(screen: AskPickerScreen | null, questions: re
 /**
  * Has the answer landed, as far as the screen can tell? This prompt's picker
  * is gone (another prompt's may already be up: Claude can ask a follow-up at
- * once), a new "User answered Claude's questions:" block appeared (more of
- * them than `blocksBefore`, the count on the last screen read before the final
- * key — an older block for the same question can still be on screen), and
- * that last block lists every question with exactly the answer given.
+ * once), and a "User answered Claude's questions:" block drawn after the
+ * last key lists every question with exactly the answer given. A block
+ * counts as new when it is below the baseline's anchor (the rows that were
+ * above the picker); when the anchor is no longer on screen, only when there
+ * are more blocks than before. An older block for the same question can
+ * still be on screen, above the anchor.
  */
 export function answersConfirmed(
   rows: readonly string[],
-  blocksBefore: number,
+  baseline: AskConfirmBaseline,
   questions: readonly AskFormQuestion[],
   answers: readonly AskAnswer[],
 ): boolean {
   const picker = parseAskPicker(rows);
   if (picker && tabsMatch(picker, questions)) return false;
-  if (countAnsweredBlocks(rows) <= blocksBefore) return false;
-  const block = lastAnsweredBlock(rows);
+  const from = afterAnchor(rows, baseline.anchor);
+  if (from < 0 && countAnsweredBlocks(rows) <= baseline.blocks) return false;
+  const block = lastAnsweredBlock(from < 0 ? rows : rows.slice(from));
   if (!block || block.length !== questions.length) return false;
   return questions.every((q, j) => {
     // `question → answer`, compared with every space removed (see sameQuestionText).

@@ -122,15 +122,21 @@ import {
 } from './types';
 import type { QuestionShape } from './askUserQuestion';
 import {
+  answerLabels,
+  answerListMatches,
   answersConfirmed,
   askAnswerSteps,
   askOtherMaxWidth,
   askPickerUntouched,
+  askConfirmBaseline,
+  askReviewOf,
   askScreenMeets,
-  countAnsweredBlocks,
+  type AskConfirmBaseline,
   isFreeTextPlaceholder,
   parseAskPicker,
+  readsAsCheckbox,
   type AskAnswer,
+  type AskFormQuestion,
   type AskStep,
 } from './askPicker';
 import type { PhoneDecisionsConfig } from './decisionConfig';
@@ -543,6 +549,15 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
    * answer stops partway. Record id → the sweep's reason. In memory only.
    */
   private readonly deferredExpiry = new Map<string, ApprovalExpiryReason>();
+  /** With a held `answered-locally`: the answers Claude reported. Record id → answers. In memory only. */
+  private readonly deferredAnswered = new Map<string, Readonly<Record<string, string>>>();
+  /**
+   * An AskUserQuestion answer the driver typed, kept while its record is
+   * pending: Claude's own report settles an unconfirmed answer as this one
+   * only when it lists these answers. Record id → form questions and answers.
+   * In memory only (a restart expires such a record anyway).
+   */
+  private readonly typedAnswers = new Map<string, { questions: readonly AskFormQuestion[]; answers: readonly AskAnswer[] }>();
   /**
    * Questions a newer prompt or gate on their pane would have superseded while
    * their stepwise answer was still typing (typingAnswer): superseded when the
@@ -1611,6 +1626,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     sessionId: string,
     reason: ApprovalExpiryReason,
     kind?: ApprovalRequest['kind'],
+    answered?: Readonly<Record<string, string>>,
   ): Promise<void> {
     // Stamped at call time. The cooldown remembers WHICH dialog was released,
     // so only a repeat of that same dialog is held back.
@@ -1641,6 +1657,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     return this.mutate(() => this.expirePendingWhere(
       (r) => r.sessionId === sessionId && (kind === undefined || r.kind === kind),
       reason,
+      answered,
     ));
   }
 
@@ -2771,14 +2788,14 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       // CR/LF submitting it) would turn the rest of it into keys.
       if (!isPasteSafeText(text)) {
         audit('invalid-text:control');
-        return { ok: false, reason: 'invalid-text', request: copyRequest(record) };
+        return { ok: false, reason: 'invalid-text', textRefusal: 'unsafe-text', request: copyRequest(record) };
       }
       // The echo check reads the whole text back off the screen, so it must
       // fit in the field the pane can show.
       const max = planFeedbackMaxWidth(first.cols, first.height);
       if (textWidth(text) > max) {
         audit(`invalid-text:width>${max}`);
-        return { ok: false, reason: 'invalid-text', request: copyRequest(record) };
+        return { ok: false, reason: 'invalid-text', textRefusal: 'too-wide', request: copyRequest(record) };
       }
     }
     const keys = [feedbackKey, ...(text !== undefined ? [`\x1b[200~${text}\x1b[201~`] : []), '\r'];
@@ -3052,12 +3069,16 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     }
     const answers: AskAnswer[] = built.answers ?? [];
     for (const a of answers) {
+      if (a.other === undefined) continue;
       // The text goes into one bracketed paste (a control character would end
-      // it early or submit the field), and its echo must be told apart from
-      // the empty row.
-      if (a.other !== undefined && (!isPasteSafeText(a.other) || isFreeTextPlaceholder(a.other))) {
-        audit('invalid-text:content');
-        return { ok: false, reason: 'invalid-text', request: copyRequest(record) };
+      // it early or submit the field), its echo must be told apart from the
+      // empty row, and its row must not read as a checkbox row.
+      const refusal = !isPasteSafeText(a.other) || readsAsCheckbox(a.other)
+        ? 'unsafe-text'
+        : isFreeTextPlaceholder(a.other) ? 'matches-placeholder' : null;
+      if (refusal) {
+        audit(`invalid-text:${refusal}`);
+        return { ok: false, reason: 'invalid-text', textRefusal: refusal, request: copyRequest(record) };
       }
     }
     const steps = askAnswerSteps(questions, answers);
@@ -3088,7 +3109,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     const maxWidth = askOtherMaxWidth(first.cols);
     if (answers.some((a) => a.other !== undefined && textWidth(a.other) > maxWidth)) {
       audit(`invalid-text:width>${maxWidth}`);
-      return { ok: false, reason: 'invalid-text', request: copyRequest(record) };
+      return { ok: false, reason: 'invalid-text', textRefusal: 'too-wide', request: copyRequest(record) };
     }
     return this.driveQuestions(params, record, first, steps, answers, answer, audit);
   }
@@ -3173,15 +3194,18 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         if (uncertain) step.uncertainBy = sanitizeResolvedBy(params.resolvedBy);
         const events: ApprovalEvent[] = [];
         const held = this.deferredExpiry.get(record.id);
+        const heldAnswered = this.deferredAnswered.get(record.id);
         this.deferredExpiry.delete(record.id);
+        this.deferredAnswered.delete(record.id);
         const replaced = this.deferredSupersede.delete(record.id);
         if (record.state === 'pending' && replaced) {
           record.state = 'superseded';
           record.resolvedAt = this.now();
+          this.typedAnswers.delete(record.id);
           events.push({ type: 'supersede', request: copyRequest(record) });
           this.deps.log?.('info', `[approvals] superseded ${record.id} on ${sessionId} (held while its answer typed)`);
         } else if (record.state === 'pending' && held) {
-          events.push(...this.expirePendingWhere((r) => r.id === record.id, held));
+          events.push(...this.expirePendingWhere((r) => r.id === record.id, held, heldAnswered));
           this.deps.log?.('info', `[approvals] settled ${record.id} on ${sessionId} (${held}, held while its answer ran)`);
         } else if (record.state === 'pending') {
           events.push({ type: 'press', request: copyRequest(record) });
@@ -3190,7 +3214,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
           events,
           persist: true,
           result: uncertain
-            ? { ok: false, reason: 'answer-uncertain', request: copyRequest(record) }
+            ? { ok: false, reason: 'answer-uncertain', effect: 'uncertain' as const, request: copyRequest(record) }
             : { ...failure, effect: 'partial' as const, request: copyRequest(record) } as ApprovalResolveResult,
         };
       });
@@ -3212,7 +3236,9 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         const step = record.step;
         if (!step || !ours()) return { result: changed() };
         this.deferredExpiry.delete(record.id);
+        this.deferredAnswered.delete(record.id);
         this.deferredSupersede.delete(record.id);
+        this.typedAnswers.delete(record.id);
         step.status = 'done';
         // Closed before the steps planned for it (a single multi-select with no review).
         step.total = step.index;
@@ -3238,12 +3264,15 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     /** Poll the screen until it shows what `expect` says, or say why not. */
     const awaitScreen = async (
       step: AskStep,
-      blocksBefore: number,
-    ): Promise<Screen | { closed: true } | 'moved' | 'timeout' | 'gone'> => {
+      baseline: AskConfirmBaseline,
+    ): Promise<Screen | { closed: true } | 'moved' | 'timeout' | 'gone' | 'mismatch'> => {
       const paste = step.key.startsWith('\x1b[200~') ? step.key.slice(6, -6) : undefined;
       const wait = STEP_RENDER_WAIT_MS + (paste !== undefined ? Math.ceil(textWidth(paste) / 100) * STEP_RENDER_WAIT_PER_100_MS : 0);
       const until = Math.min(this.now() + wait, deadline);
       let lastLook = false;
+      // A review of this prompt listing other answers, seen twice in a row
+      // (once could be a frame still being drawn): nothing has been submitted.
+      let reviewMismatch = 0;
       for (;;) {
         const screen = await this.readQuestionScreen(sessionId);
         if (!screen) return 'gone';
@@ -3252,11 +3281,17 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
           return 'moved';
         }
         const picker = parseAskPicker(screen.rows);
+        const wantsReview = step.expect.view === 'review' || step.expect.view === 'review-or-closed';
         if (step.expect.view === 'review-or-closed') {
           if (askScreenMeets(picker, { view: 'review' }, questions, answers)) return screen;
-          if (answersConfirmed(screen.rows, blocksBefore, questions, answers)) return { closed: true };
+          if (answersConfirmed(screen.rows, baseline, questions, answers)) return { closed: true };
         } else if (askScreenMeets(picker, step.expect, questions, answers)) {
           return screen;
+        }
+        if (wantsReview && askReviewOf(picker, questions)) {
+          if (++reviewMismatch >= 2) return 'mismatch';
+        } else {
+          reviewMismatch = 0;
         }
         if (lastLook) return 'timeout';
         // Out of time: one more look after a last pause, then give up.
@@ -3266,14 +3301,16 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     };
 
     /** After the last key: does the screen confirm the answer within ASK_CONFIRM_WAIT_MS? */
-    const confirmed = async (blocksBefore: number, incarnation: string): Promise<boolean> => {
+    const confirmed = async (baseline: AskConfirmBaseline, incarnation: string): Promise<boolean> => {
       const until = this.now() + ASK_CONFIRM_WAIT_MS;
       let lastLook = false;
       for (;;) {
         const screen = await this.readQuestionScreen(sessionId);
-        // A key typed after the answer does not change what the screen shows of it.
-        if (!screen || (screen.mark.incarnation ?? '') !== incarnation) return false;
-        if (answersConfirmed(screen.rows, blocksBefore, questions, answers)) return true;
+        // Another pane incarnation: this answer's screen is gone. A failed
+        // read is looked at again until the window ends. A key typed after
+        // the answer does not change what the screen shows of it.
+        if (screen && (screen.mark.incarnation ?? '') !== incarnation) return false;
+        if (screen && answersConfirmed(screen.rows, baseline, questions, answers)) return true;
         if (lastLook) return false;
         if (this.now() >= until) lastLook = true;
         await delay(STEP_POLL_MS);
@@ -3282,13 +3319,14 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
 
     let read: Screen = first;
     // "User answered" blocks on the screen the key that may close the picker was typed over.
-    let blocksBefore = countAnsweredBlocks(first.rows);
+    let baseline = askConfirmBaseline(first.rows);
     for (let index = 0; index < steps.length;) {
       if (index > 0) {
-        const seen = await awaitScreen(steps[index - 1]!, blocksBefore);
+        const seen = await awaitScreen(steps[index - 1]!, baseline);
         if (typeof seen === 'string') {
-          // After a key that may have submitted the picker, nothing typed can be ruled out.
-          return stop(changed(), seen, steps[index - 1]!.expect.view === 'review-or-closed');
+          // After a key that may have submitted the picker, nothing typed can
+          // be ruled out — unless the review is up, listing other answers.
+          return stop(changed(), seen, seen !== 'mismatch' && steps[index - 1]!.expect.view === 'review-or-closed');
         }
         if ('closed' in seen) return finish();
         read = seen;
@@ -3334,6 +3372,11 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
             status: 'running',
             startedAt: this.now(),
           };
+          // Settled elsewhere (superseded, swept) since: nothing reads theirs.
+          for (const id of this.typedAnswers.keys()) {
+            if (!this.requests.some((r) => r.id === id && r.state === 'pending')) this.typedAnswers.delete(id);
+          }
+          this.typedAnswers.set(record.id, { questions, answers });
           events.push({ type: 'press', request: copyRequest(record) });
         } else {
           step!.index = at + 1;
@@ -3349,7 +3392,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       });
       if (outcome === 'written') {
         const view = steps[at]!.expect.view;
-        if (view === 'closed' || view === 'review-or-closed') blocksBefore = countAnsweredBlocks(read.rows);
+        if (view === 'closed' || view === 'review-or-closed') baseline = askConfirmBaseline(read.rows);
         index++;
         continue;
       }
@@ -3369,7 +3412,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       return outcome;
     }
     const incarnation = record.step?.incarnation ?? '';
-    if (await confirmed(blocksBefore, incarnation)) return finish();
+    if (await confirmed(baseline, incarnation)) return finish();
     return stop(changed(), 'unconfirmed', true);
   }
 
@@ -3498,10 +3541,25 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     }
   }
 
+  /**
+   * Claude's reported answers (question text → answer) are exactly what the
+   * driver typed for record `id`: every question listed once, each with the
+   * answer given (see answerListMatches).
+   */
+  private answeredAsTyped(id: string, answered: Readonly<Record<string, string>> | undefined): boolean {
+    const typed = this.typedAnswers.get(id);
+    if (!typed || !answered || Object.keys(answered).length !== typed.questions.length) return false;
+    return typed.questions.every((q, j) => {
+      const reported = Object.prototype.hasOwnProperty.call(answered, q.text) ? answered[q.text] : undefined;
+      return typeof reported === 'string' && answerListMatches(reported, answerLabels(q, typed.answers[j]!));
+    });
+  }
+
   /** Flip every pending record matching `match`. Returns the events to fan out. */
   private expirePendingWhere(
     match: (r: ApprovalRequest) => boolean,
     reason: ApprovalExpiryReason,
+    answered?: Readonly<Record<string, string>>,
   ): ApprovalEvent[] {
     const events: ApprovalEvent[] = [];
     for (const r of this.requests) {
@@ -3516,16 +3574,22 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         // The first reason is kept, except that Claude's own word that the
         // question was answered wins: it is what settles an answer the
         // screen never confirmed (see below).
-        if (!this.deferredExpiry.has(r.id) || reason === 'answered-locally') this.deferredExpiry.set(r.id, reason);
+        if (!this.deferredExpiry.has(r.id) || reason === 'answered-locally') {
+          this.deferredExpiry.set(r.id, reason);
+          if (reason === 'answered-locally' && answered) this.deferredAnswered.set(r.id, answered);
+        }
         continue;
       }
       // A terminal_prompt whose remote answer was written RESOLVES when its
       // dialog is gone (the answered path, the screen check, the turn's end).
       // A question whose stepwise answer ended `answer-uncertain` resolves,
-      // as that answer, only on Claude's own report that it was answered;
-      // any other end (dismissed, the turn over, the pane gone) expires it.
+      // as that answer, only on Claude's own report that it was answered
+      // with exactly these answers; any other end (answered otherwise,
+      // dismissed, the turn over, the pane gone) expires it.
       const unconfirmed = r.step?.uncertainBy;
-      if (r.pressedAt !== undefined || (unconfirmed !== undefined && reason === 'answered-locally')) {
+      const asTyped = unconfirmed !== undefined && reason === 'answered-locally' && this.answeredAsTyped(r.id, answered);
+      this.typedAnswers.delete(r.id);
+      if (r.pressedAt !== undefined || asTyped) {
         r.state = 'resolved';
         r.resolvedAt = this.now();
         if (unconfirmed !== undefined) {

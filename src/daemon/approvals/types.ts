@@ -315,7 +315,11 @@ export interface DecisionForm {
     text: string;
     multiSelect: boolean;
     allowOther: boolean;
-    options: Array<{ key: string; label: string }>;
+    /**
+     * `description`: Claude AskUserQuestion only — the option's description,
+     * drawn under its label.
+     */
+    options: Array<{ key: string; label: string; description?: string }>;
   }>;
   actions: Array<{ id: string; label: string; needsText?: true }>;
 }
@@ -483,6 +487,14 @@ export type ApprovalResolveFailure =
   | 'invalid-text';
 
 /**
+ * Why a phone-typed text was refused (`invalid-text`), sent as the 400's
+ * `reason`: wider than the field the pane can show, read as the free-text
+ * row's placeholder, or not typeable as it is (a control character,
+ * whitespace only, or a start that reads as a checkbox).
+ */
+export type DecisionTextRefusal = 'too-wide' | 'matches-placeholder' | 'unsafe-text';
+
+/**
  * The one-line `reason` a 501 carries on the web wire, next to its unchanged
  * `error`: WHY the phone cannot answer, so a client can say more than "open
  * the computer". Closed set, documented in docs/phone-client-contract.md.
@@ -543,8 +555,12 @@ export type ApprovalResolveResult =
       /**
        * `partial`: a stepwise answer stopped after typing some of its keys
        * (`request.step` says how far), whatever `reason` stopped it.
+       * `uncertain`: with `answer-uncertain` — every key was typed and the
+       * answer was not confirmed.
        */
-      effect?: 'partial';
+      effect?: 'partial' | 'uncertain';
+      /** With `invalid-text`: why. */
+      textRefusal?: DecisionTextRefusal;
       /** Present on 'already-resolved' — the 409 UX names who got there first. */
       resolvedBy?: string;
       /** Absent only for 'not-found'. */
@@ -562,6 +578,7 @@ export type ApprovalResolveResult =
       /** Never set on this variant; declared so callers can read it off any refusal. */
       pressRefusal?: undefined;
       effect?: undefined;
+      textRefusal?: undefined;
       resolvedBy?: undefined;
     };
 
@@ -671,11 +688,16 @@ export interface ApprovalHookSink {
    * anything. Optional so a sink that predates the kind still type-checks.
    */
   noteTerminalPrompt?(input: TerminalPromptNote): void | Promise<void>;
-  /** `kind` narrows the sweep to one record kind; omitted ⇒ every kind. */
+  /**
+   * `kind` narrows the sweep to one record kind; omitted ⇒ every kind.
+   * `answered`: with `answered-locally`, the answers Claude reported for its
+   * AskUserQuestion (question text → answer), when the hook carried them.
+   */
   expireForSession(
     sessionId: string,
     reason: ApprovalExpiryReason,
     kind?: ApprovalRequest['kind'],
+    answered?: Readonly<Record<string, string>>,
   ): void;
   /**
    * The agent is starting another tool: retire the pane's pending
