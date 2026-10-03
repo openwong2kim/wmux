@@ -180,6 +180,8 @@ export class StateWriter {
   // StateWriter — the acquireLock() one-shot writer leaves it false so it can
   // never race the main instance over sessions.json.
   private readonly persistHealedOnLoad: boolean;
+  /** Where load() reports what it repaired; the daemon passes its own log. */
+  private readonly warn: (msg: string) => void;
   private debounceTimer: NodeJS.Timeout | null = null;
   private pendingState: DaemonState | null = null;
   private readonly queue = new AsyncQueue();
@@ -192,7 +194,13 @@ export class StateWriter {
   private immediateEpoch = 0;
   private lastImmediateState: DaemonState | null = null;
 
-  constructor(baseDir: string, suspendedTtlHours: number = SUSPENDED_TTL_HOURS_DEFAULT, detachedTtlHours: number = DETACHED_TTL_HOURS_DEFAULT, persistHealedOnLoad = false) {
+  constructor(
+    baseDir: string,
+    suspendedTtlHours: number = SUSPENDED_TTL_HOURS_DEFAULT,
+    detachedTtlHours: number = DETACHED_TTL_HOURS_DEFAULT,
+    persistHealedOnLoad = false,
+    warn: (msg: string) => void = (msg) => console.warn(msg),
+  ) {
     this.filePath = path.join(baseDir, 'sessions.json');
     // Substrate 3.0: suspended-tombstone GC retention. The daemon main
     // threads config.session.suspendedTtlHours here (codex #2). The
@@ -207,6 +215,7 @@ export class StateWriter {
     // crash/forced-kill no longer resurrects a fleet of orphan shells.
     this.detachedTtlHours = detachedTtlHours;
     this.persistHealedOnLoad = persistHealedOnLoad;
+    this.warn = warn;
 
     // Sync fallback used by `flushSync()` on emergency exit paths.
     // It writes whatever the latest pending snapshot is using the
@@ -481,15 +490,17 @@ export class StateWriter {
 
     // A stored resume binding missing its folder (or session id) would stop
     // recovery for every pane. Skip just that binding: the session is still
-    // recovered, only without its resume offer, and the next save drops it.
+    // recovered, only without its resume offer. Persisted like the timestamp
+    // heal below, so the file stops carrying it and the warning is not repeated.
     for (const s of state.sessions) {
       if (s.resumeBinding !== undefined && !isUsableResumeBinding(s.resumeBinding)) {
-        console.warn(`[StateWriter] skipped an incomplete resume binding on session ${s.id}`);
+        this.warn(`[StateWriter] skipped an incomplete resume binding on session ${s.id}`);
         delete s.resumeBinding;
+        restamped = true;
       }
     }
 
-    // If we healed any corrupt timestamp, persist the repaired state so the fix
+    // If we healed any corrupt timestamp or binding, persist the repaired state so the fix
     // is durable across restarts. Gated on persistHealedOnLoad: only the main
     // recovery StateWriter writes here. The acquireLock() one-shot writer (which
     // only reads bootId and discards the pruned list) leaves the flag off, so it

@@ -74,6 +74,36 @@ describe('StateWriter', () => {
     }
   });
 
+  it('the main writer persists the skipped binding and reports it through its own log, once', () => {
+    const missingFolder = { agent: 'codex', sessionId: 'bad-id', ts: 1 } as unknown as DaemonSession['resumeBinding'];
+    writer.saveImmediate(makeState([makeSession({ id: 'broken', resumeBinding: missingFolder })]));
+    const filePath = path.join(tmpDir, 'sessions.json');
+    const warnings: string[] = [];
+    const main = new StateWriter(tmpDir, undefined, undefined, true, (msg) => warnings.push(msg));
+    try {
+      expect(main.load().sessions[0].resumeBinding).toBeUndefined();
+      expect(JSON.parse(fs.readFileSync(filePath, 'utf-8')).sessions[0].resumeBinding).toBeUndefined();
+      // The repaired file no longer carries it, so the next load is quiet.
+      main.load();
+      expect(warnings).toEqual(['[StateWriter] skipped an incomplete resume binding on session broken']);
+    } finally {
+      main.dispose();
+    }
+  });
+
+  it('a writer without persistHealedOnLoad leaves the file as it found it', () => {
+    const missingFolder = { agent: 'codex', sessionId: 'bad-id', ts: 1 } as unknown as DaemonSession['resumeBinding'];
+    writer.saveImmediate(makeState([makeSession({ id: 'broken', resumeBinding: missingFolder })]));
+    const filePath = path.join(tmpDir, 'sessions.json');
+    const oneShot = new StateWriter(tmpDir, undefined, undefined, false, () => undefined);
+    try {
+      expect(oneShot.load().sessions[0].resumeBinding).toBeUndefined();
+      expect(JSON.parse(fs.readFileSync(filePath, 'utf-8')).sessions[0].resumeBinding).toEqual(missingFolder);
+    } finally {
+      oneShot.dispose();
+    }
+  });
+
   it('load restores saved data', () => {
     const state = makeState([makeSession({ id: 'abc' })]);
     writer.saveImmediate(state);

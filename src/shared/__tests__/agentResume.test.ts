@@ -411,6 +411,8 @@ describe('isUsableResumeBinding', () => {
     expect(isUsableResumeBinding(binding({ sessionId: '' }))).toBe(false);
     expect(isUsableResumeBinding({ ...binding(), agent: undefined })).toBe(false);
     for (const value of [undefined, null, 'claude', 7, []]) expect(isUsableResumeBinding(value)).toBe(false);
+    // The exact shape a caller of daemon.setResumeBinding can send without a folder.
+    expect(isUsableResumeBinding({ agent: 'claude', sessionId: 'abc-123' })).toBe(false);
   });
 });
 
