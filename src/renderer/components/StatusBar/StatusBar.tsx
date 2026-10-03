@@ -250,10 +250,18 @@ export default function StatusBar() {
             {prefixError}
           </span>
         )}
+        {/* The branch is the shortcut to the Git page (no button of its own). */}
         {branch && (
-          <span>
+          <button
+            type="button"
+            className={`min-w-0 truncate rounded px-1 min-h-[24px] text-[11px] text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--hover-fill)] transition-colors ${FOCUS_RING}`}
+            onClick={() => useStore.getState().setAppRoute('git')}
+            title={t('statusBar.openGit')}
+            aria-label={`${branch} — ${t('statusBar.openGit')}`}
+            data-titlebar-branch
+          >
             <span className="text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>⎇</span> {branch}
-          </span>
+          </button>
         )}
         {/* Company 모드 배지 */}
         {isCompanyMode && (

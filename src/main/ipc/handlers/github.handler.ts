@@ -19,6 +19,8 @@ export type GithubPrListResult =
       ok: false;
       code: 'no-remote' | 'unsupported-host' | 'cli-missing' | 'unauthenticated' | 'error';
       message: string;
+      /** Which CLI the gate is about, so the page offers the right sign-in. */
+      provider?: 'github' | 'gitlab';
     };
 
 export type GithubPrDetailResult =
@@ -40,6 +42,7 @@ async function prList(repoPath: string, force: boolean): Promise<GithubPrListRes
       ok: false,
       code: gate.reason === 'cli-missing' ? 'cli-missing' : 'unauthenticated',
       message: gate.message,
+      provider: isGithubHost(host) ? 'github' : 'gitlab',
     };
   }
   const res = await provider.listPrs(repoPath, force);

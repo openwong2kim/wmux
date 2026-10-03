@@ -6,7 +6,8 @@ import { selectFleetSectionCounts } from '../../stores/selectors/fleet';
 import { selectScheduleNavSummary } from '../../stores/selectors/schedules';
 import { formatNextShort } from '../Schedules/format';
 import { useT } from '../../hooks/useT';
-import { Icon, IconClock, IconGrid, IconRemoteDevices, IconUsers } from '../icons';
+import { Icon, IconClock, IconGitBranch, IconGrid, IconRemoteDevices, IconUsers } from '../icons';
+import { selectGitRailSignal } from '../Git/gitSignal';
 import type { AppRoute } from '../../stores/slices/uiSlice';
 import { FOCUS_RING } from '../focusRing';
 
@@ -53,6 +54,10 @@ export default function SidebarNavigation({ compact = false, home = false }: {
     schedulesNeedsText,
     schedulesFailedText || (schedulesNextText ? t('schedules.navNext', { time: schedulesNextText }) : ''),
   ].filter(Boolean).join(', ');
+  // Git: a red dot while some workspace's PR fails its checks or conflicts
+  // (pushed PR status only). The spoken name says why.
+  const gitSignal = useStore(selectGitRailSignal);
+  const gitName = gitSignal ? `${t('git.title')}, ${t('git.railSignal')}` : t('git.title');
   // The rail navigates (a page stays put when clicked again); the in-sheet
   // list keeps its toggles.
   const go = (page: AppRoute, toggle: () => void) => () => {
@@ -84,6 +89,10 @@ export default function SidebarNavigation({ compact = false, home = false }: {
       id: 'remote', label: t('sidebar.remote'), name: t('sidebar.remote'), active: route === 'remote',
       icon: <IconRemoteDevices size={16} />,
       onClick: () => useStore.getState().setAppRoute('remote'),
+    }, {
+      id: 'git', label: t('git.title'), name: gitName, active: route === 'git',
+      icon: <IconGitBranch size={16} />,
+      onClick: () => useStore.getState().setAppRoute('git'),
     }] : []),
   ];
 
@@ -107,6 +116,7 @@ export default function SidebarNavigation({ compact = false, home = false }: {
             {!compact && <span className="wmux-nav-label min-w-0 flex-1 truncate text-left">{label}</span>}
             {id === 'fleet' && <FleetCounts compact={compact} badge needsYou={fleetCounts.needsYou} needsText={needsText} runningText={runningText} />}
             {id === 'schedules' && <FleetCounts compact={compact} needsYou={schedules.needs} needsText={schedulesNeedsText} runningText={schedulesMutedText} />}
+            {id === 'git' && gitSignal && <span className="wmux-nav-count wmux-nav-alert" data-git-nav-signal aria-hidden="true" />}
           </button>{id === 'search' && <WebToggle variant="sidebar" compact={compact} />}</Fragment>
         );
       })}

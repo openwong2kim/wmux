@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 //
 // The PR row reads once for its count; it polls only while it is open and the
-// Workspaces page is the one on screen.
+// Git page is the one on screen.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createElement, act } from 'react';
@@ -17,7 +17,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   prList.mockClear();
   (window as unknown as { electronAPI: unknown }).electronAPI = { github: { prList, prDetail: vi.fn() } };
-  act(() => useStore.setState({ appRoute: 'workspaces' }));
+  act(() => useStore.setState({ appRoute: 'git' }));
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -41,7 +41,7 @@ describe('PrSection polling', () => {
     expect(prList).toHaveBeenCalledTimes(1);
   });
 
-  it('open on the Workspaces page it polls, and stops behind another page', async () => {
+  it('open on the Git page it polls, and stops on another page', async () => {
     act(() => root.render(createElement(PrSection, { repoPath: '/r' })));
     await tick(0);
     act(() => (container.querySelector('[data-pr-toggle]') as HTMLButtonElement).click());

@@ -18,6 +18,7 @@ import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
 import { renderBrainMarkdown } from '../Deck/BrainMarkdown';
 import { IconChevron } from '../icons';
+import { GH_LOGIN_COMMAND, openGithubLoginTab } from './connectGithub';
 import type { PrSummary, PrComment } from '../../../shared/prSurface';
 
 const POLL_MS = 30_000;
@@ -25,11 +26,11 @@ const POLL_MS = 30_000;
 type ListState =
   | { kind: 'loading' }
   | { kind: 'ready'; prs: PrSummary[] }
-  | { kind: 'gated'; code: string; message: string };
+  | { kind: 'gated'; code: string; message: string; provider?: 'github' | 'gitlab' };
 
 interface GithubBridge {
   prList: (repoPath: string, force?: boolean) => Promise<
-    { ok: true; prs: PrSummary[] } | { ok: false; code: string; message: string }
+    { ok: true; prs: PrSummary[] } | { ok: false; code: string; message: string; provider?: 'github' | 'gitlab' }
   >;
   prDetail: (repoPath: string, number: number, updatedAt: string) => Promise<
     { ok: true; detail: { number: number; comments: PrComment[] } } | { ok: false; code: string; message: string }
@@ -69,11 +70,19 @@ function relTime(iso: string, t: (k: string) => string): string {
   return `${Math.floor(h / 24)}d`;
 }
 
-export function PrSection({ repoPath, refreshKey = 0 }: { repoPath: string | null; refreshKey?: number }): React.ReactElement | null {
+export function PrSection({ repoPath, refreshKey = 0, defaultOpen = false }: {
+  repoPath: string | null;
+  refreshKey?: number;
+  /** Open on mount (the Git page has room for the list). */
+  defaultOpen?: boolean;
+}): React.ReactElement | null {
   const t = useT();
   const [state, setState] = useState<ListState>({ kind: 'loading' });
-  // Folded by default: the count is the glance, the list is one click away.
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
+  // Connect GitHub: the sign-in tab could not be opened, so the command is
+  // shown to copy instead.
+  const [loginFallback, setLoginFallback] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [expanded, setExpanded] = useState<number | null>(null);
   const [comments, setComments] = useState<PrComment[] | null>(null);
   const [commentsLoading, setCommentsLoading] = useState(false);
@@ -125,7 +134,7 @@ export function PrSection({ repoPath, refreshKey = 0 }: { repoPath: string | nul
           if (cur && cur.updatedAt !== expandedUpdatedAt.current) void fetchComments(repo, cur);
         }
       } else {
-        setState({ kind: 'gated', code: res.code, message: res.message });
+        setState({ kind: 'gated', code: res.code, message: res.message, provider: res.provider });
       }
     } finally {
       inFlight.current = false;
@@ -141,14 +150,12 @@ export function PrSection({ repoPath, refreshKey = 0 }: { repoPath: string | nul
     expandedUpdatedAt.current = '';
     if (!repoPath) return;
     void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repoPath]);
 
   // The 30s poll runs only while someone can see the list: the row is open,
-  // the Workspaces page is the one shown (not inert behind Fleet or another
-  // page), and the window is not hidden. Otherwise the mount read and the
-  // header's refresh are all there is.
-  const onWorkspaces = useStore((s) => s.appRoute === 'workspaces');
+  // the Git page is the one shown, and the window is not hidden. Otherwise
+  // the mount read and the page's refresh are all there is.
+  const onGitPage = useStore((s) => s.appRoute === 'git');
   const [windowShown, setWindowShown] = useState(() => !document.hidden);
   useEffect(() => {
     const onChange = () => setWindowShown(!document.hidden);
@@ -157,7 +164,7 @@ export function PrSection({ repoPath, refreshKey = 0 }: { repoPath: string | nul
   }, []);
   const loadRef = useRef(load);
   loadRef.current = load;
-  const polling = !!repoPath && open && onWorkspaces && windowShown;
+  const polling = !!repoPath && open && onGitPage && windowShown;
   useEffect(() => {
     if (!polling) return;
     void loadRef.current();
@@ -216,7 +223,49 @@ export function PrSection({ repoPath, refreshKey = 0 }: { repoPath: string | nul
         </div>
       )}
 
-      {state.kind === 'gated' && (
+      {state.kind === 'gated' && state.provider === 'github' && (state.code === 'cli-missing' || state.code === 'unauthenticated') && (
+        // Not connected: one way in. gh signs in through the browser and keeps
+        // the credential itself; nothing is stored here.
+        <div className="wmux-git-connect" data-git-connect>
+          <p className="wmux-git-connect-title">{t('git.connect.title')}</p>
+          <p className="wmux-git-connect-desc">
+            {state.code === 'cli-missing' ? t('git.ghMissing') : t('git.connect.desc')}
+          </p>
+          <div className="wmux-git-connect-actions">
+            <button
+              type="button"
+              className={`wmux-git-primary ${FOCUS_RING}`}
+              data-git-connect-button
+              onClick={async () => {
+                const ok = await openGithubLoginTab(t('git.connect.tabTitle'));
+                if (!ok) setLoginFallback(true);
+              }}
+            >
+              {t('git.connect.button')}
+            </button>
+            <button type="button" className={`wmux-git-button ${FOCUS_RING}`} onClick={() => void load(true)} data-git-connect-recheck>
+              {t('git.connect.recheck')}
+            </button>
+          </div>
+          {loginFallback && (
+            <div className="wmux-git-connect-cmd" data-git-connect-command>
+              <code>{GH_LOGIN_COMMAND}</code>
+              <button
+                type="button"
+                className={`wmux-git-button ${FOCUS_RING}`}
+                onClick={() => {
+                  void window.clipboardAPI?.writeText?.(GH_LOGIN_COMMAND);
+                  setCopied(true);
+                }}
+              >
+                {copied ? t('git.connect.copied') : t('git.connect.copy')}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {state.kind === 'gated' && !(state.provider === 'github' && (state.code === 'cli-missing' || state.code === 'unauthenticated')) && (
         // CLI 미설치/미인증/무remote — fail-closed 안내(조용한 빈 섹션 금지).
         // cli-missing/unauthenticated 문구는 provider(gh/glab)별로 다르므로
         // 핸들러가 내려준 message를 우선한다(self-hosted면 호스트명 포함).

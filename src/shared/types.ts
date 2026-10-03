@@ -405,6 +405,9 @@ export interface PrStatus {
   state: 'open' | 'draft' | 'merged' | 'closed';
   checks: 'pending' | 'passing' | 'failing' | null;
   url: string;
+  /** Set (true) only when GitHub reports the PR as conflicting with its base;
+   *  absent otherwise (additive, read in the same `gh pr view` call). */
+  conflicting?: true;
 }
 
 /** Sidebar git sync badge — dirty count + ahead/behind vs upstream
@@ -934,10 +937,6 @@ export interface SessionData {
   sidebarWidth?: number;
   /** #1481 — owner workspace id → user-chosen expansion of its fan-out task group. */
   sidebarTaskGroupExpanded?: Record<string, boolean>;
-  /** Whether the sidebar's Git section is folded to its header. */
-  sidebarGitCollapsed?: boolean;
-  /** Expanded height of the sidebar's Git section in px. Clamped on load. */
-  sidebarGitHeight?: number;
   /** How the multiview grid arranges its tiles (#746). Whitelisted on load. */
   multiviewArrangement?: 'auto' | 'columns' | 'rows';
   notificationSoundEnabled?: boolean;

@@ -4,6 +4,7 @@ import { ErrorBoundary } from '../ErrorBoundary';
 import FleetView from '../FleetView/FleetView';
 import SchedulesView from '../Schedules/SchedulesView';
 import RemotePage from '../Remote/RemotePage';
+import GitPage from '../Git/GitPage';
 
 const SettingsPanel = lazy(() => import('../Settings/SettingsPanel'));
 
@@ -37,6 +38,7 @@ export default function RailPage() {
       {route === 'fleet' && <ErrorBoundary name="FleetView"><FleetView /></ErrorBoundary>}
       {route === 'schedules' && <ErrorBoundary name="SchedulesView"><SchedulesView /></ErrorBoundary>}
       {route === 'remote' && <ErrorBoundary name="RemotePage"><RemotePage /></ErrorBoundary>}
+      {route === 'git' && <ErrorBoundary name="GitPage"><GitPage /></ErrorBoundary>}
     </div>
   );
 }

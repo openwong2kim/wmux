@@ -26,26 +26,6 @@ export function clampSidebarWidth(width: unknown): number {
   return Math.round(Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, width)));
 }
 
-/** Default height of the sidebar's Git section, in px. */
-export const SIDEBAR_GIT_DEFAULT_HEIGHT = 280;
-/** Shortest the Git section drags to: its header plus the current-branch card. */
-export const SIDEBAR_GIT_MIN_HEIGHT = 120;
-/** Ceiling as a share of the sidebar's height, so the workspace list stays usable. */
-export const SIDEBAR_GIT_MAX_SHARE = 0.45;
-
-/**
- * Clamp a requested Git section height. `available` is the sidebar's height;
- * when it is known the section never takes more than its share of it. A value
- * that is not a finite number (a torn session file) falls back to the default.
- */
-export function clampSidebarGitHeight(height: unknown, available?: number): number {
-  if (typeof height !== 'number' || !Number.isFinite(height)) return SIDEBAR_GIT_DEFAULT_HEIGHT;
-  const max = available !== undefined && available > 0
-    ? Math.max(SIDEBAR_GIT_MIN_HEIGHT, Math.floor(available * SIDEBAR_GIT_MAX_SHARE))
-    : Number.POSITIVE_INFINITY;
-  return Math.round(Math.min(max, Math.max(SIDEBAR_GIT_MIN_HEIGHT, height)));
-}
-
 /**
  * How the workspace list is ordered. Display only — the stored order, Ctrl+N
  * labels and drag positions are defined on the manual order in every mode.

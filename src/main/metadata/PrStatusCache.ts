@@ -46,6 +46,7 @@ interface GhPrViewJson {
   state?: string;       // "OPEN" | "MERGED" | "CLOSED"
   isDraft?: boolean;
   url?: string;
+  mergeable?: string;   // "MERGEABLE" | "CONFLICTING" | "UNKNOWN"
   statusCheckRollup?: Array<{
     status?: string;     // "COMPLETED" | "IN_PROGRESS" | "QUEUED" | ...
     conclusion?: string; // "SUCCESS" | "FAILURE" | "NEUTRAL" | ...
@@ -79,7 +80,9 @@ export function mapGhPrView(json: GhPrViewJson): PrStatus | null {
     }
     checks = failing ? 'failing' : pending ? 'pending' : 'passing';
   }
-  return { number: json.number, state, checks, url: json.url };
+  const status: PrStatus = { number: json.number, state, checks, url: json.url };
+  if ((json.mergeable ?? '').toUpperCase() === 'CONFLICTING') status.conflicting = true;
+  return status;
 }
 
 export class PrStatusCache {
@@ -151,7 +154,7 @@ export class PrStatusCache {
     try {
       const { stdout } = await this.exec(
         process.platform === 'win32' ? 'gh.exe' : 'gh',
-        ['pr', 'view', '--json', 'number,state,isDraft,url,statusCheckRollup'],
+        ['pr', 'view', '--json', 'number,state,isDraft,url,mergeable,statusCheckRollup'],
         {
           cwd,
           timeout: GH_TIMEOUT_MS,

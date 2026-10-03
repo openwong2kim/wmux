@@ -14,7 +14,7 @@ import { markRetentionMigrationDone } from '../retentionMigration';
 import { DEFAULT_BROWSER_BACKEND, isBrowserBackend, type BrowserBackend } from '../../../shared/browserBackend';
 import { CHROME_PRESET_VALUES } from '../../../shared/chromePresets';
 import { sanitizeShortcutOverrides, type ShortcutActionId, type ShortcutOverrides } from '../../../shared/keymap';
-import { SIDEBAR_DEFAULT_WIDTH, SIDEBAR_GIT_DEFAULT_HEIGHT, clampSidebarGitHeight, clampSidebarWidth, isNestedTask, togglePinned, type SidebarSortMode } from '../../utils/sidebarLayout';
+import { SIDEBAR_DEFAULT_WIDTH, clampSidebarWidth, isNestedTask, togglePinned, type SidebarSortMode } from '../../utils/sidebarLayout';
 
 /**
  * #517: read main's authoritative browser backend synchronously at store-module
@@ -150,7 +150,7 @@ export type FleetTab = 'fleet' | 'approvals' | 'remote';
  * panes and tools dock) is home; every other page covers it while the
  * terminals stay mounted underneath. Session-only, never persisted.
  */
-export type AppRoute = 'workspaces' | 'fleet' | 'schedules' | 'remote' | 'settings';
+export type AppRoute = 'workspaces' | 'fleet' | 'schedules' | 'remote' | 'git' | 'settings';
 
 export interface UISlice {
   // ─── Startup gate (Fix 0) ─────────────────────────────────────────────
@@ -566,15 +566,6 @@ export interface UISlice {
    *  active or a task needs you). */
   sidebarTaskGroupExpanded: Record<string, boolean>;
   setSidebarTaskGroupExpanded: (ownerId: string, expanded: boolean) => void;
-
-  /** Whether the sidebar's Git section is folded to its header. A folded
-   *  section unmounts its body, so it reads nothing from git or the PR host. */
-  sidebarGitCollapsed: boolean;
-  setSidebarGitCollapsed: (collapsed: boolean) => void;
-  /** Height of the expanded Git section in px (clamped; capped at render to
-   *  45% of the sidebar). */
-  sidebarGitHeight: number;
-  setSidebarGitHeight: (height: number) => void;
 
   /** #1326 — show the auto-generated `w<ws>-<pane>` coordinate in the agent
    *  roster's muted trailer for panes that have no explicit label. On by
@@ -1638,18 +1629,6 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   setSidebarTaskGroupExpanded: (ownerId, expanded) => set((state) => {
     if (!ownerId) return;
     state.sidebarTaskGroupExpanded[ownerId] = expanded;
-  }),
-
-  sidebarGitCollapsed: false,
-
-  setSidebarGitCollapsed: (collapsed) => set((state) => {
-    state.sidebarGitCollapsed = collapsed;
-  }),
-
-  sidebarGitHeight: SIDEBAR_GIT_DEFAULT_HEIGHT,
-
-  setSidebarGitHeight: (height) => set((state) => {
-    state.sidebarGitHeight = clampSidebarGitHeight(height);
   }),
 
   sidebarShowPaneCoordinates: true,

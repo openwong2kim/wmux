@@ -2,6 +2,13 @@ import { describe, it, expect, vi } from 'vitest';
 import { PrStatusCache, mapGhPrView } from '../PrStatusCache';
 
 describe('mapGhPrView', () => {
+  it('marks a conflicting PR, and only that one', () => {
+    const base = { number: 7, state: 'OPEN', isDraft: false, url: 'u', statusCheckRollup: [] };
+    expect(mapGhPrView({ ...base, mergeable: 'CONFLICTING' })?.conflicting).toBe(true);
+    expect(mapGhPrView({ ...base, mergeable: 'MERGEABLE' })).not.toHaveProperty('conflicting');
+    expect(mapGhPrView({ ...base, mergeable: 'UNKNOWN' })).not.toHaveProperty('conflicting');
+  });
+
   it('maps an open PR with passing checks', () => {
     expect(mapGhPrView({
       number: 42,

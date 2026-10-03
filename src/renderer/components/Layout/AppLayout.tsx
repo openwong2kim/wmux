@@ -425,8 +425,6 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     sidebarPinnedIds: state.sidebarPinnedIds,
     sidebarWidth: state.sidebarWidth,
     sidebarTaskGroupExpanded: state.sidebarTaskGroupExpanded,
-    sidebarGitCollapsed: state.sidebarGitCollapsed,
-    sidebarGitHeight: state.sidebarGitHeight,
     multiviewArrangement: state.multiviewArrangement,
     notificationSoundEnabled: state.notificationSoundEnabled,
     toastEnabled: state.toastEnabled,

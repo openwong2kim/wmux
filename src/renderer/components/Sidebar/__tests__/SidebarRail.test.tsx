@@ -32,15 +32,33 @@ const rail = () => container.querySelector<HTMLDivElement>('[data-sidebar-rail]'
 const navIds = () => [...container.querySelectorAll('[data-sidebar-nav]')].map((el) => el.getAttribute('data-sidebar-nav'));
 
 describe('sidebar icon rail', () => {
-  it('lists only pages — Workspaces, Fleet, Schedules and Remote — each named', async () => {
+  it('lists only pages — Workspaces, Fleet, Schedules, Remote and Git — each named', async () => {
     await act(async () => root.render(<MiniSidebar rail collapsed={false} />));
     // Search & commands is a palette (the titlebar pill), not a page.
-    expect(navIds()).toEqual(['home', 'fleet', 'schedules', 'remote']);
+    expect(navIds()).toEqual(['home', 'fleet', 'schedules', 'remote', 'git']);
     // Home is the current page until another is chosen.
     expect(container.querySelector('[data-sidebar-nav="home"]')?.getAttribute('aria-current')).toBe('page');
     for (const b of rail().querySelectorAll('button')) {
       expect(b.getAttribute('aria-label')?.length, b.outerHTML).toBeGreaterThan(0);
     }
+  });
+
+  it('Git opens its page and carries a red dot only while a PR fails its checks or conflicts', async () => {
+    await act(async () => root.render(<MiniSidebar rail collapsed={false} />));
+    const git = () => container.querySelector<HTMLButtonElement>('[data-sidebar-nav="git"]')!;
+    expect(git().querySelector('[data-git-nav-signal]')).toBeNull();
+    act(() => git().click());
+    expect(useStore.getState().appRoute).toBe('git');
+    expect(git().getAttribute('aria-current')).toBe('page');
+
+    const ws = (id: string, pr: object) => ({ id, name: id, metadata: { pr }, rootPane: { id: 'p', type: 'leaf', surfaces: [], activeSurfaceId: '' }, activePaneId: 'p' });
+    act(() => useStore.setState({ workspaces: [ws('a', { number: 1, state: 'open', checks: 'passing', url: 'u' })] as never }));
+    expect(git().querySelector('[data-git-nav-signal]')).toBeNull();
+    act(() => useStore.setState({ workspaces: [ws('a', { number: 1, state: 'open', checks: 'failing', url: 'u' })] as never }));
+    expect(git().querySelector('[data-git-nav-signal]')).not.toBeNull();
+    expect(git().getAttribute('aria-label')).toContain('checks failing or a merge conflict');
+    act(() => useStore.setState({ workspaces: [ws('a', { number: 1, state: 'open', checks: 'passing', url: 'u', conflicting: true })] as never }));
+    expect(git().querySelector('[data-git-nav-signal]')).not.toBeNull();
   });
 
   it('keeps only the sidebar toggle at its foot (Settings lives in the titlebar)', async () => {
