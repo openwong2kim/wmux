@@ -162,7 +162,7 @@ import type { ApprovalDecision, DecisionFormKind, NativeDecisionOutcome, NativeD
 import type { AgentSlug } from '../shared/events';
 import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
-import { deliverScheduledPrompt } from './sessionPromptDelivery';
+import { deliverScheduledPrompt, type ScheduledPromptDeliveryDeps } from './sessionPromptDelivery';
 import { UsageLimitRegistry } from './usageLimit/UsageLimitRegistry';
 import type { SessionPromptScheduleResult } from '../shared/sessionPromptSchedule';
 import { USAGE_LIMIT_CONTINUE_PROMPT, type PaneUsageLimitPatch } from '../shared/usageLimit';
@@ -3978,14 +3978,14 @@ function registerRpcHandlers(
       // #783 — the gated-tools list from daemon config. A GETTER so `wmux gate
       // --add` takes effect on the next tool call without a daemon restart.
       gateConfig: () => coerceGate(loadConfig().gate),
-      // Chat View P1 — the tail nudge rides the existing hook signals rather
-      // than a new hook. Fired for every resolved kind; a no-op for panes with
-      // no Chat surface open.
       // Exact pane identity only: a cwd-resolved guess could hold (or later
       // type a continue into) a sibling pane in the same directory (#919).
       onResolvedSignal: (sessionId, signal) => {
         if (signal.ptyId === sessionId) usageLimits?.noteHookSignal(sessionId, signal);
       },
+      // Chat View P1 — the tail nudge rides the existing hook signals rather
+      // than a new hook. Fired for every resolved kind; a no-op for panes with
+      // no Chat surface open.
       onTranscriptNudge: (sessionId, kind, agentSessionId) => {
         projector.nudge(sessionId, kind, agentSessionId);
         // #782 — phone turn-view nudge. Non-recording: bypasses attentionLog so
@@ -4349,12 +4349,14 @@ function registerRpcHandlers(
     id: string, agentSlug: AgentSlug, incarnationId: string, prompt: string, bypassUsageHold = false,
   ): Promise<SessionPromptScheduleResult> => {
     if (!bypassUsageHold && usageLimits?.holds(id)) return 'busy';
-    // The continue follows a turn that died on the limit, which leaves `error`.
-    return deliverPromptToSessionNow(id, agentSlug, incarnationId, prompt, bypassUsageHold);
+    return deliverPromptToSessionNow(id, agentSlug, incarnationId, prompt, {});
   };
-  const deliverPromptToSessionNow = (id: string, agentSlug: AgentSlug, incarnationId: string, prompt: string, acceptError: boolean) =>
+  const deliverPromptToSessionNow = (
+    id: string, agentSlug: AgentSlug, incarnationId: string, prompt: string,
+    opts: Pick<ScheduledPromptDeliveryDeps, 'acceptError' | 'authorized'>,
+  ) =>
     deliverScheduledPrompt(agentSlug, incarnationId, prompt, {
-      acceptError,
+      ...opts,
       getAgentState: () => {
         const current = readDaemonAgentState(id);
         const slug = current.agentName ? agentDisplayToSlug(current.agentName) : undefined;
@@ -4406,16 +4408,32 @@ function registerRpcHandlers(
 
   usageLimits = new UsageLimitRegistry({
     broadcast: (event) => pipeServer.broadcast(event),
-    deliverContinue: async (id) => {
+    // The agent verified on the pane when the limit was seen. The continue
+    // expects exactly that process (slug + incarnation), so a relaunched or
+    // swapped agent answers `session_changed` instead of receiving it.
+    identify: (id) => {
       const state = readDaemonAgentState(id);
       const slug = state.agentName ? agentDisplayToSlug(state.agentName) : undefined;
-      if (!slug || !state.incarnationId) return 'unavailable';
-      return deliverPromptToSession(id, slug, state.incarnationId, USAGE_LIMIT_CONTINUE_PROMPT, true);
+      return slug && state.agentVerified && state.incarnationId ? { slug, incarnationId: state.incarnationId } : null;
     },
+    deliverContinue: (id, expected, stillWanted) =>
+      deliverPromptToSessionNow(id, expected.slug, expected.incarnationId, USAGE_LIMIT_CONTINUE_PROMPT, {
+        // A turn that died on the limit leaves the pane at `error`.
+        acceptError: true,
+        // Asked before the paste and before the Enter: the hold must still be
+        // this one and still armed, and no human draft may sit in the
+        // composer (the input-revision proof covers the gap after the paste).
+        authorized: async (stage) => stillWanted()
+          && (stage === 'submit' || sessionManager.getSession(id)?.bridge.hasDraft() !== true),
+      }),
     log: (message) => log('info', message),
   });
   pipeServer.onRpc('daemon.usageLimit.list', async () => ({ limits: usageLimits?.list() ?? [] }));
-  pipeServer.onRpc('daemon.usageLimit.update', async (params) => {
+  // Edits come from the app only (main relays the renderer's verbs and the
+  // reset fill): an agent holding the daemon token for its hooks must not be
+  // able to dismiss or re-time a hold.
+  pipeServer.onRpc('daemon.usageLimit.update', async (params, ctx) => {
+    if (!pipeServer.isFirstParty(ctx.clientId)) return { ok: false };
     const id = typeof params['id'] === 'string' ? params['id'] : '';
     const raw = params['patch'];
     if (!id || !raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false };
@@ -4429,8 +4447,15 @@ function registerRpcHandlers(
     return { ok: (await usageLimits?.update(id, patch)) === true };
   });
   sessionManager.on('session:usageLimit', (payload: { sessionId: string; event: { provider: 'codex'; resetsAt?: number; message?: string } }) => {
+    // Only while Codex itself is the pane's verified agent: the detector's gate
+    // outlives the process, and a shell printing the same row (cat, a paste)
+    // after Codex exited is not a limit.
+    const state = readDaemonAgentState(payload.sessionId);
+    if (state.agentName !== 'Codex CLI' || !state.agentVerified) return;
     usageLimits?.noteScreenLimit(payload.sessionId, payload.event.provider, payload.event);
   });
+  sessionManager.on('session:inputSubmitted', (payload: { sessionId: string }) => usageLimits?.noteSubmitted(payload.sessionId));
+  sessionManager.on('session:interrupted', (payload: { id: string }) => usageLimits?.drop(payload.id));
   sessionManager.on('session:active', (payload: { sessionId: string; likelyRepaint?: boolean }) => {
     if (!payload.likelyRepaint) usageLimits?.noteActive(payload.sessionId);
   });
@@ -7404,6 +7429,8 @@ async function main(): Promise<void> {
   agentProcessTracker.setStateChangeListener((sessionId, state) => {
     if (!state.alive) hookIngest?.expireAuthorityFor(sessionId, state.slug);
     if (!state.alive) automationEngine?.onAgentProcessExit(sessionId);
+    // The agent that hit the limit is gone; a relaunch is a new agent.
+    if (!state.alive) usageLimits?.drop(sessionId);
     // A pane whose status the HOOK owns has exactly two settle paths: the Stop
     // hook, and this edge. An agent killed mid-turn (double Ctrl+C, /exit, a
     // crash) sends no Stop, and byte silence no longer clears a hook-governed
@@ -7515,6 +7542,8 @@ async function main(): Promise<void> {
       return !m || m.meta.state === 'dead';
     },
     broadcast: (event) => {
+      // A supervised restart replaces the pane's process: its hold is void.
+      if (event.type === 'session.restarted') usageLimits?.drop(event.sessionId);
       try {
         pipeServer.broadcast(event);
       } catch (err) {

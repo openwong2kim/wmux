@@ -209,6 +209,12 @@ export interface HookIngestDeps {
    */
   gateConfig?: () => { gatedTools: string[] };
   /**
+   * Every resolved signal with its payload, for consumers that read a field
+   * the event shapes drop (the usage-limit registry reads a StopFailure's
+   * `error` and `last_assistant_message`). Optional; only the daemon supplies it.
+   */
+  onResolvedSignal?: (sessionId: string, signal: AgentSignal) => void;
+  /**
    * Transcript projection — tell the TranscriptProjector that this pane's
    * transcript may have grown. Fired for EVERY resolved signal, including the
    * non-emit kinds: `agent.activity` is the mid-turn liveness nudge,
@@ -221,12 +227,6 @@ export interface HookIngestDeps {
    *
    * Optional: only the daemon supplies it, and no hook behaviour depends on it.
    */
-  /**
-   * Every resolved signal with its payload, for consumers that read a field
-   * the event shapes drop (the usage-limit registry reads a StopFailure's
-   * `error` and `last_assistant_message`). Optional; only the daemon supplies it.
-   */
-  onResolvedSignal?: (sessionId: string, signal: AgentSignal) => void;
   onTranscriptNudge?: (
     sessionId: string,
     kind: AgentSignalKind,
