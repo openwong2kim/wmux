@@ -119,6 +119,16 @@ describe('AccountRotationService', () => {
     expect(refreshNow.mock.calls).toEqual([['a']]);
   });
 
+  it('stops when the switch goes off while the bound account is read', async () => {
+    const s = make([acct('a', 'claude'), acct('b', 'claude')]);
+    await s.setEnabled('claude', true);
+    bindings['ws:claude'] = 'a';
+    usageEntries = [usage('a', 100, NOW - 60 * 60_000), usage('b', 10, NOW - 60 * 60_000)];
+    refreshNow.mockImplementation(async () => { await s.setEnabled('claude', false); });
+    expect(await s.prepareLaunch('claude', 'ws')).toEqual({ kind: 'keep' });
+    expect(refreshNow.mock.calls).toEqual([['a']]);
+  });
+
   it('holds a Codex launch when every account is out', async () => {
     const s = make([acct('x', 'codex'), acct('y', 'codex')]);
     await s.setEnabled('codex', true);

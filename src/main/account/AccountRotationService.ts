@@ -204,10 +204,14 @@ export class AccountRotationService {
     const boundAccount = pool.find((a) => a.id === bound)!;
     const boundReading = await this.reading(boundAccount, deadline);
     if (evaluateQuota(boundReading, now).usable) return { kind: 'keep' };
+    // The switch may have gone off while the bound account was being read.
+    if (!this.getSettings()[vendor]) return { kind: 'keep' };
     const read = [
       { a: boundAccount, reading: boundReading },
       ...await Promise.all(pool.filter((a) => a !== boundAccount).map(async (a) => ({ a, reading: await this.reading(a, deadline) }))),
     ];
+    // ...or while the others were.
+    if (!this.getSettings()[vendor]) return { kind: 'keep' };
     // Only a measured account is a switch target; an unmeasured one (no
     // reading, or a Claude account whose last probe failed) is never picked.
     const candidates = read
