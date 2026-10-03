@@ -11548,6 +11548,10 @@ src/shared/quickLaunch.ts) from:
   src/features/quick-composer/model/quickComposerShortcut.ts
 Chat v2 Claude driver (src/daemon/chat/v2/claude) from:
   src/integrations/harness/providers/claude/claude.ts, claudeProtocol.ts
+Chat v2 view (src/renderer/components/ChatV2) from:
+  src/features/sessions/ui/AgentTranscript.tsx (turn footer wording),
+    TranscriptFind.tsx
+  src/features/sessions/model/transcriptFind.ts
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

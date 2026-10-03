@@ -10,6 +10,7 @@ import { useIpc } from '../../hooks/useIpc';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import TerminalComponent from '../Terminal/Terminal';
+import { ChatV2Overlay, useChatSurfaceView } from '../ChatV2/ChatSurface';
 import BrowserPanel from '../Browser/BrowserPanel';
 import EditorPanel from '../Editor/EditorPanel';
 import DiffPanel from '../Diff/DiffPanel';
@@ -1040,6 +1041,45 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   );
 }
 
+/**
+ * A terminal surface and, in Chat view, the chat it shows. Chat v2 lays its
+ * view over the anchor terminal and makes the terminal inert, so keys typed
+ * into the chat never reach the shell; the terminal-projection chat stays
+ * inside Terminal. Choosing a view never creates a PTY.
+ */
+function TerminalSurface({ surface, chatViewEnabled, isActive, visible, isWorkspaceVisible, onPtyCreated, workspaceId }: {
+  surface: PaneLeaf['surfaces'][number];
+  chatViewEnabled: boolean;
+  isActive: boolean;
+  visible?: boolean;
+  isWorkspaceVisible: boolean;
+  onPtyCreated: (ptyId: string) => void;
+  workspaceId: string;
+}) {
+  const view = useChatSurfaceView(surface.ptyId || undefined, chatViewEnabled, surface.viewMode);
+  const chatV2 = view === 'chatv2';
+  const shown = visible ?? isActive;
+  return (
+    <>
+      <div style={{ display: 'contents' }} inert={chatV2 || undefined}>
+        <TerminalComponent
+          chatView={view === 'projection'}
+          ptyId={surface.ptyId || undefined}
+          cwd={surface.cwd || undefined}
+          isActive={isActive}
+          visible={visible}
+          isWorkspaceVisible={isWorkspaceVisible}
+          onPtyCreated={onPtyCreated}
+          scrollbackFile={surface.scrollbackFile}
+          workspaceId={workspaceId}
+          surfaceId={surface.id}
+        />
+      </div>
+      {chatV2 && shown && isWorkspaceVisible && surface.ptyId && <ChatV2Overlay ptyId={surface.ptyId} surfaceId={surface.id} />}
+    </>
+  );
+}
+
 /** Renders surfaces with a resizable split when both terminals and browsers coexist */
 function SplitSurfaceView({
   pane,
@@ -1152,17 +1192,14 @@ function SplitSurfaceView({
               onTitleChange={updateRemoteSurfaceTitle}
             />
           ) : (
-            <TerminalComponent
+            <TerminalSurface
               key={surface.id}
-              chatView={chatViewEnabled && surface.viewMode === 'chat'}
-              ptyId={surface.ptyId || undefined}
-              cwd={surface.cwd || undefined}
+              surface={surface}
+              chatViewEnabled={chatViewEnabled}
               isActive={surface.id === activeSurfaceId}
               isWorkspaceVisible={isWorkspaceVisible}
               onPtyCreated={(ptyId) => onPtyCreated(surface.id, ptyId)}
-              scrollbackFile={surface.scrollbackFile}
               workspaceId={workspaceId}
-              surfaceId={surface.id}
             />
           ),
         )}
@@ -1186,18 +1223,15 @@ function SplitSurfaceView({
         <Panel defaultSize={50} minSize={20}>
           <div className="h-full w-full relative overflow-hidden">
             {terminals.map((surface) => (
-              <TerminalComponent
+              <TerminalSurface
                 key={surface.id}
-                chatView={chatViewEnabled && surface.viewMode === 'chat'}
-                ptyId={surface.ptyId || undefined}
-                cwd={surface.cwd || undefined}
+                surface={surface}
+                chatViewEnabled={chatViewEnabled}
                 isActive={surface.id === activeSurfaceId}
                 visible={surface.id === shownTerminalId}
                 isWorkspaceVisible={isWorkspaceVisible}
                 onPtyCreated={(ptyId) => onPtyCreated(surface.id, ptyId)}
-                scrollbackFile={surface.scrollbackFile}
                 workspaceId={workspaceId}
-                surfaceId={surface.id}
               />
             ))}
           </div>

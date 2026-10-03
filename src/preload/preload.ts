@@ -1,5 +1,6 @@
 import { CHAT_IPC } from '../shared/transcript/chatIpc';
 import type { ChatBridgeApi } from '../shared/transcript/turnEvents';
+import { CHATV2_IPC, type ChatV2BridgeApi, type ChatV2EventsPush, type ChatV2ResyncPush } from '../shared/chatv2/ipc';
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { IPC } from '../shared/constants';
 import type {
@@ -89,8 +90,25 @@ const chat: ChatBridgeApi = {
   },
 };
 
+// Chat v2: one generic call per contract method (main validates and forwards).
+const chatv2: ChatV2BridgeApi = {
+  call: (method, params) => ipcRenderer.invoke(CHATV2_IPC[method], params),
+  stageAttachment: (path) => ipcRenderer.invoke(CHATV2_IPC.stageAttachment, path),
+  onEvents: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, push: ChatV2EventsPush) => listener(push);
+    ipcRenderer.on(CHATV2_IPC.events, handler);
+    return () => { ipcRenderer.removeListener(CHATV2_IPC.events, handler); };
+  },
+  onResync: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, push: ChatV2ResyncPush) => listener(push);
+    ipcRenderer.on(CHATV2_IPC.resync, handler);
+    return () => { ipcRenderer.removeListener(CHATV2_IPC.resync, handler); };
+  },
+};
+
 const electronAPI = {
   chat,
+  chatv2,
   // OS-aware shortcut mapping support — renderer cannot read process.platform
   // directly under sandbox + contextIsolation, so expose it here.
   // 'win32' | 'darwin' | 'linux' | 'aix' | 'freebsd' | 'openbsd' | 'sunos' | 'cygwin' | 'netbsd'

@@ -409,7 +409,11 @@ const BORROWED_SOURCES = [
       '  src/features/quick-composer/model/quickComposer.ts\n' +
       '  src/features/quick-composer/model/quickComposerShortcut.ts\n' +
       'Chat v2 Claude driver (src/daemon/chat/v2/claude) from:\n' +
-      '  src/integrations/harness/providers/claude/claude.ts, claudeProtocol.ts',
+      '  src/integrations/harness/providers/claude/claude.ts, claudeProtocol.ts\n' +
+      'Chat v2 view (src/renderer/components/ChatV2) from:\n' +
+      '  src/features/sessions/ui/AgentTranscript.tsx (turn footer wording),\n' +
+      '    TranscriptFind.tsx\n' +
+      '  src/features/sessions/model/transcriptFind.ts',
   },
 ];
 lines.push('BORROWED IMPLEMENTATION TECHNIQUES');

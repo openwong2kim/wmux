@@ -262,6 +262,12 @@ export function surfaceTabTooltip(
 }
 
 /** Append a keyboard hint to a tooltip label, e.g. "New terminal (Ctrl+T)". */
+/** Warm both chat views before the Chat toggle is pressed. */
+function preloadChatViews(): void {
+  void import('../Chat/ChatView').catch(() => undefined);
+  void import('../ChatV2/ChatV2View').catch(() => undefined);
+}
+
 function withShortcut(label: string, keys: string): string {
   return `${label} (${keys})`;
 }
@@ -915,8 +921,8 @@ export default function SurfaceTabs({
           {(['terminal', 'chat'] as const).map((view) => <button key={view} type="button"
             className={FOCUS_RING} data-surface-view={view}
             aria-pressed={(surface.viewMode ?? 'terminal') === view}
-            onPointerEnter={() => { if (view === 'chat') void import('../Chat/ChatView').catch(() => undefined); }}
-            onFocus={() => { if (view === 'chat') void import('../Chat/ChatView').catch(() => undefined); }}
+            onPointerEnter={() => { if (view === 'chat') preloadChatViews(); }}
+            onFocus={() => { if (view === 'chat') preloadChatViews(); }}
             onClick={(e) => { e.stopPropagation(); useStore.getState().setSurfaceViewMode(surface.id, view); }}>
             {t(`chat.${view}`)}
           </button>)}

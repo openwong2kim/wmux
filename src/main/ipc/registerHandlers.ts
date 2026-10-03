@@ -32,6 +32,7 @@ import { registerMcpHandlers } from './handlers/mcp.handler';
 import { registerLanLinkHandlers } from './handlers/lanlink.handler';
 import { registerPaneResourcesHandlers } from './handlers/paneResources.handler';
 import { registerChatHandlers } from './handlers/chat.handler';
+import { registerChatV2Handlers } from './handlers/chatv2.handler';
 import { registerWebHandlers } from './handlers/web.handler';
 import { registerAutomationHandlers } from './handlers/automation.handler';
 import { registerAccountHandlers } from './handlers/account.handler';
@@ -199,6 +200,8 @@ export function registerAllHandlers(
   // snapshot is refreshed each swap. With no daemon the handler resolves
   // `{ running:false, error }` rather than throwing (see web.handler.ts).
   const cleanupChat = registerChatHandlers(daemonClient, getWindow);
+  // Chat v2 — unconditional like chat: with no daemon every call answers `unavailable`.
+  const cleanupChatV2 = registerChatV2Handlers(daemonClient, getWindow);
   const cleanupWeb = registerWebHandlers(() => daemonClient ?? null);
   // Scheduled runs — unconditional like web: with no daemon the calls resolve
   // empty / refused instead of meeting a missing handler.
@@ -500,6 +503,7 @@ export function registerAllHandlers(
     cleanupWeb();
     cleanupAutomation();
     cleanupChat();
+    cleanupChatV2();
     cleanupAccounts();
     cleanupQuickCommands();
     // Mirror the register-side removeHandler so a teardown leaves no stale

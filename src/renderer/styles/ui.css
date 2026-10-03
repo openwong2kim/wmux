@@ -500,6 +500,94 @@
   .wmux-chat-composer, .wmux-chat-icon-button { transition: none; }
 }
 
+/* Chat v2 — driver-owned conversation view. Tokens only (themes restyle it);
+   dense rows with one boundary each: the composer and the decision cards are
+   the only bordered elements; tool rows are flat mono log lines. */
+.wmux-chatv2 { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--bg-base); color: var(--text-main); font-family: var(--font-ui); font-size: 13.5px; container-type: inline-size; }
+.wmux-chatv2-state { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; margin: auto; max-width: 28rem; padding: 16px; color: var(--text-sub); line-height: 1.6; }
+.wmux-chatv2-viewport { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; }
+.wmux-chatv2-column { display: flex; flex-direction: column; gap: 6px; width: 100%; max-width: 46rem; margin: 0 auto; padding: 14px 16px 10px; }
+.wmux-chatv2-empty { justify-content: flex-end; min-height: 100%; gap: 6px; padding-bottom: 18px; }
+.wmux-chatv2-empty strong { font-size: 18px; font-weight: 500; letter-spacing: -.01em; }
+.wmux-chatv2-empty p { color: var(--text-sub); line-height: 1.6; }
+.wmux-chatv2-user { align-self: flex-end; max-width: 85%; margin-top: 10px; padding: 6px 12px; border-radius: 12px; background: var(--bg-surface); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; }
+.wmux-chatv2-assistant, .wmux-chatv2-plan { line-height: 1.65; overflow-wrap: anywhere; }
+.wmux-chatv2-reasoning summary, .wmux-chatv2-tool summary, .wmux-chatv2-subagent summary { cursor: pointer; list-style: none; }
+.wmux-chatv2-reasoning summary::-webkit-details-marker, .wmux-chatv2-tool summary::-webkit-details-marker, .wmux-chatv2-subagent summary::-webkit-details-marker { display: none; }
+.wmux-chatv2-reasoning summary { color: var(--text-sub); font-size: 12px; }
+.wmux-chatv2-reasoning-body { margin-top: 2px; padding-left: 10px; color: var(--text-sub); font-size: 12.5px; line-height: 1.6; white-space: pre-wrap; }
+.wmux-chatv2-tool-line { display: flex; align-items: baseline; gap: 7px; min-width: 0; font-family: var(--font-mono); font-size: 12px; line-height: 1.7; color: var(--text-sub); }
+.wmux-chatv2-tool-title { flex-shrink: 0; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-main); }
+.wmux-chatv2-tool-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-sub); font-family: var(--font-mono); font-size: 12px; }
+.wmux-chatv2-step-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wmux-chatv2-glyph { flex-shrink: 0; width: 1ch; text-align: center; color: var(--text-muted); }
+.wmux-chatv2-glyph[data-state="running"] { color: var(--accent); }
+.wmux-chatv2-glyph[data-state="done"] { color: var(--accent-green); }
+.wmux-chatv2-glyph[data-state="failed"] { color: var(--accent-red); }
+.wmux-chatv2-steps { margin: 2px 0 2px 4px; padding-left: 10px; box-shadow: inset 1px 0 0 var(--border-soft); }
+.wmux-chatv2-pre { max-height: 280px; overflow: auto; margin: 4px 0 4px 15px; padding: 6px 8px; border-radius: 6px; background: var(--bg-mantle); color: var(--text-sub); font-family: var(--font-mono); font-size: 11.5px; line-height: 1.55; white-space: pre; }
+.wmux-chatv2-line[data-kind="add"] { color: var(--accent-green); }
+.wmux-chatv2-line[data-kind="del"] { color: var(--accent-red); }
+.wmux-chatv2-tasks ul { margin: 2px 0 0; padding: 0; list-style: none; }
+.wmux-chatv2-tasks li { display: flex; gap: 7px; font-size: 12.5px; line-height: 1.6; }
+.wmux-chatv2-tasks li[data-status="completed"] { color: var(--text-sub); text-decoration: line-through; }
+.wmux-chatv2-tasks li[data-status="in_progress"] .wmux-chatv2-glyph { color: var(--accent); }
+.wmux-chatv2-meta { color: var(--text-sub); font-size: 12px; }
+.wmux-chatv2-notice { font-size: 12.5px; line-height: 1.55; color: var(--text-sub); }
+.wmux-chatv2-notice[data-tone="error"] { color: var(--accent-red); }
+.wmux-chatv2-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 2px 0 6px; color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.wmux-chatv2-footer [data-outcome] { color: var(--text-sub); }
+.wmux-chatv2-card { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 4px 15px; padding: 8px 10px; border: 1px solid var(--border-soft); border-radius: 10px; background: var(--bg-mantle); }
+.wmux-chatv2-card-title { display: block; color: var(--text-sub); font-size: 11.5px; font-weight: 500; letter-spacing: .02em; }
+.wmux-chatv2-card-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.wmux-chatv2-decided { margin-left: 15px; color: var(--text-muted); font-size: 12px; }
+.wmux-chatv2-question { display: flex; flex-direction: column; gap: 4px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.wmux-chatv2-question legend { margin-bottom: 2px; padding: 0; line-height: 1.5; }
+.wmux-chatv2-option { display: flex; align-items: baseline; gap: 7px; cursor: pointer; line-height: 1.5; }
+.wmux-chatv2-option input { accent-color: var(--accent-blue); }
+.wmux-chatv2-option small { display: block; color: var(--text-sub); font-size: 11.5px; }
+.wmux-chatv2-btn { min-height: 26px; padding: 2px 10px; border-radius: 7px; background: var(--surface-fill, var(--bg-surface)); color: var(--text-main); font-size: 12px; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text-main) 10%, transparent), inset 0 1px 0 color-mix(in srgb, var(--text-main) 6%, transparent); transition: opacity 150ms; }
+.wmux-chatv2-btn:hover:not(:disabled) { background: var(--surface-fill-hover, var(--bg-surface)); }
+.wmux-chatv2-btn[data-variant="primary"] { background: var(--accent); color: var(--bg-base); box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-main) 18%, transparent); }
+.wmux-chatv2-btn:disabled { opacity: .4; cursor: not-allowed; }
+.wmux-chatv2-link { color: var(--text-sub); font-size: 12px; text-decoration: underline; text-underline-offset: 2px; }
+.wmux-chatv2-link:hover { color: var(--accent-blue); }
+.wmux-chatv2-earlier { align-self: center; margin-bottom: 6px; }
+.wmux-chatv2-dock { display: flex; flex-direction: column; gap: 6px; width: 100%; max-width: 46rem; margin: 0 auto; padding: 0 16px 12px; }
+.wmux-chatv2-composer { display: flex; flex-direction: column; gap: 4px; padding: 6px 6px 6px 10px; border: 1px solid var(--border-soft); border-radius: 12px; background: var(--bg-mantle); transition: border-color 150ms; }
+.wmux-chatv2-composer:focus-within { border-color: var(--accent-blue); }
+.wmux-chatv2-textarea { display: block; width: 100%; min-height: 40px; max-height: 200px; resize: none; padding: 4px 0; background: transparent; color: var(--text-main); font: inherit; line-height: 1.55; outline: none; field-sizing: content; }
+.wmux-chatv2-textarea::placeholder { color: var(--text-muted); }
+.wmux-chatv2-composer-bar { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; }
+.wmux-chatv2-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; min-width: 0; }
+.wmux-chatv2-chip { display: inline-flex; align-items: center; min-height: 24px; padding: 0 7px; border-radius: 999px; color: var(--text-sub); font-size: 11.5px; white-space: nowrap; }
+.wmux-chatv2-chip:hover:not([aria-disabled="true"]) { background: var(--bg-surface); color: var(--text-main); }
+.wmux-chatv2-chip select { appearance: none; background: transparent; color: inherit; font: inherit; cursor: pointer; outline: none; }
+.wmux-chatv2-chip select:disabled { cursor: default; }
+.wmux-chatv2-chip[aria-disabled="true"] { color: var(--text-muted); }
+.wmux-chatv2-chip[data-mode="bypass"] { color: var(--accent-red); }
+.wmux-chatv2-composer-actions { display: flex; flex-shrink: 0; align-items: center; gap: 6px; }
+.wmux-chatv2-send { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; background: var(--text-main); color: var(--bg-base); font-size: 14px; transition: opacity 150ms; }
+.wmux-chatv2-send:disabled { opacity: .3; cursor: not-allowed; }
+.wmux-chatv2-status { color: var(--text-muted); font-size: 11.5px; }
+.wmux-chatv2-status[data-status="failed"] { color: var(--accent-red); }
+.wmux-chatv2-find { display: flex; align-items: center; gap: 4px; padding: 4px 8px; box-shadow: inset 0 -1px 0 var(--border-soft); }
+.wmux-chatv2-input-line { min-width: 0; flex: 1; min-height: 24px; padding: 2px 8px; border-radius: 6px; background: var(--bg-mantle); color: var(--text-main); font: inherit; font-size: 12.5px; outline: none; box-shadow: inset 0 0 0 1px var(--border-soft); }
+.wmux-chatv2-input-line:focus { box-shadow: inset 0 0 0 1px var(--accent-blue); }
+.wmux-chatv2-find-count { min-width: 5.5em; color: var(--text-muted); font-size: 11.5px; text-align: right; font-variant-numeric: tabular-nums; }
+.wmux-chatv2-icon { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 6px; color: var(--text-sub); font-size: 12px; }
+.wmux-chatv2-icon:hover:not(:disabled) { background: var(--bg-surface); color: var(--text-main); }
+.wmux-chatv2-icon:disabled { opacity: .35; }
+.wmux-chatv2 [data-find-active] { border-radius: 6px; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-blue) 55%, transparent); }
+.wmux-chatv2 button:focus-visible, .wmux-chatv2 summary:focus-visible, .wmux-chatv2 select:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 2px; }
+@container (max-width: 420px) {
+  .wmux-chatv2-column, .wmux-chatv2-dock { padding-left: 8px; padding-right: 8px; }
+  .wmux-chatv2-user { max-width: 92%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .wmux-chatv2-btn, .wmux-chatv2-composer, .wmux-chatv2-send { transition: none; }
+}
+
 /* Named tabs distinguish navigation from the adjacent web action. */
 .wmux-deck-tabs { display: flex; align-items: center; flex-wrap: wrap; flex-shrink: 0; gap: 6px; padding: 8px; border-bottom: 1px solid var(--border-soft); }
 .wmux-deck-tablist { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; min-width: 0; max-width: 100%; }
