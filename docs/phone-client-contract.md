@@ -380,7 +380,7 @@ GET /api/config    → {allowInput, allowUpload, allowTranscript, inlineImages?,
                       serverVersion, hostPlatform}
 GET /api/sessions  → {sessions: [{id, cwd, spawnCwd?, cols, rows, state, agent, lastActivity,
                       workspace?, workspaceId?, shell?, lastDetectedAgent?, cwdLeaf?,
-                      liveness?, lastAssistantText?, surfaceTitle?, paneName?}]}
+                      liveness?, lastAssistantText?, surfaceTitle?, paneName?, deferred?}]}
 POST /api/input?session=<id>   body: raw bytes
 ```
 
@@ -427,6 +427,16 @@ only while the desktop is attached; see *Desktop sidebar fields* below.
 is too old to believe. `lastAssistantText` is a one-line cut of the agent's last
 message; it rides `--allow-transcript` and is absent until the first poll after
 the transcript changed.
+
+`deferred: true` marks a pane the daemon recovered after its own restart that
+no viewer has attached to yet. The daemon holds its output (the new shell's
+prompt) until one does. Opening the pane's `GET /api/stream` or sending it
+`POST /api/input` attaches it at its current size: the held output then arrives
+as `data` events after the snapshot, and the flag reads `false` from then on.
+Until then a resize is refused as *still recovering* (see
+[Resizing a pane](#resizing-a-pane--the-desk-owns-the-size-while-it-is-actually-showing-it)).
+A client may show the row as "recovering", but needs no extra request to wake
+it. A daemon that predates the field omits it; read a missing key as `false`.
 
 `gatedTools` lists the tools whose calls wait for a remote answer, so a client
 can say *why* something is pending. `gateEnabled` says whether that gate is

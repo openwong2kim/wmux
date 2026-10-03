@@ -2933,6 +2933,13 @@ export class WebTerminalServer {
      * not hold the HTTP surface behind a disk read.
      */
     lastAssistantText?: string;
+    /**
+     * The daemon recovered this pane after its own restart and is holding its
+     * output until a viewer attaches. Opening the pane's stream or sending it
+     * input activates it; the held output (the shell's prompt) then arrives as
+     * live bytes.
+     */
+    deferred: boolean;
   }> {
     const sessions = this.deps.sessionManager.listLiveSessions();
     // Against the FULL live set, not the filtered rows: the brain pane is
@@ -2964,6 +2971,7 @@ export class WebTerminalServer {
         ...this.handoffRow(this.deps.sessionManager.getSession(s.id)?.meta.handoffFrom, principal),
         ...this.livenessSummary(s.id),
         ...this.lastAssistantSummary(s.id, reads),
+        deferred: this.deps.sessionManager.getSession(s.id)?.deferred === true,
       }));
   }
 
@@ -5624,6 +5632,8 @@ export class WebTerminalServer {
       // interleaved with output painted for a different width — permanently,
       // because scrollback is not re-flowable. The route's claim that it only
       // changes two numbers is only true once that handshake has happened.
+      // Opening the pane's stream (or typing into it) activates it at the saved
+      // geometry, so this only answers a resize sent before either.
       if (current.deferred) {
         return this.json(res, 409, {
           error: 'resize-failed',
@@ -6085,6 +6095,13 @@ export class WebTerminalServer {
     bridge.on('exit', onExit);
     bridge.on('resize', onResize);
 
+    // A pane recovered after a daemon restart holds its output until a viewer
+    // attaches. The desk's first resize used to be the only trigger, so a pane
+    // no desktop mounts stayed silent forever. Activating here keeps the saved
+    // geometry; the held output (after the snapshot above) arrives through
+    // `onData`.
+    if (managed.deferred) this.deps.sessionManager.activateDeferred(sessionId);
+
     const stopHeartbeat = startSseHeartbeat(res);
 
     const detach = (): void => {
@@ -6261,6 +6278,9 @@ export class WebTerminalServer {
         const promptActive = () => this.terminalPromptBlocksInput(sessionId, body);
         const refusePrompt = () => this.json(res,409,{error:'terminal-prompt-active',effect:'none'});
         const write = () => {
+          // Same activation as opening the stream: the reply to this input
+          // must not be held behind a recovery mute nobody will lift.
+          if (managed.deferred) this.deps.sessionManager.activateDeferred(sessionId);
           managed.ptyProcess.write(body);
         // A phone can paste drafts containing newlines; bridge.noteInput keeps
         // bracketed-paste bodies inert and only re-arms on a submitted CR/LF.

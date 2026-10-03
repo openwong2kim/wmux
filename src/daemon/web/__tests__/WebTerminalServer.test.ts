@@ -142,6 +142,11 @@ function makeDeps() {
         : undefined;
     },
     listLiveSessions: () => live,
+    // The manager's own unmute. Flips the flag like the real one so a second
+    // stream or input can be shown NOT to activate again.
+    activateDeferred: vi.fn((id: string) => {
+      if (id === 's1') managed.deferred = false;
+    }),
     resizeSession: (id: string, cols: number, rows: number) => {
       resizeCalls.push({ id, cols, rows });
       if (resizeBox.throws) throw new Error(resizeBox.throws);
@@ -3911,6 +3916,60 @@ describe('WebTerminalServer', () => {
     } finally {
       await limited.stop();
     }
+  });
+
+  it('★ opening the stream of a recovering pane activates it once, at its saved size', async () => {
+    // A pane the daemon recovered after its own restart holds its output until
+    // a viewer attaches. The web client never resizes, so the stream itself is
+    // the attach; otherwise the pane stays silent forever.
+    const activate = (sessionManager as unknown as { activateDeferred: ReturnType<typeof vi.fn> }).activateDeferred;
+    const token = (await startRO()).token as string;
+    managed.deferred = true;
+    const rows = async () => (await (await fetch(`${base()}/api/sessions`, { headers: bearer(token) })).json()).sessions;
+    expect((await rows()).find((r: { id: string }) => r.id === 's1').deferred).toBe(true);
+
+    const ac = new AbortController();
+    try {
+      const sse = await fetch(`${base()}/api/stream?session=s1&token=${encodeURIComponent(token)}`, { signal: ac.signal });
+      expect(sse.status).toBe(200);
+      await new Promise((r) => setTimeout(r, 30));
+      expect(activate).toHaveBeenCalledTimes(1);
+      expect(activate).toHaveBeenCalledWith('s1');
+      // Listening BEFORE the activation, so the held output it releases
+      // reaches this viewer.
+      expect(bridge.listenerCount('data')).toBe(1);
+      expect(resizeCalls).toEqual([]);
+      expect((await rows()).find((r: { id: string }) => r.id === 's1').deferred).toBe(false);
+
+      // An active pane is not activated again.
+      const again = await fetch(`${base()}/api/stream?session=s1&token=${encodeURIComponent(token)}`, { signal: ac.signal });
+      expect(again.status).toBe(200);
+      await new Promise((r) => setTimeout(r, 30));
+      expect(activate).toHaveBeenCalledTimes(1);
+    } finally {
+      ac.abort();
+    }
+  });
+
+  it('★ typing into a recovering pane activates it; a read-only refusal does not', async () => {
+    const activate = (sessionManager as unknown as { activateDeferred: ReturnType<typeof vi.fn> }).activateDeferred;
+    managed.deferred = true;
+    let info = await startRO();
+    const refused = await fetch(`${base()}/api/input?session=s1`, {
+      method: 'POST', headers: bearer(info.token as string), body: 'nope',
+    });
+    expect(refused.status).toBe(403);
+    expect(activate).not.toHaveBeenCalled();
+    await server.stop();
+
+    info = await startRW();
+    const res = await fetch(`${base()}/api/input?session=s1`, {
+      method: 'POST', headers: bearer(info.token as string), body: 'echo after\r',
+    });
+    expect(res.status).toBe(204);
+    expect(activate).toHaveBeenCalledWith('s1');
+    expect(write).toHaveBeenCalledWith('echo after\r');
+    expect(managed.deferred).toBe(false);
   });
 
   it('★ refuses a pane that is still recovering', async () => {

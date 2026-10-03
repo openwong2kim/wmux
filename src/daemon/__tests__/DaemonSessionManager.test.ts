@@ -989,6 +989,58 @@ describe('DaemonSessionManager', () => {
       }
     });
 
+    it('activateDeferred releases held output at the saved size, on every platform', () => {
+      // A pane no desktop renderer mounts (headless daemon, phone-only) is
+      // activated by a web viewer, which never resizes: nothing may change
+      // size, and the prompt held while muted must reach the ring.
+      vi.useFakeTimers();
+      try {
+        for (const platform of ['win32', 'linux'] as const) {
+          const id = `rec-activate-${platform}`;
+          manager.createSession({ id, cmd: 'sh', cwd: '.', cols: 62, rows: 44, deferOutput: true });
+          const managed = manager.getSession(id);
+          const pty = lastMockPty;
+          if (!pty) throw new Error('no pty spawned');
+          pty.simulateData('held-prompt $ ');
+          expect(managed?.ringBuffer.readAll().toString()).toBe('');
+
+          withPlatform(platform, () => {
+            manager.activateDeferred(id);
+            expect(managed?.deferred).toBe(false);
+            vi.advanceTimersByTime(100);
+          });
+          expect(managed?.bridge.isMuted).toBe(false);
+          expect(managed?.ringBuffer.readAll().toString()).toBe('held-prompt $ ');
+          expect(pty.resizeCalls).toBe(0);
+          expect(managed?.meta.cols).toBe(62);
+
+          pty.simulateData('after');
+          expect(managed?.ringBuffer.readAll().toString()).toBe('held-prompt $ after');
+        }
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('activateDeferred is a no-op on an active or unknown session', () => {
+      vi.useFakeTimers();
+      try {
+        manager.createSession({ id: 'rec-twice', cmd: 'sh', cwd: '.', deferOutput: true });
+        const managed = manager.getSession('rec-twice');
+        manager.activateDeferred('rec-twice');
+        vi.advanceTimersByTime(100);
+        lastMockPty?.simulateData('live');
+        // A second activation must not mute again or replay anything twice.
+        manager.activateDeferred('rec-twice');
+        vi.advanceTimersByTime(100);
+        expect(managed?.bridge.isMuted).toBe(false);
+        expect(managed?.ringBuffer.readAll().toString()).toBe('live');
+        expect(() => manager.activateDeferred('no-such-session')).not.toThrow();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('default (non-deferred) sessions capture data immediately', () => {
       // Regression guard: Bug 2 fix must not change normal create flow.
       manager.createSession({ id: 'live-1', cmd: 'cmd.exe', cwd: '.' });

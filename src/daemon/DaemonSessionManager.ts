@@ -86,9 +86,10 @@ export interface ManagedSession {
   promptLog: PromptEventLog;
   /**
    * True when the session was created in deferred-output mode (recovery)
-   * and is still waiting for its first `resizeSession` to activate.
-   * Once `resizeSession` runs, output capture starts and this flips to
-   * `false` for the rest of the session's lifetime.
+   * and is still waiting for a viewer to activate it — the desk's first
+   * `resizeSession`, or a web client opening its stream or typing into it
+   * (`activateDeferred`). Once activated, output capture starts and this
+   * flips to `false` for the rest of the session's lifetime.
    */
   deferred: boolean;
   /**
@@ -864,8 +865,8 @@ export class DaemonSessionManager extends EventEmitter {
     // Set up data forwarding (PTY → RingBuffer + events), hooking the
     // prompt/command log so OSC 133 markers populate a structured journal.
     // For deferred (recovery) sessions we mute the data path before any
-    // PTY output can land — `resizeSession` unmutes once the renderer's
-    // true geometry is known.
+    // PTY output can land — `activateDeferred` unmutes once a viewer
+    // attaches (the renderer's first resize, or a web stream or input).
     if (deferred) {
       bridge.setMuted(true);
     }
@@ -1017,48 +1018,61 @@ export class DaemonSessionManager extends EventEmitter {
       managed.bridge.noteResize();
     }
 
-    // First resize on a deferred (recovery) session unmutes data
-    // capture. The 100ms delay drains any pre-resize output ConPTY
-    // queued at the saved/default geometry.
-    //
-    // #1464: the output still held at unmute was produced at the size the
-    // renderer shows (anything older was discarded above), so replay it rather
-    // than drop it. Dropping it left a recovered pane blank until a key was
-    // pressed: the shell prints its prompt once, before the renderer attaches,
-    // and repaints only on a SIGWINCH — which an unchanged geometry never
-    // sends, and a changed one sends while still muted.
-    //
-    // Windows, when the geometry changed at ANY resize inside the window (not
-    // just the first — the renderer's first fit is often transient, and the
-    // Resume row shrinks the pane): the held bytes may mix ConPTY frames from
-    // more than one size, so none are replayed. Instead the PTY is resized to
-    // its current geometry once the unmute is in place. ConPTY owns the screen
-    // and answers every resize call, same size included, with a complete
-    // repaint at that geometry (CSI H, every row, the cursor), measured 1–15 ms
-    // after the call. That frame goes out live, so the prompt reaches the pane
-    // whatever the timing of the renderer's resizes. Discarding without it left
-    // the pane blank whenever the last repaint landed before this timer fired
-    // (4 of 6 panes in the Windows dogfood of #1469).
-    if (managed.deferred) {
-      managed.deferred = false;
-      const sessionId = id;
-      setTimeout(() => {
-        const current = this.sessions.get(sessionId);
-        if (!current) return;
-        const conptyRepaint = current.resizedWhileMuted === true && process.platform === 'win32';
-        current.resizedWhileMuted = false;
-        current.bridge.setMuted(false, { replayHeld: !conptyRepaint });
-        if (conptyRepaint && current.meta.state !== 'dead' && current.meta.state !== 'suspended') {
-          // Same geometry, so no noteResize(): viewers keep their grid, and
-          // setMuted(false) above already stamped the redraw guard.
-          try {
-            current.ptyProcess.resize(current.meta.cols, current.meta.rows);
-          } catch {
-            // The PTY exited between the resize and the unmute: nothing to show.
-          }
+    this.activateDeferred(id);
+  }
+
+  /**
+   * Start output capture on a deferred (recovery) session WITHOUT changing
+   * its size. No-op for a session that is unknown or already active.
+   *
+   * Called by the desk's first `resizeSession`, and by a web client opening
+   * the pane's stream or typing into it — without that second path a session
+   * no desktop renderer mounts (headless daemon, phone-only panes) stayed
+   * muted forever. Only a viewer activates: there is deliberately no timer
+   * that unmutes on its own.
+   *
+   * The unmute waits 100ms so any output ConPTY queued at the saved/default
+   * geometry drains first.
+   *
+   * #1464: the output still held at unmute was produced at the size the
+   * viewer shows (`resizeSession` discards anything older), so replay it
+   * rather than drop it. Dropping it left a recovered pane blank until a key
+   * was pressed: the shell prints its prompt once, before the renderer
+   * attaches, and repaints only on a SIGWINCH — which an unchanged geometry
+   * never sends, and a changed one sends while still muted.
+   *
+   * Windows, when the geometry changed at ANY resize inside the window (not
+   * just the first — the renderer's first fit is often transient, and the
+   * Resume row shrinks the pane): the held bytes may mix ConPTY frames from
+   * more than one size, so none are replayed. Instead the PTY is resized to
+   * its current geometry once the unmute is in place. ConPTY owns the screen
+   * and answers every resize call, same size included, with a complete
+   * repaint at that geometry (CSI H, every row, the cursor), measured 1–15 ms
+   * after the call. That frame goes out live, so the prompt reaches the pane
+   * whatever the timing of the renderer's resizes. Discarding without it left
+   * the pane blank whenever the last repaint landed before this timer fired
+   * (4 of 6 panes in the Windows dogfood of #1469).
+   */
+  activateDeferred(id: string): void {
+    const managed = this.sessions.get(id);
+    if (!managed?.deferred) return;
+    managed.deferred = false;
+    setTimeout(() => {
+      const current = this.sessions.get(id);
+      if (!current) return;
+      const conptyRepaint = current.resizedWhileMuted === true && process.platform === 'win32';
+      current.resizedWhileMuted = false;
+      current.bridge.setMuted(false, { replayHeld: !conptyRepaint });
+      if (conptyRepaint && current.meta.state !== 'dead' && current.meta.state !== 'suspended') {
+        // Same geometry, so no noteResize(): viewers keep their grid, and
+        // setMuted(false) above already stamped the redraw guard.
+        try {
+          current.ptyProcess.resize(current.meta.cols, current.meta.rows);
+        } catch {
+          // The PTY exited between the resize and the unmute: nothing to show.
         }
-      }, DEFERRED_UNMUTE_DELAY_MS).unref?.();
-    }
+      }
+    }, DEFERRED_UNMUTE_DELAY_MS).unref?.();
   }
 
   listSessions(): DaemonSession[] {
