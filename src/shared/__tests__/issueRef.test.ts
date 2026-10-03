@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ISSUE_DRAG_TYPE, issueRepoFromUrl, parseIssueRef, serializeIssueRef, type IssueRef } from '../issueRef';
+import { ISSUE_DRAG_TYPE, ISSUE_REF_TITLE_MAX, issueRepoFromUrl, parseIssueRef, serializeIssueRef, type IssueRef } from '../issueRef';
 import { parseIssueFilter } from '../issueSurface';
 
 const ref: IssueRef = {
@@ -33,6 +33,21 @@ describe('issueRef', () => {
     expect(parseIssueRef(JSON.stringify({ ...ref, owner: '' }))).toBeNull();
     expect(parseIssueRef(JSON.stringify({ ...ref, url: 'javascript:alert(1)' }))).toBeNull();
     expect(parseIssueRef(JSON.stringify({ ...ref, title: undefined }))).toBeNull();
+  });
+
+  it('accepts a ref only when host/owner/repo/number are the ones its URL spells', () => {
+    expect(parseIssueRef(JSON.stringify({ ...ref, number: 43 }))).toBeNull();
+    expect(parseIssueRef(JSON.stringify({ ...ref, repo: 'other' }))).toBeNull();
+    expect(parseIssueRef(JSON.stringify({ ...ref, owner: 'open-wong' }))).toBeNull();
+    expect(parseIssueRef(JSON.stringify({ ...ref, host: 'evil.example' }))).toBeNull();
+    expect(parseIssueRef(JSON.stringify({ ...ref, url: `${ref.url}/../../../x/y/issues/42` }))).toBeNull();
+    expect(parseIssueRef(JSON.stringify({ ...ref, url: 'https://github.com/Open-Wong/wmux/pull/42' }))).toBeNull();
+  });
+
+  it('caps the title', () => {
+    const long = 'x'.repeat(ISSUE_REF_TITLE_MAX + 50);
+    expect(parseIssueRef(JSON.stringify({ ...ref, title: long }))!.title).toHaveLength(ISSUE_REF_TITLE_MAX);
+    expect(JSON.parse(serializeIssueRef({ ...ref, title: long })).title).toHaveLength(ISSUE_REF_TITLE_MAX);
   });
 
   it('reads host/owner/repo from an issue URL, case kept', () => {

@@ -163,6 +163,60 @@ describe('IssueSection detail', () => {
   });
 });
 
+describe('IssueSection races', () => {
+  const issueB: IssueSummary = { ...issue, number: 13, title: 'Second', url: 'https://github.com/Acme/Widgets/issues/13' };
+  const detailOf = (n: number, body: string) => ({
+    ok: true as const,
+    detail: {
+      number: n, title: `t${n}`, state: 'open' as const, stateReason: '', author: 'a', body, bodyTruncated: false,
+      labels: [], assignees: [], createdAt: '', closedAt: '', url: `https://github.com/Acme/Widgets/issues/${n}`, comments: [],
+    },
+  });
+
+  it('answers arriving B then A leave the detail of B under B', async () => {
+    issueList.mockResolvedValue({ ok: true, issues: [issue, issueB], repo: null } as never);
+    const pending = new Map<number, (v: unknown) => void>();
+    issueDetail.mockImplementation(((_r: string, n: number) => new Promise((res) => { pending.set(n, res); })) as never);
+    act(() => root.render(createElement(IssueSection, { repoPath: '/r', open: true, poll: false })));
+    await tick(0);
+    act(() => (container.querySelector('[data-issue-row="12"] button') as HTMLButtonElement).click());
+    act(() => (container.querySelector('[data-issue-row="13"] button') as HTMLButtonElement).click());
+    await act(async () => { pending.get(13)!(detailOf(13, 'body of B')); });
+    await act(async () => { pending.get(12)!(detailOf(12, 'body of A')); });
+    await tick(0);
+    const detail = container.querySelector('[data-issue-row="13"] [data-issue-detail]')!;
+    expect(detail.textContent).toContain('body of B');
+    expect(container.textContent).not.toContain('body of A');
+    expect(container.querySelector('[data-issue-row="12"] [data-issue-detail]')).toBeNull();
+    issueList.mockReset();
+    issueDetail.mockReset();
+  });
+
+  it('a lazy list answered while hidden is read again when shown', async () => {
+    const hidden = { value: false };
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden.value });
+    try {
+      let answer!: (v: unknown) => void;
+      issueList.mockImplementationOnce((() => new Promise((res) => { answer = res; })) as never);
+      act(() => root.render(createElement(IssueSection, { repoPath: '/r', open: true, lazy: true, poll: false })));
+      await tick(0);
+      expect(issueList).toHaveBeenCalledTimes(1);
+      hidden.value = true;
+      act(() => { document.dispatchEvent(new Event('visibilitychange')); });
+      await act(async () => { answer({ ok: true, issues: [issue], repo: null }); });
+      await tick(0);
+      expect(container.querySelectorAll('[data-issue-row]')).toHaveLength(0);
+      hidden.value = false;
+      act(() => { document.dispatchEvent(new Event('visibilitychange')); });
+      await tick(0);
+      expect(issueList).toHaveBeenCalledTimes(2);
+      expect(container.querySelectorAll('[data-issue-row]')).toHaveLength(1);
+    } finally {
+      delete (document as unknown as { hidden?: boolean }).hidden;
+    }
+  });
+});
+
 describe('IssueSection drag', () => {
   it('a row drags as an application/x-wmux-issue ref, case kept from the URL', async () => {
     act(() => root.render(createElement(IssueSection, { repoPath: '/r', open: true, poll: false })));

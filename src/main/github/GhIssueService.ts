@@ -47,8 +47,9 @@ const BACKOFF_MAX_MS = 15 * 60_000;
  *  GH_REPO, which would point gh at another repo, plus the three
  *  non-interactive switches. */
 export function ghIssueEnv(): NodeJS.ProcessEnv {
-  const { GH_REPO: _repo, ...env } = getExecEnv();
-  return { ...env, GH_PROMPT_DISABLED: '1', GH_PAGER: 'cat', NO_COLOR: '1' };
+  const env: NodeJS.ProcessEnv = { ...getExecEnv(), GH_PROMPT_DISABLED: '1', GH_PAGER: 'cat', NO_COLOR: '1' };
+  delete env.GH_REPO;
+  return env;
 }
 
 /** host, owner and repo of a GitHub remote key (host/owner/repo), or null. */

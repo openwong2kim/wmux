@@ -96,6 +96,15 @@ export function IssueSection({ repoPath, refreshKey = 0, open, poll = true, lazy
   const current = useRef({ repoPath, filterKey });
   current.current = { repoPath, filterKey };
   const expandedUpdatedAt = useRef('');
+  const expandedRef = useRef(expanded);
+  expandedRef.current = expanded;
+  // Detail generation: bumped by every detail read, a collapse and a repo or
+  // filter change, so only the newest read for the open issue lands.
+  const detailGen = useRef(0);
+  // A read answered while the window was hidden was dropped; showing the
+  // window reads it again.
+  const listDropped = useRef(false);
+  const detailDropped = useRef(false);
 
   const fetchDetail = useCallback(async (repo: string, issue: IssueSummary) => {
     const bridge = getIssueBridge();
@@ -103,8 +112,15 @@ export function IssueSection({ repoPath, refreshKey = 0, open, poll = true, lazy
     setDetailLoading(true);
     setDetailError(null);
     const g = gen.current;
+    const dg = ++detailGen.current;
     const res = await bridge.issueDetail(repo, issue.number, issue.updatedAt);
-    if (g !== gen.current || current.current.repoPath !== repo) return;
+    // A newer read, a collapse or a repo/filter change owns the state now.
+    if (dg !== detailGen.current || expandedRef.current !== issue.number || current.current.repoPath !== repo) return;
+    if (g !== gen.current) {
+      setDetailLoading(false);
+      detailDropped.current = true;
+      return;
+    }
     setDetailLoading(false);
     if (res.ok) {
       expandedUpdatedAt.current = issue.updatedAt;
@@ -129,12 +145,17 @@ export function IssueSection({ repoPath, refreshKey = 0, open, poll = true, lazy
     const g = gen.current;
     try {
       const res = await bridge.issueList(repo, f, force);
-      if (g !== gen.current || current.current.repoPath !== repo || current.current.filterKey !== key) return;
+      if (current.current.repoPath !== repo || current.current.filterKey !== key) return;
+      if (g !== gen.current) {
+        listDropped.current = true;
+        return;
+      }
       if (res.ok) {
         setRetryAt(null);
         setState({ kind: 'ready', issues: res.issues, repo: res.repo });
-        if (expanded !== null) {
-          const cur = res.issues.find((i) => i.number === expanded);
+        const open = expandedRef.current;
+        if (open !== null) {
+          const cur = res.issues.find((i) => i.number === open);
           if (cur && cur.updatedAt !== expandedUpdatedAt.current) void fetchDetail(repo, cur);
         }
       } else if (res.code === 'rate-limited') {
@@ -148,7 +169,7 @@ export function IssueSection({ repoPath, refreshKey = 0, open, poll = true, lazy
     } finally {
       if (inFlight.current === req) inFlight.current = null;
     }
-  }, [repoPath, filterKey, expanded, fetchDetail]);
+  }, [repoPath, filterKey, fetchDetail]);
   const loadRef = useRef(load);
   loadRef.current = load;
 
@@ -160,8 +181,13 @@ export function IssueSection({ repoPath, refreshKey = 0, open, poll = true, lazy
     setState({ kind: 'loading' });
     setRetryAt(null);
     setExpanded(null);
+    expandedRef.current = null;
+    detailGen.current++;
     setDetail(null);
     setDetailError(null);
+    setDetailLoading(false);
+    listDropped.current = false;
+    detailDropped.current = false;
     expandedUpdatedAt.current = '';
     if (!repoPath || (lazy && !everOpened.current)) return;
     void loadRef.current();
@@ -187,6 +213,23 @@ export function IssueSection({ repoPath, refreshKey = 0, open, poll = true, lazy
     document.addEventListener('visibilitychange', onChange);
     return () => document.removeEventListener('visibilitychange', onChange);
   }, []);
+  // Shown again: re-read what was dropped while hidden (a lazy list reads
+  // nowhere else, and an open detail would stay loading).
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  useEffect(() => {
+    if (!windowShown || !repoPath) return;
+    if (listDropped.current) {
+      listDropped.current = false;
+      void loadRef.current();
+    }
+    if (detailDropped.current) {
+      detailDropped.current = false;
+      const s = stateRef.current;
+      const issue = s.kind === 'ready' ? s.issues.find((i) => i.number === expandedRef.current) : undefined;
+      if (issue) void fetchDetail(repoPath, issue);
+    }
+  }, [windowShown, repoPath, fetchDetail]);
   const polling = poll && !!repoPath && open && onGitPage && windowShown;
   useEffect(() => {
     if (!polling) return;
@@ -211,11 +254,15 @@ export function IssueSection({ repoPath, refreshKey = 0, open, poll = true, lazy
   const toggle = useCallback((issue: IssueSummary) => {
     if (expanded === issue.number) {
       setExpanded(null);
+      expandedRef.current = null;
+      detailGen.current++;
       setDetail(null);
       setDetailError(null);
+      setDetailLoading(false);
       return;
     }
     setExpanded(issue.number);
+    expandedRef.current = issue.number;
     setDetail(null);
     setDetailError(null);
     if (repoPath) void fetchDetail(repoPath, issue);
@@ -292,7 +339,8 @@ export function IssueSection({ repoPath, refreshKey = 0, open, poll = true, lazy
         <ul className="wmux-git-issue-list" aria-label={t('git.issues.listLabel')} data-issue-list>
           {state.issues.map((issue) => {
             const isOpen = expanded === issue.number;
-            const repo = issueRepoFromUrl(issue.url) ?? state.repo;
+            // The drag ref is the URL's own host/owner/repo, which a drop target re-checks.
+            const repo = issueRepoFromUrl(issue.url);
             return (
               <li key={issue.number} className="wmux-git-issue" data-issue-row={issue.number}>
                 <button
@@ -337,7 +385,7 @@ export function IssueSection({ repoPath, refreshKey = 0, open, poll = true, lazy
                   <div id={`${detailId}-${issue.number}`} className="wmux-git-issue-detail" data-issue-detail>
                     <IssueDetailView
                       issue={issue}
-                      detail={detail}
+                      detail={detail?.number === issue.number ? detail : null}
                       loading={detailLoading}
                       error={detailError}
                     />
