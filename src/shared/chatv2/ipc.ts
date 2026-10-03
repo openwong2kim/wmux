@@ -350,6 +350,17 @@ export interface ChatV2ResultByMethod {
   close: ChatV2CloseResult;
 }
 
+/**
+ * The renderer's API, exposed by preload as `window.electronAPI.chatv2`. Main
+ * forwards `call` to `CHATV2_RPC[method]` after `parseChatV2Params`, and
+ * forwards `chatv2.events` pushes for subscribed panes to `onEvents`.
+ */
+export interface ChatV2BridgeApi {
+  call<M extends ChatV2Method>(method: M, params: ChatV2ParamsByMethod[M]): Promise<ChatV2ResultByMethod[M]>;
+  /** Returns an unsubscribe. */
+  onEvents(listener: (push: ChatV2EventsPush) => void): () => void;
+}
+
 // --- validation (shared by the daemon RPC and the main IPC handler) ------
 
 export const CHATV2_CLIENT_MESSAGE_ID = /^[A-Za-z0-9_-]{8,64}$/;
