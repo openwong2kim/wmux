@@ -63,6 +63,11 @@ describe('WSL execution target', () => {
       // #1729 — a cwd stored with a wrapped prompt's line break can never be
       // entered; recovery starts in home instead of suspending the pane.
       expect(recoveryCwd({ cmd: 'wsl.exe', cwd: '~/wslt\r\nest' }, 'win32')).toBe('~');
+      // A relative token from a prompt false-positive is refused the same way.
+      expect(recoveryCwd({ cmd: 'wsl.exe', cwd: 'path' }, 'win32')).toBe('~');
+      // Anything resolveWslCwd accepts is kept, a tab in a real name included.
+      expect(recoveryCwd({ cmd: 'wsl.exe', cwd: '/home/dev/a\tb' }, 'win32')).toBe('/home/dev/a\tb');
+      expect(recoveryCwd({ cmd: 'wsl.exe', cwd: 'D:\\work' }, 'win32')).toBe('D:\\work');
       expect(stat).not.toHaveBeenCalled();
       expect(recoveryCwd({ cmd: 'powershell.exe', cwd: 'C:\\gone' }, 'win32')).toBe(os.homedir());
     } finally { stat.mockRestore(); }

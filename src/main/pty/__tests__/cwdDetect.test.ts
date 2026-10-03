@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseOsc7Cwd, detectPromptCwd } from '../cwdDetect';
+import { isPlausibleCwd } from '../../../shared/cwdShape';
 
 describe('parseOsc7Cwd', () => {
   it('converts a Windows OSC 7 URI to a native backslash path', () => {
@@ -132,5 +133,12 @@ describe('detectPromptCwd on a prompt wrapped in a narrow pane (#1729)', () => {
     // readline redraws a prompt that does not fit the width with an explicit CR LF.
     expect(detectPromptCwd('dev@DESKTOP-KRO4QJQ:~/wslt\r\nest$ ', 'win32')).toBeNull();
     expect(detectPromptCwd('dev@DESKTOP-KRO4QJQ:~/wsltest$ ', 'win32')).toBe('~/wsltest');
+  });
+});
+
+describe('OSC 7 carrying an encoded control character (#1729)', () => {
+  it('decodes to a value the cwd guard rejects', () => {
+    const cwd = parseOsc7Cwd('file://host/home/a%0Ab');
+    expect(isPlausibleCwd(cwd, 'linux')).toBe(false);
   });
 });

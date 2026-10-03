@@ -35,10 +35,12 @@ function hostPlatform(): NodeJS.Platform | string {
 }
 
 /**
- * #1729 — a directory name never holds a control character in practice, but
- * a cwd read from terminal output can: a prompt that wrapped in a narrow pane
+ * #1729 — a cwd read from terminal output can carry a control character that
+ * is not in the directory's name: a prompt that wrapped in a narrow pane
  * arrives with the line break inside the path (`~/wslt` CR LF `est`). Stored,
- * it named no directory and broke WSL pane recovery.
+ * it named no directory and broke WSL pane recovery. POSIX does allow such
+ * names; they are deliberately rejected (the last good cwd stays), because a
+ * terminal cannot tell them from a wrap.
  */
 export function containsControlChars(value: string): boolean {
   return /[\u0000-\u001f\u007f]/.test(value);
