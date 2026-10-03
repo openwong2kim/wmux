@@ -123,9 +123,22 @@ export function exhaustedWindowResetAt(windows: ReadonlyArray<UsageWindowReading
  * "Claude usage limit reached. Your limit will reset at 3pm (America/New_York).",
  * and the old "Claude AI usage limit reached|1717000000".
  */
-const CLAUDE_LIMIT_TEXT = /\bhit your (?:[\w-]+ )?limit\b|\busage limit reached\b|\b[\w-]+ limit reached\s*[·∙•]\s*resets?\b/i;
-/** Codex's limit row: "You've hit your usage limit. … try again at 3:05 PM." */
-const CODEX_LIMIT_HEAD = /^\s*(?:[■•▌>⚠]\s*)?You['’]ve hit your usage limit\b/i;
+const CLAUDE_LIMIT_LINES: readonly RegExp[] = [
+  // "You've hit your limit", "You've hit your weekly limit · resets Oct 7, 9am (Asia/Seoul)"
+  /^You['’]ve hit your (?:[\w-]+ )?limit\.?(?:\s*[·∙•]\s*resets?\b.*)?$/i,
+  // "5-hour limit reached ∙ resets 3pm"
+  /^[\w-]+ limit reached\s*[·∙•]\s*resets?\b.*$/i,
+  // "Claude usage limit reached. Your limit will reset at 3pm (…)." / "Claude AI usage limit reached|1717000000"
+  /^Claude (?:AI )?usage limit reached(?:\s*\|\s*\d{10}|[.!]?(?:\s+Your limit will reset at\b.*)?)$/i,
+];
+/** A Claude limit line is a short notice, never a paragraph that mentions one. */
+const CLAUDE_LIMIT_LINE_MAX = 200;
+/**
+ * Codex's limit row: "■ You've hit your usage limit. … try again at 3:05 PM."
+ * Only the error-cell glyph `■` may lead it: `•` opens Codex's own message
+ * rows and `>` a quote, so an agent quoting the text must not hold its pane.
+ */
+const CODEX_LIMIT_HEAD = /^\s*■\s*You['’]ve hit your usage limit\b/i;
 
 /** Strip control characters, collapse whitespace, clip. */
 export function clipLimitMessage(value: unknown): string | undefined {
@@ -136,9 +149,32 @@ export function clipLimitMessage(value: unknown): string | undefined {
   return flat.length > MESSAGE_MAX ? `${flat.slice(0, MESSAGE_MAX - 1)}…` : flat;
 }
 
+/**
+ * The Claude notice line (plus the line after it, which can carry a wrapped
+ * "· resets …"), or null. Each line must BE the notice, anchored and short;
+ * fenced code and quoted lines are skipped, so an earlier answer that quotes
+ * the wording cannot turn a plain 429 into a usage limit.
+ */
+export function findClaudeUsageLimitNotice(text: string): string | null {
+  const lines = text.split(/\r?\n/);
+  let fenced = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (/^(?:```|~~~)/.test(line)) { fenced = !fenced; continue; }
+    if (fenced || line.startsWith('>')) continue;
+    const bare = line.replace(/^[⎿⏺●]\s*/, '');
+    if (bare.length === 0 || bare.length > CLAUDE_LIMIT_LINE_MAX) continue;
+    if (CLAUDE_LIMIT_LINES.some((re) => re.test(bare))) {
+      const next = lines[i + 1]?.trim() ?? '';
+      return /^[·∙•]\s*resets?\b/i.test(next) ? `${bare} ${next}` : bare;
+    }
+  }
+  return null;
+}
+
 /** True when Claude's text says a usage cap (not a transient 429) ended the turn. */
 export function isClaudeUsageLimitText(text: string): boolean {
-  return CLAUDE_LIMIT_TEXT.test(text);
+  return findClaudeUsageLimitNotice(text) != null;
 }
 
 /** True when a cleaned Codex output line opens its usage-limit message. Anchored at the row start. */
@@ -180,16 +216,28 @@ function wallClockAt(epochMs: number, timeZone: string | null): WallClock {
   return { year: d.getFullYear(), month: d.getMonth(), day: d.getDate(), hour: d.getHours(), minute: d.getMinutes() };
 }
 
-/** Epoch ms of a wall-clock time in `timeZone` (or local). Re-checks the offset once for DST edges. */
-function epochOfWallClock(w: WallClock, timeZone: string | null): number {
+/** Minutes the zone (or the local zone) is ahead of UTC at `epochMs`. */
+function offsetAt(epochMs: number, timeZone: string | null): number {
+  return (timeZone ? zoneOffsetMinutes(epochMs, timeZone) : null) ?? -new Date(epochMs).getTimezoneOffset();
+}
+
+/**
+ * Epoch ms of a wall-clock time in `timeZone` (or local). A DST fall-back hour
+ * happens twice: the earliest instance not already behind `now` is chosen. A
+ * spring-forward gap does not exist on the clock; the pre-transition offset is used.
+ */
+function epochOfWallClock(w: WallClock, timeZone: string | null, now: number): number {
   const guess = Date.UTC(w.year, w.month, w.day, w.hour, w.minute);
-  if (timeZone && zoneOffsetMinutes(guess, timeZone) != null) {
-    let epoch = guess - (zoneOffsetMinutes(guess, timeZone) as number) * 60_000;
-    const settled = zoneOffsetMinutes(epoch, timeZone);
-    if (settled != null) epoch = guess - settled * 60_000;
-    return epoch;
-  }
-  return new Date(w.year, w.month, w.day, w.hour, w.minute).getTime();
+  const offsets = new Set([offsetAt(guess - 43_200_000, timeZone), offsetAt(guess, timeZone), offsetAt(guess + 43_200_000, timeZone)]);
+  const real = [...offsets]
+    .map((off) => guess - off * 60_000)
+    .filter((epoch) => {
+      const back = wallClockAt(epoch, timeZone);
+      return back.day === w.day && back.hour === w.hour && back.minute === w.minute;
+    })
+    .sort((a, b) => a - b);
+  if (real.length === 0) return guess - offsetAt(guess - 43_200_000, timeZone) * 60_000;
+  return real.find((epoch) => epoch >= now - 60_000) ?? real[real.length - 1];
 }
 
 /**
@@ -215,12 +263,19 @@ export function parseUsageLimitReset(text: string, now: number): number | null {
     return ms > 0 ? now + ms : null;
   }
 
-  const abs = /\b(?:resets?(?:\s+at)?|reset at|try again at)\s+(?:(?:on\s+)?([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s*(?:(\d{4}),?\s*)?(?:at\s+)?)?(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\.?\b(?:\s*\(([A-Za-z_]+(?:\/[A-Za-z0-9_+-]+)*)\))?/i.exec(text);
+  const abs = /\b(?:resets?(?:\s+at)?|reset at|try again at)\s+(?:(?:on\s+)?([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s*(?:(\d{4}),?\s*)?(?:at\s+)?)?(\d{1,2})(?::(\d{2}))?(?:\s*([ap])\.?m\.?)?(?![\w:])(?:\s*\(([A-Za-z_]+(?:\/[A-Za-z0-9_+-]+)*)\))?/i.exec(text);
   if (!abs) return null;
   const [, monthName, dayStr, yearStr, hourStr, minStr, ampm, zone] = abs;
-  if (Number(hourStr) < 1 || Number(hourStr) > 12) return null;
-  let hour = Number(hourStr) % 12;
-  if (ampm.toLowerCase() === 'p') hour += 12;
+  let hour: number;
+  if (ampm) {
+    if (Number(hourStr) < 1 || Number(hourStr) > 12) return null;
+    hour = Number(hourStr) % 12 + (ampm.toLowerCase() === 'p' ? 12 : 0);
+  } else {
+    // 24-hour clock ("resets 15:30 (Europe/Berlin)"): minutes are required, so
+    // a bare number is never read as a time.
+    if (!minStr) return null;
+    hour = Number(hourStr);
+  }
   const minute = minStr ? Number(minStr) : 0;
   if (hour > 23 || minute > 59) return null;
   const timeZone = zone && zoneOffsetMinutes(now, zone) != null ? zone : null;
@@ -231,20 +286,20 @@ export function parseUsageLimitReset(text: string, now: number): number | null {
     const day = Number(dayStr);
     if (month == null || day < 1 || day > 31) return null;
     let year = yearStr ? Number(yearStr) : today.year;
-    let at = epochOfWallClock({ year, month, day, hour, minute }, timeZone);
+    let at = epochOfWallClock({ year, month, day, hour, minute }, timeZone, now);
     // No year given and the date already passed this year: it means next year.
     if (!yearStr && at < now - 86_400_000) {
       year += 1;
-      at = epochOfWallClock({ year, month, day, hour, minute }, timeZone);
+      at = epochOfWallClock({ year, month, day, hour, minute }, timeZone, now);
     }
     return at;
   }
-  let at = epochOfWallClock({ ...today, hour, minute }, timeZone);
+  let at = epochOfWallClock({ ...today, hour, minute }, timeZone, now);
   // A bare time already behind us is tomorrow's (a minute of slack for a reset
   // that is happening right now).
   if (at <= now - 60_000) {
     const next = new Date(Date.UTC(today.year, today.month, today.day + 1));
-    at = epochOfWallClock({ year: next.getUTCFullYear(), month: next.getUTCMonth(), day: next.getUTCDate(), hour, minute }, timeZone);
+    at = epochOfWallClock({ year: next.getUTCFullYear(), month: next.getUTCMonth(), day: next.getUTCDate(), hour, minute }, timeZone, now);
   }
   return at;
 }
@@ -261,9 +316,11 @@ export function claudeUsageLimitFromStopFailure(
 ): { resetsAt?: number; message?: string } | null {
   if (!payload || payload.error !== 'rate_limit') return null;
   const text = typeof payload.last_assistant_message === 'string' ? payload.last_assistant_message : '';
-  if (!isClaudeUsageLimitText(text)) return null;
-  const resetsAt = parseUsageLimitReset(text, now);
-  const message = clipLimitMessage(text);
+  // The reset is read from the notice line alone, never from quoted text around it.
+  const notice = findClaudeUsageLimitNotice(text);
+  if (!notice) return null;
+  const resetsAt = parseUsageLimitReset(notice, now);
+  const message = clipLimitMessage(notice);
   return { ...(resetsAt != null ? { resetsAt } : {}), ...(message ? { message } : {}) };
 }
 

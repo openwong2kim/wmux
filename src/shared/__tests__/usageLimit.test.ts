@@ -30,6 +30,20 @@ describe('parseUsageLimitReset', () => {
     expect(parseUsageLimitReset('or try again at Oct 5th, 2026 3:05 PM.', NOW)).not.toBeNull();
   });
 
+  it('reads a 24-hour clock, and a bare number is never a time', () => {
+    // 15:30 Berlin (UTC+2 in October) = 13:30Z, still ahead of 10:00Z.
+    expect(parseUsageLimitReset("You've hit your limit · resets 15:30 (Europe/Berlin)", NOW)).toBe(Date.UTC(2026, 9, 3, 13, 30));
+    expect(parseUsageLimitReset('resets 15 (Europe/Berlin)', NOW)).toBeNull();
+  });
+
+  it('picks the nearest future instance of a repeated DST hour', () => {
+    // 2026-11-01 1:30am New York happens at 05:30Z (EDT) and again at 06:30Z (EST).
+    const before = Date.UTC(2026, 10, 1, 5, 0);
+    expect(parseUsageLimitReset('resets Nov 1, 1:30am (America/New_York)', before)).toBe(Date.UTC(2026, 10, 1, 5, 30));
+    const between = Date.UTC(2026, 10, 1, 5, 45);
+    expect(parseUsageLimitReset('resets Nov 1, 1:30am (America/New_York)', between)).toBe(Date.UTC(2026, 10, 1, 6, 30));
+  });
+
   it('returns null when nothing names a reset', () => {
     expect(parseUsageLimitReset("You've hit your limit", NOW)).toBeNull();
     expect(parseUsageLimitReset('resets 25pm', NOW)).toBeNull();
@@ -43,6 +57,16 @@ describe('claudeUsageLimitFromStopFailure', () => {
     // A plain 429 that exhausted retries is not a usage cap.
     expect(claudeUsageLimitFromStopFailure({ error: 'rate_limit', last_assistant_message: 'API Error: 429 rate_limit_error' }, NOW)).toBeNull();
     expect(claudeUsageLimitFromStopFailure({ error: 'billing_error', last_assistant_message: "You've hit your limit" }, NOW)).toBeNull();
+    // An earlier answer that quotes the wording, a fence or a sentence mentioning it, is not the notice.
+    for (const quoted of [
+      'The docs say "You\'ve hit your limit · resets 3pm" appears when capped.\nAPI Error: 429',
+      '> You\'ve hit your limit · resets 3pm\nAPI Error: 429',
+      '```\nYou\'ve hit your limit · resets 3pm\n```\nAPI Error: 429',
+      'If the usage limit reached message shows, wait. API Error: 429',
+    ]) {
+      expect(claudeUsageLimitFromStopFailure({ error: 'rate_limit', last_assistant_message: quoted }, NOW)).toBeNull();
+    }
+    expect(claudeUsageLimitFromStopFailure({ error: 'rate_limit', last_assistant_message: 'Claude AI usage limit reached|1791000000' }, NOW)?.resetsAt).toBe(1_791_000_000_000);
   });
 });
 
@@ -50,6 +74,10 @@ describe('Codex screen rows', () => {
   it('anchors the head at the row start so quoted text does not trigger', () => {
     expect(isCodexUsageLimitLine("■ You've hit your usage limit. Upgrade to Pro")).toBe(true);
     expect(isCodexUsageLimitLine("const CODEX = /You've hit your usage limit/;")).toBe(false);
+    // `•` opens Codex's own message rows and `>` a quote: neither is the error cell.
+    expect(isCodexUsageLimitLine("• You've hit your usage limit. Try again in 2 hours.")).toBe(false);
+    expect(isCodexUsageLimitLine("> You've hit your usage limit.")).toBe(false);
+    expect(isCodexUsageLimitLine("  You've hit your usage limit.")).toBe(false);
   });
 
   it('picks the reset clause up from a wrapped following row', () => {
