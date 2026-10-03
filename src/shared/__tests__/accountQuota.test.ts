@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { chooseByQuota, evaluateQuota, heldLaunchNotice, launchStem, UNKNOWN_RESET_BLOCK_MS } from '../accountQuota';
+import { chooseByQuota, envSetsKey, evaluateQuota, heldLaunchNotice, launchInlineEnvKeys, launchStem, UNKNOWN_RESET_BLOCK_MS } from '../accountQuota';
 
 const NOW = Date.parse('2026-10-02T12:00:00Z');
 const LATER = NOW + 3 * 3600_000;
@@ -61,6 +61,7 @@ describe('launchStem', () => {
     ['"C:\\Program Files\\nodejs\\codex.cmd" exec', 'codex'],
     ['agy -i "x"', 'agy'],
     ['echo claude', 'echo'],
+    ['FOO=bar CLAUDE_CONFIG_DIR="/a b" claude -c', 'claude'],
     [undefined, ''],
   ])('%s → %s', (line, stem) => {
     expect(launchStem(line)).toBe(stem);
@@ -71,4 +72,17 @@ it('heldLaunchNotice names the provider and stays a single echo', () => {
   const line = heldLaunchNotice('codex', null);
   expect(line.startsWith('echo "wmux: codex was not started')).toBe(true);
   expect(line).not.toMatch(/[|&;<>]/);
+});
+
+describe('explicit account in a launch', () => {
+  it('reads the NAME=value prefix in front of the command only', () => {
+    expect(launchInlineEnvKeys('CLAUDE_CONFIG_DIR="/acc/b c" claude')).toEqual(['CLAUDE_CONFIG_DIR']);
+    expect(launchInlineEnvKeys('claude FOO=bar')).toEqual([]);
+  });
+
+  it('matches the env key case-insensitively on Windows only', () => {
+    expect(envSetsKey({ codex_home: 'C:\\a' }, 'CODEX_HOME', 'win32')).toBe(true);
+    expect(envSetsKey({ codex_home: '/a' }, 'CODEX_HOME', 'darwin')).toBe(false);
+    expect(envSetsKey({ CODEX_HOME: '' }, 'CODEX_HOME', 'darwin')).toBe(false);
+  });
 });

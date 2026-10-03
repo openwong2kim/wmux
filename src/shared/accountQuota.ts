@@ -87,12 +87,38 @@ export function chooseByQuota(candidates: readonly QuotaCandidate[]): QuotaChoic
   return { kind: 'switch', id: best.id };
 }
 
-/** First token of a typed launch line, as a lower-case stem (`claude`, `codex`, `agy`). */
+/** A leading `NAME=value` token: an env assignment for the command after it. */
+const ENV_ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=/;
+
+/** Whitespace-separated tokens of a launch line; a quoted span stays inside its token. */
+function launchTokens(command: string | undefined): string[] {
+  return command?.match(/(?:"[^"]*"|'[^']*'|[^\s"'])+/g) ?? [];
+}
+
+/** Names of the `NAME=value` assignments in front of the launched command. */
+export function launchInlineEnvKeys(command: string | undefined): string[] {
+  const keys: string[] = [];
+  for (const token of launchTokens(command)) {
+    const m = token.match(ENV_ASSIGNMENT);
+    if (!m) break;
+    keys.push(m[1]);
+  }
+  return keys;
+}
+
+/** First token of a typed launch line after any `NAME=value` prefix, as a
+ *  lower-case stem (`claude`, `codex`, `agy`). */
 export function launchStem(command: string | undefined): string {
-  if (!command) return '';
-  const first = command.trim().match(/^(?:"([^"]+)"|'([^']+)'|(\S+))/);
-  const token = first ? (first[1] ?? first[2] ?? first[3] ?? '') : '';
-  return token.split(/[\\/]/).pop()?.toLowerCase().replace(/\.(exe|cmd|bat|ps1)$/, '') ?? '';
+  const token = launchTokens(command).find((t) => !ENV_ASSIGNMENT.test(t)) ?? '';
+  const unquoted = token.replace(/^(["'])(.*)\1$/, '$2');
+  return unquoted.split(/[\\/]/).pop()?.toLowerCase().replace(/\.(exe|cmd|bat|ps1)$/, '') ?? '';
+}
+
+/** Whether `env` sets `key` (non-empty). Windows env names are case-insensitive. */
+export function envSetsKey(env: Record<string, string> | undefined, key: string, platform: string): boolean {
+  if (!env) return false;
+  const want = platform === 'win32' ? key.toUpperCase() : key;
+  return Object.entries(env).some(([k, v]) => (platform === 'win32' ? k.toUpperCase() : k) === want && typeof v === 'string' && v !== '');
 }
 
 /** Text a held launch prints instead of starting the agent. Shell-neutral. */

@@ -16,9 +16,9 @@ import { DaemonDataBatcher } from '../../pty/DaemonDataBatcher';
 import { sanitizePtyText } from '../../../shared/types';
 import { resolveSpawnEnv } from '../../pty/resolveSpawnEnv';
 import { withFreshWindowsPath } from '../../../shared/windowsPathEnv';
-import { getAccountStore } from '../../account/accountStore';
+import { getAccountStore, VENDOR_ENV_KEYS } from '../../account/accountStore';
 import { getAccountRotationService } from '../../account/AccountRotationService';
-import { heldLaunchNotice, launchStem } from '../../../shared/accountQuota';
+import { envSetsKey, heldLaunchNotice, launchInlineEnvKeys, launchStem } from '../../../shared/accountQuota';
 import { resolveEnvPolicy, type SpawnKind } from '../../../shared/spawnKind';
 import { withheldCredentialNames } from '../../../shared/envFilter';
 import { getShellUtf8Locale } from '../../pty/shellLocale';
@@ -166,11 +166,15 @@ function withWmuxTools(options: PtyCreateOptions | undefined): PtyCreateOptions 
  * quota" on, the pane runs on a registered account that still has quota when
  * the workspace's bound one is out, by setting the account's config dir in
  * this pane's env (applied after the binding). When no account has quota the
- * launch line is replaced with a notice. Never throws.
+ * launch line is replaced with a notice. A launch that already names its
+ * account (the vendor's config-dir key in the pane/profile env, or an inline
+ * `KEY=… claude` prefix) is the user's choice and is left alone. Never throws.
  */
 async function withAccountQuota(options: PtyCreateOptions | undefined): Promise<PtyCreateOptions | undefined> {
   const stem = launchStem(options?.initialCommand);
   if (!options || (stem !== 'claude' && stem !== 'codex')) return options;
+  const key = VENDOR_ENV_KEYS[stem];
+  if (launchInlineEnvKeys(options.initialCommand).includes(key) || envSetsKey(options.env, key, process.platform)) return options;
   try {
     const decision = await getAccountRotationService().prepareLaunch(stem, options.workspaceId);
     if (decision.kind === 'switch') return { ...options, env: { ...options.env, ...decision.env } };
