@@ -68,12 +68,16 @@ describe('app chrome overflow guard (#1688)', () => {
     expect(() => expectSheetClipped(`${base}html[data-fullscreen] .wmux-shell-body { overflow-x: scroll; }`)).toThrow();
     expect(() => expectSheetClipped(`${base}.wmux-shell-body:has(.foo .bar) { overflow: hidden; }`)).toThrow();
     expect(() => expectSheetClipped(`${base}main > .wmux-shell-body:not(:has(.a > .b)) { overflow-y: auto; }`)).toThrow();
+    expect(() => expectSheetClipped(`${base}:is(.wmux-shell-body) { overflow: hidden; }`)).toThrow();
+    expect(() => expectSheetClipped(`${base}:where(.x, html .wmux-shell-body) { overflow-y: auto; }`)).toThrow();
     expect(() => expectSheetClipped('@media print { .wmux-shell-body { overflow: clip; } }')).toThrow();
     // A descendant of the sheet is a different box and may scroll, and so may
     // an ancestor that only mentions the sheet inside :has().
     expectSheetClipped(`${base}.wmux-shell-body .wmux-fleet-body { overflow-y: auto; }`);
     expectSheetClipped(`${base}.wmux-shell-body:has(.x) .wmux-fleet-body { overflow-y: auto; }`);
     expectSheetClipped(`${base}.wmux-frame:has(.wmux-shell-body) { overflow: hidden; }`);
+    expectSheetClipped(`${base}:is(.wmux-frame):not(.wmux-shell-body) { overflow: hidden; }`);
+    expectSheetClipped(`${base}:is(.a:has(.wmux-shell-body)) { overflow: hidden; }`);
   });
 });
 
@@ -99,16 +103,28 @@ function expectInstallBeforeMount(text: string): void {
  * may only set overflow to clip, and an unconditional rule must declare it.
  */
 function expectSheetClipped(css: string): void {
-  // Blank out every parenthesised argument (`:has(.a .b)`, `:not(...)`, nested
-  // too) first, so a combinator inside one cannot be mistaken for the last
-  // compound's boundary.
+  // Rewrite pseudo-class arguments before finding the last compound, so a
+  // combinator inside one cannot be mistaken for that compound's boundary.
+  // `:is()`/`:where()` match the subject itself: their argument is kept, with
+  // its combinators dropped. Every other argument (`:has()` names a related
+  // element, `:not()` excludes the sheet) is blanked out, nested ones too.
+  const SUBJECT_PSEUDOS = /:(?:is|where|matches|-webkit-any|-moz-any)$/;
   const stripArgs = (selector: string) => {
     let out = '';
-    let depth = 0;
+    const keep: boolean[] = [];
     for (const ch of selector) {
-      if (ch === '(') depth++;
-      if (depth === 0) out += ch;
-      if (ch === ')' && depth > 0) depth--;
+      const kept = keep.every(Boolean);
+      if (ch === '(') {
+        keep.push(kept && SUBJECT_PSEUDOS.test(out));
+        continue;
+      }
+      if (ch === ')' && keep.length > 0) {
+        keep.pop();
+        continue;
+      }
+      if (!kept) continue;
+      if (keep.length > 0 && /[\s>+~,]/.test(ch)) continue;
+      out += ch;
     }
     return out;
   };
