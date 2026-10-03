@@ -127,6 +127,7 @@ export class AccountRotationService {
     const next = { ...this.getSettings(), [vendor]: on };
     await atomicWriteJSON(this.filePath, next);
     this.settings = next;
+    if (!on) for (const ws of this.launched.keys()) this.forgetLaunch(ws, vendor);
     for (const l of this.listeners) { try { l(); } catch { /* listener faults stay local */ } }
   }
 
@@ -153,8 +154,10 @@ export class AccountRotationService {
     return claudeReading(find());
   }
 
-  /** Quota rows for Settings. Never refreshes (no network from a list call). */
+  /** Quota rows for Settings. Never refreshes (no network from a list call),
+   *  and a vendor whose switch is off is not read at all. */
   async rows(vendor: Vendor): Promise<RotationAccountRow[]> {
+    if (!this.getSettings()[vendor]) return [];
     const now = this.now();
     return Promise.all(this.accounts(vendor).map(async (a) => {
       const r = await this.reading(a, false);
@@ -165,9 +168,23 @@ export class AccountRotationService {
   /**
    * Decide the account for a typed `vendor` launch in `workspaceId`. Rotation
    * off, no registered account, or a workspace not bound to one → keep (the
-   * launch runs exactly as before).
+   * launch runs exactly as before). Anything but a switch forgets the
+   * workspace's rotated account, so turn ends stop probing it.
    */
   async prepareLaunch(vendor: Vendor, workspaceId: string | undefined): Promise<RotationDecision> {
+    const decision = await this.decideLaunch(vendor, workspaceId);
+    if (decision.kind !== 'switch' && workspaceId) this.forgetLaunch(workspaceId, vendor);
+    return decision;
+  }
+
+  private forgetLaunch(workspaceId: string, vendor: Vendor): void {
+    const entry = this.launched.get(workspaceId);
+    if (!entry) return;
+    delete entry[vendor];
+    if (Object.keys(entry).length === 0) this.launched.delete(workspaceId);
+  }
+
+  private async decideLaunch(vendor: Vendor, workspaceId: string | undefined): Promise<RotationDecision> {
     if (!this.getSettings()[vendor]) return { kind: 'keep' };
     const pool = this.accounts(vendor);
     if (pool.length === 0) return { kind: 'keep' };

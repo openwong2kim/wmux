@@ -144,6 +144,23 @@ describe('AccountRotationService', () => {
     expect(await s.prepareLaunch('codex', 'ws')).toEqual({ kind: 'keep' });
   });
 
+  it('forgets the rotated account on a later keep and when switched off', async () => {
+    const s = make([acct('a', 'claude'), acct('b', 'claude')]);
+    await s.setEnabled('claude', true);
+    bindings['ws:claude'] = 'a';
+    usageEntries = [usage('a', 100), usage('b', 10)];
+    await s.prepareLaunch('claude', 'ws');
+    expect(s.launchedAccount('ws', 'claude')).toBe('b');
+    usageEntries = [usage('a', 10), usage('b', 10)];
+    await s.prepareLaunch('claude', 'ws');
+    expect(s.launchedAccount('ws', 'claude')).toBeUndefined();
+
+    usageEntries = [usage('a', 100), usage('b', 10)];
+    await s.prepareLaunch('claude', 'ws');
+    await s.setEnabled('claude', false);
+    expect(s.launchedAccount('ws', 'claude')).toBeUndefined();
+  });
+
   it('leaves an unbound workspace on its default login', async () => {
     const s = make([acct('a', 'claude')]);
     await s.setEnabled('claude', true);
@@ -158,10 +175,18 @@ describe('AccountRotationService', () => {
 
   it('rows never refresh', async () => {
     const s = make([acct('a', 'claude')]);
+    await s.setEnabled('claude', true);
     usageEntries = [usage('a', 40, NOW - 60 * 60_000)];
     const rows = await s.rows('claude');
     expect(rows[0].verdict.remaining).toBeCloseTo(0.6);
     expect(refreshNow).not.toHaveBeenCalled();
+  });
+
+  it('rows read nothing for a vendor whose switch is off', async () => {
+    const read = vi.fn(async () => limits(10));
+    const s = make([acct('x', 'codex')], { readCodexLimits: read });
+    expect(await s.rows('codex')).toEqual([]);
+    expect(read).not.toHaveBeenCalled();
   });
 });
 
