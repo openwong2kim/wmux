@@ -79,7 +79,7 @@ jobs:
       # Pinned to the v1.12.5 commit. A tag can be moved; a SHA cannot. Bump it
       # deliberately after reading the diff — this action sees a repo secret.
       - name: Open Code Review
-        uses: alibaba/open-code-review@189be5b024d3309dd10fdc8cd8ee31b2530c210b # v1.12.5
+        uses: alibaba/open-code-review@a758d9cbfb689937c7857ad64b2dd66adb58c0c2 # v1.12.11
         with:
           pr_number: ${{ steps.pr.outputs.pr_number }}
           base_ref: ${{ steps.pr.outputs.base_ref }}
