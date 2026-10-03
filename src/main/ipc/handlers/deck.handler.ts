@@ -1586,10 +1586,12 @@ export function registerDeckHandler(
   });
   // A task workspace never has a brain, whatever its mode says — an owner
   // that is itself a task (nested fan-out) parks worker events instead. The
-  // same goes for a non-HQ owner once an HQ is designated: its workers' events
-  // park and nudge the caller rather than reaching a brain that will not run.
+  // same goes for a non-HQ owner once an HQ is designated, and for an HQ
+  // whose workspace is gone: their workers' events park (durably, replayed on
+  // the next brain boot) and nudge the caller rather than reaching a brain
+  // that will not run.
   const ownerHasBrain = (owner: string): boolean =>
-    brainEligible(owner) &&
+    brainEligible(owner) && !isHqWorkspaceMissing(getHqWorkspaceId()) &&
     !isTaskWorkspace(owner) && (managers.has(owner) || loadWorkspaceMode(owner) !== 'off');
   // The pane that started a fan-out, told when its workers move and no brain
   // listens (fanoutCallerNotify.ts). One pointer to the renderer, no ack.

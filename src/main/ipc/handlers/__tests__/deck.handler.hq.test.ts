@@ -285,6 +285,9 @@ describe('hq-missing', () => {
     expect(await send('ws-a')).toEqual({ ok: false, code: 'not_hq' });
     expect(await invoke(IPC.DECK_STATUS, { workspaceId: 'ws-a' })).toMatchObject({ hq: 'hq-missing' });
     expect(await invoke(IPC.DECK_HQ_GET)).toEqual({ workspaceId: 'ws-hq', state: 'hq-missing' });
+    // Worker events owned by the missing HQ park instead of being consumed.
+    lifecycle('ws-a');
+    expect(routedHasBrain!('ws-hq')).toBe(false);
   });
 });
 
