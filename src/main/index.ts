@@ -65,7 +65,7 @@ import { registerSystemRpc } from './pipe/handlers/system.rpc';
 import { registerPerfRpc } from './pipe/handlers/perf.rpc';
 import { registerComputerRpc } from './pipe/handlers/computer.rpc';
 import { resolvePtyOwnerWorkspace } from './workspace/ptyOwnership';
-import { createComputerService, disposeComputerUse, registerComputerUseIpc } from './computer';
+import { COMPUTER_ABORT_ACCELERATOR, createComputerService, disposeComputerUse, registerComputerUseIpc } from './computer';
 import { createComputerConsentRequester } from './computer/computerConsent';
 import type { ComputerService } from './computer/ComputerService';
 import { revealStatsAggregator } from './perf/revealStatsAggregator';
@@ -94,6 +94,7 @@ import { RemoteHostsStore } from './remote/RemoteHostsStore';
 import { RemoteAttachmentsStore } from './remote/RemoteAttachmentsStore';
 import { registerFanOutHandler } from './ipc/handlers/fanout.handler';
 import { initQuickLaunch } from './quickLaunch';
+import { focusedPrimaryWindow } from './window/auxiliaryWindows';
 import { createFanOutService } from './worktask/createFanOutService';
 import { getWorkerTempDirSweeper, liveTempDirsFromSessions } from './worktask/fanoutTempDir';
 import { registerFanOutRpc } from './pipe/handlers/fanout.rpc';
@@ -724,7 +725,7 @@ registerSessionHandlers(() => daemonClient?.isConnected === true);
 // holding notifications after the user locked up and left.
 attachDesktopPresenceReporter(app, () => daemonClient, {
   powerMonitor,
-  isFocused: () => BrowserWindow.getFocusedWindow() !== null,
+  isFocused: () => focusedPrimaryWindow() !== null,
 });
 
 // Bridge the in-renderer `__wmuxEventsPoll` / `__wmuxChannelsRpc` globals
@@ -1623,7 +1624,12 @@ app.on('ready', async () => {
   mainWindow = createWindow({ deferLoad: true });
   // Global quick launch: needs `ready` for globalShortcut, and registers from
   // its own settings file so the chord works before the renderer has loaded.
-  quickLaunch = initQuickLaunch({ getMainWindow: () => mainWindow, fanOutService });
+  quickLaunch = initQuickLaunch({
+    getMainWindow: () => mainWindow,
+    fanOutService,
+    isQuitting: () => isQuitting,
+    otherGlobalShortcuts: [COMPUTER_ABORT_ACCELERATOR],
+  });
   if (cdpEnabled) {
     const localContents = mainWindow.webContents;
     let retryDelayMs = 2_000;
@@ -1756,7 +1762,7 @@ app.on('ready', async () => {
       void client
         .rpc('daemon.client.identify', { role: 'main' })
         .then(() => {
-          reportDesktopPresence(() => client, BrowserWindow.getFocusedWindow() !== null);
+          reportDesktopPresence(() => client, focusedPrimaryWindow() !== null);
           disposePhoneBridge?.();
           disposePhoneBridge = installPhoneBridge(client,(command,payload) => command.startsWith('browser.') ? handlePhoneBrowser(command,payload,{
             backend: () => browserBackendStore.get(),
@@ -2763,8 +2769,10 @@ if (process.platform === 'win32') {
 
 app.on('activate', () => {
   if (isQuitting) return;
-  const windows = BrowserWindow.getAllWindows();
-  if (windows.length === 0) {
+  // The main window itself, not "any window": the quick-launch composer is a
+  // hidden window too, and must neither count as the app window nor be the
+  // one a Dock click brings back.
+  if (!mainWindow || mainWindow.isDestroyed()) {
     mainWindow = createWindow();
     adoptMainWindow(mainWindow);
     return;
@@ -2775,8 +2783,7 @@ app.on('activate', () => {
   // 2026-07-19). Windows/Linux는 트레이 컨텍스트 메뉴가 이미 이 경로를
   // 담당하므로 이 핸들러는 mac에서만 의미 있지만, 숨겨진 창이 있으면
   // 어느 OS에서든 보여주는 편이 안전하다.
-  const hidden = windows.find((w) => !w.isVisible());
-  if (hidden) hidden.show();
+  if (!mainWindow.isVisible()) mainWindow.show();
 });
 
 } // end appInit()

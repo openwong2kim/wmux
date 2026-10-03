@@ -11,8 +11,9 @@
 //   - new worktree   → FanOutService.start through startGuiFanOut (the same
 //                      audit record and worker policy as the fan-out dialog);
 //   - current checkout → the renderer's `fanout.spawnWorkspace`, which applies
-//                      the role binding, never steals focus, and nests the new
-//                      workspace under the one that was picked.
+//                      the role binding and never steals focus. The new
+//                      workspace nests under the picked one in the sidebar
+//                      without being stamped as a fan-out task.
 
 import { globalShortcut, ipcMain, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
 import { randomUUID } from 'node:crypto';
@@ -38,7 +39,7 @@ import { startGuiFanOut } from '../ipc/handlers/fanout.handler';
 import { workerLaunchCommand, type FanOutService } from '../worktask/FanOutService';
 import { readQuickLaunchConfig, writeQuickLaunchConfig } from './config';
 import { QuickLaunchHotkey } from './hotkey';
-import { destroyQuickLaunch, fitQuickLaunch, hideQuickLaunch, prepareQuickLaunch, quickLaunchWindow, toggleQuickLaunch } from './window';
+import { destroyQuickLaunch, fitQuickLaunch, hideQuickLaunch, prepareQuickLaunch, quickLaunchWindow, setQuickLaunchQuitting, toggleQuickLaunch } from './window';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -70,10 +71,15 @@ function writePromptFile(prompt: string): string {
   return file;
 }
 
-/** Whether `accelerator` is one of wmux's own built-in shortcuts on `platform`. */
-export function clashesWithBuiltin(accelerator: string, platform: NodeJS.Platform): boolean {
+/**
+ * Whether `accelerator` is already a wmux shortcut on `platform`: a built-in
+ * key, or another global chord wmux holds (`otherGlobal`, e.g. the
+ * computer-use stop key). A global chord wins over the app's own keys, so
+ * taking one would silently disable that shortcut.
+ */
+export function clashesWithBuiltin(accelerator: string, platform: NodeJS.Platform, otherGlobal: readonly string[] = []): boolean {
   const wanted = resolveForPlatform(accelerator, platform);
-  return reservedAccelerators(platform).some((own) => resolveForPlatform(own, platform) === wanted);
+  return [...reservedAccelerators(platform), ...otherGlobal].some((own) => resolveForPlatform(own, platform) === wanted);
 }
 
 function fromComposer(event: IpcMainInvokeEvent): boolean {
@@ -138,7 +144,9 @@ export async function launchQuick(
         ...(Object.keys(env).length > 0 ? { env } : {}),
         ...(role ? { role } : {}),
         ...(agentChoice ? { agentChoice } : {}),
-        fanoutTaskOf: ws.id,
+        // Nested under the picked workspace, but not a fan-out task (no
+        // lineage stamp): it must not use up the fan-out cap or depth.
+        nestUnder: ws.id,
         fanoutOrigin: { kind: 'gui' },
       },
       { timeoutMs: 30_000 },
@@ -150,7 +158,24 @@ export async function launchQuick(
   return { ok: true };
 }
 
-export function initQuickLaunch(deps: { getMainWindow: GetWindow; fanOutService: FanOutService }): { dispose(): void } {
+export function initQuickLaunch(deps: {
+  getMainWindow: GetWindow;
+  fanOutService: FanOutService;
+  isQuitting: () => boolean;
+  /** Other global chords wmux holds, which the quick-launch chord may not reuse. */
+  otherGlobalShortcuts: readonly string[];
+}): { dispose(): void } {
+  setQuickLaunchQuitting(deps.isQuitting);
+  const clashes = (accelerator: string) => clashesWithBuiltin(accelerator, process.platform, deps.otherGlobalShortcuts);
+  const clashReason = 'it is already a wmux shortcut';
+  /** Hold the configured chord, unless it would shadow another wmux shortcut. */
+  const applyConfig = (config: { enabled: boolean; accelerator: string }): boolean => {
+    if (config.enabled && clashes(config.accelerator)) {
+      hotkey.block(config.accelerator, clashReason);
+      return false;
+    }
+    return hotkey.apply(config.enabled, config.accelerator);
+  };
   const notifyShown = (win: BrowserWindow) => {
     if (win.webContents.isLoading()) win.webContents.once('did-finish-load', () => win.webContents.send(IPC.QUICK_LAUNCH_SHOWN));
     else win.webContents.send(IPC.QUICK_LAUNCH_SHOWN);
@@ -160,8 +185,7 @@ export function initQuickLaunch(deps: { getMainWindow: GetWindow; fanOutService:
     onPress: () => toggleQuickLaunch(notifyShown),
     log: (m) => console.warn(m),
   });
-  const initial = readQuickLaunchConfig();
-  hotkey.apply(initial.enabled, initial.accelerator);
+  applyConfig(readQuickLaunchConfig());
   // Off the boot path: the main window loads first.
   const prepareTimer = setTimeout(() => {
     if (readQuickLaunchConfig().enabled) prepareQuickLaunch();
@@ -171,7 +195,7 @@ export function initQuickLaunch(deps: { getMainWindow: GetWindow; fanOutService:
     const config = readQuickLaunchConfig();
     // Re-applied on every read, so a chord another app has since let go of is
     // claimed the next time Settings looks.
-    hotkey.apply(config.enabled, config.accelerator);
+    applyConfig(config);
     const reason = hotkey.failureReason();
     return { ...config, status: hotkey.status(), ...(error || reason ? { error: error ?? reason } : {}) };
   };
@@ -186,9 +210,7 @@ export function initQuickLaunch(deps: { getMainWindow: GetWindow; fanOutService:
     if (patch.accelerator !== undefined && !isGlobalAccelerator(patch.accelerator)) {
       return snapshot('Use Command or Control with another key.');
     }
-    if (typeof patch.accelerator === 'string' && clashesWithBuiltin(patch.accelerator, process.platform)) {
-      // A global chord wins over the app's own keys, so this would silently
-      // take a wmux shortcut away inside wmux itself.
+    if (typeof patch.accelerator === 'string' && clashes(patch.accelerator)) {
       return snapshot(`${patch.accelerator} is already a wmux shortcut. Pick another one.`);
     }
     const next = {
@@ -199,13 +221,13 @@ export function initQuickLaunch(deps: { getMainWindow: GetWindow; fanOutService:
     // the shortcut that worked keeps working and stays what Settings shows.
     if (!hotkey.apply(next.enabled, next.accelerator)) {
       const reason = hotkey.failureReason() ?? 'the shortcut could not be registered';
-      hotkey.apply(current.enabled, current.accelerator);
+      applyConfig(current);
       return snapshot(`${next.accelerator}: ${reason}`);
     }
     try {
       writeQuickLaunchConfig(next);
     } catch (err) {
-      hotkey.apply(current.enabled, current.accelerator);
+      applyConfig(current);
       return snapshot(`Could not save: ${(err as Error).message}`);
     }
     if (next.enabled) prepareQuickLaunch();

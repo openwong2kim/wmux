@@ -11,7 +11,7 @@ import { isFileDrag } from '../shared/dragDrop';
 import { parseWindowsBuildNumber } from '../shared/platform';
 import type { NotificationCategory } from '../shared/types';
 import type { ComputerUseSettingsPayload } from '../shared/computer/config';
-import type { QuickLaunchContext, QuickLaunchRequest, QuickLaunchResult, QuickLaunchSettingsPayload } from '../shared/quickLaunch';
+import type { QuickLaunchSettingsPayload } from '../shared/quickLaunch';
 import type { ResumeBinding } from '../shared/agentResume';
 import type { PaneUsageLimit, PaneUsageLimitPatch } from '../shared/usageLimit';
 import type { DeadPaneRecovery } from '../shared/ptyRecovery';
@@ -371,16 +371,6 @@ const electronAPI = {
     settingsGet: () => ipcRenderer.invoke(IPC.QUICK_LAUNCH_SETTINGS_GET) as Promise<QuickLaunchSettingsPayload>,
     settingsSet: (patch: { enabled?: boolean; accelerator?: string }) =>
       ipcRenderer.invoke(IPC.QUICK_LAUNCH_SETTINGS_SET, patch) as Promise<QuickLaunchSettingsPayload>,
-    // The composer window's own calls; main refuses them from any other window.
-    context: () => ipcRenderer.invoke(IPC.QUICK_LAUNCH_CONTEXT) as Promise<QuickLaunchContext | null>,
-    submit: (req: QuickLaunchRequest) => ipcRenderer.invoke(IPC.QUICK_LAUNCH_SUBMIT, req) as Promise<QuickLaunchResult>,
-    dismiss: () => ipcRenderer.invoke(IPC.QUICK_LAUNCH_DISMISS) as Promise<void>,
-    fit: (height: number) => ipcRenderer.invoke(IPC.QUICK_LAUNCH_FIT, height) as Promise<void>,
-    onShown: (callback: () => void) => {
-      const listener = () => callback();
-      ipcRenderer.on(IPC.QUICK_LAUNCH_SHOWN, listener);
-      return () => { ipcRenderer.removeListener(IPC.QUICK_LAUNCH_SHOWN, listener); };
-    },
   },
   notification: {
     // ptyId may be null for app-level notifications (e.g. external MCP

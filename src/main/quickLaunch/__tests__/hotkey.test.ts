@@ -75,4 +75,14 @@ describe('QuickLaunchHotkey', () => {
     callbacks[0]();
     expect(onPress).toHaveBeenCalledOnce();
   });
+
+  it('block() holds nothing and reports the chord as not registered', () => {
+    const registry = fakeRegistry();
+    const hotkey = new QuickLaunchHotkey({ registry, onPress: () => undefined });
+    hotkey.apply(true, 'CommandOrControl+Shift+Space');
+    hotkey.block('CommandOrControl+K', 'it is already a wmux shortcut');
+    expect(hotkey.status()).toBe('unavailable');
+    expect(hotkey.failureReason()).toBe('it is already a wmux shortcut');
+    expect([...registry.held]).toEqual([]);
+  });
 });

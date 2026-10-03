@@ -61,6 +61,15 @@ export class QuickLaunchHotkey {
     return true;
   }
 
+  /**
+   * Hold nothing and report `accelerator` as not registered: it is wanted but
+   * may not be taken (it would shadow another wmux shortcut).
+   */
+  block(accelerator: string, reason: string): void {
+    this.release();
+    this.failure = { accelerator, error: reason };
+  }
+
   /** Give the chord back (switched off, app quitting). Safe when not held. */
   release(): void {
     this.failure = null;

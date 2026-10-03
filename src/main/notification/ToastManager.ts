@@ -1,6 +1,7 @@
 import { Notification, BrowserWindow, app } from 'electron';
 import { isWindows, isMac } from '../../shared/platform';
 import { IPC } from '../../shared/constants';
+import { focusedPrimaryWindow, primaryWindow } from '../window/auxiliaryWindows';
 
 /**
  * Originating context for a toast. When present, clicking the toast not only
@@ -50,7 +51,7 @@ export class ToastManager {
    */
   show(title: string, body: string, context?: ToastFocusContext): void {
     // Only show toast when app is not focused
-    const focusedWindow = BrowserWindow.getFocusedWindow();
+    const focusedWindow = focusedPrimaryWindow();
     if (focusedWindow) return;
 
     this.showDirect(title, body, context);
@@ -89,7 +90,7 @@ export class ToastManager {
       // Bring app to front when toast is clicked. Windows Action Center
       // keeps toasts clickable long after they fire — the window may be
       // gone or mid-teardown by now, so guard isDestroyed before touching it.
-      const win = BrowserWindow.getAllWindows()[0];
+      const win = primaryWindow();
       if (win && !win.isDestroyed()) {
         if (win.isMinimized()) win.restore();
         win.focus();
@@ -116,7 +117,7 @@ export class ToastManager {
     // Each platform's gate is independent (see ToastFocusContext) — the
     // renderer-decided path suppresses ONLY the Windows flash (it owns that
     // itself) while still wanting the macOS bounce (which it can't do).
-    const win = BrowserWindow.getAllWindows()[0];
+    const win = primaryWindow();
     if (win) {
       if (isWindows && context?.windowsFlashEnabled !== false) {
         win.flashFrame(true);

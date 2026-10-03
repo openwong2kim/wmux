@@ -1,4 +1,5 @@
 // IPC Channel names
+import { QUICK_LAUNCH_IPC } from './quickLaunchIpc';
 export const IPC = {
   PTY_CREATE: 'pty:create',
   PTY_WRITE: 'pty:write',
@@ -538,14 +539,15 @@ export const IPC = {
   COMPUTER_USE_SET: 'computer-use:set',
   // Global quick launch (Settings › Shortcuts, and the floating composer).
   // SETTINGS_GET/SET return QuickLaunchSettingsPayload; the rest are the
-  // composer window's own calls, refused from any other sender.
-  QUICK_LAUNCH_SETTINGS_GET: 'quick-launch:settings-get',
-  QUICK_LAUNCH_SETTINGS_SET: 'quick-launch:settings-set',
-  QUICK_LAUNCH_CONTEXT: 'quick-launch:context',
-  QUICK_LAUNCH_SUBMIT: 'quick-launch:submit',
-  QUICK_LAUNCH_DISMISS: 'quick-launch:dismiss',
-  QUICK_LAUNCH_FIT: 'quick-launch:fit',
-  QUICK_LAUNCH_SHOWN: 'quick-launch:shown',
+  // composer window's own calls, refused from any other sender. The strings
+  // live in quickLaunchIpc.ts for the composer's sandboxed preload.
+  QUICK_LAUNCH_SETTINGS_GET: QUICK_LAUNCH_IPC.SETTINGS_GET,
+  QUICK_LAUNCH_SETTINGS_SET: QUICK_LAUNCH_IPC.SETTINGS_SET,
+  QUICK_LAUNCH_CONTEXT: QUICK_LAUNCH_IPC.CONTEXT,
+  QUICK_LAUNCH_SUBMIT: QUICK_LAUNCH_IPC.SUBMIT,
+  QUICK_LAUNCH_DISMISS: QUICK_LAUNCH_IPC.DISMISS,
+  QUICK_LAUNCH_FIT: QUICK_LAUNCH_IPC.FIT,
+  QUICK_LAUNCH_SHOWN: QUICK_LAUNCH_IPC.SHOWN,
   // Window control
   WINDOW_HIDE: 'window:hide',
   // Windows taskbar attention recall. Renderer asks main to flash the

@@ -44,7 +44,7 @@ function applyTheme(ctx: QuickLaunchContext): void {
 }
 
 export default function QuickLaunchComposer() {
-  const api = window.electronAPI.quickLaunch;
+  const api = window.quickLaunchAPI;
   const [ctx, setCtx] = useState<QuickLaunchContext | null>(null);
   const [prompt, setPrompt] = useState('');
   const [workspaceId, setWorkspaceId] = useState<string | undefined>();
@@ -54,6 +54,7 @@ export default function QuickLaunchComposer() {
   const [error, setError] = useState<string | null>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const promptRef = useRef<HTMLTextAreaElement>(null);
+  const seeded = useRef(false);
 
   const focusPrompt = useCallback(() => {
     requestAnimationFrame(() => {
@@ -78,8 +79,13 @@ export default function QuickLaunchComposer() {
     setWorkspaceId((current) =>
       initialWorkspace(next.workspaces, current ?? remembered.workspaceId, next.activeWorkspaceId),
     );
-    setAgent((current) => (current !== 'default' ? current : remembered.agent ?? 'default'));
-    if (remembered.checkout) setCheckout(remembered.checkout);
+    // The last launch's choices seed the first show only; after that, what
+    // the person picked stays picked across a dismiss, like the draft.
+    if (!seeded.current) {
+      seeded.current = true;
+      if (remembered.agent) setAgent(remembered.agent);
+      if (remembered.checkout) setCheckout(remembered.checkout);
+    }
   }, [api, focusPrompt]);
 
   useEffect(() => {
