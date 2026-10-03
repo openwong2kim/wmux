@@ -1,6 +1,8 @@
 import {
   CHAT_LAUNCH_MAX_UNITS,
+  CHAT_MESSAGE_RETENTION_MS,
   OPENCODE_MAX_SEND_BYTES,
+  checkChatId,
   fileHistoryEpoch,
   type ChatBlocked,
   type ChatCancelOutcome,
@@ -19,6 +21,12 @@ import {
   type TerminalLaunchAgent,
   type TerminalLaunchMode,
 } from '../../shared/transcript/terminalChat';
+import type { MetaEvent, ToolBody, TurnEvent } from '../../shared/transcript/turnEvents';
+import type { AgentStatus } from '../../shared/types';
+import { chatV2HistoryEpoch, type ChatV2Binding, type ChatV2Status } from '../../shared/chatv2/ipc';
+import { truncateUtf8, utf8Bytes } from '../../shared/chatv2/limits';
+import { HARNESS_TITLE, type Block, type Session, type ToolPreview, type TurnOutcome } from '../../shared/chatv2/session';
+import type { ChatV2Host } from '../chat/v2/types';
 
 /**
  * Wire mapping for the phone chat routes (contract §5.2, §6.2, §6.4). Pure, so
@@ -452,4 +460,314 @@ export function cancelResponse(outcome: ChatCancelOutcome): WireResponse {
   if (!outcome.replayed) return response;
   return { status: outcome.error ? response.status : 200,
     body: { ...response.body, replayed: true, ...(outcome.cancel ? { cancel: outcome.cancel } : {}) } };
+}
+
+// --- chat v2 (driver-owned conversations) ---------------------------------
+
+/**
+ * What the phone routes read from the chat-v2 host. A record that is
+ * `handed-off` is not served here: its conversation now runs in the pane's
+ * TUI, so the ordinary terminal binding describes it.
+ */
+export type ChatV2PhoneHost = Pick<ChatV2Host, 'bindingForPane' | 'sessionForPane' | 'call' | 'onPush'>;
+
+/** Inline head of one tool body; v2 rows have no `srcOffset`, so the head is all a phone can open. */
+const CHATV2_INLINE_BODY_BYTES = 4 * 1024;
+/** Meta labels are one line in the phone's row; the block itself keeps the full text. */
+const CHATV2_LABEL_MAX = 500;
+/** The same bounds a managed page keeps (ChatSessionService.snapshot). */
+const CHATV2_PAGE_MAX_EVENTS = 80;
+const CHATV2_PAGE_MAX_BYTES = 192_000;
+
+const TOOL_DONE = new Set(['completed', 'success', 'failed', 'error', 'cancelled', 'canceled']);
+const TOOL_FAILED = new Set(['failed', 'error', 'cancelled', 'canceled']);
+
+function oneLine(text: string, max: number): string {
+  const line = text.replace(/\s+/g, ' ').trim();
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+}
+
+function toolBody(text: string): ToolBody {
+  const bytes = utf8Bytes(text);
+  if (bytes <= CHATV2_INLINE_BODY_BYTES) return { n: 1, bytes, inline: text };
+  return { n: 1, bytes, inline: truncateUtf8(text, CHATV2_INLINE_BODY_BYTES), truncated: true };
+}
+
+function previewText(preview: ToolPreview | undefined): string | undefined {
+  if (!preview) return undefined;
+  if (preview.output) return preview.output;
+  if (!preview.lines?.length) return undefined;
+  const mark = { add: '+', del: '-', context: ' ' } as const;
+  return preview.lines.map((line) => `${mark[line.kind]} ${line.text}`).join('\n');
+}
+
+function meta(id: string, subtype: MetaEvent['subtype'], label: string, ts?: number): MetaEvent {
+  return { id, kind: 'meta', subtype, label: oneLine(label, CHATV2_LABEL_MAX), ...(ts !== undefined ? { ts } : {}) };
+}
+
+const ABORTED_LABEL: Record<Exclude<TurnOutcome, 'completed'>, string> = {
+  interrupted: 'Interrupted',
+  failed: 'The turn failed',
+  'usage-limited': 'Usage limit reached',
+};
+
+const APPROVAL_LABEL = { allow: 'Allowed', deny: 'Denied', cancelled: 'Approval cancelled' } as const;
+
+/** The rows one folded block reads as on the phone. Pure; ids derive from the block id. */
+export function projectChatV2Block(block: Block): TurnEvent[] {
+  const truncated = block.overflow?.text ? { truncated: true } : {};
+  switch (block.role) {
+    case 'user': {
+      const images = block.attachments?.map((a) => a.path) ?? [];
+      return [{
+        id: block.id, kind: 'user_text', text: block.text, ...truncated,
+        ...(block.startedAt !== undefined ? { ts: block.startedAt } : {}),
+        ...(images.length ? { hasImage: true, images } : {}),
+      }];
+    }
+    case 'assistant':
+      return block.text ? [{ id: block.id, kind: 'assistant_text', text: block.text, ...truncated }] : [];
+    case 'reasoning':
+      return block.text ? [{ id: block.id, kind: 'assistant_text', text: block.text, thinking: true, ...truncated }] : [];
+    case 'plan':
+      return block.text ? [{ id: block.id, kind: 'assistant_text', text: block.text, ...truncated }] : [];
+    case 'tasks': {
+      const list = block.taskList;
+      if (!list?.items.length) return [];
+      const lines = list.items.map((item) =>
+        `- [${item.status === 'completed' ? 'x' : ' '}] ${item.text}${item.status === 'in_progress' ? ' (in progress)' : ''}`);
+      return [{ id: block.id, kind: 'assistant_text', text: [list.explanation, ...lines].filter(Boolean).join('\n') }];
+    }
+    case 'image':
+      return [meta(block.id, 'unknown', `Image: ${block.image?.name ?? 'generated image'}`)];
+    case 'system':
+      if (block.notice === 'interrupt') return [meta(block.id, 'turn_aborted', block.text || 'Interrupted')];
+      return block.text ? [meta(block.id, 'unknown', block.text)] : [];
+    case 'tool':
+    case 'approval':
+      return projectToolBlock(block);
+    default:
+      return [];
+  }
+}
+
+function projectToolBlock(block: Block): TurnEvent[] {
+  const tool = block.tool;
+  const toolUseId = tool?.callId ?? block.id;
+  const name = tool?.title || block.text || tool?.kind || 'Tool';
+  const preview = tool?.preview;
+  const summary = preview?.path ?? preview?.query ?? (tool?.detail ? tool.detail : '');
+  const rows: TurnEvent[] = [{
+    id: block.id, kind: 'tool_use', toolUseId, name: oneLine(name, 120), argSummary: oneLine(summary, 120),
+    ...(tool?.detail ? { input: toolBody(tool.detail) } : {}),
+  }];
+  const run = block.agentRun;
+  if (run) {
+    rows.push(meta(`${block.id}:agent`, 'subagent', `${run.name}: ${run.steps.length} step${run.steps.length === 1 ? '' : 's'}`));
+  }
+  const approval = block.approval;
+  if (approval) {
+    rows.push(meta(`${block.id}:approval`, 'unknown',
+      approval.decided ? APPROVAL_LABEL[approval.decided] : `Waiting for approval: ${name}`, approval.requestedAt));
+  }
+  const status = tool?.status;
+  if (status && TOOL_DONE.has(status)) {
+    const output = previewText(preview);
+    rows.push({
+      id: `${block.id}:result`, kind: 'tool_result', toolUseId, ok: !TOOL_FAILED.has(status),
+      bytes: output ? utf8Bytes(output) : 0,
+      ...(output ? { output: toolBody(output) } : {}),
+    });
+  }
+  return rows;
+}
+
+/**
+ * The phone rows of a whole folded session, oldest first. A turn that did not
+ * complete closes with a `turn_aborted` row; a pending question is the last
+ * row (it is answered through `/api/approvals`, like the approval rows).
+ */
+export function projectChatV2Session(session: Readonly<Session>): TurnEvent[] {
+  const rows: TurnEvent[] = [];
+  let openUser: Block | undefined;
+  const closeTurn = () => {
+    if (openUser?.outcome && openUser.outcome !== 'completed') {
+      rows.push(meta(`${openUser.id}:end`, 'turn_aborted', ABORTED_LABEL[openUser.outcome]));
+    }
+  };
+  for (const block of session.blocks) {
+    if (block.role === 'user') {
+      closeTurn();
+      openUser = block;
+    }
+    rows.push(...projectChatV2Block(block));
+  }
+  closeTurn();
+  const question = session.pendingQuestion;
+  if (question) {
+    const first = question.questions[0];
+    rows.push(meta(`question:${question.requestId}`, 'unknown',
+      `Question: ${question.title ?? first?.header ?? first?.prompt ?? 'the agent is asking'}`, question.requestedAt));
+  }
+  return rows;
+}
+
+/** The tail of the rows within the managed page bounds; always at least one row when there is one. */
+export function chatV2Page(session: Readonly<Session>): { events: TurnEvent[]; truncatedHead: boolean } {
+  const all = projectChatV2Session(session);
+  let start = all.length;
+  let bytes = 0;
+  while (start > 0 && all.length - start < CHATV2_PAGE_MAX_EVENTS) {
+    const size = utf8Bytes(JSON.stringify(all[start - 1]));
+    if (bytes + size > CHATV2_PAGE_MAX_BYTES && start < all.length) break;
+    bytes += size;
+    start--;
+  }
+  return { events: all.slice(start), truncatedHead: start > 0 };
+}
+
+/** The open (or last) turn, keyed by its user block id. */
+export function chatV2Turn(session: Readonly<Session>): ChatTurn | undefined {
+  const user = [...session.blocks].reverse().find((block) => block.role === 'user');
+  if (!user) return undefined;
+  return { id: user.id, state: session.busy ? 'running' : 'idle', ...(user.startedAt !== undefined ? { startedAt: user.startedAt } : {}) };
+}
+
+/** The identity a phone holds for a v2 record: the agent's id once bound, the record's id before. */
+export function chatV2Identity(binding: ChatV2Binding): { agentSessionId: string; historyEpoch: string } {
+  return {
+    agentSessionId: binding.providerSessionId ?? binding.chatSessionId,
+    historyEpoch: chatV2HistoryEpoch(binding.chatSessionId, binding.epoch),
+  };
+}
+
+const V2_STATE: Record<Exclude<ChatV2Status, 'handed-off'>, { agentStatus: AgentStatus; agentAlive: boolean; phase: string }> = {
+  starting: { agentStatus: 'running', agentAlive: true, phase: 'connecting' },
+  idle: { agentStatus: 'idle', agentAlive: true, phase: 'ready' },
+  running: { agentStatus: 'running', agentAlive: true, phase: 'running' },
+  'needs-input': { agentStatus: 'awaiting_input', agentAlive: true, phase: 'blocked' },
+  stopped: { agentStatus: 'idle', agentAlive: false, phase: 'disconnected' },
+  failed: { agentStatus: 'error', agentAlive: false, phase: 'disconnected' },
+};
+
+/**
+ * `/turns` `chat` for a v2 record: the managed object's keys exactly, plus
+ * `streaming:false`. Read + approve only: `send` stays false (the route answers
+ * `409 managed-read-only`). `cancel` and `turn` are shown only to a caller that
+ * declared `chat-cancel`, as on a terminal binding.
+ */
+export function buildChatV2Object(
+  binding: ChatV2Binding,
+  session: Readonly<Session> | null,
+  blocked: ChatBlocked | undefined,
+  opts: { chatCancel?: boolean } = {},
+): Record<string, unknown> {
+  const state = V2_STATE[binding.status === 'handed-off' ? 'stopped' : binding.status];
+  const turn = opts.chatCancel && session ? chatV2Turn(session) : undefined;
+  return {
+    binding: 'managed',
+    ...chatV2Identity(binding),
+    historyTruncated: false,
+    agentStatus: state.agentStatus,
+    agentAlive: state.agentAlive,
+    capabilities: {
+      history: true, send: false, permissions: false,
+      cancel: opts.chatCancel === true && binding.capabilities.interrupt && session?.busy === true,
+      fileUndo: false, streaming: false, launch: false, skills: false,
+    },
+    ...(blocked ? { blocked: { by: blocked.by, ...(blocked.approvalId ? { approvalId: blocked.approvalId } : {}) } } : {}),
+    ...(turn ? { turn } : {}),
+    managed: { provider: { id: binding.agent, name: HARNESS_TITLE[binding.agent] }, phase: state.phase },
+  };
+}
+
+/** The send refusal a v2 record answers, the same body a managed record gets. */
+export function chatV2SendResponse(clientMessageId: string): WireResponse {
+  return sendResponse({ clientMessageId, replayed: false, effect: 'none', error: 'managed-read-only' }, clientMessageId);
+}
+
+/** The launch refusal on a pane a v2 record owns: a second agent would be a second writer. */
+export function chatV2LaunchResponse(clientLaunchId: string): WireResponse {
+  return launchResponse({ ok: false, error: 'launch-not-ready', reason: 'agent-running', effect: 'none' }, clientLaunchId);
+}
+
+/** Owner-bound cancel receipts for v2 records, memory only and bounded: a replay, never a second interrupt. */
+export class ChatV2CancelReceipts {
+  private readonly entries = new Map<string, { fingerprint: string; outcome: ChatCancelOutcome }>();
+  constructor(private readonly max = 256) {}
+
+  get(key: string): { fingerprint: string; outcome: ChatCancelOutcome } | undefined {
+    return this.entries.get(key);
+  }
+
+  set(key: string, fingerprint: string, outcome: ChatCancelOutcome): void {
+    this.entries.delete(key);
+    this.entries.set(key, { fingerprint, outcome });
+    while (this.entries.size > this.max) this.entries.delete(this.entries.keys().next().value as string);
+  }
+}
+
+export interface ChatV2CancelInput {
+  owner: string;
+  paneId: string;
+  body: CancelBody;
+  now: number;
+  host: ChatV2PhoneHost;
+  receipts: ChatV2CancelReceipts;
+  /** Re-authorization immediately before the interrupt; false sends nothing. */
+  authorized: () => Promise<boolean>;
+}
+
+/**
+ * `POST …/chat/cancel` on a v2 record: the host's `interrupt`, under the
+ * cancel response table. A refusal stores no receipt; a sent or uncertain
+ * interrupt does, so a retry replays instead of interrupting the next turn.
+ */
+export async function chatV2Cancel(input: ChatV2CancelInput): Promise<ChatCancelOutcome> {
+  const { body, receipts } = input;
+  const { clientCancelId } = body;
+  const refuse = (error: ChatCancelTag, extra: Partial<ChatCancelOutcome> = {}): ChatCancelOutcome =>
+    ({ clientCancelId, replayed: false, effect: 'none', error, ...extra });
+  const idCheck = checkChatId(clientCancelId, input.now, CHAT_MESSAGE_RETENTION_MS);
+  if (idCheck === 'invalid') return refuse('invalid-chat-request', { detail: 'clientCancelId' });
+  if (idCheck === 'expired') return refuse('message-id-expired');
+
+  const key = JSON.stringify([input.owner, input.paneId, clientCancelId]);
+  const fingerprint = JSON.stringify([body.agentSessionId, body.turnId ?? null, body.historyEpoch ?? null]);
+  const stored = receipts.get(key);
+  if (stored) return stored.fingerprint === fingerprint ? { ...stored.outcome, replayed: true } : refuse('cancel-id-conflict');
+
+  const binding = input.host.bindingForPane(input.paneId);
+  const session = input.host.sessionForPane(input.paneId);
+  if (!binding || binding.status === 'handed-off' || !session) return refuse('chat-unavailable');
+  const identity = chatV2Identity(binding);
+  if (body.agentSessionId !== identity.agentSessionId || (body.historyEpoch !== undefined && body.historyEpoch !== identity.historyEpoch)) {
+    return refuse('session-changed', identity);
+  }
+  if (!binding.capabilities.interrupt) return refuse('cancel-unsupported');
+  const turn = chatV2Turn(session);
+  if (!turn || !session.busy || (body.turnId !== undefined && body.turnId !== turn.id)) {
+    return refuse('turn-not-running', turn ? { turn } : {});
+  }
+  if (!(await input.authorized())) return refuse('authorization-expired');
+
+  let outcome: ChatCancelOutcome;
+  try {
+    const result = await input.host.call('interrupt', { paneId: input.paneId, chatSessionId: binding.chatSessionId }, 'web');
+    if (result.ok && result.interrupted) {
+      outcome = { clientCancelId, replayed: false, effect: 'interrupt-requested', turnId: turn.id };
+    } else if (result.ok) {
+      return refuse('turn-not-running', { turn: { ...turn, state: 'idle' } });
+    } else if (result.error.code === 'driver-failed') {
+      outcome = { clientCancelId, replayed: false, effect: 'uncertain', error: 'cancel-failed', turnId: turn.id };
+    } else if (result.error.code === 'session-not-found' || result.error.code === 'stale-epoch') {
+      return refuse('session-changed', identity);
+    } else {
+      return refuse('chat-unavailable', { detail: result.error.code });
+    }
+  } catch {
+    outcome = { clientCancelId, replayed: false, effect: 'uncertain', error: 'cancel-failed', turnId: turn.id };
+  }
+  receipts.set(key, fingerprint, outcome);
+  return outcome;
 }
