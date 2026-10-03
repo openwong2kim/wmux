@@ -58,8 +58,9 @@ describe('launchQuick', () => {
     expect(params).toMatchObject({ cwd: '/repo', agentChoice: { agent: 'codex' }, nestUnder: 'ws-1' });
     expect(params.fanoutTaskOf).toBeUndefined();
     expect(params.workerPermissionMode).toBeUndefined();
-    // The prompt is read from a file, never typed into the shell.
-    const file = /cat '([^']+)'/.exec(params.initialCommand)?.[1];
+    // The prompt is read from a file, never typed into the shell: `cat '…'`
+    // on POSIX, `Get-Content -LiteralPath '…'` in PowerShell on Windows.
+    const file = /(?:cat|-LiteralPath) '([^']+)'/.exec(params.initialCommand)?.[1];
     expect(file && fs.readFileSync(file, 'utf8')).toBe('fix it');
   });
 
