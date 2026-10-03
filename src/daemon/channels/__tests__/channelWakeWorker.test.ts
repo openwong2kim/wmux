@@ -463,6 +463,26 @@ describe('pickTarget — never guess', () => {
     expect(target?.id).toBe('b');
   });
 
+  it('a recovered pane whose output is active but whose agent is unconfirmed gets no input', () => {
+    // A viewer activated the recovered pane's output; it still holds a fresh
+    // shell while lastDetectedAgent names the agent from before the restart.
+    const recovered = session({ id: 'pty-r', lastDetectedAgent: 'codex', deferred: false, recoveredAgentUnconfirmed: true });
+    const h = makeHarness(() => 'pty-r');
+    h.setEntries([entry({ unread: 2, mentionUnread: 1 })]);
+    h.setSessions([recovered]);
+    h.worker.tickOnce();
+    flushEnter();
+    expect(h.writes).toEqual([]);
+    expect(pickTarget([recovered], 'ws-b', 'codex')).toBeNull();
+    expect(pickTargetWithPrincipal([recovered], 'ws-b', 'codex', 'pane:ws-b/p1', () => 'pty-r')).toBeNull();
+
+    // Once the agent is seen running again the pane is a target as before.
+    h.setSessions([{ ...recovered, recoveredAgentUnconfirmed: false }]);
+    h.worker.tickOnce();
+    flushEnter();
+    expect(h.writes.map((w) => w.sessionId)).toEqual(['pty-r', 'pty-r']);
+  });
+
   it('never nudges an agent-less shell — the single-pane fallback requires a detected agent (dogfood 2026-07-05)', () => {
     // Live -dev proof: the member's real claude pane was ATTACHED (deferred to
     // the renderer Stop-hook path), leaving a bare zsh (lastDetectedAgent none)

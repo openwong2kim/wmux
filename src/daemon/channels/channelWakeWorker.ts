@@ -104,6 +104,13 @@ export interface WakeSessionView {
    */
   deferred?: boolean;
   /**
+   * True for a RECOVERED session whose agent has not been seen running since
+   * the recovery. A viewer can activate the pane's output long before that,
+   * and `lastDetectedAgent` still names the agent that ran before the restart,
+   * while the pane now holds a fresh shell. Excluded like `deferred`.
+   */
+  recoveredAgentUnconfirmed?: boolean;
+  /**
    * True when a renderer is attached to this session (GUI alive). Claude
    * panes are excluded ONLY while attached — the renderer's Stop-hook
    * mention path owns them there. Detached = headless: no renderer path
@@ -606,10 +613,16 @@ export class ChannelWakeWorker {
   }
 }
 
+/** G5: a recovered pane is no target until its agent is seen running again. */
+function recoveredWithoutAgent(s: WakeSessionView): boolean {
+  return s.deferred === true || s.recoveredAgentUnconfirmed === true;
+}
+
 /**
  * Injection target discipline: never guess.
- *  0. deferred (recovered-not-yet-activated) sessions are excluded outright —
- *     no agent lives there and nothing renders (dogfood G5 finding);
+ *  0. deferred (recovered-not-yet-activated) sessions, and recovered sessions
+ *     whose agent has not been seen since, are excluded outright — no agent
+ *     lives there (dogfood G5 finding);
  *  1. ATTACHED claude panes are excluded — the renderer's Stop-hook mention
  *     path owns them while a GUI is alive; a DETACHED claude pane is
  *     eligible like any agent (headless has no other delivery path —
@@ -648,7 +661,7 @@ export function pickTargetWithPrincipal(
   const ptyId = principalPtyIdOf(principalId);
   if (!ptyId) return null;
 
-  const session = sessions.find((candidate) => candidate.id === ptyId && candidate.deferred !== true);
+  const session = sessions.find((candidate) => candidate.id === ptyId && !recoveredWithoutAgent(candidate));
   if (!session || session.workspaceId !== workspaceId) return null;
   if (session.lastDetectedAgent === 'claude' && session.attached === true) return null;
 
@@ -663,7 +676,7 @@ export function pickTarget(
   workspaceId: string,
   memberId: string,
 ): WakeSessionView | null {
-  const inWs = sessions.filter((s) => s.workspaceId === workspaceId && s.deferred !== true);
+  const inWs = sessions.filter((s) => s.workspaceId === workspaceId && !recoveredWithoutAgent(s));
   const eligible = inWs.filter((s) => s.lastDetectedAgent !== 'claude' || s.attached !== true);
   const slugMatch = eligible.filter((s) => s.lastDetectedAgent === memberId);
   if (slugMatch.length === 1) return slugMatch[0];

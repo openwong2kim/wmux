@@ -93,6 +93,20 @@ export interface ManagedSession {
    */
   deferred: boolean;
   /**
+   * True from recovery until something shows an agent is running in the pane
+   * again: its banner is detected, one of its hooks reports, or the process
+   * watch finds it (`confirmAgent`). Separate from `deferred` on purpose:
+   * showing output says nothing about what runs there — a recovered pane is a
+   * fresh shell whatever `lastDetectedAgent` still says.
+   */
+  recoveredAgentUnconfirmed: boolean;
+  /**
+   * True from recovery until the first `resizeSession`. A web viewer can
+   * activate the pane before the desk's renderer reports its size; that first
+   * resize then still gets the ConPTY repaint the unmute path requests.
+   */
+  firstGeometryPending: boolean;
+  /**
    * #1464: the PTY was resized to a new geometry while its output was still
    * muted (recovery). Decides, when the unmute fires, whether the held output
    * may be replayed — on Windows a size change inside the drain window means
@@ -701,6 +715,8 @@ export class DaemonSessionManager extends EventEmitter {
       bridge,
       promptLog,
       deferred,
+      recoveredAgentUnconfirmed: deferred,
+      firstGeometryPending: deferred,
       viewerVisible: true,
     };
     this.sessions.set(params.id, managed);
@@ -1002,6 +1018,8 @@ export class DaemonSessionManager extends EventEmitter {
     const safeCols = clampCols(cols);
     const safeRows = clampRows(rows);
     const geometryChanged = safeCols !== managed.meta.cols || safeRows !== managed.meta.rows;
+    const firstGeometry = managed.firstGeometryPending;
+    managed.firstGeometryPending = false;
     if (geometryChanged) {
       // #1464: output held by a still-muted (recovering) session so far was
       // produced at the old size. Drop it BEFORE the resize — node-pty data
@@ -1018,7 +1036,37 @@ export class DaemonSessionManager extends EventEmitter {
       managed.bridge.noteResize();
     }
 
+    // A web viewer activated this recovered pane before the desk's first
+    // resize, so capture is already live and the #1464 held-output handling
+    // below no longer applies. On Windows, request the same full ConPTY repaint
+    // at the new size once the drain delay has passed, so the pane's latest
+    // frame is drawn at the desk's geometry.
+    if (firstGeometry && geometryChanged && !managed.bridge.isMuted && process.platform === 'win32') {
+      setTimeout(() => this.repaintAtCurrentSize(id, managed), DEFERRED_UNMUTE_DELAY_MS).unref?.();
+    }
+
     this.activateDeferred(id);
+  }
+
+  /**
+   * Mark a recovered pane's agent as running again. Called on any signal that
+   * names a live agent in the pane; see `recoveredAgentUnconfirmed`.
+   */
+  confirmAgent(id: string): void {
+    const managed = this.sessions.get(id);
+    if (managed) managed.recoveredAgentUnconfirmed = false;
+  }
+
+  /** Ask ConPTY for a full repaint by resizing to the size it already has. */
+  private repaintAtCurrentSize(id: string, managed: ManagedSession): void {
+    if (this.sessions.get(id) !== managed) return;
+    if (managed.meta.state === 'dead' || managed.meta.state === 'suspended') return;
+    // Same geometry, so no noteResize(): viewers keep their grid.
+    try {
+      managed.ptyProcess.resize(managed.meta.cols, managed.meta.rows);
+    } catch {
+      // The PTY exited in between: nothing to show.
+    }
   }
 
   /**
@@ -1056,22 +1104,16 @@ export class DaemonSessionManager extends EventEmitter {
   activateDeferred(id: string): void {
     const managed = this.sessions.get(id);
     if (!managed?.deferred) return;
+    if (managed.meta.state === 'dead' || managed.meta.state === 'suspended') return;
     managed.deferred = false;
     setTimeout(() => {
-      const current = this.sessions.get(id);
-      if (!current) return;
-      const conptyRepaint = current.resizedWhileMuted === true && process.platform === 'win32';
-      current.resizedWhileMuted = false;
-      current.bridge.setMuted(false, { replayHeld: !conptyRepaint });
-      if (conptyRepaint && current.meta.state !== 'dead' && current.meta.state !== 'suspended') {
-        // Same geometry, so no noteResize(): viewers keep their grid, and
-        // setMuted(false) above already stamped the redraw guard.
-        try {
-          current.ptyProcess.resize(current.meta.cols, current.meta.rows);
-        } catch {
-          // The PTY exited between the resize and the unmute: nothing to show.
-        }
-      }
+      // A session destroyed and re-created under the same id is not this one.
+      if (this.sessions.get(id) !== managed) return;
+      const conptyRepaint = managed.resizedWhileMuted === true && process.platform === 'win32';
+      managed.resizedWhileMuted = false;
+      // setMuted(false) stamps the redraw guard the repaint below relies on.
+      managed.bridge.setMuted(false, { replayHeld: !conptyRepaint });
+      if (conptyRepaint) this.repaintAtCurrentSize(id, managed);
     }, DEFERRED_UNMUTE_DELAY_MS).unref?.();
   }
 

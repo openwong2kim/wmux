@@ -3398,6 +3398,7 @@ function registerRpcHandlers(
     // staleness guards below on purpose: even a capture we discard as stale
     // still proves the process is alive.
     agentProcessTracker.arm(p.id, managed.meta.pid);
+    sessionManager.confirmAgent(p.id);
     const prev = managed.meta.resumeBinding;
     // codex P2: ignore a STALE capture — an older hook RPC (a delayed Stop /
     // SessionStart from a prior turn) reaching the daemon after a newer one must
@@ -4076,6 +4077,7 @@ function registerRpcHandlers(
       onAuthorityTouched: (sessionId, signal) => {
         const managed = sessionManager.getSession(sessionId);
         if (!managed) return;
+        sessionManager.confirmAgent(sessionId);
         const wslTarget = managed.meta.wslTarget;
         if (!wslTarget) {
           agentProcessTracker.arm(sessionId, managed.meta.pid);
@@ -6103,6 +6105,7 @@ function wireEvents(
     if (slug) {
       // The agent is live again → this pane is no longer a "resume me" shell.
       recoveredAgentShellIds.delete(payload.sessionId);
+      sessionManager.confirmAgent(payload.sessionId);
       recoveredResumeBindings.delete(payload.sessionId);
       // Resume-chip edge trigger: a live banner PROVES the agent is running
       // right now — attach the process watch so the chip can hide on process
@@ -7454,6 +7457,9 @@ async function main(): Promise<void> {
         // bookkept live but renders nothing and holds no agent — the worker
         // must never spend nudges on it.
         deferred: sessionManager.getSession(meta.id)?.deferred === true,
+        // Activating the output (a web stream can do it) is not the agent
+        // coming back: the pane stays excluded until its agent is seen.
+        recoveredAgentUnconfirmed: sessionManager.getSession(meta.id)?.recoveredAgentUnconfirmed === true,
         // Attached ⇔ a renderer holds this session ⇔ the Stop-hook mention
         // path can deliver to Claude panes. Detached (headless) Claude panes
         // are the worker's job (Codex round-3).
@@ -7543,6 +7549,7 @@ async function main(): Promise<void> {
     }
     const managed = sessionManager.getSession(sessionId);
     if (!managed) return;
+    if (state.alive) sessionManager.confirmAgent(sessionId);
     // A death edge, or a launch edge for a different agent than the last one
     // seen here, ends the previous agent's running episode.
     const previousSlug = managed.meta.lastDetectedAgent;

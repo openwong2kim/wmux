@@ -1041,6 +1041,109 @@ describe('DaemonSessionManager', () => {
       }
     });
 
+    it('activating the output does not confirm the recovered agent; only confirmAgent does', () => {
+      vi.useFakeTimers();
+      try {
+        manager.createSession({ id: 'rec-agent', cmd: 'sh', cwd: '.', deferOutput: true });
+        manager.createSession({ id: 'fresh', cmd: 'sh', cwd: '.' });
+        const managed = manager.getSession('rec-agent');
+        expect(managed?.recoveredAgentUnconfirmed).toBe(true);
+        expect(manager.getSession('fresh')?.recoveredAgentUnconfirmed).toBe(false);
+
+        manager.activateDeferred('rec-agent');
+        vi.advanceTimersByTime(100);
+        manager.resizeSession('rec-agent', 100, 30);
+        expect(managed?.bridge.isMuted).toBe(false);
+        expect(managed?.recoveredAgentUnconfirmed).toBe(true);
+
+        manager.confirmAgent('rec-agent');
+        expect(managed?.recoveredAgentUnconfirmed).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('a pending unmute does not touch a new session created under the same id', () => {
+      vi.useFakeTimers();
+      try {
+        manager.createSession({ id: 'rec-reuse', cmd: 'sh', cwd: '.', deferOutput: true });
+        manager.activateDeferred('rec-reuse');
+        manager.destroySession('rec-reuse');
+        manager.createSession({ id: 'rec-reuse', cmd: 'sh', cwd: '.', deferOutput: true });
+        vi.advanceTimersByTime(100);
+        const fresh = manager.getSession('rec-reuse');
+        expect(fresh?.deferred).toBe(true);
+        expect(fresh?.bridge.isMuted).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // Records every PTY resize, so the Windows repaint request can be counted.
+    const recordSizes = (): Array<[number, number]> => {
+      const pty = lastMockPty;
+      if (!pty) throw new Error('no pty spawned');
+      const sizes: Array<[number, number]> = [];
+      const resize = pty.resize.bind(pty);
+      pty.resize = (cols: number, rows: number) => {
+        sizes.push([cols, rows]);
+        resize(cols, rows);
+      };
+      return sizes;
+    };
+
+    it('on Windows the first desk resize after a web activation still gets a ConPTY repaint', () => {
+      vi.useFakeTimers();
+      try {
+        for (const [platform, repaints] of [['win32', 1], ['linux', 0]] as const) {
+          const id = `rec-first-${platform}`;
+          manager.createSession({ id, cmd: 'sh', cwd: '.', cols: 62, rows: 44, deferOutput: true });
+          const managed = manager.getSession(id);
+          const sizes = recordSizes();
+          withPlatform(platform, () => {
+            manager.activateDeferred(id);
+            vi.advanceTimersByTime(100);
+            expect(managed?.bridge.isMuted).toBe(false);
+            manager.resizeSession(id, 100, 30);
+            vi.advanceTimersByTime(100);
+            // Only the first resize is the desk's first geometry.
+            manager.resizeSession(id, 90, 30);
+            vi.advanceTimersByTime(100);
+          });
+          const repaint: Array<[number, number]> = repaints ? [[100, 30]] : [];
+          expect(sizes).toEqual([[100, 30], ...repaint, [90, 30]]);
+        }
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('on Windows a size change inside the drain window after a web activation discards, then repaints', () => {
+      vi.useFakeTimers();
+      try {
+        manager.createSession({ id: 'rec-web-win', cmd: 'cmd.exe', cwd: '.', cols: 62, rows: 44, deferOutput: true });
+        const managed = manager.getSession('rec-web-win');
+        const pty = lastMockPty;
+        if (!pty) throw new Error('no pty spawned');
+        const sizes = recordSizes();
+        withPlatform('win32', () => {
+          pty.simulateData('prompt-at-saved-geometry > ');
+          manager.activateDeferred('rec-web-win');
+          vi.advanceTimersByTime(50);
+          manager.resizeSession('rec-web-win', 62, 42);
+          pty.simulateData('conpty-frame-at-62x42 > ');
+          vi.advanceTimersByTime(50);
+          // The first-geometry repaint is not requested twice.
+          vi.advanceTimersByTime(200);
+        });
+        expect(managed?.bridge.isMuted).toBe(false);
+        expect(managed?.ringBuffer.readAll().toString()).toBe('');
+        expect(sizes).toEqual([[62, 42], [62, 42]]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('default (non-deferred) sessions capture data immediately', () => {
       // Regression guard: Bug 2 fix must not change normal create flow.
       manager.createSession({ id: 'live-1', cmd: 'cmd.exe', cwd: '.' });
