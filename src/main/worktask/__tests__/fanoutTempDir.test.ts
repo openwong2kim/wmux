@@ -14,6 +14,7 @@ import {
   TEMPDIR_BOOT_GRACE_MS,
   WorkerTempDirSweeper,
   createWorkerTempDir,
+  isDirectChildOfTempRoot,
   liveTempDirsFromSessions,
   removeWorkerTempDir,
   workerTempEnv,
@@ -24,7 +25,7 @@ let root: string;
 let registry: string;
 
 beforeEach(() => {
-  base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-tempdir-test-')));
+  base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-tempdir-test-')));
   root = path.join(base, 'tmp');
   fs.mkdirSync(root);
   registry = path.join(base, 'fanout-tempdirs.json');
@@ -79,6 +80,19 @@ describe('removeWorkerTempDir', () => {
     expect(await removeWorkerTempDir(ours, root)).toBe('removed');
     expect(fs.existsSync(ours)).toBe(false);
     expect(await removeWorkerTempDir(ours, root)).toBe('gone');
+  });
+});
+
+describe('isDirectChildOfTempRoot', () => {
+  const LONG = 'C:\\Users\\runneradmin\\AppData\\Local\\Temp';
+  it('accepts the native long spelling on win32, in any case', () => {
+    expect(isDirectChildOfTempRoot(`${LONG}\\wmux-task-abc`, LONG, 'c:\\users\\RUNNERADMIN\\appdata\\local\\temp\\', 'win32')).toBe(true);
+  });
+  it('refuses an 8.3 short-name parent, a nested dir and a case-only mismatch on POSIX', () => {
+    expect(isDirectChildOfTempRoot('C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\wmux-task-abc', LONG, LONG, 'win32')).toBe(false);
+    expect(isDirectChildOfTempRoot(`${LONG}\\x\\wmux-task-abc`, `${LONG}\\x`, LONG, 'win32')).toBe(false);
+    expect(isDirectChildOfTempRoot('/Tmp/wmux-task-abc', '/tmp', '/tmp', 'linux')).toBe(false);
+    expect(isDirectChildOfTempRoot('/tmp/wmux-task-abc', '/tmp', '/tmp', 'linux')).toBe(true);
   });
 });
 

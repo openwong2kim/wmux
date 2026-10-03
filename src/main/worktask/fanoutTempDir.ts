@@ -63,7 +63,30 @@ export function createWorkerTempDir(root: string = os.tmpdir()): string {
   // mkdtemp already uses 0700 on POSIX; say so explicitly so a umask or a
   // platform difference can never widen it.
   if (process.platform !== 'win32') fs.chmodSync(dir, 0o700);
-  return fs.realpathSync(dir);
+  // The NATIVE realpath, the same one removal compares against: the JS
+  // fallback keeps Windows 8.3 short names (C:\Users\RUNNER~1\…) that the
+  // native call expands, and the two spellings would never match.
+  return fs.realpathSync.native(dir);
+}
+
+/**
+ * Is `dir` a direct child of the temp root, with its parent spelled exactly as
+ * the resolved path (no link, no short name in it)? `realParent` / `realRoot`
+ * are native realpaths. Windows paths compare case-insensitively.
+ */
+export function isDirectChildOfTempRoot(
+  dir: string,
+  realParent: string,
+  realRoot: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  const p = platform === 'win32' ? path.win32 : path.posix;
+  const norm = (value: string): string => {
+    const n = p.normalize(value).replace(/[\\/]+$/, '');
+    return platform === 'win32' ? n.toLowerCase() : n;
+  };
+  const parent = norm(p.dirname(dir));
+  return parent === norm(realParent) && parent === norm(realRoot);
 }
 
 /** The env entries that point a worker's temp files at `dir`. */
@@ -100,10 +123,11 @@ export async function removeWorkerTempDir(dir: string, root: string = os.tmpdir(
   if (!path.isAbsolute(dir) || !path.basename(dir).startsWith(FANOUT_TEMPDIR_PREFIX)) return 'refused';
   const parent = path.dirname(dir);
   try {
+    // fs.promises.realpath is the native call, matching createWorkerTempDir.
     const [realParent, realRoot] = await Promise.all([fs.promises.realpath(parent), fs.promises.realpath(root)]);
     // The parent must BE the real temp root, spelled without any link in it:
     // a registry entry routed through a symlinked parent is refused.
-    if (realParent !== realRoot || parent !== realParent) return 'refused';
+    if (!isDirectChildOfTempRoot(dir, realParent, realRoot)) return 'refused';
     const st = await fs.promises.lstat(dir);
     if (!st.isDirectory()) return 'refused';
   } catch (err) {
