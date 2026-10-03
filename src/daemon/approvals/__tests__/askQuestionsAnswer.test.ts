@@ -479,12 +479,34 @@ describe('answering the picker', () => {
       expect(h.registry.list().pending).toEqual([expect.objectContaining({ kind: 'terminal_prompt', toolName: 'Bash' })]);
     });
 
-    it('refuses a picker that draws a Submit tab for one question, before any key', async () => {
-      const h = makeRegistry({}, oneTab(MULTI.q2, '←  ☐ Toppings  ✔ Submit  →'));
+    it('answers the picker Claude Code 2.1.288 draws: a Submit tab, then a review', async () => {
+      // Measured live: one multi-select question gets `←  ☐ … ✔ Submit  →`, the
+      // tab turns `☒` on the first tick, and Enter on the Submit row draws the
+      // review, where `1` submits.
+      const withSubmitTab = (rows: readonly string[]): string[] =>
+        rows.map((row) => row.replace(/^ (☐|☒) Toppings$/, '←  $1 Toppings  ✔ Submit  →'));
+      const h = makeRegistry({}, withSubmitTab(TOPPINGS.initial));
       const record = await create(h, TOPPINGS_PAYLOAD);
-      expect(await answer(h, record, toppings)).toMatchObject({ ok: false, reason: 'prompt-changed' });
-      expect(h.stepKeys).toEqual([]);
+      h.script = [
+        ...upToEnter.map(([key, rows]): [string, readonly string[]] => [key, withSubmitTab(rows)]),
+        [ASK_KEY_ENTER, withSubmitTab(TOPPINGS_REVIEW)],
+        ['1', TOPPINGS_ANSWERED],
+      ];
+      const result = await answer(h, record, toppings);
+      expect(h.unexpected).toEqual([]);
+      expect(result).toMatchObject({ ok: true, request: { state: 'resolved' } });
+      expect(stored(h, record.id).step).toMatchObject({ index: 7, total: 7, status: 'done' });
     });
+  });
+
+  it('still refuses a Submit tab on one single-select question, before any key', async () => {
+    const tabbed = SINGLE.initial.map((row) => row.replace(/^ ☐ Color\s*$/, '←  ☐ Color  ✔ Submit  →'));
+    expect(tabbed).not.toEqual(SINGLE.initial);
+    const h = makeRegistry({}, tabbed);
+    const record = await create(h, COLOR_PAYLOAD);
+    const result = await answer(h, record, { answers: [{ questionId: 'q0', keys: ['3'] }] });
+    expect(result).toMatchObject({ ok: false, reason: 'prompt-changed' });
+    expect(h.stepKeys).toEqual([]);
   });
 
   it('never takes an older answer block for this one: unconfirmed is answer-uncertain', async () => {

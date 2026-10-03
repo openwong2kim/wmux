@@ -28,8 +28,10 @@
 //
 // and, once every question is answered, the review screen ("Review your
 // answers", `● question` / `→ answer` pairs, `1. Submit answers`,
-// `2. Cancel`). A single question draws a one-tab bar (` ☐ Color`) with no
-// Submit tab; its single-select digit submits at once.
+// `2. Cancel`). A single single-select question draws a one-tab bar
+// (` ☐ Color`) with no Submit tab; its digit submits at once. A single
+// multi-select question draws the Submit tab too on Claude Code 2.1.288
+// (`←  ☐ Fruit  ✔ Submit  →`), and Enter on its Submit row draws the review.
 //
 // Measured key effects (KEYS.md): on a single-select question a digit selects
 // and moves to the next tab (or, alone, submits); on a multi-select question a
@@ -58,7 +60,7 @@ export interface AskPickerRow {
 interface AskPickerTabs {
   /** One per question, in order; `answered` is a `☒` (else `☐`). */
   tabs: Array<{ label: string; answered: boolean }>;
-  /** The trailing `✔ Submit` tab (drawn when there are several questions). */
+  /** The trailing `✔ Submit` tab (drawn for several questions, or one multi-select). */
   submitTab: boolean;
 }
 
@@ -372,7 +374,11 @@ export function answerLabels(question: AskFormQuestion, answer: AskAnswer): stri
 function tabsMatch(screen: AskPickerTabs, questions: readonly AskFormQuestion[]): boolean {
   return screen.tabs.length === questions.length
     && screen.tabs.every((tab, j) => tab.label === normalize(questions[j]!.header ?? ''))
-    && screen.submitTab === questions.length > 1;
+    && (questions.length > 1
+      ? screen.submitTab
+      // One question: a multi-select draws the Submit tab (measured on 2.1.288);
+      // the bar without it is still read as the same picker.
+      : !screen.submitTab || questions[0]!.multiSelect === true);
 }
 
 /**
