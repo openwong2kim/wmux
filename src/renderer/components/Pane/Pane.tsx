@@ -11,7 +11,7 @@ import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import TerminalComponent from '../Terminal/Terminal';
 import { ChatV2Overlay, useChatSurfaceView } from '../ChatV2/ChatSurface';
-import { forgetChatV2Pane } from '../ChatV2/useChatV2';
+import { forgetChatV2Pane, usePaneChatV2Binding } from '../ChatV2/useChatV2';
 import BrowserPanel from '../Browser/BrowserPanel';
 import EditorPanel from '../Editor/EditorPanel';
 import DiffPanel from '../Diff/DiffPanel';
@@ -583,6 +583,11 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   const resumePtyReady = useStore((s) =>
     activeSurfacePtyId ? !!s.ptyReadyByPtyId[activeSurfacePtyId] : false,
   );
+  // A chat-v2 conversation that still owns this pane (not handed off) must not
+  // be offered for resume in the anchor shell: that would put a second writer
+  // on the same conversation. Asked only for panes that offer a resume.
+  const chatV2Binding = usePaneChatV2Binding(activeSurfacePtyId || undefined, !!resumeBinding || !!resumeHint);
+  const chatV2OwnsPane = !!chatV2Binding && chatV2Binding.status !== 'handed-off';
   // The persistent resume chip's "is this pane's agent busy?" gate — and the
   // store-wide `agentClockMs` decay-clock subscription it needs — lives in the
   // <ResumeInfoChipGate> leaf below, NOT here: Pane mounts that leaf only when a
@@ -733,7 +738,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
           recovery pill flow above (the pill takes precedence right after a
           reboot). Reveals the conversation UUID and types the exact resume
           command into this pane on 복구. */}
-      {resumeBinding && !resumeHint && activeSurfacePtyId && (
+      {resumeBinding && !resumeHint && activeSurfacePtyId && !chatV2OwnsPane && (
         <ResumeInfoChipGate
           ptyId={activeSurfacePtyId}
           binding={resumeBinding}
@@ -797,7 +802,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
           resumePtyReady: it then takes its height before the recovered pane's
           first fit instead of shrinking the terminal (a resize, a SIGWINCH)
           once the pane is live. Only the button waits for readiness. */}
-      {resumeHint && !supervision && activeSurfacePtyId && (() => {
+      {resumeHint && !supervision && activeSurfacePtyId && !chatV2OwnsPane && (() => {
         const ptyId = activeSurfacePtyId;
         const launcher = resumeHint; // slug doubles as the launcher stem ('claude'/'codex')
         const agentName = launcher.charAt(0).toUpperCase() + launcher.slice(1);
