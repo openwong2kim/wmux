@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { buildWslInjection, WSL_HOOK } from '../wslIntegration';
+import { buildWslInjection, WSL_HOOK, wslClaudeHooks } from '../wslIntegration';
+import { HOOK_SPECS } from '../../cli/commands/setupHooks';
 import { parseWslAgentReport, pickReportedAgent } from '../../daemon/wslAgentProcess';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { BASH_INIT } from '../../daemon/shell-integration';
@@ -327,9 +328,32 @@ describe.skipIf(process.platform === 'win32')('WSL hook permission gate (#1730)'
     expect(out.slice(2, 5)).toEqual(['/bridge.mjs', 'PreToolUse', '--permission-gate']);
   });
 
+  it('stays silent with no flag path, or under the WMUX_GATE=0 opt-out', () => {
+    const { flag, dir, ran } = setup();
+    fs.writeFileSync(flag, '');
+    const hook = path.join(dir, 'hook.sh');
+    const base = { PATH: '/usr/bin:/bin', WMUX_WSL_NODE: path.join(dir, 'node'), WMUX_WSL_BRIDGE: '/b' };
+    execFileSync('/bin/sh', [hook, 'PreToolUse', '--permission-gate'], { env: base });
+    execFileSync('/bin/sh', [hook, 'PreToolUse', '--permission-gate'], { env: { ...base, WMUX_WSL_GATE_FLAG: '' } });
+    execFileSync('/bin/sh', [hook, 'PreToolUse', '--permission-gate'], { env: { ...base, WMUX_WSL_GATE_FLAG: flag, WMUX_GATE: '0' } });
+    expect(ran()).toBeNull();
+  });
+
   it('never gates the other hooks on the flag', () => {
     const { run, ran } = setup();
     run(['UserPromptSubmit']);
     expect(ran()?.slice(2, 4)).toEqual(['/bridge.mjs', 'UserPromptSubmit']);
+  });
+});
+
+// #1730 — a WSL pane must register exactly the hooks a Windows pane does.
+describe('WSL hook parity with Windows (#1730)', () => {
+  it('registers every Windows hook spec, with the same matcher and arguments', () => {
+    const wsl = Object.entries(wslClaudeHooks()).flatMap(([event, groups]) => groups.map((g) => {
+      const extra = g.hooks[0].command.split(` ${event}`)[1]?.trim() ?? '';
+      return `${event}|${g.matcher}|${extra}`;
+    })).sort();
+    const windows = HOOK_SPECS.map((s) => `${s.event}|${s.matcher}|${s.extraArgs ?? ''}`).sort();
+    expect(wsl).toEqual(windows);
   });
 });

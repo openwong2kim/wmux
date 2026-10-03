@@ -430,6 +430,22 @@ let gateBroker: GateBroker | null = null;
 let gateRuntimeOff = false;
 /** #1730 — the gate-armed hint a WSL hook tests before spawning the bridge. */
 let gateFlag: GateFlagFile | null = null;
+/** #783 — a gate raised right now could actually be answered. One predicate
+ *  for both the gate decision and the WSL flag (#1730), so they cannot drift. */
+function gateAnswerable(): boolean {
+  return !gateRuntimeOff && webTerminalServer?.canResolveGates === true;
+}
+/** #1730 — the web server's start/stop changes gateAnswerable(); mirror it at
+ *  once instead of on the next poll, however the handler returns. */
+function syncGateAfter<A extends unknown[], R>(fn: (...args: A) => Promise<R>): (...args: A) => Promise<R> {
+  return async (...args) => {
+    try {
+      return await fn(...args);
+    } finally {
+      gateFlag?.sync();
+    }
+  };
+}
 
 /**
  * A plain-text parse of a session's ring on the shared concurrency-1 snapshot
@@ -3081,7 +3097,7 @@ function registerRpcHandlers(
   // Bumped by every operator stop. An in-place grant change
   // (`onlyIfRunning`) that a stop overtook must not bring the server back.
   let webStopGeneration = 0;
-  pipeServer.onRpc('daemon.web.start', async (params) => {
+  pipeServer.onRpc('daemon.web.start', syncGateAfter(async (params) => {
     await afterRestore();
     const p = params as {
       port?: number;
@@ -3182,8 +3198,8 @@ function registerRpcHandlers(
       );
     }
     return info;
-  });
-  pipeServer.onRpc('daemon.web.stop', async () => {
+  }));
+  pipeServer.onRpc('daemon.web.stop', syncGateAfter(async () => {
     // Operator-initiated stop = "do not bring this back", and it revokes every
     // web credential with it. Distinct from stop() inside shutdown(), which is
     // a teardown of a server the operator still wants and therefore preserves
@@ -3205,7 +3221,7 @@ function registerRpcHandlers(
       );
     }
     return result;
-  });
+  }));
   pipeServer.onRpc('daemon.web.status', async () => {
     // Without this a status() called during boot would report `running:false`
     // for a server that is about to come back, and the GUI popover would latch
@@ -4088,7 +4104,7 @@ function registerRpcHandlers(
       // were; `wmux web --allow-input` arms the gate.
       // The module-level binding, not the captured `webServer` const: the
       // restore path can assign the instance after this handler is registered.
-      if (gateRuntimeOff || webTerminalServer?.canResolveGates !== true) {
+      if (!gateAnswerable()) {
         ingest.handle({ ...signal, kind: 'agent.tool_started' });
         return { ok: true };
       }
@@ -6740,8 +6756,8 @@ async function main(): Promise<void> {
   // #783 — construct the gate broker BEFORE the registry's first mutation, so
   // the notifyGateResolved/notifyGateDropped callbacks resolve to a live broker.
   // #1730 — keep the WSL gate hint in step with "a gate could be answered".
-  gateFlag = new GateFlagFile(path.join(getWmuxDir(), WSL_GATE_FLAG_FILE),
-    () => !gateRuntimeOff && webTerminalServer?.canResolveGates === true);
+  gateFlag = new GateFlagFile(path.join(getWmuxDir(), WSL_GATE_FLAG_FILE), gateAnswerable,
+    (message) => log('warn', `[gate] ${message}`));
   gateFlag.start();
   gateBroker = new GateBroker({
     log: (level, msg) => log(level, msg),
@@ -7730,7 +7746,7 @@ async function main(): Promise<void> {
   // bind must not delay the daemon's primary job. No state file → no-op, so
   // "nothing listens until asked" is unchanged for anyone who never ran
   // `wmux web`.
-  webRestore = restoreWebServer(sessionManager);
+  webRestore = restoreWebServer(sessionManager).finally(() => gateFlag?.sync());
 
   // 7. Start control pipe
   markDaemonBoot('pre-pipe-start');

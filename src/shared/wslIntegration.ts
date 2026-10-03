@@ -25,6 +25,8 @@ wmux_gate=
 for wmux_arg; do [ "$wmux_arg" = --permission-gate ] && wmux_gate=1; done
 if [ -n "$wmux_gate" ]; then
   [ -n "\${WMUX_WSL_GATE_FLAG:-}" ] && [ -e "$WMUX_WSL_GATE_FLAG" ] || exit 0
+  # The per-session opt-out the bridge would honour anyway, without the spawn.
+  [ "\${WMUX_GATE:-}" != 0 ] || exit 0
 fi
 export ELECTRON_RUN_AS_NODE=1
 wmux_agent_proc() {

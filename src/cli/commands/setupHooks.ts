@@ -134,7 +134,7 @@ const PERMISSION_REQUEST_SPEC = {
 };
 
 /** One wmux-owned hook entry in settings.json. */
-interface HookSpec {
+export interface HookSpec {
   event: HookEvent;
   matcher: string;
   extraArgs?: string;
@@ -176,7 +176,7 @@ export type HookProfile = 'full' | 'signals-only';
 
 /** Every wmux-owned hook in settings.json as (event, matcher) specs — the
  *  single source `installHooks` writes and `statusHooks` checks against. */
-const HOOK_SPECS: readonly HookSpec[] = [...SIGNAL_SPECS, PERMISSION_REQUEST_SPEC, PERMISSION_GATE_SPEC];
+export const HOOK_SPECS: readonly HookSpec[] = [...SIGNAL_SPECS, PERMISSION_REQUEST_SPEC, PERMISSION_GATE_SPEC];
 
 /** The specs a given profile installs. */
 function specsFor(profile: HookProfile): readonly HookSpec[] {
