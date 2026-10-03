@@ -114,31 +114,37 @@ export function launchStem(command: string | undefined): string {
   return unquoted.split(/[\\/]/).pop()?.toLowerCase().replace(/\.(exe|cmd|bat|ps1)$/, '') ?? '';
 }
 
-// Arguments that make a launch something other than a new agent session:
-// resuming one (its conversation already lives on an account), or a
-// management subcommand. From `claude --help` / `codex --help`.
-const NON_SESSION_ARGS: Record<'claude' | 'codex', ReadonlySet<string>> = {
+// What makes a launch something other than a new agent session: resuming one
+// (its conversation already lives on an account), or a management
+// subcommand. From `claude --help` / `codex --help`. `codex exec` (alias `e`)
+// is a new session that spends quota, so it is not listed.
+const NON_SESSION_FLAGS: Record<'claude' | 'codex', ReadonlySet<string>> = {
+  claude: new Set(['--resume', '-r', '--continue', '-c', '--version', '-v', '--help', '-h']),
+  codex: new Set(['--version', '-V', '--help', '-h']),
+};
+const NON_SESSION_SUBCOMMANDS: Record<'claude' | 'codex', ReadonlySet<string>> = {
   claude: new Set([
-    '--resume', '-r', '--continue', '-c', '--version', '-v', '--help', '-h',
     'agents', 'attach', 'auth', 'auto-mode', 'config', 'doctor', 'gateway', 'import', 'install', 'kill', 'login',
     'logout', 'logs', 'mcp', 'plugin', 'plugins', 'purge', 'respawn', 'rm', 'setup-token', 'stop', 'ultrareview',
     'update', 'upgrade',
   ]),
   codex: new Set([
-    '--version', '-V', '--help', '-h',
-    'agents', 'app', 'app-server', 'apply', 'archive', 'cloud', 'completion', 'debug', 'delete', 'doctor', 'e',
-    'exec', 'exec-server', 'features', 'fork', 'help', 'login', 'logout', 'mcp', 'migrate-rollouts', 'plugin',
+    'agents', 'app', 'app-server', 'apply', 'archive', 'cloud', 'completion', 'debug', 'delete', 'doctor',
+    'exec-server', 'features', 'fork', 'help', 'login', 'logout', 'mcp', 'migrate-rollouts', 'plugin',
     'queue', 'remote-control', 'resume', 'review', 'sandbox', 'unarchive', 'update',
   ]),
 };
 
 /** Whether a `claude` / `codex` launch line starts a new agent session (the
- *  only kind quota rotation may move or hold). Only unquoted arguments are
- *  checked, so a quoted prompt that mentions "update" is still a session. */
+ *  only kind quota rotation may move or hold). Options are matched by the
+ *  part before `=`; only the FIRST positional argument can be a subcommand,
+ *  so prompt words (`claude fix the install script`) never are. */
 export function isNewSessionLaunch(vendor: 'claude' | 'codex', command: string | undefined): boolean {
   const tokens = launchTokens(command);
-  const args = tokens.slice(tokens.findIndex((t) => !ENV_ASSIGNMENT.test(t)) + 1);
-  return !args.some((t) => !/["']/.test(t) && NON_SESSION_ARGS[vendor].has(t.split('=')[0]));
+  const args = tokens.slice(tokens.findIndex((t) => !ENV_ASSIGNMENT.test(t)) + 1).map((t) => t.replace(/["']/g, ''));
+  if (args.some((a) => a.startsWith('-') && NON_SESSION_FLAGS[vendor].has(a.split('=')[0]))) return false;
+  const first = args.find((a) => !a.startsWith('-'));
+  return first === undefined || !NON_SESSION_SUBCOMMANDS[vendor].has(first);
 }
 
 /** Whether the line runs more than one command (`;`, `&&`, `||`, `|`, `&`

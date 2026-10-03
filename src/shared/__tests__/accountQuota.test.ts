@@ -97,7 +97,11 @@ describe('isNewSessionLaunch', () => {
     ['claude', 'claude --version', false],
     ['codex', 'codex -c model=o3 "hi"', true],
     ['codex', 'codex resume --last', false],
-    ['codex', 'codex exec "x"', false],
+    ['codex', 'codex exec "x"', true],
+    ['codex', 'codex e "x"', true],
+    ['codex', 'codex "resume"', false],
+    ['claude', 'claude fix the install script', true],
+    ['claude', 'claude --resume="abc"', false],
     ['codex', 'codex login', false],
   ] as const)('%s: %s → %s', (vendor, line, expected) => {
     expect(isNewSessionLaunch(vendor, line)).toBe(expected);
