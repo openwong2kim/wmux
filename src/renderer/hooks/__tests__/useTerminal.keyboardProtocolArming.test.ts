@@ -50,12 +50,18 @@ describe('useTerminal keyboard-protocol arming (#1363)', () => {
     expect(after).toBe(INITIAL_REMOTE_KEYBOARD_STATE);
   });
 
-  it('#1694: a Codex pane on a Windows host gets its newline from the detected agent', () => {
-    // The fold above stays untrusting; the newline keys read host + agent per
-    // keystroke instead of the win32Input flag ConPTY's ?9001h would set.
+  it('#1694: native Windows Codex gets its newline from the detected agent', () => {
+    // The fold above stays untrusting; the newline keys read host, WSL,
+    // agent and prompt state per keystroke instead of the win32Input flag.
     expect(SRC).toMatch(
-      /win32RecordNewline: wantsWin32RecordNewline\(\s*hostPlatform\(\),\s*useStore\.getState\(\)\.surfaceAgent\[ptyId\]\?\.slug,\s*\)/,
+      /altEnterNewline: wantsAltEnterNewline\(\{\s*hostPlatform: hostPlatform\(\),\s*isWsl: wslByPtyId\.get\(ptyId\),\s*agentSlug: useStore\.getState\(\)\.surfaceAgent\[ptyId\]\?\.slug,\s*atPrompt: atPromptRef\.current,\s*\}\)/,
     );
+    // WSL comes from the pty's real shell, the predicate the clipboard uses.
+    expect(SRC).toMatch(/wslByPtyId\.set\(s\.id, isWslShell\(s\.shell\)\)/);
+  });
+
+  it('#1694: every live output chunk feeds the prompt state', () => {
+    expect(SRC).toMatch(/atPromptRef\.current = foldAtPrompt\(atPromptRef\.current, data\)/);
   });
 
   it('a prompt start clears state without waiting for the liveness poll', () => {

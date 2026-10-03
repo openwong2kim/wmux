@@ -10,8 +10,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   resolveNewlineKeyByte,
-  wantsWin32RecordNewline,
-  SHIFT_ENTER_WIN32,
+  wantsAltEnterNewline,
+  foldAtPrompt,
+  ALT_ENTER,
+  type AltEnterNewlineScope,
   type NewlineKeyEventLike,
 } from '../newlineKeys';
 
@@ -192,54 +194,84 @@ describe('resolveNewlineKeyByte — Ctrl+Enter', () => {
 });
 
 /**
- * #1694 — Codex on a Windows host. ConPTY's own `?9001h` is ignored there
- * (#1363), so `win32Input` never arms and Shift+Enter fell back to LF, which
- * ConPTY hands Codex as Ctrl+Enter. The newline now keys off the agent.
+ * #1694 — native Codex on a Windows host. ConPTY's own `?9001h` is ignored
+ * there (#1363), so `win32Input` never arms and Shift+Enter fell back to LF,
+ * which ConPTY hands Codex as Ctrl+Enter. The newline now keys off the agent
+ * and sends Alt+Enter, the chord measured to insert a newline in Codex.
  */
-describe('resolveNewlineKeyByte — Codex on Windows (#1694)', () => {
+describe('resolveNewlineKeyByte — native Codex on Windows (#1694)', () => {
   const NEWLINE_KEYS: Array<[string, Partial<NewlineKeyEventLike>]> = [
     ['Shift+Enter', { key: 'Enter', code: 'Enter', shiftKey: true }],
     ['Ctrl+Enter', { key: 'Enter', code: 'Enter', ctrlKey: true }],
     ['Ctrl+J', { key: 'j', code: 'KeyJ', ctrlKey: true }],
   ];
-  /** Exactly what useTerminal passes, with the host and agent forced. */
-  const opts = (host: string, slug: string | undefined) => ({
-    protocol: { kitty: false, win32Input: false, modifyOtherKeys: 0 as const },
+  const NATIVE_CODEX: AltEnterNewlineScope = {
+    hostPlatform: 'win32',
+    isWsl: false,
+    agentSlug: 'codex',
+    atPrompt: false,
+  };
+  const PROTOCOL = { kitty: false, win32Input: false, modifyOtherKeys: 0 as const };
+  /** Exactly what useTerminal passes, with the scope forced. */
+  const opts = (scope: Partial<AltEnterNewlineScope>) => ({
+    protocol: PROTOCOL,
     shiftEnterFallback: 'lf' as const,
-    win32RecordNewline: wantsWin32RecordNewline(host, slug),
+    altEnterNewline: wantsAltEnterNewline({ ...NATIVE_CODEX, ...scope }),
+  });
+  /** What the same pane sent before #1694 (no agent-keyed mapping). */
+  const before = (e: Partial<NewlineKeyEventLike>) =>
+    resolveNewlineKeyByte(ev(e), { protocol: PROTOCOL, shiftEnterFallback: 'lf' });
+
+  it('only native Codex on a win32 host, mid-command, gets the mapping', () => {
+    expect(wantsAltEnterNewline(NATIVE_CODEX)).toBe(true);
+    expect(wantsAltEnterNewline({ ...NATIVE_CODEX, agentSlug: 'claude' })).toBe(false);
+    expect(wantsAltEnterNewline({ ...NATIVE_CODEX, agentSlug: undefined })).toBe(false);
+    expect(wantsAltEnterNewline({ ...NATIVE_CODEX, isWsl: true })).toBe(false);
+    expect(wantsAltEnterNewline({ ...NATIVE_CODEX, isWsl: undefined })).toBe(false);
+    expect(wantsAltEnterNewline({ ...NATIVE_CODEX, atPrompt: true })).toBe(false);
+    expect(wantsAltEnterNewline({ ...NATIVE_CODEX, hostPlatform: 'darwin' })).toBe(false);
+    expect(wantsAltEnterNewline({ ...NATIVE_CODEX, hostPlatform: 'linux' })).toBe(false);
+    expect(wantsAltEnterNewline({ ...NATIVE_CODEX, hostPlatform: null })).toBe(false);
   });
 
-  it('only a Codex pane on a win32 host gets the record', () => {
-    expect(wantsWin32RecordNewline('win32', 'codex')).toBe(true);
-    expect(wantsWin32RecordNewline('win32', 'claude')).toBe(false);
-    expect(wantsWin32RecordNewline('win32', undefined)).toBe(false);
-    expect(wantsWin32RecordNewline('darwin', 'codex')).toBe(false);
-    expect(wantsWin32RecordNewline('linux', 'codex')).toBe(false);
-    expect(wantsWin32RecordNewline(null, 'codex')).toBe(false);
+  it.each(NEWLINE_KEYS)('%s in a native Codex pane on win32 sends Alt+Enter (ESC CR)', (_, e) => {
+    expect(ALT_ENTER).toBe('\x1b\r');
+    expect(resolveNewlineKeyByte(ev(e), opts({}))).toBe(ALT_ENTER);
   });
 
-  it.each(NEWLINE_KEYS)('%s in a Codex pane on win32 sends the win32 Shift+Enter record', (_, e) => {
-    expect(resolveNewlineKeyByte(ev(e), opts('win32', 'codex'))).toBe(SHIFT_ENTER_WIN32);
+  it.each(NEWLINE_KEYS)('%s in a Codex pane inside WSL on win32 is unchanged', (_, e) => {
+    expect(resolveNewlineKeyByte(ev(e), opts({ isWsl: true }))).toBe(before(e));
+    expect(resolveNewlineKeyByte(ev(e), opts({ isWsl: true }))).toBe('\n');
+  });
+
+  it('a WSL Codex that negotiated kitty keeps the negotiated Shift+Enter', () => {
+    const kitty = { ...PROTOCOL, kitty: true };
+    const e = ev({ key: 'Enter', code: 'Enter', shiftKey: true });
+    expect(
+      resolveNewlineKeyByte(e, {
+        protocol: kitty,
+        shiftEnterFallback: 'lf',
+        altEnterNewline: wantsAltEnterNewline({ ...NATIVE_CODEX, isWsl: true }),
+      }),
+    ).toBe('\x1b[13;2u');
   });
 
   it.each(NEWLINE_KEYS)('%s in a Claude Code pane on win32 stays LF', (_, e) => {
-    expect(resolveNewlineKeyByte(ev(e), opts('win32', 'claude'))).toBe('\n');
+    expect(resolveNewlineKeyByte(ev(e), opts({ agentSlug: 'claude' }))).toBe('\n');
   });
 
   it.each(NEWLINE_KEYS)('%s in a plain PowerShell pane on win32 stays LF', (_, e) => {
-    expect(resolveNewlineKeyByte(ev(e), opts('win32', undefined))).toBe('\n');
+    expect(resolveNewlineKeyByte(ev(e), opts({ agentSlug: undefined }))).toBe('\n');
   });
 
   it.each(['darwin', 'linux'])('a Codex pane on %s is unchanged', (host) => {
     for (const [, e] of NEWLINE_KEYS) {
-      expect(resolveNewlineKeyByte(ev(e), opts(host, 'codex')))
-        .toBe(resolveNewlineKeyByte(ev(e), { protocol: opts(host, 'codex').protocol, shiftEnterFallback: 'lf' }));
+      expect(resolveNewlineKeyByte(ev(e), opts({ hostPlatform: host }))).toBe(before(e));
     }
-    expect(resolveNewlineKeyByte(ev(NEWLINE_KEYS[0][1]), opts(host, 'codex'))).toBe('\n');
   });
 
   it('still defers to an IME preedit and a custom Ctrl+J binding', () => {
-    const codex = opts('win32', 'codex');
+    const codex = opts({});
     expect(resolveNewlineKeyByte(ev({ key: 'Enter', shiftKey: true, isComposing: true }), codex)).toBeNull();
     expect(resolveNewlineKeyByte(ev({ key: 'Enter', ctrlKey: true, isComposing: true }), codex)).toBeNull();
     expect(
@@ -248,6 +280,45 @@ describe('resolveNewlineKeyByte — Codex on Windows (#1694)', () => {
   });
 
   it('plain Enter still submits', () => {
-    expect(resolveNewlineKeyByte(ev({ key: 'Enter', code: 'Enter' }), opts('win32', 'codex'))).toBeNull();
+    expect(resolveNewlineKeyByte(ev({ key: 'Enter', code: 'Enter' }), opts({}))).toBeNull();
+  });
+});
+
+/** #1694 review — the mapping ends with the command, not with the slug. */
+describe('foldAtPrompt (#1694)', () => {
+  const PROMPT = '\x1b]133;D;0\x07\x1b]133;A\x07PS C:\\> ';
+  const COMMAND = '\x1b]133;C\x07';
+
+  it('slug still codex + OSC 133;A → back to the previous encoding', () => {
+    const atPrompt = foldAtPrompt(false, PROMPT);
+    expect(atPrompt).toBe(true);
+    const e = ev({ key: 'Enter', code: 'Enter', shiftKey: true });
+    expect(
+      resolveNewlineKeyByte(e, {
+        shiftEnterFallback: 'lf',
+        altEnterNewline: wantsAltEnterNewline({
+          hostPlatform: 'win32', isWsl: false, agentSlug: 'codex', atPrompt,
+        }),
+      }),
+    ).toBe('\n');
+  });
+
+  it('a new command start (133;C) arms it again', () => {
+    expect(foldAtPrompt(true, COMMAND)).toBe(false);
+  });
+
+  it('the later marker in one chunk wins', () => {
+    expect(foldAtPrompt(false, PROMPT + 'codex\r\n' + COMMAND)).toBe(false);
+    expect(foldAtPrompt(false, COMMAND + 'bye\r\n' + PROMPT)).toBe(true);
+  });
+
+  it('a chunk without a marker keeps the state', () => {
+    expect(foldAtPrompt(true, 'plain output\r\n')).toBe(true);
+    expect(foldAtPrompt(false, '\x1b[?9001h\x1b[?1004h')).toBe(false);
+  });
+
+  it('reads byte chunks the same as strings', () => {
+    expect(foldAtPrompt(false, new TextEncoder().encode(PROMPT))).toBe(true);
+    expect(foldAtPrompt(true, new TextEncoder().encode(COMMAND))).toBe(false);
   });
 });

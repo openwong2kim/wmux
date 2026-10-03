@@ -33,7 +33,8 @@ import {
 } from '../terminal/replayMute';
 import { terminalFontFamilyCss } from '../utils/terminalFont';
 import { createPathLinkProvider } from '../terminal/pathLinkProvider';
-import { resolveNewlineKeyByte, wantsWin32RecordNewline } from '../terminal/newlineKeys';
+import { resolveNewlineKeyByte, wantsAltEnterNewline, foldAtPrompt } from '../terminal/newlineKeys';
+import { isWslShell } from '../../shared/imagePaste';
 import { encodeEscape, isBareEscape } from '../terminal/escapeKeys';
 import { resolveCtrlLetterByte } from '../terminal/ctrlLetterKeys';
 import { isComposeChord, composeOwnerHost, TERMINAL_PTY_ATTR, COMPOSE_OWNER_ATTR } from '../terminal/composeChord';
@@ -96,6 +97,25 @@ export function onTerminalRegistered(listener: (ptyId: string) => void): () => v
   terminalRegistrationListeners.add(listener);
   return () => terminalRegistrationListeners.delete(listener);
 }
+// #1694: ptyId → whether the pane's shell enters WSL, from the pty list's
+// `shell` (the same predicate the clipboard route uses, #1196). Learned once
+// per pane on a Windows host; a pane missing here counts as WSL, which keeps
+// the old newline bytes. Requests queue behind each other, and one that finds
+// its pane already learned (a restore mounts many at once) asks nothing.
+const wslByPtyId = new Map<string, boolean>();
+let ptyShellsQueue: Promise<void> = Promise.resolve();
+function learnPtyShells(ptyId: string): void {
+  if (wslByPtyId.has(ptyId)) return;
+  ptyShellsQueue = ptyShellsQueue
+    .then(async () => {
+      if (wslByPtyId.has(ptyId)) return;
+      for (const s of await window.electronAPI.pty.list()) {
+        wslByPtyId.set(s.id, isWslShell(s.shell));
+      }
+    })
+    .catch(() => undefined);
+}
+
 function registerTerminal(ptyId: string, terminal: Terminal): void {
   terminalRegistry.set(ptyId, terminal);
   for (const listener of [...terminalRegistrationListeners]) listener(ptyId);
@@ -1854,9 +1874,16 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     const hostPlatform = () =>
       (window.electronAPI as { hostPlatform?: () => string | null }).hostPlatform?.() ?? window.electronAPI.platform;
     const foldOpts = () => ({ trustWin32Input: hostPlatform() !== 'win32' });
+    // #1694: the Codex newline mapping lives only while the command runs. The
+    // detected slug can outlive Codex, so the pane's own OSC 133;A ends the
+    // mapping at once and 133;C starts it again. The liveness edges above need
+    // no hook here: the same hydrate that flips them clears the slug.
+    const atPromptRef = { current: false };
+    if (hostPlatform() === 'win32') learnPtyShells(ptyId);
     const noteKeyboard = (data: string | Uint8Array) => {
       keyboardRef.current = foldRemoteKeyboardState(keyboardRef.current, data, foldOpts());
       parkedKeyboardByTerminal.set(terminal, keyboardRef.current);
+      if (hostPlatform() === 'win32') atPromptRef.current = foldAtPrompt(atPromptRef.current, data);
     };
     // #1228 review (C1): the fold is liveness-scoped. When process-truth or
     // OSC 133 says the pane's foreground command is gone, any negotiation it
@@ -1920,13 +1947,15 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // Claude Code inside wmux never pushes kitty, so the historical CSI-u
         // default was Escape + garbage and the prompt submitted (#1152).
         shiftEnterFallback: 'lf',
-        // #1694: Codex on Windows takes its newline from a win32 key record.
-        // Keyed on the detected agent, not on `?9001h` — ConPTY emits that
-        // for every pane, so the fold ignores it on a Windows host (#1363).
-        win32RecordNewline: wantsWin32RecordNewline(
-          hostPlatform(),
-          useStore.getState().surfaceAgent[ptyId]?.slug,
-        ),
+        // #1694: native Windows Codex takes Alt+Enter as its newline. Keyed
+        // on the detected agent, not on `?9001h` — ConPTY emits that for
+        // every pane, so the fold ignores it on a Windows host (#1363).
+        altEnterNewline: wantsAltEnterNewline({
+          hostPlatform: hostPlatform(),
+          isWsl: wslByPtyId.get(ptyId),
+          agentSlug: useStore.getState().surfaceAgent[ptyId]?.slug,
+          atPrompt: atPromptRef.current,
+        }),
       });
       if (newlineByte !== null) {
         e.preventDefault();
