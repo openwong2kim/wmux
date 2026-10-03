@@ -82,7 +82,8 @@ function rig(options: { registry?: boolean; nativeOn?: boolean; paneEnv?: Record
     sessionManager: {
       getSession: ((id: string) => (id === PANE
         ? {
-            meta: { spawnCwd: dir, env: options.paneEnv ?? PANE_ENV },
+            // An explicit shell: the resume command's grammar follows it, not the test host's platform.
+            meta: { spawnCwd: dir, env: options.paneEnv ?? PANE_ENV, cmd: '/bin/zsh' },
             promptLog: { size: 1, isCommandRunning: () => false },
             bridge: { isEmptyShellPrompt: () => r.prompt.revision !== null, getInputRevision: () => r.prompt.revision ?? 0 },
           }

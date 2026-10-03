@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { newChatSession } from '../../../../shared/chatv2/session';
-import { handOffToTerminal, handedOffRefusal, resumeCommand, type ChatV2HandoffDeps, type ProcessProbe } from '../handoff';
+import { handOffToTerminal, handedOffRefusal, resumeCommand, type ChatV2HandoffDeps, type ProcessProbe, type ResumeShell } from '../handoff';
 import type { ChatV2StoredRecord } from '../types';
 
 const PROVIDER_ID = '0199f1c2-0000-4000-8000-000000000001';
@@ -20,6 +20,7 @@ function world(state: { probe: ProcessProbe; alive: boolean } = { probe: 'gone',
   const deps = {
     paneFree: vi.fn(async () => { steps.push('paneFree'); return true; }),
     promptRevision: vi.fn((): number | null => revision),
+    shellKind: vi.fn((): ResumeShell | null => 'posix'),
     probe: vi.fn((): ProcessProbe => state.probe),
     processIdentity: vi.fn(async () => (state.alive ? { startTime: 'T0', commandLine: `claude -p --resume ${PROVIDER_ID}` } : null)),
     persist: vi.fn(async (r: ChatV2StoredRecord) => { steps.push(`persist:${r.state}`); }),
@@ -48,6 +49,11 @@ describe('chat → terminal handoff', () => {
     const r = record({ mode: 'bypass', model: 'claude-opus-5-5[1m]', session: newChatSession({ id: 'c1', harness: 'claude', cwd: "/w/it's here" }) });
     expect(resumeCommand(r)).toBe(`cd -- '/w/it'\\''s here' && claude --resume ${PROVIDER_ID} '--model=claude-opus-5-5[1m]' --dangerously-skip-permissions\r`);
     expect(resumeCommand(record({ providerSessionId: `${PROVIDER_ID}; rm x` }))).toBeNull();
+    // PowerShell (5.1 has no `&&`): the agent runs only if the directory change worked.
+    const win = record({ mode: 'bypass', model: 'opus', session: newChatSession({ id: 'c1', harness: 'claude', cwd: "C:\\Users\\me\\it's ‘here’" }) });
+    expect(resumeCommand(win, 'pwsh')).toBe(
+      `if (Set-Location -LiteralPath 'C:\\Users\\me\\it''s ‘‘here’’' -PassThru -ErrorAction SilentlyContinue) `
+      + `{ claude --resume ${PROVIDER_ID} '--model=opus' --dangerously-skip-permissions }\r`);
     expect(resumeCommand(record({ session: newChatSession({ id: 'c1', harness: 'claude', cwd: '/w\nrm x' }) }))).toBeNull();
   });
 
@@ -69,6 +75,22 @@ describe('chat → terminal handoff', () => {
     const { deps } = world({ probe: 'exists', alive: false });
     deps.processIdentity.mockImplementation(async () => ({ startTime: 'T9', commandLine: '/bin/zsh' }));
     expect((await handOffToTerminal(deps, { record: record(), driver: null })).ok).toBe(true);
+  });
+
+  it('refuses before stopping anything in a shell the command is not written for (cmd.exe, WSL)', async () => {
+    const { deps } = world();
+    deps.shellKind.mockImplementation(() => null);
+    const driver = { pid: 4242, stop: vi.fn(async () => undefined) };
+    expect(await handOffToTerminal(deps, { record: record(), driver })).toMatchObject({ ok: false, error: { code: 'handoff-refused' } });
+    expect(driver.stop).not.toHaveBeenCalled();
+    expect(deps.writeToPane).not.toHaveBeenCalled();
+  });
+
+  it('types the PowerShell form into a PowerShell pane', async () => {
+    const { deps, written } = world();
+    deps.shellKind.mockImplementation(() => 'pwsh');
+    expect((await handOffToTerminal(deps, { record: record(), driver: null })).ok).toBe(true);
+    expect(written).toEqual([`if (Set-Location -LiteralPath '/w/repo' -PassThru -ErrorAction SilentlyContinue) { claude --resume ${PROVIDER_ID} }\r`]);
   });
 
   it('refuses before stopping anything when the id is not a UUID', async () => {

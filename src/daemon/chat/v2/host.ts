@@ -37,6 +37,7 @@ import { buildDriverEnv, DriverEnvError } from './env';
 import { boundEvent, EventBatcher } from './eventBatcher';
 import { claimChatV2Pane, releaseChatV2Pane } from './paneClaims';
 import { handOffToTerminal, handedOffRefusal } from './handoff';
+import { classifyShell } from '../../shell-integration';
 import { ChatV2Store } from './store';
 import {
   CHATV2_DAEMON_EVENT,
@@ -680,6 +681,7 @@ class Host implements ChatV2Host {
       processIdentity: this.deps.processIdentity,
       ...(this.deps.processProbe ? { probe: this.deps.processProbe } : {}),
       promptRevision: (paneId) => this.promptRevision(paneId),
+      shellKind: (paneId) => this.shellKind(paneId),
       persist: async (record) => {
         const previous = current.record;
         current.record = record;
@@ -707,14 +709,28 @@ class Host implements ChatV2Host {
 
   /**
    * The anchor shell's input revision while it sits at an empty prompt (shell
-   * integration seen, no command running), or null. Not offered where the
-   * resume command's POSIX quoting would not hold (Windows, WSL).
+   * integration seen, no command running), or null. cmd.exe has no prompt
+   * integration, so it never reads as empty.
    */
   private promptRevision(paneId: string): number | null {
-    if (process.platform === 'win32') return null;
     const pane = this.deps.sessionManager.getSession(paneId);
-    if (!pane || pane.meta.wslTarget || pane.promptLog.size === 0 || pane.promptLog.isCommandRunning()) return null;
+    if (!pane || pane.promptLog.size === 0 || pane.promptLog.isCommandRunning()) return null;
     return pane.bridge.isEmptyShellPrompt() ? pane.bridge.getInputRevision() : null;
+  }
+
+  /**
+   * The resume command's grammar for the pane's shell: PowerShell, or a POSIX
+   * shell (zsh, bash, and any other non-Windows shell). Null for cmd.exe and
+   * other Windows shells, and for WSL panes, whose `claude` and paths live in
+   * the distro.
+   */
+  private shellKind(paneId: string): 'posix' | 'pwsh' | null {
+    const pane = this.deps.sessionManager.getSession(paneId);
+    if (!pane || pane.meta.wslTarget) return null;
+    const shell = classifyShell(pane.meta.cmd ?? '');
+    if (shell === 'pwsh') return 'pwsh';
+    if (shell === 'bash' || shell === 'zsh') return 'posix';
+    return process.platform === 'win32' ? null : 'posix';
   }
 
   private async close(p: ChatV2ParamsByMethod['close']): Promise<Result<'close'>> {

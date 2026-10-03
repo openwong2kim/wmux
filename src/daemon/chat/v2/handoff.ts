@@ -31,11 +31,13 @@ export interface ChatV2HandoffDeps extends Pick<ChatV2HostDeps, 'paneFree' | 'wr
   /** Persist the record atomically. Rejects when the write failed. */
   persist: (record: ChatV2StoredRecord) => Promise<void>;
   /**
-   * The anchor shell's input revision while it sits at an empty prompt of a
-   * POSIX shell, or null (not provably empty, no shell integration, Windows).
-   * The command is typed only while the revision is unchanged.
+   * The anchor shell's input revision while it sits at an empty prompt, or
+   * null (not provably empty, or no shell integration). The command is typed
+   * only while the revision is unchanged.
    */
   promptRevision: (paneId: string) => number | null;
+  /** Which command grammar the anchor shell reads, or null when it is not one the resume command is written for. */
+  shellKind: (paneId: string) => ResumeShell | null;
   /** Defaults to signal 0: ESRCH is `gone`, success or EPERM is `exists`. */
   probe?: (pid: number) => ProcessProbe;
 }
@@ -65,8 +67,16 @@ function signalProbe(pid: number): ProcessProbe {
   }
 }
 
+/** The shells a resume command is written for: POSIX sh-family, or PowerShell (5.1 and 7). */
+export type ResumeShell = 'posix' | 'pwsh';
+
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/** PowerShell single quotes: also closed by the typographic single quotes, so those are doubled too. */
+function pwshQuote(value: string): string {
+  return `'${value.replace(/['\u2018\u2019\u201a\u201b]/g, (q) => q + q)}'`;
 }
 
 /** Anything a command line must never carry: C0 controls and DEL. */
@@ -75,23 +85,30 @@ const CONTROL = /[\u0000-\u001f\u007f]/;
 
 /**
  * The resume command for the anchor shell: back to the conversation's cwd,
- * then the agent with the same model and permission mode, submitted. Null when
- * a value fails its check.
+ * then the agent with the same model and permission mode, submitted. The
+ * agent runs only if the directory change worked. Null when a value fails its
+ * check.
  */
-export function resumeCommand(record: Pick<ChatV2StoredRecord, 'providerSessionId' | 'model' | 'mode' | 'session'>): string | null {
+export function resumeCommand(
+  record: Pick<ChatV2StoredRecord, 'providerSessionId' | 'model' | 'mode' | 'session'>,
+  shell: ResumeShell = 'posix',
+): string | null {
   const { providerSessionId, model, mode } = record;
   const cwd = record.session.cwd;
   if (!CHATV2_PROVIDER_SESSION_ID.test(providerSessionId)) return null;
   if (model && !CHATV2_MODEL.test(model)) return null;
   if (!cwd || CONTROL.test(cwd)) return null;
   const permission = permissionFlagFor(modePermission(mode));
-  const parts = [
-    'cd', '--', shellQuote(cwd), '&&',
+  const quote = shell === 'pwsh' ? pwshQuote : shellQuote;
+  const agent = [
     'claude', '--resume', providerSessionId,
-    ...(model ? [shellQuote(`--model=${model}`)] : []),
+    ...(model ? [quote(`--model=${model}`)] : []),
     ...(permission ? [permission] : []),
-  ];
-  return `${parts.join(' ')}\r`;
+  ].join(' ');
+  // PowerShell 5.1 has no `&&`; `Set-Location -PassThru` yields nothing when it fails.
+  return shell === 'pwsh'
+    ? `if (Set-Location -LiteralPath ${quote(cwd)} -PassThru -ErrorAction SilentlyContinue) { ${agent} }\r`
+    : `cd -- ${quote(cwd)} && ${agent}\r`;
 }
 
 function modePermission(mode: ChatV2RunMode): 'bypassPermissions' | 'default' {
@@ -136,7 +153,9 @@ async function handOff(deps: ChatV2HandoffDeps, input: ChatV2HandoffInput): Prom
   const { paneId } = record;
   const refuse = (message: string) => chatV2Error('handoff-refused', message);
   if (record.state === 'handed-off') return chatV2Error('handed-off', 'This chat already moved to the terminal.');
-  const command = resumeCommand(record);
+  const shell = deps.shellKind(paneId);
+  if (!shell) return refuse("This pane's shell cannot resume the conversation.");
+  const command = resumeCommand(record, shell);
   if (!command) return refuse('This conversation cannot be resumed in a terminal.');
 
   // 1. Stop the driver and prove its process is gone.

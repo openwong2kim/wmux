@@ -258,9 +258,10 @@ is in `THIRD_PARTY_NOTICES`.
 - The only handoff is chat → terminal: the daemon stops the driver, proves its
   process exited, records the conversation as handed off, and types
   `cd -- '<cwd>' && claude --resume <id>` (with the chat's model and permission
-  mode) into the anchor shell. It needs an idle turn and a shell sitting at an
-  empty prompt, and is not offered on Windows or WSL panes. A handed-off
-  record no longer sends.
+  mode) into the anchor shell; a PowerShell pane gets the equivalent
+  `if (Set-Location -LiteralPath '<cwd>' -PassThru …) { claude --resume <id> }`.
+  It needs an idle turn and a shell sitting at an empty prompt, and is not
+  offered in cmd.exe or WSL panes. A handed-off record no longer sends.
   Terminal → chat is not offered: without proof that the TUI process has exited,
   both could append to the same conversation file.
 
