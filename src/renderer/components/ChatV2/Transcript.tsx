@@ -1,6 +1,7 @@
 import { memo, useEffect, useState } from 'react';
 import { renderBrainMarkdown } from '../Deck/BrainMarkdown';
 import type { AgentStep, Block, ToolPreview } from '../../../shared/chatv2/session';
+import { claudeModelLabel } from '../../../shared/claudeModels';
 import { displayPath } from '../../../shared/chatv2/paths';
 import { taskListProgressLabel } from '../../../shared/chatv2/taskList';
 import type { FormAnswers } from '../../../shared/chatv2/questions';
@@ -21,7 +22,7 @@ function StatusGlyph({ state }: { state: ToolState }) {
 }
 
 function previewSummary(preview: ToolPreview | undefined, title: string, cwd: string): string {
-  const value = preview?.path ? displayPath(preview.path, cwd) : preview?.query ?? '';
+  const value = preview?.path ? displayPath(preview.path, cwd) : preview?.query ?? (preview?.kind === 'shell' ? preview.title ?? '' : '');
   return value && !title.includes(value) ? value : '';
 }
 
@@ -87,7 +88,7 @@ function stepState(step: AgentStep): ToolState {
 
 function SubagentRow({ block, state, actions, findActive }: { block: Block; state: ToolState; actions: TranscriptActions; findActive: boolean }) {
   const run = block.agentRun!;
-  const meta = [run.agentType, run.model, S.steps(run.steps.length)].filter(Boolean).join(' · ');
+  const meta = [run.agentType, run.model && claudeModelLabel(run.model), S.steps(run.steps.length)].filter(Boolean).join(' · ');
   return (
     <div className="wmux-chatv2-subagent" data-block-id={block.id} data-find-active={findActive || undefined}>
       <details>
@@ -124,6 +125,7 @@ function TurnFooter({ row }: { row: Extract<TranscriptRow, { kind: 'footer' }> }
   const outcome = row.outcome === 'interrupted' ? S.interrupted : row.outcome === 'failed' ? S.failed : row.outcome === 'usage-limited' ? S.usageLimited : null;
   return (
     <div className="wmux-chatv2-footer" data-live={row.live || undefined} aria-live={row.live ? 'off' : undefined}>
+      {row.live && <span className="wmux-chatv2-live-dot" aria-hidden />}
       <span>{label}</span>
       {endedAt != null && <><span aria-hidden>·</span><span>{formatClockTime(endedAt)}</span></>}
       {outcome && <><span aria-hidden>·</span><span data-outcome={row.outcome}>{outcome}</span></>}

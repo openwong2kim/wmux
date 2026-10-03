@@ -516,16 +516,16 @@
 .wmux-chatv2-reasoning summary::-webkit-details-marker, .wmux-chatv2-tool summary::-webkit-details-marker, .wmux-chatv2-subagent summary::-webkit-details-marker { display: none; }
 .wmux-chatv2-reasoning summary { color: var(--text-sub); font-size: 12px; }
 .wmux-chatv2-reasoning-body { margin-top: 2px; padding-left: 10px; color: var(--text-sub); font-size: 12.5px; line-height: 1.6; white-space: pre-wrap; }
-.wmux-chatv2-tool-line { display: flex; align-items: baseline; gap: 7px; min-width: 0; font-family: var(--font-mono); font-size: 12px; line-height: 1.7; color: var(--text-sub); }
+.wmux-chatv2-tool-line { display: flex; align-items: baseline; gap: 7px; min-width: 0; font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); font-size: 12px; line-height: 1.7; color: var(--text-sub); }
 .wmux-chatv2-tool-title { flex-shrink: 0; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-main); }
-.wmux-chatv2-tool-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-sub); font-family: var(--font-mono); font-size: 12px; }
+.wmux-chatv2-tool-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-sub); font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); font-size: 12px; }
 .wmux-chatv2-step-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wmux-chatv2-glyph { flex-shrink: 0; width: 1ch; text-align: center; color: var(--text-muted); }
 .wmux-chatv2-glyph[data-state="running"] { color: var(--accent); }
 .wmux-chatv2-glyph[data-state="done"] { color: var(--accent-green); }
 .wmux-chatv2-glyph[data-state="failed"] { color: var(--accent-red); }
 .wmux-chatv2-steps { margin: 2px 0 2px 4px; padding-left: 10px; box-shadow: inset 1px 0 0 var(--border-soft); }
-.wmux-chatv2-pre { max-height: 280px; overflow: auto; margin: 4px 0 4px 15px; padding: 6px 8px; border-radius: 6px; background: var(--bg-mantle); color: var(--text-sub); font-family: var(--font-mono); font-size: 11.5px; line-height: 1.55; white-space: pre; }
+.wmux-chatv2-pre { max-height: 280px; overflow: auto; margin: 4px 0 4px 15px; padding: 6px 8px; border-radius: 6px; background: var(--bg-mantle); color: var(--text-sub); font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); font-size: 11.5px; line-height: 1.55; white-space: pre; }
 .wmux-chatv2-line[data-kind="add"] { color: var(--accent-green); }
 .wmux-chatv2-line[data-kind="del"] { color: var(--accent-red); }
 .wmux-chatv2-tasks ul { margin: 2px 0 0; padding: 0; list-style: none; }
@@ -536,6 +536,8 @@
 .wmux-chatv2-notice { font-size: 12.5px; line-height: 1.55; color: var(--text-sub); }
 .wmux-chatv2-notice[data-tone="error"] { color: var(--accent-red); }
 .wmux-chatv2-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 2px 0 6px; color: var(--text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.wmux-chatv2-live-dot { width: 6px; height: 6px; border-radius: 999px; background: var(--accent); }
+.wmux-chatv2-footer[data-live] { color: var(--text-sub); }
 .wmux-chatv2-footer [data-outcome] { color: var(--text-sub); }
 .wmux-chatv2-card { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 4px 15px; padding: 8px 10px; border: 1px solid var(--border-soft); border-radius: 10px; background: var(--bg-mantle); }
 .wmux-chatv2-card-title { display: block; color: var(--text-sub); font-size: 11.5px; font-weight: 500; letter-spacing: .02em; }
@@ -562,7 +564,7 @@
 .wmux-chatv2-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; min-width: 0; }
 .wmux-chatv2-chip { display: inline-flex; align-items: center; min-height: 24px; padding: 0 7px; border-radius: 999px; color: var(--text-sub); font-size: 11.5px; white-space: nowrap; }
 .wmux-chatv2-chip:hover:not([aria-disabled="true"]) { background: var(--bg-surface); color: var(--text-main); }
-.wmux-chatv2-chip select { appearance: none; background: transparent; color: inherit; font: inherit; cursor: pointer; outline: none; }
+.wmux-chatv2-chip select { appearance: none; field-sizing: content; background: transparent; color: inherit; font: inherit; cursor: pointer; outline: none; }
 .wmux-chatv2-chip select:disabled { cursor: default; }
 .wmux-chatv2-chip[aria-disabled="true"] { color: var(--text-muted); }
 .wmux-chatv2-chip[data-mode="bypass"] { color: var(--accent-red); }
