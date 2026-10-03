@@ -22,6 +22,8 @@ const WSL_AGENT_PROC_FN = `wmux_agent_proc() {
   # A function, so set -- below cannot touch the hook's own arguments. No
   # set -f: it would outlive the function and break the Codex hook's later
   # rollout globs, and stat's fields after the last ')' hold no glob characters.
+  # Cleared first, so a value inherited from the environment never passes on.
+  WMUX_WSL_AGENT_PROC=
   { read -r wmux_boot < /proc/sys/kernel/random/boot_id; } 2>/dev/null || return 0
   wmux_out="1:$wmux_boot"
   wmux_p=$PPID
@@ -150,12 +152,10 @@ if [ -r "/proc/$PPID/cmdline" ]; then
   export WSLENV="$WSLENV:WMUX_CODEX_NOTIFIER_ARGV/w"
 fi
 # #1727 — which Linux process this pane's Codex is, as Claude's WSL_HOOK
-# reports it. The bridge refuses a shared app-server's notification outright,
-# so a report only ever comes from the Codex that owns this pane.
+# reports it; run only for the notification the bridge will actually get
+# (below). The bridge refuses a shared app-server's notification outright, so
+# a report only ever comes from the Codex that owns this pane.
 ${WSL_AGENT_PROC_FN}
-wmux_agent_proc
-export WMUX_WSL_AGENT_PROC
-export WSLENV="$WSLENV:WMUX_WSL_AGENT_PROC/w"
 # Codex also notifies for temporary title-generation and subagent threads.
 # Only a saved top-level CLI session is a valid Resume target. Match the exact
 # reported UUID and inspect its first metadata record; never guess the newest.
@@ -171,6 +171,9 @@ for file in "\${CODEX_HOME:-$HOME/.codex}"/sessions/*/*/*/rollout-*-"$id".jsonl 
   [ -f "$file" ] || continue
   IFS= read -r metadata < "$file" || continue
   if printf '%s' "$metadata" | "$WMUX_WSL_NODE" "$WMUX_WSL_CODEX_CONFIG" --is-resumable "$id"; then
+    wmux_agent_proc
+    export WMUX_WSL_AGENT_PROC
+    export WSLENV="$WSLENV:WMUX_WSL_AGENT_PROC/w"
     exec "$WMUX_WSL_NODE" "$WMUX_WSL_CODEX_BRIDGE" "$payload"
   fi
 done

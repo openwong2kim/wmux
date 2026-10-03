@@ -69,6 +69,11 @@ describe('pickReportedAgent', () => {
     expect(pickReportedAgent(parsed, 'claude')).toBeUndefined();
   });
 
+  it('picks a natively installed codex', () => {
+    const parsed = parseWslAgentReport(report(`6000:3000:/usr/local/bin/codex${US}--no-daemon`, '5999:2999:-bash'));
+    expect(pickReportedAgent(parsed, 'codex')?.pid).toBe(6000);
+  });
+
   it('never accepts a different agent, or a chain without the agent', () => {
     expect(pickReportedAgent(parseWslAgentReport(report('400:900:codex')), 'claude')).toBeUndefined();
     expect(pickReportedAgent(parseWslAgentReport(report('400:900:-bash')), 'claude')).toBeUndefined();

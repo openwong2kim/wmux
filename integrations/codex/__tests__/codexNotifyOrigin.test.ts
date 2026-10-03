@@ -9,8 +9,17 @@ import { randomUUID } from 'node:crypto';
 // its pure origin rules so they can be checked without a process tree.
 import {
   classifyNotifierOrigin, isSharedServerArgv, claimsPaneIdentity, tokenizeCommandLine, parseProcEntry, parsePsEntry,
-  parseHandedArgv,
+  parseHandedArgv, wslAgentProcessFromEnv,
 } from '../bin/wmux-codex-notify.mjs';
+
+describe('wslAgentProcessFromEnv (#1727)', () => {
+  it('passes a report up to 8192 characters and drops a longer or empty one', () => {
+    expect(wslAgentProcessFromEnv({ WMUX_WSL_AGENT_PROC: 'x'.repeat(8192) })).toHaveLength(8192);
+    expect(wslAgentProcessFromEnv({ WMUX_WSL_AGENT_PROC: 'x'.repeat(8193) })).toBeUndefined();
+    expect(wslAgentProcessFromEnv({ WMUX_WSL_AGENT_PROC: '' })).toBeUndefined();
+    expect(wslAgentProcessFromEnv({})).toBeUndefined();
+  });
+});
 
 // #1523: Codex 0.157+ spawns `notify` from a shared, detached app-server that
 // keeps the environment of whichever pane started it. The bridge must refuse
