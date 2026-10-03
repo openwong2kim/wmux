@@ -196,6 +196,21 @@ describe('ScheduleEditor', () => {
     expect(escape.defaultPrevented).toBe(true);
   });
 
+  it('Pick days switches the day buttons to multi-select, even from a one-day schedule', () => {
+    mount(null);
+    openChip('schedule');
+    act(() => radio('Weekly').click());
+    act(() => radio('Pick days').click());
+    const day = (name: string) => [...document.body.querySelectorAll<HTMLButtonElement>('[aria-pressed]')]
+      .find((b) => b.textContent === name)!;
+    act(() => day('Wed').click());
+    act(() => day('Fri').click());
+    expect(day('Mon').getAttribute('aria-pressed')).toBe('true');
+    expect(day('Wed').getAttribute('aria-pressed')).toBe('true');
+    expect(day('Fri').getAttribute('aria-pressed')).toBe('true');
+    expect(q('[data-schedule-chip-schedule]')!.textContent).toContain('Mon Wed Fri');
+  });
+
   it('shows a missing folder under the chips and keeps More options closed for chip problems', async () => {
     mount(null);
     act(() => type(q<HTMLTextAreaElement>('[data-schedule-prompt]')!, 'Do it'));

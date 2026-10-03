@@ -191,6 +191,22 @@ export function daysForPreset(preset: SchedulePreset, current: readonly number[]
   return current.slice();
 }
 
+/**
+ * The chip's mode: what the user picked, or what the day set reads as. Custom
+ * is a mode, not a day set — picking it keeps the days and switches the day
+ * buttons to multi-select, even while the set still reads as daily or weekly.
+ */
+export function effectivePreset(picked: SchedulePreset | null, days: readonly number[]): SchedulePreset {
+  return picked ?? presetOf(days);
+}
+
+/** A day button press: weekly picks that one day, custom toggles it (never the last day off). */
+export function toggleDay(preset: SchedulePreset, days: readonly number[], day: number): number[] {
+  if (preset === 'weekly') return [day];
+  if (!days.includes(day)) return [...days, day].sort((a, b) => a - b);
+  return days.length > 1 ? days.filter((d) => d !== day) : days.slice();
+}
+
 /** A schedule's name, until the user writes one: the prompt's first line. */
 export function deriveName(prompt: string): string {
   const first = prompt.split('\n').map((l) => l.trim()).find(Boolean) ?? '';

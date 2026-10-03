@@ -18,6 +18,8 @@ import { FOCUS_RING } from '../focusRing';
 import {
   DAILY,
   daysForPreset,
+  effectivePreset,
+  toggleDay,
   deriveName,
   draftFromForm,
   emptyForm,
@@ -82,6 +84,8 @@ export default function ScheduleEditor({ original, review, accounts, initial, on
   // A new schedule's name follows its prompt until the user writes one.
   const [nameTouched, setNameTouched] = useState(() => original !== null || Boolean(initial?.name));
   const [permissionTouched, setPermissionTouched] = useState(false);
+  // The schedule chip's mode as the user picked it (null: read from the days).
+  const [pickedPreset, setPickedPreset] = useState<SchedulePreset | null>(null);
   // Set once create succeeded: a failed grant/enable retry must update this
   // schedule, never create a second one.
   const [created, setCreated] = useState<Automation | null>(null);
@@ -193,7 +197,7 @@ export default function ScheduleEditor({ original, review, accounts, initial, on
   };
 
   const title = review ? t('schedules.editorReview') : original ? t('schedules.editorEdit') : t('schedules.editorNew');
-  const preset = presetOf(form.weekdays);
+  const preset = effectivePreset(pickedPreset, form.weekdays);
   const scheduleText = `${preset === 'weekly' ? `${t('schedules.weekly')} · ${weekdayName(form.weekdays[0] ?? 1)}` : describeDays(form.weekdays) || t('schedules.customDays')} · ${form.time}`;
   const account = vendorAccounts.find((a) => a.id === form.accountId)?.name;
   const promptProblem = shown('prompt');
@@ -267,7 +271,7 @@ export default function ScheduleEditor({ original, review, accounts, initial, on
                       { value: 'weekly', label: t('schedules.weekly') },
                       { value: 'custom', label: t('schedules.customDays') },
                     ]}
-                    onValueChange={(p) => set('weekdays', daysForPreset(p, form.weekdays))}
+                    onValueChange={(p) => { setPickedPreset(p); set('weekdays', daysForPreset(p, form.weekdays)); }}
                   />
                   {(preset === 'weekly' || preset === 'custom') && (
                     <div className="flex flex-wrap gap-1" role="group" aria-label={t('schedules.customDays')}>
@@ -279,9 +283,7 @@ export default function ScheduleEditor({ original, review, accounts, initial, on
                             size="sm"
                             variant={on ? 'secondary' : 'ghost'}
                             aria-pressed={on}
-                            onClick={() => set('weekdays', preset === 'weekly'
-                              ? [d]
-                              : on ? form.weekdays.filter((x) => x !== d) : [...form.weekdays, d])}
+                            onClick={() => set('weekdays', toggleDay(preset, form.weekdays, d))}
                           >
                             {weekdayName(d)}
                           </Button>

@@ -4,6 +4,8 @@ import {
   SCHEDULE_TEMPLATES,
   WEEKDAYS,
   daysForPreset,
+  effectivePreset,
+  toggleDay,
   deriveName,
   formFromTemplate,
   presetOf,
@@ -103,5 +105,19 @@ describe('schedule composer helpers', () => {
     expect(form).toMatchObject({ name: 'Issue triage', prompt: 'Sort new issues', cwd: '/repo', weekdays: WEEKDAYS, time: '09:30', mode: 'approval' });
     expect(validateForm(form)).toEqual([]);
     expect(validateForm({ ...form, cwd: '' })).toEqual(['cwd']);
+  });
+});
+
+describe('schedule chip mode', () => {
+  it('keeps Pick days as the mode while the days still read as one day', () => {
+    expect(effectivePreset(null, [3])).toBe('weekly');
+    expect(effectivePreset('custom', [3])).toBe('custom');
+  });
+
+  it('toggles days in Pick days, picks one in Weekly, and never clears the last day', () => {
+    expect(toggleDay('custom', [1], 5)).toEqual([1, 5]);
+    expect(toggleDay('custom', [1, 5], 1)).toEqual([5]);
+    expect(toggleDay('custom', [5], 5)).toEqual([5]);
+    expect(toggleDay('weekly', [1], 4)).toEqual([4]);
   });
 });
