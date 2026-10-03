@@ -4062,6 +4062,8 @@ export interface NotificationsViewWorkspaceRow {
   id: string;
   name: string;
   muted: boolean;
+  /** "Wake the agent on PR events" — absent reads as on (the default). */
+  prWake?: boolean;
 }
 
 export interface NotificationsViewProps {
@@ -4093,6 +4095,8 @@ export interface NotificationsViewProps {
   // T12 — per-workspace mute list
   workspaces: NotificationsViewWorkspaceRow[];
   onChangeWorkspaceMuted: (workspaceId: string, muted: boolean) => void;
+  /** Per-workspace "Wake the agent on PR events"; absent hides the section. */
+  onChangeWorkspacePrWake?: (workspaceId: string, enabled: boolean) => void;
 
   // Translator — injected so the pure view can render with the live
   // `useT()` translator in production and a static stub in tests.
@@ -4117,7 +4121,7 @@ export function NotificationsView(props: NotificationsViewProps) {
     taskbarFlashEnabled, onChangeTaskbarFlashEnabled,
     notificationSoundChoice, onChangeNotificationSoundChoice,
     mutedNotificationCategories, onChangeCategoryMuted,
-    workspaces, onChangeWorkspaceMuted,
+    workspaces, onChangeWorkspaceMuted, onChangeWorkspacePrWake,
     t,
   } = props;
 
@@ -4315,6 +4319,49 @@ export function NotificationsView(props: NotificationsViewProps) {
           </div>
         )}
       </SettingsSection>
+
+      {/* Per-workspace "Wake the agent on PR events" (renderer/hooks/fanoutCallerNudge.ts) */}
+      {onChangeWorkspacePrWake && workspaces.length > 0 && (
+        <SettingsSection
+          id="wsprwake"
+          title={t('settings.prWake')}
+          description={t('settings.prWakeDesc')}
+          data-testid="per-workspace-pr-wake-section"
+        >
+          <div className="flex flex-col" style={{ maxHeight: 240, overflowY: 'auto' }}>
+            {workspaces.map((ws, idx) => {
+              const labelId = `workspace-pr-wake-label-${ws.id}`;
+              return (
+                <label
+                  key={ws.id}
+                  htmlFor={`workspace-pr-wake-${ws.id}`}
+                  className="settings-row cursor-pointer hover:bg-[color:var(--surface-fill-hover)] transition-colors"
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    borderTop: idx === 0 ? 'none' : '1px solid var(--surface-hairline)',
+                  }}
+                  data-testid={`per-workspace-pr-wake-row-${ws.id}`}
+                >
+                  <span className="ui-field-label truncate min-w-0 mr-3" id={labelId}>
+                    {ws.name}
+                  </span>
+                  <input
+                    id={`workspace-pr-wake-${ws.id}`}
+                    type="checkbox"
+                    checked={ws.prWake !== false}
+                    aria-labelledby={labelId}
+                    onChange={(e) => onChangeWorkspacePrWake(ws.id, e.target.checked)}
+                    data-testid={`per-workspace-pr-wake-checkbox-${ws.id}`}
+                    className="settings-native-check shrink-0 cursor-pointer"
+                  />
+                </label>
+              );
+            })}
+          </div>
+        </SettingsSection>
+      )}
     </div>
   );
 }
@@ -4354,6 +4401,7 @@ function TabNotifications() {
       id: ws.id,
       name: ws.name,
       muted: ws.notificationsMuted,
+      prWake: ws.wakeOnPrEvents,
     })),
     [muteRows],
   );
@@ -4381,6 +4429,7 @@ function TabNotifications() {
       onChangeCategoryMuted={setNotificationCategoryMuted}
       workspaces={workspaceRows}
       onChangeWorkspaceMuted={(id, muted) => updateWorkspaceMetadata(id, { notificationsMuted: muted })}
+      onChangeWorkspacePrWake={(id, enabled) => updateWorkspaceMetadata(id, { wakeOnPrEvents: enabled })}
     />
   );
 }

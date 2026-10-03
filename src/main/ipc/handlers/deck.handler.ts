@@ -54,6 +54,7 @@ import { DeckScheduler } from '../../deck/DeckScheduler';
 import { DeckHeartbeat } from '../../deck/DeckHeartbeat';
 import { CommanderEventCoalescer, type CoalescerInput } from '../../deck/CommanderEventCoalescer';
 import { notifyFanoutCaller, shouldNotifyCaller, installFanoutCallerLedgerNotify } from '../../deck/fanoutCallerNotify';
+import { notifyPrOwner, setPrOwnerSink } from '../../deck/prOwnerNotify';
 import {
   routeWorkerEventToOwner,
   peekOrphanBacklog,
@@ -1648,6 +1649,19 @@ export function registerDeckHandler(
     });
   };
   const disposeCallerLedgerNotify = installFanoutCallerLedgerNotify(ownerHasBrain, notifyCaller);
+  // The pane that owns a PR, told about CI / review / conflict when no brain
+  // listens (prOwnerNotify.ts). The coalescer push below is unchanged.
+  setPrOwnerSink((ev) => {
+    notifyPrOwner(ev, {
+      hasBrain: ownerHasBrain,
+      send: (payload) => {
+        const win = getWindow();
+        if (!win || win.isDestroyed()) return false;
+        win.webContents.send(IPC.DECK_PR_OWNER, payload);
+        return true;
+      },
+    });
+  });
   coalescer = new CommanderEventCoalescer({
     runTurn: (workspaceId, prompt) => runTurnForWorkspace(prompt, workspaceId),
     // Lane F: worker events parked while this workspace had no brain —
@@ -3043,6 +3057,7 @@ export function registerDeckHandler(
     disposeLedgerEmitter();
     disposeLedgerPush();
     disposeCallerLedgerNotify();
+    setPrOwnerSink(null);
     ledgerPushCoalescer.dispose();
     globalTurnGate.dispose();
     scheduler.stop();

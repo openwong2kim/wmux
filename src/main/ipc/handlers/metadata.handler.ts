@@ -16,6 +16,7 @@ import { sendToRenderer } from '../../pipe/handlers/_bridge';
 import { PrCiRouter } from '../../metadata/PrCiRouter';
 import { PrReviewRouter } from '../../metadata/PrReviewRouter';
 import { ghPrService } from '../../github/GhPrService';
+import { publishPrOwnerEvent } from '../../deck/prOwnerNotify';
 
 // AO-style CI feedback (owner decision 2026-07-18). Module singletons set at
 // registration (they need getWindow for workspace resolution). The poll feeds
@@ -25,6 +26,15 @@ import { ghPrService } from '../../github/GhPrService';
 // that don't wire them.
 let prCiRouter: PrCiRouter | null = null;
 let prReviewRouter: PrReviewRouter | null = null;
+// The PR each pane's checkout showed on the last poll tick. The PR owner
+// nudge re-checks it right before a write (main/deck/fanoutCallerSubmit.ts):
+// a pane that has since moved to another branch is not told about the old PR.
+const prByPty = new Map<string, { number: number; url: string }>();
+
+/** The PR the pane's checkout showed on the last poll tick, or null. */
+export function currentPrOfPty(ptyId: string): { number: number; url: string } | null {
+  return prByPty.get(ptyId) ?? null;
+}
 
 // Minimal shape findWorkspaceIdForPty reads from the renderer's workspace.list.
 interface WorkspaceListEntry {
@@ -242,6 +252,7 @@ export async function runMetadataPollTick(
       portsMap.delete(ptyId);
       prCiRouter?.forget(ptyId);
       prReviewRouter?.forget(ptyId);
+      prByPty.delete(ptyId);
       continue;
     }
 
@@ -257,6 +268,11 @@ export async function runMetadataPollTick(
 
     const payload = await buildMetadataPayload(ptyId);
     if (!payload) continue;
+    if (payload.pr && typeof payload.pr.number === 'number' && payload.pr.url) {
+      prByPty.set(ptyId, { number: payload.pr.number, url: payload.pr.url });
+    } else {
+      prByPty.delete(ptyId);
+    }
     // AO-style CI + review feedback: fire-and-forget — both routers are
     // edge/watermark-triggered and never throw, so they must not gate the
     // metadata broadcast below.
@@ -299,16 +315,25 @@ export function registerMetadataHandlers(
       return null;
     }
   };
-  prCiRouter = new PrCiRouter(resolvePtyWorkspace, (e) => {
-    eventBus.emit({
-      type: 'pr.ci',
-      workspaceId: e.workspaceId,
-      ptyId: e.ptyId,
-      prNumber: e.prNumber,
-      url: e.url,
-      checks: 'failing',
-    });
-  });
+  // Every PR sink also tells the pane that owns the PR when its workspace has
+  // no brain (main/deck/prOwnerNotify.ts) — the bus events stay as they were.
+  const toOwner = (kind: Parameters<typeof publishPrOwnerEvent>[0]['kind'], e: { workspaceId: string; prNumber: number; url: string; headSha?: string }): void =>
+    publishPrOwnerEvent({ workspaceId: e.workspaceId, prNumber: e.prNumber, url: e.url, kind, ...(e.headSha ? { headSha: e.headSha } : {}) });
+  prCiRouter = new PrCiRouter(
+    resolvePtyWorkspace,
+    (e) => {
+      eventBus.emit({
+        type: 'pr.ci',
+        workspaceId: e.workspaceId,
+        ptyId: e.ptyId,
+        prNumber: e.prNumber,
+        url: e.url,
+        checks: 'failing',
+      });
+      toOwner('pr.ci_failed', e);
+    },
+    (e) => toOwner('pr.checks_passed', e),
+  );
   // Slice 2: new review comments on a pane's PR → `pr.review`. Rides the
   // GhPrService caches (30 s list TTL + updatedAt-keyed detail), throttled
   // per pane inside the router.
@@ -326,6 +351,9 @@ export function registerMetadataHandlers(
         author: e.author,
         snippet: e.snippet,
       });
+      // Only someone else's words wake the pane: not the PR author's own
+      // comments, not bots.
+      if (e.fromOthers > 0) toOwner('pr.review_comment', e);
     },
     Date.now,
     // Slice 3: merge-conflict edge, riding the same throttled read.
@@ -337,6 +365,7 @@ export function registerMetadataHandlers(
         prNumber: e.prNumber,
         url: e.url,
       });
+      toOwner('pr.merge_conflict', e);
     },
   );
 
@@ -454,6 +483,7 @@ export function updateCwd(ptyId: string, cwd: string): void {
 export function removeCwd(ptyId: string): void {
   cwdMap.delete(ptyId);
   prCiRouter?.forget(ptyId);
+  prByPty.delete(ptyId);
 }
 
 export function updateBranch(ptyId: string, branch: string): void {

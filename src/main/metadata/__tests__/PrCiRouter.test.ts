@@ -109,3 +109,34 @@ describe('PrCiRouter — edge-triggered CI failure', () => {
     expect(emits).toHaveLength(0);
   });
 });
+
+describe('PrCiRouter — checks passed (the PR owner nudge pointer)', () => {
+  function mkPassed() {
+    const failed: PrCiEmit[] = [];
+    const passed: PrCiEmit[] = [];
+    const router = new PrCiRouter(() => 'ws-1', (e) => failed.push(e), (e) => passed.push(e));
+    return { router, failed, passed };
+  }
+
+  it('fires once when the same PR goes pending/failing → passing, with the head commit', async () => {
+    const { router, failed, passed } = mkPassed();
+    await router.note('ptyA', pr('failing', { headSha: 'aaa1111' }));
+    await router.note('ptyA', pr('pending', { headSha: 'bbb2222' }));
+    await router.note('ptyA', pr('passing', { headSha: 'bbb2222' }));
+    await router.note('ptyA', pr('passing', { headSha: 'bbb2222' }));
+    expect(failed.map((e) => e.headSha)).toEqual(['aaa1111']);
+    expect(passed).toEqual([
+      { workspaceId: 'ws-1', ptyId: 'ptyA', prNumber: 42, url: 'https://github.com/o/r/pull/42', headSha: 'bbb2222' },
+    ]);
+  });
+
+  it('never fires on first sight, on a different PR, or for a merged PR', async () => {
+    const { router, passed } = mkPassed();
+    await router.note('ptyA', pr('passing'));
+    await router.note('ptyB', pr('pending', { number: 1 }));
+    await router.note('ptyB', pr('passing', { number: 2 }));
+    await router.note('ptyC', pr('pending'));
+    await router.note('ptyC', pr('passing', { state: 'merged' }));
+    expect(passed).toHaveLength(0);
+  });
+});

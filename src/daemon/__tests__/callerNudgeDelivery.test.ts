@@ -84,7 +84,15 @@ describe('deliverCallerNudge', () => {
     expect((await run()).result).toBe('sent');
   });
 
-  it('cancels the Enter when anything else reaches the pane after the paste', async () => {
+  it('writes the PR owner line too (the same template check, combined)', async () => {
+    vi.advanceTimersByTime(CALLER_NUDGE_QUIET_MS);
+    const pr = '[wmux] PR #12: CI failed — gh pr checks 12';
+    const prDeliver = vi.fn(async () => 'sent' as const);
+    expect(await deliverCallerNudge(pr, { usageHeld: () => false, input: () => bridge, deliver: prDeliver })).toEqual({ result: 'sent', pasted: true });
+    expect(prDeliver).toHaveBeenCalledTimes(1);
+  });
+
+    it('cancels the Enter when anything else reaches the pane after the paste', async () => {
     vi.advanceTimersByTime(CALLER_NUDGE_QUIET_MS);
     duringSubmitDelay = () => bridge.noteInput('x');
     expect(await run()).toEqual({ result: 'error', pasted: true });
@@ -97,6 +105,9 @@ describe('deliverCallerNudge', () => {
       result: 'error',
       pasted: false,
     });
+    expect(
+      await deliverCallerNudge('[wmux] PR #12: CI failed — gh pr checks 12; npm ERR! see log', { usageHeld: () => false, input: () => bridge, deliver }),
+    ).toEqual({ result: 'error', pasted: false });
     expect(await deliverCallerNudge(LINE, { usageHeld: () => true, input: () => bridge, deliver })).toEqual({
       result: 'held',
       pasted: false,

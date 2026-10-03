@@ -23,7 +23,7 @@
 // production wiring lives in metadata.handler next to PrCiRouter's.
 
 import type { PrStatus } from '../../shared/types';
-import type { PrListResult, PrDetailResult } from '../github/PrProvider';
+import type { PrListResult, PrDetailResult, PrComment } from '../github/PrProvider';
 import type { WorkspaceResolver } from './PrCiRouter';
 
 /** How often one pane may hit the (cached) provider. The metadata poll ticks
@@ -49,6 +49,11 @@ export interface PrReviewEmit {
   /** Author + sanitized snippet of the LATEST comment in the batch. */
   author: string;
   snippet: string;
+  /** How many of those are from someone other than the PR author, bots
+   *  excluded (the PR owner nudge fires only when this is above zero). */
+  fromOthers: number;
+  /** The PR head commit when gh reported it. */
+  headSha?: string;
 }
 
 /** Merge-conflict edge (slice 3) — fired once when a pane's PR becomes
@@ -58,6 +63,24 @@ export interface PrConflictEmit {
   ptyId: string;
   prNumber: number;
   url: string;
+  headSha?: string;
+}
+
+/**
+ * Comments that are not someone else talking to the PR: the PR author's own,
+ * and bots'. A bot is flagged by the REST read (`isBot`), carries the `[bot]`
+ * suffix, or has the login of a bot seen elsewhere in the same PR — the
+ * conversation read reports an app's login without the suffix.
+ */
+export function countFromOthers(comments: readonly PrComment[], fresh: readonly PrComment[], prAuthor: string): number {
+  const strip = (login: string): string => login.toLowerCase().replace(/\[bot\]$/, '');
+  const bots = new Set<string>();
+  for (const c of comments) if (c.isBot || /\[bot\]$/i.test(c.author)) bots.add(strip(c.author));
+  const author = strip(prAuthor);
+  return fresh.filter((c) => {
+    const login = strip(c.author);
+    return !c.isBot && !bots.has(login) && (author === '' || login !== author);
+  }).length;
 }
 
 /** Display-safe snippet: control chars and newlines stripped, hard cap. The
@@ -131,7 +154,7 @@ export class PrReviewRouter {
         } else if (!st.conflictFired) {
           const ws = await this.resolveWorkspaceId(ptyId);
           if (ws) {
-            this.emitConflict({ workspaceId: ws, ptyId, prNumber: pr.number, url: pr.url });
+            this.emitConflict({ workspaceId: ws, ptyId, prNumber: pr.number, url: pr.url, ...(pr.headSha ? { headSha: pr.headSha } : {}) });
             st.conflictFired = true;
           }
         }
@@ -161,6 +184,8 @@ export class PrReviewRouter {
         count: fresh.length,
         author: latest.author,
         snippet: sanitizeSnippet(latest.body),
+        fromOthers: countFromOthers(comments, fresh, summary.author),
+        ...(pr.headSha ? { headSha: pr.headSha } : {}),
       });
       // Advance ONLY after a successful emit (CodeRabbit, PR #496) — a resolve
       // failure or emit throw above leaves the watermark put, so the same

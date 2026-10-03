@@ -69,7 +69,9 @@ export function buildFanoutCallerNudge(items: readonly { taskId: string; kind: F
 
 const ID = '[A-Za-z0-9_-]{1,8}';
 const CLAUSE = `tasks? (?:${ID}|\\?)(?:, ${ID}){0,${LISTED_IDS - 1}}(?: \\+\\d{1,4})? (?:${Object.values(PHRASE).join('|')})`;
-const LINE = new RegExp(`^\\[wmux\\] fan-out ${CLAUSE}(?:; ${CLAUSE}){0,${SEVERITY.length - 1}} — channel_mission_list$`);
+/** The line after `[wmux] `, as a regex source (shared/prOwnerNudge combines it). */
+export const FANOUT_CALLER_BODY_SOURCE = `fan-out ${CLAUSE}(?:; ${CLAUSE}){0,${SEVERITY.length - 1}} — channel_mission_list`;
+const LINE = new RegExp(`^\\[wmux\\] ${FANOUT_CALLER_BODY_SOURCE}$`);
 
 /** True only for a line `buildFanoutCallerNudge` can produce. */
 export function isFanoutCallerNudge(text: unknown): text is string {

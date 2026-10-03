@@ -1,5 +1,6 @@
 // Daemon-owned delivery of the fan-out caller nudge (one fixed line telling a
-// pane agent that its fan-out workers moved; see shared/fanoutCallerNudge).
+// pane agent that its fan-out workers moved; see shared/fanoutCallerNudge) and
+// of the PR owner nudge that shares its queue (shared/prOwnerNudge).
 //
 // Reuses deliverScheduledPrompt for the write itself — process identity
 // (slug + incarnation) before the paste and before the Enter, a live process,
@@ -12,7 +13,7 @@
 // the sender keeps the line and tries again later.
 
 import type { SessionPromptScheduleResult } from '../shared/sessionPromptSchedule';
-import { isFanoutCallerNudge } from '../shared/fanoutCallerNudge';
+import { isCallerNudge } from '../shared/prOwnerNudge';
 import type { ScheduledPromptDeliveryDeps } from './sessionPromptDelivery';
 
 export const CALLER_NUDGE_QUIET_MS = 10_000;
@@ -36,7 +37,7 @@ export interface CallerNudgeDeps {
 }
 
 export async function deliverCallerNudge(prompt: string, deps: CallerNudgeDeps): Promise<CallerNudgeReply> {
-  if (!isFanoutCallerNudge(prompt)) return { result: 'error', pasted: false };
+  if (!isCallerNudge(prompt)) return { result: 'error', pasted: false };
   if (deps.usageHeld()) return { result: 'held', pasted: false };
   const input = deps.input();
   if (!input) return { result: 'unavailable', pasted: false };

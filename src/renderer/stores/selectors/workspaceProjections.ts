@@ -127,11 +127,13 @@ export function selectWorkspaceById(id: string) {
   return (s: StoreState): Workspace | undefined => s.workspaces.find((w) => w.id === id);
 }
 
-/** {id, name, notificationsMuted} — 알림 뮤트 토글 목록(Settings)용. */
+/** {id, name, notificationsMuted} — 알림 뮤트 토글 목록(Settings)용.
+ *  Also carries the per-workspace "Wake the agent on PR events" switch. */
 export interface WorkspaceMuteRow {
   id: string;
   name: string;
   notificationsMuted: boolean;
+  wakeOnPrEvents: boolean;
 }
 
 export const selectWorkspaceMuteRows = makeCachedListProjection<WorkspaceMuteRow>(
@@ -139,6 +141,7 @@ export const selectWorkspaceMuteRows = makeCachedListProjection<WorkspaceMuteRow
     id: w.id,
     name: w.name,
     notificationsMuted: w.metadata?.notificationsMuted ?? false,
+    wakeOnPrEvents: w.metadata?.wakeOnPrEvents !== false,
   }),
-  (a, b) => a.name === b.name && a.notificationsMuted === b.notificationsMuted,
+  (a, b) => a.name === b.name && a.notificationsMuted === b.notificationsMuted && a.wakeOnPrEvents === b.wakeOnPrEvents,
 );
