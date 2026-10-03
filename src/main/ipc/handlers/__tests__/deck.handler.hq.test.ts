@@ -418,6 +418,10 @@ describe('master switch (moaEnabled)', () => {
     expect(await invoke(IPC.DECK_MOA_GET)).toEqual({ enabled: true });
   });
 
+  // The timer count is the handler's own timers (ledger/orphan reconcile, the
+  // one-shot reconcile, coalescer and gate timers). DeckHeartbeat and
+  // DeckScheduler are mocked in this harness, so theirs are asserted through
+  // `starts === 0` instead; their own suites cover start() arming an interval.
   it('off at launch: no timer, subscription, brain, token or hook; nothing eligible', async () => {
     cleanup?.();
     cleanup = null;

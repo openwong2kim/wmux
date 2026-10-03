@@ -48,6 +48,8 @@ export interface DeckSchedulerDeps {
   dir?: string;
 }
 
+const RETRYABLE_CODES: ReadonlySet<string> = new Set(['busy', 'rate_limited', 'hq_unknown', 'hq_missing']);
+
 export class DeckScheduler {
   private readonly deps: Required<Pick<DeckSchedulerDeps, 'runTurn'>> &
     Omit<DeckSchedulerDeps, 'runTurn'>;
@@ -97,8 +99,11 @@ export class DeckScheduler {
         try {
           // dueSchedules guarantees workspaceId is present.
           const r = await this.deps.runTurn(scheduledPrompt(s), s.workspaceId ?? '');
-          // A capped turn (rate_limited) stays due, like busy, and retries.
-          result = r.ok ? 'ok' : r.code === 'busy' || r.code === 'rate_limited' ? 'busy' : 'error';
+          // Transient refusals stay due, like busy, and retry: the HQ turn cap
+          // (rate_limited), and an HQ not yet observed or currently missing
+          // (a due one-shot must not be consumed before the renderer's first
+          // mirror push, or while the HQ workspace is away).
+          result = r.ok ? 'ok' : RETRYABLE_CODES.has(r.code ?? '') ? 'busy' : 'error';
         } catch {
           result = 'error';
         }

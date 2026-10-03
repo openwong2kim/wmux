@@ -69,6 +69,16 @@ describe('DeckScheduler', () => {
     expect(loadDeckSchedules(dir)[0].lastResult).toBe('ok');
   });
 
+  it.each(['rate_limited', 'hq_unknown', 'hq_missing'])(
+    'a one-shot refused with %s stays due instead of being consumed',
+    async (code) => {
+      await seed();
+      const runTurn = vi.fn(async () => ({ ok: false, code }));
+      await new DeckScheduler({ runTurn, now: () => 2_000, dir }).tick();
+      expect(loadDeckSchedules(dir)[0]).toMatchObject({ enabled: true, lastResult: 'busy' });
+    },
+  );
+
   it('a repeating schedule advances and stays enabled', async () => {
     await seed({ intervalMinutes: 60 });
     const runTurn = vi.fn(async () => ({ ok: true }));
