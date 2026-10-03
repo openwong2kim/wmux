@@ -1,0 +1,273 @@
+/* Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/features/sessions/ui/Composer.tsx, src/features/sessions/ui/AgentTranscript.tsx, src/styles/index.css), MIT License, Copyright (c) 2026 Nick
+ *
+ * The mono look for the chat surfaces: Chat View (Thread) and the channel /
+ * orchestrator composer, which reuses the chat composer classes.
+ *
+ * Cascade note: this sheet is imported from components, which index.tsx
+ * evaluates BEFORE styles/ui.css, so an equal-specificity rule here loses.
+ * Every selector is therefore scoped one step deeper than its ui.css
+ * counterpart: `[data-chat-view]` (the Thread root) for Chat View and
+ * `form[data-channel-composer]` for the channel composer. */
+
+/* ── Thread ─────────────────────────────────────────────────────────────── */
+[data-chat-view].wmux-chat { font-size: 14px; }
+/* The session header is set off by space, not a line. */
+[data-chat-view] .wmux-chat-progress { border-bottom: 0; }
+[data-chat-view] .wmux-chat-progress-detail,
+[data-chat-view] .wmux-chat-notice,
+[data-chat-view] .wmux-chat-empty { color: color-mix(in srgb, var(--text-main) 50%, transparent); }
+
+/* User message: content 10% fill, 1px content 10% border, w-fit, max 36rem;
+ * full-round on one line, rounded-xl once it wraps (data-wrapped). */
+[data-chat-view] .wmux-chat-user { max-width: min(36rem, 85%); padding: 0; }
+[data-chat-view] .wmux-chat-user .wmux-chat-user-text {
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-main) 10%, transparent);
+  line-height: 22px;
+}
+[data-chat-view] .wmux-chat-user .wmux-chat-user-text[data-wrapped='true'] { border-radius: 12px; }
+[data-chat-view] .wmux-chat-pending .wmux-chat-user-text { color: color-mix(in srgb, var(--text-main) 50%, transparent); }
+[data-chat-view] .wmux-chat-pending-caption { color: color-mix(in srgb, var(--text-main) 40%, transparent); }
+
+/* Assistant prose: no bubble, 14px. */
+[data-chat-view] .wmux-chat-prose { line-height: 1.7; }
+[data-chat-view] .wmux-chat-meta { color: color-mix(in srgb, var(--text-main) 45%, transparent); }
+
+/* Collapsed tool calls: a content-40% line with a chevron that turns open. */
+[data-chat-view] .wmux-chat-activity { border-bottom: 0; padding: 0; }
+[data-chat-view] .wmux-chat-activity > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  list-style: none;
+  padding: 2px 8px;
+  border-radius: 6px;
+  color: color-mix(in srgb, var(--text-main) 40%, transparent);
+  font-size: 13px;
+  transition: color var(--motion-feedback) var(--motion-ease-out);
+}
+[data-chat-view] .wmux-chat-activity > summary::-webkit-details-marker { display: none; }
+[data-chat-view] .wmux-chat-activity > summary:hover { color: color-mix(in srgb, var(--text-main) 70%, transparent); }
+[data-chat-view] .wmux-chat-activity > summary svg { transition: transform var(--motion-feedback) var(--motion-ease-out); }
+[data-chat-view] .wmux-chat-activity[open] > summary svg { transform: rotate(90deg); }
+[data-chat-view] .wmux-chat-tool-label { color: color-mix(in srgb, var(--text-main) 50%, transparent); }
+[data-chat-view] .wmux-chat-tool-label strong { color: color-mix(in srgb, var(--text-main) 80%, transparent); }
+[data-chat-view] .wmux-chat-tool-summary,
+[data-chat-view] .wmux-chat-detail summary,
+[data-chat-view] .wmux-chat-thinking summary { color: color-mix(in srgb, var(--text-main) 45%, transparent); }
+[data-chat-view] .wmux-chat-detail pre {
+  border-color: var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--text-main) 3%, transparent);
+}
+[data-chat-view] .wmux-chat-file { border-color: var(--line); border-radius: 8px; }
+[data-chat-view] .wmux-chat-interaction { border-color: var(--line); border-radius: 8px; }
+[data-chat-view] .wmux-chat-working { color: color-mix(in srgb, var(--text-main) 50%, transparent); }
+[data-chat-view] .wmux-chat-working > span { color: var(--accent); font-size: 8px; }
+
+/* Turn receipt under a finished assistant turn — always visible. */
+[data-chat-view] .wmux-chat-receipt {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 8px 0;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  color: color-mix(in srgb, var(--text-main) 40%, transparent);
+}
+[data-chat-view] .wmux-chat-receipt-dot {
+  width: 3px;
+  height: 3px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-main) 25%, transparent);
+}
+[data-chat-view] .wmux-chat-receipt-time { color: color-mix(in srgb, var(--text-main) 35%, transparent); }
+[data-chat-view] .wmux-chat-receipt-copy {
+  display: inline-flex;
+  padding: 4px;
+  border-radius: 6px;
+  color: color-mix(in srgb, var(--text-main) 40%, transparent);
+  transition: background-color var(--motion-feedback) var(--motion-ease-out), color var(--motion-feedback) var(--motion-ease-out);
+}
+[data-chat-view] .wmux-chat-receipt-copy:hover {
+  background: color-mix(in srgb, var(--text-main) 8%, transparent);
+  color: color-mix(in srgb, var(--text-main) 70%, transparent);
+}
+
+/* ── Composer (Chat View + channel/orchestrator composer) ──────────────── */
+[data-chat-view] .wmux-chat-footer { gap: 8px; padding: 8px 0 6px; }
+[data-chat-view] .wmux-chat-composer { gap: 0; padding: 0; }
+[data-chat-view] .wmux-chat-composer,
+form[data-channel-composer].wmux-channel-composer.wmux-chat-composer {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--text-main) 3%, transparent);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+  transition: border-color var(--motion-feedback) var(--motion-ease-out);
+}
+[data-chat-view] .wmux-chat-composer:focus-within,
+form[data-channel-composer].wmux-channel-composer.wmux-chat-composer:focus-within { border-color: var(--line-strong); }
+/* Light themes: an opaque base fill floating on a soft two-layer shadow. */
+:root:is([data-theme='mono-light'], [data-theme='paper'], [data-theme='hinomaru'], [data-theme='taegeuk']) [data-chat-view] .wmux-chat-composer,
+:root:is([data-theme='mono-light'], [data-theme='paper'], [data-theme='hinomaru'], [data-theme='taegeuk']) form[data-channel-composer].wmux-chat-composer {
+  background: var(--bg-base);
+  box-shadow: 0 6px 24px color-mix(in srgb, var(--text-main) 9%, transparent),
+    0 2px 6px color-mix(in srgb, var(--text-main) 6%, transparent);
+}
+
+[data-chat-view] .wmux-chat-input-wrap .wmux-chat-input {
+  min-height: 48px;
+  max-height: 160px;
+  padding: 10px 12px 4px;
+  font-size: 14px;
+  line-height: 22px;
+}
+[data-chat-view] .wmux-chat-input-wrap .wmux-chat-input { padding-right: 40px; }
+[data-chat-view] .wmux-chat-input::placeholder,
+form[data-channel-composer] .wmux-chat-input::placeholder { color: color-mix(in srgb, var(--text-main) 40%, transparent); }
+
+/* Toolbar: chips on the left, the hint, then Stop / send at the far right. */
+[data-chat-view] .wmux-chat-composer-footer {
+  gap: 4px;
+  padding: 0 8px 8px;
+  justify-content: flex-start;
+}
+[data-chat-view] .wmux-chat-composer-footer > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding-left: 4px;
+  font-size: 11px;
+  color: color-mix(in srgb, var(--text-main) 40%, transparent);
+}
+
+/* Send and Stop: a solid primary 26px control, never a colour. */
+[data-chat-view] .wmux-chat-send,
+form[data-channel-composer] .wmux-channel-send.wmux-chat-send,
+[data-chat-view] .wmux-chat-stop {
+  height: 26px;
+  margin: 0;
+  border: 0;
+  border-radius: 6px;
+  background: var(--primary-fill);
+  color: var(--primary-ink);
+  opacity: 1;
+  transition: background-color var(--motion-feedback) var(--motion-ease-out), color var(--motion-feedback) var(--motion-ease-out);
+}
+[data-chat-view] .wmux-chat-send,
+form[data-channel-composer] .wmux-channel-send.wmux-chat-send { width: 26px; }
+[data-chat-view] .wmux-chat-stop { margin-left: 0; padding: 0 8px; gap: 6px; font-size: 12px; font-weight: 500; }
+[data-chat-view] .wmux-chat-send:hover:not(:disabled),
+form[data-channel-composer] .wmux-channel-send.wmux-chat-send:hover:not(:disabled),
+[data-chat-view] .wmux-chat-stop:hover:not(:disabled) {
+  opacity: 1;
+  background: color-mix(in srgb, var(--primary-fill) 90%, transparent);
+}
+[data-chat-view] .wmux-chat-send:disabled,
+form[data-channel-composer] .wmux-channel-send.wmux-chat-send:disabled,
+[data-chat-view] .wmux-chat-stop:disabled {
+  opacity: 1;
+  background: color-mix(in srgb, var(--primary-fill) 30%, transparent);
+  color: color-mix(in srgb, var(--primary-ink) 40%, transparent);
+}
+
+/* Icon-only sibling (the skills `/` trigger): 26px square, --selection fill. */
+[data-chat-view] .wmux-chat-skills-trigger {
+  right: 8px;
+  bottom: 4px;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: var(--selection);
+  color: color-mix(in srgb, var(--text-main) 50%, transparent);
+  font-size: 12px;
+}
+[data-chat-view] .wmux-chat-skills-trigger:hover:not(:disabled) { background: var(--selection-hover); color: var(--text-main); }
+
+/* Launch pickers (agent, mode) as chips in the toolbar. */
+[data-chat-view] .wmux-chat-launch-options { flex-wrap: nowrap; gap: 4px; padding: 0; }
+[data-chat-view] .wmux-chat-launch-options select {
+  min-height: 0;
+  height: 26px;
+  max-width: 160px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--chip-radius, 6px);
+  background: var(--selection);
+  color: var(--text-main);
+  font-size: 11px;
+  cursor: pointer;
+}
+[data-chat-view] .wmux-chat-launch-options select:hover:not(:disabled) { background: var(--selection-hover); }
+
+/* Staged attachments. */
+[data-chat-view] .wmux-chat-attachments { padding: 8px 12px 0; }
+[data-chat-view] .wmux-chat-attachment { border-color: var(--line); border-radius: 8px; background: var(--selection-subtle); }
+[data-chat-view] .wmux-chat-image { border-color: var(--line); border-radius: 8px; }
+
+/* Skills menu: a 12px popover; items rounded-lg, selected = --selection. */
+[data-chat-view] .wmux-chat-skills {
+  border-color: var(--line);
+  border-radius: 12px;
+  box-shadow: var(--shadow-popover);
+}
+[data-chat-view] .wmux-chat-skills-heading,
+[data-chat-view] .wmux-chat-skills-keys { border-color: var(--stroke); }
+[data-chat-view] .wmux-chat-skills-list { padding: 6px; }
+[data-chat-view] .wmux-chat-skills-list button { border-radius: 8px; padding: 8px; }
+[data-chat-view] .wmux-chat-skills-list button[aria-selected='true'] { background: var(--selection); }
+[data-chat-view] .wmux-chat-skills-list small,
+[data-chat-view] .wmux-chat-skill-description { color: color-mix(in srgb, var(--text-main) 45%, transparent); }
+
+/* Model dialog: 16px dialog, content-7% border, secondary actions with a
+ * solid primary Apply (the last action). */
+[data-chat-view] .wmux-chat-model-dialog {
+  border-color: color-mix(in srgb, var(--text-main) 7%, transparent);
+  border-radius: 16px;
+  box-shadow: var(--shadow-modal);
+}
+[data-chat-view] .wmux-chat-model-dialog::backdrop { background: var(--backdrop-modal); }
+[data-chat-view] .wmux-chat-model-dialog h2 { font-size: 20px; font-weight: 500; line-height: 28px; }
+[data-chat-view] .wmux-chat-model-dialog select { border-color: var(--line); background: color-mix(in srgb, var(--text-main) 3%, transparent); }
+[data-chat-view] .wmux-chat-model-actions button {
+  padding: 4px 10px;
+  border-color: var(--line);
+  font-size: 12px;
+  color: color-mix(in srgb, var(--text-main) 70%, transparent);
+}
+[data-chat-view] .wmux-chat-model-actions button:hover:not(:disabled) { background: var(--selection); color: var(--text-main); }
+[data-chat-view] .wmux-chat-model-actions button:last-child {
+  border-color: transparent;
+  background: var(--primary-fill);
+  color: var(--primary-ink);
+  font-weight: 500;
+}
+[data-chat-view] .wmux-chat-model-actions button:last-child:hover:not(:disabled) { background: color-mix(in srgb, var(--primary-fill) 90%, transparent); }
+
+@media (prefers-reduced-motion: reduce) {
+  [data-chat-view] .wmux-chat-composer,
+  form[data-channel-composer].wmux-chat-composer,
+  [data-chat-view] .wmux-chat-activity > summary svg { transition: none; }
+}
+[data-chat-view] .wmux-chat-assistant > .wmux-chat-receipt { padding-left: 0; padding-right: 0; }
+
+/* ─── One boundary per element ────────────────────────────────────────────────
+ * Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/styles/index.css),
+ * MIT License, Copyright (c) 2026 Nick. A user bubble is a fill with no
+ * border; a composer is a hairline with no fill. */
+[data-chat-view] .wmux-chat-user .wmux-chat-user-text { border: 0; }
+[data-chat-view] .wmux-chat-composer,
+form[data-channel-composer].wmux-channel-composer.wmux-chat-composer {
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}

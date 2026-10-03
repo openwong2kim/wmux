@@ -1,3 +1,4 @@
+// Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx), MIT License, Copyright (c) 2026 Nick
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { IconChevron } from '../icons';
 import { useT } from '../../hooks/useT';
@@ -199,7 +200,7 @@ export default function WorkspaceChromeProfileMenu({
       </button>
       {open && (
         <div
-          className={`absolute top-0 ${submenuPos} min-w-[200px] max-w-[300px] py-1 rounded-[7px] shadow-xl sidebar-popover-enter`}
+          className={`absolute top-0 ${submenuPos} min-w-[200px] max-w-[300px] py-1 rounded-xl shadow-xl sidebar-popover-enter`}
           style={{ background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
         >
           {/* Reserved: attach to the user's own live Chrome (Phase 3). */}
@@ -248,7 +249,7 @@ export default function WorkspaceChromeProfileMenu({
                 <div className="flex items-center gap-1.5 mt-1.5">
                   {/* Final confirm of a danger grant → solid red (DESIGN.md). */}
                   <button
-                    className="px-2 py-0.5 rounded-[5px] text-[11px] font-semibold bg-[var(--accent-red)] text-[var(--bg-base)]"
+                    className="px-2 py-0.5 rounded-md text-[11px] font-semibold bg-[var(--accent-red)] text-[var(--bg-base)]"
                     data-testid="chrome-profile-live-confirm-yes"
                     onClick={confirmBindLive}
                   >
@@ -256,7 +257,7 @@ export default function WorkspaceChromeProfileMenu({
                   </button>
                   <button
                     autoFocus
-                    className="px-2 py-0.5 rounded-[5px] text-[11px] text-[var(--text-muted)] hover:text-[var(--text-main)]"
+                    className="px-2 py-0.5 rounded-md text-[11px] text-[var(--text-muted)] hover:text-[var(--text-main)]"
                     data-testid="chrome-profile-live-confirm-cancel"
                     onClick={closeLiveConfirm}
                   >
@@ -299,7 +300,7 @@ export default function WorkspaceChromeProfileMenu({
                 )}
                 <div className="flex items-center gap-1.5 mt-1.5">
                   <button
-                    className="px-2 py-0.5 rounded-[5px] text-[11px] font-semibold bg-[var(--accent)] text-[var(--bg-base)] disabled:opacity-40 disabled:cursor-not-allowed"
+                    className="px-2 py-0.5 rounded-md text-[11px] font-semibold bg-[var(--primary-fill)] text-[var(--primary-ink)] disabled:opacity-40 disabled:cursor-not-allowed"
                     disabled={creating || newName.trim().length === 0}
                     data-testid="chrome-profile-new-submit"
                     onClick={() => void createProfile()}
@@ -307,7 +308,7 @@ export default function WorkspaceChromeProfileMenu({
                     {t('chromeProfiles.newCreate')}
                   </button>
                   <button
-                    className="px-2 py-0.5 rounded-[5px] text-[11px] text-[var(--text-muted)] hover:text-[var(--text-main)]"
+                    className="px-2 py-0.5 rounded-md text-[11px] text-[var(--text-muted)] hover:text-[var(--text-main)]"
                     data-testid="chrome-profile-new-cancel"
                     onClick={closeForm}
                   >

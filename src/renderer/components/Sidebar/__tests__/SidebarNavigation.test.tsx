@@ -17,8 +17,8 @@ beforeEach(() => {
   document.body.appendChild(container);
   root = createRoot(container);
   useStore.setState({
-    commandPaletteVisible: false, fleetViewVisible: false,
-    notificationPanelVisible: false, settingsPanelVisible: false,
+    commandPaletteVisible: false, fleetViewVisible: false, appRoute: 'workspaces',
+    notificationPanelVisible: false, settingsPanelVisible: false, schedulesViewOpen: false,
     channelDockVisible: false, channelsTabVisible: false,
     activeDeckTab: 'commander', channelUnread: {}, notifications: [],
   });
@@ -33,13 +33,13 @@ function button(id: string) {
 }
 
 describe('Sidebar global navigation', () => {
-  it('uses existing overlay actions and keeps their mutual exclusion', () => {
+  it('opens Fleet as a page; the search palette floats over it', () => {
     act(() => root.render(<SidebarNavigation />));
     act(() => button('fleet').click());
     expect(useStore.getState().fleetViewVisible).toBe(true);
     expect(button('fleet').getAttribute('aria-pressed')).toBe('true');
     act(() => button('search').click());
-    expect(useStore.getState().fleetViewVisible).toBe(false);
+    expect(useStore.getState().appRoute).toBe('fleet');
     expect(useStore.getState().commandPaletteVisible).toBe(true);
   });
 
@@ -161,11 +161,11 @@ describe('Fleet shortcut counts', () => {
     }
   });
 
-  it('keeps only the needs-you dot on the compact rail, with the numbers in its name', () => {
+  it('keeps only the needs-you count, as a number badge, on the compact rail, with the numbers in its name', () => {
     seed();
     act(() => root.render(<SidebarNavigation compact />));
     expect(container.querySelectorAll('[data-fleet-nav-count]')).toHaveLength(1);
-    expect(container.querySelector('[data-fleet-nav-count="needsYou"]')?.textContent).toBe('');
+    expect(container.querySelector('[data-fleet-nav-count="needsYou"]')?.textContent).toBe('3');
     expect(button('fleet').getAttribute('aria-label')).toBe('Fleet, needs you 3, running 1');
     expect(button('fleet').title).toBe(button('fleet').getAttribute('aria-label'));
 

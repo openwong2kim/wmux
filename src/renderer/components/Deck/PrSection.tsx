@@ -159,10 +159,11 @@ export function PrSection({ repoPath }: { repoPath: string | null }): React.Reac
 
   return (
     <div data-pr-section className="shrink-0 max-h-[55%] overflow-y-auto border-b border-[var(--bg-surface)]" style={{ borderColor: 'var(--border-soft)' }}>
-      {/* 섹션 헤더 — 36px 크롬 행. */}
+      {/* Section header — 40px chrome row.
+          Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx), MIT License, Copyright (c) 2026 Nick */}
       <div
-        className="flex items-center gap-2 h-9 px-3 sticky top-0 bg-[var(--bg-mantle)] border-b border-[var(--bg-surface)]"
-        style={{ borderColor: 'var(--border-soft)' }}
+        className="flex items-center gap-2 h-10 px-3 sticky top-0 bg-[var(--bg-mantle)] border-b border-[var(--bg-surface)]"
+        style={{ borderColor: 'var(--stroke)' }}
         {...tokenAttrs('bgMantle', 'bg')}
       >
         <span className="font-semibold text-[var(--text-main)]" {...tokenAttrs('textMain', 'text')}>
@@ -179,7 +180,7 @@ export function PrSection({ repoPath }: { repoPath: string | null }): React.Reac
           onClick={() => void load(true)}
           title={t('git.refresh') || 'Refresh'}
           aria-label={t('git.refresh') || 'Refresh'}
-          className={`flex items-center justify-center w-6 h-6 rounded text-[var(--text-muted)] hover:text-[var(--text-sub)] transition-colors ${FOCUS_RING}`}
+          className={`flex items-center justify-center w-6 h-6 rounded-md text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--hover-fill)] transition-colors ${FOCUS_RING}`}
           {...tokenAttrs('textMuted', 'text')}
         >
           <svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden="true">

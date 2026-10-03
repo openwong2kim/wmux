@@ -730,23 +730,23 @@ export default function SurfaceTabs({
 
   return (
     <div
-      // Bridge P1.6 — h-9 (36px chrome module): matches sidebar header/footer,
+      // Bridge P1.6 — h-10 (40px chrome module): matches sidebar header/footer,
       // deck tabs, and the agent toolbar so all top/bottom hairlines align.
-      className="wmux-pane-header flex items-center bg-[var(--bg-mantle)] border-b border-[var(--bg-surface)] h-9"
-      // borderColor → --border-soft so this strip's bottom hairline matches the
-      // deck tabs / sidebar / titlebar seams (they all override to border-soft;
-      // this one was left on the opaque --bg-surface, so the top-chrome line
-      // changed color at the pane↔deck seam). Focused pane adds the steel
-      // underline on top (inset so it never shifts layout) — the single focus
-      // signal in the design system.
+      // Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/TitleBar.tsx), MIT License, Copyright (c) 2026 Nick
+      data-pane-focused={paneActive ? 'true' : undefined}
+      className="wmux-pane-header flex items-center h-10"
+      // The strip's bottom hairline lines up with the deck header and the
+      // titlebar seam. Focus is a tone change on that hairline (and an accent
+      // bar under the focused pane's active tab, ui.css) — never a second
+      // full-width accent line.
       style={{
-        borderColor: 'var(--border-soft)',
+        boxShadow: `inset 0 -1px 0 ${paneActive ? 'var(--line-strong)' : 'var(--stroke)'}`,
         // With no action cluster the corner zoom/maximize button is drawn
         // absolutely over this strip's right end, so the strip's flow content
         // stops short of it. With a cluster there is nothing to clear — the
         // zoom verb is one of its buttons.
         paddingRight: paneHeaderTailGap({ clusterShown: paneClusterWidth({ mode }) > 0 }),
-        ...(paneActive ? { boxShadow: 'inset 0 -2px 0 var(--accent-blue)' } : {}),
+
       }}
       data-pane-tabs-active={paneActive ? 'true' : undefined}
       // Right-click the header for the same actions at any width. This is what
@@ -773,7 +773,7 @@ export default function SurfaceTabs({
 
       {/* Scroll region: pane label + tabs share the horizontal overflow so the
           action cluster below stays pinned to the right on narrow panes. */}
-      <div className="flex items-center flex-1 min-w-0 overflow-x-auto h-full">
+      <div className="wmux-surface-tablist flex items-center gap-1 px-1 flex-1 min-w-0 overflow-x-auto h-full">
       {/* P2 — pane identity + double-click rename. A distinct element/handler
           from the surface tabs (different store: pane label via MetadataStore vs
           surface.title), so the two renames never collide. */}
@@ -811,7 +811,7 @@ export default function SurfaceTabs({
       ) : (
         <span
           data-pane-label
-          className="shrink-0 px-2 h-full flex items-center text-[10px] font-mono text-[var(--text-muted)] hover:text-[var(--text-sub)] border-r border-[var(--bg-surface)] cursor-pointer select-none truncate max-w-[170px]"
+          className="shrink-0 px-2 h-full flex items-center text-[10px] font-mono text-[var(--text-muted)] hover:text-[var(--text-sub)] border-r border-transparent cursor-pointer select-none truncate max-w-[170px]"
           onDoubleClick={readOnly ? undefined : startPaneRename}
           title={paneDisplay}
           {...tokenAttrs('textMuted', 'text')}
@@ -825,12 +825,15 @@ export default function SurfaceTabs({
           draggable={!readOnly && editingId !== s.id}
           onDragStart={handleDragStart}
           onDragEnd={() => setTerminalTextDropDragActive(false)}
-          className={`group flex items-center gap-2 px-3 h-full cursor-pointer text-[13px] border-r border-[var(--bg-surface)] transition-colors ${
+          // Tab pill: 30px, 6px radius, centered in the 40px strip. Active =
+          // --selection fill + full text; inactive = 50% text, hover fill.
+          // pr-3 keeps the 12px right padding the close button's refund uses.
+          data-active={s.id === activeSurfaceId ? 'true' : undefined}
+          className={`wmux-surface-tab group flex items-center gap-2 pl-3 pr-3 cursor-pointer text-[13px] transition-colors ${
             s.id === activeSurfaceId
-              ? 'bg-[var(--bg-base)] text-[var(--text-main)] font-medium'
-              : 'text-[var(--text-sub)] hover:text-[var(--text-main)] hover:bg-[rgba(var(--bg-base-rgb),0.5)]'
+              ? 'text-[var(--text-main)]'
+              : 'text-[color-mix(in_srgb,var(--text-main)_50%,transparent)] hover:text-[var(--text-main)] hover:bg-[var(--hover-fill)]'
           }`}
-          {...tokenAttrs('bgBase', 'bg')}
           {...tokenAttrs('textMain', 'text')}
           onClick={() => handleTabClick(s.id)}
           onDoubleClick={readOnly ? undefined : () => startRename(s)}
@@ -874,7 +877,7 @@ export default function SurfaceTabs({
               into the tab cell's own 12px right padding: a LEFT refund would put
               the box over the last 2px of the tab title — and over the rename
               input when the tab is being renamed — so a click meant for the end
-              of the name would close the tab instead. The 36px strip absorbs
+              of the name would close the tab instead. The 30px pill absorbs
               the height, so no vertical refund is needed either. */}
           {!readOnly && <button
             data-surface-tab-close
@@ -1009,7 +1012,7 @@ export default function SurfaceTabs({
           tooltip carries the same shortcut the keyboard already binds. */}
       {mode === 'full' && (
         <div
-          className="flex items-center shrink-0 h-full pl-1 pr-0.5 gap-0.5 border-l border-[var(--border-soft)]"
+          className="flex items-center shrink-0 h-full pl-1 pr-0.5 gap-0.5 border-l border-transparent"
           data-pane-actions
         >
           {/* The "new terminal (tab in this pane)" button is not here: it lives
@@ -1076,7 +1079,7 @@ export default function SurfaceTabs({
               tabs. Consolidates the old absolute-positioned corner maximize/
               restore controls (Pane.tsx) that overlapped this cluster. Pressed
               (accent) styling + aria-pressed convey the zoomed state. */}
-          <div className="flex items-center border-l border-[var(--border-soft)] ml-0.5 pl-1">
+          <div className="flex items-center border-l border-transparent ml-0.5 pl-1">
             <button
               className={`ui-icon-btn ${FOCUS_RING} w-6 h-6 ${isZoomed ? 'ui-icon-btn-active' : ''}`}
               onClick={(e) => { e.stopPropagation(); toggleZoom(); }}
@@ -1101,7 +1104,7 @@ export default function SurfaceTabs({
           cluster, so it stays pinned to the right edge. */}
       {mode === 'overflow' && (
         <div
-          className="flex items-center shrink-0 h-full pl-1 pr-0.5 border-l border-[var(--border-soft)]"
+          className="flex items-center shrink-0 h-full pl-1 pr-0.5 border-l border-transparent"
           data-pane-actions="overflow"
         >
           <button

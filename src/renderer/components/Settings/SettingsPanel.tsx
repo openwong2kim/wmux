@@ -9,7 +9,7 @@ import { selectWorkspaceMuteRows } from '../../stores/selectors/workspaceProject
 import { LOCALE_OPTIONS, type Locale } from '../../i18n';
 import { useT } from '../../hooks/useT';
 import { useIpc } from '../../hooks/useIpc';
-import { THEME_OPTIONS, XTERM_PALETTE_OPTIONS, XTERM_PALETTES, builtinToCustom, DEFAULT_CUSTOM_THEME, deriveBuiltinPalette, deriveFullPalette, tokenAttrs, type BuiltinThemeId, type ThemeId, type XtermPaletteId, type UIThemeTokenKey, type TokenRole, type FullCssPalette } from '../../themes';
+import { THEME_OPTIONS, THEME_STYLES, type ThemeStyle, XTERM_PALETTE_OPTIONS, XTERM_PALETTES, builtinToCustom, DEFAULT_CUSTOM_THEME, deriveBuiltinPalette, deriveFullPalette, tokenAttrs, type BuiltinThemeId, type ThemeId, type XtermPaletteId, type UIThemeTokenKey, type TokenRole, type FullCssPalette } from '../../themes';
 import {
   TAILWIND_PALETTE,
   TAILWIND_SHADES,
@@ -3009,6 +3009,13 @@ const UI_TOKEN_GROUPS: { label: string; tokens: UITokenSpec[] }[] = [
 ];
 
 const BASE_ON_OPTIONS: { value: BuiltinThemeId; label: string }[] = [
+  { value: 'tint', label: 'Tint' },
+  { value: 'zinc', label: 'Zinc' },
+  { value: 'graphite', label: 'Graphite' },
+  { value: 'paper', label: 'Paper' },
+  { value: 'amber-line', label: 'Amber Line' },
+  { value: 'mono', label: 'Mono' },
+  { value: 'mono-light', label: 'Mono Light' },
   { value: 'amber', label: 'Amber' },
   { value: 'catppuccin-mocha', label: 'Catppuccin' },
   { value: 'stars-and-stripes', label: 'Stars & Stripes' },
@@ -3436,28 +3443,39 @@ function XtermOverrideEditor() {
  * of an abstract dot cluster or a hand-maintained tuple. Because the custom
  * card's palette is derived on each render, it tracks the user's live edits.
  */
-function ThemeThumbnail({ palette }: { palette: FullCssPalette }) {
+function ThemeThumbnail({ palette, look }: { palette: FullCssPalette; look?: ThemeStyle }) {
+  // A miniature of the window in this theme: a sidebar with a selected row
+  // (drawn the theme's way — fill, fill + ring, or a left bar), a sample of
+  // its UI face, and a chip with its radius. Older themes without style
+  // knobs draw the plain fill.
+  const selectionFill = look?.selectionFill ?? palette.bgSurface;
+  const ring = look?.selection === 'fill-ring'
+    ? `inset 0 0 0 1px ${look.selectionRing ?? look.stroke ?? palette.textMuted}`
+    : look?.selection === 'left-bar' ? `inset 2px 0 0 ${palette.accent}` : 'none';
+  const chipRadius = Math.min(look?.chipRadius ?? 6, 999);
   return (
     <div
-      className="w-full flex flex-col gap-1 p-1.5"
-      style={{ height: 56, backgroundColor: palette.bgBase }}
+      className="w-full flex gap-1.5 p-1.5"
+      style={{ height: 64, backgroundColor: palette.bgBase, fontFamily: look?.uiFont }}
       aria-hidden="true"
     >
-      {/* Top row: an accent-glow "cursor" dot + a primary-text title bar. */}
-      <div className="flex items-center gap-1">
+      <div className="flex flex-col gap-1 rounded p-1" style={{ width: '42%', backgroundColor: palette.bgMantle }}>
+        <span className="rounded-full" style={{ height: 3, width: '70%', backgroundColor: palette.textMuted }} />
         <span
-          className="rounded-full shrink-0"
-          style={{ width: 6, height: 6, backgroundColor: palette.accentCursor, boxShadow: `0 0 4px ${palette.accentCursor}` }}
+          className="rounded-sm"
+          style={{ height: 10, width: '100%', backgroundColor: selectionFill, boxShadow: ring }}
         />
-        <span className="rounded-full" style={{ height: 3, width: '55%', backgroundColor: palette.textMain }} />
+        <span className="rounded-full" style={{ height: 3, width: '55%', backgroundColor: palette.textSub }} />
       </div>
-      {/* Elevated surface block. */}
-      <span className="rounded" style={{ height: 9, width: '100%', backgroundColor: palette.bgSurface }} />
-      {/* Bottom row: a secondary-text bar + two status dots (success / danger). */}
-      <div className="flex items-center gap-1 mt-auto">
-        <span className="rounded-full" style={{ height: 3, width: '40%', backgroundColor: palette.textSub }} />
-        <span className="rounded-full shrink-0 ml-auto" style={{ width: 5, height: 5, backgroundColor: palette.accentGreen }} />
-        <span className="rounded-full shrink-0" style={{ width: 5, height: 5, backgroundColor: palette.accentRed }} />
+      <div className="flex flex-1 flex-col gap-1 min-w-0">
+        <span className="text-[13px] leading-none font-semibold" style={{ color: palette.textMain }}>Aa</span>
+        <span className="rounded-full" style={{ height: 3, width: '80%', backgroundColor: palette.textSub }} />
+        <div className="mt-auto flex items-center gap-1">
+          <span style={{ height: 9, width: 22, borderRadius: chipRadius, backgroundColor: palette.bgSurface }} />
+          <span className="rounded-full shrink-0" style={{ width: 5, height: 5, backgroundColor: palette.accent }} />
+          <span className="rounded-full shrink-0 ml-auto" style={{ width: 5, height: 5, backgroundColor: palette.accentGreen }} />
+          <span className="rounded-full shrink-0" style={{ width: 5, height: 5, backgroundColor: palette.accentRed }} />
+        </div>
       </div>
     </div>
   );
@@ -3939,10 +3957,14 @@ function TabAppearance() {
                 aria-label={label}
                 className={`settings-theme-card ${FOCUS_RING}`}
               >
-                <ThemeThumbnail palette={palette} />
+                <ThemeThumbnail palette={palette} look={value === 'custom' ? undefined : THEME_STYLES[value as BuiltinThemeId]} />
                 <div
                   className="flex items-center justify-between gap-1 px-2.5 py-1.5"
-                  style={{ backgroundColor: palette.bgMantle, color: selected ? palette.textMain : palette.textSub }}
+                  style={{
+                    backgroundColor: palette.bgMantle,
+                    color: selected ? palette.textMain : palette.textSub,
+                    fontFamily: value === 'custom' ? undefined : THEME_STYLES[value as BuiltinThemeId]?.uiFont,
+                  }}
                 >
                   <span className="text-[13px] truncate">{label}</span>
                   {selected && (
@@ -5414,16 +5436,16 @@ export default function SettingsPanel({ initialTab }: { initialTab?: string }) {
   };
 
   return (
-    // Full-bleed surface under the 36px custom titlebar (DESIGN.md Window
-    // Chrome). Settings fills the whole terminal area instead of floating as a
-    // small centered modal: no scrim, no rounding/shadow/border, opaque
-    // bg-base — it reads as an app screen, not a dialog stacked on top. Closed
-    // via Esc (keydown handler above) or the header X. `ui-surface` scopes the
-    // quiet-surface tokens (hairlines, flat buttons, 10px inputs) to it.
+    // A rail page: Settings fills the sheet in place of the Workspaces page
+    // (RailPage), with its own section nav on the left — an app screen, not a
+    // dialog stacked on top. Esc (keydown handler above) or the header X go
+    // back to Workspaces. `ui-surface` scopes the quiet-surface tokens
+    // (hairlines, flat buttons, 10px inputs) to it.
     <OwnedDialogContext.Provider value={registerOwnedDialog}>
     <div
-      className="ui-surface settings-screen fixed inset-x-0 bottom-0 z-50 flex flex-col"
-      style={{ top: 36, backgroundColor: 'var(--bg-base)' }}
+      className="ui-surface settings-screen wmux-page flex flex-col"
+      data-rail-page="settings"
+      style={{ backgroundColor: 'var(--bg-base)' }}
     >
       {/* Panel — fills the full-bleed surface */}
       <div

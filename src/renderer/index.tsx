@@ -2,6 +2,7 @@ import { createRoot } from 'react-dom/client';
 import App from './App';
 import { useStore } from './stores';
 import { installChromeScrollPin } from './utils/pinChromeScroll';
+import { installWindowGlass } from './utils/windowGlass';
 import './styles/globals.css';
 import './styles/ui.css';
 import './styles/onboarding.css';
@@ -15,6 +16,9 @@ document.documentElement.setAttribute('data-theme', useStore.getState().theme);
 
 // Undo any programmatic scroll of the page chrome (#1679) — see pinChromeScroll.
 installChromeScrollPin();
+
+// Translucent chrome over the macOS window material while the theme is dark.
+installWindowGlass();
 
 const root = createRoot(document.getElementById('root')!);
 root.render(<App />);

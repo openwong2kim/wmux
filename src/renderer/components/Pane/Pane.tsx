@@ -643,7 +643,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         // shorthand and non-shorthand" dev warning firing on re-render.
         borderStyle: 'solid',
         borderColor: isActive ? 'var(--bg-overlay)' : 'var(--border-soft)',
-        // No TOP border: it sat redundantly under the 36px titlebar's own bottom
+        // No TOP border: it sat redundantly under the 40px titlebar's own bottom
         // hairline (a double line) AND pushed the tab strip down 1px, so the
         // pane's bottom-hairline seam landed 1px below the deck tabs' — the
         // "the top line doesn't connect" report. Content now starts at the
@@ -900,14 +900,15 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
           <span
             onClick={(e) => e.stopPropagation()}
             style={{
-              // A 36px chrome-module row in flow, so the terminal below gives up
+              // Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/TitleBar.tsx), MIT License, Copyright (c) 2026 Nick
+              // A 40px chrome-module row in flow, so the terminal below gives up
               // the height instead of being drawn over. On a narrow pane the
               // checkbox label ellipsizes; the button never shrinks.
               display: 'flex',
               alignItems: 'center',
               gap: 6,
               flexShrink: 0,
-              height: 36,
+              height: 40,
               minWidth: 0,
               padding: '0 8px',
               overflow: 'hidden',
@@ -937,7 +938,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
                   color: 'var(--text-sub)',
                   backgroundColor: 'var(--bg-surface)',
                   border: '1px solid var(--border-soft)',
-                  borderRadius: 4,
+                  borderRadius: 6,
                   padding: '0 6px',
                   height: 24,
                   boxSizing: 'border-box',
@@ -964,7 +965,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
                 color: 'var(--text-main)',
                 backgroundColor: 'var(--bg-surface)',
                 border: '1px solid color-mix(in srgb, var(--accent-cursor) 55%, transparent)',
-                borderRadius: 4,
+                borderRadius: 6,
                 height: 24,
                 boxSizing: 'border-box',
                 flexShrink: 0,

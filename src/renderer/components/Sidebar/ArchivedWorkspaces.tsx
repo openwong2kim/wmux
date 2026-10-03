@@ -1,3 +1,4 @@
+// Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx), MIT License, Copyright (c) 2026 Nick
 import { useState } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
@@ -26,10 +27,10 @@ export default function ArchivedWorkspaces() {
   if (archived.length === 0) return null;
 
   return (
-    <div className="pt-2 mt-1 border-t" style={{ borderColor: 'var(--border-soft)' }} data-archived-workspaces>
+    <div className="pt-2 mt-1 border-t" style={{ borderColor: 'var(--stroke)' }} data-archived-workspaces>
       <button
         type="button"
-        className={`flex w-full items-center gap-1.5 px-1 py-0.5 text-left text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)] hover:text-[var(--text-sub)] ${FOCUS_RING}`}
+        className={`flex w-full items-center gap-1.5 px-1 py-0.5 text-left text-[12px] font-semibold uppercase tracking-[0.06em] text-[color-mix(in_srgb,var(--text-main)_70%,transparent)] hover:text-[var(--text-main)] ${FOCUS_RING}`}
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
       >
@@ -48,7 +49,7 @@ export default function ArchivedWorkspaces() {
             <div key={entry.id} className="flex items-center min-w-0 group/archived-row">
               <button
                 type="button"
-                className={`flex min-w-0 flex-1 items-center gap-1.5 rounded px-1 py-[3px] text-left transition-colors hover:bg-[rgba(var(--bg-surface-rgb),0.65)] ${FOCUS_RING}`}
+                className={`flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1 py-[3px] text-left transition-colors hover:bg-[var(--hover-fill)] ${FOCUS_RING}`}
                 title={t('workspace.restore')}
                 aria-label={`${entry.name} — ${t('workspace.restore')}`}
                 onClick={() => { restoreArchivedWorkspace(entry.id); }}
@@ -70,7 +71,7 @@ export default function ArchivedWorkspaces() {
                   first click only arms it; leaving the row or blurring disarms. */}
               <button
                 type="button"
-                className={`ml-0.5 rounded px-1 transition-opacity hover:text-[var(--accent-red)] focus-visible:opacity-100 ${FOCUS_RING} ${armedId === entry.id
+                className={`ml-0.5 rounded-md px-1 transition-opacity hover:text-[var(--accent-red)] focus-visible:opacity-100 ${FOCUS_RING} ${armedId === entry.id
                   ? 'opacity-100 text-[var(--accent-red)]'
                   : 'opacity-0 group-hover/archived-row:opacity-100 text-[var(--text-muted)]'}`}
                 title={t('workspace.deletePermanently')}

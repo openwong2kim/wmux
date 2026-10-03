@@ -109,6 +109,8 @@ describe('Sidebar — Attention order (render)', () => {
     });
     act(() => root.render(<Sidebar />));
     expect(shown()).toEqual(['far', 'done', 'run', 'idle', 'cold']);
+    // The filter field opens on demand from the header button.
+    act(() => (container.querySelector('[data-sidebar-search-toggle]') as HTMLButtonElement).click());
     const input = container.querySelector('input[type="text"]') as HTMLInputElement;
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, 'studio');

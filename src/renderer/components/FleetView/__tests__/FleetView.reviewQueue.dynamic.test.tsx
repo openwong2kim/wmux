@@ -101,7 +101,7 @@ beforeEach(() => {
       ...useStore.getInitialState(),
       locale: 'en',
       fleetActiveTab: 'fleet',
-      fleetViewVisible: true,
+      appRoute: 'fleet', fleetViewVisible: true,
       workspaces: [
         workspace('ws-o', 'owner project', leaf('po', 'pty-o')),
         workspace('ws-t1', 'wtask: Fix t1', leaf('p1', 'pty-1')),
@@ -122,8 +122,8 @@ afterEach(() => {
 });
 
 describe('FleetView — Ready to review', () => {
-  it('keeps Fleet open for review-task Jump when enabled, but still closes for Open diff', async () => {
-    act(() => useStore.getState().setFleetKeepOpenAfterJump(true));
+  it('review-task Jump returns to Workspaces on that task', async () => {
+    act(() => useStore.getState().setFleetViewVisible(true));
     mount();
     await settle();
     const row = reviewRow('ws-t1')!;
@@ -131,10 +131,7 @@ describe('FleetView — Ready to review', () => {
     key(row, 'j');
     await settle();
     expect(useStore.getState().activeWorkspaceId).toBe('ws-t1');
-    expect(useStore.getState().fleetViewVisible).toBe(true);
-    act(() => row.focus());
-    key(row, 'd');
-    expect(addDiffSurface).toHaveBeenCalled();
+    expect(useStore.getState().appRoute).toBe('workspaces');
     expect(useStore.getState().fleetViewVisible).toBe(false);
   });
 
@@ -142,8 +139,8 @@ describe('FleetView — Ready to review', () => {
     mount();
     await settle();
     const sections = Array.from(container.querySelectorAll<HTMLElement>('[data-fleet-section]')).map((el) => el.dataset.fleetSection);
-    // Between Needs you (the finished pane) and Running.
-    expect(sections).toEqual(['needsYou', 'review', 'running', 'idle']);
+    // Its own column; the task's finished pane is not shown twice.
+    expect(sections).toEqual(['running', 'review', 'idle']);
     const row = reviewRow('ws-t1')!;
     expect(row).not.toBeNull();
     expect(reviewRow('ws-t2')).toBeNull();
@@ -193,11 +190,12 @@ describe('FleetView — Ready to review', () => {
     expect(container.querySelector('[data-fleet-review-row]')).toBeNull();
   });
 
-  it('drops a closed or detached task from the queue', async () => {
+  it('drops a closed or detached task from the queue — its finished pane stays a plain card', async () => {
     act(() => { useStore.setState({ missionByPaneGroup: { 'ws-t1': mission('t1', { detachedAt: 2 }), 'ws-t2': mission('t2') } }); });
     mount();
     await settle();
-    expect(container.querySelector('[data-fleet-section="review"]')).toBeNull();
+    expect(container.querySelector('[data-fleet-review-row]')).toBeNull();
+    expect(container.querySelector('[data-fleet-card][data-workspace-id="ws-t1"]')?.getAttribute('data-column')).toBe('review');
   });
 
   it('the ⋮ menu carries the review verbs; Open diff opens the task diff surface and closes Fleet', async () => {
@@ -392,7 +390,7 @@ describe('FleetView — Ready to review, review fixes', () => {
 
 describe('Sidebar rollup — N to review', () => {
   it('counts the tasks Fleet lists and opens Fleet on the review section', async () => {
-    act(() => { useStore.setState({ fleetViewVisible: false }); });
+    act(() => { useStore.setState({ appRoute: 'workspaces', fleetViewVisible: false }); });
     mount(React.createElement(SidebarTaskGroup, {
       groupKey: 'ws-o',
       taskIds: ['ws-t1', 'ws-t2'],

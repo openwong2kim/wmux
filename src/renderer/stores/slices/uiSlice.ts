@@ -86,6 +86,7 @@ export function siteGuidesAutoEnablePatch(input: {
   return { siteGuidesEnabled: true, siteGuidesAutoEnabled: true };
 }
 import type { FleetSortMode } from '../selectors/fleet';
+import { EMPTY_FILTER, type WorkspaceFilter } from '../../components/Sidebar/workspaceFilter';
 import { multiviewColumnCount, type MultiviewArrangement } from '../../utils/multiviewGrid';
 import {
   normalizeRoleBinding,
@@ -144,6 +145,13 @@ type XtermColorKey = keyof XtermThemeColors;
 // inbox (off-machine messages, rendered as text — never PTY-pasted).
 export type FleetTab = 'fleet' | 'approvals' | 'remote';
 
+/**
+ * The page the rail has swapped into the sheet. Workspaces (the sidebar,
+ * panes and tools dock) is home; every other page covers it while the
+ * terminals stay mounted underneath. Session-only, never persisted.
+ */
+export type AppRoute = 'workspaces' | 'fleet' | 'schedules' | 'remote' | 'settings';
+
 export interface UISlice {
   // ─── Startup gate (Fix 0) ─────────────────────────────────────────────
   // Lifecycle marker promoted from local AppLayout state so RPC handlers
@@ -180,6 +188,17 @@ export interface UISlice {
   toggleCommandPalette: () => void;
   setCommandPaletteVisible: (visible: boolean) => void;
 
+  // The rail's current page. `fleetViewVisible`, `schedulesViewOpen` and
+  // `settingsPanelVisible` mirror it (applyAppRoute), so their readers keep
+  // working; write the route, never the mirrors.
+  appRoute: AppRoute;
+  setAppRoute: (route: AppRoute) => void;
+
+  // The sidebar's workspace filter (facet checks). Session-only: not
+  // persisted, so a reload starts unfiltered.
+  sidebarFilter: WorkspaceFilter;
+  setSidebarFilter: (filter: WorkspaceFilter) => void;
+
   // S-C1 Fleet View — full-screen cockpit overlay (Ctrl+Shift+A). Transient
   // UI state; never persisted (buildSessionData allowlist excludes it, like the
   // command palette / settings panel flags).
@@ -209,9 +228,6 @@ export interface UISlice {
   fleetSortMode: FleetSortMode;
   setFleetSortMode: (mode: FleetSortMode) => void;
 
-  // Session-only; close/reopen retains this, app restart does not.
-  fleetKeepOpenAfterJump: boolean;
-  setFleetKeepOpenAfterJump: (keepOpen: boolean) => void;
 
   // Fleet attention board — whether the Idle section shows its rows or stays
   // collapsed to one summary row. Session-only: not in buildSessionData.
@@ -946,6 +962,31 @@ export function resetInspectState(state: InspectStateFields): void {
   state.inspectXtermTarget = null;
 }
 
+export interface AppRouteFields extends InspectStateFields {
+  appRoute: AppRoute;
+  fleetViewVisible: boolean;
+  schedulesViewOpen: boolean;
+  settingsPanelVisible: boolean;
+}
+
+/**
+ * Swap the sheet to `route` and write the per-page mirror flags. Leaving
+ * Settings tears inspect down (inspectModeActive ⇒ settingsPanelVisible).
+ * Mutates an immer draft — call only inside a set() callback.
+ */
+export function applyAppRoute(state: AppRouteFields, route: AppRoute): void {
+  if (route !== 'settings' && state.inspectModeActive) resetInspectState(state);
+  state.appRoute = route;
+  state.fleetViewVisible = route === 'fleet';
+  state.schedulesViewOpen = route === 'schedules';
+  state.settingsPanelVisible = route === 'settings';
+}
+
+/** Leave `route` for Workspaces if it is the current page; otherwise no-op. */
+export function leaveAppRoute(state: AppRouteFields, route: AppRoute): void {
+  if (state.appRoute === route) applyAppRoute(state, 'workspaces');
+}
+
 /**
  * Move focus off `wsId` before it leaves the multiview grid (#752).
  *
@@ -1012,8 +1053,6 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     state.notificationPanelVisible = !state.notificationPanelVisible;
     if (state.notificationPanelVisible) {
       state.commandPaletteVisible = false;
-      state.settingsPanelVisible = false;
-      state.fleetViewVisible = false;
       // D-exclusive: opening a competing surface tears inspect down so the
       // top-level state machine can't coexist with another modal.
       if (state.inspectModeActive) resetInspectState(state);
@@ -1037,9 +1076,8 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   toggleCommandPalette: () => set((state) => {
     state.commandPaletteVisible = !state.commandPaletteVisible;
     if (state.commandPaletteVisible) {
+      // The palette floats over whichever page is shown; it never navigates.
       state.notificationPanelVisible = false;
-      state.settingsPanelVisible = false;
-      state.fleetViewVisible = false;
       // D-exclusive: opening the palette tears inspect down (no coexistence).
       if (state.inspectModeActive) resetInspectState(state);
     }
@@ -1050,30 +1088,33 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     if (visible && state.inspectModeActive) resetInspectState(state);
   }),
 
+  sidebarFilter: EMPTY_FILTER,
+  setSidebarFilter: (filter) => set((state) => {
+    state.sidebarFilter = filter;
+  }),
+
+  // ─── Rail route ──────────────────────────────────────────────────────────
+  appRoute: 'workspaces',
+
+  setAppRoute: (route) => set((state) => {
+    if (state.appRoute === route) return;
+    applyAppRoute(state, route);
+    // A new page is a destination: the overlays that led here step aside.
+    state.commandPaletteVisible = false;
+    state.notificationPanelVisible = false;
+  }),
+
   // ─── Fleet View (S-C1 cockpit) ───────────────────────────────────────────
   fleetViewVisible: false,
 
-  toggleFleetView: () => set((state) => {
-    state.fleetViewVisible = !state.fleetViewVisible;
-    if (state.fleetViewVisible) {
-      // Mutually exclusive with the other top-level overlays (same teardown the
-      // command palette / settings paths use), and inspect can't coexist.
-      state.commandPaletteVisible = false;
-      state.notificationPanelVisible = false;
-      state.settingsPanelVisible = false;
-      if (state.inspectModeActive) resetInspectState(state);
-    }
-  }),
+  // Fleet is a page: opening it swaps the sheet (applyAppRoute closes the
+  // other pages and inspect); closing returns to Workspaces.
+  toggleFleetView: () => get().setFleetViewVisible(get().appRoute !== 'fleet'),
 
-  setFleetViewVisible: (visible) => set((state) => {
-    state.fleetViewVisible = visible;
-    if (visible) {
-      state.commandPaletteVisible = false;
-      state.notificationPanelVisible = false;
-      state.settingsPanelVisible = false;
-      if (state.inspectModeActive) resetInspectState(state);
-    }
-  }),
+  setFleetViewVisible: (visible) => {
+    if (visible) get().setAppRoute('fleet');
+    else set((state) => { leaveAppRoute(state, 'fleet'); });
+  },
 
   // S-C2 — cockpit tab. Defaults to the agent grid; FleetView resets it on
   // unmount so reopening the cockpit always lands on 'fleet'.
@@ -1083,11 +1124,6 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     state.fleetActiveTab = tab;
   }),
 
-  // Session-only; deliberately absent from session persistence.
-  fleetKeepOpenAfterJump: false,
-  setFleetKeepOpenAfterJump: (keepOpen) => set((state) => {
-    state.fleetKeepOpenAfterJump = keepOpen;
-  }),
 
   fleetSortMode: 'attention',
 
@@ -1118,25 +1154,14 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   // ─── Settings panel ──────────────────────────────────────────────────────
   settingsPanelVisible: false,
 
-  toggleSettingsPanel: () => set((state) => {
-    state.settingsPanelVisible = !state.settingsPanelVisible;
-    if (state.settingsPanelVisible) {
-      state.commandPaletteVisible = false;
-      state.notificationPanelVisible = false;
-      state.fleetViewVisible = false;
-    } else if (state.inspectModeActive) {
-      // D-exclusive invariant: inspect can only exist while Settings is open
-      // (inspectModeActive ⇒ settingsPanelVisible). Toggling Settings shut
-      // (true→false) while inspecting would strand a "Settings-less inspect"
-      // overlay, so tear inspect down in lock-step — same reset the
-      // command-palette / notification teardown paths use.
-      resetInspectState(state);
-    }
-  }),
+  // Settings is a page. Leaving it while inspecting tears inspect down in
+  // lock-step (inspectModeActive ⇒ settingsPanelVisible) — applyAppRoute.
+  toggleSettingsPanel: () => get().setSettingsPanelVisible(get().appRoute !== 'settings'),
 
-  setSettingsPanelVisible: (visible) => set((state) => {
-    state.settingsPanelVisible = visible;
-  }),
+  setSettingsPanelVisible: (visible) => {
+    if (visible) get().setAppRoute('settings');
+    else set((state) => { leaveAppRoute(state, 'settings'); });
+  },
 
   // ─── Notification sound ──────────────────────────────────────────────────
   notificationSoundEnabled: true,
@@ -1450,9 +1475,9 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   }),
 
   // ─── Theme ──────────────────────────────────────────────────────────────
-  // Default = the amber design system (owner redesign decision 2026-07-11);
-  // persisted choices in session.json are untouched.
-  theme: 'amber',
+  // Default = the tint look (owner decision 2026-10-03); persisted choices
+  // in session.json are untouched, so a saved theme stays.
+  theme: 'tint',
 
   setTheme: (theme) => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -1491,7 +1516,7 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     set((state) => {
       state.inspectModeActive = true;
       state.inspectMinimized = true;   // Settings shrinks to a floating bar.
-      state.settingsPanelVisible = true; // ...but stays mounted (D-settings).
+      applyAppRoute(state, 'settings'); // ...but stays mounted (D-settings).
       // D-exclusive: inspect is the top-level mode — close competing surfaces.
       state.commandPaletteVisible = false;
       state.notificationPanelVisible = false;

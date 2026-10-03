@@ -1,3 +1,4 @@
+// Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx), MIT License, Copyright (c) 2026 Nick
 // ─── Fan-out task groups (#1481, per requesting pane since 2026-09-27) ──────
 //
 // A rollup (`N tasks · M need you`, nothing at zero), a chevron that folds the
@@ -356,11 +357,11 @@ function SidebarTaskGroup({ groupKey, foldKey, taskIds, ownerActive, label, owne
 
   return (
     <div data-task-group={foldKey ?? groupKey}>
-      <div className="mx-2 flex h-6 items-center gap-1 pl-[22px] pr-1 text-[11px] text-[var(--text-muted)]" data-task-rollup>
+      <div className="mx-2 flex h-6 items-center gap-1 pl-[22px] pr-1 text-[11px] text-[color-mix(in_srgb,var(--text-main)_45%,transparent)]" data-task-rollup>
         <button
           type="button"
           // A labelled group keeps its name whole; the review link truncates.
-          className={`flex min-w-0 ${label && toReview > 0 ? 'flex-none' : toReview > 0 ? 'flex-initial' : 'flex-1'} items-center gap-1.5 self-stretch rounded px-1 text-left hover:text-[var(--text-sub)] ${FOCUS_RING}`}
+          className={`flex min-w-0 ${label && toReview > 0 ? 'flex-none' : toReview > 0 ? 'flex-initial' : 'flex-1'} items-center gap-1.5 self-stretch rounded-md px-1 text-left hover:text-[var(--text-main)] ${FOCUS_RING}`}
           aria-expanded={expanded}
           aria-controls={expanded ? listId : undefined}
           aria-label={toggleLabel}
@@ -378,10 +379,10 @@ function SidebarTaskGroup({ groupKey, foldKey, taskIds, ownerActive, label, owne
             {anyNeedsYou && (
               <>
                 {' · '}
-                {/* Red only while folded: then this line is the only place the
+                {/* Amber only while folded: then this line is the only place the
                     blocked task shows. Unfolded, the task row itself carries
-                    the red (attention grammar: two renditions, not three). */}
-                <span className={expanded ? '' : 'font-semibold text-[var(--accent-red)]'}>
+                    the amber (attention grammar: two renditions, not three). */}
+                <span className={expanded ? '' : 'font-semibold text-[var(--accent-yellow)]'}>
                   {t('strip.needsYou', { count: rollup.needYou })}
                 </span>
               </>
@@ -393,7 +394,7 @@ function SidebarTaskGroup({ groupKey, foldKey, taskIds, ownerActive, label, owne
             <span className="flex-none" aria-hidden="true">·</span>
             <button
               type="button"
-              className={`min-w-0 flex-initial self-stretch truncate rounded px-1 hover:text-[var(--accent-blue)] ${FOCUS_RING}`}
+              className={`min-w-0 flex-initial self-stretch truncate rounded-md px-1 hover:text-[var(--text-main)] ${FOCUS_RING}`}
               aria-label={t('sidebar.tasks.toReviewLabel', { count: toReview })}
               title={t('sidebar.tasks.toReviewLabel', { count: toReview })}
               onClick={openReview}
@@ -410,7 +411,7 @@ function SidebarTaskGroup({ groupKey, foldKey, taskIds, ownerActive, label, owne
           nameOf={nameOf}
           groupName={label ?? displayWorkspaceName(ownerName, false)}
           onCloseWorkspace={onCloseWorkspace}
-          className={`${HIT_TARGET_24} flex-none rounded text-[var(--text-muted)] hover:text-[var(--text-main)] ${FOCUS_RING}`}
+          className={`${HIT_TARGET_24} flex-none rounded-md text-[var(--text-muted)] hover:bg-[var(--selection)] hover:text-[var(--text-main)] ${FOCUS_RING}`}
         />
       </div>
       {expanded && (
@@ -419,7 +420,7 @@ function SidebarTaskGroup({ groupKey, foldKey, taskIds, ownerActive, label, owne
           label={t('sidebar.tasks.groupLabel', { owner: displayWorkspaceName(ownerName, false) })}
           taskIds={taskIds}
           renderTask={renderTask}
-          className="ml-[25px] space-y-1 border-l border-[var(--border-soft)]"
+          className="ml-[25px] space-y-0.5 border-l border-[var(--border-soft)]"
         />
       )}
     </div>
@@ -444,9 +445,9 @@ interface PaneTaskGroupProps {
 /**
  * The tasks one roster pane requested, nested under that pane's row. The
  * row itself carries the fold chevron and the task count; while folded with a
- * task that needs you, the count leads with the needs-you number in red — the
- * only place the blocked task shows then. Unfolded, the task row carries the
- * red itself (two renditions, not three).
+ * task that needs you, the count leads with the needs-you number in amber —
+ * the only place the blocked task shows then. Unfolded, the task row carries
+ * the amber itself (two renditions, not three).
  */
 function PaneTaskGroupInner({ ownerId, paneId, paneName, taskIds, ownerActive, renderTask, onCloseWorkspace, children }: PaneTaskGroupProps) {
   const t = useT();
@@ -467,7 +468,7 @@ function PaneTaskGroupInner({ ownerId, paneId, paneName, taskIds, ownerActive, r
       <button
         type="button"
         draggable={false}
-        className={`flex-none self-center inline-flex items-center gap-0.5 rounded px-1 text-[10px] font-mono tabular-nums text-[var(--text-muted)] hover:text-[var(--text-sub)] ${FOCUS_RING}`}
+        className={`flex-none self-center inline-flex items-center gap-0.5 rounded-md px-1 text-[10px] font-mono tabular-nums text-[var(--text-muted)] hover:text-[var(--text-sub)] ${FOCUS_RING}`}
         aria-expanded={expanded}
         aria-controls={expanded ? listId : undefined}
         aria-label={toggleLabel}
@@ -486,7 +487,7 @@ function PaneTaskGroupInner({ ownerId, paneId, paneName, taskIds, ownerActive, r
         <span className="flex-none" aria-hidden="true"><IconFanOut size={9} /></span>
         {redCount ? (
           <span aria-hidden="true">
-            <span className="font-semibold text-[var(--accent-red)]" data-pane-task-red>{rollup.needYou}</span>/{rollup.tasks}
+            <span className="font-semibold text-[var(--accent-yellow)]" data-pane-task-red>{rollup.needYou}</span>/{rollup.tasks}
           </span>
         ) : (
           <span aria-hidden="true">{rollup.tasks}</span>
@@ -501,7 +502,7 @@ function PaneTaskGroupInner({ ownerId, paneId, paneName, taskIds, ownerActive, r
         toReview={rollup.toReview}
         groupName={paneName}
         onCloseWorkspace={onCloseWorkspace}
-        className={`inline-flex h-6 w-0 min-w-0 flex-none items-center justify-center self-center -my-1.5 overflow-hidden rounded-[5px] text-[var(--text-muted)] hover:text-[var(--text-main)] group-hover/mention:w-6 focus-visible:w-6 aria-expanded:w-6 ${FOCUS_RING}`}
+        className={`inline-flex h-6 w-0 min-w-0 flex-none items-center justify-center self-center -my-1.5 overflow-hidden rounded-md text-[var(--text-muted)] hover:text-[var(--text-main)] group-hover/mention:w-6 focus-visible:w-6 aria-expanded:w-6 ${FOCUS_RING}`}
       />
     </>
   );
@@ -518,7 +519,7 @@ function PaneTaskGroupInner({ ownerId, paneId, paneName, taskIds, ownerActive, r
           // The nested rows sit three indents deep inside the owner row: they
           // drop their own side margins and run to the owner row's right edge
           // so the task name keeps the width it needs.
-          className="-mr-2 ml-[9px] mt-0.5 space-y-1 border-l border-[var(--border-soft)] [&>div>div]:ml-1 [&>div>div]:mr-0"
+          className="-mr-2 ml-[9px] mt-0.5 space-y-0.5 border-l border-[var(--border-soft)] [&>div>div]:ml-1 [&>div>div]:mr-0"
         />
       )}
     </div>

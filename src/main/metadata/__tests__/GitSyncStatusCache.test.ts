@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { GitSyncStatusCache, parsePorcelainV2 } from '../GitSyncStatusCache';
+import { GitSyncStatusCache, parsePorcelainV2, parseShortstat } from '../GitSyncStatusCache';
 
 describe('parsePorcelainV2', () => {
   it('parses ahead/behind and counts every dirty entry kind', () => {
@@ -57,7 +57,28 @@ describe('parsePorcelainV2', () => {
   });
 });
 
+describe('parseShortstat', () => {
+  it('reads insertions and deletions', () => {
+    expect(parseShortstat(' 3 files changed, 84 insertions(+), 31 deletions(-)\n')).toEqual({ added: 84, removed: 31 });
+  });
+
+  it('reads a one-sided change and singular forms', () => {
+    expect(parseShortstat(' 1 file changed, 1 insertion(+)\n')).toEqual({ added: 1, removed: 0 });
+    expect(parseShortstat(' 1 file changed, 2 deletions(-)\n')).toEqual({ added: 0, removed: 2 });
+  });
+});
+
 describe('GitSyncStatusCache', () => {
+  it('adds the diff line counts for a dirty tree', async () => {
+    const exec = vi.fn()
+      .mockResolvedValueOnce({ stdout: '# branch.head main\n1 .M N... 100644 100644 100644 a b src.txt\n' })
+      .mockResolvedValueOnce({ stdout: ' 1 file changed, 84 insertions(+), 31 deletions(-)\n' });
+    const cache = new GitSyncStatusCache(() => 0, exec);
+    const status = await cache.get('/repo');
+    expect(status).toMatchObject({ dirty: 1, added: 84, removed: 31 });
+    expect(exec.mock.calls[1][1]).toEqual(['--no-optional-locks', 'diff', 'HEAD', '--shortstat', '--ignore-submodules=dirty']);
+  });
+
   const CLEAN = '# branch.head main\n# branch.upstream origin/main\n# branch.ab +1 -0\n';
 
   it('caches within the 15 s TTL and refetches after it', async () => {
@@ -65,7 +86,7 @@ describe('GitSyncStatusCache', () => {
     const exec = vi.fn().mockResolvedValue({ stdout: CLEAN });
     const cache = new GitSyncStatusCache(() => now, exec);
 
-    expect(await cache.get('D:\\repo')).toEqual({ dirty: 0, ahead: 1, behind: 0, hasUpstream: true });
+    expect(await cache.get('D:\\repo')).toEqual({ dirty: 0, ahead: 1, behind: 0, hasUpstream: true, added: 0, removed: 0 });
     expect(exec).toHaveBeenCalledTimes(1);
 
     now = 10_000;

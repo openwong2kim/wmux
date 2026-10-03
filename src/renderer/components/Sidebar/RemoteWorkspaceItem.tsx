@@ -1,3 +1,4 @@
+// Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx), MIT License, Copyright (c) 2026 Nick
 import { useEffect, useRef, useState } from 'react';
 import { useT } from '../../hooks/useT';
 import { useStore } from '../../stores';
@@ -80,10 +81,9 @@ export default function RemoteWorkspaceItem({ workspace, isActive, onSelect, onD
         tabIndex={0}
         aria-pressed={isActive}
         aria-label={rejectedText ? `${displayName} — ${rejectedText}` : `${displayName} — ${hostName}`}
-        className={`group sidebar-row px-3 py-1 cursor-pointer rounded-md select-none ${needsYou ? 'sidebar-row-needs' : ''} ${
-          isActive
-            ? 'sidebar-row-active text-[var(--text-main)]'
-            : 'text-[var(--text-subtle)] hover:bg-[rgba(var(--bg-surface-rgb),0.5)] hover:text-[var(--text-sub)]'
+        // Card states are painted by the .wmux-sidebar .sidebar-row rules (ui.css).
+        className={`group sidebar-row px-2.5 py-2 cursor-pointer rounded-md select-none ${needsYou ? 'sidebar-row-needs' : ''} ${
+          isActive ? 'sidebar-row-active' : ''
         }`}
         onClick={() => { if (!editing) onSelect(workspace.key); }}
         onKeyDown={(e) => {
@@ -115,14 +115,14 @@ export default function RemoteWorkspaceItem({ workspace, isActive, onSelect, onD
             className="w-1.5 h-1.5 rounded-full flex-shrink-0"
             style={tagHex
               ? { backgroundColor: tagHex }
-              : { backgroundColor: needsYou ? 'var(--accent-red)' : isActive && !workspace.stale ? 'var(--accent)' : 'var(--text-muted)' }}
+              : { backgroundColor: needsYou ? 'var(--accent-yellow)' : isActive && !workspace.stale ? 'var(--accent)' : 'var(--text-muted)' }}
           />
           <div className="flex-1 min-w-0">
             {editing ? (
               <input
                 ref={inputRef}
                 data-remote-rename-input
-                className="ui-mini-input w-full text-caption font-mono bg-transparent border border-[var(--accent-blue)] rounded px-1"
+                className="ui-mini-input w-full text-caption font-mono bg-transparent border border-[var(--accent-blue)] rounded-md px-1"
                 value={editName}
                 maxLength={64}
                 onChange={(e) => setEditName(e.target.value)}
@@ -139,11 +139,11 @@ export default function RemoteWorkspaceItem({ workspace, isActive, onSelect, onD
               </div>
             )}
             {/* A stale entry is unreachable, not gone: it keeps its row (only
-                the user detaches) but drops the live accent colour and says
+                the user detaches) but drops to a fainter metadata tone and says
                 why on hover. */}
             <div
-              className="flex items-center gap-1 text-[10px] font-mono min-w-0"
-              style={{ color: workspace.stale || workspace.insecureTransport ? 'var(--text-muted)' : 'var(--accent)' }}
+              className="mt-0.5 flex items-center gap-1 text-[11px] font-mono min-w-0"
+              style={{ color: workspace.stale || workspace.insecureTransport ? 'color-mix(in srgb, var(--text-main) 35%, transparent)' : 'color-mix(in srgb, var(--text-main) 45%, transparent)' }}
               title={rejectedText ?? (workspace.stale ? t('remote.disconnected') : undefined)}
             >
               {/* "On another machine" at a glance, now that remote rows share
@@ -158,7 +158,7 @@ export default function RemoteWorkspaceItem({ workspace, isActive, onSelect, onD
             </div>
           </div>
           {needsYou && (
-            <span className={`font-sans text-[10px] font-semibold text-[var(--accent-red)] flex-shrink-0 ${isActive ? '' : 'group-hover:hidden'}`} data-remote-needs-you>
+            <span className={`font-sans text-[11px] font-medium text-[var(--accent-yellow)] flex-shrink-0 ${isActive ? '' : 'group-hover:hidden'}`} data-remote-needs-you>
               {t('workspace.needsYou')}
             </span>
           )}
@@ -167,15 +167,14 @@ export default function RemoteWorkspaceItem({ workspace, isActive, onSelect, onD
 
       {menuPos && (
         <div
-          className="fixed z-[var(--z-popover-top)] min-w-[160px] p-[5px]"
+          className="fixed z-[var(--z-popover-top)] min-w-[160px] p-1"
           style={{
             left: menuPos.x,
             top: menuPos.y,
             background: 'var(--bg-surface)',
-            border: '1px solid color-mix(in srgb, var(--text-main) 9%, transparent)',
-            borderRadius: 8,
-            boxShadow:
-              '0 12px 32px rgba(0, 0, 0, 0.45), inset 0 1px 0 color-mix(in srgb, var(--text-main) 5%, transparent)',
+            border: '1px solid var(--line)',
+            borderRadius: 12,
+            boxShadow: '0 12px 32px rgba(0, 0, 0, 0.45)',
           }}
           // MOUSEDOWN, not click. The dismiss listener above is on `mousedown`,
           // which fires first — so stopping only `click` let the menu unmount
@@ -188,7 +187,7 @@ export default function RemoteWorkspaceItem({ workspace, isActive, onSelect, onD
         >
           <button
             type="button"
-            className={`w-full flex items-center px-2.5 py-1.5 text-xs text-left rounded-[5px] transition-colors hover:bg-[color-mix(in_srgb,var(--accent-blue)_14%,transparent)] ${FOCUS_RING}`}
+            className={`w-full flex items-center px-2.5 py-1.5 text-xs text-left rounded-md transition-colors hover:bg-[var(--hover-fill)] ${FOCUS_RING}`}
             style={{ color: 'var(--text-main)' }}
             onClick={() => {
               setEditName(workspace.label || workspace.name || '');
@@ -232,7 +231,7 @@ export default function RemoteWorkspaceItem({ workspace, isActive, onSelect, onD
           </div>
           <button
             type="button"
-            className={`w-full flex items-center px-2.5 py-1.5 text-xs text-left rounded-[5px] transition-colors hover:bg-[color-mix(in_srgb,var(--accent-blue)_14%,transparent)] ${FOCUS_RING}`}
+            className={`w-full flex items-center px-2.5 py-1.5 text-xs text-left rounded-md transition-colors hover:bg-[var(--hover-fill)] ${FOCUS_RING}`}
             style={{ color: 'var(--text-main)' }}
             onClick={() => { onDetach(workspace.key); setMenuPos(null); }}
           >

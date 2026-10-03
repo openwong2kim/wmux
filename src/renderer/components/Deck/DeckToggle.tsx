@@ -6,7 +6,8 @@
 // terminals paid a whole column so four glyphs had somewhere to live.
 //
 // Opening the deck is one command, so it gets one button, and it moves to the
-// row that already exists for app-wide chrome — with an explicit panel label. That is scope-
+// row that already exists for app-wide chrome — an icon whose tooltip and name
+// say which panel ("Show tools panel"), beside Settings. That is scope-
 // correct: the deck's state (activeDeckTab / channelDockVisible) is app-global,
 // not per-workspace, so an app-wide row is its natural home. It also satisfies
 // the 2026-08-14 decision's REASON better than the rail did — the entry point
@@ -82,7 +83,6 @@ export default function DeckToggle() {
         </Icon>
         {signal && <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-[var(--accent)]" data-deck-toggle-dot />}
       </span>
-      <span>{t('deck.panelLabel')}</span>
     </button>
   );
 }

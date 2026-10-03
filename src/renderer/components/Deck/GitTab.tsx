@@ -358,10 +358,11 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
     <div data-git-tab className="flex flex-col flex-1 min-h-0 text-[12px]">
       {/* Pull Requests 섹션 — gh 기반(미설치/비GitHub은 안내문으로 강등). */}
       <PrSection repoPath={repoPath} />
-      {/* 워크트리 섹션 헤더 — 36px 크롬 행. */}
+      {/* Worktrees section header — 40px chrome row.
+          Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx), MIT License, Copyright (c) 2026 Nick */}
       <div
-        className="flex items-center gap-2 h-9 px-3 shrink-0 border-b border-[var(--bg-surface)]"
-        style={{ borderColor: 'var(--border-soft)' }}
+        className="flex items-center gap-2 h-10 px-3 shrink-0 border-b border-[var(--bg-surface)]"
+        style={{ borderColor: 'var(--stroke)' }}
         {...tokenAttrs('bgSurface', 'border')}
       >
         <span className="font-semibold text-[var(--text-main)]" {...tokenAttrs('textMain', 'text')}>
@@ -384,7 +385,7 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
             onClick={() => handleDiff(currentWorktree || repoPath)}
             title={t('git.diffDesc') || 'Open the diff view for this repo'}
             data-git-diff-current
-            className={`px-1.5 py-0.5 rounded text-[11px] text-[var(--text-sub)] hover:text-[var(--text-main)] border border-[var(--bg-surface)] ${FOCUS_RING}`}
+            className={`px-1.5 py-0.5 rounded-md text-[11px] text-[var(--text-sub)] hover:text-[var(--text-main)] hover:bg-[var(--hover-fill)] border border-[var(--line)] ${FOCUS_RING}`}
             {...tokenAttrs('textSub', 'text')}
           >
             {t('git.diff') || 'Diff'}
@@ -395,7 +396,7 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
           onClick={() => void load()}
           title={t('git.refresh') || 'Refresh'}
           aria-label={t('git.refresh') || 'Refresh'}
-          className={`flex items-center justify-center w-6 h-6 rounded text-[var(--text-muted)] hover:text-[var(--text-sub)] transition-colors ${FOCUS_RING}`}
+          className={`flex items-center justify-center w-6 h-6 rounded-md text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--hover-fill)] transition-colors ${FOCUS_RING}`}
           {...tokenAttrs('textMuted', 'text')}
         >
           {/* monochrome refresh glyph */}
@@ -604,8 +605,8 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
       {/* 새 워크트리 — 브랜치명 입력 한 줄(관례 위치는 main이 도출). */}
       {repoPath && (
         <div
-          className="flex items-center gap-1.5 h-9 px-2 shrink-0 border-t border-[var(--bg-surface)]"
-          style={{ borderColor: 'var(--border-soft)' }}
+          className="flex items-center gap-1.5 h-10 px-2 shrink-0 border-t border-[var(--bg-surface)]"
+          style={{ borderColor: 'var(--stroke)' }}
           {...tokenAttrs('bgSurface', 'border')}
         >
           <input
@@ -624,7 +625,7 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
             type="button"
             onClick={() => void handleCreate()}
             disabled={busy || !newBranch.trim()}
-            className={`px-2 py-0.5 rounded text-[11px] text-[var(--text-sub)] hover:text-[var(--text-main)] border border-[var(--bg-surface)] disabled:opacity-40 ${FOCUS_RING}`}
+            className={`px-2 py-0.5 rounded-md text-[11px] text-[var(--text-sub)] hover:text-[var(--text-main)] hover:bg-[var(--hover-fill)] border border-[var(--line)] disabled:opacity-40 ${FOCUS_RING}`}
             {...tokenAttrs('textSub', 'text')}
           >
             {t('git.create') || 'Create'}

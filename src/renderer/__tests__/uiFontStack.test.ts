@@ -48,16 +48,15 @@ describe('UI font stack', () => {
     }
   });
 
-  it('leads the --font-ui stack with Inter and keeps a system fallback behind it', () => {
+  it('leads the --font-ui stack with the platform UI face', () => {
     const decl = /--font-ui:\s*([^;]+);/.exec(css);
     expect(decl).not.toBeNull();
     const families = (decl as RegExpExecArray)[1].split(',').map((f) => f.trim());
-    expect(families[0]).toBe('Inter');
-    // Nothing may be inserted ahead of Inter — in particular no Hangul face.
-    // Inter carries no Hangul, so a ko UI resolves Latin runs to Inter and
-    // Hangul runs to the platform's system UI face, which is the intent. A
-    // Hangul family placed FIRST would capture the Latin runs too.
-    expect(families).toContain('system-ui');
+    // The mono look (2026-10-03) uses the system face: SF on macOS, Segoe UI
+    // on Windows. Hangul runs resolve to the platform face as before; no
+    // Hangul family is spliced in ahead of it.
+    expect(families[0]).toBe('system-ui');
+    expect(families).toContain("'Segoe UI'");
     expect(families.join(',')).not.toMatch(/Hangul|Gothic|Malgun|Apple SD/i);
   });
 

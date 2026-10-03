@@ -59,11 +59,11 @@ describe('FleetCard — task-first rows', () => {
     expect(html).toContain('Respond');
   });
 
-  it('labels a question-less waiting pane as idle with a neutral dot, not a red needs-you signal', () => {
+  it('labels a question-less waiting pane as idle with a neutral dot, not an amber needs-you signal', () => {
     const html = render({ card: card({ agentStatus: 'waiting' }) });
     expect(html).toContain('Idle');
     expect(html).not.toContain('Waiting');
-    expect(html).not.toContain('var(--accent-red)');
+    expect(html).not.toContain('var(--accent-yellow)');
     expect(html).toContain('var(--text-sub)');
   });
 

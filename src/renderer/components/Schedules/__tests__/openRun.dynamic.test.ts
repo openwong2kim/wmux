@@ -17,7 +17,7 @@ beforeEach(() => {
     activeWorkspaceId: ws.id,
     automations: [automation({ name: 'Morning report' })],
     automationRuns: [run({ id: 'r1', ptyId: 'auto-1', state: 'awaiting' })],
-    schedulesViewOpen: true,
+    appRoute: 'schedules', schedulesViewOpen: true,
     schedulesSelectedId: null,
   });
 });
@@ -37,7 +37,7 @@ describe('openAutomationRun', () => {
     expect(st.schedulesViewOpen).toBe(false);
 
     // A second open focuses the pane that already shows it — never a second binding.
-    useStore.setState({ schedulesViewOpen: true });
+    useStore.setState({ appRoute: 'schedules', schedulesViewOpen: true });
     await expect(openAutomationRun('r1')).resolves.toBe('focused');
     expect(owners('auto-1')).toHaveLength(1);
     expect(useStore.getState().workspaces).toHaveLength(2);

@@ -1,3 +1,4 @@
+// Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/features/sessions/ui/Composer.tsx), MIT License, Copyright (c) 2026 Nick
 // ─── Command Deck — "New session" chip ──────────────────────────────────────
 //
 // Replaces this workspace's orchestrator with a fresh one: the live brain is
@@ -152,12 +153,13 @@ export function NewSessionChip({
       // (DESIGN.md: AI-directed actions stay neutral at rest) — nothing is
       // destroyed by arming. Red only once ARMED, which is the one click that
       // commits: DESIGN.md reserves solid red for the final confirm.
+      // A neutral 26px filled chip; armed keeps the destructive red label.
       className={
         armed
-          ? `px-2.5 py-1 rounded-md text-[12px] font-semibold text-[var(--accent-red)] bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors disabled:opacity-40 ${FOCUS_RING}`
-          : `px-2.5 py-1 rounded-md text-[12px] font-semibold text-[var(--text-sub)] bg-[rgba(var(--bg-surface-rgb),0.6)] hover:text-[var(--accent-amber)] transition-colors disabled:opacity-40 ${FOCUS_RING}`
+          ? `h-[26px] px-2 rounded-md text-[12px] font-medium text-[var(--accent-red)] bg-[var(--selection)] hover:bg-[var(--selection-hover)] transition-colors disabled:opacity-40 ${FOCUS_RING}`
+          : `h-[26px] px-2 rounded-md text-[12px] text-[color-mix(in_srgb,var(--text-main)_70%,transparent)] bg-[var(--selection)] hover:bg-[var(--selection-hover)] hover:text-[var(--text-main)] transition-colors disabled:opacity-40 ${FOCUS_RING}`
       }
-      {...(armed ? tokenAttrs('danger', 'text') : tokenAttrs('textSub', 'text'))}
+      {...(armed ? tokenAttrs('danger', 'text') : tokenAttrs('textMain', 'text'))}
     >
       {armed ? confirmLabel : label}
     </button>

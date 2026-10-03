@@ -1,0 +1,115 @@
+// @vitest-environment jsdom
+// The icon rail (MiniSidebar `rail`): shortcuts in order, Settings and the
+// sidebar toggle at the foot, the workspace list only while collapsed, arrow
+// keys between buttons, and Fleet's needs-you count as a number badge.
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
+import { useStore } from '../../../stores';
+import MiniSidebar from '../MiniSidebar';
+import { seedFleetTriageStore } from '../../../utils/__tests__/fleetTriageFixture';
+import { selectFleetSectionCounts } from '../../../stores/selectors/fleet';
+
+let container: HTMLDivElement;
+let root: Root;
+beforeEach(() => {
+  vi.stubGlobal('electronAPI', { web: { status: vi.fn(async () => ({ running: false })) } });
+  container = document.createElement('div');
+  document.body.appendChild(container);
+  root = createRoot(container);
+  useStore.setState({
+    commandPaletteVisible: false, fleetViewVisible: false, settingsPanelVisible: false,
+    schedulesViewOpen: false, appRoute: 'workspaces', schedulesAvailable: true, readOnly: false, sidebarVisible: true,
+  });
+});
+afterEach(() => {
+  act(() => root.unmount());
+  container.remove();
+  vi.unstubAllGlobals();
+});
+
+const rail = () => container.querySelector<HTMLDivElement>('[data-sidebar-rail]')!;
+const navIds = () => [...container.querySelectorAll('[data-sidebar-nav]')].map((el) => el.getAttribute('data-sidebar-nav'));
+
+describe('sidebar icon rail', () => {
+  it('lists only pages — Workspaces, Fleet, Schedules and Remote — each named', async () => {
+    await act(async () => root.render(<MiniSidebar rail collapsed={false} />));
+    // Search & commands is a palette (the titlebar pill), not a page.
+    expect(navIds()).toEqual(['home', 'fleet', 'schedules', 'remote']);
+    // Home is the current page until another is chosen.
+    expect(container.querySelector('[data-sidebar-nav="home"]')?.getAttribute('aria-pressed')).toBe('true');
+    for (const b of rail().querySelectorAll('button')) {
+      expect(b.getAttribute('aria-label')?.length, b.outerHTML).toBeGreaterThan(0);
+    }
+  });
+
+  it('keeps only the sidebar toggle at its foot (Settings lives in the titlebar)', async () => {
+    await act(async () => root.render(<MiniSidebar rail collapsed={false} />));
+    expect(container.querySelector('[data-onboarding-target="settings-button"]')).toBeNull();
+    expect(container.querySelector('[data-sidebar-collapse]')).not.toBeNull();
+  });
+
+  it('shows no workspace list beside an open sidebar, and offers to collapse it', async () => {
+    await act(async () => root.render(<MiniSidebar rail collapsed={false} />));
+    expect(container.querySelector('[data-mini-add-workspace]')).toBeNull();
+    const toggle = container.querySelector<HTMLButtonElement>('[data-sidebar-collapse]')!;
+    expect(toggle).not.toBeNull();
+    act(() => toggle.click());
+    expect(useStore.getState().sidebarVisible).toBe(false);
+  });
+
+  it('adds the workspace list when collapsed', async () => {
+    await act(async () => root.render(<MiniSidebar rail collapsed />));
+    expect(container.querySelector('[data-mini-add-workspace]')).not.toBeNull();
+    expect(container.querySelector('[data-sidebar-collapse]')).toBeNull();
+  });
+
+  it('moves focus between buttons with the arrow keys, wrapping at the ends', async () => {
+    await act(async () => root.render(<MiniSidebar rail collapsed={false} />));
+    const buttons = [...rail().querySelectorAll<HTMLButtonElement>('button')];
+    buttons[0].focus();
+    act(() => { buttons[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); });
+    expect(document.activeElement).toBe(buttons[1]);
+    act(() => { buttons[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true })); });
+    act(() => { buttons[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true })); });
+    expect(document.activeElement).toBe(buttons[buttons.length - 1]);
+  });
+
+  it('carries the Fleet needs-you count as a number badge', async () => {
+    seedFleetTriageStore(Date.now(), { schedulesAvailable: true, readOnly: false });
+    const needs = selectFleetSectionCounts(useStore.getState()).needsYou;
+    expect(needs).toBeGreaterThan(0);
+    await act(async () => root.render(<MiniSidebar rail collapsed={false} />));
+    const badge = container.querySelector('[data-sidebar-nav="fleet"] .wmux-nav-badge');
+    expect(badge?.textContent).toBe(String(needs));
+  });
+
+  it('swaps the sheet to each page and marks only that one', async () => {
+    await act(async () => root.render(<MiniSidebar rail collapsed={false} />));
+    const pressed = () => [...container.querySelectorAll('[data-sidebar-nav][aria-pressed="true"]')]
+      .map((el) => el.getAttribute('data-sidebar-nav'));
+    for (const page of ['fleet', 'schedules', 'remote'] as const) {
+      act(() => container.querySelector<HTMLButtonElement>(`[data-sidebar-nav="${page}"]`)!.click());
+      expect(useStore.getState().appRoute).toBe(page);
+      expect(pressed()).toEqual([page]);
+    }
+    // A page clicked again stays (the rail navigates, it does not toggle).
+    act(() => container.querySelector<HTMLButtonElement>('[data-sidebar-nav="remote"]')!.click());
+    expect(useStore.getState().appRoute).toBe('remote');
+    // Settings is a page too, opened from the titlebar; the rail marks nothing.
+    act(() => useStore.getState().setAppRoute('settings'));
+    expect(pressed()).toEqual([]);
+    act(() => container.querySelector<HTMLButtonElement>('[data-sidebar-nav="home"]')!.click());
+    expect(useStore.getState().appRoute).toBe('workspaces');
+    expect(pressed()).toEqual(['home']);
+  });
+
+  it('a workspace picked on the collapsed rail brings Workspaces back', async () => {
+    useStore.setState({ appRoute: 'fleet', fleetViewVisible: true });
+    await act(async () => root.render(<MiniSidebar rail collapsed />));
+    const avatar = rail().querySelector<HTMLButtonElement>('.overflow-y-auto button');
+    expect(avatar).not.toBeNull();
+    act(() => avatar!.click());
+    expect(useStore.getState().appRoute).toBe('workspaces');
+  });
+});

@@ -1,3 +1,4 @@
+// Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx), MIT License, Copyright (c) 2026 Nick
 import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
@@ -73,11 +74,11 @@ export default function OrphanSessions() {
 
   return (
     <div
-      className="pt-2 mt-1 border-t space-y-0.5"
+      className="pt-2 mt-1 border-t border-[var(--stroke)] space-y-0.5"
       style={{ borderColor: 'var(--border-soft)' }}
       data-orphan-sessions
     >
-      <p className="px-1 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+      <p className="px-1 pb-0.5 text-[12px] font-semibold uppercase tracking-[0.06em] text-[color-mix(in_srgb,var(--text-main)_70%,transparent)]">
         {t('sidebar.orphanSessions')} · {orphans.length}
       </p>
       {orphans.map((session) => {
@@ -87,7 +88,7 @@ export default function OrphanSessions() {
           <div key={session.id} className="flex items-center min-w-0 group/orphan-row">
             <button
               type="button"
-              className={`flex min-w-0 flex-1 items-center gap-1.5 rounded px-1 py-[3px] text-left transition-colors hover:bg-[rgba(var(--bg-surface-rgb),0.65)] ${HIT_TARGET_24_ROW} ${FOCUS_RING}`}
+              className={`flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1 py-[3px] text-left transition-colors hover:bg-[var(--hover-fill)] ${HIT_TARGET_24_ROW} ${FOCUS_RING}`}
               title={t('sidebar.orphanAdopt')}
               aria-label={`${session.label}${session.cwd ? `, ${session.cwd}` : ''} — ${t('sidebar.orphanAdopt')}`}
               onClick={() => { adoptOrphanSession(session.id); }}
@@ -113,7 +114,7 @@ export default function OrphanSessions() {
               <button
                 type="button"
                 data-orphan-kill-confirm
-                className={`${HIT_TARGET_24_ROW} ml-0.5 rounded px-1 text-[10px] font-mono text-[var(--accent-red)] ${FOCUS_RING}`}
+                className={`${HIT_TARGET_24_ROW} ml-0.5 rounded-md px-1 text-[10px] font-mono text-[var(--accent-red)] ${FOCUS_RING}`}
                 title={t('sidebar.orphanDispose')}
                 aria-label={t('sidebar.orphanDispose')}
                 onClick={() => { onKillClick(session.id); }}
@@ -123,7 +124,7 @@ export default function OrphanSessions() {
             ) : (
               <button
                 type="button"
-                className={`${HIT_TARGET_24_ROW} ml-0.5 rounded text-[var(--text-muted)] opacity-0 transition-opacity group-hover/orphan-row:opacity-100 hover:text-[var(--accent-red)] ${FOCUS_RING}`}
+                className={`${HIT_TARGET_24_ROW} ml-0.5 rounded-md text-[var(--text-muted)] opacity-0 transition-opacity group-hover/orphan-row:opacity-100 hover:text-[var(--accent-red)] ${FOCUS_RING}`}
                 title={t('sidebar.orphanDispose')}
                 aria-label={t('sidebar.orphanDispose')}
                 onClick={() => { onKillClick(session.id); }}

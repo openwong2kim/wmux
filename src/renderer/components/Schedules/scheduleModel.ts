@@ -169,3 +169,58 @@ export function grantNeeded(original: Automation | null, form: ScheduleForm, per
   // the same non-approval mode picked again after a revision-bumping edit.
   return form.mode !== 'approval' || original.permission.mode !== 'approval';
 }
+
+// ─── Composer helpers ───────────────────────────────────────────────────────
+
+/** How the schedule chip reads a day set. `weekly` is exactly one day. */
+export type SchedulePreset = 'daily' | 'weekdays' | 'weekly' | 'custom';
+
+export function presetOf(days: readonly number[]): SchedulePreset {
+  const key = [...new Set(days)].sort((a, b) => a - b).join(',');
+  if (key === DAILY.join(',')) return 'daily';
+  if (key === WEEKDAYS.join(',')) return 'weekdays';
+  if (days.length === 1) return 'weekly';
+  return 'custom';
+}
+
+/** The day set a preset picks; `weekly` keeps the current first day (Monday if none). */
+export function daysForPreset(preset: SchedulePreset, current: readonly number[]): number[] {
+  if (preset === 'daily') return DAILY.slice();
+  if (preset === 'weekdays') return WEEKDAYS.slice();
+  if (preset === 'weekly') return [current.length === 1 ? current[0] : 1];
+  return current.slice();
+}
+
+/** A schedule's name, until the user writes one: the prompt's first line. */
+export function deriveName(prompt: string): string {
+  const first = prompt.split('\n').map((l) => l.trim()).find(Boolean) ?? '';
+  return first.length > 80 ? `${first.slice(0, 79).trimEnd()}…` : first;
+}
+
+/** A starting point offered on the empty Schedules page. */
+export interface ScheduleTemplate {
+  id: string;
+  /** i18n keys: `schedules.tpl.<id>.title` / `.desc` / `.prompt`. */
+  weekdays: number[];
+  time: string;
+}
+
+export const SCHEDULE_TEMPLATES: readonly ScheduleTemplate[] = [
+  { id: 'briefing', weekdays: DAILY, time: '09:00' },
+  { id: 'nightlyTests', weekdays: DAILY, time: '02:00' },
+  { id: 'depAudit', weekdays: [1], time: '10:00' },
+  { id: 'flakyHunt', weekdays: [5], time: '10:00' },
+  { id: 'changelog', weekdays: [5], time: '17:00' },
+  { id: 'triage', weekdays: WEEKDAYS, time: '09:30' },
+];
+
+export function formFromTemplate(template: ScheduleTemplate, name: string, prompt: string, cwd: string): ScheduleForm {
+  return {
+    ...emptyForm(),
+    name,
+    prompt,
+    cwd,
+    weekdays: template.weekdays.slice(),
+    time: template.time,
+  };
+}

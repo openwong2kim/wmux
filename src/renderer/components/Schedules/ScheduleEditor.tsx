@@ -1,5 +1,4 @@
-import { useMemo, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import {
@@ -8,90 +7,113 @@ import {
   type AutomationAgent,
   type AutomationPermissionMode,
 } from '../../../shared/automation';
-import Dialog, { DialogBody, DialogFooter, DialogHeader } from '../ui/Dialog';
 import Button from '../ui/Button';
-import Field, { useFieldWiring } from '../ui/Field';
+import Field from '../ui/Field';
 import Input from '../ui/Input';
 import Select from '../ui/Select';
 import SegmentedControl from '../ui/SegmentedControl';
+import Popover from '../ui/Popover';
+import { Icon, IconChevron, IconClock } from '../icons';
+import { FOCUS_RING } from '../focusRing';
 import {
   DAILY,
-  WEEKDAYS,
+  daysForPreset,
+  deriveName,
   draftFromForm,
   emptyForm,
   formFromAutomation,
   grantNeeded,
   parseToolNames,
+  presetOf,
   shouldWarnPermissionReset,
   usesToolList,
   validateForm,
+  type FormProblem,
+  type SchedulePreset,
   type ScheduleForm,
 } from './scheduleModel';
-import { BYPASS_DECLINED, weekdayName } from './format';
+import { BYPASS_DECLINED, agentLabel, describeDays, folderName, weekdayName } from './format';
 import type { AccountOption } from './useAccounts';
 
-type DayPreset = 'daily' | 'weekdays' | 'custom';
+type Chip = 'schedule' | 'folder' | 'agent';
 
-function presetOf(days: readonly number[]): DayPreset {
-  const key = [...days].sort((a, b) => a - b).join(',');
-  if (key === DAILY.join(',')) return 'daily';
-  if (key === WEEKDAYS.join(',')) return 'weekdays';
-  return 'custom';
+/** Which part of the composer a validation problem is shown under. */
+const PROBLEM_PLACE: Record<FormProblem, 'prompt' | Chip | 'more'> = {
+  name: 'prompt',
+  prompt: 'prompt',
+  promptTooLong: 'prompt',
+  cwd: 'folder',
+  weekdays: 'schedule',
+  time: 'schedule',
+  grace: 'more',
+  awaitTimeout: 'more',
+  tools: 'more',
+};
+
+function FolderIcon() {
+  return <Icon size={14}><path d="M1.5 4.5v6.5a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-5a1 1 0 0 0-1-1H7L5.5 3h-3a1 1 0 0 0-1 1.5Z" /></Icon>;
 }
 
-function PromptArea({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder: string }) {
-  const wiring = useFieldWiring();
-  return (
-    <textarea
-      id={wiring.id}
-      aria-describedby={wiring['aria-describedby']}
-      className="ui-input h-[30vh] min-h-[120px] flex-1 resize-none text-[13px] leading-5 min-[640px]:h-auto min-[640px]:min-h-[360px]"
-      value={value}
-      maxLength={AUTOMATION_DEFAULTS.maxPromptChars}
-      placeholder={placeholder}
-      onChange={(e) => onChange(e.target.value)}
-      data-schedule-prompt
-    />
-  );
+function AgentIcon() {
+  return <Icon size={14}><rect x="2" y="3" width="10" height="8" rx="2" /><path d="M5 6.5h.01M9 6.5h.01M5.5 9h3" /></Icon>;
 }
 
 /**
- * Create / edit / review a schedule. Left: the prompt. Right: folder → agent
- * and account → days and time → permission. Permission is never part of the
- * draft: saving updates the schedule first and then calls automation.grant,
- * so the grant lands on the revision the update produced.
+ * The schedule composer — one prompt box and a row of chips, in the
+ * Schedules page's right pane. The name follows the prompt's first line until
+ * it is typed over; the schedule, folder and agent chips each open a small
+ * popover; model, effort, permission and the run limits wait behind More
+ * options at their defaults. Permission is never part of the draft: saving
+ * updates the schedule first and then calls automation.grant, so the grant
+ * lands on the revision the update produced.
  */
-export default function ScheduleEditor({ original, review, accounts, onClose, onSaved }: {
+export default function ScheduleEditor({ original, review, accounts, initial, onClose, onSaved }: {
   original: Automation | null;
   /** A draft an agent proposed: saving also turns it on. */
   review: boolean;
   accounts: AccountOption[];
+  /** A new schedule's starting values (a template, the current folder). */
+  initial?: ScheduleForm;
   onClose: () => void;
   onSaved: (id: string) => void;
 }) {
   const t = useT();
-  const [form, setForm] = useState<ScheduleForm>(() => (original ? formFromAutomation(original) : emptyForm()));
+  const [form, setForm] = useState<ScheduleForm>(() => (original ? formFromAutomation(original) : initial ?? emptyForm()));
+  // A new schedule's name follows its prompt until the user writes one.
+  const [nameTouched, setNameTouched] = useState(() => original !== null || Boolean(initial?.name));
   const [permissionTouched, setPermissionTouched] = useState(false);
   // Set once create succeeded: a failed grant/enable retry must update this
   // schedule, never create a second one.
   const [created, setCreated] = useState<Automation | null>(null);
-  const [advanced, setAdvanced] = useState(false);
+  const [more, setMore] = useState(false);
+  const [chip, setChip] = useState<Chip | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showProblems, setShowProblems] = useState(false);
+  const chipsRef = useRef<HTMLDivElement>(null);
   const api = window.electronAPI?.automation;
 
   const set = <K extends keyof ScheduleForm>(key: K, value: ScheduleForm[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
+  const setPrompt = (prompt: string) =>
+    setForm((f) => ({ ...f, prompt, ...(nameTouched ? {} : { name: deriveName(prompt) }) }));
   const problems = validateForm(form);
   const tools = parseToolNames(form.toolsText);
   const warnReset = shouldWarnPermissionReset(original, form, permissionTouched);
-  const dirty = useMemo(() => {
-    if (!original) return true;
-    return permissionTouched
-      || JSON.stringify(draftFromForm(form)) !== JSON.stringify(draftFromForm(formFromAutomation(original)));
-  }, [form, original, permissionTouched]);
   const vendorAccounts = accounts.filter((a) => a.vendor === form.agent);
+  const shown = (place: 'prompt' | Chip | 'more') => (showProblems
+    ? problems.filter((p) => PROBLEM_PLACE[p] === place).map((p) => t(`schedules.problem.${p}`)).join(' ')
+    : '');
+
+  // A chip's popover closes on a click outside the chip row, or on Escape.
+  useEffect(() => {
+    if (!chip) return undefined;
+    const onDown = (e: MouseEvent) => {
+      if (!chipsRef.current?.contains(e.target as Node)) setChip(null);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [chip]);
 
   // Bypass is confirmed by main at grant time (a native prompt no renderer
   // path can skip), so picking it here only records the choice.
@@ -115,6 +137,7 @@ export default function ScheduleEditor({ original, review, accounts, onClose, on
   const save = async () => {
     if (problems.length > 0) {
       setShowProblems(true);
+      if (problems.some((p) => PROBLEM_PLACE[p] === 'more')) setMore(true);
       return;
     }
     if (!api) return;
@@ -169,172 +192,206 @@ export default function ScheduleEditor({ original, review, accounts, onClose, on
     }
   };
 
-  const testRun = async () => {
-    if (!api || !original) return;
-    const r = await api.runNow(original.id, 'test');
-    if (!r.ok) setError(t('schedules.error', { error: r.error }));
-    else useStore.getState().pushToast({ level: 'info', message: t('schedules.testRunStarted') });
-  };
-
   const title = review ? t('schedules.editorReview') : original ? t('schedules.editorEdit') : t('schedules.editorNew');
-  const problemText = showProblems && problems.length > 0
-    ? problems.map((p) => t(`schedules.problem.${p}`)).join(' ')
-    : null;
+  const preset = presetOf(form.weekdays);
+  const scheduleText = `${preset === 'weekly' ? `${t('schedules.weekly')} · ${weekdayName(form.weekdays[0] ?? 1)}` : describeDays(form.weekdays) || t('schedules.customDays')} · ${form.time}`;
+  const account = vendorAccounts.find((a) => a.id === form.accountId)?.name;
+  const promptProblem = shown('prompt');
+  const chipProblem = [shown('schedule'), shown('folder'), shown('agent')].filter(Boolean).join(' ');
+  const moreProblem = shown('more');
 
-  return createPortal(
-    <>
-    <Dialog onClose={onClose} width={880} data-testid="schedule-editor">
-      <DialogHeader title={title} closeLabel={t('schedules.cancel')} closeDisabled={saving} />
-      <DialogBody>
-        {/* Two columns from 640px (the dialog fits them at a 725px window);
-            below that one column, with the prompt height capped so the
-            settings stay reachable. */}
-        <div className="grid grid-cols-1 gap-6 min-[640px]:grid-cols-[minmax(0,1fr)_300px]">
-          <Field label={t('schedules.prompt')} description={t('schedules.promptHint', { max: AUTOMATION_DEFAULTS.maxPromptChars })} layout="stacked" className="min-h-0 justify-start">
-            <PromptArea value={form.prompt} onChange={(v) => set('prompt', v)} placeholder={t('schedules.promptPlaceholder')} />
+  const chipButton = (id: Chip, icon: ReactNode, label: string, testId: string) => (
+    <button
+      type="button"
+      className={`wmux-schedule-chip ${FOCUS_RING}`}
+      aria-expanded={chip === id}
+      aria-haspopup="dialog"
+      data-invalid={showProblems && problems.some((p) => PROBLEM_PLACE[p] === id) ? 'true' : undefined}
+      onClick={() => setChip(chip === id ? null : id)}
+      {...{ [testId]: '' }}
+    >
+      {icon}
+      <span className="truncate">{label}</span>
+      <span className="wmux-schedule-chip-caret" aria-hidden="true"><IconChevron size={11} /></span>
+    </button>
+  );
+
+  return (
+    <section
+      className="wmux-schedule-composer"
+      aria-label={title}
+      data-testid="schedule-editor"
+      onKeyDown={(e) => {
+        if (e.key !== 'Escape' || e.defaultPrevented) return;
+        // Escape closes the open chip first, then the composer — never the page.
+        e.preventDefault();
+        if (chip) setChip(null);
+        else if (!saving) onClose();
+      }}
+    >
+      <h2 className="wmux-schedule-pane-title">{title}</h2>
+      <div className="wmux-schedule-box">
+        <input
+          className="wmux-schedule-name"
+          value={form.name}
+          maxLength={80}
+          placeholder={t('schedules.namePlaceholder')}
+          aria-label={t('schedules.name')}
+          onChange={(e) => { setNameTouched(true); set('name', e.target.value); }}
+          data-schedule-name
+        />
+        <textarea
+          className="wmux-schedule-prompt"
+          value={form.prompt}
+          maxLength={AUTOMATION_DEFAULTS.maxPromptChars}
+          placeholder={t('schedules.promptPlaceholder')}
+          aria-label={t('schedules.prompt')}
+          aria-invalid={promptProblem ? true : undefined}
+          onChange={(e) => setPrompt(e.target.value)}
+          data-schedule-prompt
+        />
+        <div ref={chipsRef} className="wmux-schedule-chips">
+          {chipButton('schedule', <IconClock size={14} />, scheduleText, 'data-schedule-chip-schedule')}
+          {chipButton('folder', <FolderIcon />, form.cwd ? folderName(form.cwd) : t('schedules.chipFolderEmpty'), 'data-schedule-chip-folder')}
+          {chipButton('agent', <AgentIcon />, `${agentLabel(form.agent)} · ${account ?? t('schedules.defaultAccount')}`, 'data-schedule-chip-agent')}
+          {chip && (
+            <Popover padded className="wmux-schedule-popover" aria-label={t(`schedules.${chip === 'schedule' ? 'schedule' : chip === 'folder' ? 'folder' : 'agent'}`)}>
+              {chip === 'schedule' && (
+                <div className="flex flex-col gap-3" data-schedule-popover="schedule">
+                  <SegmentedControl<SchedulePreset>
+                    value={preset}
+                    ariaLabel={t('schedules.schedule')}
+                    options={[
+                      { value: 'daily', label: t('schedules.daily') },
+                      { value: 'weekdays', label: t('schedules.weekdays') },
+                      { value: 'weekly', label: t('schedules.weekly') },
+                      { value: 'custom', label: t('schedules.customDays') },
+                    ]}
+                    onValueChange={(p) => set('weekdays', daysForPreset(p, form.weekdays))}
+                  />
+                  {(preset === 'weekly' || preset === 'custom') && (
+                    <div className="flex flex-wrap gap-1" role="group" aria-label={t('schedules.customDays')}>
+                      {DAILY.map((d) => {
+                        const on = form.weekdays.includes(d);
+                        return (
+                          <Button
+                            key={d}
+                            size="sm"
+                            variant={on ? 'secondary' : 'ghost'}
+                            aria-pressed={on}
+                            onClick={() => set('weekdays', preset === 'weekly'
+                              ? [d]
+                              : on ? form.weekdays.filter((x) => x !== d) : [...form.weekdays, d])}
+                          >
+                            {weekdayName(d)}
+                          </Button>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <Input type="time" value={form.time} onChange={(e) => set('time', e.target.value)} aria-label={t('schedules.time')} data-schedule-time />
+                </div>
+              )}
+              {chip === 'folder' && (
+                <div className="flex gap-2" data-schedule-popover="folder">
+                  <Input value={form.cwd} onChange={(e) => set('cwd', e.target.value)} className="flex-1" spellCheck={false}
+                    aria-label={t('schedules.folder')} data-schedule-cwd />
+                  <Button variant="secondary" size="sm" onClick={() => void pickFolder()}>{t('schedules.chooseFolder')}</Button>
+                </div>
+              )}
+              {chip === 'agent' && (
+                <div className="flex flex-col gap-2" data-schedule-popover="agent">
+                  <SegmentedControl<AutomationAgent>
+                    value={form.agent}
+                    ariaLabel={t('schedules.agent')}
+                    options={[
+                      { value: 'claude', label: t('schedules.agentClaude') },
+                      { value: 'codex', label: t('schedules.agentCodex') },
+                    ]}
+                    onValueChange={setAgent}
+                  />
+                  <Select value={form.accountId} onChange={(e) => set('accountId', e.target.value)} aria-label={t('schedules.account')}>
+                    <option value="">{t('schedules.defaultAccount')}</option>
+                    {vendorAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                  </Select>
+                </div>
+              )}
+            </Popover>
+          )}
+        </div>
+      </div>
+      {promptProblem && <p className="ui-row-error" role="alert" data-schedule-problem="prompt">{promptProblem}</p>}
+      {chipProblem && <p className="ui-row-error" role="alert" data-schedule-problem="chips">{chipProblem}</p>}
+
+      <button
+        type="button"
+        className={`wmux-schedule-more ${FOCUS_RING}`}
+        aria-expanded={more}
+        onClick={() => setMore((v) => !v)}
+        data-schedule-more
+      >
+        <span className="wmux-schedule-more-caret" aria-hidden="true"><IconChevron size={12} /></span>
+        {t('schedules.moreOptions')}
+      </button>
+      {more && (
+        <div className="wmux-schedule-more-body" data-schedule-more-body>
+          <Field label={t('schedules.permission')} description={form.mode === 'scoped' && form.agent === 'codex'
+              ? t('schedules.modeDesc.scopedCodex')
+              : t(`schedules.modeDesc.${form.mode}`)} layout="stacked">
+            <SegmentedControl<AutomationPermissionMode>
+              value={form.mode}
+              ariaLabel={t('schedules.permission')}
+              options={[
+                { value: 'approval', label: t('schedules.mode.approval') },
+                { value: 'scoped', label: t('schedules.mode.scoped') },
+                { value: 'bypass', label: t('schedules.mode.bypass') },
+              ]}
+              onValueChange={pickMode}
+            />
           </Field>
-          <div className="flex flex-col gap-3">
-            <Field label={t('schedules.name')} layout="stacked">
-              <Input value={form.name} onChange={(e) => set('name', e.target.value)} maxLength={80} data-schedule-name />
-            </Field>
-            <Field label={t('schedules.folder')} layout="stacked">
-              <div className="flex gap-2">
-                <Input value={form.cwd} onChange={(e) => set('cwd', e.target.value)} className="flex-1" spellCheck={false} data-schedule-cwd />
-                <Button variant="secondary" size="sm" onClick={() => void pickFolder()}>{t('schedules.chooseFolder')}</Button>
-              </div>
-            </Field>
-            <Field label={t('schedules.agent')} layout="stacked">
-              <div className="flex flex-col gap-2">
-                <SegmentedControl<AutomationAgent>
-                  value={form.agent}
-                  ariaLabel={t('schedules.agent')}
-                  options={[
-                    { value: 'claude', label: t('schedules.agentClaude') },
-                    { value: 'codex', label: t('schedules.agentCodex') },
-                  ]}
-                  onValueChange={setAgent}
-                />
-                <Select value={form.accountId} onChange={(e) => set('accountId', e.target.value)} aria-label={t('schedules.account')}>
-                  <option value="">{t('schedules.defaultAccount')}</option>
-                  {vendorAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-                </Select>
-              </div>
-            </Field>
-            <Field label={t('schedules.schedule')} layout="stacked">
-              <div className="flex flex-col gap-2">
-                <SegmentedControl<DayPreset>
-                  value={presetOf(form.weekdays)}
-                  ariaLabel={t('schedules.schedule')}
-                  options={[
-                    { value: 'daily', label: t('schedules.daily') },
-                    { value: 'weekdays', label: t('schedules.weekdays') },
-                    { value: 'custom', label: t('schedules.customDays') },
-                  ]}
-                  onValueChange={(p) => {
-                    if (p === 'daily') set('weekdays', DAILY.slice());
-                    else if (p === 'weekdays') set('weekdays', WEEKDAYS.slice());
-                    else set('weekdays', []);
-                  }}
-                />
-                {presetOf(form.weekdays) === 'custom' && (
-                  <div className="flex flex-wrap gap-1" role="group" aria-label={t('schedules.customDays')}>
-                    {DAILY.map((d) => {
-                      const on = form.weekdays.includes(d);
-                      return (
-                        <Button
-                          key={d}
-                          size="sm"
-                          variant={on ? 'secondary' : 'ghost'}
-                          aria-pressed={on}
-                          onClick={() => set('weekdays', on ? form.weekdays.filter((x) => x !== d) : [...form.weekdays, d])}
-                        >
-                          {weekdayName(d)}
-                        </Button>
-                      );
-                    })}
-                  </div>
-                )}
-                <Input type="time" value={form.time} onChange={(e) => set('time', e.target.value)} aria-label={t('schedules.time')} data-schedule-time />
-              </div>
-            </Field>
-            <Field label={t('schedules.permission')} description={form.mode === 'scoped' && form.agent === 'codex'
-                ? t('schedules.modeDesc.scopedCodex')
-                : t(`schedules.modeDesc.${form.mode}`)} layout="stacked">
-              <SegmentedControl<AutomationPermissionMode>
-                value={form.mode}
-                ariaLabel={t('schedules.permission')}
-                options={[
-                  { value: 'approval', label: t('schedules.mode.approval') },
-                  { value: 'scoped', label: t('schedules.mode.scoped') },
-                  { value: 'bypass', label: t('schedules.mode.bypass') },
-                ]}
-                onValueChange={pickMode}
+          {usesToolList(form) && (
+            <Field label={t('schedules.tools')} description={t('schedules.toolsHint')} layout="stacked">
+              <Input
+                value={form.toolsText}
+                spellCheck={false}
+                onChange={(e) => { setPermissionTouched(true); set('toolsText', e.target.value); }}
+                aria-invalid={tools.invalid.length > 0}
+                data-schedule-tools
               />
             </Field>
-            {usesToolList(form) && (
-              <Field label={t('schedules.tools')} description={t('schedules.toolsHint')} layout="stacked">
-                <Input
-                  value={form.toolsText}
-                  spellCheck={false}
-                  onChange={(e) => { setPermissionTouched(true); set('toolsText', e.target.value); }}
-                  aria-invalid={tools.invalid.length > 0}
-                  data-schedule-tools
-                />
-              </Field>
-            )}
-            {usesToolList(form) && tools.invalid.length > 0 && (
-              <p className="ui-row-error" data-schedule-tools-error>
-                {t('schedules.toolsInvalid', { names: tools.invalid.join(', ') })}
-              </p>
-            )}
-            <button
-              type="button"
-              className="ui-note self-start underline-offset-2 hover:underline"
-              aria-expanded={advanced}
-              onClick={() => setAdvanced((v) => !v)}
-            >
-              {t('schedules.advanced')}
-            </button>
-            {advanced && (
-              <div className="flex flex-col gap-3">
-                <Field label={t('schedules.model')} description={t('schedules.modelHint')} layout="stacked">
-                  <Input value={form.model} onChange={(e) => set('model', e.target.value)} spellCheck={false} />
-                </Field>
-                <Field label={t('schedules.grace')} layout="stacked">
-                  <Input inputMode="numeric" value={form.graceMinutes} onChange={(e) => set('graceMinutes', e.target.value)} />
-                </Field>
-                <Field label={t('schedules.awaitTimeout')} description={t('schedules.awaitTimeoutHint')} layout="stacked">
-                  <Input inputMode="numeric" value={form.awaitTimeoutMinutes} onChange={(e) => set('awaitTimeoutMinutes', e.target.value)} />
-                </Field>
-              </div>
-            )}
+          )}
+          {usesToolList(form) && tools.invalid.length > 0 && (
+            <p className="ui-row-error" data-schedule-tools-error>
+              {t('schedules.toolsInvalid', { names: tools.invalid.join(', ') })}
+            </p>
+          )}
+          <div className="wmux-schedule-more-grid">
+            <Field label={t('schedules.model')} description={t('schedules.modelHint')} layout="stacked">
+              <Input value={form.model} onChange={(e) => set('model', e.target.value)} spellCheck={false} data-schedule-model />
+            </Field>
+            <Field label={t('schedules.effort')} description={t('schedules.modelHint')} layout="stacked">
+              <Input value={form.effort} onChange={(e) => set('effort', e.target.value)} spellCheck={false} data-schedule-effort />
+            </Field>
+            <Field label={t('schedules.grace')} layout="stacked">
+              <Input inputMode="numeric" value={form.graceMinutes} onChange={(e) => set('graceMinutes', e.target.value)} data-schedule-grace />
+            </Field>
+            <Field label={t('schedules.awaitTimeout')} description={t('schedules.awaitTimeoutHint')} layout="stacked">
+              <Input inputMode="numeric" value={form.awaitTimeoutMinutes} onChange={(e) => set('awaitTimeoutMinutes', e.target.value)} data-schedule-await />
+            </Field>
           </div>
+          {moreProblem && <p className="ui-row-error" role="alert" data-schedule-problem="more">{moreProblem}</p>}
         </div>
-        {warnReset && <p className="ui-note mt-3" role="status" data-schedule-reset-warning>{t('schedules.resetWarning')}</p>}
-        {original && !review && <p className="ui-note mt-3">{t('schedules.testRunHint')}</p>}
-        {problemText && <p className="ui-row-error mt-3" role="alert">{problemText}</p>}
-        {error && <p className="ui-row-error mt-3" role="alert" data-schedule-error>{error}</p>}
-      </DialogBody>
-      <DialogFooter>
-        {original && !review && (
-          <Button
-            variant="secondary"
-            className="mr-auto"
-            disabled={saving || dirty}
-            title={dirty ? t('schedules.saveFirst') : undefined}
-            onClick={() => void testRun()}
-            data-schedule-editor-test-run
-          >
-            {t('schedules.testRun')}
-          </Button>
-        )}
+      )}
+
+      {warnReset && <p className="ui-note" role="status" data-schedule-reset-warning>{t('schedules.resetWarning')}</p>}
+      {error && <p className="ui-row-error" role="alert" data-schedule-error>{error}</p>}
+      <div className="wmux-schedule-actions">
         <Button variant="ghost" onClick={onClose} disabled={saving}>{t('schedules.cancel')}</Button>
         <Button variant="primary" onClick={() => void save()} disabled={saving || !api} data-schedule-save>
-          {review ? t('schedules.saveAndEnable') : t('schedules.save')}
+          {review ? t('schedules.saveAndEnable') : original ? t('schedules.save') : t('schedules.create')}
         </Button>
-      </DialogFooter>
-    </Dialog>
-    </>,
-    document.body,
+      </div>
+    </section>
   );
 }
+

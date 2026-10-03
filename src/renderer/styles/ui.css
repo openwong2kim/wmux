@@ -33,44 +33,47 @@
    * Floating menus are portalled; the compose/toolbar layers live outside. */
   overflow: clip;
 }
+/* Sidebar navigation, group header, card rows and workspace menu.
+ * Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx), MIT License, Copyright (c) 2026 Nick
+ * Quiet 6px rows: hover = --hover-fill, active = --selection (neutral, never
+ * the accent). Needs-you counts are amber; --accent means running. */
 .wmux-sidebar-nav {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 4px 10px 14px;
+  padding: 4px 8px 12px;
   flex-shrink: 0;
 }
 .wmux-nav-button {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
-  min-height: 36px;
-  padding: 7px 10px;
-  border-radius: 5px;
-  color: var(--text-sub);
+  gap: 8px;
+  min-height: 32px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  color: color-mix(in srgb, var(--text-main) 80%, transparent);
   font-family: var(--font-ui);
   font-size: 13px;
   font-weight: 500;
   line-height: 20px;
-  transition: color 140ms ease, background-color 140ms ease;
+  transition: color var(--motion-feedback) var(--motion-ease-out),
+    background-color var(--motion-feedback) var(--motion-ease-out);
 }
 .wmux-nav-button:hover {
   color: var(--text-main);
-  background: color-mix(in srgb, var(--text-main) 5%, transparent);
+  background: var(--hover-fill);
 }
 .wmux-nav-button[aria-pressed="true"] {
   color: var(--text-main);
-  background: var(--bg-surface);
+  background: var(--selection);
 }
-.wmux-nav-button[data-sidebar-nav="search"] {
-  margin-bottom: 4px;
-  background: color-mix(in srgb, var(--text-main) 4%, transparent);
-}
-.wmux-nav-icon { flex-shrink: 0; color: var(--text-subtle); }
+.wmux-nav-button[data-sidebar-nav="search"] { margin-bottom: 4px; }
+.wmux-nav-icon { flex-shrink: 0; color: color-mix(in srgb, var(--text-main) 50%, transparent); }
+.wmux-nav-button:hover .wmux-nav-icon { color: color-mix(in srgb, var(--text-main) 70%, transparent); }
 .wmux-nav-button[aria-pressed="true"] .wmux-nav-icon { color: var(--text-main); }
 /* Fleet shortcut's trailing counts: plain meta text, no chip. Only the
- * needs-you count is warm (the attention signal); running stays muted. */
+ * needs-you count is amber (the attention signal); running stays muted. */
 .wmux-sidebar-nav { container: wmux-nav / inline-size; }
 /* The label keeps its width; the counts take what is left. A part that does
  * not fit wraps onto a clipped second line, Running first (it comes last). */
@@ -84,13 +87,13 @@
   min-width: 0;
   height: 20px;
   overflow: hidden;
-  color: var(--text-muted);
+  color: color-mix(in srgb, var(--text-main) 45%, transparent);
   font-size: 11px;
   font-weight: 400;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-.wmux-nav-count-needs { color: var(--accent); font-weight: 500; }
+.wmux-nav-count-needs { color: var(--accent-yellow); font-weight: 500; }
 .wmux-nav-count-running { display: flex; column-gap: 4px; }
 .wmux-nav-count-short { display: none; }
 /* Narrow sidebar (the 220px minimum): the needs-you number alone. */
@@ -98,22 +101,72 @@
   .wmux-nav-count-full, .wmux-nav-count-running { display: none; }
   .wmux-nav-count-short { display: inline; }
 }
+/* Group header: a 36px band on --selection-subtle, uppercase tracked label,
+ * and the count as a right-aligned pill. */
 .wmux-sidebar-section {
   display: flex;
   align-items: center;
   flex-shrink: 0;
   gap: 8px;
   min-height: 36px;
-  padding: 0 12px 0 20px;
-  color: var(--text-subtle);
-  font-size: 11px;
-  font-weight: 600;
+  /* A full-width header band flush under the tabs. */
+  margin: 0 0 6px;
+  padding: 0 8px 0 16px;
+  background: var(--selection-subtle);
+  color: var(--text-sub);
+  font-size: 12px;
+  font-weight: 500;
 }
-.wmux-sidebar-total { font-variant-numeric: tabular-nums; font-weight: 400; }
-.wmux-sidebar-footer { padding: 8px 12px; }
-.wmux-sidebar .sidebar-row { border-radius: 5px; }
+.wmux-sidebar-total {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 6px;
+  background: var(--selection);
+  color: var(--text-sub);
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: normal;
+}
+.wmux-sidebar-footer { min-height: 40px; padding: 4px 8px; }
+.wmux-sidebar-footer .wmux-nav-button { min-height: 32px; }
+/* Card rows. The 1px transparent border reserves the room the dashed
+ * needs-you border takes, so a row never shifts when it starts asking.
+ * Prefixed with .wmux-sidebar so these beat the globals.css row rules on
+ * specificity, not on source order. */
+.wmux-sidebar .sidebar-row {
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: color-mix(in srgb, var(--text-main) 80%, transparent);
+  transition: background-color var(--motion-feedback) var(--motion-ease-out),
+    color var(--motion-feedback) var(--motion-ease-out),
+    border-color var(--motion-feedback) var(--motion-ease-out);
+}
+.wmux-sidebar .sidebar-row:hover {
+  background: var(--hover-fill);
+  color: var(--text-main);
+}
+.wmux-sidebar .sidebar-row-active,
+.wmux-sidebar .sidebar-row-active:hover {
+  background: var(--selection);
+  color: var(--text-main);
+  box-shadow: var(--select-ring);
+}
+/* Needs you: content 20% fill and a dashed content 30% border. Red stays
+ * for errors. */
+.wmux-sidebar .sidebar-row.sidebar-row-needs,
+.wmux-sidebar .sidebar-row.sidebar-row-needs:hover,
+.wmux-sidebar .sidebar-row-active.sidebar-row-needs {
+  background: color-mix(in srgb, var(--text-main) 20%, transparent);
+  border-color: color-mix(in srgb, var(--text-main) 30%, transparent);
+  border-style: dashed;
+  color: var(--text-main);
+  box-shadow: none;
+}
 .wmux-sidebar-nav-compact { align-items: center; padding: 4px 4px 10px; }
-.wmux-sidebar-nav-compact .wmux-nav-button { width: 36px; padding: 9px; justify-content: center; }
+.wmux-sidebar-nav-compact .wmux-nav-button { width: 36px; min-height: 36px; padding: 9px; justify-content: center; }
 .wmux-sidebar-nav-compact .wmux-nav-count {
   position: absolute;
   top: 5px;
@@ -123,19 +176,19 @@
   height: 5px;
   padding: 0;
   border-radius: 50%;
-  background: var(--accent);
+  background: var(--accent-yellow);
 }
 .wmux-pane-header { padding-inline: 3px; }
 .wmux-workspace-menu {
   max-height: max(80px, calc(100dvh - var(--wmux-menu-top, 40px) - 8px));
   overflow-y: auto;
-  border-radius: 7px;
-  padding: 5px;
+  border-radius: 12px;
+  padding: 4px;
   font-family: var(--font-ui);
 }
 .wmux-workspace-menu > button { border-radius: 6px; }
 @media (prefers-reduced-motion: reduce) {
-  .wmux-nav-button { transition: none; }
+  .wmux-nav-button, .wmux-sidebar .sidebar-row { transition: none; }
 }
 
 /* ─── Buttons: shared base ──────────────────────────────────────────────── */
@@ -183,7 +236,7 @@
 .ui-btn-primary {
   background: var(--accent);
   color: var(--bg-base);
-  font-weight: 600;
+  font-weight: 500;
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 22%, transparent), 0 1px 2px rgba(0, 0, 0, 0.3);
 }
 .ui-btn-primary:hover:not(:disabled) {
@@ -211,7 +264,7 @@
 .ui-btn-danger {
   background: var(--accent-red);
   color: var(--bg-base);
-  font-weight: 600;
+  font-weight: 500;
   box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface-highlight) 18%, transparent), 0 1px 2px rgba(0, 0, 0, 0.3);
 }
 .ui-btn-danger:hover:not(:disabled) {
@@ -641,16 +694,242 @@
 .wmux-nav-button[aria-expanded="true"] { background: var(--bg-surface); color: var(--text-main); }
 .wmux-nav-button[data-sidebar-nav="remote"] { position: relative; }
 
-/* Fleet sits over the dock; opening it never changes terminal geometry. */
-.wmux-fleet-layer { position: absolute; z-index: 40; top: 8px; bottom: 8px; width: min(720px, calc(100% - 64px)); min-width: 0; border: 1px solid var(--border-soft); border-radius: 14px; overflow: hidden; box-shadow: 0 12px 40px rgb(0 0 0 / .24); }
-.wmux-fleet-layer[data-side="right"] { right: 8px; }
-.wmux-fleet-layer[data-side="left"] { left: 8px; }
+/* Remote page: a live board of what is connected. Tiles and cards are told
+ * apart by a fill tone alone (no outline); the live dot appears only on a row
+ * holding a connection right now. */
+.wmux-remote-page { flex: 1; min-height: 0; overflow-y: auto; container-type: inline-size; padding: 24px 28px 40px; }
+.wmux-remote-header { display: flex; flex-direction: column; gap: 4px; margin-bottom: 20px; }
+.wmux-remote-title { margin: 0; font-size: 20px; font-weight: 600; line-height: 28px; color: var(--text-main); }
+.wmux-remote-summary { display: flex; align-items: center; gap: 7px; margin: 0; font-size: 13px; color: var(--text-sub); font-variant-numeric: tabular-nums; }
+.wmux-remote-layout { display: grid; grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr); gap: 24px; align-items: start; }
+.wmux-remote-connected, .wmux-remote-machine { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.wmux-remote-card[data-live="false"], .wmux-remote-card:not([data-live]) { opacity: .62; }
+.wmux-remote-panel { display: flex; flex-direction: column; gap: 2px; padding: 8px 14px 12px; border-radius: 10px; background: var(--selection-subtle); }
+.wmux-remote-panel-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 32px; font-size: 12px; color: var(--text-muted); }
+.wmux-remote-panel-value { display: inline-flex; align-items: center; gap: 6px; min-width: 0; color: var(--text-main); }
+.wmux-remote-panel-actions { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 8px; }
+.wmux-remote-activity { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.wmux-remote-activity li { display: flex; justify-content: space-between; gap: 12px; padding: 6px 4px; font-size: 12px; color: var(--text-sub); }
+.wmux-remote-activity-when { flex: none; color: var(--text-muted); }
+.wmux-remote-machine .wmux-remote-section-title:not(:first-child) { margin-top: 12px; }
+@container (max-width: 1100px) {
+  .wmux-remote-layout { grid-template-columns: minmax(0, 1fr); }
+  .wmux-remote-machine { order: -1; }
+}
+.wmux-remote-unknown { color: var(--text-muted); font-weight: 400; }
+.wmux-remote-live { flex: none; width: 7px; height: 7px; border-radius: 9999px; background: var(--accent); }
+.wmux-remote-section-title { margin: 0; font-size: 12px; font-weight: 500; color: var(--text-sub); }
+.wmux-remote-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 8px; margin: 0; padding: 0; list-style: none; }
+.wmux-remote-card { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 12px 14px 8px; border-radius: 10px; background: var(--selection-subtle); }
+.wmux-remote-card-head { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+.wmux-remote-card-icon { flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; background: var(--selection); color: var(--text-sub); }
+.wmux-remote-card-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; color: var(--text-main); }
+.wmux-remote-card-kind { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; font-size: 11px; color: var(--text-sub); }
+.wmux-remote-card-id { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.wmux-remote-card-status { flex: none; display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-sub); }
+.wmux-remote-card[data-live="true"] .wmux-remote-card-status { color: var(--text-main); }
+.wmux-remote-card-status[data-status="needs-repair"] { color: var(--accent-yellow); }
+.wmux-remote-card-facts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 12px; margin: 0; font-size: 12px; }
+.wmux-remote-card-facts dt { color: var(--text-muted); }
+.wmux-remote-card-facts dd { display: flex; min-width: 0; margin: 0; color: var(--text-main); }
+.wmux-remote-card-error { margin: 0; font-size: 11px; color: var(--accent-red); }
+.wmux-remote-card-actions { display: flex; justify-content: flex-end; gap: 4px; }
+.wmux-remote-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 40px 24px; border-radius: 10px; background: var(--selection-subtle); text-align: center; color: var(--text-sub); }
+.wmux-remote-empty h2 { margin: 4px 0 0; font-size: 14px; font-weight: 600; color: var(--text-main); }
+.wmux-remote-empty p { max-width: 440px; margin: 0; font-size: 13px; line-height: 1.6; }
+
+/* Schedules page: a list column and a main pane. The column is set off by
+ * its own tone, the composer box by a fill — no outlines (one boundary). */
+.wmux-schedules-list { flex: none; width: 300px; display: flex; flex-direction: column; gap: 2px; min-height: 0; overflow-y: auto; padding: 14px 10px; background: var(--bg-mantle); }
+.wmux-schedules-list-head { display: flex; align-items: center; justify-content: space-between; padding: 4px 6px 8px 8px; }
+.wmux-schedules-list-title { margin: 0; font-size: 17px; font-weight: 600; color: var(--text-main); outline: none; }
+.wmux-schedules-filter { height: 30px; margin: 0 4px 6px; padding: 0 10px; border-radius: 8px; background: var(--selection-subtle); color: var(--text-main); font-size: 12px; outline: none; }
+.wmux-schedules-filter:focus-visible { box-shadow: 0 0 0 1px var(--line-strong); }
+.wmux-schedules-rows { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.wmux-schedules-row { display: flex; flex-direction: column; align-items: stretch; gap: 2px; width: 100%; min-width: 0; padding: 8px 10px; border-radius: 10px; text-align: left; color: var(--text-main); }
+.wmux-schedules-row:hover { background: var(--hover-fill); }
+.wmux-schedules-row[aria-current="true"], .wmux-schedules-row[aria-pressed="true"] { background: var(--selection); }
+.wmux-schedules-row[data-off="true"] { color: var(--text-muted); }
+.wmux-schedules-new { flex-direction: row; align-items: center; gap: 8px; font-size: 13px; color: var(--text-sub); }
+.wmux-schedules-row-name { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 13px; font-weight: 500; }
+.wmux-schedules-row-meta { font-size: 11px; color: var(--text-muted); }
+.wmux-schedules-main { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; }
+.wmux-schedules-empty { max-width: 640px; margin: 0 auto; padding: 72px 32px 40px; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px; }
+.wmux-schedules-empty-icon { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 12px; background: var(--selection-subtle); color: var(--text-sub); }
+.wmux-schedules-empty h2 { margin: 8px 0 0; font-size: 18px; font-weight: 600; color: var(--text-main); }
+.wmux-schedules-empty p { margin: 0; font-size: 13px; color: var(--text-sub); }
+.wmux-schedules-templates { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; width: 100%; margin: 24px 0 0; padding: 0; list-style: none; text-align: left; }
+.wmux-schedules-template { display: flex; align-items: flex-start; gap: 10px; width: 100%; height: 100%; padding: 12px; border-radius: 10px; background: var(--selection-subtle); text-align: left; }
+.wmux-schedules-template:hover { background: var(--selection); }
+.wmux-schedules-template-icon { flex: none; display: grid; place-items: center; width: 26px; height: 26px; border-radius: 7px; background: var(--selection); color: var(--text-sub); }
+.wmux-schedules-template-title { display: block; font-size: 13px; font-weight: 600; color: var(--text-main); }
+.wmux-schedules-template-desc { display: block; margin-top: 2px; font-size: 11px; line-height: 1.5; color: var(--text-sub); }
+.wmux-schedule-composer, .wmux-schedule-detail { max-width: 760px; margin: 0 auto; padding: 28px 32px 40px; display: flex; flex-direction: column; gap: 12px; }
+.wmux-schedule-pane-title { margin: 0; font-size: 18px; font-weight: 600; color: var(--text-main); }
+.wmux-schedule-box { position: relative; display: flex; flex-direction: column; gap: 6px; padding: 12px 12px 10px; border-radius: 12px; background: var(--selection-subtle); }
+.wmux-schedule-name { height: 26px; padding: 0 2px; background: transparent; font-size: 14px; font-weight: 600; color: var(--text-main); outline: none; }
+.wmux-schedule-name::placeholder { color: var(--text-muted); font-weight: 400; }
+.wmux-schedule-prompt { min-height: 180px; padding: 2px; resize: vertical; background: transparent; font-size: 14px; line-height: 22px; color: var(--text-main); outline: none; }
+.wmux-schedule-prompt::placeholder { color: var(--text-muted); }
+.wmux-schedule-chips { position: relative; display: flex; flex-wrap: wrap; gap: 6px; padding-top: 4px; }
+.wmux-schedule-chip { display: inline-flex; align-items: center; gap: 6px; height: 28px; max-width: 260px; padding: 0 8px; border-radius: 8px; background: var(--selection); font-size: 12px; color: var(--text-main); }
+.wmux-schedule-chip:hover, .wmux-schedule-chip[aria-expanded="true"] { background: var(--selection-hover); }
+.wmux-schedule-chip > svg { flex: none; color: var(--text-sub); }
+.wmux-schedule-chip[data-invalid="true"] { color: var(--accent-red); }
+.wmux-schedule-chip-caret { display: inline-flex; color: var(--text-muted); transform: rotate(90deg); }
+.wmux-schedule-popover { position: absolute; top: calc(100% + 6px); left: 0; z-index: 10; width: min(380px, 100%); }
+.wmux-schedule-more { display: inline-flex; align-self: flex-start; align-items: center; gap: 6px; min-height: 26px; padding: 0 4px; font-size: 12px; color: var(--text-sub); }
+.wmux-schedule-more:hover { color: var(--text-main); }
+.wmux-schedule-more-caret { display: inline-flex; transition: transform 120ms; }
+.wmux-schedule-more[aria-expanded="true"] .wmux-schedule-more-caret { transform: rotate(90deg); }
+.wmux-schedule-more-body { display: flex; flex-direction: column; gap: 12px; padding: 4px 4px 0; }
+.wmux-schedule-more-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.wmux-schedule-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px; }
+.wmux-schedule-detail-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.wmux-schedule-detail-next { margin: 4px 0 0; font-size: 12px; color: var(--text-sub); }
+.wmux-schedule-history { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; }
+.wmux-schedule-section-title { margin: 0; font-size: 12px; font-weight: 500; color: var(--text-sub); }
+.wmux-schedule-runs { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.wmux-schedule-run { border-radius: 10px; }
+.wmux-schedule-run:hover { background: var(--hover-fill); }
+.wmux-schedule-run-line { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 4px 10px; font-size: 12px; }
+.wmux-schedule-run-dot { flex: none; width: 7px; height: 7px; border-radius: 9999px; background: var(--text-muted); }
+.wmux-schedule-run-dot[data-tone="live"] { background: var(--accent); }
+.wmux-schedule-run-dot[data-tone="ok"] { background: var(--accent-green); }
+.wmux-schedule-run-dot[data-tone="error"] { background: var(--accent-red); }
+.wmux-schedule-run-when { flex: none; width: 150px; color: var(--text-main); font-variant-numeric: tabular-nums; }
+.wmux-schedule-run-took { flex: none; width: 64px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.wmux-schedule-run-result { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-sub); }
+
+/* Sidebar workspace filter: a popover under the header (search, then facet
+ * checks), a row of removable chips while it narrows the list, and a dot on
+ * the filter button. */
+.wmux-ws-filter { position: absolute; top: 52px; left: 8px; right: 8px; z-index: 30; display: flex; flex-direction: column; gap: 6px; max-height: min(520px, calc(100% - 64px)); overflow-y: auto; padding: 8px; }
+.wmux-ws-filter-group { display: flex; flex-direction: column; gap: 1px; padding-top: 4px; }
+.wmux-ws-filter-title { padding: 2px 6px; font-size: 11px; color: var(--text-muted); }
+.wmux-ws-filter-option { display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 0 6px; border-radius: 6px; font-size: 12px; color: var(--text-main); text-align: left; outline: none; }
+.wmux-ws-filter-option:hover, .wmux-ws-filter-option:focus-visible { background: var(--hover-fill); }
+.wmux-ws-filter-box { display: grid; place-items: center; flex: none; width: 14px; height: 14px; border-radius: 4px; background: var(--selection); color: var(--text-main); }
+.wmux-ws-filter-option[aria-checked="true"] .wmux-ws-filter-box { background: var(--text-main); color: var(--bg-base); }
+.wmux-ws-filter-dot { position: absolute; top: 4px; right: 4px; width: 6px; height: 6px; border-radius: 9999px; background: var(--accent); }
+.wmux-ws-filter-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 0 12px 6px; }
+.wmux-ws-filter-chip { display: inline-flex; align-items: center; gap: 2px; height: 22px; padding: 0 2px 0 8px; border-radius: 9999px; background: var(--selection); font-size: 11px; color: var(--text-main); }
+.wmux-ws-filter-chip > button { display: grid; place-items: center; width: 18px; height: 18px; border-radius: 9999px; color: var(--text-muted); }
+.wmux-ws-filter-chip > button:hover { background: var(--hover-fill); color: var(--text-main); }
+.wmux-ws-filter-clear { height: 22px; padding: 0 6px; border-radius: 6px; font-size: 11px; color: var(--text-sub); }
+.wmux-ws-filter-clear:hover { background: var(--hover-fill); color: var(--text-main); }
+.wmux-ws-filter-note { margin: 0 12px 6px; font-size: 11px; color: var(--text-muted); }
+.wmux-ws-filter-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 8px 18px; font-size: 12px; color: var(--text-sub); }
+.wmux-ws-filter-empty p { margin: 0; }
+
+/* Titlebar search & command pill: a faint fill, no outline (one boundary).
+ * Its lane is the titlebar's drag gap; under ~260px the label folds away and
+ * the icon and shortcut remain. */
+.wmux-command-pill-lane { flex: 1; min-width: 0; height: 100%; display: flex; align-items: center; justify-content: center; padding: 0 12px; container-type: inline-size; }
+.wmux-command-pill { display: inline-flex; align-items: center; gap: 8px; height: 26px; max-width: 320px; min-width: 0; padding: 0 8px 0 10px; border-radius: 8px; background: var(--selection-subtle); color: var(--text-sub); font-size: 12px; line-height: 1; white-space: nowrap; transition: background-color 120ms, color 120ms; }
+.wmux-command-pill:hover { background: var(--selection); color: var(--text-main); }
+.wmux-command-pill > svg { flex: none; }
+.wmux-command-pill-label { overflow: hidden; text-overflow: ellipsis; }
+.wmux-command-pill-kbd { flex: none; margin-left: 4px; font-family: inherit; font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+@container (max-width: 260px) { .wmux-command-pill-label { display: none; } .wmux-command-pill-kbd { margin-left: 0; } }
+
+/* A rail page fills the sheet over the Workspaces page, which stays mounted
+ * underneath at full size, so a page never changes terminal geometry. The
+ * sheet's own edge is the page's only boundary. */
+.wmux-page { position: absolute; inset: 0; z-index: 40; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; background: var(--bg-base); }
+.wmux-page[data-rail-page="fleet"] .wmux-fleet-panel { width: 100%; }
+/* Fleet board: four columns of cards. A card is a fill tone (no outline),
+ * the selected card a stronger tone; column heads are text. Amber is spent
+ * only on status dots and the empty board's one call to action. */
+.wmux-board { container-type: inline-size; }
+.wmux-board-head { display: flex; align-items: center; gap: 8px; padding: 16px 20px 6px; }
+.wmux-board-title { margin: 0; font-size: 18px; font-weight: 600; color: var(--text-main); }
+.wmux-board-search { width: min(280px, 40%); height: 28px; padding: 0 10px; border-radius: 8px; background: var(--selection-subtle); color: var(--text-main); font-size: 12px; outline: none; }
+.wmux-board-search:focus-visible { box-shadow: 0 0 0 1px var(--line-strong); }
+.wmux-board-btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 8px; background: var(--selection-subtle); color: var(--text-sub); font-size: 12px; }
+.wmux-board-btn:hover { background: var(--selection); color: var(--text-main); }
+.wmux-board-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 4px 20px 12px; }
+.wmux-board-stat { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border-radius: 9999px; background: var(--selection-subtle); color: var(--text-sub); font-size: 12px; }
+.wmux-board-stat strong { color: var(--text-main); font-weight: 600; font-variant-numeric: tabular-nums; }
+.wmux-board-stat.is-action:hover, .wmux-board-stat[aria-pressed="true"] { background: var(--selection); color: var(--text-main); }
+.wmux-board-col-dot { flex: none; width: 7px; height: 7px; border-radius: 9999px; background: var(--text-muted); }
+.wmux-board-col-dot.is-needsYou { background: var(--accent-yellow); }
+.wmux-board-col-dot.is-running { background: var(--accent); }
+.wmux-board-col-dot.is-review { background: var(--accent-green); }
+.wmux-board-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.wmux-board-columns { flex: 1; min-height: 0; display: grid; gap: 12px; padding: 0 20px; }
+.wmux-board-columns[data-layout="list"] { display: flex; flex-direction: column; gap: 14px; max-width: 900px; overflow-y: auto; }
+.wmux-board-col { display: flex; flex-direction: column; gap: 6px; min-width: 0; min-height: 0; }
+.wmux-board-columns:not([data-layout="list"]) .wmux-board-col-body { overflow-y: auto; }
+.wmux-board-col-body { display: flex; flex-direction: column; gap: 6px; min-height: 0; padding-bottom: 12px; }
+.wmux-board-col-head { display: flex; align-items: center; gap: 7px; min-height: 26px; margin: 0; padding: 0 2px; font-size: 12px; font-weight: 500; color: var(--text-sub); }
+.wmux-board-col-head.is-toggle { width: 100%; border-radius: 6px; text-align: left; }
+.wmux-board-col-head.is-toggle:hover, .wmux-board-col-head.is-toggle[aria-selected="true"] { background: var(--hover-fill); color: var(--text-main); }
+.wmux-board-col-head.is-toggle[aria-expanded="true"] .wmux-fleet-idle-chevron { transform: rotate(90deg); }
+.wmux-board-col-count { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.wmux-board-card { display: flex; flex-direction: column; gap: 5px; width: 100%; min-width: 0; padding: 10px 36px 10px 12px; border-radius: 10px; background: var(--selection-subtle); text-align: left; outline: none; }
+.wmux-board-card:hover { background: var(--selection); }
+.wmux-board-card[aria-selected="true"] { background: var(--selection-hover); }
+.wmux-board-card:focus-visible { box-shadow: inset 0 0 0 1px var(--accent); }
+.wmux-board-card[data-dense="true"] { gap: 3px; padding-top: 7px; padding-bottom: 7px; }
+.wmux-board-card-r1 { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 12px; color: var(--text-sub); }
+.wmux-board-dot { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 7px; height: 7px; border-radius: 9999px; background: currentColor; }
+.wmux-board-dot.is-hollow { background: transparent; box-shadow: inset 0 0 0 1px currentColor; }
+.wmux-board-dot[data-shape="cross"] { background: transparent; font-size: 13px; }
+.wmux-board-remote { display: inline-flex; color: var(--text-muted); }
+.wmux-board-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 500; color: var(--text-main); }
+.wmux-board-agent { flex: none; color: var(--text-muted); }
+.wmux-board-elapsed { margin-left: auto; flex: none; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.wmux-board-card-r2 { display: flex; flex-wrap: wrap; gap: 2px 8px; min-width: 0; font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px; color: var(--text-muted); }
+.wmux-board-add { color: var(--accent-green); }
+.wmux-board-del { color: var(--accent-red); }
+.wmux-board-detail { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 12px; line-height: 1.45; color: var(--text-main); }
+.wmux-board-detail.is-activity { font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px; color: var(--text-sub); }
+.wmux-board-card[data-dense="true"] .wmux-board-detail { -webkit-line-clamp: 1; }
+.wmux-board-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.wmux-board-chips:empty { display: none; }
+.wmux-board-chip { padding: 1px 7px; border-radius: 6px; background: var(--selection); font-size: 11px; color: var(--text-sub); }
+.wmux-board-chip.is-warn { color: var(--accent-yellow); }
+.wmux-board-lineage { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text-muted); }
+.wmux-board-lineage::before { content: '↳ '; }
+.wmux-board-idle-peek { display: flex; flex-direction: column; gap: 1px; }
+.wmux-board-idle-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 28px; padding: 0 8px; border-radius: 6px; font-size: 12px; color: var(--text-sub); text-align: left; }
+.wmux-board-idle-row:hover { background: var(--hover-fill); color: var(--text-main); }
+.wmux-board-fold { align-self: flex-start; padding: 2px 8px; border-radius: 6px; font-size: 11px; color: var(--text-muted); }
+.wmux-board-fold:hover { background: var(--hover-fill); color: var(--text-main); }
+.wmux-board-col .wmux-fleet-row > .wmux-fleet-row-trigger { top: 18px; transform: none; }
+/* Ready to review rows take the card shape inside a column. */
+.wmux-board-col .wmux-fleet-card { display: flex; flex-direction: column; align-items: stretch; gap: 4px; min-height: 0; padding: 10px 36px 10px 12px; border-bottom: 0; border-radius: 10px; background: var(--selection-subtle); }
+.wmux-board-col .wmux-fleet-card:hover, .wmux-board-col .wmux-fleet-card[aria-selected="true"] { background: var(--selection); }
+.wmux-board-col .wmux-fleet-card .wmux-fleet-action { display: none; }
+.wmux-board-col .wmux-fleet-editor { border-bottom: 0; }
+.wmux-board-panel { flex: 1; min-height: 0; overflow-y: auto; padding: 0 20px 16px; max-width: 900px; }
+.wmux-board-back { margin-bottom: 8px; padding: 2px 6px; border-radius: 6px; font-size: 12px; color: var(--text-sub); }
+.wmux-board-back:hover { background: var(--hover-fill); color: var(--text-main); }
+.wmux-board-quiet { padding: 24px 4px; font-size: 13px; color: var(--text-muted); }
+.wmux-board-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 96px 20px; text-align: center; }
+.wmux-board-empty h3 { margin: 0; font-size: 17px; font-weight: 600; color: var(--text-main); }
+.wmux-board-empty p { margin: 0; font-size: 13px; color: var(--text-sub); }
+.wmux-board-cta { display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; height: 32px; padding: 0 14px; border-radius: 8px; background: var(--accent-yellow); color: var(--bg-base); font-size: 13px; font-weight: 500; }
+.wmux-board-cta:hover { filter: brightness(1.06); }
+.wmux-board-recent { display: flex; flex-direction: column; gap: 6px; width: min(520px, 100%); margin: 20px 0 0; padding: 0; list-style: none; text-align: left; }
+.wmux-board-recent li { display: flex; justify-content: space-between; gap: 12px; padding: 7px 10px; border-radius: 8px; background: var(--selection-subtle); font-size: 12px; color: var(--text-sub); }
+.wmux-board-recent li > span:first-child { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.wmux-board-preview { flex: none; margin: 0 20px 8px; padding: 8px 12px; border-radius: 10px; background: var(--bg-mantle); }
+.wmux-board-preview-head { display: block; margin-bottom: 4px; font-size: 11px; color: var(--text-muted); }
+.wmux-board-preview pre { max-height: 220px; margin: 0; overflow: auto; font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px; line-height: 1.6; color: var(--text-sub); white-space: pre; }
+.wmux-board[data-layout="list"] .wmux-board-preview { max-width: 860px; }
+.wmux-board-keys { flex: none; display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 8px 20px 12px; font-size: 11px; color: var(--text-muted); }
+.wmux-board-key { display: inline-flex; align-items: center; gap: 5px; }
+.wmux-board-key kbd { padding: 1px 6px; border-radius: 5px; background: var(--selection-subtle); font-family: var(--font-mono, ui-monospace, monospace); font-size: 10.5px; }
+@container (max-width: 900px) {
+  .wmux-board-columns:not([data-layout="list"]) { grid-template-columns: repeat(2, minmax(0, 1fr)); overflow-y: auto; }
+  .wmux-board-columns:not([data-layout="list"]) .wmux-board-col-body { overflow: visible; }
+}
 .wmux-fleet-panel { container-type: inline-size; }
 .wmux-fleet-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 20px; flex-shrink: 0; }
 .wmux-fleet-header > div { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; }
 .wmux-fleet-summary { margin-top: 3px; font-size: 12px; color: var(--text-sub); }
-.wmux-fleet-keep-open { display: flex; align-items: center; gap: 6px; width: 100%; font-size: 12px; color: var(--text-sub); cursor: pointer; }
-.wmux-fleet-keep-open input { accent-color: var(--accent-blue); }
 .wmux-fleet-close { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 5px; color: var(--text-sub); }
 .wmux-fleet-close:hover { background: var(--bg-surface); color: var(--text-main); }
 .wmux-fleet-tabs { display: flex; gap: 20px; padding: 0 20px; border-bottom: 1px solid var(--border-soft); flex-shrink: 0; }
@@ -693,7 +972,7 @@
 .wmux-fleet-dot.is-unconfirmed { background: transparent; border: 1px solid currentColor; }
 .wmux-fleet-dot[data-shape="cross"] { background: transparent; font-size: 14px; }
 .wmux-fleet-identity, .wmux-fleet-progress { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.wmux-fleet-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; line-height: 18px; font-weight: 600; color: var(--text-main); }
+.wmux-fleet-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; line-height: 18px; font-weight: 500; color: var(--text-main); }
 /* A fan-out task's requester, on a line of its own so the pane coordinate it
  * leads with is never squeezed out by the meta line. */
 .wmux-fleet-requester { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; line-height: 14px; color: var(--text-muted); }
@@ -774,7 +1053,7 @@
 .wmux-record-eyebrow { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 11px; color: var(--text-sub); }
 .wmux-record-status { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .wmux-record-status > span { width: 5px; height: 5px; border-radius: 50%; background: var(--text-sub); }
-.wmux-record-summary h3 { font-size: 19px; line-height: 1.4; letter-spacing: -.025em; font-weight: 600; color: var(--text-main); overflow-wrap: anywhere; margin-top: 12px; text-wrap: pretty; }
+.wmux-record-summary h3 { font-size: 19px; line-height: 1.4; letter-spacing: -.025em; font-weight: 500; color: var(--text-main); overflow-wrap: anywhere; margin-top: 12px; text-wrap: pretty; }
 .wmux-record-branch { display: flex; align-items: flex-start; gap: 6px; margin-top: 10px; font-family: var(--font-mono); font-size: 11px; line-height: 1.5; color: var(--text-sub); overflow-wrap: anywhere; }
 .wmux-record-branch svg { flex-shrink: 0; margin-top: 1px; }
 .wmux-record-branch span { min-width: 0; }
@@ -892,7 +1171,7 @@
 .ui-dialog-header { display: flex; align-items: flex-start; gap: 12px; padding: 20px 20px 0 24px; }
 .ui-dialog-heading { flex: 1; min-width: 0; padding-top: 4px; }
 /* 16px = the existing display step (--text-display-size), dialog titles only. */
-.ui-dialog-title { margin: 0; font-size: var(--text-display-size, 16px); font-weight: 600; line-height: 24px; color: var(--text-main); }
+.ui-dialog-title { margin: 0; font-size: var(--text-display-size, 16px); font-weight: 500; line-height: 24px; color: var(--text-main); }
 .ui-dialog-description { margin: 4px 0 0; font-size: 13px; line-height: 20px; color: var(--text-sub); }
 .ui-dialog-close { width: 32px; height: 32px; flex-shrink: 0; border-radius: 8px; }
 .ui-dialog-body { display: flex; flex-direction: column; gap: 16px; min-height: 0; overflow-y: auto; padding: 20px 24px; }
@@ -1289,3 +1568,521 @@
 .wmux-chat-stop { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; height: 32px; margin-left: auto; padding: 0 12px; border: 1px solid var(--border-soft); border-radius: 999px; color: var(--text-main); font-size: 13px; transition: background-color 150ms; }
 .wmux-chat-stop:hover:not(:disabled) { background: var(--bg-surface); }
 .wmux-chat-stop:disabled { color: var(--text-sub); cursor: default; }
+
+/* ─── Mono look layer (owner decision 2026-10-03) ─────────────────────────────
+ * Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/styles/index.css,
+ * src/shared/ui/SecondaryButton.tsx, src/shared/ui/Popover.tsx,
+ * src/shared/ui/Modal.tsx, src/features/sessions/ui/ModelPicker.tsx,
+ * src/features/settings/ui/SettingsView.tsx), MIT License, Copyright (c) 2026 Nick
+ *
+ * Restates the primitives above with the neutral recipe: fills from the
+ * content-mix ladder (globals.css) instead of raised bevels and inset
+ * shadows, 6px controls, a solid white (light: ink) primary, borderless
+ * filled chips, 12px popovers and 16px dialogs. Same selectors as the
+ * originals, declared later, so these win without raising specificity. */
+.ui-btn {
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  transition: background-color var(--motion-feedback) var(--motion-ease-out),
+    border-color var(--motion-feedback) var(--motion-ease-out),
+    color var(--motion-feedback) var(--motion-ease-out);
+}
+.ui-btn-secondary {
+  background: transparent;
+  border-color: var(--line);
+  box-shadow: none;
+  color: color-mix(in srgb, var(--text-main) 70%, transparent);
+}
+.ui-btn-secondary:hover:not(:disabled) {
+  background: var(--selection);
+  border-color: var(--line);
+  box-shadow: none;
+  color: var(--text-main);
+}
+.ui-btn-secondary:active:not(:disabled),
+.ui-btn-primary:active:not(:disabled),
+.ui-btn-danger:active:not(:disabled),
+.ui-btn-danger-tinted:active:not(:disabled) {
+  transform: none;
+  box-shadow: none;
+}
+.ui-btn-primary {
+  background: var(--primary-fill);
+  color: var(--primary-ink);
+  font-weight: 500;
+  box-shadow: none;
+}
+.ui-btn-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--primary-fill) 90%, transparent);
+}
+.ui-btn-ghost { color: color-mix(in srgb, var(--text-main) 50%, transparent); }
+.ui-btn-ghost:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text-main) 8%, transparent);
+  color: color-mix(in srgb, var(--text-main) 70%, transparent);
+}
+.ui-btn-ghost:active:not(:disabled) { background: var(--selection); }
+.ui-btn-danger { box-shadow: none; font-weight: 500; }
+.ui-btn-danger-tinted {
+  background: transparent;
+  border-color: var(--line);
+  color: var(--accent-red);
+}
+.ui-btn-danger-tinted:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent-red) 10%, transparent);
+  border-color: color-mix(in srgb, var(--accent-red) 40%, transparent);
+}
+
+.ui-icon-btn { color: color-mix(in srgb, var(--text-main) 50%, transparent); }
+.ui-icon-btn:hover:not(:disabled) { background: var(--selection-hover); color: var(--text-main); }
+.ui-icon-btn:active:not(:disabled) { background: var(--selection-emphasis); }
+.ui-icon-btn-active,
+.ui-icon-btn-active:hover:not(:disabled) {
+  background: var(--selection-emphasis);
+  color: var(--text-main);
+}
+
+.ui-toggle {
+  border-radius: 6px;
+  color: color-mix(in srgb, var(--text-main) 50%, transparent);
+}
+.ui-toggle:hover:not(:disabled) { background: var(--selection-hover); color: var(--text-main); }
+.ui-toggle-on,
+.ui-toggle-on:hover:not(:disabled) {
+  background: var(--selection-emphasis);
+  color: var(--text-main);
+  box-shadow: none;
+}
+
+.ui-ghost:hover:not(:disabled),
+.ui-row-ghost:hover:not(:disabled) { background: var(--hover-fill); color: var(--text-main); }
+.ui-ghost-active { background: var(--selection); color: var(--text-main); }
+.ui-row-ghost { border-radius: 6px; }
+
+/* Chip: a filled, borderless 26px pill-rectangle (composer pickers). */
+.ui-chip-boxless {
+  min-height: 26px;
+  background: var(--selection);
+  border-color: transparent;
+  border-radius: 6px;
+  color: var(--text-main);
+}
+.ui-chip-boxless:hover:not(:disabled),
+.ui-chip-boxless[aria-expanded='true'] {
+  background: var(--selection-hover);
+  border-color: transparent;
+  box-shadow: none;
+  color: var(--text-main);
+}
+.ui-chip-boxless:focus-visible:not(:disabled) {
+  box-shadow: 0 0 0 1px var(--bg-base), 0 0 0 3px var(--accent);
+}
+
+/* Inputs: a faint fill and a hairline that brightens on focus — no sunken
+ * shadow, no glow. */
+.ui-input,
+.ui-mini-input,
+.ui-search-bar {
+  background: color-mix(in srgb, var(--text-main) 3%, transparent);
+  box-shadow: none;
+}
+.ui-input { border-color: var(--line); border-radius: 6px; }
+.ui-input:focus-visible,
+.ui-input:focus,
+.ui-surface .ui-input:focus,
+.ui-surface .ui-input:focus-visible,
+.ui-surface .ui-select > select:focus-visible {
+  border-color: var(--line-strong);
+  box-shadow: none;
+}
+.ui-search-bar { border-color: var(--line); box-shadow: var(--shadow-popover); }
+.ui-search-bar:focus-within { border-color: var(--line-strong); box-shadow: var(--shadow-popover); }
+
+/* Surfaces: popovers 12px on shadow-xl, dialogs 16px on shadow-2xl. */
+.ui-surface,
+.ui-popover {
+  --surface-hairline: var(--line);
+  --surface-fill: color-mix(in srgb, var(--text-main) 3%, transparent);
+  --surface-fill-hover: var(--selection);
+  --surface-shadow: var(--shadow-popover);
+}
+.ui-btn-sm,
+.ui-btn-md,
+.ui-surface .ui-btn { border-radius: 6px; }
+.ui-surface .ui-input,
+.ui-surface .ui-select > select { border-radius: 6px; }
+.ui-popover { border-radius: 12px; }
+.ui-dialog {
+  border-color: color-mix(in srgb, var(--text-main) 7%, transparent);
+  border-radius: 16px;
+  box-shadow: var(--shadow-modal);
+}
+.ui-dialog-title { font-size: 20px; font-weight: 500; line-height: 28px; }
+
+/* Segmented control: a hairline track with a filled active segment. */
+.ui-segmented {
+  gap: 2px;
+  padding: 2px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: transparent;
+}
+.ui-segment {
+  min-height: 0;
+  padding: 4px 10px;
+  border-radius: 5px;
+  color: color-mix(in srgb, var(--text-main) 50%, transparent);
+  font-size: 12px;
+  font-weight: 400;
+}
+.ui-segment[aria-checked="true"] { background: var(--selection); color: var(--text-main); }
+
+/* ─── Mono look: dock header, panel toggle, Fleet rows ────────────────────────
+ * Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx,
+ * src/app/shell/TitleBar.tsx), MIT License, Copyright (c) 2026 Nick.
+ * The dock header is a 40px chrome row of 24px tab pills; the titlebar panel
+ * toggle and the chat/terminal switch use the neutral fills; Fleet rows are
+ * soft 6px cards with no dividers. */
+.wmux-pane-header { padding-inline: 0; }
+.wmux-panel-toggle { border-radius: 6px; color: color-mix(in srgb, var(--text-main) 50%, transparent); }
+.wmux-panel-toggle:hover { background: var(--hover-fill); color: var(--text-main); }
+.wmux-panel-toggle[aria-expanded="true"],
+.wmux-panel-toggle[aria-pressed="true"] { background: var(--selection); color: var(--text-main); }
+/* Titlebar right end: icon-only, one 28px square each (tools panel, Settings). */
+.wmux-titlebar .wmux-panel-toggle { width: 28px; padding: 0; gap: 0; }
+.wmux-chat-toggle button { border-radius: 6px; color: color-mix(in srgb, var(--text-main) 50%, transparent); }
+.wmux-chat-toggle button[aria-pressed="true"] { background: var(--selection); color: var(--text-main); }
+.wmux-deck-tabs { min-height: 40px; padding: 0 12px; gap: 4px; border-bottom: 0; }
+.wmux-deck-tablist { gap: 2px; }
+.wmux-deck-tab {
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 400;
+  color: color-mix(in srgb, var(--text-main) 50%, transparent);
+  transition: background-color var(--motion-feedback) var(--motion-ease-out), color var(--motion-feedback) var(--motion-ease-out);
+}
+.wmux-deck-tab:hover { background: var(--hover-fill); color: var(--text-main); }
+.wmux-deck-tab[aria-selected="true"] { background: var(--selection); color: var(--text-main); }
+.wmux-deck-tab:focus-visible { outline-color: var(--accent); }
+.wmux-deck-tab-count { min-width: 0; height: auto; padding: 0; border-radius: 0; background: transparent; color: var(--text-muted); }
+.wmux-fleet-filters button[data-filter="attention"] { color: var(--accent-yellow); }
+.wmux-fleet-list { gap: 2px; }
+.wmux-fleet-card { border-bottom: 0; border-radius: 6px; padding: 8px 10px; }
+.wmux-fleet-row > .wmux-fleet-card { padding-right: 40px; }
+.wmux-fleet-card:hover { background: var(--hover-fill); }
+.wmux-fleet-card[aria-selected="true"] { background: var(--selection); }
+.wmux-fleet-card:focus-visible { box-shadow: inset 0 0 0 1px var(--accent); }
+.wmux-fleet-row-trigger { border-radius: 6px; background: var(--selection); }
+.wmux-fleet-editor { border-bottom-color: var(--stroke); }
+.wmux-fleet-editor input,
+.wmux-fleet-editor button { border-color: var(--line); border-radius: 6px; }
+.wmux-fleet-editor input { background: color-mix(in srgb, var(--text-main) 3%, transparent); }
+.wmux-fleet-editor input:focus-visible { border-color: var(--line-strong); }
+.wmux-fleet-preview { border-top-color: var(--stroke); }
+
+/* ─── Mono layout layer: floating panels on a near-black app background ─────
+ * Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/styles/index.css,
+ * src/app/shell/Sidebar.tsx), MIT License, Copyright (c) 2026 Nick.
+ * The titlebar and the sidebar sit directly on --app-bg; the workspace frame
+ * and the tools dock float on it as rounded panels separated by --panel-gap. */
+.wmux-app-root { background-color: var(--app-bg); }
+.wmux-app-root .wmux-titlebar,
+.wmux-app-root .wmux-titlebar-segment,
+.wmux-sidebar { background-color: transparent; }
+.wmux-shell-body {
+  background: transparent;
+  gap: var(--panel-gap);
+  padding: 0 var(--panel-gap) var(--panel-gap) 0;
+}
+.wmux-shell-body.flex-row-reverse { padding: 0 0 var(--panel-gap) var(--panel-gap); }
+.wmux-workspace-frame,
+.wmux-dock {
+  background: var(--bg-base);
+  border: 0;
+  border-radius: var(--panel-radius);
+  overflow: clip;
+}
+
+/* ─── Mono density ─────────────────────────────────────────────────────────────
+ * Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx),
+ * MIT License, Copyright (c) 2026 Nick. 28–30px rows on a 12px gutter: a
+ * workspace row is one line; the active row keeps its git line underneath. */
+.wmux-sidebar .sidebar-row { padding-top: 8px; padding-bottom: 8px; }
+.wmux-sidebar-nav { padding: 4px 12px 8px; }
+.wmux-nav-button { min-height: 28px; padding: 4px 8px; }
+.wmux-sidebar-footer { min-height: 40px; padding: 4px 12px; }
+.wmux-sidebar-footer .wmux-nav-button { min-height: 28px; }
+/* Counters and sync badges on a row are muted text; only the diff counts
+ * keep their green / red. */
+.wmux-sidebar [data-git-signal-line] *:not([data-git-diff]) { color: inherit !important; }
+
+/* ─── Theme style knobs ───────────────────────────────────────────────────────
+ * Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/styles/index.css),
+ * MIT License, Copyright (c) 2026 Nick. Each consumer reads one variable that
+ * THEME_STYLES sets per theme; the :root defaults reproduce the earlier look. */
+.wmux-nav-button[aria-pressed="true"],
+.wmux-fleet-card[aria-selected="true"] { box-shadow: var(--select-ring); }
+.wmux-surface-tab[data-active="true"],
+.wmux-deck-tab[aria-selected="true"] {
+  box-shadow: inset 0 calc(-1 * var(--tab-underline)) 0 var(--accent);
+}
+.wmux-sidebar-section,
+.wmux-sidebar-section > span:first-child {
+  text-transform: var(--group-case);
+  letter-spacing: var(--group-track);
+}
+.ui-chip-boxless,
+.ui-segmented,
+.wmux-agent-tools-toggle { border-radius: var(--chip-radius); }
+.ui-segment { border-radius: max(calc(var(--chip-radius) - 1px), 0px); }
+.wmux-row-title { font-weight: var(--title-weight); }
+
+/* ─── Seams and tabs ──────────────────────────────────────────────────────────
+ * One 1px seam between the sidebar and the body, top to bottom: the panels sit
+ * flush (no gap, no radius), the sidebar draws its own right edge at the same
+ * x as the titlebar segment's, and the dock draws the body/dock seam. The
+ * pane tab strip and the dock header are both 40px with a bottom hairline, so
+ * their lines meet the same y. An active tab is a square-bottomed cell joined
+ * to the body below it, marked by one straight 2px bar on the strip's line —
+ * accent in the focused pane, a quiet tone elsewhere. */
+.wmux-shell-body,
+.wmux-shell-body.flex-row-reverse { gap: 0; padding: 0; }
+.wmux-workspace-frame,
+.wmux-dock { border: 0; border-radius: 0; }
+.wmux-sidebar { box-shadow: inset -1px 0 0 var(--stroke); }
+.wmux-shell-body.flex-row-reverse .wmux-sidebar { box-shadow: inset 1px 0 0 var(--stroke); }
+.wmux-dock { box-shadow: inset 1px 0 0 var(--stroke); }
+.wmux-shell-body.flex-row-reverse .wmux-dock { box-shadow: inset -1px 0 0 var(--stroke); }
+.wmux-sidebar-section { margin: 0 12px 6px; padding: 0 4px 0 10px; border-radius: 6px; }
+
+.wmux-pane-header { background: var(--bg-mantle); }
+.wmux-surface-tablist { align-self: stretch; align-items: flex-end; gap: 2px; }
+.wmux-surface-tab {
+  position: relative;
+  height: 32px;
+  border-radius: 6px 6px 0 0;
+  box-shadow: none !important;
+}
+.wmux-surface-tab:not([data-active="true"]):hover { background: var(--hover-fill); }
+.wmux-surface-tab[data-active="true"] { background: var(--bg-base); }
+.wmux-surface-tab[data-active="true"]::after,
+.wmux-deck-tab[aria-selected="true"]::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  border-radius: 0;
+  background: var(--line-strong);
+  pointer-events: none;
+}
+.wmux-pane-header[data-pane-focused="true"] .wmux-surface-tab[data-active="true"]::after,
+.wmux-deck-tab[aria-selected="true"]::after { background: var(--accent); }
+
+.wmux-deck-tabs {
+  min-height: 40px;
+  height: 40px;
+  align-items: flex-end;
+  flex-wrap: nowrap;
+  padding: 0 8px;
+  border-bottom: 0;
+  box-shadow: inset 0 -1px 0 var(--stroke);
+  background: var(--bg-mantle);
+}
+.wmux-deck-tablist { align-self: stretch; align-items: flex-end; flex-wrap: nowrap; }
+.wmux-deck-tab {
+  position: relative;
+  min-height: 32px;
+  height: 32px;
+  border-radius: 6px 6px 0 0;
+  box-shadow: none !important;
+}
+.wmux-deck-tab[aria-selected="true"] { background: var(--bg-base); }
+/* The pane's own 1px border (it separates split panes) lands exactly on the
+ * titlebar, sidebar and dock seams instead of beside them: one line each. */
+.wmux-workspace-frame { margin: -1px -1px 0 -1px; overflow: visible; }
+
+/* ─── Frame and sheet ─────────────────────────────────────────────────────────
+ * Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/styles/index.css),
+ * MIT License, Copyright (c) 2026 Nick. The window is a frame (titlebar row
+ * and margins, --frame-bg) holding one rounded sheet: the sidebar, the panes
+ * and the dock, inset --sheet-inset from the frame on the left, right and
+ * bottom and flush under the titlebar, with a hairline edge and a faint
+ * shadow. In fullscreen the sheet fills the window. Inside the sheet the
+ * sidebar takes its own tone and meets the body at the single seam. */
+.wmux-app-root { background-color: var(--frame-bg); }
+.wmux-app-root .wmux-titlebar,
+.wmux-app-root .wmux-titlebar-segment {
+  background-color: transparent;
+  box-shadow: none !important;
+}
+.wmux-shell-body,
+.wmux-shell-body.flex-row-reverse {
+  margin: 0 var(--sheet-inset) var(--sheet-inset);
+  border: 1px solid var(--sheet-edge);
+  border-radius: var(--sheet-radius);
+  background: var(--bg-base);
+  box-shadow: var(--sheet-shadow);
+  overflow: hidden;
+}
+html[data-fullscreen] .wmux-shell-body {
+  margin: 0;
+  border-width: 1px 0 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.wmux-sidebar { background-color: var(--bg-mantle); }
+
+/* ─── Icon rail ───────────────────────────────────────────────────────────────
+ * Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx),
+ * MIT License, Copyright (c) 2026 Nick. A 48px column on the window frame
+ * beside the sheet: 36px square buttons, 16–18px icons, the current place as
+ * a soft filled square (radius 8). It starts at the sheet's top edge on every
+ * platform — the traffic lights live in the titlebar row above it. */
+.wmux-rail {
+  width: 48px;
+  align-items: center;
+  gap: 2px;
+  padding: 0 0 var(--sheet-inset);
+  background: transparent;
+}
+.wmux-rail .wmux-sidebar-nav { width: 100%; align-items: center; gap: 2px; padding: 0 0 8px; }
+.wmux-rail .wmux-nav-button {
+  width: 36px;
+  height: 36px;
+  min-height: 36px;
+  padding: 0;
+  justify-content: center;
+  border-radius: 8px;
+  margin: 0;
+}
+.wmux-rail .wmux-nav-button svg,
+.wmux-rail button > svg { width: 17px; height: 17px; }
+.wmux-rail .wmux-nav-button[aria-pressed="true"],
+.wmux-rail .wmux-nav-button[aria-expanded="true"] { background: var(--selection); color: var(--text-main); box-shadow: none; }
+.wmux-rail .wmux-nav-button:hover { background: var(--hover-fill); }
+.wmux-rail .wmux-nav-count {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 7px;
+  height: 7px;
+  border-radius: 9999px;
+  background: var(--accent);
+}
+.wmux-rail .wmux-nav-badge {
+  top: 2px;
+  right: 1px;
+  width: auto;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--bg-base);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.wmux-rail > div:last-child { border-top: 0; }
+.wmux-frame-row > .wmux-shell-body { margin-left: 0; }
+.wmux-frame-row.flex-row-reverse > .wmux-shell-body { margin-left: var(--sheet-inset); margin-right: 0; }
+
+/* ─── Detail pass: one boundary per element ───────────────────────────────────
+ * Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx,
+ * src/styles/index.css), MIT License, Copyright (c) 2026 Nick. An edge is
+ * drawn by a line or by a tone change, never both. */
+
+/* Sidebar header: a plain title with a muted count and icon buttons. */
+.wmux-sidebar-section,
+.wmux-sidebar-section > span:first-child {
+  text-transform: none;
+  letter-spacing: normal;
+}
+.wmux-sidebar-section {
+  min-height: 44px;
+  margin: 4px 8px 2px;
+  padding: 0 4px 0 10px;
+  border-radius: 0;
+  background: none;
+  color: var(--text-main);
+  font-size: 17px;
+  font-weight: 600;
+  gap: 6px;
+}
+.wmux-sidebar-total {
+  height: auto;
+  padding: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--text-muted);
+  font-size: 15px;
+  font-weight: 400;
+}
+.wmux-sidebar-section .ui-icon-btn { flex: none; }
+
+/* Selection: one pill, 8px in from the sidebar's edges; its agent rows are
+ * indented text with no box and no guide line. */
+.wmux-sidebar .sidebar-row { border-radius: 10px; padding: 8px 10px; }
+.wmux-sidebar [data-git-signal-line] {
+  margin-top: 2px;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--text-sub);
+}
+.wmux-sidebar [data-git-signal-line] *:not([data-git-diff]) { color: inherit !important; }
+.wmux-sidebar [data-roster-list] button { background: transparent !important; }
+
+/* Tabs: the bar alone marks the active tab — no fill under it. */
+.wmux-surface-tab[data-active="true"],
+.wmux-deck-tab[aria-selected="true"] { background: transparent; }
+
+/* Rail: 40px squares, 19px icons, the current place a filled square. */
+.wmux-rail { gap: 6px; }
+.wmux-rail .wmux-sidebar-nav { gap: 6px; padding-top: 2px; }
+.wmux-rail .wmux-nav-button,
+.wmux-rail > div:last-child > button {
+  width: 40px;
+  height: 40px;
+  min-height: 40px;
+  border-radius: 10px;
+}
+.wmux-rail .wmux-nav-button svg,
+.wmux-rail button > svg { width: 19px; height: 19px; }
+.wmux-rail .wmux-nav-button[aria-pressed="true"],
+.wmux-rail .wmux-nav-button[aria-expanded="true"] { background: var(--selection); }
+.wmux-rail .wmux-nav-badge { top: 3px; right: 2px; }
+.wmux-rail .wmux-nav-count:not(.wmux-nav-badge) { top: 7px; right: 7px; }
+/* Dock: Briefing is set off by space; the Assist box is the wrapper's one
+ * hairline (its inner form draws none); composers carry no extra shadow. */
+[data-commander-layout="chat"] [data-deck-briefing] { border-bottom: 0; }
+[data-commander-composer] form[data-channel-composer].wmux-chat-composer { border: 0; box-shadow: none; }
+[data-commander-layout="chat"] [data-commander-composer] { background: transparent; border-color: var(--line); }
+:root:is([data-theme="mono-light"], [data-theme="paper"], [data-theme="hinomaru"], [data-theme="taegeuk"]) form[data-channel-composer].wmux-chat-composer,
+:root:is([data-theme="mono-light"], [data-theme="paper"], [data-theme="hinomaru"], [data-theme="taegeuk"]) [data-chat-view] .wmux-chat-composer { box-shadow: none; background: transparent; }
+/* Sidebar rows: hover is a whisper next to the selection pill, and the hover
+ * actions float over the row's right edge while the text under them fades —
+ * the row's layout never changes width. */
+.wmux-sidebar .sidebar-row { position: relative; }
+.wmux-sidebar .sidebar-row:not(.sidebar-row-active):not(.sidebar-row-needs):hover {
+  background: color-mix(in srgb, var(--text-main) 3%, transparent);
+}
+.wmux-sidebar [data-workspace-actions] {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  max-width: none !important;
+  margin: 0;
+}
+.wmux-sidebar .sidebar-row:is(:hover, :focus-within) [data-workspace-text] {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 96px), transparent calc(100% - 64px));
+  mask-image: linear-gradient(to right, #000 calc(100% - 96px), transparent calc(100% - 64px));
+}
+/* Pane toolbar: groups are set apart by space, the view switch by its fill. */
+.wmux-chat-toggle { margin: 0 6px; }
+.wmux-chat-toggle button { border: 0; box-shadow: none; }

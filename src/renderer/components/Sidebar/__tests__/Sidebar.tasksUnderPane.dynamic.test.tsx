@@ -218,7 +218,7 @@ describe('fan-out tasks under the requesting pane', () => {
 describe('fan-out tasks under the pane — review fixes', () => {
   const chip = () => document.querySelector('button[aria-controls="roster-list-w1"]') as HTMLButtonElement;
 
-  it('a folded roster counts the tasks that need you in red, with an accessible label, and re-opens for a second one', () => {
+  it('a folded roster counts the tasks that need you in amber, with an accessible label, and re-opens for a second one', () => {
     seed({ active: 'bee', status: { t3: 'awaiting_input' } });
     act(() => root.render(<Sidebar />));
     // Opened on its own for beta; the user folds it anyway.
@@ -227,7 +227,7 @@ describe('fan-out tasks under the pane — review fixes', () => {
     expect(group('pane:w1:p2')).toBeNull();
     const tasks = document.querySelector('[data-roster-chip-tasks]') as HTMLElement;
     expect(tasks.getAttribute('data-roster-chip-needs-you')).toBe('1');
-    expect(tasks.querySelector('.text-\\[var\\(--accent-red\\)\\]')?.textContent).toBe('1');
+    expect(tasks.querySelector('.text-\\[var\\(--accent-yellow\\)\\]')?.textContent).toBe('1');
     expect(chip().getAttribute('aria-label')).toContain('1 need you');
     // A second task starts needing you while folded: the roster opens again.
     act(() => useStore.setState({

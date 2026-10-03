@@ -11,16 +11,19 @@ import { FOCUS_RING } from '../focusRing';
  * imported back out of either component.
  */
 
-/** One 36px cell — the chrome module (DESIGN.md "Spacing & Geometry"). */
+/**
+ * One 40px cell — the chrome module (DESIGN.md "Spacing & Geometry").
+ * Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/TitleBar.tsx), MIT License, Copyright (c) 2026 Nick
+ */
 export const DECK_ICON_BUTTON =
-  `relative flex items-center justify-center shrink-0 w-9 h-9 transition-colors duration-150 ${FOCUS_RING}`;
+  `relative flex items-center justify-center shrink-0 w-10 h-10 transition-colors duration-150 ${FOCUS_RING}`;
 
 /**
  * Icon colour: active = main (the steel underline carries "you are here") ·
  * signal = warm (unread / dirty / server running) · rest = muted.
  */
 export function deckIconTone(active: boolean, signal: boolean): string {
-  if (active) return 'text-[var(--text-main)] bg-[rgba(var(--bg-surface-rgb),0.5)]';
+  if (active) return 'text-[var(--text-main)] bg-[var(--selection)]';
   if (signal) return 'text-[var(--accent)] hover:opacity-80';
   return 'text-[var(--text-muted)] hover:text-[var(--text-sub)]';
 }
@@ -33,7 +36,7 @@ export function deckIconTone(active: boolean, signal: boolean): string {
 export const DECK_ICON_BADGE =
   'absolute top-0.5 right-0.5 inline-flex items-center justify-center min-w-[14px] h-[14px] px-[3px] rounded-full text-[10px] font-semibold tabular-nums leading-none bg-[var(--accent)] text-[var(--bg-base)]';
 
-/** Counts sit on a 36px cell — clamp so a big number can't overflow it. */
+/** Counts sit on a 40px cell — clamp so a big number can't overflow it. */
 export function formatDeckCount(count: number): string | null {
   if (count <= 0) return null;
   return count > 99 ? '99+' : String(count);

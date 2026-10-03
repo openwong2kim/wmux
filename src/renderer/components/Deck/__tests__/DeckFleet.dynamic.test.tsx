@@ -280,7 +280,7 @@ describe('DeckFleet running derivation', () => {
     act(() => useStore.setState({ surfaceTurnOpenAt: { 'pty-1': now }, agentClockMs: now }));
     mount();
     // Amber = alive (DESIGN.md). Without the latch this row reads grey/idle.
-    expect(dotStyle().backgroundColor).toBe('var(--accent-cursor)');
+    expect(dotStyle().backgroundColor).toBe('var(--text-sub)');
   });
 
   it('derives running from a fresh activity stamp read against the store clock', () => {
@@ -292,7 +292,7 @@ describe('DeckFleet running derivation', () => {
       agentClockMs: now,
     }));
     mount();
-    expect(dotStyle().backgroundColor).toBe('var(--accent-cursor)');
+    expect(dotStyle().backgroundColor).toBe('var(--text-sub)');
   });
 
   it('a pane with neither signal stays idle', () => {
@@ -343,7 +343,7 @@ describe('DeckFleet clock cadence', () => {
       agentClockMs: now,
     }));
     mount();
-    expect(dotStyle().backgroundColor).toBe('var(--accent-cursor)');
+    expect(dotStyle().backgroundColor).toBe('var(--text-sub)');
 
     // HOOK_RUNNING_TTL_MS is 120 s; past it the pane is no longer running.
     act(() => useStore.setState({ agentClockMs: now + 200_000 }));

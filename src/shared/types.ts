@@ -416,6 +416,10 @@ export interface GitSyncStatus {
   ahead: number;
   behind: number;
   hasUpstream: boolean;
+  /** Lines added / removed in tracked files vs HEAD (`git diff HEAD
+   *  --shortstat`). Absent when the count could not be read. */
+  added?: number;
+  removed?: number;
 }
 
 /** X1 — latest terminal notification summary (schema-freeze §2). */

@@ -96,23 +96,119 @@
     U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
 }
 
+/* Theme UI faces (SIL Open Font License 1.1), bundled — never loaded from a
+ * CDN. Geist (Copyright (c) 2023 Vercel, in collaboration with
+ * basement.studio) and Figtree (Copyright 2022 The Figtree Project Authors)
+ * are variable fonts; IBM Plex Sans (Copyright 2019 IBM Corp.) ships its
+ * latin 400/500/600 cuts. Each theme names its face in --font-ui. */
+@font-face {
+  font-family: 'Geist';
+  src: url('../assets/fonts/Geist.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Figtree';
+  src: url('../assets/fonts/Figtree-latin.woff2') format('woff2');
+  font-weight: 300 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'IBM Plex Sans';
+  src: url('../assets/fonts/IBMPlexSans-latin-400.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'IBM Plex Sans';
+  src: url('../assets/fonts/IBMPlexSans-latin-500.woff2') format('woff2');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'IBM Plex Sans';
+  src: url('../assets/fonts/IBMPlexSans-latin-600.woff2') format('woff2');
+  font-weight: 600 700;
+  font-style: normal;
+  font-display: swap;
+}
+
 /* ─── UI Type Stack (theme-independent) ──────────────────────────────────────
  * DESIGN.md Typography: UI/prose is Inter 400/500/600. Inter is bundled above,
  * so the stack leads with it and keeps the system faces as the fallback for
  * scripts Inter does not cover. Terminal/mono stacks are separate and owned by
  * utils/terminalFont.ts + the @font-face families above. */
+/* Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/styles/index.css),
+ * MIT License, Copyright (c) 2026 Nick — the platform UI face (SF on macOS,
+ * Segoe UI on Windows). Inter stays bundled above for anything that names it. */
 :root {
-  --font-ui: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-ui: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    Oxygen, Ubuntu, Cantarell, 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
 }
 
 /* ─── Theme CSS Variables ────────────────────────────────────────────────── */
 
-/* Amber — the redesign default (designs/design-system-20260711). Warm
- * graphite neutrals + ONE amber for action/focus/attention; success/danger
- * keep muted green/red for status semantics, warning IS the amber.
- * `:root` rides this block so the pre-hydration frame already paints the
+/* Mono — the default look (owner decision 2026-10-03). Adapted from MonoCode
+ * (hardbeat920/monocode@6bd432ca, src/styles/index.css), MIT License,
+ * Copyright (c) 2026 Nick. Values are generated from UI_THEME_TOKENS.mono /
+ * ['mono-light'] in themes.ts (themeParity.test.ts locks them).
+ * `:root` rides the dark block so the pre-hydration frame already paints the
  * default theme (index.tsx sets data-theme from the store before render). */
-:root, [data-theme="amber"] {
+:root, [data-theme="mono"] {
+  --bg-base: #1A171B;
+  --bg-mantle: #171419;
+  --bg-surface: #2A272C;
+  --bg-overlay: #39353c;
+  --text-muted: #626167;
+  --text-subtle: #747479;
+  --text-sub: #85868B;
+  --text-sub2: #b7b8bc;
+  --text-main: #E8E9ED;
+  --accent: #459BF7;
+  --accent-cursor: #459BF7;
+  --accent-blue: #459BF7;
+  --accent-green: #34D399;
+  --accent-red: #F87171;
+  --accent-yellow: #FBBF24;
+  --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
+  --surface-highlight: #FFFFFF;
+  --accent-rgb: 69, 155, 247;
+  --accent-blue-rgb: 69, 155, 247;
+  --bg-surface-rgb: 42, 39, 44;
+  --bg-base-rgb: 26, 23, 27;
+}
+[data-theme="mono-light"] {
+  --bg-base: #F7F7F7;
+  --bg-mantle: #F7F7F7;
+  --bg-surface: #EBEBEB;
+  --bg-overlay: #dcdcdc;
+  --text-muted: #9C9C9C;
+  --text-subtle: #8d8d8d;
+  --text-sub: #7E7E7E;
+  --text-sub2: #565656;
+  --text-main: #2E2E2E;
+  --accent: #459BF7;
+  --accent-cursor: #459BF7;
+  --accent-blue: #459BF7;
+  --accent-green: #059669;
+  --accent-red: #DC2626;
+  --accent-yellow: #B45309;
+  --bg-overlay-scrim: rgba(0, 0, 0, 0.35);
+  --surface-highlight: #FFFFFF;
+  --accent-rgb: 69, 155, 247;
+  --accent-blue-rgb: 69, 155, 247;
+  --bg-surface-rgb: 235, 235, 235;
+  --bg-base-rgb: 247, 247, 247;
+}
+
+/* Amber — the previous default (designs/design-system-20260711). Warm
+ * graphite neutrals + ONE amber for action/focus/attention; success/danger
+ * keep muted green/red for status semantics, warning IS the amber. */
+[data-theme="amber"] {
   --bg-base: #151517;
   --bg-mantle: #19191C;
   --bg-surface: #202024;
@@ -340,10 +436,68 @@
  * --shadow-modal-soft = 팔레트/플릿/회사 오버레이(0.7). --backdrop-modal =
  * 표준 모달 백드롭(0.6). 0.55·0.65·0.7 백드롭은 알파가 다르므로 승격 대상에서
  * 제외하고 현행 유지(시각 보존). 이 값들은 라이트/다크 무관하게 동일하다. */
+/* Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/shared/ui/Modal.tsx,
+ * src/shared/ui/Popover.tsx, src/styles/index.css), MIT License, Copyright (c)
+ * 2026 Nick: dialogs float on Tailwind shadow-2xl over a black/40 backdrop,
+ * popovers and menus on shadow-xl. */
 :root {
-  --shadow-modal: 0 25px 60px rgba(0, 0, 0, 0.75);
-  --shadow-modal-soft: 0 25px 60px rgba(0, 0, 0, 0.7);
-  --backdrop-modal: rgba(0, 0, 0, 0.6);
+  --shadow-modal: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+  --shadow-modal-soft: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+  --shadow-popover: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+  --backdrop-modal: rgba(0, 0, 0, 0.4);
+}
+
+/* ─── Content-mix fill ladder (theme-independent) ────────────────────────────
+ * Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/styles/index.css),
+ * MIT License, Copyright (c) 2026 Nick. Fills, hovers, selection and hairlines
+ * are the theme's text colour mixed into transparent, so every theme (and a
+ * custom one) gets the same grammar without a per-theme value. Light themes
+ * use a gentler ladder. The `:is()` selector keeps these rules out of the
+ * [data-theme] block parser in themeParity.test.ts. */
+:root {
+  --stroke: color-mix(in srgb, var(--text-main) 5%, transparent);
+  --line: color-mix(in srgb, var(--text-main) 10%, transparent);
+  --line-strong: color-mix(in srgb, var(--text-main) 20%, transparent);
+  --sel-subtle-pct: 8%;
+  --sel-pct: 10%;
+  --sel-strong-pct: 12%;
+  --sel-hover-pct: 15%;
+  --sel-emphasis-pct: 20%;
+  --selection-subtle: color-mix(in srgb, var(--text-main) var(--sel-subtle-pct), transparent);
+  --selection: color-mix(in srgb, var(--text-main) var(--sel-pct), transparent);
+  --selection-strong: color-mix(in srgb, var(--text-main) var(--sel-strong-pct), transparent);
+  --selection-hover: color-mix(in srgb, var(--text-main) var(--sel-hover-pct), transparent);
+  --selection-emphasis: color-mix(in srgb, var(--text-main) var(--sel-emphasis-pct), transparent);
+  --hover-fill: color-mix(in srgb, var(--text-main) 5%, transparent);
+  --primary-fill: #FFFFFF;
+  --primary-ink: #000000;
+  --motion-feedback: 120ms;
+  --motion-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  /* Theme style knobs (THEME_STYLES in themes.ts). These defaults are the
+   * look every theme had before the knobs existed. */
+  --chip-radius: 6px;
+  --select-ring: none;
+  --group-case: none;
+  --group-track: normal;
+  --tab-underline: 0px;
+  --theme-glass: 1;
+  --title-weight: 500;
+  /* Frame + sheet: the window frame (titlebar, margins) and the rounded sheet
+   * that holds the sidebar, panes and dock. */
+  --frame-bg: var(--app-bg);
+  --sheet-edge: var(--stroke);
+  --sheet-inset: 8px;
+  --sheet-radius: 12px;
+  --sheet-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+:root:is([data-theme="mono-light"], [data-theme="paper"], [data-theme="hinomaru"], [data-theme="taegeuk"]) {
+  --sel-subtle-pct: 5%;
+  --sel-pct: 6%;
+  --sel-strong-pct: 7%;
+  --sel-hover-pct: 10%;
+  --sel-emphasis-pct: 14%;
+  --primary-fill: var(--text-main);
+  --primary-ink: var(--bg-base);
 }
 
 /* ─── z-index 스태킹 스케일 (theme-independent) ──────────────────────────────
@@ -921,4 +1075,257 @@ select option {
     box-shadow: 0 0 5px 0 var(--sidebar-dot-glow);
   }
   .sidebar-row-enter, .sidebar-popover-enter { animation: none; }
+}
+
+/* ─── Window glass (macOS, dark themes) ──────────────────────────────────────
+ * Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/styles/index.css),
+ * MIT License, Copyright (c) 2026 Nick. Main gives the macOS window a vibrancy
+ * material; `data-glass` (utils/windowGlass.ts) is set only while the theme is
+ * dark. The page then stops painting an opaque backdrop and the chrome — the
+ * titlebar, the sidebar column and the tools dock — paints the mantle at 85%
+ * over the material. The workspace frame and every terminal keep an opaque
+ * base, so the hero never changes with the wallpaper. The page fades through
+ * `color-mix(… 0%, transparent)` rather than the `transparent` keyword, which
+ * interpolates through black. */
+html[data-glass],
+html[data-glass] body,
+html[data-glass] #root {
+  background-color: color-mix(in srgb, var(--bg-base) 0%, transparent);
+}
+html[data-glass] .wmux-app-root {
+  background-color: color-mix(in srgb, var(--frame-bg) 85%, transparent);
+}
+/* Glass is the frame's only: the sheet (sidebar, panes, dock) stays opaque. */
+html[data-glass] .wmux-app-root .wmux-titlebar,
+html[data-glass] .wmux-app-root .wmux-titlebar-segment {
+  background-color: transparent;
+}
+
+/* ─── Mono layout tones ───────────────────────────────────────────────────────
+ * Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/styles/index.css),
+ * MIT License, Copyright (c) 2026 Nick. Three near-black steps: the app
+ * background (titlebar, sidebar, the gaps) < panels (workspace frame, tools
+ * dock) < cards and fills on top of them. Light themes step the other way:
+ * a soft grey app background under near-white panels. */
+:root {
+  --app-bg: color-mix(in srgb, var(--bg-base) 84%, black);
+  --panel-radius: 10px;
+  --panel-gap: 6px;
+}
+:root:is([data-theme="mono-light"], [data-theme="paper"], [data-theme="hinomaru"], [data-theme="taegeuk"]) {
+  --app-bg: color-mix(in srgb, var(--bg-base) 97%, black);
+  --sheet-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+/* ─── Mono chrome reset ───────────────────────────────────────────────────────
+ * Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/styles/index.css),
+ * MIT License, Copyright (c) 2026 Nick. Global rules for everything outside
+ * the terminal canvas: the platform face at 13px/400 (emphasis 500, from the
+ * Tailwind weight map), no uppercase or tracked labels, monospace only for
+ * code and terminals, and icons no larger than 16px. */
+.wmux-app-root {
+  font-size: 13px;
+  font-weight: 400;
+}
+.wmux-app-root .uppercase { text-transform: none; }
+.wmux-app-root :is(.tracking-wide, .tracking-wider, .tracking-widest, .tracking-tight) { letter-spacing: normal; }
+.wmux-app-root .font-mono:not(pre, pre *, code, code *, kbd, .xterm, .xterm *, .ui-code, .ui-code *) {
+  font-family: var(--font-ui);
+}
+.wmux-app-root svg:is([width="18"], [width="20"], [width="22"], [width="24"]):not(.xterm *) {
+  width: 16px;
+  height: 16px;
+}
+
+/* ─── The five looks (owner decision 2026-10-03; tint is the default) ──────────
+ * Generated from UI_THEME_TOKENS + THEME_STYLES in themes.ts (themeParity and
+ * themeStyles tests lock them). `:root[...]` and their place at the end of
+ * the file let a look's own fill, stroke and primary win over the shared
+ * content-mix ladder above. Colour and style values adapted from MonoCode
+ * (hardbeat920/monocode@6bd432ca, src/styles/index.css) and the approved
+ * look sheet, MIT License, Copyright (c) 2026 Nick. */
+:root[data-theme="tint"] {
+  --bg-base: #1A171D;
+  --bg-mantle: #18151C;
+  --bg-surface: #25222A;
+  --bg-overlay: #34303b;
+  --text-muted: #8A8492;
+  --text-subtle: #a6a1ae;
+  --text-sub: #C2BDC9;
+  --text-sub2: #dbd8e0;
+  --text-main: #F4F2F7;
+  --accent: #9B8CFF;
+  --accent-cursor: #9B8CFF;
+  --accent-blue: #9B8CFF;
+  --accent-green: #5FD39A;
+  --accent-red: #FF7B7B;
+  --accent-yellow: #F2B25C;
+  --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
+  --surface-highlight: #FFFFFF;
+  --accent-rgb: 155, 140, 255;
+  --accent-blue-rgb: 155, 140, 255;
+  --bg-surface-rgb: 37, 34, 42;
+  --bg-base-rgb: 26, 23, 29;
+  --font-ui: 'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --chip-radius: 7px;
+  --selection: color-mix(in srgb, var(--text-main) 9%, transparent);
+  --select-ring: none;
+  --group-case: none;
+  --group-track: normal;
+  --tab-underline: 0px;
+  --theme-glass: 1;
+  --stroke: color-mix(in srgb, var(--text-main) 7%, transparent);
+  --primary-fill: #F4F2F7;
+  --primary-ink: #1A171D;
+  --title-weight: 500;
+  --frame-bg: #121015;
+  --sheet-edge: color-mix(in srgb, var(--text-main) 10%, transparent);
+}
+:root[data-theme="zinc"] {
+  --bg-base: #09090B;
+  --bg-mantle: #0C0C0E;
+  --bg-surface: #18181B;
+  --bg-overlay: #26262b;
+  --text-muted: #71717A;
+  --text-subtle: #a3a3a9;
+  --text-sub: #D4D4D8;
+  --text-sub2: #e7e7e9;
+  --text-main: #FAFAFA;
+  --accent: #FAFAFA;
+  --accent-cursor: #FAFAFA;
+  --accent-blue: #FAFAFA;
+  --accent-green: #4ADE80;
+  --accent-red: #F87171;
+  --accent-yellow: #FBBF24;
+  --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
+  --surface-highlight: #FFFFFF;
+  --accent-rgb: 250, 250, 250;
+  --accent-blue-rgb: 250, 250, 250;
+  --bg-surface-rgb: 24, 24, 27;
+  --bg-base-rgb: 9, 9, 11;
+  --font-ui: 'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --chip-radius: 6px;
+  --selection: #18181B;
+  --select-ring: inset 0 0 0 1px #27272A;
+  --group-case: none;
+  --group-track: normal;
+  --tab-underline: 0px;
+  --theme-glass: 0;
+  --stroke: #27272A;
+  --primary-fill: #FAFAFA;
+  --primary-ink: #09090B;
+  --title-weight: 500;
+  --frame-bg: #000000;
+  --sheet-edge: #27272A;
+}
+:root[data-theme="graphite"] {
+  --bg-base: #0B0C0E;
+  --bg-mantle: #111215;
+  --bg-surface: #1A1C21;
+  --bg-overlay: #272b32;
+  --text-muted: #6F7682;
+  --text-subtle: #949aa5;
+  --text-sub: #B9BEC7;
+  --text-sub2: #d4d7dd;
+  --text-main: #EEF0F3;
+  --accent: #4C8DFF;
+  --accent-cursor: #4C8DFF;
+  --accent-blue: #4C8DFF;
+  --accent-green: #3FCF8E;
+  --accent-red: #FF6B6B;
+  --accent-yellow: #F5A524;
+  --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
+  --surface-highlight: #FFFFFF;
+  --accent-rgb: 76, 141, 255;
+  --accent-blue-rgb: 76, 141, 255;
+  --bg-surface-rgb: 26, 28, 33;
+  --bg-base-rgb: 11, 12, 14;
+  --font-ui: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --chip-radius: 999px;
+  --selection: #1B2433;
+  --select-ring: none;
+  --group-case: uppercase;
+  --group-track: 0.06em;
+  --tab-underline: 2px;
+  --theme-glass: 0;
+  --stroke: #1D1F24;
+  --primary-fill: #4C8DFF;
+  --primary-ink: #FFFFFF;
+  --title-weight: 500;
+  --frame-bg: #060708;
+  --sheet-edge: #23262C;
+}
+:root[data-theme="paper"] {
+  --bg-base: #FFFFFF;
+  --bg-mantle: #F3F3F5;
+  --bg-surface: #ECECF0;
+  --bg-overlay: #dbdbe2;
+  --text-muted: #8A8A96;
+  --text-subtle: #65656f;
+  --text-sub: #3F3F48;
+  --text-sub2: #2b2b32;
+  --text-main: #17171C;
+  --accent: #5B5BD6;
+  --accent-cursor: #5B5BD6;
+  --accent-blue: #5B5BD6;
+  --accent-green: #16A34A;
+  --accent-red: #DC2626;
+  --accent-yellow: #C2700A;
+  --bg-overlay-scrim: rgba(0, 0, 0, 0.35);
+  --surface-highlight: #FFFFFF;
+  --accent-rgb: 91, 91, 214;
+  --accent-blue-rgb: 91, 91, 214;
+  --bg-surface-rgb: 236, 236, 240;
+  --bg-base-rgb: 255, 255, 255;
+  --font-ui: 'Figtree', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --chip-radius: 7px;
+  --selection: #E4E4EA;
+  --select-ring: none;
+  --group-case: none;
+  --group-track: normal;
+  --tab-underline: 0px;
+  --theme-glass: 0;
+  --stroke: #E6E6EA;
+  --primary-fill: #17171C;
+  --primary-ink: #FFFFFF;
+  --title-weight: 500;
+  --frame-bg: #ECECEF;
+  --sheet-edge: #DADAE0;
+}
+:root[data-theme="amber-line"] {
+  --bg-base: #121212;
+  --bg-mantle: #161616;
+  --bg-surface: #212020;
+  --bg-overlay: #312f2f;
+  --text-muted: #85817A;
+  --text-subtle: #a7a39c;
+  --text-sub: #C9C5BD;
+  --text-sub2: #dedbd5;
+  --text-main: #F2F0EC;
+  --accent: #E8A33D;
+  --accent-cursor: #E8A33D;
+  --accent-blue: #E8A33D;
+  --accent-green: #7FC98A;
+  --accent-red: #E8736B;
+  --accent-yellow: #E8A33D;
+  --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
+  --surface-highlight: #FFFFFF;
+  --accent-rgb: 232, 163, 61;
+  --accent-blue-rgb: 232, 163, 61;
+  --bg-surface-rgb: 33, 32, 32;
+  --bg-base-rgb: 18, 18, 18;
+  --font-ui: 'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --chip-radius: 6px;
+  --selection: #24221F;
+  --select-ring: inset 2px 0 0 #E8A33D;
+  --group-case: none;
+  --group-track: normal;
+  --tab-underline: 2px;
+  --theme-glass: 0;
+  --stroke: #262523;
+  --primary-fill: #E8A33D;
+  --primary-ink: #1A1408;
+  --title-weight: 500;
+  --frame-bg: #0B0B0B;
+  --sheet-edge: #2C2B29;
 }

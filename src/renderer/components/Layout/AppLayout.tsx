@@ -18,15 +18,14 @@ import { registerSessionSaver, saveSessionNow } from '../../utils/sessionSaveBri
 import { resolveReconcileRebind } from '../../hooks/resolveReconcileRebind';
 import { getLeafPanes, getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import NotificationPanel from '../Notification/NotificationPanel';
-import FleetView from '../FleetView/FleetView';
+import RailPage from './RailPage';
 import AutoUpdatePrompt from './AutoUpdatePrompt';
-// TASK-2: the 4 always-mounted overlays are lazy-loaded + render-gated below so
-// their chunks stay out of the cold-boot critical path (SettingsPanel alone is
-// ~4k lines). React.lazy without a render gate is a no-op for FCP, so each is
+// TASK-2: the always-mounted overlays are lazy-loaded + render-gated below so
+// their chunks stay out of the cold-boot critical path (SettingsPanel, ~4k
+// lines, is lazy inside RailPage). React.lazy without a render gate is a no-op for FCP, so each is
 // gated on its own open/visible store flag inside <Suspense> + <ErrorBoundary>.
 const CommandPalette = lazy(() => import('../Palette/CommandPalette'));
 const WorktaskCleanupView = lazy(() => import('../WorkTask/WorktaskCleanupView'));
-const SettingsPanel = lazy(() => import('../Settings/SettingsPanel'));
 const InspectOverlay = lazy(() => import('../Inspect/InspectOverlay'));
 import FileTreePanel from '../FileTree/FileTreePanel';
 import ApprovalDialog from '../Company/ApprovalDialog';
@@ -765,19 +764,17 @@ export default function AppLayout() {
   const searchPanelOpen = useStore((s) => s.searchPanelOpen);
   const remoteRepairHostId = useStore((s) => s.remoteRepairHostId);
   const requestRemoteRepair = useStore((s) => s.requestRemoteRepair);
-  // Mount-gate the Fleet View overlay so its store subscriptions + selector
-  // only run while the cockpit is open (the open toggle lives in the global
-  // keyboard handler, not inside FleetView, so gating the mount is safe).
+  // The rail page shown in the sheet. Anything but Workspaces covers the
+  // sidebar, panes and dock, which stay mounted and inert underneath.
   const fleetViewVisible = useStore((s) => s.fleetViewVisible);
+  const appRoute = useStore((s) => s.appRoute);
   // TASK-2: render gates for the lazy overlays. Lift each component's own
   // internal open/visible flag to the layout so the lazy chunk is fetched only
   // when the overlay actually opens (the components self-gate on these exact
-  // fields, so behavior is identical). SettingsPanel must also stay mounted
-  // while inspect mode is active (SettingsPanel.tsx: "Settings stays mounted
-  // the whole time" during inspect), hence the extra inspectModeActive term.
+  // fields, so behavior is identical). Inspect mode picks colours on the live
+  // Workspaces page, so it keeps that page interactive under its overlay.
   const commandPaletteVisible = useStore((s) => s.commandPaletteVisible);
   const worktaskCleanupVisible = useStore((s) => s.worktaskCleanupVisible);
-  const settingsPanelVisible = useStore((s) => s.settingsPanelVisible);
   const inspectModeActive = useStore((s) => s.inspectModeActive);
   // S-C2: while the Fleet View's Approvals tab owns the screen, it is the SOLE
   // approval surface — suppress the standalone A2A / MCP modals (delta 5, one
@@ -1926,7 +1923,7 @@ export default function AppLayout() {
       // range below this box, and a caret reveal or scrollIntoView must not
       // slide the titlebar under the native window controls.
       data-pin-scroll
-      className="flex flex-col h-screen w-screen bg-[var(--bg-base)] overflow-hidden"
+      className="wmux-app-root flex flex-col h-screen w-screen bg-[var(--bg-base)] overflow-hidden"
       style={{
         ...(prefixMode ? {
           boxShadow: 'inset 0 0 0 2px var(--accent-red)',
@@ -1937,16 +1934,28 @@ export default function AppLayout() {
         }),
       }}
     >
-      {/* Bridge redesign — custom 36px titlebar spans the FULL window width,
+      {/* Bridge redesign — custom 40px titlebar spans the FULL window width,
           above the sidebar|main|dock row. The BrowserWindow is frameless
           (titleBarStyle:'hidden'), so this bar owns window dragging. */}
       <ErrorBoundary name="Titlebar">
         <Titlebar />
       </ErrorBoundary>
-      <div className={`wmux-shell-body relative flex flex-1 min-h-0 ${sidebarPosition === 'right' ? 'flex-row-reverse' : ''}`}>
-      <ErrorBoundary name="Sidebar">
-        {sidebarVisible ? <Sidebar /> : <MiniSidebar />}
+      {/* The icon rail sits on the window frame beside the floating sheet and
+          stays when the sidebar collapses (MiniSidebar `rail`); the sheet holds
+          the sidebar, the panes and the dock. */}
+      <div className={`wmux-frame-row flex flex-1 min-h-0 ${sidebarPosition === 'right' ? 'flex-row-reverse' : ''}`}>
+      <ErrorBoundary name="SidebarRail">
+        <MiniSidebar rail collapsed={!sidebarVisible} />
       </ErrorBoundary>
+      <div className={`wmux-shell-body relative flex flex-1 min-h-0 min-w-0 ${sidebarPosition === 'right' ? 'flex-row-reverse' : ''}`}>
+      {/* The Workspaces page. Another rail page covers it (RailPage) while it
+          stays mounted, full size and inert, so no PTY is resized or lost. */}
+      <div className="contents" inert={appRoute !== 'workspaces' && !inspectModeActive} data-workspaces-page>
+      {sidebarVisible && (
+        <ErrorBoundary name="Sidebar">
+          <Sidebar chrome="sheet" />
+        </ErrorBoundary>
+      )}
       <ErrorBoundary name="Main">
       {/* `relative` anchors ToolbarHost: the agent toolbar overlays this column
           rather than taking a row, so revealing it never resizes a PTY. */}
@@ -1977,7 +1986,7 @@ export default function AppLayout() {
             ErrorBoundary's fallback is a plain `height:100%` block — as a flex
             child it would join the column's flow and squeeze the pane grid. So
             the BOUNDARY is the absolutely-positioned thing: a crash costs the
-            bar's own 36px strip, never the terminals' height. ToolbarHost's
+            bar's own 40px strip, never the terminals' height. ToolbarHost's
             own `inset-0` fills this box, so the trigger band still measures to
             the column's bottom edge. */}
         <div
@@ -2003,26 +2012,18 @@ export default function AppLayout() {
           chevron, ~85% of it empty; one button on a row that already exists
           costs the terminals nothing. */}
       {channelDockVisible && (
-        <div className="contents" inert={fleetViewVisible}>
-          <ErrorBoundary name="ChannelDock">
-            <ChannelDock />
-          </ErrorBoundary>
-        </div>
-      )}
-      {/* Fleet overlays the tools panel without adding another layout column.
-          Keep the covered dock mounted so its chat/composer state survives. */}
-      {fleetViewVisible && (
-        <div className="wmux-fleet-layer" data-fleet-layer data-side={sidebarPosition === 'right' ? 'left' : 'right'}>
-          <ErrorBoundary name="FleetView">
-            <FleetView />
-          </ErrorBoundary>
-        </div>
+        <ErrorBoundary name="ChannelDock">
+          <ChannelDock />
+        </ErrorBoundary>
       )}
       {fileTreeVisible && (
         <ErrorBoundary name="FileTree">
           <FileTreePanel position={sidebarPosition === 'left' ? 'right' : 'left'} />
         </ErrorBoundary>
       )}
+      </div>
+      {/* Fleet, Schedules, Remote or Settings, swapped in by the rail. */}
+      <RailPage />
       <NotificationPanel />
       <MessageFeedPanel />
       {/* Cross-pane search results panel (T-F). Mount-gated on
@@ -2047,14 +2048,6 @@ export default function AppLayout() {
       {worktaskCleanupVisible && (
         <ErrorBoundary name="WorktaskCleanupView">
           <Suspense fallback={null}><WorktaskCleanupView /></Suspense>
-        </ErrorBoundary>
-      )}
-      {/* SettingsPanel: gate on visible OR inspect-active — inspect mode keeps
-          the panel mounted while the overlay picks colors (D3 / SettingsPanel
-          ESC + inspect contract). */}
-      {(settingsPanelVisible || inspectModeActive) && (
-        <ErrorBoundary name="SettingsPanel">
-          <Suspense fallback={null}><SettingsPanel /></Suspense>
         </ErrorBoundary>
       )}
       {/* Color inspect-mode overlay (S4). Sits at --z-inspect (65, declared
@@ -2163,6 +2156,7 @@ export default function AppLayout() {
         launchCheck={hooksLaunchCheck({ firstRunSettled: firstRunProbeSettled, firstRunWizardRanThisBoot })}
         deferred={showFirstRunWizard !== null}
       />
+      </div>
       </div>
     </div>
     </ErrorBoundary>

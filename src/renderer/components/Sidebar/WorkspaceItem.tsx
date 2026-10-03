@@ -1,3 +1,4 @@
+// Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx), MIT License, Copyright (c) 2026 Nick
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, memo } from 'react';
 import type { GitSyncStatus, PrStatus, WorkspaceMetadata } from '../../../shared/types';
 import { useStore } from '../../stores';
@@ -125,13 +126,19 @@ export function GitSyncBadge({ sync }: { sync: GitSyncStatus }): React.ReactElem
   const clean = ahead === 0 && behind === 0 && sync.dirty === 0;
   return (
     <span
-      className="flex items-center gap-1.5 flex-shrink-0"
+      className="flex items-center gap-1.5 flex-shrink-0 font-mono"
       title={t('workspace.gitSyncTooltip', { ahead, behind, dirty: sync.dirty })}
       data-git-signal
     >
       {clean && <span style={{ color: 'var(--accent-green)' }}>●</span>}
-      {/* Uncommitted files are information, not attention: amber is reserved for "running". */}
-      {sync.dirty > 0 && <span style={{ color: 'var(--text-subtle)' }}>·{sync.dirty}</span>}
+      {/* Uncommitted files are information, not attention: amber is reserved for "needs you". */}
+      {/* Line counts vs HEAD, coloured like a diff. Adapted from MonoCode
+          (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx), MIT
+          License, Copyright (c) 2026 Nick. The changed-path count stays the
+          fallback when the line counts could not be read. */}
+      {(sync.added ?? 0) > 0 && <span data-git-diff="added" style={{ color: 'var(--accent-green)' }}>+{sync.added}</span>}
+      {(sync.removed ?? 0) > 0 && <span data-git-diff="removed" style={{ color: 'var(--accent-red)' }}>−{sync.removed}</span>}
+      {sync.dirty > 0 && sync.added === undefined && <span style={{ color: 'var(--text-subtle)' }}>·{sync.dirty}</span>}
       {ahead > 0 && <span style={{ color: 'var(--accent-blue)' }}>↑{ahead}</span>}
       {behind > 0 && <span style={{ color: 'var(--accent-red)' }}>↓{behind}</span>}
     </span>
@@ -159,29 +166,29 @@ function WorkspaceContextLine({ metadata, onPortClick }: {
       {/* Git 신호등 행 — 이름 바로 아래 전용 줄(owner 2026-07-20: 행이 위아래로
           두꺼워져도 OK). 브랜치·신호등·PR을 한 줄에, 포트·알림은 다음 줄로. */}
       {metadata.gitBranch && (
-        <div className="flex items-center gap-2 mt-0.5 text-[11px] leading-4 font-mono tabular-nums text-[var(--text-subtle)] min-w-0" data-git-signal-line>
+        <div className="flex items-center gap-2 mt-1 text-[11px] leading-4 tabular-nums text-[color-mix(in_srgb,var(--text-main)_45%,transparent)] min-w-0" data-git-signal-line>
           <span
             className="min-w-0 truncate"
             title={`${t('workspace.gitBranch')}: ${metadata.gitBranch}${metadata.gitIsWorktree ? ` (${t('workspace.gitWorktree')})` : ''}`}
           >
             {/* #1481 — branch and worktree marks are SVG icons, not ⎇ / ⊕. */}
-            <span className="mr-1 inline-flex align-[-1px]" aria-hidden="true"><IconGitBranch size={10} /></span>
+            <span className="mr-1 inline-flex align-[-2px]" aria-hidden="true"><IconGitBranch size={12} /></span>
             {metadata.gitBranch}
-            {metadata.gitIsWorktree ? <span className="ml-1 inline-flex align-[-1px] text-[var(--accent-blue)]" aria-hidden="true"><IconWorktree size={10} /></span> : null}
+            {metadata.gitIsWorktree ? <span className="ml-1 inline-flex align-[-1px]" aria-hidden="true"><IconWorktree size={10} /></span> : null}
           </span>
           {metadata.gitSync && <GitSyncBadge sync={metadata.gitSync} />}
           {metadata.pr && <PrBadge pr={metadata.pr} />}
         </div>
       )}
       {hasContext && (
-        <div className="flex items-center gap-1.5 mt-0.5 text-[10px] font-mono text-[var(--text-muted)] min-w-0">
+        <div className="flex items-center gap-1.5 mt-0.5 text-[11px] font-mono text-[color-mix(in_srgb,var(--text-main)_45%,transparent)] min-w-0">
           {ports.length > 0 && (
             <span className="flex items-center gap-1 flex-shrink-0">
               {ports.slice(0, 3).map((p) => (
                 <button
                   key={p}
                   type="button"
-                  className="cursor-pointer hover:text-[var(--accent-blue)] hover:underline"
+                  className="cursor-pointer hover:text-[var(--text-main)] hover:underline"
                   title={t('workspace.openPortTooltip', { port: p })}
                   aria-label={t('workspace.openPortTooltip', { port: p })}
                   onClick={(e) => { e.stopPropagation(); onPortClick(p); }}
@@ -200,7 +207,7 @@ function WorkspaceContextLine({ metadata, onPortClick }: {
       )}
       {note && (
         <div
-          className="mt-0.5 flex items-center gap-1 text-[10px] text-[var(--text-muted)] truncate"
+          className="mt-0.5 flex items-center gap-1 text-[11px] text-[color-mix(in_srgb,var(--text-main)_45%,transparent)] truncate"
           title={`${t('workspace.lastNotification')}: ${note.title ? `${note.title} — ` : ''}${note.body}`}
         >
           <span className="shrink-0 opacity-70"><IconBell size={9} /></span>
@@ -430,7 +437,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   // inactive, which would fold the roster under you), and a task that needs
   // you (it re-opens the roster, the way a stash pulse does — again for each
   // further task that starts needing you). If the user folds it anyway, the
-  // folded chip counts them in red.
+  // folded chip counts them in amber.
   const paneTaskSplit = usePaneTaskSplit(workspaceId, renderTask ? nestedTaskIds : undefined);
   const paneTaskIds = useMemo(() => [...paneTaskSplit.byPane.values()].flat(), [paneTaskSplit]);
   const paneTaskActive = useStore((s) => !!s.activeWorkspaceId && paneTaskIds.includes(s.activeWorkspaceId));
@@ -897,10 +904,10 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
         // Not while renaming: a text drag inside the input must stay a text drag.
         draggable={!!workspace && !editing && !readOnly}
         {...tokenAttrs('bgSurface', 'bg')}
-        className={`${hover.group} sidebar-row px-3 py-1.5 cursor-pointer rounded-md select-none ${needsYou ? 'sidebar-row-needs' : ''} ${
-          isActive
-            ? 'sidebar-row-active text-[var(--text-main)]'
-            : 'text-[var(--text-sub)] hover:bg-[rgba(var(--bg-surface-rgb),0.5)] hover:text-[var(--text-main)]'
+        // Card states (idle / hover / active / needs you) are painted by the
+        // .wmux-sidebar .sidebar-row rules in ui.css.
+        className={`${hover.group} sidebar-row px-2.5 ${taskRow ? 'py-1.5' : 'py-2'} cursor-pointer rounded-md select-none ${needsYou ? 'sidebar-row-needs' : ''} ${
+          isActive ? 'sidebar-row-active' : ''
         }`}
         style={isMultiview ? { borderLeft: '2px solid var(--accent-blue)' } : undefined}
         onClick={handleClick}
@@ -931,11 +938,11 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
         </span>
 
         {/* Name + Metadata */}
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 min-w-0" data-workspace-text>
           {editing ? (
             <input
               ref={inputRef}
-              className="w-full bg-[var(--bg-base)] text-[var(--text-main)] text-caption font-mono px-1 py-0 rounded border border-[var(--text-muted)] outline-none"
+              className="w-full bg-[var(--bg-base)] text-[var(--text-main)] text-caption font-mono px-1 py-0 rounded-md border border-[var(--line-strong)] outline-none"
               value={editName}
               onChange={(e) => setEditName(e.target.value)}
               onBlur={commitRename}
@@ -966,7 +973,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                   </span>
                 )}
                 <span
-                  className={`font-sans text-[13px] truncate ${unreadCount > 0 || isActive ? 'font-semibold' : 'font-medium'} ${idleLabel && !hasRoster ? 'text-[var(--text-sub)]' : ''}`}
+                  className="wmux-row-title font-sans text-[13px] leading-snug truncate font-semibold text-[var(--text-main)]"
                   title={idleLabel ? `${displayName} · ${t('workspace.idleTooltip', { time: idleLabel })}` : displayName}
                 >
                   {displayName}
@@ -1032,7 +1039,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                   </button>
                 )}
                 {unreadCount > 0 && (
-                  <span className="bg-[var(--bg-surface)] text-[var(--text-sub)] ring-1 ring-[var(--border-soft)] text-[10px] font-bold min-w-[16px] h-4 flex items-center justify-center rounded-full px-1 flex-shrink-0">
+                  <span className="bg-[var(--selection)] text-[var(--text-main)] text-[10px] font-semibold tabular-nums min-w-[16px] h-4 flex items-center justify-center rounded-full px-1 flex-shrink-0">
                     {unreadCount}
                   </span>
                 )}
@@ -1053,7 +1060,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                     minutes stay one hover away on the row's own tooltip. */}
                 {idleLabel && !hasRoster && (
                   <span
-                    className="text-[10px] font-mono text-[var(--text-muted)] flex-shrink-0"
+                    className="text-[11px] tabular-nums text-[color-mix(in_srgb,var(--text-main)_45%,transparent)] flex-shrink-0"
                     title={t('workspace.idleTooltip', { time: idleLabel })}
                   >
                     · {idleLabel}
@@ -1092,15 +1099,15 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
         )}
 
         {/* The blocked-agent label, right-aligned. It replaces the play/pause
-            mark this row used to carry: "running" is already the amber dot, and
-            a paused glyph never said what it was paused ON. Words do.
+            mark this row used to carry: "running" is already the accent dot,
+            and a paused glyph never said what it was paused ON. Words do.
             On hover the row's chrome comes back and the label steps aside for
-            it (the wash and the red dot keep saying "needs you"); the active
+            it (the dashed fill and the amber ring keep saying "needs you"); the active
             row, which shows its chrome permanently, keeps the label too. */}
-        {/* #1481 — not on a nested task row: its wash and red ring stay, and the
+        {/* #1481 — not on a nested task row: its fill and amber ring stay, and the
             owner's rollup line already says "N need you" for the group. */}
         {needsYou && !taskRow && (
-          <span className={`font-sans text-[10px] font-semibold text-[var(--accent-red)] flex-shrink-0 mt-0.5 ${isActive ? '' : hover.hideOnHover}`}>
+          <span className={`font-sans text-[11px] font-medium text-[var(--accent-yellow)] flex-shrink-0 mt-0.5 ${isActive ? '' : hover.hideOnHover}`}>
             {t('workspace.needsYou')}
           </span>
         )}
@@ -1117,7 +1124,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
             pinned row: the pinned group leads the stored order and is shown
             as stored, so its numbers match the screen. */}
         {!taskRow && (!sortPaused || pinned) && (
-          <span className={`text-[10px] font-mono text-[var(--text-muted)] flex-shrink-0 mt-0.5 ${restHidden}`}>
+          <span className={`text-[11px] tabular-nums text-[color-mix(in_srgb,var(--text-main)_35%,transparent)] flex-shrink-0 mt-0.5 ${restHidden}`}>
             {index < 9 ? `^${index + 1}` : ''}
           </span>
         )}
@@ -1151,7 +1158,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           {/* Folder icon — reveals this workspace's cwd in the OS file manager. */}
           <button
             data-workspace-action="explorer"
-            className={`${HIT_TARGET_24_IN_CLUSTER} text-[var(--text-subtle)] hover:text-[var(--accent-blue)] text-[10px] font-mono`}
+            className={`${HIT_TARGET_24_IN_CLUSTER} rounded-md text-[color-mix(in_srgb,var(--text-main)_50%,transparent)] hover:bg-[var(--selection)] hover:text-[var(--text-main)] text-[10px] font-mono`}
             onClick={(e) => { e.stopPropagation(); handleOpenExplorer(); }}
             title={t('workspace.openInExplorer', { app: fileManagerName(t) })}
             aria-label={t('workspace.openInExplorer', { app: fileManagerName(t) })}
@@ -1162,7 +1169,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           {/* Copy session info button */}
           <button
             data-workspace-action="copy-info"
-            className={`${HIT_TARGET_24_IN_CLUSTER} text-[var(--text-subtle)] hover:text-[var(--accent-blue)] text-[10px] font-mono`}
+            className={`${HIT_TARGET_24_IN_CLUSTER} rounded-md text-[color-mix(in_srgb,var(--text-main)_50%,transparent)] hover:bg-[var(--selection)] hover:text-[var(--text-main)] text-[10px] font-mono`}
             onClick={(e) => { e.stopPropagation(); onCopyInfo(workspaceId); }}
             title={t('workspace.copyInfo')}
             aria-label={t('workspace.copyInfo')}
@@ -1176,7 +1183,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
               one control here that kills a workspace. */}
           <button
             data-workspace-action="close"
-            className={`${HIT_TARGET_24_IN_CLUSTER} text-[var(--text-subtle)] hover:text-[var(--accent-red)] text-[10px] font-mono`}
+            className={`${HIT_TARGET_24_IN_CLUSTER} rounded-md text-[color-mix(in_srgb,var(--text-main)_50%,transparent)] hover:bg-[var(--selection)] hover:text-[var(--accent-red)] text-[10px] font-mono`}
             onClick={(e) => { e.stopPropagation(); setMenuPos(null); setCloseConfirmPos(anchorOf(e.currentTarget)); }}
             title={t('workspace.close')}
             aria-label={t('workspace.close')}
@@ -1208,7 +1215,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
       {/* Right-click context menu */}
       {menuPos && (
         <div
-          className="fixed z-[var(--z-popover-top)] w-max flex flex-col py-1 rounded-[7px] shadow-xl sidebar-popover-enter"
+          className="fixed z-[var(--z-popover-top)] w-max flex flex-col py-1 rounded-xl shadow-xl sidebar-popover-enter"
           style={{ left: menuPos.x, top: menuPos.y, background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
           onMouseDown={(e) => e.stopPropagation()}
         >
@@ -1278,7 +1285,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
             </button>
             {colorOpen && (
               <div
-                className={`absolute top-0 ${menuPos.x > window.innerWidth * 0.6 ? 'right-full mr-0.5' : 'left-full ml-0.5'} py-1.5 px-2 rounded-[7px] shadow-xl sidebar-popover-enter`}
+                className={`absolute top-0 ${menuPos.x > window.innerWidth * 0.6 ? 'right-full mr-0.5' : 'left-full ml-0.5'} py-1.5 px-2 rounded-xl shadow-xl sidebar-popover-enter`}
                 style={{ background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
               >
                 {/* Wraps at 8 per row: with 15 ids + the "none" swatch a single
@@ -1344,7 +1351,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
             </button>
             {owOpen && folderApps.length > 0 && (
               <div
-                className={`absolute top-0 ${menuPos.x > window.innerWidth * 0.6 ? 'right-full mr-0.5' : 'left-full ml-0.5'} min-w-[180px] py-1 rounded-[7px] shadow-xl sidebar-popover-enter`}
+                className={`absolute top-0 ${menuPos.x > window.innerWidth * 0.6 ? 'right-full mr-0.5' : 'left-full ml-0.5'} min-w-[180px] py-1 rounded-xl shadow-xl sidebar-popover-enter`}
                 style={{ background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
               >
                 {folderApps.map((app) => {
@@ -1388,7 +1395,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
             </button>
             {wdOpen && (
               <div
-                className={`absolute top-0 ${menuPos.x > window.innerWidth * 0.6 ? 'right-full mr-0.5' : 'left-full ml-0.5'} min-w-[240px] max-w-[420px] py-1 rounded-[7px] shadow-xl sidebar-popover-enter`}
+                className={`absolute top-0 ${menuPos.x > window.innerWidth * 0.6 ? 'right-full mr-0.5' : 'left-full ml-0.5'} min-w-[240px] max-w-[420px] py-1 rounded-xl shadow-xl sidebar-popover-enter`}
                 style={{ background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
               >
                 {(() => {

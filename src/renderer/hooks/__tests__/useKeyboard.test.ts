@@ -79,6 +79,7 @@ interface MockState {
   addWorkspace: ReturnType<typeof vi.fn>;
   removeWorkspace: ReturnType<typeof vi.fn>;
   setActiveWorkspace: ReturnType<typeof vi.fn>;
+  setAppRoute: ReturnType<typeof vi.fn>;
   togglePaneZoom: ReturnType<typeof vi.fn>;
   toggleCommandPalette: ReturnType<typeof vi.fn>;
   focusPaneDirection: ReturnType<typeof vi.fn>;
@@ -127,6 +128,7 @@ function makeMockStore(overrides: Partial<MockState> = {}): {
     addWorkspace: vi.fn(),
     removeWorkspace: vi.fn(),
     setActiveWorkspace: vi.fn(),
+    setAppRoute: vi.fn(),
     togglePaneZoom: vi.fn(),
     toggleCommandPalette: vi.fn(),
     focusPaneDirection: vi.fn(),
@@ -257,6 +259,8 @@ describe('createPrefixActions — workspace actions', () => {
     const { deps, state } = makeMockDeps({ activeWorkspaceId: 'w2' });
     createPrefixActions(deps).nextWorkspace();
     expect(state.setActiveWorkspace).toHaveBeenCalledWith('w1');
+    // Switching workspace leaves any rail page for Workspaces.
+    expect(state.setAppRoute).toHaveBeenCalledWith('workspaces');
   });
 
   it('prevWorkspace wraps from the first workspace to the last', () => {

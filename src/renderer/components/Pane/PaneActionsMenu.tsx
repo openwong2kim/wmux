@@ -196,8 +196,8 @@ export default function PaneActionsMenu({ anchor, triggerRef, items, onClose }: 
         background: 'var(--bg-surface)',
         border: '1px solid color-mix(in srgb, var(--text-main) 9%, transparent)',
         borderRadius: 8,
-        boxShadow:
-          '0 12px 32px rgba(0, 0, 0, 0.45), inset 0 1px 0 color-mix(in srgb, var(--text-main) 5%, transparent)',
+        // Flat drop shadow only — no inset top highlight (mono: no bevels).
+        boxShadow: '0 12px 32px rgba(0, 0, 0, 0.45)',
       }}
       onClick={(e) => e.stopPropagation()}
     >
@@ -222,7 +222,7 @@ export default function PaneActionsMenu({ anchor, triggerRef, items, onClose }: 
             // unavailable. Same call the cluster's stash button makes.
             aria-disabled={item.disabled || undefined}
             title={item.title}
-            className={`w-full flex items-center gap-2 px-2.5 py-1.5 text-xs text-left rounded-[5px] transition-colors hover:bg-[color-mix(in_srgb,var(--accent-blue)_14%,transparent)] ${
+            className={`w-full flex items-center gap-2 px-2.5 py-1.5 text-xs text-left rounded-md transition-colors hover:bg-[var(--selection-hover)] ${
               item.disabled ? 'opacity-40' : ''
             }`}
             style={{ color: item.active ? 'var(--accent-blue)' : 'var(--text-main)' }}

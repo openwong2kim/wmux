@@ -19,12 +19,18 @@ import {
   activatePaneTarget,
   focusNotificationTarget,
 } from '../../hooks/useNotificationListener';
-import { fleetChangedSinceSeen, type FleetSeenEntry, type FleetTab } from '../../stores/slices/uiSlice';
+import { fleetChangedSinceSeen, type FleetSeenEntry } from '../../stores/slices/uiSlice';
 import { tailForPty } from '../../utils/terminalTail';
-import { driveFocusToTerminal, resolveActivePanePtyId } from '../../hooks/useActivePaneFocus';
-import { findLeaf } from '../../../shared/paneUtils';
-import { terminalRegistry, onTerminalRegistered } from '../../hooks/useTerminal';
-import FleetCard from './FleetCard';
+import { onTerminalRegistered } from '../../hooks/useTerminal';
+import FleetBoardCard from './FleetBoardCard';
+import PresetPicker from '../Sidebar/PresetPicker';
+import {
+  BOARD_COLUMNS, boardAgentCount, boardLayout, buildBoardColumns, foldByOwner, moveOnBoard, visibleChips,
+  type BoardChip, type BoardColumn, type BoardGrid, type BoardGroup, type BoardItem,
+} from './fleetBoardModel';
+import { resolveTaskLink } from '../../utils/fanoutProvenance';
+import { selectScheduleNavSummary } from '../../stores/selectors/schedules';
+import { formatNextShort } from '../Schedules/format';
 import FleetReviewRow, { reviewBusyKind, reviewPrVerb, reviewRowKey, type ReviewEditorKind } from './FleetReviewRow';
 import { pruneReviewSummaries } from './reviewSummary';
 import { openTaskDiff } from '../../utils/openTaskDiff';
@@ -34,7 +40,7 @@ import RecentAutoRuns from './RecentAutoRuns';
 import RemoteInboxList from './RemoteInboxList';
 import { fleetTitle, matchesFleetFilter, type FleetFilter } from './fleetPresentation';
 import { formatIdle, IDLE_SHOW_AFTER_MS, IDLE_TICK_MS } from '../../utils/idleTime';
-import { IconX, IconTerminal, IconChevron } from '../icons';
+import { IconCheck, IconChevron, IconPlus } from '../icons';
 
 /** True when a key event comes from a text-entry control. */
 function isEditableTarget(target: EventTarget | null): boolean {
@@ -42,8 +48,16 @@ function isEditableTarget(target: EventTarget | null): boolean {
   return target.isContentEditable || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT';
 }
 
+/** A value safe inside a double-quoted attribute selector. */
+function attr(value: string): string {
+  return value.replace(/["\\]/g, '\\$&');
+}
+
 /** How long a sidebar "N to review" request waits for its row to appear. */
 const FOCUS_REVIEW_WAIT_MS = 5_000;
+
+/** Idle agents named in the collapsed Idle column before "+N more". */
+const IDLE_PEEK = 5;
 
 /** Roving key of the collapsed "Idle N" row (pane ids never take this form). */
 const IDLE_TOGGLE_KEY = 'fleet:idle-toggle';
@@ -55,9 +69,6 @@ const IDLE_TOGGLE_KEY = 'fleet:idle-toggle';
 export default function FleetView() {
   const t = useT();
   const setVisible = useStore((s) => s.setFleetViewVisible);
-  const keepOpenAfterJump = useStore((s) => s.fleetKeepOpenAfterJump);
-  const setKeepOpenAfterJump = useStore((s) => s.setFleetKeepOpenAfterJump);
-  const [jumpTarget, setJumpTarget] = useState<{ workspaceId: string; paneId: string; surfaceId: string; surfaceType?: string; ptyId: string | null } | null>(null);
   const workspaces = useStore((s) => s.workspaces);
   const surfaceAgentStatus = useStore((s) => s.surfaceAgentStatus);
   // Hook-driven per-pane activity line (fleet-activity-line-hook). Subscribed
@@ -193,29 +204,63 @@ export default function FleetView() {
     return reviewQueue.filter((entry) => [entry.title, entry.ownerName, entry.branch]
       .some((value) => value?.toLocaleLowerCase().includes(term)));
   }, [reviewQueue, filter, query]);
-  // Idle stays collapsed to one summary row unless expanded, or unless the
-  // user is searching / filtering to idle (a hidden match would read as none).
+  // Idle stays collapsed to its count unless expanded, or unless the user is
+  // searching (a hidden match would read as none).
   const idleForced = filter === 'idle' || query.trim() !== '';
   const idleShown = fleetIdleExpanded || idleForced;
-  // The collapsed "Idle N" row is itself a roving option (so an all-idle fleet
-  // still has a focus target); it is replaced by a plain header while a
-  // search or the idle filter forces the rows open.
-  const idleToggleShown = visibleGroups.idle.length > 0 && !idleForced;
-  const visibleRows = useMemo(
-    () => [...visibleGroups.needsYou, ...visibleGroups.running, ...(idleShown ? visibleGroups.idle : [])],
-    [visibleGroups, idleShown],
+  // The four board columns (the same sections as the sidebar and
+  // fleet.triage; finished panes split into Ready to review).
+  const columns = useMemo(
+    () => buildBoardColumns(visibleGroups, visibleReview, reviewRowKey),
+    [visibleGroups, visibleReview],
   );
-  // Roving order = DOM order: needs-you rows, ready-to-review rows, running
-  // rows, the idle toggle, then the idle rows when expanded. Keys are pane ids,
-  // review keys and one sentinel.
-  const rovingKeys = useMemo(() => [
-    ...visibleGroups.needsYou.map((row) => row.pane.paneId),
-    ...visibleReview.map((entry) => reviewRowKey(entry.workspaceId)),
-    ...visibleGroups.running.map((row) => row.pane.paneId),
-    ...(idleToggleShown ? [IDLE_TOGGLE_KEY] : []),
-    ...(idleShown ? visibleGroups.idle.map((row) => row.pane.paneId) : []),
-  ], [visibleGroups, visibleReview, idleToggleShown, idleShown]);
-  const matchCount = visibleGroups.needsYou.length + visibleReview.length + visibleGroups.running.length + visibleGroups.idle.length;
+  // How many agents and finished tasks exist at all — the layout follows
+  // the fleet, not the search.
+  const boardCount = useMemo(
+    () => boardAgentCount(buildBoardColumns(groups, reviewQueue, reviewRowKey)),
+    [groups, reviewQueue],
+  );
+  const layout = boardLayout(boardCount);
+  const dense = layout === 'dense';
+  // Dense board: a mission's cards fold under the first of them.
+  const fanoutLineage = useStore((s) => s.fanoutLineage);
+  const fanoutSpawnOwner = useStore((s) => s.fanoutSpawnOwner);
+  const [openFolds, setOpenFolds] = useState<Set<string>>(() => new Set());
+  const ownerOf = useCallback((item: BoardItem) => {
+    const ws = item.kind === 'pane' ? item.row.pane.workspaceId : item.entry.workspaceId;
+    const link = resolveTaskLink(missions[ws], fanoutLineage[ws], fanoutSpawnOwner[ws]);
+    return link?.ownerId || undefined;
+  }, [missions, fanoutLineage, fanoutSpawnOwner]);
+  const columnGroups = useMemo(() => {
+    const out = {} as Record<BoardColumn, BoardGroup[]>;
+    for (const c of BOARD_COLUMNS) {
+      out[c] = dense ? foldByOwner(columns[c], ownerOf) : columns[c].map((lead) => ({ lead, folded: [] }));
+    }
+    return out;
+  }, [columns, dense, ownerOf]);
+  // Focusable keys per column in display order (folded cards are hidden;
+  // the idle column starts with its count toggle).
+  const grid = useMemo<BoardGrid>(() => {
+    const keysOf = (c: BoardColumn) => columnGroups[c].flatMap((g) => [
+      g.lead.key,
+      ...(g.owner && openFolds.has(`${c}:${g.owner}`) ? g.folded.map((f) => f.key) : []),
+    ]);
+    return {
+      needsYou: keysOf('needsYou'),
+      running: keysOf('running'),
+      review: keysOf('review'),
+      idle: columns.idle.length === 0 ? [] : [
+        ...(idleForced ? [] : [IDLE_TOGGLE_KEY]),
+        ...(idleShown ? keysOf('idle') : []),
+      ],
+    };
+  }, [columnGroups, openFolds, columns.idle.length, idleForced, idleShown]);
+  const rovingKeys = useMemo(() => BOARD_COLUMNS.flatMap((c) => grid[c]), [grid]);
+  const visibleRows = useMemo(
+    () => BOARD_COLUMNS.flatMap((c) => columns[c]).flatMap((item) => (item.kind === 'pane' ? [item.row] : [])),
+    [columns],
+  );
+  const matchCount = BOARD_COLUMNS.reduce((n, c) => n + columns[c].length, 0);
   const idleOldestMs = visibleGroups.idle.reduce<number | undefined>(
     (max, row) => (row.idleForMs !== undefined && (max === undefined || row.idleForMs > max) ? row.idleForMs : max),
     undefined,
@@ -223,22 +268,12 @@ export default function FleetView() {
   // Preserve the selected pane when live status updates reorder the list.
   const focusedIdx = Math.max(0, rovingKeys.indexOf(focusedPaneId ?? ''));
   const focusedKey = rovingKeys[focusedIdx];
-  const setFocusedIdx = useCallback((next: number | ((index: number) => number)) => {
-    const index = typeof next === 'function' ? next(focusedIdx) : next;
-    setFocusedPaneId(rovingKeys[index] ?? null);
-  }, [focusedIdx, rovingKeys]);
   const selectedPane = visibleRows.find((row) => row.pane.paneId === focusedKey)?.pane;
   const focusedReview = visibleReview.find((entry) => reviewRowKey(entry.workspaceId) === focusedKey);
+  // A short fleet opens its preview: there is room, and it is the point.
+  useEffect(() => { if (layout === 'list') setPreviewOpen(true); }, [layout]);
   const previewPtyId = previewOpen && tab === 'fleet' && selectedPane?.surfaceType === 'terminal'
     ? selectedPane.ptyId : '';
-  const allRows = [...groups.needsYou, ...groups.running, ...groups.idle];
-  const filters: { id: FleetFilter; label: string; count: number }[] = [
-    { id: 'all', label: t('fleet.filter.all'), count: panes.length },
-    { id: 'attention', label: t('fleet.filter.attention'), count: groups.needsYou.length },
-    { id: 'running', label: t('workspace.agentRunning'), count: groups.running.length },
-    { id: 'complete', label: t('fleet.status.turnComplete'), count: allRows.filter((r) => matchesFleetFilter(r, 'complete')).length },
-    { id: 'idle', label: t('workspace.agentIdle'), count: groups.idle.length },
-  ];
   // Stable identity key of the terminal ptyIds to poll for RAM. `panes`
   // recomputes on every streaming activity tick (surfaceActivity/agentStatus
   // are memo deps), so keying the resource-poll effect on `panes` directly
@@ -288,7 +323,7 @@ export default function FleetView() {
     setTails({});
     if (!previewPtyId) return;
     const refresh = () => {
-      const tail = tailForPty(previewPtyId, 12);
+      const tail = tailForPty(previewPtyId, 20);
       setTails((prev) => {
         const before = prev[previewPtyId];
         return before?.length === tail.length && tail.every((line, i) => before[i] === line)
@@ -340,21 +375,15 @@ export default function FleetView() {
     };
   }, [resourcePtyIdsKey]);
 
+  // Fleet is a rail page: a jump lands on a pane, so it always returns to
+  // Workspaces, where the focus-key effect hands input to that pane.
   const finishJump = useCallback(() => {
-    // Navigation supersedes the opener, including when Fleet is closed later.
+    // Navigation supersedes the opener.
     restoreFocusRef.current = null;
-    if (!keepOpenAfterJump) { setVisible(false); return; }
-    const state = useStore.getState();
-    const workspace = state.workspaces.find((ws) => ws.id === state.activeWorkspaceId);
-    const pane = workspace && findLeaf(workspace.rootPane, workspace.activePaneId);
-    if (workspace && pane) setJumpTarget({
-      workspaceId: workspace.id, paneId: pane.id, surfaceId: pane.activeSurfaceId,
-      surfaceType: pane.surfaces.find((surface) => surface.id === pane.activeSurfaceId)?.surfaceType,
-      ptyId: resolveActivePanePtyId(state),
-    });
-  }, [keepOpenAfterJump, setVisible]);
+    setVisible(false);
+  }, [setVisible]);
 
-  // Jump to a pane, optionally retaining Fleet and its search/filter state.
+  // Jump to a pane and go back to Workspaces.
   // Terminal panes resolve by their active-surface ptyId via the full
   // notification jump — which also marks that surface's notifications read and
   // clears its attention ring. That side effect is intentional here: jumping to
@@ -408,8 +437,10 @@ export default function FleetView() {
   // 않는다. 마운트 효과와 로빙 효과가 공유하는 단일 포커스 경로.
   const focusActiveItem = useCallback(() => {
     if (tab === 'fleet' && rovingKeys.length > 0) {
-      const cards = listRef.current?.querySelectorAll<HTMLElement>('[data-fleet-card], [data-fleet-review-row], [data-fleet-idle-toggle]');
-      const el = cards && cards[focusedIdx];
+      const review = visibleReview.find((entry) => reviewRowKey(entry.workspaceId) === focusedKey);
+      const el = !focusedKey ? null : review
+        ? listRef.current?.querySelector<HTMLElement>(`[data-fleet-review-row][data-workspace-id="${attr(review.workspaceId)}"]`)
+        : listRef.current?.querySelector<HTMLElement>(`[data-board-key="${attr(focusedKey)}"]`);
       if (el) { el.focus(); return true; }
     } else if (tab === 'approvals' && inbox.length > 0) {
       const rows = bodyRef.current?.querySelectorAll<HTMLElement>('[role=option]');
@@ -421,7 +452,7 @@ export default function FleetView() {
       if (el) { el.focus(); return true; }
     }
     return false;
-  }, [tab, focusedIdx, inboxIdx, remoteIdx, rovingKeys.length, inbox.length, remoteInbox.length]);
+  }, [tab, focusedKey, visibleReview, inboxIdx, remoteIdx, rovingKeys.length, inbox.length, remoteInbox.length]);
 
   // 마운트 효과([] deps)가 매 포커스 변경마다 재실행되지 않으면서도 최신 상태를
   // 읽도록, 최신 focusActiveItem 클로저를 ref에 보관한다.
@@ -546,48 +577,6 @@ export default function FleetView() {
     };
   }, []);
 
-  // Run after the workspace has rendered; jumping to the already-active pane
-  // must also transfer input focus (the global focus-key effect will not run).
-  useEffect(() => {
-    if (!jumpTarget) return;
-    let stop: (() => void) | undefined;
-    const raf = requestAnimationFrame(() => {
-      const rememberDestination = () => {
-        const active = document.activeElement;
-        if (active instanceof HTMLElement && active !== document.body && !panelRef.current?.contains(active)) {
-          restoreFocusRef.current = active;
-        }
-      };
-      const ptyId = jumpTarget.ptyId;
-      if (ptyId) {
-        stop = driveFocusToTerminal(ptyId, {
-          getTerminal: (id) => {
-            const terminal = terminalRegistry.get(id);
-            return terminal ? { focus: () => {
-              const state = useStore.getState();
-              const workspace = state.workspaces.find((ws) => ws.id === state.activeWorkspaceId);
-              const pane = workspace && findLeaf(workspace.rootPane, workspace.activePaneId);
-              if (workspace?.id !== jumpTarget.workspaceId || pane?.id !== jumpTarget.paneId || pane.activeSurfaceId !== jumpTarget.surfaceId) return;
-              terminal.focus();
-              rememberDestination();
-            } } : undefined;
-          },
-          onRegistered: onTerminalRegistered,
-          raf: requestAnimationFrame,
-          caf: cancelAnimationFrame,
-        });
-      } else {
-        const pane = Array.from(document.querySelectorAll<HTMLElement>('[data-pane-root]'))
-          .find((el) => el.dataset.paneRoot === jumpTarget.paneId && el.dataset.paneWorkspace === jumpTarget.workspaceId);
-        const candidates = pane?.querySelectorAll<HTMLElement>(
-          jumpTarget.surfaceType === 'browser' ? 'webview' : 'textarea, [contenteditable="true"], input',
-        );
-        Array.from(candidates ?? []).find((el) => el.getClientRects().length > 0)?.focus();
-        rememberDestination();
-      }
-    });
-    return () => { cancelAnimationFrame(raf); stop?.(); };
-  }, [jumpTarget]);
 
   // 로빙 포커스: 화살표 이동에 맞춰 DOM 포커스가 카드/행을 따라가고 보조기술이
   // 선택을 읽어주도록 한다. 단 상시 크롬이므로 포커스가 "이미 패널 안"일 때만
@@ -606,6 +595,21 @@ export default function FleetView() {
     return () => cancelAnimationFrame(raf);
   }, [focusActiveItem]);
 
+  // A card that changes column is a new element: when the one holding focus
+  // moves, focus follows it instead of falling to the page.
+  const focusInsideRef = useRef(false);
+  useEffect(() => {
+    if (!focusInsideRef.current) return undefined;
+    // A frame later, so a deliberate move queued this render (the sidebar's
+    // review request) lands first; only a focus that is still lost is taken.
+    const raf = requestAnimationFrame(() => {
+      const active = document.activeElement;
+      if (!focusInsideRef.current || (active && active !== document.body)) return;
+      focusActiveItemRef.current();
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [grid]);
+
   // Keyboard (상시 크롬 재설계): 모달 시절의 전역 window 캡처 리스너 + Tab 트랩을
   // 걷어냈다. 대신 이 핸들러는 패널 DOM에 onKeyDownCapture로 붙어 "포커스가 패널
   // 안에 있을 때만" 발동한다 — 다른 페인의 xterm에 포커스가 있으면 아무 키도
@@ -620,7 +624,25 @@ export default function FleetView() {
         // Innermost first: an open ⋮ menu, then an open row editor, then Fleet.
         if (closeRowMenuRef.current) closeRowMenuRef.current();
         else if (editor || reviewEditor) closeEditor();
+        else if (tab !== 'fleet') setTab('fleet');
         else setVisible(false);
+        return;
+      }
+      const plain = !e.ctrlKey && !e.metaKey && !e.altKey && !isEditableTarget(e.target);
+      // `/` finds; 1–4 go to a column — never while typing.
+      if (plain && e.key === '/') {
+        e.preventDefault();
+        if (tab !== 'fleet') setTab('fleet');
+        requestAnimationFrame(() => panelRef.current?.querySelector<HTMLInputElement>('input[type=search]')?.focus());
+        return;
+      }
+      if (plain && tab === 'fleet' && /^[1-4]$/.test(e.key)) {
+        e.preventDefault();
+        const next = moveOnBoard(grid, focusedKey ?? null, Number(e.key) as 1 | 2 | 3 | 4);
+        if (next) {
+          setFocusedPaneId(next);
+          requestAnimationFrame(() => { focusActiveItemRef.current(); });
+        }
         return;
       }
       // Approvals tab: Enter approves the focused row (guard #5 — non-critical
@@ -647,6 +669,14 @@ export default function FleetView() {
       const onOptionRow =
         active instanceof HTMLElement && active.getAttribute('role') === 'option' &&
         !!panelRef.current?.contains(active);
+      // Space shows or hides the preview. Cards are buttons, so Space would
+      // otherwise click — and jump away.
+      if (tab === 'fleet' && onOptionRow && e.key === ' ' && plain) {
+        e.preventDefault();
+        e.stopPropagation();
+        setPreviewOpen((open) => !open);
+        return;
+      }
       if (tab === 'approvals' && inbox.length > 0 && onOptionRow) {
         if (e.key === 'Enter') {
           e.preventDefault();
@@ -703,6 +733,17 @@ export default function FleetView() {
       if (tab === 'fleet' && onOptionRow && !e.ctrlKey && !e.metaKey && !e.altKey && !isEditableTarget(e.target)) {
         const row = visibleRows.find((r) => r.pane.paneId === focusedKey);
         const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+        // a — approve the request waiting on this agent's workspace; without
+        // one, open the approvals list.
+        if (row && key === 'a') {
+          e.preventDefault();
+          e.stopPropagation();
+          const item = inbox.find((it) => it.source === 'a2a'
+            && (it.receiverWorkspaceId === row.pane.workspaceId || it.senderWorkspaceId === row.pane.workspaceId));
+          if (item) resolveInboxItem(item, true);
+          else setTab('approvals');
+          return;
+        }
         if (row && !row.pane.remote && (key === 'm' || key === 's' || key === 'l' || key === 'Backspace')) {
           e.preventDefault();
           e.stopPropagation();
@@ -723,13 +764,11 @@ export default function FleetView() {
       e.preventDefault();
       e.stopPropagation();
       if (tab === 'fleet' && rovingKeys.length > 0) {
-        if (isBoundary) {
-          setFocusedIdx(e.key === 'Home' ? 0 : rovingKeys.length - 1);
-        } else if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
-          setFocusedIdx((i) => Math.min(i + 1, rovingKeys.length - 1));
-        } else {
-          setFocusedIdx((i) => Math.max(i - 1, 0));
-        }
+        // ↑↓ within a column, ←→ across columns, Home/End in the column.
+        const move = e.key === 'ArrowUp' ? 'up' : e.key === 'ArrowDown' ? 'down'
+          : e.key === 'ArrowLeft' ? 'left' : e.key === 'ArrowRight' ? 'right'
+          : e.key === 'Home' ? 'home' : 'end';
+        setFocusedPaneId(moveOnBoard(grid, focusedKey ?? null, move));
         return;
       }
       if (tab === 'approvals' && inbox.length > 0) {
@@ -751,275 +790,359 @@ export default function FleetView() {
           setRemoteIdx((i) => Math.max(i - 1, 0));
         }
       }
-    }, [tab, rovingKeys.length, inbox, inboxIdx, remoteInbox, remoteIdx, dismissRemoteItem, setVisible, setFocusedIdx,
+    }, [tab, setTab, grid, rovingKeys.length, inbox, inboxIdx, remoteInbox, remoteIdx, dismissRemoteItem, setVisible,
       editor, reviewEditor, closeEditor, visibleRows, focusedKey, verbsFor,
       focusedReview, openReviewDiff, openReviewEditor, jumpToReviewTask]);
+
+  // ── Board data that only the board shows ───────────────────────────────
+  // Workspaces with an A2A request waiting for a decision (the card's chip).
+  const approvalWorkspaces = useMemo(() => new Set(inbox.flatMap((it) =>
+    (it.source === 'a2a' ? [it.senderWorkspaceId, it.receiverWorkspaceId] : []))), [inbox]);
+  // Work-task ledger status per task workspace, read per owner (first-party
+  // IPC) and re-read when that owner's ledger changes.
+  const [ledger, setLedger] = useState<Record<string, string>>({});
+  const ownerKey = useMemo(() => [...new Set(panes.map((p) =>
+    resolveTaskLink(missions[p.workspaceId], fanoutLineage[p.workspaceId], fanoutSpawnOwner[p.workspaceId])?.ownerId)
+    .filter((id): id is string => Boolean(id)))].sort().join(','), [panes, missions, fanoutLineage, fanoutSpawnOwner]);
+  useEffect(() => {
+    const api = window.electronAPI?.deck?.ledger;
+    if (!api?.summary || !ownerKey) return undefined;
+    const owners = ownerKey.split(',');
+    const byOwner: Record<string, Record<string, string>> = {};
+    let cancelled = false;
+    const load = async (owner: string) => {
+      try {
+        const summary = await api.summary(owner);
+        byOwner[owner] = Object.fromEntries([...(summary.rows ?? []), ...(summary.finishedRows ?? [])]
+          .map((row) => [row.taskWorkspaceId, row.status]));
+        if (!cancelled) setLedger(Object.assign({}, ...Object.values(byOwner)));
+      } catch { /* no chip: the ledger stays what it was */ }
+    };
+    for (const owner of owners) void load(owner);
+    const off = api.onChanged?.(({ workspaceId }) => { if (owners.includes(workspaceId)) void load(workspaceId); });
+    return () => { cancelled = true; off?.(); };
+  }, [ownerKey]);
+  // Summary strip: account usage, the next scheduled run, phones watching.
+  const usage = useStore((s) => (s.anthropicUsageEnabled ? s.anthropicUsage.snapshot : null));
+  const scheduleNav = useStore(useShallow(selectScheduleNavSummary));
+  const [phones, setPhones] = useState(0);
+  useEffect(() => {
+    const status = window.electronAPI?.web?.status;
+    if (typeof status !== 'function') return undefined;
+    let cancelled = false;
+    const poll = () => { status().then((info) => { if (!cancelled) setPhones(info.running ? info.clients ?? 0 : 0); }, () => undefined); };
+    poll();
+    const id = window.setInterval(poll, 10_000);
+    return () => { cancelled = true; window.clearInterval(id); };
+  }, []);
+  // The empty board's "recently finished": the newest completed A2A tasks.
+  const a2aTasks = useStore((s) => s.a2aTasks);
+  const recentDone = useMemo(() => (layout !== 'empty' ? [] : Object.values(a2aTasks)
+    .filter((task) => task.status.state === 'completed')
+    .sort((a, b) => Date.parse(b.status.timestamp ?? '') - Date.parse(a.status.timestamp ?? ''))
+    .slice(0, 3)), [a2aTasks, layout]);
+  // "+ New agent" opens the same picker as the titlebar +.
+  const [pickerAnchor, setPickerAnchor] = useState<{ left: number; top: number } | null>(null);
+  const openPicker = (e: React.MouseEvent<HTMLElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    setPickerAnchor({ left: Math.max(8, Math.min(r.left, window.innerWidth - 216)), top: r.bottom + 4 });
+  };
+
+  const counts = {
+    needsYou: columns.needsYou.length, running: columns.running.length,
+    review: columns.review.length, idle: columns.idle.length,
+  };
+  const nextRun = scheduleNav.nextRunAt !== null && scheduleNav.nextRunAt > now ? scheduleNav.nextRunAt : null;
+  const chips = visibleChips([
+    { id: 'needsYou', count: counts.needsYou },
+    { id: 'running', count: counts.running },
+    { id: 'review', count: counts.review },
+    { id: 'idle', count: counts.idle },
+    { id: 'approvals', count: inbox.length },
+    { id: 'lan', count: remoteInbox.length },
+    { id: 'usage', text: usage ? t('fleetBoard.usage', { session: Math.round(usage.sessionPct), weekly: Math.round(usage.weeklyPct) }) : '' },
+    { id: 'next', text: nextRun !== null ? t('fleetBoard.nextSchedule', { time: formatNextShort(nextRun, now) }) : '' },
+    { id: 'phones', count: phones },
+  ]);
+  const chipLabel = (chip: BoardChip): string => {
+    if (chip.text) return chip.text;
+    if (chip.id === 'approvals') return t('fleetBoard.approvals', { count: chip.count ?? 0 });
+    if (chip.id === 'lan') return t('fleetBoard.lan', { count: chip.count ?? 0 });
+    if (chip.id === 'phones') return t('fleetBoard.phones', { count: chip.count ?? 0 });
+    return t(`fleetBoard.col.${chip.id}`);
+  };
 
   const idleSummary = idleOldestMs !== undefined && idleOldestMs >= IDLE_SHOW_AFTER_MS
     ? t('fleet.section.idleOldest', { count: visibleGroups.idle.length, age: formatIdle(idleOldestMs) })
     : t('fleet.section.idle', { count: visibleGroups.idle.length });
-  const renderRow = (row: FleetRow) => {
+
+  const renderItem = (item: BoardItem, column: BoardColumn) => {
+    if (item.kind === 'review') {
+      const entry = item.entry;
+      return (
+        <FleetReviewRow
+          key={item.key}
+          entry={entry}
+          now={now}
+          focused={item.key === focusedKey}
+          onFocus={() => setFocusedPaneId(item.key)}
+          onOpenDiff={openReviewDiff}
+          onJump={jumpToReviewTask}
+          onEdit={openReviewEditor}
+          onMenuOpenChange={onRowMenuOpenChange}
+          editor={reviewEditor?.workspaceId === entry.workspaceId ? reviewEditor.kind : undefined}
+          onEditorDone={finishReviewEditor}
+        />
+      );
+    }
+    const { row } = item;
     const card = row.pane;
     return (
       <div key={`${card.workspaceId}:${card.paneId}:${card.surfaceId}`} role="presentation" className="wmux-fleet-row">
-      <FleetCard
-        card={card}
-        row={row}
-        changed={row.section === 'needsYou' && fleetChangedSinceSeen(fleetLastSeen, card.ptyId, card.agentStatus, surfacePendingQuestion[fleetTargetPtyId(card)])}
-        focused={card.paneId === focusedKey}
-        onJump={jump}
-        onFocus={() => setFocusedPaneId(card.paneId)}
-        resource={card.ptyId ? resources[card.ptyId] : undefined}
-      />
-      <FleetRowMenu pane={card} verbs={verbsFor(card)} focused={card.paneId === focusedKey} onJump={jump}
-        onEdit={openEditor} onMenuOpenChange={onRowMenuOpenChange} />
-      {editor?.paneId === card.paneId && <FleetRowEditor pane={card} kind={editor.kind} onDone={closeEditor} />}
+        <FleetBoardCard
+          card={card}
+          row={row}
+          column={column}
+          focused={card.paneId === focusedKey}
+          dense={dense}
+          now={now}
+          changed={column === 'needsYou' && fleetChangedSinceSeen(fleetLastSeen, card.ptyId, card.agentStatus, surfacePendingQuestion[fleetTargetPtyId(card)])}
+          ledgerStatus={ledger[card.workspaceId]}
+          approvalPending={approvalWorkspaces.has(card.workspaceId)}
+          resource={card.ptyId ? resources[card.ptyId] : undefined}
+          onJump={jump}
+          onFocus={() => setFocusedPaneId(card.paneId)}
+        />
+        <FleetRowMenu pane={card} verbs={verbsFor(card)} focused={card.paneId === focusedKey} onJump={jump}
+          onEdit={openEditor} onMenuOpenChange={onRowMenuOpenChange} />
+        {editor?.paneId === card.paneId && <FleetRowEditor pane={card} kind={editor.kind} onDone={closeEditor} />}
       </div>
     );
   };
+  const ownerName = (ownerId: string) => workspaces.find((w) => w.id === ownerId)?.name ?? '';
+  const renderColumn = (column: BoardColumn) => {
+    const items = columns[column];
+    // No dead gauges: a column with nothing in it is not drawn.
+    if (items.length === 0) return null;
+    const section = column === 'review' ? 'review' : column;
+    return (
+      <section key={column} className="wmux-board-col" data-board-column={column} aria-label={t(`fleetBoard.col.${column}`)}>
+        {column === 'idle' && items.length > 0 && !idleForced ? (
+          <button
+            type="button"
+            role="option"
+            aria-selected={focusedKey === IDLE_TOGGLE_KEY}
+            aria-expanded={idleShown}
+            tabIndex={focusedKey === IDLE_TOGGLE_KEY ? 0 : -1}
+            className="wmux-board-col-head is-toggle"
+            data-fleet-section="idle"
+            data-fleet-idle-toggle
+            data-board-key={IDLE_TOGGLE_KEY}
+            onFocus={() => setFocusedPaneId(IDLE_TOGGLE_KEY)}
+            onClick={() => setFleetIdleExpanded(!fleetIdleExpanded)}
+          >
+            <span className="wmux-fleet-idle-chevron" aria-hidden="true"><IconChevron size={12} /></span>
+            <span>{idleSummary}</span>
+          </button>
+        ) : (
+          <h3 className="wmux-board-col-head" data-fleet-section={section}>
+            {column !== 'idle' && <span className={`wmux-board-col-dot is-${column}`} aria-hidden="true" />}
+            <span>{column === 'idle' ? idleSummary : t(`fleetBoard.col.${column}`)}</span>
+            {column !== 'idle' && <span className="wmux-board-col-count">{items.length}</span>}
+          </h3>
+        )}
+        {column === 'idle' && !idleShown && (
+          // Collapsed: a glance at who is idle — name and idle time, five at most.
+          <div className="wmux-board-idle-peek" data-fleet-idle-peek>
+            {items.slice(0, IDLE_PEEK).map((item) => (item.kind === 'pane' ? (
+              <button key={item.key} type="button" tabIndex={-1} className="wmux-board-idle-row"
+                onClick={() => jump(item.row.pane)} data-pty-id={item.row.pane.ptyId}>
+                <span className="truncate">{fleetTitle(item.row.pane, missions[item.row.pane.workspaceId])}</span>
+                <span className="wmux-board-elapsed">
+                  {item.row.idleForMs !== undefined && item.row.idleForMs >= IDLE_SHOW_AFTER_MS ? formatIdle(item.row.idleForMs) : ''}
+                </span>
+              </button>
+            ) : null))}
+            {items.length > IDLE_PEEK && (
+              <button type="button" tabIndex={-1} className="wmux-board-fold" onClick={() => setFleetIdleExpanded(true)}>
+                {t('fleetBoard.more', { count: items.length - IDLE_PEEK })}
+              </button>
+            )}
+          </div>
+        )}
+        {(column !== 'idle' || idleShown) && (
+          <div className="wmux-board-col-body">
+            {columnGroups[column].map((group) => {
+              const foldKey = group.owner ? `${column}:${group.owner}` : '';
+              const open = foldKey !== '' && openFolds.has(foldKey);
+              return [
+                renderItem(group.lead, column),
+                ...(group.folded.length > 0 ? [
+                  <button key={`fold:${foldKey}`} type="button" className="wmux-board-fold" aria-expanded={open}
+                    data-fleet-fold={group.owner}
+                    onClick={() => setOpenFolds((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(foldKey)) next.delete(foldKey); else next.add(foldKey);
+                      return next;
+                    })}>
+                    {t('fleetBoard.fold', { count: group.folded.length, owner: ownerName(group.owner ?? '') })}
+                  </button>,
+                  ...(open ? group.folded.map((item) => renderItem(item, column)) : []),
+                ] : []),
+              ];
+            })}
+          </div>
+        )}
+      </section>
+    );
+  };
+
+  const kbd = (keys: string, label: string) => (
+    <span className="wmux-board-key"><kbd>{keys}</kbd>{label}</span>
+  );
 
   return (
-    // Layout-neutral container positioned by AppLayout.
+    // The Fleet rail page: a four-column attention board.
     <div
       ref={panelRef}
       tabIndex={-1}
       role="region"
       aria-label={t('fleet.title')}
       data-fleet-view
+      data-layout={layout}
       onKeyDownCapture={handleKeyDown}
-      className="wmux-fleet-panel flex flex-col h-full overflow-hidden outline-none"
-      style={{
-        width: '100%',
-        backgroundColor: 'var(--bg-base)',
-        borderColor: 'var(--bg-surface)',
+      onFocusCapture={() => { focusInsideRef.current = true; }}
+      onBlurCapture={(e) => {
+        // Focus leaving for somewhere else (not just a removed card) ends it.
+        if (e.relatedTarget instanceof Node && !e.currentTarget.contains(e.relatedTarget)) focusInsideRef.current = false;
       }}
+      className="wmux-fleet-panel wmux-board flex flex-col h-full overflow-hidden outline-none"
     >
-        <div className="wmux-fleet-header">
-          <div className="min-w-0">
-            <h2 className="wmux-fleet-title">{t('fleet.title')}</h2>
-            <p className="wmux-fleet-summary">{t('fleet.scope', { count: panes.length, projects: new Set(panes.map((p) => p.workspaceId)).size })}</p>
-            <label className="wmux-fleet-keep-open">
-              <input type="checkbox" checked={keepOpenAfterJump}
-                onChange={(event) => setKeepOpenAfterJump(event.target.checked)} />
-              {t('fleet.keepOpenAfterJump')}
-            </label>
-          </div>
-          <button type="button" onClick={() => setVisible(false)} className="wmux-fleet-close"
-            title={t('fleet.close')} aria-label={t('fleet.close')}><IconX size={16} /></button>
-        </div>
-
-        <div className="wmux-fleet-tabs" role="tablist" aria-label={t('fleet.title')}>
-          {(['fleet', 'approvals', 'remote'] as FleetTab[]).map((id, index, tabs) => {
-            const count = id === 'approvals' ? inbox.length : id === 'remote' ? remoteInbox.length : 0;
-            return (
-              <button key={id} id={`fleet-tab-${id}`} type="button" role="tab"
-                aria-selected={tab === id} aria-controls="fleet-tab-panel" tabIndex={tab === id ? 0 : -1}
-                onClick={() => setTab(id)}
-                onKeyDown={(event) => {
-                  if (!['ArrowRight', 'ArrowLeft', 'Home', 'End'].includes(event.key)) return;
+      <div className="wmux-board-head">
+        <h2 className="wmux-board-title">{t('fleet.title')}</h2>
+        <span className="flex-1" />
+        {tab === 'fleet' && layout !== 'empty' && (
+          <>
+            <input type="search" className="wmux-board-search" value={query} onChange={(event) => setQuery(event.target.value)}
+              placeholder={t('fleet.search')} aria-label={t('fleet.search')}
+              onKeyDown={(event) => {
+                if (event.key === 'ArrowDown' && rovingKeys.length > 0) {
                   event.preventDefault();
-                  const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1
-                    : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
-                  setTab(tabs[next]);
-                  document.getElementById(`fleet-tab-${tabs[next]}`)?.focus();
-                }}
-                className="wmux-fleet-tab">
-                {t(id === 'fleet' ? 'fleet.tab.fleet' : id === 'approvals' ? 'fleet.tab.approvals' : 'fleet.tab.remote')}
-                {count > 0 && <span className="wmux-fleet-tab-count">{count}</span>}
-              </button>
+                  focusActiveItem();
+                }
+              }} />
+            <button type="button" className="wmux-board-btn"
+              onClick={() => setFleetSortMode(fleetSortMode === 'attention' ? 'workspace' : 'attention')}
+              title={t('fleet.sort.tooltip')} aria-label={t('fleet.sort.tooltip')}>
+              {t(fleetSortMode === 'attention' ? 'fleet.sort.attention' : 'fleet.sort.workspace')}
+            </button>
+          </>
+        )}
+        {layout !== 'empty' && (
+          <button type="button" className="wmux-board-btn" onClick={openPicker} data-fleet-new-agent>
+            <IconPlus size={12} />{t('fleetBoard.newAgent')}
+          </button>
+        )}
+      </div>
+
+      {chips.length > 0 && layout !== 'empty' && (
+        <div className="wmux-board-strip" data-fleet-summary>
+          {chips.map((chip) => {
+            const opens = chip.id === 'approvals' ? 'approvals' : chip.id === 'lan' ? 'remote' : null;
+            const body = (
+              <>
+                {chip.count !== undefined && ['needsYou', 'running', 'review'].includes(chip.id)
+                  && <span className={`wmux-board-col-dot is-${chip.id}`} aria-hidden="true" />}
+                {chip.count !== undefined && !opens && chip.id !== 'phones' && <strong>{chip.count}</strong>}
+                <span>{chipLabel(chip)}</span>
+              </>
+            );
+            return opens ? (
+              <button key={chip.id} type="button" className="wmux-board-stat is-action" data-fleet-stat={chip.id}
+                aria-pressed={tab === opens} onClick={() => setTab(tab === opens ? 'fleet' : opens)}>{body}</button>
+            ) : (
+              <span key={chip.id} className="wmux-board-stat" data-fleet-stat={chip.id}>{body}</span>
             );
           })}
         </div>
+      )}
 
-        {tab === 'fleet' && panes.length > 0 && (
-          <div className="wmux-fleet-controls">
-            <div className="wmux-fleet-filters" role="group" aria-label={t('fleet.filter.label')}>
-              {filters.filter((item) => item.id === 'all' || item.count > 0 || item.id === filter).map((item) => (
-                <button key={item.id} type="button" aria-pressed={filter === item.id} data-filter={item.id}
-                  onClick={() => setFilter(item.id)}>{item.label}<span>{item.count}</span></button>
-              ))}
-            </div>
-            <div className="wmux-fleet-toolbar">
-              <input type="search" value={query} onChange={(event) => setQuery(event.target.value)}
-                placeholder={t('fleet.search')} aria-label={t('fleet.search')}
-                onKeyDown={(event) => {
-                  if (event.key === 'ArrowDown' && rovingKeys.length > 0) {
-                    event.preventDefault();
-                    focusActiveItem();
-                  }
-                }} />
-              <button type="button" className="wmux-fleet-sort"
-                onClick={() => setFleetSortMode(fleetSortMode === 'attention' ? 'workspace' : 'attention')}
-                title={t('fleet.sort.tooltip')} aria-label={t('fleet.sort.tooltip')}>
-                {t(fleetSortMode === 'attention' ? 'fleet.sort.attention' : 'fleet.sort.workspace')}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Body */}
-        <div ref={bodyRef} id="fleet-tab-panel" role="tabpanel" aria-labelledby={`fleet-tab-${tab}`} className="wmux-fleet-body">
-          {tab === 'approvals' ? (
-            <>
-              {inbox.length > 0 ? (
-                <ApprovalInboxList items={inbox} focusedIdx={inboxIdx} onResolve={resolveInboxItem} onNavigate={() => { restoreFocusRef.current = null; }} />
-              ) : (
-                <div className="flex items-center justify-center h-[200px] text-sm text-[var(--text-muted)]">
-                  {t('fleet.approvals.empty')}
-                </div>
-              )}
-              <RecentAutoRuns />
-            </>
-          ) : tab === 'remote' ? (
-            remoteInbox.length > 0 ? (
+      <div ref={bodyRef} className="wmux-board-body">
+        {tab === 'approvals' || tab === 'remote' ? (
+          <div className="wmux-board-panel" data-fleet-panel={tab}>
+            <button type="button" className="wmux-board-back" onClick={() => setTab('fleet')} data-fleet-back>
+              ← {t('fleetBoard.back')}
+            </button>
+            {tab === 'approvals' ? (
+              <>
+                {inbox.length > 0 ? (
+                  <ApprovalInboxList items={inbox} focusedIdx={inboxIdx} onResolve={resolveInboxItem} onNavigate={() => { restoreFocusRef.current = null; }} />
+                ) : (
+                  <p className="wmux-board-quiet">{t('fleet.approvals.empty')}</p>
+                )}
+                <RecentAutoRuns />
+              </>
+            ) : remoteInbox.length > 0 ? (
               <RemoteInboxList items={remoteInbox} focusedIdx={remoteIdx} onDismiss={dismissRemoteItem} />
             ) : (
-              <div className="flex items-center justify-center h-[200px] text-sm text-[var(--text-muted)]">
-                {t('fleet.remote.empty')}
-              </div>
-            )
-          ) : matchCount === 0 ? (
-            <div className="flex items-center justify-center h-[200px] text-sm text-[var(--text-muted)]">
-              {panes.length === 0 ? t('fleet.empty') : (
-                <div className="wmux-fleet-empty">
-                  <p>{t('fleet.noMatches')}</p>
-                  <button type="button" onClick={() => { setQuery(''); setFilter('all'); }}>{t('fleet.resetFilters')}</button>
-                </div>
-              )}
-            </div>
-          ) : (
-            <>
-              {visibleGroups.needsYou.length === 0 && visibleReview.length === 0 && visibleGroups.running.length === 0 && (
-                <p className="wmux-fleet-quiet" aria-hidden="true" data-fleet-all-quiet>{t('fleet.allQuiet')}</p>
-              )}
-              <div ref={listRef} role="listbox" aria-label={t('fleet.title')} className="wmux-fleet-list">
-                {/* One flat keyed sibling array (headers interleaved), so a row
-                    that changes section keeps its DOM node — and its focus. */}
-                {[
-                  ...(visibleGroups.needsYou.length === 0 ? [] : [
-                    <div key="section:needsYou" role="presentation" className="wmux-fleet-section-header" data-fleet-section="needsYou">{t('fleet.section.needsYou')}</div>,
-                    ...visibleGroups.needsYou.map(renderRow),
-                  ]),
-                  // Ready to review: task-level rows, drawn only when non-empty.
-                  ...(visibleReview.length === 0 ? [] : [
-                    <div key="section:review" role="presentation" className="wmux-fleet-section-header" data-fleet-section="review">{t('fleet.section.review')}</div>,
-                    ...visibleReview.map((entry) => (
-                      <FleetReviewRow
-                        key={reviewRowKey(entry.workspaceId)}
-                        entry={entry}
-                        now={now}
-                        focused={reviewRowKey(entry.workspaceId) === focusedKey}
-                        onFocus={() => setFocusedPaneId(reviewRowKey(entry.workspaceId))}
-                        onOpenDiff={openReviewDiff}
-                        onJump={jumpToReviewTask}
-                        onEdit={openReviewEditor}
-                        onMenuOpenChange={onRowMenuOpenChange}
-                        editor={reviewEditor?.workspaceId === entry.workspaceId ? reviewEditor.kind : undefined}
-                        onEditorDone={finishReviewEditor}
-                      />
-                    )),
-                  ]),
-                  ...(visibleGroups.running.length === 0 ? [] : [
-                    <div key="section:running" role="presentation" className="wmux-fleet-section-header" data-fleet-section="running">{t('fleet.section.running')}</div>,
-                    ...visibleGroups.running.map(renderRow),
-                  ]),
-                  ...(visibleGroups.idle.length === 0 ? [] : [idleToggleShown ? (
-                    <button
-                      key="section:idle"
-                      type="button"
-                      role="option"
-                      aria-selected={focusedKey === IDLE_TOGGLE_KEY}
-                      aria-expanded={idleShown}
-                      tabIndex={focusedKey === IDLE_TOGGLE_KEY ? 0 : -1}
-                      className="wmux-fleet-idle-toggle"
-                      data-fleet-section="idle"
-                      data-fleet-idle-toggle
-                      onFocus={() => setFocusedPaneId(IDLE_TOGGLE_KEY)}
-                      onClick={() => setFleetIdleExpanded(!fleetIdleExpanded)}
-                    >
-                      <span className="wmux-fleet-idle-chevron" aria-hidden="true"><IconChevron size={12} /></span>
-                      <span>{idleSummary}</span>
-                    </button>
-                  ) : (
-                    <div key="section:idle" role="presentation" className="wmux-fleet-section-header" data-fleet-section="idle">{idleSummary}</div>
-                  )]),
-                  ...(idleShown ? visibleGroups.idle.map(renderRow) : []),
-                ]}
-              </div>
-            </>
-          )}
-        </div>
-
-        {tab === 'fleet' && selectedPane?.surfaceType === 'terminal' && (
-          <div className="wmux-fleet-preview">
-            <button type="button" aria-expanded={previewOpen} aria-controls="fleet-output-preview"
-              onClick={() => setPreviewOpen((open) => !open)}>
-              <IconTerminal size={14} />
-              <span>{t('fleet.preview')}</span>
-              <span className="wmux-fleet-preview-name">{fleetTitle(selectedPane, missions[selectedPane.workspaceId])}</span>
-              <span aria-hidden="true">{previewOpen ? '−' : '+'}</span>
+              <p className="wmux-board-quiet">{t('fleet.remote.empty')}</p>
+            )}
+          </div>
+        ) : layout === 'empty' ? (
+          <div className="wmux-board-empty" data-fleet-empty>
+            <h3>{t('fleetBoard.empty.title')}</h3>
+            <p>{t('fleetBoard.empty.body')}</p>
+            <button type="button" className="wmux-board-cta" onClick={openPicker} data-fleet-new-agent>
+              <IconPlus size={12} />{t('fleetBoard.newAgent')}
             </button>
-            {previewOpen && <pre id="fleet-output-preview" tabIndex={0}>{tails[previewPtyId]?.join('\n') || t('fleet.previewEmpty')}</pre>}
+            {recentDone.length > 0 && (
+              <ul className="wmux-board-recent" aria-label={t('fleetBoard.recent')}>
+                {recentDone.map((task) => (
+                  <li key={task.id}>
+                    <span className="truncate"><IconCheck size={12} /> {task.metadata.title}</span>
+                    <span>{task.status.timestamp ? formatIdle(Math.max(0, now - Date.parse(task.status.timestamp))) : ''}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        ) : matchCount === 0 ? (
+          <div className="wmux-fleet-empty">
+            <p>{t('fleet.noMatches')}</p>
+            <button type="button" onClick={() => { setQuery(''); setFilter('all'); }}>{t('fleet.resetFilters')}</button>
+          </div>
+        ) : (
+          <div ref={listRef} role="listbox" aria-label={t('fleet.title')} className="wmux-board-columns" data-layout={layout}
+            style={layout === 'list' ? undefined : {
+              // The drawn columns share the width; Idle keeps a narrow one.
+              gridTemplateColumns: [
+                ...(['needsYou', 'running', 'review'] as const).filter((c) => columns[c].length > 0).map(() => 'minmax(0, 1fr)'),
+                ...(columns.idle.length > 0 ? ['minmax(0, 0.6fr)'] : []),
+              ].join(' '),
+            }}>
+            {BOARD_COLUMNS.map(renderColumn)}
           </div>
         )}
+      </div>
 
-        {/* Footer hint — approve/deny on the Approvals tab, jump on Fleet. */}
-        <div
-          className="wmux-fleet-footer flex items-center gap-3 px-4 py-2"
-          style={{ borderTop: '1px solid var(--bg-surface)', backgroundColor: 'var(--bg-mantle)' }}
-        >
-          <span className="text-xs text-[var(--text-muted)]">
-            <kbd
-              className="px-1 py-0.5 rounded mr-0.5"
-              style={{ border: '1px solid var(--bg-overlay)', fontFamily: 'monospace' }}
-            >
-              ↑↓
-            </kbd>{' '}
-            {t('palette.navigate')}
-          </span>
-          {tab === 'approvals' ? (
-            <>
-              <span className="text-xs text-[var(--text-muted)]">
-                <kbd
-                  className="px-1 py-0.5 rounded mr-0.5"
-                  style={{ border: '1px solid var(--bg-overlay)', fontFamily: 'monospace' }}
-                >
-                  Enter
-                </kbd>{' '}
-                {t('fleet.approvals.enterApprove')}
-              </span>
-              <span className="text-xs text-[var(--text-muted)]">
-                <kbd
-                  className="px-1 py-0.5 rounded mr-0.5"
-                  style={{ border: '1px solid var(--bg-overlay)', fontFamily: 'monospace' }}
-                >
-                  Del
-                </kbd>{' '}
-                {t('fleet.approvals.delDeny')}
-              </span>
-            </>
-          ) : tab === 'remote' ? (
-            <span className="text-xs text-[var(--text-muted)]">
-              <kbd
-                className="px-1 py-0.5 rounded mr-0.5"
-                style={{ border: '1px solid var(--bg-overlay)', fontFamily: 'monospace' }}
-              >
-                Del
-              </kbd>{' '}
-              {t('fleet.remote.delDismiss')}
-            </span>
-          ) : (
-            <span className="text-xs text-[var(--text-muted)]">
-              <kbd
-                className="px-1 py-0.5 rounded mr-0.5"
-                style={{ border: '1px solid var(--bg-overlay)', fontFamily: 'monospace' }}
-              >
-                Enter
-              </kbd>{' '}
-              {t('fleet.jumpHint')}
-            </span>
-          )}
+      {tab === 'fleet' && previewOpen && selectedPane?.surfaceType === 'terminal' && (
+        <div className="wmux-board-preview" data-fleet-preview>
+          <span className="wmux-board-preview-head">{t('fleetBoard.preview', { name: fleetTitle(selectedPane, missions[selectedPane.workspaceId]) })}</span>
+          <pre id="fleet-output-preview" tabIndex={0}>{tails[previewPtyId]?.join('\n') || t('fleet.previewEmpty')}</pre>
         </div>
+      )}
+
+      {tab === 'fleet' && layout !== 'empty' && (
+        <div className="wmux-board-keys" aria-hidden="true">
+          {kbd('←→', t('fleetBoard.key.columns'))}
+          {kbd('↑↓', t('fleetBoard.key.cards'))}
+          {kbd('1–4', t('fleetBoard.key.jumpColumn'))}
+          {kbd('↵', t('fleet.jumpHint'))}
+          {kbd('Space', t('fleetBoard.key.preview'))}
+          {kbd('/', t('fleetBoard.key.search'))}
+        </div>
+      )}
+      {pickerAnchor && <PresetPicker onClose={() => setPickerAnchor(null)} anchorStyle={pickerAnchor} />}
     </div>
   );
 }

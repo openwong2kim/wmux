@@ -236,8 +236,12 @@ export function useActivePaneFocus(): void {
   // changes. Logic + rationale (why multiviewIds is in the key) live in
   // computeFocusKey.
   const focusKey = useStore(computeFocusKey);
+  // Back on the Workspaces page from another rail page: the target did not
+  // change, but the pane is reachable again (no longer inert) and takes input.
+  const onWorkspaces = useStore((s) => s.appRoute === 'workspaces');
 
   useEffect(() => {
+    if (!onWorkspaces) return;
     const ptyId = resolveActivePanePtyId(useStore.getState());
     if (!ptyId) return;
     return driveFocusToTerminal(ptyId, {
@@ -246,7 +250,7 @@ export function useActivePaneFocus(): void {
       raf: (cb) => requestAnimationFrame(cb),
       caf: (handle) => cancelAnimationFrame(handle),
     });
-  }, [focusKey]);
+  }, [focusKey, onWorkspaces]);
 
   // Self-heal: reclaim focus when an overlay (search bar / command palette /
   // notification panel / agent-toolbar RichInput) closes and drops DOM focus to
@@ -262,7 +266,12 @@ export function useActivePaneFocus(): void {
     // that refocuses a terminal from a torn-down effect instance.
     const pending = new Set<number>();
     const onSignal = (ev?: Event): void => reassertFocusIfOrphaned({
-      resolveTarget: () => resolveActivePanePtyId(useStore.getState()),
+      // Another rail page covers the panes (inert): focus there belongs to
+      // the page, never pulled back into a hidden terminal.
+      resolveTarget: () => {
+        const state = useStore.getState();
+        return state.appRoute === 'workspaces' ? resolveActivePanePtyId(state) : null;
+      },
       getActiveElement: () => document.activeElement,
       getBody: () => document.body,
       focusTerminal: (id) => {

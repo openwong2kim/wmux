@@ -17,7 +17,6 @@
 // 고정한다. 겸사겸사 닫힘 시 포커스 복원(INFO 4번)도 검증한다.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { terminalRegistry } from '../../../hooks/useTerminal';
 import * as terminalTail from '../../../utils/terminalTail';
 import * as React from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -77,6 +76,8 @@ beforeEach(() => {
       fleetActiveTab: 'fleet',
       fleetSortMode: 'attention',
       workspaces: singleCardWorkspaces,
+      // An idle agent (a pane with an agent identity), not a bare shell.
+      surfaceAgent: { 'pty-1': { name: 'Claude Code', status: 'idle' } },
     });
   });
 });
@@ -166,9 +167,11 @@ describe('FleetView — task triage', () => {
     seedFleet();
     mount();
     await flushRaf();
-    expect(rows().map((row) => row.dataset.status)).toEqual(['awaiting_input', 'complete', 'running']);
+    // Board columns: Needs you, Running, Ready to review (a finished turn).
+    expect(rows().map((row) => row.dataset.status)).toEqual(['awaiting_input', 'running', 'complete']);
+    expect(rows().map((row) => row.dataset.column)).toEqual(['needsYou', 'running', 'review']);
     expect(rows()[0].textContent).toContain('Which deployment target?');
-    expect(rows()[2].textContent).toContain('wmux');
+    expect(rows()[1].textContent).toContain('wmux');
   });
 
   it('filters by task/project without stealing search focus, then navigates the results', async () => {
@@ -201,39 +204,52 @@ describe('FleetView — task triage', () => {
     await flushRaf();
     expect(document.activeElement?.getAttribute('data-pty-id')).toBe('pty-1');
     expect(rows()[0].dataset.ptyId).toBe('pty-1');
-    click('[data-filter=complete]');
-    await flushRaf();
-    expect(rows()).toHaveLength(1);
-    expect(document.activeElement?.getAttribute('data-filter')).toBe('complete');
-    act(() => rows()[0].focus());
+    // End stays inside the column (pty-1 is alone in Needs you now).
     key(rows()[0], 'End');
     await flushRaf();
-    expect(document.activeElement).toBe(rows()[0]);
+    expect(document.activeElement?.getAttribute('data-pty-id')).toBe('pty-1');
+    // → moves to the next non-empty column.
+    key(rows()[0], 'ArrowRight');
+    await flushRaf();
+    expect(document.activeElement?.getAttribute('data-pty-id')).toBe('pty-2');
   });
 
-  it('only reads terminal output when the selected preview is expanded', async () => {
+  it('opens the preview of the selected card in a short fleet, and Space hides it without jumping', async () => {
     const read = vi.spyOn(terminalTail, 'tailForPty').mockReturnValue(['real terminal output']);
     seedFleet();
     mount();
     await flushRaf();
-    expect(read).not.toHaveBeenCalled();
-    click('.wmux-fleet-preview > button');
-    expect(read).toHaveBeenCalledWith('pty-3', 12);
-    expect(container.querySelector('pre')?.textContent).toBe('real terminal output');
-    click('.wmux-fleet-preview > button');
-    expect(container.querySelector('pre')).toBeNull();
+    // Three agents: one list, preview open for the selected card (20 lines).
+    expect(container.querySelector('.wmux-board')?.getAttribute('data-layout')).toBe('list');
+    expect(read).toHaveBeenCalledWith('pty-3', 20);
+    expect(container.querySelector('#fleet-output-preview')?.textContent).toBe('real terminal output');
+    const focused = rows()[0];
+    act(() => focused.focus());
+    key(focused, ' ');
+    await flushRaf();
+    expect(container.querySelector('#fleet-output-preview')).toBeNull();
+    // Space did not click the card (no jump to its workspace).
+    expect(useStore.getState().activeWorkspaceId).not.toBe('ws-3');
+    key(focused, ' ');
+    expect(container.querySelector('#fleet-output-preview')).not.toBeNull();
   });
 
-  it('keeps tab keyboard navigation separate from row navigation', async () => {
+  it('has no tabs: approvals open from the summary only when there are some, and 1–4 jump to a column', async () => {
     seedFleet();
     mount();
     await flushRaf();
-    const tab = container.querySelector<HTMLButtonElement>('#fleet-tab-fleet')!;
-    act(() => tab.focus());
-    key(tab, 'ArrowRight');
+    expect(container.querySelector('[role=tablist]')).toBeNull();
+    expect(container.querySelector('[data-fleet-stat="approvals"]')).toBeNull();
+    // Zero-count summary chips are not drawn.
+    expect([...container.querySelectorAll('[data-fleet-stat]')].map((el) => el.getAttribute('data-fleet-stat')))
+      .toEqual(['needsYou', 'running', 'review']);
+    act(() => rows()[0].focus());
+    key(rows()[0], '3');
     await flushRaf();
-    expect(document.activeElement?.id).toBe('fleet-tab-approvals');
-    expect(container.textContent).toContain('No pending approvals');
+    expect(document.activeElement?.getAttribute('data-column')).toBe('review');
+    key(document.activeElement!, '2');
+    await flushRaf();
+    expect(document.activeElement?.getAttribute('data-pty-id')).toBe('pty-1');
   });
 });
 
@@ -246,17 +262,14 @@ describe('FleetView — attention board sections', () => {
         workspace('ws-2', 'beta', leaf('p2', [surface('s2', 'pty-2', { surfaceType: 'terminal', title: 'beta task' })]), 'p2'),
       ],
       surfaceOutputAt: { 'pty-1': now - 2 * 86_400_000, 'pty-2': now - 5 * 60_000 },
+      surfaceAgent: { 'pty-1': { name: 'Claude Code', status: 'idle' }, 'pty-2': { name: 'Claude Code', status: 'idle' } },
     }));
   }
 
-  it('shows the all-quiet line and focuses the collapsed idle row when everything is idle', async () => {
+  it('focuses the collapsed idle row when everything is idle', async () => {
     seedIdleFleet();
     mount();
     await flushRaf();
-    const quiet = container.querySelector('[data-fleet-all-quiet]');
-    expect(quiet?.textContent).toBe('Nothing needs you right now');
-    expect(quiet?.getAttribute('aria-hidden')).toBe('true');
-    expect(quiet?.hasAttribute('tabindex')).toBe(false);
     const toggle = container.querySelector<HTMLButtonElement>('[data-fleet-idle-toggle]')!;
     expect(toggle.textContent).toContain('Idle 2 · oldest 2d');
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
@@ -300,7 +313,7 @@ describe('FleetView — attention board sections', () => {
     mount();
     await flushRaf();
     expect(rows()[0].dataset.ptyId).toBe('pty-1');
-    expect(rows()[0].querySelector('.wmux-fleet-detail')?.textContent).toBe('Refactor done; 12 tests pass.');
+    expect(rows()[0].querySelector('.wmux-board-detail')?.textContent).toBe('Refactor done; 12 tests pass.');
   });
 
   it('shows a row\'s elapsed time since its newest activity stamp', async () => {
@@ -357,9 +370,9 @@ describe('FleetView — remote rows and browser help stay wired', () => {
     expect(row.getAttribute('aria-label')).toContain('office-mac');
   });
 
-  it('browser-help Jump still closes Fleet with keep-open enabled', async () => {
+  it('browser-help Jump closes Fleet', async () => {
     act(() => useStore.setState({
-      fleetActiveTab: 'approvals', fleetViewVisible: true, fleetKeepOpenAfterJump: true,
+      fleetActiveTab: 'approvals', appRoute: 'fleet', fleetViewVisible: true,
       browserHelpRequests: { r1: { requestId: 'r1', workspaceId: 'ws-1', surfaceId: 's1', prompt: 'Sign in', deadlineAt: Date.now() + 60_000 } },
       browserHelpOrder: ['r1'],
     }));
@@ -383,94 +396,30 @@ describe('FleetView — remote rows and browser help stay wired', () => {
   });
 });
 
-describe('FleetView — keep open after jump (#1542)', () => {
-  it('closes on jump by default', async () => {
+describe('FleetView — a rail page: a jump returns to Workspaces', () => {
+  it('goes back to Workspaces on the jumped-to workspace', async () => {
     seedFleet();
     act(() => useStore.getState().setFleetViewVisible(true));
     mount();
     await flushRaf();
+    expect(useStore.getState().appRoute).toBe('fleet');
     click('[data-pty-id="pty-2"]');
     expect(useStore.getState().activeWorkspaceId).toBe('ws-2');
+    expect(useStore.getState().appRoute).toBe('workspaces');
     expect(useStore.getState().fleetViewVisible).toBe(false);
   });
 
-  it('retains filters and search, focuses even an already-active target, and never restores the old pane', async () => {
+  it('leaves with Escape inside Fleet or the global toggle — the page has no close button', async () => {
     seedFleet();
-    const opener = document.createElement('textarea');
-    const destination = document.createElement('textarea');
-    document.body.append(opener, destination);
-    opener.focus();
-    const terminal = { focus: () => destination.focus() };
-    vi.spyOn(terminalRegistry, 'get').mockImplementation((id) =>
-      id === 'pty-2' ? terminal as ReturnType<typeof terminalRegistry.get> : undefined);
-    act(() => {
-      useStore.getState().setActiveWorkspace('ws-2');
-      useStore.getState().setFleetViewVisible(true);
-    });
+    act(() => useStore.getState().setFleetViewVisible(true));
     mount();
     await flushRaf();
-    click('input[type=checkbox]');
-    click('[data-filter=complete]');
-    search('launch');
-    click('[data-pty-id="pty-2"]');
-    await flushRaf();
-    expect(useStore.getState().fleetViewVisible).toBe(true);
-    expect(document.activeElement).toBe(destination);
-    expect(container.querySelector<HTMLInputElement>('input[type=search]')?.value).toBe('launch');
-    expect(container.querySelector('[data-filter=complete]')?.getAttribute('aria-pressed')).toBe('true');
-    expect(rows()).toHaveLength(1);
-    key(destination, 'Escape');
-    expect(useStore.getState().fleetViewVisible).toBe(true);
-    click('.wmux-fleet-close');
-    expect(useStore.getState().fleetViewVisible).toBe(false);
-    unmount();
-    expect(document.activeElement).toBe(destination);
-    mount();
-    await flushRaf();
-    expect(container.querySelector<HTMLInputElement>('input[type=checkbox]')?.checked).toBe(true);
-  });
-
-  it('hands focus to successive workspace targets without live updates reclaiming it', async () => {
-    seedFleet();
-    const first = document.createElement('textarea');
-    const second = document.createElement('textarea');
-    document.body.append(first, second);
-    vi.spyOn(terminalRegistry, 'get').mockImplementation((id) => ({
-      focus: () => (id === 'pty-2' ? first : second).focus(),
-    }) as ReturnType<typeof terminalRegistry.get>);
-    act(() => {
-      useStore.getState().setFleetKeepOpenAfterJump(true);
-      useStore.getState().setFleetViewVisible(true);
-    });
-    mount();
-    await flushRaf();
-    click('[data-pty-id="pty-2"]');
-    await flushRaf();
-    expect(document.activeElement).toBe(first);
-    click('[data-pty-id="pty-3"]');
-    await flushRaf();
-    expect(useStore.getState().activeWorkspaceId).toBe('ws-3');
-    expect(document.activeElement).toBe(second);
-    act(() => useStore.setState({ surfacePendingQuestion: {}, surfaceAgentStatus: { 'pty-2': 'error' } }));
-    await flushRaf();
-    expect(document.activeElement).toBe(second);
-    unmount();
-    expect(document.activeElement).toBe(second);
-  });
-
-  it('still closes with Escape inside Fleet or the global toggle', async () => {
-    seedFleet();
-    act(() => {
-      useStore.getState().setFleetKeepOpenAfterJump(true);
-      useStore.getState().setFleetViewVisible(true);
-    });
-    mount();
-    await flushRaf();
+    expect(container.querySelector('.wmux-fleet-close')).toBeNull();
     key(rows()[0], 'Escape');
-    expect(useStore.getState().fleetViewVisible).toBe(false);
+    expect(useStore.getState().appRoute).toBe('workspaces');
     act(() => useStore.getState().toggleFleetView());
+    expect(useStore.getState().appRoute).toBe('fleet');
     act(() => useStore.getState().toggleFleetView());
-    expect(useStore.getState().fleetViewVisible).toBe(false);
-    expect(useStore.getState().fleetKeepOpenAfterJump).toBe(true);
+    expect(useStore.getState().appRoute).toBe('workspaces');
   });
 });

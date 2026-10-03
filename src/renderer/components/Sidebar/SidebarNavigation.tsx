@@ -6,14 +6,22 @@ import { selectFleetSectionCounts } from '../../stores/selectors/fleet';
 import { selectScheduleNavSummary } from '../../stores/selectors/schedules';
 import { formatNextShort } from '../Schedules/format';
 import { useT } from '../../hooks/useT';
-import { Icon, IconClock, IconUsers } from '../icons';
+import { Icon, IconClock, IconGrid, IconRemoteDevices, IconUsers } from '../icons';
+import type { AppRoute } from '../../stores/slices/uiSlice';
 import { FOCUS_RING } from '../focusRing';
 
 /** Global destinations stay separate from workspace rows and their PTY state. */
-export default function SidebarNavigation({ compact = false }: { compact?: boolean }) {
+export default function SidebarNavigation({ compact = false, home = false }: {
+  compact?: boolean;
+  /** The rail: pages only, each swapped into the sheet — Workspaces (home),
+   *  Fleet, Schedules and Remote. Search & commands is a palette, reached from
+   *  the titlebar pill (CommandPill) and ⌘K, so it is not on the rail. */
+  home?: boolean;
+}) {
   const t = useT();
   const paletteOpen = useStore((s) => s.commandPaletteVisible);
-  const fleetOpen = useStore((s) => s.fleetViewVisible);
+  const route = useStore((s) => s.appRoute);
+  const fleetOpen = route === 'fleet';
   // The Fleet board's own Needs you / Running sections, counted.
   const fleetCounts = useStore(useShallow(selectFleetSectionCounts));
   const needsText = fleetCounts.needsYou > 0 ? t('sidebar.fleetNeedsYou', { count: fleetCounts.needsYou }) : '';
@@ -24,7 +32,7 @@ export default function SidebarNavigation({ compact = false }: { compact?: boole
   // runs awaiting a response + schedules whose last run failed; otherwise the
   // next run time, muted. Scheduled runs never appear in Fleet itself.
   const schedulesAvailable = useStore((s) => s.schedulesAvailable);
-  const schedulesOpen = useStore((s) => s.schedulesViewOpen);
+  const schedulesOpen = route === 'schedules';
   const schedules = useStore(useShallow(selectScheduleNavSummary));
   // A next-run time that has passed (the daemon advances it after the run)
   // must not linger: re-read the clock each minute while one is shown.
@@ -45,21 +53,37 @@ export default function SidebarNavigation({ compact = false }: { compact?: boole
     schedulesNeedsText,
     schedulesFailedText || (schedulesNextText ? t('schedules.navNext', { time: schedulesNextText }) : ''),
   ].filter(Boolean).join(', ');
+  // The rail navigates (a page stays put when clicked again); the in-sheet
+  // list keeps its toggles.
+  const go = (page: AppRoute, toggle: () => void) => () => {
+    if (home) useStore.getState().setAppRoute(page);
+    else toggle();
+  };
+  const search = {
+    id: 'search', label: t('sidebar.search'), name: t('sidebar.search'), active: paletteOpen,
+    icon: <Icon size={16}><circle cx="6" cy="6" r="3.75" /><path d="m9 9 3.5 3.5" /></Icon>,
+    onClick: () => useStore.getState().toggleCommandPalette(),
+  };
   const entries = [
-    {
-      id: 'search', label: t('sidebar.search'), name: t('sidebar.search'), active: paletteOpen,
-      icon: <Icon size={16}><circle cx="6" cy="6" r="3.75" /><path d="m9 9 3.5 3.5" /></Icon>,
-      onClick: () => useStore.getState().toggleCommandPalette(),
-    },
+    ...(home ? [{
+      id: 'home', label: t('sidebar.workspaces'), name: t('sidebar.workspaces'), active: route === 'workspaces',
+      icon: <IconGrid size={16} />,
+      onClick: () => useStore.getState().setAppRoute('workspaces'),
+    }] : [search]),
     {
       id: 'fleet', label: t('fleet.title'), name: fleetName, active: fleetOpen,
       icon: <IconUsers size={16} />,
-      onClick: () => useStore.getState().toggleFleetView(),
+      onClick: go('fleet', () => useStore.getState().toggleFleetView()),
     },
     ...(schedulesAvailable ? [{
       id: 'schedules', label: t('schedules.title'), name: schedulesName, active: schedulesOpen,
       icon: <IconClock size={16} />,
-      onClick: () => useStore.getState().toggleSchedulesView(),
+      onClick: go('schedules', () => useStore.getState().toggleSchedulesView()),
+    }] : []),
+    ...(home ? [{
+      id: 'remote', label: t('sidebar.remote'), name: t('sidebar.remote'), active: route === 'remote',
+      icon: <IconRemoteDevices size={16} />,
+      onClick: () => useStore.getState().setAppRoute('remote'),
     }] : []),
   ];
 
@@ -78,7 +102,7 @@ export default function SidebarNavigation({ compact = false }: { compact?: boole
           >
             <span className="wmux-nav-icon" aria-hidden="true">{icon}</span>
             {!compact && <span className="wmux-nav-label min-w-0 flex-1 truncate text-left">{label}</span>}
-            {id === 'fleet' && <FleetCounts compact={compact} needsYou={fleetCounts.needsYou} needsText={needsText} runningText={runningText} />}
+            {id === 'fleet' && <FleetCounts compact={compact} badge needsYou={fleetCounts.needsYou} needsText={needsText} runningText={runningText} />}
             {id === 'schedules' && <FleetCounts compact={compact} needsYou={schedules.needs} needsText={schedulesNeedsText} runningText={schedulesMutedText} />}
           </button>{id === 'search' && <WebToggle variant="sidebar" compact={compact} />}</Fragment>
         );
@@ -95,11 +119,16 @@ export default function SidebarNavigation({ compact = false }: { compact?: boole
  * single amber dot while anything needs you. The accessible name carries the
  * full text in every variant.
  */
-function FleetCounts({ compact, needsYou, needsText, runningText }: {
-  compact: boolean; needsYou: number; needsText: string; runningText: string;
+function FleetCounts({ compact, badge = false, needsYou, needsText, runningText }: {
+  compact: boolean; badge?: boolean; needsYou: number; needsText: string; runningText: string;
 }) {
   if (compact) {
-    return needsYou > 0 ? <span className="wmux-nav-count" data-fleet-nav-count="needsYou" aria-hidden="true" /> : null;
+    // Fleet carries the needs-you count as a number badge; any other
+    // destination keeps the single dot.
+    if (needsYou <= 0) return null;
+    return badge
+      ? <span className="wmux-nav-count wmux-nav-badge" data-fleet-nav-count="needsYou" aria-hidden="true">{needsYou > 99 ? '99+' : needsYou}</span>
+      : <span className="wmux-nav-count" data-fleet-nav-count="needsYou" aria-hidden="true" />;
   }
   if (!needsText && !runningText) return null;
   return (

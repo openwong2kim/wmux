@@ -2,7 +2,7 @@ import type { BrowserWindow } from 'electron';
 
 /**
  * UI zoom (#822 prototype) — scale the whole renderer, then re-place the
- * native window controls so DESIGN.md's 36px chrome module still lines up.
+ * native window controls so DESIGN.md's 40px chrome module still lines up.
  *
  * The premise under test: "trafficLightPosition and titleBarOverlay are in OS
  * coordinates and do not follow a renderer zoom, so zoom desyncs the custom
@@ -12,14 +12,18 @@ import type { BrowserWindow } from 'electron';
  * (registerHandlers.ts), so the resync rides an existing path.
  *
  * Coordinate note (this is the whole trick): `setZoomFactor` scales CSS px,
- * so the renderer's 36px bar occupies `36 * z` window points. The native
+ * so the renderer's 40px bar occupies `40 * z` window points. The native
  * controls do NOT scale — traffic lights stay ~14pt tall at any zoom. So the
- * y-offset that centers them is `(36 * z - LIGHTS_H) / 2`, not `11 * z`.
+ * y-offset that centers them is `(40 * z - LIGHTS_H) / 2`, not `13 * z`.
  * Scaling the offset instead of re-centering is what actually desyncs.
  */
 
-/** Custom titlebar height in CSS px — DESIGN.md's chrome module. */
-const CHROME_H = 36;
+/**
+ * Custom titlebar height in CSS px — DESIGN.md's chrome module.
+ * Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/TitleBar.tsx), MIT License, Copyright (c) 2026 Nick
+ * (the 40px `h-10` title row; the light cluster centers at (40 - 14) / 2 = 13).
+ */
+const CHROME_H = 40;
 /** Rendered height of the macOS traffic-light cluster, in window points. */
 const MAC_LIGHTS_H = 14;
 /** Left inset of the traffic lights at zoom 1. */

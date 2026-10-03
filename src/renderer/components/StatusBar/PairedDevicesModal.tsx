@@ -6,7 +6,7 @@ import Checkbox from '../ui/Checkbox';
 import Badge from '../ui/Badge';
 import { IconComputer, IconPhone, IconRemoteDevices, IconWarning } from '../icons';
 import { timeAgo } from '../../utils/timeAgo';
-import type { DeviceKind, WebDeviceListError, WebDeviceSummary } from '../../../shared/web';
+import type { DeviceKind, WebDeviceListError, WebDeviceRevokeResult, WebDeviceSummary } from '../../../shared/web';
 
 /** The roster's kind glyph: own monograms, never a vendor's mark. */
 function KindIcon({ kind }: { kind: DeviceKind | undefined }) {
@@ -39,6 +39,24 @@ const KIND_LABEL: Record<DeviceKind, string> = {
  * exactly when someone who just stopped sharing wants to check what still holds
  * a credential.
  */
+/**
+ * What a failed revoke means. Each reason makes a DIFFERENT claim about whether
+ * the device is off the air right now, so none of them may share copy.
+ * `persist-failed` is the only one that earns "its connections were cut", and
+ * only when the daemon reported actually cutting some.
+ */
+export function revokeFailureMessage(t: (key: string) => string, res: WebDeviceRevokeResult): string {
+  return res.reason === 'persist-failed'
+    ? (res.closed ?? 0) > 0
+      ? t('web.revokePersistFailed')
+      : t('web.revokePersistFailedNoCut')
+    : res.reason === 'unavailable'
+      ? t('web.revokeUnavailable')
+      : res.reason === 'not-found'
+        ? t('web.revokeNotFound')
+        : t('web.revokeUnknown');
+}
+
 export default function PairedDevicesModal({ onClose }: { onClose: () => void }) {
   const t = useT();
 
@@ -158,21 +176,7 @@ export default function PairedDevicesModal({ onClose }: { onClose: () => void })
       const res = await api.deviceRevoke(deviceId);
       if (!mounted.current) return;
       if (!res.ok) {
-        // Each reason makes a DIFFERENT claim about whether this device is off
-        // the air right now, so none of them may share copy. `persist-failed`
-        // is the only one that earns "its connections were cut", and only when
-        // the daemon reported actually cutting some.
-        const message =
-          res.reason === 'persist-failed'
-            ? (res.closed ?? 0) > 0
-              ? t('web.revokePersistFailed')
-              : t('web.revokePersistFailedNoCut')
-            : res.reason === 'unavailable'
-              ? t('web.revokeUnavailable')
-              : res.reason === 'not-found'
-                ? t('web.revokeNotFound')
-                : t('web.revokeUnknown');
-        setRevokeError({ deviceId, message });
+        setRevokeError({ deviceId, message: revokeFailureMessage(t, res) });
       }
     } catch {
       if (mounted.current) setRevokeError({ deviceId, message: t('web.revokeUnknown') });

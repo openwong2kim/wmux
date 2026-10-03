@@ -1,6 +1,7 @@
 import { useStore } from '../../stores';
 import { createSurface, createWorkspace, createLeafPane } from '../../../shared/types';
 import { activateLocalWorkspace } from '../../stores/slices/workspaceSlice';
+import { applyAppRoute } from '../../stores/slices/uiSlice';
 import { focusNotificationTarget } from '../../hooks/useNotificationListener';
 import { publishPaneCreated } from '../../events/publisher';
 import { saveSessionNow } from '../../utils/sessionSaveBridge';
@@ -78,7 +79,7 @@ export async function openAutomationRun(runId: string, automationId?: string): P
     state.workspaces.push(ws);
     if (state.sidebarNewAt) state.sidebarNewAt[ws.id] = Date.now();
     activateLocalWorkspace(state, ws.id);
-    state.schedulesViewOpen = false;
+    applyAppRoute(state, 'workspaces');
     created = { wsId: ws.id, paneId: leaf.id };
   });
   const done = created as { wsId: string; paneId: string } | null;

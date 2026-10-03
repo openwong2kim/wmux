@@ -10,7 +10,7 @@ import {
 
 /**
  * #822 — the arithmetic that decides whether UI zoom can keep the native
- * window controls aligned with DESIGN.md's 36px chrome module.
+ * window controls aligned with DESIGN.md's 40px chrome module.
  *
  * The plan's rejected-alternative claim was that the native controls "do not
  * follow a renderer zoom", so zoom desyncs the titlebar. These cases pin the
@@ -35,17 +35,17 @@ describe('clampUiZoom', () => {
 
 describe('macTrafficLightPosition', () => {
   it('reproduces the shipped position at zoom 1', () => {
-    // createWindow.ts uses { x: 12, y: 11 } — (36 - 14) / 2 = 11.
-    expect(macTrafficLightPosition(1)).toEqual({ x: 12, y: 11 });
+    // createWindow.ts uses { x: 12, y: 13 } — (40 - 14) / 2 = 13.
+    expect(macTrafficLightPosition(1)).toEqual({ x: 12, y: 13 });
   });
 
   it('re-centers rather than scaling the y-offset', () => {
-    // At 1.4 the renderer's bar is 50.4pt tall; the 14pt lights center at 18.2.
-    // The naive "scale the offset" answer would be 11 * 1.4 = 15.4 — 3pt high,
+    // At 1.4 the renderer's bar is 56pt tall; the 14pt lights center at 21.
+    // The naive "scale the offset" answer would be 13 * 1.4 = 18.2 — 3pt high,
     // which is exactly the desync the plan cited as the blocker.
     const { y } = macTrafficLightPosition(1.4);
-    expect(y).toBe(18);
-    expect(y).not.toBe(Math.round(11 * 1.4));
+    expect(y).toBe(21);
+    expect(y).not.toBe(Math.round(13 * 1.4));
   });
 
   it('never returns a negative offset when the bar is smaller than the lights', () => {
@@ -55,8 +55,8 @@ describe('macTrafficLightPosition', () => {
 
 describe('winOverlayHeight', () => {
   it('tracks the scaled chrome row', () => {
-    expect(winOverlayHeight(1)).toBe(36);
-    expect(winOverlayHeight(1.4)).toBe(50);
+    expect(winOverlayHeight(1)).toBe(40);
+    expect(winOverlayHeight(1.4)).toBe(56);
   });
 });
 

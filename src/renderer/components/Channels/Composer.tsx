@@ -35,6 +35,10 @@ import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
 import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
 import { parsePanePrincipalId } from '../../../shared/principals';
+// Mono look for the shared composer shell. Adapted from MonoCode
+// (hardbeat920/monocode@6bd432ca, src/features/sessions/ui/Composer.tsx), MIT
+// License, Copyright (c) 2026 Nick.
+import '../Chat/chatMono.css';
 
 // ─── Synthesized message row for the optimistic local insert ───────────
 

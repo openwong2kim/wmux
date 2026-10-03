@@ -871,7 +871,11 @@ export function WebPopoverBody({
  * (2026-08-18) — the deck reopens from the titlebar and this glyph comes back
  * with it. The popover anchors under the button.
  */
-export default function WebToggle({ variant = 'icon', compact = false }: { variant?: 'icon' | 'sidebar'; compact?: boolean } = {}) {
+export default function WebToggle({ variant = 'icon', compact = false }: {
+  /** `page`: the Remote page's "Share & pair" button, which is the hub there. */
+  variant?: 'icon' | 'sidebar' | 'page';
+  compact?: boolean;
+} = {}) {
   const t = useT();
   const [open, setOpen] = useState(false);
   const [info, setInfo] = useState<WebTerminalInfo>({ running: false });
@@ -1127,7 +1131,7 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
   useEffect(() => {
     // Only a hub that actually renders counts: without the web bridge this
     // component draws nothing, and a request sent to it would land nowhere.
-    if (variant !== 'sidebar' || !webApi()) return;
+    if (variant === 'icon' || !webApi()) return;
     setRemoteHubMounted(true);
     return () => setRemoteHubMounted(false);
   }, [variant, setRemoteHubMounted]);
@@ -1137,7 +1141,7 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
   useEffect(() => {
     if (hubRequestSeq === seenHubRequest.current) return;
     seenHubRequest.current = hubRequestSeq;
-    if (variant !== 'sidebar') return;
+    if (variant === 'icon') return;
     anchorUnderButton();
     // "Other computers" lives in the hub, so a request for it must land there.
     setView('hub');
@@ -1400,7 +1404,7 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
   if (!api) return null;
 
   const running = info.running === true;
-  const buttonLabel = variant === 'sidebar' ? t('sidebar.remote') : t('web.label');
+  const buttonLabel = variant === 'sidebar' ? t('sidebar.remote') : variant === 'page' ? t('remotePage.share') : t('web.label');
 
   return (
     <div className="contents">
@@ -1418,11 +1422,13 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
         data-testid="deck-web-toggle"
         data-deck-web=""
         data-sidebar-nav={variant === 'sidebar' ? 'remote' : undefined}
-        className={variant === 'sidebar' ? `wmux-nav-button ${FOCUS_RING}` : `${DECK_ICON_BUTTON} ${deckIconTone(open, running)}`}
+        className={variant === 'sidebar' ? `wmux-nav-button ${FOCUS_RING}`
+          : variant === 'page' ? `ui-btn ui-btn-secondary ui-btn-sm ${FOCUS_RING}`
+          : `${DECK_ICON_BUTTON} ${deckIconTone(open, running)}`}
       >
-        <span className={variant === 'sidebar' ? 'wmux-nav-icon' : undefined} aria-hidden="true">{variant === 'sidebar' ? <IconRemoteDevices size={18} /> : <IconBrowser size={16} />}</span>
-        {variant === 'sidebar' && !compact && <span className="min-w-0 flex-1 truncate text-left">{buttonLabel}</span>}
-        {running && (
+        <span className={variant === 'sidebar' ? 'wmux-nav-icon' : undefined} aria-hidden="true">{variant === 'icon' ? <IconBrowser size={16} /> : <IconRemoteDevices size={variant === 'page' ? 14 : 18} />}</span>
+        {variant !== 'icon' && !compact && <span className="min-w-0 flex-1 truncate text-left">{buttonLabel}</span>}
+        {running && variant !== 'page' && (
           <span
             aria-hidden="true"
             data-deck-web-running

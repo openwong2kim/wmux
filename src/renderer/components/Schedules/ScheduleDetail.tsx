@@ -9,7 +9,7 @@ import Badge from '../ui/Badge';
 import Switch from '../ui/Switch';
 import Dialog, { DialogFooter, DialogHeader } from '../ui/Dialog';
 import {
-  accountLabel, agentLabel, describeTrigger, formatDuration, formatWhen, resumeCommand, runStateLabel,
+  accountLabel, agentLabel, describeTrigger, folderName, formatDuration, formatWhen, resumeCommand, runStateLabel,
   BYPASS_DECLINED,
 } from './format';
 import { openAutomationRun } from './openRun';
@@ -24,11 +24,17 @@ function report(error: string | undefined, t: ReturnType<typeof useT>): void {
   useStore.getState().pushToast({ level: 'error', message: t('schedules.error', { error }) });
 }
 
-/** Selected schedule: what it runs, its policy, and its last runs. */
-export default function ScheduleDetail({ automation: a, accounts, onEdit }: {
+/**
+ * The selected schedule: a header that answers "is it on, and when next" with
+ * Run now and Edit beside it, one muted line for what it runs, then its run
+ * history (status dot, start, duration, result, open the run's workspace).
+ */
+export default function ScheduleDetail({ automation: a, accounts, onEdit, onDiscard }: {
   automation: Automation;
   accounts: AccountOption[];
   onEdit: () => void;
+  /** A proposed draft is discarded rather than deleted. */
+  onDiscard?: () => void;
 }) {
   const t = useT();
   const allRuns = useStore((s) => s.automationRuns);
@@ -61,58 +67,62 @@ export default function ScheduleDetail({ automation: a, accounts, onEdit }: {
     max: Math.round((a.policy.maxRunMinutes ?? AUTOMATION_DEFAULTS.maxRunMinutes) / 60 * 10) / 10,
   });
   const modeLabel = t(`schedules.mode.${a.permission.mode}`);
+  const next = a.enabled && a.nextRunAt !== null
+    ? t('schedules.nextRunLabel', { time: formatWhen(a.nextRunAt) })
+    : t('schedules.statusOff');
 
   return (
-    <div className="flex flex-col gap-4" data-schedule-detail={a.id}>
-      <div className="flex flex-wrap items-center gap-2">
-        <h3 className="min-w-0 flex-1 truncate text-[14px] font-semibold">{a.name}</h3>
-        {a.proposed && <Badge>{t('schedules.badgeProposed')}</Badge>}
+    <div className="wmux-schedule-detail" data-schedule-detail={a.id}>
+      <header className="wmux-schedule-detail-head">
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-2">
+            <h2 className="wmux-schedule-pane-title truncate">{a.name}</h2>
+            {a.proposed && <Badge>{t('schedules.badgeProposed')}</Badge>}
+            {a.permission.mode === 'bypass' && <Badge>{t('schedules.badgeBypass')}</Badge>}
+          </div>
+          <p className="wmux-schedule-detail-next" data-schedule-next>{`${describeTrigger(a)} · ${next}`}</p>
+        </div>
         {!a.proposed && (
-          <label className="flex items-center gap-2 text-[13px] text-[var(--text-sub)]">
-            {t('schedules.enabled')}
-            <Switch
-              checked={a.enabled}
-              disabled={busy || !api}
-              aria-label={t('schedules.enabled')}
-              onCheckedChange={(enabled) => void act((x) => x.setEnabled(a.id, enabled))}
-            />
-          </label>
+          <Switch
+            checked={a.enabled}
+            disabled={busy || !api}
+            aria-label={t('schedules.enabled')}
+            onCheckedChange={(enabled) => void act((x) => x.setEnabled(a.id, enabled))}
+          />
         )}
-        <Button variant="secondary" size="sm" onClick={onEdit}>
-          {a.proposed ? t('schedules.actionReview') : t('schedules.edit')}
-        </Button>
-        {/* An unreviewed draft never runs — not even as a test. */}
+        {/* An unreviewed draft never runs — not even by hand. */}
         {!a.proposed && (
           <Button
             variant="secondary"
             size="sm"
             disabled={busy || !api}
-            title={t('schedules.testRunHint')}
-            onClick={() => void act((x) => x.runNow(a.id, 'test'))}
+            onClick={() => void act(async (x) => {
+              const r = await x.runNow(a.id, 'manual');
+              if (r.ok) useStore.getState().pushToast({ level: 'info', message: t('schedules.runNowStarted') });
+              return r;
+            })}
             data-schedule-test-run
           >
-            {t('schedules.testRun')}
+            {t('schedules.runNow')}
           </Button>
         )}
-        <Button variant="destructive" size="sm" disabled={busy} onClick={() => setConfirmDelete(true)}>
-          {t('schedules.delete')}
+        <Button variant="secondary" size="sm" onClick={onEdit} data-schedule-edit>
+          {a.proposed ? t('schedules.actionReview') : t('schedules.edit')}
         </Button>
-      </div>
+        {a.proposed && onDiscard ? (
+          <Button variant="ghost" size="sm" onClick={onDiscard} data-schedule-discard>{t('schedules.discard')}</Button>
+        ) : (
+          <Button variant="ghost" size="sm" disabled={busy} onClick={() => setConfirmDelete(true)} data-schedule-delete>
+            {t('schedules.delete')}
+          </Button>
+        )}
+      </header>
 
-      <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-[13px]">
-        <dt className="text-[var(--text-sub)]">{t('schedules.schedule')}</dt>
-        <dd>{describeTrigger(a)}{a.enabled && a.nextRunAt !== null ? ` · ${t('schedules.nextRun', { time: formatWhen(a.nextRunAt) })}` : ''}</dd>
-        <dt className="text-[var(--text-sub)]">{t('schedules.folder')}</dt>
-        <dd className="min-w-0 truncate"><code className="ui-code">{a.action.cwd}</code></dd>
-        <dt className="text-[var(--text-sub)]">{t('schedules.agent')}</dt>
-        <dd>{`${agentLabel(a.action.agent)} · ${accountLabel(a, accounts)}${a.action.model ? ` · ${a.action.model}` : ''}`}</dd>
-        <dt className="text-[var(--text-sub)]">{t('schedules.permission')}</dt>
-        <dd className="flex items-center gap-2">
-          {modeLabel}
-          {a.permission.mode === 'scoped' && a.permission.allowedTools?.length
-            ? <code className="ui-code">{a.permission.allowedTools.join(', ')}</code> : null}
-        </dd>
-      </dl>
+      <p className="ui-note" data-schedule-facts>
+        <code className="ui-code">{folderName(a.action.cwd)}</code>
+        {` · ${agentLabel(a.action.agent)} · ${accountLabel(a, accounts)}${a.action.model ? ` · ${a.action.model}` : ''} · ${modeLabel}`}
+        {a.permission.mode === 'scoped' && a.permission.allowedTools?.length ? ` (${a.permission.allowedTools.join(', ')})` : ''}
+      </p>
 
       {isPermissionReset(a) && (
         <div className="ui-notice ui-row" data-schedule-permission-reset>
@@ -135,14 +145,12 @@ export default function ScheduleDetail({ automation: a, accounts, onEdit }: {
         </div>
       )}
 
-      <p className="ui-note" data-schedule-policy>{policy}</p>
-
-      <section className="flex flex-col gap-2">
-        <h4 className="ui-group-label">{t('schedules.history')}</h4>
+      <section className="wmux-schedule-history">
+        <h3 className="wmux-schedule-section-title">{t('schedules.history')}</h3>
         {runs.length === 0 ? (
           <p className="ui-note">{t('schedules.historyEmpty')}</p>
         ) : (
-          <ul className="ui-group">
+          <ul className="wmux-schedule-runs">
             {runs.map((run) => (
               <RunRow
                 key={run.id}
@@ -155,6 +163,7 @@ export default function ScheduleDetail({ automation: a, accounts, onEdit }: {
             ))}
           </ul>
         )}
+        <p className="ui-note" data-schedule-policy>{policy}</p>
       </section>
 
       {confirmDelete && createPortal(
@@ -189,19 +198,20 @@ function RunRow({ run, automation, showingOutput, onToggleOutput, onCancel }: {
 }) {
   const t = useT();
   const live = isLiveRun(run);
-  const parts = [
-    formatWhen(run.startedAt ?? run.scheduledFor),
-    formatDuration(run),
+  const result = [
     runStateLabel(run.state),
     run.reason ? t(`schedules.reason.${run.reason}`) : '',
     run.trigger === 'test' ? t('schedules.triggerTest') : run.trigger === 'manual' ? t('schedules.triggerManual') : '',
-  ].filter(Boolean);
+  ].filter(Boolean).join(' · ');
   return (
-    <li className="flex flex-col" data-run-row={run.id} data-run-state={run.state}>
-      <div className="ui-row">
-        <p className="ui-row-text ui-row-title">{parts.join(' · ')}</p>
+    <li className="wmux-schedule-run" data-run-row={run.id} data-run-state={run.state}>
+      <div className="wmux-schedule-run-line">
+        <span className="wmux-schedule-run-dot" data-tone={runTone(run)} aria-hidden="true" />
+        <span className="wmux-schedule-run-when">{formatWhen(run.startedAt ?? run.scheduledFor)}</span>
+        <span className="wmux-schedule-run-took">{formatDuration(run)}</span>
+        <span className="wmux-schedule-run-result">{result}</span>
         {live && run.ptyId && (
-          <Button variant="secondary" size="sm" onClick={() => void openAutomationRun(run.id)}>
+          <Button variant="secondary" size="sm" onClick={() => void openAutomationRun(run.id)} data-run-open>
             {t('schedules.actionOpen')}
           </Button>
         )}
@@ -222,6 +232,14 @@ function RunRow({ run, automation, showingOutput, onToggleOutput, onCancel }: {
       {showingOutput && <RunOutput run={run} automation={automation} />}
     </li>
   );
+}
+
+/** Status dot tone: live runs use the accent, outcomes their state colour. */
+function runTone(run: AutomationRun): 'live' | 'ok' | 'error' | 'muted' {
+  if (isLiveRun(run)) return 'live';
+  if (run.state === 'completed') return 'ok';
+  if (run.state === 'failed') return 'error';
+  return 'muted';
 }
 
 function RunOutput({ run, automation }: { run: AutomationRun; automation: Automation }) {

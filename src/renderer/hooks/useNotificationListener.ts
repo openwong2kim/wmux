@@ -20,6 +20,7 @@ import { unionSurfacePorts } from '../stores/slices/workspacePorts';
 import { FrameCoalescer } from '../utils/frameCoalescer';
 import { normalizeWorktreePath } from '../../shared/workTask';
 import { isBrainPtyId } from '../../shared/constants';
+import type { AppRoute } from '../stores/slices/uiSlice';
 
 /**
  * J3 §4 — cwd가 태스크 worktree 경계 안인지(best-effort, OSC 협조 기반). 정규화
@@ -158,6 +159,13 @@ export interface FocusTargetState {
    * — and here it errs the safe way: the jump fires an extra activation.
    */
   activeRemoteKey?: string | null;
+  /**
+   * The rail page the sheet shows. A jump lands on a pane, so it swaps the
+   * sheet back to Workspaces. Optional like the fields above: a fixture
+   * without it reads as "already on Workspaces".
+   */
+  appRoute?: AppRoute;
+  setAppRoute?: (route: AppRoute) => void;
 }
 
 /**
@@ -223,6 +231,9 @@ export function focusNotificationTarget(
   payload: { ptyId?: string | null; workspaceId?: string | null; surfaceId?: string | null },
 ): boolean {
   const state = getState();
+  const showWorkspaces = (): void => {
+    if (state.appRoute && state.appRoute !== 'workspaces') state.setAppRoute?.('workspaces');
+  };
   // Shared tail of both resolver branches: jump (workspace + pane +
   // surface + zoom coherence), then mark this surface's unread
   // notifications read and clear the ring iff something was marked.
@@ -236,6 +247,7 @@ export function focusNotificationTarget(
     // PANE_STASHED refusal instead — an agent rearranging the layout as a side
     // effect IS the surprise this feature exists to prevent.)
     if (stashed) state.unstashPane?.(paneId, workspaceId);
+    showWorkspaces();
     const fresh = activatePaneTarget(getState, { workspaceId, paneId, surfaceId });
     let markedAny = false;
     for (const n of fresh.notifications) {
@@ -277,6 +289,7 @@ export function focusNotificationTarget(
       if (ws.id !== state.activeWorkspaceId || state.activeRemoteKey) {
         state.setActiveWorkspace(ws.id);
       }
+      showWorkspaces();
       return true;
     }
   }

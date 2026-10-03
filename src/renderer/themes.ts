@@ -7,6 +7,8 @@ export type { XtermThemeColors };
 // ─── Theme IDs ─────────────────────────────────────────────────────────────
 
 export type BuiltinThemeId =
+  | 'tint' | 'zinc' | 'graphite' | 'paper' | 'amber-line'
+  | 'mono' | 'mono-light'
   | 'amber'
   | 'catppuccin-mocha' | 'monochrome' | 'stars-and-stripes'
   | 'red-dynasty' | 'nightowl' | 'void'
@@ -17,6 +19,13 @@ export type ThemeId = BuiltinThemeId | 'custom';
 // Curated xterm palettes. Built-in themes pick one of these; users can also
 // override their custom theme palette independently of the UI tokens.
 export type XtermPaletteId =
+  | 'tint-dark'
+  | 'zinc-dark'
+  | 'graphite-dark'
+  | 'paper-white'
+  | 'amber-line-dark'
+  | 'mono-dark'
+  | 'mono-light'
   | 'amber-graphite'
   | 'catppuccin-mocha'
   | 'tokyo-night'
@@ -30,6 +39,63 @@ export type XtermPaletteId =
   | 'paper-light';
 
 export const XTERM_PALETTES: Record<XtermPaletteId, XtermThemeColors> = {
+  // Terminal palettes for the five looks (2026-10-03). Each background is the
+  // look's opaque main surface — the terminal never goes translucent — and the
+  // cursor is the look's accent.
+  'tint-dark': {
+    background: '#1A171D', foreground: '#E9E6EE', cursor: '#9B8CFF', selectionBackground: '#3A3542',
+    black: '#24202A', red: '#FF7B7B', green: '#5FD39A', yellow: '#F2B25C',
+    blue: '#8AB4FF', magenta: '#C9A6FF', cyan: '#6FD6E0', white: '#E9E6EE',
+    brightBlack: '#6E6878', brightRed: '#FF9C9C', brightGreen: '#86E2B4', brightYellow: '#F6C987',
+    brightBlue: '#A9C8FF', brightMagenta: '#DCC2FF', brightCyan: '#97E4EB', brightWhite: '#F4F2F7',
+  },
+  'zinc-dark': {
+    background: '#09090B', foreground: '#E4E4E7', cursor: '#FAFAFA', selectionBackground: '#27272A',
+    black: '#18181B', red: '#F87171', green: '#4ADE80', yellow: '#FBBF24',
+    blue: '#60A5FA', magenta: '#C084FC', cyan: '#22D3EE', white: '#E4E4E7',
+    brightBlack: '#71717A', brightRed: '#FCA5A5', brightGreen: '#86EFAC', brightYellow: '#FDE68A',
+    brightBlue: '#93C5FD', brightMagenta: '#D8B4FE', brightCyan: '#67E8F9', brightWhite: '#FAFAFA',
+  },
+  'graphite-dark': {
+    background: '#0B0C0E', foreground: '#DFE3EA', cursor: '#4C8DFF', selectionBackground: '#1B2433',
+    black: '#1A1C21', red: '#FF6B6B', green: '#3FCF8E', yellow: '#F5A524',
+    blue: '#4C8DFF', magenta: '#B48CFF', cyan: '#3CC6D6', white: '#DFE3EA',
+    brightBlack: '#6F7682', brightRed: '#FF9191', brightGreen: '#6FDDAA', brightYellow: '#F8BD5A',
+    brightBlue: '#7AAAFF', brightMagenta: '#CBADFF', brightCyan: '#6BD5E1', brightWhite: '#EEF0F3',
+  },
+  'paper-white': {
+    background: '#FFFFFF', foreground: '#24242B', cursor: '#5B5BD6', selectionBackground: '#E4E4EA',
+    black: '#3F3F48', red: '#DC2626', green: '#16A34A', yellow: '#A16207',
+    blue: '#4F46E5', magenta: '#A21CAF', cyan: '#0E7490', white: '#ECECF0',
+    brightBlack: '#6B6B76', brightRed: '#B91C1C', brightGreen: '#15803D', brightYellow: '#854D0E',
+    brightBlue: '#4338CA', brightMagenta: '#86198F', brightCyan: '#155E75', brightWhite: '#17171C',
+  },
+  'amber-line-dark': {
+    background: '#121212', foreground: '#E8E4DC', cursor: '#E8A33D', selectionBackground: '#33302B',
+    black: '#212020', red: '#E8736B', green: '#7FC98A', yellow: '#E8A33D',
+    blue: '#8AAEE0', magenta: '#C79BC7', cyan: '#8FBFB2', white: '#E8E4DC',
+    brightBlack: '#6E6A63', brightRed: '#EE958F', brightGreen: '#A3D9AB', brightYellow: '#EFBD70',
+    brightBlue: '#A6C3EA', brightMagenta: '#D7B3D7', brightCyan: '#A8D1C6', brightWhite: '#F2F0EC',
+  },
+  // Adapted from MonoCode (hardbeat920/monocode@6bd432ca,
+  // src/features/terminal/ui/TerminalView.tsx), MIT License, Copyright (c) 2026 Nick
+  // ANSI_DARK / ANSI_LIGHT with the theme's own content colour as foreground.
+  // The background is the opaque theme base: the terminal grid never goes
+  // translucent, even when window glass is on.
+  'mono-dark': {
+    background: '#1A171B', foreground: '#E8E9ED', cursor: '#4DA3F5', selectionBackground: '#3E3A41',
+    black: '#1D2428', red: '#F87171', green: '#4ADE80', yellow: '#FBBF24',
+    blue: '#60A5FA', magenta: '#C084FC', cyan: '#22D3EE', white: '#E8EEF2',
+    brightBlack: '#64748B', brightRed: '#FCA5A5', brightGreen: '#86EFAC', brightYellow: '#FDE68A',
+    brightBlue: '#93C5FD', brightMagenta: '#D8B4FE', brightCyan: '#67E8F9', brightWhite: '#F8FAFC',
+  },
+  'mono-light': {
+    background: '#F7F7F7', foreground: '#2E2E2E', cursor: '#4078F2', selectionBackground: '#CFCFCF',
+    black: '#383A42', red: '#E45649', green: '#50A14F', yellow: '#C18401',
+    blue: '#4078F2', magenta: '#A626A4', cyan: '#0184BC', white: '#FAFAFA',
+    brightBlack: '#7C8591', brightRed: '#DF6B60', brightGreen: '#68B567', brightYellow: '#D19A2F',
+    brightBlue: '#5C89F5', brightMagenta: '#B54BB3', brightCyan: '#1F9CC9', brightWhite: '#FFFFFF',
+  },
   // Amber design system (designs/design-system-20260711): warm graphite base,
   // muted low-saturation ANSI hues so terminal output stays quiet next to the
   // single amber accent. Cursor is the amber — the one colored thing.
@@ -147,6 +213,54 @@ export interface UIThemeTokens {
 }
 
 export const UI_THEME_TOKENS: Record<BuiltinThemeId, UIThemeTokens> = {
+  // The five looks (owner decision 2026-10-03; tint is the default). Colour
+  // values follow the approved look sheet; bgSurface is the look's fill and
+  // bgMantle its sidebar. Style knobs live in THEME_STYLES below.
+  tint: {
+    bgBase: '#1A171D', bgSurface: '#25222A', bgMantle: '#18151C',
+    textMain: '#F4F2F7', textSub: '#C2BDC9', textMuted: '#8A8492',
+    accent: '#9B8CFF', accentSecondary: '#9B8CFF', success: '#5FD39A', danger: '#FF7B7B', warning: '#F2B25C',
+  },
+  zinc: {
+    bgBase: '#09090B', bgSurface: '#18181B', bgMantle: '#0C0C0E',
+    textMain: '#FAFAFA', textSub: '#D4D4D8', textMuted: '#71717A',
+    accent: '#FAFAFA', accentSecondary: '#FAFAFA', success: '#4ADE80', danger: '#F87171', warning: '#FBBF24',
+  },
+  graphite: {
+    bgBase: '#0B0C0E', bgSurface: '#1A1C21', bgMantle: '#111215',
+    textMain: '#EEF0F3', textSub: '#B9BEC7', textMuted: '#6F7682',
+    accent: '#4C8DFF', accentSecondary: '#4C8DFF', success: '#3FCF8E', danger: '#FF6B6B', warning: '#F5A524',
+  },
+  paper: {
+    bgBase: '#FFFFFF', bgSurface: '#ECECF0', bgMantle: '#F3F3F5',
+    textMain: '#17171C', textSub: '#3F3F48', textMuted: '#8A8A96',
+    accent: '#5B5BD6', accentSecondary: '#5B5BD6', success: '#16A34A', danger: '#DC2626', warning: '#C2700A',
+  },
+  'amber-line': {
+    bgBase: '#121212', bgSurface: '#212020', bgMantle: '#161616',
+    textMain: '#F2F0EC', textSub: '#C9C5BD', textMuted: '#85817A',
+    accent: '#E8A33D', accentSecondary: '#E8A33D', success: '#7FC98A', danger: '#E8736B', warning: '#E8A33D',
+  },
+  // The default look (owner decision 2026-10-03). Adapted from MonoCode
+  // (hardbeat920/monocode@6bd432ca, src/styles/index.css), MIT License,
+  // Copyright (c) 2026 Nick. Zero-saturation greys from one lightness pair
+  // (base 9% / content 92%, light 97% / 18%); surface = content 7% over the
+  // base, sub = content 60%, muted = content 40% (45% in light). One accent,
+  // hsl(211 92% 62%), for selection, focus, primary actions and "needs you";
+  // done emerald-400 and error red-400 (Tailwind palette, as the source uses)
+  // stay for diffs and failures. Running is muted (agentStatusIcon.ts).
+  // Dark carries a faint warm-violet cast (base ≈ rgb(26,23,27)) and three
+  // text levels: bright primary, mid-grey secondary, dim tertiary.
+  mono: {
+    bgBase: '#1A171B', bgSurface: '#2A272C', bgMantle: '#171419',
+    textMain: '#E8E9ED', textSub: '#85868B', textMuted: '#626167',
+    accent: '#459BF7', accentSecondary: '#459BF7', success: '#34D399', danger: '#F87171', warning: '#FBBF24',
+  },
+  'mono-light': {
+    bgBase: '#F7F7F7', bgSurface: '#EBEBEB', bgMantle: '#F7F7F7',
+    textMain: '#2E2E2E', textSub: '#7E7E7E', textMuted: '#9C9C9C',
+    accent: '#459BF7', accentSecondary: '#459BF7', success: '#059669', danger: '#DC2626', warning: '#B45309',
+  },
   // The redesign default (designs/design-system-20260711/wmux-FINAL-amber.html).
   // Three decisions: ONE amber for action/focus/attention; warm graphite (not
   // blue-ink) neutrals for everything else; hierarchy from typography, not
@@ -207,6 +321,13 @@ export const UI_THEME_TOKENS: Record<BuiltinThemeId, UIThemeTokens> = {
 
 // Which xterm palette each built-in theme uses for terminal rendering.
 export const BUILTIN_XTERM_PALETTE: Record<BuiltinThemeId, XtermPaletteId> = {
+  tint: 'tint-dark',
+  zinc: 'zinc-dark',
+  graphite: 'graphite-dark',
+  paper: 'paper-white',
+  'amber-line': 'amber-line-dark',
+  mono: 'mono-dark',
+  'mono-light': 'mono-light',
   amber: 'amber-graphite',
   'catppuccin-mocha': 'catppuccin-mocha',
   monochrome: 'monochrome',
@@ -221,6 +342,119 @@ export const BUILTIN_XTERM_PALETTE: Record<BuiltinThemeId, XtermPaletteId> = {
 // Populate XTERM_THEMES from the palette map (for legacy consumers).
 for (const id of Object.keys(UI_THEME_TOKENS) as BuiltinThemeId[]) {
   XTERM_THEMES[id] = XTERM_PALETTES[BUILTIN_XTERM_PALETTE[id]];
+}
+
+// ─── Per-theme style knobs ──────────────────────────────────────────────────
+//
+// A theme is more than colour: its UI face, how round a chip is, how a
+// selected row is marked, whether group labels are uppercase and tracked,
+// whether an active tab is underlined, and whether the window may go
+// translucent. Every knob is optional; a theme without an entry (all the
+// themes that shipped before the five looks) keeps exactly today's look,
+// because the CSS defaults in globals.css are today's values.
+
+export type SelectionStyle = 'fill' | 'fill-ring' | 'left-bar';
+
+export interface ThemeStyle {
+  /** UI font stack (CSS `font-family`). Default: the platform UI face. */
+  uiFont?: string;
+  /** Chip / picker radius in px; 999 = full round. Default 6. */
+  chipRadius?: number;
+  /** How a selected row is drawn. Default 'fill'. */
+  selection?: SelectionStyle;
+  /** Selected-row fill. Default: the content-mix --selection. */
+  selectionFill?: string;
+  /** Ring colour for 'fill-ring' (defaults to `stroke`). */
+  selectionRing?: string;
+  /** Group labels (sidebar section heads): uppercase + letter-spacing. */
+  groupLabel?: { uppercase: boolean; tracking: string };
+  /** Active tab marker: a fill only, or a fill plus an accent underline. */
+  tabIndicator?: 'fill' | 'underline';
+  /** May the window chrome go translucent (macOS, dark)? Default true. */
+  glass?: boolean;
+  /** Hairline colour. Default: the content-mix --stroke. */
+  stroke?: string;
+  /** The solid primary action. Default: white / ink by polarity. */
+  primary?: { fill: string; ink: string };
+  /** Title weight (row titles). Default 600. */
+  titleWeight?: number;
+  /** The window frame around the floating sheet (titlebar, margins), hex.
+   *  Default: --app-bg, a step darker than the base. */
+  frame?: string;
+  /** The sheet's 1px edge against the frame. Default: --stroke. */
+  sheetEdge?: string;
+}
+
+const GEIST = "'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif";
+
+export const THEME_STYLES: Partial<Record<BuiltinThemeId, ThemeStyle>> = {
+  tint: {
+    uiFont: GEIST, chipRadius: 7, selection: 'fill', selectionFill: 'color-mix(in srgb, var(--text-main) 9%, transparent)',
+    groupLabel: { uppercase: false, tracking: 'normal' }, tabIndicator: 'fill', glass: true,
+    stroke: 'color-mix(in srgb, var(--text-main) 7%, transparent)', primary: { fill: '#F4F2F7', ink: '#1A171D' }, titleWeight: 500,
+    frame: '#121015', sheetEdge: 'color-mix(in srgb, var(--text-main) 10%, transparent)',
+  },
+  zinc: {
+    uiFont: GEIST, chipRadius: 6, selection: 'fill-ring', selectionFill: '#18181B', selectionRing: '#27272A',
+    groupLabel: { uppercase: false, tracking: 'normal' }, tabIndicator: 'fill', glass: false,
+    stroke: '#27272A', primary: { fill: '#FAFAFA', ink: '#09090B' }, titleWeight: 500,
+    frame: '#000000', sheetEdge: '#27272A',
+  },
+  graphite: {
+    uiFont: "'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif", chipRadius: 999,
+    selection: 'fill', selectionFill: '#1B2433',
+    groupLabel: { uppercase: true, tracking: '0.06em' }, tabIndicator: 'underline', glass: false,
+    stroke: '#1D1F24', primary: { fill: '#4C8DFF', ink: '#FFFFFF' }, titleWeight: 500,
+    frame: '#060708', sheetEdge: '#23262C',
+  },
+  paper: {
+    uiFont: "'Figtree', system-ui, -apple-system, 'Segoe UI', sans-serif", chipRadius: 7,
+    selection: 'fill', selectionFill: '#E4E4EA',
+    groupLabel: { uppercase: false, tracking: 'normal' }, tabIndicator: 'fill', glass: false,
+    stroke: '#E6E6EA', primary: { fill: '#17171C', ink: '#FFFFFF' }, titleWeight: 500,
+    frame: '#ECECEF', sheetEdge: '#DADAE0',
+  },
+  'amber-line': {
+    uiFont: GEIST, chipRadius: 6, selection: 'left-bar', selectionFill: '#24221F',
+    groupLabel: { uppercase: false, tracking: 'normal' }, tabIndicator: 'underline', glass: false,
+    stroke: '#262523', primary: { fill: '#E8A33D', ink: '#1A1408' }, titleWeight: 500,
+    frame: '#0B0B0B', sheetEdge: '#2C2B29',
+  },
+};
+
+/**
+ * The CSS custom properties a theme's style knobs set on its [data-theme]
+ * block. Knobs left unset emit nothing, so the :root defaults (today's look)
+ * apply. globals.css carries exactly this output (locked by
+ * themeStyles.test.ts).
+ */
+export function themeStyleCssVars(style: ThemeStyle | undefined, accent: string): Record<string, string> {
+  if (!style) return {};
+  const out: Record<string, string> = {};
+  if (style.uiFont) out['--font-ui'] = style.uiFont;
+  if (style.chipRadius !== undefined) out['--chip-radius'] = `${style.chipRadius}px`;
+  if (style.selectionFill) out['--selection'] = style.selectionFill;
+  if (style.selection) {
+    const ring = style.selectionRing ?? style.stroke ?? 'transparent';
+    out['--select-ring'] = style.selection === 'fill-ring'
+      ? `inset 0 0 0 1px ${ring}`
+      : style.selection === 'left-bar' ? `inset 2px 0 0 ${accent}` : 'none';
+  }
+  if (style.groupLabel) {
+    out['--group-case'] = style.groupLabel.uppercase ? 'uppercase' : 'none';
+    out['--group-track'] = style.groupLabel.tracking;
+  }
+  if (style.tabIndicator) out['--tab-underline'] = style.tabIndicator === 'underline' ? '2px' : '0px';
+  if (style.glass !== undefined) out['--theme-glass'] = style.glass ? '1' : '0';
+  if (style.stroke) out['--stroke'] = style.stroke;
+  if (style.primary) {
+    out['--primary-fill'] = style.primary.fill;
+    out['--primary-ink'] = style.primary.ink;
+  }
+  if (style.titleWeight !== undefined) out['--title-weight'] = String(style.titleWeight);
+  if (style.frame) out['--frame-bg'] = style.frame;
+  if (style.sheetEdge) out['--sheet-edge'] = style.sheetEdge;
+  return out;
 }
 
 // ─── Full 14-var CSS palette (derived from 11 manual tokens) ────────────────
@@ -352,6 +586,13 @@ for (const id of Object.keys(UI_THEME_TOKENS) as BuiltinThemeId[]) {
 // SSOT, and its `custom` entry was a frozen snapshot — removed once the picker,
 // its only consumer, stopped reading it.)
 export const THEME_OPTIONS: Array<{ value: ThemeId; label: string }> = [
+  { value: 'tint',              label: 'Tint' },
+  { value: 'zinc',              label: 'Zinc' },
+  { value: 'graphite',          label: 'Graphite' },
+  { value: 'paper',             label: 'Paper' },
+  { value: 'amber-line',        label: 'Amber Line' },
+  { value: 'mono',              label: 'Mono' },
+  { value: 'mono-light',        label: 'Mono Light' },
   { value: 'amber',             label: 'Amber' },
   { value: 'catppuccin-mocha',  label: 'Catppuccin' },
   { value: 'stars-and-stripes', label: 'Stars & Stripes' },
@@ -365,6 +606,13 @@ export const THEME_OPTIONS: Array<{ value: ThemeId; label: string }> = [
 ];
 
 export const XTERM_PALETTE_OPTIONS: Array<{ value: XtermPaletteId; label: string }> = [
+  { value: 'tint-dark',        label: 'Tint' },
+  { value: 'zinc-dark',        label: 'Zinc' },
+  { value: 'graphite-dark',    label: 'Graphite' },
+  { value: 'paper-white',      label: 'Paper (white)' },
+  { value: 'amber-line-dark',  label: 'Amber Line' },
+  { value: 'mono-dark',        label: 'Mono' },
+  { value: 'mono-light',       label: 'Mono (light)' },
   { value: 'amber-graphite',   label: 'Amber Graphite' },
   { value: 'catppuccin-mocha', label: 'Catppuccin Mocha' },
   { value: 'tokyo-night',      label: 'Tokyo Night' },

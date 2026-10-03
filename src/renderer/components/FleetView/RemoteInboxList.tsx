@@ -1,3 +1,4 @@
+// Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx), MIT License, Copyright (c) 2026 Nick
 import { useT } from '../../hooks/useT';
 import type { RemoteInboxItem } from '../../../shared/lanlink';
 
@@ -27,7 +28,7 @@ export default function RemoteInboxList({ items, focusedIdx, onDismiss }: Remote
   if (items.length === 0) return null;
 
   return (
-    <div role="listbox" aria-label={t('fleet.tab.remote')} className="flex flex-col gap-2">
+    <div role="listbox" aria-label={t('fleet.tab.remote')} className="flex flex-col gap-0.5">
       {items.map((item, idx) => {
         const focused = idx === focusedIdx;
         return (
@@ -38,21 +39,19 @@ export default function RemoteInboxList({ items, focusedIdx, onDismiss }: Remote
             tabIndex={focused ? 0 : -1}
             data-inbox-row
             data-source="remote"
-            className="flex flex-col gap-2 p-3 rounded-[7px] outline-none"
+            className="flex flex-col gap-2 px-2.5 py-2 rounded-md outline-none"
             style={{
-              backgroundColor: 'var(--bg-surface)',
-              border: `1px solid ${focused ? 'var(--accent-blue)' : 'var(--bg-overlay)'}`,
-              boxShadow: focused ? '0 0 0 1px var(--accent-blue)' : undefined,
+              backgroundColor: focused ? 'var(--selection)' : 'transparent',
+              border: `1px solid ${focused ? 'var(--accent)' : 'transparent'}`,
             }}
           >
             <div className="flex items-center gap-2 min-w-0">
               {/* "remote peer" badge — marks the message as off-machine / untrusted. */}
               <span
-                className="text-[10px] font-mono px-2 py-0.5 rounded shrink-0"
+                className="text-[11px] px-2 py-0.5 rounded-md shrink-0"
                 style={{
-                  backgroundColor: 'var(--bg-surface)',
-                  color: 'var(--accent-blue)',
-                  border: '1px solid var(--bg-overlay)',
+                  backgroundColor: 'var(--selection)',
+                  color: 'color-mix(in srgb, var(--text-main) 70%, transparent)',
                 }}
               >
                 {t('fleet.remote.peerBadge')}
@@ -75,7 +74,7 @@ export default function RemoteInboxList({ items, focusedIdx, onDismiss }: Remote
                 aria-label={t('fleet.remote.dismiss')}
                 tabIndex={focused ? 0 : -1}
                 onClick={(e) => { e.stopPropagation(); onDismiss(item.recordId); }}
-                className="px-2 py-0.5 rounded-[5px] text-xs shrink-0 transition-colors text-[var(--text-subtle)] hover:bg-[var(--bg-overlay)] hover:text-[var(--text-main)]"
+                className="px-2 py-0.5 rounded-md text-xs shrink-0 transition-colors text-[color-mix(in_srgb,var(--text-main)_50%,transparent)] hover:bg-[var(--selection)] hover:text-[var(--text-main)]"
               >
                 ✕
               </button>

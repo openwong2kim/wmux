@@ -52,7 +52,8 @@ describe('Titlebar macOS traffic-light reserve', () => {
     const { header, segment } = render();
     expect(header.style.paddingLeft).toBe('0px');
     expect(segment.style.paddingLeft).toBe(`${MAC_TRAFFIC_LIGHT_RESERVE}px`);
-    expect(segment.style.width).toBe('264px');
+    // The segment spans the 48px icon rail plus the sheet sidebar (+1px edge).
+    expect(segment.style.width).toBe('313px');
   });
 
   // #1481 — the segment follows the user's dragged width (DESIGN.md: the
@@ -60,7 +61,7 @@ describe('Titlebar macOS traffic-light reserve', () => {
   it('tracks a resized sidebar width', () => {
     act(() => useStore.setState({ sidebarPosition: 'left', sidebarVisible: true, sidebarWidth: 332 }));
     const { segment } = render();
-    expect(segment.style.width).toBe('332px');
+    expect(segment.style.width).toBe('381px');
   });
 
   it('미니 사이드바(48px): 세그먼트가 예약보다 좁으니 헤더가 예약을 진다', () => {

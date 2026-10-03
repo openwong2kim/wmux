@@ -224,6 +224,7 @@ export function createPrefixActions(deps: PrefixActionDeps): Record<string, () =
       const currentIdx = workspaces.findIndex((w) => w.id === activeWorkspaceId);
       const nextIdx = (currentIdx + 1) % workspaces.length;
       store.getState().setActiveWorkspace(workspaces[nextIdx].id);
+      store.getState().setAppRoute('workspaces');
     },
     prevWorkspace: () => {
       const { workspaces, activeWorkspaceId } = store.getState();
@@ -231,6 +232,7 @@ export function createPrefixActions(deps: PrefixActionDeps): Record<string, () =
       const currentIdx = workspaces.findIndex((w) => w.id === activeWorkspaceId);
       const prevIdx = (currentIdx - 1 + workspaces.length) % workspaces.length;
       store.getState().setActiveWorkspace(workspaces[prevIdx].id);
+      store.getState().setAppRoute('workspaces');
     },
     hideWindow: () => { electronAPI.window.hide(); },
     toggleZoom: () => {
@@ -320,6 +322,8 @@ export function useKeyboard() {
       const { workspaces } = store.getState();
       if (idx >= 0 && idx < workspaces.length) {
         store.getState().setActiveWorkspace(workspaces[idx].id);
+        // Switching workspace means "show me that workspace", from any page.
+        store.getState().setAppRoute('workspaces');
       }
     };
     // Terminal font zoom writes through setTerminalFontSize, so xterm picks
@@ -458,6 +462,7 @@ export function useKeyboard() {
         if (unread.length > 0) {
           const latest = unread[0];
           state.setActiveWorkspace(latest.workspaceId);
+          state.setAppRoute('workspaces');
           state.markRead(latest.id);
         }
       },

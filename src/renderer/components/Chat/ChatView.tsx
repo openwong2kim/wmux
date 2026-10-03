@@ -4,7 +4,7 @@ import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { useTranscript } from './useTranscript';
 import { transcriptMessages } from './chatMessages';
-import { ChatPtyContext } from './ChatMessage';
+import { ChatPtyContext, UserText } from './ChatMessage';
 
 import { chatRunState } from './chatRunState';
 import { ChatProgress } from './ChatProgress';
@@ -258,7 +258,7 @@ function ChatThread({ ptyId, data, onTerminal }: { ptyId: string; data: ReturnTy
       </button>}
       pending={pending.map((item) => <div key={item.id} className="wmux-chat-message wmux-chat-user wmux-chat-pending">
         <ChatSentImages images={item.images} />
-        <div className="wmux-chat-user-text">{item.text}</div>
+        <UserText>{item.text}</UserText>
         <p className="wmux-chat-pending-caption">{t(item.queued ? 'chat.queued' : 'chat.pendingSent')}</p>
       </div>)}
       composerOptions={canLaunch && <div className="wmux-chat-launch-options">

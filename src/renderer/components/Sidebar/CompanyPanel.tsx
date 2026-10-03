@@ -1,3 +1,4 @@
+// Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx), MIT License, Copyright (c) 2026 Nick
 import { useState } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
@@ -61,20 +62,20 @@ function DeptSection({ dept, pendingCounts }: { dept: Department; pendingCounts:
 
       {/* Delete confirm */}
       {confirmDelete && (
-        <div className="mx-2 mb-1 px-2 py-1.5 rounded" style={{ backgroundColor: 'var(--bg-surface)', border: '1px solid rgba(243,139,168,0.3)' }}>
+        <div className="mx-2 mb-1 px-2 py-1.5 rounded-md" style={{ backgroundColor: 'var(--bg-surface)', border: '1px solid rgba(243,139,168,0.3)' }}>
           <p className="text-[10px] font-mono mb-1.5" style={{ color: 'var(--accent-red)' }}>
             {t('company.removeDeptConfirm', { name: dept.name })}
           </p>
           <div className="flex gap-1.5">
             <button
-              className="flex-1 text-[10px] font-mono rounded py-0.5 transition-colors"
+              className="flex-1 text-[10px] font-mono rounded-md py-0.5 transition-colors"
               style={{ backgroundColor: 'var(--accent-red)', color: 'var(--bg-base)' }}
               onClick={() => { removeDepartment(dept.id); setConfirmDelete(false); }}
             >
               {t('common.remove')}
             </button>
             <button
-              className="flex-1 text-[10px] font-mono rounded py-0.5 transition-colors"
+              className="flex-1 text-[10px] font-mono rounded-md py-0.5 transition-colors"
               style={{ color: 'var(--text-muted)', border: '1px solid var(--text-muted)' }}
               onClick={() => setConfirmDelete(false)}
             >
@@ -198,7 +199,7 @@ export default function CompanyPanel() {
         </p>
         <button
           onClick={() => setCompanyViewVisible(true)}
-          className="px-4 py-1.5 text-[11px] font-mono font-bold rounded transition-opacity hover:opacity-90"
+          className="px-4 py-1.5 text-[11px] font-mono font-bold rounded-md transition-opacity hover:opacity-90"
           style={{ backgroundColor: 'var(--accent)', color: 'var(--bg-base)' }}
         >
           {t('company.create')}

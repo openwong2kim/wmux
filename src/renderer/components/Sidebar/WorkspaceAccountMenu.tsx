@@ -1,3 +1,4 @@
+// Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx), MIT License, Copyright (c) 2026 Nick
 import { useState, useEffect, useCallback } from 'react';
 import { IconChevron } from '../icons';
 import { useT } from '../../hooks/useT';
@@ -83,7 +84,7 @@ export default function WorkspaceAccountMenu({
             </button>
             {openVendor === vendor && (
               <div
-                className={`absolute top-0 ${submenuPos} min-w-[200px] max-w-[300px] py-1 rounded-[7px] shadow-xl sidebar-popover-enter`}
+                className={`absolute top-0 ${submenuPos} min-w-[200px] max-w-[300px] py-1 rounded-xl shadow-xl sidebar-popover-enter`}
                 style={{ background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
               >
                 {/* Default (unbind) */}

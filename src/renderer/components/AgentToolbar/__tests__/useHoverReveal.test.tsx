@@ -25,8 +25,8 @@ const HOST_RECT = {
   toJSON: () => ({}),
 } as DOMRect;
 
-/** Mirrors ToolbarHost: the 36px bar plus its 8px margin. */
-const KEEP_ALIVE_PX = 44;
+/** Mirrors ToolbarHost: the 40px bar plus its 8px margin. */
+const KEEP_ALIVE_PX = 48;
 
 let focusReveal: (() => void) | null = null;
 

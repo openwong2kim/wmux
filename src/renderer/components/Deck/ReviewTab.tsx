@@ -336,10 +336,11 @@ export function ReviewTab(): React.ReactElement {
 
   return (
     <div data-review-tab className="flex flex-col flex-1 min-h-0 text-[12px]">
-      {/* Header — 36px chrome row, mirrors GitTab's. */}
+      {/* Header — 40px chrome row, mirrors GitTab's.
+          Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx), MIT License, Copyright (c) 2026 Nick */}
       <div
-        className="flex items-center gap-2 h-9 px-3 shrink-0 border-b border-[var(--bg-surface)]"
-        style={{ borderColor: 'var(--border-soft)' }}
+        className="flex items-center gap-2 h-10 px-3 shrink-0 border-b border-[var(--bg-surface)]"
+        style={{ borderColor: 'var(--stroke)' }}
         {...tokenAttrs('bgSurface', 'border')}
       >
         <span className="font-semibold text-[var(--text-main)]" {...tokenAttrs('textMain', 'text')}>
@@ -356,7 +357,7 @@ export function ReviewTab(): React.ReactElement {
           onClick={() => void load()}
           title={t('review.refresh') || 'Refresh'}
           aria-label={t('review.refresh') || 'Refresh'}
-          className={`flex items-center justify-center w-6 h-6 rounded text-[var(--text-muted)] hover:text-[var(--text-sub)] transition-colors ${FOCUS_RING}`}
+          className={`flex items-center justify-center w-6 h-6 rounded-md text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--hover-fill)] transition-colors ${FOCUS_RING}`}
           {...tokenAttrs('textMuted', 'text')}
         >
           <svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden="true">

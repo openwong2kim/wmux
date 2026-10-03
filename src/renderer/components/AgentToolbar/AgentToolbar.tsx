@@ -11,8 +11,12 @@ import BroadcastPopover from './BroadcastPopover';
 import SessionSchedulesPopover from './SessionSchedulesPopover';
 import { IconPaperclip, IconFolder, IconStar, IconKeyboard, IconPlus, IconUsers, IconSparkles, IconLock, IconClock } from '../icons';
 
-/** Bar height — also the travel distance of the reveal transform. */
-export const AGENT_TOOLBAR_HEIGHT = 36;
+/**
+ * Bar height — also the travel distance of the reveal transform. The 40px
+ * chrome module.
+ * Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/TitleBar.tsx), MIT License, Copyright (c) 2026 Nick
+ */
+export const AGENT_TOOLBAR_HEIGHT = 40;
 
 /** Marks a surface that BELONGS to the toolbar even though it renders through
  *  a portal. The outside-click test consults it, so a portalled popover is not
@@ -155,7 +159,7 @@ export default function AgentToolbar({ barHandlers, revealed, onHoldChange, onFo
   // `pointer-events-auto` on every control: the bar's own background stays
   // transparent to the terminal underneath (see the container style), so each
   // interactive child has to claim its own hit area.
-  const btn = 'pointer-events-auto inline-flex items-center gap-1.5 px-2.5 py-1 rounded-[5px] border border-transparent text-[11px] transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+  const btn = 'pointer-events-auto inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-transparent text-[11px] transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
   const idle = 'ui-ghost';
   const active = 'ui-ghost-active';
 
@@ -170,7 +174,7 @@ export default function AgentToolbar({ barHandlers, revealed, onHoldChange, onFo
       // out of this box. html/body already clip, so the hidden bar's
       // translateY cannot produce a scrollbar — but it does leave programmatic
       // scroll range below the app shell, which pinChromeScroll undoes (#1679).
-      className="wmux-toolbar absolute inset-x-0 bottom-0 z-30 flex items-center gap-2 h-9 px-2.5 border-t border-[var(--bg-surface)] bg-[var(--bg-mantle)] transition-transform duration-150 ease-out"
+      className="wmux-toolbar absolute inset-x-0 bottom-0 z-30 flex items-center gap-2 h-10 px-2.5 border-t border-[var(--stroke)] bg-[var(--bg-mantle)] transition-transform duration-150 ease-out"
       style={{
         transform: revealed ? 'translateY(0)' : `translateY(${AGENT_TOOLBAR_HEIGHT}px)`,
         // The bar's own background never takes pointer events: it covers the

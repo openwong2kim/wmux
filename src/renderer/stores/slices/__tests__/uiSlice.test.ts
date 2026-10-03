@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { createUISlice, siteGuidesAutoEnablePatch, fleetChangedSinceSeen, type UISlice } from '../uiSlice';
+import { createSchedulesSlice, type SchedulesSlice } from '../schedulesSlice';
 
 // Mock browser APIs that uiSlice touches
 vi.mock('../../../i18n', () => ({
@@ -612,15 +613,6 @@ describe('UISlice — Fleet View overlay (S-C1)', () => {
     store = createTestStore();
   });
 
-  it('keeps the jump preference across toggles but defaults off in a fresh session', () => {
-    expect(store.getState().fleetKeepOpenAfterJump).toBe(false);
-    store.getState().setFleetKeepOpenAfterJump(true);
-    store.getState().toggleFleetView();
-    store.getState().toggleFleetView();
-    expect(store.getState().fleetKeepOpenAfterJump).toBe(true);
-    expect(createTestStore().getState().fleetKeepOpenAfterJump).toBe(false);
-  });
-
   it('fleetViewVisible defaults to false', () => {
     expect(store.getState().fleetViewVisible).toBe(false);
   });
@@ -657,21 +649,20 @@ describe('UISlice — Fleet View overlay (S-C1)', () => {
     expect(store.getState().commandPaletteVisible).toBe(true);
   });
 
-  it('opening a competing overlay closes Fleet View (mutual exclusivity)', () => {
-    store.getState().setFleetViewVisible(true);
-    store.getState().toggleCommandPalette();
-    expect(store.getState().commandPaletteVisible).toBe(true);
-    expect(store.getState().fleetViewVisible).toBe(false);
-
+  it('opening another page closes Fleet View; the palette and notifications float over it', () => {
     store.getState().setFleetViewVisible(true);
     store.getState().toggleSettingsPanel();
     expect(store.getState().settingsPanelVisible).toBe(true);
     expect(store.getState().fleetViewVisible).toBe(false);
 
     store.getState().setFleetViewVisible(true);
+    store.getState().toggleCommandPalette();
+    expect(store.getState().commandPaletteVisible).toBe(true);
+    expect(store.getState().fleetViewVisible).toBe(true);
+
     store.getState().toggleNotificationPanel();
     expect(store.getState().notificationPanelVisible).toBe(true);
-    expect(store.getState().fleetViewVisible).toBe(false);
+    expect(store.getState().fleetViewVisible).toBe(true);
   });
 
   it('opening Fleet View tears down inspect mode', () => {
@@ -875,5 +866,85 @@ describe('UISlice — Fleet "changed since you last looked" snapshot', () => {
     store.getState().setFleetLastSeen(statuses);
     statuses['pty-1'].status = 'error';
     expect(store.getState().fleetLastSeen?.statuses['pty-1'].status).toBe('running');
+  });
+});
+
+// The rail swaps the whole sheet to one page at a time; the old per-overlay
+// flags are mirrors of that one route.
+describe('UISlice — rail route', () => {
+  const createRouteStore = () => create<UISlice & SchedulesSlice>()(
+    immer((...args) => ({
+      // @ts-expect-error — minimal test store doesn't match full StoreState
+      ...createUISlice(...args),
+      // @ts-expect-error — same
+      ...createSchedulesSlice(...args),
+    })),
+  );
+  let store: ReturnType<typeof createRouteStore>;
+
+  beforeEach(() => {
+    store = createRouteStore();
+  });
+
+  const mirrors = () => {
+    const s = store.getState();
+    return { fleet: s.fleetViewVisible, schedules: s.schedulesViewOpen, settings: s.settingsPanelVisible };
+  };
+
+  it('starts on Workspaces with every page closed', () => {
+    expect(store.getState().appRoute).toBe('workspaces');
+    expect(mirrors()).toEqual({ fleet: false, schedules: false, settings: false });
+  });
+
+  it('shows exactly one page and writes the mirrors from it', () => {
+    store.getState().setAppRoute('fleet');
+    expect(mirrors()).toEqual({ fleet: true, schedules: false, settings: false });
+    store.getState().setAppRoute('schedules');
+    expect(mirrors()).toEqual({ fleet: false, schedules: true, settings: false });
+    store.getState().setAppRoute('remote');
+    expect(mirrors()).toEqual({ fleet: false, schedules: false, settings: false });
+    store.getState().setAppRoute('settings');
+    expect(mirrors()).toEqual({ fleet: false, schedules: false, settings: true });
+    store.getState().setAppRoute('workspaces');
+    expect(mirrors()).toEqual({ fleet: false, schedules: false, settings: false });
+  });
+
+  it('closing a page that is not shown leaves the current page alone', () => {
+    store.getState().setAppRoute('remote');
+    store.getState().setFleetViewVisible(false);
+    store.getState().setSettingsPanelVisible(false);
+    store.getState().closeSchedulesView();
+    expect(store.getState().appRoute).toBe('remote');
+  });
+
+  it('routes the legacy openers and closers through the route', () => {
+    store.getState().openSchedulesView('auto-1');
+    expect(store.getState().appRoute).toBe('schedules');
+    expect(store.getState().schedulesSelectedId).toBe('auto-1');
+    store.getState().toggleSchedulesView();
+    expect(store.getState().appRoute).toBe('workspaces');
+    store.getState().toggleSettingsPanel();
+    expect(store.getState().appRoute).toBe('settings');
+    store.getState().toggleSettingsPanel();
+    expect(store.getState().appRoute).toBe('workspaces');
+  });
+
+  it('a new page closes the palette and notifications; the same page does not', () => {
+    store.getState().setAppRoute('fleet');
+    store.setState({ commandPaletteVisible: true, notificationPanelVisible: true });
+    store.getState().setAppRoute('fleet');
+    expect(store.getState().commandPaletteVisible).toBe(true);
+    store.getState().setAppRoute('settings');
+    expect(store.getState().commandPaletteVisible).toBe(false);
+    expect(store.getState().notificationPanelVisible).toBe(false);
+  });
+
+  it('leaving Settings tears inspect down; staying keeps it', () => {
+    store.getState().setAppRoute('settings');
+    store.setState({ inspectModeActive: true, inspectMinimized: true });
+    store.getState().setAppRoute('settings');
+    expect(store.getState().inspectModeActive).toBe(true);
+    store.getState().setAppRoute('workspaces');
+    expect(store.getState().inspectModeActive).toBe(false);
   });
 });

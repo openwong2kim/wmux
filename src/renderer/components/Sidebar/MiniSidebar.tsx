@@ -1,4 +1,5 @@
-import { useCallback, useRef, useState } from 'react';
+// Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx), MIT License, Copyright (c) 2026 Nick
+import { useCallback, useRef, useState, type KeyboardEvent } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { selectWorkspaceRailSummary } from '../../stores/selectors/workspaceProjections';
@@ -7,7 +8,7 @@ import { useT } from '../../hooks/useT';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
 import { useGlanceBoardOrder } from './useGlanceBoardOrder';
 import { tokenAttrs } from '../../themes';
-import { expandDirection } from './sidebarGlyphs';
+import { collapseDirection, expandDirection } from './sidebarGlyphs';
 import { IconPlus, IconChevronDir, IconGear } from '../icons';
 import { FOCUS_RING } from '../focusRing';
 import SidebarNavigation from './SidebarNavigation';
@@ -17,7 +18,17 @@ import PresetPicker from './PresetPicker';
 /** PresetPicker width (w-52), used to keep the flyout on-screen. */
 const PICKER_MENU_WIDTH = 208;
 
-export default function MiniSidebar() {
+/**
+ * `rail` (desktop): the icon rail on the window frame, beside the sheet —
+ * the pages Workspaces, Fleet, Schedules and Remote on top, the sidebar
+ * toggle alone at the foot (Settings and Search live in the titlebar). While the in-sheet sidebar is open (`collapsed` false) the
+ * rail carries no workspace list; collapsed, it adds the workspace avatars,
+ * so the collapsed mode and the rail are one column. Arrow keys move focus
+ * between its buttons. Adapted from MonoCode (hardbeat920/monocode@6bd432ca,
+ * src/app/shell/Sidebar.tsx), MIT License, Copyright (c) 2026 Nick.
+ * Without `rail` (the web mirror) it is the original collapsed sidebar.
+ */
+export default function MiniSidebar({ rail = false, collapsed = true }: { rail?: boolean; collapsed?: boolean } = {}) {
   const t = useT();
   const sidebarPosition = useStore((s) => s.sidebarPosition);
   // A1: 레일은 id/name + 에이전트 상태만 그린다 — 요약 투영만 구독해 cwd/git/
@@ -53,6 +64,20 @@ export default function MiniSidebar() {
   const settingsPanelVisible = useStore((s) => s.settingsPanelVisible);
   // Browser mirror (wmux web /app): no creation, reorder or desktop-only destinations.
   const readOnly = useStore((s) => s.readOnly);
+  // The rail beside an open sidebar shows no workspace list (the sidebar has it).
+  const showWorkspaces = !rail || collapsed;
+  // Arrow keys move between the rail's buttons; Tab still walks them in order.
+  const onRailKeyDown = useCallback((e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp' && e.key !== 'Home' && e.key !== 'End') return;
+    const buttons = [...e.currentTarget.querySelectorAll<HTMLButtonElement>('button:not([disabled])')];
+    const at = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    if (at < 0) return;
+    e.preventDefault();
+    const next = e.key === 'Home' ? 0
+      : e.key === 'End' ? buttons.length - 1
+      : (at + (e.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
+    buttons[next]?.focus();
+  }, []);
 
   // #1284 — the rail's + opens the same PresetPicker as the titlebar +. With
   // the sidebar collapsed the titlebar + is clipped by its 48px segment, so
@@ -89,8 +114,17 @@ export default function MiniSidebar() {
   const [dropIndicator, setDropIndicator] = useState<{ index: number; side: 'above' | 'below' } | null>(null);
 
   return (
-    <div className={`wmux-sidebar flex flex-col shrink-0 h-full bg-[var(--bg-mantle)] ${sidebarPosition === 'right' ? 'border-l' : 'border-r'} border-[var(--bg-surface)]`} style={{ width: 48, borderColor: 'var(--border-soft)' }} {...tokenAttrs('bgMantle', 'bg')} {...tokenAttrs('bgSurface', 'border')}>
-      {!readOnly && <SidebarNavigation compact />}
+    <div
+      className={rail
+        ? 'wmux-rail flex flex-col shrink-0 h-full'
+        : `wmux-sidebar flex flex-col shrink-0 h-full bg-[var(--bg-mantle)] ${sidebarPosition === 'right' ? 'border-l' : 'border-r'} border-[var(--bg-surface)]`}
+      style={rail ? undefined : { width: 48, borderColor: 'var(--border-soft)' }}
+      onKeyDown={rail ? onRailKeyDown : undefined}
+      data-sidebar-rail={rail ? '' : undefined}
+      {...(rail ? {} : { ...tokenAttrs('bgMantle', 'bg'), ...tokenAttrs('bgSurface', 'border') })}
+    >
+      {!readOnly && <SidebarNavigation compact home={rail} />}
+      {showWorkspaces && <>
       {/* Header — new workspace button */}
       {!readOnly && <button
         ref={plusBtnRef}
@@ -148,6 +182,8 @@ export default function MiniSidebar() {
               toggleMultiviewWorkspace(ws.id);
             } else {
               setActiveWorkspace(ws.id);
+              // Picking a workspace on the rail means "show me that workspace".
+              useStore.getState().setAppRoute('workspaces');
             }
           };
 
@@ -229,8 +265,8 @@ export default function MiniSidebar() {
                 draggable={!reorderOff}
                 className={`relative w-8 h-8 rounded-md flex items-center justify-center text-[10px] font-bold font-mono select-none transition-colors ${
                   isActive
-                    ? 'bg-[var(--bg-surface)] text-[var(--text-main)]'
-                    : 'text-[var(--text-muted)] hover:bg-[rgba(var(--bg-surface-rgb),0.5)] hover:text-[var(--text-sub)]'
+                    ? 'bg-[var(--selection)] text-[var(--text-main)]'
+                    : 'text-[color-mix(in_srgb,var(--text-main)_50%,transparent)] hover:bg-[var(--hover-fill)] hover:text-[var(--text-main)]'
                 } ${isDragging ? 'opacity-40' : 'opacity-100'}`}
                 style={isMultiview ? { borderLeft: '2px solid var(--accent-blue)' } : undefined}
                 {...tokenAttrs('bgSurface', 'bg')}
@@ -246,7 +282,7 @@ export default function MiniSidebar() {
                 {label}
                 {unreadCount > 0 && (
                   <span
-                    className="absolute -top-0.5 -right-0.5 bg-[var(--bg-surface)] text-[var(--text-main)] text-[10px] font-bold rounded-full min-w-[14px] h-3.5 flex items-center justify-center px-0.5 leading-none ring-1 ring-[var(--border-soft)]"
+                    className="absolute -top-0.5 -right-0.5 bg-[var(--selection-emphasis)] text-[var(--text-main)] text-[10px] font-semibold tabular-nums rounded-full min-w-[14px] h-3.5 flex items-center justify-center px-0.5 leading-none ring-1 ring-[var(--border-soft)]"
                     title={t('sidebar.unreadCount', { count: unreadCount })}
                     {...tokenAttrs('bgSurface', 'bg')}
                     {...tokenAttrs('textMain', 'text')}
@@ -277,10 +313,14 @@ export default function MiniSidebar() {
           );
         })}
       </div>
+      </>}
+      {!showWorkspaces && <div className="flex-1" />}
 
       {/* Footer — expand + status */}
       <div className="flex flex-col items-center gap-2 py-2 border-t border-[var(--bg-surface)]" style={{ borderColor: 'var(--border-soft)' }}>
-        {!readOnly && <button
+        {/* The rail's foot holds only the sidebar toggle; Settings is in the
+            titlebar (SettingsButton). The web mirror keeps its own. */}
+        {!readOnly && !rail && <button
           type="button"
           className={`ui-icon-btn w-8 h-8 ${FOCUS_RING}`}
           aria-label={t('settings.title')}
@@ -292,14 +332,16 @@ export default function MiniSidebar() {
           <IconGear size={16} />
         </button>}
 
-        {/* Expand sidebar button — same position as collapse button in full sidebar */}
+        {/* Sidebar toggle — expands when collapsed; on the rail beside an open
+            sidebar it collapses it (the sidebar's own footer is gone). */}
         <button
-          className={`w-8 h-8 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 font-mono text-caption ${FOCUS_RING}`}
+          className={`w-8 h-8 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--hover-fill)] transition-colors duration-150 font-mono text-caption ${FOCUS_RING}`}
           onClick={toggleSidebar}
-          title={t('sidebar.expandTooltip')}
-          aria-label={t('sidebar.expandTooltip')}
+          data-sidebar-collapse={collapsed ? undefined : ''}
+          title={collapsed ? t('sidebar.expandTooltip') : t('sidebar.hideTooltip')}
+          aria-label={collapsed ? t('sidebar.expandTooltip') : t('sidebar.hideTooltip')}
         >
-          <IconChevronDir dir={expandDirection(sidebarPosition)} />
+          <IconChevronDir dir={collapsed ? expandDirection(sidebarPosition) : collapseDirection(sidebarPosition)} />
         </button>
       </div>
     </div>

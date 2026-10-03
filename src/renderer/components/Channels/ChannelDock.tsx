@@ -45,7 +45,6 @@ import { claudeModelLabel } from '../../../shared/claudeModels';
 // orchestrator chat reuses the Commander tab + composer skeleton wholesale.
 
 export default function ChannelDock(): React.ReactElement {
-  const sidebarPosition = useStore((s) => s.sidebarPosition);
   const activeDeckTab = useStore((s) => s.activeDeckTab);
   const setActiveDeckTab = useStore((s) => s.setActiveDeckTab);
   const channelUnread = useStore((s) => s.channelUnread);
@@ -66,14 +65,12 @@ export default function ChannelDock(): React.ReactElement {
   // git 탭(오너 결정 2026-07-20 — 덱 복귀, Review는 Git 탭 하단 섹션으로 병합).
   const showGitView = activeDeckTab === 'git';
 
-  // Workspace sidebar is on `sidebarPosition`; the dock is on the opposite
-  // edge. When the sidebar is on the LEFT (default), the dock is on the RIGHT,
-  // so its content border faces left (border-l).
-  const dockOnRight = sidebarPosition !== 'right';
+  // The dock is a floating panel (ui.css .wmux-dock), so it needs no edge
+  // border facing the workspace; the shell gap separates them.
 
   return (
     <div
-      className={`flex flex-col h-full bg-[var(--bg-mantle)] ${dockOnRight ? 'border-l' : 'border-r'} border-[var(--bg-surface)]`}
+      className="wmux-dock flex flex-col h-full bg-[var(--bg-base)]"
       style={{ width: 'clamp(248px, 26vw, 320px)', borderColor: 'var(--border-soft)' }}
       id="wmux-tools-panel"
       data-channel-dock

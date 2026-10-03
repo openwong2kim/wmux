@@ -9,6 +9,9 @@ import { ComposerPrimitive, ThreadPrimitive } from '@assistant-ui/react';
 import { useT } from '../../../hooks/useT';
 import { ChatComposerInput, type ChatComposerKeys, type SkillComposer, type ChatSkillScope } from '../ChatComposerInput';
 import { ChatMessage } from '../ChatMessage';
+// Mono look. Adapted from MonoCode (hardbeat920/monocode@6bd432ca,
+// src/features/sessions/ui/Composer.tsx), MIT License, Copyright (c) 2026 Nick.
+import '../chatMono.css';
 
 const MESSAGE_COMPONENTS = { Message: ChatMessage };
 
@@ -44,7 +47,7 @@ export function Thread({ status, empty, welcome, history, notices, working, disa
             <div className="wmux-chat-composer-footer"><span>{hint ?? t(skillScope && ['claude', 'codex'].includes(skillScope.agent) ? 'chat.inputSkillsHint' : 'chat.inputHint')}</span>
               {stop}
               <ComposerPrimitive.Send disabled={discoveryOpen} className="wmux-chat-send wmux-chat-icon-button" aria-label={t('chat.send')} title={t('chat.send')}>
-                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M12 19V5m-6 6 6-6 6 6" /></svg>
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 19V5m-6 6 6-6 6 6" /></svg>
               </ComposerPrimitive.Send>
             </div>
           </ComposerPrimitive.Root>

@@ -1,3 +1,4 @@
+// Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx), MIT License, Copyright (c) 2026 Nick
 import { memo } from 'react';
 import type { FleetPane, FleetRow } from '../../stores/selectors/fleet';
 import { fleetRow, fleetTargetPtyId, selectLatestCompletionEvidenceTask } from '../../stores/selectors/fleet';
@@ -156,9 +157,9 @@ function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onF
     : usageWaiting ? t('usageLimit.waiting')
     : card.agentStatus === 'complete' ? t('fleet.status.turnComplete')
     : quietWaiting ? t('workspace.agentIdle') : t(icon.labelKey);
-  // Unconfirmed reuses the sidebar's hollow amber ring (.sidebar-dot-unverifiable):
+  // Unconfirmed reuses the sidebar's hollow accent ring (.sidebar-dot-unverifiable):
   // the pane still claims to be working, nothing backs the claim.
-  const statusColor = card.unverifiable ? 'var(--accent-cursor)'
+  const statusColor = card.unverifiable ? 'var(--accent)'
     : usageWaiting ? 'var(--text-muted)'
     : card.agentStatus === 'idle' || quietWaiting ? 'var(--text-sub)' : icon.dotVar;
   // A pane held at its usage limit says so instead of a generic error detail.

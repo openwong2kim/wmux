@@ -1,15 +1,22 @@
 // ─── Sidebar agent status mark (#1481) ───────────────────────────────────────
+// Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx), MIT License, Copyright (c) 2026 Nick
 //
 // Agent rows carry no identity glyph: Claude is the default and gets no mark;
 // any other agent names itself in muted text on the row (WorkspaceAgentRoster).
 //
 //   StatusMark  — WHAT it is doing, told by SHAPE first and colour second
-//                 (see AGENT_STATUS_ICON.mark): running = filled amber dot ·
-//                 needs input = red ring · error = cross · complete = green
-//                 check · unconfirmed = hollow amber ring · idle = nothing.
+//                 (see AGENT_STATUS_ICON.mark): running = filled accent dot ·
+//                 needs input = amber ring · error = cross · complete = green
+//                 check · unconfirmed = hollow accent ring · idle = nothing.
 
 import type { AgentStatus } from '../../../shared/types';
 import { AGENT_STATUS_ICON, type StatusMark } from './agentStatusIcon';
+
+/** The glow channel (globals.css .sidebar-dot::after) follows the mark's own
+ *  colour, so a remapped status never breathes in its old hue. */
+function glowVar(color: string): React.CSSProperties {
+  return { ['--sidebar-dot-glow' as string]: `color-mix(in srgb, ${color} 70%, transparent)` };
+}
 
 /** The mark a row draws: the status table's mark, the unconfirmed ring, or
  *  the usage-limit clock. */
@@ -35,7 +42,7 @@ interface StatusMarkViewProps {
   /** Tooltip + accessible name. Omit when the row already speaks the status. */
   label?: string;
   /** #1481 review — draw a running dot neutral: a secondary summary must not
-   *  spend a second amber point on a workspace whose row dot is already amber. */
+   *  spend a second accent point on a workspace whose row dot is already lit. */
   neutralRunning?: boolean;
   /** The agent is waiting out a usage limit — see rowStatusMark. */
   usageWaiting?: boolean;
@@ -55,7 +62,7 @@ export function StatusMarkView({ status, unverifiable = false, quiet = false, la
       inner = (
         <span
           className={`sidebar-dot h-1.5 w-1.5 rounded-full ${quiet || neutralRunning ? '' : icon.glowClass}`}
-          style={{ backgroundColor: neutralRunning && status === 'running' ? 'var(--text-sub)' : icon.dotVar }}
+          style={{ ...glowVar(icon.dotVar), backgroundColor: neutralRunning && status === 'running' ? 'var(--text-sub)' : icon.dotVar }}
         />
       );
       break;
@@ -64,12 +71,13 @@ export function StatusMarkView({ status, unverifiable = false, quiet = false, la
       inner = (
         <span
           className={`sidebar-dot h-[7px] w-[7px] rounded-full ${quiet ? '' : icon.glowClass}`}
-          style={{ border: `1.5px solid ${icon.dotVar}` }}
+          style={{ ...glowVar(icon.dotVar), border: `1.5px solid ${icon.dotVar}` }}
         />
       );
       break;
     case 'unconfirmed':
-      inner = <span className="sidebar-dot sidebar-dot-unverifiable h-1.5 w-1.5 rounded-full" />;
+      // The hollow ring is the running colour with nothing behind it.
+      inner = <span className="sidebar-dot sidebar-dot-unverifiable h-1.5 w-1.5 rounded-full" style={{ borderColor: 'var(--accent)' }} />;
       break;
     case 'cross':
       inner = (

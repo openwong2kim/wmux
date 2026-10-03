@@ -586,6 +586,22 @@ describe('focusNotificationTarget', () => {
     expect(h.spies.setActiveSurface).toHaveBeenCalledWith('pane-a', 'sf-a', 'ws-a');
   });
 
+  it('J-route: a jump from another rail page swaps the sheet back to Workspaces', () => {
+    for (const payload of [{ ptyId: 'pty-b', workspaceId: null }, { ptyId: null, workspaceId: 'ws-b' }]) {
+      const h = makeJumpHarness({ workspaces: [wsA(), wsB()], activeWorkspaceId: 'ws-a' });
+      const setAppRoute = vi.fn();
+      Object.assign(h.state, { appRoute: 'fleet', setAppRoute });
+      expect(focusNotificationTarget(h.getState, payload)).toBe(true);
+      expect(setAppRoute).toHaveBeenCalledWith('workspaces');
+    }
+    // Already on Workspaces: no route write.
+    const h = makeJumpHarness({ workspaces: [wsA()], activeWorkspaceId: 'ws-a' });
+    const setAppRoute = vi.fn();
+    Object.assign(h.state, { appRoute: 'workspaces', setAppRoute });
+    focusNotificationTarget(h.getState, { ptyId: 'pty-a', workspaceId: null });
+    expect(setAppRoute).not.toHaveBeenCalled();
+  });
+
   it('J3: unread notifications for the target surface are marked read and the ring cleared', () => {
     const h = makeJumpHarness({
       workspaces: [wsA()],

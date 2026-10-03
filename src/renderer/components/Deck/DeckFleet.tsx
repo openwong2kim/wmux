@@ -34,12 +34,14 @@ import { ORCH_ROLES, bindingEnforcesModel, bindingSkipPermissionsFlag } from '..
 /** DESIGN.md status-dot vocabulary: amber=running, green=ok, gray=idle, red=needs input. */
 function dotColor(status: AgentStatus): string {
   switch (status) {
+    // Mono look: one accent, for waiting on the user; running and complete
+    // are muted; red is kept for errors.
     case 'running':
-      return 'var(--accent-cursor)';
     case 'complete':
-      return 'var(--accent-green)';
+      return 'var(--text-sub)';
     case 'awaiting_input':
     case 'waiting':
+      return 'var(--accent)';
     case 'error':
       return 'var(--accent-red)';
     default:
@@ -146,7 +148,7 @@ export default function DeckFleet({
   return (
     <div
       data-deck-fleet
-      className="shrink-0 px-3 pt-2.5 pb-1.5 border-b border-[var(--bg-surface)]"
+      className="shrink-0 px-3 pt-2.5 pb-1.5"
       style={{ borderColor: 'var(--border-soft)' }}
       {...tokenAttrs('bgSurface', 'border')}
     >

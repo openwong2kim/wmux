@@ -1,15 +1,13 @@
 import { useEffect, useRef } from 'react';
 import { useStore } from '../../stores';
 import { getLocale } from '../../i18n';
-import { ErrorBoundary } from '../ErrorBoundary';
-import SchedulesView from './SchedulesView';
 import { openAutomationRun } from './openRun';
 
 /**
  * Wires the renderer to main's scheduled-run feed (pushes, toast clicks,
  * daemon reconnects) and pulls once on mount — a reloaded renderer must not
  * wait for the next reconnect snapshot. Hosted by WorkspaceCenter, which is
- * always mounted; renders the Schedules view over the pane grid when open.
+ * always mounted.
  */
 export function useAutomationBridge(): void {
   const locale = useStore((s) => s.locale);
@@ -35,9 +33,13 @@ export function useAutomationBridge(): void {
   }, [locale]);
 }
 
+/**
+ * The scheduled-run feed and the "picking a workspace leaves Schedules" rule.
+ * Always mounted (WorkspaceCenter); the Schedules page itself is a rail page
+ * (RailPage).
+ */
 export default function SchedulesHost() {
   useAutomationBridge();
-  const open = useStore((s) => s.schedulesViewOpen);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   // Picking a workspace in the sidebar means "show me that workspace": the
   // view gives the main area back.
@@ -47,10 +49,5 @@ export default function SchedulesHost() {
     lastWs.current = activeWorkspaceId;
     useStore.getState().closeSchedulesView();
   }, [activeWorkspaceId]);
-  if (!open) return null;
-  return (
-    <ErrorBoundary name="SchedulesView">
-      <SchedulesView />
-    </ErrorBoundary>
-  );
+  return null;
 }

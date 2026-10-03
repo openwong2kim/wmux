@@ -1,3 +1,4 @@
+// Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/features/sessions/ui/Composer.tsx, src/features/sessions/ui/AgentTranscript.tsx), MIT License, Copyright (c) 2026 Nick
 // ─── Command Deck — Commander view (Phase 1 P1b/P1c/P1d) ─────────────────────
 //
 // The default dock tab: an LLM-less command composer. @-mention several agent
@@ -85,6 +86,13 @@ import { onAgentModeChanged } from './deckModeBus';
 import type { AgentMode } from '../../../main/deck/deckAutonomyStore';
 
 const EMPTY_MESSAGES: ChannelMessage[] = [];
+
+/** A neutral 26px filled action chip (quick actions, Wake, Recover). */
+const ACTION_CHIP = `h-[26px] px-2 rounded-md text-[12px] text-[color-mix(in_srgb,var(--text-main)_70%,transparent)] bg-[var(--selection)] hover:bg-[var(--selection-hover)] hover:text-[var(--text-main)] transition-colors disabled:opacity-40 ${FOCUS_RING}`;
+/** Your own message: content-10% fill with a content-10% hairline, rounded-lg. */
+const USER_BUBBLE = 'max-w-[85%] rounded-lg px-3 py-2 bg-[color-mix(in_srgb,var(--text-main)_10%,transparent)] text-[13px] leading-relaxed text-[var(--text-main)] whitespace-pre-wrap break-words';
+/** Timestamps: content 35%. */
+const TIME = 'text-[11px] tabular-nums text-[color-mix(in_srgb,var(--text-main)_35%,transparent)]';
 
 // ─── Pure view ───────────────────────────────────────────────────────────────
 
@@ -272,8 +280,6 @@ export function CommanderViewContent({
       <div
         data-deck-control-bar
         className={className}
-        style={{ borderColor: 'var(--border-soft)' }}
-        {...tokenAttrs('bgSurface', 'border')}
       >
         {/* Mode = the single autonomy knob, always showing the current mode.
             모델 선택은 Agent 탭 인라인 드롭다운으로 이동(DESIGN.md Decisions
@@ -315,8 +321,8 @@ export function CommanderViewContent({
                 data-action-id={action.id}
                 disabled={brainBusy}
                 onClick={() => onQuickAction?.(action)}
-                className={`px-2.5 py-1 rounded-md text-[12px] font-semibold text-[var(--text-sub)] bg-[rgba(var(--bg-surface-rgb),0.6)] hover:text-[var(--accent-blue)] transition-colors disabled:opacity-40 ${FOCUS_RING}`}
-                {...tokenAttrs('textSub', 'text')}
+                className={ACTION_CHIP}
+                {...tokenAttrs('textMain', 'text')}
               >
                 {action.label}
               </button>
@@ -357,7 +363,7 @@ export function CommanderViewContent({
         {/* One control row: the Fleet roster and the automation controls. */}
         {fleetSlot}
         {renderControlBar(
-          'flex flex-wrap items-center gap-1 px-3 py-1.5 border-b border-[var(--bg-surface)] shrink-0',
+          'flex flex-wrap items-center gap-1 px-3 py-1.5 border-b border-[var(--stroke)] shrink-0',
           // Wake button — pty-layout only. With no composer, this is the
           // human's one-click "take a turn now"; the bubble layout's composer
           // already covers it. Disabled mid-turn: the busy reject would be the
@@ -373,8 +379,8 @@ export function CommanderViewContent({
                   /* best-effort — a rejected wake just means the brain is busy */
                 });
               }}
-              className={`px-2.5 py-1 rounded-md text-[12px] font-semibold text-[var(--text-sub)] bg-[rgba(var(--bg-surface-rgb),0.6)] hover:text-[var(--accent-amber)] transition-colors disabled:opacity-40 ${FOCUS_RING}`}
-              {...tokenAttrs('textSub', 'text')}
+              className={ACTION_CHIP}
+              {...tokenAttrs('textMain', 'text')}
             >
               {t('deck.wakeNow') || 'Wake'}
             </button>
@@ -395,16 +401,14 @@ export function CommanderViewContent({
             carries the count, a busy dot, and an error affordance so a
             collapsed rail never hides something that needs the operator. */}
         <div
-          className="border-t border-[var(--bg-surface)] shrink-0"
-          style={{ borderColor: 'var(--border-soft)' }}
-          {...tokenAttrs('bgSurface', 'border')}
+          className="border-t border-[var(--stroke)] shrink-0"
         >
           <button
             type="button"
             data-commander-report-rail-toggle
             onClick={() => setRailCollapsed((v) => !v)}
-            className={`w-full flex items-center gap-1.5 px-3 py-1.5 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors ${FOCUS_RING}`}
-            {...tokenAttrs('textMuted', 'text')}
+            className={`w-full flex items-center gap-1.5 px-3 py-1.5 text-[11px] text-[color-mix(in_srgb,var(--text-main)_45%,transparent)] hover:text-[color-mix(in_srgb,var(--text-main)_70%,transparent)] transition-colors ${FOCUS_RING}`}
+            {...tokenAttrs('textMain', 'text')}
           >
             <span aria-hidden>{railCollapsed ? '▸' : '▾'}</span>
             <span
@@ -427,7 +431,7 @@ export function CommanderViewContent({
               <span data-commander-busy className="flex items-center gap-1.5 ml-auto">
                 <span
                   aria-hidden="true"
-                  className="inline-block w-2 h-2 rounded-full border border-[var(--accent-amber)] border-t-transparent animate-spin"
+                  className="inline-block w-2 h-2 rounded-full border border-[var(--accent)] border-t-transparent animate-spin"
                 />
                 <span>{t('deck.commanderThinking') || 'Orchestrator is working…'}</span>
               </span>
@@ -515,8 +519,7 @@ export function CommanderViewContent({
         {recoveryPanes.length > 0 && (
           <div
             data-commander-recovery
-            className="rounded-[7px] px-4 py-3 space-y-2 bg-[rgba(var(--bg-surface-rgb),0.55)]"
-            {...tokenAttrs('bgSurface', 'bg')}
+            className="rounded-lg px-4 py-3 space-y-2 bg-[var(--selection-subtle)]"
           >
             <div
               className="text-[13px] font-semibold text-[var(--text-main)] leading-relaxed"
@@ -538,7 +541,7 @@ export function CommanderViewContent({
                 data-recovery-run
                 disabled={brainBusy}
                 onClick={onRecoverFleet}
-                className={`px-2.5 py-1 rounded-[4px] text-[12px] font-semibold text-[var(--text-sub)] bg-[rgba(var(--bg-surface-rgb),0.8)] hover:text-[var(--accent-blue)] transition-colors disabled:opacity-40 ${FOCUS_RING}`}
+                className={ACTION_CHIP}
               >
                 {t('deck.recoveryRun') || 'Recover agents'}
               </button>
@@ -546,8 +549,8 @@ export function CommanderViewContent({
                 type="button"
                 data-recovery-dismiss
                 onClick={onDismissRecovery}
-                className={`px-2 py-1 rounded-md text-[12px] text-[var(--text-muted)] hover:opacity-80 transition-opacity ${FOCUS_RING}`}
-                {...tokenAttrs('textMuted', 'text')}
+                className={`h-[26px] px-2 rounded-md text-[12px] text-[color-mix(in_srgb,var(--text-main)_50%,transparent)] hover:bg-[var(--hover-fill)] hover:text-[color-mix(in_srgb,var(--text-main)_70%,transparent)] transition-colors ${FOCUS_RING}`}
+                {...tokenAttrs('textMain', 'text')}
               >
                 {t('deck.recoveryDismiss') || 'Dismiss'}
               </button>
@@ -604,17 +607,15 @@ export function CommanderViewContent({
       {brainBusy && (
         <div
           data-commander-busy
-          className="flex items-center gap-2 px-4 py-1.5 border-t border-[var(--bg-surface)] shrink-0"
-          style={{ borderColor: 'var(--border-soft)' }}
-          {...tokenAttrs('bgSurface', 'border')}
+          className="flex items-center gap-2 px-4 py-1.5 border-t border-[var(--stroke)] shrink-0"
         >
           <span
             aria-hidden="true"
             className="inline-block w-3 h-3 rounded-full border-2 border-[var(--accent-blue)] border-t-transparent animate-spin"
           />
           <span
-            className="text-[12px] text-[var(--text-sub)] flex-1"
-            {...tokenAttrs('textSub', 'text')}
+            className="text-[12px] text-[color-mix(in_srgb,var(--text-main)_50%,transparent)] flex-1"
+            {...tokenAttrs('textMain', 'text')}
           >
             {t('deck.commanderThinking') || 'Orchestrator is working…'}
           </span>
@@ -622,8 +623,8 @@ export function CommanderViewContent({
             type="button"
             data-commander-interrupt
             onClick={onInterrupt}
-            className={`px-2 py-0.5 rounded-md text-[12px] text-[var(--accent-red)] bg-[rgba(var(--bg-surface-rgb),0.6)] hover:opacity-80 transition-opacity ${FOCUS_RING}`}
-            {...tokenAttrs('danger', 'text')}
+            // Stop is the solid primary control, never a colour.
+            className={`h-[26px] px-2 rounded-md text-[12px] font-medium bg-[var(--primary-fill)] text-[var(--primary-ink)] hover:bg-[color-mix(in_srgb,var(--primary-fill)_90%,transparent)] transition-colors ${FOCUS_RING}`}
           >
             {t('deck.commanderStop') || 'Stop'}
           </button>
@@ -640,7 +641,7 @@ export function CommanderViewContent({
           self-hides when its preload API is absent, so pure jsdom parent tests
           are unaffected. */}
       {renderControlBar(
-        'flex flex-wrap items-center gap-1 px-3 py-1.5 border-t border-[var(--bg-surface)] shrink-0',
+        'flex flex-wrap items-center gap-1 px-3 py-1.5 shrink-0',
       )}
 
       {/* Composer — the SAME pure shell the channel composer uses. No @mention →
@@ -651,12 +652,10 @@ export function CommanderViewContent({
             live would only produce a silent rejection. The title says which of
             the two it is, and how to undo the `off` case. */}
       <div
-        className="border-t border-[var(--bg-surface)] shrink-0"
-        style={{ borderColor: 'var(--border-soft)' }}
+        className="px-1.5 pb-1.5 shrink-0"
         title={modeOff ? modeOffReason : undefined}
         data-commander-composer
         data-mode-off={modeOff ? 'true' : undefined}
-        {...tokenAttrs('bgSurface', 'border')}
       >
         <ComposerContent
           channelId={COMMANDER_CHANNEL_NAME}
@@ -698,9 +697,9 @@ function CommanderVendorBreak({
       data-vendor={vendor}
       className="flex items-center gap-2 pt-1"
     >
-      <span className="flex-1 h-px bg-[var(--border-soft)]" aria-hidden="true" />
+      <span className="flex-1 h-px bg-[var(--stroke)]" aria-hidden="true" />
       <span
-        className="text-[9.5px] font-mono uppercase tracking-[0.08em] text-[var(--text-muted)]"
+        className="text-[10px] font-mono uppercase tracking-[0.06em] text-[color-mix(in_srgb,var(--text-main)_45%,transparent)]"
         {...tokenAttrs('textMuted', 'text')}
       >
         {(t('deck.vendorSwitched') || 'now: {brain}').replace(
@@ -708,7 +707,7 @@ function CommanderVendorBreak({
           (key && t(key)) || vendor,
         )}
       </span>
-      <span className="flex-1 h-px bg-[var(--border-soft)]" aria-hidden="true" />
+      <span className="flex-1 h-px bg-[var(--stroke)]" aria-hidden="true" />
     </div>
   );
 }
@@ -741,15 +740,14 @@ function CommanderBrainItem({
         className="flex flex-col items-end gap-0.5"
       >
         <div
-          className="max-w-[85%] rounded-[7px] rounded-tr-[3px] px-3 py-1.5 bg-[rgba(var(--bg-surface-rgb),0.8)] text-[13px] leading-relaxed text-[var(--text-main)] whitespace-pre-wrap break-words"
+          className={USER_BUBBLE}
           data-commander-brain-text
-          {...tokenAttrs('bgSurface', 'bg')}
           {...tokenAttrs('textMain', 'text')}
         >
           {message.text}
         </div>
         {message.ts && (
-          <span className="text-[9.5px] font-mono text-[var(--text-muted)] pr-1" {...tokenAttrs('textMuted', 'text')}>
+          <span className={`${TIME} pr-1`} {...tokenAttrs('textMain', 'text')}>
             {formatChatTime(message.ts)}
           </span>
         )}
@@ -775,14 +773,14 @@ function CommanderBrainItem({
           <span
             data-commander-brain-vendor
             data-vendor={message.vendor}
-            className="text-[9.5px] font-mono uppercase tracking-[0.08em] text-[var(--text-muted)]"
+            className="text-[10px] font-mono uppercase tracking-[0.06em] text-[color-mix(in_srgb,var(--text-main)_45%,transparent)]"
             {...tokenAttrs('textMuted', 'text')}
           >
             {(vendorTagKey(message.vendor) && t(vendorTagKey(message.vendor))) || message.vendor}
           </span>
         )}
         {message.ts && (
-          <span className="text-[9.5px] font-mono text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
+          <span className={TIME} {...tokenAttrs('textMain', 'text')}>
             {formatChatTime(message.ts)}
           </span>
         )}
@@ -831,7 +829,7 @@ function CommanderBrainItem({
               key={`${notice.status}-${notice.accountId ?? ''}-${notice.window ?? ''}-${notice.resetsAtMs ?? i}`}
               role="status"
               data-limit-status={notice.status}
-              className="text-[11px] text-[var(--accent-amber)]"
+              className="text-[11px] text-[var(--accent-yellow)]"
               {...tokenAttrs('warning', 'text')}
             >
               {formatLimitNotice(notice, t)}
@@ -907,8 +905,8 @@ function CommanderWakeBadge({
         </button>
         {message.ts && (
           <span
-            className="text-[9.5px] font-mono text-[var(--text-muted)]"
-            {...tokenAttrs('textMuted', 'text')}
+            className={TIME}
+            {...tokenAttrs('textMain', 'text')}
           >
             {formatChatTime(message.ts)}
           </span>
@@ -917,7 +915,7 @@ function CommanderWakeBadge({
       {expanded && (
         <pre
           data-commander-wake-raw
-          className="max-w-[85%] overflow-x-auto rounded-[4px] px-3 py-1.5 bg-[rgba(var(--bg-surface-rgb),0.55)] text-[11px] font-mono leading-relaxed text-[var(--text-sub)] whitespace-pre-wrap break-words"
+          className="max-w-[85%] overflow-x-auto rounded-lg px-3 py-1.5 bg-[color-mix(in_srgb,var(--text-main)_5%,transparent)] text-[11px] font-mono leading-relaxed text-[var(--text-sub)] whitespace-pre-wrap break-words"
           {...tokenAttrs('textSub', 'text')}
         >
           {message.text}
@@ -1002,16 +1000,15 @@ function CommanderThreadItem({
           {/* Chat convention: your dispatch sits right-aligned in a bubble, no
               author label (right = you). Local HH:MM below (was UTC slice). */}
           <div
-            className="max-w-[85%] rounded-[7px] rounded-tr-[3px] px-3 py-1.5 bg-[rgba(var(--bg-surface-rgb),0.8)] text-[13px] leading-relaxed text-[var(--text-main)] whitespace-pre-wrap break-words"
+            className={USER_BUBBLE}
             data-commander-dispatch-text
-            {...tokenAttrs('bgSurface', 'bg')}
             {...tokenAttrs('textMain', 'text')}
           >
             {renderMessageBody(dispatch.text, dispatch.mentions)}
           </div>
           <span
-            className="text-[9.5px] font-mono text-[var(--text-muted)] pr-1"
-            {...tokenAttrs('textMuted', 'text')}
+            className={`${TIME} pr-1`}
+            {...tokenAttrs('textMain', 'text')}
           >
             {formatChatTime(new Date(dispatch.postedAt).getTime())}
           </span>
@@ -1028,8 +1025,8 @@ function CommanderThreadItem({
                   disabled={!m.paneId}
                   onClick={() => m.paneId && onJumpToPane(m.workspaceId, m.paneId)}
                   title={t('deck.jumpToPane') || 'Jump to this pane'}
-                  className={`px-2 py-0.5 rounded-[4px] text-[11px] text-[var(--text-sub)] bg-[rgba(var(--bg-surface-rgb),0.6)] hover:text-[var(--accent-blue)] transition-colors disabled:opacity-50 disabled:cursor-default ${FOCUS_RING}`}
-                  {...tokenAttrs('textSub', 'text')}
+                  className={`h-[22px] px-1.5 rounded-md text-[11px] text-[color-mix(in_srgb,var(--text-main)_70%,transparent)] bg-[var(--selection)] hover:bg-[var(--selection-hover)] hover:text-[var(--text-main)] transition-colors disabled:opacity-50 disabled:cursor-default ${FOCUS_RING}`}
+                  {...tokenAttrs('textMain', 'text')}
                 >
                   @{m.name}
                 </button>
@@ -1041,7 +1038,7 @@ function CommanderThreadItem({
 
       {/* Replies — indented under the dispatch. */}
       {replies.length > 0 && (
-        <div className="flex flex-col gap-2 pl-3 border-l-2 border-[var(--bg-surface)]" data-commander-replies>
+        <div className="flex flex-col gap-2 pl-3 border-l-2 border-[var(--stroke)]" data-commander-replies>
           {replies.map((m) => {
             const author = formatChannelAuthor(m, workspaceName);
             const pane = m.senderPtyId ? resolvePtyPane(m.senderPtyId) : null;
@@ -1082,8 +1079,8 @@ function CommanderThreadItem({
                     </span>
                   )}
                   <span
-                    className="text-[9.5px] font-mono text-[var(--text-muted)]"
-                    {...tokenAttrs('textMuted', 'text')}
+                    className={TIME}
+                    {...tokenAttrs('textMain', 'text')}
                   >
                     {formatChatTime(new Date(m.postedAt).getTime())}
                   </span>

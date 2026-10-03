@@ -13,6 +13,7 @@ import type { StoreState } from '../index';
 import type { Automation, AutomationRun } from '../../../shared/automation';
 import type { AutomationPush } from '../../../main/automation/AutomationBridge';
 import { t } from '../../i18n';
+import { applyAppRoute, leaveAppRoute } from './uiSlice';
 
 // A refresh answer can be older than run-changed events that landed while it
 // was in flight. Each refresh takes a generation; only the newest applies, and
@@ -124,17 +125,18 @@ export const createSchedulesSlice: StateCreator<
     }
   },
 
+  // Schedules is a rail page; the route owns `schedulesViewOpen`.
   openSchedulesView: (automationId) => set((state) => {
-    state.schedulesViewOpen = true;
+    applyAppRoute(state, 'schedules');
     if (automationId !== undefined) state.schedulesSelectedId = automationId;
   }),
 
   closeSchedulesView: () => set((state) => {
-    state.schedulesViewOpen = false;
+    leaveAppRoute(state, 'schedules');
   }),
 
   toggleSchedulesView: () => set((state) => {
-    state.schedulesViewOpen = !state.schedulesViewOpen;
+    applyAppRoute(state, state.appRoute === 'schedules' ? 'workspaces' : 'schedules');
   }),
 
   selectSchedule: (automationId) => set((state) => {

@@ -1,3 +1,4 @@
+// Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/features/sessions/ui/AgentTranscript.tsx), MIT License, Copyright (c) 2026 Nick
 // ─── Command Deck — orchestrator prose markdown (dep-free subset) ────────────
 //
 // The orchestrator's replies are model prose — headings, lists, code fences,
@@ -37,7 +38,7 @@ function renderInline(text: string, keyPrefix: string): React.ReactNode[] {
         <code
           key={`${keyPrefix}c${match.index}`}
           data-brain-md-code-inline
-          className="px-1 rounded font-mono text-[12px] bg-[color-mix(in_srgb,var(--bg-surface)_65%,transparent)] text-[var(--text-sub)]"
+          className="px-1 rounded font-mono text-[12px] bg-[var(--selection)] text-[var(--text-sub)]"
         >
           {m.slice(1, -1)}
         </code>,
@@ -100,7 +101,7 @@ export function renderBrainMarkdown(source: string): React.ReactNode[] {
         <pre
           key={out.length}
           data-brain-md-code
-          className="my-1 px-2 py-1.5 rounded overflow-x-auto font-mono text-[12px] leading-relaxed whitespace-pre bg-[var(--bg-surface)] text-[var(--text-sub)]"
+          className="my-1 px-3 py-2 rounded-lg border border-[var(--line)] overflow-x-auto font-mono text-[12px] leading-relaxed whitespace-pre bg-[color-mix(in_srgb,var(--text-main)_3%,transparent)] text-[var(--text-sub)]"
         >
           {codeLines.join('\n')}
         </pre>,

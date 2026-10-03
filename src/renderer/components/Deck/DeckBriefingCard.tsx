@@ -1,3 +1,4 @@
+// Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/features/sessions/ui/AgentTranscript.tsx), MIT License, Copyright (c) 2026 Nick
 // ─── Command Deck — "welcome home" briefing card (D1) ────────────────────────
 //
 // Presents the deterministic briefing (deckBriefing.ts) at the top of the deck
@@ -47,6 +48,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
+import { IconChevron } from '../icons';
 import { onBriefingConfigChanged } from './deckBriefingConfigBus';
 import {
   briefingHasContent,
@@ -493,8 +495,7 @@ export function DeckBriefingCard({
     <div
       ref={setCardEl}
       data-deck-briefing
-      className="rounded-[7px] px-4 py-2.5 bg-[rgba(var(--bg-surface-rgb),0.55)]"
-      {...tokenAttrs('bgSurface', 'bg')}
+      className="px-4 py-2.5"
     >
       {/* Header row — the collapsed one-line affordance; click toggles expand.
           The jump sits OUTSIDE the toggle button (a button cannot nest a
@@ -517,7 +518,7 @@ export function DeckBriefingCard({
         }}
         className={`group flex-1 min-w-0 flex items-center gap-2 text-left ${FOCUS_RING}`}
       >
-        <span className="text-[11px] font-mono uppercase tracking-wider text-[var(--text-muted)] shrink-0">
+        <span className="text-[11px] font-mono uppercase tracking-wider text-[color-mix(in_srgb,var(--text-main)_45%,transparent)] shrink-0">
           {t('deck.briefing.eyebrow') || 'Briefing'}
         </span>
         <span
@@ -528,9 +529,9 @@ export function DeckBriefingCard({
         </span>
         <span
           aria-hidden="true"
-          className="text-[10px] font-mono opacity-70 text-[var(--text-muted)] shrink-0 group-hover:text-[var(--accent-blue)] transition-colors"
+          className={`inline-flex shrink-0 text-[color-mix(in_srgb,var(--text-main)_50%,transparent)] group-hover:text-[color-mix(in_srgb,var(--text-main)_70%,transparent)] transition-[color,transform] ${expanded ? '-rotate-90' : 'rotate-90'}`}
         >
-          {expanded ? '▴' : '▾'}
+          <IconChevron size={12} />
         </span>
       </button>
 
@@ -540,7 +541,7 @@ export function DeckBriefingCard({
           data-briefing-jump
           onClick={() => jumpTo(top.ptyId)}
           aria-label={tf(t, 'deck.briefing.jumpTo', 'Jump to {name}').replace('{name}', topName)}
-          className={`shrink-0 flex items-center gap-1 font-mono text-[11px] text-[var(--text-muted)] hover:text-[var(--accent-blue)] transition-colors ${FOCUS_RING}`}
+          className={`shrink-0 flex items-center gap-1 font-mono text-[11px] text-[color-mix(in_srgb,var(--text-main)_45%,transparent)] hover:text-[var(--text-main)] transition-colors ${FOCUS_RING}`}
         >
           <span className="truncate max-w-[120px]">{topName}</span>
           <span aria-hidden="true">→</span>
@@ -566,8 +567,8 @@ export function DeckBriefingCard({
           {showDelta && delta && (
             <div
               data-briefing-delta
-              className="text-[11px] font-mono text-[var(--text-sub)] leading-relaxed"
-              {...tokenAttrs('textSub', 'text')}
+              className="text-[11px] font-mono text-[color-mix(in_srgb,var(--text-main)_70%,transparent)] leading-relaxed"
+              {...tokenAttrs('textMain', 'text')}
             >
               {briefingDeltaLine(delta, t)}
             </div>
@@ -576,8 +577,8 @@ export function DeckBriefingCard({
           {briefing.loop && (
             <div
               data-briefing-loop
-              className="text-[11px] font-mono text-[var(--text-sub)] leading-relaxed truncate"
-              {...tokenAttrs('textSub', 'text')}
+              className="text-[11px] font-mono text-[color-mix(in_srgb,var(--text-main)_70%,transparent)] leading-relaxed truncate"
+              {...tokenAttrs('textMain', 'text')}
             >
               {t('deck.briefing.loopLabel') || 'Loop:'} {briefing.loop.objective}
               {briefing.loop.taskCount > 0
@@ -591,7 +592,7 @@ export function DeckBriefingCard({
               type="button"
               data-briefing-channels
               onClick={onJumpToChannels}
-              className={`block text-left text-[11px] font-mono text-[var(--text-muted)] hover:text-[var(--accent-blue)] transition-colors ${FOCUS_RING}`}
+              className={`block text-left text-[11px] font-mono text-[color-mix(in_srgb,var(--text-main)_45%,transparent)] hover:text-[var(--text-main)] transition-colors ${FOCUS_RING}`}
             >
               {tc(t, 'deck.briefing.channelsUnread', '{count} unread in channels', channelsUnread)}
             </button>

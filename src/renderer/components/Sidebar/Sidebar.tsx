@@ -1,3 +1,4 @@
+// Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx), MIT License, Copyright (c) 2026 Nick
 import { Fragment, useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
@@ -27,6 +28,11 @@ import { HIT_TARGET_24 } from '../hitArea';
 import PluginPanels from '../../plugins/PluginPanels';
 import CompanyPanel from './CompanyPanel';
 import SidebarNavigation from './SidebarNavigation';
+import WorkspaceFilterPopover, { filterChipKey } from './WorkspaceFilterPopover';
+import {
+  EMPTY_FILTER, factsFromKey, filterChips, isFilterActive, matchesFilter, selectWorkspaceFactKeys, toggleFacet,
+} from './workspaceFilter';
+
 import PresetPicker from './PresetPicker';
 import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
 
@@ -48,7 +54,16 @@ function disposeAllPtys(ws: Workspace) {
   destroyWorkspaceRemoteSessions(ws);
 }
 
-export default function Sidebar() {
+/** No facts are read while no facet is on. */
+const NO_FACTS: Record<string, string> = {};
+
+/**
+ * `chrome="sheet"` (desktop): the sidebar inside the floating sheet. Its
+ * global shortcuts and footer (Settings, collapse) live on the icon rail
+ * (MiniSidebar `rail`), so the Workspaces header, search and list take the
+ * full height. The default keeps them (the web mirror).
+ */
+export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet' } = {}) {
   const t = useT();
   const sidebarPosition = useStore((s) => s.sidebarPosition);
   // A1: 통트리 구독 해체. Sidebar는 목록 구조(id·name·순서)만 구독하고, 각
@@ -57,11 +72,28 @@ export default function Sidebar() {
   const workspaces = useStore(useShallow(selectWorkspaceIdName));
   const [wsSearch, setWsSearch] = useState('');
   const wsSearchRef = useRef<HTMLInputElement>(null);
+  // The header's filter button (or Ctrl/Cmd+F) opens the filter popover: the
+  // text search on top, facet checks below. Facets live in the store for the
+  // session; the list only changes what it shows.
+  const [wsSearchOpen, setWsSearchOpen] = useState(false);
+  const openWsSearch = useCallback(() => {
+    setWsSearchOpen(true);
+    requestAnimationFrame(() => wsSearchRef.current?.focus());
+  }, []);
+  const closeWsSearch = useCallback(() => {
+    setWsSearchOpen(false);
+    requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-sidebar-search-toggle]')?.focus());
+  }, []);
+  const wsFilter = useStore((s) => s.sidebarFilter);
+  const filterOn = isFilterActive(wsFilter);
+  // Facts are read only while a facet is on, so an unfiltered sidebar does
+  // not re-render for status or git changes.
+  const factKeys = useStore(useShallow((s) => (filterOn ? selectWorkspaceFactKeys(s) : NO_FACTS)));
   const filteredWorkspaces = useMemo(() => {
-    if (!wsSearch.trim()) return workspaces;
-    const q = wsSearch.toLowerCase();
-    return workspaces.filter((ws) => ws.name.toLowerCase().includes(q));
-  }, [workspaces, wsSearch]);
+    const q = wsSearch.trim().toLowerCase();
+    return workspaces.filter((ws) => (!q || ws.name.toLowerCase().includes(q))
+      && (!filterOn || (factKeys[ws.id] !== undefined && matchesFilter(wsFilter, factsFromKey(factKeys[ws.id])))));
+  }, [workspaces, wsSearch, filterOn, wsFilter, factKeys]);
 
   // #1481 — fan-out nesting. Both maps change only when a fan-out lands, a
   // task closes or detaches, or the audit log is re-read — not on output.
@@ -113,6 +145,8 @@ export default function Sidebar() {
     const q = wsSearch.trim() ? wsSearch.toLowerCase() : '';
     const fallbackHost = t('remote.hostFallback');
     const byRowId = new Map<string, AttachedRemoteWorkspace>();
+    // Facets describe local workspaces; a remote mirror is hidden while any is on.
+    if (filterOn) return byRowId;
     for (const rw of remoteWorkspaces) {
       const name = remoteWorkspaceDisplayName(rw);
       const host = rw.hostLabel || fallbackHost;
@@ -120,7 +154,7 @@ export default function Sidebar() {
       byRowId.set(`${REMOTE_ROW_PREFIX}${rw.key}`, rw);
     }
     return byRowId;
-  }, [remoteWorkspaces, wsSearch, t]);
+  }, [remoteWorkspaces, wsSearch, filterOn, t]);
   const remoteRows = useMemo(
     () => [...remoteByRowId].map(([id, rw]) => ({ id, name: remoteWorkspaceDisplayName(rw) })),
     [remoteByRowId],
@@ -201,14 +235,18 @@ export default function Sidebar() {
     if (e.key === 'f' && (e.ctrlKey || e.metaKey) && listedCount >= 3) {
       e.preventDefault();
       e.stopPropagation();
-      wsSearchRef.current?.focus();
+      openWsSearch();
     }
-  }, [listedCount]);
+  }, [listedCount, openWsSearch]);
 
   // The search input hides below 3 workspaces; clear any leftover query so
   // the list can't stay filtered with no visible way to reset it.
   useEffect(() => {
-    if (listedCount < 3) setWsSearch('');
+    if (listedCount < 3) {
+      setWsSearch('');
+      setWsSearchOpen(false);
+      if (isFilterActive(useStore.getState().sidebarFilter)) useStore.getState().setSidebarFilter(EMPTY_FILTER);
+    }
   }, [listedCount]);
 
   // A1: 콜백을 useCallback으로 안정화해 memo(WorkspaceItem)가 실효하게 한다.
@@ -250,6 +288,14 @@ export default function Sidebar() {
   }, [archiveWorkspace]);
 
   const workspaceById = useMemo(() => new Map(workspaces.map((w) => [w.id, w])), [workspaces]);
+  // Filtering only changes what the list shows; the header counts what is left.
+  const narrowed = filterOn || wsSearch.trim() !== '';
+  const shownCount = filteredWorkspaces.length + remoteByRowId.size;
+  const activeHidden = !activeRemoteKey && !filteredWorkspaces.some((w) => w.id === activeWorkspaceId);
+  const clearFilters = useCallback(() => {
+    setWsSearch('');
+    useStore.getState().setSidebarFilter(EMPTY_FILTER);
+  }, []);
   const renderTask = useCallback((id: string) => (
     <WorkspaceItem
       workspaceId={id}
@@ -277,14 +323,30 @@ export default function Sidebar() {
     >
       {pickerOpen && <PresetPicker onClose={closePicker} anchorStyle={pickerAnchor} />}
       <SidebarResizeHandle />
-      {!readOnly && <SidebarNavigation />}
+      {!readOnly && chrome === 'full' && <SidebarNavigation />}
       <div className="wmux-sidebar-section">
         <span className="truncate">{t('sidebar.workspaces')}</span>
-        <span className="wmux-sidebar-total">{listedCount}</span>
+        <span className="wmux-sidebar-total" data-sidebar-total>
+          {narrowed ? t('sidebar.filter.count', { shown: shownCount, total: listedCount }) : listedCount}
+        </span>
+        {listedCount >= 3 && <button
+          type="button"
+          className={`ui-icon-btn relative ml-auto h-7 w-7 ${FOCUS_RING}`}
+          onClick={() => (wsSearchOpen ? closeWsSearch() : openWsSearch())}
+          data-filter-active={narrowed ? 'true' : undefined}
+          // A filter for this list — distinct from the rail's Search &
+          // commands, which opens the command palette.
+          title={t('sidebar.filterWorkspaces')}
+          aria-label={t('sidebar.filterWorkspaces')}
+          aria-expanded={wsSearchOpen}
+          aria-haspopup="dialog"
+          data-sidebar-search-toggle
+        ><svg width="15" height="15" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2 3h10L8.2 7.6V11L5.8 12V7.6Z" /></svg>
+          {narrowed && <span className="wmux-ws-filter-dot" aria-hidden="true" />}</button>}
         {!readOnly && <button
           ref={pickerButtonRef}
           type="button"
-          className={`ui-icon-btn ml-auto h-7 w-7 ${FOCUS_RING}`}
+          className={`ui-icon-btn ${listedCount >= 3 ? '' : 'ml-auto '}h-7 w-7 ${FOCUS_RING}`}
           onClick={togglePicker}
           title={t('sidebar.newWorkspace')}
           aria-label={t('sidebar.newWorkspace')}
@@ -292,18 +354,42 @@ export default function Sidebar() {
         ><IconPlus size={15} /></button>}
       </div>
 
-      {/* Workspace search input — only visible when 3+ workspaces */}
-      {listedCount >= 3 && (
-        <div className="px-3 pb-1">
-          <input
-            ref={wsSearchRef}
-            type="text"
-            value={wsSearch}
-            onChange={(e) => setWsSearch(e.target.value)}
-            placeholder={t('sidebar.searchPlaceholder')}
-            aria-label={t('sidebar.searchPlaceholder')}
-            className="ui-input h-8 text-[13px]"
-          />
+      {listedCount >= 3 && wsSearchOpen && (
+        <WorkspaceFilterPopover
+          query={wsSearch}
+          onQuery={setWsSearch}
+          filter={wsFilter}
+          onToggle={(chip) => useStore.getState().setSidebarFilter(toggleFacet(useStore.getState().sidebarFilter, chip))}
+          onClose={closeWsSearch}
+          searchRef={wsSearchRef}
+        />
+      )}
+      {/* The checks in force, one removable chip each. */}
+      {narrowed && (
+        <div className="wmux-ws-filter-chips" data-ws-filter-chips>
+          {wsSearch.trim() && (
+            <span className="wmux-ws-filter-chip">
+              “{wsSearch.trim()}”
+              <button type="button" aria-label={t('sidebar.filter.remove', { name: wsSearch.trim() })} onClick={() => setWsSearch('')}>×</button>
+            </span>
+          )}
+          {filterChips(wsFilter).map((chip) => (
+            <span key={filterChipKey(chip)} className="wmux-ws-filter-chip" data-ws-filter-chip={filterChipKey(chip)}>
+              {t(filterChipKey(chip))}
+              <button type="button" aria-label={t('sidebar.filter.remove', { name: t(filterChipKey(chip)) })}
+                onClick={() => useStore.getState().setSidebarFilter(toggleFacet(useStore.getState().sidebarFilter, chip))}>×</button>
+            </span>
+          ))}
+          <button type="button" className="wmux-ws-filter-clear" onClick={clearFilters} data-ws-filter-clear>{t('sidebar.filter.clear')}</button>
+        </div>
+      )}
+      {narrowed && activeHidden && (
+        <p className="wmux-ws-filter-note" role="status" data-ws-filter-hidden-active>{t('sidebar.filter.activeHidden')}</p>
+      )}
+      {narrowed && shownCount === 0 && (
+        <div className="wmux-ws-filter-empty" data-ws-filter-empty>
+          <p>{t('sidebar.filter.noMatch')}</p>
+          <button type="button" className="wmux-ws-filter-clear" onClick={clearFilters}>{t('sidebar.filter.clearAll')}</button>
         </div>
       )}
 
@@ -319,7 +405,7 @@ export default function Sidebar() {
           below the last row) don't paint a 🚫 cursor mid-drag. External
           drags hover-through the container untouched. */
       <div
-        className="flex-1 min-h-0 overflow-y-auto px-2 pb-2 space-y-1"
+        className="flex-1 min-h-0 overflow-y-auto px-0 pb-2 space-y-0.5"
         onPointerEnter={onListPointerEnter}
         onPointerLeave={onListPointerLeave}
         onFocusCapture={onListFocus}
@@ -432,7 +518,7 @@ export default function Sidebar() {
 
       {/* Footer — when docked right, mirror the row so the collapse arrow sits
           on the inner edge facing the content area (issue #151). */}
-      <div className={`wmux-sidebar-footer flex items-center shrink-0 gap-1 ${sidebarPosition === 'right' ? 'flex-row-reverse' : ''}`} {...tokenAttrs('textMuted', 'text')}>
+      {chrome === 'full' && <div className={`wmux-sidebar-footer flex items-center shrink-0 gap-1 ${sidebarPosition === 'right' ? 'flex-row-reverse' : ''}`} {...tokenAttrs('textMuted', 'text')}>
         {readOnly ? <span className="flex-1" /> : <button
           type="button"
           className={`wmux-nav-button flex-1 ${FOCUS_RING}`}
@@ -446,14 +532,14 @@ export default function Sidebar() {
         </button>}
         <button
           data-sidebar-collapse
-          className={`${HIT_TARGET_24} rounded text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 ${FOCUS_RING}`}
+          className={`${HIT_TARGET_24} rounded-md text-[color-mix(in_srgb,var(--text-main)_50%,transparent)] hover:text-[var(--text-main)] hover:bg-[var(--hover-fill)] transition-colors duration-150 ${FOCUS_RING}`}
           onClick={() => useStore.getState().toggleSidebar()}
           title={t('sidebar.hideTooltip')}
           aria-label={t('sidebar.hideTooltip')}
         >
           <IconChevronDir dir={collapseDirection(sidebarPosition)} />
         </button>
-      </div>
+      </div>}
     </div>
   );
 }

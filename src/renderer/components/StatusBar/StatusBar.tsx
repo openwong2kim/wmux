@@ -13,6 +13,8 @@ import { selectFleetPanes, sortFleetPanes, countNeedsAttention, type FleetPane }
 import PluginStatusBarWidgets from '../../plugins/PluginStatusBarWidgets';
 import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
 import DeckToggle from '../Deck/DeckToggle';
+import CommandPill from '../Titlebar/CommandPill';
+import SettingsButton from '../Titlebar/SettingsButton';
 import { FOCUS_RING } from '../focusRing';
 import type { StoreState } from '../../stores';
 import { displayWorkspaceName, resolveTaskLink } from '../../utils/fanoutProvenance';
@@ -187,6 +189,8 @@ export default function StatusBar() {
     s.setActivePane(target.paneId);
   };
   const toggleNotificationPanel = useStore((s) => s.toggleNotificationPanel);
+  // The Fleet page has its own summary line; the titlebar's would repeat it.
+  const onFleetPage = useStore((s) => s.appRoute === 'fleet');
 
   // Prefix mode (tmux-style Ctrl+B)
   const prefixMode = useStore((s) => s.prefixMode);
@@ -259,13 +263,14 @@ export default function StatusBar() {
         <PluginStatusBarWidgets alignment="left" />
       </div>
 
-      {/* Draggable gap — the titlebar's remaining grab surface. */}
-      <div className="flex-1" />
+      {/* Draggable gap — the titlebar's remaining grab surface — with the
+          search & command pill centred in it (only the pill is no-drag). */}
+      <CommandPill />
 
       {/* Right: status indicators */}
       <div className="flex items-center shrink-0 gap-2" style={noDrag}>
         {/* Fleet vitals — render only when there is signal (no dead gauges). */}
-        {fleetVitals.running > 0 && (
+        {!onFleetPage && fleetVitals.running > 0 && (
           <span className="flex items-center gap-1.5" data-statusbar-running>
             <span
               aria-hidden="true"
@@ -274,14 +279,14 @@ export default function StatusBar() {
             {(t('strip.running') || '{count} running').replace('{count}', String(fleetVitals.running))}
           </span>
         )}
-        {fleetVitals.needsYou > 0 && (
+        {!onFleetPage && fleetVitals.needsYou > 0 && (
           <button
             type="button"
             data-statusbar-needs
             onClick={jumpToUrgent}
             // min-h only: the chip is text, so it is already wide enough — it
             // was the 13px line-height that put it under the pointer floor, and
-            // the 36px titlebar absorbs the extra height with no layout change.
+            // the 40px titlebar absorbs the extra height with no layout change.
             className="flex items-center gap-1.5 min-h-[24px] font-semibold text-[var(--accent-red)] hover:opacity-80 transition-opacity"
             title={t('strip.needsYouTooltip') || 'Jump to the pane that needs you'}
             {...tokenAttrs('danger', 'text')}
@@ -291,15 +296,19 @@ export default function StatusBar() {
           </button>
         )}
         {/* A5: company 비용 + 사용량 위젯(시계 커서 의존) — 분리된 소형 컴포넌트. */}
-        <StatusClockUsage isCompanyMode={isCompanyMode} />
+        {!onFleetPage && <StatusClockUsage isCompanyMode={isCompanyMode} />}
         {/* Plugin status-bar widgets (B-1 ui.statusbar, right-aligned) */}
         <PluginStatusBarWidgets alignment="right" />
         <NotificationBellBadgeView unreadCount={unreadCount} onActivate={toggleNotificationPanel} />
         {/* A5: 메모리 + 시각(시계 커서 의존) — 분리된 소형 컴포넌트. */}
         <StatusClockTime />
-        {/* Settings lives in the sidebar in both expanded and compact layouts.
-            The titlebar owns only the labeled tools-panel visibility control. */}
-        <DeckToggle />
+        {/* The titlebar's right end: the tools-panel toggle, then Settings —
+            two icon buttons of one size, 4px apart, left of the Windows
+            window controls (the titlebar reserves their strip). */}
+        <span className="flex items-center gap-1">
+          <DeckToggle />
+          <SettingsButton />
+        </span>
       </div>
     </div>
   );

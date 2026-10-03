@@ -1,6 +1,6 @@
 import { registerQuickCommandHandlers } from './handlers/quickCommand.handler';
 import { registerUsageLimitHandlers } from '../usageLimit/usageLimit.handler';
-import { ipcMain, type BrowserWindow } from 'electron';
+import { ipcMain, nativeTheme, type BrowserWindow } from 'electron';
 import { PTYManager } from '../pty/PTYManager';
 import { PTYBridge } from '../pty/PTYBridge';
 import { DaemonClient } from '../DaemonClient';
@@ -353,6 +353,16 @@ export function registerAllHandlers(
   };
   ipcMain.removeAllListeners(IPC.WINDOW_SET_TITLEBAR_OVERLAY);
   ipcMain.on(IPC.WINDOW_SET_TITLEBAR_OVERLAY, onSetTitleBarOverlay);
+
+  // Window glass (macOS). The vibrancy material follows the native
+  // appearance, so a dark wmux theme on a light-mode Mac would otherwise draw
+  // its translucent chrome over a light material. Only a boolean passes.
+  const onSetGlassAppearance = (_event: Electron.IpcMainEvent, dark: unknown): void => {
+    if (process.platform !== 'darwin' || typeof dark !== 'boolean') return;
+    nativeTheme.themeSource = dark ? 'dark' : 'system';
+  };
+  ipcMain.removeAllListeners(IPC.WINDOW_SET_GLASS_APPEARANCE);
+  ipcMain.on(IPC.WINDOW_SET_GLASS_APPEARANCE, onSetGlassAppearance);
 
   // Whole-interface zoom (#822). The renderer owns the persisted factor and
   // pushes it here whenever it changes (Settings slider, session hydration).

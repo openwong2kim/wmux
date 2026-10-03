@@ -307,7 +307,7 @@ describe('FleetView — row verbs', () => {
     await flushRaf();
     const r = row('pty-5a');
     expect(r.dataset.status).toBe('awaiting_input');
-    expect(r.querySelector('.wmux-fleet-detail')?.textContent).toBe('Which region?');
+    expect(r.querySelector('.wmux-board-detail')?.textContent).toBe('“Which region?”');
     act(() => r.focus());
     key(r, 'm');
     const input = container.querySelector<HTMLInputElement>('[data-fleet-editor="message"] input')!;
@@ -359,7 +359,7 @@ describe('FleetView — row verbs', () => {
   it('Escape with the ⋮ menu open closes only the menu', async () => {
     mount();
     await flushRaf();
-    act(() => { useStore.setState({ fleetViewVisible: true }); });
+    act(() => { useStore.setState({ appRoute: 'fleet', fleetViewVisible: true }); });
     const items = openMenu('pty-1');
     act(() => items[0].focus());
     key(items[0], 'Escape');
@@ -390,7 +390,7 @@ describe('FleetView — row verbs', () => {
     act(() => row('pty-1').focus());
     key(row('pty-1'), 'l');
     const input = container.querySelector<HTMLInputElement>('[data-fleet-editor="label"] input')!;
-    act(() => { useStore.setState({ fleetViewVisible: true }); });
+    act(() => { useStore.setState({ appRoute: 'fleet', fleetViewVisible: true }); });
     key(input, 'Escape');
     expect(container.querySelector('[data-fleet-editor]')).toBeNull();
     expect(useStore.getState().fleetViewVisible).toBe(true);

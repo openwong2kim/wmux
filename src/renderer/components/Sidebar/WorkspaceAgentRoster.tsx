@@ -1,3 +1,4 @@
+// Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx), MIT License, Copyright (c) 2026 Nick
 import { Fragment, memo, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
@@ -268,7 +269,7 @@ function WorkspaceRosterSummary({
       // over the end of the workspace name. `self-center` rides in the recipe:
       // the row is items-start, so a 24px box pinned to the top would float the
       // chevron above the caption line it belongs to.
-      className={`${HIT_TARGET_24_ROW} flex-shrink-0 gap-0.5 rounded px-0.5 text-[10px] font-mono tabular-nums text-[var(--text-muted)] transition-colors hover:text-[var(--text-sub)] ${FOCUS_RING}`}
+      className={`${HIT_TARGET_24_ROW} flex-shrink-0 gap-0.5 rounded-md px-0.5 text-[10px] font-mono tabular-nums text-[color-mix(in_srgb,var(--text-main)_45%,transparent)] transition-colors hover:text-[var(--text-main)] ${FOCUS_RING}`}
       aria-expanded={open}
       aria-controls={rosterListId(workspaceId)}
       aria-label={ariaLabel}
@@ -332,7 +333,7 @@ function WorkspaceRosterSummary({
         <span className="flex items-center gap-0.5" data-roster-chip-tasks={paneTaskCount} data-roster-chip-needs-you={paneTaskNeedYou || undefined}>
           <IconFanOut size={8} />
           {paneTaskNeedYou > 0 ? (
-            <span><span className="font-semibold text-[var(--accent-red)]">{paneTaskNeedYou}</span>/{paneTaskCount}</span>
+            <span><span className="font-semibold text-[var(--accent-yellow)]">{paneTaskNeedYou}</span>/{paneTaskCount}</span>
           ) : paneTaskCount}
         </span>
       )}
@@ -408,7 +409,7 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
       }}
       onDoubleClick={(event) => event.stopPropagation()}
     >
-      <div className="ml-1 border-l border-[var(--border-soft)] pl-1.5">
+      <div className="pl-3" data-roster-list>
           {roster.rows.map((row, index) => {
             // The one-line group header, immediately before the FIRST stashed
             // row. With six of seven panes stashed the list otherwise looked
@@ -480,11 +481,13 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
                 <button
                   type="button"
                   draggable={false}
-                  className={`group/roster-row flex min-w-0 flex-1 min-w-0 items-center gap-1.5 rounded px-1 py-[3px] text-left transition-colors ${FOCUS_RING} ${
+                  className={`group/roster-row flex min-w-0 flex-1 min-w-0 items-center gap-1.5 rounded-md px-1 py-[3px] text-left transition-colors ${FOCUS_RING} ${
+                    // Inside the selected workspace's pill: no inner box — the
+                    // focused agent reads as full-strength text.
                     row.isFocused
-                      ? 'bg-[var(--bg-overlay)]'
-                      : 'hover:bg-[rgba(var(--bg-surface-rgb),0.65)]'
-                  } ${pulsingPaneId === row.paneId ? 'bg-[var(--bg-overlay)]' : ''}`}
+                      ? 'text-[var(--text-main)]'
+                      : 'text-[var(--text-sub)] hover:text-[var(--text-main)]'
+                  } ${pulsingPaneId === row.paneId ? 'bg-[var(--selection-strong)]' : ''}`}
                   style={pulsingPaneId === row.paneId ? { transition: 'background-color 150ms ease-out' } : undefined}
                   title={rowAriaLabel}
                   aria-label={rowAriaLabel}
@@ -629,7 +632,7 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
                     // row hover or keyboard focus it takes its own 24px and the
                     // row gives it the room. The shared recipe's min-width would
                     // keep it 24px wide at rest, so the classes are spelled out.
-                    className={`inline-flex h-6 w-0 min-w-0 flex-none items-center justify-center self-center -my-1.5 overflow-hidden rounded-[5px] text-[11px] leading-none text-[var(--text-sub)] hover:bg-[var(--surface-fill-hover)] hover:text-[var(--text-main)] group-hover/mention:w-6 focus-visible:w-6 ${FOCUS_RING}`}
+                    className={`inline-flex h-6 w-0 min-w-0 flex-none items-center justify-center self-center -my-1.5 overflow-hidden rounded-md text-[11px] leading-none text-[var(--text-sub)] hover:bg-[var(--selection)] hover:text-[var(--text-main)] group-hover/mention:w-6 focus-visible:w-6 ${FOCUS_RING}`}
                     title={t('mention.button', { name: primary })}
                     aria-label={t('mention.button', { name: primary })}
                     onClick={(event) => {
@@ -653,10 +656,10 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
                     {stashedAgo}
                   </div>
                 )}
-                {/* 확인 필요일 때만 질문을 빨강 2번째 줄로 편다(실제로 봐야 하는 신호). */}
+                {/* The question opens as an amber second line only while it waits for an answer. */}
                 {row.pendingQuestion && (
                   <div
-                    className="truncate pl-[37px] pr-1 text-[10px] text-[var(--accent-red)]"
+                    className="truncate pl-[37px] pr-1 text-[10px] text-[var(--accent-yellow)]"
                     title={row.pendingQuestion}
                   >
                     ? {row.pendingQuestion}
@@ -700,7 +703,7 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
                     <button
                       type="button"
                       draggable={false}
-                      className={`flex min-w-0 flex-1 items-center gap-1.5 rounded px-1 py-[3px] text-left transition-colors hover:bg-[rgba(var(--bg-surface-rgb),0.65)] ${FOCUS_RING}`}
+                      className={`flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1 py-[3px] text-left transition-colors hover:bg-[var(--hover-fill)] ${FOCUS_RING}`}
                       title={t('roster.barePane', { name: label })}
                       aria-label={t('roster.barePane', { name: label })}
                       onClick={(event) => {

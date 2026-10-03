@@ -9,7 +9,9 @@ import PresetPicker from '../Sidebar/PresetPicker';
 import { SIDEBAR_COMPACT_WIDTH } from '../../utils/sidebarLayout';
 
 /**
- * Bridge redesign — custom 36px titlebar (DESIGN.md "Window Chrome").
+ * Bridge redesign — custom 40px titlebar (DESIGN.md "Window Chrome").
+ *
+ * Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/TitleBar.tsx), MIT License, Copyright (c) 2026 Nick
  *
  * The BrowserWindow is created with `titleBarStyle: 'hidden'` (+ Windows
  * `titleBarOverlay`), so this component IS the window's top edge:
@@ -24,11 +26,11 @@ import { SIDEBAR_COMPACT_WIDTH } from '../../utils/sidebarLayout';
  *     `titlebar-area-*` CSS env vars (Windows overlay). On macOS the
  *     traffic lights sit top-left instead, so the LEFT edge reserves 72px.
  *   - bottom divider is an inset hairline (box-shadow), not a border, so the
- *     36px content box stays exact.
+ *     40px content box stays exact.
  */
 
 /** Height shared with main's titleBarOverlay config (registerHandlers.ts). */
-export const TITLEBAR_HEIGHT = 36;
+export const TITLEBAR_HEIGHT = 40;
 
 // macOS 트래픽 라이트 예약 폭. macOS 26(Tahoe)에서 신호등이 커져 72px로는
 // 로고가 초록 버튼에 겹친다(owner-reported 2026-07-18) — x=12 배치 기준
@@ -55,10 +57,11 @@ function useTitleBarOverlaySync(): void {
     if (!send) return;
     const push = () => {
       const cs = getComputedStyle(document.documentElement);
-      // MUST be --bg-base: the overlay strip sits on the titlebar's right,
-      // which is bgBase — pushing bgMantle (the left-segment tint) made the
-      // window buttons read as a mismatched block (owner-reported on light).
-      const color = cs.getPropertyValue('--bg-base').trim();
+      // The overlay strip sits on the titlebar, which is the window frame:
+      // push the theme's frame colour when it is a plain hex (the looks set
+      // one), else the base colour as before.
+      const frame = cs.getPropertyValue('--frame-bg').trim();
+      const color = /^#[0-9a-fA-F]{6}$/.test(frame) ? frame : cs.getPropertyValue('--bg-base').trim();
       const symbolColor = cs.getPropertyValue('--text-sub').trim();
       // Main validates #RGB/#RRGGBB; skip empty reads during first paint.
       if (color && symbolColor) send({ color, symbolColor });
@@ -101,8 +104,28 @@ function useMacFullscreen(isMac: boolean): boolean {
   return fullscreen;
 }
 
+/**
+ * Mark <html data-fullscreen> while the window is in native fullscreen on any
+ * platform, so the floating sheet can drop its frame margins and fill the
+ * window. Same push + mount-time pull as useMacFullscreen.
+ */
+function useFullscreenAttribute(): void {
+  useEffect(() => {
+    const api = typeof window === 'undefined' ? undefined : window.electronAPI?.window;
+    const root = document.documentElement;
+    const apply = (fs: boolean) => { if (fs) root.setAttribute('data-fullscreen', ''); else root.removeAttribute('data-fullscreen'); };
+    let alive = true;
+    void api?.isFullScreen?.().then((fs: boolean) => { if (alive) apply(fs); }).catch(() => {
+      /* best-effort: the push listener corrects state */
+    });
+    const off = api?.onFullscreenChanged?.(apply);
+    return () => { alive = false; off?.(); };
+  }, []);
+}
+
 export default function Titlebar() {
   const t = useT();
+  useFullscreenAttribute();
   const sidebarVisible = useStore((s) => s.sidebarVisible);
   const sidebarPosition = useStore((s) => s.sidebarPosition);
   const platform = rendererPlatform();
@@ -136,7 +159,9 @@ export default function Titlebar() {
   const compactSegment = sidebarPosition === 'left' && !sidebarVisible;
   // #1481 — the expanded width is the user's (drag handle, persisted).
   const sidebarWidth = useStore((s) => s.sidebarWidth);
-  const leftSegmentWidth = sidebarPosition === 'left' ? (sidebarVisible ? sidebarWidth : SIDEBAR_COMPACT_WIDTH) : 0;
+  // The icon rail (48px) always sits on the frame at the left; the open
+  // sidebar follows it inside the sheet (+1px for the sheet's edge).
+  const leftSegmentWidth = sidebarPosition === 'left' ? SIDEBAR_COMPACT_WIDTH + (sidebarVisible ? sidebarWidth + 1 : 0) : 0;
 
   // macOS 트래픽 라이트 예약: 세그먼트가 충분히 넓으면(확장 240px) 세그먼트
   // "안쪽" 패딩으로 품는다 — 헤더에 걸면 세그먼트 전체가 예약만큼 밀려 아래
@@ -147,14 +172,14 @@ export default function Titlebar() {
 
   return (
     <header
-      className="flex items-stretch shrink-0 select-none bg-[var(--bg-base)]"
+      className="wmux-titlebar flex items-stretch shrink-0 select-none bg-[var(--bg-base)]"
       style={{
         height: TITLEBAR_HEIGHT,
         // Whole bar drags the window; interactive children opt out below.
         // (WebkitAppRegion is Electron-only, hence the cast.)
         WebkitAppRegion: 'drag',
-        // Inset hairline instead of border-bottom — keeps 36px exact.
-        boxShadow: 'inset 0 -1px 0 var(--border-soft)',
+        // Inset hairline instead of border-bottom — keeps 40px exact.
+        boxShadow: 'inset 0 -1px 0 var(--stroke)',
         // Windows overlay: reserve exactly the native-controls strip the OS
         // draws over us. env() resolves to 0/100vw when no overlay exists.
         paddingRight: isWin
@@ -172,13 +197,13 @@ export default function Titlebar() {
       {...tokenAttrs('bgBase', 'bg')}
     >
       <div
-        className={`flex items-center shrink-0 gap-2 ${compactSegment ? 'px-1 justify-center' : 'px-3'} overflow-hidden ${leftSegmentWidth ? 'bg-[var(--bg-mantle)]' : ''}`}
+        className={`wmux-titlebar-segment flex items-center shrink-0 gap-2 ${compactSegment ? 'px-1 justify-center' : 'px-3'} overflow-hidden ${leftSegmentWidth ? 'bg-[var(--bg-mantle)]' : ''}`}
         style={{
           width: leftSegmentWidth || undefined,
           // 트래픽 라이트를 세그먼트 안에 품을 때는 px-3 대신 예약 폭 안쪽 패딩.
           paddingLeft: reserveInSegment ? MAC_TRAFFIC_LIGHT_RESERVE : undefined,
           // Fuse with the sidebar below via the same inset hairline seam.
-          boxShadow: leftSegmentWidth ? 'inset -1px 0 0 var(--border-soft)' : undefined,
+          boxShadow: leftSegmentWidth ? 'inset -1px 0 0 var(--stroke)' : undefined,
         }}
         {...tokenAttrs('bgMantle', 'bg')}
       >
@@ -189,7 +214,7 @@ export default function Titlebar() {
           ref={plusBtnRef}
           type="button"
           onClick={togglePicker}
-          className={`flex items-center justify-center w-6 h-6 rounded-md text-[var(--text-muted)] hover:text-[var(--accent-green)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 ml-auto ${FOCUS_RING}`}
+          className={`flex items-center justify-center w-6 h-6 rounded-md text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--hover-fill)] transition-colors duration-150 ml-auto ${FOCUS_RING}`}
           style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}
           title={t('sidebar.newWorkspaceTooltip')}
           aria-label={t('sidebar.newWorkspaceTooltip')}
@@ -207,8 +232,8 @@ export default function Titlebar() {
       {/* The status strip (P1.5) fills the rest of the bar: transient
           indicators on the left, the status/clock/settings cluster pinned
           against the native-controls reserve on the right. Its own flex-1
-          gap remains the drag surface. Deliberately no search box here
-          (owner decision, DESIGN.md) — ⌘K stays a shortcut. */}
+          gap remains the drag surface, with the search & command pill centred
+          in it (the palette left the rail: it is not a page). */}
       <StatusBar />
     </header>
   );

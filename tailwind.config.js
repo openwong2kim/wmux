@@ -13,6 +13,12 @@ module.exports = {
       fontFamily: {
         sans: ['var(--font-ui)'],
       },
+      // Titles are semibold (600) and nothing in the chrome goes heavier.
+      // Adapted from MonoCode (hardbeat920/monocode@6bd432ca,
+      // src/styles/index.css), MIT License, Copyright (c) 2026 Nick.
+      fontWeight: {
+        bold: '600',
+      },
     },
   },
   plugins: [],
