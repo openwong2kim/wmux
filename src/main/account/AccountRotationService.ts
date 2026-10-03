@@ -63,9 +63,11 @@ export interface AccountRotationDeps {
   dirExists?: (dir: string) => boolean;
 }
 
+/** Null unless the account's last probe succeeded: a logged-out or erroring
+ *  account's old snapshot says nothing about whether it can run a launch. */
 export function claudeReading(entry: AccountUsageEntry | undefined): AccountQuotaReading | null {
   const s = entry?.snapshot;
-  if (!s) return null;
+  if (!s || entry.status !== 'ok') return null;
   const win = (pct: number, resetSec: number) => ({
     remaining: 1 - Math.max(0, Math.min(100, pct)) / 100,
     resetAtMs: resetSec > 0 ? resetSec * 1000 : null,
@@ -173,13 +175,18 @@ export class AccountRotationService {
     // registered account wmux can measure: leave it alone.
     if (!bound || !pool.some((a) => a.id === bound)) return { kind: 'keep' };
     const now = this.now();
-    const candidates = await Promise.all(pool.map(async (a) => ({
-      id: a.id,
-      current: a.id === bound,
-      verdict: evaluateQuota(await this.reading(a, true), now),
-    })));
+    const read = await Promise.all(pool.map(async (a) => ({ a, reading: await this.reading(a, true) })));
+    // Only a measured account is a switch target; an unmeasured one (no
+    // reading, or a Claude account whose last probe failed) is never picked.
+    const candidates = read
+      .filter(({ a, reading }) => a.id === bound || reading !== null)
+      .map(({ a, reading }) => ({ id: a.id, current: a.id === bound, verdict: evaluateQuota(reading, now) }));
     const choice = chooseByQuota(candidates);
-    if (choice.kind === 'hold') return { kind: 'hold', availableAtMs: choice.availableAtMs };
+    if (choice.kind === 'hold') {
+      // "Every account is out" is only true when every account was measured.
+      if (candidates.length < pool.length) return { kind: 'keep' };
+      return { kind: 'hold', availableAtMs: choice.availableAtMs };
+    }
     if (choice.kind === 'keep') return { kind: 'keep' };
     const account = pool.find((a) => a.id === choice.id);
     if (!account) return { kind: 'keep' };

@@ -98,6 +98,25 @@ describe('AccountRotationService', () => {
     expect(await s.prepareLaunch('codex', 'ws')).toEqual({ kind: 'switch', accountId: 'y', env: { CODEX_HOME: '/acc/y' } });
   });
 
+  it('never switches to an account whose last probe failed, and does not hold for it', async () => {
+    const s = make([acct('a', 'claude'), acct('b', 'claude')]);
+    await s.setEnabled('claude', true);
+    bindings['ws:claude'] = 'a';
+    usageEntries = [usage('a', 100), { ...usage('b', 5), status: 'unauthorized' }];
+    expect(await s.prepareLaunch('claude', 'ws')).toEqual({ kind: 'keep' });
+  });
+
+  it('never switches to a Codex account with no readable limits', async () => {
+    const s = make([acct('x', 'codex'), acct('y', 'codex'), acct('z', 'codex')]);
+    await s.setEnabled('codex', true);
+    bindings['ws:codex'] = 'x';
+    codex[path.join('/acc/x', 'sessions')] = limits(100);
+    codex[path.join('/acc/z', 'sessions')] = limits(90);
+    expect(await s.prepareLaunch('codex', 'ws')).toMatchObject({ kind: 'switch', accountId: 'z' });
+    codex[path.join('/acc/z', 'sessions')] = limits(100);
+    expect(await s.prepareLaunch('codex', 'ws')).toEqual({ kind: 'keep' });
+  });
+
   it('leaves an unbound workspace on its default login', async () => {
     const s = make([acct('a', 'claude')]);
     await s.setEnabled('claude', true);
