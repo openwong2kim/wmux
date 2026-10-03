@@ -401,7 +401,13 @@ const BORROWED_SOURCES = [
       'Fan-out worker temp dirs and checkout ownership (src/main/worktask,\n' +
       'src/shared/checkoutOwnership.ts) from:\n' +
       '  src-tauri/src/control.rs\n' +
-      '  src/features/orchestration/model/orchestration.ts (worker prompt wording)',
+      '  src/features/orchestration/model/orchestration.ts (worker prompt wording)\n' +
+      'Global quick launch (src/main/quickLaunch, src/renderer/launcher,\n' +
+      'src/shared/quickLaunch.ts) from:\n' +
+      '  src-tauri/src/quick_composer.rs\n' +
+      '  src/features/quick-composer/ui/QuickComposer.tsx\n' +
+      '  src/features/quick-composer/model/quickComposer.ts\n' +
+      '  src/features/quick-composer/model/quickComposerShortcut.ts',
   },
 ];
 lines.push('BORROWED IMPLEMENTATION TECHNIQUES');

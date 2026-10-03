@@ -11540,6 +11540,12 @@ Fan-out worker temp dirs and checkout ownership (src/main/worktask,
 src/shared/checkoutOwnership.ts) from:
   src-tauri/src/control.rs
   src/features/orchestration/model/orchestration.ts (worker prompt wording)
+Global quick launch (src/main/quickLaunch, src/renderer/launcher,
+src/shared/quickLaunch.ts) from:
+  src-tauri/src/quick_composer.rs
+  src/features/quick-composer/ui/QuickComposer.tsx
+  src/features/quick-composer/model/quickComposer.ts
+  src/features/quick-composer/model/quickComposerShortcut.ts
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
