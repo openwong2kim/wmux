@@ -586,7 +586,9 @@ describe('WebTerminalServer', () => {
 
   afterEach(async () => {
     if (server.isRunning) await server.stop();
-    fs.rmSync(uploadsDir, { recursive: true, force: true });
+    // A timed-out Git request can still hold the repo as its process cwd.
+    // Async retries let its completion callbacks run before removing the tree.
+    await fs.promises.rm(uploadsDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
 
   // Port 0 → ephemeral bind; status() reports the actual port.
@@ -3956,10 +3958,12 @@ describe('WebTerminalServer', () => {
     expect((await fetch(`${base()}/api/history?offset=-1`, {headers})).status).toBe(400);
   });
 
-  // Stage and commit are two cases on purpose: every git process costs 100ms+
-  // on the Windows runner and the route spawns ~13 per snapshot, so one case
-  // doing both sat right at the 5s limit. Test-side spawns are kept minimal too:
+  // Stage and commit stay separate, but each starts 32-36 sequential real Git
+  // processes across snapshots, writes and assertions. Their Windows startup
+  // cost can exceed Vitest's 5s default on a busy runner. Give only these two
+  // integration cases a finite 20s budget. Test-side spawns stay minimal too:
   // identity is appended to the config `init` wrote instead of `git config` calls.
+  const gitHttpTimeoutMs = 20_000;
   const gitRepo = (name: string) => {
     const root = path.join(uploadsDir, name);
     fs.mkdirSync(root);
@@ -3984,7 +3988,7 @@ describe('WebTerminalServer', () => {
     const stage = await fetch(endpoint, {method:'POST',headers:auth,body:JSON.stringify({requestId:crypto.randomUUID(),action:'stage',paths:['phone.txt'],expectedHead:before.head,expectedTree:before.tree,expectedRef:before.ref})});
     expect(await stage.json()).toEqual({applied:true});
     expect(git('ls-files')).toBe('phone.txt');
-  });
+  }, gitHttpTimeoutMs);
 
   it('commits through the authenticated Git API using spawnCwd', async () => {
     const info = await startRW();
@@ -4007,7 +4011,7 @@ describe('WebTerminalServer', () => {
     // One `rev-list` pins it all: HEAD is the returned commit, its parent is
     // the head the snapshot reported, and the replay did not commit twice.
     expect(git('rev-list','HEAD')).toBe(`${result.commit}\n${staged.head}`);
-  });
+  }, gitHttpTimeoutMs);
 
   it('gates Git control on authentication, input grants and session visibility', async () => {
     const info = await startRO();
