@@ -77,7 +77,13 @@ describe('web client inline images', () => {
     expect(app).toContain('tile.term.onData(gateUserInput(tile.term, ');
     expect(app).toContain('shared.gateUserInput(t, send)');
     expect(app).toContain('inlineImagesEnabled = cfg.inlineImages !== false;');
-    expect(app.match(/refreshInlineImages\(\); \}/g)?.length).toBe(2);
+    // The switch rides the snapshot meta and is applied before the repaint;
+    // /api/config is asked only when a meta predates it, never on open.
+    expect(app).toContain('if (!m.resize && inlineImagesFromMeta(m)) applyInlineImages(inlineImagesEnabled);');
+    expect(app).toContain('var carried = !m.resize && inlineImagesFromMeta(m);');
+    expect(app).toContain('if (carried) applyInlineImages(inlineImagesEnabled);');
+    expect(app.match(/if \(!snapMeta \|\| typeof snapMeta\.inlineImages !== 'boolean'\) refreshInlineImages\(\);/g)?.length).toBe(2);
+    expect(app).not.toMatch(/open: function \(\) \{[^}]*refreshInlineImages/);
   });
 
   it('keeps mobile limits and never answers size queries', () => {

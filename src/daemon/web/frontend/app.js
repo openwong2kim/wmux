@@ -192,16 +192,29 @@
       createImageBitmap: typeof createImageBitmap === 'function' ? createImageBitmap : null
     });
   }
-  // A phone stays connected across a server-side switch, so the setting is
-  // re-read whenever a stream (re)opens and applied to every open terminal.
+  // A phone stays connected across a server-side switch, so every snapshot's
+  // `meta` carries the switch and it is applied to every open terminal before
+  // that snapshot repaints — otherwise the first paint after a switch shows
+  // the old state.
+  function applyInlineImages(enabled) {
+    inlineImagesEnabled = enabled;
+    loadImageAddon(term);
+    tiles.forEach(function (tl) { loadImageAddon(tl.term); });
+  }
+  // Only for a daemon whose snapshot meta predates the switch: ask
+  // /api/config instead, which lands after the snapshot it was asked for.
   var inlineImagesCheck = null;
   function refreshInlineImages() {
     if (inlineImagesCheck) return;
     inlineImagesCheck = api('/api/config').then(function (r) { return r.json(); }).then(function (cfg) {
-      inlineImagesEnabled = cfg.inlineImages !== false;
-      loadImageAddon(term);
-      tiles.forEach(function (tl) { loadImageAddon(tl.term); });
-    }).catch(function () { /* the next open asks again */ }).then(function () { inlineImagesCheck = null; });
+      applyInlineImages(cfg.inlineImages !== false);
+    }).catch(function () { /* the next snapshot asks again */ }).then(function () { inlineImagesCheck = null; });
+  }
+  /** Apply the switch a snapshot `meta` carries; true when it carried one. */
+  function inlineImagesFromMeta(m) {
+    if (!m || typeof m.inlineImages !== 'boolean') return false;
+    inlineImagesEnabled = m.inlineImages;
+    return true;
   }
 
   function newTerm(cols, rows) {
@@ -1514,9 +1527,12 @@
       attention: true,
       meta: function (m) {
         if (!m.resize) snapMeta = m;
+        var carried = !m.resize && inlineImagesFromMeta(m);
         ensureTerm(m.cols, m.rows);
+        if (carried) applyInlineImages(inlineImagesEnabled);
       },
       snapshot: function (bytes) {
+        if (!snapMeta || typeof snapMeta.inlineImages !== 'boolean') refreshInlineImages();
         // Snapshot replays the pane's screen, kitty negotiation included —
         // reset before folding so a protocol the app turned off earlier does
         // not survive as stale.
@@ -1538,7 +1554,7 @@
         if (term) term.write(bytes);
       },
       exit: function () { setConn('ended', 'ended'); },
-      open: function () { setConn('live', 'live'); refreshInlineImages(); },
+      open: function () { setConn('live', 'live'); },
       error: function () { setConn('reconnect', 'reconnecting…'); diagnoseStreamError(); }
     });
   }
@@ -1686,10 +1702,12 @@
       attention: isAttentionSource,
       meta: function (m) {
         if (!m.resize) snapMeta = m;
+        if (!m.resize && inlineImagesFromMeta(m)) applyInlineImages(inlineImagesEnabled);
         if (tile.term && m.cols && m.rows) tile.term.resize(m.cols, m.rows);
         rescale();
       },
       snapshot: function (bytes) {
+        if (!snapMeta || typeof snapMeta.inlineImages !== 'boolean') refreshInlineImages();
         // Snapshot replays the pane's screen, kitty negotiation included —
         // reset before folding (see connect()'s snapshot for the rationale).
         foldKeyboardState(tile.sessionId, bytes, true);
@@ -1711,7 +1729,7 @@
         renderTileHead(tile);
         if (tile.sessionId === currentSession) setConn('ended', 'ended');
       },
-      open: function () { if (tile.sessionId === currentSession) setConn('live', 'live'); refreshInlineImages(); },
+      open: function () { if (tile.sessionId === currentSession) setConn('live', 'live'); },
       error: function () {
         if (tile.sessionId === currentSession) setConn('reconnect', 'reconnecting…');
         diagnoseStreamError();

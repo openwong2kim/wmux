@@ -6149,6 +6149,11 @@ export class WebTerminalServer {
     const meta = this.streamMeta(managed, {
       truncated: snapshot.truncated,
       omittedBytes: snapshot.omittedBytes,
+      // The server's image switch, on the frame the client paints from: a
+      // reconnect after `wmux web --[no-]inline-images` must load or drop the
+      // image addon BEFORE it replays this snapshot, which an /api/config
+      // round trip started on open cannot guarantee (#1641).
+      inlineImages: this.opts?.inlineImages !== false,
       ...(typeof resume?.commandRunning === 'boolean' ? { commandRunning: resume.commandRunning } : {}),
       ...(resume?.resumeAgent ? { resumeAgent: resume.resumeAgent } : {}),
     });
