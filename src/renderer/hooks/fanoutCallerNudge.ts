@@ -1,59 +1,98 @@
-// One-line nudge to the pane that started a fan-out, when a worker's turn ends
-// and the owner workspace has no brain to hear it (main parks the event in the
-// task ledger and sends a pointer here — main/deck/fanoutCallerNotify.ts).
+// One-line nudge to the pane that started a fan-out, when one of its workers
+// moves and the owner workspace has no brain to hear it (main parks the event
+// in the task ledger and sends a pointer here — main/deck/fanoutCallerNotify.ts).
 //
 // Accelerator only: the park is the record, nothing is acknowledged, and any
-// doubt means no write.
+// doubt means no write. A pointer that arrives before this module is
+// subscribed (startup, a renderer reload) is lost; the park still holds it.
 //
 // Address: the requester's stable {paneId, surfaceId} from the lineage stamp,
 // re-resolved against the OWNER workspace's live leaves at receipt and again
 // right before each write. A surface id must name that exact terminal surface
 // (and sit in that pane when both ids are given); a pane id alone must hold
 // exactly one terminal surface. Never the active tab, never another workspace.
-// The queue holds those ids, never a PTY id.
+// The queue holds those ids, never a PTY id. Each pointer is bound to the
+// agent session (daemon incarnation) running in the pane when it arrived; a
+// pointer whose session is gone is dropped.
 //
 // When: the pane must pass the A2A turn-end eligibility (detected agent known
 // alive, not running / awaiting_input, not held at a usage limit). Idle → a
 // short coalescing window, then one flush per pane. Busy → queued until the
-// pane's agent ends a turn. Held at a usage limit → retried on every sweep.
-// A pane that is not an agent (or is gone) drops its pending pointers.
+// pane's agent ends a turn. Held (usage limit, a person typing) → retried on
+// every sweep. A pane that is not an agent (or is gone) drops its pointers,
+// and a pointer older than POINTER_TTL_MS is dropped.
 //
-// What: a fixed template and the task ids, zero bytes of worker text. One
-// line per pane per flush. Each (pane, taskId, seq) is accepted once per
-// renderer session. A failure before the paste is retried; a paste whose
-// Enter was withheld is never pasted again.
+// The write itself goes through main (fanoutCallerSubmit.ts): the delivery
+// gate, the owner check, the session check, then a daemon-owned paste + Enter
+// that waits while the composer holds a draft or a key was pressed in the last
+// 10 s, and cancels the Enter if anything else reached the pane after the paste.
+//
+// What: a fixed template and the task short ids, zero bytes of worker text.
+// One line per pane per flush. Each (pane, task, kind, seq) is accepted once
+// per renderer session. A plain stop of a task told within STOP_COOLDOWN_MS is
+// not told again (a multi-turn worker would otherwise nudge every turn);
+// failures and ledger moves always are. A failure before the paste is retried;
+// a paste whose Enter was withheld is never pasted again.
 import { useStore } from '../stores';
 import { getWorkspaceLeafPanes } from '../../shared/paneUtils';
-import { gatedSubmitToPty } from '../utils/ptyMessageDelivery';
+import {
+  buildFanoutCallerNudge,
+  isFanoutCallerKind,
+  moreSevereKind,
+  type FanoutCallerKind,
+} from '../../shared/fanoutCallerNudge';
 import { eligibility } from './a2aTurnEndReminder';
 
 export const FANOUT_NUDGE_COALESCE_MS = 750;
+export const POINTER_TTL_MS = 30 * 60_000;
+export const STOP_COOLDOWN_MS = 5 * 60_000;
 const MAX_SEND_ATTEMPTS = 3;
 const SEEN_CAP = 2000;
-const LISTED_IDS = 4;
 
 export interface FanoutCallerPointer {
   ownerWorkspaceId: string;
   taskId: string;
+  kind: FanoutCallerKind;
   seq: number;
   origin: { paneId?: string; surfaceId?: string };
+}
+
+interface PendingItem {
+  taskId: string;
+  kind: FanoutCallerKind;
+  createdAt: number;
+  /** The pane's agent session at receipt: undefined while the read is in
+   *  flight, null when no verified agent session answered. */
+  incarnation: string | null | undefined;
 }
 
 interface Target {
   ownerWorkspaceId: string;
   paneId?: string;
   surfaceId?: string;
-  /** taskIds waiting for a line, in arrival order. */
-  pending: Set<string>;
-  /** A turn end (or a usage-limit hold) was seen: sweeps may flush. */
+  /** taskId → what to tell, in arrival order. */
+  pending: Map<string, PendingItem>;
+  /** A turn end (or a hold) was seen: sweeps may flush. */
   armed: boolean;
   timer: ReturnType<typeof setTimeout> | null;
   inFlight: boolean;
   attempts: number;
 }
 
+type SubmitReply = { result: string; pasted: boolean };
+interface DeckBridge {
+  fanoutCallerSession?: (ptyId: string) => Promise<{ incarnationId: string } | null>;
+  fanoutCallerSubmit?: (p: { ptyId: string; ownerWorkspaceId: string; incarnationId: string; text: string }) => Promise<SubmitReply>;
+}
+
 const targets = new Map<string, Target>();
 const seen = new Set<string>();
+/** taskId → when a line about it was last written (the stop cooldown). */
+const lastLineAt = new Map<string, number>();
+
+function deck(): DeckBridge | undefined {
+  return (window as unknown as { electronAPI?: { deck?: DeckBridge } }).electronAPI?.deck;
+}
 
 function str(v: unknown): string | undefined {
   return typeof v === 'string' && v.length > 0 && v.length <= 256 ? v : undefined;
@@ -66,11 +105,18 @@ function parsePointer(raw: unknown): FanoutCallerPointer | null {
   const taskId = str(r.taskId);
   const seq = r.seq;
   const o = r.origin && typeof r.origin === 'object' ? (r.origin as Record<string, unknown>) : null;
-  if (!ownerWorkspaceId || !taskId || typeof seq !== 'number' || !Number.isFinite(seq) || !o) return null;
+  if (!ownerWorkspaceId || !taskId || !isFanoutCallerKind(r.kind)) return null;
+  if (typeof seq !== 'number' || !Number.isFinite(seq) || !o) return null;
   const paneId = str(o.paneId);
   const surfaceId = str(o.surfaceId);
   if (!paneId && !surfaceId) return null;
-  return { ownerWorkspaceId, taskId, seq, origin: { ...(paneId ? { paneId } : {}), ...(surfaceId ? { surfaceId } : {}) } };
+  return {
+    ownerWorkspaceId,
+    taskId,
+    kind: r.kind,
+    seq,
+    origin: { ...(paneId ? { paneId } : {}), ...(surfaceId ? { surfaceId } : {}) },
+  };
 }
 
 function isTerminal(s: { surfaceType?: string; ptyId?: string }): boolean {
@@ -105,18 +151,6 @@ export function resolveOriginPty(
   return terminals.length === 1 ? (terminals[0].ptyId as string) : null;
 }
 
-export function buildFanoutCallerNudge(taskIds: readonly string[]): string {
-  // Every fan-out task id starts with 'wtask-'; the 8 characters after it are
-  // the part that tells tasks apart.
-  const ids = taskIds
-    .map((id) => id.replace(/^wtask-/, '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 8))
-    .filter((id) => id.length > 0);
-  if (ids.length <= 1) return `[wmux] fan-out task ${ids[0] ?? '?'} updated — channel_mission_list`;
-  const listed = ids.slice(0, LISTED_IDS).join(', ');
-  const more = ids.length > LISTED_IDS ? ` +${ids.length - LISTED_IDS}` : '';
-  return `[wmux] fan-out tasks ${listed}${more} updated — channel_mission_list`;
-}
-
 function targetKey(p: FanoutCallerPointer): string {
   return `${p.ownerWorkspaceId}|${p.origin.paneId ?? ''}|${p.origin.surfaceId ?? ''}`;
 }
@@ -132,7 +166,8 @@ function isBusy(ptyId: string): boolean {
 
 function drop(key: string, t: Target): void {
   if (t.timer) clearTimeout(t.timer);
-  targets.delete(key);
+  t.timer = null;
+  if (targets.get(key) === t) targets.delete(key);
 }
 
 function rememberSeen(k: string): void {
@@ -144,8 +179,28 @@ function rememberSeen(k: string): void {
   }
 }
 
+function inStopCooldown(taskId: string, now: number): boolean {
+  const at = lastLineAt.get(taskId);
+  return at !== undefined && now - at < STOP_COOLDOWN_MS;
+}
+
+/** Drop pointers that expired, lost their session binding or are in the
+ *  stop cooldown. */
+function prune(t: Target, now: number): void {
+  for (const [id, item] of t.pending) {
+    if (
+      now - item.createdAt >= POINTER_TTL_MS ||
+      item.incarnation === null ||
+      (item.kind === 'agent.stop' && inStopCooldown(id, now))
+    ) {
+      t.pending.delete(id);
+    }
+  }
+}
+
 /** Decide what to do with a target now: drop, schedule, wait or arm. */
 function evaluate(key: string, t: Target): void {
+  prune(t, Date.now());
   if (t.pending.size === 0) {
     drop(key, t);
     return;
@@ -173,6 +228,21 @@ function evaluate(key: string, t: Target): void {
   if (!isBusy(ptyId)) t.armed = true;
 }
 
+function bindSession(item: PendingItem, ptyId: string): void {
+  const read = deck()?.fanoutCallerSession;
+  if (typeof read !== 'function') {
+    item.incarnation = null;
+    return;
+  }
+  read(ptyId)
+    .then((s) => {
+      item.incarnation = s?.incarnationId ?? null;
+    })
+    .catch(() => {
+      item.incarnation = null;
+    });
+}
+
 async function flush(key: string): Promise<void> {
   const t = targets.get(key);
   if (!t || t.inFlight) return;
@@ -180,6 +250,7 @@ async function flush(key: string): Promise<void> {
     clearTimeout(t.timer);
     t.timer = null;
   }
+  prune(t, Date.now());
   const ptyId = resolve(t);
   if (!ptyId || t.pending.size === 0) {
     drop(key, t);
@@ -196,31 +267,68 @@ async function flush(key: string): Promise<void> {
     if (!isBusy(ptyId)) t.armed = true;
     return;
   }
-  const ids = [...t.pending];
+  const items = [...t.pending.values()];
+  if (items.some((i) => i.incarnation === undefined)) {
+    t.armed = true; // the session read is still in flight
+    return;
+  }
+  const api = deck();
+  if (typeof api?.fanoutCallerSession !== 'function' || typeof api.fanoutCallerSubmit !== 'function') {
+    drop(key, t);
+    return;
+  }
   t.inFlight = true;
   t.armed = false;
-  let result: Awaited<ReturnType<typeof gatedSubmitToPty>>;
+  let reply: SubmitReply;
+  let sent: PendingItem[] = [];
   try {
-    result = await gatedSubmitToPty(ptyId, buildFanoutCallerNudge(ids), {
-      agent: useStore.getState().surfaceAgent[ptyId]?.name ?? null,
-    });
+    const session = await api.fanoutCallerSession(ptyId).catch(() => null);
+    if (!session) {
+      drop(key, t);
+      return;
+    }
+    // Pointers bound to an earlier agent session in this pane are not this
+    // conversation's business.
+    for (const i of items) if (i.incarnation !== session.incarnationId) t.pending.delete(i.taskId);
+    sent = [...t.pending.values()];
+    if (sent.length === 0 || resolve(t) !== ptyId || eligibility(ptyId) !== 'write') {
+      if (sent.length > 0) t.armed = true;
+      return;
+    }
+    reply = await api
+      .fanoutCallerSubmit({
+        ptyId,
+        ownerWorkspaceId: t.ownerWorkspaceId,
+        incarnationId: session.incarnationId,
+        text: buildFanoutCallerNudge(sent),
+      })
+      .catch((): SubmitReply => ({ result: 'error', pasted: true }));
   } finally {
     t.inFlight = false;
   }
-  if (result.ok || result.pasted) {
-    if (!result.ok) {
-      console.warn(`[fanout-nudge] line pasted but not submitted (${result.reason}) for ${ids.join(',')}; not pasted again`);
+  const now = Date.now();
+  const consume = (): void => {
+    for (const i of sent) {
+      if (t.pending.get(i.taskId) === i) t.pending.delete(i.taskId);
+      lastLineAt.set(i.taskId, now);
     }
-    for (const id of ids) t.pending.delete(id);
     t.attempts = 0;
-  } else if (result.reason === 'usage_limited') {
+  };
+  if (reply.result === 'sent' || reply.pasted) {
+    if (reply.result !== 'sent') {
+      console.warn(`[fanout-nudge] line pasted but not submitted (${reply.result}); not pasted again`);
+    }
+    consume();
+  } else if (reply.result === 'held') {
     t.armed = true;
     return;
-  } else if (result.reason === 'approval_pending') {
-    // Nothing written; wait for the pane's next turn end.
+  } else if (reply.result === 'approval_pending') {
+    return; // nothing written; the pane's next turn end re-arms it
+  } else if (reply.result === 'gone' || reply.result === 'session_changed') {
+    drop(key, t);
     return;
   } else if (++t.attempts >= MAX_SEND_ATTEMPTS) {
-    console.warn(`[fanout-nudge] gave up after ${t.attempts} attempts (${result.reason}) for ${ids.join(',')}`);
+    console.warn(`[fanout-nudge] gave up after ${t.attempts} attempts (${reply.result})`);
     drop(key, t);
     return;
   } else {
@@ -236,16 +344,18 @@ export function receiveFanoutCallerEvent(raw: unknown): void {
   const p = parsePointer(raw);
   if (!p) return;
   const key = targetKey(p);
-  const dedup = `${key}|${p.taskId}|${p.seq}`;
+  const dedup = `${key}|${p.taskId}|${p.kind}|${p.seq}`;
   if (seen.has(dedup)) return;
   rememberSeen(dedup);
+  const now = Date.now();
+  if (p.kind === 'agent.stop' && inStopCooldown(p.taskId, now)) return;
   let t = targets.get(key);
   if (!t) {
     t = {
       ownerWorkspaceId: p.ownerWorkspaceId,
       ...(p.origin.paneId ? { paneId: p.origin.paneId } : {}),
       ...(p.origin.surfaceId ? { surfaceId: p.origin.surfaceId } : {}),
-      pending: new Set(),
+      pending: new Map(),
       armed: false,
       timer: null,
       inFlight: false,
@@ -253,11 +363,20 @@ export function receiveFanoutCallerEvent(raw: unknown): void {
     };
     targets.set(key, t);
   }
-  t.pending.add(p.taskId);
+  const existing = t.pending.get(p.taskId);
+  if (existing) {
+    existing.kind = moreSevereKind(existing.kind, p.kind);
+  } else {
+    const item: PendingItem = { taskId: p.taskId, kind: p.kind, createdAt: now, incarnation: undefined };
+    t.pending.set(p.taskId, item);
+    const ptyId = resolve(t);
+    if (ptyId) bindSession(item, ptyId);
+    else item.incarnation = null;
+  }
   if (!t.inFlight) evaluate(key, t);
 }
 
-/** An agent turn ended on `ptyId` (hook / detector stop, not osc133). */
+/** An agent turn ended on `ptyId` (hook / detector stop or failed stop, not osc133). */
 export function noteFanoutCallerTurnEnd(ptyId: string): void {
   if (!ptyId) return;
   for (const t of targets.values()) {
@@ -265,16 +384,29 @@ export function noteFanoutCallerTurnEnd(ptyId: string): void {
   }
 }
 
-/** Flush armed targets whose pane is writable now. Call on every event poll. */
+/** A lifecycle event of any pane: an agent turn end (a stop or a failed stop
+ *  from a hook or the detector) arms the nudges queued behind it. An osc133
+ *  stop is a shell command ending, not a turn end. */
+export function noteFanoutCallerLifecycle(ev: { kind: string; source: string; ptyId: string }): void {
+  if ((ev.kind === 'agent.stop' || ev.kind === 'agent.stop_failure') && ev.source !== 'osc133') {
+    noteFanoutCallerTurnEnd(ev.ptyId);
+  }
+}
+
+/** Flush armed targets whose pane is writable now and drop dead ones. Call on
+ *  every event poll. */
 export async function sweepFanoutCallerNudges(): Promise<void> {
   for (const [key, t] of [...targets]) {
     if (t.inFlight) continue;
-    // A pane that closed or moved away takes its pending pointers with it.
     if (!t.armed) {
-      if (!resolve(t)) drop(key, t);
+      // A pane that closed, moved away or stopped running an agent takes its
+      // pointers with it; so does age.
+      prune(t, Date.now());
+      const ptyId = resolve(t);
+      if (t.pending.size === 0 || !ptyId || eligibility(ptyId) === 'never') drop(key, t);
       continue;
     }
-    // eslint-disable-next-line no-await-in-loop -- one gated write per pane, in order
+    // eslint-disable-next-line no-await-in-loop -- one write per pane, in order
     await flush(key);
   }
 }
@@ -284,4 +416,5 @@ export function resetFanoutCallerNudgesForTest(): void {
   for (const t of targets.values()) if (t.timer) clearTimeout(t.timer);
   targets.clear();
   seen.clear();
+  lastLineAt.clear();
 }

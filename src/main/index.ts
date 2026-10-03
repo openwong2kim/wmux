@@ -65,6 +65,7 @@ import { registerSystemRpc } from './pipe/handlers/system.rpc';
 import { registerPerfRpc } from './pipe/handlers/perf.rpc';
 import { registerComputerRpc } from './pipe/handlers/computer.rpc';
 import { resolvePtyOwnerWorkspace } from './workspace/ptyOwnership';
+import { createFanoutCallerSubmit } from './deck/fanoutCallerSubmit';
 import { COMPUTER_ABORT_ACCELERATOR, createComputerService, disposeComputerUse, registerComputerUseIpc } from './computer';
 import { createComputerConsentRequester } from './computer/computerConsent';
 import type { ComputerService } from './computer/ComputerService';
@@ -888,6 +889,17 @@ ipcMain.handle(IPC.GATED_SUBMIT, async (_e, ptyId: unknown, text: unknown, agent
       })
     : { ok: false, reason: 'write_failed', detail: 'delivery: missing target pty or text' },
 );
+// The fan-out caller nudge (main/deck/fanoutCallerSubmit.ts): the same
+// delivery gate, then a daemon-owned write that waits while a person types.
+const fanoutCallerSubmit = createFanoutCallerSubmit({
+  deliveryGate: (ptyId) => inputRpc.deliveryGate(ptyId),
+  ownerOf: (ptyId) => resolvePtyOwnerWorkspace(() => mainWindow, ptyId),
+  agentState: async (ptyId) => (daemonClient?.isConnected ? daemonClient.getAgentState(ptyId) : null),
+  deliver: async (args) =>
+    daemonClient ? daemonClient.deliverCallerNudge(args) : { result: 'unavailable', pasted: false },
+});
+ipcMain.handle(IPC.DECK_FANOUT_CALLER_SESSION, (_e, ptyId: unknown) => fanoutCallerSubmit.session(ptyId));
+ipcMain.handle(IPC.DECK_FANOUT_CALLER_SUBMIT, (_e, payload: unknown) => fanoutCallerSubmit.submit(payload));
 registerApprovalsRpc(rpcRouter, () => daemonClient);
 registerDeckRpc(rpcRouter, () => mainWindow);
 registerNotifyRpc(rpcRouter, () => mainWindow);

@@ -670,6 +670,11 @@ export class DaemonPTYBridge extends EventEmitter {
     return Date.now() - this.lastKeyInputAt >= DaemonPTYBridge.INPUT_ECHO_QUIET_MS;
   }
 
+  /** `isKeyInputQuiet` over a caller-chosen window: no key input for `ms`. */
+  isKeyInputQuietFor(ms: number): boolean {
+    return Date.now() - this.lastKeyInputAt >= ms;
+  }
+
   /** Actual submitted input/hook work, excluding terminal redraw activity. */
   getLastTurnStartedAt(): number {
     return this.lastTurnStartedAt;

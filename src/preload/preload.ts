@@ -985,6 +985,17 @@ const electronAPI = {
       ipcRenderer.on(IPC.DECK_FANOUT_CALLER, listener);
       return () => { ipcRenderer.removeListener(IPC.DECK_FANOUT_CALLER, listener); };
     },
+    fanoutCallerSession: (ptyId: string) =>
+      ipcRenderer.invoke(IPC.DECK_FANOUT_CALLER_SESSION, ptyId) as Promise<{ incarnationId: string } | null>,
+    fanoutCallerSubmit: (payload: {
+      ptyId: string;
+      ownerWorkspaceId: string;
+      incarnationId: string;
+      text: string;
+    }) =>
+      ipcRenderer.invoke(IPC.DECK_FANOUT_CALLER_SUBMIT, payload) as Promise<
+        import('../main/deck/fanoutCallerSubmit').FanoutCallerSubmitReply
+      >,
   },
   // WorkspaceMirror push — fire-and-forget full snapshot of the workspace tree +
   // per-pane agent status. Keeps the main-process mirror warm so routing / hook

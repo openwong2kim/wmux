@@ -7,8 +7,17 @@
 // snapshot of the pane's display name, so the sidebar can still say who asked
 // after that pane is closed.
 //
-// Display data only, never an authority: the depth-1 check reads the owner,
-// not this.
+// Never an authority: the depth-1 check reads the owner, not this.
+//
+// Besides display, it is the ADDRESS of the fan-out caller nudge: when the
+// owner workspace has no brain, the pane named here is told its workers moved
+// (main/deck/fanoutCallerNotify.ts, renderer/hooks/fanoutCallerNudge.ts). The
+// trust it carries is no more than the fan-out's own: the ids were resolved
+// from the caller's senderPtyId, the same basis the fan-out's ownership rests
+// on. The nudge only uses it inside the owner workspace, re-resolved against
+// the live layout before each write (exact surface, no active-tab fallback),
+// to a pane whose verified agent passes the delivery eligibility checks, and
+// writes one fixed line.
 
 export type FanoutOriginKind = 'pane' | 'orchestrator' | 'gui';
 

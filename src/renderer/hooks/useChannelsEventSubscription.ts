@@ -70,7 +70,7 @@ import { publishA2aTask } from '../events/publisher';
 import { flushMentions, type FlushOpts } from './channelMentionFlush';
 import { gatedSubmitToPty } from '../utils/ptyMessageDelivery';
 import { noteAgentTurnEnd, sweepTurnEndReminders } from './a2aTurnEndReminder';
-import { noteFanoutCallerTurnEnd, sweepFanoutCallerNudges } from './fanoutCallerNudge';
+import { noteFanoutCallerLifecycle, sweepFanoutCallerNudges } from './fanoutCallerNudge';
 import {
   createPasteGateState,
   isMentionPasteBusy,
@@ -673,11 +673,10 @@ export function useChannelsEventSubscription(): void {
                 runFlushAll({ onlyPtyId: ev.ptyId });
                 // Only a real turn boundary: an osc133 stop is a shell command
                 // ending, possibly under a still-running agent.
-                if (ev.source !== 'osc133') {
-                  noteAgentTurnEnd(ev.ptyId);
-                  noteFanoutCallerTurnEnd(ev.ptyId);
-                }
+                if (ev.source !== 'osc133') noteAgentTurnEnd(ev.ptyId);
               }
+              // Fan-out caller nudges queued behind this pane's turn.
+              noteFanoutCallerLifecycle(ev);
             } else if (event.type === 'channel.catalog') {
               // A1: a channel's catalog/membership changed (create/archive/join/
               // leave/kick/invite — by us or another client). Flag a one-shot

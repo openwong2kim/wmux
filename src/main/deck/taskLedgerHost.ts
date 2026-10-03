@@ -83,10 +83,7 @@ export function routeWorkerEventToOwner(ev: CoalescerInput, ports: WorkerEventRo
     l.recordOrphanedEvent({ ownerWorkspaceId: entry.ownerWorkspaceId, seq: ev.seq, payload: tagged }).catch(
       (err) => console.warn(`[deck] could not park a worker event for ${entry.ownerWorkspaceId}: ${String(err)}`),
     );
-    // Independent of the park's outcome (a full backlog still nudges). Only an
-    // agent turn boundary: an osc133 stop is a shell command ending, often
-    // under a worker that is still running.
-    if (ev.source === 'osc133') return;
+    // Independent of the park's outcome (a full backlog still nudges).
     try {
       ports.notifyCaller?.(entry.ownerWorkspaceId, ev.workspaceId, entry.id, ev.kind, ev.seq);
     } catch {

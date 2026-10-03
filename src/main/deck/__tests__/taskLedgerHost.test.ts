@@ -110,19 +110,6 @@ describe('routeWorkerEventToOwner', () => {
     expect(peekOrphanBacklog('ws-parent')).toHaveLength(1);
   });
 
-  it('a brain booting later replays the park without telling the caller again', async () => {
-    const calls: unknown[][] = [];
-    const notifyCaller = (...args: unknown[]): void => { calls.push(args); };
-    for (let seq = 1; seq <= 3; seq++) {
-      routeWorkerEventToOwner(ev({ seq }), { hasBrain: () => false, push: () => undefined, notifyCaller });
-    }
-    await ledger.flush();
-    expect(calls).toHaveLength(3);
-    // The boot replay reads the backlog; it does not run the router again.
-    expect(peekOrphanBacklog('ws-parent').map((e) => e.seq)).toEqual([1, 2, 3]);
-    expect(calls).toHaveLength(3);
-  });
-
   it('still tells the caller when the park backlog is over its cap (owner off)', async () => {
     const cappedDir = path.join(dir, 'capped');
     fs.mkdirSync(cappedDir);
@@ -140,18 +127,6 @@ describe('routeWorkerEventToOwner', () => {
     await capped.flush();
     expect(capped.peekOrphanedEvents('ws-parent').map((o) => o.seq)).toEqual([3, 4]);
     expect(calls.map((c) => c[4])).toEqual([1, 2, 3, 4]);
-  });
-
-  it('parks a shell command end (osc133) without telling the caller', async () => {
-    const calls: unknown[][] = [];
-    routeWorkerEventToOwner(ev({ source: 'osc133', seq: 9 }), {
-      hasBrain: () => false,
-      push: () => undefined,
-      notifyCaller: (...args) => { calls.push(args); },
-    });
-    await ledger.flush();
-    expect(calls).toHaveLength(0);
-    expect(peekOrphanBacklog('ws-parent').map((e) => e.seq)).toEqual([9]);
   });
 
   it('a throwing caller notify does not disturb the park', async () => {

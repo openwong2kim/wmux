@@ -53,7 +53,7 @@ import { loadCommanderSession, saveCommanderSession, clearCommanderSession } fro
 import { DeckScheduler } from '../../deck/DeckScheduler';
 import { DeckHeartbeat } from '../../deck/DeckHeartbeat';
 import { CommanderEventCoalescer } from '../../deck/CommanderEventCoalescer';
-import { notifyFanoutCaller } from '../../deck/fanoutCallerNotify';
+import { notifyFanoutCaller, shouldNotifyCaller, installFanoutCallerLedgerNotify } from '../../deck/fanoutCallerNotify';
 import {
   routeWorkerEventToOwner,
   peekOrphanBacklog,
@@ -1577,6 +1577,23 @@ export function registerDeckHandler(
       });
     }
   });
+  // A task workspace never has a brain, whatever its mode says — an owner
+  // that is itself a task (nested fan-out) parks worker events instead.
+  const ownerHasBrain = (owner: string): boolean =>
+    !isTaskWorkspace(owner) && (managers.has(owner) || loadWorkspaceMode(owner) !== 'off');
+  // The pane that started a fan-out, told when its workers move and no brain
+  // listens (fanoutCallerNotify.ts). One pointer to the renderer, no ack.
+  const notifyCaller = (owner: string, taskWs: string, taskId: string, kind: string, seq: number): void => {
+    notifyFanoutCaller(owner, taskWs, taskId, kind, seq, {
+      send: (payload) => {
+        const win = getWindow();
+        if (!win || win.isDestroyed()) return false;
+        win.webContents.send(IPC.DECK_FANOUT_CALLER, payload);
+        return true;
+      },
+    });
+  };
+  const disposeCallerLedgerNotify = installFanoutCallerLedgerNotify(ownerHasBrain, notifyCaller);
   coalescer = new CommanderEventCoalescer({
     runTurn: (workspaceId, prompt) => runTurnForWorkspace(prompt, workspaceId),
     // Lane F: worker events parked while this workspace had no brain —
@@ -1769,21 +1786,12 @@ export function registerDeckHandler(
     // there once the task inherited the owner's mode (wave 2 finding 7).
     if (!isTaskWorkspace(ev.workspaceId)) coalescer?.push(lifecycleInput);
     routeWorkerEventToOwner(lifecycleInput, {
-      // A task workspace never has a brain, whatever its mode says — an owner
-      // that is itself a task (nested fan-out) parks the event instead.
-      hasBrain: (owner) =>
-        !isTaskWorkspace(owner) && (managers.has(owner) || loadWorkspaceMode(owner) !== 'off'),
+      hasBrain: ownerHasBrain,
       push: (copy) => coalescer?.push(copy),
       reconcile: reconcileTaskLedger,
-      notifyCaller: (owner, taskWs, taskId, kind, seq) =>
-        notifyFanoutCaller(owner, taskWs, taskId, kind, seq, {
-          send: (payload) => {
-            const win = getWindow();
-            if (!win || win.isDestroyed()) return false;
-            win.webContents.send(IPC.DECK_FANOUT_CALLER, payload);
-            return true;
-          },
-        }),
+      // A repeated report of one turn end (dedup) or a shell command end is
+      // parked but does not nudge the caller a second time.
+      ...(shouldNotifyCaller(ev) ? { notifyCaller } : {}),
     });
   });
 
@@ -2766,6 +2774,7 @@ export function registerDeckHandler(
     coalescer?.dispose();
     disposeLedgerEmitter();
     disposeLedgerPush();
+    disposeCallerLedgerNotify();
     ledgerPushCoalescer.dispose();
     globalTurnGate.dispose();
     scheduler.stop();

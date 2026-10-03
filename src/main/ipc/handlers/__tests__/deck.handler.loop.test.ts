@@ -229,6 +229,7 @@ import { IPC } from '../../../../shared/constants';
 import type { FleetSnapshot } from '../../../workspace/WorkspaceMirror';
 import { eventBus } from '../../../events/EventBus';
 import { createGlobalTurnGate } from '../../../deck/globalTurnGate';
+import { setFanOutGuardsForTests } from '../../../worktask/fanoutGuards';
 import type { BrainAdapter, BrainEvent, BrainStartOptions } from '../../../deck/BrainAdapter';
 
 /** Fake adapter recording the exact text each turn was sent with. */
@@ -1182,5 +1183,97 @@ describe('fan-out task workspaces never run a brain of their own (wave 2 dogfood
       { timeout: 10_000, interval: 25 },
     );
     expect(adapters).toHaveLength(0);
+  });
+});
+
+describe('fan-out caller nudge wiring (owner with no brain)', () => {
+  let ledgerDir: string;
+  let ledger: TaskLedger;
+  let sent: Array<{ channel: string; payload: Record<string, unknown> }>;
+  beforeEach(async () => {
+    ledgerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-deck-caller-'));
+    ledger = new TaskLedger({ dir: ledgerDir });
+    setTaskLedgerForTests(ledger);
+    await ledger.register({ id: 'wtask-1', taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-1', title: 'lane' });
+    setFanOutGuardsForTests({
+      lineageFor: (ids: readonly string[]) =>
+        ids.includes('ws-task')
+          ? { 'ws-task': { owner: 'ws-1', at: 1, origin: { kind: 'pane', paneId: 'pane-c', surfaceId: 'surf-c' } } }
+          : {},
+    } as unknown as Parameters<typeof setFanOutGuardsForTests>[0]);
+    mockMode = 'off';
+    sent = [];
+    const spyWindow = {
+      isDestroyed: () => false,
+      webContents: {
+        send: (channel: string, payload: Record<string, unknown>) => sent.push({ channel, payload }),
+      },
+    } as unknown as import('electron').BrowserWindow;
+    cleanup?.();
+    captured.clear();
+    adapters = [];
+    cleanup = registerDeckHandler(() => spyWindow, {
+      createAdapter: (opts) => {
+        const a = new FakeAdapter(opts.workspaceId);
+        adapters.push(a);
+        return a;
+      },
+    });
+  });
+  afterEach(() => {
+    setFanOutGuardsForTests(null);
+    setTaskLedgerForTests(null);
+    fs.rmSync(ledgerDir, { recursive: true, force: true });
+  });
+
+  const callerPointers = () =>
+    sent.filter((s) => s.channel === IPC.DECK_FANOUT_CALLER).map((s) => s.payload);
+
+  it('one turn end reported twice (emit, then dedup) parks both and tells the caller once', { timeout: 15_000 }, async () => {
+    for (const decision of ['emit', 'dedup'] as const) {
+      eventBus.emit({
+        type: 'agent.lifecycle',
+        workspaceId: 'ws-task',
+        ptyId: 'p-worker',
+        kind: 'agent.stop',
+        source: decision === 'emit' ? 'hook' : 'detector',
+        agent: 'claude',
+        decision,
+      });
+    }
+    await vi.waitFor(() => expect(ledger.peekOrphanedEvents('ws-1').length).toBe(2), { timeout: 10_000, interval: 25 });
+    expect(callerPointers()).toHaveLength(1);
+    expect(callerPointers()[0]).toMatchObject({
+      ownerWorkspaceId: 'ws-1',
+      taskId: 'wtask-1',
+      kind: 'agent.stop',
+      origin: { paneId: 'pane-c', surfaceId: 'surf-c' },
+    });
+    expect(adapters).toHaveLength(0);
+  });
+
+  it('a worker recording failed tells the caller even though its row is now closed', async () => {
+    await ledger.update({ id: 'wtask-1', status: 'failed', actor: { kind: 'worker', workspaceId: 'ws-task' }, expectedRev: 1 });
+    expect(callerPointers()).toEqual([
+      expect.objectContaining({ taskId: 'wtask-1', kind: 'ledger.failed', seq: 2 }),
+    ]);
+    // The Stop that follows is no longer routed (the row is closed).
+    eventBus.emit({
+      type: 'agent.lifecycle',
+      workspaceId: 'ws-task',
+      ptyId: 'p-worker',
+      kind: 'agent.stop',
+      source: 'hook',
+      agent: 'claude',
+      decision: 'emit',
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(callerPointers()).toHaveLength(1);
+  });
+
+  it('a brain-run owner is never sent a caller pointer', async () => {
+    mockMode = 'assist';
+    await ledger.update({ id: 'wtask-1', status: 'review_requested', actor: { kind: 'worker', workspaceId: 'ws-task' }, expectedRev: 1 });
+    expect(callerPointers()).toHaveLength(0);
   });
 });

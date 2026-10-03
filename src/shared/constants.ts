@@ -241,6 +241,13 @@ export const IPC = {
   //                   only (no PTY id, no worker text); the renderer types one
   //                   fixed line into that pane if it is still there and idle.
   DECK_FANOUT_CALLER: 'deck:fanout-caller',
+  //   DECK_FANOUT_CALLER_SESSION (invoke) renderer → main: the verified agent
+  //                   incarnation in a PTY, so a pointer is bound to the
+  //                   caller's session. Null when unverified or not daemon-backed.
+  DECK_FANOUT_CALLER_SESSION: 'deck:fanout-caller:session',
+  //   DECK_FANOUT_CALLER_SUBMIT (invoke) renderer → main: write the fixed
+  //                   nudge line through the delivery gate and the daemon.
+  DECK_FANOUT_CALLER_SUBMIT: 'deck:fanout-caller:submit',
   //   DECK_SCHEDULES_* (invoke) renderer → main: CRUD over the persisted
   //                    orchestrator schedules (P3d). Same renderer-only trust
   //                    boundary as DECK_SEND.

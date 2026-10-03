@@ -939,6 +939,9 @@ export function registerInputRpc(
     agent?: string | null,
     opts?: GatedSubmitOptions,
   ) => Promise<GatedSubmitResult>;
+  /** The approval/usage-limit gate alone, for a delivery that writes elsewhere
+   *  (the fan-out caller nudge goes through the daemon). */
+  deliveryGate: (ptyId: string) => Promise<GatedSubmitRefusal | null>;
 } {
   const ledgerOf = deps.getLedger ?? getTaskLedger;
 
@@ -1558,6 +1561,7 @@ export function registerInputRpc(
     dc.writeToSession(ptyId, data);
   };
   return {
+    deliveryGate: (ptyId) => deliveryGateCheck(approvalGate, ptyId),
     gatedSubmit: (ptyId, text, agent, opts) => {
       if (!opts?.newTask) return gatedPasteSubmit(approvalGate, writeToPty, ptyId, text, agent, deps.sleep);
       // #1680 — a new task: the fresh-context step runs inside the gated

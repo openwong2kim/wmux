@@ -1,15 +1,26 @@
-import { describe, it, expect } from 'vitest';
-import { notifyFanoutCaller, type FanoutCallerEvent } from '../fanoutCallerNotify';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { TaskLedger } from '../../../daemon/ledger/TaskLedger';
+import {
+  installFanoutCallerLedgerNotify,
+  notifyFanoutCaller,
+  shouldNotifyCaller,
+  type FanoutCallerEvent,
+} from '../fanoutCallerNotify';
 import type { FanoutOrigin } from '../../../shared/fanoutOrigin';
 
+const PANE: FanoutOrigin = { kind: 'pane', paneId: 'pane-a', surfaceId: 'surf-a', label: 'w1 · caller' };
+
 function run(
-  stamp: { owner: string; origin?: FanoutOrigin } | undefined,
+  stamps: Record<string, { owner: string; origin?: FanoutOrigin }>,
   kind = 'agent.stop',
   windowUp = true,
 ): { sent: FanoutCallerEvent[]; ok: boolean } {
   const sent: FanoutCallerEvent[] = [];
   const ok = notifyFanoutCaller('ws-parent', 'ws-task', 'wtask-1', kind, 7, {
-    lineageOf: () => stamp,
+    lineageOf: (ws) => stamps[ws],
     send: (ev) => {
       if (!windowUp) return false;
       sent.push(ev);
@@ -19,11 +30,11 @@ function run(
   return { sent, ok };
 }
 
-const PANE: FanoutOrigin = { kind: 'pane', paneId: 'pane-a', surfaceId: 'surf-a', label: 'w1 · caller' };
+const STAMPED = { 'ws-task': { owner: 'ws-parent', origin: PANE } };
 
 describe('notifyFanoutCaller', () => {
   it('sends the pane origin ids and the task pointer only', () => {
-    const { sent, ok } = run({ owner: 'ws-parent', origin: PANE });
+    const { sent, ok } = run(STAMPED);
     expect(ok).toBe(true);
     expect(sent).toEqual([
       {
@@ -37,26 +48,73 @@ describe('notifyFanoutCaller', () => {
     ]);
   });
 
-  it('includes stop_failure but not a worker awaiting input', () => {
-    expect(run({ owner: 'ws-parent', origin: PANE }, 'agent.stop_failure').sent).toHaveLength(1);
-    expect(run({ owner: 'ws-parent', origin: PANE }, 'agent.awaiting_input').sent).toHaveLength(0);
+  it('includes stop_failure and the ledger moves, not a worker awaiting input', () => {
+    for (const kind of ['agent.stop_failure', 'ledger.failed', 'ledger.review_requested']) {
+      expect(run(STAMPED, kind).sent).toHaveLength(1);
+    }
+    expect(run(STAMPED, 'agent.awaiting_input').sent).toHaveLength(0);
   });
 
-  it('sends nothing without a pane origin, or when the stamp names another owner', () => {
-    expect(run(undefined).sent).toHaveLength(0);
-    expect(run({ owner: 'ws-parent' }).sent).toHaveLength(0);
-    expect(run({ owner: 'ws-parent', origin: { kind: 'gui' } }).sent).toHaveLength(0);
-    expect(run({ owner: 'ws-parent', origin: { kind: 'orchestrator' } }).sent).toHaveLength(0);
-    expect(run({ owner: 'ws-other', origin: PANE }).sent).toHaveLength(0);
+  it('sends nothing without a pane origin, when the stamp names another owner, or to a nested owner', () => {
+    expect(run({}).sent).toHaveLength(0);
+    expect(run({ 'ws-task': { owner: 'ws-parent' } }).sent).toHaveLength(0);
+    expect(run({ 'ws-task': { owner: 'ws-parent', origin: { kind: 'gui' } } }).sent).toHaveLength(0);
+    expect(run({ 'ws-task': { owner: 'ws-parent', origin: { kind: 'orchestrator' } } }).sent).toHaveLength(0);
+    expect(run({ 'ws-task': { owner: 'ws-other', origin: PANE } }).sent).toHaveLength(0);
+    expect(run({ ...STAMPED, 'ws-parent': { owner: 'ws-root', origin: PANE } }).sent).toHaveLength(0);
   });
 
   it('reports false with no window (headless) and never throws', () => {
-    expect(run({ owner: 'ws-parent', origin: PANE }, 'agent.stop', false).ok).toBe(false);
+    expect(run(STAMPED, 'agent.stop', false).ok).toBe(false);
     expect(
       notifyFanoutCaller('ws-parent', 'ws-task', 'wtask-1', 'agent.stop', 1, {
         lineageOf: () => { throw new Error('torn'); },
         send: () => true,
       }),
     ).toBe(false);
+  });
+});
+
+describe('shouldNotifyCaller', () => {
+  it('only a first report of an agent turn end nudges', () => {
+    expect(shouldNotifyCaller({ source: 'hook', decision: 'emit' })).toBe(true);
+    expect(shouldNotifyCaller({ source: 'detector', decision: 'emit' })).toBe(true);
+    expect(shouldNotifyCaller({ source: 'hook', decision: 'dedup' })).toBe(false);
+    expect(shouldNotifyCaller({ source: 'osc133', decision: 'emit' })).toBe(false);
+    expect(shouldNotifyCaller({ source: 'hook', decision: 'internal' })).toBe(false);
+  });
+});
+
+describe('installFanoutCallerLedgerNotify', () => {
+  let dir: string;
+  let ledger: TaskLedger;
+  beforeEach(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-caller-ledger-'));
+    ledger = new TaskLedger({ dir });
+    await ledger.register({ id: 'wtask-1', taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-parent', title: 'lane' });
+  });
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  it('tells the caller when a worker records failed or review_requested, with the rev as seq', async () => {
+    const calls: unknown[][] = [];
+    installFanoutCallerLedgerNotify(() => false, (...a) => { calls.push(a); }, ledger);
+    await ledger.update({ id: 'wtask-1', status: 'review_requested', actor: { kind: 'worker', workspaceId: 'ws-task' }, expectedRev: 1 });
+    await ledger.update({ id: 'wtask-1', status: 'failed', actor: { kind: 'worker', workspaceId: 'ws-task' }, expectedRev: 2 });
+    expect(calls).toEqual([
+      ['ws-parent', 'ws-task', 'wtask-1', 'ledger.review_requested', 2],
+      ['ws-parent', 'ws-task', 'wtask-1', 'ledger.failed', 3],
+    ]);
+  });
+
+  it('stays quiet for other actors, other statuses, and an owner with a brain', async () => {
+    const calls: unknown[][] = [];
+    let brain = false;
+    installFanoutCallerLedgerNotify(() => brain, (...a) => { calls.push(a); }, ledger);
+    await ledger.update({ id: 'wtask-1', status: 'input_required', actor: { kind: 'worker', workspaceId: 'ws-task' }, expectedRev: 1 });
+    brain = true;
+    await ledger.update({ id: 'wtask-1', status: 'review_requested', actor: { kind: 'worker', workspaceId: 'ws-task' }, expectedRev: 2 });
+    brain = false;
+    await ledger.update({ id: 'wtask-1', status: 'failed', actor: { kind: 'brain', workspaceId: 'ws-parent' }, expectedRev: 3 });
+    expect(calls).toEqual([]);
   });
 });

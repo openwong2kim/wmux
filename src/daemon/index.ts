@@ -168,6 +168,7 @@ import type { AgentSlug } from '../shared/events';
 import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
 import { deliverScheduledPrompt, type ScheduledPromptDeliveryDeps } from './sessionPromptDelivery';
+import { deliverCallerNudge } from './callerNudgeDelivery';
 import { UsageLimitRegistry } from './usageLimit/UsageLimitRegistry';
 import type { SessionPromptScheduleResult } from '../shared/sessionPromptSchedule';
 import { USAGE_LIMIT_CONTINUE_PROMPT, type PaneUsageLimitPatch } from '../shared/usageLimit';
@@ -4454,7 +4455,7 @@ function registerRpcHandlers(
   };
   const deliverPromptToSessionNow = (
     id: string, agentSlug: AgentSlug, incarnationId: string, prompt: string,
-    opts: Pick<ScheduledPromptDeliveryDeps, 'acceptError' | 'authorized'>,
+    opts: Pick<ScheduledPromptDeliveryDeps, 'acceptError' | 'authorized' | 'onWrite'>,
   ) =>
     deliverScheduledPrompt(agentSlug, incarnationId, prompt, {
       ...opts,
@@ -4503,6 +4504,24 @@ function registerRpcHandlers(
     }
     const result = await deliverPromptToSession(id, agentSlug, incarnationId, prompt);
     return { result };
+  });
+  // The fan-out caller nudge: one fixed line for the pane that started a
+  // fan-out. Same identity and input-revision proof as a scheduled prompt, and
+  // it waits while a person is typing there (callerNudgeDelivery.ts). A new
+  // method name, so an older daemon answers Unknown method before any write.
+  pipeServer.onRpc('daemon.deliverCallerNudgeV1', async (params) => {
+    const id = typeof params['id'] === 'string' ? params['id'] : '';
+    const agentSlug = isAgentSlug(params['agentSlug']) ? params['agentSlug'] : null;
+    const incarnationId = typeof params['incarnationId'] === 'string' ? params['incarnationId'] : '';
+    const prompt = typeof params['prompt'] === 'string' ? params['prompt'] : '';
+    if (!id || !agentSlug || !incarnationId || incarnationId.length > 128) {
+      return { result: 'error' as const, pasted: false };
+    }
+    return deliverCallerNudge(prompt, {
+      usageHeld: () => usageLimits?.holds(id) === true,
+      input: () => sessionManager.getSession(id)?.bridge,
+      deliver: (opts) => deliverPromptToSessionNow(id, agentSlug, incarnationId, prompt, opts),
+    });
   });
 
   usageLimits = new UsageLimitRegistry({

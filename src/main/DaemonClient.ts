@@ -733,6 +733,32 @@ export class DaemonClient extends EventEmitter {
     }
   }
 
+  /** The fan-out caller nudge (daemon/callerNudgeDelivery.ts). An older
+   *  daemon without the method answers Unknown method before any write. */
+  async deliverCallerNudge(args: {
+    id: string;
+    agentSlug: AgentSlug;
+    incarnationId: string;
+    prompt: string;
+  }): Promise<{ result: 'sent' | 'held' | 'session_changed' | 'unavailable' | 'error'; pasted: boolean }> {
+    if (!this.isConnected) return { result: 'unavailable', pasted: false };
+    try {
+      const response = await this.rpc('daemon.deliverCallerNudgeV1', args) as { result?: unknown; pasted?: unknown };
+      const pasted = response.pasted === true;
+      const r = response.result;
+      if (r === 'sent' || r === 'held' || r === 'session_changed' || r === 'unavailable' || r === 'error') {
+        return { result: r, pasted };
+      }
+      return { result: 'error', pasted: true };
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('Unknown method')) {
+        return { result: 'unavailable', pasted: false };
+      }
+      // The reply was lost: the daemon may have written. Never paste again.
+      return { result: 'error', pasted: true };
+    }
+  }
+
   /** Whether the daemon control pipe is connected. */
   get isConnected(): boolean {
     return this.connected;
