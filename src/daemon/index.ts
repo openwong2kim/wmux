@@ -4456,9 +4456,6 @@ function registerRpcHandlers(
   });
   sessionManager.on('session:inputSubmitted', (payload: { sessionId: string }) => usageLimits?.noteSubmitted(payload.sessionId));
   sessionManager.on('session:interrupted', (payload: { id: string }) => usageLimits?.drop(payload.id));
-  sessionManager.on('session:active', (payload: { sessionId: string; likelyRepaint?: boolean }) => {
-    if (!payload.likelyRepaint) usageLimits?.noteActive(payload.sessionId);
-  });
   sessionManager.on('session:died', (payload: { id: string }) => usageLimits?.drop(payload.id));
   sessionManager.on('session:destroyed', (payload: { id: string }) => usageLimits?.drop(payload.id));
 
@@ -5980,6 +5977,8 @@ function wireEvents(
     // canonical rule had corrected (Codex #5).
     const activeScreenSlug = agentDisplayToSlug(payload.agentName ?? '');
     const activeCanonical = canonicalIdentityFor(agentProcessTracker, payload.sessionId, activeScreenSlug);
+    // Past a usage-limit hold, real output means the agent works again.
+    if (!payload.likelyRepaint) usageLimits?.noteActive(payload.sessionId);
     if (!payload.likelyRepaint) hookIngest?.notePaneWorking(
       payload.sessionId,
       // Canonical undefined + a mappable screen slug IS the residue veto
