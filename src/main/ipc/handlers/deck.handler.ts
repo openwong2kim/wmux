@@ -76,6 +76,14 @@ import {
   type AgentMode,
 } from '../../deck/deckAutonomyStore';
 import { loadAutoWakeEnabled, setAutoWakeEnabled } from '../../deck/deckAutoWakeStore';
+import {
+  getHqWorkspaceId,
+  hqAllowsBrain,
+  isHqMigrationDone,
+  isHqWorkspaceMissing,
+  runNonHqMigration,
+  setHqRuntime,
+} from '../../deck/deckHqStore';
 import { loadLedgerGateEnabled, setLedgerGateEnabled } from '../../deck/deckLedgerGateStore';
 import {
   buildDeckLedgerSummary,
@@ -472,6 +480,14 @@ export function registerDeckHandler(
     clearGateCapOut(workspaceId);
     lastBlockedFingerprints.delete(workspaceId);
   };
+  /** Stop a workspace's brain outright (HQ gate). Session files are kept. */
+  const retireBrain = (workspaceId: string): void => {
+    const entry = managers.get(workspaceId);
+    if (!entry) return;
+    entry.manager.dispose();
+    retireManager(workspaceId);
+    forgetAmbient(workspaceId);
+  };
 
   // Fleet-wide ceiling on CONCURRENT autonomous turns. Each workspace's manager
   // is already one-turn-at-a-time, but a hook storm across many workspaces could
@@ -676,7 +692,7 @@ export function registerDeckHandler(
 
   const refuseWhenModeOff = (
     workspaceId: string,
-  ): { ok: false; code: 'mode_off' | 'task_workspace' } | null => {
+  ): { ok: false; code: 'mode_off' | 'task_workspace' | 'not_hq' | 'hq_missing' } | null => {
     let mode: AgentMode;
     try {
       mode = loadWorkspaceMode(workspaceId);
@@ -694,6 +710,13 @@ export function registerDeckHandler(
     // the owner ever saw them (dogfood-orchestrator-2026-09.md, finding 7).
     // The owner's brain is the only one that drives a task workspace.
     if (isTaskWorkspace(workspaceId)) return { ok: false, code: 'task_workspace' };
+    // HQ gate (deckHqStore.ts): with an HQ designated, only the HQ runs a
+    // brain — and not while its workspace is gone (fail closed, so a schedule
+    // or loop cannot respawn a brain for a workspace that no longer exists).
+    // With no HQ designated both checks pass and nothing above changes.
+    const hq = getHqWorkspaceId();
+    if (!hqAllowsBrain(workspaceId, hq)) return { ok: false, code: 'not_hq' };
+    if (isHqWorkspaceMissing(hq)) return { ok: false, code: 'hq_missing' };
     return null;
   };
 
@@ -1095,7 +1118,10 @@ export function registerDeckHandler(
         : {};
       const workspaceId = readWorkspaceId(req);
       const mgr = workspaceId ? managers.get(workspaceId)?.manager : undefined;
-      return mgr?.getStatus() ?? { status: 'idle', sessionId: null };
+      const snapshot = mgr?.getStatus() ?? { status: 'idle', sessionId: null };
+      // Carried on every workspace's status: the HQ's own workspace is the one
+      // the renderer can no longer ask about.
+      return isHqWorkspaceMissing(getHqWorkspaceId()) ? { ...snapshot, hq: 'hq-missing' } : snapshot;
     }),
   );
 
@@ -1551,8 +1577,11 @@ export function registerDeckHandler(
     }
   });
   // A task workspace never has a brain, whatever its mode says — an owner
-  // that is itself a task (nested fan-out) parks worker events instead.
+  // that is itself a task (nested fan-out) parks worker events instead. The
+  // same goes for a non-HQ owner once an HQ is designated: its workers' events
+  // park and nudge the caller rather than reaching a brain that will not run.
   const ownerHasBrain = (owner: string): boolean =>
+    hqAllowsBrain(owner, getHqWorkspaceId()) &&
     !isTaskWorkspace(owner) && (managers.has(owner) || loadWorkspaceMode(owner) !== 'off');
   // The pane that started a fan-out, told when its workers move and no brain
   // listens (fanoutCallerNotify.ts). One pointer to the renderer, no ack.
@@ -1757,7 +1786,13 @@ export function registerDeckHandler(
     // owner with no brain gets it parked in the ledger as an orphan backlog.
     // Pushing it to the task workspace's own coalescer as well spawned a brain
     // there once the task inherited the owner's mode (wave 2 finding 7).
-    if (!isTaskWorkspace(ev.workspaceId)) coalescer?.push(lifecycleInput);
+    // The HQ's own panes (its brain's terminal among them) are excluded the
+    // same way: the HQ brain must not wake on its own turn ends. Its wake
+    // policy is untouched, so a2a terminal events (pushed above) still wake it.
+    const hq = getHqWorkspaceId();
+    if (!isTaskWorkspace(ev.workspaceId) && !(hq !== null && ev.workspaceId === hq)) {
+      coalescer?.push(lifecycleInput);
+    }
     routeWorkerEventToOwner(lifecycleInput, {
       hasBrain: ownerHasBrain,
       push: (copy) => coalescer?.push(copy),
@@ -1809,10 +1844,19 @@ export function registerDeckHandler(
         if (WORKSPACE_ID_RE.test(e.id) && loadWorkspaceMode(e.id) !== 'off') ids.add(e.id);
       }
     }
+    // HQ heartbeat: a designated HQ whose workspace is gone loses its brain
+    // (fail closed — no other workspace becomes eligible) and reports
+    // 'hq-missing' over DECK_STATUS.
+    const hq = getHqWorkspaceId();
+    if (isHqWorkspaceMissing(hq)) {
+      retireBrain(hq as string);
+      return [];
+    }
     // A task workspace is not reviewed, whichever way it got in (a live
     // manager, a live work record, or the mirror): the owner's brain reviews
-    // it through the tagged worker events instead.
-    return [...ids].filter((id) => !isTaskWorkspace(id));
+    // it through the tagged worker events instead. With an HQ designated, only
+    // the HQ is reviewed.
+    return [...ids].filter((id) => !isTaskWorkspace(id) && hqAllowsBrain(id, hq));
   };
   // WP3 — the instruction the re-examine wake carries as its ORIGINAL prompt (the
   // stale [decision] block is prepended on the wire by runTurnForWorkspace). Kept
@@ -1869,6 +1913,37 @@ export function registerDeckHandler(
     intervalMs: heartbeatConfig.intervalMs,
   });
   heartbeat.start();
+
+  // ── HQ (main bot) ─────────────────────────────────────────────────────────
+  // The HQ store's setter refuses while the old/new HQ has a brain and, once
+  // an HQ is designated, retires every other brain — both need the managers.
+  const disposeHqRuntime = setHqRuntime({
+    isBrainRunning: (workspaceId) => managers.has(workspaceId),
+    retireBrainsExcept: (hqWorkspaceId) => {
+      for (const workspaceId of [...managers.keys()]) {
+        if (workspaceId !== hqWorkspaceId) retireBrain(workspaceId);
+      }
+    },
+  });
+  // A designation whose migration did not finish (crash, IO failure) finishes
+  // now. Every step is idempotent.
+  {
+    const hq = getHqWorkspaceId(opts.dir);
+    if (hq !== null && !isHqMigrationDone(opts.dir)) void runNonHqMigration(hq, opts.dir);
+  }
+
+  ipcMain.removeHandler(IPC.DECK_HQ_GET);
+  ipcMain.handle(
+    IPC.DECK_HQ_GET,
+    wrapHandler(IPC.DECK_HQ_GET, async (): Promise<{
+      workspaceId: string | null;
+      state: 'unset' | 'ok' | 'hq-missing';
+    }> => {
+      const hq = getHqWorkspaceId();
+      if (hq === null) return { workspaceId: null, state: 'unset' };
+      return { workspaceId: hq, state: isHqWorkspaceMissing(hq) ? 'hq-missing' : 'ok' };
+    }),
+  );
 
   // WMX-06: startup reconcile of orphan Deck state once renderer workspace mirror is loaded.
   // Retries a bounded number of times (max 5 retries at 2.5s intervals) and on heartbeat tick.
@@ -2440,7 +2515,9 @@ export function registerDeckHandler(
       const next = await setWorkspaceMode(workspaceId, mode as AgentMode);
       // Lane F: leaving 'off' means wakes may boot a brain here again — replay
       // the worker events parked while the workspace was off.
-      if (mode !== 'off') coalescer?.notifyBrainBooted(workspaceId);
+      if (mode !== 'off' && hqAllowsBrain(workspaceId, getHqWorkspaceId())) {
+        coalescer?.notifyBrainBooted(workspaceId);
+      }
       // setWorkspaceMode reset caps to the pure mode ceiling. If a loop is still
       // running, re-narrow that new ceiling by the loop tier — otherwise raising
       // the mode mid-loop would silently grant a `report` mission drive/press
@@ -2784,7 +2861,9 @@ export function registerDeckHandler(
     globalTurnGate.dispose();
     scheduler.stop();
     heartbeat.stop();
+    disposeHqRuntime();
     disposeAll();
+    ipcMain.removeHandler(IPC.DECK_HQ_GET);
     ipcMain.removeHandler(IPC.DECK_SEND);
     ipcMain.removeHandler(IPC.DECK_INTERRUPT);
     ipcMain.removeHandler(IPC.DECK_WAKE);

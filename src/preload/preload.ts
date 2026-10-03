@@ -770,7 +770,17 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.DECK_STATUS, { workspaceId }) as Promise<{
         status: 'idle' | 'busy' | 'disposed';
         sessionId: string | null;
+        /** Present only while the designated HQ's workspace is gone. */
+        hq?: 'hq-missing';
       }>,
+    // The designated HQ workspace (main bot). Read-only from the renderer.
+    hq: {
+      get: () =>
+        ipcRenderer.invoke(IPC.DECK_HQ_GET) as Promise<{
+          workspaceId: string | null;
+          state: 'unset' | 'ok' | 'hq-missing';
+        }>,
+    },
     // P3d — persisted orchestrator schedules (fire as ordinary brain turns on
     // their own workspace's orchestrator).
     schedules: {

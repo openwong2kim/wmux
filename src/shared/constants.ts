@@ -308,6 +308,10 @@ export const IPC = {
   //   + schedules. Same renderer-only trust boundary.
   DECK_MODE_GET: 'deck:mode:get',
   DECK_MODE_SET: 'deck:mode:set',
+  //   DECK_HQ_GET — the designated HQ workspace (deckHqStore.ts, main is the
+  //   source of truth): { workspaceId, state: 'unset' | 'ok' | 'hq-missing' }.
+  //   Read-only; there is no renderer setter yet.
+  DECK_HQ_GET: 'deck:hq:get',
   //   HOOKS_BRIDGE_* — the Claude Code hook bridge (wmux setup-hooks, in-app).
   //   STATUS reports whether the wmux hook entries are installed in
   //   ~/.claude/settings.json; INSTALL performs the same idempotent install as

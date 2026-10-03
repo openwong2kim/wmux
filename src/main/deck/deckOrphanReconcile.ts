@@ -23,6 +23,7 @@ import { getCommanderSessionPath } from './commanderSessionStore';
 import { getDeckDecisionPath } from './deckDecisionStore';
 import { getDeckSchedulesPath } from './deckScheduleStore';
 import { teardownWorkspaceDeckState } from './deckWorkspaceTeardown';
+import { getHqWorkspaceId } from './deckHqStore';
 import { getWorkspaceMirror } from '../workspace/WorkspaceMirror';
 import { DEFAULT_MAX_SNAPSHOT_AGE_MS } from './stopGate';
 
@@ -232,8 +233,16 @@ export async function reconcileOrphanDeckState(
     const tornDown: string[] = [];
     const skippedIds: string[] = [];
     const activeWorks = loadActiveDeckWorks(dir);
+    const hq = getHqWorkspaceId(dir);
 
     for (const id of orphans) {
+      // The HQ's Deck state is never swept, even when its workspace is gone
+      // (that is the 'hq-missing' state, which fails closed).
+      if (id === hq) {
+        skippedIds.push(id);
+        log(`skipping orphan ${id}: it is the HQ workspace`);
+        continue;
+      }
       const work = activeWorks[id];
 
       if (work) {

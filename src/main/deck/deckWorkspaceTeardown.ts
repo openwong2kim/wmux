@@ -17,6 +17,8 @@
 //   - Fail-closed & resilient: each store operation runs in its own try/catch,
 //     logs exactly one line per store, and never throws.
 //   - Refuses empty or non-string workspace IDs.
+//   - Refuses the designated HQ workspace (deckHqStore.ts): its Deck state
+//     outlives a removal of its workspace, which then reads as 'hq-missing'.
 
 import { atomicReadJSONSync } from '../../daemon/util/atomicWrite';
 import {
@@ -40,6 +42,7 @@ import {
   clearCommanderSession,
   getCommanderSessionPath,
 } from './commanderSessionStore';
+import { getHqWorkspaceId } from './deckHqStore';
 
 const WORKSPACE_ID_RE = /^[A-Za-z0-9._-]{1,80}$/;
 
@@ -142,6 +145,11 @@ export async function teardownWorkspaceDeckState(
     // eslint-disable-next-line no-console
     console.log(`[deck:teardown] ${line}`);
   });
+
+  if (id === getHqWorkspaceId(dir)) {
+    log(`refused teardown of ${id}: it is the HQ workspace`);
+    return { ...emptyReport, workspaceId: id };
+  }
 
   const report: TeardownReport = {
     workspaceId: id,

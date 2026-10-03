@@ -239,3 +239,28 @@ describe('workspace.close — a REFUSED close must not retire the claim', () => 
     expect(lookupWorkspaceClaim(token)).toEqual({ kind: 'stale' });
   });
 });
+
+describe('workspace.close — the HQ workspace', () => {
+  const setupWithHq = (hq: string | null): RpcRouter => {
+    const router = new RpcRouter();
+    registerWorkspaceRpc(router, () => fakeWindow, { getHqWorkspaceId: () => hq });
+    return router;
+  };
+
+  it('refuses to close the HQ with a clear error, before reaching the renderer', async () => {
+    sendToRendererMock.mockResolvedValue({ ok: true });
+    const res = await setupWithHq('ws-hq').dispatch({ id: 'hq1', method: 'workspace.close', params: { id: 'ws-hq' } });
+    expect(res.ok).toBe(false);
+    expect(JSON.stringify(res)).toMatch(/ws-hq is the HQ workspace and cannot be closed/);
+    expect(sendToRendererMock).not.toHaveBeenCalled();
+  });
+
+  it('closes any other workspace as before', async () => {
+    sendToRendererMock.mockResolvedValue({ ok: true });
+    for (const hq of ['ws-hq', null]) {
+      const res = await setupWithHq(hq).dispatch({ id: 'hq2', method: 'workspace.close', params: { id: 'ws-a' } });
+      expect((res as { result?: unknown }).result).toEqual({ ok: true });
+    }
+    expect(sendToRendererMock).toHaveBeenCalledTimes(2);
+  });
+});

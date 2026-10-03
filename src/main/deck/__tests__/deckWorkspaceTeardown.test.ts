@@ -24,6 +24,7 @@ import {
   loadCommanderSession,
   getCommanderSessionPath,
 } from '../commanderSessionStore';
+import { setHqWorkspaceId } from '../deckHqStore';
 
 let dir: string;
 
@@ -403,5 +404,27 @@ describe('deckWorkspaceTeardown — concurrent writers', () => {
     expect(loadDeckSchedules(dir).map((s) => s.id)).toEqual(['s-b']);
     expect(loadCommanderSession('ws-a', dir)).toBeNull();
     expect(loadCommanderSession('ws-b', dir)?.sessionId).toBe('sess-b');
+  });
+});
+
+describe('deckWorkspaceTeardown — the HQ workspace', () => {
+  it('refuses to tear down the HQ (purge path) and still tears down others', async () => {
+    await setHqWorkspaceId('ws-hq', dir);
+    for (const ws of ['ws-hq', 'ws-a']) {
+      await setWorkspaceMode(ws, 'danger', dir);
+      beginOrContinueDeckWork(ws, `${ws} work`, dir);
+      await raiseDecision(ws, { question: 'q', options: [], context: '' }, dir);
+    }
+    const lines: string[] = [];
+
+    const hq = await teardownWorkspaceDeckState('ws-hq', { dir, log: (l) => lines.push(l) });
+    expect(hq).toMatchObject({ workspaceId: 'ws-hq', workCleared: false, autonomyDeleted: false, decisionCleared: false });
+    expect(lines).toEqual(['refused teardown of ws-hq: it is the HQ workspace']);
+    expect(loadDeckAutonomy(dir)['ws-hq']?.mode).toBe('danger');
+    expect(loadActiveDeckWork('ws-hq', dir)).not.toBeNull();
+    expect(loadWorkspaceDecision('ws-hq', dir)).not.toBeNull();
+
+    const other = await teardownWorkspaceDeckState('ws-a', { dir, log: () => undefined });
+    expect(other).toMatchObject({ autonomyDeleted: true, decisionCleared: true, workCleared: true });
   });
 });
