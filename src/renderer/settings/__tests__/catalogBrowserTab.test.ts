@@ -26,7 +26,7 @@ describe('settings catalog — Browser tab', () => {
 
   it('lists browser in the Agents nav group, followed only by computer use', () => {
     const agents = SETTINGS_NAV_GROUPS.find((g) => g.id === 'agents');
-    expect(agents?.tabs).toEqual(['claude-integration', 'accounts', 'orchestrator', 'roles', 'browser', 'computer-use']);
+    expect(agents?.tabs).toEqual(['claude-integration', 'accounts', 'orchestrator', 'roles', 'tokens', 'browser', 'computer-use']);
     const elsewhere = SETTINGS_NAV_GROUPS.filter((g) => g.id !== 'agents').flatMap((g) => g.tabs);
     expect(elsewhere).not.toContain('browser');
   });

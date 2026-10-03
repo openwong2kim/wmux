@@ -66,6 +66,7 @@ export interface IntegrationSetupApi {
      *  state made the row claim "installed" on an untouched config. */
     check: () => Promise<{ targets: McpTarget[] }>;
     reregister: () => Promise<{ targets: McpTarget[] }>;
+    registerTarget?: (targetId: string) => Promise<import('../../../preload/preload').McpRegisterTargetResult>;
   };
 }
 
@@ -661,3 +662,5 @@ export function IntegrationSetupSectionContainer(): React.ReactElement | null {
   if (!hooks && !statusline && !mcp) return null;
   return <IntegrationSetupSection api={api} />;
 }
+
+export { McpStatusSection, announceMcpChange } from './McpStatusSection';

@@ -222,9 +222,99 @@ describe('McpRegistrar.register (broker topology selection)', () => {
     fs.mkdirSync(path.dirname(agyJson), { recursive: true });
     const before = JSON.stringify({ mcpServers: { worker: { command: 'python', args: ['server.py'] } } });
     fs.writeFileSync(agyJson, before, 'utf8');
-    await new McpRegistrar().register('tok');
+    const results = await new McpRegistrar().register('tok');
     expect(fs.readFileSync(agyJson, 'utf8')).toBe(before);
     expect(target(new McpRegistrar().getStatus(), 'agy').wmux.registered).toBe(false);
+    expect(results.some((r) => r.id === 'agy')).toBe(false);
+  });
+
+  it('explicitly registers the agy target when requested and writes mcpServers.wmux', async () => {
+    const agyJson = path.join(tmpHome, '.gemini', 'config', 'mcp_config.json');
+    fs.mkdirSync(path.dirname(agyJson), { recursive: true });
+    fs.writeFileSync(agyJson, JSON.stringify({ mcpServers: {} }), 'utf8');
+
+    const registrar = new McpRegistrar();
+    const results = await registrar.register('tok', { explicit: true, targets: ['agy'] });
+
+    expect(results).toEqual([{ id: 'agy', success: true }]);
+    const written = JSON.parse(fs.readFileSync(agyJson, 'utf8')) as {
+      mcpServers: { wmux: { command: string; args: string[] } };
+    };
+    expect(written.mcpServers.wmux).toBeDefined();
+    expect(written.mcpServers.wmux.command).toBe('node');
+    expect(written.mcpServers.wmux.args).toEqual([entryPath()]);
+    expect(target(registrar.getStatus(), 'agy').wmux.registered).toBe(true);
+  });
+
+  it('a Codex-only Register installs the Codex notify bridge but not the OpenCode plugin', async () => {
+    // Private lifecycle steps are spied on the prototype; `any` is needed to reach them.
+    const proto = McpRegistrar.prototype as any;
+    const openCode = vi.spyOn(proto, 'installOpenCodePlugin').mockImplementation(() => undefined);
+    const codexNotify = vi.spyOn(proto, 'installAndRegisterCodexNotify').mockImplementation(() => undefined);
+    try {
+      await new McpRegistrar().register('tok', { explicit: true, targets: ['codex'] });
+      expect(codexNotify).toHaveBeenCalledTimes(1);
+      expect(openCode).not.toHaveBeenCalled();
+
+      await new McpRegistrar().register('tok');
+      expect(openCode).toHaveBeenCalledTimes(1);
+    } finally {
+      openCode.mockRestore();
+      codexNotify.mockRestore();
+    }
+  });
+
+  it('registerTarget explicitly registers agy and returns success result', async () => {
+    const agyJson = path.join(tmpHome, '.gemini', 'config', 'mcp_config.json');
+    fs.mkdirSync(path.dirname(agyJson), { recursive: true });
+    fs.writeFileSync(agyJson, JSON.stringify({ mcpServers: {} }), 'utf8');
+
+    const registrar = new McpRegistrar();
+    const result = await registrar.registerTarget('tok', 'agy');
+
+    expect(result).toEqual({ id: 'agy', success: true });
+    const written = JSON.parse(fs.readFileSync(agyJson, 'utf8')) as {
+      mcpServers: { wmux: { command: string; args: string[] } };
+    };
+    expect(written.mcpServers.wmux).toBeDefined();
+    expect(written.mcpServers.wmux.command).toBe('node');
+    expect(written.mcpServers.wmux.args).toEqual([entryPath()]);
+    expect(target(registrar.getStatus(), 'agy').wmux.registered).toBe(true);
+  });
+
+  it('explicit register without targets registers all targets including agy', async () => {
+    const agyJson = path.join(tmpHome, '.gemini', 'config', 'mcp_config.json');
+    fs.mkdirSync(path.dirname(agyJson), { recursive: true });
+    fs.writeFileSync(agyJson, JSON.stringify({ mcpServers: {} }), 'utf8');
+
+    const registrar = new McpRegistrar();
+    const results = await registrar.register('tok', { explicit: true });
+
+    expect(results.some((r) => r.id === 'agy' && r.success)).toBe(true);
+    expect(target(registrar.getStatus(), 'agy').wmux.registered).toBe(true);
+  });
+
+  it('explicit register of agy when config is absent returns success: false', async () => {
+    const registrar = new McpRegistrar();
+    const result = await registrar.registerTarget('tok', 'agy');
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('The CLI config file was not found');
+  });
+
+  it('plants a secret-looking fragment in a broken config and asserts it never appears in the returned error', async () => {
+    const agyJson = path.join(tmpHome, '.gemini', 'config', 'mcp_config.json');
+    fs.mkdirSync(path.dirname(agyJson), { recursive: true });
+    const secretFragment = 'sk-secret-token-key-should-never-leak-998877';
+    // Malformed JSON embedding the secret fragment
+    fs.writeFileSync(agyJson, `{\n  "secret": "${secretFragment}",\n  mcpServers: broken`, 'utf8');
+
+    const registrar = new McpRegistrar();
+    const result = await registrar.registerTarget('tok', 'agy');
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('The config file could not be updated');
+    expect(result.error).not.toContain(secretFragment);
+    expect(result.error).not.toContain('mcp_config.json');
   });
 });
 

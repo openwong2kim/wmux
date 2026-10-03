@@ -10,6 +10,7 @@ export type SettingsTabId =
   | 'accounts'
   | 'orchestrator'
   | 'roles'
+  | 'tokens'
   | 'browser'
   | 'computer-use'
   | 'remote'
@@ -44,7 +45,7 @@ export const SETTINGS_NAV_GROUPS: {
   {
     id: 'agents',
     labelKey: 'settings.navGroupAgents',
-    tabs: ['claude-integration', 'accounts', 'orchestrator', 'roles', 'browser', 'computer-use'],
+    tabs: ['claude-integration', 'accounts', 'orchestrator', 'roles', 'tokens', 'browser', 'computer-use'],
   },
   {
     id: 'connections',
@@ -149,6 +150,8 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'fanoutworkers', tab: 'roles', labelKey: 'settings.fanoutWorkerPermissionMode', descKey: 'settings.fanoutWorkerPermissionModeDesc', synonyms: 'fanout fan-out worker permission auto bypass sandbox' },
   { id: 'fanoutpresets', tab: 'roles', labelKey: 'settings.fanoutPresets', descKey: 'settings.fanoutPresetsDesc', synonyms: 'fanout fan-out preset image video agents codex grok output folder worktree' },
   { id: 'fanoutallowtools', tab: 'roles', labelKey: 'settings.fanoutAllowWorkerTools', descKey: 'settings.fanoutAllowWorkerToolsDesc', synonyms: 'fanout worker allow tools permissions settings.json' },
+
+  { id: 'tokenprofile', tab: 'tokens', labelKey: 'settings.tokenProfile', descKey: 'settings.tokenProfileDesc', synonyms: 'token usage cost cheap minimal balanced effort model profile' },
 
   { id: 'browserbackend', tab: 'browser', labelKey: 'settings.browserBackend', descKey: 'settings.browserBackendDesc', synonyms: 'browser chrome chromium external builtin' },
   { id: 'browserlight', tab: 'browser', labelKey: 'settings.browserLightweight', descKey: 'settings.browserLightweightDesc', synonyms: 'browser throttle cpu lightweight' },

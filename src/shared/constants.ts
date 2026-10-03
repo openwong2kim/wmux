@@ -390,6 +390,19 @@ export const IPC = {
   // switch + quota rows).
   ACCOUNT_ROTATION_GET: 'account:rotation:get',
   ACCOUNT_ROTATION_SET: 'account:rotation:set',
+  // agy (Antigravity CLI) accounts. agy keeps one machine-wide sign-in, so
+  // these swap the active account rather than bind one per workspace. LIST /
+  // mutations are renderer → main invokes; CHANGED (main → renderer) is a
+  // payload-free nudge to re-list.
+  AGY_ACCOUNT_LIST: 'agy-account:list',
+  AGY_ACCOUNT_ADD_CURRENT: 'agy-account:add-current',
+  AGY_ACCOUNT_LOGIN_BEGIN: 'agy-account:login:begin',
+  AGY_ACCOUNT_LOGIN_CANCEL: 'agy-account:login:cancel',
+  AGY_ACCOUNT_ACTIVATE: 'agy-account:activate',
+  AGY_ACCOUNT_RENAME: 'agy-account:rename',
+  AGY_ACCOUNT_REMOVE: 'agy-account:remove',
+  AGY_ACCOUNT_SET_AUTO_ROTATE: 'agy-account:set-auto-rotate',
+  AGY_ACCOUNT_CHANGED: 'agy-account:changed',
   // Clipboard (main process bridge)
   CLIPBOARD_WRITE: 'clipboard:write',
   CLIPBOARD_READ: 'clipboard:read',
@@ -612,6 +625,7 @@ export const IPC = {
   MCP_CHECK: 'mcp:check',
   MCP_REREGISTER: 'mcp:reregister',
   MCP_UNREGISTER: 'mcp:unregister',
+  MCP_REGISTER_TARGET: 'mcp:register-target',
   // Settings -> Token usage: quota (manual refresh only) and the CLI "surface" inventory / toggles.
   TOKEN_QUOTA_READ: 'tokenUsage:quota:read',
   TOKEN_QUOTA_SENSOR_STATUS: 'tokenUsage:quota:sensor-status',

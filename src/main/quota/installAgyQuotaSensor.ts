@@ -340,3 +340,24 @@ function writeStatusLine(
     return { ok: false, error: `Could not write settings.json: ${err instanceof Error ? err.message : String(err)}` };
   }
 }
+
+/**
+ * Bring an installed quota-sink.js up to the bundled version. The sensor copy
+ * in <homeDir>/.wmux/bin is only written by an explicit install, so without
+ * this an upgrade would keep running the old sink (no per-account snapshots).
+ * Never installs: when the sensor is not there, nothing is written.
+ */
+export function refreshInstalledAgyQuotaSink(
+  homeDir: string,
+  sourceScriptPath: string | null = findQuotaSinkSourceFrom(__dirname),
+): 'updated' | 'current' | 'absent' {
+  const dest = path.join(homeDir, '.wmux', 'bin', 'quota-sink.js');
+  if (!sourceScriptPath || !fs.existsSync(dest) || !fs.existsSync(sourceScriptPath)) return 'absent';
+  try {
+    if (fs.readFileSync(dest).equals(fs.readFileSync(sourceScriptPath))) return 'current';
+    copyFileAtomic(sourceScriptPath, dest);
+    return 'updated';
+  } catch {
+    return 'absent';
+  }
+}

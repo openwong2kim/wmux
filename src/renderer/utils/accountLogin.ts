@@ -84,6 +84,21 @@ export function loginInitialCommand(vendor: LoginVendor): string {
 /** Spawn the login tab in the active workspace's active pane, focus it and
  *  close Settings. Returns null when there is nowhere to put it. */
 async function openLoginTab(req: AccountLoginRequest): Promise<LoginTab | null> {
+  return openTerminalTab({
+    env: { [loginEnvKey(req.vendor)]: req.configDir },
+    initialCommand: loginInitialCommand(req.vendor),
+    title: t('accounts.loginTabTitle', { name: req.name }),
+  });
+}
+
+/** Open a terminal tab running `initialCommand` in the active workspace's
+ *  active pane, focus it and close Settings. Also used by agy sign-in, which
+ *  has no login subcommand: the user signs in from agy's own start screen. */
+export async function openTerminalTab(req: {
+  env?: Record<string, string>;
+  initialCommand: string;
+  title: string;
+}): Promise<LoginTab | null> {
   const state = useStore.getState();
   if (state.paneGate !== 'ready') return null;
   const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
@@ -104,8 +119,8 @@ async function openLoginTab(req: AccountLoginRequest): Promise<LoginTab | null> 
         workspaceId: ws.id,
         cwd,
         spawnKind: 'user-shell' as const,
-        env: { [loginEnvKey(req.vendor)]: req.configDir },
-        initialCommand: loginInitialCommand(req.vendor),
+        ...(req.env ? { env: req.env } : {}),
+        initialCommand: req.initialCommand,
       },
       state.defaultShell,
     ),
@@ -130,7 +145,7 @@ async function openLoginTab(req: AccountLoginRequest): Promise<LoginTab | null> 
     }
     const after = useStore.getState();
     // Set + lock the title so the shell's own title escape can't overwrite it.
-    after.updateSurfaceTitle(surface.surfaceId, t('accounts.loginTabTitle', { name: req.name }));
+    after.updateSurfaceTitle(surface.surfaceId, req.title);
     after.setActivePane(paneId);
     after.setSettingsPanelVisible(false);
     return { workspaceId: ws.id, ptyId: created.id };

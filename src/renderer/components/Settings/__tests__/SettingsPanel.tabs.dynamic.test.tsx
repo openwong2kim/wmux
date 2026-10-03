@@ -172,7 +172,7 @@ describe('Settings tabs', () => {
   it('lists every tab once, in the owner-reviewed order', () => {
     expect(ALL_TABS).toEqual([
       'general', 'appearance', 'terminal', 'shortcuts', 'notifications',
-      'claude-integration', 'accounts', 'orchestrator', 'roles', 'browser', 'computer-use',
+      'claude-integration', 'accounts', 'orchestrator', 'roles', 'tokens', 'browser', 'computer-use',
       'remote', 'lanlink',
       'about',
     ]);

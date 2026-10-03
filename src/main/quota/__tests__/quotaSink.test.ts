@@ -749,3 +749,54 @@ describe('resolveOriginalCommand helper', () => {
     expect(cmd).toBeNull();
   });
 });
+
+describe('quota-sink.js per-account snapshots', () => {
+  let tmpHome: string;
+
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-quota-account-test-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+  });
+
+  const run = (payload: object) => spawnSync(process.execPath, [SINK_SCRIPT, 'agy'], {
+    input: JSON.stringify(payload),
+    env: { ...process.env, WMUX_QUOTA_SINK_HOME: tmpHome },
+    encoding: 'utf8',
+  });
+
+  it('files each account under the sha256 key of its email and never writes the email', () => {
+    const quota = (f: number) => ({ 'gemini-5h': { remaining_fraction: f, reset_time: '2026-10-02T15:00:00Z' } });
+    expect(run({ email: 'Mom@Example.com', quota: quota(0.2), plan_tier: 'Google AI Pro' }).status).toBe(0);
+    expect(run({ email: 'dad@example.com', quota: quota(0.9) }).status).toBe(0);
+
+    const dir = path.join(tmpHome, '.wmux', 'quota', 'agy-accounts');
+    const momFile = path.join(tmpHome, '.wmux', 'quota', quotaSink.accountQuotaFileName('mom@example.com'));
+    const dadFile = path.join(tmpHome, '.wmux', 'quota', quotaSink.accountQuotaFileName('dad@example.com'));
+    expect(fs.readdirSync(dir).sort()).toEqual([path.basename(dadFile), path.basename(momFile)].sort());
+    expect(JSON.parse(fs.readFileSync(momFile, 'utf8')).quota['gemini-5h'].remaining_fraction).toBe(0.2);
+    expect(JSON.parse(fs.readFileSync(dadFile, 'utf8')).quota['gemini-5h'].remaining_fraction).toBe(0.9);
+    for (const f of [momFile, dadFile, path.join(tmpHome, '.wmux', 'quota', 'agy.json')]) {
+      expect(fs.readFileSync(f, 'utf8')).not.toMatch(/example\.com/i);
+    }
+  });
+
+  it('keeps an account quota across a payload that carries none', () => {
+    run({ email: 'a@example.com', quota: { 'gemini-5h': { remaining_fraction: 0.4 } } });
+    run({ email: 'a@example.com', version: '1.2.14' });
+    const file = path.join(tmpHome, '.wmux', 'quota', quotaSink.accountQuotaFileName('a@example.com'));
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).quota['gemini-5h'].remaining_fraction).toBe(0.4);
+  });
+
+  it('writes no per-account file without an email', () => {
+    run({ quota: { 'gemini-5h': { remaining_fraction: 0.4 } } });
+    expect(fs.existsSync(path.join(tmpHome, '.wmux', 'quota', 'agy-accounts'))).toBe(false);
+  });
+
+  it('accountQuotaFileName rejects non-emails', () => {
+    expect(quotaSink.accountQuotaFileName(undefined)).toBeNull();
+    expect(quotaSink.accountQuotaFileName('nobody')).toBeNull();
+  });
+});

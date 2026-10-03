@@ -1,4 +1,4 @@
-import type { ElectronAPI, McpTargetStatusPayload } from '../preload/preload';
+import type { ElectronAPI, McpRegisterTargetResult, McpTargetStatusPayload } from '../preload/preload';
 import type { QuickLaunchAPI } from '../preload/quickLaunchPreload';
 import type {
   AgySensorInstallResult,
@@ -71,6 +71,7 @@ declare global {
         check: () => Promise<{ targets: McpTargetStatusPayload[] }>;
         reregister: () => Promise<{ targets: McpTargetStatusPayload[] }>;
         unregister: () => Promise<{ targets: McpTargetStatusPayload[] }>;
+        registerTarget: (targetId: string) => Promise<McpRegisterTargetResult>;
       };
       tokenUsage?: {
         readQuota: (request?: QuotaReadRequest) => Promise<QuotaReadResult>;

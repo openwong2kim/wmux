@@ -68,7 +68,9 @@ import { FIRST_RUN_REOPEN_EVENT } from '../../../shared/firstRun';
 import { notifyBriefingConfigChanged } from '../Deck/deckBriefingConfigBus';
 import { ClaudeIntegrationSection } from './ClaudeIntegrationSection';
 import { IntegrationSetupSectionContainer, MCP_STATUS_CHANGED_EVENT } from './IntegrationSetupSection';
+import { McpStatusSection } from './McpStatusSection';
 import { AccountsSection } from './AccountsSection';
+import { AgyAccountsSection } from './AgyAccountsSection';
 import { FanoutPresetsSection } from './FanoutPresetsSection';
 import { terminalFontFamilyCss } from '../../utils/terminalFont';
 import { hasBareFunctionKeyBinding } from '../../utils/functionKeyBinding';
@@ -88,6 +90,7 @@ import Select from '../ui/Select';
 import Input from '../ui/Input';
 import SegmentedControl from '../ui/SegmentedControl';
 import Badge from '../ui/Badge';
+import TokenUsageTab from './tabs/TokenUsageTab';
 import './settings.css';
 import { SettingsSection, SettingRow, SettingNote } from './SettingsLayout';
 
@@ -1242,176 +1245,7 @@ interface McpStatusPayload {
   targets: McpTargetStatusPayload[];
 }
 
-interface ElectronMcpApi {
-  check: () => Promise<McpStatusPayload>;
-  reregister: () => Promise<McpStatusPayload>;
-  unregister: () => Promise<McpStatusPayload>;
-}
 
-/**
- * MCP servers panel in Settings → General. Surfaces whether each agent config
- * has the wmux MCP entry, plus Re-register / Unregister buttons.
- *
- * Mirrors the `wmux mcp check` CLI output so users have a one-stop way to
- * verify Claude Code can discover the wmux MCP bridge — DX D4 decision.
- */
-/** Tell the setup card (and any other MCP view) to re-read. This section's
- *  own listener re-reads too, which costs one extra check and nothing else. */
-function announceMcpChange(): void {
-  window.dispatchEvent(new CustomEvent(MCP_STATUS_CHANGED_EVENT));
-}
-
-function McpStatusSection() {
-  const t = useT();
-  const [status, setStatus] = useState<McpStatusPayload | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [confirmingUnregister, setConfirmingUnregister] = useState(false);
-  const [pending, setPending] = useState<'reregister' | 'unregister' | null>(null);
-  // NOT_FOUND is expected when running the dev shell with no main wired up;
-  // silence those toasts so the empty state renders cleanly.
-  const { invoke: ipcInvoke } = useIpc({ silent: ['NOT_FOUND', 'UNKNOWN'] });
-
-  // Lazily access the API so this component is safe to render in tests where
-  // the preload has not exposed mcp yet.
-  const mcpApi = (window.electronAPI as unknown as { mcp?: ElectronMcpApi }).mcp;
-
-  const refresh = useCallback(async () => {
-    if (!mcpApi) {
-      setLoading(false);
-      return;
-    }
-    const result = await ipcInvoke(() => mcpApi.check());
-    if (result.ok) setStatus(result.data);
-    setLoading(false);
-  }, [ipcInvoke, mcpApi]);
-
-  useEffect(() => {
-    void refresh();
-    // The setup card's Register writes the same configs: re-read after it.
-    const onChanged = () => void refresh();
-    window.addEventListener(MCP_STATUS_CHANGED_EVENT, onChanged);
-    return () => window.removeEventListener(MCP_STATUS_CHANGED_EVENT, onChanged);
-  }, [refresh]);
-
-  const handleReregister = useCallback(async () => {
-    if (!mcpApi) return;
-    setPending('reregister');
-    const result = await ipcInvoke(() => mcpApi.reregister());
-    if (result.ok) setStatus(result.data);
-    setPending(null);
-    announceMcpChange();
-  }, [ipcInvoke, mcpApi]);
-
-  const handleUnregister = useCallback(async () => {
-    if (!mcpApi) return;
-    setPending('unregister');
-    const result = await ipcInvoke(() => mcpApi.unregister());
-    if (result.ok) setStatus(result.data);
-    setPending(null);
-    announceMcpChange();
-    setConfirmingUnregister(false);
-  }, [ipcInvoke, mcpApi]);
-
-  // Section is hidden entirely when the preload doesn't expose the API —
-  // keeps older dev builds clean and avoids "phantom" buttons that error.
-  if (!mcpApi && !loading) return null;
-
-  // One row per client config. The status is a Badge (neutral/success), the
-  // client name is prose, and only the config path is mono (machine evidence).
-  // Non-existent configs read "not detected" — the agent isn't installed, and
-  // wmux never creates its config.
-  const renderTarget = (target: McpTargetStatusPayload) => (
-    <div key={target.id} className="settings-row" data-mcp-target={target.id}>
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0 flex flex-col gap-0.5">
-          <span className="flex items-center gap-2">
-            <span className="ui-field-label">{target.displayName}</span>
-            {!target.verified && (
-              <Badge title={t('settings.mcpExperimentalTitle')}>{t('settings.mcpExperimental')}</Badge>
-            )}
-          </span>
-          {target.configExists ? (
-            <span className="ui-field-description font-mono truncate" title={target.configPath}>
-              {target.configPath}
-              {target.configModified ? ` ${t('settings.mcpModified', { date: new Date(target.configModified).toLocaleString() })}` : ''}
-            </span>
-          ) : (
-            <span className="ui-field-description">
-              {t('settings.mcpNotDetected')}<span className="font-mono">{target.configPath}</span>
-            </span>
-          )}
-          {target.configExists && target.wmux.path && (
-            <span className="ui-field-description font-mono truncate" title={target.wmux.path}>
-              {target.wmux.path}
-            </span>
-          )}
-        </div>
-        {target.configExists && (
-          <Badge tone={target.wmux.registered ? 'success' : 'neutral'}>
-            {target.wmux.registered && <span aria-hidden="true" className="inline-flex"><IconCheck size={12} /></span>}
-            {target.wmux.registered ? t('settings.mcpRegistered') : t('settings.mcpNotRegistered')}
-          </Badge>
-        )}
-      </div>
-    </div>
-  );
-
-  const actions = status ? (
-    <div className="flex items-center gap-2 shrink-0">
-      <Button
-        variant="secondary"
-        onClick={() => void handleReregister()}
-        disabled={pending !== null}
-      >
-        {pending === 'reregister' ? '…' : t('settings.mcpReregister')}
-      </Button>
-      {confirmingUnregister ? (
-        <>
-          <Button
-            variant="ghost"
-            onClick={() => setConfirmingUnregister(false)}
-            disabled={pending !== null}
-          >
-            {t('common.cancel')}
-          </Button>
-          <UiButton
-            variant="danger"
-            size="md"
-            onClick={() => void handleUnregister()}
-            disabled={pending !== null}
-          >
-            {pending === 'unregister' ? '…' : t('settings.mcpConfirm')}
-          </UiButton>
-        </>
-      ) : (
-        <Button
-          variant="destructive"
-          onClick={() => setConfirmingUnregister(true)}
-          disabled={pending !== null}
-        >
-          {t('settings.mcpUnregister')}
-        </Button>
-      )}
-    </div>
-  ) : undefined;
-
-  return (
-    <SettingsSection id="mcp" title={t('settings.mcpServers')}>
-      {loading ? (
-        <SettingNote>{t('settings.mcpChecking')}</SettingNote>
-      ) : status ? (
-        <>
-          {status.targets.map((target) => renderTarget(target))}
-          <div className="settings-row">
-            <div className="flex justify-end">{actions}</div>
-          </div>
-        </>
-      ) : (
-        <SettingNote>{t('settings.mcpUnavailable')}</SettingNote>
-      )}
-    </SettingsSection>
-  );
-}
 
 // ─── LanLink control plane (PR-3) ───────────────────────────────────────────────
 //
@@ -5441,6 +5275,7 @@ export default function SettingsPanel({ initialTab }: { initialTab?: string }) {
     accounts:             { label: t('settings.tabAccounts'),      icon: <IconUsers /> },
     orchestrator:         { label: t('settings.tabOrchestrator'),  icon: <IconAgents /> },
     roles:                { label: t('settings.tabRoles'),         icon: <IconRobot /> },
+    tokens:               { label: t('settings.tabTokens'),        icon: <IconAgents /> },
     browser:              { label: t('settings.tabBrowser'),       icon: <IconBrowser /> },
     'computer-use':       { label: t('settings.tabComputerUse'),   icon: <IconComputer /> },
     remote:               { label: t('settings.tabRemote'),        icon: <IconRemoteDevices /> },
@@ -5624,9 +5459,10 @@ export default function SettingsPanel({ initialTab }: { initialTab?: string }) {
                     {activeTab === 'shortcuts'          && <TabShortcuts />}
                     {activeTab === 'notifications'      && <TabNotifications />}
                     {activeTab === 'claude-integration' && <TabClaudeCode />}
-                    {activeTab === 'accounts'           && <AccountsSection />}
+                    {activeTab === 'accounts'           && <><AccountsSection /><AgyAccountsSection /></>}
                     {activeTab === 'orchestrator'       && <TabOrchestrator />}
                     {activeTab === 'roles'              && <TabRoles />}
+          {activeTab === 'tokens'             && <TokenUsageTab onOpenTab={setActiveTab} />}
                     {activeTab === 'browser'            && <TabBrowser />}
                     {activeTab === 'computer-use'       && <TabComputerUse />}
                     {activeTab === 'remote'             && <TabRemote />}

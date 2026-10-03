@@ -24,6 +24,10 @@
 //        OR stored capturedAtMs is older than 30 000 ms.
 //   4. Writes the merged record atomically to <homeDir>/.wmux/quota/agy.json via tmp + rename.
 //      homeDir is overridable via WMUX_QUOTA_SINK_HOME.
+//   4b. When the payload names the signed-in account (`email`), also merges and writes the
+//      same record to <homeDir>/.wmux/quota/agy-accounts/<key>.json, key = first 16 hex of
+//      sha256(lower-cased email). The email itself is never written; wmux derives the same
+//      key from its account registry, so each agy account keeps its own quota snapshot.
 //   5. If an original statusLine command was chained (via --chain-b64 <base64url> CLI arg or
 //      WMUX_AGY_ORIGINAL_STATUSLINE env var), re-executes that command piping the
 //      same stdin through to it, and prints its stdout verbatim.
@@ -247,9 +251,18 @@ function getHomeDir(env = process.env) {
 /**
  * Reads existing quota record from <homeDir>/.wmux/quota/agy.json if available.
  */
-function readQuotaFile(homeDir = getHomeDir()) {
+/**
+ * Per-account file name for a signed-in email (see header step 4b), or null.
+ */
+function accountQuotaFileName(email) {
+  if (typeof email !== 'string' || !email.includes('@')) return null;
+  const key = crypto.createHash('sha256').update(email.trim().toLowerCase()).digest('hex').slice(0, 16);
+  return path.join('agy-accounts', `${key}.json`);
+}
+
+function readQuotaFile(homeDir = getHomeDir(), fileName = 'agy.json') {
   try {
-    const dest = path.join(homeDir, '.wmux', 'quota', 'agy.json');
+    const dest = path.join(homeDir, '.wmux', 'quota', fileName);
     if (fs.existsSync(dest)) {
       const raw = fs.readFileSync(dest, 'utf8');
       const parsed = JSON.parse(raw);
@@ -288,12 +301,12 @@ function renameWithRetry(from, to, maxAttempts = 5) {
 /**
  * Writes the extracted quota payload atomically to <homeDir>/.wmux/quota/agy.json.
  */
-function writeQuotaFile(data, homeDir = getHomeDir()) {
-  const dir = path.join(homeDir, '.wmux', 'quota');
+function writeQuotaFile(data, homeDir = getHomeDir(), fileName = 'agy.json') {
+  const dest = path.join(homeDir, '.wmux', 'quota', fileName);
+  const dir = path.dirname(dest);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
-  const dest = path.join(dir, 'agy.json');
   const tmp = path.join(dir, `agy.${process.pid}.${Date.now()}.${crypto.randomBytes(4).toString('hex')}.tmp`);
   try {
     fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 });
@@ -401,6 +414,13 @@ function runQuotaSink() {
       if (shouldWrite && record) {
         writeQuotaFile(record, homeDir);
       }
+      const accountFile = accountQuotaFileName(payload.email);
+      if (accountFile) {
+        const perAccount = mergeQuotaRecord(readQuotaFile(homeDir, accountFile), payload, Date.now());
+        if (perAccount.shouldWrite && perAccount.record) {
+          writeQuotaFile(perAccount.record, homeDir, accountFile);
+        }
+      }
     } catch {
       // Do not let write failure abort statusLine hook or block chaining
     }
@@ -414,6 +434,7 @@ function runQuotaSink() {
 }
 
 module.exports = {
+  accountQuotaFileName,
   extractQuotaPayload,
   getHomeDir,
   readQuotaFile,

@@ -31,8 +31,26 @@ import {
 
 /** Per-server registration state surfaced via getStatus(). */
 export type McpServerStatus = ServerRegState;
-/** Registration state for a single agent target (Claude / Codex / Gemini). */
+/** Registration state for a single agent target (Claude / Codex / Gemini / Antigravity). */
 export type McpTargetStatus = TargetRegStatus;
+
+/** Fixed registration error sentences surfaced via McpTargetResult.error. */
+export const MCP_ERROR_CONFIG_NOT_FOUND = 'The CLI config file was not found';
+export const MCP_ERROR_CONFIG_UPDATE_FAILED = 'The config file could not be updated';
+export const MCP_ERROR_UNAVAILABLE = 'Registration is unavailable right now';
+
+/** Per-target registration result returned by register() and registerTarget(). */
+export interface McpTargetResult {
+  id: string;
+  success: boolean;
+  error?: string;
+}
+
+export interface RegisterOptions {
+  useShim?: boolean;
+  explicit?: boolean;
+  targets?: string[];
+}
 
 /** Aggregate snapshot of MCP integration state for CLI / Settings UI. */
 export interface McpRegistrarStatus {
@@ -168,13 +186,20 @@ export class McpRegistrar {
    * `opts.useShim` forces the topology (boot passes the readiness-gate result);
    * omitting it lets register() probe the broker itself so re-register call
    * sites stay self-correcting.
+   *
+   * When `opts.explicit` is true:
+   *   - If `opts.targets` is provided, registers only those targets.
+   *   - If `opts.targets` is omitted, registers all targets in MCP_TARGETS.
+   * When `opts.explicit` is false/omitted (boot path):
+   *   - Registers only targets where `autoRegister` is true.
    */
-  async register(authToken: string, opts?: { useShim?: boolean }): Promise<void> {
+  async register(authToken: string, opts?: RegisterOptions): Promise<McpTargetResult[]> {
     const useShim = await this.resolveUseShim(opts);
     // Only the broker topology surfaces a path-choice log; flag-off stays silent.
     if (isMcpBrokerEnabled()) {
       console.log(useShim ? '[mcp] broker reachable → shim' : '[mcp] broker unreachable → full bundle');
     }
+    const results: McpTargetResult[] = [];
     try {
       // Write auth token to file so the MCP server can read it. Skip when the
       // on-disk value already matches (S-A cold-start): a rewrite costs a 1-2s
@@ -203,17 +228,46 @@ export class McpRegistrar {
       const skipReason = externalRegistrationSkipReason();
       if (skipReason) {
         console.log(`[McpRegistrar] ${skipReason}`);
-        return;
+        if (opts?.targets) {
+          return opts.targets.map((id) => ({ id, success: false, error: skipReason }));
+        }
+        return results;
       }
 
       const mcpScript = this.getMcpScriptPath(useShim);
       if (!mcpScript) {
         console.warn('[McpRegistrar] Could not determine MCP script path — skipping registration.');
-        return;
+        if (opts?.targets) {
+          return opts.targets.map((id) => ({
+            id,
+            success: false,
+            error: MCP_ERROR_UNAVAILABLE,
+          }));
+        }
+        return results;
+      }
+
+      // Record errors for any unknown target IDs requested in opts.targets
+      if (opts?.explicit && opts.targets) {
+        for (const tid of opts.targets) {
+          if (!MCP_TARGETS.some((t) => t.id === tid)) {
+            results.push({
+              id: tid,
+              success: false,
+              error: MCP_ERROR_CONFIG_NOT_FOUND,
+            });
+          }
+        }
       }
 
       for (const target of MCP_TARGETS) {
-        if (!target.autoRegister) continue;
+        if (opts?.explicit) {
+          // Explicit registration: when opts.targets is provided, register only those targets; when omitted, register all MCP_TARGETS.
+          if (opts.targets && !opts.targets.includes(target.id)) continue;
+        } else {
+          // Non-explicit / boot path: register only autoRegister targets.
+          if (!target.autoRegister) continue;
+        }
         try {
           // No profile argument on purpose. This is the AUTOMATIC path (boot,
           // path refresh), and it must never overrule a profile the user chose
@@ -226,6 +280,30 @@ export class McpRegistrar {
           if (result.foreign.length > 0) {
             console.warn(`[McpRegistrar] ${target.displayName}: left foreign key(s) ${result.foreign.join(', ')} untouched`);
           }
+          if (result.skipped === 'absent') {
+            results.push({
+              id: target.id,
+              success: false,
+              error: MCP_ERROR_CONFIG_NOT_FOUND,
+            });
+          } else if (result.skipped === 'malformed') {
+            results.push({
+              id: target.id,
+              success: false,
+              error: MCP_ERROR_CONFIG_UPDATE_FAILED,
+            });
+          } else if (result.foreign.length > 0 && result.wrote.length === 0) {
+            results.push({
+              id: target.id,
+              success: false,
+              error: MCP_ERROR_CONFIG_UPDATE_FAILED,
+            });
+          } else {
+            results.push({
+              id: target.id,
+              success: true,
+            });
+          }
         } catch (err) {
           // Per-target isolation: one target's failure must not abort the rest.
           // A write/permission failure reaches here (registerTarget propagates
@@ -235,20 +313,31 @@ export class McpRegistrar {
           if (isMac && (code === 'EACCES' || code === 'ENOACCES' || code === 'EPERM')) {
             console.error('\n' + formatMacosError(MACOS_ERRORS.mcpPermissionDenied));
           }
+          results.push({
+            id: target.id,
+            success: false,
+            error: MCP_ERROR_CONFIG_UPDATE_FAILED,
+          });
         }
       }
 
       // Official lifecycle integrations are isolated so one agent's config or
       // filesystem failure never aborts MCP registration or another bridge.
-      try {
-        this.installAndRegisterCodexNotify();
-      } catch (err) {
-        console.error('[McpRegistrar] Codex notify registration failed:', err);
+      // A per-target Register touches only its target: the Codex notify bridge goes with Codex,
+      // and the OpenCode plugin only with the full (boot) registration.
+      if (!opts?.targets || opts.targets.includes('codex')) {
+        try {
+          this.installAndRegisterCodexNotify();
+        } catch (err) {
+          console.error('[McpRegistrar] Codex notify registration failed:', err);
+        }
       }
-      try {
-        this.installOpenCodePlugin();
-      } catch (err) {
-        console.error('[McpRegistrar] OpenCode plugin installation failed:', err);
+      if (!opts?.targets) {
+        try {
+          this.installOpenCodePlugin();
+        } catch (err) {
+          console.error('[McpRegistrar] OpenCode plugin installation failed:', err);
+        }
       }
 
       this.registered = true;
@@ -261,7 +350,30 @@ export class McpRegistrar {
       if (isMac && (code === 'EACCES' || code === 'ENOACCES' || code === 'EPERM')) {
         console.error('\n' + formatMacosError(MACOS_ERRORS.mcpPermissionDenied));
       }
+      if (results.length === 0 && opts?.targets) {
+        for (const tid of opts.targets) {
+          results.push({
+            id: tid,
+            success: false,
+            error: MCP_ERROR_UNAVAILABLE,
+          });
+        }
+      }
     }
+    return results;
+  }
+
+  /**
+   * Explicitly register a single target by id (e.g. 'agy').
+   * Returns a per-target result with success and error details.
+   */
+  async registerTarget(authToken: string, targetId: string): Promise<McpTargetResult> {
+    const results = await this.register(authToken, { explicit: true, targets: [targetId] });
+    return results.find((r) => r.id === targetId) ?? {
+      id: targetId,
+      success: false,
+      error: MCP_ERROR_UNAVAILABLE,
+    };
   }
 
   /**

@@ -11,6 +11,7 @@ import {
   encodeChainedCommand,
   decodeChainedCommand,
   extractChainedB64,
+  refreshInstalledAgyQuotaSink,
 } from '../installAgyQuotaSensor';
 
 describe('installAgyQuotaSensor', () => {
@@ -771,6 +772,25 @@ describe('End-to-end chaining roundtrip with quote-free command line', () => {
       expect(res.stdout).toBe('ARG:hello world');
     } finally {
       fs.rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('refreshInstalledAgyQuotaSink', () => {
+  it('updates only an installed, outdated sink', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-sink-refresh-'));
+    const src = path.join(home, 'src-sink.js');
+    fs.writeFileSync(src, 'v2');
+    try {
+      expect(refreshInstalledAgyQuotaSink(home, src)).toBe('absent');
+      const dest = path.join(home, '.wmux', 'bin', 'quota-sink.js');
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(dest, 'v1');
+      expect(refreshInstalledAgyQuotaSink(home, src)).toBe('updated');
+      expect(fs.readFileSync(dest, 'utf8')).toBe('v2');
+      expect(refreshInstalledAgyQuotaSink(home, src)).toBe('current');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
     }
   });
 });
