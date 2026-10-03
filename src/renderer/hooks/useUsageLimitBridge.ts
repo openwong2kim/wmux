@@ -42,12 +42,13 @@ export function planUsageLimitAutoResume(
   return out;
 }
 
-/** Send one patch; failures are logged (main may not have the handler yet). */
-export function updateUsageLimit(ptyId: string, patch: PaneUsageLimitPatch): void {
+/** Send one patch; resolves whether the daemon applied it. Failures are logged. */
+export function updateUsageLimit(ptyId: string, patch: PaneUsageLimitPatch): Promise<boolean> {
   const api = window.electronAPI?.usageLimit;
-  if (!api) return;
-  void api.update(ptyId, patch).catch((err: unknown) => {
+  if (!api) return Promise.resolve(false);
+  return api.update(ptyId, patch).then((res) => res?.ok === true, (err: unknown) => {
     console.warn('[usageLimit] update failed', err);
+    return false;
   });
 }
 
@@ -70,7 +71,12 @@ export function useUsageLimitBridge(): void {
     const applied = new Set<string>();
     const apply = (state: ReturnType<typeof useStore.getState>) => {
       for (const ptyId of planUsageLimitAutoResume(state.usageLimits, state.usageLimitAutoResume, applied)) {
-        updateUsageLimit(ptyId, { autoResume: true });
+        const limit = state.usageLimits[ptyId];
+        // Claimed up front so an overlapping pass does not send twice; a send
+        // the daemon did not apply gives the claim back, so the next pass retries.
+        void updateUsageLimit(ptyId, { autoResume: true }).then((ok) => {
+          if (!ok && limit) applied.delete(usageLimitApplyKey(limit));
+        });
       }
     };
     apply(useStore.getState());

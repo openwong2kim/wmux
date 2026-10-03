@@ -64,7 +64,7 @@ export default function UsageLimitChip({ ptyId, compact }: { ptyId: string | und
           aria-pressed={view.armed}
           style={view.armed ? { color: 'var(--accent)' } : undefined}
           title={view.armed ? t('usageLimit.cancelResumeTitle') : t('usageLimit.resumeAtResetTitle')}
-          onClick={() => updateUsageLimit(ptyId, { autoResume: !view.armed })}
+          onClick={() => { void updateUsageLimit(ptyId, { autoResume: !view.armed }); }}
           data-usage-limit-action="arm"
         >
           {view.armed ? t('usageLimit.resumingAtReset') : t('usageLimit.resumeAtReset')}
@@ -75,7 +75,7 @@ export default function UsageLimitChip({ ptyId, compact }: { ptyId: string | und
           type="button"
           className={TEXT_BTN}
           title={t('usageLimit.resumeTitle')}
-          onClick={() => updateUsageLimit(ptyId, { resumeNow: true })}
+          onClick={() => { void updateUsageLimit(ptyId, { resumeNow: true }); }}
           data-usage-limit-action="resume"
         >
           {t('usageLimit.resume')}

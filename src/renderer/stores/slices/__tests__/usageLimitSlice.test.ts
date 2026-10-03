@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { createUsageLimitSlice, type UsageLimitSlice } from '../usageLimitSlice';
-import { planUsageLimitAutoResume } from '../../../hooks/useUsageLimitBridge';
+import { planUsageLimitAutoResume, updateUsageLimit } from '../../../hooks/useUsageLimitBridge';
 import type { PaneUsageLimit } from '../../../../shared/usageLimit';
 
 function createTestStore() {
@@ -47,5 +47,20 @@ describe('planUsageLimitAutoResume', () => {
     planUsageLimitAutoResume({ a: limit('a') }, true, applied);
     planUsageLimitAutoResume({}, true, applied);
     expect(applied.size).toBe(0);
+  });
+});
+
+describe('updateUsageLimit', () => {
+  it('resolves true only when the daemon applied the patch', async () => {
+    const g = globalThis as unknown as { window?: { electronAPI?: unknown } };
+    const prev = g.window;
+    const results = [{ ok: true }, { ok: false }];
+    g.window = { electronAPI: { usageLimit: { update: async () => results.shift() } } };
+    try {
+      expect(await updateUsageLimit('p', { autoResume: true })).toBe(true);
+      expect(await updateUsageLimit('p', { autoResume: true })).toBe(false);
+    } finally {
+      g.window = prev;
+    }
   });
 });
