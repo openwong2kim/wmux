@@ -13,7 +13,7 @@
  *
  * Reaches into the addon's private handler map (0.9.x). Returns false when
  * that shape is missing; the caller then loads the addon without sixel rather
- * than without the cap.
+ * than without the cap. A decoder without a readable size drops the image.
  */
 
 /** The part of the addon's sixel decoder the cap reads. */
@@ -42,11 +42,17 @@ export function capSixelImageSize(addon: SixelCapAddon, pixelLimit: number): boo
   if (!handler || typeof handler.unhook !== 'function') return false;
   const unhook = handler.unhook;
   handler.unhook = (success: boolean) => {
-    const dec = handler._dec;
-    if (success && dec && !handler._aborted && dec.width * dec.height > pixelLimit) {
-      handler._aborted = true;
-      try { dec.release(); } catch { /* nothing held */ }
-      return true;
+    if (success && !handler._aborted) {
+      const dec = handler._dec;
+      const width = dec?.width;
+      const height = dec?.height;
+      // A decoder whose size cannot be read is dropped too: the cap must not
+      // depend on the addon keeping this shape.
+      if (!dec || !Number.isFinite(width) || !Number.isFinite(height) || (width as number) * (height as number) > pixelLimit) {
+        handler._aborted = true;
+        try { dec?.release(); } catch { /* nothing held */ }
+        return true;
+      }
     }
     return unhook.call(handler, success);
   };

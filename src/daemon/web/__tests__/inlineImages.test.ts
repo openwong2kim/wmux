@@ -160,6 +160,17 @@ describe('web client inline images', () => {
     expect(draw).toHaveBeenCalledWith(true);
   });
 
+  it('drops a sixel whose decoder size cannot be read', () => {
+    for (const dec of [undefined, { width: Number.NaN, height: 10, release: vi.fn() }, { width: 10, height: undefined, release: vi.fn() }]) {
+      const term = fakeTerm();
+      gate.load(term, env());
+      const handler = (term.loadAddon.mock.calls[0][0] as FakeAddon)._handlers.get('sixel')!;
+      (handler as { _dec: unknown })._dec = dec;
+      expect(handler.unhook(true)).toBe(true);
+      expect(handler.draw).not.toHaveBeenCalled();
+    }
+  });
+
   it('runs without sixel when the size cap cannot be installed', () => {
     class Opaque extends FakeAddon {
       constructor(opts: Record<string, unknown>) { super(opts); this._handlers.clear(); }

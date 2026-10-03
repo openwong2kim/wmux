@@ -25,6 +25,8 @@ type Shared = {
   STALE_REPLAY_ALIVE_SHELL_RESETS: string;
   STALE_REPLAY_DISPLAY_RESETS: string;
   STALE_REPLAY_INPUT_MODE_RESETS: string;
+  gateUserInput: unknown;
+  capSixelImageSize: (addon: object, pixelLimit: number) => boolean;
 };
 type Repaint = (t: Terminal, bytes: string, inc: () => void, dec: () => void, tail?: string) => void;
 type Tail = (meta: Record<string, unknown> | null) => string;
@@ -96,6 +98,17 @@ describe('shared terminal bundle (wmuxTerminalShared)', () => {
     expect(shared.staleReplayResetLevel({ resumeAgent: 'claude' })).toBe('full');
     expect(shared.STALE_REPLAY_ALIVE_SHELL_RESETS).toContain('\x1b[?1003l');
     expect(shared.STALE_REPLAY_ALIVE_SHELL_RESETS).not.toContain('\x1b[?2004l');
+    expect(typeof shared.gateUserInput).toBe('function');
+    // inlineImages.js loads the addon without sixel when this is missing.
+    expect(typeof shared.capSixelImageSize).toBe('function');
+    const sixel = { unhook: () => true };
+    expect(shared.capSixelImageSize({ _handlers: new Map([['sixel', sixel]]) }, 100)).toBe(true);
+    expect(shared.capSixelImageSize({ _handlers: new Map() }, 100)).toBe(false);
+  });
+
+  it('the build refuses a bundle that drops one of these exports', () => {
+    const build = readSource(join(repoRoot, 'scripts', 'build-daemon-web.mjs'));
+    expect(build).toContain("['staleReplayResetLevel', 'gateUserInput', 'capSixelImageSize']");
   });
 });
 

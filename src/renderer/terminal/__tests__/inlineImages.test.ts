@@ -98,6 +98,18 @@ describe('inline image addon (#1641)', () => {
   it('caps a sixel image\'s finished size at pixelLimit, and still draws one within it', async () => {
     const term = new Terminal({ allowProposedApi: true, cols: 80, rows: 24 });
     const spies: Array<{ mockRestore(): void }> = [];
+    // A 2D context and ImageData for this test only, so the addon's draw path
+    // (`getContext('2d')?.putImageData(new ImageData(dec.data8, …))`) really
+    // runs: with the suite's null context the optional chain skips data8.
+    const nullContext = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = (() => ({ putImageData: () => undefined })) as never;
+    const g = globalThis as { ImageData?: unknown };
+    const hadImageData = 'ImageData' in g;
+    const RealImageData = g.ImageData;
+    const imageData: string[] = [];
+    g.ImageData = class {
+      constructor(_data: unknown, width: number, height: number) { imageData.push(`${width}x${height}`); }
+    };
     try {
       attachInlineImages(term);
       const addon = getInlineImageAddon(term) as unknown as {
@@ -120,12 +132,45 @@ describe('inline image addon (#1641)', () => {
         term.buffer.active.getLine(y)?.translateToString(true) ?? '').join('\n');
       expect(text).toContain('after-large');
 
+      expect(imageData).toEqual([]);
+
       await write(term, '\x1bPq#0;2;0;80;0#0!40~-!40~\x1b\\');
+      expect(pixelReads).toHaveBeenCalled();
+      expect(imageData).toEqual(['40x12']);
       expect(stored).toHaveBeenCalledTimes(1);
       const canvas = stored.mock.calls[0][0];
       expect([canvas.width, canvas.height]).toEqual([40, 12]);
     } finally {
       spies.forEach((s) => s.mockRestore());
+      HTMLCanvasElement.prototype.getContext = nullContext;
+      if (hadImageData) g.ImageData = RealImageData;
+      else delete g.ImageData;
+      term.dispose();
+    }
+  });
+
+  it('loads the addon without sixel when the size cap cannot be installed', async () => {
+    vi.resetModules();
+    vi.doMock('../../../shared/terminal/sixelCap', () => ({ capSixelImageSize: () => false }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const term = new Terminal({ allowProposedApi: true });
+    try {
+      const fresh = await import('../inlineImages');
+      await fresh.preloadInlineImageAddon();
+      fresh.attachInlineImages(term);
+      const addon = fresh.getInlineImageAddon(term) as unknown as { _opts: { sixelSupport: boolean } } | null;
+      expect(addon).not.toBeNull();
+      // The replacement addon, not the first one: sixel off, the rest kept.
+      expect(addon!._opts.sixelSupport).toBe(false);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('sixel size cap unavailable'));
+      // DA1 no longer advertises sixel (`4`), and is answered once.
+      const da1 = await replies(term, '\x1b[c');
+      expect(da1).toHaveLength(1);
+      expect(da1[0]).not.toMatch(/[?;]4[;c]/);
+    } finally {
+      warn.mockRestore();
+      vi.doUnmock('../../../shared/terminal/sixelCap');
+      vi.resetModules();
       term.dispose();
     }
   });

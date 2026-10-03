@@ -30,6 +30,7 @@ import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runInNewContext } from 'node:vm';
 import { buildSync } from 'esbuild';
 import { build as viteBuild } from 'vite';
 
@@ -103,6 +104,19 @@ const terminalSharedJs = buildSync({
   minify: true,
   logLevel: 'error',
 }).outputFiles[0].text;
+// app.js feature-detects these and quietly degrades without them (no stale
+// replay reset, no input gate, sixel off), so a dropped re-export would ship
+// unnoticed. Refuse the build instead.
+{
+  const sandbox = {};
+  runInNewContext(terminalSharedJs, sandbox);
+  for (const name of ['staleReplayResetLevel', 'gateUserInput', 'capSixelImageSize']) {
+    if (typeof sandbox.wmuxTerminalShared?.[name] !== 'function') {
+      console.error(`build-daemon-web: the shared terminal bundle does not export ${name}()`);
+      process.exit(1);
+    }
+  }
+}
 // Inline-image gate (#1641): the wasm probe and the addon options. Separate so
 // "no wasm, no addon" is unit tested against the exact bytes the phone runs.
 const inlineImagesJs = read(join(frontendDir, 'inlineImages.js'));
