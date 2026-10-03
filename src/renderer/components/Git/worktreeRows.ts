@@ -52,6 +52,25 @@ export function normWorktreePath(p: string, platform?: string): string {
   return platform === 'win32' || platform === 'darwin' ? s.toLowerCase() : s;
 }
 
+/**
+ * The worktree a path sits in: the longest worktree path that is the path or
+ * one of its parents (a linked worktree nested inside the main one wins over
+ * the main one). Returns the worktree's path as given, or null.
+ */
+export function worktreeContaining(path: string, worktreePaths: readonly string[], platform?: string): string | null {
+  const p = normWorktreePath(path, platform);
+  let best: string | null = null;
+  let bestLen = -1;
+  for (const wt of worktreePaths) {
+    const w = normWorktreePath(wt, platform);
+    if ((p === w || p.startsWith(`${w}/`)) && w.length > bestLen) {
+      best = wt;
+      bestLen = w.length;
+    }
+  }
+  return best;
+}
+
 export function buildWorktreeRows(input: {
   worktrees: readonly WorktreeRowUI[];
   mainPath: string;

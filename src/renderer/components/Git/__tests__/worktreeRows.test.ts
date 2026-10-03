@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildWorktreeRows, normWorktreePath, type WorktreeRowUI } from '../worktreeRows';
+import { buildWorktreeRows, normWorktreePath, worktreeContaining, type WorktreeRowUI } from '../worktreeRows';
 
 const wt = (path: string, branch: string, extra: Partial<WorktreeRowUI> = {}): WorktreeRowUI => ({
   path, branch, headOid: '0000000', locked: null, prunable: null, ...extra,
@@ -59,5 +59,18 @@ describe('buildWorktreeRows', () => {
     expect(rows.map((r) => r.entry.branch)).toEqual(['idle', 'main', 'feat']);
     expect(rows[0].stat?.additions).toBe(3);
     expect(rows.some((r) => r.isCurrent)).toBe(false);
+  });
+});
+
+describe('worktreeContaining', () => {
+  const wts = ['/code/repo', '/code/repo/.worktrees/feat', '/code/other'];
+  it('finds the innermost worktree a path sits in', () => {
+    expect(worktreeContaining('/code/repo/src/a', wts, 'linux')).toBe('/code/repo');
+    expect(worktreeContaining('/code/repo/.worktrees/feat/src', wts, 'linux')).toBe('/code/repo/.worktrees/feat');
+    expect(worktreeContaining('/code/repo', wts, 'linux')).toBe('/code/repo');
+  });
+  it('does not match a sibling that merely shares a prefix, or another repo', () => {
+    expect(worktreeContaining('/code/repository', wts, 'linux')).toBeNull();
+    expect(worktreeContaining('/elsewhere/repo', wts, 'linux')).toBeNull();
   });
 });

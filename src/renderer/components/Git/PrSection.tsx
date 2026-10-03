@@ -4,15 +4,16 @@
 // lists the PRs, and each PR expands to its comments. The Git section's header
 // refresh reaches it through `refreshKey`.
 //
-// "실시간"의 실현 수준: 섹션이 마운트된 동안(=Git 섹션이 펼쳐져 있을 때)만 30s 폴 +
-// 수동 새로고침 + PR 펼침 시 코멘트 즉시 fetch. main 캐시(GhPrService)가
-// 30s TTL·updatedAt 불변 시 코멘트 재fetch 생략으로 rate limit을 상한한다
-// (useMissionsPolling의 push-vs-pull 근거와 동일한 성긴-폴 선택).
+// How live it is: a 30s poll only while the PR row is open and on screen,
+// plus the manual refresh, plus an immediate comment fetch when a PR opens.
+// main's cache (GhPrService) has a 30s TTL and skips re-fetching comments
+// while updatedAt is unchanged, which bounds the rate limit.
 //
 // fail-closed: gh 미설치/미인증/비GitHub remote는 안내문으로 강등 — 섹션이
 // 조용히 비는 일은 없다. 모든 행·코멘트는 "브라우저에서 열기" 1클릭 제공.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useT } from '../../hooks/useT';
+import { useStore } from '../../stores';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
 import { renderBrainMarkdown } from '../Deck/BrainMarkdown';
@@ -131,7 +132,7 @@ export function PrSection({ repoPath, refreshKey = 0 }: { repoPath: string | nul
     }
   }, [repoPath, expanded, fetchComments]);
 
-  // 마운트/repo 변경 시 즉시 + 30s 성긴 폴(마운트=Git 탭 가시 상태).
+  // One read on mount / repo change, for the count on the folded row.
   useEffect(() => {
     setState({ kind: 'loading' });
     setExpanded(null);
@@ -140,10 +141,29 @@ export function PrSection({ repoPath, refreshKey = 0 }: { repoPath: string | nul
     expandedUpdatedAt.current = '';
     if (!repoPath) return;
     void load();
-    const id = window.setInterval(() => void load(), POLL_MS);
-    return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repoPath]);
+
+  // The 30s poll runs only while someone can see the list: the row is open,
+  // the Workspaces page is the one shown (not inert behind Fleet or another
+  // page), and the window is not hidden. Otherwise the mount read and the
+  // header's refresh are all there is.
+  const onWorkspaces = useStore((s) => s.appRoute === 'workspaces');
+  const [windowShown, setWindowShown] = useState(() => !document.hidden);
+  useEffect(() => {
+    const onChange = () => setWindowShown(!document.hidden);
+    document.addEventListener('visibilitychange', onChange);
+    return () => document.removeEventListener('visibilitychange', onChange);
+  }, []);
+  const loadRef = useRef(load);
+  loadRef.current = load;
+  const polling = !!repoPath && open && onWorkspaces && windowShown;
+  useEffect(() => {
+    if (!polling) return;
+    void loadRef.current();
+    const id = window.setInterval(() => void loadRef.current(), POLL_MS);
+    return () => window.clearInterval(id);
+  }, [polling]);
 
   // The section header's refresh — a forced re-read past the main-side cache.
   // Skips the first render: mounting already loaded.

@@ -289,9 +289,15 @@ leaves the page.
   over the faded right edge on hover; the new-worktree line; and, while one
   runs, the merge session pinned at the bottom. The section is never taller
   than 45% of the sidebar and scrolls inside itself; its top edge drags to
-  resize. Height and collapse are remembered. Collapsed, the body is not
-  mounted, so nothing is read from git or the PR host (pull-only, as before).
-  The web mirror shows no Git section.
+  resize, and that height is a ceiling — with nothing to show (no repo) it
+  stays one line. Height and collapse are remembered. Switching to another
+  repo clears the old one's content until the new one loads. Collapsed, the
+  body is not mounted, so nothing is read from git or the PR host; the
+  header then reads `Git · branch · +A −R · PR #n` with a CI dot (green
+  passing, yellow pending, red failing), built only from the git status main
+  already pushes, and just `Git` outside a repo. The PR list polls only while
+  its row is open and the Workspaces page is on screen. The web mirror shows
+  no Git section.
 
 ## Tools panel (Workspaces page)
 

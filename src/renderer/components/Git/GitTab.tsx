@@ -35,9 +35,14 @@ import { PrSection } from './PrSection';
 import { PrBadge } from '../Sidebar/WorkspaceItem';
 import { isPlausibleCwd } from '../../../shared/cwdShape';
 import {
-  buildWorktreeRows, normWorktreePath,
+  buildWorktreeRows, normWorktreePath, worktreeContaining,
   type DiffStat, type GitWorktreeRow, type WorkspaceOnRepo, type WorktreeRowUI,
 } from './worktreeRows';
+
+/** How long a cwd's resolved repo is trusted before git is asked again. */
+const REPO_CACHE_TTL_MS = 30_000;
+/** Settle time before the per-worktree diff stats are read. */
+export const ROW_STATS_DEBOUNCE_MS = 400;
 
 type MergeStart = { ok: true; status: MergeSessionStatus } | { ok: false; error: string };
 type MergeStatus = { ok: true; status: MergeSessionStatus | null } | { ok: false; error: string };
@@ -193,44 +198,66 @@ export function GitTab({ cwd, refreshKey = 0, onRepo }: GitTabProps = {}): React
   // owns it, so every load rehydrates it (restart recovery included).
   const [session, setSession] = useState<MergeSessionStatus | null>(null);
   // Monotonic load token — on a fast repo switch a late earlier response must
-  // not overwrite the newer result. Only the latest load() commits.
+  // not overwrite the newer result. Only the latest load() commits. Unmounting
+  // bumps it too, so nothing lands (nor reloads) after the section folds.
   const loadSeq = useRef(0);
+  const mounted = useRef(false);
   const onRepoRef = useRef(onRepo);
   onRepoRef.current = onRepo;
+  // cwd → resolved toplevel (or null), so a cd or a workspace switch does not
+  // spawn a git process per workspace again. A refresh or a mutation bypasses it.
+  const repoCache = useRef(new Map<string, { repo: string | null; at: number }>());
 
-  const load = useCallback(async () => {
+  const resolveCached = useCallback(async (resolveRepo: ResolveRepo, cwdPath: string, force: boolean): Promise<string | null> => {
+    const hit = repoCache.current.get(cwdPath);
+    if (!force && hit && Date.now() - hit.at < REPO_CACHE_TTL_MS) return hit.repo;
+    let repo: string | null = null;
+    try {
+      const r = await resolveRepo(cwdPath);
+      repo = r.ok ? r.repoPath : null;
+    } catch {
+      repo = null;
+    }
+    repoCache.current.set(cwdPath, { repo, at: Date.now() });
+    return repo;
+  }, []);
+
+  const load = useCallback(async (force = false) => {
+    if (!mounted.current) return;
     const seq = ++loadSeq.current;
+    const live = () => mounted.current && seq === loadSeq.current;
     setLoading(true);
     setError(null);
     const { worktree, resolveRepo, readDiff } = getBridges();
     if (!worktree || !resolveRepo) {
-      if (seq !== loadSeq.current) return;
-      setError('bridge unavailable');
+      setError(t('git.bridgeUnavailable'));
       setLoading(false);
       return;
     }
     let current: string | null = null;
     for (const candidate of activeCwdCandidates.split('\0').filter(Boolean)) {
-      const resolved = await resolveRepo(candidate);
-      if (seq !== loadSeq.current) return; // superseded by a newer load
-      if (resolved.ok) { current = resolved.repoPath; break; }
+      const resolved = await resolveCached(resolveRepo, candidate, force);
+      if (!live()) return; // superseded by a newer load, or unmounted
+      if (resolved !== null) { current = resolved; break; }
     }
     if (current === null) {
       setRepoPath(null);
       setWorktrees([]);
       setOnRepoWorkspaces([]);
       setStats({});
+      setSession(null);
       setLoading(false);
       onRepoRef.current?.(null);
       return;
     }
     const res = await worktree.list(current);
-    if (seq !== loadSeq.current) return; // superseded by a newer load
+    if (!live()) return;
     setCurrentWorktree(current);
     if (!res.ok) {
       setError(res.error);
       setRepoPath(null);
       setWorktrees([]);
+      setSession(null);
       setLoading(false);
       onRepoRef.current?.(null);
       return;
@@ -244,9 +271,14 @@ export function GitTab({ cwd, refreshKey = 0, onRepo }: GitTabProps = {}): React
     // in-flight session survives an app restart.
     if (worktree.mergeStatus) {
       const ms = await worktree.mergeStatus(res.repoPath);
-      if (seq !== loadSeq.current) return;
+      if (!live()) return;
       if (ms.ok) setSession(ms.status);
     }
+
+    // Row stats wait for the pane to settle: a burst of cds or workspace
+    // switches costs one round of reads, not one per step.
+    await new Promise((r) => setTimeout(r, ROW_STATS_DEBOUNCE_MS));
+    if (!live()) return;
 
     // Workspaces on this repo: each one's repo resolved from its own active
     // pane (first leaf if that is stale), kept when it is one of the worktrees.
@@ -256,23 +288,22 @@ export function GitTab({ cwd, refreshKey = 0, onRepo }: GitTabProps = {}): React
     const onRepo: WorkspaceOnRepo[] = [];
     for (const ws of state.workspaces) {
       let rp: string | null = null;
-      try {
-        rp = await resolveFirstRepo(resolveRepo, repoCwdCandidates(ws, state.startupDirectory || '', true));
-      } catch {
-        rp = null;
+      for (const candidate of repoCwdCandidates(ws, state.startupDirectory || '', true)) {
+        rp = await resolveCached(resolveRepo, candidate, force);
+        if (!live()) return;
+        if (rp !== null) break;
       }
-      if (seq !== loadSeq.current) return;
       if (rp !== null && keys.has(normWorktreePath(rp, plat))) {
         onRepo.push({ workspaceId: ws.id, name: ws.name, pr: ws.metadata?.pr ?? null, repoPath: rp });
       }
     }
     setOnRepoWorkspaces(onRepo);
 
-    // Uncommitted diff stats — read for the current worktree and the ones a
-    // workspace sits on, as the Review list did; idle worktrees are not read.
+    // Uncommitted diff stats for the worktrees a workspace sits on, as the
+    // Review list did; idle worktrees are not read. (The current-branch card
+    // reads the pushed git status instead when it describes this worktree.)
     if (!readDiff) return;
     const paths = new Map<string, string>();
-    paths.set(normWorktreePath(current, plat), current);
     for (const w of onRepo) paths.set(normWorktreePath(w.repoPath, plat), w.repoPath);
     const next: Record<string, DiffStat> = {};
     for (const [key, path] of paths) {
@@ -291,17 +322,47 @@ export function GitTab({ cwd, refreshKey = 0, onRepo }: GitTabProps = {}): React
       } catch (e) {
         stat.error = e instanceof Error ? e.message : String(e);
       }
-      if (seq !== loadSeq.current) return;
+      if (!live()) return;
       next[key] = stat;
     }
     setStats(next);
-  }, [activeCwdCandidates]);
+  }, [activeCwdCandidates, resolveCached, t]);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      loadSeq.current++;
+    };
+  }, []);
 
   // Reload on mount, workspace / pane cwd change, the workspace roster, and
-  // the header's refresh (pull-only).
+  // the header's refresh (pull-only). A new context (another workspace or
+  // pane cwd) first drops the old repo's content, so nothing on screen — and
+  // no Diff / Merge / Remove — still points at the previous repo while the
+  // new one loads.
+  const context = `${activeWorkspaceId}\0${activeCwdCandidates}`;
+  const lastContext = useRef(context);
+  const lastRefresh = useRef(refreshKey);
   useEffect(() => {
-    void load();
-  }, [load, activeWorkspaceId, workspaceIds, refreshKey]);
+    if (lastContext.current !== context) {
+      lastContext.current = context;
+      setRepoPath(null);
+      setMainPath('');
+      setCurrentWorktree('');
+      setWorktrees([]);
+      setOnRepoWorkspaces([]);
+      setStats({});
+      setSession(null);
+      onRepoRef.current?.(null);
+    }
+    const force = lastRefresh.current !== refreshKey;
+    lastRefresh.current = refreshKey;
+    void load(force);
+    return () => {
+      loadSeq.current++;
+    };
+  }, [load, context, workspaceIds, refreshKey]);
 
   const handleCreate = useCallback(async () => {
     const branch = newBranch.trim();
@@ -317,7 +378,7 @@ export function GitTab({ cwd, refreshKey = 0, onRepo }: GitTabProps = {}): React
         return;
       }
       setNewBranch('');
-      void load();
+      void load(true);
     } catch (e) {
       pushToast({ level: 'warn', message: `${t('git.createFailed')}: ${e instanceof Error ? e.message : String(e)}` });
     } finally {
@@ -339,7 +400,7 @@ export function GitTab({ cwd, refreshKey = 0, onRepo }: GitTabProps = {}): React
           pushToast({ level: 'warn', message: `${t('git.removeFailed')}: ${res.error}` });
           return;
         }
-        void load();
+        void load(true);
       } catch (e) {
         pushToast({ level: 'warn', message: `${t('git.removeFailed')}: ${e instanceof Error ? e.message : String(e)}` });
       } finally {
@@ -363,7 +424,7 @@ export function GitTab({ cwd, refreshKey = 0, onRepo }: GitTabProps = {}): React
     const st = useStore.getState();
     const ws = st.workspaces.find((w) => w.id === st.activeWorkspaceId);
     if (!ws) return;
-    const leaf = findActiveLeaf(ws.rootPane, ws.activePaneId);
+    const leaf = findActiveLeaf(ws.rootPane, ws.activePaneId) ?? findFirstLeaf(ws.rootPane);
     if (!leaf) return;
     st.addWorkspaceDiffSurface(leaf.id, targetPath, `diff: ${pathLeaf(targetPath)}`);
   }, []);
@@ -409,7 +470,7 @@ export function GitTab({ cwd, refreshKey = 0, onRepo }: GitTabProps = {}): React
       }
       setSession(null);
       pushToast({ level: 'info', message: t('git.landed') || 'Merged into base.' });
-      void load();
+      void load(true);
     } catch (e) {
       pushToast({ level: 'warn', message: `${t('git.landFailed') || 'Land failed'}: ${e instanceof Error ? e.message : String(e)}` });
     } finally {
@@ -430,7 +491,7 @@ export function GitTab({ cwd, refreshKey = 0, onRepo }: GitTabProps = {}): React
         return;
       }
       setSession(null);
-      void load();
+      void load(true);
     } catch (e) {
       pushToast({ level: 'warn', message: `${t('git.discardFailed') || 'Discard failed'}: ${e instanceof Error ? e.message : String(e)}` });
     } finally {
@@ -477,10 +538,21 @@ export function GitTab({ cwd, refreshKey = 0, onRepo }: GitTabProps = {}): React
   const currentRow = rows.find((r) => r.isCurrent) ?? null;
   const currentBranch = currentRow?.entry.branch ?? null;
   // The workspace's pushed metadata trails the active pane; it describes the
-  // card only while it is about the same branch.
-  const metaMatches = !!currentBranch && activeMeta?.gitBranch === currentBranch;
+  // card only while it is about this very worktree — the same branch name in
+  // another repo (two `main`s) must not lend its ahead/behind, PR or CI.
+  const plat = hostPlatform();
+  const metaWorktree = activeMeta?.cwd ? worktreeContaining(activeMeta.cwd, worktrees.map((w) => w.path), plat) : null;
+  const metaMatches = !!currentBranch
+    && activeMeta?.gitBranch === currentBranch
+    && metaWorktree !== null
+    && normWorktreePath(metaWorktree, plat) === normWorktreePath(currentWorktree, plat);
   const sync = metaMatches && activeMeta?.gitSync?.hasUpstream ? activeMeta.gitSync : null;
   const cardPr = metaMatches ? activeMeta?.pr ?? null : null;
+  // Uncommitted changes: the pushed git status when it is about this
+  // worktree (no extra git call), else the row's read stat.
+  const cardStat: DiffStat | null = metaMatches && activeMeta?.gitSync
+    ? { files: activeMeta.gitSync.dirty, additions: activeMeta.gitSync.added ?? 0, deletions: activeMeta.gitSync.removed ?? 0, error: null }
+    : currentRow?.stat ?? null;
 
   const renderRow = (row: GitWorktreeRow) => {
     const wt = row.entry;
@@ -522,11 +594,8 @@ export function GitTab({ cwd, refreshKey = 0, onRepo }: GitTabProps = {}): React
             {firstPr && <span className="wmux-git-sub-pr"><PrBadge pr={firstPr} /></span>}
           </span>
         </div>
-        {row.isMain ? (
-          <span className="wmux-git-main-badge">{t('git.main') || 'main'}</span>
-        ) : row.stat ? (
-          <DiffCounts stat={row.stat} t={t} />
-        ) : null}
+        {row.isMain && <span className="wmux-git-main-badge">{t('git.main') || 'main'}</span>}
+        {row.stat && <DiffCounts stat={row.stat} t={t} />}
         <div className="wmux-git-row-actions" data-git-row-actions>
           <button
             type="button"
@@ -600,12 +669,12 @@ export function GitTab({ cwd, refreshKey = 0, onRepo }: GitTabProps = {}): React
                 )}
               </div>
               <div className="wmux-git-card-line">
-                {currentRow?.stat ? (
+                {cardStat ? (
                   <span className="wmux-git-card-changes" data-git-changes>
-                    {currentRow.stat.files > 0 && (
-                      <span>{currentRow.stat.files} {t('review.files') || 'files'}</span>
+                    {cardStat.files > 0 && (
+                      <span>{cardStat.files} {t('review.files') || 'files'}</span>
                     )}
-                    <DiffCounts stat={currentRow.stat} t={t} />
+                    <DiffCounts stat={cardStat} t={t} />
                   </span>
                 ) : (
                   <span className="wmux-git-card-changes" />
@@ -676,7 +745,7 @@ export function GitTab({ cwd, refreshKey = 0, onRepo }: GitTabProps = {}): React
       </div>
 
       {/* Merge session — only while one is active: plain-language summary + Land / Discard. */}
-      {session && (
+      {session && repoPath && (
         <div data-git-merge-session className="wmux-git-merge">
           <div className="flex items-center gap-2">
             {/* Phase dot: in flight = accent · verified = green · trouble = red. */}
@@ -715,16 +784,16 @@ export function GitTab({ cwd, refreshKey = 0, onRepo }: GitTabProps = {}): React
           {/* Plain-language summary — changed files + verify result. */}
           <div className="text-[var(--text-muted)]">
             {session.phase === 'conflicted'
-              ? `${session.conflicts.length} conflicting file(s) — open with Claude to resolve`
+              ? t('git.mergeSummary.conflicted', { count: session.conflicts.length })
               : session.phase === 'verifying'
-                ? `${session.changedFiles} file(s) changed · verifying`
+                ? t('git.mergeSummary.verifying', { count: session.changedFiles })
                 : session.phase === 'verified'
                   ? session.changedFiles > 0
-                    ? `${session.changedFiles} file(s) changed · verify passed`
-                    : 'Nothing to merge (already up to date)'
+                    ? t('git.mergeSummary.verified', { count: session.changedFiles })
+                    : t('git.mergeSummary.nothing')
                   : session.phase === 'failed'
-                    ? `${session.changedFiles} file(s) changed · verify failed${session.verify?.failedStep ? ` (${session.verify.failedStep})` : ''}${session.verify?.timedOut ? ' · timed out' : ''}`
-                    : `${session.changedFiles} file(s) changed`}
+                    ? `${t('git.mergeSummary.failed', { count: session.changedFiles })}${session.verify?.failedStep ? ` (${session.verify.failedStep})` : ''}${session.verify?.timedOut ? ` · ${t('git.mergeSummary.timedOut')}` : ''}`
+                    : t('git.mergeSummary.changed', { count: session.changedFiles })}
           </div>
           <div className="flex items-center gap-1.5">
             {session.phase === 'conflicted' && (

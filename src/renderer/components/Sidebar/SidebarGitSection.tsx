@@ -7,17 +7,21 @@
 // resize; the height and the collapsed state are remembered per user.
 //
 // Collapsed, the body is not mounted, so nothing reads git or polls the PR
-// host — the same "only while visible" rule the tab had.
+// host — the same "only while visible" rule the tab had. The folded header
+// then sums up the active workspace from the git status main already pushes
+// (branch · +A −R · PR #n and its CI dot), so it costs nothing to keep.
 //
 // Later sections (issues, PR filters) hang off this header and body.
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
+import type { StoreState } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { FOCUS_RING } from '../focusRing';
 import { IconChevron, IconRefresh } from '../icons';
 import { GitTab } from '../Git/GitTab';
-import { SIDEBAR_GIT_DEFAULT_HEIGHT, clampSidebarGitHeight } from '../../utils/sidebarLayout';
+import { SIDEBAR_GIT_DEFAULT_HEIGHT, SIDEBAR_GIT_MIN_HEIGHT, clampSidebarGitHeight } from '../../utils/sidebarLayout';
 
 const KEY_STEP = 16;
 
@@ -25,6 +29,33 @@ const KEY_STEP = 16;
 export function gitHeightForDrag(startHeight: number, deltaY: number, available?: number): number {
   return clampSidebarGitHeight(startHeight - deltaY, available);
 }
+
+export interface GitHeaderSummary {
+  branch: string;
+  added: number;
+  removed: number;
+  pr: number | null;
+  checks: 'pending' | 'passing' | 'failing' | null;
+}
+
+/** The folded header's line, from the active workspace's pushed metadata; null outside a repo. */
+export function selectGitHeaderSummary(s: StoreState): GitHeaderSummary | null {
+  const m = s.workspaces.find((w) => w.id === s.activeWorkspaceId)?.metadata;
+  if (!m?.gitBranch) return null;
+  return {
+    branch: m.gitBranch,
+    added: m.gitSync?.added ?? 0,
+    removed: m.gitSync?.removed ?? 0,
+    pr: m.pr?.number ?? null,
+    checks: m.pr?.checks ?? null,
+  };
+}
+
+const CHECKS_COLOR = {
+  passing: 'var(--accent-green)',
+  pending: 'var(--accent-yellow)',
+  failing: 'var(--accent-red)',
+} as const;
 
 export default function SidebarGitSection() {
   const t = useT();
@@ -34,7 +65,19 @@ export default function SidebarGitSection() {
   const setHeight = useStore((s) => s.setSidebarGitHeight);
   const [repo, setRepo] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const summary = useStore(useShallow((s) => (collapsed ? selectGitHeaderSummary(s) : null)));
   const sectionRef = useRef<HTMLElement>(null);
+  // The sidebar's height, for the separator's value range (the 45% share).
+  const [room, setRoom] = useState(0);
+  useEffect(() => {
+    const parent = sectionRef.current?.parentElement;
+    if (!parent) return;
+    setRoom(parent.getBoundingClientRect().height);
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => setRoom(parent.getBoundingClientRect().height));
+    ro.observe(parent);
+    return () => ro.disconnect();
+  }, []);
   const drag = useRef<{ startY: number; startHeight: number; available: number } | null>(null);
   // A live drag is fine here: the sidebar's own split moves no terminal.
   const [dragHeight, setDragHeight] = useState<number | null>(null);
@@ -81,6 +124,8 @@ export default function SidebarGitSection() {
 
   const title = t('deck.tabGit') || 'Git';
   const toggleLabel = collapsed ? t('sidebar.git.expand') : t('sidebar.git.collapse');
+  const maxHeight = room > 0 ? clampSidebarGitHeight(Number.POSITIVE_INFINITY, room) : Math.max(height, SIDEBAR_GIT_MIN_HEIGHT);
+  const shownHeight = Math.min(dragHeight ?? height, maxHeight);
 
   return (
     <section
@@ -89,8 +134,9 @@ export default function SidebarGitSection() {
       data-sidebar-git
       data-collapsed={collapsed ? 'true' : undefined}
       aria-label={title}
-      // Capped at 45% of the sidebar in CSS, whatever the stored height says.
-      style={collapsed ? undefined : { height: dragHeight ?? height }}
+      // The stored height is a ceiling, not a size: a section with one line
+      // to show (no repo) stays one line. CSS also caps it at 45% of the sidebar.
+      style={collapsed ? undefined : ({ '--git-h': `${dragHeight ?? height}px` } as React.CSSProperties)}
     >
       {!collapsed && (
         <div
@@ -98,6 +144,9 @@ export default function SidebarGitSection() {
           aria-orientation="horizontal"
           aria-label={t('sidebar.git.resize')}
           title={t('sidebar.git.resize')}
+          aria-valuemin={SIDEBAR_GIT_MIN_HEIGHT}
+          aria-valuemax={maxHeight}
+          aria-valuenow={Math.round(shownHeight)}
           tabIndex={0}
           className={`wmux-git-resize ${FOCUS_RING}`}
           data-sidebar-git-resize
@@ -113,7 +162,36 @@ export default function SidebarGitSection() {
       )}
       <div className="wmux-sidebar-section wmux-git-header">
         <span className="truncate" data-sidebar-git-title>
-          {title}{repo && <span className="wmux-git-repo"> · {repo}</span>}
+          {title}
+          {!collapsed && repo && <span className="wmux-git-repo"> · {repo}</span>}
+          {collapsed && summary && (
+            <span className="wmux-git-repo" data-sidebar-git-summary>
+              {' · '}<span className="wmux-git-summary-branch">{summary.branch}</span>
+              {(summary.added > 0 || summary.removed > 0) && (
+                <>
+                  {' · '}
+                  {summary.added > 0 && <span style={{ color: 'var(--accent-green)' }}>+{summary.added}</span>}
+                  {summary.added > 0 && summary.removed > 0 && ' '}
+                  {summary.removed > 0 && <span style={{ color: 'var(--accent-red)' }}>−{summary.removed}</span>}
+                </>
+              )}
+              {summary.pr !== null && (
+                <>
+                  {' · '}PR #{summary.pr}
+                  {summary.checks && (
+                    <span
+                      className="wmux-git-ci-dot"
+                      data-ci={summary.checks}
+                      style={{ background: CHECKS_COLOR[summary.checks] }}
+                      title={t(`workspace.prChecks.${summary.checks}`)}
+                      role="img"
+                      aria-label={t(`workspace.prChecks.${summary.checks}`)}
+                    />
+                  )}
+                </>
+              )}
+            </span>
+          )}
         </span>
         {!collapsed && (
           <button
@@ -128,7 +206,12 @@ export default function SidebarGitSection() {
         <button
           type="button"
           className={`ui-icon-btn ${collapsed ? 'ml-auto ' : ''}h-7 w-7 wmux-git-collapse ${FOCUS_RING}`}
-          onClick={() => setCollapsed(!collapsed)}
+          onClick={() => {
+            // The body reports the repo again when it remounts; a name kept
+            // from before the fold could belong to another repo by then.
+            if (!collapsed) setRepo(null);
+            setCollapsed(!collapsed);
+          }}
           title={toggleLabel}
           aria-label={toggleLabel}
           aria-expanded={!collapsed}

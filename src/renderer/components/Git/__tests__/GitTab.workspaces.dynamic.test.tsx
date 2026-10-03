@@ -10,7 +10,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createElement, act, type FC } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { GitTab, type GitTabProps } from '../GitTab';
+import { GitTab, ROW_STATS_DEBOUNCE_MS, type GitTabProps } from '../GitTab';
 import { useStore } from '../../../stores';
 import type { Workspace, Pane, Surface } from '../../../../shared/types';
 
@@ -36,6 +36,12 @@ const IDLE = 'D:/repo-worktrees/idle';
 
 const flush = async () => {
   for (let i = 0; i < 16; i++) await act(async () => { await Promise.resolve(); });
+};
+/** Past the row-stats debounce, then drain what it started. */
+const settle = async () => {
+  await flush();
+  await act(async () => { await new Promise((r) => setTimeout(r, ROW_STATS_DEBOUNCE_MS + 20)); });
+  await flush();
 };
 
 let container: HTMLDivElement;
@@ -111,7 +117,7 @@ async function mount(): Promise<void> {
   act(() => {
     root.render(createElement(GitTab));
   });
-  await flush();
+  await settle();
 }
 
 const rows = () => Array.from(container.querySelectorAll('[data-git-worktree-row]'));
@@ -136,9 +142,10 @@ describe('GitTab — one row per worktree, with the workspaces on it', () => {
     expect(r[0].textContent).toContain('feat-ws, feat-ws-2');
     expect(r[0].textContent).toContain('+15');
     expect(r[0].textContent).toContain('−3');
-    // main stays labelled as main; the idle worktree shows its folder.
+    // main stays labelled as main (and keeps its stat); the idle worktree shows its folder.
     expect(r[1].textContent).toContain('main-ws');
     expect(r[1].textContent).toContain('main');
+    expect(r[1].textContent).toContain('clean');
     expect(r[2].textContent).toContain('idle');
     // A workspace on another repo is not on any row.
     expect(container.textContent).not.toContain('other-ws');
@@ -195,6 +202,7 @@ describe('GitTab — one row per worktree, with the workspaces on it', () => {
   it('the current-branch card shows ahead/behind and the PR only while metadata is about that branch', async () => {
     const meta = {
       gitBranch: 'main',
+      cwd: `${MAIN}/src`,
       gitSync: { dirty: 0, ahead: 2, behind: 1, hasUpstream: true },
       pr: { number: 1740, state: 'open', checks: 'failing', url: 'https://x/pull/1740' },
     };
@@ -215,6 +223,63 @@ describe('GitTab — one row per worktree, with the workspaces on it', () => {
     await flush();
     expect(card().querySelector('[data-git-ahead-behind]')).toBeNull();
     expect(card().querySelector('[data-git-current-pr]')).toBeNull();
+  });
+
+  it('metadata from another repo with the same branch name does not describe the card', async () => {
+    // Both repos are on `main`; the workspace's pushed status is about the other one.
+    const meta = {
+      gitBranch: 'main',
+      cwd: 'D:/elsewhere/main-repo',
+      gitSync: { dirty: 4, ahead: 3, behind: 0, hasUpstream: true, added: 9, removed: 1 },
+      pr: { number: 7, state: 'open', checks: 'passing', url: 'https://x/pull/7' },
+    };
+    seed([workspace('ws-main', 'main-ws', MAIN, { metadata: meta } as Partial<Workspace>)], 'ws-main');
+    await mount();
+    const card = container.querySelector('[data-git-current-branch]')!;
+    expect(card.querySelector('[data-git-ahead-behind]')).toBeNull();
+    expect(card.querySelector('[data-git-current-pr]')).toBeNull();
+    // Changes come from this worktree's own read, not the other repo's +9 −1.
+    expect(card.querySelector('[data-git-changes]')?.textContent).toContain('clean');
+  });
+
+  it('the card reads its changes from the pushed git status when it is about this worktree', async () => {
+    const meta = { gitBranch: 'main', cwd: MAIN, gitSync: { dirty: 3, ahead: 0, behind: 0, hasUpstream: true, added: 12, removed: 4 } };
+    seed([workspace('ws-main', 'main-ws', MAIN, { metadata: meta } as Partial<Workspace>)], 'ws-main');
+    await mount();
+    const changes = container.querySelector('[data-git-changes]')?.textContent ?? '';
+    expect(changes).toContain('3 files');
+    expect(changes).toContain('+12');
+    expect(changes).toContain('−4');
+  });
+
+  it('a dirty main worktree keeps both its badge and its stat', async () => {
+    read.mockImplementation(async (repoPath: string) =>
+      numstatResult(repoPath, repoPath === MAIN ? [{ path: 'x.ts', additions: 7, deletions: 2 }] : []));
+    seed([workspace('ws-main', 'main-ws', MAIN)], 'ws-main');
+    await mount();
+    const main = rows().find((el) => el.textContent?.includes('main-ws'))!;
+    expect(main.querySelector('.wmux-git-main-badge')).not.toBeNull();
+    expect(main.textContent).toContain('+7');
+    expect(main.textContent).toContain('−2');
+  });
+
+  it('switching to another repo drops the old content until the new one lands', async () => {
+    seed([workspace('ws-main', 'main-ws', MAIN), workspace('ws-other', 'other-ws', 'D:/repo-other')], 'ws-main');
+    await mount();
+    expect(rows().length).toBe(3);
+    const wt = (window as unknown as { electronAPI: { worktree: { list: ReturnType<typeof vi.fn> } } }).electronAPI.worktree;
+    let release!: () => void;
+    const original = wt.list.getMockImplementation() as (p: string) => unknown;
+    wt.list.mockImplementation((p: string) => new Promise((r) => { release = () => r(original(p)); }));
+    act(() => useStore.getState().setActiveWorkspace('ws-other'));
+    await flush();
+    // Mid-switch: no rows and no card from the previous repo, so no click can hit it.
+    expect(rows().length).toBe(0);
+    expect(container.querySelector('[data-git-current-branch]')).toBeNull();
+    expect(container.textContent).toContain('Loading');
+    await act(async () => { release(); });
+    await settle();
+    expect(rows().map((r) => r.querySelector('.wmux-git-branch')?.textContent)).toEqual(['other']);
   });
 
   it('reports the main worktree\'s folder as the repo name, even from a linked worktree', async () => {

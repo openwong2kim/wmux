@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { useStore } from '../../../stores';
-import SidebarGitSection, { gitHeightForDrag } from '../SidebarGitSection';
+import SidebarGitSection, { gitHeightForDrag, selectGitHeaderSummary } from '../SidebarGitSection';
 import { SIDEBAR_GIT_DEFAULT_HEIGHT, SIDEBAR_GIT_MIN_HEIGHT } from '../../../utils/sidebarLayout';
 import type { Workspace } from '../../../../shared/types';
 
@@ -82,6 +82,68 @@ describe('SidebarGitSection', () => {
     expect(useStore.getState().sidebarGitCollapsed).toBe(false);
     expect(container.querySelector('[data-git-tab]')).not.toBeNull();
     expect(list).toHaveBeenCalled();
+  });
+
+  it('a fold and a repo switch while folded never let the old repo\'s late answer into the header', async () => {
+    // The old repo answers late: it must land nowhere, not even in the header.
+    let releaseOld!: () => void;
+    list.mockImplementationOnce((repoPath: string) => new Promise((r) => {
+      releaseOld = () => r({ ok: true, repoPath, mainPath: '/code/old-repo', worktrees: [{ path: '/code/old-repo', branch: 'main', headOid: '1', locked: null, prunable: null }] });
+    }));
+    act(() => root.render(createElement(SidebarGitSection)));
+    await flush();
+    act(() => toggle().click()); // fold while the old list is in flight
+    act(() => {
+      const ws = useStore.getState().workspaces[0];
+      useStore.setState({ workspaces: [{ ...ws, rootPane: { ...(ws.rootPane as object), surfaces: [{ id: 's', ptyId: 'pty', title: 't', shell: 'zsh', cwd: '/code/wmux', surfaceType: 'terminal' }] } } as unknown as Workspace] });
+    });
+    act(() => toggle().click()); // unfold on the new repo
+    await flush();
+    await act(async () => { releaseOld(); });
+    await flush();
+    expect(container.querySelector('[data-sidebar-git-title]')?.textContent).toBe('Git · wmux');
+  });
+
+  it('folded, the header sums up the active workspace from pushed metadata only', async () => {
+    act(() => {
+      const ws = useStore.getState().workspaces[0];
+      useStore.setState({
+        sidebarGitCollapsed: true,
+        workspaces: [{ ...ws, metadata: {
+          gitBranch: 'feat/x',
+          gitSync: { dirty: 2, ahead: 0, behind: 0, hasUpstream: true, added: 12, removed: 3 },
+          pr: { number: 1742, state: 'open', checks: 'failing', url: 'u' },
+        } } as unknown as Workspace],
+      });
+    });
+    act(() => root.render(createElement(SidebarGitSection)));
+    await flush();
+    const line = container.querySelector('[data-sidebar-git-summary]')!;
+    expect(line.textContent).toBe(' · feat/x · +12 −3 · PR #1742');
+    expect(line.querySelector('[data-ci="failing"]')).not.toBeNull();
+    expect(list).not.toHaveBeenCalled();
+
+    // Out of a repo: just "Git".
+    act(() => {
+      const ws = useStore.getState().workspaces[0];
+      useStore.setState({ workspaces: [{ ...ws, metadata: {} } as unknown as Workspace] });
+    });
+    expect(container.querySelector('[data-sidebar-git-summary]')).toBeNull();
+    expect(container.querySelector('[data-sidebar-git-title]')?.textContent).toBe('Git');
+  });
+
+  it('summary leaves out what it does not know', () => {
+    const state = { activeWorkspaceId: 'a', workspaces: [{ id: 'a', metadata: { gitBranch: 'main' } }] } as never;
+    expect(selectGitHeaderSummary(state)).toEqual({ branch: 'main', added: 0, removed: 0, pr: null, checks: null });
+  });
+
+  it('the resize separator reports its value range', async () => {
+    act(() => root.render(createElement(SidebarGitSection)));
+    await flush();
+    const sep = container.querySelector('[data-sidebar-git-resize]')!;
+    expect(sep.getAttribute('aria-valuemin')).toBe(String(SIDEBAR_GIT_MIN_HEIGHT));
+    expect(Number(sep.getAttribute('aria-valuenow'))).toBe(SIDEBAR_GIT_DEFAULT_HEIGHT);
+    expect(Number(sep.getAttribute('aria-valuemax'))).toBeGreaterThanOrEqual(SIDEBAR_GIT_DEFAULT_HEIGHT);
   });
 
   it('a drag up grows the section, within its floor and the 45% share', () => {
