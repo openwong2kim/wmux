@@ -25,4 +25,9 @@ describe('shouldUseGlass', () => {
     expect(shouldUseGlass('darwin', '')).toBe(false);
     expect(shouldUseGlass('darwin', ' #171717 ')).toBe(true);
   });
+
+  it('stays off on a light Mac, so nothing has to flip the app-wide appearance', () => {
+    expect(shouldUseGlass('darwin', '#1A171D', '1', false)).toBe(false);
+    expect(shouldUseGlass('darwin', '#1A171D', '1', true)).toBe(true);
+  });
 });

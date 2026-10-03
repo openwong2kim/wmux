@@ -566,7 +566,6 @@ export const IPC = {
   // Window glass (macOS): the renderer reports whether the active theme is
   // dark so main can pin the native appearance, which the vibrancy material
   // follows. One-way send; a no-op off macOS.
-  WINDOW_SET_GLASS_APPEARANCE: 'window:setGlassAppearance',
   // Whole-interface zoom (#822): the renderer asks main to scale the
   // BrowserWindow with setZoomFactor and re-place the native chrome to match.
   // One-way send — the persisted factor lives in the renderer store.
