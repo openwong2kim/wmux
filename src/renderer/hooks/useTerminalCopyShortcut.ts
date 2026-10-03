@@ -89,6 +89,11 @@ export function useTerminalCopyShortcut(): void {
       // Ignore OS key auto-repeat: a held Ctrl+C must copy / toast / consume the
       // event at most once, not fire on every repeat tick.
       if (e.repeat) return;
+      // Terminals live on the Workspaces page. Behind Fleet, Schedules,
+      // Remote or Settings they stay mounted under an inert page, and
+      // checkVisibility() still calls them visible — so a stale selection
+      // there would be copied while the user copies a field on the page.
+      if (useStore.getState().appRoute !== 'workspaces') return;
 
       // Yield to a genuine NATIVE selection of non-terminal DOM text (a channel
       // message body, the read-only editor <pre>, the roster, markdown). xterm

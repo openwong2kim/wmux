@@ -158,10 +158,13 @@ bar is a drag region; each interactive child opts out with `no-drag`.
   dock holds unread channels or dirty worktrees) and **Settings** (a gear
   that swaps the sheet to the Settings page and shows `--selection` while it
   is up).
-- **Windows / Linux:** the native window controls sit at the right edge in
-  the `titleBarOverlay` strip, drawn in the colour the frame actually paints
+- **Windows:** the native window controls sit at the right edge in the
+  `titleBarOverlay` strip, drawn in the colour the frame actually paints
   (`overlayColors()`, one helper for every sender); the titlebar icons
   sit left of them inside the area the titlebar already reserves.
+- **Linux:** the native window frame stays, with its own title bar and
+  controls above the 40px titlebar (a frameless window would lose drag and
+  resize with nothing to replace them).
 - The bottom divider, when drawn, is an inset hairline so the 40px content
   box stays exact.
 
@@ -720,8 +723,10 @@ page stays mounted, full size and inert underneath. It is an attention board
   newest finished tasks; up to three agents is one list with the preview
   open. The preview at the foot shows the selected agent's last 20 lines.
 - **Keys:** arrows move across and within columns, 1–4 jump to a column,
-  Enter jumps, Space toggles the preview, / searches, a approves the request
-  waiting on the agent; m, s, l, Backspace, d, p and j as before. A jump to a
+  Enter jumps, Space toggles the preview, / searches, a opens the Approvals
+  tab with the request waiting on the agent focused (it never approves: the
+  card does not show the request, so the user reads the row and approves
+  there); m, s, l, Backspace, d, p and j as before. A jump to a
   pane returns to the Workspaces page and hands it focus.
 
 **Ready to review (2026-09-25; a board column after Running since

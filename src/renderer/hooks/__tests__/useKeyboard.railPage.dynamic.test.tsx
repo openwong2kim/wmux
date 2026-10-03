@@ -61,6 +61,20 @@ describe('shortcuts on a rail page', () => {
     expect(useStore.getState().terminalFontSize).toBe(15);
   });
 
+  it('a shown floating pane can still be hidden from a page, but not opened there', () => {
+    expect(WORKSPACES_ONLY_ACTIONS.has('floatingPane')).toBe(true);
+    act(() => useStore.setState({ floatingPaneVisible: false }));
+    act(() => useStore.getState().setAppRoute('fleet'));
+    // Hidden: opening it is a Workspaces-page action.
+    press({ ctrlKey: true, key: '`', code: 'Backquote' });
+    expect(useStore.getState().floatingPaneVisible).toBe(false);
+    // Shown (it floats over every page): the same key hides it.
+    act(() => useStore.setState({ floatingPaneVisible: true }));
+    press({ ctrlKey: true, key: '`', code: 'Backquote' });
+    expect(useStore.getState().floatingPaneVisible).toBe(false);
+    act(() => useStore.setState({ floatingPaneVisible: false }));
+  });
+
   it('the prefix does not arm on a page, and a page switch ends an armed one', () => {
     act(() => useStore.getState().setAppRoute('settings'));
     press({ ctrlKey: true, key: 'b', code: 'KeyB' });

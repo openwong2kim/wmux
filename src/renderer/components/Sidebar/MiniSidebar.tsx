@@ -180,6 +180,9 @@ export default function MiniSidebar({ rail = false, collapsed = true }: { rail?:
             if (cmdOrCtrl) {
               e.preventDefault();
               toggleMultiviewWorkspace(ws.id);
+              // The multiview grid lives on the Workspaces page: from Fleet or
+              // Settings the toggle would re-grid terminals behind the page.
+              useStore.getState().setAppRoute('workspaces');
             } else {
               setActiveWorkspace(ws.id);
               // Picking a workspace on the rail means "show me that workspace".

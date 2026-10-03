@@ -212,7 +212,27 @@ export default function RemotePage() {
   };
 
   return (
-    <section className="wmux-remote-page" aria-labelledby="remote-page-title" data-remote-page>
+    <section
+      className="wmux-remote-page"
+      aria-labelledby="remote-page-title"
+      data-remote-page
+      onKeyDown={(e) => {
+        // Escape returns to Workspaces, like Fleet, Schedules and Settings.
+        // Portalled dialogs bubble here through React; only keys from the
+        // page's own DOM leave it (the Schedules rule).
+        if (e.key !== 'Escape' || e.defaultPrevented || !e.currentTarget.contains(e.target as Node)) return;
+        // The palette and the notification panel float above every page and
+        // own their keys: Escape closes them first (the Settings rule).
+        const above = useStore.getState();
+        if (above.commandPaletteVisible || above.notificationPanelVisible) return;
+        // Innermost first: the open add-host dialog owns Escape, and an open
+        // remove / revoke confirmation is cancelled before the page closes.
+        if (attach) return;
+        e.preventDefault();
+        if (confirming) { setConfirming(null); return; }
+        above.setAppRoute('workspaces');
+      }}
+    >
       <header className="wmux-remote-header">
         <h1 ref={titleRef} tabIndex={-1} id="remote-page-title" className="wmux-remote-title outline-none">{t('remotePage.title')}</h1>
         {summary.length > 0 && (

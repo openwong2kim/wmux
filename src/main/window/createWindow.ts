@@ -212,12 +212,15 @@ export function createWindow(opts: { deferLoad?: boolean } = {}): BrowserWindow 
     ...platformChoice<Partial<Electron.BrowserWindowConstructorOptions>>({
       win: {
         titleBarStyle: 'hidden',
-        // bgBase (not mantle): the overlay strip sits on the titlebar's right
-        // half, which is bgBase — the renderer re-pushes the live theme's
-        // value on boot/theme-change via window:setTitleBarOverlay anyway.
+        // The overlay strip sits on the window frame, so it starts in the
+        // default (Tint) theme's frame colour, --frame-bg #121015 — the
+        // renderer re-pushes the live theme's painted frame colour on
+        // boot/theme-change via window:setTitleBarOverlay (overlayColors()).
+        // The first paint uses the same colour so the controls never sit on
+        // a different shade before the renderer paints.
         // Height 40 = uiZoom's CHROME_H at zoom 1 (the scaled resync uses it).
-        titleBarOverlay: { color: '#1A171D', symbolColor: '#C2BDC9', height: 40 },
-        backgroundColor: '#1A171D',
+        titleBarOverlay: { color: '#121015', symbolColor: '#C2BDC9', height: 40 },
+        backgroundColor: '#121015',
       },
       mac: {
         titleBarStyle: 'hidden',
@@ -236,7 +239,7 @@ export function createWindow(opts: { deferLoad?: boolean } = {}): BrowserWindow 
         backgroundColor: '#00000000',
       },
       default: {
-        // Matches the mono (default) theme's bgBase so the first paint
+        // Matches the Tint (default) theme's bgBase so the first paint
         // doesn't flash a foreign color behind the renderer.
         backgroundColor: '#1A171D',
       },

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { FleetPane, FleetRow } from '../../../stores/selectors/fleet';
 import type { ReviewQueueEntry } from '../../../stores/selectors/reviewQueue';
+import type { InboxItem } from '../../../stores/selectors/approvalInbox';
 import {
   boardAgentCount,
   boardColumnOf,
@@ -8,6 +9,7 @@ import {
   buildBoardColumns,
   foldByOwner,
   moveOnBoard,
+  rowApprovalIndex,
   visibleChips,
   type BoardGrid,
   type BoardItem,
@@ -102,5 +104,28 @@ describe('Fleet board keys', () => {
     expect(moveOnBoard(grid, 'r1', 3)).toBe('r1');
     expect(moveOnBoard(grid, 'n2', 'end')).toBe('n3');
     expect(moveOnBoard(grid, null, 'down')).toBe('n1');
+  });
+});
+
+describe('rowApprovalIndex', () => {
+  const a2a = (key: string, sender: string, receiver: string): InboxItem => ({
+    source: 'a2a', key, approvalId: key, taskId: `t-${key}`, messagePreview: 'ls', expiresAt: 0,
+    senderWorkspaceId: sender, receiverWorkspaceId: receiver, cwd: null,
+  });
+  const mcp = (key: string, isCritical: boolean): InboxItem => ({
+    source: 'mcp', key, promptId: key, clientName: 'ws-0', declaredCapabilities: ['shell'], isCritical,
+  });
+  const help: InboxItem = { source: 'browserHelp', key: 'h', requestId: 'h', prompt: 'ws-0', deadlineAt: 0 };
+
+  it('points at the first A2A request sent to or from the workspace', () => {
+    const inbox = [a2a('x', 'ws-9', 'ws-1'), a2a('y', 'ws-0', 'ws-2'), a2a('z', 'ws-3', 'ws-0')];
+    expect(rowApprovalIndex(inbox, 'ws-0')).toBe(1);
+    expect(rowApprovalIndex(inbox, 'ws-1')).toBe(0);
+    expect(rowApprovalIndex(inbox, 'ws-4')).toBe(-1);
+  });
+
+  it('never matches an MCP grant, critical or not, or a browser help request', () => {
+    expect(rowApprovalIndex([mcp('m1', true), mcp('m2', false), help], 'ws-0')).toBe(-1);
+    expect(rowApprovalIndex([mcp('m1', true), help, a2a('a', 'ws-x', 'ws-0')], 'ws-0')).toBe(2);
   });
 });

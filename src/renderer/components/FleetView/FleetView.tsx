@@ -25,7 +25,7 @@ import { onTerminalRegistered } from '../../hooks/useTerminal';
 import FleetBoardCard from './FleetBoardCard';
 import PresetPicker from '../Sidebar/PresetPicker';
 import {
-  BOARD_COLUMNS, boardAgentCount, boardLayout, buildBoardColumns, foldByOwner, moveOnBoard, visibleChips,
+  BOARD_COLUMNS, boardAgentCount, boardLayout, buildBoardColumns, foldByOwner, moveOnBoard, rowApprovalIndex, visibleChips,
   type BoardChip, type BoardColumn, type BoardGrid, type BoardGroup, type BoardItem,
 } from './fleetBoardModel';
 import { resolveTaskLink } from '../../utils/fanoutProvenance';
@@ -733,17 +733,18 @@ export default function FleetView() {
       if (tab === 'fleet' && onOptionRow && !e.ctrlKey && !e.metaKey && !e.altKey && !isEditableTarget(e.target)) {
         const row = visibleRows.find((r) => r.pane.paneId === focusedKey);
         const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
-        // a — approve the request waiting on this agent's workspace; without
-        // one, open the approvals list.
+        // a — open the Approvals tab on the request waiting on this agent's
+        // workspace (else on the list as it is). It never approves: the card
+        // does not show the request text and several may be waiting, so the
+        // user reads the row and approves it there (rowApprovalIndex).
         if (row && key === 'a') {
           e.preventDefault();
           e.stopPropagation();
-          const item = inbox.find((it) => it.source === 'a2a'
-            && (it.receiverWorkspaceId === row.pane.workspaceId || it.senderWorkspaceId === row.pane.workspaceId));
-          // A critical grant is never approved by one key: it opens the list,
-          // like Enter on the Approvals tab (only MCP grants carry the flag).
-          if (item && !(item.source === 'mcp' && item.isCritical)) resolveInboxItem(item, true);
-          else setTab('approvals');
+          const idx = rowApprovalIndex(inbox, row.pane.workspaceId);
+          if (idx >= 0) setInboxIdx(idx);
+          setTab('approvals');
+          // The focused card unmounts with the tab switch; put focus on the row.
+          requestAnimationFrame(() => { focusActiveItemRef.current(); });
           return;
         }
         if (row && !row.pane.remote && (key === 'm' || key === 's' || key === 'l' || key === 'Backspace')) {

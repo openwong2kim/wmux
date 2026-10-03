@@ -312,7 +312,11 @@ export default function CommandPalette() {
           // toolbar for remote views and then adding an unguarded keyboard
           // route would have reopened the hole from the other side.
           if (isRemoteMirrorVisible(state)) { setVisible(false); return; }
-          if (state.activeWorkspaceId) state.openFanOut(state.activeWorkspaceId, null);
+          if (state.activeWorkspaceId) {
+            state.openFanOut(state.activeWorkspaceId, null);
+            // The fan-out dialog opens over the Workspaces page.
+            showWorkspaces(useStore.getState());
+          }
           setVisible(false);
         },
       },
@@ -409,6 +413,8 @@ export default function CommandPalette() {
         icon: <IconCommand />,
         action: () => {
           openTaskDiff(task.id, activeWorkspaceId, task.title, task.owner.verifiedWorkspaceId);
+          // The diff opens in a pane, which is on the Workspaces page.
+          showWorkspaces(useStore.getState());
           setVisible(false);
         },
       });

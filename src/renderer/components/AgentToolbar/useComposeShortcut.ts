@@ -49,6 +49,11 @@ export function useComposeShortcut(): void {
       // the same early-out to every global shortcut. The pane gate checks it
       // too, so the key is not merely swallowed here.
       if (useStore.getState().inspectModeActive) return;
+      // Rich Input belongs to the active pane, which is on the Workspaces
+      // page. Behind Fleet, Schedules, Remote or Settings that pane is inert
+      // and covered, so the chord does nothing there (useKeyboard gates its
+      // pane actions the same way).
+      if (useStore.getState().appRoute !== 'workspaces') return;
       // Don't hijack the chord while the user is typing in a field that this
       // toolbar owns (Rich Input's textarea, snippet inputs). The focused
       // terminal's own xterm textarea is NOT one of those — it is the primary

@@ -70,6 +70,38 @@ describe('Remote page', () => {
     expect(container.querySelector('[data-remote-entry="phone"][data-live="true"] .wmux-remote-live')).not.toBeNull();
   });
 
+  it('Escape returns to Workspaces, after cancelling an open confirmation', async () => {
+    stub([{ deviceId: DEVICE_ID, name: 'Old laptop', kind: 'computer', createdAt: 1, lastSeenAt: 1, allowInput: false }]);
+    useStore.getState().setAppRoute('remote');
+    await render();
+    const escape = (from: Element) => act(() => {
+      from.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    });
+    const button = () => container.querySelector<HTMLButtonElement>('[data-remote-remove="computer"]')!;
+    act(() => button().click());
+    expect(button().textContent).toBe('Revoke for good?');
+    escape(button());
+    expect(button().textContent).not.toBe('Revoke for good?');
+    expect(useStore.getState().appRoute).toBe('remote');
+    escape(button());
+    expect(useStore.getState().appRoute).toBe('workspaces');
+    expect(api.web.deviceRevoke).not.toHaveBeenCalled();
+  });
+
+  it('Escape leaves the page alone while the palette or notifications are open', async () => {
+    stub([]);
+    useStore.getState().setAppRoute('remote');
+    await render();
+    const title = container.querySelector('#remote-page-title')!;
+    for (const over of [{ commandPaletteVisible: true }, { notificationPanelVisible: true }]) {
+      useStore.setState({ commandPaletteVisible: false, notificationPanelVisible: false, ...over });
+      act(() => { title.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); });
+      expect(useStore.getState().appRoute).toBe('remote');
+    }
+    useStore.setState({ commandPaletteVisible: false, notificationPanelVisible: false });
+    useStore.getState().setAppRoute('workspaces');
+  });
+
   it('revokes only on the second click', async () => {
     stub([{ deviceId: DEVICE_ID, name: 'Old laptop', kind: 'computer', createdAt: 1, lastSeenAt: 1, allowInput: false }]);
     await render();

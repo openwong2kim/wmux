@@ -67,7 +67,9 @@ const PREFIX_ERROR_DISPLAY_MS = 500;
  * rail page covers the panes (inert, still mounted), so these run only on the
  * Workspaces page: a split, a close or a pane-focus move behind Fleet or
  * Settings would change a terminal the user cannot see. Workspace switches are
- * not here — they bring the Workspaces page forward instead.
+ * not here — they bring the Workspaces page forward instead. One exception:
+ * the floating pane floats over every page, so while it is shown its toggle
+ * still runs (to hide it); opening it stays a Workspaces-page action.
  */
 export const WORKSPACES_ONLY_ACTIONS: ReadonlySet<ShortcutActionId> = new Set<ShortcutActionId>([
   'splitHorizontal', 'splitVertical', 'newSurface', 'closeSurface', 'closePane', 'closeWorkspace',
@@ -756,7 +758,8 @@ export function useKeyboard() {
       // for the PTY (Ctrl+T reaches Codex, Alt+Up reaches a TUI). A custom
       // macro on the combo still fires. (#1152, #1455)
       const resolved = resolveShortcut(e, currentShortcutBindings());
-      const action = resolved && (onWorkspaces || !WORKSPACES_ONLY_ACTIONS.has(resolved)) ? resolved : undefined;
+      const action = resolved && (onWorkspaces || !WORKSPACES_ONLY_ACTIONS.has(resolved)
+        || (resolved === 'floatingPane' && store.getState().floatingPaneVisible)) ? resolved : undefined;
       const run = action ? builtinActions[action] : undefined;
       // The mention picker claims its key only while an agent pane (or Chat
       // view) has focus — whatever key it is bound to — and only when the key

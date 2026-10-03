@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 // The Fleet page as a board: the layout follows how many agents there are
 // (none → a call to action and recent work; up to 3 → one list; 4–19 →
-// columns; 20+ → compact cards), and `a` approves the request waiting on the
-// focused agent.
+// columns; 20+ → compact cards), and `a` opens the Approvals tab on the request
+// waiting on the focused agent — it never approves anything itself.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as React from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -106,7 +106,36 @@ describe('Fleet board layout', () => {
 });
 
 describe('Fleet board keys', () => {
-  it('a approves the A2A request waiting on the focused agent, else opens the approvals list', async () => {
+  it('a opens the Approvals tab on the request waiting on the focused agent and never approves', async () => {
+    const resolve = vi.spyOn(resolveInbox, 'resolveInboxItem').mockImplementation(() => undefined);
+    const now = Date.now();
+    act(() => useStore.setState({
+      workspaces: agents(2),
+      surfaceAgentStatus: { 'pty-0': 'awaiting_input', 'pty-1': 'awaiting_input' },
+      // Two waiting requests: ws-0's is the SECOND row, so landing on it
+      // proves `a` picks the matching row, not the first one.
+      pendingExecuteApprovals: {
+        r1: { requestId: 'r1', senderWorkspaceId: 'ws-x', receiverWorkspaceId: 'ws-1', command: 'ls', createdAt: now },
+        r0: { requestId: 'r0', senderWorkspaceId: 'ws-x', receiverWorkspaceId: 'ws-0', command: 'rm -rf build', createdAt: now },
+      } as unknown as ReturnType<typeof useStore.getState>['pendingExecuteApprovals'],
+      pendingExecuteApprovalOrder: ['r1', 'r0'],
+    }));
+    await mount();
+    const card = (ws: string) => container.querySelector<HTMLButtonElement>(`[data-fleet-card][data-workspace-id="${ws}"]`)!;
+    expect(card('ws-0').querySelector('[data-fleet-chip="approval"]')).not.toBeNull();
+    act(() => card('ws-0').focus());
+    act(() => card('ws-0').dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true })));
+    await act(async () => { await new Promise<void>((r) => requestAnimationFrame(() => r())); });
+    expect(useStore.getState().fleetActiveTab).toBe('approvals');
+    const panel = container.querySelector('[data-fleet-panel="approvals"]')!;
+    expect(panel).not.toBeNull();
+    const rows = panel.querySelectorAll<HTMLElement>('[role=option]');
+    expect(rows).toHaveLength(2);
+    expect(document.activeElement).toBe(rows[1]);
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it('a on an agent with nothing waiting opens the approvals list', async () => {
     const resolve = vi.spyOn(resolveInbox, 'resolveInboxItem').mockImplementation(() => undefined);
     act(() => useStore.setState({
       workspaces: agents(2),
@@ -118,15 +147,12 @@ describe('Fleet board keys', () => {
     }));
     await mount();
     const card = (ws: string) => container.querySelector<HTMLButtonElement>(`[data-fleet-card][data-workspace-id="${ws}"]`)!;
-    expect(card('ws-0').querySelector('[data-fleet-chip="approval"]')).not.toBeNull();
     expect(card('ws-1').querySelector('[data-fleet-chip="approval"]')).toBeNull();
-    act(() => card('ws-0').focus());
-    act(() => card('ws-0').dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true })));
-    expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ source: 'a2a' }), true);
     act(() => card('ws-1').focus());
     act(() => card('ws-1').dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true })));
     expect(useStore.getState().fleetActiveTab).toBe('approvals');
     expect(container.querySelector('[data-fleet-panel="approvals"]')).not.toBeNull();
+    expect(resolve).not.toHaveBeenCalled();
   });
 
 });

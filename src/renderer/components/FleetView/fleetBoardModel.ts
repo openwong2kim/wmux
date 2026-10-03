@@ -5,6 +5,7 @@
 // splits finished panes out of "needs you" into their own column.
 import { fleetAttentionClass, type FleetRow } from '../../stores/selectors/fleet';
 import type { ReviewQueueEntry } from '../../stores/selectors/reviewQueue';
+import type { InboxItem } from '../../stores/selectors/approvalInbox';
 
 export type BoardColumn = 'needsYou' | 'running' | 'review' | 'idle';
 export const BOARD_COLUMNS: readonly BoardColumn[] = ['needsYou', 'running', 'review', 'idle'];
@@ -136,4 +137,17 @@ export function moveOnBoard(grid: BoardGrid, current: string | null, move: Board
     row = Math.min(row, grid[col].length - 1);
   }
   return grid[col][row] ?? current;
+}
+
+/**
+ * The Approvals row that `a` on a board card points at: the first A2A execute
+ * request sent to or from that card's workspace, as an index into the inbox;
+ * -1 when there is none. Only A2A requests are tied to a workspace, so an MCP
+ * grant (critical or not) or a browser help request never matches. `a` only
+ * brings that row forward — the user reads it and approves on the Approvals
+ * tab; no key on the board grants anything.
+ */
+export function rowApprovalIndex(inbox: readonly InboxItem[], workspaceId: string): number {
+  return inbox.findIndex((it) => it.source === 'a2a'
+    && (it.receiverWorkspaceId === workspaceId || it.senderWorkspaceId === workspaceId));
 }

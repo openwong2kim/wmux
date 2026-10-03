@@ -90,7 +90,7 @@ function eventForCombo(
 beforeEach(() => {
   setToolbarPopover.mockClear();
   focusedPtyId = 'pty-1';
-  state = { workspaces: [], activeWorkspaceId: 'w1', toolbarPopover: null, shortcutOverrides: {}, inspectModeActive: false, setToolbarPopover };
+  state = { workspaces: [], activeWorkspaceId: 'w1', appRoute: 'workspaces', toolbarPopover: null, shortcutOverrides: {}, inspectModeActive: false, setToolbarPopover };
   (window as unknown as { electronAPI?: unknown }).electronAPI = { platform: 'win32' };
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -203,6 +203,20 @@ describe('useComposeShortcut modifier matching (#1280)', () => {
   it('yields while inspect mode owns the keyboard', () => {
     state.inspectModeActive = true;
     press({ key: 'g', code: 'KeyG', ctrlKey: true });
+    expect(setToolbarPopover).not.toHaveBeenCalled();
+  });
+
+  it('does nothing while another rail page covers the panes', () => {
+    for (const route of ['fleet', 'schedules', 'remote', 'settings']) {
+      state.appRoute = route;
+      let prevented = true;
+      act(() => {
+        const e = new KeyboardEvent('keydown', { key: 'g', code: 'KeyG', ctrlKey: true, bubbles: true, cancelable: true });
+        mountTerminal('pty-1', true).dispatchEvent(e);
+        prevented = e.defaultPrevented;
+      });
+      expect(prevented).toBe(false);
+    }
     expect(setToolbarPopover).not.toHaveBeenCalled();
   });
 
