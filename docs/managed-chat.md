@@ -242,8 +242,9 @@ terminal. The daemon starts the agent process (a *driver*), streams its replies,
 tool calls, subagent work, approvals and questions, and keeps the folded
 conversation. The wire contract and its rules are in `src/shared/chatv2/ipc.ts`
 (limits in `limits.ts`); the daemon side is `src/daemon/chat/v2/`. The daemon
-runs Claude Code this way and a paired phone can read and approve; the desktop
-view that starts and shows these conversations comes later. Parts of the event model and fold are adapted from
+runs Claude Code this way: the desktop Chat view starts and shows these
+conversations, a paired phone can read and approve, and a conversation can move
+to the pane's terminal. Parts of the event model and fold are adapted from
 MIT-licensed code; each such file names its source in a header, and the license
 is in `THIRD_PARTY_NOTICES`.
 
@@ -264,10 +265,12 @@ is in `THIRD_PARTY_NOTICES`.
   offered in cmd.exe or WSL panes. A handed-off record no longer sends.
   Terminal → chat is not offered: without proof that the TUI process has exited,
   both could append to the same conversation file.
-- A new chat runs in the pane's current directory, as the shell last reported
-  it (shell integration / OSC 7), or in the directory the pane started in when
-  that is unknown or no longer exists. The empty chat says where it will run,
-  and a started chat shows its directory next to the composer.
+- A new chat runs in the shell's verified working directory: the directory the
+  pane reports (shell integration / OSC 7) when it is the same directory the
+  operating system reports for the pane's shell. When the two differ, when
+  either cannot be read, and on Windows, it runs in the directory the pane
+  started in. The empty chat says where it will run, and a started chat shows
+  its directory next to the composer.
 
 ### Events, snapshots and seq
 
@@ -307,13 +310,16 @@ approval card. The daemon's `WMUX_CHATV2_SETTING_SOURCES` (a comma list of
 
 ### Environment and accounts
 
-The driver env is built like a scheduled run's: agent-nesting markers removed,
-the pane's account directory applied, then `WMUX_PTY_ID` set to the anchor pane
-and `WMUX_GATE=0` so the PreToolUse gate does not show a second card for the same
-request. `CLAUDE_EFFORT` is dropped too, so the effort the chat shows is the one
-it runs with. Provider settings exported only in your shell profile (for example
-`CLAUDE_CODE_USE_BEDROCK` or `ANTHROPIC_BASE_URL`) are not inherited; put them in
-the `env` block of the agent's `settings.json` instead. Images are copied into a
+The driver gets the environment the pane was started with, which is the one
+wmux itself was launched with, so credentials and endpoints in it (the pane's
+account directory, `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_USE_BEDROCK`, …) apply as
+they do to a `claude` typed in the pane. wmux internals and agent-nesting markers
+are removed, the login shell's `PATH` is used, `WMUX_PTY_ID` is set to the anchor
+pane and `WMUX_GATE=0` so the PreToolUse gate does not show a second card for the
+same request. `CLAUDE_EFFORT` is dropped too, so the effort the chat shows is the
+one it runs with. Variables your shell profile exports after the pane starts are
+not in that environment when wmux is opened from the Dock or Finder; put such
+provider settings in the `env` block of the agent's `settings.json`. Images are copied into a
 staging folder in the wmux data directory before they are sent.
 
 ### Restore

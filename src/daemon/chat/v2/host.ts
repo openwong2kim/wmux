@@ -33,6 +33,7 @@ import { CHAT_IMAGE_EXTENSIONS, CHAT_IMAGE_MAX_BYTES } from '../../../shared/tra
 import type { DecisionForm, NativeDecisionOutcome, NativeDecisionRef, NativeDecisionReply } from '../../approvals/types';
 import { ClaudeDriver } from './claude/claudeDriver';
 import { CLAUDE_SETTING_SOURCES, CLAUDE_SETTING_SOURCES_PATTERN } from './claude/claudeProtocol';
+import { driverCwd } from './cwd';
 import { buildDriverEnv, DriverEnvError } from './env';
 import { boundEvent, EventBatcher } from './eventBatcher';
 import { claimChatV2Pane, releaseChatV2Pane } from './paneClaims';
@@ -56,25 +57,6 @@ import {
  * allow rules do not answer the permission prompts it exercises.
  */
 export const CHATV2_SETTING_SOURCES_ENV = 'WMUX_CHATV2_SETTING_SOURCES';
-
-/**
- * Where a new driver runs: the pane's current directory (shell integration /
- * OSC 7) when it names an existing directory, else the directory the pane was
- * spawned in. The pane is idle when a chat starts (the single-writer check),
- * so the current value is the shell's own last report; the chat shows the
- * directory before and after it starts. An owner decision for chat v2;
- * `spawnCwd` stays the root for the diff route. Synchronous: `create`
- * reserves the pane before its first await.
- */
-export function driverCwd(meta: { cwd?: string; spawnCwd?: string }): string | undefined {
-  const live = meta.cwd;
-  if (live && path.isAbsolute(live)) {
-    try {
-      if (fs.statSync(live).isDirectory()) return live;
-    } catch { /* gone: fall back */ }
-  }
-  return meta.spawnCwd || undefined;
-}
 
 /** The built-in drivers. */
 export function defaultChatV2Drivers(env: NodeJS.ProcessEnv = process.env): ChatV2DriverFactory {
@@ -419,7 +401,10 @@ class Host implements ChatV2Host {
     const pane = this.deps.sessionManager.getSession(p.paneId);
     if (!pane) return chatV2Error('pane-not-found', 'That pane is gone.');
     if (this.byPane.has(p.paneId)) return chatV2Error('already-exists', 'This pane already has a chat.');
-    const cwd = driverCwd(pane.meta);
+    const cwd = await (this.deps.driverCwd ?? driverCwd)(pane.meta);
+    // Checked again after the await: the pane may have closed, or another create won.
+    if (!this.deps.sessionManager.getSession(p.paneId)) return chatV2Error('pane-not-found', 'That pane is gone.');
+    if (this.byPane.has(p.paneId)) return chatV2Error('already-exists', 'This pane already has a chat.');
     if (!cwd) return chatV2Error('pane-not-found', 'The pane has no known working directory.');
     // The RPC layer validated it; the argv rule is checked again where it is used.
     if (p.model !== undefined && !CHATV2_MODEL.test(p.model)) return chatV2Error('invalid-params', 'Invalid model.');
@@ -442,7 +427,7 @@ class Host implements ChatV2Host {
       savedAt: this.deps.now(),
     };
     const live = this.newLive(record);
-    // Reserved before the first await, so a second create for the pane is refused.
+    // Reserved before the driver starts, so a second create for the pane is refused.
     this.byPane.set(p.paneId, live);
     const started = await this.startDriver(live);
     const saved = started.ok && await this.persistNow(live);

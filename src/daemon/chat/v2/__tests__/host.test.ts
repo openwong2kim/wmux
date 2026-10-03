@@ -49,7 +49,7 @@ interface Rig {
 
 const PANE_ENV = { PATH: '/usr/bin', WMUX_WORKSPACE_ID: 'ws-1', CLAUDECODE: '1', WMUX_AUTH_TOKEN: 'x' };
 
-function rig(options: { registry?: boolean; nativeOn?: boolean; paneEnv?: Record<string, string>; stubborn?: boolean; paneCwd?: string } = {}): Rig {
+function rig(options: { registry?: boolean; nativeOn?: boolean; paneEnv?: Record<string, string>; stubborn?: boolean; paneCwd?: string; driverCwd?: ChatV2HostDeps['driverCwd'] } = {}): Rig {
   const r = {
     fakes: [] as FakeClaude[],
     pushes: [] as Rig['pushes'],
@@ -104,6 +104,7 @@ function rig(options: { registry?: boolean; nativeOn?: boolean; paneEnv?: Record
     dropClient: (clientId) => r.dropped.push(clientId),
     processIdentity: async () => r.identity.value,
     killTree: async (pid) => { r.killed.push(pid); },
+    ...(options.driverCwd ? { driverCwd: options.driverCwd } : {}),
     drivers: () => {
       const fake = new FakeClaude();
       fake.stubborn = options.stubborn ?? false;
@@ -394,23 +395,21 @@ describe('chat v2 host', () => {
     await reloaded.host.dispose();
   });
 
-  it('runs the driver in the pane\'s current directory, falling back to where the pane started', async () => {
+  it('runs the driver where the cwd resolver says, and in the spawn directory without the resolver\'s confirmation', async () => {
     const live = fs.mkdtempSync(path.join(os.tmpdir(), 'chatv2-cwd-'));
-    const r = rig({ paneCwd: live });
+    const seen: Array<{ cwd?: string; spawnCwd?: string }> = [];
+    const r = rig({ paneCwd: live, driverCwd: async (meta) => { seen.push(meta); return live; } });
     await created(r);
+    expect(seen[0]).toMatchObject({ cwd: live });
     expect(r.fake().cwd).toBe(live);
     expect(r.host.sessionForPane(PANE)?.cwd).toBe(live);
     await r.host.call('close', { paneId: PANE, chatSessionId: r.host.bindingForPane(PANE)!.chatSessionId }, 'main');
     await r.host.dispose();
-    for (const paneCwd of ['', 'relative/dir', path.join(live, 'gone')]) {
-      const fallback = rig({ paneCwd });
-      const binding = await created(fallback);
-      expect(fallback.fake().cwd).not.toBe(paneCwd);
-      expect(fallback.fake().cwd).not.toBe(live);
-      expect(fallback.host.sessionForPane(PANE)?.cwd).toBe(fallback.fake().cwd);
-      await fallback.host.call('close', { paneId: PANE, chatSessionId: binding.chatSessionId }, 'main');
-      await fallback.host.dispose();
-    }
+    // The default resolver: a reported directory with no shell pid to check it against is not used.
+    const fallback = rig({ paneCwd: live });
+    await created(fallback);
+    expect(fallback.fake().cwd).not.toBe(live);
+    await fallback.host.dispose();
   });
 
   it('runs the driver with the pane credentials and endpoint, without nesting markers, on the login PATH', async () => {
