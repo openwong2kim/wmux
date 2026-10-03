@@ -5278,6 +5278,8 @@ export class WebTerminalServer {
    * can move it with three bytes of terminal output and aim this route at the
    * whole home directory. A record with no `spawnCwd` leaves the uploads
    * directory as the only root; with neither there is nothing to serve.
+   * Outside the roots, the one path served is a file the pane's agent sent
+   * with `SendUserFile` — see `sentFileTarget`.
    *
    * Everything a caller could use to map the disk answers 404 `image not
    * found` — outside the boundary, missing, a directory, unreadable. A 403 for
@@ -5468,6 +5470,7 @@ export class WebTerminalServer {
    * NOT `meta.cwd` (OSC 7 lets any process in the pane move that one), both
    * sides are realpath'd, containment is `path.relative` and never a string
    * prefix, and ONE handle carries the request from the gate to the last byte.
+   * The `SendUserFile` addition (`sentFileTarget`) applies here as there.
    *
    * Two things differ from the image route, both forced by the size this one
    * accepts:
