@@ -13,6 +13,7 @@ import type { WebDeviceSummary, WebTerminalInfo } from '../../../shared/web';
 import type { RemoteHostPublic, RemoteHostStatus } from '../../../shared/remoteHosts';
 import type { LanLinkPeerSummary } from '../../../shared/lanlink';
 import { buildRemoteEntries, serverReach, type RemoteEntry, type ServerReach } from './remoteEntries';
+import { selectRemoteInbox } from '../../stores/selectors/remoteInbox';
 
 /** How often the page re-reads the roster, the hosts and the server state. */
 export const REMOTE_PAGE_POLL_MS = 10_000;
@@ -42,6 +43,17 @@ interface ActivityItem {
  */
 export default function RemotePage() {
   const t = useT();
+  // Focus moves to the page title on open, so keyboard users start on this
+  // page and never in the panes it covers.
+  const titleRef = useRef<HTMLHeadingElement>(null);
+  useEffect(() => { titleRef.current?.focus(); }, []);
+  // LAN messages wait in Fleet's inbox; this page opens it too.
+  const lanMessages = useStore((s) => selectRemoteInbox({ remoteItems: s.remoteItems, remoteItemOrder: s.remoteItemOrder }).length);
+  const openLanInbox = () => {
+    const s = useStore.getState();
+    s.setAppRoute('fleet');
+    s.setFleetActiveTab('remote');
+  };
   const [info, setInfo] = useState<WebTerminalInfo | null>(null);
   const [devices, setDevices] = useState<WebDeviceSummary[] | null>(null);
   const [devicesError, setDevicesError] = useState(false);
@@ -202,12 +214,17 @@ export default function RemotePage() {
   return (
     <section className="wmux-remote-page" aria-labelledby="remote-page-title" data-remote-page>
       <header className="wmux-remote-header">
-        <h1 id="remote-page-title" className="wmux-remote-title">{t('remotePage.title')}</h1>
+        <h1 ref={titleRef} tabIndex={-1} id="remote-page-title" className="wmux-remote-title outline-none">{t('remotePage.title')}</h1>
         {summary.length > 0 && (
           <p className="wmux-remote-summary" data-remote-summary>
             {onlineDevices > 0 && <span className="wmux-remote-live" aria-hidden="true" />}
             {summary.join(' · ')}
           </p>
+        )}
+        {lanMessages > 0 && (
+          <Button variant="secondary" size="sm" className="self-start" onClick={openLanInbox} data-remote-lan-inbox>
+            {t('fleetBoard.lan', { count: lanMessages })}
+          </Button>
         )}
       </header>
       {devicesError && <p className="ui-note px-1" role="status">{t('web.devicesUnavailable')}</p>}

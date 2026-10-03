@@ -75,6 +75,23 @@ describe('Fleet board layout', () => {
     expect(container.querySelector('input[type=search]')).toBeNull();
   });
 
+  it('with no agents still offers the way into waiting approvals', async () => {
+    act(() => useStore.setState({
+      workspaces: agents(2),
+      pendingExecuteApprovals: {
+        r1: { requestId: 'r1', senderWorkspaceId: 'ws-x', receiverWorkspaceId: 'ws-0', command: 'ls', createdAt: Date.now() },
+      } as unknown as ReturnType<typeof useStore.getState>['pendingExecuteApprovals'],
+      pendingExecuteApprovalOrder: ['r1'],
+    }));
+    await mount();
+    expect(layout()).toBe('empty');
+    const stat = container.querySelector<HTMLButtonElement>('[data-fleet-stat="approvals"]')!;
+    expect(stat).not.toBeNull();
+    expect(container.querySelector('[data-fleet-stat="idle"]')).toBeNull();
+    act(() => stat.click());
+    expect(container.querySelector('[data-fleet-panel="approvals"]')).not.toBeNull();
+  });
+
   it('is one list up to three agents, columns from four, and compact cards from twenty', async () => {
     act(() => useStore.setState({ workspaces: agents(3), surfaceAgent: agentIdentities(3) }));
     await mount();

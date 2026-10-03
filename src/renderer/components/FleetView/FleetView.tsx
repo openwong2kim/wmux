@@ -740,7 +740,9 @@ export default function FleetView() {
           e.stopPropagation();
           const item = inbox.find((it) => it.source === 'a2a'
             && (it.receiverWorkspaceId === row.pane.workspaceId || it.senderWorkspaceId === row.pane.workspaceId));
-          if (item) resolveInboxItem(item, true);
+          // A critical grant is never approved by one key: it opens the list,
+          // like Enter on the Approvals tab (only MCP grants carry the flag).
+          if (item && !(item.source === 'mcp' && item.isCritical)) resolveInboxItem(item, true);
           else setTab('approvals');
           return;
         }
@@ -864,6 +866,9 @@ export default function FleetView() {
     { id: 'next', text: nextRun !== null ? t('fleetBoard.nextSchedule', { time: formatNextShort(nextRun, now) }) : '' },
     { id: 'phones', count: phones },
   ]);
+  // With no agents the board is a call to action, but waiting approvals and
+  // LAN messages still need their way in.
+  const stripChips = layout === 'empty' ? chips.filter((c) => c.id === 'approvals' || c.id === 'lan') : chips;
   const chipLabel = (chip: BoardChip): string => {
     if (chip.text) return chip.text;
     if (chip.id === 'approvals') return t('fleetBoard.approvals', { count: chip.count ?? 0 });
@@ -1046,9 +1051,9 @@ export default function FleetView() {
         )}
       </div>
 
-      {chips.length > 0 && layout !== 'empty' && (
+      {stripChips.length > 0 && (
         <div className="wmux-board-strip" data-fleet-summary>
-          {chips.map((chip) => {
+          {stripChips.map((chip) => {
             const opens = chip.id === 'approvals' ? 'approvals' : chip.id === 'lan' ? 'remote' : null;
             const body = (
               <>
