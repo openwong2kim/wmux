@@ -9,7 +9,7 @@ import PresetPicker from '../Sidebar/PresetPicker';
 import { SIDEBAR_COMPACT_WIDTH } from '../../utils/sidebarLayout';
 
 /**
- * Bridge redesign — custom 40px titlebar (DESIGN.md "Window Chrome").
+ * Bridge redesign — custom 40px titlebar (DESIGN.md "Titlebar").
  *
  * Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/TitleBar.tsx), MIT License, Copyright (c) 2026 Nick
  *

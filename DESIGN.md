@@ -94,7 +94,7 @@ in the terminal whatever the chrome accent.
 
 ```
 ┌ frame ─ titlebar 40px ───────────────────────────────────────────────┐
-│ [traffic lights][workspace]   ( Search & commands ⌘K )  [vitals][▣][⚙]│
+│ [lights][wmux    +]           ( Search & commands ⌘K )  [vitals][▣][⚙]│
 ├──┬───────────────────────────────────────────────────────────────────┤
 │  │╭ sheet ────────────────────────────────────────────────────────╮ │
 │r │ sidebar   │ pane tab strip                       │ tools dock    │ │
@@ -135,9 +135,11 @@ in the terminal whatever the chrome accent.
 40px (`TITLEBAR_HEIGHT`, shared with main's `titleBarOverlay`). The whole
 bar is a drag region; each interactive child opts out with `no-drag`.
 
-- **Left:** on macOS an 80px reserve for the traffic lights (centred in the
-  40px row), then the current workspace label. In a fan-out task workspace a
-  muted `↰ <owner>` link follows the name.
+- **Left:** a segment tinted `--bg-mantle` and width-matched to the rail
+  and sidebar below it, so the top-left reads as one panel: on macOS an 80px
+  reserve for the traffic lights (centred in the 40px row, dropped in native
+  fullscreen), the `wmux` wordmark, and a `+` that opens the new-workspace
+  preset picker. A collapsed sidebar shrinks it to the rail's width.
 - **Centre: the search pill.** A small filled pill, "Search & commands" with
   the palette shortcut, centred in the drag gap. It opens the command palette
   over whatever page is shown; it is not a page. Only the pill opts out of
@@ -324,8 +326,8 @@ always neutral (the fill ladder).
 - **Icons** cap at 16px in chrome (19px on the rail); wmux's own icon set
   (`icons.tsx`), never emoji.
 - **Density:** the chrome module is **40px** (titlebar, pane header, dock
-  header, resume row, section headers). Sidebar rows are a single ~30px
-  line (the selected row keeps its git line); controls are 24–28px tall;
+  header, resume row, section headers). Sidebar rows are a title over one
+  13px meta line; controls are 24–28px tall;
   every interactive element keeps a hit area of at least 24×24px. Base unit
   4px.
 - **Radii:** 6px controls (or the look's `--chip-radius` for chips and
@@ -712,8 +714,8 @@ page stays mounted, full size and inert underneath. It is an attention board
   waiting on the agent; m, s, l, Backspace, d, p and j as before. A jump to a
   pane returns to the Workspaces page and hands it focus.
 
-**Ready to review (2026-09-25).** Between Needs you and Running, a fourth
-section lists fan-out TASKS, not panes: one row per task whose record is open
+**Ready to review (2026-09-25; a board column after Running since
+2026-10-03).** It lists fan-out TASKS, not panes: one row per task whose record is open
 and not detached and whose every agent pane reports complete (the sidebar's
 close-finished rule; idle never counts). It is a section, not a tab: Fleet is
 one roving list, and a finished task belongs in the same glance as what needs

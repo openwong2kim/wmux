@@ -12,7 +12,7 @@ import { FOCUS_RING } from '../focusRing';
  */
 
 /**
- * One 40px cell — the chrome module (DESIGN.md "Spacing & Geometry").
+ * One 40px cell — the chrome module (DESIGN.md "Typography and density").
  * Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/TitleBar.tsx), MIT License, Copyright (c) 2026 Nick
  */
 export const DECK_ICON_BUTTON =

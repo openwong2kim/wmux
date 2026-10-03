@@ -25,7 +25,7 @@ export const AGENT_STATUS_ICON: Record<AgentStatus, {
    */
   mark: StatusMark;
 }> = {
-  // Mono status vocabulary (DESIGN.md G1): one accent, for "needs you"; running
+  // Mono status vocabulary (DESIGN.md Colour grammar): one accent, for "needs you"; running
   // and complete are muted (--text-sub), red is for errors only, idle draws
   // nothing. DeckFleet.dotColor keeps its own copy of this mapping.
   running:        { dot: '●', className: 'text-[var(--text-sub)]',      labelKey: 'workspace.agentRunning',       dotVar: 'var(--text-sub)',        glowClass: 'sidebar-dot-running', shape: 'dot', mark: 'dot' },

@@ -19,13 +19,13 @@ const BTN_PRIMARY_WARM =
   'rounded-md font-semibold bg-[var(--primary-fill)] text-[var(--primary-ink)] hover:bg-[color-mix(in_srgb,var(--primary-fill)_90%,transparent)] transition-colors';
 const BTN_DANGER_TINTED =
   'rounded-md border transition-colors bg-[color-mix(in_srgb,var(--accent-red)_15%,transparent)] border-[color-mix(in_srgb,var(--accent-red)_32%,transparent)] text-[color-mix(in_srgb,var(--accent-red)_70%,var(--text-main))] hover:bg-[color-mix(in_srgb,var(--accent-red)_22%,transparent)]';
-// Hairline neutral secondary (DESIGN.md G5). Cancelling a help request
+// Hairline neutral secondary (DESIGN.md Component Rules). Cancelling a help request
 // abandons one step, not the flow, so it is NOT the destructive treatment the
 // approval rows' Deny wears.
 const BTN_SECONDARY_RAISED =
   'rounded-md border transition-colors bg-transparent border-[var(--line)] text-[color-mix(in_srgb,var(--text-main)_70%,transparent)] hover:bg-[var(--line)] hover:text-[var(--text-main)]';
 
-// Approval card (DESIGN.md G7): a request that waits on you is a content-20%
+// Approval card (DESIGN.md Colour grammar): a request that waits on you is a content-20%
 // card with a dashed content-30% border; keyboard focus swaps in the accent
 // ring. Red stays for critical grants and errors.
 const APPROVAL_FILL = 'color-mix(in srgb, var(--text-main) 20%, transparent)';

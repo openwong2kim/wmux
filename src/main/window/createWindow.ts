@@ -191,7 +191,7 @@ export function createWindow(opts: { deferLoad?: boolean } = {}): BrowserWindow 
     icon: app.isPackaged
       ? path.join(process.resourcesPath, iconFile)
       : path.join(__dirname, '../../assets', iconFile),
-    // Bridge redesign chrome (DESIGN.md "Window Chrome"). The default-frame +
+    // Bridge redesign chrome (DESIGN.md "Window: frame and sheet"). The default-frame +
     // visible File/Edit menu strip was the #1 "web page in an OS window"
     // offender. The renderer draws a 40px custom titlebar (Titlebar.tsx);
     // the OS keeps drawing its own window controls:
