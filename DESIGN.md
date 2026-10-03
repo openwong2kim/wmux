@@ -46,9 +46,12 @@ for a session that never chose a theme; a saved choice is always kept.
 | Paper | light | `#5B5BD6` | Figtree | 7px | fill (`#E4E4EA`) | fill | no |
 | Amber Line | dark, warm | `#E8A33D` | Geist | 6px | 2px accent left bar | fill + 2px accent underline | no |
 
-The earlier themes (Mono, Mono Light, Amber, Catppuccin, Stars & Stripes,
-Red Dynasty, Nightowl, Void, Monochrome, Hinomaru, Taegeuk) and Custom stay
-selectable and keep their own look; they take the `:root` knob defaults.
+Two neutral themes ship beside them, Mono and Mono Light (zero-saturation
+greys, one blue accent). The other themes (Amber, Catppuccin, Stars &
+Stripes, Red Dynasty, Nightowl, Void, Monochrome, Hinomaru, Taegeuk) and
+Custom stay selectable with their own colours and take the `:root` knob
+defaults; the frame, sheet, type, dialog and icon rules below apply to every
+theme.
 Geist, IBM Plex Sans and Figtree are bundled (`src/renderer/assets/fonts`,
 SIL OFL 1.1, listed in `THIRD_PARTY_NOTICES`) so a look never falls back to
 another face.
@@ -61,8 +64,8 @@ another face.
 | `bgMantle` | `--bg-mantle` | the sidebar column inside the sheet |
 | `bgSurface` | `--bg-surface` | the look's fill for raised controls |
 | `textMain` / `textSub` / `textMuted` | `--text-main` / `--text-sub` / `--text-muted` | titles and body · secondary lines · metadata, idle, disabled |
-| `accent` | `--accent` (`--accent-cursor`, `--accent-blue`) | selection marks, focus, links, the running column, "needs you" in the sidebar |
-| `success` / `danger` / `warning` | `--accent-green` / `--accent-red` / `--accent-yellow` | done, added lines · errors, removed lines · waits on you (Fleet), caution |
+| `accent` | `--accent` (`--accent-cursor`, `--accent-blue`) | selection marks, focus, links, the running column |
+| `success` / `danger` / `warning` | `--accent-green` / `--accent-red` / `--accent-yellow` | done, added lines · errors, removed lines · waits on you (everywhere), caution |
 
 **Fill ladder** (theme-independent, `globals.css`): fills, hovers, selection
 and hairlines are the theme's text colour mixed into transparent, so every
@@ -170,7 +173,8 @@ navigates through it.
   · Fleet · Schedules · Remote. Settings is a page too, opened from the
   titlebar gear. The sidebar toggle sits at the rail's foot.
 - **Rail item:** a 19px icon on a 40px square. The current page is a soft
-  `--selection` square (plus the look's `--select-ring`); hover is
+  `--selection` square (plus the look's `--select-ring`) marked
+  `aria-current="page"`; hover is
   `--hover-fill`; Fleet's needs-you count is a small number badge on the
   icon's corner. Every button is named, and the arrow keys move between
   them.
@@ -291,15 +295,18 @@ always neutral (the fill ladder).
 
 - **Sidebar and pane marks** — shape first, colour second, one shared helper
   (`AGENT_STATUS_ICON.mark`): running = filled muted dot · needs input =
-  `--accent` ring · error = red ✕ (SVG) · complete = muted check ·
+  `--accent-yellow` ring · error = red ✕ (SVG) · complete = muted check ·
   unconfirmed = hollow `--accent` ring · usage-limit hold = muted clock ·
   idle = no mark. Selection is never painted as a status.
+- **Needs you is `--accent-yellow` everywhere** — the sidebar ring, its
+  labels and counts, the rail badge and Fleet's Needs you column — so one
+  state never wears two colours (and a white-accent look still reads it).
 - **Fleet board** — a card's dot takes its column's colour (see Fleet page).
 - **Diff counts** are green `+N` / red `−M`; red is otherwise reserved for
   errors and destructive actions.
 - **The accent** marks selection edges and underlines (per the look's
-  knobs), focus rings, links, the running column, and "needs you" in the
-  sidebar. It is never an area fill; the one solid fill per surface is the
+  knobs), focus rings, links and the running column. It is never an area
+  fill; the one solid fill per surface is the
   primary button (`--primary-fill`, white on dark looks, ink on Paper, the
   accent on Graphite and Amber Line).
 - **No washes.** A row that needs you is a content-20% fill with a dashed
