@@ -2,10 +2,31 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { deletePhoneBranch, phoneWorktreeDir, removePhoneWorktree } from '../PhoneWorktreeRemoval';
 import { windowsDirectoryHold, type DirectoryHold } from '../../../shared/directoryHold';
+
+/**
+ * A process whose current directory is `cwd`, once it reports that it is
+ * running (its `ready` line); rejects if it ends first.
+ */
+async function startHolder(cwd: string): Promise<ChildProcess> {
+  const holder = spawn(process.execPath, ['-e', "process.stdout.write('ready\\n'); setInterval(() => {}, 1000)"], {
+    cwd,
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  await new Promise<void>((resolve, reject) => {
+    let out = '';
+    holder.stdout!.on('data', (chunk: Buffer) => {
+      out += chunk.toString();
+      if (out.includes('ready')) resolve();
+    });
+    holder.once('error', reject);
+    holder.once('exit', (code, signal) => reject(new Error(`the holder ended before it was ready (${code ?? signal})`)));
+  });
+  return holder;
+}
 
 const HASH = 'abc123def456';
 let base: string;
@@ -79,24 +100,26 @@ describe('removing a phone worktree from the desktop cleanup list', { timeout: 3
       expect(fs.readFileSync(path.join(dir, 'src', 'kept.txt'), 'utf8')).toBe('kept');
       expect(git(repo, 'worktree', 'list', '--porcelain')).toContain('phone-held');
     };
-    // A new process holds its current directory a moment after it starts, and
-    // lets go a moment after it exits: wait for Windows to say so each time.
-    const holding = (hold: DirectoryHold) =>
-      vi.waitFor(async () => expect(await windowsDirectoryHold(dir)).toBe(hold), { timeout: 10_000, interval: 50 });
+    // The holder says when it runs, and is checked to still be running while
+    // Windows is asked; Windows lets go a moment after it exits: wait for that.
+    const holding = (hold: DirectoryHold, holder?: ChildProcess) =>
+      vi.waitFor(async () => {
+        if (holder) expect(holder.exitCode, 'the holder exited').toBeNull();
+        expect(await windowsDirectoryHold(dir)).toBe(hold);
+      }, { timeout: 10_000, interval: 50 });
     for (const [cwd, hold, answer] of [
       [dir, 'in-use', { ok: false, reason: 'in-use' }],
       [path.join(dir, 'src'), 'refused', { ok: false, reason: 'held' }],
     ] as const) {
-      const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { cwd, stdio: 'ignore' });
+      const holder = await startHolder(cwd);
       try {
-        await once(holder, 'spawn');
-        await holding(hold);
+        await holding(hold, holder);
         expect(await removePhoneWorktree(dir, false, deps)).toEqual(answer);
         expect(await removePhoneWorktree(dir, true, deps)).toEqual(answer);
         intact();
       } finally {
         holder.kill();
-        await once(holder, 'exit');
+        if (holder.exitCode === null && holder.signalCode === null) await once(holder, 'exit');
       }
       await holding('free');
     }
