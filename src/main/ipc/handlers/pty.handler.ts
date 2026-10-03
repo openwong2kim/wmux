@@ -18,7 +18,7 @@ import { resolveSpawnEnv } from '../../pty/resolveSpawnEnv';
 import { withFreshWindowsPath } from '../../../shared/windowsPathEnv';
 import { getAccountStore, VENDOR_ENV_KEYS } from '../../account/accountStore';
 import { getAccountRotationService } from '../../account/AccountRotationService';
-import { envSetsKey, heldLaunchNotice, isNewSessionLaunch, launchInlineEnvKeys, launchStem } from '../../../shared/accountQuota';
+import { envSetsKey, heldLaunchNotice, isCompoundLine, isNewSessionLaunch, launchInlineEnvKeys, launchStem } from '../../../shared/accountQuota';
 import { resolveEnvPolicy, type SpawnKind } from '../../../shared/spawnKind';
 import { withheldCredentialNames } from '../../../shared/envFilter';
 import { getShellUtf8Locale } from '../../pty/shellLocale';
@@ -180,6 +180,11 @@ async function withAccountQuota(options: PtyCreateOptions | undefined): Promise<
     const decision = await getAccountRotationService().prepareLaunch(stem, options.workspaceId);
     if (decision.kind === 'switch') return { ...options, env: { ...options.env, ...decision.env } };
     if (decision.kind === 'hold') {
+      // Holding replaces the whole line; never drop commands chained after the launch.
+      if (isCompoundLine(options.initialCommand)) {
+        console.warn(`[account-rotation] ${stem} accounts are all out of quota, but the launch line runs other commands too: launching unchanged`);
+        return options;
+      }
       console.warn(`[account-rotation] ${stem} launch held: every registered ${stem} account is out of quota`);
       return { ...options, initialCommand: heldLaunchNotice(stem, decision.availableAtMs) };
     }

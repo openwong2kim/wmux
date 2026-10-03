@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { chooseByQuota, envSetsKey, evaluateQuota, heldLaunchNotice, isNewSessionLaunch, launchInlineEnvKeys, launchStem, UNKNOWN_RESET_BLOCK_MS } from '../accountQuota';
+import { chooseByQuota, envSetsKey, evaluateQuota, heldLaunchNotice, isCompoundLine, isNewSessionLaunch, launchInlineEnvKeys, launchStem, UNKNOWN_RESET_BLOCK_MS } from '../accountQuota';
 
 const NOW = Date.parse('2026-10-02T12:00:00Z');
 const LATER = NOW + 3 * 3600_000;
@@ -102,4 +102,11 @@ describe('isNewSessionLaunch', () => {
   ] as const)('%s: %s → %s', (vendor, line, expected) => {
     expect(isNewSessionLaunch(vendor, line)).toBe(expected);
   });
+});
+
+it('isCompoundLine sees chaining outside quotes only', () => {
+  expect(isCompoundLine('claude && npm test')).toBe(true);
+  expect(isCompoundLine('codex; echo done')).toBe(true);
+  expect(isCompoundLine('claude | tee log')).toBe(true);
+  expect(isCompoundLine('claude "a && b; c | d"')).toBe(false);
 });

@@ -141,6 +141,12 @@ export function isNewSessionLaunch(vendor: 'claude' | 'codex', command: string |
   return !args.some((t) => !/["']/.test(t) && NON_SESSION_ARGS[vendor].has(t.split('=')[0]));
 }
 
+/** Whether the line runs more than one command (`;`, `&&`, `||`, `|`, `&`
+ *  outside quotes), so replacing it would drop the rest. */
+export function isCompoundLine(command: string | undefined): boolean {
+  return /[;&|]/.test((command ?? '').replace(/"[^"]*"|'[^']*'/g, ''));
+}
+
 /** Whether `env` sets `key` (non-empty). Windows env names are case-insensitive. */
 export function envSetsKey(env: Record<string, string> | undefined, key: string, platform: string): boolean {
   if (!env) return false;
