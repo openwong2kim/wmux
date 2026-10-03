@@ -47,6 +47,10 @@ export interface MockHost extends ChatV2BridgeApi {
   /** Full values `bodies` serves, by `<blockId>:<field>`, paged by `bodyPageChars`. */
   fullBodies: Map<string, string>;
   bodyPageChars: number;
+  /** What `bindingForPane` says a new chat would run in. */
+  nextCwd?: string;
+  /** Fail the next `bodies` call at or past this offset (once). */
+  failBodiesAt?: number;
 }
 
 let epochCounter = 0;
@@ -152,7 +156,8 @@ export function createMockHost(options: MockHostOptions = {}): MockHost {
       return { ok: true, binding: { ...records.get(params.paneId)!.binding } };
     },
     async bindingForPane(params) {
-      return { ok: true, binding: records.get(params.paneId)?.binding ?? null };
+      const binding = records.get(params.paneId)?.binding ?? null;
+      return { ok: true, binding, ...(!binding && host.nextCwd ? { cwd: host.nextCwd } : {}) };
     },
     async subscribe(params) {
       subscribedPanes.add(params.paneId);
@@ -224,6 +229,10 @@ export function createMockHost(options: MockHostOptions = {}): MockHost {
       const full = host.fullBodies.get(`${params.blockId}:${params.field}`);
       if (full === undefined) return chatV2Error('body-gone', 'The full output is no longer kept.');
       const offset = params.offset ?? 0;
+      if (host.failBodiesAt !== undefined && offset >= host.failBodiesAt) {
+        host.failBodiesAt = undefined;
+        return chatV2Error('stale-epoch', 'Reload the conversation.');
+      }
       const page = full.slice(offset, offset + host.bodyPageChars);
       const next = offset + page.length;
       return { ok: true, text: page, ...(next < full.length ? { nextOffset: next } : {}) };

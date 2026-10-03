@@ -120,11 +120,13 @@ describe('ChatV2View', () => {
   });
 
   it('shows New chat on a free pane and never touches a PTY or creates a chat by itself', async () => {
-    await act(async () => root.render(<ChatV2View paneId="daemon-free" active cwd="/work/repo" onTerminal={() => undefined} />));
+    mock.nextCwd = '/verified/repo';
+    // The pane's own report is only a cue to ask again; the daemon's answer is shown.
+    await act(async () => root.render(<ChatV2View paneId="daemon-free" active cwd="/reported/elsewhere" onTerminal={() => undefined} />));
     await flush();
     expect(host.querySelector('[data-chatv2="empty"]')?.textContent).toContain('New chat');
-    expect(host.querySelector('[data-chatv2-runs-in]')?.textContent).toBe('Runs in /work/repo');
-    expect(mock.calls.map((call) => call.method)).toEqual(['subscribe']);
+    expect(host.querySelector('[data-chatv2-runs-in]')?.textContent).toBe('Runs in /verified/repo');
+    expect(mock.calls.map((call) => call.method).sort()).toEqual(['bindingForPane', 'subscribe']);
     expect(ptyCalls).toEqual([]);
   });
 
@@ -213,6 +215,39 @@ describe('ChatV2View', () => {
     await flush();
     expect(host.querySelector('.wmux-chatv2-assistant')?.textContent).toBe(full);
     expect(host.querySelector('[data-truncated]')).toBeNull();
+  });
+
+  it('says a read stopped part way and finishes it on Retry', async () => {
+    await mock.call('subscribe', { paneId: 'daemon-partial' });
+    await mock.call('create', { paneId: 'daemon-partial', agent: 'claude', mode: 'default' });
+    await act(async () => root.render(<ChatV2View paneId="daemon-partial" active onTerminal={() => undefined} />));
+    await flush();
+    const full = 'q'.repeat(33 * 1024) + 'END';
+    await act(async () => {
+      mock.emit('daemon-partial', [
+        { type: 'user.message', text: 'long', clientMessageId: 'c-00000001' },
+        { type: 'message.delta', text: full },
+        { type: 'turn.ended', outcome: 'completed' },
+      ]);
+    });
+    const blockId = host.querySelector('.wmux-chatv2-assistant')!.getAttribute('data-block-id')!;
+    mock.fullBodies.set(`${blockId}:text`, full);
+    mock.failBodiesAt = 2048;
+    await act(async () => { (host.querySelector('[data-truncated]') as HTMLButtonElement).click(); });
+    await flush();
+    const assistant = () => host.querySelector('.wmux-chatv2-assistant')!;
+    expect(assistant().textContent).toContain('Only part of the text loaded.');
+    expect(assistant().querySelector('[data-truncated]')?.textContent).toBe('Retry');
+    await act(async () => { (assistant().querySelector('[data-truncated]') as HTMLButtonElement).click(); });
+    await flush();
+    expect(assistant().textContent).toBe(full);
+  });
+
+  it('says where a chat would run without naming a path the daemon did not give', async () => {
+    mock.nextCwd = undefined;
+    await act(async () => root.render(<ChatV2View paneId="daemon-nocwd" active cwd="/reported" onTerminal={() => undefined} />));
+    await flush();
+    expect(host.querySelector('[data-chatv2-runs-in]')?.textContent).toBe('Runs in the shell\u2019s working directory, or where this pane started.');
   });
 
   it('shows a handed-off chat read-only', async () => {

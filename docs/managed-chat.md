@@ -266,10 +266,10 @@ is in `THIRD_PARTY_NOTICES`.
   Terminal → chat is not offered: without proof that the TUI process has exited,
   both could append to the same conversation file.
 - A new chat runs in the shell's verified working directory: the directory the
-  pane reports (shell integration / OSC 7) when it is the same directory the
-  operating system reports for the pane's shell. When the two differ, when
-  either cannot be read, and on Windows, it runs in the directory the pane
-  started in. The empty chat says where it will run, and a started chat shows
+  operating system reports for the pane's shell process, as its real path.
+  When it cannot be read, and on Windows, the chat runs in the directory the
+  pane started in. That path is also the one a restarted driver uses. The empty
+  chat asks the daemon where a chat would run and says so; a started chat shows
   its directory next to the composer.
 
 ### Events, snapshots and seq
@@ -316,8 +316,9 @@ account directory, `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_USE_BEDROCK`, …) apply a
 they do to a `claude` typed in the pane. wmux internals and agent-nesting markers
 are removed, the login shell's `PATH` is used, `WMUX_PTY_ID` is set to the anchor
 pane and `WMUX_GATE=0` so the PreToolUse gate does not show a second card for the
-same request. `CLAUDE_EFFORT` is dropped too, so the effort the chat shows is the
-one it runs with. Variables your shell profile exports after the pane starts are
+same request. `CLAUDE_CODE_EFFORT_LEVEL` (Claude Code's effort setting) and
+`CLAUDE_EFFORT` (the effort a running Claude Code passes to its hooks) are
+dropped too, so the effort the chat shows is the one it runs with. Variables your shell profile exports after the pane starts are
 not in that environment when wmux is opened from the Dock or Finder; put such
 provider settings in the `env` block of the agent's `settings.json`. Images are copied into a
 staging folder in the wmux data directory before they are sent.

@@ -8,11 +8,12 @@ import type { FormAnswers } from '../../../shared/chatv2/questions';
 import { ApprovalCard, QuestionCard } from './Cards';
 import { formatClockTime, formatWorkingDuration } from './format';
 import type { ToolState, TranscriptRow } from './rows';
+import type { BodyRead } from './controller';
 import { S } from './strings';
 
 export interface TranscriptActions {
   answer(requestId: string, decision: 'allow' | 'deny', answers?: FormAnswers): Promise<boolean>;
-  body(blockId: string, field: 'text' | 'detail' | 'output'): Promise<string | null>;
+  body(blockId: string, field: 'text' | 'detail' | 'output', offset?: number): Promise<BodyRead | null>;
 }
 
 const GLYPH: Record<ToolState, string> = { running: '●', done: '✓', failed: '✕' };
@@ -41,37 +42,58 @@ function PreviewBody({ preview }: { preview: ToolPreview }) {
   return preview.output ? <pre className="wmux-chatv2-pre">{preview.output}</pre> : null;
 }
 
-/** The part a byte cap cut, fetched on request (`bodies`). undefined = not asked, null = no longer kept. */
+/**
+ * The part a byte cap cut, fetched on request (`bodies`). `text` undefined =
+ * not asked, null = no longer kept. A partial read keeps what it has and offers
+ * to continue (`stopped`).
+ */
 function useFullBody(block: Block, field: 'text' | 'detail' | 'output', actions: TranscriptActions) {
-  const [text, setText] = useState<string | null | undefined>(undefined);
+  const [read, setRead] = useState<BodyRead | null | undefined>(undefined);
   const [loading, setLoading] = useState(false);
   const load = () => {
     if (loading) return;
     setLoading(true);
-    void actions.body(block.id, field).then(setText).finally(() => setLoading(false));
+    const from = read?.stopped ? read.nextOffset ?? 0 : 0;
+    const before = read?.stopped ? read.text : '';
+    void actions.body(block.id, field, from).then((next) => {
+      if (next) setRead({ ...next, text: before + next.text });
+      else if (before) setRead({ text: before, nextOffset: from, stopped: 'error' });
+      else setRead(null);
+    }).finally(() => setLoading(false));
   };
-  return { text, load, loading };
+  return { read, load, loading };
+}
+
+/** Continue or retry a partial read, or say the value is gone. */
+function BodyMore({ read, loading, load, first }: { read: BodyRead | null | undefined; loading: boolean; load: () => void; first: string }) {
+  if (read === null) return <span className="wmux-chatv2-meta">{S.bodyGone}</span>;
+  if (read && !read.stopped) return null;
+  const label = loading ? S.loadingFull : !read ? first : read.stopped === 'limit' ? S.showRest : S.retry;
+  return (
+    <span className="wmux-chatv2-body-more">
+      {read?.stopped === 'error' && <span className="wmux-chatv2-meta" role="status">{S.partialLoaded}</span>}
+      <button type="button" className="wmux-chatv2-link" data-truncated disabled={loading} onClick={load}>{label}</button>
+    </span>
+  );
 }
 
 function FullBody({ block, field, actions }: { block: Block; field: 'detail' | 'output'; actions: TranscriptActions }) {
-  const { text, load, loading } = useFullBody(block, field, actions);
-  if (typeof text === 'string') return <pre className="wmux-chatv2-pre">{text}</pre>;
-  if (text === null) return <span className="wmux-chatv2-meta">{S.bodyGone}</span>;
-  return <button type="button" className="wmux-chatv2-link" disabled={loading} onClick={load}>{loading ? S.loadingFull : S.showMore}</button>;
+  const { read, load, loading } = useFullBody(block, field, actions);
+  return (
+    <>
+      {read && <pre className="wmux-chatv2-pre">{read.text}</pre>}
+      <BodyMore read={read} loading={loading} load={load} first={S.showMore} />
+    </>
+  );
 }
 
 /** Block prose, with the cut tail offered on request when the fold capped it. */
 function CappedText({ block, actions, render }: { block: Block; actions: TranscriptActions; render: (text: string) => React.ReactNode }) {
-  const { text, load, loading } = useFullBody(block, 'text', actions);
-  const full = typeof text === 'string' ? text : null;
+  const { read, load, loading } = useFullBody(block, 'text', actions);
   return (
     <>
-      {render(full ?? block.text)}
-      {block.overflow?.text && full === null && (
-        text === null
-          ? <span className="wmux-chatv2-meta">{S.bodyGone}</span>
-          : <button type="button" className="wmux-chatv2-link" data-truncated disabled={loading} onClick={load}>{loading ? S.loadingFull : S.showFullText}</button>
-      )}
+      {render(read ? read.text : block.text)}
+      {block.overflow?.text && <BodyMore read={read} loading={loading} load={load} first={S.showFullText} />}
     </>
   );
 }

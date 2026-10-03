@@ -369,7 +369,14 @@ class Host implements ChatV2Host {
 
   private readonly handlers: { [M in ChatV2Method]: (params: ChatV2ParamsByMethod[M], clientId: string) => Promise<Result<M>> } = {
     create: (p) => this.create(p),
-    bindingForPane: async (p) => ({ ok: true, binding: this.bindingForPane(p.paneId) }),
+    bindingForPane: async (p) => {
+      const binding = this.bindingForPane(p.paneId);
+      if (binding) return { ok: true, binding };
+      // No chat yet: say where a new one would run.
+      const pane = this.deps.sessionManager.getSession(p.paneId);
+      const cwd = pane ? await (this.deps.driverCwd ?? driverCwd)(pane.meta) : undefined;
+      return { ok: true, binding: null, ...(cwd ? { cwd } : {}) };
+    },
     snapshot: async (p) => this.snapshot(p),
     history: async (p) => this.history(p),
     subscribe: async (p, clientId) => {
@@ -401,9 +408,14 @@ class Host implements ChatV2Host {
     const pane = this.deps.sessionManager.getSession(p.paneId);
     if (!pane) return chatV2Error('pane-not-found', 'That pane is gone.');
     if (this.byPane.has(p.paneId)) return chatV2Error('already-exists', 'This pane already has a chat.');
-    const cwd = await (this.deps.driverCwd ?? driverCwd)(pane.meta);
-    // Checked again after the await: the pane may have closed, or another create won.
-    if (!this.deps.sessionManager.getSession(p.paneId)) return chatV2Error('pane-not-found', 'That pane is gone.');
+    const meta = pane.meta;
+    const cwd = await (this.deps.driverCwd ?? driverCwd)(meta);
+    // Checked again after the await: the pane may have closed (or been replaced
+    // under the same id, so compare the session itself), or another create won.
+    const again = this.deps.sessionManager.getSession(p.paneId);
+    if (!again || again !== pane || again.meta.incarnationId !== meta.incarnationId) {
+      return chatV2Error('pane-not-found', 'That pane is gone.');
+    }
     if (this.byPane.has(p.paneId)) return chatV2Error('already-exists', 'This pane already has a chat.');
     if (!cwd) return chatV2Error('pane-not-found', 'The pane has no known working directory.');
     // The RPC layer validated it; the argv rule is checked again where it is used.

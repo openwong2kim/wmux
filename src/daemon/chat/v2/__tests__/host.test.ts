@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChatV2EventsPush } from '../../../../shared/chatv2/ipc';
 import { ApprovalRegistry } from '../../../approvals/ApprovalRegistry';
@@ -26,6 +27,8 @@ afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
 
 interface Rig {
   host: ChatV2Host;
+  /** The pane is closed and a new one opened under the same id. */
+  replacePane: () => void;
   registry: ApprovalRegistry | null;
   fakes: FakeClaude[];
   pushes: Array<{ clientId: string; push: ChatV2EventsPush }>;
@@ -49,7 +52,7 @@ interface Rig {
 
 const PANE_ENV = { PATH: '/usr/bin', WMUX_WORKSPACE_ID: 'ws-1', CLAUDECODE: '1', WMUX_AUTH_TOKEN: 'x' };
 
-function rig(options: { registry?: boolean; nativeOn?: boolean; paneEnv?: Record<string, string>; stubborn?: boolean; paneCwd?: string; driverCwd?: ChatV2HostDeps['driverCwd'] } = {}): Rig {
+function rig(options: { registry?: boolean; nativeOn?: boolean; paneEnv?: Record<string, string>; stubborn?: boolean; paneCwd?: string; panePid?: number; driverCwd?: ChatV2HostDeps['driverCwd'] } = {}): Rig {
   const r = {
     fakes: [] as FakeClaude[],
     pushes: [] as Rig['pushes'],
@@ -75,19 +78,29 @@ function rig(options: { registry?: boolean; nativeOn?: boolean; paneEnv?: Record
     answerNative: (native, reply, sessionId) => host!.answerNative(native, reply, sessionId),
     phoneDecisions: () => ({ native: options.nativeOn ?? true, stepwise: true }),
   });
+  let incarnation = 0;
+  const makePane = () => ({
+    // An explicit shell: the resume command's grammar follows it, not the test host's platform.
+    meta: {
+      spawnCwd: dir,
+      incarnationId: `inc-${++incarnation}`,
+      ...(options.paneCwd !== undefined ? { cwd: options.paneCwd } : {}),
+      ...(options.panePid !== undefined ? { pid: options.panePid } : {}),
+      env: options.paneEnv ?? PANE_ENV,
+      cmd: '/bin/zsh',
+    },
+    promptLog: { size: 1, isCommandRunning: () => false },
+    bridge: { isEmptyShellPrompt: () => r.prompt.revision !== null, getInputRevision: () => r.prompt.revision ?? 0 },
+  });
+  let paneSession = makePane();
+  r.replacePane = () => { paneSession = makePane(); };
   const deps: ChatV2HostDeps = {
     wmuxDir: dir,
     log: () => undefined,
     now: () => r.clock.now,
     sessionManager: {
-      getSession: ((id: string) => (id === PANE
-        ? {
-            // An explicit shell: the resume command's grammar follows it, not the test host's platform.
-            meta: { spawnCwd: dir, ...(options.paneCwd !== undefined ? { cwd: options.paneCwd } : {}), env: options.paneEnv ?? PANE_ENV, cmd: '/bin/zsh' },
-            promptLog: { size: 1, isCommandRunning: () => false },
-            bridge: { isEmptyShellPrompt: () => r.prompt.revision !== null, getInputRevision: () => r.prompt.revision ?? 0 },
-          }
-        : undefined)) as unknown as ChatV2HostDeps['sessionManager']['getSession'],
+      // One stable session object per pane, as the session manager keeps them.
+      getSession: ((id: string) => (id === PANE ? paneSession : undefined)) as unknown as ChatV2HostDeps['sessionManager']['getSession'],
     },
     approvals: () => r.registry,
     paneFree: async () => {
@@ -395,21 +408,41 @@ describe('chat v2 host', () => {
     await reloaded.host.dispose();
   });
 
-  it('runs the driver where the cwd resolver says, and in the spawn directory without the resolver\'s confirmation', async () => {
-    const live = fs.mkdtempSync(path.join(os.tmpdir(), 'chatv2-cwd-'));
-    const seen: Array<{ cwd?: string; spawnCwd?: string }> = [];
-    const r = rig({ paneCwd: live, driverCwd: async (meta) => { seen.push(meta); return live; } });
-    await created(r);
-    expect(seen[0]).toMatchObject({ cwd: live });
-    expect(r.fake().cwd).toBe(live);
-    expect(r.host.sessionForPane(PANE)?.cwd).toBe(live);
-    await r.host.call('close', { paneId: PANE, chatSessionId: r.host.bindingForPane(PANE)!.chatSessionId }, 'main');
-    await r.host.dispose();
-    // The default resolver: a reported directory with no shell pid to check it against is not used.
-    const fallback = rig({ paneCwd: live });
+  it.runIf(process.platform === 'darwin' || process.platform === 'linux')('runs the driver in the shell\'s real working directory, and where the pane started when it cannot be read', async () => {
+    const work = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'chatv2-cwd-')));
+    const shell = spawn('sleep', ['30'], { cwd: work, stdio: 'ignore' });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      // The reported directory is ignored: the shell process's own directory decides.
+      const r = rig({ panePid: shell.pid!, paneCwd: '/elsewhere' });
+      expect(await r.host.call('bindingForPane', { paneId: PANE }, 'main')).toMatchObject({ ok: true, binding: null, cwd: work });
+      await created(r);
+      expect(r.fake().cwd).toBe(work);
+      expect(r.host.sessionForPane(PANE)?.cwd).toBe(work);
+      await r.host.call('close', { paneId: PANE, chatSessionId: r.host.bindingForPane(PANE)!.chatSessionId }, 'main');
+      await r.host.dispose();
+    } finally {
+      shell.kill();
+    }
+    const gone = spawn('true');
+    await new Promise((resolve) => gone.on('exit', resolve));
+    const fallback = rig({ panePid: gone.pid!, paneCwd: work });
     await created(fallback);
-    expect(fallback.fake().cwd).not.toBe(live);
+    expect(fallback.fake().cwd).not.toBe(work);
+    expect(fallback.host.sessionForPane(PANE)?.cwd).toBe(fallback.fake().cwd);
     await fallback.host.dispose();
+  });
+
+  it('refuses a create whose pane was replaced while its directory was looked up', async () => {
+    let release!: () => void;
+    const r = rig({ driverCwd: () => new Promise((resolve) => { release = () => resolve('/work'); }) });
+    const pending = r.host.call('create', { paneId: PANE, agent: 'claude', mode: 'default' }, 'main');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    r.replacePane();
+    release();
+    expect(await pending).toMatchObject({ ok: false, error: { code: 'pane-not-found' } });
+    expect(r.fakes).toHaveLength(0);
+    await r.host.dispose();
   });
 
   it('runs the driver with the pane credentials and endpoint, without nesting markers, on the login PATH', async () => {
@@ -423,12 +456,13 @@ describe('chat v2 host', () => {
       CLAUDE_CODE_ENTRYPOINT: 'cli',
       AI_AGENT: 'claude',
       CLAUDE_EFFORT: 'max',
+      CLAUDE_CODE_EFFORT_LEVEL: 'low',
       ANTHROPIC_CUSTOM_MODEL_OPTION: 'my-model',
     } });
     await created(r);
     const env = r.fake().env;
     expect(env).toMatchObject({ ANTHROPIC_API_KEY: 'sk-test', ANTHROPIC_BASE_URL: 'https://gateway.example', CLAUDE_CODE_USE_BEDROCK: '1', ANTHROPIC_CUSTOM_MODEL_OPTION: 'my-model' });
-    for (const key of ['CLAUDECODE', 'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_ENTRYPOINT', 'AI_AGENT', 'WMUX_AUTH_TOKEN', 'CLAUDE_EFFORT']) {
+    for (const key of ['CLAUDECODE', 'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_ENTRYPOINT', 'AI_AGENT', 'WMUX_AUTH_TOKEN', 'CLAUDE_EFFORT', 'CLAUDE_CODE_EFFORT_LEVEL']) {
       expect(env[key]).toBeUndefined();
     }
     expect(env.PATH).toBe('/usr/bin:/opt/login/bin');

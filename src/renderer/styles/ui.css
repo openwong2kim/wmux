@@ -557,6 +557,7 @@
 .wmux-chatv2-link { color: var(--text-sub); font-size: 12px; text-decoration: underline; text-underline-offset: 2px; }
 .wmux-chatv2-link:hover { color: var(--accent-blue); }
 .wmux-chatv2-earlier { align-self: center; margin-bottom: 6px; }
+.wmux-chatv2-body-more { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
 .wmux-chatv2-dock { display: flex; flex-direction: column; gap: 6px; width: 100%; max-width: 46rem; margin: 0 auto; padding: 0 16px 12px; }
 .wmux-chatv2-composer { display: flex; flex-direction: column; gap: 4px; padding: 6px 6px 6px 10px; border: 1px solid var(--border-soft); border-radius: 12px; background: var(--bg-mantle); transition: border-color 150ms; }
 .wmux-chatv2-composer:focus-within { border-color: var(--accent-blue); }

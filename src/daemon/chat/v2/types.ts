@@ -202,7 +202,7 @@ export interface ChatV2HostDeps {
   /** Defaults to the built-in drivers. Tests pass fakes. */
   drivers?: ChatV2DriverFactory;
   /** Where a new driver runs (default: `driverCwd` in cwd.ts). Tests pass fakes. */
-  driverCwd?: (meta: { cwd?: string; spawnCwd?: string; pid?: number }) => Promise<string | undefined>;
+  driverCwd?: (meta: { spawnCwd?: string; pid?: number }) => Promise<string | undefined>;
   /**
    * Whether a pid exists, for the handoff's exit proof: `gone` only on proof
    * (ESRCH). Defaults to signal 0. Tests pass fakes.

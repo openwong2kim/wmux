@@ -31,11 +31,14 @@ const NESTING_MARKERS = new Set([
   'CLAUDE_CODE_CHILD_SESSION',
   'CLAUDE_CODE_EXECPATH',
   'CLAUDE_CODE_SANDBOXED',
-  // Not a nesting marker, but it overrides the effort the chat presents as its
-  // own ("Default effort") without the chat knowing. Model-picker extras such
-  // as ANTHROPIC_CUSTOM_MODEL_OPTION* are user shell config a `claude` typed in
-  // the pane also sees; they only affect the interactive picker, so they stay.
+  // What a running claude exports to its hooks and Bash (claude 2.1.288).
   'CLAUDE_EFFORT',
+  // claude's effort input: it would override the effort the chat presents as
+  // its own ("Default effort") without the chat knowing. Model-picker extras
+  // such as ANTHROPIC_CUSTOM_MODEL_OPTION* are user shell config a `claude`
+  // typed in the pane also sees; they only affect the interactive picker, so
+  // they stay.
+  'CLAUDE_CODE_EFFORT_LEVEL',
 ]);
 const NESTING_MARKER_PREFIXES = ['CLAUDE_CODE_SESSION_', 'CLAUDE_CODE_MESSAGING_', 'CLAUDE_AGENT_SDK_'];
 

@@ -17,6 +17,16 @@ import { applyPushToView, prependHistory, RESNAPSHOT, stateFromSnapshot, type Ch
 
 export type ChatV2Phase = 'loading' | 'empty' | 'ready' | 'unavailable';
 
+/** How much of one capped value the view holds at once before it asks to continue. */
+export const BODY_RENDER_MAX_CHARS = 2 * 1024 * 1024;
+
+/** A read of a capped value. `stopped`: partial (`limit` = enough for now, `error` = a page failed); continue at `nextOffset`. */
+export interface BodyRead {
+  text: string;
+  nextOffset?: number;
+  stopped?: 'limit' | 'error';
+}
+
 export interface ChatV2ControllerState {
   phase: ChatV2Phase;
   view: ChatV2ViewState | null;
@@ -292,12 +302,17 @@ export class ChatV2Controller {
     return true;
   }
 
-  /** The full value a cap cut, read page by page (`nextOffset`). Null when it is no longer kept. */
-  async body(blockId: string, field: 'text' | 'detail' | 'output'): Promise<string | null> {
+  /**
+   * The part of a capped value from `offset` on, read page by page
+   * (`nextOffset`) until it is complete, a page fails, or `maxChars` were read.
+   * Null when nothing could be read. A result with `stopped` is partial and
+   * continues from its `nextOffset`.
+   */
+  async body(blockId: string, field: 'text' | 'detail' | 'output', offset = 0, maxChars = BODY_RENDER_MAX_CHARS): Promise<BodyRead | null> {
     const view = this.state.view;
     if (!view) return null;
     const parts: string[] = [];
-    let offset = 0;
+    let read = 0;
     for (;;) {
       const result = await this.bridge.call('bodies', {
         paneId: this.paneId,
@@ -308,13 +323,15 @@ export class ChatV2Controller {
         ...(offset ? { offset } : {}),
       });
       if (this.disposed) return null;
-      if (!result.ok) return parts.length ? parts.join('') : null;
+      if (!result.ok) return parts.length ? { text: parts.join(''), nextOffset: offset, stopped: 'error' } : null;
       parts.push(result.text);
+      read += result.text.length;
       // A page that does not move forward would loop forever: stop there.
-      if (result.nextOffset === undefined || result.nextOffset <= offset) break;
+      if (result.nextOffset === undefined || result.nextOffset <= offset) return { text: parts.join('') };
       offset = result.nextOffset;
+      if (read >= maxChars) return { text: parts.join(''), nextOffset: offset, stopped: 'limit' };
     }
-    return parts.join('');
   }
+
 
 }

@@ -410,8 +410,12 @@ export interface ChatV2ParamsByMethod {
 
 export interface ChatV2ResultByMethod {
   create: ChatV2Result<{ binding: ChatV2Binding }>;
-  /** `binding: null` = the pane has no chat-v2 record. */
-  bindingForPane: ChatV2Result<{ binding: ChatV2Binding | null }>;
+  /**
+   * `binding: null` = the pane has no chat-v2 record; `cwd` is then the
+   * directory a chat created now would run in (the shell's verified working
+   * directory, else where the pane started), when the host knows it.
+   */
+  bindingForPane: ChatV2Result<{ binding: ChatV2Binding | null; cwd?: string }>;
   snapshot: ChatV2Result<{ snapshot: ChatV2Snapshot }>;
   history: ChatV2Result<{ page: ChatV2HistoryPage }>;
   /** Per socket; a subscriber gets every push for the pane. `binding: null` = no record yet. */

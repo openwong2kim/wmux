@@ -160,9 +160,34 @@ describe('ChatV2Controller snapshot/push race', () => {
     host.fullBodies.set('7.1:text', full);
     const controller = new ChatV2Controller(host, PANE);
     await controller.start();
-    expect(await controller.body('7.1', 'text')).toBe(full);
+    expect(await controller.body('7.1', 'text')).toEqual({ text: full });
     expect(host.calls.filter((call) => call.method === 'bodies').map((call) => (call.params as { offset?: number }).offset ?? 0)).toEqual([0, 1024, 2048]);
     expect(await controller.body('9.9', 'text')).toBeNull();
+    controller.dispose();
+  });
+
+  it('marks a read that a later page failed as partial, and continues it from there', async () => {
+    const host = await seeded();
+    const full = 'a'.repeat(1024) + 'b'.repeat(1024) + 'c'.repeat(10);
+    host.fullBodies.set('7.1:text', full);
+    host.failBodiesAt = 1024;
+    const controller = new ChatV2Controller(host, PANE);
+    await controller.start();
+    const first = await controller.body('7.1', 'text');
+    expect(first).toEqual({ text: 'a'.repeat(1024), nextOffset: 1024, stopped: 'error' });
+    expect(await controller.body('7.1', 'text', first!.nextOffset)).toEqual({ text: full.slice(1024) });
+    controller.dispose();
+  });
+
+  it('stops at the render limit and continues where it stopped', async () => {
+    const host = await seeded();
+    const full = 'z'.repeat(3000);
+    host.fullBodies.set('7.1:text', full);
+    const controller = new ChatV2Controller(host, PANE);
+    await controller.start();
+    const first = await controller.body('7.1', 'text', 0, 1500);
+    expect(first).toEqual({ text: full.slice(0, 2048), nextOffset: 2048, stopped: 'limit' });
+    expect(await controller.body('7.1', 'text', 2048, 1500)).toEqual({ text: full.slice(2048) });
     controller.dispose();
   });
 });
