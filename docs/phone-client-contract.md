@@ -3909,6 +3909,9 @@ nothing itself.
 
 ### Chat v2 records (driver-owned conversations)
 
+**Not served yet.** No daemon runs chat v2 drivers today, so no pane reads
+this way. The rules below are what a phone gets once one does.
+
 A pane can hold a chat-v2 conversation: the daemon runs the agent itself
 through its structured protocol, and the pane's shell stays idle as its anchor
 (see `docs/managed-chat.md`). On the phone such a pane is **read + approve
@@ -3928,8 +3931,12 @@ only**, and every rule above for a `managed` binding applies:
   `truncatedHead:true` means older rows exist that the phone cannot page to.
   Tool bodies are inline heads of at most 4 KiB with `truncated:true` when
   cut; these rows have no `srcOffset`, so `/turns/block` cannot open them.
+  When the daemon itself cut a body, `bytes` counts only the part it kept (a
+  lower bound).
 - A pending tool permission or question is `chat.blocked`
-  `{by:"approval", approvalId}`. Answer it through `/api/approvals` exactly as
+  `{by:"approval", approvalId}`, and its opening and closing are
+  `chat.blocked` / `chat.unblocked` events (`agent:"claude"`) under the same
+  rules as above. Answer it through `/api/approvals` exactly as
   any other native decision (`POST /api/approvals/<id>` for the v1 Yes/No
   projection, `POST /api/approvals/<id>/answer` with `decision-v2`). The first
   answer from any device or the desktop wins. A transcript row
@@ -3942,10 +3949,14 @@ only**, and every rule above for a `managed` binding applies:
 - `POST …/chat/cancel` interrupts the running turn. `capabilities.cancel` and
   `chat.turn` (`id` = the turn's user row id) are shown only to a caller that
   sent `chat-cancel`, as on a terminal binding. Answers follow the cancel table:
-  202 `interrupt-requested`, 409 `turn-not-running` `{turn}`,
-  `session-changed`, `cancel-id-conflict`, 500 `cancel-failed`
-  (`effect:"uncertain"`). A retry with the same `clientCancelId` replays while
-  the daemon runs; these receipts are not persisted.
+  202 `interrupt-requested` with `cancel` progress, 409 `turn-not-running`
+  `{turn}`, `session-changed`, `turn-already-interrupted`, `cancel-id-conflict`,
+  `cancel-cooldown` (the same id is still in flight), 507
+  `message-history-full`, 500 `cancel-failed` (`effect:"uncertain"`). The
+  receipt (`GET …/chat/cancel/<clientCancelId>`) and SSE `chat.cancel` follow
+  the cancel outcome rules; `ended` comes with `evidence:"native"` (the
+  conversation recorded how the turn ended). These receipts live in memory for
+  the id's 24 h lifetime: after a daemon restart a receipt reads `none`.
 - A `transcript.nudge` fires when the conversation changes.
 - When the conversation is handed to the terminal from the desktop, the pane
   reads as an ordinary terminal binding again (the agent's TUI resumed the

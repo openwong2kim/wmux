@@ -348,6 +348,18 @@ export interface ChatV2SessionParams {
   chatSessionId: string;
 }
 
+/**
+ * Both guards are optional and checked by the host in the same step that
+ * writes the interrupt: `epoch` other than the record's is `stale-epoch`;
+ * `turnId` other than the open turn's user block id answers
+ * `interrupted: false`.
+ */
+export interface ChatV2InterruptParams extends ChatV2SessionParams {
+  epoch?: string;
+  /** The user block id that opened the turn the caller means to stop. */
+  turnId?: string;
+}
+
 export interface ChatV2HistoryParams extends ChatV2SessionParams {
   epoch: string;
   /** Return the blocks before this block, newest last. */
@@ -389,7 +401,7 @@ export interface ChatV2ParamsByMethod {
   subscribe: ChatV2PaneParams;
   unsubscribe: ChatV2PaneParams;
   send: ChatV2SendParams;
-  interrupt: ChatV2SessionParams;
+  interrupt: ChatV2InterruptParams;
   answer: ChatV2AnswerParams;
   bodies: ChatV2BodiesParams;
   toTerminal: ChatV2SessionParams;
@@ -492,8 +504,17 @@ export function parseChatV2Params<M extends ChatV2Method>(method: M, value: unkn
     case 'unsubscribe':
       parsed = { paneId };
       break;
-    case 'snapshot':
     case 'interrupt':
+      if (!session) return null;
+      if (o.epoch !== undefined && !matches(o.epoch, CHATV2_EPOCH)) return null;
+      if (o.turnId !== undefined && !matches(o.turnId, CHATV2_BLOCK_ID)) return null;
+      parsed = {
+        ...session,
+        ...(o.epoch !== undefined ? { epoch: o.epoch } : {}),
+        ...(o.turnId !== undefined ? { turnId: o.turnId } : {}),
+      };
+      break;
+    case 'snapshot':
     case 'toTerminal':
     case 'close':
       parsed = session;

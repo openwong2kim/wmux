@@ -2,11 +2,13 @@ import {
   CHAT_LAUNCH_MAX_UNITS,
   CHAT_MESSAGE_RETENTION_MS,
   OPENCODE_MAX_SEND_BYTES,
+  chatIdTime,
   checkChatId,
   fileHistoryEpoch,
   type ChatBlocked,
   type ChatCancelOutcome,
   type ChatCancelTag,
+  type ChatOwner,
   type ChatDequeueResult,
   type ChatQueueItemView,
   type ChatLaunchOutcome,
@@ -27,6 +29,8 @@ import { chatV2HistoryEpoch, type ChatV2Binding, type ChatV2Status } from '../..
 import { truncateUtf8, utf8Bytes } from '../../shared/chatv2/limits';
 import { HARNESS_TITLE, type Block, type Session, type ToolPreview, type TurnOutcome } from '../../shared/chatv2/session';
 import type { ChatV2Host } from '../chat/v2/types';
+import type { ChatCancelEvent } from '../chat/chatCancelObserver';
+import { CHAT_CANCEL_OBSERVE_MS, type ChatCancelEndedAs, type ChatCancelProgress } from '../../shared/phoneChatCancelOutcome';
 
 /**
  * Wire mapping for the phone chat routes (contract §5.2, §6.2, §6.4). Pure, so
@@ -487,9 +491,13 @@ function oneLine(text: string, max: number): string {
   return line.length > max ? `${line.slice(0, max - 1)}…` : line;
 }
 
-function toolBody(text: string): ToolBody {
+/**
+ * `cut`: the fold already capped this value (`Block.overflow`), so `inline` is
+ * a head and `bytes` counts only what the fold kept (a lower bound).
+ */
+function toolBody(text: string, cut = false): ToolBody {
   const bytes = utf8Bytes(text);
-  if (bytes <= CHATV2_INLINE_BODY_BYTES) return { n: 1, bytes, inline: text };
+  if (bytes <= CHATV2_INLINE_BODY_BYTES) return { n: 1, bytes, inline: text, ...(cut ? { truncated: true } : {}) };
   return { n: 1, bytes, inline: truncateUtf8(text, CHATV2_INLINE_BODY_BYTES), truncated: true };
 }
 
@@ -559,7 +567,7 @@ function projectToolBlock(block: Block): TurnEvent[] {
   const summary = preview?.path ?? preview?.query ?? (tool?.detail ? tool.detail : '');
   const rows: TurnEvent[] = [{
     id: block.id, kind: 'tool_use', toolUseId, name: oneLine(name, 120), argSummary: oneLine(summary, 120),
-    ...(tool?.detail ? { input: toolBody(tool.detail) } : {}),
+    ...(tool?.detail ? { input: toolBody(tool.detail, block.overflow?.detail === true) } : {}),
   }];
   const run = block.agentRun;
   if (run) {
@@ -576,7 +584,7 @@ function projectToolBlock(block: Block): TurnEvent[] {
     rows.push({
       id: `${block.id}:result`, kind: 'tool_result', toolUseId, ok: !TOOL_FAILED.has(status),
       bytes: output ? utf8Bytes(output) : 0,
-      ...(output ? { output: toolBody(output) } : {}),
+      ...(output ? { output: toolBody(output, block.overflow?.output === true) } : {}),
     });
   }
   return rows;
@@ -691,83 +699,229 @@ export function chatV2LaunchResponse(clientLaunchId: string): WireResponse {
   return launchResponse({ ok: false, error: 'launch-not-ready', reason: 'agent-running', effect: 'none' }, clientLaunchId);
 }
 
-/** Owner-bound cancel receipts for v2 records, memory only and bounded: a replay, never a second interrupt. */
-export class ChatV2CancelReceipts {
-  private readonly entries = new Map<string, { fingerprint: string; outcome: ChatCancelOutcome }>();
-  constructor(private readonly max = 256) {}
+/** A turn's settled outcome, as a cancel progress reports it. */
+const ENDED_AS: Record<TurnOutcome, ChatCancelEndedAs> = {
+  completed: 'completed',
+  interrupted: 'interrupted',
+  failed: 'failed',
+  'usage-limited': 'failed',
+};
 
-  get(key: string): { fingerprint: string; outcome: ChatCancelOutcome } | undefined {
-    return this.entries.get(key);
-  }
-
-  set(key: string, fingerprint: string, outcome: ChatCancelOutcome): void {
-    this.entries.delete(key);
-    this.entries.set(key, { fingerprint, outcome });
-    while (this.entries.size > this.max) this.entries.delete(this.entries.keys().next().value as string);
-  }
+interface ChatV2CancelEntry {
+  owner: ChatOwner;
+  paneId: string;
+  clientCancelId: string;
+  fingerprint: string;
+  /** From the id's time prefix; the entry is kept for the id's whole lifetime. */
+  createdAt: number;
+  chatSessionId?: string;
+  epoch?: string;
+  turnId?: string;
+  /** Absent while the cancel is in flight (reserved). */
+  outcome?: ChatCancelOutcome;
+  progress?: ChatCancelProgress;
+  timer?: ReturnType<typeof setTimeout>;
 }
 
 export interface ChatV2CancelInput {
-  owner: string;
+  owner: ChatOwner;
   paneId: string;
   body: CancelBody;
-  now: number;
   host: ChatV2PhoneHost;
-  receipts: ChatV2CancelReceipts;
   /** Re-authorization immediately before the interrupt; false sends nothing. */
   authorized: () => Promise<boolean>;
 }
 
 /**
- * `POST …/chat/cancel` on a v2 record: the host's `interrupt`, under the
- * cancel response table. A refusal stores no receipt; a sent or uncertain
- * interrupt does, so a retry replays instead of interrupting the next turn.
+ * Cancels of chat-v2 turns: the host's `interrupt` under the cancel response
+ * table, with owner- and pane-bound receipts and the cancel outcome
+ * (`requested` → `ended` / `not-ended` / `unknown`, evidence `native`: the
+ * fold reports how the aimed turn ended).
+ *
+ * Receipts live in memory for the id's lifetime (CHAT_MESSAGE_RETENTION_MS)
+ * and are never evicted early: when the store is full of live ids a new cancel
+ * is refused before anything is written. A refusal stores nothing.
  */
-export async function chatV2Cancel(input: ChatV2CancelInput): Promise<ChatCancelOutcome> {
-  const { body, receipts } = input;
-  const { clientCancelId } = body;
-  const refuse = (error: ChatCancelTag, extra: Partial<ChatCancelOutcome> = {}): ChatCancelOutcome =>
-    ({ clientCancelId, replayed: false, effect: 'none', error, ...extra });
-  const idCheck = checkChatId(clientCancelId, input.now, CHAT_MESSAGE_RETENTION_MS);
-  if (idCheck === 'invalid') return refuse('invalid-chat-request', { detail: 'clientCancelId' });
-  if (idCheck === 'expired') return refuse('message-id-expired');
+export class ChatV2Cancels {
+  private readonly entries = new Map<string, ChatV2CancelEntry>();
 
-  const key = JSON.stringify([input.owner, input.paneId, clientCancelId]);
-  const fingerprint = JSON.stringify([body.agentSessionId, body.turnId ?? null, body.historyEpoch ?? null]);
-  const stored = receipts.get(key);
-  if (stored) return stored.fingerprint === fingerprint ? { ...stored.outcome, replayed: true } : refuse('cancel-id-conflict');
+  constructor(private readonly opts: {
+    now: () => number;
+    /** A progress change, for SSE `chat.cancel` to the owner. */
+    emit: (event: ChatCancelEvent) => void;
+    max?: number;
+    observeMs?: number;
+  }) {}
 
-  const binding = input.host.bindingForPane(input.paneId);
-  const session = input.host.sessionForPane(input.paneId);
-  if (!binding || binding.status === 'handed-off' || !session) return refuse('chat-unavailable');
-  const identity = chatV2Identity(binding);
-  if (body.agentSessionId !== identity.agentSessionId || (body.historyEpoch !== undefined && body.historyEpoch !== identity.historyEpoch)) {
-    return refuse('session-changed', identity);
+  private key(owner: ChatOwner, paneId: string, clientCancelId: string): string {
+    return JSON.stringify([owner, paneId, clientCancelId]);
   }
-  if (!binding.capabilities.interrupt) return refuse('cancel-unsupported');
-  const turn = chatV2Turn(session);
-  if (!turn || !session.busy || (body.turnId !== undefined && body.turnId !== turn.id)) {
-    return refuse('turn-not-running', turn ? { turn } : {});
-  }
-  if (!(await input.authorized())) return refuse('authorization-expired');
 
-  let outcome: ChatCancelOutcome;
-  try {
-    const result = await input.host.call('interrupt', { paneId: input.paneId, chatSessionId: binding.chatSessionId }, 'web');
-    if (result.ok && result.interrupted) {
-      outcome = { clientCancelId, replayed: false, effect: 'interrupt-requested', turnId: turn.id };
-    } else if (result.ok) {
-      return refuse('turn-not-running', { turn: { ...turn, state: 'idle' } });
-    } else if (result.error.code === 'driver-failed') {
-      outcome = { clientCancelId, replayed: false, effect: 'uncertain', error: 'cancel-failed', turnId: turn.id };
-    } else if (result.error.code === 'session-not-found' || result.error.code === 'stale-epoch') {
-      return refuse('session-changed', identity);
-    } else {
-      return refuse('chat-unavailable', { detail: result.error.code });
+  /** The progress of one owner's cancel on one pane, or undefined when there is no receipt. */
+  progress(owner: ChatOwner, paneId: string, clientCancelId: string): ChatCancelProgress | undefined {
+    const progress = this.entries.get(this.key(owner, paneId, clientCancelId))?.progress;
+    return progress ? { ...progress } : undefined;
+  }
+
+  async cancel(input: ChatV2CancelInput): Promise<ChatCancelOutcome> {
+    const { body, host, paneId } = input;
+    const { clientCancelId } = body;
+    const now = this.opts.now();
+    const refuse = (error: ChatCancelTag, extra: Partial<ChatCancelOutcome> = {}): ChatCancelOutcome =>
+      ({ clientCancelId, replayed: false, effect: 'none', error, ...extra });
+    const idCheck = checkChatId(clientCancelId, now, CHAT_MESSAGE_RETENTION_MS);
+    if (idCheck === 'invalid') return refuse('invalid-chat-request', { detail: 'clientCancelId' });
+    if (idCheck === 'expired') return refuse('message-id-expired');
+
+    // Reserve synchronously, before the first await: a concurrent request with
+    // the same id finds the reservation instead of interrupting a second time.
+    const key = this.key(input.owner, paneId, clientCancelId);
+    const fingerprint = JSON.stringify([body.agentSessionId, body.turnId ?? null, body.historyEpoch ?? null]);
+    const existing = this.entries.get(key);
+    if (existing) {
+      if (existing.fingerprint !== fingerprint) return refuse('cancel-id-conflict');
+      if (!existing.outcome) return refuse('cancel-cooldown', { retryAfterMs: 500 });
+      return { ...existing.outcome, replayed: true, ...(existing.progress ? { cancel: { ...existing.progress } } : {}) };
     }
-  } catch {
-    outcome = { clientCancelId, replayed: false, effect: 'uncertain', error: 'cancel-failed', turnId: turn.id };
+    this.prune(now);
+    if (this.entries.size >= (this.opts.max ?? 2048)) return refuse('message-history-full');
+    const entry: ChatV2CancelEntry = { owner: input.owner, paneId, clientCancelId, fingerprint, createdAt: chatIdTime(clientCancelId) };
+    this.entries.set(key, entry);
+    const release = (outcome: ChatCancelOutcome): ChatCancelOutcome => {
+      this.entries.delete(key);
+      return outcome;
+    };
+
+    // The pane, its conversation and the running turn, read the same way before
+    // and after the re-authorization (which awaits).
+    const target = (): { aim?: { chatSessionId: string; epoch: string; turnId: string }; refusal?: ChatCancelOutcome } => {
+      const binding = host.bindingForPane(paneId);
+      const session = host.sessionForPane(paneId);
+      if (!binding || binding.status === 'handed-off' || !session) return { refusal: refuse('chat-unavailable') };
+      const identity = chatV2Identity(binding);
+      if (body.agentSessionId !== identity.agentSessionId || (body.historyEpoch !== undefined && body.historyEpoch !== identity.historyEpoch)) {
+        return { refusal: refuse('session-changed', identity) };
+      }
+      if (!binding.capabilities.interrupt) return { refusal: refuse('cancel-unsupported') };
+      const turn = chatV2Turn(session);
+      if (!turn || !session.busy || (body.turnId !== undefined && body.turnId !== turn.id)) {
+        return { refusal: refuse('turn-not-running', turn ? { turn } : {}) };
+      }
+      return { aim: { chatSessionId: binding.chatSessionId, epoch: binding.epoch, turnId: turn.id } };
+    };
+    const before = target();
+    if (!before.aim) return release(before.refusal as ChatCancelOutcome);
+    const aim = before.aim;
+    // A turn gets one interrupt, whichever owner asked.
+    for (const other of this.entries.values()) {
+      if (other !== entry && other.paneId === paneId && other.outcome && !other.outcome.error
+        && other.chatSessionId === aim.chatSessionId && other.turnId === aim.turnId) {
+        return release(refuse('turn-already-interrupted', { turnId: aim.turnId }));
+      }
+    }
+    if (!(await input.authorized())) return release(refuse('authorization-expired'));
+    const after = target();
+    if (!after.aim) return release(after.refusal as ChatCancelOutcome);
+    if (after.aim.chatSessionId !== aim.chatSessionId || after.aim.epoch !== aim.epoch || after.aim.turnId !== aim.turnId) {
+      return release(refuse('turn-not-running', { turn: { id: after.aim.turnId, state: 'running' } }));
+    }
+
+    Object.assign(entry, aim);
+    let outcome: ChatCancelOutcome;
+    try {
+      // The host re-checks the epoch and the turn in the step that writes.
+      const result = await host.call('interrupt', { paneId, chatSessionId: aim.chatSessionId, epoch: aim.epoch, turnId: aim.turnId }, 'web');
+      if (result.ok && result.interrupted) {
+        outcome = { clientCancelId, replayed: false, effect: 'interrupt-requested', turnId: aim.turnId };
+      } else if (result.ok) {
+        return release(refuse('turn-not-running', { turn: { id: aim.turnId, state: 'idle' } }));
+      } else if (result.error.code === 'driver-failed') {
+        outcome = { clientCancelId, replayed: false, effect: 'uncertain', error: 'cancel-failed', turnId: aim.turnId };
+      } else if (result.error.code === 'session-not-found' || result.error.code === 'stale-epoch') {
+        return release(refuse('session-changed', chatV2IdentityOf(host, paneId)));
+      } else {
+        return release(refuse('chat-unavailable', { detail: result.error.code }));
+      }
+    } catch {
+      outcome = { clientCancelId, replayed: false, effect: 'uncertain', error: 'cancel-failed', turnId: aim.turnId };
+    }
+    entry.outcome = outcome;
+    const at = this.opts.now();
+    if (outcome.error) {
+      this.settle(entry, { state: 'unknown', turnId: aim.turnId, reason: 'write-uncertain', at });
+      // The first 500 carries no progress: the receipt has it.
+      return outcome;
+    }
+    this.settle(entry, { state: 'requested', turnId: aim.turnId, requestedAt: at, at });
+    const timer = setTimeout(() => {
+      entry.timer = undefined;
+      if (entry.progress?.state === 'requested') this.settle(entry, { ...entry.progress, state: 'not-ended', at: this.opts.now() });
+    }, this.opts.observeMs ?? CHAT_CANCEL_OBSERVE_MS);
+    timer.unref?.();
+    entry.timer = timer;
+    // The turn may already have ended between the write and here.
+    this.observe(paneId, host);
+    return { ...outcome, cancel: { ...(entry.progress as ChatCancelProgress) } };
   }
-  receipts.set(key, fingerprint, outcome);
-  return outcome;
+
+  /** The pane's conversation changed (a host push): settle its cancels still `requested`. */
+  observe(paneId: string, host: ChatV2PhoneHost): void {
+    for (const entry of this.entries.values()) {
+      if (entry.paneId !== paneId || entry.progress?.state !== 'requested') continue;
+      const binding = host.bindingForPane(paneId);
+      const session = host.sessionForPane(paneId);
+      const at = this.opts.now();
+      const base = { turnId: entry.turnId, ...(entry.progress.requestedAt !== undefined ? { requestedAt: entry.progress.requestedAt } : {}), at };
+      if (!binding || !session || binding.chatSessionId !== entry.chatSessionId || binding.status === 'handed-off') {
+        this.settle(entry, { ...base, state: 'unknown', reason: 'session-changed' });
+        continue;
+      }
+      if (binding.epoch !== entry.epoch) {
+        this.settle(entry, { ...base, state: 'unknown', reason: 'daemon-restart' });
+        continue;
+      }
+      const outcome = session.blocks.find((block) => block.id === entry.turnId)?.outcome;
+      if (outcome) this.settle(entry, { ...base, state: 'ended', endedAs: ENDED_AS[outcome], evidence: 'native' });
+    }
+  }
+
+  /** Stop observing (server stop). Receipts stay readable. */
+  dispose(): void {
+    for (const entry of this.entries.values()) {
+      if (entry.timer) clearTimeout(entry.timer);
+      entry.timer = undefined;
+    }
+  }
+
+  private settle(entry: ChatV2CancelEntry, progress: ChatCancelProgress): void {
+    entry.progress = progress;
+    if (progress.state !== 'requested' && entry.timer) {
+      clearTimeout(entry.timer);
+      entry.timer = undefined;
+    }
+    this.opts.emit({
+      owner: entry.owner,
+      sessionId: entry.paneId,
+      clientCancelId: entry.clientCancelId,
+      state: progress.state,
+      ...(progress.turnId ? { turnId: progress.turnId } : {}),
+      ...(progress.endedAs ? { endedAs: progress.endedAs } : {}),
+      at: progress.at,
+    });
+  }
+
+  /** Drop receipts whose id is past its lifetime; a later request with that id is refused as expired anyway. */
+  private prune(now: number): void {
+    for (const [key, entry] of this.entries) {
+      if (entry.outcome && entry.createdAt <= now - CHAT_MESSAGE_RETENTION_MS) {
+        if (entry.timer) clearTimeout(entry.timer);
+        this.entries.delete(key);
+      }
+    }
+  }
+}
+
+function chatV2IdentityOf(host: ChatV2PhoneHost, paneId: string): Partial<ChatCancelOutcome> {
+  const binding = host.bindingForPane(paneId);
+  return binding ? chatV2Identity(binding) : {};
 }

@@ -202,16 +202,78 @@ describe('phone chat routes for a chat-v2 record', () => {
     expect(pane.ptyProcess.write).not.toHaveBeenCalled();
   });
 
-  it('cancels through the host interrupt and replays a retry', async () => {
+  /** Open `/api/events` and collect the wire until `until` matches or 3 s pass. */
+  const sse = async (token: string, headers: Record<string, string> = {}) => {
+    const ac = new AbortController();
+    const res = await fetch(`${base()}/api/events`, { signal: ac.signal, headers: auth(token, { Accept: 'text/event-stream', ...headers }) });
+    const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+    const box = { wire: '' };
+    void (async () => {
+      try {
+        for (;;) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          box.wire += Buffer.from(chunk.value).toString('utf8');
+        }
+      } catch { /* aborted */ }
+    })();
+    const until = async (text: string) => {
+      const deadline = Date.now() + 3000;
+      while (!box.wire.includes(text) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+      return box.wire;
+    };
+    return { box, until, close: () => ac.abort() };
+  };
+
+  it('cancels through the host interrupt, replays a retry, and serves the receipt and its SSE', async () => {
     const token = await start();
+    await turns(token);
+    const events = await sse(token);
     const body = { agentSessionId: PROVIDER_ID, clientCancelId: freshId() };
     const first = await post(token, 'cancel', body);
-    expect(first).toEqual({ status: 202, body: { result: 'sent', replayed: false, turnId: '1.1', clientCancelId: body.clientCancelId, effect: 'interrupt-requested' } });
+    expect(first.status).toBe(202);
+    expect(first.body).toMatchObject({ result: 'sent', replayed: false, turnId: '1.1', clientCancelId: body.clientCancelId,
+      effect: 'interrupt-requested', cancel: { state: 'requested', turnId: '1.1' } });
+    expect(host.call).toHaveBeenCalledWith('interrupt', { paneId: 's1', chatSessionId: 'c1', epoch: EPOCH, turnId: '1.1' }, 'web');
     const again = await post(token, 'cancel', body);
     expect(again.status).toBe(200);
     expect(again.body).toMatchObject({ replayed: true, effect: 'interrupt-requested' });
     expect(host.call).toHaveBeenCalledTimes(1);
     expect(bridge.cancel).not.toHaveBeenCalled();
+    expect(await events.until('event: chat.cancel')).toContain(`"clientCancelId":"${body.clientCancelId}","state":"requested"`);
+
+    // The turn ends: the push settles the receipt and announces it.
+    box.session = applyHarnessEvent(box.session as Session, { seq: 9, at: 2000, event: { type: 'turn.ended', outcome: 'interrupted' } });
+    pushListeners[0]({ paneId: 's1', chatSessionId: 'c1', epoch: EPOCH, events: [], blockCount: 2, lastBlockId: '2.1', touchedFrom: 1 });
+    expect(await events.until('"state":"ended"')).toContain('"endedAs":"interrupted"');
+    events.close();
+    const receipt = await fetch(`${base()}/api/sessions/s1/chat/cancel/${body.clientCancelId}`, { headers: auth(token) });
+    expect(await receipt.json()).toMatchObject({ clientCancelId: body.clientCancelId, state: 'ended', endedAs: 'interrupted', evidence: 'native', turnId: '1.1' });
+  });
+
+  it('announces a driver approval opening and closing as chat.blocked / chat.unblocked', async () => {
+    const token = await start();
+    await turns(token);
+    const events = await sse(token);
+    approvals.push({
+      id: 'apr_2', sessionId: 's1', agent: 'claude', kind: 'terminal_prompt', state: 'pending', createdAt: 1,
+      native: { adapter: 'claude', requestId: 'r1', threadId: 'c1', relayId: EPOCH },
+    } as unknown as ApprovalRequest);
+    pushListeners[0]({ paneId: 's1', chatSessionId: 'c1', epoch: EPOCH, events: [], blockCount: 2, lastBlockId: '2.1', touchedFrom: 1 });
+    expect(await events.until('event: chat.blocked')).toContain('"approvalId":"apr_2"');
+    approvals.length = 0;
+    pushListeners[0]({ paneId: 's1', chatSessionId: 'c1', epoch: EPOCH, events: [], blockCount: 2, lastBlockId: '2.1', touchedFrom: 1 });
+    expect(await events.until('event: chat.unblocked')).toContain('event: chat.unblocked');
+    events.close();
+  });
+
+  it('ignores a claude approval of another conversation or an earlier load', async () => {
+    approvals.push({
+      id: 'apr_old', sessionId: 's1', agent: 'claude', kind: 'terminal_prompt', state: 'pending', createdAt: 1,
+      native: { adapter: 'claude', requestId: 'r0', threadId: 'c1', relayId: 'b'.repeat(16) },
+    } as unknown as ApprovalRequest);
+    const token = await start();
+    expect((await turns(token)).body.chat.blocked).toBeUndefined();
   });
 
   it('nudges the pane watchers on a host push', async () => {
