@@ -704,6 +704,7 @@ describe('browser_repl session', () => {
     ['42', '42'],
     ['new Error("background error")', 'background error'],
     ['({ message: "background object" })', 'background object'],
+    ['({ toString: null })', 'unprintable worker error'],
   ])('reports worker failure %s and starts a fresh runtime', async (expression, reason) => {
     const bridge = createBrowserBridge(harness().tools, {});
     const session = newSession();
@@ -714,7 +715,7 @@ describe('browser_repl session', () => {
       bridge,
     );
     expect(out.ok).toBe(false);
-    expect(out.error).toContain(reason);
+    expect(out.error).toBe(`browser_repl runtime crashed: ${reason}`);
     expect(out.timedOut).toBe(false);
 
     const next = await session.run('1', 10_000, bridge);
@@ -729,6 +730,7 @@ describe('browser_repl session', () => {
     [42, '42'],
     [new Error('idle error'), 'idle error'],
     [{ message: 'idle object' }, 'idle object'],
+    [{ toString: null }, 'unprintable worker error'],
   ])('preserves idle worker failure %s when starting a fresh runtime', async (failure, reason) => {
     const bridge = createBrowserBridge(harness().tools, {});
     const session = newSession();
@@ -742,7 +744,7 @@ describe('browser_repl session', () => {
     expect(next.ok).toBe(true);
     expect(next.freshRuntime).toBe(true);
     expect(next.result?.text).toBe('undefined');
-    expect(next.previousDeath).toContain(`crashed between runs: ${reason}`);
+    expect(next.previousDeath).toBe(`crashed between runs: ${reason}`);
   });
 
   it('collects the hint blocks of a run once, deduped, and renders them as their own block', async () => {

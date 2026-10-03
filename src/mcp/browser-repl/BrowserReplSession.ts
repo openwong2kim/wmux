@@ -41,11 +41,16 @@ export {
 const READY_TIMEOUT_MS = 10_000;
 
 function workerFailureMessage(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  if (err && typeof err === 'object' && 'message' in err && typeof err.message === 'string') {
-    return err.message;
+  try {
+    if (err instanceof Error) return err.message;
+    if (err && typeof err === 'object' && 'message' in err) {
+      const message = err.message;
+      if (typeof message === 'string') return message;
+    }
+    return String(err);
+  } catch {
+    return 'unprintable worker error';
   }
-  return String(err);
 }
 
 export interface BrowserReplRunOutcome {
