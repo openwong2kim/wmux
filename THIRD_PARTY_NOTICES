@@ -3389,7 +3389,7 @@ THE SOFTWARE.
 
 ================================================================================
 
-electron@41.10.3
+electron@41.10.6
 License: MIT
 Author: Electron Community
 Repository: https://github.com/electron/electron
@@ -3983,7 +3983,7 @@ For more information, please refer to <http://unlicense.org>
 
 ================================================================================
 
-fast-uri@3.1.7
+fast-uri@3.1.8
 License: BSD-3-Clause
 Author: Vincent Le Goff <vince.legoff@gmail.com> (https://github.com/zekth)
 Repository: https://github.com/fastify/fast-uri
