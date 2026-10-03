@@ -460,7 +460,7 @@ describe('chat v2 host', () => {
 
   it('takes a send off the ledger when it was not delivered or not saved', async () => {
     const r = rig();
-    await created(r);
+    const binding = await created(r);
     const backend = r.backends[0];
     const write = backend.write.bind(backend);
     backend.write = (line: string) => (line.includes('"type":"user"') ? Promise.reject(new Error('pipe')) : write(line));
@@ -473,14 +473,24 @@ describe('chat v2 host', () => {
     r.fake().result();
     await until(() => r.host.statusForPane(PANE) === 'idle');
 
-    const v2 = path.join(dir, 'chat-sessions', 'v2');
-    fs.chmodSync(v2, 0o500);
+    // A directory where the record file goes: the save's rename onto it fails
+    // on every platform (permissions do not make a folder read-only on Windows).
+    const file = path.join(dir, 'chat-sessions', 'v2', `${binding.chatSessionId}.json`);
+    await until(() => {
+      try {
+        fs.rmSync(file, { force: true });
+        fs.mkdirSync(file);
+        return true;
+      } catch {
+        return false; // a queued save landed in between; swap again
+      }
+    });
     try {
       const before = r.fake().stdin.filter((l) => l.type === 'user').length;
       expect(await sent(r, 'unsaved', 'msg-00003')).toMatchObject({ ok: false, error: { code: 'driver-failed' } });
       expect(r.fake().stdin.filter((l) => l.type === 'user').length).toBe(before);
     } finally {
-      fs.chmodSync(v2, 0o700);
+      fs.rmdirSync(file);
     }
     expect(await sent(r, 'unsaved', 'msg-00003')).toMatchObject({ ok: true });
     await r.host.dispose();
