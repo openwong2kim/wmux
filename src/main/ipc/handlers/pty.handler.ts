@@ -16,9 +16,8 @@ import { DaemonDataBatcher } from '../../pty/DaemonDataBatcher';
 import { sanitizePtyText } from '../../../shared/types';
 import { resolveSpawnEnv } from '../../pty/resolveSpawnEnv';
 import { withFreshWindowsPath } from '../../../shared/windowsPathEnv';
-import { getAccountStore, VENDOR_ENV_KEYS } from '../../account/accountStore';
-import { getAccountRotationService } from '../../account/AccountRotationService';
-import { envSetsKey, heldLaunchNotice, isCompoundLine, isNewSessionLaunch, launchInlineEnvKeys, launchStem } from '../../../shared/accountQuota';
+import { getAccountStore } from '../../account/accountStore';
+import { withAccountQuota } from '../../account/accountQuotaGate';
 import { resolveEnvPolicy, type SpawnKind } from '../../../shared/spawnKind';
 import { withheldCredentialNames } from '../../../shared/envFilter';
 import { getShellUtf8Locale } from '../../pty/shellLocale';
@@ -159,39 +158,6 @@ function withWmuxTools(options: PtyCreateOptions | undefined): PtyCreateOptions 
   });
   if (initialCommand !== rest.initialCommand) console.log('[pty:create] wmux tool level applied', { tools: wmuxTools.tools, role: wmuxTools.role });
   return { ...rest, initialCommand };
-}
-
-/**
- * Quota gate for a typed Claude or Codex launch. With "Switch accounts by
- * quota" on, a new session (not a resume or a management subcommand) runs on a registered account that still has quota when
- * the workspace's bound one is out, by setting the account's config dir in
- * this pane's env (applied after the binding). When no account has quota the
- * launch line is replaced with a notice. A launch that already names its
- * account (the vendor's config-dir key in the pane/profile env, or an inline
- * `KEY=… claude` prefix) is the user's choice and is left alone. Never throws.
- */
-async function withAccountQuota(options: PtyCreateOptions | undefined): Promise<PtyCreateOptions | undefined> {
-  const stem = launchStem(options?.initialCommand);
-  if (!options || (stem !== 'claude' && stem !== 'codex')) return options;
-  if (!isNewSessionLaunch(stem, options.initialCommand)) return options;
-  const key = VENDOR_ENV_KEYS[stem];
-  if (launchInlineEnvKeys(options.initialCommand).includes(key) || envSetsKey(options.env, key, process.platform)) return options;
-  try {
-    const decision = await getAccountRotationService().prepareLaunch(stem, options.workspaceId);
-    if (decision.kind === 'switch') return { ...options, env: { ...options.env, ...decision.env } };
-    if (decision.kind === 'hold') {
-      // Holding replaces the whole line; never drop commands chained after the launch.
-      if (isCompoundLine(options.initialCommand)) {
-        console.warn(`[account-rotation] ${stem} accounts are all out of quota, but the launch line runs other commands too: launching unchanged`);
-        return options;
-      }
-      console.warn(`[account-rotation] ${stem} launch held: every registered ${stem} account is out of quota`);
-      return { ...options, initialCommand: heldLaunchNotice(stem, decision.availableAtMs) };
-    }
-  } catch (err) {
-    console.warn(`[account-rotation] launch gate failed, launching unchanged: ${String(err)}`);
-  }
-  return options;
 }
 
 /** Clamp one runaway-guard bound to its cap; falls back to `def` when absent.
