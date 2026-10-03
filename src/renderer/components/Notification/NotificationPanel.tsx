@@ -9,6 +9,7 @@ import Badge from '../ui/Badge';
 import Button from '../ui/Button';
 import { IconBell, IconRobot, IconWarning, IconX } from '../icons';
 import { TITLEBAR_HEIGHT } from '../Titlebar/Titlebar';
+import { NOTIFICATION_TOGGLE_ATTR } from '../StatusBar/StatusBar';
 
 // ─── Pure helpers (exported for tests) ────────────────────────────────────────
 
@@ -42,13 +43,6 @@ export function buildNotifAriaLabel(notif: Notification, now: number = Date.now(
   const state = notif.read ? 'read' : 'unread';
   return `${typeName}, ${notif.title}, ${rel}, ${state}`;
 }
-
-/**
- * Marks the control that toggles the panel (the titlebar bell). An
- * outside-click must not close the panel when it lands there, or the bell's
- * own click would immediately reopen it.
- */
-export const NOTIFICATION_TOGGLE_ATTR = 'data-notification-toggle';
 
 /**
  * Whether a pointer press at `target` should dismiss the open panel: anywhere
@@ -308,18 +302,37 @@ export default function NotificationPanel() {
 
   // ─── Outside click to close ────────────────────────────────────────────────
   // Deferred one tick (the PresetPicker / create-channel pattern) so the
-  // press that opened the panel cannot also close it.
+  // press that opened the panel cannot also close it. Capture phase: xterm
+  // stops propagation of some presses (Shift/Option+click in a
+  // mouse-tracking terminal), which a bubbling listener would never see.
+  //
+  // A press inside a browser pane's <webview> lands in the guest page and
+  // never reaches this document; the window blurs and the <webview> becomes
+  // the active element instead, so that is treated as an outside press too.
+  // (A press on the titlebar's drag region reaches neither — known gap.)
   useEffect(() => {
     if (!notificationPanelVisible) return;
+    const close = () => useStore.getState().setNotificationPanelVisible(false);
     const onDown = (e: MouseEvent) => {
-      if (isOutsidePanelPress(e.target, panelRef.current)) {
-        useStore.getState().setNotificationPanelVisible(false);
-      }
+      if (isOutsidePanelPress(e.target, panelRef.current)) close();
     };
-    const timer = setTimeout(() => document.addEventListener('mousedown', onDown), 0);
+    let blurTimer: ReturnType<typeof setTimeout> | undefined;
+    const onBlur = () => {
+      // activeElement settles after the blur event; read it a tick later.
+      clearTimeout(blurTimer);
+      blurTimer = setTimeout(() => {
+        if (document.activeElement?.tagName === 'WEBVIEW') close();
+      }, 0);
+    };
+    const timer = setTimeout(() => {
+      document.addEventListener('mousedown', onDown, true);
+      window.addEventListener('blur', onBlur);
+    }, 0);
     return () => {
       clearTimeout(timer);
-      document.removeEventListener('mousedown', onDown);
+      clearTimeout(blurTimer);
+      document.removeEventListener('mousedown', onDown, true);
+      window.removeEventListener('blur', onBlur);
     };
   }, [notificationPanelVisible]);
 

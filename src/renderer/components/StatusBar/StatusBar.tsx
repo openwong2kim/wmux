@@ -87,6 +87,13 @@ interface NotificationBellBadgeProps {
 }
 
 /**
+ * Marks the control that toggles the notification panel. The panel's
+ * outside-click handler ignores presses on it, or the bell's own click would
+ * immediately reopen the panel it just closed.
+ */
+export const NOTIFICATION_TOGGLE_ATTR = 'data-notification-toggle';
+
+/**
  * Presentational bell badge. Extracted from StatusBar so the static-markup
  * test in __tests__/StatusBar.test.tsx can assert role / aria-label / focus
  * classes without mounting the full StatusBar tree (vitest runs in `node`
@@ -106,7 +113,7 @@ export function NotificationBellBadgeView({ unreadCount, onActivate }: Notificat
       aria-label={ariaLabel}
       title={ariaLabel}
       data-testid="statusbar-notification-bell"
-      data-notification-toggle
+      {...{ [NOTIFICATION_TOGGLE_ATTR]: '' }}
       className="text-[var(--text-sub)] hover:text-[var(--text-main)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent-blue)] focus-visible:outline-offset-1 transition-colors px-1.5 py-0.5 min-w-[24px] min-h-[24px] inline-flex items-center justify-center rounded-sm"
       {...tokenAttrs('textSub', 'text')}
     >
