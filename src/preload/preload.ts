@@ -1125,6 +1125,15 @@ const electronAPI = {
     // host/owner/repo of origin (lowercased), or null — groups clones of one repo.
     repoKey: (repoPath: string) =>
       ipcRenderer.invoke(IPC.GITHUB_REPO_KEY, repoPath) as Promise<{ key: string | null }>,
+    // Open issues (filtered) and one issue's detail; force skips the 30s TTL.
+    issueList: (repoPath: string, filter: import('../shared/issueSurface').IssueFilter, force?: boolean) =>
+      ipcRenderer.invoke(IPC.GITHUB_ISSUE_LIST, repoPath, filter, force ?? false) as Promise<
+        import('../shared/issueSurface').IssueListResult
+      >,
+    issueDetail: (repoPath: string, number: number, updatedAt: string) =>
+      ipcRenderer.invoke(IPC.GITHUB_ISSUE_DETAIL, repoPath, number, updatedAt) as Promise<
+        import('../shared/issueSurface').IssueDetailResult
+      >,
   },
   // Deck Git 탭 — worktree list/add/remove(렌더러 전용, 파이프 미노출).
   worktree: {

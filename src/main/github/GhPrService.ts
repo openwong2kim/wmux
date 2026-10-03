@@ -131,7 +131,7 @@ interface GhDetailJson {
   }>;
 }
 
-function capBody(raw: string): { body: string; truncated: boolean } {
+export function capBody(raw: string): { body: string; truncated: boolean } {
   // HTML 주석 스트립 — 봇 리뷰어(CodeRabbit 등)가 본문 앞뒤에 다는 마커가
   // 렌더러(마크다운)에 raw로 노출되는 걸 dogfood가 잡았다. 표시용 정규화.
   const body = raw.replace(/<!--[\s\S]*?-->/g, '').trim();

@@ -510,6 +510,9 @@ export const IPC = {
   GITHUB_PR_LIST: 'github:prList',
   GITHUB_PR_DETAIL: 'github:prDetail',
   GITHUB_REPO_KEY: 'github:repoKey',
+  // Git page Issues view (gh CLI, 30s TTL, rate-limit breaker)
+  GITHUB_ISSUE_LIST: 'github:issueList',
+  GITHUB_ISSUE_DETAIL: 'github:issueDetail',
   DIALOG_PICK_FILE: 'dialog:pick-file',
   DIALOG_PICK_FOLDER: 'dialog:pick-folder',
   // File system
