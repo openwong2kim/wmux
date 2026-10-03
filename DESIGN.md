@@ -262,24 +262,39 @@ button.
   repo) or All repos (every open workspace grouped by repo, the active repo
   first, each group headed by the repo name and its workspace count). Clones
   of one remote are one group: one PR list, and each clone's worktrees under
-  its folder name. Only the active repo's PR list is open and polls; another
-  repo's opens on demand and reads once.
-- **Pull requests | Worktrees** side by side, stacking on a narrow sheet.
-  PRs expand to their comments. One row per worktree: the branch in mono
+  its folder name. Only the active repo's PR or issue list is open and polls;
+  another repo's opens on demand and reads once.
+- **Pull requests | Issues | Worktrees:** the left column's header is a
+  disclosure chevron and two text tabs, **Pull requests | Issues**, the chosen
+  one on the neutral `--selection` fill; the choice is kept per viewer. Only
+  the chosen list is mounted, so only it reads and polls. Worktrees sit beside
+  it, stacking on a narrow sheet.
+- **Pull requests** expand to their comments.
+- **Issues** (GitHub only; another host says so): a filter select (All open,
+  Assigned to me, Created by me, With label + a label field), then rows of
+  mono `#N`, the title, up to three **neutral label chips** (`--selection`,
+  11px; GitHub's label colours are not drawn, since colour carries state
+  only), a comment count with a small glyph, and the age. A row is a button:
+  click or Enter opens its detail inline under it (author and age, assignees,
+  labels, the body and the comments in order through the app's text-only
+  markdown, a closed line, Open on GitHub). A row drags as an issue ref. On
+  GitHub's rate limit the list keeps its last answer under one muted line,
+  "GitHub rate limit, retrying at HH:MM".
+- **Worktrees:** one row per worktree: the branch in mono
   over the workspaces on it (each a link that switches to it) or its folder,
   the PR, the diff stat (green/red), the accent dot only on the active pane's
   worktree, and Diff / Open / Merge / Remove floating over the faded right
   edge on hover; then the new-worktree line and, while one runs, the merge
   session. Anything that lands on a pane (Diff, Open, a workspace link)
   returns to Workspaces.
-- **Not connected:** signed out for a GitHub remote, the Pull requests
-  column says so with one primary, Connect GitHub, which opens a terminal tab
+- **Not connected:** signed out for a GitHub remote, the Pull requests or
+  Issues list says so with one primary, Connect GitHub, which opens a terminal tab
   running `gh auth login --web` (or shows the command to copy when no tab can
   show it, e.g. a WSL default shell on Windows), and Check again. gh not
   installed shows how to get it and Check again only. gh keeps the
   credential; wmux stores no token.
-- **Cost:** pull-only and only while the page is shown. The PR list polls
-  every 30s while it is open on this page and the window is visible.
+- **Cost:** pull-only and only while the page is shown. The PR or issue list
+  polls every 30s while it is open on this page and the window is visible.
 - **Rail dot:** a red dot on the Git icon while an open workspace's open or
   draft PR fails its checks or conflicts with its base (pushed PR status
   only, never a saved one); the button's name says why. Nothing at zero.
@@ -576,6 +591,7 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-10-03 | **Shipped: the new look.** Five built-in themes (Tint default, Zinc, Graphite, Paper, Amber Line) with per-theme style knobs; a window frame holding one floating rounded sheet; a 48px icon rail of pages (Workspaces, Fleet, Schedules, Remote); a titlebar with a centred search pill and Settings and tools-panel icons at the right; Fleet as a four-column board, Schedules as a list and one-box composer, Remote as a two-column dashboard; a workspace filter in the sidebar (with a Waiting (usage limit) status); the one-boundary rule; a 13px chrome face with 500 emphasis. Supersedes the proposal row above, the amber/steel grammar, the 5±2 amber budget, the machined bevel, the 36px module and the Fleet overlay | Owner approval of the local build after review in every theme. Pages replace overlays so nothing covers a half-visible terminal; one boundary per element and fills instead of outlines keep dense screens calm; colour carries state only, so every coloured mark still means something |
 | 2026-10-03 | Owner decision: Git moves from the tools panel to a collapsible section at the foot of the sidebar; the Git tab's worktrees and the Review list's workspaces become one row per worktree. The deck keeps Orchestrator (and the opt-in Channels). The titlebar toggle's dot no longer counts dirty worktrees. | Git is about the active workspace's repo, so it belongs beside the workspace list; the deck stays the agent's surface. Capping the section at 45% keeps the list usable, and a folded section reads nothing. The dot would have pointed into a panel that no longer shows worktrees. |
 | 2026-10-03 | Owner decision (supersedes the same-day sidebar row above): Git is a rail page below Remote, not a sidebar section — the current-branch card, a This repo / All repos scope, then Pull requests and Worktrees. The titlebar branch text opens it; the rail icon carries a red dot for failing checks or a conflicting PR; signing in to GitHub goes through `gh auth login --web`. | A page has the room the sidebar did not, keeps the workspace list whole, and puts every repo in one place. gh owns the credential, so wmux never handles a token. |
+| 2026-10-04 | Git page left column = **Pull requests \| Issues** text tabs under one disclosure (choice kept per viewer); issues filter by all / assigned / created / label, open inline, and draw labels as neutral chips | Issues belong next to PRs on the same repo, not on another page; one mounted list keeps the polling cost of #1742. GitHub label colours would be colour without state, so the chips stay neutral |
 
 ### Desktop conversation view
 
