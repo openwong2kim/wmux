@@ -114,6 +114,24 @@ describe('PrStatusCache', () => {
     expect(exec).toHaveBeenCalledTimes(1); // never probed again
   });
 
+  it('hands gh a PATH with the Homebrew dirs under a launchd PATH (macOS)', async () => {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    const savedPath = process.env.PATH;
+    Object.defineProperty(process, 'platform', { value: 'darwin' });
+    process.env.PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
+    try {
+      const exec = vi.fn().mockResolvedValue({ stdout: PR_JSON });
+      const cache = new PrStatusCache(() => 0, exec);
+      await cache.get('/repo', 'main');
+      const path = (exec.mock.calls[0][2].env.PATH as string).split(':');
+      expect(path).toContain('/opt/homebrew/bin');
+      expect(path).toContain('/usr/local/bin');
+    } finally {
+      Object.defineProperty(process, 'platform', platform);
+      process.env.PATH = savedPath;
+    }
+  });
+
   it('invalidate() forces a refetch before the TTL', async () => {
     const exec = vi.fn().mockResolvedValue({ stdout: PR_JSON });
     const cache = new PrStatusCache(() => 0, exec);

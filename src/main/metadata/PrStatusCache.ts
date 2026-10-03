@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { PrStatus } from '../../shared/types';
 import { normalizeWorktreePath } from '../../shared/workTask';
+import { cliPath } from '../github/PrProvider';
 
 const execFileAsync = promisify(execFile);
 
@@ -155,8 +156,9 @@ export class PrStatusCache {
           cwd,
           timeout: GH_TIMEOUT_MS,
           // Force non-interactive: gh must never block the metadata poll on
-          // a login prompt or pager.
-          env: { ...process.env, GH_PROMPT_DISABLED: '1', GH_PAGER: 'cat', NO_COLOR: '1' },
+          // a login prompt or pager. PATH comes from cliPath() so a launchd-
+          // started macOS app still finds a Homebrew-installed gh.
+          env: { ...process.env, PATH: cliPath(), GH_PROMPT_DISABLED: '1', GH_PAGER: 'cat', NO_COLOR: '1' },
           windowsHide: true,
         },
       );
