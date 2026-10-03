@@ -161,7 +161,10 @@ bar is a drag region; each interactive child opts out with `no-drag`.
 - **Windows:** the native window controls sit at the right edge in the
   `titleBarOverlay` strip, drawn in the colour the frame actually paints
   (`overlayColors()`, one helper for every sender); the titlebar icons
-  sit left of them inside the area the titlebar already reserves.
+  sit left of them inside the area the titlebar already reserves. Nothing
+  anchored to the window's right edge starts above the titlebar: the OS
+  draws that strip over any z-index, so the notification drawer hangs from
+  `TITLEBAR_HEIGHT` on every platform.
 - **Linux:** the native window frame stays, with its own title bar and
   controls above the 40px titlebar (a frameless window would lose drag and
   resize with nothing to replace them).
