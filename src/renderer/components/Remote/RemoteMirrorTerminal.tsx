@@ -22,6 +22,7 @@ import { resolveMinimumContrastRatio } from '../../tailwindPalette';
 import { createOsc8LinkHandler, isLoopbackHref } from '../../terminal/osc8LinkHandler';
 import { installAltClickTrackingGuard } from '../../utils/altClickUnderMouseTracking';
 import { createOsc52Handler } from '../../utils/osc52Clipboard';
+import { gateUserInput, type UserInputTerminal } from '../../../shared/terminal/userInputGate';
 
 export interface RemoteMirrorTerminalProps {
   /** null while the pane attach is still in flight. */
@@ -56,47 +57,6 @@ export interface RemoteMirrorTerminalProps {
  *  parser instead of a lossy JS string round-trip. */
 function decodeBase64Bytes(b64: string): Uint8Array {
   return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-}
-
-/**
- * Answers xterm generates BY ITSELF in response to a device query, which it
- * delivers through the same `onData` a user's keystrokes come out of.
- *
- * A mirror must never answer: the machine that owns the pane has its own
- * terminal, that one is the authoritative responder, and a second answer is a
- * line of garbage typed into a live remote shell. (HeadlessSnapshot avoids the
- * whole problem by never wiring `onData` at all — a mirror cannot, because it
- * also has to carry real typing.)
- *
- * Matching by SHAPE is what makes this safe to apply to the live stream and not
- * just to a replay: no key or key combination xterm encodes produces any of
- * these. Arrows and function keys end in `A`–`H`, `~`, or an uppercase letter;
- * a reply ends in lowercase `c`, `n`, `y`, `t`, or the specific `R` of a cursor
- * report, and the DCS/OSC forms have no keyboard analogue at all.
- *
- * The stronger fix is upstream: neutralise the QUERIES so no reply is ever
- * generated (xterm's `parser.registerCsiHandler` can swallow DA/DSR/DECRQM
- * before the default handler answers), or have the daemon strip them from the
- * bytes it fans out. Both are larger than this pane and out of scope here.
- */
-// eslint-disable-next-line no-control-regex
-const DEVICE_REPLY_RE = new RegExp(
-  '^(?:' +
-    // Device attributes (DA1/DA2/DA3) and device status / cursor position.
-    '\\x1b\\[[?>=]?[0-9;]*[cnR]' +
-    // DECRPM — "mode Ps is currently Pm".
-    '|\\x1b\\[\\?[0-9;]*\\$y' +
-    // Window / text-area reports (CSI 8 ; rows ; cols t and friends).
-    '|\\x1b\\[[0-9;]+t' +
-    // DCS replies: DECRQSS, XTVERSION, DA3.
-    '|\\x1bP[^\\x1b]*\\x1b\\\\' +
-    // OSC colour reports (`rgb:....` under BEL or ST).
-    '|\\x1b\\][0-9;]*;?rgb:[^\\x07\\x1b]*(?:\\x07|\\x1b\\\\)' +
-    ')$',
-);
-
-export function isDeviceReply(data: string): boolean {
-  return DEVICE_REPLY_RE.test(data);
 }
 
 /** Trailing debounce for box-size-driven fits. A divider drag emits a resize
@@ -172,9 +132,9 @@ export default function RemoteMirrorTerminal({ attachId, error, insecureTranspor
 
   /**
    * How many snapshot repaints are currently being fed to the parser. Second
-   * line of defence behind {@link isDeviceReply}: a reply shape that list does
-   * not know about still cannot escape during a replay, which is where a
-   * snapshot's worth of queries arrives at once.
+   * line of defence behind {@link gateUserInput}: should the user-input signal
+   * ever be unavailable, a replay — where a snapshot's worth of queries arrives
+   * at once — still cannot answer.
    *
    * A COUNT, not a flag. xterm parses a large write in ~12 ms slices, so a
    * second repaint can start while the first is still being consumed — and with
@@ -1022,15 +982,24 @@ export default function RemoteMirrorTerminal({ attachId, error, insecureTranspor
         setDisconnected(true);
       }
     });
-    const dataDisposable = termRef.current?.onData((data) => {
-      if (readOnlyRef.current) return; // read-only host — swallow locally, don't POST a write that'll be rejected
-      // A query answer xterm produced on its own, from a replayed snapshot OR
-      // from live output — the remote app sends `ESC[6n` mid-session too, and
-      // gating only the repaint left that path answering. See isDeviceReply.
-      if (isDeviceReply(data)) return;
-      if (repaintDepthRef.current > 0) return;
-      remote.paneWrite(attachId, data);
-    });
+    // Answers xterm generates BY ITSELF to device queries in the output come
+    // out of the same `onData` as the user's keystrokes. A mirror must never
+    // send them: the machine that owns the pane has its own terminal, that one
+    // is the authoritative responder, and a second answer is a line of garbage
+    // typed into a live remote shell. (HeadlessSnapshot avoids the problem by
+    // never wiring `onData` — a mirror cannot, it also carries real typing.)
+    // That holds for live output too (the remote app sends `ESC[6n`
+    // mid-session), not just a replay. `gateUserInput` tells the two apart by
+    // xterm's own user-input signal, not by shape: a modified F3 is byte for
+    // byte a cursor report.
+    const userInput = termRef.current
+      ? gateUserInput(termRef.current as unknown as UserInputTerminal, (data) => {
+        if (readOnlyRef.current) return; // read-only host — swallow locally, don't POST a write that'll be rejected
+        if (repaintDepthRef.current > 0) return;
+        remote.paneWrite(attachId, data);
+      })
+      : null;
+    const dataDisposable = userInput ? termRef.current?.onData(userInput) : undefined;
 
     return () => {
       offMeta();
@@ -1039,6 +1008,7 @@ export default function RemoteMirrorTerminal({ attachId, error, insecureTranspor
       offExit();
       offError();
       dataDisposable?.dispose();
+      userInput?.dispose();
       remote.paneDetach(attachId).catch(() => { /* best-effort teardown — nothing for the caller to act on */ });
     };
   }, [attachId]);

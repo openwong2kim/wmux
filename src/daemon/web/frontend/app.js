@@ -9,7 +9,7 @@
  * <select>), a dot-vocabulary connection chip, and explicit loading / empty /
  * error / auth states instead of a bare status string.
  */
-/* global Terminal, ImageAddon, wmuxAttentionFormat, pairQuery, wmuxTouchScroll, wmuxInlineImages, wmuxDeviceReply */ // provided by the inlined bundles
+/* global Terminal, ImageAddon, wmuxAttentionFormat, pairQuery, wmuxTouchScroll, wmuxInlineImages */ // provided by the inlined bundles
 (function () {
   'use strict';
   var $ = function (s) { return document.querySelector(s); };
@@ -311,6 +311,17 @@
   }
 
   /**
+   * An onData listener that forwards only what the user produced, never the
+   * answers xterm gives by itself to queries in the pane output — the desktop
+   * mirror's own gate (src/shared/terminal/userInputGate.ts). Without the
+   * shared bundle it forwards everything, as before the gate.
+   */
+  function gateUserInput(t, send) {
+    var shared = window.wmuxTerminalShared;
+    return shared && shared.gateUserInput ? shared.gateUserInput(t, send) : send;
+  }
+
+  /**
    * Stale-replay mode reset — the desktop's own module (src/shared/terminal/
    * staleReplayModeReset.ts, published as `wmuxTerminalShared`), not a copy.
    *
@@ -494,9 +505,10 @@
         sendKeys: sendInput,
         notify: touchScrollNotice
       });
-      // Live device replies (DA1, XTSMGRAPHICS, size reports) are the pane
-      // owner's to give; deviceReply.js drops them here.
-      if (allowInput) term.onData(wmuxDeviceReply.guard(function (d) {
+      // Answers xterm gives to device queries in the output (DA1, cursor and
+      // size reports, XTSMGRAPHICS) are the pane owner's to give; only what
+      // the user typed is sent (src/shared/terminal/userInputGate.ts).
+      if (allowInput) term.onData(gateUserInput(term, function (d) {
         if (termRepaints > 0) return; // parser reply to a replayed query
         sendInput(d);
       }));
@@ -1653,7 +1665,7 @@
       // focus back on each reply, which pinned the page to whichever pane
       // chattered most (caught in live dogfood — a tap looked like it did
       // nothing). Focus moves on an explicit tap only.
-      tile.term.onData(wmuxDeviceReply.guard(function (d) {
+      tile.term.onData(gateUserInput(tile.term, function (d) {
         if (tile.repaints > 0) return; // parser reply to a replayed query
         sendTo(tile.sessionId, d);
       }));

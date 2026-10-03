@@ -22,12 +22,7 @@ interface Gate {
   load: (term: object, env: Record<string, unknown>) => boolean;
   sync: (term: object, env: Record<string, unknown>) => boolean;
 }
-interface Replies {
-  isDeviceReply: (d: string) => boolean;
-  guard: (send: (d: string) => void) => (d: string) => void;
-}
 let gate: Gate;
-let replies: Replies;
 
 function evaluate<T>(file: string, name: string): T {
   const sandbox: Record<string, unknown> = { WeakMap };
@@ -37,7 +32,6 @@ function evaluate<T>(file: string, name: string): T {
 
 beforeAll(() => {
   gate = evaluate<Gate>('inlineImages.js', 'wmuxInlineImages');
-  replies = evaluate<Replies>('deviceReply.js', 'wmuxDeviceReply');
 });
 
 // The addon's sixel handler as far as capSixel touches it (addon 0.9.x).
@@ -69,20 +63,19 @@ const env = (over: Record<string, unknown> = {}) => ({
 const fakeTerm = () => ({ loadAddon: vi.fn() });
 
 describe('web client inline images', () => {
-  it('inlines the addon after xterm and both helpers before app.js', () => {
+  it('inlines the addon after xterm and the gate before app.js', () => {
     expect(html.indexOf('/*__ADDON_IMAGE_JS__*/')).toBeGreaterThan(html.indexOf('/*__XTERM_JS__*/'));
     expect(html.indexOf('/*__INLINE_IMAGES_JS__*/')).toBeLessThan(html.indexOf('/*__APP_JS__*/'));
-    expect(html.indexOf('/*__DEVICE_REPLY_JS__*/')).toBeLessThan(html.indexOf('/*__APP_JS__*/'));
     expect(build).toContain("inject(html, '/*__ADDON_IMAGE_JS__*/', addonImageJs)");
     expect(build).toContain("inject(html, '/*__INLINE_IMAGES_JS__*/', inlineImagesJs)");
-    expect(build).toContain("inject(html, '/*__DEVICE_REPLY_JS__*/', deviceReplyJs)");
   });
 
-  it('wires the gate, the reply guard and the config refresh into app.js', () => {
+  it('wires the gate, the user-input gate and the config refresh into app.js', () => {
     expect(app).toMatch(/term\.open\(termHost\);\s+loadImageAddon\(term\);/);
     expect(app).toMatch(/tile\.term\.open\(host\);\s+loadImageAddon\(tile\.term\);/);
-    expect(app).toContain('term.onData(wmuxDeviceReply.guard(');
-    expect(app).toContain('tile.term.onData(wmuxDeviceReply.guard(');
+    expect(app).toContain('term.onData(gateUserInput(term, ');
+    expect(app).toContain('tile.term.onData(gateUserInput(tile.term, ');
+    expect(app).toContain('shared.gateUserInput(t, send)');
     expect(app).toContain('inlineImagesEnabled = cfg.inlineImages !== false;');
     expect(app.match(/refreshInlineImages\(\); \}/g)?.length).toBe(2);
   });
@@ -193,34 +186,5 @@ describe('web client inline images', () => {
       t.buffer.active.getLine(i)?.translateToString(true) ?? '');
     expect(lines).toContain('alive');
     t.dispose();
-  });
-});
-
-describe('web client device replies', () => {
-  it('a DA1 / DA2 / status query in the output sends nothing to the pane', async () => {
-    const t = new Terminal({ cols: 40, rows: 6, allowProposedApi: true });
-    const sent: string[] = [];
-    const raw: string[] = [];
-    t.onData((d) => raw.push(d));
-    t.onData(replies.guard((d) => sent.push(d)));
-    const queries = '\x1b[c\x1b[>c\x1b[6n\x1b[5n\x1b[?1;1;0S\x1b]11;?\x07';
-    await new Promise<void>((resolve) => t.write(`out${queries}put\r\n`, resolve));
-    expect(raw.length).toBeGreaterThan(0); // xterm did answer
-    expect(sent).toEqual([]);
-    t.dispose();
-  });
-
-  it('recognises the addon and window replies and lets typing through', () => {
-    for (const reply of ['\x1b[?62;4;9;22c', '\x1b[?1;0;256S', '\x1b[?2;0;2048;2048S', '\x1b[4;480;640t', '\x1b[>0;276;0c']) {
-      expect(replies.isDeviceReply(reply)).toBe(true);
-    }
-    for (const key of ['a', '\r', '\x1b[A', '\x1b[1;5A', '\x1b[15~', '\x1bOS', '\x03', '\x1b[97;5u', 'cat six.txt']) {
-      expect(replies.isDeviceReply(key)).toBe(false);
-    }
-    const sent: string[] = [];
-    const send = replies.guard((d) => sent.push(d));
-    send('\x1b[?62;4;9;22c');
-    send('ls\r');
-    expect(sent).toEqual(['ls\r']);
   });
 });

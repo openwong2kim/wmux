@@ -36,7 +36,22 @@ class FakeTerminal {
   resized: Array<{ cols: number; rows: number }> = [];
   resetCalls = 0;
   disposed = false;
+  /** xterm's user-input signal (`coreService.onUserInput`), which fires just
+   *  before the `onData` of anything the user produced — the gate keys on it. */
+  userInputListeners: Array<() => void> = [];
+  _core = {
+    coreService: {
+      onUserInput: (listener: () => void) => {
+        this.userInputListeners.push(listener);
+        return { dispose: vi.fn() };
+      },
+    },
+  };
+  /** User input: the signal, then `onData` — what xterm does for a key. */
   onDataHandler: ((data: string) => void) | null = null;
+  rawDataHandler: ((data: string) => void) | null = null;
+  /** An answer xterm gives by itself to a query in the output: `onData` alone. */
+  reply(data: string): void { this.rawDataHandler?.(data); }
 
   open(): void {
     // Ordering only — the fake never touches the DOM container.
@@ -75,7 +90,11 @@ class FakeTerminal {
     cbs.forEach((cb) => cb());
   }
   onData(cb: (data: string) => void): { dispose: () => void } {
-    this.onDataHandler = cb;
+    this.rawDataHandler = cb;
+    this.onDataHandler = (data) => {
+      this.userInputListeners.forEach((listener) => listener());
+      cb(data);
+    };
     return { dispose: vi.fn() };
   }
 
@@ -457,19 +476,21 @@ describe('RemoteMirrorTerminal', () => {
       '\x1b[0n', // DSR
       '\x1b[24;80R', // CPR
       '\x1b[?2004;1$y', // DECRPM
+      '\x1b[4;2$y', // ANSI DECRPM (no `?`)
       '\x1b[8;24;80t', // text-area report
       '\x1bP1$r0m\x1b\\', // DECRQSS
       '\x1b]11;rgb:1e1e/1e1e/2e2e\x07', // OSC background report
     ];
-    act(() => { replies.forEach((r) => term.onDataHandler?.(r)); });
+    act(() => { replies.forEach((r) => term.reply(r)); });
     expect(paneWrite).not.toHaveBeenCalled();
 
     unmount();
   });
 
   it('still forwards the escape sequences a KEY produces', () => {
-    // The filter is shape-based, so it has to leave real input alone: arrows,
-    // modified arrows, function keys, shift-tab, bracketed paste, mouse.
+    // Real input passes whatever its shape: arrows, modified arrows, function
+    // keys (a modified F3 is byte for byte a cursor report), shift-tab,
+    // bracketed paste, mouse.
     const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
     const term = termInstances[0];
     attach();
@@ -478,6 +499,7 @@ describe('RemoteMirrorTerminal', () => {
     const keys = [
       '\x1b[A', '\x1b[D', '\x1b[1;5C', '\x1b[3~', '\x1b[15~', '\x1b[Z',
       '\x1bOR', '\x1b[200~pasted\x1b[201~', '\x1b[<0;10;5M', '\x03',
+      '\x1b[1;2R', '\x1b[1;5R',
     ];
     act(() => { keys.forEach((k) => term.onDataHandler?.(k)); });
     expect(paneWrite).toHaveBeenCalledTimes(keys.length);
