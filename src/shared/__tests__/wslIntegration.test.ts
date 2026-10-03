@@ -153,7 +153,7 @@ describe('WSL per-launch Claude integration', () => {
       fs.writeFileSync(path.join(dir, '.bashrc'), `export PATH="${nvmBin}:$PATH"\n`);
 
       const started = Date.now();
-      const out = execFileSync('script', ['-qec', `/bin/sh ${shimOf(dir)} --help`, '/dev/null'], {
+      const out = execFileSync('script', ['-qec', `/bin/sh '${shimOf(dir)}' --help`, '/dev/null'], {
         encoding: 'utf8', env, timeout: 20_000, killSignal: 'SIGKILL',
       });
 

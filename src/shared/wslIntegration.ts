@@ -60,10 +60,10 @@ if [ -z "$real" ]; then
   command -v timeout >/dev/null 2>&1 && wmux_bash="timeout -k 1 10 /bin/bash"
   # #1721 — and in its OWN session. timeout runs bash in a background process
   # group; with a controlling terminal, which every real pane has, the
-  # interactive bash tries to take the terminal, is stopped (SIGTTOU), and sits
-  # there until the KILL above. Measured in a WSL pane: 11 s, then the 127
-  # below for a claude that is installed. With no controlling terminal there is
-  # nothing to take, and a startup file cannot read or write the pane's tty.
+  # interactive bash finds itself outside the terminal's foreground group, is
+  # stopped (SIGTTIN/SIGTTOU), and sits there until the KILL above. Measured in
+  # a WSL pane: 11 s, then the 127 below for a claude that is installed. With
+  # no controlling terminal there is nothing to take, and /dev/tty is gone.
   # setsid outside timeout: if setsid has to fork, timeout still bounds bash.
   # util-linux and busybox both ship setsid; without it, behave as before.
   command -v setsid >/dev/null 2>&1 && wmux_bash="setsid $wmux_bash"
