@@ -8,6 +8,7 @@ import { focusNotificationTarget } from '../../hooks/useNotificationListener';
 import Badge from '../ui/Badge';
 import Button from '../ui/Button';
 import { IconBell, IconRobot, IconWarning, IconX } from '../icons';
+import { TITLEBAR_HEIGHT } from '../Titlebar/Titlebar';
 
 // ─── Pure helpers (exported for tests) ────────────────────────────────────────
 
@@ -40,6 +41,23 @@ export function buildNotifAriaLabel(notif: Notification, now: number = Date.now(
   const rel = timeAgo(notif.timestamp, now);
   const state = notif.read ? 'read' : 'unread';
   return `${typeName}, ${notif.title}, ${rel}, ${state}`;
+}
+
+/**
+ * Marks the control that toggles the panel (the titlebar bell). An
+ * outside-click must not close the panel when it lands there, or the bell's
+ * own click would immediately reopen it.
+ */
+export const NOTIFICATION_TOGGLE_ATTR = 'data-notification-toggle';
+
+/**
+ * Whether a pointer press at `target` should dismiss the open panel: anywhere
+ * outside the panel except the toggle that opened it.
+ */
+export function isOutsidePanelPress(target: EventTarget | null, panel: Element | null): boolean {
+  if (!panel || !(target instanceof Element)) return false;
+  if (panel.contains(target)) return false;
+  return !target.closest(`[${NOTIFICATION_TOGGLE_ATTR}]`);
 }
 
 // ─── Scroll-position memory (cmux parity) ─────────────────────────────────────
@@ -111,6 +129,7 @@ export interface NotificationPanelViewProps {
   markAllReadBtnRef?: React.Ref<HTMLButtonElement>;
   listRef?: React.Ref<HTMLDivElement>;
   onListScroll?: React.UIEventHandler<HTMLDivElement>;
+  panelRef?: React.Ref<HTMLDivElement>;
 }
 
 /**
@@ -123,19 +142,28 @@ export function NotificationPanelView(props: NotificationPanelViewProps): ReactE
     markAllReadLabel, markWorkspaceReadLabel, clearLabel, closeLabel,
     onNotifClick, onNotifKeyDown, onClose,
     onMarkAllRead, onMarkWorkspaceRead, onClear,
-    firstUnreadRef, markAllReadBtnRef, listRef, onListScroll,
+    firstUnreadRef, markAllReadBtnRef, listRef, onListScroll, panelRef,
   } = props;
 
   const firstUnreadIdx = notifications.findIndex((n) => !n.read);
 
   return (
     <div
+      ref={panelRef}
       role="dialog"
       aria-label={dialogLabel}
       // A drawer, not a floating card: the quiet surface rules (hairline, one
       // soft shadow, Inter, flat controls) without the 14px card radius.
-      className="ui-surface fixed right-0 top-0 h-full w-80 bg-[var(--bg-mantle)] z-50 flex flex-col font-sans notification-panel-enter"
-      style={{ borderLeft: '1px solid var(--surface-hairline)', boxShadow: 'var(--surface-shadow)' }}
+      className="ui-surface fixed right-0 bottom-0 w-80 bg-[var(--bg-mantle)] z-50 flex flex-col font-sans notification-panel-enter"
+      style={{
+        // Hang under the titlebar (#1747). On Windows the top-right
+        // TITLEBAR_HEIGHT strip belongs to the native caption buttons
+        // (titleBarOverlay), drawn by the OS above any z-index, so a drawer
+        // starting at top: 0 put its close button under them.
+        top: TITLEBAR_HEIGHT,
+        borderLeft: '1px solid var(--surface-hairline)',
+        boxShadow: 'var(--surface-shadow)',
+      }}
       {...tokenAttrs('bgMantle', 'bg')}
     >
       {/* Header */}
@@ -249,6 +277,7 @@ export default function NotificationPanel() {
   const firstUnreadRef = useRef<HTMLDivElement>(null);
   const markAllReadBtnRef = useRef<HTMLButtonElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   // Track the notification id the firstUnreadRef captured at render time so
   // the rAF focus pass can detect a race (new notification arrived between
   // render and rAF firing) and degrade to the mark-all button instead of
@@ -276,6 +305,23 @@ export default function NotificationPanel() {
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [notificationPanelVisible, toggleNotificationPanel]);
+
+  // ─── Outside click to close ────────────────────────────────────────────────
+  // Deferred one tick (the PresetPicker / create-channel pattern) so the
+  // press that opened the panel cannot also close it.
+  useEffect(() => {
+    if (!notificationPanelVisible) return;
+    const onDown = (e: MouseEvent) => {
+      if (isOutsidePanelPress(e.target, panelRef.current)) {
+        useStore.getState().setNotificationPanelVisible(false);
+      }
+    };
+    const timer = setTimeout(() => document.addEventListener('mousedown', onDown), 0);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener('mousedown', onDown);
+    };
+  }, [notificationPanelVisible]);
 
   // ─── Initial focus: first unread, else markAllRead button (D5) ─────────────
   // Defer with requestAnimationFrame so the enter animation has flipped the
@@ -404,6 +450,7 @@ export default function NotificationPanel() {
       markAllReadBtnRef={markAllReadBtnRef}
       listRef={listRef}
       onListScroll={handleListScroll}
+      panelRef={panelRef}
     />
   );
 }

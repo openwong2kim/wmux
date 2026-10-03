@@ -106,6 +106,7 @@ export function NotificationBellBadgeView({ unreadCount, onActivate }: Notificat
       aria-label={ariaLabel}
       title={ariaLabel}
       data-testid="statusbar-notification-bell"
+      data-notification-toggle
       className="text-[var(--text-sub)] hover:text-[var(--text-main)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent-blue)] focus-visible:outline-offset-1 transition-colors px-1.5 py-0.5 min-w-[24px] min-h-[24px] inline-flex items-center justify-center rounded-sm"
       {...tokenAttrs('textSub', 'text')}
     >
