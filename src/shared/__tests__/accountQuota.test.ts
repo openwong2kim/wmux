@@ -113,4 +113,8 @@ it('isCompoundLine sees chaining outside quotes only', () => {
   expect(isCompoundLine('codex; echo done')).toBe(true);
   expect(isCompoundLine('claude | tee log')).toBe(true);
   expect(isCompoundLine('claude "a && b; c | d"')).toBe(false);
+  expect(isCompoundLine("claude 'literal $(x) > y'")).toBe(false);
+  for (const line of ['claude\necho hi', 'claude > log.txt', 'codex < in.txt', 'claude "$(cat p)"', 'claude `pwd`']) {
+    expect(isCompoundLine(line)).toBe(true);
+  }
 });

@@ -147,10 +147,15 @@ export function isNewSessionLaunch(vendor: 'claude' | 'codex', command: string |
   return first === undefined || !NON_SESSION_SUBCOMMANDS[vendor].has(first);
 }
 
-/** Whether the line runs more than one command (`;`, `&&`, `||`, `|`, `&`
- *  outside quotes), so replacing it would drop the rest. */
+/** Whether the line does more than launch the agent — chaining (`;`, `&&`,
+ *  `||`, `|`, `&`, a newline) or redirection (`>`, `>>`, `<`) outside quotes,
+ *  or command substitution (`$(`, backticks) outside single quotes — so
+ *  replacing it would drop the rest. */
 export function isCompoundLine(command: string | undefined): boolean {
-  return /[;&|]/.test((command ?? '').replace(/"[^"]*"|'[^']*'/g, ''));
+  const line = command ?? '';
+  // Substitution also runs inside double quotes; only single quotes stop it.
+  return /[;&|<>\r\n`]|\$\(/.test(line.replace(/"[^"]*"|'[^']*'/g, ''))
+    || /`|\$\(/.test(line.replace(/'[^']*'/g, ''));
 }
 
 /** Whether `env` sets `key` (non-empty). Windows env names are case-insensitive. */
