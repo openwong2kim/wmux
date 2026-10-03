@@ -178,7 +178,14 @@ export class AccountRotationService {
     // registered account wmux can measure: leave it alone.
     if (!bound || !pool.some((a) => a.id === bound)) return { kind: 'keep' };
     const now = this.now();
-    const read = await Promise.all(pool.map(async (a) => ({ a, reading: await this.reading(a, true) })));
+    // The bound account first: while it has quota nothing else is read.
+    const boundAccount = pool.find((a) => a.id === bound)!;
+    const boundReading = await this.reading(boundAccount, true);
+    if (evaluateQuota(boundReading, now).usable) return { kind: 'keep' };
+    const read = [
+      { a: boundAccount, reading: boundReading },
+      ...await Promise.all(pool.filter((a) => a !== boundAccount).map(async (a) => ({ a, reading: await this.reading(a, true) }))),
+    ];
     // Only a measured account is a switch target; an unmeasured one (no
     // reading, or a Claude account whose last probe failed) is never picked.
     const candidates = read

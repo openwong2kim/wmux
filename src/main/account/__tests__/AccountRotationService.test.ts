@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AccountRotationService, claudeReading, codexReading } from '../AccountRotationService';
+import { AccountRotationService, claudeReading, codexReading, type AccountRotationDeps } from '../AccountRotationService';
 import type { Account } from '../accountStore';
 import type { AccountUsageEntry } from '../AccountUsageService';
 import type { RolloutLimits } from '../../quota/codexRollout';
@@ -33,7 +33,7 @@ describe('AccountRotationService', () => {
   let codex: Record<string, RolloutLimits | null>;
   let bindings: Record<string, string>;
 
-  const make = (accounts: Account[]) => new AccountRotationService({
+  const make = (accounts: Account[], extra: AccountRotationDeps = {}) => new AccountRotationService({
     dataDir,
     now: () => NOW,
     accounts: () => accounts,
@@ -41,6 +41,7 @@ describe('AccountRotationService', () => {
     claudeUsage: { getAll: () => usageEntries, refreshNow },
     readCodexLimits: async (dir) => codex[dir] ?? null,
     dirExists: () => true,
+    ...extra,
   });
 
   beforeEach(() => {
@@ -87,6 +88,23 @@ describe('AccountRotationService', () => {
     usageEntries = [{ ...usage('a', 10, NOW - 60 * 60_000), fetchedAtMs: NOW }, usage('b', 10)];
     await s.prepareLaunch('claude', 'ws');
     expect(refreshNow).toHaveBeenCalledWith('a');
+  });
+
+  it('reads only the bound account while it has quota', async () => {
+    const s = make([acct('a', 'claude'), acct('b', 'claude')]);
+    await s.setEnabled('claude', true);
+    bindings['ws:claude'] = 'a';
+    usageEntries = [usage('a', 10), usage('b', 10, NOW - 60 * 60_000)];
+    expect(await s.prepareLaunch('claude', 'ws')).toEqual({ kind: 'keep' });
+    expect(refreshNow).not.toHaveBeenCalled();
+
+    const read = vi.fn(async (dir: string) => codex[dir] ?? null);
+    const c = make([acct('x', 'codex'), acct('y', 'codex')], { readCodexLimits: read });
+    await c.setEnabled('codex', true);
+    bindings['ws:codex'] = 'x';
+    codex[path.join('/acc/x', 'sessions')] = limits(20);
+    expect(await c.prepareLaunch('codex', 'ws')).toEqual({ kind: 'keep' });
+    expect(read.mock.calls).toEqual([[path.join('/acc/x', 'sessions')]]);
   });
 
   it('holds a Codex launch when every account is out', async () => {
