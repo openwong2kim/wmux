@@ -6,7 +6,7 @@ import {
   buildGitEnv, createGitRunner, gitArgv, resolveFilterOverrides, GIT_MAX_BUFFER_BYTES,
   type GitRunner, type GitRunResult,
 } from './sessionDiff';
-import { canonicalPath, listWorktrees, resolvePhoneGitRepo, type PhoneGitRepo, type WorktreeRow } from './phoneGitRead';
+import { canonicalPath, listWorktrees, pathWithin, resolvePhoneGitRepo, samePath, type PhoneGitRepo, type WorktreeRow } from './phoneGitRead';
 import { PhoneWorktreeReceipts, ReceiptCapacityError, type PhoneWorktreeExec, type PhoneWorktreeOutcome } from './phoneWorktreeReceipts';
 import {
   parseWorktreeCreateBody, phoneWorktreeAddArgs, phoneWorktreeNames, PHONE_WORKTREE_DIR_PREFIX, PHONE_WORKTREE_RETRY_AFTER_MS,
@@ -484,7 +484,7 @@ export class PhoneWorktreeService {
     // outcome is unknown and a repeat of the same request recovers it.
     const dirLeft = await fs.promises.lstat(dir).then(() => true, () => false);
     const listed = await listWorktrees(this.git, cwd).catch(() => null);
-    const registered = listed === null ? null : listed.some((w) => path.resolve(w.path) === dir);
+    const registered = listed === null ? null : listed.some((w) => samePath(w.path, dir));
     // `rev-parse --verify -q` answers 1 for a missing ref; anything else decides nothing.
     let branchLeft: boolean | null = made1.ok ? true : made1.ran !== false && made1.code === 1 ? false : null;
     // Git answered with a failure and removed its checkout, keeping only the
@@ -510,7 +510,7 @@ export class PhoneWorktreeService {
     const cwds = await this.opts.liveCwds?.() ?? [];
     for (const cwd of cwds) {
       const real = await canonicalPath(cwd);
-      if (real === dir || real.startsWith(dir + path.sep)) return true;
+      if (pathWithin(real, dir)) return true;
     }
     return false;
   }
@@ -531,7 +531,7 @@ export class PhoneWorktreeService {
     const m = /^gitdir: (.+?)\r?\n?$/.exec(text);
     if (!m) return null;
     const admin = await canonicalPath(path.resolve(dir, m[1]));
-    return path.dirname(admin) === path.join(repo.commonReal, 'worktrees') ? admin : null;
+    return samePath(path.dirname(admin), path.join(repo.commonReal, 'worktrees')) ? admin : null;
   }
 
   /**
@@ -564,7 +564,7 @@ export class PhoneWorktreeService {
     const { dir, branch } = exec;
     let worktrees = await this.worktreesOf(cwd);
     if (!worktrees) return RETRY;
-    const here = worktrees.find((w) => path.resolve(w.path) === dir);
+    const here = worktrees.find((w) => samePath(w.path, dir));
     if (here) {
       const settled = await this.settleCheckout(job, requestId, config, repo, exec, here);
       if (settled) return settled;

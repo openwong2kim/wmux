@@ -7,6 +7,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { buildGitEnv, createGitRunner, type GitRunner } from '../sessionDiff';
 import { createAddRunner, PhoneWorktreeService, scanTree, type PhoneWorktreeOptions } from '../phoneWorktree';
+import { pathWithin, samePath } from '../phoneGitRead';
 import { PHONE_WORKTREE_RECEIPTS_FILE, PHONE_WORKTREE_RECEIPTS_PER_OWNER, PhoneWorktreeReceipts } from '../phoneWorktreeReceipts';
 import { parseWorktreeCreateBody, PHONE_WORKTREE_RECEIPT_TTL_MS, PHONE_WORKTREE_RETRY_AFTER_MS } from '../../../shared/phoneGitV1';
 import { windowsDirectoryHold } from '../../../shared/directoryHold';
@@ -571,6 +572,8 @@ describe('phone worktree creation', { timeout: 60_000 }, () => {
   it('touches no other registration of the repository, and clears its own whose directory is gone', async () => {
     const elsewhere = path.join(root, 'elsewhere');
     run(repo, 'worktree', 'add', '-q', '-b', 'side', elsewhere);
+    // Git lists it by its long, canonical spelling (on Windows the temp dir can be an 8.3 name).
+    const elsewhereReal = fs.realpathSync.native(elsewhere);
     fs.rmSync(elsewhere, { recursive: true });
     const gone = await cutOff('gone');
     run(repo, 'worktree', 'unlock', gone.dir);
@@ -583,7 +586,9 @@ describe('phone worktree creation', { timeout: 60_000 }, () => {
       expect((await create(service({ git: recording(calls) }), repo, slug, { requestId })).receipt).toMatchObject({ state: 'created', cwd: dir });
       expect(issued(calls, 'worktree', 'prune')).toBe(false);
     }
-    expect(run(repo, 'worktree', 'list', '--porcelain')).toContain(`worktree ${elsewhere}`);
+    const listed = run(repo, 'worktree', 'list', '--porcelain').split('\n')
+      .filter((line) => line.startsWith('worktree ')).map((line) => line.slice('worktree '.length));
+    expect(listed.some((p) => samePath(p, elsewhereReal))).toBe(true);
   });
 
   it('leaves the request retryable when the outcome cannot be decided, and refuses only a confirmed failure', async () => {
@@ -661,5 +666,24 @@ describe('phone worktree creation', { timeout: 60_000 }, () => {
     const deepDirs = async () => ({ filters: 'unused' as const, longest: 10, longestDir: 240 });
     expect((await create(service({ platform: 'win32', scan: deepDirs }), repo, 'dirs')).receipt).toMatchObject({ state: 'refused', error: 'path-too-long' });
     expect((await create(service({ platform: 'linux', scan: deepDirs }), repo, 'dirs2')).receipt).toMatchObject({ state: 'created' });
+  });
+});
+
+describe('path comparison', () => {
+  it('reads a Windows path git prints as the same path, whatever its separators and letter case', () => {
+    const w = path.win32;
+    expect(samePath('C:/Users/runneradmin/AppData/Local/Temp/x/elsewhere', 'C:\\Users\\runneradmin\\AppData\\Local\\Temp\\x\\elsewhere', w)).toBe(true);
+    expect(samePath('c:/users/RunnerAdmin/x', 'C:\\Users\\runneradmin\\x', w)).toBe(true);
+    expect(samePath('C:/Users/runneradmin/x', 'C:\\Users\\runneradmin\\y', w)).toBe(false);
+    expect(pathWithin('C:/Users/a/wt/phone-x/src', 'c:\\users\\A\\wt\\phone-x', w)).toBe(true);
+    expect(pathWithin('C:/Users/a/wt/phone-x2', 'C:\\Users\\a\\wt\\phone-x', w)).toBe(false);
+  });
+
+  it('keeps letter case on POSIX', () => {
+    const p = path.posix;
+    expect(samePath('/tmp/a/./b/', '/tmp/a/b', p)).toBe(true);
+    expect(samePath('/tmp/A', '/tmp/a', p)).toBe(false);
+    expect(pathWithin('/tmp/a/b', '/tmp/a', p)).toBe(true);
+    expect(pathWithin('/tmp/ab', '/tmp/a', p)).toBe(false);
   });
 });

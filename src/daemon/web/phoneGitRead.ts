@@ -63,6 +63,24 @@ const failed = () => new SessionGitError(409, 'git-operation-failed');
 /** One canonical spelling for cache keys and path matching: the native realpath. */
 export const canonicalPath = async (p: string) => fs.realpath(p).catch(() => path.resolve(p));
 /**
+ * A path as a comparison key: resolved with the platform's separators, and
+ * case-folded on Windows, whose paths are case-insensitive (git prints its
+ * worktree paths with forward slashes there). Compare canonical paths.
+ */
+export function pathKey(p: string, platformPath: typeof path = path): string {
+  const resolved = platformPath.resolve(p);
+  return platformPath === path.win32 ? resolved.toLowerCase() : resolved;
+}
+/** `a` and `b` name the same path (see pathKey). */
+export const samePath = (a: string, b: string, platformPath: typeof path = path): boolean =>
+  pathKey(a, platformPath) === pathKey(b, platformPath);
+/** `inner` is `outer` or lies under it (see pathKey). */
+export function pathWithin(inner: string, outer: string, platformPath: typeof path = path): boolean {
+  const a = pathKey(inner, platformPath);
+  const b = pathKey(outer, platformPath);
+  return a === b || a.startsWith(b.endsWith(platformPath.sep) ? b : b + platformPath.sep);
+}
+/**
  * The desktop's `repoHash` realpath exactly: the JS `realpathSync`, raw path on
  * failure. The native realpath differs on Windows (it expands 8.3 short
  * names), and a different string is a different projectId and directory.
