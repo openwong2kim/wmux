@@ -32,7 +32,7 @@ import type { Pane, PaneLeaf } from '../../../shared/types';
 import type { WorktreeEntry } from '../../../shared/worktreeParse';
 import type { MergeSessionStatus } from '../../../main/git/mergeSession';
 import type { DiffReadResult, DiffReadError } from '../../../shared/diffParse';
-import { PrSection } from './PrSection';
+import { GitWorkSection } from './GitWorkSection';
 import { PrBadge } from '../Sidebar/WorkspaceItem';
 import { isPlausibleCwd } from '../../../shared/cwdShape';
 import { showWorkspaces } from '../../utils/showWorkspaces';
@@ -750,9 +750,9 @@ export function GitTab({
       {repoPath && showSections && (
         <div className={`wmux-git-sections${showPrs ? '' : ' wmux-git-sections-single'}`}>
           {showPrs && (
-            <section className="wmux-git-col" aria-label={t('git.pullRequests') || 'Pull Requests'}>
-              {/* Pull requests (gh); each PR expands to its comments. */}
-              <PrSection repoPath={repoPath} refreshKey={refreshKey} defaultOpen />
+            <section className="wmux-git-col" aria-label={t('git.work.label')}>
+              {/* Pull requests | Issues (gh); a PR expands to its comments, an issue to its detail. */}
+              <GitWorkSection repoPath={repoPath} refreshKey={refreshKey} defaultOpen />
             </section>
           )}
           <section className="wmux-git-col" aria-label={t('git.worktrees') || 'Worktrees'}>

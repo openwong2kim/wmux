@@ -2213,6 +2213,54 @@ html[data-fullscreen] .wmux-shell-body {
 .wmux-git-prs[data-open] .wmux-git-chevron { transform: rotate(90deg); }
 .wmux-git-count { color: var(--text-muted); font-weight: 400; font-variant-numeric: tabular-nums; }
 
+/* Pull requests | Issues: a disclosure chevron, then two text tabs; the chosen
+ * one wears the neutral selection fill. */
+.wmux-git-work-head { display: flex; align-items: center; gap: 2px; height: 28px; }
+.wmux-git-work-toggle {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; border-radius: 6px; color: var(--text-muted);
+}
+.wmux-git-work-toggle:hover { background: var(--hover-fill); color: var(--text-main); }
+.wmux-git-work-tabs { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.wmux-git-work-tab {
+  height: 24px; padding: 0 8px; border-radius: 6px;
+  font-size: 11px; font-weight: 500; color: var(--text-muted); white-space: nowrap;
+}
+.wmux-git-work-tab:hover { background: var(--hover-fill); color: var(--text-main); }
+.wmux-git-work-tab[aria-selected='true'] { background: var(--selection); color: var(--text-main); }
+
+/* Issues list: number, title, neutral label chips (colour carries state only,
+ * so GitHub's label colours are not drawn), age. */
+.wmux-git-issue-filter { display: flex; align-items: center; gap: 6px; padding: 4px 4px 6px; }
+.wmux-git-issue-filter .ui-select > select { min-height: 26px; font-size: 11px; padding-left: 8px; }
+.wmux-git-issue-label-input {
+  flex: 1; min-width: 0; height: 26px; padding: 0 8px; border-radius: 6px;
+  border: 1px solid var(--line); background: transparent; font-size: 11px; color: var(--text-main);
+}
+.wmux-git-issue-label-input::placeholder { color: var(--text-muted); }
+.wmux-git-issue { border-bottom: 1px solid var(--border-soft); }
+.wmux-git-issue-row {
+  display: flex; align-items: center; gap: 8px; width: 100%; height: 36px; padding: 0 8px;
+  text-align: left; border-radius: 6px;
+}
+.wmux-git-issue-row:hover { background: var(--hover-fill); }
+.wmux-git-issue-row[aria-expanded='true'] { background: var(--selection-subtle); }
+.wmux-git-issue-num { flex-shrink: 0; font-size: 11px; color: var(--text-muted); font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); font-variant-numeric: tabular-nums; }
+.wmux-git-issue-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-main); }
+.wmux-git-issue-label {
+  flex-shrink: 0; max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 1px 6px; border-radius: var(--chip-radius, 9999px); background: var(--selection);
+  font-size: 11px; color: var(--text-sub);
+}
+.wmux-git-issue-meta { flex-shrink: 0; font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.wmux-git-issue-detail { display: flex; flex-direction: column; gap: 6px; padding: 6px 8px 10px; font-size: 12px; }
+.wmux-git-issue-byline { font-size: 11px; color: var(--text-muted); }
+.wmux-git-issue-labels { display: flex; flex-wrap: wrap; gap: 4px; }
+.wmux-git-issue-body { color: var(--text-sub); overflow-wrap: anywhere; }
+.wmux-git-issue-timeline { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 0; padding: 0; list-style: none; }
+.wmux-git-issue-comment { padding-top: 6px; border-top: 1px solid var(--border-soft); }
+.wmux-git-issue-actions { display: flex; gap: 8px; padding-top: 2px; }
+
 .wmux-git-row {
   position: relative;
   display: flex;

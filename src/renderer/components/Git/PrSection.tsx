@@ -21,7 +21,7 @@ import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
 import { renderBrainMarkdown } from '../Deck/BrainMarkdown';
 import { IconChevron } from '../icons';
-import { GH_LOGIN_COMMAND, openGithubLoginTab } from './connectGithub';
+import { GhGateNotice } from './GhGateNotice';
 import type { PrSummary, PrComment } from '../../../shared/prSurface';
 
 const POLL_MS = 30_000;
@@ -61,7 +61,7 @@ function checksClass(checks: PrSummary['checks']): string {
   return 'text-transparent';
 }
 
-function relTime(iso: string, t: (k: string) => string): string {
+export function relTime(iso: string, t: (k: string) => string): string {
   if (!iso) return '';
   const ms = Date.now() - Date.parse(iso);
   if (!Number.isFinite(ms) || ms < 0) return '';
@@ -73,7 +73,7 @@ function relTime(iso: string, t: (k: string) => string): string {
   return `${Math.floor(h / 24)}d`;
 }
 
-export function PrSection({ repoPath, refreshKey = 0, defaultOpen = false, poll = true, lazy = false }: {
+export function PrSection({ repoPath, refreshKey = 0, defaultOpen = false, poll = true, lazy = false, open: openProp, onCount }: {
   repoPath: string | null;
   refreshKey?: number;
   /** Open on mount (the Git page has room for the list). */
@@ -82,16 +82,17 @@ export function PrSection({ repoPath, refreshKey = 0, defaultOpen = false, poll 
   poll?: boolean;
   /** Read nothing until first opened, then once (another repo's list). */
   lazy?: boolean;
+  /** Set by the Pull requests | Issues switch, which draws the header and
+   *  owns the disclosure; this section then draws only the list. */
+  open?: boolean;
+  /** The open PR count for that header (null until read). */
+  onCount?: (count: number | null) => void;
 }): React.ReactElement | null {
   const t = useT();
   const [state, setState] = useState<ListState>({ kind: 'loading' });
-  const [open, setOpen] = useState(defaultOpen);
-  // Connect GitHub: the sign-in tab could not be opened, so the command is
-  // shown to copy instead.
-  const [loginFallback, setLoginFallback] = useState(false);
-  const [copied, setCopied] = useState(false);
-  // One sign-in tab per click: the button is off while one is opening.
-  const [connecting, setConnecting] = useState(false);
+  const [openState, setOpen] = useState(defaultOpen);
+  const embedded = openProp !== undefined;
+  const open = openProp ?? openState;
   // Request generation: bumped on unmount and when the window hides, so a late
   // response is dropped and starts nothing.
   const gen = useRef(0);
@@ -224,11 +225,16 @@ export function PrSection({ repoPath, refreshKey = 0, defaultOpen = false, poll 
     [expanded, repoPath, fetchComments],
   );
 
+  const count = state.kind === 'ready' ? state.prs.length : null;
+  const onCountRef = useRef(onCount);
+  onCountRef.current = onCount;
+  useEffect(() => { onCountRef.current?.(count); }, [count]);
+
   if (!repoPath) return null;
 
   return (
     <div data-pr-section className="wmux-git-prs" data-open={open ? 'true' : undefined}>
-      <button
+      {!embedded && <button
         type="button"
         className={`wmux-git-subhead wmux-git-disclosure ${FOCUS_RING}`}
         aria-expanded={open}
@@ -240,7 +246,7 @@ export function PrSection({ repoPath, refreshKey = 0, defaultOpen = false, poll 
         {state.kind === 'ready' && (
           <span className="wmux-git-count">· {state.prs.length >= 100 ? '100+' : state.prs.length}</span>
         )}
-      </button>
+      </button>}
 
       {open && <>
       {state.kind === 'loading' && (
@@ -249,79 +255,19 @@ export function PrSection({ repoPath, refreshKey = 0, defaultOpen = false, poll 
         </div>
       )}
 
-      {state.kind === 'gated' && state.provider === 'github' && state.code === 'cli-missing' && (
-        // gh is not installed: signing in cannot work yet, so only the way to
-        // get it and a re-check (which probes past the main-side cache).
-        <div className="wmux-git-connect" data-git-install>
-          <p className="wmux-git-connect-title">{t('git.connect.installTitle')}</p>
-          <p className="wmux-git-connect-desc">{t('git.connect.installDesc')}</p>
-          <div className="wmux-git-connect-actions">
-            <button type="button" className={`wmux-git-button ${FOCUS_RING}`} onClick={() => void load(true)} data-git-connect-recheck>
-              {t('git.connect.recheck')}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {state.kind === 'gated' && state.provider === 'github' && state.code === 'unauthenticated' && (
-        // Not connected: one way in. gh signs in through the browser and keeps
-        // the credential itself; nothing is stored here.
-        <div className="wmux-git-connect" data-git-connect>
-          <p className="wmux-git-connect-title">{t('git.connect.title')}</p>
-          <p className="wmux-git-connect-desc">{t('git.connect.desc')}</p>
-          <div className="wmux-git-connect-actions">
-            <button
-              type="button"
-              className={`wmux-git-primary ${FOCUS_RING}`}
-              data-git-connect-button
-              disabled={connecting}
-              onClick={async () => {
-                if (connecting) return;
-                setConnecting(true);
-                try {
-                  const ok = await openGithubLoginTab(t('git.connect.tabTitle'));
-                  if (!ok) setLoginFallback(true);
-                } finally {
-                  setConnecting(false);
-                }
-              }}
-            >
-              {t('git.connect.button')}
-            </button>
-            <button type="button" className={`wmux-git-button ${FOCUS_RING}`} onClick={() => void load(true)} data-git-connect-recheck>
-              {t('git.connect.recheck')}
-            </button>
-          </div>
-          {loginFallback && (
-            <div className="wmux-git-connect-cmd" data-git-connect-command>
-              <code>{GH_LOGIN_COMMAND}</code>
-              <button
-                type="button"
-                className={`wmux-git-button ${FOCUS_RING}`}
-                onClick={() => {
-                  void window.clipboardAPI?.writeText?.(GH_LOGIN_COMMAND);
-                  setCopied(true);
-                }}
-              >
-                {copied ? t('git.connect.copied') : t('git.connect.copy')}
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-
-      {state.kind === 'gated' && !(state.provider === 'github' && (state.code === 'cli-missing' || state.code === 'unauthenticated')) && (
-        // CLI 미설치/미인증/무remote — fail-closed 안내(조용한 빈 섹션 금지).
-        // cli-missing/unauthenticated 문구는 provider(gh/glab)별로 다르므로
-        // 핸들러가 내려준 message를 우선한다(self-hosted면 호스트명 포함).
-        <div className="px-3 py-3 text-[11px] text-[var(--text-muted)] break-words" {...tokenAttrs('textMuted', 'text')}>
-          {state.code === 'no-remote'
+      {state.kind === 'gated' && (
+        // gh/glab missing or signed out, or no remote: fail-closed notice. For
+        // glab the handler's message names the host (self-hosted GitLab).
+        <GhGateNotice
+          gate={state}
+          onRecheck={() => void load(true)}
+          fallback={state.code === 'no-remote'
             ? t('git.noRemote') || 'This repository has no origin remote.'
             : state.message ||
               (state.code === 'cli-missing'
                 ? t('git.ghMissing') || 'CLI is not installed.'
                 : t('git.ghUnauth') || 'CLI is not authenticated.')}
-        </div>
+        />
       )}
 
       {state.kind === 'ready' && state.prs.length === 0 && (

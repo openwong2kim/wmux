@@ -2,10 +2,10 @@
 //
 // The rail's Git page: the active workspace's current-branch card on top,
 // then a scope filter — This repo (the active pane's repo) or All repos (every
-// open workspace, grouped by repo) — then each repo's Pull requests and
-// Worktrees. Everything is pull-only and lives only while the page is shown:
-// leaving the page unmounts it, and the PR list polls only while it is open
-// on this page.
+// open workspace, grouped by repo) — then each repo's Pull requests | Issues
+// and Worktrees. Everything is pull-only and lives only while the page is shown:
+// leaving the page unmounts it, and the PR or issue list polls only while it
+// is open on this page.
 
 import { useEffect, useRef, useState } from 'react';
 import { useT } from '../../hooks/useT';
@@ -13,7 +13,7 @@ import { FOCUS_RING } from '../focusRing';
 import { IconRefresh } from '../icons';
 import SegmentedControl from '../ui/SegmentedControl';
 import { GitTab } from './GitTab';
-import { PrSection } from './PrSection';
+import { GitWorkSection } from './GitWorkSection';
 import { useRepoGroups } from './repoGroups';
 
 type Scope = 'repo' | 'all';
@@ -85,10 +85,10 @@ function AllRepos({ refreshKey }: { refreshKey: number }) {
             <span className="wmux-git-group-meta">{t('git.allRepos.workspaces', { count: g.workspaceCount })}</span>
           </h2>
           <div className="wmux-git-sections">
-            {/* One PR list per repo, however many clones. Only the active
-                repo's opens and polls; another repo's reads once when opened. */}
-            <section className="wmux-git-col" aria-label={t('git.pullRequests')}>
-              <PrSection repoPath={g.prPath} refreshKey={refreshKey} defaultOpen={g.active} poll={g.active} lazy={!g.active} />
+            {/* One PR / issue list per repo, however many clones. Only the
+                active repo's opens and polls; another repo's reads when opened. */}
+            <section className="wmux-git-col" aria-label={t('git.work.label')}>
+              <GitWorkSection repoPath={g.prPath} refreshKey={refreshKey} defaultOpen={g.active} poll={g.active} lazy={!g.active} />
             </section>
             <section className="wmux-git-col" aria-label={t('git.worktrees')}>
               {g.checkouts.map((c) => (
