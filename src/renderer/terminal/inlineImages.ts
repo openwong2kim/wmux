@@ -1,5 +1,6 @@
 import type { Terminal, ITerminalOptions } from '@xterm/xterm';
 import type { ImageAddon, IImageAddonOptions } from '@xterm/addon-image';
+import { capSixelImageSize, type SixelCapAddon } from '../../shared/terminal/sixelCap';
 
 /**
  * Inline terminal images (#1641): sixel (DCS … q) and the iTerm2 inline-image
@@ -93,9 +94,17 @@ export function preloadInlineImageAddon(): Promise<ImageAddonModule> {
 function activate(terminal: Terminal, attachment: Attachment, mod: ImageAddonModule): void {
   if (attachment.detached || attachments.get(terminal) !== attachment) return;
   attachment.windowOptions = { ...(terminal.options.windowOptions ?? {}) };
-  const addon = new mod.ImageAddon(INLINE_IMAGE_ADDON_OPTIONS);
+  let addon = new mod.ImageAddon(INLINE_IMAGE_ADDON_OPTIONS);
   try {
     terminal.loadAddon(addon);
+    // pixelLimit also caps a sixel image's finished size (shared with the
+    // browser terminal). Without the hook, sixel stays off rather than uncapped.
+    if (!capSixelImageSize(addon as unknown as SixelCapAddon, INLINE_IMAGE_ADDON_OPTIONS.pixelLimit)) {
+      console.warn('[wmux:inline-images] sixel size cap unavailable; sixel stays off');
+      addon.dispose();
+      addon = new mod.ImageAddon({ ...INLINE_IMAGE_ADDON_OPTIONS, sixelSupport: false });
+      terminal.loadAddon(addon);
+    }
     attachment.addon = addon;
   } catch (err) {
     // A terminal disposed between the sync and the chunk arriving.

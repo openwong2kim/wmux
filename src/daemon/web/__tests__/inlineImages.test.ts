@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { Terminal } from '@xterm/headless';
+import { capSixelImageSize } from '../../../shared/terminal/sixelCap';
 
 // Inline images in the web client (#1641). There is no bundler: the gate runs
 // only if a marker inlines it, so the shipped files are evaluated verbatim.
@@ -18,7 +19,6 @@ interface Gate {
   OPTIONS: Record<string, unknown>;
   wasmUsable: (wa: unknown) => boolean;
   optionsFor: (env: Record<string, unknown>) => Record<string, unknown>;
-  capSixel: (addon: object, pixelLimit: number) => boolean;
   load: (term: object, env: Record<string, unknown>) => boolean;
   sync: (term: object, env: Record<string, unknown>) => boolean;
 }
@@ -34,7 +34,7 @@ beforeAll(() => {
   gate = evaluate<Gate>('inlineImages.js', 'wmuxInlineImages');
 });
 
-// The addon's sixel handler as far as capSixel touches it (addon 0.9.x).
+// The addon's sixel handler as far as the shared cap touches it (addon 0.9.x).
 class FakeSixelHandler {
   _aborted = false;
   _dec = { width: 0, height: 0, release: vi.fn() };
@@ -58,7 +58,7 @@ const blockedWasm = {
   Instance: function () { return {}; },
 };
 const env = (over: Record<string, unknown> = {}) => ({
-  enabled: true, ImageAddon: addonModule, WebAssembly, createImageBitmap: bitmap, ...over,
+  enabled: true, ImageAddon: addonModule, WebAssembly, createImageBitmap: bitmap, capSixel: capSixelImageSize, ...over,
 });
 const fakeTerm = () => ({ loadAddon: vi.fn() });
 
@@ -170,6 +170,17 @@ describe('web client inline images', () => {
     const [first, second] = term.loadAddon.mock.calls.map((c) => c[0] as FakeAddon);
     expect(first.disposed).toBe(true);
     expect(second.opts.sixelSupport).toBe(false);
+  });
+
+  it('runs without sixel when the shared cap is not on the page', () => {
+    const term = fakeTerm();
+    expect(gate.load(term, env({ capSixel: null }))).toBe(true);
+    expect(term.loadAddon).toHaveBeenCalledTimes(1);
+    expect((term.loadAddon.mock.calls[0][0] as FakeAddon).opts.sixelSupport).toBe(false);
+  });
+
+  it('passes the shared cap from the terminal bundle into the gate', () => {
+    expect(app).toContain('capSixel: window.wmuxTerminalShared ? window.wmuxTerminalShared.capSixelImageSize : null');
   });
 
   it('keeps iTerm2 images off where createImageBitmap is missing', () => {

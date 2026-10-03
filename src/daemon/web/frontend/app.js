@@ -189,7 +189,8 @@
       enabled: inlineImagesEnabled,
       ImageAddon: typeof ImageAddon === 'object' ? ImageAddon : null,
       WebAssembly: typeof WebAssembly === 'object' ? WebAssembly : null,
-      createImageBitmap: typeof createImageBitmap === 'function' ? createImageBitmap : null
+      createImageBitmap: typeof createImageBitmap === 'function' ? createImageBitmap : null,
+      capSixel: window.wmuxTerminalShared ? window.wmuxTerminalShared.capSixelImageSize : null
     });
   }
   // A phone stays connected across a server-side switch, so every snapshot's

@@ -95,6 +95,41 @@ describe('inline image addon (#1641)', () => {
     }
   });
 
+  it('caps a sixel image\'s finished size at pixelLimit, and still draws one within it', async () => {
+    const term = new Terminal({ allowProposedApi: true, cols: 80, rows: 24 });
+    const spies: Array<{ mockRestore(): void }> = [];
+    try {
+      attachInlineImages(term);
+      const addon = getInlineImageAddon(term) as unknown as {
+        _handlers: Map<string, { _dec?: object }>;
+        _storage: { addImage(canvas: HTMLCanvasElement): void };
+      };
+      const sixel = addon._handlers.get('sixel')!;
+      for (let i = 0; i < 100 && !sixel._dec; i++) await new Promise((r) => setTimeout(r, 10));
+      expect(sixel._dec).toBeTruthy();
+      // What the addon's unhook does to draw: read the pixels, store a canvas.
+      const pixelReads = vi.spyOn(Object.getPrototypeOf(sixel._dec), 'data8', 'get');
+      const stored = vi.spyOn(addon._storage, 'addImage').mockImplementation(() => undefined);
+      spies.push(pixelReads, stored);
+
+      // 16380 x 6006 px: over 2^23, though the sequence itself is ~2 KB.
+      await write(term, `\x1bPq#0;2;100;0;0#0!16380~-${'~-'.repeat(1000)}\x1b\\after-large\r\n`);
+      expect(pixelReads).not.toHaveBeenCalled();
+      expect(stored).not.toHaveBeenCalled();
+      const text = Array.from({ length: term.buffer.active.length }, (_, y) =>
+        term.buffer.active.getLine(y)?.translateToString(true) ?? '').join('\n');
+      expect(text).toContain('after-large');
+
+      await write(term, '\x1bPq#0;2;0;80;0#0!40~-!40~\x1b\\');
+      expect(stored).toHaveBeenCalledTimes(1);
+      const canvas = stored.mock.calls[0][0];
+      expect([canvas.width, canvas.height]).toEqual([40, 12]);
+    } finally {
+      spies.forEach((s) => s.mockRestore());
+      term.dispose();
+    }
+  });
+
   it('never loads the addon where WebAssembly cannot compile (CSP), so images cannot stall output', async () => {
     vi.resetModules();
     const Real = WebAssembly.Module;
