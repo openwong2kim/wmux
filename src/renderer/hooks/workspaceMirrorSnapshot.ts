@@ -34,6 +34,7 @@ import { selectFleetPanes, surfaceAttentionStatus, type FleetPane, type FleetSel
 export type MirrorSnapshotState = FleetSnapshotState & {
   orchestratorRoleBindings?: StoreState['orchestratorRoleBindings'];
   sessionRestored?: StoreState['sessionRestored'];
+  sidebarPinnedIds?: StoreState['sidebarPinnedIds'];
 };
 
 /**
@@ -341,5 +342,6 @@ export function buildWorkspaceMirrorPayload(
     fleets: buildFleetSnapshots(state, ts),
     roleBindings: buildRoleBindings(state),
     sessionRestored: state.sessionRestored === true,
+    pinnedIds: [...(state.sidebarPinnedIds ?? [])],
   };
 }

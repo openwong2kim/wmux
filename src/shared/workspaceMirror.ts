@@ -103,4 +103,10 @@ export interface WorkspaceMirrorPushPayload {
    * which counts as false.
    */
   sessionRestored?: boolean;
+  /**
+   * Workspace ids pinned to the top of the sidebar (`sidebarPinnedIds`). The
+   * settle rules exempt a pinned workspace. An old renderer omits the field,
+   * which main reads as "nothing pinned".
+   */
+  pinnedIds?: string[];
 }

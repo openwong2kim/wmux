@@ -153,6 +153,10 @@ export function parseWorkspaceMirrorPayload(raw: unknown): WorkspaceMirrorPushPa
   }
   // Only a literal true counts: anything else keeps the startup Deck reconcile off.
   if (raw.sessionRestored === true) out.sessionRestored = true;
+  // Sidebar pins (settle exemption). Absent (old renderer) stays absent.
+  if (Array.isArray(raw.pinnedIds)) {
+    out.pinnedIds = raw.pinnedIds.filter((id): id is string => typeof id === 'string' && WORKSPACE_ID_RE.test(id));
+  }
   return out;
 }
 

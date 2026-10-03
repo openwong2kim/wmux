@@ -38,6 +38,12 @@ import type { ComputerUseSettingsPayload } from '../shared/computer/config';
 import type { QuickLaunchSettingsPayload } from '../shared/quickLaunch';
 import type { ResumeBinding } from '../shared/agentResume';
 import type { PaneUsageLimit, PaneUsageLimitPatch } from '../shared/usageLimit';
+import type {
+  WorkspaceSettleChangedPayload,
+  WorkspaceSettleCommand,
+  WorkspaceSettleCommandResult,
+  WorkspaceSettleSnapshot,
+} from '../shared/workspaceSettle';
 import type { DeadPaneRecovery } from '../shared/ptyRecovery';
 import type { AgentSlug } from '../shared/events';
 import type { BrowserHelpOutcome, BrowserHelpRequestInfo } from '../shared/browserHelp';
@@ -1504,6 +1510,19 @@ const electronAPI = {
     },
     update: (ptyId: string, patch: PaneUsageLimitPatch) =>
       ipcRenderer.invoke(IPC.USAGE_LIMIT_UPDATE, { ptyId, patch }) as Promise<{ ok: boolean }>,
+  },
+  // Workspace settle / snooze (shared/workspaceSettle). Main owns the state;
+  // `get` hydrates on boot, `onChanged` streams the snapshot and the changes
+  // behind it, `command` sends the user's verbs (settle, snooze, undo, ...).
+  workspaceSettle: {
+    get: () => ipcRenderer.invoke(IPC.WORKSPACE_SETTLE_GET) as Promise<WorkspaceSettleSnapshot>,
+    command: (command: WorkspaceSettleCommand) =>
+      ipcRenderer.invoke(IPC.WORKSPACE_SETTLE_COMMAND, command) as Promise<WorkspaceSettleCommandResult>,
+    onChanged: (callback: (payload: WorkspaceSettleChangedPayload) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: WorkspaceSettleChangedPayload) => callback(payload);
+      ipcRenderer.on(IPC.WORKSPACE_SETTLE_CHANGED, listener);
+      return () => { ipcRenderer.removeListener(IPC.WORKSPACE_SETTLE_CHANGED, listener); };
+    },
   },
   window: {
     hide: () => ipcRenderer.send(IPC.WINDOW_HIDE),

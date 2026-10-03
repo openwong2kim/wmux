@@ -562,6 +562,12 @@ export const IPC = {
   USAGE_LIMIT_CHANGED: 'usageLimit:changed',
   USAGE_LIMIT_LIST: 'usageLimit:list',
   USAGE_LIMIT_UPDATE: 'usageLimit:update',
+  // Workspace settle / snooze (shared/workspaceSettle). Main owns and decides
+  // the state; renderer → main snapshot read on boot and the user's verbs,
+  // main → renderer push of the snapshot plus the changes behind it (toasts).
+  WORKSPACE_SETTLE_GET: 'workspaceSettle:get',
+  WORKSPACE_SETTLE_COMMAND: 'workspaceSettle:command',
+  WORKSPACE_SETTLE_CHANGED: 'workspaceSettle:changed',
   // EventBus publish — renderer→main one-way for pane lifecycle events
   EVENTS_PUBLISH: 'events:publish',
   // Total app memory (renderer → main, invoke). Returns the summed
