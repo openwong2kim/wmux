@@ -7,6 +7,7 @@ import { FOCUS_RING } from '../focusRing';
 import { IconPlus } from '../icons';
 import PresetPicker from '../Sidebar/PresetPicker';
 import { SIDEBAR_COMPACT_WIDTH } from '../../utils/sidebarLayout';
+import { overlayColors } from '../../utils/titlebarOverlay';
 
 /**
  * Bridge redesign — custom 40px titlebar (DESIGN.md "Titlebar").
@@ -54,15 +55,10 @@ function useTitleBarOverlaySync(): void {
     const send = window.electronAPI?.window?.setTitleBarOverlay;
     if (!send) return;
     const push = () => {
-      const cs = getComputedStyle(document.documentElement);
-      // The overlay strip sits on the titlebar, which is the window frame:
-      // push the theme's frame colour when it is a plain hex (the looks set
-      // one), else the base colour as before.
-      const frame = cs.getPropertyValue('--frame-bg').trim();
-      const color = /^#[0-9a-fA-F]{6}$/.test(frame) ? frame : cs.getPropertyValue('--bg-base').trim();
-      const symbolColor = cs.getPropertyValue('--text-sub').trim();
-      // Main validates #RGB/#RRGGBB; skip empty reads during first paint.
-      if (color && symbolColor) send({ color, symbolColor });
+      // The overlay strip sits on the window frame: the colour it actually
+      // paints, as hex (overlayColors). Skipped while unreadable (first paint).
+      const colors = overlayColors();
+      if (colors) send(colors);
     };
     push();
     const mo = new MutationObserver(push);

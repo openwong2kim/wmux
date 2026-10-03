@@ -125,9 +125,11 @@ in the terminal whatever the chrome accent.
   an under-window vibrancy material behind a transparent background, and
   `data-glass` on `<html>` makes the **frame only** paint at 85% over it. The
   sheet, the panes and every terminal stay opaque, so the hero never changes
-  with the wallpaper. Under a dark theme the native appearance is pinned to
-  dark. Light looks, looks with `glass: false`, and Windows and Linux are
-  opaque. The page fades through `color-mix(… 0%, transparent)`, never the
+  with the wallpaper. Glass needs macOS itself to be dark too: the material
+  follows the system appearance, and changing that is app-wide (it would
+  flip browser surfaces' `prefers-color-scheme` and the native menus), so a
+  dark look on a light Mac keeps an opaque frame. Light looks, looks with
+  `glass: false`, and Windows and Linux are opaque. The page fades through `color-mix(… 0%, transparent)`, never the
   `transparent` keyword (which interpolates through black).
 - `BrowserWindow.backgroundColor` follows the default look so the first
   frame never flashes white; no native menu bar is visible
@@ -157,7 +159,8 @@ bar is a drag region; each interactive child opts out with `no-drag`.
   that swaps the sheet to the Settings page and shows `--selection` while it
   is up).
 - **Windows / Linux:** the native window controls sit at the right edge in
-  the `titleBarOverlay` strip, drawn in the frame colour; the titlebar icons
+  the `titleBarOverlay` strip, drawn in the colour the frame actually paints
+  (`overlayColors()`, one helper for every sender); the titlebar icons
   sit left of them inside the area the titlebar already reserves.
 - The bottom divider, when drawn, is an inset hairline so the 40px content
   box stays exact.

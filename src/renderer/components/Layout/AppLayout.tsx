@@ -91,6 +91,7 @@ import {
   type DeadPaneSessionSnapshot,
 } from '../../../shared/ptyRecovery';
 import { isChatV2Covering } from '../ChatV2/coverage';
+import { overlayColors } from '../../utils/titlebarOverlay';
 
 interface ReconcilePtySession extends DeadPaneSessionSnapshot {
   id: string;
@@ -706,16 +707,12 @@ function useUiScaleSync(uiScale: number): void {
     const send = window.electronAPI?.window?.setUiScale;
     if (!send) return; // tests / non-electron
     const push = () => {
-      const cs = getComputedStyle(document.documentElement);
-      const color = cs.getPropertyValue('--bg-base').trim();
-      const symbolColor = cs.getPropertyValue('--text-sub').trim();
       // Factor is always sent (zoom applies on every platform); the overlay
       // color pair only matters on Windows and is skipped when unread, which
-      // main treats as "leave the overlay height untouched this round".
-      send({
-        factor: uiScale,
-        ...(color && symbolColor ? { color, symbolColor } : {}),
-      });
+      // main treats as "leave the overlay height untouched this round". The
+      // pair is the titlebar sync's (overlayColors), so the two never fight.
+      const colors = overlayColors();
+      send({ factor: uiScale, ...(colors ?? {}) });
     };
     push();
     // Re-push on theme change so the Windows overlay keeps the scaled height.
