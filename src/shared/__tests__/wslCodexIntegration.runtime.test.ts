@@ -245,6 +245,8 @@ describe.skipIf(process.platform === 'win32')('WSL Codex per-launch wmux MCP ser
     [['mcp-server']],
     [['-c', 'model="o3"', 'app-server']],
     [['--profile', 'work', 'mcp-server', '--listen', 'stdio']],
+    [['remote-control', 'start']],
+    [['-c', 'model="o3"', 'exec-server']],
   ])('does not stamp this pane on a shared server: %j', (args) => {
     const result = fixture(MCP_ENTRY).run(args);
     expect(result.args).toEqual(['-c', expect.stringMatching(/^notify=/), ...args]);

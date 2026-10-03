@@ -149,7 +149,7 @@ args=("$@")
 for ((i=0; i<\${#args[@]}; i++)); do
   case "\${args[i]}" in
     --) break ;;
-    app-server|mcp-server) server_mode=1 ;;
+    app-server|mcp-server|remote-control|exec-server) server_mode=1 ;;
     -C|--cd) ((i++)); launch_dir=\${args[i]:-} ;;
     --cd=*) launch_dir=\${args[i]#--cd=} ;;
     -C?*) launch_dir=\${args[i]#-C} ;;
@@ -189,6 +189,8 @@ done <<< "$free"
 overrides=()
 [ -z "$notify" ] || overrides+=(-c "$notify")
 # Server modes may serve other panes; never stamp this pane's identity on them.
+# remote-control starts the shared app-server daemon; exec-server is a
+# standalone service (both Codex 0.160+, both take -c).
 # Global options may precede the subcommand (codex -c k=v app-server). Any
 # matching word before -- counts: a false match only skips MCP, which is safe.
 [ -z "$server_mode" ] || mcp=
