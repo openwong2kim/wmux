@@ -32,6 +32,8 @@ If the daemon cannot verify the session, Resume fails and the row stays paused
 with its binding intact. Reconnect and choose Resume again; wmux rechecks the
 identity before enabling it. An unavailable lookup alone does not mean the
 session changed, and it does not require deleting and recreating the schedule.
+If no identifiable session returns, the row stays paused. Delete it if you know
+the intended session is gone; wmux does not infer a replacement from missing state.
 
 Session schedules are different from **Command Deck schedules**. Deck schedules begin a new orchestrator turn for a workspace. Session schedules write only to one existing agent conversation and therefore use stricter PTY and agent-identity checks.
 
