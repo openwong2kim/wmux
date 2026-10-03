@@ -49,7 +49,7 @@ interface Rig {
 
 const PANE_ENV = { PATH: '/usr/bin', WMUX_WORKSPACE_ID: 'ws-1', CLAUDECODE: '1', WMUX_AUTH_TOKEN: 'x' };
 
-function rig(options: { registry?: boolean; nativeOn?: boolean; paneEnv?: Record<string, string>; stubborn?: boolean } = {}): Rig {
+function rig(options: { registry?: boolean; nativeOn?: boolean; paneEnv?: Record<string, string>; stubborn?: boolean; paneCwd?: string } = {}): Rig {
   const r = {
     fakes: [] as FakeClaude[],
     pushes: [] as Rig['pushes'],
@@ -83,7 +83,7 @@ function rig(options: { registry?: boolean; nativeOn?: boolean; paneEnv?: Record
       getSession: ((id: string) => (id === PANE
         ? {
             // An explicit shell: the resume command's grammar follows it, not the test host's platform.
-            meta: { spawnCwd: dir, env: options.paneEnv ?? PANE_ENV, cmd: '/bin/zsh' },
+            meta: { spawnCwd: dir, ...(options.paneCwd !== undefined ? { cwd: options.paneCwd } : {}), env: options.paneEnv ?? PANE_ENV, cmd: '/bin/zsh' },
             promptLog: { size: 1, isCommandRunning: () => false },
             bridge: { isEmptyShellPrompt: () => r.prompt.revision !== null, getInputRevision: () => r.prompt.revision ?? 0 },
           }
@@ -394,6 +394,25 @@ describe('chat v2 host', () => {
     await reloaded.host.dispose();
   });
 
+  it('runs the driver in the pane\'s current directory, falling back to where the pane started', async () => {
+    const live = fs.mkdtempSync(path.join(os.tmpdir(), 'chatv2-cwd-'));
+    const r = rig({ paneCwd: live });
+    await created(r);
+    expect(r.fake().cwd).toBe(live);
+    expect(r.host.sessionForPane(PANE)?.cwd).toBe(live);
+    await r.host.call('close', { paneId: PANE, chatSessionId: r.host.bindingForPane(PANE)!.chatSessionId }, 'main');
+    await r.host.dispose();
+    for (const paneCwd of ['', 'relative/dir', path.join(live, 'gone')]) {
+      const fallback = rig({ paneCwd });
+      const binding = await created(fallback);
+      expect(fallback.fake().cwd).not.toBe(paneCwd);
+      expect(fallback.fake().cwd).not.toBe(live);
+      expect(fallback.host.sessionForPane(PANE)?.cwd).toBe(fallback.fake().cwd);
+      await fallback.host.call('close', { paneId: PANE, chatSessionId: binding.chatSessionId }, 'main');
+      await fallback.host.dispose();
+    }
+  });
+
   it('runs the driver with the pane credentials and endpoint, without nesting markers, on the login PATH', async () => {
     const r = rig({ paneEnv: {
       ...PANE_ENV,
@@ -404,11 +423,13 @@ describe('chat v2 host', () => {
       CLAUDE_CODE_SESSION_ID: 'parent',
       CLAUDE_CODE_ENTRYPOINT: 'cli',
       AI_AGENT: 'claude',
+      CLAUDE_EFFORT: 'max',
+      ANTHROPIC_CUSTOM_MODEL_OPTION: 'my-model',
     } });
     await created(r);
     const env = r.fake().env;
-    expect(env).toMatchObject({ ANTHROPIC_API_KEY: 'sk-test', ANTHROPIC_BASE_URL: 'https://gateway.example', CLAUDE_CODE_USE_BEDROCK: '1' });
-    for (const key of ['CLAUDECODE', 'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_ENTRYPOINT', 'AI_AGENT', 'WMUX_AUTH_TOKEN']) {
+    expect(env).toMatchObject({ ANTHROPIC_API_KEY: 'sk-test', ANTHROPIC_BASE_URL: 'https://gateway.example', CLAUDE_CODE_USE_BEDROCK: '1', ANTHROPIC_CUSTOM_MODEL_OPTION: 'my-model' });
+    for (const key of ['CLAUDECODE', 'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_ENTRYPOINT', 'AI_AGENT', 'WMUX_AUTH_TOKEN', 'CLAUDE_EFFORT']) {
       expect(env[key]).toBeUndefined();
     }
     expect(env.PATH).toBe('/usr/bin:/opt/login/bin');

@@ -264,6 +264,10 @@ is in `THIRD_PARTY_NOTICES`.
   offered in cmd.exe or WSL panes. A handed-off record no longer sends.
   Terminal → chat is not offered: without proof that the TUI process has exited,
   both could append to the same conversation file.
+- A new chat runs in the pane's current directory, as the shell last reported
+  it (shell integration / OSC 7), or in the directory the pane started in when
+  that is unknown or no longer exists. The empty chat says where it will run,
+  and a started chat shows its directory next to the composer.
 
 ### Events, snapshots and seq
 
@@ -294,12 +298,20 @@ the registry cannot record, or one made while native decisions are switched off,
 is denied at once. Permission replies are allow or deny; question answers use the
 form's option keys.
 
+The driver loads your user, project and local Claude Code settings, as `claude`
+in a terminal does. A tool call your `permissions.allow` rules (or the session's
+permission mode) already allow runs without a card, exactly as it would run
+without a prompt in the terminal; only calls Claude Code would ask about show an
+approval card. The daemon's `WMUX_CHATV2_SETTING_SOURCES` (a comma list of
+`user`, `project`, `local`) narrows which settings the driver loads.
+
 ### Environment and accounts
 
 The driver env is built like a scheduled run's: agent-nesting markers removed,
 the pane's account directory applied, then `WMUX_PTY_ID` set to the anchor pane
 and `WMUX_GATE=0` so the PreToolUse gate does not show a second card for the same
-request. Provider settings exported only in your shell profile (for example
+request. `CLAUDE_EFFORT` is dropped too, so the effort the chat shows is the one
+it runs with. Provider settings exported only in your shell profile (for example
 `CLAUDE_CODE_USE_BEDROCK` or `ANTHROPIC_BASE_URL`) are not inherited; put them in
 the `env` block of the agent's `settings.json` instead. Images are copied into a
 staging folder in the wmux data directory before they are sent.

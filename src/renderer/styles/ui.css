@@ -510,6 +510,8 @@
 .wmux-chatv2-empty { justify-content: flex-end; min-height: 100%; gap: 6px; padding-bottom: 18px; }
 .wmux-chatv2-empty strong { font-size: 18px; font-weight: 500; letter-spacing: -.01em; }
 .wmux-chatv2-empty p { color: var(--text-sub); line-height: 1.6; }
+.wmux-chatv2-runs-in { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); font-size: 12px; }
+.wmux-chatv2-cwd { max-width: 18em; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); }
 .wmux-chatv2-user { align-self: flex-end; max-width: 85%; margin-top: 10px; padding: 6px 12px; border-radius: 12px; background: var(--bg-surface); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; }
 .wmux-chatv2-assistant, .wmux-chatv2-plan { line-height: 1.65; overflow-wrap: anywhere; }
 .wmux-chatv2-reasoning summary, .wmux-chatv2-tool summary, .wmux-chatv2-subagent summary { cursor: pointer; list-style: none; }

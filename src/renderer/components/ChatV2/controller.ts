@@ -292,10 +292,29 @@ export class ChatV2Controller {
     return true;
   }
 
+  /** The full value a cap cut, read page by page (`nextOffset`). Null when it is no longer kept. */
   async body(blockId: string, field: 'text' | 'detail' | 'output'): Promise<string | null> {
     const view = this.state.view;
     if (!view) return null;
-    const result = await this.bridge.call('bodies', { paneId: this.paneId, chatSessionId: view.binding.chatSessionId, epoch: view.epoch, blockId, field });
-    return result.ok ? result.text : null;
+    const parts: string[] = [];
+    let offset = 0;
+    for (;;) {
+      const result = await this.bridge.call('bodies', {
+        paneId: this.paneId,
+        chatSessionId: view.binding.chatSessionId,
+        epoch: view.epoch,
+        blockId,
+        field,
+        ...(offset ? { offset } : {}),
+      });
+      if (this.disposed) return null;
+      if (!result.ok) return parts.length ? parts.join('') : null;
+      parts.push(result.text);
+      // A page that does not move forward would loop forever: stop there.
+      if (result.nextOffset === undefined || result.nextOffset <= offset) break;
+      offset = result.nextOffset;
+    }
+    return parts.join('');
   }
+
 }

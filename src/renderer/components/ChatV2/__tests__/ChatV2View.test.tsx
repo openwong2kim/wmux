@@ -120,9 +120,10 @@ describe('ChatV2View', () => {
   });
 
   it('shows New chat on a free pane and never touches a PTY or creates a chat by itself', async () => {
-    await act(async () => root.render(<ChatV2View paneId="daemon-free" active onTerminal={() => undefined} />));
+    await act(async () => root.render(<ChatV2View paneId="daemon-free" active cwd="/work/repo" onTerminal={() => undefined} />));
     await flush();
     expect(host.querySelector('[data-chatv2="empty"]')?.textContent).toContain('New chat');
+    expect(host.querySelector('[data-chatv2-runs-in]')?.textContent).toBe('Runs in /work/repo');
     expect(mock.calls.map((call) => call.method)).toEqual(['subscribe']);
     expect(ptyCalls).toEqual([]);
   });
@@ -151,6 +152,8 @@ describe('ChatV2View', () => {
       ]);
     });
     expect(host.querySelector('.wmux-chatv2-footer')?.textContent).toMatch(/^Opus 5\.5 worked for \d+s/);
+    // The chat shows the directory it runs in.
+    expect(host.querySelector('[data-chatv2-cwd]')?.getAttribute('title')).toBe('Working directory: /tmp/demo');
     expect(host.textContent).toContain('Continue in Terminal');
     expect(ptyCalls).toEqual([]);
   });
@@ -189,6 +192,27 @@ describe('ChatV2View', () => {
     await act(async () => { more.click(); });
     await flush();
     expect(host.querySelector('.wmux-chatv2-assistant')?.textContent).toContain('The full output is no longer kept.');
+  });
+
+  it('shows every page of a long body', async () => {
+    await mock.call('subscribe', { paneId: 'daemon-pages' });
+    await mock.call('create', { paneId: 'daemon-pages', agent: 'claude', mode: 'default' });
+    await act(async () => root.render(<ChatV2View paneId="daemon-pages" active onTerminal={() => undefined} />));
+    await flush();
+    const full = 'y'.repeat(33 * 1024) + 'TAIL';
+    await act(async () => {
+      mock.emit('daemon-pages', [
+        { type: 'user.message', text: 'long', clientMessageId: 'c-00000001' },
+        { type: 'message.delta', text: full },
+        { type: 'turn.ended', outcome: 'completed' },
+      ]);
+    });
+    const blockId = host.querySelector('.wmux-chatv2-assistant')!.getAttribute('data-block-id')!;
+    mock.fullBodies.set(`${blockId}:text`, full);
+    await act(async () => { (host.querySelector('[data-truncated]') as HTMLButtonElement).click(); });
+    await flush();
+    expect(host.querySelector('.wmux-chatv2-assistant')?.textContent).toBe(full);
+    expect(host.querySelector('[data-truncated]')).toBeNull();
   });
 
   it('shows a handed-off chat read-only', async () => {

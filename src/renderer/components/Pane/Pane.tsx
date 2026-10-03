@@ -1092,7 +1092,7 @@ function TerminalSurface({ surface, paneId, chatViewEnabled, isActive, visible, 
           surfaceId={surface.id}
         />
       </div>
-      {chatV2 && shown && isWorkspaceVisible && surface.ptyId && <ChatV2Overlay ptyId={surface.ptyId} surfaceId={surface.id} />}
+      {chatV2 && shown && isWorkspaceVisible && surface.ptyId && <ChatV2Overlay ptyId={surface.ptyId} surfaceId={surface.id} cwd={surface.cwd} />}
     </>
   );
 }

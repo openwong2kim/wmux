@@ -153,4 +153,16 @@ describe('ChatV2Controller snapshot/push race', () => {
     expect(controller.current.phase).toBe('empty');
     controller.dispose();
   });
+
+  it('reads a capped body page by page until the host says it is complete', async () => {
+    const host = await seeded();
+    const full = 'x'.repeat(2_500) + 'END';
+    host.fullBodies.set('7.1:text', full);
+    const controller = new ChatV2Controller(host, PANE);
+    await controller.start();
+    expect(await controller.body('7.1', 'text')).toBe(full);
+    expect(host.calls.filter((call) => call.method === 'bodies').map((call) => (call.params as { offset?: number }).offset ?? 0)).toEqual([0, 1024, 2048]);
+    expect(await controller.body('9.9', 'text')).toBeNull();
+    controller.dispose();
+  });
 });

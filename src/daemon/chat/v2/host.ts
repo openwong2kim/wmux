@@ -57,6 +57,25 @@ import {
  */
 export const CHATV2_SETTING_SOURCES_ENV = 'WMUX_CHATV2_SETTING_SOURCES';
 
+/**
+ * Where a new driver runs: the pane's current directory (shell integration /
+ * OSC 7) when it names an existing directory, else the directory the pane was
+ * spawned in. The pane is idle when a chat starts (the single-writer check),
+ * so the current value is the shell's own last report; the chat shows the
+ * directory before and after it starts. An owner decision for chat v2;
+ * `spawnCwd` stays the root for the diff route. Synchronous: `create`
+ * reserves the pane before its first await.
+ */
+export function driverCwd(meta: { cwd?: string; spawnCwd?: string }): string | undefined {
+  const live = meta.cwd;
+  if (live && path.isAbsolute(live)) {
+    try {
+      if (fs.statSync(live).isDirectory()) return live;
+    } catch { /* gone: fall back */ }
+  }
+  return meta.spawnCwd || undefined;
+}
+
 /** The built-in drivers. */
 export function defaultChatV2Drivers(env: NodeJS.ProcessEnv = process.env): ChatV2DriverFactory {
   const requested = env[CHATV2_SETTING_SOURCES_ENV];
@@ -400,7 +419,7 @@ class Host implements ChatV2Host {
     const pane = this.deps.sessionManager.getSession(p.paneId);
     if (!pane) return chatV2Error('pane-not-found', 'That pane is gone.');
     if (this.byPane.has(p.paneId)) return chatV2Error('already-exists', 'This pane already has a chat.');
-    const cwd = pane.meta.spawnCwd;
+    const cwd = driverCwd(pane.meta);
     if (!cwd) return chatV2Error('pane-not-found', 'The pane has no known working directory.');
     // The RPC layer validated it; the argv rule is checked again where it is used.
     if (p.model !== undefined && !CHATV2_MODEL.test(p.model)) return chatV2Error('invalid-params', 'Invalid model.');

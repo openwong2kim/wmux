@@ -24,6 +24,8 @@ export interface ComposerChips {
   /** Effort as the head reports it; '' = the agent's default. Not settable through the contract yet. */
   effort: string;
   mode: ChatV2RunMode;
+  /** The directory the chat runs in, once it started. */
+  cwd?: string;
   /** Model and permissions can still change (before the chat starts). */
   editable: boolean;
   onModel?: (model: string) => void;
@@ -31,6 +33,12 @@ export interface ComposerChips {
 }
 
 interface Staged { path: string; name: string }
+
+/** The last two segments of a directory, for a chip (the full path is its tooltip). */
+export function shortDir(dir: string): string {
+  const parts = dir.split(/[\\/]+/).filter(Boolean);
+  return parts.length <= 2 ? dir : `…/${parts.slice(-2).join('/')}`;
+}
 
 export function Composer({ paneId, draftKey, chips, placeholder, disabled, running, canStop, canAttach, onSend, onStop, extra }: {
   paneId: string;
@@ -150,6 +158,11 @@ export function Composer({ paneId, draftKey, chips, placeholder, disabled, runni
               <option value="bypass">{S.modeBypass}</option>
             </select>
           </label>
+          {chips.cwd && (
+            <span className="wmux-chatv2-chip wmux-chatv2-cwd" aria-disabled="true" title={`${S.workingDirectory}: ${chips.cwd}`} data-chatv2-cwd>
+              <span className="sr-only">{S.workingDirectory}: </span>{shortDir(chips.cwd)}
+            </span>
+          )}
         </div>
         <div className="wmux-chatv2-composer-actions">
           {extra}

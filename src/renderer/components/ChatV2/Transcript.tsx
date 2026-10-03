@@ -44,20 +44,25 @@ function PreviewBody({ preview }: { preview: ToolPreview }) {
 /** The part a byte cap cut, fetched on request (`bodies`). undefined = not asked, null = no longer kept. */
 function useFullBody(block: Block, field: 'text' | 'detail' | 'output', actions: TranscriptActions) {
   const [text, setText] = useState<string | null | undefined>(undefined);
-  const load = () => void actions.body(block.id, field).then(setText);
-  return { text, load };
+  const [loading, setLoading] = useState(false);
+  const load = () => {
+    if (loading) return;
+    setLoading(true);
+    void actions.body(block.id, field).then(setText).finally(() => setLoading(false));
+  };
+  return { text, load, loading };
 }
 
 function FullBody({ block, field, actions }: { block: Block; field: 'detail' | 'output'; actions: TranscriptActions }) {
-  const { text, load } = useFullBody(block, field, actions);
+  const { text, load, loading } = useFullBody(block, field, actions);
   if (typeof text === 'string') return <pre className="wmux-chatv2-pre">{text}</pre>;
   if (text === null) return <span className="wmux-chatv2-meta">{S.bodyGone}</span>;
-  return <button type="button" className="wmux-chatv2-link" onClick={load}>{S.showMore}</button>;
+  return <button type="button" className="wmux-chatv2-link" disabled={loading} onClick={load}>{loading ? S.loadingFull : S.showMore}</button>;
 }
 
 /** Block prose, with the cut tail offered on request when the fold capped it. */
 function CappedText({ block, actions, render }: { block: Block; actions: TranscriptActions; render: (text: string) => React.ReactNode }) {
-  const { text, load } = useFullBody(block, 'text', actions);
+  const { text, load, loading } = useFullBody(block, 'text', actions);
   const full = typeof text === 'string' ? text : null;
   return (
     <>
@@ -65,7 +70,7 @@ function CappedText({ block, actions, render }: { block: Block; actions: Transcr
       {block.overflow?.text && full === null && (
         text === null
           ? <span className="wmux-chatv2-meta">{S.bodyGone}</span>
-          : <button type="button" className="wmux-chatv2-link" data-truncated onClick={load}>{S.showFullText}</button>
+          : <button type="button" className="wmux-chatv2-link" data-truncated disabled={loading} onClick={load}>{loading ? S.loadingFull : S.showFullText}</button>
       )}
     </>
   );

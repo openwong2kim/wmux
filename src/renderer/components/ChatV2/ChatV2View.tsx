@@ -14,7 +14,13 @@ const NEAR_BOTTOM_PX = 48;
  * Chat v2 for one pane. Never creates a PTY: the pane's shell PTY is the
  * anchor (`paneId`), and everything here goes through the chat-v2 bridge.
  */
-export default function ChatV2View({ paneId, active, onTerminal }: { paneId: string; active: boolean; onTerminal: () => void }) {
+export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
+  paneId: string;
+  active: boolean;
+  onTerminal: () => void;
+  /** The pane's current directory as the renderer knows it (where a new chat will run); '' = unknown. */
+  cwd?: string;
+}) {
   const t = useT();
   const { state, controller, retry } = useChatV2(paneId, active);
   const view = state.view;
@@ -84,6 +90,7 @@ export default function ChatV2View({ paneId, active, onTerminal }: { paneId: str
           <div className="wmux-chatv2-column wmux-chatv2-empty">
             <strong>{S.newChat}</strong>
             <p>{S.newChatHint}</p>
+            <p className="wmux-chatv2-runs-in" data-chatv2-runs-in title={cwd || undefined}>{cwd ? S.runsIn(cwd) : S.runsInStart}</p>
           </div>
         </div>
         <div className="wmux-chatv2-dock">
@@ -159,7 +166,7 @@ export default function ChatV2View({ paneId, active, onTerminal }: { paneId: str
             disabled={!binding.capabilities.send || binding.status === 'failed'}
             running={running}
             canStop={binding.capabilities.interrupt}
-            chips={{ model: binding.model, effort: view.session.modelSettings.effort ?? '', mode: binding.mode, editable: false }}
+            chips={{ model: binding.model, effort: view.session.modelSettings.effort ?? '', mode: binding.mode, cwd: view.session.cwd, editable: false }}
             onSend={(text, attachments) => controller.send(text, attachments)}
             onStop={() => void controller.interrupt()}
             extra={canHandOff ? (

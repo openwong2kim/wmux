@@ -44,6 +44,9 @@ export interface MockHost extends ChatV2BridgeApi {
   record(paneId: string): Record_ | undefined;
   /** Whether create should find the pane busy. */
   busyPanes: Set<string>;
+  /** Full values `bodies` serves, by `<blockId>:<field>`, paged by `bodyPageChars`. */
+  fullBodies: Map<string, string>;
+  bodyPageChars: number;
 }
 
 let epochCounter = 0;
@@ -218,7 +221,12 @@ export function createMockHost(options: MockHostOptions = {}): MockHost {
     async bodies(params) {
       const record = find(params);
       if (!record) return notFound();
-      return chatV2Error('body-gone', 'The full output is no longer kept.');
+      const full = host.fullBodies.get(`${params.blockId}:${params.field}`);
+      if (full === undefined) return chatV2Error('body-gone', 'The full output is no longer kept.');
+      const offset = params.offset ?? 0;
+      const page = full.slice(offset, offset + host.bodyPageChars);
+      const next = offset + page.length;
+      return { ok: true, text: page, ...(next < full.length ? { nextOffset: next } : {}) };
     },
     async toTerminal(params) {
       const record = find(params);
@@ -238,6 +246,8 @@ export function createMockHost(options: MockHostOptions = {}): MockHost {
   const host: MockHost = {
     calls,
     busyPanes: new Set(),
+    fullBodies: new Map(),
+    bodyPageChars: 1024,
     async call(method, params) {
       calls.push({ method, params });
       return (handlers[method] as (p: typeof params) => Promise<ChatV2ResultByMethod[typeof method]>)(params);

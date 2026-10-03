@@ -18,13 +18,13 @@ export function useChatSurfaceView(ptyId: string | undefined, chatViewEnabled: b
 }
 
 /** The chat-v2 view laid over the pane's (inert) anchor terminal. */
-export function ChatV2Overlay({ ptyId, surfaceId }: { ptyId: string; surfaceId: string }) {
+export function ChatV2Overlay({ ptyId, surfaceId, cwd }: { ptyId: string; surfaceId: string; cwd?: string }) {
   const t = useT();
   useEffect(() => markChatV2Covering(ptyId), [ptyId]);
   return (
     <div className="absolute inset-0 z-10 bg-[var(--bg-base)]" data-chatv2-surface>
       <Suspense fallback={<div className="wmux-chatv2-state" role="status">{t('chat.loading')}</div>}>
-        <ChatV2View paneId={ptyId} active onTerminal={() => useStore.getState().setSurfaceViewMode(surfaceId, 'terminal')} />
+        <ChatV2View paneId={ptyId} active cwd={cwd} onTerminal={() => useStore.getState().setSurfaceViewMode(surfaceId, 'terminal')} />
       </Suspense>
     </div>
   );
