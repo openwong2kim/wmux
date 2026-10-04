@@ -50,11 +50,11 @@ export function isPaneQuiet(s: PaneInputState, quietMs = QUIET_INPUT_MS): boolea
 
 /** The same agent is still in the pane: same name and session incarnation,
  *  not back at a shell, and not a process-backed agent whose process went
- *  away. Pure. */
+ *  away. The daemon reports a shell return as no agent name; an idle status
+ *  with a name is a live agent at its first prompt. Pure. */
 export function agentIdentityHolds(base: AgentBaseline, s: PaneAgentState): boolean {
   if (s.agentName !== base.agentName) return false;
   if (s.incarnationId !== base.incarnationId) return false;
-  if (s.agentStatus === 'idle') return false;
   return !(base.agentVerified && s.agentVerified !== true);
 }
 
@@ -106,7 +106,7 @@ export async function waitForQuietAgent(
   for (;;) {
     const s = await read().catch(() => null);
     if (s) {
-      if (!s.agentName || s.agentStatus === 'idle' || (opts.expectAgent && s.agentName !== opts.expectAgent)) {
+      if (!s.agentName || (opts.expectAgent && s.agentName !== opts.expectAgent)) {
         return { ok: false, reason: 'agent_changed', detail: 'delivery: the agent the hand-off was aimed at is no longer in the pane' };
       }
       baseline ??= { agentName: s.agentName, incarnationId: s.incarnationId, agentVerified: s.agentVerified === true };

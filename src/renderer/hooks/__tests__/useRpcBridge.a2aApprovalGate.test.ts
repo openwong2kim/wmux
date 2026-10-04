@@ -174,10 +174,18 @@ describe('A2A delivery approval gate', () => {
       expect(gate.mock.calls[0][1]).toContain('a2a_task_query');
     });
 
-    it('an agent that is not live counts as none: nothing written, no loud paste', async () => {
+    it.each(['idle', 'complete'] as const)('an agent %s at its prompt is live: the reference goes through the gate', async (status) => {
       gateRefusal = null;
-      // Detected, but its turn ended: any other send would get the loud full-body paste.
-      useStore.getState().setSurfaceAgent(PTY, 'Claude Code', 'complete', 'claude');
+      // A fresh agent at its first prompt reads idle; one whose turn ended, complete.
+      useStore.getState().setSurfaceAgent(PTY, 'Claude Code', status, 'claude');
+      const result = await handoff();
+      expect(result.delivery).toMatchObject({ notified: true });
+      expect(gate.mock.calls[0][1]).toContain('[wmux] Issue o/r#12');
+    });
+
+    it('a pane whose agent is known gone counts as none: nothing written, no loud paste', async () => {
+      gateRefusal = null;
+      useStore.getState().hydrateAgentAlive({ [PTY]: false });
       const result = await handoff();
       expect(gate).not.toHaveBeenCalled();
       expect(writesToTarget()).toEqual([]);

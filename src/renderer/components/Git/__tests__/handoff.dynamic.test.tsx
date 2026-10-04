@@ -14,7 +14,7 @@ import HandoffPopover from '../HandoffPopover';
 import { PrSection } from '../PrSection';
 import SidebarNavigation, { SPRING_LOAD_MS } from '../../Sidebar/SidebarNavigation';
 import WorkspaceItem from '../../Sidebar/WorkspaceItem';
-import { beginHandoffDrag, handoffTargetForPty, isHandoffDrag, isOurHandoffDrag, readHandoffDrop, takeHandoffDrop } from '../handoffDrag';
+import { allHandoffTargets, beginHandoffDrag, handoffTargetForPty, isHandoffDrag, isOurHandoffDrag, readHandoffDrop, takeHandoffDrop } from '../handoffDrag';
 import { repoOwnerWorkspace } from '../repoGroups';
 import { ISSUE_DRAG_TYPE, serializeIssueRef } from '../../../../shared/issueRef';
 import { PR_DRAG_TYPE, parsePrDragRef, serializePrDragRef } from '../../../../shared/prDragRef';
@@ -111,6 +111,16 @@ describe('drop payload', () => {
     const st = { ...useStore.getState(), surfaceAgent: { 'pty-a': { name: 'Claude Code', slug: 'claude' } } } as never;
     expect(handoffTargetForPty(st, 'pty-a')).toEqual(target);
     expect(handoffTargetForPty(st, 'pty-gone')).toBeNull();
+  });
+
+  it('an agent idle at its first prompt is a target; a pane whose agent is known gone is a plain terminal', () => {
+    const base = useStore.getState();
+    const idle = { ...base, surfaceAgent: { 'pty-a': { name: 'Claude Code', status: 'idle', slug: 'claude' } } } as never;
+    expect(handoffTargetForPty(idle, 'pty-a')).toEqual(target);
+    expect(allHandoffTargets(idle)).toEqual([target]);
+    const gone = { ...base, surfaceAgent: { 'pty-a': { name: 'Claude Code', status: 'idle', slug: 'claude' } }, agentAliveByPtyId: { 'pty-a': false } } as never;
+    expect(handoffTargetForPty(gone, 'pty-a')).toEqual({ ...target, agentName: '', agentSlug: undefined });
+    expect(allHandoffTargets(gone)).toEqual([]);
   });
 
   it('All repos: a group\'s hand-offs belong to its own workspace, the active one only when it is in that repo', () => {

@@ -3189,8 +3189,16 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       const noAgentTarget = !a2aTargetHasAgent(target, explicitPty);
       // A Git page hand-off (operator only; main stamps operatorOrigin): the
       // body is a fixed reference built in main, pasted as is instead of a
-      // nudge, and only into a live agent: anything else counts as no agent.
+      // nudge, and only into the addressed pane's own detected agent: anything
+      // else counts as no agent. Absence is decided by the agent's name, not
+      // its status: an agent idle at its first prompt is live, and one that
+      // left is dropped from the pane's entry (the workspace-level name is not).
       const referenceDelivery = params.operatorOrigin === true && params.referenceDelivery === true && typeof message === 'string';
+      const panes = useStore.getState();
+      const referencePaneHasAgent = !!explicitPty && paneHasDetectedAgent(explicitPty, panes.surfaceAgent, {
+        agentAlive: panes.agentAliveByPtyId,
+        commandRunning: panes.commandRunningByPtyId,
+      });
       const gated: Omit<NewTaskDelivery, 'taskId'> = params.gatedDelivery === true
         ? {
             waitQuiet: true,
@@ -3200,7 +3208,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
         : {};
       let write: A2aPtyWrite = { ptyId: null };
       let mode: 'nudge' | 'notification' | 'no-agent-pane' = 'nudge';
-      if (noAgentTarget || (referenceDelivery && !isLiveTuiAgent(liveMeta))) {
+      if (noAgentTarget || (referenceDelivery && !referencePaneHasAgent)) {
         // Nothing is written: a body pasted into a shell prompt is the #1336
         // hazard whether or not we press Enter. The task is stored and teed
         // onto the EventBus below, so the receiver can still poll it.

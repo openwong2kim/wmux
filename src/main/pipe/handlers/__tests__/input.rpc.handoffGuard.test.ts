@@ -123,6 +123,18 @@ describe('hand-off delivery guard', () => {
     expect(writes).toEqual([]);
   });
 
+  it('a fresh agent idle at its first prompt gets the paste and the Enter', async () => {
+    pane.agentStatus = 'idle';
+    expect(await send()).toEqual({ ok: true });
+    expect(writes).toEqual([PASTE, '\r']);
+  });
+
+  it('a pane back at the shell (no agent name) is refused, whatever its status', async () => {
+    pane.agentName = null;
+    expect(await send()).toMatchObject({ ok: false, reason: 'agent_changed' });
+    expect(writes).toEqual([]);
+  });
+
   it('another agent than the one the person picked is refused', async () => {
     pane.agentName = 'Codex CLI';
     expect(await send()).toMatchObject({ ok: false, reason: 'agent_changed' });

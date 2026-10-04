@@ -282,7 +282,9 @@ describe('waiting for the person to stop typing', () => {
     expect(agentIdentityHolds(base, { ...agent, agentVerified: true })).toBe(true);
     expect(agentIdentityHolds(base, { ...agent, agentVerified: false })).toBe(false);
     expect(agentIdentityHolds(base, { ...agent, agentVerified: true, incarnationId: 'i2' })).toBe(false);
-    expect(agentIdentityHolds(base, { ...agent, agentVerified: true, agentStatus: 'idle' })).toBe(false);
+    // Idle with a name is a fresh agent at its first prompt; the shell has no name.
+    expect(agentIdentityHolds(base, { ...agent, agentVerified: true, agentStatus: 'idle' })).toBe(true);
+    expect(agentIdentityHolds(base, { ...agent, agentVerified: true, agentName: null, agentStatus: 'idle' })).toBe(false);
     expect(agentIdentityHolds(base, { ...agent, agentVerified: true, agentName: 'Codex CLI' })).toBe(false);
   });
 

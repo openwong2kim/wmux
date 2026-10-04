@@ -4,6 +4,7 @@
 import { ISSUE_DRAG_TYPE, parseIssueRef } from '../../../shared/issueRef';
 import { PR_DRAG_TYPE, parsePrDragRef } from '../../../shared/prDragRef';
 import { paneAddressOfPty } from '../../hooks/a2aFreshContext';
+import { paneHasDetectedAgent } from '../../hooks/a2aAddressing';
 import { selectWorkspaceAgentRoster } from '../../stores/selectors/workspaceAgentRoster';
 import { useStore, type StoreState } from '../../stores';
 import type { HandoffRef, HandoffTarget } from '../../../shared/gitHandoff';
@@ -80,11 +81,24 @@ export function takeHandoffDrop(dt: Pick<DataTransfer, 'getData' | 'types'>): { 
   return same ? { item, repo: ctx } : null;
 }
 
+/** The pane has an agent by the delivery gate's rule: a detected name, not
+ *  known gone. Its status does not matter: an agent idle at its first prompt
+ *  is a target. */
+function hasAgent(state: Pick<StoreState, 'surfaceAgent' | 'agentAliveByPtyId' | 'commandRunningByPtyId'>, ptyId: string): boolean {
+  return paneHasDetectedAgent(ptyId, state.surfaceAgent ?? {}, {
+    agentAlive: state.agentAliveByPtyId,
+    commandRunning: state.commandRunningByPtyId,
+  });
+}
+
 /** The hand-off target for a pane's terminal, or null when no workspace holds it. */
-export function handoffTargetForPty(state: Pick<StoreState, 'workspaces' | 'surfaceAgent'>, ptyId: string): HandoffTarget | null {
+export function handoffTargetForPty(
+  state: Pick<StoreState, 'workspaces' | 'surfaceAgent' | 'agentAliveByPtyId' | 'commandRunningByPtyId'>,
+  ptyId: string,
+): HandoffTarget | null {
   const addr = paneAddressOfPty(state.workspaces, ptyId);
   if (!addr) return null;
-  const agent = state.surfaceAgent?.[ptyId];
+  const agent = hasAgent(state, ptyId) ? state.surfaceAgent[ptyId] : undefined;
   return {
     workspaceId: addr.workspaceId,
     paneId: addr.paneId,
@@ -98,7 +112,7 @@ export function handoffTargetForPty(state: Pick<StoreState, 'workspaces' | 'surf
 /** The local, visible agent panes of a workspace as hand-off targets. */
 export function handoffTargetsInWorkspace(state: StoreState, workspaceId: string): HandoffTarget[] {
   return selectWorkspaceAgentRoster(state, workspaceId).rows
-    .filter((r) => !r.remote && !r.stashed)
+    .filter((r) => !r.remote && !r.stashed && hasAgent(state, r.ptyId))
     .map((r) => ({
       workspaceId: r.workspaceId,
       paneId: r.paneId,
