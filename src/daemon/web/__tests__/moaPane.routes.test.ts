@@ -574,6 +574,51 @@ describe('the Moa pane on the phone routes', () => {
         ac.abort();
       }
     });
+
+    it.each([
+      ['GET /api/approvals', false],
+      ['/turns', true],
+    ] as const)('a card first seen through %s (raised before the server subscribed) still closes on the phone after Moa is off', async (_route, viaTurns) => {
+      records.push(prompt());
+      await start();
+      const h = device('dev-1');
+      // No `create` event: the card was raised before this server listened.
+      if (viaTurns) {
+        const blocked = (await (await fetch(`${base()}/api/sessions/brain-hq/turns`, { headers: { ...h, ...caps } })).json()) as { chat?: { blocked?: unknown } };
+        expect(blocked.chat?.blocked).toEqual({ by: 'approval', approvalId: 'ap-moa' });
+      } else {
+        expect(await listIds(h)).toEqual(['ap-moa']);
+      }
+      const ac = new AbortController();
+      const res = await fetch(`${base()}/api/events`, { signal: ac.signal, headers: { ...h, ...caps, Accept: 'text/event-stream' } });
+      const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+      let wire = '';
+      void (async () => {
+        try {
+          for (;;) {
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            wire += Buffer.from(chunk.value).toString('utf8');
+          }
+        } catch { /* aborted */ }
+      })();
+      const until = async (cond: () => boolean) => {
+        const deadline = Date.now() + 4000;
+        while (!cond()) {
+          if (Date.now() > deadline) throw new Error(`timed out: ${wire}`);
+          await new Promise((r) => setTimeout(r, 20));
+        }
+      };
+      try {
+        moa = null;
+        records[0] = prompt({ state: 'expired', resolvedAt: 9 });
+        emit('expire', records[0]);
+        await until(() => wire.includes('"phase":"expire"') && (!viaTurns || wire.includes('chat.unblocked')));
+        expect(wire).toContain('"approvalId":"ap-moa"');
+      } finally {
+        ac.abort();
+      }
+    });
   });
 
   describe('live pane and phone notifications', () => {

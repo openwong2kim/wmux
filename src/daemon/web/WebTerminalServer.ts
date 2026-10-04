@@ -4542,6 +4542,7 @@ export class WebTerminalServer {
       const pending = this.deps.approvals?.list().pending
         .find((r) => r.sessionId === sessionId && r.kind === 'terminal_prompt' && !isNativeDecision(r));
       if (pending) {
+        this.rememberMoaCard(pending.id);
         return {
           by: 'terminal',
           terminalPrompt: {
@@ -4597,6 +4598,17 @@ export class WebTerminalServer {
     const legacy = bodyOf(views.legacy);
     const capable = bodyOf(views.capable);
     this.deliverChatEvent(sessionId, (caps) => (caps.terminalPromptAnswer ? capable : legacy));
+  }
+
+  /** #1772 — a card a phone was shown as the Moa pane's (see `moaCardIds`). */
+  private rememberMoaCard(id: string): void {
+    if (this.moaCardIds.has(id)) return;
+    this.moaCardIds.add(id);
+    while (this.moaCardIds.size > MOA_CARD_IDS_MAX) {
+      const oldest = this.moaCardIds.values().next();
+      if (oldest.done) break;
+      this.moaCardIds.delete(oldest.value);
+    }
   }
 
   /**
@@ -7143,6 +7155,11 @@ export class WebTerminalServer {
       const managed = this.deps.sessionManager.getSession(r.sessionId);
       return askOtherMaxWidth(managed?.ptyProcess.cols ?? managed?.meta.cols);
     };
+    // #1772 — a Moa card first seen here (raised before this server subscribed
+    // to the registry) must still hear its close once Moa is off.
+    for (const r of listed.pending) {
+      if (this.isBrainApproval(r.sessionId) && this.moaSession(r.sessionId)) this.rememberMoaCard(r.id);
+    }
     return this.json(res, 200, {
       pending: listed.pending.filter(visible).map((r) => approvalWire(r, caps, otherMaxCells(r))),
       recentlyResolved: listed.recentlyResolved.filter(visible).filter(answeredHere).map((r) => approvalWire(r, caps)),
@@ -8085,14 +8102,7 @@ export class WebTerminalServer {
       const known = this.moaCardIds.has(r.id);
       if (!known && !this.moaSession(r.sessionId)) return;
       if (settles) this.moaCardIds.delete(r.id);
-      else if (!known) {
-        this.moaCardIds.add(r.id);
-        while (this.moaCardIds.size > MOA_CARD_IDS_MAX) {
-          const oldest = this.moaCardIds.values().next();
-          if (oldest.done) break;
-          this.moaCardIds.delete(oldest.value);
-        }
-      }
+      else this.rememberMoaCard(r.id);
       if (!this.moaSession(r.sessionId)) {
         if (settles) this.releaseMoaChatBlocked(r.sessionId);
       } else {
