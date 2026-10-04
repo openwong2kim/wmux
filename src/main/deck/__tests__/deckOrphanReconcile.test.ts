@@ -56,6 +56,13 @@ afterEach(() => {
 });
 
 describe('deckOrphanReconcile', () => {
+  it('never treats Moa\'s "Remember this?" card key as a workspace', async () => {
+    await raiseDecision('_moa-memory', { question: 'Remember this?', options: ['Save', 'Discard'] }, dir);
+    expect(collectDeckWorkspaceIds(dir).has('_moa-memory')).toBe(false);
+    await reconcileOrphanDeckState(['ws-live'], { dir });
+    expect(loadWorkspaceDecision('_moa-memory', dir)).not.toBeNull();
+  });
+
   it('reconciles three orphan ids and one live id across all six files -> only live id remains, archive holds orphan work', async () => {
     // 3 orphans: 'ws-orphan1', 'ws-orphan2', 'ws-orphan3'
     // 1 live: 'ws-live'

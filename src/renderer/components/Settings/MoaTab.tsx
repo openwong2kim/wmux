@@ -13,7 +13,7 @@ import { useStore } from '../../stores';
 import { isMoaHqWorkspace } from '../../stores/slices/moaSlice';
 import { useT } from '../../hooks/useT';
 import { CLAUDE_EFFORT_LEVELS, CLAUDE_MODEL_OPTIONS } from '../../../shared/claudeModels';
-import { MOA_MAX_TURNS_PER_HOUR_RANGE, type MoaConfigPatch } from '../../../shared/moa';
+import { MOA_MAX_TURNS_PER_HOUR_RANGE, type MoaConfigPatch, type MoaMemoryItem } from '../../../shared/moa';
 import type { RetroSchedule } from '../../../shared/trackRecord';
 import type { AgentMode } from '../../../main/deck/deckAutonomyStore';
 import { notifyBriefingConfigChanged } from '../Deck/deckBriefingConfigBus';
@@ -102,6 +102,30 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
     registerDialog(1);
     return () => registerDialog(-1);
   }, [dialogOpen, registerDialog]);
+
+  // ── What Moa remembers: re-read whenever main says Moa moved ──
+  const [memory, setMemory] = useState<MoaMemoryItem[] | null>(null);
+  const [memoryFailed, setMemoryFailed] = useState(false);
+  useEffect(() => {
+    let live = true;
+    const api = window.electronAPI.deck?.moa;
+    if (!api?.memoryList) return;
+    api.memoryList().then(
+      (r) => { if (live) setMemory(r?.items ?? []); },
+      () => { if (live) setMemory([]); },
+    );
+    return () => { live = false; };
+  }, [moa]);
+  const onForget = async (item: MoaMemoryItem) => {
+    setMemoryFailed(false);
+    try {
+      const r = await window.electronAPI.deck?.moa?.memoryDelete(item.kind, item.name);
+      if (!r?.ok) setMemoryFailed(true);
+    } catch {
+      setMemoryFailed(true);
+    }
+    await refreshMoa();
+  };
 
   // ── Master switch ──
   const [switchFailed, setSwitchFailed] = useState(false);
@@ -644,6 +668,44 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
         </SettingRow>
         {statsCleared && (
           <SettingNote data-testid="moa-stats-cleared">{t('moa.settings.statsCleared')}</SettingNote>
+        )}
+      </SettingsSection>
+
+      <SettingsSection
+        id="moamemory"
+        title={t('moa.settings.memory')}
+        description={t('moa.settings.memoryDesc')}
+        data-testid="moa-memory"
+      >
+        <SettingRow id="moaproposals" label={t('moa.settings.proposals')} description={t('moa.settings.proposalsDesc')}>
+          <Switch
+            checked={moa?.config.proposals !== false}
+            onCheckedChange={(v) => { void patchConfig({ proposals: v }); }}
+            aria-label={t('moa.settings.proposals')}
+            disabled={!loaded}
+            data-testid="moa-proposals"
+          />
+        </SettingRow>
+        {memory !== null && memory.length === 0 && <SettingNote>{t('moa.settings.memoryEmpty')}</SettingNote>}
+        {(memory ?? []).map((item) => (
+          <SettingRow
+            key={`${item.kind}:${item.name}`}
+            label={item.name}
+            description={`${t(`moa.settings.memoryKind.${item.kind}`)}${item.description ? ` · ${item.description}` : ''}`}
+          >
+            <Button
+              variant="ghost"
+              size="md"
+              onClick={() => { void onForget(item); }}
+              aria-label={t('moa.settings.memoryDelete', { name: item.name })}
+              data-testid={`moa-memory-delete-${item.kind}-${item.name}`}
+            >
+              {t('common.remove')}
+            </Button>
+          </SettingRow>
+        ))}
+        {memoryFailed && (
+          <SettingNote tone="danger" role="alert">{t('moa.settings.saveFailed')}</SettingNote>
         )}
       </SettingsSection>
 

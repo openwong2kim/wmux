@@ -60,7 +60,7 @@ const MAX_ARCHIVED_DECISIONS = 200;
 /** Default hourly cap on the HQ's automatic turns. */
 export const DEFAULT_HQ_MAX_TURNS_PER_HOUR = 12;
 
-import { MOA_MAX_TURNS_PER_HOUR_RANGE, type MoaLevel, type MoaConfig, type MoaConfigPatch } from '../../shared/moa';
+import { MOA_MAX_TURNS_PER_HOUR_RANGE, MOA_MEMORY_DECISION_KEY, type MoaLevel, type MoaConfig, type MoaConfigPatch } from '../../shared/moa';
 export type { MoaLevel, MoaConfig, MoaConfigPatch };
 
 export interface ArchivedHqDecision {
@@ -87,6 +87,8 @@ interface HqFile {
   moaReduceMotion?: boolean;
   /** HQ approval lane opt-in (hqApprovalLane.ts). Absent = off. */
   hqApprovalPress?: boolean;
+  /** "Remember this?" proposals (moaMemory.ts). Absent = on. */
+  moaProposals?: boolean;
   /** Archived decisions up to this archivedAt have been acknowledged. */
   archiveAckedAt?: number;
   /** Set once the non-HQ migration has completed for `hqWorkspaceId`. */
@@ -116,7 +118,7 @@ function isValidHqFile(data: unknown): data is Record<string, unknown> {
   if (o.hqMaxTurnsPerHour !== undefined
     && !(typeof o.hqMaxTurnsPerHour === 'number' && Number.isInteger(o.hqMaxTurnsPerHour) && o.hqMaxTurnsPerHour >= 1)) return false;
   if (o.archivedDecisions !== undefined && !Array.isArray(o.archivedDecisions)) return false;
-  for (const k of ['moaOnboarded', 'moaBubbles', 'moaReduceMotion', 'hqApprovalPress'] as const) {
+  for (const k of ['moaOnboarded', 'moaBubbles', 'moaReduceMotion', 'hqApprovalPress', 'moaProposals'] as const) {
     if (o[k] !== undefined && typeof o[k] !== 'boolean') return false;
   }
   if (o.moaLevel !== undefined && o.moaLevel !== 1 && o.moaLevel !== 2 && o.moaLevel !== 3) return false;
@@ -139,6 +141,7 @@ function sanitize(o: Record<string, unknown>): HqFile {
   if (typeof o.moaBubbles === 'boolean') out.moaBubbles = o.moaBubbles;
   if (typeof o.moaReduceMotion === 'boolean') out.moaReduceMotion = o.moaReduceMotion;
   if (typeof o.hqApprovalPress === 'boolean') out.hqApprovalPress = o.hqApprovalPress;
+  if (typeof o.moaProposals === 'boolean') out.moaProposals = o.moaProposals;
   if (typeof o.archiveAckedAt === 'number') out.archiveAckedAt = o.archiveAckedAt;
   return out;
 }
@@ -281,6 +284,13 @@ export function isHqApprovalPressEnabled(dir?: string): boolean {
   return !corrupt && file.hqApprovalPress === true;
 }
 
+/** Whether Moa may propose precedents and skills. Absent = on; a corrupt
+ *  store = off. Moa off overrides it. */
+export function isMoaProposalsEnabled(dir?: string): boolean {
+  const { file, corrupt } = load(dir);
+  return !corrupt && file.moaEnabled !== false && file.moaProposals !== false;
+}
+
 /** The master switch. Absent = on (today's behaviour); a corrupt store = off. */
 export function isMoaEnabled(dir?: string): boolean {
   const { file, corrupt } = load(dir);
@@ -370,6 +380,7 @@ export function getMoaConfig(dir?: string): MoaConfig {
     reduceMotion: file.moaReduceMotion === true,
     defaultReason: file.moaDefault ?? null,
     approvalPress: file.hqApprovalPress === true,
+    proposals: file.moaProposals !== false,
   };
 }
 
@@ -388,6 +399,7 @@ export async function setMoaConfig(patch: MoaConfigPatch, dir?: string): Promise
   if (typeof patch.bubbles === 'boolean') next.moaBubbles = patch.bubbles;
   if (typeof patch.reduceMotion === 'boolean') next.moaReduceMotion = patch.reduceMotion;
   if (typeof patch.approvalPress === 'boolean') next.hqApprovalPress = patch.approvalPress;
+  if (typeof patch.proposals === 'boolean') next.moaProposals = patch.proposals;
   try {
     await mutate(dir, (file) => write(dir, { ...file, ...next }));
     return true;
@@ -707,7 +719,7 @@ export async function runNonHqMigration(
   //    kept, and the migration re-runs later to pick up a replacement.
   try {
     for (const [ws, decision] of Object.entries(loadDeckDecisions(dir))) {
-      if (ws === hq || decision.status !== 'pending') continue;
+      if (ws === hq || ws === MOA_MEMORY_DECISION_KEY || decision.status !== 'pending') continue;
       const entry: ArchivedHqDecision = { workspaceId: ws, decision, archivedAt: now() };
       await mutate(dir, async (file) => {
         const list = file.archivedDecisions ?? [];

@@ -18,9 +18,12 @@ export interface MoaConfig {
   /** Opt-in: main presses fan-out workers' small permission approvals by rule
    *  (owner in danger, not critical) and tells Moa afterwards. Absent = off. */
   approvalPress?: boolean;
+  /** Moa may propose precedents and skills ("Remember this?"); nothing is
+   *  saved without the operator's click. Absent = on. */
+  proposals?: boolean;
 }
 
-export type MoaConfigPatch = Partial<Pick<MoaConfig, 'onboarded' | 'level' | 'maxTurnsPerHour' | 'bubbles' | 'reduceMotion' | 'approvalPress'>>;
+export type MoaConfigPatch = Partial<Pick<MoaConfig, 'onboarded' | 'level' | 'maxTurnsPerHour' | 'bubbles' | 'reduceMotion' | 'approvalPress' | 'proposals'>>;
 
 export interface MoaState {
   config: MoaConfig;
@@ -58,3 +61,16 @@ export const MOA_WORKSPACE_NAME = 'Moa';
 
 /** Bounds on the HQ turn cap Settings accepts (mirrors main). */
 export const MOA_MAX_TURNS_PER_HOUR_RANGE = { min: 1, max: 120 } as const;
+
+/** The decision-store key Moa's "Remember this?" cards are raised under. Not a
+ *  workspace: a card on the HQ's own key would block Moa's wakes. */
+export const MOA_MEMORY_DECISION_KEY = '_moa-memory';
+
+/** One thing Moa remembers, as Settings → Moa lists it. */
+export interface MoaMemoryItem {
+  kind: 'precedent' | 'note' | 'skill';
+  /** The slug (file or skill folder name). */
+  name: string;
+  description: string;
+  savedAt: number;
+}

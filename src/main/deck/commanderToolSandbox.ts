@@ -23,6 +23,7 @@
 // is case-insensitive (the filesystem is), and that mode is injectable so the
 // win32 branch stays testable on any host.
 
+import * as fs from 'fs';
 import * as path from 'path';
 
 /** The subset of the SDK's PermissionResult this evaluator ever returns. A deny
@@ -121,4 +122,154 @@ export function evaluateCommanderToolPermission(
     // allow (or an unhandled rejection that ends the turn).
     return { behavior: 'deny', message: 'Write permission check failed.' };
   }
+}
+
+// ─── Moa proposal gate (P3) ───────────────────────────────────────────────────
+//
+// The terminal (pty) HQ brain has no canUseTool callback, so its one write
+// grant is enforced by a PreToolUse hook script instead: Write and Edit pass
+// ONLY for a `.md` file placed directly inside `<memoryRoot>/_proposals/`.
+// Same rules as evaluateCommanderToolPermission above (resolve, then a
+// separator-anchored comparison, case-insensitive on win32), plus what a
+// filesystem hook can see and the SDK path never needed: no subfolders, no
+// symlinked folder or file, no hard link, and a size cap.
+//
+// The check is kept as SOURCE TEXT so the hook script and main run the exact
+// same bytes. A hook script cannot import main's bundle, and a function's
+// toString() after bundling may reference helpers the script does not have.
+// It is plain ES2020 with no outside references: everything it uses arrives
+// as a parameter. It returns null to allow, or the reason to deny.
+
+export const PROPOSAL_WRITE_CHECK_SOURCE = String.raw`function checkProposalWrite(toolName, toolInput, proposalsDir, caseInsensitive, maxBytes, path, fs) {
+  if (toolName !== 'Write' && toolName !== 'Edit') return toolName + ' is not available to Moa.';
+  var input = toolInput && typeof toolInput === 'object' ? toolInput : {};
+  var filePath = input.file_path;
+  if (typeof filePath !== 'string' || filePath.length === 0) return 'A proposal needs a file_path.';
+  if (!path.isAbsolute(filePath)) return 'Use the absolute path of a file directly inside ' + proposalsDir + '.';
+  var dir = path.resolve(proposalsDir);
+  var resolved = path.resolve(filePath);
+  var parent = path.dirname(resolved);
+  if ((caseInsensitive ? parent.toLowerCase() : parent) !== (caseInsensitive ? dir.toLowerCase() : dir)) {
+    return 'Moa can only write proposal files directly inside ' + dir + ' (no subfolders).';
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}\.md$/.test(path.basename(resolved))) {
+    return 'A proposal is one .md file with a plain name (letters, digits, dot, dash, underscore).';
+  }
+  var dirStat;
+  try { dirStat = fs.lstatSync(dir); } catch (e) { return 'The proposals folder does not exist.'; }
+  if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) return 'The proposals folder is not a plain folder.';
+  var existing = 0;
+  try {
+    var st = fs.lstatSync(resolved);
+    if (st.isSymbolicLink()) return 'A proposal file may not be a link.';
+    if (!st.isFile()) return 'A proposal must be a regular file.';
+    if (st.nlink > 1) return 'A proposal file may not be a hard link.';
+    existing = st.size;
+  } catch (e) {
+    if (!e || e.code !== 'ENOENT') return 'The proposal file could not be checked.';
+  }
+  var text = toolName === 'Write' ? input.content : input.new_string;
+  if (typeof text !== 'string') return toolName === 'Write' ? 'Write needs string content.' : 'Edit needs a string new_string.';
+  var bytes = Buffer.byteLength(text, 'utf8') + (toolName === 'Edit' ? existing : 0);
+  if (bytes > maxBytes) return 'A proposal is at most ' + maxBytes + ' bytes.';
+  return null;
+}`;
+
+/** Largest proposal file, in bytes (the gate and the card both enforce it). */
+export const PROPOSAL_MAX_BYTES = 16 * 1024;
+
+type ProposalWriteCheck = (
+  toolName: string,
+  toolInput: unknown,
+  proposalsDir: string,
+  caseInsensitive: boolean,
+  maxBytes: number,
+  pathMod: typeof path,
+  fsMod: Pick<typeof fs, 'lstatSync'>,
+) => string | null;
+
+// eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
+const compiledProposalCheck = new Function(`${PROPOSAL_WRITE_CHECK_SOURCE}\nreturn checkProposalWrite;`)() as ProposalWriteCheck;
+
+/**
+ * Main's copy of the hook's check (same source). Allows only a Write/Edit of a
+ * `.md` file directly inside `proposalsDir`; anything else, and any thrown
+ * error, is a deny. Never throws.
+ */
+export function evaluateProposalWrite(
+  toolName: string,
+  toolInput: unknown,
+  opts: { proposalsDir: string; caseInsensitive?: boolean; maxBytes?: number },
+): ToolPermissionResult {
+  try {
+    const reason = compiledProposalCheck(
+      toolName,
+      toolInput,
+      opts.proposalsDir,
+      opts.caseInsensitive ?? process.platform === 'win32',
+      opts.maxBytes ?? PROPOSAL_MAX_BYTES,
+      path,
+      fs,
+    );
+    return reason === null ? { behavior: 'allow' } : { behavior: 'deny', message: String(reason) };
+  } catch {
+    return { behavior: 'deny', message: 'The proposal check failed.' };
+  }
+}
+
+/**
+ * The generated PreToolUse hook for the HQ brain's Write/Edit: reads the hook
+ * JSON on stdin, runs the check, and either prints Claude Code's
+ * `permissionDecision: "allow"` (the brain's TUI has nobody to answer a
+ * prompt) or exits 2 with the reason on stderr. Fail-closed: bad input, a
+ * thrown check, or anything but an explicit null is a deny.
+ */
+export function buildProposalGateScript(opts: {
+  proposalsDir: string;
+  caseInsensitive?: boolean;
+  maxBytes?: number;
+}): string {
+  const caseInsensitive = opts.caseInsensitive ?? process.platform === 'win32';
+  return [
+    '// Generated by wmux (Moa proposal gate). Regenerated on every brain spawn',
+    '// and unlinked on dispose; edits here are lost.',
+    "'use strict';",
+    "const path = require('path');",
+    "const fs = require('fs');",
+    PROPOSAL_WRITE_CHECK_SOURCE,
+    `const PROPOSALS_DIR = ${JSON.stringify(opts.proposalsDir)};`,
+    `const CASE_INSENSITIVE = ${caseInsensitive ? 'true' : 'false'};`,
+    `const MAX_BYTES = ${Math.max(0, Math.floor(opts.maxBytes ?? PROPOSAL_MAX_BYTES))};`,
+    'function deny(reason) {',
+    '  // Exit 2 + stderr is Claude Code\'s "block this call and tell the model why".',
+    "  process.stderr.write(String(reason) + '\\n');",
+    '  process.exit(2);',
+    '}',
+    "let raw = '';",
+    "process.stdin.setEncoding('utf8');",
+    "process.stdin.on('error', () => deny('The proposal check could not read its input.'));",
+    "process.stdin.on('data', (chunk) => {",
+    '  raw += chunk;',
+    "  if (raw.length > MAX_BYTES * 8 + 65536) deny('The proposal is too large.');",
+    '});',
+    "process.stdin.on('end', () => {",
+    '  let reason;',
+    '  try {',
+    '    const payload = JSON.parse(raw);',
+    '    reason = checkProposalWrite(payload.tool_name, payload.tool_input, PROPOSALS_DIR, CASE_INSENSITIVE, MAX_BYTES, path, fs);',
+    '  } catch (e) {',
+    "    reason = 'The proposal check failed.';",
+    '  }',
+    '  if (reason !== null) deny(reason);',
+    '  process.stdout.write(JSON.stringify({',
+    '    hookSpecificOutput: {',
+    "      hookEventName: 'PreToolUse',",
+    "      permissionDecision: 'allow',",
+    "      permissionDecisionReason: 'A Moa proposal file. The operator decides whether to keep it.',",
+    '    },',
+    "  }) + '\\n');",
+    '  process.exit(0);',
+    '});',
+    '',
+  ].join('\n');
 }

@@ -42,7 +42,10 @@ import {
   clearGateCapOut,
 } from '../../deck/stopGateState';
 import type { BrainVendor } from '../../../shared/types';
-import { getMemoryRootDir } from '../../deck/commanderMemory';
+import { getMemoryRootDir, loadCommanderMemory } from '../../deck/commanderMemory';
+import { MoaMemoryLane } from '../../deck/moaMemory';
+import { getWorkLinkStore } from '../../workLink/workLinkStore';
+import { MOA_MEMORY_DECISION_KEY, type MoaMemoryItem } from '../../../shared/moa';
 import { loadDeckPolicyBlock, ensureDeckPolicySeed } from '../../deck/deckPolicy';
 import { grantReExamineLease, revokeReExamineLease } from '../../deck/reExamineLease';
 import {
@@ -90,6 +93,7 @@ import {
   isHqMigrationDone,
   isHqStoreCorrupt,
   isMoaEnabled,
+  isMoaProposalsEnabled,
   runNonHqMigration,
   setHqRuntime,
   setMoaEnabled,
@@ -212,6 +216,10 @@ export interface RegisterDeckHandlerOptions {
     /** How an adapter reports a session id learned from a foreign turn's Stop
      *  (TUI-only conversations must survive a restart). */
     onForeignSessionId: (sessionId: string) => void;
+    /** First-turn memory for the HQ terminal brain (Moa); absent elsewhere. */
+    loadMemory?: () => string;
+    /** Moa's proposals folder, when its brain may write proposals there. */
+    moaProposalsDir?: string;
   }) => BrainAdapter;
   /** M2 startup-reconcile delay (ms) before resolved-but-unconsumed decisions
    *  are resumed headlessly. Deferred so daemon/session recovery settles first;
@@ -387,6 +395,8 @@ export function registerDeckHandler(
       onForeignTurnStart: (prompt: string) => void;
       onForeignTurnEnd: () => void;
       onForeignSessionId: (sessionId: string) => void;
+      loadMemory?: () => string;
+      moaProposalsDir?: string;
     }) => {
       // BYOB M0: the vendor picker decides which brain runtime serves this
       // workspace. 'hermes' rides the generic ACP adapter (any ACP agent
@@ -473,6 +483,8 @@ export function registerDeckHandler(
             },
             onForeignTurnEnd: adapterOpts.onForeignTurnEnd,
             onForeignSessionId: adapterOpts.onForeignSessionId,
+            ...(adapterOpts.loadMemory ? { loadMemory: adapterOpts.loadMemory } : {}),
+            ...(adapterOpts.moaProposalsDir ? { proposalGate: { proposalsDir: adapterOpts.moaProposalsDir } } : {}),
             // The workspace mode IS the launch policy (owner decision
             // 2026-08-01): assist launches claude in accept-edits, danger in
             // bypass. Read per spawn, from here rather than inside the adapter,
@@ -646,11 +658,26 @@ export function registerDeckHandler(
   // eslint-disable-next-line prefer-const
   let coalescer: CommanderEventCoalescer | undefined;
 
+  // Moa's precedents and skill proposals: one "Remember this?" card at a time,
+  // under its own decision key (moaMemory.ts).
+  const moaMemory = new MoaMemoryLane();
+  // The A2A task a decision was raised about, from its work link.
+  const sourceTaskOf = (decisionId: string): { taskId?: string } => {
+    try {
+      const link = getWorkLinkStore().list().find((l) => l.decisionIds.includes(decisionId));
+      return link?.a2aTaskId ? { taskId: link.a2aTaskId } : {};
+    } catch {
+      return {};
+    }
+  };
+
   /** Tell the renderer Moa's state moved (it re-reads DECK_MOA_STATE). */
   const emitMoaChanged = (): void => {
     // The daemon's copy first: switching Moa off or losing the HQ revokes the
     // phone's access to the Moa pane, which must not wait on the renderer.
     void publishMoaPane();
+    // Moa or proposals switched off clears the card; on raises the next one.
+    void moaMemory.sync();
     const win = getWindow();
     if (win && !win.isDestroyed()) win.webContents.send(IPC.DECK_MOA_CHANGED, {});
   };
@@ -859,6 +886,12 @@ export function registerDeckHandler(
     // app run. A dead id is soft — the adapter falls back to a fresh session.
     const sessionKey = sessionKeyFor(workspaceId, vendor);
     const persisted = loadCommanderSession(sessionKey);
+    // Moa's memory lane (moaMemory.ts): the HQ terminal brain reads what the
+    // operator approved on a fresh conversation's first turn, and with
+    // proposals on may write proposal files (and nothing else). Every other
+    // brain is unchanged. Fixed for this manager's life, like its prompt.
+    const isMoaHqPty = vendor === 'claude-pty' && workspaceId === getHqWorkspaceId() && isMoaEnabled();
+    const moaProposalsDir = isMoaHqPty && isMoaProposalsEnabled() ? moaMemory.proposalsDir : undefined;
     // The adapter's foreign-turn callback needs the manager the adapter is
     // about to be constructed INTO — late-bound through this holder, exactly
     // like the coalescer's own forward reference above. It can only fire long
@@ -892,6 +925,8 @@ export function registerDeckHandler(
         ...(model ? { model } : {}),
         ...(effort ? { effort } : {}),
         ...(fullPower ? { fullPower: true } : {}),
+        ...(isMoaHqPty ? { loadMemory: () => loadCommanderMemory({ workspaceId }) } : {}),
+        ...(moaProposalsDir ? { moaProposalsDir } : {}),
       }),
       sink: (event) => emit(workspaceId, event),
       startOptions: {
@@ -905,6 +940,7 @@ export function registerDeckHandler(
           // through), so it is told memory persistence is unavailable rather
           // than handed a write policy it can only fail at.
           memoryWrites: vendor !== 'claude-pty',
+          ...(moaProposalsDir ? { proposalsDir: moaProposalsDir } : {}),
         }),
         ...(fleetContext ? { fleetContext } : {}),
         ...(persisted ? { resumeSessionId: persisted.sessionId } : {}),
@@ -919,7 +955,11 @@ export function registerDeckHandler(
       // Event-push: when this workspace's turn ends, wake the coalescer (on a
       // later tick — the manager defers) so any events buffered during the turn
       // flush into the next one.
-      onIdle: () => coalescer?.notifyIdle(workspaceId),
+      onIdle: () => {
+        coalescer?.notifyIdle(workspaceId);
+        // A Moa turn may have left a proposal behind: raise its card.
+        if (workspaceId === getHqWorkspaceId()) void moaMemory.sync();
+      },
     });
     managerRef = manager;
     managers.set(workspaceId, { manager, model, effort, fullPower, vendor });
@@ -2272,6 +2312,28 @@ export function registerDeckHandler(
     }),
   );
 
+  // What Moa remembers (saved precedents, notes and skills) and deleting one.
+  ipcMain.removeHandler(IPC.DECK_MOA_MEMORY_LIST);
+  ipcMain.handle(
+    IPC.DECK_MOA_MEMORY_LIST,
+    wrapHandler(IPC.DECK_MOA_MEMORY_LIST, async (): Promise<{ items: MoaMemoryItem[] }> => ({
+      items: moaMemory.list(),
+    })),
+  );
+  ipcMain.removeHandler(IPC.DECK_MOA_MEMORY_DELETE);
+  ipcMain.handle(
+    IPC.DECK_MOA_MEMORY_DELETE,
+    wrapHandler(IPC.DECK_MOA_MEMORY_DELETE, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ ok: boolean }> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? (raw as Record<string, unknown>) : {};
+      const ok = moaMemory.remove(req.kind, req.name);
+      if (ok) emitMoaChanged();
+      return { ok };
+    }),
+  );
+
   // Recovery for an unreadable deck-hq.json: move it aside and start over with
   // Moa off and no HQ.
   ipcMain.removeHandler(IPC.DECK_MOA_STORE_RESET);
@@ -2959,10 +3021,28 @@ export function registerDeckHandler(
       const id = typeof req.id === 'string' ? req.id : '';
       const resolution = typeof req.resolution === 'string' ? req.resolution : '';
       if (!id || !resolution.trim()) return { ok: false, code: 'invalid' };
+      // A "Remember this?" card is not a workspace's decision: no brain waits
+      // on it and no turn resumes. The lane saves or discards, then clears it.
+      if (workspaceId === MOA_MEMORY_DECISION_KEY) {
+        const r = await moaMemory.resolve(id, resolution);
+        if (r.ok) emitMoaChanged();
+        return r.ok ? { ok: true } : { ok: false, code: r.code ?? 'not_pending' };
+      }
       const decision = await resolveDecision(workspaceId, id, resolution);
       if (!decision || decision.status !== 'resolved') {
         // Stale id, already resolved, or empty answer — nothing to resume.
         return { ok: false, code: 'not_pending' };
+      }
+      // The operator answered one of Moa's own decisions: offer to keep the
+      // answer as a precedent. A no-op while Moa or proposals are off.
+      if (workspaceId === getHqWorkspaceId()) {
+        void moaMemory.offerPrecedent({
+          decisionId: decision.id,
+          question: decision.question,
+          answer: decision.resolution ?? resolution,
+          ...(decision.resolvedAt ? { answeredAt: decision.resolvedAt } : {}),
+          ...sourceTaskOf(decision.id),
+        });
       }
       // A human just answered, which is the confirmation parking waits for, so
       // a record that survived the last shutdown becomes live again here. Doing
@@ -3144,6 +3224,8 @@ export function registerDeckHandler(
     // the old fire-and-forget loop only got the first `cap` past the gate and
     // silently dropped the rest.
     for (const [workspaceId, decision] of Object.entries(loadDeckDecisions())) {
+      // Moa's memory card key is not a workspace: never resume a brain for it.
+      if (workspaceId === MOA_MEMORY_DECISION_KEY) continue;
       if (decision.status === 'resolved') {
         // Provenance-aware prompt (round-3 P2): a stranded brain self-resolution
         // resumes as the brain's OWN answer, never as "the operator resolved".
@@ -3236,6 +3318,9 @@ export function registerDeckHandler(
     for (const workspaceId of [...managers.keys()]) retireBrain(workspaceId);
   };
   if (isMoaEnabled()) startRuntime();
+  // A proposal left from the last run gets its card (or a card left while
+  // Moa was switched off is cleared).
+  void moaMemory.sync();
 
   const disposeAll = (): void => {
     for (const { manager } of managers.values()) manager.dispose();
@@ -3275,6 +3360,8 @@ export function registerDeckHandler(
     ipcMain.removeHandler(IPC.DECK_MOA_ARCHIVE_LIST);
     ipcMain.removeHandler(IPC.DECK_MOA_ARCHIVE_ACK);
     ipcMain.removeHandler(IPC.DECK_MOA_STORE_RESET);
+    ipcMain.removeHandler(IPC.DECK_MOA_MEMORY_LIST);
+    ipcMain.removeHandler(IPC.DECK_MOA_MEMORY_DELETE);
     ipcMain.removeHandler(IPC.DECK_SEND);
     ipcMain.removeHandler(IPC.DECK_INTERRUPT);
     ipcMain.removeHandler(IPC.DECK_WAKE);

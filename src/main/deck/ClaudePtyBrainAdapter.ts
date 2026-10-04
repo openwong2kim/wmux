@@ -40,6 +40,7 @@ import { ENV_KEYS, BRAIN_PTY_ID_PREFIX } from '../../shared/constants';
 import { mintCommanderToken, revokeCommanderToken } from './commanderTrust';
 import { registerBrainPty, type BrainPtyHookBlock, type BrainPtyHookContext } from './brainPtyHookBus';
 import { installBrainSkills } from './brainSkills';
+import { buildProposalGateScript } from './commanderToolSandbox';
 import type { StopGateVerdict } from './stopGate';
 import { readLastAssistantMessage } from '../claude/lastAssistantMessage';
 import { resolveClaudeExecutable, resolveMcpBundlePath, DISALLOWED_TOOLS } from './ClaudeSdkAdapter';
@@ -292,6 +293,9 @@ export const BRAIN_PTY_ALLOWED_TOOLS: string[] = [...new Set([...COMMANDER_TOOL_
  */
 export const BRAIN_PTY_DENIED_TOOLS: string[] = [...DISALLOWED_TOOLS, 'Write', 'AskUserQuestion'];
 
+/** The tools the Moa proposal gate takes over from the deny list. */
+export const PROPOSAL_GATED_TOOLS: readonly string[] = ['Write', 'Edit'];
+
 /** Why each denied tool is denied, and what to reach for instead. This text is
  *  written to stderr by the deny script, which is the only channel that reaches
  *  the model — a bare exit 2 tells it a call failed and nothing else. */
@@ -369,25 +373,42 @@ export function buildBrainSettingsProfile(opts: {
    *  falls back to a bare `exit 2`, which blocks the call but explains
    *  nothing — only reachable when the script could not be written. */
   denyScriptPath?: string | null;
+  /** Absolute path to the generated Moa proposal gate (the HQ brain with Moa
+   *  and proposals on). When set, Write and Edit leave the deny list and go
+   *  through that script instead, which allows only `.md` files directly in
+   *  the proposals folder. Null/absent = the hard deny every other brain gets. */
+  proposalGateScriptPath?: string | null;
 }): Record<string, unknown> {
-  const denied = BRAIN_PTY_DENIED_TOOLS;
+  const proposalGate = opts.proposalGateScriptPath ?? null;
+  const denied = proposalGate
+    ? BRAIN_PTY_DENIED_TOOLS.filter((tool) => !PROPOSAL_GATED_TOOLS.includes(tool))
+    : BRAIN_PTY_DENIED_TOOLS;
   const denyScriptPath = opts.denyScriptPath ?? null;
+  const preToolUse: unknown[] = denied.map((tool) => ({
+    matcher: tool,
+    hooks: [
+      {
+        type: 'command',
+        command: denyScriptPath
+          ? `${quoteArg(opts.nodePath)} ${quoteArg(denyScriptPath)} ${tool}`
+          : `${quoteArg(opts.nodePath)} -e "process.exit(2)"`,
+      },
+    ],
+  }));
+  if (proposalGate) {
+    // Fail-closed: the script prints an explicit allow only for a proposal
+    // file and exits 2 for everything else, including its own errors.
+    preToolUse.push({
+      matcher: PROPOSAL_GATED_TOOLS.join('|'),
+      hooks: [{ type: 'command', command: `${quoteArg(opts.nodePath)} ${quoteArg(proposalGate)}` }],
+    });
+  }
   const hooks: Record<string, unknown> = {
     // Fail-closed backstop for the deny list above: exit code 2 is Claude
     // Code's "block this tool call" contract. The script also writes a reason
     // to stderr, which is what Claude Code shows the model — exit 2 on its own
     // tells it a call failed but not what to do instead.
-    PreToolUse: denied.map((tool) => ({
-      matcher: tool,
-      hooks: [
-        {
-          type: 'command',
-          command: denyScriptPath
-            ? `${quoteArg(opts.nodePath)} ${quoteArg(denyScriptPath)} ${tool}`
-            : `${quoteArg(opts.nodePath)} -e "process.exit(2)"`,
-        },
-      ],
-    })),
+    PreToolUse: preToolUse,
   };
   if (opts.bridgePath) {
     // UserPromptSubmit is the human-typed-into-the-TUI signal: with no composer
@@ -632,6 +653,12 @@ export interface ClaudePtyBrainAdapterDeps {
   wmuxDir?: string;
   /** Node-compatible executable for the generated hook commands. */
   nodePath?: string;
+  /** Memory for the first turn of a fresh conversation (commanderMemory).
+   *  Absent = none. A throw is swallowed: memory never blocks a turn. */
+  loadMemory?: () => string;
+  /** The Moa proposal gate: Write/Edit allowed only for `.md` files directly
+   *  in this folder. Absent = Write and Edit stay hard-denied. */
+  proposalGate?: { proposalsDir: string };
   /** Fired with the daemon session id the moment the pty exists, so the deck
    *  can embed the live terminal, and with `null` on every teardown so the
    *  deck retires a terminal that no longer exists. */
@@ -1018,6 +1045,27 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
 
   // ── spawn ───────────────────────────────────────────────────────────────
 
+  /** Write the proposal gate script beside the profile, or return null (and
+   *  leave Write/Edit hard-denied) when there is no gate or it cannot be
+   *  written. The proposals folder must exist for the gate to allow anything. */
+  private writeProposalGate(dir: string, stamp: string): string | null {
+    const gate = this.deps.proposalGate;
+    if (!gate) return null;
+    try {
+      fs.mkdirSync(gate.proposalsDir, { recursive: true, mode: 0o700 });
+      const scriptPath = path.join(dir, `proposal-gate-${stamp}.cjs`);
+      fs.writeFileSync(scriptPath, buildProposalGateScript({ proposalsDir: gate.proposalsDir }), {
+        encoding: 'utf8',
+        mode: 0o600,
+      });
+      this.profilePaths.push(scriptPath);
+      return scriptPath;
+    } catch (err) {
+      console.warn(`[deck] could not write Moa's proposal gate; Write stays denied: ${String(err)}`);
+      return null;
+    }
+  }
+
   /** Write the generated profile + MCP config, returning their paths. */
   private writeProfile(): { settingsPath: string; mcpConfigPath: string | null } {
     const dir = path.join(this.wmuxDir, 'brain-profiles');
@@ -1042,9 +1090,14 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
       console.warn(`[deck] could not write the terminal brain's deny script: ${String(err)}`);
       denyScriptPath = null;
     }
+    const proposalGateScriptPath = this.writeProposalGate(dir, stamp);
     fs.writeFileSync(
       settingsPath,
-      JSON.stringify(buildBrainSettingsProfile({ bridgePath, nodePath, denyScriptPath }), null, 2),
+      JSON.stringify(
+        buildBrainSettingsProfile({ bridgePath, nodePath, denyScriptPath, proposalGateScriptPath }),
+        null,
+        2,
+      ),
       { encoding: 'utf8', mode: 0o600 },
     );
     this.profilePaths.push(settingsPath);
@@ -1352,6 +1405,13 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     this._contextInjected = true;
     const parts: string[] = [];
     if (this._startOptions.systemPrompt) parts.push(this._startOptions.systemPrompt);
+    let memory = '';
+    try {
+      memory = this.deps.loadMemory?.() ?? '';
+    } catch {
+      /* memory is best-effort context, never a turn blocker */
+    }
+    if (memory) parts.push(memory);
     if (this._startOptions.fleetContext) parts.push(this._startOptions.fleetContext);
     if (parts.length === 0) return text;
     return `${parts.join('\n\n---\n\n')}\n\n---\n\n${text}`;

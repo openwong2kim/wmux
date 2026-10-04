@@ -341,6 +341,11 @@ export const IPC = {
   DECK_MOA_ARCHIVE_LIST: 'deck:moa:archive:list',
   DECK_MOA_ARCHIVE_ACK: 'deck:moa:archive:ack',
   DECK_MOA_STORE_RESET: 'deck:moa:store:reset',
+  //   DECK_MOA_MEMORY_LIST / _DELETE: what Moa remembers (saved precedents,
+  //   notes and skills, all approved by the operator) and deleting one by
+  //   { kind, name }. DECK_MOA_CHANGED also says this list moved.
+  DECK_MOA_MEMORY_LIST: 'deck:moa:memory:list',
+  DECK_MOA_MEMORY_DELETE: 'deck:moa:memory:delete',
   //   HOOKS_BRIDGE_* — the Claude Code hook bridge (wmux setup-hooks, in-app).
   //   STATUS reports whether the wmux hook entries are installed in
   //   ~/.claude/settings.json; INSTALL performs the same idempotent install as

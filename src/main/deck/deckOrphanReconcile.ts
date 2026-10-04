@@ -21,6 +21,7 @@ import { getDeckLoopStatePath } from './deckLoopStateStore';
 import { getDeckAutonomyPath } from './deckAutonomyStore';
 import { getCommanderSessionPath } from './commanderSessionStore';
 import { getDeckDecisionPath } from './deckDecisionStore';
+import { MOA_MEMORY_DECISION_KEY } from '../../shared/moa';
 import { getDeckSchedulesPath } from './deckScheduleStore';
 import { teardownWorkspaceDeckState } from './deckWorkspaceTeardown';
 import { getHqWorkspaceId, isHqStoreCorrupt } from './deckHqStore';
@@ -129,7 +130,8 @@ export function collectDeckWorkspaceFiles(dir?: string): Map<string, string[]> {
     const raw = atomicReadJSONSync<unknown>(getDeckDecisionPath(dir));
     if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
       for (const k of Object.keys(raw as Record<string, unknown>)) {
-        if (WORKSPACE_ID_RE.test(k)) addId(k, 'deck-decisions.json');
+        // Moa's "Remember this?" card key is not a workspace (moaMemory.ts).
+        if (WORKSPACE_ID_RE.test(k) && k !== MOA_MEMORY_DECISION_KEY) addId(k, 'deck-decisions.json');
       }
     }
   } catch {

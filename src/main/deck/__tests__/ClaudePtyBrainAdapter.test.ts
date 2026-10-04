@@ -1560,3 +1560,84 @@ it('allows every commander surface tool in the PTY runtime and settings profile'
     expect(BRAIN_PTY_ALLOWED_TOOLS).toContain(`mcp__wmux__${tool}`);
   }
 });
+
+// ── Moa: proposal gate and first-turn memory ─────────────────────────────────
+
+describe('the Moa proposal gate in the profile', () => {
+  type Pre = { PreToolUse: Array<{ matcher: string; hooks: Array<{ command: string }> }> };
+  const base = { bridgePath: null, nodePath: '/usr/bin/node', denyScriptPath: '/tmp/deny.js' };
+
+  it('is absent by default: Write and Edit stay hard-denied, no gate hook', () => {
+    const profile = buildBrainSettingsProfile(base);
+    const deny = (profile.permissions as { deny: string[] }).deny;
+    expect(deny).toContain('Write');
+    expect(deny).toContain('Edit');
+    expect((profile.hooks as Pre).PreToolUse.some((g) => g.hooks[0].command.includes('proposal-gate'))).toBe(false);
+  });
+
+  it('moves Write and Edit from the deny list to the gate script; everything else stays denied', () => {
+    const profile = buildBrainSettingsProfile({ ...base, proposalGateScriptPath: '/tmp/proposal-gate-1.cjs' });
+    const deny = (profile.permissions as { deny: string[] }).deny;
+    expect(deny).toEqual(['Agent', 'Task', 'Bash', 'MultiEdit', 'NotebookEdit', 'AskUserQuestion']);
+    const groups = (profile.hooks as Pre).PreToolUse;
+    const gate = groups.find((g) => g.matcher === 'Write|Edit')!;
+    expect(gate.hooks[0].command).toBe('"/usr/bin/node" "/tmp/proposal-gate-1.cjs"');
+    expect(groups.some((g) => g.matcher === 'Write' || g.matcher === 'Edit')).toBe(false);
+  });
+
+  it('writes the gate script and proposals folder at spawn only when asked', async () => {
+    const proposalsDir = path.join(tmpDir, 'memory', '_proposals');
+    const host = makeHost();
+    const adapter = makeAdapter(host, { proposalGate: { proposalsDir } });
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.created.length).toBe(1));
+    const dir = path.join(tmpDir, 'brain-profiles');
+    const gateFile = fs.readdirSync(dir).find((f) => f.startsWith('proposal-gate-'));
+    expect(gateFile).toBeDefined();
+    expect(fs.readFileSync(path.join(dir, gateFile!), 'utf8')).toContain(JSON.stringify(proposalsDir));
+    expect(fs.statSync(proposalsDir).isDirectory()).toBe(true);
+    const settings = fs.readdirSync(dir).find((f) => f.startsWith('settings-'))!;
+    expect(fs.readFileSync(path.join(dir, settings), 'utf8')).toContain('proposal-gate-');
+    adapter.dispose();
+    await turn;
+
+    const plainHost = makeHost();
+    const plain = makeAdapter(plainHost, { workspaceId: 'ws-2' });
+    const plainTurn = collect(plain.send('hi'));
+    await vi.waitFor(() => expect(plainHost.created.length).toBe(1));
+    // The first brain's dispose unlinked its gate; this one never wrote one.
+    expect(fs.readdirSync(dir).filter((f) => f.startsWith('proposal-gate-'))).toEqual([]);
+    plain.dispose();
+    await plainTurn;
+  });
+});
+
+describe('first-turn memory', () => {
+  it('rides the first prompt of a fresh conversation only, and a throw costs nothing', async () => {
+    const host = makeHost();
+    const adapter = makeAdapter(host, { loadMemory: () => '## Orchestrator memory (background context)\nprecedent-x' });
+    adapter.start({ systemPrompt: 'SYSTEM' });
+    const first = collect(adapter.send('first'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    expect(host.writes[0].data).toContain('SYSTEM');
+    expect(host.writes[0].data).toContain('precedent-x');
+    deliverBrainPtyHookSignal(signal('agent.stop', host.created[0].id, { agentSessionId: 's1' }));
+    await first;
+    const n = host.writes.length;
+    const second = collect(adapter.send('second'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(n));
+    expect(host.writes[n].data).not.toContain('precedent-x');
+    deliverBrainPtyHookSignal(signal('agent.stop', host.created[0].id, { agentSessionId: 's1' }));
+    await second;
+    adapter.dispose();
+
+    const host2 = makeHost();
+    const throwing = makeAdapter(host2, { loadMemory: () => { throw new Error('torn'); } });
+    const t = collect(throwing.send('go'));
+    await vi.waitFor(() => expect(host2.writes.length).toBeGreaterThan(0));
+    expect(host2.writes[0].data).toContain('go');
+    deliverBrainPtyHookSignal(signal('agent.stop', host2.created[0].id, { agentSessionId: 's2' }));
+    expect((await t).some((e) => e.type === 'error')).toBe(false);
+    throwing.dispose();
+  });
+});
