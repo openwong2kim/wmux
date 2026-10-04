@@ -1320,8 +1320,16 @@ function ingestResumeSpool(
     // D5: a purged origin transcript makes `--resume` a silent "No conversation
     // found." — drop the record (the pill can still degrade to --continue).
     if (!bindingTranscriptLives(binding)) { drop(); continue; }
+    // A Codex record binds only with its rollout, like a live notify: a spooled
+    // title-thread id would otherwise bind path-less at boot.
+    let admitted = binding;
+    if (binding.agent === 'codex') {
+      const decision = admitCodexCapture(ptyId, prev, binding, managed.meta.env, null);
+      if (!decision.apply) { drop(); continue; }
+      admitted = decision.binding;
+    }
 
-    managed.meta.resumeBinding = mergeResumeBinding(prev, binding);
+    managed.meta.resumeBinding = mergeResumeBinding(prev, admitted);
     // Rung 1 parity: a spooled capture also proves the pane ran claude, so it
     // arms the pill gate even if no live banner was ever detected. (binding.agent
     // is already a KNOWN_AGENT_SLUG — validated in spoolRecordToBinding.)

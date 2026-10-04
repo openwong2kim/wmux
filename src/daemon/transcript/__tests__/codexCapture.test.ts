@@ -127,7 +127,7 @@ describe('admitCodexCapture (#1624)', () => {
 });
 
 describe('gateCodexStop', () => {
-  const stop = (id: string) => ({ agent: 'codex', kind: 'agent.stop' as const, agentSessionId: id, payload: {} });
+  const stop = (id: string) => ({ agent: 'codex' as const, kind: 'agent.stop' as const, agentSessionId: id, payload: {} });
 
   function gate(id: string, extra: { bound?: ResumeBinding } = {}) {
     const calls: string[] = [];
@@ -170,9 +170,9 @@ describe('gateCodexStop', () => {
   it('passes every other signal untouched', () => {
     const calls: string[] = [];
     const opts = { env, admit: () => calls.push('a'), drop: () => calls.push('d') };
-    expect(gateCodexStop({ agent: 'claude', kind: 'agent.stop', agentSessionId: T }, opts)).toBe('pass');
-    expect(gateCodexStop({ agent: 'codex', kind: 'agent.subagent_stop', agentSessionId: T }, opts)).toBe('pass');
-    expect(gateCodexStop({ agent: 'codex', kind: 'agent.stop' }, opts)).toBe('pass');
+    expect(gateCodexStop({ agent: 'claude', kind: 'agent.stop', agentSessionId: T, payload: {} }, opts)).toBe('pass');
+    expect(gateCodexStop({ agent: 'codex', kind: 'agent.subagent_stop', agentSessionId: T, payload: {} }, opts)).toBe('pass');
+    expect(gateCodexStop({ agent: 'codex', kind: 'agent.stop', payload: {} }, opts)).toBe('pass');
     expect(calls).toEqual([]);
   });
 });
