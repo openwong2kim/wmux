@@ -155,7 +155,7 @@ import { AutomationBridge } from './automation/AutomationBridge';
 import { AutomationClient } from './automation/AutomationClient';
 import { toastManager } from './notification/ToastManager';
 import { WorkspaceContextRouter } from './metadata/WorkspaceContextRouter';
-import { ensureDaemon, killDaemonByPidFile, killVerifiedDaemonPid, checkProcessLiveness, isDaemonPipeGone } from './daemon/launcher';
+import { ensureDaemon, killDaemonByPidFile, describeDaemonKillOutcome, killVerifiedDaemonPid, checkProcessLiveness, isDaemonPipeGone } from './daemon/launcher';
 import { DaemonRespawnController } from './daemon/DaemonRespawnController';
 import { loadConfig, getWmuxDir } from '../daemon/config';
 import { CHANNELS_EPOCH } from '../shared/channels';
@@ -2704,16 +2704,17 @@ app.on('before-quit', async (e) => {
             `[Main] daemon.shutdown did not complete (elapsed=${elapsed}ms): ${race.error} — pid-kill backstop`,
           );
           logLine('warn', 'main', `full-shutdown: daemon.shutdown timed out (${race.error}); invoking pid-kill backstop`);
-          const killed = killDaemonByPidFile();
-          logLine('warn', 'main', `full-shutdown: pid-kill backstop ${killed ? 'killed the daemon' : 'found no verified daemon to kill'}`);
+          const outcome = killDaemonByPidFile();
+          logLine('warn', 'main', `full-shutdown: pid-kill backstop ${describeDaemonKillOutcome(outcome)}`);
         }
       } else {
         console.log('[Main] Quit — detaching from daemon; live sessions stay alive (tmux-style persistence)');
         logLine('info', 'main', 'quit: detaching from daemon, sessions remain live (persistence)');
       }
       // Detach our half of the control pipe in BOTH branches. In full-shutdown
-      // the daemon is already gone (RPC ack) or killed (backstop), so this just
-      // cleans up our socket; in the detach branch it is the whole operation.
+      // the daemon is already gone (RPC ack), killed (backstop), or, when its
+      // script identity could not be verified, left running; either way this
+      // just cleans up our socket. In the detach branch it is the whole operation.
       // Best-effort — if the 'disconnected' handler already tore the socket
       // down, disconnect() may throw; swallow it so the quit sequence proceeds.
       try {
@@ -2736,8 +2737,8 @@ app.on('before-quit', async (e) => {
       // than guessing from the persisted PID. A normal Quit still leaves
       // any such daemon alone — that is the persistence promise.
       if (fullShutdownRequested) {
-        const killed = killDaemonByPidFile();
-        logLine('warn', 'main', `full-shutdown (no live client): pid-kill backstop ${killed ? 'killed the daemon' : 'found no verified daemon to kill'}`);
+        const outcome = killDaemonByPidFile();
+        logLine('warn', 'main', `full-shutdown (no live client): pid-kill backstop ${describeDaemonKillOutcome(outcome)}`);
       }
     }
   } catch (err) {
@@ -2748,8 +2749,8 @@ app.on('before-quit', async (e) => {
     // running; a normal Quit skips this entirely.
     if (fullShutdownRequested) {
       safeStep('full-shutdown pid-kill (post-throw backstop)', () => {
-        const killed = killDaemonByPidFile();
-        logLine('warn', 'main', `full-shutdown: post-throw pid-kill backstop ${killed ? 'killed the daemon' : 'found no verified daemon to kill'}`);
+        const outcome = killDaemonByPidFile();
+        logLine('warn', 'main', `full-shutdown: post-throw pid-kill backstop ${describeDaemonKillOutcome(outcome)}`);
       });
     }
   }

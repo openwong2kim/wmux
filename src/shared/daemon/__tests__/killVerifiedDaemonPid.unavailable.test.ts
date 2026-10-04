@@ -28,7 +28,7 @@ vi.mock('fs', async (importOriginal) => {
   }) };
 });
 
-import { killVerifiedDaemonPid } from '../daemonLauncherCore';
+import { describeDaemonKillOutcome, killVerifiedDaemonPid, killVerifiedDaemonPidOutcome } from '../daemonLauncherCore';
 
 describe('killVerifiedDaemonPid — unavailable command line', () => {
   beforeEach(() => {
@@ -94,7 +94,45 @@ describe('killVerifiedDaemonPid — unavailable command line', () => {
     expect(killVerifiedDaemonPid(424242, { definitiveOnly: false })).toBe(true);
     expect(probes.imageReads).toBe(strictReads - 1);
   });
+
+  // The before-quit backstop logs this outcome, so a refused, possibly live
+  // daemon must not read like one that is already gone.
+  it('reports why a kill was refused', () => {
+    expect(killVerifiedDaemonPidOutcome(424242, { definitiveOnly: false })).toBe('unverifiable');
+    probes.image = null;
+    probes.argv = verifiedArgv();
+    expect(killVerifiedDaemonPidOutcome(424242, { definitiveOnly: true })).toBe('unverifiable');
+    probes.image = path.basename(process.execPath);
+    probes.argv = unrelatedArgv();
+    expect(killVerifiedDaemonPidOutcome(424242, { definitiveOnly: false })).toBe('not-daemon');
+    expect(killVerifiedDaemonPidOutcome(-1, { definitiveOnly: false })).toBe('dead');
+    expect(process.kill).not.toHaveBeenCalledWith(424242, 'SIGKILL');
+
+    probes.argv = verifiedArgv();
+    expect(killVerifiedDaemonPidOutcome(424242, { definitiveOnly: false })).toBe('killed');
+    expect(process.kill).toHaveBeenCalledWith(424242, 'SIGKILL');
+  });
+
+  it('reports a verified kill whose signal throws as failed', () => {
+    probes.argv = verifiedArgv();
+    vi.mocked(process.kill).mockImplementation((_pid, signal) => {
+      if (signal === 'SIGKILL') throw Object.assign(new Error('EPERM'), { code: 'EPERM' });
+      return true;
+    });
+    expect(killVerifiedDaemonPidOutcome(424242, { definitiveOnly: false })).toBe('failed');
+  });
+
+  it('describes an unverifiable refusal as a daemon that may still be running', () => {
+    expect(describeDaemonKillOutcome('unverifiable')).toMatch(/may still be running/);
+    expect(describeDaemonKillOutcome('dead')).not.toBe(describeDaemonKillOutcome('unverifiable'));
+  });
 });
+
+function unrelatedArgv(): string {
+  if (process.platform === 'linux') return `${process.execPath}\0/test/someone-elses-app/index.js\0`;
+  if (process.platform === 'win32') return `"${process.execPath}" /test/someone-elses-app/index.js`;
+  return `${process.execPath} /test/someone-elses-app/index.js`;
+}
 
 // The command line each platform's probe returns for a verified daemon:
 // NUL-separated /proc cmdline on Linux, the quoted CIM string on Windows,

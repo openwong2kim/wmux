@@ -253,7 +253,8 @@ export async function runDaemonReplacement(deps: ReplacementDeps): Promise<Repla
       // before-quit disposed the controller during the shutdown race
       // (Codex code-review #1a). Do not hand the old client back for
       // install — quit teardown owns the daemon from here (the before-quit
-      // pid-file kill covers the full-shutdown case).
+      // pid-file kill covers the full-shutdown case when the daemon's script
+      // identity can be verified).
       deps.log('warn', '[replace] cancelled during shutdown race (app quitting) — not reusing, not spawning');
       return 'cancelled';
     }

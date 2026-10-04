@@ -15,8 +15,10 @@ import {
   pollDaemonReady,
   isDaemonPipeGone,
   ensureDaemon as ensureDaemonCore,
-  killDaemonByPidFile as killDaemonByPidFileCore,
+  killDaemonByPidFileOutcome as killDaemonByPidFileOutcomeCore,
+  describeDaemonKillOutcome,
   killVerifiedDaemonPid as killVerifiedDaemonPidCore,
+  type DaemonKillOutcome,
   type DaemonInfo,
   type DaemonLauncherDeps,
   type ProcessLiveness,
@@ -48,9 +50,11 @@ export {
   DAEMON_READY_HARD_CEILING_MS,
   pollDaemonReady,
   isDaemonPipeGone,
+  describeDaemonKillOutcome,
 };
 export type {
   DaemonInfo,
+  DaemonKillOutcome,
   ProcessLiveness,
   DaemonPingResult,
   RecoveringWaitOutcome,
@@ -155,8 +159,13 @@ function safeScriptCandidates(): string[] {
   try { return resolveDaemonScriptCandidates(); } catch { return []; }
 }
 
-export function killDaemonByPidFile(): boolean {
-  return killDaemonByPidFileCore(safeScriptCandidates());
+/**
+ * The full-shutdown pid-file backstop. Returns the outcome rather than a
+ * boolean so before-quit can log a refused, still-running daemon differently
+ * from one that is already gone (`describeDaemonKillOutcome`).
+ */
+export function killDaemonByPidFile(): DaemonKillOutcome {
+  return killDaemonByPidFileOutcomeCore(safeScriptCandidates());
 }
 
 export function killVerifiedDaemonPid(

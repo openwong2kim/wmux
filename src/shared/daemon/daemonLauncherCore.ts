@@ -1411,17 +1411,51 @@ export async function ensureDaemon(deps: DaemonLauncherDeps): Promise<DaemonInfo
  * running for explicit recovery.
  *
  * Best-effort: never throws. Returns true only when a verified daemon was
- * signalled.
+ * signalled; `killDaemonByPidFileOutcome` says why it was not.
  */
 export function killDaemonByPidFile(scriptCandidates: string[] = []): boolean {
+  return killDaemonByPidFileOutcome(scriptCandidates) === 'killed';
+}
+
+/** `killDaemonByPidFile`, reporting why nothing was signalled. Never throws. */
+export function killDaemonByPidFileOutcome(scriptCandidates: string[] = []): DaemonKillOutcome {
+  let pid: number;
   try {
     const wmuxDir = getWmuxDir();
     const pidStr = fs.readFileSync(path.join(wmuxDir, 'daemon.pid'), 'utf8').trim();
-    const pid = parseInt(pidStr, 10);
-    // Relaxed mode: no image lookup, but never a kill without script identity.
-    return killVerifiedDaemonPid(pid, { definitiveOnly: false, scriptCandidates });
+    pid = parseInt(pidStr, 10);
   } catch {
-    return false;
+    return 'dead'; // no pid file: no daemon recorded
+  }
+  // Relaxed mode: no image lookup, but never a kill without script identity.
+  return killVerifiedDaemonPidOutcome(pid, { definitiveOnly: false, scriptCandidates });
+}
+
+/**
+ * Why a verified kill did or did not signal its target. Callers that only
+ * need "was a daemon signalled" use the boolean wrappers; the full-shutdown
+ * backstop logs the outcome so a refusal is not mistaken for "already gone".
+ *
+ *  - `killed`: a verified daemon was sent SIGKILL.
+ *  - `dead`: nothing to kill: no pid file, an invalid PID, or a process that
+ *    is confirmed gone.
+ *  - `not-daemon`: the process's command line was read and it is not a wmux
+ *    daemon (for example a reused PID). It was left alone.
+ *  - `unverifiable`: the process may still be live, but its identity could
+ *    not be read (the command line, or strict mode's image lookup). It was
+ *    left running rather than guessed at.
+ *  - `failed`: identity was verified, but sending the signal threw.
+ */
+export type DaemonKillOutcome = 'killed' | 'dead' | 'not-daemon' | 'unverifiable' | 'failed';
+
+/** Log phrase for a backstop outcome; `unverifiable` names the daemon left running. */
+export function describeDaemonKillOutcome(outcome: DaemonKillOutcome): string {
+  switch (outcome) {
+    case 'killed': return 'killed the daemon';
+    case 'dead': return 'found no live daemon to kill';
+    case 'not-daemon': return 'refused: the recorded PID is not a wmux daemon';
+    case 'unverifiable': return 'refused: could not verify the daemon script identity (process inspection unavailable), so the daemon may still be running; retry shutdown once inspection works';
+    case 'failed': return 'verified the daemon but the kill signal failed';
   }
 }
 
@@ -1435,9 +1469,9 @@ export function killDaemonByPidFile(scriptCandidates: string[] = []): boolean {
  *    already spawned a replacement daemon and rewritten the pid file; a
  *    file-read here would SIGKILL the fresh daemon.
  *  - `definitiveOnly: true` also refuses when the image lookup is
- *    indeterminate (null — AV blocking tasklist/ps). The replacement path
- *    waits up to ~5s after asking the daemon to die, which is long enough
- *    for PID reuse to stop being "near-impossible".
+ *    indeterminate (null — AV blocking tasklist/ps). This is a conservative
+ *    "refuse when indeterminate" gate, not the PID-reuse defense: in both
+ *    modes that defense is the script identity read from the command line.
  *
  * Both modes require script identity from the command line. A matching
  * executable name is shared by unrelated Node/Electron processes, so an
@@ -1445,32 +1479,44 @@ export function killDaemonByPidFile(scriptCandidates: string[] = []): boolean {
  * caller's recovery path, never to a blind SIGKILL.
  *
  * Best-effort: never throws. Returns true only when a verified daemon was
- * signalled.
+ * signalled; `killVerifiedDaemonPidOutcome` says why it was not.
  */
 export function killVerifiedDaemonPid(
   pid: number,
   opts: { definitiveOnly: boolean; scriptCandidates?: string[] },
 ): boolean {
+  return killVerifiedDaemonPidOutcome(pid, opts) === 'killed';
+}
+
+/** `killVerifiedDaemonPid`, reporting why nothing was signalled. Never throws. */
+export function killVerifiedDaemonPidOutcome(
+  pid: number,
+  opts: { definitiveOnly: boolean; scriptCandidates?: string[] },
+): DaemonKillOutcome {
   try {
-    if (!Number.isFinite(pid) || pid <= 0 || pid === process.pid) return false;
+    if (!Number.isFinite(pid) || pid <= 0) return 'dead';
+    if (pid === process.pid) return 'not-daemon';
     // Only a confirmed-dead PID skips the kill (already gone). `unknown`
     // proceeds to verification — the image/cmdline guards below decide.
-    if (checkProcessLiveness(pid) === 'dead') return false;
+    if (checkProcessLiveness(pid) === 'dead') return 'dead';
 
     // Since #1001 another host may have spawned the daemon (Electron vs CLI),
     // so the image is never compared with this caller's; script identity below
     // is the host-independent gate. Only strict mode reads the image, and only
     // to refuse an indeterminate lookup; skipping it in relaxed mode saves
     // before-quit one tasklist/ps call (up to 3 s) whose result was unused.
-    if (opts.definitiveOnly && getProcessImageName(pid) === null) return false;
+    if (opts.definitiveOnly && getProcessImageName(pid) === null) return 'unverifiable';
     const argv = getProcessArgv(pid);
-    if (argv === null || !argvIdentifiesDaemonScript(argv, opts.scriptCandidates ?? [])) {
-      return false; // missing or mismatched script identity, regardless of image
-    }
-
-    process.kill(pid, 'SIGKILL');
-    return true;
+    // Missing or mismatched script identity refuses, regardless of image.
+    if (argv === null) return 'unverifiable';
+    if (!argvIdentifiesDaemonScript(argv, opts.scriptCandidates ?? [])) return 'not-daemon';
   } catch {
-    return false;
+    return 'unverifiable';
+  }
+  try {
+    process.kill(pid, 'SIGKILL');
+    return 'killed';
+  } catch {
+    return 'failed';
   }
 }
