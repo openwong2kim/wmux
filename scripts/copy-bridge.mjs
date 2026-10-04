@@ -21,6 +21,7 @@ const destDir = join(repoRoot, 'dist', 'cli-bundle');
 //   - Codex lifecycle notify + hooks bridges
 //   - OpenCode lifecycle plugin (renamed in the bundle to avoid generic wmux.js)
 const bridges = [
+  { src: join(repoRoot, 'integrations', 'codex', 'bin', 'wmux-codex-thread.mjs'), dest: 'wmux-codex-thread.mjs' },
   { src: join(repoRoot, 'integrations', 'opencode', 'plugins', 'wmux-chat-tui.mjs'), dest: 'wmux-chat-tui.mjs' },
   {
     src: join(repoRoot, 'integrations', 'claude', 'bin', 'wmux-bridge.mjs'),

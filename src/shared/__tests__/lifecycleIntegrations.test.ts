@@ -40,6 +40,7 @@ function writeCodexConfig(text: string): string {
 
 beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-life-'));
+  fs.writeFileSync(path.join(home, 'wmux-codex-thread.mjs'), '// wmux-managed: codex-thread-attribution\n');
   // Two tests assert the default ~/.config opencode destination. An ambient
   // XDG_CONFIG_HOME in the runner env would silently reroute that and flake
   // CI, so clear it; the XDG-honoring test sets its own value after this.
@@ -266,6 +267,7 @@ describe('statusLifecycleIntegrations — codexNotify staleness', () => {
     const paths = pathsWithSource();
     fs.mkdirSync(path.dirname(paths.codex.destinationPath), { recursive: true });
     fs.writeFileSync(paths.codex.destinationPath, SOURCE_TEXT, 'utf8');
+    for (const dependency of paths.codex.dependencies ?? []) installLifecycleAsset(dependency);
     writeCodexConfig(`notify = ["node", ${JSON.stringify(paths.codex.destinationPath)}]\n`);
     const status = statusLifecycleIntegrations(paths);
     expect(status.codexNotify.state).toBe('wmux');
@@ -389,5 +391,27 @@ describe('lifecycleIntegrations — codex hooks lane', () => {
     const outcome = installLifecycleIntegrations(paths, { codexVersionOutput: VERSION_OK });
     expect(outcome.codexHooksBridge.state).toBe('error');
     expect(outcome.ok).toBe(false);
+  });
+});
+
+describe('Codex shared runtime installation', () => {
+  it('installs the module beside both entry points and detects a missing dependency', () => {
+    const paths = resolveLifecycleIntegrationPaths(home, path.resolve(__dirname, '../../..'));
+    expect(installLifecycleAsset(paths.codex).state).toBe('current');
+    expect(installLifecycleAsset(paths.codexHooksBridge).state).toBe('current');
+    const shared = path.join(home, '.wmux', 'hooks', 'wmux-codex-thread.mjs');
+    expect(fs.readFileSync(shared, 'utf8')).toContain('export function classifyCodexThread');
+    fs.unlinkSync(shared);
+    expect(inspectLifecycleAsset(paths.codex).state).toBe('stale');
+    expect(installLifecycleAsset(paths.codex).state).toBe('current');
+  });
+
+  it('does not register a bridge when its shared module conflicts', () => {
+    const paths = resolveLifecycleIntegrationPaths(home, path.resolve(__dirname, '../../..'));
+    const dependency = paths.codex.dependencies![0];
+    fs.mkdirSync(path.dirname(dependency.destinationPath), { recursive: true });
+    fs.writeFileSync(dependency.destinationPath, FOREIGN_TEXT);
+    expect(installLifecycleIntegrations(paths).codexNotify).toBeNull();
+    expect(fs.readFileSync(dependency.destinationPath, 'utf8')).toBe(FOREIGN_TEXT);
   });
 });

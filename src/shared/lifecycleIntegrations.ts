@@ -34,6 +34,8 @@ export interface LifecycleAssetSpec {
   destinationPath: string;
   /** Any one marker identifies an older or current wmux-owned destination. */
   ownershipMarkers: readonly string[];
+  /** Runtime modules installed beside this entry point before it is registered. */
+  dependencies?: readonly LifecycleAssetSpec[];
 }
 
 export interface LifecycleAssetStatus {
@@ -77,6 +79,10 @@ export function inspectLifecycleAsset(spec: LifecycleAssetSpec): LifecycleAssetS
     return { ...base, state: 'error', error: String(error) };
   }
 
+  for (const dependency of spec.dependencies ?? []) {
+    const status = inspectLifecycleAsset(dependency);
+    if (status.state !== 'current') return { ...base, state: status.state === 'missing' ? 'stale' : status.state, error: status.error };
+  }
   if (source.equals(destination)) return { ...base, state: 'current' };
   const destinationText = destination.toString('utf8');
   const owned = spec.ownershipMarkers.some((marker) => destinationText.includes(marker));
@@ -88,6 +94,13 @@ export function inspectLifecycleAsset(spec: LifecycleAssetSpec): LifecycleAssetS
  * without a wmux marker is reported as foreign and is never overwritten.
  */
 export function installLifecycleAsset(spec: LifecycleAssetSpec): LifecycleAssetInstallOutcome {
+  for (const dependency of spec.dependencies ?? []) {
+    const outcome = installLifecycleAsset(dependency);
+    if (outcome.state !== 'current') return {
+      sourcePath: spec.sourcePath, destinationPath: spec.destinationPath,
+      state: outcome.state, error: outcome.error, action: 'none',
+    };
+  }
   const before = inspectLifecycleAsset(spec);
   if (before.state !== 'missing' && before.state !== 'stale') {
     return { ...before, action: 'none' };
@@ -167,6 +180,12 @@ function resolveOpenCodeConfigHome(home: string): string {
 }
 
 export function resolveLifecycleIntegrationPaths(home: string, startDir: string): LifecycleIntegrationPaths {
+  const basename = 'wmux-codex-thread.mjs';
+  const codexThread: LifecycleAssetSpec = {
+    sourcePath: findLifecycleAssetSourceFrom(startDir, basename, ['integrations', 'codex', 'bin', basename]),
+    destinationPath: path.join(home, '.wmux', 'hooks', basename),
+    ownershipMarkers: ['wmux-managed: codex-thread-attribution'],
+  };
   return {
     home,
     codex: {
@@ -177,6 +196,7 @@ export function resolveLifecycleIntegrationPaths(home: string, startDir: string)
       ),
       destinationPath: path.join(home, '.wmux', 'hooks', CODEX_NOTIFY_BASENAME),
       ownershipMarkers: [CODEX_NOTIFY_MANAGED_MARKER],
+      dependencies: [codexThread],
     },
     codexHooksBridge: {
       sourcePath: findLifecycleAssetSourceFrom(
@@ -186,6 +206,7 @@ export function resolveLifecycleIntegrationPaths(home: string, startDir: string)
       ),
       destinationPath: path.join(home, '.wmux', 'hooks', CODEX_HOOKS_BRIDGE_BASENAME),
       ownershipMarkers: [CODEX_HOOKS_MANAGED_MARKER],
+      dependencies: [codexThread],
     },
     opencode: {
       sourcePath: findLifecycleAssetSourceFrom(

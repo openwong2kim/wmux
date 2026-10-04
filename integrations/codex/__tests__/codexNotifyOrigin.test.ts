@@ -276,6 +276,7 @@ describe('wmux-codex-notify under a fake Codex parent', () => {
     Object.assign(env, {
       USERPROFILE: home,
       HOME: home,
+      CODEX_HOME: path.join(home, '.codex'),
       WMUX_PIPE_NAME: pipe,
       WMUX_TEST_CHILD: JSON.stringify(child),
     });
@@ -301,9 +302,7 @@ describe('wmux-codex-notify under a fake Codex parent', () => {
     expect(await run(SERVER_ARGV)).toBe(0);
     expect(received).toEqual([]);
     expect(spoolFiles()).toEqual([]);
-    expect(logLines()).toEqual([
-      expect.objectContaining({ outcome: 'refused-shared-server', sessionId: THREAD_ID, claimedPtyId: 'pty-starter' }),
-    ]);
+    expect(logLines()).toEqual([]);
   }, 20_000);
 
   it('does not spool under the inherited pane id when no wmux endpoint exists', async () => {
@@ -311,25 +310,21 @@ describe('wmux-codex-notify under a fake Codex parent', () => {
     // resume binding under WMUX_PTY_ID straight away.
     expect(await run(SERVER_ARGV)).toBe(0);
     expect(spoolFiles()).toEqual([]);
-    expect(logLines().map((l) => l.outcome)).toEqual(['refused-shared-server']);
+    expect(logLines().map((l) => l.outcome)).toEqual([]);
   }, 20_000);
 
   it('sees through a wrapper that re-runs the bridge', async () => {
     writeToken();
     expect(await run(SERVER_ARGV, { shim: true })).toBe(0);
     expect(received).toEqual([]);
-    expect(logLines().map((l) => l.outcome)).toEqual(['refused-shared-server']);
+    expect(logLines().map((l) => l.outcome)).toEqual([]);
   }, 20_000);
 
-  it('sends a clean shared server\'s notification without a pane, as before', async () => {
-    // What wmux itself starts (codexSharedRuntime): every WMUX_* removed. The
-    // daemon places the signal by cwd; it feeds the status dot and webhooks.
+  it('drops an unknown shared thread even with no inherited pane identity', async () => {
     writeToken();
     expect(await run(SERVER_ARGV, { identity: false })).toBe(0);
-    expect(received).toEqual([delivered({})]);
-    const params = received[0].params ?? {};
-    expect(['ptyId', 'workspaceId', 'surfaceId'].filter((k) => k in params)).toEqual([]);
-    expect(logLines()).toEqual([expect.objectContaining({ outcome: 'ok', origin: 'unclaimed' })]);
+    expect(received).toEqual([]);
+    expect(logLines()).toEqual([]);
   }, 20_000);
 
   it('attributes a per-pane stdio server (the Chat composer) to its pane', async () => {
@@ -362,7 +357,7 @@ describe('wmux-codex-notify under a fake Codex parent', () => {
       handed: ['/usr/bin/codex', '--no-daemon', '-C', 'app-server', 'exec', 'fix tests'],
     })).toBe(0);
     expect(received).toEqual([delivered(PANE)]);
-    expect(logLines().map((l) => l.outcome)).toEqual(['refused-shared-server', 'ok']);
+    expect(logLines().map((l) => l.outcome)).toEqual(['ok']);
   }, 20_000);
 
   // #1727 — the WSL Codex hook's report of which Linux process this Codex is.

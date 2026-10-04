@@ -65,7 +65,7 @@
 //     feature flag, the flag's presence, and a clean config parse are all
 //     useless as capability probes; only the version is load-bearing.
 //
-// SELF-CONTAINED: JS-only, Node built-ins only — no imports from src/ or
+// JS-only with a sibling wmux-codex-thread.mjs; no imports from src/ or
 // integrations/shared/. Mirrors integrations/codex/bin/wmux-codex-notify.mjs
 // and integrations/kiro/bin/wmux-kiro-bridge.mjs; the duplication across
 // bridges is by design (a bridge runs in the agent's runtime, where wmux's
@@ -85,6 +85,11 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createConnection } from 'node:net';
 import { randomUUID } from 'node:crypto';
+
+import {
+  classifyCodexThread, codexSessionsRoot, classifyNotifierOrigin, readAncestorChain,
+  recordThreadOwner, readThreadOwner, applyThreadOwner,
+} from './wmux-codex-thread.mjs';
 
 const HOOK_TIMEOUT_MS = 2000; // hard cap so we never stall a Codex turn
 // Stamped on every codex-hooks.log line; bump on behavior changes.
@@ -462,7 +467,7 @@ export function buildCodexHookEnvelope(payload, { env = process.env, now = Date.
   // through the prototype chain to truthy values, sail past a `!kind` guard,
   // and produce an envelope whose `kind` is a function or `{}`. Same trap the
   // Kiro bridge documents.
-  const kind = event && Object.hasOwn(EVENT_TO_KIND, event)
+  let kind = event && Object.hasOwn(EVENT_TO_KIND, event)
     ? EVENT_TO_KIND[event]
     : undefined;
   if (!kind) return null;
@@ -472,7 +477,13 @@ export function buildCodexHookEnvelope(payload, { env = process.env, now = Date.
 
   const sessionId = nonEmptyStr(payload.session_id);
   const turnId = nonEmptyStr(payload.turn_id);
-  const transcriptPath = nonEmptyStr(payload.transcript_path);
+  const thread = sessionId ? classifyCodexThread(sessionId, codexSessionsRoot(env)) : { subagent: false };
+  if (thread.subagent) {
+    // Nested prompts/approvals must not change the lead's turn state either.
+    if (event !== 'Stop' && event !== 'SessionStart') return null;
+    kind = 'agent.subagent_stop';
+  }
+  const transcriptPath = thread.subagent ? undefined : nonEmptyStr(payload.transcript_path);
   // `source` is "startup" | "resume" on SessionStart. Metadata, not content.
   // NO CONSUMER YET — nothing in src/ reads signal.payload.source; it is
   // carried because it is the only field that distinguishes a resumed session
@@ -485,7 +496,7 @@ export function buildCodexHookEnvelope(payload, { env = process.env, now = Date.
   return {
     kind,
     agent: 'codex',
-    ...(sessionId ? { agentSessionId: sessionId } : {}),
+    ...(sessionId && !thread.subagent ? { agentSessionId: sessionId } : {}),
     ptyId,
     ...(workspaceId ? { workspaceId } : {}),
     ...(surfaceId ? { surfaceId } : {}),
@@ -515,6 +526,17 @@ async function main() {
     return;
   }
 
+  const sessionIdClaimed = nonEmptyStr(payload?.session_id);
+  const thread = sessionIdClaimed
+    ? classifyCodexThread(sessionIdClaimed, codexSessionsRoot(process.env)) : undefined;
+  const origin = classifyNotifierOrigin(readAncestorChain());
+  if (origin === 'process' && payload?.hook_event_name === 'SessionStart' && !thread?.subagent) {
+    recordThreadOwner(sessionIdClaimed, process.env);
+  } else if (origin !== 'process') {
+    const owner = readThreadOwner(thread?.rootId, process.env);
+    if (!owner) return;
+    applyThreadOwner(owner, process.env);
+  }
   const envelope = buildCodexHookEnvelope(payload);
   if (!envelope) {
     // Two reasons, and the log distinguishes them without echoing content: an

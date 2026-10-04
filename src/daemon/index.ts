@@ -7,6 +7,7 @@ import { ChatCancelReceiptStore } from './chat/ChatCancelReceiptStore';
 import { ChatQueueStore } from './chat/ChatQueue';
 import { createChatBridge, type NativeChatBridge } from './chat/nativeChatBridge';
 import {captureCodexRelayResume, codexRelayResumeCommand} from './web/codexRelayResume';
+import { persistCodexThreadOwner } from './web/codexThreadOwner';
 import { codexCdOperand, recoverCodexPane, withCodexRemote } from './web/recoverCodexPane';
 import { CodexRelayUnavailableError } from './web/codexTuiRelay';
 import { paneCodexSettings } from './web/paneCodexSettings';
@@ -7721,7 +7722,9 @@ async function main(): Promise<void> {
   persistCodexRelayState = (id,owner) => {
     if (shuttingDown || sessionManager.getSession(id) !== owner || !['attached','detached'].includes(owner.meta.state)) return;
     const before = JSON.stringify(owner.meta.codexRelayResume);
-    captureCodexRelayResume(owner.meta,codexPaneRelays.liveSelection(id,owner));
+    const observed = codexPaneRelays.liveSelection(id,owner);
+    persistCodexThreadOwner(owner.meta, observed);
+    captureCodexRelayResume(owner.meta, observed);
     if (before !== JSON.stringify(owner.meta.codexRelayResume) && !stateWriter.saveImmediate(buildState(sessionManager))) {
       throw new Error('Codex recovery selection could not be persisted');
     }
