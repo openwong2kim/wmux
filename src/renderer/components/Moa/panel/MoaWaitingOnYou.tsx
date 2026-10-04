@@ -1,4 +1,5 @@
-// "Waiting on you": every workspace's pending decision, answerable in place.
+// "Waiting on you": every workspace's pending decision, answerable in place,
+// with Moa's own "Remember this?" card (MoaMemoryCard) as the first row.
 // A decision is the one thing on screen waiting on the operator, so each row
 // wears the needs-you grammar (content-20% fill, dashed content-30% border,
 // the yellow eyebrow as its one state mark). Answers go to the decision's own
@@ -7,6 +8,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { MoaPendingDecision } from '../../../../shared/moa';
 import Button from '../../ui/Button';
 import Input from '../../ui/Input';
+import { MoaMemoryCard, type MoaMemoryCardApi } from '../MoaMemoryCard';
 
 export type ResolveDecision = (args: { workspaceId: string; id: string; resolution: string }) => Promise<{ ok: boolean; code?: string }>;
 
@@ -22,12 +24,18 @@ export const NEEDS_YOU_ROW =
 export function MoaWaitingOnYou({
   decisions,
   onResolve,
+  memoryApi,
   t,
 }: {
   decisions: readonly MoaPendingDecision[];
   onResolve: ResolveDecision;
+  /** Injected in tests; the card defaults to the preload. */
+  memoryApi?: MoaMemoryCardApi;
   t: (key: string, vars?: Record<string, string | number>) => string;
 }): React.ReactElement | null {
+  // The memory card fetches its own card (and re-reads on DECK_MOA_CHANGED),
+  // so it stays mounted; it says here whether one is up.
+  const [memoryPending, setMemoryPending] = useState(false);
   // Answered rows leave at once; main's change signal confirms it moments later.
   const [answered, setAnswered] = useState<ReadonlySet<string>>(() => new Set());
   const listRef = useRef<HTMLUListElement>(null);
@@ -55,8 +63,9 @@ export function MoaWaitingOnYou({
     (target ?? headingRef.current)?.focus();
   });
 
-  // Nothing waiting: no heading, no "0" (no dead gauges).
-  if (visible.length === 0) return null;
+  // Nothing waiting: no heading, no "0" (no dead gauges). The section stays
+  // mounted (hidden) only so the memory card can learn of a new card.
+  const total = visible.length + (memoryPending ? 1 : 0);
 
   const resolve = async (d: MoaPendingDecision, resolution: string): Promise<boolean> => {
     const text = resolution.trim();
@@ -69,7 +78,7 @@ export function MoaWaitingOnYou({
     } catch {
       return false;
     }
-    if (visible.length === 1) {
+    if (total === 1) {
       // The last one: the section goes away, so focus moves to the panel's
       // top region (it is focusable for exactly this) rather than the page.
       listRef.current?.closest<HTMLElement>('[data-moa-panel-top]')?.focus();
@@ -81,7 +90,7 @@ export function MoaWaitingOnYou({
   };
 
   return (
-    <section data-moa-waiting aria-labelledby="moa-waiting-title" className="px-3 pt-2 pb-1 flex flex-col gap-1.5">
+    <section data-moa-waiting aria-labelledby="moa-waiting-title" className={total === 0 ? 'hidden' : 'px-3 pt-2 pb-1 flex flex-col gap-1.5'}>
       <h3
         id="moa-waiting-title"
         ref={headingRef}
@@ -89,9 +98,12 @@ export function MoaWaitingOnYou({
         className="m-0 text-[13px] font-medium text-[var(--text-main)] outline-none"
       >
         {t('moa.panel.waitingTitle')}{' '}
-        <span className="tabular-nums text-[var(--accent-yellow)]">{visible.length}</span>
+        <span className="tabular-nums text-[var(--accent-yellow)]">{total}</span>
       </h3>
       <ul ref={listRef} className="m-0 p-0 list-none flex flex-col gap-1.5">
+        <li data-moa-memory-row className={memoryPending ? 'flex flex-col min-h-0' : 'hidden'}>
+          <MoaMemoryCard api={memoryApi} onPendingChange={setMemoryPending} t={t} />
+        </li>
         {visible.map((d) => (
           <DecisionRow key={d.decision.id} item={d} onAnswer={(text) => resolve(d, text)} t={t} />
         ))}

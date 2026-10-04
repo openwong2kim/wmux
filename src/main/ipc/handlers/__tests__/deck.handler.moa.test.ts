@@ -62,7 +62,7 @@ import { getWorkspaceMirror, __resetWorkspaceMirrorForTest } from '../../../work
 import { __resetHqMemoryForTest, setHqWorkspaceId, setMoaEnabled } from '../../../deck/deckHqStore';
 import { clearDecision, raiseDecision, resolveDecision } from '../../../deck/deckDecisionStore';
 import { __resetStartupDeckReconcileForTest } from '../../../deck/deckOrphanReconcile';
-import type { MoaPendingDecision } from '../../../../shared/moa';
+import { MOA_MEMORY_DECISION_KEY, type MoaPendingDecision } from '../../../../shared/moa';
 
 class FakeAdapter implements BrainAdapter {
   sessionId: string | null = null;
@@ -106,7 +106,7 @@ beforeEach(async () => {
   __resetStartupDeckReconcileForTest();
   vi.spyOn(console, 'log').mockImplementation(() => undefined);
   vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-  for (const ws of ['ws-a', 'ws-b', 'ws-c', 'ws-hq']) await clearDecision(ws);
+  for (const ws of ['ws-a', 'ws-b', 'ws-c', 'ws-hq', MOA_MEMORY_DECISION_KEY]) await clearDecision(ws);
   await setHqWorkspaceId(null);
   await setMoaEnabled(true);
   cleanup = registerDeckHandler(() => fakeWindow, {
@@ -149,6 +149,14 @@ describe('DECK_MOA_DECISIONS', () => {
     });
     // Only the panel's fields cross the wire — no status or resolution.
     expect(Object.keys(list[1].decision).sort()).toEqual(['context', 'id', 'options', 'question', 'raisedAt']);
+  });
+
+  it('skips Moa\'s "Remember this?" card: it has its own row in Waiting on you', async () => {
+    expect(await raiseDecision(MOA_MEMORY_DECISION_KEY, { question: 'Remember this?', options: ['Save', 'Discard'] })).not.toBeNull();
+    await raiseDecision('ws-a', { question: 'ship it?' });
+    const list = await decisions();
+    expect(list.map((d) => d.workspaceId)).toEqual(['ws-a']);
+    await clearDecision(MOA_MEMORY_DECISION_KEY);
   });
 
   it('pushes DECK_MOA_CHANGED when a decision is raised and when it is resolved', async () => {

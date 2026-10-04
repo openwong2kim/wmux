@@ -497,8 +497,9 @@ export function CommanderViewContent({
         {moaNotice && <div className="pt-2">{moaNotice}</div>}
         {/* Moa's "Remember this?" card waits on the operator, so it sits at the
             top of the panel, above the TUI, never inside the collapsed rail.
-            It is Moa's own: it shows whichever workspace the deck is on. */}
-        <MoaMemoryCard t={t} className="px-3 pt-2 shrink-0 max-h-[55%] min-h-0 flex flex-col" />
+            It is Moa's own: it shows whichever workspace the deck is on. When
+            Moa owns the panel it is the first row of Waiting on you instead. */}
+        {!moa && <MoaMemoryCard t={t} className="px-3 pt-2 shrink-0 max-h-[55%] min-h-0 flex flex-col" />}
         {/* The brain pty is embedded here and nowhere else; in Moa's chat view
             it is not mounted at all until the operator asks for the terminal. */}
         {showTerminal ? (
@@ -699,7 +700,7 @@ export function CommanderViewContent({
             it survives a reboot); renders null unless a decision is pending for
             this workspace. */}
         {!moa && <DeckDecisionCard workspaceId={chatWorkspaceId} t={t} />}
-        <MoaMemoryCard t={t} />
+        {!moa && <MoaMemoryCard t={t} />}
 
         {/* Brain conversation — the normalized bubbles + tool chips. The
             `claude-pty` vendor never reaches here (it returns the TUI layout

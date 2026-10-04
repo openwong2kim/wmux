@@ -2459,7 +2459,9 @@ export function registerDeckHandler(
       const names = new Map((getWorkspaceMirror().getEntries() ?? []).map((e) => [e.id, e.name]));
       const decisions: MoaPendingDecision[] = [];
       for (const [workspaceId, d] of Object.entries(loadDeckDecisions())) {
-        if (d.status !== 'pending') continue;
+        // Moa's "Remember this?" card has its own row in Waiting on you
+        // (MoaMemoryCard): listed here too, it would show twice.
+        if (d.status !== 'pending' || workspaceId === MOA_MEMORY_DECISION_KEY) continue;
         const workspaceName = names.get(workspaceId);
         decisions.push({
           workspaceId,

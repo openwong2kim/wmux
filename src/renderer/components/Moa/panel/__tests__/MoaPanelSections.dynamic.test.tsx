@@ -9,7 +9,8 @@ import { createRoot, type Root } from 'react-dom/client';
 import { MoaWaitingOnYou } from '../MoaWaitingOnYou';
 import { MoaTaskCards } from '../MoaTaskCards';
 import { MoaPanelTop } from '../MoaPanelTop';
-import type { MoaPendingDecision } from '../../../../../shared/moa';
+import type { MoaMemoryCard as MoaMemoryCardData, MoaPendingDecision } from '../../../../../shared/moa';
+import type { MoaMemoryCardApi } from '../../MoaMemoryCard';
 import type { WorkLink } from '../../../../../shared/workLink';
 
 let container: HTMLDivElement;
@@ -35,6 +36,18 @@ const decision = (id: string, workspaceId: string, options: string[] = []): MoaP
   decision: { id, question: `Question ${id}?`, options, context: '', raisedAt: 1 },
 });
 
+/** A fake of main's memory-card API: `set` swaps the card, `changed` fires DECK_MOA_CHANGED. */
+function memoryApi(initial: MoaMemoryCardData | null) {
+  let current = initial;
+  const listeners: Array<() => void> = [];
+  const api = {
+    memoryCard: vi.fn(async () => ({ card: current })),
+    memoryResolve: vi.fn(async () => ({ ok: true })),
+    onChanged: (cb: () => void) => { listeners.push(cb); return () => undefined; },
+  } satisfies MoaMemoryCardApi;
+  return { api, set: (c: MoaMemoryCardData | null) => { current = c; }, changed: () => listeners.forEach((cb) => cb()) };
+}
+
 const link = (id: string, over: Partial<WorkLink> = {}): WorkLink => ({
   id,
   origin: 'moa',
@@ -48,8 +61,9 @@ const link = (id: string, over: Partial<WorkLink> = {}): WorkLink => ({
 
 describe('MoaWaitingOnYou', () => {
   it('draws nothing at zero (no dead gauges)', async () => {
-    await act(async () => root.render(createElement(MoaWaitingOnYou, { decisions: [], onResolve: vi.fn(), t })));
-    expect(container.querySelector('[data-moa-waiting]')).toBeNull();
+    await act(async () => root.render(createElement(MoaWaitingOnYou, { decisions: [], onResolve: vi.fn(), memoryApi: memoryApi(null).api, t })));
+    // Mounted (the memory card listens for a new card) but not drawn.
+    expect(container.querySelector('[data-moa-waiting]')?.className).toBe('hidden');
   });
 
   it('answers an option in one click, to the decision\'s own workspace', async () => {
@@ -95,6 +109,55 @@ describe('MoaWaitingOnYou', () => {
     expect(container.querySelector('[data-moa-decision="d5"]')).toBeNull();
     expect(container.querySelector('[data-moa-decision="d6"]')).not.toBeNull();
     expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+});
+
+describe('MoaWaitingOnYou — the "Remember this?" card', () => {
+  const card = (id: string, fullText: string): MoaMemoryCardData => ({
+    id, kind: 'skill', name: 'triage-ci', question: 'Remember this? Moa proposes a skill', description: 'Triage a red CI run', fullText, replaces: false,
+  });
+  const long = `---\nname: triage-ci\n---\n${Array.from({ length: 12 }, (_, i) => `line ${i}`).join('\n')}\nHIDDEN-TAIL\n`;
+
+  it('is the first row of Waiting on you and counts in its total', async () => {
+    const { api } = memoryApi(card('m1', 'short text'));
+    await act(async () => root.render(createElement(MoaWaitingOnYou, { decisions: [decision('d1', 'ws-a', ['Go'])], onResolve: vi.fn(), memoryApi: api, t })));
+    await act(async () => { await Promise.resolve(); });
+    const section = container.querySelector('[data-moa-waiting]') as HTMLElement;
+    expect(section.className).not.toBe('hidden');
+    expect(section.querySelector('h3 span')?.textContent).toBe('2');
+    const rows = section.querySelectorAll('ul > li');
+    expect(rows[0].querySelector('[data-moa-memory-card="m1"]')).not.toBeNull();
+    expect(rows[1].getAttribute('data-moa-decision')).toBe('d1');
+  });
+
+  it('alone, it still opens the section; Save stays off until the full text is opened; only Save and Discard', async () => {
+    const { api } = memoryApi(card('m2', long));
+    await act(async () => root.render(createElement(MoaWaitingOnYou, { decisions: [], onResolve: vi.fn(), memoryApi: api, t })));
+    await act(async () => { await Promise.resolve(); });
+    expect(container.querySelector('[data-moa-waiting]')?.className).not.toBe('hidden');
+    expect(container.querySelector('h3 span')?.textContent).toBe('1');
+    const save = container.querySelector('[data-moa-memory-save]') as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    expect(container.querySelectorAll('[data-moa-memory-card] input, [data-moa-memory-card] textarea')).toHaveLength(0);
+    await act(async () => { (container.querySelector('[data-moa-memory-toggle]') as HTMLButtonElement).click(); });
+    expect(container.textContent).toContain('HIDDEN-TAIL');
+    expect(save.disabled).toBe(false);
+    await act(async () => { save.click(); });
+    expect(api.memoryResolve).toHaveBeenCalledWith({ id: 'm2', answer: 'save', fullTextShown: true });
+  });
+
+  it('re-reads on DECK_MOA_CHANGED: a new card shows up, an answered one leaves', async () => {
+    const m = memoryApi(null);
+    await act(async () => root.render(createElement(MoaWaitingOnYou, { decisions: [], onResolve: vi.fn(), memoryApi: m.api, t })));
+    await act(async () => { await Promise.resolve(); });
+    expect(container.querySelector('[data-moa-memory-card]')).toBeNull();
+    m.set(card('m3', 'short text'));
+    await act(async () => { m.changed(); await Promise.resolve(); await Promise.resolve(); });
+    expect(container.querySelector('[data-moa-memory-card="m3"]')).not.toBeNull();
+    m.set(null);
+    await act(async () => { m.changed(); await Promise.resolve(); await Promise.resolve(); });
+    expect(container.querySelector('[data-moa-memory-card]')).toBeNull();
+    expect(container.querySelector('[data-moa-waiting]')?.className).toBe('hidden');
   });
 });
 
