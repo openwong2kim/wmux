@@ -86,7 +86,7 @@ describe('validateFanoutAgentChoice', () => {
 describe('per-task effort', () => {
   // The renderer path: swap the launcher, then the choice becomes a RoleBinding.
   const launchLine = (entry: unknown, base = `claude "$(cat '/p')"`): string => {
-    const v = validateFanoutAgentChoice(entry);
+    const v = validateFanoutAgentChoice(entry, { allowEffort: true });
     if (!v.ok) throw new Error(v.error);
     const opts = { extraAgents: new Set([v.choice.agent]) };
     const swapped = applyRoleAgent(base, fanoutChoiceBinding(v.choice), opts).command;
@@ -119,15 +119,26 @@ describe('per-task effort', () => {
 
   it('omitted effort leaves the line unchanged', () => {
     expect(launchLine({ agent: 'claude' })).toBe(`claude "$(cat '/p')"`);
-    expect(validateFanoutAgentChoice({ agent: 'codex', effort: '' })).toEqual({ ok: true, choice: { agent: 'codex' } });
+    expect(validateFanoutAgentChoice({ agent: 'codex', effort: '' }, { allowEffort: true })).toEqual({
+      ok: true,
+      choice: { agent: 'codex' },
+    });
   });
 
-  it.each(['High', 'x high', '--yolo', 'a'.repeat(17), 3])('refuses effort %j with a clear error', (effort) => {
-    expect(validateFanoutAgentChoice({ agent: 'claude', effort })).toMatchObject({
+  it.each(['High', 'x high', '--yolo', 'a'.repeat(17), 3, { toString: 1 }])('refuses effort %j with a clear error', (effort) => {
+    expect(validateFanoutAgentChoice({ agent: 'claude', effort }, { allowEffort: true })).toMatchObject({
       ok: false,
       code: 'effort-invalid',
       error: expect.stringMatching(/not one lowercase word/),
     });
+  });
+});
+
+describe('effort on preset rows', () => {
+  it('is refused as an unknown field (the Settings editor would drop it on save)', () => {
+    const r = validateFanoutAgentChoice({ agent: 'claude', effort: 'low' }, { allowUnattended: true });
+    expect(r).toMatchObject({ ok: false, code: 'unknown-field', params: { field: 'effort' } });
+    expect(normalizeFanoutPreset({ name: 'P', items: [{ agent: 'agy', effort: 'low' }], worktree: true }).ok).toBe(false);
   });
 });
 

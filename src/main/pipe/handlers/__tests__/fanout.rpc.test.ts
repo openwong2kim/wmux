@@ -1670,6 +1670,13 @@ describe('task.fanout.start — preset and agents', () => {
     expect(h.request().agents).toEqual([{ agent: 'agy' }, { agent: 'grok' }]);
   });
 
+  it('refuses a non-string effort as INVALID_ARGUMENT, not a thrown error', async () => {
+    const h = setup();
+    const err = errorOf(await h.call(goodParams({ agents: [{ agent: 'claude', effort: { toString: 1 } }, { agent: 'claude' }] })));
+    expect(err.code).toBe('INVALID_ARGUMENT');
+    expect(err.message).toMatch(/agents\[0\]: effort "<object>" is not one lowercase word/);
+  });
+
   it('refuses an effort that is not one lowercase word', async () => {
     const h = setup();
     const err = errorOf(await h.call(goodParams({ agents: [{ agent: 'claude', effort: 'High; rm' }, { agent: 'claude' }] })));

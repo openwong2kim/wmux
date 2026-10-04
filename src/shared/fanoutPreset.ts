@@ -160,7 +160,9 @@ export interface FanoutAgentChoice {
  */
 export function validateFanoutAgentChoice(
   input: unknown,
-  opts: { allowUnattended?: boolean } = {},
+  /** allowEffort: a caller's `agents[k]` only. Preset rows refuse it — the
+   *  Settings editor has no effort field and would drop it on save. */
+  opts: { allowUnattended?: boolean; allowEffort?: boolean } = {},
 ): { ok: true; choice: FanoutAgentChoice } | ({ ok: false } & FanoutIssue) {
   const fail = (i: FanoutIssue): { ok: false } & FanoutIssue => ({ ok: false, ...i });
   if (input === null || typeof input !== 'object' || Array.isArray(input)) {
@@ -168,9 +170,10 @@ export function validateFanoutAgentChoice(
   }
   const src = input as Record<string, unknown>;
   for (const key of Object.keys(src)) {
-    if (key !== 'agent' && key !== 'model' && key !== 'effort' && !(opts.allowUnattended && key === 'unattended')) {
+    if (key !== 'agent' && key !== 'model' && !(opts.allowEffort && key === 'effort') &&
+      !(opts.allowUnattended && key === 'unattended')) {
       const field = key.slice(0, 40);
-      return fail(issue('unknown-field', { field }, `unknown field "${field}" (only agent, model and effort are accepted)`));
+      return fail(issue('unknown-field', { field }, `unknown field "${field}" (only agent, model${opts.allowEffort ? ' and effort' : ''} are accepted)`));
     }
   }
   const agent = typeof src.agent === 'string' ? src.agent.trim().slice(0, 48) : '';
@@ -214,7 +217,8 @@ export function validateFanoutAgentChoice(
   // without a word, so accepting it here would launch on the inherited one.
   if (src.effort !== undefined && src.effort !== null && src.effort !== '') {
     if (typeof src.effort !== 'string' || !EFFORT_TOKEN_RE.test(src.effort)) {
-      const shown = String(src.effort).slice(0, 40);
+      // Never String() a non-string: an object with a bad toString throws.
+      const shown = typeof src.effort === 'string' ? src.effort.slice(0, 40) : `<${typeof src.effort}>`;
       return fail(
         issue('effort-invalid', { effort: shown }, `effort "${shown}" is not one lowercase word (e.g. low, medium, high)`),
       );

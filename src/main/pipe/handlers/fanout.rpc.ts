@@ -630,7 +630,7 @@ function resolveAgentSelection(
     for (const [k, entry] of raw.entries()) {
       // No `unattended` from the wire: an approval-free non-claude worker is
       // an operator decision, made in a preset.
-      const v = validateFanoutAgentChoice(entry);
+      const v = validateFanoutAgentChoice(entry, { allowEffort: true });
       if (!v.ok) return { error: `agents[${k}]: ${v.error}` };
       // An effort the agent cannot take is dropped, not refused: the task
       // still runs, and the preview no longer names a flag the line lacks.

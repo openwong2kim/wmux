@@ -1175,7 +1175,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // the default agent instead of the one that was asked for.
     let agentChoice: FanoutAgentChoice | undefined;
     if (params.agentChoice !== undefined) {
-      const checked = validateFanoutAgentChoice(params.agentChoice, { allowUnattended: true });
+      const checked = validateFanoutAgentChoice(params.agentChoice, { allowUnattended: true, allowEffort: true });
       const normalized = checked.ok ? normalizeRoleBinding(fanoutChoiceBinding(checked.choice)) : undefined;
       if (!checked.ok || !normalized || normalized.agent !== checked.choice.agent || normalized.model !== checked.choice.model ||
         normalized.effort !== checked.choice.effort) {

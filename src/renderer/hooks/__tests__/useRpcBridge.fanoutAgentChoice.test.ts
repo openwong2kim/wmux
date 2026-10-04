@@ -34,7 +34,7 @@ const CWD = '/data/outputs/image/b1/1-codex-abcd1234';
 
 function launch(choice: FanOutChoiceInput, mode: 'auto' | 'manual' = 'auto'): string {
   const main = workerLaunchCommand('claude', PROMPT, { platform: 'darwin' }).command;
-  const checked = validateFanoutAgentChoice(choice, { allowUnattended: true });
+  const checked = validateFanoutAgentChoice(choice, { allowUnattended: true, allowEffort: true });
   if (!checked.ok) throw new Error(checked.error);
   const binding = fanoutChoiceBinding(checked.choice);
   const { marker, command: bare } = splitModelEnvMarker(main);
@@ -110,7 +110,7 @@ describe('useRpcBridge — fanout.spawnWorkspace wiring for agent choices', () =
   };
 
   it('re-validates the choice against the closed table AND normalizeRoleBinding, failing the task if either disagrees', () => {
-    expect(block).toMatch(/validateFanoutAgentChoice\(params\.agentChoice, \{ allowUnattended: true \}\)/);
+    expect(block).toMatch(/validateFanoutAgentChoice\(params\.agentChoice, \{ allowUnattended: true, allowEffort: true \}\)/);
     expect(block).toMatch(/normalizeRoleBinding\(fanoutChoiceBinding\(checked\.choice\)\)/);
     expect(block).toMatch(/return \{ error: `fanout\.spawnWorkspace: invalid agent choice/);
   });
