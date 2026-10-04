@@ -2593,8 +2593,6 @@ export const pl = {
   'moa.missing.failed': "Nie udało się ponownie utworzyć obszaru roboczego Moa. Spróbuj ponownie w Ustawieniach → Moa.",
   'moa.panel.title': "Moa",
   'moa.panel.subtitle': "Główny bot",
-  'moa.panel.showPanel': "Pokaż Moa",
-  'moa.panel.hidePanel': "Ukryj Moa",
   'moa.panel.mascot.working': "pracuje",
   'moa.panel.mascot.needs-you': "potrzebuje ciebie",
   'moa.panel.waitingTitle': "Czeka na ciebie",

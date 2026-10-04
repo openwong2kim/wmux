@@ -2616,8 +2616,6 @@ export const en = {
   'moa.missing.failed': "Couldn't recreate Moa's workspace. Try again from Settings → Moa.",
   'moa.panel.title': "Moa",
   'moa.panel.subtitle': "Main bot",
-  'moa.panel.showPanel': "Show Moa",
-  'moa.panel.hidePanel': "Hide Moa",
   'moa.panel.mascot.working': "working",
   'moa.panel.mascot.needs-you': "needs you",
   'moa.panel.waitingTitle': "Waiting on you",

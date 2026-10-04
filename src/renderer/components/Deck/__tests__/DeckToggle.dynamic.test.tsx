@@ -122,22 +122,25 @@ describe('DeckToggle', () => {
     expect(useStore.getState().activeDeckTab).toBe('commander');
   });
 
-  it('with Moa running it is named for Moa and opens its panel', () => {
-    act(() => {
-      useStore.setState({
-        activeDeckTab: 'channels',
-        moa: {
-          config: { enabled: true, onboarded: true, level: 1, maxTurnsPerHour: 20, bubbles: true, reduceMotion: false, defaultReason: null },
-          hq: { workspaceId: 'ws-hq', state: 'ok' },
-          archive: { unacked: 0, total: 0 },
-        },
-      });
-    });
+  const moaState = (enabled: boolean) => ({
+    config: { enabled, onboarded: true, level: 1 as const, maxTurnsPerHour: 20, bubbles: true, reduceMotion: false, defaultReason: null },
+    hq: { workspaceId: 'ws-hq', state: 'ok' as const },
+    archive: { unacked: 0, total: 0 },
+  });
+
+  it('steps aside while Moa is on — the titlebar Moa button opens the panel', () => {
+    act(() => { useStore.setState({ moa: moaState(true) }); });
     mount();
-    expect(btn().getAttribute('aria-label')).toBe('Show Moa');
+    expect(btn()).toBeNull();
+  });
+
+  it('with Moa off it stays and opens the panel (which says how to turn Moa on)', () => {
+    act(() => { useStore.setState({ moa: moaState(false), activeDeckTab: 'channels' }); });
+    mount();
+    expect(btn()).not.toBeNull();
     act(() => { btn().click(); });
+    expect(useStore.getState().channelDockVisible).toBe(true);
     expect(useStore.getState().activeDeckTab).toBe('commander');
-    expect(btn().getAttribute('aria-label')).toBe('Hide Moa');
   });
 
   it('from another page it reads closed and opens the dock on the Workspaces page', () => {

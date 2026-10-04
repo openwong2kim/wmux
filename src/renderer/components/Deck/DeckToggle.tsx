@@ -23,7 +23,6 @@ import { FOCUS_RING } from '../focusRing';
 import { Icon } from '../icons';
 import { sumUnread } from '../Channels/ChannelsPanel';
 import { showWorkspaces } from '../../utils/showWorkspaces';
-import { moaOwnsPanel } from '../Moa/panel/moaPanelMode';
 
 /**
  * Whether the collapsed deck holds anything worth opening it for: unread
@@ -43,8 +42,10 @@ export default function DeckToggle() {
   const visible = useStore((s) => s.channelDockVisible) && onWorkspaces;
   const setChannelDockVisible = useStore((s) => s.setChannelDockVisible);
   const setActiveDeckTab = useStore((s) => s.setActiveDeckTab);
-  // Moa runs: this button is Moa's panel, and says so.
-  const moaPanel = useStore((s) => moaOwnsPanel(s.moa));
+  // Moa on: the titlebar's Moa button opens this same panel, so this one
+  // steps aside (one button per panel). Moa off: it stays, and the panel it
+  // opens says how to turn Moa on.
+  const moaOn = useStore((s) => !!s.moa?.config.enabled);
   const sidebarPosition = useStore((s) => s.sidebarPosition);
   const channelUnread = useStore((s) => s.channelUnread);
 
@@ -54,9 +55,7 @@ export default function DeckToggle() {
 
   const deckOnRight = sidebarPosition !== 'right';
 
-  const label = moaPanel
-    ? t(visible ? 'moa.panel.hidePanel' : 'moa.panel.showPanel')
-    : visible
+  const label = visible
     ? (t('deck.collapseDock') || 'Collapse dock')
     : (t('deck.expandDock') || 'Expand dock');
   // The dot is aria-hidden decoration, so the signal has to reach the
@@ -65,6 +64,8 @@ export default function DeckToggle() {
   const accessibleName = signal
     ? `${label} — ${t('deck.hasSignal') || 'something in here needs you'}`
     : label;
+
+  if (moaOn) return null;
 
   return (
     <button

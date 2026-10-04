@@ -101,6 +101,8 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
     const before = new Set(data.events.filter((e) => e.kind === 'user_text').map((e) => e.id));
     const result = await onSend(text).catch(() => ({ ok: false }));
     if (!result.ok) throw new MessageNotSentError(t('moa.panel.sendFailed'));
+    // /clear and /reset are commands, not messages: nothing to wait for.
+    if (/^\/(clear|reset)$/.test(text.trim())) return;
     setPending((current) => [...current, { id: crypto.randomUUID(), text, before }].slice(-4));
   }, [busy, data.events, onSend, t]);
 

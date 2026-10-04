@@ -142,3 +142,15 @@ describe('MoaTranscriptChat — main\'s transcript contract', () => {
     expect(host.querySelectorAll('.wmux-chat-assistant')).toHaveLength(1);
   });
 });
+
+describe('MoaTranscriptChat — commands', () => {
+  it('/clear is sent but leaves no pending bubble (it opens no turn)', async () => {
+    const { api } = fakeApi();
+    const onSend = vi.fn(async () => ({ ok: true }));
+    await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={onSend} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />));
+    await type('/clear');
+    await act(async () => input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })));
+    expect(onSend).toHaveBeenCalledWith('/clear');
+    expect(host.querySelector('[data-moa-chat-pending]')).toBeNull();
+  });
+});
