@@ -20,8 +20,6 @@ export interface GitPageState {
   selected: GitSelection | null;
   /** List scroll offset per list (scope + tab). */
   listScroll: Record<string, number>;
-  /** The branch bar is expanded (collapsed to one thin line by default). */
-  barOpen: boolean;
 }
 
 /** Where a dragged issue / PR came from: the repo and a workspace in it, for
@@ -75,5 +73,5 @@ export function saveGitTab(tab: GitPageTab): void {
 }
 
 export function initialGitPageState(): GitPageState {
-  return { scope: 'repo', tab: readGitTab(), issueFilter: { kind: 'all' }, selected: null, listScroll: {}, barOpen: false };
+  return { scope: 'repo', tab: readGitTab(), issueFilter: { kind: 'all' }, selected: null, listScroll: {} };
 }

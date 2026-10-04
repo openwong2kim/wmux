@@ -1,11 +1,13 @@
 // ─── Git page (rail) ─────────────────────────────────────────────────────────
 //
-// The rail's Git page: a one-line bar for the active workspace's branch (Diff,
-// Go to terminal, and the ship button), then a scope (This repo / All repos)
-// and three tabs. Pull requests and Issues are a list/detail split: the list
-// (~30%, its own scroll) selects, the detail (~70%, its own scroll) shows the
-// item under a sticky header. Worktrees is a grouped list with the new-branch
-// line and the merge session on top.
+// The rail's Git page leads with the repo: its owner/repo (a link to it on
+// GitHub) and how many issues and pull requests are open, then a scope (This
+// repo / All repos) and the tabs Issues, Pull requests and, set apart,
+// Worktrees. Issues and Pull requests are a list/detail split: the list (~30%,
+// its own scroll) selects, the detail (~70%, its own scroll) shows the item
+// under a sticky header. Branches live in Worktrees: the active workspace's
+// branch bar (Diff, Go to terminal, the ship button) on top, then the grouped
+// worktree list with the new-branch line and the merge session.
 //
 // Scope, tab, issue filter, selection and list scroll live in the UI store,
 // so leaving the page and coming back finds them as they were. Everything is
@@ -18,8 +20,9 @@ import { useT } from '../../hooks/useT';
 import { useStore } from '../../stores';
 import { FOCUS_RING } from '../focusRing';
 import { IconChevron, IconRefresh } from '../icons';
+import { useActiveRepo } from './useActiveRepo';
 import SegmentedControl from '../ui/SegmentedControl';
-import { GitTab } from './GitTab';
+import { GitTab, pathLeaf } from './GitTab';
 import { PrSection } from './PrSection';
 import { IssueSection } from './IssueSection';
 import { GitDetail } from './GitDetail';
@@ -31,7 +34,15 @@ import { saveGitTab, type GitPageTab, type GitScope, type GitSelection } from '.
 import type { PrSummary } from '../../../shared/prSurface';
 import type { IssueFilter, IssueSummary } from '../../../shared/issueSurface';
 
-const TABS: GitPageTab[] = ['prs', 'issues', 'worktrees'];
+const TABS: GitPageTab[] = ['issues', 'prs', 'worktrees'];
+/** The most a list reads (main's gh list caps); a list this long says "100+". */
+const LIST_READ_CAP = 100;
+
+/** owner/repo and its web page from a host/owner/repo key, or null. */
+function repoWeb(key: string | null): { label: string; url: string } | null {
+  const m = key ? /^([\w.-]+)\/([\w.-]+)\/([\w.-]+)$/.exec(key) : null;
+  return m ? { label: `${m[2]}/${m[3]}`, url: `https://${m[1]}/${m[2]}/${m[3]}` } : null;
+}
 const itemsKey = (repoPath: string, kind: GitSelection['kind']) => `${repoPath}\0${kind}`;
 
 export default function GitPage() {
@@ -43,8 +54,11 @@ export default function GitPage() {
   const page = useStore((s) => s.gitPage);
   const setGitPage = useStore((s) => s.setGitPage);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [repoName, setRepoName] = useState<string | null>(null);
-  const [resolved, setResolved] = useState<{ repoPath: string; mainPath: string } | null>(null);
+  // The active workspace's repo, resolved whether or not Worktrees is open.
+  const active = useActiveRepo(refreshKey);
+  const resolved = active.repo;
+  const web = repoWeb(resolved?.remoteKey ?? null);
+  const repoName = resolved ? web?.label ?? pathLeaf(resolved.mainPath) : null;
   // Signed out or no gh: the page is one connect card (re-read on refresh / after a login).
   const gate = useGhAuthGate(resolved?.repoPath ?? null, refreshKey);
   const recheck = () => setRefreshKey((k) => k + 1);
@@ -113,12 +127,40 @@ export default function GitPage() {
   const selList = sel ? items[itemsKey(sel.repoPath, sel.kind)] : undefined;
   const selItem = sel && selList ? (selList as Array<PrSummary | IssueSummary>).find((x) => x.number === sel.number) ?? null : null;
 
+  // Open counts from the lists already read (an issue count only for the
+  // unfiltered list); a list that has not answered yet says nothing.
+  const countOf = (list: unknown[] | undefined, key: string) => {
+    if (!list) return null;
+    const count = list.length >= LIST_READ_CAP ? `${LIST_READ_CAP}+` : list.length;
+    return t(`${key}.${count === 1 ? 'one' : 'other'}`, { count });
+  };
+  const counts = page.scope === 'repo' && resolved ? [
+    page.issueFilter.kind === 'all' ? countOf(items[itemsKey(resolved.repoPath, 'issue')], 'git.count.issues') : null,
+    countOf(items[itemsKey(resolved.repoPath, 'pr')], 'git.count.prs'),
+  ].filter((c): c is string => c !== null) : [];
+
   return (
     <div className="wmux-git-page" data-git-page>
       <header className="wmux-git-page-header">
         <div className="min-w-0">
-          <h1 ref={titleRef} tabIndex={-1} className="wmux-git-page-title">{t('git.title')}</h1>
-          {repoName && <p className="wmux-git-page-summary" data-git-page-repo>{repoName}</p>}
+          <h1 ref={titleRef} tabIndex={-1} className="sr-only">{t('git.title')}</h1>
+          {repoName && (
+            <p className="wmux-git-page-repo" data-git-page-repo>
+              {web ? (
+                <a
+                  href={web.url}
+                  className={`wmux-git-page-repo-link ${FOCUS_RING}`}
+                  title={web.url}
+                  onClick={(e) => { e.preventDefault(); window.open(web.url, '_blank'); }}
+                  data-git-page-repo-link
+                >
+                  {repoName}
+                </a>
+              ) : repoName}
+            </p>
+          )}
+          {!resolved && !active.loading && <p className="wmux-git-page-summary" data-git-no-repo>{t('git.noRepo')}</p>}
+          {counts.length > 0 && <p className="wmux-git-page-summary" data-git-page-counts>{counts.join(' · ')}</p>}
         </div>
         <button
           type="button"
@@ -129,8 +171,6 @@ export default function GitPage() {
           data-git-refresh
         ><IconRefresh size={15} /></button>
       </header>
-
-      <GitTab layout="summary" refreshKey={refreshKey} onRepo={setRepoName} onResolved={setResolved} />
 
       {(gate === 'unauthenticated' || gate === 'cli-missing') ? (
         // Not connected (or gh missing): the whole page is the connect card.
@@ -147,7 +187,7 @@ export default function GitPage() {
               aria-selected={page.tab === tab}
               aria-controls={`${tabIds}-panel`}
               tabIndex={page.tab === tab ? 0 : -1}
-              className={`wmux-git-tab ${FOCUS_RING}`}
+              className={`wmux-git-tab ${tab === 'worktrees' ? 'wmux-git-tab-aside ' : ''}${FOCUS_RING}`}
               onClick={() => setTab(tab)}
               onKeyDown={onTabKey}
               data-git-page-tab={tab}
@@ -171,6 +211,8 @@ export default function GitPage() {
       <div id={`${tabIds}-panel`} role="tabpanel" aria-labelledby={`${tabIds}-${page.tab}`} className="wmux-git-panel">
         {page.tab === 'worktrees' ? (
           <div className="wmux-git-scroll" data-git-worktrees-tab>
+            {/* The active workspace's branch: Diff, Go to terminal, the ship button. */}
+            <GitTab layout="summary" refreshKey={refreshKey} />
             {page.scope === 'repo'
               ? <GitTab layout="worktrees" refreshKey={refreshKey} />
               : <AllWorktrees refreshKey={refreshKey} />}

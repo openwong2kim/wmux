@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 //
-// The rail's Git page: the branch bar, then Pull requests / Issues as a
-// list/detail split and Worktrees as its own tab; All repos grouping every
+// The rail's Git page: the repo (owner/repo, a link) and its open counts on
+// top, then Issues / Pull requests as a list/detail split and Worktrees (with
+// the branch bar and the ship button) as its own, last tab; All repos grouping every
 // open workspace by repo; the not-connected state when gh is missing or
 // signed out; Diff and Go to terminal returning to the panes; and the page's
 // view state (scope, tab, selection) surviving a remount.
@@ -84,8 +85,8 @@ beforeEach(() => {
   act(() => useStore.setState({
     workspaces: [workspace('a', '/code/alpha'), workspace('b', '/code/alpha-wt/feat'), workspace('c', '/code/beta')],
     activeWorkspaceId: 'a', startupDirectory: '', appRoute: 'git', paneGate: 'pending',
-    // Most cases read PRs with the branch bar open; the reading-first defaults have their own test.
-    gitPage: { ...initialGitPageState(), tab: 'prs', barOpen: true },
+    // Most cases read PRs; the reading-first defaults have their own test.
+    gitPage: { ...initialGitPageState(), tab: 'prs' },
   }));
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -103,34 +104,81 @@ const tab = (name: string) => container.querySelector(`[data-git-page-tab="${nam
 const scopeOption = (label: string) => [...container.querySelectorAll<HTMLElement>('[data-testid="git-scope"] [role="radio"]')].find((b) => b.textContent === label)!;
 
 describe('Git page', () => {
-  it('reading first: opens on Issues with the branch bar folded to one line, and remembers both', async () => {
+  it('reading first: opens on Issues; tabs are Issues, Pull requests, then Worktrees; the tab is remembered', async () => {
     act(() => useStore.setState({ gitPage: initialGitPageState() }));
     act(() => root.render(createElement(GitPage)));
     await settle();
+    expect([...container.querySelectorAll('[data-git-page-tab]')].map((b) => b.getAttribute('data-git-page-tab'))).toEqual(['issues', 'prs', 'worktrees']);
     expect(tab('issues').getAttribute('aria-selected')).toBe('true');
-    const line = container.querySelector('[data-git-bar-toggle]') as HTMLButtonElement;
-    expect(line.textContent).toContain('main');
-    expect(line.getAttribute('aria-expanded')).toBe('false');
-    expect(container.querySelector('[data-git-ship-primary]')).toBeNull();
-    act(() => line.click());
-    await settle();
-    expect(container.querySelector('[data-git-ship-primary]')).not.toBeNull();
+    expect(tab('worktrees').classList.contains('wmux-git-tab-aside')).toBe(true);
     act(() => tab('prs').click());
     act(() => root.unmount());
     root = createRoot(container);
     act(() => root.render(createElement(GitPage)));
     await settle();
     expect(tab('prs').getAttribute('aria-selected')).toBe('true');
-    expect(container.querySelector('[data-git-ship-primary]')).not.toBeNull();
-    act(() => (container.querySelector('.wmux-git-bar-collapse') as HTMLButtonElement).click());
-    expect(container.querySelector('[data-git-bar-toggle]')).not.toBeNull();
   });
 
-  it('This repo: the branch bar, then a list/detail split; worktrees live on their own tab', async () => {
+  it('the header leads with owner/repo as a link to it, and the open counts', async () => {
+    const issues = Array.from({ length: 100 }, (_, i) => ({
+      number: i + 1, title: `i${i}`, state: 'open', author: 'a', labels: [], assignees: [], updatedAt: '2026-10-01T00:00:00Z',
+      url: `https://github.com/o/alpha/issues/${i + 1}`, comments: 0,
+    }));
+    const api = (window as unknown as { electronAPI: { github: { issueList: ReturnType<typeof vi.fn> } } }).electronAPI;
+    api.github.issueList.mockResolvedValue({ ok: true, issues });
+    act(() => useStore.setState({ gitPage: { ...initialGitPageState(), tab: 'issues' } }));
     act(() => root.render(createElement(GitPage)));
     await settle();
-    expect(container.querySelector('[data-git-page-repo]')?.textContent).toBe('alpha');
-    expect(container.querySelector('[data-git-current-branch]')?.textContent).toContain('main');
+    expect(container.querySelector('h1')?.textContent).toBe('Git');
+    const link = container.querySelector('[data-git-page-repo-link]') as HTMLAnchorElement;
+    expect(link.textContent).toBe('o/alpha');
+    expect(link.getAttribute('href')).toBe('https://github.com/o/alpha');
+    const open = vi.spyOn(window, 'open').mockReturnValue(null);
+    act(() => link.click());
+    expect(open).toHaveBeenCalledWith('https://github.com/o/alpha', '_blank');
+    open.mockRestore();
+    // Only the lists that answered are counted; a full read says 100+.
+    expect(container.querySelector('[data-git-page-counts]')?.textContent).toBe('100+ issues');
+    act(() => tab('prs').click());
+    await settle();
+    expect(container.querySelector('[data-git-page-counts]')?.textContent).toBe('100+ issues · 1 pull request');
+    // All repos keeps the name and drops the counts.
+    act(() => scopeOption('All repos').click());
+    await settle();
+    expect(container.querySelector('[data-git-page-repo]')?.textContent).toBe('o/alpha');
+    expect(container.querySelector('[data-git-page-counts]')).toBeNull();
+  });
+
+  it('a repo without a GitHub remote is named by its folder, without a link', async () => {
+    act(() => useStore.setState({ activeWorkspaceId: 'c' }));
+    act(() => root.render(createElement(GitPage)));
+    await settle();
+    expect(container.querySelector('[data-git-page-repo]')?.textContent).toBe('beta');
+    expect(container.querySelector('[data-git-page-repo-link]')).toBeNull();
+  });
+
+  it('nothing about branches above the lists; the branch bar and ship button live in Worktrees', async () => {
+    const list = (window as unknown as { electronAPI: { worktree: { list: ReturnType<typeof vi.fn> } } }).electronAPI.worktree.list;
+    act(() => root.render(createElement(GitPage)));
+    await settle();
+    // The lists load with the Worktrees tab never opened.
+    expect(prList).toHaveBeenCalledWith('/code/alpha', false);
+    expect(container.querySelector('[data-pr-row="7"]')).not.toBeNull();
+    expect(container.querySelector('[data-git-current-branch]')).toBeNull();
+    expect(container.querySelector('[data-git-ship-primary]')).toBeNull();
+    // One worktree list resolved the repo (the cached resolver), nothing more.
+    expect(list).toHaveBeenCalledTimes(1);
+    act(() => tab('worktrees').click());
+    await settle();
+    const wt = container.querySelector('[data-git-worktrees-tab]')!;
+    expect(wt.firstElementChild!.querySelector('[data-git-current-branch]')?.textContent).toContain('main');
+    expect(wt.querySelector('[data-git-ship-primary]')).not.toBeNull();
+  });
+
+  it('This repo: a list/detail split; worktrees live on their own tab', async () => {
+    act(() => root.render(createElement(GitPage)));
+    await settle();
+    expect(container.querySelector('[data-git-page-repo]')?.textContent).toBe('o/alpha');
     expect(scopeOption('This repo').getAttribute('aria-checked')).toBe('true');
     expect(tab('prs').getAttribute('aria-selected')).toBe('true');
     expect(container.querySelector('[data-git-listpane] [data-pr-section]')).not.toBeNull();
@@ -182,11 +230,13 @@ describe('Git page', () => {
   it('Go to terminal returns to the panes', async () => {
     act(() => root.render(createElement(GitPage)));
     await settle();
+    act(() => tab('worktrees').click());
+    await settle();
     act(() => (container.querySelector('[data-git-go-terminal]') as HTMLButtonElement).click());
     expect(useStore.getState().appRoute).toBe('workspaces');
   });
 
-  it('All repos: one group per repo, the active repo first, the bar kept on top', async () => {
+  it('All repos: one group per repo, the active repo first; Worktrees keeps the branch bar on top', async () => {
     act(() => root.render(createElement(GitPage)));
     await settle();
     act(() => scopeOption('All repos').click());
@@ -194,12 +244,12 @@ describe('Git page', () => {
     const groups = [...container.querySelectorAll('[data-git-repo-group]')].map((g) => g.getAttribute('data-git-repo-group'));
     expect(groups).toEqual(['alpha', 'beta']);
     expect(container.querySelector('[data-git-repo-group="alpha"]')?.textContent).toContain('2 workspace');
-    expect(container.querySelector('[data-git-current-branch]')).not.toBeNull();
     // The active repo's list is open; another repo's waits to be opened.
     expect(container.querySelector('[data-git-repo-group="alpha"] [data-pr-section]')).not.toBeNull();
     expect(container.querySelector('[data-git-repo-group="beta"] [data-pr-section]')).toBeNull();
     act(() => tab('worktrees').click());
     await settle();
+    expect(container.querySelector('[data-git-worktrees-tab] [data-git-current-branch]')).not.toBeNull();
     // Only the active repo's group marks a row with the dot.
     expect(container.querySelectorAll('[data-git-repo-group="beta"] [data-current="true"]').length).toBe(0);
     expect(container.querySelectorAll('[data-git-repo-group="alpha"] [data-current="true"]').length).toBe(1);
@@ -247,6 +297,8 @@ describe('Git page', () => {
 
   it('the card\'s Diff opens the diff on that workspace and returns to the panes', async () => {
     act(() => root.render(createElement(GitPage)));
+    await settle();
+    act(() => tab('worktrees').click());
     await settle();
     act(() => (container.querySelector('[data-git-diff-current]') as HTMLButtonElement).click());
     const st = useStore.getState();
@@ -340,6 +392,8 @@ describe('Git page', () => {
 
   it('a merge session started from the Worktrees tab holds the branch bar\'s ship button', async () => {
     act(() => root.render(createElement(GitPage)));
+    await settle();
+    act(() => tab('worktrees').click());
     await settle();
     const ship = () => container.querySelector('[data-git-ship-primary]') as HTMLButtonElement;
     expect(ship().textContent).toBe('Commit');

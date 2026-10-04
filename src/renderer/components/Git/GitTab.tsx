@@ -28,7 +28,6 @@ import { useStore } from '../../stores';
 import type { StoreState } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { FOCUS_RING } from '../focusRing';
-import { IconChevron } from '../icons';
 import type { Pane, PaneLeaf } from '../../../shared/types';
 import type { WorktreeEntry } from '../../../shared/worktreeParse';
 import type { MergeSessionStatus } from '../../../main/git/mergeSession';
@@ -99,7 +98,7 @@ export function repoCwdCandidates(
 
 // The active workspace's candidates as one primitive string, so the selector
 // only re-renders when they change.
-function selectActivePaneCwdCandidates(state: StoreState): string {
+export function selectActivePaneCwdCandidates(state: StoreState): string {
   const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
   if (!ws) return '';
   return repoCwdCandidates(ws, state.startupDirectory || '', false).join('\0');
@@ -163,7 +162,7 @@ export interface GitTabProps {
   /** Tells the page which repo it is showing (the main worktree's folder name). */
   onRepo?: (name: string | null) => void;
   /** summary = the one-line current-branch bar with Diff, Open PR, Go to
-   *  terminal and the ship button (the Git page's top); worktrees = the
+   *  terminal and the ship button (the top of the Git page's Worktrees tab); worktrees = the
    *  grouped worktree list with the new-branch line and the merge session on
    *  top (the Worktrees tab, or one checkout in All repos); full = both. */
   layout?: 'full' | 'summary' | 'worktrees';
@@ -571,8 +570,6 @@ export function GitTab({
 
   // The merge session is shared through the store: the Worktrees tab starts,
   // lands or discards it while the branch bar's ship button waits on it.
-  const barOpen = useStore((s) => s.gitPage.barOpen);
-  const setGitPage = useStore((s) => s.setGitPage);
   const mergeKey = mainPath ? normWorktreePath(mainPath, hostPlatform()) : '';
   const setGitMerge = useStore((s) => s.setGitMerge);
   const sharedMerge = useStore((s) => (mergeKey ? s.gitMerge[mergeKey] : undefined));
@@ -699,46 +696,8 @@ export function GitTab({
     );
   };
 
-  // On the Git page the bar starts as one thin line (reading comes first) and
-  // opens to the full bar; the open state lives in the UI store.
-  const branchLabel = currentBranch ?? (currentRow ? `(${t('git.detached') || 'detached'} ${currentRow.entry.headOid.slice(0, 7)})` : pathLeaf(currentWorktree));
-  const collapsible = layout === 'summary';
-  const barLine = repoPath && collapsible && !barOpen ? (
-    <button
-      type="button"
-      className={`wmux-git-barline ${FOCUS_RING}`}
-      aria-expanded={false}
-      aria-label={t('git.bar.expand')}
-      title={t('git.bar.expand')}
-      onClick={() => setGitPage({ barOpen: true })}
-      data-git-current-branch
-      data-git-bar-toggle
-    >
-      <span className="wmux-git-chevron" aria-hidden="true"><IconChevron size={11} /></span>
-      <span className="wmux-git-branch wmux-git-barline-branch">{branchLabel}</span>
-      {sync && (sync.ahead > 0 || sync.behind > 0) && (
-        <span className="wmux-git-stat">
-          {sync.ahead > 0 && `↑${sync.ahead}`}{sync.behind > 0 && ` ↓${sync.behind}`}
-        </span>
-      )}
-      {cardStat && cardStat.files > 0 && <span className="wmux-git-stat">{cardStat.files} {t('review.files') || 'files'}</span>}
-    </button>
-  ) : null;
-  const bar = repoPath && showCard && !barLine ? (
+  const bar = repoPath && showCard ? (
     <div className="wmux-git-bar" data-git-current-branch>
-      {collapsible && (
-        <button
-          type="button"
-          className={`wmux-git-work-toggle wmux-git-bar-collapse ${FOCUS_RING}`}
-          aria-expanded
-          aria-label={t('git.bar.collapse')}
-          title={t('git.bar.collapse')}
-          onClick={() => setGitPage({ barOpen: false })}
-          data-git-bar-toggle
-        >
-          <span className="wmux-git-chevron" data-open="true" aria-hidden="true"><IconChevron size={11} /></span>
-        </button>
-      )}
       <span className="wmux-git-branch" title={currentWorktree}>
         {currentBranch ?? (currentRow ? `(${t('git.detached') || 'detached'} ${currentRow.entry.headOid.slice(0, 7)})` : pathLeaf(currentWorktree))}
       </span>
@@ -914,7 +873,6 @@ export function GitTab({
         <div className="wmux-git-note">{t('git.noRepo') || 'Not a git repository — focus a pane inside a repo.'}</div>
       )}
       {/* Current branch, one line: branch, ahead/behind, changes, PR, then Diff / Go to terminal / ship. */}
-      {barLine}
       {bar}
       {slot}
       {repoPath && showSections && (
