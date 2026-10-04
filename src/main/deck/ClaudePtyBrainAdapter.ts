@@ -681,6 +681,10 @@ export interface ClaudePtyBrainAdapterDeps {
    *  resumed the previous (or an empty) session and the TUI-only conversation
    *  was lost. */
   onForeignSessionId?: (sessionId: string) => void;
+  /** Every hook signal's session id and transcript path, as Claude reported
+   *  them (the HQ's right-panel transcript binds from these). Observational:
+   *  it sees each signal before the turn logic and can never block one. */
+  onTranscriptHint?: (hint: { kind: AgentSignal['kind']; agentSessionId?: string; transcriptPath?: string }) => void;
   /** Reader for the final assistant text (injected in tests). */
   readTranscript?: typeof readLastAssistantMessage;
   /** The Stop gate. Absent means no gating at all (every Stop ends its turn),
@@ -859,6 +863,18 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
    *  resolved, so no `turn-end` is emitted and TURN_TIMEOUT_MS stays the
    *  backstop. */
   private onHookSignal(signal: AgentSignal): void | BrainPtyHookBlock | BrainPtyHookContext {
+    if (this.deps.onTranscriptHint) {
+      try {
+        const raw = signal.payload?.['transcript_path'];
+        this.deps.onTranscriptHint({
+          kind: signal.kind,
+          ...(signal.agentSessionId ? { agentSessionId: signal.agentSessionId } : {}),
+          ...(typeof raw === 'string' && raw.length > 0 ? { transcriptPath: raw } : {}),
+        });
+      } catch {
+        /* the transcript view is best-effort — never surface into a hook */
+      }
+    }
     if (signal.kind === 'agent.session_start') {
       this.sessionStartSeen = true;
       this.sessionStarted?.resolve();

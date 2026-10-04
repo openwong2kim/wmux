@@ -143,9 +143,13 @@ import {
   hasPendingDecision,
   raiseDecision,
   isIssueProposalDecision,
+  onDecisionsChanged,
   type WorkspaceDecision,
 } from '../../deck/deckDecisionStore';
 import { startMoaIssueProposals } from '../../deck/moaIssueProposalsHost';
+import { MoaTranscript, type MoaTranscriptHint } from '../../deck/moaTranscript';
+import { getAccountStore } from '../../account/accountStore';
+import type { MoaPendingDecision } from '../../../shared/moa';
 import {
   beginOrContinueDeckWork,
   clearActiveDeckWork,
@@ -222,6 +226,10 @@ export interface RegisterDeckHandlerOptions {
     loadMemory?: () => string;
     /** Moa's proposals folder, when its brain may write proposals there. */
     moaProposalsDir?: string;
+    /** How a terminal brain reports each hook signal's session id and
+     *  transcript path (the HQ's right-panel transcript binds from these).
+     *  Optional: only the terminal brain has hook signals to report. */
+    onTranscriptHint?: (hint: MoaTranscriptHint) => void;
   }) => BrainAdapter;
   /** M2 startup-reconcile delay (ms) before resolved-but-unconsumed decisions
    *  are resumed headlessly. Deferred so daemon/session recovery settles first;
@@ -379,6 +387,26 @@ export function registerDeckHandler(
     }
   };
 
+  // The HQ brain's transcript for Moa's right panel (DECK_MOA_TRANSCRIPT_*).
+  // Projected here in main — the brain pane is never a daemon transcript
+  // session. Bound only from the HQ brain's own session id and hook hints;
+  // every other workspace's report is ignored inside the module.
+  const moaTranscript = new MoaTranscript({
+    getHqWorkspaceId: () => getHqWorkspaceId(),
+    isMoaEnabled: () => isMoaEnabled(),
+    // The brain re-applies its account binding after the env scrub, so its
+    // transcript lives under that account's CLAUDE_CONFIG_DIR — the
+    // containment check has to see the same overlay.
+    getSessionEnv: (workspaceId) => getAccountStore().resolveAccountEnv(workspaceId, 'claude'),
+    emitAppend: (data) => {
+      const win = getWindow();
+      if (win && !win.isDestroyed()) win.webContents.send(IPC.DECK_MOA_TRANSCRIPT_APPEND, data);
+    },
+    log: (level, message) => {
+      if (level !== 'info') console.warn(message);
+    },
+  });
+
   // The fingerprint of each workspace's LAST refused Stop (rule 5). A cap-out
   // is recorded for suppression only when it names this same state — the gate
   // must never silence a hold no refusal was ever issued for. In-memory and
@@ -399,6 +427,7 @@ export function registerDeckHandler(
       onForeignSessionId: (sessionId: string) => void;
       loadMemory?: () => string;
       moaProposalsDir?: string;
+      onTranscriptHint?: (hint: MoaTranscriptHint) => void;
     }) => {
       // BYOB M0: the vendor picker decides which brain runtime serves this
       // workspace. 'hermes' rides the generic ACP adapter (any ACP agent
@@ -487,6 +516,7 @@ export function registerDeckHandler(
             onForeignSessionId: adapterOpts.onForeignSessionId,
             ...(adapterOpts.loadMemory ? { loadMemory: adapterOpts.loadMemory } : {}),
             ...(adapterOpts.moaProposalsDir ? { proposalGate: { proposalsDir: adapterOpts.moaProposalsDir } } : {}),
+            ...(adapterOpts.onTranscriptHint ? { onTranscriptHint: adapterOpts.onTranscriptHint } : {}),
             // The workspace mode IS the launch policy (owner decision
             // 2026-08-01): assist launches claude in accept-edits, danger in
             // bypass. Read per spawn, from here rather than inside the adapter,
@@ -545,6 +575,9 @@ export function registerDeckHandler(
    */
   const retireManager = (workspaceId: string): void => {
     managers.delete(workspaceId);
+    // The retired brain's transcript binding goes with it; the next brain
+    // rebinds (and re-pushes a reset snapshot to a still-open panel).
+    moaTranscript.retire(workspaceId);
     clearGateVerdict(workspaceId);
     // The cap-out suppression dies with the commander too — a new commander in
     // the same workspace starts with a fully-armed gate.
@@ -685,6 +718,9 @@ export function registerDeckHandler(
     void publishMoaPane();
     // Moa or proposals switched off clears the card; on raises the next one.
     void moaMemory.sync();
+    // Moa off or a new HQ drops the panel transcript's binding and
+    // subscription before the renderer re-reads anything.
+    moaTranscript.sync();
     const win = getWindow();
     if (win && !win.isDestroyed()) win.webContents.send(IPC.DECK_MOA_CHANGED, {});
   };
@@ -912,6 +948,8 @@ export function registerDeckHandler(
     // brain is unchanged. Fixed for this manager's life, like its prompt.
     const isMoaHqPty = vendor === 'claude-pty' && workspaceId === getHqWorkspaceId() && isMoaEnabled();
     const moaProposalsDir = isMoaHqPty && isMoaMemoryProposalsEnabled() ? moaMemory.proposalsDir : undefined;
+    // Only a Claude runtime's session id names a Claude transcript.
+    const claudeRuntime = vendor === 'claude' || vendor === 'claude-pty';
     // The adapter's foreign-turn callback needs the manager the adapter is
     // about to be constructed INTO — late-bound through this holder, exactly
     // like the coalescer's own forward reference above. It can only fire long
@@ -930,7 +968,9 @@ export function registerDeckHandler(
           coalescer?.notifyHumanSend(workspaceId);
         },
         onForeignTurnEnd: () => managerRef?.notifyForeignTurnEnd(),
+        onTranscriptHint: (hint) => moaTranscript.noteHint(workspaceId, hint),
         onForeignSessionId: (sessionId) => {
+          if (claudeRuntime) moaTranscript.noteSessionId(workspaceId, sessionId);
           // A CHANGED session id means the TUI conversation was reset (e.g.
           // /clear typed into the terminal) — the new conversation has never
           // seen the ambient rules or the full [active-work] block, so the
@@ -966,6 +1006,7 @@ export function registerDeckHandler(
         ...(persisted ? { resumeSessionId: persisted.sessionId } : {}),
       },
       onSessionId: (sessionId) => {
+        if (claudeRuntime) moaTranscript.noteSessionId(workspaceId, sessionId);
         // Fire-and-forget: a failed persist only costs continuity next run.
         void saveCommanderSession(sessionKey, sessionId).catch((err) => {
           // eslint-disable-next-line no-console
@@ -983,6 +1024,9 @@ export function registerDeckHandler(
     });
     managerRef = manager;
     managers.set(workspaceId, { manager, model, effort, fullPower, vendor });
+    // The resumed conversation is the HQ panel's transcript before the brain's
+    // first hook fires (a no-op for every other workspace).
+    if (claudeRuntime && persisted) moaTranscript.noteSessionId(workspaceId, persisted.sessionId);
     // Lane F: a brain now exists for this workspace — replay the worker
     // events parked while it had none (the manager's first idle flushes them).
     coalescer?.notifyBrainBooted(workspaceId);
@@ -2401,6 +2445,62 @@ export function registerDeckHandler(
     }),
   );
 
+  // ── Moa right panel ──────────────────────────────────────────────────────
+  // "Waiting on you": every workspace's PENDING decision, newest first. A
+  // change rides DECK_MOA_CHANGED, told by the store after every write
+  // (raise, replace, resolve, clear — wherever it happened).
+  const offDecisionsChanged = onDecisionsChanged(() => emitMoaChanged());
+  ipcMain.removeHandler(IPC.DECK_MOA_DECISIONS);
+  ipcMain.handle(
+    IPC.DECK_MOA_DECISIONS,
+    wrapHandler(IPC.DECK_MOA_DECISIONS, async (): Promise<{ decisions: MoaPendingDecision[] }> => {
+      const names = new Map((getWorkspaceMirror().getEntries() ?? []).map((e) => [e.id, e.name]));
+      const decisions: MoaPendingDecision[] = [];
+      for (const [workspaceId, d] of Object.entries(loadDeckDecisions())) {
+        if (d.status !== 'pending') continue;
+        const workspaceName = names.get(workspaceId);
+        decisions.push({
+          workspaceId,
+          ...(workspaceName ? { workspaceName } : {}),
+          decision: { id: d.id, question: d.question, options: d.options, context: d.context, raisedAt: d.raisedAt },
+        });
+      }
+      decisions.sort((a, b) => b.decision.raisedAt - a.decision.raisedAt);
+      return { decisions };
+    }),
+  );
+
+  // The HQ brain's transcript (see MoaTranscript). Every call answers for the
+  // HQ only; an unavailable status / null snapshot when Moa is off, there is
+  // no HQ, or the HQ has no brain yet.
+  ipcMain.removeHandler(IPC.DECK_MOA_TRANSCRIPT_STATUS);
+  ipcMain.handle(
+    IPC.DECK_MOA_TRANSCRIPT_STATUS,
+    wrapHandler(IPC.DECK_MOA_TRANSCRIPT_STATUS, async () => moaTranscript.status()),
+  );
+  ipcMain.removeHandler(IPC.DECK_MOA_TRANSCRIPT_SNAPSHOT);
+  ipcMain.handle(
+    IPC.DECK_MOA_TRANSCRIPT_SNAPSHOT,
+    wrapHandler(IPC.DECK_MOA_TRANSCRIPT_SNAPSHOT, async (_event: Electron.IpcMainInvokeEvent, raw: unknown) => {
+      const before = raw && typeof raw === 'object' && !Array.isArray(raw)
+        ? (raw as Record<string, unknown>).before
+        : undefined;
+      return moaTranscript.snapshot(typeof before === 'number' ? { before } : undefined);
+    }),
+  );
+  ipcMain.removeHandler(IPC.DECK_MOA_TRANSCRIPT_SUBSCRIBE);
+  ipcMain.handle(
+    IPC.DECK_MOA_TRANSCRIPT_SUBSCRIBE,
+    wrapHandler(IPC.DECK_MOA_TRANSCRIPT_SUBSCRIBE, async () => moaTranscript.subscribe()),
+  );
+  ipcMain.removeHandler(IPC.DECK_MOA_TRANSCRIPT_UNSUBSCRIBE);
+  ipcMain.handle(
+    IPC.DECK_MOA_TRANSCRIPT_UNSUBSCRIBE,
+    wrapHandler(IPC.DECK_MOA_TRANSCRIPT_UNSUBSCRIBE, async () => {
+      moaTranscript.unsubscribe();
+    }),
+  );
+
   // WMX-06: startup reconcile of orphan Deck state once renderer workspace mirror is loaded.
   // Retries a bounded number of times (max 5 retries at 2.5s intervals) and on heartbeat tick.
   // Armed by startRuntime, with the master switch.
@@ -3411,6 +3511,13 @@ export function registerDeckHandler(
     disposeMoaPaneSource();
     void publishMoaPane();
     disposeAll();
+    offDecisionsChanged();
+    moaTranscript.dispose();
+    ipcMain.removeHandler(IPC.DECK_MOA_DECISIONS);
+    ipcMain.removeHandler(IPC.DECK_MOA_TRANSCRIPT_STATUS);
+    ipcMain.removeHandler(IPC.DECK_MOA_TRANSCRIPT_SNAPSHOT);
+    ipcMain.removeHandler(IPC.DECK_MOA_TRANSCRIPT_SUBSCRIBE);
+    ipcMain.removeHandler(IPC.DECK_MOA_TRANSCRIPT_UNSUBSCRIBE);
     ipcMain.removeHandler(IPC.DECK_HQ_GET);
     ipcMain.removeHandler(IPC.DECK_MOA_GET);
     ipcMain.removeHandler(IPC.DECK_MOA_SET);
