@@ -2,6 +2,7 @@ import { useId } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { FOCUS_RING } from '../focusRing';
+import { IconChevron } from '../icons';
 import type { WorkspaceSettleGroupKind } from '../../stores/slices/workspaceSettleSlice';
 
 /**
@@ -29,17 +30,19 @@ export default function WorkspaceSettleGroup({ kind, count, containsActive, chil
     <div className="pt-2 mt-1 border-t" style={{ borderColor: 'var(--stroke)' }} data-workspace-settle-group={kind}>
       <button
         type="button"
-        className={`flex w-full items-center gap-1.5 px-1 py-0.5 text-left text-[12px] font-semibold uppercase tracking-[0.06em] text-[color-mix(in_srgb,var(--text-main)_70%,transparent)] hover:text-[var(--text-main)] ${FOCUS_RING}`}
+        className={`flex w-full min-h-[24px] items-center gap-1.5 px-1 py-0.5 text-left text-[12px] font-medium text-[color-mix(in_srgb,var(--text-main)_70%,transparent)] hover:text-[var(--text-main)] ${FOCUS_RING}`}
+        // Group-label case and tracking come from the look (DESIGN.md).
+        style={{ textTransform: 'var(--group-case)' as React.CSSProperties['textTransform'], letterSpacing: 'var(--group-track)' }}
         aria-expanded={open}
         aria-controls={listId}
         onClick={() => setOpen(kind, !open)}
       >
         <span
           aria-hidden="true"
-          className="w-3 h-3 flex-none inline-flex items-center justify-center text-[10px] font-mono transition-transform"
+          className="w-3 h-3 flex-none inline-flex items-center justify-center transition-transform"
           style={{ transform: open ? 'rotate(90deg)' : 'none' }}
         >
-          ▸
+          <IconChevron size={12} />
         </span>
         {t(kind === 'settled' ? 'workspaceSettle.groupSettled' : 'workspaceSettle.groupSnoozed', { count })}
       </button>
