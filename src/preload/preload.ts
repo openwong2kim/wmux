@@ -753,7 +753,7 @@ const electronAPI = {
     send: (args: { workspaceId: string; text: string; fleetContext?: string; model?: string }) =>
       ipcRenderer.invoke(IPC.DECK_SEND, args) as Promise<{
         ok: boolean;
-        code?: 'busy' | 'disposed' | 'empty' | 'invalid_workspace';
+        code?: 'busy' | 'disposed' | 'empty' | 'invalid_workspace' | 'mode_off' | 'task_workspace' | 'moa_off' | 'not_hq' | 'hq_missing' | 'hq_unknown';
       }>,
     interrupt: (workspaceId: string) =>
       ipcRenderer.invoke(IPC.DECK_INTERRUPT, { workspaceId }) as Promise<{ ok: true }>,
@@ -799,7 +799,7 @@ const electronAPI = {
       setConfig: (patch: import('../shared/moa').MoaConfigPatch) =>
         ipcRenderer.invoke(IPC.DECK_MOA_CONFIG_SET, patch) as Promise<{ ok: boolean; code?: string }>,
       setup: (workspaceId: string) =>
-        ipcRenderer.invoke(IPC.DECK_MOA_SETUP, { workspaceId }) as Promise<{ ok: boolean; code?: string; archived?: number; committed?: boolean }>,
+        ipcRenderer.invoke(IPC.DECK_MOA_SETUP, { workspaceId }) as Promise<import('../shared/moa').MoaSetupResult>,
       archiveList: () =>
         ipcRenderer.invoke(IPC.DECK_MOA_ARCHIVE_LIST) as Promise<{ decisions: import('../shared/moa').MoaArchivedDecision[] }>,
       archiveAck: () => ipcRenderer.invoke(IPC.DECK_MOA_ARCHIVE_ACK) as Promise<{ ok: boolean }>,

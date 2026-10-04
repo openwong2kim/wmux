@@ -447,4 +447,13 @@ describe('buildPhoneSidebarSnapshot — the Moa HQ', () => {
     expect(unset).not.toHaveProperty('hqWorkspaceId');
     expect(unset).not.toHaveProperty('moa');
   });
+
+  it('names the remembered HQ before main\'s first answer (no flash on the phone), without claiming moa', () => {
+    const boot = buildPhoneSidebarSnapshot({ ...withMoa(null), moaHqSeed: 'hq' } as StoreState);
+    expect(boot.hqWorkspaceId).toBe('hq');
+    expect(boot).not.toHaveProperty('moa');
+    // Main's answer wins once it arrives.
+    const answered = buildPhoneSidebarSnapshot({ ...withMoa(moa(null, true, 'unset')), moaHqSeed: 'hq' } as StoreState);
+    expect(answered).not.toHaveProperty('hqWorkspaceId');
+  });
 });

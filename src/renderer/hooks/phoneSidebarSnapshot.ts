@@ -28,6 +28,7 @@
 
 import { getWorkspaceLeafPanes } from '../../shared/paneUtils';
 import { isBrainPtyId } from '../../shared/constants';
+import { moaHqId } from '../stores/slices/moaSlice';
 import {
   PHONE_LAYOUT_SURFACE_KINDS,
   PHONE_SIDEBAR_LIMITS,
@@ -283,10 +284,11 @@ export function buildPhoneSidebarSnapshot(state: StoreState, onDrop: SidebarDrop
     }
   }
 
-  // The Moa HQ, by the rule the desktop hides it with (`isMoaHqWorkspace`):
-  // the designated id, Moa on or off. `moa` only while Moa is on and main
-  // reports its workspace present.
-  const hqId = state.moa?.hq.workspaceId;
+  // The Moa HQ, by the rule the desktop hides it with (`moaHqId`): the
+  // designated id, Moa on or off — the remembered id until main's first
+  // answer, so the phone does not show the HQ for a moment at boot. `moa`
+  // only while Moa is on and main reports its workspace present.
+  const hqId = moaHqId(state);
   const hqWorkspaceId = isSidebarId(hqId) ? hqId : undefined;
   const moaOn = state.moa?.config.enabled === true && state.moa.hq.state === 'ok' && hqWorkspaceId !== undefined && liveIds.has(hqWorkspaceId);
 
