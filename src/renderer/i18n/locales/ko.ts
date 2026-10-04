@@ -1941,6 +1941,7 @@ export const ko = {
   'git.ship.blocked.detached': '분리된 HEAD: 브랜치를 체크아웃하세요',
   'git.ship.blocked.no-upstream': '푸시할 업스트림 브랜치가 없습니다',
   'git.ship.blocked.behind': '업스트림보다 뒤처짐: 먼저 pull 하세요',
+  'git.ship.blocked.unpushed': '새 커밋을 먼저 푸시하세요',
   'git.ship.blocked.default-branch': '기본 브랜치입니다',
   'git.ship.blocked.nothing-to-ship': '보낼 것이 없습니다',
   'statusBar.openGit': 'Git 페이지 열기',

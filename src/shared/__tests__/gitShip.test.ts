@@ -92,6 +92,11 @@ describe('shipState: blocked steps say why', () => {
     expect(shipState(s({ detached: true })).primary.blocked).toBe('detached');
   });
 
+  it('commits not yet pushed block Create PR (gh would ask where to push)', () => {
+    expect(shipBlock('createPr', s({ ahead: 1 }))).toBe('unpushed');
+    expect(shipState(s({ ahead: 1 })).menu).toEqual([]);
+  });
+
   it('the default branch cannot open a PR', () => {
     expect(shipState(s({ onDefaultBranch: true })).primary).toEqual({ action: 'createPr', blocked: 'default-branch' });
   });

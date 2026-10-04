@@ -2558,6 +2558,7 @@ export const en = {
   'git.ship.blocked.detached': 'Detached HEAD: check out a branch',
   'git.ship.blocked.no-upstream': 'No upstream branch to push to',
   'git.ship.blocked.behind': 'Behind the upstream: pull first',
+  'git.ship.blocked.unpushed': 'Push the new commits first',
   'git.ship.blocked.default-branch': 'On the default branch',
   'git.ship.blocked.nothing-to-ship': 'Nothing to ship',
   'statusBar.openGit': 'Open the Git page',

@@ -136,4 +136,16 @@ describe('ShipButton', () => {
     await flush();
     expect(primary().textContent).toBe('Push');
   });
+
+  it('stays on screen while a refresh re-reads the step', async () => {
+    await mount({ ahead: 1 });
+    let release!: (v: unknown) => void;
+    bridge.shipStatus.mockImplementationOnce(() => new Promise((r) => { release = r; }) as never);
+    act(() => root.render(createElement(ShipButton, { repoPath: '/r', mergeActive: false, refreshKey: 1 })));
+    await flush();
+    expect(primary()?.textContent).toBe('Push');
+    await act(async () => { release({ ok: true, status: { ...base } }); });
+    await flush();
+    expect(primary().textContent).toBe('Create PR');
+  });
 });

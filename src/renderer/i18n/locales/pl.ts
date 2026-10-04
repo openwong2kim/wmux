@@ -2535,6 +2535,7 @@ export const pl = {
   'git.ship.blocked.detached': 'Odłączony HEAD: przełącz się na gałąź',
   'git.ship.blocked.no-upstream': 'Brak gałęzi upstream do wypchnięcia',
   'git.ship.blocked.behind': 'Za upstreamem: najpierw pobierz zmiany',
+  'git.ship.blocked.unpushed': 'Najpierw wypchnij nowe commity',
   'git.ship.blocked.default-branch': 'Na gałęzi domyślnej',
   'git.ship.blocked.nothing-to-ship': 'Nic do wysłania',
   'statusBar.openGit': 'Otwórz stronę Git',

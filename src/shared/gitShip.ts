@@ -23,7 +23,7 @@ export interface ShipInput {
 }
 
 /** Why a step cannot run now; the UI words each one. */
-export type ShipBlock = 'merge-active' | 'detached' | 'no-upstream' | 'behind' | 'default-branch' | 'nothing-to-ship';
+export type ShipBlock = 'merge-active' | 'detached' | 'no-upstream' | 'behind' | 'unpushed' | 'default-branch' | 'nothing-to-ship';
 
 export interface ShipStep {
   action: ShipAction;
@@ -56,6 +56,8 @@ export function shipBlock(action: ShipAction, s: ShipInput): ShipBlock | null {
       if (prIsOpen(s.pr)) return 'nothing-to-ship';
       if (s.onDefaultBranch) return 'default-branch';
       if (!s.hasUpstream) return 'no-upstream';
+      // gh would ask where to push the new commits, and it cannot ask here.
+      if (s.ahead > 0) return 'unpushed';
       return null;
   }
 }

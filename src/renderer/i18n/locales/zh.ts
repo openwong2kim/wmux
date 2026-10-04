@@ -2076,6 +2076,7 @@ export const zh = {
   'git.ship.blocked.detached': '游离 HEAD：请检出一个分支',
   'git.ship.blocked.no-upstream': '没有可推送的上游分支',
   'git.ship.blocked.behind': '落后于上游：请先拉取',
+  'git.ship.blocked.unpushed': '请先推送新的提交',
   'git.ship.blocked.default-branch': '当前在默认分支',
   'git.ship.blocked.nothing-to-ship': '没有可发布的内容',
   'statusBar.openGit': '打开 Git 页面',

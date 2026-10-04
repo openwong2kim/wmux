@@ -62,8 +62,10 @@ export function ShipButton({ repoPath, mergeActive, refreshKey = 0, changeKey = 
     if (mine !== req.current) return;
     setStatus(res.ok ? res.status : null);
   }, [repoPath]);
+  // Another repo starts blank; a re-read of the same one replaces the status
+  // in place, so the button does not blink out on every refresh.
+  useEffect(() => { setStatus(null); }, [repoPath]);
   useEffect(() => {
-    setStatus(null);
     void read();
     return () => { req.current++; };
   }, [read, refreshKey, changeKey]);
