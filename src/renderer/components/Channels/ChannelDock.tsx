@@ -21,10 +21,13 @@
 // docked right, so placing the dock as the last flex child puts it on the
 // correct (opposite) edge automatically — we only flip the inner border side.
 
+import { useState } from 'react';
 import { useStore } from '../../stores';
 import { DOCK_WIDTH_CSS } from '../Layout/dockLayout';
 import { tokenAttrs } from '../../themes';
 import { useT } from '../../hooks/useT';
+import { isOurHandoffDrag, takeHandoffDrop } from '../Git/handoffDrag';
+import { moaHqId } from '../../stores/slices/moaSlice';
 import { DeckTabs } from '../Deck/DeckTabs';
 import { CommanderView } from '../Deck/CommanderView';
 import { MODEL_OPTIONS } from '../Deck/OrchestratorModelChip';
@@ -141,12 +144,40 @@ export default function ChannelDock(): React.ReactElement {
   // The dock is a floating panel (ui.css .wmux-dock), so it needs no edge
   // border facing the workspace; the shell gap separates them.
 
+  // An issue or PR dragged from the Git page onto the dock goes to Moa: the
+  // hand-off popover opens on Moa's HQ workspace and lists its agents (the
+  // same fixed reference, gated delivery and work link as any drop).
+  const [handoffOver, setHandoffOver] = useState(false);
+  const moaAccepts = (dt: DataTransfer) => isOurHandoffDrag(dt) && !!moaHqId(useStore.getState());
+  const onDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    if (!moaAccepts(e.dataTransfer)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    if (!handoffOver) setHandoffOver(true);
+  };
+  const onDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) setHandoffOver(false);
+  };
+  const onDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    if (!moaAccepts(e.dataTransfer)) return;
+    e.preventDefault();
+    setHandoffOver(false);
+    const st = useStore.getState();
+    const hq = moaHqId(st);
+    const taken = takeHandoffDrop(e.dataTransfer);
+    if (taken && hq) st.setGitHandoff({ item: taken.item, workspaceId: hq, repo: taken.repo, anchor: { x: e.clientX, y: e.clientY } });
+  };
+
   return (
     <div
       className="wmux-dock flex flex-col h-full bg-[var(--bg-base)]"
       style={{ width: DOCK_WIDTH_CSS, maxWidth: '100%', borderColor: 'var(--border-soft)' }}
       id="wmux-tools-panel"
       data-channel-dock
+      data-handoff-over={handoffOver ? 'true' : undefined}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
       {...tokenAttrs('bgMantle', 'bg')}
       {...tokenAttrs('bgSurface', 'border')}
     >

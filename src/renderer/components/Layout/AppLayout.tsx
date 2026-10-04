@@ -2044,6 +2044,14 @@ export default function AppLayout() {
           The rail spent a full-height column on four glyphs and an expand
           chevron, ~85% of it empty; one button on a row that already exists
           costs the terminals nothing. */}
+      </div>
+      {/* The dock stays interactive beside the Git page (which covers only the
+          sidebar and the panes, so Moa is in reach); every other rail page
+          covers it, inert, like the rest of the Workspaces page. Both dock
+          modes live in this region: `contents` keeps the inline dock the same
+          flex item it always was, and the overlay still positions against
+          the sheet. */}
+      <div className="contents" inert={appRoute !== 'workspaces' && appRoute !== 'git' && !inspectModeActive} data-dock-region>
       {channelDockVisible && dockMode === 'inline' && (
         <ErrorBoundary name="ChannelDock">
           <ChannelDock />
@@ -2061,6 +2069,8 @@ export default function AppLayout() {
           </ErrorBoundary>
         </div>
       )}
+      </div>
+      <div className="contents" inert={appRoute !== 'workspaces' && !inspectModeActive} data-workspaces-page>
       {fileTreeVisible && (
         <ErrorBoundary name="FileTree">
           <FileTreePanel position={sidebarPosition === 'left' ? 'right' : 'left'} />

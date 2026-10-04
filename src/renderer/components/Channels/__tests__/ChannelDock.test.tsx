@@ -75,3 +75,24 @@ describe('channel dock — wiring regression guard', () => {
     expect(uiSlice).not.toMatch(/toggleChannelDock/);
   });
 });
+
+describe('channel dock beside the Git page (Moa stays in reach)', () => {
+  it('the dock is its own region, outside the inert Workspaces page, and only the Git page leaves it live', () => {
+    const region = appLayout.slice(appLayout.indexOf('data-dock-region') - 200, appLayout.indexOf('data-dock-region'));
+    expect(region).toMatch(/inert=\{appRoute !== 'workspaces' && appRoute !== 'git' && !inspectModeActive\}/);
+    // The dock is mounted inside that region, not inside a data-workspaces-page wrapper.
+    const dockAt = appLayout.indexOf('<ChannelDock />');
+    const regionAt = appLayout.indexOf('data-dock-region');
+    const lastPageWrapperBefore = appLayout.lastIndexOf('data-workspaces-page', dockAt);
+    expect(regionAt).toBeLessThan(dockAt);
+    expect(lastPageWrapperBefore).toBeLessThan(regionAt);
+  });
+
+  it('a Git page drag dropped on the dock opens the hand-off on Moa\'s HQ', () => {
+    expect(dock).toMatch(/isOurHandoffDrag\(dt\) && !!moaHqId\(/);
+    expect(dock).toMatch(/takeHandoffDrop\(e\.dataTransfer\)/);
+    expect(dock).toMatch(/setGitHandoff\(\{ item: taken\.item, workspaceId: hq, repo: taken\.repo/);
+    expect(dock).toMatch(/onDrop=\{onDrop\}/);
+  });
+});
+
