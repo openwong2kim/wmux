@@ -50,6 +50,7 @@ import { getWmuxDir } from '../../../daemon/config';
 import { DEFAULT_MAX_SNAPSHOT_AGE_MS, isOutstandingWorkerPane } from '../../deck/stopGate';
 import { getTaskLedger } from '../../deck/taskLedgerHost';
 import type { TaskLedger } from '../../../daemon/ledger/TaskLedger';
+import { attachDecisionToTask, carryDecision, refreshDecisionLinks } from '../../workLink/decisionLink';
 
 /** Minimum characters a self-resolve resolution must carry. The re-examine
  *  prompt demands the brain CITE the binding rule/basis that settles the
@@ -266,6 +267,9 @@ export function registerDeckRpc(router: RpcRouter, getWindow: GetWindow, deps: D
       ? (params['options'] as unknown[]).filter((s): s is string => typeof s === 'string')
       : [];
     const context = typeof params['context'] === 'string' ? (params['context'] as string) : '';
+    // Optional A2A task the decision is about: shown on that task's work link.
+    // Best-effort — a missing or foreign task never fails the raise.
+    const taskId = typeof params['taskId'] === 'string' && params['taskId'] ? params['taskId'] : undefined;
     const existing = loadWorkspaceDecision(ws);
     let decision: WorkspaceDecision | null;
     if (existing && existing.status === 'pending') {
@@ -290,7 +294,12 @@ export function registerDeckRpc(router: RpcRouter, getWindow: GetWindow, deps: D
         // CAS lost — the decision was resolved/cleared/replaced concurrently.
         return { ok: false, error: 'decision_pending', id: existing.id };
       }
-      return { ok: true, id: decision.id };
+      // The replacement has a new id; without a task_id it stays on the old one's links.
+      if (!taskId) {
+        await carryDecision(existing.id, decision.id);
+        return { ok: true, id: decision.id };
+      }
+      return { ok: true, id: decision.id, ...(await attachDecisionToTask(ws, taskId, decision.id)) };
     }
     decision = await raiseDecision(ws, { question, options, context });
     // Fail CLOSED: if nothing was persisted (write failure, or the question
@@ -300,7 +309,8 @@ export function registerDeckRpc(router: RpcRouter, getWindow: GetWindow, deps: D
     if (!decision) {
       return { ok: false, error: 'raise_failed' };
     }
-    return { ok: true, id: decision.id };
+    if (!taskId) return { ok: true, id: decision.id };
+    return { ok: true, id: decision.id, ...(await attachDecisionToTask(ws, taskId, decision.id)) };
   });
 
   // `deck.resolveDecision` is how the commander brain resolves its OWN stale
@@ -376,6 +386,7 @@ export function registerDeckRpc(router: RpcRouter, getWindow: GetWindow, deps: D
     if (!resolved || resolved.status !== 'resolved') {
       return { ok: false, error: 'not_pending' };
     }
+    void refreshDecisionLinks(resolved.id);
     return { ok: true, id: resolved.id };
   });
 }

@@ -23,6 +23,7 @@ import { ipcMain, app, type BrowserWindow } from 'electron';
 import { sanitizeClaudeEffort, type ClaudeEffort } from '../../../shared/claudeModels';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
+import { refreshDecisionLinks } from '../../workLink/decisionLink';
 import type { BrainAdapter, BrainEvent } from '../../deck/BrainAdapter';
 import { ClaudeSdkAdapter, buildCommanderSystemPrompt, resolveMcpBundlePath } from '../../deck/ClaudeSdkAdapter';
 import { AcpBrainAdapter } from '../../deck/AcpBrainAdapter';
@@ -2743,6 +2744,8 @@ export function registerDeckHandler(
         // Stale id, already resolved, or empty answer — nothing to resume.
         return { ok: false, code: 'not_pending' };
       }
+      // Its work link (if any) leaves needs-you. Best-effort.
+      void refreshDecisionLinks(decision.id);
       // A human just answered, which is the confirmation parking waits for, so
       // a record that survived the last shutdown becomes live again here. Doing
       // it BEFORE the resume turn matters: the prompt renders the work block,

@@ -174,6 +174,10 @@ const DECK_ASK_DECISION_SHAPE = {
     .string()
     .optional()
     .describe('Optional short note on what is at stake or why you cannot decide yourself.'),
+  task_id: z
+    .string()
+    .optional()
+    .describe('Optional A2A task id this decision is about; shows it on that task.'),
 };
 
 const DECK_RESOLVE_DECISION_SHAPE = {
@@ -1332,7 +1336,7 @@ server.tool(
   'deck_ask_decision',
   'Pause your working loop and ask the human operator for a decision you should NOT make yourself — an ambiguous requirement, a risky or irreversible action, a genuine fork between approaches. First check the binding policy rules / standing conventions / your memory: a question whose answer you can already cite is not a decision for the human. Your loop STOPS and will not auto-advance until they answer; the pending decision survives a restart, so they can answer later and you resume from here. After calling this, END YOUR TURN and take no further action. Never for progress updates or questions you can resolve yourself.',
   DECK_ASK_DECISION_SHAPE,
-  async ({ question, options, context }) => {
+  async ({ question, options, context, task_id }) => {
     // Only the commander brain has WMUX_COMMANDER_TOKEN; a non-commander caller
     // sends an undefined token and the RPC fail-closes ("not a live commander").
     const params: Record<string, unknown> = {
@@ -1341,6 +1345,7 @@ server.tool(
     };
     if (options && options.length > 0) params.options = options;
     if (context) params.context = context;
+    if (task_id) params.taskId = task_id;
     return callRpc('deck.requestDecision', params);
   },
 );
