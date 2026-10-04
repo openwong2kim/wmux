@@ -85,6 +85,15 @@ describe('RailPage beside the dock', () => {
     expect(dock.getAttribute('style')).toBeNull();
   });
 
+  it('measures from inside the sheet\'s border, so the page meets the dock with no sliver between', () => {
+    // The page's offsets start inside the border: 1px of it would leave 1px
+    // of the panes showing between the page and an overlay dock.
+    sheet.style.border = '1px solid';
+    act(() => root.render(<RailPage />));
+    act(() => useStore.setState({ appRoute: 'git' }));
+    expect(page()?.style.right).toBe('319px');
+  });
+
   it('with the dock closed the Git page takes the whole sheet', () => {
     dock.remove();
     act(() => root.render(<RailPage />));

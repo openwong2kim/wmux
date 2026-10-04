@@ -38,7 +38,13 @@ function useInsetBesideDock(enabled: boolean, page: React.RefObject<HTMLDivEleme
       const sheet = page.current?.parentElement ?? null;
       if (!sheet) return;
       const dock = document.querySelector<HTMLElement>('[data-dock-region] .wmux-dock');
-      const next = insetBesideDock(sheet.getBoundingClientRect(), dock ? dock.getBoundingClientRect() : null);
+      // The page's left/right offsets start inside the sheet's border, so
+      // measure from there: from the border box, a 1px sliver of the panes
+      // under it showed between the page and an overlay dock.
+      const rect = sheet.getBoundingClientRect();
+      const cs = getComputedStyle(sheet);
+      const inner = { left: rect.left + (parseFloat(cs.borderLeftWidth) || 0), right: rect.right - (parseFloat(cs.borderRightWidth) || 0) };
+      const next = insetBesideDock(inner, dock ? dock.getBoundingClientRect() : null);
       setInset((cur) => (cur.left === next.left && cur.right === next.right ? cur : next));
     };
     measure();
