@@ -18,6 +18,7 @@ import CommandPill from '../Titlebar/CommandPill';
 import SettingsButton from '../Titlebar/SettingsButton';
 import { FOCUS_RING } from '../focusRing';
 import type { StoreState } from '../../stores';
+import { RAIL_PAGE_TITLE_KEYS } from '../Titlebar/railPageTitle';
 import { displayWorkspaceName, resolveTaskLink } from '../../utils/fanoutProvenance';
 import { showWorkspaces } from '../../utils/showWorkspaces';
 
@@ -202,6 +203,9 @@ export default function StatusBar() {
   const toggleNotificationPanel = useStore((s) => s.toggleNotificationPanel);
   // The Fleet page has its own summary line; the titlebar's would repeat it.
   const onFleetPage = useStore((s) => s.appRoute === 'fleet');
+  // On a rail page the workspace's name, task link and branch belong to the
+  // Workspaces page under it: the titlebar names the page instead.
+  const railPageTitleKey = useStore((s) => RAIL_PAGE_TITLE_KEYS[s.appRoute]);
 
   // Prefix mode (tmux-style Ctrl+B)
   const prefixMode = useStore((s) => s.prefixMode);
@@ -233,10 +237,10 @@ export default function StatusBar() {
       {/* Left: current workspace (back at its original status-row spot —
           owner call) + transient indicators (prefix mode, branch, badge) */}
       <div className="flex items-center gap-3 min-w-0" style={noDrag}>
-        <span className="text-[13px] text-[var(--text-main)] font-medium truncate" {...tokenAttrs('textMain', 'text')}>{displayWorkspaceName(activeWs.name, taskOwner.isTask) || 'wmux'}</span>
+        <span className="text-[13px] text-[var(--text-main)] font-medium truncate" data-titlebar-title {...tokenAttrs('textMain', 'text')}>{railPageTitleKey ? t(railPageTitleKey) : displayWorkspaceName(activeWs.name, taskOwner.isTask) || 'wmux'}</span>
         {/* #1481 — inside a fan-out task, one hop back to the workspace that
             fanned it out. A link, so steel on hover; muted at rest. */}
-        {taskOwner.ownerId && (
+        {!railPageTitleKey && taskOwner.ownerId && (
           <button
             type="button"
             className={`flex min-w-0 items-center gap-1 rounded px-1 min-h-[24px] text-[11px] text-[var(--text-muted)] hover:text-[var(--accent-blue)] transition-colors ${FOCUS_RING}`}
@@ -260,7 +264,7 @@ export default function StatusBar() {
           </span>
         )}
         {/* The branch is the shortcut to the Git page (no button of its own). */}
-        {branch && (
+        {!railPageTitleKey && branch && (
           <button
             type="button"
             className={`min-w-0 truncate rounded px-1 min-h-[24px] text-[11px] text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--hover-fill)] transition-colors ${FOCUS_RING}`}

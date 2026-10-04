@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef, type CSSProperties } from 're
 import { useStore } from '../../stores';
 import { tokenAttrs } from '../../themes';
 import StatusBar from '../StatusBar/StatusBar';
+import { RAIL_PAGE_TITLE_KEYS } from './railPageTitle';
 import { useT } from '../../hooks/useT';
 import { FOCUS_RING } from '../focusRing';
 import { IconPlus } from '../icons';
@@ -144,6 +145,9 @@ export default function Titlebar() {
     });
   }, []);
   const closePicker = useCallback(() => setPickerOpen(false), []);
+  // New workspace belongs to the Workspaces page: a rail page hides it.
+  const onRailPage = useStore((s) => s.appRoute in RAIL_PAGE_TITLE_KEYS);
+  useEffect(() => { if (onRailPage) setPickerOpen(false); }, [onRailPage]);
 
   useTitleBarOverlaySync();
 
@@ -204,7 +208,7 @@ export default function Titlebar() {
         <span className="text-[14px] font-semibold text-[var(--text-main)] tracking-tight" {...tokenAttrs('textMain', 'text')}>
           wmux
         </span>
-        {!compactSegment && <button
+        {!compactSegment && !onRailPage && <button
           ref={plusBtnRef}
           type="button"
           onClick={togglePicker}
@@ -216,7 +220,7 @@ export default function Titlebar() {
         >
           <IconPlus size={14} />
         </button>}
-        {pickerOpen && (
+        {pickerOpen && !onRailPage && (
           <PresetPicker
             onClose={closePicker}
             anchorStyle={{ left: pickerLeft, top: TITLEBAR_HEIGHT + 4 }}

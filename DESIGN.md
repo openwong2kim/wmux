@@ -145,6 +145,11 @@ bar is a drag region; each interactive child opts out with `no-drag`.
   reserve for the traffic lights (centred in the 40px row, dropped in native
   fullscreen), the `wmux` wordmark, and a `+` that opens the new-workspace
   preset picker. A collapsed sidebar shrinks it to the rail's width.
+- **Page title:** right of the segment, the active workspace's name, its
+  task link and its branch (the shortcut to Git). These belong to the
+  Workspaces page: on a rail page (Git, Fleet, Schedules, Remote) the `+`
+  is hidden and the title is the page's name instead, with no branch.
+  Settings keeps the workspace's titlebar. Back on Workspaces, all return.
 - **Centre: the search pill.** A small filled pill, "Search & commands" with
   the palette shortcut, centred in the drag gap. It opens the command palette
   over whatever page is shown; it is not a page. Only the pill opts out of
@@ -707,6 +712,7 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-10-04 | PR review lives in the Git page's detail pane: checks with failed-run logs and an explicit Rerun failed jobs, review actions, squash merge with an editable subject and an empty body, changed files with line comments and threads, and who acts next from the PR's work link | Reading and routing PRs already happens on this page; leaving for the browser to approve, merge or read a CI failure broke the flow. Every write is pinned to the head commit shown, so a push that lands while you read can never be approved or merged unseen. Logs are untrusted text, shown plain. Rerun is never automatic: a flaky job is a decision, not a retry loop |
 | 2026-10-04 | The Git page leads with the repo: `owner/repo` with its open issue and PR counts, then Issues and Pull requests; branches and worktrees (the branch bar, the ship button) move into a secondary Worktrees tab. The Git page sits beside the tools dock instead of covering it, and an issue or PR dropped on the dock goes to Moa | The owner reads the repo's issues and PRs on this page and rarely its branches, so the branch chrome above the lists was noise. Covering the dock hid Moa exactly when work was being routed to it, and the jump from panes-plus-dock to one full-width page read as the window's proportions changing. Measuring the dock instead of reflowing keeps every terminal at its size |
 | 2026-10-04 | The repo name in the Git page header is a repo switcher (All repos, each open workspace's repo, Follow active workspace); it replaces the This repo / All repos control. A pick sticks across workspace switches and restarts | The owner asked how to move between repos on the page. A page that jumped whenever the active workspace changed made reading another repo's issues impossible, and one control in the place the eye already reads the repo name beats a second, separate scope control |
+| 2026-10-04 | On a rail page the titlebar names the page (Git, Fleet, Schedules, Remote) and hides `+` and the workspace's name and branch; Search & commands stays | Owner feedback: the workspace's title and New workspace read as part of the Git page while they act on the Workspaces page under it. Search & commands is global, so it stays |
 
 ### Desktop conversation view
 
