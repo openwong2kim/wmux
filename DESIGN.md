@@ -325,15 +325,18 @@ button.
 - **Hand-off:** an issue or PR dropped on an agent pane or a sidebar
   workspace row (holding the drag over the rail's Workspaces button for
   half a second opens that page; a held row gets a dashed accent outline)
-  opens a small popover at the drop point: "Send issue #N to <agent> in
-  <workspace>?" (a workspace row asks which of its agents), the sanitized
+  opens a small popover at the drop point: "Send issue owner/repo#N to
+  <agent> in <workspace>?" (a workspace row asks which of its agents), the sanitized
   title, an optional note, then Start in a new worktree (issues only),
   Cancel and the one primary, Send. Esc or a press outside cancels. Work
   already linked to the item shows "Already in progress in <workspace>"
   with Send anyway. The agent receives a fixed two-line reference (the
   item, its URL, the `gh` command to read it) and the note, never the
   item's own text, through the gated A2A delivery that waits for nobody to
-  be typing in the pane.
+  be typing in the pane and only into a live agent. A send that did not
+  land says "Did not send …" with the reason in a few words (someone
+  typing, the agent left, no live agent). Only a drag that began on a Git
+  page row of the same repo is accepted.
 - **Not connected:** signed out for a GitHub remote, the whole page below
   the title is a centred **connect card**: one primary, Connect GitHub, and
   Check again. Connect runs gh's device sign-in in the background and shows
