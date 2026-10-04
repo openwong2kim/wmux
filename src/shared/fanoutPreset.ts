@@ -20,6 +20,7 @@
 // asked to write landed in the task's folder. Anything else is listed with the
 // reason it is not selectable, and is refused rather than launched on a guess.
 
+import { EFFORT_TOKEN_RE, launchGrammarFor } from './agentLaunchOptions';
 import { KNOWN_AGENT_STEMS, ROLE_BINDING_MODEL_MAX, type RoleBinding } from './orchestratorRole';
 import { FANOUT_MAX_TASKS } from './workTask';
 
@@ -39,6 +40,7 @@ export type FanoutIssueCode =
   | 'model-not-string'
   | 'model-invalid'
   | 'model-unsupported'
+  | 'effort-invalid'
   | 'name-invalid'
   | 'name-reserved'
   | 'rows-empty'
@@ -143,6 +145,9 @@ export const FANOUT_MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 export interface FanoutAgentChoice {
   agent: string;
   model?: string;
+  /** Effort level (EFFORT_TOKEN_RE), applied through the agent's verified
+   *  effort flag. Kept only for an agent that has one (see fanoutEffortIgnored). */
+  effort?: string;
   /** Non-claude only: insert the CLI's unattended flags. Preset rows only. */
   unattended?: boolean;
 }
@@ -159,13 +164,13 @@ export function validateFanoutAgentChoice(
 ): { ok: true; choice: FanoutAgentChoice } | ({ ok: false } & FanoutIssue) {
   const fail = (i: FanoutIssue): { ok: false } & FanoutIssue => ({ ok: false, ...i });
   if (input === null || typeof input !== 'object' || Array.isArray(input)) {
-    return fail(issue('not-object', {}, 'must be an object { agent, model? }'));
+    return fail(issue('not-object', {}, 'must be an object { agent, model?, effort? }'));
   }
   const src = input as Record<string, unknown>;
   for (const key of Object.keys(src)) {
-    if (key !== 'agent' && key !== 'model' && !(opts.allowUnattended && key === 'unattended')) {
+    if (key !== 'agent' && key !== 'model' && key !== 'effort' && !(opts.allowUnattended && key === 'unattended')) {
       const field = key.slice(0, 40);
-      return fail(issue('unknown-field', { field }, `unknown field "${field}" (only agent and model are accepted)`));
+      return fail(issue('unknown-field', { field }, `unknown field "${field}" (only agent, model and effort are accepted)`));
     }
   }
   const agent = typeof src.agent === 'string' ? src.agent.trim().slice(0, 48) : '';
@@ -204,6 +209,18 @@ export function validateFanoutAgentChoice(
     }
     choice.model = model;
   }
+  // Same shape as automation's optionalToken (absent / null / '' = not given),
+  // but held to EFFORT_TOKEN_RE: the launch rewrite drops any other effort
+  // without a word, so accepting it here would launch on the inherited one.
+  if (src.effort !== undefined && src.effort !== null && src.effort !== '') {
+    if (typeof src.effort !== 'string' || !EFFORT_TOKEN_RE.test(src.effort)) {
+      const shown = String(src.effort).slice(0, 40);
+      return fail(
+        issue('effort-invalid', { effort: shown }, `effort "${shown}" is not one lowercase word (e.g. low, medium, high)`),
+      );
+    }
+    choice.effort = src.effort;
+  }
   if (opts.allowUnattended && src.unattended === true && spec.unattendedFlags.length > 0) {
     choice.unattended = true;
   }
@@ -212,7 +229,25 @@ export function validateFanoutAgentChoice(
 
 /** The RoleBinding a choice becomes on the launch path. */
 export function fanoutChoiceBinding(choice: FanoutAgentChoice): RoleBinding {
-  return choice.model ? { agent: choice.agent, model: choice.model } : { agent: choice.agent };
+  return {
+    agent: choice.agent,
+    ...(choice.model ? { model: choice.model } : {}),
+    ...(choice.effort ? { effort: choice.effort } : {}),
+  };
+}
+
+/**
+ * Why this choice's effort will not reach the launch line, or undefined when it
+ * will (or none was asked). Only an agent with a verified effort flag applies
+ * one; the caller drops the effort and reports this instead of failing.
+ */
+export function fanoutEffortIgnored(choice: FanoutAgentChoice): string | undefined {
+  if (!choice.effort) return undefined;
+  const grammar = launchGrammarFor(choice.agent);
+  if (grammar?.effortFlag) return undefined;
+  return grammar?.effortInModelId
+    ? `${choice.agent} takes its effort in the model id (e.g. <model>-${choice.effort}), so effort "${choice.effort}" was ignored`
+    : `${choice.agent} has no verified effort flag, so effort "${choice.effort}" was ignored`;
 }
 
 // ─── Launch flags the role rewrite does not cover ────────────────────────────
@@ -462,6 +497,7 @@ export function describeFanoutAgentChoice(c: FanoutAgentChoice): string {
     c.agent,
     c.agent === 'codex' ? '-c projects.<task folder>.trust_level=trusted' : '',
     c.model ? `--model ${c.model}` : '',
+    c.effort ? `effort ${c.effort}` : '',
     c.unattended && spec?.unattendedFlags ? spec.unattendedFlags : '',
   ]
     .filter((p) => p.length > 0)

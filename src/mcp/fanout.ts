@@ -26,6 +26,7 @@ import type { RpcMethod } from '../shared/rpc';
 import { FANOUT_MAX_TASKS, FANOUT_PROMPT_MAX_BYTES } from '../shared/workTask';
 import { ORCH_ROLES } from '../shared/orchestratorRole';
 import { FANOUT_MODEL_RE } from '../shared/fanoutPreset';
+import { EFFORT_TOKEN_RE } from '../shared/agentLaunchOptions';
 
 /** Resolvers the parent module injects (mirrors ChannelToolDeps). */
 export interface FanOutToolDeps {
@@ -100,10 +101,20 @@ const FANOUT_START_SHAPE = {
     .optional()
     .describe('Operator preset name (Settings). Task k runs on its row k; unknown names return the list.'),
   agents: z
-    .array(z.object({ agent: z.string().min(1).max(48), model: z.string().regex(FANOUT_MODEL_RE).max(64).optional() }).strict())
+    .array(
+      z
+        .object({
+          agent: z.string().min(1).max(48),
+          model: z.string().regex(FANOUT_MODEL_RE).max(64).optional(),
+          effort: z.string().regex(EFFORT_TOKEN_RE, 'effort must be one lowercase word, e.g. low, medium, high').optional(),
+        })
+        .strict(),
+    )
     .max(FANOUT_MAX_TASKS)
     .optional()
-    .describe('Per-task agent CLI slug (+ model), one per title. At most one of roles, preset, agents.'),
+    .describe(
+      'Per-task agent CLI slug (+ model, + effort), one per title. Effort overrides the CLI default; an agent without an effort flag ignores it with a warning. At most one of roles, preset, agents.',
+    ),
   files: z
     .array(z.array(z.string().min(1).max(256)).max(32))
     .max(FANOUT_MAX_TASKS)

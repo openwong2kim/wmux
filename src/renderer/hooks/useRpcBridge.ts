@@ -1177,7 +1177,8 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     if (params.agentChoice !== undefined) {
       const checked = validateFanoutAgentChoice(params.agentChoice, { allowUnattended: true });
       const normalized = checked.ok ? normalizeRoleBinding(fanoutChoiceBinding(checked.choice)) : undefined;
-      if (!checked.ok || !normalized || normalized.agent !== checked.choice.agent || normalized.model !== checked.choice.model) {
+      if (!checked.ok || !normalized || normalized.agent !== checked.choice.agent || normalized.model !== checked.choice.model ||
+        normalized.effort !== checked.choice.effort) {
         return { error: `fanout.spawnWorkspace: invalid agent choice — ${checked.ok ? 'normalization changed it' : checked.error}` };
       }
       agentChoice = checked.choice;

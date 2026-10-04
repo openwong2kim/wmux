@@ -1239,6 +1239,7 @@ export const ko = {
   'settings.fanoutPresetsIssue.model-not-string': '모델은 텍스트여야 합니다.',
   'settings.fanoutPresetsIssue.model-invalid': '"{model}"은 모델 ID 하나가 아닙니다. 영문자나 숫자로 시작하고 영문자, 숫자, . _ : - 만 쓸 수 있습니다 (최대 {max}자).',
   'settings.fanoutPresetsIssue.model-unsupported': '{agent}는 검증된 모델 플래그가 없어 모델을 지정할 수 없습니다.',
+  'settings.fanoutPresetsIssue.effort-invalid': '"{effort}"은 effort 수준이 아닙니다. low, medium, high처럼 소문자 단어 하나를 쓰세요.',
   'settings.fanoutPresetsIssue.name-invalid': '이름은 1–{max}자의 영문자, 숫자, 공백, . _ - 여야 합니다.',
   'settings.fanoutPresetsIssue.name-reserved': '"{name}"은 Windows 예약 이름입니다 (con, nul, com1… 또는 점으로 끝나는 이름).',
   'settings.fanoutPresetsIssue.rows-empty': '"{name}"에 에이전트 행이 없습니다.',

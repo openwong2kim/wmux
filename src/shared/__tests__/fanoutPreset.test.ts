@@ -5,6 +5,8 @@ import {
   applyFanoutAgentFlags,
   codexTrustOverride,
   describeFanoutAgentChoice,
+  fanoutChoiceBinding,
+  fanoutEffortIgnored,
   fanoutPresetFolderSlug,
   isWindowsReservedName,
   normalizeFanoutPreset,
@@ -78,6 +80,54 @@ describe('validateFanoutAgentChoice', () => {
     expect(applyRoleAgent(`claude "$(cat '/p')"`, { agent: 'grok' }, { extraAgents: new Set(['grok']) }).command).toBe(
       `grok "$(cat '/p')"`,
     );
+  });
+});
+
+describe('per-task effort', () => {
+  // The renderer path: swap the launcher, then the choice becomes a RoleBinding.
+  const launchLine = (entry: unknown, base = `claude "$(cat '/p')"`): string => {
+    const v = validateFanoutAgentChoice(entry);
+    if (!v.ok) throw new Error(v.error);
+    const opts = { extraAgents: new Set([v.choice.agent]) };
+    const swapped = applyRoleAgent(base, fanoutChoiceBinding(v.choice), opts).command;
+    return applyRoleBinding(swapped, fanoutChoiceBinding(v.choice), opts).command;
+  };
+
+  it('claude: --effort right after the launcher', () => {
+    expect(launchLine({ agent: 'claude', model: 'claude-opus-5-5', effort: 'medium' })).toBe(
+      `claude --model claude-opus-5-5 --effort medium "$(cat '/p')"`,
+    );
+  });
+
+  it('codex: model_reasoning_effort through -c', () => {
+    expect(launchLine({ agent: 'codex', effort: 'low' })).toBe(`codex -c model_reasoning_effort=low "$(cat '/p')"`);
+  });
+
+  it('agy: ignored on the line, with the reason (effort lives in its model id)', () => {
+    expect(launchLine({ agent: 'agy', effort: 'low' })).toBe(launchLine({ agent: 'agy' }));
+    expect(launchLine({ agent: 'agy', effort: 'low' })).not.toMatch(/effort|-low/);
+    expect(fanoutEffortIgnored({ agent: 'agy', effort: 'low' })).toMatch(/model id .*ignored/);
+    expect(fanoutEffortIgnored({ agent: 'grok', effort: 'low' })).toMatch(/no verified effort flag/);
+    expect(fanoutEffortIgnored({ agent: 'codex', effort: 'low' })).toBeUndefined();
+  });
+
+  it('a manual effort flag already on the line wins', () => {
+    expect(launchLine({ agent: 'claude', effort: 'medium' }, `claude --effort high "$(cat '/p')"`)).toBe(
+      `claude --effort high "$(cat '/p')"`,
+    );
+  });
+
+  it('omitted effort leaves the line unchanged', () => {
+    expect(launchLine({ agent: 'claude' })).toBe(`claude "$(cat '/p')"`);
+    expect(validateFanoutAgentChoice({ agent: 'codex', effort: '' })).toEqual({ ok: true, choice: { agent: 'codex' } });
+  });
+
+  it.each(['High', 'x high', '--yolo', 'a'.repeat(17), 3])('refuses effort %j with a clear error', (effort) => {
+    expect(validateFanoutAgentChoice({ agent: 'claude', effort })).toMatchObject({
+      ok: false,
+      code: 'effort-invalid',
+      error: expect.stringMatching(/not one lowercase word/),
+    });
   });
 });
 

@@ -1753,6 +1753,7 @@ export const en = {
   'settings.fanoutPresetsIssue.model-not-string': 'The model must be text.',
   'settings.fanoutPresetsIssue.model-invalid': '"{model}" is not a single model id: start with a letter or digit, then letters, digits, . _ : - (at most {max}).',
   'settings.fanoutPresetsIssue.model-unsupported': '{agent} has no verified model flag, so a model cannot be set for it.',
+  'settings.fanoutPresetsIssue.effort-invalid': '"{effort}" is not an effort level: use one lowercase word, such as low, medium or high.',
   'settings.fanoutPresetsIssue.name-invalid': 'The name must be 1–{max} characters: letters, digits, space, . _ -',
   'settings.fanoutPresetsIssue.name-reserved': '"{name}" is a reserved name on Windows (con, nul, com1…, or ending in a dot).',
   'settings.fanoutPresetsIssue.rows-empty': '"{name}" has no agent rows.',

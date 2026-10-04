@@ -71,13 +71,16 @@ describe('fanout_start: tool surface', () => {
     }
   });
 
-  it('agents[] entries carry an agent slug and a single-token model, nothing else', () => {
+  it('agents[] entries carry an agent slug, a single-token model and an effort word, nothing else', () => {
     const agents = (shapes.get('fanout_start') ?? {})['agents'] as { safeParse: (v: unknown) => { success: boolean } };
     expect(agents.safeParse([{ agent: 'codex', model: 'gpt-5.5' }]).success).toBe(true);
     expect(agents.safeParse([{ agent: 'codex', args: '--yolo' }]).success).toBe(false);
     expect(agents.safeParse([{ agent: 'codex', model: '--dangerously-skip-permissions' }]).success).toBe(false);
     expect(agents.safeParse([{ agent: 'codex', model: 'x y' }]).success).toBe(false);
     expect(agents.safeParse([{ agent: 'codex', unattended: true }]).success).toBe(false);
+    expect(agents.safeParse([{ agent: 'claude', model: 'claude-opus-5-5', effort: 'medium' }]).success).toBe(true);
+    expect(agents.safeParse([{ agent: 'codex', effort: 'High' }]).success).toBe(false);
+    expect(agents.safeParse([{ agent: 'codex', effort: '--yolo' }]).success).toBe(false);
   });
 
   it('exposes no workspace, repository or member input (all server-derived)', () => {

@@ -1649,6 +1649,35 @@ describe('task.fanout.start — preset and agents', () => {
     expect(h.preview()).toMatch(/\[agent: codex -c projects\.<task folder>\.trust_level=trusted --model gpt-5\.5\]/);
   });
 
+  it('carries a per-task effort to the service and names it in the preview', async () => {
+    const h = setup();
+    const res = await h.call(goodParams({ agents: [{ agent: 'claude', effort: 'medium' }, { agent: 'codex', effort: 'low' }] }));
+    expect(res).toMatchObject({ ok: true, status: 'accepted' });
+    expect((res as { warnings?: unknown }).warnings).toBeUndefined();
+    await h.flush();
+    expect(h.request().agents).toEqual([{ agent: 'claude', effort: 'medium' }, { agent: 'codex', effort: 'low' }]);
+    expect(h.preview()).toMatch(/\[agent: codex -c projects\.<task folder>\.trust_level=trusted effort low\]/);
+  });
+
+  it('ignores effort on an agent without an effort flag, with a warning instead of a refusal', async () => {
+    const h = setup();
+    const res = await h.call(goodParams({ agents: [{ agent: 'agy', effort: 'low' }, { agent: 'grok', effort: 'high' }] }));
+    expect(res).toMatchObject({ ok: true, status: 'accepted' });
+    const warnings = (res as { warnings: string[] }).warnings;
+    expect(warnings[0]).toMatch(/^agents\[0\]: agy takes its effort in the model id/);
+    expect(warnings[1]).toMatch(/^agents\[1\]: grok has no verified effort flag/);
+    await h.flush();
+    expect(h.request().agents).toEqual([{ agent: 'agy' }, { agent: 'grok' }]);
+  });
+
+  it('refuses an effort that is not one lowercase word', async () => {
+    const h = setup();
+    const err = errorOf(await h.call(goodParams({ agents: [{ agent: 'claude', effort: 'High; rm' }, { agent: 'claude' }] })));
+    expect(err.code).toBe('INVALID_ARGUMENT');
+    expect(err.message).toMatch(/agents\[0\]: effort "High; rm" is not one lowercase word/);
+    expect(h.start).not.toHaveBeenCalled();
+  });
+
   it('matches the preset name case-insensitively and uses its rows in order', async () => {
     const h = setup({ presets: [IMAGE] });
     await h.call(goodParams({ preset: 'image', titles: ['one', 'two'] }));

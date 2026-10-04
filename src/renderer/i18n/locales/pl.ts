@@ -1730,6 +1730,7 @@ export const pl = {
   'settings.fanoutPresetsIssue.model-not-string': 'Model musi być tekstem.',
   'settings.fanoutPresetsIssue.model-invalid': '„{model}” nie jest pojedynczym identyfikatorem modelu: zacznij od litery lub cyfry, potem litery, cyfry, . _ : - (maks. {max}).',
   'settings.fanoutPresetsIssue.model-unsupported': '{agent} nie ma zweryfikowanej flagi modelu, więc nie można ustawić dla niego modelu.',
+  'settings.fanoutPresetsIssue.effort-invalid': '„{effort}” nie jest poziomem wysiłku: użyj jednego słowa małymi literami, np. low, medium lub high.',
   'settings.fanoutPresetsIssue.name-invalid': 'Nazwa musi mieć 1–{max} znaków: litery, cyfry, spacja, . _ -',
   'settings.fanoutPresetsIssue.name-reserved': '„{name}” to nazwa zastrzeżona w Windows (con, nul, com1… lub zakończona kropką).',
   'settings.fanoutPresetsIssue.rows-empty': '„{name}” nie ma wierszy agentów.',

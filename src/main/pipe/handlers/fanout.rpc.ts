@@ -102,6 +102,7 @@ import { loadFanoutPresets } from '../../worktask/fanoutPresets';
 import { sanitizeFanoutOrigin, type FanoutOrigin } from '../../../shared/fanoutOrigin';
 import {
   describeFanoutAgentChoice,
+  fanoutEffortIgnored,
   fanoutPresetKey,
   fanoutPresetOutputFolder,
   validateFanoutAgentChoice,
@@ -586,7 +587,7 @@ export interface FanOutRpcDeps {
 type AgentSelection =
   | { kind: 'none' }
   | { kind: 'preset'; preset: FanoutPreset; agents: FanoutAgentChoice[] }
-  | { kind: 'agents'; agents: FanoutAgentChoice[] };
+  | { kind: 'agents'; agents: FanoutAgentChoice[]; warnings: string[] };
 
 function resolveAgentSelection(
   params: Record<string, unknown>,
@@ -620,19 +621,27 @@ function resolveAgentSelection(
   }
   if (has('agents')) {
     const raw = params['agents'];
-    if (!Array.isArray(raw)) return { error: 'agents must be an array of { agent, model? }' };
+    if (!Array.isArray(raw)) return { error: 'agents must be an array of { agent, model?, effort? }' };
     if (raw.length !== titleCount) {
       return { error: `agents has ${raw.length} entries but there are ${titleCount} titles — one agent per title` };
     }
     const agents: FanoutAgentChoice[] = [];
+    const warnings: string[] = [];
     for (const [k, entry] of raw.entries()) {
       // No `unattended` from the wire: an approval-free non-claude worker is
       // an operator decision, made in a preset.
       const v = validateFanoutAgentChoice(entry);
       if (!v.ok) return { error: `agents[${k}]: ${v.error}` };
+      // An effort the agent cannot take is dropped, not refused: the task
+      // still runs, and the preview no longer names a flag the line lacks.
+      const ignored = fanoutEffortIgnored(v.choice);
+      if (ignored) {
+        warnings.push(`agents[${k}]: ${ignored}`);
+        delete v.choice.effort;
+      }
       agents.push(v.choice);
     }
-    return { kind: 'agents', agents };
+    return { kind: 'agents', agents, warnings };
   }
   return { kind: 'none' };
 }
@@ -870,7 +879,7 @@ export function registerFanOutRpc(
     if (params['agentCmd'] !== undefined) {
       return deny(
         'INVALID_ARGUMENT',
-        'task.fanout.start does not accept agentCmd — pick the CLI with `agents` ([{agent, model?}]) or an operator `preset`',
+        'task.fanout.start does not accept agentCmd — pick the CLI with `agents` ([{agent, model?, effort?}]) or an operator `preset`',
       );
     }
     if (params['memberId'] !== undefined) {
@@ -1211,7 +1220,7 @@ export function registerFanOutRpc(
       }
     })();
 
-    const warnings = acceptWarnings(callerWorkspaceId);
+    const warnings = [...(selection.kind === 'agents' ? selection.warnings : []), ...acceptWarnings(callerWorkspaceId)];
     return {
       ok: true as const,
       status: 'accepted' as const,
