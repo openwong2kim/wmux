@@ -250,6 +250,21 @@ describe('DeckTabs', () => {
     expect(el.getAttribute('aria-label')).toBe('Moa · Main bot (Default) — needs you');
   });
 
+  it('keeps the mascot state in the Moa tab name while channels have unread', () => {
+    mount({
+      active: 'commander',
+      channelsUnread: 3,
+      moa: {
+        commanderTitle: 'Moa',
+        commanderSubtitle: 'Main bot',
+        commanderIcon: createElement('svg', { 'data-moa-mascot': 'needs-you' }),
+        commanderStatusLabel: 'needs you',
+      },
+    });
+    expect(tab('commander').getAttribute('aria-label')).toBe('Moa · Main bot — needs you');
+    expect(tab('channels').getAttribute('aria-label')).toBe('deck.tabChannels (3 unread)');
+  });
+
   it('keeps the Orchestrator name and glyph without Moa', () => {
     mount({ active: 'commander' });
     expect(tab('commander').querySelector('[data-deck-tab-subtitle]')).toBeNull();

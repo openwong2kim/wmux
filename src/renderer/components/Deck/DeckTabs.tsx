@@ -133,8 +133,9 @@ export function DeckTabs({
         const label = isCommander && commanderModelLabel ? `${named} (${commanderModelLabel})` : named;
         const unread = tab.id === 'channels' ? formatDeckCount(channelsUnread) : null;
         // Include unread activity in the accessible name as well as the badge.
+        // The two suffixes add up: an unread count never drops the mascot state.
         const status = isCommander && commanderStatusLabel ? ` — ${commanderStatusLabel}` : '';
-        const ariaLabel = unread ? `${label} (${unread} unread)` : `${label}${status}`;
+        const ariaLabel = `${label}${status}${unread ? ` (${unread} unread)` : ''}`;
         const button = (
           <button
             key={tab.id}
