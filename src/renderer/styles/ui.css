@@ -2444,7 +2444,7 @@ html[data-fullscreen] .wmux-shell-body {
 .wmux-hunk-gutter-btn { flex-shrink: 0; border-radius: 4px; }
 .wmux-hunk-gutter-btn:hover { background: var(--hover-fill); }
 .wmux-hunk-gutter-btn:hover .wmux-hunk-gutter { color: var(--text-main); }
-.wmux-hunk-text { flex: 1; min-width: 0; padding: 0 8px 0 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.wmux-hunk-text { flex: 1; min-width: 0; padding: 0 8px 0 4px; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); }
 .wmux-hunk-below { display: flex; flex-direction: column; gap: 6px; padding: 6px 8px 6px 88px; font-family: var(--font-ui, inherit); font-size: 12px; line-height: 1.45; white-space: normal; border-top: 1px solid var(--border-soft); border-bottom: 1px solid var(--border-soft); }
 @container (max-width: 700px) { .wmux-hunk-below { padding-left: 8px; } }
 .wmux-git-threads-aside { display: flex; flex-direction: column; gap: 6px; }

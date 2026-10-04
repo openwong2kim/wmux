@@ -3,6 +3,7 @@
 // reads them and re-reads when they change). You, with why; the agent or
 // workspace doing the work, working or with why it stopped; nothing when no
 // work is linked or it is finished.
+import { agentSlugToDisplay, isAgentSlug } from '../../../shared/agentIdentity';
 import { useEffect, useState } from 'react';
 import { useT } from '../../hooks/useT';
 import { useStore } from '../../stores';
@@ -49,7 +50,8 @@ export function WhoActsNext({ url }: { url: string }): React.ReactElement | null
   if (next.actor === 'you') {
     text = t('git.next.you', { reason: t(`git.next.reason.${next.reason}`) });
   } else {
-    const name = link.agent || workspaces.find((w) => w.id === link.owner.workspaceId)?.name || t('git.next.agent');
+    const agent = link.agent ? (isAgentSlug(link.agent) ? agentSlugToDisplay(link.agent) : link.agent) : '';
+    const name = agent || workspaces.find((w) => w.id === link.owner.workspaceId)?.name || t('git.next.agent');
     const status = next.working ? t('git.next.working') : t(`git.next.reason.${next.reason ?? 'other'}`);
     text = t('git.next.owner', { name, status });
   }

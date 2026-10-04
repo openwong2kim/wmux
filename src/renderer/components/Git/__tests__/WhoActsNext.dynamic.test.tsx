@@ -66,7 +66,7 @@ describe('who acts next', () => {
     ]);
     render();
     await flush();
-    expect(slot().textContent).toBe('Next: codex · working');
+    expect(slot().textContent).toBe('Next: Codex CLI · working');
     list.mockResolvedValue([link({ state: 'blocked', reason: 'ci-failing' })]);
     await act(async () => { changed(['l1']); });
     await flush();
