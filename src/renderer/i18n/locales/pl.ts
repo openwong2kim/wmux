@@ -1242,6 +1242,8 @@ export const pl = {
   'moa.settings.bubblesDesc': "Pokazuj krótki dymek, gdy Moa składa raport lub potrzebuje decyzji.",
   'moa.settings.reduceMotion': "Ogranicz ruch",
   'moa.settings.reduceMotionDesc': "Wskaźniki Moa pozostają nieruchome zamiast animacji.",
+  'moa.settings.approvalPress': "Zatwierdzaj drobne prośby",
+  'moa.settings.approvalPressDesc': "Gdy pracownik w obszarze roboczym w trybie Danger prosi o zgodę na uruchomienie polecenia lub edycję pliku, wmux zgadza się za Ciebie i informuje o tym Moa. Wszystko, co wygląda na destrukcyjne, oraz każdy obszar roboczy poza trybem Danger nadal czeka na Ciebie. Domyślnie wyłączone.",
   'moa.settings.saveFailed': "Nie udało się zapisać ustawienia. Spróbuj ponownie.",
   'moa.archive.noticeOne': "1 oczekująca decyzja została przeniesiona do archiwum Moa",
   'moa.archive.notice': "Oczekujące decyzje przeniesione do archiwum Moa: {count}",

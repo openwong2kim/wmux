@@ -330,3 +330,13 @@ describe('Settings › Moa › owned dialogs', () => {
     expect(register).toHaveBeenLastCalledWith(-1);
   });
 });
+
+describe('Settings › Moa › HQ approval pressing', () => {
+  it('is off by default, explains itself, and turns on with one patch', async () => {
+    await render(moaState());
+    expect(rowSwitch('moaapprovalpress')!.getAttribute('aria-checked')).toBe('false');
+    expect(q('[data-setting-id="moaapprovalpress"]')!.textContent).toMatch(/Danger/);
+    await click(rowSwitch('moaapprovalpress'));
+    expect(api.moa.setConfig).toHaveBeenCalledWith({ approvalPress: true });
+  });
+});

@@ -15,9 +15,12 @@ export interface MoaConfig {
   reduceMotion: boolean;
   /** How the switch got its first value, when it was decided automatically. */
   defaultReason: 'new-install' | 'existing-brain' | null;
+  /** Opt-in: main presses fan-out workers' small permission approvals by rule
+   *  (owner in danger, not critical) and tells Moa afterwards. Absent = off. */
+  approvalPress?: boolean;
 }
 
-export type MoaConfigPatch = Partial<Pick<MoaConfig, 'onboarded' | 'level' | 'maxTurnsPerHour' | 'bubbles' | 'reduceMotion'>>;
+export type MoaConfigPatch = Partial<Pick<MoaConfig, 'onboarded' | 'level' | 'maxTurnsPerHour' | 'bubbles' | 'reduceMotion' | 'approvalPress'>>;
 
 export interface MoaState {
   config: MoaConfig;

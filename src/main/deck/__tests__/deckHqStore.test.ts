@@ -20,6 +20,7 @@ import {
   setMoaEnabled,
   ensureMoaDefault,
   getMoaConfig,
+  isHqApprovalPressEnabled,
   setMoaConfig,
   countUnackedArchivedDecisions,
   ackArchivedDecisions,
@@ -384,6 +385,18 @@ describe('deckHqStore — Moa settings', () => {
     await setMoaConfig({ maxTurnsPerHour: 1.5 }, dir);
     expect(getMoaConfig(dir)).toMatchObject({ level: 2, maxTurnsPerHour: 30 });
     expect(getHqMaxTurnsPerHour(dir)).toBe(30);
+  });
+
+  it('keeps the HQ approval lane off until the operator turns it on', async () => {
+    expect(getMoaConfig(dir).approvalPress).toBe(false);
+    expect(isHqApprovalPressEnabled(dir)).toBe(false);
+    expect(await setMoaConfig({ approvalPress: true }, dir)).toBe(true);
+    expect(getMoaConfig(dir).approvalPress).toBe(true);
+    expect(isHqApprovalPressEnabled(dir)).toBe(true);
+    await setMoaConfig({ approvalPress: 'yes' as unknown as boolean }, dir);
+    expect(isHqApprovalPressEnabled(dir)).toBe(true);
+    expect(await setMoaConfig({ approvalPress: false }, dir)).toBe(true);
+    expect(isHqApprovalPressEnabled(dir)).toBe(false);
   });
 
   it('acknowledging the archive clears the one-time notice until something new is archived', async () => {

@@ -905,6 +905,10 @@ export class DaemonClient extends EventEmitter {
         case 'input.typed':
           this.emit('session:input', { sessionId: event.sessionId });
           break;
+        case 'approvals.changed':
+          // A re-list nudge (no record data) for the HQ approval lane.
+          this.emit('approvals:changed');
+          break;
         case 'activity.idle': {
           // #1463 — a daemon that knows the silence came before any turn says so.
           const preTurn = (event.data as { preTurn?: unknown } | null)?.preTurn === true;

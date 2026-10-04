@@ -55,6 +55,7 @@ import { DeckScheduler } from '../../deck/DeckScheduler';
 import { DeckHeartbeat } from '../../deck/DeckHeartbeat';
 import { CommanderEventCoalescer, type CoalescerInput } from '../../deck/CommanderEventCoalescer';
 import { notifyFanoutCaller, shouldNotifyCaller, installFanoutCallerLedgerNotify } from '../../deck/fanoutCallerNotify';
+import { runHqAutoPress, takeHqPressPointer } from '../../deck/hqApprovalLane';
 import { notifyPrOwner, setPrOwnerSink } from '../../deck/prOwnerNotify';
 import {
   routeWorkerEventToOwner,
@@ -1059,6 +1060,12 @@ export function registerDeckHandler(
       }
     }
     if (loop) blocks.push(renderLoopStateBlock(loop));
+    // What the HQ approval lane pressed since Moa's last turn — a pointer, not
+    // a wake (hqApprovalLane.ts).
+    if (workspaceId === getHqWorkspaceId()) {
+      const pressed = takeHqPressPointer();
+      if (pressed) blocks.push(pressed);
+    }
     if (blocks.length === 0) return text;
     return `${blocks.join('\n\n')}\n\n${text}`;
   };
@@ -2186,6 +2193,8 @@ export function registerDeckHandler(
       const patch = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? (raw as MoaConfigPatch) : {};
       if (!(await setMoaConfig(patch))) return { ok: false, code: 'store_corrupt' };
       emitMoaChanged();
+      // Approvals already waiting when the lane is turned on get their pass now.
+      if (patch.approvalPress === true) runHqAutoPress();
       return { ok: true };
     }),
   );

@@ -422,7 +422,9 @@ export interface ApprovalRegistryDeps {
    * classify this workspace, which refuses as `workspace-unknown`. Every branch
    * refuses; what differs is what an operator is told to go and fix.
    */
-  pressScope?: (workspaceId: string) => Pick<ApprovalPressFacts, 'isTaskWorkspace' | 'autonomyMode'> | null;
+  pressScope?: (
+    workspaceId: string,
+  ) => Pick<ApprovalPressFacts, 'isTaskWorkspace' | 'autonomyMode' | 'approvalPress' | 'ownerMode'> | null;
   log?: (level: 'info' | 'warn' | 'error', message: string) => void;
   /** Injected for test determinism. */
   now?: () => number;
@@ -794,6 +796,8 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     workspaceId?: string;
     toolName: string;
     toolInputSummary?: string;
+    /** The ingest's verdict on the call's FULL input (the summary is cut). */
+    risk?: 'critical';
   }): string {
     const id = this.newId();
     const snapshot = {
@@ -804,6 +808,9 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       toolName: input.toolName,
       toolInputSummary: input.toolInputSummary,
     };
+    // The same pattern list every other record kind uses; the summary is
+    // scanned too so a caller that passed no verdict still gets one.
+    const critical = input.risk === 'critical' || hasCriticalRisk(input.toolInputSummary);
     this.mutate(() => {
       // One-pending-per-session holds for SCREEN-backed prompts: a pane shows
       // one question at a time, so a newer one replaced the older. Gates are
@@ -835,6 +842,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         kind: 'awaiting_permission',
         toolName: snapshot.toolName,
         ...(snapshot.toolInputSummary ? { toolInputSummary: snapshot.toolInputSummary } : {}),
+        ...(critical ? { risk: 'critical' as const } : {}),
         createdAt: this.now(),
         // No `deadlineAt` here on purpose. The record is created BEFORE the
         // broker arms its timer, and that timer runs for min(the bridge's own
@@ -3670,6 +3678,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       // record's own existence is the origin evidence.
       origin: 'hook',
       stillOnScreen,
+      ...(record.risk === 'critical' ? { risk: 'critical' as const } : {}),
     });
     if (!pressDecision.press && pressDecision.reason !== 'prompt-gone') {
       // NOT an expiry: the request is live and a human at the desktop can

@@ -1344,6 +1344,8 @@ export const zh = {
   'moa.settings.bubblesDesc': "Moa 汇报或需要你决定时显示简短气泡。",
   'moa.settings.reduceMotion': "减少动画",
   'moa.settings.reduceMotionDesc': "让 Moa 的指示保持静止，不播放动画。",
+  'moa.settings.approvalPress': "代为批准小请求",
+  'moa.settings.approvalPressDesc': "当处于危险（Danger）模式工作区的 worker 请求运行命令或编辑文件时，wmux 会替你批准，并在之后告知 Moa。看起来具有破坏性的操作，以及所有非危险模式的工作区，仍然等你决定。默认关闭。",
   'moa.settings.saveFailed': "无法保存该设置，请重试。",
   'moa.archive.noticeOne': "1 个待处理的决定已移入 Moa 归档",
   'moa.archive.notice': "{count} 个待处理的决定已移入 Moa 归档",

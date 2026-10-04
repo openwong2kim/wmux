@@ -112,7 +112,7 @@ function makeRegistry(overrides: Partial<ApprovalRegistryDeps> = {}): Harness {
     // default here is the IN-scope answer (a delegated task workspace with
     // autonomy on) so each test below exercises its own subject; the scope
     // itself is pinned by its own describe block.
-    pressScope: () => ({ isTaskWorkspace: true, autonomyMode: 'assist', approvalPress: true }),
+    pressScope: () => ({ isTaskWorkspace: true, autonomyMode: 'assist', approvalPress: true, ownerMode: 'danger' }),
     now: () => clock++,
     newId: () => `req-${ids.next++}`,
     ...overrides,
@@ -1399,6 +1399,7 @@ describe('decideApprovalPress — the four conditions', () => {
     approvalPress: true,
     origin: 'hook' as const,
     stillOnScreen: true,
+    ownerMode: 'danger',
   };
 
   it('presses when all four hold', () => {
@@ -1546,7 +1547,8 @@ describe('ApprovalRegistry — press scope is enforced at resolve', () => {
   // reauthorize (up to 2 s). Autonomy turned off inside that window must still
   // stop the keystroke, as it already does on the gate branch.
   it('re-checks scope after the final reauthorize, so a policy flip mid-press writes nothing', async () => {
-    let scope = { isTaskWorkspace: true, autonomyMode: 'assist', approvalPress: true };
+    let scope: { isTaskWorkspace: boolean; autonomyMode: string; approvalPress: boolean; ownerMode?: string } =
+      { isTaskWorkspace: true, autonomyMode: 'assist', approvalPress: true, ownerMode: 'danger' };
     const h = makeRegistry({ pressScope: () => scope });
     await awaitingInput(h.registry);
     await settle();
@@ -1878,5 +1880,132 @@ describe('ApprovalRegistry — caller re-authorization inside the chain', () => 
 
     expect(res.ok).toBe(true);
     expect(h.writes).toEqual([{ sessionId: 'pty-a', data: '1' }]);
+  });
+});
+
+// ── C2 v2: the owner's live mode and the critical flag (HQ approval lane) ────
+describe('decideApprovalPress — owner live mode and critical risk', () => {
+  const inScope = {
+    resolver: 'automated' as const,
+    decision: 'approve' as const,
+    scopeAvailable: true,
+    isTaskWorkspace: true,
+    autonomyMode: 'danger',
+    approvalPress: true,
+    origin: 'hook' as const,
+    stillOnScreen: true,
+    ownerMode: 'danger',
+  };
+
+  // The task workspace still carries the `danger` copy it took at fan-out; the
+  // owner has since been lowered. Before C2 v2 the owner's mode was not a fact
+  // at all, so this pressed.
+  it('refuses an automated approve once the owner was lowered after the fan-out', () => {
+    expect(decideApprovalPress({ ...inScope, ownerMode: 'assist' })).toEqual({ press: false, reason: 'owner-not-danger' });
+    expect(decideApprovalPress({ ...inScope, ownerMode: 'off' })).toEqual({ press: false, reason: 'owner-autonomy-off' });
+  });
+
+  it('refuses when the task has no single owner to read (none, or several)', () => {
+    expect(decideApprovalPress({ ...inScope, ownerMode: undefined })).toEqual({ press: false, reason: 'owner-mode-unknown' });
+  });
+
+  it('refuses an automated approve of a critical record', () => {
+    expect(decideApprovalPress({ ...inScope, risk: 'critical' })).toEqual({ press: false, reason: 'critical-risk' });
+  });
+
+  it('still lets a deny and a human approve through on a critical record', () => {
+    expect(decideApprovalPress({ ...inScope, risk: 'critical', decision: 'deny' })).toEqual({ press: true });
+    expect(decideApprovalPress({ ...inScope, risk: 'critical', resolver: 'human' })).toEqual({ press: true });
+  });
+});
+
+describe('ApprovalRegistry — critical gates and the owner floor at resolve', () => {
+  const automatedApprove = { decision: 'approve' as const, resolvedBy: 'hq:ws-hq;owner:ws-own;lane:hq', resolver: 'automated' as const };
+
+  it('flags a gate critical from its input, and refuses the automated approve without a second event', async () => {
+    const broker = new GateBroker();
+    const h = makeRegistry({ notifyGateResolved: (id, decision) => broker.notifyResolved(id, decision) });
+    h.setScreen(null);
+    const id = h.registry.noteGateAwaiting({
+      sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', toolName: 'Bash', toolInputSummary: 'rm -rf build/',
+    });
+    await settle();
+    try {
+      expect(h.registry.list().pending[0]).toMatchObject({ id, risk: 'critical' });
+      expect(await h.registry.resolve({ id, ...automatedApprove })).toMatchObject({
+        ok: false, reason: 'out-of-scope', pressRefusal: 'critical-risk',
+      });
+      // Still pending for the human, and nothing new was announced: the
+      // existing approval is the only notification.
+      expect(h.registry.list().pending.map((r) => r.id)).toEqual([id]);
+      expect(h.events.map((e) => e.type)).toEqual(['create']);
+      // A human approve still answers it.
+      expect(await h.registry.resolve({ id, decision: 'approve', resolvedBy: 'phone' })).toMatchObject({ ok: true });
+    } finally { broker.cancelAll('test-teardown'); }
+  });
+
+  it('takes the ingest verdict on the full input even when the summary was cut', async () => {
+    const h = makeRegistry();
+    const id = h.registry.noteGateAwaiting({
+      sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', toolName: 'Bash', toolInputSummary: 'echo ok', risk: 'critical',
+    });
+    await settle();
+    expect(h.registry.list().pending.find((r) => r.id === id)?.risk).toBe('critical');
+  });
+
+  it('lets an automated deny through on a critical gate', async () => {
+    const broker = new GateBroker();
+    const h = makeRegistry({ notifyGateResolved: (id, decision) => broker.notifyResolved(id, decision) });
+    h.setScreen(null);
+    const id = h.registry.noteGateAwaiting({
+      sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', toolName: 'Bash', toolInputSummary: 'git push --force',
+    });
+    await settle();
+    try {
+      expect(await h.registry.resolve({ id, ...automatedApprove, decision: 'deny' })).toMatchObject({ ok: true });
+    } finally { broker.cancelAll('test-teardown'); }
+  });
+
+  it('refuses when the task copy still says danger but the owner was lowered', async () => {
+    const broker = new GateBroker();
+    const h = makeRegistry({
+      pressScope: () => ({ isTaskWorkspace: true, autonomyMode: 'danger', approvalPress: true, ownerMode: 'assist' }),
+      notifyGateResolved: (id, decision) => broker.notifyResolved(id, decision),
+    });
+    h.setScreen(null);
+    const id = h.registry.noteGateAwaiting({ sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', toolName: 'Bash' });
+    await settle();
+    try {
+      expect(await h.registry.resolve({ id, ...automatedApprove })).toMatchObject({
+        ok: false, reason: 'out-of-scope', pressRefusal: 'owner-not-danger',
+      });
+    } finally { broker.cancelAll('test-teardown'); }
+  });
+
+  // A phone tap and the HQ lane on the same gate: one answer wins, the history
+  // holds that one answer, and when the lane won it names the owner it acted for.
+  it('records exactly one history entry when a phone resolve races an HQ press', async () => {
+    const broker = new GateBroker();
+    const h = makeRegistry({ notifyGateResolved: (id, decision) => broker.notifyResolved(id, decision) });
+    h.setScreen(null);
+    const id = h.registry.noteGateAwaiting({ sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', toolName: 'Bash' });
+    await settle();
+    try {
+      const [hq, phone] = await Promise.all([
+        h.registry.resolve({ id, ...automatedApprove }),
+        h.registry.resolve({ id, decision: 'deny', resolvedBy: 'phone:device-1' }),
+      ]);
+      expect([hq.ok, phone.ok].filter(Boolean)).toHaveLength(1);
+      const history = h.registry.list().recentlyResolved.filter((r) => r.id === id);
+      expect(history).toHaveLength(1);
+      expect(history[0]!.resolvedBy).toBe(hq.ok ? 'hq:ws-hq;owner:ws-own;lane:hq' : 'phone:device-1');
+      expect(h.events.filter((e) => e.type === 'resolve')).toHaveLength(1);
+    } finally { broker.cancelAll('test-teardown'); }
+  });
+
+  it('keeps the full HQ audit label within the resolvedBy cap', () => {
+    const ws = 'w'.repeat(80);
+    const label = `hq:${ws};owner:${ws};lane:hq`;
+    expect(sanitizeResolvedBy(label)).toBe(label);
   });
 });

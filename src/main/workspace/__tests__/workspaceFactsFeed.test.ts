@@ -149,3 +149,45 @@ describe('createWorkspaceFactsPublisher', () => {
     p.dispose();
   });
 });
+
+describe('buildWorkspaceFacts — the owner live mode (C2 v2)', () => {
+  const owned = (rows: { taskWorkspaceId: string; ownerWorkspaceId: string }[]) =>
+    () => ({ list: () => rows }) as unknown as TaskLedger;
+
+  it("publishes the single open owner's CURRENT mode, and follows it when it changes", () => {
+    const modes: Record<string, { mode: string; approvalPress: boolean }> = {
+      'ws-own': { mode: 'danger', approvalPress: true },
+      'ws-task': { mode: 'danger', approvalPress: true },
+    };
+    const build = () =>
+      buildWorkspaceFacts({
+        push: async () => undefined,
+        ledger: owned([{ taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-own' }]),
+        autonomy: () => modes as never,
+      }).find((r) => r.workspaceId === 'ws-task');
+    expect(build()).toMatchObject({ ownerMode: 'danger' });
+    modes['ws-own'] = { mode: 'assist', approvalPress: false };
+    expect(build()).toMatchObject({ ownerMode: 'assist', autonomyMode: 'danger' });
+  });
+
+  it('publishes no owner mode when several open tasks name different owners', () => {
+    const rows = buildWorkspaceFacts({
+      push: async () => undefined,
+      ledger: owned([
+        { taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-a' },
+        { taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-b' },
+      ]),
+      autonomy: () => ({ 'ws-a': { mode: 'danger' }, 'ws-b': { mode: 'danger' } }),
+    });
+    expect(rows.find((r) => r.workspaceId === 'ws-task')).not.toHaveProperty('ownerMode');
+  });
+
+  it('reads an owner with no autonomy entry as off', () => {
+    const rows = buildWorkspaceFacts({
+      push: async () => undefined,
+      ledger: owned([{ taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-own' }]),
+      autonomy: () => ({}),
+    });
+    expect(rows.find((r) => r.workspaceId === 'ws-task')).toMatchObject({ ownerMode: 'off' });
+  });
+});

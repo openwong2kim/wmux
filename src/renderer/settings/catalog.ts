@@ -146,6 +146,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'moahq', tab: 'moa', labelKey: 'moa.settings.hq', synonyms: 'hq headquarters workspace recreate reset setup' },
   { id: 'moamodes', tab: 'moa', labelKey: 'moa.settings.modes', descKey: 'moa.settings.modesDesc', synonyms: 'mode off assist danger autonomy workspace 모드' },
   { id: 'moaturncap', tab: 'moa', labelKey: 'moa.settings.turnCap', descKey: 'moa.settings.turnCapDesc', synonyms: 'turn cap limit rate hour budget usage' },
+  { id: 'moaapprovalpress', tab: 'moa', labelKey: 'moa.settings.approvalPress', descKey: 'moa.settings.approvalPressDesc', synonyms: 'approval approve press permission prompt auto yes danger worker 승인' },
   { id: 'fullpower', tab: 'moa', labelKey: 'settings.orchestratorFullPower', synonyms: 'full power sdk settings sources tools' },
   { id: 'autowake', tab: 'moa', labelKey: 'settings.autoWake', descKey: 'settings.autoWakeDesc', synonyms: 'autowake wake event push tokens' },
   { id: 'ledgergate', tab: 'moa', labelKey: 'settings.ledgerGate', descKey: 'settings.ledgerGateDesc', synonyms: 'ledger gate stop task orchestrator delegated experimental' },

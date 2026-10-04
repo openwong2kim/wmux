@@ -129,6 +129,11 @@ export interface ApprovalRequest {
    *
    * Absent means "no match", never "safe". Only 'critical' exists today; the
    * softer `review` tier is deliberately not carried — see hasCriticalRisk.
+   *
+   * The one place it does gate: an AUTOMATED approve (a brain or the HQ lane)
+   * is refused as `critical-risk` (decideApprovalPress). That withholds
+   * nothing from a human — the record stays pending in front of them — it
+   * only stops a machine from saying yes on their behalf.
    */
   risk?: 'critical';
   /** Epoch ms. */
@@ -679,6 +684,8 @@ export interface ApprovalHookSink {
     workspaceId?: string;
     toolName: string;
     toolInputSummary?: string;
+    /** Judged on the call's FULL input before the summary was cut. */
+    risk?: 'critical';
   }): string;
   /**
    * Record the agent's own terminal dialog as a `kind:'terminal_prompt'`

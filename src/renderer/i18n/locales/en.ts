@@ -1258,6 +1258,8 @@ export const en = {
   'moa.settings.bubblesDesc': "Show a short bubble when Moa reports or needs a decision.",
   'moa.settings.reduceMotion': "Reduce motion",
   'moa.settings.reduceMotionDesc': "Keep Moa's indicators still instead of animated.",
+  'moa.settings.approvalPress': "Press small approvals",
+  'moa.settings.approvalPressDesc': "When a worker in a Danger workspace stops to ask permission to run a command or edit a file, wmux says yes for you and tells Moa afterwards. Anything that looks destructive, and every workspace not set to Danger, still waits for you. Off by default.",
   'moa.settings.saveFailed': "Couldn't save that setting. Try again.",
   'moa.archive.noticeOne': "1 pending decision was moved to Moa's archive",
   'moa.archive.notice': "{count} pending decisions were moved to Moa's archive",

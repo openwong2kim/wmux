@@ -778,6 +778,8 @@ export const ko = {
   'moa.settings.bubblesDesc': "Moa가 보고하거나 결정이 필요할 때 짧은 말풍선을 띄웁니다.",
   'moa.settings.reduceMotion': "움직임 줄이기",
   'moa.settings.reduceMotionDesc': "Moa 표시를 애니메이션 없이 고정합니다.",
+  'moa.settings.approvalPress': "작은 승인 대신 누르기",
+  'moa.settings.approvalPressDesc': "위험(Danger) 모드 워크스페이스의 워커가 명령 실행이나 파일 수정 허락을 물으면 wmux가 대신 허락하고 Moa에게 나중에 알립니다. 파괴적으로 보이는 작업과 위험 모드가 아닌 워크스페이스는 그대로 직접 확인합니다. 기본은 꺼짐입니다.",
   'moa.settings.saveFailed': "설정을 저장하지 못했습니다. 다시 시도하세요.",
   'moa.archive.noticeOne': "대기 중이던 결정 1개를 Moa 보관함으로 옮겼습니다",
   'moa.archive.notice': "대기 중이던 결정 {count}개를 Moa 보관함으로 옮겼습니다",

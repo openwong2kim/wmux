@@ -85,6 +85,8 @@ interface HqFile {
   moaBubbles?: boolean;
   /** Still Moa's animations regardless of the OS setting. Absent = off. */
   moaReduceMotion?: boolean;
+  /** HQ approval lane opt-in (hqApprovalLane.ts). Absent = off. */
+  hqApprovalPress?: boolean;
   /** Archived decisions up to this archivedAt have been acknowledged. */
   archiveAckedAt?: number;
   /** Set once the non-HQ migration has completed for `hqWorkspaceId`. */
@@ -114,7 +116,7 @@ function isValidHqFile(data: unknown): data is Record<string, unknown> {
   if (o.hqMaxTurnsPerHour !== undefined
     && !(typeof o.hqMaxTurnsPerHour === 'number' && Number.isInteger(o.hqMaxTurnsPerHour) && o.hqMaxTurnsPerHour >= 1)) return false;
   if (o.archivedDecisions !== undefined && !Array.isArray(o.archivedDecisions)) return false;
-  for (const k of ['moaOnboarded', 'moaBubbles', 'moaReduceMotion'] as const) {
+  for (const k of ['moaOnboarded', 'moaBubbles', 'moaReduceMotion', 'hqApprovalPress'] as const) {
     if (o[k] !== undefined && typeof o[k] !== 'boolean') return false;
   }
   if (o.moaLevel !== undefined && o.moaLevel !== 1 && o.moaLevel !== 2 && o.moaLevel !== 3) return false;
@@ -136,6 +138,7 @@ function sanitize(o: Record<string, unknown>): HqFile {
   if (o.moaLevel === 1 || o.moaLevel === 2 || o.moaLevel === 3) out.moaLevel = o.moaLevel;
   if (typeof o.moaBubbles === 'boolean') out.moaBubbles = o.moaBubbles;
   if (typeof o.moaReduceMotion === 'boolean') out.moaReduceMotion = o.moaReduceMotion;
+  if (typeof o.hqApprovalPress === 'boolean') out.hqApprovalPress = o.hqApprovalPress;
   if (typeof o.archiveAckedAt === 'number') out.archiveAckedAt = o.archiveAckedAt;
   return out;
 }
@@ -246,6 +249,12 @@ export function getHqWorkspaceId(dir?: string): string | null {
   return load(dir).file.hqWorkspaceId;
 }
 
+/** The HQ approval lane opt-in. Absent = off; a corrupt store = off. */
+export function isHqApprovalPressEnabled(dir?: string): boolean {
+  const { file, corrupt } = load(dir);
+  return !corrupt && file.hqApprovalPress === true;
+}
+
 /** The master switch. Absent = on (today's behaviour); a corrupt store = off. */
 export function isMoaEnabled(dir?: string): boolean {
   const { file, corrupt } = load(dir);
@@ -334,6 +343,7 @@ export function getMoaConfig(dir?: string): MoaConfig {
     bubbles: file.moaBubbles !== false,
     reduceMotion: file.moaReduceMotion === true,
     defaultReason: file.moaDefault ?? null,
+    approvalPress: file.hqApprovalPress === true,
   };
 }
 
@@ -351,6 +361,7 @@ export async function setMoaConfig(patch: MoaConfigPatch, dir?: string): Promise
     && patch.maxTurnsPerHour <= HQ_MAX_TURNS_PER_HOUR_RANGE.max) next.hqMaxTurnsPerHour = patch.maxTurnsPerHour;
   if (typeof patch.bubbles === 'boolean') next.moaBubbles = patch.bubbles;
   if (typeof patch.reduceMotion === 'boolean') next.moaReduceMotion = patch.reduceMotion;
+  if (typeof patch.approvalPress === 'boolean') next.hqApprovalPress = patch.approvalPress;
   try {
     await mutate(dir, (file) => write(dir, { ...file, ...next }));
     return true;

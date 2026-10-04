@@ -31,7 +31,7 @@ import type { ApprovalPressFacts } from './approvalKeystrokes';
  *  is what authorizes; the mode rides along for the refusal reason. */
 export type WorkspaceFacts = Pick<
   ApprovalPressFacts,
-  'isTaskWorkspace' | 'autonomyMode' | 'approvalPress'
+  'isTaskWorkspace' | 'autonomyMode' | 'approvalPress' | 'ownerMode'
 >;
 
 /** One row as it arrives on the wire. */
@@ -40,6 +40,9 @@ export interface WorkspaceFactRowInput {
   isTaskWorkspace: boolean;
   autonomyMode: string;
   approvalPress: boolean;
+  /** The live mode of the task's single open owner. Absent when the row is
+   *  not a task workspace or its task has no single open owner. */
+  ownerMode?: string;
 }
 
 /** Upper bound on a pushed table. Main sends one row per live workspace, so a
@@ -90,6 +93,9 @@ export class WorkspaceFactStore {
         isTaskWorkspace: row.isTaskWorkspace,
         autonomyMode: row.autonomyMode,
         approvalPress: row.approvalPress,
+        // A malformed owner mode drops the FIELD, not the row: the row's other
+        // facts are still good, and a missing owner mode refuses on its own.
+        ...(typeof row.ownerMode === 'string' ? { ownerMode: row.ownerMode } : {}),
       });
     }
     this.facts = next;

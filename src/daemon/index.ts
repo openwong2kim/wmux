@@ -7101,6 +7101,12 @@ async function main(): Promise<void> {
   // because which pushes were delivered is not persisted.
   approvalPushRouter.adopt(approvalRegistry.list().pending);
   const pipeServer = new DaemonPipeServer(config.daemon.pipeName);
+  // A re-list nudge for main's HQ approval lane (deck/hqApprovalLane.ts).
+  // Subscribed here, not above: that listener runs before `pipeServer` exists.
+  // No record field rides along — every subscribed client gets broadcasts.
+  approvalRegistry.onEvent((event) => {
+    pipeServer.broadcast({ type: 'approvals.changed', sessionId: '', data: { change: event.type } });
+  });
   // Desktop presence, reported by the Electron main process on every
   // focus/blur transition. Registered here rather than in `registerRpcHandlers`
   // so the wiring stays additive — the tracker is a boot-scope value and

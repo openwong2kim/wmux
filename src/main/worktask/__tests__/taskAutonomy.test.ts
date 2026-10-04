@@ -2,8 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { inheritTaskAutonomy } from '../taskAutonomy';
-import { loadDeckAutonomy, setWorkspaceMode } from '../../deck/deckAutonomyStore';
+import { inheritTaskAutonomy, planOwnerDowngrades, reconcileOwnerDowngrades } from '../taskAutonomy';
+import { loadDeckAutonomy, loadWorkspaceMode, setWorkspaceMode } from '../../deck/deckAutonomyStore';
 import { buildWorkspaceFacts } from '../../workspace/workspaceFactsFeed';
 
 let dir: string;
@@ -78,5 +78,49 @@ describe('inheritTaskAutonomy (A-2 precondition)', () => {
       autonomyMode: 'danger',
       approvalPress: true,
     });
+  });
+});
+
+describe('reconcileOwnerDowngrades (C2 v2)', () => {
+  const open = [{ taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-owner' }];
+
+  it("lowers an open task to its owner's new mode, and press goes off with it", async () => {
+    await setWorkspaceMode('ws-owner', 'danger', dir);
+    await inheritTaskAutonomy('ws-owner', 'ws-task', dir);
+    await setWorkspaceMode('ws-owner', 'assist', dir);
+
+    expect(await reconcileOwnerDowngrades(() => open, dir)).toBe(1);
+    expect(loadDeckAutonomy(dir)['ws-task']).toMatchObject({ mode: 'assist', approvalPress: false });
+    // Settles: a second pass finds nothing to change.
+    expect(await reconcileOwnerDowngrades(() => open, dir)).toBe(0);
+  });
+
+  it('lowers to off when the owner is turned off', async () => {
+    await setWorkspaceMode('ws-owner', 'danger', dir);
+    await inheritTaskAutonomy('ws-owner', 'ws-task', dir);
+    await setWorkspaceMode('ws-owner', 'off', dir);
+    await reconcileOwnerDowngrades(() => open, dir);
+    expect(loadWorkspaceMode('ws-task', dir)).toBe('off');
+  });
+
+  it('never raises a task when its owner is raised', async () => {
+    await setWorkspaceMode('ws-owner', 'assist', dir);
+    await inheritTaskAutonomy('ws-owner', 'ws-task', dir);
+    await setWorkspaceMode('ws-owner', 'danger', dir);
+    expect(await reconcileOwnerDowngrades(() => open, dir)).toBe(0);
+    expect(loadWorkspaceMode('ws-task', dir)).toBe('assist');
+  });
+
+  it('leaves a task with several open owners alone', () => {
+    const modes: Record<string, 'off' | 'assist' | 'danger'> = { 'ws-task': 'danger', 'ws-a': 'off', 'ws-b': 'danger' };
+    expect(
+      planOwnerDowngrades(
+        [
+          { taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-a' },
+          { taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-b' },
+        ],
+        (ws) => modes[ws] ?? 'off',
+      ),
+    ).toEqual([]);
   });
 });

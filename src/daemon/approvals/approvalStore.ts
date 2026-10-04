@@ -239,8 +239,10 @@ export function trimHistory(requests: readonly ApprovalRequest[]): ApprovalReque
 }
 
 /** Bound a captured pane tail so a record can never carry a screenful of noise. */
-/** Longest `resolvedBy` we will persist. Room for a device name plus a UUID. */
-export const RESOLVED_BY_MAX = 128;
+/** Longest `resolvedBy` we will persist. Room for a device name plus a UUID,
+ *  and for the HQ lane's `hq:<ws>;owner:<ws>;lane:hq` with two 80-char
+ *  workspace ids — the audit must not lose its owner or lane to the cap. */
+export const RESOLVED_BY_MAX = 200;
 
 /**
  * Bound and clean the "who answered this" label.

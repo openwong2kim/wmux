@@ -110,8 +110,11 @@ import { createHostedLedgerPort } from './worktask/ledgerPort';
 import { getProjectConfigStore } from './project/ProjectConfigStore';
 import { createWorkspaceFactsPublisher, invalidateAutonomyCache } from './workspace/workspaceFactsFeed';
 import { publishMoaPane, setMoaPanePush } from './deck/moaPaneFeed';
+import { reconcileOwnerDowngrades } from './worktask/taskAutonomy';
+import { createHqAutoPress, setHqAutoPress } from './deck/hqApprovalLane';
 import { getTaskLedger } from './deck/taskLedgerHost';
-import { onAutonomyWritten } from './deck/deckAutonomyStore';
+import { onAutonomyWritten, loadWorkspaceMode } from './deck/deckAutonomyStore';
+import { getHqWorkspaceId, hqPresence, isHqApprovalPressEnabled, isMoaEnabled } from './deck/deckHqStore';
 import { registerDeckHandler } from './ipc/handlers/deck.handler';
 import { registerWorkspaceMirrorHandler } from './ipc/handlers/workspaceMirror.handler';
 import { getWorkspaceMirror } from './workspace/WorkspaceMirror';
@@ -1106,10 +1109,26 @@ registerWorktaskHandlers(() => daemonClient, (services: WorktaskServices) => {
 // cancelled) and an autonomy write. Until the first push lands the daemon
 // answers `scope-unavailable` and refuses, which is the safe direction.
 // See workspace/workspaceFactsFeed.ts.
+// The HQ approval lane (deck/hqApprovalLane.ts) presses by the facts this feed
+// publishes, so a lane pass runs right after each push lands — never before
+// the daemon holds the table it will judge by.
+const hqAutoPress = createHqAutoPress({
+  getHq: () => getHqWorkspaceId(),
+  isMoaEnabled: () => isMoaEnabled(),
+  presence: (hq) => hqPresence(hq),
+  isOptedIn: () => isHqApprovalPressEnabled(),
+  ledger: () => getTaskLedger(),
+  modeOf: (ws) => loadWorkspaceMode(ws),
+  nameOf: (ws) => getWorkspaceMirror().getEntries()?.find((e) => e.id === ws)?.name,
+  getDaemonClient: () => daemonClient,
+});
+setHqAutoPress(hqAutoPress);
 const workspaceFactsPublisher = createWorkspaceFactsPublisher({
   push: async (facts, seq) => {
     if (!daemonClient) throw new Error('Daemon not connected');
-    return daemonClient.rpc('daemon.workspaceFacts.set', { facts, seq });
+    const result = await daemonClient.rpc('daemon.workspaceFacts.set', { facts, seq });
+    void hqAutoPress.run();
+    return result;
   },
 });
 getTaskLedger().onTransition(() => {
@@ -1127,6 +1146,8 @@ onAutonomyWritten(() => {
   // before the debounce fires — invalidate first, then schedule.
   invalidateAutonomyCache();
   workspaceFactsPublisher.schedule();
+  // An owner lowered after a fan-out lowers its open tasks too (taskAutonomy.ts).
+  void reconcileOwnerDowngrades(() => getTaskLedger().list({ openOnly: true }));
 });
 
 // Command Deck Phase 2 — the Commander brain. Renderer-only surface (same
@@ -1838,6 +1859,8 @@ app.on('ready', async () => {
       // Same for the Moa pane: the daemon drops it with its publisher, so a
       // fresh connection holds none until main says so again.
       void publishMoaPane({ force: true });
+      // A new approval, or one settled elsewhere: the lane re-lists.
+      client.on('approvals:changed', () => { void hqAutoPress.run(); });
       // Handler swap to daemon-routed mode. The microsecond window where
       // pty/* handlers are torn down and re-registered is the same
       // surface the original code used; the swap is logged for the

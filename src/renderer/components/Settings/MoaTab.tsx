@@ -519,6 +519,19 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
             {t('moa.settings.saveFailed')}
           </SettingNote>
         )}
+        <SettingRow
+          id="moaapprovalpress"
+          label={t('moa.settings.approvalPress')}
+          description={t('moa.settings.approvalPressDesc')}
+        >
+          <Switch
+            checked={moa?.config.approvalPress === true}
+            onCheckedChange={(v) => { void patchConfig({ approvalPress: v }); }}
+            aria-label={t('moa.settings.approvalPress')}
+            disabled={!loaded}
+            data-testid="moa-approval-press"
+          />
+        </SettingRow>
         {/* Full power tunes settingSources/canUseTool — both SDK-only knobs. The
             terminal brain (an interactive TUI) and ACP brains ignore the flag
             entirely (see createAdapter in deck.handler), so with the terminal

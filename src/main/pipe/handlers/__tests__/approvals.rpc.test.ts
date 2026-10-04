@@ -59,6 +59,8 @@ function wire(options: {
   registerApprovalsRpc(router as never, () => dc as never, {
     // The default row: pty-w's workspace is a task ws-brain delegated.
     getLedger: () => fakeLedger(options.ledger ?? [{ taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-brain' }]),
+    // No HQ: these tests pin the owner lane (the HQ lane has its own file).
+    hq: { getHq: () => null, isMoaEnabled: () => true, presence: () => 'unset', isOptedIn: () => false, modeOf: () => 'off' },
   });
 }
 

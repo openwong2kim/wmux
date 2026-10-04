@@ -82,3 +82,76 @@ export async function inheritTaskAutonomy(
     return { mode: DEFAULT_MODE, written: false };
   }
 }
+
+// ── An owner's downgrade reaches its open tasks at once (C2 v2) ──────────────
+//
+// The inheritance above is a copy taken at fan-out. An owner switched from
+// `danger` to `assist` or `off` afterwards used to leave every open worker at
+// `danger`, with approval-press still on. So every autonomy write runs this:
+// an open task whose mode ranks ABOVE its single owner's is lowered to the
+// owner's mode. Downgrades only — raising the owner later does not hand press
+// back to workers that were already started under a lower mode; a new fan-out
+// inherits it. A task with several open owners is left alone (the daemon
+// refuses automated approves there anyway: no single owner mode).
+//
+// The daemon also re-reads the owner's live mode on every automated approve
+// (workspaceFactsFeed `ownerMode`), so this is the second of two guards, the
+// one that also turns the task workspace's own readout down.
+
+const MODE_RANK: Readonly<Record<AgentMode, number>> = { off: 0, assist: 1, danger: 2 };
+
+interface OpenTaskRow {
+  taskWorkspaceId: string;
+  ownerWorkspaceId: string;
+}
+
+/** The (task, lower mode) writes a reconcile would make. Pure. */
+export function planOwnerDowngrades(
+  openTasks: readonly OpenTaskRow[],
+  modeOf: (workspaceId: string) => AgentMode,
+): Array<{ taskWorkspaceId: string; mode: AgentMode }> {
+  const owners = new Map<string, Set<string>>();
+  for (const t of openTasks) {
+    const set = owners.get(t.taskWorkspaceId) ?? new Set<string>();
+    set.add(t.ownerWorkspaceId);
+    owners.set(t.taskWorkspaceId, set);
+  }
+  const out: Array<{ taskWorkspaceId: string; mode: AgentMode }> = [];
+  for (const [taskWorkspaceId, set] of owners) {
+    if (set.size !== 1) continue;
+    const ownerMode = modeOf([...set][0] as string);
+    if (MODE_RANK[modeOf(taskWorkspaceId)] > MODE_RANK[ownerMode]) {
+      out.push({ taskWorkspaceId, mode: ownerMode });
+    }
+  }
+  return out;
+}
+
+/**
+ * Lower every open task workspace whose mode is above its owner's. Never
+ * throws. Its own writes fire the autonomy listener again; that second pass
+ * finds nothing to change, so it settles.
+ */
+export async function reconcileOwnerDowngrades(
+  openTasks: () => readonly OpenTaskRow[],
+  dir?: string,
+): Promise<number> {
+  let plan: Array<{ taskWorkspaceId: string; mode: AgentMode }>;
+  try {
+    plan = planOwnerDowngrades(openTasks(), (ws) => loadWorkspaceMode(ws, dir));
+  } catch (err) {
+    console.warn(`[fanout] could not read open tasks to propagate an owner downgrade: ${String(err)}`);
+    return 0;
+  }
+  let written = 0;
+  for (const { taskWorkspaceId, mode } of plan) {
+    try {
+      await setWorkspaceMode(taskWorkspaceId, mode, dir);
+      written += 1;
+      console.log(`[fanout] task workspace ${taskWorkspaceId} lowered to '${mode}' with its owner`);
+    } catch (err) {
+      console.warn(`[fanout] could not lower task workspace ${taskWorkspaceId} to '${mode}': ${String(err)}`);
+    }
+  }
+  return written;
+}

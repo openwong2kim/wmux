@@ -45,6 +45,9 @@ export interface WorkspaceFactRow {
   autonomyMode: string;
   /** Main's EFFECTIVE approvalPress capability for this workspace. */
   approvalPress: boolean;
+  /** Task workspaces only: the LIVE mode of the task's single open owner.
+   *  Omitted when the open tasks on it name no owner or several. */
+  ownerMode?: string;
 }
 
 /** How long a burst of changes is collected before one table is sent. A fan-out
@@ -74,15 +77,21 @@ export interface WorkspaceFactsFeedPorts {
  * driving any more.
  */
 export function buildWorkspaceFacts(ports: WorkspaceFactsFeedPorts): WorkspaceFactRow[] {
-  let taskWorkspaces = new Set<string>();
+  // Task workspace → the distinct owners of its OPEN tasks.
+  const owners = new Map<string, Set<string>>();
   try {
     const ledger = (ports.ledger ?? getTaskLedger)();
-    taskWorkspaces = new Set(ledger.list({ openOnly: true }).map((e) => e.taskWorkspaceId));
+    for (const e of ledger.list({ openOnly: true })) {
+      const set = owners.get(e.taskWorkspaceId) ?? new Set<string>();
+      if (e.ownerWorkspaceId) set.add(e.ownerWorkspaceId);
+      owners.set(e.taskWorkspaceId, set);
+    }
   } catch {
     // An unreadable ledger publishes NO task workspaces rather than a stale
     // set: every press then refuses, which is the safe direction.
-    taskWorkspaces = new Set();
+    owners.clear();
   }
+  const taskWorkspaces = new Set(owners.keys());
   let modes: AutonomyMap = {};
   try {
     modes = (ports.autonomy ?? readAutonomyCached)();
@@ -101,9 +110,27 @@ export function buildWorkspaceFacts(ports: WorkspaceFactsFeedPorts): WorkspaceFa
       // Absent entry ⇒ false. The product default is press OFF, and a missing
       // row must never read as the dangerous capability being on.
       approvalPress: entry?.approvalPress === true,
+      ...ownerModeField(owners.get(workspaceId), modes),
     });
   }
   return rows;
+}
+
+/**
+ * The owner's live mode, when the task workspace has exactly one open owner.
+ * The task workspace's own mode is a copy taken at fan-out; the daemon checks
+ * this one too, so an owner downgraded after the fan-out stops automated
+ * approves on the next publish even if the copy has not caught up. Several
+ * owners (or none) publish nothing, which the daemon refuses.
+ */
+function ownerModeField(
+  taskOwners: ReadonlySet<string> | undefined,
+  modes: AutonomyMap,
+): { ownerMode?: string } {
+  if (!taskOwners || taskOwners.size !== 1) return {};
+  const [owner] = [...taskOwners];
+  const mode = modes[owner as string]?.mode;
+  return { ownerMode: typeof mode === 'string' ? mode : DEFAULT_MODE };
 }
 
 // ── Autonomy read cache ─────────────────────────────────────────────────────

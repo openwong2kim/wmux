@@ -58,6 +58,7 @@ import {
   type HookSignalResponse,
 } from '../../shared/hooks/signal-types';
 import { ENV_KEYS, isBrainPty } from '../../shared/constants';
+import { hasCriticalRisk } from '../../shared/criticalPatterns';
 // Pure regex/lookup module (no electron), already imported by src/daemon/index.ts.
 import { agentDisplayToSlug, agentStatusToSignalKind, type AgentEventStatus } from '../../main/pty/AgentDetector';
 import type { ResumeBinding, PermissionMode } from '../../shared/agentResume';
@@ -460,6 +461,20 @@ function summarizeToolInput(payload: Record<string, unknown> | undefined): strin
 }
 
 /**
+ * Whether the gated call's FULL input names a critical action. Judged before
+ * `summarizeToolInput` cuts the text to 200 characters: an `rm -rf` past the
+ * cut is still the call being approved. Every string field counts — a match in
+ * a file's content over-fires, which only sends the approval to a human.
+ */
+function gateInputIsCritical(payload: Record<string, unknown> | undefined): boolean {
+  const toolInput = payload?.['tool_input'];
+  if (!toolInput || typeof toolInput !== 'object' || Array.isArray(toolInput)) return false;
+  return hasCriticalRisk(
+    ...Object.values(toolInput as Record<string, unknown>).filter((v): v is string => typeof v === 'string'),
+  );
+}
+
+/**
  * Emit-class kinds — the turn boundaries. These are the only kinds that
  * produce a user-visible event and the only ones that touch the dedup ledger.
  *
@@ -787,6 +802,7 @@ export class HookIngest {
       ...(workspaceId ? { workspaceId } : {}),
       toolName,
       ...(toolInputSummary ? { toolInputSummary } : {}),
+      ...(gateInputIsCritical(signal.payload) ? { risk: 'critical' as const } : {}),
     }) ?? crypto.randomUUID();
 
     this.broadcast(sessionId, {

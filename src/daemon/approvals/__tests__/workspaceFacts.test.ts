@@ -84,3 +84,18 @@ describe('WorkspaceFactStore', () => {
     expect(store.replace([ROW], 1).ok).toBe(true);
   });
 });
+
+describe('WorkspaceFactStore — the owner live mode (C2 v2)', () => {
+  it('keeps a string ownerMode and drops a malformed one without dropping the row', () => {
+    const store = new WorkspaceFactStore();
+    store.replace(
+      [
+        { ...ROW, ownerMode: 'danger' },
+        { ...ROW, workspaceId: 'ws-bad', ownerMode: 7 as unknown as string },
+      ],
+      1,
+    );
+    expect(store.get('ws-task')).toMatchObject({ ownerMode: 'danger' });
+    expect(store.get('ws-bad')).toEqual({ isTaskWorkspace: true, autonomyMode: 'assist', approvalPress: true });
+  });
+});
