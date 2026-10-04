@@ -1736,6 +1736,10 @@ interface ColdTuiOptions {
   printRefusal?: boolean;
   /** How long a turn that runs takes to fire its Stop. */
   stopDelayMs?: number;
+  /** The Nth bracketed paste loses its end marker (measured on Windows ConPTY
+   *  with a busy TUI): the box holds the text, and every Enter after it is
+   *  taken as pasted text until an end marker arrives on its own. */
+  dropPasteEnd?: (attempt: number) => boolean;
 }
 
 /**
@@ -1760,11 +1764,20 @@ function makeColdTui(opts: ColdTuiOptions = {}) {
   let box = '';
   let coldBareWrite = true;
   let pastes = 0;
+  let pasteOpen = false;
   const write = host.write.bind(host);
   host.write = (id, data) => {
     write(id, data);
+    if (data === '\u001b[201~') {
+      pasteOpen = false;
+      return;
+    }
     if (data === '\u001b') {
       box = '';
+      return;
+    }
+    if (data === '\r' && pasteOpen) {
+      box += '\n';
       return;
     }
     if (data === '\r') {
@@ -1797,6 +1810,7 @@ function makeColdTui(opts: ColdTuiOptions = {}) {
       pastes += 1;
       text = data.slice(6, -6);
       if (opts.damage) text = opts.damage(pastes, text);
+      if (opts.dropPasteEnd?.(pastes)) pasteOpen = true;
     } else {
       const reads: string[] = [];
       for (let i = 0; i < data.length; i += 1024) reads.push(data.slice(i, i + 1024));
@@ -1903,6 +1917,25 @@ describe('a cold-start prompt that reaches the TUI incomplete (#1787)', () => {
     adapter.interrupt();
     expect(await turn).toEqual([{ type: 'error', message: expect.stringMatching(/interrupted/) }]);
     expect(pasteWrites()).toBe(1);
+    adapter.dispose();
+  });
+
+  it('closes a paste the TUI left open, so its Enter submits the prompt instead of hanging the turn', async () => {
+    const { host, accepted } = makeColdTui({ dropPasteEnd: (n) => n === 1 });
+    const adapter = makeAdapter(host, { turnTimeoutMs: 5_000 });
+    const events = await collect(adapter.send(LONG_PROMPT));
+    expect(accepted.map((p) => p.replace(/\s+/g, ''))).toEqual([LONG_PROMPT.replace(/\s+/g, '')]);
+    expect(host.writes.filter((w) => w.data === '\u001b[201~')).toHaveLength(1);
+    expect(events.at(-1)).toMatchObject({ type: 'turn-end' });
+    adapter.dispose();
+  });
+
+  it('sends no extra end marker when the paste closed and the Enter was reported', async () => {
+    const { host, accepted } = makeColdTui();
+    const adapter = makeAdapter(host);
+    await collect(adapter.send(LONG_PROMPT));
+    expect(accepted).toEqual([LONG_PROMPT]);
+    expect(host.writes.some((w) => w.data === '\u001b[201~')).toBe(false);
     adapter.dispose();
   });
 

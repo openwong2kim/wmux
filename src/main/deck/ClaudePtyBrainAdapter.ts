@@ -1816,10 +1816,11 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
       if (this._disposed) return;
     }
     this.pasteModeWaitPending = false;
+    const bracketed = this.pasteModeOn;
     // Two writes with a gap, never `prompt\r` in one chunk: the TUI's paste
     // detection would absorb the trailing Enter as pasted content and the
     // prompt would sit unsubmitted in the input box (see SUBMIT_DELAY_MS).
-    this.deps.host.write(ptyId, this.pasteModeOn ? `${PASTE_START}${prompt}${PASTE_END}` : prompt);
+    this.deps.host.write(ptyId, bracketed ? `${PASTE_START}${prompt}${PASTE_END}` : prompt);
     await delay(submitDelayMs);
     if (this._disposed) return;
     this.deps.host.write(ptyId, '\r');
@@ -1830,6 +1831,18 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     // a copy still in the box while the hook runs.
     await delay(submitDelayMs * 2);
     if (this._disposed || this.promptVerdict === null) return;
+    if (bracketed) {
+      // Close the paste again first. On Windows (ConPTY, Claude Code 2.1.289)
+      // a TUI busy at the time of the write can take the paste's start and
+      // text but never its end, and then reads every Enter as pasted text:
+      // the prompt sits in the box and the turn hangs until its timeout. A
+      // stray end marker is ignored by an idle TUI, by a box holding text and
+      // by a running turn (all measured), so it costs nothing when the paste
+      // did close.
+      this.deps.host.write(ptyId, PASTE_END);
+      await delay(submitDelayMs);
+      if (this._disposed || this.promptVerdict === null) return;
+    }
     this.deps.host.write(ptyId, '\r');
   }
 
