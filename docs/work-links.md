@@ -117,6 +117,9 @@ Coming from the two lanes:
   read for a linked branch. `prStatus` feeds the `review`/`blocked`/`done`
   part of the derivation.
 - **Fanout:** upsert with the worker's `worktree`, `agent` and task id.
+- **Moa:** the brain sees `task_id` in the `deck_ask_decision` schema, but no
+  brain prompt asks for it yet. Teaching Moa to pass it for task-bound
+  decisions belongs to the task-card lane.
 
 ## Consumers
 

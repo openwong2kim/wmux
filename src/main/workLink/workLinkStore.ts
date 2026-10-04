@@ -158,13 +158,20 @@ export class WorkLinkStore {
   /** Re-derive the links holding this decision (after it was answered). */
   async refreshDecision(decisionId: string): Promise<void> {
     try {
-      for (const l of [...this.cache().values()]) {
+      // All in one synchronous pass, then one write: awaiting per link would let
+      // a concurrent update land between them and be overwritten by a stale copy.
+      const links = this.cache();
+      const changed: string[] = [];
+      for (const l of links.values()) {
         if (!l.decisionIds.includes(decisionId)) continue;
         const next = this.rederive(l);
-        if (next.state !== l.state || next.reason !== l.reason) {
-          await this.commit({ ...next, updatedAt: this.now() });
-        }
+        if (next.state === l.state && next.reason === l.reason) continue;
+        links.set(l.id, { ...next, updatedAt: this.now() });
+        changed.push(l.id);
       }
+      if (changed.length === 0) return;
+      this.emit(changed);
+      await this.persist();
     } catch (err) {
       console.warn('[workLinks] refreshDecision failed:', err);
     }

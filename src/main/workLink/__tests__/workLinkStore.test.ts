@@ -79,6 +79,24 @@ describe('WorkLinkStore', () => {
     expect(await s.attachDecision('missing', 'dec-2')).toBeNull();
   });
 
+  it('refreshes every link holding an answered decision, keeping their other fields', async () => {
+    const s = make();
+    const a = (await s.upsert({ ...sent, a2aState: 'working' }))!;
+    const b = (await s.upsert({ ...sent, a2aTaskId: 'task-2', a2aState: 'working' }))!;
+    pending.add('dec-1');
+    await s.attachDecision(a.id, 'dec-1');
+    await s.attachDecision(b.id, 'dec-1');
+    pending.clear();
+    const seen: string[][] = [];
+    s.onChange((ids) => seen.push(ids));
+    const refresh = s.refreshDecision('dec-1');
+    await s.upsert({ a2aTaskId: 'task-2', title: 'landed mid-refresh' });
+    await refresh;
+    expect(seen[0]).toEqual([a.id, b.id]);
+    expect(s.get(a.id)?.state).toBe('running');
+    expect(s.get(b.id)).toMatchObject({ state: 'running', title: 'landed mid-refresh' });
+  });
+
   it('setState: abandoned sticks, others yield to the next derivation', async () => {
     const s = make();
     const link = (await s.upsert(sent))!;
