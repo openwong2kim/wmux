@@ -677,13 +677,13 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
         description={t('moa.settings.memoryDesc')}
         data-testid="moa-memory"
       >
-        <SettingRow id="moaproposals" label={t('moa.settings.proposals')} description={t('moa.settings.proposalsDesc')}>
+        <SettingRow id="moamemoryproposals" label={t('moa.settings.memoryProposals')} description={t('moa.settings.memoryProposalsDesc')}>
           <Switch
             checked={moa?.config.memoryProposals !== false}
             onCheckedChange={(v) => { void patchConfig({ memoryProposals: v }); }}
-            aria-label={t('moa.settings.proposals')}
+            aria-label={t('moa.settings.memoryProposals')}
             disabled={!loaded}
-            data-testid="moa-proposals"
+            data-testid="moa-memory-proposals"
           />
         </SettingRow>
         {memory !== null && memory.length === 0 && <SettingNote>{t('moa.settings.memoryEmpty')}</SettingNote>}

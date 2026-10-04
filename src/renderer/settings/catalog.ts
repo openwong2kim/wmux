@@ -146,7 +146,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'moahq', tab: 'moa', labelKey: 'moa.settings.hq', synonyms: 'hq headquarters workspace recreate reset setup' },
   { id: 'moamodes', tab: 'moa', labelKey: 'moa.settings.modes', descKey: 'moa.settings.modesDesc', synonyms: 'mode off assist danger autonomy workspace 모드' },
   { id: 'moaturncap', tab: 'moa', labelKey: 'moa.settings.turnCap', descKey: 'moa.settings.turnCapDesc', synonyms: 'turn cap limit rate hour budget usage' },
-  { id: 'moaproposals', tab: 'moa', labelKey: 'moa.settings.proposals', descKey: 'moa.settings.proposalsDesc', synonyms: 'remember precedent skill proposal memory save 기억 판례 스킬' },
+  { id: 'moamemoryproposals', tab: 'moa', labelKey: 'moa.settings.memoryProposals', descKey: 'moa.settings.memoryProposalsDesc', synonyms: 'remember precedent skill proposal memory save 기억 판례 스킬' },
   { id: 'moaapprovalpress', tab: 'moa', labelKey: 'moa.settings.approvalPress', descKey: 'moa.settings.approvalPressDesc', synonyms: 'approval approve press permission prompt auto yes danger worker 승인' },
   { id: 'moaretro', tab: 'moa', labelKey: 'moa.settings.retro', descKey: 'moa.settings.retroDesc', synonyms: 'retro retrospective weekly review summary interruptions stalls 회고' },
   { id: 'moastats', tab: 'moa', labelKey: 'moa.settings.stats', descKey: 'moa.settings.statsDesc', synonyms: 'track record stats statistics clear reset delegation 실적' },
