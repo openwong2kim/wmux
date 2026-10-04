@@ -1,17 +1,20 @@
-// The confirm step of handing an issue or PR to an agent: "Send issue #n to
-// <agent> in <workspace>?" with an optional note, Send / Cancel (Esc cancels),
-// and "Start in a new worktree". Opened by a drop on an agent pane or a
-// workspace row, or by the detail header's "Send to agent…" (then it lists
-// the agent panes to pick from). Main does the rest (src/main/git/handoff.ts):
-// the work link, the gated, typing-held delivery of a fixed reference.
-import { useEffect, useMemo, useRef, useState } from 'react';
+// The confirm step of handing an issue or PR to an agent: "Send issue
+// owner/repo#n to <agent> in <workspace>?" with an optional note, Send /
+// Cancel (Esc cancels), and "Start in a new worktree". Opened by a drop on an
+// agent pane or a workspace row, or by the detail header's "Send to agent…"
+// (then it lists the agent panes to pick from). Main does the rest
+// (src/main/git/handoff.ts): the work link, the gated, typing-held delivery of
+// a fixed reference.
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useT } from '../../hooks/useT';
 import { useStore } from '../../stores';
 import { FOCUS_RING } from '../focusRing';
 import Popover from '../ui/Popover';
+import { useModalLayer } from '../ui/modalLayer';
 import { loadLastAgentCmd } from '../AgentToolbar/fanoutAgentCmd';
 import { allHandoffTargets, handoffTargetsInWorkspace } from './handoffDrag';
 import { sanitizeHandoffTitle, type HandoffInProgress, type HandoffSendResult, type HandoffStartResult, type HandoffTarget } from '../../../shared/gitHandoff';
+import type { GitHandoffOpen } from './gitPageState';
 
 interface HandoffBridge {
   handoffSend: (req: unknown) => Promise<HandoffSendResult>;
@@ -27,15 +30,21 @@ const POPOVER_W = 380;
 
 export default function HandoffPopover(): React.ReactElement | null {
   const open = useStore((s) => s.gitHandoff);
-  return open ? <HandoffPopoverBody key={`${open.item.kind}:${open.item.ref.url}:${open.target?.ptyId ?? open.workspaceId ?? ''}`} /> : null;
+  return open ? <HandoffPopoverBody key={`${open.item.kind}:${open.item.ref.url}:${open.target?.ptyId ?? open.workspaceId ?? ''}`} open={open} /> : null;
 }
 
-function HandoffPopoverBody(): React.ReactElement | null {
+function HandoffPopoverBody({ open }: { open: GitHandoffOpen }): React.ReactElement | null {
   const t = useT();
-  const open = useStore((s) => s.gitHandoff)!;
-  const close = useStore((s) => s.setGitHandoff);
   const pushToast = useStore((s) => s.pushToast);
   const workspaces = useStore((s) => s.workspaces);
+  // Only this hand-off may close itself or update after an await: the store
+  // may hold a newer one by then, or none, and the body may be gone.
+  const mounted = useRef(true);
+  useEffect(() => () => { mounted.current = false; }, []);
+  const current = () => mounted.current && useStore.getState().gitHandoff === open;
+  const close = useCallback(() => {
+    if (useStore.getState().gitHandoff === open) useStore.getState().setGitHandoff(null);
+  }, [open]);
   // The pane to send to: the dropped one, or a pick among a workspace's (or all) agents.
   const choices = useMemo<HandoffTarget[]>(() => {
     if (open.target) return [open.target];
@@ -47,31 +56,29 @@ function HandoffPopoverBody(): React.ReactElement | null {
   const [busy, setBusy] = useState<'send' | 'start' | null>(null);
   const [inProgress, setInProgress] = useState<{ action: 'send' | 'start'; info: HandoffInProgress } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const ref = useRef<HTMLDivElement>(null);
+  const ref = useRef<HTMLDivElement | null>(null);
   const noteRef = useRef<HTMLTextAreaElement>(null);
   const target = choices[pick] ?? null;
   const wsName = (id: string) => workspaces.find((w) => w.id === id)?.name ?? id;
   const kindWord = open.item.kind === 'issue' ? t('git.handoff.issue') : t('git.handoff.pr');
+  const itemRef = `${open.item.ref.owner}/${open.item.ref.repo}#${open.item.ref.number}`;
   const agentWord = (tg: HandoffTarget) => tg.agentName || t('git.handoff.terminal');
+  const canStart = open.item.kind === 'issue' && !!open.repo?.workspaceId;
 
-  // Esc cancels; so does a press outside.
+  // A modal layer: Esc closes the top-most one, Tab stays inside, and focus
+  // returns to where it was on close. A press outside cancels too.
+  const attachLayer = useModalLayer({ onEscape: close });
+  const setPanel = useCallback((el: HTMLDivElement | null) => {
+    ref.current = el;
+    attachLayer(el);
+  }, [attachLayer]);
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        close(null);
-      }
-    };
     const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) close(null);
+      if (ref.current && !ref.current.contains(e.target as Node)) close();
     };
-    document.addEventListener('keydown', onKey, true);
     document.addEventListener('mousedown', onDown);
     noteRef.current?.focus();
-    return () => {
-      document.removeEventListener('keydown', onKey, true);
-      document.removeEventListener('mousedown', onDown);
-    };
+    return () => document.removeEventListener('mousedown', onDown);
   }, [close]);
 
   const send = async (force = false) => {
@@ -80,14 +87,15 @@ function HandoffPopoverBody(): React.ReactElement | null {
     setBusy('send');
     setError(null);
     const res = await b.handoffSend({ item: open.item, target, note, force });
+    if (!current()) return;
     setBusy(null);
     if (!res.ok) {
       if (res.code === 'in-progress') setInProgress({ action: 'send', info: res.inProgress });
       else setError(res.message);
       return;
     }
-    close(null);
-    const vars = { kind: kindWord, number: open.item.ref.number, agent: agentWord(target), workspace: wsName(target.workspaceId) };
+    close();
+    const vars = { kind: kindWord, ref: itemRef, agent: agentWord(target), workspace: wsName(target.workspaceId) };
     pushToast(res.delivered
       ? { level: 'info', message: t('git.handoff.sent', vars) }
       : { level: 'warn', message: `${t('git.handoff.stored', vars)}${res.note ? ` ${res.note}` : ''}` });
@@ -95,20 +103,21 @@ function HandoffPopoverBody(): React.ReactElement | null {
 
   const start = async (force = false) => {
     const b = bridge();
-    if (!b || !open.repo || busy) return;
+    if (!b || !canStart || !open.repo?.workspaceId || busy) return;
     setBusy('start');
     setError(null);
     const res = await b.handoffStartWorktree({
-      item: open.item, repoPath: open.repo.repoPath, workspaceId: open.repo.workspaceId, agentCmd: loadLastAgentCmd() || 'claude', note, force,
+      item: open.item, repoPath: open.repo.repoPath, workspaceId: open.repo.workspaceId, agentCmd: loadLastAgentCmd() || undefined, note, force,
     });
+    if (!current()) return;
     setBusy(null);
     if (!res.ok) {
       if (res.code === 'in-progress') setInProgress({ action: 'start', info: res.inProgress });
       else setError(res.message);
       return;
     }
-    close(null);
-    pushToast({ level: 'info', message: t('git.handoff.started', { kind: kindWord, number: open.item.ref.number, branch: res.branch }) });
+    close();
+    pushToast({ level: 'info', message: t('git.handoff.started', { kind: kindWord, ref: itemRef, branch: res.branch }) });
   };
 
   const pos = open.anchor
@@ -121,9 +130,10 @@ function HandoffPopoverBody(): React.ReactElement | null {
   return (
     <div className="wmux-handoff-layer">
       <Popover
-        ref={ref}
+        ref={setPanel}
         padded
         role="dialog"
+        aria-modal="true"
         aria-label={t('git.handoff.label')}
         className="wmux-handoff"
         style={{ left: pos.left, top: pos.top, width: POPOVER_W }}
@@ -131,11 +141,11 @@ function HandoffPopoverBody(): React.ReactElement | null {
       >
         {target && choices.length === 1 ? (
           <p className="wmux-handoff-title" data-handoff-question>
-            {t('git.handoff.question', { kind: kindWord, number: open.item.ref.number, agent: agentWord(target), workspace: wsName(target.workspaceId) })}
+            {t('git.handoff.question', { kind: kindWord, ref: itemRef, agent: agentWord(target), workspace: wsName(target.workspaceId) })}
           </p>
         ) : (
           <>
-            <p className="wmux-handoff-title">{t('git.handoff.pickQuestion', { kind: kindWord, number: open.item.ref.number })}</p>
+            <p className="wmux-handoff-title">{t('git.handoff.pickQuestion', { kind: kindWord, ref: itemRef })}</p>
             {choices.length === 0 ? (
               <p className="wmux-handoff-note" data-handoff-none>{t('git.handoff.noAgents')}</p>
             ) : (
@@ -170,6 +180,7 @@ function HandoffPopoverBody(): React.ReactElement | null {
             <button
               type="button"
               className={`wmux-git-button ${FOCUS_RING}`}
+              disabled={busy !== null}
               onClick={() => void (inProgress.action === 'send' ? send(true) : start(true))}
               data-handoff-anyway
             >
@@ -179,7 +190,7 @@ function HandoffPopoverBody(): React.ReactElement | null {
         )}
         {error && <p className="wmux-handoff-error" role="alert">{error}</p>}
         <div className="wmux-handoff-actions">
-          {open.repo && open.item.kind === 'issue' && (
+          {canStart && (
             <button
               type="button"
               className={`wmux-git-button ${FOCUS_RING}`}
@@ -191,7 +202,7 @@ function HandoffPopoverBody(): React.ReactElement | null {
             </button>
           )}
           <span className="flex-1" />
-          <button type="button" className={`wmux-git-button ${FOCUS_RING}`} onClick={() => close(null)} data-handoff-cancel>
+          <button type="button" className={`wmux-git-button ${FOCUS_RING}`} onClick={close} data-handoff-cancel>
             {t('git.handoff.cancel')}
           </button>
           <button

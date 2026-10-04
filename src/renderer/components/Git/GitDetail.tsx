@@ -23,7 +23,7 @@ import { useStore } from '../../stores';
 import { parseIssueRef, issueUrlParts, serializeIssueRef } from '../../../shared/issueRef';
 import { parsePrDragRef, prUrlParts, serializePrDragRef } from '../../../shared/prDragRef';
 import type { HandoffRef } from '../../../shared/gitHandoff';
-import type { GitDragContext } from './gitPageState';
+import type { GitDragOwner } from './gitPageState';
 
 /** The selected item as a hand-off ref (URL-checked), or null when its URL is not GitHub's shape. */
 function handoffRefOf(kind: 'pr' | 'issue', item: { number: number; title: string; url: string }): HandoffRef | null {
@@ -101,7 +101,7 @@ function DetailHeader({ title, number, repo, url, state, author, handoff, repoCo
   author: string;
   /** The item to hand to an agent (the keyboard / a11y twin of dragging it). */
   handoff: HandoffRef | null;
-  repoContext?: GitDragContext;
+  repoContext?: GitDragOwner;
 }): React.ReactElement {
   const t = useT();
   const open = () => {
@@ -119,7 +119,7 @@ function DetailHeader({ title, number, repo, url, state, author, handoff, repoCo
               {t('git.detail.sendToAgent')}
             </button>
           )}
-          {handoff?.kind === 'issue' && repoContext && (
+          {handoff?.kind === 'issue' && repoContext?.workspaceId && (
             <button type="button" className={`wmux-git-button ${FOCUS_RING}`} onClick={open} data-git-start-worktree>
               {t('git.detail.startWorktree')}
             </button>
@@ -250,7 +250,7 @@ export function GitDetail({ kind, repoPath, repoLabel, pr, issue, refreshKey = 0
   /** The page's refresh: the detail reads again too. */
   refreshKey?: number;
   /** The repo and workspace the item belongs to (for "Start in a new worktree"). */
-  repo?: GitDragContext;
+  repo?: GitDragOwner;
   repoPath: string;
   repoLabel: string;
   pr?: PrSummary | null;

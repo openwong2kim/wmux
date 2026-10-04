@@ -13,7 +13,8 @@ import { relTime, useGitList, type ListAnswer } from './useGitList';
 import { PR_STEP_IS_PROBLEM, prNextStep } from '../../../shared/prNextStep';
 import { PR_DRAG_TYPE, prUrlParts, serializePrDragRef } from '../../../shared/prDragRef';
 import { useStore } from '../../stores';
-import type { GitDragContext } from './gitPageState';
+import type { GitDragOwner } from './gitPageState';
+import { beginHandoffDrag } from './handoffDrag';
 import type { PrSummary, PrComment } from '../../../shared/prSurface';
 
 export { relTime };
@@ -66,7 +67,7 @@ export function PrSection({ repoPath, refreshKey = 0, shown = true, poll = true,
   /** Every good answer, so the page can keep the selected PR's summary fresh. */
   onItems?: (prs: PrSummary[]) => void;
   /** The repo a dragged row comes from (for the drop's "Start in a new worktree"). */
-  dragContext?: GitDragContext;
+  dragContext?: GitDragOwner;
 }): React.ReactElement | null {
   const t = useT();
   const read = useCallback(async (force: boolean): Promise<ListAnswer<PrSummary[]>> => {
@@ -119,9 +120,8 @@ export function PrSection({ repoPath, refreshKey = 0, shown = true, poll = true,
                   if (!parts) return;
                   e.dataTransfer.effectAllowed = 'copy';
                   e.dataTransfer.setData(PR_DRAG_TYPE, serializePrDragRef({ ...parts, title: pr.title, url: pr.url }));
-                  useStore.getState().setGitDragContext(dragContext ?? null);
+                  beginHandoffDrag({ repoPath, ...(dragContext?.workspaceId ? { workspaceId: dragContext.workspaceId } : {}), owner: parts.owner, repo: parts.repo });
                 }}
-                onDragEnd={() => useStore.getState().setGitDragContext(null)}
               >
                 <span className="wmux-git-item-line">
                   <span className={`wmux-git-item-dot ${checksClass(pr.checks)}`} title={pr.checks ?? ''} aria-hidden="true">●</span>

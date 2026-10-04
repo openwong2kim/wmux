@@ -50,6 +50,15 @@ export interface RepoGroup {
 
 type Live = Record<string, { name: string; pr: PrStatus | null }>;
 
+/** The workspace that owns a repo group's hand-offs (the fan-out runs from
+ *  it): the active workspace when it is in the group, else the group's first
+ *  workspace; undefined when none is open on it. */
+export function repoOwnerWorkspace(group: Pick<RepoGroup, 'checkouts'>, activeWorkspaceId: string | null): string | undefined {
+  const all = group.checkouts.flatMap((c) => c.workspaces.map((w) => w.workspaceId));
+  if (activeWorkspaceId && all.includes(activeWorkspaceId)) return activeWorkspaceId;
+  return all[0];
+}
+
 /** Group resolved workspaces by remote (else checkout); the active repo first, then by name. */
 export function groupWorkspacesByRepo(
   list: readonly ResolvedWorkspace[],

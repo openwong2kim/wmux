@@ -14,7 +14,8 @@ import { relTime, useGitList, type ListAnswer } from './useGitList';
 import { ISSUE_DRAG_TYPE, issueRepoFromUrl, serializeIssueRef } from '../../../shared/issueRef';
 import type { IssueDetailResult, IssueFilter, IssueListResult, IssueSummary } from '../../../shared/issueSurface';
 import { useStore } from '../../stores';
-import type { GitDragContext } from './gitPageState';
+import type { GitDragOwner } from './gitPageState';
+import { beginHandoffDrag } from './handoffDrag';
 
 /** Label chips drawn on a row; the rest is a +N. */
 const ROW_LABELS = 3;
@@ -46,7 +47,7 @@ export function IssueSection({
   onSelect?: (issue: IssueSummary) => void;
   onItems?: (issues: IssueSummary[]) => void;
   /** The repo a dragged row comes from (for the drop's "Start in a new worktree"). */
-  dragContext?: GitDragContext;
+  dragContext?: GitDragOwner;
 }): React.ReactElement | null {
   const t = useT();
   const fkey = filterKeyOf(filter);
@@ -155,9 +156,8 @@ export function IssueSection({
                     e.dataTransfer.setData(ISSUE_DRAG_TYPE, serializeIssueRef({
                       host: repo.host, owner: repo.owner, repo: repo.repo, number: issue.number, title: issue.title, url: issue.url,
                     }));
-                    useStore.getState().setGitDragContext(dragContext ?? null);
+                    beginHandoffDrag({ repoPath, ...(dragContext?.workspaceId ? { workspaceId: dragContext.workspaceId } : {}), owner: repo.owner, repo: repo.repo });
                   }}
-                  onDragEnd={() => useStore.getState().setGitDragContext(null)}
                 >
                   <span className="wmux-git-item-line">
                     <span className="wmux-git-item-num">#{issue.number}</span>

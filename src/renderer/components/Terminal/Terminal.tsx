@@ -1,6 +1,6 @@
 import { lazy, Suspense, useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import { useTerminal, copySelectionWithFeedback, getPaneSyncUi, subscribePaneSyncUi, type ContextMenuEvent, type PaneSyncUiState } from '../../hooks/useTerminal';
-import { handoffTargetForPty, isHandoffDrag, readHandoffDrop } from '../Git/handoffDrag';
+import { handoffTargetForPty, isOurHandoffDrag, takeHandoffDrop } from '../Git/handoffDrag';
 import { useStore } from '../../stores';
 import { t } from '../../i18n';
 import { useIpc } from '../../hooks/useIpc';
@@ -412,7 +412,7 @@ export default function TerminalComponent({ chatView = false, ptyId: externalPty
     if (isFileDrag(e.dataTransfer)) return;
     // An issue / PR from the Git page: this pane's agent takes it, after a
     // confirm step. Its text is never pasted from the drag.
-    if (isHandoffDrag(e.dataTransfer)) {
+    if (isOurHandoffDrag(e.dataTransfer)) {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'copy';
       return;
@@ -426,13 +426,13 @@ export default function TerminalComponent({ chatView = false, ptyId: externalPty
   const handleTerminalDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     if (!ptyId) return;
     if (isFileDrag(e.dataTransfer)) return;
-    if (isHandoffDrag(e.dataTransfer)) {
+    if (isOurHandoffDrag(e.dataTransfer)) {
       e.preventDefault();
-      const item = readHandoffDrop(e.dataTransfer);
+      const taken = takeHandoffDrop(e.dataTransfer);
       const st = useStore.getState();
-      const target = item ? handoffTargetForPty(st, ptyId) : null;
-      if (item && target) {
-        st.setGitHandoff({ item, target, ...(st.gitDragContext ? { repo: st.gitDragContext } : {}), anchor: { x: e.clientX, y: e.clientY } });
+      const target = taken ? handoffTargetForPty(st, ptyId) : null;
+      if (taken && target) {
+        st.setGitHandoff({ item: taken.item, target, repo: taken.repo, anchor: { x: e.clientX, y: e.clientY } });
       }
       return;
     }

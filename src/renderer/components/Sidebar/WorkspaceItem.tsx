@@ -35,7 +35,7 @@ import { taskNeedsYou } from './sidebarTree';
 import { WORKSPACE_COLOR_IDS, WORKSPACE_COLOR_HEX, workspaceColorHex, workspaceColorLabelKey } from '../../../shared/workspaceColors';
 import { WORKSPACE_SNOOZE_PRESETS, workspaceSnoozeUntil } from '../../../shared/workspaceSettle';
 import { sendWorkspaceSettleCommand } from '../../hooks/useWorkspaceSettleBridge';
-import { isHandoffDrag, readHandoffDrop } from '../Git/handoffDrag';
+import { isOurHandoffDrag, takeHandoffDrop } from '../Git/handoffDrag';
 
 interface WorkspaceItemProps {
   /** A1: 부모(Sidebar)는 id만 내리고, 이 컴포넌트가 자기 ws를 self-subscribe해
@@ -764,7 +764,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
 
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
     // An issue / PR dragged from the Git page: this workspace's agent takes it.
-    if (isHandoffDrag(e.dataTransfer)) {
+    if (isOurHandoffDrag(e.dataTransfer)) {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'copy';
       if (!handoffOver) setHandoffOver(true);
@@ -800,13 +800,12 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
   };
 
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
-    if (isHandoffDrag(e.dataTransfer)) {
+    if (isOurHandoffDrag(e.dataTransfer)) {
       setHandoffOver(false);
       e.preventDefault();
-      const item = readHandoffDrop(e.dataTransfer);
-      if (item) {
-        const st = useStore.getState();
-        st.setGitHandoff({ item, workspaceId, ...(st.gitDragContext ? { repo: st.gitDragContext } : {}), anchor: { x: e.clientX, y: e.clientY } });
+      const taken = takeHandoffDrop(e.dataTransfer);
+      if (taken) {
+        useStore.getState().setGitHandoff({ item: taken.item, workspaceId, repo: taken.repo, anchor: { x: e.clientX, y: e.clientY } });
       }
       return;
     }

@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import { isHandoffDrag } from '../Git/handoffDrag';
+import { isOurHandoffDrag } from '../Git/handoffDrag';
 
 /** How long a held drag waits over Workspaces before it opens. */
 export const SPRING_LOAD_MS = 500;
@@ -135,7 +135,7 @@ export default function SidebarNavigation({ compact = false, home = false }: {
   useEffect(() => cancelSpring, []);
   const springLoad = {
     onDragOver: (e: React.DragEvent<HTMLButtonElement>) => {
-      if (!isHandoffDrag(e.dataTransfer)) return;
+      if (!isOurHandoffDrag(e.dataTransfer)) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = 'none';
       if (springTimer.current !== null || useStore.getState().appRoute === 'workspaces') return;

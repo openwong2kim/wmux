@@ -26,9 +26,19 @@ export interface GitPageState {
 
 /** Where a dragged issue / PR came from: the repo and a workspace in it, for
  *  "Start in a new worktree" after the drop. */
-export interface GitDragContext {
+/** Where a list's rows come from: the repo, and the workspace that owns it
+ *  (the fan-out's owner for "Start in a new worktree"; absent when no open
+ *  workspace is in that repo). */
+export interface GitDragOwner {
   repoPath: string;
-  workspaceId: string;
+  workspaceId?: string;
+}
+
+/** A hand-off drag in flight from a Git page row: its owner plus the repo the
+ *  row is in. A drop is accepted only when the dropped ref names this repo. */
+export interface GitDragContext extends GitDragOwner {
+  owner: string;
+  repo: string;
 }
 
 /** An open hand-off (the confirm popover): the item, and either the dropped
@@ -38,7 +48,7 @@ export interface GitHandoffOpen {
   item: import('../../../shared/gitHandoff').HandoffRef;
   target?: import('../../../shared/gitHandoff').HandoffTarget;
   workspaceId?: string;
-  repo?: GitDragContext;
+  repo?: GitDragOwner;
   /** Where to show it (the drop point); centred when absent. */
   anchor?: { x: number; y: number };
 }
