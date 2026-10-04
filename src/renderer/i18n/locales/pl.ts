@@ -2628,6 +2628,7 @@ export const pl = {
   'moa.panel.checks.failing': "testy nie przechodzą",
   'moa.panel.viewAsTerminal': "Pokaż jako terminal",
   'moa.panel.terminalHint': "Moa czeka na monit widoczny tylko w terminalu.",
+  'moa.panel.answerInTerminal': "Odpowiedz w terminalu",
   'moa.panel.placeholder': "Napisz do Moa…",
   'moa.panel.busy': "Moa pracuje. Wyślesz, gdy ta tura się skończy.",
   'moa.panel.sendFailed': "Moa nie mógł przyjąć tej wiadomości.",

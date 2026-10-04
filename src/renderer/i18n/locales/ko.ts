@@ -2034,6 +2034,7 @@ export const ko = {
   'moa.panel.checks.failing': "체크 실패",
   'moa.panel.viewAsTerminal': "터미널로 보기",
   'moa.panel.terminalHint': "Moa가 터미널에만 보이는 확인 창을 기다리고 있습니다.",
+  'moa.panel.answerInTerminal': "터미널에서 답하기",
   'moa.panel.placeholder': "Moa에게 메시지…",
   'moa.panel.busy': "Moa가 작업 중입니다. 이 턴이 끝나면 보낼 수 있습니다.",
   'moa.panel.sendFailed': "Moa가 메시지를 받지 못했습니다.",

@@ -85,13 +85,17 @@ describe('MoaTranscriptChat', () => {
     expect(host.querySelector('[role="alert"]')).toBeNull();
   });
 
-  it('points to the terminal while the brain waits on a prompt only the TUI shows', async () => {
+  it('mid-turn, a dialog only the TUI shows gets an Answer in terminal action', async () => {
     const onTerminal = vi.fn();
+    // Main reports the dialog as agentStatus 'awaiting_input' (MoaTranscript.status).
     const { api } = fakeApi({ status: vi.fn(async () => ({ available: true, reason: 'ok', agentSessionId: 's1', agentStatus: 'awaiting_input' })) as never });
-    await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={onTerminal} api={api} />));
+    await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={onTerminal} api={api} />));
     const hint = host.querySelector('[data-moa-chat-terminal-hint]') as HTMLElement;
     expect(hint).not.toBeNull();
-    await act(async () => { hint.querySelector('button')!.click(); });
+    expect(hint.getAttribute('role')).toBe('status');
+    const answer = hint.querySelector('[data-moa-chat-answer-in-terminal]') as HTMLButtonElement;
+    expect(answer.textContent).toBe('moa.panel.answerInTerminal');
+    await act(async () => { answer.click(); });
     expect(onTerminal).toHaveBeenCalled();
   });
 

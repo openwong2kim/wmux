@@ -2171,6 +2171,7 @@ export const zh = {
   'moa.panel.checks.failing': "检查失败",
   'moa.panel.viewAsTerminal': "以终端查看",
   'moa.panel.terminalHint': "Moa 正在等待一个只在终端中显示的提示。",
+  'moa.panel.answerInTerminal': "在终端中回答",
   'moa.panel.placeholder': "给 Moa 发消息…",
   'moa.panel.busy': "Moa 正在工作。本轮结束后即可发送。",
   'moa.panel.sendFailed': "Moa 无法接收这条消息。",

@@ -2651,6 +2651,7 @@ export const en = {
   'moa.panel.checks.failing': "checks failing",
   'moa.panel.viewAsTerminal': "View as terminal",
   'moa.panel.terminalHint': "Moa is waiting on a prompt that only the terminal shows.",
+  'moa.panel.answerInTerminal': "Answer in terminal",
   'moa.panel.placeholder': "Message Moa…",
   'moa.panel.busy': "Moa is working. You can send once this turn ends.",
   'moa.panel.sendFailed': "Moa couldn't take that message.",

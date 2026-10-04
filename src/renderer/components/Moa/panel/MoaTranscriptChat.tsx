@@ -14,6 +14,8 @@ import { useTranscript } from '../../Chat/useTranscript';
 import { transcriptMessages } from '../../Chat/chatMessages';
 import { ChatCodeBlockContext, ChatPtyContext, UserText } from '../../Chat/ChatMessage';
 import { Thread } from '../../Chat/assistant-ui/Thread';
+import Button from '../../ui/Button';
+import { NEEDS_YOU_ROW } from './MoaWaitingOnYou';
 import type { ChatBridgeApi } from '../../../../shared/transcript/turnEvents';
 
 /** The preload's `deck.moa.transcript` (main reads the HQ brain; no pty id). */
@@ -175,10 +177,13 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
               </button>
             )}
             notices={<>
+              {/* A dialog only the TUI shows holds the turn (and so the
+                  composer): this is the one way forward, drawn as a
+                  needs-you row with the action, not a footnote. */}
               {awaitingTerminal && (
-                <div className="wmux-chat-notice" role="status" data-moa-chat-terminal-hint>
-                  {t('moa.panel.terminalHint')}{' '}
-                  <button type="button" onClick={onTerminal}>{t('moa.panel.viewAsTerminal')}</button>
+                <div className={`${NEEDS_YOU_ROW} mx-3 my-1.5 flex items-center gap-2 text-[13px] text-[var(--text-main)]`} role="status" data-moa-chat-terminal-hint>
+                  <span className="flex-1 min-w-0">{t('moa.panel.terminalHint')}</span>
+                  <Button variant="secondary" size="sm" onClick={onTerminal} data-moa-chat-answer-in-terminal>{t('moa.panel.answerInTerminal')}</Button>
                 </div>
               )}
               {data.error && !empty && (
