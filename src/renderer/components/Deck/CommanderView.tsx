@@ -34,7 +34,7 @@ import {
   type DeckLimitNotice,
 } from './deckBrain';
 import DeckFleet from './DeckFleet';
-import { selectMissionChannelIds } from '../../stores/selectors/missions';
+import { findMission, selectMissionChannelIds } from '../../stores/selectors/missions';
 import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import { generateId } from '../../../shared/types';
 import type { ChannelMention, ChannelMessage } from '../../../shared/channels';
@@ -293,9 +293,10 @@ export function CommanderViewContent({
   // object identity for the same ids would re-render the whole deck every 15 s.
   const channelByTaskId = useStore(useShallow((s) => selectMissionChannelIds(s.missionsByWorkspace)));
   const openMissionChannel = useCallback((channelId: string) => {
-    // Reuse the existing channel route — setActiveChannel opens the dock and
-    // selects the channel. No new routing.
-    useStore.getState().setActiveChannel(channelId);
+    // The mission channel reads in Fleet, as the task's conversation.
+    const st = useStore.getState();
+    const task = findMission(st.missionsByWorkspace, (item) => item.missionChannelId === channelId);
+    if (task) st.openTaskConversation(task.id);
   }, []);
   const jumpToTaskWorkspace = useCallback((taskWorkspaceId: string) => {
     useStore.getState().setActiveWorkspace(taskWorkspaceId);

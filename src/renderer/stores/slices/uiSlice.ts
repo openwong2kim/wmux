@@ -255,6 +255,13 @@ export interface UISlice {
   // (focuses the first Ready to review row) and clears it. Session-only.
   fleetFocusReview: boolean;
   setFleetFocusReview: (focus: boolean) => void;
+  // One-shot request from an "Open conversation" link (Moa's task cards and
+  // Waiting on you, the deck ledger): a WorkTask id. Fleet consumes it — it
+  // selects that task and shows its conversation — and clears it. Session-only.
+  fleetFocusTask: string | null;
+  setFleetFocusTask: (taskId: string | null) => void;
+  /** Go to Fleet and show a fan-out task's conversation there. */
+  openTaskConversation: (taskId: string) => void;
   // Fleet's "changed since you last looked" baseline, written when the overlay
   // closes. Session-only: not in buildSessionData; null until the first close.
   fleetLastSeen: FleetSeenSnapshot | null;
@@ -1192,6 +1199,15 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   setFleetFocusReview: (focus) => set((state) => {
     state.fleetFocusReview = focus;
   }),
+
+  fleetFocusTask: null,
+  setFleetFocusTask: (taskId) => set((state) => {
+    state.fleetFocusTask = taskId;
+  }),
+  openTaskConversation: (taskId) => {
+    get().setFleetFocusTask(taskId);
+    get().setFleetViewVisible(true);
+  },
 
   fleetLastSeen: null,
 

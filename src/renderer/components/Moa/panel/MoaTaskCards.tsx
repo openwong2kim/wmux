@@ -26,12 +26,18 @@ export function MoaTaskCards({
   pendingDecisions,
   workspaceName,
   onOpenPr = openPrExternally,
+  conversationTaskId,
+  onOpenConversation,
   t,
 }: {
   links: readonly WorkLink[];
   pendingDecisions: readonly MoaPendingDecision[];
   workspaceName: (id: string) => string | undefined;
   onOpenPr?: (url: string) => void;
+  /** The fan-out task (WorkTask id) a workspace runs, when it is one. */
+  conversationTaskId?: (workspaceId: string) => string | undefined;
+  /** Show that task's conversation in Fleet. */
+  onOpenConversation?: (taskId: string) => void;
   t: T;
 }): React.ReactElement | null {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
@@ -54,6 +60,7 @@ export function MoaTaskCards({
           const regionId = `moa-task-${link.id}`;
           const decisions = link.decisionIds.map((id) => pendingById.get(id)).filter((d): d is MoaPendingDecision => !!d);
           const owner = workspaceName(link.owner.workspaceId) || t('moa.panel.unknownWorkspace');
+          const taskId = onOpenConversation ? conversationTaskId?.(link.owner.workspaceId) : undefined;
           return (
             <li key={link.id} data-moa-task={link.id} data-state={link.state}>
               {/* Disclosure: focus stays on this button when it opens; the
@@ -117,7 +124,17 @@ export function MoaTaskCards({
                       )}
                     </div>
                   )}
-                  {decisions.length === 0 && !link.a2aState && !link.pr && (
+                  {taskId && (
+                    <button
+                      type="button"
+                      onClick={() => onOpenConversation?.(taskId)}
+                      className={`self-start text-[var(--accent)] hover:underline underline-offset-2 ${FOCUS_RING}`}
+                      data-moa-task-conversation
+                    >
+                      {t('moa.panel.openConversation')}
+                    </button>
+                  )}
+                  {decisions.length === 0 && !link.a2aState && !link.pr && !taskId && (
                     <div>{t('moa.panel.taskNoDetails')}</div>
                   )}
                 </div>

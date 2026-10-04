@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { MoaPendingDecision } from '../../../../shared/moa';
 import Button from '../../ui/Button';
 import Input from '../../ui/Input';
+import { FOCUS_RING } from '../../focusRing';
 import { MoaMemoryCard, type MoaMemoryCardApi } from '../MoaMemoryCard';
 
 export type ResolveDecision = (args: { workspaceId: string; id: string; resolution: string }) => Promise<{ ok: boolean; code?: string }>;
@@ -25,9 +26,15 @@ export function MoaWaitingOnYou({
   decisions,
   onResolve,
   memoryApi,
+  conversationTaskId,
+  onOpenConversation,
   t,
 }: {
   decisions: readonly MoaPendingDecision[];
+  /** The fan-out task (WorkTask id) a workspace runs, when it is one. */
+  conversationTaskId?: (workspaceId: string) => string | undefined;
+  /** Show that task's conversation in Fleet. */
+  onOpenConversation?: (taskId: string) => void;
   onResolve: ResolveDecision;
   /** Injected in tests; the card defaults to the preload. */
   memoryApi?: MoaMemoryCardApi;
@@ -105,7 +112,14 @@ export function MoaWaitingOnYou({
           <MoaMemoryCard api={memoryApi} onPendingChange={setMemoryPending} t={t} />
         </li>
         {visible.map((d) => (
-          <DecisionRow key={d.decision.id} item={d} onAnswer={(text) => resolve(d, text)} t={t} />
+          <DecisionRow
+            key={d.decision.id}
+            item={d}
+            onAnswer={(text) => resolve(d, text)}
+            conversationTaskId={onOpenConversation ? conversationTaskId?.(d.workspaceId) : undefined}
+            onOpenConversation={onOpenConversation}
+            t={t}
+          />
         ))}
       </ul>
     </section>
@@ -115,10 +129,14 @@ export function MoaWaitingOnYou({
 function DecisionRow({
   item,
   onAnswer,
+  conversationTaskId,
+  onOpenConversation,
   t,
 }: {
   item: MoaPendingDecision;
   onAnswer: (text: string) => Promise<boolean>;
+  conversationTaskId?: string;
+  onOpenConversation?: (taskId: string) => void;
   t: (key: string, vars?: Record<string, string | number>) => string;
 }): React.ReactElement {
   const { decision } = item;
@@ -177,6 +195,16 @@ function DecisionRow({
             {t('moa.panel.answerSend')}
           </Button>
         </form>
+      )}
+      {conversationTaskId && (
+        <button
+          type="button"
+          onClick={() => onOpenConversation?.(conversationTaskId)}
+          className={`mt-1.5 text-[11px] text-[var(--accent)] hover:underline underline-offset-2 ${FOCUS_RING}`}
+          data-moa-decision-conversation
+        >
+          {t('moa.panel.openConversation')}
+        </button>
       )}
       {failed && (
         <p role="alert" className="m-0 mt-1.5 text-[11px] text-[var(--accent-red)]">{t('moa.panel.answerFailed')}</p>

@@ -40,6 +40,10 @@ export function MoaPanelTop({
     const map = new Map(names.map((pair) => pair.split('\u0000') as [string, string]));
     return (id: string) => map.get(id);
   }, [names]);
+  // Fan-out tasks get an "Open conversation" link to their mission channel in Fleet.
+  const missionByPaneGroup = useStore((s) => s.missionByPaneGroup);
+  const conversationTaskId = useCallback((workspaceId: string) => missionByPaneGroup[workspaceId]?.id, [missionByPaneGroup]);
+  const openConversation = useCallback((taskId: string) => useStore.getState().openTaskConversation(taskId), []);
   const onResolve = useCallback<ResolveDecision>(async (args) => {
     const r = await resolve(args);
     // Answered elsewhere still moved main's list: re-read it.
@@ -54,8 +58,10 @@ export function MoaPanelTop({
   return (
     // Focusable so an answer that empties the list has somewhere to put focus.
     <div data-moa-panel-top tabIndex={-1} className="shrink-0 max-h-[30%] overflow-y-auto outline-none">
-      <MoaWaitingOnYou decisions={named} onResolve={onResolve} t={t} />
-      <MoaTaskCards links={cards} pendingDecisions={decisions} workspaceName={workspaceName} t={t} />
+      <MoaWaitingOnYou decisions={named} onResolve={onResolve}
+        conversationTaskId={conversationTaskId} onOpenConversation={openConversation} t={t} />
+      <MoaTaskCards links={cards} pendingDecisions={decisions} workspaceName={workspaceName}
+        conversationTaskId={conversationTaskId} onOpenConversation={openConversation} t={t} />
     </div>
   );
 }

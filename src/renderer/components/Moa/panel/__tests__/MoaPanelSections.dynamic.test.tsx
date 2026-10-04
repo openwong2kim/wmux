@@ -229,3 +229,43 @@ describe('MoaPanelTop', () => {
     }
   });
 });
+
+describe('Open conversation links (#1779)', () => {
+  const taskOf = (ws: string) => (ws === 'ws-task' ? 'wtask-1' : undefined);
+
+  it('a fan-out task card links to its conversation; other work does not', async () => {
+    const onOpenConversation = vi.fn();
+    await act(async () => root.render(createElement(MoaTaskCards, {
+      links: [link('l1', { title: 'Fan-out task', owner: { workspaceId: 'ws-task' } }), link('l2', { title: 'Plain send' })],
+      pendingDecisions: [],
+      workspaceName: () => undefined,
+      conversationTaskId: taskOf,
+      onOpenConversation,
+      t,
+    })));
+    const toggles = container.querySelectorAll<HTMLButtonElement>('[data-moa-task-toggle]');
+    await act(async () => { toggles[0].click(); toggles[1].click(); });
+    const [taskCard, plainCard] = Array.from(container.querySelectorAll('[data-moa-task]'));
+    expect(plainCard.querySelector('[data-moa-task-conversation]')).toBeNull();
+    const open = taskCard.querySelector<HTMLButtonElement>('[data-moa-task-conversation]')!;
+    expect(open.textContent).toBe('moa.panel.openConversation');
+    await act(async () => { open.click(); });
+    expect(onOpenConversation).toHaveBeenCalledWith('wtask-1');
+  });
+
+  it('a decision raised by a fan-out task links to its conversation', async () => {
+    const onOpenConversation = vi.fn();
+    await act(async () => root.render(createElement(MoaWaitingOnYou, {
+      decisions: [decision('d1', 'ws-task', ['Go']), decision('d2', 'ws-b', ['Go'])],
+      onResolve: vi.fn(),
+      conversationTaskId: taskOf,
+      onOpenConversation,
+      t,
+    })));
+    const links = container.querySelectorAll<HTMLButtonElement>('[data-moa-decision-conversation]');
+    expect(links).toHaveLength(1);
+    expect(links[0].closest('[data-moa-decision]')?.getAttribute('data-moa-decision')).toBe('d1');
+    await act(async () => { links[0].click(); });
+    expect(onOpenConversation).toHaveBeenCalledWith('wtask-1');
+  });
+});

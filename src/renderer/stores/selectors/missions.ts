@@ -87,3 +87,15 @@ export function ownerForTaskLedger(
   }
   return bestOwner;
 }
+
+/** The first cached task, across every workspace, that matches. */
+export function findMission(
+  byWorkspace: Readonly<Record<string, WorkTask[]>>,
+  match: (task: WorkTask) => boolean,
+): WorkTask | undefined {
+  for (const tasks of Object.values(byWorkspace)) {
+    const found = tasks.find(match);
+    if (found) return found;
+  }
+  return undefined;
+}

@@ -38,6 +38,8 @@ import { FleetRowMenu, FleetRowEditor, fleetRowVerbsFromState, toggleFleetStash,
 import ApprovalInboxList from './ApprovalInboxList';
 import RecentAutoRuns from './RecentAutoRuns';
 import RemoteInboxList from './RemoteInboxList';
+import TaskConversation from './TaskConversation';
+import { findMission } from '../../stores/selectors/missions';
 import { fleetTitle, matchesFleetFilter, type FleetFilter } from './fleetPresentation';
 import { formatIdle, IDLE_SHOW_AFTER_MS, IDLE_TICK_MS } from '../../utils/idleTime';
 import { IconCheck, IconChevron, IconPlus } from '../icons';
@@ -294,6 +296,19 @@ export default function FleetView() {
   useEffect(() => { if (layout === 'list') setPreviewOpen(true); }, [layout]);
   const previewPtyId = previewOpen && tab === 'fleet' && selectedPane?.surfaceType === 'terminal'
     ? selectedPane.ptyId : '';
+  // The selected fan-out task's conversation. A task an "Open conversation"
+  // link asked for that has no item on the board (closed, workspace gone)
+  // stays pinned until the selection moves.
+  const missionsByWorkspace = useStore((s) => s.missionsByWorkspace);
+  const [pinnedTask, setPinnedTask] = useState<{ taskId: string; atKey: string | null } | null>(null);
+  const conversationTask = useMemo(() => {
+    if (pinnedTask && pinnedTask.atKey === focusedPaneId) {
+      const pinned = findMission(missionsByWorkspace, (task) => task.id === pinnedTask.taskId);
+      if (pinned) return pinned;
+    }
+    const ws = focusedReview?.workspaceId ?? (selectedPane && !selectedPane.remote ? selectedPane.workspaceId : undefined);
+    return ws ? missions[ws] : undefined;
+  }, [pinnedTask, focusedPaneId, missionsByWorkspace, focusedReview, selectedPane, missions]);
   // Stable identity key of the terminal ptyIds to poll for RAM. `panes`
   // recomputes on every streaming activity tick (surfaceActivity/agentStatus
   // are memo deps), so keying the resource-poll effect on `panes` directly
@@ -549,6 +564,47 @@ export default function FleetView() {
       focusActiveItemRef.current();
     });
   }, [fleetFocusReview, reviewQueue, setFleetFocusReview]);
+
+  // An "Open conversation" link: select the task's card (or its review row)
+  // with nothing hiding it. Waits a few seconds for the task records to load.
+  const fleetFocusTask = useStore((s) => s.fleetFocusTask);
+  const setFleetFocusTask = useStore((s) => s.setFleetFocusTask);
+  useEffect(() => {
+    if (!fleetFocusTask) return undefined;
+    const timer = window.setTimeout(() => {
+      if (useStore.getState().fleetFocusTask === fleetFocusTask) setFleetFocusTask(null);
+    }, FOCUS_REVIEW_WAIT_MS);
+    return () => window.clearTimeout(timer);
+  }, [fleetFocusTask, setFleetFocusTask]);
+  useEffect(() => {
+    if (!fleetFocusTask) return;
+    const task = findMission(missionsByWorkspace, (item) => item.id === fleetFocusTask);
+    if (!task) return;
+    setFleetFocusTask(null);
+    setTab('fleet');
+    setQuery('');
+    setFilter('all');
+    const ws = task.paneGroupId;
+    if (ws && settledIds.has(ws)) setShowSettled(true);
+    const row = ws ? [...groups.needsYou, ...groups.running, ...groups.idle]
+      .find((r) => r.pane.workspaceId === ws && !r.pane.remote) : undefined;
+    const key = row ? row.pane.paneId : ws && reviewQueue.some((entry) => entry.workspaceId === ws) ? reviewRowKey(ws) : null;
+    if (key) {
+      if (row && groups.idle.includes(row)) setFleetIdleExpanded(true);
+      setPinnedTask(null);
+      setFocusedPaneId(key);
+    } else {
+      // Nothing on the board: keep today's selection and show the task.
+      const at = focusedKey ?? null;
+      setFocusedPaneId(at);
+      setPinnedTask({ taskId: task.id, atKey: at });
+    }
+    requestAnimationFrame(() => {
+      if (key) listRef.current?.querySelector(`[data-board-key="${attr(key)}"], [data-fleet-review-row][data-workspace-id="${attr(ws ?? '')}"]`)
+        ?.scrollIntoView?.({ block: 'nearest' });
+      focusActiveItemRef.current();
+    });
+  }, [fleetFocusTask, missionsByWorkspace, groups, reviewQueue, settledIds, focusedKey, setFleetFocusTask, setTab, setFleetIdleExpanded]);
 
   // The ⋮ menu that is open, if any (its close function), so Escape closes the
   // menu rather than the overlay.
@@ -1158,10 +1214,15 @@ export default function FleetView() {
         )}
       </div>
 
-      {tab === 'fleet' && previewOpen && selectedPane?.surfaceType === 'terminal' && (
-        <div className="wmux-board-preview" data-fleet-preview>
-          <span className="wmux-board-preview-head">{t('fleetBoard.preview', { name: fleetTitle(selectedPane, missions[selectedPane.workspaceId]) })}</span>
-          <pre id="fleet-output-preview" tabIndex={0}>{tails[previewPtyId]?.join('\n') || t('fleet.previewEmpty')}</pre>
+      {tab === 'fleet' && ((previewOpen && selectedPane?.surfaceType === 'terminal') || conversationTask) && (
+        <div className="wmux-board-foot" data-fleet-foot>
+          {previewOpen && selectedPane?.surfaceType === 'terminal' && (
+            <div className="wmux-board-preview" data-fleet-preview>
+              <span className="wmux-board-preview-head">{t('fleetBoard.preview', { name: fleetTitle(selectedPane, missions[selectedPane.workspaceId]) })}</span>
+              <pre id="fleet-output-preview" tabIndex={0}>{tails[previewPtyId]?.join('\n') || t('fleet.previewEmpty')}</pre>
+            </div>
+          )}
+          {conversationTask && <TaskConversation key={conversationTask.id} task={conversationTask} now={now} t={t} />}
         </div>
       )}
 

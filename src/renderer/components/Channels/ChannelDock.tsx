@@ -40,7 +40,7 @@ import { MoaPanelTop, renderMoaChat } from '../Moa/panel/MoaPanelTop';
 import { MoaHqProblemCard, MoaOffCard, MoaSetupHint } from '../Moa/panel/MoaPanelCards';
 import { DeckLedgerPanel } from '../Deck/DeckLedgerPanel';
 import { useShallow } from 'zustand/react/shallow';
-import { selectMissionChannelIds } from '../../stores/selectors/missions';
+import { findMission, selectMissionChannelIds } from '../../stores/selectors/missions';
 
 // ─── Command Deck (Phase 1 P1a) ───────────────────────────────────────────────
 //
@@ -68,7 +68,12 @@ function CardModeLedger({ workspaceId, t }: { workspaceId: string; t: (key: stri
   const channelByTaskId = useStore(useShallow((s) => selectMissionChannelIds(s.missionsByWorkspace)));
   const finishedExpanded = useStore((s) => s.deckLedgerFinishedExpanded);
   const setFinishedExpanded = useStore((s) => s.setDeckLedgerFinishedExpanded);
-  const openChannel = useCallback((channelId: string) => useStore.getState().setActiveChannel(channelId), []);
+  // The mission channel reads in Fleet, as the task's conversation.
+  const openChannel = useCallback((channelId: string) => {
+    const st = useStore.getState();
+    const task = findMission(st.missionsByWorkspace, (item) => item.missionChannelId === channelId);
+    if (task) st.openTaskConversation(task.id);
+  }, []);
   const jumpToWorkspace = useCallback((id: string) => useStore.getState().setActiveWorkspace(id), []);
   const onLedgerPush = useCallback(() => {
     if (workspaceId) void useStore.getState().refreshMissions(workspaceId);
