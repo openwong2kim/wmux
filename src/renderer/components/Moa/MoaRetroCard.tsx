@@ -58,7 +58,7 @@ export function MoaRetroCard({ workspaceId, t, api }: { workspaceId?: string; t:
 
   const nameOf = (id: string): string => workspaces.find((w) => w.id === id)?.name ?? (id === '-' ? '?' : id.slice(0, 12));
   const evidence = 'text-[11px] font-mono text-[color-mix(in_srgb,var(--text-main)_70%,transparent)] leading-relaxed';
-  const heading = 'text-[12px] text-[var(--text-main)] mt-2';
+  const heading = 'text-[12px] font-medium text-[var(--text-main)] mt-2';
 
   const dismiss = (): void => {
     setCard(null);
@@ -67,12 +67,10 @@ export function MoaRetroCard({ workspaceId, t, api }: { workspaceId?: string; t:
 
   return (
     <div data-moa-retro className="px-4 py-2.5">
-      <div className="flex items-center gap-2">
-        <span className="text-[11px] font-mono uppercase tracking-wider text-[color-mix(in_srgb,var(--text-main)_45%,transparent)] shrink-0">
-          {fill(t, 'moa.retro.eyebrow', 'Weekly retro')}
-        </span>
-        <span className="text-[13px] text-[var(--text-main)] leading-relaxed flex-1 min-w-0">{retroHeadline(card, t)}</span>
+      <div className="text-[11px] font-mono uppercase tracking-wider text-[color-mix(in_srgb,var(--text-main)_45%,transparent)]">
+        {fill(t, 'moa.retro.eyebrow', 'Weekly retro')}
       </div>
+      <div className="text-[13px] text-[var(--text-main)] leading-relaxed mt-0.5">{retroHeadline(card, t)}</div>
       <div className="flex items-center gap-2 mt-2">
         <Button variant="secondary" size="sm" aria-expanded={open} onClick={() => setOpen(!open)} data-moa-retro-open>
           {open ? fill(t, 'moa.retro.close', 'Hide details') : fill(t, 'moa.retro.open', 'Open details')}

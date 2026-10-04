@@ -782,7 +782,6 @@ export const ko = {
   'moa.settings.approvalPressDesc': "위험(Danger) 모드 워크스페이스의 워커가 명령 실행이나 파일 수정 허락을 물으면 wmux가 대신 허락하고 Moa에게 나중에 알립니다. 파괴적으로 보이는 작업과 위험 모드가 아닌 워크스페이스는 그대로 직접 확인합니다. 기본은 꺼짐입니다.",
   'moa.settings.retro': "주간 회고",
   'moa.settings.retroDesc': "Moa가 켜져 있으면 일주일에 한 번 Moa 브리핑에 짧은 요약을 보여 줍니다: 얼마나 자주 물어봤는지, 오래 기다린 일, 반복된 질문, 가장 느린 일.",
-  'moa.settings.retroWhen': "회고 요일과 시각",
   'moa.settings.retroWhenDesc': "현지 시각 기준. 지난 한 주(월요일~일요일)를 돌아봅니다.",
   'moa.settings.retroDay': "회고 요일",
   'moa.settings.retroHour': "회고 시각",

@@ -1262,7 +1262,6 @@ export const en = {
   'moa.settings.approvalPressDesc': "When a worker in a Danger workspace stops to ask permission to run a command or edit a file, wmux says yes for you and tells Moa afterwards. Anything that looks destructive, and every workspace not set to Danger, still waits for you. Off by default.",
   'moa.settings.retro': "Weekly retro",
   'moa.settings.retroDesc': "Once a week, while Moa is on, a short summary on Moa's briefing: how often you were asked, work that sat waiting, repeated questions and the slowest work.",
-  'moa.settings.retroWhen': "Retro day and time",
   'moa.settings.retroWhenDesc': "Local time. It reviews the last full week, Monday to Sunday.",
   'moa.settings.retroDay': "Retro day",
   'moa.settings.retroHour': "Retro time",

@@ -611,7 +611,7 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
         </SettingRow>
       </SettingsSection>
 
-      <SettingsSection id="moaretro" title={t('moa.settings.retro')} data-testid="moa-retro">
+      <SettingsSection id="moaretro" data-testid="moa-retro">
         <SettingRow label={t('moa.settings.retro')} description={t('moa.settings.retroDesc')}>
           <Switch
             checked={retro?.enabled ?? false}
@@ -621,21 +621,21 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
             data-testid="moa-retro-switch"
           />
         </SettingRow>
-        <SettingRow label={t('moa.settings.retroWhen')} description={t('moa.settings.retroWhenDesc')}>
-          <div className="flex items-center gap-2">
-            <MoaSelect
-              value={String(retro?.day ?? 1)}
-              onChange={(v) => patchRetro({ day: Number(v) })}
-              options={dayOptions}
-              label={t('moa.settings.retroDay')}
-            />
-            <MoaSelect
-              value={String(retro?.hour ?? 9)}
-              onChange={(v) => patchRetro({ hour: Number(v) })}
-              options={hourOptions}
-              label={t('moa.settings.retroHour')}
-            />
-          </div>
+        <SettingRow label={t('moa.settings.retroDay')} description={t('moa.settings.retroWhenDesc')}>
+          <MoaSelect
+            value={String(retro?.day ?? 1)}
+            onChange={(v) => patchRetro({ day: Number(v) })}
+            options={dayOptions}
+            label={t('moa.settings.retroDay')}
+          />
+        </SettingRow>
+        <SettingRow label={t('moa.settings.retroHour')}>
+          <MoaSelect
+            value={String(retro?.hour ?? 9)}
+            onChange={(v) => patchRetro({ hour: Number(v) })}
+            options={hourOptions}
+            label={t('moa.settings.retroHour')}
+          />
         </SettingRow>
         <SettingRow id="moastats" label={t('moa.settings.stats')} description={t('moa.settings.statsDesc')}>
           <Button variant="destructive" size="md" onClick={clearStats} data-testid="moa-stats-clear">

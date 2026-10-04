@@ -1246,7 +1246,6 @@ export const pl = {
   'moa.settings.approvalPressDesc': "Gdy pracownik w obszarze roboczym w trybie Danger prosi o zgodę na uruchomienie polecenia lub edycję pliku, wmux zgadza się za Ciebie i informuje o tym Moa. Wszystko, co wygląda na destrukcyjne, oraz każdy obszar roboczy poza trybem Danger nadal czeka na Ciebie. Domyślnie wyłączone.",
   'moa.settings.retro': "Cotygodniowe podsumowanie",
   'moa.settings.retroDesc': "Raz w tygodniu, gdy Moa jest włączona, krótkie podsumowanie w briefingu Moa: jak często Cię pytano, praca, która długo czekała, powtarzające się pytania i najwolniejsza praca.",
-  'moa.settings.retroWhen': "Dzień i godzina podsumowania",
   'moa.settings.retroWhenDesc': "Czas lokalny. Obejmuje ostatni pełny tydzień, od poniedziałku do niedzieli.",
   'moa.settings.retroDay': "Dzień podsumowania",
   'moa.settings.retroHour': "Godzina podsumowania",
