@@ -1555,6 +1555,35 @@ describe('a session id learned from a foreign Stop', () => {
   });
 });
 
+describe('transcript hints', () => {
+  it('reports every hook signal\'s session id and transcript path, own turn or foreign', async () => {
+    const host = makeHost();
+    const hints: unknown[] = [];
+    const adapter = makeAdapter(host, { onTranscriptHint: (h: unknown) => hints.push(h) });
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const ptyId = host.created[0].id;
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-own', payload: { transcript_path: '/tmp/sess-own.jsonl' } }));
+    await turn;
+    deliverBrainPtyHookSignal(signal('agent.session_start', ptyId, { agentSessionId: 'sess-new' }));
+    expect(hints).toEqual([
+      { kind: 'agent.stop', agentSessionId: 'sess-own', transcriptPath: '/tmp/sess-own.jsonl' },
+      { kind: 'agent.session_start', agentSessionId: 'sess-new' },
+    ]);
+    adapter.dispose();
+  });
+
+  it('a throwing hint listener never breaks the turn', async () => {
+    const host = makeHost();
+    const adapter = makeAdapter(host, { onTranscriptHint: () => { throw new Error('boom'); } });
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    deliverBrainPtyHookSignal(signal('agent.stop', host.created[0].id, { agentSessionId: 's' }));
+    expect((await turn).some((e) => e.type === 'turn-end')).toBe(true);
+    adapter.dispose();
+  });
+});
+
 it('allows every commander surface tool in the PTY runtime and settings profile', () => {
   for (const tool of [...COMMANDER_TOOL_SURFACE, ...COMMANDER_ONLY_TOOLS]) {
     expect(BRAIN_PTY_ALLOWED_TOOLS).toContain(`mcp__wmux__${tool}`);
