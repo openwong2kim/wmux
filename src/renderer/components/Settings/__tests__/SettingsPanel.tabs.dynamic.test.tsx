@@ -198,6 +198,22 @@ describe('Settings tabs', () => {
     expect(missing).toEqual([]);
   });
 
+  it('openSettingsTab lands on the asked-for tab, on mount and while open, and is consumed', async () => {
+    act(() => root.unmount());
+    root = createRoot(container);
+    act(() => useStore.getState().setSettingsPanelVisible(false));
+    act(() => useStore.getState().openSettingsTab('moa'));
+    expect(useStore.getState().appRoute).toBe('settings');
+    await act(async () => root.render(createElement(SettingsPanel)));
+    await flush();
+    expect(page().getAttribute('data-settings-page')).toBe('moa');
+    expect(useStore.getState().settingsInitialTab).toBeNull();
+    await openTab('general');
+    act(() => useStore.getState().openSettingsTab('moa'));
+    await flush();
+    expect(page().getAttribute('data-settings-page')).toBe('moa');
+  });
+
   it('puts no catalog entry on a tab the nav does not list', () => {
     const tabs = new Set<string>(ALL_TABS);
     expect(SETTINGS_CATALOG.filter((e) => !tabs.has(e.tab)).map((e) => e.id)).toEqual([]);

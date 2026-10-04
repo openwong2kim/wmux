@@ -5064,8 +5064,17 @@ export default function SettingsPanel({ initialTab }: { initialTab?: string }) {
 
   // Every id that reaches the state goes through resolveSettingsTab, so a
   // retired or unknown id (an old deep link) opens a real tab, never nothing.
-  const [activeTab, setActiveTabState] = useState<TabId>(() => resolveSettingsTab(initialTab));
+  // A tab asked for from elsewhere (`openSettingsTab`) wins over the default.
+  const [activeTab, setActiveTabState] = useState<TabId>(
+    () => resolveSettingsTab(initialTab ?? useStore.getState().settingsInitialTab),
+  );
   const setActiveTab = useCallback((id: string) => setActiveTabState(resolveSettingsTab(id)), []);
+  const requestedTab = useStore((s) => s.settingsInitialTab);
+  useEffect(() => {
+    if (!requestedTab) return;
+    setActiveTab(requestedTab);
+    useStore.getState().clearSettingsInitialTab();
+  }, [requestedTab, setActiveTab]);
   const ownedDialogs = useRef(0);
   const registerOwnedDialog = useCallback((delta: number) => { ownedDialogs.current += delta; }, []);
   const [searchQuery, setSearchQuery] = useState('');
