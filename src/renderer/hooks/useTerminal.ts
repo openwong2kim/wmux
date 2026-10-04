@@ -55,6 +55,7 @@ import { useWindowDisplayed } from './useWindowDisplayed';
 import { createDeadInputWatchdog } from '../terminal/deadInputWatchdog';
 import { awaitParseBarrier } from '../terminal/parseBarrier';
 import { STALE_REPLAY_INPUT_MODE_RESETS, STALE_REPLAY_ALIVE_SHELL_RESETS, STALE_REPLAY_DISPLAY_RESETS, staleReplayResetLevel } from '../../shared/terminal/staleReplayModeReset';
+import { installShellPromptModeReset } from '../../shared/terminal/shellPromptModeReset';
 import { attachAltScreenWheel, PAGE_SCROLL_AGENTS } from '../terminal/altScreenWheel';
 import { RestingCursorGuard } from '../terminal/restingCursor';
 import { restoreSeam } from '../../shared/restoreSeam';
@@ -1251,6 +1252,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // new React mount. Share the mute with the terminal instance so an
     // in-flight replay cannot become live-authorized during that handoff.
     replayMuteRef.current = getTerminalReplayMute(terminal);
+
+    // #1792: a TUI agent killed mid-run leaves mouse / focus reporting armed,
+    // and the shell that takes the prompt back gets every report as typed
+    // junk. The guard watches this pane's own OSC 133 prompt marks and clears
+    // those modes terminal-side once the shell owns the pane again. Once per
+    // terminal, not per mount: an adopted terminal keeps the state it folded.
+    installShellPromptModeReset(terminal);
 
     const fitAddon = fixedGeometryRef.current
       ? new FixedGeometryFitAddon(() => fixedGeometryRef.current)

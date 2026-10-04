@@ -23,6 +23,7 @@ import { createOsc8LinkHandler, isLoopbackHref } from '../../terminal/osc8LinkHa
 import { installAltClickTrackingGuard } from '../../utils/altClickUnderMouseTracking';
 import { createOsc52Handler } from '../../utils/osc52Clipboard';
 import { gateUserInput, type UserInputTerminal } from '../../../shared/terminal/userInputGate';
+import { installShellPromptModeReset } from '../../../shared/terminal/shellPromptModeReset';
 
 export interface RemoteMirrorTerminalProps {
   /** null while the pane attach is still in flight. */
@@ -753,6 +754,10 @@ export default function RemoteMirrorTerminal({ attachId, error, insecureTranspor
     window.addEventListener('pointercancel', onDisarm, true);
     window.addEventListener('blur', onDisarm);
     document.addEventListener('visibilitychange', onVisibility);
+    // #1792: mouse / focus modes a killed TUI left armed are cleared once the
+    // remote shell prints its prompt, so this mirror stops POSTing reports
+    // into that shell. Same guard as the local panes (useTerminal).
+    installShellPromptModeReset(term);
     const osc52Disposable = term.parser.registerOscHandler(52, createOsc52Handler({
       isReplaying: () => !shouldHonorMirrorClipboardWrite({
         now: Date.now(),

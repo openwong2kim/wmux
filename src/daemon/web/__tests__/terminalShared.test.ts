@@ -27,6 +27,7 @@ type Shared = {
   STALE_REPLAY_INPUT_MODE_RESETS: string;
   gateUserInput: unknown;
   capSixelImageSize: (addon: object, pixelLimit: number) => boolean;
+  installShellPromptModeReset: (term: Terminal) => { readonly appliedCount: number };
 };
 type Repaint = (t: Terminal, bytes: string, inc: () => void, dec: () => void, tail?: string) => void;
 type Tail = (meta: Record<string, unknown> | null) => string;
@@ -108,7 +109,33 @@ describe('shared terminal bundle (wmuxTerminalShared)', () => {
 
   it('the build refuses a bundle that drops one of these exports', () => {
     const build = readSource(join(repoRoot, 'scripts', 'build-daemon-web.mjs'));
-    expect(build).toContain("['staleReplayResetLevel', 'gateUserInput', 'capSixelImageSize']");
+    expect(build).toContain("['staleReplayResetLevel', 'gateUserInput', 'capSixelImageSize', 'installShellPromptModeReset']");
+  });
+});
+
+describe('live prompt-mode reset on the phone page (app.js, #1792)', () => {
+  it('every page terminal gets the guard: a killed agent stops typing mouse / focus reports at the prompt', async () => {
+    const start = appJs.indexOf('  function withPromptModeReset(');
+    expect(start).toBeGreaterThan(-1);
+    const close = appJs.indexOf('\n  }\n', start);
+    const sandbox: Record<string, unknown> = { window: { wmuxTerminalShared: shared } };
+    runInNewContext(`${appJs.slice(start, close + 4)}\nthis.withPromptModeReset = withPromptModeReset;`, sandbox);
+    const withPromptModeReset = sandbox.withPromptModeReset as (t: Terminal) => Terminal;
+    // newTerm() is the only constructor the page uses, and it goes through the wrapper.
+    expect(appJs).toContain('return withPromptModeReset(new Terminal({');
+
+    const t = withPromptModeReset(new Terminal({ allowProposedApi: true }));
+    const prompt = '\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07';
+    t.write('\x1b[?2004h' + prompt + '\x1b]133;C\x07' + '\x1b[?1003h\x1b[?1006h\x1b[?1004h');
+    await flush(t);
+    expect(t.modes.mouseTrackingMode).toBe('any');
+    // Killed: the shell prints its prompt with no ?1003l / ?1004l before it.
+    t.write(prompt);
+    await flush(t);
+    expect(t.modes.mouseTrackingMode).toBe('none');
+    expect(t.modes.sendFocusMode).toBe(false);
+    expect(t.modes.bracketedPasteMode).toBe(true);
+    expect(shared.installShellPromptModeReset(t).appliedCount).toBe(1);
   });
 });
 

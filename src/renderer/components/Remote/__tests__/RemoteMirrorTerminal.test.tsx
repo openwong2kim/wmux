@@ -130,6 +130,12 @@ class FakeTerminal {
       this.oscHandlers.set(ident, cb);
       return { dispose: () => { this.oscHandlers.delete(ident); } };
     },
+    /** DECSET / DECRST hooks of the #1792 prompt-mode guard. */
+    csiHandlers: [] as { id: { prefix?: string; final: string } }[],
+    registerCsiHandler(id: { prefix?: string; final: string }) {
+      this.csiHandlers.push({ id });
+      return { dispose: () => {} };
+    },
   };
 
   dispose(): void { this.disposed = true; }
@@ -384,6 +390,14 @@ describe('RemoteMirrorTerminal', () => {
 
     expect(paneWrite).toHaveBeenCalledWith('a1', 'ls\n');
 
+    unmount();
+  });
+
+  it('#1792 — installs the prompt-mode guard (OSC 133 + DECSET/DECRST hooks)', () => {
+    const { unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+    const term = termInstances[0];
+    expect(term.oscHandlers.has(133)).toBe(true);
+    expect(term.parser.csiHandlers.map((h) => `${h.id.prefix}${h.id.final}`)).toEqual(['?h', '?l']);
     unmount();
   });
 

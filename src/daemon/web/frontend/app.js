@@ -219,7 +219,7 @@
   }
 
   function newTerm(cols, rows) {
-    return new Terminal({
+    return withPromptModeReset(new Terminal({
       cols: cols || 80,
       rows: rows || 24,
       fontFamily: 'ui-monospace, SFMono-Regular, "Cascadia Code", Menlo, Consolas, "DejaVu Sans Mono", monospace',
@@ -238,7 +238,20 @@
       // structurally (xterm.js#594), and this covers the perceptual half.
       smoothScrollDuration: 90,
       disableStdin: !allowInput
-    });
+    }));
+  }
+
+  /**
+   * #1792: clear the mouse / focus reporting a killed TUI left armed once the
+   * pane's shell prints its prompt again (OSC 133;A), so this page stops
+   * typing reports into that shell. The desktop's own module
+   * (src/shared/terminal/shellPromptModeReset.ts, via `wmuxTerminalShared`);
+   * without the shared bundle the terminal is returned unchanged.
+   */
+  function withPromptModeReset(t) {
+    var shared = window.wmuxTerminalShared;
+    if (shared && shared.installShellPromptModeReset) shared.installShellPromptModeReset(t);
+    return t;
   }
 
   /**
