@@ -158,6 +158,32 @@ describe('right panel — other Moa states', () => {
     expect(useStore.getState().settingsInitialTab).toBe('moa');
   });
 
+  // The sidebar's Tasks line opens this panel; with only the card it was a
+  // dead end, so the active workspace's ledger stays on screen above it.
+  it('Moa off or HQ down: the active workspace\'s tasks stay reachable above the card', async () => {
+    installApi();
+    const summary = vi.fn(async () => ({
+      openCount: 1,
+      rows: [{ id: 't1', title: 'Fix login', status: 'working', taskWorkspaceId: 'ws-b', workerStatus: 'running', lastLine: null, updatedAt: 0, ageMs: 5_000 }],
+      ts: 1,
+    }));
+    (globalThis as unknown as { electronAPI: { deck: Record<string, unknown> } }).electronAPI.deck.ledger = { summary, onChanged: vi.fn(() => () => undefined) };
+    useStore.setState({ moa: moa({ enabled: false }) });
+    await render();
+    expect(summary).toHaveBeenCalledWith('ws-a');
+    expect(host.querySelector('[data-moa-panel-card="off"]')).not.toBeNull();
+    expect(host.querySelector('[data-commander-view]')).toBeNull();
+    const title = host.querySelector('[data-deck-ledger-row] [data-deck-ledger-title]') as HTMLButtonElement;
+    expect(title.textContent).toBe('Fix login');
+    await act(async () => { title.click(); });
+    expect(useStore.getState().activeWorkspaceId).toBe('ws-b');
+
+    await act(async () => { useStore.setState({ moa: moa({ state: 'hq-missing' }) }); });
+    for (let i = 0; i < 3; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(host.querySelector('[data-moa-panel-card="hq-missing"]')).not.toBeNull();
+    expect(host.querySelector('[data-deck-ledger-panel]')).not.toBeNull();
+  });
+
   it('an HQ not seen yet is a short checking card', async () => {
     installApi();
     useStore.setState({ moa: moa({ state: 'hq-unknown' }) });

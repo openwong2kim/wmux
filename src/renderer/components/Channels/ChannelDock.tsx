@@ -39,6 +39,9 @@ import { moaMascotState, resolveMoaPanelMode } from '../Moa/panel/moaPanelMode';
 import { useMoaDecisions } from '../Moa/panel/useMoaPanelData';
 import { MoaPanelTop, renderMoaChat } from '../Moa/panel/MoaPanelTop';
 import { MoaHqProblemCard, MoaOffCard, MoaSetupHint } from '../Moa/panel/MoaPanelCards';
+import { DeckLedgerPanel } from '../Deck/DeckLedgerPanel';
+import { useShallow } from 'zustand/react/shallow';
+import { selectMissionChannelIds } from '../../stores/selectors/missions';
 
 // ─── Command Deck (Phase 1 P1a) ───────────────────────────────────────────────
 //
@@ -54,6 +57,36 @@ import { MoaHqProblemCard, MoaOffCard, MoaSetupHint } from '../Moa/panel/MoaPane
 // a card that says how to turn it on; HQ gone or not seen yet → a card with
 // the recovery; Moa on without an HQ (an install that kept its existing
 // brains) → today's per-workspace chat plus a "Set up Moa" hint.
+
+/**
+ * The active workspace's delegated tasks, kept on screen while the panel is
+ * only a Moa-off / HQ-problem card. The sidebar's Tasks line opens this panel;
+ * without the ledger it landed on the card with no way on to the tasks. Rows
+ * jump to a task's workspace or its mission channel, as in CommanderView; no
+ * brain is involved. Renders nothing when there are no tasks.
+ */
+function CardModeLedger({ workspaceId, t }: { workspaceId: string; t: (key: string) => string }) {
+  const channelByTaskId = useStore(useShallow((s) => selectMissionChannelIds(s.missionsByWorkspace)));
+  const finishedExpanded = useStore((s) => s.deckLedgerFinishedExpanded);
+  const setFinishedExpanded = useStore((s) => s.setDeckLedgerFinishedExpanded);
+  const openChannel = useCallback((channelId: string) => useStore.getState().setActiveChannel(channelId), []);
+  const jumpToWorkspace = useCallback((id: string) => useStore.getState().setActiveWorkspace(id), []);
+  const onLedgerPush = useCallback(() => {
+    if (workspaceId) void useStore.getState().refreshMissions(workspaceId);
+  }, [workspaceId]);
+  return (
+    <DeckLedgerPanel
+      t={t}
+      workspaceId={workspaceId}
+      channelByTaskId={channelByTaskId}
+      onOpenChannel={openChannel}
+      onJumpToTaskWorkspace={jumpToWorkspace}
+      finishedExpanded={finishedExpanded}
+      onToggleFinished={setFinishedExpanded}
+      onLedgerPush={onLedgerPush}
+    />
+  );
+}
 
 export default function ChannelDock(): React.ReactElement {
   const activeDeckTab = useStore((s) => s.activeDeckTab);
@@ -91,10 +124,22 @@ export default function ChannelDock(): React.ReactElement {
 
   const commander = (() => {
     switch (mode.kind) {
+      // The ledger sits where CommanderView pins it (above the content), so
+      // the tasks the sidebar line points at are reachable here too.
       case 'off':
-        return <MoaOffCard onOpenSettings={openMoaSettings} t={t} />;
+        return (
+          <>
+            <CardModeLedger workspaceId={activeWorkspaceId} t={t} />
+            <MoaOffCard onOpenSettings={openMoaSettings} t={t} />
+          </>
+        );
       case 'hq-problem':
-        return <MoaHqProblemCard state={mode.state} onOpenSettings={openMoaSettings} t={t} />;
+        return (
+          <>
+            <CardModeLedger workspaceId={activeWorkspaceId} t={t} />
+            <MoaHqProblemCard state={mode.state} onOpenSettings={openMoaSettings} t={t} />
+          </>
+        );
       case 'moa':
         return <CommanderView chatWorkspaceId={mode.chatWorkspaceId} viewedWorkspaceId={activeWorkspaceId} moa={moaSlots} />;
       default:
