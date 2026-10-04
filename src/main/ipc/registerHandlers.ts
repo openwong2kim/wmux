@@ -32,6 +32,7 @@ import { registerGithubHandlers } from './handlers/github.handler';
 import { registerWorkLinkHandlers } from './handlers/workLink.handler';
 import { registerTrackRecordHandlers } from './handlers/trackRecord.handler';
 import { registerGitShipHandlers } from './handlers/gitShip.handler';
+import { registerGhLoginHandlers } from './handlers/ghLogin.handler';
 import { registerMcpHandlers } from './handlers/mcp.handler';
 import { registerTokenUsageQuotaHandlers } from './handlers/tokenUsageQuota.handler';
 import { registerTokenUsageSurfaceHandlers } from './handlers/tokenUsageSurface.handler';
@@ -195,6 +196,7 @@ export function registerAllHandlers(
   // Moa's track record — the retro card and its schedule (Settings → Moa).
   const cleanupTrackRecord = registerTrackRecordHandlers(getWindow);
   const cleanupGitShip = registerGitShipHandlers();
+  const cleanupGhLogin = registerGhLoginHandlers(getWindow);
   const cleanupMcp = options.mcpRegistrar
     ? registerMcpHandlers(options.mcpRegistrar, options.getMcpAuthToken ?? (() => null))
     : null;
@@ -519,6 +521,7 @@ export function registerAllHandlers(
     cleanupWorkLinks();
     cleanupTrackRecord();
     cleanupGitShip();
+    cleanupGhLogin();
     if (cleanupMcp) cleanupMcp();
     cleanupTokenUsageQuota();
     cleanupTokenUsageSurface();
