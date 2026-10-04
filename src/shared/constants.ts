@@ -534,6 +534,11 @@ export const IPC = {
   WORK_LINK_LIST: 'workLink:list',
   WORK_LINK_GET: 'workLink:get',
   WORK_LINK_CHANGED: 'workLink:changed',
+  // Git page ship button: the branch's status, commit / push / create PR
+  GIT_SHIP_STATUS: 'gitShip:status',
+  GIT_SHIP_COMMIT: 'gitShip:commit',
+  GIT_SHIP_PUSH: 'gitShip:push',
+  GIT_SHIP_CREATE_PR: 'gitShip:createPr',
   DIALOG_PICK_FILE: 'dialog:pick-file',
   DIALOG_PICK_FOLDER: 'dialog:pick-folder',
   // File system

@@ -52,6 +52,19 @@ export interface WorktreeRow extends WorktreeEntry {
   integration?: boolean;
   /** 미해결 충돌 파일 수(merging일 때만 의미). */
   conflicts?: number;
+  /** The branch's last commit time (ms), for "no recent activity"; absent when detached or unknown. */
+  lastCommitAt?: number;
+}
+
+/** branch → last commit time (ms) from one `git for-each-ref` line set. Pure. */
+export function parseBranchDates(raw: string): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const line of raw.split('\n')) {
+    const [name, secs] = line.split('\t');
+    const t = Number(secs);
+    if (name && Number.isFinite(t) && t > 0) out.set(name, t * 1000);
+  }
+  return out;
 }
 
 export type WorktreeListResult =
@@ -124,6 +137,9 @@ async function listWorktrees(repoPath: string): Promise<WorktreeListResult> {
   const r = await git(['worktree', 'list', '--porcelain'], top);
   if (r.code !== 0) return { ok: false, error: r.stderr.slice(0, 300) };
   const parsed = parseWorktreePorcelain(r.stdout);
+  // Every branch's last commit time in one call, however many worktrees.
+  const refs = await git(['for-each-ref', '--format=%(refname:short)%09%(committerdate:unix)', 'refs/heads'], top);
+  const dates = refs.code === 0 ? parseBranchDates(refs.stdout) : new Map<string, number>();
   // 재시작 복구: 각 워크트리의 MERGING 상태를 디스크에서 파생해 붙인다(병렬).
   // 앱 재시작으로 in-memory 세션이 유실돼도 UI가 integration 워크트리를
   // 인식해 Land/Discard를 제시할 수 있게 하는 정본은 git 디스크 상태다.
@@ -131,7 +147,8 @@ async function listWorktrees(repoPath: string): Promise<WorktreeListResult> {
     parsed.map(async (e) => {
       const integration = isIntegrationPath(e.path);
       const ms = existsSync(e.path) ? await readMergeState(e.path) : { merging: false, conflicts: 0 };
-      return { ...e, merging: ms.merging, integration, conflicts: ms.conflicts };
+      const lastCommitAt = e.branch ? dates.get(e.branch) : undefined;
+      return { ...e, merging: ms.merging, integration, conflicts: ms.conflicts, ...(lastCommitAt ? { lastCommitAt } : {}) };
     }),
   );
   // dogfood가 잡은 실버그: top은 "호출한 워크트리"의 toplevel이지 본 repo가
