@@ -1170,6 +1170,16 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.GITHUB_ISSUE_DETAIL, repoPath, number, updatedAt) as Promise<
         import('../shared/issueSurface').IssueDetailResult
       >,
+    // Ship button: the current branch's status and its writes (each re-checked in main).
+    shipStatus: (repoPath: string) =>
+      ipcRenderer.invoke(IPC.GIT_SHIP_STATUS, repoPath) as Promise<import('../main/git/shipActions').ShipStatusResult>,
+    // Each write names the branch + HEAD it was asked for; main refuses if either moved.
+    shipCommit: (repoPath: string, message: string, expect: import('../main/git/shipActions').ShipExpect) =>
+      ipcRenderer.invoke(IPC.GIT_SHIP_COMMIT, repoPath, message, expect) as Promise<import('../main/git/shipActions').ShipActionResult>,
+    shipPush: (repoPath: string, expect: import('../main/git/shipActions').ShipExpect) =>
+      ipcRenderer.invoke(IPC.GIT_SHIP_PUSH, repoPath, expect) as Promise<import('../main/git/shipActions').ShipActionResult>,
+    shipCreatePr: (repoPath: string, title: string, expect: import('../main/git/shipActions').ShipExpect) =>
+      ipcRenderer.invoke(IPC.GIT_SHIP_CREATE_PR, repoPath, title, expect) as Promise<import('../main/git/shipActions').ShipActionResult>,
   },
   // Work links (docs/work-links.md): read-only here, main is the only writer.
   // onChanged hands over the changed link ids; re-read what you show.

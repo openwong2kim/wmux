@@ -87,6 +87,7 @@ export function siteGuidesAutoEnablePatch(input: {
 }
 import type { FleetSortMode } from '../selectors/fleet';
 import { EMPTY_FILTER, type WorkspaceFilter } from '../../components/Sidebar/workspaceFilter';
+import { initialGitPageState, type GitPageState } from '../../components/Git/gitPageState';
 import { multiviewColumnCount, type MultiviewArrangement } from '../../utils/multiviewGrid';
 import {
   normalizeRoleBinding,
@@ -198,6 +199,16 @@ export interface UISlice {
   // persisted, so a reload starts unfiltered.
   sidebarFilter: WorkspaceFilter;
   setSidebarFilter: (filter: WorkspaceFilter) => void;
+
+  // The Git page's scope, tab, filter, selection and list scroll, kept here
+  // so they survive leaving the page. Session-only.
+  gitPage: GitPageState;
+  setGitPage: (patch: Partial<GitPageState>) => void;
+  // Whether a merge session runs, per repo (its main worktree, normalized):
+  // the Worktrees tab starts / lands / discards it, the branch bar's ship
+  // button waits on it. Session-only.
+  gitMerge: Record<string, boolean>;
+  setGitMerge: (repoKey: string, active: boolean) => void;
 
   // S-C1 Fleet View — full-screen cockpit overlay (Ctrl+Shift+A). Transient
   // UI state; never persisted (buildSessionData allowlist excludes it, like the
@@ -1101,6 +1112,14 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   sidebarFilter: EMPTY_FILTER,
   setSidebarFilter: (filter) => set((state) => {
     state.sidebarFilter = filter;
+  }),
+  gitPage: initialGitPageState(),
+  setGitPage: (patch) => set((state) => {
+    Object.assign(state.gitPage, patch);
+  }),
+  gitMerge: {},
+  setGitMerge: (repoKey, active) => set((state) => {
+    if (state.gitMerge[repoKey] !== active) state.gitMerge[repoKey] = active;
   }),
 
   // ─── Rail route ──────────────────────────────────────────────────────────

@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { renderBrainMarkdown } from '../BrainMarkdown';
+import { renderBrainMarkdown, MAX_QUOTE_DEPTH, MAX_BLOCKS } from '../BrainMarkdown';
 import { CommanderViewContent, type CommanderViewContentProps } from '../CommanderView';
 
 let container: HTMLDivElement;
@@ -30,6 +30,144 @@ function render(source: string): void {
 }
 
 describe('renderBrainMarkdown', () => {
+  const gh = (src: string) => act(() => {
+    root.render(createElement('div', null, renderBrainMarkdown(src, { links: true, githubHtml: true })));
+  });
+
+  it('GitHub HTML: a CodeRabbit-style comment renders comments hidden, details collapsed, tags as text', () => {
+    gh([
+      '<!-- This is an auto-generated comment: summarize by coderabbit.ai -->',
+      '> [!WARNING]',
+      '> ## Review limit reached',
+      '<details>',
+      '<summary>View limit details</summary>',
+      '',
+      '**Limit details:** You used <b>all 2</b> reviews.<br>Next one in 15 minutes.',
+      '<img src="https://x/y.png" alt="rabbit"> <a href="https://coderabbit.ai/usage">usage</a> <a href="javascript:alert(1)">bad</a>',
+      '</details>',
+      '<!-- tips_start -->',
+      'Thanks &amp; enjoy &lt;3',
+    ].join('\n'));
+    expect(container.textContent).not.toContain('auto-generated');
+    expect(container.textContent).not.toContain('tips_start');
+    expect(container.textContent).not.toMatch(/<\/?(details|summary|b|img|a)\b/);
+    const d = container.querySelector('details[data-brain-md-details]') as HTMLDetailsElement;
+    expect(d.open).toBe(false);
+    expect(d.querySelector('summary')?.textContent).toBe('View limit details');
+    expect(d.querySelector('strong')?.textContent).toBe('Limit details:');
+    expect(d.textContent).toContain('You used all 2 reviews.');
+    expect(d.textContent).toContain('Next one in 15 minutes.');
+    expect(d.textContent).toContain('rabbit');
+    const links = [...d.querySelectorAll('a')].map((x) => x.getAttribute('href'));
+    expect(links).toEqual(['https://coderabbit.ai/usage']);
+    expect(d.textContent).toContain('bad');
+    expect(container.textContent).toContain('Thanks & enjoy <3');
+  });
+
+  it('GitHub HTML: nested details, each with its own summary', () => {
+    gh('<details><summary>Outer</summary>\nouter body\n<details>\n<summary>Inner</summary>\ninner body\n</details>\n</details>\nafter');
+    const outer = container.querySelector('details[data-brain-md-details]')!;
+    expect(outer.querySelector(':scope > summary')?.textContent).toBe('Outer');
+    const inner = outer.querySelector('details[data-brain-md-details]')!;
+    expect(inner.querySelector(':scope > summary')?.textContent).toBe('Inner');
+    expect(inner.textContent).toContain('inner body');
+    expect(outer.textContent).toContain('outer body');
+    expect(container.lastElementChild?.textContent).toContain('after');
+  });
+
+  it('GitHub HTML: script and style are dropped and never run; details nesting is capped', () => {
+    gh('a<script>window.__md = 1</script>b\n<style>body{display:none}</style>\n' + '<details><summary>x</summary>\n'.repeat(50) + 'deep' + '\n</details>'.repeat(50));
+    expect(container.querySelector('script, style')).toBeNull();
+    expect(container.textContent).not.toContain('window.__md');
+    expect(container.textContent).not.toContain('display:none');
+    expect((window as unknown as { __md?: unknown }).__md).toBeUndefined();
+    expect(container.textContent).toContain('ab');
+    let depth = 0;
+    let d = container.querySelector('details[data-brain-md-details]');
+    while (d) { depth++; d = d.querySelector('details[data-brain-md-details]'); }
+    expect(depth).toBe(MAX_QUOTE_DEPTH);
+    expect(container.textContent).toContain('deep');
+  });
+
+  it('GitHub HTML stays out of code: fences and spans keep their tags', () => {
+    gh('use `<div>` here\n```\n<!-- keep -->\n<br>\n```');
+    expect(container.querySelector('[data-brain-md-code-inline]')?.textContent).toBe('<div>');
+    expect(container.querySelector('[data-brain-md-code]')?.textContent).toBe('<!-- keep -->\n<br>');
+  });
+
+  it('without the GitHub option, HTML stays literal text (the deck)', () => {
+    render('<details><summary>x</summary></details>');
+    expect(container.querySelector('details')).toBeNull();
+    expect(container.textContent).toContain('<details>');
+  });
+
+  it('a body of 16000 > does not overflow: quotes stop nesting at the cap and the rest is text', () => {
+    expect(() => render('>'.repeat(16000))).not.toThrow();
+    let depth = 0;
+    let q = container.querySelector('[data-brain-md-quote]');
+    while (q) {
+      depth++;
+      q = q.querySelector('[data-brain-md-quote]');
+    }
+    expect(depth).toBe(MAX_QUOTE_DEPTH);
+    expect(container.textContent).toContain('>'.repeat(100));
+  });
+
+  it('caps the blocks drawn for a huge body', () => {
+    expect(() => render('line\n'.repeat(MAX_BLOCKS * 3))).not.toThrow();
+    expect(container.querySelectorAll('[data-brain-md-p]').length).toBeLessThanOrEqual(MAX_BLOCKS);
+    expect(container.querySelector('[data-brain-md-cut]')).not.toBeNull();
+  });
+
+  it('renders consecutive > lines as one blockquote, markdown inside', () => {
+    render('before\n> ## Limit\n> **bold** text\n>\n> - item\nafter');
+    const q = container.querySelectorAll('[data-brain-md-quote]');
+    expect(q).toHaveLength(1);
+    expect(q[0].querySelector('[data-brain-md-heading]')?.textContent).toBe('Limit');
+    expect(q[0].querySelector('strong')?.textContent).toBe('bold');
+    expect(q[0].querySelector('[data-brain-md-li]')?.textContent).toContain('item');
+    expect(container.textContent).not.toContain('>');
+  });
+
+  it('keeps links inert by default (the deck never navigates)', () => {
+    render('see [docs](https://example.com) and https://example.com/x');
+    expect(container.querySelector('a')).toBeNull();
+    expect(container.textContent).toContain('https://example.com/x');
+  });
+
+  it('with links on: http(s) links and bare URLs are real links opened through window.open', () => {
+    const open = vi.spyOn(window, 'open').mockReturnValue(null);
+    try {
+      act(() => {
+        root.render(createElement('div', null, renderBrainMarkdown(
+          'see [docs](https://example.com/a), https://example.com/b. and [bad](javascript:alert(1))',
+          { links: true },
+        )));
+      });
+      const links = [...container.querySelectorAll('a')];
+      expect(links.map((a) => a.getAttribute('href'))).toEqual(['https://example.com/a', 'https://example.com/b']);
+      expect(links[0].textContent).toBe('docs');
+      expect(links[0].getAttribute('rel')).toBe('noopener noreferrer');
+      // A non-http link stays an inert span.
+      expect(container.textContent).toContain('bad');
+      expect(container.querySelector('a[href^="javascript"]')).toBeNull();
+      const click = new MouseEvent('click', { bubbles: true, cancelable: true });
+      act(() => { links[1].dispatchEvent(click); });
+      expect(click.defaultPrevented).toBe(true);
+      expect(open).toHaveBeenCalledWith('https://example.com/b', '_blank');
+    } finally {
+      open.mockRestore();
+    }
+  });
+
+  it('renders task-list items as read-only checkboxes', () => {
+    render('- [ ] todo\n- [x] done\n- plain');
+    const boxes = [...container.querySelectorAll('[data-brain-md-task] input[type="checkbox"]')] as HTMLInputElement[];
+    expect(boxes.map((b) => [b.checked, b.disabled])).toEqual([[false, true], [true, true]]);
+    expect(container.querySelectorAll('[data-brain-md-task]')[1].textContent).toBe('done');
+    expect(container.querySelectorAll('[data-brain-md-li]')).toHaveLength(1);
+  });
+
   it('renders a GFM table: header, body rows, alignment, inline markup, in its own scroll box', () => {
     render([
       'Seen in CI:',

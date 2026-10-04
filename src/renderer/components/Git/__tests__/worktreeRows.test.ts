@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildWorktreeRows, normWorktreePath, worktreeContaining, type WorktreeRowUI } from '../worktreeRows';
+import { buildWorktreeRows, groupWorktreeRows, normWorktreePath, worktreeContaining, STALE_WORKTREE_DAYS, type GitWorktreeRow, type WorktreeRowUI } from '../worktreeRows';
 
 const wt = (path: string, branch: string, extra: Partial<WorktreeRowUI> = {}): WorktreeRowUI => ({
   path, branch, headOid: '0000000', locked: null, prunable: null, ...extra,
@@ -72,5 +72,40 @@ describe('worktreeContaining', () => {
   it('does not match a sibling that merely shares a prefix, or another repo', () => {
     expect(worktreeContaining('/code/repository', wts, 'linux')).toBeNull();
     expect(worktreeContaining('/elsewhere/repo', wts, 'linux')).toBeNull();
+  });
+});
+
+describe('groupWorktreeRows', () => {
+  const now = Date.UTC(2026, 9, 4);
+  const day = 24 * 60 * 60 * 1000;
+  const row = (path: string, over: Partial<WorktreeRowUI> = {}, extra: Partial<GitWorktreeRow> = {}): GitWorktreeRow => ({
+    key: path,
+    entry: { path, headOid: 'abc1234', branch: path, detached: false, bare: false, locked: null, prunable: null, ...over },
+    isMain: false,
+    isCurrent: false,
+    workspaces: [],
+    stat: null,
+    ...extra,
+  });
+
+  it('in use = a workspace on it; cleanup = no workspace and detached, prunable or quiet; the rest idle', () => {
+    const g = groupWorktreeRows([
+      row('main', { lastCommitAt: now - 90 * day }, { isMain: true }),
+      row('busy', { detached: true }, { workspaces: [{ workspaceId: 'w', name: 'w', pr: null }] }),
+      row('fresh', { lastCommitAt: now - 2 * day }),
+      row('quiet', { lastCommitAt: now - (STALE_WORKTREE_DAYS + 1) * day }),
+      row('detached', { branch: null, detached: true }),
+      row('prunable', { prunable: 'gone' }),
+      row('merge', { detached: true, integration: true }),
+      row('unknown'),
+      row('locked', { detached: true, locked: 'on a USB disk' }),
+      row('fresh-worktree', { lastCommitAt: now - 90 * day, worktreeAt: now - 1 * day }),
+    ], now);
+    const names = (rows: GitWorktreeRow[]) => rows.map((r) => r.entry.path);
+    expect(names(g.inUse)).toEqual(['busy']);
+    expect(names(g.cleanup)).toEqual(['quiet', 'detached', 'prunable']);
+    // The main worktree and a merge session's worktree are never candidates.
+    // A locked worktree, or a new worktree on an old branch, is not a candidate either.
+    expect(names(g.idle)).toEqual(['main', 'fresh', 'merge', 'unknown', 'locked', 'fresh-worktree']);
   });
 });

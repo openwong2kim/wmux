@@ -2115,17 +2115,79 @@ html[data-fullscreen] .wmux-shell-body {
  * is a fill without a border; Pull requests and Worktrees sit in two columns
  * that stack on a narrow sheet; worktree rows are plain rows whose actions
  * float over a faded right edge. */
-.wmux-git-page { flex: 1; min-height: 0; overflow-y: auto; container-type: inline-size; padding: 24px 28px 40px; font-size: 12px; }
+.wmux-git-page { display: flex; flex: 1; flex-direction: column; min-height: 0; overflow: hidden; container-type: inline-size; padding: 24px 28px 0; font-size: 12px; }
+
+/* Git page v2: the branch bar, the tabs, then a list/detail split whose two
+ * panes scroll on their own (the page itself does not scroll). */
+.wmux-git-bar {
+  display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 4px 6px 4px 12px;
+  border-radius: 10px; background: var(--selection-subtle); min-width: 0;
+}
+.wmux-git-bar .wmux-git-branch { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wmux-git-bar .wmux-git-card-pr { flex: 0 1 auto; }
+.wmux-git-bar-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; flex-shrink: 0; }
+.wmux-git-ship { position: relative; display: flex; align-items: center; gap: 6px; }
+.wmux-git-ship-group { display: inline-flex; }
+.wmux-git-primary.wmux-git-ship-primary:not(:last-child) { border-radius: 6px 0 0 6px; }
+.wmux-git-primary.wmux-git-ship-caret { display: inline-flex; align-items: center; justify-content: center; width: 24px; padding: 0; border-radius: 0 6px 6px 0; border-left: 1px solid color-mix(in srgb, var(--primary-ink) 25%, transparent); }
+.wmux-git-primary:disabled { opacity: .45; }
+.wmux-git-ship-reason { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text-muted); }
+.wmux-git-ship-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 20; min-width: 160px; display: flex; flex-direction: column; }
+.wmux-git-ship-item { height: 30px; padding: 0 10px; border-radius: 6px; text-align: left; font-size: 12px; color: var(--text-main); }
+.wmux-git-ship-item:hover { background: var(--hover-fill); }
+.wmux-git-ship-input { width: 100%; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--line); background: transparent; font-size: 13px; color: var(--text-main); resize: vertical; }
+.wmux-git-ship-error { margin: 8px 0 0; font-size: 12px; color: var(--accent-red); overflow-wrap: anywhere; }
+.wmux-git-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 16px 0 0; border-bottom: 1px solid var(--line); }
+.wmux-git-tabs { display: flex; gap: 2px; }
+.wmux-git-tab { height: 34px; padding: 0 12px; font-size: 13px; color: var(--text-muted); border-radius: 6px 6px 0 0; }
+.wmux-git-tab:hover { color: var(--text-main); background: var(--hover-fill); }
+.wmux-git-tab[aria-selected='true'] { color: var(--text-main); font-weight: var(--title-weight, 500); box-shadow: inset 0 -2px 0 var(--accent); }
+.wmux-git-toolbar .ui-segmented { margin-bottom: 4px; }
+.wmux-git-panel { display: flex; flex: 1; min-height: 0; }
+.wmux-git-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 0 32px; }
+.wmux-git-split { display: grid; flex: 1; min-height: 0; grid-template-columns: minmax(260px, 30%) minmax(0, 1fr); }
+@container (max-width: 900px) { .wmux-git-split { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 40%) minmax(0, 1fr); } }
+.wmux-git-listpane { min-height: 0; overflow-y: auto; padding: 8px 12px 24px 0; border-right: 1px solid var(--line); }
+@container (max-width: 900px) { .wmux-git-listpane { padding-right: 0; border-right: 0; border-bottom: 1px solid var(--line); } }
+.wmux-git-detailpane { min-width: 0; min-height: 0; overflow-y: auto; padding: 0 4px 32px 24px; }
+@container (max-width: 900px) { .wmux-git-detailpane { padding-left: 0; } }
+.wmux-git-fresh { display: flex; align-items: center; gap: 8px; padding: 2px 8px 6px; font-size: 11px; color: var(--text-muted); }
+.wmux-git-link-btn { font-size: 11px; color: var(--text-sub); text-decoration: underline; }
+.wmux-git-link-btn:hover { color: var(--text-main); }
+.wmux-git-list { margin: 0; padding: 0; list-style: none; }
+.wmux-git-item { display: flex; flex-direction: column; gap: 2px; width: 100%; padding: 7px 8px; border-radius: 6px; text-align: left; }
+.wmux-git-item:hover { background: var(--hover-fill); }
+.wmux-git-item[aria-current='true'] { background: var(--selection); }
+.wmux-git-item-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.wmux-git-item-dot { flex-shrink: 0; font-size: 9px; }
+.wmux-git-item-num { flex-shrink: 0; font-size: 11px; color: var(--text-muted); font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); font-variant-numeric: tabular-nums; }
+.wmux-git-item-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--text-main); }
+.wmux-git-item-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding-left: 2px; font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.wmux-git-step { color: var(--text-sub); }
+.wmux-git-step[data-problem] { color: var(--accent-red); }
+.wmux-git-group + .wmux-git-group { margin-top: 8px; }
+.wmux-git-group-head { display: flex; align-items: center; gap: 6px; width: 100%; height: 30px; padding: 0 6px; border-radius: 6px; text-align: left; }
+.wmux-git-group-head:hover { background: var(--hover-fill); }
+.wmux-git-group-name { font-size: 13px; font-weight: 500; color: var(--text-main); }
+.wmux-git-chevron[data-open] { transform: rotate(90deg); }
+.wmux-git-detail-head { position: sticky; top: 0; z-index: 1; display: flex; flex-direction: column; gap: 6px; padding: 12px 0 12px; background: var(--bg-base); border-bottom: 1px solid var(--line); }
+.wmux-git-detail-titlerow { display: flex; align-items: flex-start; gap: 12px; }
+.wmux-git-detail-title { flex: 1; min-width: 0; margin: 0; font-size: 16px; font-weight: 600; line-height: 22px; color: var(--text-main); overflow-wrap: anywhere; }
+.wmux-git-detail-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.wmux-git-detail-slot:empty { display: none; }
+.wmux-git-detail-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 12px; color: var(--text-muted); }
+.wmux-git-detail-body { display: flex; flex-direction: column; gap: 10px; padding-top: 12px; font-size: 13px; }
+.wmux-git-detail-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 12px; color: var(--text-sub); }
+.wmux-git-branch-chip { font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); font-size: 11px; padding: 1px 6px; border-radius: 6px; background: var(--selection); }
+.wmux-git-detail-empty { display: flex; align-items: center; justify-content: center; height: 100%; min-height: 160px; font-size: 13px; color: var(--text-muted); }
+.wmux-git-worktrees { display: flex; flex-direction: column; gap: 12px; }
+.wmux-git-wt-group .wmux-git-subhead { margin: 0; }
+.wmux-git-wt-caption { margin: 0 4px 4px; font-size: 11px; color: var(--text-muted); }
 .wmux-git-page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
 .wmux-git-page-title { margin: 0; font-size: 20px; font-weight: 600; line-height: 28px; color: var(--text-main); outline: none; }
 .wmux-git-page-summary { margin: 2px 0 0; font-size: 13px; color: var(--text-sub); }
 .wmux-git-body { display: flex; flex-direction: column; gap: 12px; }
-.wmux-git-body .wmux-git-card { max-width: 560px; margin: 0; }
 .wmux-git-scope { display: flex; }
-.wmux-git-sections { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 28px; align-items: start; }
-@container (max-width: 900px) { .wmux-git-sections { grid-template-columns: minmax(0, 1fr); } }
-.wmux-git-col { min-width: 0; }
-.wmux-git-sections-single { grid-template-columns: minmax(0, 1fr); }
 .wmux-git-checkout + .wmux-git-checkout { margin-top: 16px; }
 .wmux-git-checkout-title { margin: 0 0 4px; padding: 0 4px; font-size: 12px; font-weight: 500; color: var(--text-sub); font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); }
 .wmux-git-groups { display: flex; flex-direction: column; gap: 28px; margin-top: 20px; }
@@ -2173,16 +2235,6 @@ html[data-fullscreen] .wmux-shell-body {
 .wmux-git-button:hover:not(:disabled) { background: var(--hover-fill); color: var(--text-main); }
 .wmux-git-button:disabled { opacity: .4; }
 
-.wmux-git-card {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin: 0 0 6px;
-  padding: 6px 8px 6px 10px;
-  border-radius: 10px;
-  background: var(--selection-subtle);
-}
-.wmux-git-card-line { display: flex; align-items: center; gap: 8px; min-height: 26px; }
 .wmux-git-card-changes {
   display: inline-flex;
   flex: 1;
@@ -2208,29 +2260,12 @@ html[data-fullscreen] .wmux-shell-body {
   color: var(--text-muted);
   text-align: left;
 }
-.wmux-git-disclosure:hover { background: var(--hover-fill); color: var(--text-main); }
 .wmux-git-chevron { display: inline-flex; transition: transform var(--motion-feedback, 120ms) ease-out; }
-.wmux-git-prs[data-open] .wmux-git-chevron { transform: rotate(90deg); }
 .wmux-git-count { color: var(--text-muted); font-weight: 400; font-variant-numeric: tabular-nums; }
 
-/* Pull requests | Issues: a disclosure chevron, then two text tabs; the chosen
- * one wears the neutral selection fill. */
-.wmux-git-work-head { display: flex; align-items: center; gap: 2px; height: 28px; }
-.wmux-git-work-toggle {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 24px; height: 24px; border-radius: 6px; color: var(--text-muted);
-}
-.wmux-git-work-toggle:hover { background: var(--hover-fill); color: var(--text-main); }
-.wmux-git-work-tabs { display: flex; align-items: center; gap: 2px; min-width: 0; }
-.wmux-git-work-tab {
-  height: 24px; padding: 0 8px; border-radius: 6px;
-  font-size: 11px; font-weight: 500; color: var(--text-muted); white-space: nowrap;
-}
-.wmux-git-work-tab:hover { background: var(--hover-fill); color: var(--text-main); }
-.wmux-git-work-tab[aria-selected='true'] { background: var(--selection); color: var(--text-main); }
 
-/* Issues list: number, title, neutral label chips (colour carries state only,
- * so GitHub's label colours are not drawn), age. */
+/* Issues: neutral label chips (colour carries state only, so GitHub's label
+ * colours are not drawn). */
 .wmux-git-issue-filter { display: flex; align-items: center; gap: 6px; padding: 4px 4px 6px; }
 .wmux-git-issue-filter .ui-select > select { min-height: 26px; font-size: 11px; padding-left: 8px; }
 .wmux-git-issue-label-input {
@@ -2238,29 +2273,16 @@ html[data-fullscreen] .wmux-shell-body {
   border: 1px solid var(--line); background: transparent; font-size: 11px; color: var(--text-main);
 }
 .wmux-git-issue-label-input::placeholder { color: var(--text-muted); }
-.wmux-git-issue { border-bottom: 1px solid var(--border-soft); }
-.wmux-git-issue-row {
-  display: flex; align-items: center; gap: 8px; width: 100%; height: 36px; padding: 0 8px;
-  text-align: left; border-radius: 6px;
-}
-.wmux-git-issue-row:hover { background: var(--hover-fill); }
-.wmux-git-issue-row[aria-expanded='true'] { background: var(--selection-subtle); }
-.wmux-git-issue-num { flex-shrink: 0; font-size: 11px; color: var(--text-muted); font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); font-variant-numeric: tabular-nums; }
-.wmux-git-issue-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-main); }
 .wmux-git-issue-label {
   flex-shrink: 0; max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   padding: 1px 6px; border-radius: var(--chip-radius, 9999px); background: var(--selection);
   font-size: 11px; color: var(--text-sub);
 }
-.wmux-git-issue-meta { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .wmux-git-issue-comments { display: inline-flex; align-items: center; gap: 3px; }
-.wmux-git-issue-detail { display: flex; flex-direction: column; gap: 6px; padding: 6px 8px 10px; font-size: 12px; }
 .wmux-git-issue-byline { font-size: 11px; color: var(--text-muted); }
-.wmux-git-issue-labels { display: flex; flex-wrap: wrap; gap: 4px; }
 .wmux-git-issue-body { color: var(--text-sub); overflow-wrap: anywhere; }
 .wmux-git-issue-timeline { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 0; padding: 0; list-style: none; }
 .wmux-git-issue-comment { padding-top: 6px; border-top: 1px solid var(--border-soft); }
-.wmux-git-issue-actions { display: flex; gap: 8px; padding-top: 2px; }
 
 .wmux-git-row {
   position: relative;

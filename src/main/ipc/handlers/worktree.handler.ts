@@ -13,6 +13,7 @@
 //  - 모든 실패는 { ok:false, error }로 강등(fail-soft 표시 표면).
 import { ipcMain } from 'electron';
 import { existsSync, mkdirSync } from 'node:fs';
+import { readFile, stat } from 'node:fs/promises';
 import { join, dirname, basename, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { IPC } from '../../../shared/constants';
@@ -52,6 +53,37 @@ export interface WorktreeRow extends WorktreeEntry {
   integration?: boolean;
   /** 미해결 충돌 파일 수(merging일 때만 의미). */
   conflicts?: number;
+  /** The branch's last commit time (ms), for "no recent activity"; absent when detached or unknown. */
+  lastCommitAt?: number;
+  /** A linked worktree's admin dir (.git/worktrees/<name>) mtime (ms): when it
+   *  was created or last written by git there. Absent for the main worktree. */
+  worktreeAt?: number;
+}
+
+/** The admin dir a linked worktree's `.git` file points at, or null. Pure. */
+export function parseGitdirFile(raw: string, worktreePath: string): string | null {
+  const m = raw.match(/^gitdir:\s*(.+)$/m);
+  return m ? resolve(worktreePath, m[1].trim()) : null;
+}
+
+async function worktreeAdminMtime(worktreePath: string): Promise<number | undefined> {
+  try {
+    const dir = parseGitdirFile(await readFile(join(worktreePath, '.git'), 'utf8'), worktreePath);
+    return dir ? (await stat(dir)).mtimeMs : undefined;
+  } catch {
+    return undefined; // the main worktree (.git is a directory), or gone
+  }
+}
+
+/** branch → last commit time (ms) from one `git for-each-ref` line set. Pure. */
+export function parseBranchDates(raw: string): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const line of raw.split('\n')) {
+    const [name, secs] = line.split('\t');
+    const t = Number(secs);
+    if (name && Number.isFinite(t) && t > 0) out.set(name, t * 1000);
+  }
+  return out;
 }
 
 export type WorktreeListResult =
@@ -75,8 +107,10 @@ export type WorktreeMutateResult =
 
 // repo 단위 뮤텍스 — diff.handler.withRepoLock과 동형 복제(additive 원칙:
 // 그쪽 인스턴스는 diff 채택 직렬화 전용이라 큐를 공유하지 않는다).
+// The Git page's ship writes queue here too (repoLockKeyFor), so a commit or
+// push never interleaves with a merge session's start / land / discard.
 const repoChains = new Map<string, Promise<unknown>>();
-function withRepoLock<T>(repoKey: string, fn: () => Promise<T>): Promise<T> {
+export function withRepoLock<T>(repoKey: string, fn: () => Promise<T>): Promise<T> {
   const prev = repoChains.get(repoKey) ?? Promise.resolve();
   const run = prev.then(fn, fn);
   repoChains.set(
@@ -124,6 +158,9 @@ async function listWorktrees(repoPath: string): Promise<WorktreeListResult> {
   const r = await git(['worktree', 'list', '--porcelain'], top);
   if (r.code !== 0) return { ok: false, error: r.stderr.slice(0, 300) };
   const parsed = parseWorktreePorcelain(r.stdout);
+  // Every branch's last commit time in one call, however many worktrees.
+  const refs = await git(['for-each-ref', '--format=%(refname:short)%09%(committerdate:unix)', 'refs/heads'], top);
+  const dates = refs.code === 0 ? parseBranchDates(refs.stdout) : new Map<string, number>();
   // 재시작 복구: 각 워크트리의 MERGING 상태를 디스크에서 파생해 붙인다(병렬).
   // 앱 재시작으로 in-memory 세션이 유실돼도 UI가 integration 워크트리를
   // 인식해 Land/Discard를 제시할 수 있게 하는 정본은 git 디스크 상태다.
@@ -131,7 +168,13 @@ async function listWorktrees(repoPath: string): Promise<WorktreeListResult> {
     parsed.map(async (e) => {
       const integration = isIntegrationPath(e.path);
       const ms = existsSync(e.path) ? await readMergeState(e.path) : { merging: false, conflicts: 0 };
-      return { ...e, merging: ms.merging, integration, conflicts: ms.conflicts };
+      const lastCommitAt = e.branch ? dates.get(e.branch) : undefined;
+      const worktreeAt = existsSync(e.path) ? await worktreeAdminMtime(e.path) : undefined;
+      return {
+        ...e, merging: ms.merging, integration, conflicts: ms.conflicts,
+        ...(lastCommitAt ? { lastCommitAt } : {}),
+        ...(worktreeAt ? { worktreeAt } : {}),
+      };
     }),
   );
   // dogfood가 잡은 실버그: top은 "호출한 워크트리"의 toplevel이지 본 repo가
@@ -285,6 +328,13 @@ function kickVerify(s: MergeSessionState): void {
 
 type MergeCtx = { top: string; mainWt: string; repoKey: string; entries: WorktreeEntry[] };
 
+/** The lock key the merge session uses for the repo at `repoPath` (its main
+ *  worktree), or null when it is not a repository. */
+export async function repoLockKeyFor(repoPath: string): Promise<string | null> {
+  const ctx = await resolveMergeContext(repoPath);
+  return 'error' in ctx ? null : ctx.repoKey;
+}
+
 async function resolveMergeContext(repoPath: string): Promise<MergeCtx | { error: string }> {
   const top = await resolveToplevel(repoPath);
   if (!top) return { error: 'not a git repository' };
@@ -416,7 +466,7 @@ async function recoverSession(ctx: MergeCtx): Promise<MergeSessionState | null> 
   return session;
 }
 
-async function mergeStatus(repoPath: string): Promise<MergeStatusResult> {
+export async function mergeStatus(repoPath: string): Promise<MergeStatusResult> {
   const ctx = await resolveMergeContext(repoPath);
   if ('error' in ctx) return { ok: false, error: ctx.error };
   const existing = mergeSessions.get(ctx.repoKey);
