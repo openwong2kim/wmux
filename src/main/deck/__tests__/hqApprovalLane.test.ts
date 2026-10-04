@@ -153,6 +153,14 @@ describe('approval.press — the HQ branch', () => {
     expect(resolves()).toEqual([]);
   });
 
+  it("refuses the HQ token on Moa's own prompt, approve or deny", async () => {
+    pending = [{ id: 'ap-own', sessionId: 'brain-ws-hq', workspaceId: 'ws-hq', kind: 'awaiting_permission', attribution: 'exact' }];
+    for (const decision of ['deny', 'approve']) {
+      expect(await press({ approvalId: 'ap-own', decision }, as('ws-hq'))).toMatchObject({ ok: false, reason: 'hq-own-pane' });
+    }
+    expect(resolves()).toEqual([]);
+  });
+
   // The token outlives the designation: the HQ is re-read on every call.
   it('refuses a token minted for the previous HQ after a switch', async () => {
     world.hq = 'ws-new-hq';
@@ -271,6 +279,19 @@ describe('createHqAutoPress — pressing by rule', () => {
     await l.run();
     expect(resolves()).toHaveLength(1);
     expect(l.takePointer()).toBeNull();
+  });
+
+  // #1772 will raise Moa's own permission prompt as an approval record. The
+  // lane skips it even when every other condition would pass — the HQ
+  // workspace listed as someone's open danger task included.
+  it("never presses Moa's own permission prompt", async () => {
+    world.rows.push({ taskWorkspaceId: 'ws-hq', ownerWorkspaceId: 'ws-own', status: 'working' });
+    pending = [
+      { id: 'ap-hq-ws', sessionId: 'pty-x', workspaceId: 'ws-hq', kind: 'awaiting_permission', attribution: 'exact' },
+      { id: 'ap-brain', sessionId: 'brain-ws-hq', workspaceId: 'ws-task', kind: 'awaiting_permission', attribution: 'exact' },
+    ];
+    await lane().run();
+    expect(resolves()).toEqual([]);
   });
 
   it('never presses an inexactly attributed gate', async () => {

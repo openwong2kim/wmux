@@ -37,6 +37,7 @@ import type { DaemonClient } from '../DaemonClient';
 import type { TaskLedger } from '../../daemon/ledger/TaskLedger';
 import type { AgentMode } from './deckAutonomyStore';
 import type { HqPresence } from './deckHqStore';
+import { isBrainPtyId } from '../../shared/constants';
 
 /** Why the HQ lane will not act on a record. Each is its own test. */
 export type HqLaneRefusal =
@@ -50,7 +51,8 @@ export type HqLaneRefusal =
   | 'record-has-no-workspace'
   | 'task-closed'
   | 'owner-ambiguous'
-  | 'facts-pending';
+  | 'facts-pending'
+  | 'hq-own-pane';
 
 export interface HqLanePorts {
   getHq: () => string | null;
@@ -70,13 +72,17 @@ export interface HqLanePorts {
  */
 export function checkHqLane(
   callerWs: string,
-  record: { workspaceId?: string },
+  record: { workspaceId?: string; sessionId?: string },
   opts: { choiceKey?: string; forDeny?: boolean },
   ports: HqLanePorts,
 ): { ok: true; hq: string; owner: string } | { ok: false; reason: HqLaneRefusal } {
   const hq = ports.getHq();
   if (hq === null) return { ok: false, reason: 'hq-unset' };
   if (!callerWs || callerWs !== hq) return { ok: false, reason: 'not-hq' };
+  // Moa never answers its OWN permission prompt, by rule or by token: that
+  // dialog is the human's check on the brain itself. Either mark is enough —
+  // the HQ workspace, or any brain pty.
+  if (record.workspaceId === hq || isBrainPtyId(record.sessionId)) return { ok: false, reason: 'hq-own-pane' };
   // A deny is the safe direction: it does not need Moa's switch or the
   // approve opt-in, only that it answers for exactly one owner.
   if (!opts.forDeny && !ports.isMoaEnabled()) return { ok: false, reason: 'moa-off' };

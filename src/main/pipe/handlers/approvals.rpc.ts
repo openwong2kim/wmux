@@ -210,6 +210,7 @@ export const HQ_REFUSAL_HINTS: Readonly<Record<string, string>> = {
   'hq-choice-key': 'the HQ lane only ever answers with the record\'s own option — omit choiceKey',
   'task-closed': 'that worker has no open task, so it is no longer delegated',
   'hq-lane-closed': 'the HQ lane closed while the press was queued — nothing was approved',
+  'hq-own-pane': "this is Moa's own prompt — only the human answers it",
   'owner-ambiguous': 'that worker has more than one open owner, so the HQ cannot act for one of them',
   'hq-approve-by-rule':
     'the HQ does not approve another owner\'s worker: approvals that pass the rule are pressed ' +
