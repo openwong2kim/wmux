@@ -131,8 +131,11 @@ export function checkProcessLiveness(pid: number): ProcessLiveness {
 }
 
 /**
- * Look up the process image name (executable basename) for a PID, so the
- * launcher can verify a PID actually belongs to wmux before sending SIGKILL.
+ * Look up the process image name (executable basename) for a PID, so
+ * ensureDaemon can screen a recorded PID before trusting it. The forced-kill
+ * helpers never compare it (another host may have spawned the daemon);
+ * strict mode only refuses when it cannot be read. Script identity from
+ * `getProcessArgv` is what clears a kill.
  *
  * Critical for the "alive but unresponsive" branch: after a crash, the OS
  * may reuse the daemon's PID for an unrelated user process (Chrome, an
@@ -183,7 +186,7 @@ function getProcessImageName(pid: number): string | null {
  * Read a process's full command line, so callers can verify it actually
  * carries the daemon-script path before treating it as a wmux daemon.
  *
- * This is the second safety net for the kill path: image basename alone
+ * This is the identity gate for every forced kill: image basename alone
  * ("electron.exe" in dev) collides with the main process itself and with
  * any other Electron-based app the user happens to be running. Adding
  * "did this process get spawned with the daemon script as argv[1]"

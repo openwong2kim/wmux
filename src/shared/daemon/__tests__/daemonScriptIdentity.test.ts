@@ -8,6 +8,7 @@ import {
   psArgvFromCommand,
   type DaemonLauncherDeps,
 } from '../daemonLauncherCore';
+import { importWithStubbedWin32Cmdline, undoModuleStubs } from './win32CmdlineStub';
 
 /**
  * #1025 redo (#1028) — the four requirements, each pinned here:
@@ -163,47 +164,6 @@ describe('argvIdentifiesDaemonScript — unit (#1025/#1028)', () => {
     )).toBe(true);
   });
 });
-
-/**
- * Re-import the module with ONLY the win32 argv probe stubbed, so a refusal
- * case can stay in the `definitiveOnly: false` mode that `killDaemonByPidFile`
- * actually uses and still be deterministic.
- *
- * #1274: on win32 `getProcessArgv` shells out to PowerShell + Get-CimInstance
- * with a 5 s timeout and returns null on failure. The former relaxed shutdown
- * policy proceeded to SIGKILL on null — so on a loaded runner these tests
- * killed their own sleeper. Asserting them under
- * `definitiveOnly: true` instead would make them tautologies on exactly the
- * platform that flaked: production returns false on ANY indeterminate probe
- * before `argvIdentifiesDaemonScript` is ever called, so the #1025
- * entry-position guard would no longer be exercised there. Replacing just the
- * CIM call with the sleeper's real command line keeps the matcher in the loop
- * on every platform. Every other `execFileSync` call — the tasklist / `ps`
- * image lookup included — passes through to the real implementation, and on
- * macOS/Linux the argv probe is untouched (it is fast and never flaked).
- */
-async function importWithStubbedWin32Cmdline(argv: string[]) {
-  vi.resetModules();
-  vi.doMock('child_process', async () => {
-    const actual = await vi.importActual<typeof import('child_process')>('child_process');
-    const execFileSync = ((file: unknown, args?: unknown, opts?: unknown) => {
-      const isCimProbe = Array.isArray(args)
-        && args.some((a) => typeof a === 'string' && a.includes('Get-CimInstance Win32_Process'));
-      // The CIM string quotes arguments carrying spaces; production
-      // re-tokenizes it quote-aware, so quote every part.
-      if (isCimProbe) return argv.map((part) => `"${part}"`).join(' ');
-      return (actual.execFileSync as (...rest: unknown[]) => unknown)(file, args, opts);
-    }) as typeof actual.execFileSync;
-    return { ...actual, default: { ...actual, execFileSync }, execFileSync };
-  });
-  return import('../daemonLauncherCore');
-}
-
-function undoModuleStubs(): void {
-  vi.doUnmock('child_process');
-  vi.doUnmock('fs');
-  vi.resetModules();
-}
 
 describe('killVerifiedDaemonPid — execution (#1025/#1028)', () => {
   let tmpDir = '';

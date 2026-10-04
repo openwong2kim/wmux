@@ -4,6 +4,7 @@ import os from 'os';
 import path from 'path';
 import { spawn, type ChildProcess } from 'child_process';
 import { killVerifiedDaemonPid } from '../daemonLauncherCore';
+import { importWithStubbedWin32Cmdline, undoModuleStubs } from './win32CmdlineStub';
 
 /**
  * CodeRabbit finding on #1019 (critical): the pre-#1001 image-name check
@@ -73,9 +74,15 @@ describe('killVerifiedDaemonPid — cross-host image mismatch (#1019)', () => {
 
     // This test process's own image is `node`/`node.exe` (unrenamed) — the
     // spawned child's image is the renamed copy, so this IS the mismatch
-    // the fix must tolerate.
-    const killed = killVerifiedDaemonPid(pid as number, { definitiveOnly: true });
-    expect(killed).toBe(true);
+    // the fix must tolerate. The image lookup stays real; the win32 CIM
+    // command-line read is fed the child's exact argv, because a read that
+    // times out on a loaded runner refuses (#1274).
+    try {
+      const stubbed = await importWithStubbedWin32Cmdline([renamedNodePath, scriptPath]);
+      expect(stubbed.killVerifiedDaemonPid(pid as number, { definitiveOnly: true })).toBe(true);
+    } finally {
+      undoModuleStubs();
+    }
   }, 15_000);
 
   it('still refuses an unrelated process even when definitiveOnly is false, via the cmdline marker mismatch', async () => {
