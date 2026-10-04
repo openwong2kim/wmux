@@ -96,6 +96,17 @@ describe("Moa's HQ is left out of the workspace list", () => {
     expect(hqRow()).toBeNull();
   });
 
+  it("Moa's fan-out tasks still show (their owner is not in the list)", () => {
+    seed();
+    act(() => useStore.setState({
+      workspaces: [...useStore.getState().workspaces, { ...ws('t1'), name: 'wtask: alpha' }],
+      fanoutLineage: { t1: 'moa' },
+      fanoutRefreshSettled: true,
+    } as never));
+    act(() => root.render(<Sidebar />));
+    expect([...document.querySelectorAll('.sidebar-row')].some((r) => r.textContent?.includes('alpha'))).toBe(true);
+  });
+
   it('the collapsed rail leaves it out and numbers the rest as listed', () => {
     seed();
     act(() => root.render(<MiniSidebar />));
