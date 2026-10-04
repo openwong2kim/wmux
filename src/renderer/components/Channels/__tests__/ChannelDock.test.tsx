@@ -51,7 +51,11 @@ describe('channel dock — wiring regression guard', () => {
     // rail that used to stand in for the dock is gone, and the way back is the
     // titlebar's DeckToggle. Nothing may render on this edge while collapsed —
     // that is the whole point, the terminals take the width.
-    expect(appLayout).toContain('channelDockVisible && (');
+    expect(appLayout).toContain("channelDockVisible && dockMode === 'inline' && (");
+    // Too narrow for the panes' floor: the dock leaves the row and floats over
+    // the panes on the far edge (dockLayout.ts), so the sheet never overflows.
+    expect(appLayout).toContain("channelDockVisible && dockMode === 'overlay' && (");
+    expect(appLayout).toMatch(/data-dock-overlay[\s\S]{0,200}absolute inset-y-0/);
     expect(appLayout).not.toMatch(/<DeckMiniRail\s*\/>/);
     expect(appLayout).toMatch(/<ChannelDock\s*\/>/);
     // The old always-mounted overlay <ChannelView /> must be gone from AppLayout.

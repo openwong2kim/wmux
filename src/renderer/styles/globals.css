@@ -934,14 +934,15 @@ select option {
   container-name: wmux-toolbar;
 }
 /* Two-stage collapse: secondary labels (Attach·Files·Snippets) drop first at
- * 560px, then all labels drop to icon-only at 420px. The buttons keep their
- * title tooltips at every stage, so nothing becomes undiscoverable. */
-@container wmux-toolbar (max-width: 560px) {
+ * 860px, then all labels drop to icon-only at 720px — the widths where the
+ * full row (incl. New conversation and the pin) stops fitting. The buttons
+ * keep their title tooltips at every stage, so nothing becomes undiscoverable. */
+@container wmux-toolbar (max-width: 860px) {
   .wmux-toolbar-label-secondary {
     display: none;
   }
 }
-@container wmux-toolbar (max-width: 420px) {
+@container wmux-toolbar (max-width: 720px) {
   .wmux-toolbar-label {
     display: none;
   }

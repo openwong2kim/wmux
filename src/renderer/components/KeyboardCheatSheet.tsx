@@ -151,7 +151,7 @@ export function KeyboardCheatSheetView({
       padded
       aria-label={title}
       data-testid="keyboard-cheat-sheet"
-      className="fixed bottom-4 right-4 z-[var(--z-cheatsheet)] w-[280px] overflow-hidden"
+      className="fixed bottom-4 right-4 z-[var(--z-cheatsheet)] w-[280px] max-w-[calc(100vw-2rem)] overflow-hidden"
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
       onFocus={onFocus}

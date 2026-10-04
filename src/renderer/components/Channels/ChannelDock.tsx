@@ -22,6 +22,7 @@
 // correct (opposite) edge automatically — we only flip the inner border side.
 
 import { useStore } from '../../stores';
+import { DOCK_WIDTH_CSS } from '../Layout/dockLayout';
 import { tokenAttrs } from '../../themes';
 import { useT } from '../../hooks/useT';
 import { DeckTabs } from '../Deck/DeckTabs';
@@ -143,7 +144,7 @@ export default function ChannelDock(): React.ReactElement {
   return (
     <div
       className="wmux-dock flex flex-col h-full bg-[var(--bg-base)]"
-      style={{ width: 'clamp(248px, 26vw, 320px)', borderColor: 'var(--border-soft)' }}
+      style={{ width: DOCK_WIDTH_CSS, maxWidth: '100%', borderColor: 'var(--border-soft)' }}
       id="wmux-tools-panel"
       data-channel-dock
       {...tokenAttrs('bgMantle', 'bg')}

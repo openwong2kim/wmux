@@ -181,7 +181,7 @@ export function DeckTabs({
                 role="menu"
                 aria-label={t('deck.orchestratorModel') || 'Orchestrator model'}
                 data-commander-model-menu
-                className="absolute left-0 top-full mt-2 z-50 min-w-[160px] rounded-lg border p-1 shadow-lg bg-[var(--bg-surface)]"
+                className="absolute left-0 top-full mt-2 z-50 min-w-[160px] max-w-[calc(100vw-1rem)] rounded-lg border p-1 shadow-lg bg-[var(--bg-surface)]"
                 style={{ borderColor: 'var(--border-soft)' }}
                 {...tokenAttrs('bgSurface', 'bg')}
               >

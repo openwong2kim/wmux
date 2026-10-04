@@ -44,6 +44,7 @@ import { HooksInstallPromptContainer } from '../Deck/HooksInstallPrompt';
 import FloatingPane from '../Terminal/FloatingPane';
 import SearchResultsPanel from '../Search/SearchResultsPanel';
 import ChannelDock from '../Channels/ChannelDock';
+import { useDockMode } from './dockLayout';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { useKeyboard } from '../../hooks/useKeyboard';
 import { FocusManager } from './LayoutLogicMounts';
@@ -740,6 +741,25 @@ export default function AppLayout() {
   const sidebarVisible = useStore((s) => s.sidebarVisible);
   const channelDockVisible = useStore((s) => s.channelDockVisible);
   const sidebarPosition = useStore((s) => s.sidebarPosition);
+  // The dock never pushes the sheet past the window: when inline would leave
+  // the panes under their floor, it collapses and reopens as an overlay
+  // (dockLayout.ts). Re-opened when the window is wide enough again, if it
+  // was open when it collapsed.
+  const sidebarWidthPx = useStore((s) => (s.sidebarVisible ? s.sidebarWidth : 0));
+  const [dockMode, shellRef] = useDockMode(sidebarWidthPx);
+  const dockAutoCollapsed = useRef(false);
+  useEffect(() => {
+    const st = useStore.getState();
+    if (dockMode === 'overlay' && st.channelDockVisible) {
+      dockAutoCollapsed.current = true;
+      st.setChannelDockVisible(false);
+    } else if (dockMode === 'inline' && dockAutoCollapsed.current) {
+      dockAutoCollapsed.current = false;
+      if (!st.channelDockVisible) st.setChannelDockVisible(true);
+    }
+    // Only a mode change collapses or restores; opening the overlay later
+    // must not be undone.
+  }, [dockMode]);
   const fileTreeVisible = useStore((s) => s.fileTreeVisible);
   const companyViewVisible = useStore((s) => s.companyViewVisible);
   const setCompanyViewVisible = useStore((s) => s.setCompanyViewVisible);
@@ -1959,7 +1979,7 @@ export default function AppLayout() {
       <ErrorBoundary name="SidebarRail">
         <MiniSidebar rail collapsed={!sidebarVisible} />
       </ErrorBoundary>
-      <div className={`wmux-shell-body relative flex flex-1 min-h-0 min-w-0 ${sidebarPosition === 'right' ? 'flex-row-reverse' : ''}`}>
+      <div ref={shellRef} className={`wmux-shell-body relative flex flex-1 min-h-0 min-w-0 ${sidebarPosition === 'right' ? 'flex-row-reverse' : ''}`}>
       {/* The Workspaces page. Another rail page covers it (RailPage) while it
           stays mounted, full size and inert, so no PTY is resized or lost. */}
       <div className="contents" inert={appRoute !== 'workspaces' && !inspectModeActive} data-workspaces-page>
@@ -2023,10 +2043,22 @@ export default function AppLayout() {
           The rail spent a full-height column on four glyphs and an expand
           chevron, ~85% of it empty; one button on a row that already exists
           costs the terminals nothing. */}
-      {channelDockVisible && (
+      {channelDockVisible && dockMode === 'inline' && (
         <ErrorBoundary name="ChannelDock">
           <ChannelDock />
         </ErrorBoundary>
+      )}
+      {/* Too narrow for the dock beside the panes: it floats over them on the
+          far edge instead, and never reflows a PTY. */}
+      {channelDockVisible && dockMode === 'overlay' && (
+        <div
+          data-dock-overlay
+          className={`absolute inset-y-0 z-30 flex max-w-full ${sidebarPosition === 'right' ? 'left-0' : 'right-0'}`}
+        >
+          <ErrorBoundary name="ChannelDock">
+            <ChannelDock />
+          </ErrorBoundary>
+        </div>
       )}
       {fileTreeVisible && (
         <ErrorBoundary name="FileTree">
