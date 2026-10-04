@@ -3149,6 +3149,14 @@ which workspace that is from one key, never from a name or an id it guesses:
   `role` key. Treat an unknown value as no role. It follows the desktop's own
   rule, so it is present whenever the desktop has an HQ designated, whether
   or not Moa is switched on.
+- Every pane of the HQ carries it: an HQ with several panes (or several
+  tabs in one pane) has `role: "hq"` on each of those sessions, not only on
+  the first.
+- Work the HQ hands out is **not** HQ: a fan-out task workspace whose owner is
+  the HQ (`ownerWorkspaceId` is the HQ's id, nested under it or not), and
+  every session in it, carries no `role`. Those are ordinary workspaces doing
+  delegated work; show them as you show any task, using `ownerWorkspaceId` /
+  `nested` to place them.
 - Hide `role: "hq"` rows from the normal workspace and session lists, as the
   desktop does, and decide that by `role` alone.
 - Presence rules are those of every field above: from the desktop only, and

@@ -9955,6 +9955,57 @@ describe('WebTerminalServer', () => {
         expect(roles(sessions)).toEqual({ s1: null, s2: 'hq', s3: null });
       });
 
+      it('tags every session of a multi-pane HQ, and never a task workspace the HQ delegated to', async () => {
+        const HQ = 'ws-hq';
+        const TASK = 't-from-hq';
+        const PLAIN = 'ws-plain';
+        const snapshot = {
+          activeWorkspaceId: HQ,
+          hqWorkspaceId: HQ,
+          workspaces: [
+            { id: PLAIN, order: 0, pinned: false },
+            { id: HQ, order: 1, pinned: false },
+            // A fan-out task the HQ started: owned by the HQ, nested under it.
+            { id: TASK, order: 2, pinned: false, task: { ownerWorkspaceId: HQ, detached: false, nested: true, paneGroup: 'pane', requesterPaneId: 'pane-h1' } },
+          ],
+          panes: [
+            { ptyId: 'h-1', workspaceId: HQ, paneId: 'pane-h1', paneName: 'w2-1' },
+            { ptyId: 'h-2', workspaceId: HQ, paneId: 'pane-h2', paneName: 'w2-2' },
+            { ptyId: 'h-3', workspaceId: HQ, paneId: 'pane-h2', paneName: 'w2-2' },
+            { ptyId: 't-1', workspaceId: TASK, paneId: 'pane-t1', paneName: 'w3-1' },
+            { ptyId: 'p-1', workspaceId: PLAIN, paneId: 'pane-p1', paneName: 'w1-1' },
+          ],
+        };
+        const sessions = [['h-1', HQ], ['h-2', HQ], ['h-3', HQ], ['t-1', TASK], ['p-1', PLAIN]].map(([id, ws]) => ({
+          id, cwd: '/repo', cols: 80, rows: 24, state: 'attached',
+          agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
+          env: { WMUX_WORKSPACE_ID: ws, WMUX_WORKSPACE_NAME: ws }, cmd: '/bin/zsh',
+        }));
+        const fixture = live.splice(0, live.length, ...sessions);
+        try {
+          attachDesktop(() => ({
+            workspaces: [
+              { id: HQ, name: 'Moa', sessionId: 'h-1' },
+              { id: TASK, name: 'task', sessionId: 't-1' },
+              { id: PLAIN, name: 'plain', sessionId: 'p-1' },
+            ],
+            sidebar: snapshot,
+          }));
+          const info = await startRW();
+          const token = info.token as string;
+          const listed = (await getJson(token, '/api/sessions')).sessions as Row[];
+          expect(roles(listed)).toEqual({ 'h-1': 'hq', 'h-2': 'hq', 'h-3': 'hq', 't-1': null, 'p-1': null });
+          const workspaces = (await getJson(token, '/api/workspaces')).workspaces as Row[];
+          expect(roles(workspaces)).toEqual({ [PLAIN]: null, [HQ]: 'hq', [TASK]: null });
+          // The task still says who owns it, so the phone can nest it — just not as HQ.
+          expect(workspaces.find((w) => w.id === TASK)).toMatchObject({ ownerWorkspaceId: HQ, nested: true });
+          const registry = (await getJson(token, '/api/desktop-workspaces')).workspaces as Row[];
+          expect(roles(registry)).toEqual({ [HQ]: 'hq', [TASK]: null, [PLAIN]: null });
+        } finally {
+          live.splice(0, live.length, ...fixture);
+        }
+      });
+
       it('carries no role without an HQ, without a desktop, or for a malformed HQ id', async () => {
         attachDesktop(() => ({ workspaces: registryRows, sidebar: sidebar() }));
         let info = await startRW();
