@@ -925,6 +925,10 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     // TUI is actually on. Adopt it and let the manager persist it, or a
     // restart resumes a conversation the human already left behind.
     if (this.turnStop === null && signal.agentSessionId && signal.agentSessionId !== this._sessionId) {
+      // A CHANGED id means the TUI conversation was replaced (e.g. /clear):
+      // the new one has never seen the first-turn memory, so the next turn
+      // carries it again. The first id a fresh pty reports is not a change.
+      if (this._sessionId !== null) this._contextInjected = false;
       this._sessionId = signal.agentSessionId;
       try {
         this.deps.onForeignSessionId?.(signal.agentSessionId);

@@ -88,7 +88,7 @@ interface HqFile {
   /** HQ approval lane opt-in (hqApprovalLane.ts). Absent = off. */
   hqApprovalPress?: boolean;
   /** "Remember this?" proposals (moaMemory.ts). Absent = on. */
-  moaProposals?: boolean;
+  moaMemoryProposals?: boolean;
   /** Archived decisions up to this archivedAt have been acknowledged. */
   archiveAckedAt?: number;
   /** Set once the non-HQ migration has completed for `hqWorkspaceId`. */
@@ -118,7 +118,7 @@ function isValidHqFile(data: unknown): data is Record<string, unknown> {
   if (o.hqMaxTurnsPerHour !== undefined
     && !(typeof o.hqMaxTurnsPerHour === 'number' && Number.isInteger(o.hqMaxTurnsPerHour) && o.hqMaxTurnsPerHour >= 1)) return false;
   if (o.archivedDecisions !== undefined && !Array.isArray(o.archivedDecisions)) return false;
-  for (const k of ['moaOnboarded', 'moaBubbles', 'moaReduceMotion', 'hqApprovalPress', 'moaProposals'] as const) {
+  for (const k of ['moaOnboarded', 'moaBubbles', 'moaReduceMotion', 'hqApprovalPress', 'moaMemoryProposals'] as const) {
     if (o[k] !== undefined && typeof o[k] !== 'boolean') return false;
   }
   if (o.moaLevel !== undefined && o.moaLevel !== 1 && o.moaLevel !== 2 && o.moaLevel !== 3) return false;
@@ -141,7 +141,7 @@ function sanitize(o: Record<string, unknown>): HqFile {
   if (typeof o.moaBubbles === 'boolean') out.moaBubbles = o.moaBubbles;
   if (typeof o.moaReduceMotion === 'boolean') out.moaReduceMotion = o.moaReduceMotion;
   if (typeof o.hqApprovalPress === 'boolean') out.hqApprovalPress = o.hqApprovalPress;
-  if (typeof o.moaProposals === 'boolean') out.moaProposals = o.moaProposals;
+  if (typeof o.moaMemoryProposals === 'boolean') out.moaMemoryProposals = o.moaMemoryProposals;
   if (typeof o.archiveAckedAt === 'number') out.archiveAckedAt = o.archiveAckedAt;
   return out;
 }
@@ -286,9 +286,9 @@ export function isHqApprovalPressEnabled(dir?: string): boolean {
 
 /** Whether Moa may propose precedents and skills. Absent = on; a corrupt
  *  store = off. Moa off overrides it. */
-export function isMoaProposalsEnabled(dir?: string): boolean {
+export function isMoaMemoryProposalsEnabled(dir?: string): boolean {
   const { file, corrupt } = load(dir);
-  return !corrupt && file.moaEnabled !== false && file.moaProposals !== false;
+  return !corrupt && file.moaEnabled !== false && file.moaMemoryProposals !== false;
 }
 
 /** The master switch. Absent = on (today's behaviour); a corrupt store = off. */
@@ -380,7 +380,7 @@ export function getMoaConfig(dir?: string): MoaConfig {
     reduceMotion: file.moaReduceMotion === true,
     defaultReason: file.moaDefault ?? null,
     approvalPress: file.hqApprovalPress === true,
-    proposals: file.moaProposals !== false,
+    memoryProposals: file.moaMemoryProposals !== false,
   };
 }
 
@@ -399,7 +399,7 @@ export async function setMoaConfig(patch: MoaConfigPatch, dir?: string): Promise
   if (typeof patch.bubbles === 'boolean') next.moaBubbles = patch.bubbles;
   if (typeof patch.reduceMotion === 'boolean') next.moaReduceMotion = patch.reduceMotion;
   if (typeof patch.approvalPress === 'boolean') next.hqApprovalPress = patch.approvalPress;
-  if (typeof patch.proposals === 'boolean') next.moaProposals = patch.proposals;
+  if (typeof patch.memoryProposals === 'boolean') next.moaMemoryProposals = patch.memoryProposals;
   try {
     await mutate(dir, (file) => write(dir, { ...file, ...next }));
     return true;

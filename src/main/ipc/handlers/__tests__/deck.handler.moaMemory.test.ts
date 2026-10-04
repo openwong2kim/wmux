@@ -110,11 +110,11 @@ beforeEach(async () => {
   vi.spyOn(console, 'warn').mockImplementation(() => undefined);
   await setHqWorkspaceId(null);
   await setMoaEnabled(true);
-  await setMoaConfig({ proposals: true });
+  await setMoaConfig({ memoryProposals: true });
   await clearDecision(MOA_MEMORY_DECISION_KEY);
   await clearDecision('ws-hq');
   fs.rmSync(proposalsDir(), { recursive: true, force: true });
-  fs.rmSync(path.join(getWmuxDir(), 'moa-proposals.json'), { force: true });
+  fs.rmSync(path.join(getWmuxDir(), 'moa-memory-card.json'), { force: true });
   cleanup = registerDeckHandler(() => fakeWindow, {
     createAdapter: (o: AdapterOpts) => {
       const a = new FakeAdapter(o);
@@ -151,7 +151,7 @@ describe('which brain gets the gate and the memory', () => {
   });
 
   it('proposals off: memory still reaches the HQ, the gate does not', async () => {
-    await setMoaConfig({ proposals: false });
+    await setMoaConfig({ memoryProposals: false });
     await setHqWorkspaceId('ws-hq');
     await send('ws-hq');
     const hq = adapters.find((a) => a.opts.workspaceId === 'ws-hq')!;
@@ -174,7 +174,7 @@ describe('which brain gets the gate and the memory', () => {
     fs.writeFileSync(path.join(proposalsDir(), 'x.md'), '---\nname: x\ndescription: d\n---\nbody\n');
     expect((await send('ws-hq')).ok).toBe(false);
     expect(adapters).toHaveLength(0);
-    await invoke(IPC.DECK_MOA_CONFIG_SET, { proposals: true });
+    await invoke(IPC.DECK_MOA_CONFIG_SET, { memoryProposals: true });
     await new Promise((r) => setTimeout(r, 400));
     expect(card()).toBeNull();
   });
@@ -185,7 +185,7 @@ describe('answering cards', () => {
     await setHqWorkspaceId('ws-hq');
     fs.mkdirSync(proposalsDir(), { recursive: true });
     fs.writeFileSync(path.join(proposalsDir(), 'x.md'), '---\nname: triage-ci\ndescription: d\n---\nbody\n');
-    await invoke(IPC.DECK_MOA_CONFIG_SET, { proposals: true });
+    await invoke(IPC.DECK_MOA_CONFIG_SET, { memoryProposals: true });
     await vi.waitFor(() => expect(card()).not.toBeNull(), { timeout: 2000 });
     const r = await invoke(IPC.DECK_DECISION_RESOLVE, { workspaceId: MOA_MEMORY_DECISION_KEY, id: card()!.id, resolution: 'Save' });
     expect(r).toEqual({ ok: true });
@@ -198,6 +198,26 @@ describe('answering cards', () => {
       expect.objectContaining({ kind: 'skill', name: 'triage-ci' }),
     ]);
     expect(await invoke(IPC.DECK_MOA_MEMORY_DELETE, { kind: 'skill', name: 'triage-ci' })).toEqual({ ok: true });
+  });
+
+  it('the deck card reads the full text and answers with Save/Discard only', async () => {
+    await setHqWorkspaceId('ws-hq');
+    fs.mkdirSync(proposalsDir(), { recursive: true });
+    fs.writeFileSync(path.join(proposalsDir(), 'x.md'), `---\nname: triage-ci\ndescription: d\n---\n${'step\n'.repeat(300)}END\n`);
+    await invoke(IPC.DECK_MOA_CONFIG_SET, { memoryProposals: true });
+    await vi.waitFor(() => expect(card()).not.toBeNull(), { timeout: 2000 });
+    const view = (await invoke(IPC.DECK_MOA_MEMORY_CARD)).card as { id: string; fullText: string };
+    expect(view.fullText).toContain('END');
+    // Free text is not an answer; a context-only Save of a long text is refused.
+    expect(await invoke(IPC.DECK_DECISION_RESOLVE, { workspaceId: MOA_MEMORY_DECISION_KEY, id: view.id, resolution: 'save it' }))
+      .toMatchObject({ ok: false, code: 'unknown_answer' });
+    expect(await invoke(IPC.DECK_DECISION_RESOLVE, { workspaceId: MOA_MEMORY_DECISION_KEY, id: view.id, resolution: 'Save' }))
+      .toMatchObject({ ok: false, code: 'open_full_text' });
+    expect(await invoke(IPC.DECK_MOA_MEMORY_RESOLVE, { id: view.id, answer: 'maybe', fullTextShown: true }))
+      .toMatchObject({ ok: false, code: 'invalid' });
+    expect(await invoke(IPC.DECK_MOA_MEMORY_RESOLVE, { id: view.id, answer: 'save', fullTextShown: true })).toEqual({ ok: true });
+    expect((await invoke(IPC.DECK_MOA_MEMORY_CARD)).card).toBeNull();
+    expect(adapters).toHaveLength(0);
   });
 
   it('the operator answering a Moa decision offers it as a precedent', async () => {

@@ -79,6 +79,7 @@ import { DeckLoopPanel } from './DeckLoopPanel';
 import { DeckLedgerPanel } from './DeckLedgerPanel';
 import { DeckApprovalCountdown } from './DeckApprovalCountdown';
 import { DeckDecisionCard } from './DeckDecisionCard';
+import { MoaMemoryCard } from '../Moa/MoaMemoryCard';
 import BrainTerminalEmbed from './BrainTerminalEmbed';
 import { DeckBriefingCard } from './DeckBriefingCard';
 import { AgentModeChipContainer } from './AgentModeChip';
@@ -299,6 +300,7 @@ export function CommanderViewContent({
     }
   }, []);
   const [decisionPending, setDecisionPending] = useState(false);
+  const [memoryCardPending, setMemoryCardPending] = useState(false);
   // The pty layout's durable turn reports (pure selector — the store keeps the
   // full message array for the other vendors' bubble log).
   const railMessages = useMemo(() => selectReportRail(brainMessages), [brainMessages]);
@@ -482,6 +484,9 @@ export function CommanderViewContent({
                 {` · ${t('deck.reportRailDecision') || '1 decision'}`}
               </span>
             )}
+            {memoryCardPending && (
+              <span data-commander-rail-memory>{` · ${t('moa.memoryCard.railBadge')}`}</span>
+            )}
             {/* Slim busy indicator: automation-driven turns (heartbeat, loop,
                 schedule) must stay visible now that the busy bar is gone. */}
             {brainBusy && (
@@ -516,6 +521,9 @@ export function CommanderViewContent({
               onPendingChange={setDecisionPending}
               t={t}
             />
+            {/* Moa's "Remember this?" card: Moa's own, so it shows whichever
+                workspace the deck is on. */}
+            <MoaMemoryCard onPendingChange={setMemoryCardPending} t={t} />
             {railMessages.map((m, i) => (
               <Fragment key={m.id}>
                 {isVendorBoundary(railMessages[i - 1], m) && m.vendor && (
@@ -634,6 +642,7 @@ export function CommanderViewContent({
             it survives a reboot); renders null unless a decision is pending for
             this workspace. */}
         <DeckDecisionCard workspaceId={activeWorkspaceId} t={t} />
+        <MoaMemoryCard t={t} />
 
         {/* Brain conversation — the normalized bubbles + tool chips. The
             `claude-pty` vendor never reaches here (it returns the TUI layout

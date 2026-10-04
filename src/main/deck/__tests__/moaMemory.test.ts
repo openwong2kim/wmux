@@ -10,6 +10,7 @@ import {
   MOA_SAVED_SKILL_MARKER,
   PRECEDENT_FRAMING,
   parseProposal,
+  renderSaved,
 } from '../moaMemory';
 import { loadCommanderMemory } from '../commanderMemory';
 import { hasPendingDecision, loadWorkspaceDecision, raiseDecision } from '../deckDecisionStore';
@@ -188,7 +189,7 @@ describe('switches', () => {
   });
 
   it('proposals off: no card and no offer', async () => {
-    await setMoaConfig({ proposals: false }, dir);
+    await setMoaConfig({ memoryProposals: false }, dir);
     fs.writeFileSync(path.join(proposals, 'x.md'), skill('triage-ci'));
     await lane.sync();
     await lane.offerPrecedent({ decisionId: 'd1', question: 'Q?', answer: 'A' });
@@ -200,5 +201,95 @@ describe('switches', () => {
     fs.writeFileSync(path.join(proposals, 'x.md'), skill('triage-ci'));
     await lane.sync();
     expect(card()!.question).toContain('triage-ci');
+  });
+});
+
+describe('review fixes', () => {
+  it('only an exact Save or Discard answers; anything else keeps the file and the card', async () => {
+    fs.writeFileSync(path.join(proposals, 'x.md'), skill('triage-ci'));
+    await lane.sync();
+    const id = card()!.id;
+    for (const answer of ['save it', '저장', 'no', 'Saved']) {
+      expect(await lane.resolve(id, answer)).toMatchObject({ ok: false, code: 'unknown_answer' });
+    }
+    expect(card()!.id).toBe(id);
+    expect(fs.existsSync(path.join(proposals, 'x.md'))).toBe(true);
+    expect(await lane.resolve(id, '  discard ')).toMatchObject({ ok: true, saved: false });
+    expect(fs.existsSync(path.join(proposals, 'x.md'))).toBe(false);
+  });
+
+  it('a long description cannot hide the body: the deck card carries all of it, and Save from a context-only surface is refused', async () => {
+    const longDesc = `Triage ${'very '.repeat(150)}carefully`;
+    fs.writeFileSync(
+      path.join(proposals, 'x.md'),
+      `---\nname: triage-ci\ndescription: ${longDesc}\n---\nHIDDEN-INSTRUCTION at the end of the body.\n`,
+    );
+    await lane.sync();
+    const c = card()!;
+    expect(c.context).not.toContain('HIDDEN-INSTRUCTION');
+    const view = lane.cardView()!;
+    expect(view.fullText).toContain('HIDDEN-INSTRUCTION');
+    // A surface that showed only the context may not save it.
+    expect(await lane.resolve(c.id, 'Save')).toMatchObject({ ok: false, code: 'open_full_text' });
+    expect(card()!.id).toBe(c.id);
+    // The deck card, which shows the full text, may; what lands is that text.
+    expect(await lane.resolve(c.id, 'Save', { fullTextShown: true })).toMatchObject({ ok: true, saved: true });
+    expect(fs.readFileSync(skillFile('triage-ci'), 'utf8')).toBe(view.fullText);
+  });
+
+  it('a short proposal shows its whole saved text in the context, so any surface may save it', async () => {
+    fs.writeFileSync(path.join(proposals, 'x.md'), skill('triage-ci'));
+    await lane.sync();
+    const c = card()!;
+    expect(c.context).toContain(lane.cardView()!.fullText.trim());
+    expect(await lane.resolve(c.id, 'Save')).toMatchObject({ ok: true, saved: true });
+  });
+
+  it('descriptions with a colon, a hash and quotes survive a save round trip as valid frontmatter', async () => {
+    for (const desc of ['CI: failure', 'Fix #42 # not a comment', 'Say "hi" and \'bye\'', '- leading: dash', '"quoted at both ends"']) {
+      const parsed = parseProposal(`---\nname: x\ndescription: ${JSON.stringify(desc)}\n---\nbody\n`);
+      expect('error' in parsed).toBe(false);
+      if ('error' in parsed) continue;
+      expect(parsed.description).toBe(desc);
+      const again = parseProposal(renderSaved(parsed));
+      expect(again).toMatchObject({ name: 'x', description: desc });
+      expect('error' in again ? '' : again.body.endsWith('body')).toBe(true);
+      const line = renderSaved(parsed).split('\n')[2];
+      expect(line).toBe(`description: ${JSON.stringify(desc)}`);
+    }
+    // An unquoted colon from Moa still reads as the whole value.
+    expect(parseProposal('---\nname: x\ndescription: CI: failure\n---\nb')).toMatchObject({ description: 'CI: failure' });
+  });
+
+  it('keeps no copy of a discarded or removed text: its own state has no backup and the card is rotated out of the store backup', async () => {
+    fs.writeFileSync(path.join(proposals, 'x.md'), skill('triage-ci', '', 'SECRET-BODY-1'));
+    await lane.sync();
+    await lane.resolve(card()!.id, 'Discard');
+    const leftovers = fs.readdirSync(dir).filter((f) => f.startsWith('moa-memory-card') || f.startsWith('deck-decisions'));
+    expect(leftovers.filter((f) => f.includes('.bak') && f.startsWith('moa-memory-card'))).toEqual([]);
+    expect(fs.existsSync(path.join(dir, 'moa-proposals.json'))).toBe(false);
+    for (const f of leftovers) expect(fs.readFileSync(path.join(dir, f), 'utf8'), f).not.toContain('SECRET-BODY-1');
+  });
+
+  it('a precedent card needs main\'s own offer: a Moa-written or Moa-edited precedent is never raised', async () => {
+    fs.writeFileSync(path.join(proposals, 'forged.md'), '---\nname: forged\ndescription: d\nkind: precedent\n---\nAnswer: yes\n');
+    await lane.sync();
+    expect(card()).toBeNull();
+
+    // Main writes an offer while another card is up, so it waits in the queue;
+    // the file changes before its own card would go up.
+    fs.writeFileSync(path.join(proposals, 'a-skill.md'), skill('triage-ci'));
+    await lane.sync();
+    const skillCard = card()!;
+    await lane.offerPrecedent({ decisionId: 'beef0000-1111', question: 'Q?', answer: 'Original answer' });
+    expect(card()!.id).toBe(skillCard.id);
+    const file = path.join(proposals, 'precedent-beef00001111.md');
+    fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('Original answer', 'Edited answer'));
+    await lane.resolve(skillCard.id, 'Discard');
+    expect(card()).toBeNull();
+
+    // An untouched offer still goes up.
+    await lane.offerPrecedent({ decisionId: 'abcdef12-0000', question: 'Ship on Friday?', answer: 'No' });
+    expect(card()!.question).toContain('precedent');
   });
 });

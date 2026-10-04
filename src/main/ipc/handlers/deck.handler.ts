@@ -45,7 +45,7 @@ import type { BrainVendor } from '../../../shared/types';
 import { getMemoryRootDir, loadCommanderMemory } from '../../deck/commanderMemory';
 import { MoaMemoryLane } from '../../deck/moaMemory';
 import { getWorkLinkStore } from '../../workLink/workLinkStore';
-import { MOA_MEMORY_DECISION_KEY, type MoaMemoryItem } from '../../../shared/moa';
+import { MOA_MEMORY_DECISION_KEY, type MoaMemoryCard, type MoaMemoryItem } from '../../../shared/moa';
 import { loadDeckPolicyBlock, ensureDeckPolicySeed } from '../../deck/deckPolicy';
 import { grantReExamineLease, revokeReExamineLease } from '../../deck/reExamineLease';
 import {
@@ -93,7 +93,7 @@ import {
   isHqMigrationDone,
   isHqStoreCorrupt,
   isMoaEnabled,
-  isMoaProposalsEnabled,
+  isMoaMemoryProposalsEnabled,
   runNonHqMigration,
   setHqRuntime,
   setMoaEnabled,
@@ -660,7 +660,12 @@ export function registerDeckHandler(
 
   // Moa's precedents and skill proposals: one "Remember this?" card at a time,
   // under its own decision key (moaMemory.ts).
-  const moaMemory = new MoaMemoryLane();
+  const moaMemory = new MoaMemoryLane({
+    onChange: () => {
+      const win = getWindow();
+      if (win && !win.isDestroyed()) win.webContents.send(IPC.DECK_MOA_CHANGED, {});
+    },
+  });
   // The A2A task a decision was raised about, from its work link.
   const sourceTaskOf = (decisionId: string): { taskId?: string } => {
     try {
@@ -891,7 +896,7 @@ export function registerDeckHandler(
     // proposals on may write proposal files (and nothing else). Every other
     // brain is unchanged. Fixed for this manager's life, like its prompt.
     const isMoaHqPty = vendor === 'claude-pty' && workspaceId === getHqWorkspaceId() && isMoaEnabled();
-    const moaProposalsDir = isMoaHqPty && isMoaProposalsEnabled() ? moaMemory.proposalsDir : undefined;
+    const moaProposalsDir = isMoaHqPty && isMoaMemoryProposalsEnabled() ? moaMemory.proposalsDir : undefined;
     // The adapter's foreign-turn callback needs the manager the adapter is
     // about to be constructed INTO — late-bound through this holder, exactly
     // like the coalescer's own forward reference above. It can only fire long
@@ -2334,6 +2339,32 @@ export function registerDeckHandler(
     }),
   );
 
+  // The pending "Remember this?" card for the deck, with its full text, and
+  // its Save / Discard. Only these two answers exist on this surface.
+  ipcMain.removeHandler(IPC.DECK_MOA_MEMORY_CARD);
+  ipcMain.handle(
+    IPC.DECK_MOA_MEMORY_CARD,
+    wrapHandler(IPC.DECK_MOA_MEMORY_CARD, async (): Promise<{ card: MoaMemoryCard | null }> => ({
+      card: moaMemory.cardView(),
+    })),
+  );
+  ipcMain.removeHandler(IPC.DECK_MOA_MEMORY_RESOLVE);
+  ipcMain.handle(
+    IPC.DECK_MOA_MEMORY_RESOLVE,
+    wrapHandler(IPC.DECK_MOA_MEMORY_RESOLVE, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ ok: boolean; code?: string }> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? (raw as Record<string, unknown>) : {};
+      const id = typeof req.id === 'string' ? req.id : '';
+      const answer = req.answer === 'save' || req.answer === 'discard' ? req.answer : null;
+      if (!id || !answer) return { ok: false, code: 'invalid' };
+      const r = await moaMemory.resolve(id, answer, { fullTextShown: req.fullTextShown === true });
+      if (r.ok) emitMoaChanged();
+      return r.ok ? { ok: true } : { ok: false, code: r.code ?? 'not_pending' };
+    }),
+  );
+
   // Recovery for an unreadable deck-hq.json: move it aside and start over with
   // Moa off and no HQ.
   ipcMain.removeHandler(IPC.DECK_MOA_STORE_RESET);
@@ -3362,6 +3393,8 @@ export function registerDeckHandler(
     ipcMain.removeHandler(IPC.DECK_MOA_STORE_RESET);
     ipcMain.removeHandler(IPC.DECK_MOA_MEMORY_LIST);
     ipcMain.removeHandler(IPC.DECK_MOA_MEMORY_DELETE);
+    ipcMain.removeHandler(IPC.DECK_MOA_MEMORY_CARD);
+    ipcMain.removeHandler(IPC.DECK_MOA_MEMORY_RESOLVE);
     ipcMain.removeHandler(IPC.DECK_SEND);
     ipcMain.removeHandler(IPC.DECK_INTERRUPT);
     ipcMain.removeHandler(IPC.DECK_WAKE);

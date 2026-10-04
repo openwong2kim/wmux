@@ -82,6 +82,15 @@ describe('evaluateProposalWrite', () => {
     ).toBe('deny');
   });
 
+  it('refuses precedent-* names (main writes those) and replace_all edits', () => {
+    expect(check('Write', write(path.join(proposals, 'precedent-abc.md'))).behavior).toBe('deny');
+    expect(check('Write', write(path.join(proposals, 'Precedent-abc.md'))).behavior).toBe('deny');
+    fs.writeFileSync(path.join(proposals, 'small.md'), 'a a a a');
+    const edit = { file_path: path.join(proposals, 'small.md'), old_string: 'a', new_string: 'b'.repeat(4000) };
+    expect(check('Edit', { ...edit, replace_all: true }).behavior).toBe('deny');
+    expect(check('Edit', edit)).toEqual({ behavior: 'allow' });
+  });
+
   it('caps the size, counting the existing file for an Edit', () => {
     expect(check('Write', write(path.join(proposals, 'big.md'), 'a'.repeat(PROPOSAL_MAX_BYTES + 1))).behavior).toBe('deny');
     fs.writeFileSync(path.join(proposals, 'grow.md'), 'a'.repeat(PROPOSAL_MAX_BYTES - 2));
@@ -126,6 +135,15 @@ describe('the generated hook script', () => {
       expect(r.stdout).toBe('');
       expect(r.stderr.trim().length).toBeGreaterThan(0);
     }
+  });
+
+  it('blocks a precedent name and a replace_all edit in the script too', () => {
+    fs.writeFileSync(path.join(proposals, 'small.md'), 'a');
+    expect(runGate({ tool_name: 'Write', tool_input: write(path.join(proposals, 'precedent-x.md')) }).status).toBe(2);
+    expect(runGate({
+      tool_name: 'Edit',
+      tool_input: { file_path: path.join(proposals, 'small.md'), old_string: 'a', new_string: 'b', replace_all: true },
+    }).status).toBe(2);
   });
 
   it('fails closed on unreadable input', () => {

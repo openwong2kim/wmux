@@ -346,6 +346,12 @@ export const IPC = {
   //   { kind, name }. DECK_MOA_CHANGED also says this list moved.
   DECK_MOA_MEMORY_LIST: 'deck:moa:memory:list',
   DECK_MOA_MEMORY_DELETE: 'deck:moa:memory:delete',
+  //   DECK_MOA_MEMORY_CARD: the pending "Remember this?" card with the full
+  //   text Save would write, or null. DECK_MOA_MEMORY_RESOLVE { id, answer:
+  //   'save' | 'discard', fullTextShown } answers it. DECK_MOA_CHANGED says the
+  //   card moved (raised, answered, next).
+  DECK_MOA_MEMORY_CARD: 'deck:moa:memory:card',
+  DECK_MOA_MEMORY_RESOLVE: 'deck:moa:memory:resolve',
   //   HOOKS_BRIDGE_* — the Claude Code hook bridge (wmux setup-hooks, in-app).
   //   STATUS reports whether the wmux hook entries are installed in
   //   ~/.claude/settings.json; INSTALL performs the same idempotent install as

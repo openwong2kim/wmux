@@ -679,8 +679,8 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
       >
         <SettingRow id="moaproposals" label={t('moa.settings.proposals')} description={t('moa.settings.proposalsDesc')}>
           <Switch
-            checked={moa?.config.proposals !== false}
-            onCheckedChange={(v) => { void patchConfig({ proposals: v }); }}
+            checked={moa?.config.memoryProposals !== false}
+            onCheckedChange={(v) => { void patchConfig({ memoryProposals: v }); }}
             aria-label={t('moa.settings.proposals')}
             disabled={!loaded}
             data-testid="moa-proposals"

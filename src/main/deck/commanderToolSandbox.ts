@@ -152,9 +152,12 @@ export const PROPOSAL_WRITE_CHECK_SOURCE = String.raw`function checkProposalWrit
   if ((caseInsensitive ? parent.toLowerCase() : parent) !== (caseInsensitive ? dir.toLowerCase() : dir)) {
     return 'Moa can only write proposal files directly inside ' + dir + ' (no subfolders).';
   }
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}\.md$/.test(path.basename(resolved))) {
+  var base = path.basename(resolved);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}\.md$/.test(base)) {
     return 'A proposal is one .md file with a plain name (letters, digits, dot, dash, underscore).';
   }
+  if (/^precedent-/i.test(base)) return 'precedent-* files are written by wmux, not by Moa.';
+  if (toolName === 'Edit' && input.replace_all === true) return 'Edit a proposal one occurrence at a time (replace_all is not available).';
   var dirStat;
   try { dirStat = fs.lstatSync(dir); } catch (e) { return 'The proposals folder does not exist.'; }
   if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) return 'The proposals folder is not a plain folder.';

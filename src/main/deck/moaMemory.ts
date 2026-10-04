@@ -25,11 +25,11 @@
 // (`allowed-tools` would grant tools), the `!`-backtick inline-shell syntax, NUL
 // bytes, and oversize files. Moa off, or proposals off, means no cards.
 
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { getWmuxDir } from '../../daemon/config';
-import { atomicReadJSONSync, atomicWriteJSON } from '../../daemon/util/atomicWrite';
-import { MOA_MEMORY_DECISION_KEY, type MoaMemoryItem } from '../../shared/moa';
+import { MOA_MEMORY_DECISION_KEY, type MoaMemoryCard, type MoaMemoryItem } from '../../shared/moa';
 import { getMemoryRootDir } from './commanderMemory';
 import { PROPOSAL_MAX_BYTES } from './commanderToolSandbox';
 import { buildBrainSkills } from './brainSkills';
@@ -40,7 +40,7 @@ import {
   loadWorkspaceDecision,
   raiseDecision,
 } from './deckDecisionStore';
-import { getHqWorkspaceId, isMoaProposalsEnabled } from './deckHqStore';
+import { getHqWorkspaceId, isMoaMemoryProposalsEnabled } from './deckHqStore';
 import { createSerialChain } from './serialChain';
 
 export type ProposalKind = 'skill' | 'note' | 'precedent';
@@ -74,10 +74,29 @@ function reservedSkillNames(): Set<string> {
 
 function unquote(v: string): string {
   const t = v.trim();
-  if (t.length >= 2 && ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'")))) {
+  if (t.length >= 2 && t.startsWith('"') && t.endsWith('"')) {
+    // A double-quoted scalar is how renderSaved writes one (JSON escapes are a
+    // subset of YAML's double-quoted escapes).
+    try {
+      const parsed: unknown = JSON.parse(t);
+      if (typeof parsed === 'string') return parsed.trim();
+    } catch {
+      /* not JSON: fall back to stripping the quotes */
+    }
     return t.slice(1, -1).trim();
   }
+  if (t.length >= 2 && t.startsWith("'") && t.endsWith("'")) return t.slice(1, -1).replace(/''/g, "'").trim();
   return t;
+}
+
+/** A YAML-safe scalar: double-quoted with JSON escapes, so `:`, `#`, quotes
+ *  and leading indicators can never change the frontmatter's shape. */
+function yamlString(v: string): string {
+  return JSON.stringify(v.replace(/[\r\n]+/g, ' '));
+}
+
+function sha256(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex');
 }
 
 /**
@@ -106,7 +125,9 @@ export function parseProposal(text: string): ParsedProposal | { error: string } 
   const name = fields.get('name') ?? '';
   if (!NAME_RE.test(name)) return { error: 'name must be lowercase-kebab, at most 64 characters' };
   const description = fields.get('description') ?? '';
-  if (!description || description.length > MAX_DESCRIPTION_CHARS) return { error: 'description is missing or too long' };
+  if (!description || description.length > MAX_DESCRIPTION_CHARS || /[\r\n]/.test(description)) {
+    return { error: 'description is missing, too long or multi-line' };
+  }
   const kindRaw = fields.get('kind') ?? 'skill';
   const kind: ProposalKind | null =
     kindRaw === 'skill' ? 'skill' : kindRaw === 'note' || kindRaw === 'memory' ? 'note' : kindRaw === 'precedent' ? 'precedent' : null;
@@ -122,7 +143,7 @@ export function parseProposal(text: string): ParsedProposal | { error: string } 
 /** The text a saved proposal is written as: rebuilt from validated fields, so
  *  nothing outside them survives the save. */
 export function renderSaved(p: ParsedProposal): string {
-  const front = ['---', `name: ${p.name}`, `description: ${p.description.replace(/\n/g, ' ')}`];
+  const front = ['---', `name: ${p.name}`, `description: ${yamlString(p.description)}`];
   if (p.kind !== 'skill') front.push(`kind: ${p.kind}`);
   front.push('---');
   const marker = p.kind === 'skill' ? `${MOA_SAVED_SKILL_MARKER}\n\n` : '';
@@ -142,7 +163,7 @@ export function renderPrecedentOffer(args: {
   return [
     '---',
     `name: ${name}`,
-    `description: ${firstLine}`,
+    `description: ${yamlString(firstLine)}`,
     'kind: precedent',
     '---',
     PRECEDENT_FRAMING,
@@ -161,6 +182,8 @@ function savedPath(p: { kind: ProposalKind; name: string }, roots: { memoryDir: 
   return path.join(roots.memoryDir, `${p.kind}-${p.name}.md`);
 }
 
+/** Write via a temp file and a rename, keeping no backup copy: a discarded
+ *  proposal or a removed memory must leave nothing behind. */
 function writeFileAtomic(target: string, content: string): void {
   fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
   const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
@@ -183,13 +206,28 @@ interface PendingCard {
   decisionId: string;
   /** The proposal's file name inside `_proposals/`. */
   file: string;
-  /** The exact text the card showed; Save writes this. */
+  /** The proposal text when the card went up; Save writes what it renders to. */
   snapshot: string;
   raisedAt: number;
+  /** Whether the decision's own context holds the whole text Save would
+   *  write. Only then may a surface that shows just that context save. */
+  fullTextInContext: boolean;
 }
 
 interface CardState {
   pending: PendingCard | null;
+  /** Precedent offers main wrote: proposal file name → sha256 of its text.
+   *  A precedent card is raised only for a file listed here, unchanged. */
+  offers: Record<string, string>;
+}
+
+
+/** How the operator answered a card. Anything else is not an answer. */
+export function parseCardAnswer(resolution: string): 'save' | 'discard' | null {
+  const a = resolution.trim().toLowerCase();
+  if (a === SAVE_ANSWER.toLowerCase()) return 'save';
+  if (a === DISCARD_ANSWER.toLowerCase()) return 'discard';
+  return null;
 }
 
 export interface MoaMemoryLaneOptions {
@@ -198,6 +236,8 @@ export interface MoaMemoryLaneOptions {
   /** Memory root. Defaults to `<dir>/memory`. */
   memoryRoot?: string;
   log?: (line: string) => void;
+  /** Told after a card goes up or comes down, so the deck can re-read it. */
+  onChange?: () => void;
 }
 
 export interface ResolveResult {
@@ -237,32 +277,63 @@ export class MoaMemoryLane {
   }
 
   private statePath(): string {
-    return path.join(this.dir, 'moa-proposals.json');
+    return path.join(this.dir, 'moa-memory-card.json');
   }
 
   private loadState(): CardState {
+    const state: CardState = { pending: null, offers: {} };
+    let raw: { pending?: unknown; offers?: unknown } | null;
     try {
-      const raw = atomicReadJSONSync<unknown>(this.statePath()) as { pending?: unknown } | null;
-      const p = raw && typeof raw === 'object' ? (raw.pending as Record<string, unknown> | null | undefined) : null;
-      if (
-        p && typeof p.decisionId === 'string' && typeof p.file === 'string'
-        && typeof p.snapshot === 'string' && typeof p.raisedAt === 'number'
-      ) {
-        return { pending: { decisionId: p.decisionId, file: p.file, snapshot: p.snapshot, raisedAt: p.raisedAt } };
-      }
+      raw = JSON.parse(fs.readFileSync(this.statePath(), 'utf8')) as { pending?: unknown; offers?: unknown } | null;
     } catch {
-      /* a missing or torn state file is "no card" */
+      return state; // a missing or torn state file is "no card"
     }
-    return { pending: null };
+    const p = raw && typeof raw === 'object' ? (raw.pending as Record<string, unknown> | null | undefined) : null;
+    if (
+      p && typeof p.decisionId === 'string' && typeof p.file === 'string'
+      && typeof p.snapshot === 'string' && typeof p.raisedAt === 'number'
+    ) {
+      state.pending = {
+        decisionId: p.decisionId,
+        file: p.file,
+        snapshot: p.snapshot,
+        raisedAt: p.raisedAt,
+        fullTextInContext: p.fullTextInContext === true,
+      };
+    }
+    const offers = raw && typeof raw === 'object' ? raw.offers : null;
+    if (offers && typeof offers === 'object' && !Array.isArray(offers)) {
+      for (const [k, v] of Object.entries(offers as Record<string, unknown>)) {
+        if (typeof v === 'string') state.offers[k] = v;
+      }
+    }
+    return state;
   }
 
-  private async saveState(state: CardState): Promise<void> {
-    await atomicWriteJSON(this.statePath(), state);
+  /** Main-owned state, written with no backup copy (see writeFileAtomic). */
+  private saveState(state: CardState): void {
+    writeFileAtomic(this.statePath(), JSON.stringify(state));
+  }
+
+  /** Take the card down. The decision store keeps the previous file as a
+   *  backup, so a second write rotates the card's text out of it too. */
+  private async clearCard(): Promise<void> {
+    await clearDecision(MOA_MEMORY_DECISION_KEY, this.dir);
+    await clearDecision(MOA_MEMORY_DECISION_KEY, this.dir);
+    this.changed();
+  }
+
+  private changed(): void {
+    try {
+      this.opts.onChange?.();
+    } catch {
+      /* a listener never breaks the lane */
+    }
   }
 
   /** The HQ these proposals belong to, or null when the lane is off. */
   private activeHq(): string | null {
-    if (!isMoaProposalsEnabled(this.dir)) return null;
+    if (!isMoaMemoryProposalsEnabled(this.dir)) return null;
     return getHqWorkspaceId(this.dir);
   }
 
@@ -289,15 +360,15 @@ export class MoaMemoryLane {
     const state = this.loadState();
     const card = loadWorkspaceDecision(MOA_MEMORY_DECISION_KEY, this.dir);
     if (!hq) {
-      if (card) await clearDecision(MOA_MEMORY_DECISION_KEY, this.dir);
-      if (state.pending) await this.saveState({ pending: null });
+      if (card) await this.clearCard();
+      if (state.pending) this.saveState({ ...state, pending: null });
       return;
     }
     if (state.pending && card?.status === 'pending' && card.id === state.pending.decisionId) return;
     // A card nobody tracks (or a state whose card is gone): start over. The
     // proposal file is still on disk, so it is raised again below.
-    if (card) await clearDecision(MOA_MEMORY_DECISION_KEY, this.dir);
-    if (state.pending) await this.saveState({ pending: null });
+    if (card) await this.clearCard();
+    if (state.pending) this.saveState({ ...state, pending: null });
     await this.raiseNext(hq);
   }
 
@@ -321,27 +392,56 @@ export class MoaMemoryLane {
     return withTime.map((x) => x.n);
   }
 
+  private skip(file: string, text: string, reason: string): void {
+    const key = `${file}:${sha256(text)}`;
+    if (this.warned.has(key)) return;
+    this.warned.add(key);
+    this.log(`skipping proposal ${file}: ${reason}`);
+  }
+
   private async raiseNext(hq: string): Promise<void> {
-    for (const file of this.listProposalFiles()) {
+    const state = this.loadState();
+    const files = this.listProposalFiles();
+    // Forget offers whose file is gone.
+    const live = new Set(files);
+    for (const f of Object.keys(state.offers)) if (!live.has(f)) delete state.offers[f];
+    for (const file of files) {
       const text = readPlainFile(path.join(this.proposalsDir, file), PROPOSAL_MAX_BYTES);
       if (text === null) continue;
       const parsed = parseProposal(text);
       if ('error' in parsed) {
-        const key = `${file}:${text.length}`;
-        if (!this.warned.has(key)) {
-          this.warned.add(key);
-          this.log(`skipping proposal ${file}: ${parsed.error}`);
-        }
+        this.skip(file, text, parsed.error);
         continue;
       }
-      const decision = await raiseDecision(MOA_MEMORY_DECISION_KEY, this.renderCard(parsed, hq), this.dir);
-      if (!decision) return;
-      await this.saveState({ pending: { decisionId: decision.id, file, snapshot: text, raisedAt: decision.raisedAt } });
-      return;
+      // A precedent is the operator's own answer: only main writes one, so
+      // only a file main recorded, unchanged since, may become a card.
+      if (parsed.kind === 'precedent' && state.offers[file] !== sha256(text)) {
+        this.skip(file, text, 'a precedent main did not write');
+        continue;
+      }
+      const card = this.renderCard(parsed, hq);
+      const decision = await raiseDecision(
+        MOA_MEMORY_DECISION_KEY,
+        { question: card.question, options: [SAVE_ANSWER, DISCARD_ANSWER], context: card.context },
+        this.dir,
+      );
+      if (!decision) break;
+      state.pending = {
+        decisionId: decision.id,
+        file,
+        snapshot: text,
+        raisedAt: decision.raisedAt,
+        // Trust what the store kept, not what was asked for: it may cap or
+        // prefix the context.
+        fullTextInContext: card.fullTextInContext && decision.context.includes(renderSaved(parsed).trim()),
+      };
+      break;
     }
+    this.saveState(state);
+    if (state.pending) this.changed();
   }
 
-  private renderCard(p: ParsedProposal, hq: string): { question: string; options: string[]; context: string } {
+  private renderCard(p: ParsedProposal, hq: string): { question: string; context: string; fullTextInContext: boolean } {
     const replaces = fs.existsSync(savedPath(p, this.roots(hq)));
     const what =
       p.kind === 'precedent'
@@ -350,18 +450,46 @@ export class MoaMemoryLane {
           ? `Remember this? Moa proposes a memory note: "${p.name}"`
           : `Remember this? Moa proposes a skill: "${p.name}"`;
     const question = replaces ? `${what} (replaces the saved one)` : what;
-    // Shown to the operator as text. The preview is data, never instructions.
-    const context = `${p.description}\n---\n${p.body}`.slice(0, DECISION_LIMITS.MAX_CONTEXT_CHARS);
-    return { question, options: [SAVE_ANSWER, DISCARD_ANSWER], context };
+    // Shown to the operator as text. The whole text Save writes when it fits;
+    // otherwise a pointer to the deck card, which shows all of it.
+    const fullText = renderSaved(p);
+    const fullTextInContext = fullText.length <= DECISION_LIMITS.MAX_CONTEXT_CHARS;
+    const context = fullTextInContext
+      ? fullText
+      : `${p.description.slice(0, 400)}\n---\nToo long to show here (${fullText.length} characters). Open Moa's deck to read the full text before saving.`;
+    return { question, context, fullTextInContext };
+  }
+
+  /** The pending card with the full text Save would write, or null. */
+  cardView(): MoaMemoryCard | null {
+    const hq = this.activeHq();
+    if (!hq) return null;
+    const { pending } = this.loadState();
+    const card = loadWorkspaceDecision(MOA_MEMORY_DECISION_KEY, this.dir);
+    if (!pending || card?.id !== pending.decisionId || card.status !== 'pending') return null;
+    const parsed = parseProposal(pending.snapshot);
+    if ('error' in parsed) return null;
+    return {
+      id: card.id,
+      kind: parsed.kind,
+      name: parsed.name,
+      question: card.question,
+      description: parsed.description,
+      fullText: renderSaved(parsed),
+      replaces: fs.existsSync(savedPath(parsed, this.roots(hq))),
+    };
   }
 
   /**
-   * The operator answered the card. Save writes the snapshot the card showed;
-   * anything else discards. The proposal file is removed only while it still
-   * holds that snapshot, so an edit Moa made meanwhile comes back as a new
-   * card. Then the next card goes up.
+   * The operator answered the card: exactly Save or Discard. Save writes what
+   * the snapshot renders to, never a re-read of the file Moa can still edit.
+   * Any other answer changes nothing and the card stays up. Save from a
+   * surface that showed only the decision's context is refused when that
+   * context did not hold the whole text (`fullTextShown`). The proposal file is
+   * removed only while it still holds the snapshot, so an edit Moa made
+   * meanwhile comes back as a new card. Then the next card goes up.
    */
-  resolve(decisionId: string, resolution: string): Promise<ResolveResult> {
+  resolve(decisionId: string, resolution: string, opts: { fullTextShown?: boolean } = {}): Promise<ResolveResult> {
     return this.serial(async () => {
       try {
         const state = this.loadState();
@@ -370,7 +498,10 @@ export class MoaMemoryLane {
           return { ok: false, code: 'not_pending' };
         }
         const pending = state.pending;
-        const save = resolution.trim().toLowerCase() === SAVE_ANSWER.toLowerCase();
+        const answer = parseCardAnswer(resolution);
+        if (!answer) return { ok: false, code: 'unknown_answer' };
+        const save = answer === 'save';
+        if (save && !opts.fullTextShown && !pending.fullTextInContext) return { ok: false, code: 'open_full_text' };
         const hq = this.activeHq();
         let saved = false;
         if (save && hq) {
@@ -388,8 +519,10 @@ export class MoaMemoryLane {
             /* already gone */
           }
         }
-        await this.saveState({ pending: null });
-        await clearDecision(MOA_MEMORY_DECISION_KEY, this.dir);
+        const offers = { ...state.offers };
+        delete offers[pending.file];
+        this.saveState({ pending: null, offers });
+        await this.clearCard();
         if (hq) await this.raiseNext(hq);
         return { ok: true, saved };
       } catch (err) {
@@ -414,7 +547,11 @@ export class MoaMemoryLane {
           return;
         }
         fs.mkdirSync(this.proposalsDir, { recursive: true, mode: 0o700 });
-        writeFileAtomic(path.join(this.proposalsDir, `precedent-${parsed.name}.md`), text);
+        const file = `precedent-${parsed.name}.md`;
+        writeFileAtomic(path.join(this.proposalsDir, file), text);
+        const state = this.loadState();
+        state.offers[file] = sha256(text);
+        this.saveState(state);
       } catch (err) {
         this.log(`could not queue a precedent offer: ${String(err)}`);
       }

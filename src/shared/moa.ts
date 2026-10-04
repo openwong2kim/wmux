@@ -20,10 +20,10 @@ export interface MoaConfig {
   approvalPress?: boolean;
   /** Moa may propose precedents and skills ("Remember this?"); nothing is
    *  saved without the operator's click. Absent = on. */
-  proposals?: boolean;
+  memoryProposals?: boolean;
 }
 
-export type MoaConfigPatch = Partial<Pick<MoaConfig, 'onboarded' | 'level' | 'maxTurnsPerHour' | 'bubbles' | 'reduceMotion' | 'approvalPress' | 'proposals'>>;
+export type MoaConfigPatch = Partial<Pick<MoaConfig, 'onboarded' | 'level' | 'maxTurnsPerHour' | 'bubbles' | 'reduceMotion' | 'approvalPress' | 'memoryProposals'>>;
 
 export interface MoaState {
   config: MoaConfig;
@@ -73,4 +73,17 @@ export interface MoaMemoryItem {
   name: string;
   description: string;
   savedAt: number;
+}
+
+/** The pending "Remember this?" card, with everything Save would write. */
+export interface MoaMemoryCard {
+  id: string;
+  kind: 'precedent' | 'note' | 'skill';
+  name: string;
+  question: string;
+  description: string;
+  /** Exactly the text Save writes. */
+  fullText: string;
+  /** Save replaces an item already kept under this name. */
+  replaces: boolean;
 }

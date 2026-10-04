@@ -1641,3 +1641,35 @@ describe('first-turn memory', () => {
     throwing.dispose();
   });
 });
+
+describe('first-turn memory after the conversation changes', () => {
+  it('rides the next turn again once a foreign Stop reports a different session (e.g. /clear)', async () => {
+    const host = makeHost();
+    const adapter = makeAdapter(host, { loadMemory: () => 'MEMORY-BLOCK' });
+    const first = collect(adapter.send('first'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const ptyId = host.created[0].id;
+    expect(host.writes[0].data).toContain('MEMORY-BLOCK');
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 's1' }));
+    await first;
+
+    // A foreign Stop on the SAME conversation changes nothing.
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 's1' }));
+    let n = host.writes.length;
+    const second = collect(adapter.send('second'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(n));
+    expect(host.writes[n].data).not.toContain('MEMORY-BLOCK');
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 's1' }));
+    await second;
+
+    // The human cleared the TUI: a new conversation id arrives on a foreign Stop.
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 's2' }));
+    n = host.writes.length;
+    const third = collect(adapter.send('third'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(n));
+    expect(host.writes[n].data).toContain('MEMORY-BLOCK');
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 's2' }));
+    await third;
+    adapter.dispose();
+  });
+});
