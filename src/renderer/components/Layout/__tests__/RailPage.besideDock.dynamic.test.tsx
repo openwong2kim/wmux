@@ -93,6 +93,15 @@ describe('RailPage beside the dock', () => {
     expect(page()?.getAttribute('data-beside-dock')).toBeNull();
   });
 
+  it('watches only the dock region\'s own children, never its subtree (streamed messages would force layouts)', () => {
+    const observe = vi.spyOn(MutationObserver.prototype, 'observe');
+    act(() => root.render(<RailPage />));
+    act(() => useStore.setState({ appRoute: 'git' }));
+    const onRegion = observe.mock.calls.filter(([target]) => (target as Element).hasAttribute?.('data-dock-region'));
+    expect(onRegion.map(([, opts]) => opts)).toEqual([{ childList: true }]);
+    observe.mockRestore();
+  });
+
   it('focus in the dock stays on the Git page and is dropped under a page that covers it', () => {
     act(() => root.render(<RailPage />));
     dock.focus();

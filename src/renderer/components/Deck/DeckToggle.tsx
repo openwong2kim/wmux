@@ -23,6 +23,7 @@ import { FOCUS_RING } from '../focusRing';
 import { Icon } from '../icons';
 import { sumUnread } from '../Channels/ChannelsPanel';
 import { showWorkspaces } from '../../utils/showWorkspaces';
+import { dockShownOn } from '../Layout/pagesBesideDock';
 
 /**
  * Whether the collapsed deck holds anything worth opening it for: unread
@@ -36,10 +37,10 @@ export function deckHasSignal(unread: number): boolean {
 
 export default function DeckToggle() {
   const t = useT();
-  // The dock lives on the Workspaces page; under another page it is not on
-  // screen, whatever its flag says.
-  const onWorkspaces = useStore((s) => s.appRoute === 'workspaces');
-  const visible = useStore((s) => s.channelDockVisible) && onWorkspaces;
+  // The dock shows on the Workspaces page and beside the pages that leave it
+  // in view (Git); under another page it is not on screen, whatever its flag says.
+  const shownHere = useStore((s) => dockShownOn(s.appRoute));
+  const visible = useStore((s) => s.channelDockVisible) && shownHere;
   const setChannelDockVisible = useStore((s) => s.setChannelDockVisible);
   const setActiveDeckTab = useStore((s) => s.setActiveDeckTab);
   // Moa on: the titlebar's Moa button opens this same panel, so this one
@@ -71,9 +72,10 @@ export default function DeckToggle() {
     <button
       type="button"
       onClick={() => {
-        // From another page: show the Workspaces page with the dock open, so
-        // it never opens (and resizes the terminals) behind an inert page.
-        showWorkspaces(useStore.getState());
+        // Where the dock shows (Workspaces, or beside Git) it opens and closes
+        // in place. From another page: show the Workspaces page with the dock
+        // open, so it never opens (and resizes the terminals) behind an inert page.
+        if (!shownHere) showWorkspaces(useStore.getState());
         // Opening lands on the conversation (Moa's, or the orchestrator's),
         // not on whichever tab was left selected.
         if (!visible) setActiveDeckTab('commander');

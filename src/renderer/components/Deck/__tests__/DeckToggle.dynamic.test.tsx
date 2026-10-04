@@ -152,4 +152,17 @@ describe('DeckToggle', () => {
     expect(useStore.getState().channelDockVisible).toBe(true);
     expect(btn().getAttribute('aria-expanded')).toBe('true');
   });
+
+  it('beside the Git page it reads the dock as shown and collapses and opens it in place', () => {
+    act(() => { useStore.setState({ channelDockVisible: true, appRoute: 'git' }); });
+    mount();
+    expect(btn().getAttribute('aria-expanded')).toBe('true');
+    expect(btn().getAttribute('aria-label')).toBe('Hide tools panel');
+    act(() => { btn().dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    expect(useStore.getState().appRoute).toBe('git');
+    expect(useStore.getState().channelDockVisible).toBe(false);
+    act(() => { btn().dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    expect(useStore.getState().appRoute).toBe('git');
+    expect(useStore.getState().channelDockVisible).toBe(true);
+  });
 });

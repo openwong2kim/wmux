@@ -5,11 +5,10 @@ import FleetView from '../FleetView/FleetView';
 import SchedulesView from '../Schedules/SchedulesView';
 import RemotePage from '../Remote/RemotePage';
 import GitPage from '../Git/GitPage';
+import { PAGES_BESIDE_DOCK } from './pagesBesideDock';
 
 const SettingsPanel = lazy(() => import('../Settings/SettingsPanel'));
 
-/** Rail pages that leave the dock (Moa, channels) in view beside them. */
-const PAGES_BESIDE_DOCK = new Set(['git']);
 
 /**
  * How far a page beside the dock stays off each edge of the sheet so the dock
@@ -47,13 +46,15 @@ function useInsetBesideDock(enabled: boolean, page: React.RefObject<HTMLDivEleme
     const sheet = page.current?.parentElement;
     if (sheet) ro.observe(sheet);
     const region = document.querySelector('[data-dock-region]');
-    // The dock mounts and unmounts as it opens and closes: watch the region.
+    // The dock mounts and unmounts as it opens and closes: watch the region's
+    // own children only (its root is one), never the subtree, or every
+    // streamed message would re-measure and force a layout.
     const mo = new MutationObserver(() => {
       measure();
       const dock = document.querySelector('[data-dock-region] .wmux-dock');
       if (dock) ro.observe(dock);
     });
-    if (region) mo.observe(region, { childList: true, subtree: true });
+    if (region) mo.observe(region, { childList: true });
     const dock = document.querySelector('[data-dock-region] .wmux-dock');
     if (dock) ro.observe(dock);
     window.addEventListener('resize', measure);

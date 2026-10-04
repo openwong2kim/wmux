@@ -79,7 +79,11 @@ describe('channel dock — wiring regression guard', () => {
 describe('channel dock beside the Git page (Moa stays in reach)', () => {
   it('the dock is its own region, outside the inert Workspaces page, and only the Git page leaves it live', () => {
     const region = appLayout.slice(appLayout.indexOf('data-dock-region') - 200, appLayout.indexOf('data-dock-region'));
-    expect(region).toMatch(/inert=\{appRoute !== 'workspaces' && appRoute !== 'git' && !inspectModeActive\}/);
+    expect(region).toMatch(/inert=\{!dockShownOn\(appRoute\) && !inspectModeActive\}/);
+    // The one shared rule: the Workspaces page, and Git beside the dock.
+    const besideDock = read('components/Layout/pagesBesideDock.ts');
+    expect(besideDock).toMatch(/PAGES_BESIDE_DOCK[^=]*= new Set<AppRoute>\(\['git'\]\)/);
+    expect(besideDock).toMatch(/route === 'workspaces' \|\| PAGES_BESIDE_DOCK\.has\(route\)/);
     // The dock is mounted inside that region, not inside a data-workspaces-page wrapper.
     const dockAt = appLayout.indexOf('<ChannelDock />');
     const regionAt = appLayout.indexOf('data-dock-region');

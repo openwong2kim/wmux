@@ -97,6 +97,7 @@ import {
 } from '../../../shared/ptyRecovery';
 import { isChatV2Covering } from '../ChatV2/coverage';
 import { overlayColors } from '../../utils/titlebarOverlay';
+import { dockShownOn } from './pagesBesideDock';
 
 interface ReconcilePtySession extends DeadPaneSessionSnapshot {
   id: string;
@@ -2051,7 +2052,7 @@ export default function AppLayout() {
           modes live in this region: `contents` keeps the inline dock the same
           flex item it always was, and the overlay still positions against
           the sheet. */}
-      <div className="contents" inert={appRoute !== 'workspaces' && appRoute !== 'git' && !inspectModeActive} data-dock-region>
+      <div className="contents" inert={!dockShownOn(appRoute) && !inspectModeActive} data-dock-region>
       {channelDockVisible && dockMode === 'inline' && (
         <ErrorBoundary name="ChannelDock">
           <ChannelDock />
