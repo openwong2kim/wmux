@@ -812,6 +812,24 @@ const electronAPI = {
         ipcRenderer.invoke(IPC.DECK_MOA_MEMORY_CARD) as Promise<{ card: import('../shared/moa').MoaMemoryCard | null }>,
       memoryResolve: (args: { id: string; answer: 'save' | 'discard'; fullTextShown: boolean }) =>
         ipcRenderer.invoke(IPC.DECK_MOA_MEMORY_RESOLVE, args) as Promise<{ ok: boolean; code?: string }>,
+      // Every workspace's pending decision ("Waiting on you").
+      decisions: () =>
+        ipcRenderer.invoke(IPC.DECK_MOA_DECISIONS) as Promise<{ decisions: import('../shared/moa').MoaPendingDecision[] }>,
+      // The HQ brain's transcript as turn events (chat look over the terminal brain).
+      transcript: {
+        status: () =>
+          ipcRenderer.invoke(IPC.DECK_MOA_TRANSCRIPT_STATUS) as Promise<import('../shared/transcript/turnEvents').TranscriptStatus>,
+        snapshot: (opts?: { before?: number }) =>
+          ipcRenderer.invoke(IPC.DECK_MOA_TRANSCRIPT_SNAPSHOT, opts ?? {}) as Promise<import('../shared/transcript/turnEvents').TranscriptPage | null>,
+        subscribe: () =>
+          ipcRenderer.invoke(IPC.DECK_MOA_TRANSCRIPT_SUBSCRIBE) as Promise<import('../shared/transcript/turnEvents').TranscriptStatus>,
+        unsubscribe: () => ipcRenderer.invoke(IPC.DECK_MOA_TRANSCRIPT_UNSUBSCRIBE) as Promise<void>,
+        onAppend: (callback: (data: import('../shared/transcript/turnEvents').TranscriptAppendData) => void) => {
+          const listener = (_e: Electron.IpcRendererEvent, data: import('../shared/transcript/turnEvents').TranscriptAppendData): void => callback(data);
+          ipcRenderer.on(IPC.DECK_MOA_TRANSCRIPT_APPEND, listener);
+          return () => { ipcRenderer.removeListener(IPC.DECK_MOA_TRANSCRIPT_APPEND, listener); };
+        },
+      },
       onChanged: (callback: () => void) => {
         const listener = (): void => callback();
         ipcRenderer.on(IPC.DECK_MOA_CHANGED, listener);

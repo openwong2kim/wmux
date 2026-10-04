@@ -352,6 +352,20 @@ export const IPC = {
   //   card moved (raised, answered, next).
   DECK_MOA_MEMORY_CARD: 'deck:moa:memory:card',
   DECK_MOA_MEMORY_RESOLVE: 'deck:moa:memory:resolve',
+  //   DECK_MOA_DECISIONS — every workspace's pending decision, for the right
+  //   panel's "Waiting on you" ({ decisions: MoaPendingDecision[] }); a change
+  //   rides DECK_MOA_CHANGED.
+  //   DECK_MOA_TRANSCRIPT_* — the HQ brain's Claude transcript, projected in
+  //   main by the same TranscriptProjector the phone turn view uses (the brain
+  //   pane is never a daemon transcript session). STATUS / SNAPSHOT
+  //   ({ before? }) / SUBSCRIBE / UNSUBSCRIBE (invoke); APPEND (send, main →
+  //   renderer, TranscriptAppendData).
+  DECK_MOA_DECISIONS: 'deck:moa:decisions',
+  DECK_MOA_TRANSCRIPT_STATUS: 'deck:moa:transcript:status',
+  DECK_MOA_TRANSCRIPT_SNAPSHOT: 'deck:moa:transcript:snapshot',
+  DECK_MOA_TRANSCRIPT_SUBSCRIBE: 'deck:moa:transcript:subscribe',
+  DECK_MOA_TRANSCRIPT_UNSUBSCRIBE: 'deck:moa:transcript:unsubscribe',
+  DECK_MOA_TRANSCRIPT_APPEND: 'deck:moa:transcript:append',
   //   HOOKS_BRIDGE_* — the Claude Code hook bridge (wmux setup-hooks, in-app).
   //   STATUS reports whether the wmux hook entries are installed in
   //   ~/.claude/settings.json; INSTALL performs the same idempotent install as

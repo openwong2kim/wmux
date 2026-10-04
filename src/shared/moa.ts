@@ -134,3 +134,19 @@ export function parseIgnoredRepos(raw: unknown): string[] {
   }
   return out;
 }
+/** A pending decision in any workspace, for the panel's "Waiting on you". */
+export interface MoaPendingDecision {
+  workspaceId: string;
+  /** The workspace's display name when the desktop knows it. */
+  workspaceName?: string;
+  decision: {
+    id: string;
+    question: string;
+    options: string[];
+    context: string;
+    raisedAt: number;
+  };
+}
+
+/** Moa's mascot states (the panel header, the titlebar icon). */
+export type MoaMascotState = 'idle' | 'working' | 'needs-you' | 'done';
