@@ -3223,21 +3223,32 @@ read its `/turns`, exactly as for any pane.
 permission dialog ("Do you want to proceed?"), the daemon raises it as a
 `kind: "terminal_prompt"` approval record on the Moa pane — the same record,
 shape and rules as any pane's terminal prompt (see *`terminal_prompt` — the agent's own permission dialog* above),
-so a client needs nothing new for it. The record is in `GET /api/approvals`,
-its `approval` events are on `GET /api/events`, and a client that declared
-`terminal-prompt-answer` / `terminal-prompt-decline` answers or declines it
-through `POST /api/approvals/:id` / `…/decline` with the usual fences
-(fingerprint, `425 answer-too-soon`, one answer, `409 already-answered`). It
-is answerable only when the daemon can bind it to Moa's own tool call AND
-parse the dialog on screen. Today the parser binds the `<Tool> command`
-dialog shape (Bash) only, and Moa's brain cannot run Bash, so **Moa's
-prompts (WebFetch, WebSearch, reads outside its home, …) arrive as
-informational cards**: no `choices`, no `promptFingerprint`, and a press is
-refused with `answer-in-terminal`. Show them with the existing informational
-copy, e.g. "Answer on the desktop". The same holds when Moa's transcript is
-not known yet or a tool input is too large to carry. Binding more dialog
-shapes is a separate change to the shared parser. The desktop's Moa chat answers the same record, so an
-answer from either side settles it for both. While it is up:
+so a client needs nothing new to show it. The record is in `GET /api/approvals`
+and its `approval` events are on `GET /api/events`.
+
+**A device does not press it** — no answer, no decline — until the shared
+parser binds Moa's dialog shapes (a separate change). Today the parser binds
+the `<Tool> command` dialog shape (Bash) only, and Moa's brain cannot run
+Bash, so **Moa's prompts (WebFetch, WebSearch, reads outside its home, …)
+arrive as informational cards**: no `choices`, no `promptFingerprint`. The
+same holds when Moa's transcript is not known yet or a tool input is too
+large to carry. Show them with the existing informational copy, e.g. "Answer
+on the desktop". Whatever the record carries (an ExitPlanMode prompt can
+arrive with `choices`), a device's press is refused and nothing is typed:
+
+| Request | Response |
+|---|---|
+| `POST /api/approvals/:id` (answer) | `501 {error:"answer-in-terminal", reason:"unsupported-shape"}` |
+| `POST /api/approvals/:id/answer` (`decision-v2`) | `501 {error:"answer-in-terminal", reason:"unsupported-shape"}` |
+| `POST /api/approvals/:id/decline`, within 1.5 s of the record's creation | `425 {error:"answer-too-soon", effect:"none"}` |
+| `POST /api/approvals/:id/decline`, after that | `409 {error:"prompt-unverified", effect:"none"}` |
+| `POST /api/approvals/:id/decline`, already answered on the desktop | `409 {error:"already-answered", effect:"none"}` |
+
+Both answer routes refuse with that `501` whatever the client declared. A
+decline meets the route's usual checks first: `501 {error:"answer-in-terminal",
+reason:"no-capability"}` without `terminal-prompt-decline`, `403` without the
+input grant. The desktop's Moa chat answers the record; its answer settles
+it for the phone too. While it is up:
 
 - `/turns` reports `chat.blocked` exactly as for any pane's terminal prompt:
   `{by: "approval", approvalId}` to a capable client while the record is
