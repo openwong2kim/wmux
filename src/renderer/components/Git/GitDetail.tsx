@@ -17,6 +17,7 @@ import { DetailError, useDetail } from './useDetail';
 import { PrChecks, usePrChecks } from './PrChecks';
 import { PrReviewActions } from './PrReviewActions';
 import { PrFiles } from './PrFiles';
+import { WhoActsNext } from './WhoActsNext';
 import { PrStepText, getGithubBridge } from './PrSection';
 import { getIssueBridge } from './IssueSection';
 import { relTime } from './useGitList';
@@ -49,7 +50,7 @@ function reviewWord(state: string, t: (k: string) => string): string {
   return word === key ? state.toLowerCase().replaceAll('_', ' ') : word;
 }
 
-function DetailHeader({ title, number, repo, url, state, author, handoff, repoContext }: {
+function DetailHeader({ title, number, repo, url, state, author, handoff, repoContext, next }: {
   title: string;
   number: number;
   repo: string;
@@ -59,6 +60,8 @@ function DetailHeader({ title, number, repo, url, state, author, handoff, repoCo
   /** The item to hand to an agent (the keyboard / a11y twin of dragging it). */
   handoff: HandoffRef | null;
   repoContext?: GitDragOwner;
+  /** Who acts next on the item (its work link), drawn in the reserved slot. */
+  next?: React.ReactNode;
 }): React.ReactElement {
   const t = useT();
   const open = () => {
@@ -69,8 +72,8 @@ function DetailHeader({ title, number, repo, url, state, author, handoff, repoCo
       <div className="wmux-git-detail-titlerow">
         <h2 className="wmux-git-detail-title">{title}</h2>
         <div className="wmux-git-detail-actions">
-          {/* Reserved for "who acts next" (the shared work-link model); empty until then. */}
-          <div className="wmux-git-detail-slot" data-git-detail-slot />
+          {/* Who acts next (the shared work-link model); empty when no work is linked. */}
+          <div className="wmux-git-detail-slot" data-git-detail-slot>{next}</div>
           {handoff && (
             <button type="button" className={`wmux-git-button ${FOCUS_RING}`} onClick={open} data-git-send-agent>
               {t('git.detail.sendToAgent')}
@@ -234,6 +237,7 @@ export function GitDetail({ kind, repoPath, repoLabel, pr, issue, refreshKey = 0
           state={<PrStepText pr={pr} />}
           handoff={handoffRefOf('pr', pr)}
           repoContext={repo}
+          next={<WhoActsNext url={pr.url} />}
         />
         <PrBody key={`${repoPath}\0${pr.number}`} repoPath={repoPath} pr={pr} refreshKey={refreshKey} />
       </article>

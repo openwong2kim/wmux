@@ -2453,3 +2453,4 @@ html[data-fullscreen] .wmux-shell-body {
 .wmux-git-reply { display: flex; align-items: flex-start; gap: 6px; }
 .wmux-git-reply .wmux-git-ship-input { flex: 1; min-width: 0; padding: 4px 8px; font-size: 12px; }
 .wmux-git-composer { display: flex; flex-direction: column; gap: 6px; }
+.wmux-git-next { display: inline-block; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text-muted); }
