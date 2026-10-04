@@ -172,7 +172,6 @@ vi.mock('../../../deck/deckDecisionStore', () => ({
   isIssueProposalDecision: vi.fn((d: FakeDecision | null | undefined) => d?.origin === 'issue-proposal'),
   loadWorkspaceDecision: vi.fn((ws: string) => decisions.get(ws) ?? null),
   loadDeckDecisions: vi.fn(() => Object.fromEntries(decisions.entries())),
-  onDecisionsChanged: vi.fn(() => () => undefined),
   hasPendingDecision: vi.fn((ws: string) => decisions.get(ws)?.status === 'pending'),
   resolveDecision: vi.fn(async (ws: string, id: string, resolution: string) => {
     const d = decisions.get(ws);
