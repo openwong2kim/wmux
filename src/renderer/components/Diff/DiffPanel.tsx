@@ -18,6 +18,7 @@ import { useT } from '../../hooks/useT';
 import { buildDiffAskContext } from '../../../shared/diffAskContext';
 import { moaOwnsPanel, moaQuestionBlock } from '../Moa/panel/moaPanelMode';
 import { unwrapRpc } from '../../utils/unwrapRpc';
+import { HunkLines } from './HunkLines';
 
 // gpui button recipes (theme-safe color-mix on tokens; primary/danger keep the
 // rgba sheen the DESIGN spec calls for). Reused across this panel's header.
@@ -309,28 +310,6 @@ function CommentList({ comments }: { comments: DiffComment[] }) {
           <div className="text-[var(--text-sub)] whitespace-pre-wrap">{c.text}</div>
         </div>
       ))}
-    </div>
-  );
-}
-
-// hunk 라인에 +/- 색만 입힌다(신택스 하이라이팅 금지 — 비목표).
-function HunkBody({ bodyLines }: { bodyLines: readonly string[] }) {
-  return (
-    <div className="font-mono text-[11px] leading-[1.5] whitespace-pre overflow-x-auto">
-      {bodyLines.map((line, i) => {
-        const c = line.charAt(0);
-        const color =
-          c === '+'
-            ? 'text-[var(--accent-green)]'
-            : c === '-'
-              ? 'text-[var(--accent-red)]'
-              : 'text-[var(--text-sub)]';
-        return (
-          <div key={i} className={color}>
-            {line || ' '}
-          </div>
-        );
-      })}
     </div>
   );
 }
@@ -1092,7 +1071,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
                         </div>
                       )}
                       <div className="px-2 py-1">
-                        <HunkBody bodyLines={hunk.bodyLines} />
+                        <HunkLines bodyLines={hunk.bodyLines} />
                       </div>
                       {/* F10: 이 hunk 헤더에 매칭된 코멘트 인라인 표시. */}
                       <CommentList comments={fileComments.byHunk.get(hunk.header) ?? []} />
