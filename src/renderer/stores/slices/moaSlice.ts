@@ -12,6 +12,8 @@ import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import { createWorkspace } from '../../../shared/types';
 import { MOA_WORKSPACE_NAME, type MoaSetupResult, type MoaState } from '../../../shared/moa';
+import { moaQuestionBlock } from '../../components/Moa/panel/moaPanelMode';
+import { t } from '../../i18n';
 
 /** localStorage key holding the last HQ id main reported. Read at boot so the
  *  HQ stays hidden and guarded before the first DECK_MOA_STATE answers. */
@@ -97,6 +99,17 @@ export const createMoaSlice: StateCreator<StoreState, [['zustand/immer', never]]
     const prev = get().moa;
     set((state: StoreState) => { state.moa = next; });
     writeMoaHqSeed(next.hq.workspaceId);
+    // A Diff "Ask" still queued for the panel's brain: with Moa off or its HQ
+    // down the panel is only a card, so nothing sends it now, and sending it
+    // when Moa returns would fire an old question out of the blue. Drop it.
+    const block = moaQuestionBlock(next);
+    if (block && get().pendingBrainPrompt) {
+      get().setPendingBrainPrompt(null);
+      get().pushToast({
+        level: 'warn',
+        message: t(block === 'off' ? 'moa.panel.queuedDroppedOff' : 'moa.panel.queuedDroppedHq'),
+      });
+    }
     // Moa turned off while its workspace is on screen: the HQ is hidden from
     // the list, so leave it for the first listed workspace.
     const st = get();

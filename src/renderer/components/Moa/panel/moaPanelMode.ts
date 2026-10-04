@@ -33,6 +33,15 @@ export function moaOwnsPanel(moa: MoaState | null): boolean {
   return resolveMoaPanelMode(moa, null).kind === 'moa';
 }
 
+/** Why a question for the panel's brain cannot go now: Moa is switched off,
+ *  or its HQ cannot run. null when it can (Moa runs, or today's per-workspace
+ *  chat). The panel shows only a card in both blocked modes, so nothing would
+ *  pick a queued question up until Moa came back — long after it was asked. */
+export function moaQuestionBlock(moa: MoaState | null): 'off' | 'hq-problem' | null {
+  const kind = resolveMoaPanelMode(moa, null).kind;
+  return kind === 'off' || kind === 'hq-problem' ? kind : null;
+}
+
 /** The header mascot: a decision waiting on you outranks a running turn. */
 export function moaMascotState(args: { busy: boolean; pendingDecisions: number }): MoaMascotState {
   if (args.pendingDecisions > 0) return 'needs-you';

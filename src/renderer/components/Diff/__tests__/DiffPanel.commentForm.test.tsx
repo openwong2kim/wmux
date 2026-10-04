@@ -12,6 +12,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createRoot } from 'react-dom/client';
 import { act } from 'react';
 import DiffPanel from '../DiffPanel';
+import { useStore } from '../../../stores';
+import type { MoaState } from '../../../../shared/moa';
 import type { DiffReadResult } from '../../../../shared/diffParse';
 
 const TASK_ID = 'wtask-1';
@@ -208,5 +210,61 @@ describe('DiffPanel — inline comment composer (replaces dead window.prompt)', 
 
     expect(q(c, 'diff-comment-input')).toBeNull();
     expect(mutateChannelLocal).not.toHaveBeenCalled();
+  });
+});
+
+// Moa off, or its HQ down: the right panel is only a card, so nothing would
+// pick an Ask up until Moa came back — and then it fired an old question.
+// Ask is disabled with the reason instead, and never queues.
+describe('DiffPanel — Ask while Moa cannot take a question', () => {
+  const moa = (enabled: boolean, state: MoaState['hq']['state'] = 'ok'): MoaState => ({
+    config: { enabled, onboarded: true, level: 1, maxTurnsPerHour: 20, bubbles: true, reduceMotion: false, defaultReason: null },
+    hq: { workspaceId: 'ws-hq', state },
+    archive: { unacked: 0, total: 0 },
+  });
+  const askBtn = (c: Element) => c.querySelector<HTMLButtonElement>('[data-diff-ask]')!;
+
+  afterEach(() => {
+    useStore.setState({ moa: null, pendingBrainPrompt: null });
+  });
+
+  it('Moa off: Ask is disabled and says why', async () => {
+    useStore.setState({ moa: moa(false), pendingBrainPrompt: null });
+    const c = render();
+    await flush();
+    expect(askBtn(c).disabled).toBe(true);
+    expect(askBtn(c).title).toContain('Moa is off');
+  });
+
+  it('HQ problem: Ask is disabled and says why', async () => {
+    useStore.setState({ moa: moa(true, 'hq-missing'), pendingBrainPrompt: null });
+    const c = render();
+    await flush();
+    expect(askBtn(c).disabled).toBe(true);
+    expect(askBtn(c).title).toContain("Moa's workspace is unavailable");
+  });
+
+  it('a form left open when Moa switches off closes and queues nothing', async () => {
+    useStore.setState({ moa: moa(true), pendingBrainPrompt: null });
+    const c = render();
+    await flush();
+    expect(askBtn(c).disabled).toBe(false);
+    click(askBtn(c));
+    const input = c.querySelector<HTMLInputElement>('[data-diff-ask-form] input')!;
+    setInputValue(input, 'why this?');
+    act(() => { useStore.setState({ moa: moa(false) }); });
+    expect(c.querySelector('[data-diff-ask-form]')).toBeNull();
+    expect(useStore.getState().pendingBrainPrompt).toBeNull();
+  });
+
+  it('Moa running: Ask queues the question for the panel', async () => {
+    useStore.setState({ moa: moa(true), pendingBrainPrompt: null });
+    const c = render();
+    await flush();
+    click(askBtn(c));
+    const input = c.querySelector<HTMLInputElement>('[data-diff-ask-form] input')!;
+    setInputValue(input, 'why this?');
+    act(() => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
+    expect(useStore.getState().pendingBrainPrompt).toContain('why this?');
   });
 });

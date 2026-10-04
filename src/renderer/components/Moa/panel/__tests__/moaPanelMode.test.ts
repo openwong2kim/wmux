@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { moaMascotState, moaOwnsPanel, resolveMoaPanelMode } from '../moaPanelMode';
+import { moaMascotState, moaOwnsPanel, moaQuestionBlock, resolveMoaPanelMode } from '../moaPanelMode';
 import { selectTaskCards, MOA_TASK_CARD_LIMIT } from '../useMoaPanelData';
 import type { MoaState } from '../../../../../shared/moa';
 import type { WorkLink } from '../../../../../shared/workLink';
@@ -48,6 +48,18 @@ describe('resolveMoaPanelMode', () => {
     for (const state of ['hq-missing', 'hq-unknown', 'hq-store-corrupt'] as const) {
       expect(resolveMoaPanelMode(moa({ hq: { workspaceId: 'ws-hq', state } }), 'ws-a')).toEqual({ kind: 'hq-problem', state });
     }
+  });
+});
+
+describe('moaQuestionBlock', () => {
+  it('blocks a question only while Moa is off or its HQ cannot run', () => {
+    expect(moaQuestionBlock(moa({ enabled: false }))).toBe('off');
+    expect(moaQuestionBlock(moa({ hq: { workspaceId: 'ws-hq', state: 'hq-missing' } }))).toBe('hq-problem');
+    expect(moaQuestionBlock(moa({ hq: { workspaceId: null, state: 'hq-unknown' } }))).toBe('hq-problem');
+    expect(moaQuestionBlock(moa())).toBeNull();
+    // Today's per-workspace chat (no HQ, or Moa's state not known yet) takes it.
+    expect(moaQuestionBlock(moa({ hq: { workspaceId: null, state: 'unset' } }))).toBeNull();
+    expect(moaQuestionBlock(null)).toBeNull();
   });
 });
 

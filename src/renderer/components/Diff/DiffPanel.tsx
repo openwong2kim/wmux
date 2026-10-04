@@ -16,7 +16,7 @@ import { HUMAN_WORKSPACE_ID, CHANNEL_MENTIONS_MAX } from '../../../shared/channe
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { buildDiffAskContext } from '../../../shared/diffAskContext';
-import { moaOwnsPanel } from '../Moa/panel/moaPanelMode';
+import { moaOwnsPanel, moaQuestionBlock } from '../Moa/panel/moaPanelMode';
 import { unwrapRpc } from '../../utils/unwrapRpc';
 
 // gpui button recipes (theme-safe color-mix on tokens; primary/danger keep the
@@ -383,6 +383,9 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
   const pushToast = useStore((s) => s.pushToast);
   // When Moa runs, the question goes to Moa (the panel is pinned to its HQ).
   const askMoa = useStore((s) => moaOwnsPanel(s.moa));
+  // Moa off or its HQ down: the panel is only a card, so a question would sit
+  // queued until Moa came back. Ask is disabled instead, saying why.
+  const askBlock = useStore((s) => moaQuestionBlock(s.moa));
   const t = useT();
 
   // Bumped by every load() and by a successful Close. A load whose generation
@@ -726,9 +729,11 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
     (file: string, hunkHeader: string, hunkBody: string) => {
       const question = askText.trim();
       if (!question) return;
+      const st = useStore.getState();
+      // The form can be open when Moa switches off; never queue into a card.
+      if (moaQuestionBlock(st.moa)) return;
       setAskTarget(null);
       setAskText('');
-      const st = useStore.getState();
       const prompt = buildDiffAskContext({
         repoLabel: isTask ? meta?.worktreePath || taskId : repoPath,
         branch: meta?.branch || data?.snapshot.targetBranch || '',
@@ -978,12 +983,19 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
                         <div className="flex-1" />
                         {/* diff→오케스트레이터 질문 — 양 모드 공통(hunk 컨텍스트 동봉). */}
                         <button
-                          className="text-[10px] text-[var(--text-muted)] hover:text-[var(--text-main)]"
+                          className="text-[10px] text-[var(--text-muted)] hover:text-[var(--text-main)] disabled:opacity-40 disabled:hover:text-[var(--text-muted)]"
+                          disabled={askBlock !== null}
                           onClick={() => {
                             setAskText('');
                             setAskTarget((prev) => (prev === key ? null : key));
                           }}
-                          title={askMoa ? t('moa.panel.diffAskTitle') : t('diff.askOrchestrator') || 'Ask the orchestrator about this hunk'}
+                          title={
+                            askBlock === 'off'
+                              ? t('moa.panel.diffAskOff')
+                              : askBlock === 'hq-problem'
+                                ? t('moa.panel.diffAskHqProblem')
+                                : askMoa ? t('moa.panel.diffAskTitle') : t('diff.askOrchestrator') || 'Ask the orchestrator about this hunk'
+                          }
                           data-diff-ask
                         >
                           {t('diff.ask') || 'Ask'}
@@ -1008,7 +1020,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
                         )}
                       </div>
                       {/* 인라인 질문 폼 — Enter 발사, Esc 닫기. */}
-                      {askTarget === key && (
+                      {askTarget === key && askBlock === null && (
                         <div
                           className="flex items-center gap-1.5 px-2 py-1 bg-[var(--bg-base)] border-t border-[var(--bg-mantle)]"
                           data-diff-ask-form

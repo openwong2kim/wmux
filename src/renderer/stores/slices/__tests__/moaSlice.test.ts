@@ -135,3 +135,37 @@ describe('createMoaHq failures', () => {
     expect(useStore.getState().moaHqPendingId).toBeNull();
   });
 });
+
+describe('a Diff question still queued when Moa cannot take it', () => {
+  const hqState = (state: MoaState['hq']['state'], enabled = true): MoaState => ({
+    ...moa('hq', enabled),
+    hq: { workspaceId: 'hq', state },
+  });
+
+  beforeEach(() => {
+    useStore.setState({ pendingBrainPrompt: 'old hunk question', toasts: [] } as never);
+  });
+
+  it('is dropped with a toast when Moa turns off', async () => {
+    mainState = hqState('ok', false);
+    await useStore.getState().refreshMoa();
+    expect(useStore.getState().pendingBrainPrompt).toBeNull();
+    const toasts = useStore.getState().toasts;
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0].message).toContain('Moa is off');
+  });
+
+  it('is dropped when Moa\'s HQ goes missing', async () => {
+    mainState = hqState('hq-missing');
+    await useStore.getState().refreshMoa();
+    expect(useStore.getState().pendingBrainPrompt).toBeNull();
+    expect(useStore.getState().toasts).toHaveLength(1);
+  });
+
+  it('is kept while Moa runs', async () => {
+    mainState = hqState('ok');
+    await useStore.getState().refreshMoa();
+    expect(useStore.getState().pendingBrainPrompt).toBe('old hunk question');
+    expect(useStore.getState().toasts).toHaveLength(0);
+  });
+});
