@@ -163,7 +163,7 @@ export function MoaMascot({ state, size, label }: MoaMascotProps) {
             <path d="M55 76 L57.5 79 L60 76.5 L62.5 79 L65 76" {...ink(2.4)} />
             <path d="M44 86 C50 92 58 92 60 88 C62 92 70 92 76 86 C70 96 50 96 44 86 Z" fill={url('nub')} />
           </g>
-          <g className={anim('moa-dots')} fill="var(--text-muted, #C2BDC9)" data-moa-effect="dots">
+          <g className={anim('moa-dots')} fill="var(--text-muted)" data-moa-effect="dots">
             <circle cx="96" cy="30" r="3" />
             <circle cx="105" cy="23" r="3" />
             <circle cx="114" cy="16" r="3" />
@@ -190,7 +190,7 @@ export function MoaMascot({ state, size, label }: MoaMascotProps) {
             <ellipse cx="60" cy="78" rx="3.5" ry="3" fill={EYE} />
           </g>
           <g className={anim('moa-bang')} data-moa-effect="bang">
-            <circle cx="104" cy="34" r="11" fill="var(--accent-yellow, #F2B25C)" />
+            <circle cx="104" cy="34" r="11" fill="var(--accent-yellow)" />
             <path d="M104 28 L104 36" stroke={EYE} strokeWidth={3} strokeLinecap="round" />
             <circle cx="104" cy="40.5" r="1.7" fill={EYE} />
           </g>
