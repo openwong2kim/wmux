@@ -130,6 +130,8 @@ export interface UseMoaNoticesOptions {
   onScreen: boolean;
   /** The right panel is mounted (`channelDockVisible`, whatever the page). */
   mounted: boolean;
+  /** The HQ workspace: main drops the transcript subscription when it changes. */
+  hqId: string | null;
   bubbles: boolean;
   text: MoaNoticeText;
 }
@@ -138,7 +140,7 @@ export interface UseMoaNoticesOptions {
  * Listens to the deck bridge and keeps the notice state. Every bridge call is
  * optional: a missing method or a rejected call leaves the state as it was.
  */
-export function useMoaNotices({ enabled, onScreen, mounted, bubbles, text }: UseMoaNoticesOptions) {
+export function useMoaNotices({ enabled, onScreen, mounted, hqId, bubbles, text }: UseMoaNoticesOptions) {
   const [state, dispatch] = useReducer(moaNoticeReducer, MOA_NOTICE_INITIAL);
   const live = useRef({ quiet: onScreen, bubbles, text });
   live.current = { quiet: onScreen, bubbles, text };
@@ -221,35 +223,32 @@ export function useMoaNotices({ enabled, onScreen, mounted, bubbles, text }: Use
     const tr = window.electronAPI?.deck?.moa?.transcript;
     if (!tr?.onAppend) return;
     return tr.onAppend((data: TranscriptAppendData) => {
+      // A reset push is a re-snapshot of history (the first push after every
+      // subscribe, or a new brain session), not a new message.
+      if (data?.reset) return;
       if (data?.events?.some((e) => e.kind === 'assistant_text')) {
         dispatch({ type: 'reply', quiet: live.current.quiet });
       }
     });
   }, [enabled]);
 
-  // Appends only flow while someone subscribes. The panel subscribes while it
-  // is mounted; we hold a subscription only while it is not, so (refcounted or
-  // not on main's side) neither ever unsubscribes the other.
+  // Appends only flow while someone subscribes, and main keeps ONE subscription
+  // (a boolean, not a count). The panel subscribes while it is mounted; we hold
+  // it only while the panel is not, so neither ever unsubscribes the other
+  // (React runs the unmount's cleanup before the next effect). Main drops the
+  // subscription when the HQ changes, so a new HQ subscribes again.
   useEffect(() => {
-    if (!enabled || mounted) return;
+    if (!enabled || mounted || !hqId) return;
     const tr = window.electronAPI?.deck?.moa?.transcript;
     if (!tr?.subscribe) return;
     tr.subscribe().catch(() => undefined);
     return () => { tr.unsubscribe?.().catch(() => undefined); };
-  }, [enabled, mounted]);
+  }, [enabled, mounted, hqId]);
 
   // The panel on screen has shown everything: clear the bubble and the grey dot.
   useEffect(() => {
     if (onScreen) dispatch({ type: 'seen' });
   }, [onScreen]);
-
-  // Moa turned off: forget everything.
-  useEffect(() => {
-    if (!enabled) {
-      dispatch({ type: 'seen' });
-      dispatch({ type: 'decisions', keys: [], fresh: null, quiet: true, bubbles: false });
-    }
-  }, [enabled]);
 
   return { state, dispatch };
 }

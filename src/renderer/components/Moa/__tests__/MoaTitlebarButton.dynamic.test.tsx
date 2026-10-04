@@ -310,6 +310,20 @@ describe('Moa reply dot', () => {
     expect(api.deck.moa.transcript.subscribe).toHaveBeenCalledTimes(2);
   });
 
+  it('ignores a reset push: it re-sends history, not a new message', async () => {
+    await mount();
+    act(() => append!({ seq: 1, reset: true, events: [{ id: 'a0', kind: 'assistant_text', text: 'Earlier.' }], cursor: {} as never }));
+    expect(dot()).toBe('none');
+  });
+
+  it('subscribes again when the HQ changes (main drops the old subscription)', async () => {
+    await mount();
+    expect(api.deck.moa.transcript.subscribe).toHaveBeenCalledTimes(1);
+    act(() => useStore.setState({ moa: { ...moa(), hq: { workspaceId: 'hq2', state: 'ok' } } } as never));
+    expect(api.deck.moa.transcript.unsubscribe).toHaveBeenCalledTimes(1);
+    expect(api.deck.moa.transcript.subscribe).toHaveBeenCalledTimes(2);
+  });
+
   it('survives a bridge without the Moa notice methods', async () => {
     (window as unknown as { electronAPI: unknown }).electronAPI = { deck: { moa: {} } };
     await mount();
