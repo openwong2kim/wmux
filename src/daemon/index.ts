@@ -135,7 +135,8 @@ import { agentSlugToDisplay, isAgentSignal, type AgentSignal } from '../shared/h
 import { checkNativeTranscriptPath } from './transcript/providers';
 import { TranscriptProjector } from './transcript/TranscriptProjector';
 import { TranscriptDiscovery, DISCOVERABLE_AGENT } from './transcript/TranscriptDiscovery';
-import { admitCodexCapture } from './transcript/codexCapture';
+import { admitCodexCapture, gateCodexStop } from './transcript/codexCapture';
+import { canonicalDir, CodexCwdBinder } from './transcript/codexRolloutByCwd';
 import { PushSender } from './push/PushSender';
 import { RelayTransport } from './push/RelayTransport';
 import { LiveActivityPusher, type LiveActivityCounts } from './push/LiveActivityPusher';
@@ -272,6 +273,8 @@ const chatSubscribers = new Map<string, Set<string>>();
 const chatPushTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const chatPushSeq = new Map<string, number>();
 let transcriptDiscovery: TranscriptDiscovery | null = null;
+// Binds a fresh Codex pane to its rollout by cwd on the launch edge (codexRolloutByCwd.ts).
+let codexCwdBinder: CodexCwdBinder | null = null;
 // #1163 — registerRpcHandlers' canonical agent-state reader (readDaemonAgentState),
 // read by BOTH WebTerminalServer construction sites for /api/workspaces. Module-
 // scoped because the boot-restore site has no agent tracker in scope; a request
@@ -3600,6 +3603,37 @@ function registerRpcHandlers(
       log: (level, message) => log(level, message),
     });
   }
+  if (!codexCwdBinder) {
+    const isRolloutBound = (b: ResumeBinding | undefined): boolean => b?.agent === 'codex' && !!b.transcriptPath;
+    codexCwdBinder = new CodexCwdBinder({
+      pane: (id) => {
+        const managed = sessionManager.getSession(id);
+        if (!managed || (managed.meta.state !== 'attached' && managed.meta.state !== 'detached')) return undefined;
+        if (isRolloutBound(managed.meta.resumeBinding)) return undefined;
+        const cwd = managed.meta.cwd;
+        const others = sessionManager.listLiveSessions().filter((s) => s.id !== id);
+        const exclude = new Set(others.flatMap((s) => (s.resumeBinding?.agent === 'codex' ? [s.resumeBinding.sessionId] : [])));
+        const isCodex = (paneId: string, detected: string | undefined): boolean => {
+          const tracked = agentProcessTracker.identityFor(paneId);
+          return tracked ? tracked.alive && tracked.slug === 'codex' : detected === 'codex';
+        };
+        const want = canonicalDir(cwd);
+        const sharedCwd = others.some((s) => !isRolloutBound(s.resumeBinding)
+          && isCodex(s.id, s.lastDetectedAgent) && canonicalDir(s.cwd) === want);
+        // The launch is the latest OSC 133 command-start; an exec unit (no shell) launched with the pane.
+        const launchedAt = managed.promptLog.recent(256).filter((e) => e.type === 'command_start').pop()?.ts
+          ?? Date.parse(managed.meta.createdAt);
+        return { cwd, notBefore: Number.isFinite(launchedAt) ? launchedAt : 0, env: managed.meta.env, exclude, sharedCwd };
+      },
+      bind: (id, match) => {
+        log('info', `[codex] bound ${id} to rollout ${match.threadId} by cwd`);
+        // Same writer as a hook-supplied path: vetted, merged, saveImmediate'd.
+        applyResumeBinding(id, { agent: 'codex', sessionId: match.threadId, cwd: match.cwd, transcriptPath: match.transcriptPath, ts: Date.now() });
+        transcriptProjector?.rebind(id);
+      },
+      log: (level, message) => log(level, message),
+    });
+  }
 
   // D7 — the transcript RPCs are the one part of this surface that returns a
   // pane's full CONVERSATION, and the design note that justified keeping Chat
@@ -4208,6 +4242,20 @@ function registerRpcHandlers(
         }, Date.now()));
       }
       return { ok: true, ...(permissionDecision ? { permissionDecision } : {}) };
+    }
+    // A Codex stop for a thread with no rollout (the title thread) is not the
+    // pane's turn end. Answer the bridge now (its 2s budget spools on timeout)
+    // and decide once the rollout had its grace.
+    if (isAgentSignal(params) && params.agent === 'codex' && params.kind === 'agent.stop') {
+      const signal: AgentSignal = params;
+      const pane = signal.ptyId ? sessionManager.getSession(signal.ptyId) : undefined;
+      const gate = gateCodexStop(signal, {
+        ...(pane?.meta.resumeBinding ? { bound: pane.meta.resumeBinding } : {}),
+        ...(pane?.meta.env ? { env: pane.meta.env } : {}),
+        admit: () => { ingest.handle(signal); },
+        drop: () => log('info', `[codex] ignored stop for ${signal.ptyId ?? '?'}: thread ${signal.agentSessionId} has no rollout`),
+      });
+      if (gate === 'deferred') return { ok: true };
     }
     return ingest.handle(params);
   });
@@ -5793,6 +5841,7 @@ function wireEvents(
     terminalChat?.dropPty(payload.id);
     // …and nothing left to discover a transcript FOR.
     transcriptDiscovery?.cancel(payload.id);
+    codexCwdBinder?.reset(payload.id);
     try {
       const event: DaemonEvent = {
         type: 'session.died',
@@ -6145,6 +6194,8 @@ function wireEvents(
     // the AgentDetector display name ('Claude Code') → canonical slug ('claude').
     const slug = agentDisplayToSlug(payload.event.agent);
     const managed = sessionManager.getSession(payload.sessionId);
+    // A banner names Codex before (or without) the process probe: try the cwd bind.
+    if (slug === 'codex') codexCwdBinder?.arm(payload.sessionId);
     if (slug) {
       // The agent is live again → this pane is no longer a "resume me" shell.
       recoveredAgentShellIds.delete(payload.sessionId);
@@ -6373,6 +6424,7 @@ function wireEvents(
     terminalChat?.dropPty(payload.id);
     // …and nothing left to discover a transcript FOR.
     transcriptDiscovery?.cancel(payload.id);
+    codexCwdBinder?.reset(payload.id);
     const event: DaemonEvent = {
       type: 'session.destroyed',
       sessionId: payload.id,
@@ -6608,6 +6660,7 @@ async function shutdown(
   terminalChat?.dispose();
   // Same for the discovery searches — unref'd watch handles and poll timers.
   transcriptDiscovery?.dispose();
+  codexCwdBinder?.dispose();
 
   // Cancel pending shutdown-kill reclassifications — the suspend loop below is
   // now the single owner of every non-dead session's persisted state.
@@ -7580,6 +7633,9 @@ async function main(): Promise<void> {
     if (!state.alive) automationEngine?.onAgentProcessExit(sessionId);
     // The agent that hit the limit is gone; a relaunch is a new agent.
     if (!state.alive) usageLimits?.drop(sessionId);
+    // A Codex launch edge opens a fresh cwd-bind window; a death edge closes it.
+    codexCwdBinder?.reset(sessionId);
+    if (state.alive && state.slug === 'codex') codexCwdBinder?.arm(sessionId);
     // A pane whose status the HOOK owns has exactly two settle paths: the Stop
     // hook, and this edge. An agent killed mid-turn (double Ctrl+C, /exit, a
     // crash) sends no Stop, and byte silence no longer clears a hook-governed

@@ -7,7 +7,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { isProvisionalCapture, mergeResumeBinding, type ResumeBinding } from '../../../shared/agentResume';
 import { TranscriptDiscovery } from '../TranscriptDiscovery';
-import { admitCodexCapture, HELD_BACK_SEARCH_MS } from '../codexCapture';
+import { admitCodexCapture, gateCodexStop, HELD_BACK_SEARCH_MS } from '../codexCapture';
 
 const A = '01a0e700-0000-7000-8000-00000000000a';
 const B = '01a0e700-0000-7000-8000-00000000000b';
@@ -93,11 +93,11 @@ describe('admitCodexCapture (#1624)', () => {
     expect(binding).toMatchObject({ sessionId: B, transcriptPath: fileB });
   });
 
-  it('first-use pane with a late rollout: the title thread neither binds nor displaces B\'s search', async () => {
+  it('first-use pane with a late rollout: nothing binds until B\'s rollout exists, and the title thread does not displace B\'s search', async () => {
     notify(B);
-    expect(binding).toMatchObject({ sessionId: B });
+    expect(binding).toBeUndefined();
     notify(T);
-    expect(binding?.sessionId).toBe(B);
+    expect(binding).toBeUndefined();
     expect(discovery.pendingFor(PANE)).toEqual({ agent: 'codex', agentSessionId: B });
     const fileB = rollout(B);
     await until(() => binding?.transcriptPath === fileB);
@@ -110,5 +110,69 @@ describe('admitCodexCapture (#1624)', () => {
     notify(B);
     expect(binding).toMatchObject({ sessionId: B, transcriptPath: fileB });
     expect(discovery.pendingFor(PANE)).toBeUndefined();
+  });
+
+  it('fresh pane: a title-thread notify does not bind the pane', () => {
+    notify(T);
+    expect(binding).toBeUndefined();
+    expect(starts).toEqual([{ id: T, deadlineMs: HELD_BACK_SEARCH_MS }]);
+  });
+
+  it('a real-thread notify on a fresh pane binds with its rollout path', () => {
+    const file = rollout(A);
+    notify(A);
+    expect(binding).toMatchObject({ sessionId: A, transcriptPath: file });
+    expect(discovery.pendingFor(PANE)).toBeUndefined();
+  });
+});
+
+describe('gateCodexStop', () => {
+  const stop = (id: string) => ({ agent: 'codex', kind: 'agent.stop' as const, agentSessionId: id, payload: {} });
+
+  function gate(id: string, extra: { bound?: ResumeBinding } = {}) {
+    const calls: string[] = [];
+    const verdict = gateCodexStop(stop(id), {
+      env, ...extra, graceMs: 60, pollMs: 10,
+      admit: () => calls.push('admit'),
+      drop: () => calls.push('drop'),
+    });
+    return { verdict, calls };
+  }
+
+  it('a title-thread stop is not the pane\'s turn end: it is held, then dropped', async () => {
+    const { verdict, calls } = gate(T);
+    expect(verdict).toBe('deferred');
+    expect(calls).toEqual([]);
+    await until(() => calls.length > 0);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(calls).toEqual(['drop']);
+  });
+
+  it('a stop whose rollout exists passes at once', () => {
+    rollout(A);
+    expect(gate(A).verdict).toBe('pass');
+  });
+
+  it('a stop for the thread the pane is bound to passes without a scan', () => {
+    const bound: ResumeBinding = { agent: 'codex', sessionId: A, cwd: '/w', transcriptPath: '/elsewhere/a.jsonl', ts: 1 };
+    expect(gate(A, { bound }).verdict).toBe('pass');
+  });
+
+  it('a stop whose rollout lands inside the grace is admitted late, once', async () => {
+    const { verdict, calls } = gate(B);
+    expect(verdict).toBe('deferred');
+    rollout(B);
+    await until(() => calls.length > 0);
+    await new Promise((r) => setTimeout(r, 80));
+    expect(calls).toEqual(['admit']);
+  });
+
+  it('passes every other signal untouched', () => {
+    const calls: string[] = [];
+    const opts = { env, admit: () => calls.push('a'), drop: () => calls.push('d') };
+    expect(gateCodexStop({ agent: 'claude', kind: 'agent.stop', agentSessionId: T }, opts)).toBe('pass');
+    expect(gateCodexStop({ agent: 'codex', kind: 'agent.subagent_stop', agentSessionId: T }, opts)).toBe('pass');
+    expect(gateCodexStop({ agent: 'codex', kind: 'agent.stop' }, opts)).toBe('pass');
+    expect(calls).toEqual([]);
   });
 });
