@@ -953,6 +953,40 @@ describe('HookIngest', () => {
       });
     }
 
+    // The summary stops at 200 characters; the danger verdict must not.
+    it('flags a gate critical from the FULL command, past the summary cut', () => {
+      const base = makeDeps();
+      const seen: Array<{ toolInputSummary?: string; risk?: 'critical' }> = [];
+      const ingestWithGate = new HookIngest({
+        ...base.deps,
+        gateConfig: () => ({ gatedTools: ['Bash'] }),
+        approvals: {
+          ...base.deps.approvals,
+          noteGateAwaiting: (input) => {
+            seen.push(input);
+            return 'gate-id';
+          },
+        },
+      });
+      const command = `echo ${'a'.repeat(250)} && rm -rf ./build`;
+      ingestWithGate.handlePermissionGate(makeSignal({
+        kind: 'agent.awaiting_permission',
+        ptyId: 'pty-a',
+        payload: { tool_name: 'Bash', tool_input: { command } },
+      }));
+      expect(seen).toHaveLength(1);
+      expect(seen[0]!.toolInputSummary).not.toContain('rm -rf');
+      expect(seen[0]!.risk).toBe('critical');
+
+      seen.length = 0;
+      ingestWithGate.handlePermissionGate(makeSignal({
+        kind: 'agent.awaiting_permission',
+        ptyId: 'pty-a',
+        payload: { tool_name: 'Bash', tool_input: { command: 'ls -la' } },
+      }));
+      expect(seen[0]!.risk).toBeUndefined();
+    });
+
     it('passes a bypassPermissions session straight through without opening a gate', () => {
       // The user launched with --dangerously-skip-permissions: re-asking is the
       // exact thing they opted out of, and with no phone attached every gated

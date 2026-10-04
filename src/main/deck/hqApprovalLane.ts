@@ -165,8 +165,8 @@ export function createHqAutoPress(ports: HqAutoPressPorts): HqAutoPress {
       const lane = checkHqLane(hq, record, {}, ports);
       if (!lane.ok) continue;
       if (ports.modeOf(lane.owner) !== 'danger') continue;
-      attempted.add(record.id);
       if (record.risk === 'critical') {
+        attempted.add(record.id);
         bump(leftCritical, lane.owner);
         log(`[hq-lane] left ${record.id} for a human: critical (owner ${lane.owner})`);
         continue;
@@ -180,15 +180,19 @@ export function createHqAutoPress(ports: HqAutoPressPorts): HqAutoPress {
           resolver: 'automated',
         })) as typeof result;
       } catch (err) {
+        // Transport failure: no answer either way, so the next pass may retry.
         log(`[hq-lane] press of ${record.id} failed: ${String(err)}`);
         continue;
       }
-      if (result?.ok) {
+      const why = result?.ok ? null : (result?.pressRefusal ?? result?.reason ?? 'unknown');
+      // A table the daemon has not received yet is not a verdict on this
+      // record (a connect-time race); every other answer is final for its id.
+      if (why !== 'scope-unavailable') attempted.add(record.id);
+      if (why === null) {
         bump(pressed, lane.owner);
         log(`[hq-lane] pressed ${record.id} on ${record.sessionId} (hq ${lane.hq}, owner ${lane.owner})`);
         continue;
       }
-      const why = result?.pressRefusal ?? result?.reason ?? 'unknown';
       if (why === 'critical-risk') bump(leftCritical, lane.owner);
       log(`[hq-lane] daemon refused ${record.id}: ${why} (owner ${lane.owner})`);
     }

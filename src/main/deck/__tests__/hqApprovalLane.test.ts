@@ -207,6 +207,16 @@ describe('createHqAutoPress — pressing by rule', () => {
     expect(l.takePointer()).toContain('do not raise a decision');
   });
 
+  it('retries a record the daemon could not judge yet (no fact table), then stops', async () => {
+    reply = { ok: false, reason: 'out-of-scope', pressRefusal: 'scope-unavailable' };
+    const l = lane();
+    await l.run();
+    reply = { ok: true, durable: true };
+    await l.run();
+    await l.run();
+    expect(resolves()).toHaveLength(2);
+  });
+
   it('tries each record once — a refusal is final for that id', async () => {
     reply = { ok: false, reason: 'out-of-scope', pressRefusal: 'owner-not-danger' };
     const l = lane();
