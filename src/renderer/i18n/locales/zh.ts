@@ -1383,7 +1383,7 @@ export const zh = {
   'moa.settings.memoryKind.precedent': "先例",
   'moa.settings.memoryKind.note': "笔记",
   'moa.settings.memoryKind.skill': "技能",
-  'moa.memoryCard.eyebrow': "记住这个吗？",
+  'moa.memoryCard.eyebrow': "Moa 记忆",
   'moa.memoryCard.showFull': "显示全文（{chars} 个字符）",
   'moa.memoryCard.hideFull': "收起全文",
   'moa.memoryCard.save': "保存",

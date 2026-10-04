@@ -1297,7 +1297,7 @@ export const en = {
   'moa.settings.memoryKind.precedent': "Precedent",
   'moa.settings.memoryKind.note': "Note",
   'moa.settings.memoryKind.skill': "Skill",
-  'moa.memoryCard.eyebrow': "Remember this?",
+  'moa.memoryCard.eyebrow': "Moa memory",
   'moa.memoryCard.showFull': "Show full text ({chars} characters)",
   'moa.memoryCard.hideFull': "Hide full text",
   'moa.memoryCard.save': "Save",

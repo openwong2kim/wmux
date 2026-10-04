@@ -817,7 +817,7 @@ export const ko = {
   'moa.settings.memoryKind.precedent': "판례",
   'moa.settings.memoryKind.note': "메모",
   'moa.settings.memoryKind.skill': "스킬",
-  'moa.memoryCard.eyebrow': "이거 기억할까요?",
+  'moa.memoryCard.eyebrow': "Moa 기억",
   'moa.memoryCard.showFull': "전체 텍스트 보기 ({chars}자)",
   'moa.memoryCard.hideFull': "전체 텍스트 접기",
   'moa.memoryCard.save': "저장",

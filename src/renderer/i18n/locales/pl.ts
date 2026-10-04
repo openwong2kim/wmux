@@ -1281,7 +1281,7 @@ export const pl = {
   'moa.settings.memoryKind.precedent': "Precedens",
   'moa.settings.memoryKind.note': "Notatka",
   'moa.settings.memoryKind.skill': "Umiejętność",
-  'moa.memoryCard.eyebrow': "Zapamiętać to?",
+  'moa.memoryCard.eyebrow': "Pamięć Moa",
   'moa.memoryCard.showFull': "Pokaż pełny tekst ({chars} znaków)",
   'moa.memoryCard.hideFull': "Ukryj pełny tekst",
   'moa.memoryCard.save': "Zapisz",
