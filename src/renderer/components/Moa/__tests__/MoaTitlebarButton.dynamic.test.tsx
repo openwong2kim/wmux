@@ -155,6 +155,18 @@ describe('Moa titlebar icon', () => {
     expect(useStore.getState().appRoute).toBe('workspaces');
     expect(useStore.getState().channelDockVisible).toBe(true);
   });
+
+  it('beside the Git page it reads the panel as shown and opens and closes it in place', async () => {
+    useStore.setState({ appRoute: 'git', channelDockVisible: true } as never);
+    await mount();
+    expect(button()!.getAttribute('aria-expanded')).toBe('true');
+    act(() => button()!.click());
+    expect(useStore.getState().appRoute).toBe('git');
+    expect(useStore.getState().channelDockVisible).toBe(false);
+    act(() => button()!.click());
+    expect(useStore.getState().appRoute).toBe('git');
+    expect(useStore.getState().channelDockVisible).toBe(true);
+  });
 });
 
 describe('Moa bubble', () => {

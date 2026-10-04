@@ -199,7 +199,9 @@ navigates through it.
 - **A page fills the sheet** (Git excepted: it fills the sheet beside the
   tools dock, which stays in view and usable, so Moa is in reach while you
   read issues and PRs; the page is inset off the dock by measuring it, never
-  by reflowing the sheet). The Workspaces page stays mounted at full size
+  by reflowing the sheet, whether the dock sits inline or floats as the
+  narrow-window overlay; the dock's toggle and Moa's titlebar icon open and
+  close it in place there). The Workspaces page stays mounted at full size
   and **inert** under any other page, so no terminal is resized or unmounted
   and PTYs, scrollback, the WebGL atlas and IME state survive the round trip.
   Showing a page drops focus left in the panes, and the focus self-heal runs

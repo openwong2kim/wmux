@@ -6,8 +6,8 @@
 // a short bubble for a new decision or a finished delegation, then a dot —
 // yellow while a decision waits on the operator, grey for an unseen reply.
 //
-// "On screen" is DeckToggle's reading (the dock is open AND the Workspaces page
-// is up): bubbles, dots and "seen" follow it. The transcript subscription
+// "On screen" is DeckToggle's reading (the dock is open AND shown: on the
+// Workspaces page, or beside Git): bubbles, dots and "seen" follow it. The transcript subscription
 // follows the dock's mount flag instead (AppLayout mounts it on
 // `channelDockVisible` alone), so it can never be dropped while the panel holds
 // its own.
@@ -17,6 +17,7 @@ import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { FOCUS_RING } from '../focusRing';
 import { showWorkspaces } from '../../utils/showWorkspaces';
+import { dockShownOn } from '../Layout/pagesBesideDock';
 import type { MoaMascotState, MoaPendingDecision } from '../../../shared/moa';
 import type { WorkLink } from '../../../shared/workLink';
 import { MoaMascot, useMoaReducedMotion } from './MoaMascot';
@@ -31,7 +32,7 @@ export default function MoaTitlebarButton() {
 
 function MoaTitlebarButtonOn() {
   const t = useT();
-  const onScreen = useStore((s) => s.channelDockVisible && s.appRoute === 'workspaces');
+  const onScreen = useStore((s) => s.channelDockVisible && dockShownOn(s.appRoute));
   const bubbles = useStore((s) => s.moa?.config.bubbles !== false);
   const hqId = useStore((s) => s.moa?.hq.workspaceId ?? null);
   const setChannelDockVisible = useStore((s) => s.setChannelDockVisible);
@@ -73,7 +74,8 @@ function MoaTitlebarButtonOn() {
 
   const openPanel = useCallback(() => {
     const st = useStore.getState();
-    showWorkspaces(st);
+    // Beside Git the panel opens in place; from another page, on Workspaces.
+    if (!dockShownOn(st.appRoute)) showWorkspaces(st);
     // Land on the conversation, as the tools-panel toggle does.
     st.setActiveDeckTab('commander');
     st.setChannelDockVisible(true);

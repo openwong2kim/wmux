@@ -90,6 +90,12 @@ describe('channel dock beside the Git page (Moa stays in reach)', () => {
     const lastPageWrapperBefore = appLayout.lastIndexOf('data-workspaces-page', dockAt);
     expect(regionAt).toBeLessThan(dockAt);
     expect(lastPageWrapperBefore).toBeLessThan(regionAt);
+    // The narrow-window overlay dock lives in the same region, so it too stays
+    // live beside Git and is what the page measures.
+    const overlayAt = appLayout.indexOf('data-dock-overlay');
+    const regionEnd = appLayout.indexOf('data-workspaces-page', regionAt);
+    expect(overlayAt).toBeGreaterThan(regionAt);
+    expect(overlayAt).toBeLessThan(regionEnd);
   });
 
   it('a Git page drag dropped on the dock opens the hand-off on Moa\'s HQ', () => {
