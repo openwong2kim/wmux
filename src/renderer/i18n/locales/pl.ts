@@ -1309,6 +1309,7 @@ export const pl = {
   'moa.mascot.waitingOne': "1 decyzja czeka na ciebie",
   'moa.mascot.waiting': "Decyzje czekające na ciebie: {count}",
   'moa.mascot.newReply': "nowa odpowiedź",
+  'moa.mascot.channelsUnread': "{count} nieprzeczytanych w kanałach",
   'moa.settings.saveFailed': "Nie udało się zapisać ustawienia. Spróbuj ponownie.",
   'moa.archive.noticeOne': "1 oczekująca decyzja została przeniesiona do archiwum Moa",
   'moa.archive.notice': "Oczekujące decyzje przeniesione do archiwum Moa: {count}",
