@@ -178,7 +178,13 @@ function statKey(p: string): string {
 
 const cache = new Map<string, { key: string; loaded: Loaded }>();
 
-function load(dir?: string): Loaded {
+/** The first value of the switch, decided in memory before it is on disk
+ *  (ensureMoaDefault). It answers every read until the file carries the
+ *  field, so a write that fails can never leave a new install switched on. */
+const pendingDefault = new Map<string, { enabled: boolean; reason: 'new-install' | 'existing-brain' }>();
+
+/** The file as stored (no pending default). */
+function loadStored(dir?: string): Loaded {
   const p = getDeckHqPath(dir);
   const key = statKey(p);
   const hit = cache.get(p);
@@ -188,11 +194,28 @@ function load(dir?: string): Loaded {
   return loaded;
 }
 
+function load(dir?: string): Loaded {
+  const loaded = loadStored(dir);
+  const pending = pendingDefault.get(getDeckHqPath(dir));
+  if (!pending || loaded.corrupt || loaded.file.moaEnabled !== undefined) return loaded;
+  return { corrupt: false, file: { ...loaded.file, moaEnabled: pending.enabled, moaDefault: pending.reason } };
+}
+
+// Writers, swappable in tests to inject a failing disk.
+let writeAsync: typeof atomicWriteJSON = atomicWriteJSON;
+let writeSync: typeof atomicWriteJSONSync = atomicWriteJSONSync;
+
+/** Tests only: replace the writers (null restores the real ones). */
+export function __setHqWritersForTest(w: { async?: typeof atomicWriteJSON; sync?: typeof atomicWriteJSONSync } | null): void {
+  writeAsync = w?.async ?? atomicWriteJSON;
+  writeSync = w?.sync ?? atomicWriteJSONSync;
+}
+
 /** Write the file (refused while corrupt) and drop the cached copy. */
 async function write(dir: string | undefined, next: HqFile): Promise<void> {
   const p = getDeckHqPath(dir);
   try {
-    await atomicWriteJSON(p, next);
+    await writeAsync(p, next);
   } finally {
     cache.delete(p);
   }
@@ -244,8 +267,12 @@ export async function setMoaEnabled(enabled: boolean, dir?: string): Promise<boo
 // ── Defaults and Moa settings ───────────────────────────────────────────────
 
 /** True when this install already uses a deck brain: a workspace in a mode
- *  other than off, or a persisted brain conversation. */
-function hasExistingBrain(dir?: string): boolean {
+ *  other than off, a persisted brain conversation, or HQ state from an
+ *  earlier version (a designated HQ, a migration marker, archived decisions). */
+function hasExistingBrain(file: HqFile, dir?: string): boolean {
+  if (file.hqWorkspaceId !== null || file.migration !== undefined || (file.archivedDecisions?.length ?? 0) > 0) {
+    return true;
+  }
   try {
     if (Object.values(loadDeckAutonomy(dir)).some((e) => e.mode !== 'off')) return true;
   } catch {
@@ -262,24 +289,39 @@ function hasExistingBrain(dir?: string): boolean {
 }
 
 /**
- * Decide the master switch's first value, once per install (synchronous, so
- * it lands before the deck runtime starts). A new install starts with Moa
- * off. An install that already uses a deck brain keeps today's behaviour:
- * the switch stays on and no HQ is designated, so every workspace keeps its
- * own brain until the operator sets Moa up. A value already on disk (either
- * way) is never changed, and a corrupt store is left alone.
+ * Decide the master switch's first value, once per install. A new install
+ * starts with Moa off. An install that already uses a deck brain keeps
+ * today's behaviour: the switch stays on and no HQ is designated, so every
+ * workspace keeps its own brain until the operator sets Moa up. A value
+ * already on disk (either way) is never changed, and a corrupt store is left
+ * alone.
+ *
+ * The decision takes effect in memory at once (synchronously, before the deck
+ * runtime starts) and is then written through the store's serial chain. If
+ * that write fails the in-memory value keeps answering, so a new install
+ * stays off until the operator turns Moa on. Returns the persist promise
+ * alongside the reason, for callers (tests) that need to wait for it.
  */
-export function ensureMoaDefault(dir?: string): 'new-install' | 'existing-brain' | null {
-  const { file, corrupt } = load(dir);
-  if (corrupt || file.moaEnabled !== undefined) return null;
-  const reason = hasExistingBrain(dir) ? 'existing-brain' : 'new-install';
+export function ensureMoaDefault(dir?: string): { reason: 'new-install' | 'existing-brain'; persisted: Promise<boolean> } | null {
+  const { file, corrupt } = loadStored(dir);
   const p = getDeckHqPath(dir);
-  try {
-    atomicWriteJSONSync(p, { ...file, moaEnabled: reason === 'existing-brain', moaDefault: reason });
-  } finally {
-    cache.delete(p);
-  }
-  return reason;
+  if (corrupt || file.moaEnabled !== undefined || pendingDefault.has(p)) return null;
+  const reason = hasExistingBrain(file, dir) ? 'existing-brain' : 'new-install';
+  const enabled = reason === 'existing-brain';
+  pendingDefault.set(p, { enabled, reason });
+  const persisted = serialize(async () => {
+    const stored = loadStored(dir);
+    if (stored.corrupt) return false;
+    if (stored.file.moaEnabled === undefined) {
+      await write(dir, { ...stored.file, moaEnabled: enabled, moaDefault: reason });
+    }
+    pendingDefault.delete(p);
+    return true;
+  }).catch((err) => {
+    console.warn(`[deck:hq] could not save Moa's default (${reason}); it holds in memory: ${String(err)}`);
+    return false;
+  });
+  return { reason, persisted };
 }
 
 export function getMoaConfig(dir?: string): MoaConfig {
@@ -346,20 +388,44 @@ export async function ackArchivedDecisions(dir?: string): Promise<boolean> {
  */
 export function resetCorruptHqStore(dir?: string): boolean {
   const p = getDeckHqPath(dir);
-  if (!load(dir).corrupt) return false;
-  for (const f of [p, ...BACKUP_SUFFIXES.map((x) => `${p}${x}`)]) {
+  if (!loadStored(dir).corrupt) return false;
+  // Prepare the fresh "off" file BEFORE touching the corrupt one. If that
+  // write fails, nothing moved: the store stays corrupt, which is fail-closed
+  // (moving the bad files first and then failing would leave no file at all,
+  // which reads as unset — every workspace eligible).
+  const staged = `${p}.reset`;
+  try {
+    writeSync(staged, { hqWorkspaceId: null, moaEnabled: false });
+  } catch (err) {
+    console.warn(`[deck:hq] could not prepare a fresh deck-hq.json; it stays unreadable: ${String(err)}`);
+    return false;
+  }
+  try {
+    // Keep a copy of the unreadable primary, then swap the fresh file in
+    // (one rename: there is never a moment with no primary).
+    try {
+      fs.copyFileSync(p, `${p}.corrupt-${Date.now()}`);
+    } catch {
+      // a primary that cannot be copied is still replaced
+    }
+    fs.renameSync(staged, p);
+  } catch (err) {
+    console.warn(`[deck:hq] could not swap in a fresh deck-hq.json; it stays unreadable: ${String(err)}`);
+    return false;
+  } finally {
+    cache.delete(p);
+  }
+  // The backups are still unreadable; move them aside so a later fallback
+  // never lands on one. Best effort: the primary is readable now.
+  for (const f of BACKUP_SUFFIXES.map((x) => `${p}${x}`)) {
     try {
       quarantineFileSync(f, 'deck-hq.json reset from Settings → Moa');
     } catch {
-      // best effort: a file that cannot be moved is overwritten below
+      // best effort
     }
   }
-  try {
-    atomicWriteJSONSync(p, { hqWorkspaceId: null, moaEnabled: false });
-  } finally {
-    cache.delete(p);
-    corruptWarned = false;
-  }
+  cache.delete(p);
+  corruptWarned = false;
   return true;
 }
 
@@ -434,6 +500,7 @@ export function hqPresence(hq: string | null, mirror: MirrorView = getWorkspaceM
 export function __resetHqMemoryForTest(): void {
   observed = null;
   cache.clear();
+  pendingDefault.clear();
   corruptWarned = false;
 }
 

@@ -1616,9 +1616,13 @@ export function registerDeckHandler(
   });
   // Periodic pass (lane F): fan-out registration and the unknown-workspace
   // path both feed the ledger, but a task closed or detached elsewhere only
-  // shows up by re-reading WorkTask — so the reconciler also runs on a timer
-  // (armed by startRuntime, with the master switch).
-  let ledgerReconcileTimer: ReturnType<typeof setInterval> | null = null;
+  // shows up by re-reading WorkTask — so the reconciler also runs on a timer.
+  // Always on, with the other fan-out bookkeeping below: it serves fan-out,
+  // not the brain, so it runs whatever Moa's switch says.
+  const ledgerReconcileTimer = setInterval(() => {
+    void reconcileTaskLedger().catch(() => undefined);
+  }, 60_000);
+  ledgerReconcileTimer.unref?.();
   // Lane F step 5: every ledger transition is posted to the task's mission
   // channel as the owner workspace, so the channel transcript and the ledger
   // never disagree about what happened.
@@ -2160,19 +2164,33 @@ export function registerDeckHandler(
     wrapHandler(IPC.DECK_MOA_SETUP, async (
       _event: Electron.IpcMainInvokeEvent,
       raw: unknown,
-    ): Promise<{ ok: boolean; code?: string; archived?: number }> => {
+    ): Promise<{ ok: boolean; code?: string; archived?: number; committed?: boolean }> => {
       const req = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? (raw as Record<string, unknown>) : {};
       const workspaceId = readWorkspaceId(req);
       if (!workspaceId) return { ok: false, code: 'invalid_workspace' };
       if (isHqStoreCorrupt()) return { ok: false, code: 'store_corrupt' };
-      const designated = await setHqWorkspaceId(workspaceId);
+      let designated: Awaited<ReturnType<typeof setHqWorkspaceId>>;
+      try {
+        designated = await setHqWorkspaceId(workspaceId);
+      } catch {
+        return { ok: false, code: 'setup_failed' };
+      }
       if (!designated.ok) return { ok: false, code: designated.code };
-      await setWorkspaceMode(workspaceId, 'assist');
-      await setWorkspaceAutonomy(workspaceId, { continueInstruction: false, approvalPress: false });
-      await setMoaConfig({ onboarded: true, level: 1 });
-      if (!isMoaEnabled()) {
-        await setMoaEnabled(true);
-        startRuntime();
+      // From here the workspace IS the HQ (committed): a failure below must not
+      // make the renderer delete it. Calling setup again with the same id
+      // finishes the rest (designating the same HQ again is a no-op).
+      try {
+        await setWorkspaceMode(workspaceId, 'assist');
+        await setWorkspaceAutonomy(workspaceId, { continueInstruction: false, approvalPress: false });
+        if (!(await setMoaConfig({ onboarded: true, level: 1 }))) throw new Error('store refused the settings');
+        if (!isMoaEnabled()) {
+          if (!(await setMoaEnabled(true))) throw new Error('store refused the switch');
+          startRuntime();
+        }
+      } catch (err) {
+        console.warn(`[deck] Moa setup for ${workspaceId} stopped after the HQ was set: ${String(err)}`);
+        emitMoaChanged();
+        return { ok: false, code: 'setup_incomplete', committed: true };
       }
       emitMoaChanged();
       return { ok: true, archived: designated.migration?.decisionsArchived.length ?? 0 };
@@ -3123,17 +3141,12 @@ export function registerDeckHandler(
   // ── Deck runtime, tied to the master switch ───────────────────────────────
   // Every deck timer and EventBus/mirror subscription lives here, so with the
   // switch off (at launch or later) none is registered. The task-ledger
-  // listeners stay: they serve fan-out bookkeeping (mission-channel posts,
-  // task-workspace mode reset), not the brain.
+  // reconcile timer and listeners stay (registered above): they serve fan-out
+  // bookkeeping (mission-channel posts, task-workspace mode reset), not the
+  // brain.
   let offBus: (() => void) | null = null;
   let offMirror: (() => void) | null = null;
   const startRuntime = (): void => {
-    if (!ledgerReconcileTimer) {
-      ledgerReconcileTimer = setInterval(() => {
-        void reconcileTaskLedger().catch(() => undefined);
-      }, 60_000);
-      ledgerReconcileTimer.unref?.();
-    }
     if (!offBus) offBus = eventBus.subscribe(onBusEvent);
     if (!offMirror) offMirror = getWorkspaceMirror().onSnapshot(onHqMirrorUpdate);
     scheduler.start();
@@ -3149,8 +3162,6 @@ export function registerDeckHandler(
     }
   };
   const stopRuntime = (): void => {
-    if (ledgerReconcileTimer) clearInterval(ledgerReconcileTimer);
-    ledgerReconcileTimer = null;
     offBus?.();
     offBus = null;
     offMirror?.();
@@ -3180,7 +3191,7 @@ export function registerDeckHandler(
   return () => {
     app.removeListener('before-quit', disposeAll);
     if (reconcileTimer) clearTimeout(reconcileTimer);
-    if (ledgerReconcileTimer) clearInterval(ledgerReconcileTimer);
+    clearInterval(ledgerReconcileTimer);
     stopOrphanReconcile();
     offBus?.();
     offMirror?.();

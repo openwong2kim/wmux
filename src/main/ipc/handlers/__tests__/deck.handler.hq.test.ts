@@ -109,6 +109,7 @@ import { eventBus } from '../../../events/EventBus';
 import { getWorkspaceMirror, __resetWorkspaceMirrorForTest } from '../../../workspace/WorkspaceMirror';
 import {
   __resetHqMemoryForTest,
+  __setHqWritersForTest,
   getDeckHqPath,
   getHqWorkspaceId,
   getMoaConfig,
@@ -425,8 +426,9 @@ describe('master switch (moaEnabled)', () => {
     expect(await invoke(IPC.DECK_MOA_GET)).toEqual({ enabled: true });
   });
 
-  // The timer count is the handler's own timers (ledger/orphan reconcile, the
-  // one-shot reconcile, coalescer and gate timers). DeckHeartbeat and
+  // The timer count is the handler's own timers (orphan reconcile, the
+  // one-shot reconcile, coalescer and gate timers), plus the task-ledger
+  // reconcile, which serves fan-out and runs whatever the switch says. DeckHeartbeat and
   // DeckScheduler are mocked in this harness, so theirs are asserted through
   // `starts === 0` instead; their own suites cover start() arming an interval.
   it('off at launch: no timer, subscription, brain, token or hook; nothing eligible', async () => {
@@ -437,7 +439,7 @@ describe('master switch (moaEnabled)', () => {
     const subsBefore = busSubscribers();
     const listenersBefore = mirrorListeners();
     reregister({ production: true });
-    expect(vi.getTimerCount()).toBe(0);
+    expect(vi.getTimerCount()).toBe(1); // only the always-on task-ledger reconcile (fan-out bookkeeping)
     expect(busSubscribers()).toBe(subsBefore);
     expect(mirrorListeners()).toBe(listenersBefore);
     expect(heartbeats.at(-1)!.starts).toBe(0);
@@ -454,7 +456,7 @@ describe('master switch (moaEnabled)', () => {
     // The bus is not even subscribed, so nothing routes or wakes.
     lifecycle('ws-a');
     expect(pushedTo()).toEqual([]);
-    expect(vi.getTimerCount()).toBe(0);
+    expect(vi.getTimerCount()).toBe(1);
   });
 
   it('turning it on starts everything and re-arms the startup reconcile once; off tears it all down', async () => {
@@ -468,11 +470,11 @@ describe('master switch (moaEnabled)', () => {
     await invoke(IPC.DECK_MOA_SET, { enabled: true });
     expect(busSubscribers()).toBe(subsBefore + 1);
     expect(mirrorListeners()).toBe(1);
-    const armed = vi.getTimerCount(); // ledger reconcile + orphan reconcile + one-shot reconcile
+    const armed = vi.getTimerCount(); // always-on ledger reconcile + orphan reconcile + one-shot reconcile
     expect(armed).toBe(3);
 
     await invoke(IPC.DECK_MOA_SET, { enabled: false });
-    expect(vi.getTimerCount()).toBe(0);
+    expect(vi.getTimerCount()).toBe(1); // the ledger reconcile stays
     expect(busSubscribers()).toBe(subsBefore);
     expect(mirrorListeners()).toBe(0);
 
@@ -570,5 +572,34 @@ describe('Moa settings IPC', () => {
     expect(await invoke(IPC.DECK_MOA_STATE)).toMatchObject({ hq: { state: 'hq-store-corrupt' } });
     expect(await invoke(IPC.DECK_MOA_STORE_RESET)).toEqual({ ok: true });
     expect(await invoke(IPC.DECK_MOA_STATE)).toMatchObject({ config: { enabled: false }, hq: { state: 'unset' } });
+  });
+});
+
+describe('Moa setup that fails after the HQ is set', () => {
+  it('reports committed (the renderer keeps the workspace) and a retry finishes it', async () => {
+    await invoke(IPC.DECK_MOA_SET, { enabled: false });
+    // The disk refuses the onboarding settings write, after the HQ write.
+    const real = (await import('../../../../daemon/util/atomicWrite')).atomicWriteJSON;
+    __setHqWritersForTest({
+      async: async (p: string, data: unknown) => {
+        if ((data as { moaOnboarded?: boolean }).moaOnboarded) throw new Error('ENOSPC');
+        return real(p, data);
+      },
+    });
+    let r: Record<string, unknown>;
+    try {
+      r = await invoke(IPC.DECK_MOA_SETUP, { workspaceId: 'ws-moa' });
+    } finally {
+      __setHqWritersForTest(null);
+    }
+    expect(r).toEqual({ ok: false, code: 'setup_incomplete', committed: true });
+    expect(getHqWorkspaceId()).toBe('ws-moa');
+    expect(await invoke(IPC.DECK_MOA_SETUP, { workspaceId: 'ws-moa' })).toMatchObject({ ok: true });
+    expect(getMoaConfig()).toMatchObject({ enabled: true, onboarded: true });
+  });
+
+  it('a refusal before the commit carries no committed flag', async () => {
+    expect(await invoke(IPC.DECK_MOA_SETUP, { workspaceId: '../bad' })).toEqual({ ok: false, code: 'invalid_workspace' });
+    expect(getHqWorkspaceId()).toBeNull();
   });
 });
