@@ -51,7 +51,7 @@ describe('sendHandoff', () => {
     const [method, params] = (d.invoke as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(method).toBe('a2a.task.send');
     expect(params).toMatchObject({
-      workspaceId: 'ws-human', to: 'ws-target', paneId: 'pane-1', surfaceId: 'surf-1', workLinkId: 'link-new', gatedDelivery: true,
+      workspaceId: 'ws-human', to: 'ws-target', paneId: 'pane-1', surfaceId: 'surf-1', workLinkId: 'link-new', gatedDelivery: true, referenceDelivery: true,
       title: 'Issue Acme/Widgets#12',
     });
     expect(params.message).toBe(

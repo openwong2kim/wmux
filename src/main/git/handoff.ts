@@ -3,8 +3,9 @@
 // Send: record a work link for the item (origin issue / pr, owner = the
 // target pane), then send it as a new A2A task to that pane over the
 // operator lane (so the task joins the link) with the gated delivery: the
-// renderer waits until nobody is typing in the pane, then pastes through
-// main's approval gate, checked again right before the Enter. The text is the
+// renderer waits until nobody is typing in the pane, then pastes the fixed
+// reference (not a nudge) through main's approval gate, checked again right
+// before the Enter. A pane with no agent gets nothing written. The text is the
 // fixed reference from buildHandoffMessage, never the issue's own text.
 //
 // Start in a new worktree: the existing fan-out path from the repo's
@@ -125,6 +126,8 @@ export async function sendHandoff(deps: HandoffDeps, raw: unknown): Promise<Hand
     message,
     ...(link ? { workLinkId: link.id } : {}),
     gatedDelivery: true,
+    // Paste the fixed reference itself, not a "query the task" nudge.
+    referenceDelivery: true,
   }).catch((err: unknown) => ({ ok: false, error: err instanceof Error ? err.message : String(err) }))) as {
     ok?: boolean;
     error?: string;

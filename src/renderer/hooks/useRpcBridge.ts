@@ -3179,6 +3179,14 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
         // hazard whether or not we press Enter. The task is stored and teed
         // onto the EventBus below, so the receiver can still poll it.
         mode = 'no-agent-pane';
+      } else if (!silentExplicit && params.operatorOrigin === true && params.referenceDelivery === true && typeof message === 'string') {
+        // A Git page hand-off (operator only; main stamps operatorOrigin): the
+        // body is a fixed reference built in main (the item, its URL, the gh
+        // command to read it, the operator's note), so it is pasted as is
+        // instead of a nudge. One line for a pane that cannot take a
+        // multi-line paste.
+        write = await deliverPtyNudge(target, (pty) => (a2aFormatOptionsFor(pty).multiline ? message : message.replace(/\n+/g, ' — ')), explicitPty, operator, { taskId: newTaskId, ...(params.gatedDelivery === true ? { waitQuiet: true } : {}) });
+        mode = 'notification';
       } else if (!silentExplicit && isLiveTuiAgent(liveMeta)) {
         // #1680 — this branch is the task boundary: the pane's role may ask
         // for a fresh conversation before the task lands (both modes).
