@@ -156,13 +156,15 @@ describe('MoaTranscriptChat — commands', () => {
 });
 
 describe('tidyMoaUserText', () => {
-  it('shows text typed after a paste, else one short line instead of the pasted instructions', () => {
+  it('shows one short line instead of any pasted wire, as Claude records it', () => {
     const out = tidyMoaUserText([
-      { id: '1', kind: 'user_text', text: '<pasted_content id="a">rules</pasted_content>\n\nand also this' },
+      // The real shape: an id on both tags, and the TUI's split leaves the
+      // wire's tail after the closing tag.
+      { id: '1', kind: 'user_text', text: '\n\n<pasted_content id="4dff">\n[autonomy] mode: assist…\n</pasted_content id="4dff">\n\n fork, use deck_ask_decision. What next?' },
       { id: '2', kind: 'user_text', text: '<pasted_content id="b">You are the wmux Orchestrator… (cut)' },
       { id: '3', kind: 'user_text', text: 'plain' },
       { id: '4', kind: 'assistant_text', text: '<pasted_content id="c">quoted</pasted_content>' },
     ], 'Instructions sent to Moa');
-    expect(out.map((e) => e.text)).toEqual(['and also this', 'Instructions sent to Moa', 'plain', '<pasted_content id="c">quoted</pasted_content>']);
+    expect(out.map((e) => e.text)).toEqual(['Instructions sent to Moa', 'Instructions sent to Moa', 'plain', '<pasted_content id="c">quoted</pasted_content>']);
   });
 });

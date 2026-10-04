@@ -491,6 +491,8 @@ describe('CommanderViewContent — Moa slots', () => {
     mount({ brainPtyId: null, chatWorkspaceId: 'ws-hq', moa: { top: topNode, chat: chatNode, view: 'chat', onViewChange: vi.fn() } });
     const input = container.querySelector('[data-channel-composer-input]') as HTMLTextAreaElement;
     expect(input.placeholder).toBe('moa.panel.placeholder');
+    // A send here goes to Moa, not into a channel's shared record.
+    expect(container.querySelector('[data-channel-record-hint]')?.textContent).toBe('chat.inputHint');
   });
 
   it('without a transcript source the terminal is the only view, and there is no toggle', () => {

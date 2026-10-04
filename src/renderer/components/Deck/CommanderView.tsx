@@ -795,6 +795,7 @@ export function CommanderViewContent({
               ? t('moa.panel.placeholder')
               : t('deck.commanderPlaceholder') || 'Tell the orchestrator, or @mention panes…'
           }
+          hint={moa ? t('chat.inputHint') : undefined}
           t={t}
         />
       </div>

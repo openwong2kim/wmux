@@ -27,18 +27,16 @@ export type MoaTranscriptApi = NonNullable<NonNullable<NonNullable<Window['elect
  */
 /**
  * The terminal brain types each turn as one paste (Moa's context blocks with
- * the prompt at the end). Main swaps in the prompt it sent when it remembers
- * it; a pasted entry it could not match (sent before this app run) shows any
- * text typed after the paste, else one short line instead of Moa's
- * instructions.
+ * the prompt at the end). Main swaps in the prompt it sent (it keeps the last
+ * ones on disk); a pasted entry it has no record of shows one short line
+ * instead of Moa's instructions. Text after the paste is not used: the TUI
+ * splits a long paste, so it is the wire's tail, not the operator's words.
  */
 export function tidyMoaUserText<E extends { kind: string; text?: string }>(events: readonly E[], instructionsLabel: string): E[] {
-  return events.map((e) => {
-    if (e.kind !== 'user_text' || typeof e.text !== 'string' || !e.text.includes('<pasted_content')) return e;
-    const close = e.text.lastIndexOf('</pasted_content>');
-    const after = close >= 0 ? e.text.slice(close + '</pasted_content>'.length).trim() : '';
-    return { ...e, text: after || instructionsLabel };
-  });
+  return events.map((e) =>
+    e.kind === 'user_text' && typeof e.text === 'string' && e.text.includes('<pasted_content')
+      ? { ...e, text: instructionsLabel }
+      : e);
 }
 
 export function moaTranscriptBridge(

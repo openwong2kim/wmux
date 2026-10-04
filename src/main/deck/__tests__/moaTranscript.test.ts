@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { MoaTranscript, MOA_TRANSCRIPT_REASONS, rewritePastedPrompts } from '../moaTranscript';
+import { MoaTranscript, MOA_TRANSCRIPT_REASONS, parseNotedPrompts, rewritePastedPrompts, type NotedPrompt } from '../moaTranscript';
 import type { TranscriptAppendData } from '../../../shared/transcript/turnEvents';
 
 const HQ_SESSION = '920b9112-1111-4222-8333-444455556666';
@@ -218,5 +218,34 @@ describe('rewritePastedPrompts — the chat shows what was asked, not the pasted
     expect(out[0]).toBe(typed);
     expect((out[1] as { text: string }).text).toBe(early.text);
     expect(rewritePastedPrompts([early] as never, [])[0]).toEqual(early);
+  });
+});
+
+describe('the remembered prompts', () => {
+  const make = (store: { saved: NotedPrompt[] | null }) => new MoaTranscript({
+    getHqWorkspaceId: () => 'ws-hq',
+    isMoaEnabled: () => true,
+    emitAppend: () => undefined,
+    promptStore: { load: () => (store.saved ? { prompts: store.saved } : undefined), save: (p) => { store.saved = [...p]; } },
+  });
+
+  it('are saved for the HQ only, and a new run reads them back', () => {
+    const store: { saved: NotedPrompt[] | null } = { saved: null };
+    const first = make(store);
+    first.notePrompt('ws-other', 'not the HQ', 1_000);
+    first.notePrompt('ws-hq', 'Which task needs me first?', 2_000);
+    first.dispose();
+    expect(store.saved).toEqual([{ at: 2_000, text: 'Which task needs me first?', hq: 'ws-hq' }]);
+    // A second instance (the next app run) appends to what the first saved.
+    const second = make(store);
+    second.notePrompt('ws-hq', 'And the second?', 3_000);
+    second.dispose();
+    expect(store.saved?.map((p) => p.text)).toEqual(['Which task needs me first?', 'And the second?']);
+  });
+
+  it('a file that is not ours reads as none', () => {
+    expect(parseNotedPrompts(null)).toEqual([]);
+    expect(parseNotedPrompts({ prompts: 'x' })).toEqual([]);
+    expect(parseNotedPrompts({ prompts: [{ at: 1, text: 'ok', hq: 'h' }, { at: 'x', text: 1 }] })).toEqual([{ at: 1, text: 'ok', hq: 'h' }]);
   });
 });

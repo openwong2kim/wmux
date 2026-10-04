@@ -27,9 +27,12 @@
 //                    Dropped only when Moa goes off or the HQ changes; the
 //                    renderer hears those through DECK_MOA_CHANGED.
 
+import fs from 'node:fs';
+import path from 'node:path';
 import { TranscriptProjector } from '../../daemon/transcript/TranscriptProjector';
 import { scanForTranscript } from '../../daemon/transcript/TranscriptDiscovery';
 import { getWmuxDir } from '../../daemon/config';
+import { atomicWriteJSON } from '../../daemon/util/atomicWrite';
 import { resolveBrainHomeDir } from './ClaudePtyBrainAdapter';
 import type { ResumeBinding } from '../../shared/agentResume';
 import type { AgentSignalKind } from '../../shared/hooks/signal-types';
@@ -44,6 +47,25 @@ import type {
 const PROMPT_MEMORY = 50;
 /** A transcript user entry lands a little after main typed it. */
 const PROMPT_MATCH_SLACK_MS = 5_000;
+/** Where the remembered prompts live (wmux data dir), so a restart keeps the
+ *  questions earlier turns showed. */
+const PROMPTS_FILE = 'moa-prompts.json';
+
+/** A prompt main sent to an HQ brain. */
+export interface NotedPrompt { at: number; text: string; hq: string }
+
+/** The remembered prompts on disk, or [] (none yet, unreadable, foreign). */
+export function parseNotedPrompts(raw: unknown): NotedPrompt[] {
+  const list = (raw as { prompts?: unknown } | null)?.prompts;
+  if (!Array.isArray(list)) return [];
+  return list
+    .filter((p): p is NotedPrompt =>
+      !!p && typeof p === 'object'
+      && typeof (p as NotedPrompt).at === 'number' && Number.isFinite((p as NotedPrompt).at)
+      && typeof (p as NotedPrompt).text === 'string'
+      && typeof (p as NotedPrompt).hq === 'string')
+    .slice(-PROMPT_MEMORY);
+}
 
 /**
  * The terminal brain types each turn as one paste — the context blocks main
@@ -112,6 +134,8 @@ export interface MoaTranscriptDeps {
   wmuxDir?: () => string;
   /** Find `<sessionId>.jsonl` under the projects roots. Injected in tests. */
   scan?: (sessionId: string, env?: Record<string, string>) => string[];
+  /** Load / save the remembered prompts. Defaults to `moa-prompts.json`. */
+  promptStore?: { load: () => unknown; save: (prompts: NotedPrompt[]) => void };
   log?: (level: 'info' | 'warn' | 'error', message: string) => void;
   debounceMs?: number;
   pollMs?: number;
@@ -132,8 +156,8 @@ export class MoaTranscript {
   private subscribedHq: string | null = null;
   /** Whether the projector currently holds the renderer's subscription. */
   private armed = false;
-  /** Prompts sent to the HQ brain this run, oldest first. */
-  private prompts: { at: number; text: string }[] = [];
+  /** Prompts sent to an HQ brain, oldest first; read from disk on first use. */
+  private prompts: NotedPrompt[] | null = null;
 
   constructor(deps: MoaTranscriptDeps) {
     this.deps = deps;
@@ -147,7 +171,7 @@ export class MoaTranscript {
       emitAppend: (key, data, clientIds) => {
         if (key !== SESSION_KEY || !clientIds.includes(CLIENT_ID)) return;
         if (this.subscribedHq === null || this.subscribedHq !== this.activeHq()) return;
-        this.deps.emitAppend({ ...data, events: rewritePastedPrompts(data.events, this.prompts) });
+        this.deps.emitAppend({ ...data, events: rewritePastedPrompts(data.events, this.hqPrompts()) });
       },
       ...(deps.log ? { log: deps.log } : {}),
       ...(deps.debounceMs !== undefined ? { debounceMs: deps.debounceMs } : {}),
@@ -171,15 +195,46 @@ export class MoaTranscript {
     const before = opts?.before;
     const valid = typeof before === 'number' && Number.isFinite(before) && before >= 0;
     const page = this.projector.snapshot(SESSION_KEY, valid ? { before: Math.floor(before) } : undefined);
-    return page ? { ...page, events: rewritePastedPrompts(page.events, this.prompts) } : page;
+    return page ? { ...page, events: rewritePastedPrompts(page.events, this.hqPrompts()) } : page;
   }
 
   /** The prompt main is about to send to a workspace's brain (the operator's
    *  words, or an automation's), remembered for the HQ's chat view. */
   notePrompt(workspaceId: string, text: string, at: number = Date.now()): void {
     if (workspaceId !== this.activeHq() || !text.trim()) return;
-    this.prompts.push({ at, text });
-    if (this.prompts.length > PROMPT_MEMORY) this.prompts.splice(0, this.prompts.length - PROMPT_MEMORY);
+    const prompts = this.loadPrompts();
+    prompts.push({ at, text, hq: workspaceId });
+    if (prompts.length > PROMPT_MEMORY) prompts.splice(0, prompts.length - PROMPT_MEMORY);
+    this.promptStore().save(prompts);
+  }
+
+  private hqPrompts(): NotedPrompt[] {
+    const hq = this.activeHq();
+    return this.loadPrompts().filter((p) => p.hq === hq);
+  }
+
+  private loadPrompts(): NotedPrompt[] {
+    if (!this.prompts) {
+      try {
+        this.prompts = parseNotedPrompts(this.promptStore().load());
+      } catch {
+        this.prompts = [];
+      }
+    }
+    return this.prompts;
+  }
+
+  private promptStore(): NonNullable<MoaTranscriptDeps['promptStore']> {
+    if (this.deps.promptStore) return this.deps.promptStore;
+    const file = path.join((this.deps.wmuxDir ?? getWmuxDir)(), PROMPTS_FILE);
+    return {
+      load: () => JSON.parse(fs.readFileSync(file, 'utf8')),
+      save: (prompts) => {
+        void atomicWriteJSON(file, { prompts }).catch((err) => {
+          this.deps.log?.('warn', `[moa] could not save prompts: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      },
+    };
   }
 
   /**

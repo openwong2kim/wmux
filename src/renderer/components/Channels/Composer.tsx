@@ -464,6 +464,9 @@ export interface ComposerContentProps {
   placeholder?: string;
   /** Disable the input + send button. */
   disabled?: boolean;
+  /** Replaces the shared-record hint where a send is not a channel post
+   *  (Moa's composer before its brain is up). */
+  hint?: string;
 }
 
 /** Side-effect-free presentational surface. The test can call
@@ -477,6 +480,7 @@ export function ComposerContent({
   mentionCandidates,
   placeholder,
   disabled,
+  hint,
   t: tProp,
 }: ComposerContentProps): React.ReactElement {
   const t = tProp ?? ((key: string) => key);
@@ -795,7 +799,7 @@ export function ComposerContent({
           user is still typing, not an event — announcing every revision talks
           over the composition it describes. It is read where it sits. */}
       {targetHints.length === 0 && (
-        <p data-channel-record-hint className="text-[11px] text-[var(--text-muted)]">{t('channels.recordOnlyHint')}</p>
+        <p data-channel-record-hint className="text-[11px] text-[var(--text-muted)]">{hint ?? t('channels.recordOnlyHint')}</p>
       )}
       {targetHints.length > 0 && (
         <div
