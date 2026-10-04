@@ -2421,3 +2421,35 @@ html[data-fullscreen] .wmux-shell-body {
   margin: 0; max-height: 320px; overflow: auto; padding: 8px; border-radius: 6px; background: var(--selection-subtle);
   font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); font-size: 11px; line-height: 1.5; white-space: pre; color: var(--text-sub);
 }
+
+/* Git page — PR review on the detail pane: review, squash merge, files and threads */
+.wmux-git-review-head { font-size: 11px; color: var(--text-muted); }
+.wmux-git-sha { font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); font-size: 11px; color: var(--text-sub); }
+.wmux-git-review-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; }
+.wmux-git-merge-row { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.wmux-git-merge-editor { display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: 10px; box-shadow: inset 0 0 0 1px var(--line); }
+.wmux-git-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-sub); }
+.wmux-git-files { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.wmux-git-file + .wmux-git-file { border-top: 1px solid var(--border-soft); }
+.wmux-git-file-head { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 28px; padding: 0 4px; border-radius: 6px; text-align: left; }
+.wmux-git-file-head:hover { background: var(--hover-fill); }
+.wmux-git-file-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); font-size: 12px; color: var(--text-main); }
+.wmux-git-file-kind { flex-shrink: 0; font-size: 11px; color: var(--text-muted); }
+.wmux-git-file-body { display: flex; flex-direction: column; gap: 8px; padding: 4px 0 10px; }
+.wmux-git-hunk { border-radius: 6px; box-shadow: inset 0 0 0 1px var(--line); overflow: hidden; }
+.wmux-git-hunk-head { padding: 2px 8px; font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); font-size: 11px; color: var(--text-muted); background: var(--selection-subtle); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wmux-hunk-row { display: flex; align-items: flex-start; }
+.wmux-hunk-gutter { display: inline-flex; flex-shrink: 0; gap: 0; color: var(--text-muted); font-variant-numeric: tabular-nums; user-select: none; }
+.wmux-hunk-gutter > span { width: 40px; padding-right: 6px; text-align: right; }
+.wmux-hunk-gutter-btn { flex-shrink: 0; border-radius: 4px; }
+.wmux-hunk-gutter-btn:hover { background: var(--hover-fill); }
+.wmux-hunk-gutter-btn:hover .wmux-hunk-gutter { color: var(--text-main); }
+.wmux-hunk-text { flex: 1; min-width: 0; padding: 0 8px 0 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.wmux-hunk-below { display: flex; flex-direction: column; gap: 6px; padding: 6px 8px 6px 88px; font-family: var(--font-ui, inherit); font-size: 12px; line-height: 1.45; white-space: normal; border-top: 1px solid var(--border-soft); border-bottom: 1px solid var(--border-soft); }
+@container (max-width: 700px) { .wmux-hunk-below { padding-left: 8px; } }
+.wmux-git-threads-aside { display: flex; flex-direction: column; gap: 6px; }
+.wmux-git-thread { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-radius: 10px; box-shadow: inset 0 0 0 1px var(--line); }
+.wmux-git-thread-comment + .wmux-git-thread-comment { padding-top: 6px; border-top: 1px solid var(--border-soft); }
+.wmux-git-reply { display: flex; align-items: flex-start; gap: 6px; }
+.wmux-git-reply .wmux-git-ship-input { flex: 1; min-width: 0; padding: 4px 8px; font-size: 12px; }
+.wmux-git-composer { display: flex; flex-direction: column; gap: 6px; }

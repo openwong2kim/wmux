@@ -15,6 +15,8 @@ import { renderBrainMarkdown } from '../Deck/BrainMarkdown';
 import { ListFreshness } from './ListFreshness';
 import { DetailError, useDetail } from './useDetail';
 import { PrChecks, usePrChecks } from './PrChecks';
+import { PrReviewActions } from './PrReviewActions';
+import { PrFiles } from './PrFiles';
 import { PrStepText, getGithubBridge } from './PrSection';
 import { getIssueBridge } from './IssueSection';
 import { relTime } from './useGitList';
@@ -116,6 +118,12 @@ function PrBody({ repoPath, pr, refreshKey }: { repoPath: string; pr: PrSummary;
         {pr.checks && <span>{t(`workspace.prChecks.${pr.checks}`)}</span>}
       </div>
       <PrChecks repoPath={repoPath} read={checks} />
+      {checks.data && (
+        <>
+          <PrReviewActions repoPath={repoPath} number={pr.number} head={checks.data.head} checks={checks.data.checks} onMoved={() => checks.reload(true)} />
+          <PrFiles repoPath={repoPath} number={pr.number} head={checks.data.head.headRefOid} refreshKey={refreshKey} onMoved={() => checks.reload(true)} />
+        </>
+      )}
       {detail.loading && <div className="wmux-git-note">{t('git.loading')}</div>}
       {!detail.loading && detail.error && <DetailError label={t('git.commentsFailed')} error={detail.error} retry={detail.retry} />}
       {!detail.loading && detail.value?.length === 0 && <div className="wmux-git-note">{t('git.noComments')}</div>}
