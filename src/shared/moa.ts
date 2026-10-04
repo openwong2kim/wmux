@@ -21,9 +21,19 @@ export interface MoaConfig {
   /** Moa may propose precedents and skills ("Remember this?"); nothing is
    *  saved without the operator's click. Absent = on. */
   memoryProposals?: boolean;
+  /** Opt-in: propose new issues and outside PRs of open repos as decision
+   *  cards (moaIssueProposals.ts). Absent = off. */
+  issueProposals?: boolean;
+  /** GitHub logins (lowercase) whose `wmux:auto` items may be handed off
+   *  without a card. Absent = none. */
+  trustedAuthors?: string[];
+  /** Minutes between proposal scans. Absent = the default. */
+  issuePollMinutes?: number;
+  /** Repos (host/owner/repo, lowercase) Moa no longer proposes from. */
+  ignoredRepos?: string[];
 }
 
-export type MoaConfigPatch = Partial<Pick<MoaConfig, 'onboarded' | 'level' | 'maxTurnsPerHour' | 'bubbles' | 'reduceMotion' | 'approvalPress' | 'memoryProposals'>>;
+export type MoaConfigPatch = Partial<Pick<MoaConfig, 'onboarded' | 'level' | 'maxTurnsPerHour' | 'bubbles' | 'reduceMotion' | 'approvalPress' | 'memoryProposals' | 'issueProposals' | 'trustedAuthors' | 'issuePollMinutes' | 'ignoredRepos'>>;
 
 export interface MoaState {
   config: MoaConfig;
@@ -86,4 +96,41 @@ export interface MoaMemoryCard {
   fullText: string;
   /** Save replaces an item already kept under this name. */
   replaces: boolean;
+}
+
+/** Bounds and default of the proposal scan interval, in minutes. */
+export const MOA_ISSUE_POLL_MINUTES_RANGE = { min: 5, max: 120 } as const;
+export const MOA_ISSUE_POLL_MINUTES_DEFAULT = 10;
+/** At most this many trusted authors and ignored repos are kept. */
+export const MOA_ISSUE_LIST_MAX = 50;
+
+const GITHUB_LOGIN_RE = /^[a-z0-9](?:[a-z0-9-]{0,38})$/;
+const REPO_KEY_RE = /^[a-z0-9.-]+\/[a-z0-9_.-]+\/[a-z0-9_.-]+$/;
+
+/** GitHub logins from free text (comma, space or newline separated, an
+ *  optional leading @), lowercased, deduplicated, invalid ones dropped. */
+export function parseTrustedAuthors(raw: unknown): string[] {
+  const parts = Array.isArray(raw) ? raw : typeof raw === 'string' ? raw.split(/[\s,]+/) : [];
+  const out: string[] = [];
+  for (const p of parts) {
+    if (typeof p !== 'string') continue;
+    const login = p.trim().replace(/^@/, '').toLowerCase();
+    if (GITHUB_LOGIN_RE.test(login) && !out.includes(login)) out.push(login);
+    if (out.length >= MOA_ISSUE_LIST_MAX) break;
+  }
+  return out;
+}
+
+/** Repo keys (host/owner/repo) from free text, lowercased, deduplicated,
+ *  invalid ones dropped. */
+export function parseIgnoredRepos(raw: unknown): string[] {
+  const parts = Array.isArray(raw) ? raw : typeof raw === 'string' ? raw.split(/[\s,]+/) : [];
+  const out: string[] = [];
+  for (const p of parts) {
+    if (typeof p !== 'string') continue;
+    const key = p.trim().toLowerCase();
+    if (REPO_KEY_RE.test(key) && !out.includes(key)) out.push(key);
+    if (out.length >= MOA_ISSUE_LIST_MAX) break;
+  }
+  return out;
 }

@@ -117,6 +117,8 @@ vi.mock('../../../deck/deckScheduleStore', () => ({
 }));
 
 vi.mock('../../../deck/deckDecisionStore', () => ({
+  onDecisionsChanged: vi.fn(() => () => undefined),
+  isIssueProposalDecision: vi.fn(() => false),
   loadWorkspaceDecision: vi.fn(() => null),
   loadDeckDecisions: vi.fn(() => ({})),
   hasPendingDecision: vi.fn(() => false),

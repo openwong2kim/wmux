@@ -54,7 +54,16 @@ export interface WorkspaceDecision {
   resolvedBy?: DecisionResolvedBy;
   raisedAt: number;
   resolvedAt?: number;
+  /** Who raised it, when not the workspace's brain. `issue-proposal`: Moa's
+   *  issue and PR proposals lane (moaIssueProposals.ts), whose answers main
+   *  handles. Such a card is never shown to a brain (loadBrainDecision). */
+  origin?: DecisionOrigin;
+  /** The raiser's own key for the card (the proposal's item key), stored with
+   *  it so the owner can be recovered after a crash. */
+  ref?: string;
 }
+
+export type DecisionOrigin = 'issue-proposal';
 
 export type DecisionResolvedBy = 'human' | 'brain';
 
@@ -110,6 +119,8 @@ function sanitizeDecision(raw: unknown): WorkspaceDecision | null {
     ...(typeof o.resolvedAt === 'number' && Number.isFinite(o.resolvedAt)
       ? { resolvedAt: o.resolvedAt }
       : {}),
+    ...(o.origin === 'issue-proposal' ? { origin: o.origin } : {}),
+    ...(typeof o.ref === 'string' && o.ref.length <= 256 ? { ref: o.ref } : {}),
   };
 }
 
@@ -160,6 +171,11 @@ export function loadWorkspaceDecision(workspaceId: string, dir?: string): Worksp
   } catch {
     return null;
   }
+}
+
+/** A card raised by Moa's issue proposals lane (main answers it, never a brain). */
+export function isIssueProposalDecision(d: Pick<WorkspaceDecision, 'origin'> | null | undefined): boolean {
+  return d?.origin === 'issue-proposal';
 }
 
 /** The wake-suppression predicate: a workspace with a PENDING decision must not
@@ -266,6 +282,44 @@ export async function raiseDecision(
     }),
     dir,
   );
+}
+
+/**
+ * Raise a decision only while the workspace has none pending, checked inside
+ * the store's serialization (a load-then-raise could clobber a question raised
+ * in between). A resolved one not consumed yet is left alone too: its answer
+ * still has to reach whoever asked. Returns the new decision, or null when the
+ * slot was taken or nothing was written.
+ */
+export async function raiseDecisionIfFree(
+  workspaceId: string,
+  args: { question: string; options?: string[]; context?: string; origin?: DecisionOrigin; ref?: string },
+  dir?: string,
+): Promise<WorkspaceDecision | null> {
+  const question = args.question.trim();
+  if (!question) return null;
+  // Fast no-op without a disk write; the mutate re-checks under the lock.
+  if (loadWorkspaceDecision(workspaceId, dir)) return null;
+  let raised = false;
+  const result = await mutate(
+    workspaceId,
+    (prev) => {
+      if (prev) return prev;
+      raised = true;
+      return {
+        id: randomUUID(),
+        question: question.slice(0, DECISION_LIMITS.MAX_QUESTION_CHARS),
+        options: sanitizeOptions(args.options),
+        context: typeof args.context === 'string' ? args.context.trim().slice(0, DECISION_LIMITS.MAX_CONTEXT_CHARS) : '',
+        status: 'pending',
+        raisedAt: Date.now(),
+        ...(args.origin ? { origin: args.origin } : {}),
+        ...(typeof args.ref === 'string' && args.ref.length <= 256 ? { ref: args.ref } : {}),
+      };
+    },
+    dir,
+  );
+  return raised ? result : null;
 }
 
 /**

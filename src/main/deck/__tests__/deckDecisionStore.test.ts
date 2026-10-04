@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
   raiseDecision,
+  raiseDecisionIfFree,
+  isIssueProposalDecision,
   replaceStaleDecision,
   resolveDecision,
   clearDecision,
@@ -28,6 +30,27 @@ afterEach(() => {
 });
 
 describe('deckDecisionStore', () => {
+  it('raiseDecisionIfFree raises only into an empty slot and never clobbers', async () => {
+    const first = await raiseDecisionIfFree('ws-1', { question: 'Hand it off?', options: ['Yes', 'No'] }, dir);
+    expect(first).toMatchObject({ question: 'Hand it off?', status: 'pending' });
+    expect(await raiseDecisionIfFree('ws-1', { question: 'Second?' }, dir)).toBeNull();
+    expect(loadWorkspaceDecision('ws-1', dir)!.id).toBe(first!.id);
+    // A resolved answer not consumed yet holds the slot too.
+    await resolveDecision('ws-1', first!.id, 'Yes', dir);
+    expect(await raiseDecisionIfFree('ws-1', { question: 'Third?' }, dir)).toBeNull();
+    expect(loadWorkspaceDecision('ws-1', dir)!.resolution).toBe('Yes');
+    await clearResolvedDecision('ws-1', first!.id, dir);
+    expect(await raiseDecisionIfFree('ws-1', { question: 'Now?' }, dir)).toMatchObject({ question: 'Now?' });
+  });
+
+  it('keeps an issue-proposal card\'s origin and key through a resolve and a reload', async () => {
+    const d = await raiseDecisionIfFree('ws-1', { question: 'Hand it off?', origin: 'issue-proposal', ref: 'issue:github.com/a/b#1' }, dir);
+    expect(isIssueProposalDecision(d)).toBe(true);
+    await resolveDecision('ws-1', d!.id, 'Not now', dir);
+    expect(loadWorkspaceDecision('ws-1', dir)).toMatchObject({ origin: 'issue-proposal', ref: 'issue:github.com/a/b#1', status: 'resolved' });
+    expect(isIssueProposalDecision(await raiseDecision('ws-2', { question: 'Brain?' }, dir))).toBe(false);
+  });
+
   it('tells change listeners after every write, and a throwing listener breaks nothing', async () => {
     let calls = 0;
     const offBad = onDecisionsChanged(() => { throw new Error('boom'); });

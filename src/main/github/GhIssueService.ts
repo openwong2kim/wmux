@@ -108,13 +108,44 @@ interface RestIssueJson {
   number?: number;
   title?: string;
   state?: string;
-  user?: { login?: string } | null;
+  user?: { login?: string; type?: string } | null;
   labels?: Array<{ name?: string } | string> | null;
   assignees?: Array<{ login?: string }> | null;
   updated_at?: string;
   html_url?: string;
   comments?: number;
   pull_request?: unknown;
+  draft?: boolean;
+}
+
+/** One open issue or PR of a list, lean: what Moa's proposals need
+ *  (moaIssueProposals.ts). The REST endpoint returns both kinds, so one read covers
+ *  them. Title and author are the author's own text (untrusted). */
+export interface RepoItem {
+  kind: 'issue' | 'pr';
+  number: number;
+  title: string;
+  author: string;
+  /** The host typed the author as a bot (`user.type === 'Bot'`). */
+  authorIsBot: boolean;
+  labels: string[];
+  url: string;
+  draft: boolean;
+}
+
+export function mapRestItem(j: RestIssueJson): RepoItem | null {
+  if (typeof j.number !== 'number' || typeof j.html_url !== 'string') return null;
+  if ((j.state ?? 'open').toLowerCase() !== 'open') return null;
+  return {
+    kind: j.pull_request ? 'pr' : 'issue',
+    number: j.number,
+    title: j.title ?? '',
+    author: j.user?.login ?? '',
+    authorIsBot: j.user?.type === 'Bot',
+    labels: (j.labels ?? []).map((l) => (typeof l === 'string' ? l : l?.name ?? '')).filter(Boolean),
+    url: j.html_url,
+    draft: j.draft === true,
+  };
 }
 
 /** A REST issues-endpoint item; a pull request (which the endpoint mixes in) is null. */
@@ -185,7 +216,7 @@ function errorText(err: unknown): string {
 // ── service ─────────────────────────────────────────────────────────────────
 
 type ServiceListResult =
-  | { ok: true; issues: IssueSummary[] }
+  | { ok: true; issues: IssueSummary[]; items: RepoItem[] }
   | { ok: false; code: 'rate-limited'; message: string; retryAt: number }
   | { ok: false; code: 'error'; message: string };
 
@@ -257,6 +288,17 @@ export class GhIssueService {
     return login;
   }
 
+  /** The login gh is signed in as on `host` (cached like the filters' read),
+   *  or null when it cannot be read or the breaker is open. Never throws. */
+  async signedInLogin(host: string, cwd: string): Promise<string | null> {
+    if (this.retryAt(host) !== null) return null;
+    try {
+      return (await this.login(host, cwd)).toLowerCase();
+    } catch {
+      return null;
+    }
+  }
+
   /**
    * Open issues of the remote `key` (host/owner/repo), read from `repoPath`.
    * Its host scopes the breaker. `force` (the page's refresh) skips the TTL
@@ -294,8 +336,10 @@ export class GhIssueService {
         repoPath,
       );
       const arr = JSON.parse(stdout) as RestIssueJson[];
-      const issues = (Array.isArray(arr) ? arr : []).map(mapRestIssue).filter((i): i is IssueSummary => i !== null);
-      return { ok: true, issues };
+      const all = Array.isArray(arr) ? arr : [];
+      const issues = all.map(mapRestIssue).filter((i): i is IssueSummary => i !== null);
+      const items = all.map(mapRestItem).filter((i): i is RepoItem => i !== null);
+      return { ok: true, issues, items };
     } catch (err) {
       if (err instanceof RateLimited) return this.rateLimited(repo.host) ?? { ok: false, code: 'error', message: err.message };
       return { ok: false, code: 'error', message: errorText(err) };

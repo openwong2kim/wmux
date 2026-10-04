@@ -245,6 +245,14 @@ describe('DeckHeartbeat — WP3 stale-decision re-examine', () => {
     expect(flush).not.toHaveBeenCalled();
   });
 
+  it('never re-examines an issue-proposal card, however stale', () => {
+    const { deps, reExamine } = makeReExamineDeps({
+      getDecision: () => ({ ...pending(NOW - TTL * 10), origin: 'issue-proposal', ref: 'issue:github.com/a/b#1' }),
+    });
+    new DeckHeartbeat(deps).tick();
+    expect(reExamine).not.toHaveBeenCalled();
+  });
+
   it('does NOT re-examine a pending decision that is not yet stale', () => {
     const { deps, reExamine } = makeReExamineDeps({ getDecision: () => pending(NOW - TTL + 1) });
     new DeckHeartbeat(deps).tick();

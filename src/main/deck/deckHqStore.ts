@@ -60,7 +60,18 @@ const MAX_ARCHIVED_DECISIONS = 200;
 /** Default hourly cap on the HQ's automatic turns. */
 export const DEFAULT_HQ_MAX_TURNS_PER_HOUR = 12;
 
-import { MOA_MAX_TURNS_PER_HOUR_RANGE, MOA_MEMORY_DECISION_KEY, type MoaLevel, type MoaConfig, type MoaConfigPatch } from '../../shared/moa';
+import {
+  MOA_MAX_TURNS_PER_HOUR_RANGE,
+  MOA_MEMORY_DECISION_KEY,
+  MOA_ISSUE_POLL_MINUTES_DEFAULT,
+  MOA_ISSUE_POLL_MINUTES_RANGE,
+  MOA_ISSUE_LIST_MAX,
+  parseIgnoredRepos,
+  parseTrustedAuthors,
+  type MoaLevel,
+  type MoaConfig,
+  type MoaConfigPatch,
+} from '../../shared/moa';
 export type { MoaLevel, MoaConfig, MoaConfigPatch };
 
 export interface ArchivedHqDecision {
@@ -89,6 +100,14 @@ interface HqFile {
   hqApprovalPress?: boolean;
   /** "Remember this?" proposals (moaMemory.ts). Absent = on. */
   moaMemoryProposals?: boolean;
+  /** Issue / outside-PR proposals opt-in (moaIssueProposals.ts). Absent = off. */
+  moaIssueProposals?: boolean;
+  /** Logins whose `wmux:auto` items may be handed off without a card. */
+  moaTrustedAuthors?: string[];
+  /** Minutes between proposal scans; absent = the default. */
+  moaIssuePollMinutes?: number;
+  /** Repo keys the proposals skip ("Ignore this repo"). */
+  moaIgnoredRepos?: string[];
   /** Archived decisions up to this archivedAt have been acknowledged. */
   archiveAckedAt?: number;
   /** Set once the non-HQ migration has completed for `hqWorkspaceId`. */
@@ -118,11 +137,15 @@ function isValidHqFile(data: unknown): data is Record<string, unknown> {
   if (o.hqMaxTurnsPerHour !== undefined
     && !(typeof o.hqMaxTurnsPerHour === 'number' && Number.isInteger(o.hqMaxTurnsPerHour) && o.hqMaxTurnsPerHour >= 1)) return false;
   if (o.archivedDecisions !== undefined && !Array.isArray(o.archivedDecisions)) return false;
-  for (const k of ['moaOnboarded', 'moaBubbles', 'moaReduceMotion', 'hqApprovalPress', 'moaMemoryProposals'] as const) {
+  for (const k of ['moaOnboarded', 'moaBubbles', 'moaReduceMotion', 'hqApprovalPress', 'moaMemoryProposals', 'moaIssueProposals'] as const) {
     if (o[k] !== undefined && typeof o[k] !== 'boolean') return false;
   }
   if (o.moaLevel !== undefined && o.moaLevel !== 1 && o.moaLevel !== 2 && o.moaLevel !== 3) return false;
   if (o.archiveAckedAt !== undefined && typeof o.archiveAckedAt !== 'number') return false;
+  if (o.moaIssuePollMinutes !== undefined && typeof o.moaIssuePollMinutes !== 'number') return false;
+  for (const k of ['moaTrustedAuthors', 'moaIgnoredRepos'] as const) {
+    if (o[k] !== undefined && !Array.isArray(o[k])) return false;
+  }
   return true;
 }
 
@@ -143,6 +166,13 @@ function sanitize(o: Record<string, unknown>): HqFile {
   if (typeof o.hqApprovalPress === 'boolean') out.hqApprovalPress = o.hqApprovalPress;
   if (typeof o.moaMemoryProposals === 'boolean') out.moaMemoryProposals = o.moaMemoryProposals;
   if (typeof o.archiveAckedAt === 'number') out.archiveAckedAt = o.archiveAckedAt;
+  if (typeof o.moaIssueProposals === 'boolean') out.moaIssueProposals = o.moaIssueProposals;
+  if (Array.isArray(o.moaTrustedAuthors)) out.moaTrustedAuthors = parseTrustedAuthors(o.moaTrustedAuthors);
+  if (typeof o.moaIssuePollMinutes === 'number') {
+    const n = issuePollMinutes(o.moaIssuePollMinutes);
+    if (n !== null) out.moaIssuePollMinutes = n;
+  }
+  if (Array.isArray(o.moaIgnoredRepos)) out.moaIgnoredRepos = parseIgnoredRepos(o.moaIgnoredRepos);
   return out;
 }
 
@@ -381,7 +411,36 @@ export function getMoaConfig(dir?: string): MoaConfig {
     defaultReason: file.moaDefault ?? null,
     approvalPress: file.hqApprovalPress === true,
     memoryProposals: file.moaMemoryProposals !== false,
+    issueProposals: file.moaIssueProposals === true,
+    trustedAuthors: file.moaTrustedAuthors ?? [],
+    issuePollMinutes: file.moaIssuePollMinutes ?? MOA_ISSUE_POLL_MINUTES_DEFAULT,
+    ignoredRepos: file.moaIgnoredRepos ?? [],
   };
+}
+
+/** A whole number of minutes within the accepted range, or null. */
+function issuePollMinutes(n: unknown): number | null {
+  return typeof n === 'number' && Number.isInteger(n)
+    && n >= MOA_ISSUE_POLL_MINUTES_RANGE.min && n <= MOA_ISSUE_POLL_MINUTES_RANGE.max ? n : null;
+}
+
+/** Add a repo to the proposals' ignore list. Returns false while the store is
+ *  corrupt (nothing written). */
+export async function addMoaIgnoredRepo(repoKey: string, dir?: string): Promise<boolean> {
+  const [key] = parseIgnoredRepos([repoKey]);
+  if (!key) return false;
+  try {
+    await mutate(dir, (file) => {
+      const list = file.moaIgnoredRepos ?? [];
+      if (list.includes(key)) return Promise.resolve();
+      // A full list drops its oldest entry, so the new key always lands.
+      return write(dir, { ...file, moaIgnoredRepos: [...list, key].slice(-MOA_ISSUE_LIST_MAX) });
+    });
+    return true;
+  } catch (err) {
+    if (err instanceof HqStoreCorruptError) return false;
+    throw err;
+  }
 }
 
 /** Bounds on the HQ turn cap the settings accept. */
@@ -400,6 +459,11 @@ export async function setMoaConfig(patch: MoaConfigPatch, dir?: string): Promise
   if (typeof patch.reduceMotion === 'boolean') next.moaReduceMotion = patch.reduceMotion;
   if (typeof patch.approvalPress === 'boolean') next.hqApprovalPress = patch.approvalPress;
   if (typeof patch.memoryProposals === 'boolean') next.moaMemoryProposals = patch.memoryProposals;
+  if (typeof patch.issueProposals === 'boolean') next.moaIssueProposals = patch.issueProposals;
+  if (patch.trustedAuthors !== undefined) next.moaTrustedAuthors = parseTrustedAuthors(patch.trustedAuthors);
+  const minutes = issuePollMinutes(patch.issuePollMinutes);
+  if (minutes !== null) next.moaIssuePollMinutes = minutes;
+  if (patch.ignoredRepos !== undefined) next.moaIgnoredRepos = parseIgnoredRepos(patch.ignoredRepos);
   try {
     await mutate(dir, (file) => write(dir, { ...file, ...next }));
     return true;

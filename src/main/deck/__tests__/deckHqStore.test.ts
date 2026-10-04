@@ -22,6 +22,7 @@ import {
   getMoaConfig,
   isHqApprovalPressEnabled,
   setMoaConfig,
+  addMoaIgnoredRepo,
   countUnackedArchivedDecisions,
   ackArchivedDecisions,
   resetCorruptHqStore,
@@ -385,6 +386,39 @@ describe('deckHqStore — Moa settings', () => {
     await setMoaConfig({ maxTurnsPerHour: 1.5 }, dir);
     expect(getMoaConfig(dir)).toMatchObject({ level: 2, maxTurnsPerHour: 30 });
     expect(getHqMaxTurnsPerHour(dir)).toBe(30);
+  });
+
+  it('keeps proposals off by default and stores only valid lists and intervals', async () => {
+    expect(getMoaConfig(dir)).toMatchObject({ issueProposals: false, trustedAuthors: [], issuePollMinutes: 10, ignoredRepos: [] });
+    expect(await setMoaConfig({
+      issueProposals: true,
+      trustedAuthors: ['@Alice', 'bob', 'not a login!', 'bob'],
+      issuePollMinutes: 30,
+      ignoredRepos: ['GitHub.com/O/R', 'nonsense'],
+    }, dir)).toBe(true);
+    expect(getMoaConfig(dir)).toMatchObject({
+      issueProposals: true, trustedAuthors: ['alice', 'bob'], issuePollMinutes: 30, ignoredRepos: ['github.com/o/r'],
+    });
+    // Stored under its own keys, apart from the memory proposals' switch.
+    const raw = JSON.parse(fs.readFileSync(getDeckHqPath(dir), 'utf8'));
+    expect(raw).toMatchObject({ moaIssueProposals: true, moaIssuePollMinutes: 30 });
+    expect(raw.moaProposals).toBeUndefined();
+    await setMoaConfig({ issuePollMinutes: 1 }, dir);
+    await setMoaConfig({ issuePollMinutes: 5.5 }, dir);
+    expect(getMoaConfig(dir).issuePollMinutes).toBe(30);
+    expect(await addMoaIgnoredRepo('github.com/a/b', dir)).toBe(true);
+    expect(await addMoaIgnoredRepo('github.com/a/b', dir)).toBe(true);
+    expect(getMoaConfig(dir).ignoredRepos).toEqual(['github.com/o/r', 'github.com/a/b']);
+    // A full list drops its oldest entry; the new key always lands.
+    await setMoaConfig({ ignoredRepos: Array.from({ length: 50 }, (_, i) => `github.com/o/r${i}`) }, dir);
+    expect(await addMoaIgnoredRepo('github.com/new/one', dir)).toBe(true);
+    const ignored = getMoaConfig(dir).ignoredRepos!;
+    expect(ignored).toHaveLength(50);
+    expect(ignored[0]).toBe('github.com/o/r1');
+    expect(ignored.at(-1)).toBe('github.com/new/one');
+    // Another setting's write keeps them (sanitize must carry the fields).
+    await setMoaConfig({ bubbles: false }, dir);
+    expect(getMoaConfig(dir)).toMatchObject({ issueProposals: true, trustedAuthors: ['alice', 'bob'] });
   });
 
   it('keeps the HQ approval lane off until the operator turns it on', async () => {

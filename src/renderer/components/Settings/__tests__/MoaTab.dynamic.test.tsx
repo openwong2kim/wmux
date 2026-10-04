@@ -340,3 +340,30 @@ describe('Settings › Moa › HQ approval pressing', () => {
     expect(api.moa.setConfig).toHaveBeenCalledWith({ approvalPress: true });
   });
 });
+
+describe('Settings › Moa › issue and PR proposals', () => {
+  const typeInto = async (testId: string, value: string) => {
+    const input = q<HTMLInputElement>(`[data-testid="${testId}"]`)!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => { input.dispatchEvent(new FocusEvent('focusout', { bubbles: true })); });
+    await flush();
+  };
+
+  it('is off by default and saves the switch, interval and trusted authors', async () => {
+    await render(moaState());
+    expect(rowSwitch('moaissueproposals')!.getAttribute('aria-checked')).toBe('false');
+    await click(rowSwitch('moaissueproposals'));
+    expect(api.moa.setConfig).toHaveBeenCalledWith({ issueProposals: true });
+    await typeInto('moa-issue-poll', '1');
+    expect(q('[data-testid="moa-issue-poll-error"]')).not.toBeNull();
+    await typeInto('moa-issue-poll', '30');
+    expect(api.moa.setConfig).toHaveBeenCalledWith({ issuePollMinutes: 30 });
+    await typeInto('moa-trusted-authors', '@Alice, bob, bad_login');
+    expect(api.moa.setConfig).toHaveBeenCalledWith({ trustedAuthors: ['alice', 'bob'] });
+    await typeInto('moa-ignored-repos', 'github.com/Acme/Widgets');
+    expect(api.moa.setConfig).toHaveBeenCalledWith({ ignoredRepos: ['github.com/acme/widgets'] });
+  });
+});

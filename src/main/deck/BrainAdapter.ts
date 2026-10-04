@@ -86,6 +86,9 @@ export type BrainEvent =
   | { type: 'tool-end'; name: string; ok: boolean; toolId?: string }
   | { type: 'turn-end'; sessionId: string | null; usage?: BrainUsage }
   | { type: 'error'; message: string }
+  // Main changed this workspace's decision slot outside a brain turn (Moa's
+  // issue proposals). Carries nothing: the decision card refetches.
+  | { type: 'decision-changed' }
   | {
       type: 'limit';
       /** 'rejected' = the window is exhausted (hard limit hit, from the SDK's

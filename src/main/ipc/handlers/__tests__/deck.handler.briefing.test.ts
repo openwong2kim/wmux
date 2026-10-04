@@ -107,6 +107,8 @@ interface FakeDecision {
 }
 const decisions = new Map<string, FakeDecision>();
 vi.mock('../../../deck/deckDecisionStore', () => ({
+  onDecisionsChanged: vi.fn(() => () => undefined),
+  isIssueProposalDecision: vi.fn(() => false),
   loadWorkspaceDecision: vi.fn((ws: string) => decisions.get(ws) ?? null),
   loadDeckDecisions: vi.fn(() => Object.fromEntries(decisions.entries())),
   hasPendingDecision: vi.fn((ws: string) => decisions.get(ws)?.status === 'pending'),

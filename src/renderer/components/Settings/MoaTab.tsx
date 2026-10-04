@@ -13,7 +13,15 @@ import { useStore } from '../../stores';
 import { isMoaHqWorkspace } from '../../stores/slices/moaSlice';
 import { useT } from '../../hooks/useT';
 import { CLAUDE_EFFORT_LEVELS, CLAUDE_MODEL_OPTIONS } from '../../../shared/claudeModels';
-import { MOA_MAX_TURNS_PER_HOUR_RANGE, type MoaConfigPatch, type MoaMemoryItem } from '../../../shared/moa';
+import {
+  MOA_MAX_TURNS_PER_HOUR_RANGE,
+  MOA_ISSUE_POLL_MINUTES_DEFAULT,
+  MOA_ISSUE_POLL_MINUTES_RANGE,
+  parseIgnoredRepos,
+  parseTrustedAuthors,
+  type MoaConfigPatch,
+  type MoaMemoryItem,
+} from '../../../shared/moa';
 import type { RetroSchedule } from '../../../shared/trackRecord';
 import type { AgentMode } from '../../../main/deck/deckAutonomyStore';
 import { notifyBriefingConfigChanged } from '../Deck/deckBriefingConfigBus';
@@ -57,6 +65,14 @@ export function parseTurnCap(raw: string): number | null {
   if (!/^\d+$/.test(s)) return null;
   const n = Number(s);
   return n >= MOA_MAX_TURNS_PER_HOUR_RANGE.min && n <= MOA_MAX_TURNS_PER_HOUR_RANGE.max ? n : null;
+}
+
+/** The proposal scan interval from the field, or null when out of range. */
+export function parseProposalPoll(raw: string): number | null {
+  const s = raw.trim();
+  if (!/^\d+$/.test(s)) return null;
+  const n = Number(s);
+  return n >= MOA_ISSUE_POLL_MINUTES_RANGE.min && n <= MOA_ISSUE_POLL_MINUTES_RANGE.max ? n : null;
 }
 
 export interface TabMoaProps {
@@ -263,6 +279,39 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
     }
     setCapInvalid(false);
     if (n !== storedCap) void patchConfig({ maxTurnsPerHour: n });
+  };
+
+  // ── Issue and PR proposals ──
+  const storedPoll = moa?.config.issuePollMinutes ?? MOA_ISSUE_POLL_MINUTES_DEFAULT;
+  const storedTrusted = (moa?.config.trustedAuthors ?? []).join(', ');
+  const storedIgnored = (moa?.config.ignoredRepos ?? []).join(', ');
+  const [pollDraft, setPollDraft] = useState('');
+  const [pollInvalid, setPollInvalid] = useState(false);
+  const [trustedDraft, setTrustedDraft] = useState('');
+  const [ignoredDraft, setIgnoredDraft] = useState('');
+  useEffect(() => {
+    setPollDraft(String(storedPoll));
+    setPollInvalid(false);
+  }, [storedPoll]);
+  useEffect(() => setTrustedDraft(storedTrusted), [storedTrusted]);
+  useEffect(() => setIgnoredDraft(storedIgnored), [storedIgnored]);
+  const commitPoll = () => {
+    if (!loaded) return;
+    const n = parseProposalPoll(pollDraft);
+    setPollInvalid(n === null);
+    if (n !== null && n !== storedPoll) void patchConfig({ issuePollMinutes: n });
+  };
+  const commitTrusted = () => {
+    if (!loaded) return;
+    const list = parseTrustedAuthors(trustedDraft);
+    if (list.join(', ') === storedTrusted) setTrustedDraft(storedTrusted);
+    else void patchConfig({ trustedAuthors: list });
+  };
+  const commitIgnored = () => {
+    if (!loaded) return;
+    const list = parseIgnoredRepos(ignoredDraft);
+    if (list.join(', ') === storedIgnored) setIgnoredDraft(storedIgnored);
+    else void patchConfig({ ignoredRepos: list });
   };
 
   // ── Per-workspace modes (every workspace but the HQ) ──
@@ -718,6 +767,70 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
             checked={briefingAutoShow}
             onCheckedChange={onBriefingAutoShowChange}
             aria-label={t('settings.briefingAutoShow')}
+          />
+        </SettingRow>
+      </SettingsSection>
+
+      <SettingsSection title={t('moa.settings.issueProposalsSection')}>
+        <SettingRow id="moaissueproposals" label={t('moa.settings.issueProposals')} description={t('moa.settings.issueProposalsDesc')}>
+          <Switch
+            checked={moa?.config.issueProposals === true}
+            onCheckedChange={(v) => { void patchConfig({ issueProposals: v }); }}
+            aria-label={t('moa.settings.issueProposals')}
+            disabled={!loaded}
+            data-testid="moa-issue-proposals"
+          />
+        </SettingRow>
+        <SettingRow id="moaissuepoll" label={t('moa.settings.issuePoll')} description={t('moa.settings.issuePollDesc')}>
+          <Input
+            type="number"
+            inputMode="numeric"
+            min={MOA_ISSUE_POLL_MINUTES_RANGE.min}
+            max={MOA_ISSUE_POLL_MINUTES_RANGE.max}
+            step={1}
+            value={pollDraft}
+            disabled={!loaded}
+            aria-label={t('moa.settings.issuePoll')}
+            aria-invalid={pollInvalid || undefined}
+            onChange={(e) => setPollDraft(e.target.value)}
+            onBlur={commitPoll}
+            onKeyDown={(e) => { if (e.key === 'Enter') commitPoll(); }}
+            className="settings-input tabular-nums text-center"
+            style={{ width: 96 }}
+            data-testid="moa-issue-poll"
+          />
+        </SettingRow>
+        {pollInvalid && (
+          <SettingNote tone="danger" role="alert" data-testid="moa-issue-poll-error">
+            {t('moa.settings.turnCapInvalid', MOA_ISSUE_POLL_MINUTES_RANGE)}
+          </SettingNote>
+        )}
+        <SettingRow id="moatrustedauthors" label={t('moa.settings.trustedAuthors')} description={t('moa.settings.trustedAuthorsDesc')}>
+          <Input
+            value={trustedDraft}
+            disabled={!loaded}
+            placeholder={t('moa.settings.trustedAuthorsPlaceholder')}
+            aria-label={t('moa.settings.trustedAuthors')}
+            onChange={(e) => setTrustedDraft(e.target.value)}
+            onBlur={commitTrusted}
+            onKeyDown={(e) => { if (e.key === 'Enter') commitTrusted(); }}
+            className="settings-input"
+            style={{ width: 240 }}
+            data-testid="moa-trusted-authors"
+          />
+        </SettingRow>
+        <SettingRow id="moaignoredrepos" label={t('moa.settings.ignoredRepos')} description={t('moa.settings.ignoredReposDesc')}>
+          <Input
+            value={ignoredDraft}
+            disabled={!loaded}
+            placeholder="github.com/owner/repo"
+            aria-label={t('moa.settings.ignoredRepos')}
+            onChange={(e) => setIgnoredDraft(e.target.value)}
+            onBlur={commitIgnored}
+            onKeyDown={(e) => { if (e.key === 'Enter') commitIgnored(); }}
+            className="settings-input"
+            style={{ width: 240 }}
+            data-testid="moa-ignored-repos"
           />
         </SettingRow>
       </SettingsSection>

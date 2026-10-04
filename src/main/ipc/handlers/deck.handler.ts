@@ -142,8 +142,10 @@ import {
   isDecisionStale,
   hasPendingDecision,
   raiseDecision,
+  isIssueProposalDecision,
   type WorkspaceDecision,
 } from '../../deck/deckDecisionStore';
+import { startMoaIssueProposals } from '../../deck/moaIssueProposalsHost';
 import {
   beginOrContinueDeckWork,
   clearActiveDeckWork,
@@ -694,6 +696,19 @@ export function registerDeckHandler(
     }
   };
 
+  // New issues and outside PRs proposed as decision cards (moaIssueProposals.ts).
+  // Its scan follows the settings, the master switch and the HQ: deck-hq.json
+  // writes re-sync it, and so does every workspace mirror push while the
+  // runtime is up (onHqMirrorUpdate; a cold boot learns the HQ is present only
+  // from the mirror). Moa off means no timer and no mirror listener. Its cards' answers are main's (DECK_DECISION_RESOLVE,
+  // DECK_DECISION_GET and the sweep), and a card raised or cleared tells that
+  // workspace's open decision card to refetch.
+  const moaIssueProposals = startMoaIssueProposals({
+    notifyCard: (workspaceId) => emit(workspaceId, { type: 'decision-changed' }),
+    mirrorFeed: false,
+  });
+  const moaProposals = moaIssueProposals.service;
+
   /**
    * A request record has LEFT the store — superseded by a newer human request,
    * or dropped by a conversation clear. It can no longer be closed by
@@ -1041,11 +1056,18 @@ export function registerDeckHandler(
     pendingActiveWorkBlocks.delete(workspaceId);
     trackContextMemory.forget(workspaceId);
   };
+  /** The workspace's decision as its brain may see it: an issue-proposal card
+   *  (moaIssueProposals.ts) is main's, never rendered into a turn or re-examined. */
+  const loadBrainDecision = (workspaceId: string): WorkspaceDecision | null => {
+    const d = loadWorkspaceDecision(workspaceId);
+    return isIssueProposalDecision(d) ? null : d;
+  };
   const withLoopContext = (workspaceId: string, text: string): string => {
     // Mode is read fresh here (not cached) so a Settings flip between turns
     // takes effect immediately — same rationale as the heartbeat's per-tick read.
     const mode = loadWorkspaceMode(workspaceId);
-    const decision = loadWorkspaceDecision(workspaceId);
+    // Moa's issue-proposal cards are main's, never a brain's [decision].
+    const decision = loadBrainDecision(workspaceId);
     const loop = loadWorkspaceLoopState(workspaceId);
     const activeWork = loadActiveDeckWork(workspaceId);
     const blocks: string[] = [];
@@ -1173,7 +1195,7 @@ export function registerDeckHandler(
       // blocks ride in front of the typed text — invisible to the renderer's
       // optimistic user bubble, visible to the brain. If this human turn carried
       // a resolved decision's block, consume it (id-scoped) so it never re-injects.
-      const injectedDecision = loadWorkspaceDecision(workspaceId);
+      const injectedDecision = loadBrainDecision(workspaceId);
       // A human at the composer: no double-check delay — they are waiting on it,
       // and a turn they typed themselves cannot be racing their own TUI input.
       const verdict = await mgr.send(withLoopContext(workspaceId, text), { origin: 'human' });
@@ -1495,7 +1517,7 @@ export function registerDeckHandler(
       // resolution this turn actually carried — never one RAISED mid-turn, whose
       // prompt this turn was built before (that would silently drop the human's
       // answer and unblock the loop — 3-way review P1).
-      const injected = loadWorkspaceDecision(workspaceId);
+      const injected = loadBrainDecision(workspaceId);
       // WP3 re-examine builds a DIFFERENT wire prompt: the STALE decision block
       // (re-examine / auto-may-self-resolve) instead of withLoopContext's normal
       // "BLOCKED — wait" pending block. Everything is RE-VALIDATED fresh here —
@@ -1568,7 +1590,7 @@ export function registerDeckHandler(
           // prompt — consuming it here would silently discard it (3-way review
           // round 2 P1). A human resolution is left on disk so the next natural
           // wake / startup reconcile carries it into a resume turn.
-          const after = loadWorkspaceDecision(workspaceId);
+          const after = loadBrainDecision(workspaceId);
           if (
             after?.status === 'resolved' &&
             after.resolvedBy === 'brain' &&
@@ -2077,7 +2099,8 @@ export function registerDeckHandler(
     lastWakeAt: (workspaceId) => coalescer?.lastWakeAt(workspaceId) ?? null,
     // WP3: the current decision + TTL let the heartbeat detect a STALE pending
     // decision and fire a bounded re-examine wake that bypasses the wake block.
-    getDecision: (workspaceId) => loadWorkspaceDecision(workspaceId),
+    // An issue-proposal card is never re-examined: it is not the brain's question.
+    getDecision: (workspaceId) => loadBrainDecision(workspaceId),
     decisionTtlMs: heartbeatConfig.decisionTtlMs,
     reExamineDecision: (workspaceId, decision) => {
       // AMBIENT-WAKE CONTROLS (3-way review round 2 P1): this path bypasses
@@ -2131,6 +2154,7 @@ export function registerDeckHandler(
     if (presence !== lastHqPresence) emitMoaChanged();
     else void publishMoaPane(); // unchanged answers are not re-sent
     lastHqPresence = presence;
+    moaProposals.sync();
   };
   // The HQ store's setter refuses while the old/new HQ is mid-turn and, once
   // an HQ is designated, retires every other brain — both need the managers.
@@ -3026,7 +3050,9 @@ export function registerDeckHandler(
       // resume so the answer is delivered instead of sitting forever. Idempotent:
       // the resumed turn consumes the resolved record, and a busy reject is fine.
       // A full headless (no-deck-open) startup reconcile is the M2 follow-up.
-      if (workspaceId && decision?.status === 'resolved') {
+      if (workspaceId && decision?.status === 'resolved' && isIssueProposalDecision(decision)) {
+        void moaProposals.handleResolved(workspaceId, decision).catch(() => undefined);
+      } else if (workspaceId && decision?.status === 'resolved') {
         // Queued acquire (P1): a one-shot resume must await a slot, not silently
         // drop on a full gate — the answer would sit forever with autonomy off.
         // Provenance-aware prompt (round-3 P2): a brain self-resolution must not
@@ -3064,6 +3090,8 @@ export function registerDeckHandler(
         // Stale id, already resolved, or empty answer — nothing to resume.
         return { ok: false, code: 'not_pending' };
       }
+      // A proposal card's answer is main's to act on; no brain resumes with it.
+      if (await moaProposals.handleResolved(workspaceId, decision)) return { ok: true, decision };
       // The operator answered one of Moa's own decisions: offer to keep the
       // answer as a precedent. A no-op while Moa or proposals are off.
       if (workspaceId === getHqWorkspaceId()) {
@@ -3257,7 +3285,7 @@ export function registerDeckHandler(
     for (const [workspaceId, decision] of Object.entries(loadDeckDecisions())) {
       // Moa's memory card key is not a workspace: never resume a brain for it.
       if (workspaceId === MOA_MEMORY_DECISION_KEY) continue;
-      if (decision.status === 'resolved') {
+      if (decision.status === 'resolved' && !(await moaProposals.handleResolved(workspaceId, decision))) {
         // Provenance-aware prompt (round-3 P2): a stranded brain self-resolution
         // resumes as the brain's OWN answer, never as "the operator resolved".
         await runTurnForWorkspace(resumePromptFor(decision), workspaceId, { queued: true }).catch(
@@ -3364,6 +3392,7 @@ export function registerDeckHandler(
 
   return () => {
     app.removeListener('before-quit', disposeAll);
+    moaIssueProposals.dispose();
     if (reconcileTimer) clearTimeout(reconcileTimer);
     clearInterval(ledgerReconcileTimer);
     stopOrphanReconcile();

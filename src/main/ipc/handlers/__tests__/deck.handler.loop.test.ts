@@ -163,9 +163,13 @@ interface FakeDecision {
   resolution?: string;
   raisedAt: number;
   resolvedAt?: number;
+  origin?: 'issue-proposal';
+  ref?: string;
 }
 const decisions = new Map<string, FakeDecision>();
 vi.mock('../../../deck/deckDecisionStore', () => ({
+  onDecisionsChanged: vi.fn(() => () => undefined),
+  isIssueProposalDecision: vi.fn((d: FakeDecision | null | undefined) => d?.origin === 'issue-proposal'),
   loadWorkspaceDecision: vi.fn((ws: string) => decisions.get(ws) ?? null),
   loadDeckDecisions: vi.fn(() => Object.fromEntries(decisions.entries())),
   hasPendingDecision: vi.fn((ws: string) => decisions.get(ws)?.status === 'pending'),
@@ -459,6 +463,48 @@ describe('deck:decision — the gate (handler wiring)', () => {
       status: 'pending',
       raisedAt: 1,
     });
+
+  const seedProposal = (ws: string, status: 'pending' | 'resolved' = 'pending') =>
+    decisions.set(ws, {
+      id: 'card-1',
+      question: 'New issue acme/widgets#7 "Item" — hand it to W?',
+      options: ['Hand off', 'Not now', 'Ignore this repo'],
+      context: '',
+      status,
+      ...(status === 'resolved' ? { resolution: 'Not now', resolvedAt: 2 } : {}),
+      raisedAt: 1,
+      origin: 'issue-proposal',
+      ref: 'issue:github.com/acme/widgets#7',
+    });
+
+  it('an issue-proposal card never rides a brain turn as a [decision]', async () => {
+    seedProposal('ws-1');
+    await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'status?' });
+    const sent = adapters.find((x) => x.workspaceId === 'ws-1')!.sentTexts.join('\n');
+    expect(sent).toContain('status?');
+    expect(sent).not.toContain('[decision]');
+    expect(sent).not.toContain('acme/widgets#7');
+  });
+
+  it('answering an issue-proposal card resumes no brain and clears the card', async () => {
+    seedProposal('ws-1');
+    const sends = vi.spyOn(fakeWindow.webContents, 'send');
+    const res = await invoke(IPC.DECK_DECISION_RESOLVE, { workspaceId: 'ws-1', id: 'card-1', resolution: 'Not now' });
+    expect(res.ok).toBe(true);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(decisions.has('ws-1')).toBe(false);
+    expect(adapters.find((x) => x.workspaceId === 'ws-1')?.sentTexts ?? []).toEqual([]);
+    // The workspace's open decision card is told to refetch.
+    expect(sends).toHaveBeenCalledWith(IPC.DECK_STREAM, { workspaceId: 'ws-1', event: { type: 'decision-changed' } });
+    sends.mockRestore();
+  });
+
+  it('GET on a resolved issue-proposal card resumes no brain', async () => {
+    seedProposal('ws-1', 'resolved');
+    await invoke(IPC.DECK_DECISION_GET, { workspaceId: 'ws-1' });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(adapters.find((x) => x.workspaceId === 'ws-1')?.sentTexts ?? []).toEqual([]);
+  });
 
   it('GET hydrates a pending decision', async () => {
     seedPending('ws-1');

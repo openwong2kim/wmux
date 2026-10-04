@@ -2,7 +2,7 @@
 // read, gh env, TTL cache, single-flight and the rate-limit breaker (exec
 // mocked, as in GhPrService.test).
 import { describe, it, expect, vi } from 'vitest';
-import { GhIssueService, ghIssueEnv, issueListPath, isRateLimitError, mapRestIssue, mapGhIssueDetail } from '../GhIssueService';
+import { GhIssueService, ghIssueEnv, issueListPath, isRateLimitError, mapRestIssue, mapRestItem, mapGhIssueDetail } from '../GhIssueService';
 import { getExecEnv } from '../../../shared/execEnv';
 import type { IssueFilter } from '../../../shared/issueSurface';
 
@@ -59,6 +59,26 @@ describe('issue mapping', () => {
     });
     expect(mapRestIssue(arr[1])).toBeNull();
     expect(mapRestIssue(arr[2])).toBeNull();
+  });
+
+  it('reads the signed-in login lowercased, null when gh cannot say', async () => {
+    const { svc } = makeService((args) => (args.includes('user') ? 'Me\n' : LIST));
+    expect(await svc.signedInLogin('github.com', '/r')).toBe('me');
+    const failing = makeService(() => new Error('not logged in')).svc;
+    expect(await failing.signedInLogin('github.com', '/r')).toBeNull();
+  });
+
+  it('maps both kinds as lean items for the proposals lane, bots typed', () => {
+    const arr = JSON.parse(LIST);
+    expect(mapRestItem(arr[0])).toEqual({
+      kind: 'issue', number: 7, title: 'Crash on launch', author: 'alice', authorIsBot: false,
+      labels: ['bug'], url: 'https://github.com/O/R/issues/7', draft: false,
+    });
+    expect(mapRestItem(arr[1])).toMatchObject({ kind: 'pr', number: 8, author: '' });
+    expect(mapRestItem(arr[2])).toBeNull();
+    expect(mapRestItem({ number: 9, html_url: 'u', user: { login: 'dependabot[bot]', type: 'Bot' }, pull_request: {}, draft: true }))
+      .toMatchObject({ kind: 'pr', authorIsBot: true, draft: true });
+    expect(mapRestItem({ number: 10, html_url: 'u', state: 'closed' })).toBeNull();
   });
 
   it('maps a detail: comments oldest first, HTML comments stripped', () => {

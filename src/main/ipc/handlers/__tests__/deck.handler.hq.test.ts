@@ -116,6 +116,7 @@ import {
   isMoaEnabled,
   setHqWorkspaceId,
   setMoaEnabled,
+  setMoaConfig,
 } from '../../../deck/deckHqStore';
 import { setWorkspaceAutonomy, setWorkspaceMode } from '../../../deck/deckAutonomyStore';
 import { raiseDecision } from '../../../deck/deckDecisionStore';
@@ -457,6 +458,20 @@ describe('master switch (moaEnabled)', () => {
     lifecycle('ws-a');
     expect(pushedTo()).toEqual([]);
     expect(vi.getTimerCount()).toBe(1);
+  });
+
+  it('issue proposals on at a cold boot: the scan arms when the mirror shows the HQ, with no settings write', async () => {
+    cleanup?.();
+    cleanup = null;
+    await setHqWorkspaceId('ws-hq');
+    await setMoaConfig({ issueProposals: true });
+    vi.useFakeTimers();
+    const sixtySeconds = () => (vi.spyOn(globalThis, 'setTimeout').mock.calls as unknown[][]).filter((c) => c[1] === 60_000).length;
+    reregister({ production: true });
+    const before = sixtySeconds();
+    expect(before).toBe(0);
+    mirror(['ws-hq', 'ws-a']);
+    expect(sixtySeconds()).toBe(1);
   });
 
   it('turning it on starts everything and re-arms the startup reconcile once; off tears it all down', async () => {
