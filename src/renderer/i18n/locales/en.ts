@@ -1304,7 +1304,6 @@ export const en = {
   'moa.memoryCard.discard': "Discard",
   'moa.memoryCard.readToSave': "Open the full text to save it.",
   'moa.memoryCard.failed': "Couldn't answer that card. Try again.",
-  'moa.memoryCard.railBadge': "remember this?",
   'moa.settings.saveFailed': "Couldn't save that setting. Try again.",
   'moa.archive.noticeOne': "1 pending decision was moved to Moa's archive",
   'moa.archive.notice': "{count} pending decisions were moved to Moa's archive",

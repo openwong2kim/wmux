@@ -300,7 +300,6 @@ export function CommanderViewContent({
     }
   }, []);
   const [decisionPending, setDecisionPending] = useState(false);
-  const [memoryCardPending, setMemoryCardPending] = useState(false);
   // The pty layout's durable turn reports (pure selector — the store keeps the
   // full message array for the other vendors' bubble log).
   const railMessages = useMemo(() => selectReportRail(brainMessages), [brainMessages]);
@@ -450,6 +449,10 @@ export function CommanderViewContent({
             input surface has no meaning, and the rail below it is what the
             operator opens instead. */}
         {moaNotice && <div className="pt-2">{moaNotice}</div>}
+        {/* Moa's "Remember this?" card waits on the operator, so it sits at the
+            top of the panel, above the TUI, never inside the collapsed rail.
+            It is Moa's own: it shows whichever workspace the deck is on. */}
+        <MoaMemoryCard t={t} className="px-3 pt-2 shrink-0 max-h-[55%] overflow-y-auto" />
         <div className="flex flex-col flex-1 min-h-0 px-3 py-2">
           <BrainTerminalEmbed ptyId={brainPtyId} />
         </div>
@@ -484,9 +487,7 @@ export function CommanderViewContent({
                 {` · ${t('deck.reportRailDecision') || '1 decision'}`}
               </span>
             )}
-            {memoryCardPending && (
-              <span data-commander-rail-memory>{` · ${t('moa.memoryCard.railBadge')}`}</span>
-            )}
+
             {/* Slim busy indicator: automation-driven turns (heartbeat, loop,
                 schedule) must stay visible now that the busy bar is gone. */}
             {brainBusy && (
@@ -521,9 +522,7 @@ export function CommanderViewContent({
               onPendingChange={setDecisionPending}
               t={t}
             />
-            {/* Moa's "Remember this?" card: Moa's own, so it shows whichever
-                workspace the deck is on. */}
-            <MoaMemoryCard onPendingChange={setMemoryCardPending} t={t} />
+
             {railMessages.map((m, i) => (
               <Fragment key={m.id}>
                 {isVendorBoundary(railMessages[i - 1], m) && m.vendor && (

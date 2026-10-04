@@ -1288,7 +1288,6 @@ export const pl = {
   'moa.memoryCard.discard': "Odrzuć",
   'moa.memoryCard.readToSave': "Otwórz pełny tekst, aby go zapisać.",
   'moa.memoryCard.failed': "Nie udało się odpowiedzieć na kartę. Spróbuj ponownie.",
-  'moa.memoryCard.railBadge': "zapamiętać?",
   'moa.settings.saveFailed': "Nie udało się zapisać ustawienia. Spróbuj ponownie.",
   'moa.archive.noticeOne': "1 oczekująca decyzja została przeniesiona do archiwum Moa",
   'moa.archive.notice': "Oczekujące decyzje przeniesione do archiwum Moa: {count}",

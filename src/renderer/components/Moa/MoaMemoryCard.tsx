@@ -36,9 +36,12 @@ const BUTTON = `h-[26px] px-2 rounded-md text-[12px] transition-colors disabled:
 export function MoaMemoryCard({
   api: apiProp,
   onPendingChange,
+  className,
   t,
 }: {
   api?: MoaMemoryCardApi;
+  /** Classes for a wrapper drawn only while a card is up (layout spacing). */
+  className?: string;
   /** Told whether a card is on screen (the collapsed rail's header badge). */
   onPendingChange?: (pending: boolean) => void;
   t: (key: string, vars?: Record<string, string | number>) => string;
@@ -105,7 +108,7 @@ export function MoaMemoryCard({
   };
 
   const fullId = `moa-memory-full-${card.id}`;
-  return (
+  const body = (
     <div
       data-moa-memory-card={card.id}
       className="rounded-md px-4 py-3 space-y-2.5 border border-dashed border-[color-mix(in_srgb,var(--text-main)_30%,transparent)] bg-[color-mix(in_srgb,var(--text-main)_20%,transparent)]"
@@ -174,4 +177,5 @@ export function MoaMemoryCard({
       )}
     </div>
   );
+  return className ? <div className={className}>{body}</div> : body;
 }

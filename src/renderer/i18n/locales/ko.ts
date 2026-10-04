@@ -824,7 +824,6 @@ export const ko = {
   'moa.memoryCard.discard': "버리기",
   'moa.memoryCard.readToSave': "저장하려면 전체 텍스트를 펼쳐 보세요.",
   'moa.memoryCard.failed': "카드에 답하지 못했습니다. 다시 시도하세요.",
-  'moa.memoryCard.railBadge': "기억할까요?",
   'moa.settings.saveFailed': "설정을 저장하지 못했습니다. 다시 시도하세요.",
   'moa.archive.noticeOne': "대기 중이던 결정 1개를 Moa 보관함으로 옮겼습니다",
   'moa.archive.notice': "대기 중이던 결정 {count}개를 Moa 보관함으로 옮겼습니다",

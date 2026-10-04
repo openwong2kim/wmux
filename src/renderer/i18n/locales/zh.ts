@@ -1390,7 +1390,6 @@ export const zh = {
   'moa.memoryCard.discard': "丢弃",
   'moa.memoryCard.readToSave': "展开全文后才能保存。",
   'moa.memoryCard.failed': "无法回答这张卡片，请重试。",
-  'moa.memoryCard.railBadge': "记住这个？",
   'moa.settings.saveFailed': "无法保存该设置，请重试。",
   'moa.archive.noticeOne': "1 个待处理的决定已移入 Moa 归档",
   'moa.archive.notice': "{count} 个待处理的决定已移入 Moa 归档",
