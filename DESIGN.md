@@ -259,10 +259,22 @@ each part only when it has something to say.
 Opened from the rail (the branch icon under Remote) or by clicking the
 branch text in the titlebar. It is about the **repo**, not its branches:
 the sheet beside the dock (see Rail and pages) with 28px sides; the header
-is the repo as `owner/repo` at the title size, a link to it on GitHub (the
-folder name without a GitHub remote), a muted line with the open counts
-("12 issues · 4 pull requests", "100+" at the read cap), and a refresh
-button. Nothing about branches or worktrees sits above the lists.
+is the repo as `owner/repo` at the title size (the folder name without a
+GitHub remote), a small GitHub link icon beside it, a muted line with the
+open counts ("12 issues · 4 pull requests", "100+" at the read cap), and a
+refresh button. Nothing about branches or worktrees sits above the lists.
+
+- **Repo switcher:** the repo name is the switcher, a "Current repository"
+  listbox: a filter field, **All repos** on top, every repo of the open
+  workspaces grouped by remote (a checkout label when one remote has 2+
+  clones; the open counts only when already read), and **Follow active
+  workspace** at the bottom. Type to filter, arrows, Enter, Esc; focus
+  returns to the name. The default follows the active workspace; a picked
+  repo stays, across restarts too, until another is picked or Follow is
+  chosen, so switching workspaces never moves the page. A pick whose repo
+  has no open workspace left follows the active one with a muted line, and
+  comes back when a workspace reopens there. The picked repo's lists,
+  worktrees and hand-off owner come from its group.
 
 - **Branch bar:** at the top of the **Worktrees** tab, one line: the active
   workspace's branch in mono, ahead/behind, uncommitted files `+N −M`, the
@@ -277,14 +289,14 @@ button. Nothing about branches or worktrees sits above the lists.
   cannot run is disabled with its reason in a muted line (a merge session,
   a detached HEAD, no upstream, behind the upstream, the default branch).
   Commit needs no upstream; Push and Create PR do. main re-checks each step.
-- **Tabs and scope:** text tabs **Issues · Pull requests**, then
-  **Worktrees** as a quieter, secondary tab at the end (the active one
-  carries the 2px accent bar; a first visit opens on Issues, then the last
-  tab is kept) on the left of a hairline, and the
-  This repo / All repos segmented control on the right. All repos groups
-  every open workspace by repo (the active repo first; clones of one remote
-  are one group). Only the shown list of the active repo polls; another
-  repo's group opens on demand and reads once.
+- **Tabs:** text tabs **Issues · Pull requests**, then **Worktrees** as a
+  quieter, secondary tab at the end (the active one carries the 2px accent
+  bar; a first visit opens on Issues, then the last tab is kept) over a
+  hairline. All repos (from the switcher) groups every open workspace by
+  repo (the active repo first; clones of one remote are one group). Only the
+  shown list of the shown repo polls; another repo's group opens on demand
+  and reads once. The branch bar shows on Worktrees only when the active
+  workspace is in the shown repo.
 - **List / detail:** Pull requests and Issues are a split, the list ~30%
   and the detail the rest, each scrolling on its own (the page itself does
   not scroll); stacked on a narrow sheet. A list row is two lines: mono
@@ -322,9 +334,9 @@ button. Nothing about branches or worktrees sits above the lists.
   switches to it) or its folder, the PR, the diff stat (green/red), the
   accent dot only on the active pane's worktree, and Diff / Open / Merge /
   Remove floating over the faded right edge on hover.
-- **Remembered:** scope, tab, issue filter, selected item and list scroll
-  live in the UI store and survive leaving the page; the tab is also kept
-  per viewer across restarts. Anything that lands on a pane (Diff, Open, Go
+- **Remembered:** the picked repo, tab, issue filter, selected item and list scroll
+  live in the UI store and survive leaving the page; the picked repo and
+  the tab are also kept per viewer across restarts. Anything that lands on a pane (Diff, Open, Go
   to terminal, a workspace link) returns to Workspaces.
 - **PR review (detail pane):** under the facts row, in order:
   - **Checks:** a row per check (a green tick for pass, a red mark for fail, a
@@ -694,6 +706,7 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-10-04 | Git page reads first: Issues is the first tab, the branch bar folds to one thin line by default, issues and PRs drag onto an agent pane or a workspace row to hand them off (a confirm popover with an optional note), and signing in to GitHub is a full-page card with gh's device code shown in-app | Most visits are to read and route work, not to ship; the bar's controls stay one click away. Dropping on the agent you mean is quicker than copying a link, and the popover keeps a stray drop from sending anything. The agent gets a fixed reference to read with gh, never the item's text pasted in. The device code in-app removes the terminal round trip, which is the step most people stall on |
 | 2026-10-04 | PR review lives in the Git page's detail pane: checks with failed-run logs and an explicit Rerun failed jobs, review actions, squash merge with an editable subject and an empty body, changed files with line comments and threads, and who acts next from the PR's work link | Reading and routing PRs already happens on this page; leaving for the browser to approve, merge or read a CI failure broke the flow. Every write is pinned to the head commit shown, so a push that lands while you read can never be approved or merged unseen. Logs are untrusted text, shown plain. Rerun is never automatic: a flaky job is a decision, not a retry loop |
 | 2026-10-04 | The Git page leads with the repo: `owner/repo` with its open issue and PR counts, then Issues and Pull requests; branches and worktrees (the branch bar, the ship button) move into a secondary Worktrees tab. The Git page sits beside the tools dock instead of covering it, and an issue or PR dropped on the dock goes to Moa | The owner reads the repo's issues and PRs on this page and rarely its branches, so the branch chrome above the lists was noise. Covering the dock hid Moa exactly when work was being routed to it, and the jump from panes-plus-dock to one full-width page read as the window's proportions changing. Measuring the dock instead of reflowing keeps every terminal at its size |
+| 2026-10-04 | The repo name in the Git page header is a repo switcher (All repos, each open workspace's repo, Follow active workspace); it replaces the This repo / All repos control. A pick sticks across workspace switches and restarts | The owner asked how to move between repos on the page. A page that jumped whenever the active workspace changed made reading another repo's issues impossible, and one control in the place the eye already reads the repo name beats a second, separate scope control |
 
 ### Desktop conversation view
 
