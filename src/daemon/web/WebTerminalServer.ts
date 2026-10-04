@@ -69,6 +69,7 @@ import {
 import { parseDecisionAnswerBody } from './decisionAnswer';
 import { askOtherMaxWidth } from '../approvals/askPicker';
 import { decisionForChoiceLabel } from '../approvals/terminalPromptParse';
+import { TERMINAL_PROMPT_MIN_ANSWER_AGE_MS } from '../approvals/ApprovalRegistry';
 // Type only — the projector's implementation (transcript parsing, watch state,
 // fs watching) stays out of this module. The web server is a STATELESS consumer
 // of its `delta()` for the phone turn view (#782); it must never `subscribe()`.
@@ -7198,6 +7199,17 @@ export class WebTerminalServer {
   }
 
   /**
+   * #1772 — may this caller not PRESS the record (answer or decline it)? A
+   * device sees the Moa pane's own prompt but never presses it until the
+   * parser binds Moa's dialog shapes (#1786); the desktop's Moa chat answers
+   * it. Asked after `deviceBarredApproval`, so a brain record a device still
+   * reaches is the Moa pane's.
+   */
+  private devicePressBarred(principal: WebPrincipal, record: ApprovalRequest): boolean {
+    return principal.kind === 'device' && this.isBrainApproval(record.sessionId);
+  }
+
+  /**
    * `POST /api/approvals/:id` — answer one request.
    *
    * ┌───────────────────────────────────────────────────────────────────────┐
@@ -7254,6 +7266,10 @@ export class WebTerminalServer {
     // for. The operator path is untouched.
     if (record && principal.kind === 'device' && this.deviceBarredApproval(record.sessionId)) {
       return this.json(res, 404, { error: 'not-found' });
+    }
+    // Moa's own prompt: the same 501 as a record nobody can answer remotely.
+    if (record && this.devicePressBarred(principal, record)) {
+      return this.json(res, 501, { error: 'answer-in-terminal', reason: 'unsupported-shape' });
     }
     // The agent's own terminal dialog is answerable only by a client that
     // declared it understands one. An older client (the shipped iOS app among
@@ -7613,6 +7629,16 @@ export class WebTerminalServer {
           return this.json(res, 404, { error: 'not-found' });
         }
         if (!this.mayInput(fresh.principal)) return this.refuseInput(res, fresh.principal, 'Input permission changed');
+        // Moa's own prompt: no Esc from a device either. Refused with what the
+        // registry answers a card it cannot prove, in its order; nothing typed.
+        // A settled record goes on to the registry, which refuses it as such.
+        if (current.state === 'pending' && this.devicePressBarred(fresh.principal, current)) {
+          if (current.pressedAt !== undefined || current.step) return this.json(res, 409, { error: 'already-answered', effect: 'none' });
+          if (this.now() - current.createdAt < TERMINAL_PROMPT_MIN_ANSWER_AGE_MS) {
+            return this.json(res, 425, { error: 'answer-too-soon', effect: 'none' });
+          }
+          return this.json(res, 409, { error: 'prompt-unverified', effect: 'none' });
+        }
         const authorize = async (r: ApprovalRequest): Promise<'ok' | 'expired' | 'read-only'> => {
           const now = await this.authenticate(req, url, false).catch(() => ({ ok: false as const }));
           if (!now.ok || !sameCaller(now.principal)) return 'expired';
@@ -7740,6 +7766,10 @@ export class WebTerminalServer {
     const record = find();
     if (record && principal.kind === 'device' && this.deviceBarredApproval(record.sessionId)) {
       return this.json(res, 404, { error: 'not-found' });
+    }
+    // Moa's own prompt (an ExitPlanMode form included): never from a device.
+    if (record && this.devicePressBarred(principal, record)) {
+      return this.json(res, 501, { error: 'answer-in-terminal', reason: 'unsupported-shape' });
     }
     if (!clientCaps(req).decisionV2) {
       return this.json(res, 501, { error: 'answer-in-terminal', reason: 'no-capability' });

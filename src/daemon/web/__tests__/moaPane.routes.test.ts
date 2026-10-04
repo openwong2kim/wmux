@@ -12,7 +12,8 @@ import type { DaemonSessionManager } from '../../DaemonSessionManager';
 import type { ChatBridge, ChatResolution, ChatSendOutcome, ChatSendRequest } from '../../chat/chatBridge';
 import type { MoaPaneFact } from '../moaPane';
 import type { ApprovalEvent, ApprovalRegistryApi, ApprovalRequest, ApprovalResolveParams, ApprovalResolveResult } from '../../approvals/types';
-import { TERMINAL_PROMPT_WEB_ANSWER } from '../../approvals/types';
+import { TERMINAL_PROMPT_WEB_ANSWER, TERMINAL_PROMPT_WEB_DECLINE } from '../../approvals/types';
+import { ApprovalRegistry, TERMINAL_PROMPT_MIN_ANSWER_AGE_MS } from '../../approvals/ApprovalRegistry';
 
 /**
  * The Moa (HQ brain) pane on the phone routes: which brain pane a paired
@@ -82,6 +83,8 @@ describe('the Moa pane on the phone routes', () => {
   let resolveResult: ApprovalResolveResult | null;
   let approvalListeners: Set<(e: ApprovalEvent) => void>;
   let refused: string[];
+  /** What the server was built with, so a nested block can rebuild it around another registry. */
+  let serverDeps: ConstructorParameters<typeof WebTerminalServer>[0];
 
   beforeEach(() => {
     panes = new Map([
@@ -171,7 +174,7 @@ describe('the Moa pane on the phone routes', () => {
       getSession: (id: string) => panes.get(id),
       listLiveSessions: () => [],
     }) as unknown as DaemonSessionManager;
-    server = new WebTerminalServer({
+    serverDeps = {
       sessionManager,
       devices,
       projector: () => projector as unknown as TranscriptProjector,
@@ -183,7 +186,8 @@ describe('the Moa pane on the phone routes', () => {
       moaPromptRefused: (sessionId) => { refused.push(sessionId); },
       log: () => { /* silent */ },
       assetsDir: os.tmpdir(),
-    });
+    };
+    server = new WebTerminalServer(serverDeps);
   });
 
   afterEach(async () => {
@@ -207,14 +211,14 @@ describe('the Moa pane on the phone routes', () => {
     (await fetch(`${base()}/api/input?session=${id}`, { method: 'POST', headers: h, body: 'hi' })).status;
 
   /** A POST whose body is held until the route passed its entry gates, so `change` lands mid-request. */
-  const midBody = async (url: string, deviceId: string, body: string, change: () => void, contentType = 'application/json') => {
+  const midBody = async (url: string, deviceId: string, body: string, change: () => void, contentType = 'application/json', extra: Record<string, string> = {}) => {
     let entered!: () => void;
     const gated = new Promise<void>((resolve) => { entered = resolve; });
     const lookup = Map.prototype.get.bind(panes);
     const spy = vi.spyOn(panes, 'get').mockImplementation((id: string) => { entered(); return lookup(id); });
     let request!: ReturnType<typeof httpReq>;
     const response = new Promise<{ status?: number; body: string }>((resolve, reject) => {
-      request = httpReq(url, { method: 'POST', headers: { ...bearer(`${deviceId}.secret-${deviceId}`), 'Content-Type': contentType } }, (res) => {
+      request = httpReq(url, { method: 'POST', headers: { ...bearer(`${deviceId}.secret-${deviceId}`), 'Content-Type': contentType, ...extra } }, (res) => {
         let text = '';
         res.on('data', (c: Buffer) => { text += c.toString('utf8'); });
         res.on('end', () => resolve({ status: res.statusCode, body: text }));
@@ -460,15 +464,13 @@ describe('the Moa pane on the phone routes', () => {
     const answer = (h: Record<string, string>, id = 'ap-moa') =>
       postJson(`${base()}/api/approvals/${id}`, { ...h, ...caps }, { decision: 'approve', choiceKey: '1', promptFingerprint: FP });
 
-    it('a device lists and answers the Moa pane\'s record while Moa is on — no other brain\'s, and none once Moa is off', async () => {
+    it('a device lists the Moa pane\'s record while Moa is on — no other brain\'s, and none once Moa is off', async () => {
       records.push(prompt(), prompt({ id: 'ap-other', sessionId: 'brain-other', workspaceId: 'ws-2' }));
       await start();
       const h = device('dev-1');
       expect(await listIds(h)).toEqual(['ap-moa']);
-      const res = await answer(h);
-      expect(res.status).toBe(200);
-      expect(resolveCalls).toHaveLength(1);
-      expect(resolveCalls[0]).toMatchObject({ id: 'ap-moa', choiceKey: '1', promptFingerprint: FP, terminalPromptAnswer: TERMINAL_PROMPT_WEB_ANSWER });
+      expect((await answer(h)).status).toBe(501);
+      expect(resolveCalls).toEqual([]);
       expect((await answer(h, 'ap-other')).status).toBe(404);
       for (const path of ['detail']) {
         expect((await fetch(`${base()}/api/approvals/ap-moa/${path}`, { headers: { ...h, ...caps } })).status).toBe(200);
@@ -479,22 +481,49 @@ describe('the Moa pane on the phone routes', () => {
       expect((await answer(h)).status).toBe(404);
       expect((await postJson(`${base()}/api/approvals/ap-moa/decline`, { ...h, ...caps }, {})).status).toBe(404);
       expect((await fetch(`${base()}/api/approvals/ap-moa/detail`, { headers: { ...h, ...caps } })).status).toBe(404);
-      expect(resolveCalls).toHaveLength(1);
+      expect(resolveCalls).toEqual([]);
       // The operator's view of every brain is unchanged.
       expect((await fetch(`${base()}/api/approvals`, { headers: { ...bearer(server.status().token as string), ...caps } })).status).toBe(200);
     });
 
-    it('Moa switched off while an answer or a decline waits → the authorize re-check refuses, no key', async () => {
-      records.push(prompt());
+    it('a device never presses the Moa pane\'s record, bound or not, until its shapes are bound (#1786); the operator still may', async () => {
+      records.push(prompt({ createdAt: Date.now() }));
       await start();
       const h = device('dev-1');
-      beforeAuthorize = () => { moa = null; };
+      const decline = async () => postJson(`${base()}/api/approvals/ap-moa/decline`, { ...h, ...caps }, {});
       const res = await answer(h);
-      expect(res.status).toBe(401);
-      moa = { ...HQ };
-      const declined = await postJson(`${base()}/api/approvals/ap-moa/decline`, { ...h, ...caps }, {});
-      expect(declined.status).toBe(401);
-      expect(verdicts).toEqual(['expired', 'expired']);
+      expect(res.status).toBe(501);
+      expect(await res.json()).toEqual({ error: 'answer-in-terminal', reason: 'unsupported-shape' });
+      // An ExitPlanMode form is answered through decision-v2: refused the same way.
+      const v2 = await postJson(`${base()}/api/approvals/ap-moa/answer`, { ...h, 'X-Wmux-Client-Caps': 'decision-v2' },
+        { clientAnswerId: freshId(), formFingerprint: FP, action: 'approve' });
+      expect(v2.status).toBe(501);
+      expect(await v2.json()).toEqual({ error: 'answer-in-terminal', reason: 'unsupported-shape' });
+      // Decline (one Esc): too soon, then unverified, then answered from the desktop.
+      let declined = await decline();
+      expect([declined.status, await declined.json()]).toEqual([425, { error: 'answer-too-soon', effect: 'none' }]);
+      records[0] = prompt({ createdAt: 1 });
+      declined = await decline();
+      expect([declined.status, await declined.json()]).toEqual([409, { error: 'prompt-unverified', effect: 'none' }]);
+      records[0] = prompt({ createdAt: 1, pressedAt: 5 });
+      declined = await decline();
+      expect([declined.status, await declined.json()]).toEqual([409, { error: 'already-answered', effect: 'none' }]);
+      expect(resolveCalls).toEqual([]);
+      expect(panes.get('brain-hq')!.ptyProcess.write).not.toHaveBeenCalled();
+      // The operator's own surfaces are not a device's: unchanged.
+      records[0] = prompt({ createdAt: 1 });
+      expect((await answer(bearer(server.status().token as string))).status).toBe(200);
+      expect(resolveCalls).toHaveLength(1);
+      expect(resolveCalls[0]).toMatchObject({ id: 'ap-moa', choiceKey: '1', promptFingerprint: FP, terminalPromptAnswer: TERMINAL_PROMPT_WEB_ANSWER });
+    });
+
+    it('Moa switched off while a decline body is on the wire → 404, no key', async () => {
+      records.push(prompt({ createdAt: 1 }));
+      await start();
+      device('dev-1');
+      const res = await midBody(`${base()}/api/approvals/ap-moa/decline`, 'dev-1', '{}', () => { moa = null; }, 'application/json', caps);
+      expect(res.status).toBe(404);
+      expect(resolveCalls).toEqual([]);
       expect(panes.get('brain-hq')!.ptyProcess.write).not.toHaveBeenCalled();
     });
 
@@ -514,7 +543,9 @@ describe('the Moa pane on the phone routes', () => {
       await start();
       const h = device('dev-1');
       resolveResult = { ok: false, reason: 'prompt-changed', request: prompt() };
-      expect((await answer(h)).status).toBe(409);
+      // The operator's answer: a device's never reaches the registry (above).
+      expect((await answer(bearer(server.status().token as string))).status).toBe(409);
+      expect((await answer(h)).status).toBe(501);
       expect(refused).toEqual(['brain-hq']);
     });
 
@@ -618,6 +649,87 @@ describe('the Moa pane on the phone routes', () => {
       } finally {
         ac.abort();
       }
+    });
+  });
+
+  describe('Moa\'s own prompt against the real registry (#1772)', () => {
+    // A WebFetch dialog: the parser does not read it as active, so its card is
+    // informational (answerable:false) — Moa's prompts today.
+    const FETCH = [
+      '────────────────────────────────────────────────────────────',
+      ' Fetch',
+      '   Claude wants to fetch content from example.net',
+      '╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌',
+      '   url: https://example.net/',
+      '   prompt: What is the page title?',
+      '╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌',
+      ' Do you want to allow Claude to fetch this content?',
+      ' ❯ 1. Yes',
+      "   2. Yes, and don't ask again for example.net",
+      '   3. No, and tell Claude what to do differently (esc)',
+    ];
+    const caps = { 'X-Wmux-Client-Caps': 'terminal-prompt-answer, terminal-prompt-decline' };
+    let registry: ApprovalRegistry;
+    let registryDir: string;
+    let writes: Array<{ sessionId: string; data: string }>;
+    let clock: { now: number };
+
+    beforeEach(() => {
+      registryDir = fs.mkdtempSync(path.join(isolatedHome, 'approvals-'));
+      writes = [];
+      clock = { now: Date.now() };
+      const mark = { bytes: 100, keyInputRevision: 3, incarnation: 'brain-hq-inc-1' };
+      registry = new ApprovalRegistry({
+        wmuxDir: registryDir,
+        readScreenTail: async () => null,
+        writeToSession: (sessionId, data) => { writes.push({ sessionId, data }); return true; },
+        readPromptScreen: async () => ({ rows: FETCH, mark: { ...mark } }),
+        promptScreenMark: () => ({ ...mark }),
+        pendingToolUse: () => null,
+        agentSessionId: () => 'conv-1',
+        promptReadDelay: async () => undefined,
+        now: () => clock.now,
+      });
+      server = new WebTerminalServer({ ...serverDeps, approvals: registry, now: () => clock.now });
+    });
+
+    it('a press and a decline on an answerable:false Moa card are refused, and nothing reaches the pane', async () => {
+      await registry.noteTerminalPrompt({
+        sessionId: 'brain-hq', agent: 'claude', source: 'hook', workspaceId: 'ws-hq', toolName: 'WebFetch',
+        toolInput: { url: 'https://example.net/', prompt: 'What is the page title?' }, hookSessionId: 'conv-1', toolUseId: 'toolu_f',
+      });
+      const [card] = registry.list().pending;
+      expect(card).toMatchObject({ sessionId: 'brain-hq', kind: 'terminal_prompt' });
+      expect(card!.promptFingerprint).toBeUndefined();
+      await start();
+      const h = device('dev-1');
+      const listed = (await (await fetch(`${base()}/api/approvals`, { headers: { ...h, ...caps } })).json()) as { pending: Array<Record<string, unknown>> };
+      expect(listed.pending.map((r) => r['id'])).toEqual([card!.id]);
+      expect(listed.pending[0]).not.toHaveProperty('choices');
+
+      const pressed = await postJson(`${base()}/api/approvals/${card!.id}`, { ...h, ...caps }, { decision: 'approve', choiceKey: '1', promptFingerprint: 'f'.repeat(32) });
+      expect([pressed.status, await pressed.json()]).toEqual([501, { error: 'answer-in-terminal', reason: 'unsupported-shape' }]);
+      const decline = async () => postJson(`${base()}/api/approvals/${card!.id}/decline`, { ...h, ...caps }, {});
+      let declined = await decline();
+      expect([declined.status, await declined.json()]).toEqual([425, { error: 'answer-too-soon', effect: 'none' }]);
+      clock.now += TERMINAL_PROMPT_MIN_ANSWER_AGE_MS;
+      declined = await decline();
+      expect([declined.status, await declined.json()]).toEqual([409, { error: 'prompt-unverified', effect: 'none' }]);
+
+      // The registry refuses the same press and decline on its own too.
+      const viaRegistry = await registry.resolve({
+        id: card!.id, decision: 'approve', choiceKey: '1', promptFingerprint: 'f'.repeat(32), resolvedBy: 'device:dev-1',
+        terminalPromptAnswer: TERMINAL_PROMPT_WEB_ANSWER,
+      });
+      expect(viaRegistry).toMatchObject({ ok: false, reason: 'answer-in-terminal', answerRefusal: 'unsupported-shape' });
+      const declinedViaRegistry = await registry.resolve({
+        id: card!.id, decision: 'deny', resolvedBy: 'device:dev-1', terminalPromptDecline: TERMINAL_PROMPT_WEB_DECLINE,
+      });
+      expect(declinedViaRegistry).toMatchObject({ ok: false, reason: 'prompt-unverified' });
+
+      expect(writes).toEqual([]);
+      expect(panes.get('brain-hq')!.ptyProcess.write).not.toHaveBeenCalled();
+      expect(registry.list().pending.map((r) => r.id)).toEqual([card!.id]);
     });
   });
 
