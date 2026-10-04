@@ -325,6 +325,14 @@ describe('buildBrainSettingsProfile', () => {
     expect(hooks.SessionStart[0].hooks[0].command).not.toContain('--gate');
   });
 
+  it('runs UserPromptSubmit in context mode (never gated)', () => {
+    const hooks = profile.hooks as Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+    const command = hooks.UserPromptSubmit[0].hooks[0].command;
+    expect(command).toContain('UserPromptSubmit --context');
+    expect(command).not.toContain('--gate');
+    expect(hooks.Stop[0].hooks[0].command).not.toContain('--context');
+  });
+
   it('backstops each denied tool with a PreToolUse hook that names the tool', () => {
     const pre = profile.hooks as { PreToolUse: Array<{ matcher: string; hooks: Array<{ command: string }> }> };
     const matchers = pre.PreToolUse.map((g) => g.matcher);
@@ -1088,6 +1096,67 @@ describe('a turn the human started in the TUI', () => {
     expect(adapter2.busy).toBe(true);
     adapter2.dispose();
     expect(adapter2.busy).toBe(false);
+  });
+});
+
+describe('the view pointer on a prompt the human typed', () => {
+  const LINE = '[wmux context] viewing workspace "A" (ws-a), pane p-1, branch main, cwd /a';
+
+  async function settledAdapter(over: Record<string, unknown>) {
+    const host = makeHost();
+    const adapter = makeAdapter(host, over);
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const ptyId = host.created[0].id;
+    return { host, adapter, turn, ptyId };
+  }
+
+  it('returns the line for a human prompt, and nothing for its own send()', async () => {
+    const viewContext = vi.fn(() => LINE);
+    const { adapter, turn, ptyId } = await settledAdapter({ viewContext });
+    // Our own (automated) turn: no pointer, and the lookup is not even asked.
+    expect(deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId))).toEqual({ consumed: true });
+    expect(viewContext).not.toHaveBeenCalled();
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }));
+    await turn;
+
+    // The human types into the TUI: the pointer rides the hook response.
+    const human = deliverBrainPtyHookSignal(
+      signal('agent.user_prompt_submit', ptyId, { payload: { prompt: 'tell iOS about this' } }),
+    );
+    expect(human).toEqual({ consumed: true, additionalContext: LINE });
+    expect(viewContext).toHaveBeenCalledWith('ws-1');
+    adapter.dispose();
+  });
+
+  it('asks again on every prompt, so a switched view is reported', async () => {
+    let viewed = 'A';
+    const viewContext = vi.fn(() => `[wmux context] viewing workspace "${viewed}"`);
+    const { adapter, turn, ptyId } = await settledAdapter({ viewContext, foreignResubmitFoldMs: 0 });
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }));
+    await turn;
+    const a = deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId, { payload: { prompt: 'one' } }));
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }));
+    viewed = 'B';
+    const b = deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId, { payload: { prompt: 'two' } }));
+    expect(a.additionalContext).toContain('"A"');
+    expect(b.additionalContext).toContain('"B"');
+    adapter.dispose();
+  });
+
+  it('adds nothing when the lookup has no line or throws', async () => {
+    const { adapter, turn, ptyId } = await settledAdapter({
+      viewContext: vi.fn().mockReturnValueOnce(null).mockImplementationOnce(() => { throw new Error('boom'); }),
+      foreignResubmitFoldMs: 0,
+    });
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }));
+    await turn;
+    expect(deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId, { payload: { prompt: 'x' } })))
+      .toEqual({ consumed: true });
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }));
+    expect(deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId, { payload: { prompt: 'y' } })))
+      .toEqual({ consumed: true });
+    adapter.dispose();
   });
 });
 

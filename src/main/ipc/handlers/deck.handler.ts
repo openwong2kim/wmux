@@ -102,6 +102,7 @@ import {
   type ArchivedHqDecision,
 } from '../../deck/deckHqStore';
 import { loadLedgerGateEnabled, setLedgerGateEnabled } from '../../deck/deckLedgerGateStore';
+import { resolveViewContext } from '../../deck/viewContext';
 import {
   buildDeckLedgerSummary,
   createLedgerPushCoalescer,
@@ -446,6 +447,19 @@ export function registerDeckHandler(
                 noteGateCapOut(workspaceId, verdict.cappedOutFingerprint);
               }
               return verdict;
+            },
+            // E2: the pointer to what the human is viewing, for a prompt typed
+            // into the HQ brain. Store and mirror are read per prompt, so a
+            // Moa switch or an HQ change mid-session takes effect at once.
+            viewContext: (workspaceId) => {
+              const mirror = getWorkspaceMirror();
+              return resolveViewContext({
+                brainWorkspaceId: workspaceId,
+                hqWorkspaceId: getHqWorkspaceId(),
+                moaEnabled: isMoaEnabled(),
+                viewed: mirror.getViewed(),
+                entries: mirror.getEntries(),
+              });
             },
             onForeignTurnEnd: adapterOpts.onForeignTurnEnd,
             onForeignSessionId: adapterOpts.onForeignSessionId,

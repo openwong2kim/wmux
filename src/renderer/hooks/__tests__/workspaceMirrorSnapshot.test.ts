@@ -377,6 +377,18 @@ describe('buildWorkspaceMirrorPayload', () => {
       buildWorkspaceMirrorPayload({ ...state(), sessionRestored: true }, () => 1).sessionRestored,
     ).toBe(true);
   });
+
+  it('carries the viewed workspace and its active pane, following a switch', () => {
+    expect(buildWorkspaceMirrorPayload({ ...state(), activeWorkspaceId: 'ws-1' }, () => 1).viewed)
+      .toEqual({ workspaceId: 'ws-1', paneId: 'p1' });
+    expect(buildWorkspaceMirrorPayload({ ...state(), activeWorkspaceId: 'ws-2' }, () => 1).viewed)
+      .toEqual({ workspaceId: 'ws-2', paneId: 'p2a' });
+  });
+
+  it('omits viewed when no known workspace is active', () => {
+    expect(buildWorkspaceMirrorPayload(state(), () => 1).viewed).toBeUndefined();
+    expect(buildWorkspaceMirrorPayload({ ...state(), activeWorkspaceId: 'ws-gone' }, () => 1).viewed).toBeUndefined();
+  });
 });
 
 // ─── Workspace-OWNED walks (#977 review) ─────────────────────────────────────

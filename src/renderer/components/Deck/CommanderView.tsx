@@ -163,9 +163,14 @@ export interface CommanderViewContentProps {
   quickActions?: DeckQuickAction[];
   /** Fire a quick action (sends its canned prompt to the brain). */
   onQuickAction?: (action: DeckQuickAction) => void;
-  /** M1.5: the workspace this deck view is bound to — new schedules are
-   *  created against its orchestrator. */
-  activeWorkspaceId?: string;
+  /** M1.5: the workspace whose brain this chat talks to — new schedules are
+   *  created against its orchestrator. Once the dock is pinned to the HQ this
+   *  is the HQ, whatever the human is viewing. */
+  chatWorkspaceId?: string;
+  /** The workspace the human is viewing. Equal to chatWorkspaceId until the
+   *  dock is pinned to the HQ. Main reads the same fact from the workspace
+   *  mirror for the HQ brain's context line, so nothing here sends it. */
+  viewedWorkspaceId?: string;
   /** 활성 pane의 라이브 cwd — 루프 설정 모달의 스킬 카탈로그 스캔 기준. */
   activePaneCwd?: string;
   /** P2① mission control — the Fleet roster slot, pinned above the thread.
@@ -209,7 +214,7 @@ export function CommanderViewContent({
   onDismissRecovery,
   quickActions = [],
   onQuickAction,
-  activeWorkspaceId,
+  chatWorkspaceId: activeWorkspaceId,
   activePaneCwd,
   fleetSlot,
   channelsUnread = 0,
@@ -1662,7 +1667,8 @@ export function CommanderView(): React.ReactElement {
       onDismissRecovery={dismissRecoveryCard}
       quickActions={quickActions}
       onQuickAction={handleQuickAction}
-      activeWorkspaceId={activeWorkspaceId}
+      chatWorkspaceId={activeWorkspaceId}
+      viewedWorkspaceId={activeWorkspaceId}
       activePaneCwd={activePaneCwd}
       fleetSlot={<DeckFleet onJumpToPane={onJumpToPane} />}
       channelsUnread={channelsUnread}
