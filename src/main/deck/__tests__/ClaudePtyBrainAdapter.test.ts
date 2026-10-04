@@ -37,6 +37,7 @@ import {
   flattenPromptForPty,
   classifyReportedPrompt,
   lastPasteModeToggle,
+  printedText,
   resolveBrainHomeDir,
   BRAIN_PTY_ALLOWED_TOOLS,
   createBrainPtyHost,
@@ -68,6 +69,8 @@ interface FakeHost extends BrainPtyHost {
   /** Make every write throw — the production host's "the pty is gone" signal
    *  (createBrainPtyHost turns a false writeToSession into this). */
   failWrites: boolean;
+  /** Print output on one session, as the TUI would. */
+  emit(id: string, data: string): void;
 }
 
 function makeHost(): FakeHost {
@@ -96,6 +99,9 @@ function makeHost(): FakeHost {
     },
     set failNextAttach(v: boolean) {
       failAttach = v;
+    },
+    emit(id, data) {
+      listeners.get(id)?.(data);
     },
     killSession(id, exitCode = 1) {
       exitListeners.get(id)?.(exitCode);
@@ -1718,15 +1724,29 @@ describe('first-turn memory after the conversation changes', () => {
 
 // ── #1787: a cold-start prompt that reaches the TUI incomplete ─────────────
 
+interface ColdTuiOptions {
+  /** Damage what the Nth bracketed paste puts in the box (1-based). */
+  damage?: (attempt: number, text: string) => string;
+  /** How long the UserPromptSubmit hook runs. The box keeps its text until it
+   *  returns, so an Enter in the meantime submits that text again. */
+  hookDelayMs?: number;
+  /** The bridge missed main's answer: a refusal does not take, the copy runs. */
+  bridgeTimeout?: boolean;
+  /** Claude Code prints a refusal's reason (default true). */
+  printRefusal?: boolean;
+  /** How long a turn that runs takes to fire its Stop. */
+  stopDelayMs?: number;
+}
+
 /**
  * A fake Claude Code input box over the fake pty, modelled on what Claude Code
  * 2.1.289 did on a cold start: a bare write longer than the pty's 1024-byte
  * input queue arrives as several reads, each taken as its own paste, and the
  * first bare write loses every read but the last. A bracketed paste is held
- * whole. On Enter it reports the box through UserPromptSubmit; a refused report
- * clears the box, an accepted one runs the turn (and its Stop follows).
+ * whole. On Enter it reports the box through UserPromptSubmit; a refused
+ * report clears the box and prints the reason, an accepted one runs the turn.
  */
-function makeColdTui(opts: { damageAttempts?: number } = {}) {
+function makeColdTui(opts: ColdTuiOptions = {}) {
   const host = makeHost();
   host.nextBanner = '\u001b[?2004h';
   // The TUI's SessionStart lands once the session is up.
@@ -1739,40 +1759,58 @@ function makeColdTui(opts: { damageAttempts?: number } = {}) {
   const verdicts: Array<ReturnType<typeof deliverBrainPtyHookSignal>> = [];
   let box = '';
   let coldBareWrite = true;
-  let damageLeft = opts.damageAttempts ?? 0;
+  let pastes = 0;
   const write = host.write.bind(host);
   host.write = (id, data) => {
     write(id, data);
+    if (data === '\u001b') {
+      box = '';
+      return;
+    }
     if (data === '\r') {
       if (!box) return;
       const prompt = box;
-      box = '';
-      const verdict = deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', id, { payload: { prompt } }));
-      verdicts.push(verdict);
-      if (verdict.block) return;
-      accepted.push(prompt);
-      setTimeout(() => deliverBrainPtyHookSignal(signal('agent.stop', id, { agentSessionId: 'sess-1' })), 0);
+      const report = (): void => {
+        const verdict = deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', id, { payload: { prompt } }));
+        verdicts.push(verdict);
+        if (box === prompt) box = '';
+        if (verdict.block && !opts.bridgeTimeout) {
+          // Wrapped and spaced with cursor moves, as Claude Code draws it.
+          const shown = verdict.block.replace(/ /g, '\u001b[1C').replace(/(.{40})/g, '$1\r\n  ');
+          if (opts.printRefusal !== false) {
+            host.emit(id, `\r\n\u001b[1m⏺ UserPromptSubmit operation blocked by hook:\u001b[22m\r\n  ${shown}`);
+          }
+          return;
+        }
+        accepted.push(prompt);
+        setTimeout(
+          () => deliverBrainPtyHookSignal(signal('agent.stop', id, { agentSessionId: 'sess-1' })),
+          opts.stopDelayMs ?? 0,
+        );
+      };
+      if (opts.hookDelayMs) setTimeout(report, opts.hookDelayMs);
+      else report();
       return;
     }
     let text: string;
     if (data.startsWith('\u001b[200~') && data.endsWith('\u001b[201~')) {
+      pastes += 1;
       text = data.slice(6, -6);
+      if (opts.damage) text = opts.damage(pastes, text);
     } else {
       const reads: string[] = [];
       for (let i = 0; i < data.length; i += 1024) reads.push(data.slice(i, i + 1024));
       text = coldBareWrite ? reads[reads.length - 1] : reads.join('');
       coldBareWrite = false;
     }
-    if (damageLeft > 0) {
-      damageLeft -= 1;
-      text = text.slice(-100);
-    }
     box += text;
   };
-  return { host, accepted, verdicts };
+  const pasteWrites = (): number => host.writes.filter((w) => w.data.startsWith('\u001b[200~')).length;
+  return { host, accepted, verdicts, pasteWrites };
 }
 
 const LONG_PROMPT = Array.from({ length: 400 }, (_, i) => `word${i}`).join(' ');
+const tailOnly = (text: string): string => text.slice(-100);
 
 describe('a cold-start prompt that reaches the TUI incomplete (#1787)', () => {
   it('lands the whole prompt on a cold TUI that splits a long bare write into pastes', async () => {
@@ -1784,19 +1822,40 @@ describe('a cold-start prompt that reaches the TUI incomplete (#1787)', () => {
     adapter.dispose();
   });
 
-  it('refuses a damaged copy and types the prompt again', async () => {
-    const { host, accepted, verdicts } = makeColdTui({ damageAttempts: 1 });
+  it('refuses a damaged copy, skips its second Enter, and types the prompt again once refused', async () => {
+    const { host, accepted, verdicts, pasteWrites } = makeColdTui({
+      damage: (n, text) => (n === 1 ? tailOnly(text) : text),
+    });
     const adapter = makeAdapter(host);
     const events = await collect(adapter.send(LONG_PROMPT));
     expect(verdicts[0].block).toMatch(/incomplete \(\d+ of \d+ characters\)/);
     expect(verdicts.slice(1).every((v) => !v.block)).toBe(true);
+    expect(accepted).toEqual([LONG_PROMPT]);
+    expect(pasteWrites()).toBe(2);
+    // One Enter per attempt: each was reported before the second could go out.
+    expect(host.writes.filter((w) => w.data === '\r')).toHaveLength(2);
+    expect(events.at(-1)).toMatchObject({ type: 'turn-end' });
+    adapter.dispose();
+  });
+
+  it('refuses a damaged copy the second Enter resubmits while a slow hook holds the box', async () => {
+    const { host, accepted, verdicts } = makeColdTui({
+      damage: (n, text) => (n === 1 ? tailOnly(text) : text),
+      hookDelayMs: 150,
+    });
+    const adapter = makeAdapter(host);
+    const events = await collect(adapter.send(LONG_PROMPT));
+    // Both submissions of the damaged box were refused (and, depending on the
+    // hook's timing, the full prompt's own resubmission too): the full prompt
+    // ran exactly once and nothing else ran.
+    expect(verdicts.filter((v) => v.block).length).toBeGreaterThanOrEqual(2);
     expect(accepted).toEqual([LONG_PROMPT]);
     expect(events.at(-1)).toMatchObject({ type: 'turn-end' });
     adapter.dispose();
   });
 
   it('fails the turn, never running half a prompt, when every attempt arrives damaged', async () => {
-    const { host, accepted, verdicts } = makeColdTui({ damageAttempts: Infinity });
+    const { host, accepted, verdicts } = makeColdTui({ damage: (_n, text) => tailOnly(text) });
     const adapter = makeAdapter(host, { turnTimeoutMs: 5_000 });
     const events = await collect(adapter.send(LONG_PROMPT));
     expect(accepted).toEqual([]);
@@ -1806,18 +1865,91 @@ describe('a cold-start prompt that reaches the TUI incomplete (#1787)', () => {
     adapter.dispose();
   });
 
-  it('leaves a prompt the human types during the attempt alone', () => {
+  it('never types again, nor reports the result, when a refusal did not take and the copy ran', async () => {
+    const { host, accepted, pasteWrites } = makeColdTui({
+      damage: (_n, text) => tailOnly(text),
+      bridgeTimeout: true,
+    });
+    const adapter = makeAdapter(host, { turnTimeoutMs: 5_000 });
+    const events = await collect(adapter.send(LONG_PROMPT));
+    expect(accepted).toHaveLength(1);
+    expect(pasteWrites()).toBe(1);
+    expect(events).toEqual([{ type: 'error', message: expect.stringMatching(/ran an incomplete copy/) }]);
+    adapter.dispose();
+  });
+
+  it('interrupts instead of typing again when a refusal is never seen taking effect', async () => {
+    const { host, pasteWrites } = makeColdTui({
+      damage: (_n, text) => tailOnly(text),
+      bridgeTimeout: true,
+      stopDelayMs: 10_000,
+    });
+    const adapter = makeAdapter(host, { turnTimeoutMs: 5_000, refusalConfirmMs: 30 });
+    const events = await collect(adapter.send(LONG_PROMPT));
+    expect(pasteWrites()).toBe(1);
+    expect(host.writes.some((w) => w.data === '\u001b')).toBe(true);
+    expect(events).toEqual([{ type: 'error', message: expect.stringMatching(/could not confirm/) }]);
+    adapter.dispose();
+  });
+
+  it('does not type a refused prompt again after interrupt()', async () => {
+    const { host, verdicts, pasteWrites } = makeColdTui({
+      damage: (_n, text) => tailOnly(text),
+      printRefusal: false,
+    });
+    const adapter = makeAdapter(host, { turnTimeoutMs: 5_000, refusalConfirmMs: 5_000 });
+    const turn = collect(adapter.send(LONG_PROMPT));
+    await vi.waitFor(() => expect(verdicts).toHaveLength(1));
+    adapter.interrupt();
+    expect(await turn).toEqual([{ type: 'error', message: expect.stringMatching(/interrupted/) }]);
+    expect(pasteWrites()).toBe(1);
+    adapter.dispose();
+  });
+
+  it('waits out the startup h -> l -> h toggle of bracketed paste before typing', async () => {
+    const { host } = makeColdTui();
+    let lastOn = 0;
+    const attach = host.attach.bind(host);
+    host.attach = async (id) => {
+      await attach(id);
+      setTimeout(() => host.emit(id, '\u001b[?2004l'), 30);
+      setTimeout(() => {
+        lastOn = Date.now();
+        host.emit(id, '\u001b[?2004h');
+      }, 60);
+    };
+    let typedAt = 0;
+    const write = host.write.bind(host);
+    host.write = (id, data) => {
+      if (data.startsWith('\u001b[200~')) typedAt = Date.now();
+      write(id, data);
+    };
+    const adapter = makeAdapter(host, { pasteModeWaitMs: 2_000, pasteModeSettleMs: 50 });
+    await collect(adapter.send(LONG_PROMPT));
+    expect(lastOn).toBeGreaterThan(0);
+    expect(typedAt - lastOn).toBeGreaterThanOrEqual(45);
+    adapter.dispose();
+  });
+
+  it('classifies any piece of its own prompt as damaged, however short', () => {
     const own = 'checkthefleetandsayok';
     expect(classifyReportedPrompt(own, own)).toBe('own');
-    expect(classifyReportedPrompt('fleetandsayok', own)).toBe('damaged');
-    expect(classifyReportedPrompt(`draft${own}`, own)).toBe('damaged');
-    expect(classifyReportedPrompt('sayok', own)).toBe('other');
+    expect(classifyReportedPrompt('fleetandsayok', own)).toBe('damaged'); // tail
+    expect(classifyReportedPrompt('checkthe', own)).toBe('damaged'); // head only
+    expect(classifyReportedPrompt('checkthesayok', own)).toBe('damaged'); // middle lost
+    for (let n = 1; n <= 7; n++) expect(classifyReportedPrompt(own.slice(-n), own)).toBe('damaged');
     expect(classifyReportedPrompt('mergethis', own)).toBe('other');
+    expect(classifyReportedPrompt(`draft${own}`, own)).toBe('other');
+    expect(classifyReportedPrompt('lookatthis', 'hi')).toBe('other');
   });
 
   it('reads the bracketed-paste mode the TUI output leaves on', () => {
     expect(lastPasteModeToggle('\u001b[?2004h\u001b[?2004l\u001b[?2004h')).toBe(true);
     expect(lastPasteModeToggle('x\u001b[?2004l')).toBe(false);
     expect(lastPasteModeToggle('plain output')).toBeNull();
+  });
+
+  it('reads printed text through cursor moves, styling and line wraps', () => {
+    expect(printedText('\u001b[1m[wmux-\r\n  refused-3]\u001b[1Cwmux\u001b[22m')).toBe('[wmux-refused-3]wmux');
   });
 });
