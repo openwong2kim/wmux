@@ -7,6 +7,7 @@
 // how to read it with gh, then the operator's note if one was given.
 import type { IssueRef } from './issueRef';
 import type { PrDragRef } from './prDragRef';
+import type { SubmitAssurance } from './ptyMessageDelivery';
 
 /** What is handed over: an issue or a PR (both URL-checked refs). */
 export type HandoffRef = { kind: 'issue'; ref: IssueRef } | { kind: 'pr'; ref: PrDragRef };
@@ -111,8 +112,10 @@ export interface HandoffInProgress {
 export type HandoffSendResult =
   /** Not delivered: `reason` is the refusal code (user_typing, agent_changed,
    *  no_agent_pane, ...), `note` the delivery's own hint. The task was
-   *  cancelled, so nothing is left waiting. */
-  | { ok: true; linkId: string; taskId?: string; delivered: boolean; note?: string; reason?: string }
+   *  cancelled, so nothing is left waiting. Delivered: `assurance` says
+   *  whether the Enter is known to have started a turn ('unverified': pasted,
+   *  but the agent may not have taken it, e.g. a busy Codex). */
+  | { ok: true; linkId: string; taskId?: string; delivered: boolean; assurance?: SubmitAssurance; note?: string; reason?: string }
   | { ok: false; code: 'in-progress'; inProgress: HandoffInProgress }
   | { ok: false; code: 'invalid' | 'refused' | 'error'; message: string };
 

@@ -201,7 +201,7 @@ export async function sendHandoff(deps: HandoffDeps, raw: unknown): Promise<Hand
     }).catch((err: unknown) => ({ ok: false, error: err instanceof Error ? err.message : String(err) }))) as {
       ok?: boolean;
       error?: string;
-      result?: { taskId?: unknown; error?: unknown; delivery?: { notified?: unknown; hint?: unknown; reason?: unknown } };
+      result?: { taskId?: unknown; error?: unknown; delivery?: { notified?: unknown; submit?: unknown; hint?: unknown; reason?: unknown } };
     };
     if (!res || res.ok === false) {
       await releaseUndelivered(deps, link?.id, undefined);
@@ -214,6 +214,9 @@ export async function sendHandoff(deps: HandoffDeps, raw: unknown): Promise<Hand
     }
     const taskId = typeof result.taskId === 'string' ? result.taskId : undefined;
     const delivered = result.delivery?.notified === true;
+    // Only a delivery that says so is assured; anything else may be pasted
+    // and never submitted.
+    const assurance = result.delivery?.submit === 'assured' ? 'assured' as const : 'unverified' as const;
     const hint = typeof result.delivery?.hint === 'string' ? result.delivery.hint : undefined;
     const why = result.delivery?.reason;
     const reason = !delivered && typeof why === 'string' && /^[a-z_]{1,40}$/.test(why) ? why : undefined;
@@ -223,6 +226,7 @@ export async function sendHandoff(deps: HandoffDeps, raw: unknown): Promise<Hand
       linkId: link?.id ?? '',
       ...(taskId ? { taskId } : {}),
       delivered,
+      ...(delivered ? { assurance } : {}),
       ...(hint ? { note: hint } : {}),
       ...(reason ? { reason } : {}),
     };

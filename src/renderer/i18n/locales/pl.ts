@@ -2792,6 +2792,7 @@ export const pl = {
   'git.handoff.send': 'Wyślij',
   'git.handoff.sending': 'Wysyłanie…',
   'git.handoff.sent': 'Wysłano {kind} {ref} do {agent} w {workspace}.',
+  'git.handoff.pasted': 'Wklejono {kind} {ref} do {agent} w {workspace}, sprawdź, czy się zaczęło.',
   'git.handoff.notSent': 'Nie wysłano {kind} {ref} do {agent} w {workspace}.',
   'git.handoff.why.user_typing': 'Ktoś pisał w tym panelu; spróbuj ponownie, gdy będzie wolny.',
   'git.handoff.why.agent_changed': 'Agent opuścił ten panel lub został zastąpiony.',

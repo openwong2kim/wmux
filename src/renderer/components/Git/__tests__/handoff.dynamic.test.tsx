@@ -201,6 +201,21 @@ describe('confirm popover', () => {
     expect(useStore.getState().toasts).toEqual([]);
   });
 
+  it('pasted but not known to have started (a busy Codex): never says Sent, asks to check it started', async () => {
+    handoffSend.mockResolvedValueOnce({ ok: true, linkId: 'l1', delivered: true, assurance: 'unverified' });
+    open();
+    await act(async () => { q<HTMLButtonElement>('[data-handoff-send]')!.click(); });
+    await flush();
+    expect(useStore.getState().toasts.at(-1)).toMatchObject({
+      level: 'warn', message: 'Pasted issue Acme/Widgets#12 into Claude Code in alpha, check it started.',
+    });
+    handoffSend.mockResolvedValueOnce({ ok: true, linkId: 'l1', delivered: true, assurance: 'assured' });
+    open();
+    await act(async () => { q<HTMLButtonElement>('[data-handoff-send]')!.click(); });
+    await flush();
+    expect(useStore.getState().toasts.at(-1)).toMatchObject({ level: 'info', message: 'Sent issue Acme/Widgets#12 to Claude Code in alpha.' });
+  });
+
   it('not delivered: says it did not send, and why in a word of its own (else the delivery\'s hint)', async () => {
     handoffSend.mockResolvedValueOnce({ ok: true, linkId: 'l1', delivered: false, note: 'a long generic hint', reason: 'agent_changed' });
     open();

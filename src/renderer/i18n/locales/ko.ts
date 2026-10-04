@@ -2198,6 +2198,7 @@ export const ko = {
   'git.handoff.send': '보내기',
   'git.handoff.sending': '보내는 중…',
   'git.handoff.sent': '{kind} {ref}을(를) {workspace}의 {agent}에게 보냈습니다.',
+  'git.handoff.pasted': '{kind} {ref}을(를) {workspace}의 {agent}에 붙여 넣었습니다. 시작됐는지 확인하세요.',
   'git.handoff.notSent': '{kind} {ref}을(를) {workspace}의 {agent}에게 보내지 않았습니다.',
   'git.handoff.why.user_typing': '그 판에서 누군가 입력 중이었습니다. 한가해지면 다시 시도하세요.',
   'git.handoff.why.agent_changed': '에이전트가 그 판을 떠났거나 바뀌었습니다.',

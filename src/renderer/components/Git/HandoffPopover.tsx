@@ -99,9 +99,13 @@ function HandoffPopoverBody({ open }: { open: GitHandoffOpen }): React.ReactElem
     close();
     const vars = { kind: kindWord, ref: itemRef, agent: agentWord(target), workspace: wsName(target.workspaceId) };
     const why = (WHY as readonly string[]).includes(res.reason ?? '') ? t(`git.handoff.why.${res.reason}`) : res.note;
-    pushToast(res.delivered
-      ? { level: 'info', message: t('git.handoff.sent', vars) }
-      : { level: 'warn', message: `${t('git.handoff.notSent', vars)}${why ? ` ${why}` : ''}` });
+    // Pasted but not known to have started a turn (a busy Codex can take the
+    // paste and drop the Enter): never claim "Sent".
+    pushToast(!res.delivered
+      ? { level: 'warn', message: `${t('git.handoff.notSent', vars)}${why ? ` ${why}` : ''}` }
+      : res.assurance === 'unverified'
+        ? { level: 'warn', message: t('git.handoff.pasted', vars) }
+        : { level: 'info', message: t('git.handoff.sent', vars) });
   };
 
   const start = async (force = false) => {

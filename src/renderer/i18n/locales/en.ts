@@ -2815,6 +2815,7 @@ export const en = {
   'git.handoff.send': 'Send',
   'git.handoff.sending': 'Sending…',
   'git.handoff.sent': 'Sent {kind} {ref} to {agent} in {workspace}.',
+  'git.handoff.pasted': 'Pasted {kind} {ref} into {agent} in {workspace}, check it started.',
   'git.handoff.notSent': 'Did not send {kind} {ref} to {agent} in {workspace}.',
   'git.handoff.why.user_typing': 'Someone was typing in that pane; try again once it is idle.',
   'git.handoff.why.agent_changed': 'The agent left that pane or was replaced.',

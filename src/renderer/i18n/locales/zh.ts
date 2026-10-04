@@ -2334,6 +2334,7 @@ export const zh = {
   'git.handoff.send': '发送',
   'git.handoff.sending': '正在发送…',
   'git.handoff.sent': '已将{kind} {ref}发送给{workspace}中的{agent}。',
+  'git.handoff.pasted': '已将{kind} {ref}粘贴到{workspace}中的{agent}，请确认它已开始。',
   'git.handoff.notSent': '未将{kind} {ref}发送给{workspace}中的{agent}。',
   'git.handoff.why.user_typing': '有人正在该窗格中输入；空闲后再试。',
   'git.handoff.why.agent_changed': '代理已离开该窗格或已被替换。',

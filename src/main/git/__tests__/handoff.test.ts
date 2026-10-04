@@ -32,7 +32,7 @@ function link(over: Partial<WorkLink>): WorkLink {
   } as WorkLink;
 }
 
-const DELIVERED = { ok: true, result: { ok: true, taskId: 'task-9', delivery: { notified: true } } };
+const DELIVERED = { ok: true, result: { ok: true, taskId: 'task-9', delivery: { notified: true, submit: 'assured' } } };
 
 function deps(over: { links?: WorkLink[]; invoke?: (method: string, params: Record<string, unknown>) => Promise<unknown> } = {}) {
   const upserts: Array<Record<string, unknown>> = [];
@@ -83,10 +83,18 @@ describe('the fixed reference', () => {
 });
 
 describe('sendHandoff', () => {
+  it('a delivery not known to have started a turn is reported unverified (pasted, maybe not submitted)', async () => {
+    for (const delivery of [{ notified: true, submit: 'unverified' }, { notified: true }]) {
+      const { d } = deps({ invoke: async () => ({ ok: true, result: { ok: true, taskId: 'task-9', delivery } }) });
+      const res = await sendHandoff(d, { item: { kind: 'issue', ref: issue }, target });
+      expect(res).toMatchObject({ ok: true, delivered: true, assurance: 'unverified' });
+    }
+  });
+
   it('records an issue link owned by the target, then sends the fixed reference as a gated A2A task joined to it', async () => {
     const { d, upserts } = deps();
     const res = await sendHandoff(d, { item: { kind: 'issue', ref: issue }, target, note: 'start with the logs' });
-    expect(res).toEqual({ ok: true, linkId: 'link-new', taskId: 'task-9', delivered: true });
+    expect(res).toEqual({ ok: true, linkId: 'link-new', taskId: 'task-9', delivered: true, assurance: 'assured' });
     expect(upserts[0]).toMatchObject({
       origin: 'issue', issue: { number: 12 }, title: "Crash on 'launch'", owner: { workspaceId: 'ws-target', paneId: 'pane-1' }, agent: 'claude',
     });
