@@ -375,7 +375,15 @@ export class PTYManager {
     const instance = this.instances.get(id);
     if (instance) {
       instance.process.write(data);
+      this.inputObserver?.(id, data);
     }
+  }
+
+  /** Sees every write in local PTY mode (workspace settle activity). In daemon
+   *  mode the daemon reports typed input itself. */
+  private inputObserver: ((id: string, data: string) => void) | null = null;
+  setInputObserver(observer: ((id: string, data: string) => void) | null): void {
+    this.inputObserver = observer;
   }
 
   resize(id: string, cols: number, rows: number): void {

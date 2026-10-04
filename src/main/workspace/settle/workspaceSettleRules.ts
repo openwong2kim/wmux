@@ -83,22 +83,23 @@ export function isPrActivity(
 }
 
 /**
- * One reply the terminal itself writes back into the PTY, not a person typing:
- * device attributes, status and cursor-position reports, mode reports, focus
- * in/out (agents turn focus reporting on, so merely viewing the pane sends
- * one), and OSC / DCS answers.
+ * Bytes that reach a PTY without anyone using it: replies the terminal writes
+ * back on its own (device attributes, status and cursor-position reports, mode
+ * reports, focus in/out — agents turn focus reporting on, so merely viewing
+ * the pane sends one — and OSC / DCS answers), and mouse reports (SGR and X10;
+ * scrolling an agent's screen is looking, not using).
  */
-const TERMINAL_REPLY =
-  /\x1b\[(?:\?[\d;]*(?:c|n|u|\$y)|[>=][\d;]*c|[\d;]*[Rn]|[IO])|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\/gy;
+const PASSIVE_INPUT =
+  /\x1b\[(?:\?[\d;]*(?:c|n|u|\$y)|[>=][\d;]*c|[\d;]*[Rn]|[IO]|<\d+;\d+;\d+[Mm]|M[\s\S]{3})|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\/gy;
 
-/** Whether `data` is nothing but terminal replies — not activity. */
-export function isTerminalReplyOnly(data: string): boolean {
+/** Whether `data` is nothing but passive input — not activity. */
+export function isPassiveInput(data: string): boolean {
   if (data.length === 0 || data.charCodeAt(0) !== 0x1b) return false;
   let at = 0;
   while (at < data.length) {
-    TERMINAL_REPLY.lastIndex = at;
-    if (!TERMINAL_REPLY.exec(data)) return false;
-    at = TERMINAL_REPLY.lastIndex;
+    PASSIVE_INPUT.lastIndex = at;
+    if (!PASSIVE_INPUT.exec(data)) return false;
+    at = PASSIVE_INPUT.lastIndex;
   }
   return true;
 }

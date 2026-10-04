@@ -17,12 +17,17 @@ import { prStatusCache } from '../../metadata/PrStatusCache';
 import { gitSyncStatusCache } from '../../metadata/GitSyncStatusCache';
 import { getHqWorkspaceId } from '../../deck/deckHqStore';
 import { getWorkspaceMirror } from '../WorkspaceMirror';
+import { notePrCiObservation } from '../../ipc/handlers/metadata.handler';
+import type { DaemonClient } from '../../DaemonClient';
+import type { PTYManager } from '../../pty/PTYManager';
 import { WorkspaceSettleService, type PersistedWorkspaceSettle } from './WorkspaceSettleService';
 
 /** Expiry, idle and PR rules are evaluated once a minute. */
 export const WORKSPACE_SETTLE_TICK_MS = 60_000;
 const SAVE_DEBOUNCE_MS = 1_000;
 const HQ_CACHE_MS = 5_000;
+/** PR observation interval while the window is hidden. */
+const PR_OBSERVE_HIDDEN_MS = 5 * 60 * 1000;
 
 // One service per process: handler re-registration rebinds the IPC and the
 // subscriptions but keeps the rows and the last mirror it saw.
@@ -83,20 +88,32 @@ function loadPersisted(filePath: string): unknown {
   }
 }
 
-/** Read every present workspace's PR and git state through the shared caches. */
-async function observePrs(svc: WorkspaceSettleService): Promise<void> {
+/**
+ * Read the PR and git state of every workspace a PR transition can matter for,
+ * in parallel, through the shared caches. `feedCi` while the window is hidden:
+ * the metadata poll (the CI router's usual feeder) is stopped then.
+ */
+async function observePrs(svc: WorkspaceSettleService, feedCi: boolean): Promise<void> {
   const entries = getWorkspaceMirror().getEntries() ?? [];
   const present = new Set(svc.presentIds());
-  for (const e of entries) {
+  await Promise.all(entries.map(async (e) => {
     const cwd = e.metadata?.cwd;
     const branch = e.metadata?.gitBranch;
-    if (!present.has(e.id) || !cwd || !branch) continue;
-    const [pr, sync] = await Promise.all([prStatusCache.get(cwd, branch), gitSyncStatusCache.get(cwd)]);
-    svc.notePr(e.id, pr, sync?.hasUpstream ? sync.ahead : undefined);
-  }
+    if (!present.has(e.id) || !cwd || !branch || !svc.wantsPrObservation(e.id)) return;
+    const [{ pr, failed }, sync] = await Promise.all([prStatusCache.observe(cwd, branch), gitSyncStatusCache.get(cwd)]);
+    svc.notePr(e.id, failed ? undefined : pr, sync?.hasUpstream ? sync.ahead : undefined);
+    if (feedCi && !failed && e.activePtyId) notePrCiObservation(e.activePtyId, pr);
+  }));
 }
 
-export function registerWorkspaceSettle(getWindow: () => BrowserWindow | null): () => void {
+export interface WorkspaceSettleInputs {
+  /** Daemon mode: the daemon reports typed input from every input path. */
+  daemonClient?: DaemonClient;
+  /** Local mode: every write goes through the PTY manager. */
+  ptyManager?: PTYManager;
+}
+
+export function registerWorkspaceSettle(getWindow: () => BrowserWindow | null, inputs: WorkspaceSettleInputs = {}): () => void {
   if (!service || !saver) {
     const filePath = getWorkspaceSettlePath();
     const s = createSaver(filePath);
@@ -114,6 +131,11 @@ export function registerWorkspaceSettle(getWindow: () => BrowserWindow | null): 
     if (event.type === 'agent.lifecycle') svc.noteLifecycle(event.workspaceId, event.kind);
     else if (event.type === 'pr.ci') svc.noteAttention(event.workspaceId);
   });
+  // Input from any path: desktop keys, phone/web, MCP input.send, A2A.
+  const onTyped = (payload: { sessionId: string }): void => svc.noteInput(payload.sessionId);
+  const { daemonClient, ptyManager } = inputs;
+  if (daemonClient) daemonClient.on('session:input', onTyped);
+  else ptyManager?.setInputObserver((id, data) => svc.noteInput(id, data));
 
   ipcMain.removeHandler(IPC.WORKSPACE_SETTLE_GET);
   ipcMain.handle(IPC.WORKSPACE_SETTLE_GET, () => svc.snapshot());
@@ -126,10 +148,19 @@ export function registerWorkspaceSettle(getWindow: () => BrowserWindow | null): 
   });
 
   let ticking = false;
+  let observedAt = -Infinity;
   const timer = setInterval(() => {
     if (ticking) return;
+    const win = getWindow();
+    const hidden = !win || win.isDestroyed() || !win.isVisible();
+    // Nobody is looking: PR state can wait longer (the gh cache TTL is 5 min anyway).
+    if (Date.now() - observedAt < (hidden ? PR_OBSERVE_HIDDEN_MS : 0)) {
+      svc.tick();
+      return;
+    }
     ticking = true;
-    observePrs(svc)
+    observedAt = Date.now();
+    observePrs(svc, hidden)
       .catch((err) => console.error('[workspaceSettle] PR observation failed:', err))
       .finally(() => {
         ticking = false;
@@ -142,6 +173,8 @@ export function registerWorkspaceSettle(getWindow: () => BrowserWindow | null): 
     clearInterval(timer);
     unsubscribeChange();
     unsubscribeBus();
+    if (daemonClient) daemonClient.off('session:input', onTyped);
+    else ptyManager?.setInputObserver(null);
     ipcMain.removeHandler(IPC.WORKSPACE_SETTLE_GET);
     ipcMain.removeHandler(IPC.WORKSPACE_SETTLE_COMMAND);
     flushSave();

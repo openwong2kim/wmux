@@ -60,7 +60,6 @@ import {
   removeSessionPromptSchedulesForPty,
 } from '../../pty/sessionPromptScheduleStore';
 import { createSessionPromptScheduleHandlers } from '../../pty/sessionPromptScheduleHandlers';
-import { getWorkspaceSettleService } from '../../workspace/settle/workspaceSettleHost';
 
 /**
  * Allowed shell basenames (compared case-insensitively).
@@ -754,8 +753,6 @@ export function registerPTYHandlers(
       // see it either. Runs before the write so the settle is not gated on
       // delivery — the operator's intent is the same either way.
       ptyBridge.noteInterruptInput(id, data);
-      // Input is activity: it un-settles the workspace and restarts its idle clock.
-      getWorkspaceSettleService()?.noteInput(id, data);
       const segments = segmentOversize(data);
       let allDelivered = true;
       for (const segment of segments) {
@@ -788,7 +785,6 @@ export function registerPTYHandlers(
       }
       // Interrupt edge — same reasoning as the daemon branch above.
       ptyBridge.noteInterruptInput(id, data);
-      getWorkspaceSettleService()?.noteInput(id, data);
       const segments = segmentOversize(data);
       for (const segment of segments) {
         ptyManager.write(id, sanitizePtyText(segment));

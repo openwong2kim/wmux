@@ -768,6 +768,9 @@ export class DaemonSessionManager extends EventEmitter {
     bridge.on('fenceInput', (payload) => {
       this.emit('session:fenceInput', payload);
     });
+    bridge.on('typedInput', (payload) => {
+      this.emit('session:typedInput', payload);
+    });
 
     // OSC 133 shell integration markers — daemon-side parsing populates
     // PromptEventLog (canonical, byte-offset indexed); this re-emit teases

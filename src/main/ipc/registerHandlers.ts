@@ -163,7 +163,7 @@ export function registerAllHandlers(
 ): () => void {
   const cleanupPty = registerPTYHandlers(ptyManager, ptyBridge, daemonClient, getWindow);
   const cleanupUsageLimit = registerUsageLimitHandlers(daemonClient, getWindow);
-  const cleanupWorkspaceSettle = registerWorkspaceSettle(getWindow);
+  const cleanupWorkspaceSettle = registerWorkspaceSettle(getWindow, { daemonClient, ptyManager });
   // session/scrollback handlers: installed elsewhere (module-load in
   // main/index.ts) and intentionally NOT in this swap cycle. See the
   // import-block note above for the race rationale.

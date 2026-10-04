@@ -6260,6 +6260,12 @@ function wireEvents(
     approvalRegistry?.noteFenceInput(payload.sessionId);
   });
 
+  // Someone typed into a pane, by any path (desktop, phone/web, MCP, A2A).
+  // Main's workspace settle reads it as activity; throttled in the bridge.
+  sessionManager.on('session:typedInput', (payload: { sessionId: string }) => {
+    pipeServer.broadcast({ type: 'input.typed', sessionId: payload.sessionId, data: null });
+  });
+
   sessionManager.on('session:answered', (payload: { sessionId: string; reason?: 'input' | 'screen-cleared' }) => {
     awaitingVerifier.forget(payload.sessionId);
     // The dialog is closed, so its terminal_prompt record is done too (a record

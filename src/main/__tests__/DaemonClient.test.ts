@@ -797,6 +797,32 @@ describe('DaemonClient', () => {
       await new Promise<void>(resolve => server.close(() => resolve()));
     });
 
+    it('should emit session:input from an input.typed daemon broadcast', async () => {
+      const pipeName = testPipeName('evtyped');
+      const sockets = new Set<net.Socket>();
+      const server = net.createServer((socket) => {
+        sockets.add(socket);
+        socket.on('close', () => sockets.delete(socket));
+        socket.setEncoding('utf8');
+        socket.on('data', () => { /* accept all; no RPC handling needed */ });
+      });
+      await new Promise<void>((resolve, reject) => {
+        server.on('error', reject);
+        server.listen(pipeName, () => resolve());
+      });
+      client = new DaemonClient(pipeName, AUTH_TOKEN);
+      await client.connect();
+      const seen: Array<{ sessionId: string }> = [];
+      client.on('session:input', (payload: { sessionId: string }) => seen.push(payload));
+      await new Promise(r => setTimeout(r, 100));
+      for (const socket of sockets) socket.write(JSON.stringify({ type: 'input.typed', sessionId: 'sess-typed', data: null }) + '\n');
+      await new Promise(r => setTimeout(r, 200));
+      expect(seen).toEqual([{ sessionId: 'sess-typed' }]);
+      await client.disconnect();
+      sockets.forEach(s => s.destroy());
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    });
+
     it('should emit disconnected when daemon goes away', async () => {
       const pipeName = testPipeName('ev2');
       mockServer = createMockDaemonServer(pipeName, AUTH_TOKEN, {});

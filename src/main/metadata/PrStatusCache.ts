@@ -36,6 +36,8 @@ const MAX_ENTRIES = 256;
 
 interface CacheEntry {
   value: PrStatus | null;
+  /** The last fetch failed (network, auth, timeout) rather than finding no PR. */
+  failed?: boolean;
   fetchedAt: number;
   /** In-flight fetch, shared by concurrent callers within the same window. */
   pending: Promise<PrStatus | null> | null;
@@ -116,12 +118,12 @@ export class PrStatusCache {
     }
 
     const pending = this.fetch(cwd)
-      .then((value) => {
-        this.cache.set(key, { value, fetchedAt: this.now(), pending: null });
+      .then(({ value, failed }) => {
+        this.cache.set(key, { value, failed, fetchedAt: this.now(), pending: null });
         return value;
       })
       .catch(() => {
-        this.cache.set(key, { value: null, fetchedAt: this.now(), pending: null });
+        this.cache.set(key, { value: null, failed: true, fetchedAt: this.now(), pending: null });
         return null;
       });
     this.cache.set(key, {
@@ -131,6 +133,18 @@ export class PrStatusCache {
     });
     this.evictIfNeeded();
     return pending;
+  }
+
+  /**
+   * `get` plus whether the null it may return is a failed lookup (gh missing,
+   * network, auth) rather than a branch with no PR. A caller that tracks PR
+   * transitions keeps its last observation on `failed`.
+   */
+  async observe(cwd: string, branch: string): Promise<{ pr: PrStatus | null; failed: boolean }> {
+    const pr = await this.get(cwd, branch);
+    if (pr) return { pr, failed: false };
+    const gone = this.ghMissingAt !== null && this.now() - this.ghMissingAt < TTL_MS;
+    return { pr: null, failed: gone || this.cache.get(cacheKey(cwd, branch))?.failed === true };
   }
 
   /** Drop a single cache entry (used when the branch changes so the next poll refetches). */
@@ -150,7 +164,7 @@ export class PrStatusCache {
     }
   }
 
-  private async fetch(cwd: string): Promise<PrStatus | null> {
+  private async fetch(cwd: string): Promise<{ value: PrStatus | null; failed: boolean }> {
     try {
       const { stdout } = await this.exec(
         process.platform === 'win32' ? 'gh.exe' : 'gh',
@@ -166,15 +180,18 @@ export class PrStatusCache {
         },
       );
       this.ghMissingAt = null;
-      return mapGhPrView(JSON.parse(stdout) as GhPrViewJson);
+      return { value: mapGhPrView(JSON.parse(stdout) as GhPrViewJson), failed: false };
     } catch (err) {
       // ENOENT = gh not installed → silent for TTL_MS, then probe again
       // (gh may be installed while wmux is running).
       if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
         this.ghMissingAt = this.now();
       }
-      // "no pull requests found" exits 1 — also lands here. Quiet absence.
-      return null;
+      // "no pull requests found" exits 1 — also lands here. Quiet absence,
+      // told apart from a failed lookup for callers that track transitions.
+      const e = err as { stderr?: unknown; message?: unknown };
+      const text = `${typeof e?.stderr === 'string' ? e.stderr : ''} ${typeof e?.message === 'string' ? e.message : ''}`;
+      return { value: null, failed: !/no (open )?pull requests? found/i.test(text) };
     }
   }
 }

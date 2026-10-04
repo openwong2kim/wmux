@@ -847,6 +847,9 @@ export interface DaemonEvent {
     // A pane's usage-limit hold changed (shared/usageLimit).
     //   usage.limit.changed → { limit: PaneUsageLimit | null }  (null = cleared)
     | 'usage.limit.changed'
+    // A key (not a mouse report) reached the pane by any input path; at most
+    // once per 30 s per pane. Workspace settle activity. No data.
+    | 'input.typed'
     | 'session.output'
     | 'phone.request'
     | 'agent.event'

@@ -3,12 +3,13 @@ import type { AgentStatus, PrStatus } from '../../../../shared/types';
 import type { WorkspaceMirrorPushPayload } from '../../../../shared/workspaceMirror';
 import type { WorkspaceSettleChange } from '../../../../shared/workspaceSettle';
 import {
+  BOOT_SETTLE_GRACE_MS,
   INPUT_ACTIVITY_THROTTLE_MS,
   parsePersistedWorkspaceSettle,
   WorkspaceSettleService,
   type PersistedWorkspaceSettle,
 } from '../WorkspaceSettleService';
-import { isTerminalReplyOnly, PR_SETTLE_QUIET_MS } from '../workspaceSettleRules';
+import { isPassiveInput, PR_SETTLE_QUIET_MS } from '../workspaceSettleRules';
 
 const DAY = 24 * 60 * 60 * 1000;
 const T0 = Date.UTC(2026, 9, 1, 12);
@@ -106,7 +107,7 @@ describe('WorkspaceSettleService — settle rules', () => {
     const states = t.svc.snapshot().states;
     expect(Object.keys(states)).toEqual(['idle']);
     for (const id of ['pinned', 'hq', 'run', 'ask']) {
-      expect(t.svc.command({ op: 'settle', workspaceId: id })).toEqual({ ok: false, error: 'refused' });
+      expect(t.svc.command({ op: 'settle', workspaceId: id })).toEqual({ ok: false, error: id === 'hq' ? 'hq' : 'refused' });
     }
   });
 
@@ -159,11 +160,11 @@ describe('WorkspaceSettleService — un-settle on activity', () => {
   });
 
   it('tells terminal replies from keys', () => {
-    for (const reply of ['\x1b[I', '\x1b[O', '\x1b[?62;22c', '\x1b[>0;276;0c', '\x1b[0n', '\x1b[3;1R', '\x1b[?2026;2$y', '\x1b[?1u', '\x1bP>|xterm\x1b\\', '\x1b]10;rgb:0/0/0\x07']) {
-      expect(isTerminalReplyOnly(reply)).toBe(true);
+    for (const reply of ['\x1b[<0;10;5M', '\x1b[<64;3;3M\x1b[<65;3;3M', '\x1b[M !!', '\x1b[I', '\x1b[O', '\x1b[?62;22c', '\x1b[>0;276;0c', '\x1b[0n', '\x1b[3;1R', '\x1b[?2026;2$y', '\x1b[?1u', '\x1bP>|xterm\x1b\\', '\x1b]10;rgb:0/0/0\x07']) {
+      expect(isPassiveInput(reply)).toBe(true);
     }
-    for (const key of ['a', '\r', '\x1b', '\x1b[A', '\x1b[13;2u', '\x1b[200~hi\x1b[201~', '\x1b[I x', '\x1b[<0;10;5M']) {
-      expect(isTerminalReplyOnly(key)).toBe(false);
+    for (const key of ['a', '\r', '\x1b', '\x1b[A', '\x1b[13;2u', '\x1b[200~hi\x1b[201~', '\x1b[I x', '\x1b[<0;10;5Mx']) {
+      expect(isPassiveInput(key)).toBe(false);
     }
   });
 
@@ -310,5 +311,125 @@ describe('WorkspaceSettleService — persistence', () => {
     expect(t.saved()?.rows.b).toBeDefined();
     t.svc.noteMirror(mirror([{ id: 'a' }], { restored: true }));
     expect(t.saved()?.rows.b).toBeUndefined();
+  });
+});
+
+describe('WorkspaceSettleService — review follow-ups', () => {
+  it('stays awake after a CI-failure wake instead of re-settling on the next tick', () => {
+    const t = setup();
+    t.svc.noteMirror(mirror([{ id: 'a' }]));
+    t.svc.notePr('a', merged(), undefined);
+    t.advance(4 * DAY);
+    t.svc.tick();
+    expect(t.state('a')?.settled).toBeDefined();
+    t.svc.noteAttention('a');
+    expect(t.state('a')).toBeUndefined();
+    t.advance(60_000);
+    t.svc.tick();
+    t.advance(PR_SETTLE_QUIET_MS);
+    t.svc.tick();
+    expect(t.state('a')).toBeUndefined();
+  });
+
+  it('does not idle-settle a workspace in the tick its long snooze expires, nor after a manual unsnooze', () => {
+    const t = setup();
+    t.svc.noteMirror(mirror([{ id: 'a' }, { id: 'b' }]));
+    t.svc.command({ op: 'snooze', workspaceId: 'a', until: t.now() + 5 * DAY });
+    t.svc.command({ op: 'snooze', workspaceId: 'b', until: t.now() + 6 * DAY });
+    t.advance(5 * DAY);
+    t.svc.tick();
+    expect(t.state('a')).toBeUndefined();
+    t.svc.command({ op: 'unsnooze', workspaceId: 'b' });
+    t.svc.tick();
+    expect(t.state('b')).toBeUndefined();
+  });
+
+  it('shares one awaiting edge across lifecycle and mirror, in either order', () => {
+    for (const order of ['lifecycle-first', 'mirror-first'] as const) {
+      const t = setup();
+      t.svc.noteMirror(mirror([{ id: 'a' }]));
+      t.svc.command({ op: 'snooze', workspaceId: 'a', until: t.now() + DAY });
+      const wakes = () => t.changes.filter((c) => c.kind === 'unsnoozed').length;
+      if (order === 'lifecycle-first') t.svc.noteLifecycle('a', 'agent.awaiting_input');
+      else t.svc.noteMirror(mirror([{ id: 'a', status: 'awaiting_input' }]));
+      expect(wakes()).toBe(1);
+      t.svc.command({ op: 'undo', changeId: t.changes.filter((c) => c.kind === 'unsnoozed').at(-1)!.id });
+      // The same prompt, reported again by either path: no second wake.
+      t.svc.noteLifecycle('a', 'agent.awaiting_input');
+      t.svc.noteMirror(mirror([{ id: 'a', status: 'awaiting_input' }]));
+      expect(wakes()).toBe(1);
+      expect(t.state('a')?.snoozedUntil).toBeDefined();
+    }
+  });
+
+  it('a stale mirror push right after the lifecycle signal does not re-arm the edge', () => {
+    const t = setup();
+    t.svc.noteMirror(mirror([{ id: 'a' }]));
+    t.svc.command({ op: 'snooze', workspaceId: 'a', until: t.now() + DAY });
+    t.svc.noteLifecycle('a', 'agent.awaiting_input');
+    t.svc.command({ op: 'undo', changeId: t.changes.at(-1)!.id });
+    t.advance(300);
+    t.svc.noteMirror(mirror([{ id: 'a' }]));
+    t.svc.noteMirror(mirror([{ id: 'a', status: 'awaiting_input' }]));
+    expect(t.state('a')?.snoozedUntil).toBeDefined();
+  });
+
+  it('after a restart, a prompt already open does not wake a snoozed workspace', () => {
+    const until = T0 + DAY;
+    const t = setup({ load: { version: 1, idleDays: 3, rows: { a: { lastActivityAt: T0, snoozedUntil: until } } } });
+    t.svc.noteMirror(mirror([{ id: 'a', status: 'awaiting_input' }]));
+    expect(t.state('a')?.snoozedUntil).toBe(until);
+    t.svc.noteMirror(mirror([{ id: 'a', status: 'awaiting_input' }]));
+    expect(t.state('a')?.snoozedUntil).toBe(until);
+  });
+
+  it('keeps the last PR across a failed lookup, so a reopen is still seen', () => {
+    const t = setup();
+    t.svc.noteMirror(mirror([{ id: 'a' }]));
+    t.svc.notePr('a', merged(), undefined);
+    t.advance(PR_SETTLE_QUIET_MS);
+    t.svc.tick();
+    expect(t.state('a')?.settled?.reason).toBe('pr');
+    t.svc.notePr('a', undefined, undefined);
+    expect(t.state('a')?.settled).toBeDefined();
+    t.svc.notePr('a', open(), undefined);
+    expect(t.state('a')).toBeUndefined();
+  });
+
+  it('applies a new idle-days value only on the clock tick, never on a mirror push', () => {
+    const t = setup();
+    t.svc.noteMirror(mirror([{ id: 'a' }]));
+    t.advance(DAY + 1000);
+    t.svc.command({ op: 'setIdleDays', days: 1 });
+    t.svc.noteMirror(mirror([{ id: 'a' }]));
+    expect(t.state('a')).toBeUndefined();
+    t.svc.tick();
+    expect(t.state('a')?.settled?.reason).toBe('idle');
+  });
+
+  it('settles nothing automatically in the boot grace', () => {
+    const t = setup({ load: { version: 1, idleDays: 3, rows: { a: { lastActivityAt: T0 - 10 * DAY } } } });
+    t.svc.noteMirror(mirror([{ id: 'a' }]));
+    t.svc.tick();
+    expect(t.state('a')).toBeUndefined();
+    t.advance(BOOT_SETTLE_GRACE_MS);
+    t.svc.tick();
+    expect(t.state('a')?.settled?.reason).toBe('idle');
+  });
+
+  it('refuses the HQ with its own reason and names it in the snapshot', () => {
+    const t = setup({ hqId: () => 'hq' });
+    t.svc.noteMirror(mirror([{ id: 'hq' }]));
+    expect(t.svc.command({ op: 'settle', workspaceId: 'hq' })).toEqual({ ok: false, error: 'hq' });
+    expect(t.svc.command({ op: 'snooze', workspaceId: 'hq', until: t.now() + 1000 })).toEqual({ ok: false, error: 'hq' });
+    expect(t.svc.snapshot().hqWorkspaceId).toBe('hq');
+  });
+
+  it('takes the daemon typed-input signal (no data) as activity', () => {
+    const t = setup();
+    t.svc.noteMirror(mirror([{ id: 'a' }]));
+    t.svc.command({ op: 'settle', workspaceId: 'a' });
+    t.svc.noteInput('pty-a');
+    expect(t.state('a')).toBeUndefined();
   });
 });

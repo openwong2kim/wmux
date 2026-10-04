@@ -1,7 +1,7 @@
 import { ipcMain, BrowserWindow } from 'electron';
 import fs from 'node:fs';
 import { IPC } from '../../../shared/constants';
-import type { AgentStatus, MetadataUpdatePayload } from '../../../shared/types';
+import type { AgentStatus, MetadataUpdatePayload, PrStatus } from '../../../shared/types';
 import { isWindowDisplayed } from '../../window/windowDisplayed';
 import { MetadataCollector } from '../../metadata/MetadataCollector';
 import { prStatusCache } from '../../metadata/PrStatusCache';
@@ -25,6 +25,16 @@ import { ghPrService } from '../../github/GhPrService';
 // that don't wire them.
 let prCiRouter: PrCiRouter | null = null;
 let prReviewRouter: PrReviewRouter | null = null;
+
+/**
+ * Feed one pane's PR observation to the CI router from outside the poll. The
+ * workspace settle host does this while the window is hidden (the poll is
+ * stopped then), so a CI failure still reaches the deck and wakes a snoozed
+ * workspace. The router is edge-triggered per pane, so it never double-emits.
+ */
+export function notePrCiObservation(ptyId: string, pr: PrStatus | null): void {
+  void prCiRouter?.note(ptyId, pr);
+}
 
 // Minimal shape findWorkspaceIdForPty reads from the renderer's workspace.list.
 interface WorkspaceListEntry {

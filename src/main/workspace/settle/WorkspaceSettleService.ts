@@ -28,7 +28,7 @@ import {
   autoSettleReason,
   isFinishedPrKey,
   isPrActivity,
-  isTerminalReplyOnly,
+  isPassiveInput,
   prKeyOf,
   settleBlocked,
   type WorkspaceSettleFacts,
@@ -47,6 +47,12 @@ const MAX_SNOOZE_MS = 366 * DAY_MS;
  *  idle clock only needs to move in steps this size, so the file is not
  *  rewritten for each one. */
 const ACTIVITY_STEP_MS = 30_000;
+/** No automatic settle this soon after the first mirror push: agents are
+ *  still being detected, and a workspace must not flicker into a group. */
+export const BOOT_SETTLE_GRACE_MS = 2 * 60 * 1000;
+/** A mirror push can trail an awaiting_input lifecycle signal; inside this
+ *  window its "not awaiting" is taken as stale, not as the prompt closing. */
+const AWAITING_MIRROR_LAG_MS = 5_000;
 
 export interface PersistedWorkspaceSettle {
   version: 1;
@@ -107,7 +113,14 @@ export class WorkspaceSettleService {
   private idleDays: number;
   private readonly rows: Map<string, WorkspaceSettleRow>;
   private mirror: WorkspaceMirrorPushPayload | null = null;
-  private readonly awaitingBefore = new Map<string, boolean>();
+  /** One edge memory for the awaiting state, shared by the lifecycle and the
+   *  mirror paths, so a repeated signal for the same prompt never wakes twice. */
+  private readonly awaiting = new Map<string, { on: boolean; at: number }>();
+  /** First mirror push: seeds `awaiting` without firing, starts the boot grace. */
+  private firstMirrorAt: number | null = null;
+  /** A new idle-days value, applied by the next tick (typing passes through
+   *  intermediate values). */
+  private pendingIdleDays: number | null = null;
   private readonly inputNotedAt = new Map<string, number>();
   private readonly undo = new Map<string, UndoRecord>();
   private readonly listeners = new Set<Listener>();
@@ -135,7 +148,7 @@ export class WorkspaceSettleService {
       if (row.settled) states[id] = { settled: { ...row.settled } };
       else if (row.snoozedUntil !== undefined) states[id] = { snoozedUntil: row.snoozedUntil };
     }
-    return { states, idleDays: this.idleDays, hqWorkspaceId: this.hqId() };
+    return { states, idleDays: this.pendingIdleDays ?? this.idleDays, hqWorkspaceId: this.hqId() };
   }
 
   /** Workspaces main knows to exist right now (the last mirror push). */
@@ -149,13 +162,11 @@ export class WorkspaceSettleService {
     const now = this.now();
     const changes: WorkspaceSettleChange[] = [];
     const present = new Set(payload.entries.map((e) => e.id));
-    for (const id of present) {
-      const awaiting = this.facts(id).awaiting;
-      // Edge, not level: an awaiting pane that stays awaiting must not wake a
-      // workspace the user re-snoozed with Undo.
-      if (awaiting && !this.awaitingBefore.get(id)) this.attention(id, now, changes);
-      this.awaitingBefore.set(id, awaiting);
-    }
+    // The first push after boot only learns who is already waiting: a prompt
+    // that was open before the restart is not a new reason to wake anything.
+    const seeding = this.firstMirrorAt === null;
+    if (seeding) this.firstMirrorAt = now;
+    for (const id of present) this.noteAwaiting(id, this.facts(id).awaiting, 'mirror', now, changes, seeding);
     // Forget closed workspaces only when the tree came from the saved session;
     // a failed session load must not wipe the persisted state.
     if (payload.sessionRestored === true) {
@@ -165,9 +176,9 @@ export class WorkspaceSettleService {
           this.dirty = true;
         }
       }
-      for (const id of [...this.awaitingBefore.keys()]) if (!present.has(id)) this.awaitingBefore.delete(id);
+      for (const id of [...this.awaiting.keys()]) if (!present.has(id)) this.awaiting.delete(id);
     }
-    this.evaluateAll(now, changes);
+    this.evaluateAll(now, changes, false);
     this.commit(changes, false);
   }
 
@@ -177,13 +188,20 @@ export class WorkspaceSettleService {
     const now = this.now();
     const changes: WorkspaceSettleChange[] = [];
     this.touch(workspaceId, now, changes);
-    if (kind === 'agent.awaiting_input') this.attention(workspaceId, now, changes);
+    if (kind === 'agent.awaiting_input') this.noteAwaiting(workspaceId, true, 'lifecycle', now, changes, false);
+    // A turn boundary closes whatever prompt was open.
+    else if (kind !== 'agent.subagent_stop') this.awaiting.set(workspaceId, { on: false, at: now });
     this.commit(changes, false);
   }
 
-  /** Input reached a PTY. Throttled per PTY before any lookup: this is the keystroke path. */
-  noteInput(ptyId: string, data: string): void {
-    if (isTerminalReplyOnly(data)) return;
+  /**
+   * Input reached a PTY. Throttled per PTY before any lookup: this is the
+   * keystroke path. `data` is filtered here (terminal replies and mouse
+   * reports are not use); the daemon's typed-input signal comes pre-filtered
+   * and passes none.
+   */
+  noteInput(ptyId: string, data?: string): void {
+    if (data !== undefined && isPassiveInput(data)) return;
     const now = this.now();
     if (now - (this.inputNotedAt.get(ptyId) ?? -Infinity) < INPUT_ACTIVITY_THROTTLE_MS) return;
     const entry = this.mirror?.entries.find((e) => e.activePtyId === ptyId || e.ptyIds?.includes(ptyId));
@@ -202,12 +220,17 @@ export class WorkspaceSettleService {
     this.commit(changes, changes.length > 0);
   }
 
-  /** A fresh PR / git observation for the workspace's branch. */
-  notePr(workspaceId: string, pr: PrStatus | null, ahead: number | undefined): void {
+  /**
+   * A fresh PR / git observation for the workspace's branch. `pr` undefined
+   * means the lookup failed (network, auth, gh missing): the last valid PR
+   * observation stands, or a merged PR reopened behind a failed lookup would
+   * be missed. null means the branch has no PR.
+   */
+  notePr(workspaceId: string, pr: PrStatus | null | undefined, ahead: number | undefined): void {
     if (!this.isPresent(workspaceId)) return;
     const now = this.now();
     const row = this.row(workspaceId, now);
-    const nextKey = prKeyOf(pr);
+    const nextKey = pr === undefined ? row.prKey : prKeyOf(pr);
     const changes: WorkspaceSettleChange[] = [];
     if (isPrActivity(row, nextKey, ahead)) this.touch(workspaceId, now, changes);
     const dirty = row.prKey !== nextKey || (ahead !== undefined && row.ahead !== ahead);
@@ -216,10 +239,21 @@ export class WorkspaceSettleService {
     this.commit(changes, dirty);
   }
 
+  /** Whether a PR observation can change anything for this workspace: it can
+   *  settle, or it is snoozed (a CI failure wakes it). */
+  wantsPrObservation(workspaceId: string): boolean {
+    const row = this.rows.get(workspaceId);
+    return row?.snoozedUntil !== undefined || !settleBlocked(this.facts(workspaceId));
+  }
+
   /** Clock tick: snooze expiry and the automatic settle rules. */
   tick(): void {
     const changes: WorkspaceSettleChange[] = [];
-    this.evaluateAll(this.now(), changes);
+    if (this.pendingIdleDays !== null) {
+      this.idleDays = this.pendingIdleDays;
+      this.pendingIdleDays = null;
+    }
+    this.evaluateAll(this.now(), changes, true);
     this.commit(changes, changes.length > 0);
   }
 
@@ -230,7 +264,7 @@ export class WorkspaceSettleService {
       if (typeof cmd.days !== 'number' || !Number.isFinite(cmd.days)) return { ok: false, error: 'invalid' };
       // Applied by the next tick, not here: a field typed digit by digit
       // ("14" passes through 1) must not settle everything on the way.
-      this.idleDays = clampIdleDays(cmd.days);
+      this.pendingIdleDays = clampIdleDays(cmd.days);
       this.commit(changes, true, true);
       return { ok: true, snapshot: this.snapshot() };
     }
@@ -252,6 +286,7 @@ export class WorkspaceSettleService {
     const prev = this.stateOf(row);
     switch (cmd.op) {
       case 'settle':
+        if (facts.hq) return { ok: false, error: 'hq' };
         if (settleBlocked(facts)) return { ok: false, error: 'refused' };
         if (!row.settled) {
           delete row.snoozedUntil;
@@ -264,7 +299,8 @@ export class WorkspaceSettleService {
         break;
       case 'snooze':
         if (typeof cmd.until !== 'number' || !(cmd.until > now) || cmd.until - now > MAX_SNOOZE_MS) return { ok: false, error: 'invalid' };
-        if (facts.pinned || facts.hq) return { ok: false, error: 'refused' };
+        if (facts.hq) return { ok: false, error: 'hq' };
+        if (facts.pinned) return { ok: false, error: 'refused' };
         delete row.settled;
         row.snoozedUntil = cmd.until;
         changes.push(this.change(id, 'snoozed', 'manual', prev, now));
@@ -272,6 +308,7 @@ export class WorkspaceSettleService {
       case 'unsnooze':
         if (row.snoozedUntil !== undefined) {
           delete row.snoozedUntil;
+          this.restartClock(row, now);
           changes.push(this.change(id, 'unsnoozed', 'manual', prev, now));
         }
         break;
@@ -285,7 +322,7 @@ export class WorkspaceSettleService {
   persisted(): PersistedWorkspaceSettle {
     const rows: Record<string, WorkspaceSettleRow> = {};
     for (const [id, row] of this.rows) rows[id] = { ...row };
-    return { version: 1, idleDays: this.idleDays, rows };
+    return { version: 1, idleDays: this.pendingIdleDays ?? this.idleDays, rows };
   }
 
   // ─── internals ────────────────────────────────────────────────────────────
@@ -321,9 +358,15 @@ export class WorkspaceSettleService {
     };
   }
 
-  private evaluateAll(now: number, changes: WorkspaceSettleChange[]): void {
+  /**
+   * `autoSettle` false (mirror pushes) runs everything but the automatic
+   * settle rules, which only the clock tick applies — a pending idle-days
+   * value or a burst of pushes must not settle anything between ticks.
+   */
+  private evaluateAll(now: number, changes: WorkspaceSettleChange[], autoSettle: boolean): void {
     if (!this.mirror) return;
     const idleMs = this.idleDays * DAY_MS;
+    const settling = autoSettle && this.firstMirrorAt !== null && now - this.firstMirrorAt >= BOOT_SETTLE_GRACE_MS;
     for (const { id } of this.mirror.entries) {
       const row = this.row(id, now);
       const facts = this.facts(id);
@@ -332,9 +375,12 @@ export class WorkspaceSettleService {
       if (row.snoozedUntil !== undefined && row.snoozedUntil <= now) {
         const prev = this.stateOf(row);
         delete row.snoozedUntil;
+        // A snooze longer than the idle days must not hand the workspace
+        // straight to the idle rule: it comes back for a full period.
+        this.restartClock(row, now);
         changes.push(this.change(id, 'unsnoozed', 'expired', prev, now));
       }
-      const reason = autoSettleReason(row, facts, now, idleMs);
+      const reason = settling ? autoSettleReason(row, facts, now, idleMs) : null;
       if (reason) {
         const prev = this.stateOf(row);
         row.settled = { at: now, reason };
@@ -356,9 +402,41 @@ export class WorkspaceSettleService {
     }
   }
 
+  /**
+   * The awaiting edge, shared by both paths: it fires attention only on a
+   * false→true transition. `seed` records the level without firing.
+   */
+  private noteAwaiting(
+    id: string,
+    on: boolean,
+    source: 'mirror' | 'lifecycle',
+    now: number,
+    changes: WorkspaceSettleChange[],
+    seed: boolean,
+  ): void {
+    const before = this.awaiting.get(id);
+    if (on) {
+      if (!before?.on && !seed) this.attention(id, now, changes);
+      if (!before?.on || source === 'lifecycle') this.awaiting.set(id, { on: true, at: now });
+      return;
+    }
+    // A mirror push right after the lifecycle signal may not show it yet.
+    if (before?.on && source === 'mirror' && now - before.at < AWAITING_MIRROR_LAG_MS) return;
+    this.awaiting.set(id, { on: false, at: now });
+  }
+
+  /** Restart the idle clock and stop the current finished PR from settling the
+   *  workspace again — the workspace was just handed back to the user. */
+  private restartClock(row: WorkspaceSettleRow, now: number): void {
+    row.lastActivityAt = Math.max(row.lastActivityAt, now);
+    if (isFinishedPrKey(row.prKey)) row.prAckKey = row.prKey;
+    this.dirty = true;
+  }
+
   private attention(id: string, now: number, changes: WorkspaceSettleChange[]): void {
     const row = this.row(id, now);
     const prev = this.stateOf(row);
+    this.restartClock(row, now);
     if (row.snoozedUntil !== undefined) {
       delete row.snoozedUntil;
       changes.push(this.change(id, 'unsnoozed', 'attention', prev, now));
@@ -374,10 +452,7 @@ export class WorkspaceSettleService {
   private unsettle(id: string, row: WorkspaceSettleRow, cause: WorkspaceSettleCause, now: number, changes: WorkspaceSettleChange[]): void {
     const prev = this.stateOf(row);
     delete row.settled;
-    if (cause !== 'exempt') {
-      row.lastActivityAt = Math.max(row.lastActivityAt, now);
-      if (isFinishedPrKey(row.prKey)) row.prAckKey = row.prKey;
-    }
+    if (cause !== 'exempt') this.restartClock(row, now);
     changes.push(this.change(id, 'unsettled', cause, prev, now));
   }
 

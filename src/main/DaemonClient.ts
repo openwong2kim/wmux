@@ -902,6 +902,9 @@ export class DaemonClient extends EventEmitter {
           this.emit('usageLimit:changed', { sessionId: event.sessionId, limit: data?.limit ?? null });
           break;
         }
+        case 'input.typed':
+          this.emit('session:input', { sessionId: event.sessionId });
+          break;
         case 'activity.idle': {
           // #1463 — a daemon that knows the silence came before any turn says so.
           const preTurn = (event.data as { preTurn?: unknown } | null)?.preTurn === true;
