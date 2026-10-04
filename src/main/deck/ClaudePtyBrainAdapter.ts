@@ -416,8 +416,10 @@ export function buildBrainSettingsProfile(opts: {
     // did not start is open, so automation can defer to it.
     // PermissionRequest is a signal only (the bridge writes no decision): it
     // tells main the brain's own permission dialog is on screen, which the
-    // phone's Moa pane must not be able to answer by typing (moaPaneFeed).
-    for (const event of ['Stop', 'SessionStart', 'UserPromptSubmit', 'PermissionRequest'] as const) {
+    // phone's Moa pane must not be able to answer by typing (moaPaneFeed), and
+    // which Moa's chat sends the human to the terminal for. PostToolUse says a
+    // tool ran — the dialog is gone again.
+    for (const event of ['Stop', 'SessionStart', 'UserPromptSubmit', 'PermissionRequest', 'PostToolUse'] as const) {
       // `Stop` runs the bridge in GATE mode: it reads the `hooks.signal`
       // response and exits 2 when the adapter refuses to end the turn. The
       // verdict has to travel on this one round trip — a second, independent

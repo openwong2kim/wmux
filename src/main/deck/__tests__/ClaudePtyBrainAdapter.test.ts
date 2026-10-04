@@ -342,6 +342,16 @@ describe('buildBrainSettingsProfile', () => {
     expect(command).not.toContain('--context');
   });
 
+  it('reports a permission dialog (PermissionRequest) and its end (PostToolUse) without gating', () => {
+    const hooks = profile.hooks as Record<string, Array<{ matcher: string; hooks: Array<{ command: string }> }>>;
+    for (const event of ['PermissionRequest', 'PostToolUse']) {
+      const command = hooks[event][0].hooks[0].command;
+      expect(hooks[event][0].matcher).toBe('');
+      expect(command).toContain('wmux-bridge.mjs');
+      expect(command.endsWith(` ${event}`)).toBe(true);
+    }
+  });
+
   it('backstops each denied tool with a PreToolUse hook that names the tool', () => {
     const pre = profile.hooks as { PreToolUse: Array<{ matcher: string; hooks: Array<{ command: string }> }> };
     const matchers = pre.PreToolUse.map((g) => g.matcher);

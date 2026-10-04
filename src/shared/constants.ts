@@ -366,6 +366,9 @@ export const IPC = {
   DECK_MOA_TRANSCRIPT_SUBSCRIBE: 'deck:moa:transcript:subscribe',
   DECK_MOA_TRANSCRIPT_UNSUBSCRIBE: 'deck:moa:transcript:unsubscribe',
   DECK_MOA_TRANSCRIPT_APPEND: 'deck:moa:transcript:append',
+  //   CODEBLOCK (invoke { srcOffset, n, eventId? }): one code-block body from
+  //   the HQ brain's transcript (the daemon cannot resolve the brain pty).
+  DECK_MOA_TRANSCRIPT_CODEBLOCK: 'deck:moa:transcript:codeblock',
   //   HOOKS_BRIDGE_* — the Claude Code hook bridge (wmux setup-hooks, in-app).
   //   STATUS reports whether the wmux hook entries are installed in
   //   ~/.claude/settings.json; INSTALL performs the same idempotent install as

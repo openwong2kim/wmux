@@ -2490,16 +2490,33 @@ export function registerDeckHandler(
       return moaTranscript.snapshot(typeof before === 'number' ? { before } : undefined);
     }),
   );
+  // Who in the renderer subscribes ('panel', 'notice'); anything else counts
+  // as the panel, the one subscriber older renderers had.
+  const moaTranscriptClient = (raw: unknown): string =>
+    typeof raw === 'string' && /^[a-z]{1,16}$/.test(raw) ? raw : 'panel';
   ipcMain.removeHandler(IPC.DECK_MOA_TRANSCRIPT_SUBSCRIBE);
   ipcMain.handle(
     IPC.DECK_MOA_TRANSCRIPT_SUBSCRIBE,
-    wrapHandler(IPC.DECK_MOA_TRANSCRIPT_SUBSCRIBE, async () => moaTranscript.subscribe()),
+    wrapHandler(IPC.DECK_MOA_TRANSCRIPT_SUBSCRIBE, async (_event: Electron.IpcMainInvokeEvent, client: unknown) => moaTranscript.subscribe(moaTranscriptClient(client))),
   );
   ipcMain.removeHandler(IPC.DECK_MOA_TRANSCRIPT_UNSUBSCRIBE);
   ipcMain.handle(
     IPC.DECK_MOA_TRANSCRIPT_UNSUBSCRIBE,
-    wrapHandler(IPC.DECK_MOA_TRANSCRIPT_UNSUBSCRIBE, async () => {
-      moaTranscript.unsubscribe();
+    wrapHandler(IPC.DECK_MOA_TRANSCRIPT_UNSUBSCRIBE, async (_event: Electron.IpcMainInvokeEvent, client: unknown) => {
+      moaTranscript.unsubscribe(moaTranscriptClient(client));
+    }),
+  );
+  ipcMain.removeHandler(IPC.DECK_MOA_TRANSCRIPT_CODEBLOCK);
+  ipcMain.handle(
+    IPC.DECK_MOA_TRANSCRIPT_CODEBLOCK,
+    wrapHandler(IPC.DECK_MOA_TRANSCRIPT_CODEBLOCK, async (_event: Electron.IpcMainInvokeEvent, args: unknown) => {
+      const a = (args ?? {}) as { srcOffset?: unknown; n?: unknown; eventId?: unknown };
+      if (typeof a.srcOffset !== 'number' || typeof a.n !== 'number') return null;
+      return moaTranscript.codeBlock({
+        srcOffset: a.srcOffset,
+        n: a.n,
+        ...(typeof a.eventId === 'string' ? { eventId: a.eventId } : {}),
+      });
     }),
   );
 
@@ -3520,6 +3537,7 @@ export function registerDeckHandler(
     ipcMain.removeHandler(IPC.DECK_MOA_TRANSCRIPT_SNAPSHOT);
     ipcMain.removeHandler(IPC.DECK_MOA_TRANSCRIPT_SUBSCRIBE);
     ipcMain.removeHandler(IPC.DECK_MOA_TRANSCRIPT_UNSUBSCRIBE);
+    ipcMain.removeHandler(IPC.DECK_MOA_TRANSCRIPT_CODEBLOCK);
     ipcMain.removeHandler(IPC.DECK_HQ_GET);
     ipcMain.removeHandler(IPC.DECK_MOA_GET);
     ipcMain.removeHandler(IPC.DECK_MOA_SET);

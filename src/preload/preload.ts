@@ -821,9 +821,13 @@ const electronAPI = {
           ipcRenderer.invoke(IPC.DECK_MOA_TRANSCRIPT_STATUS) as Promise<import('../shared/transcript/turnEvents').TranscriptStatus>,
         snapshot: (opts?: { before?: number }) =>
           ipcRenderer.invoke(IPC.DECK_MOA_TRANSCRIPT_SNAPSHOT, opts ?? {}) as Promise<import('../shared/transcript/turnEvents').TranscriptPage | null>,
-        subscribe: () =>
-          ipcRenderer.invoke(IPC.DECK_MOA_TRANSCRIPT_SUBSCRIBE) as Promise<import('../shared/transcript/turnEvents').TranscriptStatus>,
-        unsubscribe: () => ipcRenderer.invoke(IPC.DECK_MOA_TRANSCRIPT_UNSUBSCRIBE) as Promise<void>,
+        // `client` names who listens ('panel', 'notice'): appends flow while
+        // any client is subscribed, so one cannot unsubscribe the other.
+        subscribe: (client?: string) =>
+          ipcRenderer.invoke(IPC.DECK_MOA_TRANSCRIPT_SUBSCRIBE, client) as Promise<import('../shared/transcript/turnEvents').TranscriptStatus>,
+        unsubscribe: (client?: string) => ipcRenderer.invoke(IPC.DECK_MOA_TRANSCRIPT_UNSUBSCRIBE, client) as Promise<void>,
+        codeBlock: (args: { srcOffset: number; n: number; eventId?: string }) =>
+          ipcRenderer.invoke(IPC.DECK_MOA_TRANSCRIPT_CODEBLOCK, args) as Promise<{ body: string } | null>,
         onAppend: (callback: (data: import('../shared/transcript/turnEvents').TranscriptAppendData) => void) => {
           const listener = (_e: Electron.IpcRendererEvent, data: import('../shared/transcript/turnEvents').TranscriptAppendData): void => callback(data);
           ipcRenderer.on(IPC.DECK_MOA_TRANSCRIPT_APPEND, listener);

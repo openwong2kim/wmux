@@ -219,6 +219,62 @@ describe('rewritePastedPrompts — the chat shows what was asked, not the pasted
     expect((out[1] as { text: string }).text).toBe(early.text);
     expect(rewritePastedPrompts([early] as never, [])[0]).toEqual(early);
   });
+  it('never takes a prompt sent after the entry (turn A keeps A, an old paste stays old)', () => {
+    const a = user('ua', '<pasted_content id="a">ctx</pasted_content>', 10_000);
+    const out = rewritePastedPrompts([a] as never, [{ at: 9_000, text: 'A' }, { at: 12_000, text: 'B' }]);
+    expect((out[0] as { text: string }).text).toBe('A');
+    // A pasted entry from before any noted prompt is left as recorded.
+    const old = user('uo', '<pasted_content id="o">ctx</pasted_content>', 1_000);
+    expect((rewritePastedPrompts([old] as never, [{ at: 3_000, text: 'later' }])[0] as { text: string }).text).toBe(old.text);
+  });
+  it('uses each prompt once, prefers the one the entry ends with, and stays stable across reads', () => {
+    const p1 = { at: 9_000, text: 'first question' };
+    const p2 = { at: 9_500, text: 'second question' };
+    const assigned = new Map<string, typeof p1>();
+    const e1 = user('e1', 'ctx… first question', 10_000);
+    const e2 = user('e2', '<pasted_content id="x">ctx</pasted_content>', 10_200);
+    const e3 = user('e3', '<pasted_content id="y">ctx</pasted_content>', 10_400);
+    const out = rewritePastedPrompts([e1, e2, e3] as never, [p1, p2], assigned);
+    // e1 ends with p1 even though p2 is later; e2 takes the one left; e3 has none.
+    expect(out.map((e) => (e as { text: string }).text)).toEqual(['first question', 'second question', e3.text]);
+    // A later read of the same entries (an append, a snapshot) gives the same answer.
+    const again = rewritePastedPrompts([e2] as never, [p1, p2], assigned);
+    expect((again[0] as { text: string }).text).toBe('second question');
+  });
+});
+
+describe('a dialog only the terminal shows', () => {
+  it('reads as awaiting_input from the PermissionRequest hint until a tool runs, the turn ends or a prompt starts', () => {
+    transcript(HQ_SESSION, userLine(HQ_SESSION, 'u1', 'hello'));
+    moa.noteSessionId('ws-hq', HQ_SESSION);
+    expect(moa.status().agentStatus).not.toBe('awaiting_input');
+    for (const clear of ['agent.activity', 'agent.stop', 'agent.user_prompt_submit'] as const) {
+      moa.noteHint('ws-hq', { kind: 'agent.awaiting_input', agentSessionId: HQ_SESSION });
+      expect(moa.status()).toMatchObject({ available: true, agentStatus: 'awaiting_input' });
+      moa.noteHint('ws-hq', { kind: clear, agentSessionId: HQ_SESSION });
+      expect(moa.status().agentStatus).not.toBe('awaiting_input');
+    }
+    moa.noteHint('ws-hq', { kind: 'agent.awaiting_input', agentSessionId: HQ_SESSION });
+    moa.notePrompt('ws-hq', 'next question');
+    expect(moa.status().agentStatus).not.toBe('awaiting_input');
+    // Another workspace's dialog is not Moa's.
+    moa.noteHint('ws-other', { kind: 'agent.awaiting_input' });
+    expect(moa.status().agentStatus).not.toBe('awaiting_input');
+  });
+});
+
+describe('subscribers', () => {
+  it('the panel and the reply dot cannot unsubscribe each other', () => {
+    transcript(HQ_SESSION, userLine(HQ_SESSION, 'u1', 'hello'));
+    moa.noteSessionId('ws-hq', HQ_SESSION);
+    moa.subscribe('panel');
+    moa.subscribe('notice');
+    expect(moa.watchCount).toBe(1);
+    moa.unsubscribe('panel');
+    expect(moa.watchCount).toBe(1);
+    moa.unsubscribe('notice');
+    expect(moa.watchCount).toBe(0);
+  });
 });
 
 describe('the remembered prompts', () => {
