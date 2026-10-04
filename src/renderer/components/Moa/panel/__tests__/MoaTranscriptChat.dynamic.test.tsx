@@ -6,7 +6,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import MoaTranscriptChat, { type MoaTranscriptApi } from '../MoaTranscriptChat';
+import MoaTranscriptChat, { tidyMoaUserText, type MoaTranscriptApi } from '../MoaTranscriptChat';
 import type { TranscriptAppendData, TranscriptPage, TurnEvent } from '../../../../../shared/transcript/turnEvents';
 
 vi.mock('../../../../hooks/useT', () => { const t = (key: string) => key; return { useT: () => t }; });
@@ -152,5 +152,17 @@ describe('MoaTranscriptChat — commands', () => {
     await act(async () => input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })));
     expect(onSend).toHaveBeenCalledWith('/clear');
     expect(host.querySelector('[data-moa-chat-pending]')).toBeNull();
+  });
+});
+
+describe('tidyMoaUserText', () => {
+  it('shows text typed after a paste, else one short line instead of the pasted instructions', () => {
+    const out = tidyMoaUserText([
+      { id: '1', kind: 'user_text', text: '<pasted_content id="a">rules</pasted_content>\n\nand also this' },
+      { id: '2', kind: 'user_text', text: '<pasted_content id="b">You are the wmux Orchestrator… (cut)' },
+      { id: '3', kind: 'user_text', text: 'plain' },
+      { id: '4', kind: 'assistant_text', text: '<pasted_content id="c">quoted</pasted_content>' },
+    ], 'Instructions sent to Moa');
+    expect(out.map((e) => e.text)).toEqual(['and also this', 'Instructions sent to Moa', 'plain', '<pasted_content id="c">quoted</pasted_content>']);
   });
 });

@@ -37,7 +37,37 @@ import type {
   TranscriptAppendData,
   TranscriptPage,
   TranscriptStatus,
+  TurnEvent,
 } from '../../shared/transcript/turnEvents';
+
+/** How many recent prompts Moa remembers for the chat view. */
+const PROMPT_MEMORY = 50;
+/** A transcript user entry lands a little after main typed it. */
+const PROMPT_MATCH_SLACK_MS = 5_000;
+
+/**
+ * The terminal brain types each turn as one paste — the context blocks main
+ * builds (rules, policy, decision, active work) with the prompt at the end —
+ * so Claude records the whole wire as the user's message, capped by the
+ * parser. Shown as-is, the chat would display Moa's instructions as if the
+ * operator had typed them. Main knows what was actually asked, so a pasted
+ * user entry is shown as the prompt main sent at that moment.
+ */
+export function rewritePastedPrompts(
+  events: readonly TurnEvent[],
+  prompts: readonly { at: number; text: string }[],
+): TurnEvent[] {
+  if (prompts.length === 0) return [...events];
+  return events.map((e) => {
+    if (e.kind !== 'user_text' || !e.text.includes('<pasted_content')) return e;
+    const at = typeof e.ts === 'number' ? e.ts : Number.POSITIVE_INFINITY;
+    let match: { at: number; text: string } | undefined;
+    for (const p of prompts) {
+      if (p.at <= at + PROMPT_MATCH_SLACK_MS && (!match || p.at > match.at)) match = p;
+    }
+    return match ? { ...e, text: match.text } : e;
+  });
+}
 
 /** The projector's one session key. Never a daemon pty id. */
 const SESSION_KEY = 'moa-hq-brain';
@@ -96,6 +126,8 @@ export class MoaTranscript {
   private subscribedHq: string | null = null;
   /** Whether the projector currently holds the renderer's subscription. */
   private armed = false;
+  /** Prompts sent to the HQ brain this run, oldest first. */
+  private prompts: { at: number; text: string }[] = [];
 
   constructor(deps: MoaTranscriptDeps) {
     this.deps = deps;
@@ -109,7 +141,7 @@ export class MoaTranscript {
       emitAppend: (key, data, clientIds) => {
         if (key !== SESSION_KEY || !clientIds.includes(CLIENT_ID)) return;
         if (this.subscribedHq === null || this.subscribedHq !== this.activeHq()) return;
-        this.deps.emitAppend(data);
+        this.deps.emitAppend({ ...data, events: rewritePastedPrompts(data.events, this.prompts) });
       },
       ...(deps.log ? { log: deps.log } : {}),
       ...(deps.debounceMs !== undefined ? { debounceMs: deps.debounceMs } : {}),
@@ -132,7 +164,16 @@ export class MoaTranscript {
     if (!this.liveBinding()) return null;
     const before = opts?.before;
     const valid = typeof before === 'number' && Number.isFinite(before) && before >= 0;
-    return this.projector.snapshot(SESSION_KEY, valid ? { before: Math.floor(before) } : undefined);
+    const page = this.projector.snapshot(SESSION_KEY, valid ? { before: Math.floor(before) } : undefined);
+    return page ? { ...page, events: rewritePastedPrompts(page.events, this.prompts) } : page;
+  }
+
+  /** The prompt main is about to send to a workspace's brain (the operator's
+   *  words, or an automation's), remembered for the HQ's chat view. */
+  notePrompt(workspaceId: string, text: string, at: number = Date.now()): void {
+    if (workspaceId !== this.activeHq() || !text.trim()) return;
+    this.prompts.push({ at, text });
+    if (this.prompts.length > PROMPT_MEMORY) this.prompts.splice(0, this.prompts.length - PROMPT_MEMORY);
   }
 
   /**

@@ -2657,6 +2657,7 @@ export const en = {
   'moa.panel.chatEmpty': "No conversation yet",
   'moa.panel.chatEmptyHint': "Tell Moa what you want done; it hands the work out and brings back what needs you.",
   'moa.panel.chatStarting': "Moa is starting…",
+  'moa.panel.instructionsSent': "Instructions sent to Moa",
   'moa.panel.offTitle': "Moa is off",
   'moa.panel.offBody': "Turn on Moa in Settings to talk to it here.",
   'moa.panel.openSettings': "Open Settings › Moa",

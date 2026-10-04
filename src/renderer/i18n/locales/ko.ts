@@ -2040,6 +2040,7 @@ export const ko = {
   'moa.panel.chatEmpty': "아직 대화가 없습니다",
   'moa.panel.chatEmptyHint': "원하는 일을 Moa에게 말하세요. 작업을 나눠 맡기고 당신이 볼 것만 가져옵니다.",
   'moa.panel.chatStarting': "Moa를 시작하는 중…",
+  'moa.panel.instructionsSent': "Moa에게 보낸 지시",
   'moa.panel.offTitle': "Moa가 꺼져 있습니다",
   'moa.panel.offBody': "여기서 대화하려면 설정에서 Moa를 켜세요.",
   'moa.panel.openSettings': "설정 › Moa 열기",

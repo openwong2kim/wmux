@@ -25,16 +25,40 @@ export type MoaTranscriptApi = NonNullable<NonNullable<NonNullable<Window['elect
  * An unknown gate state (daemon unreachable) counts as open here: the gate
  * only drives the "use the terminal" hint, and main gates the send itself.
  */
-export function moaTranscriptBridge(ptyId: string, api: MoaTranscriptApi, chat: Partial<ChatBridgeApi> | undefined): ChatBridgeApi {
+/**
+ * The terminal brain types each turn as one paste (Moa's context blocks with
+ * the prompt at the end). Main swaps in the prompt it sent when it remembers
+ * it; a pasted entry it could not match (sent before this app run) shows any
+ * text typed after the paste, else one short line instead of Moa's
+ * instructions.
+ */
+export function tidyMoaUserText<E extends { kind: string; text?: string }>(events: readonly E[], instructionsLabel: string): E[] {
+  return events.map((e) => {
+    if (e.kind !== 'user_text' || typeof e.text !== 'string' || !e.text.includes('<pasted_content')) return e;
+    const close = e.text.lastIndexOf('</pasted_content>');
+    const after = close >= 0 ? e.text.slice(close + '</pasted_content>'.length).trim() : '';
+    return { ...e, text: after || instructionsLabel };
+  });
+}
+
+export function moaTranscriptBridge(
+  ptyId: string,
+  api: MoaTranscriptApi,
+  chat: Partial<ChatBridgeApi> | undefined,
+  instructionsLabel = 'Instructions sent to Moa',
+): ChatBridgeApi {
   return {
     status: () => api.status(),
-    snapshot: (_id, before) => api.snapshot(before === undefined ? undefined : { before }),
+    snapshot: async (_id, before) => {
+      const page = await api.snapshot(before === undefined ? undefined : { before });
+      return page ? { ...page, events: tidyMoaUserText(page.events, instructionsLabel) } : page;
+    },
     subscribe: async () => ({ ok: true, status: await api.subscribe() }),
     unsubscribe: async () => {
       await api.unsubscribe();
       return { ok: true };
     },
-    onAppend: (cb) => api.onAppend((data) => cb(ptyId, data)),
+    onAppend: (cb) => api.onAppend((data) => cb(ptyId, { ...data, events: tidyMoaUserText(data.events, instructionsLabel) })),
     onGate: chat?.onGate ?? (() => () => undefined),
     openGates: async () => (await chat?.openGates?.().catch(() => null)) ?? [],
     codeBlock: (args) => chat?.codeBlock?.(args) ?? Promise.resolve(null),
@@ -63,8 +87,8 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
   const t = useT();
   const source = api ?? window.electronAPI?.deck?.moa?.transcript;
   const bridge = useMemo(
-    () => (source ? moaTranscriptBridge(ptyId, source, window.electronAPI?.chat) : undefined),
-    [ptyId, source],
+    () => (source ? moaTranscriptBridge(ptyId, source, window.electronAPI?.chat, t('moa.panel.instructionsSent')) : undefined),
+    [ptyId, source, t],
   );
   const data = useTranscript(ptyId, !!bridge, bridge);
   // Main's subscription survives a brain swap (it re-pushes the tail with

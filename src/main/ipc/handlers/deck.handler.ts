@@ -1242,6 +1242,7 @@ export function registerDeckHandler(
       const injectedDecision = loadBrainDecision(workspaceId);
       // A human at the composer: no double-check delay — they are waiting on it,
       // and a turn they typed themselves cannot be racing their own TUI input.
+      moaTranscript.notePrompt(workspaceId, text);
       const verdict = await mgr.send(withLoopContext(workspaceId, text), { origin: 'human' });
       settleAmbient(workspaceId, verdict);
       if (verdict.ok && injectedDecision?.status === 'resolved') {
@@ -1614,6 +1615,7 @@ export function registerDeckHandler(
       // read from the renderer's live global, so a vendor switch racing this
       // event cannot relabel a turn the old brain produced.
       emit(workspaceId, { type: 'turn-start', prompt, vendor: vendorForWorkspace(workspaceId) });
+      moaTranscript.notePrompt(workspaceId, prompt);
       if (!runOpts.human) noteHqTurn(workspaceId);
       // Every caller of runTurnForWorkspace is an ambient driver (heartbeat,
       // loop, scheduler, decision resume, startup reconcile) — never a human at

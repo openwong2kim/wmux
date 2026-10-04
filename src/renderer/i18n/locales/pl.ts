@@ -2634,6 +2634,7 @@ export const pl = {
   'moa.panel.chatEmpty': "Brak rozmowy",
   'moa.panel.chatEmptyHint': "Powiedz Moa, co ma być zrobione; rozdzieli pracę i wróci tylko z tym, co wymaga ciebie.",
   'moa.panel.chatStarting': "Moa się uruchamia…",
+  'moa.panel.instructionsSent': "Polecenia wysłane do Moa",
   'moa.panel.offTitle': "Moa jest wyłączony",
   'moa.panel.offBody': "Włącz Moa w Ustawieniach, aby rozmawiać z nim tutaj.",
   'moa.panel.openSettings': "Otwórz Ustawienia › Moa",

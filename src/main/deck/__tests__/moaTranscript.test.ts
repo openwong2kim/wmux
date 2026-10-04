@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { MoaTranscript, MOA_TRANSCRIPT_REASONS } from '../moaTranscript';
+import { MoaTranscript, MOA_TRANSCRIPT_REASONS, rewritePastedPrompts } from '../moaTranscript';
 import type { TranscriptAppendData } from '../../../shared/transcript/turnEvents';
 
 const HQ_SESSION = '920b9112-1111-4222-8333-444455556666';
@@ -195,5 +195,23 @@ describe('MoaTranscript — appends', () => {
     moaOn = false;
     moa.sync();
     expect(moa.watchCount).toBe(0);
+  });
+});
+
+describe('rewritePastedPrompts — the chat shows what was asked, not the pasted wire', () => {
+  const user = (id: string, text: string, ts?: number) => ({ id, kind: 'user_text' as const, text, ...(ts !== undefined ? { ts } : {}) });
+  it('replaces a pasted user entry with the prompt sent just before it', () => {
+    const events = [user('u1', '<pasted_content id="a">rules…</pasted_content>', 10_000), { id: 'a1', kind: 'assistant_text' as const, text: 'hi' }];
+    const out = rewritePastedPrompts(events as never, [{ at: 1_000, text: 'old' }, { at: 9_000, text: 'Say hello' }, { at: 20_000, text: 'later' }]);
+    expect((out[0] as { text: string }).text).toBe('Say hello');
+    expect(out[1]).toBe(events[1]);
+  });
+  it('leaves typed (non-pasted) entries and unmatched pastes alone', () => {
+    const typed = user('u2', 'typed in the terminal', 10_000);
+    const early = user('u3', '<pasted_content id="b">x</pasted_content>', 500);
+    const out = rewritePastedPrompts([typed, early] as never, [{ at: 9_000, text: 'p' }]);
+    expect(out[0]).toBe(typed);
+    expect((out[1] as { text: string }).text).toBe(early.text);
+    expect(rewritePastedPrompts([early] as never, [])[0]).toEqual(early);
   });
 });

@@ -2177,6 +2177,7 @@ export const zh = {
   'moa.panel.chatEmpty': "还没有对话",
   'moa.panel.chatEmptyHint': "告诉 Moa 你想完成什么；它会分派工作，只带回需要你的事。",
   'moa.panel.chatStarting': "Moa 正在启动…",
+  'moa.panel.instructionsSent': "发给 Moa 的指示",
   'moa.panel.offTitle': "Moa 已关闭",
   'moa.panel.offBody': "在设置中开启 Moa，即可在这里与它对话。",
   'moa.panel.openSettings': "打开 设置 › Moa",
