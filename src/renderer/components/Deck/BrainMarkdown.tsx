@@ -78,7 +78,9 @@ function preprocessGithubHtml(source: string): string {
   const flush = () => {
     if (chunk.length === 0) return;
     const text = chunk.join('\n')
-      .replace(/<!--[\s\S]*?(?:-->|$)/g, '')
+      // \x21 is '!': this file is inlined into the web client's page, whose
+      // build refuses a bundle containing a literal comment opener.
+      .replace(/<\x21--[\s\S]*?(?:-->|$)/g, '')
       .replace(/<(script|style)\b[^>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi, '')
       .replace(/<br\s*\/?>/gi, '\n');
     out.push(...text.split('\n'));
