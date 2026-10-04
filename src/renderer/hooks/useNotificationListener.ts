@@ -786,6 +786,11 @@ export function useNotificationListener() {
             state.settleSurfaceTurn(ptyId);
           }
         }
+        // The surface's own branch (Moa's view pointer): the workspace record
+        // above only follows the active pane, and only at the time it arrives.
+        if (typeof rest.gitBranch === 'string') {
+          state.setSurfaceGitBranch(ptyId, rest.gitBranch);
+        }
         // Part A: stamp per-surface agent IDENTITY (name + status) keyed by
         // ptyId so a2a_discover / surface_list / pane_list can label each pane
         // individually. setSurfaceAgent keeps an already-known name when only a

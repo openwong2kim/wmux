@@ -1182,20 +1182,23 @@ describe('the view pointer on a prompt the human typed', () => {
     adapter.dispose();
   });
 
-  it('recognises a long own prompt inside a paste wrapper, but a short one only verbatim', async () => {
+  it('recognises its own prompt when the TUI reports part of it as a split paste', async () => {
     const viewContext = vi.fn(() => LINE);
     const host = makeHost();
     const adapter = makeAdapter(host, { viewContext });
-    const longText = 'Fleet event: worker pane finished its task; check the ledger and report the result to the owner.';
-    const first = collect(adapter.send(longText));
+    const first = collect(adapter.send('Fleet event: worker pane finished; check the ledger and report blocked work.'));
     await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
     const ptyId = host.created[0].id;
-    const wrapped = `<pasted_content id="x">\n${typedPrompt(host)}\n</pasted_content>`;
-    expect(deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId, { payload: { prompt: wrapped } })))
+    // The shape measured on Claude Code 2.1.289: a paste-marked head whose
+    // closing marker falls mid-word ("blo" / "cked").
+    const typed = typedPrompt(host);
+    const cut = typed.indexOf('blocked') + 3;
+    const reported = `\n\n<pasted_content id="bc9f">\n${typed.slice(0, cut)}\n</pasted_content id="bc9f">\n\n${typed.slice(cut)}`;
+    expect(deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId, { payload: { prompt: reported } })))
       .toEqual({ consumed: true });
     deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }));
     await first;
-    // A short automated prompt ("hi") is not "inside" a human's "this".
+    // A short automated prompt is never "inside" a human prompt: exact only.
     const second = collect(adapter.send('hi'));
     await vi.waitFor(() => expect(host.writes.filter((w) => w.data === 'hi').length).toBe(1));
     expect(deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId, { payload: { prompt: 'look at this' } })))

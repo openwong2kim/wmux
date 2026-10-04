@@ -582,14 +582,16 @@ export function flattenPromptForPty(text: string): string {
   return text.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/ {2,}/g, ' ').trim();
 }
 
-/** Below this length our own prompt must come back verbatim to be recognised;
- *  at or above it, inside a wrapper is enough (see isOwnPromptSubmit). */
-const OWN_PROMPT_CONTAINMENT_MIN = 64;
+// The TUI treats a long write as a paste and reports part of it wrapped in
+// these markers, with line breaks around them that can fall mid-word
+// (measured on Claude Code 2.1.289: "…blo\n</pasted_content id=\"bc9f\">\n\ncked…").
+const PASTE_MARKER_RE = /<\/?pasted_content(?:\s[^>]*)?>/g;
 
-/** Whitespace-insensitive form used to recognise our own prompt when Claude
- *  Code reports it back through UserPromptSubmit. */
+/** The form used to recognise our own prompt when Claude Code reports it back
+ *  through UserPromptSubmit: paste markers and ALL whitespace removed, since
+ *  the TUI inserts breaks inside words around a paste. */
 export function normalizeForPromptMatch(text: string): string {
-  return flattenPromptForPty(text).replace(/\s+/g, ' ');
+  return text.replace(PASTE_MARKER_RE, '').replace(/\s+/g, '');
 }
 
 // ─── Adapter ─────────────────────────────────────────────────────────────────
@@ -945,21 +947,17 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
   }
 
   /**
-   * Whether this UserPromptSubmit is the one our pending send() typed. Matched
-   * on the flattened text and consumed on a match, so the human sending the
-   * same words afterwards counts as the human. A long prompt may also match by
-   * containment: the TUI treats a long write as a paste and may wrap it. A
-   * short one must match exactly ("hi" is inside "this"). An older Claude Code
-   * with no `prompt` in the payload cannot be told apart: fall back to "our
-   * turn is open".
+   * Whether this UserPromptSubmit is the one our pending send() typed: equal
+   * once both are normalized (see normalizeForPromptMatch). Consumed on a
+   * match, so the human sending the same words afterwards counts as the
+   * human. An older Claude Code with no `prompt` in the payload cannot be told
+   * apart: fall back to "our turn is open".
    */
   private isOwnPromptSubmit(rawPrompt: string | null): boolean {
     const own = this.ownPromptPending;
     if (rawPrompt === null) return this.turnStop !== null;
     if (own === null) return false;
-    const got = normalizeForPromptMatch(rawPrompt);
-    const match = got === own || (own.length >= OWN_PROMPT_CONTAINMENT_MIN && got.includes(own));
-    if (!match) return false;
+    if (normalizeForPromptMatch(rawPrompt) !== own) return false;
     this.ownPromptPending = null;
     return true;
   }
