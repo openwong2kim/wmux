@@ -158,6 +158,7 @@ import {
 import { ApprovalRegistry } from './approvals/ApprovalRegistry';
 import { WorkspaceFactStore, type WorkspaceFactRowInput } from './approvals/workspaceFacts';
 import { MoaPaneRpc, resolveMoaPane } from './web/moaPane';
+import { MoaPromptSync } from './web/moaPrompt';
 import { parseApprovalResolveRequest } from './approvals/resolveRequest';
 import { GateBroker } from './approvals/GateBroker';
 import { coerceGate } from './approvals/gateConfig';
@@ -453,6 +454,9 @@ let workspaceFactsPublisher: string | null = null;
 // registerRpcHandlers, which holds the session manager it checks against.
 let moaPaneRpc: MoaPaneRpc<ManagedSession> | null = null;
 const currentMoaPane = () => moaPaneRpc?.current() ?? null;
+// #1772 — the Moa pane's own permission dialog as a `terminal_prompt` record
+// (see web/moaPrompt.ts). Built with moaPaneRpc, whose pushes drive it.
+let moaPrompt: MoaPromptSync | null = null;
 
 // #783 — the gate broker holds bridge RPC responses open until a phone answers.
 // Module-scoped for the same reason as the registry: the RPC handler creates
@@ -4379,10 +4383,21 @@ function registerRpcHandlers(
   // server opens that one brain pane's turns, chat and input routes to a
   // paired device for exactly as long as it stands. See web/moaPane.ts.
   if (!moaPaneRpc) {
+    const prompt = new MoaPromptSync({
+      registry: () => approvalRegistry,
+      current: currentMoaPane,
+      resolves: (fact) => !!resolveMoaPane(fact, (sid) => sessionManager.getSession(sid)),
+      log: (level, message) => log(level, message),
+    });
+    moaPrompt = prompt;
+    approvalRegistry?.onEvent((event) => prompt.onApprovalEvent(event));
     moaPaneRpc = new MoaPaneRpc<ManagedSession>({
       isFirstParty: (clientId) => firstPartyOnly(clientId, 'daemon.moa.set'),
       getSession: (id) => sessionManager.getSession(id),
       onChanged: (prev, next, pane) => {
+        // First, and for every push (withdrawals included): the Moa prompt
+        // record follows the dialog, and its expiries are queued right here.
+        prompt.onChanged(next, pane);
         if (!next || !pane) return;
         // The brain's hooks go to main, so none of the hook paths that attach
         // the process watch ever runs for this pane, and a chat send needs the
@@ -4402,6 +4417,20 @@ function registerRpcHandlers(
   }
   const moaRpc = moaPaneRpc;
   pipeServer.onRpc('daemon.moa.set', async (params, ctx) => moaRpc.handle(params, ctx.clientId));
+  // #1772 — the desktop's Moa chat reads and answers the Moa pane's own
+  // permission prompt. First-party only, and like daemon.approvals.* these are
+  // token-only string methods: NOT in the RpcMethod union or
+  // methodCapabilityMap, and main calls them only from its renderer IPC — no
+  // pipe route, MCP tool or CLI verb reaches them.
+  const moaPromptRpc = moaPrompt;
+  pipeServer.onRpc('daemon.moa.prompt', async (_params, ctx) => {
+    if (!firstPartyOnly(ctx.clientId, 'daemon.moa.prompt')) return { ok: false, error: 'daemon.moa.prompt is first-party only' };
+    return { ok: true, prompt: moaPromptRpc?.view() ?? null };
+  });
+  pipeServer.onRpc('daemon.moa.answerPrompt', async (params, ctx) => {
+    if (!firstPartyOnly(ctx.clientId, 'daemon.moa.answerPrompt')) return { ok: false, reason: 'first-party-only' };
+    return moaPromptRpc ? moaPromptRpc.answer(params) : { ok: false, reason: 'not-pending' };
+  });
 
   const readDaemonAgentState = (id: string): {
     agentName: string | null;

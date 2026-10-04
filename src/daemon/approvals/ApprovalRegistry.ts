@@ -1421,13 +1421,34 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
 
   /** One screen read, parsed. Outside the mutation chain: a render can take seconds. */
   private async readActiveDialog(sessionId: string): Promise<DialogRead | null> {
-    let screen: { rows: readonly string[]; mark: PromptScreenMark; cols?: number } | null = null;
+    const screen = await this.readPromptScreenSafely(sessionId);
+    return screen ? this.parseActiveDialog(screen) : null;
+  }
+
+  /**
+   * True only when a fresh read of the pane shows readable rows and no active
+   * dialog on them. An unreadable or blank screen is not evidence: false.
+   * For a caller that learned a dialog closed from something other than the
+   * screen (the Moa pane's main-side flag) and must not expire on that alone.
+   */
+  async dialogGoneFromScreen(sessionId: string): Promise<boolean> {
+    const screen = await this.readPromptScreenSafely(sessionId);
+    if (!screen || !screen.rows.some((row) => row.trim().length > 0)) return false;
+    return this.parseActiveDialog(screen) === null;
+  }
+
+  private async readPromptScreenSafely(
+    sessionId: string,
+  ): Promise<{ rows: readonly string[]; mark: PromptScreenMark; cols?: number } | null> {
     try {
-      screen = (await this.deps.readPromptScreen?.(sessionId)) ?? null;
+      return (await this.deps.readPromptScreen?.(sessionId)) ?? null;
     } catch (err) {
       this.deps.log?.('warn', `[approvals] prompt screen read failed for ${sessionId}: ${String(err)}`);
+      return null;
     }
-    if (!screen) return null;
+  }
+
+  private parseActiveDialog(screen: { rows: readonly string[]; mark: PromptScreenMark; cols?: number }): DialogRead | null {
     const opts = screen.cols ? { cols: screen.cols } : {};
     const parsed = parseTerminalPrompt(screen.rows, opts);
     const geometry = { ...(screen.cols ? { cols: screen.cols } : {}), height: screen.rows.length };
