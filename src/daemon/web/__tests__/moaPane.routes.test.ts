@@ -549,14 +549,38 @@ describe('the Moa pane on the phone routes', () => {
       expect(refused).toEqual(['brain-hq']);
     });
 
-    it('/turns shows the record: a capable caller sees the approval id, an older one the terminal', async () => {
+    it('a device sees Moa-pane records without choices, fingerprint or form — plan mode included', async () => {
+      records.push(
+        prompt(),
+        prompt({ id: 'ap-plan', toolName: 'ExitPlanMode', summary: 'Ship the panel', question: 'Would you like to proceed?',
+          form: { kind: 'plan' } as never, formFingerprint: 'ff01' }),
+      );
+      await start();
+      const h = device('dev-1');
+      const listed = ((await (await fetch(`${base()}/api/approvals`, {
+        headers: { ...h, 'X-Wmux-Client-Caps': 'terminal-prompt-answer, terminal-prompt-decline, terminal-prompt-detail, decision-v2' },
+      })).json()) as { pending: Array<Record<string, unknown>> }).pending;
+      expect(listed.map((r) => r.id)).toEqual(['ap-moa', 'ap-plan']);
+      for (const r of listed) {
+        // The informational card: what Moa wants, nothing to press.
+        expect(r).toMatchObject({ kind: 'terminal_prompt', state: 'pending', sessionId: 'brain-hq' });
+        expect(typeof r.toolName).toBe('string');
+        for (const key of ['choices', 'promptFingerprint', 'question', 'reason', 'form', 'formFingerprint', 'hasDetail']) {
+          expect(r, key).not.toHaveProperty(key);
+        }
+      }
+    });
+
+    it('/turns shows the record as a terminal block, never an approval a phone could press', async () => {
       records.push(prompt());
       moa = { ...HQ, dialog: { fingerprint: 'ab12' } };
       await start();
       const h = device('dev-1');
       const read = async (extra: Record<string, string>) =>
         ((await (await fetch(`${base()}/api/sessions/brain-hq/turns`, { headers: { ...h, ...extra } })).json()) as { chat?: { blocked?: unknown } }).chat?.blocked;
-      expect(await read(caps)).toEqual({ by: 'approval', approvalId: 'ap-moa' });
+      // A device never presses a Moa-pane record (#1786), so even a capable
+      // caller gets the terminal block, not an approval id to tap.
+      expect(await read(caps)).toEqual({ by: 'terminal' });
       expect(await read({})).toEqual({ by: 'terminal' });
       // Answered already: the badge stays, but it points at the terminal.
       records[0] = prompt({ pressedAt: 5 });
@@ -573,7 +597,7 @@ describe('the Moa pane on the phone routes', () => {
       emit('create', prompt());
       emit('create', prompt({ id: 'ap-other', sessionId: 'brain-other' }));
       const blocked = (await (await fetch(`${base()}/api/sessions/brain-hq/turns`, { headers: { ...h, ...caps } })).json()) as { chat?: { blocked?: unknown } };
-      expect(blocked.chat?.blocked).toEqual({ by: 'approval', approvalId: 'ap-moa' });
+      expect(blocked.chat?.blocked).toEqual({ by: 'terminal' });
       const ac = new AbortController();
       const res = await fetch(`${base()}/api/events`, { signal: ac.signal, headers: { ...h, ...caps, Accept: 'text/event-stream' } });
       const reader = (res.body as ReadableStream<Uint8Array>).getReader();
@@ -616,7 +640,7 @@ describe('the Moa pane on the phone routes', () => {
       // No `create` event: the card was raised before this server listened.
       if (viaTurns) {
         const blocked = (await (await fetch(`${base()}/api/sessions/brain-hq/turns`, { headers: { ...h, ...caps } })).json()) as { chat?: { blocked?: unknown } };
-        expect(blocked.chat?.blocked).toEqual({ by: 'approval', approvalId: 'ap-moa' });
+        expect(blocked.chat?.blocked).toEqual({ by: 'terminal' });
       } else {
         expect(await listIds(h)).toEqual(['ap-moa']);
       }

@@ -4544,13 +4544,10 @@ export class WebTerminalServer {
         .find((r) => r.sessionId === sessionId && r.kind === 'terminal_prompt' && !isNativeDecision(r));
       if (pending) {
         this.rememberMoaCard(pending.id);
-        return {
-          by: 'terminal',
-          terminalPrompt: {
-            approvalId: pending.id,
-            answerable: !!pending.promptFingerprint && !!pending.choices?.length && pending.pressedAt === undefined,
-          },
-        };
+        // Never answerable here: this also feeds the chat.blocked broadcast
+        // every device hears, and a device never presses a Moa-pane record
+        // (#1786); the desktop answers through its own RPC.
+        return { by: 'terminal', terminalPrompt: { approvalId: pending.id, answerable: false } };
       }
       if (this.moaDialogUp(sessionId)) return { by: 'terminal' };
     }
@@ -7162,8 +7159,8 @@ export class WebTerminalServer {
       if (this.isBrainApproval(r.sessionId) && this.moaSession(r.sessionId)) this.rememberMoaCard(r.id);
     }
     return this.json(res, 200, {
-      pending: listed.pending.filter(visible).map((r) => approvalWire(r, caps, otherMaxCells(r))),
-      recentlyResolved: listed.recentlyResolved.filter(visible).filter(answeredHere).map((r) => approvalWire(r, caps)),
+      pending: listed.pending.filter(visible).map((r) => approvalWire(this.deviceView(principal, r), caps, otherMaxCells(r))),
+      recentlyResolved: listed.recentlyResolved.filter(visible).filter(answeredHere).map((r) => approvalWire(this.deviceView(principal, r), caps)),
     });
   }
 
@@ -7191,6 +7188,24 @@ export class WebTerminalServer {
    */
   private deviceBarredApproval(sessionId: string): boolean {
     return this.isBrainApproval(sessionId) && !this.moaSession(sessionId);
+  }
+
+  /**
+   * #1772 — the record as this caller may see it. A device never presses a
+   * Moa-pane record (devicePressBarred), so it gets the informational card
+   * only — no choices, fingerprint, question, reason or decision-v2 form,
+   * plan mode included — rather than buttons that always fail.
+   */
+  private deviceView(principal: WebPrincipal, r: ApprovalRequest): ApprovalRequest {
+    if (!this.devicePressBarred(principal, r)) return r;
+    const view: Partial<ApprovalRequest> = { ...r };
+    delete view.choices;
+    delete view.promptFingerprint;
+    delete view.question;
+    delete view.reason;
+    delete view.form;
+    delete view.formFingerprint;
+    return view as ApprovalRequest;
   }
 
   /** A device's `authorize` verdict on the record's pane, re-read at call time. */

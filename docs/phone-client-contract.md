@@ -3230,11 +3230,13 @@ and its `approval` events are on `GET /api/events`.
 parser binds Moa's dialog shapes (a separate change). Today the parser binds
 the `<Tool> command` dialog shape (Bash) only, and Moa's brain cannot run
 Bash, so **Moa's prompts (WebFetch, WebSearch, reads outside its home, …)
-arrive as informational cards**: no `choices`, no `promptFingerprint`. The
-same holds when Moa's transcript is not known yet or a tool input is too
-large to carry. Show them with the existing informational copy, e.g. "Answer
-on the desktop". Whatever the record carries (an ExitPlanMode prompt can
-arrive with `choices`), a device's press is refused and nothing is typed:
+arrive as informational cards**. A device is shown **every** Moa-pane record
+that way, whatever the daemon could bind (an ExitPlanMode prompt included):
+no `choices`, no `promptFingerprint`, no `question` / `reason`, no
+decision-v2 `form` / `formFingerprint`, no `hasDetail` — only `kind`,
+`toolName`, `summary` (and `risk`) — so a client never draws a button that
+always fails. Show them with the existing informational copy, e.g. "Answer
+on the desktop". A press is refused and nothing is typed:
 
 | Request | Response |
 |---|---|
@@ -3250,10 +3252,10 @@ reason:"no-capability"}` without `terminal-prompt-decline`, `403` without the
 input grant. The desktop's Moa chat answers the record; its answer settles
 it for the phone too. While it is up:
 
-- `/turns` reports `chat.blocked` exactly as for any pane's terminal prompt:
-  `{by: "approval", approvalId}` to a capable client while the record is
-  answerable, else `{by: "terminal"}` (also before the record exists); and
-  `chat.blocked` / `chat.unblocked` follow on `/api/events`;
+- `/turns` reports `chat.blocked` as `{by: "terminal"}` — never
+  `{by: "approval", approvalId}`, since a device cannot press it — before
+  and while the record is up; `chat.blocked` / `chat.unblocked` follow on
+  `/api/events`;
 - `POST …/chat/messages` answers `409 {error:"chat-blocked", result:"blocked",
   blockedBy:"terminal", effect:"none"}`, and a send already admitted is
   refused before Enter (`authorization-expired`);
