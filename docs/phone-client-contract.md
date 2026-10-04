@@ -4122,8 +4122,8 @@ fresh launch (`-- '<prompt>'` after the resume flags); an agent that cannot take
 one refuses with `409 resume-prompt-unsupported` (none today). Before anything is
 typed the daemon checks that there is something to continue — Claude: a
 non-empty transcript in Claude's project directory for that cwd (under
-`CLAUDE_CONFIG_DIR` when set); Codex: an interactive rollout whose recorded cwd
-is that cwd — and otherwise answers `409 resume-unavailable` (`effect:"none"`),
+`CLAUDE_CONFIG_DIR` when set); Codex: an interactive Codex CLI rollout (not `codex exec`, not a sub-agent)
+whose recorded cwd is that cwd, newest first within a bounded scan — and otherwise answers `409 resume-unavailable` (`effect:"none"`),
 never launching an agent that would fail. Eligibility is unchanged: a pane that
 already resolves to a conversation (including one whose agent has exited but
 whose binding remains) is still `conversation-exists`, so resume is for a pane

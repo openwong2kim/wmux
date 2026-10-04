@@ -124,29 +124,54 @@ export function findCodexRolloutByCwd(query: CodexCwdQuery): CodexCwdMatch {
   return { ok: true, threadId, transcriptPath: hit.file, cwd: hit.cwd };
 }
 
-/** session_meta reads for a resume check; more than this without a hit reads as "none". */
+/** Full session_meta reads for a resume check; more than this without a hit reads as "none". */
 export const MAX_RESUME_HEAD_READS = 256;
+/** Rollout files a resume check may look at in all (most are skipped from a small first read). */
+export const MAX_RESUME_FILES = 4096;
+const SNIFF_BYTES = 4096;
+
+/** The originator from the first bytes of a rollout, or undefined when it is not there. */
+function sniffOriginator(file: string): string | undefined {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(file, 'r');
+    const buf = Buffer.alloc(SNIFF_BYTES);
+    const n = fs.readSync(fd, buf, 0, SNIFF_BYTES, 0);
+    return /"originator"\s*:\s*"([^"]*)"/.exec(buf.subarray(0, n).toString('utf8'))?.[1];
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
 
 /**
  * Whether `codex resume --last` run in `cwd` has a conversation to continue:
  * any interactive top-level rollout recorded there, with no time window. The
- * walk goes newest first and stops at the first hit; a budget that runs out
- * answers false, so a launch is refused rather than left to fail in the TUI.
+ * walk goes newest first and stops at the first hit. A rollout whose first
+ * bytes name another originator (`codex exec` writes many) is skipped without
+ * a full read; a budget that runs out answers false, so a launch is refused
+ * rather than left to fail in the TUI.
  */
-export function hasCodexRolloutForCwd(cwd: string, env?: Record<string, string>, budget = MAX_RESUME_HEAD_READS): boolean {
+export function hasCodexRolloutForCwd(cwd: string, env?: Record<string, string>, budget = MAX_RESUME_HEAD_READS, maxFiles = MAX_RESUME_FILES): boolean {
   const want = canonicalDir(cwd);
   const newestFirst = (dir: string, pattern: RegExp): string[] => {
     try { return fs.readdirSync(dir).filter((name) => pattern.test(name)).sort().reverse(); } catch { return []; }
   };
   const root = codexSessionRoot(env);
+  let files = 0;
   let reads = 0;
   for (const year of newestFirst(root, /^\d{4}$/)) {
     for (const month of newestFirst(path.join(root, year), /^\d{2}$/)) {
       for (const day of newestFirst(path.join(root, year, month), /^\d{2}$/)) {
         const dir = path.join(root, year, month, day);
         for (const name of newestFirst(dir, ROLLOUT_NAME)) {
+          if (++files > maxFiles) return false;
+          const file = path.join(dir, name);
+          const originator = sniffOriginator(file);
+          if (originator !== undefined && originator !== 'codex-tui') continue;
           if (++reads > budget) return false;
-          const meta = readSessionMeta(path.join(dir, name));
+          const meta = readSessionMeta(file);
           if (!meta || meta.originator !== 'codex-tui' || typeof meta.source !== 'string' || meta.thread_source === 'subagent') continue;
           if (typeof meta.cwd === 'string' && canonicalDir(meta.cwd) === want) return true;
         }

@@ -185,10 +185,13 @@ describe('hasCodexRolloutForCwd', () => {
     expect(hasCodexRolloutForCwd(cwd, env)).toBe(true);
   });
 
-  it('answers false when the read budget runs out before a hit', () => {
+  it('skips other originators without a full read, and answers false when a budget runs out', () => {
     rollout(A, {}, LAUNCH - 86_400_000);
     for (let i = 1; i <= 3; i++) rollout(uuid(i), { originator: 'codex_exec' }, LAUNCH + i * 1_000);
-    expect(hasCodexRolloutForCwd(cwd, env, 3)).toBe(false);
-    expect(hasCodexRolloutForCwd(cwd, env, 4)).toBe(true);
+    expect(hasCodexRolloutForCwd(cwd, env, 1)).toBe(true);
+    expect(hasCodexRolloutForCwd(cwd, env, 1, 3)).toBe(false);
+    for (let i = 4; i <= 5; i++) rollout(uuid(i), { cwd: path.join(cwd, 'other') }, LAUNCH + i * 1_000);
+    expect(hasCodexRolloutForCwd(cwd, env, 2)).toBe(false);
+    expect(hasCodexRolloutForCwd(cwd, env, 3)).toBe(true);
   });
 });
