@@ -10,7 +10,9 @@
 //
 // Lifecycle, all on the registry's own paths:
 //   - a new dialog (none → A, or A → B) notes a record; A → B first expires A
-//     and notes B only once that expiry is through and B is still current;
+//     and notes B only once that expiry is through and B is still current.
+//     Creations run one at a time, and one that finds the dialog closed
+//     while it read the screen checks its own card;
 //   - Moa off, the pane unresolved, or another session expires the old
 //     session's record (`pane-gone`), queued synchronously so an in-flight
 //     creation (which awaits a screen read) is dropped by the sweep;
@@ -100,6 +102,12 @@ export class MoaPromptSync {
   private noted: { sessionId: string; fingerprint: string } | null = null;
   /** Screen-check loops running, keyed by record and the dialog they began under. */
   private readonly checking = new Set<string>();
+  /**
+   * Card creations, one at a time. The registry ignores a note while it is
+   * still reading the screen for the previous one, so a dialog B pushed during
+   * A's read would otherwise never get its card.
+   */
+  private creating: Promise<void> = Promise.resolve();
 
   constructor(private readonly deps: MoaPromptDeps) {}
 
@@ -153,14 +161,47 @@ export class MoaPromptSync {
     const standing = pendingPrompt(registry, target.sessionId);
     if (standing && this.noted?.sessionId === target.sessionId && this.noted.fingerprint === dialog.fingerprint) return;
     const ready = before !== undefined || standing ? this.expire(registry, target.sessionId, 'prompt-gone') : Promise.resolve();
-    void ready.then(async () => {
-      // Moa off, another pane or another dialog since this push: not this
-      // card's to raise any more.
+    this.creating = this.creating
+      .then(() => this.raise(registry, target.sessionId, dialog.fingerprint, note, ready))
+      .catch((err: unknown) => {
+        this.deps.log?.('warn', `[moa] could not raise the Moa prompt on ${target.sessionId}: ${String(err)}`);
+      });
+  }
+
+  /**
+   * One creation step, run after the ones queued before it. Everything is
+   * re-read here, at run time: the push that queued it is old by now.
+   */
+  private async raise(
+    registry: MoaPromptRegistry,
+    sessionId: string,
+    fingerprint: string,
+    note: TerminalPromptNote,
+    ready: Promise<void>,
+  ): Promise<void> {
+    await ready;
+    // Moa off, another pane or another dialog since this push: not this
+    // card's to raise any more.
+    const stillCurrent = (): boolean => {
       const fact = this.deps.current();
-      if (!fact || fact.sessionId !== target.sessionId || fact.dialog?.fingerprint !== target.fingerprint || !this.deps.resolves(fact)) return;
-      this.noted = { sessionId: target.sessionId, fingerprint: dialog.fingerprint };
-      await registry.noteTerminalPrompt(note);
-    });
+      return !!fact && fact.sessionId === sessionId && fact.dialog?.fingerprint === fingerprint && this.deps.resolves(fact);
+    };
+    if (!stillCurrent()) return;
+    // A card an earlier step finished after this push looked: this dialog's
+    // own stays; another dialog's goes first.
+    if (pendingPrompt(registry, sessionId)) {
+      if (this.noted?.sessionId === sessionId && this.noted.fingerprint === fingerprint) return;
+      await this.expire(registry, sessionId, 'prompt-gone');
+      if (!stillCurrent()) return;
+    }
+    this.noted = { sessionId, fingerprint };
+    await registry.noteTerminalPrompt(note);
+    // The dialog closed while the screen was read: the push that said so found
+    // no card to check yet, so the card just made is checked now.
+    const fact = this.deps.current();
+    if (fact && fact.sessionId === sessionId && !fact.dialog && this.deps.resolves(fact)) {
+      void this.confirmGone(sessionId, MOA_PROMPT_GONE_CHECKS);
+    }
   }
 
   /** A registry event: a press on the Moa pane's record looks at the screen. */

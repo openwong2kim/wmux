@@ -304,6 +304,40 @@ describe('MoaPromptSync — the record follows main\'s dialog', () => {
     expect(h.events.filter((e) => e.type === 'create')).toHaveLength(0);
   });
 
+  it('the dialog closes while the creation reads the screen → the card it makes is checked and expires', async () => {
+    const h = harness();
+    h.duringRead.fn = () => {
+      // This read still shows the dialog; every later one shows it gone.
+      h.duringRead.fn = () => { h.rows = IDLE; };
+      h.push(noDialog());
+    };
+    h.push(withDialog());
+    await flush();
+    expect(pending(h)).toHaveLength(0);
+    expect(h.events.filter((e) => e.type === 'create')).toHaveLength(1);
+    expect(h.events.filter((e) => e.type === 'expire')).toHaveLength(1);
+    expect(h.sync.view()).toBeNull();
+  });
+
+  it('A replaced by B while A\'s creation reads the screen → B gets the card', async () => {
+    const h = harness();
+    const dist = DIALOG.map((r) => r.replace(/build\/cache/g, 'dist'));
+    h.duringRead.fn = () => {
+      h.duringRead.fn = null;
+      h.rows = dist;
+      h.push(withDialog('bb22', { toolInput: { command: 'rm -rf dist', description: 'Remove the build cache' }, toolUseId: 'toolu_2' }));
+    };
+    h.push(withDialog('aa11'));
+    await flush();
+    const records = pending(h);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ sessionId: SID, kind: 'terminal_prompt', summary: 'rm -rf dist' });
+    expect(h.events.filter((e) => e.type === 'create')).toHaveLength(1);
+    // Not asserted: B's card comes out unanswerable here (fail-closed). A's
+    // PermissionRequest evidence outlives A, which never became a record, so
+    // B's is not the pane's sole evidence.
+  });
+
   it('a push carrying no pane for another brain never raises a card there', async () => {
     const h = harness();
     h.resolves = false;
