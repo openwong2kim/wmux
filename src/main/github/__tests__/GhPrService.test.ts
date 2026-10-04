@@ -216,6 +216,37 @@ describe('GhPrService — 게이트', () => {
     expect(calls.map((c) => c.args[0])).toEqual(['--version', 'auth']);
   });
 
+  it('signed in means signed in to the remote host: auth status asks for that host only', async () => {
+    const { svc, calls } = makeService((args) =>
+      args[0] === 'auth' && args[3] === 'git.example.com' ? new Error('not logged in to git.example.com') : { stdout: 'ok' },
+    );
+    expect((await svc.gate('D:/r', 'github.com')).ok).toBe(true);
+    expect(calls.find((c) => c.args[0] === 'auth')?.args).toEqual(['auth', 'status', '--hostname', 'github.com']);
+    // Another host failing does not sign github.com out, and vice versa.
+    expect(await svc.gate('D:/r', 'git.example.com')).toMatchObject({ ok: false, reason: 'unauthenticated' });
+    expect((await svc.gate('D:/r', 'github.com')).ok).toBe(true);
+  });
+
+  it('a refresh shares one forced probe across the auth check and every list read', async () => {
+    const nowRef = { t: 0 };
+    const { svc, calls } = makeService(() => ({ stdout: 'ok' }), nowRef);
+    await svc.gate('D:/r', 'github.com');
+    const authCalls = () => calls.filter((c) => c.args[0] === 'auth').length;
+    expect(authCalls()).toBe(1);
+    // Concurrent forced reads: one probe.
+    nowRef.t = 10_000;
+    await Promise.all([svc.gate('D:/a', 'github.com', true), svc.gate('D:/b', 'github.com', true), svc.gate('D:/c', 'github.com', true)]);
+    expect(authCalls()).toBe(2);
+    // Back-to-back forced reads within the reuse window: still that one.
+    nowRef.t += 1_000;
+    await svc.gate('D:/d', 'github.com', true);
+    expect(authCalls()).toBe(2);
+    // A Check again later probes again.
+    nowRef.t += 5_000;
+    await svc.gate('D:/e', 'github.com', true);
+    expect(authCalls()).toBe(3);
+  });
+
   it('버전 OK + auth 실패 → unauthenticated', async () => {
     const { svc } = makeService((args) =>
       args[0] === '--version' ? { stdout: 'gh version 2' } : new Error('not logged in'),

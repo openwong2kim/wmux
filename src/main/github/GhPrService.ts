@@ -38,6 +38,9 @@ const GH_MAX_BUFFER = 16 * 1024 * 1024;
 const GATE_TTL_MS = 5 * 60 * 1000;
 /** How long `gh auth status` is believed. */
 const AUTH_TTL_MS = 60 * 1000;
+/** A forced probe (Check again, refresh) answered this recently is reused: one
+ *  refresh asks for the gate from the auth check and from every list read. */
+const FORCED_REUSE_MS = 3_000;
 
 // 캐시 키 — 파일시스템 대소문자 정책 반영(Codex P3). POSIX(case-sensitive)는
 // /src/Foo와 /src/foo가 서로 다른 repo다 — 소문자화하면 캐시가 섞인다.
@@ -263,8 +266,10 @@ export class GhPrService implements PrProvider {
   private ghMissingAt: number | null = null;
   /** When `gh --version` last succeeded. */
   private ghFoundAt: number | null = null;
-  /** `gh auth status` result and when it was read. */
-  private authAt: { ok: boolean; at: number } | null = null;
+  /** `gh auth status --hostname <host>` per host: the result and when it was read. */
+  private authAt = new Map<string, { ok: boolean; at: number }>();
+  /** The auth probe running per host, shared by every caller meanwhile. */
+  private authPending = new Map<string, Promise<boolean>>();
 
   constructor(
     private now: () => number = Date.now,
@@ -281,10 +286,13 @@ export class GhPrService implements PrProvider {
     });
   }
 
-  // host 인자는 미사용 — gh는 github.com 인증이 곧 게이트(PrProvider 계약 참조).
-  // Each probe is TTL-cached so a page full of repos costs one `gh --version`
-  // and one `gh auth status`; `force` (Check again) re-probes both.
-  async gate(repoPath: string, _host?: string, force = false): Promise<PrGate> {
+  // Signed in means signed in to the remote's host (`--hostname`, github.com by
+  // default), the same check the connect flow polls; another host's state
+  // does not count. Each probe is TTL-cached so a page full of repos costs one
+  // `gh --version` and one `gh auth status`; `force` (Check again) re-probes
+  // both, and concurrent or back-to-back forced reads share one probe.
+  async gate(repoPath: string, host?: string, force = false): Promise<PrGate> {
+    const authHost = host || 'github.com';
     const now = this.now();
     const missing = { ok: false as const, reason: 'cli-missing' as const, message: 'GitHub CLI (gh) is not installed' };
     if (!force && this.ghMissingAt !== null && now - this.ghMissingAt < GATE_TTL_MS) return missing;
@@ -299,16 +307,10 @@ export class GhPrService implements PrProvider {
         return missing;
       }
     }
-    if (force || this.authAt === null || now - this.authAt.at >= AUTH_TTL_MS) {
-      let ok = true;
-      try {
-        await this.gh(['auth', 'status'], repoPath);
-      } catch {
-        ok = false;
-      }
-      this.authAt = { ok, at: this.now() };
-    }
-    if (!this.authAt.ok) {
+    const auth = this.authAt.get(authHost);
+    const fresh = !!auth && now - auth.at < (force ? FORCED_REUSE_MS : AUTH_TTL_MS);
+    const ok = fresh ? auth.ok : await this.probeAuth(repoPath, authHost);
+    if (!ok) {
       return {
         ok: false,
         reason: 'unauthenticated',
@@ -316,6 +318,20 @@ export class GhPrService implements PrProvider {
       };
     }
     return { ok: true };
+  }
+
+  private probeAuth(repoPath: string, host: string): Promise<boolean> {
+    const running = this.authPending.get(host);
+    if (running) return running;
+    const probe = this.gh(['auth', 'status', '--hostname', host], repoPath)
+      .then(() => true, () => false)
+      .then((ok) => {
+        this.authAt.set(host, { ok, at: this.now() });
+        this.authPending.delete(host);
+        return ok;
+      });
+    this.authPending.set(host, probe);
+    return probe;
   }
 
   // force=true: 수동 새로고침 — TTL 캐시를 건너뛰고 즉시 gh를 호출한다(Codex P2).

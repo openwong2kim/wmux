@@ -33,6 +33,8 @@ export const CODE_WAIT_MS = 20_000;
 /** How long gh may finish writing its config after success before it is ended. */
 export const EXIT_GRACE_MS = 5_000;
 const STATUS_TIMEOUT_MS = 10_000;
+/** The wait before re-reading the status once after gh exited cleanly. */
+export const EXIT_RETRY_MS = 1_500;
 /** Output kept for parsing; gh prints a few lines. */
 const OUTPUT_CAP = 16 * 1024;
 
@@ -58,12 +60,17 @@ export interface GhLoginDeps {
   cwd: () => string;
 }
 
+/** A browser command that opens nothing, so gh never opens one itself (the
+ *  dialog's button does). gh splits it shell-style and appends the URL; on
+ *  Windows backslashes would be eaten, so cmd is named bare. */
+export const GH_NOOP_BROWSER = { posix: 'true', win32: 'cmd /d /c exit 0' } as const;
+
 /** The env for `gh auth login`: the usual gh env, but prompts allowed (login
- *  needs them) and, on POSIX, a no-op browser so gh never opens one itself. */
+ *  needs them) and a no-op browser. */
 export function ghLoginEnv(platform: NodeJS.Platform = process.platform): NodeJS.ProcessEnv {
   const env = ghIssueEnv();
   delete env.GH_PROMPT_DISABLED;
-  if (platform !== 'win32') env.GH_BROWSER = 'true';
+  env.GH_BROWSER = platform === 'win32' ? GH_NOOP_BROWSER.win32 : GH_NOOP_BROWSER.posix;
   return env;
 }
 
@@ -160,7 +167,11 @@ export class GhLogin {
       if (this.run === run) this.run = null;
       return this.spawnFailure(spawned.err);
     }
-    if (this.run !== run) return { ok: true }; // cancelled while spawning
+    if (this.run !== run) {
+      // Cancelled while spawning: the kill then had no process to end yet.
+      try { child.kill(); } catch { /* already gone */ }
+      return { ok: true };
+    }
 
     const onData = (chunk: Buffer | string) => this.onOutput(run, String(chunk));
     child.stdout?.on('data', onData);
@@ -221,14 +232,18 @@ export class GhLogin {
   private onExit(run: Run, code: number | null): void {
     if (this.run !== run || run.finished) return;
     if (code === 0) {
-      void this.poll(run, true);
+      // A status read right after gh exits can miss the config it just wrote:
+      // one retry before calling it a failure.
+      void this.poll(run, 'retry');
       return;
     }
     this.fail(run, tailOf(run.output) || `gh exited with code ${code ?? 'unknown'}`);
   }
 
-  /** One `gh auth status`; `last` means gh has exited, so a miss is a failure. */
-  private async poll(run: Run, last = false): Promise<void> {
+  /** One `gh auth status`. After gh has exited, a miss is retried once
+   *  (`retry`) and then a failure (`last`). Success counts only once the code
+   *  was shown: a sign-in this page did not see start is not this one. */
+  private async poll(run: Run, after: false | 'retry' | 'last' = false): Promise<void> {
     if (this.run !== run || run.finished || run.polling) return;
     run.polling = true;
     let ok = false;
@@ -245,14 +260,18 @@ export class GhLogin {
     }
     run.polling = false;
     if (this.run !== run || run.finished) return;
-    if (ok) {
+    if (ok && run.code) {
       run.finished = true;
       this.end(run, false);
       void this.deps.regate().catch(() => undefined);
       this.emit({ kind: 'done' });
       return;
     }
-    if (last) this.fail(run, tailOf(run.output) || 'gh exited before the sign-in finished');
+    if (after === 'retry') {
+      run.timers.push(setTimeout(() => void this.poll(run, 'last'), EXIT_RETRY_MS));
+      return;
+    }
+    if (after === 'last') this.fail(run, tailOf(run.output) || 'gh exited before the sign-in finished');
   }
 
   private fail(run: Run, message: string): void {

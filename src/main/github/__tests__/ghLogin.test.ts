@@ -4,7 +4,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { GhLogin, ghLoginEnv, CODE_WAIT_MS, EXIT_GRACE_MS, POLL_MS, type GhLoginDeps, type LoginChild } from '../ghLogin';
+import { GhLogin, ghLoginEnv, CODE_WAIT_MS, EXIT_GRACE_MS, EXIT_RETRY_MS, POLL_MS, type GhLoginDeps, type LoginChild } from '../ghLogin';
 import { GH_DEVICE_URL, GH_LOGIN_TIMEOUT_MS, type GhLoginEvent } from '../../../shared/ghDeviceLogin';
 
 class FakeChild extends EventEmitter {
@@ -14,7 +14,10 @@ class FakeChild extends EventEmitter {
   stderr = new PassThrough();
   stdin = new PassThrough();
   written = '';
+  /** Like a real child, there is nothing to kill before it has spawned. */
+  spawned = false;
   kill = vi.fn(() => {
+    if (!this.spawned) return false;
     if (this.exitCode === null) { this.exitCode = 143; this.emit('exit', null, 'SIGTERM'); }
     return true;
   });
@@ -32,7 +35,11 @@ function setup(opts: { spawnError?: NodeJS.ErrnoException; platform?: NodeJS.Pla
   const spawn = vi.fn((_cmd: string, _args: string[], _o: unknown) => {
     const c = new FakeChild();
     children.push(c);
-    queueMicrotask(() => (opts.spawnError ? c.emit('error', opts.spawnError) : c.emit('spawn')));
+    queueMicrotask(() => {
+      if (opts.spawnError) { c.emit('error', opts.spawnError); return; }
+      c.spawned = true;
+      c.emit('spawn');
+    });
     return c as unknown as LoginChild;
   });
   const exec = vi.fn(async () => {
@@ -64,11 +71,46 @@ describe('GhLogin', () => {
     expect(o.stdio).toEqual(['pipe', 'pipe', 'pipe']);
   });
 
-  it('uses gh.exe on Windows and leaves the browser setting alone', async () => {
+  it('uses gh.exe on Windows with a no-op browser there too (named bare: gh eats backslashes)', async () => {
     const s = setup({ platform: 'win32' });
     await s.login.start();
     expect(s.spawn.mock.calls[0][0]).toBe('gh.exe');
-    expect(ghLoginEnv('win32').GH_BROWSER).toBeUndefined();
+    expect(ghLoginEnv('win32').GH_BROWSER).toBe('cmd /d /c exit 0');
+    expect(ghLoginEnv('win32').GH_BROWSER).not.toContain('\\');
+  });
+
+  it('a cancel while gh is still spawning kills it once it has spawned', async () => {
+    const s = setup();
+    const started = s.login.start();
+    s.login.cancel();
+    expect(await started).toEqual({ ok: true });
+    expect(s.children[0].kill).toHaveBeenCalled();
+    expect(s.children[0].exitCode).not.toBeNull();
+    expect(s.login.running).toBe(false);
+  });
+
+  it('a sign-in this run never showed a code for does not count as done', async () => {
+    const s = setup();
+    await s.login.start();
+    s.setStatus(true);
+    s.children[0].exit(0);
+    await vi.advanceTimersByTimeAsync(EXIT_RETRY_MS + 10);
+    expect(s.events.some((e) => e.kind === 'done')).toBe(false);
+    expect(s.events.at(-1)).toMatchObject({ kind: 'failed', fallback: true });
+  });
+
+  it('gh exiting 0 then one status read missing the new config: retried once, then done', async () => {
+    const s = setup();
+    await s.login.start();
+    const c = s.children[0];
+    c.out('! First copy your one-time code: ABCD-1234\n');
+    await tick();
+    c.exit(0);
+    await tick();
+    expect(s.events.some((e) => e.kind === 'failed' || e.kind === 'done')).toBe(false);
+    s.setStatus(true);
+    await vi.advanceTimersByTimeAsync(EXIT_RETRY_MS);
+    expect(s.events.at(-1)).toEqual({ kind: 'done' });
   });
 
   it('emits the code once, even split across coloured chunks', async () => {
