@@ -21,7 +21,7 @@ function ws(id: string): Workspace {
   };
   return { id, name: id, rootPane, activePaneId: `${id}-p` };
 }
-function seed(states: WorkspaceSettleMap, pinned: string[] = []) {
+function seed(states: WorkspaceSettleMap, pinned: string[] = [], hqWorkspaceId: string | null = null) {
   act(() => useStore.setState({
     workspaces: ['a', 'b', 'c', 'd'].map(ws),
     activeWorkspaceId: '',
@@ -32,7 +32,7 @@ function seed(states: WorkspaceSettleMap, pinned: string[] = []) {
     missionByPaneGroup: {},
     fanoutLineage: {},
     fanoutSpawnOwner: {},
-    workspaceSettle: { states, idleDays: 3, hqWorkspaceId: null },
+    workspaceSettle: { states, idleDays: 3, hqWorkspaceId },
     workspaceSettleGroupsOpen: {},
   } as never));
 }
@@ -134,6 +134,41 @@ describe('Row menu verbs', () => {
     openMenu('b');
     expect(action('settle')!.disabled).toBe(true);
     expect(action('snooze')).toBeNull();
+  });
+
+  it('keeps the HQ workspace in view: Settle disabled with its reason, no Snooze', () => {
+    seed({}, [], 'a');
+    act(() => root.render(<Sidebar />));
+    openMenu('a');
+    expect(action('settle')!.disabled).toBe(true);
+    expect(action('settle')!.title).toBe('The HQ workspace always stays in view');
+    expect(action('snooze')).toBeNull();
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); });
+    openMenu('b');
+    expect(action('settle')!.disabled).toBe(false);
+    expect(action('snooze')).not.toBeNull();
+  });
+
+  it('opens the Snooze submenu from the keyboard and folds it on Escape, keeping the menu', () => {
+    seed({});
+    act(() => root.render(<Sidebar />));
+    openMenu('a');
+    const trigger = action('snooze')!;
+    expect(trigger.getAttribute('aria-haspopup')).toBe('menu');
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    act(() => { trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); });
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    const first = document.querySelector('[data-snooze-preset="1h"]') as HTMLButtonElement;
+    expect(document.activeElement).toBe(first);
+    act(() => { first.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })); });
+    expect(document.activeElement?.getAttribute('data-snooze-preset')).toBe('tonight');
+
+    act(() => { document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); });
+    expect(document.querySelector('[data-snooze-preset]')).toBeNull();
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(trigger);
+    // The context menu itself is still open.
+    expect(action('settle')).not.toBeNull();
   });
 
   it('offers Unsettle / Unsnooze for a grouped workspace', () => {

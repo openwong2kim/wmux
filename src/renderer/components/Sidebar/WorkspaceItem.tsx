@@ -364,6 +364,11 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   const [owOpen, setOwOpen] = useState(false);
   const [colorOpen, setColorOpen] = useState(false);
   const [snoozeOpen, setSnoozeOpen] = useState(false);
+  // Keyboard path into the Snooze submenu: focus its first preset once it
+  // mounts, and do not reopen it when Escape hands focus back to the trigger.
+  const snoozeTriggerRef = useRef<HTMLButtonElement>(null);
+  const snoozeFocusFirst = useRef(false);
+  const snoozeSkipFocusOpen = useRef(false);
   const [folderApps, setFolderApps] = useState<{ id: string; name: string }[]>([]);
   const [closeConfirmPos, setCloseConfirmPos] = useState<CloseConfirmAnchor | null>(null);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
@@ -429,6 +434,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   const snoozedUntil = useStore((s) => s.workspaceSettle.states[workspaceId]?.snoozedUntil ?? 0);
   // Main refuses to settle these (rules (b)/(c)); the item says so up front.
   const settleBlocked = pinned || needsYou || agentStatus === 'running' || agentStatus === 'awaiting_input';
+  // The HQ workspace never settles or snoozes (rule (d)).
+  const isHq = useStore((s) => s.workspaceSettle.hqWorkspaceId === workspaceId);
   // Name first. At rest the row shows the workspace name and the signals that
   // change on their own (status dot, unread, idle, "needs you"); the project
   // badge, the agent count and the shortcut hint are chrome you only look for
@@ -1294,8 +1301,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
             <button
               className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)] disabled:opacity-40 disabled:hover:bg-transparent"
               style={{ color: 'var(--text-main)' }}
-              disabled={settleBlocked}
-              title={settleBlocked ? t('workspaceSettle.settleBlocked') : undefined}
+              disabled={isHq || settleBlocked}
+              title={isHq ? t('workspaceSettle.settleHq') : settleBlocked ? t('workspaceSettle.settleBlocked') : undefined}
               onClick={() => { setMenuPos(null); void sendWorkspaceSettleCommand({ op: 'settle', workspaceId }); }}
               data-workspace-action="settle"
             >
@@ -1311,16 +1318,36 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
             >
               {t('workspaceSettle.unsnooze')}
             </button>
-          ) : !pinned && (
+          ) : !pinned && !isHq && (
             <div
               className="relative"
               onMouseEnter={() => setSnoozeOpen(true)}
               onMouseLeave={() => setSnoozeOpen(false)}
+              onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setSnoozeOpen(false); }}
             >
               <button
+                ref={snoozeTriggerRef}
                 className="w-full flex items-center gap-2 px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
                 style={{ color: 'var(--text-main)' }}
+                aria-haspopup="menu"
+                aria-expanded={snoozeOpen}
                 onClick={() => setSnoozeOpen(true)}
+                onFocus={() => {
+                  if (snoozeSkipFocusOpen.current) snoozeSkipFocusOpen.current = false;
+                  else setSnoozeOpen(true);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape' && snoozeOpen) {
+                    // First Escape folds the submenu; the next one closes the menu.
+                    e.stopPropagation();
+                    setSnoozeOpen(false);
+                    return;
+                  }
+                  if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'ArrowRight') return;
+                  e.preventDefault();
+                  snoozeFocusFirst.current = true;
+                  setSnoozeOpen(true);
+                }}
                 data-workspace-action="snooze"
               >
                 <span>{t('workspaceSettle.snooze')}</span>
@@ -1328,8 +1355,31 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
               </button>
               {snoozeOpen && (
                 <div
+                  ref={(el) => {
+                    if (!el || !snoozeFocusFirst.current) return;
+                    snoozeFocusFirst.current = false;
+                    el.querySelector<HTMLButtonElement>('[data-snooze-preset]')?.focus();
+                  }}
+                  role="menu"
                   className={`absolute top-0 ${menuPos.x > window.innerWidth * 0.6 ? 'right-full mr-0.5' : 'left-full ml-0.5'} min-w-[140px] py-1 rounded-xl shadow-xl sidebar-popover-enter`}
                   style={{ background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
+                  onKeyDown={(e) => {
+                    const items = [...e.currentTarget.querySelectorAll<HTMLButtonElement>('[data-snooze-preset]')];
+                    const at = items.indexOf(document.activeElement as HTMLButtonElement);
+                    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                      e.preventDefault();
+                      const step = e.key === 'ArrowDown' ? 1 : -1;
+                      items[(at + step + items.length) % items.length]?.focus();
+                    } else if (e.key === 'Escape' || e.key === 'ArrowLeft') {
+                      // Close only the submenu: stop the event before the
+                      // document listener that dismisses the whole menu.
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setSnoozeOpen(false);
+                      snoozeSkipFocusOpen.current = true;
+                      snoozeTriggerRef.current?.focus();
+                    }
+                  }}
                 >
                   {WORKSPACE_SNOOZE_PRESETS.map((preset) => {
                     // A preset that makes no sense now ("tonight" late in the
@@ -1339,6 +1389,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                     return (
                       <button
                         key={preset}
+                        role="menuitem"
                         className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
                         style={{ color: 'var(--text-main)' }}
                         onClick={() => {
