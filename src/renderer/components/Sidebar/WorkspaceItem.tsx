@@ -33,6 +33,8 @@ import { useShallow } from 'zustand/react/shallow';
 import { usePaneTaskSplit } from './SidebarTaskGroup';
 import { taskNeedsYou } from './sidebarTree';
 import { WORKSPACE_COLOR_IDS, WORKSPACE_COLOR_HEX, workspaceColorHex, workspaceColorLabelKey } from '../../../shared/workspaceColors';
+import { WORKSPACE_SNOOZE_PRESETS, workspaceSnoozeUntil } from '../../../shared/workspaceSettle';
+import { sendWorkspaceSettleCommand } from '../../hooks/useWorkspaceSettleBridge';
 
 interface WorkspaceItemProps {
   /** A1: 부모(Sidebar)는 id만 내리고, 이 컴포넌트가 자기 ws를 self-subscribe해
@@ -361,6 +363,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   const [wdOpen, setWdOpen] = useState(false);
   const [owOpen, setOwOpen] = useState(false);
   const [colorOpen, setColorOpen] = useState(false);
+  const [snoozeOpen, setSnoozeOpen] = useState(false);
   const [folderApps, setFolderApps] = useState<{ id: string; name: string }[]>([]);
   const [closeConfirmPos, setCloseConfirmPos] = useState<CloseConfirmAnchor | null>(null);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
@@ -420,6 +423,12 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   // view, and it wants a look. Fleet's changed-dot rule: --text-main, never amber.
   const unseen = useStore((s) => !!selectSidebarUnseenWorkspaces(s)[workspaceId]);
   const toggleSidebarPin = useStore((s) => s.toggleSidebarPin);
+  // Settle / snooze (main owns both; the menu only sends the verbs). Scalars,
+  // so a push about another workspace does not re-render this row.
+  const workspaceSettled = useStore((s) => !!s.workspaceSettle.states[workspaceId]?.settled);
+  const snoozedUntil = useStore((s) => s.workspaceSettle.states[workspaceId]?.snoozedUntil ?? 0);
+  // Main refuses to settle these (rules (b)/(c)); the item says so up front.
+  const settleBlocked = pinned || needsYou || agentStatus === 'running' || agentStatus === 'awaiting_input';
   // Name first. At rest the row shows the workspace name and the signals that
   // change on their own (status dot, unread, idle, "needs you"); the project
   // badge, the agent count and the shortcut hint are chrome you only look for
@@ -839,6 +848,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
       // the next time the menu is summoned. Resetting here covers every close
       // path at once rather than each menu item individually.
       setColorOpen(false);
+      setSnoozeOpen(false);
     };
   }, [menuPos]);
 
@@ -1268,6 +1278,86 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
               {pinned ? t('sidebar.unpin') : t('sidebar.pin')}
             </button>
           )}
+          {/* Settle / snooze: visibility only — the workspace moves to the
+              sidebar's Settled or Snoozed group, nothing is closed. A task row
+              rides with its owner, so it has no verbs of its own. */}
+          {!taskRow && (workspaceSettled ? (
+            <button
+              className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+              style={{ color: 'var(--text-main)' }}
+              onClick={() => { setMenuPos(null); void sendWorkspaceSettleCommand({ op: 'unsettle', workspaceId }); }}
+              data-workspace-action="unsettle"
+            >
+              {t('workspaceSettle.unsettle')}
+            </button>
+          ) : (
+            <button
+              className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)] disabled:opacity-40 disabled:hover:bg-transparent"
+              style={{ color: 'var(--text-main)' }}
+              disabled={settleBlocked}
+              title={settleBlocked ? t('workspaceSettle.settleBlocked') : undefined}
+              onClick={() => { setMenuPos(null); void sendWorkspaceSettleCommand({ op: 'settle', workspaceId }); }}
+              data-workspace-action="settle"
+            >
+              {t('workspaceSettle.settle')}
+            </button>
+          ))}
+          {!taskRow && (snoozedUntil > Date.now() ? (
+            <button
+              className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+              style={{ color: 'var(--text-main)' }}
+              onClick={() => { setMenuPos(null); void sendWorkspaceSettleCommand({ op: 'unsnooze', workspaceId }); }}
+              data-workspace-action="unsnooze"
+            >
+              {t('workspaceSettle.unsnooze')}
+            </button>
+          ) : !pinned && (
+            <div
+              className="relative"
+              onMouseEnter={() => setSnoozeOpen(true)}
+              onMouseLeave={() => setSnoozeOpen(false)}
+            >
+              <button
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+                style={{ color: 'var(--text-main)' }}
+                aria-haspopup="menu"
+                aria-expanded={snoozeOpen}
+                onClick={() => setSnoozeOpen((v) => !v)}
+                data-workspace-action="snooze"
+              >
+                <span>{t('workspaceSettle.snooze')}</span>
+                <span className="text-[var(--text-muted)] ml-auto"><IconChevron /></span>
+              </button>
+              {snoozeOpen && (
+                <div
+                  className={`absolute top-0 ${menuPos.x > window.innerWidth * 0.6 ? 'right-full mr-0.5' : 'left-full ml-0.5'} min-w-[140px] py-1 rounded-xl shadow-xl sidebar-popover-enter`}
+                  style={{ background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
+                >
+                  {WORKSPACE_SNOOZE_PRESETS.map((preset) => {
+                    // A preset that makes no sense now ("tonight" late in the
+                    // evening) is not offered. The end is taken again on
+                    // click, so a menu left open does not send a stale time.
+                    if (workspaceSnoozeUntil(preset, new Date()) === null) return null;
+                    return (
+                      <button
+                        key={preset}
+                        className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+                        style={{ color: 'var(--text-main)' }}
+                        onClick={() => {
+                          setMenuPos(null);
+                          const until = workspaceSnoozeUntil(preset, new Date());
+                          if (until !== null) void sendWorkspaceSettleCommand({ op: 'snooze', workspaceId, until });
+                        }}
+                        data-snooze-preset={preset}
+                      >
+                        {t(`workspaceSettle.preset.${preset}`)}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          ))}
           {/* Color tag — hover to reveal the swatch row. A single row of eight
               swatches plus "None" keeps the whole picker one click deep; a
               modal would be heavier than the decision it holds. */}
