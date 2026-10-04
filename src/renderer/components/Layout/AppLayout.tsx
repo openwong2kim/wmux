@@ -52,6 +52,7 @@ import { useNotificationListener } from '../../hooks/useNotificationListener';
 import { useRpcBridge } from '../../hooks/useRpcBridge';
 import AgentMentionPicker from '../Palette/AgentMentionPicker';
 import { useWorkspaceMirrorPush } from '../../hooks/useWorkspaceMirrorPush';
+import { useMoaSync } from '../../hooks/useMoaSync';
 import { useResizeGuard } from '../../hooks/useResizeGuard';
 import { useApprovalInboxBridge } from '../../hooks/useApprovalInboxBridge';
 import { useBrowserHelpBridge } from '../../hooks/useBrowserHelpBridge';
@@ -836,6 +837,7 @@ export default function AppLayout() {
   // per-pane agent status whenever it changes, so main resolves hooks/routing
   // locally instead of round-tripping workspace.list back to the renderer.
   useWorkspaceMirrorPush();
+  useMoaSync();
   // S-C2 Approval Inbox bridge: the SINGLE owner of permissionPrompt.onOpen /
   // onClosed (guard #2). Always-on (not gated on fleetViewVisible) so MCP
   // prompts accumulate in the store before the cockpit's Approvals tab opens.

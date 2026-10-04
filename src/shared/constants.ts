@@ -325,6 +325,22 @@ export const IPC = {
   //   is unreadable.
   DECK_MOA_GET: 'deck:moa:get',
   DECK_MOA_SET: 'deck:moa:set',
+  //   DECK_MOA_STATE — Settings → Moa's one read: { config, hq: { workspaceId,
+  //   state }, archive: { unacked, total } }. DECK_MOA_CHANGED (send, main →
+  //   renderer, no payload) says it moved. DECK_MOA_CONFIG_SET takes a partial
+  //   { onboarded, level, maxTurnsPerHour, bubbles, reduceMotion }.
+  //   DECK_MOA_SETUP { workspaceId } makes a just-created workspace the HQ at
+  //   level 1 and turns Moa on (first run, and "Recreate Moa workspace").
+  //   DECK_MOA_ARCHIVE_LIST / _ACK: the decisions the HQ migration archived and
+  //   their one-time notice. DECK_MOA_STORE_RESET moves an unreadable
+  //   deck-hq.json aside and starts over (Moa off, no HQ).
+  DECK_MOA_STATE: 'deck:moa:state',
+  DECK_MOA_CHANGED: 'deck:moa:changed',
+  DECK_MOA_CONFIG_SET: 'deck:moa:config:set',
+  DECK_MOA_SETUP: 'deck:moa:setup',
+  DECK_MOA_ARCHIVE_LIST: 'deck:moa:archive:list',
+  DECK_MOA_ARCHIVE_ACK: 'deck:moa:archive:ack',
+  DECK_MOA_STORE_RESET: 'deck:moa:store:reset',
   //   HOOKS_BRIDGE_* — the Claude Code hook bridge (wmux setup-hooks, in-app).
   //   STATUS reports whether the wmux hook entries are installed in
   //   ~/.claude/settings.json; INSTALL performs the same idempotent install as

@@ -792,6 +792,23 @@ const electronAPI = {
       get: () => ipcRenderer.invoke(IPC.DECK_MOA_GET) as Promise<{ enabled: boolean }>,
       set: (enabled: boolean) =>
         ipcRenderer.invoke(IPC.DECK_MOA_SET, { enabled }) as Promise<{ ok: boolean; enabled?: boolean; code?: string }>,
+      // Settings → Moa: one read for the switch, its settings, the HQ and the
+      // archived-decision notice; onChanged says it moved.
+      state: () =>
+        ipcRenderer.invoke(IPC.DECK_MOA_STATE) as Promise<import('../shared/moa').MoaState>,
+      setConfig: (patch: import('../shared/moa').MoaConfigPatch) =>
+        ipcRenderer.invoke(IPC.DECK_MOA_CONFIG_SET, patch) as Promise<{ ok: boolean; code?: string }>,
+      setup: (workspaceId: string) =>
+        ipcRenderer.invoke(IPC.DECK_MOA_SETUP, { workspaceId }) as Promise<{ ok: boolean; code?: string; archived?: number }>,
+      archiveList: () =>
+        ipcRenderer.invoke(IPC.DECK_MOA_ARCHIVE_LIST) as Promise<{ decisions: import('../shared/moa').MoaArchivedDecision[] }>,
+      archiveAck: () => ipcRenderer.invoke(IPC.DECK_MOA_ARCHIVE_ACK) as Promise<{ ok: boolean }>,
+      resetStore: () => ipcRenderer.invoke(IPC.DECK_MOA_STORE_RESET) as Promise<{ ok: boolean }>,
+      onChanged: (callback: () => void) => {
+        const listener = (): void => callback();
+        ipcRenderer.on(IPC.DECK_MOA_CHANGED, listener);
+        return () => { ipcRenderer.removeListener(IPC.DECK_MOA_CHANGED, listener); };
+      },
     },
     // P3d — persisted orchestrator schedules (fire as ordinary brain turns on
     // their own workspace's orchestrator).
