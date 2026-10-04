@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { partitionWorkspaceSettle, workspaceSettleGroupOf, workspaceSettleGroupedIds } from '../workspaceSettleGroups';
+import { partitionWorkspaceSettle, workspaceSettleGroupOf } from '../workspaceSettleGroups';
 import { ORPHAN_GROUP_KEY } from '../sidebarTree';
 import type { WorkspaceSettleMap } from '../../../../shared/workspaceSettle';
 
@@ -61,17 +61,5 @@ describe('partitionWorkspaceSettle', () => {
   it('leaves a task of a closed owner in the main list', () => {
     const out = partition({ task1: { settled: { at: 1, reason: 'idle' } } }, { owners: { task1: ORPHAN_GROUP_KEY } });
     expect(ids(out.main)).toContain('task1');
-  });
-});
-
-describe('workspaceSettleGroupedIds', () => {
-  it('lists grouped, unpinned ids for the rail', () => {
-    const grouped = workspaceSettleGroupedIds({
-      a: { settled: { at: 1, reason: 'idle' } },
-      b: { snoozedUntil: NOW + 1 },
-      c: { snoozedUntil: NOW - 1 },
-      d: { settled: { at: 1, reason: 'manual' } },
-    }, ['d'], NOW);
-    expect([...grouped].sort()).toEqual(['a', 'b']);
   });
 });

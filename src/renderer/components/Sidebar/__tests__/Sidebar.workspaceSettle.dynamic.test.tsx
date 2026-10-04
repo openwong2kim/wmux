@@ -101,8 +101,20 @@ describe('Sidebar settle groups', () => {
     act(() => root.render(<MiniSidebar />));
     const titles = [...container.querySelectorAll('button[title]')].map((b) => b.getAttribute('title'))
       .filter((t) => /^[a-z0-9]+ \(Ctrl\+\d\)$/.test(t ?? ''));
-    // Grouped rows keep their stored Ctrl+N number on the rail.
-    expect(titles).toEqual(['c (Ctrl+3)', 'd (Ctrl+4)', 'a (Ctrl+1)', 'b (Ctrl+2)']);
+    // Grouped rows keep their stored Ctrl+N number on the rail; snoozed come
+    // before settled, as the sidebar's groups do.
+    expect(titles).toEqual(['c (Ctrl+3)', 'd (Ctrl+4)', 'b (Ctrl+2)', 'a (Ctrl+1)']);
+  });
+
+  it('moves a fan-out task with its settled owner on the rail, and not on its own', () => {
+    seed({ a: { settled: { at: 1, reason: 'idle' } }, c: { settled: { at: 1, reason: 'idle' } } });
+    // b is a's task (unsettled), c is d's task (settled, owner not).
+    act(() => useStore.setState({ fanoutSpawnOwner: { b: 'a', c: 'd' } } as never));
+    act(() => root.render(<MiniSidebar />));
+    const order = [...container.querySelectorAll('button[title]')].map((b) => b.getAttribute('title'))
+      .filter((t) => /^[a-z0-9]+ \(Ctrl\+\d\)$/.test(t ?? '')).map((t) => t![0]);
+    expect(order.slice(-2).sort()).toEqual(['a', 'b']);
+    expect(order.slice(0, 2).sort()).toEqual(['c', 'd']);
   });
 });
 

@@ -40,17 +40,3 @@ export function partitionWorkspaceSettle<T extends { id: string }>(
   }
   return out;
 }
-
-/** Ids of the rows that leave the main list, for the compact rail. */
-export function workspaceSettleGroupedIds(
-  states: Record<string, WorkspaceSettleState>,
-  pinnedIds: readonly string[],
-  now: number,
-): Set<string> {
-  const pinned = new Set(pinnedIds);
-  const out = new Set<string>();
-  for (const [id, state] of Object.entries(states)) {
-    if (!pinned.has(id) && workspaceSettleGroupOf(state, now)) out.add(id);
-  }
-  return out;
-}
