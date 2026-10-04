@@ -65,6 +65,8 @@ export function GhConnectPage({ gate, onRecheck, onConnected }: GhConnectPagePro
   const [codeCopied, setCodeCopied] = useState(false);
   const onConnectedRef = useRef(onConnected);
   onConnectedRef.current = onConnected;
+  // A fresh gate read from the page supersedes what Connect found.
+  useEffect(() => { setMissing(false); }, [gate]);
 
   // Subscribed for the page's lifetime, so no event is lost to dialog timing.
   useEffect(() => {
