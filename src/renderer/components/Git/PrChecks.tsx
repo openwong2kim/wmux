@@ -25,7 +25,7 @@ export function usePrChecks(repoPath: string, pr: PrSummary, refreshKey: number)
     read: async (force) => {
       const b = getPrReviewBridge();
       if (!b) return { ok: false, kind: 'error', message: t('git.bridgeUnavailable') };
-      const res = await b.prChecks(repoPath, pr.number, force);
+      const res = await b.prChecks(repoPath, pr.url, force);
       if (res.ok) return { ok: true, data: res.value };
       if (res.code === 'rate-limited') return { ok: false, kind: 'rate', retryAt: res.retryAt };
       return { ok: false, kind: 'error', message: res.message };
@@ -70,7 +70,7 @@ function failedRuns(checks: readonly PrCheck[]): { runId: string; checks: PrChec
   return [...byRun].map(([runId, cs]) => ({ runId, checks: cs }));
 }
 
-export function PrChecks({ repoPath, read }: { repoPath: string; read: PrChecksRead }): React.ReactElement | null {
+export function PrChecks({ repoPath, prUrl, read }: { repoPath: string; prUrl: string; read: PrChecksRead }): React.ReactElement | null {
   const t = useT();
   if (!getPrReviewBridge()) return null;
   const checks = read.data?.checks ?? null;
@@ -99,7 +99,7 @@ export function PrChecks({ repoPath, read }: { repoPath: string; read: PrChecksR
         </ul>
       )}
       {checks && failedRuns(checks).map((run) => (
-        <FailedRun key={run.runId} repoPath={repoPath} runId={run.runId} checks={run.checks} />
+        <FailedRun key={run.runId} repoPath={repoPath} prUrl={prUrl} runId={run.runId} checks={run.checks} />
       ))}
     </section>
   );
@@ -108,7 +108,7 @@ export function PrChecks({ repoPath, read }: { repoPath: string; read: PrChecksR
 type Rerun = { state: 'idle' } | { state: 'running' } | { state: 'done'; text: string; ok: boolean };
 
 /** One failed run: its log tail, read once on first open, and Rerun failed jobs. */
-function FailedRun({ repoPath, runId, checks }: { repoPath: string; runId: string; checks: PrCheck[] }): React.ReactElement {
+function FailedRun({ repoPath, prUrl, runId, checks }: { repoPath: string; prUrl: string; runId: string; checks: PrCheck[] }): React.ReactElement {
   const t = useT();
   const [open, setOpen] = useState(false);
   const [log, setLog] = useState<PrReviewRead<PrRunLog> | 'loading' | null>(null);
@@ -119,7 +119,7 @@ function FailedRun({ repoPath, runId, checks }: { repoPath: string; runId: strin
     const bridge = getPrReviewBridge();
     if (!bridge) return;
     setLog('loading');
-    setLog(await bridge.prRunLog(repoPath, runId));
+    setLog(await bridge.prRunLog(repoPath, prUrl, runId));
   };
   const toggle = () => {
     setOpen((v) => !v);
@@ -129,7 +129,7 @@ function FailedRun({ repoPath, runId, checks }: { repoPath: string; runId: strin
     const bridge = getPrReviewBridge();
     if (!bridge || rerun.state === 'running') return;
     setRerun({ state: 'running' });
-    const res = await bridge.prRerunFailed(repoPath, runId);
+    const res = await bridge.prRerunFailed(repoPath, prUrl, runId);
     setRerun(res.ok ? { state: 'done', ok: true, text: t('git.checks.rerunRequested') } : { state: 'done', ok: false, text: writeErrorText(res, t) });
   };
 

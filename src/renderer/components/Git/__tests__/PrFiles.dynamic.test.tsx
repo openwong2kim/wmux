@@ -23,7 +23,7 @@ const file: DiffFile = {
   hunks: [{ header: '@@ -1,3 +1,4 @@', oldStart: 1, oldLines: 3, newStart: 1, newLines: 4, section: '', bodyLines: [' one', '-two', '+TWO', '+three', ' four'] }],
 };
 const thread = (id: string, line: number | null, side: 'LEFT' | 'RIGHT', extra: Partial<PrReviewThread> = {}): PrReviewThread => ({
-  id, path: 'src/a.ts', line, side, isResolved: false, isOutdated: line === null,
+  id, path: 'src/a.ts', subject: 'line', line, side, isResolved: false, isOutdated: line === null,
   comments: [
     { id: Number(id.slice(1)) * 100 + 1, author: 'rev', body: `first on ${id} <img src=x onerror="window.__pwned=1">`, createdAt: '2026-10-01T00:00:00Z' },
     { id: Number(id.slice(1)) * 100 + 2, author: 'me', body: `second on ${id}`, createdAt: '2026-10-01T00:00:00Z' },
@@ -80,7 +80,7 @@ describe('PR files', () => {
   it('lists the file folded with its +/- counts, and draws numbered hunks when opened', async () => {
     act(() => root.render(createElement(GitDetail, { kind: 'pr', repoPath: '/r', repoLabel: 'r', pr: prOf(1) })));
     await flush();
-    expect(gh.prFiles).toHaveBeenCalledWith('/r', 1, A);
+    expect(gh.prFiles).toHaveBeenCalledWith('/r', prOf(1).url, A);
     const head = q('[data-pr-file="src/a.ts"] > button')!;
     expect(head.getAttribute('aria-expanded')).toBe('false');
     expect(head.textContent).toContain('+2');
@@ -112,8 +112,8 @@ describe('PR files', () => {
     type(t1.querySelector('[data-thread-reply-body]') as HTMLTextAreaElement, 'Because of X');
     act(() => (t1.querySelector('[data-thread-reply]') as HTMLButtonElement).click());
     await flush();
-    expect(gh.prReply).toHaveBeenCalledWith('/r', 3, 101, 'Because of X');
-    expect(gh.prThreads).toHaveBeenLastCalledWith('/r', 3, true);
+    expect(gh.prReply).toHaveBeenCalledWith('/r', prOf(3).url, 101, 'Because of X');
+    expect(gh.prThreads).toHaveBeenLastCalledWith('/r', prOf(3).url, A, true);
   });
 
   it('the gutter opens a composer under that line; sending uses the line\'s anchor and the head', async () => {
@@ -126,9 +126,9 @@ describe('PR files', () => {
     type(composer.querySelector('[data-line-composer-body]') as HTMLTextAreaElement, 'Why remove this?');
     act(() => (composer.querySelector('[data-line-composer-send]') as HTMLButtonElement).click());
     await flush();
-    expect(gh.prComment).toHaveBeenCalledWith('/r', 4, { expectHead: A, path: 'src/a.ts', line: 2, side: 'LEFT', body: 'Why remove this?' });
+    expect(gh.prComment).toHaveBeenCalledWith('/r', prOf(4).url, { expectHead: A, path: 'src/a.ts', line: 2, side: 'LEFT', body: 'Why remove this?' });
     expect(q('[data-line-composer]')).toBeNull();
-    expect(gh.prThreads).toHaveBeenLastCalledWith('/r', 4, true);
+    expect(gh.prThreads).toHaveBeenLastCalledWith('/r', prOf(4).url, A, true);
   });
 
   it('a moved PR keeps the comment text and warns', async () => {

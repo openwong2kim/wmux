@@ -120,11 +120,11 @@ function PrBody({ repoPath, pr, refreshKey }: { repoPath: string; pr: PrSummary;
         {pr.reviewDecision && <span>{reviewWord(pr.reviewDecision, t)}</span>}
         {pr.checks && <span>{t(`workspace.prChecks.${pr.checks}`)}</span>}
       </div>
-      <PrChecks repoPath={repoPath} read={checks} />
+      <PrChecks repoPath={repoPath} prUrl={pr.url} read={checks} />
       {checks.data && (
         <>
-          <PrReviewActions repoPath={repoPath} number={pr.number} head={checks.data.head} checks={checks.data.checks} onMoved={() => checks.reload(true)} />
-          <PrFiles repoPath={repoPath} number={pr.number} head={checks.data.head.headRefOid} refreshKey={refreshKey} onMoved={() => checks.reload(true)} />
+          <PrReviewActions repoPath={repoPath} prUrl={pr.url} number={pr.number} head={checks.data.head} checks={checks.data.checks} onMoved={() => checks.reload(true)} />
+          <PrFiles repoPath={repoPath} prUrl={pr.url} number={pr.number} head={checks.data.head.headRefOid} refreshKey={refreshKey} onMoved={() => checks.reload(true)} />
         </>
       )}
       {detail.loading && <div className="wmux-git-note">{t('git.loading')}</div>}

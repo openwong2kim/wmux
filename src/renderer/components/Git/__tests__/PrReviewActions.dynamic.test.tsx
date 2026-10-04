@@ -88,7 +88,7 @@ describe('squash merge', () => {
     expect(q<HTMLTextAreaElement>('[data-pr-merge-body]')!.value).toBe('');
     act(() => q<HTMLButtonElement>('[data-pr-merge-submit]')!.click());
     await flush();
-    expect(gh.prMerge).toHaveBeenCalledWith('/r', 3, { expectHead: A, subject: 'Add widgets (#3)', body: '' });
+    expect(gh.prMerge).toHaveBeenCalledWith('/r', prOf(3).url, { expectHead: A, subject: 'Add widgets (#3)', body: '' });
     expect(q('[data-pr-note]')?.textContent).toBe('Merged');
   });
 
@@ -106,7 +106,7 @@ describe('squash merge', () => {
     expect(q<HTMLInputElement>('[data-pr-merge-subject]')!.value).toBe('Widgets, finally');
     expect(q<HTMLTextAreaElement>('[data-pr-merge-body]')!.value).toBe('Details');
     expect(gh.prChecks.mock.calls.length).toBeGreaterThan(reads);
-    expect(gh.prChecks).toHaveBeenLastCalledWith('/r', 4, true);
+    expect(gh.prChecks).toHaveBeenLastCalledWith('/r', prOf(4).url, true);
   });
 });
 
@@ -116,7 +116,7 @@ describe('review', () => {
     await flush();
     act(() => q<HTMLButtonElement>('[data-pr-review-event="APPROVE"]')!.click());
     await flush();
-    expect(gh.prSubmitReview).toHaveBeenCalledWith('/r', 5, { expectHead: A, event: 'APPROVE', body: '' });
+    expect(gh.prSubmitReview).toHaveBeenCalledWith('/r', prOf(5).url, { expectHead: A, event: 'APPROVE', body: '' });
     expect(q('[data-pr-note]')?.textContent).toBe('Review sent');
   });
 
@@ -131,7 +131,7 @@ describe('review', () => {
     expect(btn.disabled).toBe(false);
     act(() => btn.click());
     await flush();
-    expect(gh.prSubmitReview).toHaveBeenCalledWith('/r', 6, { expectHead: A, event: 'REQUEST_CHANGES', body: 'Please split this' });
+    expect(gh.prSubmitReview).toHaveBeenCalledWith('/r', prOf(6).url, { expectHead: A, event: 'REQUEST_CHANGES', body: 'Please split this' });
   });
 
   it('a moved review keeps the text', async () => {
@@ -161,6 +161,6 @@ describe('drafts', () => {
     expect(q('[data-pr-draft-old]')?.textContent).toBe('This draft was written for an older version of the PR (aaaaaaa)');
     act(() => q<HTMLButtonElement>('[data-pr-review-event="COMMENT"]')!.click());
     await flush();
-    expect(gh.prSubmitReview).toHaveBeenCalledWith('/r', 8, { expectHead: B, event: 'COMMENT', body: 'Half-written thought' });
+    expect(gh.prSubmitReview).toHaveBeenCalledWith('/r', prOf(8).url, { expectHead: B, event: 'COMMENT', body: 'Half-written thought' });
   });
 });

@@ -31,7 +31,9 @@ describe('mergeBlock', () => {
     expect(mergeBlock(head({ mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY' }), [check('fail')])).toBe('conflicts');
     expect(mergeBlock(head(), [check('pass'), check('fail')])).toBe('checks-failing');
     expect(mergeBlock(head(), [check('cancel')])).toBe('checks-failing');
-    expect(mergeBlock(head({ mergeStateStatus: 'UNSTABLE' }), [])).toBe('checks-failing');
+    // UNSTABLE with nothing failing in sight is a check still running, not a failure.
+    expect(mergeBlock(head({ mergeStateStatus: 'UNSTABLE' }), [check('pass')])).toBe('checks-pending');
+    expect(mergeBlock(head({ mergeStateStatus: 'UNSTABLE' }), [check('fail')])).toBe('checks-failing');
     expect(mergeBlock(head(), [check('pending')])).toBe('checks-pending');
     expect(mergeBlock(head({ mergeStateStatus: 'BEHIND' }), [])).toBe('behind');
     expect(mergeBlock(head({ mergeStateStatus: 'BLOCKED' }), [])).toBe('blocked');
@@ -75,9 +77,21 @@ describe('log tail', () => {
     const huge = Array.from({ length: 20 }, (_, i) => `${i}:${'x'.repeat(4_000)}`).join('\n');
     const cut = cleanLogTail(huge);
     expect(cut.truncated).toBe(true);
-    expect(cut.text.length).toBeLessThanOrEqual(LOG_TAIL_MAX_BYTES);
+    expect(new TextEncoder().encode(cut.text).length).toBeLessThanOrEqual(LOG_TAIL_MAX_BYTES);
     // Cut at a line start, never mid-line.
-    expect(cut.text.startsWith('1') || /^\d+:/.test(cut.text)).toBe(true);
+    expect(cut.text).toMatch(/^\d+:/);
+  });
+
+  it('the byte cap counts UTF-8 bytes and never splits a character (Hangul, emoji)', () => {
+    // 3-byte Hangul and 4-byte emoji: 80 such lines are about 52 KB of UTF-8.
+    const wide = Array.from({ length: 80 }, (_, i) => `${i}:${'한'.repeat(150)}${'🙂'.repeat(50)}`).join('\n');
+    const cut = cleanLogTail(wide);
+    const bytes = new TextEncoder().encode(cut.text);
+    expect(cut.truncated).toBe(true);
+    expect(bytes.length).toBeLessThanOrEqual(LOG_TAIL_MAX_BYTES);
+    expect(cut.text).not.toContain('\ufffd');
+    expect(cut.text).toMatch(/^\d+:한/);
+    expect(cut.text.endsWith('🙂')).toBe(true);
   });
 });
 

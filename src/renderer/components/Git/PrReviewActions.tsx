@@ -32,8 +32,9 @@ const REVIEW_LABEL: Record<ReviewEvent, string> = {
   COMMENT: 'git.review.comment',
 };
 
-export function PrReviewActions({ repoPath, number, head, checks, onMoved }: {
+export function PrReviewActions({ repoPath, prUrl, number, head, checks, onMoved }: {
   repoPath: string;
+  prUrl: string;
   number: number;
   head: PrReviewHead;
   checks: readonly PrCheck[];
@@ -70,7 +71,7 @@ export function PrReviewActions({ repoPath, number, head, checks, onMoved }: {
     setBusy(event);
     setReviewNote(null);
     // Always the head on screen now, even for a draft written at an older one.
-    const res = await bridge.prSubmitReview(repoPath, number, { expectHead: sha, event, body: review });
+    const res = await bridge.prSubmitReview(repoPath, prUrl, { expectHead: sha, event, body: review });
     setBusy(null);
     if (res.ok) {
       editReview('');
@@ -85,7 +86,7 @@ export function PrReviewActions({ repoPath, number, head, checks, onMoved }: {
     if (busy || !merge || !merge.subject.trim()) return;
     setBusy('merge');
     setMergeNote(null);
-    const res = await bridge.prMerge(repoPath, number, { expectHead: sha, subject: merge.subject.trim(), body: merge.body });
+    const res = await bridge.prMerge(repoPath, prUrl, { expectHead: sha, subject: merge.subject.trim(), body: merge.body });
     setBusy(null);
     if (res.ok) {
       editMerge(null);

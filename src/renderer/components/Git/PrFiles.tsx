@@ -46,6 +46,7 @@ function fileStat(file: Pick<DiffFile, 'hunks'>): { add: number; del: number } {
 
 interface Ctx {
   repoPath: string;
+  prUrl: string;
   number: number;
   head: string;
   composer: Composer | null;
@@ -54,8 +55,9 @@ interface Ctx {
   onMoved: () => void;
 }
 
-export function PrFiles({ repoPath, number, head, refreshKey, onMoved }: {
+export function PrFiles({ repoPath, prUrl, number, head, refreshKey, onMoved }: {
   repoPath: string;
+  prUrl: string;
   number: number;
   /** The head shown (from the checks read). */
   head: string;
@@ -67,7 +69,7 @@ export function PrFiles({ repoPath, number, head, refreshKey, onMoved }: {
   const files = useDetail<PrFilesState>(async () => {
     const bridge = getPrReviewBridge();
     if (!bridge) return { ok: false, message: t('git.bridgeUnavailable') };
-    const res = await bridge.prFiles(repoPath, number, head);
+    const res = await bridge.prFiles(repoPath, prUrl, head);
     if (res.ok) return { ok: true, value: res.value };
     return { ok: false, message: res.message, ...(res.code === 'rate-limited' ? { retryAt: res.retryAt } : {}) };
   }, `${head}\0${refreshKey}`);
@@ -81,7 +83,7 @@ export function PrFiles({ repoPath, number, head, refreshKey, onMoved }: {
     const force = forceThreads.current || seenRefresh.current !== refreshKey;
     forceThreads.current = false;
     seenRefresh.current = refreshKey;
-    const res = await bridge.prThreads(repoPath, number, force);
+    const res = await bridge.prThreads(repoPath, prUrl, head, force);
     if (res.ok) return { ok: true, value: res.value };
     return { ok: false, message: res.message, ...(res.code === 'rate-limited' ? { retryAt: res.retryAt } : {}) };
   }, `${head}\0${refreshKey}\0${threadsGen}`);
@@ -96,7 +98,7 @@ export function PrFiles({ repoPath, number, head, refreshKey, onMoved }: {
     forceThreads.current = true;
     setThreadsGen((n) => n + 1);
   };
-  const ctx: Ctx = { repoPath, number, head, composer, setComposer, reloadThreads, onMoved };
+  const ctx: Ctx = { repoPath, prUrl, number, head, composer, setComposer, reloadThreads, onMoved };
 
   const list = files.value?.files ?? [];
   const allThreads = threads.value?.threads ?? [];
@@ -219,7 +221,7 @@ function Thread({ thread, ctx }: { thread: PrReviewThread; ctx: Ctx }): React.Re
     if (!bridge || !first || busy || !reply.trim()) return;
     setBusy(true);
     setError(null);
-    const res = await bridge.prReply(ctx.repoPath, ctx.number, first.id, reply);
+    const res = await bridge.prReply(ctx.repoPath, ctx.prUrl, first.id, reply);
     setBusy(false);
     if (res.ok) {
       setReply('');
@@ -283,7 +285,7 @@ function LineComposer({ ctx }: { ctx: Ctx }): React.ReactElement | null {
     setBusy(true);
     setError(null);
     // The head on screen now, even for a draft written at an older one.
-    const res = await bridge.prComment(ctx.repoPath, ctx.number, { expectHead: ctx.head, path: c.path, line: c.line, side: c.side, body: c.text });
+    const res = await bridge.prComment(ctx.repoPath, ctx.prUrl, { expectHead: ctx.head, path: c.path, line: c.line, side: c.side, body: c.text });
     setBusy(false);
     if (res.ok) {
       ctx.setComposer(null);

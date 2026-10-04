@@ -70,7 +70,7 @@ describe('PR checks', () => {
   it('lists each check with a mark for its bucket and an Open link', async () => {
     render();
     await flush();
-    expect(gh.prChecks).toHaveBeenCalledWith('/r', 7, false);
+    expect(gh.prChecks).toHaveBeenCalledWith('/r', pr.url, false);
     const rows = [...container.querySelectorAll('[data-check-bucket]')].map((r) => r.getAttribute('data-check-bucket'));
     expect(rows).toEqual(['pass', 'fail', 'fail', 'pending', 'skipping', 'cancel']);
     expect(q('[data-check-bucket="pass"] [role="img"]')?.getAttribute('aria-label')).toBe('Passed');
@@ -88,7 +88,7 @@ describe('PR checks', () => {
     const toggle = q('[data-run-log-toggle]') as HTMLButtonElement;
     act(() => toggle.click());
     await flush();
-    expect(gh.prRunLog).toHaveBeenCalledWith('/r', '99');
+    expect(gh.prRunLog).toHaveBeenCalledWith('/r', pr.url, '99');
     const pre = q('pre[data-run-log]')!;
     expect(pre.textContent).toContain('<script>window.__pwned = 1</script>');
     expect(pre.querySelector('script')).toBeNull();
@@ -123,7 +123,7 @@ describe('PR checks', () => {
     expect(btn.disabled).toBe(true);
     act(() => btn.click());
     expect(gh.prRerunFailed).toHaveBeenCalledTimes(1);
-    expect(gh.prRerunFailed).toHaveBeenCalledWith('/r', '99');
+    expect(gh.prRerunFailed).toHaveBeenCalledWith('/r', pr.url, '99');
     await act(async () => { finish({ ok: true }); });
     await flush();
     expect(q('[data-run-rerun-result]')?.textContent).toBe('Rerun requested');

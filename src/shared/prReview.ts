@@ -58,7 +58,10 @@ export interface PrReviewComment {
 export interface PrReviewThread {
   id: string;
   path: string;
-  /** The line on `side`; null when the thread is outdated (its line is gone). */
+  /** On a line, or on the file as a whole (then `line` is null). */
+  subject: 'line' | 'file';
+  /** The line on `side`; null for a file comment, or when GitHub no longer
+   *  places it on a line. */
   line: number | null;
   side: 'LEFT' | 'RIGHT';
   isResolved: boolean;
@@ -67,6 +70,8 @@ export interface PrReviewThread {
 }
 
 export interface PrThreadsState {
+  /** The head the threads were read for. */
+  headRefOid: string;
   threads: PrReviewThread[];
   /** More threads or comments exist than were read. */
   truncated: boolean;
@@ -142,8 +147,10 @@ export function mergeBlock(head: PrReviewHead, checks: readonly PrCheck[]): Merg
   if (head.state !== 'OPEN') return 'not-open';
   if (head.isDraft || head.mergeStateStatus === 'DRAFT') return 'draft';
   if (head.mergeable === 'CONFLICTING' || head.mergeStateStatus === 'DIRTY') return 'conflicts';
-  if (checks.some((c) => c.bucket === 'fail' || c.bucket === 'cancel') || head.mergeStateStatus === 'UNSTABLE') return 'checks-failing';
-  if (checks.some((c) => c.bucket === 'pending')) return 'checks-pending';
+  if (checks.some((c) => c.bucket === 'fail' || c.bucket === 'cancel')) return 'checks-failing';
+  // UNSTABLE without a failure in sight: a check still running (or one this
+  // list does not show), not a failure.
+  if (checks.some((c) => c.bucket === 'pending') || head.mergeStateStatus === 'UNSTABLE') return 'checks-pending';
   if (head.mergeStateStatus === 'BEHIND') return 'behind';
   if (head.mergeStateStatus === 'BLOCKED') return 'blocked';
   if (head.mergeable === 'UNKNOWN' || head.mergeStateStatus === 'UNKNOWN') return 'unknown';
@@ -171,16 +178,22 @@ export const LOG_TAIL_MAX_LINES = 200;
 export const LOG_TAIL_MAX_BYTES = 32 * 1024;
 
 /** A log as plain text: ANSI and other control characters removed (tabs and
- *  line breaks kept), then its last lines within the caps. Pure. */
+ *  line breaks kept), then its last lines within the caps; the byte cap is
+ *  UTF-8 bytes, cut on a character and then a line boundary. Pure. */
 export function cleanLogTail(raw: string): { text: string; truncated: boolean } {
   // eslint-disable-next-line no-control-regex -- control characters are what is removed
   const plain = cleanGhOutput(raw).replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, '');
   const lines = plain.replace(/\n+$/, '').split('\n');
   let truncated = lines.length > LOG_TAIL_MAX_LINES;
   let tail = lines.slice(-LOG_TAIL_MAX_LINES).join('\n');
-  if (tail.length > LOG_TAIL_MAX_BYTES) {
-    tail = tail.slice(-LOG_TAIL_MAX_BYTES);
-    tail = tail.slice(tail.indexOf('\n') + 1);
+  const bytes = new TextEncoder().encode(tail);
+  if (bytes.length > LOG_TAIL_MAX_BYTES) {
+    let start = bytes.length - LOG_TAIL_MAX_BYTES;
+    // Never start inside a character: skip UTF-8 continuation bytes.
+    while (start < bytes.length && (bytes[start] & 0xc0) === 0x80) start += 1;
+    tail = new TextDecoder().decode(bytes.subarray(start));
+    const nl = tail.indexOf('\n');
+    if (nl >= 0) tail = tail.slice(nl + 1);
     truncated = true;
   }
   return { text: tail, truncated };

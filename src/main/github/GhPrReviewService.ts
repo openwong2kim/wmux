@@ -3,9 +3,11 @@
 // Every call names the repo (`--repo host/owner/repo`, or the host and path
 // for `gh api`) and runs with gh's whitelisted env (ghIssueEnv: no GH_REPO,
 // no prompts, no pager, no colour). Reads go through the shared per-host
-// rate-limit breaker and short TTL caches with one fetch in flight per key;
-// checks are read fresh with the PR's head and mergeability, because those
-// change with CI, not with the PR's update time.
+// rate-limit breaker and short TTL caches with one fetch in flight per key.
+// The head, mergeability and checks come from ONE `gh pr view` (its
+// statusCheckRollup is the head commit's), so a merge decision never mixes
+// one commit's checks with another's head. A diff is kept only when the head
+// was the same before and after reading it; threads are cached per head.
 //
 // Writes are tied to the head the person saw: the head is re-read right
 // before writing and a different one is refused ("moved"). A review and a line
@@ -57,8 +59,7 @@ const MAX_THREADS = 100;
 const MAX_THREAD_COMMENTS = 50;
 
 const HEAD_FIELDS = 'number,title,url,state,isDraft,headRefOid,headRefName,baseRefName,mergeable,mergeStateStatus';
-const CHECK_FIELDS = 'name,workflow,bucket,link,startedAt,completedAt';
-const BUCKETS: readonly PrCheckBucket[] = ['pass', 'fail', 'pending', 'skipping', 'cancel'];
+const STATE_FIELDS = `${HEAD_FIELDS},statusCheckRollup`;
 
 const THREADS_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
@@ -66,7 +67,7 @@ const THREADS_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
       reviewThreads(first: ${MAX_THREADS}) {
         totalCount
         nodes {
-          id isResolved isOutdated path line diffSide
+          id isResolved isOutdated path line diffSide subjectType
           comments(first: ${MAX_THREAD_COMMENTS}) {
             totalCount
             nodes { databaseId body createdAt author { login } }
@@ -108,19 +109,41 @@ export function mapReviewHead(raw: unknown): PrReviewHead | null {
   };
 }
 
-/** Checks from `gh pr checks --json`; anything malformed is dropped. */
-export function mapChecks(raw: unknown): PrCheck[] {
+/** A check's bucket from its rollup entry: a CheckRun (status + conclusion)
+ *  or a commit StatusContext (state). */
+function rollupBucket(c: Record<string, unknown>): PrCheckBucket {
+  if (c.__typename === 'StatusContext' || (typeof c.state === 'string' && c.status === undefined)) {
+    const state = str(c.state);
+    return state === 'SUCCESS' ? 'pass' : state === 'FAILURE' || state === 'ERROR' ? 'fail' : 'pending';
+  }
+  if (str(c.status) !== 'COMPLETED') return 'pending';
+  switch (str(c.conclusion)) {
+    case 'SUCCESS':
+    case 'NEUTRAL':
+      return 'pass';
+    case 'SKIPPED':
+      return 'skipping';
+    case 'CANCELLED':
+      return 'cancel';
+    default:
+      // FAILURE, TIMED_OUT, ACTION_REQUIRED, STARTUP_FAILURE, STALE.
+      return 'fail';
+  }
+}
+
+/** The head commit's checks from `statusCheckRollup`; anything malformed is dropped. */
+export function mapRollup(raw: unknown): PrCheck[] {
   if (!Array.isArray(raw)) return [];
   return raw.flatMap((c): PrCheck[] => {
     const j = c as Record<string, unknown>;
-    const bucket = BUCKETS.find((b) => b === j?.bucket);
-    if (!bucket || typeof j.name !== 'string') return [];
-    const link = str(j.link);
+    const name = str(j?.name) || str(j?.context);
+    if (!name) return [];
+    const link = str(j.detailsUrl) || str(j.targetUrl);
     const run = link ? parseRunLink(link) : null;
     return [{
-      name: j.name,
-      workflow: str(j.workflow),
-      bucket,
+      name,
+      workflow: str(j.workflowName),
+      bucket: rollupBucket(j),
       link,
       ...(str(j.startedAt) ? { startedAt: str(j.startedAt) } : {}),
       ...(str(j.completedAt) ? { completedAt: str(j.completedAt) } : {}),
@@ -131,7 +154,7 @@ export function mapChecks(raw: unknown): PrCheck[] {
 
 /** Review threads from the GraphQL answer, comments capped; an outdated
  *  thread has no line. */
-export function mapThreads(raw: unknown): PrThreadsState {
+export function mapThreads(raw: unknown, headRefOid: string): PrThreadsState {
   const threadsNode = (raw as { data?: { repository?: { pullRequest?: { reviewThreads?: unknown } } } })
     ?.data?.repository?.pullRequest?.reviewThreads as { totalCount?: number; nodes?: unknown[] } | undefined;
   const nodes = Array.isArray(threadsNode?.nodes) ? threadsNode.nodes : [];
@@ -152,18 +175,20 @@ export function mapThreads(raw: unknown): PrThreadsState {
         createdAt: str(cm.createdAt),
       }];
     });
-    const outdated = t.isOutdated === true;
+    const subject = t.subjectType === 'FILE' ? 'file' : 'line';
     return [{
       id: t.id,
       path: t.path,
-      line: !outdated && typeof t.line === 'number' ? t.line : null,
+      subject,
+      line: subject === 'line' && typeof t.line === 'number' ? t.line : null,
       side: t.diffSide === 'LEFT' ? 'LEFT' : 'RIGHT',
       isResolved: t.isResolved === true,
-      isOutdated: outdated || typeof t.line !== 'number',
+      // As GitHub reports it.
+      isOutdated: t.isOutdated === true,
       comments,
     }];
   });
-  return { threads, truncated };
+  return { headRefOid, threads, truncated };
 }
 
 /** A PR diff within the size caps: whole files past the total cap are left
@@ -178,6 +203,8 @@ export function capPrDiff(text: string): { files: PrFilesState['files']; truncat
     body = lastFile > 0 ? body.slice(0, lastFile + 1) : '';
   }
   const files = parseUnifiedDiff(body).files.map((f) => {
+    // A pure rename or a binary change has no ---/+++ lines to name it.
+    if (f.path === '(unknown)') f = { ...f, path: pathFromHeader(f.headerBlock) ?? f.path };
     const size = f.hunks.reduce((s, h) => s + h.bodyLines.join('\n').length, 0);
     if (size <= DIFF_FILE_CAP_BYTES) return f;
     truncated = true;
@@ -186,11 +213,34 @@ export function capPrDiff(text: string): { files: PrFilesState['files']; truncat
   return { files, truncated };
 }
 
-/** A gh error that still printed its JSON answer (gh pr checks exits 8 while
- *  checks are pending and 1 when one failed, with the list on stdout). */
-function stdoutOf(err: unknown): string {
-  const out = (err as { stdout?: unknown })?.stdout;
-  return typeof out === 'string' ? out : '';
+/** A file's path from its git header: the rename or copy target, else the
+ *  `b/` side of `diff --git a/… b/…`. Null when neither is readable. */
+export function pathFromHeader(headerBlock: string): string | null {
+  const to = /^(?:rename|copy) to (.+)$/m.exec(headerBlock);
+  if (to) return unquote(to[1]);
+  const git = /^diff --git (?:"a\/(.+?)"|a\/(.+?)) (?:"b\/(.+)"|b\/(.+))$/m.exec(headerBlock);
+  const b = git?.[3] ?? git?.[4];
+  return b ? unquote(b) : null;
+}
+
+/** A path git printed in C-style quotes (spaces, non-ASCII): the quotes and
+ *  escapes removed, octal bytes decoded as UTF-8. */
+function unquote(p: string): string {
+  const s = p.replace(/^"|"$/g, '');
+  if (!s.includes('\\')) return s;
+  const bytes: number[] = [];
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '\\' && /[0-7]{3}/.test(s.slice(i + 1, i + 4))) {
+      bytes.push(parseInt(s.slice(i + 1, i + 4), 8));
+      i += 3;
+    } else if (s[i] === '\\' && i + 1 < s.length) {
+      const e = s[++i];
+      bytes.push(...new TextEncoder().encode(e === 't' ? '\t' : e === 'n' ? '\n' : e));
+    } else {
+      bytes.push(...new TextEncoder().encode(s[i]));
+    }
+  }
+  return new TextDecoder().decode(new Uint8Array(bytes));
 }
 
 interface Cached<T> {
@@ -252,10 +302,24 @@ export class GhPrReviewService {
     return value;
   }
 
+  private forgetThreads(key: string, number: number): void {
+    for (const k of [...this.threadsCache.keys()]) if (k.startsWith(`${key}#${number}@`)) this.threadsCache.delete(k);
+  }
+
   private repo(key: string) {
     const parts = splitRepoKey(key);
     if (!parts) throw new Error(`not a GitHub owner/repo remote: ${key}`);
     return parts;
+  }
+
+  /** The head, mergeability and the head commit's checks, in one read. */
+  private async readState(repoPath: string, key: string, number: number): Promise<PrChecksState> {
+    const { host } = this.repo(key);
+    const out = await this.gh(host, ['pr', 'view', String(number), '--repo', key, '--json', STATE_FIELDS], repoPath);
+    const raw = JSON.parse(out) as { statusCheckRollup?: unknown };
+    const head = mapReviewHead(raw);
+    if (!head) throw new Error('could not read the pull request');
+    return { head, checks: mapRollup(raw.statusCheckRollup) };
   }
 
   private async readHead(repoPath: string, key: string, number: number): Promise<PrReviewHead> {
@@ -264,28 +328,6 @@ export class GhPrReviewService {
     const head = mapReviewHead(JSON.parse(out));
     if (!head) throw new Error('could not read the pull request');
     return head;
-  }
-
-  private async readChecks(repoPath: string, key: string, number: number): Promise<PrCheck[]> {
-    const { host } = this.repo(key);
-    let out: string;
-    try {
-      out = await this.gh(host, ['pr', 'checks', String(number), '--repo', key, '--json', CHECK_FIELDS], repoPath);
-    } catch (err) {
-      if (err instanceof RateLimited) throw err;
-      out = stdoutOf(err);
-      // No checks at all: gh says so on stderr with nothing on stdout.
-      if (!out.trim()) {
-        if (/no checks reported/i.test(errorText(err))) return [];
-        throw err;
-      }
-    }
-    return mapChecks(JSON.parse(out));
-  }
-
-  private async readState(repoPath: string, key: string, number: number): Promise<PrChecksState> {
-    const [head, checks] = await Promise.all([this.readHead(repoPath, key, number), this.readChecks(repoPath, key, number)]);
-    return { head, checks };
   }
 
   private async read<T>(run: () => Promise<T>): Promise<PrReviewRead<T>> {
@@ -306,9 +348,10 @@ export class GhPrReviewService {
     }
   }
 
-  /** The head as it is now, or a "moved" refusal when it is not `expectHead`. */
+  /** A refusal when the PR is not open, or its head is not `expectHead`. */
   private async moved(repoPath: string, key: string, number: number, expectHead: string): Promise<PrWriteResult | null> {
     const head = await this.readHead(repoPath, key, number);
+    if (head.state !== 'OPEN') return { ok: false, code: 'blocked', reason: 'not-open', message: 'the pull request is not open' };
     return head.headRefOid === expectHead
       ? null
       : { ok: false, code: 'moved', message: 'the pull request has new commits since it was shown; review them first', headRefOid: head.headRefOid };
@@ -326,24 +369,30 @@ export class GhPrReviewService {
       const hit = this.filesCache.get(cacheKey);
       if (hit) return hit;
       const { host } = this.repo(key);
-      const head = await this.readHead(repoPath, key, number);
+      // gh pr diff reads the PR as it is now: a push during the read would
+      // file one commit's diff under another, so the head is read on both
+      // sides and a change discards the result.
+      const before = await this.readHead(repoPath, key, number);
       const text = await this.gh(host, ['pr', 'diff', String(number), '--repo', key], repoPath);
-      const value: PrFilesState = { headRefOid: head.headRefOid, ...capPrDiff(text) };
-      this.filesCache.set(`${key}#${number}@${head.headRefOid}`, value);
+      const after = await this.readHead(repoPath, key, number);
+      if (after.headRefOid !== before.headRefOid) throw new Error('the pull request changed while its diff was read; reload');
+      const value: PrFilesState = { headRefOid: before.headRefOid, ...capPrDiff(text) };
+      this.filesCache.set(`${key}#${number}@${before.headRefOid}`, value);
       if (this.filesCache.size > MAX_ENTRIES) this.filesCache.delete(this.filesCache.keys().next().value as string);
       return value;
     });
   }
 
-  /** The PR's review threads with their comments. */
-  threads(repoPath: string, key: string, number: number, force = false): Promise<PrReviewRead<PrThreadsState>> {
-    return this.read(() => this.cached(this.threadsCache, `${key}#${number}`, THREADS_TTL_MS, force, async () => {
+  /** The PR's review threads with their comments, cached per head (a new
+   *  head reads them again). */
+  threads(repoPath: string, key: string, number: number, headRefOid: string, force = false): Promise<PrReviewRead<PrThreadsState>> {
+    return this.read(() => this.cached(this.threadsCache, `${key}#${number}@${headRefOid}`, THREADS_TTL_MS, force, async () => {
       const { host, owner, repo } = this.repo(key);
       const out = await this.gh(host, [
         'api', 'graphql', '--hostname', host,
         '-f', `query=${THREADS_QUERY}`, '-f', `owner=${owner}`, '-f', `repo=${repo}`, '-F', `number=${number}`,
       ], repoPath);
-      return mapThreads(JSON.parse(out));
+      return mapThreads(JSON.parse(out), headRefOid);
     }));
   }
 
@@ -358,7 +407,7 @@ export class GhPrReviewService {
         '-f', `body=${req.body}`, '-f', `commit_id=${req.expectHead}`, '-f', `path=${req.path}`,
         '-F', `line=${req.line}`, '-f', `side=${req.side}`,
       ], repoPath, true);
-      this.threadsCache.delete(`${key}#${number}`);
+      this.forgetThreads(key, number);
       return { ok: true, ...urlOf(out) };
     });
   }
@@ -371,7 +420,7 @@ export class GhPrReviewService {
         'api', '--hostname', host, '-X', 'POST', `repos/${owner}/${repo}/pulls/${number}/comments/${commentId}/replies`,
         '-f', `body=${body}`,
       ], repoPath, true);
-      this.threadsCache.delete(`${key}#${number}`);
+      this.forgetThreads(key, number);
       return { ok: true, ...urlOf(out) };
     });
   }
@@ -387,7 +436,7 @@ export class GhPrReviewService {
         '-f', `event=${req.event}`, '-f', `commit_id=${req.expectHead}`, ...(req.body ? ['-f', `body=${req.body}`] : []),
       ], repoPath, true);
       this.checksCache.delete(`${key}#${number}`);
-      this.threadsCache.delete(`${key}#${number}`);
+      this.forgetThreads(key, number);
       return { ok: true, ...urlOf(out) };
     });
   }

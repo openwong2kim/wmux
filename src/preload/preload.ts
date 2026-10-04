@@ -1229,32 +1229,32 @@ const electronAPI = {
       >,
     // PR review and CI: reads, and writes tied to the head the person saw
     // (main re-reads it right before writing and refuses if it moved).
-    prChecks: (repoPath: string, number: number, force?: boolean) =>
-      ipcRenderer.invoke(IPC.PR_REVIEW_CHECKS, repoPath, number, force === true) as Promise<
+    prChecks: (repoPath: string, prUrl: string, force?: boolean) =>
+      ipcRenderer.invoke(IPC.PR_REVIEW_CHECKS, repoPath, prUrl, force === true) as Promise<
         import('../shared/prReview').PrReviewRead<import('../shared/prReview').PrChecksState>
       >,
-    prFiles: (repoPath: string, number: number, headRefOid: string) =>
-      ipcRenderer.invoke(IPC.PR_REVIEW_FILES, repoPath, number, headRefOid) as Promise<
+    prFiles: (repoPath: string, prUrl: string, headRefOid: string) =>
+      ipcRenderer.invoke(IPC.PR_REVIEW_FILES, repoPath, prUrl, headRefOid) as Promise<
         import('../shared/prReview').PrReviewRead<import('../shared/prReview').PrFilesState>
       >,
-    prThreads: (repoPath: string, number: number, force?: boolean) =>
-      ipcRenderer.invoke(IPC.PR_REVIEW_THREADS, repoPath, number, force === true) as Promise<
+    prThreads: (repoPath: string, prUrl: string, headRefOid: string, force?: boolean) =>
+      ipcRenderer.invoke(IPC.PR_REVIEW_THREADS, repoPath, prUrl, headRefOid, force === true) as Promise<
         import('../shared/prReview').PrReviewRead<import('../shared/prReview').PrThreadsState>
       >,
-    prComment: (repoPath: string, number: number, req: import('../shared/prReview').PrCommentRequest) =>
-      ipcRenderer.invoke(IPC.PR_REVIEW_COMMENT, repoPath, number, req) as Promise<import('../shared/prReview').PrWriteResult>,
-    prReply: (repoPath: string, number: number, commentId: number, body: string) =>
-      ipcRenderer.invoke(IPC.PR_REVIEW_REPLY, repoPath, number, commentId, body) as Promise<import('../shared/prReview').PrWriteResult>,
-    prSubmitReview: (repoPath: string, number: number, req: import('../shared/prReview').PrSubmitReviewRequest) =>
-      ipcRenderer.invoke(IPC.PR_REVIEW_SUBMIT, repoPath, number, req) as Promise<import('../shared/prReview').PrWriteResult>,
-    prMerge: (repoPath: string, number: number, req: import('../shared/prReview').PrMergeRequest) =>
-      ipcRenderer.invoke(IPC.PR_REVIEW_MERGE, repoPath, number, req) as Promise<import('../shared/prReview').PrWriteResult>,
-    prRunLog: (repoPath: string, runId: string) =>
-      ipcRenderer.invoke(IPC.PR_REVIEW_RUN_LOG, repoPath, runId) as Promise<
+    prComment: (repoPath: string, prUrl: string, req: import('../shared/prReview').PrCommentRequest) =>
+      ipcRenderer.invoke(IPC.PR_REVIEW_COMMENT, repoPath, prUrl, req) as Promise<import('../shared/prReview').PrWriteResult>,
+    prReply: (repoPath: string, prUrl: string, commentId: number, body: string) =>
+      ipcRenderer.invoke(IPC.PR_REVIEW_REPLY, repoPath, prUrl, commentId, body) as Promise<import('../shared/prReview').PrWriteResult>,
+    prSubmitReview: (repoPath: string, prUrl: string, req: import('../shared/prReview').PrSubmitReviewRequest) =>
+      ipcRenderer.invoke(IPC.PR_REVIEW_SUBMIT, repoPath, prUrl, req) as Promise<import('../shared/prReview').PrWriteResult>,
+    prMerge: (repoPath: string, prUrl: string, req: import('../shared/prReview').PrMergeRequest) =>
+      ipcRenderer.invoke(IPC.PR_REVIEW_MERGE, repoPath, prUrl, req) as Promise<import('../shared/prReview').PrWriteResult>,
+    prRunLog: (repoPath: string, prUrl: string, runId: string) =>
+      ipcRenderer.invoke(IPC.PR_REVIEW_RUN_LOG, repoPath, prUrl, runId) as Promise<
         import('../shared/prReview').PrReviewRead<import('../shared/prReview').PrRunLog>
       >,
-    prRerunFailed: (repoPath: string, runId: string) =>
-      ipcRenderer.invoke(IPC.PR_REVIEW_RERUN, repoPath, runId) as Promise<import('../shared/prReview').PrWriteResult>,
+    prRerunFailed: (repoPath: string, prUrl: string, runId: string) =>
+      ipcRenderer.invoke(IPC.PR_REVIEW_RERUN, repoPath, prUrl, runId) as Promise<import('../shared/prReview').PrWriteResult>,
     // Ship button: the current branch's status and its writes (each re-checked in main).
     shipStatus: (repoPath: string) =>
       ipcRenderer.invoke(IPC.GIT_SHIP_STATUS, repoPath) as Promise<import('../main/git/shipActions').ShipStatusResult>,

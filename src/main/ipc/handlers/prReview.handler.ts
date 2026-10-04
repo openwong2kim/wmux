@@ -1,11 +1,15 @@
 // The Git page's PR review and CI IPC (src/main/github/GhPrReviewService.ts):
 // every argument from the renderer is validated here, the repo path is
-// confined, and the repo's GitHub remote is resolved before gh runs.
+// confined, and the repo's GitHub remote is resolved before gh runs. Each call
+// names the PR by its URL, and the URL must be on that same repo: a list read
+// through another remote (a fork's upstream, gh's default repo) never gets a
+// review or a merge sent to a different PR with the same number.
 import { ipcMain } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import { resolveAccessiblePath } from './fs.handler';
 import { detectRemote, isGithubHost } from '../../github/PrProvider';
+import { prUrlParts } from '../../../shared/prDragRef';
 import { ghPrReviewService, type GhPrReviewService } from '../../github/GhPrReviewService';
 import {
   MERGE_SUBJECT_MAX,
@@ -29,14 +33,23 @@ const isPath = (v: unknown): v is string =>
   // eslint-disable-next-line no-control-regex -- control characters are what is refused
   typeof v === 'string' && v.length > 0 && v.length <= 1024 && !v.startsWith('/') && !v.split('/').includes('..') && !/[\u0000-\u001f]/.test(v);
 
-/** The confined repo and its GitHub key (host/owner/repo), or why not. */
-async function githubRepo(repoPath: unknown): Promise<{ cwd: string; key: string } | { error: string }> {
+/** The PR's number when its URL is on `key` (host/owner/repo, any case), else null. */
+export function prNumberOn(key: string, prUrl: unknown): number | null {
+  const parts = typeof prUrl === 'string' ? prUrlParts(prUrl) : null;
+  if (!parts) return null;
+  return `${parts.host}/${parts.owner}/${parts.repo}`.toLowerCase() === key.toLowerCase() ? parts.number : null;
+}
+
+/** The confined repo, its GitHub key and the PR's number, or why not. */
+async function githubPr(repoPath: unknown, prUrl: unknown): Promise<{ cwd: string; key: string; number: number } | { error: string }> {
   if (typeof repoPath !== 'string' || !repoPath) return { error: 'repoPath required' };
   const cwd = await resolveAccessiblePath(repoPath);
   if (!cwd) return { error: 'repoPath required' };
   const remote = await detectRemote(cwd);
   if (!remote || !isGithubHost(remote.host) || !remote.key) return { error: 'not a GitHub repository' };
-  return { cwd, key: remote.key };
+  const number = prNumberOn(remote.key, prUrl);
+  if (number === null) return { error: `this pull request is not on ${remote.key}; refusing to act on it from here` };
+  return { cwd, key: remote.key, number };
 }
 
 export function parseCommentRequest(raw: unknown): PrCommentRequest | null {
@@ -62,46 +75,38 @@ export function parseMergeRequest(raw: unknown): PrMergeRequest | null {
 }
 
 export function registerPrReviewHandlers(service: GhPrReviewService = ghPrReviewService): () => void {
-  const read = <T>(channel: string, run: (cwd: string, key: string, ...args: unknown[]) => Promise<PrReviewRead<T>> | PrReviewRead<T>) => {
+  const on = <R>(channel: string, run: (cwd: string, key: string, number: number, ...args: unknown[]) => Promise<R> | R) => {
     ipcMain.removeHandler(channel);
-    ipcMain.handle(channel, wrapHandler(channel, async (_e: Electron.IpcMainInvokeEvent, repoPath: unknown, ...args: unknown[]) => {
-      const repo = await githubRepo(repoPath);
-      return 'error' in repo ? invalid(repo.error) : run(repo.cwd, repo.key, ...args);
-    }));
-  };
-  const write = (channel: string, run: (cwd: string, key: string, ...args: unknown[]) => Promise<PrWriteResult> | PrWriteResult) => {
-    ipcMain.removeHandler(channel);
-    ipcMain.handle(channel, wrapHandler(channel, async (_e: Electron.IpcMainInvokeEvent, repoPath: unknown, ...args: unknown[]) => {
-      const repo = await githubRepo(repoPath);
-      return 'error' in repo ? invalid(repo.error) : run(repo.cwd, repo.key, ...args);
+    ipcMain.handle(channel, wrapHandler(channel, async (_e: Electron.IpcMainInvokeEvent, repoPath: unknown, prUrl: unknown, ...args: unknown[]) => {
+      const pr = await githubPr(repoPath, prUrl);
+      return 'error' in pr ? invalid(pr.error) : run(pr.cwd, pr.key, pr.number, ...args);
     }));
   };
 
-  read(IPC.PR_REVIEW_CHECKS, (cwd, key, number, force) =>
-    isNumber(number) ? service.checks(cwd, key, number, force === true) : invalid('valid PR number required'));
-  read(IPC.PR_REVIEW_FILES, (cwd, key, number, head) =>
-    isNumber(number) && isCommitSha(head) ? service.files(cwd, key, number, head) : invalid('valid PR number and head required'));
-  read(IPC.PR_REVIEW_THREADS, (cwd, key, number, force) =>
-    isNumber(number) ? service.threads(cwd, key, number, force === true) : invalid('valid PR number required'));
-  read(IPC.PR_REVIEW_RUN_LOG, (cwd, key, runId) => (isRunId(runId) ? service.runLog(cwd, key, runId) : invalid('valid run id required')));
+  on<PrReviewRead<unknown>>(IPC.PR_REVIEW_CHECKS, (cwd, key, number, force) => service.checks(cwd, key, number, force === true));
+  on<PrReviewRead<unknown>>(IPC.PR_REVIEW_FILES, (cwd, key, number, head) =>
+    isCommitSha(head) ? service.files(cwd, key, number, head) : invalid('a head commit is required'));
+  on<PrReviewRead<unknown>>(IPC.PR_REVIEW_THREADS, (cwd, key, number, head, force) =>
+    isCommitSha(head) ? service.threads(cwd, key, number, head, force === true) : invalid('a head commit is required'));
+  on<PrReviewRead<unknown>>(IPC.PR_REVIEW_RUN_LOG, (cwd, key, _number, runId) => (isRunId(runId) ? service.runLog(cwd, key, runId) : invalid('valid run id required')));
 
-  write(IPC.PR_REVIEW_COMMENT, (cwd, key, number, raw) => {
+  on<PrWriteResult>(IPC.PR_REVIEW_COMMENT, (cwd, key, number, raw) => {
     const req = parseCommentRequest(raw);
-    return isNumber(number) && req ? service.comment(cwd, key, number, req) : invalid('a line, a head and a comment are required');
+    return req ? service.comment(cwd, key, number, req) : invalid('a line, a head and a comment are required');
   });
-  write(IPC.PR_REVIEW_REPLY, (cwd, key, number, commentId, body) =>
-    isNumber(number) && typeof commentId === 'number' && Number.isSafeInteger(commentId) && commentId > 0 && isBody(body, REVIEW_BODY_MAX) && body.trim()
+  on<PrWriteResult>(IPC.PR_REVIEW_REPLY, (cwd, key, number, commentId, body) =>
+    typeof commentId === 'number' && Number.isSafeInteger(commentId) && commentId > 0 && isBody(body, REVIEW_BODY_MAX) && body.trim()
       ? service.reply(cwd, key, number, commentId, body)
       : invalid('a comment and a reply are required'));
-  write(IPC.PR_REVIEW_SUBMIT, (cwd, key, number, raw) => {
+  on<PrWriteResult>(IPC.PR_REVIEW_SUBMIT, (cwd, key, number, raw) => {
     const req = parseReviewRequest(raw);
-    return isNumber(number) && req ? service.submitReview(cwd, key, number, req) : invalid('a review needs a head, an action and (unless approving) a body');
+    return req ? service.submitReview(cwd, key, number, req) : invalid('a review needs a head, an action and (unless approving) a body');
   });
-  write(IPC.PR_REVIEW_MERGE, (cwd, key, number, raw) => {
+  on<PrWriteResult>(IPC.PR_REVIEW_MERGE, (cwd, key, number, raw) => {
     const req = parseMergeRequest(raw);
-    return isNumber(number) && req ? service.merge(cwd, key, number, req) : invalid('a merge needs the head and a one-line subject');
+    return req ? service.merge(cwd, key, number, req) : invalid('a merge needs the head and a one-line subject');
   });
-  write(IPC.PR_REVIEW_RERUN, (cwd, key, runId) => (isRunId(runId) ? service.rerunFailed(cwd, key, runId) : invalid('valid run id required')));
+  on<PrWriteResult>(IPC.PR_REVIEW_RERUN, (cwd, key, _number, runId) => (isRunId(runId) ? service.rerunFailed(cwd, key, runId) : invalid('valid run id required')));
 
   const channels = [
     IPC.PR_REVIEW_CHECKS, IPC.PR_REVIEW_FILES, IPC.PR_REVIEW_THREADS, IPC.PR_REVIEW_RUN_LOG,
