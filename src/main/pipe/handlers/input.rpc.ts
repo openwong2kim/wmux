@@ -1,6 +1,14 @@
 import type { BrowserWindow } from 'electron';
 import { usageLimitHoldDetail } from '../../usageLimit/paneUsageLimits';
-import { waitForQuietInput } from './quietInput';
+import {
+  DELIVERY_RESERVE_MS,
+  QUIET_INPUT_WAIT_MS,
+  agentIdentityHolds,
+  isPaneQuiet,
+  quietWaitBudget,
+  typedSincePaste,
+  waitForQuietAgent,
+} from './quietInput';
 import type { RpcRouter } from '../RpcRouter';
 import { isHostedCaller, type RpcContext } from '../../../shared/rpc';
 import type { PTYManager } from '../../pty/PTYManager';
@@ -796,6 +804,17 @@ export async function deliveryGateCheck(
 }
 
 /**
+ * Extra checks for a delivery that must not land in the wrong place (the Git
+ * page's hand-off): run right before the paste and right before the Enter,
+ * inside the pane lock. A refusal before the Enter clears what was pasted.
+ */
+export interface DeliveryGuard {
+  /** Passing also stamps the paste's time on the guard's own clock. */
+  beforePaste: () => Promise<GatedSubmitRefusal | null>;
+  beforeEnter: () => Promise<GatedSubmitRefusal | null>;
+}
+
+/**
  * Paste `text` into `ptyId` and submit it, gated as one operation in main. The
  * gate runs before the paste AND again right before the Enter, because the
  * Enter follows the paste after an agent-specific delay and a dialog drawn in
@@ -817,6 +836,7 @@ export async function gatedPasteSubmit(
    * paste: the step takes seconds, and a dialog can open meanwhile.
    */
   freshContext?: () => Promise<FreshContextReply>,
+  guard?: DeliveryGuard,
 ): Promise<GatedSubmitResult> {
   const before = await deliveryGateCheck(gate, ptyId);
   if (before) return before;
@@ -839,6 +859,8 @@ export async function gatedPasteSubmit(
         : afterStep;
     }
   }
+  const atPaste = guard ? await guard.beforePaste() : null;
+  if (atPaste) return atPaste;
   try {
     write(ptyId, formatBracketedPastePayload(text));
   } catch (err) {
@@ -847,6 +869,19 @@ export async function gatedPasteSubmit(
   await sleep(submitProfileForAgent(agent).submitDelayMs);
   const atEnter = await deliveryGateCheck(gate, ptyId);
   if (atEnter) return { ...atEnter, pasted: true };
+  const guardAtEnter = guard ? await guard.beforeEnter() : null;
+  if (guardAtEnter) {
+    // Not submitted; take the text back out (Ctrl+U empties an agent's
+    // composer or a shell's line — best effort, reported as such).
+    let cleared = false;
+    try {
+      write(ptyId, '\x15');
+      cleared = true;
+    } catch {
+      /* the pane went away */
+    }
+    return { ...guardAtEnter, pasted: true, cleared };
+  }
   try {
     write(ptyId, isMultilinePtyPayload(text) ? '\r\r' : '\r');
   } catch (err) {
@@ -895,6 +930,8 @@ export interface InputRpcDeps {
   readScreenText?: (ptyId: string) => Promise<string | null>;
   /** Injected in tests; the gated submit's wait between paste and Enter. */
   sleep?: (ms: number) => Promise<void>;
+  /** Injected in tests; the hand-off guard's clock. */
+  now?: () => number;
   /** The latest SessionStart hook main received for a pane: the evidence a
    *  fresh-context step waits for (#1680). */
   readSessionStart?: (ptyId: string) => SessionStartReceipt | undefined;
@@ -1561,22 +1598,69 @@ export function registerInputRpc(
     if (!dc?.isConnected) throw new Error(`delivery: PTY not found — id="${ptyId}"`);
     dc.writeToSession(ptyId, data);
   };
+  /**
+   * The hand-off's wait and guard. A pane whose agent main cannot read (a
+   * local pty, no daemon) is refused: its agent cannot be verified. The wait
+   * is bounded by what the deadline leaves after the rest of the delivery.
+   */
+  const prepareHandoffGuard = async (
+    ptyId: string,
+    opts: GatedSubmitOptions,
+  ): Promise<{ ok: true; guard: DeliveryGuard } | { ok: false; refusal: GatedSubmitRefusal }> => {
+    const refusal = (reason: GatedSubmitRefusal['reason'], detail: string) => ({ ok: false as const, refusal: { ok: false as const, reason, detail } });
+    const dc = ptyManager.get(ptyId) ? null : getDaemonClient?.();
+    if (!dc?.isConnected) return refusal('agent_unverified', "delivery: the target pane's agent cannot be verified (no daemon state)");
+    const now = deps.now ?? Date.now;
+    const deadlineAt = typeof opts.deadlineAt === 'number' ? opts.deadlineAt : now() + QUIET_INPUT_WAIT_MS + DELIVERY_RESERVE_MS;
+    const read = () => dc.getAgentState(ptyId, { timeoutMs: 1_000 });
+    const waited = await waitForQuietAgent(read, {
+      ...(opts.expectAgent ? { expectAgent: opts.expectAgent } : {}),
+      waitMs: quietWaitBudget(deadlineAt, now()),
+      ...(deps.sleep ? { sleep: deps.sleep } : {}),
+      now,
+    });
+    if (!waited.ok) return refusal(waited.reason, waited.detail);
+    const { baseline } = waited;
+    const pastDeadline = (): GatedSubmitRefusal | null =>
+      now() > deadlineAt ? { ok: false, reason: 'deadline', detail: 'delivery: the hand-off ran past its deadline' } : null;
+    const check = async (pasteAt?: number): Promise<GatedSubmitRefusal | null> => {
+      const late = pastDeadline();
+      if (late) return late;
+      const s = await read().catch(() => null);
+      if (!s) return { ok: false, reason: 'agent_unverified', detail: "delivery: the target pane's agent could not be read" };
+      if (!agentIdentityHolds(baseline, s)) {
+        return { ok: false, reason: 'agent_changed', detail: 'delivery: the agent the hand-off was aimed at is no longer in the pane' };
+      }
+      const typing = pasteAt === undefined ? !isPaneQuiet(s) : typedSincePaste(s, pasteAt, now());
+      return typing ? { ok: false, reason: 'user_typing', detail: 'delivery: someone typed in the target pane' } : null;
+    };
+    let pasteAt = 0;
+    return {
+      ok: true,
+      guard: {
+        beforePaste: async () => {
+          const refused = await check();
+          if (!refused) pasteAt = now();
+          return refused;
+        },
+        beforeEnter: () => check(pasteAt),
+      },
+    };
+  };
+
   return {
     deliveryGate: (ptyId) => deliveryGateCheck(approvalGate, ptyId),
     gatedSubmit: async (ptyId, text, agent, opts) => {
       // The Git page's hand-off: hold the paste while the person is typing in
-      // that pane (draft or recent keys), within a bounded wait.
+      // that pane, and check right before the paste and the Enter that the
+      // agent they chose is still the one there.
+      let guard: DeliveryGuard | undefined;
       if (opts?.waitQuiet) {
-        const dc = getDaemonClient?.();
-        const quiet = await waitForQuietInput(
-          async () => (dc?.isConnected ? dc.getAgentState(ptyId, { timeoutMs: 1_000 }) : null),
-          { ...(deps.sleep ? { sleep: deps.sleep } : {}) },
-        );
-        if (!quiet) {
-          return { ok: false, reason: 'user_typing', detail: 'delivery: someone is typing in the target pane' };
-        }
+        const prepared = await prepareHandoffGuard(ptyId, opts);
+        if (!prepared.ok) return prepared.refusal;
+        guard = prepared.guard;
       }
-      if (!opts?.newTask) return gatedPasteSubmit(approvalGate, writeToPty, ptyId, text, agent, deps.sleep);
+      if (!opts?.newTask) return gatedPasteSubmit(approvalGate, writeToPty, ptyId, text, agent, deps.sleep, undefined, guard);
       // #1680 — a new task: the fresh-context step runs inside the gated
       // delivery, and the pane is held through the text's Enter. The pane's
       // conversation is kept when the renderer knows of other open tasks on it,
@@ -1596,7 +1680,7 @@ export function registerInputRpc(
               (data) => writeToPty(ptyId, data),
               keepContext,
             );
-          }),
+          }, guard),
         deps.freshContextLockWaitMs,
       ).catch((err: unknown): GatedSubmitResult => {
         if (!(err instanceof FreshContextBusy)) throw err;

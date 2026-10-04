@@ -7,7 +7,8 @@ import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import { resolveAccessiblePath } from './fs.handler';
 import { getWorkLinkStore } from '../../workLink/workLinkStore';
-import { sendHandoff, startHandoffWorktree, type HandoffDeps } from '../../git/handoff';
+import { sendHandoff, startHandoffWorktree, watchHandoffWorktreeLinks, type HandoffDeps } from '../../git/handoff';
+import { getTaskLedger } from '../../deck/taskLedgerHost';
 import type { FanOutRequest, FanOutResult } from '../../worktask/FanOutService';
 import type { HandoffSendResult, HandoffStartResult } from '../../../shared/gitHandoff';
 
@@ -18,9 +19,11 @@ export function registerGitHandoffHandlers(opts: {
   const store = getWorkLinkStore();
   const deps: HandoffDeps = {
     invoke: opts.invoke,
-    links: { list: (f) => store.list(f), upsert: (i) => store.upsert(i) },
+    links: { list: (f) => store.list(f), upsert: (i) => store.upsert(i), setState: (id, st, why) => store.setState(id, st, why) },
     startFanOut: opts.startFanOut,
   };
+  // A worktree hand-off's link follows its fan-out mission (done, closed, …).
+  const unwatch = watchHandoffWorktreeLinks(getTaskLedger(), deps.links);
   ipcMain.removeHandler(IPC.GIT_HANDOFF_SEND);
   ipcMain.handle(
     IPC.GIT_HANDOFF_SEND,
@@ -38,6 +41,7 @@ export function registerGitHandoffHandlers(opts: {
     }),
   );
   return () => {
+    unwatch();
     ipcMain.removeHandler(IPC.GIT_HANDOFF_SEND);
     ipcMain.removeHandler(IPC.GIT_HANDOFF_START_WORKTREE);
   };

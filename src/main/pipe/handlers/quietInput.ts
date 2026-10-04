@@ -1,17 +1,44 @@
-// Waiting for a person to stop typing in a pane before a delivery pastes into
-// it (the Git page's hand-off): no draft in the composer and no key input for
-// a quiet window, within a bounded wait. A pane whose state cannot be read
-// (no daemon, a local pty) is not held here; the approval gate still runs.
+// The Git page's hand-off delivery, main side: wait for the person to stop
+// typing in the target pane, and keep checking that the agent the person
+// chose is still the one there. A pane whose state cannot be read at all (a
+// local pty, no daemon) is not handed to here: the caller refuses it, because
+// its agent cannot be verified.
 
 export const QUIET_INPUT_MS = 10_000;
-/** Bounded so the whole delivery stays inside a new task send's main timeout. */
-export const QUIET_INPUT_WAIT_MS = 14_000;
 const POLL_MS = 500;
+/** The longest wait for quiet: the quiet window plus room for someone still
+ *  typing when the hand-off starts to finish (about 10 s of it). */
+export const QUIET_INPUT_WAIT_MS = 20_000;
+/**
+ * What the rest of a new-task delivery may take after the wait: the pane
+ * lock, the task-store read, the gates, a fresh-context step and the paste
+ * (about 21 s worst case, see NEW_TASK_SEND_MAIN_TIMEOUT_MS). The wait gets
+ * what is left of the deadline after this.
+ */
+export const DELIVERY_RESERVE_MS = 21_000;
+/** How far our own paste may lag behind the moment we wrote it (the write
+ *  reaches the daemon a little later than we stamp it). */
+const PASTE_ECHO_SLACK_MS = 300;
 
 export interface PaneInputState {
   hasDraft?: boolean;
   keyInputIdleMs?: number;
   keyInputQuiet?: boolean;
+}
+
+/** The daemon's view of a pane's agent, as getAgentState reports it. */
+export interface PaneAgentState extends PaneInputState {
+  agentName: string | null;
+  agentStatus: string;
+  agentVerified?: boolean;
+  incarnationId: string;
+}
+
+/** The agent a hand-off was aimed at, as first seen in the pane. */
+export interface AgentBaseline {
+  agentName: string;
+  incarnationId: string;
+  agentVerified: boolean;
 }
 
 /** Quiet now: no draft, and keys idle for the window (an older daemon without
@@ -22,23 +49,73 @@ export function isPaneQuiet(s: PaneInputState, quietMs = QUIET_INPUT_MS): boolea
   return s.keyInputQuiet !== false;
 }
 
-/** True once the pane is quiet (or its state is unreadable); false when the
- *  person was still typing, or left a draft, when the wait ran out. */
-export async function waitForQuietInput(
-  read: () => Promise<PaneInputState | null>,
-  opts: { quietMs?: number; waitMs?: number; pollMs?: number; sleep?: (ms: number) => Promise<void>; now?: () => number } = {},
-): Promise<boolean> {
+/** The same agent is still in the pane: same name and session incarnation,
+ *  not back at a shell, and not a process-backed agent whose process went
+ *  away. Pure. */
+export function agentIdentityHolds(base: AgentBaseline, s: PaneAgentState): boolean {
+  if (s.agentName !== base.agentName) return false;
+  if (s.incarnationId !== base.incarnationId) return false;
+  if (s.agentStatus === 'idle') return false;
+  return !(base.agentVerified && s.agentVerified !== true);
+}
+
+/** Someone pressed a key after our paste at `pasteAt`: the last key is newer
+ *  than our write. Our own paste counts as key input, so a draft alone says
+ *  nothing here. Unknown idle time counts as typed. Pure. */
+export function typedSincePaste(s: PaneInputState, pasteAt: number, now: number): boolean {
+  if (typeof s.keyInputIdleMs !== 'number') return true;
+  return s.keyInputIdleMs + PASTE_ECHO_SLACK_MS < now - pasteAt;
+}
+
+/** How long the quiet wait may take before `deadlineAt`, leaving the rest of
+ *  the delivery its reserve; never more than QUIET_INPUT_WAIT_MS. Pure. */
+export function quietWaitBudget(deadlineAt: number, now: number): number {
+  return Math.max(0, Math.min(QUIET_INPUT_WAIT_MS, deadlineAt - now - DELIVERY_RESERVE_MS));
+}
+
+export type QuietAgentResult =
+  | { ok: true; baseline: AgentBaseline }
+  | { ok: false; reason: 'user_typing' | 'agent_changed'; detail: string };
+
+/**
+ * Wait until the pane is quiet with the expected agent in it. A read that
+ * fails or times out is not quiet: it is retried until the wait runs out,
+ * then refused as `user_typing`. A different agent, or none, is refused at
+ * once as `agent_changed`.
+ */
+export async function waitForQuietAgent(
+  read: () => Promise<PaneAgentState | null>,
+  opts: {
+    expectAgent?: string;
+    quietMs?: number;
+    waitMs?: number;
+    pollMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+    now?: () => number;
+  } = {},
+): Promise<QuietAgentResult> {
   const quietMs = opts.quietMs ?? QUIET_INPUT_MS;
   const waitMs = opts.waitMs ?? QUIET_INPUT_WAIT_MS;
   const pollMs = opts.pollMs ?? POLL_MS;
   const sleep = opts.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   const now = opts.now ?? Date.now;
   const deadline = now() + waitMs;
+  let baseline: AgentBaseline | null = null;
   for (;;) {
     const s = await read().catch(() => null);
-    if (!s) return true;
-    if (isPaneQuiet(s, quietMs)) return true;
-    if (now() + pollMs > deadline) return false;
+    if (s) {
+      if (!s.agentName || s.agentStatus === 'idle' || (opts.expectAgent && s.agentName !== opts.expectAgent)) {
+        return { ok: false, reason: 'agent_changed', detail: 'delivery: the agent the hand-off was aimed at is no longer in the pane' };
+      }
+      baseline ??= { agentName: s.agentName, incarnationId: s.incarnationId, agentVerified: s.agentVerified === true };
+      if (!agentIdentityHolds(baseline, s)) {
+        return { ok: false, reason: 'agent_changed', detail: 'delivery: the agent in the pane changed while waiting' };
+      }
+      if (isPaneQuiet(s, quietMs)) return { ok: true, baseline };
+    }
+    if (now() + pollMs > deadline) {
+      return { ok: false, reason: 'user_typing', detail: 'delivery: someone is typing in the target pane (or its state could not be read)' };
+    }
     await sleep(pollMs);
   }
 }

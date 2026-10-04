@@ -218,10 +218,21 @@ export interface GatedSubmitRefusal {
     | 'fresh_context_busy'
     | 'usage_limited'
     /** A `waitQuiet` delivery: the person kept typing (or left a draft) in
-     *  the pane, so nothing was written. */
-    | 'user_typing';
+     *  the pane, so nothing was written (or, after the paste, no Enter). */
+    | 'user_typing'
+    /** A `waitQuiet` delivery: the agent it was aimed at left the pane or was
+     *  replaced (or the pane is back at a shell). */
+    | 'agent_changed'
+    /** A `waitQuiet` delivery: the pane's agent could not be read, so it could
+     *  not be verified (a local pty, no daemon, or a failed read). */
+    | 'agent_unverified'
+    /** A `waitQuiet` delivery ran past its deadline; the sender has given up. */
+    | 'deadline';
   detail: string;
   pasted?: boolean;
+  /** With `pasted`: whether the pasted text was cleared again (best effort:
+   *  one Ctrl+U, which empties an agent's composer or a shell's line). */
+  cleared?: boolean;
 }
 /** A delivered submit. A new-task delivery also says what its fresh-context
  *  step did (shared/freshContext). */
@@ -247,6 +258,12 @@ export interface GatedSubmitOptions {
   pane?: { workspaceId: string; paneId: string; surfaceId: string };
   /** Hold the paste until the pane has no draft and no key input for a quiet
    *  window, within a bounded wait; refuse with `user_typing` otherwise (the
-   *  Git page's hand-off: the person may be typing in that pane). */
+   *  Git page's hand-off: the person may be typing in that pane). Also checks,
+   *  before the paste and before the Enter, that the same agent is there. */
   waitQuiet?: boolean;
+  /** With `waitQuiet`: the agent the sender saw in the pane (display name). */
+  expectAgent?: string;
+  /** With `waitQuiet`: epoch ms after which nothing is written (main stamps
+   *  it from the send's own timeout). */
+  deadlineAt?: number;
 }

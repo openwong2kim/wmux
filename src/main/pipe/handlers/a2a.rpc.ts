@@ -10,7 +10,7 @@ import * as fs from 'fs';
 import { getPidMapDir } from '../../../shared/constants';
 import { validateMessage } from '../../../shared/types';
 import { EXECUTE_SEND_MAIN_TIMEOUT_MS } from '../../../shared/executeApprovalBounds';
-import { NEW_TASK_SEND_MAIN_TIMEOUT_MS } from '../../../shared/freshContext';
+import { GATED_DELIVERY_DEADLINE_MARGIN_MS, GATED_NEW_TASK_SEND_MAIN_TIMEOUT_MS, NEW_TASK_SEND_MAIN_TIMEOUT_MS } from '../../../shared/freshContext';
 import { flagOrphanedTask, isPagedTaskQuery, pagedTaskId, shapeTaskQueryResult, summarizeTask } from '../../../shared/a2aTaskQueryView';
 import { defaultSnapshot } from '../../pty/portWatch';
 import type { PortSnapshot, SnapshotFn } from '../../pty/portWatch';
@@ -49,6 +49,7 @@ const INTERNAL_RENDERER_FIELDS = [
   'reopenPreflight',
   'requirePaneIdentity',
   'livePaneIds',
+  'deliveryDeadlineAt',
 ] as const;
 
 /**
@@ -670,10 +671,20 @@ export function registerA2aRpc(
     // A NEW task's delivery may run the target pane's fresh-context step
     // (#1680): its command, up to FRESH_CONTEXT_TIMEOUT_MS of waiting, then
     // the paste. Replies never do, and keep the default.
+    // A gated new task (the Git page's hand-off) also waits for the person to
+    // stop typing: a longer wait, and a deadline main stamps (never taken from
+    // the wire) after which nothing is written, so a late delivery cannot land
+    // once this call has given up.
+    const gatedNewTask = !awaitsApproval && !params.taskId && sendParams.gatedDelivery === true;
+    if (gatedNewTask) {
+      sendParams.deliveryDeadlineAt = Date.now() + GATED_NEW_TASK_SEND_MAIN_TIMEOUT_MS - GATED_DELIVERY_DEADLINE_MARGIN_MS;
+    }
     const result = awaitsApproval
       ? await sendToRenderer(getWindow, 'a2a.task.send', sendParams, { timeoutMs: EXECUTE_SEND_MAIN_TIMEOUT_MS })
       : !params.taskId
-        ? await sendToRenderer(getWindow, 'a2a.task.send', sendParams, { timeoutMs: NEW_TASK_SEND_MAIN_TIMEOUT_MS })
+        ? await sendToRenderer(getWindow, 'a2a.task.send', sendParams, {
+            timeoutMs: gatedNewTask ? GATED_NEW_TASK_SEND_MAIN_TIMEOUT_MS : NEW_TASK_SEND_MAIN_TIMEOUT_MS,
+          })
         : await sendToRenderer(getWindow, 'a2a.task.send', sendParams);
 
     // 데몬 정본 미러-생성(신규 태스크 브랜치에서만 — 렌더러가 task 스냅샷 동반).

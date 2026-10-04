@@ -28,19 +28,40 @@ export const HANDOFF_TITLE_MAX = 120;
 /** Longest operator note. */
 export const HANDOFF_NOTE_MAX = 2000;
 
-/** An untrusted title as one safe line: control characters and line breaks
- *  removed, whitespace collapsed, quotes kept from closing the quote, cut to
- *  HANDOFF_TITLE_MAX with an ellipsis. */
+// Invisible characters that can reorder or hide text: bidi controls,
+// zero-width and other format characters, the byte-order mark.
+const INVISIBLE_RE = /[\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/g;
+
+/** An untrusted title as one safe line: control characters, line breaks and
+ *  invisible characters removed, the characters a shell expands inside double
+ *  quotes defused (`$` dropped, a backtick becomes `'`, a backslash `/`),
+ *  quotes kept from closing the quote, whitespace collapsed, cut to
+ *  HANDOFF_TITLE_MAX with an ellipsis. Should the pane turn out to be a shell
+ *  after all, nothing in it runs. */
 export function sanitizeHandoffTitle(title: string): string {
-  // eslint-disable-next-line no-control-regex
-  const flat = title.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ').replace(/"/g, "'").replace(/\s+/g, ' ').trim();
+  const flat = title
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ')
+    .replace(INVISIBLE_RE, '')
+    .replace(/\$/g, '')
+    .replace(/`/g, "'")
+    .replace(/\\/g, '/')
+    .replace(/"/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
   return flat.length > HANDOFF_TITLE_MAX ? `${flat.slice(0, HANDOFF_TITLE_MAX - 1).trimEnd()}…` : flat;
 }
 
-/** The operator's note: control characters other than line breaks removed, capped. */
+/** The operator's note: control characters other than line breaks and
+ *  invisible characters removed, capped. */
 export function sanitizeHandoffNote(note: string): string {
-  // eslint-disable-next-line no-control-regex
-  return note.replace(/\r\n?/g, '\n').replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, '').trim().slice(0, HANDOFF_NOTE_MAX);
+  return note
+    .replace(/\r\n?/g, '\n')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, '')
+    .replace(INVISIBLE_RE, '')
+    .trim()
+    .slice(0, HANDOFF_NOTE_MAX);
 }
 
 /** The fixed message an agent receives for a hand-off. */

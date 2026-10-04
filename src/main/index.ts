@@ -897,7 +897,16 @@ ipcMain.handle(IPC.GATED_SUBMIT, async (_e, ptyId: unknown, text: unknown, agent
           ? { keepContext: 'open_a2a_task' as const }
           : {}),
         ...(typeof opts === 'object' && opts !== null && (opts as { waitQuiet?: unknown }).waitQuiet === true
-          ? { waitQuiet: true }
+          ? {
+              waitQuiet: true,
+              ...(typeof (opts as { expectAgent?: unknown }).expectAgent === 'string'
+                ? { expectAgent: ((opts as { expectAgent: string }).expectAgent).slice(0, 80) }
+                : {}),
+              ...(typeof (opts as { deadlineAt?: unknown }).deadlineAt === 'number' &&
+              Number.isFinite((opts as { deadlineAt: number }).deadlineAt)
+                ? { deadlineAt: (opts as { deadlineAt: number }).deadlineAt }
+                : {}),
+            }
           : {}),
         ...gatedSubmitTaskContext(opts),
       })

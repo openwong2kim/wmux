@@ -110,6 +110,16 @@ export const FRESH_CONTEXT_LOCK_WAIT_MS = 4_000;
  */
 export const NEW_TASK_SEND_MAIN_TIMEOUT_MS = 25_000;
 
+/**
+ * Main's wait for a GATED new-task send (the Git page's hand-off): the same
+ * delivery as above plus up to 20 s waiting for the person to stop typing.
+ * The renderer gets a deadline this far ahead minus
+ * GATED_DELIVERY_DEADLINE_MARGIN_MS, and main writes nothing after it, so a
+ * delivery never lands after main gave up.
+ */
+export const GATED_NEW_TASK_SEND_MAIN_TIMEOUT_MS = 45_000;
+export const GATED_DELIVERY_DEADLINE_MARGIN_MS = 3_000;
+
 /** The MCP client's budget for a new-task `send_message`: outwaits main. */
 export const NEW_TASK_SEND_CLIENT_TIMEOUT_MS = 30_000;
 
