@@ -98,7 +98,7 @@ export function RepoSwitcher({ label, current, options, onPick, onOpenChange }: 
         onClick={() => (open ? close(false) : openMenu())}
         data-git-repo-switcher
       >
-        <span className="wmux-git-repo-trigger-text" data-git-page-repo>{label}</span>
+        <span className="wmux-git-repo-trigger-text" title={label} data-git-page-repo>{label}</span>
         <span className="wmux-git-chevron" data-open={open ? 'true' : undefined} aria-hidden="true"><IconChevron size={12} /></span>
       </button>
       {open && (

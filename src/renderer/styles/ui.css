@@ -2455,13 +2455,15 @@ html[data-fullscreen] .wmux-shell-body {
 
 /* Git page — the header's repo switcher */
 .wmux-git-page-repo { display: flex; align-items: center; gap: 4px; }
-.wmux-git-repo-switch { position: relative; min-width: 0; }
-.wmux-git-repo-trigger { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; margin-left: -6px; padding: 0 6px; border-radius: 6px; font-size: 20px; font-weight: 600; line-height: 28px; color: var(--text-main); }
+/* The hover fill reaches 6px past the text: the negative margin sits on the
+   wrapper so the trigger's own width is never cut short (that clipped the name). */
+.wmux-git-repo-switch { position: relative; min-width: 0; margin-left: -6px; }
+.wmux-git-repo-trigger { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 0 6px; border-radius: 6px; font-size: 20px; font-weight: 600; line-height: 28px; color: var(--text-main); }
 .wmux-git-repo-trigger:hover, .wmux-git-repo-trigger[aria-expanded='true'] { background: var(--hover-fill); }
 .wmux-git-repo-trigger-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wmux-git-repo-trigger .wmux-git-chevron { color: var(--text-muted); transform: rotate(90deg); }
 .wmux-git-repo-trigger .wmux-git-chevron[data-open] { transform: rotate(-90deg); }
-.wmux-git-repo-menu { position: absolute; top: calc(100% + 6px); left: -6px; z-index: 30; display: flex; flex-direction: column; gap: 4px; width: 320px; max-width: calc(100vw - 32px); }
+.wmux-git-repo-menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 30; display: flex; flex-direction: column; gap: 4px; width: 320px; max-width: calc(100vw - 32px); }
 .wmux-git-repo-filter { width: 100%; height: 28px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--line); background: transparent; font-size: 12px; color: var(--text-main); }
 .wmux-git-repo-list { max-height: 320px; overflow-y: auto; margin: 0; padding: 0; list-style: none; }
 .wmux-git-repo-option { display: flex; flex-direction: column; gap: 1px; padding: 6px 8px; border-radius: 6px; cursor: default; }

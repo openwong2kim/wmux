@@ -138,6 +138,8 @@ describe('Git page', () => {
     await settle();
     expect(container.querySelector('h1')?.textContent).toBe('Git');
     expect(container.querySelector('[data-git-page-repo]')?.textContent).toBe('o/alpha');
+    // Truncated only by real overflow; the full owner/repo is always in the tooltip.
+    expect(container.querySelector('[data-git-page-repo]')?.getAttribute('title')).toBe('o/alpha');
     const link = container.querySelector('[data-git-page-repo-link]') as HTMLAnchorElement;
     expect(link.getAttribute('aria-label')).toBe('Open o/alpha on GitHub');
     expect(link.getAttribute('href')).toBe('https://github.com/o/alpha');
