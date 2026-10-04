@@ -19,6 +19,7 @@ import { mentionKeyClaim } from '../utils/agentMention';
 import { OPEN_MENTION_PICKER_EVENT } from '../utils/agentMentionInsert';
 import { isChatV2Covering } from '../components/ChatV2/coverage';
 import { showWorkspaces } from '../utils/showWorkspaces';
+import { listedWorkspaces, moaHqId, refuseIfMoaHq } from '../components/Moa/moaHqGuard';
 
 // Lightweight bookmark toast — reuses the same DOM element pattern as showCopyToast
 let bookmarkToastTimer: ReturnType<typeof setTimeout> | null = null;
@@ -237,20 +238,26 @@ export function createPrefixActions(deps: PrefixActionDeps): Record<string, () =
       state.closePane(ws.activePaneId);
     },
     newWorkspace: () => { store.getState().addWorkspace(); },
+    // Cycles the operator's workspaces only: Moa's HQ is not in the list.
     nextWorkspace: () => {
-      const { workspaces, activeWorkspaceId } = store.getState();
-      if (workspaces.length <= 1) return;
+      const state = store.getState();
+      const { activeWorkspaceId } = state;
+      const workspaces = listedWorkspaces(state.workspaces, moaHqId(state));
       const currentIdx = workspaces.findIndex((w) => w.id === activeWorkspaceId);
-      const nextIdx = (currentIdx + 1) % workspaces.length;
-      store.getState().setActiveWorkspace(workspaces[nextIdx].id);
+      const next = workspaces[(currentIdx + 1) % workspaces.length];
+      if (!next || next.id === activeWorkspaceId) return;
+      store.getState().setActiveWorkspace(next.id);
       store.getState().setAppRoute('workspaces');
     },
     prevWorkspace: () => {
-      const { workspaces, activeWorkspaceId } = store.getState();
-      if (workspaces.length <= 1) return;
+      const state = store.getState();
+      const { activeWorkspaceId } = state;
+      const workspaces = listedWorkspaces(state.workspaces, moaHqId(state));
       const currentIdx = workspaces.findIndex((w) => w.id === activeWorkspaceId);
-      const prevIdx = (currentIdx - 1 + workspaces.length) % workspaces.length;
-      store.getState().setActiveWorkspace(workspaces[prevIdx].id);
+      // From the HQ (not in the list), back to the last one.
+      const prev = workspaces[currentIdx === -1 ? workspaces.length - 1 : (currentIdx - 1 + workspaces.length) % workspaces.length];
+      if (!prev || prev.id === activeWorkspaceId) return;
+      store.getState().setActiveWorkspace(prev.id);
       store.getState().setAppRoute('workspaces');
     },
     hideWindow: () => { electronAPI.window.hide(); },
@@ -290,6 +297,8 @@ export function createPrefixActions(deps: PrefixActionDeps): Record<string, () =
       const state = store.getState();
       const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
       if (!ws) return;
+      // Moa's HQ: refused before any session is touched.
+      if (refuseIfMoaHq(ws.id, state)) return;
       // Workspace-wide (#977) — see Sidebar.disposeAllPtys: a stashed pane's
       // session dies with its workspace or it becomes an orphan.
       for (const ptyId of getWorkspacePtyIds(ws)) electronAPI.pty.dispose(ptyId);
@@ -337,8 +346,10 @@ export function useKeyboard() {
       const state = store.getState();
       return state.workspaces.find((w) => w.id === state.activeWorkspaceId);
     };
+    // Ctrl+N counts the list the operator sees, which leaves out Moa's HQ.
     const jumpToWorkspace = (idx: number) => {
-      const { workspaces } = store.getState();
+      const state = store.getState();
+      const workspaces = listedWorkspaces(state.workspaces, moaHqId(state));
       if (idx >= 0 && idx < workspaces.length) {
         store.getState().setActiveWorkspace(workspaces[idx].id);
         // Switching workspace means "show me that workspace", from any page.
@@ -461,10 +472,15 @@ export function useKeyboard() {
       workspace6: () => jumpToWorkspace(5),
       workspace7: () => jumpToWorkspace(6),
       workspace8: () => jumpToWorkspace(7),
-      workspace9: () => jumpToWorkspace(store.getState().workspaces.length - 1),
+      workspace9: () => {
+        const state = store.getState();
+        jumpToWorkspace(listedWorkspaces(state.workspaces, moaHqId(state)).length - 1);
+      },
       closeWorkspace: () => {
         const state = store.getState();
         const ws = activeWorkspace();
+        // Moa's HQ: refused before any session is touched.
+        if (ws && refuseIfMoaHq(ws.id, state)) return;
         if (ws) {
           // 워크스페이스가 소유한 모든 PTY 정리 — 보관된 페인 포함(#977).
           // Same reasoning as Sidebar's close button and the prefix

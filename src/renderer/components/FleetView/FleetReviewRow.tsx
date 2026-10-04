@@ -21,6 +21,7 @@ import { disposeWorkspacePtys } from '../../utils/paneTeardown';
 import { displayWorkspaceName, fleetRequesterText } from '../../utils/fanoutProvenance';
 import { useShallow } from 'zustand/react/shallow';
 import { formatIdle, IDLE_SHOW_AFTER_MS } from '../../utils/idleTime';
+import { refuseIfMoaHq } from '../Moa/moaHqGuard';
 
 export type ReviewEditorKind = 'close' | 'pr';
 type Translate = ReturnType<typeof useT>;
@@ -104,6 +105,8 @@ export function reviewPrUrl(entry: ReviewQueueEntry): string | undefined {
  * unpushed worktree with the reason), then dispose and remove the workspace.
  */
 export async function closeReviewTask(workspaceId: string, t: Translate): Promise<boolean> {
+  // Moa's HQ is never closed: refused before the task close or any dispose.
+  if (refuseIfMoaHq(workspaceId)) return false;
   const st = useStore.getState();
   const name = displayWorkspaceName(st.workspaces.find((w) => w.id === workspaceId)?.name ?? workspaceId, true);
   const owner = st.missionByPaneGroup[workspaceId]?.owner?.verifiedWorkspaceId ?? '';

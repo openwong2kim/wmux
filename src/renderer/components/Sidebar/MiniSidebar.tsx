@@ -16,6 +16,7 @@ import { FOCUS_RING } from '../focusRing';
 import SidebarNavigation from './SidebarNavigation';
 import { workspaceColorHex } from '../../../shared/workspaceColors';
 import PresetPicker from './PresetPicker';
+import { listedWorkspaces } from '../Moa/moaHqGuard';
 
 /** PresetPicker width (w-52), used to keep the flyout on-screen. */
 const PICKER_MENU_WIDTH = 208;
@@ -35,7 +36,12 @@ export default function MiniSidebar({ rail = false, collapsed = true }: { rail?:
   const sidebarPosition = useStore((s) => s.sidebarPosition);
   // A1: 레일은 id/name + 에이전트 상태만 그린다 — 요약 투영만 구독해 cwd/git/
   // port 변경에는 리렌더되지 않게 한다.
-  const workspaces = useStore(useShallow(selectWorkspaceRailSummary));
+  const allWorkspaces = useStore(useShallow(selectWorkspaceRailSummary));
+  // Moa's HQ is not one of the operator's workspaces: the rail lists (and
+  // numbers) the same rows as the full sidebar. It is reached from its own
+  // rail entry instead.
+  const moaHqId = useStore((s) => s.moa?.hq.workspaceId ?? null);
+  const workspaces = useMemo(() => listedWorkspaces(allWorkspaces, moaHqId), [allWorkspaces, moaHqId]);
   // Dot source (agent-status-dot fix): whole-workspace roll-up, same derivation
   // as WorkspaceItem — not the active-pane-only `ws.agentStatus` projection.
   const agentStatusById = useStore(useShallow(selectAllWorkspaceAgentStatus));

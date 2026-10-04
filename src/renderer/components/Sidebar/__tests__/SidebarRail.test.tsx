@@ -20,6 +20,7 @@ beforeEach(() => {
   useStore.setState({
     commandPaletteVisible: false, fleetViewVisible: false, settingsPanelVisible: false,
     schedulesViewOpen: false, appRoute: 'workspaces', schedulesAvailable: true, readOnly: false, sidebarVisible: true,
+    moa: null,
   });
 });
 afterEach(() => {
@@ -129,5 +130,54 @@ describe('sidebar icon rail', () => {
     expect(avatar).not.toBeNull();
     act(() => avatar!.click());
     expect(useStore.getState().appRoute).toBe('workspaces');
+  });
+});
+
+describe('the Moa rail entry', () => {
+  const moa = (enabled: boolean, state: 'ok' | 'hq-missing' | 'unset' = 'ok') => ({
+    config: { enabled, onboarded: true, level: 1 as const, maxTurnsPerHour: 20, bubbles: true, reduceMotion: false, defaultReason: null },
+    hq: { workspaceId: state === 'unset' ? null : 'hq', state },
+    archive: { unacked: 0, total: 0 },
+  });
+  const ws = (id: string) => ({ id, name: id, rootPane: { id: `${id}-p`, type: 'leaf' as const, surfaces: [], activeSurfaceId: '' }, activePaneId: `${id}-p` });
+  const entry = () => container.querySelector<HTMLButtonElement>('[data-sidebar-nav="moa"]');
+  const current = () => [...container.querySelectorAll('[data-sidebar-nav][aria-current="page"]')].map((el) => el.getAttribute('data-sidebar-nav'));
+
+  it('shows after Git, named, only while Moa is on and its workspace exists', async () => {
+    useStore.setState({ workspaces: [ws('a'), ws('hq')], activeWorkspaceId: 'a', activeRemoteKey: null, moa: moa(false) } as never);
+    await act(async () => root.render(<MiniSidebar rail collapsed={false} />));
+    expect(entry()).toBeNull();
+    act(() => useStore.setState({ moa: moa(true, 'hq-missing') } as never));
+    expect(entry()).toBeNull();
+    act(() => useStore.setState({ moa: moa(true, 'unset') } as never));
+    expect(entry()).toBeNull();
+    act(() => useStore.setState({ moa: moa(true) } as never));
+    expect(navIds()).toEqual(['home', 'fleet', 'schedules', 'remote', 'git', 'moa']);
+    expect(entry()!.getAttribute('aria-label')).toBe('Moa');
+  });
+
+  it('opens the HQ on Workspaces from any page and is the current place while it is active', async () => {
+    useStore.setState({ workspaces: [ws('a'), ws('hq')], activeWorkspaceId: 'a', activeRemoteKey: null, appRoute: 'git', moa: moa(true) } as never);
+    const openMoaHq = vi.spyOn(useStore.getState(), 'openMoaHq');
+    await act(async () => root.render(<MiniSidebar rail collapsed={false} />));
+    expect(current()).toEqual(['git']);
+    act(() => entry()!.click());
+    expect(openMoaHq).toHaveBeenCalledTimes(1);
+    expect(useStore.getState().activeWorkspaceId).toBe('hq');
+    expect(useStore.getState().appRoute).toBe('workspaces');
+    // One current item: Moa, not Workspaces.
+    expect(current()).toEqual(['moa']);
+    act(() => useStore.getState().setActiveWorkspace('a'));
+    expect(current()).toEqual(['home']);
+    openMoaHq.mockRestore();
+  });
+
+  it('keeps arrow-key navigation reaching it', async () => {
+    useStore.setState({ workspaces: [ws('a'), ws('hq')], activeWorkspaceId: 'a', activeRemoteKey: null, moa: moa(true) } as never);
+    await act(async () => root.render(<MiniSidebar rail collapsed={false} />));
+    const git = container.querySelector<HTMLButtonElement>('[data-sidebar-nav="git"]')!;
+    git.focus();
+    act(() => { git.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); });
+    expect(document.activeElement).toBe(entry());
   });
 });

@@ -37,6 +37,7 @@ import {
 
 import PresetPicker from './PresetPicker';
 import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
+import { listedWorkspaces, refuseIfMoaHq } from '../Moa/moaHqGuard';
 
 /** Namespaces a remote row's id in the shared glance order. */
 const REMOTE_ROW_PREFIX = 'remote:';
@@ -72,6 +73,11 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
   // WorkspaceItem이 자기 ws를 self-subscribe한다. 배경 ws의 metadata/surface
   // churn은 이 컴포넌트를 리렌더하지 않는다(이름/추가/삭제/재정렬 시에만).
   const workspaces = useStore(useShallow(selectWorkspaceIdName));
+  // Moa's HQ is app-owned and never part of the list (nor its count, filter,
+  // or Ctrl+N numbering). While it is the active workspace it shows as its
+  // own row above the list, so the operator sees where they are.
+  const moaHqId = useStore((s) => s.moa?.hq.workspaceId ?? null);
+  const listed = useMemo(() => listedWorkspaces(workspaces, moaHqId), [workspaces, moaHqId]);
   const [wsSearch, setWsSearch] = useState('');
   const wsSearchRef = useRef<HTMLInputElement>(null);
   // The header's filter button (or Ctrl/Cmd+F) opens the filter popover: the
@@ -93,9 +99,9 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
   const factKeys = useStore(useShallow((s) => (filterOn ? selectWorkspaceFactKeys(s) : NO_FACTS)));
   const filteredWorkspaces = useMemo(() => {
     const q = wsSearch.trim().toLowerCase();
-    return workspaces.filter((ws) => (!q || ws.name.toLowerCase().includes(q))
+    return listed.filter((ws) => (!q || ws.name.toLowerCase().includes(q))
       && (!filterOn || (factKeys[ws.id] !== undefined && matchesFilter(wsFilter, factsFromKey(factKeys[ws.id])))));
-  }, [workspaces, wsSearch, filterOn, wsFilter, factKeys]);
+  }, [listed, wsSearch, filterOn, wsFilter, factKeys]);
 
   // #1481 — fan-out nesting. Both maps change only when a fan-out lands, a
   // task closes or detaches, or the audit log is re-read — not on output.
@@ -255,7 +261,7 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
   // sidebar root via onKeyDown and stops propagation so the global handler
   // does not also fire.
   // Remote rows share the list and the query, so they count toward showing it.
-  const listedCount = workspaces.length + remoteWorkspaces.length;
+  const listedCount = listed.length + remoteWorkspaces.length;
   const handleSidebarKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'f' && (e.ctrlKey || e.metaKey) && listedCount >= 3) {
       e.preventDefault();
@@ -292,6 +298,8 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
   }, [t, pushToast]);
 
   const handleClose = useCallback((wsId: string) => {
+    // Refused before any session is torn down: the store would keep the HQ.
+    if (refuseIfMoaHq(wsId)) return;
     // 삭제 전 해당 워크스페이스의 모든 PTY 정리
     const ws = useStore.getState().workspaces.find((w) => w.id === wsId);
     if (ws) disposeAllPtys(ws);
@@ -303,11 +311,13 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
   // sidebar is the point), but the configuration snapshot survives and lists
   // in the Archived section for one-click restore.
   const handleArchive = useCallback((wsId: string) => {
-    const { workspaces: all } = useStore.getState();
+    if (refuseIfMoaHq(wsId)) return;
+    const { workspaces: all, moa } = useStore.getState();
     const ws = all.find((w) => w.id === wsId);
     // archiveWorkspace refuses the last workspace; disposing first would kill
-    // its sessions and then leave the workspace in place, emptied.
-    if (!ws || all.length <= 1) return;
+    // its sessions and then leave the workspace in place, emptied. The HQ is
+    // not one of the operator's, so it does not count.
+    if (!ws || listedWorkspaces(all, moa?.hq.workspaceId ?? null).length <= 1) return;
     disposeAllPtys(ws);
     archiveWorkspace(wsId);
   }, [archiveWorkspace]);
@@ -316,7 +326,9 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
   // Filtering only changes what the list shows; the header counts what is left.
   const narrowed = filterOn || wsSearch.trim() !== '';
   const shownCount = filteredWorkspaces.length + remoteByRowId.size;
-  const activeHidden = !activeRemoteKey && !filteredWorkspaces.some((w) => w.id === activeWorkspaceId);
+  const hqActive = !!moaHqId && !activeRemoteKey && activeWorkspaceId === moaHqId
+    && workspaces.some((w) => w.id === moaHqId);
+  const activeHidden = !activeRemoteKey && !hqActive && !filteredWorkspaces.some((w) => w.id === activeWorkspaceId);
   const clearFilters = useCallback(() => {
     setWsSearch('');
     useStore.getState().setSidebarFilter(EMPTY_FILTER);
@@ -327,6 +339,7 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
       isActive={id === shownActiveId}
       isMultiview={multiviewIds.includes(id)}
       index={workspaces.findIndex((w) => w.id === id)}
+      shortcutIndex={listed.findIndex((w) => w.id === id)}
       onSelect={setActiveWorkspace}
       onCtrlSelect={handleCtrlSelect}
       onRename={renameWorkspace}
@@ -337,7 +350,7 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
       onReorder={reorderWorkspace}
       taskRow
     />
-  ), [shownActiveId, multiviewIds, workspaces, setActiveWorkspace, handleCtrlSelect, renameWorkspace, handleClose, handleArchive, handleCopySessionInfo, duplicateWorkspace, reorderWorkspace]);
+  ), [shownActiveId, multiviewIds, workspaces, listed, setActiveWorkspace, handleCtrlSelect, renameWorkspace, handleClose, handleArchive, handleCopySessionInfo, duplicateWorkspace, reorderWorkspace]);
 
   // One top-level node: a remote mirror, a task row whose owner is filtered
   // out, or a workspace row with its nested tasks. `inSettleGroup` rows sit
@@ -367,6 +380,7 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
           isActive={ws.id === shownActiveId}
           isMultiview={multiviewIds.includes(ws.id)}
           index={workspaces.indexOf(ws)}
+          shortcutIndex={listed.indexOf(ws)}
           onSelect={setActiveWorkspace}
           onCtrlSelect={handleCtrlSelect}
           onRename={renameWorkspace}
@@ -404,6 +418,25 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
       {pickerOpen && <PresetPicker onClose={closePicker} anchorStyle={pickerAnchor} />}
       <SidebarResizeHandle />
       {!readOnly && chrome === 'full' && <SidebarNavigation />}
+      {hqActive && moaHqId && (
+        <div className="shrink-0 pt-1" data-moa-hq-row>
+          <WorkspaceItem
+            workspaceId={moaHqId}
+            isActive
+            isMultiview={multiviewIds.includes(moaHqId)}
+            index={workspaces.findIndex((w) => w.id === moaHqId)}
+            onSelect={setActiveWorkspace}
+            onCtrlSelect={handleCtrlSelect}
+            onRename={renameWorkspace}
+            onClose={handleClose}
+            onArchive={handleArchive}
+            onCopyInfo={handleCopySessionInfo}
+            onDuplicate={duplicateWorkspace}
+            onReorder={reorderWorkspace}
+            moaHq
+          />
+        </div>
+      )}
       <div className="wmux-sidebar-section">
         <span className="truncate">{t('sidebar.workspaces')}</span>
         <span className="wmux-sidebar-total" data-sidebar-total>

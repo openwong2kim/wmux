@@ -44,6 +44,9 @@ interface WorkspaceItemProps {
   isActive: boolean;
   isMultiview: boolean;
   index: number;
+  /** Position in the list the operator sees (Moa's HQ left out), which is
+   *  what Ctrl+N counts. Defaults to `index`. */
+  shortcutIndex?: number;
   onSelect: (id: string) => void;
   onCtrlSelect: (id: string) => void;
   onRename: (id: string, name: string) => void;
@@ -78,6 +81,9 @@ interface WorkspaceItemProps {
   renderTask?: (id: string) => React.ReactNode;
   /** Sidebar's workspace close, for a pane group's "Close finished tasks". */
   onCloseTask?: (id: string) => void;
+  /** Moa's app-owned HQ workspace: Close and Archive are shown but disabled
+   *  (with the reason), and it is not a reorder or pin target. */
+  moaHq?: boolean;
 }
 
 /**
@@ -352,7 +358,7 @@ function shortenPath(path: string, maxLen = 25): string {
   return `.../${parts.slice(-2).join('/')}`;
 }
 
-function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, onCtrlSelect, onRename, onClose, onArchive, onCopyInfo, onDuplicate, onReorder, taskRow = false, shortcutHintHidden = false, nestedTaskIds, renderTask, onCloseTask }: WorkspaceItemProps) {
+function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutIndex = index, onSelect, onCtrlSelect, onRename, onClose, onArchive, onCopyInfo, onDuplicate, onReorder, taskRow = false, shortcutHintHidden = false, nestedTaskIds, renderTask, onCloseTask, moaHq = false }: WorkspaceItemProps) {
   const t = useT();
   // A1: 자기 ws만 구독 — 배경 ws churn/다른 항목 변경에는 리렌더되지 않는다.
   const workspace = useStore(selectWorkspaceById(workspaceId));
@@ -396,7 +402,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   const sortMode = useStore((s) => s.sidebarSortMode);
   const sortPaused = sortMode !== 'manual';
   const pinned = useStore((s) => s.sidebarPinnedIds.includes(workspaceId));
-  const reorderOff = taskRow || (sortPaused && !pinned);
+  const reorderOff = taskRow || moaHq || (sortPaused && !pinned);
   const setTerminalTextDropDragActive = useStore((s) => s.setTerminalTextDropDragActive);
 
   const metadata = workspace?.metadata;
@@ -1147,9 +1153,9 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
             sequence with the rows around it, so none is drawn — except on a
             pinned row: the pinned group leads the stored order and is shown
             as stored, so its numbers match the screen. */}
-        {!taskRow && !shortcutHintHidden && (!sortPaused || pinned) && (
+        {!taskRow && !moaHq && !shortcutHintHidden && (!sortPaused || pinned) && (
           <span className={`text-[11px] tabular-nums text-[color-mix(in_srgb,var(--text-main)_35%,transparent)] flex-shrink-0 mt-0.5 ${restHidden}`}>
-            {index < 9 ? `^${index + 1}` : ''}
+            {shortcutIndex >= 0 && shortcutIndex < 9 ? `^${shortcutIndex + 1}` : ''}
           </span>
         )}
 
@@ -1205,12 +1211,16 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
               the cluster, at the sidebar's edge: a pointer overshooting the row
               to the right leaves the cluster entirely instead of landing on the
               one control here that kills a workspace. */}
+          {/* Moa's HQ: present but disabled, focusable so the reason can be
+              read (aria-disabled, not `disabled`). */}
           <button
             data-workspace-action="close"
-            className={`${HIT_TARGET_24_IN_CLUSTER} rounded-md text-[color-mix(in_srgb,var(--text-main)_50%,transparent)] hover:bg-[var(--selection)] hover:text-[var(--accent-red)] text-[10px] font-mono`}
-            onClick={(e) => { e.stopPropagation(); setMenuPos(null); setCloseConfirmPos(anchorOf(e.currentTarget)); }}
-            title={t('workspace.close')}
+            className={`${HIT_TARGET_24_IN_CLUSTER} rounded-md text-[color-mix(in_srgb,var(--text-main)_50%,transparent)] text-[10px] font-mono ${moaHq ? 'opacity-50 cursor-default' : 'hover:bg-[var(--selection)] hover:text-[var(--accent-red)]'}`}
+            onClick={(e) => { e.stopPropagation(); if (moaHq) return; setMenuPos(null); setCloseConfirmPos(anchorOf(e.currentTarget)); }}
+            title={moaHq ? t('moa.guard.reason') : t('workspace.close')}
             aria-label={t('workspace.close')}
+            aria-disabled={moaHq || undefined}
+            aria-description={moaHq ? t('moa.guard.reason') : undefined}
           >
             <IconX size={11} />
           </button>
@@ -1267,15 +1277,20 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           {/* #1011 — the non-destructive exit: same session teardown as Close,
               but the workspace comes back from the Archived section intact. */}
           <button
-            className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+            className={`w-full text-left px-3 py-1.5 text-xs transition-colors ${moaHq ? 'opacity-50 cursor-default' : 'hover:bg-[var(--bg-overlay)]'}`}
             style={{ color: 'var(--text-main)' }}
-            onClick={() => { setMenuPos(null); onArchive(workspaceId); }}
+            onClick={() => { if (moaHq) return; setMenuPos(null); onArchive(workspaceId); }}
+            data-workspace-action="archive"
+            title={moaHq ? t('moa.guard.reason') : undefined}
+            aria-disabled={moaHq || undefined}
+            aria-description={moaHq ? t('moa.guard.reason') : undefined}
           >
             {t('workspace.archive')}
           </button>
           {/* Pinned to top (2026-09-26): offered in every order. A task row
-              renders under its owner, so it has no top to pin to. */}
-          {!taskRow && (
+              renders under its owner, so it has no top to pin to; Moa's HQ
+              is not in the list at all. */}
+          {!taskRow && !moaHq && (
             <button
               className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
               style={{ color: 'var(--text-main)' }}

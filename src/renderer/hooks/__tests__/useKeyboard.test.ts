@@ -85,6 +85,8 @@ interface MockState {
   focusPaneDirection: ReturnType<typeof vi.fn>;
   setCheatSheetForceShown: ReturnType<typeof vi.fn>;
   stashPane: ReturnType<typeof vi.fn>;
+  moa?: { hq: { workspaceId: string | null } };
+  pushToast?: ReturnType<typeof vi.fn>;
 }
 
 function makeLeaf(paneId: string, ptyIds: string[]): Pane {
@@ -317,6 +319,27 @@ describe('createPrefixActions — tmux compat (new in 2026-05-18 expansion)', ()
     for (const order of disposeOrder) {
       expect(order).toBeLessThan(removeOrder);
     }
+  });
+
+  it("killWorkspace refuses Moa's HQ before disposing anything, with a toast", () => {
+    const pushToast = vi.fn();
+    const { deps, state, disposeMock } = makeMockDeps({ moa: { hq: { workspaceId: 'w1' } }, pushToast });
+    createPrefixActions(deps).killWorkspace();
+    expect(disposeMock).not.toHaveBeenCalled();
+    expect(state.removeWorkspace).not.toHaveBeenCalled();
+    expect(pushToast).toHaveBeenCalledTimes(1);
+  });
+
+  it("next/prevWorkspace skip Moa's HQ and leave it for the listed ones", () => {
+    const hq = { id: 'hq', rootPane: makeLeaf('ph', []), activePaneId: 'ph' };
+    const w1 = { id: 'w1', rootPane: makeLeaf('p1', []), activePaneId: 'p1' };
+    const w2 = { id: 'w2', rootPane: makeLeaf('p2', []), activePaneId: 'p2' };
+    const next = makeMockDeps({ workspaces: [w1, hq, w2], activeWorkspaceId: 'w1', moa: { hq: { workspaceId: 'hq' } } });
+    createPrefixActions(next.deps).nextWorkspace();
+    expect(next.state.setActiveWorkspace).toHaveBeenCalledWith('w2');
+    const fromHq = makeMockDeps({ workspaces: [w1, hq, w2], activeWorkspaceId: 'hq', moa: { hq: { workspaceId: 'hq' } } });
+    createPrefixActions(fromHq.deps).prevWorkspace();
+    expect(fromHq.state.setActiveWorkspace).toHaveBeenCalledWith('w2');
   });
 
   it('killWorkspace is a no-op when no active workspace is found', () => {
