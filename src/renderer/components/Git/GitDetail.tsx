@@ -14,6 +14,7 @@ import { FOCUS_RING } from '../focusRing';
 import { renderBrainMarkdown } from '../Deck/BrainMarkdown';
 import { ListFreshness } from './ListFreshness';
 import { DetailError, useDetail } from './useDetail';
+import { PrChecks, usePrChecks } from './PrChecks';
 import { PrStepText, getGithubBridge } from './PrSection';
 import { getIssueBridge } from './IssueSection';
 import { relTime } from './useGitList';
@@ -106,6 +107,7 @@ function PrBody({ repoPath, pr, refreshKey }: { repoPath: string; pr: PrSummary;
     const res = await bridge.prDetail(repoPath, pr.number, pr.updatedAt);
     return res.ok ? { ok: true, value: res.detail.comments } : { ok: false, message: res.message };
   }, `${pr.updatedAt}\0${refreshKey}`);
+  const checks = usePrChecks(repoPath, pr, refreshKey);
   return (
     <div className="wmux-git-detail-body" data-pr-detail>
       <div className="wmux-git-detail-facts">
@@ -113,6 +115,7 @@ function PrBody({ repoPath, pr, refreshKey }: { repoPath: string; pr: PrSummary;
         {pr.reviewDecision && <span>{reviewWord(pr.reviewDecision, t)}</span>}
         {pr.checks && <span>{t(`workspace.prChecks.${pr.checks}`)}</span>}
       </div>
+      <PrChecks repoPath={repoPath} read={checks} />
       {detail.loading && <div className="wmux-git-note">{t('git.loading')}</div>}
       {!detail.loading && detail.error && <DetailError label={t('git.commentsFailed')} error={detail.error} retry={detail.retry} />}
       {!detail.loading && detail.value?.length === 0 && <div className="wmux-git-note">{t('git.noComments')}</div>}

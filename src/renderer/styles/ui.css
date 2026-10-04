@@ -2402,3 +2402,22 @@ html[data-fullscreen] .wmux-shell-body {
 .wmux-handoff-error { margin: 0; font-size: 12px; color: var(--accent-red); overflow-wrap: anywhere; }
 .wmux-handoff-actions { display: flex; align-items: center; gap: 6px; }
 .sidebar-row[data-handoff-over] { outline: 1px dashed var(--accent); outline-offset: -1px; }
+
+/* Git page — PR review on the detail pane: checks and run logs */
+.wmux-git-section { display: flex; flex-direction: column; gap: 6px; padding-top: 10px; border-top: 1px solid var(--border-soft); }
+.wmux-git-section-title { margin: 0; font-size: 12px; font-weight: 500; color: var(--text-sub); }
+.wmux-git-checks { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.wmux-git-check { display: flex; align-items: center; gap: 8px; min-height: 26px; font-size: 12px; color: var(--text-main); }
+.wmux-git-check-mark { display: inline-flex; flex-shrink: 0; color: var(--text-muted); }
+.wmux-git-check-mark[data-bucket='pass'] { color: var(--accent-green); }
+.wmux-git-check-mark[data-bucket='fail'] { color: var(--accent-red); }
+.wmux-git-check-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wmux-git-check-wf { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text-muted); }
+.wmux-git-check .wmux-git-link-btn { flex-shrink: 0; margin-left: auto; }
+.wmux-git-run { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-radius: 10px; box-shadow: inset 0 0 0 1px var(--line); }
+.wmux-git-run-head { display: flex; align-items: center; gap: 6px; }
+.wmux-git-run-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text-sub); }
+.wmux-git-log {
+  margin: 0; max-height: 320px; overflow: auto; padding: 8px; border-radius: 6px; background: var(--selection-subtle);
+  font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); font-size: 11px; line-height: 1.5; white-space: pre; color: var(--text-sub);
+}
