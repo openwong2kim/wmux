@@ -1182,7 +1182,6 @@ const trackRecordFeed = createTrackRecordFeed({
 });
 setTrackRecordFeed(trackRecordFeed);
 onHqStoreWritten(() => trackRecordFeed.sync());
-trackRecordFeed.sync();
 getWorkspaceMirror().onSnapshot(() => workspaceFactsPublisher.publishIfLaneChanged());
 getTaskLedger().onTransition(() => {
   workspaceFactsPublisher.schedule();
@@ -1217,6 +1216,9 @@ onAutonomyWritten(() => {
 const disposeDeckHandler = registerDeckHandler(() => mainWindow, {
   getDaemonClient: () => daemonClient,
 });
+// The track record's first start waits for the deck handler: it decides Moa's
+// switch for a new install (ensureMoaDefault), which reads as on until then.
+trackRecordFeed.sync();
 // WorkspaceMirror — renderer push (fire-and-forget) keeps a main-process cache
 // of the workspace tree + per-pane agent status warm, so routing / hook
 // resolution is served locally instead of via the workspace.list renderer

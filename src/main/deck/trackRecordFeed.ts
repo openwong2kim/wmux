@@ -27,6 +27,7 @@ import type { TrackRecordStore } from './trackRecordStore';
 import { sanitizeContextValue, VIEW_CONTEXT_DISCLAIMER } from './viewContext';
 import {
   addWeeks,
+  agentSlug,
   buildRetro,
   bumpRow,
   formatDuration,
@@ -117,7 +118,8 @@ function ledgerState(to: string): OpenState | 'done' | 'gone' {
   }
 }
 
-/** `hq:<hq>;owner:<owner>;lane:hq` (hqApprovalLane.hqResolvedBy) → the owner. */
+/** `hq:<hq>;owner:<owner>;lane:hq` (hqApprovalLane.hqResolvedBy) → the owner.
+ *  The daemon keeps up to RESOLVED_BY_MAX (200) characters, sized for this label. */
 function laneOwner(resolvedBy: string): string | null {
   if (!/(^|;)lane:hq(;|$)/.test(resolvedBy)) return null;
   const m = /(?:^|;)owner:([^;]+)/.exec(resolvedBy);
@@ -215,7 +217,7 @@ export function createTrackRecordFeed(ports: TrackRecordFeedPorts): TrackRecordF
         changed = true;
         const at = typeof r.resolvedAt === 'number' ? r.resolvedAt : now();
         const by = typeof r.resolvedBy === 'string' ? r.resolvedBy : '';
-        const agent = r.agent || '-';
+        const agent = agentSlug(r.agent);
         const owner = laneOwner(by);
         if (owner !== null) {
           bumpRow(d, at, owner, agent, { approvalsLane: 1 });
