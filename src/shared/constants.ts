@@ -361,6 +361,14 @@ export const IPC = {
   //   ({ before? }) / SUBSCRIBE / UNSUBSCRIBE (invoke); APPEND (send, main →
   //   renderer, TranscriptAppendData).
   DECK_MOA_DECISIONS: 'deck:moa:decisions',
+  //   DECK_MOA_HANDOFF_RESOLVE (invoke MoaHandoffResolveRequest): answer a
+  //   hand-off card by id (main reads the body from its own store; an edited
+  //   body is the operator's own input). DECK_MOA_HANDOFF_RECEIPTS (invoke):
+  //   recent auto hand-offs. DECK_MOA_HANDOFF_STOP (invoke { id }): interrupt
+  //   the worker and cancel an auto hand-off's task.
+  DECK_MOA_HANDOFF_RESOLVE: 'deck:moa:handoff:resolve',
+  DECK_MOA_HANDOFF_RECEIPTS: 'deck:moa:handoff:receipts',
+  DECK_MOA_HANDOFF_STOP: 'deck:moa:handoff:stop',
   DECK_MOA_TRANSCRIPT_STATUS: 'deck:moa:transcript:status',
   DECK_MOA_TRANSCRIPT_SNAPSHOT: 'deck:moa:transcript:snapshot',
   DECK_MOA_TRANSCRIPT_SUBSCRIBE: 'deck:moa:transcript:subscribe',

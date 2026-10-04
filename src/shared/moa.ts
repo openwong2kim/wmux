@@ -31,9 +31,12 @@ export interface MoaConfig {
   issuePollMinutes?: number;
   /** Repos (host/owner/repo, lowercase) Moa no longer proposes from. */
   ignoredRepos?: string[];
+  /** Moa may hand off to a workspace in danger mode without a card, while the
+   *  HQ is in danger mode too. Never applies to any other target. Absent = on. */
+  autoHandoff?: boolean;
 }
 
-export type MoaConfigPatch = Partial<Pick<MoaConfig, 'onboarded' | 'level' | 'maxTurnsPerHour' | 'bubbles' | 'reduceMotion' | 'approvalPress' | 'memoryProposals' | 'issueProposals' | 'trustedAuthors' | 'issuePollMinutes' | 'ignoredRepos'>>;
+export type MoaConfigPatch = Partial<Pick<MoaConfig, 'onboarded' | 'level' | 'maxTurnsPerHour' | 'bubbles' | 'reduceMotion' | 'approvalPress' | 'memoryProposals' | 'issueProposals' | 'trustedAuthors' | 'issuePollMinutes' | 'ignoredRepos' | 'autoHandoff'>>;
 
 export interface MoaState {
   config: MoaConfig;
@@ -146,6 +149,8 @@ export interface MoaPendingDecision {
     context: string;
     raisedAt: number;
   };
+  /** Present on a hand-off Moa proposed (origin 'moa-handoff'). */
+  handoff?: import('./moaHandoff').MoaHandoffCardInfo;
 }
 
 /** Moa's mascot states (the panel header, the titlebar icon). */

@@ -63,7 +63,14 @@ export interface WorkspaceDecision {
   ref?: string;
 }
 
-export type DecisionOrigin = 'issue-proposal';
+/** `issue-proposal`: Moa's issue and PR proposals lane. `moa-handoff`: a
+ *  hand-off Moa proposed (moaHandoff.ts). Both are main-owned: main acts on the
+ *  answer, no brain ever sees or resolves the card. */
+export type DecisionOrigin = 'issue-proposal' | 'moa-handoff';
+
+/** Origins whose cards main answers. Never set from the wire (deck.requestDecision
+ *  takes no origin), never shown to a brain, never resolvable by one. */
+export const MAIN_OWNED_ORIGINS: readonly DecisionOrigin[] = ['issue-proposal', 'moa-handoff'];
 
 export type DecisionResolvedBy = 'human' | 'brain';
 
@@ -119,7 +126,9 @@ function sanitizeDecision(raw: unknown): WorkspaceDecision | null {
     ...(typeof o.resolvedAt === 'number' && Number.isFinite(o.resolvedAt)
       ? { resolvedAt: o.resolvedAt }
       : {}),
-    ...(o.origin === 'issue-proposal' ? { origin: o.origin } : {}),
+    ...(typeof o.origin === 'string' && (MAIN_OWNED_ORIGINS as readonly string[]).includes(o.origin)
+      ? { origin: o.origin as DecisionOrigin }
+      : {}),
     ...(typeof o.ref === 'string' && o.ref.length <= 256 ? { ref: o.ref } : {}),
   };
 }
@@ -173,9 +182,15 @@ export function loadWorkspaceDecision(workspaceId: string, dir?: string): Worksp
   }
 }
 
-/** A card raised by Moa's issue proposals lane (main answers it, never a brain). */
+/** A card raised by Moa's issue proposals lane. */
 export function isIssueProposalDecision(d: Pick<WorkspaceDecision, 'origin'> | null | undefined): boolean {
   return d?.origin === 'issue-proposal';
+}
+
+/** A card main answers (issue proposals, Moa's hand-offs): never shown to a
+ *  brain, never re-examined, never resolvable through deck.resolveDecision. */
+export function isMainOwnedDecision(d: Pick<WorkspaceDecision, 'origin'> | null | undefined): boolean {
+  return !!d?.origin && MAIN_OWNED_ORIGINS.includes(d.origin);
 }
 
 /** The wake-suppression predicate: a workspace with a PENDING decision must not

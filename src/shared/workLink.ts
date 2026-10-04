@@ -29,7 +29,8 @@ export const WORK_LINK_STATES = [
 export type WorkLinkState = (typeof WORK_LINK_STATES)[number];
 
 /** Where the work started: a Git page issue, a Moa delegation, or a plain send. */
-export const WORK_LINK_ORIGINS = ['issue', 'pr', 'moa', 'manual'] as const;
+/** `moa-auto`: a hand-off Moa delivered without a click (danger mode). */
+export const WORK_LINK_ORIGINS = ['issue', 'pr', 'moa', 'moa-auto', 'manual'] as const;
 export type WorkLinkOrigin = (typeof WORK_LINK_ORIGINS)[number];
 
 /** Why a link is `needs-you` (a person must act) or `blocked` (the agent must). */
@@ -93,6 +94,9 @@ export interface WorkLink {
    *  derived abandoned (canceled task, closed PR) never carries it, so it
    *  revives when the task or PR reopens. */
   manualClose?: true;
+  /** The worker's closing words when it last stopped on a question or a
+   *  refusal (Stop hook). UNTRUSTED agent text, capped: show as text only. */
+  lastQuestion?: { text: string; at: number };
   /** Decisions raised about this work, oldest first, at most WORK_LINK_LIMITS.MAX_DECISIONS. */
   decisionIds: string[];
   createdAt: number;
@@ -104,6 +108,7 @@ export const WORK_LINK_LIMITS = {
   MAX_TITLE: ISSUE_REF_TITLE_MAX,
   MAX_PATH: 1024,
   MAX_BRANCH: 255,
+  MAX_LAST_QUESTION: 2048,
 } as const;
 
 const ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
@@ -279,6 +284,11 @@ export function parseWorkLink(v: unknown): WorkLink | null {
   if (v.manualClose !== undefined) {
     if (v.manualClose !== true || out.state !== 'abandoned') return null;
     out.manualClose = true;
+  }
+  if (v.lastQuestion !== undefined) {
+    const q = v.lastQuestion;
+    if (!isRecord(q) || typeof q.text !== 'string' || !isTime(q.at)) return null;
+    out.lastQuestion = { text: q.text.slice(0, WORK_LINK_LIMITS.MAX_LAST_QUESTION), at: q.at };
   }
   if (v.decisionIds !== undefined) {
     if (!Array.isArray(v.decisionIds) || !v.decisionIds.every(isWorkLinkId)) return null;
