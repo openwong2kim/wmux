@@ -3,6 +3,7 @@
  * it trusts, and that a withdrawal is retried until the daemon took it.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import path from 'node:path';
 import {
   __resetMoaPaneFeedForTest,
   buildMoaPanePayload,
@@ -17,8 +18,13 @@ import {
   type MoaPaneSource,
 } from '../moaPaneFeed';
 
-const BRAIN_CWD = '/Users/u/.wmux/brains/ws-hq';
-const PROJECT = `/Users/u/.claude/projects/${claudeProjectSlug(BRAIN_CWD)}`;
+// Native paths: the check reads them with the platform's path rules, and a
+// Windows brain reports Windows paths.
+const HOME = path.resolve(path.sep, 'Users', 'u');
+const BRAIN_CWD = path.join(HOME, '.wmux', 'brains', 'ws-hq');
+const PROJECTS = path.join(HOME, '.claude', 'projects');
+const PROJECT = path.join(PROJECTS, claudeProjectSlug(BRAIN_CWD));
+const conv = (name: string) => path.join(PROJECT, `${name}.jsonl`);
 const HQ: MoaPaneSource = { sessionId: 'brain-1', workspaceId: 'ws-hq', brainCwd: BRAIN_CWD };
 
 let pushes: Array<{ pane: MoaPanePayload; seq: number }>;
@@ -26,7 +32,7 @@ let current: MoaPaneSource | null;
 
 const signal = (over: Partial<BrainHookSignal> = {}): BrainHookSignal => ({
   kind: 'agent.stop', agent: 'claude', agentSessionId: 'conv-1', ptyId: 'brain-1', cwd: BRAIN_CWD,
-  payload: { transcript_path: `${PROJECT}/conv-1.jsonl` }, ts: 10, ...over,
+  payload: { transcript_path: conv('conv-1') }, ts: 10, ...over,
 });
 const bindingOf = () => (buildMoaPanePayload() as { binding?: Record<string, unknown> } | null)?.binding;
 const dialogOf = () => (buildMoaPanePayload() as { dialog?: { fingerprint: string } } | null)?.dialog;
@@ -71,7 +77,7 @@ describe('moaPaneFeed', () => {
     await publishMoaPane(); // joins the publish the signal started
     expect(pushes.at(-1)!.pane).toEqual({
       sessionId: 'brain-1', workspaceId: 'ws-hq',
-      binding: { agent: 'claude', sessionId: 'conv-1', cwd: BRAIN_CWD, transcriptPath: `${PROJECT}/conv-1.jsonl`, ts: 10 },
+      binding: { agent: 'claude', sessionId: 'conv-1', cwd: BRAIN_CWD, transcriptPath: conv('conv-1'), ts: 10 },
     });
   });
 
@@ -79,28 +85,29 @@ describe('moaPaneFeed', () => {
     current = HQ;
     noteBrainHookSignal(signal());
     noteBrainHookSignal(signal({ kind: 'agent.session_start', payload: {}, ts: 20 }));
-    expect(bindingOf()).toMatchObject({ transcriptPath: `${PROJECT}/conv-1.jsonl`, ts: 20 });
+    expect(bindingOf()).toMatchObject({ transcriptPath: conv('conv-1'), ts: 20 });
   });
 
   it('a late Stop from the conversation a /clear left behind does not replace the new one', () => {
     current = HQ;
     noteBrainHookSignal(signal({ ts: 10 }));
     // /clear: a new conversation starts...
-    noteBrainHookSignal(signal({ kind: 'agent.session_start', agentSessionId: 'conv-2', payload: { transcript_path: `${PROJECT}/conv-2.jsonl` }, ts: 30 }));
+    noteBrainHookSignal(signal({ kind: 'agent.session_start', agentSessionId: 'conv-2', payload: { transcript_path: conv('conv-2') }, ts: 30 }));
     // ...and the old one's Stop arrives late.
     noteBrainHookSignal(signal({ ts: 20 }));
-    expect(bindingOf()).toMatchObject({ sessionId: 'conv-2', transcriptPath: `${PROJECT}/conv-2.jsonl`, ts: 30 });
+    expect(bindingOf()).toMatchObject({ sessionId: 'conv-2', transcriptPath: conv('conv-2'), ts: 30 });
   });
 
   it('drops a forged binding: another cwd, a path outside the brain\'s project, or a file that is not the conversation', () => {
     current = HQ;
     for (const forged of [
-      signal({ cwd: '/tmp/elsewhere' }),
-      signal({ payload: { transcript_path: '/Users/u/.claude/projects/-tmp-elsewhere/conv-1.jsonl' } }),
-      signal({ payload: { transcript_path: `${PROJECT}/other-conv.jsonl` } }),
-      signal({ payload: { transcript_path: '/etc/passwd' } }),
-      signal({ payload: { transcript_path: `${PROJECT}/../${claudeProjectSlug(BRAIN_CWD)}/conv-1.jsonl` } }),
-      signal({ payload: { transcript_path: `/Users/u/notprojects/${claudeProjectSlug(BRAIN_CWD)}/conv-1.jsonl` } }),
+      signal({ cwd: path.join(HOME, 'elsewhere') }),
+      signal({ payload: { transcript_path: path.join(PROJECTS, claudeProjectSlug(path.join(HOME, 'elsewhere')), 'conv-1.jsonl') } }),
+      signal({ payload: { transcript_path: conv('other-conv') } }),
+      signal({ payload: { transcript_path: path.join(HOME, 'passwd') } }),
+      signal({ payload: { transcript_path: [PROJECT, '..', claudeProjectSlug(BRAIN_CWD), 'conv-1.jsonl'].join(path.sep) } }),
+      signal({ payload: { transcript_path: path.join(HOME, 'notprojects', claudeProjectSlug(BRAIN_CWD), 'conv-1.jsonl') } }),
+      signal({ payload: { transcript_path: 'conv-1.jsonl' } }),
     ]) {
       __resetMoaPaneFeedForTest();
       setMoaPaneSource(() => current);
