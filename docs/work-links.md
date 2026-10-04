@@ -100,11 +100,11 @@ blocks or fails the delivery or decision that triggered it.
   that id is kept on the old one's links. Answering a decision (from the Deck
   or by a self-resolve) re-derives its links.
 
-What counts as Moa today: a send whose router context carries a commander
-binding (`ctx.commanderWorkspace`) is recorded as `origin: 'moa'`. Every
-per-workspace orchestrator brain has that binding, so "moa" currently means
-"a commander brain delegated this", not the HQ brain specifically. Once an HQ
-identity exists, narrow it in `workLinkFromSentTask`.
+What counts as Moa: a send whose router context carries a commander binding
+(`ctx.commanderWorkspace`) is recorded as `origin: 'moa'`. With an HQ
+designated (`getHqWorkspaceId()` in `deckHqStore.ts`), only the HQ runs a
+brain, so these sends are exactly the HQ's delegations. With no HQ designated,
+each workspace's own orchestrator brain counts as that workspace's Moa.
 
 Coming from the two lanes:
 
