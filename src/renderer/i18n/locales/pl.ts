@@ -3534,6 +3534,8 @@ export const pl = {
   'fleetBoard.empty.body': "Uruchom agenta w panelu albo rozdziel zadanie między pracowników.",
   'fleetBoard.recent': "Ostatnio zakończone",
   'fleetBoard.preview': "Podgląd · {name} — Spacja ukrywa",
+  'fleetBoard.conversationEarlier': "Wcześniejsze wiadomości",
+  'fleetBoard.conversationEarlierCount': "Wcześniejsze wiadomości ({count})",
   'fleetBoard.conversationEmpty': "Brak raportów i poleceń.",
   'fleetBoard.conversationLabel': "Rozmowa zadania {title}",
   'fleetBoard.conversation': "Rozmowa · {title}",

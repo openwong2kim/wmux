@@ -5,7 +5,7 @@
 // history once, as the human seat (the daemon lets the human observe every
 // mission channel with its full history). No composer, no ack.
 
-import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import type { ChannelMember, ChannelMessage } from '../../../shared/channels';
@@ -23,6 +23,9 @@ const EMPTY_MEMBERS: ChannelMember[] = [];
 
 /** How close to the end counts as "reading the latest" (px). */
 const STICK_TO_END_PX = 24;
+
+/** Channels whose missing catalog row was already re-read this session. */
+const catalogReread = new Set<string>();
 
 export default function TaskConversation({
   task,
@@ -43,10 +46,22 @@ export default function TaskConversation({
       ?? { workspaceId: HUMAN_WORKSPACE_ID, memberId: HUMAN_MEMBER_ID, joinedAt: 0, historyFromSeq: 0 },
     [members],
   );
-  const visible = useMemo(() => {
-    const sorted = sortMessagesBySeq(messages).filter((m) => isMessageVisibleToViewer(m, viewer));
-    return sorted.length > SCROLLBACK_PAGE ? sorted.slice(sorted.length - SCROLLBACK_PAGE) : sorted;
-  }, [messages, viewer]);
+  const all = useMemo(
+    () => sortMessagesBySeq(messages).filter((m) => isMessageVisibleToViewer(m, viewer)),
+    [messages, viewer],
+  );
+  // The window opens on the newest SCROLLBACK_PAGE posts. Its start is pinned
+  // (startSeq) once the reader scrolls back or asks for earlier ones, so a
+  // live post only adds at the end and never shifts what is being read.
+  const [startSeq, setStartSeq] = useState<number | null>(null);
+  const [reachedStart, setReachedStart] = useState(false);
+  const defaultStart = all.length > SCROLLBACK_PAGE ? all[all.length - SCROLLBACK_PAGE].seq : (all[0]?.seq ?? 0);
+  const effectiveStart = startSeq ?? defaultStart;
+  const visible = useMemo(() => all.filter((m) => m.seq >= effectiveStart), [all, effectiveStart]);
+  const hiddenEarlier = all.length - visible.length;
+  // Older posts the first load did not fetch still sit on the daemon.
+  const earliestLoaded = all[0]?.seq ?? 0;
+  const moreOnDaemon = !reachedStart && earliestLoaded > Math.max(viewer.historyFromSeq, 1);
 
   // Names for the author chips, as the channel view builds them (string
   // projections, so terminal churn does not repaint the transcript).
@@ -79,7 +94,8 @@ export default function TaskConversation({
     if (!bridge) return undefined;
     let disposed = false;
     const load = async () => {
-      if (!useStore.getState().channels[channelId]) {
+      if (!useStore.getState().channels[channelId] && !catalogReread.has(channelId)) {
+        catalogReread.add(channelId);
         await hydrateChannelsCatalog({
           rpc: bridge.rpc,
           workspaceId: HUMAN_WORKSPACE_ID,
@@ -116,6 +132,38 @@ export default function TaskConversation({
     const el = logRef.current;
     if (el && atEndRef.current) el.scrollTop = el.scrollHeight;
   }, [channelId, lastSeq]);
+  // Earlier posts go in above the reader without moving what is on screen.
+  const prependFromRef = useRef<{ height: number; top: number } | null>(null);
+  const firstSeq = visible[0]?.seq ?? 0;
+  useLayoutEffect(() => {
+    const el = logRef.current;
+    const from = prependFromRef.current;
+    if (!el || !from) return;
+    prependFromRef.current = null;
+    el.scrollTop = from.top + (el.scrollHeight - from.height);
+  }, [firstSeq]);
+  const showEarlier = () => {
+    const el = logRef.current;
+    if (el) prependFromRef.current = { height: el.scrollHeight, top: el.scrollTop };
+    atEndRef.current = false;
+    if (hiddenEarlier > 0) {
+      setStartSeq(all[Math.max(0, hiddenEarlier - SCROLLBACK_PAGE)].seq);
+      return;
+    }
+    const bridge = useStore.getState().channelsRpc();
+    if (!bridge) return;
+    void loadChannelHistory({
+      rpc: bridge.rpc,
+      channelId,
+      nextSeq: earliestLoaded,
+      workspaceId: HUMAN_WORKSPACE_ID,
+      apply: useStore.getState().hydrateChannelMessages,
+      limit: SCROLLBACK_PAGE,
+    }).then((loaded) => {
+      if (loaded === 0) setReachedStart(true);
+      setStartSeq(0);
+    });
+  };
 
   return (
     <section className="wmux-board-conversation" data-fleet-conversation data-channel-id={channelId}
@@ -130,8 +178,14 @@ export default function TaskConversation({
         onScroll={(e) => {
           const el = e.currentTarget;
           atEndRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_TO_END_PX;
+          if (!atEndRef.current && startSeq === null) setStartSeq(effectiveStart);
         }}
       >
+        {(hiddenEarlier > 0 || moreOnDaemon) && (
+          <button type="button" className="wmux-board-conversation-earlier" data-fleet-conversation-earlier onClick={showEarlier}>
+            {hiddenEarlier > 0 ? t('fleetBoard.conversationEarlierCount', { count: hiddenEarlier }) : t('fleetBoard.conversationEarlier')}
+          </button>
+        )}
         {visible.length === 0 ? (
           <p className="wmux-board-conversation-empty">{t('fleetBoard.conversationEmpty')}</p>
         ) : rows.map((m) => (

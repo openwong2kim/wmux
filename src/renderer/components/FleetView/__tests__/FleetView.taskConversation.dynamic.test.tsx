@@ -186,4 +186,93 @@ describe('FleetView — task conversation', () => {
     expect(authors.at(-1)).toBe('Fix t1');
     expect(authors[0]).toBe('worker');
   });
+
+  it('Open conversation on a finished task selects its Ready to review row', async () => {
+    act(() => useStore.setState({
+      surfaceAgent: { 'pty-1': { name: 'Claude Code', status: 'complete' }, 'pty-2': { name: 'Claude Code', status: 'running' }, 'pty-x': { name: 'Claude Code', status: 'running' } },
+      surfaceAgentStatus: { 'pty-1': 'complete' },
+      surfaceTurnOpenAt: { 'pty-2': Date.now(), 'pty-x': Date.now() },
+      surfaceTurnEndAt: { 'pty-1': Date.now() - 60_000 },
+    }));
+    mount();
+    await settle();
+    act(() => card('px').focus());
+    await settle();
+    const row = container.querySelector('[data-fleet-review-row][data-workspace-id="ws-t1"]')!;
+    expect(row).not.toBeNull();
+    act(() => useStore.getState().openTaskConversation('t1'));
+    await settle();
+    expect(row.getAttribute('aria-selected')).toBe('true');
+    expect(container.querySelector('[data-fleet-conversation]')?.getAttribute('data-channel-id')).toBe('ch-t1');
+  });
+
+  it('on a dense board, Open conversation unfolds a task folded under its owner', async () => {
+    // 20 plain agents plus two tasks of one owner: the second task folds.
+    const extra = Array.from({ length: 20 }, (_, i) => workspace(`ws-a${i}`, `agent ${i}`, leaf(`pa${i}`, `pty-a${i}`)));
+    act(() => {
+      const st = useStore.getState();
+      const agents = { ...st.surfaceAgent };
+      const opened = { ...st.surfaceTurnOpenAt };
+      for (let i = 0; i < 20; i++) { agents[`pty-a${i}`] = { name: 'Claude Code', status: 'running' }; opened[`pty-a${i}`] = Date.now(); }
+      useStore.setState({ workspaces: [...st.workspaces, ...extra], surfaceAgent: agents, surfaceTurnOpenAt: opened });
+    });
+    mount();
+    await settle();
+    expect(container.querySelector('[data-fleet-view]')?.getAttribute('data-layout')).toBe('dense');
+    const folded = container.querySelector('[data-board-key="p1"]') ? 'p2' : 'p1';
+    const task = folded === 'p2' ? 't2' : 't1';
+    expect(container.querySelector(`[data-board-key="${folded}"]`)).toBeNull();
+    act(() => useStore.getState().openTaskConversation(task));
+    await settle();
+    expect(card(folded)?.getAttribute('aria-selected')).toBe('true');
+    expect(container.querySelector('[data-fleet-conversation]')?.getAttribute('data-channel-id')).toBe(`ch-${task}`);
+  });
+
+  it('a long conversation offers earlier messages, and a live post does not move them', async () => {
+    rpc.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      if (method === 'a2a.channel.getMessages') {
+        const id = params.channelId as string;
+        return { ok: true, messages: Array.from({ length: 250 }, (_, i) => message(id, i + 1, `m${i + 1}`)) };
+      }
+      return { ok: false };
+    });
+    mount();
+    await settle();
+    act(() => card('p1').focus());
+    await settle();
+    expect(conversationTexts()).toHaveLength(200);
+    expect(conversationTexts()[0]).toBe('m51');
+    const earlier = container.querySelector<HTMLButtonElement>('[data-fleet-conversation-earlier]')!;
+    expect(earlier.textContent).toBe('Earlier messages (50)');
+    act(() => earlier.click());
+    await settle();
+    expect(conversationTexts()).toHaveLength(250);
+    expect(conversationTexts()[0]).toBe('m1');
+    expect(container.querySelector('[data-fleet-conversation-earlier]')).toBeNull();
+    act(() => useStore.getState().appendMessageFromEvent(message('ch-t1', 251, 'm251')));
+    expect(conversationTexts()[0]).toBe('m1');
+    expect(conversationTexts().at(-1)).toBe('m251');
+  });
+
+  it('pages earlier messages in from the daemon past the first load', async () => {
+    act(() => useStore.setState({ channels: { 'ch-t1': { ...channel('ch-t1'), nextSeq: 401 }, 'ch-t2': channel('ch-t2') } }));
+    rpc.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+      if (method !== 'a2a.channel.getMessages') return { ok: false };
+      const since = params.sinceSeq as number;
+      const from = Math.max(1, since);
+      const to = since >= 200 ? 400 : 200;
+      return { ok: true, messages: Array.from({ length: to - from + 1 }, (_, i) => message('ch-t1', from + i, `m${from + i}`)) };
+    });
+    mount();
+    await settle();
+    act(() => card('p1').focus());
+    await settle();
+    expect(conversationTexts()[0]).toBe('m201');
+    const earlier = container.querySelector<HTMLButtonElement>('[data-fleet-conversation-earlier]')!;
+    expect(earlier.textContent).toBe('Earlier messages');
+    act(() => earlier.click());
+    await settle();
+    expect(rpc).toHaveBeenCalledWith('a2a.channel.getMessages', expect.objectContaining({ channelId: 'ch-t1', sinceSeq: 1 }));
+    expect(conversationTexts()[0]).toBe('m1');
+  });
 });

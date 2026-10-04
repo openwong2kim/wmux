@@ -586,13 +586,20 @@ export default function FleetView() {
     setFilter('all');
     const ws = task.paneGroupId;
     if (ws && settledIds.has(ws)) setShowSettled(true);
-    const row = ws ? [...groups.needsYou, ...groups.running, ...groups.idle]
-      .find((r) => r.pane.workspaceId === ws && !r.pane.remote) : undefined;
-    const key = row ? row.pane.paneId : ws && reviewQueue.some((entry) => entry.workspaceId === ws) ? reviewRowKey(ws) : null;
-    if (key) {
-      if (row && groups.idle.includes(row)) setFleetIdleExpanded(true);
+    // Resolve against the items the board draws once the filters are clear:
+    // a finished task is its review row, not its pane's card.
+    const all = buildBoardColumns(groups, reviewQueue, reviewRowKey);
+    const itemWs = (item: BoardItem) => (item.kind === 'pane' ? (item.row.pane.remote ? undefined : item.row.pane.workspaceId) : item.entry.workspaceId);
+    const column = ws ? BOARD_COLUMNS.find((c) => all[c].some((item) => itemWs(item) === ws)) : undefined;
+    const target = column ? all[column].find((item) => itemWs(item) === ws) : undefined;
+    const key = target?.key ?? null;
+    if (column && target) {
+      if (column === 'idle') setFleetIdleExpanded(true);
+      // A dense board folds a mission's cards under the first: open that fold.
+      const owner = dense ? foldByOwner(all[column], ownerOf).find((g) => g.folded.includes(target))?.owner : undefined;
+      if (owner) setOpenFolds((prev) => new Set(prev).add(`${column}:${owner}`));
       setPinnedTask(null);
-      setFocusedPaneId(key);
+      setFocusedPaneId(target.key);
     } else {
       // Nothing on the board: keep today's selection and show the task.
       const at = focusedKey ?? null;
@@ -604,7 +611,7 @@ export default function FleetView() {
         ?.scrollIntoView?.({ block: 'nearest' });
       focusActiveItemRef.current();
     });
-  }, [fleetFocusTask, missionsByWorkspace, groups, reviewQueue, settledIds, focusedKey, setFleetFocusTask, setTab, setFleetIdleExpanded]);
+  }, [fleetFocusTask, missionsByWorkspace, groups, reviewQueue, settledIds, focusedKey, dense, ownerOf, setFleetFocusTask, setTab, setFleetIdleExpanded]);
 
   // The ⋮ menu that is open, if any (its close function), so Escape closes the
   // menu rather than the overlay.

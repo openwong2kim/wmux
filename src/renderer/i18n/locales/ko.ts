@@ -3009,6 +3009,8 @@ export const ko = {
   'fleetBoard.empty.body': "판에서 에이전트를 시작하거나, 작업을 여러 워커로 나눠 띄워 보세요.",
   'fleetBoard.recent': "최근 완료",
   'fleetBoard.preview': "미리보기 · {name} — Space로 닫기",
+  'fleetBoard.conversationEarlier': "이전 메시지",
+  'fleetBoard.conversationEarlierCount': "이전 메시지 ({count})",
   'fleetBoard.conversationEmpty': "아직 보고나 지시가 없습니다.",
   'fleetBoard.conversationLabel': "{title}의 대화",
   'fleetBoard.conversation': "대화 · {title}",

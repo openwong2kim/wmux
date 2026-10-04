@@ -2820,6 +2820,8 @@ export const zh = {
   'fleetBoard.empty.body': "在窗格中启动代理，或把任务拆给多个工作者。",
   'fleetBoard.recent': "最近完成",
   'fleetBoard.preview': "预览 · {name} — 按空格隐藏",
+  'fleetBoard.conversationEarlier': "更早的消息",
+  'fleetBoard.conversationEarlierCount': "更早的消息（{count}）",
   'fleetBoard.conversationEmpty': "还没有报告或指示。",
   'fleetBoard.conversationLabel': "{title} 的对话",
   'fleetBoard.conversation': "对话 · {title}",

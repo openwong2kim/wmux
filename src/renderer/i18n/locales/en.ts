@@ -3572,6 +3572,8 @@ export const en = {
   'fleetBoard.empty.body': "Start an agent in a pane, or split a task across workers.",
   'fleetBoard.recent': "Recently finished",
   'fleetBoard.preview': "Preview · {name} — Space to hide",
+  'fleetBoard.conversationEarlier': "Earlier messages",
+  'fleetBoard.conversationEarlierCount': "Earlier messages ({count})",
   'fleetBoard.conversationEmpty': "No reports or instructions yet.",
   'fleetBoard.conversationLabel': "Conversation of {title}",
   'fleetBoard.conversation': "Conversation · {title}",
