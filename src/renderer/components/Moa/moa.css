@@ -1,0 +1,49 @@
+/* Moa's mascot motion (approved art: Mascot6). The classes are only rendered
+ * while motion is allowed (MoaMascot drops them under the OS reduced-motion
+ * preference or Moa's own Reduce motion setting); the media query below is the
+ * second guard for a preference that flips before React re-renders. */
+.moa-squish { animation: moa-squish 2.4s ease-in-out infinite; transform-origin: 60px 104px; transform-box: view-box; }
+.moa-squish-fast { animation: moa-squish 0.9s ease-in-out infinite; transform-origin: 60px 104px; transform-box: view-box; }
+.moa-hop { animation: moa-hop 0.9s cubic-bezier(0.3, 0.7, 0.4, 1) infinite; transform-origin: 60px 104px; transform-box: view-box; }
+.moa-shadow { animation: moa-shadow 2.4s ease-in-out infinite; transform-origin: 60px 108px; transform-box: view-box; }
+.moa-blink { animation: moa-blink 3.6s infinite; transform-origin: 60px 66px; transform-box: view-box; }
+.moa-tuft { animation: moa-tuft 2.4s ease-in-out infinite; transform-origin: 60px 34px; transform-box: view-box; }
+.moa-wave-l { animation: moa-wave-l 0.9s ease-in-out infinite; transform-origin: 30px 80px; transform-box: view-box; }
+.moa-wave-r { animation: moa-wave-r 0.9s ease-in-out infinite; transform-origin: 90px 80px; transform-box: view-box; }
+.moa-raise { animation: moa-raise 0.7s ease-in-out infinite; transform-origin: 90px 78px; transform-box: view-box; }
+.moa-bang { animation: moa-bang 0.7s ease-in-out infinite; transform-origin: 50% 50%; transform-box: fill-box; }
+.moa-dots circle { animation: moa-dot 1.2s infinite; }
+.moa-dots circle:nth-child(2) { animation-delay: 0.2s; }
+.moa-dots circle:nth-child(3) { animation-delay: 0.4s; }
+.moa-heart { animation: moa-heart 1.4s ease-in-out infinite; transform-origin: 50% 50%; transform-box: fill-box; }
+.moa-heart-late { animation-delay: 0.5s; }
+
+@keyframes moa-squish { 0%, 100% { transform: scale(1, 1); } 50% { transform: scale(1.05, 0.94); } }
+@keyframes moa-hop {
+  0%, 100% { transform: translateY(0) scale(1, 1); }
+  20% { transform: translateY(0) scale(1.08, 0.9); }
+  50% { transform: translateY(-14px) scale(0.95, 1.06); }
+  80% { transform: translateY(0) scale(1.06, 0.93); }
+}
+@keyframes moa-shadow { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.08); } }
+@keyframes moa-blink { 0%, 90%, 100% { transform: scaleY(1); } 94% { transform: scaleY(0.1); } }
+@keyframes moa-tuft { 0%, 100% { transform: rotate(-10deg); } 50% { transform: rotate(10deg); } }
+@keyframes moa-wave-l { 0%, 100% { transform: rotate(0); } 50% { transform: rotate(-28deg); } }
+@keyframes moa-wave-r { 0%, 100% { transform: rotate(0); } 50% { transform: rotate(28deg); } }
+@keyframes moa-raise { 0%, 100% { transform: rotate(-10deg); } 50% { transform: rotate(-34deg); } }
+@keyframes moa-bang { 0%, 100% { transform: scale(1) rotate(-6deg); } 50% { transform: scale(1.18) rotate(6deg); } }
+@keyframes moa-dot { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+@keyframes moa-heart {
+  0%, 100% { opacity: 0; transform: translateY(4px) scale(0.6); }
+  50% { opacity: 1; transform: translateY(-4px) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .moa-mascot *, .moa-bubble { animation: none !important; }
+}
+
+/* The titlebar bubble: a popover hung under the Moa icon. Enters with the
+ * feedback motion token; no overshoot (it is chrome, not the character). */
+.moa-bubble { animation: moa-bubble-in var(--motion-feedback, 120ms) cubic-bezier(0.22, 1, 0.36, 1) both; }
+.moa-bubble[data-motion="reduced"] { animation: none; }
+@keyframes moa-bubble-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
