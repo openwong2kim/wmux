@@ -49,6 +49,7 @@ vi.mock('../../../deck/deckAutonomyStore', async (importOriginal) => {
 });
 
 import { registerDeckHandler } from '../deck.handler';
+import { setMoaEnabled } from '../../../deck/deckHqStore';
 import { IPC } from '../../../../shared/constants';
 import type { BrainAdapter, BrainEvent, BrainStartOptions } from '../../../deck/BrainAdapter';
 
@@ -128,6 +129,12 @@ const setModel = (model: unknown) =>
  *  (its layout has no composer), so it is where the model has to apply. */
 const wake = (workspaceId = 'ws-1') =>
   captured.get(IPC.DECK_WAKE)!({}, { workspaceId }) as Promise<{ ok: boolean }>;
+
+// These suites exercise the deck brain itself: start with Moa's master
+// switch on (a fresh data dir would otherwise read as a new install, off).
+beforeEach(async () => {
+  await setMoaEnabled(true);
+});
 
 beforeEach(() => {
   captured.clear();

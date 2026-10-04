@@ -1318,16 +1318,13 @@ export const en = {
   // Picking this one does not just change the runtime: the orchestrator panel
   // becomes an embedded terminal instead of the chat surface, which is a
   // visible change people have hit without warning.
-  'settings.orchestratorBrainClaudePtyNote':
-    'Runs the orchestrator as a terminal: the panel shows the Claude Code TUI instead of the chat view.',
+  'settings.orchestratorBrainClaudePtyNote': 'Runs Moa as a terminal: its panel shows the Claude Code TUI instead of the chat view.',
   'settings.orchestratorBrainHermes': 'Hermes Agent (ACP) — experimental',
-  'settings.orchestratorModel': 'Orchestrator model',
-  'settings.orchestratorModelDesc':
-    'The Claude model the Command Deck orchestrator runs on. Changes apply from your next command; the conversation carries over.',
+  'settings.orchestratorModel': 'Model',
+  'settings.orchestratorModelDesc': 'The Claude model Moa runs on. Changes apply from its next turn; the conversation carries over.',
   'settings.orchestratorModelDefault': 'Default (subscription model)',
-  'settings.orchestratorEffort': 'Orchestrator effort',
-  'settings.orchestratorEffortDesc':
-    'How much the orchestrator thinks per turn (claude --effort). Lower is faster and uses fewer tokens. Applies from your next command.',
+  'settings.orchestratorEffort': 'Effort',
+  'settings.orchestratorEffortDesc': 'How much Moa thinks per turn (claude --effort). Lower is faster and uses fewer tokens. Applies from its next turn.',
   'settings.orchestratorEffortDefault': 'Default (CLI setting)',
   'settings.orchestratorFullPower': 'Full-power mode',
   'settings.orchestratorFullPowerDesc':

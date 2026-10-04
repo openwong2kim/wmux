@@ -49,6 +49,7 @@ vi.mock('../../../deck/deckAutonomyStore', async (importOriginal) => {
 });
 
 import { registerDeckHandler } from '../deck.handler';
+import { setMoaEnabled } from '../../../deck/deckHqStore';
 import { IPC } from '../../../../shared/constants';
 import type { BrainAdapter, BrainEvent, BrainStartOptions } from '../../../deck/BrainAdapter';
 import type { BrainVendor } from '../../../../shared/types';
@@ -124,6 +125,12 @@ const listBrainPtys = () =>
   }>;
 const send = (workspaceId: string) =>
   captured.get(IPC.DECK_SEND)!({}, { workspaceId, text: 'hi' }) as Promise<{ ok: boolean }>;
+
+// These suites exercise the deck brain itself: start with Moa's master
+// switch on (a fresh data dir would otherwise read as a new install, off).
+beforeEach(async () => {
+  await setMoaEnabled(true);
+});
 
 beforeEach(() => {
   captured.clear();

@@ -117,6 +117,7 @@ vi.mock('../../../deck/deckDecisionStore', () => ({
 }));
 
 import { registerDeckHandler } from '../deck.handler';
+import { setMoaEnabled } from '../../../deck/deckHqStore';
 import { IPC } from '../../../../shared/constants';
 import { getWorkspaceMirror, __resetWorkspaceMirrorForTest } from '../../../workspace/WorkspaceMirror';
 import type { WorkspaceMirrorPushPayload } from '../../../workspace/WorkspaceMirror';
@@ -161,6 +162,12 @@ function seedMirror(
   };
   getWorkspaceMirror().setSnapshot(payload);
 }
+
+// These suites exercise the deck brain itself: start with Moa's master
+// switch on (a fresh data dir would otherwise read as a new install, off).
+beforeEach(async () => {
+  await setMoaEnabled(true);
+});
 
 beforeEach(() => {
   captured.clear();

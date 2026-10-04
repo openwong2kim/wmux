@@ -1299,16 +1299,13 @@ export const pl = {
     'Który runtime agenta napędza Command Deck. Mózg terminalowy jest domyślny — steruje Twoim własnym plikiem binarnym claude na Twojej subskrypcji. Hermes (ACP) wymaga zainstalowanego i uwierzytelnionego Hermes Agent CLI na tej maszynie — najpierw uruchom jego własną konfigurację. Obowiązuje od następnej tury mózgu; każdy mózg trzyma własną historię rozmowy.',
   'settings.orchestratorBrainClaude': 'Claude Code (SDK)',
   'settings.orchestratorBrainClaudePty': 'Claude Code (terminal, domyślny) — subskrypcja',
-  'settings.orchestratorBrainClaudePtyNote':
-    'Uruchamia orkiestratora jako terminal: panel pokazuje TUI Claude Code zamiast widoku czatu.',
+  'settings.orchestratorBrainClaudePtyNote': 'Uruchamia Moa jako terminal: panel pokazuje TUI Claude Code zamiast widoku czatu.',
   'settings.orchestratorBrainHermes': 'Hermes Agent (ACP) — eksperymentalny',
-  'settings.orchestratorModel': 'Model orkiestratora',
-  'settings.orchestratorModelDesc':
-    'Model Claude, na którym działa orkiestrator Command Deck. Zmiany obowiązują od następnego polecenia; rozmowa przechodzi dalej.',
+  'settings.orchestratorModel': 'Model',
+  'settings.orchestratorModelDesc': 'Model Claude, na którym działa Moa. Zmiany obowiązują od jej następnej tury; rozmowa przechodzi dalej.',
   'settings.orchestratorModelDefault': 'Domyślny (model subskrypcji)',
-  'settings.orchestratorEffort': 'Effort orkiestratora',
-  'settings.orchestratorEffortDesc':
-    'Ile orkiestrator myśli w każdej turze (claude --effort). Niżej = szybciej i mniej tokenów. Działa od następnego polecenia.',
+  'settings.orchestratorEffort': 'Effort',
+  'settings.orchestratorEffortDesc': 'Ile Moa myśli w każdej turze (claude --effort). Niżej = szybciej i mniej tokenów. Działa od następnej tury.',
   'settings.orchestratorEffortDefault': 'Domyślny (ustawienie CLI)',
   'settings.orchestratorFullPower': 'Tryb pełnej mocy',
   'settings.orchestratorFullPowerDesc':

@@ -836,16 +836,13 @@ export const ko = {
     'agent를 구동할 에이전트 런타임. 기본은 터미널 런타임으로, 본인 claude 바이너리를 구독으로 구동합니다. Hermes(ACP)는 이 PC에 Hermes Agent CLI 설치·인증이 필요합니다(자체 setup 먼저). 다음 agent 턴부터 적용되며 런타임별로 대화 이력이 따로 유지됩니다.',
   'settings.orchestratorBrainClaude': 'Claude Code (SDK)',
   'settings.orchestratorBrainClaudePty': 'Claude Code (터미널, 기본) — 구독',
-  'settings.orchestratorBrainClaudePtyNote':
-    'agent가 터미널로 동작합니다 — 패널이 채팅 화면 대신 Claude Code TUI를 표시합니다.',
+  'settings.orchestratorBrainClaudePtyNote': 'Moa가 터미널로 동작합니다. 패널이 채팅 화면 대신 Claude Code TUI를 보여 줍니다.',
   'settings.orchestratorBrainHermes': 'Hermes Agent (ACP) — 실험적',
-  'settings.orchestratorModel': 'agent 모델',
-  'settings.orchestratorModelDesc':
-    '커맨드 데크 agent가 사용할 Claude 모델. 변경은 다음 지시부터 적용되고 대화는 이어집니다.',
+  'settings.orchestratorModel': '모델',
+  'settings.orchestratorModelDesc': 'Moa가 사용할 Claude 모델입니다. 변경은 다음 턴부터 적용되고 대화는 이어집니다.',
   'settings.orchestratorModelDefault': '기본 (구독 기본 모델)',
-  'settings.orchestratorEffort': 'agent effort',
-  'settings.orchestratorEffortDesc':
-    '턴마다 agent가 생각하는 양(claude --effort). 낮을수록 빠르고 토큰을 덜 씁니다. 다음 지시부터 적용됩니다.',
+  'settings.orchestratorEffort': 'Effort',
+  'settings.orchestratorEffortDesc': '턴마다 Moa가 생각하는 양(claude --effort)입니다. 낮을수록 빠르고 토큰을 덜 씁니다. 다음 턴부터 적용됩니다.',
   'settings.orchestratorEffortDefault': '기본 (CLI 설정)',
   'settings.roleBindingEffortLabel': '{role} effort',
   'settings.roleBindingEffortDefault': 'Effort: 기본',
