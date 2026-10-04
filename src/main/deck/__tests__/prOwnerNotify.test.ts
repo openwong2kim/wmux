@@ -22,6 +22,13 @@ describe('notifyPrOwner', () => {
     expect(sent).toHaveLength(0);
   });
 
+  it('never addresses the HQ workspace, even while its brain is down', () => {
+    const { sent, p } = ports(false);
+    expect(notifyPrOwner(EV, { ...p, isHq: (ws) => ws === 'ws-1' })).toBe(false);
+    expect(notifyPrOwner({ ...EV, workspaceId: 'ws-2' }, { ...p, isHq: (ws) => ws === 'ws-1' })).toBe(true);
+    expect(sent.map((e) => e.workspaceId)).toEqual(['ws-2']);
+  });
+
   it('only the fixed fields travel: no external text, a malformed head commit is dropped', () => {
     const { sent, p } = ports(false);
     notifyPrOwner({ ...EV, headSha: 'x; rm -rf', snippet: 'body', author: 'someone' } as typeof EV, p);

@@ -1654,6 +1654,7 @@ export function registerDeckHandler(
   setPrOwnerSink((ev) => {
     notifyPrOwner(ev, {
       hasBrain: ownerHasBrain,
+      isHq: (ws) => ws === getHqWorkspaceId(),
       send: (payload) => {
         const win = getWindow();
         if (!win || win.isDestroyed()) return false;

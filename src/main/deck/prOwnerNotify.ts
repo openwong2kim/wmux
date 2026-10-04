@@ -12,9 +12,12 @@
 // The metadata poll publishes here (no new polling: PrCiRouter and
 // PrReviewRouter ride the existing PrStatusCache / GhPrService cadence);
 // deck.handler installs the sink because it knows which workspaces have a
-// brain. Fail-closed, no ack, no retry: a workspace with a brain (the HQ
-// included) is never addressed this way — its brain already got the event —
-// and no window (headless) means nothing is sent.
+// brain. Fail-closed, no ack, no retry: a workspace with a brain is never
+// addressed this way — its brain already got the event — nor is the HQ
+// workspace even while its brain is down, and no window (headless) means
+// nothing is sent. Once an HQ is designated every other workspace has no
+// brain, so their PR events always come here: CI failures and review
+// comments are the owning agent's job, not the HQ's.
 
 import { isPrNumber, isPrOwnerKind, type PrOwnerKind } from '../../shared/prOwnerNudge';
 
@@ -32,6 +35,8 @@ export interface PrOwnerEvent {
 export interface PrOwnerPorts {
   /** True when the workspace has a brain that hears the event itself. */
   hasBrain: (workspaceId: string) => boolean;
+  /** True for the HQ workspace: never addressed, brain or not. */
+  isHq?: (workspaceId: string) => boolean;
   /** Hand the pointer to the renderer; false when there is none. */
   send: (ev: PrOwnerEvent) => boolean;
 }
@@ -59,7 +64,7 @@ export function notifyPrOwner(ev: Omit<PrOwnerEvent, 'seq'>, ports: PrOwnerPorts
   try {
     if (!ev.workspaceId || !isPrNumber(ev.prNumber) || !isPrOwnerKind(ev.kind)) return false;
     if (typeof ev.url !== 'string' || !ev.url || ev.url.length > 512) return false;
-    if (ports.hasBrain(ev.workspaceId)) return false;
+    if (ports.isHq?.(ev.workspaceId) || ports.hasBrain(ev.workspaceId)) return false;
     return ports.send({
       workspaceId: ev.workspaceId,
       prNumber: ev.prNumber,
