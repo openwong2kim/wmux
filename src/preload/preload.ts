@@ -563,6 +563,10 @@ const electronAPI = {
         ...(opts?.keepContext ? { keepContext: opts.keepContext } : {}),
         ...(opts?.taskId ? { taskId: opts.taskId } : {}),
         ...(opts?.pane ? { pane: opts.pane } : {}),
+        // The Git page's hand-off: the typing hold and its checks.
+        ...(opts?.waitQuiet ? { waitQuiet: true } : {}),
+        ...(opts?.waitQuiet && opts.expectAgent ? { expectAgent: opts.expectAgent } : {}),
+        ...(opts?.waitQuiet && opts.deadlineAt !== undefined ? { deadlineAt: opts.deadlineAt } : {}),
       }) as Promise<
         import('../shared/ptyMessageDelivery').GatedSubmitResult
       >,
