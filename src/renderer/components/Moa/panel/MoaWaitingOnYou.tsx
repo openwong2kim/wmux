@@ -8,7 +8,13 @@ import type { MoaPendingDecision } from '../../../../shared/moa';
 import Button from '../../ui/Button';
 import Input from '../../ui/Input';
 
-export type ResolveDecision = (args: { workspaceId: string; id: string; resolution: string }) => Promise<{ ok: boolean }>;
+export type ResolveDecision = (args: { workspaceId: string; id: string; resolution: string }) => Promise<{ ok: boolean; code?: string }>;
+
+/** Main's refusal for a decision that is no longer pending: it was answered
+ *  elsewhere (the phone, another window) a moment before this click. */
+export function answeredElsewhere(r: { ok: boolean; code?: string }): boolean {
+  return !r.ok && r.code === 'not_pending';
+}
 
 export const NEEDS_YOU_ROW =
   'rounded-[10px] px-3 py-2.5 border border-dashed border-[color-mix(in_srgb,var(--text-main)_30%,transparent)] bg-[color-mix(in_srgb,var(--text-main)_20%,transparent)]';
@@ -57,7 +63,9 @@ export function MoaWaitingOnYou({
     if (!text) return false;
     try {
       const r = await onResolve({ workspaceId: d.workspaceId, id: d.decision.id, resolution: text });
-      if (!r.ok) return false;
+      // Already answered elsewhere: the row is stale, not failed, so it leaves
+      // like an answered one and shows no error.
+      if (!r.ok && !answeredElsewhere(r)) return false;
     } catch {
       return false;
     }

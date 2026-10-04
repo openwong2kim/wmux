@@ -5,7 +5,7 @@ import { Suspense, lazy, useCallback, useMemo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../../stores';
 import type { MoaPendingDecision } from '../../../../shared/moa';
-import { MoaWaitingOnYou, type ResolveDecision } from './MoaWaitingOnYou';
+import { MoaWaitingOnYou, answeredElsewhere, type ResolveDecision } from './MoaWaitingOnYou';
 import { MoaTaskCards } from './MoaTaskCards';
 import { selectTaskCards, useWorkLinks, type WorkLinksApi } from './useMoaPanelData';
 import type { CommanderViewProps } from '../../Deck/CommanderView';
@@ -42,7 +42,8 @@ export function MoaPanelTop({
   }, [names]);
   const onResolve = useCallback<ResolveDecision>(async (args) => {
     const r = await resolve(args);
-    if (r.ok) onResolved?.();
+    // Answered elsewhere still moved main's list: re-read it.
+    if (r.ok || answeredElsewhere(r)) onResolved?.();
     return r;
   }, [resolve, onResolved]);
   // Main names a decision's workspace when it knows it; fall back to ours.

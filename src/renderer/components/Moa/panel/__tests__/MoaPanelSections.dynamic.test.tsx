@@ -87,6 +87,15 @@ describe('MoaWaitingOnYou', () => {
     expect(container.querySelector('[data-moa-decision="d4"]')).not.toBeNull();
     expect(container.querySelector('[role="alert"]')?.textContent).toBe('moa.panel.answerFailed');
   });
+
+  it('a decision already answered elsewhere (not_pending) just leaves, with no error', async () => {
+    const onResolve = vi.fn(async () => ({ ok: false, code: 'not_pending' }));
+    await act(async () => root.render(createElement(MoaWaitingOnYou, { decisions: [decision('d5', 'ws-a', ['Go']), decision('d6', 'ws-b', ['Yes'])], onResolve, t })));
+    await act(async () => { (container.querySelector('[data-moa-decision="d5"] [data-moa-decision-option]') as HTMLButtonElement).click(); });
+    expect(container.querySelector('[data-moa-decision="d5"]')).toBeNull();
+    expect(container.querySelector('[data-moa-decision="d6"]')).not.toBeNull();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
 });
 
 describe('MoaTaskCards', () => {
@@ -129,6 +138,17 @@ describe('MoaTaskCards', () => {
 });
 
 describe('MoaPanelTop', () => {
+  it('re-reads the decisions when main says one was already answered elsewhere', async () => {
+    const resolve = vi.fn(async () => ({ ok: false, code: 'not_pending' }));
+    const onResolved = vi.fn();
+    const linksApi = { list: vi.fn(async () => []), onChanged: vi.fn(() => () => undefined) };
+    await act(async () => root.render(createElement(MoaPanelTop, { decisions: [decision('d7', 'ws-a', ['Go'])], resolve, onResolved, linksApi, t })));
+    await act(async () => { (container.querySelector('[data-moa-decision-option]') as HTMLButtonElement).click(); });
+    expect(onResolved).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-moa-decision="d7"]')).toBeNull();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
   it('lists delegated work from workLinks and re-reads it when main says it changed', async () => {
     let changed: ((ids: string[]) => void) | null = null;
     const list = vi.fn(async () => [link('l1', { title: 'One' }), link('gone', { title: 'Gone', state: 'abandoned', manualClose: true })]);
