@@ -583,6 +583,16 @@ export const IPC = {
   // Git page Issues view (gh CLI, 30s TTL, rate-limit breaker)
   GITHUB_ISSUE_LIST: 'github:issueList',
   GITHUB_ISSUE_DETAIL: 'github:issueDetail',
+  // PR review and CI on the Git page's detail pane (src/main/github/GhPrReviewService.ts).
+  PR_REVIEW_CHECKS: 'prReview:checks',
+  PR_REVIEW_FILES: 'prReview:files',
+  PR_REVIEW_THREADS: 'prReview:threads',
+  PR_REVIEW_COMMENT: 'prReview:comment',
+  PR_REVIEW_REPLY: 'prReview:reply',
+  PR_REVIEW_SUBMIT: 'prReview:submit',
+  PR_REVIEW_MERGE: 'prReview:merge',
+  PR_REVIEW_RUN_LOG: 'prReview:runLog',
+  PR_REVIEW_RERUN: 'prReview:rerun',
   // Work links (src/shared/workLink.ts): renderer reads only; main is the sole writer.
   WORK_LINK_LIST: 'workLink:list',
   WORK_LINK_GET: 'workLink:get',
