@@ -1912,7 +1912,8 @@ describe('a cold-start prompt that reaches the TUI incomplete (#1787)', () => {
     const attach = host.attach.bind(host);
     host.attach = async (id) => {
       await attach(id);
-      setTimeout(() => host.emit(id, '\u001b[?2004l'), 30);
+      // The banner turned the mode on; it goes off now, and on again later.
+      host.emit(id, '\u001b[?2004l');
       setTimeout(() => {
         lastOn = Date.now();
         host.emit(id, '\u001b[?2004h');
@@ -1924,7 +1925,7 @@ describe('a cold-start prompt that reaches the TUI incomplete (#1787)', () => {
       if (data.startsWith('\u001b[200~')) typedAt = Date.now();
       write(id, data);
     };
-    const adapter = makeAdapter(host, { pasteModeWaitMs: 2_000, pasteModeSettleMs: 50 });
+    const adapter = makeAdapter(host, { pasteModeWaitMs: 5_000, pasteModeSettleMs: 50 });
     await collect(adapter.send(LONG_PROMPT));
     expect(lastOn).toBeGreaterThan(0);
     expect(typedAt - lastOn).toBeGreaterThanOrEqual(45);
