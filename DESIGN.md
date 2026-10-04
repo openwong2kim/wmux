@@ -181,6 +181,10 @@ navigates through it.
 - **Pages, in order:** Workspaces (home: the sidebar, panes and tools dock)
   · Fleet · Schedules · Remote · Git. Settings is a page too, opened from the
   titlebar gear. The sidebar toggle sits at the rail's foot.
+- **Moa** follows Git while Moa is on and its workspace exists: a monogram
+  `M` in the rail's stroke style (no logo). It is not a page — it opens
+  Moa's app-owned workspace on the Workspaces page, and it (not Workspaces)
+  is the current item while that workspace is active there.
 - **Rail item:** a 19px icon on a 40px square. The current page is a soft
   `--selection` square (plus the look's `--select-ring`) marked
   `aria-current="page"`; hover is
@@ -327,6 +331,15 @@ leaves the page.
   is one 10px-radius `--selection` pill inset 8px from the edges; its agent
   rows are indented text with no inner box or guide line. Hover is
   `--hover-fill` with the row actions floating over a faded right edge.
+- **Moa's workspace** is app-owned and never in the list, its count, the
+  filter, the collapsed rail or Ctrl+N (the numbers skip it). While it is
+  the active workspace it shows as its own row above the Workspaces header;
+  its Close and Archive stay visible but disabled (`aria-disabled`, still
+  focusable) with the reason as tooltip and description — turn Moa off in
+  Settings › Moa instead. Every other close path (keyboard, task groups,
+  Fleet) refuses it with that reason before any session is touched. When Moa
+  is on and its workspace is gone, one persistent toast offers "Recreate Moa
+  workspace" and leaves once the state recovers.
 - The glance-board rules (attention order, pin to top, fan-out nesting, the
   changed-since-you-looked dot) are in "Sidebar rows" after the Decisions
   Log.

@@ -39,6 +39,7 @@ import OnboardingOverlay from '../Onboarding/OnboardingOverlay';
 import FirstRunWizard from '../FirstRunWizard';
 import KeyboardCheatSheet from '../KeyboardCheatSheet';
 import ToastContainer from '../Toast/ToastContainer';
+import MoaHqMissingNotice from '../Moa/MoaHqMissingNotice';
 import { HooksInstallPromptContainer } from '../Deck/HooksInstallPrompt';
 import FloatingPane from '../Terminal/FloatingPane';
 import SearchResultsPanel from '../Search/SearchResultsPanel';
@@ -2162,6 +2163,7 @@ export default function AppLayout() {
       )}
       <FloatingPane />
       <ToastContainer />
+      <MoaHqMissingNotice />
       <HooksInstallPromptContainer
         t={t}
         launchCheck={hooksLaunchCheck({ firstRunSettled: firstRunProbeSettled, firstRunWizardRanThisBoot })}
