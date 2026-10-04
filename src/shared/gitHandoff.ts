@@ -96,6 +96,10 @@ export interface HandoffStartRequest {
   item: HandoffRef;
   /** A path inside the repo (the page's current repo). */
   repoPath: string;
+  /** The workspace in that repo the fan-out runs from. */
+  workspaceId: string;
+  /** The agent command (the user's default: the fan-out dialog's last one). */
+  agentCmd?: string;
   note?: string;
   force?: boolean;
 }

@@ -1,5 +1,6 @@
 import type { BrowserWindow } from 'electron';
 import { usageLimitHoldDetail } from '../../usageLimit/paneUsageLimits';
+import { waitForQuietInput } from './quietInput';
 import type { RpcRouter } from '../RpcRouter';
 import { isHostedCaller, type RpcContext } from '../../../shared/rpc';
 import type { PTYManager } from '../../pty/PTYManager';
@@ -1562,7 +1563,19 @@ export function registerInputRpc(
   };
   return {
     deliveryGate: (ptyId) => deliveryGateCheck(approvalGate, ptyId),
-    gatedSubmit: (ptyId, text, agent, opts) => {
+    gatedSubmit: async (ptyId, text, agent, opts) => {
+      // The Git page's hand-off: hold the paste while the person is typing in
+      // that pane (draft or recent keys), within a bounded wait.
+      if (opts?.waitQuiet) {
+        const dc = getDaemonClient?.();
+        const quiet = await waitForQuietInput(
+          async () => (dc?.isConnected ? dc.getAgentState(ptyId, { timeoutMs: 1_000 }) : null),
+          { ...(deps.sleep ? { sleep: deps.sleep } : {}) },
+        );
+        if (!quiet) {
+          return { ok: false, reason: 'user_typing', detail: 'delivery: someone is typing in the target pane' };
+        }
+      }
       if (!opts?.newTask) return gatedPasteSubmit(approvalGate, writeToPty, ptyId, text, agent, deps.sleep);
       // #1680 — a new task: the fresh-context step runs inside the gated
       // delivery, and the pane is held through the text's Enter. The pane's

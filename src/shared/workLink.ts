@@ -29,7 +29,7 @@ export const WORK_LINK_STATES = [
 export type WorkLinkState = (typeof WORK_LINK_STATES)[number];
 
 /** Where the work started: a Git page issue, a Moa delegation, or a plain send. */
-export const WORK_LINK_ORIGINS = ['issue', 'moa', 'manual'] as const;
+export const WORK_LINK_ORIGINS = ['issue', 'pr', 'moa', 'manual'] as const;
 export type WorkLinkOrigin = (typeof WORK_LINK_ORIGINS)[number];
 
 /** Why a link is `needs-you` (a person must act) or `blocked` (the agent must). */
@@ -264,6 +264,8 @@ export function parseWorkLink(v: unknown): WorkLink | null {
     if (!pr) return null;
     out.pr = pr;
   }
+  // A PR handed to an agent from the Git page carries the PR it is about.
+  if (out.origin === 'pr' && !out.pr) return null;
   if (v.prStatus !== undefined) {
     const prStatus = parsePrStatus(v.prStatus);
     if (!prStatus) return null;

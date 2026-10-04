@@ -16,7 +16,7 @@ same records, so both show the same state.
 | Field | Meaning |
 | --- | --- |
 | `id` | Link id (a UUID). |
-| `origin` | `issue` (started from an issue on the Git page), `moa` (a Moa delegation) or `manual` (any other A2A send). |
+| `origin` | `issue` (started from an issue on the Git page), `pr` (a PR handed to an agent from the Git page; requires `pr`), `moa` (a Moa delegation) or `manual` (any other A2A send). |
 | `issue?` | The `IssueRef` (`src/shared/issueRef.ts`) the work is about. Required when `origin` is `issue`; any link may carry one. |
 | `title?` | Task or issue title. Untrusted free text, capped at 256 characters. Render it as text only. |
 | `a2aTaskId?` | The A2A task carrying the work. At most one link per task. |

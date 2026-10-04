@@ -4513,6 +4513,10 @@ function registerRpcHandlers(
       keyInputRevision: bridge.getKeyInputRevision(),
       keyInputQuiet: bridge.isKeyInputQuiet(),
       hookReports: bridge.hasHookReports(),
+      // Additive, for a delivery that waits for the person to stop typing:
+      // whether the composer holds a draft, and how long keys have been quiet.
+      hasDraft: bridge.hasDraft(),
+      keyInputIdleMs: bridge.keyInputIdleMs(),
     };
   });
   // #1594 — what main's terminal_send needs to paste into a session: the agent

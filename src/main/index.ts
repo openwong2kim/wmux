@@ -57,6 +57,7 @@ import { registerSurfaceRpc } from './pipe/handlers/surface.rpc';
 import { registerPaneRpc } from './pipe/handlers/pane.rpc';
 import { registerInputRpc, makeRoleBindingResolver } from './pipe/handlers/input.rpc';
 import { gatedSubmitTaskContext } from './pipe/handlers/a2aOpenTasks';
+import { registerGitHandoffHandlers } from './ipc/handlers/gitHandoff.handler';
 import { registerApprovalsRpc } from './pipe/handlers/approvals.rpc';
 import { registerDeckRpc } from './pipe/handlers/deck.rpc';
 import { registerNotifyRpc } from './pipe/handlers/notify.rpc';
@@ -94,7 +95,7 @@ import { registerChannelLocalHandlers } from './ipc/handlers/channelLocal.handle
 import { registerRemoteHandlers } from './ipc/handlers/remote.handler';
 import { RemoteHostsStore } from './remote/RemoteHostsStore';
 import { RemoteAttachmentsStore } from './remote/RemoteAttachmentsStore';
-import { registerFanOutHandler } from './ipc/handlers/fanout.handler';
+import { registerFanOutHandler, startGuiFanOut } from './ipc/handlers/fanout.handler';
 import { initQuickLaunch } from './quickLaunch';
 import { focusedPrimaryWindow } from './window/auxiliaryWindows';
 import { createFanOutService } from './worktask/createFanOutService';
@@ -895,6 +896,9 @@ ipcMain.handle(IPC.GATED_SUBMIT, async (_e, ptyId: unknown, text: unknown, agent
         ...(typeof opts === 'object' && opts !== null && (opts as { keepContext?: unknown }).keepContext === 'open_a2a_task'
           ? { keepContext: 'open_a2a_task' as const }
           : {}),
+        ...(typeof opts === 'object' && opts !== null && (opts as { waitQuiet?: unknown }).waitQuiet === true
+          ? { waitQuiet: true }
+          : {}),
         ...gatedSubmitTaskContext(opts),
       })
     : { ok: false, reason: 'write_failed', detail: 'delivery: missing target pty or text' },
@@ -1067,6 +1071,13 @@ getWorkerTempDirSweeper().setLiveTempDirs(async () => {
 });
 let quickLaunch: ReturnType<typeof initQuickLaunch> | null = null;
 registerFanOutHandler(fanOutService);
+// The Git page's hand-off (issue / PR → agent pane or new worktree): the
+// operator RPC lane for the A2A send (so the task joins its work link) and
+// the fan-out service for a new worktree.
+registerGitHandoffHandlers({
+  invoke: (method, params) => invokeRendererRpc(method, params),
+  startFanOut: (req) => startGuiFanOut(fanOutService, req),
+});
 registerFanOutRpc(rpcRouter, fanOutService, () => mainWindow);
 registerLedgerRpc(rpcRouter, () => mainWindow);
 // Scheduled runs for agents: draft-only propose + redacted reads, relayed to

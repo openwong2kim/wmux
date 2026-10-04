@@ -593,6 +593,10 @@ export class DaemonClient extends EventEmitter {
     /** #1680 — the pane's CURRENT agent has delivered a hook (reset when that
      *  agent ends). Absent on an older daemon. */
     hookReports?: boolean;
+    /** The composer holds a typed but unsubmitted draft. Absent on an older daemon. */
+    hasDraft?: boolean;
+    /** Milliseconds since the last key input. Absent on an older daemon. */
+    keyInputIdleMs?: number;
   } | null> {
     try {
       const result = await (opts.timeoutMs !== undefined
@@ -607,6 +611,8 @@ export class DaemonClient extends EventEmitter {
         keyInputRevision?: unknown;
         keyInputQuiet?: unknown;
         hookReports?: unknown;
+        hasDraft?: unknown;
+        keyInputIdleMs?: unknown;
       };
       const validStatuses: AgentStatus[] = [
         'running',
@@ -642,6 +648,10 @@ export class DaemonClient extends EventEmitter {
           : {}),
         ...(typeof result.keyInputQuiet === 'boolean' ? { keyInputQuiet: result.keyInputQuiet } : {}),
         ...(typeof result.hookReports === 'boolean' ? { hookReports: result.hookReports } : {}),
+        ...(typeof result.hasDraft === 'boolean' ? { hasDraft: result.hasDraft } : {}),
+        ...(typeof result.keyInputIdleMs === 'number' && Number.isFinite(result.keyInputIdleMs) && result.keyInputIdleMs >= 0
+          ? { keyInputIdleMs: result.keyInputIdleMs }
+          : {}),
       };
     } catch {
       return null;

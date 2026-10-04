@@ -180,6 +180,10 @@ export interface FanOutRequest {
   prompt: string;
   /** 태스크별 title(길이 = N). N은 title 배열 길이로 결정한다. */
   titles: string[];
+  /** Per-task branch name, index-aligned with `titles` (optional; absent =
+   *  `wtask/{slug}-{id}`). The Git page's "Start in a new worktree" names
+   *  its branch issue-<n>-<slug>. */
+  branches?: string[];
   /** 태스크별 개별 프롬프트(titles와 인덱스 정렬, 옵셔널). 유효 프롬프트는
    *  `공통 + "\n\n" + 개별`(빈 쪽 생략)로 결합된다. **공통·개별이 둘 다 비어도
    *  거부하지 않는다** — worktree·브랜치·에이전트 페인만 열고(환경만 조성) 프롬프트는
@@ -582,6 +586,7 @@ export class FanOutService {
       const placeholder = `wtask-preflight-${String(k).padStart(8, '0')}`;
       const pf = await this.worktrees.preflight(req.repoPath, preflightTitle, placeholder, {
         checkBranchConflict: true,
+        ...(req.branches?.[k] ? { branch: req.branches[k] } : {}),
       });
       if (!pf.ok) {
         return { ok: false, error: `fanout preflight failed (task ${k + 1}): ${pf.error}`, tasks: [] };
@@ -618,6 +623,7 @@ export class FanOutService {
       missionIdemKey: `${req.idempotencyKey}-${k}`,
       ...(entries[k].role ? { role: entries[k].role } : {}),
       ...(entries[k].agent ? { agentChoice: entries[k].agent } : {}),
+      ...(req.branches?.[k] ? { branch: req.branches[k] } : {}),
       workerMode,
       requester,
     });
@@ -980,6 +986,8 @@ export class FanOutService {
     setupCommand?: string;
     /** Orchestrator role for this task's pane (absent = unroled). */
     role?: string;
+    /** The task branch's name (absent = wtask/{slug}-{id}). */
+    branch?: string;
     /** T3 — commit the task branch starts from (absent = HEAD). */
     baseOid?: string;
     /** T3 — why the base is not a fresh origin commit; posted to the mission channel. */
@@ -1037,7 +1045,7 @@ export class FanOutService {
       }
       base.outputDir = cwd;
     } else {
-      const pf = await this.worktrees.preflight(ctx.repoPath, ctx.title, taskId);
+      const pf = await this.worktrees.preflight(ctx.repoPath, ctx.title, taskId, ctx.branch ? { branch: ctx.branch } : undefined);
       if (!pf.ok) {
         await this.compensate(taskId, ctx.verifiedWorkspaceId);
         return { ...base, error: `worktree preflight failed: ${pf.error}` };

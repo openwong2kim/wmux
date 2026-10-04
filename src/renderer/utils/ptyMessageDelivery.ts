@@ -73,8 +73,11 @@ export async function gatedSubmitToPty(
           ...(options.keepContext ? { keepContext: options.keepContext } : {}),
           ...(options.taskId ? { taskId: options.taskId } : {}),
           ...(options.pane ? { pane: options.pane } : {}),
+          ...(options.waitQuiet ? { waitQuiet: true } : {}),
         })
-      : await submit(ptyId, text, options.agent ?? null);
+      : options.waitQuiet
+        ? await submit(ptyId, text, options.agent ?? null, { waitQuiet: true })
+        : await submit(ptyId, text, options.agent ?? null);
     return result && typeof result === 'object' && 'ok' in result
       ? result
       : { ok: false, reason: 'gate_unavailable', detail: 'delivery: approval gate returned no answer' };

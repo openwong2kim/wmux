@@ -205,10 +205,21 @@ export function resolveAgentSlug(agent?: string | null): AgentSlug | undefined {
  * fresh-context command and never saw it finish, so the text was not written.
  * `usage_limited`: the pane hit its provider's usage limit and is held until
  * the window resets (shared/usageLimit); nothing was written.
+ * `user_typing`: a `waitQuiet` delivery found a draft in the composer or keys
+ * still arriving within its wait; nothing was written.
  */
 export interface GatedSubmitRefusal {
   ok: false;
-  reason: 'approval_pending' | 'gate_unavailable' | 'write_failed' | 'fresh_context_timeout' | 'fresh_context_busy' | 'usage_limited';
+  reason:
+    | 'approval_pending'
+    | 'gate_unavailable'
+    | 'write_failed'
+    | 'fresh_context_timeout'
+    | 'fresh_context_busy'
+    | 'usage_limited'
+    /** A `waitQuiet` delivery: the person kept typing (or left a draft) in
+     *  the pane, so nothing was written. */
+    | 'user_typing';
   detail: string;
   pasted?: boolean;
 }
@@ -234,4 +245,8 @@ export interface GatedSubmitOptions {
   /** With `newTask`: where the delivered pane sits, so main can check the
    *  daemon's open tasks for it (a pane it cannot place is never cleared). */
   pane?: { workspaceId: string; paneId: string; surfaceId: string };
+  /** Hold the paste until the pane has no draft and no key input for a quiet
+   *  window, within a bounded wait; refuse with `user_typing` otherwise (the
+   *  Git page's hand-off: the person may be typing in that pane). */
+  waitQuiet?: boolean;
 }

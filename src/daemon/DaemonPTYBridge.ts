@@ -688,6 +688,11 @@ export class DaemonPTYBridge extends EventEmitter {
     return Date.now() - this.lastKeyInputAt >= DaemonPTYBridge.INPUT_ECHO_QUIET_MS;
   }
 
+  /** Milliseconds since the last key input (focus and pointer reports excluded). */
+  keyInputIdleMs(): number {
+    return Date.now() - this.lastKeyInputAt;
+  }
+
   /** `isKeyInputQuiet` over a caller-chosen window: no key input for `ms`. */
   isKeyInputQuietFor(ms: number): boolean {
     return Date.now() - this.lastKeyInputAt >= ms;

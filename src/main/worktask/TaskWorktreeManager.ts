@@ -228,7 +228,7 @@ export class TaskWorktreeManager {
     repoPathRaw: string,
     title: string,
     taskId: string,
-    opts?: { checkBranchConflict?: boolean },
+    opts?: { checkBranchConflict?: boolean; branch?: string },
   ): Promise<PreflightResult> {
     let repoInput: string;
     try {
@@ -292,7 +292,9 @@ export class TaskWorktreeManager {
     const root = `${getWmuxHomeDir()}/worktrees/${repoHash}`;
     const worktreePath = path.join(root, taskSlug);
     const metaDir = path.join(root, '.meta', taskSlug);
-    const branch = `wtask/${taskSlug}`;
+    // A caller may name the branch (the Git page's issue-<n>-<slug>); it is
+    // validated as a ref below and an existing branch is still refused.
+    const branch = opts?.branch ?? `wtask/${taskSlug}`;
 
     // branch·경로 검증(플래그 주입·traversal — 계승 유틸).
     try {

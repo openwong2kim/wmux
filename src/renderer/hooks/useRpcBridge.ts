@@ -298,9 +298,11 @@ function submitToPty(ptyId: string, text: string): void {
 // `operatorOrigin` at the router (the human's own surface) is written here.
 // ---------------------------------------------------------------------------
 
-/** Whether an A2A delivery skips the approval gate: main-stamped operator origin only. */
+/** Whether an A2A delivery skips the approval gate: main-stamped operator
+ *  origin only, and not when the send asks for the gated delivery (the Git
+ *  page's hand-off, which also waits for the person to stop typing). */
 function a2aOperatorOrigin(params: RpcParams): boolean {
-  return params.operatorOrigin === true;
+  return params.operatorOrigin === true && params.gatedDelivery !== true;
 }
 
 /**
@@ -322,6 +324,8 @@ export interface A2aPtyWrite {
  */
 interface NewTaskDelivery {
   taskId: string;
+  /** Hold the paste while the person is typing in the pane (gatedDelivery sends). */
+  waitQuiet?: boolean;
 }
 
 /** The fields a new-task delivery's receipt carries about the fresh-context
@@ -359,6 +363,7 @@ async function deliverA2aText(
   const result = await gatedSubmitToPty(ptyId, text, {
     agent: ptyAgent(ptyId).name,
     ...(newTask ? { newTask: true, taskId: newTask.taskId, ...keep, ...(pane ? { pane } : {}) } : {}),
+    ...(newTask?.waitQuiet ? { waitQuiet: true } : {}),
   });
   if (!result.ok) return { ptyId: null, refused: result };
   const fresh = freshContextOf(result);
@@ -390,6 +395,9 @@ const DELIVERY_REFUSED_HINTS: Record<GatedSubmitRefusal['reason'], string> = {
     "The target pane hit its provider's usage limit and is held until the limit resets, so nothing was " +
     'written to it. The task is stored; the receiver can find it with a2a_task_query. Send again after the ' +
     'reset (the detail names the reset time when it is known).',
+  user_typing:
+    'Someone was typing in the target pane (or left a draft in its composer), so nothing was written to it. ' +
+    'The task is stored; the receiver can find it with a2a_task_query. Send again once the pane is idle.',
 };
 
 /** The `delivery` receipt for a refused write. */
@@ -3174,9 +3182,9 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       } else if (!silentExplicit && isLiveTuiAgent(liveMeta)) {
         // #1680 — this branch is the task boundary: the pane's role may ask
         // for a fresh conversation before the task lands (both modes).
-        write = await deliverPtyNudge(target, (pty) => buildA2aNudge(newTaskId, fromName, 'new', a2aFormatOptionsFor(pty).multiline ? title : undefined), explicitPty, operator, { taskId: newTaskId });
+        write = await deliverPtyNudge(target, (pty) => buildA2aNudge(newTaskId, fromName, 'new', a2aFormatOptionsFor(pty).multiline ? title : undefined), explicitPty, operator, { taskId: newTaskId, ...(params.gatedDelivery === true ? { waitQuiet: true } : {}) });
       } else {
-        write = await deliverPtyNotification(target, fromName, message, explicitPty, operator, { taskId: newTaskId });
+        write = await deliverPtyNotification(target, fromName, message, explicitPty, operator, { taskId: newTaskId, ...(params.gatedDelivery === true ? { waitQuiet: true } : {}) });
         mode = 'notification';
       }
       const wrotePty = write.ptyId;
