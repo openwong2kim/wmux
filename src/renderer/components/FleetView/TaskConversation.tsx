@@ -14,6 +14,7 @@ import type { WorkTask } from '../../../shared/workTask';
 import { hydrateChannelsCatalog, loadChannelHistory } from '../../hooks/useChannelsHydration';
 import { paneNameForAuthor, paneNamesKey, parsePaneNamesKey } from '../../channels/paneMemberNames';
 import { ChannelMessageRow } from '../Channels/ChannelMessageRow';
+import { TASK_WORKSPACE_PREFIX } from '../../utils/fanoutProvenance';
 import { SCROLLBACK_PAGE, sortMessagesBySeq, isMessageVisibleToViewer } from '../Channels/ChannelView';
 
 // Module-level empties: a selector returning a fresh [] re-renders forever.
@@ -60,6 +61,15 @@ export default function TaskConversation({
     const names = parsePaneNamesKey(paneNamesProjection);
     return (workspaceId: string, memberId: string) => paneNameForAuthor({ members, names, workspaceId, memberId });
   }, [paneNamesProjection, members]);
+
+  // The daemon's own posts (ledger transitions, fan-out notes) and posts
+  // made as a whole workspace carry the workspace id as the author. Shown as
+  // that workspace's name instead (a task workspace without its prefix).
+  const rows = useMemo(() => visible.map((m) => {
+    if ((m.memberName || m.memberId) !== m.workspaceId) return m;
+    const name = workspaceName(m.workspaceId)?.replace(TASK_WORKSPACE_PREFIX, '');
+    return name ? { ...m, memberName: name, memberId: name } : m;
+  }), [visible, workspaceName]);
 
   // Load the recent history. A channel missing from the catalog would get no
   // live posts (the subscription appends a private channel only for a member
@@ -124,7 +134,7 @@ export default function TaskConversation({
       >
         {visible.length === 0 ? (
           <p className="wmux-board-conversation-empty">{t('fleetBoard.conversationEmpty')}</p>
-        ) : visible.map((m) => (
+        ) : rows.map((m) => (
           <ChannelMessageRow
             key={`${channelId}:${m.seq}`}
             message={m}

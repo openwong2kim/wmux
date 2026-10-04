@@ -173,4 +173,17 @@ describe('FleetView — task conversation', () => {
     await settle();
     expect(container.querySelector('[data-fleet-conversation]')?.getAttribute('data-channel-id')).toBe('ch-t2');
   });
+
+  it('names a post authored as a whole workspace (ledger lines) by that workspace', async () => {
+    mount();
+    await settle();
+    act(() => card('p1').focus());
+    await settle();
+    act(() => useStore.getState().appendMessageFromEvent({
+      ...message('ch-t1', 3, '[ledger] t1 working→review_requested'), workspaceId: 'ws-t1', memberId: 'ws-t1', memberName: 'ws-t1',
+    }));
+    const authors = Array.from(container.querySelectorAll('[data-fleet-conversation] [data-channel-message-author]')).map((el) => el.textContent);
+    expect(authors.at(-1)).toBe('Fix t1');
+    expect(authors[0]).toBe('worker');
+  });
 });
