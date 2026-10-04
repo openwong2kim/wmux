@@ -258,11 +258,14 @@ branch text in the titlebar. The sheet's full width with 28px sides, like
 Remote: the 20px title, the repo's name as a muted line, and a refresh
 button.
 
-- **Branch bar** on top, one line: the active workspace's branch in mono,
-  ahead/behind, uncommitted files `+N −M`, the PR badge with its CI state,
-  then Diff, Go to terminal and the **ship button**. A `--selection-subtle`
-  fill, no border. It trusts the pushed git status only when that status is
-  about this very worktree.
+- **Branch bar** on top, **folded by default** to one thin 26px line (a
+  chevron, the branch in mono, ↑↓ and the changed-file count, muted; the
+  page is for reading first). Opened, it is one line: the active
+  workspace's branch in mono, ahead/behind, uncommitted files `+N −M`, the
+  PR badge with its CI state, then Diff, Go to terminal and the **ship
+  button**, with a chevron that folds it again. A `--selection-subtle` fill,
+  no border. Folded or open is remembered. It trusts the pushed git status
+  only when that status is about this very worktree.
 - **Ship button:** the one primary on the page. Its label is the branch's
   next step: Commit (a message box; commits every change, new files
   included), Push, Create PR (`gh pr create --fill` with an editable title)
@@ -272,7 +275,8 @@ button.
   a detached HEAD, no upstream, behind the upstream, the default branch).
   Commit needs no upstream; Push and Create PR do. main re-checks each step.
 - **Tabs and scope:** text tabs **Pull requests · Issues · Worktrees** (the
-  active one carries the 2px accent bar) on the left of a hairline, and the
+  active one carries the 2px accent bar; a first visit opens on Issues, then
+  the last tab is kept) on the left of a hairline, and the
   This repo / All repos segmented control on the right. All repos groups
   every open workspace by repo (the active repo first; clones of one remote
   are one group). Only the shown list of the active repo polls; another
@@ -290,12 +294,15 @@ button.
   when a read fails the last list stays under "Could not refresh … Retry";
   on GitHub's rate limit, "GitHub rate limit, retrying at HH:MM". Issues add
   a filter select (All open, Assigned to me, Created by me, With label).
-  An issue row drags as an issue ref.
+  Issue and PR rows drag as refs (`application/x-wmux-issue` /
+  `application/x-wmux-pr`) — see Hand-off below.
 - **Detail:** a sticky header (the title at 16px, then `#N`, the repo, the
   state in words and the author; Open on GitHub on the right, with an empty
   slot kept for who acts next) over the body: for a PR its branch, review
   and checks, then the comments; for an issue its labels, assignees, body,
-  comments in order and a closed line. Bodies go through the app's
+  comments in order and a closed line. The header also carries **Send to
+  agent…** (a picker over the live agent panes: the keyboard way to hand
+  off) and, for an issue, **Start in a new worktree**. Bodies go through the app's
   text-only markdown: real http(s) links (opened in the browser), read-only
   task boxes, blockquotes and tables. GitHub's HTML is never rendered as
   HTML: comments and scripts vanish, `<details>` becomes a collapsed
@@ -315,12 +322,27 @@ button.
   live in the UI store and survive leaving the page; the tab is also kept
   per viewer across restarts. Anything that lands on a pane (Diff, Open, Go
   to terminal, a workspace link) returns to Workspaces.
-- **Not connected:** signed out for a GitHub remote, the Pull requests or
-  Issues list says so with one primary, Connect GitHub, which opens a terminal tab
-  running `gh auth login --web` (or shows the command to copy when no tab can
-  show it, e.g. a WSL default shell on Windows), and Check again. gh not
-  installed shows how to get it and Check again only. gh keeps the
-  credential; wmux stores no token.
+- **Hand-off:** an issue or PR dropped on an agent pane or a sidebar
+  workspace row (holding the drag over the rail's Workspaces button for
+  half a second opens that page; a held row gets a dashed accent outline)
+  opens a small popover at the drop point: "Send issue #N to <agent> in
+  <workspace>?" (a workspace row asks which of its agents), the sanitized
+  title, an optional note, then Start in a new worktree (issues only),
+  Cancel and the one primary, Send. Esc or a press outside cancels. Work
+  already linked to the item shows "Already in progress in <workspace>"
+  with Send anyway. The agent receives a fixed two-line reference (the
+  item, its URL, the `gh` command to read it) and the note, never the
+  item's own text, through the gated A2A delivery that waits for nobody to
+  be typing in the pane.
+- **Not connected:** signed out for a GitHub remote, the whole page below
+  the title is a centred **connect card**: one primary, Connect GitHub, and
+  Check again. Connect runs gh's device sign-in in the background and shows
+  its one-time code large in a dialog with Copy code & open GitHub; the page
+  refreshes itself when gh reports the sign-in (it gives up after 10
+  minutes). If gh gives no code, the dialog offers the terminal-tab sign-in
+  (`gh auth login --web`, or the command to copy when no tab can show it).
+  gh not installed shows the install command for the OS and Check again.
+  gh keeps the credential; wmux stores no token.
 - **Cost:** pull-only and only while the page is shown. The shown PR or
   issue list polls every 30s while the window is visible.
 - **Rail dot:** a red dot on the Git icon while an open workspace's open or
@@ -635,6 +657,7 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-10-04 | Git page left column = **Pull requests \| Issues** text tabs under one disclosure (choice kept per viewer); issues filter by all / assigned / created / label, open inline, and draw labels as neutral chips | Issues belong next to PRs on the same repo, not on another page; one mounted list keeps the polling cost of #1742. GitHub label colours would be colour without state, so the chips stay neutral |
 | 2026-10-04 | Git page v2 (supersedes the row above): a one-line branch bar with one ship button (Commit → Push → Create PR → Open PR), Pull requests · Issues · Worktrees as tabs, PRs and issues as a list/detail split with a sticky detail header, worktrees grouped (in use / no workspace / cleanup candidates), view state in the UI store | The inline accordion buried long bodies and tables in a half-width column; a fixed split gives the detail the room. Worktrees were most of the screen on a busy repo but rarely the task. One primary that names the next step replaces reading four indicators to decide what to do. Cleanup candidates are worded as a check, not a verdict, because a quiet branch can still hold unpushed work |
 | 2026-10-04 | Owner decision (Moa, PR E): the right tool panel is always Moa's chat (pinned to the HQ, whatever workspace is active), and Moa's character is the one exception to two chrome rules. **Motion:** the mascot keeps its approved idle squish and blink (and the working / needs-you / done loops) — the only perpetual motion besides spinners and the cursor — and stops under `prefers-reduced-motion` or Moa's own Reduce motion setting. **Size:** the titlebar Moa icon is the mascot at 20px (chrome icons otherwise cap at 16px); at 28px and under only the body and face are drawn. The "needs you" bubble pops under that icon for ~6s (decisions and finished delegations only, one at a time, polite live region, never takes focus), then shrinks to a dot: yellow = a decision waits, grey = an unseen plain reply. While Moa is on, the Moa icon is the panel toggle (DeckToggle hides) | Owner-approved art (Mascot6, Closed) and spec; a character the owner chose to give the main bot a face, kept calm by the reduced-motion switches and the one-bubble rule |
+| 2026-10-04 | Git page reads first: Issues is the first tab, the branch bar folds to one thin line by default, issues and PRs drag onto an agent pane or a workspace row to hand them off (a confirm popover with an optional note), and signing in to GitHub is a full-page card with gh's device code shown in-app | Most visits are to read and route work, not to ship; the bar's controls stay one click away. Dropping on the agent you mean is quicker than copying a link, and the popover keeps a stray drop from sending anything. The agent gets a fixed reference to read with gh, never the item's text pasted in. The device code in-app removes the terminal round trip, which is the step most people stall on |
 
 ### Desktop conversation view
 
