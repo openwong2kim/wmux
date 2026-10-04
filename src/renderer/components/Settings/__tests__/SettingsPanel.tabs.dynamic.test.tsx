@@ -172,7 +172,7 @@ describe('Settings tabs', () => {
   it('lists every tab once, in the owner-reviewed order', () => {
     expect(ALL_TABS).toEqual([
       'general', 'appearance', 'terminal', 'shortcuts', 'notifications',
-      'claude-integration', 'accounts', 'orchestrator', 'roles', 'tokens', 'browser', 'computer-use',
+      'claude-integration', 'accounts', 'moa', 'roles', 'tokens', 'browser', 'computer-use',
       'remote', 'lanlink',
       'about',
     ]);
@@ -222,9 +222,11 @@ describe('Settings search jump', () => {
 });
 
 describe('retired tab ids', () => {
-  it('resolves the split Agents tab to Orchestrator', () => {
-    expect(LEGACY_SETTINGS_TAB_ALIASES.agents).toBe('orchestrator');
-    expect(resolveSettingsTab('agents')).toBe('orchestrator');
+  it('resolves the split Agents tab and the retired Orchestrator tab to Moa', () => {
+    expect(LEGACY_SETTINGS_TAB_ALIASES.agents).toBe('moa');
+    expect(resolveSettingsTab('agents')).toBe('moa');
+    expect(LEGACY_SETTINGS_TAB_ALIASES.orchestrator).toBe('moa');
+    expect(resolveSettingsTab('orchestrator')).toBe('moa');
   });
 
   it('keeps every surviving id as itself, and sends unknown ids to General', () => {
@@ -357,7 +359,8 @@ describe('Settings keyboard ownership (review follow-up)', () => {
 
 describe('opening on a tab id', () => {
   it.each([
-    ['agents', 'orchestrator'],
+    ['agents', 'moa'],
+    ['orchestrator', 'moa'],
     ['no-such-tab', 'general'],
     ['lanlink', 'lanlink'],
   ])('opens %s as %s', async (id, expected) => {

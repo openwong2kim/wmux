@@ -22,7 +22,7 @@ type T = ReturnType<typeof useT>;
 export interface TokenUsageViewProps {
   bindings: OrchestratorRoleBindings;
   onApply: (next: OrchestratorRoleBindings) => void;
-  onOpenTab: (tab: 'roles' | 'orchestrator') => void;
+  onOpenTab: (tab: 'roles' | 'moa') => void;
   deckBrainModel: string;
   deckBrainEffort: string;
   t: T;
@@ -118,7 +118,7 @@ export function TokenUsageView({ bindings, onApply, onOpenTab, deckBrainModel, d
           label={t('settings.tokenDeckModel')}
           description={[deckBrainModel || 'default', deckBrainEffort ? `· ${deckBrainEffort}` : ''].join(' ').trim()}
         >
-          <Button variant="secondary" size="sm" onClick={() => onOpenTab('orchestrator')}>
+          <Button variant="secondary" size="sm" onClick={() => onOpenTab('moa')}>
             {t('settings.tokenOpenOrchestrator')}
           </Button>
         </SettingRow>
@@ -127,7 +127,7 @@ export function TokenUsageView({ bindings, onApply, onOpenTab, deckBrainModel, d
   );
 }
 
-export default function TokenUsageTab({ onOpenTab }: { onOpenTab: (tab: 'roles' | 'orchestrator') => void }) {
+export default function TokenUsageTab({ onOpenTab }: { onOpenTab: (tab: 'roles' | 'moa') => void }) {
   const t = useT();
   const bindings = useStore((s) => s.orchestratorRoleBindings);
   const setBinding = useStore((s) => s.setOrchestratorRoleBinding);

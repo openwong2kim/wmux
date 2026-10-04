@@ -8,7 +8,7 @@ export type SettingsTabId =
   | 'notifications'
   | 'claude-integration'
   | 'accounts'
-  | 'orchestrator'
+  | 'moa'
   | 'roles'
   | 'tokens'
   | 'browser'
@@ -45,7 +45,7 @@ export const SETTINGS_NAV_GROUPS: {
   {
     id: 'agents',
     labelKey: 'settings.navGroupAgents',
-    tabs: ['claude-integration', 'accounts', 'orchestrator', 'roles', 'tokens', 'browser', 'computer-use'],
+    tabs: ['claude-integration', 'accounts', 'moa', 'roles', 'tokens', 'browser', 'computer-use'],
   },
   {
     id: 'connections',
@@ -62,10 +62,12 @@ export const SETTINGS_NAV_GROUPS: {
  * Tab ids that no longer exist, mapped to the tab that now holds their
  * settings. `agents` was split into Orchestrator and Roles & fan-out; the
  * orchestrator half kept the tab's first section, so an old deep link lands
- * there. Every tab id that survived kept its spelling, so it needs no alias.
+ * there. Orchestrator then became Moa (the HQ main bot), which kept all of its
+ * rows. Every other tab id kept its spelling, so it needs no alias.
  */
 export const LEGACY_SETTINGS_TAB_ALIASES: Readonly<Record<string, SettingsTabId>> = {
-  agents: 'orchestrator',
+  agents: 'moa',
+  orchestrator: 'moa',
 };
 
 const TAB_IDS: ReadonlySet<string> = new Set(SETTINGS_NAV_GROUPS.flatMap((g) => g.tabs));
@@ -137,13 +139,19 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
 
   { id: 'claudeacct', tab: 'accounts', labelKey: 'accounts.title', synonyms: 'claude account login subscription max usage quota 계정' },
 
-  { id: 'brain', tab: 'orchestrator', labelKey: 'settings.orchestratorBrain', descKey: 'settings.orchestratorBrainDesc', synonyms: 'orchestrator brain hermes claude acp' },
-  { id: 'model', tab: 'orchestrator', labelKey: 'settings.orchestratorModel', descKey: 'settings.orchestratorModelDesc', synonyms: 'model opus sonnet haiku' },
-  { id: 'effort', tab: 'orchestrator', labelKey: 'settings.orchestratorEffort', descKey: 'settings.orchestratorEffortDesc', synonyms: 'effort thinking reasoning budget low medium high max' },
-  { id: 'autowake', tab: 'orchestrator', labelKey: 'settings.autoWake', descKey: 'settings.autoWakeDesc', synonyms: 'autowake wake event push tokens' },
-  { id: 'fullpower', tab: 'orchestrator', labelKey: 'settings.orchestratorFullPower', synonyms: 'full power sdk settings sources tools' },
-  { id: 'ledgergate', tab: 'orchestrator', labelKey: 'settings.ledgerGate', descKey: 'settings.ledgerGateDesc', synonyms: 'ledger gate stop task orchestrator delegated experimental' },
-  { id: 'briefing', tab: 'orchestrator', labelKey: 'settings.briefing', descKey: 'settings.briefingDesc', synonyms: 'briefing welcome home summary' },
+  { id: 'moaswitch', tab: 'moa', labelKey: 'moa.settings.switch', descKey: 'moa.settings.switchDesc', synonyms: 'moa main bot hq orchestrator brain on off enable disable 모아 메인봇 오케스트레이터' },
+  { id: 'brain', tab: 'moa', labelKey: 'moa.settings.engine', descKey: 'moa.settings.engineDesc', synonyms: 'orchestrator brain engine runtime hermes claude acp sdk terminal' },
+  { id: 'model', tab: 'moa', labelKey: 'settings.orchestratorModel', descKey: 'settings.orchestratorModelDesc', synonyms: 'model opus sonnet haiku' },
+  { id: 'effort', tab: 'moa', labelKey: 'settings.orchestratorEffort', descKey: 'settings.orchestratorEffortDesc', synonyms: 'effort thinking reasoning budget low medium high max' },
+  { id: 'moahq', tab: 'moa', labelKey: 'moa.settings.hq', synonyms: 'hq headquarters workspace recreate reset setup' },
+  { id: 'moamodes', tab: 'moa', labelKey: 'moa.settings.modes', descKey: 'moa.settings.modesDesc', synonyms: 'mode off assist danger autonomy workspace 모드' },
+  { id: 'moaturncap', tab: 'moa', labelKey: 'moa.settings.turnCap', descKey: 'moa.settings.turnCapDesc', synonyms: 'turn cap limit rate hour budget usage' },
+  { id: 'moabubbles', tab: 'moa', labelKey: 'moa.settings.bubbles', descKey: 'moa.settings.bubblesDesc', synonyms: 'bubble notification popup 말풍선' },
+  { id: 'moareducemotion', tab: 'moa', labelKey: 'moa.settings.reduceMotion', descKey: 'moa.settings.reduceMotionDesc', synonyms: 'motion animation reduce accessibility' },
+  { id: 'fullpower', tab: 'moa', labelKey: 'settings.orchestratorFullPower', synonyms: 'full power sdk settings sources tools' },
+  { id: 'autowake', tab: 'moa', labelKey: 'settings.autoWake', descKey: 'settings.autoWakeDesc', synonyms: 'autowake wake event push tokens' },
+  { id: 'ledgergate', tab: 'moa', labelKey: 'settings.ledgerGate', descKey: 'settings.ledgerGateDesc', synonyms: 'ledger gate stop task orchestrator delegated experimental' },
+  { id: 'briefing', tab: 'moa', labelKey: 'settings.briefing', descKey: 'settings.briefingDesc', synonyms: 'briefing welcome home summary' },
 
   { id: 'roles', tab: 'roles', labelKey: 'settings.roleBindings', descKey: 'settings.roleBindingsDesc', synonyms: 'role reviewer tester planner model bind' },
   { id: 'a2a', tab: 'roles', labelKey: 'settings.a2aAutoApproveExecute', descKey: 'settings.a2aAutoApproveExecuteDesc', synonyms: 'a2a execute approve' },

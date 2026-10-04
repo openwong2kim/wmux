@@ -508,11 +508,15 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 - **Information architecture** (owner-reviewed, 2026-09-24). Tabs, in nav
   order: General · Appearance (theme, interface, sidebar, panes, terminal
   text, agent toolbar) · Terminal · Keyboard · Notifications. Group
-  **Agents**: Claude Code · Accounts · Orchestrator · Roles & fan-out ·
+  **Agents**: Claude Code · Accounts · Moa · Roles & fan-out ·
   Token usage · Browser · Computer use. Group **Connections**: Remote & phone · LAN. Then
   About. Each tab answers one question; a setting lives on exactly one tab
   and the search catalog (`settings/catalog.ts`) names that tab. Retired tab
-  ids resolve through `resolveSettingsTab`.
+  ids resolve through `resolveSettingsTab` (Orchestrator became Moa, the HQ
+  main bot: its master switch first, then engine, model and effort, the Moa
+  workspace's status with its one-click recovery, a per-workspace mode table
+  that leaves out the HQ, the hourly turn cap, bubbles and reduce motion, and
+  the orchestrator rows it kept).
 - **Theme picker:** visual cards whose thumbnails show the look's face,
   chip shape and selection style; selected by a neutral outline + check.
 - **Nav:** 13px icon + label rows; group headings muted sentence case; the
