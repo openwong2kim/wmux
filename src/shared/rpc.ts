@@ -487,6 +487,9 @@ export type RpcMethod =
   | 'daemon.phone.register'
   | 'daemon.phone.complete'
   | 'daemon.workspaceFacts.set'
+  // Main → daemon: which daemon session is the Moa (HQ brain) pane, or null.
+  // The phone's access to that one brain pane stands only while it does.
+  | 'daemon.moa.set'
   | 'daemon.inbox.poll'
   | 'lanlink.status'
   | 'lanlink.configure'
@@ -722,6 +725,7 @@ export const ALL_RPC_METHODS = [
   'daemon.phone.register',
   'daemon.phone.complete',
   'daemon.workspaceFacts.set',
+  'daemon.moa.set',
   'daemon.inbox.poll',
   'lanlink.status',
   'lanlink.configure',

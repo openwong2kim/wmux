@@ -109,6 +109,7 @@ import { TaskGateRunner } from './worktask/TaskGateRunner';
 import { createHostedLedgerPort } from './worktask/ledgerPort';
 import { getProjectConfigStore } from './project/ProjectConfigStore';
 import { createWorkspaceFactsPublisher, invalidateAutonomyCache } from './workspace/workspaceFactsFeed';
+import { publishMoaPane, setMoaPanePush } from './deck/moaPaneFeed';
 import { getTaskLedger } from './deck/taskLedgerHost';
 import { onAutonomyWritten } from './deck/deckAutonomyStore';
 import { registerDeckHandler } from './ipc/handlers/deck.handler';
@@ -1114,6 +1115,13 @@ const workspaceFactsPublisher = createWorkspaceFactsPublisher({
 getTaskLedger().onTransition(() => {
   workspaceFactsPublisher.schedule();
 });
+// The phone's Moa pane (main → daemon): which daemon session is the HQ brain's
+// TUI, or null. The deck handler re-publishes on every change; see
+// deck/moaPaneFeed.ts.
+setMoaPanePush(async (pane, seq) => {
+  if (!daemonClient) throw new Error('Daemon not connected');
+  return daemonClient.rpc('daemon.moa.set', { pane, seq });
+});
 onAutonomyWritten(() => {
   // The store this feed reads was just rewritten, so the cached copy is stale
   // before the debounce fires — invalidate first, then schedule.
@@ -1827,6 +1835,9 @@ app.on('ready', async () => {
       // process, so read it fresh.
       invalidateAutonomyCache();
       void workspaceFactsPublisher.publishNow();
+      // Same for the Moa pane: the daemon drops it with its publisher, so a
+      // fresh connection holds none until main says so again.
+      void publishMoaPane({ force: true });
       // Handler swap to daemon-routed mode. The microsecond window where
       // pty/* handlers are torn down and re-registered is the same
       // surface the original code used; the swap is logged for the

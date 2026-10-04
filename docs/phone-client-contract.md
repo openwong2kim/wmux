@@ -375,7 +375,7 @@ GET /api/events?since=<cursor>     (Bearer)
 
 ```
 GET /api/config    → {allowInput, allowUpload, allowTranscript, inlineImages?, liveActivityPush?,
-                      gatedTools, gateEnabled?, fleetSidebar?, moa?, channels?, terminalPromptDetail?,
+                      gatedTools, gateEnabled?, fleetSidebar?, moa?, moaSessionId?, channels?, terminalPromptDetail?,
                       terminalPromptDecline?, protocolVersion, minProtocolVersion,
                       serverVersion, hostPlatform}
 GET /api/sessions  → {sessions: [{id, cwd, spawnCwd?, cols, rows, state, agent, lastActivity,
@@ -1844,8 +1844,9 @@ the body, and again immediately before the interrupt is written:
 1. the server runs with `--allow-transcript` and `--allow-input`;
 2. the caller may input: the operator token, or a paired, unrevoked device
    whose own `grants.input` is true;
-3. the pane resolves for the caller (never the orchestrator brain pane, for
-   any credential) and is the same incarnation throughout;
+3. the pane resolves for the caller (never an orchestrator brain pane, for
+   any credential, other than the Moa pane while it is named) and is the
+   same incarnation throughout;
 4. the re-authenticated caller is the same caller (same credential class; for
    a device, the same device id);
 5. `agentSessionId` (and `historyEpoch` and `turnId` when sent) match the
@@ -3172,10 +3173,67 @@ quarter of a second for the desktop's first snapshot, like the first list poll.
 Approvals and decisions raised by the HQ's panes are not filtered: they reach
 `GET /api/approvals`, `GET /api/events` and push exactly as any other
 workspace's do, so answer them from the approvals inbox as usual even while
-the HQ's rows are hidden. The HQ's orchestrator brain pane stays refused to a
-paired device like every brain pane: it is never listed, streamed or carried
-in a layout tree, and a record whose `sessionId` is the brain pane is withheld
-from a device as before. No route names a Moa session yet.
+the HQ's rows are hidden.
+
+#### The Moa pane (`moaSessionId`)
+
+The Moa pane is the HQ's orchestrator brain: the terminal Moa itself runs in.
+It is the **one** brain pane a paired device may reach, through exactly these
+routes, and only while it is named:
+
+```
+GET /api/config → { ..., moa: true, moaSessionId: "brain-<24 hex>" }
+```
+
+- `moaSessionId` — the Moa pane's session id. Present **only** beside
+  `moa: true`, and only while the desktop says Moa is on, its HQ is present,
+  and the HQ's brain terminal is running. It is **omitted, never `null`**,
+  otherwise: Moa off, no HQ, the HQ changed or missing, no desktop attached,
+  an older daemon, or before Moa's first turn (the brain terminal starts on
+  its first turn, not when Moa is switched on — show "Moa has not started
+  yet" rather than an error). Treat it as opaque: never derive or guess it,
+  and re-read `/api/config` rather than caching it across launches; a new
+  brain terminal gets a new id.
+- The id is not a session row: it is never in `GET /api/sessions`,
+  `GET /api/workspaces` or a layout tree. Learn it from `/api/config` only.
+
+Routes that accept `moaSessionId` as `:id`, each under its usual permission:
+
+| Route | Requires |
+|---|---|
+| `GET /api/sessions/:id/turns`, `GET /api/sessions/:id/turns/block` | `--allow-transcript` (`allowTranscript`) |
+| `POST /api/sessions/:id/chat/messages`, `POST /api/sessions/:id/chat/cancel`, `DELETE /api/sessions/:id/chat/queue/:clientMessageId` | transcript and input (the device's `grants.input`) |
+| `GET /api/sessions/:id/chat/messages/:clientMessageId`, `GET /api/sessions/:id/chat/cancel/:clientCancelId` | transcript |
+| `POST /api/input?session=:id` | input |
+
+Every other per-pane route answers the Moa pane exactly as any brain pane:
+`404` — stream, resize, close, files, `turns/image`, `turns/file`, diff, git,
+worktree, commands, accounts, agent settings, chat launch, search. Moa's own
+permission dialogs are answered on the desktop; they never become an approval
+record, so `/api/approvals` has none for the Moa pane. Decisions Moa raises
+for you arrive through the approvals inbox like any other (above).
+
+Revocation: switching Moa off, changing the HQ, or the HQ going missing closes
+the Moa pane on the daemon at once — before the desktop's own lists catch up.
+From then on every route above answers it as any brain pane: `404
+{error:"session not found"}` (`{error:"pane-not-found"}` on cancel, its
+receipt and dequeue).
+A request already in flight re-checks after each wait: a send or raw input
+whose body arrives after the withdrawal answers `409
+{error:"pane-incarnation-changed"}` with nothing typed; a send cleared at
+admission but withdrawn before its first write answers
+`{error:"authorization-expired", effect:"none"}`; a queued message is dropped
+at delivery; a `/turns` read answers `404`. On any of these, re-read
+`/api/config`: no `moaSessionId` means Moa is closed.
+
+Every send that reaches the Moa pane from a paired device (chat send or
+cancel, raw input) writes one `moa-send` line to the device audit log with the
+device id, the pane and the route (`chat` or `input`), never the text.
+Repeats of the same device, pane and route within a minute are one line.
+
+Never exposed, on any route: the brain's environment, its commander token, or
+its hook and MCP configuration. A device holding input can of course ask Moa
+anything in its own words, as it can any agent pane.
 
 #### Workspace layout tree
 
@@ -3751,7 +3809,9 @@ Everything here sits behind the normal Bearer gate. No chat route accepts a
 stream ticket, and every response carries `Cache-Control: no-store`. The four
 chat routes (send, send receipt, launch, launch receipt) answer
 `404 {error:"session not found"}` for the orchestrator brain pane for **every**
-credential, the operator token included, exactly as `/turns` does.
+credential, the operator token included, exactly as `/turns` does — except
+the Moa pane while it is named, on send and send receipt (never launch); see
+*The Moa pane* under *Desktop sidebar fields*.
 
 ### Capabilities in `/api/config`
 

@@ -93,6 +93,7 @@ import {
   type SkillCatalogEntry,
 } from '../../main/deck/skillCatalogScan';
 import { ENV_KEYS, isBrainPty } from '../../shared/constants';
+import { resolveMoaPane, type MoaPaneFact } from './moaPane';
 import {
   DEVICE_KIND_HEADER,
   normalizeDeviceKind,
@@ -697,6 +698,14 @@ interface WebTerminalServerDeps {
    * operator token.
    */
   auditSentFile?: (entry: { deviceId: string; sessionId: string; file: string; bytes: number }) => void;
+  /**
+   * The Moa (HQ brain) pane main last pushed (`daemon.moa.set`), or null: Moa
+   * off, no HQ, HQ missing, no brain TUI, or no main connected. Read on every
+   * check; `moaSession` re-validates it against the live session.
+   */
+  moaPane?: () => MoaPaneFact | null;
+  /** Records one phone send to the Moa pane (the device audit log). */
+  auditMoaSend?: (entry: { deviceId: string; sessionId: string; route: 'chat' | 'input' }) => void;
   /**
    * Overrides for the upload bounds. Test seam only — production takes the
    * module constants, and there is no operator surface for these. Filling a
@@ -2565,6 +2574,11 @@ export class WebTerminalServer {
         // OMITTED, not false, otherwise — Moa off, no HQ, no desktop attached,
         // or an older desktop or daemon: the phone reads all of them as "no Moa".
         ...(sidebar?.moa === true ? { moa: true } : {}),
+        // The Moa pane's session id, for its turns, chat and input routes.
+        // Only beside `moa` and only while main vouches for a live HQ brain
+        // TUI (see moaSession): omitted with Moa off, the HQ missing or
+        // changed, or before the brain's first turn has started its TUI.
+        ...(sidebar?.moa === true ? this.moaSessionIdField() : {}),
         // Phone channel Inbox (§9): the four `/api/channels*` routes answer
         // here. OMITTED, not false, exactly when they would answer 503
         // `channels-unavailable` — the shape a pre-channels daemon serves.
@@ -4159,7 +4173,7 @@ export class WebTerminalServer {
     // routes: a phone that fetched a pane id the daemon no longer owns learns the
     // pane is gone, not that its conversation is unavailable. A brain pty answers
     // the same way — see readableSession.
-    if (!this.readableSession(sessionId)) {
+    if (!this.conversableSession(sessionId)) {
       this.json(res, 404, { error: 'session not found' });
       return;
     }
@@ -4259,14 +4273,24 @@ export class WebTerminalServer {
     const rawCursor = url.searchParams.get('cursor');
     const carried = !!rawCursor;
     const cursor = decodeChatCursor(rawCursor);
+    // Admitted as the Moa pane: Moa can be switched off (or the HQ change)
+    // during either await below, and the page must not go out after that.
+    const viaMoa = !this.readableSession(sessionId);
+    const moaWithdrawn = (): boolean => {
+      if (!viaMoa || this.moaSession(sessionId)) return false;
+      this.json(res, 404, { error: 'session not found' });
+      return true;
+    };
 
     const resolution = await chat.resolve(sessionId);
+    if (moaWithdrawn()) return;
     // The page is read before the blocked await (a screen render): a binding
     // that moved meanwhile must not have its rows served under this identity.
     const body = this.readChatTurnsPage(res, sessionId, principal, chat, resolution, dir, carried, cursor);
     if (!body) return;
     const blocked = await this.readChatBlocked(chat, sessionId, resolution);
     if (res.destroyed || res.writableEnded) return;
+    if (moaWithdrawn()) return;
     this.noteChatBlocked(sessionId, resolution.status.terminal?.agent, blocked);
     const caps = clientCaps(req);
     // A file binding's episode is daemon-tracked; an OpenCode one comes from
@@ -4694,9 +4718,9 @@ export class WebTerminalServer {
    * §3.3 steps 3–5, after the body: the credential that sent the headers must
    * still be the same caller, still hold input, and the pane must still be the
    * SAME incarnation. Answers the request itself and returns null on refusal.
-   * Every chat route resolves its pane with `readableSession`, whatever the
-   * principal: `/turns` 404s a brain pane for the operator too, so a chat
-   * write or receipt must not reach one either.
+   * Every chat route resolves its pane with `conversableSession`, whatever
+   * the principal: `/turns` 404s a brain pane for the operator too (the Moa
+   * pane aside), so a chat write or receipt must not reach one either.
    */
   private async reauthorizeChatWrite(
     req: http.IncomingMessage,
@@ -4716,7 +4740,7 @@ export class WebTerminalServer {
       this.refuseInput(res, fresh.principal, 'Input permission changed');
       return null;
     }
-    if (this.readableSession(id) !== pane || pane.meta.incarnationId !== incarnation) {
+    if (this.conversableSession(id) !== pane || pane.meta.incarnationId !== incarnation) {
       this.json(res, 409, { error: 'pane-incarnation-changed' });
       return null;
     }
@@ -4746,8 +4770,12 @@ export class WebTerminalServer {
       if (this.opts?.allowTranscript !== true) return false;
       if (extra && !extra()) return false;
       const now = await this.authenticate(req, url, false).catch(() => ({ ok: false as const }));
-      return now.ok && sameCaller(principal, now.principal) && this.mayInput(now.principal) &&
-        this.readableSession(id) === pane && pane.meta.incarnationId === incarnation;
+      const ok = now.ok && sameCaller(principal, now.principal) && this.mayInput(now.principal) &&
+        this.conversableSession(id) === pane && pane.meta.incarnationId === incarnation;
+      // Logged where the write is cleared, not where it was asked for: a send
+      // refused before anything was typed reached nobody.
+      if (ok && stage !== 'submit') this.auditMoaSend(principal, id, 'chat');
+      return ok;
     };
   }
 
@@ -4765,14 +4793,16 @@ export class WebTerminalServer {
     incarnation: string | undefined,
   ): (stage?: 'first-write' | 'submit') => Promise<boolean> {
     const opts = this.opts;
-    return async () => {
+    return async (stage) => {
       if (!this.server || !opts || this.opts !== opts || opts.allowTranscript !== true || opts.allowInput !== true) return false;
       if (principal.kind === 'device') {
         let row: WebDeviceSummary | undefined;
         try { row = this.deps.devices?.list?.().find((d) => d.deviceId === principal.deviceId); } catch { return false; }
         if (!row || row.revokedAt !== undefined || !row.allowInput) return false;
       }
-      return this.readableSession(id) === pane && pane.meta.incarnationId === incarnation;
+      const ok = this.conversableSession(id) === pane && pane.meta.incarnationId === incarnation;
+      if (ok && stage !== 'submit') this.auditMoaSend(principal, id, 'chat');
+      return ok;
     };
   }
 
@@ -4787,7 +4817,7 @@ export class WebTerminalServer {
     if (refusal === 'transcript') return this.refuseTranscript(res);
     if (refusal === 'input') return this.refuseInput(res, principal, 'Canceling a queued message changes what is typed into this pane');
     const id = decodePathSegment(rawId);
-    if (id === null || !this.readableSession(id)) return this.json(res, 404, { error: 'pane-not-found' });
+    if (id === null || !this.conversableSession(id)) return this.json(res, 404, { error: 'pane-not-found' });
     const chat = this.deps.chat?.() ?? null;
     if (!chat?.dequeue) return this.json(res, 503, { error: 'chat-unavailable' });
     const clientMessageId = decodePathSegment(rawMessageId) ?? '';
@@ -4812,7 +4842,7 @@ export class WebTerminalServer {
     if (refusal === 'transcript') return this.refuseTranscript(res);
     if (refusal === 'input') return this.refuseInput(res, principal, 'Sending to a chat types into this pane');
     const id = decodePathSegment(rawId);
-    const pane = id === null ? undefined : this.readableSession(id);
+    const pane = id === null ? undefined : this.conversableSession(id);
     if (!pane || id === null) return this.json(res, 404, { error: 'session not found' });
     const chat = this.deps.chat?.() ?? null;
     if (!chat && !this.chatV2For(id)) return this.json(res, 503, { error: 'chat-unavailable' });
@@ -4881,7 +4911,7 @@ export class WebTerminalServer {
     if (refusal === 'transcript') return this.refuseTranscript(res);
     if (refusal === 'input') return this.refuseInput(res, principal, 'Stopping a turn types into this pane');
     const id = decodePathSegment(rawId);
-    const pane = id === null ? undefined : this.readableSession(id);
+    const pane = id === null ? undefined : this.conversableSession(id);
     if (!pane || id === null) return this.json(res, 404, { error: 'pane-not-found' });
     const chat = this.deps.chat?.() ?? null;
     if (!chat && !this.chatV2For(id)) return this.json(res, 503, { error: 'chat-unavailable' });
@@ -4948,7 +4978,7 @@ export class WebTerminalServer {
     res.setHeader('Cache-Control', 'no-store');
     if (this.opts?.allowTranscript !== true) return this.refuseTranscript(res);
     const id = decodePathSegment(rawId);
-    if (id === null || !this.readableSession(id)) return this.json(res, 404, { error: 'pane-not-found' });
+    if (id === null || !this.conversableSession(id)) return this.json(res, 404, { error: 'pane-not-found' });
     const clientCancelId = decodePathSegment(rawCancelId) ?? '';
     const v2Progress = this.chatV2Cancels.progress(chatOwner(principal), id, clientCancelId);
     if (v2Progress) return this.json(res, 200, { clientCancelId, ...v2Progress });
@@ -4966,7 +4996,7 @@ export class WebTerminalServer {
     res.setHeader('Cache-Control', 'no-store');
     if (this.opts?.allowTranscript !== true) return this.refuseTranscript(res);
     const id = decodePathSegment(rawId);
-    if (id === null || !this.readableSession(id)) return this.json(res, 404, { error: 'session not found' });
+    if (id === null || !this.conversableSession(id)) return this.json(res, 404, { error: 'session not found' });
     const chat = this.deps.chat?.() ?? null;
     if (!chat) return this.json(res, 503, { error: 'chat-unavailable' });
     const clientMessageId = decodePathSegment(rawMessageId) ?? '';
@@ -5193,6 +5223,50 @@ export class WebTerminalServer {
   }
 
   /**
+   * The Moa (HQ brain) pane, when `sessionId` names it and main still vouches
+   * for it: Moa on, its HQ present, and this live session that HQ's brain
+   * (see moaPane.ts). Undefined otherwise, including for every other brain.
+   *
+   * The ONE brain pane a paired device may reach, and only through the routes
+   * that resolve with `conversableSession` / `inputSession`: turns, chat and
+   * raw input. Every other per-pane route keeps `readableSession` /
+   * `attachableSession`, so stream, resize, delete, files, git, diff and the
+   * rest still 404 it. Re-read on every check, so the in-flight re-checks see
+   * a withdrawal the moment main pushes it.
+   */
+  private moaSession(sessionId: string): ManagedSession | undefined {
+    const fact = this.deps.moaPane?.() ?? null;
+    if (fact?.sessionId !== sessionId) return undefined;
+    return resolveMoaPane(fact, (id) => this.deps.sessionManager.getSession(id));
+  }
+
+  /** `{moaSessionId}` while the Moa pane resolves, else nothing. */
+  private moaSessionIdField(): { moaSessionId?: string } {
+    const sessionId = this.deps.moaPane?.()?.sessionId;
+    return sessionId !== undefined && this.moaSession(sessionId) ? { moaSessionId: sessionId } : {};
+  }
+
+  /** `readableSession`, plus the Moa pane: the turn and chat routes only. */
+  private conversableSession(sessionId: string): ManagedSession | undefined {
+    return this.readableSession(sessionId) ?? this.moaSession(sessionId);
+  }
+
+  /** `attachableSession`, plus the Moa pane: `POST /api/input` only. */
+  private inputSession(principal: WebPrincipal, sessionId: string): ManagedSession | undefined {
+    return this.attachableSession(principal, sessionId) ?? this.moaSession(sessionId);
+  }
+
+  /** One device-audit line for a phone send that reached the Moa pane. */
+  private auditMoaSend(principal: WebPrincipal, sessionId: string, route: 'chat' | 'input'): void {
+    if (principal.kind !== 'device' || !this.moaSession(sessionId)) return;
+    try {
+      this.deps.auditMoaSend?.({ deviceId: principal.deviceId, sessionId, route });
+    } catch {
+      // Best-effort, like every other audit line.
+    }
+  }
+
+  /**
    * `GET /api/sessions/:id/turns/block?srcOffset=&n=&eventId=` — the body behind
    * a code-block or tool-body chip, the phone's half of what the desktop does
    * over `daemon.transcript.codeBlock`.
@@ -5218,7 +5292,7 @@ export class WebTerminalServer {
       });
       return;
     }
-    if (!this.readableSession(sessionId)) {
+    if (!this.conversableSession(sessionId)) {
       this.json(res, 404, { error: 'session not found' });
       return;
     }
@@ -6385,8 +6459,9 @@ export class WebTerminalServer {
     }
     const sessionId = url.searchParams.get('session') ?? '';
     // Same class gate as the stream (#1388): a device must not be able to
-    // type into the orchestrator's pane either.
-    const managed = this.attachableSession(principal, sessionId);
+    // type into the orchestrator's pane either — except the Moa pane, while
+    // main vouches for it (see moaSession).
+    const managed = this.inputSession(principal, sessionId);
     if (!managed) {
       return this.json(res, 404, { error: 'session not found' });
     }
@@ -6424,7 +6499,7 @@ export class WebTerminalServer {
         const fresh = await this.authenticate(req, url, false);
         if (!fresh.ok) return this.json(res,401,{error:'authorization-expired'});
         if (!this.mayInput(fresh.principal)) return this.refuseInput(res,fresh.principal,'Input permission changed');
-        if (this.attachableSession(fresh.principal,sessionId) !== managed || managed.meta.incarnationId !== incarnation) {
+        if (this.inputSession(fresh.principal,sessionId) !== managed || managed.meta.incarnationId !== incarnation) {
           return this.json(res,409,{error:'pane-incarnation-changed'});
         }
         // Decided in the same synchronous run as the write, never earlier: the
@@ -6436,6 +6511,7 @@ export class WebTerminalServer {
           // must not be held behind a recovery mute nobody will lift.
           if (managed.deferred) this.deps.sessionManager.activateDeferred(sessionId);
           managed.ptyProcess.write(body);
+          this.auditMoaSend(fresh.principal, sessionId, 'input');
         // A phone can paste drafts containing newlines; bridge.noteInput keeps
         // bracketed-paste bodies inert and only re-arms on a submitted CR/LF.
           managed.bridge.noteInput?.(body);
@@ -8066,6 +8142,10 @@ export class WebTerminalServer {
   private deliverTranscriptNudge(sessionId: string): void {
     const watchers = this.transcriptWatchers.get(sessionId);
     if (!watchers || watchers.size === 0) return;
+    // A device watching the Moa pane keeps its watcher entry after Moa is
+    // withdrawn; from then on it is a brain pane like any other.
+    const managed = this.deps.sessionManager.getSession(sessionId);
+    if (managed && isBrainPty({ id: sessionId, env: managed.meta.env }) && !this.moaSession(sessionId)) return;
     const body = JSON.stringify({ sessionId });
     for (const client of this.eventClients) {
       if (!watchers.has(this.watcherKey(client.principal))) continue;

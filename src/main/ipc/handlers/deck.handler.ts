@@ -103,6 +103,7 @@ import {
 } from '../../deck/deckHqStore';
 import { loadLedgerGateEnabled, setLedgerGateEnabled } from '../../deck/deckLedgerGateStore';
 import { resolveViewContext } from '../../deck/viewContext';
+import { forgetBrainPty, publishMoaPane, setMoaPaneSource } from '../../deck/moaPaneFeed';
 import {
   buildDeckLedgerSummary,
   createLedgerPushCoalescer,
@@ -351,8 +352,13 @@ export function registerDeckHandler(
   // everything it learned from earlier pushes.
   const brainPtyIds = new Map<string, string>();
   const emitBrainPty = (workspaceId: string, ptyId: string | null): void => {
+    const prev = brainPtyIds.get(workspaceId);
+    if (prev && prev !== ptyId) forgetBrainPty(prev);
     if (ptyId) brainPtyIds.set(workspaceId, ptyId);
     else brainPtyIds.delete(workspaceId);
+    // The HQ's brain TUI coming or going is the phone's Moa pane coming or
+    // going (moaPaneFeed): a dead brain's id must stop being reachable now.
+    void publishMoaPane();
     const win = getWindow();
     if (win && !win.isDestroyed()) {
       win.webContents.send(IPC.DECK_BRAIN_PTY, { workspaceId, ptyId });
@@ -638,6 +644,9 @@ export function registerDeckHandler(
 
   /** Tell the renderer Moa's state moved (it re-reads DECK_MOA_STATE). */
   const emitMoaChanged = (): void => {
+    // The daemon's copy first: switching Moa off or losing the HQ revokes the
+    // phone's access to the Moa pane, which must not wait on the renderer.
+    void publishMoaPane();
     const win = getWindow();
     if (win && !win.isDestroyed()) win.webContents.send(IPC.DECK_MOA_CHANGED, {});
   };
@@ -2054,6 +2063,7 @@ export function registerDeckHandler(
       coalescer?.notifyBrainBooted(hq);
     }
     if (presence !== lastHqPresence) emitMoaChanged();
+    else void publishMoaPane(); // unchanged answers are not re-sent
     lastHqPresence = presence;
   };
   // The HQ store's setter refuses while the old/new HQ is mid-turn and, once
@@ -2072,6 +2082,17 @@ export function registerDeckHandler(
       lastHqPresence = null;
       onHqMirrorUpdate();
     },
+  });
+  // The phone's Moa pane (moaPaneFeed): the HQ brain's TUI, while Moa is on
+  // and the HQ is present. Every input to this answer re-publishes it — the
+  // switch and the HQ through emitMoaChanged / onHqMirrorUpdate, the brain TUI
+  // through emitBrainPty.
+  const disposeMoaPaneSource = setMoaPaneSource(() => {
+    if (!isMoaEnabled()) return null;
+    const hq = getHqWorkspaceId();
+    if (hq === null || hqPresence(hq) !== 'present') return null;
+    const ptyId = brainPtyIds.get(hq);
+    return ptyId ? { sessionId: ptyId, workspaceId: hq } : null;
   });
   // A designation whose migration did not finish (crash, IO failure) — or
   // that never ran for the current HQ — finishes now. Every step is idempotent.
@@ -3219,6 +3240,8 @@ export function registerDeckHandler(
     scheduler.stop();
     heartbeat.stop();
     disposeHqRuntime();
+    disposeMoaPaneSource();
+    void publishMoaPane();
     disposeAll();
     ipcMain.removeHandler(IPC.DECK_HQ_GET);
     ipcMain.removeHandler(IPC.DECK_MOA_GET);

@@ -425,6 +425,9 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   // Main → daemon only. A plugin that could write this table would choose
   // which panes an automated approval may be pressed into.
   'daemon.workspaceFacts.set': { capability: 'wmux.internal' },
+  // Main → daemon only. A client that could write this would choose which
+  // brain pane a paired phone may read and type into.
+  'daemon.moa.set':          { capability: 'wmux.internal' },
   // LanLink PR-2 — cursor-pull of the durable remote inbox. main↔daemon only
   // (DaemonClient → daemon control pipe); never an external MCP surface.
   'daemon.inbox.poll':       { capability: 'wmux.internal' },

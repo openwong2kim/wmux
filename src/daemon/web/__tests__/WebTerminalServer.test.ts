@@ -514,6 +514,8 @@ describe('WebTerminalServer', () => {
   let settingsCalls: Array<{id:string;choice:unknown}>;
   /** What the server handed its sent-file audit hook. */
   let sentFileAudits: Array<{ deviceId: string; sessionId: string; file: string; bytes: number }>;
+  /** The Moa pane main last pushed (`daemon.moa.set`). */
+  let moaFact: { sessionId: string; workspaceId: string } | null;
   let settingsHook: ((authorized:()=>Promise<boolean>)=>Promise<void>) | undefined;
   const settingsRevision = 'a'.repeat(64)+'.'+'b'.repeat(64);
 
@@ -528,6 +530,7 @@ describe('WebTerminalServer', () => {
     agentLaunchEnv = undefined;
     settingsCalls = []; settingsHook = undefined;
     sentFileAudits = [];
+    moaFact = null;
     gateArmed = true;
     decisionFormKinds = [];
     liveActivityPushEnabled = true;
@@ -572,6 +575,7 @@ describe('WebTerminalServer', () => {
       git: deps.git,
       uploadsDir: deps.uploadsDir,
       auditSentFile: (entry) => { sentFileAudits.push(entry); },
+      moaPane: () => moaFact,
       runHistory: () => new RunHistoryStore(deps.uploadsDir),
       inputReceipts: () => new InputReceiptStore(deps.uploadsDir),
       answerReceipts: () => answerReceiptStore,
@@ -10046,6 +10050,41 @@ describe('WebTerminalServer', () => {
         desktopBridge = null;
         info = await startRO();
         expect('moa' in (await getJson(info.token as string, '/api/config'))).toBe(false);
+      });
+
+      it('names the Moa pane in /api/config only beside moa and only while main vouches for a live HQ brain', async () => {
+        const hqBrain = { ...brainRow, id: 'brain-hq', env: { WMUX_BRAIN_PTY: '1', WMUX_WORKSPACE_ID: 'ws-1' } };
+        live.push(hqBrain);
+        try {
+          attachDesktop(() => hqReply('ws-1', { moa: true }));
+          moaFact = { sessionId: 'brain-hq', workspaceId: 'ws-1' };
+          let info = await startRO();
+          const phone = await pairDevice('Phone');
+          const config = await getJson(phone.token, '/api/config');
+          expect(config).toMatchObject({ moa: true, moaSessionId: 'brain-hq' });
+          // Never the brain's env, cwd or anything else about the pane.
+          expect(JSON.stringify(config)).not.toContain('WMUX_BRAIN_PTY');
+          // The pane itself stays out of the session list.
+          expect(((await getJson(phone.token, '/api/sessions')).sessions as Row[]).map((r) => r.id)).not.toContain('brain-hq');
+          // Withdrawn by main (Moa off, HQ changed or missing, brain gone): gone at once,
+          // even while the sidebar snapshot still says moa.
+          moaFact = null;
+          expect('moaSessionId' in (await getJson(phone.token, '/api/config'))).toBe(false);
+          // A fact that no longer matches a live HQ brain names nothing.
+          for (const fact of [{ sessionId: 'brain-gone', workspaceId: 'ws-1' }, { sessionId: 'brain-hq', workspaceId: 'ws-2' }, { sessionId: 'brain-abc', workspaceId: 'ws-1' }]) {
+            moaFact = fact;
+            expect('moaSessionId' in (await getJson(phone.token, '/api/config'))).toBe(false);
+          }
+          await server.stop();
+          // The desktop says Moa is off: no moaSessionId even with a fact standing.
+          attachDesktop(() => hqReply('ws-1'));
+          moaFact = { sessionId: 'brain-hq', workspaceId: 'ws-1' };
+          info = await startRO();
+          const off = await getJson(info.token as string, '/api/config');
+          expect('moa' in off || 'moaSessionId' in off).toBe(false);
+        } finally {
+          live.splice(live.indexOf(hqBrain), 1);
+        }
       });
 
       it('still delivers an approval raised in the HQ to a paired phone, on /api/approvals and /api/events', async () => {

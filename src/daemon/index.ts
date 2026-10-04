@@ -156,6 +156,7 @@ import {
 } from './push/presence';
 import { ApprovalRegistry } from './approvals/ApprovalRegistry';
 import { WorkspaceFactStore, type WorkspaceFactRowInput } from './approvals/workspaceFacts';
+import { MoaPaneStore, parseMoaPane, resolveMoaPane } from './web/moaPane';
 import { parseApprovalResolveRequest } from './approvals/resolveRequest';
 import { GateBroker } from './approvals/GateBroker';
 import { coerceGate } from './approvals/gateConfig';
@@ -440,6 +441,13 @@ const workspaceFacts = new WorkspaceFactStore();
 /** The pipe client whose push the current table came from, so the table can be
  *  dropped when that client disconnects rather than outliving its publisher. */
 let workspaceFactsPublisher: string | null = null;
+
+// The Moa (HQ brain) pane main pushes down (see web/moaPane.ts). Module-scoped
+// like the fact table: the RPC handler writes it, the web server and the
+// transcript projector read it, and the client-close sweep drops it.
+const moaPane = new MoaPaneStore();
+/** The pipe client whose push the current Moa pane came from. */
+let moaPanePublisher: string | null = null;
 
 // #783 — the gate broker holds bridge RPC responses open until a phone answers.
 // Module-scoped for the same reason as the registry: the RPC handler creates
@@ -788,6 +796,10 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         uploadsDir: path.join(wmuxDir, 'uploads', 'phone'),
         // Each file served because an agent sent it with SendUserFile.
         auditSentFile: (entry) => getDeviceStore().recordSentFile(entry),
+        // The Moa (HQ brain) pane main last vouched for, read per request so a
+        // withdrawal closes the next check. See web/moaPane.ts.
+        moaPane: () => moaPane.current(),
+        auditMoaSend: (entry) => getDeviceStore().recordMoaSend(entry),
         // #782 — the phone turn view. Lazy: the projector is built after the
         // first resume binding, so a getter resolves the live instance per
         // request rather than capturing a null at construction.
@@ -3108,6 +3120,9 @@ function registerRpcHandlers(
       uploadsDir: path.join(wmuxDir, 'uploads', 'phone'),
       // See the restore path.
       auditSentFile: (entry) => getDeviceStore().recordSentFile(entry),
+      // See the restore path.
+      moaPane: () => moaPane.current(),
+      auditMoaSend: (entry) => getDeviceStore().recordMoaSend(entry),
       // See the restore path: lazy projector for the phone turn view (#782).
       projector: () => transcriptProjector,
       chat: () => chatBridge,
@@ -3533,7 +3548,13 @@ function registerRpcHandlers(
           return selection ? { agent: 'codex', sessionId: selection.threadId, cwd: selection.cwd,
             transcriptPath: selection.transcriptPath, ts: Date.now() } : undefined;
         }
-        const binding = pane?.meta.resumeBinding;
+        // The Moa pane's transcript is known only to main (a brain's hooks go
+        // there), so it arrives with the pushed fact and is read from memory —
+        // never persisted, see web/moaPane.ts. Only while the fact still
+        // resolves to this live brain pane.
+        const fact = moaPane.current();
+        const binding = pane?.meta.resumeBinding
+          ?? (fact?.sessionId === id && resolveMoaPane(fact, (sid) => sessionManager.getSession(sid)) ? fact.binding : undefined);
         const current = agentDisplayToSlug(readDaemonAgentState(id).agentName ?? '');
         return current && binding?.agent !== current ? undefined : binding;
       },
@@ -4289,6 +4310,34 @@ function registerRpcHandlers(
     // main is no longer maintaining must not keep authorizing presses.
     workspaceFactsPublisher = ctx.clientId;
     return { ok: true, applied: true, accepted: result.accepted, seq: result.seq };
+  });
+
+  // ── Main → daemon Moa pane (phone access to the HQ brain) ────────────────
+  // Which daemon session is the Moa (HQ brain) pane, while Moa is on and its
+  // HQ is present; null otherwise. Main pushes it on every change, and the web
+  // server opens that one brain pane's turns, chat and input routes to a
+  // paired device for exactly as long as it stands. See web/moaPane.ts.
+  pipeServer.onRpc('daemon.moa.set', async (params, ctx) => {
+    // FIRST-PARTY ONLY and load-bearing: a client that could write this would
+    // be choosing which brain pane a phone may type into.
+    if (!firstPartyOnly(ctx.clientId, 'daemon.moa.set')) {
+      return { ok: false, error: 'daemon.moa.set is first-party only' };
+    }
+    const payload = params as { pane?: unknown; seq?: unknown };
+    if (typeof payload?.seq !== 'number' || !Number.isFinite(payload.seq)) {
+      return { ok: false, error: 'daemon.moa.set requires a numeric seq' };
+    }
+    const fact = parseMoaPane(payload.pane === undefined ? null : payload.pane);
+    if (fact === 'invalid') return { ok: false, error: 'daemon.moa.set: invalid pane' };
+    // One publisher at a time, first-writer-wins while it lives (as the fact
+    // table): a second first-party client must not take the slot and then, on
+    // ITS disconnect, close a pane the real main is still vouching for.
+    if (moaPanePublisher !== null && moaPanePublisher !== ctx.clientId) {
+      log('warn', `[moa] refused a Moa pane push from ${ctx.clientId}: ${moaPanePublisher} is already the publisher`);
+      return { ok: false, error: 'another client is already publishing the Moa pane' };
+    }
+    moaPanePublisher = ctx.clientId;
+    return moaPane.replace(fact, payload.seq);
   });
 
   const readDaemonAgentState = (id: string): {
@@ -7088,6 +7137,12 @@ async function main(): Promise<void> {
     if (workspaceFactsPublisher !== null && workspaceFactsPublisher === clientId) {
       workspaceFacts.clear();
       workspaceFactsPublisher = null;
+    }
+    // Same for the Moa pane: nobody is vouching for it any more, so the phone
+    // loses it until a main process publishes again.
+    if (moaPanePublisher !== null && moaPanePublisher === clientId) {
+      moaPane.clear();
+      moaPanePublisher = null;
     }
   });
   // Channels (a2a-channels U3). Channels live in their own file

@@ -546,6 +546,19 @@ export class DeviceStore {
   }
 
   /**
+   * A paired device sent something to the Moa (HQ brain) pane: the device, the
+   * pane, and which route (`chat` or `input`) in `reason`. Never what was sent.
+   * Repeats of the same device, pane and route within `MOA_SEND_COALESCE_MS`
+   * write one line.
+   */
+  recordMoaSend(entry: { deviceId: string; sessionId: string; route: 'chat' | 'input' }): void {
+    this.audit.append(
+      { event: 'moa-send', deviceId: entry.deviceId, sessionId: entry.sessionId, reason: entry.route },
+      { coalesceKey: JSON.stringify([entry.deviceId, entry.sessionId, entry.route]) },
+    );
+  }
+
+  /**
    * Revoke a device. FAIL-CLOSED: `ok` is true only once the revocation is on
    * disk, because an operator who is told "revoked" will stop worrying about
    * that phone.
