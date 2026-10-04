@@ -74,6 +74,7 @@ import {
   type ParsedTerminalPrompt,
 } from './terminalPromptParse';
 import { commandOfToolInput, type PendingToolUse } from '../transcript/pendingToolUse';
+import { screenShowsActiveDialog, screenShowsPermissionDialog } from '../transcript/chatScreenGate';
 import { terminalPromptTextRisk } from '../push/approvalRisk';
 import {
   decideApprovalPress,
@@ -1426,15 +1427,22 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
   }
 
   /**
-   * True only when a fresh read of the pane shows readable rows and no active
-   * dialog on them. An unreadable or blank screen is not evidence: false.
+   * True only when a fresh read of the pane shows readable rows and no dialog
+   * on them. An unreadable or blank screen is not evidence: false.
    * For a caller that learned a dialog closed from something other than the
    * screen (the Moa pane's main-side flag) and must not expire on that alone.
+   *
+   * Presence, not answerability: a dialog the parser does not read as active
+   * (a WebFetch dialog has no `Esc to cancel` footer) is still up while its
+   * cursor row owns the bottom of the screen, so the looser screen checks the
+   * awaiting-state verifier uses count too. One read is one sample; the caller
+   * wants a few in a row before it believes the dialog is gone.
    */
   async dialogGoneFromScreen(sessionId: string): Promise<boolean> {
     const screen = await this.readPromptScreenSafely(sessionId);
     if (!screen || !screen.rows.some((row) => row.trim().length > 0)) return false;
-    return this.parseActiveDialog(screen) === null;
+    if (this.parseActiveDialog(screen) !== null) return false;
+    return !screenShowsActiveDialog(screen.rows) && !screenShowsPermissionDialog(screen.rows);
   }
 
   private async readPromptScreenSafely(

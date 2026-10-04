@@ -68,6 +68,8 @@ export interface MoaPromptDeps {
 export const MOA_PROMPT_GONE_CHECKS = 3;
 /** Screen checks after a press: the key's effect can take a moment to draw. */
 export const MOA_PROMPT_PRESS_CHECKS = 5;
+/** Consecutive reads with no dialog on them before the card is expired. */
+export const MOA_PROMPT_GONE_STREAK = 2;
 export const MOA_PROMPT_CHECK_GAP_MS = 1_000;
 
 /** What the desktop's Moa chat shows for the pending record. */
@@ -176,7 +178,7 @@ export class MoaPromptSync {
    */
   noteRefusedPress(sessionId: string): void {
     if (sessionId !== this.moaSessionId()) return;
-    void this.confirmGone(sessionId, 1);
+    void this.confirmGone(sessionId, MOA_PROMPT_GONE_STREAK);
   }
 
   /** The Moa pane's pending `terminal_prompt`, for the desktop's Moa chat. */
@@ -247,9 +249,10 @@ export class MoaPromptSync {
   }
 
   /**
-   * Expire the pane's record once the screen shows no active dialog. Gives up
-   * when the record or the dialog main reports changes in between (that is a
-   * newer push's to handle), or after `attempts` reads that still show one.
+   * Expire the pane's record once MOA_PROMPT_GONE_STREAK reads in a row show
+   * no dialog on the screen. Gives up when the record or the dialog main
+   * reports changes in between (that is a newer push's to handle), or after
+   * `attempts` reads without that streak.
    */
   private async confirmGone(sessionId: string, attempts: number): Promise<void> {
     const registry = this.deps.registry();
@@ -265,12 +268,14 @@ export class MoaPromptSync {
       ?? ((ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms).unref?.(); }));
     const unchanged = (): boolean => pendingPrompt(registry, sessionId)?.id === record.id && dialogNow() === dialog;
     try {
+      let streak = 0;
       for (let attempt = 0; attempt < attempts; attempt++) {
         if (attempt > 0) await delay(MOA_PROMPT_CHECK_GAP_MS);
         if (!unchanged()) return;
         const gone = await registry.dialogGoneFromScreen(sessionId);
         if (!unchanged()) return;
-        if (gone) {
+        streak = gone ? streak + 1 : 0;
+        if (streak >= MOA_PROMPT_GONE_STREAK) {
           await this.expire(registry, sessionId, 'screen-cleared');
           return;
         }

@@ -26,6 +26,21 @@ const DIALOG = [
   ' Esc to cancel · Tab to amend',
 ];
 const IDLE = ['● Done.', '', '> '];
+// A WebFetch dialog as Claude Code draws it: no `Esc to cancel` footer, so the
+// parser does not read it as active, yet it is up and owns the keyboard.
+const FETCH = [
+  '────────────────────────────────────────────────────────────',
+  ' Fetch',
+  '   Claude wants to fetch content from example.net',
+  '╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌',
+  '   url: https://example.net/',
+  '   prompt: What is the page title?',
+  '╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌',
+  ' Do you want to allow Claude to fetch this content?',
+  ' ❯ 1. Yes',
+  "   2. Yes, and don't ask again for example.net",
+  '   3. No, and tell Claude what to do differently (esc)',
+];
 const INPUT = { command: 'rm -rf build/cache', description: 'Remove the build cache' };
 const SID = 'brain-hq';
 
@@ -236,6 +251,33 @@ describe('MoaPromptSync — the record follows main\'s dialog', () => {
     h.push(withDialog('aa11'));
     await flush();
     expect(pending(h).map((r) => r.id)).toEqual([a!.id]);
+  });
+
+  it('main\'s flag cleared while a dialog the parser cannot read as active (WebFetch) is still up keeps the card', async () => {
+    const h = harness();
+    h.rows = FETCH;
+    h.push(withDialog('ff01', { toolName: 'WebFetch', toolInput: { url: 'https://example.net/', prompt: 'What is the page title?' } }));
+    await flush();
+    expect(pending(h)).toHaveLength(1);
+    expect(h.sync.view()).toMatchObject({ answerable: false });
+    h.push(noDialog());
+    await flush();
+    // The pending record is also what keeps the Moa pane's raw-input fence up
+    // (WebTerminalServer.terminalPromptBlocksInput) once main's flag is clear.
+    expect(pending(h)).toHaveLength(1);
+    expect(h.events.filter((e) => e.type === 'expire')).toHaveLength(0);
+  });
+
+  it('one clear read between reads that show the dialog does not expire the card', async () => {
+    const h = harness();
+    h.push(withDialog());
+    await flush();
+    let reads = 0;
+    h.duringRead.fn = () => { reads += 1; h.rows = reads % 2 === 1 ? IDLE : DIALOG; };
+    h.push(noDialog());
+    await flush();
+    expect(reads).toBeGreaterThan(1);
+    expect(pending(h)).toHaveLength(1);
   });
 
   it('an unreadable screen is not proof the dialog is gone', async () => {
