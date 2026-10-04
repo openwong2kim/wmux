@@ -201,7 +201,7 @@ export async function sendHandoff(deps: HandoffDeps, raw: unknown): Promise<Hand
     }).catch((err: unknown) => ({ ok: false, error: err instanceof Error ? err.message : String(err) }))) as {
       ok?: boolean;
       error?: string;
-      result?: { taskId?: unknown; error?: unknown; delivery?: { notified?: unknown; hint?: unknown } };
+      result?: { taskId?: unknown; error?: unknown; delivery?: { notified?: unknown; hint?: unknown; reason?: unknown } };
     };
     if (!res || res.ok === false) {
       await releaseUndelivered(deps, link?.id, undefined);
@@ -215,6 +215,8 @@ export async function sendHandoff(deps: HandoffDeps, raw: unknown): Promise<Hand
     const taskId = typeof result.taskId === 'string' ? result.taskId : undefined;
     const delivered = result.delivery?.notified === true;
     const hint = typeof result.delivery?.hint === 'string' ? result.delivery.hint : undefined;
+    const why = result.delivery?.reason;
+    const reason = !delivered && typeof why === 'string' && /^[a-z_]{1,40}$/.test(why) ? why : undefined;
     if (!delivered) await releaseUndelivered(deps, link?.id, taskId);
     return {
       ok: true,
@@ -222,6 +224,7 @@ export async function sendHandoff(deps: HandoffDeps, raw: unknown): Promise<Hand
       ...(taskId ? { taskId } : {}),
       delivered,
       ...(hint ? { note: hint } : {}),
+      ...(reason ? { reason } : {}),
     };
   });
 }

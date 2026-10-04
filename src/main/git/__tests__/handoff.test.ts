@@ -156,11 +156,11 @@ describe('sendHandoff', () => {
   it('not delivered: the task is cancelled so a retry is not blocked; the link is closed when the cancel fails', async () => {
     const stored = deps({
       invoke: async (m) => (m === 'a2a.task.send'
-        ? { ok: true, result: { ok: true, taskId: 't', delivery: { notified: false, hint: 'Someone was typing' } } }
+        ? { ok: true, result: { ok: true, taskId: 't', delivery: { notified: false, hint: 'Someone was typing', reason: 'user_typing' } } }
         : { ok: true, result: { ok: true } }),
     });
     expect(await sendHandoff(stored.d, { item: { kind: 'issue', ref: issue }, target })).toEqual({
-      ok: true, linkId: 'link-new', taskId: 't', delivered: false, note: 'Someone was typing',
+      ok: true, linkId: 'link-new', taskId: 't', delivered: false, note: 'Someone was typing', reason: 'user_typing',
     });
     expect(invokeCalls(stored.d)[1]).toEqual(['a2a.task.cancel', { taskId: 't', workspaceId: 'ws-human' }]);
     expect(stored.d.links.setState).not.toHaveBeenCalled();

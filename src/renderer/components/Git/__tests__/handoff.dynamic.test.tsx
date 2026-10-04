@@ -191,12 +191,18 @@ describe('confirm popover', () => {
     expect(useStore.getState().toasts).toEqual([]);
   });
 
-  it('stored but not delivered warns with the reason', async () => {
-    handoffSend.mockResolvedValueOnce({ ok: true, linkId: 'l1', delivered: false, note: 'Someone was typing.' });
+  it('not delivered: says it did not send, and why in a word of its own (else the delivery\'s hint)', async () => {
+    handoffSend.mockResolvedValueOnce({ ok: true, linkId: 'l1', delivered: false, note: 'a long generic hint', reason: 'agent_changed' });
     open();
     await act(async () => { q<HTMLButtonElement>('[data-handoff-send]')!.click(); });
     await flush();
-    expect(useStore.getState().toasts.at(-1)).toMatchObject({ level: 'warn' });
+    expect(useStore.getState().toasts.at(-1)).toMatchObject({
+      level: 'warn', message: 'Did not send issue Acme/Widgets#12 to Claude Code in alpha. The agent left that pane or was replaced.',
+    });
+    handoffSend.mockResolvedValueOnce({ ok: true, linkId: 'l1', delivered: false, note: 'Someone was typing.', reason: 'something_new' });
+    open();
+    await act(async () => { q<HTMLButtonElement>('[data-handoff-send]')!.click(); });
+    await flush();
     expect(useStore.getState().toasts.at(-1)?.message).toContain('Someone was typing.');
   });
 

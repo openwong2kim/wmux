@@ -109,7 +109,10 @@ export interface HandoffInProgress {
 }
 
 export type HandoffSendResult =
-  | { ok: true; linkId: string; taskId?: string; delivered: boolean; note?: string }
+  /** Not delivered: `reason` is the refusal code (user_typing, agent_changed,
+   *  no_agent_pane, ...), `note` the delivery's own hint. The task was
+   *  cancelled, so nothing is left waiting. */
+  | { ok: true; linkId: string; taskId?: string; delivered: boolean; note?: string; reason?: string }
   | { ok: false; code: 'in-progress'; inProgress: HandoffInProgress }
   | { ok: false; code: 'invalid' | 'refused' | 'error'; message: string };
 

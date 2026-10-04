@@ -27,6 +27,8 @@ function bridge(): HandoffBridge | null {
 }
 
 const POPOVER_W = 380;
+/** Refusal codes the "not sent" toast explains in a word of its own. */
+const WHY = ['user_typing', 'agent_changed', 'agent_unverified', 'deadline', 'no_agent_pane', 'approval_pending', 'gate_unavailable'] as const;
 
 export default function HandoffPopover(): React.ReactElement | null {
   const open = useStore((s) => s.gitHandoff);
@@ -96,9 +98,10 @@ function HandoffPopoverBody({ open }: { open: GitHandoffOpen }): React.ReactElem
     }
     close();
     const vars = { kind: kindWord, ref: itemRef, agent: agentWord(target), workspace: wsName(target.workspaceId) };
+    const why = (WHY as readonly string[]).includes(res.reason ?? '') ? t(`git.handoff.why.${res.reason}`) : res.note;
     pushToast(res.delivered
       ? { level: 'info', message: t('git.handoff.sent', vars) }
-      : { level: 'warn', message: `${t('git.handoff.stored', vars)}${res.note ? ` ${res.note}` : ''}` });
+      : { level: 'warn', message: `${t('git.handoff.notSent', vars)}${why ? ` ${why}` : ''}` });
   };
 
   const start = async (force = false) => {
