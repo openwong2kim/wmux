@@ -58,8 +58,9 @@ describe('GitDetail', () => {
     expect(issueDetail).toHaveBeenCalledWith('/r', 12, issue.updatedAt);
     const body = container.querySelector('[data-issue-detail]')!;
     expect(body.querySelector('script, img, iframe')).toBeNull();
-    expect(body.textContent).toContain('<script>window.__pwned = 1</script>');
-    expect(body.textContent).toContain('<iframe src="https://evil"></iframe>');
+    // Script elements are dropped; other tags reduce to their text.
+    expect(body.textContent).not.toContain('window.__pwned');
+    expect(body.textContent).not.toContain('<iframe');
     expect((window as unknown as { __pwned?: unknown }).__pwned).toBeUndefined();
     expect(body.querySelector('a')?.getAttribute('href')).toBe('https://example.com/log');
     const box = body.querySelector('input[type="checkbox"]') as HTMLInputElement;

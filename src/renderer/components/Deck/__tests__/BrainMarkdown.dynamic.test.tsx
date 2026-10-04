@@ -30,6 +30,77 @@ function render(source: string): void {
 }
 
 describe('renderBrainMarkdown', () => {
+  const gh = (src: string) => act(() => {
+    root.render(createElement('div', null, renderBrainMarkdown(src, { links: true, githubHtml: true })));
+  });
+
+  it('GitHub HTML: a CodeRabbit-style comment renders comments hidden, details collapsed, tags as text', () => {
+    gh([
+      '<!-- This is an auto-generated comment: summarize by coderabbit.ai -->',
+      '> [!WARNING]',
+      '> ## Review limit reached',
+      '<details>',
+      '<summary>View limit details</summary>',
+      '',
+      '**Limit details:** You used <b>all 2</b> reviews.<br>Next one in 15 minutes.',
+      '<img src="https://x/y.png" alt="rabbit"> <a href="https://coderabbit.ai/usage">usage</a> <a href="javascript:alert(1)">bad</a>',
+      '</details>',
+      '<!-- tips_start -->',
+      'Thanks &amp; enjoy &lt;3',
+    ].join('\n'));
+    expect(container.textContent).not.toContain('auto-generated');
+    expect(container.textContent).not.toContain('tips_start');
+    expect(container.textContent).not.toMatch(/<\/?(details|summary|b|img|a)\b/);
+    const d = container.querySelector('details[data-brain-md-details]') as HTMLDetailsElement;
+    expect(d.open).toBe(false);
+    expect(d.querySelector('summary')?.textContent).toBe('View limit details');
+    expect(d.querySelector('strong')?.textContent).toBe('Limit details:');
+    expect(d.textContent).toContain('You used all 2 reviews.');
+    expect(d.textContent).toContain('Next one in 15 minutes.');
+    expect(d.textContent).toContain('rabbit');
+    const links = [...d.querySelectorAll('a')].map((x) => x.getAttribute('href'));
+    expect(links).toEqual(['https://coderabbit.ai/usage']);
+    expect(d.textContent).toContain('bad');
+    expect(container.textContent).toContain('Thanks & enjoy <3');
+  });
+
+  it('GitHub HTML: nested details, each with its own summary', () => {
+    gh('<details><summary>Outer</summary>\nouter body\n<details>\n<summary>Inner</summary>\ninner body\n</details>\n</details>\nafter');
+    const outer = container.querySelector('details[data-brain-md-details]')!;
+    expect(outer.querySelector(':scope > summary')?.textContent).toBe('Outer');
+    const inner = outer.querySelector('details[data-brain-md-details]')!;
+    expect(inner.querySelector(':scope > summary')?.textContent).toBe('Inner');
+    expect(inner.textContent).toContain('inner body');
+    expect(outer.textContent).toContain('outer body');
+    expect(container.lastElementChild?.textContent).toContain('after');
+  });
+
+  it('GitHub HTML: script and style are dropped and never run; details nesting is capped', () => {
+    gh('a<script>window.__md = 1</script>b\n<style>body{display:none}</style>\n' + '<details><summary>x</summary>\n'.repeat(50) + 'deep' + '\n</details>'.repeat(50));
+    expect(container.querySelector('script, style')).toBeNull();
+    expect(container.textContent).not.toContain('window.__md');
+    expect(container.textContent).not.toContain('display:none');
+    expect((window as unknown as { __md?: unknown }).__md).toBeUndefined();
+    expect(container.textContent).toContain('ab');
+    let depth = 0;
+    let d = container.querySelector('details[data-brain-md-details]');
+    while (d) { depth++; d = d.querySelector('details[data-brain-md-details]'); }
+    expect(depth).toBe(MAX_QUOTE_DEPTH);
+    expect(container.textContent).toContain('deep');
+  });
+
+  it('GitHub HTML stays out of code: fences and spans keep their tags', () => {
+    gh('use `<div>` here\n```\n<!-- keep -->\n<br>\n```');
+    expect(container.querySelector('[data-brain-md-code-inline]')?.textContent).toBe('<div>');
+    expect(container.querySelector('[data-brain-md-code]')?.textContent).toBe('<!-- keep -->\n<br>');
+  });
+
+  it('without the GitHub option, HTML stays literal text (the deck)', () => {
+    render('<details><summary>x</summary></details>');
+    expect(container.querySelector('details')).toBeNull();
+    expect(container.textContent).toContain('<details>');
+  });
+
   it('a body of 16000 > does not overflow: quotes stop nesting at the cap and the rest is text', () => {
     expect(() => render('>'.repeat(16000))).not.toThrow();
     let depth = 0;

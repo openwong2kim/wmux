@@ -293,8 +293,10 @@ button.
   and checks, then the comments; for an issue its labels, assignees, body,
   comments in order and a closed line. Bodies go through the app's
   text-only markdown: real http(s) links (opened in the browser), read-only
-  task boxes, blockquotes and tables; never GitHub's HTML. Nothing selected
-  is one quiet line.
+  task boxes, blockquotes and tables. GitHub's HTML is never rendered as
+  HTML: comments and scripts vanish, `<details>` becomes a collapsed
+  disclosure labelled by its summary, other tags reduce to their text.
+  Nothing selected is one quiet line.
 - **Worktrees tab:** the new-worktree line and, while one runs, the merge
   session on top, then the worktrees in three groups: **In use** (a
   workspace on it), **No workspace**, and **Cleanup candidates** (no

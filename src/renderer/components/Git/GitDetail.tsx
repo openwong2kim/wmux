@@ -2,7 +2,9 @@
 // A sticky header (title, number, repo, state, actions) over the body, which
 // scrolls on its own. Bodies and comments go through the app's text-only
 // markdown with real http(s) links (opened by the window's external-link
-// handler) and read-only task checkboxes; no HTML from GitHub reaches the DOM.
+// handler), read-only task checkboxes and GitHub's HTML reduced to text
+// (<details> as a disclosure, comments and scripts dropped); no HTML from
+// GitHub reaches the DOM.
 //
 // Each body is mounted per selected item (keyed by the page), so an answer for
 // a previous selection is dropped with its component; within one item, only
@@ -18,7 +20,7 @@ import { relTime } from './useGitList';
 import type { PrSummary, PrComment } from '../../../shared/prSurface';
 import type { IssueDetail, IssueSummary } from '../../../shared/issueSurface';
 
-const md = (s: string) => renderBrainMarkdown(s, { links: true });
+const md = (s: string) => renderBrainMarkdown(s, { links: true, githubHtml: true });
 
 /** A review state in words; an unknown one as GitHub spells it, lowercased. */
 function reviewWord(state: string, t: (k: string) => string): string {
