@@ -12,7 +12,7 @@ import { useT } from '../../../hooks/useT';
 import { useStore } from '../../../stores';
 import { useTranscript } from '../../Chat/useTranscript';
 import { transcriptMessages } from '../../Chat/chatMessages';
-import { ChatPtyContext, UserText } from '../../Chat/ChatMessage';
+import { ChatCodeBlockContext, ChatPtyContext, UserText } from '../../Chat/ChatMessage';
 import { Thread } from '../../Chat/assistant-ui/Thread';
 import type { ChatBridgeApi } from '../../../../shared/transcript/turnEvents';
 
@@ -51,15 +51,17 @@ export function moaTranscriptBridge(
       const page = await api.snapshot(before === undefined ? undefined : { before });
       return page ? { ...page, events: tidyMoaUserText(page.events, instructionsLabel) } : page;
     },
-    subscribe: async () => ({ ok: true, status: await api.subscribe() }),
+    subscribe: async () => ({ ok: true, status: await api.subscribe('panel') }),
     unsubscribe: async () => {
-      await api.unsubscribe();
+      await api.unsubscribe('panel');
       return { ok: true };
     },
     onAppend: (cb) => api.onAppend((data) => cb(ptyId, { ...data, events: tidyMoaUserText(data.events, instructionsLabel) })),
     onGate: chat?.onGate ?? (() => () => undefined),
     openGates: async () => (await chat?.openGates?.().catch(() => null)) ?? [],
-    codeBlock: (args) => chat?.codeBlock?.(args) ?? Promise.resolve(null),
+    // The daemon cannot resolve the brain pty: main reads the HQ transcript.
+    codeBlock: ({ srcOffset, n, eventId }) =>
+      api.codeBlock?.({ srcOffset, n, ...(eventId ? { eventId } : {}) }) ?? Promise.resolve(null),
     // Never used: Moa's composer goes through deck.send (main's gated path).
     send: async () => ({ result: 'unavailable' }),
   };
@@ -137,6 +139,7 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
   const empty = messages.length === 0 && pending.length === 0;
   return (
     <ChatPtyContext.Provider value={ptyId}>
+      <ChatCodeBlockContext.Provider value={bridge?.codeBlock ?? null}>
       <AssistantRuntimeProvider runtime={runtime}>
         <div className="flex flex-col flex-1 min-h-0" data-moa-chat>
           <Thread
@@ -187,6 +190,7 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
           />
         </div>
       </AssistantRuntimeProvider>
+      </ChatCodeBlockContext.Provider>
     </ChatPtyContext.Provider>
   );
 }

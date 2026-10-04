@@ -4,7 +4,7 @@
 // receipt under a finished turn. Styles live in ./chatMono.css.
 import { createContext, useContext, useLayoutEffect, useRef, useState } from 'react';
 import { MessagePrimitive, useAuiState } from '@assistant-ui/react';
-import type { CodeBlockRef, ToolBody, TurnEvent } from '../../../shared/transcript/turnEvents';
+import type { ChatBridgeApi, CodeBlockRef, ToolBody, TurnEvent } from '../../../shared/transcript/turnEvents';
 import { renderBrainMarkdown } from '../Deck/BrainMarkdown';
 import { formatChatTime } from '../Deck/deckBrain';
 import { IconCheck, IconChevron, IconCopy } from '../icons';
@@ -14,10 +14,16 @@ import { ChatSentImages } from './ChatAttachmentViews';
 import { withoutImageTokens } from './chatAttachments';
 
 export const ChatPtyContext = createContext('');
+/** Where code-block bodies come from. Unset = the daemon's (a pane's chat);
+ *  Moa's chat reads its brain's transcript in main and sets its own. */
+export const ChatCodeBlockContext = createContext<ChatBridgeApi['codeBlock'] | null>(null);
+type FetchCodeBlock = ChatBridgeApi['codeBlock'];
+const daemonCodeBlock: FetchCodeBlock = (args) => window.electronAPI.chat.codeBlock(args);
 
 function Body({ eventId, body, label }: { eventId: string; body: ToolBody | CodeBlockRef; label: string }) {
   const t = useT();
   const ptyId = useContext(ChatPtyContext);
+  const fetchCodeBlock = useContext(ChatCodeBlockContext) ?? daemonCodeBlock;
   const initial = 'inline' in body ? body.inline : undefined;
   const [text, setText] = useState(initial);
   const [loaded, setLoaded] = useState(initial !== undefined && (!body.truncated || body.srcOffset === undefined));
@@ -29,7 +35,7 @@ function Body({ eventId, body, label }: { eventId: string; body: ToolBody | Code
     setLoading(true); setFailed(false);
     try {
       if (body.srcOffset === undefined) throw new Error('missing handle');
-      const result = await window.electronAPI.chat.codeBlock({ ptyId, eventId, srcOffset: body.srcOffset, n: body.n });
+      const result = await fetchCodeBlock({ ptyId, eventId, srcOffset: body.srcOffset, n: body.n });
       if (!result) throw new Error('body unavailable');
       setText(result.body); setLoaded(true);
     } catch { setFailed(true); }
@@ -67,7 +73,7 @@ export function formatDuration(ms: number): string {
 }
 
 /** The turn's reply prose with each code-block marker replaced by its fetched body. */
-async function receiptText(ptyId: string, receipt: TurnReceipt): Promise<string> {
+async function receiptText(ptyId: string, receipt: TurnReceipt, fetchCodeBlock: FetchCodeBlock): Promise<string> {
   const marker = String.fromCharCode(0);
   const parts = await Promise.all(receipt.replies.map(async (event) => {
     const pieces = await Promise.all(event.text.split(new RegExp(`(${marker}code:\\d+${marker})`, 'g')).map(async (part) => {
@@ -76,7 +82,7 @@ async function receiptText(ptyId: string, receipt: TurnReceipt): Promise<string>
       const block = event.codeBlocks?.find((b) => b.n === Number(match[1]));
       // A cut body would copy short with nothing saying so: refuse instead.
       if (block?.srcOffset === undefined || block.truncated) throw new Error('body incomplete');
-      const result = await window.electronAPI.chat.codeBlock({ ptyId, eventId: event.id, srcOffset: block.srcOffset, n: block.n });
+      const result = await fetchCodeBlock({ ptyId, eventId: event.id, srcOffset: block.srcOffset, n: block.n });
       if (!result) throw new Error('body unavailable');
       return `\n\`\`\`${block.lang ?? ''}\n${result.body}\n\`\`\`\n`;
     }));
@@ -89,12 +95,13 @@ async function receiptText(ptyId: string, receipt: TurnReceipt): Promise<string>
 function Receipt({ receipt, label }: { receipt: TurnReceipt; label?: string }) {
   const t = useT();
   const ptyId = useContext(ChatPtyContext);
+  const fetchCodeBlock = useContext(ChatCodeBlockContext) ?? daemonCodeBlock;
   const [copy, setCopy] = useState<'idle' | 'copied' | 'failed'>('idle');
   const { start, end } = receipt;
   const duration = start !== undefined && end !== undefined && end >= start ? formatDuration(end - start) : null;
   const copyTurn = async () => {
     try {
-      await window.clipboardAPI.writeText(await receiptText(ptyId, receipt));
+      await window.clipboardAPI.writeText(await receiptText(ptyId, receipt, fetchCodeBlock));
       setCopy('copied');
       setTimeout(() => setCopy('idle'), 1500);
     } catch { setCopy('failed'); }

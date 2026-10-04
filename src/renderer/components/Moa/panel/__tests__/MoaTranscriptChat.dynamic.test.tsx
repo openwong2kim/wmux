@@ -155,6 +155,42 @@ describe('MoaTranscriptChat — commands', () => {
   });
 });
 
+describe('MoaTranscriptChat — code blocks', () => {
+  it('fetches a code-block body from main, never from the daemon pane bridge', async () => {
+    const marker = String.fromCharCode(0);
+    const withCode: TurnEvent[] = [
+      { id: 'a9', kind: 'assistant_text', text: `Here:${marker}code:1${marker}`, ts: 5, turnComplete: true,
+        codeBlocks: [{ n: 1, lang: 'ts', lines: 2, srcOffset: 40, truncated: true }] },
+    ];
+    const codeBlock = vi.fn(async () => ({ body: 'const ok = true;' }));
+    const daemon = vi.fn(async () => null);
+    vi.stubGlobal('electronAPI', { chat: { codeBlock: daemon } });
+    const { api } = fakeApi({
+      snapshot: vi.fn(async () => ({ events: withCode, cursor, hasMore: false, truncatedHead: false })),
+      codeBlock,
+    } as never);
+    await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />));
+    const details = host.querySelector('details.wmux-chat-detail') as HTMLDetailsElement;
+    expect(details).not.toBeNull();
+    await act(async () => {
+      details.open = true;
+      details.dispatchEvent(new Event('toggle'));
+    });
+    expect(codeBlock).toHaveBeenCalledWith({ srcOffset: 40, n: 1, eventId: 'a9' });
+    expect(daemon).not.toHaveBeenCalled();
+    expect(host.textContent).toContain('const ok = true;');
+  });
+
+  it("subscribes as the panel, so the titlebar's reply dot keeps its own subscription", async () => {
+    const { api } = fakeApi();
+    await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />));
+    expect(api.subscribe).toHaveBeenCalledWith('panel');
+    act(() => root.render(<div />));
+    await act(async () => { await Promise.resolve(); });
+    expect(api.unsubscribe).toHaveBeenCalledWith('panel');
+  });
+});
+
 describe('tidyMoaUserText', () => {
   it('shows one short line instead of any pasted wire, as Claude records it', () => {
     const out = tidyMoaUserText([
