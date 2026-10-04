@@ -3888,6 +3888,9 @@ function registerRpcHandlers(
   // drift between the two transports.
   const bridge: NativeChatBridge = createChatBridge({
     pane: (id) => sessionManager.getSession(id),
+    panesBoundTo: (agent, sessionId) => sessionManager.listManagedSessions()
+      .filter((s) => s.meta.resumeBinding?.agent === agent && s.meta.resumeBinding.sessionId === sessionId)
+      .map((s) => s.meta.id),
     agentState: (id) => readDaemonAgentState(id),
     chatAgentState: (id) => readChatAgentState(id),
     projector,

@@ -226,7 +226,7 @@ export type ChatLaunchTag =
   | 'launch-pending' | 'conversation-exists' | 'launch-not-ready' | 'launch-unsupported'
   | 'agent-not-installed' | 'agent-runtime-unavailable' | 'launch-unconfirmed'
   | 'authorization-expired' | 'invalid-chat-request'
-  | 'resume-unavailable' | 'resume-prompt-unsupported';
+  | 'resume-unavailable' | 'resume-in-use' | 'resume-prompt-unsupported';
 
 export type ChatLaunchOutcome =
   | { ok: true; effect: 'submitted' }

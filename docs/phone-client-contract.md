@@ -4112,23 +4112,44 @@ environment are refused; model and effort for new panes stay on
 `POST /api/sessions {agentLaunch}`.
 
 **Resume.** `resume: true` continues the newest conversation recorded for that
-agent in the pane's cwd: Claude is typed as `claude --continue`, Codex as
-`codex resume --last` (Codex gets `--cd` with that same cwd). The command line
-is built from fixed tokens only, never from request text. It combines with
-`mode` (the dangerous-mode rules below are unchanged: `bypass`/`yolo` still need
-the ceiling and the exact `confirm`). With a non-empty `prompt` the agent resumes
-first and the prompt is its first message, passed the same gated way as on a
-fresh launch (`-- '<prompt>'` after the resume flags); an agent that cannot take
-one refuses with `409 resume-prompt-unsupported` (none today). Before anything is
-typed the daemon checks that there is something to continue — Claude: a
-non-empty transcript in Claude's project directory for that cwd (under
-`CLAUDE_CONFIG_DIR` when set); Codex: an interactive Codex CLI rollout (not `codex exec`, not a sub-agent)
-whose recorded cwd is that cwd, newest first within a bounded scan — and otherwise answers `409 resume-unavailable` (`effect:"none"`),
-never launching an agent that would fail. Eligibility is unchanged: a pane that
-already resolves to a conversation (including one whose agent has exited but
-whose binding remains) is still `conversation-exists`, so resume is for a pane
-with no binding, typically a fresh pane opened in the project's directory.
-Receipts and the binding wait below are the same as for any launch.
+agent in the pane's cwd. Claude is typed as `cd -- '<cwd>' && claude --continue`
+and Codex as `codex resume --remote <relay> --cd '<cwd>' --last`, so the agent runs
+in the directory the daemon checked. A cwd that cannot be written as one
+single-quoted word (not absolute, or containing a quote, backslash or control
+character) is `resume-unavailable`. The command line is built from fixed tokens
+only, never from request text. It combines with `mode`, and the dangerous-mode
+rules below are unchanged: `bypass`/`yolo` still need the ceiling and the exact
+`confirm`. With a non-empty `prompt` the agent resumes first and the prompt is
+its first message, passed the same gated way as on a fresh launch
+(`-- '<prompt>'` after the resume flags). An agent that cannot take one refuses
+with `409 resume-prompt-unsupported` (none today).
+
+Before anything is typed, the daemon finds the conversation the agent would
+continue:
+
+- **Claude:** the most recently modified non-empty transcript in Claude's
+  project directory for that cwd, under `CLAUDE_CONFIG_DIR` when it is set. A
+  cwd whose project name is longer than 200 characters counts only when the
+  transcript records that cwd.
+- **Codex:** the most recently updated interactive Codex CLI thread whose
+  recorded cwd is that cwd, excluding `codex exec` and sub-agent threads, within
+  a bounded scan. Because the launch goes through the pane's relay
+  (`--remote`), Codex filters `--last` on that exact cwd. Its linked-worktree
+  widening applies only to a local launch, so a sibling worktree's thread is
+  neither counted nor resumed.
+
+If there is no such conversation, the answer is `409 resume-unavailable`
+(`effect:"none"`); the daemon never launches an agent that would fail. If
+another live pane is running that conversation (its binding names it and the
+same agent is running there), the answer is `409 resume-in-use`
+(`effect:"none"`), because two agents would append to one conversation. The
+lookup is cached for 30 s per agent, cwd and account.
+
+Eligibility is unchanged: a pane that already resolves to a conversation
+(including one whose agent has exited but whose binding remains) is still
+`conversation-exists`. Resume is therefore for a pane with no binding, typically
+a fresh pane opened in the project's directory.
+Receipts and the binding wait are the same as for any launch.
 
 The daemon re-authorizes once more as the last await before the launcher is
 typed; a withdrawn grant or a closed connection types nothing
@@ -4161,6 +4182,7 @@ changes; never persist it.
 | another launch running on this pane | 409 | `{error:"launch-pending"}` | `none` |
 | pane already has a conversation | 409 | `{error:"conversation-exists"}` | `none` |
 | `resume` with nothing to continue in the pane's cwd | 409 | `{error:"resume-unavailable"}` | `none` |
+| `resume` of a conversation another live pane is running | 409 | `{error:"resume-in-use"}` | `none` |
 | `resume` + `prompt` for an agent that cannot take both | 409 | `{error:"resume-prompt-unsupported"}` | `none` |
 | shell not ready | 409 | `{error:"launch-not-ready", reason:"shell-not-empty"\|"shell-busy"\|"approval-pending"\|"not-integrated"}` | `none` |
 | shell cannot launch | 409 | `{error:"launch-unsupported", reason:"unsupported-shell"\|"shell-has-children"}` | `none` |

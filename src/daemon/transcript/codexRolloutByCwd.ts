@@ -124,61 +124,87 @@ export function findCodexRolloutByCwd(query: CodexCwdQuery): CodexCwdMatch {
   return { ok: true, threadId, transcriptPath: hit.file, cwd: hit.cwd };
 }
 
-/** Full session_meta reads for a resume check; more than this without a hit reads as "none". */
+/** Full first-line reads for a resume lookup; more than this without a hit reads as "none". */
 export const MAX_RESUME_HEAD_READS = 256;
-/** Rollout files a resume check may look at in all (most are skipped from a small first read). */
+/** Rollout files a resume lookup may stat in all (most are skipped from a small first read). */
 export const MAX_RESUME_FILES = 4096;
 const SNIFF_BYTES = 4096;
+const CHUNK_BYTES = 16 * 1024;
 
-/** The originator from the first bytes of a rollout, or undefined when it is not there. */
-function sniffOriginator(file: string): string | undefined {
-  let fd: number | undefined;
+/** The first line of `file` (up to HEAD_BYTES), read in chunks so a short line costs one chunk. */
+async function readFirstLine(file: string, sniffOnly = false): Promise<string | undefined> {
+  let handle: fs.promises.FileHandle | undefined;
   try {
-    fd = fs.openSync(file, 'r');
-    const buf = Buffer.alloc(SNIFF_BYTES);
-    const n = fs.readSync(fd, buf, 0, SNIFF_BYTES, 0);
-    return /"originator"\s*:\s*"([^"]*)"/.exec(buf.subarray(0, n).toString('utf8'))?.[1];
+    handle = await fs.promises.open(file, 'r');
+    const chunks: Buffer[] = [];
+    let total = 0;
+    const limit = sniffOnly ? SNIFF_BYTES : HEAD_BYTES;
+    while (total < limit) {
+      const buf = Buffer.alloc(Math.min(sniffOnly ? SNIFF_BYTES : CHUNK_BYTES, limit - total));
+      const { bytesRead } = await handle.read(buf, 0, buf.length, total);
+      if (bytesRead === 0) break;
+      const chunk = buf.subarray(0, bytesRead);
+      const nl = chunk.indexOf(0x0a);
+      if (nl >= 0) { chunks.push(chunk.subarray(0, nl)); return Buffer.concat(chunks).toString('utf8'); }
+      chunks.push(chunk);
+      total += bytesRead;
+    }
+    // No newline inside the limit: a sniff still answers from what it read.
+    return sniffOnly ? Buffer.concat(chunks).toString('utf8') : undefined;
   } catch {
     return undefined;
   } finally {
-    if (fd !== undefined) fs.closeSync(fd);
+    await handle?.close().catch(() => undefined);
   }
 }
 
 /**
- * Whether `codex resume --last` run in `cwd` has a conversation to continue:
- * any interactive top-level rollout recorded there, with no time window. The
- * walk goes newest first and stops at the first hit. A rollout whose first
- * bytes name another originator (`codex exec` writes many) is skipped without
- * a full read; a budget that runs out answers false, so a launch is refused
- * rather than left to fail in the TUI.
+ * The thread `codex resume --last` would pick when launched by wmux in `cwd`:
+ * the most recently updated interactive top-level rollout recorded there.
+ * wmux always launches Codex with `--remote … --cd <cwd>`, and for a remote
+ * app server Codex 0.160 filters on that one cwd (its linked-worktree
+ * widening applies only to a local filesystem), so the match is exact. Files
+ * are taken newest-modified first; one whose first bytes name another
+ * originator (`codex exec` writes many) is skipped without a full read. A
+ * budget that runs out answers undefined, so a launch is refused rather than
+ * left to fail in the TUI.
  */
-export function hasCodexRolloutForCwd(cwd: string, env?: Record<string, string>, budget = MAX_RESUME_HEAD_READS, maxFiles = MAX_RESUME_FILES): boolean {
+export async function latestCodexRolloutForCwd(
+  cwd: string, env?: Record<string, string>, budget = MAX_RESUME_HEAD_READS, maxFiles = MAX_RESUME_FILES,
+): Promise<string | undefined> {
   const want = canonicalDir(cwd);
-  const newestFirst = (dir: string, pattern: RegExp): string[] => {
-    try { return fs.readdirSync(dir).filter((name) => pattern.test(name)).sort().reverse(); } catch { return []; }
+  const list = async (dir: string, pattern: RegExp): Promise<string[]> => {
+    try { return (await fs.promises.readdir(dir)).filter((name) => pattern.test(name)); } catch { return []; }
   };
   const root = codexSessionRoot(env);
-  let files = 0;
-  let reads = 0;
-  for (const year of newestFirst(root, /^\d{4}$/)) {
-    for (const month of newestFirst(path.join(root, year), /^\d{2}$/)) {
-      for (const day of newestFirst(path.join(root, year, month), /^\d{2}$/)) {
+  const files: Array<{ id: string; file: string; mtime: number }> = [];
+  for (const year of await list(root, /^\d{4}$/)) {
+    for (const month of await list(path.join(root, year), /^\d{2}$/)) {
+      for (const day of await list(path.join(root, year, month), /^\d{2}$/)) {
         const dir = path.join(root, year, month, day);
-        for (const name of newestFirst(dir, ROLLOUT_NAME)) {
-          if (++files > maxFiles) return false;
+        for (const name of await list(dir, ROLLOUT_NAME)) {
+          if (files.length >= maxFiles) return undefined;
           const file = path.join(dir, name);
-          const originator = sniffOriginator(file);
-          if (originator !== undefined && originator !== 'codex-tui') continue;
-          if (++reads > budget) return false;
-          const meta = readSessionMeta(file);
-          if (!meta || meta.originator !== 'codex-tui' || typeof meta.source !== 'string' || meta.thread_source === 'subagent') continue;
-          if (typeof meta.cwd === 'string' && canonicalDir(meta.cwd) === want) return true;
+          try { files.push({ id: ROLLOUT_NAME.exec(name)![7], file, mtime: (await fs.promises.stat(file)).mtimeMs }); } catch { /* gone */ }
         }
       }
     }
   }
-  return false;
+  files.sort((a, b) => b.mtime - a.mtime);
+  let reads = 0;
+  for (const { id, file } of files) {
+    const originator = /"originator"\s*:\s*"([^"]*)"/.exec(await readFirstLine(file, true) ?? '')?.[1];
+    if (originator !== undefined && originator !== 'codex-tui') continue;
+    if (++reads > budget) return undefined;
+    let meta: SessionMeta | undefined;
+    try {
+      const line = JSON.parse(await readFirstLine(file) ?? '') as { type?: unknown; payload?: SessionMeta };
+      meta = line.type === 'session_meta' && line.payload && typeof line.payload === 'object' ? line.payload : undefined;
+    } catch { continue; }
+    if (!meta || meta.id !== id || meta.originator !== 'codex-tui' || typeof meta.source !== 'string' || meta.thread_source === 'subagent') continue;
+    if (typeof meta.cwd === 'string' && canonicalDir(meta.cwd) === want) return id;
+  }
+  return undefined;
 }
 
 /** What the pane decision needs to know about one live pane. */

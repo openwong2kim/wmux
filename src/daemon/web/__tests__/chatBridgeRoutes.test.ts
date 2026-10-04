@@ -1221,6 +1221,7 @@ describe('native chat routes (contract v0.3.1)', () => {
         [{ ok: false, error: 'authorization-expired', effect: 'none' }, 401, { error: 'authorization-expired', effect: 'none' }],
         [{ ok: false, error: 'invalid-chat-request', effect: 'none' }, 400, { error: 'invalid-chat-request', effect: 'none' }],
         [{ ok: false, error: 'resume-unavailable', effect: 'none' }, 409, { error: 'resume-unavailable', effect: 'none' }],
+        [{ ok: false, error: 'resume-in-use', effect: 'none' }, 409, { error: 'resume-in-use', effect: 'none' }],
         [{ ok: false, error: 'resume-prompt-unsupported', effect: 'none' }, 409, { error: 'resume-prompt-unsupported', effect: 'none' }],
       ];
       for (const [outcome, status, expected] of rows) {
