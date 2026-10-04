@@ -70,6 +70,7 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
   const refreshMoa = useStore((s) => s.refreshMoa);
   const createMoaHq = useStore((s) => s.createMoaHq);
   const openMoaHq = useStore((s) => s.openMoaHq);
+  const hqPending = useStore((s) => s.moaHqPendingId !== null);
   const setSettingsPanelVisible = useStore((s) => s.setSettingsPanelVisible);
   const workspaces = useStore((s) => s.workspaces);
 
@@ -105,9 +106,13 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
   const [switchFailed, setSwitchFailed] = useState(false);
   const onSwitchChange = async (next: boolean) => {
     if (!moa) return;
+    // An existing orchestrator user (the switch defaulted on for them) with no
+    // HQ is re-enabling the behaviour they already had: no card. The card is
+    // reachable from the HQ row's "Set up Moa".
+    const existingNoHq = moa.config.defaultReason === 'existing-brain' && moa.hq.state === 'unset';
     // Turning on before the first-run card was ever seen (or with no HQ at
     // all) goes through the card: that is where the HQ gets made.
-    if (next && (!moa.config.onboarded || moa.hq.state === 'unset')) {
+    if (next && !existingNoHq && (!moa.config.onboarded || moa.hq.state === 'unset')) {
       setFirstRunOpen(true);
       return;
     }
@@ -150,7 +155,19 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
   let hqBadge: { tone: 'neutral' | 'success' | 'warning' | 'danger'; text: string };
   let hqDesc: string;
   let hqAction: ReactNode = null;
-  switch (hqState) {
+  // A setup main committed but did not finish wins over the reported state:
+  // main may already say "ok" for a workspace whose mode, caps or switch
+  // never got set. The retry runs setup again on the same workspace.
+  switch (hqPending ? 'pending' : hqState) {
+    case 'pending':
+      hqBadge = { tone: 'warning', text: t('moa.settings.hqPending') };
+      hqDesc = t('moa.settings.hqPendingDesc');
+      hqAction = (
+        <Button variant="primary" size="md" onClick={() => { void recreateHq(); }} disabled={hqBusy} data-testid="moa-hq-finish">
+          {t('moa.firstRun.finish')}
+        </Button>
+      );
+      break;
     case 'ok':
       hqBadge = { tone: 'success', text: t('moa.settings.hqReady') };
       hqDesc = enabled ? t('moa.settings.hqReadyDesc') : t('moa.settings.hqOffDesc');
@@ -192,7 +209,7 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
       hqDesc = t('moa.settings.hqCheckingDesc');
   }
 
-  // ── Moa settings (cap, bubbles, motion) ──
+  // ── Moa settings (the hourly turn cap) ──
   const [saveFailed, setSaveFailed] = useState(false);
   const patchConfig = async (patch: MoaConfigPatch) => {
     setSaveFailed(false);
@@ -497,22 +514,6 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
             {t('moa.settings.turnCapInvalid', MOA_MAX_TURNS_PER_HOUR_RANGE)}
           </SettingNote>
         )}
-        <SettingRow id="moabubbles" label={t('moa.settings.bubbles')} description={t('moa.settings.bubblesDesc')}>
-          <Switch
-            checked={moa?.config.bubbles ?? false}
-            onCheckedChange={(v) => { void patchConfig({ bubbles: v }); }}
-            aria-label={t('moa.settings.bubbles')}
-            disabled={!loaded}
-          />
-        </SettingRow>
-        <SettingRow id="moareducemotion" label={t('moa.settings.reduceMotion')} description={t('moa.settings.reduceMotionDesc')}>
-          <Switch
-            checked={moa?.config.reduceMotion ?? false}
-            onCheckedChange={(v) => { void patchConfig({ reduceMotion: v }); }}
-            aria-label={t('moa.settings.reduceMotion')}
-            disabled={!loaded}
-          />
-        </SettingRow>
         {saveFailed && (
           <SettingNote tone="danger" role="alert" data-testid="moa-save-error">
             {t('moa.settings.saveFailed')}

@@ -20,7 +20,7 @@ beforeAll(() => {
 const work = createWorkspace('Work', 1);
 const hq = createWorkspace('Moa', 2);
 
-function moaState(over: { enabled?: boolean; onboarded?: boolean; hq?: MoaHqState; unacked?: number } = {}): MoaState {
+function moaState(over: { enabled?: boolean; onboarded?: boolean; hq?: MoaHqState; unacked?: number; defaultReason?: MoaState['config']['defaultReason'] } = {}): MoaState {
   return {
     config: {
       enabled: over.enabled ?? true,
@@ -29,7 +29,7 @@ function moaState(over: { enabled?: boolean; onboarded?: boolean; hq?: MoaHqStat
       maxTurnsPerHour: 20,
       bubbles: false,
       reduceMotion: false,
-      defaultReason: null,
+      defaultReason: over.defaultReason ?? null,
     },
     hq: { workspaceId: over.hq === 'unset' ? null : hq.id, state: over.hq ?? 'ok' },
     archive: { unacked: over.unacked ?? 0, total: over.unacked ?? 0 },
@@ -79,7 +79,7 @@ function makeApi() {
 
 let container: HTMLDivElement;
 let root: Root;
-let saved: { workspaces: unknown; activeWorkspaceId: unknown; moa: unknown };
+let saved: { workspaces: unknown; activeWorkspaceId: unknown; moa: unknown; moaHqPendingId: unknown };
 
 async function flush(): Promise<void> {
   for (let i = 0; i < 5; i++) await act(async () => { await Promise.resolve(); });
@@ -104,7 +104,7 @@ beforeEach(() => {
   api = makeApi();
   (window as unknown as { electronAPI: unknown }).electronAPI = { deck: api };
   const s = useStore.getState();
-  saved = { workspaces: s.workspaces, activeWorkspaceId: s.activeWorkspaceId, moa: s.moa };
+  saved = { workspaces: s.workspaces, activeWorkspaceId: s.activeWorkspaceId, moa: s.moa, moaHqPendingId: s.moaHqPendingId };
   act(() => useStore.setState({ workspaces: [work, hq], activeWorkspaceId: work.id }));
   act(() => useStore.getState().setSettingsPanelVisible(true));
   container = document.createElement('div');
@@ -132,6 +132,32 @@ describe('Settings › Moa › master switch', () => {
     await render(moaState({ enabled: false }));
     await click(rowSwitch('moaswitch'));
     expect(api.moa.set).toHaveBeenCalledWith(true);
+    expect(q('[data-testid="moa-first-run"]')).toBeNull();
+  });
+
+  it('an existing orchestrator user with no HQ turns back on directly, without the card', async () => {
+    await render(moaState({ enabled: false, onboarded: false, hq: 'unset', defaultReason: 'existing-brain' }));
+    await click(rowSwitch('moaswitch'));
+    expect(api.moa.set).toHaveBeenCalledWith(true);
+    expect(q('[data-testid="moa-first-run"]')).toBeNull();
+    expect(rowSwitch('moaswitch')!.getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('a new install with no HQ still goes through the card', async () => {
+    await render(moaState({ enabled: false, onboarded: false, hq: 'unset', defaultReason: 'new-install' }));
+    await click(rowSwitch('moaswitch'));
+    expect(api.moa.set).not.toHaveBeenCalled();
+    expect(q('[data-testid="moa-first-run"]')).not.toBeNull();
+    // The keep-current-behaviour button is for existing users only.
+    expect(q('[data-testid="moa-first-run-turn-on-only"]')).toBeNull();
+  });
+
+  it("the card offers an existing user with no HQ to turn on without Moa's workspace", async () => {
+    await render(moaState({ enabled: true, onboarded: false, hq: 'unset', defaultReason: 'existing-brain' }));
+    await click(q('[data-testid="moa-hq-setup"]'));
+    await click(q('[data-testid="moa-first-run-turn-on-only"]'));
+    expect(api.moa.set).toHaveBeenCalledWith(true);
+    expect(api.moa.setup).not.toHaveBeenCalled();
     expect(q('[data-testid="moa-first-run"]')).toBeNull();
   });
 
@@ -173,6 +199,24 @@ describe('Settings › Moa › HQ workspace status', () => {
     await render(moaState({ hq: 'hq-missing' }));
     await click(q('[data-testid="moa-hq-recreate"]'));
     expect(q('[data-testid="moa-hq-error"]')).not.toBeNull();
+  });
+
+  it('a setup main committed but did not finish: Finish setting up Moa retries on the same workspace', async () => {
+    api.moa.setup.mockResolvedValueOnce({ ok: false, code: 'failed', committed: true } as never);
+    await render(moaState({ hq: 'hq-missing' }));
+    await click(q('[data-testid="moa-hq-recreate"]'));
+    const createdId = api.moa.setup.mock.calls[0][0];
+    // Kept, not rolled back, even though main now reports the HQ as ok.
+    expect(useStore.getState().workspaces.some((w) => w.id === createdId)).toBe(true);
+    current = { ...moaState({ hq: 'ok' }), hq: { workspaceId: createdId, state: 'ok' } };
+    await act(async () => { await useStore.getState().refreshMoa(); });
+    await flush();
+    expect(q('[data-testid="moa-hq-status"]')!.textContent).toContain('Setup unfinished');
+    await click(q('[data-testid="moa-hq-finish"]'));
+    expect(api.moa.setup).toHaveBeenCalledTimes(2);
+    expect(api.moa.setup.mock.calls[1][0]).toBe(createdId);
+    expect(q('[data-testid="moa-hq-finish"]')).toBeNull();
+    expect(q('[data-testid="moa-hq-status"]')!.textContent).toContain('Ready');
   });
 
   it('hq-unknown: shows Checking…', async () => {
@@ -242,12 +286,10 @@ describe('Settings › Moa › limits and switches', () => {
     expect(api.moa.setConfig).toHaveBeenCalledWith({ maxTurnsPerHour: 30 });
   });
 
-  it('writes bubbles and reduce motion through setConfig', async () => {
+  it('has no bubble or reduce-motion rows yet (nothing consumes them)', async () => {
     await render(moaState());
-    await click(rowSwitch('moabubbles'));
-    expect(api.moa.setConfig).toHaveBeenCalledWith({ bubbles: true });
-    await click(rowSwitch('moareducemotion'));
-    expect(api.moa.setConfig).toHaveBeenCalledWith({ reduceMotion: true });
+    expect(q('[data-setting-id="moabubbles"]')).toBeNull();
+    expect(q('[data-setting-id="moareducemotion"]')).toBeNull();
   });
 });
 

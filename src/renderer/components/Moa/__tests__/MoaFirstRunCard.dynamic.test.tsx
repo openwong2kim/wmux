@@ -72,6 +72,34 @@ describe('MoaFirstRunCardView', () => {
     expect(confirmBtn().disabled).toBe(false);
   });
 
+  it('a failure main committed turns the button into Finish setting up Moa', async () => {
+    const onConfirm = vi.fn(async (): Promise<MoaSetupResult> => ({ ok: false, code: 'failed', committed: true }));
+    await act(async () => root.render(createElement(MoaFirstRunCardView, { onConfirm, onClose: vi.fn() })));
+    await act(async () => { confirmBtn().click(); });
+    await flush();
+    expect(document.querySelector('[data-testid="moa-first-run-error"]')?.textContent).toContain("setup didn't finish");
+    expect(confirmBtn().textContent).toBe('Finish setting up Moa');
+  });
+
+  it('opened with a pending setup, the button already says Finish', async () => {
+    await act(async () => root.render(createElement(MoaFirstRunCardView, { onConfirm: vi.fn(), onClose: vi.fn(), pending: true })));
+    expect(confirmBtn().textContent).toBe('Finish setting up Moa');
+  });
+
+  it('offers turn-on-only only when given, and closes once the switch is on', async () => {
+    await act(async () => root.render(createElement(MoaFirstRunCardView, { onConfirm: vi.fn(), onClose: vi.fn() })));
+    expect(document.querySelector('[data-testid="moa-first-run-turn-on-only"]')).toBeNull();
+    const onTurnOnOnly = vi.fn(async () => true);
+    const onClose = vi.fn();
+    const onConfirm = vi.fn();
+    await act(async () => root.render(createElement(MoaFirstRunCardView, { onConfirm, onClose, onTurnOnOnly })));
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-testid="moa-first-run-turn-on-only"]')!.click(); });
+    await flush();
+    expect(onTurnOnOnly).toHaveBeenCalledTimes(1);
+    expect(onConfirm).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it('treats a thrown setup as a failure', async () => {
     const onConfirm = vi.fn(async (): Promise<MoaSetupResult> => { throw new Error('ipc down'); });
     await act(async () => root.render(createElement(MoaFirstRunCardView, { onConfirm, onClose: vi.fn() })));
