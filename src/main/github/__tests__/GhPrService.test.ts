@@ -1,7 +1,7 @@
 // GhPrService — gh JSON 매핑·게이트·TTL·updatedAt 상세캐시 (exec 목킹,
 // PrStatusCache 테스트 스타일). + PrProvider의 remote 호스트 분류.
 import { describe, it, expect, vi } from 'vitest';
-import { GhPrService, mapGhListItem, mapGhDetail, botLoginsFromGraphql } from '../GhPrService';
+import { GhPrService, mapGhListItem, mapGhDetail, authorTypesFromGraphql } from '../GhPrService';
 import { parseRemoteHost, parseRemoteKey, isGithubHost } from '../PrProvider';
 import { PR_COMMENT_BODY_CAP } from '../../../shared/prSurface';
 
@@ -89,39 +89,69 @@ describe('mapGhListItem / mapGhDetail — 매핑 계약', () => {
     expect(out[3]).toMatchObject({ kind: 'review', reviewState: 'CHANGES_REQUESTED', body: '' });
   });
 
-  it('flags conversation comments and reviews by a bot GraphQL named', () => {
-    const bots = botLoginsFromGraphql({
+  it('types conversation comments and reviews from the GraphQL author read', () => {
+    const types = authorTypesFromGraphql({
       data: { repository: { pullRequest: {
         comments: { nodes: [{ author: { __typename: 'Bot', login: 'CI-Reporter' } }, { author: { __typename: 'User', login: 'alice' } }] },
-        reviews: { nodes: [null, { author: null }] },
+        reviews: { nodes: [null, { author: null }, { author: { __typename: 'Organization', login: 'org' } }] },
       } } },
     });
-    expect([...bots]).toEqual(['ci-reporter']);
+    expect(types && [...types]).toEqual([['ci-reporter', 'Bot'], ['alice', 'User']]);
     const out = mapGhDetail(
       {
         comments: [
           { author: { login: 'ci-reporter' }, body: 'coverage', createdAt: '2026-07-12T01:00:00Z' },
           { author: { login: 'alice' }, body: 'nit', createdAt: '2026-07-12T02:00:00Z' },
+          { author: { login: 'stranger' }, body: '?', createdAt: '2026-07-12T02:30:00Z' },
         ],
         reviews: [{ author: { login: 'CI-Reporter' }, body: '', state: 'COMMENTED', submittedAt: '2026-07-12T03:00:00Z' }],
       },
       'pr-url',
       [],
-      bots,
+      types ?? new Map(),
     );
-    expect(out.map((c) => [c.author, c.isBot])).toEqual([['ci-reporter', true], ['alice', undefined], ['CI-Reporter', true]]);
-    expect(botLoginsFromGraphql({ errors: [] }).size).toBe(0);
+    expect(out.map((c) => [c.author, c.authorType])).toEqual([
+      ['ci-reporter', 'Bot'], ['alice', 'User'], ['stranger', undefined], ['CI-Reporter', 'Bot'],
+    ]);
+    expect(authorTypesFromGraphql({ errors: [{ message: 'x' }] })).toBeNull();
   });
 
-  it('flags an inline comment whose REST author is a bot', () => {
+  it('types an inline comment from its REST user.type', () => {
     const out = mapGhDetail({ comments: [], reviews: [] }, 'pr-url', [
       { user: { login: 'review-app[bot]', type: 'Bot' }, body: 'nit', created_at: '2026-07-12T05:00:00Z' },
       { user: { login: 'rev', type: 'User' }, body: 'real', created_at: '2026-07-12T06:00:00Z' },
+      { user: { login: 'odd' }, body: '?', created_at: '2026-07-12T07:00:00Z' },
     ]);
-    expect(out.map((c) => c.isBot)).toEqual([true, undefined]);
+    expect(out.map((c) => c.authorType)).toEqual(['Bot', 'User', undefined]);
   });
 
-    it('인라인 리뷰 코멘트(gh api)를 파일:라인 앵커와 함께 병합(Codex P2)', () => {
+  it('an untyped detail read (GraphQL failed) is not kept as a success: retried later or on change', async () => {
+    let graphqlFails = true;
+    const { svc, calls, nowRef } = makeService((args) => {
+      if (args[0] === 'pr' && args[1] === 'view') {
+        return { stdout: JSON.stringify({ number: 5, url: 'u', comments: [{ author: { login: 'alice' }, body: 'hi', createdAt: 't' }], reviews: [] }) };
+      }
+      if (args[0] === 'api' && args[1] === 'graphql') {
+        if (graphqlFails) return new Error('graphql down');
+        return { stdout: JSON.stringify({ data: { repository: { pullRequest: { comments: { nodes: [{ author: { __typename: 'User', login: 'alice' } }] }, reviews: { nodes: [] } } } } }) };
+      }
+      return { stdout: '[]' };
+    });
+    const views = () => calls.filter((c) => c.args[1] === 'view').length;
+    const d1 = await svc.prDetail('D:/r', 5, 'T1');
+    expect(d1.ok && d1.detail.comments[0].authorType).toBeUndefined();
+    await svc.prDetail('D:/r', 5, 'T1'); // within the retry window: reused
+    expect(views()).toBe(1);
+    graphqlFails = false;
+    nowRef.t += 5 * 60_000;
+    const d2 = await svc.prDetail('D:/r', 5, 'T1'); // retry window passed
+    expect(views()).toBe(2);
+    expect(d2.ok && d2.detail.comments[0].authorType).toBe('User');
+    await svc.prDetail('D:/r', 5, 'T1'); // typed: kept
+    expect(views()).toBe(2);
+  });
+
+  it('인라인 리뷰 코멘트(gh api)를 파일:라인 앵커와 함께 병합(Codex P2)', () => {
     const out = mapGhDetail(
       { comments: [], reviews: [] },
       'pr-url',

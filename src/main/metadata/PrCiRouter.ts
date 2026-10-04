@@ -35,6 +35,9 @@ export interface PrCiEmit {
   url: string;
   /** The PR head commit when gh reported it. */
   headSha?: string;
+  /** Which transition this is (process-local, increasing): fail → pass →
+   *  fail on one head is three events, and the PR owner nudge dedups on it. */
+  episode?: string;
 }
 
 export class PrCiRouter {
@@ -43,6 +46,7 @@ export class PrCiRouter {
    *  straight from failing PR A to failing PR B is a NEW red PR and must fire,
    *  even though the checks state never left 'failing'. */
   private last = new Map<string, { checks: Checks; prNumber: number | null }>();
+  private transitions = 0;
 
   constructor(
     private readonly resolveWorkspaceId: WorkspaceResolver,
@@ -79,7 +83,12 @@ export class PrCiRouter {
       const emitPassed = this.emitPassed;
       try {
         const workspaceId = await this.resolveWorkspaceId(ptyId);
-        if (workspaceId) emitPassed({ workspaceId, ptyId, prNumber: pr.number, url: pr.url, ...(pr.headSha ? { headSha: pr.headSha } : {}) });
+        if (workspaceId) {
+          emitPassed({
+            workspaceId, ptyId, prNumber: pr.number, url: pr.url,
+            ...(pr.headSha ? { headSha: pr.headSha } : {}), episode: String(++this.transitions),
+          });
+        }
       } catch { /* never disrupt the poll */ }
       return;
     }
@@ -90,7 +99,10 @@ export class PrCiRouter {
     try {
       const workspaceId = await this.resolveWorkspaceId(ptyId);
       if (!workspaceId) throw new Error('unresolved');
-      this.emit({ workspaceId, ptyId, prNumber: pr.number, url: pr.url, ...(pr.headSha ? { headSha: pr.headSha } : {}) });
+      this.emit({
+        workspaceId, ptyId, prNumber: pr.number, url: pr.url,
+        ...(pr.headSha ? { headSha: pr.headSha } : {}), episode: String(++this.transitions),
+      });
     } catch {
       // Restore the pre-transition state so the next tick re-attempts the SAME
       // edge instead of the red being permanently lost to a transient failure.

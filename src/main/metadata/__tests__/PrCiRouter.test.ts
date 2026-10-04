@@ -21,7 +21,7 @@ describe('PrCiRouter — edge-triggered CI failure', () => {
     await router.note('ptyA', pr('passing'));
     await router.note('ptyA', pr('failing'));
     expect(emits).toEqual([
-      { workspaceId: 'ws-1', ptyId: 'ptyA', prNumber: 42, url: 'https://github.com/o/r/pull/42' },
+      { workspaceId: 'ws-1', ptyId: 'ptyA', prNumber: 42, url: 'https://github.com/o/r/pull/42', episode: '1' },
     ]);
   });
 
@@ -126,7 +126,17 @@ describe('PrCiRouter — checks passed (the PR owner nudge pointer)', () => {
     await router.note('ptyA', pr('passing', { headSha: 'bbb2222' }));
     expect(failed.map((e) => e.headSha)).toEqual(['aaa1111']);
     expect(passed).toEqual([
-      { workspaceId: 'ws-1', ptyId: 'ptyA', prNumber: 42, url: 'https://github.com/o/r/pull/42', headSha: 'bbb2222' },
+      { workspaceId: 'ws-1', ptyId: 'ptyA', prNumber: 42, url: 'https://github.com/o/r/pull/42', headSha: 'bbb2222', episode: '2' },
+    ]);
+  });
+
+  it('each transition is its own episode: fail, pass, fail on one head', async () => {
+    const { router, failed, passed } = mkPassed();
+    await router.note('ptyA', pr('failing', { headSha: 'aaa1111' }));
+    await router.note('ptyA', pr('passing', { headSha: 'aaa1111' }));
+    await router.note('ptyA', pr('failing', { headSha: 'aaa1111' }));
+    expect([...failed, ...passed].map((e) => [e.headSha, e.episode]).sort()).toEqual([
+      ['aaa1111', '1'], ['aaa1111', '2'], ['aaa1111', '3'],
     ]);
   });
 

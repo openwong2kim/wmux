@@ -391,6 +391,8 @@ export interface WorkspaceMetadata {
   // brain hears it, write one pointer line into the agent pane that owns the
   // PR (renderer/hooks/fanoutCallerNudge.ts). undefined === true === on.
   wakeOnPrEvents?: boolean;
+  // "Checks passed" is its own, lower-priority switch: undefined === false.
+  wakeOnPrChecksPassed?: boolean;
   // ── X1 workspace-context sidebar (schema-freeze §2, additive) ──
   /** True when gitBranch comes from a linked worktree, not the main checkout. */
   gitIsWorktree?: boolean;

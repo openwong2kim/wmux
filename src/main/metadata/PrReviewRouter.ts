@@ -54,6 +54,9 @@ export interface PrReviewEmit {
   fromOthers: number;
   /** The PR head commit when gh reported it. */
   headSha?: string;
+  /** The batch: newest comment time and the comment count. A second batch
+   *  on the same head is a new event for the PR owner nudge's dedup. */
+  episode?: string;
 }
 
 /** Merge-conflict edge (slice 3) — fired once when a pane's PR becomes
@@ -64,22 +67,20 @@ export interface PrConflictEmit {
   prNumber: number;
   url: string;
   headSha?: string;
+  /** Which conflict episode (process-local, increasing). */
+  episode?: string;
 }
 
 /**
- * Comments that are not someone else talking to the PR: the PR author's own,
- * and bots'. A bot is flagged by the REST read (`isBot`), carries the `[bot]`
- * suffix, or has the login of a bot seen elsewhere in the same PR — the
- * conversation read reports an app's login without the suffix.
+ * Comments from someone else talking to the PR: a person (the host typed the
+ * author as a User) who is not the PR author. Bots, and authors whose type
+ * could not be read, never count — an unknown author does not wake anyone.
  */
-export function countFromOthers(comments: readonly PrComment[], fresh: readonly PrComment[], prAuthor: string): number {
-  const strip = (login: string): string => login.toLowerCase().replace(/\[bot\]$/, '');
-  const bots = new Set<string>();
-  for (const c of comments) if (c.isBot || /\[bot\]$/i.test(c.author)) bots.add(strip(c.author));
-  const author = strip(prAuthor);
+export function countFromOthers(fresh: readonly PrComment[], prAuthor: string): number {
+  const author = prAuthor.toLowerCase();
   return fresh.filter((c) => {
-    const login = strip(c.author);
-    return !c.isBot && !bots.has(login) && (author === '' || login !== author);
+    const login = c.author.toLowerCase();
+    return c.authorType === 'User' && !login.endsWith('[bot]') && (author === '' || login !== author);
   }).length;
 }
 
@@ -107,6 +108,7 @@ interface PaneState {
 
 export class PrReviewRouter {
   private panes = new Map<string, PaneState>();
+  private conflictEpisodes = 0;
 
   constructor(
     private readonly provider: ReviewProvider,
@@ -154,7 +156,10 @@ export class PrReviewRouter {
         } else if (!st.conflictFired) {
           const ws = await this.resolveWorkspaceId(ptyId);
           if (ws) {
-            this.emitConflict({ workspaceId: ws, ptyId, prNumber: pr.number, url: pr.url, ...(pr.headSha ? { headSha: pr.headSha } : {}) });
+            this.emitConflict({
+              workspaceId: ws, ptyId, prNumber: pr.number, url: pr.url,
+              ...(pr.headSha ? { headSha: pr.headSha } : {}), episode: String(++this.conflictEpisodes),
+            });
             st.conflictFired = true;
           }
         }
@@ -184,8 +189,9 @@ export class PrReviewRouter {
         count: fresh.length,
         author: latest.author,
         snippet: sanitizeSnippet(latest.body),
-        fromOthers: countFromOthers(comments, fresh, summary.author),
+        fromOthers: countFromOthers(fresh, summary.author),
         ...(pr.headSha ? { headSha: pr.headSha } : {}),
+        episode: `${maxCreated}#${comments.length}`,
       });
       // Advance ONLY after a successful emit (CodeRabbit, PR #496) — a resolve
       // failure or emit throw above leaves the watermark put, so the same

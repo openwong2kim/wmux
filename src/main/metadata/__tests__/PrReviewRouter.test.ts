@@ -21,6 +21,7 @@ function comment(createdAt: string, over: Partial<PrComment> = {}): PrComment {
     kind: 'comment',
     reviewState: '',
     truncated: false,
+    authorType: 'User',
     ...over,
   };
 }
@@ -87,29 +88,45 @@ describe('PrReviewRouter — watermark batch routing', () => {
     expect(h.emits).toEqual([{
       workspaceId: 'ws-1', ptyId: 'ptyA', prNumber: 42, url: 'https://x/pull/42',
       count: 2, author: 'glm', snippet: 'newest feedback', fromOthers: 2,
+      episode: '2026-07-04T00:00:00Z#3',
     }]);
   });
 
-  it('counts only someone else: not the PR author, not bots (also a bot login without its suffix)', async () => {
+  it('counts only someone else: a person who is not the PR author; bots and unknown authors never', async () => {
     const h = mk({ comments: [comment('2026-07-01T00:00:00Z')] });
     await h.router.note('ptyA', CWD, pr()); // arm
     h.setComments([
       comment('2026-07-01T00:00:00Z'),
       // the PR author ('a' in the fake list) answering their own PR
       comment('2026-07-02T00:00:00Z', { author: 'A' }),
-      // a review app: REST reports it as a bot, the conversation read drops the suffix
-      comment('2026-07-03T00:00:00Z', { author: 'review-app[bot]', isBot: true }),
-      comment('2026-07-04T00:00:00Z', { author: 'review-app' }),
+      comment('2026-07-03T00:00:00Z', { author: 'review-app', authorType: 'Bot' }),
+      // the author type could not be read (the GraphQL lookup failed)
+      comment('2026-07-04T00:00:00Z', { author: 'someone', authorType: undefined }),
     ]);
     h.tick(60_000);
     await h.router.note('ptyA', CWD, pr());
     expect(h.emits).toHaveLength(1);
     expect(h.emits[0].count).toBe(3);
     expect(h.emits[0].fromOthers).toBe(0);
-    h.setComments([comment('2026-07-04T00:00:00Z', { author: 'review-app' }), comment('2026-07-05T00:00:00Z', { author: 'reviewer' })]);
+    h.setComments([comment('2026-07-04T00:00:00Z', { authorType: undefined }), comment('2026-07-05T00:00:00Z', { author: 'reviewer' })]);
     h.tick(60_000);
     await h.router.note('ptyA', CWD, pr());
     expect(h.emits[1].fromOthers).toBe(1);
+  });
+
+  it('a second batch on the same head is a new episode', async () => {
+    const h = mk({ comments: [comment('2026-07-01T00:00:00Z')] });
+    await h.router.note('ptyA', CWD, { ...pr(), headSha: 'abc1234' }); // arm
+    h.setComments([comment('2026-07-01T00:00:00Z'), comment('2026-07-02T00:00:00Z')]);
+    h.tick(60_000);
+    await h.router.note('ptyA', CWD, { ...pr(), headSha: 'abc1234' });
+    h.setComments([comment('2026-07-01T00:00:00Z'), comment('2026-07-02T00:00:00Z'), comment('2026-07-03T00:00:00Z')]);
+    h.tick(60_000);
+    await h.router.note('ptyA', CWD, { ...pr(), headSha: 'abc1234' });
+    expect(h.emits.map((e) => [e.headSha, e.episode])).toEqual([
+      ['abc1234', '2026-07-02T00:00:00Z#2'],
+      ['abc1234', '2026-07-03T00:00:00Z#3'],
+    ]);
   });
 
   it('carries the head commit when gh reported it', async () => {
@@ -214,7 +231,7 @@ describe('PrReviewRouter — merge-conflict edge (slice 3)', () => {
     h.setMergeable('CONFLICTING');
     h.tick(60_000);
     await h.router.note('ptyA', CWD, pr()); // conflict — fires
-    expect(h.conflicts).toEqual([{ workspaceId: 'ws-1', ptyId: 'ptyA', prNumber: 42, url: 'https://x/pull/42' }]);
+    expect(h.conflicts).toEqual([{ workspaceId: 'ws-1', ptyId: 'ptyA', prNumber: 42, url: 'https://x/pull/42', episode: '1' }]);
     h.tick(60_000);
     await h.router.note('ptyA', CWD, pr()); // still conflicting — no re-fire
     expect(h.conflicts).toHaveLength(1);

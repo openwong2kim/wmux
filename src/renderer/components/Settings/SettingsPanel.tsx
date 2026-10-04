@@ -4064,6 +4064,8 @@ export interface NotificationsViewWorkspaceRow {
   muted: boolean;
   /** "Wake the agent on PR events" — absent reads as on (the default). */
   prWake?: boolean;
+  /** Its "checks passed" pointer — absent reads as off (the default). */
+  prWakeChecksPassed?: boolean;
 }
 
 export interface NotificationsViewProps {
@@ -4097,6 +4099,7 @@ export interface NotificationsViewProps {
   onChangeWorkspaceMuted: (workspaceId: string, muted: boolean) => void;
   /** Per-workspace "Wake the agent on PR events"; absent hides the section. */
   onChangeWorkspacePrWake?: (workspaceId: string, enabled: boolean) => void;
+  onChangeWorkspacePrWakeChecksPassed?: (workspaceId: string, enabled: boolean) => void;
 
   // Translator — injected so the pure view can render with the live
   // `useT()` translator in production and a static stub in tests.
@@ -4121,7 +4124,7 @@ export function NotificationsView(props: NotificationsViewProps) {
     taskbarFlashEnabled, onChangeTaskbarFlashEnabled,
     notificationSoundChoice, onChangeNotificationSoundChoice,
     mutedNotificationCategories, onChangeCategoryMuted,
-    workspaces, onChangeWorkspaceMuted, onChangeWorkspacePrWake,
+    workspaces, onChangeWorkspaceMuted, onChangeWorkspacePrWake, onChangeWorkspacePrWakeChecksPassed,
     t,
   } = props;
 
@@ -4331,11 +4334,11 @@ export function NotificationsView(props: NotificationsViewProps) {
           <div className="flex flex-col" style={{ maxHeight: 240, overflowY: 'auto' }}>
             {workspaces.map((ws, idx) => {
               const labelId = `workspace-pr-wake-label-${ws.id}`;
+              const enabled = ws.prWake !== false;
               return (
-                <label
+                <div
                   key={ws.id}
-                  htmlFor={`workspace-pr-wake-${ws.id}`}
-                  className="settings-row cursor-pointer hover:bg-[color:var(--surface-fill-hover)] transition-colors"
+                  className="settings-row"
                   style={{
                     flexDirection: 'row',
                     alignItems: 'center',
@@ -4347,16 +4350,36 @@ export function NotificationsView(props: NotificationsViewProps) {
                   <span className="ui-field-label truncate min-w-0 mr-3" id={labelId}>
                     {ws.name}
                   </span>
-                  <input
-                    id={`workspace-pr-wake-${ws.id}`}
-                    type="checkbox"
-                    checked={ws.prWake !== false}
-                    aria-labelledby={labelId}
-                    onChange={(e) => onChangeWorkspacePrWake(ws.id, e.target.checked)}
-                    data-testid={`per-workspace-pr-wake-checkbox-${ws.id}`}
-                    className="settings-native-check shrink-0 cursor-pointer"
-                  />
-                </label>
+                  <div className="flex items-center gap-4 shrink-0">
+                    <label className="flex items-center gap-2 cursor-pointer ui-field-description">
+                      {t('settings.prWakeFailures')}
+                      <input
+                        id={`workspace-pr-wake-${ws.id}`}
+                        type="checkbox"
+                        checked={enabled}
+                        aria-describedby={labelId}
+                        onChange={(e) => onChangeWorkspacePrWake(ws.id, e.target.checked)}
+                        data-testid={`per-workspace-pr-wake-checkbox-${ws.id}`}
+                        className="settings-native-check cursor-pointer"
+                      />
+                    </label>
+                    {onChangeWorkspacePrWakeChecksPassed && (
+                      <label className="flex items-center gap-2 cursor-pointer ui-field-description">
+                        {t('settings.prWakeChecksPassed')}
+                        <input
+                          id={`workspace-pr-wake-passed-${ws.id}`}
+                          type="checkbox"
+                          checked={enabled && ws.prWakeChecksPassed === true}
+                          disabled={!enabled}
+                          aria-describedby={labelId}
+                          onChange={(e) => onChangeWorkspacePrWakeChecksPassed(ws.id, e.target.checked)}
+                          data-testid={`per-workspace-pr-wake-passed-checkbox-${ws.id}`}
+                          className="settings-native-check cursor-pointer"
+                        />
+                      </label>
+                    )}
+                  </div>
+                </div>
               );
             })}
           </div>
@@ -4402,6 +4425,7 @@ function TabNotifications() {
       name: ws.name,
       muted: ws.notificationsMuted,
       prWake: ws.wakeOnPrEvents,
+      prWakeChecksPassed: ws.wakeOnPrChecksPassed,
     })),
     [muteRows],
   );
@@ -4430,6 +4454,7 @@ function TabNotifications() {
       workspaces={workspaceRows}
       onChangeWorkspaceMuted={(id, muted) => updateWorkspaceMetadata(id, { notificationsMuted: muted })}
       onChangeWorkspacePrWake={(id, enabled) => updateWorkspaceMetadata(id, { wakeOnPrEvents: enabled })}
+      onChangeWorkspacePrWakeChecksPassed={(id, enabled) => updateWorkspaceMetadata(id, { wakeOnPrChecksPassed: enabled })}
     />
   );
 }

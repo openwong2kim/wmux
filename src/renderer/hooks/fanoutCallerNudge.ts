@@ -42,8 +42,13 @@
 // written (the coalescer path in main still holds the event). The owner is
 // re-resolved at receipt, at every evaluation and right before the write, and
 // main checks the pane's PR once more before the daemon pastes. The
-// per-workspace "Wake the agent on PR events" switch is read at the same
-// points. Each (workspace, PR, kind, head commit) is accepted once.
+// per-workspace "Wake the agent on PR events" switches (checks passed has its
+// own, off by default) are read at the same points. Each (workspace, PR,
+// kind, head commit, occurrence) is accepted once, and only once it is queued.
+//
+// A pointer that arrives while a line is in flight never edits the item being
+// sent: it replaces it with a new object, and the reply consumes only the
+// objects that were actually sent.
 import { useStore } from '../stores';
 import { getWorkspaceLeafPanes } from '../../shared/paneUtils';
 import {
@@ -113,7 +118,13 @@ interface Target {
 type SubmitReply = { result: string; pasted: boolean };
 interface DeckBridge {
   fanoutCallerSession?: (ptyId: string) => Promise<{ incarnationId: string } | null>;
-  fanoutCallerSubmit?: (p: { ptyId: string; ownerWorkspaceId: string; incarnationId: string; text: string }) => Promise<SubmitReply>;
+  fanoutCallerSubmit?: (p: {
+    ptyId: string;
+    ownerWorkspaceId: string;
+    incarnationId: string;
+    text: string;
+    prs?: { number: number; url: string }[];
+  }) => Promise<SubmitReply>;
 }
 
 const targets = new Map<string, Target>();
@@ -224,20 +235,22 @@ export function resolvePrOwner(
   return found.length === 1 ? found[0] : null;
 }
 
-function prWakeEnabled(workspaceId: string): boolean {
+function prWakeEnabled(workspaceId: string, kind?: PrOwnerKind): boolean {
   const ws = useStore.getState().workspaces.find((w) => w.id === workspaceId);
-  return !!ws && ws.metadata?.wakeOnPrEvents !== false;
+  if (!ws || ws.metadata?.wakeOnPrEvents === false) return false;
+  return kind !== 'pr.checks_passed' || ws.metadata?.wakeOnPrChecksPassed === true;
 }
 
 /** Drop PR items this pane no longer owns, or whose workspace turned the
  *  switch off. */
 function dropStalePr(t: Target, ptyId: string): void {
-  let enabled: boolean | undefined;
   for (const [key, item] of t.pending) {
     if (item.type !== 'pr') continue;
-    enabled ??= prWakeEnabled(t.ownerWorkspaceId);
     const s = useStore.getState();
-    if (!enabled || resolvePrOwner(s.workspaces, s.surfaceAgent, t.ownerWorkspaceId, item.url)?.ptyId !== ptyId) {
+    if (
+      !prWakeEnabled(t.ownerWorkspaceId, item.kind)
+      || resolvePrOwner(s.workspaces, s.surfaceAgent, t.ownerWorkspaceId, item.url)?.ptyId !== ptyId
+    ) {
       t.pending.delete(key);
     }
   }
@@ -391,6 +404,7 @@ async function flush(key: string): Promise<void> {
           sent.flatMap((i) => (i.type === 'fanout' ? [{ taskId: i.taskId, kind: i.kind }] : [])),
           sent.flatMap((i) => (i.type === 'pr' ? [{ prNumber: i.prNumber, kind: i.kind }] : [])),
         ),
+        ...prClaims(sent),
       })
       .catch((): SubmitReply => ({ result: 'error', pasted: true }));
   } finally {
@@ -412,6 +426,10 @@ async function flush(key: string): Promise<void> {
     return;
   } else if (reply.result === 'approval_pending') {
     return; // nothing written; the pane's next turn end re-arms it
+  } else if (reply.result === 'pr_changed') {
+    // The pane moved off a PR the line named: drop those PR clauses only
+    // and send the rest again (fan-out pointers, other PR events).
+    for (const [k, i] of [...t.pending]) if (i.type === 'pr' && sent.includes(i)) t.pending.delete(k);
   } else if (reply.result === 'gone' || reply.result === 'session_changed') {
     drop(key, t);
     return;
@@ -440,7 +458,8 @@ export function receiveFanoutCallerEvent(raw: unknown): void {
   const t = targetFor(key, p.ownerWorkspaceId, p.origin.paneId, p.origin.surfaceId);
   const existing = t.pending.get(p.taskId);
   if (existing?.type === 'fanout') {
-    existing.kind = moreSevereKind(existing.kind, p.kind);
+    // A new object, never an edit: the old one may be the line in flight.
+    replaceItem(t, p.taskId, { ...existing, kind: moreSevereKind(existing.kind, p.kind) });
   } else {
     addItem(t, p.taskId, { type: 'fanout', taskId: p.taskId, kind: p.kind, createdAt: now, incarnation: undefined });
   }
@@ -472,6 +491,20 @@ function addItem(t: Target, key: string, item: PendingItem): void {
   else item.incarnation = null;
 }
 
+/** Swap in a new version of a queued item. A binding still being read
+ *  landed on the old object, so the new one reads its own. */
+function replaceItem(t: Target, key: string, next: PendingItem): void {
+  if (next.incarnation === undefined) addItem(t, key, next);
+  else t.pending.set(key, next);
+}
+
+/** The PRs a line names, with the url each owner was resolved by. */
+function prClaims(items: readonly PendingItem[]): { prs?: { number: number; url: string }[] } {
+  const prs = new Map<string, { number: number; url: string }>();
+  for (const i of items) if (i.type === 'pr') prs.set(i.url, { number: i.prNumber, url: i.url });
+  return prs.size > 0 ? { prs: [...prs.values()] } : {};
+}
+
 /** A PR owner pointer from main (DECK_PR_OWNER). Malformed input is ignored. */
 export function receivePrOwnerEvent(raw: unknown): void {
   if (!raw || typeof raw !== 'object') return;
@@ -479,15 +512,18 @@ export function receivePrOwnerEvent(raw: unknown): void {
   const workspaceId = str(r.workspaceId);
   const url = str(r.url);
   const headSha = typeof r.headSha === 'string' && /^[0-9a-f]{7,64}$/i.test(r.headSha) ? r.headSha : undefined;
+  const episode = typeof r.episode === 'string' && /^[\w:.#+-]{1,80}$/.test(r.episode) ? r.episode : undefined;
   const seq = r.seq;
   if (!workspaceId || !url || !isPrNumber(r.prNumber) || !isPrOwnerKind(r.kind)) return;
   if (typeof seq !== 'number' || !Number.isFinite(seq)) return;
   const prNumber = r.prNumber;
   const kind = r.kind;
-  if (!prWakeEnabled(workspaceId)) return;
-  const dedup = `pr|${workspaceId}|${url}|${kind}|${headSha ?? `#${seq}`}`;
+  if (!prWakeEnabled(workspaceId, kind)) return;
+  // The occurrence (CI transition, review batch, conflict episode) is part of
+  // the key: fail → pass → fail on one head, or a second review batch, is a
+  // new event. Without either, the pointer's own seq stands in.
+  const dedup = `pr|${workspaceId}|${url}|${kind}|${headSha ?? ''}|${episode ?? (headSha ? '' : `#${seq}`)}`;
   if (seen.has(dedup)) return;
-  rememberSeen(dedup);
   const s = useStore.getState();
   const owner = resolvePrOwner(s.workspaces, s.surfaceAgent, workspaceId, url);
   if (!owner) return; // no single agent pane owns it: main's coalescer path keeps the event
@@ -496,10 +532,15 @@ export function receivePrOwnerEvent(raw: unknown): void {
   const itemKey = `pr|${url}|${prOwnerSlot(kind)}`;
   const existing = t.pending.get(itemKey);
   if (existing?.type === 'pr') {
-    existing.kind = kind; // the newer answer wins (checks passed after CI failed)
+    // The newer answer wins (checks passed after CI failed) — as a new object,
+    // so a line already in flight with the old one does not consume it.
+    replaceItem(t, itemKey, { ...existing, kind, createdAt: Date.now() });
   } else {
     addItem(t, itemKey, { type: 'pr', prNumber, url, kind, createdAt: Date.now(), incarnation: undefined });
   }
+  // Consumed only now that it is queued: an owner that did not resolve
+  // leaves the key free.
+  rememberSeen(dedup);
   if (!t.inFlight) evaluate(key, t);
 }
 

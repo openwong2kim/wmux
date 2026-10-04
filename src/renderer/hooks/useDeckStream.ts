@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useStore } from '../stores';
 import { receiveFanoutCallerEvent, receivePrOwnerEvent } from './fanoutCallerNudge';
+import { showPrWakeNoticeOnce } from './prWakeNotice';
 
 // ─── Command Deck Phase 2 — Commander brain stream bridge ────────────────────
 //
@@ -36,6 +37,7 @@ export function useDeckStream(): void {
     const offFanoutCaller = api.onFanoutCaller?.((ev) => receiveFanoutCallerEvent(ev));
     // A PR event of a brain-less workspace: nudge the pane that owns the PR.
     const offPrOwner = api.onPrOwner?.((ev) => receivePrOwnerEvent(ev));
+    showPrWakeNoticeOnce();
     // …and hydrate from main's snapshot, because every push that landed
     // before this subscription existed (app start, a renderer reload) is
     // simply gone. Main is the authority; a failed call just leaves the deck

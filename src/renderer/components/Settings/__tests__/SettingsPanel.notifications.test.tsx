@@ -322,7 +322,27 @@ describe('NotificationsView — wake the agent on PR events', () => {
     expect(html.match(/id="workspace-pr-wake-ws-3"[^>]*checked/)).not.toBeNull();
   });
 
-  it('is absent without a handler or without workspaces', () => {
+  it('checks passed is its own checkbox: off by default, disabled while the workspace is off', () => {
+    const workspaces = [
+      { ...workspaceRow('ws-1', 'Workspace 1'), prWake: true },
+      { ...workspaceRow('ws-2', 'Workspace 2'), prWake: true, prWakeChecksPassed: true },
+      { ...workspaceRow('ws-3', 'Workspace 3'), prWake: false, prWakeChecksPassed: true },
+    ];
+    const html = renderToStaticMarkup(
+      createElement(NotificationsView, makeProps({
+        workspaces,
+        onChangeWorkspacePrWake: () => undefined,
+        onChangeWorkspacePrWakeChecksPassed: () => undefined,
+      })),
+    );
+    const tag = (id: string) => html.match(new RegExp(`<input[^>]*id="workspace-pr-wake-passed-${id}"[^>]*>`))?.[0] ?? '';
+    expect(tag('ws-1')).not.toMatch(/checked/);
+    expect(tag('ws-2')).toMatch(/checked/);
+    expect(tag('ws-3')).toMatch(/disabled/);
+    expect(tag('ws-3')).not.toMatch(/checked/);
+  });
+
+    it('is absent without a handler or without workspaces', () => {
     expect(renderToStaticMarkup(createElement(NotificationsView, makeProps({ workspaces: [workspaceRow('ws-1', 'W')] })))).not.toContain(
       'per-workspace-pr-wake-section',
     );

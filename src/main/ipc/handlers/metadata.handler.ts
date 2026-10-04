@@ -29,7 +29,16 @@ let prReviewRouter: PrReviewRouter | null = null;
 // The PR each pane's checkout showed on the last poll tick. The PR owner
 // nudge re-checks it right before a write (main/deck/fanoutCallerSubmit.ts):
 // a pane that has since moved to another branch is not told about the old PR.
+// A cwd or branch change drops the proof at once and bumps the pane's
+// generation, so a poll lookup that started before the change cannot put the
+// old PR back when it lands.
 const prByPty = new Map<string, { number: number; url: string }>();
+const prGeneration = new Map<string, number>();
+
+function invalidatePrProof(ptyId: string): void {
+  prByPty.delete(ptyId);
+  prGeneration.set(ptyId, (prGeneration.get(ptyId) ?? 0) + 1);
+}
 
 /** The PR the pane's checkout showed on the last poll tick, or null. */
 export function currentPrOfPty(ptyId: string): { number: number; url: string } | null {
@@ -234,6 +243,17 @@ export function resetMetadataPollCache(): void {
 }
 
 /**
+ * Reset the poll cache whenever `win` (re)loads its renderer. A reloaded
+ * renderer starts with empty per-pane state, and the poll only re-sends
+ * changed payloads: without this, only the active pane's metadata came back
+ * (the renderer pulls that one itself), and the PR owner nudge could not
+ * address any other pane's PR until its payload happened to change.
+ */
+export function resetPollCacheOnRendererLoad(win: Pick<BrowserWindow, 'webContents'>): void {
+  win.webContents.on('did-finish-load', resetMetadataPollCache);
+}
+
+/**
  * One tick of the metadata poll. Exported for unit tests; production calls it
  * from the 5 s interval in registerMetadataHandlers.
  */
@@ -266,12 +286,15 @@ export async function runMetadataPollTick(
       } catch { /* not available on macOS without /proc */ }
     }
 
+    const generation = prGeneration.get(ptyId) ?? 0;
     const payload = await buildMetadataPayload(ptyId);
     if (!payload) continue;
-    if (payload.pr && typeof payload.pr.number === 'number' && payload.pr.url) {
-      prByPty.set(ptyId, { number: payload.pr.number, url: payload.pr.url });
-    } else {
-      prByPty.delete(ptyId);
+    if ((prGeneration.get(ptyId) ?? 0) === generation) {
+      if (payload.pr && typeof payload.pr.number === 'number' && payload.pr.url) {
+        prByPty.set(ptyId, { number: payload.pr.number, url: payload.pr.url });
+      } else {
+        prByPty.delete(ptyId);
+      }
     }
     // AO-style CI + review feedback: fire-and-forget — both routers are
     // edge/watermark-triggered and never throw, so they must not gate the
@@ -317,8 +340,15 @@ export function registerMetadataHandlers(
   };
   // Every PR sink also tells the pane that owns the PR when its workspace has
   // no brain (main/deck/prOwnerNotify.ts) — the bus events stay as they were.
-  const toOwner = (kind: Parameters<typeof publishPrOwnerEvent>[0]['kind'], e: { workspaceId: string; prNumber: number; url: string; headSha?: string }): void =>
-    publishPrOwnerEvent({ workspaceId: e.workspaceId, prNumber: e.prNumber, url: e.url, kind, ...(e.headSha ? { headSha: e.headSha } : {}) });
+  const toOwner = (
+    kind: Parameters<typeof publishPrOwnerEvent>[0]['kind'],
+    e: { workspaceId: string; prNumber: number; url: string; headSha?: string; episode?: string },
+  ): void =>
+    publishPrOwnerEvent({
+      workspaceId: e.workspaceId, prNumber: e.prNumber, url: e.url, kind,
+      ...(e.headSha ? { headSha: e.headSha } : {}),
+      ...(e.episode ? { episode: e.episode } : {}),
+    });
   prCiRouter = new PrCiRouter(
     resolvePtyWorkspace,
     (e) => {
@@ -474,6 +504,7 @@ export function registerMetadataHandlers(
 }
 
 export function updateCwd(ptyId: string, cwd: string): void {
+  if (cwdMap.get(ptyId) !== cwd) invalidatePrProof(ptyId);
   cwdMap.set(ptyId, cwd);
   for (const listener of cwdListeners) {
     try { listener(ptyId, cwd); } catch { /* listener errors must not break PTY flow */ }
@@ -483,14 +514,16 @@ export function updateCwd(ptyId: string, cwd: string): void {
 export function removeCwd(ptyId: string): void {
   cwdMap.delete(ptyId);
   prCiRouter?.forget(ptyId);
-  prByPty.delete(ptyId);
+  invalidatePrProof(ptyId);
 }
 
 export function updateBranch(ptyId: string, branch: string): void {
+  if (branchMap.get(ptyId) !== branch) invalidatePrProof(ptyId);
   branchMap.set(ptyId, branch);
 }
 
 export function removeBranch(ptyId: string): void {
+  if (branchMap.has(ptyId)) invalidatePrProof(ptyId);
   branchMap.delete(ptyId);
 }
 

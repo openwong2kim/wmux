@@ -134,6 +134,7 @@ export interface WorkspaceMuteRow {
   name: string;
   notificationsMuted: boolean;
   wakeOnPrEvents: boolean;
+  wakeOnPrChecksPassed: boolean;
 }
 
 export const selectWorkspaceMuteRows = makeCachedListProjection<WorkspaceMuteRow>(
@@ -142,6 +143,8 @@ export const selectWorkspaceMuteRows = makeCachedListProjection<WorkspaceMuteRow
     name: w.name,
     notificationsMuted: w.metadata?.notificationsMuted ?? false,
     wakeOnPrEvents: w.metadata?.wakeOnPrEvents !== false,
+    wakeOnPrChecksPassed: w.metadata?.wakeOnPrChecksPassed === true,
   }),
-  (a, b) => a.name === b.name && a.notificationsMuted === b.notificationsMuted && a.wakeOnPrEvents === b.wakeOnPrEvents,
+  (a, b) => a.name === b.name && a.notificationsMuted === b.notificationsMuted
+    && a.wakeOnPrEvents === b.wakeOnPrEvents && a.wakeOnPrChecksPassed === b.wakeOnPrChecksPassed,
 );

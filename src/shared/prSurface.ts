@@ -31,8 +31,10 @@ export interface PrComment {
   readonly reviewState: string;
   /** 본문이 캡(PR_COMMENT_BODY_CAP)에서 절단됐는가 — UI가 "브라우저에서 보기" 유도. */
   readonly truncated: boolean;
-  /** Set when the host says the author is a bot (REST `user.type`). */
-  readonly isBot?: true;
+  /** The host's account type for the author, when it said: REST `user.type`
+   *  for inline comments, GraphQL `__typename` for the rest. Absent = unknown
+   *  (the PR owner nudge never wakes on an unknown author). */
+  readonly authorType?: 'Bot' | 'User';
 }
 
 export interface PrDetail {

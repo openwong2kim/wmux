@@ -1068,6 +1068,8 @@ const electronAPI = {
       ownerWorkspaceId: string;
       incarnationId: string;
       text: string;
+      /** The PRs the line names, with the url the owner was resolved by. */
+      prs?: { number: number; url: string }[];
     }) =>
       ipcRenderer.invoke(IPC.DECK_FANOUT_CALLER_SUBMIT, payload) as Promise<
         import('../main/deck/fanoutCallerSubmit').FanoutCallerSubmitReply

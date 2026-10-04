@@ -28,6 +28,9 @@ export interface PrOwnerEvent {
   url: string;
   kind: PrOwnerKind;
   headSha?: string;
+  /** Which occurrence of this kind on this head: the CI transition, the
+   *  review batch (newest comment time + count), the conflict episode. */
+  episode?: string;
   /** Process-local order, the dedup fallback when there is no head commit. */
   seq: number;
 }
@@ -40,6 +43,8 @@ export interface PrOwnerPorts {
   /** Hand the pointer to the renderer; false when there is none. */
   send: (ev: PrOwnerEvent) => boolean;
 }
+
+const EPISODE = /^[\w:.#+-]{1,80}$/;
 
 type Sink = (ev: Omit<PrOwnerEvent, 'seq'>) => void;
 let sink: Sink | null = null;
@@ -71,6 +76,7 @@ export function notifyPrOwner(ev: Omit<PrOwnerEvent, 'seq'>, ports: PrOwnerPorts
       url: ev.url,
       kind: ev.kind,
       ...(typeof ev.headSha === 'string' && /^[0-9a-f]{7,64}$/i.test(ev.headSha) ? { headSha: ev.headSha } : {}),
+      ...(typeof ev.episode === 'string' && EPISODE.test(ev.episode) ? { episode: ev.episode } : {}),
       seq: ++seq,
     });
   } catch (err) {

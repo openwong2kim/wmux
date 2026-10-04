@@ -39,8 +39,13 @@ function agent(ptyId = PTY, status: 'waiting' | 'running' = 'waiting'): void {
   useStore.getState().hydrateCommandRunning({ ...useStore.getState().commandRunningByPtyId, [ptyId]: true });
 }
 
+let episode = 0;
 function prEvent(kind: string, over: Record<string, unknown> = {}) {
-  return { workspaceId: WS, prNumber: 123, url: URL, kind, headSha: 'aaaa1111', seq: Math.random(), ...over };
+  return { workspaceId: WS, prNumber: 123, url: URL, kind, headSha: 'aaaa1111', episode: `e${++episode}`, seq: Math.random(), ...over };
+}
+
+function setMeta(metadata: Workspace['metadata']): void {
+  useStore.setState({ workspaces: [ws(WS, leaf('pane-a', [surface('surf-a', PTY)]), metadata)] });
 }
 
 async function windowElapses(): Promise<void> {
@@ -74,9 +79,21 @@ describe('PR owner nudge', () => {
     ['pr.review_comment', '[wmux] PR #123: new review comment — gh pr view 123 --comments'],
     ['pr.checks_passed', '[wmux] PR #123: checks passed, ready for review — gh pr view 123'],
   ])('%s → one line to the pane whose checkout is the PR', async (kind, line) => {
+    setMeta({ wakeOnPrChecksPassed: true });
     receivePrOwnerEvent(prEvent(kind));
     await windowElapses();
-    expect(calls()).toEqual([{ ptyId: PTY, ownerWorkspaceId: WS, incarnationId: 'inc-1', text: line }]);
+    expect(calls()).toEqual([
+      { ptyId: PTY, ownerWorkspaceId: WS, incarnationId: 'inc-1', text: line, prs: [{ number: 123, url: URL }] },
+    ]);
+  });
+
+  it('checks passed is off by default, and only it', async () => {
+    receivePrOwnerEvent(prEvent('pr.checks_passed'));
+    await windowElapses();
+    expect(submit).not.toHaveBeenCalled();
+    receivePrOwnerEvent(prEvent('pr.ci_failed'));
+    await windowElapses();
+    expect(submit).toHaveBeenCalledTimes(1);
   });
 
   it('never carries external text: extra pointer fields are not read, the line is the template', async () => {
@@ -133,15 +150,89 @@ describe('PR owner nudge', () => {
     expect(submit).not.toHaveBeenCalled();
   });
 
-  it('dedups per (PR, kind, head commit)', async () => {
-    receivePrOwnerEvent(prEvent('pr.ci_failed'));
+  it('dedups per (PR, kind, head commit, occurrence)', async () => {
+    receivePrOwnerEvent(prEvent('pr.ci_failed', { episode: 'ci-1' }));
     await windowElapses();
-    receivePrOwnerEvent(prEvent('pr.ci_failed'));
+    receivePrOwnerEvent(prEvent('pr.ci_failed', { episode: 'ci-1' }));
     await windowElapses();
     expect(submit).toHaveBeenCalledTimes(1);
-    receivePrOwnerEvent(prEvent('pr.ci_failed', { headSha: 'cccc3333' }));
+    receivePrOwnerEvent(prEvent('pr.ci_failed', { headSha: 'cccc3333', episode: 'ci-1' }));
     await windowElapses();
     expect(submit).toHaveBeenCalledTimes(2);
+  });
+
+  it('fail, pass, fail on one head delivers the last failure', async () => {
+    setMeta({ wakeOnPrChecksPassed: true });
+    receivePrOwnerEvent(prEvent('pr.ci_failed', { episode: 'ci-1' }));
+    await windowElapses();
+    receivePrOwnerEvent(prEvent('pr.checks_passed', { episode: 'ci-2' }));
+    await windowElapses();
+    receivePrOwnerEvent(prEvent('pr.ci_failed', { episode: 'ci-3' }));
+    await windowElapses();
+    expect(calls().map((c) => c.text)).toEqual([
+      '[wmux] PR #123: CI failed — gh pr checks 123',
+      '[wmux] PR #123: checks passed, ready for review — gh pr view 123',
+      '[wmux] PR #123: CI failed — gh pr checks 123',
+    ]);
+  });
+
+  it('a second review batch on the same head is delivered', async () => {
+    receivePrOwnerEvent(prEvent('pr.review_comment', { episode: '2026-07-02T00:00:00Z#2' }));
+    await windowElapses();
+    receivePrOwnerEvent(prEvent('pr.review_comment', { episode: '2026-07-03T00:00:00Z#3' }));
+    await windowElapses();
+    expect(submit).toHaveBeenCalledTimes(2);
+  });
+
+  it('a pointer that arrives while a line is in flight is kept and sent next', async () => {
+    let release: (v: { result: string; pasted: boolean }) => void = () => undefined;
+    submit.mockImplementationOnce(() => new Promise((r) => { release = r; }));
+    setMeta({ wakeOnPrChecksPassed: true });
+    receivePrOwnerEvent(prEvent('pr.ci_failed'));
+    await windowElapses(); // the CI-failed line is now in flight
+    expect(submit).toHaveBeenCalledTimes(1);
+    receivePrOwnerEvent(prEvent('pr.checks_passed')); // same slot, during the flight
+    release({ result: 'sent', pasted: true });
+    await windowElapses();
+    expect(calls().map((c) => c.text)).toEqual([
+      '[wmux] PR #123: CI failed — gh pr checks 123',
+      '[wmux] PR #123: checks passed, ready for review — gh pr view 123',
+    ]);
+  });
+
+  it('an event whose owner did not resolve is not consumed: the same event later is delivered', async () => {
+    notePanePr(PTY, null);
+    const ev = prEvent('pr.ci_failed');
+    receivePrOwnerEvent(ev);
+    await windowElapses();
+    expect(submit).not.toHaveBeenCalled();
+    notePanePr(PTY, { url: URL });
+    receivePrOwnerEvent(ev);
+    await windowElapses();
+    expect(submit).toHaveBeenCalledTimes(1);
+  });
+
+  it('when main says the PR changed, only the PR clauses go; the fan-out pointer is sent again', async () => {
+    submit.mockImplementationOnce(async () => ({ result: 'pr_changed', pasted: false }));
+    agent(PTY, 'running');
+    receivePrOwnerEvent(prEvent('pr.ci_failed'));
+    receiveFanoutCallerEvent({
+      ownerWorkspaceId: WS,
+      taskWorkspaceId: 'ws-t',
+      taskId: 'wtask-x-aaaa1111',
+      kind: 'ledger.failed',
+      seq: 1,
+      origin: { paneId: 'pane-a', surfaceId: 'surf-a' },
+    });
+    await windowElapses();
+    agent(PTY, 'waiting');
+    noteFanoutCallerTurnEnd(PTY);
+    await sweepFanoutCallerNudges();
+    await windowElapses();
+    expect(calls().map((c) => c.text)).toEqual([
+      '[wmux] PR #123: CI failed — gh pr checks 123; fan-out task aaaa1111 failed — channel_mission_list',
+      '[wmux] fan-out task aaaa1111 failed — channel_mission_list',
+    ]);
   });
 
   it('the switch off for the workspace writes nothing', async () => {
@@ -174,6 +265,7 @@ describe('PR owner nudge', () => {
   });
 
   it('checks passed replaces a pending CI failure of the same PR', async () => {
+    setMeta({ wakeOnPrChecksPassed: true });
     agent(PTY, 'running');
     receivePrOwnerEvent(prEvent('pr.ci_failed'));
     receivePrOwnerEvent(prEvent('pr.checks_passed', { headSha: 'dddd4444' }));

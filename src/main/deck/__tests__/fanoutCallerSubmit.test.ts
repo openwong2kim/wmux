@@ -47,18 +47,46 @@ describe('createFanoutCallerSubmit', () => {
     }
   });
 
-  it('a PR owner line is written only while the pane still shows that PR', async () => {
+  it('a PR owner line is written only while the pane still shows that PR, number and url', async () => {
     const PR_LINE = '[wmux] PR #123: CI failed — gh pr checks 123';
-    const ok = make({ prOf: () => ({ number: 123 }) });
-    expect(await ok.api.submit({ ...REQ, text: PR_LINE })).toEqual({ result: 'sent', pasted: true });
+    const URL = 'https://github.com/o/r/pull/123';
+    const PR_REQ = { ...REQ, text: PR_LINE, prs: [{ number: 123, url: URL }] };
+    const ok = make({ prOf: () => ({ number: 123, url: URL }) });
+    expect(await ok.api.submit(PR_REQ)).toEqual({ result: 'sent', pasted: true });
     expect(ok.deliver).toHaveBeenCalledWith({ id: 'pty-c', agentSlug: 'claude', incarnationId: 'inc-1', prompt: PR_LINE });
-    for (const prOf of [() => ({ number: 7 }), () => null, undefined]) {
+    for (const prOf of [
+      () => ({ number: 7, url: URL }),
+      // Same number, another repo.
+      () => ({ number: 123, url: 'https://github.com/x/y/pull/123' }),
+      () => null,
+      undefined,
+    ]) {
       const { api, deliver } = make(prOf ? { prOf } : {});
-      expect(await api.submit({ ...REQ, text: PR_LINE })).toEqual({ result: 'gone', pasted: false });
+      expect(await api.submit(PR_REQ)).toEqual({ result: 'pr_changed', pasted: false });
       expect(deliver).not.toHaveBeenCalled();
     }
+    // A PR the line names but the request does not claim is refused outright.
+    expect(await make({ prOf: () => ({ number: 123, url: URL }) }).api.submit({ ...REQ, text: PR_LINE })).toEqual({
+      result: 'error',
+      pasted: false,
+    });
     // A fan-out-only line needs no PR.
     expect(await make().api.submit(REQ)).toEqual({ result: 'sent', pasted: true });
+  });
+
+  it('proves the PR after the last await: a branch switch during the agent check is caught', async () => {
+    const PR_LINE = '[wmux] PR #123: CI failed — gh pr checks 123';
+    const URL = 'https://github.com/o/r/pull/123';
+    let current: { number: number; url: string } | null = { number: 123, url: URL };
+    const { api, deliver } = make({
+      prOf: () => current,
+      agentState: async () => {
+        current = null; // the pane changed branch while this was in flight
+        return { agentName: 'Claude Code', agentVerified: true, incarnationId: 'inc-1' };
+      },
+    });
+    expect(await api.submit({ ...REQ, text: PR_LINE, prs: [{ number: 123, url: URL }] })).toEqual({ result: 'pr_changed', pasted: false });
+    expect(deliver).not.toHaveBeenCalled();
   });
 
     it('session answers only for a verified agent', async () => {
