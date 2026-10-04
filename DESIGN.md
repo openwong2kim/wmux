@@ -254,47 +254,69 @@ branch text in the titlebar. The sheet's full width with 28px sides, like
 Remote: the 20px title, the repo's name as a muted line, and a refresh
 button.
 
-- **Current-branch card** on top: the active workspace's branch in mono,
-  ahead/behind, uncommitted files `+N −M` with Diff, and the PR badge with
-  its CI state and Open PR. A `--selection-subtle` fill, no border. It trusts
-  the pushed git status only when that status is about this very worktree.
-- **Scope:** a segmented control, This repo (default, the active pane's
-  repo) or All repos (every open workspace grouped by repo, the active repo
-  first, each group headed by the repo name and its workspace count). Clones
-  of one remote are one group: one PR list, and each clone's worktrees under
-  its folder name. Only the active repo's PR or issue list is open and polls;
-  another repo's opens on demand and reads once.
-- **Pull requests | Issues | Worktrees:** the left column's header is a
-  disclosure chevron and two text tabs, **Pull requests | Issues**, the chosen
-  one on the neutral `--selection` fill; the choice is kept per viewer. Only
-  the chosen list is mounted, so only it reads and polls. Worktrees sit beside
-  it, stacking on a narrow sheet.
-- **Pull requests** expand to their comments.
-- **Issues** (GitHub only; another host says so): a filter select (All open,
-  Assigned to me, Created by me, With label + a label field), then rows of
-  mono `#N`, the title, up to three **neutral label chips** (`--selection`,
-  11px; GitHub's label colours are not drawn, since colour carries state
-  only), a comment count with a small glyph, and the age. A row is a button:
-  click or Enter opens its detail inline under it (author and age, assignees,
-  labels, the body and the comments in order through the app's text-only
-  markdown, a closed line, Open on GitHub). A row drags as an issue ref. On
-  GitHub's rate limit the list keeps its last answer under one muted line,
-  "GitHub rate limit, retrying at HH:MM".
-- **Worktrees:** one row per worktree: the branch in mono
-  over the workspaces on it (each a link that switches to it) or its folder,
-  the PR, the diff stat (green/red), the accent dot only on the active pane's
-  worktree, and Diff / Open / Merge / Remove floating over the faded right
-  edge on hover; then the new-worktree line and, while one runs, the merge
-  session. Anything that lands on a pane (Diff, Open, a workspace link)
-  returns to Workspaces.
+- **Branch bar** on top, one line: the active workspace's branch in mono,
+  ahead/behind, uncommitted files `+N −M`, the PR badge with its CI state,
+  then Diff, Go to terminal and the **ship button**. A `--selection-subtle`
+  fill, no border. It trusts the pushed git status only when that status is
+  about this very worktree.
+- **Ship button:** the one primary on the page. Its label is the branch's
+  next step: Commit (a message box; commits every change, new files
+  included), Push, Create PR (`gh pr create --fill` with an editable title)
+  or Open PR. A caret opens a menu with the other steps that can run now;
+  Open PR stays beside it while the next step is something else. A step that
+  cannot run is disabled with its reason in a muted line (a merge session,
+  a detached HEAD, no upstream, behind the upstream, the default branch).
+  Commit needs no upstream; Push and Create PR do. main re-checks each step.
+- **Tabs and scope:** text tabs **Pull requests · Issues · Worktrees** (the
+  active one carries the 2px accent bar) on the left of a hairline, and the
+  This repo / All repos segmented control on the right. All repos groups
+  every open workspace by repo (the active repo first; clones of one remote
+  are one group). Only the shown list of the active repo polls; another
+  repo's group opens on demand and reads once.
+- **List / detail:** Pull requests and Issues are a split, the list ~30%
+  and the detail the rest, each scrolling on its own (the page itself does
+  not scroll); stacked on a narrow sheet. A list row is two lines: mono
+  `#N` and the title, then a meta line. A PR's meta says **what it needs
+  next in words** (CI failing, Conflicts with base, Changes requested, CI
+  running, Review requested, Approved, mergeable, Draft …), red only for a
+  failing check or a conflict, beside the checks dot, the author and the age.
+  An issue's meta has up to three **neutral label chips** (`--selection`,
+  11px; GitHub's label colours are not drawn), a comment count and the age.
+  The selected row wears `--selection`. Over each list, "Updated Xm ago";
+  when a read fails the last list stays under "Could not refresh … Retry";
+  on GitHub's rate limit, "GitHub rate limit, retrying at HH:MM". Issues add
+  a filter select (All open, Assigned to me, Created by me, With label).
+  An issue row drags as an issue ref.
+- **Detail:** a sticky header (the title at 16px, then `#N`, the repo, the
+  state in words and the author; Open on GitHub on the right, with an empty
+  slot kept for who acts next) over the body: for a PR its branch, review
+  and checks, then the comments; for an issue its labels, assignees, body,
+  comments in order and a closed line. Bodies go through the app's
+  text-only markdown: real http(s) links (opened in the browser), read-only
+  task boxes, blockquotes and tables; never GitHub's HTML. Nothing selected
+  is one quiet line.
+- **Worktrees tab:** the new-worktree line and, while one runs, the merge
+  session on top, then the worktrees in three groups: **In use** (a
+  workspace on it), **No workspace**, and **Cleanup candidates** (no
+  workspace, and detached, prunable or no commits in 14 days), captioned as
+  something to check before removing, never as safe to delete. The main
+  worktree and a merge session's worktree are never candidates. One row per
+  worktree: the branch in mono over the workspaces on it (each a link that
+  switches to it) or its folder, the PR, the diff stat (green/red), the
+  accent dot only on the active pane's worktree, and Diff / Open / Merge /
+  Remove floating over the faded right edge on hover.
+- **Remembered:** scope, tab, issue filter, selected item and list scroll
+  live in the UI store and survive leaving the page; the tab is also kept
+  per viewer across restarts. Anything that lands on a pane (Diff, Open, Go
+  to terminal, a workspace link) returns to Workspaces.
 - **Not connected:** signed out for a GitHub remote, the Pull requests or
   Issues list says so with one primary, Connect GitHub, which opens a terminal tab
   running `gh auth login --web` (or shows the command to copy when no tab can
   show it, e.g. a WSL default shell on Windows), and Check again. gh not
   installed shows how to get it and Check again only. gh keeps the
   credential; wmux stores no token.
-- **Cost:** pull-only and only while the page is shown. The PR or issue list
-  polls every 30s while it is open on this page and the window is visible.
+- **Cost:** pull-only and only while the page is shown. The shown PR or
+  issue list polls every 30s while the window is visible.
 - **Rail dot:** a red dot on the Git icon while an open workspace's open or
   draft PR fails its checks or conflicts with its base (pushed PR status
   only, never a saved one); the button's name says why. Nothing at zero.
@@ -592,6 +614,7 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-10-03 | Owner decision: Git moves from the tools panel to a collapsible section at the foot of the sidebar; the Git tab's worktrees and the Review list's workspaces become one row per worktree. The deck keeps Orchestrator (and the opt-in Channels). The titlebar toggle's dot no longer counts dirty worktrees. | Git is about the active workspace's repo, so it belongs beside the workspace list; the deck stays the agent's surface. Capping the section at 45% keeps the list usable, and a folded section reads nothing. The dot would have pointed into a panel that no longer shows worktrees. |
 | 2026-10-03 | Owner decision (supersedes the same-day sidebar row above): Git is a rail page below Remote, not a sidebar section — the current-branch card, a This repo / All repos scope, then Pull requests and Worktrees. The titlebar branch text opens it; the rail icon carries a red dot for failing checks or a conflicting PR; signing in to GitHub goes through `gh auth login --web`. | A page has the room the sidebar did not, keeps the workspace list whole, and puts every repo in one place. gh owns the credential, so wmux never handles a token. |
 | 2026-10-04 | Git page left column = **Pull requests \| Issues** text tabs under one disclosure (choice kept per viewer); issues filter by all / assigned / created / label, open inline, and draw labels as neutral chips | Issues belong next to PRs on the same repo, not on another page; one mounted list keeps the polling cost of #1742. GitHub label colours would be colour without state, so the chips stay neutral |
+| 2026-10-04 | Git page v2 (supersedes the row above): a one-line branch bar with one ship button (Commit → Push → Create PR → Open PR), Pull requests · Issues · Worktrees as tabs, PRs and issues as a list/detail split with a sticky detail header, worktrees grouped (in use / no workspace / cleanup candidates), view state in the UI store | The inline accordion buried long bodies and tables in a half-width column; a fixed split gives the detail the room. Worktrees were most of the screen on a busy repo but rarely the task. One primary that names the next step replaces reading four indicators to decide what to do. Cleanup candidates are worded as a check, not a verdict, because a quiet branch can still hold unpushed work |
 
 ### Desktop conversation view
 
