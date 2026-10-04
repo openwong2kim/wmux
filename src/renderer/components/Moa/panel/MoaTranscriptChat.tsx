@@ -18,9 +18,17 @@ import { useComposerDraft } from '../../Chat/chatDrafts';
 import Button from '../../ui/Button';
 import { NEEDS_YOU_ROW } from './MoaWaitingOnYou';
 import type { ChatBridgeApi } from '../../../../shared/transcript/turnEvents';
+import type { MoaApproval } from '../../../../shared/moa';
 
 /** The preload's `deck.moa.transcript` (main reads the HQ brain; no pty id). */
 export type MoaTranscriptApi = NonNullable<NonNullable<NonNullable<Window['electronAPI']>['deck']>['moa']>['transcript'];
+
+type MoaPreload = NonNullable<NonNullable<NonNullable<Window['electronAPI']>['deck']>['moa']>;
+/** The preload's Moa prompt calls (#1772): read, answer, and main's change signal. */
+export type MoaApprovalApi = Pick<MoaPreload, 'approval' | 'approvalAnswer'> & Partial<Pick<MoaPreload, 'onChanged'>>;
+
+/** While Moa waits on its prompt: how often its record is read again (it trails the hook by ~1 s). */
+const APPROVAL_POLL_MS = 2_000;
 
 /**
  * deck.moa.transcript in the shape useTranscript reads. Keyed by the brain's
@@ -82,13 +90,16 @@ export interface MoaTranscriptChatProps {
   onTerminal: () => void;
   /** Injected in tests; defaults to the preload. */
   api?: MoaTranscriptApi;
+  /** Injected in tests; defaults to the preload. */
+  approvalApi?: MoaApprovalApi;
 }
 
 interface Pending { id: string; text: string; before: ReadonlySet<string> }
 
-export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, onTerminal, api }: MoaTranscriptChatProps) {
+export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, onTerminal, api, approvalApi }: MoaTranscriptChatProps) {
   const t = useT();
   const source = api ?? window.electronAPI?.deck?.moa?.transcript;
+  const prompts = approvalApi ?? window.electronAPI?.deck?.moa;
   const bridge = useMemo(
     () => (source ? moaTranscriptBridge(ptyId, source, window.electronAPI?.chat, t('moa.panel.instructionsSent')) : undefined),
     [ptyId, source, t],
@@ -141,6 +152,43 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
   // Main's appends carry no status on this path, so `agentStatus` refreshes
   // on useTranscript's 5 s poll: the hint can trail the prompt by up to ~5 s.
   const awaitingTerminal = data.status.agentStatus === 'awaiting_input' || (data.blocked && data.status.available && !data.loading && !data.error);
+
+  // Moa's own permission prompt as an approval record (#1772): its question
+  // and choices in the row, answered through the daemon's fences. Read again
+  // on main's change signal, on every status poll, and every 2 s while the row
+  // is up (the record lands about a second after the dialog).
+  const [approval, setApproval] = useState<MoaApproval | null>(null);
+  const [answering, setAnswering] = useState(false);
+  const [approvalNotice, setApprovalNotice] = useState<{ kind: 'retry' | 'error' } | null>(null);
+  const readApproval = useCallback(async () => {
+    if (!prompts?.approval) return;
+    const read = await prompts.approval().catch(() => null);
+    const next = read?.approval ?? null;
+    setApproval((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
+    if (!next) setApprovalNotice(null);
+  }, [prompts]);
+  useEffect(() => { void readApproval(); }, [readApproval, data.status, awaitingTerminal]);
+  useEffect(() => prompts?.onChanged?.(() => { void readApproval(); }), [prompts, readApproval]);
+  const showPrompt = awaitingTerminal || approval !== null;
+  useEffect(() => {
+    if (!showPrompt) return;
+    const timer = setInterval(() => { void readApproval(); }, APPROVAL_POLL_MS);
+    return () => clearInterval(timer);
+  }, [showPrompt, readApproval]);
+  const answerApproval = useCallback(async (choiceKey: string) => {
+    if (!approval?.promptFingerprint || !prompts?.approvalAnswer) return;
+    setAnswering(true);
+    try {
+      const result = await prompts.approvalAnswer({ approvalId: approval.id, choiceKey, promptFingerprint: approval.promptFingerprint })
+        .catch(() => ({ ok: false as const, code: 'error' as const }));
+      // Answered or gone elsewhere: the card leaves quietly with the next read.
+      if (result.ok || result.code === 'not_pending') setApprovalNotice(null);
+      else setApprovalNotice({ kind: result.code === 'answer_too_soon' ? 'retry' : 'error' });
+    } finally {
+      setAnswering(false);
+      void readApproval();
+    }
+  }, [approval, prompts, readApproval]);
   const empty = messages.length === 0 && pending.length === 0;
   return (
     <ChatPtyContext.Provider value={ptyId}>
@@ -183,10 +231,32 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
               {/* A dialog only the TUI shows holds the turn (and so the
                   composer): this is the one way forward, drawn as a
                   needs-you row with the action, not a footnote. */}
-              {awaitingTerminal && (
-                <div className={`${NEEDS_YOU_ROW} mx-3 my-1.5 flex items-center gap-2 text-[13px] text-[var(--text-main)]`} role="status" data-moa-chat-terminal-hint>
-                  <span className="flex-1 min-w-0">{t('moa.panel.terminalHint')}</span>
-                  <Button variant="secondary" size="sm" onClick={onTerminal} data-moa-chat-answer-in-terminal>{t('moa.panel.answerInTerminal')}</Button>
+              {showPrompt && (
+                <div className={`${NEEDS_YOU_ROW} mx-3 my-1.5 flex flex-col gap-2 text-[13px] text-[var(--text-main)]`} role="status" data-moa-chat-terminal-hint>
+                  {approval ? (
+                    <div className="min-w-0 flex flex-col gap-1" data-moa-chat-approval={approval.id}>
+                      <span className="font-medium">{approval.question ?? t('moa.panel.approvalTitle', { tool: approval.toolName ?? '' })}</span>
+                      {approval.toolName && approval.question && <span className="text-[12px] text-[var(--text-sub)]">{approval.toolName}</span>}
+                      {approval.summary && <code className="font-mono text-[12px] text-[var(--text-sub)] break-all whitespace-pre-wrap" data-moa-chat-approval-summary>{approval.summary}</code>}
+                      {approval.answered && <span className="text-[12px] text-[var(--text-sub)]" data-moa-chat-approval-answered>{t('moa.panel.approvalAnswered')}</span>}
+                    </div>
+                  ) : (
+                    <span className="min-w-0">{t('moa.panel.terminalHint')}</span>
+                  )}
+                  <div className="flex flex-wrap items-center gap-2">
+                    {approval?.answerable && approval.choices?.map((choice) => (
+                      <Button key={choice.key} variant="secondary" size="sm" disabled={answering}
+                        onClick={() => { void answerApproval(choice.key); }} data-moa-chat-approval-choice={choice.key}>
+                        {choice.label}
+                      </Button>
+                    ))}
+                    <Button variant="secondary" size="sm" onClick={onTerminal} data-moa-chat-answer-in-terminal>{t('moa.panel.answerInTerminal')}</Button>
+                  </div>
+                  {approvalNotice && (
+                    <span className={`text-[12px] ${approvalNotice.kind === 'error' ? 'text-[var(--accent-red)]' : 'text-[var(--text-sub)]'}`} role="alert" data-moa-chat-approval-notice={approvalNotice.kind}>
+                      {t(approvalNotice.kind === 'retry' ? 'moa.panel.approvalTooSoon' : 'moa.panel.approvalFailed')}
+                    </span>
+                  )}
                 </div>
               )}
               {data.error && !empty && (

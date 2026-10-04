@@ -148,8 +148,9 @@ import {
 } from '../../deck/deckDecisionStore';
 import { startMoaIssueProposals } from '../../deck/moaIssueProposalsHost';
 import { MoaTranscript, type MoaTranscriptHint } from '../../deck/moaTranscript';
+import { answerMoaApproval, readMoaApproval } from '../../deck/moaApproval';
 import { getAccountStore } from '../../account/accountStore';
-import type { MoaPendingDecision } from '../../../shared/moa';
+import type { MoaApproval, MoaApprovalAnswerResult, MoaPendingDecision } from '../../../shared/moa';
 import {
   beginOrContinueDeckWork,
   clearActiveDeckWork,
@@ -2522,6 +2523,23 @@ export function registerDeckHandler(
     }),
   );
 
+  // Moa's own permission prompt (#1772): read and answered from the Moa chat.
+  // The daemon RPCs behind these are reached from here only — never from the
+  // pipe router, an MCP tool or the CLI (see moaApproval.ts).
+  ipcMain.removeHandler(IPC.DECK_MOA_APPROVAL);
+  ipcMain.handle(
+    IPC.DECK_MOA_APPROVAL,
+    wrapHandler(IPC.DECK_MOA_APPROVAL, async (): Promise<{ approval: MoaApproval | null }> => ({
+      approval: await readMoaApproval(opts.getDaemonClient?.() ?? null),
+    })),
+  );
+  ipcMain.removeHandler(IPC.DECK_MOA_APPROVAL_ANSWER);
+  ipcMain.handle(
+    IPC.DECK_MOA_APPROVAL_ANSWER,
+    wrapHandler(IPC.DECK_MOA_APPROVAL_ANSWER, async (_event: Electron.IpcMainInvokeEvent, args: unknown): Promise<MoaApprovalAnswerResult> =>
+      answerMoaApproval(opts.getDaemonClient?.() ?? null, args)),
+  );
+
   // WMX-06: startup reconcile of orphan Deck state once renderer workspace mirror is loaded.
   // Retries a bounded number of times (max 5 retries at 2.5s intervals) and on heartbeat tick.
   // Armed by startRuntime, with the master switch.
@@ -3540,6 +3558,8 @@ export function registerDeckHandler(
     ipcMain.removeHandler(IPC.DECK_MOA_TRANSCRIPT_SUBSCRIBE);
     ipcMain.removeHandler(IPC.DECK_MOA_TRANSCRIPT_UNSUBSCRIBE);
     ipcMain.removeHandler(IPC.DECK_MOA_TRANSCRIPT_CODEBLOCK);
+    ipcMain.removeHandler(IPC.DECK_MOA_APPROVAL);
+    ipcMain.removeHandler(IPC.DECK_MOA_APPROVAL_ANSWER);
     ipcMain.removeHandler(IPC.DECK_HQ_GET);
     ipcMain.removeHandler(IPC.DECK_MOA_GET);
     ipcMain.removeHandler(IPC.DECK_MOA_SET);

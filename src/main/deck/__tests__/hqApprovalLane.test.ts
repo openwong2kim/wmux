@@ -161,6 +161,14 @@ describe('approval.press — the HQ branch', () => {
     expect(resolves()).toEqual([]);
   });
 
+  it("refuses the HQ token on Moa's own terminal_prompt record (#1772), approve or deny", async () => {
+    pending = [{ id: 'ap-moa', sessionId: 'brain-ws-hq', workspaceId: 'ws-hq', kind: 'terminal_prompt', attribution: 'exact' }];
+    for (const decision of ['deny', 'approve']) {
+      expect(await press({ approvalId: 'ap-moa', decision }, as('ws-hq'))).toMatchObject({ ok: false, reason: 'hq-own-pane' });
+    }
+    expect(resolves()).toEqual([]);
+  });
+
   // The token outlives the designation: the HQ is re-read on every call.
   it('refuses a token minted for the previous HQ after a switch', async () => {
     world.hq = 'ws-new-hq';
@@ -290,6 +298,19 @@ describe('createHqAutoPress — pressing by rule', () => {
       { id: 'ap-hq-ws', sessionId: 'pty-x', workspaceId: 'ws-hq', kind: 'awaiting_permission', attribution: 'exact' },
       { id: 'ap-brain', sessionId: 'brain-ws-hq', workspaceId: 'ws-task', kind: 'awaiting_permission', attribution: 'exact' },
     ];
+    await lane().run();
+    expect(resolves()).toEqual([]);
+  });
+
+  // #1772 — the record Moa's own dialog now raises: a `terminal_prompt` on
+  // the HQ brain pane. Neither the rule lane nor the HQ token touches it.
+  it("never presses Moa's own terminal_prompt record by rule", async () => {
+    world.rows.push({ taskWorkspaceId: 'ws-hq', ownerWorkspaceId: 'ws-own', status: 'working' });
+    pending = [{ id: 'ap-moa', sessionId: 'brain-ws-hq', workspaceId: 'ws-hq', kind: 'terminal_prompt', attribution: 'exact' }];
+    await lane().run();
+    expect(resolves()).toEqual([]);
+    // Even shaped like a gate, the HQ brain pane is the HQ's own.
+    pending = [{ id: 'ap-moa', sessionId: 'brain-ws-hq', workspaceId: 'ws-hq', kind: 'awaiting_permission', attribution: 'exact' }];
     await lane().run();
     expect(resolves()).toEqual([]);
   });

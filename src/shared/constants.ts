@@ -369,6 +369,15 @@ export const IPC = {
   //   CODEBLOCK (invoke { srcOffset, n, eventId? }): one code-block body from
   //   the HQ brain's transcript (the daemon cannot resolve the brain pty).
   DECK_MOA_TRANSCRIPT_CODEBLOCK: 'deck:moa:transcript:codeblock',
+  //   DECK_MOA_APPROVAL — Moa's own permission prompt (#1772): the daemon's
+  //   pending `terminal_prompt` record for the HQ brain pane, or null
+  //   ({ approval: MoaApproval | null }). DECK_MOA_APPROVAL_ANSWER
+  //   { approvalId, choiceKey, promptFingerprint } presses one of its choices
+  //   (MoaApprovalAnswerResult). Renderer-only: the daemon RPCs behind them
+  //   (daemon.moa.prompt / daemon.moa.answerPrompt) have no pipe route, MCP
+  //   tool or CLI verb.
+  DECK_MOA_APPROVAL: 'deck:moa:approval',
+  DECK_MOA_APPROVAL_ANSWER: 'deck:moa:approval:answer',
   //   HOOKS_BRIDGE_* — the Claude Code hook bridge (wmux setup-hooks, in-app).
   //   STATUS reports whether the wmux hook entries are installed in
   //   ~/.claude/settings.json; INSTALL performs the same idempotent install as

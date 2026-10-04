@@ -6,7 +6,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import MoaTranscriptChat, { tidyMoaUserText, type MoaTranscriptApi } from '../MoaTranscriptChat';
+import MoaTranscriptChat, { tidyMoaUserText, type MoaApprovalApi, type MoaTranscriptApi } from '../MoaTranscriptChat';
+import type { MoaApproval, MoaApprovalAnswerResult } from '../../../../../shared/moa';
 import type { TranscriptAppendData, TranscriptPage, TurnEvent } from '../../../../../shared/transcript/turnEvents';
 
 vi.mock('../../../../hooks/useT', () => { const t = (key: string) => key; return { useT: () => t }; });
@@ -106,6 +107,78 @@ describe('MoaTranscriptChat', () => {
     expect(input().disabled).toBe(true);
     await act(async () => { (host.querySelector('[data-moa-chat-stop]') as HTMLButtonElement).click(); });
     expect(onInterrupt).toHaveBeenCalled();
+  });
+});
+
+describe('MoaTranscriptChat — Moa\'s own permission prompt (#1772)', () => {
+  const RECORD: MoaApproval = {
+    id: 'ap-1', toolName: 'Bash', summary: 'rm -rf build', question: 'Do you want to proceed?',
+    choices: [{ key: '1', label: 'Yes' }, { key: '2', label: 'No' }], promptFingerprint: 'f'.repeat(32),
+    answerable: true, answered: false, createdAt: 1,
+  };
+  const awaiting = () => fakeApi({ status: vi.fn(async () => ({ available: true, reason: 'ok', agentSessionId: 's1', agentStatus: 'awaiting_input' })) as never });
+  function prompts(record: MoaApproval | null, answers: MoaApprovalAnswerResult[] = [{ ok: true }]) {
+    let current = record;
+    let changed: (() => void) | null = null;
+    const api = {
+      approval: vi.fn(async () => ({ approval: current })),
+      approvalAnswer: vi.fn(async () => answers.shift() ?? { ok: true }),
+      onChanged: vi.fn((cb: () => void) => { changed = cb; return () => { changed = null; }; }),
+    } as unknown as MoaApprovalApi & { approvalAnswer: ReturnType<typeof vi.fn> };
+    return { api, set: (next: MoaApproval | null) => { current = next; changed?.(); } };
+  }
+  const render = async (approvalApi: MoaApprovalApi) => {
+    const { api } = awaiting();
+    await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} approvalApi={approvalApi} />));
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+  };
+  const row = () => host.querySelector('[data-moa-chat-terminal-hint]') as HTMLElement | null;
+  const choice = (key: string) => host.querySelector(`[data-moa-chat-approval-choice="${key}"]`) as HTMLButtonElement | null;
+
+  it('shows the record\'s question, summary and choices, and still offers the terminal', async () => {
+    const { api } = prompts(RECORD);
+    await render(api);
+    expect(row()?.textContent).toContain('Do you want to proceed?');
+    expect(host.querySelector('[data-moa-chat-approval-summary]')?.textContent).toBe('rm -rf build');
+    expect(choice('1')?.textContent).toBe('Yes');
+    expect(choice('2')?.textContent).toBe('No');
+    expect(host.querySelector('[data-moa-chat-answer-in-terminal]')).not.toBeNull();
+  });
+
+  it('a click answers with the record\'s id and fingerprint', async () => {
+    const { api } = prompts(RECORD);
+    await render(api);
+    await act(async () => { choice('2')!.click(); });
+    expect(api.approvalAnswer).toHaveBeenCalledWith({ approvalId: 'ap-1', choiceKey: '2', promptFingerprint: 'f'.repeat(32) });
+    expect(host.querySelector('[data-moa-chat-approval-notice]')).toBeNull();
+  });
+
+  it('answered elsewhere (not_pending) leaves quietly; too soon asks for a retry; anything else is an error', async () => {
+    const { api } = prompts(RECORD, [
+      { ok: false, code: 'not_pending' },
+      { ok: false, code: 'answer_too_soon' },
+      { ok: false, code: 'error', reason: 'prompt-changed' },
+    ]);
+    await render(api);
+    await act(async () => { choice('1')!.click(); });
+    expect(host.querySelector('[data-moa-chat-approval-notice]')).toBeNull();
+    await act(async () => { choice('1')!.click(); });
+    expect(host.querySelector('[data-moa-chat-approval-notice]')?.getAttribute('data-moa-chat-approval-notice')).toBe('retry');
+    await act(async () => { choice('1')!.click(); });
+    expect(host.querySelector('[data-moa-chat-approval-notice]')?.getAttribute('data-moa-chat-approval-notice')).toBe('error');
+  });
+
+  it('an unanswerable or already answered record shows no choices; main\'s change signal re-reads it', async () => {
+    const { api, set } = prompts({ ...RECORD, answerable: false });
+    await render(api);
+    expect(row()?.textContent).toContain('Do you want to proceed?');
+    expect(choice('1')).toBeNull();
+    await act(async () => { set({ ...RECORD, answerable: false, answered: true }); await new Promise((r) => setTimeout(r, 0)); });
+    expect(host.querySelector('[data-moa-chat-approval-answered]')).not.toBeNull();
+    await act(async () => { set(null); await new Promise((r) => setTimeout(r, 0)); });
+    expect(host.querySelector('[data-moa-chat-approval]')).toBeNull();
+    // Still awaiting per the transcript status: the plain terminal hint.
+    expect(row()?.textContent).toContain('moa.panel.terminalHint');
   });
 });
 

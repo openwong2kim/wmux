@@ -120,15 +120,15 @@ export class MoaPromptSync {
     // stand on the pane that is no longer the Moa pane.
     if (acted && acted.sessionId !== target?.sessionId) this.expire(registry, acted.sessionId, 'pane-gone');
     if (next && !pane && next.sessionId !== acted?.sessionId) this.expire(registry, next.sessionId, 'pane-gone');
-    if (!target || !next) return;
+    if (!target || !next || !pane) return;
     const before = acted?.sessionId === target.sessionId ? acted.fingerprint : undefined;
     if (before === target.fingerprint) return;
-    if (target.fingerprint === undefined) {
+    const dialog = next.dialog;
+    if (!dialog) {
       void this.confirmGone(target.sessionId, MOA_PROMPT_GONE_CHECKS);
       return;
     }
-    const dialog = next.dialog!;
-    const workspaceId = pane!.meta.env?.[ENV_KEYS.WORKSPACE_ID];
+    const workspaceId = pane.meta.env?.[ENV_KEYS.WORKSPACE_ID];
     const toolName = boundRecordText(dialog.toolName, TERMINAL_PROMPT_TOOL_NAME_MAX);
     const note: TerminalPromptNote = {
       sessionId: target.sessionId,

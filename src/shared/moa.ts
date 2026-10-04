@@ -150,3 +150,32 @@ export interface MoaPendingDecision {
 
 /** Moa's mascot states (the panel header, the titlebar icon). */
 export type MoaMascotState = 'idle' | 'working' | 'needs-you' | 'done';
+
+/**
+ * Moa's own permission prompt (#1772), as the daemon's `terminal_prompt`
+ * record for the HQ brain pane (DECK_MOA_APPROVAL). Agent-authored text:
+ * render it as text, never as markup.
+ */
+export interface MoaApproval {
+  id: string;
+  toolName?: string;
+  summary?: string;
+  question?: string;
+  reason?: string;
+  choices?: Array<{ key: string; label: string }>;
+  /** Echoed back with an answer. */
+  promptFingerprint?: string;
+  /** The choices may be pressed from here. */
+  answerable: boolean;
+  /** The one remote answer was typed; the card settles when the dialog closes. */
+  answered: boolean;
+  createdAt: number;
+}
+
+/**
+ * DECK_MOA_APPROVAL_ANSWER's answer. `not_pending`: answered or gone
+ * elsewhere (quiet); `answer_too_soon`: the card just appeared, try again.
+ */
+export type MoaApprovalAnswerResult =
+  | { ok: true }
+  | { ok: false; code: 'not_pending' | 'answer_too_soon' | 'invalid' | 'error'; reason?: string };

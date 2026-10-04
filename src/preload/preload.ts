@@ -812,6 +812,12 @@ const electronAPI = {
         ipcRenderer.invoke(IPC.DECK_MOA_MEMORY_CARD) as Promise<{ card: import('../shared/moa').MoaMemoryCard | null }>,
       memoryResolve: (args: { id: string; answer: 'save' | 'discard'; fullTextShown: boolean }) =>
         ipcRenderer.invoke(IPC.DECK_MOA_MEMORY_RESOLVE, args) as Promise<{ ok: boolean; code?: string }>,
+      // Moa's own permission prompt (the HQ brain's dialog as an approval
+      // record), and pressing one of its choices from the Moa chat.
+      approval: () =>
+        ipcRenderer.invoke(IPC.DECK_MOA_APPROVAL) as Promise<{ approval: import('../shared/moa').MoaApproval | null }>,
+      approvalAnswer: (args: { approvalId: string; choiceKey: string; promptFingerprint: string }) =>
+        ipcRenderer.invoke(IPC.DECK_MOA_APPROVAL_ANSWER, args) as Promise<import('../shared/moa').MoaApprovalAnswerResult>,
       // Every workspace's pending decision ("Waiting on you").
       decisions: () =>
         ipcRenderer.invoke(IPC.DECK_MOA_DECISIONS) as Promise<{ decisions: import('../shared/moa').MoaPendingDecision[] }>,

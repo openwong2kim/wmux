@@ -230,3 +230,29 @@ describe('DECK_MOA_TRANSCRIPT_*', () => {
     expect(await invoke(IPC.DECK_MOA_TRANSCRIPT_STATUS)).toEqual({ available: false, reason: 'no-brain' });
   });
 });
+
+describe('DECK_MOA_APPROVAL / _ANSWER (#1772)', () => {
+  it('reads and answers Moa\'s own prompt through the daemon client, and nothing without one', async () => {
+    expect(await invoke(IPC.DECK_MOA_APPROVAL)).toEqual({ approval: null });
+    expect(await invoke(IPC.DECK_MOA_APPROVAL_ANSWER, { approvalId: 'ap-1', choiceKey: '1', promptFingerprint: 'f'.repeat(32) }))
+      .toMatchObject({ ok: false, code: 'error' });
+    cleanup?.();
+    const calls: Array<{ method: string; params: unknown }> = [];
+    const rpc = vi.fn(async (method: string, params?: unknown) => {
+      calls.push({ method, params });
+      return method === 'daemon.moa.prompt'
+        ? { ok: true, prompt: { id: 'ap-1', choices: [{ key: '1', label: 'Yes' }], promptFingerprint: 'f'.repeat(32), answerable: true, answered: false, createdAt: 1 } }
+        : { ok: true, state: 'pending' };
+    });
+    cleanup = registerDeckHandler(() => fakeWindow, {
+      createAdapter: () => new FakeAdapter(),
+      getDaemonClient: () => ({ rpc }) as never,
+    } as Parameters<typeof registerDeckHandler>[1]);
+    expect(await invoke(IPC.DECK_MOA_APPROVAL)).toMatchObject({ approval: { id: 'ap-1', answerable: true } });
+    expect(await invoke(IPC.DECK_MOA_APPROVAL_ANSWER, { approvalId: 'ap-1', choiceKey: '1', promptFingerprint: 'f'.repeat(32) })).toEqual({ ok: true });
+    expect(calls.filter((c) => c.method.startsWith('daemon.moa.'))).toEqual([
+      { method: 'daemon.moa.prompt', params: {} },
+      { method: 'daemon.moa.answerPrompt', params: { approvalId: 'ap-1', choiceKey: '1', promptFingerprint: 'f'.repeat(32) } },
+    ]);
+  });
+});
