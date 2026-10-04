@@ -16,6 +16,7 @@ import { HUMAN_WORKSPACE_ID, CHANNEL_MENTIONS_MAX } from '../../../shared/channe
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { buildDiffAskContext } from '../../../shared/diffAskContext';
+import { moaOwnsPanel } from '../Moa/panel/moaPanelMode';
 import { unwrapRpc } from '../../utils/unwrapRpc';
 
 // gpui button recipes (theme-safe color-mix on tokens; primary/danger keep the
@@ -380,6 +381,8 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
   // J3 §1·§2: close·PR 진행 상태(중복 클릭 방지).
   const [lifecycleBusy, setLifecycleBusy] = useState<'close' | 'pr' | null>(null);
   const pushToast = useStore((s) => s.pushToast);
+  // When Moa runs, the question goes to Moa (the panel is pinned to its HQ).
+  const askMoa = useStore((s) => moaOwnsPanel(s.moa));
   const t = useT();
 
   // Bumped by every load() and by a successful Close. A load whose generation
@@ -980,7 +983,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
                             setAskText('');
                             setAskTarget((prev) => (prev === key ? null : key));
                           }}
-                          title={t('diff.askOrchestrator') || 'Ask the orchestrator about this hunk'}
+                          title={askMoa ? t('moa.panel.diffAskTitle') : t('diff.askOrchestrator') || 'Ask the orchestrator about this hunk'}
                           data-diff-ask
                         >
                           {t('diff.ask') || 'Ask'}
@@ -1025,7 +1028,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
                                 setAskText('');
                               }
                             }}
-                            placeholder={t('diff.askPrompt') || 'Ask the orchestrator — hunk context attaches automatically'}
+                            placeholder={askMoa ? t('moa.panel.diffAskPrompt') : t('diff.askPrompt') || 'Ask the orchestrator — hunk context attaches automatically'}
                             spellCheck={false}
                             className="flex-1 min-w-0 bg-transparent text-[11px] text-[var(--text-main)] placeholder-[var(--text-muted)] outline-none px-1"
                           />

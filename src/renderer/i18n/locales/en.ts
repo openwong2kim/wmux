@@ -2668,6 +2668,8 @@ export const en = {
   'moa.panel.hqCorruptBody': "Reset them in Settings › Moa; your workspaces are not touched.",
   'moa.panel.setupHint': "Moa can run this from one place.",
   'moa.panel.setupAction': "Set up Moa",
+  'moa.panel.diffAskTitle': "Ask Moa about this hunk",
+  'moa.panel.diffAskPrompt': "Ask Moa (the hunk context is attached automatically):",
   'git.scope.label': 'Scope',
   'git.scope.thisRepo': 'This repo',
   'git.scope.allRepos': 'All repos',

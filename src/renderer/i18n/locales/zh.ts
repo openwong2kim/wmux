@@ -2188,6 +2188,8 @@ export const zh = {
   'moa.panel.hqCorruptBody': "在 设置 › Moa 中重置；你的工作区不受影响。",
   'moa.panel.setupHint': "Moa 可以在一个地方统一处理这些。",
   'moa.panel.setupAction': "设置 Moa",
+  'moa.panel.diffAskTitle': "就此代码块询问 Moa",
+  'moa.panel.diffAskPrompt': "询问 Moa（代码块上下文会自动附上）：",
   'git.scope.label': '范围',
   'git.scope.thisRepo': '此仓库',
   'git.scope.allRepos': '所有仓库',

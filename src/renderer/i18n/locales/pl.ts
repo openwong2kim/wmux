@@ -2645,6 +2645,8 @@ export const pl = {
   'moa.panel.hqCorruptBody': "Zresetuj je w Ustawieniach › Moa; twoje obszary robocze pozostaną nietknięte.",
   'moa.panel.setupHint': "Moa może prowadzić to z jednego miejsca.",
   'moa.panel.setupAction': "Skonfiguruj Moa",
+  'moa.panel.diffAskTitle': "Zapytaj Moa o ten fragment",
+  'moa.panel.diffAskPrompt': "Zapytaj Moa (kontekst fragmentu dołączany jest automatycznie):",
   'git.scope.label': 'Zakres',
   'git.scope.thisRepo': 'To repozytorium',
   'git.scope.allRepos': 'Wszystkie repozytoria',

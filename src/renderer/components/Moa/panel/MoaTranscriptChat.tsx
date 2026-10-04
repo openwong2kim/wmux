@@ -109,6 +109,8 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
   const runtime = useExternalStoreRuntime({ messages, isRunning: false, isLoading: data.loading, isSendDisabled: busy, onNew });
 
   // Waiting on a permission prompt (or any dialog) that only the TUI shows.
+  // Main's appends carry no status on this path, so `agentStatus` refreshes
+  // on useTranscript's 5 s poll: the hint can trail the prompt by up to ~5 s.
   const awaitingTerminal = data.status.agentStatus === 'awaiting_input' || (data.blocked && data.status.available && !data.loading && !data.error);
   const empty = messages.length === 0 && pending.length === 0;
   return (

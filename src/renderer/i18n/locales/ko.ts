@@ -2051,6 +2051,8 @@ export const ko = {
   'moa.panel.hqCorruptBody': "설정 › Moa에서 초기화하세요. 워크스페이스는 건드리지 않습니다.",
   'moa.panel.setupHint': "Moa가 한곳에서 이 일을 맡을 수 있습니다.",
   'moa.panel.setupAction': "Moa 설정",
+  'moa.panel.diffAskTitle': "이 헝크에 대해 Moa에게 묻기",
+  'moa.panel.diffAskPrompt': "Moa에게 묻기 (헝크 컨텍스트가 자동으로 첨부됩니다):",
   'git.scope.label': '범위',
   'git.scope.thisRepo': '이 저장소',
   'git.scope.allRepos': '모든 저장소',

@@ -179,12 +179,14 @@ export interface CommanderViewContentProps {
    *  else the active workspace (M1.5). Schedules, mode, wake and the decision
    *  card are all bound to it. */
   chatWorkspaceId?: string;
-  /** Moa mode: the panel's own top section (Waiting on you, task cards) and
-   *  the chat look over the HQ brain's terminal. Absent = today's layouts. */
   /** The workspace the human is viewing. Equal to chatWorkspaceId until the
    *  dock is pinned to the HQ. Main reads the same fact from the workspace
    *  mirror for the HQ brain's context line, so nothing here sends it. */
   viewedWorkspaceId?: string;
+  /** Moa mode: the panel's own top section (Waiting on you, task cards) and
+   *  the chat look over the HQ brain's terminal. Waiting on you and the task
+   *  cards replace the HQ's decision card and ledger panel, so those two are
+   *  not drawn. Absent = today's layouts. */
   moa?: CommanderMoaSlots;
   /** 활성 pane의 라이브 cwd — 루프 설정 모달의 스킬 카탈로그 스캔 기준. */
   activePaneCwd?: string;
@@ -426,17 +428,19 @@ export function CommanderViewContent({
         {moa?.top}
         {/* Delegated tasks, pinned above everything: the ledger is the one
             state the brain, the workers and the Stop gate share. */}
-        <DeckLedgerPanel
-          t={t}
-          workspaceId={chatWorkspaceId}
-          onOpenCountChange={onLedgerOpenCount}
-          channelByTaskId={channelByTaskId}
-          onOpenChannel={openMissionChannel}
-          onJumpToTaskWorkspace={jumpToTaskWorkspace}
-          finishedExpanded={finishedExpanded}
-          onToggleFinished={setFinishedExpanded}
-          onLedgerPush={onLedgerPush}
-        />
+        {!moa && (
+          <DeckLedgerPanel
+            t={t}
+            workspaceId={chatWorkspaceId}
+            onOpenCountChange={onLedgerOpenCount}
+            channelByTaskId={channelByTaskId}
+            onOpenChannel={openMissionChannel}
+            onJumpToTaskWorkspace={jumpToTaskWorkspace}
+            finishedExpanded={finishedExpanded}
+            onToggleFinished={setFinishedExpanded}
+            onLedgerPush={onLedgerPush}
+          />
+        )}
         {/* One control row: the Fleet roster and the automation controls. */}
         {fleetSlot}
         {renderControlBar(
@@ -563,12 +567,13 @@ export function CommanderViewContent({
               onJumpToChannels={onJumpToChannels}
               fleetSignature={fleetSignature}
             />
-            <DeckDecisionCard
-              workspaceId={chatWorkspaceId}
-              onPendingChange={setDecisionPending}
-              t={t}
-            />
-
+            {!moa && (
+              <DeckDecisionCard
+                workspaceId={chatWorkspaceId}
+                onPendingChange={setDecisionPending}
+                t={t}
+              />
+            )}
             {railMessages.map((m, i) => (
               <Fragment key={m.id}>
                 {isVendorBoundary(railMessages[i - 1], m) && m.vendor && (
@@ -595,17 +600,19 @@ export function CommanderViewContent({
     >
       {moa?.top}
       {/* Delegated tasks, pinned above the roster (see the pty layout above). */}
-      <DeckLedgerPanel
-        t={t}
-        workspaceId={chatWorkspaceId}
-        onOpenCountChange={onLedgerOpenCount}
-        channelByTaskId={channelByTaskId}
-        onOpenChannel={openMissionChannel}
-        onJumpToTaskWorkspace={jumpToTaskWorkspace}
-        finishedExpanded={finishedExpanded}
-        onToggleFinished={setFinishedExpanded}
-        onLedgerPush={onLedgerPush}
-      />
+      {!moa && (
+        <DeckLedgerPanel
+          t={t}
+          workspaceId={chatWorkspaceId}
+          onOpenCountChange={onLedgerOpenCount}
+          channelByTaskId={channelByTaskId}
+          onOpenChannel={openMissionChannel}
+          onJumpToTaskWorkspace={jumpToTaskWorkspace}
+          finishedExpanded={finishedExpanded}
+          onToggleFinished={setFinishedExpanded}
+          onLedgerPush={onLedgerPush}
+        />
+      )}
       {/* P2① — Fleet roster pinned above the thread (does not scroll with it). */}
       {fleetSlot}
       {/* Message list — the brain conversation (Phase 2) plus the Phase 1
@@ -687,7 +694,7 @@ export function CommanderViewContent({
             operator answers. Self-contained (hydrates from the durable store, so
             it survives a reboot); renders null unless a decision is pending for
             this workspace. */}
-        <DeckDecisionCard workspaceId={chatWorkspaceId} t={t} />
+        {!moa && <DeckDecisionCard workspaceId={chatWorkspaceId} t={t} />}
         <MoaMemoryCard t={t} />
 
         {/* Brain conversation — the normalized bubbles + tool chips. The

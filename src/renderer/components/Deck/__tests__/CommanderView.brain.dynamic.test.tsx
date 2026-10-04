@@ -22,6 +22,15 @@ vi.mock('../BrainTerminalEmbed', () => ({
     createElement('div', { 'data-commander-brain-terminal': true, 'data-pty-id': ptyId }),
 }));
 
+// The decision card and ledger hydrate from main; here only WHERE they are
+// drawn matters, so they are stubbed to markers.
+vi.mock('../DeckDecisionCard', () => ({
+  DeckDecisionCard: () => createElement('div', { 'data-test-decision-card': true }),
+}));
+vi.mock('../DeckLedgerPanel', () => ({
+  DeckLedgerPanel: () => createElement('div', { 'data-test-ledger': true }),
+}));
+
 let container: HTMLDivElement;
 let root: Root;
 
@@ -482,6 +491,23 @@ describe('CommanderViewContent — Moa slots', () => {
     mount({ brainPtyId: 'pty-hq', chatWorkspaceId: 'ws-hq', moa: { chat: null, view: 'chat', onViewChange: vi.fn() } });
     expect(container.querySelectorAll('[data-commander-brain-terminal]')).toHaveLength(1);
     expect(container.querySelector('[data-moa-terminal-toggle]')).toBeNull();
+  });
+
+  it('Waiting on you and the task cards replace the HQ decision card and ledger', () => {
+    for (const brainPtyId of ['pty-hq', null]) {
+      mount({ brainPtyId, chatWorkspaceId: 'ws-hq', moa: { top: topNode, chat: chatNode, view: 'chat', onViewChange: vi.fn() } });
+      expect(container.querySelector('[data-test-moa-top]')).not.toBeNull();
+      expect(container.querySelector('[data-test-decision-card]')).toBeNull();
+      expect(container.querySelector('[data-test-ledger]')).toBeNull();
+    }
+  });
+
+  it('without Moa (per-workspace chat) both stay, in either layout', () => {
+    for (const brainPtyId of ['pty-a', null]) {
+      mount({ brainPtyId, chatWorkspaceId: 'ws-a' });
+      expect(container.querySelector('[data-test-decision-card]')).not.toBeNull();
+      expect(container.querySelector('[data-test-ledger]')).not.toBeNull();
+    }
   });
 
   it('Wake fires for the chat workspace (the HQ), not the one on screen', () => {
