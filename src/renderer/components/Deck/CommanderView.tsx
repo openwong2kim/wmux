@@ -213,6 +213,10 @@ export interface CommanderViewContentProps {
   t?: (key: string) => string;
 }
 
+/** How long a send waits for main's verdict before it counts as accepted.
+ *  Every refusal is decided before the turn starts, well inside this. */
+const SEND_VERDICT_GRACE_MS = 1500;
+
 /** Side-effect-free presentational surface — all data via props (mirrors the
  *  ChannelViewContent split so the render is testable without the store). */
 export function CommanderViewContent({
@@ -1641,41 +1645,50 @@ export function CommanderView({ chatWorkspaceId: chatWorkspaceIdProp, viewedWork
       const fleetContext = recoveryLines ? `${recoveryLines}\n\n${wsSummary}` : wsSummary;
       // The orchestrator model override rides along on every send; main swaps
       // this workspace's brain between turns when it changes (Settings →
-      // Claude tab). Fire-and-observe: the verdict closes the bubble on
-      // rejection, the stream fills it on acceptance.
-      void api
+      // Claude tab). deck:send resolves when the whole turn ends, but every
+      // refusal (Moa gates, mode off, busy) comes back at once: the composer
+      // waits SEND_VERDICT_GRACE_MS for one and keeps its draft on refusal;
+      // silence means accepted. A late refusal still closes the turn below.
+      const verdict = (res: { ok: boolean; code?: string }): { ok: boolean; errorCode?: string; errorMessage?: string } => {
+        // Main's Moa gates refuse with their own codes (deck.handler
+        // refuseWhenModeOff); the preload type predates them.
+        const code: string | undefined = res.code;
+        if (res.ok) {
+          setMoaRefusal((prev) => (prev?.workspaceId === workspaceId ? null : prev));
+          return { ok: true };
+        }
+        let reason: string;
+        if (isMoaBlockCode(code)) {
+          // Say which gate refused and keep the notice (with its fix) up.
+          setMoaRefusal({ workspaceId, code });
+          reason = t(MOA_BLOCK_KEY[code]);
+        } else {
+          // Rejected before any stream event (busy race / disposed): close the
+          // open turn with an error so the placeholder doesn't spin forever.
+          reason = code === 'busy'
+            ? t('deck.commanderBusy') || 'A command is already running.'
+            : t('deck.commanderFailed') || 'The command could not run.';
+        }
+        failDeckBrainTurn(workspaceId, reason);
+        return { ok: false, errorCode: code ?? 'FAILED', errorMessage: reason };
+      };
+      const sent = api
         .send({
           workspaceId,
           text,
           fleetContext,
           ...(useStore.getState().deckBrainModel ? { model: useStore.getState().deckBrainModel } : {}),
         })
-        .then((res) => {
-          // Main's Moa gates refuse with their own codes (deck.handler
-          // refuseWhenModeOff); the preload type predates them.
-          const code: string | undefined = res.code;
-          if (res.ok) {
-            setMoaRefusal((prev) => (prev?.workspaceId === workspaceId ? null : prev));
-          } else if (isMoaBlockCode(code)) {
-            // Say which gate refused and keep the notice (with its fix) up.
-            setMoaRefusal({ workspaceId, code });
-            failDeckBrainTurn(workspaceId, t(MOA_BLOCK_KEY[code]));
-          } else {
-            // Rejected before any stream event (busy race / disposed): close
-            // the open turn with an error so the placeholder doesn't spin
-            // forever.
-            failDeckBrainTurn(
-              workspaceId,
-              code === 'busy'
-                ? t('deck.commanderBusy') || 'A command is already running.'
-                : t('deck.commanderFailed') || 'The command could not run.',
-            );
-          }
-        })
-        .catch((err) => {
-          failDeckBrainTurn(workspaceId, err instanceof Error ? err.message : String(err));
+        .then(verdict, (err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          failDeckBrainTurn(workspaceId, message);
+          return { ok: false, errorCode: 'FAILED', errorMessage: message };
         });
-      return { ok: true };
+      const early = await Promise.race([
+        sent,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), SEND_VERDICT_GRACE_MS)),
+      ]);
+      return early ?? { ok: true };
     },
     [chatWorkspaceId, viewedWorkspaceId, workspaces, surfaceAgent, paneLabel, paneRole, channels, recoveryPanes, startDeckBrainTurn, failDeckBrainTurn, pushToast, t],
   );
