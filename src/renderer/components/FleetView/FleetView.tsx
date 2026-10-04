@@ -175,16 +175,26 @@ export default function FleetView() {
     }
     useStore.getState().setFleetLastSeen(statuses);
   }, []);
+  // Settled workspaces (finished work, decided in main) are hidden behind the
+  // "Settled" chip until it is pressed; snoozed ones stay. The chip counts the
+  // settled workspaces that have something on the board.
+  const settleStates = useStore((s) => s.workspaceSettle.states);
+  const [showSettled, setShowSettled] = useState(false);
+  const settledIds = useMemo(
+    () => new Set(Object.keys(settleStates).filter((id) => settleStates[id]?.settled)),
+    [settleStates],
+  );
   // Search and status filters narrow each section; the sections themselves
   // (and so the chip counts) come from the one groupFleetPanes pass.
   const visibleGroups = useMemo(() => {
     const term = query.trim().toLocaleLowerCase();
-    const keep = (row: FleetRow) => matchesFleetFilter(row, filter) && (!term || [
+    const keep = (row: FleetRow) => (showSettled || !settledIds.has(row.pane.workspaceId))
+      && matchesFleetFilter(row, filter) && (!term || [
       fleetTitle(row.pane, missions[row.pane.workspaceId]), row.pane.workspaceName, row.pane.agentName,
       row.pane.title, row.pane.cwd, row.pane.activity, row.detail,
     ].some((value) => value?.toLocaleLowerCase().includes(term)));
     return { needsYou: groups.needsYou.filter(keep), running: groups.running.filter(keep), idle: groups.idle.filter(keep) };
-  }, [groups, filter, query, missions]);
+  }, [groups, filter, query, missions, showSettled, settledIds]);
   // Rows re-derive when a task's record, its workspace (name, metadata.pr —
   // both live on the workspaces array) or a turn-end stamp changes. The
   // output stamp (fallback for panes finished before stamping existed) is read
@@ -200,10 +210,20 @@ export default function FleetView() {
   const visibleReview = useMemo(() => {
     if (filter !== 'all' && filter !== 'complete') return [];
     const term = query.trim().toLocaleLowerCase();
-    if (!term) return reviewQueue;
-    return reviewQueue.filter((entry) => [entry.title, entry.ownerName, entry.branch]
+    const shown = showSettled ? reviewQueue : reviewQueue.filter((entry) => !settledIds.has(entry.workspaceId));
+    if (!term) return shown;
+    return shown.filter((entry) => [entry.title, entry.ownerName, entry.branch]
       .some((value) => value?.toLocaleLowerCase().includes(term)));
-  }, [reviewQueue, filter, query]);
+  }, [reviewQueue, filter, query, showSettled, settledIds]);
+  const settledCount = useMemo(() => {
+    if (settledIds.size === 0) return 0;
+    const onBoard = new Set<string>();
+    for (const row of [...groups.needsYou, ...groups.running, ...groups.idle]) {
+      if (settledIds.has(row.pane.workspaceId)) onBoard.add(row.pane.workspaceId);
+    }
+    for (const entry of reviewQueue) if (settledIds.has(entry.workspaceId)) onBoard.add(entry.workspaceId);
+    return onBoard.size;
+  }, [groups, reviewQueue, settledIds]);
   // Idle stays collapsed to its count unless expanded, or unless the user is
   // searching (a hidden match would read as none).
   const idleForced = filter === 'idle' || query.trim() !== '';
@@ -1052,7 +1072,7 @@ export default function FleetView() {
         )}
       </div>
 
-      {stripChips.length > 0 && (
+      {(stripChips.length > 0 || settledCount > 0) && (
         <div className="wmux-board-strip" data-fleet-summary>
           {stripChips.map((chip) => {
             const opens = chip.id === 'approvals' ? 'approvals' : chip.id === 'lan' ? 'remote' : null;
@@ -1071,6 +1091,12 @@ export default function FleetView() {
               <span key={chip.id} className="wmux-board-stat" data-fleet-stat={chip.id}>{body}</span>
             );
           })}
+          {settledCount > 0 && (
+            <button type="button" className="wmux-board-stat is-action" data-fleet-stat="settled"
+              aria-pressed={showSettled} onClick={() => setShowSettled((v) => !v)}>
+              <span>{t('workspaceSettle.fleetChip', { count: settledCount })}</span>
+            </button>
+          )}
         </div>
       )}
 
@@ -1116,7 +1142,7 @@ export default function FleetView() {
         ) : matchCount === 0 ? (
           <div className="wmux-fleet-empty">
             <p>{t('fleet.noMatches')}</p>
-            <button type="button" onClick={() => { setQuery(''); setFilter('all'); }}>{t('fleet.resetFilters')}</button>
+            <button type="button" onClick={() => { setQuery(''); setFilter('all'); setShowSettled(true); }}>{t('fleet.resetFilters')}</button>
           </div>
         ) : (
           <div ref={listRef} role="listbox" aria-label={t('fleet.title')} className="wmux-board-columns" data-layout={layout}
