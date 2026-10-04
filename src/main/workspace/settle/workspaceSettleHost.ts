@@ -3,8 +3,8 @@
 // with no renderer dependency, so settle and snooze keep moving while the
 // window is closed (the mirror then holds the last tree the renderer pushed).
 //
-// HQ exemption: the service takes an `isHq` resolver (setHqResolver), which
-// defaults to "no HQ". The HQ store wires itself in through that port.
+// HQ exemption: the HQ id comes from deck-hq.json (deckHqStore), read at most
+// every HQ_CACHE_MS — the rules ask once per workspace on every mirror push.
 
 import path from 'node:path';
 import { ipcMain, type BrowserWindow } from 'electron';
@@ -15,12 +15,14 @@ import { atomicReadJSONSync, atomicWriteJSON } from '../../../daemon/util/atomic
 import { eventBus } from '../../events/EventBus';
 import { prStatusCache } from '../../metadata/PrStatusCache';
 import { gitSyncStatusCache } from '../../metadata/GitSyncStatusCache';
+import { getHqWorkspaceId } from '../../deck/deckHqStore';
 import { getWorkspaceMirror } from '../WorkspaceMirror';
 import { WorkspaceSettleService, type PersistedWorkspaceSettle } from './WorkspaceSettleService';
 
 /** Expiry, idle and PR rules are evaluated once a minute. */
 export const WORKSPACE_SETTLE_TICK_MS = 60_000;
 const SAVE_DEBOUNCE_MS = 1_000;
+const HQ_CACHE_MS = 5_000;
 
 // One service per process: handler re-registration rebinds the IPC and the
 // subscriptions but keeps the rows and the last mirror it saw.
@@ -59,6 +61,19 @@ function createSaver(filePath: string): { save: (data: PersistedWorkspaceSettle)
   };
 }
 
+function createHqResolver(): (workspaceId: string) => boolean {
+  let readAt = -Infinity;
+  let hq: string | null = null;
+  return (workspaceId) => {
+    const now = Date.now();
+    if (now - readAt > HQ_CACHE_MS) {
+      readAt = now;
+      try { hq = getHqWorkspaceId(); } catch { hq = null; }
+    }
+    return workspaceId === hq;
+  };
+}
+
 function loadPersisted(filePath: string): unknown {
   try {
     return atomicReadJSONSync<unknown>(filePath);
@@ -86,7 +101,7 @@ export function registerWorkspaceSettle(getWindow: () => BrowserWindow | null): 
     const filePath = getWorkspaceSettlePath();
     const s = createSaver(filePath);
     saver = s;
-    service = new WorkspaceSettleService({ load: () => loadPersisted(filePath), save: s.save });
+    service = new WorkspaceSettleService({ load: () => loadPersisted(filePath), save: s.save, isHq: createHqResolver() });
   }
   const svc = service;
   const flushSave = saver.flush;

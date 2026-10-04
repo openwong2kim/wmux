@@ -97,7 +97,8 @@ export function parsePersistedWorkspaceSettle(raw: unknown): { idleDays: number;
 export class WorkspaceSettleService {
   private readonly now: () => number;
   private readonly save: (data: PersistedWorkspaceSettle) => void;
-  private isHq: (workspaceId: string) => boolean;
+  /** The HQ workspace is exempt from settling. */
+  private readonly isHq: (workspaceId: string) => boolean;
   private idleDays: number;
   private readonly rows: Map<string, WorkspaceSettleRow>;
   private mirror: WorkspaceMirrorPushPayload | null = null;
@@ -119,11 +120,6 @@ export class WorkspaceSettleService {
   onChange(listener: Listener): () => void {
     this.listeners.add(listener);
     return () => { this.listeners.delete(listener); };
-  }
-
-  /** The HQ workspace is exempt from settling. */
-  setHqResolver(isHq: (workspaceId: string) => boolean): void {
-    this.isHq = isHq;
   }
 
   snapshot(): WorkspaceSettleSnapshot {
