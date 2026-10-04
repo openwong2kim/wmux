@@ -438,10 +438,11 @@ export class ClaudeWorker {
       }
     }
     // Work link (best-effort): this path skips the a2a.rpc handlers, so it
-    // records the state itself — the daemon's committed one when it has it.
-    void recordTaskState(taskId, stateOfTask(committedTask) ?? status);
+    // records the state itself, and only a committed one: the daemon's, or
+    // the requested one once the renderer's fallback accepted it.
+    if (committedTask) void recordTaskState(taskId, stateOfTask(committedTask));
     try {
-      await sendToRenderer(this.getWindow, 'a2a.task.update', {
+      const res = await sendToRenderer(this.getWindow, 'a2a.task.update', {
         taskId,
         workspaceId,
         status,
@@ -451,6 +452,9 @@ export class ClaudeWorker {
           ? { daemonCommitted: true, committedTask }
           : {}),
       });
+      if (!committedTask && res && typeof res === 'object' && (res as { ok?: unknown }).ok === true) {
+        void recordTaskState(taskId, status);
+      }
     } catch (err) {
       console.error(`[ClaudeWorker] Failed to update task ${taskId}:`, err);
     }

@@ -14,6 +14,7 @@ import {
   renderStaleDecisionBlock,
   isDecisionStale,
   getDeckDecisionPath,
+  onDecisionsChanged,
   DECISION_LIMITS,
   type WorkspaceDecision,
 } from '../deckDecisionStore';
@@ -27,6 +28,19 @@ afterEach(() => {
 });
 
 describe('deckDecisionStore', () => {
+  it('tells change listeners after every write, and a throwing listener breaks nothing', async () => {
+    let calls = 0;
+    const offBad = onDecisionsChanged(() => { throw new Error('boom'); });
+    const off = onDecisionsChanged(() => { calls++; });
+    const d = await raiseDecision('ws-1', { question: 'A or B?' }, dir);
+    await resolveDecision('ws-1', d!.id, 'A', dir);
+    await clearDecision('ws-1', dir);
+    off();
+    offBad();
+    await raiseDecision('ws-1', { question: 'again?' }, dir);
+    expect(calls).toBe(3);
+  });
+
   it('raises a pending decision and loads it back', async () => {
     const d = await raiseDecision('ws-1', { question: 'A or B?', options: ['A', 'B'], context: 'ctx' }, dir);
     expect(d).toMatchObject({ question: 'A or B?', options: ['A', 'B'], status: 'pending' });

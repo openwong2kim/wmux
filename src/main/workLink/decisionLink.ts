@@ -1,7 +1,8 @@
 // Decisions on work links: `deck_ask_decision({ task_id })` attaches the new
-// decision to that task's link, and answering a decision re-derives the links
-// that hold it. Best-effort throughout: a decision is raised or resolved
-// whatever happens here.
+// decision to that task's link. Answering or clearing a decision needs nothing
+// here: every decision write re-derives the links that hold one (see
+// WorkLinkStore.reconcileDecisions). Best-effort throughout: a decision is
+// raised whatever happens here.
 
 import { getWorkLinkStore, type WorkLinkStore } from './workLinkStore';
 
@@ -48,14 +49,5 @@ export async function carryDecision(
     }
   } catch {
     /* best-effort */
-  }
-}
-
-/** A decision was answered: re-derive the links that hold it. Never rejects. */
-export function refreshDecisionLinks(decisionId: string, store?: WorkLinkStore): Promise<void> {
-  try {
-    return (store ?? getWorkLinkStore()).refreshDecision(decisionId);
-  } catch {
-    return Promise.resolve();
   }
 }

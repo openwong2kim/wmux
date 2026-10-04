@@ -72,6 +72,7 @@ describe('workLink guards', () => {
     ['issue whose number disagrees with its url', { ...base, issue: { ...issue, number: 43 } }],
     ['unknown a2a state', { ...base, a2aState: 'constructor' }],
     ['reason on a state that takes none', { ...base, state: 'running', reason: 'decision' }],
+    ['a hand-close marker on a live state', { ...base, state: 'running', manualClose: true }],
     ['pr url on another host', { ...base, pr: { host: 'github.com', owner: 'a', repo: 'b', number: 1, url: 'https://evil.example/a/b/pull/1' } }],
     ['branch with a space', { ...base, worktree: { path: '/tmp/wt', branch: 'a b' } }],
     ['non-array decisionIds', { ...base, decisionIds: 'd1' }],
@@ -156,8 +157,11 @@ describe('deriveWorkLinkState', () => {
     ['completed, conflict', { a2aState: 'completed', hasPr: true, prStatus: pr({ mergeable: 'CONFLICTING' }) }, 'blocked', 'conflict'],
     ['completed, changes requested', { a2aState: 'completed', hasPr: true, prStatus: pr({ reviewDecision: 'CHANGES_REQUESTED' }) }, 'blocked', 'changes-requested'],
     ['completed, PR closed unmerged', { a2aState: 'completed', hasPr: true, prStatus: pr({ state: 'closed' }) }, 'abandoned'],
-    ['merged PR beats everything', { a2aState: 'failed', hasPr: true, prStatus: pr({ state: 'merged' }), pendingDecision: true, state: 'abandoned' }, 'done'],
-    ['abandoned is sticky', { state: 'abandoned', a2aState: 'working' }, 'abandoned'],
+    ['merged PR beats everything', { a2aState: 'failed', hasPr: true, prStatus: pr({ state: 'merged' }), pendingDecision: true, state: 'abandoned', manualClose: true }, 'done'],
+    ['a hand close sticks', { state: 'abandoned', manualClose: true, a2aState: 'working' }, 'abandoned'],
+    ['a canceled task reopened revives', { state: 'abandoned', a2aState: 'submitted' }, 'queued'],
+    ['a closed PR reopened revives', { state: 'abandoned', a2aState: 'completed', hasPr: true, prStatus: pr() }, 'review'],
+    ['a closed PR with no task reopened revives', { state: 'abandoned', hasPr: true, prStatus: pr() }, 'review'],
     ['pending decision while working', { a2aState: 'working', pendingDecision: true }, 'needs-you', 'decision'],
     ['working task with a failing PR is still running', { a2aState: 'working', hasPr: true, prStatus: pr({ checks: 'failing' }) }, 'running'],
     ['no task, a PR', { hasPr: true }, 'review'],
@@ -183,9 +187,10 @@ describe('deriveWorkLinkState', () => {
       for (const a2aState of tasks) {
         for (const prStatus of prs) {
           for (const hasPr of [false, true]) {
-            for (const pendingDecision of [false, true]) {
+            for (const [pendingDecision, manualClose] of [[false, false], [true, false], [false, true], [true, true]]) {
               const out = deriveWorkLinkState({
                 state,
+                manualClose,
                 ...(stateTakesReason(state) ? { reason: 'other' as const } : {}),
                 a2aState,
                 hasPr: hasPr || !!prStatus,
@@ -196,13 +201,13 @@ describe('deriveWorkLinkState', () => {
               expect(isWorkLinkState(out.state)).toBe(true);
               expect(out.reason === undefined || stateTakesReason(out.state)).toBe(true);
               if (prStatus?.state === 'merged') expect(out.state).toBe('done');
-              else if (state === 'abandoned' || a2aState === 'canceled') expect(out.state).toBe('abandoned');
+              else if (manualClose || a2aState === 'canceled') expect(out.state).toBe('abandoned');
               else if (pendingDecision) expect(out).toEqual({ state: 'needs-you', reason: 'decision' });
             }
           }
         }
       }
     }
-    expect(cells).toBe(7 * 7 * 9 * 2 * 2);
+    expect(cells).toBe(7 * 7 * 9 * 2 * 4);
   });
 });

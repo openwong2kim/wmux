@@ -16,7 +16,7 @@ import { defaultSnapshot } from '../../pty/portWatch';
 import type { PortSnapshot, SnapshotFn } from '../../pty/portWatch';
 import { walkToOwningAnchor } from '../../pty/serverSidePidWalk';
 import type { OwningAnchor } from '../../pty/serverSidePidWalk';
-import { recordSentTask, recordTaskState, stateOfTask, workLinkFromSentTask } from '../../workLink/a2aProducer';
+import { recordSentTask, recordTaskState, reopenedState, stateOfTask, workLinkFromSentTask } from '../../workLink/a2aProducer';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -618,7 +618,7 @@ export function registerA2aRpc(
       if ('response' in prepared) return prepared.response;
       const res = await sendToRenderer(getWindow, 'a2a.task.update', prepared.params);
       if (isRecord(res) && res.ok === true) {
-        void recordTaskState(params.taskId, stateOfTask(prepared.params.daemonReopenedTask));
+        void recordTaskState(params.taskId, reopenedState(prepared.params));
       }
       return res;
     }
@@ -644,6 +644,12 @@ export function registerA2aRpc(
     // `workspaceId` on the wire would carry its privilege into someone else's.
     let sendParams: Record<string, unknown> = withOperatorOrigin(params, ctx);
     delete sendParams.commanderWorkspaceId;
+    // A trusted in-process caller (Git page, fanout, Moa) that created the work
+    // link first names it here, so the new task joins that link instead of
+    // starting a twin. Never taken from an external caller; main-only.
+    const linkTrusted = ctx?.operator === true || (ctx?.firstParty === true && !isHostedCaller(ctx));
+    const workLinkId = linkTrusted && typeof sendParams.workLinkId === 'string' ? sendParams.workLinkId : undefined;
+    delete sendParams.workLinkId;
     if (ctx?.commanderWorkspace) {
       sendParams.commanderWorkspaceId = ctx.commanderWorkspace;
       sendParams.workspaceId = ctx.commanderWorkspace;
@@ -674,7 +680,7 @@ export function registerA2aRpc(
     if (isRecord(result) && result.ok === true && isRecord(result.task) && !params.taskId) {
       // Work link (best-effort, never awaited): read before `task` is stripped.
       // A commander brain's send is a Moa delegation (docs/work-links.md).
-      void recordSentTask(workLinkFromSentTask(result, { fromCommander: !!ctx?.commanderWorkspace }));
+      void recordSentTask(workLinkFromSentTask(result, { fromCommander: !!ctx?.commanderWorkspace, workLinkId }));
       const t = result.task as { id?: unknown; metadata?: { title?: unknown; from?: unknown; to?: unknown }; history?: unknown };
       if (typeof t.id === 'string' && isRecord(t.metadata)) {
         const mirror = await daemonTaskRpc(getDaemonClient, 'a2a.task.create', {
@@ -698,8 +704,8 @@ export function registerA2aRpc(
       delete (result as Record<string, unknown>).task;
     }
     // A reply that reopened an ended task moves its link back with it.
-    if (params.taskId && isRecord(result) && result.ok === true && sendParams.daemonReopenedTask) {
-      void recordTaskState(params.taskId, stateOfTask(sendParams.daemonReopenedTask));
+    if (params.taskId && isRecord(result) && result.ok === true) {
+      void recordTaskState(params.taskId, reopenedState(sendParams));
     }
 
     // execute → origin decision (LanLink PR-1, positive-allow):

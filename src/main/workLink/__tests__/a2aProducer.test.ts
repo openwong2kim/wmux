@@ -5,11 +5,11 @@ import path from 'node:path';
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../../pipe/RpcRouter';
 import type { RpcContext } from '../../../shared/rpc';
-import type { ClaudeWorker } from '../../a2a/ClaudeWorker';
 import type { DaemonClient } from '../../DaemonClient';
 import { WorkLinkStore } from '../workLinkStore';
 import { workLinkFromSentTask } from '../a2aProducer';
 import { registerA2aRpc } from '../../pipe/handlers/a2a.rpc';
+import { ClaudeWorker, type DaemonRpcLike } from '../../a2a/ClaudeWorker';
 
 const h = vi.hoisted(() => ({
   sendToRenderer: vi.fn(),
@@ -165,5 +165,81 @@ describe('a2a.rpc → work links', () => {
     await handlers(daemonOk('canceled'))['a2a.task.cancel']({ taskId: 'task-1', workspaceId: 'ws-hq' }, local);
     await settle();
     expect(store.getByTaskId('task-1')?.state).toBe('abandoned');
+  });
+
+  const issue = { host: 'github.com', owner: 'acme', repo: 'widget', number: 42, title: 'Crash on save', url: 'https://github.com/acme/widget/issues/42' };
+  const issueLink = () => store.upsert({ origin: 'issue', issue, owner: { workspaceId: 'ws-1' }, title: 'Crash on save' });
+  const operator = { ...local, operator: true } as RpcContext;
+
+  it('a trusted send naming a work link joins it instead of making a twin', async () => {
+    const link = (await issueLink())!;
+    h.sendToRenderer.mockResolvedValueOnce(sendReply());
+    await handlers(daemonOk('submitted'))['a2a.task.send']({ to: '1', message: 'go', workLinkId: link.id }, operator);
+    await settle();
+    expect(store.list()).toHaveLength(1);
+    expect(store.get(link.id)).toMatchObject({ origin: 'issue', a2aTaskId: 'task-1', title: 'Crash on save', requester: { workspaceId: 'ws-hq' } });
+    // The renderer never sees the main-only field.
+    expect(h.sendToRenderer.mock.calls[0][2]).not.toHaveProperty('workLinkId');
+  });
+
+  it.each([
+    ['an external caller', local, undefined],
+    ['a link owned by another workspace', operator, { workspaceId: 'ws-2' }],
+  ])('a named link is ignored for %s', async (_label, ctx, owner) => {
+    const link = (await store.upsert({ origin: 'issue', issue, owner: owner ?? { workspaceId: 'ws-1' } }))!;
+    h.sendToRenderer.mockResolvedValueOnce(sendReply());
+    await handlers(daemonOk('submitted'))['a2a.task.send']({ to: '1', message: 'go', workLinkId: link.id }, ctx as RpcContext);
+    await settle();
+    expect(store.get(link.id)?.a2aTaskId).toBeUndefined();
+    expect(store.getByTaskId('task-1')).toMatchObject({ origin: 'manual' });
+  });
+
+  it('a link that already carries another task is not joined', async () => {
+    const link = (await store.upsert({ origin: 'issue', issue, owner: { workspaceId: 'ws-1' }, a2aTaskId: 'task-0' }))!;
+    h.sendToRenderer.mockResolvedValueOnce(sendReply());
+    await handlers(daemonOk('submitted'))['a2a.task.send']({ to: '1', message: 'go', workLinkId: link.id }, operator);
+    await settle();
+    expect(store.get(link.id)?.a2aTaskId).toBe('task-0');
+    expect(store.getByTaskId('task-1')?.id).not.toBe(link.id);
+  });
+
+  it('a cache-only reopen (no daemon) moves the link back to queued', async () => {
+    await store.upsert({ ...workLinkFromSentTask(sendReply(), { fromCommander: false })!, a2aState: 'canceled' });
+    expect(store.getByTaskId('task-1')?.state).toBe('abandoned');
+    h.sendToRenderer.mockImplementation(async (_w: unknown, _m: string, p: Record<string, unknown>) =>
+      p.reopenPreflight ? { preflight: { reopen: true } } : { ok: true });
+    const out: Record<string, Handler> = {};
+    registerA2aRpc({ register: (m: string, fn: Handler) => { out[m] = fn; } } as unknown as RpcRouter, () => ({}) as BrowserWindow, worker, {});
+    await out['a2a.task.update']({ taskId: 'task-1', workspaceId: 'ws-hq', message: 'one more thing' }, local);
+    await settle();
+    expect(store.getByTaskId('task-1')?.state).toBe('queued');
+  });
+});
+
+describe('ClaudeWorker → work links', () => {
+  const drive = async (rpc: () => Promise<unknown>, rendererReply: unknown) => {
+    h.sendToRenderer.mockResolvedValue(rendererReply);
+    await store.upsert(workLinkFromSentTask(sendReply(), { fromCommander: false })!);
+    await store.upsert({ a2aTaskId: 'task-1', a2aState: 'working' });
+    const w = new ClaudeWorker(() => ({}) as BrowserWindow, () => ({ rpc }) as DaemonRpcLike);
+    const session = { proc: {} as never, taskId: 'task-1', lineBuffer: '', sessionId: 's' };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (w as any).processLine(session, 'ws-1', JSON.stringify({ type: 'result', result: 'done', is_error: false, total_cost_usd: 0 }));
+    await vi.waitFor(() => expect(h.sendToRenderer).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 0));
+    await settle();
+    return store.getByTaskId('task-1')?.state;
+  };
+
+  it('records the daemon-committed state', async () => {
+    expect(await drive(async () => ({ ok: true, task: { id: 'task-1', status: { state: 'completed' } } }), { ok: true })).toBe('done');
+  });
+
+  it('records nothing when neither the daemon nor the renderer committed', async () => {
+    expect(await drive(async () => ({ ok: false, error: 'invalid transition' }), { error: 'refused' })).toBe('running');
+  });
+
+  it('records the requested state once the renderer fallback accepted it', async () => {
+    expect(await drive(async () => { throw new Error('daemon down'); }, { ok: true })).toBe('done');
   });
 });

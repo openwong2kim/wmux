@@ -8,7 +8,7 @@ import { registerDeckRpc } from '../../pipe/handlers/deck.rpc';
 import { mintCommanderToken, __resetCommanderTrustForTesting } from '../../deck/commanderTrust';
 import type { TaskLedger } from '../../../daemon/ledger/TaskLedger';
 import { WorkLinkStore } from '../workLinkStore';
-import { attachDecisionToTask, carryDecision, refreshDecisionLinks } from '../decisionLink';
+import { attachDecisionToTask, carryDecision } from '../decisionLink';
 
 type Decision = import('../../deck/deckDecisionStore').WorkspaceDecision;
 const h = vi.hoisted(() => ({
@@ -77,7 +77,7 @@ describe('decisionLink', () => {
     expect(store.getByTaskId('task-1')?.decisionIds).toEqual(['d1', 'd2']);
   });
 
-  it('carries a replaced decision to its successor and refreshes on answer', async () => {
+  it('carries a replaced decision to its successor and settles on answer', async () => {
     const link = (await seed())!;
     pending.add('d1');
     await store.attachDecision(link.id, 'd1');
@@ -86,8 +86,25 @@ describe('decisionLink', () => {
     await carryDecision('d1', 'd1b', store);
     expect(store.get(link.id)).toMatchObject({ state: 'needs-you', decisionIds: ['d1', 'd1b'] });
     pending.clear();
-    await refreshDecisionLinks('d1b', store);
+    await store.reconcileDecisions();
     expect(store.get(link.id)?.state).toBe('running');
+  });
+
+  it('a stale decision replaced onto another task frees the old task\'s link', async () => {
+    const old = (await seed())!;
+    const other = (await store.upsert({ origin: 'moa', a2aTaskId: 'task-2', a2aState: 'working', owner: { workspaceId: 'ws-2' }, requester: { workspaceId: 'ws-hq' } }))!;
+    pending.add('d0');
+    await store.attachDecision(old.id, 'd0');
+    h.current = decision('d0', 1);
+    h.replace.mockResolvedValue(decision('d1'));
+    pending.clear();
+    pending.add('d1');
+    const r = new RpcRouter();
+    registerDeckRpc(r, () => ({}) as BrowserWindow, { getLedger: () => ({ list: () => [] }) as unknown as TaskLedger });
+    await r.dispatch({ id: '1', method: 'deck.requestDecision', params: { token: mintCommanderToken('ws-hq'), question: 'Sharper?', taskId: 'task-2' } });
+    await store.reconcileDecisions(); // what the decision-store hook runs after the replace's write
+    expect(store.get(other.id)).toMatchObject({ state: 'needs-you', decisionIds: ['d1'] });
+    expect(store.get(old.id)).toMatchObject({ state: 'running', decisionIds: ['d0'] });
   });
 });
 

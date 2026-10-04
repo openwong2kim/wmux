@@ -170,6 +170,26 @@ export function hasPendingDecision(workspaceId: string, dir?: string): boolean {
   return d !== null && d.status === 'pending';
 }
 
+// Told after every decision write (raise, replace, resolve, clear), so a
+// reader that mirrors decision state (work links) never keeps a stale copy.
+// A listener cannot break a write.
+const changeListeners = new Set<() => void>();
+
+export function onDecisionsChanged(fn: () => void): () => void {
+  changeListeners.add(fn);
+  return () => changeListeners.delete(fn);
+}
+
+function notifyDecisionsChanged(): void {
+  for (const fn of changeListeners) {
+    try {
+      fn();
+    } catch {
+      /* best-effort */
+    }
+  }
+}
+
 function mutate(
   workspaceId: string,
   fn: (prev: WorkspaceDecision | null) => WorkspaceDecision | null,
@@ -188,6 +208,7 @@ function mutate(
       all[workspaceId] = next;
     }
     await atomicWriteJSON(getDeckDecisionPath(dir), all);
+    notifyDecisionsChanged();
     return next;
   });
 }

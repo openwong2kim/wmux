@@ -4,6 +4,12 @@
 // then queues a write of the whole cache; writes run one at a time, so the last
 // one on disk is always the newest cache.
 //
+// Decisions live in another store (deck-decisions.json), so a link's stored
+// state can lag them (a decision cleared by a loop reset, a crash between an
+// answer and this write). Reads therefore re-derive against the decisions
+// pending right now, every decision write re-derives the links that hold one,
+// and the cache re-derives everything once when it loads.
+//
 // Never throws: a torn file loads as an empty store, a bad record is dropped on
 // its own, and a failed write is logged and retried by the next mutation. The
 // callers are delivery paths (A2A send, decisions) that must not fail because
@@ -13,7 +19,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { getWmuxDir } from '../../daemon/config';
 import { atomicReadJSONSync, atomicWriteJSON } from '../../daemon/util/atomicWrite';
-import { loadDeckDecisions } from '../deck/deckDecisionStore';
+import { loadDeckDecisions, onDecisionsChanged } from '../deck/deckDecisionStore';
 import {
   WORK_LINK_LIMITS,
   deriveLinkState,
@@ -31,10 +37,11 @@ import {
 export const MAX_WORK_LINKS = 500;
 
 /** Fields a producer may set. `id` or `a2aTaskId` finds an existing link;
- *  creating one needs `origin` and `owner`. `origin`, `id` and `createdAt`
- *  never change once set. State is derived, never passed here (see setState). */
+ *  creating one needs `origin` and `owner`. `id` and `createdAt` never change;
+ *  `origin` changes only from 'manual' to 'issue' (the work turned out to be
+ *  about an issue). State is derived, never passed here (see setState). */
 export type WorkLinkUpsert = Partial<
-  Omit<WorkLink, 'state' | 'reason' | 'decisionIds' | 'createdAt' | 'updatedAt'>
+  Omit<WorkLink, 'state' | 'reason' | 'manualClose' | 'decisionIds' | 'createdAt' | 'updatedAt'>
 >;
 
 interface WorkLinkFile {
@@ -83,33 +90,42 @@ export class WorkLinkStore {
   }
 
   list(filter: WorkLinkFilter = {}): WorkLink[] {
+    const pending = this.pendingFor([...this.cache().values()]);
     return [...this.cache().values()]
+      .map((l) => this.rederive(l, pending))
       .filter((l) => matchesWorkLinkFilter(l, filter))
       .sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
   get(id: string): WorkLink | null {
-    return this.cache().get(id) ?? null;
+    const link = this.cache().get(id);
+    return link ? this.rederive(link) : null;
   }
 
   getByTaskId(a2aTaskId: string): WorkLink | null {
-    for (const l of this.cache().values()) if (l.a2aTaskId === a2aTaskId) return l;
-    return null;
+    const link = this.rawByTask(a2aTaskId);
+    return link ? this.rederive(link) : null;
   }
 
   /** Create or merge a link, then re-derive its state. Null when the input is
    *  invalid (nothing is written). */
   async upsert(input: WorkLinkUpsert): Promise<WorkLink | null> {
     try {
+      const links = this.cache();
       const prev =
-        (input.id ? this.get(input.id) : null) ?? (input.a2aTaskId ? this.getByTaskId(input.a2aTaskId) : null);
+        (input.id ? links.get(input.id) : undefined) ?? (input.a2aTaskId ? this.rawByTask(input.a2aTaskId) : undefined);
       if (!prev && (!input.origin || !input.owner)) return null;
       const now = this.now();
+      const origin = !prev
+        ? input.origin
+        : prev.origin === 'manual' && input.origin === 'issue'
+          ? 'issue'
+          : prev.origin;
       const merged = parseWorkLink({
         ...(prev ?? { state: 'queued', decisionIds: [], createdAt: now }),
         ...stripUndefined(input),
         id: prev?.id ?? input.id ?? randomUUID(),
-        origin: prev?.origin ?? input.origin,
+        origin,
         updatedAt: now,
       });
       // A task id already held by another link would break one-link-per-task.
@@ -121,19 +137,24 @@ export class WorkLinkStore {
     }
   }
 
-  /** Set a state by hand (a person or an owner closing the work out). The next
-   *  derivation overrides it, except `abandoned`, which only a merged PR undoes. */
+  /** Set a state by hand. A hand close (`abandoned`) holds until a PR merges.
+   *  Any other state holds only while the task and PR say nothing (a link not
+   *  handed out yet); reads derive it from them otherwise. Returns what a
+   *  reader now sees. */
   async setState(id: string, state: WorkLinkState, reason?: WorkLinkReason): Promise<WorkLink | null> {
     try {
-      const prev = this.get(id);
+      const prev = this.cache().get(id);
       if (!prev) return null;
       const next = parseWorkLink({
         ...prev,
         state,
         reason: stateTakesReason(state) ? reason ?? 'other' : undefined,
+        manualClose: state === 'abandoned' ? true : undefined,
         updatedAt: this.now(),
       });
-      return next ? await this.commit(next) : null;
+      if (!next) return null;
+      await this.commit(next);
+      return this.get(id);
     } catch (err) {
       console.warn('[workLinks] setState failed:', err);
       return null;
@@ -143,7 +164,7 @@ export class WorkLinkStore {
   /** Record that a decision is about this link's work, then re-derive. */
   async attachDecision(id: string, decisionId: string): Promise<WorkLink | null> {
     try {
-      const prev = this.get(id);
+      const prev = this.cache().get(id);
       if (!prev || !isWorkLinkId(decisionId)) return null;
       const decisionIds = [...prev.decisionIds.filter((d) => d !== decisionId), decisionId].slice(
         -WORK_LINK_LIMITS.MAX_DECISIONS,
@@ -155,25 +176,30 @@ export class WorkLinkStore {
     }
   }
 
-  /** Re-derive the links holding this decision (after it was answered). */
-  async refreshDecision(decisionId: string): Promise<void> {
+  /**
+   * Decisions changed (raised, replaced, answered, cleared): store the state
+   * of every link that holds one again. One synchronous pass, then one write,
+   * so a concurrent update cannot be overwritten by a stale copy. A store
+   * nobody has read yet is skipped; its load re-derives everything anyway.
+   * Never rejects.
+   */
+  async reconcileDecisions(): Promise<void> {
     try {
-      // All in one synchronous pass, then one write: awaiting per link would let
-      // a concurrent update land between them and be overwritten by a stale copy.
-      const links = this.cache();
+      if (!this.links) return;
+      const holders = [...this.links.values()].filter((l) => l.decisionIds.length > 0);
+      const pending = this.pendingFor(holders);
       const changed: string[] = [];
-      for (const l of links.values()) {
-        if (!l.decisionIds.includes(decisionId)) continue;
-        const next = this.rederive(l);
+      for (const l of holders) {
+        const next = this.rederive(l, pending);
         if (next.state === l.state && next.reason === l.reason) continue;
-        links.set(l.id, { ...next, updatedAt: this.now() });
+        this.links.set(l.id, { ...next, updatedAt: this.now() });
         changed.push(l.id);
       }
       if (changed.length === 0) return;
       this.emit(changed);
       await this.persist();
     } catch (err) {
-      console.warn('[workLinks] refreshDecision failed:', err);
+      console.warn('[workLinks] reconcileDecisions failed:', err);
     }
   }
 
@@ -209,38 +235,60 @@ export class WorkLinkStore {
       if (link.a2aTaskId) byTask.set(link.a2aTaskId, link);
     }
     this.links = links;
+    // Decisions may have moved while the file was not being written (a crash
+    // between an answer and its write): settle every stored state once.
+    const pending = this.pendingFor([...links.values()]);
+    let stale = false;
+    for (const l of [...links.values()]) {
+      const next = this.rederive(l, pending);
+      if (next.state === l.state && next.reason === l.reason) continue;
+      links.set(l.id, next);
+      stale = true;
+    }
+    if (stale) void this.persist();
     return links;
   }
 
+  private rawByTask(a2aTaskId: string): WorkLink | undefined {
+    for (const l of this.cache().values()) if (l.a2aTaskId === a2aTaskId) return l;
+    return undefined;
+  }
+
   private taskHeldByOther(a2aTaskId: string, id: string): boolean {
-    const holder = this.getByTaskId(a2aTaskId);
+    const holder = this.rawByTask(a2aTaskId);
     return !!holder && holder.id !== id;
   }
 
-  private rederive(link: WorkLink): WorkLink {
-    const pending = link.decisionIds.length > 0 ? this.pendingDecisionIds() : new Set<string>();
+  /** Pending decision ids, read only when one of these links holds a decision. */
+  private pendingFor(links: WorkLink[]): Set<string> {
+    return links.some((l) => l.decisionIds.length > 0) ? this.pendingDecisionIds() : new Set<string>();
+  }
+
+  private rederive(link: WorkLink, pending: Set<string> = this.pendingFor([link])): WorkLink {
     const { state, reason } = deriveLinkState(link, link.decisionIds.some((d) => pending.has(d)));
     const next: WorkLink = { ...link, state };
     if (reason) next.reason = reason;
     else delete next.reason;
+    if (state !== 'abandoned') delete next.manualClose;
     return next;
   }
 
   private async commit(link: WorkLink): Promise<WorkLink> {
     const links = this.cache();
     links.set(link.id, link);
-    const evicted = this.evict(links);
+    const evicted = this.evict(links, link.id);
     this.emit([link.id, ...evicted]);
     await this.persist();
     return link;
   }
 
-  private evict(links: Map<string, WorkLink>): string[] {
+  /** Drop the oldest links past the cap, ended ones first, never `keepId`. */
+  private evict(links: Map<string, WorkLink>, keepId: string): string[] {
     if (links.size <= MAX_WORK_LINKS) return [];
     const ended = (l: WorkLink) => l.state === 'done' || l.state === 'abandoned';
-    const order = [...links.values()].sort(
-      (a, b) => Number(ended(b)) - Number(ended(a)) || a.updatedAt - b.updatedAt,
-    );
+    const order = [...links.values()]
+      .filter((l) => l.id !== keepId)
+      .sort((a, b) => Number(ended(b)) - Number(ended(a)) || a.updatedAt - b.updatedAt);
     const gone = order.slice(0, links.size - MAX_WORK_LINKS).map((l) => l.id);
     for (const id of gone) links.delete(id);
     return gone;
@@ -276,8 +324,12 @@ function stripUndefined<T extends object>(o: T): Partial<T> {
 
 let shared: WorkLinkStore | null = null;
 
-/** The process-wide store under the wmux data dir. */
+/** The process-wide store under the wmux data dir, kept in step with decisions. */
 export function getWorkLinkStore(): WorkLinkStore {
-  shared ??= new WorkLinkStore();
+  if (!shared) {
+    const store = new WorkLinkStore();
+    onDecisionsChanged(() => void store.reconcileDecisions());
+    shared = store;
+  }
   return shared;
 }

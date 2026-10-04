@@ -89,6 +89,10 @@ export interface WorkLink {
   state: WorkLinkState;
   /** Only on needs-you and blocked. */
   reason?: WorkLinkReason;
+  /** Set only by a hand close (setState 'abandoned'); only on abandoned. A
+   *  derived abandoned (canceled task, closed PR) never carries it, so it
+   *  revives when the task or PR reopens. */
+  manualClose?: true;
   /** Decisions raised about this work, oldest first, at most WORK_LINK_LIMITS.MAX_DECISIONS. */
   decisionIds: string[];
   createdAt: number;
@@ -270,6 +274,10 @@ export function parseWorkLink(v: unknown): WorkLink | null {
     if (!isWorkLinkReason(v.reason) || !stateTakesReason(out.state)) return null;
     out.reason = v.reason;
   }
+  if (v.manualClose !== undefined) {
+    if (v.manualClose !== true || out.state !== 'abandoned') return null;
+    out.manualClose = true;
+  }
   if (v.decisionIds !== undefined) {
     if (!Array.isArray(v.decisionIds) || !v.decisionIds.every(isWorkLinkId)) return null;
     out.decisionIds = [...new Set(v.decisionIds as string[])].slice(-WORK_LINK_LIMITS.MAX_DECISIONS);
@@ -339,6 +347,8 @@ export function matchesWorkLinkFilter(link: WorkLink, f: WorkLinkFilter): boolea
 export interface WorkLinkDeriveInput {
   state: WorkLinkState;
   reason?: WorkLinkReason;
+  /** Closed by hand (setState 'abandoned'). */
+  manualClose?: boolean;
   a2aState?: TaskState;
   /** The link points at a PR (its status may still be unknown). */
   hasPr: boolean;
@@ -368,7 +378,7 @@ function prPhase(hasPr: boolean, pr: WorkLinkPrStatus | undefined): DerivedWorkL
 /**
  * A link's state from what is known about it. Total and pure; first match wins:
  *   1. a merged PR                      → done
- *   2. abandoned stays abandoned (only a merge revives it)
+ *   2. closed by hand                   → abandoned (only a merge revives it)
  *   3. a canceled task                  → abandoned
  *   4. a pending decision               → needs-you (decision)
  *   5. the task's state: input-required → needs-you, submitted → queued,
@@ -381,7 +391,7 @@ function prPhase(hasPr: boolean, pr: WorkLinkPrStatus | undefined): DerivedWorkL
 export function deriveWorkLinkState(input: WorkLinkDeriveInput): DerivedWorkLinkState {
   const { a2aState, hasPr, prStatus, pendingDecision } = input;
   if (prStatus?.state === 'merged') return { state: 'done' };
-  if (input.state === 'abandoned') return { state: 'abandoned' };
+  if (input.manualClose) return { state: 'abandoned' };
   if (a2aState === 'canceled') return { state: 'abandoned' };
   if (pendingDecision) return { state: 'needs-you', reason: 'decision' };
   switch (a2aState) {
@@ -410,6 +420,7 @@ export function deriveLinkState(link: WorkLink, pendingDecision: boolean): Deriv
   return deriveWorkLinkState({
     state: link.state,
     reason: link.reason,
+    manualClose: link.manualClose === true,
     a2aState: link.a2aState,
     hasPr: !!link.pr,
     prStatus: link.prStatus,

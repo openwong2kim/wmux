@@ -18,7 +18,10 @@ const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v 
  * task. A send from a commander brain is a Moa delegation; anything else is
  * manual.
  */
-export function workLinkFromSentTask(reply: unknown, opts: { fromCommander: boolean }): WorkLinkUpsert | null {
+export function workLinkFromSentTask(
+  reply: unknown,
+  opts: { fromCommander: boolean; workLinkId?: string },
+): WorkLinkUpsert | null {
   if (!isRecord(reply) || reply.ok !== true || !isRecord(reply.task)) return null;
   const task = reply.task;
   const meta = isRecord(task.metadata) ? task.metadata : {};
@@ -33,6 +36,7 @@ export function workLinkFromSentTask(reply: unknown, opts: { fromCommander: bool
   const fromPane = str(from.paneId);
   const title = str(meta.title);
   return {
+    ...(opts.workLinkId ? { id: opts.workLinkId } : {}),
     origin: opts.fromCommander ? 'moa' : 'manual',
     a2aTaskId: taskId,
     a2aState: stateOfTask(task) ?? 'submitted',
@@ -42,19 +46,48 @@ export function workLinkFromSentTask(reply: unknown, opts: { fromCommander: bool
   };
 }
 
+/** The state a reopen left the task in: the daemon's snapshot, or `submitted`
+ *  for a cache-only reopen (the renderer's reopenTask). Undefined when the
+ *  call reopened nothing. */
+export function reopenedState(params: Record<string, unknown>): TaskState | undefined {
+  if (params.daemonReopenedTask) return stateOfTask(params.daemonReopenedTask);
+  return params.localReopen === true ? 'submitted' : undefined;
+}
+
 /** The state of an A2A task snapshot, when it carries a valid one. */
 export function stateOfTask(task: unknown): TaskState | undefined {
   const state = isRecord(task) && isRecord(task.status) ? task.status.state : undefined;
   return isTaskState(state) ? state : undefined;
 }
 
-/** Store the link for a sent task. Never rejects. */
+/**
+ * Store the link for a sent task. A named link (`id`) is joined only while it
+ * has no other task and the task goes to the workspace it names as owner; it
+ * keeps its origin and title. Otherwise the task gets a link of its own.
+ * Never rejects.
+ */
 export function recordSentTask(link: WorkLinkUpsert | null, store?: WorkLinkStore): Promise<void> {
   if (!link) return Promise.resolve();
-  return (store ?? getWorkLinkStore()).upsert(link).then(
-    () => undefined,
-    () => undefined,
-  );
+  try {
+    const s = store ?? getWorkLinkStore();
+    let input = link;
+    if (link.id) {
+      const named = s.get(link.id);
+      const joinable =
+        !!named &&
+        (!named.a2aTaskId || named.a2aTaskId === link.a2aTaskId) &&
+        named.owner.workspaceId === link.owner?.workspaceId;
+      input = { ...link };
+      if (joinable) input.title = named?.title ?? link.title;
+      else delete input.id;
+    }
+    return s.upsert(input).then(
+      () => undefined,
+      () => undefined,
+    );
+  } catch {
+    return Promise.resolve();
+  }
 }
 
 /** Move an existing link to a task state it reached. A task with no link is

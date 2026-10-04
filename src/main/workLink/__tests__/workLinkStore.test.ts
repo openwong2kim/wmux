@@ -73,13 +73,24 @@ describe('WorkLinkStore', () => {
     pending.add('dec-1');
     expect(await s.attachDecision(link.id, 'dec-1')).toMatchObject({ state: 'needs-you', reason: 'decision', decisionIds: ['dec-1'] });
     pending.delete('dec-1');
-    await s.refreshDecision('dec-1');
+    await s.reconcileDecisions();
     expect(s.get(link.id)).toMatchObject({ state: 'running', decisionIds: ['dec-1'] });
     expect(s.get(link.id)).not.toHaveProperty('reason');
     expect(await s.attachDecision('missing', 'dec-2')).toBeNull();
   });
 
-  it('refreshes every link holding an answered decision, keeping their other fields', async () => {
+  it('reads never show a decision that is no longer pending, even before a reconcile', async () => {
+    const s = make();
+    const link = (await s.upsert({ ...sent, a2aState: 'working' }))!;
+    pending.add('dec-1');
+    await s.attachDecision(link.id, 'dec-1');
+    pending.clear(); // cleared by a loop reset: no answer, no hook yet
+    expect(s.get(link.id)?.state).toBe('running');
+    expect(s.getByTaskId('task-1')?.state).toBe('running');
+    expect(s.list({ states: ['needs-you'] })).toEqual([]);
+  });
+
+  it('reconciles every link holding a changed decision in one pass', async () => {
     const s = make();
     const a = (await s.upsert({ ...sent, a2aState: 'working' }))!;
     const b = (await s.upsert({ ...sent, a2aTaskId: 'task-2', a2aState: 'working' }))!;
@@ -89,21 +100,67 @@ describe('WorkLinkStore', () => {
     pending.clear();
     const seen: string[][] = [];
     s.onChange((ids) => seen.push(ids));
-    const refresh = s.refreshDecision('dec-1');
-    await s.upsert({ a2aTaskId: 'task-2', title: 'landed mid-refresh' });
-    await refresh;
+    const done = s.reconcileDecisions();
+    await s.upsert({ a2aTaskId: 'task-2', title: 'landed mid-reconcile' });
+    await done;
+    await s.flush();
     expect(seen[0]).toEqual([a.id, b.id]);
-    expect(s.get(a.id)?.state).toBe('running');
-    expect(s.get(b.id)).toMatchObject({ state: 'running', title: 'landed mid-refresh' });
+    expect(s.get(b.id)).toMatchObject({ state: 'running', title: 'landed mid-reconcile' });
+    // Durable: a fresh load sees the settled states.
+    expect(make().get(a.id)?.state).toBe('running');
   });
 
-  it('setState: abandoned sticks, others yield to the next derivation', async () => {
+  it('settles stored states on load (a crash between an answer and its write)', async () => {
+    const s = make();
+    const link = (await s.upsert({ ...sent, a2aState: 'working' }))!;
+    pending.add('dec-1');
+    await s.attachDecision(link.id, 'dec-1');
+    await s.flush();
+    pending.clear();
+    const fresh = make();
+    expect(fresh.get(link.id)?.state).toBe('running');
+    await fresh.flush();
+    expect(JSON.parse(readFileSync(getWorkLinkPath(dir), 'utf8')).links[0].state).toBe('running');
+  });
+
+  it('a hand close sticks; a derived abandoned revives when the task or PR reopens', async () => {
     const s = make();
     const link = (await s.upsert(sent))!;
-    expect(await s.setState(link.id, 'blocked')).toMatchObject({ state: 'blocked', reason: 'other' });
-    expect(await s.upsert({ a2aTaskId: 'task-1', a2aState: 'working' })).toMatchObject({ state: 'running' });
-    expect(await s.setState(link.id, 'abandoned', 'conflict')).not.toHaveProperty('reason');
-    expect(await s.upsert({ a2aTaskId: 'task-1', a2aState: 'completed' })).toMatchObject({ state: 'abandoned' });
+    expect(await s.setState(link.id, 'abandoned', 'conflict')).toMatchObject({ state: 'abandoned', manualClose: true });
+    expect(s.get(link.id)).not.toHaveProperty('reason');
+    expect(await s.upsert({ a2aTaskId: 'task-1', a2aState: 'working' })).toMatchObject({ state: 'abandoned' });
+
+    await s.upsert({ ...sent, a2aTaskId: 'task-2', a2aState: 'canceled' });
+    expect(s.getByTaskId('task-2')?.state).toBe('abandoned');
+    expect(await s.upsert({ a2aTaskId: 'task-2', a2aState: 'submitted' })).toMatchObject({ state: 'queued' });
+
+    const pr = { host: 'github.com', owner: 'acme', repo: 'widget', number: 7 };
+    const status = (state: 'open' | 'closed') => ({ state, checks: null, reviewDecision: '', mergeable: '', observedAt: 1 });
+    await s.upsert({ ...sent, a2aTaskId: 'task-3', a2aState: 'completed', pr, prStatus: status('closed') });
+    expect(s.getByTaskId('task-3')?.state).toBe('abandoned');
+    expect(await s.upsert({ a2aTaskId: 'task-3', prStatus: status('open') })).toMatchObject({ state: 'review' });
+  });
+
+  it('setState other than abandoned holds only while task and PR say nothing', async () => {
+    const s = make();
+    const bare = (await s.upsert({ origin: 'manual', owner: { workspaceId: 'ws-1' } }))!;
+    expect(await s.setState(bare.id, 'blocked')).toMatchObject({ state: 'blocked', reason: 'other' });
+    const tasked = (await s.upsert({ ...sent, a2aState: 'working' }))!;
+    expect(await s.setState(tasked.id, 'blocked')).toMatchObject({ state: 'running' });
+  });
+
+  it('promotes origin manual to issue, and nothing else', async () => {
+    const s = make();
+    const issue = { host: 'github.com', owner: 'acme', repo: 'widget', number: 42, title: 'Crash', url: 'https://github.com/acme/widget/issues/42' };
+    const m = (await s.upsert(sent))!;
+    expect(await s.upsert({ id: m.id, origin: 'issue', issue })).toMatchObject({ origin: 'issue', issue });
+    const moa = (await s.upsert({ ...sent, a2aTaskId: 'task-2', origin: 'moa' }))!;
+    expect(await s.upsert({ id: moa.id, origin: 'issue', issue })).toMatchObject({ origin: 'moa', issue });
+    const i = (await s.upsert({ origin: 'issue', issue, owner: { workspaceId: 'ws-1' } }))!;
+    expect(await s.upsert({ id: i.id, origin: 'manual' })).toMatchObject({ origin: 'issue' });
+    expect(await s.upsert({ id: m.id, origin: 'issue' })).toMatchObject({ origin: 'issue' });
+    const bad = (await s.upsert({ ...sent, a2aTaskId: 'task-3' }))!;
+    expect(await s.upsert({ id: bad.id, origin: 'issue' })).toBeNull(); // issue origin needs an issue
   });
 
   it('tells listeners which links changed', async () => {
@@ -148,5 +205,18 @@ describe('WorkLinkStore', () => {
     expect(s.list()).toHaveLength(MAX_WORK_LINKS);
     expect(s.get(done.id)).toBeNull();
     expect(s.getByTaskId('t-0')).not.toBeNull();
+  });
+
+  it('never evicts the link being committed', async () => {
+    clock = 5;
+    const stuck = () => 5;
+    const ended = Array.from({ length: MAX_WORK_LINKS + 2 }, (_, i) => ({
+      id: `l-${i}`, origin: 'manual', owner: { workspaceId: 'ws-1' }, state: 'done', decisionIds: [], createdAt: 5, updatedAt: 5,
+    }));
+    writeFileSync(getWorkLinkPath(dir), JSON.stringify({ version: 1, links: ended }));
+    const s = new WorkLinkStore({ dir, pendingDecisionIds: () => pending, now: stuck });
+    expect(await s.attachDecision('l-0', 'dec-1')).not.toBeNull();
+    expect(s.get('l-0')?.decisionIds).toEqual(['dec-1']);
+    expect(s.list()).toHaveLength(MAX_WORK_LINKS);
   });
 });
