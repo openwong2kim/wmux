@@ -14,6 +14,7 @@ import { useTranscript } from '../../Chat/useTranscript';
 import { transcriptMessages } from '../../Chat/chatMessages';
 import { ChatCodeBlockContext, ChatPtyContext, UserText } from '../../Chat/ChatMessage';
 import { Thread } from '../../Chat/assistant-ui/Thread';
+import { useComposerDraft } from '../../Chat/chatDrafts';
 import Button from '../../ui/Button';
 import { NEEDS_YOU_ROW } from './MoaWaitingOnYou';
 import type { ChatBridgeApi } from '../../../../shared/transcript/turnEvents';
@@ -133,6 +134,8 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
   }, [busy, data.events, onSend, t]);
 
   const runtime = useExternalStoreRuntime({ messages, isRunning: false, isLoading: data.loading, isSendDisabled: busy, onNew });
+  // The chat unmounts for the terminal view and with the panel: keep the draft.
+  useComposerDraft(runtime, `moa:${hqId ?? ''}:${data.status.agentSessionId ?? 'new'}`);
 
   // Waiting on a permission prompt (or any dialog) that only the TUI shows.
   // Main's appends carry no status on this path, so `agentStatus` refreshes

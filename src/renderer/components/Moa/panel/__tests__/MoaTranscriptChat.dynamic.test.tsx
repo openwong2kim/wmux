@@ -159,6 +159,19 @@ describe('MoaTranscriptChat — commands', () => {
   });
 });
 
+describe('MoaTranscriptChat — drafts', () => {
+  it('a draft survives the swap to the terminal (or closing the panel) and back', async () => {
+    const { api } = fakeApi();
+    const chat = () => <MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />;
+    await act(async () => root.render(chat()));
+    await type('Half-written question');
+    await act(async () => root.render(<div />)); // the terminal view replaces the chat
+    expect(host.querySelector('textarea')).toBeNull();
+    await act(async () => root.render(chat()));
+    expect(input().value).toBe('Half-written question');
+  });
+});
+
 describe('MoaTranscriptChat — code blocks', () => {
   it('fetches a code-block body from main, never from the daemon pane bridge', async () => {
     const marker = String.fromCharCode(0);

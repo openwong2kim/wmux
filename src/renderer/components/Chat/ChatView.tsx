@@ -15,9 +15,10 @@ import type { TurnEvent } from '../../../shared/transcript/turnEvents';
 import { registerChatDropTarget, withoutImageTokens, type ChatAttachment } from './chatAttachments';
 import { ChatAttachmentChips, ChatSentImages } from './ChatAttachmentViews';
 import { CHAT_ATTACHMENT_LIMIT } from '../../../shared/transcript/chatAttachments';
+import { useComposerDraft } from './chatDrafts';
 
-// Drafts survive view/workspace changes, but never cross conversation boundaries.
-const drafts = new Map<string, string>();
+// Drafts (chatDrafts.ts) and attachments survive view/workspace changes, but
+// never cross conversation boundaries.
 const attachmentDrafts = new Map<string, ChatAttachment[]>();
 // Queued sends outlive a switch to Terminal and back until Claude records them.
 const pendingSends = new Map<string, PendingSend[]>();
@@ -217,18 +218,7 @@ function ChatThread({ ptyId, data, onTerminal }: { ptyId: string; data: ReturnTy
   // optimistic reply row and make Enter insert a newline instead of sending.
   const runtime = useExternalStoreRuntime({ messages, isRunning: sending, isLoading: data.loading,
     isSendDisabled: canLaunch ? sending || data.loading : launched || readOnly || blocked || (busy && !canQueue) || uncertain || data.error || !data.status.available || data.status.agentAlive === false || sending, onNew });
-  useEffect(() => {
-    const session = data.status.agentSessionId ?? 'new';
-    const key = `${ptyId}:${session}`;
-    const composer = runtime.thread.composer;
-    composer.setText(drafts.get(key) ?? '');
-    return composer.subscribe(() => {
-      const text = composer.getState().text;
-      drafts.delete(key);
-      if (text) drafts.set(key, text);
-      if (drafts.size > 100) drafts.delete(drafts.keys().next().value!);
-    });
-  }, [runtime, ptyId, data.status.agentSessionId]);
+  useComposerDraft(runtime, `${ptyId}:${data.status.agentSessionId ?? 'new'}`);
   // A send in flight owns the composer until its pastes land.
   const showStop = canStop && (busy && !blocked && !sending || stopState === 'stopping');
   const runningHint = busy && !managed && !blocked
