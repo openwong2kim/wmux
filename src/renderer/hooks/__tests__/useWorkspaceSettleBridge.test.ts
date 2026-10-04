@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { WorkspaceSettleChange, WorkspaceSettleSnapshot } from '../../../shared/workspaceSettle';
 import { WORKSPACE_SETTLE_UNDO_MS } from '../../../shared/workspaceSettle';
 import { useStore } from '../../stores';
-import { applyWorkspaceSettleChanges } from '../useWorkspaceSettleBridge';
+import { applyWorkspaceSettleChanges, IDLE_DAYS_SEND_DELAY_MS, sendWorkspaceSettleIdleDays } from '../useWorkspaceSettleBridge';
 
 const snapshot: WorkspaceSettleSnapshot = { states: {}, idleDays: 3 };
 const command = vi.fn(async () => ({ ok: true as const, snapshot }));
@@ -58,5 +58,21 @@ describe('applyWorkspaceSettleChanges', () => {
     });
     expect(useStore.getState().toasts).toEqual([]);
     expect(command).not.toHaveBeenCalled();
+  });
+});
+
+describe('sendWorkspaceSettleIdleDays', () => {
+  it('sends only the value typing settled on', () => {
+    vi.useFakeTimers();
+    try {
+      sendWorkspaceSettleIdleDays(1);
+      vi.advanceTimersByTime(IDLE_DAYS_SEND_DELAY_MS - 1);
+      sendWorkspaceSettleIdleDays(14);
+      vi.advanceTimersByTime(IDLE_DAYS_SEND_DELAY_MS);
+      expect(command).toHaveBeenCalledTimes(1);
+      expect(command).toHaveBeenCalledWith({ op: 'setIdleDays', days: 14 });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

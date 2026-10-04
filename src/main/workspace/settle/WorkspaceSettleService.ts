@@ -43,6 +43,10 @@ const UNDO_GRACE_MS = 3_000;
 /** Undoing an automatic unsnooze re-snoozes for at least this long. */
 const RESNOOZE_MS = 60 * 60 * 1000;
 const MAX_SNOOZE_MS = 366 * DAY_MS;
+/** A running agent keeps touching its workspace on every status push; the
+ *  idle clock only needs to move in steps this size, so the file is not
+ *  rewritten for each one. */
+const ACTIVITY_STEP_MS = 30_000;
 
 export interface PersistedWorkspaceSettle {
   version: 1;
@@ -107,6 +111,8 @@ export class WorkspaceSettleService {
   private readonly undo = new Map<string, UndoRecord>();
   private readonly listeners = new Set<Listener>();
   private changeSeq = 0;
+  /** A row changed in a way the snapshot does not show (activity time, PR key). */
+  private dirty = false;
 
   constructor(ports: WorkspaceSettleServicePorts = {}) {
     this.now = ports.now ?? Date.now;
@@ -152,11 +158,16 @@ export class WorkspaceSettleService {
     // Forget closed workspaces only when the tree came from the saved session;
     // a failed session load must not wipe the persisted state.
     if (payload.sessionRestored === true) {
-      for (const id of [...this.rows.keys()]) if (!present.has(id)) this.rows.delete(id);
+      for (const id of [...this.rows.keys()]) {
+        if (!present.has(id)) {
+          this.rows.delete(id);
+          this.dirty = true;
+        }
+      }
       for (const id of [...this.awaitingBefore.keys()]) if (!present.has(id)) this.awaitingBefore.delete(id);
     }
     this.evaluateAll(now, changes);
-    this.commit(changes, true);
+    this.commit(changes, false);
   }
 
   /** An agent turn ran (any lifecycle signal), or it is waiting on the user. */
@@ -166,7 +177,7 @@ export class WorkspaceSettleService {
     const changes: WorkspaceSettleChange[] = [];
     this.touch(workspaceId, now, changes);
     if (kind === 'agent.awaiting_input') this.attention(workspaceId, now, changes);
-    this.commit(changes, true);
+    this.commit(changes, false);
   }
 
   /** Input reached a PTY. Throttled per PTY before any lookup: this is the keystroke path. */
@@ -179,7 +190,7 @@ export class WorkspaceSettleService {
     this.inputNotedAt.set(ptyId, now);
     const changes: WorkspaceSettleChange[] = [];
     this.touch(entry.id, now, changes);
-    this.commit(changes, true);
+    this.commit(changes, false);
   }
 
   /** The workspace needs the user (CI failure, approval). */
@@ -216,8 +227,9 @@ export class WorkspaceSettleService {
     const changes: WorkspaceSettleChange[] = [];
     if (cmd.op === 'setIdleDays') {
       if (typeof cmd.days !== 'number' || !Number.isFinite(cmd.days)) return { ok: false, error: 'invalid' };
+      // Applied by the next tick, not here: a field typed digit by digit
+      // ("14" passes through 1) must not settle everything on the way.
       this.idleDays = clampIdleDays(cmd.days);
-      this.evaluateAll(now, changes);
       this.commit(changes, true, true);
       return { ok: true, snapshot: this.snapshot() };
     }
@@ -286,6 +298,7 @@ export class WorkspaceSettleService {
     if (!row) {
       row = { lastActivityAt: now };
       this.rows.set(id, row);
+      this.dirty = true;
     }
     return row;
   }
@@ -331,7 +344,10 @@ export class WorkspaceSettleService {
 
   private touch(id: string, now: number, changes: WorkspaceSettleChange[]): void {
     const row = this.row(id, now);
-    row.lastActivityAt = Math.max(row.lastActivityAt, now);
+    if (now - row.lastActivityAt >= ACTIVITY_STEP_MS) {
+      row.lastActivityAt = now;
+      this.dirty = true;
+    }
     if (row.settled) {
       const prev = this.stateOf(row);
       delete row.settled;
@@ -413,7 +429,10 @@ export class WorkspaceSettleService {
   }
 
   private commit(changes: WorkspaceSettleChange[], dirty: boolean, forceEmit = false): void {
-    if (dirty || changes.length > 0) this.save(this.persisted());
+    if (dirty || this.dirty || changes.length > 0) {
+      this.dirty = false;
+      this.save(this.persisted());
+    }
     if (changes.length === 0 && !forceEmit) return;
     this.pruneUndo(this.now());
     const payload: WorkspaceSettleChangedPayload = { snapshot: this.snapshot(), changes };

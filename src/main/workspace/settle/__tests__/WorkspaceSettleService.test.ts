@@ -75,6 +75,9 @@ describe('WorkspaceSettleService — settle rules', () => {
     t.svc.noteMirror(mirror([{ id: 'a' }]));
     t.advance(DAY);
     expect(t.svc.command({ op: 'setIdleDays', days: 1 })).toMatchObject({ ok: true, snapshot: { idleDays: 1 } });
+    // Not on the keystroke: the next tick applies it.
+    expect(t.state('a')).toBeUndefined();
+    t.svc.tick();
     expect(t.state('a')?.settled?.reason).toBe('idle');
   });
 
@@ -266,6 +269,18 @@ describe('WorkspaceSettleService — undo', () => {
 });
 
 describe('WorkspaceSettleService — persistence', () => {
+  it('does not rewrite the file for every status push of a running agent', () => {
+    const t = setup();
+    t.svc.noteMirror(mirror([{ id: 'a', status: 'running' }]));
+    const first = t.saved();
+    t.advance(300);
+    t.svc.noteMirror(mirror([{ id: 'a', status: 'running' }]));
+    expect(t.saved()).toBe(first);
+    t.advance(30_000);
+    t.svc.noteMirror(mirror([{ id: 'a', status: 'running' }]));
+    expect(t.saved()).not.toBe(first);
+  });
+
   it('round-trips through the persisted shape', () => {
     const t = setup();
     t.svc.noteMirror(mirror([{ id: 'a' }, { id: 'b' }]));

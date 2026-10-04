@@ -40,6 +40,22 @@ export function sendWorkspaceSettleCommand(command: WorkspaceSettleCommand): Pro
   });
 }
 
+/** How long the idle-days field waits for typing to pause before it sends. */
+export const IDLE_DAYS_SEND_DELAY_MS = 600;
+let idleDaysTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Send the idle-days setting once typing pauses, so "14" is one command and
+ * never a passing 1.
+ */
+export function sendWorkspaceSettleIdleDays(days: number): void {
+  if (idleDaysTimer) clearTimeout(idleDaysTimer);
+  idleDaysTimer = setTimeout(() => {
+    idleDaysTimer = null;
+    void sendWorkspaceSettleCommand({ op: 'setIdleDays', days });
+  }, IDLE_DAYS_SEND_DELAY_MS);
+}
+
 /** Apply one push: replace the snapshot, then toast each undoable change. */
 export function applyWorkspaceSettleChanges(payload: WorkspaceSettleChangedPayload): void {
   const store = useStore.getState();

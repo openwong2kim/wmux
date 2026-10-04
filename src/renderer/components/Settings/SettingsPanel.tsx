@@ -93,7 +93,7 @@ import TokenUsageTab from './tabs/TokenUsageTab';
 import './settings.css';
 import { SettingsSection, SettingRow, SettingNote } from './SettingsLayout';
 import { MAX_WORKSPACE_IDLE_DAYS, MIN_WORKSPACE_IDLE_DAYS } from '../../../shared/workspaceSettle';
-import { sendWorkspaceSettleCommand } from '../../hooks/useWorkspaceSettleBridge';
+import { sendWorkspaceSettleIdleDays } from '../../hooks/useWorkspaceSettleBridge';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -3977,7 +3977,7 @@ function TabAppearance() {
             label={t('settings.workspaceSettleIdleDays')}
             onChange={(days) => {
               useStore.getState().setWorkspaceSettleIdleDays(days);
-              void sendWorkspaceSettleCommand({ op: 'setIdleDays', days });
+              sendWorkspaceSettleIdleDays(days);
             }}
           />
         </SettingRow>
