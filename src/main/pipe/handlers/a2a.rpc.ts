@@ -17,6 +17,7 @@ import type { PortSnapshot, SnapshotFn } from '../../pty/portWatch';
 import { walkToOwningAnchor } from '../../pty/serverSidePidWalk';
 import type { OwningAnchor } from '../../pty/serverSidePidWalk';
 import { recordSentTask, recordTaskState, reopenedState, stateOfTask, workLinkFromSentTask } from '../../workLink/a2aProducer';
+import { noteTrackReply } from '../../deck/trackRecordFeed';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -706,6 +707,8 @@ export function registerA2aRpc(
     // A reply that reopened an ended task moves its link back with it.
     if (params.taskId && isRecord(result) && result.ok === true) {
       void recordTaskState(params.taskId, reopenedState(sendParams));
+      // Track record: a reply from anyone but the task's owner is a nudge.
+      noteTrackReply(params.taskId, sendParams.workspaceId);
     }
 
     // execute → origin decision (LanLink PR-1, positive-allow):

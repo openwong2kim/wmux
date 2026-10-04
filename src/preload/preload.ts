@@ -1211,6 +1211,21 @@ const electronAPI = {
       return () => { ipcRenderer.removeListener(IPC.WORK_LINK_CHANGED, listener); };
     },
   },
+  // Moa's track record: the weekly retro card and its settings.
+  trackRecord: {
+    getRetro: (workspaceId: string) =>
+      ipcRenderer.invoke(IPC.TRACK_RECORD_RETRO_GET, { workspaceId }) as Promise<{ card: import('../shared/trackRecord').RetroCard | null }>,
+    dismissRetro: () => ipcRenderer.invoke(IPC.TRACK_RECORD_RETRO_DISMISS) as Promise<{ ok: boolean }>,
+    getSchedule: () => ipcRenderer.invoke(IPC.TRACK_RECORD_SCHEDULE_GET) as Promise<import('../shared/trackRecord').RetroSchedule>,
+    setSchedule: (patch: Partial<import('../shared/trackRecord').RetroSchedule>) =>
+      ipcRenderer.invoke(IPC.TRACK_RECORD_SCHEDULE_SET, patch) as Promise<import('../shared/trackRecord').RetroSchedule>,
+    clear: () => ipcRenderer.invoke(IPC.TRACK_RECORD_CLEAR) as Promise<{ ok: boolean }>,
+    onChanged: (callback: () => void) => {
+      const listener = () => callback();
+      ipcRenderer.on(IPC.TRACK_RECORD_CHANGED, listener);
+      return () => { ipcRenderer.removeListener(IPC.TRACK_RECORD_CHANGED, listener); };
+    },
+  },
   // Deck Git 탭 — worktree list/add/remove(렌더러 전용, 파이프 미노출).
   worktree: {
     list: (repoPath: string) =>

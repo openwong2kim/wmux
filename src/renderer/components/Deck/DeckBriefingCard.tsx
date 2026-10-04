@@ -50,6 +50,7 @@ import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
 import { IconChevron } from '../icons';
 import { onBriefingConfigChanged } from './deckBriefingConfigBus';
+import { MoaRetroCard } from '../Moa/MoaRetroCard';
 import {
   briefingHasContent,
   briefingSignal,
@@ -219,7 +220,18 @@ export function briefingDeltaLine(changed: BriefingChange, t: T): string {
   );
 }
 
-export function DeckBriefingCard({
+/** The briefing, with Moa's weekly retro on top when main has one for this
+ *  workspace (MoaRetroCard renders nothing otherwise). */
+export function DeckBriefingCard(props: Parameters<typeof DeckBriefingBody>[0]): React.ReactElement {
+  return (
+    <>
+      <MoaRetroCard workspaceId={props.workspaceId} t={props.t ?? (() => '')} />
+      <DeckBriefingBody {...props} />
+    </>
+  );
+}
+
+function DeckBriefingBody({
   api,
   onStream,
   workspaceId,

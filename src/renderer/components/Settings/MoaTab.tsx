@@ -14,6 +14,7 @@ import { isMoaHqWorkspace } from '../../stores/slices/moaSlice';
 import { useT } from '../../hooks/useT';
 import { CLAUDE_EFFORT_LEVELS, CLAUDE_MODEL_OPTIONS } from '../../../shared/claudeModels';
 import { MOA_MAX_TURNS_PER_HOUR_RANGE, type MoaConfigPatch } from '../../../shared/moa';
+import type { RetroSchedule } from '../../../shared/trackRecord';
 import type { AgentMode } from '../../../main/deck/deckAutonomyStore';
 import { notifyBriefingConfigChanged } from '../Deck/deckBriefingConfigBus';
 import { notifyAgentModeChanged, onAgentModeChanged } from '../Deck/deckModeBus';
@@ -368,6 +369,41 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
       })
       .catch(() => setBriefingAutoShow(!autoShow));
   };
+  // Weekly retro + track record — persisted in MAIN (track-record.json). Read
+  // on mount; each change returns the stored schedule.
+  const [retro, setRetro] = useState<RetroSchedule | null>(null);
+  const [statsCleared, setStatsCleared] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    window.electronAPI.trackRecord
+      ?.getSchedule()
+      .then((r) => { if (!cancelled) setRetro(r); })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
+  const patchRetro = (patch: Partial<RetroSchedule>) => {
+    setSaveFailed(false);
+    window.electronAPI.trackRecord
+      ?.setSchedule(patch)
+      .then(setRetro)
+      .catch(() => setSaveFailed(true));
+  };
+  const clearStats = () => {
+    setStatsCleared(false);
+    window.electronAPI.trackRecord
+      ?.clear()
+      .then((r) => setStatsCleared(r.ok))
+      .catch(() => setSaveFailed(true));
+  };
+  const dayOptions = [1, 2, 3, 4, 5, 6, 0].map((d) => ({
+    // 2024-01-07 was a Sunday: the locale names the weekday.
+    value: String(d),
+    label: new Date(2024, 0, 7 + d).toLocaleDateString(undefined, { weekday: 'long' }),
+  }));
+  const hourOptions = Array.from({ length: 24 }, (_, h) => ({
+    value: String(h),
+    label: new Date(2024, 0, 1, h).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }),
+  }));
   const options = CLAUDE_MODEL_OPTIONS.map((o) => ({
     value: o.value,
     label: o.value === '' ? t('settings.orchestratorModelDefault') : o.label,
@@ -573,6 +609,42 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
             aria-label={t('settings.channelsTabVisible')}
           />
         </SettingRow>
+      </SettingsSection>
+
+      <SettingsSection id="moaretro" title={t('moa.settings.retro')} data-testid="moa-retro">
+        <SettingRow label={t('moa.settings.retro')} description={t('moa.settings.retroDesc')}>
+          <Switch
+            checked={retro?.enabled ?? false}
+            onCheckedChange={(v) => patchRetro({ enabled: v })}
+            aria-label={t('moa.settings.retro')}
+            disabled={!retro}
+            data-testid="moa-retro-switch"
+          />
+        </SettingRow>
+        <SettingRow label={t('moa.settings.retroWhen')} description={t('moa.settings.retroWhenDesc')}>
+          <div className="flex items-center gap-2">
+            <MoaSelect
+              value={String(retro?.day ?? 1)}
+              onChange={(v) => patchRetro({ day: Number(v) })}
+              options={dayOptions}
+              label={t('moa.settings.retroDay')}
+            />
+            <MoaSelect
+              value={String(retro?.hour ?? 9)}
+              onChange={(v) => patchRetro({ hour: Number(v) })}
+              options={hourOptions}
+              label={t('moa.settings.retroHour')}
+            />
+          </div>
+        </SettingRow>
+        <SettingRow id="moastats" label={t('moa.settings.stats')} description={t('moa.settings.statsDesc')}>
+          <Button variant="destructive" size="md" onClick={clearStats} data-testid="moa-stats-clear">
+            {t('moa.settings.statsClear')}
+          </Button>
+        </SettingRow>
+        {statsCleared && (
+          <SettingNote data-testid="moa-stats-cleared">{t('moa.settings.statsCleared')}</SettingNote>
+        )}
       </SettingsSection>
 
       <SettingsSection title={t('settings.briefing')}>

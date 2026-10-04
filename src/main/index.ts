@@ -113,6 +113,11 @@ import { publishMoaPane, setMoaPanePush } from './deck/moaPaneFeed';
 import { reconcileOwnerDowngrades } from './worktask/taskAutonomy';
 import { createHqAutoPress, setHqAutoPress } from './deck/hqApprovalLane';
 import { getTaskLedger } from './deck/taskLedgerHost';
+import { createTrackRecordFeed, setTrackRecordFeed, type TrackApprovalRecord } from './deck/trackRecordFeed';
+import { getTrackRecordStore } from './deck/trackRecordStore';
+import { loadDeckDecisions, onDecisionsChanged } from './deck/deckDecisionStore';
+import { getWorkLinkStore } from './workLink/workLinkStore';
+import { agentSlug } from '../shared/trackRecord';
 import { onAutonomyWritten, loadWorkspaceMode } from './deck/deckAutonomyStore';
 import { getHqWorkspaceId, hqPresence, isHqApprovalPressEnabled, isMoaEnabled, onHqStoreWritten } from './deck/deckHqStore';
 import { registerDeckHandler } from './ipc/handlers/deck.handler';
@@ -1153,6 +1158,31 @@ const workspaceFactsPublisher = createWorkspaceFactsPublisher({
 registerWorkspaceFactsPublisher(workspaceFactsPublisher);
 // Any change to the lane's own inputs reaches the daemon at once.
 onHqStoreWritten(() => workspaceFactsPublisher.publishIfLaneChanged());
+// Moa's track record (deck/trackRecordFeed.ts): counts from wmux's own task
+// data, running only while Moa is on — the switch starts and stops it.
+const trackRecordFeed = createTrackRecordFeed({
+  store: getTrackRecordStore(),
+  isMoaEnabled: () => isMoaEnabled(),
+  workLinks: getWorkLinkStore(),
+  decisions: { load: () => loadDeckDecisions(), onChanged: onDecisionsChanged },
+  ledger: getTaskLedger(),
+  listResolvedApprovals: async () => {
+    if (!daemonClient?.isConnected) return null;
+    const listed = (await daemonClient.rpc('daemon.approvals.list', {})) as
+      | { recentlyResolved?: TrackApprovalRecord[] }
+      | undefined;
+    return listed?.recentlyResolved ?? [];
+  },
+  agentOf: (ws) => agentSlug(getWorkspaceMirror().getEntries()?.find((e) => e.id === ws)?.metadata?.agentName),
+  ownerOfTaskWorkspace: (ws) =>
+    getTaskLedger().list({}).find((e) => e.taskWorkspaceId === ws)?.ownerWorkspaceId ?? null,
+  onRetroChanged: () => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(IPC.TRACK_RECORD_CHANGED);
+  },
+});
+setTrackRecordFeed(trackRecordFeed);
+onHqStoreWritten(() => trackRecordFeed.sync());
+trackRecordFeed.sync();
 getWorkspaceMirror().onSnapshot(() => workspaceFactsPublisher.publishIfLaneChanged());
 getTaskLedger().onTransition(() => {
   workspaceFactsPublisher.schedule();
@@ -1886,6 +1916,7 @@ app.on('ready', async () => {
       void publishMoaPane({ force: true });
       // A new approval, or one settled elsewhere: the lane re-lists.
       client.on('approvals:changed', () => { void hqAutoPress.run(); });
+      client.on('approvals:changed', () => { void trackRecordFeed.onApprovalsChanged(); });
       // Handler swap to daemon-routed mode. The microsecond window where
       // pty/* handlers are torn down and re-registered is the same
       // surface the original code used; the swap is logged for the

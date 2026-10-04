@@ -30,6 +30,7 @@ import { registerDiffHandlers } from './handlers/diff.handler';
 import { registerWorktreeHandlers } from './handlers/worktree.handler';
 import { registerGithubHandlers } from './handlers/github.handler';
 import { registerWorkLinkHandlers } from './handlers/workLink.handler';
+import { registerTrackRecordHandlers } from './handlers/trackRecord.handler';
 import { registerGitShipHandlers } from './handlers/gitShip.handler';
 import { registerMcpHandlers } from './handlers/mcp.handler';
 import { registerTokenUsageQuotaHandlers } from './handlers/tokenUsageQuota.handler';
@@ -191,6 +192,8 @@ export function registerAllHandlers(
   const cleanupGithub = registerGithubHandlers();
   // Work links — read-only for the renderer (docs/work-links.md).
   const cleanupWorkLinks = registerWorkLinkHandlers(getWindow);
+  // Moa's track record — the retro card and its schedule (Settings → Moa).
+  const cleanupTrackRecord = registerTrackRecordHandlers(getWindow);
   const cleanupGitShip = registerGitShipHandlers();
   const cleanupMcp = options.mcpRegistrar
     ? registerMcpHandlers(options.mcpRegistrar, options.getMcpAuthToken ?? (() => null))
@@ -514,6 +517,7 @@ export function registerAllHandlers(
     cleanupWorktree();
     cleanupGithub();
     cleanupWorkLinks();
+    cleanupTrackRecord();
     cleanupGitShip();
     if (cleanupMcp) cleanupMcp();
     cleanupTokenUsageQuota();
