@@ -51,7 +51,10 @@ const PROMPT_MATCH_SLACK_MS = 5_000;
  * so Claude records the whole wire as the user's message, capped by the
  * parser. Shown as-is, the chat would display Moa's instructions as if the
  * operator had typed them. Main knows what was actually asked, so a pasted
- * user entry is shown as the prompt main sent at that moment.
+ * user entry is shown as the prompt main sent at that moment. So is an entry
+ * that merely ends with that prompt: a wire typed into a TUI that is still
+ * starting can land without its paste markers and missing its first
+ * characters, and it still carries the context blocks.
  */
 export function rewritePastedPrompts(
   events: readonly TurnEvent[],
@@ -59,13 +62,16 @@ export function rewritePastedPrompts(
 ): TurnEvent[] {
   if (prompts.length === 0) return [...events];
   return events.map((e) => {
-    if (e.kind !== 'user_text' || !e.text.includes('<pasted_content')) return e;
+    if (e.kind !== 'user_text') return e;
     const at = typeof e.ts === 'number' ? e.ts : Number.POSITIVE_INFINITY;
     let match: { at: number; text: string } | undefined;
     for (const p of prompts) {
       if (p.at <= at + PROMPT_MATCH_SLACK_MS && (!match || p.at > match.at)) match = p;
     }
-    return match ? { ...e, text: match.text } : e;
+    if (!match || e.text === match.text) return e;
+    const prompt = match.text.trim();
+    const wire = e.text.includes('<pasted_content') || (prompt.length > 0 && e.text.trimEnd().endsWith(prompt));
+    return wire ? { ...e, text: match.text } : e;
   });
 }
 

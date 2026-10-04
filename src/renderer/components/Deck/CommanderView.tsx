@@ -790,6 +790,9 @@ export function CommanderViewContent({
               ? t('deck.moaOffShort')
               : modeOff
               ? modeOffPlaceholder
+              // Moa's panel before its brain is up: the same words as its chat.
+              : moa
+              ? t('moa.panel.placeholder')
               : t('deck.commanderPlaceholder') || 'Tell the orchestrator, or @mention panes…'
           }
           t={t}

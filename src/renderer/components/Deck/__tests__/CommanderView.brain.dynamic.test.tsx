@@ -487,6 +487,12 @@ describe('CommanderViewContent — Moa slots', () => {
     expect(container.querySelector('[data-moa-terminal-toggle]')?.getAttribute('aria-pressed')).toBe('true');
   });
 
+  it('before the brain is up, the composer speaks of Moa, not the orchestrator', () => {
+    mount({ brainPtyId: null, chatWorkspaceId: 'ws-hq', moa: { top: topNode, chat: chatNode, view: 'chat', onViewChange: vi.fn() } });
+    const input = container.querySelector('[data-channel-composer-input]') as HTMLTextAreaElement;
+    expect(input.placeholder).toBe('moa.panel.placeholder');
+  });
+
   it('without a transcript source the terminal is the only view, and there is no toggle', () => {
     mount({ brainPtyId: 'pty-hq', chatWorkspaceId: 'ws-hq', moa: { chat: null, view: 'chat', onViewChange: vi.fn() } });
     expect(container.querySelectorAll('[data-commander-brain-terminal]')).toHaveLength(1);

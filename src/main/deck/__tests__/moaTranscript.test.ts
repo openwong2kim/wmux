@@ -206,6 +206,11 @@ describe('rewritePastedPrompts — the chat shows what was asked, not the pasted
     expect((out[0] as { text: string }).text).toBe('Say hello');
     expect(out[1]).toBe(events[1]);
   });
+  it('also replaces a wire that lost its paste markers and first characters on a cold start', () => {
+    const cut = user('u4', 'nd leave this work active. In one short sentence: what are you tracking?', 10_000);
+    const out = rewritePastedPrompts([cut] as never, [{ at: 9_000, text: 'In one short sentence: what are you tracking?' }]);
+    expect((out[0] as { text: string }).text).toBe('In one short sentence: what are you tracking?');
+  });
   it('leaves typed (non-pasted) entries and unmatched pastes alone', () => {
     const typed = user('u2', 'typed in the terminal', 10_000);
     const early = user('u3', '<pasted_content id="b">x</pasted_content>', 500);
