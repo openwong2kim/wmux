@@ -137,9 +137,13 @@ describe('Git page', () => {
     act(() => link.click());
     expect(open).toHaveBeenCalledWith('https://github.com/o/alpha', '_blank');
     open.mockRestore();
-    // Only the lists that answered are counted; a full read says 100+.
-    expect(container.querySelector('[data-git-page-counts]')?.textContent).toBe('100+ issues');
-    act(() => tab('prs').click());
+    // Both counts on a first visit to Issues: the PR count from one read of
+    // that list (never polled); a full read says 100+.
+    expect(container.querySelector('[data-git-page-counts]')?.textContent).toBe('100+ issues · 1 pull request');
+    expect(prList).toHaveBeenCalledTimes(1);
+    expect(prList).toHaveBeenCalledWith('/code/alpha', false);
+    // A filter on: the issue count still says all open issues.
+    act(() => useStore.getState().setGitPage({ issueFilter: { kind: 'assigned' } }));
     await settle();
     expect(container.querySelector('[data-git-page-counts]')?.textContent).toBe('100+ issues · 1 pull request');
     // All repos keeps the name and drops the counts.

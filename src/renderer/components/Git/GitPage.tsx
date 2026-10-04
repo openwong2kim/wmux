@@ -24,7 +24,7 @@ import { useActiveRepo } from './useActiveRepo';
 import SegmentedControl from '../ui/SegmentedControl';
 import { GitTab, pathLeaf } from './GitTab';
 import { PrSection } from './PrSection';
-import { IssueSection } from './IssueSection';
+import { IssueSection, getIssueBridge } from './IssueSection';
 import { GitDetail } from './GitDetail';
 import { repoOwnerWorkspace, useRepoGroups } from './repoGroups';
 import { GhConnectPage } from './GhConnectPage';
@@ -60,7 +60,11 @@ export default function GitPage() {
   const web = repoWeb(resolved?.remoteKey ?? null);
   const repoName = resolved ? web?.label ?? pathLeaf(resolved.mainPath) : null;
   // Signed out or no gh: the page is one connect card (re-read on refresh / after a login).
-  const gate = useGhAuthGate(resolved?.repoPath ?? null, refreshKey);
+  // The open PR count comes from the gate's own PR list read (one per repo and refresh).
+  const [gatePrs, setGatePrs] = useState<{ repoPath: string; count?: number }>({ repoPath: '' });
+  const gate = useGhAuthGate(resolved?.repoPath ?? null, refreshKey, (repoPath, res) => {
+    setGatePrs({ repoPath, ...(res.ok ? { count: res.prs.length } : {}) });
+  });
   const recheck = () => setRefreshKey((k) => k + 1);
   // Back from the connect card: the lists mounted while the gate was still
   // re-checking read main's stale signed-out answer, so read them once more,
@@ -95,6 +99,32 @@ export default function GitPage() {
     setItemsVersion((v) => v + 1);
   }, []);
 
+  // All open issues while the issue list is not shown (or is filtered): one
+  // read per repo and per refresh, made when first needed and never polled
+  // (main caches it and shares it with the list). The PR count needs no read
+  // of its own: the gate reads that list anyway.
+  const [readIssues, setReadIssues] = useState<{ repoPath: string; count?: number }>({ repoPath: '' });
+  const issuesRead = useRef('');
+  const issuesRefresh = useRef(refreshKey);
+  const countsRepo = page.scope === 'repo' ? resolved?.repoPath ?? null : null;
+  const needIssues = page.tab !== 'issues' || page.issueFilter.kind !== 'all';
+  useEffect(() => {
+    const issues = getIssueBridge();
+    if (!countsRepo || !needIssues || !issues) return undefined;
+    const readKey = `${countsRepo}\0${refreshKey}`;
+    if (issuesRead.current === readKey) return undefined;
+    issuesRead.current = readKey;
+    const force = issuesRefresh.current !== refreshKey;
+    issuesRefresh.current = refreshKey;
+    // A gate or an error leaves the count out. The answer is kept even if the
+    // tab changes meanwhile; it is tagged with its repo.
+    void issues.issueList(countsRepo, { kind: 'all' }, force).then(
+      (res) => setReadIssues({ repoPath: countsRepo, ...(res.ok ? { count: res.issues.length } : {}) }),
+      () => undefined,
+    );
+    return undefined;
+  }, [countsRepo, refreshKey, needIssues]);
+
   const tabIds = useRef(`git-tab-${Math.random().toString(36).slice(2)}`).current;
   const setTab = (tab: GitPageTab) => {
     setGitPage({ tab });
@@ -127,16 +157,18 @@ export default function GitPage() {
   const selList = sel ? items[itemsKey(sel.repoPath, sel.kind)] : undefined;
   const selItem = sel && selList ? (selList as Array<PrSummary | IssueSummary>).find((x) => x.number === sel.number) ?? null : null;
 
-  // Open counts from the lists already read (an issue count only for the
-  // unfiltered list); a list that has not answered yet says nothing.
-  const countOf = (list: unknown[] | undefined, key: string) => {
-    if (!list) return null;
-    const count = list.length >= LIST_READ_CAP ? `${LIST_READ_CAP}+` : list.length;
+  // Open counts: the shown list's own answer when it has one (an issue list
+  // only when unfiltered), else one read of that list (all open issues).
+  const countOf = (length: number | undefined, key: string) => {
+    if (length === undefined) return null;
+    const count = length >= LIST_READ_CAP ? `${LIST_READ_CAP}+` : length;
     return t(`${key}.${count === 1 ? 'one' : 'other'}`, { count });
   };
+  const shownIssues = page.issueFilter.kind === 'all' && resolved ? items[itemsKey(resolved.repoPath, 'issue')] : undefined;
+  const shownPrs = resolved ? items[itemsKey(resolved.repoPath, 'pr')] : undefined;
   const counts = page.scope === 'repo' && resolved ? [
-    page.issueFilter.kind === 'all' ? countOf(items[itemsKey(resolved.repoPath, 'issue')], 'git.count.issues') : null,
-    countOf(items[itemsKey(resolved.repoPath, 'pr')], 'git.count.prs'),
+    countOf(shownIssues?.length ?? (readIssues.repoPath === resolved.repoPath ? readIssues.count : undefined), 'git.count.issues'),
+    countOf(shownPrs?.length ?? (gatePrs.repoPath === resolved.repoPath ? gatePrs.count : undefined), 'git.count.prs'),
   ].filter((c): c is string => c !== null) : [];
 
   return (
