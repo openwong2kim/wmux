@@ -2,8 +2,9 @@
 // person to stop typing, and right before the paste and the Enter checks that
 // the same agent is in the pane and nobody typed, under a deadline. Our own
 // paste counts as key input to the daemon, so the check before the Enter
-// tells it apart from a person's keys. Driven against registerInputRpc with a
-// fake daemon whose key clock moves with every write.
+// tells it apart from a person's keys by the daemon's key counter. Driven
+// against registerInputRpc with a fake daemon whose key clock and key counter
+// move with every write.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RpcRouter } from '../../RpcRouter';
@@ -19,8 +20,8 @@ const PASTE = '\x1b[200~ref\x1b[201~';
 
 let clock: number;
 let writes: string[];
-/** The pane as the daemon sees it; `lastKeyAt` drives keyInputIdleMs. */
-let pane: { agentName: string | null; agentStatus: string; incarnationId: string; agentVerified: boolean; hasDraft: boolean; lastKeyAt: number };
+/** The pane as the daemon sees it; `lastKeyAt` drives keyInputIdleMs, `keys` keyInputRevision. */
+let pane: { agentName: string | null; agentStatus: string; incarnationId: string; agentVerified: boolean; hasDraft: boolean; lastKeyAt: number; keys: number };
 /** Runs on every state read, before it answers (tests change the pane in it). */
 let onRead: ((n: number) => void) | null;
 let readFails: boolean;
@@ -35,6 +36,7 @@ function harness() {
       writes.push(data);
       // The daemon sees every write as key input; text leaves a draft, Enter submits it.
       pane.lastKeyAt = clock;
+      pane.keys += 1;
       pane.hasDraft = data !== '\r' && data !== '\x15';
       return true;
     },
@@ -51,6 +53,7 @@ function harness() {
         inputRevision: 1,
         hasDraft: pane.hasDraft,
         keyInputIdleMs: clock - pane.lastKeyAt,
+        keyInputRevision: pane.keys,
       };
     },
   };
@@ -81,7 +84,7 @@ const send = (opts: Partial<GatedSubmitOptions> = {}): Promise<GatedSubmitResult
 beforeEach(() => {
   clock = 1_000_000;
   writes = [];
-  pane = { agentName: 'Claude Code', agentStatus: 'waiting', incarnationId: 'inc-1', agentVerified: false, hasDraft: false, lastKeyAt: clock - 60_000 };
+  pane = { agentName: 'Claude Code', agentStatus: 'waiting', incarnationId: 'inc-1', agentVerified: false, hasDraft: false, lastKeyAt: clock - 60_000, keys: 7 };
   onRead = null;
   readFails = false;
   local = false;
@@ -134,7 +137,15 @@ describe('hand-off delivery guard', () => {
 
   it('a key pressed after our paste: no Enter, the paste is cleared', async () => {
     // A second after our paste, the person presses a key.
-    onRead = () => { if (writes.length === 1) { clock += 1_000; pane.lastKeyAt = clock; } };
+    onRead = () => { if (writes.length === 1) { clock += 1_000; pane.lastKeyAt = clock; pane.keys += 1; } };
+    expect(await send()).toMatchObject({ ok: false, reason: 'user_typing', pasted: true, cleared: true });
+    expect(writes).toEqual([PASTE, '\x15']);
+  });
+
+  it('a key 50 ms after our paste, inside the 100 ms Enter delay: no Enter, the paste is cleared', async () => {
+    // The Enter check reads 100 ms after the paste (Claude Code's delay); the
+    // person's key landed at 50 ms. Idle time alone cannot tell it from our paste.
+    onRead = () => { if (writes.length === 1 && pane.lastKeyAt === clock - 100) { pane.lastKeyAt = clock - 50; pane.keys += 1; } };
     expect(await send()).toMatchObject({ ok: false, reason: 'user_typing', pasted: true, cleared: true });
     expect(writes).toEqual([PASTE, '\x15']);
   });

@@ -15,7 +15,7 @@ import {
   watchHandoffWorktreeLinks,
   type HandoffDeps,
 } from '../handoff';
-import { agentIdentityHolds, isPaneQuiet, quietWaitBudget, typedSincePaste, waitForQuietAgent } from '../../pipe/handlers/quietInput';
+import { agentIdentityHolds, isPaneQuiet, quietWaitBudget, typedPastOwnInput, waitForQuietAgent } from '../../pipe/handlers/quietInput';
 import { buildHandoffMessage } from '../../../shared/gitHandoff';
 import { WorkLinkStore } from '../../workLink/workLinkStore';
 import { TaskLedger } from '../../../daemon/ledger/TaskLedger';
@@ -286,10 +286,13 @@ describe('waiting for the person to stop typing', () => {
     expect(agentIdentityHolds(base, { ...agent, agentVerified: true, agentName: 'Codex CLI' })).toBe(false);
   });
 
-  it('our own paste is not "typing"; a key after it is', () => {
-    expect(typedSincePaste({ keyInputIdleMs: 990 }, 1_000, 2_000)).toBe(false);
-    expect(typedSincePaste({ keyInputIdleMs: 100 }, 1_000, 2_000)).toBe(true);
-    expect(typedSincePaste({}, 1_000, 2_000)).toBe(true);
+  it('our own paste is not "typing"; a key after it is, however soon', () => {
+    // Expected 8: the pane stood at 7 and our paste is one write.
+    expect(typedPastOwnInput({ keyInputRevision: 8, keyInputIdleMs: 0 }, 8)).toBe(false);
+    expect(typedPastOwnInput({ keyInputRevision: 7 }, 8)).toBe(false);
+    expect(typedPastOwnInput({ keyInputRevision: 9, keyInputIdleMs: 50 }, 8)).toBe(true);
+    expect(typedPastOwnInput({ keyInputIdleMs: 60_000 }, 8)).toBe(true);
+    expect(typedPastOwnInput({ keyInputRevision: 8 }, undefined)).toBe(true);
   });
 
   it('the wait gets what the deadline leaves after the rest of the delivery, never more than its cap', () => {

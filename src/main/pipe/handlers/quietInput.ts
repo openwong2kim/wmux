@@ -16,14 +16,13 @@ export const QUIET_INPUT_WAIT_MS = 20_000;
  * what is left of the deadline after this.
  */
 export const DELIVERY_RESERVE_MS = 21_000;
-/** How far our own paste may lag behind the moment we wrote it (the write
- *  reaches the daemon a little later than we stamp it). */
-const PASTE_ECHO_SLACK_MS = 300;
 
 export interface PaneInputState {
   hasDraft?: boolean;
   keyInputIdleMs?: number;
   keyInputQuiet?: boolean;
+  /** The daemon's key-input counter: one per write that can act on the screen. */
+  keyInputRevision?: number;
 }
 
 /** The daemon's view of a pane's agent, as getAgentState reports it. */
@@ -59,12 +58,15 @@ export function agentIdentityHolds(base: AgentBaseline, s: PaneAgentState): bool
   return !(base.agentVerified && s.agentVerified !== true);
 }
 
-/** Someone pressed a key after our paste at `pasteAt`: the last key is newer
- *  than our write. Our own paste counts as key input, so a draft alone says
- *  nothing here. Unknown idle time counts as typed. Pure. */
-export function typedSincePaste(s: PaneInputState, pasteAt: number, now: number): boolean {
-  if (typeof s.keyInputIdleMs !== 'number') return true;
-  return s.keyInputIdleMs + PASTE_ECHO_SLACK_MS < now - pasteAt;
+/** Someone pressed a key besides our own writes: the daemon's key counter
+ *  moved past `expected`, the count our writes account for. Our paste is one
+ *  write, so it moves the counter by one however soon a key follows it; a time
+ *  window cannot tell the two apart within the agent's Enter delay. A counter
+ *  still below `expected` is our write not yet counted (it rides the data
+ *  pipe, the read the control pipe). Unknown counts count as typed. Pure. */
+export function typedPastOwnInput(s: PaneInputState, expected: number | undefined): boolean {
+  if (typeof s.keyInputRevision !== 'number' || expected === undefined) return true;
+  return s.keyInputRevision > expected;
 }
 
 /** How long the quiet wait may take before `deadlineAt`, leaving the rest of

@@ -6,7 +6,7 @@ import {
   agentIdentityHolds,
   isPaneQuiet,
   quietWaitBudget,
-  typedSincePaste,
+  typedPastOwnInput,
   waitForQuietAgent,
 } from './quietInput';
 import type { RpcRouter } from '../RpcRouter';
@@ -809,7 +809,7 @@ export async function deliveryGateCheck(
  * inside the pane lock. A refusal before the Enter clears what was pasted.
  */
 export interface DeliveryGuard {
-  /** Passing also stamps the paste's time on the guard's own clock. */
+  /** Passing also records the key count the paste will bring the pane to. */
   beforePaste: () => Promise<GatedSubmitRefusal | null>;
   beforeEnter: () => Promise<GatedSubmitRefusal | null>;
 }
@@ -1623,7 +1623,9 @@ export function registerInputRpc(
     const { baseline } = waited;
     const pastDeadline = (): GatedSubmitRefusal | null =>
       now() > deadlineAt ? { ok: false, reason: 'deadline', detail: 'delivery: the hand-off ran past its deadline' } : null;
-    const check = async (pasteAt?: number): Promise<GatedSubmitRefusal | null> => {
+    /** The key count our paste accounts for, set when the paste is let through. */
+    let expectedRevision: number | undefined;
+    const check = async (atEnter: boolean): Promise<GatedSubmitRefusal | null> => {
       const late = pastDeadline();
       if (late) return late;
       const s = await read().catch(() => null);
@@ -1631,19 +1633,17 @@ export function registerInputRpc(
       if (!agentIdentityHolds(baseline, s)) {
         return { ok: false, reason: 'agent_changed', detail: 'delivery: the agent the hand-off was aimed at is no longer in the pane' };
       }
-      const typing = pasteAt === undefined ? !isPaneQuiet(s) : typedSincePaste(s, pasteAt, now());
-      return typing ? { ok: false, reason: 'user_typing', detail: 'delivery: someone typed in the target pane' } : null;
+      const typing = atEnter ? typedPastOwnInput(s, expectedRevision) : !isPaneQuiet(s);
+      if (typing) return { ok: false, reason: 'user_typing', detail: 'delivery: someone typed in the target pane' };
+      // The paste follows at once and is one write: one key on the counter.
+      if (!atEnter) expectedRevision = typeof s.keyInputRevision === 'number' ? s.keyInputRevision + 1 : undefined;
+      return null;
     };
-    let pasteAt = 0;
     return {
       ok: true,
       guard: {
-        beforePaste: async () => {
-          const refused = await check();
-          if (!refused) pasteAt = now();
-          return refused;
-        },
-        beforeEnter: () => check(pasteAt),
+        beforePaste: () => check(false),
+        beforeEnter: () => check(true),
       },
     };
   };
