@@ -152,13 +152,37 @@ interface GhReviewComment {
   original_line?: number | null;
 }
 
-/** comments + (본문 있는) reviews + 인라인 리뷰 코멘트를 시간순 단일 스트림으로. */
+// `gh pr view` reports an app's login without its `[bot]` suffix and with no
+// type, so a bot's conversation comment reads like a person's. One GraphQL
+// read in the same (updatedAt-cached) detail fetch names the bot authors.
+const BOT_AUTHORS_QUERY =
+  'query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){'
+  + 'comments(last:100){nodes{author{__typename login}}} reviews(last:100){nodes{author{__typename login}}}}}}';
+
+type AuthorNodes = { nodes?: Array<{ author?: { __typename?: string; login?: string } | null } | null> } | null;
+
+/** Lower-cased logins GraphQL types as `Bot` in a BOT_AUTHORS_QUERY answer. */
+export function botLoginsFromGraphql(json: unknown): Set<string> {
+  const pr = (json as { data?: { repository?: { pullRequest?: { comments?: AuthorNodes; reviews?: AuthorNodes } } } })
+    ?.data?.repository?.pullRequest;
+  const out = new Set<string>();
+  for (const n of [...(pr?.comments?.nodes ?? []), ...(pr?.reviews?.nodes ?? [])]) {
+    const a = n?.author;
+    if (a?.__typename === 'Bot' && typeof a.login === 'string' && a.login) out.add(a.login.toLowerCase());
+  }
+  return out;
+}
+
+/** comments + (본문 있는) reviews + 인라인 리뷰 코멘트를 시간순 단일 스트림으로.
+ *  `botLogins` (lower-cased) marks conversation comments and reviews by bots. */
 export function mapGhDetail(
   json: GhDetailJson,
   prUrl: string,
   reviewComments: GhReviewComment[] = [],
+  botLogins: ReadonlySet<string> = new Set(),
 ): PrComment[] {
   const out: PrComment[] = [];
+  const bot = (login: string | undefined) => (login && botLogins.has(login.toLowerCase()) ? { isBot: true as const } : {});
   for (const c of json.comments ?? []) {
     if (typeof c.body !== 'string') continue;
     const { body, truncated } = capBody(c.body);
@@ -170,6 +194,7 @@ export function mapGhDetail(
       kind: 'comment',
       reviewState: '',
       truncated,
+      ...bot(c.author?.login),
     });
   }
   for (const r of json.reviews ?? []) {
@@ -184,6 +209,7 @@ export function mapGhDetail(
       kind: 'review',
       reviewState: (r.state ?? '').toUpperCase(),
       truncated,
+      ...bot(r.author?.login),
     });
   }
   for (const rc of reviewComments) {
@@ -355,9 +381,19 @@ export class GhPrService implements PrProvider {
       } catch {
         /* 인라인 코멘트 조회 실패 — 대화 코멘트만으로 강등 */
       }
+      let botLogins = new Set<string>();
+      try {
+        const g = await this.gh(
+          ['api', 'graphql', '-F', 'owner={owner}', '-F', 'name={repo}', '-F', `number=${number}`, '-f', `query=${BOT_AUTHORS_QUERY}`],
+          repoPath,
+        );
+        botLogins = botLoginsFromGraphql(JSON.parse(g.stdout));
+      } catch {
+        /* no bot names: the inline read's `user.type` still marks some */
+      }
       const value: PrDetailResult = {
         ok: true,
-        detail: { number, comments: mapGhDetail(json, json.url ?? '', reviewComments) },
+        detail: { number, comments: mapGhDetail(json, json.url ?? '', reviewComments, botLogins) },
       };
       this.detailCache.set(key, { updatedAt, value });
       this.evict(this.detailCache);

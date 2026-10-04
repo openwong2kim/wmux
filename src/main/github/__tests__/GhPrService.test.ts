@@ -1,7 +1,7 @@
 // GhPrService — gh JSON 매핑·게이트·TTL·updatedAt 상세캐시 (exec 목킹,
 // PrStatusCache 테스트 스타일). + PrProvider의 remote 호스트 분류.
 import { describe, it, expect, vi } from 'vitest';
-import { GhPrService, mapGhListItem, mapGhDetail } from '../GhPrService';
+import { GhPrService, mapGhListItem, mapGhDetail, botLoginsFromGraphql } from '../GhPrService';
 import { parseRemoteHost, parseRemoteKey, isGithubHost } from '../PrProvider';
 import { PR_COMMENT_BODY_CAP } from '../../../shared/prSurface';
 
@@ -87,6 +87,30 @@ describe('mapGhListItem / mapGhDetail — 매핑 계약', () => {
     expect(out[2].truncated).toBe(true);
     expect(out[2].body.length).toBe(PR_COMMENT_BODY_CAP);
     expect(out[3]).toMatchObject({ kind: 'review', reviewState: 'CHANGES_REQUESTED', body: '' });
+  });
+
+  it('flags conversation comments and reviews by a bot GraphQL named', () => {
+    const bots = botLoginsFromGraphql({
+      data: { repository: { pullRequest: {
+        comments: { nodes: [{ author: { __typename: 'Bot', login: 'CI-Reporter' } }, { author: { __typename: 'User', login: 'alice' } }] },
+        reviews: { nodes: [null, { author: null }] },
+      } } },
+    });
+    expect([...bots]).toEqual(['ci-reporter']);
+    const out = mapGhDetail(
+      {
+        comments: [
+          { author: { login: 'ci-reporter' }, body: 'coverage', createdAt: '2026-07-12T01:00:00Z' },
+          { author: { login: 'alice' }, body: 'nit', createdAt: '2026-07-12T02:00:00Z' },
+        ],
+        reviews: [{ author: { login: 'CI-Reporter' }, body: '', state: 'COMMENTED', submittedAt: '2026-07-12T03:00:00Z' }],
+      },
+      'pr-url',
+      [],
+      bots,
+    );
+    expect(out.map((c) => [c.author, c.isBot])).toEqual([['ci-reporter', true], ['alice', undefined], ['CI-Reporter', true]]);
+    expect(botLoginsFromGraphql({ errors: [] }).size).toBe(0);
   });
 
   it('flags an inline comment whose REST author is a bot', () => {
