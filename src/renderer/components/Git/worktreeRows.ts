@@ -11,7 +11,7 @@ import type { PrStatus } from '../../../shared/types';
 import type { WorktreeEntry } from '../../../shared/worktreeParse';
 
 /** A `git worktree list` row, plus the merge-session fields main derives. */
-export type WorktreeRowUI = WorktreeEntry & { merging?: boolean; integration?: boolean; conflicts?: number };
+export type WorktreeRowUI = WorktreeEntry & { merging?: boolean; integration?: boolean; conflicts?: number; lastCommitAt?: number };
 
 /** Uncommitted changes of one worktree (summed `diff:read` numstat). */
 export interface DiffStat {
@@ -104,4 +104,35 @@ export function buildWorktreeRows(input: {
   const dirty = rows.filter((r) => (r.stat?.files ?? 0) > 0);
   const rest = rows.filter((r) => (r.stat?.files ?? 0) === 0);
   return [...dirty, ...rest];
+}
+
+/** A branch with no commit for this long counts as having no recent activity. */
+export const STALE_WORKTREE_DAYS = 14;
+
+export interface WorktreeGroups {
+  /** A workspace sits on it. */
+  inUse: GitWorktreeRow[];
+  /** No workspace on it, and not a cleanup candidate. */
+  idle: GitWorktreeRow[];
+  /** No workspace, and detached, prunable or quiet for STALE_WORKTREE_DAYS.
+   *  A candidate to look at, not a verdict: it may hold unpushed work. */
+  cleanup: GitWorktreeRow[];
+}
+
+/** Split rows for the Worktrees tab. The main worktree and a merge session's
+ *  integration worktree are never cleanup candidates. Pure. */
+export function groupWorktreeRows(rows: readonly GitWorktreeRow[], now: number): WorktreeGroups {
+  const out: WorktreeGroups = { inUse: [], idle: [], cleanup: [] };
+  const staleMs = STALE_WORKTREE_DAYS * 24 * 60 * 60 * 1000;
+  for (const row of rows) {
+    if (row.workspaces.length > 0) {
+      out.inUse.push(row);
+      continue;
+    }
+    const e = row.entry;
+    const quiet = e.lastCommitAt !== undefined && now - e.lastCommitAt > staleMs;
+    const candidate = !row.isMain && !e.integration && (e.detached || e.prunable !== null || quiet);
+    (candidate ? out.cleanup : out.idle).push(row);
+  }
+  return out;
 }

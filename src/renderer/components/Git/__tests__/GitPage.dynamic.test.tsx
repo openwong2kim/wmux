@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
 //
-// The rail's Git page: This repo by default (card, Pull requests, Worktrees),
-// All repos grouping every open workspace by repo, the not-connected state
-// when gh is missing or signed out, and Diff returning to the panes.
+// The rail's Git page: the branch bar, then Pull requests / Issues as a
+// list/detail split and Worktrees as its own tab; All repos grouping every
+// open workspace by repo; the not-connected state when gh is missing or
+// signed out; Diff and Go to terminal returning to the panes; and the page's
+// view state (scope, tab, selection) surviving a remount.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createElement, act } from 'react';
@@ -11,6 +13,7 @@ import GitPage from '../GitPage';
 import { clearGitCaches } from '../repoCache';
 import { ROW_STATS_DEBOUNCE_MS } from '../GitTab';
 import { useStore } from '../../../stores';
+import { initialGitPageState } from '../gitPageState';
 import type { Workspace, Pane } from '../../../../shared/types';
 
 function workspace(id: string, cwd: string, extra: Partial<Workspace> = {}): Workspace {
@@ -42,7 +45,8 @@ let prList: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   clearGitCaches();
-  prList = vi.fn(async () => ({ ok: true, prs: [] }));
+  prList = vi.fn(async (p: string) => ({ ok: true, prs: p === '/code/alpha' ? [PR] : [] }));
+  try { localStorage.clear(); } catch { /* none */ }
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     platform: 'linux',
     diff: {
@@ -58,11 +62,16 @@ beforeEach(() => {
       }),
       add: vi.fn(), remove: vi.fn(),
     },
-    github: { prList, prDetail: vi.fn(), repoKey: vi.fn(async (p: string) => ({ key: remoteOf[p] ?? null })) },
+    github: {
+      prList,
+      prDetail: vi.fn(async () => ({ ok: true, detail: { number: 7, comments: [] } })),
+      repoKey: vi.fn(async (p: string) => ({ key: remoteOf[p] ?? null })),
+    },
   };
   act(() => useStore.setState({
     workspaces: [workspace('a', '/code/alpha'), workspace('b', '/code/alpha-wt/feat'), workspace('c', '/code/beta')],
     activeWorkspaceId: 'a', startupDirectory: '', appRoute: 'git', paneGate: 'pending',
+    gitPage: initialGitPageState(),
   }));
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -75,21 +84,72 @@ afterEach(() => {
   delete (window as unknown as { electronAPI?: unknown }).electronAPI;
 });
 
+const PR = { number: 7, title: 'feat: add x', state: 'open', author: 'me', headRefName: 'feat', updatedAt: '2026-10-01T00:00:00Z', url: 'https://github.com/o/alpha/pull/7', reviewDecision: 'APPROVED', checks: 'passing', mergeable: 'MERGEABLE' };
+const tab = (name: string) => container.querySelector(`[data-git-page-tab="${name}"]`) as HTMLButtonElement;
 const scopeOption = (label: string) => [...container.querySelectorAll<HTMLElement>('[data-testid="git-scope"] [role="radio"]')].find((b) => b.textContent === label)!;
 
 describe('Git page', () => {
-  it('This repo: the card, then this repo\'s Pull requests and Worktrees', async () => {
+  it('This repo: the branch bar, then a list/detail split; worktrees live on their own tab', async () => {
     act(() => root.render(createElement(GitPage)));
     await settle();
     expect(container.querySelector('[data-git-page-repo]')?.textContent).toBe('alpha');
     expect(container.querySelector('[data-git-current-branch]')?.textContent).toContain('main');
     expect(scopeOption('This repo').getAttribute('aria-checked')).toBe('true');
-    expect(container.querySelector('[data-pr-section]')).not.toBeNull();
-    expect(container.querySelectorAll('[data-git-worktree-row]').length).toBe(2);
-    expect(container.querySelector('[data-git-all-repos]')).toBeNull();
+    expect(tab('prs').getAttribute('aria-selected')).toBe('true');
+    expect(container.querySelector('[data-git-listpane] [data-pr-section]')).not.toBeNull();
+    expect(container.querySelector('[data-git-detail-empty]')).not.toBeNull();
+    expect(container.querySelectorAll('[data-git-worktree-row]').length).toBe(0);
+    act(() => tab('worktrees').click());
+    await settle();
+    expect(container.querySelectorAll('[data-git-worktrees-tab] [data-git-worktree-row]').length).toBe(2);
+    expect(container.querySelector('[data-git-split]')).toBeNull();
   });
 
-  it('All repos: one group per repo, the active repo first, the card kept on top', async () => {
+  it('a selected PR opens in the detail pane under a sticky header, and stays selected after leaving the page', async () => {
+    act(() => root.render(createElement(GitPage)));
+    await settle();
+    const row = container.querySelector('[data-pr-row="7"] button') as HTMLButtonElement;
+    expect(row.textContent).toContain('Approved, mergeable');
+    act(() => row.click());
+    await settle();
+    expect(row.getAttribute('aria-current')).toBe('true');
+    const head = container.querySelector('[data-git-detailpane] [data-git-detail-head]')!;
+    expect(head.textContent).toContain('feat: add x');
+    expect(head.textContent).toContain('#7');
+    expect(head.textContent).toContain('alpha');
+    expect(head.querySelector('[data-git-detail-slot]')).not.toBeNull();
+    // Leave the page and come back: the selection is still there.
+    act(() => root.unmount());
+    root = createRoot(container);
+    act(() => root.render(createElement(GitPage)));
+    await settle();
+    expect(container.querySelector('[data-pr-row="7"] button')?.getAttribute('aria-current')).toBe('true');
+    expect(container.querySelector('[data-git-detail-head]')?.textContent).toContain('feat: add x');
+  });
+
+  it('the scope and tab survive a remount, and the tab is kept per viewer', async () => {
+    act(() => root.render(createElement(GitPage)));
+    await settle();
+    act(() => tab('issues').click());
+    act(() => scopeOption('All repos').click());
+    await settle();
+    act(() => root.unmount());
+    root = createRoot(container);
+    act(() => root.render(createElement(GitPage)));
+    await settle();
+    expect(tab('issues').getAttribute('aria-selected')).toBe('true');
+    expect(scopeOption('All repos').getAttribute('aria-checked')).toBe('true');
+    expect(localStorage.getItem('wmux.git.workView')).toBe('issues');
+  });
+
+  it('Go to terminal returns to the panes', async () => {
+    act(() => root.render(createElement(GitPage)));
+    await settle();
+    act(() => (container.querySelector('[data-git-go-terminal]') as HTMLButtonElement).click());
+    expect(useStore.getState().appRoute).toBe('workspaces');
+  });
+
+  it('All repos: one group per repo, the active repo first, the bar kept on top', async () => {
     act(() => root.render(createElement(GitPage)));
     await settle();
     act(() => scopeOption('All repos').click());
@@ -98,6 +158,11 @@ describe('Git page', () => {
     expect(groups).toEqual(['alpha', 'beta']);
     expect(container.querySelector('[data-git-repo-group="alpha"]')?.textContent).toContain('2 workspace');
     expect(container.querySelector('[data-git-current-branch]')).not.toBeNull();
+    // The active repo's list is open; another repo's waits to be opened.
+    expect(container.querySelector('[data-git-repo-group="alpha"] [data-pr-section]')).not.toBeNull();
+    expect(container.querySelector('[data-git-repo-group="beta"] [data-pr-section]')).toBeNull();
+    act(() => tab('worktrees').click());
+    await settle();
     // Only the active repo's group marks a row with the dot.
     expect(container.querySelectorAll('[data-git-repo-group="beta"] [data-current="true"]').length).toBe(0);
     expect(container.querySelectorAll('[data-git-repo-group="alpha"] [data-current="true"]').length).toBe(1);
@@ -147,10 +212,12 @@ describe('Git page', () => {
     await settle();
     const groups = [...container.querySelectorAll('[data-git-repo-group]')].map((g) => g.getAttribute('data-git-repo-group'));
     expect(groups).toEqual(['alpha', 'beta']);
+    expect(container.querySelectorAll('[data-git-repo-group="alpha"] [data-pr-section]').length).toBe(1);
+    expect(container.querySelector('[data-git-repo-group="alpha"]')!.textContent).toContain('3 workspace');
+    act(() => tab('worktrees').click());
+    await settle();
     const alpha = container.querySelector('[data-git-repo-group="alpha"]')!;
-    expect(alpha.querySelectorAll('[data-pr-section]').length).toBe(1);
     expect([...alpha.querySelectorAll('[data-git-checkout]')].map((c) => c.getAttribute('data-git-checkout'))).toEqual(['alpha', 'alpha-clone']);
-    expect(alpha.textContent).toContain('3 workspace');
     // The other repo's PR list waits to be opened.
     const prCallsFor = (path: string) => prList.mock.calls.filter((c) => c[0] === path).length;
     expect(prCallsFor('/code/beta')).toBe(0);
@@ -189,6 +256,8 @@ describe('Git page', () => {
       act(() => { document.dispatchEvent(new Event('visibilitychange')); });
       await settle();
       expect(list).toHaveBeenCalled();
+      act(() => tab('worktrees').click());
+      await settle();
       expect(container.querySelectorAll('[data-git-worktree-row]').length).toBe(2);
     } finally {
       delete (document as unknown as { hidden?: boolean }).hidden;

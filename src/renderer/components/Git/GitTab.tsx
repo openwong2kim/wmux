@@ -32,13 +32,13 @@ import type { Pane, PaneLeaf } from '../../../shared/types';
 import type { WorktreeEntry } from '../../../shared/worktreeParse';
 import type { MergeSessionStatus } from '../../../main/git/mergeSession';
 import type { DiffReadResult, DiffReadError } from '../../../shared/diffParse';
-import { GitWorkSection } from './GitWorkSection';
+import { ShipButton } from './ShipButton';
 import { PrBadge } from '../Sidebar/WorkspaceItem';
 import { isPlausibleCwd } from '../../../shared/cwdShape';
 import { showWorkspaces } from '../../utils/showWorkspaces';
 import { resolveRepoCached } from './repoCache';
 import {
-  buildWorktreeRows, normWorktreePath, worktreeContaining,
+  buildWorktreeRows, groupWorktreeRows, normWorktreePath, worktreeContaining, STALE_WORKTREE_DAYS,
   type DiffStat, type GitWorktreeRow, type WorkspaceOnRepo, type WorktreeRowUI,
 } from './worktreeRows';
 
@@ -161,10 +161,13 @@ export interface GitTabProps {
   refreshKey?: number;
   /** Tells the page which repo it is showing (the main worktree's folder name). */
   onRepo?: (name: string | null) => void;
-  /** full = card, slot, then Pull requests and Worktrees; card = the card and
-   *  the slot only; sections = Pull requests and Worktrees only; worktrees =
-   *  the Worktrees column only (one checkout inside an All repos group). */
-  layout?: 'full' | 'card' | 'sections' | 'worktrees';
+  /** summary = the one-line current-branch bar with Diff, Open PR, Go to
+   *  terminal and the ship button (the Git page's top); worktrees = the
+   *  grouped worktree list with the new-branch line and the merge session on
+   *  top (the Worktrees tab, or one checkout in All repos); full = both. */
+  layout?: 'full' | 'summary' | 'worktrees';
+  /** Tells the page the repo's paths once resolved (null: no repo). */
+  onResolved?: (r: { repoPath: string; mainPath: string } | null) => void;
   /** Drawn right under the card (the page's scope filter), repo or not. */
   slot?: React.ReactNode;
   /** The workspaces on this repo, already resolved by the caller (All repos
@@ -179,11 +182,10 @@ export interface GitTabProps {
 }
 
 export function GitTab({
-  cwd, refreshKey = 0, onRepo, layout = 'full', slot, workspacesOnRepo, markCurrent = true, currentPath,
+  cwd, refreshKey = 0, onRepo, onResolved, layout = 'full', slot, workspacesOnRepo, markCurrent = true, currentPath,
 }: GitTabProps = {}): React.ReactElement {
-  const showCard = layout === 'full' || layout === 'card';
-  const showSections = layout !== 'card';
-  const showPrs = layout === 'full' || layout === 'sections';
+  const showCard = layout === 'full' || layout === 'summary';
+  const showSections = layout !== 'summary';
   // Hidden window: nothing is read, and what is in flight is dropped.
   const [hidden, setHidden] = useState(() => document.hidden);
   useEffect(() => {
@@ -200,7 +202,7 @@ export function GitTab({
   // Row identity only — names and metadata are re-read inside load(). Only
   // the full layout resolves the workspace list itself; a group is handed its
   // workspaces, and the card reads just its own worktree.
-  const workspaceIds = useStore((s) => (layout === 'full' && !workspacesOnRepo ? s.workspaces.map((w) => w.id).join('\0') : ''));
+  const workspaceIds = useStore((s) => (showSections && !workspacesOnRepo ? s.workspaces.map((w) => w.id).join('\0') : ''));
   // The current-branch card's live parts (pushed by main, no polling here).
   const activeMeta = useStore((s) => s.workspaces.find((w) => w.id === s.activeWorkspaceId)?.metadata);
   const pushToast = useStore((s) => s.pushToast);
@@ -226,6 +228,8 @@ export function GitTab({
   const mounted = useRef(false);
   const onRepoRef = useRef(onRepo);
   onRepoRef.current = onRepo;
+  const onResolvedRef = useRef(onResolved);
+  onResolvedRef.current = onResolved;
   const givenWorkspaces = useRef(workspacesOnRepo);
   givenWorkspaces.current = workspacesOnRepo;
   const givenKey = workspacesOnRepo?.map((w) => `${w.workspaceId}\0${w.repoPath}`).join('\n') ?? '';
@@ -259,6 +263,7 @@ export function GitTab({
       setSession(null);
       setLoading(false);
       onRepoRef.current?.(null);
+      onResolvedRef.current?.(null);
       return;
     }
     const res = await worktree.list(current);
@@ -271,6 +276,7 @@ export function GitTab({
       setSession(null);
       setLoading(false);
       onRepoRef.current?.(null);
+      onResolvedRef.current?.(null);
       return;
     }
     setRepoPath(res.repoPath);
@@ -278,9 +284,11 @@ export function GitTab({
     setWorktrees(res.worktrees);
     setLoading(false);
     onRepoRef.current?.(pathLeaf(res.mainPath || res.repoPath));
+    onResolvedRef.current?.({ repoPath: res.repoPath, mainPath: res.mainPath || res.repoPath });
     // Merge session rehydrate — main derives it from MERGE_HEAD on disk, so an
     // in-flight session survives an app restart.
-    if (showSections && worktree.mergeStatus) {
+    // The summary bar needs it too: the ship button waits while one runs.
+    if (worktree.mergeStatus) {
       if (!live()) return;
       const ms = await worktree.mergeStatus(res.repoPath);
       if (!live()) return;
@@ -380,6 +388,7 @@ export function GitTab({
       setStats({});
       setSession(null);
       onRepoRef.current?.(null);
+      onResolvedRef.current?.(null);
     }
     const force = lastRefresh.current !== refreshKey;
     lastRefresh.current = refreshKey;
@@ -677,34 +686,37 @@ export function GitTab({
     );
   };
 
-  const cardEl = repoPath && showCard ? (
-    <div className="wmux-git-card" data-git-current-branch>
-      <div className="wmux-git-card-line">
-        <span className="wmux-git-branch" title={currentWorktree}>
-          {currentBranch ?? (currentRow ? `(${t('git.detached') || 'detached'} ${currentRow.entry.headOid.slice(0, 7)})` : pathLeaf(currentWorktree))}
+  const bar = repoPath && showCard ? (
+    <div className="wmux-git-bar" data-git-current-branch>
+      <span className="wmux-git-branch" title={currentWorktree}>
+        {currentBranch ?? (currentRow ? `(${t('git.detached') || 'detached'} ${currentRow.entry.headOid.slice(0, 7)})` : pathLeaf(currentWorktree))}
+      </span>
+      {sync && (sync.ahead > 0 || sync.behind > 0) && (
+        <span
+          className="wmux-git-stat"
+          data-git-ahead-behind
+          title={t('workspace.gitSyncTooltip', { ahead: sync.ahead, behind: sync.behind, dirty: sync.dirty })}
+        >
+          {sync.ahead > 0 && <span style={{ color: 'var(--accent-blue)' }}>↑{sync.ahead}</span>}
+          {sync.behind > 0 && <span style={{ color: 'var(--accent-red)' }}>↓{sync.behind}</span>}
         </span>
-        {sync && (sync.ahead > 0 || sync.behind > 0) && (
-          <span
-            className="wmux-git-stat"
-            data-git-ahead-behind
-            title={t('workspace.gitSyncTooltip', { ahead: sync.ahead, behind: sync.behind, dirty: sync.dirty })}
-          >
-            {sync.ahead > 0 && <span style={{ color: 'var(--accent-blue)' }}>↑{sync.ahead}</span>}
-            {sync.behind > 0 && <span style={{ color: 'var(--accent-red)' }}>↓{sync.behind}</span>}
+      )}
+      {cardStat && (
+        <span className="wmux-git-card-changes" data-git-changes>
+          {cardStat.files > 0 && <span>{cardStat.files} {t('review.files') || 'files'}</span>}
+          <DiffCounts stat={cardStat} t={t} />
+        </span>
+      )}
+      {cardPr && (
+        <span className="wmux-git-card-pr" data-git-current-pr>
+          <PrBadge pr={cardPr} />
+          <span>
+            {t(`workspace.prState.${cardPr.state}`)}
+            {cardPr.checks && ` · ${t(`workspace.prChecks.${cardPr.checks}`)}`}
           </span>
-        )}
-      </div>
-      <div className="wmux-git-card-line">
-        {cardStat ? (
-          <span className="wmux-git-card-changes" data-git-changes>
-            {cardStat.files > 0 && (
-              <span>{cardStat.files} {t('review.files') || 'files'}</span>
-            )}
-            <DiffCounts stat={cardStat} t={t} />
-          </span>
-        ) : (
-          <span className="wmux-git-card-changes" />
-        )}
+        </span>
+      )}
+      <div className="wmux-git-bar-actions">
         <button
           type="button"
           onClick={() => handleDiff(currentWorktree || repoPath)}
@@ -714,16 +726,25 @@ export function GitTab({
         >
           {t('git.diff') || 'Diff'}
         </button>
-      </div>
-      {cardPr && (
-        <div className="wmux-git-card-line" data-git-current-pr>
-          <span className="wmux-git-card-pr">
-            <PrBadge pr={cardPr} />
-            <span>
-              {t(`workspace.prState.${cardPr.state}`)}
-              {cardPr.checks && ` · ${t(`workspace.prChecks.${cardPr.checks}`)}`}
-            </span>
-          </span>
+        <button
+          type="button"
+          onClick={() => showWorkspaces(useStore.getState())}
+          title={t('git.goTerminalDesc')}
+          data-git-go-terminal
+          className={`wmux-git-button ${FOCUS_RING}`}
+        >
+          {t('git.goTerminal')}
+        </button>
+        {layout === 'summary' ? (
+          // The ship button carries Open PR (beside it, or as its step).
+          <ShipButton
+            repoPath={currentWorktree || repoPath}
+            mergeActive={session !== null}
+            refreshKey={refreshKey}
+            changeKey={activeMeta?.gitSync ? `${activeMeta.gitSync.dirty}:${activeMeta.gitSync.ahead}:${activeMeta.gitSync.behind}:${activeMeta.pr?.state ?? ''}` : ''}
+            onShipped={() => void load(true)}
+          />
+        ) : cardPr && (
           <button
             type="button"
             onClick={() => window.electronAPI?.shell?.openExternal?.(cardPr.url)}
@@ -732,10 +753,106 @@ export function GitTab({
           >
             {t('git.openPr') || 'Open PR'}
           </button>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   ) : null;
+
+  const mergeEl = session && repoPath ? (
+      <div data-git-merge-session className="wmux-git-merge">
+        <div className="flex items-center gap-2">
+          {/* Phase dot: in flight = accent · verified = green · trouble = red. */}
+          <span
+            aria-hidden="true"
+            className="w-1.5 h-1.5 rounded-full shrink-0"
+            style={{
+              backgroundColor:
+                session.phase === 'verified'
+                  ? 'var(--accent-green)'
+                  : session.phase === 'failed' || session.phase === 'conflicted'
+                    ? 'var(--accent-red)'
+                    : session.phase === 'merging' || session.phase === 'verifying'
+                      ? 'var(--accent)'
+                      : 'var(--text-muted)',
+            }}
+          />
+          <span className="truncate text-[var(--text-main)]">
+            {(session.sourceBranch ?? pathLeaf(session.integrationPath))} → {session.baseBranch}
+          </span>
+          <div className="flex-1" />
+          <span className="shrink-0 text-[var(--text-sub)]">
+            {session.phase === 'merging'
+              ? t('git.mergePhaseMerging') || 'Merging…'
+              : session.phase === 'verifying'
+                ? t('git.mergePhaseVerifying') || 'Verifying…'
+                : session.phase === 'verified'
+                  ? t('git.mergePhaseVerified') || 'Verified'
+                  : session.phase === 'failed'
+                    ? t('git.mergePhaseFailed') || 'Verify failed'
+                    : session.phase === 'conflicted'
+                      ? t('git.mergePhaseConflict') || 'Conflict'
+                      : t('git.mergePhaseReady') || 'Ready'}
+          </span>
+        </div>
+        {/* Plain-language summary — changed files + verify result. */}
+        <div className="text-[var(--text-muted)]">
+          {session.phase === 'conflicted'
+            ? t('git.mergeSummary.conflicted', { count: session.conflicts.length })
+            : session.phase === 'verifying'
+              ? t('git.mergeSummary.verifying', { count: session.changedFiles })
+              : session.phase === 'verified'
+                ? session.changedFiles > 0
+                  ? t('git.mergeSummary.verified', { count: session.changedFiles })
+                  : t('git.mergeSummary.nothing')
+                : session.phase === 'failed'
+                  ? `${t('git.mergeSummary.failed', { count: session.changedFiles })}${session.verify?.failedStep ? ` (${session.verify.failedStep})` : ''}${session.verify?.timedOut ? ` · ${t('git.mergeSummary.timedOut')}` : ''}`
+                  : t('git.mergeSummary.changed', { count: session.changedFiles })}
+        </div>
+        <div className="flex items-center gap-1.5">
+          {session.phase === 'conflicted' && (
+            <button
+              type="button"
+              onClick={openIntegration}
+              className={`wmux-git-button ${FOCUS_RING}`}
+              title={t('git.mergeOpenConflictDesc') || 'Open the integration worktree as a workspace to resolve conflicts with Claude'}
+            >
+              {t('git.mergeOpenConflict') || 'Conflict — open with Claude'}
+            </button>
+          )}
+          {session.phase === 'verified' && (
+            <button
+              type="button"
+              onClick={() => void handleLand()}
+              disabled={busy}
+              className={`wmux-git-button ${FOCUS_RING}`}
+              title={t('git.landDesc') || 'Commit the verified merge and fast-forward the base branch'}
+            >
+              {t('git.land') || 'Land'}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => void handleDiscard()}
+            disabled={busy}
+            className={`wmux-git-button wmux-git-action-danger ${FOCUS_RING}`}
+            title={t('git.discardDesc') || 'Abort the merge and remove the integration worktree (base unchanged)'}
+          >
+            {t('git.discard') || 'Discard'}
+          </button>
+        </div>
+      </div>
+  ) : null;
+
+  const groups = groupWorktreeRows(rows, Date.now());
+  const group = (key: 'inUse' | 'idle' | 'cleanup', items: GitWorktreeRow[]) => items.length > 0 && (
+    <section key={key} className="wmux-git-wt-group" data-git-wt-group={key} aria-label={t(`git.wt.${key}`)}>
+      <h3 className="wmux-git-subhead">{t(`git.wt.${key}`)} · {items.length}</h3>
+      {key === 'cleanup' && (
+        <p className="wmux-git-wt-caption">{t('git.wt.cleanupCaption', { days: STALE_WORKTREE_DAYS })}</p>
+      )}
+      <ul data-git-worktree-list>{items.map(renderRow)}</ul>
+    </section>
+  );
 
   return (
     <div data-git-tab className="wmux-git-body" data-layout={layout}>
@@ -744,130 +861,37 @@ export function GitTab({
       {!loading && !error && !repoPath && (
         <div className="wmux-git-note">{t('git.noRepo') || 'Not a git repository — focus a pane inside a repo.'}</div>
       )}
-      {/* Current branch: branch, ahead/behind, uncommitted changes + Diff, PR + CI. */}
-      {cardEl}
+      {/* Current branch, one line: branch, ahead/behind, changes, PR, then Diff / Go to terminal / ship. */}
+      {bar}
       {slot}
       {repoPath && showSections && (
-        <div className={`wmux-git-sections${showPrs ? '' : ' wmux-git-sections-single'}`}>
-          {showPrs && (
-            <section className="wmux-git-col" aria-label={t('git.work.label')}>
-              {/* Pull requests | Issues (gh); a PR expands to its comments, an issue to its detail. */}
-              <GitWorkSection repoPath={repoPath} refreshKey={refreshKey} defaultOpen />
-            </section>
-          )}
-          <section className="wmux-git-col" aria-label={t('git.worktrees') || 'Worktrees'}>
-            <div className="wmux-git-subhead">
-              {t('git.worktrees') || 'Worktrees'} · {rows.length}
-            </div>
-            <ul data-git-worktree-list>{rows.map(renderRow)}</ul>
-            {/* New worktree — one branch-name line (main derives the location). */}
-            <div className="wmux-git-create">
-              <input
-                type="text"
-                value={newBranch}
-                onChange={(e) => setNewBranch(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') void handleCreate();
-                }}
-                placeholder={t('git.newBranchPlaceholder') || 'new branch name…'}
-                aria-label={t('git.newBranchPlaceholder') || 'new branch name…'}
-                spellCheck={false}
-              />
-              <button
-                type="button"
-                onClick={() => void handleCreate()}
-                disabled={busy || !newBranch.trim()}
-                className={`wmux-git-button ${FOCUS_RING}`}
-              >
-                {t('git.create') || 'Create'}
-              </button>
-            </div>
-            {/* Merge session — only while one is active: plain-language summary + Land / Discard. */}
-            {session && repoPath && (
-              <div data-git-merge-session className="wmux-git-merge">
-                <div className="flex items-center gap-2">
-                  {/* Phase dot: in flight = accent · verified = green · trouble = red. */}
-                  <span
-                    aria-hidden="true"
-                    className="w-1.5 h-1.5 rounded-full shrink-0"
-                    style={{
-                      backgroundColor:
-                        session.phase === 'verified'
-                          ? 'var(--accent-green)'
-                          : session.phase === 'failed' || session.phase === 'conflicted'
-                            ? 'var(--accent-red)'
-                            : session.phase === 'merging' || session.phase === 'verifying'
-                              ? 'var(--accent)'
-                              : 'var(--text-muted)',
-                    }}
-                  />
-                  <span className="truncate text-[var(--text-main)]">
-                    {(session.sourceBranch ?? pathLeaf(session.integrationPath))} → {session.baseBranch}
-                  </span>
-                  <div className="flex-1" />
-                  <span className="shrink-0 text-[var(--text-sub)]">
-                    {session.phase === 'merging'
-                      ? t('git.mergePhaseMerging') || 'Merging…'
-                      : session.phase === 'verifying'
-                        ? t('git.mergePhaseVerifying') || 'Verifying…'
-                        : session.phase === 'verified'
-                          ? t('git.mergePhaseVerified') || 'Verified'
-                          : session.phase === 'failed'
-                            ? t('git.mergePhaseFailed') || 'Verify failed'
-                            : session.phase === 'conflicted'
-                              ? t('git.mergePhaseConflict') || 'Conflict'
-                              : t('git.mergePhaseReady') || 'Ready'}
-                  </span>
-                </div>
-                {/* Plain-language summary — changed files + verify result. */}
-                <div className="text-[var(--text-muted)]">
-                  {session.phase === 'conflicted'
-                    ? t('git.mergeSummary.conflicted', { count: session.conflicts.length })
-                    : session.phase === 'verifying'
-                      ? t('git.mergeSummary.verifying', { count: session.changedFiles })
-                      : session.phase === 'verified'
-                        ? session.changedFiles > 0
-                          ? t('git.mergeSummary.verified', { count: session.changedFiles })
-                          : t('git.mergeSummary.nothing')
-                        : session.phase === 'failed'
-                          ? `${t('git.mergeSummary.failed', { count: session.changedFiles })}${session.verify?.failedStep ? ` (${session.verify.failedStep})` : ''}${session.verify?.timedOut ? ` · ${t('git.mergeSummary.timedOut')}` : ''}`
-                          : t('git.mergeSummary.changed', { count: session.changedFiles })}
-                </div>
-                <div className="flex items-center gap-1.5">
-                  {session.phase === 'conflicted' && (
-                    <button
-                      type="button"
-                      onClick={openIntegration}
-                      className={`wmux-git-button ${FOCUS_RING}`}
-                      title={t('git.mergeOpenConflictDesc') || 'Open the integration worktree as a workspace to resolve conflicts with Claude'}
-                    >
-                      {t('git.mergeOpenConflict') || 'Conflict — open with Claude'}
-                    </button>
-                  )}
-                  {session.phase === 'verified' && (
-                    <button
-                      type="button"
-                      onClick={() => void handleLand()}
-                      disabled={busy}
-                      className={`wmux-git-button ${FOCUS_RING}`}
-                      title={t('git.landDesc') || 'Commit the verified merge and fast-forward the base branch'}
-                    >
-                      {t('git.land') || 'Land'}
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => void handleDiscard()}
-                    disabled={busy}
-                    className={`wmux-git-button wmux-git-action-danger ${FOCUS_RING}`}
-                    title={t('git.discardDesc') || 'Abort the merge and remove the integration worktree (base unchanged)'}
-                  >
-                    {t('git.discard') || 'Discard'}
-                  </button>
-                </div>
-              </div>
-            )}
-          </section>
+        <div className="wmux-git-worktrees" aria-label={t('git.worktrees') || 'Worktrees'}>
+          {/* New worktree — one branch-name line (main derives the location) — and the merge session, on top. */}
+          <div className="wmux-git-create">
+            <input
+              type="text"
+              value={newBranch}
+              onChange={(e) => setNewBranch(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void handleCreate();
+              }}
+              placeholder={t('git.newBranchPlaceholder') || 'new branch name…'}
+              aria-label={t('git.newBranchPlaceholder') || 'new branch name…'}
+              spellCheck={false}
+            />
+            <button
+              type="button"
+              onClick={() => void handleCreate()}
+              disabled={busy || !newBranch.trim()}
+              className={`wmux-git-button ${FOCUS_RING}`}
+            >
+              {t('git.create') || 'Create'}
+            </button>
+          </div>
+          {mergeEl}
+          {group('inUse', groups.inUse)}
+          {group('idle', groups.idle)}
+          {group('cleanup', groups.cleanup)}
         </div>
       )}
     </div>
