@@ -1,15 +1,16 @@
 // ─── Git page (rail) ─────────────────────────────────────────────────────────
 //
-// The rail's Git page leads with the repo: its owner/repo (a link to it on
-// GitHub) and how many issues and pull requests are open, then a scope (This
-// repo / All repos) and the tabs Issues, Pull requests and, set apart,
-// Worktrees. Issues and Pull requests are a list/detail split: the list (~30%,
+// The rail's Git page leads with the repo: its owner/repo, a menu to pick
+// another repo of the open workspaces (or All repos, or back to following the
+// active workspace; a picked repo stays until another is picked), a link to it
+// on GitHub and how many issues and pull requests are open; then the tabs
+// Issues, Pull requests and, set apart, Worktrees. Issues and Pull requests are a list/detail split: the list (~30%,
 // its own scroll) selects, the detail (~70%, its own scroll) shows the item
 // under a sticky header. Branches live in Worktrees: the active workspace's
 // branch bar (Diff, Go to terminal, the ship button) on top, then the grouped
 // worktree list with the new-branch line and the merge session.
 //
-// Scope, tab, issue filter, selection and list scroll live in the UI store,
+// Repo choice, tab, issue filter, selection and list scroll live in the UI store,
 // so leaving the page and coming back finds them as they were. Everything is
 // pull-only and lives only while the page is shown; only the shown list of
 // the active repo polls.
@@ -19,18 +20,18 @@ import type { KeyboardEvent } from 'react';
 import { useT } from '../../hooks/useT';
 import { useStore } from '../../stores';
 import { FOCUS_RING } from '../focusRing';
-import { IconChevron, IconRefresh } from '../icons';
+import { IconChevron, IconExternalLink, IconRefresh } from '../icons';
 import { useActiveRepo } from './useActiveRepo';
-import SegmentedControl from '../ui/SegmentedControl';
+import { RepoSwitcher, type RepoOption } from './RepoSwitcher';
 import { GitTab, pathLeaf } from './GitTab';
 import { PrSection } from './PrSection';
 import { IssueSection, getIssueBridge } from './IssueSection';
 import { GitDetail } from './GitDetail';
-import { repoOwnerWorkspace, useRepoGroups } from './repoGroups';
+import { repoOwnerWorkspace, useRepoGroups, type RepoGroup } from './repoGroups';
 import { GhConnectPage } from './GhConnectPage';
 import { useGhAuthGate } from './ghAuthGate';
 import type { GitDragOwner } from './gitPageState';
-import { saveGitTab, type GitPageTab, type GitScope, type GitSelection } from './gitPageState';
+import { saveGitRepoChoice, saveGitTab, type GitPageState, type GitPageTab, type GitSelection } from './gitPageState';
 import type { PrSummary } from '../../../shared/prSurface';
 import type { IssueFilter, IssueSummary } from '../../../shared/issueSurface';
 
@@ -56,9 +57,27 @@ export default function GitPage() {
   const [refreshKey, setRefreshKey] = useState(0);
   // The active workspace's repo, resolved whether or not Worktrees is open.
   const active = useActiveRepo(refreshKey);
-  const resolved = active.repo;
+  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
+  // Every repo of the open workspaces, read while the menu is open, in All
+  // repos, or for a picked repo (its lists and owner come from its group).
+  const [menuOpen, setMenuOpen] = useState(false);
+  const pick = page.scope === 'repo' ? page.pick : null;
+  const groups = useRepoGroups(refreshKey, menuOpen || page.scope === 'all' || pick !== null);
+  const pickedGroup = pick && groups ? groups.find((g) => g.key === pick) ?? null : null;
+  // A picked repo with no open workspace left: follow the active one instead.
+  const pickMissing = pick !== null && groups !== null && pickedGroup === null;
+  const following = pick === null || pickMissing;
+  // The repo shown in This repo (the gate's repo in All repos).
+  const resolved = following
+    ? active.repo
+    : pickedGroup && { repoPath: pickedGroup.prPath, mainPath: pickedGroup.prPath, remoteKey: pickedGroup.key.startsWith('path:') ? null : pickedGroup.key };
+  const resolving = following ? active.loading : groups === null;
   const web = repoWeb(resolved?.remoteKey ?? null);
   const repoName = resolved ? web?.label ?? pathLeaf(resolved.mainPath) : null;
+  const choose = (choice: Pick<GitPageState, 'scope' | 'pick'>) => {
+    setGitPage(choice);
+    saveGitRepoChoice(choice);
+  };
   // Signed out or no gh: the page is one connect card (re-read on refresh / after a login).
   // The open PR count comes from the gate's own PR list read (one per repo and refresh).
   const [gatePrs, setGatePrs] = useState<{ repoPath: string; count?: number }>({ repoPath: '' });
@@ -78,11 +97,11 @@ export default function GitPage() {
     }
   }, [gate]);
   // Who owns a hand-off from a list (the fan-out's workspace for "Start in a
-  // new worktree"): in This repo the active workspace, which is in it; in All
-  // repos each group's own workspace, reported by AllLists.
-  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
+  // new worktree"): the shown repo's workspace (the active one when following,
+  // else one in the picked repo); in All repos each group's own, reported by AllLists.
+  const owner = following ? activeWorkspaceId ?? undefined : pickedGroup ? repoOwnerWorkspace(pickedGroup, activeWorkspaceId) : undefined;
   const repoContext: GitDragOwner | undefined = resolved
-    ? { repoPath: resolved.repoPath, ...(activeWorkspaceId ? { workspaceId: activeWorkspaceId } : {}) }
+    ? { repoPath: resolved.repoPath, ...(owner ? { workspaceId: owner } : {}) }
     : undefined;
   const [groupOwners, setGroupOwners] = useState<Record<string, string | undefined>>({});
   const groupContext = (repoPath: string): GitDragOwner => {
@@ -164,34 +183,65 @@ export default function GitPage() {
     const count = length >= LIST_READ_CAP ? `${LIST_READ_CAP}+` : length;
     return t(`${key}.${count === 1 ? 'one' : 'other'}`, { count });
   };
-  const shownIssues = page.issueFilter.kind === 'all' && resolved ? items[itemsKey(resolved.repoPath, 'issue')] : undefined;
-  const shownPrs = resolved ? items[itemsKey(resolved.repoPath, 'pr')] : undefined;
-  const counts = page.scope === 'repo' && resolved ? [
-    countOf(shownIssues?.length ?? (readIssues.repoPath === resolved.repoPath ? readIssues.count : undefined), 'git.count.issues'),
-    countOf(shownPrs?.length ?? (gatePrs.repoPath === resolved.repoPath ? gatePrs.count : undefined), 'git.count.prs'),
-  ].filter((c): c is string => c !== null) : [];
+  // What is known for a repo path without reading anything.
+  const cachedCount = (repoPath: string, kind: GitSelection['kind']): number | undefined => {
+    if (kind === 'pr') return items[itemsKey(repoPath, 'pr')]?.length ?? (gatePrs.repoPath === repoPath ? gatePrs.count : undefined);
+    const listed = page.issueFilter.kind === 'all' ? items[itemsKey(repoPath, 'issue')] : undefined;
+    return listed?.length ?? (readIssues.repoPath === repoPath ? readIssues.count : undefined);
+  };
+  const countsOf = (repoPaths: string[]) => (['issue', 'pr'] as const).map((k) => {
+    const n = repoPaths.map((p) => cachedCount(p, k)).find((c) => c !== undefined);
+    return countOf(n, k === 'issue' ? 'git.count.issues' : 'git.count.prs');
+  }).filter((c): c is string => c !== null);
+  const counts = page.scope === 'repo' && resolved ? countsOf([resolved.repoPath]) : [];
+
+  // The header menu: All repos, each repo (its clones, its counts when known), Follow active workspace.
+  const groupLabel = (g: RepoGroup) => repoWeb(g.key)?.label ?? g.name;
+  const menuOptions: RepoOption[] = [
+    { value: 'all', label: t('git.scope.allRepos') },
+    ...(groups ?? []).map((g) => {
+      const paths = [g.prPath, ...(g.active && active.repo ? [active.repo.repoPath] : [])];
+      const sub = [
+        g.checkouts.length > 1 ? g.checkouts.map((c) => c.label).join(', ') : '',
+        countsOf(paths).join(' · '),
+      ].filter(Boolean).join(' · ');
+      return { value: `repo:${g.key}`, label: groupLabel(g), ...(sub ? { sub } : {}) };
+    }),
+    { value: 'follow', label: t('git.repoMenu.follow') },
+  ];
+  const menuCurrent = page.scope === 'all' ? 'all' : pick ? `repo:${pick}` : 'follow';
+  const onMenuPick = (v: string) => {
+    if (v === 'all') choose({ scope: 'all', pick: null });
+    else if (v === 'follow') choose({ scope: 'repo', pick: null });
+    else choose({ scope: 'repo', pick: v.slice(5) });
+  };
 
   return (
     <div className="wmux-git-page" data-git-page>
       <header className="wmux-git-page-header">
         <div className="min-w-0">
           <h1 ref={titleRef} tabIndex={-1} className="sr-only">{t('git.title')}</h1>
-          {repoName && (
-            <p className="wmux-git-page-repo" data-git-page-repo>
-              {web ? (
-                <a
-                  href={web.url}
-                  className={`wmux-git-page-repo-link ${FOCUS_RING}`}
-                  title={web.url}
-                  onClick={(e) => { e.preventDefault(); window.open(web.url, '_blank'); }}
-                  data-git-page-repo-link
-                >
-                  {repoName}
-                </a>
-              ) : repoName}
-            </p>
-          )}
-          {!resolved && !active.loading && <p className="wmux-git-page-summary" data-git-no-repo>{t('git.noRepo')}</p>}
+          <div className="wmux-git-page-repo">
+            <RepoSwitcher
+              label={page.scope === 'all' ? t('git.scope.allRepos') : repoName ?? t('git.repoMenu.choose')}
+              current={menuCurrent}
+              options={menuOptions}
+              onPick={onMenuPick}
+              onOpenChange={setMenuOpen}
+            />
+            {page.scope === 'repo' && web && (
+              <a
+                href={web.url}
+                className={`ui-icon-btn h-7 w-7 ${FOCUS_RING}`}
+                title={web.url}
+                aria-label={t('git.repoMenu.openOnGithub', { repo: web.label })}
+                onClick={(e) => { e.preventDefault(); window.open(web.url, '_blank'); }}
+                data-git-page-repo-link
+              ><IconExternalLink size={14} /></a>
+            )}
+          </div>
+          {pickMissing && <p className="wmux-git-page-summary" data-git-pick-missing>{t('git.repoMenu.missing')}</p>}
+          {page.scope === 'repo' && !resolved && !resolving && <p className="wmux-git-page-summary" data-git-no-repo>{t('git.noRepo')}</p>}
           {counts.length > 0 && <p className="wmux-git-page-summary" data-git-page-counts>{counts.join(' · ')}</p>}
         </div>
         <button
@@ -228,26 +278,21 @@ export default function GitPage() {
             </button>
           ))}
         </div>
-        <SegmentedControl<GitScope>
-          value={page.scope}
-          onValueChange={(scope) => setGitPage({ scope })}
-          ariaLabel={t('git.scope.label')}
-          data-testid="git-scope"
-          options={[
-            { value: 'repo', label: t('git.scope.thisRepo') },
-            { value: 'all', label: t('git.scope.allRepos') },
-          ]}
-        />
       </div>
 
       <div id={`${tabIds}-panel`} role="tabpanel" aria-labelledby={`${tabIds}-${page.tab}`} className="wmux-git-panel">
         {page.tab === 'worktrees' ? (
           <div className="wmux-git-scroll" data-git-worktrees-tab>
-            {/* The active workspace's branch: Diff, Go to terminal, the ship button. */}
-            <GitTab layout="summary" refreshKey={refreshKey} />
-            {page.scope === 'repo'
-              ? <GitTab layout="worktrees" refreshKey={refreshKey} />
-              : <AllWorktrees refreshKey={refreshKey} />}
+            {/* The active workspace's branch (Diff, Go to terminal, the ship
+                button), unless a picked repo it is not in is shown. */}
+            {(page.scope === 'all' || following || pickedGroup?.active) && <GitTab layout="summary" refreshKey={refreshKey} />}
+            {page.scope === 'all'
+              ? <AllWorktrees groups={groups} refreshKey={refreshKey} />
+              : following
+                ? <GitTab layout="worktrees" refreshKey={refreshKey} />
+                : pickedGroup
+                  ? <GroupWorktrees group={pickedGroup} refreshKey={refreshKey} />
+                  : <div className="wmux-git-note">{t('git.loading')}</div>}
           </div>
         ) : (
           <div className="wmux-git-split" data-git-split>
@@ -269,6 +314,7 @@ export default function GitPage() {
                 )
               ) : (
                 <AllLists
+                  groups={groups}
                   tab={page.tab}
                   refreshKey={refreshKey}
                   filter={page.issueFilter}
@@ -385,7 +431,8 @@ function RepoList({ tab, repoPath, refreshKey, active, filter, onFilter, selecte
 }
 
 /** All repos: one collapsible list per repo, the active repo first and open. */
-function AllLists({ tab, refreshKey, filter, onFilter, sel, onSelect, publish, onOwners }: {
+function AllLists({ groups, tab, refreshKey, filter, onFilter, sel, onSelect, publish, onOwners }: {
+  groups: RepoGroup[] | null;
   tab: GitPageTab;
   refreshKey: number;
   filter: IssueFilter;
@@ -397,7 +444,6 @@ function AllLists({ tab, refreshKey, filter, onFilter, sel, onSelect, publish, o
   onOwners?: (owners: Record<string, string | undefined>) => void;
 }) {
   const t = useT();
-  const groups = useRepoGroups(refreshKey);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const owners = useMemo(
@@ -446,9 +492,8 @@ function AllLists({ tab, refreshKey, filter, onFilter, sel, onSelect, publish, o
 }
 
 /** All repos on the Worktrees tab: each repo's checkouts, grouped. */
-function AllWorktrees({ refreshKey }: { refreshKey: number }) {
+function AllWorktrees({ groups, refreshKey }: { groups: RepoGroup[] | null; refreshKey: number }) {
   const t = useT();
-  const groups = useRepoGroups(refreshKey);
   if (groups === null) return <div className="wmux-git-note">{t('git.loading')}</div>;
   if (groups.length === 0) return <div className="wmux-git-note" data-git-all-empty>{t('git.allRepos.empty')}</div>;
   return (
@@ -459,23 +504,32 @@ function AllWorktrees({ refreshKey }: { refreshKey: number }) {
             {g.name}
             <span className="wmux-git-group-meta">{t('git.allRepos.workspaces', { count: g.workspaceCount })}</span>
           </h2>
-          {g.checkouts.map((c) => (
-            <div key={c.mainPath} className="wmux-git-checkout" data-git-checkout={c.label}>
-              {g.checkouts.length > 1 && <h3 className="wmux-git-checkout-title" title={c.mainPath}>{c.label}</h3>}
-              {/* cwd pins the checkout; the active pane's worktree comes
-                  apart, so switching panes inside the repo reloads nothing. */}
-              <GitTab
-                layout="worktrees"
-                cwd={c.mainPath}
-                currentPath={c.currentPath}
-                markCurrent={!!c.currentPath}
-                workspacesOnRepo={c.workspaces}
-                refreshKey={refreshKey}
-              />
-            </div>
-          ))}
+          <GroupWorktrees group={g} refreshKey={refreshKey} />
         </section>
       ))}
     </div>
+  );
+}
+
+/** One repo's checkouts on the Worktrees tab (labelled when there are clones). */
+function GroupWorktrees({ group, refreshKey }: { group: RepoGroup; refreshKey: number }) {
+  return (
+    <>
+      {group.checkouts.map((c) => (
+        <div key={c.mainPath} className="wmux-git-checkout" data-git-checkout={c.label}>
+          {group.checkouts.length > 1 && <h3 className="wmux-git-checkout-title" title={c.mainPath}>{c.label}</h3>}
+          {/* cwd pins the checkout; the active pane's worktree comes
+              apart, so switching panes inside the repo reloads nothing. */}
+          <GitTab
+            layout="worktrees"
+            cwd={c.mainPath}
+            currentPath={c.currentPath}
+            markCurrent={!!c.currentPath}
+            workspacesOnRepo={c.workspaces}
+            refreshKey={refreshKey}
+          />
+        </div>
+      ))}
+    </>
   );
 }

@@ -2189,9 +2189,6 @@ html[data-fullscreen] .wmux-shell-body {
 .wmux-git-wt-group .wmux-git-subhead { margin: 0; }
 .wmux-git-wt-caption { margin: 0 4px 4px; font-size: 11px; color: var(--text-muted); }
 .wmux-git-page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
-.wmux-git-page-repo { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 20px; font-weight: 600; line-height: 28px; color: var(--text-main); }
-.wmux-git-page-repo-link { color: inherit; border-radius: 6px; }
-.wmux-git-page-repo-link:hover { text-decoration: underline; text-underline-offset: 3px; }
 .wmux-git-page-summary { margin: 2px 0 0; font-size: 13px; color: var(--text-sub); }
 .wmux-git-body { display: flex; flex-direction: column; gap: 12px; }
 .wmux-git-scope { display: flex; }
@@ -2455,3 +2452,20 @@ html[data-fullscreen] .wmux-shell-body {
 .wmux-git-next { display: inline-block; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text-muted); }
 /* Newer commits than the pinned head: a muted line with one Reload, no wash. */
 .wmux-git-moved { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--border-soft); font-size: 12px; color: var(--text-sub); }
+
+/* Git page — the header's repo switcher */
+.wmux-git-page-repo { display: flex; align-items: center; gap: 4px; }
+.wmux-git-repo-switch { position: relative; min-width: 0; }
+.wmux-git-repo-trigger { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; margin-left: -6px; padding: 0 6px; border-radius: 6px; font-size: 20px; font-weight: 600; line-height: 28px; color: var(--text-main); }
+.wmux-git-repo-trigger:hover, .wmux-git-repo-trigger[aria-expanded='true'] { background: var(--hover-fill); }
+.wmux-git-repo-trigger-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wmux-git-repo-trigger .wmux-git-chevron { color: var(--text-muted); transform: rotate(90deg); }
+.wmux-git-repo-trigger .wmux-git-chevron[data-open] { transform: rotate(-90deg); }
+.wmux-git-repo-menu { position: absolute; top: calc(100% + 6px); left: -6px; z-index: 30; display: flex; flex-direction: column; gap: 4px; width: 320px; max-width: calc(100vw - 32px); }
+.wmux-git-repo-filter { width: 100%; height: 28px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--line); background: transparent; font-size: 12px; color: var(--text-main); }
+.wmux-git-repo-list { max-height: 320px; overflow-y: auto; margin: 0; padding: 0; list-style: none; }
+.wmux-git-repo-option { display: flex; flex-direction: column; gap: 1px; padding: 6px 8px; border-radius: 6px; cursor: default; }
+.wmux-git-repo-option[data-active] { background: var(--hover-fill); }
+.wmux-git-repo-option[aria-selected='true'] .wmux-git-repo-option-label { font-weight: 500; }
+.wmux-git-repo-option-label { font-size: 13px; color: var(--text-main); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wmux-git-repo-option-sub { font-size: 11px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

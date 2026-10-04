@@ -1,6 +1,8 @@
 // The Git page's view state, kept in the UI store so the scope, tab, issue
 // filter, selected item and list scroll survive leaving the page and coming
-// back. The tab is also kept per viewer (local storage) across restarts.
+// back. The tab and the repo choice (All repos, a picked repo, or following
+// the active workspace) are also kept per viewer (local storage) across
+// restarts.
 import type { IssueFilter } from '../../../shared/issueSurface';
 
 export type GitScope = 'repo' | 'all';
@@ -14,7 +16,11 @@ export interface GitSelection {
 }
 
 export interface GitPageState {
+  /** 'repo' shows one repo (the picked one, else the active workspace's); 'all' groups every repo. */
   scope: GitScope;
+  /** The repo picked in the header (its group key: the remote key, or
+   *  `path:<main worktree>` without one); null follows the active workspace. */
+  pick: string | null;
   tab: GitPageTab;
   issueFilter: IssueFilter;
   selected: GitSelection | null;
@@ -72,6 +78,28 @@ export function saveGitTab(tab: GitPageTab): void {
   }
 }
 
+/** Where the repo choice is kept: 'all', 'follow' or `repo:<group key>`. */
+export const GIT_REPO_KEY = 'wmux.git.repo';
+
+export function readGitRepoChoice(): Pick<GitPageState, 'scope' | 'pick'> {
+  try {
+    const v = localStorage.getItem(GIT_REPO_KEY);
+    if (v === 'all') return { scope: 'all', pick: null };
+    if (v?.startsWith('repo:') && v.length > 5) return { scope: 'repo', pick: v.slice(5) };
+  } catch {
+    /* no storage */
+  }
+  return { scope: 'repo', pick: null };
+}
+
+export function saveGitRepoChoice(choice: Pick<GitPageState, 'scope' | 'pick'>): void {
+  try {
+    localStorage.setItem(GIT_REPO_KEY, choice.scope === 'all' ? 'all' : choice.pick ? `repo:${choice.pick}` : 'follow');
+  } catch {
+    /* no storage: the choice lasts this session */
+  }
+}
+
 export function initialGitPageState(): GitPageState {
-  return { scope: 'repo', tab: readGitTab(), issueFilter: { kind: 'all' }, selected: null, listScroll: {} };
+  return { ...readGitRepoChoice(), tab: readGitTab(), issueFilter: { kind: 'all' }, selected: null, listScroll: {} };
 }

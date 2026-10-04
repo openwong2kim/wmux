@@ -107,8 +107,9 @@ function selectLive(s: StoreState): string[] {
   return s.workspaces.map((w) => `${w.id}\u0001${w.name}\u0001${w.metadata?.pr ? JSON.stringify(w.metadata.pr) : ''}`);
 }
 
-/** Groups for All repos; null while the first resolution runs. */
-export function useRepoGroups(refreshKey: number): RepoGroup[] | null {
+/** Groups for All repos and the header's repo menu; null while the first
+ *  resolution runs. Nothing is read while `enabled` is false. */
+export function useRepoGroups(refreshKey: number, enabled = true): RepoGroup[] | null {
   const resolutionKey = useStore(selectResolutionKey);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const liveRows = useStore(useShallow(selectLive));
@@ -125,7 +126,7 @@ export function useRepoGroups(refreshKey: number): RepoGroup[] | null {
 
   useEffect(() => {
     const mine = ++seq.current;
-    if (hidden) return undefined;
+    if (hidden || !enabled) return undefined;
     const force = lastRefresh.current !== refreshKey;
     lastRefresh.current = refreshKey;
     const api = (window as unknown as {
@@ -160,7 +161,7 @@ export function useRepoGroups(refreshKey: number): RepoGroup[] | null {
       if (live()) setResolved(out);
     })();
     return () => { seq.current++; };
-  }, [resolutionKey, refreshKey, hidden]);
+  }, [resolutionKey, refreshKey, hidden, enabled]);
 
   const liveMap = useMemo(() => {
     const m: Live = {};
