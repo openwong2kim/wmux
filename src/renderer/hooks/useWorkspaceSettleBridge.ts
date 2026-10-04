@@ -4,6 +4,7 @@ import { t } from '../i18n';
 import { formatWhen } from '../components/Schedules/format';
 import {
   WORKSPACE_SETTLE_UNDO_MS,
+  type WorkspaceSettleChange,
   type WorkspaceSettleChangedPayload,
   type WorkspaceSettleCommand,
   type WorkspaceSettleCommandResult,
@@ -13,8 +14,9 @@ import {
 //
 // The single owner of the `workspaceSettle` IPC subscription, mounted once in
 // AppLayout. Hydrates the slice from `get()` on mount, then follows
-// `onChanged`: every push replaces the snapshot, and each undoable change in
-// it raises one toast with an Undo action.
+// `onChanged`: every push replaces the snapshot, and its undoable changes
+// raise one toast with an Undo action — a named one for a single change, a
+// counted one for a batch (several workspaces idle-settling after a restart).
 
 /**
  * Send one verb. Resolves the result, or null when the channel is missing or
@@ -30,7 +32,9 @@ export function sendWorkspaceSettleCommand(command: WorkspaceSettleCommand): Pro
     else if (res) {
       useStore.getState().pushToast({
         level: 'warn',
-        message: t(res.error === 'refused' ? 'workspaceSettle.refused' : 'workspaceSettle.failed'),
+        message: t(res.error === 'refused' ? 'workspaceSettle.refused'
+          : res.error === 'hq' ? 'workspaceSettle.hq'
+          : 'workspaceSettle.failed'),
       });
     }
     return res ?? null;
@@ -56,15 +60,21 @@ export function sendWorkspaceSettleIdleDays(days: number): void {
   }, IDLE_DAYS_SEND_DELAY_MS);
 }
 
-/** Apply one push: replace the snapshot, then toast each undoable change. */
+/** Apply one push: replace the snapshot, then toast its undoable changes. */
 export function applyWorkspaceSettleChanges(payload: WorkspaceSettleChangedPayload): void {
   const store = useStore.getState();
   if (payload?.snapshot) store.setWorkspaceSettleSnapshot(payload.snapshot);
+  const workspaces = useStore.getState().workspaces;
+  const shown: { change: WorkspaceSettleChange; name: string }[] = [];
   for (const change of payload?.changes ?? []) {
     if (!change.undoable || change.kind === 'unsettled') continue;
-    const name = useStore.getState().workspaces.find((w) => w.id === change.workspaceId)?.name;
-    if (name === undefined) continue;
-    let message: string;
+    const name = workspaces.find((w) => w.id === change.workspaceId)?.name;
+    if (name !== undefined) shown.push({ change, name });
+  }
+  if (shown.length === 0) return;
+  let message: string;
+  if (shown.length === 1) {
+    const { change, name } = shown[0];
     if (change.kind === 'settled') {
       message = t('workspaceSettle.toastSettled', { name });
     } else if (change.kind === 'snoozed') {
@@ -75,16 +85,25 @@ export function applyWorkspaceSettleChanges(payload: WorkspaceSettleChangedPaylo
     } else {
       message = t('workspaceSettle.toastBack', { name });
     }
-    store.pushToast({
-      level: 'info',
-      message,
-      durationMs: WORKSPACE_SETTLE_UNDO_MS,
-      action: {
-        label: t('workspaceSettle.undo'),
-        onClick: () => { void sendWorkspaceSettleCommand({ op: 'undo', changeId: change.id }); },
-      },
-    });
+  } else {
+    const count = shown.length;
+    const kind = shown[0].change.kind;
+    message = shown.some((e) => e.change.kind !== kind) ? t('workspaceSettle.toastBatchMixed', { count })
+      : kind === 'settled' ? t('workspaceSettle.toastBatchSettled', { count })
+      : kind === 'snoozed' ? t('workspaceSettle.toastBatchSnoozed', { count })
+      : t('workspaceSettle.toastBatchBack', { count });
   }
+  store.pushToast({
+    level: 'info',
+    message,
+    durationMs: WORKSPACE_SETTLE_UNDO_MS,
+    action: {
+      label: t('workspaceSettle.undo'),
+      onClick: () => {
+        for (const { change } of shown) void sendWorkspaceSettleCommand({ op: 'undo', changeId: change.id });
+      },
+    },
+  });
 }
 
 export function useWorkspaceSettleBridge(): void {
