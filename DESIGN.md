@@ -322,6 +322,28 @@ button.
   live in the UI store and survive leaving the page; the tab is also kept
   per viewer across restarts. Anything that lands on a pane (Diff, Open, Go
   to terminal, a workspace link) returns to Workspaces.
+- **PR review (detail pane):** under the facts row, in order:
+  - **Checks:** a row per check (a green tick for pass, a red mark for fail, a
+    muted mark otherwise) with Open on GitHub. A failed GitHub Actions run gets
+    Show log, which shows the failed jobs' last 200 lines as plain text in a
+    mono block (ANSI stripped, never markup), and Rerun failed jobs, which only
+    ever runs on a click. Polled every 30 s only while the page and window
+    are shown and the PR is open.
+  - **Review:** "Applies to commit abc1234", one text box, and Approve /
+    Request changes / Comment as quiet buttons.
+  - **Squash and merge:** the one primary. It opens an inline editor with the
+    subject "<title> (#n)" and an empty body. While the PR cannot merge, it is
+    disabled with the reason in a muted line (checks failing or running,
+    conflicts, draft, behind, blocked, not open).
+  - **Files:** one row per changed file with its counts; open, it draws the
+    hunks with an old/new line gutter. A gutter click opens a line comment
+    composer. Review threads sit under their line with a reply box; outdated
+    ones are listed under the file.
+
+  Every write names the head commit shown, and main refuses if the PR moved
+  ("The PR changed since you loaded it"; drafts are kept). A draft written
+  for an older head says so. The header slot shows who acts next when a
+  work link names the PR: "Next: you · review" or "Next: <agent> · working".
 - **Hand-off:** an issue or PR dropped on an agent pane or a sidebar
   workspace row (holding the drag over the rail's Workspaces button for
   half a second opens that page; a held row gets a dashed accent outline)
@@ -661,6 +683,7 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-10-04 | Git page v2 (supersedes the row above): a one-line branch bar with one ship button (Commit → Push → Create PR → Open PR), Pull requests · Issues · Worktrees as tabs, PRs and issues as a list/detail split with a sticky detail header, worktrees grouped (in use / no workspace / cleanup candidates), view state in the UI store | The inline accordion buried long bodies and tables in a half-width column; a fixed split gives the detail the room. Worktrees were most of the screen on a busy repo but rarely the task. One primary that names the next step replaces reading four indicators to decide what to do. Cleanup candidates are worded as a check, not a verdict, because a quiet branch can still hold unpushed work |
 | 2026-10-04 | Owner decision (Moa, PR E): the right tool panel is always Moa's chat (pinned to the HQ, whatever workspace is active), and Moa's character is the one exception to two chrome rules. **Motion:** the mascot keeps its approved idle squish and blink (and the working / needs-you / done loops) — the only perpetual motion besides spinners and the cursor — and stops under `prefers-reduced-motion` or Moa's own Reduce motion setting. **Size:** the titlebar Moa icon is the mascot at 20px (chrome icons otherwise cap at 16px); at 28px and under only the body and face are drawn. The "needs you" bubble pops under that icon for ~6s (decisions and finished delegations only, one at a time, polite live region, never takes focus), then shrinks to a dot: yellow = a decision waits, grey = an unseen plain reply. While Moa is on, the Moa icon is the panel toggle (DeckToggle hides) | Owner-approved art (Mascot6, Closed) and spec; a character the owner chose to give the main bot a face, kept calm by the reduced-motion switches and the one-bubble rule |
 | 2026-10-04 | Git page reads first: Issues is the first tab, the branch bar folds to one thin line by default, issues and PRs drag onto an agent pane or a workspace row to hand them off (a confirm popover with an optional note), and signing in to GitHub is a full-page card with gh's device code shown in-app | Most visits are to read and route work, not to ship; the bar's controls stay one click away. Dropping on the agent you mean is quicker than copying a link, and the popover keeps a stray drop from sending anything. The agent gets a fixed reference to read with gh, never the item's text pasted in. The device code in-app removes the terminal round trip, which is the step most people stall on |
+| 2026-10-04 | PR review lives in the Git page's detail pane: checks with failed-run logs and an explicit Rerun failed jobs, review actions, squash merge with an editable subject and an empty body, changed files with line comments and threads, and who acts next from the PR's work link | Reading and routing PRs already happens on this page; leaving for the browser to approve, merge or read a CI failure broke the flow. Every write is pinned to the head commit shown, so a push that lands while you read can never be approved or merged unseen. Logs are untrusted text, shown plain. Rerun is never automatic: a flaky job is a decision, not a retry loop |
 
 ### Desktop conversation view
 
