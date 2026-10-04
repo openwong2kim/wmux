@@ -162,6 +162,34 @@ describe('Git page', () => {
     expect(container.querySelector('[data-git-page-counts]')).toBeNull();
   });
 
+  it('after a refresh the header counts take the newest answer, not a list from an earlier visit', async () => {
+    const issue = (n: number) => ({
+      number: n, title: `i${n}`, state: 'open', author: 'a', labels: [], assignees: [], updatedAt: '2026-10-01T00:00:00Z',
+      url: `https://github.com/o/alpha/issues/${n}`, comments: 0,
+    });
+    const api = (window as unknown as { electronAPI: { github: { issueList: ReturnType<typeof vi.fn> } } }).electronAPI;
+    api.github.issueList.mockResolvedValue({ ok: true, issues: [issue(1), issue(2), issue(3)] });
+    prList.mockImplementation(async () => ({ ok: true, prs: [PR, { ...PR, number: 8 }] }));
+    act(() => useStore.setState({ gitPage: { ...initialGitPageState(), tab: 'issues' } }));
+    act(() => root.render(createElement(GitPage)));
+    await settle();
+    // Visit both lists, so each has an answer from this (first) refresh.
+    act(() => tab('prs').click());
+    await settle();
+    expect(container.querySelector('[data-git-page-counts]')?.textContent).toBe('3 issues · 2 pull requests');
+    // One PR and one issue close; refresh while Pull requests is shown.
+    prList.mockImplementation(async () => ({ ok: true, prs: [PR] }));
+    api.github.issueList.mockResolvedValue({ ok: true, issues: [issue(1), issue(2)] });
+    act(() => (container.querySelector('[data-git-refresh]') as HTMLButtonElement).click());
+    await settle();
+    // The issue list from before the refresh is not shown, so its 3 must not win.
+    expect(container.querySelector('[data-git-page-counts]')?.textContent).toBe('2 issues · 1 pull request');
+    // Back on Issues, the fresh list agrees.
+    act(() => tab('issues').click());
+    await settle();
+    expect(container.querySelector('[data-git-page-counts]')?.textContent).toBe('2 issues · 1 pull request');
+  });
+
   it('a repo without a GitHub remote is named by its folder, without a link', async () => {
     act(() => useStore.setState({ activeWorkspaceId: 'c' }));
     act(() => root.render(createElement(GitPage)));
@@ -468,6 +496,11 @@ describe('Git page', () => {
       await settle();
       expect(repoText()).toBe('o/alpha');
       expect(container.querySelector('[data-git-pick-missing]')).not.toBeNull();
+      // The listbox still has a current option: Follow active workspace.
+      act(() => switcher().click());
+      await settle();
+      const selected = [...container.querySelectorAll('[role="option"][aria-selected="true"]')];
+      expect(selected.map((o) => o.getAttribute('data-git-repo-option'))).toEqual(['follow']);
     });
 
     it('keyboard: type to filter, arrows move, Enter picks, Esc closes and returns focus', async () => {

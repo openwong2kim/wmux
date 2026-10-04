@@ -46,6 +46,9 @@ function repoWeb(key: string | null): { label: string; url: string } | null {
 }
 const itemsKey = (repoPath: string, kind: GitSelection['kind']) => `${repoPath}\0${kind}`;
 
+/** One count read's answer, tagged with its repo and the refresh it came under. */
+interface CountAnswer { repoPath: string; gen: number; count?: number }
+
 export default function GitPage() {
   const t = useT();
   // Focus moves to the page title on open, so keyboard users start on this
@@ -55,6 +58,10 @@ export default function GitPage() {
   const page = useStore((s) => s.gitPage);
   const setGitPage = useStore((s) => s.setGitPage);
   const [refreshKey, setRefreshKey] = useState(0);
+  // The refresh generation each count answer arrived under: after a refresh
+  // the header takes the newest answer, never a list left from an earlier one.
+  const generation = useRef(refreshKey);
+  generation.current = refreshKey;
   // The active workspace's repo, resolved whether or not Worktrees is open.
   const active = useActiveRepo(refreshKey);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
@@ -80,9 +87,9 @@ export default function GitPage() {
   };
   // Signed out or no gh: the page is one connect card (re-read on refresh / after a login).
   // The open PR count comes from the gate's own PR list read (one per repo and refresh).
-  const [gatePrs, setGatePrs] = useState<{ repoPath: string; count?: number }>({ repoPath: '' });
+  const [gatePrs, setGatePrs] = useState<CountAnswer>({ repoPath: '', gen: -1 });
   const gate = useGhAuthGate(resolved?.repoPath ?? null, refreshKey, (repoPath, res) => {
-    setGatePrs({ repoPath, ...(res.ok ? { count: res.prs.length } : {}) });
+    setGatePrs({ repoPath, gen: generation.current, ...(res.ok ? { count: res.prs.length } : {}) });
   });
   const recheck = () => setRefreshKey((k) => k + 1);
   // Back from the connect card: the lists mounted while the gate was still
@@ -110,11 +117,14 @@ export default function GitPage() {
   };
   // Each list's last answer, so the detail pane can find the selected item.
   const [items, setItems] = useState<Record<string, PrSummary[] | IssueSummary[]>>({});
+  const [itemsGen, setItemsGen] = useState<Record<string, number>>({});
   // Bumped by every new list answer, so the list scroll can be restored once
   // the rows it was saved over are there.
   const [itemsVersion, setItemsVersion] = useState(0);
   const publish = useCallback((repoPath: string, kind: GitSelection['kind']) => (list: PrSummary[] | IssueSummary[]) => {
     setItems((m) => (m[itemsKey(repoPath, kind)] === list ? m : { ...m, [itemsKey(repoPath, kind)]: list }));
+    const gen = generation.current;
+    setItemsGen((m) => (m[itemsKey(repoPath, kind)] === gen ? m : { ...m, [itemsKey(repoPath, kind)]: gen }));
     setItemsVersion((v) => v + 1);
   }, []);
 
@@ -122,7 +132,7 @@ export default function GitPage() {
   // read per repo and per refresh, made when first needed and never polled
   // (main caches it and shares it with the list). The PR count needs no read
   // of its own: the gate reads that list anyway.
-  const [readIssues, setReadIssues] = useState<{ repoPath: string; count?: number }>({ repoPath: '' });
+  const [readIssues, setReadIssues] = useState<CountAnswer>({ repoPath: '', gen: -1 });
   const issuesRead = useRef('');
   const issuesRefresh = useRef(refreshKey);
   const countsRepo = page.scope === 'repo' ? resolved?.repoPath ?? null : null;
@@ -137,8 +147,9 @@ export default function GitPage() {
     issuesRefresh.current = refreshKey;
     // A gate or an error leaves the count out. The answer is kept even if the
     // tab changes meanwhile; it is tagged with its repo.
+    const gen = refreshKey;
     void issues.issueList(countsRepo, { kind: 'all' }, force).then(
-      (res) => setReadIssues({ repoPath: countsRepo, ...(res.ok ? { count: res.issues.length } : {}) }),
+      (res) => setReadIssues({ repoPath: countsRepo, gen, ...(res.ok ? { count: res.issues.length } : {}) }),
       () => undefined,
     );
     return undefined;
@@ -183,11 +194,17 @@ export default function GitPage() {
     const count = length >= LIST_READ_CAP ? `${LIST_READ_CAP}+` : length;
     return t(`${key}.${count === 1 ? 'one' : 'other'}`, { count });
   };
-  // What is known for a repo path without reading anything.
+  // What is known for a repo path without reading anything: the list's answer
+  // or the count read's, whichever came under the later refresh (the list, a
+  // polled read, on a tie).
   const cachedCount = (repoPath: string, kind: GitSelection['kind']): number | undefined => {
-    if (kind === 'pr') return items[itemsKey(repoPath, 'pr')]?.length ?? (gatePrs.repoPath === repoPath ? gatePrs.count : undefined);
-    const listed = page.issueFilter.kind === 'all' ? items[itemsKey(repoPath, 'issue')] : undefined;
-    return listed?.length ?? (readIssues.repoPath === repoPath ? readIssues.count : undefined);
+    const key = itemsKey(repoPath, kind);
+    const listed = kind === 'pr' || page.issueFilter.kind === 'all' ? items[key] : undefined;
+    const read = kind === 'pr' ? gatePrs : readIssues;
+    const readCount = read.repoPath === repoPath ? read.count : undefined;
+    if (!listed) return readCount;
+    if (readCount === undefined) return listed.length;
+    return read.gen > (itemsGen[key] ?? -1) ? readCount : listed.length;
   };
   const countsOf = (repoPaths: string[]) => (['issue', 'pr'] as const).map((k) => {
     const n = repoPaths.map((p) => cachedCount(p, k)).find((c) => c !== undefined);
@@ -209,7 +226,8 @@ export default function GitPage() {
     }),
     { value: 'follow', label: t('git.repoMenu.follow') },
   ];
-  const menuCurrent = page.scope === 'all' ? 'all' : pick ? `repo:${pick}` : 'follow';
+  // A pick with no open workspace left is not an option: the page follows.
+  const menuCurrent = page.scope === 'all' ? 'all' : pick && !pickMissing ? `repo:${pick}` : 'follow';
   const onMenuPick = (v: string) => {
     if (v === 'all') choose({ scope: 'all', pick: null });
     else if (v === 'follow') choose({ scope: 'repo', pick: null });
