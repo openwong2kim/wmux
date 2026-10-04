@@ -81,3 +81,24 @@ export function isPrActivity(
   if (prNumberOf(nextKey) !== prNumberOf(row.prKey)) return true;
   return isFinishedPrKey(row.prKey) && !isFinishedPrKey(nextKey);
 }
+
+/**
+ * One reply the terminal itself writes back into the PTY, not a person typing:
+ * device attributes, status and cursor-position reports, mode reports, focus
+ * in/out (agents turn focus reporting on, so merely viewing the pane sends
+ * one), and OSC / DCS answers.
+ */
+const TERMINAL_REPLY =
+  /\x1b\[(?:\?[\d;]*(?:c|n|u|\$y)|[>=][\d;]*c|[\d;]*[Rn]|[IO])|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\/gy;
+
+/** Whether `data` is nothing but terminal replies — not activity. */
+export function isTerminalReplyOnly(data: string): boolean {
+  if (data.length === 0 || data.charCodeAt(0) !== 0x1b) return false;
+  let at = 0;
+  while (at < data.length) {
+    TERMINAL_REPLY.lastIndex = at;
+    if (!TERMINAL_REPLY.exec(data)) return false;
+    at = TERMINAL_REPLY.lastIndex;
+  }
+  return true;
+}

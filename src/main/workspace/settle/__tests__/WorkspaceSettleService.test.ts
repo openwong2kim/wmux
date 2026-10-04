@@ -8,7 +8,7 @@ import {
   WorkspaceSettleService,
   type PersistedWorkspaceSettle,
 } from '../WorkspaceSettleService';
-import { PR_SETTLE_QUIET_MS } from '../workspaceSettleRules';
+import { isTerminalReplyOnly, PR_SETTLE_QUIET_MS } from '../workspaceSettleRules';
 
 const DAY = 24 * 60 * 60 * 1000;
 const T0 = Date.UTC(2026, 9, 1, 12);
@@ -132,17 +132,36 @@ describe('WorkspaceSettleService — un-settle on activity', () => {
 
   it('un-settles on input, throttled per PTY', () => {
     const t = settled();
-    t.svc.noteInput('pty-a');
+    t.svc.noteInput('pty-a', 'x');
     expect(t.state('a')).toBeUndefined();
     t.advance(4 * DAY);
     t.svc.tick();
     expect(t.state('a')?.settled).toBeDefined();
-    t.svc.noteInput('pty-a');
+    t.svc.noteInput('pty-a', 'x');
     expect(t.state('a')).toBeUndefined();
     const lastCount = t.changes.length;
     t.advance(INPUT_ACTIVITY_THROTTLE_MS - 1);
-    t.svc.noteInput('pty-a');
+    t.svc.noteInput('pty-a', 'x');
     expect(t.changes.length).toBe(lastCount);
+  });
+
+  it('ignores what the terminal writes back on its own', () => {
+    const t = settled();
+    t.svc.noteInput('pty-a', '\x1b[I');
+    t.svc.noteInput('pty-a', '\x1b[?1;2c\x1b[12;40R');
+    t.svc.noteInput('pty-a', '\x1b]11;rgb:ffff/ffff/ffff\x1b\\');
+    expect(t.state('a')?.settled).toBeDefined();
+    t.svc.noteInput('pty-a', '\x1b[A');
+    expect(t.state('a')).toBeUndefined();
+  });
+
+  it('tells terminal replies from keys', () => {
+    for (const reply of ['\x1b[I', '\x1b[O', '\x1b[?62;22c', '\x1b[>0;276;0c', '\x1b[0n', '\x1b[3;1R', '\x1b[?2026;2$y', '\x1b[?1u', '\x1bP>|xterm\x1b\\', '\x1b]10;rgb:0/0/0\x07']) {
+      expect(isTerminalReplyOnly(reply)).toBe(true);
+    }
+    for (const key of ['a', '\r', '\x1b', '\x1b[A', '\x1b[13;2u', '\x1b[200~hi\x1b[201~', '\x1b[I x', '\x1b[<0;10;5M']) {
+      expect(isTerminalReplyOnly(key)).toBe(false);
+    }
   });
 
   it('un-settles when the agent runs', () => {

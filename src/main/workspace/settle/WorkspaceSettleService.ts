@@ -28,6 +28,7 @@ import {
   autoSettleReason,
   isFinishedPrKey,
   isPrActivity,
+  isTerminalReplyOnly,
   prKeyOf,
   settleBlocked,
   type WorkspaceSettleFacts,
@@ -173,7 +174,8 @@ export class WorkspaceSettleService {
   }
 
   /** Input reached a PTY. Throttled per PTY before any lookup: this is the keystroke path. */
-  noteInput(ptyId: string): void {
+  noteInput(ptyId: string, data: string): void {
+    if (isTerminalReplyOnly(data)) return;
     const now = this.now();
     if (now - (this.inputNotedAt.get(ptyId) ?? -Infinity) < INPUT_ACTIVITY_THROTTLE_MS) return;
     const entry = this.mirror?.entries.find((e) => e.activePtyId === ptyId || e.ptyIds?.includes(ptyId));

@@ -755,7 +755,7 @@ export function registerPTYHandlers(
       // delivery — the operator's intent is the same either way.
       ptyBridge.noteInterruptInput(id, data);
       // Input is activity: it un-settles the workspace and restarts its idle clock.
-      getWorkspaceSettleService()?.noteInput(id);
+      getWorkspaceSettleService()?.noteInput(id, data);
       const segments = segmentOversize(data);
       let allDelivered = true;
       for (const segment of segments) {
@@ -788,7 +788,7 @@ export function registerPTYHandlers(
       }
       // Interrupt edge — same reasoning as the daemon branch above.
       ptyBridge.noteInterruptInput(id, data);
-      getWorkspaceSettleService()?.noteInput(id);
+      getWorkspaceSettleService()?.noteInput(id, data);
       const segments = segmentOversize(data);
       for (const segment of segments) {
         ptyManager.write(id, sanitizePtyText(segment));
