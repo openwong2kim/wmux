@@ -600,6 +600,7 @@ export function useNotificationListener() {
     });
     const gitBranchCoalescer = new FrameCoalescer<string, string>((ptyId, branch) => {
       const state = useStore.getState();
+      state.setSurfaceGitBranch(ptyId, branch);
       for (const ws of state.workspaces) {
         if (findSurfaceByPtyId(ws.rootPane, ptyId)) {
           state.updateWorkspaceMetadata(ws.id, { gitBranch: branch });

@@ -16,6 +16,7 @@
 import type {
   WorkspaceListEntry,
   FleetSnapshot,
+  ViewedPointer,
   WorkspaceMirrorPushPayload,
 } from '../../shared/workspaceMirror';
 
@@ -34,7 +35,7 @@ export class WorkspaceMirror {
   // null ⇒ the last push carried no roleBindings field (old renderer) — callers
   // must treat the bindings as UNKNOWN and round-trip, never as "unbound".
   private roleBindings: Record<string, unknown> | null = null;
-  private viewed: { workspaceId: string; paneId: string | null } | null = null;
+  private viewed: ViewedPointer | null = null;
   private setAt = 0;
   private populated = false;
   private sessionRestored = false;
@@ -126,7 +127,7 @@ export class WorkspaceMirror {
 
   /** The workspace + pane the human is viewing, or null when unknown (nothing
    *  pushed yet, or an old renderer that omits the field). */
-  getViewed(): { workspaceId: string; paneId: string | null } | null {
+  getViewed(): ViewedPointer | null {
     return this.viewed === null ? null : { ...this.viewed };
   }
 

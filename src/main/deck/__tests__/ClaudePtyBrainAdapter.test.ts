@@ -1144,6 +1144,69 @@ describe('the view pointer on a prompt the human typed', () => {
     adapter.dispose();
   });
 
+  /** What send() typed: the first write that is not a bare Enter. */
+  function typedPrompt(host: FakeHost): string {
+    return host.writes.find((w) => w.data !== '\r')!.data;
+  }
+
+  it('gives the pointer to a prompt the human types while an automated turn is open', async () => {
+    const viewContext = vi.fn(() => LINE);
+    const { host, adapter, turn, ptyId } = await settledAdapter({ viewContext });
+    // Claude Code reports our own prompt back: no pointer.
+    const own = deliverBrainPtyHookSignal(
+      signal('agent.user_prompt_submit', ptyId, { payload: { prompt: `  ${typedPrompt(host)}\n` } }),
+    );
+    expect(own).toEqual({ consumed: true });
+    // The human types into the TUI before our turn ends.
+    const human = deliverBrainPtyHookSignal(
+      signal('agent.user_prompt_submit', ptyId, { payload: { prompt: 'merge this when it is green' } }),
+    );
+    expect(human).toEqual({ consumed: true, additionalContext: LINE });
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }));
+    await turn;
+    adapter.dispose();
+  });
+
+  it('gives the pointer after the human ESC-interrupts an automated turn and types', async () => {
+    const viewContext = vi.fn(() => LINE);
+    const { host, adapter, ptyId } = await settledAdapter({ viewContext, turnTimeoutMs: 60_000 });
+    const ownText = typedPrompt(host);
+    expect(deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId, { payload: { prompt: ownText } })))
+      .toEqual({ consumed: true });
+    // ESC fires no hook and no Stop: our turn is still open when the human
+    // submits. Even the same words, once ours were already seen, are theirs.
+    expect(deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId, { payload: { prompt: 'do this instead' } })))
+      .toEqual({ consumed: true, additionalContext: LINE });
+    expect(deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId, { payload: { prompt: ownText } })))
+      .toEqual({ consumed: true, additionalContext: LINE });
+    adapter.dispose();
+  });
+
+  it('recognises a long own prompt inside a paste wrapper, but a short one only verbatim', async () => {
+    const viewContext = vi.fn(() => LINE);
+    const host = makeHost();
+    const adapter = makeAdapter(host, { viewContext });
+    const longText = 'Fleet event: worker pane finished its task; check the ledger and report the result to the owner.';
+    const first = collect(adapter.send(longText));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const ptyId = host.created[0].id;
+    const wrapped = `<pasted_content id="x">\n${typedPrompt(host)}\n</pasted_content>`;
+    expect(deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId, { payload: { prompt: wrapped } })))
+      .toEqual({ consumed: true });
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }));
+    await first;
+    // A short automated prompt ("hi") is not "inside" a human's "this".
+    const second = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.writes.filter((w) => w.data === 'hi').length).toBe(1));
+    expect(deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId, { payload: { prompt: 'look at this' } })))
+      .toEqual({ consumed: true, additionalContext: LINE });
+    expect(deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', ptyId, { payload: { prompt: 'hi' } })))
+      .toEqual({ consumed: true });
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-1' }));
+    await second;
+    adapter.dispose();
+  });
+
   it('adds nothing when the lookup has no line or throws', async () => {
     const { adapter, turn, ptyId } = await settledAdapter({
       viewContext: vi.fn().mockReturnValueOnce(null).mockImplementationOnce(() => { throw new Error('boom'); }),

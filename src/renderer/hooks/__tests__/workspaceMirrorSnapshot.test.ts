@@ -380,9 +380,35 @@ describe('buildWorkspaceMirrorPayload', () => {
 
   it('carries the viewed workspace and its active pane, following a switch', () => {
     expect(buildWorkspaceMirrorPayload({ ...state(), activeWorkspaceId: 'ws-1' }, () => 1).viewed)
-      .toEqual({ workspaceId: 'ws-1', paneId: 'p1' });
+      .toMatchObject({ workspaceId: 'ws-1', paneId: 'p1' });
     expect(buildWorkspaceMirrorPayload({ ...state(), activeWorkspaceId: 'ws-2' }, () => 1).viewed)
-      .toEqual({ workspaceId: 'ws-2', paneId: 'p2a' });
+      .toMatchObject({ workspaceId: 'ws-2', paneId: 'p2a', cwd: 'C:\\repo\\s2a' });
+  });
+
+  it("carries the active surface's own cwd and branch, not the workspace's", () => {
+    // Two panes in one workspace: the workspace metadata holds the OTHER
+    // pane's values (the last reporter); the pointer must not.
+    const ws = workspace(
+      'ws-m', 'mixed',
+      branch('b', [
+        leaf('p-viewed', [surface('s-viewed', 'pty-viewed', { cwd: '/repo/viewed' })]),
+        leaf('p-other', [surface('s-other', 'pty-other')]),
+      ]),
+      'p-viewed',
+      { cwd: '/repo/other', gitBranch: 'other-branch' },
+    );
+    const st = {
+      ...state(),
+      workspaces: [ws],
+      activeWorkspaceId: 'ws-m',
+      surfaceGitBranch: { 'pty-viewed': 'feat/viewed', 'pty-other': 'other-branch' },
+    };
+    expect(buildWorkspaceMirrorPayload(st, () => 1).viewed).toEqual({
+      workspaceId: 'ws-m', paneId: 'p-viewed', cwd: '/repo/viewed', branch: 'feat/viewed',
+    });
+    // A branch the viewed pane never reported is omitted, not borrowed.
+    expect(buildWorkspaceMirrorPayload({ ...st, surfaceGitBranch: { 'pty-other': 'other-branch' } }, () => 1).viewed)
+      .toEqual({ workspaceId: 'ws-m', paneId: 'p-viewed', cwd: '/repo/viewed' });
   });
 
   it('omits viewed when no known workspace is active', () => {

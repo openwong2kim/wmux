@@ -171,6 +171,15 @@ describe('parseWorkspaceMirrorPayload — viewed (HQ brain context line)', () =>
       .toEqual({ workspaceId: 'ws-1', paneId: 'pane-1' });
   });
 
+  it("forwards the pane's cwd and branch, and drops non-strings", () => {
+    expect(parseWorkspaceMirrorPayload({
+      ...base, viewed: { workspaceId: 'ws-1', paneId: 'pane-1', cwd: '/repo', branch: 'main' },
+    })?.viewed).toEqual({ workspaceId: 'ws-1', paneId: 'pane-1', cwd: '/repo', branch: 'main' });
+    expect(parseWorkspaceMirrorPayload({
+      ...base, viewed: { workspaceId: 'ws-1', paneId: 'pane-1', cwd: 7, branch: { x: 1 } },
+    })?.viewed).toEqual({ workspaceId: 'ws-1', paneId: 'pane-1' });
+  });
+
   it('keeps the workspace with no pane when the pane id is bad', () => {
     expect(parseWorkspaceMirrorPayload({ ...base, viewed: { workspaceId: 'ws-1', paneId: 'a b\n' } })?.viewed)
       .toEqual({ workspaceId: 'ws-1', paneId: null });

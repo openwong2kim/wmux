@@ -162,10 +162,13 @@ export function parseWorkspaceMirrorPayload(raw: unknown): WorkspaceMirrorPushPa
   // the field (unknown); a bad pane id keeps the workspace with no pane.
   if (isRecord(raw.viewed) && typeof raw.viewed.workspaceId === 'string'
     && WORKSPACE_ID_RE.test(raw.viewed.workspaceId)) {
-    const paneId = raw.viewed.paneId;
+    const { paneId, cwd, branch } = raw.viewed;
     out.viewed = {
       workspaceId: raw.viewed.workspaceId,
       paneId: typeof paneId === 'string' && PTY_ID_RE.test(paneId) ? paneId : null,
+      // Bounded here; the context line re-checks and sanitizes both.
+      ...(typeof cwd === 'string' && cwd.length > 0 && cwd.length <= 4096 ? { cwd } : {}),
+      ...(typeof branch === 'string' && branch.length > 0 && branch.length <= 512 ? { branch } : {}),
     };
   }
   return out;

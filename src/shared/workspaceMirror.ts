@@ -114,5 +114,14 @@ export interface WorkspaceMirrorPushPayload {
    * Feeds the HQ brain's context line (main/deck/viewContext.ts). An old
    * renderer omits it, which main reads as "unknown" (no context line).
    */
-  viewed?: { workspaceId: string; paneId: string | null };
+  viewed?: ViewedPointer;
+}
+
+/** The viewed workspace, its active pane, and that pane's active surface's own
+ *  cwd and branch (absent when that surface never reported one). */
+export interface ViewedPointer {
+  workspaceId: string;
+  paneId: string | null;
+  cwd?: string;
+  branch?: string;
 }

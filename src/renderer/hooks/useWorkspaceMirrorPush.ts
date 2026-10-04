@@ -86,7 +86,10 @@ export function useWorkspaceMirrorPush(): void {
       const structural =
         s.workspaces !== prev.workspaces ||
         s.activeWorkspaceId !== prev.activeWorkspaceId ||
-        s.sidebarPinnedIds !== prev.sidebarPinnedIds;
+        s.sidebarPinnedIds !== prev.sidebarPinnedIds ||
+        // The viewed pane's branch (Moa's view pointer) has no tree change
+        // of its own when the workspace metadata already held that value.
+        s.surfaceGitBranch !== prev.surfaceGitBranch;
       if (structural) {
         flushLeading();
         return;

@@ -582,6 +582,16 @@ export function flattenPromptForPty(text: string): string {
   return text.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/ {2,}/g, ' ').trim();
 }
 
+/** Below this length our own prompt must come back verbatim to be recognised;
+ *  at or above it, inside a wrapper is enough (see isOwnPromptSubmit). */
+const OWN_PROMPT_CONTAINMENT_MIN = 64;
+
+/** Whitespace-insensitive form used to recognise our own prompt when Claude
+ *  Code reports it back through UserPromptSubmit. */
+export function normalizeForPromptMatch(text: string): string {
+  return flattenPromptForPty(text).replace(/\s+/g, ' ');
+}
+
 // ─── Adapter ─────────────────────────────────────────────────────────────────
 
 export interface ClaudePtyBrainAdapterDeps {
@@ -734,6 +744,11 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
   /** The open foreign turn's prompt text, for the repeat test in
    *  `onHookSignal`. Empty when the hook payload carried none. */
   private foreignTurnPrompt = '';
+  /** The flattened text of the prompt our own send() typed and has not yet
+   *  seen come back through UserPromptSubmit. The view pointer is withheld
+   *  only from a submission that matches it; every other one is the human's,
+   *  even one typed while our turn is open. */
+  private ownPromptPending: string | null = null;
   /** Spawn-banner buffer, kept only for the stale-resume probe window. */
   private banner = '';
   private bannerWatching = false;
@@ -821,12 +836,14 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     // counts: during our own send() the hook fires for our keystroke too, and
     // that turn is already tracked by `turnStop`.
     if (signal.kind === 'agent.user_prompt_submit') {
+      const rawPrompt = typeof signal.payload['prompt'] === 'string' ? signal.payload['prompt'] : null;
+      // The view pointer goes on every submission that is not our own send().
+      // `turnStop` alone cannot say that: the human may type while our turn is
+      // open (or after ESC-interrupting it, which fires no Stop).
+      const context = this.isOwnPromptSubmit(rawPrompt) ? undefined : this.humanPromptContext();
       if (this.turnStop === null) {
         const now = Date.now();
-        const prompt =
-          typeof signal.payload['prompt'] === 'string'
-            ? signal.payload['prompt'].trim()
-            : '';
+        const prompt = rawPrompt !== null ? rawPrompt.trim() : '';
         // Two UserPromptSubmits with no Stop between them have two very
         // different causes, and folding both into one turn loses the second.
         //
@@ -855,9 +872,8 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
         // stale-release deadline must measure from the latest submission.
         this.foreignTurnOpenedAt = now;
         this.foreignTurnPrompt = prompt;
-        // Every human submission gets the pointer, a resubmission included:
-        // the model reads each prompt on its own.
-        const context = this.humanPromptContext();
+        // A resubmission gets the pointer too: the model reads each prompt on
+        // its own.
         if (repeat) return context;
         try {
           // Empty is still meaningful: older Claude hook payloads may omit the
@@ -869,9 +885,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
         }
         return context;
       }
-      // Our own send() (an automated wake): no pointer. The human did not
-      // send it, so what they happen to be viewing says nothing about it.
-      return;
+      return context;
     }
     if (signal.kind !== 'agent.stop') return;
     // A Stop no waiter claims is a FOREIGN turn's (or a superseded one from
@@ -928,6 +942,26 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     this.consecutiveStopBlocks = 0;
     this.turnStop = null;
     waiter.resolve(signal);
+  }
+
+  /**
+   * Whether this UserPromptSubmit is the one our pending send() typed. Matched
+   * on the flattened text and consumed on a match, so the human sending the
+   * same words afterwards counts as the human. A long prompt may also match by
+   * containment: the TUI treats a long write as a paste and may wrap it. A
+   * short one must match exactly ("hi" is inside "this"). An older Claude Code
+   * with no `prompt` in the payload cannot be told apart: fall back to "our
+   * turn is open".
+   */
+  private isOwnPromptSubmit(rawPrompt: string | null): boolean {
+    const own = this.ownPromptPending;
+    if (rawPrompt === null) return this.turnStop !== null;
+    if (own === null) return false;
+    const got = normalizeForPromptMatch(rawPrompt);
+    const match = got === own || (own.length >= OWN_PROMPT_CONTAINMENT_MIN && got.includes(own));
+    if (!match) return false;
+    this.ownPromptPending = null;
+    return true;
   }
 
   /** The view pointer for a human-typed prompt, if the deck has one. A
@@ -1431,6 +1465,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     // per-pty budget.
     this.consecutiveStopBlocks = 0;
     this.turnStop = waiter;
+    this.ownPromptPending = normalizeForPromptMatch(prompt) || null;
     try {
       // Two writes with a gap, never `prompt\r` in one chunk: the TUI's paste
       // detection would absorb the trailing Enter as pasted content and the
