@@ -659,7 +659,7 @@ describe('parseTranscriptLine — tool bodies', () => {
   it('charges the entry budget by SERIALIZED size, not raw bytes', () => {
     // Codex's exact case: eight 4 KB bodies of NULs. Raw that is exactly the
     // 32 KB budget; escaped it is ~197 KB.
-    const nulBody = ' '.repeat(4096);
+    const nulBody = '\u0000'.repeat(4096);
     const results = Array.from({ length: 8 }, (_, i) => ({
       type: 'tool_result',
       tool_use_id: `n${i}`,

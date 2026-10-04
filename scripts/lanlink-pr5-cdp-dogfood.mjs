@@ -79,7 +79,7 @@ async function main() {
   await page.evaluate(() => {
     const add = window.__s.getState().addRemoteItem;
     add({ recordId: 'dog-1', origin: 'remote', peerName: 'Workstation-A', text: 'hello from the other box', seq: 1, receivedAt: Date.now() });
-    add({ recordId: 'dog-2', origin: 'remote', peerName: 'Laptop-B', text: 'ctrl[31mRED[0m chars here', seq: 2, receivedAt: Date.now() });
+    add({ recordId: 'dog-2', origin: 'remote', peerName: 'Laptop-B', text: 'ctrl\x1b[31mRED\x1b[0m\x07 chars here', seq: 2, receivedAt: Date.now() });
   });
   await sleep(600);
 

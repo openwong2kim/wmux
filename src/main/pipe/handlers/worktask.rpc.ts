@@ -597,7 +597,7 @@ export function registerWorktaskRpc(router: RpcRouter, deps: WorktaskRpcDeps): v
     effect: string,
     extra: { branchTip?: string } = {},
   ): Promise<{ ok: false; error: { code: string; message: string } } | null> => {
-    const key = `${workspaceId} ${task.id} ${action}`;
+    const key = `${workspaceId}\u0000${task.id}\u0000${action}`;
     let pending = inFlightApprovals.get(key);
     if (!pending) {
       const open = pendingPerWorkspace.get(workspaceId) ?? 0;

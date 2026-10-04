@@ -381,11 +381,11 @@ describe('native decision records', () => {
     }
     const id = await h.registry.noteNativeDecision({
       sessionId: 'pty-oc', agent: 'opencode', native: { adapter: 'opencode', requestId: 'y' },
-      form: { ...PERMISSION, actions: [{ id: 'approve', label: `Allow[31m ${'x'.repeat(400)}` }] }, question: 'Allow?',
+      form: { ...PERMISSION, actions: [{ id: 'approve', label: `Allow\x1b[31m ${'x'.repeat(400)}` }] }, question: 'Allow?\x07',
     });
     const record = h.registry.list().pending.find((r) => r.id === id)!;
     expect(record.question).toBe('Allow?');
-    expect(record.form!.actions[0]!.label).not.toContain('');
+    expect(record.form!.actions[0]!.label).not.toContain('\x1b');
     expect(record.form!.actions[0]!.label.length).toBeLessThanOrEqual(201);
   });
 

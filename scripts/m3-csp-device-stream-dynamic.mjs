@@ -1080,7 +1080,7 @@ async function scenarioBrowserRenew(control, sessionId, browserCtl) {
     const ticketOf = (q) => new URLSearchParams(q).get('ticket') ?? '';
     const firstTicket = ticketOf(streamsBefore.find((r) => ticketOf(r.query))?.query ?? '');
     // A device browser must NEVER put its durable credential in a URL.
-    const credentialLeakedToUrl = apiRequests.some((r) => r.query.includes(storedCredential.split('.')[1] ?? ' '));
+    const credentialLeakedToUrl = apiRequests.some((r) => r.query.includes(storedCredential.split('.')[1] ?? '\u0000'));
 
     // --- give the page an attention cursor to resume from
     //

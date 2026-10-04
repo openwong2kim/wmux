@@ -67,7 +67,7 @@ describe('RemoteInboxList', () => {
   it('SECURITY: control/CSI sequences stay inert text — no synthesized elements', () => {
     // An ESC/CSI color sequence lands inside the <p> text node. It is NOT executed,
     // NOT a PTY escape, and cannot create new DOM elements (no dangerouslySetInnerHTML).
-    const html = render([item({ text: 'A[31mRED[0m B' })]);
+    const html = render([item({ text: 'A\x1b[31mRED\x1b[0m B' })]);
     expect(html).toContain('RED');
     // The sequence did NOT become a styled <span> or any new element.
     expect(html).not.toContain('<span style="color');

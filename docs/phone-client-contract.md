@@ -713,7 +713,7 @@ GET /api/sessions/<id>/turns/block?srcOffset=<n>&n=<n>[&eventId=<id>]
 
 Turn pages never carry large bodies. A fenced code block arrives as a chip
 (`codeBlocks: [{n, lines, lang, path?, srcOffset}]`, with the prose carrying an
-inline ` code:<n> ` marker where it belongs), and a tool body over the
+inline `\u0000code:<n>\u0000` marker, `\u0000` being a NUL character, where it belongs), and a tool body over the
 inline cap arrives as `{n, bytes, inline?, truncated, srcOffset}`. Both are
 handles: pass the ref's `srcOffset` and `n` here when the user expands one.
 

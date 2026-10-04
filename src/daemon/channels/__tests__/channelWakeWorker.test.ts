@@ -882,7 +882,7 @@ describe('ChannelWakeWorker — body preview + inject outcome', () => {
   });
 
   it('bodyPreview strips control characters and caps the length', () => {
-    expect(bodyPreview('abc')).toBe('a b c');
+    expect(bodyPreview('a\x07b\x1bc')).toBe('a b c');
     expect(bodyPreview(undefined)).toBe('');
     expect(bodyPreview('   ')).toBe('');
     // Only the first line — the rest would submit as separate lines.

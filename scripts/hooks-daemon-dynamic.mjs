@@ -482,7 +482,7 @@ async function scenario2(control, sessionId) {
     evidence.allAgentEvents = agentEventsFor(sessionId).map((e) => ({
       source: e.data?.source, status: e.data?.status, decision: e.data?.decision ?? null, message: e.data?.message,
     }));
-    evidence.paneOutputTail = pane.output().replace(/\[[0-9;?]*[A-Za-z]/g, '').slice(-600);
+    evidence.paneOutputTail = pane.output().replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').slice(-600);
 
     const pass =
       detectorEmit !== null &&

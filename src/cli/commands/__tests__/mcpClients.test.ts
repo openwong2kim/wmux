@@ -145,7 +145,7 @@ describe('readObservedClients', () => {
           evil: {
             name: 'ev\u001b[31mil',
             version: '1.0\u0007]0;pwned',
-            status: 'unconfirmed',
+            status: 'uncon\x1bfirmed',
           },
         },
       }),

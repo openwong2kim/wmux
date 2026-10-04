@@ -279,7 +279,7 @@ describe('PrReviewRouter — merge-conflict edge (slice 3)', () => {
 
 describe('sanitizeSnippet', () => {
   it('strips control chars + newlines and collapses whitespace', () => {
-    expect(sanitizeSnippet('a[31m b\n\nc\td')).toBe('a [31m b c d');
+    expect(sanitizeSnippet('a\x1b[31m b\n\nc\td')).toBe('a [31m b c d');
   });
   it('caps long bodies with an ellipsis', () => {
     const s = sanitizeSnippet('x'.repeat(500));

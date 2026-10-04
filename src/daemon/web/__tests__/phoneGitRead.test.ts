@@ -185,7 +185,7 @@ describe('phone Git read parsers', () => {
       .toEqual([{ path: '/r', branch: 'main' }, { path: '/w', branch: null }]);
   });
   it('keeps the lock reason and the prunable mark of a worktree record', () => {
-    expect(parseWorktreeList('worktree /a branch refs/heads/x locked initializing  worktree /b locked  worktree /c prunable gitdir file points to non-existent location  '))
+    expect(parseWorktreeList('worktree /a\u0000branch refs/heads/x\u0000locked initializing\u0000\u0000worktree /b\u0000locked\u0000\u0000worktree /c\u0000prunable gitdir file points to non-existent location\u0000\u0000'))
       .toEqual([
         { path: '/a', branch: 'x', locked: true, lockReason: 'initializing' },
         { path: '/b', branch: null, locked: true, lockReason: '' },

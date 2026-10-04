@@ -766,7 +766,7 @@ function registerToolBody(
   // Charge the budget by what this costs ON THE WIRE, not by the raw byte
   // length. The projector enforces its page budget against
   // `JSON.stringify(events)`, and JSON escaping is not a small constant:
-  // a NUL becomes ` `, six characters for one byte. Eight 4 KB
+  // a NUL becomes `\u0000`, six characters for one byte. Eight 4 KB
   // control-heavy bodies spend exactly 32 KB raw and serialize to ~197 KB —
   // past the 128 KB page budget, so the entry is skipped whole and the turn
   // vanishes, which is the failure this budget exists to prevent.

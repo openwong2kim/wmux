@@ -1017,7 +1017,7 @@ export const LANLINK_NIC_NONE = '';
 
 /** Stable select-value key for a NIC identity (US separator can't appear in a name/MAC). */
 function nicKey(nic: LanLinkNic): string {
-  return `${nic.name}${nic.mac}`;
+  return `${nic.name}\x1f${nic.mac}`;
 }
 
 export interface NicOption {

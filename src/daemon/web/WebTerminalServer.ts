@@ -3101,7 +3101,7 @@ export class WebTerminalServer {
     // NUL-delimited: a path may contain anything a filename may contain, and
     // concatenating without a separator lets two different (path, size) pairs
     // collide into one key.
-    const key = `${transcriptPath} ${stat.size} ${stat.mtimeMs}`;
+    const key = `${transcriptPath}\u0000${stat.size}\u0000${stat.mtimeMs}`;
     const cached = this.lastAssistantCache.get(sessionId);
     if (cached?.key === key) {
       return cached.text === null ? {} : { lastAssistantText: cached.text };

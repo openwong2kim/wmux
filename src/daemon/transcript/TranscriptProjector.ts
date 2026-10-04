@@ -630,7 +630,7 @@ export class TranscriptProjector {
     );
     if (!check.ok) {
       this.warnOnce(
-        `${sessionId} ${binding.transcriptPath}`,
+        `${sessionId}\u0000${binding.transcriptPath}`,
         `[transcript] refused transcript path for ${sessionId}: ${check.reason}`,
       );
       return { ok: false, reason: 'unsafe-transcript-path' };

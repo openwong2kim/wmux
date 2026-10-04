@@ -345,7 +345,7 @@ describe('DeviceStore — roster housekeeping', () => {
   it('names the device, bounding and cleaning what the operator typed', async () => {
     const s = store();
     expect((await s.mint({ name: '  Living room  ' })).name).toBe('Living room');
-    expect((await s.mint({ name: 'a b\nc' })).name).toBe('a b c');
+    expect((await s.mint({ name: 'a\u0000b\nc' })).name).toBe('a b c');
     expect((await s.mint({ name: 'x'.repeat(200) })).name).toHaveLength(64);
     // Pairing must not fail over a label, so an empty one gets a placeholder
     // that reads as the anomaly it is in the roster.

@@ -640,7 +640,7 @@ describe('the spawned command line', () => {
 
 describe('flattenPromptForPty', () => {
   it('collapses newlines and control characters — the TUI submits on Enter', () => {
-    expect(flattenPromptForPty('do this\nthen that[A')).toBe('do this then that [A');
+    expect(flattenPromptForPty('do this\nthen that\x1b[A')).toBe('do this then that [A');
   });
 });
 
