@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { isProvisionalCapture, mergeResumeBinding, type ResumeBinding } from '../../../shared/agentResume';
+import type { AgentSignal } from '../../../shared/hooks/signal-types';
 import { TranscriptDiscovery } from '../TranscriptDiscovery';
 import { admitCodexCapture, gateCodexStop, HELD_BACK_SEARCH_MS } from '../codexCapture';
 
@@ -127,52 +128,87 @@ describe('admitCodexCapture (#1624)', () => {
 });
 
 describe('gateCodexStop', () => {
-  const stop = (id: string) => ({ agent: 'codex' as const, kind: 'agent.stop' as const, agentSessionId: id, payload: {} });
+  const stop = (id: string) => ({ agent: 'codex' as const, kind: 'agent.stop' as const, agentSessionId: id, payload: {} as Record<string, unknown> });
+  const boundTo = (id: string, transcriptPath: string): ResumeBinding => ({ agent: 'codex', sessionId: id, cwd: '/w', transcriptPath, ts: 1 });
 
-  function gate(id: string, extra: { bound?: ResumeBinding } = {}) {
-    const calls: string[] = [];
-    const verdict = gateCodexStop(stop(id), {
+  function gate(id: string, extra: { bound?: ResumeBinding; wsl?: boolean } = {}) {
+    const calls: Array<{ kind: 'admit'; path: unknown } | { kind: 'drop' }> = [];
+    const now = gateCodexStop(stop(id), {
       env, ...extra, graceMs: 60, pollMs: 10,
-      admit: () => calls.push('admit'),
-      drop: () => calls.push('drop'),
+      admit: (late) => calls.push({ kind: 'admit', path: late.payload.transcript_path }),
+      drop: () => calls.push({ kind: 'drop' }),
     });
-    return { verdict, calls };
+    return { now, calls };
   }
 
-  it('a title-thread stop is not the pane\'s turn end: it is held, then dropped', async () => {
-    const { verdict, calls } = gate(T);
-    expect(verdict).toBe('deferred');
+  it('a title-thread stop on a rollout-bound pane is not the turn end: held, then dropped', async () => {
+    const { now, calls } = gate(T, { bound: boundTo(A, rollout(A)) });
+    expect(now).toBeNull();
     expect(calls).toEqual([]);
     await until(() => calls.length > 0);
     await new Promise((r) => setTimeout(r, 30));
-    expect(calls).toEqual(['drop']);
+    expect(calls).toEqual([{ kind: 'drop' }]);
   });
 
-  it('a stop whose rollout exists passes at once', () => {
-    rollout(A);
-    expect(gate(A).verdict).toBe('pass');
-  });
-
-  it('a stop for the thread the pane is bound to passes without a scan', () => {
-    const bound: ResumeBinding = { agent: 'codex', sessionId: A, cwd: '/w', transcriptPath: '/elsewhere/a.jsonl', ts: 1 };
-    expect(gate(A, { bound }).verdict).toBe('pass');
-  });
-
-  it('a stop whose rollout lands inside the grace is admitted late, once', async () => {
-    const { verdict, calls } = gate(B);
-    expect(verdict).toBe('deferred');
-    rollout(B);
+  it('a stop whose rollout lands inside the grace is admitted late, once, with its path', async () => {
+    const { now, calls } = gate(B, { bound: boundTo(A, rollout(A)) });
+    expect(now).toBeNull();
+    const fileB = rollout(B);
     await until(() => calls.length > 0);
     await new Promise((r) => setTimeout(r, 80));
-    expect(calls).toEqual(['admit']);
+    expect(calls).toEqual([{ kind: 'admit', path: fileB }]);
+  });
+
+  it('a stop whose rollout exists passes at once, carrying the path so admission does not rescan', () => {
+    const file = rollout(A);
+    expect(gate(A).now?.payload).toEqual({ transcript_path: file });
+  });
+
+  it('a stop for the thread the pane is bound to passes with the bound path, without a scan', () => {
+    expect(gate(A, { bound: boundTo(A, '/elsewhere/a.jsonl') }).now?.payload).toEqual({ transcript_path: '/elsewhere/a.jsonl' });
+  });
+
+  it('passes a rollout-less stop when nothing proves where this pane writes rollouts', () => {
+    // A fresh pane with no binding: the root may simply be the wrong one.
+    expect(gate(T).now).toEqual(stop(T));
+    // A binding whose path is outside the pane env's sessions root (CODEX_HOME set in a shell rc).
+    expect(gate(T, { bound: boundTo(A, path.join(os.tmpdir(), 'not-codex-home', 'a.jsonl')) }).now).toEqual(stop(T));
+  });
+
+  it('a WSL pane\'s normal stop passes: its rollout lives in the distro', () => {
+    const { now, calls } = gate(B, { bound: boundTo(A, rollout(A)), wsl: true });
+    expect(now).toEqual(stop(B));
+    expect(calls).toEqual([]);
   });
 
   it('passes every other signal untouched', () => {
     const calls: string[] = [];
     const opts = { env, admit: () => calls.push('a'), drop: () => calls.push('d') };
-    expect(gateCodexStop({ agent: 'claude', kind: 'agent.stop', agentSessionId: T, payload: {} }, opts)).toBe('pass');
-    expect(gateCodexStop({ agent: 'codex', kind: 'agent.subagent_stop', agentSessionId: T, payload: {} }, opts)).toBe('pass');
-    expect(gateCodexStop({ agent: 'codex', kind: 'agent.stop', payload: {} }, opts)).toBe('pass');
+    const others: Array<Pick<AgentSignal, 'agent' | 'kind' | 'agentSessionId' | 'payload'>> = [
+      { agent: 'claude', kind: 'agent.stop', agentSessionId: T, payload: {} },
+      { agent: 'codex', kind: 'agent.subagent_stop', agentSessionId: T, payload: {} },
+      { agent: 'codex', kind: 'agent.stop', payload: {} },
+    ];
+    for (const signal of others) expect(gateCodexStop(signal, opts)).toBe(signal);
     expect(calls).toEqual([]);
+  });
+});
+
+describe('spooled Codex records', () => {
+  it('a spooled title-thread id (no rollout) is not admitted at boot', () => {
+    const decision = admitCodexCapture(PANE, undefined, { agent: 'codex', sessionId: T, cwd: '/w', ts: 1 }, env, null);
+    expect(decision).toEqual({ apply: false });
+  });
+
+  it('a spooled real-thread id is admitted with its path', () => {
+    const file = rollout(A);
+    expect(admitCodexCapture(PANE, undefined, { agent: 'codex', sessionId: A, cwd: '/w', ts: 1 }, env, null))
+      .toEqual({ apply: true, binding: { agent: 'codex', sessionId: A, cwd: '/w', ts: 1, transcriptPath: file } });
+  });
+
+  it('the boot spool ingest routes Codex records through admitCodexCapture', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', '..', 'index.ts'), 'utf8');
+    const body = src.slice(src.indexOf('function ingestResumeSpool'));
+    expect(body.slice(0, body.indexOf('\n}\n'))).toMatch(/binding\.agent === 'codex'[\s\S]*admitCodexCapture\(ptyId, prev, binding, managed\.meta\.env, null\)/);
   });
 });

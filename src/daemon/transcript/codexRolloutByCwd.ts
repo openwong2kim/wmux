@@ -6,48 +6,49 @@
 // normally; Ctrl+C never sends it. A fan-out worker started with a long argv
 // prompt could therefore stay unbound for its whole life.
 //
-// The exact-id lookup (scanForCodexTranscript) stays the rule for notify ids.
-// This module is the narrow exception the owner asked for: the rollout's
-// `session_meta` records the cwd and start time, and a pane whose cwd no other
-// live Codex pane shares (a fan-out worktree, typically) can be matched on
-// them. It fails closed:
+// The exact-id lookup stays the rule for notify ids. This module is the narrow
+// exception the owner asked for: the rollout's `session_meta` records the cwd
+// and start time, and a pane whose cwd no other live Codex pane shares (a
+// fan-out worktree, typically) can be matched on them. It fails closed:
+//   - the pane's launch time must be known (the agent process's start time, or
+//     the OSC 133 command-start that launched it); without one it waits;
+//   - only a rollout started within LAUNCH_WINDOW_MS of that launch counts;
 //   - only an interactive `codex-tui` top-level thread qualifies: sub-agent
 //     rollouts share their parent's cwd, and phone/chat relay threads are not
 //     the pane's TUI;
-//   - the rollout must start after the pane's agent launch;
 //   - ids bound to another pane are skipped;
-//   - two or more matches refuse ('ambiguous'), and so does a cwd another
-//     unbound live Codex pane shares (decided by the caller).
-// The scan is bounded to the newest local-date folders and a capped number of
-// session_meta reads.
+//   - two or more matches refuse, and so does a candidate set too large to read
+//     in full, and so does a cwd another live Codex pane shares unless that
+//     pane is already bound for its current run.
 
+import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import type { ResumeBinding } from '../../shared/agentResume';
 import { checkNativeTranscriptPath, codexSessionRoot } from './providers';
 
-/** A rollout may start a moment before the launch marker the caller saw. */
+/** A rollout may start a moment before the launch marker (whole-second names, clock skew). */
 const START_SLACK_MS = 2_000;
-/** Local-date folders examined, newest first. */
-const MAX_DAY_DIRS = 3;
-/** session_meta reads per scan. */
-const MAX_HEAD_READS = 64;
+/** A rollout started this long after the launch belongs to something else. */
+export const LAUNCH_WINDOW_MS = 120_000;
+/** session_meta reads per scan; more candidates than this refuse. */
+export const MAX_HEAD_READS = 64;
 /** session_meta is the first line; it carries the full base instructions (~22KB). */
 const HEAD_BYTES = 128 * 1024;
-const ROLLOUT_NAME = /^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\.jsonl$/i;
+const ROLLOUT_NAME = /^rollout-(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})-([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\.jsonl$/i;
 
 export interface CodexCwdQuery {
   cwd: string;
-  /** Epoch ms of the pane's agent launch; an older rollout is not this pane's. */
+  /** Epoch ms of the pane's agent launch. */
   notBefore: number;
   env?: Record<string, string>;
   /** Thread ids already bound to other panes. */
   exclude?: ReadonlySet<string>;
-  now?: number;
 }
 
 export type CodexCwdMatch =
   | { ok: true; threadId: string; transcriptPath: string; cwd: string }
-  | { ok: false; reason: 'none' | 'ambiguous' };
+  | { ok: false; reason: 'none' | 'ambiguous' | 'budget' };
 
 /** Canonical form for comparing two directories (macOS /tmp → /private/tmp, symlinked worktrees). */
 export function canonicalDir(dir: string): string {
@@ -56,17 +57,15 @@ export function canonicalDir(dir: string): string {
   return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
 }
 
-/** `<root>/YYYY/MM/DD` for the local dates from `now` back to `floor`, newest first. Codex names them in local time. */
-function dayDirs(root: string, floor: number, now: number): string[] {
-  const today = new Date(now);
-  const dirs: string[] = [];
-  for (let i = 0; i < MAX_DAY_DIRS; i += 1) {
-    const day = new Date(today.getFullYear(), today.getMonth(), today.getDate() - i);
-    const pad = (n: number) => String(n).padStart(2, '0');
-    dirs.push(path.join(root, String(day.getFullYear()), pad(day.getMonth() + 1), pad(day.getDate())));
-    if (day.getTime() <= floor) break;
+const pad = (n: number) => String(n).padStart(2, '0');
+/** `<root>/YYYY/MM/DD` for each local date the window touches. Codex names them in local time. */
+function dayDirs(root: string, from: number, to: number): string[] {
+  const dirs = new Set<string>();
+  for (const at of [from, to]) {
+    const d = new Date(at);
+    dirs.add(path.join(root, String(d.getFullYear()), pad(d.getMonth() + 1), pad(d.getDate())));
   }
-  return dirs;
+  return [...dirs];
 }
 
 interface SessionMeta { id?: unknown; cwd?: unknown; timestamp?: unknown; originator?: unknown; source?: unknown; thread_source?: unknown }
@@ -89,50 +88,109 @@ function readSessionMeta(file: string): SessionMeta | undefined {
   }
 }
 
-/** The one interactive Codex rollout started in `cwd` since `notBefore`, if exactly one exists. */
+/** The one interactive Codex rollout started in `cwd` within the launch window, if exactly one exists. */
 export function findCodexRolloutByCwd(query: CodexCwdQuery): CodexCwdMatch {
-  const now = query.now ?? Date.now();
-  const floor = query.notBefore - START_SLACK_MS;
+  const from = query.notBefore - START_SLACK_MS;
+  const to = query.notBefore + LAUNCH_WINDOW_MS;
   const want = canonicalDir(query.cwd);
-  const hits = new Map<string, { file: string; cwd: string }>();
-  let reads = 0;
-  for (const dir of dayDirs(codexSessionRoot(query.env), floor, now)) {
+  // Cheap pass first: the file name carries the local start time to the second.
+  const candidates: Array<{ id: string; file: string }> = [];
+  for (const dir of dayDirs(codexSessionRoot(query.env), from, to)) {
     let names: string[];
     try { names = fs.readdirSync(dir); } catch { continue; }
-    // Names start with the local start time, so newest first.
-    for (const name of names.sort().reverse()) {
-      const id = ROLLOUT_NAME.exec(name)?.[1];
-      if (!id || query.exclude?.has(id)) continue;
-      const file = path.join(dir, name);
-      try {
-        const st = fs.lstatSync(file);
-        if (!st.isFile() || st.mtimeMs < floor) continue;
-      } catch { continue; }
-      if (reads++ >= MAX_HEAD_READS) break;
-      const meta = readSessionMeta(file);
-      if (!meta || meta.id !== id || meta.originator !== 'codex-tui') continue;
-      if (typeof meta.source !== 'string' || meta.thread_source === 'subagent') continue;
-      const started = typeof meta.timestamp === 'string' ? Date.parse(meta.timestamp) : NaN;
-      if (!(started >= floor) || typeof meta.cwd !== 'string' || canonicalDir(meta.cwd) !== want) continue;
-      if (!checkNativeTranscriptPath('codex', file, id, query.env).ok) continue;
-      hits.set(id, { file, cwd: meta.cwd });
+    for (const name of names) {
+      const m = ROLLOUT_NAME.exec(name);
+      if (!m || query.exclude?.has(m[7])) continue;
+      const named = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]).getTime();
+      if (named < from - 1_000 || named > to + 1_000) continue;
+      candidates.push({ id: m[7], file: path.join(dir, name) });
     }
+  }
+  // A match outside what we can read could be the second one: refuse rather than guess.
+  if (candidates.length > MAX_HEAD_READS) return { ok: false, reason: 'budget' };
+  const hits = new Map<string, { file: string; cwd: string }>();
+  for (const { id, file } of candidates) {
+    const meta = readSessionMeta(file);
+    if (!meta || meta.id !== id || meta.originator !== 'codex-tui') continue;
+    if (typeof meta.source !== 'string' || meta.thread_source === 'subagent') continue;
+    const started = typeof meta.timestamp === 'string' ? Date.parse(meta.timestamp) : NaN;
+    if (!(started >= from && started <= to)) continue;
+    if (typeof meta.cwd !== 'string' || canonicalDir(meta.cwd) !== want) continue;
+    if (!checkNativeTranscriptPath('codex', file, id, query.env).ok) continue;
+    hits.set(id, { file, cwd: meta.cwd });
   }
   if (hits.size !== 1) return { ok: false, reason: hits.size === 0 ? 'none' : 'ambiguous' };
   const [[threadId, hit]] = hits;
   return { ok: true, threadId, transcriptPath: hit.file, cwd: hit.cwd };
 }
 
+/** What the pane decision needs to know about one live pane. */
+export interface CodexPaneFacts {
+  id: string;
+  cwd: string;
+  binding?: ResumeBinding;
+  /** Epoch ms the pane's current agent launched; undefined when unknown. */
+  launchAt?: number;
+  /** A Codex process is (or, untracked, was last detected) running in the pane. */
+  codexLive: boolean;
+}
+
+export type CodexPaneDecision =
+  | { kind: 'skip' }
+  | { kind: 'wait' }
+  | { kind: 'refuse'; reason: 'shared-cwd' }
+  | { kind: 'query'; query: CodexCwdQuery };
+
+/** The pane holds a rollout binding captured during its current Codex run. */
+export function boundForCurrentRun(pane: Pick<CodexPaneFacts, 'binding' | 'launchAt'>): boolean {
+  const b = pane.binding;
+  return b?.agent === 'codex' && !!b.transcriptPath && pane.launchAt !== undefined
+    && b.ts >= pane.launchAt - START_SLACK_MS;
+}
+
+/** Decide what the cwd bind may do for `self`, given every other live pane. Pure. */
+export function describeCodexPane(
+  self: CodexPaneFacts,
+  others: readonly CodexPaneFacts[],
+  env?: Record<string, string>,
+): CodexPaneDecision {
+  if (boundForCurrentRun(self)) return { kind: 'skip' };
+  // No launch marker (tmux, a shell without integration, the process start not
+  // read yet): nothing bounds the match in time.
+  if (self.launchAt === undefined) return { kind: 'wait' };
+  const want = canonicalDir(self.cwd);
+  // A pane holding an older binding has started a new run whose rollout is not
+  // bound yet; it competes for the same cwd until it is.
+  const conflict = others.some((o) => o.codexLive && !boundForCurrentRun(o) && canonicalDir(o.cwd) === want);
+  if (conflict) return { kind: 'refuse', reason: 'shared-cwd' };
+  const exclude = new Set(others.flatMap((o) => (o.binding?.agent === 'codex' ? [o.binding.sessionId] : [])));
+  return { kind: 'query', query: { cwd: self.cwd, notBefore: self.launchAt, ...(env ? { env } : {}), exclude } };
+}
+
+/** `ps` etime (`[[dd-]hh:]mm:ss`) in ms. */
+export function parseEtime(etime: string): number | undefined {
+  const m = /^\s*(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)\s*$/.exec(etime);
+  if (!m) return undefined;
+  return ((((+(m[1] ?? 0) * 24) + +(m[2] ?? 0)) * 60 + +m[3]) * 60 + +m[4]) * 1000;
+}
+
+/** Start time of a POSIX process, from its elapsed time; undefined on Windows or failure. */
+export function readProcessStartMs(pid: number): Promise<number | undefined> {
+  if (process.platform === 'win32' || !(pid > 0)) return Promise.resolve(undefined);
+  return new Promise((resolve) => {
+    execFile('ps', ['-o', 'etime=', '-p', String(pid)], { timeout: 5_000 }, (err, stdout) => {
+      const elapsed = err ? undefined : parseEtime(String(stdout));
+      // etime has whole-second resolution: round the start down.
+      resolve(elapsed === undefined ? undefined : Date.now() - elapsed - 1_000);
+    });
+  });
+}
+
 /** Delays between attempts after the launch edge; the first runs at once. */
 export const CWD_BIND_DELAYS_MS: readonly number[] = [0, 2_000, 5_000, 15_000, 45_000];
 
 export interface CodexCwdBinderDeps {
-  /**
-   * The pane as it stands now, or undefined when there is nothing to do (gone,
-   * no longer Codex, or already bound to a rollout). `sharedCwd` is true when
-   * another unbound live Codex pane has the same cwd.
-   */
-  pane: (paneId: string) => (Omit<CodexCwdQuery, 'now'> & { sharedCwd: boolean }) | undefined;
+  pane: (paneId: string) => CodexPaneDecision | undefined;
   bind: (paneId: string, match: Extract<CodexCwdMatch, { ok: true }>) => void;
   log?: (level: 'info' | 'warn', message: string) => void;
   delaysMs?: readonly number[];
@@ -186,14 +244,15 @@ export class CodexCwdBinder {
 
   /** One attempt; true when the attempts for this launch are over. */
   private attempt(paneId: string): boolean {
-    let pane: ReturnType<CodexCwdBinderDeps['pane']>;
-    try { pane = this.deps.pane(paneId); } catch { return true; }
-    if (!pane) return true;
-    if (pane.sharedCwd) {
+    let decision: CodexPaneDecision | undefined;
+    try { decision = this.deps.pane(paneId); } catch { return true; }
+    if (!decision || decision.kind === 'skip') return true;
+    if (decision.kind === 'wait') return false;
+    if (decision.kind === 'refuse') {
       this.deps.log?.('info', `[codex] cwd bind refused for ${paneId}: another live Codex pane shares its cwd`);
       return true;
     }
-    const match = findCodexRolloutByCwd(pane);
+    const match = findCodexRolloutByCwd(decision.query);
     if (match.ok) {
       try {
         this.deps.bind(paneId, match);
@@ -202,8 +261,8 @@ export class CodexCwdBinder {
       }
       return true;
     }
-    if (match.reason === 'ambiguous') {
-      this.deps.log?.('info', `[codex] cwd bind refused for ${paneId}: several rollouts match its cwd`);
+    if (match.reason !== 'none') {
+      this.deps.log?.('info', `[codex] cwd bind refused for ${paneId}: ${match.reason === 'budget' ? 'too many recent rollouts to read' : 'several rollouts match its cwd'}`);
       return true;
     }
     return false;

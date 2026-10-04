@@ -5,14 +5,17 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { CodexCwdBinder, findCodexRolloutByCwd, type CodexCwdQuery } from '../codexRolloutByCwd';
+import type { ResumeBinding } from '../../../shared/agentResume';
+import {
+  CodexCwdBinder, describeCodexPane, findCodexRolloutByCwd, LAUNCH_WINDOW_MS, MAX_HEAD_READS, parseEtime,
+  type CodexCwdQuery, type CodexPaneFacts,
+} from '../codexRolloutByCwd';
 
 const A = '01a0e700-0000-7000-8000-00000000000a';
 const B = '01a0e700-0000-7000-8000-00000000000b';
 const C = '01a0e700-0000-7000-8000-00000000000c';
 
-const NOW = new Date(2026, 9, 4, 12, 0, 0).getTime();
-const LAUNCH = NOW - 10_000;
+const LAUNCH = new Date(2026, 9, 4, 12, 0, 0).getTime();
 
 let home: string;
 let cwd: string;
@@ -32,11 +35,11 @@ function rollout(id: string, meta: Record<string, unknown> = {}, at = LAUNCH + 1
     ...meta,
   };
   fs.writeFileSync(file, `${JSON.stringify({ timestamp: new Date(at).toISOString(), type: 'session_meta', payload })}\n`);
-  fs.utimesSync(file, new Date(at), new Date(at));
   return file;
 }
 
-const query = (extra: Partial<CodexCwdQuery> = {}): CodexCwdQuery => ({ cwd, notBefore: LAUNCH, env, now: NOW, ...extra });
+const uuid = (n: number) => `01a0e700-0000-7000-8000-${String(n).padStart(12, '0')}`;
+const query = (extra: Partial<CodexCwdQuery> = {}): CodexCwdQuery => ({ cwd, notBefore: LAUNCH, env, ...extra });
 
 beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-codex-cwd-'));
@@ -51,10 +54,11 @@ afterEach(() => {
 });
 
 describe('findCodexRolloutByCwd', () => {
-  it('binds the one rollout started in the pane cwd after the launch', () => {
+  it('binds the one rollout started in the pane cwd inside the launch window', () => {
     const file = rollout(A);
     rollout(B, { cwd: path.join(cwd, 'elsewhere') });
     rollout(C, {}, LAUNCH - 60_000); // an older session in the same cwd
+    rollout(uuid(9), {}, LAUNCH + LAUNCH_WINDOW_MS + 30_000); // a later one, past the window
     expect(findCodexRolloutByCwd(query())).toEqual({ ok: true, threadId: A, transcriptPath: file, cwd });
   });
 
@@ -62,6 +66,12 @@ describe('findCodexRolloutByCwd', () => {
     rollout(A);
     rollout(B, {}, LAUNCH + 2_000);
     expect(findCodexRolloutByCwd(query())).toEqual({ ok: false, reason: 'ambiguous' });
+  });
+
+  it('refuses when there are more candidates than it reads, instead of binding the first one it read', () => {
+    rollout(A);
+    for (let i = 1; i <= MAX_HEAD_READS; i += 1) rollout(uuid(100 + i), { cwd: path.join(cwd, `other-${i}`) }, LAUNCH + 2_000);
+    expect(findCodexRolloutByCwd(query())).toEqual({ ok: false, reason: 'budget' });
   });
 
   it('skips sub-agent, relay and excluded threads', () => {
@@ -76,6 +86,45 @@ describe('findCodexRolloutByCwd', () => {
   });
 });
 
+describe('describeCodexPane', () => {
+  const binding = (sessionId: string, ts: number): ResumeBinding => ({ agent: 'codex', sessionId, cwd, transcriptPath: `/x/${sessionId}.jsonl`, ts });
+  const pane = (extra: Partial<CodexPaneFacts> = {}): CodexPaneFacts => ({ id: 'pty-self', cwd, launchAt: LAUNCH, codexLive: true, ...extra });
+
+  it('waits when the launch is unknown (no command-start, no process start time)', () => {
+    expect(describeCodexPane(pane({ launchAt: undefined }), [])).toEqual({ kind: 'wait' });
+  });
+
+  it('treats a pane bound only for an earlier run as a cwd conflict', () => {
+    const other = pane({ id: 'pty-a', binding: binding(A, LAUNCH - 3_600_000), launchAt: LAUNCH - 1_000 });
+    expect(describeCodexPane(pane(), [other])).toEqual({ kind: 'refuse', reason: 'shared-cwd' });
+  });
+
+  it('treats a live Codex pane with no launch marker in the same cwd as a conflict', () => {
+    expect(describeCodexPane(pane(), [pane({ id: 'pty-a', launchAt: undefined })])).toEqual({ kind: 'refuse', reason: 'shared-cwd' });
+  });
+
+  it('lets a pane bound for its current run share the cwd, and excludes its thread', () => {
+    const other = pane({ id: 'pty-a', binding: binding(A, LAUNCH + 5_000), launchAt: LAUNCH - 1_000 });
+    const decision = describeCodexPane(pane(), [other, pane({ id: 'pty-b', codexLive: false, cwd: '/elsewhere' })], env);
+    expect(decision).toMatchObject({ kind: 'query', query: { cwd, notBefore: LAUNCH, env } });
+    expect(decision.kind === 'query' && [...(decision.query.exclude ?? [])]).toEqual([A]);
+  });
+
+  it('skips a pane already bound for its current run, but not one bound for an earlier run', () => {
+    expect(describeCodexPane(pane({ binding: binding(A, LAUNCH + 1) }), [])).toEqual({ kind: 'skip' });
+    expect(describeCodexPane(pane({ binding: binding(A, LAUNCH - 60_000) }), []).kind).toBe('query');
+  });
+});
+
+describe('parseEtime', () => {
+  it('reads every ps elapsed-time shape', () => {
+    expect(parseEtime('  00:07\n')).toBe(7_000);
+    expect(parseEtime('01:02:03')).toBe(3_723_000);
+    expect(parseEtime('2-00:00:01')).toBe(172_801_000);
+    expect(parseEtime('')).toBeUndefined();
+  });
+});
+
 describe('CodexCwdBinder', () => {
   async function until(check: () => boolean): Promise<void> {
     const end = Date.now() + 2000;
@@ -85,17 +134,19 @@ describe('CodexCwdBinder', () => {
     }
   }
 
-  it('retries until the rollout appears, then binds once', async () => {
+  it('waits for a launch marker, retries until the rollout appears, then binds once', async () => {
     const bound: string[] = [];
+    const marker: { launchAt?: number } = {};
     const binder = new CodexCwdBinder({
-      pane: () => (bound.length ? undefined : { cwd, notBefore: Date.now() - 5_000, env, sharedCwd: false }),
+      pane: () => (bound.length ? { kind: 'skip' } : describeCodexPane({ id: 'pty-1', cwd, codexLive: true, ...marker }, [], env)),
       bind: (_pane, match) => bound.push(match.threadId),
-      delaysMs: [0, 20, 20, 20, 20],
+      delaysMs: [0, 20, 20, 20, 20, 20],
     });
     binder.arm('pty-1');
-    await new Promise((r) => setTimeout(r, 10));
-    expect(bound).toEqual([]);
     rollout(A, {}, Date.now());
+    await new Promise((r) => setTimeout(r, 30));
+    expect(bound).toEqual([]); // no launch marker yet
+    marker.launchAt = Date.now() - 5_000;
     await until(() => bound.length > 0);
     binder.arm('pty-1'); // a later banner after the bind is a no-op
     await new Promise((r) => setTimeout(r, 50));
@@ -103,19 +154,21 @@ describe('CodexCwdBinder', () => {
     binder.dispose();
   });
 
-  it('refuses a cwd another unbound Codex pane shares', async () => {
+  it('logs and stops on a shared cwd', async () => {
     rollout(A, {}, Date.now());
     const bound: string[] = [];
     const logs: string[] = [];
     const binder = new CodexCwdBinder({
-      pane: () => ({ cwd, notBefore: Date.now() - 5_000, env, sharedCwd: true }),
+      pane: () => ({ kind: 'refuse', reason: 'shared-cwd' }),
       bind: (_pane, match) => bound.push(match.threadId),
       log: (_level, message) => logs.push(message),
-      delaysMs: [0],
+      delaysMs: [0, 10],
     });
     binder.arm('pty-1');
     await until(() => logs.length > 0);
+    await new Promise((r) => setTimeout(r, 30));
     expect(bound).toEqual([]);
+    expect(logs).toHaveLength(1);
     expect(logs[0]).toContain('shares its cwd');
     binder.dispose();
   });

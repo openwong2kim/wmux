@@ -242,7 +242,7 @@ export class TranscriptDiscovery {
   /** Scan, validate, and (on success) finish the search. Returns true if done. */
   private tryAdopt(sessionId: string, state: SearchState): boolean {
     const env = this.deps.getSessionEnv?.(sessionId);
-    for (const candidate of (state.agent === 'codex' ? scanForCodexTranscript(state.agentSessionId, env) : scanForTranscript(state.agentSessionId, env))) {
+    for (const candidate of (state.agent === 'codex' ? findCodexTranscriptCandidates(state.agentSessionId, env) : scanForTranscript(state.agentSessionId, env))) {
       const check = checkNativeTranscriptPath(state.agent, candidate, state.agentSessionId, env);
       if (!check.ok) {
         // A same-named file reachable through the root but resolving OUTSIDE it
@@ -383,6 +383,33 @@ export function scanForCodexTranscript(id: string, env?: Record<string, string>)
       }
     } catch { /* Missing/unreadable account: no candidate. */ }
     finally { dir?.closeSync(); }
+  }
+  // Ambiguous duplicate copies must not choose a conversation by directory order.
+  return found.length === 1 ? found : [];
+}
+
+/**
+ * Exact-id lookup bounded to the day folders the id names. Codex thread ids are
+ * UUIDv7, so their first 48 bits are the creation time, and a rollout lives in
+ * the local-date folder of that time; the day either side covers a timezone or
+ * midnight edge. A non-v7 id falls back to the full bounded walk. Cheap enough
+ * for a hot path, and immune to the walk's entry cap missing a new rollout.
+ */
+export function findCodexTranscriptCandidates(id: string, env?: Record<string, string>): string[] {
+  if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id)) return [];
+  const hex = id.replace(/-/g, '');
+  if (hex[12] !== '7') return scanForCodexTranscript(id, env);
+  const createdAt = parseInt(hex.slice(0, 12), 16);
+  const root = codexSessionRoot(env);
+  const found: string[] = [];
+  for (const offset of [0, -1, 1]) {
+    const day = new Date(createdAt);
+    const date = new Date(day.getFullYear(), day.getMonth(), day.getDate() + offset);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const dir = path.join(root, String(date.getFullYear()), pad(date.getMonth() + 1), pad(date.getDate()));
+    let names: string[];
+    try { names = fs.readdirSync(dir); } catch { continue; }
+    for (const name of names) if (name.endsWith(`-${id}.jsonl`)) found.push(path.join(dir, name));
   }
   // Ambiguous duplicate copies must not choose a conversation by directory order.
   return found.length === 1 ? found : [];
