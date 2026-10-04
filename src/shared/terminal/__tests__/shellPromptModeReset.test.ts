@@ -19,7 +19,6 @@ function make() {
   const guard = installShellPromptModeReset({
     get parser() { return term.parser; },
     get modes() { return term.modes; },
-    get buffer() { return term.buffer; },
     write: (data: string) => { writes.push(data); realWrite(data); },
   });
   const feed = (data: string) => new Promise<void>((resolve) => realWrite(data, resolve));
@@ -74,13 +73,30 @@ describe('installShellPromptModeReset (#1792)', () => {
     expect(writes).toEqual([]);
   });
 
-  it('does not fire when a dead TUI left the alternate screen active', async () => {
-    const { term, writes, feed, drain } = make();
-    await feed(PROMPT + COMMAND + `${ESC}[?1049h${ESC}[?1000h`);
-    await feed(PROMPT);
+  it('fires when the killed TUI left its alternate screen on, and leaves the screen alone', async () => {
+    // Recorded live (#1792 dogfood): Claude Code 2.1.289 on Windows, then
+    // `taskkill /F` on its PID and PowerShell printing its prompt.
+    const { term, guard, feed, drain } = make();
+    await feed(CONPTY_START + PROMPT);
+    await feed(COMMAND
+      + `${ESC}[?2004h${ESC}[?2031h${ESC}[?1004h${ESC}[?2031l${ESC}[?2004l`
+      + `${ESC}[?2004h${ESC}[?2031h${ESC}[?1004h${ESC}[?1049h`
+      + `${ESC}[?1000h${ESC}[?1002h${ESC}[?1003h${ESC}[?1006h${ESC}[?25h`
+      + 'claude ui');
+    expect(armed(term)).toEqual({ mouse: 'any', focus: true, paste: true });
+    await feed(`${ESC}]133;D;1${BEL}${ESC}]133;A${BEL}PS C:\\cc> ${ESC}]133;B${BEL}`);
     await drain();
+    expect(armed(term)).toEqual({ mouse: 'none', focus: false, paste: true });
     expect(term.buffer.active.type).toBe('alternate');
-    expect(armed(term).mouse).toBe('vt200');
+    expect(guard.appliedCount).toBe(1);
+  });
+
+  it('leaves a running full-screen agent alone (no prompt mark while it draws)', async () => {
+    const { term, writes, feed, drain } = make();
+    await feed(PROMPT + COMMAND + `${ESC}[?1049h${ESC}[?1000h${ESC}[?1003h${ESC}[?1006h${ESC}[?1004h`);
+    await feed('frame 1\r\nframe 2');
+    await drain();
+    expect(armed(term)).toMatchObject({ mouse: 'any', focus: true });
     expect(writes).toEqual([]);
   });
 

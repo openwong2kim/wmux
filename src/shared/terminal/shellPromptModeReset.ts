@@ -26,9 +26,17 @@
  *
  * The reset is queued at 133;A only when a reporting mode was armed since the
  * previous prompt (by the command that just ended) and is still armed. It is
- * never written while a command owns the pane (after 133;C), while anything
- * re-armed a reporting mode after the prompt, or while the alternate screen is
- * active (vim, less, htop, a full-screen TUI that is still drawing).
+ * never written while a command owns the pane (after 133;C: vim, less, htop, a
+ * live agent), or when anything re-armed a reporting mode after the prompt.
+ *
+ * The alternate screen is deliberately NOT a condition. A full-screen TUI that
+ * is still running never lets the shell print a prompt, so the prompt mark
+ * already rules it out. A TUI that was killed, on the other hand, leaves its
+ * alternate screen on too: Claude Code 2.1.289 enters ?1049 and arms
+ * ?1000/?1002/?1003/?1006/?1004, and after `taskkill` PowerShell draws its
+ * prompt on that alternate screen with every mode still armed. Gating on the
+ * normal screen would skip exactly the case this guard exists for. Only the
+ * input-reporting modes are cleared; the screen itself is left alone.
  *
  * Ordering. `terminal.write()` from inside a parser handler appends to the END
  * of xterm's write queue, so output already queued behind the prompt (a hidden
@@ -62,7 +70,6 @@ export interface ShellPromptModeResetTerminal {
     readonly mouseTrackingMode: string;
     readonly sendFocusMode: boolean;
   };
-  readonly buffer: { readonly active: { readonly type: string } };
   write(data: string): void;
 }
 
@@ -119,7 +126,7 @@ export function installShellPromptModeReset(term: ShellPromptModeResetTerminal):
     term.modes.mouseTrackingMode !== 'none' || term.modes.sendFocusMode;
   /** The shell owns the pane and a mode it never asks for is still armed. */
   const leaked = () =>
-    phase === 'prompt' && term.buffer.active.type === 'normal' && reportingArmed();
+    phase === 'prompt' && reportingArmed();
 
   const onPromptMark = (data: string): boolean => {
     // `A`, `B`, `C`, `D;<exit>`, sometimes with `;k=v` options after the kind.
