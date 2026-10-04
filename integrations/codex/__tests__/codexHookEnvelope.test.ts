@@ -76,7 +76,7 @@ const baseEnv = {
 
 describe('buildCodexHookEnvelope', () => {
   it('maps Stop to a canonical agent.stop envelope', () => {
-    expect(buildCodexHookEnvelope(STOP_PAYLOAD, { env: baseEnv, now: 42 })).toEqual({
+    expect(buildCodexHookEnvelope(STOP_PAYLOAD, { env: baseEnv, now: 42, thread: { subagent: false, confirmed: true } })).toEqual({
       kind: 'agent.stop',
       agent: 'codex',
       agentSessionId: '01a0582a-52b6-7a50-aaba-07e35bd05aba',
@@ -90,6 +90,23 @@ describe('buildCodexHookEnvelope', () => {
       },
       ts: 42,
     });
+  });
+
+  it('uses a supplied classification without scanning the rollout again', () => {
+    const envelope = buildCodexHookEnvelope(STOP_PAYLOAD, {
+      env: baseEnv, thread: { subagent: true, confirmed: true },
+    });
+    expect(envelope?.kind).toBe('agent.subagent_stop');
+    expect(envelope?.agentSessionId).toBeUndefined();
+  });
+
+  it('does not bind an unconfirmed Stop', () => {
+    const envelope = buildCodexHookEnvelope(STOP_PAYLOAD, {
+      env: baseEnv, thread: { subagent: false, confirmed: false },
+    });
+    expect(envelope?.kind).toBe('agent.stop');
+    expect(envelope?.agentSessionId).toBeUndefined();
+    expect(envelope?.payload).not.toHaveProperty('transcript_path');
   });
 
   it('maps SessionStart to agent.session_start and keeps the resume marker', () => {
@@ -108,7 +125,7 @@ describe('buildCodexHookEnvelope', () => {
       { ...SESSION_START_PAYLOAD, source: 'resume' },
       { env: baseEnv, now: 1 },
     );
-    expect(envelope?.agentSessionId).toBe(SESSION_START_PAYLOAD.session_id);
+    expect(envelope?.agentSessionId).toBeUndefined();
     expect(envelope?.payload).toMatchObject({ source: 'resume' });
   });
 
@@ -134,10 +151,9 @@ describe('buildCodexHookEnvelope', () => {
   it('maps PermissionRequest to agent.awaiting_input, metadata-only', () => {
     const envelope = buildCodexHookEnvelope(PERMISSION_REQUEST_PAYLOAD, { env: baseEnv, now: 1 });
     expect(envelope?.kind).toBe('agent.awaiting_input');
-    expect(envelope?.agentSessionId).toBe(PERMISSION_REQUEST_PAYLOAD.session_id);
+    expect(envelope?.agentSessionId).toBeUndefined();
     expect(envelope?.payload).toEqual({
       turn_id: PERMISSION_REQUEST_PAYLOAD.turn_id,
-      transcript_path: PERMISSION_REQUEST_PAYLOAD.transcript_path,
     });
     // tool_name / tool_input (including the justification in `description`)
     // are content and must not survive.

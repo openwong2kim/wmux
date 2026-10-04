@@ -114,6 +114,27 @@ describe('Codex pane relay lifetime',()=>{
     await expect(registry.prepare('pane')).rejects.toThrow('unavailable');
     await registry.shutdown();await expect(registry.prepare('other')).rejects.toThrow('unavailable');
   });
+  it('revokes ownership on close using the attached account rather than pane.env', async()=>{
+    const retiring=vi.fn();
+    const registry=new CodexPaneRelays(async()=>relay(),undefined,undefined,{retiring});
+    const lease=await registry.prepare('pane','/attached-account');
+    const pane=owner();pane.meta.env={CODEX_HOME:'/different-account'};
+    expect(lease.commit(pane)).toBe(true);
+    expect(registry.accountHome('pane',pane)).toBe('/attached-account');
+    await lease.close();
+    expect(retiring).toHaveBeenCalledExactlyOnceWith(pane,'/attached-account');
+    await lease.close();
+    expect(retiring).toHaveBeenCalledTimes(1);
+    await registry.shutdown();
+  });
+  it('still closes a relay when ownership cleanup fails during retirement',async()=>{
+    const connection=relay();const report=vi.fn();
+    const registry=new CodexPaneRelays(async()=>connection,report,undefined,{retiring:()=>{throw new Error('unlink refused');}});
+    const lease=await registry.prepare('pane','/attached-account');lease.commit(owner());
+    await registry.retire('pane');
+    expect(report).toHaveBeenCalledOnce();expect(connection.close).toHaveBeenCalledOnce();
+    await registry.shutdown();
+  });
   it('announces state only for the exact committed owner of the current reservation',async()=>{
     const changed=vi.fn();const announcers:(()=>void)[]=[];
     const registry=new CodexPaneRelays(async options=>{announcers.push(options.onStateChange!);return relay();},undefined,changed);

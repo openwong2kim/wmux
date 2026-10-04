@@ -1,11 +1,14 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
+import mutableFs from 'node:fs';
+import { readThreadOwner, resolveThreadOwner, attributeThread, notifierOrigin } from '../bin/wmux-codex-thread.mjs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as net from 'node:net';
 import { spawn } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import { persistCodexThreadOwner } from '../../../src/daemon/web/codexThreadOwner';
+import { persistCodexThreadOwner, invalidateCodexThreadOwner, trackCodexPaneOwnerCleanup } from '../../../src/daemon/web/codexThreadOwner';
 
 const bin = path.join(__dirname, '..', 'bin');
 const ROOT = '01a0582a-52b6-7a50-aaba-07e35bd05aba';
@@ -27,7 +30,9 @@ describe('thread ownership across a shared app-server', { timeout: 20_000 }, () 
     env = { ...process.env };
     for (const key of Object.keys(env)) if (key.startsWith('WMUX_')) delete env[key];
     Object.assign(env, { HOME: home, USERPROFILE: home, CODEX_HOME: path.join(home, '.codex'),
-      WMUX_DATA_SUFFIX: '-owner', WMUX_PIPE_NAME: pipe, WMUX_PTY_ID: 'pane-a', WMUX_WORKSPACE_ID: 'workspace-a' });
+      WMUX_CODEX_NOTIFIER_ARGV: 'codex\x1f', WMUX_DATA_SUFFIX: '-owner', WMUX_PIPE_NAME: pipe, WMUX_PTY_ID: 'pane-a', WMUX_WORKSPACE_ID: 'workspace-a' });
+    rollout(ROOT, 'cli');
+    rollout(OTHER, 'cli');
     fs.writeFileSync(path.join(home, '.wmux-owner-auth-token'), 'owner-token');
     server = net.createServer(socket => {
       let data = '';
@@ -67,25 +72,132 @@ describe('thread ownership across a shared app-server', { timeout: 20_000 }, () 
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, `rollout-test-${id}.jsonl`), JSON.stringify({ type: 'session_meta', payload: { id, source } }) + '\n');
   }
+  it('keeps a direct process in pane B even when pane A owns the recorded thread', async () => {
+    await run(true, ROOT);
+    received.length = 0;
+    await run(false, ROOT, { WMUX_CODEX_NOTIFIER_ARGV: 'codex\x1fresume\x1f', WMUX_PTY_ID: 'pane-b' });
+    expect(received.map(r => r.params.ptyId)).toEqual(['pane-b']);
+    received.length = 0;
+    await run(false, ROOT, { WMUX_CODEX_NOTIFIER_ARGV: 'codex\x1f', WMUX_PTY_ID: '' });
+    expect(received).toEqual([]);
+    await run(false, ROOT, { WMUX_CODEX_NOTIFIER_ARGV: 'codex\x1f', WMUX_PTY_ID: '',
+      WMUX_WORKSPACE_ID: '', WMUX_SURFACE_ID: '', WMUX_DATA_SUFFIX: '' });
+    expect(received).toEqual([]);
+  });
+  it('preserves pane delivery for an unknown origin, including permission hooks', async () => {
+    const unknown = { WMUX_CODEX_NOTIFIER_ARGV: 'node\x1f/x/wmux-codex-notify.mjs\x1f' };
+    await run(false, ROOT, unknown);
+    await run(true, ROOT, unknown, 'PermissionRequest');
+    expect(received.map(r => r.params.kind)).toEqual(['agent.stop', 'agent.awaiting_input']);
+    expect(received.every(r => r.params.ptyId === 'pane-a')).toBe(true);
+  });
+  it('invalidates an on-disk pointer for a recovered pane with no in-memory snapshot', async () => {
+    const pane = { id: 'relay-pane', env: env as Record<string, string> };
+    persistCodexThreadOwner(pane, { live: true, selection: { threadId: ROOT, cwd: home, generation: 1 } }, env.CODEX_HOME!, env);
+    expect(readThreadOwner(ROOT, env)).toBeDefined();
+    persistCodexThreadOwner({ ...pane }, { live: true }, env.CODEX_HOME!, env);
+    expect(readThreadOwner(ROOT, env)).toBeUndefined();
+  });
+  it('propagates ENOSPC during a switch instead of keeping the old owner usable', () => {
+    const pane = { id: 'relay-pane', env: env as Record<string, string> };
+    persistCodexThreadOwner(pane, { live: true, selection: { threadId: ROOT, cwd: home, generation: 1 } }, env.CODEX_HOME!, env);
+    const fail = vi.spyOn(mutableFs, 'writeFileSync').mockImplementation(() => { throw Object.assign(new Error('disk full'), { code: 'ENOSPC' }); });
+    try {
+      expect(() => persistCodexThreadOwner(pane, { live: true, selection: { threadId: OTHER, cwd: home, generation: 2 } }, env.CODEX_HOME!, env)).toThrow('disk full');
+    } finally { fail.mockRestore(); }
+    expect(readThreadOwner(ROOT, env)).toBeUndefined();
+  });
+  it('does not bind or record an unconfirmed SessionStart, then binds a confirmed Stop', async () => {
+    await run(true, CHILD);
+    expect(received[0]?.params.agentSessionId).toBeUndefined();
+    expect(readThreadOwner(CHILD, env)).toBeUndefined();
+    rollout(CHILD, 'cli');
+    await run(true, CHILD, {}, 'Stop');
+    expect(received[1]?.params.agentSessionId).toBe(CHILD);
+  });
+  it('records in the relay account even when pane.env names a different account', async () => {
+    const attachedHome = path.join(home, 'attached-account');
+    const pane = { id: 'relay-pane', env: env as Record<string, string> };
+    persistCodexThreadOwner(pane, { live: true, selection: { threadId: ROOT, cwd: home, generation: 1 } }, attachedHome, env);
+    expect(readThreadOwner(ROOT, env)).toBeUndefined();
+    await run(false, ROOT, { CODEX_HOME: attachedHome, WMUX_CODEX_NOTIFIER_ARGV: SHARED });
+    expect(received.map(r => r.params.ptyId)).toEqual(['relay-pane']);
+    invalidateCodexThreadOwner(pane, attachedHome, env);
+    expect(readThreadOwner(ROOT, { ...env, CODEX_HOME: attachedHome })).toBeUndefined();
+  });
+  it.each(['session:died', 'session:destroyed'])('revokes a direct launch when %s closes its pane', async event => {
+    const events = new EventEmitter();
+    const onError = vi.fn();
+    trackCodexPaneOwnerCleanup(events, env.CODEX_HOME!, onError, env);
+    events.emit('session:created', { session: { id: 'pane-a', env } });
+    await run(true, ROOT);
+    expect(readThreadOwner(ROOT, env)).toBeDefined();
+    events.emit(event, { id: 'pane-a' });
+    expect(readThreadOwner(ROOT, env)).toBeUndefined();
+    expect(onError).not.toHaveBeenCalled();
+  });
+  it('retries an early missing owner once for 75ms and then routes the first turn', async () => {
+    const delay = vi.fn(async (ms: number) => {
+      expect(ms).toBe(75);
+      persistCodexThreadOwner({ id: 'relay-pane', env: env as Record<string, string> },
+        { live: true, selection: { threadId: ROOT, cwd: home, generation: 1 } }, env.CODEX_HOME!, env);
+    });
+    const routedEnv = { ...env };
+    const readOwner = vi.fn(readThreadOwner);
+    const resolveOwner = (id: string, target: NodeJS.ProcessEnv) => resolveThreadOwner(id, target, { delay, readOwner });
+    expect(await attributeThread('shared-server', { rootId: ROOT }, routedEnv, resolveOwner)).toBe(true);
+    expect(routedEnv.WMUX_PTY_ID).toBe('relay-pane');
+    expect(delay).toHaveBeenCalledTimes(1);
+    expect(readOwner).toHaveBeenCalledTimes(2);
+    const missing = vi.fn(() => undefined);
+    const noWait = vi.fn(async () => {});
+    expect(await resolveThreadOwner(OTHER, env, { readOwner: missing, delay: noWait })).toBeUndefined();
+    expect(missing).toHaveBeenCalledTimes(2);
+    expect(noWait).toHaveBeenCalledTimes(1);
+  });
+  it('routes a no-identity record only after confirming a clean shared server', async () => {
+    const pane = { id: 'pane-a', env: env as Record<string, string> };
+    persistCodexThreadOwner(pane, { live: true, selection: { threadId: ROOT, cwd: home, generation: 1 } }, env.CODEX_HOME!, env);
+    const clean = { HOME: home, CODEX_HOME: env.CODEX_HOME };
+    expect(await attributeThread('unclaimed', { rootId: ROOT }, { ...clean }, resolveThreadOwner, () => 'process')).toBe(false);
+    expect(await attributeThread('unclaimed', { rootId: ROOT }, { ...clean }, resolveThreadOwner, () => 'unknown')).toBe(false);
+    const target = { ...clean };
+    expect(await attributeThread('unclaimed', { rootId: ROOT }, target, resolveThreadOwner, () => 'shared-server')).toBe(true);
+    expect(target).toHaveProperty('WMUX_PTY_ID', 'pane-a');
+  });
+  it('does not walk ancestors without an inherited identity', () => {
+    const readChain = vi.fn(() => [['codex']]);
+    expect(notifierOrigin({}, readChain)).toBe('unclaimed');
+    expect(readChain).not.toHaveBeenCalled();
+    expect(notifierOrigin(env, readChain)).toBe('process');
+    expect(readChain).toHaveBeenCalledTimes(1);
+  });
+  it('propagates invalidation failure so the caller cannot forward a selection switch', () => {
+    const pane = { id: 'relay-pane', env: env as Record<string, string> };
+    persistCodexThreadOwner(pane, { live: true, selection: { threadId: ROOT, cwd: home, generation: 1 } }, env.CODEX_HOME!, env);
+    const fail = vi.spyOn(mutableFs, 'unlinkSync').mockImplementation(() => { throw Object.assign(new Error('unlink refused'), { code: 'EPERM' }); });
+    try { expect(() => persistCodexThreadOwner(pane, { live: true }, env.CODEX_HOME!, env)).toThrow('unlink refused'); }
+    finally { fail.mockRestore(); }
+  });
   it('routes a shared-server turn after the TUI relay selects it, without a pane-side hook', async () => {
     const pane = { id: 'relay-pane', env: env as Record<string, string> };
-    persistCodexThreadOwner(pane, { live: true, selection: { threadId: ROOT, cwd: home, generation: 1 } }, env);
+    persistCodexThreadOwner(pane, { live: true, selection: { threadId: ROOT, cwd: home, generation: 1 } }, env.CODEX_HOME!, env);
     await run(false, ROOT, { WMUX_CODEX_NOTIFIER_ARGV: SHARED, WMUX_DATA_SUFFIX: '-foreign', WMUX_PIPE_NAME: 'wrong' });
     expect(received.map(r => r.params.ptyId)).toEqual(['relay-pane']);
     received.length = 0;
-    persistCodexThreadOwner(pane, { live: true }, env);
+    persistCodexThreadOwner(pane, { live: true }, env.CODEX_HOME!, env);
     await run(false, ROOT, { WMUX_CODEX_NOTIFIER_ARGV: SHARED });
     expect(received).toEqual([]);
   });
   it('keeps relay ownership on link loss and does not reclaim it on repeated state notifications', async () => {
     const pane = { id: 'relay-pane', env: env as Record<string, string> };
     const observed = { live: true as const, selection: { threadId: ROOT, cwd: home, generation: 1 } };
-    persistCodexThreadOwner(pane, observed, env);
-    persistCodexThreadOwner(pane, { live: false }, env);
+    persistCodexThreadOwner(pane, observed, env.CODEX_HOME!, env);
+    persistCodexThreadOwner(pane, { live: false }, env.CODEX_HOME!, env);
     await run(false, ROOT, { WMUX_CODEX_NOTIFIER_ARGV: SHARED });
     expect(received.map(r => r.params.ptyId)).toEqual(['relay-pane']);
     await run(true, ROOT, { WMUX_PTY_ID: 'attached-pane' });
-    persistCodexThreadOwner(pane, observed, env);
+    persistCodexThreadOwner(pane, observed, env.CODEX_HOME!, env);
     received.length = 0;
     await run(false, ROOT, { WMUX_CODEX_NOTIFIER_ARGV: SHARED });
     expect(received.map(r => r.params.ptyId)).toEqual(['attached-pane']);

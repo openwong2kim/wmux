@@ -7,7 +7,7 @@ import { ChatCancelReceiptStore } from './chat/ChatCancelReceiptStore';
 import { ChatQueueStore } from './chat/ChatQueue';
 import { createChatBridge, type NativeChatBridge } from './chat/nativeChatBridge';
 import {captureCodexRelayResume, codexRelayResumeCommand} from './web/codexRelayResume';
-import { persistCodexThreadOwner } from './web/codexThreadOwner';
+import { persistCodexThreadOwner, invalidateCodexThreadOwner, trackCodexPaneOwnerCleanup } from './web/codexThreadOwner';
 import { codexCdOperand, recoverCodexPane, withCodexRemote } from './web/recoverCodexPane';
 import { CodexRelayUnavailableError } from './web/codexTuiRelay';
 import { paneCodexSettings } from './web/paneCodexSettings';
@@ -318,6 +318,7 @@ const codexPaneRelays = new CodexPaneRelays(undefined,()=>log('warn','[phone] Co
   {
     ensureRuntime: async (id,codeHome)=>{ await codexSharedRuntime.ensureStarted(id,{...process.env,...(codeHome ? {CODEX_HOME:codeHome} : {})}); },
     serverProven: (codeHome)=>codexSharedRuntime.state(codeHome)?.kind === 'clean',
+    retiring: (owner,codeHome)=>invalidateCodexThreadOwner(owner.meta,codeHome),
     refused: (id,reason)=>{
       log('warn',`[codex-relay] refused a Codex request in ${id}: ${reason}`);
       // One notice per pane per minute: a TUI can retry a refused request in a loop.
@@ -4585,6 +4586,8 @@ function registerRpcHandlers(
   });
   sessionManager.on('session:inputSubmitted', (payload: { sessionId: string }) => usageLimits?.noteSubmitted(payload.sessionId));
   sessionManager.on('session:interrupted', (payload: { id: string }) => usageLimits?.drop(payload.id));
+  trackCodexPaneOwnerCleanup(sessionManager,path.join(os.homedir(),'.codex'),
+    (error)=>log('warn','[codex] pane ownership cleanup failed:',error));
   sessionManager.on('session:died', (payload: { id: string }) => usageLimits?.drop(payload.id));
   sessionManager.on('session:destroyed', (payload: { id: string }) => usageLimits?.drop(payload.id));
 
@@ -7723,7 +7726,8 @@ async function main(): Promise<void> {
     if (shuttingDown || sessionManager.getSession(id) !== owner || !['attached','detached'].includes(owner.meta.state)) return;
     const before = JSON.stringify(owner.meta.codexRelayResume);
     const observed = codexPaneRelays.liveSelection(id,owner);
-    persistCodexThreadOwner(owner.meta, observed);
+    const codeHome = codexPaneRelays.accountHome(id,owner);
+    if (codeHome) persistCodexThreadOwner(owner.meta, observed, codeHome);
     captureCodexRelayResume(owner.meta, observed);
     if (before !== JSON.stringify(owner.meta.codexRelayResume) && !stateWriter.saveImmediate(buildState(sessionManager))) {
       throw new Error('Codex recovery selection could not be persisted');

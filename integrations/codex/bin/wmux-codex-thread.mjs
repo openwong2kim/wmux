@@ -16,8 +16,9 @@ function codexHome(env) {
 
 // ----- Process origin -----------------------------------------------------
 // A shared app-server retains its starter's environment. Only pane-side
-// SessionStart may establish ownership. Shared and uninspectable origins
-// require a previously recorded thread owner, even with no inherited pane.
+// SessionStart with confirmed rollout metadata may establish ownership.
+// Shared servers require recorded ownership; unknown origins keep the legacy
+// pane-environment fallback without establishing new ownership.
 
 const SELF_BASENAMES = ['wmux-codex-notify.mjs', 'wmux-codex-hooks-bridge.mjs'];
 // This program's own wrappers (a version-manager shim such as Volta's `node`
@@ -25,7 +26,7 @@ const SELF_BASENAMES = ['wmux-codex-notify.mjs', 'wmux-codex-hooks-bridge.mjs'];
 const MAX_ORIGIN_HOPS = 4;
 // One budget for the whole ancestor walk, well under the 1.5 s the hook
 // harmlessness gate allows a bridge over a no-op hook. A PowerShell start is
-// ~300 ms; a lookup that runs out is 'unknown' and needs a recorded owner.
+// ~300 ms; a lookup that runs out is 'unknown' and retains pane delivery.
 const ORIGIN_LOOKUP_BUDGET_MS = 900;
 // On WSL this bridge is a Windows process and cannot see the Linux Codex that
 // spawned the launcher; the launcher (WSL_CODEX_HOOK in
@@ -43,7 +44,7 @@ const CODEX_VALUE_OPTIONS = new Set([
 
 function isSelfToken(token) {
   return typeof token === 'string'
-    && SELF_BASENAMES.includes((token.split(/[\\/]/).pop() ?? '').toLowerCase());
+    && SELF_BASENAMES.some(name => token.replace(/[\"']/g, '').toLowerCase().includes(name));
 }
 
 /**
@@ -138,16 +139,18 @@ export function isSharedServerArgv(argv) {
  * same command and is skipped; the first other ancestor spawned the
  * notification and decides:
  *   'shared-server'  a shared Codex app-server (isSharedServerArgv).
- *   'process'        anything else — the Codex process in the pane, or a
- *                    stdio app-server that one client started.
- *   'unknown'        no readable ancestor, or only wrappers.
+ *   'process'        a confirmed Codex executable, including per-pane stdio.
+ *   'unknown'        no confirmed Codex ancestor, including incomplete wrappers.
  * Exported for tests.
  */
 export function classifyNotifierOrigin(chain) {
   for (const argv of Array.isArray(chain) ? chain : []) {
     if (!Array.isArray(argv) || argv.length === 0) return 'unknown';
     if (argv.some(isSelfToken)) continue;
-    return isSharedServerArgv(argv) ? 'shared-server' : 'process';
+    if (isSharedServerArgv(argv)) return 'shared-server';
+    // A shell or unrelated parent is not proof of a pane-side Codex process.
+    const executable = String(argv[0]).replace(/["']/g, '').split(/[\\/]/).pop();
+    return /^codex(?:[-.](?:[a-z0-9_-]+))?$/i.test(executable ?? '') ? 'process' : 'unknown';
   }
   return 'unknown';
 }
@@ -446,6 +449,11 @@ function parseSessionMetaRecord(line) {
  * a sub-agent's own explicit `session_id` cross-reference.
  */
 export function classifyCodexThread(id, sessionsRoot) {
+  const { confirmed: _confirmed, ...thread } = inspectCodexThread(id, sessionsRoot);
+  return thread;
+}
+
+export function inspectCodexThread(id, sessionsRoot) {
   const visited = new Set();
   let current = id;
   let subagent = false;
@@ -465,17 +473,17 @@ export function classifyCodexThread(id, sessionsRoot) {
     // mis-paired rollout must not attribute another conversation's root here.
     if (!record || !record.classification || record.id !== current) break;
     const meta = record.classification;
-    if (!meta.subagent) return { subagent, rootId: current }; // read AND confirmed top-level
+    if (!meta.subagent) return { subagent, rootId: current, confirmed: true }; // read AND confirmed top-level
     subagent = true;
-    if (meta.rootId) return { subagent, rootId: meta.rootId }; // Codex's own cross-reference
-    if (!meta.parentId) return { subagent, rootId: undefined }; // e.g. a review sub-agent
+    if (meta.rootId) return { subagent, rootId: meta.rootId, confirmed: true }; // Codex's own cross-reference
+    if (!meta.parentId) return { subagent, rootId: undefined, confirmed: true }; // e.g. a review sub-agent
     current = meta.parentId;
   }
   // Loop exited without confirming a root. subagent is still false only when
   // hop 0 itself could not be read — the original "unavailable initial-thread
   // metadata" fallback. Any later exit (missing/mis-paired intermediate,
   // cycle, or hop budget) already confirmed a sub-agent and must not guess.
-  return { subagent, rootId: subagent ? undefined : id };
+  return { subagent, rootId: subagent ? undefined : id, confirmed: subagent };
 }
 
 // ----- TUI ownership ------------------------------------------------------
@@ -500,18 +508,25 @@ function writeAtomic(file, record) {
   }
 }
 
-/** Call only for a top-level SessionStart from the pane-side process. */
+export function invalidatePaneOwner(env = process.env) {
+  if (!nonEmptyStr(env.WMUX_PTY_ID)) return;
+  try { unlinkSync(join(ownerDir(env), `pane-${paneKey(env)}.json`)); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+}
+
+/** Call only for a confirmed top-level SessionStart from the pane process. */
 export function recordThreadOwner(id, env = process.env) {
   if (!nonEmptyStr(id) || !nonEmptyStr(env.WMUX_PTY_ID)) return false;
   try {
+    invalidatePaneOwner(env);
     const dir = ownerDir(env);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     const identity = Object.fromEntries(OWNER_ENV_KEYS.map(key => [key, env[key] || '']));
     const owner = { version: 1, id, env: identity, nonce: randomUUID() };
     // The per-pane pointer invalidates old thread bindings after /new or a
     // different resume. A torn pair is dropped, never guessed from stale env.
-    writeAtomic(join(dir, `pane-${paneKey(identity)}.json`), { id, nonce: owner.nonce });
     writeAtomic(join(dir, `thread-${digest(id)}.json`), owner);
+    writeAtomic(join(dir, `pane-${paneKey(identity)}.json`), { id, nonce: owner.nonce });
     return true;
   } catch { return false; }
 }
@@ -537,4 +552,36 @@ export function applyThreadOwner(owner, env = process.env) {
   }
   // These describe the app-server's original process, never the resolved TUI.
   delete env.WMUX_WSL_AGENT_PROC;
+}
+
+/** Skip expensive OS ancestry queries when there is no inherited identity. */
+export function notifierOrigin(env = process.env, readChain = readAncestorChain) {
+  return claimsPaneIdentity(env) ? classifyNotifierOrigin(readChain()) : 'unclaimed';
+}
+
+/** One bounded retry covers a turn finishing just ahead of relay persistence. */
+export async function resolveThreadOwner(id, env = process.env, {
+  readOwner = readThreadOwner, delay = ms => new Promise(resolve => setTimeout(resolve, ms)),
+} = {}) {
+  const owner = readOwner(id, env);
+  if (owner || !nonEmptyStr(id)) return owner;
+  await delay(75);
+  return readOwner(id, env);
+}
+
+/** Direct and unknown pane processes retain their own identity. A positively
+ * identified shared server must resolve ownership, even if it claims a pane.
+ * With no identity to inspect, account ownership is the only possible route.
+ */
+export async function attributeThread(origin, thread, env = process.env, resolveOwner = resolveThreadOwner,
+  confirmUnclaimed = () => classifyNotifierOrigin(readAncestorChain())) {
+  if (origin !== 'shared-server' && nonEmptyStr(env.WMUX_PTY_ID)) return true;
+  if (origin === 'process' || origin === 'unknown') return false;
+  const owner = await resolveOwner(thread?.rootId, env);
+  if (!owner) return false;
+  // A no-identity hook normally costs no OS lookup. Before using a record,
+  // distinguish a clean shared server from a direct launch outside wmux.
+  if (origin === 'unclaimed' && confirmUnclaimed() !== 'shared-server') return false;
+  applyThreadOwner(owner, env);
+  return true;
 }

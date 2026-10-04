@@ -16,6 +16,8 @@ export interface CodexPaneRelayHooks {
   ensureRuntime?:(id:string,codeHome?:string)=>Promise<void>;
   /** Is the account's shared server proven to have been started clean? */
   serverProven?:(codeHome?:string)=>boolean;
+  /** Revoke persistent notification ownership before this relay is retired. */
+  retiring?:(owner:ManagedSession,codeHome:string)=>void;
   /** A Codex request in pane `id` was refused. */
   refused?:(id:string,reason:string)=>void;
   /** A client response in pane `id` was not forwarded (no matching pending server request). */
@@ -80,6 +82,7 @@ export class CodexPaneRelays {
 
   async prepare(id:string, codeHome?:string) {
     if (this.stopped || this.entries.has(id) || this.entries.size >= 256 || this.creating.size >= 256) throw new Error('Codex pane relay unavailable');
+    codeHome ??= path.join(os.homedir(),'.codex');
     const entry:Entry = {id,relayId:randomUUID(),retired:false,codeHome};
     this.entries.set(id,entry);
     try {await this.hooks.ensureRuntime?.(id,codeHome);} catch {/* The relay probe below decides availability. */}
@@ -264,6 +267,10 @@ export class CodexPaneRelays {
   }
 
   private retireEntry(entry:Entry):Promise<void> {
+    if (!entry.retired && entry.owner) {
+      try {this.hooks.retiring?.(entry.owner,entry.codeHome!);}
+      catch {try {this.cleanupError();} catch {/* Still close an unusable relay. */}}
+    }
     entry.retired = true;
     if(this.entries.get(entry.id) === entry)this.entries.delete(entry.id);
     return this.closeEntry(entry);

@@ -117,6 +117,17 @@ describe('classifyNotifierOrigin', () => {
     expect(classifyNotifierOrigin([['node', '/x/wmux-codex-notify.mjs', '{}']])).toBe('unknown');
   });
 
+  it.each([
+    ['sh', '-lc', 'node "/x/wmux-codex-hooks-bridge.mjs"'],
+    ['cmd.exe', '/C', 'node "C:\\x\\wmux-codex-hooks-bridge.mjs"'],
+    ['powershell.exe', '-Command', '& node "C:\\x\\wmux-codex-hooks-bridge.mjs"'],
+  ])('walks through the %s hook shell to the real ancestor', (...shell) => {
+    expect(classifyNotifierOrigin([shell, ['codex', ...SERVER_ARGV]])).toBe('shared-server');
+    expect(classifyNotifierOrigin([shell, ['codex', 'resume', THREAD_ID]])).toBe('process');
+    expect(classifyNotifierOrigin([shell])).toBe('unknown');
+    expect(classifyNotifierOrigin([shell, ['unrelated-process']])).toBe('unknown');
+  });
+
   it('classifies Windows command lines once tokenized', () => {
     const server = tokenizeCommandLine(
       '"C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\vendor\\codex.exe" app-server --listen unix:// --managed-daemon',
@@ -331,7 +342,7 @@ describe('wmux-codex-notify under a fake Codex parent', () => {
     writeToken();
     expect(await run(['app-server', '--listen', 'stdio://'])).toBe(0);
     expect(received).toEqual([delivered(PANE)]);
-    expect(logLines()).toEqual([expect.objectContaining({ outcome: 'ok', origin: 'process' })]);
+    expect(logLines()).toEqual([expect.objectContaining({ outcome: 'ok', origin: 'unknown' })]);
   }, 20_000);
 
   it('attributes a Codex process that runs the turn itself, whatever words it was given', async () => {
@@ -341,7 +352,7 @@ describe('wmux-codex-notify under a fake Codex parent', () => {
     writeToken();
     expect(await run(['parent.cjs', '--no-daemon', '-C', 'app-server', 'exec', 'fix tests'])).toBe(0);
     expect(received).toEqual([delivered(PANE)]);
-    expect(logLines()).toEqual([expect.objectContaining({ outcome: 'ok', origin: 'process' })]);
+    expect(logLines()).toEqual([expect.objectContaining({ outcome: 'ok', origin: 'unknown' })]);
   }, 20_000);
 
   it('still spools under the pane id for a Codex process when no endpoint exists', async () => {

@@ -87,8 +87,7 @@ import { createConnection } from 'node:net';
 import { randomUUID } from 'node:crypto';
 
 import {
-  classifyCodexThread, codexSessionsRoot, classifyNotifierOrigin, readAncestorChain,
-  recordThreadOwner, readThreadOwner, applyThreadOwner,
+  inspectCodexThread, codexSessionsRoot, notifierOrigin, attributeThread, recordThreadOwner, invalidatePaneOwner,
 } from './wmux-codex-thread.mjs';
 
 const HOOK_TIMEOUT_MS = 2000; // hard cap so we never stall a Codex turn
@@ -460,7 +459,7 @@ function nonEmptyStr(v) {
  * and `tool_input` are user and model content; this bridge is metadata-only,
  * and the allowlist here is where that is enforced.
  */
-export function buildCodexHookEnvelope(payload, { env = process.env, now = Date.now() } = {}) {
+export function buildCodexHookEnvelope(payload, { env = process.env, now = Date.now(), thread: classifiedThread } = {}) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
   const event = nonEmptyStr(payload.hook_event_name);
   // hasOwn, not a bare index: `constructor` / `toString` / `__proto__` resolve
@@ -477,13 +476,14 @@ export function buildCodexHookEnvelope(payload, { env = process.env, now = Date.
 
   const sessionId = nonEmptyStr(payload.session_id);
   const turnId = nonEmptyStr(payload.turn_id);
-  const thread = sessionId ? classifyCodexThread(sessionId, codexSessionsRoot(env)) : { subagent: false };
+  const thread = classifiedThread ?? (sessionId ? inspectCodexThread(sessionId, codexSessionsRoot(env)) : { subagent: false, confirmed: false });
   if (thread.subagent) {
     // Nested prompts/approvals must not change the lead's turn state either.
     if (event !== 'Stop' && event !== 'SessionStart') return null;
     kind = 'agent.subagent_stop';
   }
-  const transcriptPath = thread.subagent ? undefined : nonEmptyStr(payload.transcript_path);
+  const canBind = event === 'Stop' && thread.confirmed && !thread.subagent;
+  const transcriptPath = canBind ? nonEmptyStr(payload.transcript_path) : undefined;
   // `source` is "startup" | "resume" on SessionStart. Metadata, not content.
   // NO CONSUMER YET — nothing in src/ reads signal.payload.source; it is
   // carried because it is the only field that distinguishes a resumed session
@@ -496,7 +496,7 @@ export function buildCodexHookEnvelope(payload, { env = process.env, now = Date.
   return {
     kind,
     agent: 'codex',
-    ...(sessionId && !thread.subagent ? { agentSessionId: sessionId } : {}),
+    ...(sessionId && canBind ? { agentSessionId: sessionId } : {}),
     ptyId,
     ...(workspaceId ? { workspaceId } : {}),
     ...(surfaceId ? { surfaceId } : {}),
@@ -526,18 +526,19 @@ async function main() {
     return;
   }
 
+  const event = nonEmptyStr(payload?.hook_event_name);
+  if (!event || !Object.hasOwn(EVENT_TO_KIND, event)) return;
   const sessionIdClaimed = nonEmptyStr(payload?.session_id);
   const thread = sessionIdClaimed
-    ? classifyCodexThread(sessionIdClaimed, codexSessionsRoot(process.env)) : undefined;
-  const origin = classifyNotifierOrigin(readAncestorChain());
-  if (origin === 'process' && payload?.hook_event_name === 'SessionStart' && !thread?.subagent) {
-    recordThreadOwner(sessionIdClaimed, process.env);
-  } else if (origin !== 'process') {
-    const owner = readThreadOwner(thread?.rootId, process.env);
-    if (!owner) return;
-    applyThreadOwner(owner, process.env);
+    ? inspectCodexThread(sessionIdClaimed, codexSessionsRoot(process.env))
+    : { subagent: false, confirmed: false };
+  const origin = notifierOrigin();
+  if (origin === 'process' && event === 'SessionStart' && !thread.subagent) {
+    invalidatePaneOwner();
+    if (thread.confirmed) recordThreadOwner(sessionIdClaimed, process.env);
   }
-  const envelope = buildCodexHookEnvelope(payload);
+  if (!await attributeThread(origin, thread)) return;
+  const envelope = buildCodexHookEnvelope(payload, { thread });
   if (!envelope) {
     // Two reasons, and the log distinguishes them without echoing content: an
     // event wmux does not act on, or a pane we cannot identify.

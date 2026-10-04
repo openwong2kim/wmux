@@ -53,8 +53,7 @@ import { fileURLToPath } from 'node:url';
 import { createConnection } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import {
-  classifyNotifierOrigin, readAncestorChain, classifyCodexThread, codexSessionsRoot,
-  readThreadOwner, applyThreadOwner,
+  classifyCodexThread, codexSessionsRoot, notifierOrigin, attributeThread,
 } from './wmux-codex-thread.mjs';
 
 const HOOK_TIMEOUT_MS = 2000; // hard cap so we never stall a Codex turn
@@ -408,7 +407,7 @@ async function main() {
   const cwd = nonEmptyStr(payload.cwd) ?? process.cwd();
   const transcriptPathClaimed = nonEmptyStr(payload.transcript_path);
 
-  const origin = classifyNotifierOrigin(readAncestorChain());
+  const origin = notifierOrigin();
 
   // #1696/#1697: a sub-agent thread reports as agent.subagent_stop with no
   // agentSessionId (see "Sub-agent threads" above) — never agent.stop under
@@ -420,18 +419,11 @@ async function main() {
   } catch {
     // Fail open: an unreadable history is today's agent.stop.
   }
-  // A shared or uninspectable process cannot establish ownership from its
-  // inherited environment. Only the TUI's recorded thread binding can do so.
-  const owner = readThreadOwner(thread.rootId, process.env);
-  if (owner) {
-    applyThreadOwner(owner, process.env);
-  } else if (origin !== 'process' || !nonEmptyStr(process.env.WMUX_PTY_ID)) {
-    return; // Fail closed, including no cwd-based fallback or foreign spool.
-  }
+  if (!await attributeThread(origin, thread)) return;
   const envPtyId = nonEmptyStr(process.env.WMUX_PTY_ID);
   const envWorkspaceId = nonEmptyStr(process.env.WMUX_WORKSPACE_ID);
   const envSurfaceId = nonEmptyStr(process.env.WMUX_SURFACE_ID);
-  const wslAgentProcess = origin === 'process' && !owner ? wslAgentProcessFromEnv(process.env) : undefined;
+  const wslAgentProcess = origin !== 'shared-server' ? wslAgentProcessFromEnv(process.env) : undefined;
 
   // A sub-agent's own transcript_path (legacy payloads) names the sub-agent's
   // rollout and must never ride along under any other thread's signal.
