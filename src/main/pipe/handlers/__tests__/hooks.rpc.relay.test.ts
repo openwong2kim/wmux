@@ -30,6 +30,7 @@ vi.mock('../../../ipc/handlers/metadata.handler', () => ({
 
 import { registerHooksRpc, relayHookSignalToDaemon } from '../hooks.rpc';
 import { registerBrainPty } from '../../../deck/brainPtyHookBus';
+import { __resetMoaPaneFeedForTest, buildMoaPanePayload, setMoaPaneSource } from '../../../deck/moaPaneFeed';
 import { DaemonNotificationRouter } from '../../../notification/DaemonNotificationRouter';
 
 function fakeWindow(): BrowserWindow {
@@ -410,6 +411,27 @@ describe('hooks.signal — brain-pty lane', () => {
       expect(daemon.rpc).not.toHaveBeenCalled();
     } finally {
       off();
+    }
+  });
+
+  it('a human prompt both gets its context line and closes the Moa dialog flag (phone Moa pane)', async () => {
+    __resetMoaPaneFeedForTest();
+    setMoaPaneSource(() => ({ sessionId: 'pty-brain', workspaceId: 'ws-hq', brainCwd: '/repo' }));
+    const { router: hookRouter } = stubHookRouter();
+    const line = '[wmux context] viewing workspace "A" (ws-a)';
+    const off = registerBrainPty('pty-brain', (s) => (s.kind === 'agent.user_prompt_submit' ? { additionalContext: line } : undefined));
+    try {
+      // The brain's own permission dialog opens: the Moa pane carries the flag.
+      const asked = await dispatchSignal(null, hookRouter, { kind: 'agent.awaiting_input', ptyId: 'pty-brain', payload: { tool_name: 'Bash' } });
+      expect(asked.result).toEqual({ ok: true });
+      expect(buildMoaPanePayload()).toMatchObject({ dialog: expect.any(Object) });
+      // The human types a prompt: #1766's context line rides the response, and the flag clears.
+      const res = await dispatchSignal(null, hookRouter, { kind: 'agent.user_prompt_submit', ptyId: 'pty-brain' });
+      expect(res.result).toEqual({ ok: true, additionalContext: line });
+      expect(buildMoaPanePayload()).not.toHaveProperty('dialog');
+    } finally {
+      off();
+      __resetMoaPaneFeedForTest();
     }
   });
 
