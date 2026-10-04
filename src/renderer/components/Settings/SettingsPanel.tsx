@@ -92,6 +92,8 @@ import Badge from '../ui/Badge';
 import TokenUsageTab from './tabs/TokenUsageTab';
 import './settings.css';
 import { SettingsSection, SettingRow, SettingNote } from './SettingsLayout';
+import { MAX_WORKSPACE_IDLE_DAYS, MIN_WORKSPACE_IDLE_DAYS } from '../../../shared/workspaceSettle';
+import { sendWorkspaceSettleCommand } from '../../hooks/useWorkspaceSettleBridge';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -3806,6 +3808,7 @@ function TabAppearance() {
   const setSidebarSortMode = useStore((s) => s.setSidebarSortMode);
   const sidebarShowPaneCoordinates = useStore((s) => s.sidebarShowPaneCoordinates);
   const setSidebarShowPaneCoordinates = useStore((s) => s.setSidebarShowPaneCoordinates);
+  const workspaceSettleIdleDays = useStore((s) => s.workspaceSettle.idleDays);
   const setSidebarPosition = useStore((s) => s.setSidebarPosition);
   const multiviewArrangement = useStore((s) => s.multiviewArrangement);
   const setMultiviewArrangement = useStore((s) => s.setMultiviewArrangement);
@@ -3958,6 +3961,24 @@ function TabAppearance() {
             checked={sidebarShowPaneCoordinates}
             onChange={setSidebarShowPaneCoordinates}
             label={t('settings.sidebarShowPaneCoordinates')}
+          />
+        </SettingRow>
+        {/* Main owns the value (it runs the idle rule while the window is
+            closed). The field shows it at once and main's reply confirms it. */}
+        <SettingRow
+          id="workspacesettleidle"
+          label={t('settings.workspaceSettleIdleDays')}
+          description={t('settings.workspaceSettleIdleDaysDesc')}
+        >
+          <SettingNumberInput
+            value={workspaceSettleIdleDays}
+            min={MIN_WORKSPACE_IDLE_DAYS}
+            max={MAX_WORKSPACE_IDLE_DAYS}
+            label={t('settings.workspaceSettleIdleDays')}
+            onChange={(days) => {
+              useStore.getState().setWorkspaceSettleIdleDays(days);
+              void sendWorkspaceSettleCommand({ op: 'setIdleDays', days });
+            }}
           />
         </SettingRow>
       </SettingsSection>
