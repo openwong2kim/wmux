@@ -28,6 +28,7 @@ import type {
   IssueSummary,
 } from '../../shared/issueSurface';
 import { capBody } from './GhPrService';
+import { GhRateBreaker, ghRateBreaker, isRateLimitError } from './ghRateBreaker';
 
 const execFileAsync = promisify(execFile);
 
@@ -40,8 +41,6 @@ export const ISSUE_LIST_LIMIT = 100;
 const LOGIN_TTL_MS = 5 * 60_000;
 const MAX_ENTRIES = 128;
 const GH_MAX_BUFFER = 16 * 1024 * 1024;
-const BACKOFF_MIN_MS = 60_000;
-const BACKOFF_MAX_MS = 15 * 60_000;
 
 /** gh's env: the GUI exec env (process env with a fixed-up PATH) minus
  *  GH_REPO, which would point gh at another repo, plus the three
@@ -194,19 +193,7 @@ export function mapGhIssueDetail(j: GhIssueJson): IssueDetail | null {
   };
 }
 
-/** A gh failure that is GitHub's rate limit (primary or secondary). Read from
- *  gh's stderr lines only: the error message also holds the argv, where a
- *  label named "rate limit" would otherwise turn a plain 403 into a trip. A 403
- *  without a rate-limit body is a permission or SSO answer and is not one. */
-export function isRateLimitError(err: unknown): boolean {
-  const stderr = (err as { stderr?: unknown })?.stderr;
-  if (typeof stderr !== 'string') return false;
-  return stderr.split('\n').some((line) =>
-    /\bHTTP 429\b/.test(line) ||
-    /API rate limit exceeded/i.test(line) ||
-    /secondary rate limit/i.test(line) ||
-    (/\bHTTP 403\b/.test(line) && /rate limit/i.test(line)));
-}
+export { isRateLimitError };
 
 function errorText(err: unknown): string {
   const e = err as { stderr?: string; message?: string };
@@ -232,30 +219,26 @@ export class GhIssueService {
   private listCache = new Map<string, ListEntry>();
   private detailCache = new Map<string, { updatedAt: string; value: IssueDetail }>();
   private detailPending = new Map<string, Promise<IssueDetailResult>>();
-  /** Per host: the breaker's retry time and the backoff that set it. */
-  private breaker = new Map<string, { until: number; backoff: number }>();
   private logins = new Map<string, { login: string; at: number }>();
+  /** Per host rate-limit breaker; the process-wide one in production. */
+  private breaker: GhRateBreaker;
 
   constructor(
     private now: () => number = Date.now,
     private exec: Exec = execFileAsync,
-  ) {}
+    breaker?: GhRateBreaker,
+  ) {
+    this.breaker = breaker ?? new GhRateBreaker(now);
+  }
 
   /** When reads to this host resume, or null while they are allowed. */
   retryAt(host: string): number | null {
-    const b = this.breaker.get(host);
-    return b && this.now() < b.until ? b.until : null;
+    return this.breaker.retryAt(host);
   }
 
   private rateLimited(host: string): { ok: false; code: 'rate-limited'; message: string; retryAt: number } | null {
     const until = this.retryAt(host);
     return until === null ? null : { ok: false, code: 'rate-limited', message: 'GitHub rate limit', retryAt: until };
-  }
-
-  private trip(host: string): void {
-    const prev = this.breaker.get(host);
-    const backoff = prev ? Math.min(prev.backoff * 2, BACKOFF_MAX_MS) : BACKOFF_MIN_MS;
-    this.breaker.set(host, { until: this.now() + backoff, backoff });
   }
 
   private async gh(host: string, args: string[], cwd: string): Promise<string> {
@@ -267,11 +250,11 @@ export class GhIssueService {
         windowsHide: true,
         maxBuffer: GH_MAX_BUFFER,
       });
-      this.breaker.delete(host);
+      this.breaker.reset(host);
       return stdout;
     } catch (err) {
       if (isRateLimitError(err)) {
-        this.trip(host);
+        this.breaker.trip(host);
         throw new RateLimited(errorText(err));
       }
       throw err;
@@ -391,4 +374,4 @@ function evict(cache: Map<string, unknown>): void {
 }
 
 /** Process-wide, so every caller shares the TTL window and the breaker. */
-export const ghIssueService = new GhIssueService();
+export const ghIssueService = new GhIssueService(Date.now, execFileAsync, ghRateBreaker);
