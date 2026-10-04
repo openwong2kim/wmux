@@ -1452,7 +1452,7 @@ export const zh = {
   'settings.tokenDeck': '指挥台',
   'settings.tokenDeckDesc': '编排器大脑。其模型和 effort 在"编排器"标签页中设置。',
   'settings.tokenDeckModel': '编排器模型',
-  'settings.tokenOpenOrchestrator': '打开编排器',
+  'settings.tokenOpenOrchestrator': '打开 Moa 设置',
   // Settings — Token usage (quotas, custom surface switches, saved profiles)
   'settings.tokenUsage.surfaceDefault': '表面：默认',
   'settings.tokenUsage.surfaceOff': '表面：{n} 项已关闭',

@@ -892,7 +892,7 @@ export const ko = {
   'settings.tokenDeck': '커맨드 덱',
   'settings.tokenDeckDesc': '오케스트레이터 두뇌입니다. 모델과 effort는 오케스트레이터 탭에 있습니다.',
   'settings.tokenDeckModel': '오케스트레이터 모델',
-  'settings.tokenOpenOrchestrator': '오케스트레이터 열기',
+  'settings.tokenOpenOrchestrator': 'Moa 설정 열기',
   // Settings — MCP targets (feat: register opt-in targets)
   'settings.mcpRegister': '등록',
   'settings.mcpTargetRegistered': '{name} 등록됨',

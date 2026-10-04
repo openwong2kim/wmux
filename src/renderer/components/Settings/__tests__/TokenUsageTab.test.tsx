@@ -82,10 +82,10 @@ describe('TokenUsageView', () => {
     expect(htmlOnlyBuilder).not.toContain('data-testid="token-shared-pane"');
   });
 
-  it('shows the Deck brain model and effort with a link to Orchestrator', () => {
+  it('shows the Deck brain model and effort with a link to Moa settings', () => {
     const html = render(BOUND);
     expect(html).toContain('claude-sonnet-5-5 · medium');
-    expect(html).toContain('Open Orchestrator');
+    expect(html).toContain('Open Moa settings');
   });
 
   it('toggles Custom panel when clicking the badge or using keyboard', () => {

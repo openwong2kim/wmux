@@ -172,6 +172,15 @@ describe('the Moa rail entry', () => {
     openMoaHq.mockRestore();
   });
 
+  it('Workspaces leads back from the HQ to the first listed workspace', async () => {
+    useStore.setState({ workspaces: [ws('hq'), ws('a')], activeWorkspaceId: 'hq', activeRemoteKey: null, appRoute: 'workspaces', moa: moa(true) } as never);
+    await act(async () => root.render(<MiniSidebar rail collapsed={false} />));
+    expect(current()).toEqual(['moa']);
+    act(() => container.querySelector<HTMLButtonElement>('[data-sidebar-nav="home"]')!.click());
+    expect(useStore.getState().activeWorkspaceId).toBe('a');
+    expect(current()).toEqual(['home']);
+  });
+
   it('keeps arrow-key navigation reaching it', async () => {
     useStore.setState({ workspaces: [ws('a'), ws('hq')], activeWorkspaceId: 'a', activeRemoteKey: null, moa: moa(true) } as never);
     await act(async () => root.render(<MiniSidebar rail collapsed={false} />));

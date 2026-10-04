@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import WebToggle from '../StatusBar/WebToggle';
+import { isMoaHqWorkspace } from '../../stores/slices/moaSlice';
 import { useStore } from '../../stores';
 import { selectFleetSectionCounts } from '../../stores/selectors/fleet';
 import { selectScheduleNavSummary } from '../../stores/selectors/schedules';
@@ -80,7 +81,16 @@ export default function SidebarNavigation({ compact = false, home = false }: {
     ...(home ? [{
       id: 'home', label: t('sidebar.workspaces'), name: t('sidebar.workspaces'), active: route === 'workspaces' && !(home && moaShown && moaActive),
       icon: <IconGrid size={16} />,
-      onClick: () => useStore.getState().setAppRoute('workspaces'),
+      onClick: () => {
+        const st = useStore.getState();
+        // From Moa's workspace, Workspaces means "back to my workspaces": the
+        // HQ is not in the list, so show the first listed one.
+        if (moaActive) {
+          const back = st.workspaces.find((w) => !isMoaHqWorkspace(st, w.id));
+          if (back) st.setActiveWorkspace(back.id);
+        }
+        st.setAppRoute('workspaces');
+      },
     }] : [search]),
     {
       id: 'fleet', label: t('fleet.title'), name: fleetName, active: fleetOpen,

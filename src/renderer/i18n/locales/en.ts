@@ -1389,7 +1389,7 @@ export const en = {
   'settings.tokenDeck': 'Command Deck',
   'settings.tokenDeckDesc': 'The orchestrator brain. Its model and effort live on the Orchestrator tab.',
   'settings.tokenDeckModel': 'Orchestrator model',
-  'settings.tokenOpenOrchestrator': 'Open Orchestrator',
+  'settings.tokenOpenOrchestrator': 'Open Moa settings',
   // Settings — Token usage (quotas, custom surface switches, saved profiles)
   'settings.tokenUsage.surfaceDefault': 'Surface: default',
   'settings.tokenUsage.surfaceOff': 'Surface: {n} off',

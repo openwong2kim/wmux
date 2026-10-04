@@ -4,6 +4,7 @@ import { BROWSER_BACKENDS, isBrowserBackend } from '../../../shared/browserBacke
 import { isWslShellPath } from '../../../shared/wslDistro';
 import type { ImagePasteMode } from '../../../shared/imagePaste';
 import { useShallow } from 'zustand/react/shallow';
+import { isMoaHqWorkspace } from '../../stores/slices/moaSlice';
 import { useStore } from '../../stores';
 import { selectWorkspaceMuteRows } from '../../stores/selectors/workspaceProjections';
 import { LOCALE_OPTIONS, type Locale } from '../../i18n';
@@ -571,7 +572,9 @@ function ResetSection() {
   const { invoke: ipcInvoke } = useIpc();
 
   const handleReset = useCallback(async () => {
-    const workspaces = useStore.getState().workspaces;
+    // Moa's HQ workspace is app-owned and survives a reset (the store refuses
+    // to remove it), so its sessions are left alone too.
+    const workspaces = useStore.getState().workspaces.filter((w) => !isMoaHqWorkspace(useStore.getState(), w.id));
     // Dispose all PTYs across all workspaces
     for (const ws of workspaces) {
       disposeWorkspacePtys(ws);

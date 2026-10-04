@@ -1370,7 +1370,7 @@ export const pl = {
   'settings.tokenDeck': 'Command Deck',
   'settings.tokenDeckDesc': 'Mózg orkiestratora. Jego model i effort ustawia się na karcie Orkiestrator.',
   'settings.tokenDeckModel': 'Model orkiestratora',
-  'settings.tokenOpenOrchestrator': 'Otwórz Orkiestrator',
+  'settings.tokenOpenOrchestrator': 'Otwórz ustawienia Moa',
   // Settings — Token usage (quotas, custom surface switches, saved profiles)
   'settings.tokenUsage.surfaceDefault': 'Powierzchnia: domyślna',
   'settings.tokenUsage.surfaceOff': 'Powierzchnia: wyłączono {n}',
