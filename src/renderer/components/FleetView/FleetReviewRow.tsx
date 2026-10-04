@@ -21,7 +21,7 @@ import { disposeWorkspacePtys } from '../../utils/paneTeardown';
 import { displayWorkspaceName, fleetRequesterText } from '../../utils/fanoutProvenance';
 import { useShallow } from 'zustand/react/shallow';
 import { formatIdle, IDLE_SHOW_AFTER_MS } from '../../utils/idleTime';
-import { refuseIfMoaHq } from '../Moa/moaHqGuard';
+import { refuseWorkspaceClose } from '../Moa/moaHqGuard';
 
 export type ReviewEditorKind = 'close' | 'pr';
 type Translate = ReturnType<typeof useT>;
@@ -105,8 +105,9 @@ export function reviewPrUrl(entry: ReviewQueueEntry): string | undefined {
  * unpushed worktree with the reason), then dispose and remove the workspace.
  */
 export async function closeReviewTask(workspaceId: string, t: Translate): Promise<boolean> {
-  // Moa's HQ is never closed: refused before the task close or any dispose.
-  if (refuseIfMoaHq(workspaceId)) return false;
+  // Moa's HQ and the last workspace are never closed: refused before the task
+  // close or any dispose.
+  if (refuseWorkspaceClose(workspaceId)) return false;
   const st = useStore.getState();
   const name = displayWorkspaceName(st.workspaces.find((w) => w.id === workspaceId)?.name ?? workspaceId, true);
   const owner = st.missionByPaneGroup[workspaceId]?.owner?.verifiedWorkspaceId ?? '';
@@ -123,6 +124,9 @@ export async function closeReviewTask(workspaceId: string, t: Translate): Promis
       TASK_CLOSE_TIMEOUT_MS,
     );
     if (res.ok) {
+      // Re-asked after the await: the workspace list may have changed while
+      // the task close ran, and a refused removal must not follow a dispose.
+      if (refuseWorkspaceClose(workspaceId)) return false;
       const now = useStore.getState();
       const ws = now.workspaces.find((w) => w.id === workspaceId);
       if (ws) disposeWorkspacePtys(ws);

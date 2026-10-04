@@ -53,9 +53,14 @@ describe('useRpcBridge — workspace.close receipt honesty (#799)', () => {
     // The guard that used to only skip the PTY dispose now also refuses the
     // call. Asserting the length check and the error return separately would
     // still pass if a rewrite left the old silent-success fall-through.
+    // The guard is the shared pre-close check (moaHqGuard), which also leaves
+    // Moa's HQ out of the count.
     expect(block).toMatch(
-      /if \(store\.workspaces\.length <= 1\)\s*\{[\s\S]*?return \{[\s\S]*?error:/,
+      /if \(refusal === 'last-workspace'\)\s*\{[\s\S]*?return \{[\s\S]*?error:/,
     );
+    // …and it is asked before any dispose.
+    expect(block.indexOf('workspaceCloseRefusal(store, id)')).toBeGreaterThan(-1);
+    expect(block.indexOf('workspaceCloseRefusal(store, id)')).toBeLessThan(block.indexOf('pty.dispose'));
   });
 
   it('verifies the removal actually landed before returning ok', () => {

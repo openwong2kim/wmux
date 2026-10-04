@@ -26,6 +26,17 @@ export interface MoaState {
   archive: { unacked: number; total: number };
 }
 
+/** `deck.moa.setup(workspaceId)`'s answer. On failure, `committed: true` says
+ *  main already made that workspace the HQ and only a later step (mode, caps,
+ *  settings, switch) failed: calling setup again with the same id is safe and
+ *  finishes the rest. */
+export interface MoaSetupResult {
+  ok: boolean;
+  code?: string;
+  archived?: number;
+  committed?: boolean;
+}
+
 export interface MoaArchivedDecision {
   workspaceId: string;
   decision: {

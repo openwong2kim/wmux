@@ -5,6 +5,7 @@ import { isWslShellPath } from '../../../shared/wslDistro';
 import type { ImagePasteMode } from '../../../shared/imagePaste';
 import { useShallow } from 'zustand/react/shallow';
 import { isMoaHqWorkspace } from '../../stores/slices/moaSlice';
+import { workspaceCloseRefusal } from '../Moa/moaHqGuard';
 import { useStore } from '../../stores';
 import { selectWorkspaceMuteRows } from '../../stores/selectors/workspaceProjections';
 import { LOCALE_OPTIONS, type Locale } from '../../i18n';
@@ -575,18 +576,15 @@ function ResetSection() {
     // Moa's HQ workspace is app-owned and survives a reset (the store refuses
     // to remove it), so its sessions are left alone too.
     const workspaces = useStore.getState().workspaces.filter((w) => !isMoaHqWorkspace(useStore.getState(), w.id));
-    // Dispose all PTYs across all workspaces
-    for (const ws of workspaces) {
-      disposeWorkspacePtys(ws);
-    }
-
-    // Remove all workspaces except the last one (store requires at least 1)
-    const ids = workspaces.map((w) => w.id);
-    // Add a fresh workspace first
+    // Add a fresh workspace first, so every old one passes the shared close
+    // check (the operator always keeps one workspace of their own).
     addWorkspace('Workspace 1');
-    // Then remove all old ones
-    for (const id of ids) {
-      removeWorkspace(id);
+    // Then dispose and remove each old one, asking the close check before any
+    // dispose so a refused removal never leaves a dead, empty workspace.
+    for (const ws of workspaces) {
+      if (workspaceCloseRefusal(useStore.getState(), ws.id)) continue;
+      disposeWorkspacePtys(ws);
+      removeWorkspace(ws.id);
     }
 
     // Save the clean session — surface IPC errors via toast (daemon may be down).

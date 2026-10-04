@@ -16,7 +16,7 @@ import { FOCUS_RING } from '../focusRing';
 import SidebarNavigation from './SidebarNavigation';
 import { workspaceColorHex } from '../../../shared/workspaceColors';
 import PresetPicker from './PresetPicker';
-import { listedWorkspaces } from '../Moa/moaHqGuard';
+import { listedWorkspaces, moaHqId as selectMoaHqId } from '../Moa/moaHqGuard';
 
 /** PresetPicker width (w-52), used to keep the flyout on-screen. */
 const PICKER_MENU_WIDTH = 208;
@@ -40,7 +40,7 @@ export default function MiniSidebar({ rail = false, collapsed = true }: { rail?:
   // Moa's HQ is not one of the operator's workspaces: the rail lists (and
   // numbers) the same rows as the full sidebar. It is reached from its own
   // rail entry instead.
-  const moaHqId = useStore((s) => s.moa?.hq.workspaceId ?? null);
+  const moaHqId = useStore(selectMoaHqId);
   const workspaces = useMemo(() => listedWorkspaces(allWorkspaces, moaHqId), [allWorkspaces, moaHqId]);
   // Dot source (agent-status-dot fix): whole-workspace roll-up, same derivation
   // as WorkspaceItem — not the active-pane-only `ws.agentStatus` projection.

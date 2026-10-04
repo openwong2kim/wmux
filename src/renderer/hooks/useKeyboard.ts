@@ -19,7 +19,7 @@ import { mentionKeyClaim } from '../utils/agentMention';
 import { OPEN_MENTION_PICKER_EVENT } from '../utils/agentMentionInsert';
 import { isChatV2Covering } from '../components/ChatV2/coverage';
 import { showWorkspaces } from '../utils/showWorkspaces';
-import { listedWorkspaces, moaHqId, refuseIfMoaHq } from '../components/Moa/moaHqGuard';
+import { listedWorkspaces, moaHqId, refuseWorkspaceClose } from '../components/Moa/moaHqGuard';
 
 // Lightweight bookmark toast — reuses the same DOM element pattern as showCopyToast
 let bookmarkToastTimer: ReturnType<typeof setTimeout> | null = null;
@@ -297,8 +297,8 @@ export function createPrefixActions(deps: PrefixActionDeps): Record<string, () =
       const state = store.getState();
       const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
       if (!ws) return;
-      // Moa's HQ: refused before any session is touched.
-      if (refuseIfMoaHq(ws.id, state)) return;
+      // Moa's HQ and the last workspace: refused before any session is touched.
+      if (refuseWorkspaceClose(ws.id, state)) return;
       // Workspace-wide (#977) — see Sidebar.disposeAllPtys: a stashed pane's
       // session dies with its workspace or it becomes an orphan.
       for (const ptyId of getWorkspacePtyIds(ws)) electronAPI.pty.dispose(ptyId);
@@ -479,8 +479,8 @@ export function useKeyboard() {
       closeWorkspace: () => {
         const state = store.getState();
         const ws = activeWorkspace();
-        // Moa's HQ: refused before any session is touched.
-        if (ws && refuseIfMoaHq(ws.id, state)) return;
+        // Moa's HQ and the last workspace: refused before any session is touched.
+        if (ws && refuseWorkspaceClose(ws.id, state)) return;
         if (ws) {
           // 워크스페이스가 소유한 모든 PTY 정리 — 보관된 페인 포함(#977).
           // Same reasoning as Sidebar's close button and the prefix

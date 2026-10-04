@@ -37,7 +37,7 @@ import {
 
 import PresetPicker from './PresetPicker';
 import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
-import { listedWorkspaces, refuseIfMoaHq } from '../Moa/moaHqGuard';
+import { listedWorkspaces, moaHqId as selectMoaHqId, refuseWorkspaceClose } from '../Moa/moaHqGuard';
 
 /** Namespaces a remote row's id in the shared glance order. */
 const REMOTE_ROW_PREFIX = 'remote:';
@@ -76,7 +76,7 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
   // Moa's HQ is app-owned and never part of the list (nor its count, filter,
   // or Ctrl+N numbering). While it is the active workspace it shows as its
   // own row above the list, so the operator sees where they are.
-  const moaHqId = useStore((s) => s.moa?.hq.workspaceId ?? null);
+  const moaHqId = useStore(selectMoaHqId);
   const listed = useMemo(() => listedWorkspaces(workspaces, moaHqId), [workspaces, moaHqId]);
   const [wsSearch, setWsSearch] = useState('');
   const wsSearchRef = useRef<HTMLInputElement>(null);
@@ -298,8 +298,9 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
   }, [t, pushToast]);
 
   const handleClose = useCallback((wsId: string) => {
-    // Refused before any session is torn down: the store would keep the HQ.
-    if (refuseIfMoaHq(wsId)) return;
+    // Refused before any session is torn down: the store keeps the HQ and the
+    // operator's last workspace, and would refuse only after the dispose.
+    if (refuseWorkspaceClose(wsId)) return;
     // 삭제 전 해당 워크스페이스의 모든 PTY 정리
     const ws = useStore.getState().workspaces.find((w) => w.id === wsId);
     if (ws) disposeAllPtys(ws);
@@ -311,13 +312,11 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
   // sidebar is the point), but the configuration snapshot survives and lists
   // in the Archived section for one-click restore.
   const handleArchive = useCallback((wsId: string) => {
-    if (refuseIfMoaHq(wsId)) return;
-    const { workspaces: all, moa } = useStore.getState();
-    const ws = all.find((w) => w.id === wsId);
-    // archiveWorkspace refuses the last workspace; disposing first would kill
-    // its sessions and then leave the workspace in place, emptied. The HQ is
-    // not one of the operator's, so it does not count.
-    if (!ws || listedWorkspaces(all, moa?.hq.workspaceId ?? null).length <= 1) return;
+    // archiveWorkspace refuses the HQ and the last workspace; disposing first
+    // would kill its sessions and then leave the workspace in place, emptied.
+    if (refuseWorkspaceClose(wsId)) return;
+    const ws = useStore.getState().workspaces.find((w) => w.id === wsId);
+    if (!ws) return;
     disposeAllPtys(ws);
     archiveWorkspace(wsId);
   }, [archiveWorkspace]);

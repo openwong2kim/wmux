@@ -206,3 +206,71 @@ describe('close paths refuse the HQ before any session dies', () => {
     expect(toastMessages()).toEqual([REASON]);
   });
 });
+
+describe('[HQ, A]: A is the last listed workspace, so every close path refuses it before any dispose', () => {
+  const LAST = 'This is your only workspace, so it stays open. Create another workspace first.';
+  function seedTwo() {
+    seed('a');
+    act(() => useStore.setState({ workspaces: ['moa', 'a'].map(ws) } as never));
+  }
+  const rowOf = (name: string) => [...document.querySelectorAll('.sidebar-row')]
+    .find((r) => r.textContent?.startsWith(name)) as HTMLElement;
+
+  it('the sidebar Close button', () => {
+    seedTwo();
+    act(() => root.render(<Sidebar />));
+    act(() => (rowOf('a').querySelector('[data-workspace-action="close"]') as HTMLButtonElement).click());
+    const buttons = document.querySelectorAll('[data-workspace-close-confirm] button');
+    act(() => (buttons[buttons.length - 1] as HTMLButtonElement).click());
+    expect(dispose).not.toHaveBeenCalled();
+    expect(useStore.getState().workspaces.map((w) => w.id)).toEqual(['moa', 'a']);
+    expect(toastMessages()).toEqual([LAST]);
+  });
+
+  it('the sidebar Archive action', () => {
+    seedTwo();
+    act(() => root.render(<Sidebar />));
+    act(() => { rowOf('a').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 })); });
+    act(() => (document.querySelector('[data-workspace-action="archive"]') as HTMLButtonElement).click());
+    expect(dispose).not.toHaveBeenCalled();
+    expect(useStore.getState().archivedWorkspaces).toEqual([]);
+    expect(useStore.getState().workspaces.map((w) => w.id)).toEqual(['moa', 'a']);
+  });
+
+  it('Ctrl+Shift+W', () => {
+    seedTwo();
+    function Harness(): null { useKeyboard(); return null; }
+    act(() => root.render(<Harness />));
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ctrlKey: true, shiftKey: true, key: 'W', code: 'KeyW' }));
+    });
+    expect(dispose).not.toHaveBeenCalled();
+    expect(useStore.getState().workspaces.map((w) => w.id)).toEqual(['moa', 'a']);
+    expect(toastMessages()).toEqual([LAST]);
+  });
+
+  it("Fleet's task close", async () => {
+    seedTwo();
+    const ok = await closeReviewTask('a', (k) => k);
+    expect(ok).toBe(false);
+    expect(taskClose).not.toHaveBeenCalled();
+    expect(dispose).not.toHaveBeenCalled();
+  });
+});
+
+describe('before main answers, the remembered HQ id stands in', () => {
+  it('the list, its count and Ctrl+N leave the remembered HQ out', () => {
+    seed();
+    act(() => useStore.setState({ moa: null, moaHqSeed: 'moa' } as never));
+    act(() => root.render(<Sidebar />));
+    expect(rows()).toEqual(['a', 'b']);
+    expect(container.querySelector('[data-sidebar-total]')?.textContent).toBe('2');
+  });
+
+  it("main's answer wins over a stale remembered id", () => {
+    seed();
+    act(() => useStore.setState({ moa: moaState(null, 'unset'), moaHqSeed: 'moa' } as never));
+    act(() => root.render(<Sidebar />));
+    expect(rows()).toEqual(['a', 'moa', 'b']);
+  });
+});
