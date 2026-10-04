@@ -3228,10 +3228,15 @@ its `approval` events are on `GET /api/events`, and a client that declared
 `terminal-prompt-answer` / `terminal-prompt-decline` answers or declines it
 through `POST /api/approvals/:id` / `…/decline` with the usual fences
 (fingerprint, `425 answer-too-soon`, one answer, `409 already-answered`). It
-is answerable only when the daemon can bind it to Moa's own tool call; when
-it cannot (Moa's transcript not known yet, or a tool input too large to
-carry), the card carries no `choices` and the dialog is answered on the
-desktop or declined. The desktop's Moa chat answers the same record, so an
+is answerable only when the daemon can bind it to Moa's own tool call AND
+parse the dialog on screen. Today the parser binds the `<Tool> command`
+dialog shape (Bash) only, and Moa's brain cannot run Bash, so **Moa's
+prompts (WebFetch, WebSearch, reads outside its home, …) arrive as
+informational cards**: no `choices`, no `promptFingerprint`, and a press is
+refused with `answer-in-terminal`. Show them with the existing informational
+copy, e.g. "Answer on the desktop". The same holds when Moa's transcript is
+not known yet or a tool input is too large to carry. Binding more dialog
+shapes is a separate change to the shared parser. The desktop's Moa chat answers the same record, so an
 answer from either side settles it for both. While it is up:
 
 - `/turns` reports `chat.blocked` exactly as for any pane's terminal prompt:
