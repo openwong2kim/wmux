@@ -44,6 +44,8 @@ const CHROME_FILES = [
   'Pane/SurfaceTabs.tsx',
   'Deck/DeckTabs.tsx',
   'Deck/DeckToggle.tsx',
+  'Moa/MoaTitlebarButton.tsx',
+  'Moa/MoaBubble.tsx',
   'StatusBar/PhoneConnectWizard.tsx',
 ];
 

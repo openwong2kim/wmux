@@ -13,6 +13,7 @@ import { selectFleetPanes, sortFleetPanes, countNeedsAttention, type FleetPane }
 import PluginStatusBarWidgets from '../../plugins/PluginStatusBarWidgets';
 import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
 import DeckToggle from '../Deck/DeckToggle';
+import MoaTitlebarButton from '../Moa/MoaTitlebarButton';
 import CommandPill from '../Titlebar/CommandPill';
 import SettingsButton from '../Titlebar/SettingsButton';
 import { FOCUS_RING } from '../focusRing';
@@ -320,10 +321,11 @@ export default function StatusBar() {
         <NotificationBellBadgeView unreadCount={unreadCount} onActivate={toggleNotificationPanel} />
         {/* A5: 메모리 + 시각(시계 커서 의존) — 분리된 소형 컴포넌트. */}
         <StatusClockTime />
-        {/* The titlebar's right end: the tools-panel toggle, then Settings —
-            two icon buttons of one size, 4px apart, left of the Windows
-            window controls (the titlebar reserves their strip). */}
+        {/* The titlebar's right end: Moa (while it is on), the tools-panel
+            toggle, then Settings — icon buttons of one size, 4px apart, left
+            of the Windows window controls (the titlebar reserves their strip). */}
         <span className="flex items-center gap-1">
+          <MoaTitlebarButton />
           <DeckToggle />
           <SettingsButton />
         </span>

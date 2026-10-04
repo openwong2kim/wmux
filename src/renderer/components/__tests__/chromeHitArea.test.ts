@@ -53,6 +53,7 @@ const REQUIRED: { file: string; markers: string[] }[] = [
   },
   { file: 'Sidebar/WorkspaceAgentRoster.tsx', markers: ['data-workspace-agent-roster'] },
   { file: 'Deck/DeckToggle.tsx', markers: ['data-deck-toggle'] },
+  { file: 'Moa/MoaTitlebarButton.tsx', markers: ['data-moa-titlebar'] },
 ];
 
 /**
