@@ -27,6 +27,8 @@ export interface WorkspaceSettleSnapshot {
   states: WorkspaceSettleMap;
   /** Days without an agent turn or input before a workspace settles. */
   idleDays: number;
+  /** The HQ workspace, which never settles or snoozes; null when none. */
+  hqWorkspaceId: string | null;
 }
 
 export type WorkspaceSettleChangeKind = 'settled' | 'unsettled' | 'snoozed' | 'unsnoozed';
@@ -79,8 +81,9 @@ export type WorkspaceSettleCommand =
 
 export type WorkspaceSettleCommandResult =
   | { ok: true; snapshot: WorkspaceSettleSnapshot }
-  /** `refused`: the rules forbid it (e.g. settling a running, pinned or HQ workspace). */
-  | { ok: false; error: 'invalid' | 'refused' | 'unknown-change' };
+  /** `refused`: the rules forbid it (a running, waiting or pinned workspace);
+   *  `hq`: the HQ workspace always stays in view. */
+  | { ok: false; error: 'invalid' | 'refused' | 'hq' | 'unknown-change' };
 
 export const DEFAULT_WORKSPACE_IDLE_DAYS = 3;
 export const MIN_WORKSPACE_IDLE_DAYS = 1;

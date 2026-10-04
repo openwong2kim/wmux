@@ -32,7 +32,7 @@ function seed(states: WorkspaceSettleMap, pinned: string[] = []) {
     missionByPaneGroup: {},
     fanoutLineage: {},
     fanoutSpawnOwner: {},
-    workspaceSettle: { states, idleDays: 3 },
+    workspaceSettle: { states, idleDays: 3, hqWorkspaceId: null },
     workspaceSettleGroupsOpen: {},
   } as never));
 }

@@ -28,13 +28,14 @@ export const createWorkspaceSettleSlice: StateCreator<
   [],
   WorkspaceSettleSlice
 > = (set) => ({
-  workspaceSettle: { states: {}, idleDays: DEFAULT_WORKSPACE_IDLE_DAYS },
+  workspaceSettle: { states: {}, idleDays: DEFAULT_WORKSPACE_IDLE_DAYS, hqWorkspaceId: null },
   workspaceSettleGroupsOpen: {},
 
   setWorkspaceSettleSnapshot: (snapshot) => set((draft: StoreState) => {
     draft.workspaceSettle = {
       states: snapshot && typeof snapshot.states === 'object' && snapshot.states ? snapshot.states : {},
       idleDays: typeof snapshot?.idleDays === 'number' ? snapshot.idleDays : draft.workspaceSettle.idleDays,
+      hqWorkspaceId: typeof snapshot?.hqWorkspaceId === 'string' ? snapshot.hqWorkspaceId : null,
     };
   }),
 

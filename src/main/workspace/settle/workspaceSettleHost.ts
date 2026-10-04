@@ -61,16 +61,16 @@ function createSaver(filePath: string): { save: (data: PersistedWorkspaceSettle)
   };
 }
 
-function createHqResolver(): (workspaceId: string) => boolean {
+function createHqResolver(): () => string | null {
   let readAt = -Infinity;
   let hq: string | null = null;
-  return (workspaceId) => {
+  return () => {
     const now = Date.now();
     if (now - readAt > HQ_CACHE_MS) {
       readAt = now;
       try { hq = getHqWorkspaceId(); } catch { hq = null; }
     }
-    return workspaceId === hq;
+    return hq;
   };
 }
 
@@ -101,7 +101,7 @@ export function registerWorkspaceSettle(getWindow: () => BrowserWindow | null): 
     const filePath = getWorkspaceSettlePath();
     const s = createSaver(filePath);
     saver = s;
-    service = new WorkspaceSettleService({ load: () => loadPersisted(filePath), save: s.save, isHq: createHqResolver() });
+    service = new WorkspaceSettleService({ load: () => loadPersisted(filePath), save: s.save, hqId: createHqResolver() });
   }
   const svc = service;
   const flushSave = saver.flush;

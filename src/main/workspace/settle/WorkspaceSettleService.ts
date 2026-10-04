@@ -59,7 +59,8 @@ export interface WorkspaceSettleServicePorts {
   /** The persisted file's raw content, or null when there is none. */
   load?: () => unknown;
   save?: (data: PersistedWorkspaceSettle) => void;
-  isHq?: (workspaceId: string) => boolean;
+  /** The HQ workspace id (exempt from settle and snooze), or null. */
+  hqId?: () => string | null;
 }
 
 interface UndoRecord {
@@ -101,8 +102,8 @@ export function parsePersistedWorkspaceSettle(raw: unknown): { idleDays: number;
 export class WorkspaceSettleService {
   private readonly now: () => number;
   private readonly save: (data: PersistedWorkspaceSettle) => void;
-  /** The HQ workspace is exempt from settling. */
-  private readonly isHq: (workspaceId: string) => boolean;
+  /** The HQ workspace is exempt from settling and snoozing. */
+  private readonly hqId: () => string | null;
   private idleDays: number;
   private readonly rows: Map<string, WorkspaceSettleRow>;
   private mirror: WorkspaceMirrorPushPayload | null = null;
@@ -117,7 +118,7 @@ export class WorkspaceSettleService {
   constructor(ports: WorkspaceSettleServicePorts = {}) {
     this.now = ports.now ?? Date.now;
     this.save = ports.save ?? (() => undefined);
-    this.isHq = ports.isHq ?? (() => false);
+    this.hqId = ports.hqId ?? (() => null);
     const parsed = parsePersistedWorkspaceSettle(ports.load?.() ?? null);
     this.idleDays = parsed.idleDays;
     this.rows = parsed.rows;
@@ -134,7 +135,7 @@ export class WorkspaceSettleService {
       if (row.settled) states[id] = { settled: { ...row.settled } };
       else if (row.snoozedUntil !== undefined) states[id] = { snoozedUntil: row.snoozedUntil };
     }
-    return { states, idleDays: this.idleDays };
+    return { states, idleDays: this.idleDays, hqWorkspaceId: this.hqId() };
   }
 
   /** Workspaces main knows to exist right now (the last mirror push). */
@@ -309,7 +310,7 @@ export class WorkspaceSettleService {
       running: panes.some((p) => p.agentStatus === 'running'),
       awaiting: panes.some((p) => p.agentStatus === 'awaiting_input'),
       pinned: this.mirror?.pinnedIds?.includes(id) ?? false,
-      hq: this.isHq(id),
+      hq: id === this.hqId(),
     };
   }
 

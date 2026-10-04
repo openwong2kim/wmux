@@ -33,14 +33,14 @@ function mirror(specs: WsSpec[], opts: { pinned?: string[]; restored?: boolean }
   };
 }
 
-function setup(opts: { load?: unknown; isHq?: (id: string) => boolean } = {}) {
+function setup(opts: { load?: unknown; hqId?: () => string | null } = {}) {
   let now = T0;
   let saved: PersistedWorkspaceSettle | null = null;
   const svc = new WorkspaceSettleService({
     now: () => now,
     load: () => opts.load ?? null,
     save: (d) => { saved = d; },
-    isHq: opts.isHq,
+    hqId: opts.hqId,
   });
   const changes: WorkspaceSettleChange[] = [];
   svc.onChange((p) => changes.push(...p.changes));
@@ -96,7 +96,7 @@ describe('WorkspaceSettleService — settle rules', () => {
   });
 
   it('exempts pinned, HQ, running and awaiting workspaces', () => {
-    const t = setup({ isHq: (id) => id === 'hq' });
+    const t = setup({ hqId: () => 'hq' });
     t.svc.noteMirror(mirror(
       [{ id: 'pinned' }, { id: 'hq' }, { id: 'run', status: 'running' }, { id: 'ask', status: 'awaiting_input' }, { id: 'idle' }],
       { pinned: ['pinned'] },

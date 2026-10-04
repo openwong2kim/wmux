@@ -4,7 +4,7 @@ import { WORKSPACE_SETTLE_UNDO_MS } from '../../../shared/workspaceSettle';
 import { useStore } from '../../stores';
 import { applyWorkspaceSettleChanges, IDLE_DAYS_SEND_DELAY_MS, sendWorkspaceSettleIdleDays } from '../useWorkspaceSettleBridge';
 
-const snapshot: WorkspaceSettleSnapshot = { states: {}, idleDays: 3 };
+const snapshot: WorkspaceSettleSnapshot = { states: {}, idleDays: 3, hqWorkspaceId: null };
 const command = vi.fn(async () => ({ ok: true as const, snapshot }));
 vi.stubGlobal('window', { electronAPI: { workspaceSettle: { command } } });
 
@@ -23,7 +23,7 @@ beforeEach(() => {
 
 describe('applyWorkspaceSettleChanges', () => {
   it('stores the snapshot and raises an Undo toast that sends the undo verb', async () => {
-    const next: WorkspaceSettleSnapshot = { states: { 'ws-1': { settled: { at: 1, reason: 'manual' } } }, idleDays: 5 };
+    const next: WorkspaceSettleSnapshot = { states: { 'ws-1': { settled: { at: 1, reason: 'manual' } } }, idleDays: 5, hqWorkspaceId: null };
     applyWorkspaceSettleChanges({ snapshot: next, changes: [change('settled', { id: 'chg-9' })] });
 
     expect(useStore.getState().workspaceSettle).toEqual(next);
@@ -39,7 +39,7 @@ describe('applyWorkspaceSettleChanges', () => {
   it('names the end time of a snooze and says when a workspace is back', () => {
     const until = new Date(2026, 9, 4, 20, 0).getTime();
     applyWorkspaceSettleChanges({
-      snapshot: { states: { 'ws-1': { snoozedUntil: until } }, idleDays: 3 },
+      snapshot: { states: { 'ws-1': { snoozedUntil: until } }, idleDays: 3, hqWorkspaceId: null },
       changes: [change('snoozed'), change('unsnoozed')],
     });
     const messages = useStore.getState().toasts.map((t) => t.message);

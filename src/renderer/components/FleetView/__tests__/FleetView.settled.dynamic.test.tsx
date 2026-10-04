@@ -55,7 +55,7 @@ describe('Fleet settled chip', () => {
           'ws-2': { snoozedUntil: Date.now() + 60_000 },
           'ws-3': { settled: { at: 1, reason: 'pr' } },
         },
-        idleDays: 3,
+        idleDays: 3, hqWorkspaceId: null,
       },
     }));
     await mount();
@@ -74,7 +74,7 @@ describe('Fleet settled chip', () => {
       surfaceAgent: { 'pty-0': { name: 'Claude Code', status: 'idle' as const }, 'pty-1': { name: 'Claude Code', status: 'idle' as const } },
       fleetIdleExpanded: true,
       // Settled, but with nothing on the board: no chip (no dead gauges).
-      workspaceSettle: { states: { 'ws-gone': { settled: { at: 1, reason: 'idle' } } }, idleDays: 3 },
+      workspaceSettle: { states: { 'ws-gone': { settled: { at: 1, reason: 'idle' } } }, idleDays: 3, hqWorkspaceId: null },
     }));
     await mount();
     expect(chip()).toBeNull();
