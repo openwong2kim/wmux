@@ -250,7 +250,7 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
       hqDesc = t('moa.settings.hqCheckingDesc');
   }
 
-  // ── Moa settings (the hourly turn cap) ──
+  // ── Moa settings (the hourly turn cap, bubbles, reduce motion) ──
   const [saveFailed, setSaveFailed] = useState(false);
   const patchConfig = async (patch: MoaConfigPatch) => {
     setSaveFailed(false);
@@ -623,6 +623,22 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
             {t('moa.settings.turnCapInvalid', MOA_MAX_TURNS_PER_HOUR_RANGE)}
           </SettingNote>
         )}
+        <SettingRow id="moabubbles" label={t('moa.settings.bubbles')} description={t('moa.settings.bubblesDesc')}>
+          <Switch
+            checked={moa?.config.bubbles ?? true}
+            onCheckedChange={(v) => void patchConfig({ bubbles: v })}
+            aria-label={t('moa.settings.bubbles')}
+            disabled={!loaded}
+          />
+        </SettingRow>
+        <SettingRow id="moareducemotion" label={t('moa.settings.reduceMotion')} description={t('moa.settings.reduceMotionDesc')}>
+          <Switch
+            checked={moa?.config.reduceMotion ?? false}
+            onCheckedChange={(v) => void patchConfig({ reduceMotion: v })}
+            aria-label={t('moa.settings.reduceMotion')}
+            disabled={!loaded}
+          />
+        </SettingRow>
         {saveFailed && (
           <SettingNote tone="danger" role="alert" data-testid="moa-save-error">
             {t('moa.settings.saveFailed')}

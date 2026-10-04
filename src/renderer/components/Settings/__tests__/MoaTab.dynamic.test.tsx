@@ -286,10 +286,29 @@ describe('Settings › Moa › limits and switches', () => {
     expect(api.moa.setConfig).toHaveBeenCalledWith({ maxTurnsPerHour: 30 });
   });
 
-  it('has no bubble or reduce-motion rows yet (nothing consumes them)', async () => {
+  it('bubble notifications: mirrors the setting and writes it', async () => {
     await render(moaState());
-    expect(q('[data-setting-id="moabubbles"]')).toBeNull();
-    expect(q('[data-setting-id="moareducemotion"]')).toBeNull();
+    const sw = rowSwitch('moabubbles')!;
+    expect(sw.getAttribute('aria-checked')).toBe('false');
+    await click(sw);
+    expect(api.moa.setConfig).toHaveBeenCalledWith({ bubbles: true });
+  });
+
+  it('reduce motion: mirrors the setting and writes it', async () => {
+    await render(moaState());
+    const sw = rowSwitch('moareducemotion')!;
+    expect(sw.getAttribute('aria-checked')).toBe('false');
+    await click(sw);
+    expect(api.moa.setConfig).toHaveBeenCalledWith({ reduceMotion: true });
+  });
+
+  it('keeps both switches inert until Moa answers', async () => {
+    // Main has not answered: the bridge's read never yields a Moa state.
+    api.moa.state.mockImplementation(async () => null as never);
+    act(() => useStore.setState({ moa: null }));
+    await act(async () => root.render(createElement(TabMoa)));
+    expect(rowSwitch('moabubbles')!.disabled).toBe(true);
+    expect(rowSwitch('moareducemotion')!.disabled).toBe(true);
   });
 });
 

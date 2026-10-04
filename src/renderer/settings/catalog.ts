@@ -154,6 +154,8 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'moaissuepoll', tab: 'moa', labelKey: 'moa.settings.issuePoll', descKey: 'moa.settings.issuePollDesc', synonyms: 'poll interval minutes scan check github issue' },
   { id: 'moatrustedauthors', tab: 'moa', labelKey: 'moa.settings.trustedAuthors', descKey: 'moa.settings.trustedAuthorsDesc', synonyms: 'trusted author login github auto label wmux:auto' },
   { id: 'moaignoredrepos', tab: 'moa', labelKey: 'moa.settings.ignoredRepos', descKey: 'moa.settings.ignoredReposDesc', synonyms: 'ignore mute repo repository proposals' },
+  { id: 'moabubbles', tab: 'moa', labelKey: 'moa.settings.bubbles', descKey: 'moa.settings.bubblesDesc', synonyms: 'bubble notification popup titlebar dot moa 말풍선 알림' },
+  { id: 'moareducemotion', tab: 'moa', labelKey: 'moa.settings.reduceMotion', descKey: 'moa.settings.reduceMotionDesc', synonyms: 'reduce motion animation mascot still accessibility 애니메이션 동작 줄이기' },
   { id: 'fullpower', tab: 'moa', labelKey: 'settings.orchestratorFullPower', synonyms: 'full power sdk settings sources tools' },
   { id: 'autowake', tab: 'moa', labelKey: 'settings.autoWake', descKey: 'settings.autoWakeDesc', synonyms: 'autowake wake event push tokens' },
   { id: 'ledgergate', tab: 'moa', labelKey: 'settings.ledgerGate', descKey: 'settings.ledgerGateDesc', synonyms: 'ledger gate stop task orchestrator delegated experimental' },
