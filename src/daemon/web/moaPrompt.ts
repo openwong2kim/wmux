@@ -94,6 +94,8 @@ export type MoaAnswerResult =
 export class MoaPromptSync {
   /** The pane and dialog the last push was acted on for. */
   private acted: { sessionId: string; fingerprint?: string } | null = null;
+  /** The dialog the last card was noted for. */
+  private noted: { sessionId: string; fingerprint: string } | null = null;
   /** Screen-check loops running, keyed by record and the dialog they began under. */
   private readonly checking = new Set<string>();
 
@@ -141,15 +143,20 @@ export class MoaPromptSync {
       ...(dialog.promptId ? { promptId: dialog.promptId } : {}),
       source: 'hook',
     };
-    // A → B: A's card goes first. The registry creates nothing while a record
-    // is pending on the pane, and the expiry is only queued until the chain
-    // runs it, so B is noted once it is through.
-    const ready = before !== undefined ? this.expire(registry, target.sessionId, 'prompt-gone') : Promise.resolve();
+    // A card still standing for another dialog — A → B, or A kept by the
+    // screen check when main's flag cleared early and then answered in the
+    // terminal with no push since — goes first: the registry creates nothing
+    // while a record is pending on the pane. The expiry is only queued until
+    // the chain runs it, so B is noted once it is through.
+    const standing = pendingPrompt(registry, target.sessionId);
+    if (standing && this.noted?.sessionId === target.sessionId && this.noted.fingerprint === dialog.fingerprint) return;
+    const ready = before !== undefined || standing ? this.expire(registry, target.sessionId, 'prompt-gone') : Promise.resolve();
     void ready.then(async () => {
       // Moa off, another pane or another dialog since this push: not this
       // card's to raise any more.
       const fact = this.deps.current();
       if (!fact || fact.sessionId !== target.sessionId || fact.dialog?.fingerprint !== target.fingerprint || !this.deps.resolves(fact)) return;
+      this.noted = { sessionId: target.sessionId, fingerprint: dialog.fingerprint };
       await registry.noteTerminalPrompt(note);
     });
   }

@@ -207,6 +207,37 @@ describe('MoaPromptSync — the record follows main\'s dialog', () => {
     expect(pending(h)).toHaveLength(0);
   });
 
+  it('a card the screen kept, then answered in the terminal with no push, gives way to the next dialog', async () => {
+    const h = harness();
+    h.push(withDialog('aa11'));
+    await flush();
+    const [a] = pending(h);
+    // A subagent's PostToolUse clears main's flag while A is still on screen.
+    h.push(noDialog());
+    await flush();
+    expect(pending(h).map((r) => r.id)).toEqual([a!.id]);
+    // A is answered in the terminal (no push: the flag is already clear); B opens.
+    h.rows = DIALOG.map((r) => r.replace(/build\/cache/g, 'dist'));
+    h.push(withDialog('bb22', { toolInput: { command: 'rm -rf dist', description: 'Remove the build cache' }, toolUseId: 'toolu_2' }));
+    await flush();
+    const records = pending(h);
+    expect(records).toHaveLength(1);
+    expect(records[0]!.id).not.toBe(a!.id);
+    expect(h.sync.view()).toMatchObject({ id: records[0]!.id, answerable: true });
+  });
+
+  it('the same dialog pushed again after its flag flickered keeps its one card', async () => {
+    const h = harness();
+    h.push(withDialog('aa11'));
+    await flush();
+    const [a] = pending(h);
+    h.push(noDialog());
+    await flush();
+    h.push(withDialog('aa11'));
+    await flush();
+    expect(pending(h).map((r) => r.id)).toEqual([a!.id]);
+  });
+
   it('an unreadable screen is not proof the dialog is gone', async () => {
     const h = harness();
     h.push(withDialog());
