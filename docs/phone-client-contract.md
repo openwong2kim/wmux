@@ -3851,6 +3851,8 @@ bridge. A missing key reads as `false`; none of them moves `protocolVersion`.
 | `chatLaunch` | `POST …/chat/launch` exists and this caller may use it (same condition) |
 | `chatLaunchModes` | Present only when `chatLaunch` is true. `{claude:[…], codex:[…]}`: `default` only, plus `bypass` (Claude) / `yolo` (Codex) when the server was started with `wmux web --allow-dangerous-launch` |
 | `chatSkills` | `/commands` accepts `?agent=` and answers the native catalogue |
+| `chatLaunchBare` | `POST …/chat/launch` accepts an omitted or empty `prompt` (starts the agent with no first message). Daemon capability; `chatLaunch` still says whether this caller may launch |
+| `chatLaunchResume` | `POST …/chat/launch` accepts `resume: true` (continue the newest conversation in the pane's cwd). Daemon capability, same as above |
 | `chatVersion` | Version of this chat contract (`1`). Bumped only on a breaking change |
 
 Gate the composer on `chatSend`, not on `allowInput`: a read-only device reads
@@ -4096,15 +4098,37 @@ time prefix.
   "prompt": "explain the test layout\ndo not edit files" }
 ```
 
-Starts `claude` or `codex` in the pane's own empty shell with the first message,
-through the same daemon function the desktop uses. Same grants and
+Starts `claude` or `codex` in the pane's own empty shell, with the first message
+when one is given, through the same daemon function the desktop uses. Same grants and
 post-body re-authentication as send, 16 KiB body cap. `agent ∈ {claude, codex}`;
-`prompt` non-blank, at most 2,000 UTF-16 units, newlines allowed, no other
-control characters; `clientLaunchId` has the send id format (malformed →
+`prompt` optional: omitted or `""` types only the launcher (no first message;
+needs `chatLaunchBare`), otherwise non-blank, at most 2,000 UTF-16 units,
+newlines allowed, no other control characters (whitespace-only is
+`400 invalid-chat-request`); `resume` optional boolean (needs
+`chatLaunchResume`, see below); `clientLaunchId` has the send id format (malformed →
 `400 invalid-chat-request`) and a **10-minute** age limit, 60 s clock skew
 allowed (`launch-id-expired`). Model, effort, arguments, command, cwd and
 environment are refused; model and effort for new panes stay on
 `POST /api/sessions {agentLaunch}`.
+
+**Resume.** `resume: true` continues the newest conversation recorded for that
+agent in the pane's cwd: Claude is typed as `claude --continue`, Codex as
+`codex resume --last` (Codex gets `--cd` with that same cwd). The command line
+is built from fixed tokens only, never from request text. It combines with
+`mode` (the dangerous-mode rules below are unchanged: `bypass`/`yolo` still need
+the ceiling and the exact `confirm`). With a non-empty `prompt` the agent resumes
+first and the prompt is its first message, passed the same gated way as on a
+fresh launch (`-- '<prompt>'` after the resume flags); an agent that cannot take
+one refuses with `409 resume-prompt-unsupported` (none today). Before anything is
+typed the daemon checks that there is something to continue — Claude: a
+non-empty transcript in Claude's project directory for that cwd (under
+`CLAUDE_CONFIG_DIR` when set); Codex: an interactive rollout whose recorded cwd
+is that cwd — and otherwise answers `409 resume-unavailable` (`effect:"none"`),
+never launching an agent that would fail. Eligibility is unchanged: a pane that
+already resolves to a conversation (including one whose agent has exited but
+whose binding remains) is still `conversation-exists`, so resume is for a pane
+with no binding, typically a fresh pane opened in the project's directory.
+Receipts and the binding wait below are the same as for any launch.
 
 The daemon re-authorizes once more as the last await before the launcher is
 typed; a withdrawn grant or a closed connection types nothing
@@ -4136,6 +4160,8 @@ changes; never persist it.
 | launch receipt store full | 429 | `{error:"launch-busy"}` | `none` — retry later |
 | another launch running on this pane | 409 | `{error:"launch-pending"}` | `none` |
 | pane already has a conversation | 409 | `{error:"conversation-exists"}` | `none` |
+| `resume` with nothing to continue in the pane's cwd | 409 | `{error:"resume-unavailable"}` | `none` |
+| `resume` + `prompt` for an agent that cannot take both | 409 | `{error:"resume-prompt-unsupported"}` | `none` |
 | shell not ready | 409 | `{error:"launch-not-ready", reason:"shell-not-empty"\|"shell-busy"\|"approval-pending"\|"not-integrated"}` | `none` |
 | shell cannot launch | 409 | `{error:"launch-unsupported", reason:"unsupported-shell"\|"shell-has-children"}` | `none` |
 | same id, different request | 409 | `{error:"launch-id-conflict"}` | `none` |
@@ -4152,7 +4178,8 @@ Every body also carries `clientLaunchId` when the request had one.
 `unsupported-shell` means a WSL pane, a Windows host, or a shell other than
 zsh, bash or sh. A shell process that is gone at the idle check reads as
 `launch-not-ready` with `shell-busy` (the pane is being torn down). The launch
-fingerprint is `(pane, incarnation, agent, mode, prompt)`: unlike send, a retry
+fingerprint is `(pane, incarnation, agent, mode, prompt, resume)`, an omitted
+and an empty `prompt` being the same: unlike send, a retry
 after a pane restart is `launch-id-conflict`.
 
 `202` means the launcher line was typed, not that the agent started: login and
@@ -4638,7 +4665,8 @@ Terminal).
 The flow has two steps: create the pane with `accountId` and `handoffFrom`
 and no `agentLaunch`, wait for `/turns` `launch.ready`, then
 `POST …/chat/launch` with the prompt. `agentLaunch` would start the agent
-without a prompt and make the pane ineligible for `chat/launch`, and launch
+without a prompt and make the pane ineligible for `chat/launch` (a bare
+`chat/launch` with no `prompt` has the same effect), and launch
 cannot pick a model or effort.
 
 ### 5. Git v1 (priority-3 track): projects, branches, worktree creation, CI checks

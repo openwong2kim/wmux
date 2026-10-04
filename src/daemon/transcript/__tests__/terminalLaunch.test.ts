@@ -24,4 +24,12 @@ describe('native launch instruction', () => {
     for (const prompt of ['', '  ', 'x\ry', '\x1b[31m', 'x'.repeat(2001)]) expect(() => terminalLaunchCommand('claude', prompt)).toThrow();
     expect(() => terminalLaunchCommand('sh', 'hello')).toThrow();
   });
+  it('launches bare without a prompt and resumes with fixed tokens only', () => {
+    expect(terminalLaunchCommand('claude', undefined)).toBe('claude');
+    expect(terminalLaunchCommand('codex', undefined, 'yolo')).toBe('codex --dangerously-bypass-approvals-and-sandbox');
+    expect(terminalLaunchCommand('claude', undefined, 'default', true)).toBe('claude --continue');
+    expect(terminalLaunchCommand('codex', undefined, 'default', true)).toBe('codex resume --last');
+    expect(terminalLaunchCommand('claude', 'next', 'bypass', true)).toBe("claude --continue --dangerously-skip-permissions -- 'next'");
+    expect(terminalLaunchCommand('codex', 'next', 'yolo', true)).toBe("codex resume --last --dangerously-bypass-approvals-and-sandbox -- 'next'");
+  });
 });

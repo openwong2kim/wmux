@@ -211,8 +211,11 @@ export interface ChatDeliveredMessage {
 export interface ChatLaunchRequest {
   id: string;
   agent: TerminalLaunchAgent;
-  prompt: string;
+  /** The first message; absent launches the agent alone. */
+  prompt?: string;
   mode?: TerminalLaunchMode;
+  /** Continue the newest conversation in the pane's cwd (Claude `--continue`, Codex `resume --last`). */
+  resume?: boolean;
   /** Phone: refuse a pane that already has a readable conversation (desktop eligibility rule). */
   refuseConversation?: boolean;
   /** Called (`first-write`) immediately before the launcher is typed. `false` types nothing. */
@@ -222,7 +225,8 @@ export interface ChatLaunchRequest {
 export type ChatLaunchTag =
   | 'launch-pending' | 'conversation-exists' | 'launch-not-ready' | 'launch-unsupported'
   | 'agent-not-installed' | 'agent-runtime-unavailable' | 'launch-unconfirmed'
-  | 'authorization-expired' | 'invalid-chat-request';
+  | 'authorization-expired' | 'invalid-chat-request'
+  | 'resume-unavailable' | 'resume-prompt-unsupported';
 
 export type ChatLaunchOutcome =
   | { ok: true; effect: 'submitted' }

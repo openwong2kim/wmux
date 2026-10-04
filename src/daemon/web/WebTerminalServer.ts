@@ -4709,6 +4709,9 @@ export class WebTerminalServer {
           }
         : {}),
       chatSkills: true,
+      // Launch body capabilities: `prompt` may be omitted, and `resume: true` is accepted.
+      chatLaunchBare: true,
+      chatLaunchResume: true,
       chatVersion: 1,
     };
   }
@@ -5083,7 +5086,7 @@ export class WebTerminalServer {
             ...(parsed.clientLaunchId !== undefined ? { clientLaunchId: parsed.clientLaunchId } : {}),
           });
         }
-        const { agent, mode, prompt, clientLaunchId } = parsed.value;
+        const { agent, mode, prompt, resume, clientLaunchId } = parsed.value;
         const age = checkChatId(clientLaunchId, this.now(), CHAT_LAUNCH_RETENTION_MS);
         if (age === 'invalid') {
           return this.json(res, 400, {
@@ -5127,7 +5130,7 @@ export class WebTerminalServer {
           return this.json(res, 428, { error: 'dangerous-mode-unconfirmed', effect: 'none', clientLaunchId });
         }
 
-        const fingerprint = JSON.stringify([id, incarnation ?? null, agent, mode, prompt]);
+        const fingerprint = JSON.stringify([id, incarnation ?? null, agent, mode, prompt ?? null, resume]);
         const begun = this.chatLaunchReceipts.begin(owner, clientLaunchId, id, fingerprint, this.now());
         if (begun.kind === 'conflict') return this.json(res, 409, { error: 'launch-id-conflict', effect: 'none', clientLaunchId });
         if (begun.kind === 'pending') return this.json(res, 202, { state: 'pending', replayed: true, clientLaunchId });
@@ -5148,7 +5151,7 @@ export class WebTerminalServer {
         let wire: WireResponse;
         let effect: 'none' | 'uncertain' | 'submitted';
         try {
-          const outcome = await chat.launch({ id, agent, prompt, mode, refuseConversation: true, authorized });
+          const outcome = await chat.launch({ id, agent, ...(prompt !== undefined ? { prompt } : {}), resume, mode, refuseConversation: true, authorized });
           wire = claimedByChatV2 && !outcome.ok ? chatV2LaunchResponse(clientLaunchId) : launchResponse(outcome, clientLaunchId);
           effect = outcome.ok ? 'submitted' : outcome.effect;
           if (outcome.ok) trace('submitted');

@@ -7,7 +7,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { ResumeBinding } from '../../../shared/agentResume';
 import {
-  CodexCwdBinder, describeCodexPane, findCodexRolloutByCwd, LAUNCH_WINDOW_MS, MAX_HEAD_READS, parseEtime,
+  CodexCwdBinder, describeCodexPane, findCodexRolloutByCwd, hasCodexRolloutForCwd, LAUNCH_WINDOW_MS, MAX_HEAD_READS, parseEtime,
   type CodexCwdQuery, type CodexPaneFacts,
 } from '../codexRolloutByCwd';
 
@@ -171,5 +171,24 @@ describe('CodexCwdBinder', () => {
     expect(logs).toHaveLength(1);
     expect(logs[0]).toContain('shares its cwd');
     binder.dispose();
+  });
+});
+
+describe('hasCodexRolloutForCwd', () => {
+  it('finds an interactive rollout in the cwd however old, and nothing else', () => {
+    expect(hasCodexRolloutForCwd(cwd, env)).toBe(false);
+    rollout(A, { originator: 'codex_exec', source: 'exec' });
+    rollout(B, { thread_source: 'subagent' });
+    rollout(C, { cwd: path.join(cwd, 'elsewhere') });
+    expect(hasCodexRolloutForCwd(cwd, env)).toBe(false);
+    rollout(uuid(9), {}, LAUNCH - 90 * 86_400_000);
+    expect(hasCodexRolloutForCwd(cwd, env)).toBe(true);
+  });
+
+  it('answers false when the read budget runs out before a hit', () => {
+    rollout(A, {}, LAUNCH - 86_400_000);
+    for (let i = 1; i <= 3; i++) rollout(uuid(i), { originator: 'codex_exec' }, LAUNCH + i * 1_000);
+    expect(hasCodexRolloutForCwd(cwd, env, 3)).toBe(false);
+    expect(hasCodexRolloutForCwd(cwd, env, 4)).toBe(true);
   });
 });

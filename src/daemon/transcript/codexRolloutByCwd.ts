@@ -124,6 +124,38 @@ export function findCodexRolloutByCwd(query: CodexCwdQuery): CodexCwdMatch {
   return { ok: true, threadId, transcriptPath: hit.file, cwd: hit.cwd };
 }
 
+/** session_meta reads for a resume check; more than this without a hit reads as "none". */
+export const MAX_RESUME_HEAD_READS = 256;
+
+/**
+ * Whether `codex resume --last` run in `cwd` has a conversation to continue:
+ * any interactive top-level rollout recorded there, with no time window. The
+ * walk goes newest first and stops at the first hit; a budget that runs out
+ * answers false, so a launch is refused rather than left to fail in the TUI.
+ */
+export function hasCodexRolloutForCwd(cwd: string, env?: Record<string, string>, budget = MAX_RESUME_HEAD_READS): boolean {
+  const want = canonicalDir(cwd);
+  const newestFirst = (dir: string, pattern: RegExp): string[] => {
+    try { return fs.readdirSync(dir).filter((name) => pattern.test(name)).sort().reverse(); } catch { return []; }
+  };
+  const root = codexSessionRoot(env);
+  let reads = 0;
+  for (const year of newestFirst(root, /^\d{4}$/)) {
+    for (const month of newestFirst(path.join(root, year), /^\d{2}$/)) {
+      for (const day of newestFirst(path.join(root, year, month), /^\d{2}$/)) {
+        const dir = path.join(root, year, month, day);
+        for (const name of newestFirst(dir, ROLLOUT_NAME)) {
+          if (++reads > budget) return false;
+          const meta = readSessionMeta(path.join(dir, name));
+          if (!meta || meta.originator !== 'codex-tui' || typeof meta.source !== 'string' || meta.thread_source === 'subagent') continue;
+          if (typeof meta.cwd === 'string' && canonicalDir(meta.cwd) === want) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 /** What the pane decision needs to know about one live pane. */
 export interface CodexPaneFacts {
   id: string;

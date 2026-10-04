@@ -512,6 +512,53 @@ describe('launch', () => {
     expect(started[0]).toMatchObject({ KEEP_ME: 'yes' });
   });
 
+  it('launches bare with no prompt, and resumes in the pane cwd for both agents', async () => {
+    const f = fixture();
+    const checked: Array<[string, string]> = [];
+    f.deps.resumeAvailable = (agent, cwd) => { checked.push([agent, cwd]); return true; };
+    const bridge = () => createChatBridge(f.deps);
+    const fresh = () => { f.shell.empty = true; };
+    expect(await bridge().launch({ id: 'pane', agent: 'claude' })).toEqual({ ok: true, effect: 'submitted' });
+    fresh();
+    expect(await bridge().launch({ id: 'pane', agent: 'codex' })).toMatchObject({ ok: true });
+    fresh();
+    expect(await bridge().launch({ id: 'pane', agent: 'claude', resume: true, mode: 'bypass' })).toMatchObject({ ok: true });
+    fresh();
+    expect(await bridge().launch({ id: 'pane', agent: 'codex', resume: true })).toMatchObject({ ok: true });
+    fresh();
+    expect(await bridge().launch({ id: 'pane', agent: 'claude', resume: true, prompt: "it's next" })).toMatchObject({ ok: true });
+    fresh();
+    expect(await bridge().launch({ id: 'pane', agent: 'codex', resume: true, prompt: 'go', mode: 'yolo' })).toMatchObject({ ok: true });
+    expect(f.typed).toEqual([
+      'claude\r',
+      'codex --remote unix:///tmp/relay.sock --cd "$PWD"\r',
+      'claude --continue --dangerously-skip-permissions\r',
+      "codex resume --remote unix:///tmp/relay.sock --cd '/live' --last\r",
+      "claude --continue -- 'it'\\''s next'\r",
+      "codex resume --remote unix:///tmp/relay.sock --cd '/live' --last --dangerously-bypass-approvals-and-sandbox -- 'go'\r",
+    ]);
+    expect(checked).toEqual([['claude', '/live'], ['codex', '/live'], ['claude', '/live'], ['codex', '/live']]);
+    // A blank prompt is still malformed: only an absent one is a bare launch.
+    fresh();
+    expect(await bridge().launch({ id: 'pane', agent: 'claude', prompt: '  ' })).toMatchObject({ error: 'invalid-chat-request', effect: 'none' });
+  });
+
+  it('refuses a resume with nothing to continue before any relay is touched or anything typed', async () => {
+    const f = fixture();
+    f.deps.resumeAvailable = () => false;
+    const prepare = vi.fn(f.deps.relays.prepare);
+    const retire = vi.fn(f.deps.relays.retire);
+    f.deps.relays.prepare = prepare; f.deps.relays.retire = retire;
+    const bridge = createChatBridge(f.deps);
+    for (const agent of ['claude', 'codex'] as const) {
+      expect(await bridge.launch({ id: 'pane', agent, resume: true })).toEqual({ ok: false, error: 'resume-unavailable', effect: 'none' });
+      expect(await bridge.launch({ id: 'pane', agent, resume: true, prompt: 'go' })).toMatchObject({ error: 'resume-unavailable', effect: 'none' });
+    }
+    expect(prepare).not.toHaveBeenCalled();
+    expect(retire).not.toHaveBeenCalled();
+    expect(f.typed).toEqual([]);
+  });
+
   it('types nothing when the grant is gone, and is uncertain when typing throws', async () => {
     const f = fixture();
     expect(await f.bridge.launch({ id: 'pane', agent: 'claude', prompt: 'go', authorized: async () => false }))

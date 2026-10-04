@@ -14,6 +14,7 @@ import { screenBlocksChatSend, screenShowsRunningTurn, screenShowsTurnEnding, ti
 import { claudeComposerRows, claudeComposerShows, deliverChatPrompt, type ChatScreenRows } from '../transcript/deliverChatPrompt';
 import { INTERRUPT_COOLDOWN_MS, interruptChatTurn, type ChatInterruptVerdict } from '../transcript/interruptChatTurn';
 import { codexRuntimeEnv, terminalLaunchCommand } from '../transcript/terminalLaunch';
+import { resumeAvailable } from '../transcript/resumeAvailable';
 import type { TerminalChatFailure, TerminalChatService } from '../transcript/TerminalChatService';
 import type { ChatSessionService } from './ChatSessionService';
 import { ChatSendReceiptStore, type StoredChatOutcome } from './ChatSendReceiptStore';
@@ -40,6 +41,13 @@ export const WEB_BRIDGE_CLIENT = 'web:bridge';
 export const QUEUE_WATCH_CLIENT = 'web:queue';
 
 /** The parts of a daemon pane the bridge reads. `ManagedSession` satisfies it. */
+/**
+ * Whether the agent takes a first message on its resume command line
+ * (`claude --continue -- 'p'`, `codex resume --last -- 'p'`). One that cannot
+ * refuses resume + prompt with `resume-prompt-unsupported`.
+ */
+const RESUME_TAKES_PROMPT: Readonly<Record<TerminalLaunchAgent, boolean>> = { claude: true, codex: true };
+
 export interface ChatPane {
   meta: {
     id: string; state: string; pid: number; cwd: string; env: Record<string, string>;
@@ -111,6 +119,8 @@ export interface NativeChatBridgeDeps<P extends ChatPane> {
   queueTickMs?: number;
   idleShell(pid: number, env: NodeJS.ProcessEnv): Promise<{ ok: true } | { ok: false; reason: 'missing' | 'unsupported-shell' | 'shell-has-children' }>;
   installedAgents(env: NodeJS.ProcessEnv): Promise<AgentLaunchOptions[]>;
+  /** Whether a resume launch has a conversation to continue in `cwd` (default: the agent's own records). */
+  resumeAvailable?(agent: TerminalLaunchAgent, cwd: string, env: NodeJS.ProcessEnv): boolean;
   relays: {
     retire(id: string): Promise<void>;
     prepare(id: string, pane: P): Promise<LaunchRelay>;
@@ -1505,7 +1515,9 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     const { id, agent } = req;
     if (agent !== 'claude' && agent !== 'codex') return fail('invalid-chat-request');
     let command: string;
-    try { command = terminalLaunchCommand(agent, req.prompt, req.mode); } catch { return fail('invalid-chat-request'); }
+    const resume = req.resume === true;
+    if (resume && req.prompt !== undefined && !RESUME_TAKES_PROMPT[agent]) return fail('resume-prompt-unsupported');
+    try { command = terminalLaunchCommand(agent, req.prompt, req.mode, resume); } catch { return fail('invalid-chat-request'); }
     if (launching.has(id)) return fail('launch-pending');
     launching.add(id);
     let relay: LaunchRelay | undefined;
@@ -1529,6 +1541,10 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       const firstIdle = await idle();
       if (firstIdle) return firstIdle;
       try { buildAgentLaunch({ agent }, await deps.installedAgents(env)); } catch { return fail('agent-not-installed'); }
+      // Checked against the agent's own records before anything is typed (or a
+      // Codex relay is touched), so a resume never starts an agent that fails.
+      const cwd = pane.meta.cwd || pane.meta.spawnCwd;
+      if (resume && (!cwd || !(deps.resumeAvailable ?? resumeAvailable)(agent, cwd, env))) return fail('resume-unavailable');
       if (agent === 'codex') {
         // Hook session_id can name an invocation rather than the conversation.
         // Observe the existing native TUI transport for authoritative thread IDs.
@@ -1544,7 +1560,8 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
         if (!RELAY_URL.test(relay.url)) return fail('launch-unconfirmed');
         // Typed into an idle zsh/bash/sh prompt (idleShell refuses anything else), so the
         // shell's own "$PWD" is the directory Codex should start in; a tracked cwd can only lag it.
-        command = withCodexRemote(command, relay.url, codexCdOperand());
+        // A resume names the directory its availability was checked in, so `--last` filters on that one.
+        command = withCodexRemote(command, relay.url, codexCdOperand(resume ? cwd : undefined));
       }
       // A pane created with a chosen account launches that vendor's agent on it,
       // whatever the shell's rc files exported (see withChosenAccountEnv).
