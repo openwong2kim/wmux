@@ -16,6 +16,13 @@ export interface ShipInput {
   detached: boolean;
   /** The branch is the repo's default branch (a PR from it makes no sense). */
   onDefaultBranch: boolean;
+  /** The repo's default branch could be read (else a PR's base is unknown). */
+  defaultBranchKnown: boolean;
+  /** Unmerged (conflicted) files. */
+  conflicts: number;
+  /** A merge or cherry-pick is in progress in this worktree (MERGE_HEAD /
+   *  CHERRY_PICK_HEAD), conflicted or not. */
+  inProgress: boolean;
   /** The branch's PR, if any. */
   pr: { state: 'open' | 'draft' | 'merged' | 'closed'; url: string } | null;
   /** A merge session (isolated integration worktree) is running. */
@@ -23,7 +30,17 @@ export interface ShipInput {
 }
 
 /** Why a step cannot run now; the UI words each one. */
-export type ShipBlock = 'merge-active' | 'detached' | 'no-upstream' | 'behind' | 'unpushed' | 'default-branch' | 'nothing-to-ship';
+export type ShipBlock =
+  | 'merge-active'
+  | 'conflicts'
+  | 'in-progress'
+  | 'detached'
+  | 'no-upstream'
+  | 'behind'
+  | 'unpushed'
+  | 'default-branch'
+  | 'unknown-default'
+  | 'nothing-to-ship';
 
 export interface ShipStep {
   action: ShipAction;
@@ -44,6 +61,10 @@ const prIsOpen = (pr: ShipInput['pr']) => pr?.state === 'open' || pr?.state === 
 export function shipBlock(action: ShipAction, s: ShipInput): ShipBlock | null {
   if (s.mergeActive) return 'merge-active';
   if (action === 'openPr') return s.pr ? null : 'nothing-to-ship';
+  // A conflicted or half-done merge / cherry-pick: committing would stage
+  // conflict markers and finish it; resolve it in the terminal first.
+  if (s.conflicts > 0) return 'conflicts';
+  if (s.inProgress) return 'in-progress';
   if (s.detached) return 'detached';
   switch (action) {
     case 'commit':
@@ -54,8 +75,10 @@ export function shipBlock(action: ShipAction, s: ShipInput): ShipBlock | null {
       return s.ahead > 0 ? null : 'nothing-to-ship';
     case 'createPr':
       if (prIsOpen(s.pr)) return 'nothing-to-ship';
+      if (!s.defaultBranchKnown) return 'unknown-default';
       if (s.onDefaultBranch) return 'default-branch';
       if (!s.hasUpstream) return 'no-upstream';
+      if (s.behind > 0) return 'behind';
       // gh would ask where to push the new commits, and it cannot ask here.
       if (s.ahead > 0) return 'unpushed';
       return null;

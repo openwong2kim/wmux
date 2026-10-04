@@ -65,6 +65,14 @@ beforeEach(() => {
     github: {
       prList,
       prDetail: vi.fn(async () => ({ ok: true, detail: { number: 7, comments: [] } })),
+      shipStatus: vi.fn(async () => ({
+        ok: true,
+        status: {
+          branch: 'main', head: 'e'.repeat(40), detached: false, upstream: 'origin/main', ahead: 0, behind: 0, dirty: 2,
+          conflicts: 0, inProgress: false, defaultBranch: 'main', headSubject: 's', pr: null,
+        },
+      })),
+      shipCommit: vi.fn(), shipPush: vi.fn(), shipCreatePr: vi.fn(),
       repoKey: vi.fn(async (p: string) => ({ key: remoteOf[p] ?? null })),
     },
   };
@@ -262,5 +270,38 @@ describe('Git page', () => {
     } finally {
       delete (document as unknown as { hidden?: boolean }).hidden;
     }
+  });
+
+  it('This repo shows a selection only while it belongs to the current repo', async () => {
+    act(() => useStore.setState({ gitPage: { ...initialGitPageState(), selected: { kind: 'pr', repoPath: '/code/beta', number: 7 } } }));
+    act(() => root.render(createElement(GitPage)));
+    await settle();
+    expect(container.querySelector('[data-git-detail-empty]')).not.toBeNull();
+    expect(container.querySelector('[data-git-detail-head]')).toBeNull();
+  });
+
+  it('a new selection starts at the top of the detail', async () => {
+    prList.mockImplementation(async (p: string) => ({ ok: true, prs: p === '/code/alpha' ? [PR, { ...PR, number: 8, title: 'second' }] : [] }));
+    act(() => root.render(createElement(GitPage)));
+    await settle();
+    act(() => (container.querySelector('[data-pr-row="7"] button') as HTMLButtonElement).click());
+    await settle();
+    const pane = container.querySelector('[data-git-detailpane]') as HTMLElement;
+    pane.scrollTop = 400;
+    act(() => (container.querySelector('[data-pr-row="8"] button') as HTMLButtonElement).click());
+    await settle();
+    expect(pane.scrollTop).toBe(0);
+  });
+
+  it('a merge session started from the Worktrees tab holds the branch bar\'s ship button', async () => {
+    act(() => root.render(createElement(GitPage)));
+    await settle();
+    const ship = () => container.querySelector('[data-git-ship-primary]') as HTMLButtonElement;
+    expect(ship().textContent).toBe('Commit');
+    expect(ship().disabled).toBe(false);
+    act(() => useStore.getState().setGitMerge('/code/alpha', true));
+    await settle();
+    expect(ship().disabled).toBe(true);
+    expect(container.querySelector('[data-git-ship-reason]')?.textContent).toBe('A merge session is running');
   });
 });

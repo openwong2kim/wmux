@@ -2,8 +2,9 @@
 // branch's next step (Commit → Push → Create PR → Open PR, from the gitShip
 // state machine), a menu with the other steps that can run now, and the
 // reason when the next step cannot. Commit asks for a message; Create PR asks
-// for a title (gh fills the body from the commits). main re-checks every step
-// before it runs it.
+// for a title (gh fills the body from the commits). Each write carries the
+// branch and HEAD the user saw (when the dialog opened or the step started);
+// main re-checks the step and refuses if either moved.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useT } from '../../hooks/useT';
 import { useStore } from '../../stores';
@@ -12,14 +13,17 @@ import Dialog, { DialogBody, DialogFooter, DialogHeader } from '../ui/Dialog';
 import Popover from '../ui/Popover';
 import { Icon } from '../icons';
 import { shipState, type ShipAction, type ShipInput } from '../../../shared/gitShip';
-import type { ShipActionResult, ShipStatusResult } from '../../../main/git/shipActions';
+import type { ShipActionResult, ShipExpect, ShipStatusResult } from '../../../main/git/shipActions';
 
 interface ShipBridge {
   shipStatus: (repoPath: string) => Promise<ShipStatusResult>;
-  shipCommit: (repoPath: string, message: string) => Promise<ShipActionResult>;
-  shipPush: (repoPath: string) => Promise<ShipActionResult>;
-  shipCreatePr: (repoPath: string, title: string) => Promise<ShipActionResult>;
+  shipCommit: (repoPath: string, message: string, expect: ShipExpect) => Promise<ShipActionResult>;
+  shipPush: (repoPath: string, expect: ShipExpect) => Promise<ShipActionResult>;
+  shipCreatePr: (repoPath: string, title: string, expect: ShipExpect) => Promise<ShipActionResult>;
 }
+
+/** Enter that is not finishing an IME composition (Korean, Japanese, Chinese input). */
+const isPlainEnter = (e: React.KeyboardEvent) => e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229;
 
 function getShipBridge(): ShipBridge | null {
   const gh = (window as unknown as { electronAPI?: { github?: Partial<ShipBridge> } }).electronAPI?.github;
@@ -46,6 +50,13 @@ export function ShipButton({ repoPath, mergeActive, refreshKey = 0, changeKey = 
   const t = useT();
   const pushToast = useStore((s) => s.pushToast);
   const [status, setStatus] = useState<Extract<ShipStatusResult, { ok: true }>['status'] | null>(null);
+  // The last status read failed (the button stays, disabled, with this reason).
+  const [statusError, setStatusError] = useState<string | null>(null);
+  // The branch + HEAD the open dialog acts on, captured when it opened.
+  const [pinned, setPinned] = useState<ShipExpect | null>(null);
+  // The repo answers belong to: a late answer for another repo is dropped.
+  const repoRef = useRef(repoPath);
+  repoRef.current = repoPath;
   const [busy, setBusy] = useState<ShipAction | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [dialog, setDialog] = useState<'commit' | 'createPr' | null>(null);
@@ -58,13 +69,23 @@ export function ShipButton({ repoPath, mergeActive, refreshKey = 0, changeKey = 
     const bridge = getShipBridge();
     if (!bridge) return;
     const mine = ++req.current;
-    const res = await bridge.shipStatus(repoPath);
-    if (mine !== req.current) return;
-    setStatus(res.ok ? res.status : null);
+    const repo = repoPath;
+    const res = await bridge.shipStatus(repo);
+    if (mine !== req.current || repoRef.current !== repo) return;
+    if (res.ok) {
+      setStatus(res.status);
+      setStatusError(null);
+    } else {
+      setStatus(null);
+      setStatusError(res.error);
+    }
   }, [repoPath]);
   // Another repo starts blank; a re-read of the same one replaces the status
   // in place, so the button does not blink out on every refresh.
-  useEffect(() => { setStatus(null); }, [repoPath]);
+  useEffect(() => {
+    setStatus(null);
+    setStatusError(null);
+  }, [repoPath]);
   useEffect(() => {
     void read();
     return () => { req.current++; };
@@ -83,7 +104,18 @@ export function ShipButton({ repoPath, mergeActive, refreshKey = 0, changeKey = 
     };
   }, [menuOpen]);
 
-  if (!status) return null;
+  if (!status) {
+    // The step cannot be read: a disabled button that says why, not nothing.
+    if (!statusError) return null;
+    return (
+      <div className="wmux-git-ship" data-git-ship="unknown">
+        <span className="wmux-git-ship-reason" data-git-ship-reason title={statusError}>{t('git.ship.statusFailed')}</span>
+        <button type="button" className={`wmux-git-primary ${FOCUS_RING}`} disabled data-git-ship-primary title={statusError}>
+          {t('git.ship.commit')}
+        </button>
+      </div>
+    );
+  }
   const input: ShipInput = {
     dirty: status.dirty,
     ahead: status.ahead,
@@ -91,12 +123,18 @@ export function ShipButton({ repoPath, mergeActive, refreshKey = 0, changeKey = 
     hasUpstream: status.upstream !== null,
     detached: status.detached,
     onDefaultBranch: status.branch !== null && status.branch === status.defaultBranch,
+    defaultBranchKnown: status.defaultBranch !== null,
+    conflicts: status.conflicts,
+    inProgress: status.inProgress,
     pr: status.pr,
     mergeActive,
   };
+  // What a write is pinned to: the branch and HEAD on screen now.
+  const pinNow: ShipExpect | null = status.branch ? { branch: status.branch, head: status.head } : null;
   const ship = shipState(input);
 
-  const finish = async (action: ShipAction, res: ShipActionResult) => {
+  const finish = async (action: ShipAction, res: ShipActionResult, repo: string) => {
+    if (repoRef.current !== repo) return;
     setBusy(null);
     if (!res.ok) {
       if (dialog) setDialogError(res.error);
@@ -117,29 +155,29 @@ export function ShipButton({ repoPath, mergeActive, refreshKey = 0, changeKey = 
       if (status.pr) window.open(status.pr.url, '_blank');
       return;
     }
-    if (action === 'commit') {
-      setText('');
+    if (!pinNow) return;
+    if (action === 'commit' || action === 'createPr') {
+      setText(action === 'commit' ? '' : status.headSubject);
       setDialogError(null);
-      setDialog('commit');
+      setPinned(pinNow);
+      setDialog(action);
       return;
     }
-    if (action === 'createPr') {
-      setText(status.headSubject);
-      setDialogError(null);
-      setDialog('createPr');
-      return;
-    }
+    const repo = repoPath;
     setBusy('push');
-    await finish('push', await bridge.shipPush(repoPath));
+    await finish('push', await bridge.shipPush(repo, pinNow), repo);
   };
 
   const submit = async () => {
     const bridge = getShipBridge();
-    if (!bridge || !dialog || busy || !text.trim()) return;
+    if (!bridge || !dialog || !pinned || busy || !text.trim()) return;
     setDialogError(null);
     setBusy(dialog);
-    const res = dialog === 'commit' ? await bridge.shipCommit(repoPath, text) : await bridge.shipCreatePr(repoPath, text);
-    await finish(dialog, res);
+    const repo = repoPath;
+    const res = dialog === 'commit'
+      ? await bridge.shipCommit(repo, text, pinned)
+      : await bridge.shipCreatePr(repo, text, pinned);
+    await finish(dialog, res, repo);
   };
 
   const { primary, menu } = ship;
@@ -211,7 +249,7 @@ export function ShipButton({ repoPath, mergeActive, refreshKey = 0, changeKey = 
                 placeholder={t('git.ship.commitPlaceholder')}
                 aria-label={t('git.ship.commitTitle')}
                 onChange={(e) => setText(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void submit(); }}
+                onKeyDown={(e) => { if (isPlainEnter(e) && (e.metaKey || e.ctrlKey)) void submit(); }}
                 data-git-ship-text
               />
             ) : (
@@ -222,7 +260,7 @@ export function ShipButton({ repoPath, mergeActive, refreshKey = 0, changeKey = 
                 autoFocus
                 aria-label={t('git.ship.prTitleLabel')}
                 onChange={(e) => setText(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') void submit(); }}
+                onKeyDown={(e) => { if (isPlainEnter(e)) void submit(); }}
                 data-git-ship-text
               />
             )}

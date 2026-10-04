@@ -88,4 +88,30 @@ describe('GitDetail', () => {
     act(() => root.render(createElement(GitDetail, { kind: 'pr', repoPath: '', repoLabel: '' })));
     expect(container.querySelector('[data-git-detail-empty]')).not.toBeNull();
   });
+
+  it('a failed detail offers Retry, and the page refresh reads it again', async () => {
+    issueDetail.mockResolvedValueOnce({ ok: false, code: 'error', message: 'HTTP 502' });
+    act(() => root.render(createElement(GitDetail, { kind: 'issue', repoPath: '/r', repoLabel: 'w', issue })));
+    await flush();
+    expect(container.querySelector('[data-git-detail-error]')?.textContent).toContain('HTTP 502');
+    await act(async () => { (container.querySelector('[data-git-detail-retry]') as HTMLButtonElement).click(); });
+    await flush();
+    expect(issueDetail).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-git-detail-error]')).toBeNull();
+    act(() => root.render(createElement(GitDetail, { kind: 'issue', repoPath: '/r', repoLabel: 'w', issue, refreshKey: 1 })));
+    await flush();
+    expect(issueDetail).toHaveBeenCalledTimes(3);
+  });
+
+  it('a late rate-limited answer for issue A never shows on issue B', async () => {
+    const pending = new Map<number, (v: unknown) => void>();
+    issueDetail.mockImplementation((_r: string, n: number) => new Promise((res) => { pending.set(n, res); }));
+    const b = { ...issue, number: 13, title: 'Other', url: 'https://github.com/Acme/Widgets/issues/13' };
+    act(() => root.render(createElement(GitDetail, { kind: 'issue', repoPath: '/r', repoLabel: 'w', issue })));
+    act(() => root.render(createElement(GitDetail, { kind: 'issue', repoPath: '/r', repoLabel: 'w', issue: b })));
+    await act(async () => { pending.get(12)!({ ok: false, code: 'rate-limited', message: 'GitHub rate limit', retryAt: Date.now() + 60_000 }); });
+    await flush();
+    expect(container.querySelector('[data-git-list-rate-limited]')).toBeNull();
+    expect(container.querySelector('[data-git-detail-head]')?.textContent).toContain('Other');
+  });
 });

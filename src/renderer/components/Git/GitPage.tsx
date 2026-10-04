@@ -44,8 +44,12 @@ export default function GitPage() {
   const [resolved, setResolved] = useState<{ repoPath: string; mainPath: string } | null>(null);
   // Each list's last answer, so the detail pane can find the selected item.
   const [items, setItems] = useState<Record<string, PrSummary[] | IssueSummary[]>>({});
+  // Bumped by every new list answer, so the list scroll can be restored once
+  // the rows it was saved over are there.
+  const [itemsVersion, setItemsVersion] = useState(0);
   const publish = useCallback((repoPath: string, kind: GitSelection['kind']) => (list: PrSummary[] | IssueSummary[]) => {
     setItems((m) => (m[itemsKey(repoPath, kind)] === list ? m : { ...m, [itemsKey(repoPath, kind)]: list }));
+    setItemsVersion((v) => v + 1);
   }, []);
 
   const tabIds = useRef(`git-tab-${Math.random().toString(36).slice(2)}`).current;
@@ -68,7 +72,15 @@ export default function GitPage() {
 
   const kind: GitSelection['kind'] = page.tab === 'issues' ? 'issue' : 'pr';
   const select = (repoPath: string, number: number) => setGitPage({ selected: { kind, repoPath, number } });
-  const sel = page.selected && page.selected.kind === kind ? page.selected : null;
+  // In This repo, a selection from another repo (the active pane moved) is not shown.
+  const sel = page.selected && page.selected.kind === kind
+    && (page.scope === 'all' || page.selected.repoPath === resolved?.repoPath)
+    ? page.selected
+    : null;
+  const detailRef = useRef<HTMLDivElement>(null);
+  const selKey = sel ? `${sel.kind}\0${sel.repoPath}\0${sel.number}` : '';
+  // A new selection starts at the top of its detail.
+  useEffect(() => { if (detailRef.current) detailRef.current.scrollTop = 0; }, [selKey]);
   const selList = sel ? items[itemsKey(sel.repoPath, sel.kind)] : undefined;
   const selItem = sel && selList ? (selList as Array<PrSummary | IssueSummary>).find((x) => x.number === sel.number) ?? null : null;
 
@@ -132,7 +144,7 @@ export default function GitPage() {
           </div>
         ) : (
           <div className="wmux-git-split" data-git-split>
-            <ListPane scrollKey={`${page.scope}:${page.tab}`} ready={Object.keys(items).length}>
+            <ListPane scrollKey={`${page.scope}:${page.tab}`} ready={itemsVersion}>
               {page.scope === 'repo' ? (
                 resolved && (
                   <RepoList
@@ -159,10 +171,11 @@ export default function GitPage() {
                 />
               )}
             </ListPane>
-            <div className="wmux-git-detailpane" data-git-detailpane>
+            <div ref={detailRef} className="wmux-git-detailpane" data-git-detailpane>
               {sel && selItem ? (
                 <GitDetail
                   kind={kind}
+                  refreshKey={refreshKey}
                   repoPath={sel.repoPath}
                   repoLabel={page.scope === 'repo' ? repoName ?? '' : repoLabelOf(sel.repoPath)}
                   pr={kind === 'pr' ? (selItem as PrSummary) : null}

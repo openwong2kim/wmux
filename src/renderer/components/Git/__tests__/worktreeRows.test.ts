@@ -98,11 +98,14 @@ describe('groupWorktreeRows', () => {
       row('prunable', { prunable: 'gone' }),
       row('merge', { detached: true, integration: true }),
       row('unknown'),
+      row('locked', { detached: true, locked: 'on a USB disk' }),
+      row('fresh-worktree', { lastCommitAt: now - 90 * day, worktreeAt: now - 1 * day }),
     ], now);
     const names = (rows: GitWorktreeRow[]) => rows.map((r) => r.entry.path);
     expect(names(g.inUse)).toEqual(['busy']);
     expect(names(g.cleanup)).toEqual(['quiet', 'detached', 'prunable']);
     // The main worktree and a merge session's worktree are never candidates.
-    expect(names(g.idle)).toEqual(['main', 'fresh', 'merge', 'unknown']);
+    // A locked worktree, or a new worktree on an old branch, is not a candidate either.
+    expect(names(g.idle)).toEqual(['main', 'fresh', 'merge', 'unknown', 'locked', 'fresh-worktree']);
   });
 });

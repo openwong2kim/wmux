@@ -568,6 +568,16 @@ export function GitTab({
     };
   }, [sessionPhase, repoPath, hidden]);
 
+  // The merge session is shared through the store: the Worktrees tab starts,
+  // lands or discards it while the branch bar's ship button waits on it.
+  const mergeKey = mainPath ? normWorktreePath(mainPath, hostPlatform()) : '';
+  const setGitMerge = useStore((s) => s.setGitMerge);
+  const sharedMerge = useStore((s) => (mergeKey ? s.gitMerge[mergeKey] : undefined));
+  useEffect(() => {
+    if (mergeKey) setGitMerge(mergeKey, session !== null);
+  }, [mergeKey, session, setGitMerge]);
+  const mergeActive = sharedMerge ?? session !== null;
+
   const rows = buildWorktreeRows({
     worktrees,
     mainPath,
@@ -738,8 +748,9 @@ export function GitTab({
         {layout === 'summary' ? (
           // The ship button carries Open PR (beside it, or as its step).
           <ShipButton
+            key={currentWorktree || repoPath}
             repoPath={currentWorktree || repoPath}
-            mergeActive={session !== null}
+            mergeActive={mergeActive}
             refreshKey={refreshKey}
             changeKey={activeMeta?.gitSync ? `${activeMeta.gitSync.dirty}:${activeMeta.gitSync.ahead}:${activeMeta.gitSync.behind}:${activeMeta.pr?.state ?? ''}` : ''}
             onShipped={() => void load(true)}

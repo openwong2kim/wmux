@@ -9,6 +9,9 @@ const base: ShipInput = {
   hasUpstream: true,
   detached: false,
   onDefaultBranch: false,
+  defaultBranchKnown: true,
+  conflicts: 0,
+  inProgress: false,
   pr: null,
   mergeActive: false,
 };
@@ -95,6 +98,21 @@ describe('shipState: blocked steps say why', () => {
   it('commits not yet pushed block Create PR (gh would ask where to push)', () => {
     expect(shipBlock('createPr', s({ ahead: 1 }))).toBe('unpushed');
     expect(shipState(s({ ahead: 1 })).menu).toEqual([]);
+  });
+
+  it('conflicted files or a merge / cherry-pick in progress block every write, not Open PR', () => {
+    const pr = { state: 'open' as const, url: 'u' };
+    for (const a of ['commit', 'push', 'createPr'] as const) {
+      expect(shipBlock(a, s({ dirty: 1, ahead: 1, conflicts: 2 }))).toBe('conflicts');
+      expect(shipBlock(a, s({ dirty: 1, ahead: 1, inProgress: true }))).toBe('in-progress');
+    }
+    expect(shipState(s({ dirty: 3, conflicts: 1 })).primary).toEqual({ action: 'commit', blocked: 'conflicts' });
+    expect(shipState(s({ dirty: 1, conflicts: 1, pr })).menu).toEqual(['openPr']);
+  });
+
+  it('Create PR waits while behind the upstream, or while the default branch is unknown', () => {
+    expect(shipBlock('createPr', s({ behind: 1 }))).toBe('behind');
+    expect(shipBlock('createPr', s({ defaultBranchKnown: false }))).toBe('unknown-default');
   });
 
   it('the default branch cannot open a PR', () => {

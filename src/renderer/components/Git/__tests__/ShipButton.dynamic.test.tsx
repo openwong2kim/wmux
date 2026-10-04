@@ -10,19 +10,22 @@ import { createRoot, type Root } from 'react-dom/client';
 import { ShipButton } from '../ShipButton';
 
 type Status = {
-  branch: string | null; detached: boolean; upstream: string | null; ahead: number; behind: number; dirty: number;
+  branch: string | null; head: string; detached: boolean; upstream: string | null; ahead: number; behind: number; dirty: number;
+  conflicts: number; inProgress: boolean;
   defaultBranch: string | null; headSubject: string; pr: { state: 'open' | 'draft' | 'merged' | 'closed'; url: string } | null;
 };
+const HEAD = 'c'.repeat(40);
+const PIN = { branch: 'feat/x', head: HEAD };
 const base: Status = {
-  branch: 'feat/x', detached: false, upstream: 'origin/feat/x', ahead: 0, behind: 0, dirty: 0,
-  defaultBranch: 'main', headSubject: 'feat: add x', pr: null,
+  branch: 'feat/x', head: HEAD, detached: false, upstream: 'origin/feat/x', ahead: 0, behind: 0, dirty: 0,
+  conflicts: 0, inProgress: false, defaultBranch: 'main', headSubject: 'feat: add x', pr: null,
 };
 
 let container: HTMLDivElement;
 let root: Root;
 let status: Status;
 const bridge = {
-  shipStatus: vi.fn(async () => ({ ok: true, status })),
+  shipStatus: vi.fn(async (): Promise<unknown> => ({ ok: true, status })),
   shipCommit: vi.fn(async () => ({ ok: true })),
   shipPush: vi.fn(async () => ({ ok: true })),
   shipCreatePr: vi.fn(async () => ({ ok: true, url: 'https://github.com/o/r/pull/9' })),
@@ -65,7 +68,7 @@ describe('ShipButton', () => {
     });
     await act(async () => { (document.querySelector('[data-git-ship-submit]') as HTMLButtonElement).click(); });
     await flush();
-    expect(bridge.shipCommit).toHaveBeenCalledWith('/r', 'fix: thing');
+    expect(bridge.shipCommit).toHaveBeenCalledWith('/r', 'fix: thing', PIN);
     expect(document.querySelector('[data-testid="git-ship-commit"]')).toBeNull();
     // The step is read again after it lands.
     expect(bridge.shipStatus.mock.calls.length).toBeGreaterThanOrEqual(2);
@@ -76,7 +79,7 @@ describe('ShipButton', () => {
     expect(primary().textContent).toBe('Push');
     await act(async () => { primary().click(); });
     await flush();
-    expect(bridge.shipPush).toHaveBeenCalledWith('/r');
+    expect(bridge.shipPush).toHaveBeenCalledWith('/r', PIN);
   });
 
   it('pushed, no PR → Create PR with the last commit subject as an editable title, then opens it', async () => {
@@ -89,7 +92,7 @@ describe('ShipButton', () => {
       expect(input.value).toBe('feat: add x');
       await act(async () => { (document.querySelector('[data-git-ship-submit]') as HTMLButtonElement).click(); });
       await flush();
-      expect(bridge.shipCreatePr).toHaveBeenCalledWith('/r', 'feat: add x');
+      expect(bridge.shipCreatePr).toHaveBeenCalledWith('/r', 'feat: add x', PIN);
       expect(open).toHaveBeenCalledWith('https://github.com/o/r/pull/9', '_blank');
     } finally {
       open.mockRestore();
@@ -147,5 +150,56 @@ describe('ShipButton', () => {
     await act(async () => { release({ ok: true, status: { ...base } }); });
     await flush();
     expect(primary().textContent).toBe('Create PR');
+  });
+
+  it('a write is pinned to the branch + HEAD seen when the dialog opened', async () => {
+    await mount({ dirty: 1 });
+    act(() => primary().click());
+    // The status moves on while the dialog is open; the commit still names what was seen.
+    status = { ...status, head: 'd'.repeat(40) };
+    const box = document.querySelector('[data-git-ship-text]') as HTMLTextAreaElement;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
+    act(() => { setter.call(box, 'msg'); box.dispatchEvent(new Event('input', { bubbles: true })); });
+    await act(async () => { (document.querySelector('[data-git-ship-submit]') as HTMLButtonElement).click(); });
+    expect(bridge.shipCommit).toHaveBeenCalledWith('/r', 'msg', PIN);
+  });
+
+  it('Enter that finishes an IME composition does not create the PR', async () => {
+    await mount();
+    act(() => primary().click());
+    const input = document.querySelector('[data-git-ship-text]') as HTMLInputElement;
+    const ev = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, isComposing: true });
+    act(() => { input.dispatchEvent(ev); });
+    expect(bridge.shipCreatePr).not.toHaveBeenCalled();
+    await act(async () => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
+    expect(bridge.shipCreatePr).toHaveBeenCalledTimes(1);
+  });
+
+  it('conflicted files block Commit with the reason', async () => {
+    await mount({ dirty: 2, conflicts: 1 });
+    expect(primary().disabled).toBe(true);
+    expect(container.querySelector('[data-git-ship-reason]')?.textContent).toBe('Conflicted files: resolve them first');
+  });
+
+  it('a failed status read shows a disabled button with the reason instead of nothing', async () => {
+    bridge.shipStatus.mockResolvedValueOnce({ ok: false, error: 'fatal: not a git repository' });
+    act(() => root.render(createElement(ShipButton, { repoPath: '/r', mergeActive: false })));
+    await flush();
+    expect(primary().disabled).toBe(true);
+    expect(container.querySelector('[data-git-ship-reason]')?.textContent).toBe('Could not read the branch');
+  });
+
+  it('a status answer for the previous repo does not land on the new one', async () => {
+    let releaseA!: (v: unknown) => void;
+    bridge.shipStatus.mockImplementationOnce(() => new Promise((r) => { releaseA = r; }));
+    act(() => root.render(createElement(ShipButton, { repoPath: '/a', mergeActive: false })));
+    await flush();
+    status = { ...base, ahead: 1 };
+    act(() => root.render(createElement(ShipButton, { repoPath: '/b', mergeActive: false })));
+    await flush();
+    expect(primary().textContent).toBe('Push');
+    await act(async () => { releaseA({ ok: true, status: { ...base, dirty: 5 } }); });
+    await flush();
+    expect(primary().textContent).toBe('Push');
   });
 });

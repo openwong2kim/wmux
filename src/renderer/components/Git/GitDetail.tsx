@@ -7,7 +7,7 @@
 // Each body is mounted per selected item (keyed by the page), so an answer for
 // a previous selection is dropped with its component; within one item, only
 // the newest read lands.
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useT } from '../../hooks/useT';
 import { FOCUS_RING } from '../focusRing';
 import { renderBrainMarkdown } from '../Deck/BrainMarkdown';
@@ -27,9 +27,15 @@ function reviewWord(state: string, t: (k: string) => string): string {
   return word === key ? state.toLowerCase().replaceAll('_', ' ') : word;
 }
 
-/** Reads `load` once per `dep`, keeping only the newest answer; null while it reads. */
-function useDetail<T>(load: () => Promise<{ ok: true; value: T } | { ok: false; message: string }>, dep: string) {
-  const [state, setState] = useState<{ value: T | null; error: string | null; loading: boolean }>({ value: null, error: null, loading: true });
+type DetailAnswer<T> = { ok: true; value: T } | { ok: false; message: string; retryAt?: number };
+
+/** Reads `load` once per `dep` (and per retry), keeping only the newest
+ *  answer. A rate-limited answer reads again by itself at its retry time. */
+function useDetail<T>(load: () => Promise<DetailAnswer<T>>, dep: string) {
+  const [state, setState] = useState<{ value: T | null; error: string | null; retryAt: number | null; loading: boolean }>(
+    { value: null, error: null, retryAt: null, loading: true },
+  );
+  const [attempt, setAttempt] = useState(0);
   const req = useRef(0);
   const loadRef = useRef(load);
   loadRef.current = load;
@@ -37,12 +43,34 @@ function useDetail<T>(load: () => Promise<{ ok: true; value: T } | { ok: false; 
     const mine = ++req.current;
     setState((s) => ({ ...s, loading: true, error: null }));
     void loadRef.current().then((res) => {
+      // Only the newest read for this item lands (its rate limit included).
       if (mine !== req.current) return;
-      setState(res.ok ? { value: res.value, error: null, loading: false } : { value: null, error: res.message, loading: false });
+      setState(res.ok
+        ? { value: res.value, error: null, retryAt: null, loading: false }
+        : { value: null, error: res.message, retryAt: res.retryAt ?? null, loading: false });
     });
     return () => { req.current++; };
-  }, [dep]);
-  return state;
+  }, [dep, attempt]);
+  useEffect(() => {
+    if (state.retryAt === null) return;
+    const id = window.setTimeout(() => setAttempt((n) => n + 1), Math.max(0, state.retryAt - Date.now()) + 500);
+    return () => window.clearTimeout(id);
+  }, [state.retryAt]);
+  const retry = useCallback(() => setAttempt((n) => n + 1), []);
+  return { ...state, retry };
+}
+
+/** A failed detail read: why, and a Retry. */
+function DetailError({ label, error, retry }: { label: string; error: string; retry: () => void }): React.ReactElement {
+  const t = useT();
+  return (
+    <div className="wmux-git-fresh break-words" role="status" data-git-detail-error>
+      <span>{label}: {error}</span>
+      <button type="button" className={`wmux-git-link-btn ${FOCUS_RING}`} onClick={retry} data-git-detail-retry>
+        {t('git.list.retry')}
+      </button>
+    </div>
+  );
 }
 
 function DetailHeader({ title, number, repo, url, state, author }: {
@@ -81,14 +109,14 @@ function DetailHeader({ title, number, repo, url, state, author }: {
   );
 }
 
-function PrBody({ repoPath, pr }: { repoPath: string; pr: PrSummary }): React.ReactElement {
+function PrBody({ repoPath, pr, refreshKey }: { repoPath: string; pr: PrSummary; refreshKey: number }): React.ReactElement {
   const t = useT();
   const detail = useDetail<PrComment[]>(async () => {
     const bridge = getGithubBridge();
     if (!bridge) return { ok: false, message: t('git.bridgeUnavailable') };
     const res = await bridge.prDetail(repoPath, pr.number, pr.updatedAt);
     return res.ok ? { ok: true, value: res.detail.comments } : { ok: false, message: res.message };
-  }, pr.updatedAt);
+  }, `${pr.updatedAt}\0${refreshKey}`);
   return (
     <div className="wmux-git-detail-body" data-pr-detail>
       <div className="wmux-git-detail-facts">
@@ -97,7 +125,7 @@ function PrBody({ repoPath, pr }: { repoPath: string; pr: PrSummary }): React.Re
         {pr.checks && <span>{t(`workspace.prChecks.${pr.checks}`)}</span>}
       </div>
       {detail.loading && <div className="wmux-git-note">{t('git.loading')}</div>}
-      {!detail.loading && detail.error && <div className="wmux-git-note break-words" role="status">{t('git.commentsFailed')}: {detail.error}</div>}
+      {!detail.loading && detail.error && <DetailError label={t('git.commentsFailed')} error={detail.error} retry={detail.retry} />}
       {!detail.loading && detail.value?.length === 0 && <div className="wmux-git-note">{t('git.noComments')}</div>}
       {detail.value && detail.value.length > 0 && (
         <ol className="wmux-git-issue-timeline" aria-label={t('git.issues.comments', { count: detail.value.length })}>
@@ -122,16 +150,16 @@ function PrBody({ repoPath, pr }: { repoPath: string; pr: PrSummary }): React.Re
   );
 }
 
-function IssueBody({ repoPath, issue }: { repoPath: string; issue: IssueSummary }): React.ReactElement {
+function IssueBody({ repoPath, issue, refreshKey }: { repoPath: string; issue: IssueSummary; refreshKey: number }): React.ReactElement {
   const t = useT();
-  const [retryAt, setRetryAt] = useState<number | null>(null);
   const detail = useDetail<IssueDetail>(async () => {
     const bridge = getIssueBridge();
     if (!bridge) return { ok: false, message: t('git.bridgeUnavailable') };
     const res = await bridge.issueDetail(repoPath, issue.number, issue.updatedAt);
-    setRetryAt(!res.ok && res.code === 'rate-limited' ? res.retryAt : null);
-    return res.ok ? { ok: true, value: res.detail } : { ok: false, message: res.message };
-  }, issue.updatedAt);
+    if (res.ok) return { ok: true, value: res.detail };
+    return { ok: false, message: res.message, ...(res.code === 'rate-limited' ? { retryAt: res.retryAt } : {}) };
+  }, `${issue.updatedAt}\0${refreshKey}`);
+  const retryAt = detail.retryAt;
   // Never draw another issue's detail under this one.
   const d = detail.value && detail.value.number === issue.number ? detail.value : null;
   return (
@@ -141,7 +169,7 @@ function IssueBody({ repoPath, issue }: { repoPath: string; issue: IssueSummary 
         <ListFreshness fetchedAt={null} error={null} retryAt={retryAt} onRetry={() => undefined} />
       )}
       {!detail.loading && retryAt === null && detail.error && (
-        <div className="wmux-git-note break-words" role="status">{t('git.issues.detailFailed')}: {detail.error}</div>
+        <DetailError label={t('git.issues.detailFailed')} error={detail.error} retry={detail.retry} />
       )}
       {d && (
         <>
@@ -182,8 +210,10 @@ function IssueBody({ repoPath, issue }: { repoPath: string; issue: IssueSummary 
   );
 }
 
-export function GitDetail({ kind, repoPath, repoLabel, pr, issue }: {
+export function GitDetail({ kind, repoPath, repoLabel, pr, issue, refreshKey = 0 }: {
   kind: 'pr' | 'issue';
+  /** The page's refresh: the detail reads again too. */
+  refreshKey?: number;
   repoPath: string;
   repoLabel: string;
   pr?: PrSummary | null;
@@ -194,7 +224,7 @@ export function GitDetail({ kind, repoPath, repoLabel, pr, issue }: {
     return (
       <article className="wmux-git-detail" aria-label={pr.title} data-git-detail="pr">
         <DetailHeader title={pr.title} number={pr.number} repo={repoLabel} url={pr.url} author={pr.author} state={<PrStepText pr={pr} />} />
-        <PrBody key={`${repoPath}\0${pr.number}`} repoPath={repoPath} pr={pr} />
+        <PrBody key={`${repoPath}\0${pr.number}`} repoPath={repoPath} pr={pr} refreshKey={refreshKey} />
       </article>
     );
   }
@@ -209,7 +239,7 @@ export function GitDetail({ kind, repoPath, repoLabel, pr, issue }: {
           author={issue.author}
           state={<span className="wmux-git-step">{t(`git.issues.state.${issue.state}`)}</span>}
         />
-        <IssueBody key={`${repoPath}\0${issue.number}`} repoPath={repoPath} issue={issue} />
+        <IssueBody key={`${repoPath}\0${issue.number}`} repoPath={repoPath} issue={issue} refreshKey={refreshKey} />
       </article>
     );
   }
