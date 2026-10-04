@@ -85,6 +85,13 @@ describe('TranscriptProjector.status — unavailable reasons', () => {
     expect(harness.projector.status('pty-1')).toEqual({ available: false, reason: 'stale-session' });
   });
 
+  it('no-transcript-path, not stale-session, for a Codex pane still waiting for its binding (#1764)', () => {
+    // Codex binds only once its rollout is known; until then the phone must
+    // read "waiting for the record", not "this pane moved on to a new session".
+    harness.detectedAgents.set('pty-1', 'codex');
+    expect(harness.projector.status('pty-1')).toEqual({ available: false, reason: 'no-transcript-path' });
+  });
+
   it('unsupported-agent for an agent that publishes no structured transcript', () => {
     harness.bindings.set('pty-1', binding({ agent: 'grok', transcriptPath: '/tmp/x.jsonl' }));
     expect(harness.projector.status('pty-1')).toEqual({ available: false, reason: 'unsupported-agent' });
