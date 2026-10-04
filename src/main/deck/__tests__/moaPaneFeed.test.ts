@@ -124,12 +124,19 @@ describe('moaPaneFeed', () => {
     expect(buildMoaPanePayload()).toEqual({ sessionId: 'brain-1', workspaceId: 'ws-hq' });
   });
 
-  it('flags the brain\'s permission dialog with a fingerprint only, and clears it when the turn moves on', async () => {
+  it('flags the brain\'s permission dialog with its fingerprint and hook evidence, and clears it when the turn moves on', async () => {
     current = HQ;
-    noteBrainHookSignal(signal({ kind: 'agent.awaiting_input', payload: { tool_name: 'Bash', tool_input: { command: 'rm -r build' } } }));
+    noteBrainHookSignal(signal({ kind: 'agent.awaiting_input', payload: {
+      hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'rm -r build' },
+      tool_use_id: 'toolu_1', session_id: 'conv-1', prompt_id: 'p-1', transcript_path: '/not/pushed.jsonl',
+    } }));
     const dialog = dialogOf();
     expect(dialog?.fingerprint).toMatch(/^[0-9a-f]{32}$/);
-    expect(JSON.stringify(buildMoaPanePayload())).not.toContain('rm -r build');
+    // The same fields HookIngest reads (payload.session_id etc.), nothing else.
+    expect(dialog).toEqual({
+      fingerprint: dialog?.fingerprint, toolName: 'Bash', toolInput: { command: 'rm -r build' },
+      toolUseId: 'toolu_1', hookSessionId: 'conv-1', promptId: 'p-1',
+    });
     await publishMoaPane();
     expect(pushes.at(-1)!.pane).toMatchObject({ dialog });
     for (const kind of ['agent.stop', 'agent.user_prompt_submit', 'agent.session_start', 'agent.stop_failure']) {
@@ -138,6 +145,28 @@ describe('moaPaneFeed', () => {
       noteBrainHookSignal(signal({ kind, payload: {} }));
       expect(dialogOf()).toBeUndefined();
     }
+  });
+
+  it('omits a tool input over 8 KB whole — never cut — and keeps the dialog', () => {
+    current = HQ;
+    const big = { command: 'x'.repeat(9000) };
+    noteBrainHookSignal(signal({ kind: 'agent.awaiting_input', payload: { tool_name: 'Bash', tool_input: big, session_id: 'conv-1' } }));
+    const dialog = dialogOf() as Record<string, unknown> | undefined;
+    expect(dialog?.fingerprint).toMatch(/^[0-9a-f]{32}$/);
+    expect(dialog).not.toHaveProperty('toolInput');
+    expect(dialog).toMatchObject({ toolName: 'Bash', hookSessionId: 'conv-1' });
+    // Just under the cap is sent whole.
+    const fits = { command: 'y'.repeat(8 * 1024 - 20) };
+    noteBrainHookSignal(signal({ kind: 'agent.awaiting_input', payload: { tool_name: 'Bash', tool_input: fits } }));
+    expect((dialogOf() as { toolInput?: unknown }).toolInput).toEqual(fits);
+  });
+
+  it('a PostToolUse (agent.activity) clears the dialog and its evidence', () => {
+    current = HQ;
+    noteBrainHookSignal(signal({ kind: 'agent.awaiting_input', payload: { tool_name: 'Bash', tool_input: { command: 'ls' } } }));
+    expect(dialogOf()).toBeDefined();
+    noteBrainHookSignal(signal({ kind: 'agent.activity', payload: {} }));
+    expect(buildMoaPanePayload()).not.toHaveProperty('dialog');
   });
 
   it('drops a brain\'s binding and dialog once its pty is gone', () => {

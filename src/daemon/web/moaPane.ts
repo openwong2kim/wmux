@@ -19,9 +19,13 @@
 //   - Unpublished means closed: `null` until main pushes, and dropped again
 //     when the publishing client disconnects (`MoaPaneRpc.onClientClose`), so
 //     a daemon running without its GUI exposes no brain pane.
-//   - `dialog` says the brain's own permission dialog is on screen. The daemon
-//     keeps no approval record for a brain pane, so this is what stops typed
-//     input from answering that dialog through the phone.
+//   - `dialog` says the brain's own permission dialog is on screen, so typed
+//     input cannot answer it through the phone. It carries the
+//     PermissionRequest hook's evidence too (tool name, whole tool input, the
+//     hook's ids), from which the daemon raises the dialog as a `terminal_prompt`
+//     approval record for the Moa pane only (see moaPrompt.ts). The evidence is
+//     a claim like any hook payload: the registry still binds an answer to the
+//     pane's own Claude session and re-proves the dialog on screen.
 //   - The transcript binding rides along because the brain's hooks go to main,
 //     never to the daemon, so the daemon has no resume binding for that pane.
 //     It is held in memory only and never written to the pane's persisted
@@ -40,12 +44,37 @@ export interface MoaPaneFact {
   /** The brain's transcript, once its hooks reported one. Memory only. */
   binding?: ResumeBinding;
   /** Present while the brain's own permission dialog is up. */
-  dialog?: { fingerprint: string };
+  dialog?: MoaPaneDialogFact;
+}
+
+/** The dialog main reports, with the PermissionRequest hook's evidence for it. */
+export interface MoaPaneDialogFact {
+  fingerprint: string;
+  toolName?: string;
+  /** Whole, never cut: an answer is bound to its hash. Absent when main omitted it. */
+  toolInput?: Record<string, unknown>;
+  toolUseId?: string;
+  hookSessionId?: string;
+  promptId?: string;
 }
 
 /** Bounds on pushed strings; anything longer is not an id main mints. */
 const MAX_ID_CHARS = 128;
 const MAX_PATH_CHARS = 4096;
+/** The largest serialized tool input taken with a dialog (main omits bigger). */
+export const MOA_DIALOG_INPUT_MAX_BYTES = 8 * 1024;
+
+/** A whole, JSON-safe tool input within the cap, else undefined. */
+function dialogToolInput(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  try {
+    const json = JSON.stringify(value);
+    if (Buffer.byteLength(json, 'utf8') > MOA_DIALOG_INPUT_MAX_BYTES) return undefined;
+    return JSON.parse(json) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+}
 
 function boundedString(value: unknown, max: number): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= max;
@@ -69,6 +98,17 @@ export function parseMoaPane(raw: unknown): MoaPaneFact | null | 'invalid' {
     const fingerprint = dialog && typeof dialog.fingerprint === 'string' && /^[0-9a-f]{1,64}$/.test(dialog.fingerprint)
       ? dialog.fingerprint : 'unknown';
     fact.dialog = { fingerprint };
+    // Evidence that does not parse is dropped field by field: the card is then
+    // one nobody can answer remotely, the fence in front of the dialog stays.
+    if (fingerprint !== 'unknown') {
+      const d = dialog as Record<string, unknown>;
+      const toolInput = dialogToolInput(d.toolInput);
+      if (boundedString(d.toolName, MAX_ID_CHARS)) fact.dialog.toolName = d.toolName;
+      if (toolInput) fact.dialog.toolInput = toolInput;
+      if (boundedString(d.toolUseId, MAX_ID_CHARS)) fact.dialog.toolUseId = d.toolUseId;
+      if (boundedString(d.hookSessionId, MAX_ID_CHARS)) fact.dialog.hookSessionId = d.hookSessionId;
+      if (boundedString(d.promptId, MAX_ID_CHARS)) fact.dialog.promptId = d.promptId;
+    }
   }
   const b = r.binding as Record<string, unknown> | undefined;
   if (

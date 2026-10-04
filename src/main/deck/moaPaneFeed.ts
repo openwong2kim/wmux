@@ -17,12 +17,13 @@
 //     spawned the TUI in and its path is that cwd's Claude project file for
 //     the reported conversation, and an older hook never replaces a newer one;
 //   - whether the brain's own permission dialog is up (its PermissionRequest
-//     hook), so the daemon can refuse typed input that would answer it. The
-//     daemon has no approval record for a brain pane, so this is the only
-//     fence in front of that dialog on the phone side.
+//     hook), so the daemon can refuse typed input that would answer it, and
+//     the hook's evidence for that dialog (tool name, whole tool input, the
+//     hook's tool_use / session / prompt ids), so the daemon can raise it as a
+//     `terminal_prompt` approval record bound to that exact call (#1772).
 //
 // Never pushed: the commander token, the brain's env or its hook/MCP config.
-// The payload is the two ids, the transcript binding and a dialog fingerprint.
+// The payload is the two ids, the transcript binding and the dialog.
 
 import { createHash } from 'node:crypto';
 import path from 'node:path';
@@ -55,21 +56,40 @@ export interface MoaPaneBinding {
   ts: number;
 }
 
+/**
+ * The permission dialog that is up, with the PermissionRequest hook's evidence
+ * for it. The daemon binds an answer to the WHOLE tool input by hash, so an
+ * input too big to send is omitted, never cut: the card is then one the phone
+ * and the desktop cannot answer, only point at the terminal.
+ */
+export interface MoaPaneDialog {
+  fingerprint: string;
+  toolName?: string;
+  toolInput?: Record<string, unknown>;
+  toolUseId?: string;
+  hookSessionId?: string;
+  promptId?: string;
+}
+
 export type MoaPanePayload =
-  | { sessionId: string; workspaceId: string; binding?: MoaPaneBinding; dialog?: { fingerprint: string } }
+  | { sessionId: string; workspaceId: string; binding?: MoaPaneBinding; dialog?: MoaPaneDialog }
   | null;
 
 type Push = (pane: MoaPanePayload, seq: number) => Promise<unknown>;
 
 interface BrainState {
   binding?: MoaPaneBinding;
-  /** Fingerprint of the permission dialog that is up, if one is. */
-  dialog?: string;
+  /** The permission dialog that is up, if one is. */
+  dialog?: MoaPaneDialog;
 }
 
 /** A brain pty is one per workspace and an HQ means one live brain, so a
  *  handful of entries is all this ever holds; the cap only bounds a leak. */
 const MAX_BRAINS = 32;
+/** The largest serialized tool input pushed with a dialog. Bigger is omitted. */
+export const MOA_DIALOG_INPUT_MAX_BYTES = 8 * 1024;
+/** Bounds on the hook's ids and tool name; longer is not something to bind to. */
+const MAX_DIALOG_ID_CHARS = 128;
 /** Retry delays for a push the daemon did not apply. */
 const RETRY_BASE_MS = 500;
 const RETRY_MAX_MS = 30_000;
@@ -123,6 +143,39 @@ function dialogFingerprint(payload: Record<string, unknown>): string {
   return createHash('sha256').update(`${tool}\0${input}`).digest('hex').slice(0, 32);
 }
 
+function dialogId(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 && value.length <= MAX_DIALOG_ID_CHARS ? value : undefined;
+}
+
+/**
+ * The dialog and the PermissionRequest hook's evidence for it, read from the
+ * same payload fields the daemon's HookIngest reads for every other pane.
+ */
+function dialogFrom(payload: Record<string, unknown>): MoaPaneDialog {
+  const toolName = dialogId(payload.tool_name);
+  const raw = payload.tool_input;
+  let toolInput: Record<string, unknown> | undefined;
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    try {
+      const json = JSON.stringify(raw);
+      if (Buffer.byteLength(json, 'utf8') <= MOA_DIALOG_INPUT_MAX_BYTES) toolInput = JSON.parse(json) as Record<string, unknown>;
+    } catch {
+      toolInput = undefined;
+    }
+  }
+  const toolUseId = dialogId(payload.tool_use_id);
+  const hookSessionId = dialogId(payload.session_id);
+  const promptId = dialogId(payload.prompt_id);
+  return {
+    fingerprint: dialogFingerprint(payload),
+    ...(toolName ? { toolName } : {}),
+    ...(toolInput ? { toolInput } : {}),
+    ...(toolUseId ? { toolUseId } : {}),
+    ...(hookSessionId ? { hookSessionId } : {}),
+    ...(promptId ? { promptId } : {}),
+  };
+}
+
 /**
  * A brain pty's hook signal: note the permission dialog and the transcript it
  * names. Called for every signal the brain lane claimed.
@@ -135,7 +188,7 @@ export function noteBrainHookSignal(signal: BrainHookSignal): void {
   if (signal.kind === 'agent.awaiting_input') {
     // The brain profile maps only PermissionRequest to this kind, so for a
     // brain it is its own permission dialog drawn on screen.
-    state.dialog = dialogFingerprint(signal.payload ?? {});
+    state.dialog = dialogFrom(signal.payload ?? {});
     changed = true;
   } else if (
     signal.kind === 'agent.stop' || signal.kind === 'agent.stop_failure'
@@ -233,7 +286,7 @@ export function buildMoaPanePayload(): MoaPanePayload {
     sessionId: pane.sessionId,
     workspaceId: pane.workspaceId,
     ...(binding ? { binding } : {}),
-    ...(state?.dialog ? { dialog: { fingerprint: state.dialog } } : {}),
+    ...(state?.dialog ? { dialog: { ...state.dialog } } : {}),
   };
 }
 

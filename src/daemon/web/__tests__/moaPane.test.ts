@@ -43,6 +43,21 @@ describe('parseMoaPane', () => {
     }
   });
 
+  it('keeps the dialog\'s hook evidence, dropping each malformed or oversized field on its own', () => {
+    const evidence = { toolName: 'Bash', toolInput: { command: 'ls' }, toolUseId: 'toolu_1', hookSessionId: 'conv-1', promptId: 'p-1' };
+    expect(parseMoaPane({ sessionId: 'brain-abc', workspaceId: 'hq', dialog: { fingerprint: 'ab12', ...evidence, extra: 'x' } }))
+      .toEqual({ sessionId: 'brain-abc', workspaceId: 'hq', dialog: { fingerprint: 'ab12', ...evidence } });
+    const parsed = parseMoaPane({ sessionId: 'brain-abc', workspaceId: 'hq', dialog: {
+      fingerprint: 'ab12', toolName: 7, toolInput: { command: 'x'.repeat(9000) }, toolUseId: '', hookSessionId: 'conv-1', promptId: ['p'],
+    } });
+    expect(parsed).toEqual({ sessionId: 'brain-abc', workspaceId: 'hq', dialog: { fingerprint: 'ab12', hookSessionId: 'conv-1' } });
+    // An array is not a tool input; a malformed fingerprint keeps no evidence.
+    expect(parseMoaPane({ sessionId: 'brain-abc', workspaceId: 'hq', dialog: { fingerprint: 'ab12', toolInput: ['ls'] } }))
+      .toEqual({ sessionId: 'brain-abc', workspaceId: 'hq', dialog: { fingerprint: 'ab12' } });
+    expect(parseMoaPane({ sessionId: 'brain-abc', workspaceId: 'hq', dialog: { fingerprint: 'NOT HEX', ...evidence } }))
+      .toEqual({ sessionId: 'brain-abc', workspaceId: 'hq', dialog: { fingerprint: 'unknown' } });
+  });
+
   it('copies only the binding fields it knows', () => {
     const parsed = parseMoaPane({ sessionId: 'brain-abc', workspaceId: 'hq', extra: 'x',
       binding: { agent: 'claude', sessionId: 'c', cwd: '/x', ts: 1, permissionMode: 'bypassPermissions', token: 'secret' } });
