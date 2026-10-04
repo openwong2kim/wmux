@@ -6,6 +6,7 @@ import type { StoreState } from '../../stores';
 import type { Workspace, Pane, PaneLeaf, Surface, AgentStatus } from '../../../shared/types';
 import type { WorkTask } from '../../../shared/workTask';
 import type { FanoutOrigin } from '../../../shared/fanoutOrigin';
+import type { MoaState } from '../../../shared/moa';
 
 const NOW = 5_000_000;
 
@@ -406,5 +407,44 @@ describe('buildPhoneSidebarSnapshot — layout tree', () => {
     expect(layout).toBeUndefined();
     expect(snap.panes).toHaveLength(leaves.length);
     expect(reasons).toContain('workspace.layout.bounds');
+  });
+});
+
+describe('buildPhoneSidebarSnapshot — the Moa HQ', () => {
+  const moa = (hqWorkspaceId: string | null, enabled: boolean, hqState: MoaState['hq']['state'] = 'ok'): MoaState => ({
+    config: { enabled, onboarded: true, level: 2, maxTurnsPerHour: 30, bubbles: true, reduceMotion: false, defaultReason: null },
+    hq: { workspaceId: hqWorkspaceId, state: hqState },
+    archive: { unacked: 0, total: 0 },
+  });
+  const withMoa = (m: MoaState | null) => {
+    const a = workspace('a', [leaf('pa', [surface('sa', 'pty-a')])]);
+    const hq = workspace('hq', [leaf('ph', [surface('sh', 'pty-h')])]);
+    return { ...state({ workspaces: [a, hq] }), moa: m } as StoreState;
+  };
+
+  it('names the HQ once, at the snapshot level, and changes nothing else', () => {
+    const plain = buildPhoneSidebarSnapshot(withMoa(null));
+    const snap = buildPhoneSidebarSnapshot(withMoa(moa('hq', true)));
+    expect(snap.hqWorkspaceId).toBe('hq');
+    expect(snap.moa).toBe(true);
+    // toEqual reads an undefined key as absent: every other field is unchanged.
+    expect({ ...snap, hqWorkspaceId: undefined, moa: undefined }).toEqual(plain);
+    expect('hqWorkspaceId' in plain || 'moa' in plain).toBe(false);
+    expect(parsePhoneSidebarSnapshot(JSON.parse(JSON.stringify(snap)))).toEqual(snap);
+  });
+
+  it('keeps naming the HQ while Moa is off, as the desktop keeps it out of its list, but says moa only when on and present', () => {
+    const off = buildPhoneSidebarSnapshot(withMoa(moa('hq', false)));
+    expect(off.hqWorkspaceId).toBe('hq');
+    expect(off).not.toHaveProperty('moa');
+    const missing = buildPhoneSidebarSnapshot(withMoa(moa('hq', true, 'hq-missing')));
+    expect(missing.hqWorkspaceId).toBe('hq');
+    expect(missing).not.toHaveProperty('moa');
+    // Main says ok but the renderer holds no such workspace yet.
+    const notLive = buildPhoneSidebarSnapshot(withMoa(moa('gone', true)));
+    expect(notLive).not.toHaveProperty('moa');
+    const unset = buildPhoneSidebarSnapshot(withMoa(moa(null, true, 'unset')));
+    expect(unset).not.toHaveProperty('hqWorkspaceId');
+    expect(unset).not.toHaveProperty('moa');
   });
 });
