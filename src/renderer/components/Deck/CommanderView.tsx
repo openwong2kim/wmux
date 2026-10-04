@@ -452,7 +452,7 @@ export function CommanderViewContent({
         {/* Moa's "Remember this?" card waits on the operator, so it sits at the
             top of the panel, above the TUI, never inside the collapsed rail.
             It is Moa's own: it shows whichever workspace the deck is on. */}
-        <MoaMemoryCard t={t} className="px-3 pt-2 shrink-0 max-h-[55%] overflow-y-auto" />
+        <MoaMemoryCard t={t} className="px-3 pt-2 shrink-0 max-h-[55%] min-h-0 flex flex-col" />
         <div className="flex flex-col flex-1 min-h-0 px-3 py-2">
           <BrainTerminalEmbed ptyId={brainPtyId} />
         </div>
