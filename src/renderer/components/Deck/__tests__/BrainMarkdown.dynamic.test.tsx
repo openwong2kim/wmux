@@ -30,6 +30,16 @@ function render(source: string): void {
 }
 
 describe('renderBrainMarkdown', () => {
+  it('renders consecutive > lines as one blockquote, markdown inside', () => {
+    render('before\n> ## Limit\n> **bold** text\n>\n> - item\nafter');
+    const q = container.querySelectorAll('[data-brain-md-quote]');
+    expect(q).toHaveLength(1);
+    expect(q[0].querySelector('[data-brain-md-heading]')?.textContent).toBe('Limit');
+    expect(q[0].querySelector('strong')?.textContent).toBe('bold');
+    expect(q[0].querySelector('[data-brain-md-li]')?.textContent).toContain('item');
+    expect(container.textContent).not.toContain('>');
+  });
+
   it('keeps links inert by default (the deck never navigates)', () => {
     render('see [docs](https://example.com) and https://example.com/x');
     expect(container.querySelector('a')).toBeNull();

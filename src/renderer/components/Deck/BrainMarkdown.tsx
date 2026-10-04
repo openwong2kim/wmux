@@ -5,8 +5,8 @@
 // bold — and rendering them as raw text made every reply read like a diff.
 // This is a deliberately tiny, dependency-free markdown SUBSET renderer for
 // the brain bubble: fenced code blocks, #/##/### headings, bullet + numbered
-// lists (with read-only task checkboxes), GFM tables, and inline bold /
-// italic / `code` / [links]. Anything else stays
+// lists (with read-only task checkboxes), blockquotes, GFM tables, and
+// inline bold / italic / `code` / [links]. Anything else stays
 // literal text — no HTML injection surface (everything renders through React
 // text nodes, never dangerouslySetInnerHTML).
 //
@@ -203,6 +203,25 @@ export function renderBrainMarkdown(source: string, opts: MarkdownOptions = {}):
             </tbody>
           </table>
         </div>,
+      );
+      continue;
+    }
+
+    // Blockquote: consecutive `>` lines, rendered (recursively) inside a quiet bar.
+    if (/^\s*>/.test(line)) {
+      const quoted: string[] = [];
+      while (i < lines.length && /^\s*>/.test(lines[i])) {
+        quoted.push(lines[i].replace(/^\s*>\s?/, ''));
+        i++;
+      }
+      out.push(
+        <blockquote
+          key={out.length}
+          data-brain-md-quote
+          className="my-1 pl-3 border-l-2 border-[var(--line)] text-[var(--text-sub)]"
+        >
+          {renderBrainMarkdown(quoted.join('\n'), opts)}
+        </blockquote>,
       );
       continue;
     }

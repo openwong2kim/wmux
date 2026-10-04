@@ -164,18 +164,21 @@ export function ShipButton({ repoPath, mergeActive, refreshKey = 0, changeKey = 
         >
           {busy ? t(`git.ship.busy.${busy}`) : t(LABEL[primary.action])}
         </button>
-        <button
-          type="button"
-          className={`wmux-git-primary wmux-git-ship-caret ${FOCUS_RING}`}
-          aria-label={t('git.ship.more')}
-          aria-haspopup="menu"
-          aria-expanded={menuOpen}
-          disabled={menu.length === 0 || busy !== null}
-          onClick={() => setMenuOpen((v) => !v)}
-          data-git-ship-more
-        >
-          <Icon size={12}><polyline points="3.5,5.5 7,9 10.5,5.5" /></Icon>
-        </button>
+        {/* The menu is drawn only when it has something in it. */}
+        {menu.length > 0 && (
+          <button
+            type="button"
+            className={`wmux-git-primary wmux-git-ship-caret ${FOCUS_RING}`}
+            aria-label={t('git.ship.more')}
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            disabled={busy !== null}
+            onClick={() => setMenuOpen((v) => !v)}
+            data-git-ship-more
+          >
+            <Icon size={12}><polyline points="3.5,5.5 7,9 10.5,5.5" /></Icon>
+          </button>
+        )}
       </div>
       {menuOpen && (
         <Popover role="menu" className="wmux-git-ship-menu" data-testid="git-ship-menu">

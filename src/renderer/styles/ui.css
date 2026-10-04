@@ -2128,8 +2128,8 @@ html[data-fullscreen] .wmux-shell-body {
 .wmux-git-bar-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; flex-shrink: 0; }
 .wmux-git-ship { position: relative; display: flex; align-items: center; gap: 6px; }
 .wmux-git-ship-group { display: inline-flex; }
-.wmux-git-ship-primary { border-radius: 6px 0 0 6px; }
-.wmux-git-ship-caret { display: inline-flex; align-items: center; justify-content: center; width: 24px; padding: 0; border-radius: 0 6px 6px 0; border-left: 1px solid color-mix(in srgb, var(--primary-ink) 25%, transparent); }
+.wmux-git-primary.wmux-git-ship-primary:not(:last-child) { border-radius: 6px 0 0 6px; }
+.wmux-git-primary.wmux-git-ship-caret { display: inline-flex; align-items: center; justify-content: center; width: 24px; padding: 0; border-radius: 0 6px 6px 0; border-left: 1px solid color-mix(in srgb, var(--primary-ink) 25%, transparent); }
 .wmux-git-primary:disabled { opacity: .45; }
 .wmux-git-ship-reason { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text-muted); }
 .wmux-git-ship-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 20; min-width: 160px; display: flex; flex-direction: column; }
