@@ -52,7 +52,7 @@ export function MoaPanelTop({
   );
   return (
     // Focusable so an answer that empties the list has somewhere to put focus.
-    <div data-moa-panel-top tabIndex={-1} className="shrink-0 max-h-[40%] overflow-y-auto outline-none">
+    <div data-moa-panel-top tabIndex={-1} className="shrink-0 max-h-[30%] overflow-y-auto outline-none">
       <MoaWaitingOnYou decisions={named} onResolve={onResolve} t={t} />
       <MoaTaskCards links={cards} pendingDecisions={decisions} workspaceName={workspaceName} t={t} />
     </div>
