@@ -48,6 +48,7 @@ import { parseTerminalPrompt } from '../../../daemon/approvals/terminalPromptPar
 import { checkHqLane, hqResolvedBy, type HqLanePorts } from '../../deck/hqApprovalLane';
 import { getHqWorkspaceId, hqPresence, isHqApprovalPressEnabled, isMoaEnabled } from '../../deck/deckHqStore';
 import { loadWorkspaceMode } from '../../deck/deckAutonomyStore';
+import { workspaceFactsSettled } from '../../workspace/workspaceFactsFeed';
 
 /** The daemon's approval list, narrowed to what target resolution needs. */
 export interface PendingApproval {
@@ -190,6 +191,11 @@ export const PRESS_REFUSAL_HINTS: Readonly<Record<string, string>> = {
   'owner-autonomy-off': "this worker's owner has autonomy off — a human answers it",
   'owner-not-danger':
     "this worker's owner is not in danger mode, so its approvals are a human's — raise it with deck_ask_decision",
+  'attribution-inexact':
+    'this prompt was tied to the pane by its workspace or folder, not by the pane id, so it may come from ' +
+    'an agent wmux did not launch — a human answers it',
+  'facts-pending':
+    'wmux is still handing the daemon a policy change (a mode or task just changed) — read the pane and try again in a moment',
 };
 
 /**
@@ -203,6 +209,7 @@ export const HQ_REFUSAL_HINTS: Readonly<Record<string, string>> = {
   'hq-press-off': 'the operator has not turned on HQ approval pressing (Settings → Moa)',
   'hq-choice-key': 'the HQ lane only ever answers with the record\'s own option — omit choiceKey',
   'task-closed': 'that worker has no open task, so it is no longer delegated',
+  'hq-lane-closed': 'the HQ lane closed while the press was queued — nothing was approved',
   'owner-ambiguous': 'that worker has more than one open owner, so the HQ cannot act for one of them',
   'hq-approve-by-rule':
     'the HQ does not approve another owner\'s worker: approvals that pass the rule are pressed ' +
@@ -363,6 +370,8 @@ export interface ApprovalsRpcDeps {
   getLedger?: () => TaskLedger;
   /** Injected in tests; defaults to the HQ store, presence and autonomy store. */
   hq?: Omit<HqLanePorts, 'ledger'>;
+  /** Whether the daemon holds main's current facts; defaults to the publisher. */
+  factsSettled?: () => boolean;
 }
 
 function defaultHqPorts(): Omit<HqLanePorts, 'ledger'> {
@@ -485,7 +494,12 @@ export function registerApprovalsRpc(
     // switch — falls through to the plain not-your-task refusal.
     const hqPorts = { ...(deps.hq ?? defaultHqPorts()), ledger: ledgerOf };
     if (!owned && callerWs === hqPorts.getHq()) {
-      const lane = checkHqLane(callerWs, record, parsed.choiceKey !== undefined ? { choiceKey: parsed.choiceKey } : {}, hqPorts);
+      const lane = checkHqLane(
+        callerWs,
+        record,
+        { ...(parsed.choiceKey !== undefined ? { choiceKey: parsed.choiceKey } : {}), forDeny: parsed.decision === 'deny' },
+        hqPorts,
+      );
       const hqRefusal = (reason: string) => ({
         ok: false as const,
         reason,
@@ -522,6 +536,24 @@ export function registerApprovalsRpc(
           'you as its owner). Answering another orchestrator\'s worker, or a human\'s own pane, ' +
           'is not something this tool does — raise it with deck_ask_decision instead.',
       };
+    }
+
+    // An approve is judged on the owner's LIVE word and on facts the daemon
+    // already holds: a mode lowered a moment ago has not necessarily reached
+    // the daemon's table yet.
+    if (parsed.decision === 'approve') {
+      const live = hqPorts.modeOf(callerWs);
+      const stop = live !== 'danger' ? 'owner-not-danger' : !(deps.factsSettled ?? workspaceFactsSettled)() ? 'facts-pending' : null;
+      if (stop) {
+        return {
+          ok: false,
+          reason: stop,
+          approvalId,
+          ptyId: targetPtyId,
+          note: PRESS_REFUSAL_HINTS[stop],
+          ...(stop === 'owner-not-danger' ? { escalate: 'deck_ask_decision' } : {}),
+        };
+      }
     }
 
     const result = (await dc.rpc('daemon.approvals.resolve', {

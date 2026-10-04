@@ -460,18 +460,39 @@ function summarizeToolInput(payload: Record<string, unknown> | undefined): strin
   return undefined;
 }
 
+/** Bounds on the critical scan's walk of a tool input. Past either, the input
+ *  is treated as critical: an unread remainder is not evidence of safety, and
+ *  the cost of the over-fire is one approval going to a human. */
+const RISK_SCAN_MAX_CHARS = 1_000_000;
+const RISK_SCAN_MAX_NODES = 10_000;
+
 /**
  * Whether the gated call's FULL input names a critical action. Judged before
  * `summarizeToolInput` cuts the text to 200 characters: an `rm -rf` past the
- * cut is still the call being approved. Every string field counts — a match in
- * a file's content over-fires, which only sends the approval to a human.
+ * cut is still the call being approved. Every string LEAF counts, however
+ * deep — MultiEdit's `edits[]` and an MCP tool's nested arguments included. A
+ * match in a file's content over-fires, which only sends it to a human.
  */
-function gateInputIsCritical(payload: Record<string, unknown> | undefined): boolean {
-  const toolInput = payload?.['tool_input'];
-  if (!toolInput || typeof toolInput !== 'object' || Array.isArray(toolInput)) return false;
-  return hasCriticalRisk(
-    ...Object.values(toolInput as Record<string, unknown>).filter((v): v is string => typeof v === 'string'),
-  );
+export function gateInputIsCritical(payload: Record<string, unknown> | undefined): boolean {
+  const root = payload?.['tool_input'];
+  if (root === undefined || root === null) return false;
+  const stack: unknown[] = [root];
+  let nodes = 0;
+  let chars = 0;
+  while (stack.length > 0) {
+    const v = stack.pop();
+    if (++nodes > RISK_SCAN_MAX_NODES) return true;
+    if (typeof v === 'string') {
+      chars += v.length;
+      if (chars > RISK_SCAN_MAX_CHARS) return true;
+      if (hasCriticalRisk(v)) return true;
+    } else if (Array.isArray(v)) {
+      for (const item of v) stack.push(item);
+    } else if (v && typeof v === 'object') {
+      for (const item of Object.values(v as Record<string, unknown>)) stack.push(item);
+    }
+  }
+  return false;
 }
 
 /**
@@ -803,6 +824,8 @@ export class HookIngest {
       toolName,
       ...(toolInputSummary ? { toolInputSummary } : {}),
       ...(gateInputIsCritical(signal.payload) ? { risk: 'critical' as const } : {}),
+      // Only a hook that named this pane exactly may be approved by a machine.
+      attribution: signal.ptyId === sessionId ? 'exact' : 'inexact',
     }) ?? crypto.randomUUID();
 
     this.broadcast(sessionId, {
@@ -1219,6 +1242,7 @@ export class HookIngest {
     const legacy = (): void => approvals.noteHookAwaitingInput({
       sessionId,
       agent: signal.agent,
+      attribution: signal.ptyId === sessionId ? 'exact' : 'inexact',
       ...(workspaceId ? { workspaceId } : {}),
       ...(permId ? { requestId: permId } : {}),
       ...(asked.question ? { question: asked.question } : {}),

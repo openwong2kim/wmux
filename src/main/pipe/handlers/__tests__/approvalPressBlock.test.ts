@@ -92,9 +92,23 @@ function wire(options: {
       sleep: async () => { live.betweenPasteAndEnter?.(); },
     },
   );
-  registerApprovalsRpc(router, () => dc as never, { getLedger: () => LEDGER });
+  registerApprovalsRpc(router, () => dc as never, {
+    getLedger: () => LEDGER,
+    hq: NO_HQ,
+    factsSettled: () => true,
+  });
   return { router, token: mintCommanderToken('ws-brain'), writes, gatedSubmit: input.gatedSubmit };
 }
+
+/** No HQ, the owner live in danger: these tests pin the daemon's refusals,
+ *  which main's own pre-checks would otherwise shadow. */
+const NO_HQ = {
+  getHq: () => null,
+  isMoaEnabled: () => true,
+  presence: () => 'unset' as const,
+  isOptedIn: () => false,
+  modeOf: () => 'danger' as const,
+};
 
 /** The pane the brain owns: a record in a task workspace it delegated. */
 const OWNED = { id: 'ap-1', sessionId: 'pty-w', workspaceId: 'ws-task' };
@@ -382,7 +396,7 @@ describe('an ordinary AskUserQuestion (awaiting_input record)', () => {
       },
     };
     const router = new RpcRouter();
-    registerApprovalsRpc(router, () => dc as never, { getLedger: () => LEDGER });
+    registerApprovalsRpc(router, () => dc as never, { getLedger: () => LEDGER, hq: NO_HQ, factsSettled: () => true });
     const res = (await router.dispatch({
       id: '1',
       method: 'approval.press',

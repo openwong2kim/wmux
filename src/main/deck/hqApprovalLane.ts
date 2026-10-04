@@ -13,10 +13,14 @@
 //   - the record's workspace has exactly ONE open task, so exactly one owner;
 //   - that owner's LIVE mode is `danger` (daemon: ownerMode);
 //   - the task workspace's own approvalPress capability is on (daemon);
-//   - the record came from a hook (daemon) and is a permission gate — never an
+//   - the record came from a hook that named its pane exactly (daemon:
+//     `attribution-inexact`) and is a permission gate — never an
 //     AskUserQuestion, whose "approve" picks option 1 of a question;
 //   - the record is not flagged critical (daemon: `critical-risk`);
-//   - no choiceKey — the lane only ever says the record's own "yes".
+//   - no choiceKey — the lane only ever says the record's own "yes";
+//   - the daemon holds main's CURRENT facts and lane policy (the publisher is
+//     settled), and the lane policy is still the generation checked here when
+//     the daemon releases the gate (daemon: `hq-lane-closed`).
 // The daemon is the single enforcement point for the facts it holds; main's
 // pre-checks only keep it from being asked about records that cannot pass.
 //
@@ -45,7 +49,8 @@ export type HqLaneRefusal =
   | 'hq-choice-key'
   | 'record-has-no-workspace'
   | 'task-closed'
-  | 'owner-ambiguous';
+  | 'owner-ambiguous'
+  | 'facts-pending';
 
 export interface HqLanePorts {
   getHq: () => string | null;
@@ -66,16 +71,18 @@ export interface HqLanePorts {
 export function checkHqLane(
   callerWs: string,
   record: { workspaceId?: string },
-  opts: { choiceKey?: string },
+  opts: { choiceKey?: string; forDeny?: boolean },
   ports: HqLanePorts,
 ): { ok: true; hq: string; owner: string } | { ok: false; reason: HqLaneRefusal } {
   const hq = ports.getHq();
   if (hq === null) return { ok: false, reason: 'hq-unset' };
   if (!callerWs || callerWs !== hq) return { ok: false, reason: 'not-hq' };
-  if (!ports.isMoaEnabled()) return { ok: false, reason: 'moa-off' };
+  // A deny is the safe direction: it does not need Moa's switch or the
+  // approve opt-in, only that it answers for exactly one owner.
+  if (!opts.forDeny && !ports.isMoaEnabled()) return { ok: false, reason: 'moa-off' };
   const presence = ports.presence(hq);
   if (presence !== 'present') return { ok: false, reason: presence === 'missing' ? 'hq-missing' : 'hq-unknown' };
-  if (!ports.isOptedIn()) return { ok: false, reason: 'hq-press-off' };
+  if (!opts.forDeny && !ports.isOptedIn()) return { ok: false, reason: 'hq-press-off' };
   if (opts.choiceKey !== undefined) return { ok: false, reason: 'hq-choice-key' };
   if (!record.workspaceId) return { ok: false, reason: 'record-has-no-workspace' };
   const owners = new Set(
@@ -100,10 +107,14 @@ export interface LanePendingRecord {
   workspaceId?: string;
   kind?: string;
   risk?: string;
+  attribution?: string;
 }
 
 export interface HqAutoPressPorts extends HqLanePorts {
   getDaemonClient: () => DaemonClient | null;
+  /** The facts publisher: is the daemon current, which table, which lane
+   *  generation does it hold. */
+  facts: { settled: () => boolean; ackedSeq: () => number; ackedLaneGeneration: () => number };
   /** A workspace's display name for the pointer (falls back to the id). */
   nameOf?: (workspaceId: string) => string | undefined;
   log?: (line: string) => void;
@@ -126,19 +137,46 @@ function safeName(raw: string): string {
   return flat.length > 60 ? `${flat.slice(0, 59)}…` : flat;
 }
 
+/**
+ * Refusals that may only mean the daemon judged by facts older than main's:
+ * re-evaluated once a newer table is acknowledged. Every other refusal is a
+ * verdict on the record and final for its id.
+ */
+const FACTS_LAG_REFUSALS: ReadonlySet<string> = new Set([
+  'scope-unavailable',
+  'workspace-unknown',
+  'not-a-task-workspace',
+  'autonomy-unknown',
+  'autonomy-off',
+  'unknown-autonomy-mode',
+  'press-capability-unknown',
+  'press-capability-off',
+  'owner-mode-unknown',
+  'owner-autonomy-off',
+  'owner-not-danger',
+  'hq-lane-closed',
+]);
+
 export function createHqAutoPress(ports: HqAutoPressPorts): HqAutoPress {
   const log = ports.log ?? ((line: string) => console.log(line));
-  // One attempt per record: a refusal is final for that id, so a record the
-  // rule refused is never retried into a press. Pruned to what is pending.
-  const attempted = new Set<string>();
-  // owner → counts since Moa last saw them.
+  // id → 'final' (answered, or refused on the record itself) or the acked
+  // facts seq it was refused under (re-tried once a newer table lands).
+  // Pruned to what is pending.
+  const attempted = new Map<string, number | 'final'>();
+  // owner → counts since Moa last saw them; past the cap, totals only.
   const pressed = new Map<string, number>();
   const leftCritical = new Map<string, number>();
+  const overflow = { pressed: 0, critical: 0, owners: new Set<string>() };
   let running: Promise<void> | null = null;
   let again = false;
 
   const bump = (m: Map<string, number>, owner: string): void => {
-    if (m.size >= MAX_POINTER_LINES && !m.has(owner)) return;
+    if (pressed.size + leftCritical.size >= MAX_POINTER_LINES && !m.has(owner)) {
+      if (m === pressed) overflow.pressed += 1;
+      else overflow.critical += 1;
+      overflow.owners.add(owner);
+      return;
+    }
     m.set(owner, (m.get(owner) ?? 0) + 1);
   };
 
@@ -157,16 +195,23 @@ export function createHqAutoPress(ports: HqAutoPressPorts): HqAutoPress {
       return;
     }
     const live = new Set(pending.map((r) => r.id));
-    for (const id of attempted) if (!live.has(id)) attempted.delete(id);
+    for (const id of attempted.keys()) if (!live.has(id)) attempted.delete(id);
 
     for (const record of pending) {
-      if (attempted.has(record.id)) continue;
+      const prior = attempted.get(record.id);
+      if (prior === 'final') continue;
       if (record.kind !== 'awaiting_permission') continue;
+      if (record.attribution !== 'exact') continue;
+      // The daemon must hold what main holds now; the push that settles it
+      // runs this pass again.
+      if (!ports.facts.settled()) return;
+      const seqNow = ports.facts.ackedSeq();
+      if (prior !== undefined && prior >= seqNow) continue;
       const lane = checkHqLane(hq, record, {}, ports);
       if (!lane.ok) continue;
       if (ports.modeOf(lane.owner) !== 'danger') continue;
       if (record.risk === 'critical') {
-        attempted.add(record.id);
+        attempted.set(record.id, 'final');
         bump(leftCritical, lane.owner);
         log(`[hq-lane] left ${record.id} for a human: critical (owner ${lane.owner})`);
         continue;
@@ -178,6 +223,9 @@ export function createHqAutoPress(ports: HqAutoPressPorts): HqAutoPress {
           decision: 'approve',
           resolvedBy: hqResolvedBy(lane.hq, lane.owner),
           resolver: 'automated',
+          // Re-checked by the daemon at release (see the header).
+          lane: 'hq',
+          laneGeneration: ports.facts.ackedLaneGeneration(),
         })) as typeof result;
       } catch (err) {
         // Transport failure: no answer either way, so the next pass may retry.
@@ -185,9 +233,9 @@ export function createHqAutoPress(ports: HqAutoPressPorts): HqAutoPress {
         continue;
       }
       const why = result?.ok ? null : (result?.pressRefusal ?? result?.reason ?? 'unknown');
-      // A table the daemon has not received yet is not a verdict on this
-      // record (a connect-time race); every other answer is final for its id.
-      if (why !== 'scope-unavailable') attempted.add(record.id);
+      // A refusal the daemon may have reached on older facts is retried under
+      // the next table; anything else is final for this id.
+      attempted.set(record.id, why !== null && FACTS_LAG_REFUSALS.has(why) ? seqNow : 'final');
       if (why === null) {
         bump(pressed, lane.owner);
         log(`[hq-lane] pressed ${record.id} on ${record.sessionId} (hq ${lane.hq}, owner ${lane.owner})`);
@@ -219,7 +267,7 @@ export function createHqAutoPress(ports: HqAutoPressPorts): HqAutoPress {
   };
 
   const takePointer = (): string | null => {
-    if (pressed.size === 0 && leftCritical.size === 0) return null;
+    if (pressed.size === 0 && leftCritical.size === 0 && overflow.owners.size === 0) return null;
     const label = (ws: string): string => `"${safeName(ports.nameOf?.(ws) ?? ws) || ws}"`;
     const plural = (n: number): string => (n === 1 ? '1 approval' : `${n} approvals`);
     const lines: string[] = [];
@@ -230,8 +278,18 @@ export function createHqAutoPress(ports: HqAutoPressPorts): HqAutoPress {
           'already in their approval inbox; do not raise a decision for it',
       );
     }
+    if (overflow.owners.size > 0) {
+      const parts = [
+        overflow.pressed > 0 ? `pressed ${plural(overflow.pressed)}` : '',
+        overflow.critical > 0 ? `left ${plural(overflow.critical)} to the human (critical)` : '',
+      ].filter(Boolean);
+      lines.push(`[wmux] …and ${overflow.owners.size} more workspaces: ${parts.join(', ')}`);
+    }
     pressed.clear();
     leftCritical.clear();
+    overflow.pressed = 0;
+    overflow.critical = 0;
+    overflow.owners.clear();
     return lines.join('\n');
   };
 

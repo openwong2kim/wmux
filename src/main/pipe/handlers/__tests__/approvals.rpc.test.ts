@@ -60,7 +60,8 @@ function wire(options: {
     // The default row: pty-w's workspace is a task ws-brain delegated.
     getLedger: () => fakeLedger(options.ledger ?? [{ taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-brain' }]),
     // No HQ: these tests pin the owner lane (the HQ lane has its own file).
-    hq: { getHq: () => null, isMoaEnabled: () => true, presence: () => 'unset', isOptedIn: () => false, modeOf: () => 'off' },
+    hq: { getHq: () => null, isMoaEnabled: () => true, presence: () => 'unset', isOptedIn: () => false, modeOf: () => 'danger' },
+    factsSettled: () => true,
   });
 }
 

@@ -119,7 +119,8 @@ describe('hook → approval registry wiring', () => {
     expect(ingest.handle(makeSignal())).toEqual({ ok: true });
 
     expect(approvals.created).toEqual([
-      { sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-real' },
+      // Routed by cwd (the signal names no pane), so not exact.
+      { sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-real', attribution: 'inexact' },
     ]);
   });
 

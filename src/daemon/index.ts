@@ -651,6 +651,7 @@ function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalR
     // pushed a table at all, which is what makes a missing integration report
     // as `scope-unavailable` instead of looking like a policy refusal.
     pressScope: (workspaceId) => workspaceFacts.get(workspaceId),
+    hqLane: () => workspaceFacts.hqLane(),
     log: (level, message) => log(level, message),
   });
 }
@@ -4279,7 +4280,7 @@ function registerRpcHandlers(
     if (!firstPartyOnly(ctx.clientId, 'daemon.workspaceFacts.set')) {
       return { ok: false, error: 'daemon.workspaceFacts.set is first-party only' };
     }
-    const payload = params as { facts?: unknown; seq?: unknown };
+    const payload = params as { facts?: unknown; seq?: unknown; lane?: unknown };
     if (!Array.isArray(payload?.facts)) {
       return { ok: false, error: 'daemon.workspaceFacts.set requires a facts array' };
     }
@@ -4300,6 +4301,7 @@ function registerRpcHandlers(
     const result = workspaceFacts.replace(
       payload.facts as WorkspaceFactRowInput[],
       payload.seq,
+      payload.lane,
     );
     if (!result.ok) {
       // A push that lost a race. Not an error the caller must handle — the

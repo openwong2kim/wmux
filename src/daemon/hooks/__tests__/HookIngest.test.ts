@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   HookIngest,
+  gateInputIsCritical,
   resolveSessionIdForSignal,
   type DetectorHeldEventData,
   type HookAgentEventData,
@@ -985,6 +986,27 @@ describe('HookIngest', () => {
         payload: { tool_name: 'Bash', tool_input: { command: 'ls -la' } },
       }));
       expect(seen[0]!.risk).toBeUndefined();
+    });
+
+    it('finds a critical command in nested input: MultiEdit edits[] and an MCP argument tree', () => {
+      expect(gateInputIsCritical({ tool_input: { file_path: 'a.sh', edits: [{ old_string: 'x', new_string: 'rm -rf /tmp/y ' }] } })).toBe(true);
+      expect(gateInputIsCritical({ tool_input: { args: { steps: [{ run: { sh: 'git push --force origin main' } }] } } })).toBe(true);
+      expect(gateInputIsCritical({ tool_input: { edits: [{ old_string: 'a', new_string: 'b' }] } })).toBe(false);
+      // Past the walk's bounds the unread rest is not evidence of safety.
+      expect(gateInputIsCritical({ tool_input: { content: 'a'.repeat(1_000_001) } })).toBe(true);
+    });
+
+    it('marks a gate exact only when the hook named the pane, inexact when routed by cwd', () => {
+      const base = makeDeps();
+      const seen: Array<{ attribution?: string }> = [];
+      const ingestWithGate = new HookIngest({
+        ...base.deps,
+        gateConfig: () => ({ gatedTools: ['Bash'] }),
+        approvals: { ...base.deps.approvals, noteGateAwaiting: (input) => { seen.push(input); return 'gate-id'; } },
+      });
+      ingestWithGate.handlePermissionGate(makeSignal({ kind: 'agent.awaiting_permission', ptyId: 'pty-a', payload: { tool_name: 'Bash' } }));
+      ingestWithGate.handlePermissionGate(makeSignal({ kind: 'agent.awaiting_permission', ptyId: undefined, payload: { tool_name: 'Bash' } }));
+      expect(seen.map((g) => g.attribution)).toEqual(['exact', 'inexact']);
     });
 
     it('passes a bypassPermissions session straight through without opening a gate', () => {

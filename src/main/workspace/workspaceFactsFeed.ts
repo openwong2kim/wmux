@@ -58,8 +58,10 @@ export const WORKSPACE_FACTS_DEBOUNCE_MS = 250;
 type AutonomyMap = Record<string, Partial<WorkspaceAutonomy>>;
 
 export interface WorkspaceFactsFeedPorts {
-  /** Send the table. Rejections are swallowed by `publish`. */
-  push: (rows: WorkspaceFactRow[], seq: number) => Promise<unknown>;
+  /** Send the table. A rejection leaves the publisher unsettled. */
+  push: (rows: WorkspaceFactRow[], seq: number, lane: HqLanePolicyWire) => Promise<unknown>;
+  /** The HQ lane's live policy inputs; absent = closed. */
+  lanePolicy?: () => { open: boolean; hq: string | null };
   /** Injected in tests; defaults to the main-hosted ledger. */
   ledger?: () => TaskLedger;
   /** Injected in tests; defaults to the deck-autonomy store. */
@@ -170,23 +172,47 @@ export function invalidateAutonomyCache(): void {
 
 // ── Publishing ──────────────────────────────────────────────────────────────
 
+/** The HQ lane policy main publishes beside the table (see the daemon's
+ *  workspaceFacts.ts). `generation` moves whenever `open` or the HQ does. */
+export interface HqLanePolicyWire {
+  open: boolean;
+  generation: number;
+}
+
+export interface WorkspaceFactsPublisher {
+  /** Publish now, awaiting the push. Used for the connect-time seed and for
+   *  every autonomy write — a downgrade must not wait for a debounce. */
+  publishNow: () => Promise<void>;
+  /** Coalescing publish: latest wins, at most one in flight. */
+  schedule: () => void;
+  /** Publish now if the HQ lane policy differs from the one last sent. */
+  publishIfLaneChanged: () => void;
+  /**
+   * True only when every requested publish has been ACKNOWLEDGED by the daemon:
+   * nothing debounced, nothing in flight, the last push did not fail. An
+   * automated approve waits for this — a fact main has changed but the daemon
+   * has not received is a fact the daemon would judge by its old value.
+   */
+  settled: () => boolean;
+  /** The seq of the last acknowledged table (0 = none). */
+  ackedSeq: () => number;
+  /** The lane generation the daemon holds (last acknowledged). */
+  ackedLaneGeneration: () => number;
+  /** Cancel a pending debounce (shutdown / tests). */
+  dispose: () => void;
+}
+
 /**
- * Build and send once, stamping the next sequence number. Never throws — the
- * daemon keeps its previous table.
+ * Build and send, stamping the next sequence number. Never throws — the
+ * daemon keeps its previous table, and `settled()` stays false until a later
+ * push lands, so automated approves wait rather than trust the old table.
  *
  * The counter is per PROCESS and starts at 1. A daemon that outlives main
  * clears its table when main's pipe client disconnects, so a fresh main
  * counting from 1 again is never compared against the dead one's high-water
  * mark.
  */
-export function createWorkspaceFactsPublisher(ports: WorkspaceFactsFeedPorts): {
-  /** Publish now, awaiting the push. Used for the connect-time seed. */
-  publishNow: () => Promise<void>;
-  /** Coalescing publish: latest wins, at most one in flight. */
-  schedule: () => void;
-  /** Cancel a pending debounce (shutdown / tests). */
-  dispose: () => void;
-} {
+export function createWorkspaceFactsPublisher(ports: WorkspaceFactsFeedPorts): WorkspaceFactsPublisher {
   let seq = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
   // One push at a time. The debounce alone would still let a second push start
@@ -194,11 +220,35 @@ export function createWorkspaceFactsPublisher(ports: WorkspaceFactsFeedPorts): {
   // `seq` makes that survivable; not opening it is better.
   let inFlight: Promise<void> | null = null;
   let again = false;
+  // Requested vs acknowledged: `settled()` is their equality.
+  let wanted = 0;
+  let acked = 0;
+  let ackedSeqValue = 0;
+  // Lane policy: what was last sent, and the generation counter.
+  let laneKey: string | null = null;
+  let laneGeneration = 0;
+  let ackedLaneGen = 0;
+
+  const currentLane = (): { key: string; open: boolean } => {
+    const p = ports.lanePolicy?.() ?? { open: false, hq: null };
+    return { key: `${p.open ? 1 : 0}|${p.hq ?? ''}`, open: p.open };
+  };
 
   const send = async (): Promise<void> => {
     seq += 1;
+    const mySeq = seq;
+    const myWant = wanted;
+    const lane = currentLane();
+    if (lane.key !== laneKey) {
+      laneKey = lane.key;
+      laneGeneration += 1;
+    }
+    const myGen = laneGeneration;
     try {
-      await ports.push(buildWorkspaceFacts(ports), seq);
+      await ports.push(buildWorkspaceFacts(ports), mySeq, { open: lane.open, generation: myGen });
+      acked = Math.max(acked, myWant);
+      ackedSeqValue = mySeq;
+      ackedLaneGen = myGen;
     } catch (err) {
       console.warn(`[approvals] could not publish the workspace fact table: ${String(err)}`);
     }
@@ -223,17 +273,47 @@ export function createWorkspaceFactsPublisher(ports: WorkspaceFactsFeedPorts): {
   };
 
   return {
-    publishNow: () => pump(),
+    publishNow: () => {
+      wanted += 1;
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      return pump();
+    },
     schedule: () => {
+      wanted += 1;
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         timer = null;
         void pump();
       }, WORKSPACE_FACTS_DEBOUNCE_MS);
     },
+    publishIfLaneChanged: () => {
+      if (currentLane().key === laneKey) return;
+      wanted += 1;
+      void pump();
+    },
+    settled: () => timer === null && inFlight === null && acked === wanted,
+    ackedSeq: () => ackedSeqValue,
+    ackedLaneGeneration: () => ackedLaneGen,
     dispose: () => {
       if (timer) clearTimeout(timer);
       timer = null;
     },
   };
+}
+
+// ── Process registration (main/index.ts), read by approval.press ─────────────
+
+let registered: WorkspaceFactsPublisher | null = null;
+
+export function registerWorkspaceFactsPublisher(p: WorkspaceFactsPublisher | null): void {
+  registered = p;
+}
+
+/** Whether the daemon holds main's current facts. False before main wires a
+ *  publisher: an unknown is never permission. */
+export function workspaceFactsSettled(): boolean {
+  return registered?.settled() ?? false;
 }

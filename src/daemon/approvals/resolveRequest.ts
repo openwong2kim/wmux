@@ -83,5 +83,13 @@ export function parseApprovalResolveRequest(
     resolvedBy: typeof params['resolvedBy'] === 'string' ? params['resolvedBy'] : '',
     resolver: ctx.isFirstParty && !declaredAutomated ? 'human' : 'automated',
     ...(hasChoiceKey ? { choiceKey: rawChoice as string } : {}),
+    // Restriction-only (see ApprovalResolveParams.lane): declaring it can only
+    // add the lane check, never skip one.
+    ...(params['lane'] === 'hq'
+      ? {
+          lane: 'hq' as const,
+          laneGeneration: typeof params['laneGeneration'] === 'number' ? params['laneGeneration'] : -1,
+        }
+      : {}),
   };
 }

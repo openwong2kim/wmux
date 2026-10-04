@@ -222,6 +222,32 @@ async function write(dir: string | undefined, next: HqFile): Promise<void> {
   } finally {
     cache.delete(p);
   }
+  emitHqStoreWritten();
+}
+
+// ── Change notification (the HQ approval lane's policy) ─────────────────────
+// Moa's switch, the HQ id and the lane opt-in are part of the policy main
+// publishes to the daemon (workspaceFactsFeed). A bare "something changed"
+// signal, like deckAutonomyStore's: the subscriber recomputes the whole policy.
+
+const hqWriteListeners = new Set<() => void>();
+
+/** Subscribe to "deck-hq.json was rewritten". Returns the unsubscribe. */
+export function onHqStoreWritten(listener: () => void): () => void {
+  hqWriteListeners.add(listener);
+  return () => {
+    hqWriteListeners.delete(listener);
+  };
+}
+
+function emitHqStoreWritten(): void {
+  for (const listener of hqWriteListeners) {
+    try {
+      listener();
+    } catch (err) {
+      console.warn(`[deck:hq] store write listener threw: ${String(err)}`);
+    }
+  }
 }
 
 class HqStoreCorruptError extends Error {

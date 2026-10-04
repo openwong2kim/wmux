@@ -36,6 +36,7 @@ let world: World;
 let calls: Array<{ method: string; params: Record<string, unknown> }>;
 let pending: LanePendingRecord[];
 let reply: unknown;
+let facts: { settled: boolean; seq: number; gen: number };
 
 const ports = (): HqLanePorts => ({
   getHq: () => world.hq,
@@ -65,8 +66,9 @@ beforeEach(() => {
     modes: { 'ws-own': 'danger' },
   };
   calls = [];
-  pending = [{ id: 'ap-1', sessionId: 'pty-w', workspaceId: 'ws-task', kind: 'awaiting_permission' }];
+  pending = [{ id: 'ap-1', sessionId: 'pty-w', workspaceId: 'ws-task', kind: 'awaiting_permission', attribution: 'exact' }];
   reply = { ok: true, durable: true };
+  facts = { settled: true, seq: 1, gen: 7 };
 });
 
 // ── approval.press from the HQ's commander token ────────────────────────────
@@ -77,6 +79,7 @@ describe('approval.press — the HQ branch', () => {
     registerApprovalsRpc({ register: (m: string, h: Handler) => handlers.set(m, h) } as never, () => daemon() as never, {
       getLedger: () => ledger(world.rows) as TaskLedger,
       hq: { getHq: () => world.hq, isMoaEnabled: () => world.moa, presence: () => world.presence, isOptedIn: () => world.optIn, modeOf: (ws) => world.modes[ws] ?? 'off' },
+      factsSettled: () => facts.settled,
     });
     press = handlers.get('approval.press')!;
   });
@@ -112,13 +115,41 @@ describe('approval.press — the HQ branch', () => {
     ['no HQ designated', (w) => { w.hq = null; }, 'not-your-task'],
     ['the HQ missing', (w) => { w.presence = 'missing'; }, 'hq-missing'],
     ['the HQ not yet seen', (w) => { w.presence = 'unknown'; }, 'hq-unknown'],
-    ['Moa off', (w) => { w.moa = false; }, 'moa-off'],
-    ['the opt-in off', (w) => { w.optIn = false; }, 'hq-press-off'],
     ['a closed task', (w) => { w.rows = [{ taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-own', status: 'completed' }]; }, 'task-closed'],
     ['several owners', (w) => { w.rows.push({ taskWorkspaceId: 'ws-task', ownerWorkspaceId: 'ws-two', status: 'working' }); }, 'owner-ambiguous'],
   ])('refuses with %s', async (_label, mutate, reason) => {
     mutate(world);
     expect(await press(deny, as('ws-hq'))).toMatchObject({ ok: false, reason });
+    expect(resolves()).toEqual([]);
+  });
+
+  // A deny is the safe direction: Moa's switch and the approve opt-in do not
+  // gate it — only that it answers for one owner whose mode is not off.
+  it('lets an HQ deny through with Moa off or the opt-in off', async () => {
+    world.moa = false;
+    world.optIn = false;
+    expect(await press(deny, as('ws-hq'))).toMatchObject({ ok: true, decision: 'deny' });
+  });
+
+  it('still names Moa off and the opt-in on an HQ approve', async () => {
+    world.moa = false;
+    expect(await press({ approvalId: 'ap-1', decision: 'approve' }, as('ws-hq'))).toMatchObject({ reason: 'moa-off' });
+    world.moa = true;
+    world.optIn = false;
+    expect(await press({ approvalId: 'ap-1', decision: 'approve' }, as('ws-hq'))).toMatchObject({ reason: 'hq-press-off' });
+  });
+
+  // The owner lane judges the owner's LIVE mode and waits for the daemon to
+  // hold main's current facts.
+  it('re-reads the owner lane caller\'s live mode before an approve', async () => {
+    world.modes['ws-own'] = 'assist';
+    expect(await press({ approvalId: 'ap-1', decision: 'approve' }, as('ws-own'))).toMatchObject({ ok: false, reason: 'owner-not-danger' });
+    expect(resolves()).toEqual([]);
+  });
+
+  it('refuses an owner-lane approve while the daemon does not yet hold main\'s facts', async () => {
+    facts.settled = false;
+    expect(await press({ approvalId: 'ap-1', decision: 'approve' }, as('ws-own'))).toMatchObject({ ok: false, reason: 'facts-pending' });
     expect(resolves()).toEqual([]);
   });
 
@@ -158,7 +189,14 @@ describe('approval.press — the HQ branch', () => {
 
 // ── The rule lane ───────────────────────────────────────────────────────────
 describe('createHqAutoPress — pressing by rule', () => {
-  const lane = () => createHqAutoPress({ ...ports(), getDaemonClient: () => daemon() as never, log: () => undefined, nameOf: () => 'repo A' });
+  const lane = (nameOf: (ws: string) => string = () => 'repo A') =>
+    createHqAutoPress({
+      ...ports(),
+      facts: { settled: () => facts.settled, ackedSeq: () => facts.seq, ackedLaneGeneration: () => facts.gen },
+      getDaemonClient: () => daemon() as never,
+      log: () => undefined,
+      nameOf,
+    });
   const resolves = () => calls.filter((c) => c.method === 'daemon.approvals.resolve');
 
   it('approves a permission gate when every condition holds, and tells Moa afterwards', async () => {
@@ -167,7 +205,10 @@ describe('createHqAutoPress — pressing by rule', () => {
     expect(resolves()).toEqual([
       {
         method: 'daemon.approvals.resolve',
-        params: { id: 'ap-1', decision: 'approve', resolvedBy: hqResolvedBy('ws-hq', 'ws-own'), resolver: 'automated' },
+        params: {
+          id: 'ap-1', decision: 'approve', resolvedBy: hqResolvedBy('ws-hq', 'ws-own'), resolver: 'automated',
+          lane: 'hq', laneGeneration: 7,
+        },
       },
     ]);
     expect(resolves()[0]!.params).not.toHaveProperty('choiceKey');
@@ -194,35 +235,73 @@ describe('createHqAutoPress — pressing by rule', () => {
   });
 
   it('never answers a question — an approve there would pick option 1', async () => {
-    pending = [{ id: 'ap-q', sessionId: 'pty-w', workspaceId: 'ws-task', kind: 'awaiting_input' }];
+    pending = [{ id: 'ap-q', sessionId: 'pty-w', workspaceId: 'ws-task', kind: 'awaiting_input', attribution: 'exact' }];
     await lane().run();
     expect(resolves()).toEqual([]);
   });
 
   it('leaves a critical gate to the human and only says so to Moa', async () => {
-    pending = [{ id: 'ap-c', sessionId: 'pty-w', workspaceId: 'ws-task', kind: 'awaiting_permission', risk: 'critical' }];
+    pending = [{ id: 'ap-c', sessionId: 'pty-w', workspaceId: 'ws-task', kind: 'awaiting_permission', risk: 'critical', attribution: 'exact' }];
     const l = lane();
     await l.run();
     expect(resolves()).toEqual([]);
     expect(l.takePointer()).toContain('do not raise a decision');
   });
 
-  it('retries a record the daemon could not judge yet (no fact table), then stops', async () => {
-    reply = { ok: false, reason: 'out-of-scope', pressRefusal: 'scope-unavailable' };
+  // A refusal the daemon may have reached on older facts is re-tried once a
+  // newer table is acknowledged — and only then.
+  it('re-evaluates a facts-lag refusal under the next acknowledged table, not before', async () => {
+    reply = { ok: false, reason: 'out-of-scope', pressRefusal: 'owner-not-danger' };
     const l = lane();
     await l.run();
+    await l.run();
+    expect(resolves()).toHaveLength(1);
+    facts.seq = 2;
     reply = { ok: true, durable: true };
     await l.run();
     await l.run();
     expect(resolves()).toHaveLength(2);
   });
 
-  it('tries each record once — a refusal is final for that id', async () => {
-    reply = { ok: false, reason: 'out-of-scope', pressRefusal: 'owner-not-danger' };
+  it('treats a refusal on the record itself as final', async () => {
+    reply = { ok: false, reason: 'out-of-scope', pressRefusal: 'attribution-inexact' };
     const l = lane();
     await l.run();
+    facts.seq = 2;
     await l.run();
     expect(resolves()).toHaveLength(1);
     expect(l.takePointer()).toBeNull();
+  });
+
+  it('never presses an inexactly attributed gate', async () => {
+    pending = [{ ...pending[0]!, attribution: 'inexact' }];
+    await lane().run();
+    expect(resolves()).toEqual([]);
+  });
+
+  // A downgrade the daemon has not acknowledged yet (in flight, or the push
+  // failed) holds every lane press.
+  it('presses nothing while the daemon does not hold main\'s current facts', async () => {
+    facts.settled = false;
+    await lane().run();
+    expect(resolves()).toEqual([]);
+    facts.settled = true;
+    await lane().run();
+    expect(resolves()).toHaveLength(1);
+  });
+
+  it('keeps the totals when more owners pressed than the pointer has lines for', async () => {
+    pending = [];
+    world.rows = [];
+    for (let i = 0; i < 23; i++) {
+      world.rows.push({ taskWorkspaceId: `ws-t${i}`, ownerWorkspaceId: `ws-o${i}`, status: 'working' });
+      world.modes[`ws-o${i}`] = 'danger';
+      pending.push({ id: `ap-${i}`, sessionId: `pty-${i}`, workspaceId: `ws-t${i}`, kind: 'awaiting_permission', attribution: 'exact' });
+    }
+    const l = lane((ws) => ws);
+    await l.run();
+    const lines = l.takePointer()!.split('\n');
+    expect(lines).toHaveLength(21);
+    expect(lines[20]).toBe('[wmux] …and 3 more workspaces: pressed 3 approvals');
   });
 });

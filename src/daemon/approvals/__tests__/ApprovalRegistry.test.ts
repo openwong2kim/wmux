@@ -153,7 +153,7 @@ function awaitingInput(
   // By default the record describes PROMPT_ROWS exactly: a press is only ever
   // made into the record's own question, so a record needs one to be pressed.
   return registry.noteHookAwaitingInput({
-    sessionId, agent, workspaceId: 'ws-1', ...PROMPT_RECORD, ...extras,
+    sessionId, agent, workspaceId: 'ws-1', attribution: 'exact', ...PROMPT_RECORD, ...extras,
   });
 }
 
@@ -531,7 +531,7 @@ describe('ApprovalRegistry — supersede and expire', () => {
   async function gatesPlusQuestion(dropped: string[]): Promise<{ h: Harness; survivor: string }> {
     const h = makeRegistry({ notifyGateDropped: (id) => { dropped.push(id); } });
     await h.registry.noteGateAwaiting({
-      sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', toolName: 'Bash',
+      sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', attribution: 'exact', toolName: 'Bash',
     });
     await settle();
     const survivor = await h.registry.noteGateAwaiting({
@@ -1400,6 +1400,7 @@ describe('decideApprovalPress — the four conditions', () => {
     origin: 'hook' as const,
     stillOnScreen: true,
     ownerMode: 'danger',
+    attribution: 'exact' as const,
   };
 
   it('presses when all four hold', () => {
@@ -1527,7 +1528,7 @@ describe('ApprovalRegistry — press scope is enforced at resolve', () => {
       pressScope: () => ({ isTaskWorkspace: true, ...scope }),
       notifyGateResolved: (id, decision) => broker.notifyResolved(id, decision),
     });
-    const id = h.registry.noteGateAwaiting({ sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', toolName: 'Bash' });
+    const id = h.registry.noteGateAwaiting({ sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', attribution: 'exact', toolName: 'Bash' });
     await settle();
     let answered = false;
     const verdict = broker.awaitVerdict(id, 'pty-a').then(value => { answered = true; return value; });
@@ -1575,7 +1576,7 @@ describe('ApprovalRegistry — press scope is enforced at resolve', () => {
     const broker = new GateBroker();
     const h = makeRegistry({ notifyGateResolved: (id, decision) => broker.notifyResolved(id, decision) });
     h.setScreen(null); // Permission hooks wait in the broker, not on a TUI prompt.
-    const id = h.registry.noteGateAwaiting({ sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', toolName: 'Bash' });
+    const id = h.registry.noteGateAwaiting({ sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', attribution: 'exact', toolName: 'Bash' });
     await settle();
     const verdict = broker.awaitVerdict(id, 'pty-a');
     try {
@@ -1722,7 +1723,7 @@ describe('ApprovalRegistry — press scope is enforced at resolve', () => {
   it('names the record, not the wiring, when the request has no workspaceId', async () => {
     const logs: string[] = [];
     const h = makeRegistry({ log: (_level, message) => logs.push(message) });
-    await h.registry.noteHookAwaitingInput({ sessionId: 'pty-a', agent: 'claude', ...PROMPT_RECORD });
+    await h.registry.noteHookAwaitingInput({ sessionId: 'pty-a', agent: 'claude', attribution: 'exact', ...PROMPT_RECORD });
     await settle();
 
     const res = await h.registry.resolve({ id: 'req-1', ...automatedApprove });
@@ -1755,7 +1756,7 @@ describe('ApprovalRegistry — caller re-authorization inside the chain', () => 
 
   async function pendingGate(h: Harness): Promise<string> {
     const id = h.registry.noteGateAwaiting({
-      sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', toolName: 'Bash',
+      sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', attribution: 'exact', toolName: 'Bash',
     });
     await settle();
     return id;
@@ -1895,6 +1896,7 @@ describe('decideApprovalPress — owner live mode and critical risk', () => {
     origin: 'hook' as const,
     stillOnScreen: true,
     ownerMode: 'danger',
+    attribution: 'exact' as const,
   };
 
   // The task workspace still carries the `danger` copy it took at fan-out; the
@@ -1927,7 +1929,7 @@ describe('ApprovalRegistry — critical gates and the owner floor at resolve', (
     const h = makeRegistry({ notifyGateResolved: (id, decision) => broker.notifyResolved(id, decision) });
     h.setScreen(null);
     const id = h.registry.noteGateAwaiting({
-      sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', toolName: 'Bash', toolInputSummary: 'rm -rf build/',
+      sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', attribution: 'exact', toolName: 'Bash', toolInputSummary: 'rm -rf build/',
     });
     await settle();
     try {
@@ -1947,7 +1949,7 @@ describe('ApprovalRegistry — critical gates and the owner floor at resolve', (
   it('takes the ingest verdict on the full input even when the summary was cut', async () => {
     const h = makeRegistry();
     const id = h.registry.noteGateAwaiting({
-      sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', toolName: 'Bash', toolInputSummary: 'echo ok', risk: 'critical',
+      sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', attribution: 'exact', toolName: 'Bash', toolInputSummary: 'echo ok', risk: 'critical',
     });
     await settle();
     expect(h.registry.list().pending.find((r) => r.id === id)?.risk).toBe('critical');
@@ -1958,7 +1960,7 @@ describe('ApprovalRegistry — critical gates and the owner floor at resolve', (
     const h = makeRegistry({ notifyGateResolved: (id, decision) => broker.notifyResolved(id, decision) });
     h.setScreen(null);
     const id = h.registry.noteGateAwaiting({
-      sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', toolName: 'Bash', toolInputSummary: 'git push --force',
+      sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', attribution: 'exact', toolName: 'Bash', toolInputSummary: 'git push --force',
     });
     await settle();
     try {
@@ -1973,7 +1975,7 @@ describe('ApprovalRegistry — critical gates and the owner floor at resolve', (
       notifyGateResolved: (id, decision) => broker.notifyResolved(id, decision),
     });
     h.setScreen(null);
-    const id = h.registry.noteGateAwaiting({ sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', toolName: 'Bash' });
+    const id = h.registry.noteGateAwaiting({ sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', attribution: 'exact', toolName: 'Bash' });
     await settle();
     try {
       expect(await h.registry.resolve({ id, ...automatedApprove })).toMatchObject({
@@ -1988,7 +1990,7 @@ describe('ApprovalRegistry — critical gates and the owner floor at resolve', (
     const broker = new GateBroker();
     const h = makeRegistry({ notifyGateResolved: (id, decision) => broker.notifyResolved(id, decision) });
     h.setScreen(null);
-    const id = h.registry.noteGateAwaiting({ sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', toolName: 'Bash' });
+    const id = h.registry.noteGateAwaiting({ sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', attribution: 'exact', toolName: 'Bash' });
     await settle();
     try {
       const [hq, phone] = await Promise.all([
@@ -2007,5 +2009,102 @@ describe('ApprovalRegistry — critical gates and the owner floor at resolve', (
     const ws = 'w'.repeat(80);
     const label = `hq:${ws};owner:${ws};lane:hq`;
     expect(sanitizeResolvedBy(label)).toBe(label);
+  });
+});
+
+// ── #1767 review: attribution, the lane re-check at release, check order ─────
+describe('ApprovalRegistry — #1767 review hardening', () => {
+  const laneApprove = {
+    decision: 'approve' as const,
+    resolvedBy: 'hq:ws-hq;owner:ws-own;lane:hq',
+    resolver: 'automated' as const,
+    lane: 'hq' as const,
+    laneGeneration: 4,
+  };
+
+  // A Claude started outside wmux that cd's into a task worktree is routed to
+  // the task pane by cwd. Its gate is inexact and no machine approves it.
+  it('never auto-approves a gate attributed by cwd rather than by pane id', async () => {
+    const broker = new GateBroker();
+    const h = makeRegistry({ notifyGateResolved: (id, decision) => broker.notifyResolved(id, decision) });
+    h.setScreen(null);
+    const id = h.registry.noteGateAwaiting({
+      sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', attribution: 'inexact', toolName: 'Bash',
+    });
+    const unmarked = h.registry.noteGateAwaiting({ sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', toolName: 'Edit' });
+    await settle();
+    try {
+      for (const target of [id, unmarked]) {
+        expect(await h.registry.resolve({ id: target, decision: 'approve', resolvedBy: 'deck', resolver: 'automated' })).toMatchObject({
+          ok: false, pressRefusal: 'attribution-inexact',
+        });
+      }
+      // A human still answers it.
+      expect(await h.registry.resolve({ id, decision: 'approve', resolvedBy: 'phone' })).toMatchObject({ ok: true });
+    } finally { broker.cancelAll('test-teardown'); }
+  });
+
+  // The policy closes while the resolve waits in the chain: the lane is read at
+  // release, not when the caller checked it.
+  it('refuses an HQ-lane approve when the lane policy is revoked while it is queued', async () => {
+    const broker = new GateBroker();
+    let lane = { open: true, generation: 4 };
+    const h = makeRegistry({
+      hqLane: () => lane,
+      notifyGateResolved: (id, decision) => broker.notifyResolved(id, decision),
+    });
+    h.setScreen(null);
+    const id = h.registry.noteGateAwaiting({ sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', attribution: 'exact', toolName: 'Bash' });
+    await settle();
+    try {
+      const res = await h.registry.resolve({
+        id,
+        ...laneApprove,
+        authorize: async () => {
+          // Main publishes "Moa off" while this resolve is inside the chain.
+          lane = { open: false, generation: 5 };
+          return 'ok';
+        },
+      });
+      expect(res).toMatchObject({ ok: false, pressRefusal: 'hq-lane-closed' });
+      expect(h.registry.list().pending.map((r) => r.id)).toEqual([id]);
+    } finally { broker.cancelAll('test-teardown'); }
+  });
+
+  it('refuses an HQ-lane approve checked against an older lane generation, and passes the current one', async () => {
+    const broker = new GateBroker();
+    const h = makeRegistry({
+      hqLane: () => ({ open: true, generation: 5 }),
+      notifyGateResolved: (id, decision) => broker.notifyResolved(id, decision),
+    });
+    h.setScreen(null);
+    const id = h.registry.noteGateAwaiting({ sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', attribution: 'exact', toolName: 'Bash' });
+    await settle();
+    try {
+      expect(await h.registry.resolve({ id, ...laneApprove })).toMatchObject({ ok: false, pressRefusal: 'hq-lane-closed' });
+      expect(await h.registry.resolve({ id, ...laneApprove, laneGeneration: 5 })).toMatchObject({ ok: true });
+    } finally { broker.cancelAll('test-teardown'); }
+  });
+
+  it('an HQ-lane deny does not need the lane open', async () => {
+    const broker = new GateBroker();
+    const h = makeRegistry({ hqLane: () => null, notifyGateResolved: (id, decision) => broker.notifyResolved(id, decision) });
+    h.setScreen(null);
+    const id = h.registry.noteGateAwaiting({ sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', attribution: 'exact', toolName: 'Bash' });
+    await settle();
+    try {
+      expect(await h.registry.resolve({ id, ...laneApprove, decision: 'deny' })).toMatchObject({ ok: true });
+    } finally { broker.cancelAll('test-teardown'); }
+  });
+
+  // Critical is decided before any workspace fact, so the refusal never names a
+  // policy the caller would escalate as a second decision card.
+  it('decides critical before every workspace fact', () => {
+    expect(
+      decideApprovalPress({
+        resolver: 'automated', decision: 'approve', risk: 'critical',
+        scopeAvailable: true, isTaskWorkspace: true, autonomyMode: 'assist', approvalPress: false,
+      }),
+    ).toEqual({ press: false, reason: 'critical-risk' });
   });
 });

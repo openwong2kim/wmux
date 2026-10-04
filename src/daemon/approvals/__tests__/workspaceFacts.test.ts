@@ -99,3 +99,17 @@ describe('WorkspaceFactStore — the owner live mode (C2 v2)', () => {
     expect(store.get('ws-bad')).toEqual({ isTaskWorkspace: true, autonomyMode: 'assist', approvalPress: true });
   });
 });
+
+describe('WorkspaceFactStore — the HQ lane policy', () => {
+  it('holds the lane from the latest table and closes it on a malformed one or a clear', () => {
+    const store = new WorkspaceFactStore();
+    expect(store.hqLane()).toBeNull();
+    store.replace([ROW], 1, { open: true, generation: 3 });
+    expect(store.hqLane()).toEqual({ open: true, generation: 3 });
+    store.replace([ROW], 2, { open: 'yes', generation: 3 });
+    expect(store.hqLane()).toBeNull();
+    store.replace([ROW], 3, { open: true, generation: 4 });
+    store.clear();
+    expect(store.hqLane()).toBeNull();
+  });
+});
