@@ -3220,13 +3220,24 @@ A new answer from Moa (or its dialog opening or closing) raises
 read its `/turns`, exactly as for any pane.
 
 **Moa's own permission dialog.** When Moa's terminal shows its own
-permission dialog ("Do you want to proceed?"), the phone cannot answer it:
-the dialog never becomes an approval record, so there is nothing for
-`/api/approvals` to answer, and it is answered on the desktop. While it is
-up:
+permission dialog ("Do you want to proceed?"), the daemon raises it as a
+`kind: "terminal_prompt"` approval record on the Moa pane — the same record,
+shape and rules as any pane's terminal prompt (see *`terminal_prompt` — the agent's own permission dialog* above),
+so a client needs nothing new for it. The record is in `GET /api/approvals`,
+its `approval` events are on `GET /api/events`, and a client that declared
+`terminal-prompt-answer` / `terminal-prompt-decline` answers or declines it
+through `POST /api/approvals/:id` / `…/decline` with the usual fences
+(fingerprint, `425 answer-too-soon`, one answer, `409 already-answered`). It
+is answerable only when the daemon can bind it to Moa's own tool call; when
+it cannot (Moa's transcript not known yet, or a tool input too large to
+carry), the card carries no `choices` and the dialog is answered on the
+desktop or declined. The desktop's Moa chat answers the same record, so an
+answer from either side settles it for both. While it is up:
 
-- `/turns` reports `chat.blocked: {by: "terminal"}` (and `chat.blocked` /
-  `chat.unblocked` follow on `/api/events` as for any pane);
+- `/turns` reports `chat.blocked` exactly as for any pane's terminal prompt:
+  `{by: "approval", approvalId}` to a capable client while the record is
+  answerable, else `{by: "terminal"}` (also before the record exists); and
+  `chat.blocked` / `chat.unblocked` follow on `/api/events`;
 - `POST …/chat/messages` answers `409 {error:"chat-blocked", result:"blocked",
   blockedBy:"terminal", effect:"none"}`, and a send already admitted is
   refused before Enter (`authorization-expired`);
@@ -3237,6 +3248,9 @@ up:
 
 Revocation: switching Moa off, changing the HQ, or the HQ going missing closes
 the Moa pane on the daemon at once — before the desktop's own lists catch up.
+Its pending prompt record expires with it (the `expire` event and
+`chat.unblocked` still reach a phone that was shown the card), and from then
+on the record and its routes answer `404` to a device, like any brain pane's.
 From then on every route above answers it as any brain pane: `404
 {error:"session not found"}` (`{error:"pane-not-found"}` on cancel, its
 receipt and dequeue).
