@@ -3,8 +3,9 @@
  *
  * Main's brain lane may answer `hooks.signal` with `additionalContext` (which
  * workspace the human was viewing). In `--context` mode the bridge prints it as
- * Claude Code's UserPromptSubmit `hookSpecificOutput`, and in every other case
- * it prints nothing and exits 0 — a prompt is never blocked from here. The real
+ * Claude Code's UserPromptSubmit `hookSpecificOutput`. An explicit `block` (the
+ * brain's own prompt arrived incomplete, #1787) exits 2 with the reason on
+ * stderr; every other case prints nothing and exits 0. The real
  * bridge runs as a subprocess against a fake socket so the bytes on stdout are
  * what is asserted.
  */
@@ -31,7 +32,7 @@ afterAll(() => {
 type Captured = { method: string; token: string; params: { kind: string } };
 
 async function runBridge(args: string[], result: Record<string, unknown>): Promise<{
-  code: number | null; stdout: string; requests: Captured[];
+  code: number | null; stdout: string; stderr: string; requests: Captured[];
 }> {
   const home = mkdtempSync(path.join(tmp, 'home-'));
   mkdirSync(path.join(home, '.wmux'), { recursive: true });
@@ -51,14 +52,16 @@ async function runBridge(args: string[], result: Record<string, unknown>): Promi
     });
   });
   await new Promise<void>((resolve) => server.listen(sock, resolve));
-  const out = await new Promise<{ code: number | null; stdout: string }>((resolve, reject) => {
+  const out = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
     const child = spawn(process.execPath, [BRIDGE, ...args], {
       env: { PATH: process.env.PATH, HOME: home, USERPROFILE: home, WMUX_PIPE_NAME: sock, WMUX_PTY_ID: 'pty-brain' },
     });
     let stdout = '';
+    let stderr = '';
     child.stdout.on('data', (d) => { stdout += d.toString('utf8'); });
+    child.stderr.on('data', (d) => { stderr += d.toString('utf8'); });
     child.on('error', reject);
-    child.on('close', (code) => resolve({ code, stdout }));
+    child.on('close', (code) => resolve({ code, stdout, stderr }));
     child.stdin.end(JSON.stringify({ session_id: 's-1', hook_event_name: 'UserPromptSubmit', prompt: 'merge this' }));
   });
   await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -87,6 +90,20 @@ describe.skipIf(process.platform === 'win32')('claude bridge --context', () => {
     const { code, stdout } = await runBridge(['UserPromptSubmit', '--context'], result);
     expect(code).toBe(0);
     expect(stdout).toBe('');
+  });
+
+  it('exits 2 with the reason on stderr when main refuses the prompt', async () => {
+    const reason = 'wmux: the orchestrator\'s prompt reached the terminal incomplete (89 of 2300 characters)';
+    const { code, stdout, stderr } = await runBridge(['UserPromptSubmit', '--context'], { ok: true, block: { reason } });
+    expect(code).toBe(2);
+    expect(stdout).toBe('');
+    expect(stderr.trim()).toBe(reason);
+  });
+
+  it('never refuses without --context, or on an answer main did not give', async () => {
+    const block = { reason: 'incomplete' };
+    expect((await runBridge(['UserPromptSubmit'], { ok: true, block })).code).toBe(0);
+    expect((await runBridge(['UserPromptSubmit', '--context'], { ok: false, block })).code).toBe(0);
   });
 
   it('prints nothing without --context, even when the endpoint offers a line', async () => {

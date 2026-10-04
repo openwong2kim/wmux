@@ -35,6 +35,8 @@ import {
   buildDenyScript,
   buildBrainLaunchCommand,
   flattenPromptForPty,
+  classifyReportedPrompt,
+  lastPasteModeToggle,
   resolveBrainHomeDir,
   BRAIN_PTY_ALLOWED_TOOLS,
   createBrainPtyHost,
@@ -167,6 +169,7 @@ function makeAdapter(host: FakeHost, over: Record<string, unknown> = {}): Claude
     staleResumeWindowMs: 5,
     turnTimeoutMs: 500,
     submitDelayMs: 1,
+    pasteModeWaitMs: 1,
     readTranscript: () => ({ text: 'final answer', endsWithQuestion: false }),
     ...over,
   });
@@ -1710,5 +1713,111 @@ describe('first-turn memory after the conversation changes', () => {
     deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 's2' }));
     await third;
     adapter.dispose();
+  });
+});
+
+// ── #1787: a cold-start prompt that reaches the TUI incomplete ─────────────
+
+/**
+ * A fake Claude Code input box over the fake pty, modelled on what Claude Code
+ * 2.1.289 did on a cold start: a bare write longer than the pty's 1024-byte
+ * input queue arrives as several reads, each taken as its own paste, and the
+ * first bare write loses every read but the last. A bracketed paste is held
+ * whole. On Enter it reports the box through UserPromptSubmit; a refused report
+ * clears the box, an accepted one runs the turn (and its Stop follows).
+ */
+function makeColdTui(opts: { damageAttempts?: number } = {}) {
+  const host = makeHost();
+  host.nextBanner = '\u001b[?2004h';
+  // The TUI's SessionStart lands once the session is up.
+  const attach = host.attach.bind(host);
+  host.attach = async (id) => {
+    await attach(id);
+    deliverBrainPtyHookSignal(signal('agent.session_start', id));
+  };
+  const accepted: string[] = [];
+  const verdicts: Array<ReturnType<typeof deliverBrainPtyHookSignal>> = [];
+  let box = '';
+  let coldBareWrite = true;
+  let damageLeft = opts.damageAttempts ?? 0;
+  const write = host.write.bind(host);
+  host.write = (id, data) => {
+    write(id, data);
+    if (data === '\r') {
+      if (!box) return;
+      const prompt = box;
+      box = '';
+      const verdict = deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', id, { payload: { prompt } }));
+      verdicts.push(verdict);
+      if (verdict.block) return;
+      accepted.push(prompt);
+      setTimeout(() => deliverBrainPtyHookSignal(signal('agent.stop', id, { agentSessionId: 'sess-1' })), 0);
+      return;
+    }
+    let text: string;
+    if (data.startsWith('\u001b[200~') && data.endsWith('\u001b[201~')) {
+      text = data.slice(6, -6);
+    } else {
+      const reads: string[] = [];
+      for (let i = 0; i < data.length; i += 1024) reads.push(data.slice(i, i + 1024));
+      text = coldBareWrite ? reads[reads.length - 1] : reads.join('');
+      coldBareWrite = false;
+    }
+    if (damageLeft > 0) {
+      damageLeft -= 1;
+      text = text.slice(-100);
+    }
+    box += text;
+  };
+  return { host, accepted, verdicts };
+}
+
+const LONG_PROMPT = Array.from({ length: 400 }, (_, i) => `word${i}`).join(' ');
+
+describe('a cold-start prompt that reaches the TUI incomplete (#1787)', () => {
+  it('lands the whole prompt on a cold TUI that splits a long bare write into pastes', async () => {
+    const { host, accepted } = makeColdTui();
+    const adapter = makeAdapter(host);
+    const events = await collect(adapter.send(LONG_PROMPT));
+    expect(accepted).toEqual([LONG_PROMPT]);
+    expect(events.at(-1)).toMatchObject({ type: 'turn-end' });
+    adapter.dispose();
+  });
+
+  it('refuses a damaged copy and types the prompt again', async () => {
+    const { host, accepted, verdicts } = makeColdTui({ damageAttempts: 1 });
+    const adapter = makeAdapter(host);
+    const events = await collect(adapter.send(LONG_PROMPT));
+    expect(verdicts[0].block).toMatch(/incomplete \(\d+ of \d+ characters\)/);
+    expect(verdicts.slice(1).every((v) => !v.block)).toBe(true);
+    expect(accepted).toEqual([LONG_PROMPT]);
+    expect(events.at(-1)).toMatchObject({ type: 'turn-end' });
+    adapter.dispose();
+  });
+
+  it('fails the turn, never running half a prompt, when every attempt arrives damaged', async () => {
+    const { host, accepted, verdicts } = makeColdTui({ damageAttempts: Infinity });
+    const adapter = makeAdapter(host, { turnTimeoutMs: 5_000 });
+    const events = await collect(adapter.send(LONG_PROMPT));
+    expect(accepted).toEqual([]);
+    expect(verdicts).toHaveLength(3);
+    expect(verdicts.every((v) => typeof v.block === 'string')).toBe(true);
+    expect(events).toEqual([{ type: 'error', message: expect.stringMatching(/only part of the prompt/) }]);
+    adapter.dispose();
+  });
+
+  it('leaves a prompt the human types during the attempt alone', () => {
+    const own = 'checkthefleetandsayok';
+    expect(classifyReportedPrompt(own, own)).toBe('own');
+    expect(classifyReportedPrompt('fleetandsayok', own)).toBe('damaged');
+    expect(classifyReportedPrompt(`draft${own}`, own)).toBe('damaged');
+    expect(classifyReportedPrompt('sayok', own)).toBe('other');
+    expect(classifyReportedPrompt('mergethis', own)).toBe('other');
+  });
+
+  it('reads the bracketed-paste mode the TUI output leaves on', () => {
+    expect(lastPasteModeToggle('\u001b[?2004h\u001b[?2004l\u001b[?2004h')).toBe(true);
+    expect(lastPasteModeToggle('x\u001b[?2004l')).toBe(false);
+    expect(lastPasteModeToggle('plain output')).toBeNull();
   });
 });

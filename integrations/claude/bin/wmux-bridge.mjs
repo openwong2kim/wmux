@@ -22,7 +22,9 @@
 //      Stop hook is wired that way; every other invocation is byte-for-byte
 //      what it always was. Likewise `--context` (the HQ brain's
 //      UserPromptSubmit) prints the endpoint's `additionalContext`, if any, as
-//      hook output and still exits 0.
+//      hook output — or, when the endpoint answers with a `block` (the brain's
+//      own prompt arrived incomplete, #1787), writes the reason to stderr and
+//      exits 2 so Claude Code discards the prompt instead of running it.
 //
 // THIS FILE IS SELF-CONTAINED. It runs from inside a Claude Code plugin
 // where TypeScript transpilation is NOT available. Do not import anything
@@ -44,7 +46,8 @@ const HOOK_TIMEOUT_MS = 2000; // hard cap so we never slow Claude
 //   0.2.0 — daemon-first targeting (daemon.hooks.signal → hooks.signal).
 //   0.3.0 — suffix-isolated lifecycle routing and bridge state.
 //   0.5.0 — `--context` mode (HQ brain UserPromptSubmit additionalContext).
-const BRIDGE_VERSION = '0.5.0';
+//   0.6.0 — `--context` mode honors a `block` (exit 2 discards the prompt).
+const BRIDGE_VERSION = '0.6.0';
 
 // A2 (2026-05-29 user dogfood: 8 connect-errors during a brief main-process
 // restart / handler-swap window): retry a TRANSIENT connect failure a few
@@ -879,8 +882,9 @@ async function sendToTargets(targets, buildRequest, timeoutMs = HOOK_TIMEOUT_MS)
 // UserPromptSubmit hook's stdout and adds it to the prompt the model sees.
 // Only the HQ brain's profile passes `--context`, and only main's brain lane
 // ever answers with the field. Anything else — no field, an empty one, a
-// transport failure — writes nothing: the prompt goes through unchanged. A
-// prompt is never blocked from here, so this path never exits 2.
+// transport failure — writes nothing: the prompt goes through unchanged. The
+// one refusal is an explicit `block` from main (see the verdict in main()),
+// never a transport failure: a lost answer lets the prompt run.
 function outputPromptContext(text) {
   if (typeof text !== 'string' || text.length === 0) return false;
   const out = {
@@ -1270,7 +1274,15 @@ async function main() {
     logEvent('gate-fail-closed', { hook: hookName, target: targetName, error: rpcResult?.error });
   }
 
-  if (contextMode && innerOk && outputPromptContext(rpcResult.result.additionalContext)) {
+  // The HQ brain's own prompt reported incomplete (#1787): exit 2 makes Claude
+  // Code discard it unrun, and main types it again. Only an explicit refusal —
+  // unlike the Stop gate, a lost answer fails OPEN here.
+  const promptBlock = contextMode && innerOk ? rpcResult.result.block : null;
+  if (promptBlock && typeof promptBlock.reason === 'string' && promptBlock.reason) {
+    process.stderr.write(`${promptBlock.reason}\n`);
+    gateExitCode = 2;
+    logEvent('prompt-blocked', { hook: hookName, target: targetName });
+  } else if (contextMode && innerOk && outputPromptContext(rpcResult.result.additionalContext)) {
     logEvent('prompt-context', { hook: hookName, target: targetName });
   }
 

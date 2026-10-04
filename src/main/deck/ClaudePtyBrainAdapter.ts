@@ -70,6 +70,23 @@ const STALE_RESUME_WINDOW_MS = 4_000;
  *  content — the prompt lands in the input box but never submits (dogfood
  *  2026-07-26; the PoC proved a short gap fixes it). */
 const SUBMIT_DELAY_MS = 400;
+/** How long a send() waits for the TUI to (re-)enable bracketed paste before
+ *  typing anyway. Claude Code turns the mode off and on again while it starts
+ *  (measured on 2.1.289: `?2004h`, `?2004l`, `?2004h` within ~700 ms of
+ *  spawn), so a prompt can land inside that toggle. */
+const PASTE_MODE_WAIT_MS = 2_000;
+/** How many times a prompt is typed before the turn gives up on it. Each
+ *  attempt the TUI reports incomplete (see `onHookSignal`) is refused and
+ *  typed again; the last refusal fails the turn rather than running half. */
+const PROMPT_ATTEMPTS = 3;
+/** How long after the Enters a send() waits for the TUI's UserPromptSubmit
+ *  before it stops verifying. The hook lands within a few hundred ms in
+ *  practice; an older claude whose payload carries no prompt never answers
+ *  this, and the turn then runs unverified, as it always did. */
+const PROMPT_VERIFY_WINDOW_MS = 5_000;
+/** Shortest reported text treated as a damaged copy of our prompt rather than
+ *  something the human typed. Below this the two cannot be told apart. */
+const MIN_PROMPT_FRAGMENT_CHARS = 8;
 /** How long after a TIMED-OUT turn a Stop hook is still assumed to belong to
  *  that dead turn rather than the next one. The adapter ESCs the TUI on
  *  timeout, so its Stop should arrive within seconds; the window bounds the
@@ -620,6 +637,39 @@ export function normalizeForPromptMatch(text: string): string {
   return text.replace(PASTE_MARKER_RE, '').replace(/\s+/g, '');
 }
 
+/** Bracketed-paste delimiters (DECSET 2004). */
+const PASTE_START = '\u001b[200~';
+const PASTE_END = '\u001b[201~';
+// eslint-disable-next-line no-control-regex
+const PASTE_MODE_RE = /\u001b\[\?2004([hl])/g;
+
+/** The bracketed-paste mode the output in `text` leaves the terminal in:
+ *  true for on, false for off, null when `text` does not toggle it. */
+export function lastPasteModeToggle(text: string): boolean | null {
+  let last: boolean | null = null;
+  for (const m of text.matchAll(PASTE_MODE_RE)) last = m[1] === 'h';
+  return last;
+}
+
+/** How a UserPromptSubmit's prompt relates to the one our send() typed, both
+ *  normalized (see normalizeForPromptMatch):
+ *  - `own`: the same text.
+ *  - `damaged`: our text with its head lost, or with text in front of it. Both
+ *    keep the tail, which is the only shape the TUI produces (#1787: a cold
+ *    start kept the last paste chunk of a multi-chunk write). Anchored at the
+ *    end, so a short prompt the human types is never mistaken for one.
+ *  - `other`: anything else, i.e. the human's. */
+export function classifyReportedPrompt(reported: string, own: string): 'own' | 'damaged' | 'other' {
+  if (reported === own) return 'own';
+  if (
+    Math.min(reported.length, own.length) >= MIN_PROMPT_FRAGMENT_CHARS
+    && (own.endsWith(reported) || reported.endsWith(own))
+  ) {
+    return 'damaged';
+  }
+  return 'other';
+}
+
 // ─── Adapter ─────────────────────────────────────────────────────────────────
 
 export interface ClaudePtyBrainAdapterDeps {
@@ -710,6 +760,9 @@ export interface ClaudePtyBrainAdapterDeps {
   /** How long a second UserPromptSubmit still folds into the open foreign turn.
    *  Tests shrink this. See FOREIGN_RESUBMIT_FOLD_MS. */
   foreignResubmitFoldMs?: number;
+  /** Tests shrink these. See PASTE_MODE_WAIT_MS / PROMPT_VERIFY_WINDOW_MS. */
+  pasteModeWaitMs?: number;
+  promptVerifyWindowMs?: number;
 }
 
 /** One pending waiter — resolved by a hook signal, a timeout, or dispose(). */
@@ -787,6 +840,17 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
    *  only from a submission that matches it; every other one is the human's,
    *  even one typed while our turn is open. */
   private ownPromptPending: string | null = null;
+  /** The open typing attempt's verdict, resolved by the UserPromptSubmit that
+   *  reports it: `ok` for our full text (or a payload with no prompt to check),
+   *  `damaged` for a copy the hook refused. Null between attempts. */
+  private promptVerdict: Waiter<{ ok: true } | { ok: false; received: number }> | null = null;
+  /** Bracketed-paste mode as the CURRENT pty's output last left it, and the
+   *  few bytes carried over so a toggle split across two chunks is still seen. */
+  private pasteModeOn = false;
+  private pasteModeCarry = '';
+  /** True until the first prompt typed into the CURRENT pty: only that one
+   *  waits for bracketed paste (the mode toggles only while the TUI starts). */
+  private pasteModeWaitPending = false;
   /** Spawn-banner buffer, kept only for the stale-resume probe window. */
   private banner = '';
   private bannerWatching = false;
@@ -887,6 +951,11 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     // that turn is already tracked by `turnStop`.
     if (signal.kind === 'agent.user_prompt_submit') {
       const rawPrompt = typeof signal.payload['prompt'] === 'string' ? signal.payload['prompt'] : null;
+      // Our own prompt arriving damaged (#1787) is refused before anything
+      // else sees it: the block keeps the TUI from running half a prompt, and
+      // send() types it again. It is neither the human's nor a foreign turn.
+      const damaged = this.checkOwnPromptDamage(rawPrompt);
+      if (damaged) return damaged;
       // The view pointer goes on every submission that is not our own send().
       // `turnStop` alone cannot say that: the human may type while our turn is
       // open (or after ESC-interrupting it, which fires no Stop).
@@ -1007,11 +1076,37 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
    */
   private isOwnPromptSubmit(rawPrompt: string | null): boolean {
     const own = this.ownPromptPending;
-    if (rawPrompt === null) return this.turnStop !== null;
+    if (rawPrompt === null) {
+      this.settlePromptVerdict({ ok: true });
+      return this.turnStop !== null;
+    }
     if (own === null) return false;
     if (normalizeForPromptMatch(rawPrompt) !== own) return false;
     this.ownPromptPending = null;
+    this.settlePromptVerdict({ ok: true });
     return true;
+  }
+
+  /** The refusal for a UserPromptSubmit that reports our pending prompt
+   *  damaged (see classifyReportedPrompt), or undefined when it does not.
+   *  Only checked while a typing attempt is waiting on its verdict. */
+  private checkOwnPromptDamage(rawPrompt: string | null): BrainPtyHookBlock | undefined {
+    const own = this.ownPromptPending;
+    if (rawPrompt === null || own === null || this.promptVerdict === null) return undefined;
+    const reported = normalizeForPromptMatch(rawPrompt);
+    if (classifyReportedPrompt(reported, own) !== 'damaged') return undefined;
+    this.settlePromptVerdict({ ok: false, received: reported.length });
+    return {
+      block:
+        `wmux: the orchestrator's prompt reached the terminal incomplete (${reported.length} of ` +
+        `${own.length} characters) and was not run. wmux types it again.`,
+    };
+  }
+
+  private settlePromptVerdict(verdict: { ok: true } | { ok: false; received: number }): void {
+    const pending = this.promptVerdict;
+    this.promptVerdict = null;
+    pending?.resolve(verdict);
   }
 
   /** The view pointer for a human-typed prompt, if the deck has one. A
@@ -1271,7 +1366,15 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     // Both are rolled back by abandonPty() on every failure path below.
     this.ptyId = ptyId;
     this.unregisterHooks = registerBrainPty(ptyId, (s) => this.onHookSignal(s));
+    this.pasteModeOn = false;
+    this.pasteModeCarry = '';
+    this.pasteModeWaitPending = true;
     this.unsubscribeData = this.deps.host.onData(ptyId, (chunk) => {
+      const scan = this.pasteModeCarry + chunk;
+      const toggled = lastPasteModeToggle(scan);
+      if (toggled !== null) this.pasteModeOn = toggled;
+      // Long enough to hold a `ESC[?2004h` split anywhere.
+      this.pasteModeCarry = scan.slice(-7);
       if (!this.bannerWatching) return;
       this.banner += chunk;
       if (this.banner.length > 64 * 1024) this.bannerWatching = false;
@@ -1548,32 +1651,69 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     // per-pty budget.
     this.consecutiveStopBlocks = 0;
     this.turnStop = waiter;
-    this.ownPromptPending = normalizeForPromptMatch(prompt) || null;
-    try {
-      // Two writes with a gap, never `prompt\r` in one chunk: the TUI's paste
-      // detection would absorb the trailing Enter as pasted content and the
-      // prompt would sit unsubmitted in the input box (see SUBMIT_DELAY_MS).
-      this.deps.host.write(ptyId, prompt);
-      await delay(this.deps.submitDelayMs ?? SUBMIT_DELAY_MS);
-      if (this._disposed) return;
-      this.deps.host.write(ptyId, '\r');
-      // Belt-and-braces second Enter: the first can still be swallowed when it
-      // lands during a TUI redraw right after the previous turn (observed in
-      // dogfood). If the first one DID submit, the input box is empty by now
-      // and an Enter on an empty box is a no-op — so the retry is harmless.
-      await delay((this.deps.submitDelayMs ?? SUBMIT_DELAY_MS) * 2);
-      if (this._disposed) return;
-      this.deps.host.write(ptyId, '\r');
-    } catch (err) {
-      this.turnStop = null;
-      yield { type: 'error', message: `could not reach the terminal brain: ${String(err)}` };
-      return;
-    }
-
+    const own = normalizeForPromptMatch(prompt);
+    this.ownPromptPending = own || null;
+    const submitDelayMs = this.deps.submitDelayMs ?? SUBMIT_DELAY_MS;
+    // Typed, then checked against what the TUI's UserPromptSubmit reports it
+    // received (#1787). A damaged copy is refused by that hook (so it never
+    // runs) and typed again; attempts are strictly serial, so the previous
+    // attempt's Enters have gone out before the next text does.
     const timeout = delay(this.deps.turnTimeoutMs ?? TURN_TIMEOUT_MS).then(() => 'timeout' as const);
     // Captured locally: the field is nulled the moment the pty is let go, and
-    // the race still has to settle on the promise this turn started with.
+    // the races below still have to settle on the promise this turn started with.
     const died = this.ptyDead?.promise.then(() => 'died' as const) ?? never<'died'>();
+    let lastReceived = 0;
+    for (let attempt = 1; ; attempt++) {
+      const verdict = createWaiter<{ ok: true } | { ok: false; received: number }>();
+      this.promptVerdict = verdict;
+      try {
+        await this.typePrompt(ptyId, prompt, submitDelayMs);
+      } catch (err) {
+        this.promptVerdict = null;
+        this.turnStop = null;
+        yield { type: 'error', message: `could not reach the terminal brain: ${String(err)}` };
+        return;
+      }
+      if (this._disposed) return;
+      const settled = await Promise.race([
+        verdict.promise,
+        // A Stop, a dead pty or the turn timeout ends verification: the turn
+        // handling below reads each from its own promise.
+        waiter.promise.then(() => null),
+        died.then(() => null),
+        timeout.then(() => null),
+        // No report in time (an older claude, a slow hook): run unverified,
+        // exactly as before verification existed.
+        delay(this.deps.promptVerifyWindowMs ?? PROMPT_VERIFY_WINDOW_MS).then(() => null),
+      ]);
+      if (this.promptVerdict === verdict) this.promptVerdict = null;
+      if (this._disposed) return;
+      if (settled === null || settled.ok) break;
+      lastReceived = settled.received;
+      console.warn(
+        `[deck] terminal brain received ${settled.received} of ${own.length} prompt characters ` +
+        `(attempt ${attempt} of ${PROMPT_ATTEMPTS}) — refused it`,
+      );
+      if (attempt >= PROMPT_ATTEMPTS) {
+        this.turnStop = null;
+        this.ownPromptPending = null;
+        // The bootstrap context never reached the transcript: carry it again.
+        this._contextInjected = false;
+        yield {
+          type: 'error',
+          message:
+            `the terminal brain received only part of the prompt (${lastReceived} of ${own.length} ` +
+            `characters) on each of ${PROMPT_ATTEMPTS} attempts, so the turn was not run. Send it again.`,
+        };
+        return;
+      }
+      // The refusal resolved the verdict inside the hook's RPC, before the
+      // hook process exited — the TUI clears its input box only once it has.
+      // Typing into that gap would be cleared along with the damaged copy.
+      await delay(submitDelayMs * 2);
+      if (this._disposed) return;
+    }
+
     const stop = await Promise.race([waiter.promise, timeout, died]);
     // dispose() resolves the waiter with null so this iterator TERMINATES
     // rather than hanging the manager's for-await on app quit.
@@ -1618,6 +1758,39 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
       if (last?.text) yield { type: 'text-delta', text: last.text };
     }
     yield { type: 'turn-end', sessionId: this._sessionId };
+  }
+
+  /** Type one attempt of the prompt and submit it.
+   *
+   *  As a single bracketed paste whenever the TUI has bracketed paste on.
+   *  Typed bare, a long prompt reaches Claude Code as several 1024-byte reads
+   *  (the pty's input queue), each taken as its own paste, and on a cold start
+   *  all but the last read can be lost — the #1787 drop, measured on 2.1.289 in
+   *  1 of 3 cold starts. Bracketed, the TUI holds the whole text as one paste
+   *  however it arrives (10 of 10). The mode is read from the TUI's own output;
+   *  one that never turns it on (none seen so far) gets the bare write, and
+   *  verification in send() still stands behind it. */
+  private async typePrompt(ptyId: string, prompt: string, submitDelayMs: number): Promise<void> {
+    if (!this.pasteModeOn && this.pasteModeWaitPending) {
+      const deadline = Date.now() + (this.deps.pasteModeWaitMs ?? PASTE_MODE_WAIT_MS);
+      while (!this.pasteModeOn && !this._disposed && Date.now() < deadline) await delay(25);
+      if (this._disposed) return;
+    }
+    this.pasteModeWaitPending = false;
+    // Two writes with a gap, never `prompt\r` in one chunk: the TUI's paste
+    // detection would absorb the trailing Enter as pasted content and the
+    // prompt would sit unsubmitted in the input box (see SUBMIT_DELAY_MS).
+    this.deps.host.write(ptyId, this.pasteModeOn ? `${PASTE_START}${prompt}${PASTE_END}` : prompt);
+    await delay(submitDelayMs);
+    if (this._disposed) return;
+    this.deps.host.write(ptyId, '\r');
+    // Belt-and-braces second Enter: the first can still be swallowed when it
+    // lands during a TUI redraw right after the previous turn (observed in
+    // dogfood). If the first one DID submit, the input box is empty by now
+    // and an Enter on an empty box is a no-op — so the retry is harmless.
+    await delay(submitDelayMs * 2);
+    if (this._disposed) return;
+    this.deps.host.write(ptyId, '\r');
   }
 
   interrupt(): void {
