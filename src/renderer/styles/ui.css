@@ -2454,3 +2454,5 @@ html[data-fullscreen] .wmux-shell-body {
 .wmux-git-reply .wmux-git-ship-input { flex: 1; min-width: 0; padding: 4px 8px; font-size: 12px; }
 .wmux-git-composer { display: flex; flex-direction: column; gap: 6px; }
 .wmux-git-next { display: inline-block; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text-muted); }
+/* Newer commits than the pinned head: a muted line with one Reload, no wash. */
+.wmux-git-moved { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--border-soft); font-size: 12px; color: var(--text-sub); }

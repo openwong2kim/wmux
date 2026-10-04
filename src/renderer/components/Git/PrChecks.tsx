@@ -3,7 +3,7 @@
 // screen, the window is visible and the PR is open, and on the page's refresh.
 // A failed GitHub Actions run can show the tail of its log (plain text in a
 // <pre>, never markup) and rerun its failed jobs, on an explicit click only.
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useT } from '../../hooks/useT';
 import { FOCUS_RING } from '../focusRing';
 import { Icon, IconCheck, IconX } from '../icons';
@@ -13,22 +13,28 @@ import { getPrReviewBridge, writeErrorText } from './prReviewState';
 import type { PrSummary } from '../../../shared/prSurface';
 import type { PrCheck, PrCheckBucket, PrChecksState, PrReviewRead, PrRunLog } from '../../../shared/prReview';
 
-export type PrChecksRead = GitListState<PrChecksState> & { reload: (force?: boolean) => void };
+export type PrChecksRead = GitListState<PrChecksState> & {
+  reload: (force?: boolean) => void;
+  /** The newest head any read answered, set as the answer arrives (before it
+   *  is drawn), so a click racing a new head can be refused. */
+  latestHead: React.MutableRefObject<string | null>;
+};
 
 /** The PR's head and checks; polls only while the PR is open. */
 export function usePrChecks(repoPath: string, pr: PrSummary, refreshKey: number): PrChecksRead {
   const t = useT();
   const bridge = getPrReviewBridge();
   const [open, setOpen] = useState(pr.state === 'open' || pr.state === 'draft');
+  const latestHead = useRef<string | null>(null);
   const read = useGitList<PrChecksState>({
     listKey: bridge ? `${repoPath}#${pr.number}` : null,
     read: async (force) => {
       const b = getPrReviewBridge();
       if (!b) return { ok: false, kind: 'error', message: t('git.bridgeUnavailable') };
       const res = await b.prChecks(repoPath, pr.url, force);
-      if (res.ok) return { ok: true, data: res.value };
-      if (res.code === 'rate-limited') return { ok: false, kind: 'rate', retryAt: res.retryAt };
-      return { ok: false, kind: 'error', message: res.message };
+      if (!res.ok) return res.code === 'rate-limited' ? { ok: false, kind: 'rate', retryAt: res.retryAt } : { ok: false, kind: 'error', message: res.message };
+      latestHead.current = res.value.head.headRefOid;
+      return { ok: true, data: res.value };
     },
     shown: true,
     poll: open,
@@ -39,7 +45,7 @@ export function usePrChecks(repoPath: string, pr: PrSummary, refreshKey: number)
   useEffect(() => {
     if (headState) setOpen(headState === 'OPEN');
   }, [headState]);
-  return read;
+  return { ...read, latestHead };
 }
 
 const https = (url: string) => url.startsWith('https://');

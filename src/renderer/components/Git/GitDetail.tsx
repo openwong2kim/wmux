@@ -9,6 +9,7 @@
 // Each body is mounted per selected item (keyed by the page), so an answer for
 // a previous selection is dropped with its component; within one item, only
 // the newest read lands.
+import { useState } from 'react';
 import { useT } from '../../hooks/useT';
 import { FOCUS_RING } from '../focusRing';
 import { renderBrainMarkdown } from '../Deck/BrainMarkdown';
@@ -17,6 +18,7 @@ import { DetailError, useDetail } from './useDetail';
 import { PrChecks, usePrChecks } from './PrChecks';
 import { PrReviewActions } from './PrReviewActions';
 import { PrFiles } from './PrFiles';
+import type { PrPin } from './prReviewState';
 import { WhoActsNext } from './WhoActsNext';
 import { PrStepText, getGithubBridge } from './PrSection';
 import { getIssueBridge } from './IssueSection';
@@ -113,6 +115,24 @@ function PrBody({ repoPath, pr, refreshKey }: { repoPath: string; pr: PrSummary;
     return res.ok ? { ok: true, value: res.detail.comments } : { ok: false, message: res.message };
   }, `${pr.updatedAt}\0${refreshKey}`);
   const checks = usePrChecks(repoPath, pr, refreshKey);
+  // The head this detail is pinned to: the first one read, until Reload.
+  const latest = checks.data?.head.headRefOid ?? null;
+  const [pinned, setPinned] = useState<string | null>(null);
+  const [reloads, setReloads] = useState(0);
+  if (pinned === null && latest !== null) setPinned(latest);
+  const pinHead = pinned ?? latest;
+  const pin: PrPin | null = checks.data && pinHead ? {
+    head: pinHead,
+    moved: latest !== pinHead,
+    closed: checks.data.head.state === 'OPEN' ? null : checks.data.head.state,
+    stale: () => checks.latestHead.current !== null && checks.latestHead.current !== pinHead,
+  } : null;
+  const reload = () => {
+    setPinned(latest);
+    setReloads((n) => n + 1);
+    checks.reload(true);
+  };
+  const reread = () => checks.reload(true);
   return (
     <div className="wmux-git-detail-body" data-pr-detail>
       <div className="wmux-git-detail-facts">
@@ -121,10 +141,18 @@ function PrBody({ repoPath, pr, refreshKey }: { repoPath: string; pr: PrSummary;
         {pr.checks && <span>{t(`workspace.prChecks.${pr.checks}`)}</span>}
       </div>
       <PrChecks repoPath={repoPath} prUrl={pr.url} read={checks} />
-      {checks.data && (
+      {checks.data && pin && (
         <>
-          <PrReviewActions repoPath={repoPath} prUrl={pr.url} number={pr.number} head={checks.data.head} checks={checks.data.checks} onMoved={() => checks.reload(true)} />
-          <PrFiles repoPath={repoPath} prUrl={pr.url} number={pr.number} head={checks.data.head.headRefOid} refreshKey={refreshKey} onMoved={() => checks.reload(true)} />
+          {pin.moved && (
+            <div className="wmux-git-moved" role="status" data-pr-moved>
+              <span>{t('git.review.newCommits')}</span>
+              <button type="button" className={`wmux-git-button ${FOCUS_RING}`} onClick={reload} data-pr-reload>
+                {t('git.review.reload')}
+              </button>
+            </div>
+          )}
+          <PrReviewActions repoPath={repoPath} prUrl={pr.url} number={pr.number} head={checks.data.head} checks={checks.data.checks} pin={pin} onMoved={reread} />
+          <PrFiles repoPath={repoPath} prUrl={pr.url} number={pr.number} pin={pin} readKey={`${refreshKey}\0${reloads}`} onMoved={reread} />
         </>
       )}
       {detail.loading && <div className="wmux-git-note">{t('git.loading')}</div>}
