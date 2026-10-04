@@ -8,6 +8,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MoaTranscript, MOA_TRANSCRIPT_REASONS, parseNotedPrompts, rewritePastedPrompts, type NotedPrompt } from '../moaTranscript';
 import type { TranscriptAppendData } from '../../../shared/transcript/turnEvents';
+import { __resetMoaPaneFeedForTest, moaDialogUp, noteBrainHookSignal, setMoaPaneSource } from '../moaPaneFeed';
 
 const HQ_SESSION = '920b9112-1111-4222-8333-444455556666';
 const OTHER_SESSION = '7a0c0de0-1111-4222-8333-444455556666';
@@ -244,21 +245,33 @@ describe('rewritePastedPrompts — the chat shows what was asked, not the pasted
 });
 
 describe('a dialog only the terminal shows', () => {
-  it('reads as awaiting_input from the PermissionRequest hint until a tool runs, the turn ends or a prompt starts', () => {
+  // The real path: the brain's hooks reach main's hook RPC, which feeds
+  // moaPaneFeed (the phone fence's source); the chat reads the same state.
+  const brainCwd = '/brains/ws-hq';
+  const signal = (kind: string) => ({ kind, agent: 'claude', ptyId: 'pty-hq', cwd: brainCwd, payload: { tool_name: 'WebFetch', tool_input: { url: 'https://example.com' } }, ts: Date.now() });
+  let release: () => void;
+  beforeEach(() => {
+    __resetMoaPaneFeedForTest();
+    release = setMoaPaneSource(() => (moaOn && hq === 'ws-hq' ? { sessionId: 'pty-hq', workspaceId: 'ws-hq', brainCwd } : null));
+  });
+  afterEach(() => {
+    release();
+    __resetMoaPaneFeedForTest();
+  });
+
+  it('reads as awaiting_input from the PermissionRequest hook until a tool runs, the turn ends or a prompt starts', () => {
     transcript(HQ_SESSION, userLine(HQ_SESSION, 'u1', 'hello'));
     moa.noteSessionId('ws-hq', HQ_SESSION);
     expect(moa.status().agentStatus).not.toBe('awaiting_input');
     for (const clear of ['agent.activity', 'agent.stop', 'agent.user_prompt_submit'] as const) {
-      moa.noteHint('ws-hq', { kind: 'agent.awaiting_input', agentSessionId: HQ_SESSION });
+      noteBrainHookSignal(signal('agent.awaiting_input'));
+      expect(moaDialogUp()).toBe(true);
       expect(moa.status()).toMatchObject({ available: true, agentStatus: 'awaiting_input' });
-      moa.noteHint('ws-hq', { kind: clear, agentSessionId: HQ_SESSION });
+      noteBrainHookSignal(signal(clear));
       expect(moa.status().agentStatus).not.toBe('awaiting_input');
     }
-    moa.noteHint('ws-hq', { kind: 'agent.awaiting_input', agentSessionId: HQ_SESSION });
-    moa.notePrompt('ws-hq', 'next question');
-    expect(moa.status().agentStatus).not.toBe('awaiting_input');
-    // Another workspace's dialog is not Moa's.
-    moa.noteHint('ws-other', { kind: 'agent.awaiting_input' });
+    // Another brain's dialog is not Moa's.
+    noteBrainHookSignal({ ...signal('agent.awaiting_input'), ptyId: 'pty-other' });
     expect(moa.status().agentStatus).not.toBe('awaiting_input');
   });
 });

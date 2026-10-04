@@ -133,16 +133,17 @@ export function noteBrainHookSignal(signal: BrainHookSignal): void {
   const state = stateFor(ptyId);
   let changed = false;
   if (signal.kind === 'agent.awaiting_input') {
-    // The brain profile registers PermissionRequest only, so for a brain this
-    // kind is its own permission dialog drawn on screen.
+    // The brain profile maps only PermissionRequest to this kind, so for a
+    // brain it is its own permission dialog drawn on screen.
     state.dialog = dialogFingerprint(signal.payload ?? {});
     changed = true;
   } else if (
     signal.kind === 'agent.stop' || signal.kind === 'agent.stop_failure'
     || signal.kind === 'agent.user_prompt_submit' || signal.kind === 'agent.session_start'
+    || signal.kind === 'agent.activity'
   ) {
-    // The turn ended, a new prompt was taken, or a new session started: no
-    // dialog is waiting any more.
+    // The turn ended, a new prompt was taken, a new session started, or a
+    // tool ran (PostToolUse: the human allowed it): no dialog is waiting.
     if (state.dialog !== undefined) {
       delete state.dialog;
       changed = true;
@@ -173,6 +174,16 @@ export function noteBrainHookSignal(signal: BrainHookSignal): void {
     }
   }
   if (changed && currentSource()?.sessionId === ptyId) void publishMoaPane();
+}
+
+/**
+ * The HQ brain's own permission dialog is on screen. The one source for both
+ * the phone's typed-input fence (via the published payload) and Moa's desktop
+ * chat (its transcript status reads `awaiting_input`).
+ */
+export function moaDialogUp(): boolean {
+  const src = currentSource();
+  return !!src && brains.get(src.sessionId)?.dialog !== undefined;
 }
 
 /** A brain pty is gone: its binding and dialog go with it. */

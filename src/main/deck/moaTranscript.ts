@@ -32,6 +32,7 @@ import path from 'node:path';
 import { TranscriptProjector } from '../../daemon/transcript/TranscriptProjector';
 import { scanForTranscript } from '../../daemon/transcript/TranscriptDiscovery';
 import type { CodeBlockRequest } from '../../daemon/transcript/types';
+import { moaDialogUp } from './moaPaneFeed';
 import { getWmuxDir } from '../../daemon/config';
 import { atomicWriteJSON } from '../../daemon/util/atomicWrite';
 import { resolveBrainHomeDir } from './ClaudePtyBrainAdapter';
@@ -118,16 +119,6 @@ export function rewritePastedPrompts<P extends { at: number; text: string }>(
   });
 }
 
-/** Hook kinds that mean the brain's dialog is gone: a tool ran (the human
- *  allowed it), the turn ended, or a new turn or session started. */
-const AWAITING_CLEARED_BY: ReadonlySet<AgentSignalKind> = new Set<AgentSignalKind>([
-  'agent.activity',
-  'agent.stop',
-  'agent.stop_failure',
-  'agent.user_prompt_submit',
-  'agent.session_start',
-]);
-
 /** The projector's one session key. Never a daemon pty id. */
 const SESSION_KEY = 'moa-hq-brain';
 /** The projector's one client: the desktop renderer's Moa panel. */
@@ -165,6 +156,8 @@ export interface MoaTranscriptDeps {
   wmuxDir?: () => string;
   /** Find `<sessionId>.jsonl` under the projects roots. Injected in tests. */
   scan?: (sessionId: string, env?: Record<string, string>) => string[];
+  /** The HQ brain's own permission dialog is up. Defaults to moaPaneFeed's. */
+  isDialogUp?: () => boolean;
   /** Load / save the remembered prompts. Defaults to `moa-prompts.json`. */
   promptStore?: { load: () => unknown; save: (prompts: NotedPrompt[]) => void };
   log?: (level: 'info' | 'warn' | 'error', message: string) => void;
@@ -192,10 +185,6 @@ export class MoaTranscript {
   private armed = false;
   /** Prompts sent to an HQ brain, oldest first; read from disk on first use. */
   private prompts: NotedPrompt[] | null = null;
-  /** The HQ brain's TUI is showing a dialog only the terminal can answer
-   *  (a permission prompt): set by its PermissionRequest hook, cleared when a
-   *  tool runs, the turn ends or a new prompt starts. */
-  private awaiting = false;
   /** Transcript entry id → the prompt it was shown as (see rewritePastedPrompts). */
   private readonly assigned = new Map<string, NotedPrompt>();
 
@@ -228,8 +217,10 @@ export class MoaTranscript {
     if (!this.liveBinding()) return { available: false, reason: MOA_TRANSCRIPT_REASONS.noBrain };
     const status = this.projector.status(SESSION_KEY);
     // The brain's hooks never reach the daemon's approval registry, so the
-    // projector cannot know a dialog is up; this flag is the one source.
-    return this.awaiting ? { ...status, agentStatus: 'awaiting_input' } : status;
+    // projector cannot know a dialog is up. moaPaneFeed tracks it from the
+    // brain's PermissionRequest / PostToolUse hooks for the phone; the chat
+    // reads the same state.
+    return (this.deps.isDialogUp ?? moaDialogUp)() ? { ...status, agentStatus: 'awaiting_input' } : status;
   }
 
   snapshot(opts?: { before?: number }): TranscriptPage | null {
@@ -245,7 +236,6 @@ export class MoaTranscript {
    *  words, or an automation's), remembered for the HQ's chat view. */
   notePrompt(workspaceId: string, text: string, at: number = Date.now()): void {
     if (workspaceId !== this.activeHq() || !text.trim()) return;
-    this.awaiting = false;
     const prompts = this.loadPrompts();
     prompts.push({ at, text, hq: workspaceId });
     if (prompts.length > PROMPT_MEMORY) prompts.splice(0, prompts.length - PROMPT_MEMORY);
@@ -319,8 +309,6 @@ export class MoaTranscript {
   /** A hook signal from a workspace's terminal brain. Ignored unless HQ. */
   noteHint(workspaceId: string, hint: MoaTranscriptHint): void {
     if (workspaceId !== this.activeHq()) return;
-    if (hint.kind === 'agent.awaiting_input') this.awaiting = true;
-    else if (AWAITING_CLEARED_BY.has(hint.kind)) this.awaiting = false;
     const sessionId = hint.agentSessionId || this.binding?.sessionId;
     if (!sessionId) return;
     const prev = this.liveBinding();
@@ -348,7 +336,6 @@ export class MoaTranscript {
   retire(workspaceId: string): void {
     if (this.binding?.workspaceId !== workspaceId) return;
     this.binding = null;
-    this.awaiting = false;
     this.disarm();
   }
 
@@ -362,7 +349,6 @@ export class MoaTranscript {
     const hq = this.activeHq();
     if (this.binding && this.binding.workspaceId !== hq) {
       this.binding = null;
-      this.awaiting = false;
       this.disarm();
     }
     if (this.subscribedHq !== null && this.subscribedHq !== hq) {
