@@ -57,7 +57,7 @@ describe('titlebar on rail pages', () => {
   });
 
   it('closes an open New workspace picker when a rail page opens', () => {
-    act(() => useStore.setState({ workspaces: [], activeWorkspaceId: null, appRoute: 'workspaces', sidebarPosition: 'left', sidebarVisible: true }));
+    act(() => useStore.setState({ workspaces: [], activeWorkspaceId: undefined, appRoute: 'workspaces', sidebarPosition: 'left', sidebarVisible: true }));
     act(() => root.render(<Titlebar />));
     act(() => container.querySelector<HTMLButtonElement>('[data-onboarding-target="add-workspace"]')!.click());
     const pickerShown = () => container.textContent?.includes(t('sidebar.emptyWorkspace'));
