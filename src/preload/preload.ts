@@ -1227,6 +1227,19 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.GIT_SHIP_PUSH, repoPath, expect) as Promise<import('../main/git/shipActions').ShipActionResult>,
     shipCreatePr: (repoPath: string, title: string, expect: import('../main/git/shipActions').ShipExpect) =>
       ipcRenderer.invoke(IPC.GIT_SHIP_CREATE_PR, repoPath, title, expect) as Promise<import('../main/git/shipActions').ShipActionResult>,
+    // Hand an issue / PR to an agent pane (gated, typing-held delivery) or to a new worktree.
+    handoffSend: (req: import('../shared/gitHandoff').HandoffSendRequest) =>
+      ipcRenderer.invoke(IPC.GIT_HANDOFF_SEND, req) as Promise<import('../shared/gitHandoff').HandoffSendResult>,
+    handoffStartWorktree: (req: import('../shared/gitHandoff').HandoffStartRequest) =>
+      ipcRenderer.invoke(IPC.GIT_HANDOFF_START_WORKTREE, req) as Promise<import('../shared/gitHandoff').HandoffStartResult>,
+    // One-step connect: main runs gh auth login --web; events carry the device code and the outcome.
+    loginStart: () => ipcRenderer.invoke(IPC.GH_LOGIN_START) as Promise<import('../shared/ghDeviceLogin').GhLoginStartResult>,
+    loginCancel: () => ipcRenderer.invoke(IPC.GH_LOGIN_CANCEL) as Promise<void>,
+    onLoginEvent: (callback: (event: import('../shared/ghDeviceLogin').GhLoginEvent) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, event: import('../shared/ghDeviceLogin').GhLoginEvent) => callback(event);
+      ipcRenderer.on(IPC.GH_LOGIN_EVENT, listener);
+      return () => { ipcRenderer.removeListener(IPC.GH_LOGIN_EVENT, listener); };
+    },
   },
   // Work links (docs/work-links.md): read-only here, main is the only writer.
   // onChanged hands over the changed link ids; re-read what you show.

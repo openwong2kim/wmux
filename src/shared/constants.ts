@@ -591,6 +591,13 @@ export const IPC = {
   GIT_SHIP_COMMIT: 'gitShip:commit',
   GIT_SHIP_PUSH: 'gitShip:push',
   GIT_SHIP_CREATE_PR: 'gitShip:createPr',
+  // Git page hand-off: an issue / PR to an agent pane, or to a new worktree
+  GIT_HANDOFF_SEND: 'gitHandoff:send',
+  GIT_HANDOFF_START_WORKTREE: 'gitHandoff:startWorktree',
+  // One-step GitHub connect: gh auth login --web run by main, its device code shown in the page
+  GH_LOGIN_START: 'ghLogin:start',
+  GH_LOGIN_CANCEL: 'ghLogin:cancel',
+  GH_LOGIN_EVENT: 'ghLogin:event',
   DIALOG_PICK_FILE: 'dialog:pick-file',
   DIALOG_PICK_FOLDER: 'dialog:pick-folder',
   // File system
