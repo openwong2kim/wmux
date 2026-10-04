@@ -13,7 +13,9 @@ import {
   noteHumanApproval,
   openItem,
   pruneTrackRecord,
-  questionPrint,
+  resumeOpenItems,
+  questionWords,
+  toPrint,
   repeatedQuestions,
   retroDueWeek,
   retroRunAt,
@@ -97,21 +99,29 @@ describe('rollups', () => {
   });
 });
 
+// Prints are main's keyed hashes; the words themselves stand in for them here.
+const print = (text: string) => toPrint(questionWords(text));
+
 describe('questions', () => {
-  it('keeps hashed words only, never the text', () => {
-    const print = questionPrint('Should I merge PR #42 into main now?');
-    expect(print.every((p) => /^[0-9a-f]{8}$/.test(p))).toBe(true);
-    expect(JSON.stringify(print)).not.toMatch(/merge|main/);
+  it('splits a question into distinct content words', () => {
+    expect(questionWords('Should I merge PR #42 into main now? Merge!')).toEqual(['merge', 'pr', '42', 'main']);
   });
 
-  it('groups similar questions asked twice or more', () => {
-    const q = (text: string, at: number) => ({ workspaceId: 'ws', at, print: questionPrint(text) });
+  it('groups similar questions asked twice or more in the same workspace', () => {
+    const q = (text: string, at: number, workspaceId = 'ws') => ({ workspaceId, at, print: print(text) });
     const groups = repeatedQuestions([
       q('Merge PR 42 into main after CI is green?', 1),
       q('Merge PR 43 into main after CI is green?', 2),
       q('Which icon set should the settings page use?', 3),
     ]);
     expect(groups).toEqual([{ workspaceId: 'ws', count: 2, lastAt: 2 }]);
+  });
+
+  it('does not call a question asked once in each of two workspaces a repeat', () => {
+    expect(repeatedQuestions([
+      { workspaceId: 'a', at: 1, print: print('Merge PR 42 into main after CI is green?') },
+      { workspaceId: 'b', at: 2, print: print('Merge PR 42 into main after CI is green?') },
+    ])).toEqual([]);
   });
 });
 
@@ -121,9 +131,9 @@ describe('retro', () => {
 
   it('summarises interruptions versus the week before, repeats, missed stalls and the slowest', () => {
     const d = emptyTrackRecord();
-    noteDecisionAsked(d, 'ws', 'Release 3.68 today?', addWeeks(inLastWeek, -1));
-    noteDecisionAsked(d, 'ws', 'Ship release 3.68 now?', inLastWeek);
-    noteDecisionAsked(d, 'ws', 'Ship release 3.68 today?', inLastWeek + H);
+    noteDecisionAsked(d, 'ws', print('Release 3.68 today?'), addWeeks(inLastWeek, -1));
+    noteDecisionAsked(d, 'ws', print('Ship release 3.68 now?'), inLastWeek);
+    noteDecisionAsked(d, 'ws', print('Ship release 3.68 today?'), inLastWeek + H);
     noteHumanApproval(d, 'ws', 'claude', inLastWeek);
     bumpRow(d, inLastWeek, 'ws', 'claude', { approvalsLane: 4 });
     openItem(d, 'link:slow0001', { workspaceId: 'ws', agent: 'claude', createdAt: inLastWeek }, inLastWeek);
@@ -139,7 +149,6 @@ describe('retro', () => {
     expect(card?.missedStalls).toHaveLength(1);
     expect(card?.slowest[0]).toMatchObject({ ref: 'slow0001', ms: 10 * H });
     expect(card?.suggestions).toEqual(['precedent', 'stalls']);
-    expect(JSON.stringify(card)).not.toMatch(/release|ship/i);
   });
 
   it('makes no card for a week with no activity', () => {
@@ -154,8 +163,11 @@ describe('retro schedule', () => {
 
   it('runs on the scheduled local day and hour, once a week', () => {
     expect(retroRunAt(sched, MON)).toBe(new Date(2026, 8, 28, 9).getTime());
-    expect(retroDueWeek(sched, undefined, new Date(2026, 8, 28, 8, 59).getTime())).toBeNull();
-    expect(retroDueWeek(sched, undefined, new Date(2026, 8, 28, 9).getTime())).toBe(MON);
+    const lastWeek = addWeeks(MON, -1);
+    expect(retroDueWeek(sched, lastWeek, new Date(2026, 8, 28, 8, 59).getTime())).toBeNull();
+    expect(retroDueWeek(sched, lastWeek, new Date(2026, 8, 28, 9).getTime())).toBe(MON);
+    // Never run: the most recent slot before now is due, even last week's.
+    expect(retroDueWeek(sched, undefined, new Date(2026, 8, 28, 8, 59).getTime())).toBe(lastWeek);
     expect(retroDueWeek(sched, MON, WED)).toBeNull();
   });
 
@@ -163,9 +175,33 @@ describe('retro schedule', () => {
     expect(retroDueWeek(sched, addWeeks(MON, -1), WED)).toBe(MON);
   });
 
+  it('still runs a Sunday-evening slot when the app opens on Monday', () => {
+    const sunday = { enabled: true, day: 0, hour: 18 };
+    const nextMon = addWeeks(MON, 1);
+    const mondayMorning = new Date(2026, 9, 5, 8).getTime();
+    // Last run was the week before; Sunday 18:00 of this week passed while closed.
+    expect(retroDueWeek(sunday, addWeeks(MON, -1), mondayMorning)).toBe(MON);
+    // Once it ran, the same Monday finds nothing due until next Sunday.
+    expect(retroDueWeek(sunday, MON, mondayMorning)).toBeNull();
+    expect(retroDueWeek(sunday, MON, retroRunAt(sunday, nextMon))).toBe(nextMon);
+  });
+
   it('treats Sunday as the last day of the week and honours off', () => {
     expect(retroRunAt({ enabled: true, day: 0, hour: 18 }, MON)).toBe(new Date(2026, 9, 4, 18).getTime());
     expect(retroDueWeek({ ...sched, enabled: false }, undefined, WED)).toBeNull();
+  });
+});
+
+describe('time the feed was off', () => {
+  it('does not count as waiting', () => {
+    const d = emptyTrackRecord();
+    openItem(d, 'k', { workspaceId: 'ws', agent: 'claude', createdAt: WED }, WED);
+    moveItem(d, 'k', 'needs-you', WED);
+    d.activeAt = WED + 10 * 60 * 1000; // the feed stopped 10 minutes in
+    resumeOpenItems(d, WED + 10 * H); // back on ten hours later
+    sweepOpenItems(d, WED + 10 * H + 1);
+    expect(rollupRows(d, WED, 1)[0].stalls).toBe(0);
+    expect(d.weeks[0].missedStalls).toEqual([]);
   });
 });
 

@@ -56,7 +56,7 @@ import { DeckHeartbeat } from '../../deck/DeckHeartbeat';
 import { CommanderEventCoalescer, type CoalescerInput } from '../../deck/CommanderEventCoalescer';
 import { notifyFanoutCaller, shouldNotifyCaller, installFanoutCallerLedgerNotify } from '../../deck/fanoutCallerNotify';
 import { runHqAutoPress, takeHqPressPointer } from '../../deck/hqApprovalLane';
-import { takeTrackRecordContext } from '../../deck/trackRecordFeed';
+import { trackContextMemory } from '../../deck/trackRecordFeed';
 import { getTrackRecordStore } from '../../deck/trackRecordStore';
 import { notifyPrOwner, setPrOwnerSink } from '../../deck/prOwnerNotify';
 import {
@@ -985,6 +985,7 @@ export function registerDeckHandler(
       pendingActiveWorkBlocks.delete(workspaceId);
       if (delivered) shownActiveWorkBlocks.set(workspaceId, pendingWork);
     }
+    trackContextMemory.settle(workspaceId, delivered);
   };
   /** Drop the changed-only memory — a retired conversation must be told the
    *  rules (and the full active-work contract) again. */
@@ -993,6 +994,7 @@ export function registerDeckHandler(
     pendingAmbientBlocks.delete(workspaceId);
     shownActiveWorkBlocks.delete(workspaceId);
     pendingActiveWorkBlocks.delete(workspaceId);
+    trackContextMemory.forget(workspaceId);
   };
   const withLoopContext = (workspaceId: string, text: string): string => {
     // Mode is read fresh here (not cached) so a Settings flip between turns
@@ -1068,8 +1070,8 @@ export function registerDeckHandler(
       const pressed = takeHqPressPointer();
       if (pressed) blocks.push(pressed);
     }
-    // The track record, read-only, when it changed since Moa last saw it.
-    const track = takeTrackRecordContext(workspaceId, {
+    // The track record, read-only, when this conversation has not seen it yet.
+    const track = trackContextMemory.take(workspaceId, {
       moaEnabled: isMoaEnabled(),
       hq: getHqWorkspaceId(),
       data: getTrackRecordStore().read(),

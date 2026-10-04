@@ -2,8 +2,11 @@
 //
 // Built only from wmux's own data: work links, A2A task states, Deck decisions,
 // the fan-out ledger and the approval registry. The file holds ids, counts,
-// durations and hashed word sets — never a title, a question, a summary or any
+// durations and keyed word hashes — never a title, a question, a summary or any
 // other free text, so nothing in it can carry instructions back to Moa.
+// A decision question is kept only as HMACs of its words under a per-install
+// key (trackRecordStore.ts), so the prints compare across restarts but cannot
+// be reversed with a dictionary without that key.
 //
 // Everything here is pure: main (src/main/deck/trackRecordFeed.ts) feeds it
 // events and a clock, and owns the file (trackRecordStore.ts).
@@ -68,7 +71,7 @@ export interface TrackMissedStall extends TrackItemRef {
 export interface TrackQuestion {
   workspaceId: string;
   at: number;
-  /** Hashed, de-duplicated words of the question (questionPrint). */
+  /** Keyed hashes of the question's de-duplicated words (questionWords → main's HMAC). */
   print: string[];
 }
 
@@ -138,6 +141,9 @@ export interface TrackRecordData {
   open: Record<string, TrackOpenItem>;
   /** Ids already counted, so a restart or a repeated signal counts nothing twice. */
   seen: { links: string[]; decisions: string[]; linkedDecisions: string[]; approvals: string[]; ledger: string[] };
+  /** When the feed last ran (tick or stop). Waits do not accrue past it while
+   *  the feed is off, whether Moa was switched off or the app was closed. */
+  activeAt?: number;
   retro: {
     schedule: RetroSchedule;
     /** The week (local Monday) whose scheduled run already happened, card or not. */
@@ -269,11 +275,19 @@ function judgeWait(data: TrackRecordData, key: string, item: TrackOpenItem, now:
  * slowest list); `gone` (cancelled, abandoned) just stops tracking it. A state
  * that did not change is not a reaction, so the wait clock keeps running.
  */
-export function moveItem(data: TrackRecordData, key: string, next: OpenState | 'done' | 'gone', now: number): void {
+export function moveItem(
+  data: TrackRecordData,
+  key: string,
+  next: OpenState | 'done' | 'gone',
+  now: number,
+  opts: { judge?: boolean } = {},
+): void {
   const item = data.open[key];
   if (!item) return;
   if (next === item.state) return;
-  judgeWait(data, key, item, now);
+  // A move found on catch-up happened at an unknown time while the feed was
+  // off: the wait it ended is not judged.
+  if (opts.judge !== false) judgeWait(data, key, item, now);
   if (next === 'done' || next === 'gone') {
     delete data.open[key];
     if (next === 'gone') return;
@@ -291,6 +305,20 @@ export function moveItem(data: TrackRecordData, key: string, next: OpenState | '
   item.missedCounted = false;
 }
 
+/**
+ * The feed is running again: time it was off (Moa switched off, or the app
+ * closed) does not count as waiting, so every wait clock moves forward by it.
+ */
+export function resumeOpenItems(data: TrackRecordData, now: number): void {
+  const gap = data.activeAt !== undefined ? Math.max(0, now - data.activeAt) : 0;
+  if (gap > 0) {
+    for (const item of Object.values(data.open)) {
+      if (item.state !== 'active') item.since = Math.min(now, item.since + gap);
+    }
+  }
+  data.activeAt = now;
+}
+
 /** Count the waits that crossed a threshold while nothing changed. */
 export function sweepOpenItems(data: TrackRecordData, now: number): void {
   for (const [key, item] of Object.entries(data.open)) judgeWait(data, key, item, now);
@@ -298,11 +326,10 @@ export function sweepOpenItems(data: TrackRecordData, now: number): void {
 
 // ── Decisions and approvals ─────────────────────────────────────────────────
 
-/** A person was asked a decision question. Only the question's hashed words are kept. */
-export function noteDecisionAsked(data: TrackRecordData, workspaceId: string, question: string, at: number): void {
+/** A person was asked a decision question. Only its keyed word hashes are kept. */
+export function noteDecisionAsked(data: TrackRecordData, workspaceId: string, print: string[], at: number): void {
   const week = weekFor(data, at);
   week.interruptions.decisions += 1;
-  const print = questionPrint(question);
   if (print.length === 0) return;
   week.questions.push({ workspaceId, at, print });
   if (week.questions.length > MAX_QUESTIONS) week.questions.splice(0, week.questions.length - MAX_QUESTIONS);
@@ -319,19 +346,15 @@ const STOPWORDS = new Set([
   'are', 'can', 'you', 'now', 'not', 'any', 'our', 'its', 'have', 'has', 'was', 'will', 'would', 'how', 'why',
 ]);
 
-function fnv1a(s: string): string {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < s.length; i += 1) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return (h >>> 0).toString(16).padStart(8, '0');
+/** The question's distinct content words, for main to hash. Never stored as is. */
+export function questionWords(question: string): string[] {
+  const words = question.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length >= 2 && !STOPWORDS.has(w));
+  return [...new Set(words)];
 }
 
-/** The question as a sorted set of hashed words: comparable, not readable. */
-export function questionPrint(question: string): string[] {
-  const words = question.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w.length >= 2 && !STOPWORDS.has(w));
-  return [...new Set(words.map(fnv1a))].sort().slice(0, MAX_PRINT_TOKENS);
+/** A print from word hashes: sorted, de-duplicated, capped. */
+export function toPrint(hashes: readonly string[]): string[] {
+  return [...new Set(hashes)].sort().slice(0, MAX_PRINT_TOKENS);
 }
 
 export function printSimilarity(a: readonly string[], b: readonly string[]): number {
@@ -341,11 +364,13 @@ export function printSimilarity(a: readonly string[], b: readonly string[]): num
   return shared / (a.length + b.length - shared);
 }
 
-/** Groups of similar questions asked two or more times, largest first. */
+/** Groups of similar questions asked two or more times in the same workspace,
+ *  largest first. A question asked once in each of two workspaces is not a repeat. */
 export function repeatedQuestions(questions: readonly TrackQuestion[]): RetroRepeated[] {
   const groups: { head: TrackQuestion; members: TrackQuestion[] }[] = [];
   for (const q of questions) {
-    const g = groups.find((x) => printSimilarity(x.head.print, q.print) >= SIMILAR_QUESTION_JACCARD);
+    const g = groups.find((x) =>
+      x.head.workspaceId === q.workspaceId && printSimilarity(x.head.print, q.print) >= SIMILAR_QUESTION_JACCARD);
     if (g) g.members.push(q);
     else groups.push({ head: q, members: [q] });
   }
@@ -366,12 +391,17 @@ export function retroRunAt(schedule: RetroSchedule, weekStart: number): number {
   return d.getTime();
 }
 
-/** The week this week's retro still has to run for, or null (off, not yet time, or already run). */
+/**
+ * The week of the most recent scheduled slot at or before `now`, when that
+ * slot has not run yet; otherwise null. Looking back to last week's slot is
+ * what lets a Sunday-evening retro still run when the app opens on Monday.
+ */
 export function retroDueWeek(schedule: RetroSchedule, lastRunWeek: number | undefined, now: number): number | null {
   if (!schedule.enabled) return null;
   const thisWeek = weekStartOf(now);
-  if (lastRunWeek === thisWeek || now < retroRunAt(schedule, thisWeek)) return null;
-  return thisWeek;
+  const slotWeek = now >= retroRunAt(schedule, thisWeek) ? thisWeek : addWeeks(thisWeek, -1);
+  if (lastRunWeek !== undefined && lastRunWeek >= slotWeek) return null;
+  return slotWeek;
 }
 
 function sumRows(week: TrackWeek | undefined): TrackCounters {

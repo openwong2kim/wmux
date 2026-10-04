@@ -6,16 +6,26 @@
 // next one. Stats are never load-bearing: a file that does not read loads as
 // empty (keeping nothing but defaults) and a failed write is logged and retried
 // with the next change. Shapes and rollups live in src/shared/trackRecord.ts.
+//
+// Decision questions are kept as HMAC-SHA256 word hashes under a random key in
+// `track-record.key` (0600, its own file so it never rides along in a copy of
+// the stats). Clearing the stats replaces the key and removes the stats file's
+// backups, so nothing from before the clear can be restored or matched.
 
+import { createHmac, randomBytes } from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { getWmuxDir } from '../../daemon/config';
-import { atomicReadJSONSync, atomicWriteJSON } from '../../daemon/util/atomicWrite';
+import { atomicReadJSONSync, atomicWriteJSON, BACKUP_SUFFIXES } from '../../daemon/util/atomicWrite';
 import {
   DEFAULT_RETRO_SCHEDULE,
   MAX_SEEN_IDS,
   TRACK_COUNTER_KEYS,
   emptyTrackRecord,
+  questionWords,
+  toPrint,
   type RetroCard,
+  type RetroSuggestion,
   type RetroSchedule,
   type TrackOpenItem,
   type TrackRecordData,
@@ -24,6 +34,10 @@ import {
 
 export function getTrackRecordPath(dir: string = getWmuxDir()): string {
   return path.join(dir, 'track-record.json');
+}
+
+export function getTrackRecordKeyPath(dir: string = getWmuxDir()): string {
+  return path.join(dir, 'track-record.key');
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -82,6 +96,31 @@ function parseWeek(v: unknown): TrackWeek | null {
   };
 }
 
+const SUGGESTIONS: readonly RetroSuggestion[] = ['precedent', 'stalls', 'approvals'];
+
+/** A stored retro card, or null when any part of it is not the shape the renderer reads. */
+export function parseRetroCard(v: unknown): RetroCard | null {
+  if (!isObj(v) || !num(v.weekStart) || !num(v.builtAt) || !isObj(v.interruptions)) return null;
+  const i = v.interruptions;
+  if (![i.decisions, i.approvals, i.total, i.prevTotal].every(num)) return null;
+  if (![v.approvalsLane, v.delegations, v.done].every(num)) return null;
+  if (![v.missedStalls, v.repeated, v.slowest, v.suggestions].every(Array.isArray)) return null;
+  const repeated = (v.repeated as unknown[]).flatMap((r) =>
+    isObj(r) && str(r.workspaceId) && num(r.count) && num(r.lastAt) ? [{ workspaceId: r.workspaceId, count: r.count, lastAt: r.lastAt }] : []);
+  return {
+    weekStart: v.weekStart,
+    builtAt: v.builtAt,
+    interruptions: { decisions: i.decisions as number, approvals: i.approvals as number, total: i.total as number, prevTotal: i.prevTotal as number },
+    approvalsLane: v.approvalsLane as number,
+    delegations: v.delegations as number,
+    done: v.done as number,
+    missedStalls: parseRefs(v.missedStalls, (o) => (o.state === 'needs-you' || o.state === 'blocked' ? { ...ref(o), state: o.state } : null)),
+    repeated,
+    slowest: parseRefs(v.slowest, ref),
+    suggestions: (v.suggestions as unknown[]).filter((x): x is RetroSuggestion => SUGGESTIONS.includes(x as RetroSuggestion)),
+  };
+}
+
 function parseOpen(v: unknown): Record<string, TrackOpenItem> {
   const out: Record<string, TrackOpenItem> = {};
   if (!isObj(v)) return out;
@@ -115,7 +154,9 @@ export function parseTrackRecord(raw: unknown): TrackRecordData {
   const retro = isObj(raw.retro) ? raw.retro : {};
   data.retro.schedule = parseRetroSchedule(retro.schedule);
   if (num(retro.lastRunWeek)) data.retro.lastRunWeek = retro.lastRunWeek;
-  if (isObj(retro.card) && num(retro.card.weekStart)) data.retro.card = retro.card as unknown as RetroCard;
+  if (num(raw.activeAt)) data.activeAt = raw.activeAt;
+  const card = parseRetroCard(retro.card);
+  if (card) data.retro.card = card;
   if (retro.dismissed === true) data.retro.dismissed = true;
   return data;
 }
@@ -124,6 +165,8 @@ export class TrackRecordStore {
   private data: TrackRecordData;
   private writing: Promise<void> | null = null;
   private dirty = false;
+  private purgeBackups = false;
+  private key: Buffer | null = null;
   private readonly listeners = new Set<() => void>();
 
   constructor(private readonly dir: string = getWmuxDir()) {
@@ -155,14 +198,48 @@ export class TrackRecordStore {
   }
 
   /** Forget every count and the retro card; keep the schedule and the seen ids
-   *  (they only stop double counting). */
+   *  (they only stop double counting). The next write drops the file's
+   *  backups, and the question key is replaced. */
   clear(): void {
+    this.purgeBackups = true;
     this.mutate((d) => {
       const kept = { schedule: d.retro.schedule, ...(d.retro.lastRunWeek !== undefined ? { lastRunWeek: d.retro.lastRunWeek } : {}) };
       d.weeks = [];
       d.open = {};
       d.retro = kept;
     });
+    this.key = null;
+    try {
+      fs.unlinkSync(getTrackRecordKeyPath(this.dir));
+    } catch {
+      /* none yet */
+    }
+  }
+
+  /** The question as keyed word hashes: comparable under this install's key, not readable. */
+  questionPrint(question: string): string[] {
+    const key = this.questionKey();
+    return toPrint(questionWords(question).map((w) => createHmac('sha256', key).update(w).digest('hex').slice(0, 8)));
+  }
+
+  private questionKey(): Buffer {
+    if (this.key) return this.key;
+    const p = getTrackRecordKeyPath(this.dir);
+    try {
+      const hex = fs.readFileSync(p, 'utf8').trim();
+      if (/^[0-9a-f]{64}$/.test(hex)) return (this.key = Buffer.from(hex, 'hex'));
+    } catch {
+      /* create below */
+    }
+    const fresh = randomBytes(32);
+    try {
+      fs.mkdirSync(this.dir, { recursive: true });
+      fs.writeFileSync(p, fresh.toString('hex'), { mode: 0o600 });
+    } catch (err) {
+      // Held in memory: prints stay comparable until the next restart.
+      console.warn(`[track-record] could not save the question key: ${String(err)}`);
+    }
+    return (this.key = fresh);
   }
 
   onChange(fn: () => void): () => void {
@@ -181,10 +258,20 @@ export class TrackRecordStore {
     this.writing = (async () => {
       while (this.dirty) {
         this.dirty = false;
+        // Taken with the data it goes with: a clear made while an older write
+        // was in flight purges after the write that carries the cleared data.
+        const purge = this.purgeBackups;
+        this.purgeBackups = false;
         try {
           // A snapshot: a change made during the write goes out in the next one.
           await atomicWriteJSON(getTrackRecordPath(this.dir), structuredClone(this.data));
+          if (purge) {
+            for (const suffix of BACKUP_SUFFIXES) {
+              await fs.promises.unlink(`${getTrackRecordPath(this.dir)}${suffix}`).catch(() => undefined);
+            }
+          }
         } catch (err) {
+          if (purge) this.purgeBackups = true;
           console.warn(`[track-record] write failed; the next change retries: ${String(err)}`);
         }
       }

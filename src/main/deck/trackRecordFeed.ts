@@ -14,13 +14,20 @@
 // counted, swept, scheduled or injected; on re-subscribes and the stored
 // counts come back as they were.
 //
-// The weekly retro runs on the tick: once per local week at the scheduled day
-// and hour (or the first tick after it, if the app was closed), reviewing the
-// last full week. A week with no activity records the run and makes no card.
+// Each start (the switch turned on, or the app opened with Moa on) first
+// settles saved open items against the work links and the ledger: anything
+// that moved while the feed was off moves now, without judging a wait whose
+// end it did not see. Time the feed was off never counts as waiting, and
+// approvals answered while it was off are taken as a baseline, not counted.
+//
+// The weekly retro runs on the tick: at the most recent scheduled slot it has
+// not run for yet (the first tick after it, if the app was closed), reviewing
+// the last full week. A week with no activity records the run and makes no card.
 //
 // Moa reads the record (renderTrackRecordContext) but never writes it.
 
 import type { WorkLink } from '../../shared/workLink';
+import type { LedgerEntry } from '../../shared/ledger';
 import type { LedgerTransition } from '../../daemon/ledger/TaskLedger';
 import type { WorkspaceDecision } from './deckDecisionStore';
 import type { TrackRecordStore } from './trackRecordStore';
@@ -37,6 +44,7 @@ import {
   noteHumanApproval,
   openItem,
   pruneTrackRecord,
+  resumeOpenItems,
   retroDueWeek,
   rollupRows,
   sweepOpenItems,
@@ -72,7 +80,10 @@ export interface TrackRecordFeedPorts {
     load: () => Record<string, WorkspaceDecision>;
     onChanged: (fn: () => void) => () => void;
   };
-  ledger: { onTransition: (fn: (t: LedgerTransition) => void) => () => void };
+  ledger: {
+    onTransition: (fn: (t: LedgerTransition) => void) => () => void;
+    get: (id: string) => Pick<LedgerEntry, 'status' | 'updatedAt'> | null;
+  };
   /** The registry's recently resolved records, or null when the daemon is away. */
   listResolvedApprovals: () => Promise<TrackApprovalRecord[] | null>;
   /** A workspace's agent slug (`claude`), or `-`. */
@@ -118,12 +129,19 @@ function ledgerState(to: string): OpenState | 'done' | 'gone' {
   }
 }
 
-/** `hq:<hq>;owner:<owner>;lane:hq` (hqApprovalLane.hqResolvedBy) → the owner.
- *  The daemon keeps up to RESOLVED_BY_MAX (200) characters, sized for this label. */
-function laneOwner(resolvedBy: string): string | null {
-  if (!/(^|;)lane:hq(;|$)/.test(resolvedBy)) return null;
-  const m = /(?:^|;)owner:([^;]+)/.exec(resolvedBy);
-  return m ? m[1] : '-';
+const WORKSPACE_ID_RE = /^[A-Za-z0-9._-]{1,80}$/;
+
+/**
+ * The owner from the lane's audit label `hq:<hq>;owner:<owner>;lane:hq`
+ * (hqApprovalLane.hqResolvedBy), or null when the label is not exactly that
+ * shape with valid workspace ids. The daemon stores no structured lane field
+ * on the record, and `resolvedBy` is free text, so anything else is not
+ * counted as a lane press. The daemon keeps 200 characters, sized for this label.
+ */
+export function laneOwner(resolvedBy: string): string | null {
+  const m = /^hq:([^;]+);owner:([^;]+);lane:hq$/.exec(resolvedBy);
+  if (!m || !WORKSPACE_ID_RE.test(m[1]) || !WORKSPACE_ID_RE.test(m[2])) return null;
+  return m[2];
 }
 
 export function createTrackRecordFeed(ports: TrackRecordFeedPorts): TrackRecordFeed {
@@ -131,6 +149,8 @@ export function createTrackRecordFeed(ports: TrackRecordFeedPorts): TrackRecordF
   const store = ports.store;
   let offs: (() => void)[] = [];
   let timer: unknown = null;
+  // Set on every start: the first approval list read after it is a baseline.
+  let approvalBaseline = false;
 
   const onLinks = (ids: string[]): void => {
     if (!ports.isMoaEnabled()) return;
@@ -179,7 +199,9 @@ export function createTrackRecordFeed(ports: TrackRecordFeedPorts): TrackRecordF
         if (!markSeen(d.seen.decisions, decision.id)) continue;
         changed = true;
         // One answered while the feed was off was not seen being asked.
-        if (decision.status === 'pending') noteDecisionAsked(d, workspaceId, decision.question, decision.raisedAt || now());
+        if (decision.status === 'pending') {
+          noteDecisionAsked(d, workspaceId, store.questionPrint(decision.question), decision.raisedAt || now());
+        }
       }
       return changed;
     });
@@ -211,6 +233,12 @@ export function createTrackRecordFeed(ports: TrackRecordFeedPorts): TrackRecordF
     }
     if (!resolved || !ports.isMoaEnabled()) return;
     store.mutate((d) => {
+      if (approvalBaseline) {
+        // Answered while the feed was off: seen, not counted.
+        approvalBaseline = false;
+        for (const r of resolved) if (typeof r.id === 'string') markSeen(d.seen.approvals, r.id);
+        return true;
+      }
       let changed = false;
       for (const r of resolved) {
         if (typeof r.id !== 'string' || !markSeen(d.seen.approvals, r.id)) continue;
@@ -218,7 +246,8 @@ export function createTrackRecordFeed(ports: TrackRecordFeedPorts): TrackRecordF
         const at = typeof r.resolvedAt === 'number' ? r.resolvedAt : now();
         const by = typeof r.resolvedBy === 'string' ? r.resolvedBy : '';
         const agent = agentSlug(r.agent);
-        const owner = laneOwner(by);
+        const owner = by.startsWith('hq:') ? laneOwner(by) : null;
+        if (by.startsWith('hq:') && owner === null) continue; // a malformed lane label
         if (owner !== null) {
           bumpRow(d, at, owner, agent, { approvalsLane: 1 });
         } else if (r.state === 'resolved' && !by.startsWith('brain')) {
@@ -251,6 +280,7 @@ export function createTrackRecordFeed(ports: TrackRecordFeedPorts): TrackRecordF
     let retroChanged = false;
     store.mutate((d) => {
       sweepOpenItems(d, t);
+      d.activeAt = t;
       pruneTrackRecord(d, t);
       const due = retroDueWeek(d.retro.schedule, d.retro.lastRunWeek, t);
       if (due !== null) {
@@ -268,7 +298,36 @@ export function createTrackRecordFeed(ports: TrackRecordFeedPorts): TrackRecordF
     if (retroChanged) ports.onRetroChanged?.();
   };
 
+  /** Settle saved open items against where the work actually is. */
+  const reconcile = (d: TrackRecordData, t: number): void => {
+    for (const [key, item] of Object.entries(d.open)) {
+      const [kind, id] = [key.slice(0, key.indexOf(':')), key.slice(key.indexOf(':') + 1)];
+      let next: OpenState | 'done' | 'gone';
+      let at = t;
+      if (kind === 'link') {
+        const link = ports.workLinks.get(id);
+        next = link ? linkState(link) : 'gone';
+        if (link) at = link.updatedAt;
+      } else if (kind === 'fan') {
+        const entry = ports.ledger.get(id);
+        next = entry ? ledgerState(entry.status) : 'gone';
+        if (entry) at = entry.updatedAt;
+      } else {
+        next = 'gone';
+      }
+      // A finish found now happened while the feed was off, at the source's
+      // last change: time-to-done uses it; the wait it ended is not judged.
+      moveItem(d, key, next, Math.min(t, Math.max(item.createdAt, at)), { judge: false });
+    }
+  };
+
   const start = (): void => {
+    approvalBaseline = true;
+    store.mutate((d) => {
+      const t = now();
+      reconcile(d, t);
+      resumeOpenItems(d, t);
+    });
     offs = [
       ports.workLinks.onChange(onLinks),
       ports.decisions.onChanged(onDecisions),
@@ -279,11 +338,13 @@ export function createTrackRecordFeed(ports: TrackRecordFeedPorts): TrackRecordF
     if (typeof h === 'object' && h) h.unref?.();
     timer = h;
     // Catch up with what changed while the feed was off.
+    void onApprovalsChanged();
     onDecisions();
     tick();
   };
 
   const stop = (): void => {
+    store.mutate((d) => { d.activeAt = now(); });
     for (const off of offs) off();
     offs = [];
     if (timer !== null) (ports.clearInterval ?? ((h: unknown) => clearInterval(h as NodeJS.Timeout)))(timer);
@@ -334,28 +395,50 @@ export function renderTrackRecordContext(
   ].join('\n');
 }
 
-const shownContext = new Map<string, string>();
-
-/**
- * The block for this brain turn, or null. Only while Moa is on, only for Moa
- * (the HQ, or with no HQ designated each workspace's own brain), and only when
- * it changed since that brain last got it, so an idle week costs no tokens.
- */
-export function takeTrackRecordContext(
-  workspaceId: string,
-  opts: { moaEnabled: boolean; hq: string | null; data: TrackRecordData; now: number; nameOf: (id: string) => string | undefined },
-): string | null {
-  if (!opts.moaEnabled || (opts.hq !== null && workspaceId !== opts.hq)) return null;
-  const block = renderTrackRecordContext(opts.data, opts.now, opts.nameOf);
-  if (!block || shownContext.get(workspaceId) === block) return null;
-  shownContext.set(workspaceId, block);
-  return block;
+export interface TrackContextMemory {
+  /**
+   * The block for this brain turn, or null. Only while Moa is on, only for Moa
+   * (the HQ, or with no HQ designated each workspace's own brain), and only when
+   * it differs from what that brain's conversation already got, so an idle week
+   * costs no tokens. The block is pending until the turn is settled.
+   */
+  take: (
+    workspaceId: string,
+    opts: { moaEnabled: boolean; hq: string | null; data: TrackRecordData; now: number; nameOf: (id: string) => string | undefined },
+  ) => string | null;
+  /** The turn ended: a delivered block counts as shown; an errored one is sent again. */
+  settle: (workspaceId: string, delivered: boolean) => void;
+  /** The conversation was reset or retired: the next turn gets the block again. */
+  forget: (workspaceId: string) => void;
 }
 
-/** Tests only. */
-export function __resetTrackContextForTest(): void {
-  shownContext.clear();
+/** Changed-only memory for the block, settled like the deck's ambient blocks. */
+export function createTrackContextMemory(): TrackContextMemory {
+  const shown = new Map<string, string>();
+  const pending = new Map<string, string>();
+  return {
+    take: (workspaceId, opts) => {
+      if (!opts.moaEnabled || (opts.hq !== null && workspaceId !== opts.hq)) return null;
+      const block = renderTrackRecordContext(opts.data, opts.now, opts.nameOf);
+      if (!block || shown.get(workspaceId) === block) return null;
+      pending.set(workspaceId, block);
+      return block;
+    },
+    settle: (workspaceId, delivered) => {
+      const block = pending.get(workspaceId);
+      if (block === undefined) return;
+      pending.delete(workspaceId);
+      if (delivered) shown.set(workspaceId, block);
+    },
+    forget: (workspaceId) => {
+      shown.delete(workspaceId);
+      pending.delete(workspaceId);
+    },
+  };
 }
+
+/** The app's memory, used by the deck handler. */
+export const trackContextMemory = createTrackContextMemory();
 
 // ── The app's instance ──────────────────────────────────────────────────────
 
