@@ -42,3 +42,7 @@ Cite your PR number at the end of an entry the same way as before — `(#684)`.
 `CHANGELOG.md` under `## [Unreleased]`, in PR-number order, and deletes the
 fragments. That runs as part of cutting a release, before the version bump.
 `--check` reports what would be folded without writing anything.
+
+A prerelease (`X.Y.Z-beta.N`) folds the same way, so the final `X.Y.Z`
+section holds only what landed after the last prerelease. See "Pre-releases"
+in `CLAUDE.md`.

@@ -29,6 +29,7 @@ jobs:
       contents: write
     outputs:
       version: ${{ steps.pkg.outputs.version }}
+      is_prerelease: ${{ steps.pkg.outputs.is_prerelease }}
     env:
       # NN2-T1 — SignPath Foundation (OSS) code signing. This non-secret gate
       # keeps signing steps no-op until SIGNPATH_API_TOKEN is configured, while
@@ -211,11 +212,28 @@ jobs:
           }
           Write-Host "Signed Setup.exe in place (status=$($sig.Status), publisher: $($sig.SignerCertificate.Subject))"
 
+      # is_prerelease decides whether this run ships to existing users. A tag
+      # like v4.0.0-beta.1 becomes a GitHub prerelease that is never "latest",
+      # and skips Chocolatey and WinGet. update.electronjs.org ignores
+      # prereleases and the side-car manifests are read through the
+      # releases/latest alias, so no stable install is ever offered one.
+      #
+      # The package.json version counts too, not just the tag: a v4.0.0 tag on
+      # a tree still versioned 4.0.0-beta.1 would otherwise publish beta
+      # binaries as the latest release. On a dispatch (no tag) it is the only
+      # input, so the rehearsal skips what the tagged run would skip.
       - name: Get version from package.json
         id: pkg
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           $v = (Get-Content package.json | ConvertFrom-Json).version
           echo "version=$v" >> $env:GITHUB_OUTPUT
+          $tagPre = ($env:REF_TYPE -eq 'tag') -and $env:REF_NAME.Contains('-')
+          $pre = if ($tagPre -or $v.Contains('-')) { 'true' } else { 'false' }
+          echo "is_prerelease=$pre" >> $env:GITHUB_OUTPUT
+          Write-Host "version=$v ref=$env:REF_TYPE/$env:REF_NAME is_prerelease=$pre"
         shell: pwsh
 
       # Single canonical SHA-256 of the Setup.exe, consumed by BOTH the
@@ -331,8 +349,13 @@ jobs:
           body_path: out/release-notes.md
           generate_release_notes: true
           draft: false
+          prerelease: ${{ steps.pkg.outputs.is_prerelease == 'true' }}
+          make_latest: ${{ steps.pkg.outputs.is_prerelease != 'true' }}
 
+      # Chocolatey and WinGet have no beta channel we use: a prerelease pushed
+      # there reaches every user who runs an upgrade.
       - name: Build Chocolatey package
+        if: steps.pkg.outputs.is_prerelease != 'true'
         env:
           PKG_VERSION: ${{ steps.pkg.outputs.version }}
           SETUP_SHA256: ${{ steps.checksum.outputs.sha256 }}
@@ -349,7 +372,7 @@ jobs:
         shell: pwsh
 
       - name: Push to Chocolatey
-        if: github.event_name == 'push' && env.CHOCO_API_KEY != ''
+        if: github.event_name == 'push' && steps.pkg.outputs.is_prerelease != 'true' && env.CHOCO_API_KEY != ''
         continue-on-error: true
         run: choco push "out/choco/wmux.$env:PKG_VERSION.nupkg" --source https://push.chocolatey.org --api-key $env:CHOCO_API_KEY
         shell: pwsh
@@ -360,6 +383,7 @@ jobs:
   winget:
     name: Publish to WinGet
     needs: build
+    if: needs.build.outputs.is_prerelease != 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
