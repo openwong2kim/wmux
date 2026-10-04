@@ -340,9 +340,14 @@ button.
     composer. Review threads sit under their line with a reply box; outdated
     ones are listed under the file.
 
-  Every write names the head commit shown, and main refuses if the PR moved
-  ("The PR changed since you loaded it"; drafts are kept). A draft written
-  for an older head says so. The header slot shows who acts next when a
+  The pane pins the head it first showed. When new commits land, a muted
+  line "New commits were pushed since you loaded this PR" with [Reload]
+  holds every write until Reload pins the new head and reads files, threads
+  and checks again. Every write names the pinned head, and main refuses if
+  the PR moved ("The PR changed since you loaded it"; drafts are kept).
+  Drafts remember their head per field; a line comment written on an older
+  head offers Discard or Re-anchor. A closed or merged PR turns the writes
+  off with the reason. File-level comments sit at the top of their file. The header slot shows who acts next when a
   work link names the PR: "Next: you · review" or "Next: <agent> · working".
 - **Hand-off:** an issue or PR dropped on an agent pane or a sidebar
   workspace row (holding the drag over the rail's Workspaces button for
