@@ -108,8 +108,9 @@ export const createMoaSlice: StateCreator<StoreState, [['zustand/immer', never]]
     const api = window.electronAPI?.deck?.moa;
     if (!api?.setup) return { ok: false, code: 'unavailable' };
     const pending = get().moaHqPendingId;
-    const reuse = !!pending && get().workspaces.some((w) => w.id === pending);
-    let id = reuse ? pending! : '';
+    const reused = pending && get().workspaces.some((w) => w.id === pending) ? pending : null;
+    const reuse = reused !== null;
+    let id = reused ?? '';
     if (!reuse) {
       set((state: StoreState) => {
         const ordinal = state.nextWorkspaceOrdinal ?? 1;

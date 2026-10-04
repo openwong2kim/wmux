@@ -36,15 +36,3 @@ export function refuseWorkspaceClose(
   state.pushToast?.({ level: 'info', message: t(refusal === 'moa-hq' ? 'moa.guard.reason' : 'workspace.closeLastRefused') });
   return true;
 }
-
-/** True (with a toast giving the reason) when `workspaceId` is the HQ. For
- *  paths that only need the HQ half (e.g. a reset that adds a fresh workspace
- *  before removing the old ones). */
-export function refuseIfMoaHq(
-  workspaceId: string,
-  state: Pick<StoreState, 'moa' | 'pushToast'> & { moaHqSeed?: string | null } = useStore.getState(),
-): boolean {
-  if (!isMoaHqWorkspace(state, workspaceId)) return false;
-  state.pushToast({ level: 'info', message: t('moa.guard.reason') });
-  return true;
-}
