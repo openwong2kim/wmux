@@ -304,6 +304,37 @@ notifications resolve the pane through the root
 thread's ownership. They never replace the pane's resume binding or spool.
 The shared module is shipped and installed beside both entry points.
 
+### MCP and A2A identity under the shared server (#1778)
+
+The wmux MCP server Codex spawns is the shared server's child too, so the
+PID-map walk climbs through the server instead of reaching a pane, and its
+inherited `WMUX_*` env names the pane that started the server. Codex names the
+conversation on every `tools/call` in `_meta.threadId`. When a call carries a
+thread id **and** the MCP server's parent is positively a shared app-server
+(`app-server --managed-daemon`, or a non-stdio `--listen`; wrappers that
+re-run the MCP entry itself are skipped), the server resolves that call's pane
+from the ownership index above and requires it to be a live pid-map anchor of
+this wmux instance. The workspace is the one main resolves now. Nothing about
+it is cached, so a resumed thread, a closed pane or a restarted server is seen
+on the next call.
+
+For such a call the PID walks, the cached identity, the commander token and
+the `WMUX_WORKSPACE_ID` / `WMUX_PTY_ID` env hints are not used. A thread with
+no live owner fails with a `Workspace identity unknown` error that names the
+reason (no owning pane, owning pane closed, another wmux instance) instead of
+acting as another pane. Any other parent — Claude Code, `codex --no-daemon`, a
+stdio app-server, a script run by Codex's shell tool, an external MCP client —
+cannot claim a thread id and keeps the existing resolution.
+
+Diagnostics go to the MCP server's stderr: `identity: parent shared-codex-server`,
+`identity: codex-thread HIT ws=… pty=…` or `identity: codex-thread MISS <reason>`.
+
+A thread has an owner only when a pane recorded one: wmux's own Codex launches
+(through the pane relay) and a pane-side `SessionStart` do. A `codex` typed in a
+PowerShell pane that starts or joins the shared server records none (the shell
+guard from #1584 covers bash and zsh only), so its A2A calls fail closed until
+it is started through wmux or with `--no-daemon`.
+
 ## Identity on the main pipe (#1111)
 
 Both bridges send `clientName: 'wmux-hook-bridge'` on every request. On the

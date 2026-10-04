@@ -59,7 +59,12 @@ describe('WI-002 senderPtyId provenance (source-level invariant)', () => {
   it('getTaskSenderPtyId prefers the VERIFIED ptyId, then falls back to the weak env hint', () => {
     // Precedence is the whole point: a verified walk result must win over the
     // spoofable env hint whenever it exists.
-    expect(mcpIndexSrc).toMatch(/function\s+getTaskSenderPtyId\s*\(\s*\)\s*:\s*string\s*\{\s*return\s+MY_PTY_ID\s*\|\|\s*ENV_PTY_HINT\s*;?\s*\}/);
+    // A shared Codex app-server caller (#1778) answers ONLY from this call's
+    // thread-resolved pane — neither another call's MY_PTY_ID nor the daemon
+    // starter's env hint.
+    expect(mcpIndexSrc).toMatch(
+      /function\s+getTaskSenderPtyId\s*\(\s*\)\s*:\s*string\s*\{\s*if\s*\(\s*SHARED_CODEX_PARENT\s*\)\s*return\s+codexCallScope\.getStore\(\)\?\.ptyId\s*\?\?\s*''\s*;\s*return\s+MY_PTY_ID\s*\|\|\s*ENV_PTY_HINT\s*;?\s*\}/,
+    );
   });
 
   it('MY_PTY_ID is NEVER assigned from the weak env source (verified provenance preserved)', () => {
@@ -76,7 +81,12 @@ describe('WI-002 senderPtyId provenance (source-level invariant)', () => {
   it('a2a.channel.* stays VERIFIED-only — getSenderPtyId returns MY_PTY_ID and NOTHING weak', () => {
     // The channel mutation authz gate (a2a.channel.rpc.ts) resolves this
     // senderPtyId and fails closed without one; it must never see the weak hint.
-    expect(mcpIndexSrc).toMatch(/getSenderPtyId:\s*\(\)\s*=>\s*MY_PTY_ID\b/);
+    expect(mcpIndexSrc).toMatch(/getSenderPtyId:\s*\(\)\s*=>\s*verifiedPtyId\(\)/);
+    // verifiedPtyId = the walk hit, or (#1778) only THIS call's thread pane for
+    // a shared Codex app-server — never a weak source, never another call's pane.
+    expect(mcpIndexSrc).toMatch(
+      /function\s+verifiedPtyId\s*\(\s*\)\s*:\s*string\s*\{\s*if\s*\(\s*SHARED_CODEX_PARENT\s*\)\s*return\s+codexCallScope\.getStore\(\)\?\.ptyId\s*\?\?\s*''\s*;\s*return\s+MY_PTY_ID\s*;\s*\}/,
+    );
     // Lock the WHOLE arrow body, not just its prefix. The earlier `\b`-only
     // assertion (review P2: codex + code-reviewer both caught it) would pass
     // against `getSenderPtyId: () => MY_PTY_ID || ENV_PTY_HINT` — exactly the
@@ -86,7 +96,7 @@ describe('WI-002 senderPtyId provenance (source-level invariant)', () => {
     expect(mcpIndexSrc).not.toMatch(/getSenderPtyId:\s*\(\)\s*=>[^\n,]*process\.env/);
     expect(mcpIndexSrc).not.toMatch(/getSenderPtyId:\s*\(\)\s*=>[^\n,]*getTaskSenderPtyId/);
     expect(mcpIndexSrc).toMatch(
-      /registerChannelTools\s*\(\s*server\s*,\s*\{[\s\S]*?resolveWorkspaceId:\s*requireWorkspaceId[\s\S]*?getSenderPtyId:\s*\(\)\s*=>\s*MY_PTY_ID[\s\S]*?\}\s*,\s*MCP_CATALOG_OPTIONS\s*,?\s*\)/,
+      /registerChannelTools\s*\(\s*server\s*,\s*\{[\s\S]*?resolveWorkspaceId:\s*requireWorkspaceId[\s\S]*?getSenderPtyId:\s*\(\)\s*=>\s*verifiedPtyId\(\)[\s\S]*?\}\s*,\s*MCP_CATALOG_OPTIONS\s*,?\s*\)/,
     );
   });
 
