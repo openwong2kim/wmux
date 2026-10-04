@@ -16,6 +16,7 @@ import { defaultSnapshot } from '../../pty/portWatch';
 import type { PortSnapshot, SnapshotFn } from '../../pty/portWatch';
 import { walkToOwningAnchor } from '../../pty/serverSidePidWalk';
 import type { OwningAnchor } from '../../pty/serverSidePidWalk';
+import { recordSentTask, recordTaskState, stateOfTask, workLinkFromSentTask } from '../../workLink/a2aProducer';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -596,6 +597,8 @@ export function registerA2aRpc(
         : undefined;
       if (gate.kind === 'ok') {
         if (cancelWorker) claudeWorker.cancel(cancelWorker);
+        // Work link (best-effort): the daemon's committed state is the truth.
+        void recordTaskState(params.taskId, stateOfTask(gate.result.task));
         return sendToRenderer(getWindow, 'a2a.task.update', {
           ...params,
           daemonCommitted: true,
@@ -606,13 +609,18 @@ export function registerA2aRpc(
       // explicit ok from it counts as a committed cancel.
       const res = await sendToRenderer(getWindow, 'a2a.task.update', params);
       if (cancelWorker && isRecord(res) && res.ok === true) claudeWorker.cancel(cancelWorker);
+      if (isRecord(res) && res.ok === true) void recordTaskState(params.taskId, params.status);
       return res;
     }
     // Message-only update: may reopen an ended task (daemon first).
     if (typeof params.message === 'string') {
       const prepared = await prepareReopen('a2a.task.update', params);
       if ('response' in prepared) return prepared.response;
-      return sendToRenderer(getWindow, 'a2a.task.update', prepared.params);
+      const res = await sendToRenderer(getWindow, 'a2a.task.update', prepared.params);
+      if (isRecord(res) && res.ok === true) {
+        void recordTaskState(params.taskId, stateOfTask(prepared.params.daemonReopenedTask));
+      }
+      return res;
     }
     return sendToRenderer(getWindow, 'a2a.task.update', params);
   });
@@ -664,6 +672,9 @@ export function registerA2aRpc(
     // 데몬 정본 미러-생성(신규 태스크 브랜치에서만 — 렌더러가 task 스냅샷 동반).
     // 실패는 soft-degrade: 이후 전이가 'task not found'로 렌더러 폴백을 탄다.
     if (isRecord(result) && result.ok === true && isRecord(result.task) && !params.taskId) {
+      // Work link (best-effort, never awaited): read before `task` is stripped.
+      // A commander brain's send is a Moa delegation (docs/work-links.md).
+      void recordSentTask(workLinkFromSentTask(result, { fromCommander: !!ctx?.commanderWorkspace }));
       const t = result.task as { id?: unknown; metadata?: { title?: unknown; from?: unknown; to?: unknown }; history?: unknown };
       if (typeof t.id === 'string' && isRecord(t.metadata)) {
         const mirror = await daemonTaskRpc(getDaemonClient, 'a2a.task.create', {
@@ -685,6 +696,10 @@ export function registerA2aRpc(
       }
       // 내부 운반 필드 제거 — 파이프 호출자 응답 계약 불변.
       delete (result as Record<string, unknown>).task;
+    }
+    // A reply that reopened an ended task moves its link back with it.
+    if (params.taskId && isRecord(result) && result.ok === true && sendParams.daemonReopenedTask) {
+      void recordTaskState(params.taskId, stateOfTask(sendParams.daemonReopenedTask));
     }
 
     // execute → origin decision (LanLink PR-1, positive-allow):
@@ -732,6 +747,7 @@ export function registerA2aRpc(
       const committedState =
         committed && isRecord(committed.status) ? committed.status.state : undefined;
       if (committedState === 'canceled') {
+        void recordTaskState(taskId, 'canceled');
         return sendToRenderer(getWindow, 'a2a.task.cancel', {
           ...params,
           daemonCommitted: true,
@@ -740,6 +756,8 @@ export function registerA2aRpc(
       }
       return { ok: true, taskId };
     }
-    return sendToRenderer(getWindow, 'a2a.task.cancel', params);
+    const res = await sendToRenderer(getWindow, 'a2a.task.cancel', params);
+    if (isRecord(res) && res.ok === true) void recordTaskState(taskId, 'canceled');
+    return res;
   });
 }
