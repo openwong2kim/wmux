@@ -6,10 +6,6 @@
 // a short bubble for a new decision or a finished delegation, then a dot —
 // yellow while a decision waits on the operator, grey for an unseen reply.
 //
-// It also carries the dot DeckToggle had for unread channels (DeckToggle steps
-// aside while Moa is on), counted only while the Channels tab is opted in. A
-// Moa dot outranks it in colour; the accessible name says both.
-//
 // "On screen" is DeckToggle's reading (the dock is open AND the Workspaces page
 // is up): bubbles, dots and "seen" follow it. The transcript subscription
 // follows the dock's mount flag instead (AppLayout mounts it on
@@ -26,8 +22,6 @@ import type { WorkLink } from '../../../shared/workLink';
 import { MoaMascot, useMoaReducedMotion } from './MoaMascot';
 import MoaBubble from './MoaBubble';
 import { MOA_BUBBLE_MS, moaDot, useMoaNotices, type MoaNoticeText } from './moaNotice';
-import { sumUnread } from '../Channels/ChannelsPanel';
-import { deckHasSignal } from '../Deck/DeckToggle';
 
 export default function MoaTitlebarButton() {
   const enabled = useStore((s) => s.moa?.config.enabled === true);
@@ -41,7 +35,6 @@ function MoaTitlebarButtonOn() {
   const bubbles = useStore((s) => s.moa?.config.bubbles !== false);
   const hqId = useStore((s) => s.moa?.hq.workspaceId ?? null);
   const setChannelDockVisible = useStore((s) => s.setChannelDockVisible);
-  const channelsUnread = useStore((s) => (s.channelsTabVisible ? sumUnread(s.channelUnread) : 0));
   const reduceMotion = useMoaReducedMotion();
   const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null);
   const [hold, setHold] = useState(false);
@@ -88,25 +81,20 @@ function MoaTitlebarButtonOn() {
   }, [dispatch]);
   const later = useCallback(() => dispatch({ type: 'collapse' }), [dispatch]);
 
-  const moaDotKind = onScreen ? null : moaDot(state);
-  // Like DeckToggle: only while the panel is off screen.
-  const channelSignal = !onScreen && deckHasSignal(channelsUnread);
-  const dot = moaDotKind ?? (channelSignal ? 'channels' : null);
+  const dot = onScreen ? null : moaDot(state);
   const mascot: MoaMascotState = bubble?.kind === 'done' ? 'done' : state.pending.length > 0 ? 'needs-you' : 'idle';
 
   // Named "Moa" (open state is aria-expanded): the tools-panel toggle beside
   // it already reads "Show / Hide Moa" while Moa owns the panel.
   const base = t('moa.mascot.name');
-  const moaSuffix =
-    moaDotKind === 'waiting'
+  const suffix =
+    dot === 'waiting'
       ? state.pending.length === 1
         ? t('moa.mascot.waitingOne')
         : t('moa.mascot.waiting', { count: state.pending.length })
-      : moaDotKind === 'reply'
+      : dot === 'reply'
         ? t('moa.mascot.newReply')
         : '';
-  const channelSuffix = channelSignal ? t('moa.mascot.channelsUnread', { count: channelsUnread }) : '';
-  const suffix = [moaSuffix, channelSuffix].filter(Boolean).join(', ');
   const name = suffix ? `${base} — ${suffix}` : base;
 
   return (
@@ -130,10 +118,7 @@ function MoaTitlebarButtonOn() {
           {dot && (
             <span
               className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full"
-              style={{
-                background:
-                  dot === 'waiting' ? 'var(--accent-yellow)' : dot === 'reply' ? 'var(--text-muted)' : 'var(--accent)',
-              }}
+              style={{ background: dot === 'waiting' ? 'var(--accent-yellow)' : 'var(--text-muted)' }}
               data-moa-titlebar-dot={dot}
             />
           )}

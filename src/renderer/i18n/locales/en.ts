@@ -1325,7 +1325,6 @@ export const en = {
   'moa.mascot.waitingOne': "1 decision waiting on you",
   'moa.mascot.waiting': "{count} decisions waiting on you",
   'moa.mascot.newReply': "new reply",
-  'moa.mascot.channelsUnread': "{count} unread in channels",
   'moa.settings.saveFailed': "Couldn't save that setting. Try again.",
   'moa.archive.noticeOne': "1 pending decision was moved to Moa's archive",
   'moa.archive.notice': "{count} pending decisions were moved to Moa's archive",

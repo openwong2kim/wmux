@@ -1411,7 +1411,6 @@ export const zh = {
   'moa.mascot.waitingOne': "1 个决定在等你",
   'moa.mascot.waiting': "{count} 个决定在等你",
   'moa.mascot.newReply': "新回复",
-  'moa.mascot.channelsUnread': "频道中有 {count} 条未读",
   'moa.settings.saveFailed': "无法保存该设置，请重试。",
   'moa.archive.noticeOne': "1 个待处理的决定已移入 Moa 归档",
   'moa.archive.notice': "{count} 个待处理的决定已移入 Moa 归档",

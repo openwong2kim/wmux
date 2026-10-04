@@ -845,7 +845,6 @@ export const ko = {
   'moa.mascot.waitingOne': "결정 1개가 기다리는 중",
   'moa.mascot.waiting': "결정 {count}개가 기다리는 중",
   'moa.mascot.newReply': "새 답장",
-  'moa.mascot.channelsUnread': "채널에 읽지 않은 메시지 {count}개",
   'moa.settings.saveFailed': "설정을 저장하지 못했습니다. 다시 시도하세요.",
   'moa.archive.noticeOne': "대기 중이던 결정 1개를 Moa 보관함으로 옮겼습니다",
   'moa.archive.notice': "대기 중이던 결정 {count}개를 Moa 보관함으로 옮겼습니다",

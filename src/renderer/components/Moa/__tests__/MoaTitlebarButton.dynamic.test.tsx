@@ -122,7 +122,7 @@ afterEach(() => {
   act(() => root.unmount());
   container.remove();
   vi.useRealTimers();
-  useStore.setState({ moa: null, channelDockVisible: false, channelUnread: {}, channelsTabVisible: false } as never);
+  useStore.setState({ moa: null, channelDockVisible: false } as never);
 });
 
 describe('Moa titlebar icon', () => {
@@ -154,37 +154,6 @@ describe('Moa titlebar icon', () => {
     act(() => button()!.click());
     expect(useStore.getState().appRoute).toBe('workspaces');
     expect(useStore.getState().channelDockVisible).toBe(true);
-  });
-});
-
-// DeckToggle steps aside while Moa is on, so this button carries its dot for
-// unread channels (only once the Channels tab is opted in).
-describe('Moa titlebar icon — unread channels', () => {
-  it('shows the channel dot and names it while the panel is closed', async () => {
-    useStore.setState({ channelsTabVisible: true, channelUnread: { c1: 2, c2: 1 } } as never);
-    await mount();
-    expect(dot()).toBe('channels');
-    expect(button()!.querySelector('[data-moa-titlebar-dot="channels"]')).not.toBeNull();
-    expect(button()!.getAttribute('aria-label')).toBe('Moa — 3 unread in channels');
-    act(() => button()!.click());
-    expect(dot()).toBe('none');
-  });
-
-  it('ignores channel unread while the Channels tab is not opted in', async () => {
-    useStore.setState({ channelsTabVisible: false, channelUnread: { c1: 2 } } as never);
-    await mount();
-    expect(dot()).toBe('none');
-    expect(button()!.getAttribute('aria-label')).toBe('Moa');
-  });
-
-  it('a waiting decision keeps the dot yellow, and the name lists both', async () => {
-    useStore.setState({ channelsTabVisible: true, channelUnread: { c1: 1 } } as never);
-    decisions = [decision('d0', 'Old question?')];
-    await mount();
-    expect(dot()).toBe('waiting');
-    const mark = button()!.querySelector<HTMLElement>('[data-moa-titlebar-dot]')!;
-    expect(mark.style.background).toBe('var(--accent-yellow)');
-    expect(button()!.getAttribute('aria-label')).toBe('Moa — 1 decision waiting on you, 1 unread in channels');
   });
 });
 
@@ -314,6 +283,15 @@ describe('Moa bubble', () => {
     await raise([]);
     expect(bubble()).toBeNull();
     expect(dot()).toBe('none');
+  });
+});
+
+describe('unread channels', () => {
+  it('never light the Moa button: the right panel has no Channels tab to point to', async () => {
+    useStore.setState({ channelsTabVisible: true, channelUnread: { 'ch-1': 3 } } as never);
+    await mount();
+    expect(dot()).toBe('none');
+    expect(button()!.getAttribute('aria-label')).toBe('Moa');
   });
 });
 
