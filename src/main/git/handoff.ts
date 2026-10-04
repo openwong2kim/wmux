@@ -286,6 +286,8 @@ export function linkStateForLedger(status: LedgerStatus): { state: WorkLinkState
       return { state: 'blocked', reason: 'task-failed' };
     case 'input_required':
       return { state: 'needs-you', reason: 'input-required' };
+    case 'review_requested':
+      return { state: 'review' };
     default:
       return { state: 'running' };
   }

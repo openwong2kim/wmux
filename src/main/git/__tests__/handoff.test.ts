@@ -232,14 +232,14 @@ describe('a worktree hand-off follows its fan-out mission', () => {
 
   it('maps every ledger status to a link state', () => {
     expect(linkStateForLedger('working')).toEqual({ state: 'running' });
-    expect(linkStateForLedger('review_requested')).toEqual({ state: 'running' });
+    expect(linkStateForLedger('review_requested')).toEqual({ state: 'review' });
     expect(linkStateForLedger('input_required')).toEqual({ state: 'needs-you', reason: 'input-required' });
     expect(linkStateForLedger('failed')).toEqual({ state: 'blocked', reason: 'task-failed' });
     expect(linkStateForLedger('completed')).toEqual({ state: 'done' });
     expect(linkStateForLedger('cancelled')).toEqual({ state: 'abandoned' });
   });
 
-  it('the mission running then closing moves the link to running, then abandoned, and frees the item', async () => {
+  it('the mission running, asking for review, then closing moves the link to running, review, then abandoned, and frees the item', async () => {
     const store = new WorkLinkStore({ dir, pendingDecisionIds: () => new Set() });
     const ledger = new TaskLedger({ dir });
     const links = { list: (f: Parameters<WorkLinkStore['list']>[0]) => store.list(f), setState: store.setState.bind(store), upsert: store.upsert.bind(store) };
@@ -255,6 +255,10 @@ describe('a worktree hand-off follows its fan-out mission', () => {
     await ledger.register({ id: 'wtask-1', taskWorkspaceId: 'ws-new', ownerWorkspaceId: 'ws-repo', title: 'issue-12-crash' });
     await settle();
     expect(store.get(created!.id)?.state).toBe('running');
+    // The worker asks for review: the link shows it.
+    await ledger.update({ id: 'wtask-1', status: 'review_requested', actor: { kind: 'worker', workspaceId: 'ws-new' }, expectedRev: 1 });
+    await settle();
+    expect(store.get(created!.id)?.state).toBe('review');
     await ledger.closeTask('wtask-1');
     await settle();
     expect(store.get(created!.id)?.state).toBe('abandoned');
