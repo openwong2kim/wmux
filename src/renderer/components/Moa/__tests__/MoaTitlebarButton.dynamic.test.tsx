@@ -332,13 +332,18 @@ describe('Moa reply dot', () => {
     expect(dot()).toBe('none');
   });
 
-  it('holds the transcript subscription only while the panel is not mounted', async () => {
+  it('holds its own transcript subscription whether or not the panel is mounted', async () => {
     await mount();
     expect(api.deck.moa.transcript.subscribe).toHaveBeenCalledTimes(1);
+    expect(api.deck.moa.transcript.subscribe).toHaveBeenCalledWith('notice');
+    // The panel opening (or swapping to its terminal view) leaves it alone.
     act(() => useStore.setState({ channelDockVisible: true } as never));
-    expect(api.deck.moa.transcript.unsubscribe).toHaveBeenCalledTimes(1);
-    act(() => useStore.setState({ channelDockVisible: false } as never));
-    expect(api.deck.moa.transcript.subscribe).toHaveBeenCalledTimes(2);
+    act(() => useStore.setState({ channelDockVisible: false, appRoute: 'fleet' } as never));
+    expect(api.deck.moa.transcript.unsubscribe).not.toHaveBeenCalled();
+    expect(api.deck.moa.transcript.subscribe).toHaveBeenCalledTimes(1);
+    // A reply that lands meanwhile still marks the dot.
+    act(() => append!({ seq: 3, events: [{ id: 'a7', kind: 'assistant_text', text: 'Done.' }], cursor: {} as never }));
+    expect(dot()).toBe('reply');
   });
 
   it('ignores a reset push: it re-sends history, not a new message', async () => {

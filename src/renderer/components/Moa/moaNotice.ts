@@ -128,8 +128,6 @@ export interface UseMoaNoticesOptions {
   enabled: boolean;
   /** The right panel is on screen (the Workspaces page with the dock open). */
   onScreen: boolean;
-  /** The right panel is mounted (`channelDockVisible`, whatever the page). */
-  mounted: boolean;
   /** The HQ workspace: main drops the transcript subscription when it changes. */
   hqId: string | null;
   bubbles: boolean;
@@ -140,7 +138,7 @@ export interface UseMoaNoticesOptions {
  * Listens to the deck bridge and keeps the notice state. Every bridge call is
  * optional: a missing method or a rejected call leaves the state as it was.
  */
-export function useMoaNotices({ enabled, onScreen, mounted, hqId, bubbles, text }: UseMoaNoticesOptions) {
+export function useMoaNotices({ enabled, onScreen, hqId, bubbles, text }: UseMoaNoticesOptions) {
   const [state, dispatch] = useReducer(moaNoticeReducer, MOA_NOTICE_INITIAL);
   const live = useRef({ quiet: onScreen, bubbles, text });
   live.current = { quiet: onScreen, bubbles, text };
@@ -232,18 +230,18 @@ export function useMoaNotices({ enabled, onScreen, mounted, hqId, bubbles, text 
     });
   }, [enabled]);
 
-  // Appends only flow while someone subscribes, and main keeps ONE subscription
-  // (a boolean, not a count). The panel subscribes while it is mounted; we hold
-  // it only while the panel is not, so neither ever unsubscribes the other
-  // (React runs the unmount's cleanup before the next effect). Main drops the
-  // subscription when the HQ changes, so a new HQ subscribes again.
+  // Appends only flow while someone subscribes. Main counts subscribers by
+  // name, so the reply dot holds its own ('notice') the whole time Moa is on —
+  // in the terminal view and on other pages too — and the panel's comes and
+  // goes beside it. Main drops subscriptions when the HQ changes, so a new HQ
+  // subscribes again.
   useEffect(() => {
-    if (!enabled || mounted || !hqId) return;
+    if (!enabled || !hqId) return;
     const tr = window.electronAPI?.deck?.moa?.transcript;
     if (!tr?.subscribe) return;
-    tr.subscribe().catch(() => undefined);
-    return () => { tr.unsubscribe?.().catch(() => undefined); };
-  }, [enabled, mounted, hqId]);
+    tr.subscribe('notice').catch(() => undefined);
+    return () => { tr.unsubscribe?.('notice').catch(() => undefined); };
+  }, [enabled, hqId]);
 
   // The panel on screen has shown everything: clear the bubble and the grey dot.
   useEffect(() => {

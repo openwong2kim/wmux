@@ -37,7 +37,6 @@ export default function MoaTitlebarButton() {
 
 function MoaTitlebarButtonOn() {
   const t = useT();
-  const mounted = useStore((s) => s.channelDockVisible);
   const onScreen = useStore((s) => s.channelDockVisible && s.appRoute === 'workspaces');
   const bubbles = useStore((s) => s.moa?.config.bubbles !== false);
   const hqId = useStore((s) => s.moa?.hq.workspaceId ?? null);
@@ -58,7 +57,7 @@ function MoaTitlebarButtonOn() {
       return title ? t('moa.bubble.finished', { title }) : t('moa.bubble.finishedUntitled');
     },
   };
-  const { state, dispatch } = useMoaNotices({ enabled: true, onScreen, mounted, hqId, bubbles, text });
+  const { state, dispatch } = useMoaNotices({ enabled: true, onScreen, hqId, bubbles, text });
   const bubble = onScreen ? null : state.bubble;
 
   // A new bubble is announced once, politely; the bubble itself never takes focus.
