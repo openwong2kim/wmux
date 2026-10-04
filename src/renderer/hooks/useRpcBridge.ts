@@ -66,6 +66,7 @@ import { findActivePtyId, buildWorkspaceListEntries } from './workspaceMirrorSna
 import { buildPhoneSidebarSnapshot } from './phoneSidebarSnapshot';
 import { createSidebarDropLog } from '../../shared/phoneFleetSidebar';
 import { buildFleetTriage, fleetTriageScopeError } from '../utils/fleetTriage';
+import { workspaceCloseRefusal } from '../components/Moa/moaHqGuard';
 
 // ---------------------------------------------------------------------------
 // Cold-park (TASK-9) daemon-backed read fallback
@@ -965,7 +966,19 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     if (!ws) {
       return { error: `workspace.close: no workspace with id "${id}"` };
     }
-    if (store.workspaces.length <= 1) {
+    // The shared pre-close check (moaHqGuard): Moa's HQ is never closed, and
+    // the HQ does not count toward the last-workspace guard. With [HQ, A] the
+    // old total-count check let A through, disposed its sessions, and then
+    // removeWorkspace refused — A was left open, dead and empty.
+    const refusal = workspaceCloseRefusal(store, id);
+    if (refusal === 'moa-hq') {
+      return {
+        error:
+          `workspace.close: refusing to close "${id}" — it is Moa's workspace, ` +
+          'which Moa manages. Turn Moa off in Settings → Moa instead.',
+      };
+    }
+    if (refusal === 'last-workspace') {
       return {
         error:
           `workspace.close: refusing to close "${id}" — it is the only workspace, ` +

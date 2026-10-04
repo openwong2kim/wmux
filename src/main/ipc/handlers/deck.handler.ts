@@ -89,6 +89,17 @@ import {
   runNonHqMigration,
   setHqRuntime,
   setMoaEnabled,
+  setHqWorkspaceId,
+  ensureMoaDefault,
+  getMoaConfig,
+  setMoaConfig,
+  loadArchivedHqDecisions,
+  countUnackedArchivedDecisions,
+  ackArchivedDecisions,
+  resetCorruptHqStore,
+  type MoaConfig,
+  type MoaConfigPatch,
+  type ArchivedHqDecision,
 } from '../../deck/deckHqStore';
 import { loadLedgerGateEnabled, setLedgerGateEnabled } from '../../deck/deckLedgerGateStore';
 import {
@@ -253,6 +264,13 @@ export function buildFleetTailLine(snapshot: FleetSnapshot | null): string | und
  * a restart). `off` workspaces get NO block — an off workspace should never
  * receive ambient-turn instructions. Pure + exported for unit testing.
  */
+/** The HQ's ramp level, injected with the ambient blocks on the HQ's turns. */
+export const MOA_LEVEL_LINES: Record<1 | 2 | 3, string> = {
+  1: '[moa] Level 1 — observe and report: surface decisions and completion reports to the human. Delegate work only when the human asks you to.',
+  2: '[moa] Level 2 — delegate on request: when the human asks, plan and delegate the work to workspace agents and track it.',
+  3: '[moa] Level 3 — autonomous: you may delegate and follow through on your own, within the workspace modes.',
+};
+
 export function renderAutonomyBlock(mode: AgentMode): string | null {
   switch (mode) {
     case 'danger':
@@ -312,6 +330,15 @@ export function registerDeckHandler(
     sweepOrphanAtomicTemps(opts.dir ?? getWmuxDir());
   } catch {
     /* best-effort — startup sweep must never break registration */
+  }
+
+  // Moa's master switch gets its first value once per install, before anything
+  // below reads it: off for a new install, on (today's behaviour) for one that
+  // already uses a deck brain (deckHqStore.ensureMoaDefault).
+  try {
+    ensureMoaDefault(opts.dir);
+  } catch (err) {
+    console.warn(`[deck] could not decide Moa's default: ${String(err)}`);
   }
 
   // One-way push: which daemon session holds a workspace's embedded brain TUI
@@ -594,6 +621,12 @@ export function registerDeckHandler(
   // be a `let`.)
   // eslint-disable-next-line prefer-const
   let coalescer: CommanderEventCoalescer | undefined;
+
+  /** Tell the renderer Moa's state moved (it re-reads DECK_MOA_STATE). */
+  const emitMoaChanged = (): void => {
+    const win = getWindow();
+    if (win && !win.isDestroyed()) win.webContents.send(IPC.DECK_MOA_CHANGED, {});
+  };
 
   const emit = (workspaceId: string, event: BrainEvent): void => {
     const win = getWindow();
@@ -948,6 +981,8 @@ export function registerDeckHandler(
     const ambient: string[] = [];
     const autonomy = renderAutonomyBlock(mode);
     if (autonomy) ambient.push(autonomy);
+    // The HQ's ramp level (Moa starts at level 1): what it may do on its own.
+    if (workspaceId === getHqWorkspaceId()) ambient.push(MOA_LEVEL_LINES[getMoaConfig().level]);
     // Binding operator policy next: the standing rules that let the brain resolve
     // a fork itself instead of escalating (and, in assist, guide what it
     // recommends). Injected for auto AND assist; never for off. Read fresh (the
@@ -1581,9 +1616,13 @@ export function registerDeckHandler(
   });
   // Periodic pass (lane F): fan-out registration and the unknown-workspace
   // path both feed the ledger, but a task closed or detached elsewhere only
-  // shows up by re-reading WorkTask — so the reconciler also runs on a timer
-  // (armed by startRuntime, with the master switch).
-  let ledgerReconcileTimer: ReturnType<typeof setInterval> | null = null;
+  // shows up by re-reading WorkTask — so the reconciler also runs on a timer.
+  // Always on, with the other fan-out bookkeeping below: it serves fan-out,
+  // not the brain, so it runs whatever Moa's switch says.
+  const ledgerReconcileTimer = setInterval(() => {
+    void reconcileTaskLedger().catch(() => undefined);
+  }, 60_000);
+  ledgerReconcileTimer.unref?.();
   // Lane F step 5: every ledger transition is posted to the task's mission
   // channel as the owner workspace, so the channel transcript and the ledger
   // never disagree about what happened.
@@ -2000,6 +2039,7 @@ export function registerDeckHandler(
     if (hq !== null && presence === 'present' && lastHqPresence !== 'present') {
       coalescer?.notifyBrainBooted(hq);
     }
+    if (presence !== lastHqPresence) emitMoaChanged();
     lastHqPresence = presence;
   };
   // The HQ store's setter refuses while the old/new HQ is mid-turn and, once
@@ -2074,7 +2114,115 @@ export function registerDeckHandler(
       } else {
         stopRuntime();
       }
+      emitMoaChanged();
       return { ok: true, enabled };
+    }),
+  );
+
+  // ── Moa settings (Settings → Moa) ────────────────────────────────────────
+  // One read for the whole section: the switch and its settings, the HQ's
+  // state, and the archived-decision notice. DECK_MOA_CHANGED tells the
+  // renderer to read it again.
+  const readMoaState = (): {
+    config: MoaConfig;
+    hq: { workspaceId: string | null; state: 'unset' | 'ok' | 'hq-missing' | 'hq-unknown' | 'hq-store-corrupt' };
+    archive: { unacked: number; total: number };
+  } => {
+    const hq = getHqWorkspaceId();
+    const bad = hqStatusState();
+    const state = bad === 'hq-store-corrupt' ? bad : hq === null ? 'unset' : (bad ?? 'ok');
+    return {
+      config: getMoaConfig(),
+      hq: { workspaceId: bad === 'hq-store-corrupt' ? null : hq, state },
+      archive: { unacked: countUnackedArchivedDecisions(), total: loadArchivedHqDecisions().length },
+    };
+  };
+  ipcMain.removeHandler(IPC.DECK_MOA_STATE);
+  ipcMain.handle(IPC.DECK_MOA_STATE, wrapHandler(IPC.DECK_MOA_STATE, async () => readMoaState()));
+
+  ipcMain.removeHandler(IPC.DECK_MOA_CONFIG_SET);
+  ipcMain.handle(
+    IPC.DECK_MOA_CONFIG_SET,
+    wrapHandler(IPC.DECK_MOA_CONFIG_SET, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ ok: boolean; code?: string }> => {
+      const patch = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? (raw as MoaConfigPatch) : {};
+      if (!(await setMoaConfig(patch))) return { ok: false, code: 'store_corrupt' };
+      emitMoaChanged();
+      return { ok: true };
+    }),
+  );
+
+  // First run and "Recreate Moa workspace": the renderer has just created the
+  // app-owned workspace; make it the HQ at ramp level 1 (observe and report:
+  // the HQ runs in assist with no follow-up or approval-press capability) and
+  // turn Moa on.
+  ipcMain.removeHandler(IPC.DECK_MOA_SETUP);
+  ipcMain.handle(
+    IPC.DECK_MOA_SETUP,
+    wrapHandler(IPC.DECK_MOA_SETUP, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ ok: boolean; code?: string; archived?: number; committed?: boolean }> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? (raw as Record<string, unknown>) : {};
+      const workspaceId = readWorkspaceId(req);
+      if (!workspaceId) return { ok: false, code: 'invalid_workspace' };
+      if (isHqStoreCorrupt()) return { ok: false, code: 'store_corrupt' };
+      let designated: Awaited<ReturnType<typeof setHqWorkspaceId>>;
+      try {
+        designated = await setHqWorkspaceId(workspaceId);
+      } catch {
+        return { ok: false, code: 'setup_failed' };
+      }
+      if (!designated.ok) return { ok: false, code: designated.code };
+      // From here the workspace IS the HQ (committed): a failure below must not
+      // make the renderer delete it. Calling setup again with the same id
+      // finishes the rest (designating the same HQ again is a no-op).
+      try {
+        await setWorkspaceMode(workspaceId, 'assist');
+        await setWorkspaceAutonomy(workspaceId, { continueInstruction: false, approvalPress: false });
+        if (!(await setMoaConfig({ onboarded: true, level: 1 }))) throw new Error('store refused the settings');
+        if (!isMoaEnabled()) {
+          if (!(await setMoaEnabled(true))) throw new Error('store refused the switch');
+          startRuntime();
+        }
+      } catch (err) {
+        console.warn(`[deck] Moa setup for ${workspaceId} stopped after the HQ was set: ${String(err)}`);
+        emitMoaChanged();
+        return { ok: false, code: 'setup_incomplete', committed: true };
+      }
+      emitMoaChanged();
+      return { ok: true, archived: designated.migration?.decisionsArchived.length ?? 0 };
+    }),
+  );
+
+  ipcMain.removeHandler(IPC.DECK_MOA_ARCHIVE_LIST);
+  ipcMain.handle(
+    IPC.DECK_MOA_ARCHIVE_LIST,
+    wrapHandler(IPC.DECK_MOA_ARCHIVE_LIST, async (): Promise<{ decisions: ArchivedHqDecision[] }> => ({
+      decisions: loadArchivedHqDecisions(),
+    })),
+  );
+  ipcMain.removeHandler(IPC.DECK_MOA_ARCHIVE_ACK);
+  ipcMain.handle(
+    IPC.DECK_MOA_ARCHIVE_ACK,
+    wrapHandler(IPC.DECK_MOA_ARCHIVE_ACK, async (): Promise<{ ok: boolean }> => {
+      const ok = await ackArchivedDecisions();
+      emitMoaChanged();
+      return { ok };
+    }),
+  );
+
+  // Recovery for an unreadable deck-hq.json: move it aside and start over with
+  // Moa off and no HQ.
+  ipcMain.removeHandler(IPC.DECK_MOA_STORE_RESET);
+  ipcMain.handle(
+    IPC.DECK_MOA_STORE_RESET,
+    wrapHandler(IPC.DECK_MOA_STORE_RESET, async (): Promise<{ ok: boolean }> => {
+      const ok = resetCorruptHqStore();
+      emitMoaChanged();
+      return { ok };
     }),
   );
 
@@ -2993,17 +3141,12 @@ export function registerDeckHandler(
   // ── Deck runtime, tied to the master switch ───────────────────────────────
   // Every deck timer and EventBus/mirror subscription lives here, so with the
   // switch off (at launch or later) none is registered. The task-ledger
-  // listeners stay: they serve fan-out bookkeeping (mission-channel posts,
-  // task-workspace mode reset), not the brain.
+  // reconcile timer and listeners stay (registered above): they serve fan-out
+  // bookkeeping (mission-channel posts, task-workspace mode reset), not the
+  // brain.
   let offBus: (() => void) | null = null;
   let offMirror: (() => void) | null = null;
   const startRuntime = (): void => {
-    if (!ledgerReconcileTimer) {
-      ledgerReconcileTimer = setInterval(() => {
-        void reconcileTaskLedger().catch(() => undefined);
-      }, 60_000);
-      ledgerReconcileTimer.unref?.();
-    }
     if (!offBus) offBus = eventBus.subscribe(onBusEvent);
     if (!offMirror) offMirror = getWorkspaceMirror().onSnapshot(onHqMirrorUpdate);
     scheduler.start();
@@ -3019,8 +3162,6 @@ export function registerDeckHandler(
     }
   };
   const stopRuntime = (): void => {
-    if (ledgerReconcileTimer) clearInterval(ledgerReconcileTimer);
-    ledgerReconcileTimer = null;
     offBus?.();
     offBus = null;
     offMirror?.();
@@ -3050,7 +3191,7 @@ export function registerDeckHandler(
   return () => {
     app.removeListener('before-quit', disposeAll);
     if (reconcileTimer) clearTimeout(reconcileTimer);
-    if (ledgerReconcileTimer) clearInterval(ledgerReconcileTimer);
+    clearInterval(ledgerReconcileTimer);
     stopOrphanReconcile();
     offBus?.();
     offMirror?.();
@@ -3068,6 +3209,12 @@ export function registerDeckHandler(
     ipcMain.removeHandler(IPC.DECK_HQ_GET);
     ipcMain.removeHandler(IPC.DECK_MOA_GET);
     ipcMain.removeHandler(IPC.DECK_MOA_SET);
+    ipcMain.removeHandler(IPC.DECK_MOA_STATE);
+    ipcMain.removeHandler(IPC.DECK_MOA_CONFIG_SET);
+    ipcMain.removeHandler(IPC.DECK_MOA_SETUP);
+    ipcMain.removeHandler(IPC.DECK_MOA_ARCHIVE_LIST);
+    ipcMain.removeHandler(IPC.DECK_MOA_ARCHIVE_ACK);
+    ipcMain.removeHandler(IPC.DECK_MOA_STORE_RESET);
     ipcMain.removeHandler(IPC.DECK_SEND);
     ipcMain.removeHandler(IPC.DECK_INTERRUPT);
     ipcMain.removeHandler(IPC.DECK_WAKE);

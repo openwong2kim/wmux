@@ -165,6 +165,32 @@ describe('parsePhoneSidebarSnapshot', () => {
     expect(Object.fromEntries(phoneTaskNesting(rows, listed).placement)).toEqual({ closed: { nestedUnder: 'closedPane' } });
   });
 
+  it('keeps the HQ id and moa flag, and drops either alone when malformed', () => {
+    expect(parsePhoneSidebarSnapshot({ ...valid, hqWorkspaceId: 'ws-hq', moa: true })).toMatchObject({ hqWorkspaceId: 'ws-hq', moa: true });
+    const bad: unknown[] = ['', ' ws ', 'x'.repeat(PHONE_SIDEBAR_LIMITS.id + 1), '__proto__', 'ws\u202e', 42, null];
+    for (const hqWorkspaceId of bad) {
+      const reasons: string[] = [];
+      const parsed = parsePhoneSidebarSnapshot({ ...valid, hqWorkspaceId, moa: true }, (r) => reasons.push(r));
+      expect(parsed).not.toHaveProperty('hqWorkspaceId');
+      expect(parsed?.moa).toBe(true);
+      expect(parsed?.workspaces).toHaveLength(2);
+      expect(reasons).toEqual(['hqWorkspaceId']);
+    }
+    for (const moa of [false, 'true', 1, null, {}]) {
+      const reasons: string[] = [];
+      const parsed = parsePhoneSidebarSnapshot({ ...valid, hqWorkspaceId: 'ws-hq', moa }, (r) => reasons.push(r));
+      expect(parsed).not.toHaveProperty('moa');
+      expect(parsed?.hqWorkspaceId).toBe('ws-hq');
+      expect(reasons).toEqual(['moa']);
+    }
+    // Absent is not a drop.
+    const reasons: string[] = [];
+    const parsed = parsePhoneSidebarSnapshot(valid, (r) => reasons.push(r));
+    expect(parsed).not.toHaveProperty('hqWorkspaceId');
+    expect(parsed).not.toHaveProperty('moa');
+    expect(reasons).toEqual([]);
+  });
+
   it('caps the row counts', () => {
     const many = Array.from({ length: PHONE_SIDEBAR_LIMITS.panes + 10 }, (_, i) => ({ ptyId: `p${i}`, workspaceId: 'w' }));
     expect(parsePhoneSidebarSnapshot({ activeWorkspaceId: null, workspaces: [], panes: many })?.panes).toHaveLength(PHONE_SIDEBAR_LIMITS.panes);

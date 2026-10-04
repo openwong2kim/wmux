@@ -101,6 +101,7 @@ vi.mock('../../../deck/deckDecisionStore', async (orig) => {
 });
 
 import { registerDeckHandler } from '../deck.handler';
+import { setMoaEnabled } from '../../../deck/deckHqStore';
 import { IPC } from '../../../../shared/constants';
 import {
   beginOrContinueDeckWork,
@@ -147,6 +148,12 @@ const newSession = () =>
 const delegate = (taskId: string, state: 'working' | 'completed' = 'working'): void => {
   recordDeckWorkA2aTask(WS, { taskId, to: 'ws-worker', state, ts: Date.now() + 1_000 });
 };
+
+// These suites exercise the deck brain itself: start with Moa's master
+// switch on (a fresh data dir would otherwise read as a new install, off).
+beforeEach(async () => {
+  await setMoaEnabled(true);
+});
 
 beforeEach(() => {
   captured.clear();

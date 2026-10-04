@@ -2,6 +2,7 @@ import { isPhoneWorkspaceId, PHONE_WORKSPACE_REQUEST_LIMIT } from '../../../shar
 import type { StateCreator } from 'zustand';
 import { sanitizeClaudeEffort } from '../../../shared/claudeModels';
 import type { StoreState } from '../index';
+import { isMoaHqWorkspace } from './moaSlice';
 import { createWorkspace, clonePaneTreeFresh, assignPaneOrdinals, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, buildDefaultCustomKeybindings, upgradeDefaultKeybindingsForPlatform, TERMINAL_STATES, NOTIFICATION_CATEGORIES, type ArchivedWorkspace, type Pane, type PaneLeaf, type SessionData, type StashedPane, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
 import { normalizeWorkspaceProfile } from '../../../shared/workspaceProfile';
 import { overridesFromDisabledCombos, sanitizeShortcutOverrides } from '../../../shared/keymap';
@@ -444,6 +445,8 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       const ws = get().workspaces.find((w: Workspace) => w.id === id);
       // Same protection as removeWorkspace: never archive the last workspace.
       if (!ws || get().workspaces.length <= 1) return;
+      // Moa's HQ is app-owned: it is never archived (the UI disables it too).
+      if (isMoaHqWorkspace(get(), id)) return;
       const color = normalizeWorkspaceColor(ws.color);
       const snapshot: ArchivedWorkspace = {
         id: generateId('arch'),
@@ -572,10 +575,16 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       // R2: decide whether the removal will actually happen ahead of the
       // transaction — the same condition as the in-set() guards (last-workspace
       // protection, nonexistent id).
+      // Moa's HQ is app-owned and never removed here (the UI disables Close
+      // for it; main refuses workspace.close for it). It also does not count
+      // toward the last-workspace guard: the operator must keep one of theirs.
+      if (isMoaHqWorkspace(get(), id)) return;
+      const visibleCount = (ws: readonly Workspace[]): number =>
+        ws.filter((w) => !isMoaHqWorkspace(get(), w.id)).length;
       const willRemove =
-        get().workspaces.length > 1 && get().workspaces.some((w: Workspace) => w.id === id);
+        visibleCount(get().workspaces) > 1 && get().workspaces.some((w: Workspace) => w.id === id);
       set((state: StoreState) => {
-        if (state.workspaces.length <= 1) return;
+        if (visibleCount(state.workspaces) <= 1) return;
         const idx = state.workspaces.findIndex((w: Workspace) => w.id === id);
         if (idx === -1) return;
         const closedAt = new Date().toISOString();

@@ -109,12 +109,15 @@ import { eventBus } from '../../../events/EventBus';
 import { getWorkspaceMirror, __resetWorkspaceMirrorForTest } from '../../../workspace/WorkspaceMirror';
 import {
   __resetHqMemoryForTest,
+  __setHqWritersForTest,
   getDeckHqPath,
   getHqWorkspaceId,
+  getMoaConfig,
   isMoaEnabled,
   setHqWorkspaceId,
   setMoaEnabled,
 } from '../../../deck/deckHqStore';
+import { setWorkspaceAutonomy, setWorkspaceMode } from '../../../deck/deckAutonomyStore';
 import { raiseDecision } from '../../../deck/deckDecisionStore';
 import { getTaskLedger } from '../../../deck/taskLedgerHost';
 import { __resetStartupDeckReconcileForTest } from '../../../deck/deckOrphanReconcile';
@@ -129,7 +132,8 @@ class FakeAdapter implements BrainAdapter {
     mintCommanderToken(workspaceId);
   }
   start(): void { /* nothing to start */ }
-  async *send(): AsyncIterable<BrainEvent> {
+  async *send(text: string): AsyncIterable<BrainEvent> {
+    prompts.push(text);
     yield { type: 'turn-end', sessionId: 'sess-1' } as BrainEvent;
   }
   interrupt(): void { /* no in-flight turn */ }
@@ -137,10 +141,12 @@ class FakeAdapter implements BrainAdapter {
 }
 
 let adapters: FakeAdapter[];
+let prompts: string[] = [];
 let cleanup: (() => void) | null = null;
+const pushed: string[] = [];
 const fakeWindow = {
   isDestroyed: () => false,
-  webContents: { send: () => undefined },
+  webContents: { send: (channel: string) => { pushed.push(channel); } },
 } as unknown as import('electron').BrowserWindow;
 
 function register(opts: { production?: boolean; turnGate?: GlobalTurnGate; reconcileDelayMs?: number } = {}): void {
@@ -197,6 +203,8 @@ beforeEach(async () => {
   cleanup = null;
   captured.clear();
   adapters = [];
+  prompts = [];
+  pushed.length = 0;
   heartbeats.length = 0;
   schedulers.length = 0;
   clearedSessions.length = 0;
@@ -418,8 +426,9 @@ describe('master switch (moaEnabled)', () => {
     expect(await invoke(IPC.DECK_MOA_GET)).toEqual({ enabled: true });
   });
 
-  // The timer count is the handler's own timers (ledger/orphan reconcile, the
-  // one-shot reconcile, coalescer and gate timers). DeckHeartbeat and
+  // The timer count is the handler's own timers (orphan reconcile, the
+  // one-shot reconcile, coalescer and gate timers), plus the task-ledger
+  // reconcile, which serves fan-out and runs whatever the switch says. DeckHeartbeat and
   // DeckScheduler are mocked in this harness, so theirs are asserted through
   // `starts === 0` instead; their own suites cover start() arming an interval.
   it('off at launch: no timer, subscription, brain, token or hook; nothing eligible', async () => {
@@ -430,7 +439,7 @@ describe('master switch (moaEnabled)', () => {
     const subsBefore = busSubscribers();
     const listenersBefore = mirrorListeners();
     reregister({ production: true });
-    expect(vi.getTimerCount()).toBe(0);
+    expect(vi.getTimerCount()).toBe(1); // only the always-on task-ledger reconcile (fan-out bookkeeping)
     expect(busSubscribers()).toBe(subsBefore);
     expect(mirrorListeners()).toBe(listenersBefore);
     expect(heartbeats.at(-1)!.starts).toBe(0);
@@ -447,7 +456,7 @@ describe('master switch (moaEnabled)', () => {
     // The bus is not even subscribed, so nothing routes or wakes.
     lifecycle('ws-a');
     expect(pushedTo()).toEqual([]);
-    expect(vi.getTimerCount()).toBe(0);
+    expect(vi.getTimerCount()).toBe(1);
   });
 
   it('turning it on starts everything and re-arms the startup reconcile once; off tears it all down', async () => {
@@ -461,11 +470,11 @@ describe('master switch (moaEnabled)', () => {
     await invoke(IPC.DECK_MOA_SET, { enabled: true });
     expect(busSubscribers()).toBe(subsBefore + 1);
     expect(mirrorListeners()).toBe(1);
-    const armed = vi.getTimerCount(); // ledger reconcile + orphan reconcile + one-shot reconcile
+    const armed = vi.getTimerCount(); // always-on ledger reconcile + orphan reconcile + one-shot reconcile
     expect(armed).toBe(3);
 
     await invoke(IPC.DECK_MOA_SET, { enabled: false });
-    expect(vi.getTimerCount()).toBe(0);
+    expect(vi.getTimerCount()).toBe(1); // the ledger reconcile stays
     expect(busSubscribers()).toBe(subsBefore);
     expect(mirrorListeners()).toBe(0);
 
@@ -508,5 +517,89 @@ describe('master switch (moaEnabled)', () => {
   it('rejects a non-boolean value', async () => {
     expect(await invoke(IPC.DECK_MOA_SET, { enabled: 'no' })).toEqual({ ok: false });
     expect(isMoaEnabled()).toBe(true);
+  });
+});
+
+describe('Moa settings IPC', () => {
+  it('a new install registers with Moa off (default decided once)', async () => {
+    cleanup?.();
+    cleanup = null;
+    fs.writeFileSync(getDeckHqPath(), JSON.stringify({ hqWorkspaceId: null }));
+    reregister();
+    expect(isMoaEnabled()).toBe(false);
+    expect(getMoaConfig().defaultReason).toBe('new-install');
+    expect(heartbeats.at(-1)!.starts).toBe(0);
+  });
+
+  it('setup makes the new workspace the HQ at level 1, turns Moa on and says so', async () => {
+    await invoke(IPC.DECK_MOA_SET, { enabled: false });
+    pushed.length = 0;
+    const r = await invoke(IPC.DECK_MOA_SETUP, { workspaceId: 'ws-moa' });
+    expect(r).toMatchObject({ ok: true, archived: 0 });
+    expect(getHqWorkspaceId()).toBe('ws-moa');
+    expect(vi.mocked(setWorkspaceMode)).toHaveBeenCalledWith('ws-moa', 'assist');
+    expect(vi.mocked(setWorkspaceAutonomy)).toHaveBeenCalledWith('ws-moa', { continueInstruction: false, approvalPress: false });
+    expect(getMoaConfig()).toMatchObject({ enabled: true, onboarded: true, level: 1 });
+    expect(pushed).toContain(IPC.DECK_MOA_CHANGED);
+
+    const state = await invoke(IPC.DECK_MOA_STATE);
+    expect(state).toMatchObject({ config: { enabled: true }, hq: { workspaceId: 'ws-moa', state: 'hq-unknown' }, archive: { unacked: 0 } });
+    mirror(['ws-moa', 'ws-a']);
+    expect(await invoke(IPC.DECK_MOA_STATE)).toMatchObject({ hq: { state: 'ok' } });
+
+    // The ramp level rides the HQ's turns.
+    await send('ws-moa');
+    expect(prompts.at(-1)).toContain('[moa] Level 1');
+  });
+
+  it('setup refuses an invalid workspace id', async () => {
+    expect(await invoke(IPC.DECK_MOA_SETUP, { workspaceId: '../x' })).toEqual({ ok: false, code: 'invalid_workspace' });
+  });
+
+  it('config set validates and pushes a change; a non-HQ turn carries no level line', async () => {
+    pushed.length = 0;
+    expect(await invoke(IPC.DECK_MOA_CONFIG_SET, { maxTurnsPerHour: 20, bubbles: false })).toEqual({ ok: true });
+    expect(getMoaConfig()).toMatchObject({ maxTurnsPerHour: 20, bubbles: false });
+    expect(pushed).toContain(IPC.DECK_MOA_CHANGED);
+    await send('ws-a');
+    expect(prompts.at(-1)).not.toContain('[moa]');
+  });
+
+  it('store reset is a no-op on a readable store and recovers a corrupt one', async () => {
+    expect(await invoke(IPC.DECK_MOA_STORE_RESET)).toEqual({ ok: false });
+    fs.writeFileSync(getDeckHqPath(), '{ torn');
+    fs.writeFileSync(`${getDeckHqPath()}.bak`, '{ torn');
+    expect(await invoke(IPC.DECK_MOA_STATE)).toMatchObject({ hq: { state: 'hq-store-corrupt' } });
+    expect(await invoke(IPC.DECK_MOA_STORE_RESET)).toEqual({ ok: true });
+    expect(await invoke(IPC.DECK_MOA_STATE)).toMatchObject({ config: { enabled: false }, hq: { state: 'unset' } });
+  });
+});
+
+describe('Moa setup that fails after the HQ is set', () => {
+  it('reports committed (the renderer keeps the workspace) and a retry finishes it', async () => {
+    await invoke(IPC.DECK_MOA_SET, { enabled: false });
+    // The disk refuses the onboarding settings write, after the HQ write.
+    const real = (await import('../../../../daemon/util/atomicWrite')).atomicWriteJSON;
+    __setHqWritersForTest({
+      async: async (p: string, data: unknown) => {
+        if ((data as { moaOnboarded?: boolean }).moaOnboarded) throw new Error('ENOSPC');
+        return real(p, data);
+      },
+    });
+    let r: Record<string, unknown>;
+    try {
+      r = await invoke(IPC.DECK_MOA_SETUP, { workspaceId: 'ws-moa' });
+    } finally {
+      __setHqWritersForTest(null);
+    }
+    expect(r).toEqual({ ok: false, code: 'setup_incomplete', committed: true });
+    expect(getHqWorkspaceId()).toBe('ws-moa');
+    expect(await invoke(IPC.DECK_MOA_SETUP, { workspaceId: 'ws-moa' })).toMatchObject({ ok: true });
+    expect(getMoaConfig()).toMatchObject({ enabled: true, onboarded: true });
+  });
+
+  it('a refusal before the commit carries no committed flag', async () => {
+    expect(await invoke(IPC.DECK_MOA_SETUP, { workspaceId: '../bad' })).toEqual({ ok: false, code: 'invalid_workspace' });
+    expect(getHqWorkspaceId()).toBeNull();
   });
 });

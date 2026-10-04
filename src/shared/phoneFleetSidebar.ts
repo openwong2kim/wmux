@@ -177,6 +177,15 @@ export interface PhoneSidebarSnapshot {
   activeWorkspaceId: string | null;
   workspaces: PhoneSidebarWorkspace[];
   panes: PhoneSidebarPane[];
+  /**
+   * The Moa HQ workspace's id, whenever the desktop has one designated —
+   * whether or not Moa is on, because the desktop keeps that workspace out of
+   * its list either way. One id for the whole snapshot, so at most one
+   * workspace can ever be marked; the daemon stamps `role: "hq"` from it.
+   */
+  hqWorkspaceId?: string;
+  /** Moa is on and its HQ workspace exists. Absent otherwise. */
+  moa?: true;
 }
 
 /**
@@ -517,7 +526,13 @@ export function parsePhoneSidebarSnapshot(value: unknown, onDrop?: SidebarDropRe
     activeWorkspaceId = idString(value.activeWorkspaceId) ?? null;
     if (activeWorkspaceId === null) drop('activeWorkspaceId');
   }
-  return { activeWorkspaceId, workspaces, panes };
+  const snapshot: PhoneSidebarSnapshot = { activeWorkspaceId, workspaces, panes };
+  const hqWorkspaceId = idString(value.hqWorkspaceId);
+  if (hqWorkspaceId !== undefined) snapshot.hqWorkspaceId = hqWorkspaceId;
+  else if (value.hqWorkspaceId !== undefined) drop('hqWorkspaceId');
+  if (value.moa === true) snapshot.moa = true;
+  else if (value.moa !== undefined) drop('moa');
+  return snapshot;
 }
 
 /**

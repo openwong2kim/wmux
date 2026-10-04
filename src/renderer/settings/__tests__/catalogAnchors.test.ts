@@ -27,6 +27,7 @@ const SOURCES = [
   'tabs/TokenUsageTab.tsx',
   'ComputerUseSection.tsx',
   'QuickLaunchSection.tsx',
+  'MoaTab.tsx',
 ];
 
 function anchoredIds(): Set<string> {

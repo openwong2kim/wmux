@@ -181,6 +181,10 @@ navigates through it.
 - **Pages, in order:** Workspaces (home: the sidebar, panes and tools dock)
   · Fleet · Schedules · Remote · Git. Settings is a page too, opened from the
   titlebar gear. The sidebar toggle sits at the rail's foot.
+- **Moa** follows Git while Moa is on and its workspace exists: a monogram
+  `M` in the rail's stroke style (no logo). It is not a page — it opens
+  Moa's app-owned workspace on the Workspaces page, and it (not Workspaces)
+  is the current item while that workspace is active there.
 - **Rail item:** a 19px icon on a 40px square. The current page is a soft
   `--selection` square (plus the look's `--select-ring`) marked
   `aria-current="page"`; hover is
@@ -327,6 +331,15 @@ leaves the page.
   is one 10px-radius `--selection` pill inset 8px from the edges; its agent
   rows are indented text with no inner box or guide line. Hover is
   `--hover-fill` with the row actions floating over a faded right edge.
+- **Moa's workspace** is app-owned and never in the list, its count, the
+  filter, the collapsed rail or Ctrl+N (the numbers skip it). While it is
+  the active workspace it shows as its own row above the Workspaces header;
+  its Close and Archive stay visible but disabled (`aria-disabled`, still
+  focusable) with the reason as tooltip and description — turn Moa off in
+  Settings › Moa instead. Every other close path (keyboard, task groups,
+  Fleet) refuses it with that reason before any session is touched. When Moa
+  is on and its workspace is gone, one persistent toast offers "Recreate Moa
+  workspace" and leaves once the state recovers.
 - The glance-board rules (attention order, pin to top, fan-out nesting, the
   changed-since-you-looked dot) are in "Sidebar rows" after the Decisions
   Log.
@@ -508,11 +521,15 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 - **Information architecture** (owner-reviewed, 2026-09-24). Tabs, in nav
   order: General · Appearance (theme, interface, sidebar, panes, terminal
   text, agent toolbar) · Terminal · Keyboard · Notifications. Group
-  **Agents**: Claude Code · Accounts · Orchestrator · Roles & fan-out ·
+  **Agents**: Claude Code · Accounts · Moa · Roles & fan-out ·
   Token usage · Browser · Computer use. Group **Connections**: Remote & phone · LAN. Then
   About. Each tab answers one question; a setting lives on exactly one tab
   and the search catalog (`settings/catalog.ts`) names that tab. Retired tab
-  ids resolve through `resolveSettingsTab`.
+  ids resolve through `resolveSettingsTab` (Orchestrator became Moa, the HQ
+  main bot: its master switch first, then engine, model and effort, the Moa
+  workspace's status with its one-click recovery, a per-workspace mode table
+  that leaves out the HQ, the hourly turn cap, bubbles and reduce motion, and
+  the orchestrator rows it kept).
 - **Theme picker:** visual cards whose thumbnails show the look's face,
   chip shape and selection style; selected by a neutral outline + check.
 - **Nav:** 13px icon + label rows; group headings muted sentence case; the

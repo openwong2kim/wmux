@@ -18,8 +18,17 @@ import {
   setHqRuntime,
   setHqWorkspaceId,
   setMoaEnabled,
+  ensureMoaDefault,
+  getMoaConfig,
+  setMoaConfig,
+  countUnackedArchivedDecisions,
+  ackArchivedDecisions,
+  resetCorruptHqStore,
   __resetHqMemoryForTest,
+  __setHqWritersForTest,
 } from '../deckHqStore';
+import { setWorkspaceMode } from '../deckAutonomyStore';
+import { saveCommanderSession } from '../commanderSessionStore';
 import { saveDeckSchedules, loadDeckSchedules, mutateDeckSchedules } from '../deckScheduleStore';
 import { startLoop, loadWorkspaceLoopState } from '../deckLoopStateStore';
 import * as decisionStore from '../deckDecisionStore';
@@ -302,5 +311,120 @@ describe('deckHqStore — non-HQ migration', () => {
     log.mockRestore();
     expect(r.ok && r.migration?.decisionsArchived.map((d) => d.workspaceId)).toEqual(['ws-a']);
     expect(isHqMigrationDone(dir)).toBe(true);
+  });
+});
+
+describe('deckHqStore — Moa defaults (once per install)', () => {
+  it('a new install starts with Moa off, on disk once the chain writes it', async () => {
+    const decided = ensureMoaDefault(dir)!;
+    expect(decided.reason).toBe('new-install');
+    // In memory at once, before the write lands.
+    expect(isMoaEnabled(dir)).toBe(false);
+    expect(await decided.persisted).toBe(true);
+    expect(JSON.parse(fs.readFileSync(getDeckHqPath(dir), 'utf8'))).toMatchObject({ moaEnabled: false, moaDefault: 'new-install' });
+    expect(getMoaConfig(dir)).toMatchObject({ enabled: false, onboarded: false, defaultReason: 'new-install' });
+  });
+
+  it('a new install whose default cannot be saved stays off until Moa is turned on', async () => {
+    __setHqWritersForTest({ async: async () => { throw new Error('ENOSPC'); } });
+    try {
+      const decided = ensureMoaDefault(dir)!;
+      expect(await decided.persisted).toBe(false);
+      expect(isMoaEnabled(dir)).toBe(false);
+      expect(brainEligible('ws-a', dir)).toBe(false);
+    } finally {
+      __setHqWritersForTest(null);
+    }
+    expect(await setMoaEnabled(true, dir)).toBe(true);
+    expect(isMoaEnabled(dir)).toBe(true);
+  });
+
+  it('an install already using a deck brain keeps today\'s behaviour (on, no HQ)', async () => {
+    await setWorkspaceMode('ws-a', 'assist', dir);
+    const decided = ensureMoaDefault(dir)!;
+    expect(decided.reason).toBe('existing-brain');
+    await decided.persisted;
+    expect(isMoaEnabled(dir)).toBe(true);
+    expect(getHqWorkspaceId(dir)).toBeNull();
+    expect(getMoaConfig(dir).onboarded).toBe(false);
+  });
+
+  it.each([
+    ['a persisted brain conversation', async () => { await saveCommanderSession('ws-a::claude-pty', 'sess-1', dir); }],
+    ['an HQ designated by an earlier version', async () => { fs.writeFileSync(getDeckHqPath(dir), JSON.stringify({ hqWorkspaceId: 'ws-hq' })); }],
+    ['a migration marker', async () => { fs.writeFileSync(getDeckHqPath(dir), JSON.stringify({ hqWorkspaceId: null, migration: { doneAt: 1, hqWorkspaceId: 'ws-old' } })); }],
+    ['archived decisions', async () => {
+      fs.writeFileSync(getDeckHqPath(dir), JSON.stringify({
+        hqWorkspaceId: null,
+        archivedDecisions: [{ workspaceId: 'ws-a', archivedAt: 1, decision: { id: 'd', question: 'q', options: [], context: '', status: 'pending', raisedAt: 1 } }],
+      }));
+    }],
+  ])('%s counts as an existing install', async (_label, seed) => {
+    await seed();
+    expect(ensureMoaDefault(dir)!.reason).toBe('existing-brain');
+    expect(isMoaEnabled(dir)).toBe(true);
+  });
+
+  it('never changes a value already on disk, and leaves a corrupt store alone', async () => {
+    await setMoaEnabled(true, dir);
+    expect(ensureMoaDefault(dir)).toBeNull();
+    expect(isMoaEnabled(dir)).toBe(true);
+    fs.writeFileSync(getDeckHqPath(dir), '{ torn');
+    expect(ensureMoaDefault(dir)).toBeNull();
+    expect(fs.readFileSync(getDeckHqPath(dir), 'utf8')).toBe('{ torn');
+  });
+});
+
+describe('deckHqStore — Moa settings', () => {
+  it('has defaults and keeps only valid patches', async () => {
+    expect(getMoaConfig(dir)).toMatchObject({ level: 1, maxTurnsPerHour: 12, bubbles: true, reduceMotion: false });
+    expect(await setMoaConfig({ level: 2, maxTurnsPerHour: 30, bubbles: false, reduceMotion: true, onboarded: true }, dir)).toBe(true);
+    expect(getMoaConfig(dir)).toMatchObject({ level: 2, maxTurnsPerHour: 30, bubbles: false, reduceMotion: true, onboarded: true });
+    await setMoaConfig({ level: 7 as 1, maxTurnsPerHour: 0 }, dir);
+    await setMoaConfig({ maxTurnsPerHour: 1.5 }, dir);
+    expect(getMoaConfig(dir)).toMatchObject({ level: 2, maxTurnsPerHour: 30 });
+    expect(getHqMaxTurnsPerHour(dir)).toBe(30);
+  });
+
+  it('acknowledging the archive clears the one-time notice until something new is archived', async () => {
+    await raiseDecision('ws-a', { question: 'a q', options: [], context: '' }, dir);
+    await runNonHqMigration('ws-hq', dir, quiet, () => 1000);
+    expect(countUnackedArchivedDecisions(dir)).toBe(1);
+    expect(await ackArchivedDecisions(dir)).toBe(true);
+    expect(countUnackedArchivedDecisions(dir)).toBe(0);
+    await raiseDecision('ws-b', { question: 'b q', options: [], context: '' }, dir);
+    await runNonHqMigration('ws-b2', dir, quiet, () => 2000);
+    expect(countUnackedArchivedDecisions(dir)).toBe(1);
+  });
+
+  it('resetting a corrupt store moves it aside and starts over with Moa off', () => {
+    fs.writeFileSync(getDeckHqPath(dir), '{ torn');
+    expect(resetCorruptHqStore(dir)).toBe(true);
+    expect(isHqStoreCorrupt(dir)).toBe(false);
+    expect(getMoaConfig(dir).enabled).toBe(false);
+    expect(getHqWorkspaceId(dir)).toBeNull();
+    // A readable store is not reset.
+    expect(resetCorruptHqStore(dir)).toBe(false);
+  });
+
+  it('a reset whose fresh file cannot be written leaves the store corrupt (fail closed), nothing moved', () => {
+    fs.writeFileSync(getDeckHqPath(dir), '{ torn');
+    fs.writeFileSync(`${getDeckHqPath(dir)}.bak`, '{ torn');
+    __setHqWritersForTest({ sync: () => { throw new Error('ENOSPC'); } });
+    try {
+      expect(resetCorruptHqStore(dir)).toBe(false);
+    } finally {
+      __setHqWritersForTest(null);
+    }
+    expect(isHqStoreCorrupt(dir)).toBe(true);
+    expect(isMoaEnabled(dir)).toBe(false);
+    expect(fs.readFileSync(getDeckHqPath(dir), 'utf8')).toBe('{ torn');
+    expect(fs.existsSync(`${getDeckHqPath(dir)}.bak`)).toBe(true);
+  });
+
+  it('refuses settings writes while corrupt', async () => {
+    fs.writeFileSync(getDeckHqPath(dir), '{ torn');
+    expect(await setMoaConfig({ bubbles: false }, dir)).toBe(false);
+    expect(await ackArchivedDecisions(dir)).toBe(false);
   });
 });

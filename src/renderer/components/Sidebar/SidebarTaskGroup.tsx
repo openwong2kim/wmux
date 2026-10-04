@@ -30,6 +30,7 @@ import { CLOSE_SKIP_KEY as SKIP_KEY, closedPaneFoldKey, isTaskGroupExpanded, pan
 import { selectWorkspaceAgentRoster } from '../../stores/selectors/workspaceAgentRoster';
 import { isTaskReadyForReview } from '../../stores/selectors/reviewQueue';
 import { displayWorkspaceName } from '../../utils/fanoutProvenance';
+import { refuseWorkspaceClose } from '../Moa/moaHqGuard';
 
 /**
  * An owner's tasks split by requesting pane (see selectOwnerPaneTaskSplit:
@@ -159,6 +160,9 @@ function TaskGroupMenu({ ownerKey, finishedIds, nameOf, toReview = 0, groupName,
     let closed = 0;
     try {
       for (const id of ids) {
+        // Moa's HQ and the last workspace are never closed: refused (with the
+        // reason) before the task close can remove a worktree or dispose a session.
+        if (refuseWorkspaceClose(id)) continue;
         // Re-validate against the CURRENT store right before each close: the
         // task may have resumed, been detached or closed while the confirm
         // was open or while an earlier close ran.

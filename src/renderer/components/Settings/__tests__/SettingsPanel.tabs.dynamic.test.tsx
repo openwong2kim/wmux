@@ -172,7 +172,7 @@ describe('Settings tabs', () => {
   it('lists every tab once, in the owner-reviewed order', () => {
     expect(ALL_TABS).toEqual([
       'general', 'appearance', 'terminal', 'shortcuts', 'notifications',
-      'claude-integration', 'accounts', 'orchestrator', 'roles', 'tokens', 'browser', 'computer-use',
+      'claude-integration', 'accounts', 'moa', 'roles', 'tokens', 'browser', 'computer-use',
       'remote', 'lanlink',
       'about',
     ]);
@@ -196,6 +196,22 @@ describe('Settings tabs', () => {
       .filter((e) => !page().querySelector(`[data-setting-id="${e.id}"]`))
       .map((e) => e.id);
     expect(missing).toEqual([]);
+  });
+
+  it('openSettingsTab lands on the asked-for tab, on mount and while open, and is consumed', async () => {
+    act(() => root.unmount());
+    root = createRoot(container);
+    act(() => useStore.getState().setSettingsPanelVisible(false));
+    act(() => useStore.getState().openSettingsTab('moa'));
+    expect(useStore.getState().appRoute).toBe('settings');
+    await act(async () => root.render(createElement(SettingsPanel)));
+    await flush();
+    expect(page().getAttribute('data-settings-page')).toBe('moa');
+    expect(useStore.getState().settingsInitialTab).toBeNull();
+    await openTab('general');
+    act(() => useStore.getState().openSettingsTab('moa'));
+    await flush();
+    expect(page().getAttribute('data-settings-page')).toBe('moa');
   });
 
   it('puts no catalog entry on a tab the nav does not list', () => {
@@ -222,9 +238,11 @@ describe('Settings search jump', () => {
 });
 
 describe('retired tab ids', () => {
-  it('resolves the split Agents tab to Orchestrator', () => {
-    expect(LEGACY_SETTINGS_TAB_ALIASES.agents).toBe('orchestrator');
-    expect(resolveSettingsTab('agents')).toBe('orchestrator');
+  it('resolves the split Agents tab and the retired Orchestrator tab to Moa', () => {
+    expect(LEGACY_SETTINGS_TAB_ALIASES.agents).toBe('moa');
+    expect(resolveSettingsTab('agents')).toBe('moa');
+    expect(LEGACY_SETTINGS_TAB_ALIASES.orchestrator).toBe('moa');
+    expect(resolveSettingsTab('orchestrator')).toBe('moa');
   });
 
   it('keeps every surviving id as itself, and sends unknown ids to General', () => {
@@ -357,7 +375,8 @@ describe('Settings keyboard ownership (review follow-up)', () => {
 
 describe('opening on a tab id', () => {
   it.each([
-    ['agents', 'orchestrator'],
+    ['agents', 'moa'],
+    ['orchestrator', 'moa'],
     ['no-such-tab', 'general'],
     ['lanlink', 'lanlink'],
   ])('opens %s as %s', async (id, expected) => {

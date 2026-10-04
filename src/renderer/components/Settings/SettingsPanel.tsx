@@ -4,6 +4,8 @@ import { BROWSER_BACKENDS, isBrowserBackend } from '../../../shared/browserBacke
 import { isWslShellPath } from '../../../shared/wslDistro';
 import type { ImagePasteMode } from '../../../shared/imagePaste';
 import { useShallow } from 'zustand/react/shallow';
+import { isMoaHqWorkspace } from '../../stores/slices/moaSlice';
+import { workspaceCloseRefusal } from '../Moa/moaHqGuard';
 import { useStore } from '../../stores';
 import { selectWorkspaceMuteRows } from '../../stores/selectors/workspaceProjections';
 import { LOCALE_OPTIONS, type Locale } from '../../i18n';
@@ -50,7 +52,7 @@ import {
   type ShortcutActionId,
 } from '../../../shared/keymap';
 import { shortcutPressGuard } from '../../utils/shortcutBindings';
-import { CLAUDE_EFFORT_LEVELS, CLAUDE_MODEL_OPTIONS } from '../../../shared/claudeModels';
+import { CLAUDE_EFFORT_LEVELS } from '../../../shared/claudeModels';
 import {
   agyEffortOf,
   agyFamilyOf,
@@ -65,7 +67,6 @@ import { MULTIVIEW_ARRANGEMENTS } from '../../utils/multiviewGrid';
 import type { NicInfo, LanLinkNic, LanLinkStatus, LanLinkPeerSummary } from '../../../shared/lanlink';
 import type { FirstRunCheckResult } from '../../../shared/firstRun';
 import { FIRST_RUN_REOPEN_EVENT } from '../../../shared/firstRun';
-import { notifyBriefingConfigChanged } from '../Deck/deckBriefingConfigBus';
 import { ClaudeIntegrationSection } from './ClaudeIntegrationSection';
 import { IntegrationSetupSectionContainer, MCP_STATUS_CHANGED_EVENT } from './IntegrationSetupSection';
 import { McpStatusSection } from './McpStatusSection';
@@ -94,6 +95,7 @@ import './settings.css';
 import { SettingsSection, SettingRow, SettingNote } from './SettingsLayout';
 import { MAX_WORKSPACE_IDLE_DAYS, MIN_WORKSPACE_IDLE_DAYS } from '../../../shared/workspaceSettle';
 import { sendWorkspaceSettleIdleDays } from '../../hooks/useWorkspaceSettleBridge';
+import { TabMoa } from './MoaTab';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -571,19 +573,18 @@ function ResetSection() {
   const { invoke: ipcInvoke } = useIpc();
 
   const handleReset = useCallback(async () => {
-    const workspaces = useStore.getState().workspaces;
-    // Dispose all PTYs across all workspaces
-    for (const ws of workspaces) {
-      disposeWorkspacePtys(ws);
-    }
-
-    // Remove all workspaces except the last one (store requires at least 1)
-    const ids = workspaces.map((w) => w.id);
-    // Add a fresh workspace first
+    // Moa's HQ workspace is app-owned and survives a reset (the store refuses
+    // to remove it), so its sessions are left alone too.
+    const workspaces = useStore.getState().workspaces.filter((w) => !isMoaHqWorkspace(useStore.getState(), w.id));
+    // Add a fresh workspace first, so every old one passes the shared close
+    // check (the operator always keeps one workspace of their own).
     addWorkspace('Workspace 1');
-    // Then remove all old ones
-    for (const id of ids) {
-      removeWorkspace(id);
+    // Then dispose and remove each old one, asking the close check before any
+    // dispose so a refused removal never leaves a dead, empty workspace.
+    for (const ws of workspaces) {
+      if (workspaceCloseRefusal(useStore.getState(), ws.id)) continue;
+      disposeWorkspacePtys(ws);
+      removeWorkspace(ws.id);
     }
 
     // Save the clean session — surface IPC errors via toast (daemon may be down).
@@ -976,252 +977,6 @@ function RoleBindingEditor() {
       catalog={catalog}
       onRefreshModels={(a) => load(a, true)}
     />
-  );
-}
-
-function OrchestratorSection() {
-  const t = useT();
-  const deckBrainModel = useStore((s) => s.deckBrainModel);
-  const setDeckBrainModel = useStore((s) => s.setDeckBrainModel);
-  const deckBrainEffort = useStore((s) => s.deckBrainEffort);
-  const setDeckBrainEffort = useStore((s) => s.setDeckBrainEffort);
-  const deckBrainFullPower = useStore((s) => s.deckBrainFullPower);
-  const setDeckBrainFullPower = useStore((s) => s.setDeckBrainFullPower);
-  const deckBrainVendor = useStore((s) => s.deckBrainVendor);
-  const setDeckBrainVendor = useStore((s) => s.setDeckBrainVendor);
-  const channelsTabVisible = useStore((s) => s.channelsTabVisible);
-  const setChannelsTabVisible = useStore((s) => s.setChannelsTabVisible);
-  // Global auto-wake switch — persisted in MAIN (deck-autowake.json) because
-  // the event-push coalescer that spends the tokens lives there. Read on
-  // mount; optimistic toggle with echo reconciliation.
-  const [autoWake, setAutoWake] = useState(true);
-  useEffect(() => {
-    let cancelled = false;
-    window.electronAPI.deck?.autoWake
-      ?.get()
-      .then((r) => { if (!cancelled) setAutoWake(r.enabled); })
-      .catch(() => undefined); // keep the default-on rendering
-    return () => { cancelled = true; };
-  }, []);
-  const onAutoWakeChange = (enabled: boolean) => {
-    setAutoWake(enabled);
-    window.electronAPI.deck?.autoWake
-      ?.set(enabled)
-      .then((r) => setAutoWake(r.enabled))
-      .catch(() => setAutoWake(!enabled));
-  };
-  // `deck.ledgerGate` — persisted in MAIN (deck-ledger-gate.json), the same
-  // file the Stop gate reads, so the toggle and the gate can never disagree and
-  // the choice survives a restart. Default OFF; same optimistic-toggle-with-
-  // echo shape as auto-wake, except the default rendering is off, so a failed
-  // read leaves the switch showing the behaviour actually in force.
-  const [ledgerGate, setLedgerGate] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    window.electronAPI.deck?.ledgerGate
-      ?.get()
-      .then((r) => { if (!cancelled) setLedgerGate(r.enabled); })
-      .catch(() => undefined); // keep the default-off rendering
-    return () => { cancelled = true; };
-  }, []);
-  const onLedgerGateChange = (enabled: boolean) => {
-    setLedgerGate(enabled);
-    window.electronAPI.deck?.ledgerGate
-      ?.set(enabled)
-      .then((r) => setLedgerGate(r.enabled))
-      .catch(() => setLedgerGate(!enabled));
-  };
-  // D1 briefing toggles — persisted in MAIN (deck-briefing.json). Read on mount;
-  // optimistic toggle with echo reconciliation (mirrors auto-wake).
-  const [briefingEnabled, setBriefingEnabled] = useState(true);
-  const [briefingAutoShow, setBriefingAutoShow] = useState(true);
-  useEffect(() => {
-    let cancelled = false;
-    window.electronAPI.deck?.briefing
-      ?.getConfig()
-      .then((c) => {
-        if (cancelled) return;
-        setBriefingEnabled(c.enabled);
-        setBriefingAutoShow(c.autoShow);
-      })
-      .catch(() => undefined); // keep the default-on rendering
-    return () => { cancelled = true; };
-  }, []);
-  // A mounted DeckBriefingCard reads its config from main, not from this
-  // component's state, so every confirmed change is broadcast — otherwise a card
-  // that is already on screen stays visible after the operator turns it off.
-  const onBriefingEnabledChange = (enabled: boolean) => {
-    setBriefingEnabled(enabled);
-    window.electronAPI.deck?.briefing
-      ?.setConfig({ enabled })
-      .then((c) => {
-        setBriefingEnabled(c.enabled);
-        setBriefingAutoShow(c.autoShow);
-        notifyBriefingConfigChanged();
-      })
-      .catch(() => setBriefingEnabled(!enabled));
-  };
-  const onBriefingAutoShowChange = (autoShow: boolean) => {
-    setBriefingAutoShow(autoShow);
-    window.electronAPI.deck?.briefing
-      ?.setConfig({ autoShow })
-      .then((c) => {
-        setBriefingEnabled(c.enabled);
-        setBriefingAutoShow(c.autoShow);
-        notifyBriefingConfigChanged();
-      })
-      .catch(() => setBriefingAutoShow(!autoShow));
-  };
-  const options = CLAUDE_MODEL_OPTIONS.map((o) => ({
-    value: o.value,
-    label: o.value === '' ? t('settings.orchestratorModelDefault') : o.label,
-  }));
-  // A hand-typed / newer id that is not in the list still shows as itself.
-  if (deckBrainModel && !options.some((o) => o.value === deckBrainModel)) {
-    options.push({ value: deckBrainModel, label: deckBrainModel });
-  }
-  const effortOptions = [
-    { value: '', label: t('settings.orchestratorEffortDefault') },
-    ...CLAUDE_EFFORT_LEVELS.map((l) => ({ value: l, label: l })),
-  ];
-  return (
-    <>
-      <SettingsSection data-testid="orchestrator-section">
-        <SettingRow id="brain"
-          label={t('settings.orchestratorBrain')}
-          description={t('settings.orchestratorBrainDesc')}
-        >
-          <SettingSelect
-            value={deckBrainVendor}
-            onChange={(v) =>
-              setDeckBrainVendor(v === 'claude' || v === 'hermes' ? v : 'claude-pty')
-            }
-            options={[
-              { value: 'claude', label: t('settings.orchestratorBrainClaude') },
-              { value: 'claude-pty', label: t('settings.orchestratorBrainClaudePty') },
-              { value: 'hermes', label: t('settings.orchestratorBrainHermes') },
-            ]}
-            label={t('settings.orchestratorBrain')}
-          />
-        </SettingRow>
-        {/* Picking the terminal runtime does not only swap the agent behind the
-            orchestrator: the panel itself becomes an embedded Claude Code TUI
-            instead of the chat surface. That is the change people actually
-            notice, and nothing said so before they picked it. */}
-        {deckBrainVendor === 'claude-pty' && (
-          <SettingNote data-testid="orchestrator-claude-pty-note">
-            {t('settings.orchestratorBrainClaudePtyNote')}
-          </SettingNote>
-        )}
-        <SettingRow id="model"
-          label={t('settings.orchestratorModel')}
-          description={t('settings.orchestratorModelDesc')}
-        >
-          <SettingSelect
-            value={deckBrainModel}
-            onChange={setDeckBrainModel}
-            options={options}
-            label={t('settings.orchestratorModel')}
-          />
-        </SettingRow>
-        {/* Effort reaches both Claude runtimes (SDK options.effort / TUI
-            --effort); an ACP brain ignores it, so the row hides there. */}
-        {deckBrainVendor !== 'hermes' && (
-          <SettingRow id="effort"
-            label={t('settings.orchestratorEffort')}
-            description={t('settings.orchestratorEffortDesc')}
-          >
-            <SettingSelect
-              value={deckBrainEffort}
-              onChange={setDeckBrainEffort}
-              options={effortOptions}
-              label={t('settings.orchestratorEffort')}
-            />
-          </SettingRow>
-        )}
-        {/* Full power tunes settingSources/canUseTool — both SDK-only knobs. The
-            terminal brain (an interactive TUI) and ACP brains ignore the flag
-            entirely (see createAdapter in deck.handler), so with the terminal
-            brain now the default the row would otherwise read as a toggle that
-            does nothing when clicked. Inert + a reason instead of hidden: the
-            setting still exists, it just belongs to the other vendor. */}
-        <SettingRow
-          id="fullpower"
-          label={t('settings.orchestratorFullPower')}
-          description={
-            deckBrainVendor === 'claude'
-              ? t('settings.orchestratorFullPowerDesc')
-              : t('settings.orchestratorFullPowerSdkOnly')
-          }
-        >
-          <Toggle
-            checked={deckBrainFullPower}
-            onChange={setDeckBrainFullPower}
-            label={t('settings.orchestratorFullPower')}
-            disabled={deckBrainVendor !== 'claude'}
-          />
-        </SettingRow>
-        <SettingRow id="autowake"
-          label={t('settings.autoWake')}
-          description={t('settings.autoWakeDesc')}
-        >
-          <Toggle
-            checked={autoWake}
-            onChange={onAutoWakeChange}
-            label={t('settings.autoWake')}
-          />
-        </SettingRow>
-        {/* Experimental on purpose: this replaces the shipped Stop gate's
-            snapshot inference with the task ledger, and the ledger has not run a
-            full dogfood yet (orchestrator track, 2026-09). */}
-        <SettingRow id="ledgergate"
-          label={t('settings.ledgerGate')}
-          description={t('settings.ledgerGateDesc')}
-        >
-          <div className="flex items-center gap-3">
-            <Badge title={t('settings.ledgerGateDesc')}>{t('settings.mcpExperimental')}</Badge>
-            <Toggle
-              checked={ledgerGate}
-              onChange={onLedgerGateChange}
-              label={t('settings.ledgerGate')}
-            />
-          </div>
-        </SettingRow>
-        <SettingRow
-          label={t('settings.channelsTabVisible')}
-          description={t('settings.channelsTabVisibleDesc')}
-        >
-          <Toggle
-            checked={channelsTabVisible}
-            onChange={setChannelsTabVisible}
-            label={t('settings.channelsTabVisible')}
-          />
-        </SettingRow>
-      </SettingsSection>
-      <SettingsSection title={t('settings.briefing')}>
-        <SettingRow
-          id="briefing"
-          label={t('settings.briefing')}
-          description={t('settings.briefingDesc')}
-        >
-          <Toggle
-            checked={briefingEnabled}
-            onChange={onBriefingEnabledChange}
-            label={t('settings.briefing')}
-          />
-        </SettingRow>
-        <SettingRow
-          label={t('settings.briefingAutoShow')}
-          description={t('settings.briefingAutoShowDesc')}
-        >
-          <Toggle
-            checked={briefingAutoShow}
-            onChange={onBriefingAutoShowChange}
-            label={t('settings.briefingAutoShow')}
-          />
-        </SettingRow>
-      </SettingsSection>
-    </>
   );
 }
 
@@ -2505,15 +2260,6 @@ function FanoutWorkersSection() {
         </SettingNote>
       )}
     </SettingsSection>
-  );
-}
-
-// ─── Orchestrator tab — the deck brain: runtime, model, wake, gates ──────────
-function TabOrchestrator() {
-  return (
-    <div className="settings-page">
-      <OrchestratorSection />
-    </div>
   );
 }
 
@@ -5318,8 +5064,17 @@ export default function SettingsPanel({ initialTab }: { initialTab?: string }) {
 
   // Every id that reaches the state goes through resolveSettingsTab, so a
   // retired or unknown id (an old deep link) opens a real tab, never nothing.
-  const [activeTab, setActiveTabState] = useState<TabId>(() => resolveSettingsTab(initialTab));
+  // A tab asked for from elsewhere (`openSettingsTab`) wins over the default.
+  const [activeTab, setActiveTabState] = useState<TabId>(
+    () => resolveSettingsTab(initialTab ?? useStore.getState().settingsInitialTab),
+  );
   const setActiveTab = useCallback((id: string) => setActiveTabState(resolveSettingsTab(id)), []);
+  const requestedTab = useStore((s) => s.settingsInitialTab);
+  useEffect(() => {
+    if (!requestedTab) return;
+    setActiveTab(requestedTab);
+    useStore.getState().clearSettingsInitialTab();
+  }, [requestedTab, setActiveTab]);
   const ownedDialogs = useRef(0);
   const registerOwnedDialog = useCallback((delta: number) => { ownedDialogs.current += delta; }, []);
   const [searchQuery, setSearchQuery] = useState('');
@@ -5367,7 +5122,7 @@ export default function SettingsPanel({ initialTab }: { initialTab?: string }) {
     notifications:        { label: t('settings.tabNotifications'), icon: <IconNotifications /> },
     'claude-integration': { label: t('settings.tabClaudeCode'),    icon: <IconClaude /> },
     accounts:             { label: t('settings.tabAccounts'),      icon: <IconUsers /> },
-    orchestrator:         { label: t('settings.tabOrchestrator'),  icon: <IconAgents /> },
+    moa:                  { label: t('settings.tabMoa'),           icon: <IconAgents /> },
     roles:                { label: t('settings.tabRoles'),         icon: <IconRobot /> },
     tokens:               { label: t('settings.tabTokens'),        icon: <IconAgents /> },
     browser:              { label: t('settings.tabBrowser'),       icon: <IconBrowser /> },
@@ -5554,7 +5309,7 @@ export default function SettingsPanel({ initialTab }: { initialTab?: string }) {
                     {activeTab === 'notifications'      && <TabNotifications />}
                     {activeTab === 'claude-integration' && <TabClaudeCode />}
                     {activeTab === 'accounts'           && <AccountsSection />}
-                    {activeTab === 'orchestrator'       && <TabOrchestrator />}
+                    {activeTab === 'moa'                && <TabMoa registerDialog={registerOwnedDialog} />}
                     {activeTab === 'roles'              && <TabRoles />}
           {activeTab === 'tokens'             && <TokenUsageTab onOpenTab={setActiveTab} />}
                     {activeTab === 'browser'            && <TabBrowser />}

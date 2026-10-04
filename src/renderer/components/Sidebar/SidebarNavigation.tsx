@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import WebToggle from '../StatusBar/WebToggle';
+import { isMoaHqWorkspace } from '../../stores/slices/moaSlice';
 import { useStore } from '../../stores';
 import { selectFleetSectionCounts } from '../../stores/selectors/fleet';
 import { selectScheduleNavSummary } from '../../stores/selectors/schedules';
@@ -58,6 +59,13 @@ export default function SidebarNavigation({ compact = false, home = false }: {
   // (pushed PR status only). The spoken name says why.
   const gitSignal = useStore(selectGitRailSignal);
   const gitName = gitSignal ? `${t('git.title')}, ${t('git.railSignal')}` : t('git.title');
+  // Moa: the app-owned HQ workspace, reached only from here (it is not in the
+  // workspace list). Shown while Moa is on and its workspace exists. It is a
+  // workspace, not a page: it opens on Workspaces, and it is the current
+  // place (instead of Workspaces) while it is the active workspace there.
+  const moaShown = useStore((s) => !!s.moa?.config.enabled && s.moa.hq.state === 'ok' && !!s.moa.hq.workspaceId);
+  const moaActive = useStore((s) => route === 'workspaces' && !s.activeRemoteKey
+    && !!s.moa?.hq.workspaceId && s.activeWorkspaceId === s.moa.hq.workspaceId);
   // The rail navigates (a page stays put when clicked again); the in-sheet
   // list keeps its toggles.
   const go = (page: AppRoute, toggle: () => void) => () => {
@@ -71,9 +79,18 @@ export default function SidebarNavigation({ compact = false, home = false }: {
   };
   const entries = [
     ...(home ? [{
-      id: 'home', label: t('sidebar.workspaces'), name: t('sidebar.workspaces'), active: route === 'workspaces',
+      id: 'home', label: t('sidebar.workspaces'), name: t('sidebar.workspaces'), active: route === 'workspaces' && !(home && moaShown && moaActive),
       icon: <IconGrid size={16} />,
-      onClick: () => useStore.getState().setAppRoute('workspaces'),
+      onClick: () => {
+        const st = useStore.getState();
+        // From Moa's workspace, Workspaces means "back to my workspaces": the
+        // HQ is not in the list, so show the first listed one.
+        if (moaActive) {
+          const back = st.workspaces.find((w) => !isMoaHqWorkspace(st, w.id));
+          if (back) st.setActiveWorkspace(back.id);
+        }
+        st.setAppRoute('workspaces');
+      },
     }] : [search]),
     {
       id: 'fleet', label: t('fleet.title'), name: fleetName, active: fleetOpen,
@@ -93,6 +110,16 @@ export default function SidebarNavigation({ compact = false, home = false }: {
       id: 'git', label: t('git.title'), name: gitName, active: route === 'git',
       icon: <IconGitBranch size={16} />,
       onClick: () => useStore.getState().setAppRoute('git'),
+    }] : []),
+    ...(home && moaShown ? [{
+      id: 'moa', label: t('moa.rail.title'), name: t('moa.rail.title'), active: moaActive,
+      // A monogram, not a logo: the M of Moa in the rail's stroke style.
+      icon: <Icon size={16}><path d="M3.5 10.5v-7L7 7.5l3.5-4v7" /></Icon>,
+      onClick: () => {
+        const st = useStore.getState();
+        st.openMoaHq();
+        st.setAppRoute('workspaces');
+      },
     }] : []),
   ];
 

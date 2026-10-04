@@ -245,6 +245,12 @@ export interface UISlice {
   settingsPanelVisible: boolean;
   toggleSettingsPanel: () => void;
   setSettingsPanelVisible: (visible: boolean) => void;
+  /** A tab Settings should land on the next time it shows (consumed by
+   *  SettingsPanel). Transient, not persisted. */
+  settingsInitialTab: string | null;
+  /** Open Settings on `tab` (an id `resolveSettingsTab` understands). */
+  openSettingsTab: (tab: string) => void;
+  clearSettingsInitialTab: () => void;
 
   notificationSoundEnabled: boolean;
   toggleNotificationSound: () => void;
@@ -1172,6 +1178,13 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     if (visible) get().setAppRoute('settings');
     else set((state) => { leaveAppRoute(state, 'settings'); });
   },
+
+  settingsInitialTab: null,
+  openSettingsTab: (tab) => {
+    set((state) => { state.settingsInitialTab = tab; });
+    get().setSettingsPanelVisible(true);
+  },
+  clearSettingsInitialTab: () => set((state) => { state.settingsInitialTab = null; }),
 
   // ─── Notification sound ──────────────────────────────────────────────────
   notificationSoundEnabled: true,

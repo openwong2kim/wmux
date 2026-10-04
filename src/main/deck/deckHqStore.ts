@@ -14,9 +14,11 @@
 // Reads are cached in memory and revalidated by the file's mtime/size, so the
 // per-event hot paths do not re-parse it.
 //
-// MASTER SWITCH (`moaEnabled`): the main bot as a whole. Absent = on, which is
-// today's behaviour. Off makes the deck brain fully inert (see deck.handler).
-// Nothing is deleted, so turning it back on restores the previous state.
+// MASTER SWITCH (`moaEnabled`): the main bot as a whole. Off makes the deck
+// brain fully inert (see deck.handler). Nothing is deleted, so turning it back
+// on restores the previous state. The value is decided once per install by
+// ensureMoaDefault: off for a new install, on for an install that already uses
+// a deck brain (so it keeps today's behaviour). Until that runs, absent = on.
 //
 // HQ TURN CAP (`hqMaxTurnsPerHour`): with an HQ designated, its automatic turns
 // are capped per trailing hour (default 12). No HQ designated → no cap.
@@ -30,7 +32,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getWmuxDir } from '../../daemon/config';
-import { atomicReadJSONSync, atomicWriteJSON, BACKUP_SUFFIXES } from '../../daemon/util/atomicWrite';
+import {
+  atomicReadJSONSync,
+  atomicWriteJSON,
+  atomicWriteJSONSync,
+  BACKUP_SUFFIXES,
+} from '../../daemon/util/atomicWrite';
+import { quarantineFileSync } from '../../daemon/util/atomicWrite/quarantine';
 import { createSerialChain } from './serialChain';
 import { mutateDeckSchedules } from './deckScheduleStore';
 import { loadDeckLoopState, setLoopStatus } from './deckLoopStateStore';
@@ -40,7 +48,8 @@ import {
   type WorkspaceDecision,
 } from './deckDecisionStore';
 import { loadLiveDeckWorks, archiveDeckWork, clearActiveDeckWork } from './deckWorkStore';
-import { loadWorkspaceMode, modeToCaps, setWorkspaceAutonomy } from './deckAutonomyStore';
+import { loadDeckAutonomy, loadWorkspaceMode, modeToCaps, setWorkspaceAutonomy } from './deckAutonomyStore';
+import { getCommanderSessionPath } from './commanderSessionStore';
 import { getWorkspaceMirror } from '../workspace/WorkspaceMirror';
 
 const WORKSPACE_ID_RE = /^[A-Za-z0-9._-]{1,80}$/;
@@ -50,6 +59,9 @@ const MAX_ARCHIVED_DECISIONS = 200;
 
 /** Default hourly cap on the HQ's automatic turns. */
 export const DEFAULT_HQ_MAX_TURNS_PER_HOUR = 12;
+
+import { MOA_MAX_TURNS_PER_HOUR_RANGE, type MoaLevel, type MoaConfig, type MoaConfigPatch } from '../../shared/moa';
+export type { MoaLevel, MoaConfig, MoaConfigPatch };
 
 export interface ArchivedHqDecision {
   workspaceId: string;
@@ -63,6 +75,18 @@ interface HqFile {
   moaEnabled?: boolean;
   /** Hourly cap on the HQ's automatic turns; absent = the default. */
   hqMaxTurnsPerHour?: number;
+  /** Why the switch got its first value (ensureMoaDefault). */
+  moaDefault?: 'new-install' | 'existing-brain';
+  /** The operator has been through the Moa first-run card. */
+  moaOnboarded?: boolean;
+  /** Ramp level: 1 observe and report, 2 delegate on request, 3 autonomous. */
+  moaLevel?: MoaLevel;
+  /** Moa's speech-bubble notifications (renderer). Absent = on. */
+  moaBubbles?: boolean;
+  /** Still Moa's animations regardless of the OS setting. Absent = off. */
+  moaReduceMotion?: boolean;
+  /** Archived decisions up to this archivedAt have been acknowledged. */
+  archiveAckedAt?: number;
   /** Set once the non-HQ migration has completed for `hqWorkspaceId`. */
   migration?: { doneAt: number; hqWorkspaceId: string };
   archivedDecisions?: ArchivedHqDecision[];
@@ -90,6 +114,11 @@ function isValidHqFile(data: unknown): data is Record<string, unknown> {
   if (o.hqMaxTurnsPerHour !== undefined
     && !(typeof o.hqMaxTurnsPerHour === 'number' && Number.isInteger(o.hqMaxTurnsPerHour) && o.hqMaxTurnsPerHour >= 1)) return false;
   if (o.archivedDecisions !== undefined && !Array.isArray(o.archivedDecisions)) return false;
+  for (const k of ['moaOnboarded', 'moaBubbles', 'moaReduceMotion'] as const) {
+    if (o[k] !== undefined && typeof o[k] !== 'boolean') return false;
+  }
+  if (o.moaLevel !== undefined && o.moaLevel !== 1 && o.moaLevel !== 2 && o.moaLevel !== 3) return false;
+  if (o.archiveAckedAt !== undefined && typeof o.archiveAckedAt !== 'number') return false;
   return true;
 }
 
@@ -102,6 +131,12 @@ function sanitize(o: Record<string, unknown>): HqFile {
     out.migration = { doneAt: m.doneAt, hqWorkspaceId: m.hqWorkspaceId };
   }
   if (Array.isArray(o.archivedDecisions)) out.archivedDecisions = o.archivedDecisions as ArchivedHqDecision[];
+  if (o.moaDefault === 'new-install' || o.moaDefault === 'existing-brain') out.moaDefault = o.moaDefault;
+  if (typeof o.moaOnboarded === 'boolean') out.moaOnboarded = o.moaOnboarded;
+  if (o.moaLevel === 1 || o.moaLevel === 2 || o.moaLevel === 3) out.moaLevel = o.moaLevel;
+  if (typeof o.moaBubbles === 'boolean') out.moaBubbles = o.moaBubbles;
+  if (typeof o.moaReduceMotion === 'boolean') out.moaReduceMotion = o.moaReduceMotion;
+  if (typeof o.archiveAckedAt === 'number') out.archiveAckedAt = o.archiveAckedAt;
   return out;
 }
 
@@ -143,7 +178,13 @@ function statKey(p: string): string {
 
 const cache = new Map<string, { key: string; loaded: Loaded }>();
 
-function load(dir?: string): Loaded {
+/** The first value of the switch, decided in memory before it is on disk
+ *  (ensureMoaDefault). It answers every read until the file carries the
+ *  field, so a write that fails can never leave a new install switched on. */
+const pendingDefault = new Map<string, { enabled: boolean; reason: 'new-install' | 'existing-brain' }>();
+
+/** The file as stored (no pending default). */
+function loadStored(dir?: string): Loaded {
   const p = getDeckHqPath(dir);
   const key = statKey(p);
   const hit = cache.get(p);
@@ -153,11 +194,28 @@ function load(dir?: string): Loaded {
   return loaded;
 }
 
+function load(dir?: string): Loaded {
+  const loaded = loadStored(dir);
+  const pending = pendingDefault.get(getDeckHqPath(dir));
+  if (!pending || loaded.corrupt || loaded.file.moaEnabled !== undefined) return loaded;
+  return { corrupt: false, file: { ...loaded.file, moaEnabled: pending.enabled, moaDefault: pending.reason } };
+}
+
+// Writers, swappable in tests to inject a failing disk.
+let writeAsync: typeof atomicWriteJSON = atomicWriteJSON;
+let writeSync: typeof atomicWriteJSONSync = atomicWriteJSONSync;
+
+/** Tests only: replace the writers (null restores the real ones). */
+export function __setHqWritersForTest(w: { async?: typeof atomicWriteJSON; sync?: typeof atomicWriteJSONSync } | null): void {
+  writeAsync = w?.async ?? atomicWriteJSON;
+  writeSync = w?.sync ?? atomicWriteJSONSync;
+}
+
 /** Write the file (refused while corrupt) and drop the cached copy. */
 async function write(dir: string | undefined, next: HqFile): Promise<void> {
   const p = getDeckHqPath(dir);
   try {
-    await atomicWriteJSON(p, next);
+    await writeAsync(p, next);
   } finally {
     cache.delete(p);
   }
@@ -204,6 +262,171 @@ export async function setMoaEnabled(enabled: boolean, dir?: string): Promise<boo
     if (err instanceof HqStoreCorruptError) return false;
     throw err;
   }
+}
+
+// ── Defaults and Moa settings ───────────────────────────────────────────────
+
+/** True when this install already uses a deck brain: a workspace in a mode
+ *  other than off, a persisted brain conversation, or HQ state from an
+ *  earlier version (a designated HQ, a migration marker, archived decisions). */
+function hasExistingBrain(file: HqFile, dir?: string): boolean {
+  if (file.hqWorkspaceId !== null || file.migration !== undefined || (file.archivedDecisions?.length ?? 0) > 0) {
+    return true;
+  }
+  try {
+    if (Object.values(loadDeckAutonomy(dir)).some((e) => e.mode !== 'off')) return true;
+  } catch {
+    // unreadable autonomy: fall through to the session check
+  }
+  try {
+    const raw = atomicReadJSONSync<Record<string, unknown>>(getCommanderSessionPath(dir));
+    const sessions = raw?.sessions;
+    if (sessions && typeof sessions === 'object' && Object.keys(sessions).length > 0) return true;
+  } catch {
+    // none
+  }
+  return false;
+}
+
+/**
+ * Decide the master switch's first value, once per install. A new install
+ * starts with Moa off. An install that already uses a deck brain keeps
+ * today's behaviour: the switch stays on and no HQ is designated, so every
+ * workspace keeps its own brain until the operator sets Moa up. A value
+ * already on disk (either way) is never changed, and a corrupt store is left
+ * alone.
+ *
+ * The decision takes effect in memory at once (synchronously, before the deck
+ * runtime starts) and is then written through the store's serial chain. If
+ * that write fails the in-memory value keeps answering, so a new install
+ * stays off until the operator turns Moa on. Returns the persist promise
+ * alongside the reason, for callers (tests) that need to wait for it.
+ */
+export function ensureMoaDefault(dir?: string): { reason: 'new-install' | 'existing-brain'; persisted: Promise<boolean> } | null {
+  const { file, corrupt } = loadStored(dir);
+  const p = getDeckHqPath(dir);
+  if (corrupt || file.moaEnabled !== undefined || pendingDefault.has(p)) return null;
+  const reason = hasExistingBrain(file, dir) ? 'existing-brain' : 'new-install';
+  const enabled = reason === 'existing-brain';
+  pendingDefault.set(p, { enabled, reason });
+  const persisted = serialize(async () => {
+    const stored = loadStored(dir);
+    if (stored.corrupt) return false;
+    if (stored.file.moaEnabled === undefined) {
+      await write(dir, { ...stored.file, moaEnabled: enabled, moaDefault: reason });
+    }
+    pendingDefault.delete(p);
+    return true;
+  }).catch((err) => {
+    console.warn(`[deck:hq] could not save Moa's default (${reason}); it holds in memory: ${String(err)}`);
+    return false;
+  });
+  return { reason, persisted };
+}
+
+export function getMoaConfig(dir?: string): MoaConfig {
+  const { file, corrupt } = load(dir);
+  return {
+    enabled: !corrupt && file.moaEnabled !== false,
+    onboarded: file.moaOnboarded === true,
+    level: file.moaLevel ?? 1,
+    maxTurnsPerHour: file.hqMaxTurnsPerHour ?? DEFAULT_HQ_MAX_TURNS_PER_HOUR,
+    bubbles: file.moaBubbles !== false,
+    reduceMotion: file.moaReduceMotion === true,
+    defaultReason: file.moaDefault ?? null,
+  };
+}
+
+/** Bounds on the HQ turn cap the settings accept. */
+export const HQ_MAX_TURNS_PER_HOUR_RANGE = MOA_MAX_TURNS_PER_HOUR_RANGE;
+
+/** Persist a settings patch. Invalid fields are ignored. Returns false while
+ *  the store is corrupt (nothing written). */
+export async function setMoaConfig(patch: MoaConfigPatch, dir?: string): Promise<boolean> {
+  const next: Partial<HqFile> = {};
+  if (typeof patch.onboarded === 'boolean') next.moaOnboarded = patch.onboarded;
+  if (patch.level === 1 || patch.level === 2 || patch.level === 3) next.moaLevel = patch.level;
+  if (typeof patch.maxTurnsPerHour === 'number' && Number.isInteger(patch.maxTurnsPerHour)
+    && patch.maxTurnsPerHour >= HQ_MAX_TURNS_PER_HOUR_RANGE.min
+    && patch.maxTurnsPerHour <= HQ_MAX_TURNS_PER_HOUR_RANGE.max) next.hqMaxTurnsPerHour = patch.maxTurnsPerHour;
+  if (typeof patch.bubbles === 'boolean') next.moaBubbles = patch.bubbles;
+  if (typeof patch.reduceMotion === 'boolean') next.moaReduceMotion = patch.reduceMotion;
+  try {
+    await mutate(dir, (file) => write(dir, { ...file, ...next }));
+    return true;
+  } catch (err) {
+    if (err instanceof HqStoreCorruptError) return false;
+    throw err;
+  }
+}
+
+/** Archived decisions the operator has not acknowledged yet. */
+export function countUnackedArchivedDecisions(dir?: string): number {
+  const { file } = load(dir);
+  const ackedAt = file.archiveAckedAt ?? -Infinity;
+  return (file.archivedDecisions ?? []).filter((a) => a.archivedAt > ackedAt).length;
+}
+
+/** Acknowledge every archived decision so far (the one-time notice). */
+export async function ackArchivedDecisions(dir?: string): Promise<boolean> {
+  try {
+    await mutate(dir, (file) => {
+      const latest = Math.max(file.archiveAckedAt ?? 0, ...(file.archivedDecisions ?? []).map((a) => a.archivedAt));
+      return write(dir, { ...file, archiveAckedAt: latest });
+    });
+    return true;
+  } catch (err) {
+    if (err instanceof HqStoreCorruptError) return false;
+    throw err;
+  }
+}
+
+/**
+ * Recovery from a corrupt store: move the unreadable file and its backups
+ * aside (quarantine, nothing deleted) and start over with Moa off and no HQ.
+ * A no-op when the store is readable.
+ */
+export function resetCorruptHqStore(dir?: string): boolean {
+  const p = getDeckHqPath(dir);
+  if (!loadStored(dir).corrupt) return false;
+  // Prepare the fresh "off" file BEFORE touching the corrupt one. If that
+  // write fails, nothing moved: the store stays corrupt, which is fail-closed
+  // (moving the bad files first and then failing would leave no file at all,
+  // which reads as unset — every workspace eligible).
+  const staged = `${p}.reset`;
+  try {
+    writeSync(staged, { hqWorkspaceId: null, moaEnabled: false });
+  } catch (err) {
+    console.warn(`[deck:hq] could not prepare a fresh deck-hq.json; it stays unreadable: ${String(err)}`);
+    return false;
+  }
+  try {
+    // Keep a copy of the unreadable primary, then swap the fresh file in
+    // (one rename: there is never a moment with no primary).
+    try {
+      fs.copyFileSync(p, `${p}.corrupt-${Date.now()}`);
+    } catch {
+      // a primary that cannot be copied is still replaced
+    }
+    fs.renameSync(staged, p);
+  } catch (err) {
+    console.warn(`[deck:hq] could not swap in a fresh deck-hq.json; it stays unreadable: ${String(err)}`);
+    return false;
+  } finally {
+    cache.delete(p);
+  }
+  // The backups are still unreadable; move them aside so a later fallback
+  // never lands on one. Best effort: the primary is readable now.
+  for (const f of BACKUP_SUFFIXES.map((x) => `${p}${x}`)) {
+    try {
+      quarantineFileSync(f, 'deck-hq.json reset from Settings → Moa');
+    } catch {
+      // best effort
+    }
+  }
+  cache.delete(p);
+  corruptWarned = false;
+  return true;
 }
 
 /** The hourly cap on the HQ's automatic turns. */
@@ -277,6 +500,7 @@ export function hqPresence(hq: string | null, mirror: MirrorView = getWorkspaceM
 export function __resetHqMemoryForTest(): void {
   observed = null;
   cache.clear();
+  pendingDefault.clear();
   corruptWarned = false;
 }
 

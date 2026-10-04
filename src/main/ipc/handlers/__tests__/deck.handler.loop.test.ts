@@ -228,6 +228,7 @@ import {
   renderAutonomyBlock,
   modeToPermissionMode,
 } from '../deck.handler';
+import { setMoaEnabled } from '../../../deck/deckHqStore';
 import { buildCommanderSystemPrompt } from '../../../deck/ClaudeSdkAdapter';
 import { IPC } from '../../../../shared/constants';
 import type { FleetSnapshot } from '../../../workspace/WorkspaceMirror';
@@ -266,6 +267,12 @@ const fakeWindow = {
 
 const invoke = (channel: string, payload: Record<string, unknown>) =>
   captured.get(channel)!({}, payload) as Promise<Record<string, unknown>>;
+
+// These suites exercise the deck brain itself: start with Moa's master
+// switch on (a fresh data dir would otherwise read as a new install, off).
+beforeEach(async () => {
+  await setMoaEnabled(true);
+});
 
 beforeEach(() => {
   captured.clear();

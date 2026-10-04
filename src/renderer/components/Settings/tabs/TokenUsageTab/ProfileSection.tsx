@@ -35,7 +35,7 @@ export const PROFILE_KEYS: Record<TokenProfile | 'custom', string> = {
 export interface ProfileSectionProps {
   bindings: OrchestratorRoleBindings;
   onApply: (next: OrchestratorRoleBindings) => void;
-  onOpenTab: (tab: 'roles' | 'orchestrator') => void;
+  onOpenTab: (tab: 'roles' | 'moa') => void;
   t: (key: string, vars?: Record<string, string | number>) => string;
   showCustom?: boolean;
   onToggleCustom?: () => void;

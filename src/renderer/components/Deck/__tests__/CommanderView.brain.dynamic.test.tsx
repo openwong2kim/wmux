@@ -9,7 +9,7 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { CommanderViewContent, type CommanderViewContentProps } from '../CommanderView';
+import { CommanderViewContent, MOA_BLOCK_CODES, MOA_BLOCK_KEY, isMoaBlockCode, type CommanderViewContentProps } from '../CommanderView';
 import { applyBrainEvent, type DeckBrainMessage } from '../deckBrain';
 import { t, setLocale } from '../../../i18n';
 
@@ -130,6 +130,48 @@ describe('CommanderViewContent — brain surface', () => {
     // tall and the full sentence gets clipped there.
     expect(shell.getAttribute('title')).toBe('deck.composerModeOff');
     expect(input.placeholder).toBe('deck.composerModeOffShort');
+  });
+
+  it('Moa off: the composer is disabled with the reason, and the notice opens Settings › Moa', () => {
+    const onOpenSettings = vi.fn();
+    mount({ moaBlock: { code: 'moa_off', onOpenSettings }, t });
+    const input = container.querySelector('[data-channel-composer-input]') as HTMLTextAreaElement;
+    expect(input.disabled).toBe(true);
+    expect(input.placeholder).toBe('Moa is off — turn it on in Settings → Moa');
+    const shell = container.querySelector('[data-commander-composer]') as HTMLElement;
+    expect(shell.getAttribute('data-moa-off')).toBe('true');
+    const notice = container.querySelector('[data-commander-moa-block="moa_off"]') as HTMLElement;
+    expect(notice.textContent).toContain('Moa is off.');
+    act(() => (notice.querySelector('[data-commander-moa-open-settings]') as HTMLButtonElement).click());
+    expect(onOpenSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("not_hq: says this isn't Moa's workspace, offers to open it, and leaves the composer live", () => {
+    const onOpenHq = vi.fn();
+    mount({ moaBlock: { code: 'not_hq', onOpenSettings: vi.fn(), onOpenHq }, t });
+    const notice = container.querySelector('[data-commander-moa-block="not_hq"]') as HTMLElement;
+    expect(notice.textContent).toContain("This workspace isn't Moa's workspace.");
+    expect(notice.querySelector('[data-commander-moa-open-settings]')).toBeNull();
+    act(() => (notice.querySelector('[data-commander-moa-open-hq]') as HTMLButtonElement).click());
+    expect(onOpenHq).toHaveBeenCalledTimes(1);
+    expect((container.querySelector('[data-channel-composer-input]') as HTMLTextAreaElement).disabled).toBe(false);
+  });
+
+  it('hq_missing and hq_unknown each say their own reason; no notice without a block', () => {
+    mount({ moaBlock: { code: 'hq_missing', onOpenSettings: vi.fn() }, t });
+    expect(container.querySelector('[data-commander-moa-block="hq_missing"]')?.textContent).toContain("Moa's workspace is missing.");
+    mount({ moaBlock: { code: 'hq_unknown' }, t });
+    expect(container.querySelector('[data-commander-moa-block="hq_unknown"]')?.textContent).toContain("hasn't been seen yet");
+    mount({});
+    expect(container.querySelector('[data-commander-moa-block]')).toBeNull();
+  });
+
+  it('every Moa refusal code main sends has its own sentence', () => {
+    for (const code of MOA_BLOCK_CODES) {
+      expect(isMoaBlockCode(code)).toBe(true);
+      expect(t(MOA_BLOCK_KEY[code])).not.toBe(MOA_BLOCK_KEY[code]);
+    }
+    expect(isMoaBlockCode('busy')).toBe(false);
   });
 
   it('leaves the composer live in any other mode', () => {

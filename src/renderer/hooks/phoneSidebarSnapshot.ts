@@ -21,11 +21,14 @@
 //   - panes:        the roster's pane display name and surface title rules
 //   - layout:       `rootPane` as PaneContainer draws it (direction, sizes,
 //                   tab order, active tab) and `activePaneId`
+//   - HQ / moa:     `state.moa` (main's Moa state), as `isMoaHqWorkspace`
+//                   reads it
 //
 // Store-free (state in, plain object out) so it is unit-testable directly.
 
 import { getWorkspaceLeafPanes } from '../../shared/paneUtils';
 import { isBrainPtyId } from '../../shared/constants';
+import { moaHqId } from '../stores/slices/moaSlice';
 import {
   PHONE_LAYOUT_SURFACE_KINDS,
   PHONE_SIDEBAR_LIMITS,
@@ -281,9 +284,19 @@ export function buildPhoneSidebarSnapshot(state: StoreState, onDrop: SidebarDrop
     }
   }
 
+  // The Moa HQ, by the rule the desktop hides it with (`moaHqId`): the
+  // designated id, Moa on or off — the remembered id until main's first
+  // answer, so the phone does not show the HQ for a moment at boot. `moa`
+  // only while Moa is on and main reports its workspace present.
+  const hqId = moaHqId(state);
+  const hqWorkspaceId = isSidebarId(hqId) ? hqId : undefined;
+  const moaOn = state.moa?.config.enabled === true && state.moa.hq.state === 'ok' && hqWorkspaceId !== undefined && liveIds.has(hqWorkspaceId);
+
   return {
     activeWorkspaceId: state.activeWorkspaceId && liveIds.has(state.activeWorkspaceId) ? state.activeWorkspaceId : null,
     workspaces: workspaceRows,
     panes: paneRows,
+    ...(hqWorkspaceId !== undefined ? { hqWorkspaceId } : {}),
+    ...(moaOn ? { moa: true as const } : {}),
   };
 }

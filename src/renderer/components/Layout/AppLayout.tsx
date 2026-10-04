@@ -39,6 +39,7 @@ import OnboardingOverlay from '../Onboarding/OnboardingOverlay';
 import FirstRunWizard from '../FirstRunWizard';
 import KeyboardCheatSheet from '../KeyboardCheatSheet';
 import ToastContainer from '../Toast/ToastContainer';
+import MoaHqMissingNotice from '../Moa/MoaHqMissingNotice';
 import { HooksInstallPromptContainer } from '../Deck/HooksInstallPrompt';
 import FloatingPane from '../Terminal/FloatingPane';
 import SearchResultsPanel from '../Search/SearchResultsPanel';
@@ -52,6 +53,7 @@ import { useNotificationListener } from '../../hooks/useNotificationListener';
 import { useRpcBridge } from '../../hooks/useRpcBridge';
 import AgentMentionPicker from '../Palette/AgentMentionPicker';
 import { useWorkspaceMirrorPush } from '../../hooks/useWorkspaceMirrorPush';
+import { useMoaSync } from '../../hooks/useMoaSync';
 import { useResizeGuard } from '../../hooks/useResizeGuard';
 import { useApprovalInboxBridge } from '../../hooks/useApprovalInboxBridge';
 import { useBrowserHelpBridge } from '../../hooks/useBrowserHelpBridge';
@@ -836,6 +838,7 @@ export default function AppLayout() {
   // per-pane agent status whenever it changes, so main resolves hooks/routing
   // locally instead of round-tripping workspace.list back to the renderer.
   useWorkspaceMirrorPush();
+  useMoaSync();
   // S-C2 Approval Inbox bridge: the SINGLE owner of permissionPrompt.onOpen /
   // onClosed (guard #2). Always-on (not gated on fleetViewVisible) so MCP
   // prompts accumulate in the store before the cockpit's Approvals tab opens.
@@ -2160,6 +2163,7 @@ export default function AppLayout() {
       )}
       <FloatingPane />
       <ToastContainer />
+      <MoaHqMissingNotice />
       <HooksInstallPromptContainer
         t={t}
         launchCheck={hooksLaunchCheck({ firstRunSettled: firstRunProbeSettled, firstRunWizardRanThisBoot })}

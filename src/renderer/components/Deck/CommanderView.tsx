@@ -84,6 +84,7 @@ import { DeckBriefingCard } from './DeckBriefingCard';
 import { AgentModeChipContainer } from './AgentModeChip';
 import { onAgentModeChanged } from './deckModeBus';
 import type { AgentMode } from '../../../main/deck/deckAutonomyStore';
+import Button from '../ui/Button';
 
 const EMPTY_MESSAGES: ChannelMessage[] = [];
 
@@ -95,6 +96,30 @@ const USER_BUBBLE = 'max-w-[85%] rounded-lg px-3 py-2 bg-[color-mix(in_srgb,var(
 const TIME = 'text-[11px] tabular-nums text-[color-mix(in_srgb,var(--text-main)_35%,transparent)]';
 
 // ─── Pure view ───────────────────────────────────────────────────────────────
+
+/** Why Moa will not run a turn in this workspace — main's refusal codes. */
+export type MoaBlockCode = 'moa_off' | 'not_hq' | 'hq_missing' | 'hq_unknown';
+
+export const MOA_BLOCK_CODES: readonly MoaBlockCode[] = ['moa_off', 'not_hq', 'hq_missing', 'hq_unknown'];
+
+export const isMoaBlockCode = (code: unknown): code is MoaBlockCode =>
+  typeof code === 'string' && (MOA_BLOCK_CODES as readonly string[]).includes(code);
+
+/** The sentence for each refusal (also the failed turn's error text). */
+export const MOA_BLOCK_KEY: Record<MoaBlockCode, string> = {
+  moa_off: 'deck.moaOff',
+  not_hq: 'deck.moaNotHq',
+  hq_missing: 'deck.moaHqMissing',
+  hq_unknown: 'deck.moaHqUnknown',
+};
+
+export interface MoaBlock {
+  code: MoaBlockCode;
+  /** Settings › Moa (switch, HQ recovery). */
+  onOpenSettings?: () => void;
+  /** Moa's own workspace, when one exists. */
+  onOpenHq?: () => void;
+}
 
 export interface CommanderViewContentProps {
   threads: CommanderThread[];
@@ -155,6 +180,10 @@ export interface CommanderViewContentProps {
    *  does not run, so the composer is disabled and says why. Main refuses the
    *  send with `mode_off` regardless; this is the explanation, not the gate. */
   modeOff?: boolean;
+  /** Moa will not run here: `moa_off` (known up front, disables the composer)
+   *  or the code main gave the last refused send. Renders a notice with the
+   *  reason and the action that fixes it. */
+  moaBlock?: MoaBlock | null;
   /** D1 briefing — fingerprint of the active workspace's status-relevant fleet
    *  state; the card refetches when it moves (the autonomy-'off' path, where no
    *  brain stream ever fires). */
@@ -187,9 +216,31 @@ export function CommanderViewContent({
   onJumpToChannels,
   fleetSignature,
   modeOff = false,
+  moaBlock = null,
   t: tProp,
 }: CommanderViewContentProps): React.ReactElement {
   const t = tProp ?? ((key: string) => key);
+  const moaOff = moaBlock?.code === 'moa_off';
+  // The notice for a Moa refusal: the reason, and the one action that fixes it
+  // (open Moa's workspace for not_hq, Settings › Moa otherwise).
+  const moaNotice = moaBlock ? (
+    <div
+      className="ui-notice mx-3 mb-1.5 flex flex-col items-start gap-2 px-3 py-2.5 shrink-0"
+      role="status"
+      data-commander-moa-block={moaBlock.code}
+    >
+      <p className="m-0 text-[13px] leading-5">{t(MOA_BLOCK_KEY[moaBlock.code])}</p>
+      {moaBlock.code === 'not_hq' && moaBlock.onOpenHq ? (
+        <Button variant="secondary" size="sm" onClick={moaBlock.onOpenHq} data-commander-moa-open-hq>
+          {t('deck.moaOpenHq')}
+        </Button>
+      ) : moaBlock.code !== 'not_hq' && moaBlock.onOpenSettings ? (
+        <Button variant="secondary" size="sm" onClick={moaBlock.onOpenSettings} data-commander-moa-open-settings>
+          {t('deck.moaOpenSettings')}
+        </Button>
+      ) : null}
+    </div>
+  ) : null;
   const modeOffReason =
     t('deck.composerModeOff') ||
     'The orchestrator is off for this workspace. Set Mode to Assist or Danger to talk to it.';
@@ -391,6 +442,7 @@ export function CommanderViewContent({
             leave. It has no collapse toggle anymore: collapsing the dock's only
             input surface has no meaning, and the rail below it is what the
             operator opens instead. */}
+        {moaNotice && <div className="pt-2">{moaNotice}</div>}
         <div className="flex flex-col flex-1 min-h-0 px-3 py-2">
           <BrainTerminalEmbed ptyId={brainPtyId} />
         </div>
@@ -651,19 +703,25 @@ export function CommanderViewContent({
             at all — main refuses those sends with `mode_off`, so leaving the box
             live would only produce a silent rejection. The title says which of
             the two it is, and how to undo the `off` case. */}
+      {moaNotice}
       <div
         className="px-1.5 pb-1.5 shrink-0"
-        title={modeOff ? modeOffReason : undefined}
+        title={moaOff ? t('deck.moaOff') : modeOff ? modeOffReason : undefined}
         data-commander-composer
         data-mode-off={modeOff ? 'true' : undefined}
+        data-moa-off={moaOff ? 'true' : undefined}
       >
         <ComposerContent
           channelId={COMMANDER_CHANNEL_NAME}
           onSubmit={onSubmit}
           mentionCandidates={mentionCandidates}
-          disabled={brainBusy || modeOff}
+          disabled={brainBusy || modeOff || moaOff}
           placeholder={
-            modeOff
+            // Moa off comes first: main refuses with moa_off before it reads
+            // the workspace's mode.
+            moaOff
+              ? t('deck.moaOffShort')
+              : modeOff
               ? modeOffPlaceholder
               : t('deck.commanderPlaceholder') || 'Tell the orchestrator, or @mention panes…'
           }
@@ -1415,6 +1473,26 @@ export function CommanderView(): React.ReactElement {
   // its input on this promise — awaiting it left the typed text sitting in
   // the composer for the entire orchestrator turn. A late reject (busy race /
   // disposed) is surfaced by failing the open turn's bubble instead.
+  // Moa: the switch (known up front) and the last refusal main gave a send
+  // in this workspace (not_hq / hq_missing / hq_unknown, or moa_off from a
+  // race with the switch).
+  const moa = useStore((s) => s.moa);
+  const [moaRefusal, setMoaRefusal] = useState<{ workspaceId: string; code: MoaBlockCode } | null>(null);
+  const moaBlock = useMemo((): MoaBlock | null => {
+    let code: MoaBlockCode | null = null;
+    if (moa && !moa.config.enabled) code = 'moa_off';
+    else if (moaRefusal && moaRefusal.workspaceId === activeWorkspaceId && moaRefusal.code !== 'moa_off') {
+      code = moaRefusal.code;
+    }
+    if (!code) return null;
+    const hqId = moa?.hq.state === 'ok' ? moa.hq.workspaceId : null;
+    return {
+      code,
+      onOpenSettings: () => useStore.getState().openSettingsTab('moa'),
+      ...(hqId && hqId !== activeWorkspaceId ? { onOpenHq: () => useStore.getState().openMoaHq() } : {}),
+    };
+  }, [moa, moaRefusal, activeWorkspaceId]);
+
   const handleBrainSend = useCallback(
     async (text: string): Promise<{ ok: boolean; errorCode?: string; errorMessage?: string }> => {
       const api = window.electronAPI?.deck;
@@ -1475,13 +1553,22 @@ export function CommanderView(): React.ReactElement {
           ...(useStore.getState().deckBrainModel ? { model: useStore.getState().deckBrainModel } : {}),
         })
         .then((res) => {
-          if (!res.ok) {
+          // Main's Moa gates refuse with their own codes (deck.handler
+          // refuseWhenModeOff); the preload type predates them.
+          const code: string | undefined = res.code;
+          if (res.ok) {
+            setMoaRefusal((prev) => (prev?.workspaceId === workspaceId ? null : prev));
+          } else if (isMoaBlockCode(code)) {
+            // Say which gate refused and keep the notice (with its fix) up.
+            setMoaRefusal({ workspaceId, code });
+            failDeckBrainTurn(workspaceId, t(MOA_BLOCK_KEY[code]));
+          } else {
             // Rejected before any stream event (busy race / disposed): close
             // the open turn with an error so the placeholder doesn't spin
             // forever.
             failDeckBrainTurn(
               workspaceId,
-              res.code === 'busy'
+              code === 'busy'
                 ? t('deck.commanderBusy') || 'A command is already running.'
                 : t('deck.commanderFailed') || 'The command could not run.',
             );
@@ -1582,6 +1669,7 @@ export function CommanderView(): React.ReactElement {
       onJumpToChannels={onJumpToChannels}
       fleetSignature={fleetSignature}
       modeOff={agentMode === 'off'}
+      moaBlock={moaBlock}
       t={t}
     />
   );
