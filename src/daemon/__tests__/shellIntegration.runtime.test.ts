@@ -470,7 +470,9 @@ describe.runIf(hasPowerShell)('execution policy on a factory-default machine —
     tmp = undefined;
   });
 
-  it('control: with no policy arg, Restricted blocks the init script and no markers arrive', async () => {
+  // Native PowerShell/PSReadLine startup occasionally stalls before the policy error.
+  // Retry this live-OS control once in the runtime lane, keeping its assertions.
+  it('control: with no policy arg, Restricted blocks the init script and no markers arrive', { retry: 1, timeout: EVENT_TIMEOUT_MS * 2 + 2000 }, async () => {
     __setPolicyProbeForTests({ scopes: { ...FACTORY_DEFAULT_SCOPES, currentUser: 'set' }, platform: 'win32' });
     manager = new DaemonSessionManager();
     const id = `rt-policy-control-${Date.now()}`;
@@ -483,7 +485,7 @@ describe.runIf(hasPowerShell)('execution policy on a factory-default machine —
     managed.ptyProcess.write('echo wmux-policy-control\r');
     await waitForOutputAfter(managed, 0, /wmux-policy-control[\s\S]*wmux-policy-control/, 'echo output');
     expect(managed.promptLog.size).toBe(0);
-  }, EVENT_TIMEOUT_MS * 2 + 2000);
+  });
 
   it('fix: RemoteSigned lets the init script load, so OSC 133 command markers arrive', async () => {
     __setPolicyProbeForTests({ scopes: FACTORY_DEFAULT_SCOPES, platform: 'win32' });

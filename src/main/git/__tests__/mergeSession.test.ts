@@ -6,6 +6,7 @@ import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync, existsSync, lstatSync, readFileSync, realpathSync, appendFileSync } from 'node:fs';
 import { copyDirSync } from '../../../test-utils/copyDirSync';
+import { disableGitMaintenance } from '../../../test-utils/gitFixture';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -40,6 +41,7 @@ function makeTemplate(): { base: string; repo: string; cleanup: () => void } {
   const repo = join(base, 'repo');
   mkdirSync(repo);
   g(repo, ['init', '-q', '-b', 'main']);
+  disableGitMaintenance(repo);
   appendFileSync(join(repo, '.git', 'config'), '[user]\n\temail = t@t\n\tname = t\n');
   writeFileSync(join(repo, 'f.txt'), 'a\n');
   g(repo, ['add', '-A']);
@@ -51,8 +53,13 @@ function makeTemplate(): { base: string; repo: string; cleanup: () => void } {
 function makeRepo(templateRepo: string): { base: string; repo: string; cleanup: () => void } {
   const base = realpathSync.native(mkdtempSync(join(tmpdir(), 'wmux-ms-')));
   const repo = join(base, 'repo');
-  copyDirSync(templateRepo, repo);
-  g(repo, ['update-index', '-q', '--refresh']);
+  try {
+    copyDirSync(templateRepo, repo);
+    g(repo, ['update-index', '-q', '--refresh']);
+  } catch (error) {
+    rmSync(base, { recursive: true, force: true });
+    throw error;
+  }
   return { base, repo, cleanup: () => rmSync(base, { recursive: true, force: true }) };
 }
 
@@ -102,12 +109,12 @@ describe('detectConflicts — conflict detection (not exit code)', { timeout: GI
     g(tpl.repo, ['commit', '-q', '-a', '-m', 'main2']);
     baseOid = g(tpl.repo, ['rev-parse', 'HEAD']).trim();
   });
-  afterAll(() => tpl.cleanup());
+  afterAll(() => tpl?.cleanup());
   // Template state every copy starts from: main = base → main2 (f.txt "MAIN"),
   // and branch feat = base → feat (f.txt "FEAT"), so the two conflict on f.txt.
   let scn: ReturnType<typeof makeRepo>;
   beforeEach(() => (scn = makeRepo(tpl.repo)));
-  afterEach(() => scn.cleanup());
+  afterEach(() => scn?.cleanup());
 
   it('a conflicting merge returns the unmerged file list, a clean merge returns an empty list', async () => {
     const created = await createIntegrationWorktree(scn.repo, baseOid, 'feat');
@@ -133,10 +140,10 @@ describe('detectConflicts — conflict detection (not exit code)', { timeout: GI
 describe('checkTargetPreconditions — target (base) preconditions', { timeout: GIT_PROCESS_TIMEOUT_MS }, () => {
   let tpl: ReturnType<typeof makeTemplate>;
   beforeAll(() => (tpl = makeTemplate()));
-  afterAll(() => tpl.cleanup());
+  afterAll(() => tpl?.cleanup());
   let scn: ReturnType<typeof makeRepo>;
   beforeEach(() => (scn = makeRepo(tpl.repo)));
-  afterEach(() => scn.cleanup());
+  afterEach(() => scn?.cleanup());
 
   it('clean · HEAD==base · no MERGE_HEAD → ok', async () => {
     const r = await checkTargetPreconditions(scn.repo, 'main');
@@ -175,10 +182,10 @@ describe('checkTargetPreconditions — target (base) preconditions', { timeout: 
 describe('resolveBaseFromGit — fallback chain (no gh)', { timeout: GIT_PROCESS_TIMEOUT_MS }, () => {
   let tpl: ReturnType<typeof makeTemplate>;
   beforeAll(() => (tpl = makeTemplate()));
-  afterAll(() => tpl.cleanup());
+  afterAll(() => tpl?.cleanup());
   let scn: ReturnType<typeof makeRepo>;
   beforeEach(() => (scn = makeRepo(tpl.repo)));
-  afterEach(() => scn.cleanup());
+  afterEach(() => scn?.cleanup());
 
   it('uses the branch name when origin/HEAD symbolic-ref exists', async () => {
     // Mimic an origin remote with a bare repo and set origin/HEAD.
@@ -261,10 +268,10 @@ describe('linkNodeModules — dep link into the integration worktree', () => {
 describe('runVerify — exit-code verdict (injected commands)', { timeout: GIT_PROCESS_TIMEOUT_MS }, () => {
   let tpl: ReturnType<typeof makeTemplate>;
   beforeAll(() => (tpl = makeTemplate()));
-  afterAll(() => tpl.cleanup());
+  afterAll(() => tpl?.cleanup());
   let scn: ReturnType<typeof makeRepo>;
   beforeEach(() => (scn = makeRepo(tpl.repo)));
-  afterEach(() => scn.cleanup());
+  afterEach(() => scn?.cleanup());
 
   it('all steps exit 0 → ok:true', async () => {
     const res = await runVerify(scn.repo, {
@@ -298,10 +305,10 @@ describe('clean merge → Land round-trip', { timeout: GIT_PROCESS_TIMEOUT_MS },
     featOid = addFeat(tpl.repo, 'a\nfeat\n'); // A change that does not conflict with main.
     baseOid = g(tpl.repo, ['rev-parse', 'HEAD']).trim();
   });
-  afterAll(() => tpl.cleanup());
+  afterAll(() => tpl?.cleanup());
   let scn: ReturnType<typeof makeRepo>;
   beforeEach(() => (scn = makeRepo(tpl.repo)));
-  afterEach(() => scn.cleanup());
+  afterEach(() => scn?.cleanup());
 
   it('fast-forwards base to the result after merging in the isolated worktree', async () => {
     const created = await createIntegrationWorktree(scn.repo, baseOid, 'feat');

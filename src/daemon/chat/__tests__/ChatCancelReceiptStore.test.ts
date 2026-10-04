@@ -78,7 +78,8 @@ describe('ChatCancelReceiptStore', () => {
     expect(normalizeCancelProgress({ state: 'unknown', promptRestored: true, inputCleared: true, at: 1 }, 0)).toEqual({ state: 'unknown', at: 1 });
   });
 
-  it('a daemon restart turns requested and crashed pending entries into unknown (daemon-restart); settled ones stay', () => {
+  // Eleven durable writes (including restart settlement) fsync real files; loaded CI disks can exceed 5 s.
+  it('a daemon restart turns requested and crashed pending entries into unknown (daemon-restart); settled ones stay', { timeout: 30_000 }, () => {
     const dir = tmp();
     const store = new ChatCancelReceiptStore(dir, { now: () => 5_000 });
     const [requested, ended, crashed, uncertain, legacy] = [id(), id(), id(), id(), id()];

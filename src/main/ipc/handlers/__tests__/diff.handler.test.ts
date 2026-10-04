@@ -18,6 +18,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { copyDirSync } from '../../../../test-utils/copyDirSync';
+import { disableGitMaintenance } from '../../../../test-utils/gitFixture';
 
 // electron ipcMain을 캡처해 핸들러를 직접 호출한다.
 const captured = new Map<string, (...args: unknown[]) => unknown>();
@@ -104,6 +105,7 @@ function makeTemplateDir(): string {
 function initTemplateRepo(repo: string, config: string, files: Record<string, string>): void {
   mkdirSync(repo, { recursive: true });
   g(repo, ['init', '-q', '-b', 'main']);
+  disableGitMaintenance(repo);
   appendFileSync(join(repo, '.git', 'config'), config);
   for (const [rel, content] of Object.entries(files)) {
     mkdirSync(join(repo, rel, '..'), { recursive: true });

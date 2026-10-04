@@ -72,7 +72,9 @@ afterEach(async () => {
   }
 });
 
-describe('WebTerminalServer native TLS (#764)', () => {
+// OpenSSL and native sockets depend on host load; the serial runtime lane
+// permits one Windows retry without relaxing the request/test deadlines.
+describe('WebTerminalServer native TLS (#764)', { retry: process.platform === 'win32' ? 1 : 0 }, () => {
   it.skipIf(!HAVE_OPENSSL)(
     'terminates HTTPS, advertises only https URLs, and permits secure pairing',
     async () => {

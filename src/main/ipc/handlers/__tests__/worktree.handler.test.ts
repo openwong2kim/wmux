@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } 
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync, existsSync, realpathSync, appendFileSync } from 'node:fs';
 import { copyDirSync } from '../../../../test-utils/copyDirSync';
+import { disableGitMaintenance } from '../../../../test-utils/gitFixture';
 import os from 'node:os';
 import { join, basename, dirname } from 'node:path';
 
@@ -37,6 +38,7 @@ function buildTemplates(): void {
   templateRepo = join(templateBase, 'repo');
   mkdirSync(templateRepo);
   g(templateRepo, ['init', '-q', '-b', 'main']);
+  disableGitMaintenance(templateRepo);
   appendFileSync(join(templateRepo, '.git', 'config'), '[user]\n\temail = t@t\n\tname = t\n');
   writeFileSync(join(templateRepo, 'a.txt'), 'a\n');
   g(templateRepo, ['add', '-A']);

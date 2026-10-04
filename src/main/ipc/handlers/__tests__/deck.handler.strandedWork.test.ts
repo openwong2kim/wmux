@@ -170,7 +170,8 @@ afterEach(() => {
 });
 
 describe('deck handler — a human turn against a PARKED record', () => {
-  it('starts a NEW record and surfaces the one it superseded', async () => {
+  // Exercises the real durable work store through several record writes and a handler turn on Windows.
+  it('starts a NEW record and surfaces the one it superseded', { timeout: 30_000 }, async () => {
     beginOrContinueDeckWork(WS, 'Recover my agents after the reboot');
     delegate('task-orphan');
     const before = loadActiveDeckWork(WS)!;
@@ -193,7 +194,8 @@ describe('deck handler — a human turn against a PARKED record', () => {
     expect(raised[0].context).not.toContain('You OWN');
   });
 
-  it('does not raise for a superseded record with nothing outstanding', async () => {
+  // Exercises the real durable work store through several record writes and a handler turn on Windows.
+  it('does not raise for a superseded record with nothing outstanding', { timeout: 30_000 }, async () => {
     // A decision blocks autonomous follow-through on the request the human JUST
     // made, so it is charged only where delegated work would be orphaned.
     beginOrContinueDeckWork(WS, 'yesterday, and it finished');

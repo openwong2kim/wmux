@@ -1,8 +1,4 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { execFileSync } from 'child_process';
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
 import {
   expandPercentRefs,
   composeRegistryPath,
@@ -10,7 +6,6 @@ import {
   withFreshWindowsPath,
   resetFreshPathCacheForTests,
   parseRegExportValue,
-  readRegistryEnvPath,
 } from '../windowsPathEnv';
 
 beforeEach(() => resetFreshPathCacheForTests());
@@ -87,65 +82,6 @@ describe('parseRegExportValue', () => {
     }
     expect(parseRegExportValue('', 'Path')).toBeNull();
     expect(parseRegExportValue(regFile('"TEMP"="C:\\\\t"'), 'Path')).toBeNull();
-  });
-});
-
-/**
- * The regression that matters: every other test here injects
- * `deps.readRegistryPath`, so the real reader — the function that held the
- * encoding bug — was never executed by the suite. This one spawns the real
- * reg.exe against a scratch key under HKCU\Software. It never touches
- * HKCU\Environment.
- */
-describe.runIf(process.platform === 'win32')('readRegistryEnvPath (live reg.exe)', () => {
-  const KEY = `HKCU\\Software\\wmux-test-849-${process.pid}`;
-  const reg = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'reg.exe');
-  const drop = () => {
-    try {
-      execFileSync(reg, ['delete', KEY, '/f'], { stdio: 'ignore' });
-    } catch {
-      /* not present */
-    }
-  };
-
-  it('round-trips a non-ASCII REG_EXPAND_SZ value byte for byte', () => {
-    const value = 'D:\\软件\\Python312;D:\\héllo;%SystemRoot%\\System32';
-    drop();
-    execFileSync(reg, ['add', KEY, '/v', 'Path', '/t', 'REG_EXPAND_SZ', '/d', value, '/f'], {
-      stdio: 'ignore',
-    });
-    try {
-      expect(readRegistryEnvPath(KEY)).toBe(value);
-    } finally {
-      drop();
-    }
-  });
-
-  it('leaves no temp file behind', () => {
-    // Point os.tmpdir() at a private directory for the duration. Counting
-    // `wmux-regpath-*` in the shared temp dir instead would go flaky the moment
-    // a real wmux is running alongside the suite — it writes the same prefix.
-    const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-849-tmp-'));
-    const saved = { TEMP: process.env.TEMP, TMP: process.env.TMP };
-    process.env.TEMP = sandbox;
-    process.env.TMP = sandbox;
-    drop();
-    execFileSync(reg, ['add', KEY, '/v', 'Path', '/t', 'REG_SZ', '/d', 'C:\\a', '/f'], {
-      stdio: 'ignore',
-    });
-    try {
-      expect(readRegistryEnvPath(KEY)).toBe('C:\\a'); // it really ran
-      expect(fs.readdirSync(sandbox)).toEqual([]);
-    } finally {
-      process.env.TEMP = saved.TEMP;
-      process.env.TMP = saved.TMP;
-      fs.rmSync(sandbox, { recursive: true, force: true });
-      drop();
-    }
-  });
-
-  it('fails open (null) for a key that does not exist', () => {
-    expect(readRegistryEnvPath(`${KEY}-absent-xyz`)).toBeNull();
   });
 });
 

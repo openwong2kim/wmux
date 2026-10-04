@@ -261,7 +261,8 @@ describe('claudeWriter', () => {
     ).rejects.toThrow('Project directory is required');
   });
 
-  it('toggles mcp-tool and builtin-tool via permissions.deny', async () => {
+  // Three config edits with backups and repeated inventory reads exercise real disk I/O on a loaded runner.
+  it('toggles mcp-tool and builtin-tool via permissions.deny', { timeout: 30_000 }, async () => {
     seedFixtures();
     const deps = makeDeps(tempHome, tempProj);
     const inv = await readInventory('claude', { homeDir: tempHome, projectDir: tempProj, run: deps.run });

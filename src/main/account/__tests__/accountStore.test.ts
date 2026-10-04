@@ -72,7 +72,8 @@ describe('AccountStore CRUD', () => {
     ).rejects.toMatchObject({ code: 'invalid' });
   });
 
-  it('remove clears bindings and reports affected workspaces', async () => {
+  // Four serialized durable account/binding writes include fsync; loaded Windows disks can exceed 5 s.
+  it('remove clears bindings and reports affected workspaces', { timeout: 30_000 }, async () => {
     const acc = await store.addAccount({ name: 'w', vendor: 'claude', configDir: mkConfigDir('w') });
     await store.setBinding('ws-1', 'claude', acc.id);
     await store.setBinding('ws-2', 'claude', acc.id);
@@ -84,7 +85,8 @@ describe('AccountStore CRUD', () => {
 });
 
 describe('AccountStore bindings', () => {
-  it('binds claude and codex to one workspace simultaneously', async () => {
+  // Four serialized durable account/binding writes include fsync; loaded Windows disks can exceed 5 s.
+  it('binds claude and codex to one workspace simultaneously', { timeout: 30_000 }, async () => {
     const c = await store.addAccount({ name: 'c', vendor: 'claude', configDir: mkConfigDir('c') });
     const x = await store.addAccount({ name: 'x', vendor: 'codex', configDir: mkConfigDir('x') });
     await store.setBinding('ws-1', 'claude', c.id);
