@@ -56,11 +56,19 @@ export function useGitList<T>({ listKey, read, shown, poll, lazy, refreshKey }: 
   readRef.current = read;
   // The key being read: a second read of it waits, another key does not.
   const inFlight = useRef<string | null>(null);
+  // A forced read asked for while that read runs: it runs right after, so a
+  // refresh is never swallowed by an older, unforced read.
+  const forceAfter = useRef(false);
+  const loadRef = useRef<(force?: boolean) => Promise<void>>(async () => undefined);
   const dropped = useRef(false);
 
   const load = useCallback(async (force = false) => {
     const key = keyRef.current;
-    if (!key || inFlight.current === key) return;
+    if (!key) return;
+    if (inFlight.current === key) {
+      if (force) forceAfter.current = true;
+      return;
+    }
     inFlight.current = key;
     const g = gen.current;
     try {
@@ -78,8 +86,13 @@ export function useGitList<T>({ listKey, read, shown, poll, lazy, refreshKey }: 
       });
     } finally {
       if (inFlight.current === key) inFlight.current = null;
+      if (forceAfter.current) {
+        forceAfter.current = false;
+        if (keyRef.current === key) void loadRef.current(true);
+      }
     }
   }, []);
+  loadRef.current = load;
 
   // A new key starts over: one read, unless lazy and never shown.
   const everShown = useRef(shown);

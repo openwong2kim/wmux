@@ -75,6 +75,7 @@ beforeEach(() => {
       shipCommit: vi.fn(), shipPush: vi.fn(), shipCreatePr: vi.fn(),
       repoKey: vi.fn(async (p: string) => ({ key: remoteOf[p] ?? null })),
       issueList: vi.fn(async () => ({ ok: true, issues: [] })),
+      issueDetail: vi.fn(async () => ({ ok: true, detail: null })),
       loginStart: vi.fn(async () => ({ ok: false, message: 'no code', fallback: true })),
       loginCancel: vi.fn(async () => undefined),
       onLoginEvent: vi.fn(() => () => undefined),
@@ -219,6 +220,21 @@ describe('Git page', () => {
     prList.mockClear();
     await act(async () => { (container.querySelector('[data-gh-connect-recheck]') as HTMLButtonElement).click(); });
     expect(prList).toHaveBeenCalledWith('/code/alpha', true);
+  });
+
+  it('signed in from the connect card: the lists read again, forced, once gh answers', async () => {
+    prList.mockResolvedValue({ ok: false, code: 'unauthenticated', message: 'GitHub CLI is not authenticated', provider: 'github' });
+    act(() => useStore.setState({ gitPage: { ...initialGitPageState(), tab: 'issues' } }));
+    act(() => root.render(createElement(GitPage)));
+    await settle();
+    expect(container.querySelector('[data-gh-connect]')).not.toBeNull();
+    const issueList = (window as unknown as { electronAPI: { github: { issueList: ReturnType<typeof vi.fn> } } }).electronAPI.github.issueList;
+    prList.mockResolvedValue({ ok: true, prs: [] });
+    issueList.mockClear();
+    await act(async () => { (container.querySelector('[data-gh-connect-recheck]') as HTMLButtonElement).click(); });
+    await settle();
+    expect(container.querySelector('[data-gh-connect]')).toBeNull();
+    expect(issueList.mock.calls.some((c) => c[2] === true)).toBe(true);
   });
 
   it('a GitLab remote keeps its own message instead of Connect GitHub', async () => {

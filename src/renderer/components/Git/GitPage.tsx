@@ -48,6 +48,17 @@ export default function GitPage() {
   // Signed out or no gh: the page is one connect card (re-read on refresh / after a login).
   const gate = useGhAuthGate(resolved?.repoPath ?? null, refreshKey);
   const recheck = () => setRefreshKey((k) => k + 1);
+  // Back from the connect card: the lists mounted while the gate was still
+  // re-checking read main's stale signed-out answer, so read them once more,
+  // forced, now that gh answers.
+  const wasBlocked = useRef(false);
+  useEffect(() => {
+    if (gate === 'unauthenticated' || gate === 'cli-missing') wasBlocked.current = true;
+    else if (gate === 'ok' && wasBlocked.current) {
+      wasBlocked.current = false;
+      setRefreshKey((k) => k + 1);
+    }
+  }, [gate]);
   // Where a dragged item comes from, for "Start in a new worktree" after the drop:
   // the repo and the active workspace (the fan-out's owner).
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
