@@ -23,6 +23,7 @@ import { FOCUS_RING } from '../focusRing';
 import { Icon } from '../icons';
 import { sumUnread } from '../Channels/ChannelsPanel';
 import { showWorkspaces } from '../../utils/showWorkspaces';
+import { moaOwnsPanel } from '../Moa/panel/moaPanelMode';
 
 /**
  * Whether the collapsed deck holds anything worth opening it for: unread
@@ -41,6 +42,9 @@ export default function DeckToggle() {
   const onWorkspaces = useStore((s) => s.appRoute === 'workspaces');
   const visible = useStore((s) => s.channelDockVisible) && onWorkspaces;
   const setChannelDockVisible = useStore((s) => s.setChannelDockVisible);
+  const setActiveDeckTab = useStore((s) => s.setActiveDeckTab);
+  // Moa runs: this button is Moa's panel, and says so.
+  const moaPanel = useStore((s) => moaOwnsPanel(s.moa));
   const sidebarPosition = useStore((s) => s.sidebarPosition);
   const channelUnread = useStore((s) => s.channelUnread);
 
@@ -50,7 +54,9 @@ export default function DeckToggle() {
 
   const deckOnRight = sidebarPosition !== 'right';
 
-  const label = visible
+  const label = moaPanel
+    ? t(visible ? 'moa.panel.hidePanel' : 'moa.panel.showPanel')
+    : visible
     ? (t('deck.collapseDock') || 'Collapse dock')
     : (t('deck.expandDock') || 'Expand dock');
   // The dot is aria-hidden decoration, so the signal has to reach the
@@ -67,6 +73,9 @@ export default function DeckToggle() {
         // From another page: show the Workspaces page with the dock open, so
         // it never opens (and resizes the terminals) behind an inert page.
         showWorkspaces(useStore.getState());
+        // Opening lands on the conversation (Moa's, or the orchestrator's),
+        // not on whichever tab was left selected.
+        if (!visible) setActiveDeckTab('commander');
         setChannelDockVisible(!visible);
       }}
       className={`wmux-panel-toggle ${FOCUS_RING}`}

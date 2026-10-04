@@ -28,6 +28,7 @@ beforeEach(() => {
     channelDockVisible: false,
     activeDeckTab: 'channels',
     deckLedgerFinishedExpanded: false,
+    moa: null,
   });
 });
 afterEach(() => {
@@ -184,7 +185,7 @@ describe('MissionsSection summary', () => {
   // The dead link: the summary counts every workspace, the deck panel reads
   // one. Clicking "1 open" from a workspace with no tasks used to open an
   // empty panel.
-  it('switches to the workspace that owns the tasks first', async () => {
+  it('without Moa, switches to the workspace that owns the tasks first', async () => {
     useStore.setState({
       workspaces: [workspace('parent'), workspace('other')],
       activeWorkspaceId: 'other',
@@ -196,6 +197,28 @@ describe('MissionsSection summary', () => {
     await click('[data-missions-summary]');
     const state = useStore.getState();
     expect(state.activeWorkspaceId).toBe('parent');
+    expect(state.activeDeckTab).toBe('commander');
+    expect(state.channelDockVisible).toBe(true);
+  });
+
+  it('with Moa running, opens its panel without switching to the owner workspace', async () => {
+    useStore.setState({
+      workspaces: [workspace('parent'), workspace('other')],
+      activeWorkspaceId: 'other',
+      missionsByWorkspace: {
+        parent: [mission({ id: 't1', title: 'one', createdAt: 5 })],
+      },
+      moa: {
+        config: { enabled: true, onboarded: true, level: 1, maxTurnsPerHour: 20, bubbles: true, reduceMotion: false, defaultReason: null },
+        hq: { workspaceId: 'ws-hq', state: 'ok' },
+        archive: { unacked: 0, total: 0 },
+      },
+    });
+    await render();
+    await click('[data-missions-summary]');
+    const state = useStore.getState();
+    // The panel is Moa's whatever is on screen: no hop to another brain.
+    expect(state.activeWorkspaceId).toBe('other');
     expect(state.activeDeckTab).toBe('commander');
     expect(state.channelDockVisible).toBe(true);
   });

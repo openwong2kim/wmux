@@ -33,6 +33,12 @@ import { DeckTabs } from '../Deck/DeckTabs';
 import { CommanderView } from '../Deck/CommanderView';
 import { MODEL_OPTIONS } from '../Deck/OrchestratorModelChip';
 import { claudeModelLabel } from '../../../shared/claudeModels';
+import { useCallback, useMemo } from 'react';
+import { MoaMascot } from '../Moa/MoaMascot';
+import { moaMascotState, resolveMoaPanelMode } from '../Moa/panel/moaPanelMode';
+import { useMoaDecisions } from '../Moa/panel/useMoaPanelData';
+import { MoaPanelTop, renderMoaChat } from '../Moa/panel/MoaPanelTop';
+import { MoaHqProblemCard, MoaOffCard, MoaSetupHint } from '../Moa/panel/MoaPanelCards';
 
 // ─── Command Deck (Phase 1 P1a) ───────────────────────────────────────────────
 //
@@ -41,6 +47,13 @@ import { claudeModelLabel } from '../../../shared/claudeModels';
 // the `channels` tab holds the classic list + conversation exactly as before
 // (the code below is unchanged, just wrapped in a conditional). Phase 2's
 // orchestrator chat reuses the Commander tab + composer skeleton wholesale.
+//
+// Moa (the HQ main bot): the Commander tab is ALWAYS Moa's conversation. The
+// chat is pinned to the HQ while the active workspace only supplies context,
+// so switching workspaces never switches who you are talking to. Moa off →
+// a card that says how to turn it on; HQ gone or not seen yet → a card with
+// the recovery; Moa on without an HQ (an install that kept its existing
+// brains) → today's per-workspace chat plus a "Set up Moa" hint.
 
 export default function ChannelDock(): React.ReactElement {
   const activeDeckTab = useStore((s) => s.activeDeckTab);
@@ -60,6 +73,39 @@ export default function ChannelDock(): React.ReactElement {
   const commanderModelLabel =
     deckBrainModel === '' ? t('deck.orchestratorModelDefault') : claudeModelLabel(deckBrainModel);
   const showChannelsView = activeDeckTab === 'channels' && channelsTabVisible;
+
+  const moa = useStore((s) => s.moa);
+  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId) || '';
+  const mode = useMemo(() => resolveMoaPanelMode(moa, activeWorkspaceId), [moa, activeWorkspaceId]);
+  const moaOwnsTab = mode.kind !== 'legacy';
+  const { decisions, refresh: refreshDecisions } = useMoaDecisions(mode.kind === 'moa');
+  const hqBusy = useStore((s) => mode.kind === 'moa' && s.brainThreads[mode.hqId]?.status === 'busy');
+  const mascot = moaMascotState({ busy: hqBusy, pendingDecisions: decisions.length });
+  const openMoaSettings = useCallback(() => useStore.getState().openSettingsTab('moa'), []);
+  const moaSlots = useMemo(
+    () => (mode.kind === 'moa'
+      ? { top: <MoaPanelTop decisions={decisions} onResolved={refreshDecisions} t={t} />, renderChat: renderMoaChat }
+      : undefined),
+    [mode.kind, decisions, refreshDecisions, t],
+  );
+
+  const commander = (() => {
+    switch (mode.kind) {
+      case 'off':
+        return <MoaOffCard onOpenSettings={openMoaSettings} t={t} />;
+      case 'hq-problem':
+        return <MoaHqProblemCard state={mode.state} onOpenSettings={openMoaSettings} t={t} />;
+      case 'moa':
+        return <CommanderView chatWorkspaceId={mode.chatWorkspaceId} viewedWorkspaceId={activeWorkspaceId} moa={moaSlots} />;
+      default:
+        return (
+          <>
+            {mode.setupHint && <MoaSetupHint onOpenSettings={openMoaSettings} t={t} />}
+            <CommanderView chatWorkspaceId={mode.chatWorkspaceId} viewedWorkspaceId={activeWorkspaceId} />
+          </>
+        );
+    }
+  })();
 
   // The dock is a floating panel (ui.css .wmux-dock), so it needs no edge
   // border facing the workspace; the shell gap separates them.
@@ -88,6 +134,14 @@ export default function ChannelDock(): React.ReactElement {
         commanderModelOptions={MODEL_OPTIONS}
         commanderModelValue={deckBrainModel}
         onCommanderModelSelect={setDeckBrainModel}
+        {...(moaOwnsTab
+          ? {
+              commanderTitle: t('moa.panel.title'),
+              commanderSubtitle: t('moa.panel.subtitle'),
+              commanderIcon: <MoaMascot state={mascot} size={28} />,
+              commanderStatusLabel: mascot === 'idle' ? undefined : t(`moa.panel.mascot.${mascot}`),
+            }
+          : {})}
         /* No collapse button here any more. The titlebar's DeckToggle closes
            the deck as well as opening it (2026-08-18), so a second chevron in
            this header was the same command twice, ~30px apart. One control in
@@ -97,8 +151,8 @@ export default function ChannelDock(): React.ReactElement {
       />
 
       {!showChannelsView ? (
-        // Commander tab — the LLM-less command composer + fan-out thread.
-        <CommanderView />
+        // Commander tab — Moa's conversation (or today's per-workspace one).
+        commander
       ) : (
         // Channels tab — the classic list + conversation (unchanged).
         <>

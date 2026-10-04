@@ -34,7 +34,9 @@ describe('channel dock — wiring regression guard', () => {
     // ALSO gated on channelsTabVisible (human channel UI frozen — the tab is a
     // Settings opt-in), so a stale persisted activeDeckTab can never render it.
     expect(dock).toMatch(/<DeckTabs\b/);
-    expect(dock).toMatch(/<CommanderView\s*\/>/);
+    // The conversation is pinned by prop: Moa's HQ when Moa runs, else the
+    // active workspace (resolveMoaPanelMode), never read inside the view.
+    expect(dock).toMatch(/<CommanderView chatWorkspaceId=\{mode\.chatWorkspaceId\} viewedWorkspaceId=\{activeWorkspaceId\}/);
     expect(dock).toContain('activeDeckTab');
     expect(dock).toMatch(/activeDeckTab === 'channels' && channelsTabVisible/);
     // The VIEW stays gated on channelsTabVisible, but the glyph no longer is:

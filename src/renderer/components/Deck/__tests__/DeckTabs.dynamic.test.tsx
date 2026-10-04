@@ -33,6 +33,7 @@ function mount(props: {
   commanderModelOptions?: { value: string; label: string }[];
   commanderModelValue?: string;
   onCommanderModelSelect?: (v: string) => void;
+  moa?: { commanderTitle: string; commanderSubtitle: string; commanderIcon: React.ReactNode; commanderStatusLabel?: string };
 }): void {
   act(() => {
     root.render(
@@ -47,6 +48,7 @@ function mount(props: {
         ...(props.commanderModelOptions !== undefined ? { commanderModelOptions: props.commanderModelOptions } : {}),
         ...(props.commanderModelValue !== undefined ? { commanderModelValue: props.commanderModelValue } : {}),
         ...(props.onCommanderModelSelect !== undefined ? { onCommanderModelSelect: props.onCommanderModelSelect } : {}),
+        ...(props.moa ?? {}),
         t: (k: string) => k,
       }),
     );
@@ -227,5 +229,30 @@ describe('DeckTabs', () => {
     });
     expect(onSelect).toHaveBeenCalledWith('commander');
     expect(container.querySelector('[data-commander-model-menu]')).toBeNull();
+  });
+
+  it('names the conversation tab for Moa when Moa owns the panel', () => {
+    mount({
+      active: 'commander',
+      commanderModelLabel: 'Default',
+      moa: {
+        commanderTitle: 'Moa',
+        commanderSubtitle: 'Main bot',
+        commanderIcon: createElement('svg', { 'data-moa-mascot': 'needs-you' }),
+        commanderStatusLabel: 'needs you',
+      },
+    });
+    const el = tab('commander');
+    expect(el.querySelector('.wmux-deck-tab-label')?.textContent).toBe('Moa');
+    expect(el.querySelector('[data-deck-tab-subtitle]')?.textContent).toBe('Main bot');
+    expect(el.querySelector('[data-moa-mascot="needs-you"]')).not.toBeNull();
+    // The mascot's state reaches the accessible name, not only the picture.
+    expect(el.getAttribute('aria-label')).toBe('Moa · Main bot (Default) — needs you');
+  });
+
+  it('keeps the Orchestrator name and glyph without Moa', () => {
+    mount({ active: 'commander' });
+    expect(tab('commander').querySelector('[data-deck-tab-subtitle]')).toBeNull();
+    expect(tab('commander').querySelector('.wmux-deck-tab-label')?.textContent).toBe('deck.tabCommander');
   });
 });

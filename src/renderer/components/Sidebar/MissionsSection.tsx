@@ -36,6 +36,7 @@ import { useT } from '../../hooks/useT';
 import type { WorkTask } from '../../../shared/workTask';
 import { ownerForTaskLedger, summarizeMissions } from '../../stores/selectors/missions';
 import { FOCUS_RING } from '../focusRing';
+import { moaOwnsPanel } from '../Moa/panel/moaPanelMode';
 
 /**
  * 모든 부모 캐시를 평탄화·정렬한 미션 목록(순수 함수 — 테스트 가능). open을 먼저,
@@ -98,14 +99,19 @@ function useLiveMissions(): WorkTask[] {
  */
 export function openTaskLedger(wanted: WorkTask['status'] = 'open'): void {
   const state = useStore.getState();
-  const liveIds = new Set(state.workspaces.map((w) => w.id));
-  const owner = ownerForTaskLedger(
-    state.missionsByWorkspace,
-    state.activeWorkspaceId,
-    wanted,
-    (task) => !task.paneGroupId || liveIds.has(task.paneGroupId),
-  );
-  if (owner) state.setActiveWorkspace(owner);
+  // Moa owns the panel: its conversation and task cards are fleet-wide, so the
+  // line opens the panel where it is. Hopping to the owner workspace would only
+  // move the operator away from what they were looking at.
+  if (!moaOwnsPanel(state.moa)) {
+    const liveIds = new Set(state.workspaces.map((w) => w.id));
+    const owner = ownerForTaskLedger(
+      state.missionsByWorkspace,
+      state.activeWorkspaceId,
+      wanted,
+      (task) => !task.paneGroupId || liveIds.has(task.paneGroupId),
+    );
+    if (owner) state.setActiveWorkspace(owner);
+  }
   state.setChannelDockVisible(true);
   state.setActiveDeckTab('commander');
   // A finished-only line has nothing to show in the open list — it is pointing
@@ -114,7 +120,7 @@ export function openTaskLedger(wanted: WorkTask['status'] = 'open'): void {
   if (typeof requestAnimationFrame !== 'function') return;
   requestAnimationFrame(() => {
     document
-      .querySelector('[data-deck-ledger-panel]')
+      .querySelector('[data-moa-tasks], [data-deck-ledger-panel]')
       ?.scrollIntoView({ block: 'nearest' });
   });
 }

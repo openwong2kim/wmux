@@ -38,6 +38,14 @@ export interface DeckTabsProps {
   commanderModelValue?: string;
   /** 모델 선택 콜백. 있으면 활성 Agent 탭 재클릭 시 드롭다운이 열린다. */
   onCommanderModelSelect?: (value: string) => void;
+  /** Moa owns the panel: the Orchestrator tab is named for it instead
+   *  ("Moa" over "Main bot", the mascot for its icon). Omit → unchanged. */
+  commanderTitle?: string;
+  commanderSubtitle?: string;
+  commanderIcon?: React.ReactNode;
+  /** What the icon says without words (e.g. "needs you"), for the tab's
+   *  accessible name. */
+  commanderStatusLabel?: string;
   /** Translator — defaults to identity so tests can omit it. */
   t?: (key: string) => string;
 }
@@ -63,6 +71,10 @@ export function DeckTabs({
   commanderModelOptions,
   commanderModelValue = '',
   onCommanderModelSelect,
+  commanderTitle,
+  commanderSubtitle,
+  commanderIcon,
+  commanderStatusLabel,
   t: tProp,
 }: DeckTabsProps): React.ReactElement {
   const t = tProp ?? ((key: string) => key);
@@ -115,12 +127,14 @@ export function DeckTabs({
         const isCommander = tab.id === 'commander';
         // Agent 탭만 모델 인라인 드롭다운을 가진다(활성 상태에서 재클릭 시 토글).
         const tabHasModelMenu = isCommander && canModelMenu;
-        const baseLabel = t(tab.labelKey) || tab.fallback;
+        const baseLabel = (isCommander && commanderTitle) || t(tab.labelKey) || tab.fallback;
+        const named = isCommander && commanderTitle && commanderSubtitle ? `${baseLabel} · ${commanderSubtitle}` : baseLabel;
         // Keep the current model in the accessible name and tooltip.
-        const label = isCommander && commanderModelLabel ? `${baseLabel} (${commanderModelLabel})` : baseLabel;
+        const label = isCommander && commanderModelLabel ? `${named} (${commanderModelLabel})` : named;
         const unread = tab.id === 'channels' ? formatDeckCount(channelsUnread) : null;
         // Include unread activity in the accessible name as well as the badge.
-        const ariaLabel = unread ? `${label} (${unread} unread)` : label;
+        const status = isCommander && commanderStatusLabel ? ` — ${commanderStatusLabel}` : '';
+        const ariaLabel = unread ? `${label} (${unread} unread)` : `${label}${status}`;
         const button = (
           <button
             key={tab.id}
@@ -140,8 +154,11 @@ export function DeckTabs({
             className="wmux-deck-tab"
             {...(isActive ? tokenAttrs('textMain', 'text') : tokenAttrs('textMuted', 'text'))}
           >
-            <tab.Icon size={16} />
+            {isCommander && commanderIcon ? commanderIcon : <tab.Icon size={16} />}
             <span className="wmux-deck-tab-label">{baseLabel}</span>
+            {isCommander && commanderTitle && commanderSubtitle && (
+              <span className="text-[11px] text-[var(--text-sub)]" data-deck-tab-subtitle>{commanderSubtitle}</span>
+            )}
             {/* 활성 Agent 탭에만 붙는 힌트 — 재클릭하면 모델 메뉴가 열린다는 표시. */}
             {tabHasModelMenu && isActive && (
               <span aria-hidden="true" className="wmux-deck-tab-chevron">▾</span>
