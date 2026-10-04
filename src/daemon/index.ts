@@ -4337,7 +4337,14 @@ function registerRpcHandlers(
       return { ok: false, error: 'another client is already publishing the Moa pane' };
     }
     moaPanePublisher = ctx.clientId;
-    return moaPane.replace(fact, payload.seq);
+    const result = moaPane.replace(fact, payload.seq);
+    // The brain's hooks go to main, so none of the hook paths that attach the
+    // process watch ever runs for this pane, and a chat send needs the live
+    // claude process proven (`agentVerified`). Main vouching for the pane is
+    // that evidence's trigger here. Idempotent while a watch is live.
+    const pane = result.applied ? resolveMoaPane(fact, (id) => sessionManager.getSession(id)) : undefined;
+    if (fact && pane) agentProcessTracker.arm(fact.sessionId, pane.meta.pid);
+    return result;
   });
 
   const readDaemonAgentState = (id: string): {
