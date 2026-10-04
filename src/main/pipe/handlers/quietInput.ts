@@ -76,7 +76,7 @@ export function quietWaitBudget(deadlineAt: number, now: number): number {
 }
 
 export type QuietAgentResult =
-  | { ok: true; baseline: AgentBaseline }
+  | { ok: true; baseline: AgentBaseline; /** The key count at the quiet read. */ keyInputRevision?: number }
   | { ok: false; reason: 'user_typing' | 'agent_changed'; detail: string };
 
 /**
@@ -113,7 +113,9 @@ export async function waitForQuietAgent(
       if (!agentIdentityHolds(baseline, s)) {
         return { ok: false, reason: 'agent_changed', detail: 'delivery: the agent in the pane changed while waiting' };
       }
-      if (isPaneQuiet(s, quietMs)) return { ok: true, baseline };
+      if (isPaneQuiet(s, quietMs)) {
+        return { ok: true, baseline, ...(typeof s.keyInputRevision === 'number' ? { keyInputRevision: s.keyInputRevision } : {}) };
+      }
     }
     if (now() + pollMs > deadline) {
       return { ok: false, reason: 'user_typing', detail: 'delivery: someone is typing in the target pane (or its state could not be read)' };

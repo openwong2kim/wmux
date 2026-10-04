@@ -4,7 +4,6 @@ import {
   DELIVERY_RESERVE_MS,
   QUIET_INPUT_WAIT_MS,
   agentIdentityHolds,
-  isPaneQuiet,
   quietWaitBudget,
   typedPastOwnInput,
   waitForQuietAgent,
@@ -1606,7 +1605,7 @@ export function registerInputRpc(
   const prepareHandoffGuard = async (
     ptyId: string,
     opts: GatedSubmitOptions,
-  ): Promise<{ ok: true; guard: DeliveryGuard } | { ok: false; refusal: GatedSubmitRefusal }> => {
+  ): Promise<{ ok: true; guard: DeliveryGuard; noteOwnWrite: () => void } | { ok: false; refusal: GatedSubmitRefusal }> => {
     const refusal = (reason: GatedSubmitRefusal['reason'], detail: string) => ({ ok: false as const, refusal: { ok: false as const, reason, detail } });
     const dc = ptyManager.get(ptyId) ? null : getDaemonClient?.();
     if (!dc?.isConnected) return refusal('agent_unverified', "delivery: the target pane's agent cannot be verified (no daemon state)");
@@ -1623,8 +1622,9 @@ export function registerInputRpc(
     const { baseline } = waited;
     const pastDeadline = (): GatedSubmitRefusal | null =>
       now() > deadlineAt ? { ok: false, reason: 'deadline', detail: 'delivery: the hand-off ran past its deadline' } : null;
-    /** The key count our paste accounts for, set when the paste is let through. */
-    let expectedRevision: number | undefined;
+    /** The key count our own writes account for: the count at the quiet read,
+     *  plus one per write of ours since (a fresh-context command, the paste). */
+    let expectedRevision = waited.keyInputRevision;
     const check = async (atEnter: boolean): Promise<GatedSubmitRefusal | null> => {
       const late = pastDeadline();
       if (late) return late;
@@ -1633,10 +1633,11 @@ export function registerInputRpc(
       if (!agentIdentityHolds(baseline, s)) {
         return { ok: false, reason: 'agent_changed', detail: 'delivery: the agent the hand-off was aimed at is no longer in the pane' };
       }
-      const typing = atEnter ? typedPastOwnInput(s, expectedRevision) : !isPaneQuiet(s);
+      // Before the paste a draft is the person's; before the Enter it is ours.
+      const typing = (!atEnter && s.hasDraft === true) || typedPastOwnInput(s, expectedRevision);
       if (typing) return { ok: false, reason: 'user_typing', detail: 'delivery: someone typed in the target pane' };
       // The paste follows at once and is one write: one key on the counter.
-      if (!atEnter) expectedRevision = typeof s.keyInputRevision === 'number' ? s.keyInputRevision + 1 : undefined;
+      if (!atEnter && expectedRevision !== undefined) expectedRevision += 1;
       return null;
     };
     return {
@@ -1644,6 +1645,9 @@ export function registerInputRpc(
       guard: {
         beforePaste: () => check(false),
         beforeEnter: () => check(true),
+      },
+      noteOwnWrite: () => {
+        if (expectedRevision !== undefined) expectedRevision += 1;
       },
     };
   };
@@ -1655,10 +1659,12 @@ export function registerInputRpc(
       // that pane, and check right before the paste and the Enter that the
       // agent they chose is still the one there.
       let guard: DeliveryGuard | undefined;
+      let noteOwnWrite = (): void => undefined;
       if (opts?.waitQuiet) {
         const prepared = await prepareHandoffGuard(ptyId, opts);
         if (!prepared.ok) return prepared.refusal;
         guard = prepared.guard;
+        noteOwnWrite = prepared.noteOwnWrite;
       }
       if (!opts?.newTask) return gatedPasteSubmit(approvalGate, writeToPty, ptyId, text, agent, deps.sleep, undefined, guard);
       // #1680 — a new task: the fresh-context step runs inside the gated
@@ -1677,7 +1683,13 @@ export function registerInputRpc(
               ptyId,
               await bindingFor(ptyId),
               workspaceId,
-              (data) => writeToPty(ptyId, data),
+              // The step's own keys (its command, Enter or erase) are not the
+              // person typing: the guard counts each, one key apiece, as the
+              // step itself verifies.
+              (data) => {
+                writeToPty(ptyId, data);
+                noteOwnWrite();
+              },
               keepContext,
             );
           }, guard),

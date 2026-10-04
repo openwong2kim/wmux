@@ -35,6 +35,11 @@ interface PaneOptions {
   /** The daemon task read waits for this (holds a delivery inside the lock). */
   holdDaemonQuery?: Promise<void>;
   humanTypesDuringCommand?: boolean;
+  /** The pane as a Git page hand-off reads it: a waiting agent, and the
+   *  composer draft and key idle time the daemon reports. */
+  handoff?: boolean;
+  /** A human key lands on the approval gate's screen read with this index. */
+  humanKeyOnGateRead?: number;
 }
 
 const DIALOG = [' Bash command', '', '   touch probe.txt', '', ' Do you want to proceed?', ' ❯ 1. Yes', '   2. No'].join('\n');
@@ -46,6 +51,7 @@ function scriptedPane(opts: PaneOptions = {}) {
   let transcript = ['● earlier task, done'];
   let receipt: SessionStartReceipt | undefined = opts.hooks ? { at: 1, agent: 'claude', source: 'startup' } : undefined;
   let clock = 5_000_000;
+  let lastKeyAt = clock - 60_000;
   let gateReads = 0;
   const screen = (): string => [...transcript, '', '──────────', `> ${composer}`].join('\n');
   const dc = {
@@ -55,16 +61,18 @@ function scriptedPane(opts: PaneOptions = {}) {
     getAgentState: vi.fn(async () => ({
       agentName: 'Claude Code',
       agentVerified: true,
-      agentStatus: 'idle',
+      agentStatus: opts.handoff ? 'waiting' : 'idle',
       inputQuiet: true,
       inputRevision: revision,
       incarnationId: 'inc-1',
       keyInputRevision: revision,
       keyInputQuiet: true,
+      ...(opts.handoff ? { hasDraft: composer !== '', keyInputIdleMs: clock - lastKeyAt } : {}),
     })),
     writeToSession: (_id: string, data: string) => {
       writes.push(data);
       revision += 1;
+      lastKeyAt = clock;
       // A human key lands while the command is typed.
       if (opts.humanTypesDuringCommand && data === '/clear') revision += 1;
       if (data === '\r') {
@@ -111,7 +119,13 @@ function scriptedPane(opts: PaneOptions = {}) {
       readSessionStart: () => receipt,
       sleep: async () => undefined,
       answerPolicy: async () => ({ allowed: false, reason: 'autonomy-off' }),
-      readScreenText: async () => (++gateReads === opts.dialogOnGateRead ? DIALOG : screen()),
+      readScreenText: async () => {
+        if (++gateReads === opts.humanKeyOnGateRead) {
+          revision += 1;
+          lastKeyAt = clock;
+        }
+        return gateReads === opts.dialogOnGateRead ? DIALOG : screen();
+      },
       queryDaemonTasks: async () => {
         await opts.holdDaemonQuery;
         return opts.daemonTasks === undefined ? [] : opts.daemonTasks;
@@ -346,5 +360,23 @@ describe('gated submit, new-task delivery (#1680)', () => {
     const { gatedSubmit, writes } = scriptedPane({ binding: FRESH, hooks: true });
     expect(await gatedSubmit('pty-a', 'a reply', 'Claude Code')).toEqual({ ok: true });
     expect(writes).toEqual(['\x1b[200~a reply\x1b[201~', '\r']);
+  });
+
+  // The Git page's hand-off to a fresh-context pane: it waits for quiet, then
+  // the step types its own /clear. Those keys are ours, not the person typing.
+  const HANDOFF = { ...NEW, waitQuiet: true, expectAgent: 'Claude Code' } as const;
+
+  it('a hand-off that waits for quiet still delivers after its own /clear', async () => {
+    const { gatedSubmit, writes } = scriptedPane({ binding: FRESH, hooks: true, handoff: true });
+    const res = ok(await gatedSubmit('pty-a', 'new task', 'Claude Code', HANDOFF));
+    expect(writes).toEqual(['/clear', '\r', '\x1b[200~new task\x1b[201~', '\r']);
+    expect(res).toMatchObject({ freshContext: 'applied' });
+  });
+
+  it('a hand-off: a person typing after the /clear, before the paste, still cancels it', async () => {
+    // Gate read 2 is the re-check after the fresh-context step.
+    const { gatedSubmit, writes } = scriptedPane({ binding: FRESH, hooks: true, handoff: true, humanKeyOnGateRead: 2 });
+    expect(await gatedSubmit('pty-a', 'new task', 'Claude Code', HANDOFF)).toMatchObject({ ok: false, reason: 'user_typing' });
+    expect(writes).toEqual(['/clear', '\r']);
   });
 });
