@@ -30,6 +30,45 @@ function render(source: string): void {
 }
 
 describe('renderBrainMarkdown', () => {
+  it('keeps links inert by default (the deck never navigates)', () => {
+    render('see [docs](https://example.com) and https://example.com/x');
+    expect(container.querySelector('a')).toBeNull();
+    expect(container.textContent).toContain('https://example.com/x');
+  });
+
+  it('with links on: http(s) links and bare URLs are real links opened through window.open', () => {
+    const open = vi.spyOn(window, 'open').mockReturnValue(null);
+    try {
+      act(() => {
+        root.render(createElement('div', null, renderBrainMarkdown(
+          'see [docs](https://example.com/a), https://example.com/b. and [bad](javascript:alert(1))',
+          { links: true },
+        )));
+      });
+      const links = [...container.querySelectorAll('a')];
+      expect(links.map((a) => a.getAttribute('href'))).toEqual(['https://example.com/a', 'https://example.com/b']);
+      expect(links[0].textContent).toBe('docs');
+      expect(links[0].getAttribute('rel')).toBe('noopener noreferrer');
+      // A non-http link stays an inert span.
+      expect(container.textContent).toContain('bad');
+      expect(container.querySelector('a[href^="javascript"]')).toBeNull();
+      const click = new MouseEvent('click', { bubbles: true, cancelable: true });
+      act(() => { links[1].dispatchEvent(click); });
+      expect(click.defaultPrevented).toBe(true);
+      expect(open).toHaveBeenCalledWith('https://example.com/b', '_blank');
+    } finally {
+      open.mockRestore();
+    }
+  });
+
+  it('renders task-list items as read-only checkboxes', () => {
+    render('- [ ] todo\n- [x] done\n- plain');
+    const boxes = [...container.querySelectorAll('[data-brain-md-task] input[type="checkbox"]')] as HTMLInputElement[];
+    expect(boxes.map((b) => [b.checked, b.disabled])).toEqual([[false, true], [true, true]]);
+    expect(container.querySelectorAll('[data-brain-md-task]')[1].textContent).toBe('done');
+    expect(container.querySelectorAll('[data-brain-md-li]')).toHaveLength(1);
+  });
+
   it('renders a GFM table: header, body rows, alignment, inline markup, in its own scroll box', () => {
     render([
       'Seen in CI:',
