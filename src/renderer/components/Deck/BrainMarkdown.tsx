@@ -134,10 +134,25 @@ function tableAlign(cell: string): 'left' | 'center' | 'right' | undefined {
 /** Render orchestrator prose as chat-bubble markdown. Pure — safe to call on
  *  every streaming re-render. */
 export function renderBrainMarkdown(source: string, opts: MarkdownOptions = {}): React.ReactNode[] {
+  return renderBlocks(source, opts, 0, { left: MAX_BLOCKS });
+}
+
+/** Quotes nest this deep; a deeper `>` renders as text. Untrusted text (an
+ *  issue body) could otherwise nest thousands deep and overflow the stack. */
+export const MAX_QUOTE_DEPTH = 4;
+/** Blocks drawn per render, every quote level together; the rest is cut. */
+export const MAX_BLOCKS = 2000;
+
+function renderBlocks(source: string, opts: MarkdownOptions, depth: number, budget: { left: number }): React.ReactNode[] {
   const lines = source.split('\n');
   const out: React.ReactNode[] = [];
   let i = 0;
   while (i < lines.length) {
+    if (budget.left <= 0) {
+      out.push(<div key={out.length} data-brain-md-cut className="text-[var(--text-muted)]">…</div>);
+      break;
+    }
+    budget.left--;
     const line = lines[i];
 
     // Fenced code block (an unclosed fence swallows to the end — streaming).
@@ -208,7 +223,7 @@ export function renderBrainMarkdown(source: string, opts: MarkdownOptions = {}):
     }
 
     // Blockquote: consecutive `>` lines, rendered (recursively) inside a quiet bar.
-    if (/^\s*>/.test(line)) {
+    if (depth < MAX_QUOTE_DEPTH && /^\s*>/.test(line)) {
       const quoted: string[] = [];
       while (i < lines.length && /^\s*>/.test(lines[i])) {
         quoted.push(lines[i].replace(/^\s*>\s?/, ''));
@@ -220,7 +235,7 @@ export function renderBrainMarkdown(source: string, opts: MarkdownOptions = {}):
           data-brain-md-quote
           className="my-1 pl-3 border-l-2 border-[var(--line)] text-[var(--text-sub)]"
         >
-          {renderBrainMarkdown(quoted.join('\n'), opts)}
+          {renderBlocks(quoted.join('\n'), opts, depth + 1, budget)}
         </blockquote>,
       );
       continue;

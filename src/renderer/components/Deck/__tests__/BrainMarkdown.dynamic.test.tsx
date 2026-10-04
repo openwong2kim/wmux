@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { renderBrainMarkdown } from '../BrainMarkdown';
+import { renderBrainMarkdown, MAX_QUOTE_DEPTH, MAX_BLOCKS } from '../BrainMarkdown';
 import { CommanderViewContent, type CommanderViewContentProps } from '../CommanderView';
 
 let container: HTMLDivElement;
@@ -30,6 +30,24 @@ function render(source: string): void {
 }
 
 describe('renderBrainMarkdown', () => {
+  it('a body of 16000 > does not overflow: quotes stop nesting at the cap and the rest is text', () => {
+    expect(() => render('>'.repeat(16000))).not.toThrow();
+    let depth = 0;
+    let q = container.querySelector('[data-brain-md-quote]');
+    while (q) {
+      depth++;
+      q = q.querySelector('[data-brain-md-quote]');
+    }
+    expect(depth).toBe(MAX_QUOTE_DEPTH);
+    expect(container.textContent).toContain('>'.repeat(100));
+  });
+
+  it('caps the blocks drawn for a huge body', () => {
+    expect(() => render('line\n'.repeat(MAX_BLOCKS * 3))).not.toThrow();
+    expect(container.querySelectorAll('[data-brain-md-p]').length).toBeLessThanOrEqual(MAX_BLOCKS);
+    expect(container.querySelector('[data-brain-md-cut]')).not.toBeNull();
+  });
+
   it('renders consecutive > lines as one blockquote, markdown inside', () => {
     render('before\n> ## Limit\n> **bold** text\n>\n> - item\nafter');
     const q = container.querySelectorAll('[data-brain-md-quote]');
