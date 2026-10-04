@@ -6,7 +6,6 @@ import { spawn, type ChildProcess } from 'child_process';
 import {
   argvIdentifiesDaemonScript,
   psArgvFromCommand,
-  killVerifiedDaemonPid,
   type DaemonLauncherDeps,
 } from '../daemonLauncherCore';
 
@@ -267,9 +266,9 @@ describe('killVerifiedDaemonPid — execution (#1025/#1028)', () => {
     } finally {
       undoModuleStubs();
     }
-    // 15 s: two kill attempts, each paying the real win32 tasklist image
-    // lookup (3 s worst case). The 5 s cmdline probe is stubbed out, so the
-    // old 5 s default was only ever missed by the image lookup plus spawn.
+    // 15 s: two kill attempts, each paying the real win32 tasklist liveness
+    // probe (3 s worst case). Relaxed mode skips the image lookup, and the
+    // 5 s cmdline probe is stubbed out.
   }, 15_000);
 
   // Both shutdown modes now require script identity. A probe failure does not
@@ -277,7 +276,10 @@ describe('killVerifiedDaemonPid — execution (#1025/#1028)', () => {
   // so the refusal never depends on the real 5 s WMI timeout.
   it('keeps an unrelated process alive when the identity probes cannot resolve in either mode', async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-identity-indeterminate-'));
-    const pid = await spawnSleeper(path.join(tmpDir, 'someone-elses-app', 'daemon', 'index.js'));
+    // The sleeper runs the exact cross-host fallback shape, so a readable
+    // command line WOULD verify it. Only the unavailable-probe refusal keeps
+    // it alive; a stub that stopped failing the probes fails this loudly.
+    const pid = await spawnSleeper(path.join(tmpDir, 'daemon-bundle', 'index.js'));
 
     vi.resetModules();
     // Kill every OS probe the module can use to read an image or a cmdline:
@@ -344,10 +346,18 @@ describe('killVerifiedDaemonPid — execution (#1025/#1028)', () => {
     const scriptPath = path.join(tmpDir, 'dist', 'daemon', 'index.js');
     const pid = await spawnSleeper(scriptPath);
 
-    expect(killVerifiedDaemonPid(pid, {
-      definitiveOnly: false,
-      scriptCandidates: [path.join(tmpDir, 'dist', 'daemon-bundle', 'index.js'), scriptPath],
-    })).toBe(true);
+    // #1274: a kill now needs a readable command line in both modes, so a
+    // slow win32 CIM probe on a loaded runner would refuse it. Stub that one
+    // probe with the sleeper's exact argv; tasklist and process.kill stay real.
+    try {
+      const stubbed = await importWithStubbedWin32Cmdline([process.execPath, scriptPath]);
+      expect(stubbed.killVerifiedDaemonPid(pid, {
+        definitiveOnly: false,
+        scriptCandidates: [path.join(tmpDir, 'dist', 'daemon-bundle', 'index.js'), scriptPath],
+      })).toBe(true);
+    } finally {
+      undoModuleStubs();
+    }
   }, 15_000);
 
   it('requirement 3, executed: daemon-bundler/index.js is refused, daemon-bundle/index.js is killed', async () => {
@@ -367,12 +377,18 @@ describe('killVerifiedDaemonPid — execution (#1025/#1028)', () => {
     }
     try { process.kill(bundlerPid, 'SIGKILL'); } catch { /* cleanup */ }
 
-    // The kill half keeps the real probe: it must pass the matcher on a real
-    // cmdline read, which is the other half of the #1028 guarantee.
-    const exactPid = await spawnSleeper(path.join(tmpDir, 'daemon-bundle', 'index.js'));
-    expect(killVerifiedDaemonPid(exactPid, { definitiveOnly: false })).toBe(true);
-    // 30 s: two spawns plus the kill half's real win32 tasklist (3 s) + WMI
-    // cmdline (5 s) worst case (#1274).
+    // The kill half stubs the win32 CIM probe with the sleeper's exact argv
+    // too (#1274: a timed-out probe now refuses the kill), so the exact
+    // daemon-bundle/index.js shape is what verifies it. process.kill is real.
+    const exactScript = path.join(tmpDir, 'daemon-bundle', 'index.js');
+    const exactPid = await spawnSleeper(exactScript);
+    try {
+      const stubbed = await importWithStubbedWin32Cmdline([process.execPath, exactScript]);
+      expect(stubbed.killVerifiedDaemonPid(exactPid, { definitiveOnly: false })).toBe(true);
+    } finally {
+      undoModuleStubs();
+    }
+    // 30 s: two spawns plus two real win32 tasklist liveness probes (3 s each).
   }, 30_000);
 });
 
