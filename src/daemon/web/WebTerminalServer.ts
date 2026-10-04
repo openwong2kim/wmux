@@ -4066,13 +4066,16 @@ export class WebTerminalServer {
   private handleSessionCommands(res: http.ServerResponse, rawId: string, url: URL, principal: WebPrincipal): void {
     const id = decodePathSegment(rawId);
     if (id === null) return this.json(res, 404, { error: 'session not found' });
-    const managed = this.attachableSession(principal, id);
-    if (!managed) return this.json(res, 404, { error: 'session not found' });
     const agent = url.searchParams.get('agent');
+    // The composer's skill list is part of the Moa pane's chat; the legacy
+    // command list (a directory read) is not.
+    const managed = this.attachableSession(principal, id) ?? (agent !== null ? this.moaSession(id) : undefined);
+    if (!managed) return this.json(res, 404, { error: 'session not found' });
     if (agent !== null) {
       // Same pane rule as the other chat routes: the brain pane is nobody's
-      // chat, whatever the credential. The legacy list keeps its old rule.
-      if (!this.readableSession(id)) return this.json(res, 404, { error: 'session not found' });
+      // chat, whatever the credential, the Moa pane aside. The legacy list
+      // keeps its old rule.
+      if (!this.conversableSession(id)) return this.json(res, 404, { error: 'session not found' });
       void this.handleChatSkills(res, id, agent).catch((err: unknown) => this.failRequest(res, err));
       return;
     }
@@ -4515,9 +4518,12 @@ export class WebTerminalServer {
    * itself, so a missed badge costs a refused send, not a wrong one.
    */
   private async readChatBlocked(chat: ChatBridge, sessionId: string, resolution: ChatResolution): Promise<ChatBlocked | undefined> {
-    // Producer-side brain gate (#1397/#1402): computed for no brain pane,
-    // whichever path asks.
-    if (this.isBrainApproval(sessionId)) return undefined;
+    // The Moa pane's permission dialog never becomes an approval record (its
+    // hooks go to main), so main's dialog flag is what says it is blocked.
+    if (this.moaDialogUp(sessionId)) return { by: 'terminal' };
+    // Producer-side brain gate (#1397/#1402): computed for no brain pane but
+    // the Moa pane, whichever path asks.
+    if (this.isBrainApproval(sessionId) && !this.moaSession(sessionId)) return undefined;
     try {
       return await chat.blocked(sessionId, resolution);
     } catch (err) {
@@ -4532,7 +4538,7 @@ export class WebTerminalServer {
    * without an event: whoever made it just read the value in `/turns`.
    */
   private noteChatBlocked(sessionId: string, agent: string | undefined, blocked: ChatBlocked | undefined): void {
-    if (this.isBrainApproval(sessionId)) return;
+    if (this.isBrainApproval(sessionId) && !this.moaSession(sessionId)) return;
     // Two views of one state: a capable client may see a `terminal_prompt` as
     // an approval, an older one sees the terminal. A transition in either view
     // is an event; each watcher gets its own view.
@@ -4606,7 +4612,7 @@ export class WebTerminalServer {
    */
   private scheduleChatBlockedCheck(sessionId: string): void {
     if (this.opts?.allowTranscript !== true || this.chatBlockedTimers.has(sessionId)) return;
-    if (this.isBrainApproval(sessionId) || !this.readableSession(sessionId)) return;
+    if (!this.conversableSession(sessionId)) return;
     if ((!(this.deps.chat?.() ?? null) && !this.chatV2For(sessionId)) || !this.hasLiveChatWatcher(sessionId)) return;
     const timer = setTimeout(() => {
       this.chatBlockedTimers.delete(sessionId);
@@ -4620,7 +4626,7 @@ export class WebTerminalServer {
 
   private async recomputeChatBlocked(sessionId: string): Promise<void> {
     if (this.opts?.allowTranscript !== true) return;
-    if (!this.readableSession(sessionId)) {
+    if (!this.conversableSession(sessionId)) {
       this.chatBlockedState.delete(sessionId);
       return;
     }
@@ -4764,6 +4770,7 @@ export class WebTerminalServer {
     pane: ManagedSession,
     incarnation: string | undefined,
     extra?: () => boolean,
+    kind: MoaWriteKind = 'send',
   ): (stage?: 'first-write' | 'submit') => Promise<boolean> {
     return async (stage) => {
       if (stage !== 'submit' && (res.destroyed || res.writableEnded)) return false;
@@ -4772,11 +4779,30 @@ export class WebTerminalServer {
       const now = await this.authenticate(req, url, false).catch(() => ({ ok: false as const }));
       const ok = now.ok && sameCaller(principal, now.principal) && this.mayInput(now.principal) &&
         this.conversableSession(id) === pane && pane.meta.incarnationId === incarnation;
-      // Logged where the write is cleared, not where it was asked for: a send
-      // refused before anything was typed reached nobody.
-      if (ok && stage !== 'submit') this.auditMoaSend(principal, id, 'chat');
-      return ok;
+      return this.moaWriteCleared(ok, principal, id, pane, stage, kind);
     };
+  }
+
+  /**
+   * The Moa pane's part of a chat write check, after the caller's own: a send
+   * is refused while Moa's permission dialog is up (Enter would answer it; a
+   * cancel is ESC, which only declines it), and a cleared write to the Moa
+   * pane is audited at its write boundary — a send at `submit`, after its text
+   * is in the composer and nothing but Enter follows; a cancel at
+   * `first-write`, immediately before the ESC. A queue drain's pre-check and a
+   * write refused before anything was typed log nothing.
+   */
+  private moaWriteCleared(
+    ok: boolean, principal: WebPrincipal, id: string, pane: ManagedSession,
+    stage: 'first-write' | 'submit' | undefined, kind: MoaWriteKind,
+  ): boolean {
+    if (!ok || this.readableSession(id) === pane) return ok;
+    // Captured with the check, so a withdrawal after it cannot drop the line.
+    const viaMoa = this.moaSession(id) === pane;
+    if (!viaMoa) return false;
+    if (kind === 'send' && this.moaDialogUp(id)) return false;
+    if (stage === (kind === 'send' ? 'submit' : 'first-write')) this.auditMoaSend(principal, id, 'chat');
+    return true;
   }
 
   /**
@@ -4801,8 +4827,7 @@ export class WebTerminalServer {
         if (!row || row.revokedAt !== undefined || !row.allowInput) return false;
       }
       const ok = this.conversableSession(id) === pane && pane.meta.incarnationId === incarnation;
-      if (ok && stage !== 'submit') this.auditMoaSend(principal, id, 'chat');
-      return ok;
+      return this.moaWriteCleared(ok, principal, id, pane, stage, 'send');
     };
   }
 
@@ -4868,6 +4893,12 @@ export class WebTerminalServer {
           return this.json(res, refused.status, refused.body);
         }
         if (!chat) return this.json(res, 503, { error: 'chat-unavailable' });
+        // Moa's own permission dialog is up: Enter would answer it, and its only
+        // answer path is the desktop. Same refusal as a dialog the screen shows.
+        if (this.moaDialogUp(id)) {
+          const blocked = sendResponse({ clientMessageId, replayed: false, result: 'blocked', effect: 'none', error: 'chat-blocked', blockedBy: 'terminal' }, clientMessageId);
+          return this.json(res, blocked.status, blocked.body);
+        }
         let outcome;
         try {
           // The cap on THIS request opts it into the daemon queue.
@@ -4931,7 +4962,7 @@ export class WebTerminalServer {
           });
         }
         const { clientCancelId } = parsed.value;
-        const authorize = this.chatWriteAuthorizer(req, res, url, principal, id, pane, incarnation);
+        const authorize = this.chatWriteAuthorizer(req, res, url, principal, id, pane, incarnation, undefined, 'cancel');
         const v2 = this.chatV2For(id);
         if (v2) {
           const v2Outcome = await this.chatV2Cancels.cancel({
@@ -5246,6 +5277,11 @@ export class WebTerminalServer {
     return sessionId !== undefined && this.moaSession(sessionId) ? { moaSessionId: sessionId } : {};
   }
 
+  /** The Moa pane's own permission dialog is on screen (main's flag, see moaPane.ts). */
+  private moaDialogUp(sessionId: string): boolean {
+    return this.deps.moaPane?.()?.dialog !== undefined && !!this.moaSession(sessionId);
+  }
+
   /** `readableSession`, plus the Moa pane: the turn and chat routes only. */
   private conversableSession(sessionId: string): ManagedSession | undefined {
     return this.readableSession(sessionId) ?? this.moaSession(sessionId);
@@ -5258,7 +5294,8 @@ export class WebTerminalServer {
 
   /** One device-audit line for a phone send that reached the Moa pane. */
   private auditMoaSend(principal: WebPrincipal, sessionId: string, route: 'chat' | 'input'): void {
-    if (principal.kind !== 'device' || !this.moaSession(sessionId)) return;
+    // The caller decided the write went to the Moa pane, before the write.
+    if (principal.kind !== 'device') return;
     try {
       this.deps.auditMoaSend?.({ deviceId: principal.deviceId, sessionId, route });
     } catch {
@@ -6439,6 +6476,9 @@ export class WebTerminalServer {
    */
   private terminalPromptBlocksInput(sessionId: string, body: string): boolean {
     if (body === '\x1b' || body === '\x03') return false;
+    // The Moa pane's own permission dialog has no approval record, so typed
+    // keys could answer it; only cancelling it (ESC / ^C above) gets through.
+    if (this.moaDialogUp(sessionId)) return true;
     const approvals = this.deps.approvals;
     if (!approvals) return false;
     // A native decision is not a dialog typed keys can answer behind the
@@ -6502,6 +6542,9 @@ export class WebTerminalServer {
         if (this.inputSession(fresh.principal,sessionId) !== managed || managed.meta.incarnationId !== incarnation) {
           return this.json(res,409,{error:'pane-incarnation-changed'});
         }
+        // Decided with the check above, before the write, so the audit line
+        // cannot be lost to a withdrawal between the write and the log.
+        const viaMoa = this.attachableSession(fresh.principal,sessionId) !== managed;
         // Decided in the same synchronous run as the write, never earlier: the
         // dialog can appear while the body is on the wire.
         const promptActive = () => this.terminalPromptBlocksInput(sessionId, body);
@@ -6511,7 +6554,7 @@ export class WebTerminalServer {
           // must not be held behind a recovery mute nobody will lift.
           if (managed.deferred) this.deps.sessionManager.activateDeferred(sessionId);
           managed.ptyProcess.write(body);
-          this.auditMoaSend(fresh.principal, sessionId, 'input');
+          if (viaMoa) this.auditMoaSend(fresh.principal, sessionId, 'input');
         // A phone can paste drafts containing newlines; bridge.noteInput keeps
         // bracketed-paste bodies inert and only re-arms on a submitted CR/LF.
           managed.bridge.noteInput?.(body);
@@ -9144,6 +9187,9 @@ function sidebarWorkspaceFields(
       : {}),
   };
 }
+
+/** Which chat write a Moa pane check is for (see `moaWriteCleared`). */
+type MoaWriteKind = 'send' | 'cancel';
 
 /**
  * `role: "hq"` for a row of the desktop's Moa HQ workspace, nothing for any

@@ -17,8 +17,11 @@
 //     cannot point the gate at an ordinary pane, or at another workspace's
 //     brain.
 //   - Unpublished means closed: `null` until main pushes, and dropped again
-//     when the publishing client disconnects (index.ts), so a daemon running
-//     without its GUI exposes no brain pane.
+//     when the publishing client disconnects (`MoaPaneRpc.onClientClose`), so
+//     a daemon running without its GUI exposes no brain pane.
+//   - `dialog` says the brain's own permission dialog is on screen. The daemon
+//     keeps no approval record for a brain pane, so this is what stops typed
+//     input from answering that dialog through the phone.
 //   - The transcript binding rides along because the brain's hooks go to main,
 //     never to the daemon, so the daemon has no resume binding for that pane.
 //     It is held in memory only and never written to the pane's persisted
@@ -36,6 +39,8 @@ export interface MoaPaneFact {
   workspaceId: string;
   /** The brain's transcript, once its hooks reported one. Memory only. */
   binding?: ResumeBinding;
+  /** Present while the brain's own permission dialog is up. */
+  dialog?: { fingerprint: string };
 }
 
 /** Bounds on pushed strings; anything longer is not an id main mints. */
@@ -58,6 +63,13 @@ export function parseMoaPane(raw: unknown): MoaPaneFact | null | 'invalid' {
   if (!boundedString(r.sessionId, MAX_ID_CHARS) || !isBrainPtyId(r.sessionId)) return 'invalid';
   if (!boundedString(r.workspaceId, MAX_ID_CHARS)) return 'invalid';
   const fact: MoaPaneFact = { sessionId: r.sessionId, workspaceId: r.workspaceId };
+  const dialog = r.dialog as Record<string, unknown> | undefined;
+  if (dialog !== undefined) {
+    // A malformed dialog is still a dialog: refuse input rather than drop it.
+    const fingerprint = dialog && typeof dialog.fingerprint === 'string' && /^[0-9a-f]{1,64}$/.test(dialog.fingerprint)
+      ? dialog.fingerprint : 'unknown';
+    fact.dialog = { fingerprint };
+  }
   const b = r.binding as Record<string, unknown> | undefined;
   if (
     isUsableResumeBinding(b)
@@ -113,7 +125,7 @@ export class MoaPaneStore {
 
 /** The slice of a daemon session the check reads. */
 interface PaneLike {
-  meta: { env?: Record<string, string> };
+  meta: { env?: Record<string, string>; state?: string };
 }
 
 /**
@@ -130,5 +142,81 @@ export function resolveMoaPane<P extends PaneLike>(
   const pane = getSession(fact.sessionId);
   const env = pane?.meta.env;
   if (!pane || env?.[ENV_KEYS.BRAIN_PTY] !== '1' || env[ENV_KEYS.WORKSPACE_ID] !== fact.workspaceId) return undefined;
+  // A dead or suspended session is still held by the manager; it is not a
+  // pane anybody may talk to.
+  if (pane.meta.state !== 'attached' && pane.meta.state !== 'detached') return undefined;
   return pane;
+}
+
+export interface MoaPaneRpcDeps<P extends PaneLike> {
+  /** The daemon's first-party classification of a pipe client. */
+  isFirstParty: (clientId: string) => boolean;
+  getSession: (id: string) => P | undefined;
+  /**
+   * A push changed the fact. `pane` is the live pane the new fact resolves to,
+   * if any. index.ts arms the process watch and nudges the pane's phone
+   * watchers from here.
+   */
+  onChanged?: (prev: MoaPaneFact | null, next: MoaPaneFact | null, pane: P | undefined) => void;
+  log?: (level: 'warn', message: string) => void;
+}
+
+export type MoaPaneSetResult =
+  | MoaPaneReplaceResult
+  | { ok: false; error: string };
+
+/**
+ * `daemon.moa.set` and its publisher bookkeeping, apart from the pipe server
+ * so the trust rules are testable: first-party only, one publisher at a time
+ * (first writer wins while it lives), seq-ordered, cleared with its publisher.
+ */
+export class MoaPaneRpc<P extends PaneLike> {
+  private readonly store = new MoaPaneStore();
+  private publisher: string | null = null;
+
+  constructor(private readonly deps: MoaPaneRpcDeps<P>) {}
+
+  current(): MoaPaneFact | null {
+    return this.store.current();
+  }
+
+  handle(params: unknown, clientId: string): MoaPaneSetResult {
+    // Load-bearing: a client that could write this would be choosing which
+    // brain pane a phone may type into.
+    if (!this.deps.isFirstParty(clientId)) return { ok: false, error: 'daemon.moa.set is first-party only' };
+    const payload = (params ?? {}) as { pane?: unknown; seq?: unknown };
+    if (typeof payload.seq !== 'number' || !Number.isFinite(payload.seq)) {
+      return { ok: false, error: 'daemon.moa.set requires a numeric seq' };
+    }
+    const fact = parseMoaPane(payload.pane === undefined ? null : payload.pane);
+    if (fact === 'invalid') return { ok: false, error: 'daemon.moa.set: invalid pane' };
+    // A second first-party client must not take the slot and then, on ITS
+    // disconnect, close a pane the real main is still vouching for.
+    if (this.publisher !== null && this.publisher !== clientId) {
+      this.deps.log?.('warn', `[moa] refused a Moa pane push from ${clientId}: ${this.publisher} is already the publisher`);
+      return { ok: false, error: 'another client is already publishing the Moa pane' };
+    }
+    this.publisher = clientId;
+    const prev = this.store.current();
+    const result = this.store.replace(fact, payload.seq);
+    if (result.applied) this.changed(prev, fact);
+    return result;
+  }
+
+  /** A pipe client went away; the fact goes with its publisher. */
+  onClientClose(clientId: string): void {
+    if (this.publisher === null || this.publisher !== clientId) return;
+    const prev = this.store.current();
+    this.store.clear();
+    this.publisher = null;
+    if (prev) this.changed(prev, null);
+  }
+
+  private changed(prev: MoaPaneFact | null, next: MoaPaneFact | null): void {
+    try {
+      this.deps.onChanged?.(prev, next, resolveMoaPane(next, this.deps.getSession));
+    } catch {
+      // Side effects only (process watch, phone nudge); the fact stands.
+    }
+  }
 }

@@ -30,6 +30,7 @@ import {
   ClaudePtyBrainAdapter,
   createBrainPtyHost,
   resolveBrainBridgePath,
+  resolveBrainHomeDir,
   type DaemonClientLike,
 } from '../../deck/ClaudePtyBrainAdapter';
 import { evaluateStopGate, DEFAULT_MAX_SNAPSHOT_AGE_MS } from '../../deck/stopGate';
@@ -2092,7 +2093,7 @@ export function registerDeckHandler(
     const hq = getHqWorkspaceId();
     if (hq === null || hqPresence(hq) !== 'present') return null;
     const ptyId = brainPtyIds.get(hq);
-    return ptyId ? { sessionId: ptyId, workspaceId: hq } : null;
+    return ptyId ? { sessionId: ptyId, workspaceId: hq, brainCwd: resolveBrainHomeDir(getWmuxDir(), hq) } : null;
   });
   // A designation whose migration did not finish (crash, IO failure) — or
   // that never ran for the current HQ — finishes now. Every step is idempotent.

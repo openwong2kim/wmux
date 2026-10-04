@@ -1,11 +1,12 @@
 /**
- * The Moa pane feed (main → daemon): what is pushed, when, and that a
- * withdrawal is sent at once rather than deduplicated away.
+ * The Moa pane feed (main → daemon): what is pushed, when, which hook payloads
+ * it trusts, and that a withdrawal is retried until the daemon took it.
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   __resetMoaPaneFeedForTest,
   buildMoaPanePayload,
+  claudeProjectSlug,
   forgetBrainPty,
   noteBrainHookSignal,
   publishMoaPane,
@@ -16,36 +17,46 @@ import {
   type MoaPaneSource,
 } from '../moaPaneFeed';
 
+const BRAIN_CWD = '/Users/u/.wmux/brains/ws-hq';
+const PROJECT = `/Users/u/.claude/projects/${claudeProjectSlug(BRAIN_CWD)}`;
+const HQ: MoaPaneSource = { sessionId: 'brain-1', workspaceId: 'ws-hq', brainCwd: BRAIN_CWD };
+
 let pushes: Array<{ pane: MoaPanePayload; seq: number }>;
 let current: MoaPaneSource | null;
 
 const signal = (over: Partial<BrainHookSignal> = {}): BrainHookSignal => ({
-  kind: 'agent.stop', agent: 'claude', agentSessionId: 'conv-1', ptyId: 'brain-1', cwd: '/brains/hq',
-  payload: { transcript_path: '/h/.claude/projects/p/conv-1.jsonl' }, ts: 10, ...over,
+  kind: 'agent.stop', agent: 'claude', agentSessionId: 'conv-1', ptyId: 'brain-1', cwd: BRAIN_CWD,
+  payload: { transcript_path: `${PROJECT}/conv-1.jsonl` }, ts: 10, ...over,
 });
+const bindingOf = () => (buildMoaPanePayload() as { binding?: Record<string, unknown> } | null)?.binding;
+const dialogOf = () => (buildMoaPanePayload() as { dialog?: { fingerprint: string } } | null)?.dialog;
 
 beforeEach(() => {
   __resetMoaPaneFeedForTest();
   pushes = [];
   current = null;
   setMoaPaneSource(() => current);
-  setMoaPanePush(async (pane, seq) => { pushes.push({ pane, seq }); });
+  setMoaPanePush(async (pane, seq) => { pushes.push({ pane, seq }); return { ok: true, applied: true, seq }; });
+});
+afterEach(() => {
+  vi.useRealTimers();
+  __resetMoaPaneFeedForTest();
 });
 
 describe('moaPaneFeed', () => {
-  it('pushes the pane, then null the moment the source withdraws it, with rising seq', async () => {
-    current = { sessionId: 'brain-1', workspaceId: 'hq' };
+  it('pushes the pane, then null the moment the source withdraws it, with rising seq; never the brain cwd', async () => {
+    current = HQ;
     await publishMoaPane();
     current = null;
     await publishMoaPane();
     expect(pushes).toEqual([
-      { pane: { sessionId: 'brain-1', workspaceId: 'hq' }, seq: 1 },
+      { pane: { sessionId: 'brain-1', workspaceId: 'ws-hq' }, seq: 1 },
       { pane: null, seq: 2 },
     ]);
   });
 
   it('does not re-send an unchanged answer, except when forced (a new daemon connection)', async () => {
-    current = { sessionId: 'brain-1', workspaceId: 'hq' };
+    current = HQ;
     await publishMoaPane();
     await publishMoaPane();
     expect(pushes).toHaveLength(1);
@@ -54,52 +65,109 @@ describe('moaPaneFeed', () => {
   });
 
   it('carries the transcript binding the brain\'s own Stop reported, and re-publishes when it lands', async () => {
-    current = { sessionId: 'brain-1', workspaceId: 'hq' };
+    current = HQ;
     await publishMoaPane();
     noteBrainHookSignal(signal());
     await publishMoaPane(); // joins the publish the signal started
     expect(pushes.at(-1)!.pane).toEqual({
-      sessionId: 'brain-1', workspaceId: 'hq',
-      binding: { agent: 'claude', sessionId: 'conv-1', cwd: '/brains/hq', transcriptPath: '/h/.claude/projects/p/conv-1.jsonl', ts: 10 },
+      sessionId: 'brain-1', workspaceId: 'ws-hq',
+      binding: { agent: 'claude', sessionId: 'conv-1', cwd: BRAIN_CWD, transcriptPath: `${PROJECT}/conv-1.jsonl`, ts: 10 },
     });
   });
 
   it('keeps the path through a later SessionStart of the same conversation without one', () => {
-    current = { sessionId: 'brain-1', workspaceId: 'hq' };
+    current = HQ;
     noteBrainHookSignal(signal());
     noteBrainHookSignal(signal({ kind: 'agent.session_start', payload: {}, ts: 20 }));
-    expect((buildMoaPanePayload() as { binding?: { transcriptPath?: string; ts: number } }).binding)
-      .toMatchObject({ transcriptPath: '/h/.claude/projects/p/conv-1.jsonl', ts: 20 });
+    expect(bindingOf()).toMatchObject({ transcriptPath: `${PROJECT}/conv-1.jsonl`, ts: 20 });
+  });
+
+  it('a late Stop from the conversation a /clear left behind does not replace the new one', () => {
+    current = HQ;
+    noteBrainHookSignal(signal({ ts: 10 }));
+    // /clear: a new conversation starts...
+    noteBrainHookSignal(signal({ kind: 'agent.session_start', agentSessionId: 'conv-2', payload: { transcript_path: `${PROJECT}/conv-2.jsonl` }, ts: 30 }));
+    // ...and the old one's Stop arrives late.
+    noteBrainHookSignal(signal({ ts: 20 }));
+    expect(bindingOf()).toMatchObject({ sessionId: 'conv-2', transcriptPath: `${PROJECT}/conv-2.jsonl`, ts: 30 });
+  });
+
+  it('drops a forged binding: another cwd, a path outside the brain\'s project, or a file that is not the conversation', () => {
+    current = HQ;
+    for (const forged of [
+      signal({ cwd: '/tmp/elsewhere' }),
+      signal({ payload: { transcript_path: '/Users/u/.claude/projects/-tmp-elsewhere/conv-1.jsonl' } }),
+      signal({ payload: { transcript_path: `${PROJECT}/other-conv.jsonl` } }),
+      signal({ payload: { transcript_path: '/etc/passwd' } }),
+      signal({ payload: { transcript_path: `${PROJECT}/../${claudeProjectSlug(BRAIN_CWD)}/conv-1.jsonl` } }),
+      signal({ payload: { transcript_path: `/Users/u/notprojects/${claudeProjectSlug(BRAIN_CWD)}/conv-1.jsonl` } }),
+    ]) {
+      __resetMoaPaneFeedForTest();
+      setMoaPaneSource(() => current);
+      noteBrainHookSignal(forged);
+      expect(bindingOf()).toBeUndefined();
+    }
   });
 
   it('ignores signals that carry no conversation, and another brain\'s binding never rides on the HQ pane', () => {
-    current = { sessionId: 'brain-1', workspaceId: 'hq' };
+    current = HQ;
     noteBrainHookSignal(signal({ kind: 'agent.tool_started' }));
     noteBrainHookSignal(signal({ agentSessionId: undefined }));
     noteBrainHookSignal(signal({ ptyId: 'brain-2' }));
-    expect(buildMoaPanePayload()).toEqual({ sessionId: 'brain-1', workspaceId: 'hq' });
+    expect(buildMoaPanePayload()).toEqual({ sessionId: 'brain-1', workspaceId: 'ws-hq' });
   });
 
-  it('drops a brain\'s binding once its pty is gone', () => {
-    current = { sessionId: 'brain-1', workspaceId: 'hq' };
+  it('flags the brain\'s permission dialog with a fingerprint only, and clears it when the turn moves on', async () => {
+    current = HQ;
+    noteBrainHookSignal(signal({ kind: 'agent.awaiting_input', payload: { tool_name: 'Bash', tool_input: { command: 'rm -r build' } } }));
+    const dialog = dialogOf();
+    expect(dialog?.fingerprint).toMatch(/^[0-9a-f]{32}$/);
+    expect(JSON.stringify(buildMoaPanePayload())).not.toContain('rm -r build');
+    await publishMoaPane();
+    expect(pushes.at(-1)!.pane).toMatchObject({ dialog });
+    for (const kind of ['agent.stop', 'agent.user_prompt_submit', 'agent.session_start', 'agent.stop_failure']) {
+      noteBrainHookSignal(signal({ kind: 'agent.awaiting_input', payload: { tool_name: 'Bash' } }));
+      expect(dialogOf()).toBeDefined();
+      noteBrainHookSignal(signal({ kind, payload: {} }));
+      expect(dialogOf()).toBeUndefined();
+    }
+  });
+
+  it('drops a brain\'s binding and dialog once its pty is gone', () => {
+    current = HQ;
     noteBrainHookSignal(signal());
+    noteBrainHookSignal(signal({ kind: 'agent.awaiting_input', payload: {} }));
     forgetBrainPty('brain-1');
-    expect(buildMoaPanePayload()).toEqual({ sessionId: 'brain-1', workspaceId: 'hq' });
+    expect(buildMoaPanePayload()).toEqual({ sessionId: 'brain-1', workspaceId: 'ws-hq' });
   });
 
-  it('treats a throwing source as no Moa pane, and retries a failed push on the next call', async () => {
+  it('treats a throwing source as no Moa pane', () => {
     setMoaPaneSource(() => { throw new Error('store'); });
     expect(buildMoaPanePayload()).toBeNull();
-    current = { sessionId: 'brain-1', workspaceId: 'hq' };
-    setMoaPaneSource(() => current);
-    let fail = true;
+  });
+
+  it('retries a withdrawal the daemon refused or never answered until it is applied', async () => {
+    vi.useFakeTimers();
+    current = HQ;
+    await publishMoaPane();
+    let answers: unknown[] = [{ ok: false, error: 'busy' }, new Error('pipe closed'), { ok: true, applied: true }];
     setMoaPanePush(async (pane, seq) => {
-      if (fail) throw new Error('down');
       pushes.push({ pane, seq });
+      const answer = answers.shift();
+      if (answer instanceof Error) throw answer;
+      return answer;
     });
+    current = null;
     await publishMoaPane();
-    fail = false;
-    await publishMoaPane();
-    expect(pushes).toEqual([{ pane: { sessionId: 'brain-1', workspaceId: 'hq' }, seq: 2 }]);
+    expect(pushes.at(-1)!.pane).toBeNull();
+    await vi.advanceTimersByTimeAsync(600);
+    await vi.advanceTimersByTimeAsync(1100);
+    const nulls = pushes.filter((p) => p.pane === null);
+    expect(nulls).toHaveLength(3);
+    // Applied: no more retries.
+    answers = [];
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(pushes.filter((p) => p.pane === null)).toHaveLength(3);
+    expect(nulls.map((p) => p.seq)).toEqual([...nulls.map((p) => p.seq)].sort((a, b) => a - b));
   });
 });

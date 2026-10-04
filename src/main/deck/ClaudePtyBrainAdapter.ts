@@ -393,7 +393,10 @@ export function buildBrainSettingsProfile(opts: {
     // UserPromptSubmit is the human-typed-into-the-TUI signal: with no composer
     // in the dock's pty layout it is the only way the adapter learns a turn it
     // did not start is open, so automation can defer to it.
-    for (const event of ['Stop', 'SessionStart', 'UserPromptSubmit'] as const) {
+    // PermissionRequest is a signal only (the bridge writes no decision): it
+    // tells main the brain's own permission dialog is on screen, which the
+    // phone's Moa pane must not be able to answer by typing (moaPaneFeed).
+    for (const event of ['Stop', 'SessionStart', 'UserPromptSubmit', 'PermissionRequest'] as const) {
       // `Stop` runs the bridge in GATE mode: it reads the `hooks.signal`
       // response and exits 2 when the adapter refuses to end the turn. The
       // verdict has to travel on this one round trip — a second, independent

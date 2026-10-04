@@ -90,15 +90,19 @@ describe('the Moa pane on the phone routes', () => {
       managedSnapshot: vi.fn(() => null),
       turn: vi.fn(() => undefined),
       blocked: vi.fn(async () => undefined),
+      // Like the real delivery: checked before the paste, then again before Enter.
       send: vi.fn(async (req: ChatSendRequest): Promise<ChatSendOutcome> => {
         await sendHook?.(req);
-        if (req.authorized && !(await req.authorized())) {
+        if (req.authorized && !(await req.authorized('first-write'))) {
           return { clientMessageId: req.clientMessageId, replayed: false, error: 'authorization-expired', result: 'error', effect: 'none' };
+        }
+        if (req.authorized && !(await req.authorized('submit'))) {
+          return { clientMessageId: req.clientMessageId, replayed: false, error: 'authorization-expired', result: 'error', effect: 'uncertain' };
         }
         return { clientMessageId: req.clientMessageId, replayed: false, result: 'sent', effect: 'submitted' };
       }),
       cancel: vi.fn(async (req) => {
-        if (req.authorized && !(await req.authorized())) return { clientCancelId: req.clientCancelId, replayed: false, effect: 'none', error: 'authorization-expired' };
+        if (req.authorized && !(await req.authorized('first-write'))) return { clientCancelId: req.clientCancelId, replayed: false, effect: 'none', error: 'authorization-expired' };
         return { clientCancelId: req.clientCancelId, replayed: false, effect: 'interrupt-requested', turnId: 't1:abc.3' };
       }),
       receipt: vi.fn((_o, _id, cmid: string) => ({ clientMessageId: cmid, state: 'unknown' as const })),
@@ -237,7 +241,9 @@ describe('the Moa pane on the phone routes', () => {
       expect((await fetch(`${base()}/api/stream?session=brain-hq`, { headers: h })).status).toBe(404);
       expect((await fetch(brain, { method: 'DELETE', headers: h })).status).toBe(404);
       expect((await postJson(`${brain}/resize`, h, { cols: 100, rows: 30 })).status).toBe(404);
-      expect((await fetch(`${brain}/commands?agent=claude`, { headers: h })).status).toBe(404);
+      // The legacy command list (a directory read) stays refused; the composer's skill list does not.
+      expect((await fetch(`${brain}/commands`, { headers: h })).status).toBe(404);
+      expect((await fetch(`${brain}/commands?agent=claude`, { headers: h })).status).toBe(200);
       expect((await postJson(`${brain}/chat/launch`, h, { agent: 'claude', clientLaunchId: freshId(), prompt: 'x' })).status).toBe(404);
       expect((await fetch(`${brain}/turns/file?path=${encodeURIComponent('/etc/hosts')}`, { headers: h })).status).toBe(404);
       expect((await fetch(`${brain}/files`, { headers: h })).status).toBe(404);
@@ -300,7 +306,10 @@ describe('the Moa pane on the phone routes', () => {
       await postJson(`${base()}/api/sessions/brain-hq/chat/messages`, { ...h, 'x-wmux-client-caps': 'chat-queue' }, sendBody());
       expect(deliver).toBeDefined();
       audits.length = 0;
+      // The drain's pre-check types nothing and logs nothing; Enter after the paste does.
       expect(await deliver!('first-write')).toBe(true);
+      expect(audits).toEqual([]);
+      expect(await deliver!('submit')).toBe(true);
       expect(audits).toEqual([{ deviceId: 'dev-1', sessionId: 'brain-hq', route: 'chat' }]);
       moa = null;
       expect(await deliver!('first-write')).toBe(false);
@@ -328,6 +337,124 @@ describe('the Moa pane on the phone routes', () => {
       const h = device('dev-1');
       resolveGate = async () => { moa = null; };
       expect(await turnsStatus(h, 's1')).toBe(200);
+    });
+  });
+
+  describe('Moa\'s own permission dialog', () => {
+    const dialogUp = () => { moa = { ...HQ, dialog: { fingerprint: 'ab12' } }; };
+
+    it('refuses typed input that could answer it; ESC and ^C still get through', async () => {
+      await start();
+      const h = device('dev-1');
+      dialogUp();
+      for (const body of ['1', '\r', '1\r', 'y']) {
+        const res = await fetch(`${base()}/api/input?session=brain-hq`, { method: 'POST', headers: h, body });
+        expect([body, res.status, (await res.json() as { error: string }).error]).toEqual([body, 409, 'terminal-prompt-active']);
+      }
+      expect(panes.get('brain-hq')!.ptyProcess.write).not.toHaveBeenCalled();
+      expect(await inputStatus(h, 'brain-hq')).toBe(409);
+      for (const body of ['\x1b', '\x03']) {
+        expect((await fetch(`${base()}/api/input?session=brain-hq`, { method: 'POST', headers: h, body })).status).toBe(204);
+      }
+      expect(audits).toEqual([
+        { deviceId: 'dev-1', sessionId: 'brain-hq', route: 'input' },
+        { deviceId: 'dev-1', sessionId: 'brain-hq', route: 'input' },
+      ]);
+      // An ordinary pane is not touched by Moa's dialog.
+      expect(await inputStatus(h, 's1')).toBe(204);
+    });
+
+    it('refuses a chat send with chat-blocked (terminal), before anything reaches the bridge', async () => {
+      await start();
+      const h = device('dev-1');
+      dialogUp();
+      const res = await postJson(`${base()}/api/sessions/brain-hq/chat/messages`, h, sendBody());
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({ error: 'chat-blocked', result: 'blocked', blockedBy: 'terminal', effect: 'none' });
+      expect(chat.send).not.toHaveBeenCalled();
+    });
+
+    it('refuses a send whose dialog opens between admission and Enter', async () => {
+      await start();
+      const h = device('dev-1');
+      sendHook = async () => { dialogUp(); };
+      const res = await postJson(`${base()}/api/sessions/brain-hq/chat/messages`, h, sendBody());
+      expect(await res.json()).toMatchObject({ error: 'authorization-expired', effect: 'none' });
+      expect(audits).toEqual([]);
+    });
+
+    it('still lets a cancel through (ESC declines the dialog, it cannot approve it)', async () => {
+      await start();
+      const h = device('dev-1');
+      dialogUp();
+      const res = await postJson(`${base()}/api/sessions/brain-hq/chat/cancel`, h, { agentSessionId: 'sess-a', clientCancelId: freshId(), turnId: 't1:abc.3' });
+      expect(res.status).not.toBe(404);
+      expect(chat.cancel).toHaveBeenCalledTimes(1);
+      expect(audits).toEqual([{ deviceId: 'dev-1', sessionId: 'brain-hq', route: 'chat' }]);
+    });
+
+    it('reports the pane blocked by the terminal in /turns', async () => {
+      await start();
+      const h = device('dev-1');
+      dialogUp();
+      const body = await (await fetch(`${base()}/api/sessions/brain-hq/turns`, { headers: h })).json() as { chat?: { blocked?: unknown } };
+      expect(body.chat?.blocked).toMatchObject({ by: 'terminal' });
+      moa = { ...HQ };
+      const clear = await (await fetch(`${base()}/api/sessions/brain-hq/turns`, { headers: h })).json() as { chat?: { blocked?: unknown } };
+      expect(clear.chat?.blocked).toBeUndefined();
+    });
+  });
+
+  describe('live pane and phone notifications', () => {
+    it('a dead or suspended session under the pushed id is not the Moa pane', async () => {
+      await start();
+      const h = device('dev-1');
+      for (const state of ['dead', 'suspended']) {
+        panes.get('brain-hq')!.meta.state = state;
+        expect(await turnsStatus(h, 'brain-hq')).toBe(404);
+        expect(await inputStatus(h, 'brain-hq')).toBe(404);
+      }
+      panes.get('brain-hq')!.meta.state = 'attached';
+      expect(await turnsStatus(h, 'brain-hq')).toBe(200);
+    });
+
+    it('a transcript nudge for the Moa pane reaches the phone reading it, and stops once Moa is withdrawn', async () => {
+      await start();
+      const h = device('dev-1');
+      expect(await turnsStatus(h, 'brain-hq')).toBe(200);
+      const ac = new AbortController();
+      const res = await fetch(`${base()}/api/events`, { signal: ac.signal, headers: { ...h, Accept: 'text/event-stream' } });
+      const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+      let wire = '';
+      void (async () => {
+        try {
+          for (;;) {
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            wire += Buffer.from(chunk.value).toString('utf8');
+          }
+        } catch { /* aborted */ }
+      })();
+      try {
+        const until = async (cond: () => boolean) => {
+          const deadline = Date.now() + 4000;
+          while (!cond()) {
+            if (Date.now() > deadline) throw new Error('timed out');
+            await new Promise((r) => setTimeout(r, 20));
+          }
+        };
+        await until(() => wire.length > 0);
+        server.emitTranscriptNudge('brain-hq');
+        await until(() => wire.includes('transcript.nudge'));
+        expect(wire).toContain('"sessionId":"brain-hq"');
+        const seen = wire.split('transcript.nudge').length;
+        moa = null;
+        server.emitTranscriptNudge('brain-hq');
+        await new Promise((r) => setTimeout(r, 1300));
+        expect(wire.split('transcript.nudge').length).toBe(seen);
+      } finally {
+        ac.abort();
+      }
     });
   });
 

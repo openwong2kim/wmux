@@ -4,7 +4,7 @@
  * HQ's own brain pane.
  */
 import { describe, it, expect } from 'vitest';
-import { MoaPaneStore, parseMoaPane, resolveMoaPane, type MoaPaneFact } from '../moaPane';
+import { MoaPaneRpc, MoaPaneStore, parseMoaPane, resolveMoaPane, type MoaPaneFact } from '../moaPane';
 
 const fact = (over: Partial<MoaPaneFact> = {}): MoaPaneFact => ({ sessionId: 'brain-abc', workspaceId: 'hq', ...over });
 const brainEnv = (ws = 'hq') => ({ WMUX_BRAIN_PTY: '1', WMUX_WORKSPACE_ID: ws });
@@ -32,6 +32,14 @@ describe('parseMoaPane', () => {
       { agent: 'claude', sessionId: 'c', cwd: '/x', transcriptPath: 7, ts: 1 },
     ]) {
       expect(parseMoaPane({ sessionId: 'brain-abc', workspaceId: 'hq', binding })).toEqual({ sessionId: 'brain-abc', workspaceId: 'hq' });
+    }
+  });
+
+  it('keeps a dialog flag, and reads a malformed one as a dialog rather than none', () => {
+    expect(parseMoaPane({ sessionId: 'brain-abc', workspaceId: 'hq', dialog: { fingerprint: 'ab12' } }))
+      .toEqual({ sessionId: 'brain-abc', workspaceId: 'hq', dialog: { fingerprint: 'ab12' } });
+    for (const dialog of [{}, { fingerprint: 'NOT HEX' }, null, 'up']) {
+      expect(parseMoaPane({ sessionId: 'brain-abc', workspaceId: 'hq', dialog })).toMatchObject({ dialog: { fingerprint: 'unknown' } });
     }
   });
 
@@ -63,11 +71,13 @@ describe('MoaPaneStore', () => {
 });
 
 describe('resolveMoaPane', () => {
-  const panes = new Map<string, { meta: { env?: Record<string, string> } }>([
-    ['brain-abc', { meta: { env: brainEnv('hq') } }],
-    ['brain-other', { meta: { env: brainEnv('ws-2') } }],
-    ['brain-unmarked', { meta: { env: { WMUX_WORKSPACE_ID: 'hq' } } }],
-    ['s1', { meta: { env: brainEnv('hq') } }],
+  const panes = new Map<string, { meta: { env?: Record<string, string>; state: string } }>([
+    ['brain-abc', { meta: { env: brainEnv('hq'), state: 'attached' } }],
+    ['brain-other', { meta: { env: brainEnv('ws-2'), state: 'detached' } }],
+    ['brain-unmarked', { meta: { env: { WMUX_WORKSPACE_ID: 'hq' }, state: 'detached' } }],
+    ['brain-dead', { meta: { env: brainEnv('hq'), state: 'dead' } }],
+    ['brain-suspended', { meta: { env: brainEnv('hq'), state: 'suspended' } }],
+    ['s1', { meta: { env: brainEnv('hq'), state: 'detached' } }],
   ]);
   const get = (id: string) => panes.get(id);
 
@@ -82,5 +92,65 @@ describe('resolveMoaPane', () => {
     expect(resolveMoaPane(fact({ sessionId: 'brain-unmarked' }), get)).toBeUndefined();
     expect(resolveMoaPane(fact({ sessionId: 's1' }), get)).toBeUndefined();
     expect(resolveMoaPane(fact({ workspaceId: 'ws-2' }), get)).toBeUndefined();
+  });
+
+  it('fails closed for a session the manager still holds but that is dead or suspended', () => {
+    expect(resolveMoaPane(fact({ sessionId: 'brain-dead' }), get)).toBeUndefined();
+    expect(resolveMoaPane(fact({ sessionId: 'brain-suspended' }), get)).toBeUndefined();
+  });
+});
+
+describe('MoaPaneRpc (daemon.moa.set)', () => {
+  const pane = { meta: { env: brainEnv('hq'), state: 'attached' } };
+  const make = () => {
+    const changes: Array<[MoaPaneFact | null, MoaPaneFact | null, unknown]> = [];
+    const firstParty = new Set(['main-1', 'main-2']);
+    const rpc = new MoaPaneRpc({
+      isFirstParty: (id) => firstParty.has(id),
+      getSession: (id) => (id === 'brain-abc' ? pane : undefined),
+      onChanged: (prev, next, p) => { changes.push([prev, next, p]); },
+    });
+    return { rpc, changes };
+  };
+
+  it('refuses a client that is not first-party, and changes nothing', () => {
+    const { rpc, changes } = make();
+    expect(rpc.handle({ pane: fact(), seq: 1 }, 'plugin')).toEqual({ ok: false, error: 'daemon.moa.set is first-party only' });
+    expect(rpc.current()).toBeNull();
+    expect(changes).toEqual([]);
+  });
+
+  it('refuses a malformed push: no seq, a non-brain id', () => {
+    const { rpc } = make();
+    expect(rpc.handle({ pane: fact() }, 'main-1')).toMatchObject({ ok: false });
+    expect(rpc.handle({ pane: { sessionId: 's1', workspaceId: 'hq' }, seq: 1 }, 'main-1')).toMatchObject({ ok: false });
+    expect(rpc.current()).toBeNull();
+  });
+
+  it('refuses a second publisher while the first lives, and the second cannot clear it by leaving', () => {
+    const { rpc } = make();
+    expect(rpc.handle({ pane: fact(), seq: 1 }, 'main-1')).toMatchObject({ ok: true, applied: true });
+    expect(rpc.handle({ pane: null, seq: 2 }, 'main-2')).toEqual({ ok: false, error: 'another client is already publishing the Moa pane' });
+    rpc.onClientClose('main-2');
+    expect(rpc.current()).toEqual(fact());
+  });
+
+  it('clears the fact when its publisher disconnects, and the next publisher starts from seq 1', () => {
+    const { rpc, changes } = make();
+    rpc.handle({ pane: fact(), seq: 5 }, 'main-1');
+    rpc.onClientClose('main-1');
+    expect(rpc.current()).toBeNull();
+    expect(changes.at(-1)?.[1]).toBeNull();
+    expect(rpc.handle({ pane: fact(), seq: 1 }, 'main-2')).toMatchObject({ ok: true, applied: true });
+  });
+
+  it('reports a change with the live pane it resolves to, and nothing for a stale push', () => {
+    const { rpc, changes } = make();
+    rpc.handle({ pane: fact(), seq: 2 }, 'main-1');
+    expect(changes).toEqual([[null, fact(), pane]]);
+    rpc.handle({ pane: null, seq: 1 }, 'main-1');
+    expect(changes).toHaveLength(1);
+    rpc.handle({ pane: fact({ sessionId: 'brain-gone' }), seq: 3 }, 'main-1');
+    expect(changes.at(-1)).toEqual([fact(), fact({ sessionId: 'brain-gone' }), undefined]);
   });
 });

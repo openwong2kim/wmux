@@ -333,6 +333,15 @@ describe('buildBrainSettingsProfile', () => {
     expect(hooks.Stop[0].hooks[0].command).not.toContain('--context');
   });
 
+  it('wires PermissionRequest to the bridge as a signal only, so main sees the brain\'s own dialog (phone Moa pane)', () => {
+    const hooks = profile.hooks as Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+    const command = hooks.PermissionRequest[0].hooks[0].command;
+    expect(command).toContain('wmux-bridge.mjs');
+    expect(command).toContain('PermissionRequest');
+    expect(command).not.toContain('--gate');
+    expect(command).not.toContain('--context');
+  });
+
   it('backstops each denied tool with a PreToolUse hook that names the tool', () => {
     const pre = profile.hooks as { PreToolUse: Array<{ matcher: string; hooks: Array<{ command: string }> }> };
     const matchers = pre.PreToolUse.map((g) => g.matcher);

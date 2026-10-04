@@ -3194,6 +3194,8 @@ GET /api/config → { ..., moa: true, moaSessionId: "brain-<24 hex>" }
   yet" rather than an error). Treat it as opaque: never derive or guess it,
   and re-read `/api/config` rather than caching it across launches; a new
   brain terminal gets a new id.
+- Only a live pane qualifies: a Moa terminal that has exited is gone at
+  once, before Moa starts a new one (which gets a new id).
 - The id is not a session row: it is never in `GET /api/sessions`,
   `GET /api/workspaces` or a layout tree. Learn it from `/api/config` only.
 
@@ -3204,14 +3206,34 @@ Routes that accept `moaSessionId` as `:id`, each under its usual permission:
 | `GET /api/sessions/:id/turns`, `GET /api/sessions/:id/turns/block` | `--allow-transcript` (`allowTranscript`) |
 | `POST /api/sessions/:id/chat/messages`, `POST /api/sessions/:id/chat/cancel`, `DELETE /api/sessions/:id/chat/queue/:clientMessageId` | transcript and input (the device's `grants.input`) |
 | `GET /api/sessions/:id/chat/messages/:clientMessageId`, `GET /api/sessions/:id/chat/cancel/:clientCancelId` | transcript |
+| `GET /api/sessions/:id/commands?agent=<agent>` (the composer's skill list) | transcript |
 | `POST /api/input?session=:id` | input |
 
 Every other per-pane route answers the Moa pane exactly as any brain pane:
 `404` — stream, resize, close, files, `turns/image`, `turns/file`, diff, git,
-worktree, commands, accounts, agent settings, chat launch, search. Moa's own
-permission dialogs are answered on the desktop; they never become an approval
-record, so `/api/approvals` has none for the Moa pane. Decisions Moa raises
-for you arrive through the approvals inbox like any other (above).
+worktree, the legacy `commands` list (no `agent`), accounts, agent settings,
+chat launch, search. Decisions Moa raises for you arrive through the
+approvals inbox like any other (above).
+
+A new answer from Moa (or its dialog opening or closing) raises
+`transcript.nudge` for the Moa pane on `GET /api/events`, to a phone that has
+read its `/turns`, exactly as for any pane.
+
+**Moa's own permission dialog.** When Moa's terminal shows its own
+permission dialog ("Do you want to proceed?"), the phone cannot answer it:
+the dialog never becomes an approval record, so there is nothing for
+`/api/approvals` to answer, and it is answered on the desktop. While it is
+up:
+
+- `/turns` reports `chat.blocked: {by: "terminal"}` (and `chat.blocked` /
+  `chat.unblocked` follow on `/api/events` as for any pane);
+- `POST …/chat/messages` answers `409 {error:"chat-blocked", result:"blocked",
+  blockedBy:"terminal", effect:"none"}`, and a send already admitted is
+  refused before Enter (`authorization-expired`);
+- `POST /api/input` answers `409 {error:"terminal-prompt-active",
+  effect:"none"}` for anything but ESC (`\x1b`) or Ctrl-C (`\x03`), which only
+  decline the dialog;
+- `POST …/chat/cancel` still works (it is ESC).
 
 Revocation: switching Moa off, changing the HQ, or the HQ going missing closes
 the Moa pane on the daemon at once — before the desktop's own lists catch up.
@@ -3226,10 +3248,14 @@ admission but withdrawn before its first write answers
 at delivery; a `/turns` read answers `404`. On any of these, re-read
 `/api/config`: no `moaSessionId` means Moa is closed.
 
-Every send that reaches the Moa pane from a paired device (chat send or
-cancel, raw input) writes one `moa-send` line to the device audit log with the
-device id, the pane and the route (`chat` or `input`), never the text.
-Repeats of the same device, pane and route within a minute are one line.
+Every send that reaches the Moa pane from a paired device writes one
+`moa-send` line to the device audit log with the device id, the pane and the
+route (`chat` or `input`), never the text. It is written at the write itself:
+a chat send when its text is in Moa's composer and only Enter follows, a
+cancel immediately before its ESC, raw input with the bytes. A message
+still waiting in the queue, or refused before anything was typed, writes
+nothing. Repeats of the same device, pane and route within a minute are one
+line.
 
 Never exposed, on any route: the brain's environment, its commander token, or
 its hook and MCP configuration. A device holding input can of course ask Moa
