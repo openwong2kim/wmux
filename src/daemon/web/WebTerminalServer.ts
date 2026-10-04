@@ -2453,6 +2453,11 @@ export class WebTerminalServer {
       // through the same helper, at request time. The getter is always wired,
       // so testing it for `undefined` advertised routes that answered 503.
       const desktopAvailable = this.availableDesktop() !== null;
+      // `moa` comes from the desktop sidebar snapshot the list routes share:
+      // immediate while one is cached, and on a cold start bounded by the same
+      // first-paint wait — this is the first call a phone makes, so a
+      // cache-only read would leave `moa` out of exactly the answer it keeps.
+      const sidebar = await this.desktopSidebar();
       return this.json(res, 200, {
         // THIS CALLER's effective grant, not the server flag. A phone paired
         // read-only asks the same question a phone paired with input does, and
@@ -2556,6 +2561,10 @@ export class WebTerminalServer {
         // that they are present now: each field is omitted while the desktop
         // is away. Omitted without a bridge, and by an older daemon.
         ...(this.deps.desktop ? { fleetSidebar: true } : {}),
+        // Moa (the desktop's HQ main bot) is on and its HQ workspace exists.
+        // OMITTED, not false, otherwise — Moa off, no HQ, no desktop attached,
+        // or an older desktop or daemon: the phone reads all of them as "no Moa".
+        ...(sidebar?.moa === true ? { moa: true } : {}),
         // Phone channel Inbox (§9): the four `/api/channels*` routes answer
         // here. OMITTED, not false, exactly when they would answer 503
         // `channels-unavailable` — the shape a pre-channels daemon serves.
@@ -3225,8 +3234,9 @@ export class WebTerminalServer {
             ...sidebarWorkspaceFields(extra, nesting.nested.get(w.id), nesting.summaries.get(w.id), nesting.placement.get(w.id)),
             // The tree may name only this row's own sessions (see phoneWorkspaceLayout).
             ...(extra.layout ? { layout: phoneWorkspaceLayout(extra.layout, w.panes.map((pane) => pane.sessionId)) } : {}),
+            ...hqRole(sidebar, w.id),
           }
-        : { ...w, panes };
+        : { ...w, panes, ...hqRole(sidebar, w.id) };
     });
     // Only an id this reply lists, so the active workspace cannot name one the
     // phone is not allowed to see (a brain-only workspace, for one).
@@ -3251,7 +3261,9 @@ export class WebTerminalServer {
     return this.json(res, 200, {
       sessions: sessions.map((s) => {
         const pane = labels.get(s.id);
-        if (!pane) return s;
+        // By the daemon's own record of the session's workspace, label or not.
+        const role = hqRole(sidebar, s.workspaceId);
+        if (!pane) return { ...s, ...role };
         return {
           ...s,
           // Same rule as /api/workspaces: a pane id only where the desktop and
@@ -3259,6 +3271,7 @@ export class WebTerminalServer {
           ...(pane.paneId !== undefined && pane.workspaceId === s.workspaceId ? { paneId: pane.paneId } : {}),
           ...(pane.surfaceTitle !== undefined ? { surfaceTitle: pane.surfaceTitle } : {}),
           ...(pane.paneName !== undefined ? { paneName: pane.paneName } : {}),
+          ...role,
         };
       }),
     });
@@ -3682,11 +3695,15 @@ export class WebTerminalServer {
         if (command === 'workspaces.list' && result && typeof result === 'object') {
           const rows = (result as {workspaces?: unknown}).workspaces;
           if (!Array.isArray(rows)) throw new Error('invalid workspaces');
+          // The HQ id rides in the sidebar projection; the projection itself
+          // is not part of this reply.
+          const sidebar = parsePhoneSidebarSnapshot((result as {sidebar?: unknown}).sidebar);
           result = {workspaces: rows.map(row => ({id:row.id,name:row.name,
             sessionId: typeof row.sessionId === 'string' && this.attachableSession(principal,row.sessionId) ? row.sessionId : null,
             // Additive settle state (visibility only, desktop-owned).
             ...(row.settled === true ? {settled:true} : {}),
-            ...(typeof row.snoozedUntil === 'number' && Number.isFinite(row.snoozedUntil) ? {snoozedUntil:row.snoozedUntil} : {})}))};
+            ...(typeof row.snoozedUntil === 'number' && Number.isFinite(row.snoozedUntil) ? {snoozedUntil:row.snoozedUntil} : {}),
+            ...hqRole(sidebar,row.id)}))};
         }
         this.json(res,200,result,{'Cache-Control':'no-store'});
       }).catch(() => this.json(res,503,{error:'workspace-request-unconfirmed'}));
@@ -9046,6 +9063,14 @@ function sidebarWorkspaceFields(
         }
       : {}),
   };
+}
+
+/**
+ * `role: "hq"` for a row of the desktop's Moa HQ workspace, nothing for any
+ * other row or without a snapshot. The phone hides HQ rows by this key alone.
+ */
+function hqRole(sidebar: PhoneSidebarSnapshot | null, workspaceId: unknown): { role?: 'hq' } {
+  return sidebar?.hqWorkspaceId !== undefined && workspaceId === sidebar.hqWorkspaceId ? { role: 'hq' } : {};
 }
 
 /** A pane's extracted scrollback is current while nothing was written and the geometry held. */

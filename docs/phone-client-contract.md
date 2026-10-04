@@ -375,12 +375,12 @@ GET /api/events?since=<cursor>     (Bearer)
 
 ```
 GET /api/config    → {allowInput, allowUpload, allowTranscript, inlineImages?, liveActivityPush?,
-                      gatedTools, gateEnabled?, fleetSidebar?, channels?, terminalPromptDetail?,
+                      gatedTools, gateEnabled?, fleetSidebar?, moa?, channels?, terminalPromptDetail?,
                       terminalPromptDecline?, protocolVersion, minProtocolVersion,
                       serverVersion, hostPlatform}
 GET /api/sessions  → {sessions: [{id, cwd, spawnCwd?, cols, rows, state, agent, lastActivity,
                       workspace?, workspaceId?, shell?, lastDetectedAgent?, cwdLeaf?,
-                      liveness?, lastAssistantText?, surfaceTitle?, paneName?, deferred?}]}
+                      liveness?, lastAssistantText?, surfaceTitle?, paneName?, role?, deferred?}]}
 POST /api/input?session=<id>   body: raw bytes
 ```
 
@@ -2831,12 +2831,13 @@ an owner-bound request bridge, never an arbitrary RPC supplied by the phone.
   120-character titles, 16,000-character bodies, and 64 KiB serialized storage.
   Conflicting or unconfirmed writes must refresh before another edit; never retry
   a replacement automatically. Saving or inserting a command does not execute it.
-- `GET /api/desktop-workspaces` returns `{workspaces:[{id,name,sessionId,settled?,snoozedUntil?}]}`; a session ID
+- `GET /api/desktop-workspaces` returns `{workspaces:[{id,name,sessionId,settled?,snoozedUntil?,role?}]}`; a session ID
   is nullable and must pass the caller's attachable-session check. `settled: true` marks a
   workspace whose work the desktop considers finished (idle for the configured days, or its
   PR merged/closed, or settled by hand); `snoozedUntil` is the epoch-ms end of a snooze. Both
   are additive, absent when not set, and visibility hints only: the workspace is still open
-  and every operation on it works as before. `POST /api/workspaces` accepts
+  and every operation on it works as before. `role: "hq"` marks the Moa HQ workspace (see
+  *The Moa HQ* under *Desktop sidebar fields*). `POST /api/workspaces` accepts
   `{requestId,name,cwd?}`. Both require input permission. Creation requires a
   nonempty name and, when supplied, an existing absolute Mac directory. UUID
   request identity becomes the persisted workspace ID, so retrying an existing
@@ -3134,6 +3135,38 @@ session in a pane of that workspace.
 
 Top level of `GET /api/workspaces`: `activeWorkspaceId` — the workspace the
 desktop is showing, present only when it is one of the listed rows.
+
+#### The Moa HQ (`role`, `moa`)
+
+Moa is the desktop's HQ main bot. It lives in one app-owned workspace, the HQ,
+which the desktop keeps out of its normal workspace list. The phone learns
+which workspace that is from one key, never from a name or an id it guesses:
+
+- `role: "hq"` — on every row that belongs to the HQ workspace, on three
+  routes: the HQ's row of `GET /api/workspaces`, its row of
+  `GET /api/desktop-workspaces`, and every `GET /api/sessions` row whose
+  `workspaceId` is the HQ. `"hq"` is the only value; any other row has no
+  `role` key. Treat an unknown value as no role. It follows the desktop's own
+  rule, so it is present whenever the desktop has an HQ designated, whether
+  or not Moa is switched on.
+- Hide `role: "hq"` rows from the normal workspace and session lists, as the
+  desktop does, and decide that by `role` alone.
+- Presence rules are those of every field above: from the desktop only, and
+  omitted while it is not attached (or too old to say), in which case the HQ
+  shows as an ordinary workspace, exactly as before.
+
+`moa: true` in `GET /api/config` says Moa is switched on AND its HQ workspace
+exists. It is **omitted, never `false`**, otherwise: Moa off, no HQ, the HQ
+workspace gone, no desktop attached, or a desktop or daemon that predates it.
+Read a missing key as "no Moa". On a cold daemon this answer may wait up to a
+quarter of a second for the desktop's first snapshot, like the first list poll.
+
+Approvals and decisions raised in the HQ are not filtered: they reach
+`GET /api/approvals`, `GET /api/events` and push exactly as any other
+workspace's do, so answer them from the approvals inbox as usual even while
+the HQ's rows are hidden. The HQ's orchestrator brain pane stays refused to a
+paired device like every brain pane (it is never listed, streamed or carried
+in a layout tree), and no route names a Moa session yet.
 
 #### Workspace layout tree
 
