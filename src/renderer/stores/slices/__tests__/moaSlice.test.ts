@@ -54,6 +54,14 @@ describe('the remembered HQ id', () => {
     expect(localStorage.getItem(MOA_HQ_SEED_KEY)).toBeNull();
   });
 
+  it('ignores an answer that is not Moa\'s state and keeps what it had', async () => {
+    mainState = moa('hq');
+    await useStore.getState().refreshMoa();
+    mainState = {} as never;
+    await expect(useStore.getState().refreshMoa()).resolves.toBeUndefined();
+    expect(useStore.getState().moa?.hq.workspaceId).toBe('hq');
+  });
+
   it('survives storage that throws', () => {
     const get = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('denied'); });
     const put = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('denied'); });

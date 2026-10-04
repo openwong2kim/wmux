@@ -91,6 +91,9 @@ export const createMoaSlice: StateCreator<StoreState, [['zustand/immer', never]]
     } catch {
       return; // keep the last known state
     }
+    // An answer that is not Moa's state (an older main, a test double) is
+    // ignored the same way: keep what we had.
+    if (!next || typeof next !== 'object' || !next.hq || !next.config) return;
     const prev = get().moa;
     set((state: StoreState) => { state.moa = next; });
     writeMoaHqSeed(next.hq.workspaceId);
