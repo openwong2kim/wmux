@@ -715,6 +715,7 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-10-04 | The Git page leads with the repo: `owner/repo` with its open issue and PR counts, then Issues and Pull requests; branches and worktrees (the branch bar, the ship button) move into a secondary Worktrees tab. The Git page sits beside the tools dock instead of covering it, and an issue or PR dropped on the dock goes to Moa | The owner reads the repo's issues and PRs on this page and rarely its branches, so the branch chrome above the lists was noise. Covering the dock hid Moa exactly when work was being routed to it, and the jump from panes-plus-dock to one full-width page read as the window's proportions changing. Measuring the dock instead of reflowing keeps every terminal at its size |
 | 2026-10-04 | The repo name in the Git page header is a repo switcher (All repos, each open workspace's repo, Follow active workspace); it replaces the This repo / All repos control. A pick sticks across workspace switches and restarts | The owner asked how to move between repos on the page. A page that jumped whenever the active workspace changed made reading another repo's issues impossible, and one control in the place the eye already reads the repo name beats a second, separate scope control |
 | 2026-10-04 | On a rail page the titlebar names the page (Git, Fleet, Schedules, Remote) and hides `+` and the workspace's name and branch; Search & commands stays | Owner feedback: the workspace's title and New workspace read as part of the Git page while they act on the Workspaces page under it. Search & commands is global, so it stays |
+| 2026-10-05 | A fan-out task's mission channel reads in Fleet, as the selected task's Conversation at the foot beside the preview; Moa's task cards, Waiting on you and the deck ledger link to it. No channel list returns | The Channels tab left with the Moa-only right panel (#1771), and with it the only desktop view of worker reports, instructions and ledger transitions. The foot is already Fleet's selection detail, so the conversation follows the selection without reflowing the columns |
 
 ### Desktop conversation view
 
@@ -909,6 +910,12 @@ page stays mounted, full size and inert underneath. It is an attention board
 - **Empty and small fleets:** no agents is one call to action plus the three
   newest finished tasks; up to three agents is one list with the preview
   open. The preview at the foot shows the selected agent's last 20 lines.
+- **Conversation:** a selected fan-out task (its card or its Ready to
+  review row) also shows its mission channel at the foot, beside the
+  preview (stacked below 900px): read-only, oldest first, live, in the same
+  mantle fill. Authors and bodies use the UI face; code stays mono. Moa's
+  task cards, Waiting on you rows and the deck ledger's `#` open Fleet on
+  that task.
 - **Keys:** arrows move across and within columns, 1–4 jump to a column,
   Enter jumps, Space toggles the preview, / searches, a opens the Approvals
   tab with the request waiting on the agent focused (it never approves: the
