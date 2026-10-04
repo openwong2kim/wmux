@@ -707,6 +707,12 @@ interface WebTerminalServerDeps {
   /** Records one phone send to the Moa pane (the device audit log). */
   auditMoaSend?: (entry: { deviceId: string; sessionId: string; route: 'chat' | 'input' }) => void;
   /**
+   * #1772 — an answer or decline to the Moa pane's `terminal_prompt` was
+   * refused as `prompt-changed`: the daemon looks at the screen once, so a
+   * dialog declined in the terminal (Esc sends no hook) loses its card.
+   */
+  moaPromptRefused?: (sessionId: string) => void;
+  /**
    * Overrides for the upload bounds. Test seam only — production takes the
    * module constants, and there is no operator surface for these. Filling a
    * quota honestly is the only way to test the refusal, and 200 MB of temp
@@ -987,6 +993,8 @@ const CHAT_CANCEL_MAX_BODY_BYTES = 4 * 1024;
 const CHAT_DELIVERY_SKEW_MS = 5_000;
 /** Same 1 Hz floor as the nudge: a blocked badge must be right, not instant. */
 const CHAT_BLOCKED_COALESCE_MS = 1000;
+/** Moa card ids remembered until they settle (see `moaCardIds`). */
+const MOA_CARD_IDS_MAX = 32;
 /**
  * N7 — a bridge watch outlives its last reader by at most this long: four of
  * the client's 30 s stale windows (contract §5.5). A visible chat reads every
@@ -1341,6 +1349,13 @@ export class WebTerminalServer {
   private chatV2PushOff: (() => void) | null = null;
   /** Per-pane coalescing timers for the non-recording liveness event. */
   private readonly livenessTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /**
+   * #1772 — approval ids published as Moa cards, until they settle. Moa can
+   * be switched off (or the HQ change) before a card settles, and the phone
+   * that was shown it must still hear it close. Bounded: a pane holds one
+   * pending prompt at a time, so a handful is all this ever holds.
+   */
+  private readonly moaCardIds = new Set<string>();
   /**
    * N3 — the last read-time `chat.blocked` value per pane, as a comparable
    * key ('' = not blocked). Only transitions become live events; the value
@@ -1897,6 +1912,7 @@ export class WebTerminalServer {
     for (const timer of this.chatBlockedTimers.values()) clearTimeout(timer);
     this.chatBlockedTimers.clear();
     this.chatBlockedState.clear();
+    this.moaCardIds.clear();
     // A restarted server asks the desktop afresh rather than serving a
     // snapshot (or a remembered miss) from before the stop, and a refresh
     // still in flight from before it lands in a dead generation.
@@ -4518,9 +4534,24 @@ export class WebTerminalServer {
    * itself, so a missed badge costs a refused send, not a wrong one.
    */
   private async readChatBlocked(chat: ChatBridge, sessionId: string, resolution: ChatResolution): Promise<ChatBlocked | undefined> {
-    // The Moa pane's permission dialog never becomes an approval record (its
-    // hooks go to main), so main's dialog flag is what says it is blocked.
-    if (this.moaDialogUp(sessionId)) return { by: 'terminal' };
+    // The Moa pane's permission dialog: the bridge computes nothing for a
+    // brain pane, so its record (#1772) is read here, shaped like any other
+    // pane's — a capable caller sees `{by:'approval', approvalId}`. Main's
+    // dialog flag alone, with no record yet, is the bare terminal block.
+    if (this.moaSession(sessionId)) {
+      const pending = this.deps.approvals?.list().pending
+        .find((r) => r.sessionId === sessionId && r.kind === 'terminal_prompt' && !isNativeDecision(r));
+      if (pending) {
+        return {
+          by: 'terminal',
+          terminalPrompt: {
+            approvalId: pending.id,
+            answerable: !!pending.promptFingerprint && !!pending.choices?.length && pending.pressedAt === undefined,
+          },
+        };
+      }
+      if (this.moaDialogUp(sessionId)) return { by: 'terminal' };
+    }
     // Producer-side brain gate (#1397/#1402): computed for no brain pane but
     // the Moa pane, whichever path asks.
     if (this.isBrainApproval(sessionId) && !this.moaSession(sessionId)) return undefined;
@@ -4566,6 +4597,18 @@ export class WebTerminalServer {
     const legacy = bodyOf(views.legacy);
     const capable = bodyOf(views.capable);
     this.deliverChatEvent(sessionId, (caps) => (caps.terminalPromptAnswer ? capable : legacy));
+  }
+
+  /**
+   * #1772 — a Moa card settled after Moa was switched off: the recompute no
+   * longer runs for the pane (it is a brain pane like any other now), so a
+   * watcher that was told it is blocked hears `chat.unblocked` from here, once.
+   */
+  private releaseMoaChatBlocked(sessionId: string): void {
+    if (!this.chatBlockedState.get(sessionId)) return;
+    this.chatBlockedState.delete(sessionId);
+    const body = JSON.stringify({ sessionId, at: this.now() });
+    this.deliverChatEvent(sessionId, () => ({ event: 'chat.unblocked', body }));
   }
 
   /**
@@ -7076,8 +7119,10 @@ export class WebTerminalServer {
     // to drop; it is here because the producer is one path and this route is
     // what a device actually reads. Same credential split as
     // `attachableSession`: the operator's own surfaces keep the full list.
+    // #1772 — the Moa pane's own prompt is the one brain record a device sees,
+    // while main vouches for the Moa pane (see deviceBarredApproval).
     const visible = (r: ApprovalRequest): boolean =>
-      principal.kind === 'operator' || !this.isBrainApproval(r.sessionId);
+      principal.kind === 'operator' || !this.deviceBarredApproval(r.sessionId);
     // A settled `terminal_prompt` is history only when a phone ANSWERED it
     // (`pressedAt`: approved or declined remotely), decided from the record
     // alone — whatever this caller is shown of it (an older client sees no
@@ -7117,6 +7162,22 @@ export class WebTerminalServer {
   private isBrainApproval(sessionId: string): boolean {
     const managed = this.deps.sessionManager.getSession(sessionId);
     return isBrainPty({ id: sessionId, env: managed?.meta.env });
+  }
+
+  /**
+   * May a DEVICE not see or answer this pane's approvals? Every brain pane's,
+   * except the Moa pane's while main vouches for it (#1772: its own
+   * permission prompt is a `terminal_prompt` record a phone may answer). The
+   * one check for the device list, every device route and their `authorize`
+   * re-checks, so Moa switched off mid-request refuses there too.
+   */
+  private deviceBarredApproval(sessionId: string): boolean {
+    return this.isBrainApproval(sessionId) && !this.moaSession(sessionId);
+  }
+
+  /** A device's `authorize` verdict on the record's pane, re-read at call time. */
+  private moaAuthorizeVerdict(principal: WebPrincipal, record: ApprovalRequest): 'ok' | 'expired' {
+    return principal.kind === 'device' && this.deviceBarredApproval(record.sessionId) ? 'expired' : 'ok';
   }
 
   /**
@@ -7174,7 +7235,7 @@ export class WebTerminalServer {
     // same 404 as an unknown id, and BEFORE the gate check below: a 403 here
     // would confirm the record exists, which is half of what the exclusion is
     // for. The operator path is untouched.
-    if (record && principal.kind === 'device' && this.isBrainApproval(record.sessionId)) {
+    if (record && principal.kind === 'device' && this.deviceBarredApproval(record.sessionId)) {
       return this.json(res, 404, { error: 'not-found' });
     }
     // The agent's own terminal dialog is answerable only by a client that
@@ -7261,7 +7322,7 @@ export class WebTerminalServer {
       const fresh = await this.authenticate(req, url, false).catch(() => ({ ok: false as const }));
       if (!fresh.ok || !sameCaller(fresh.principal)) return this.json(res, 401, { error: 'authorization-expired' });
       const current = approvals.list().pending.find((r) => r.id === id);
-      if (current && fresh.principal.kind === 'device' && this.isBrainApproval(current.sessionId)) {
+      if (current && fresh.principal.kind === 'device' && this.deviceBarredApproval(current.sessionId)) {
         return this.json(res, 404, { error: 'not-found' });
       }
       if (current && needsInputGrant(current) && !this.mayInput(fresh.principal)) {
@@ -7274,6 +7335,7 @@ export class WebTerminalServer {
       const authorize = async (record: ApprovalRequest): Promise<'ok' | 'expired' | 'read-only'> => {
         const now = await this.authenticate(req, url, false).catch(() => ({ ok: false as const }));
         if (!now.ok || !sameCaller(now.principal)) return 'expired';
+        if (this.moaAuthorizeVerdict(now.principal, record) === 'expired') return 'expired';
         if (needsInputGrant(record) && !this.mayInput(now.principal)) {
           return 'read-only';
         }
@@ -7296,6 +7358,7 @@ export class WebTerminalServer {
           authorize,
         })
         .then((result) => {
+          if (!result.ok && result.reason === 'prompt-changed' && current) this.deps.moaPromptRefused?.(current.sessionId);
           if (result.ok) {
             // 200 with `durable:false` rather than an error: the keystroke IS in
             // the terminal, so the answer landed and the caller must not retry.
@@ -7444,7 +7507,7 @@ export class WebTerminalServer {
     if (!record || record.kind !== 'terminal_prompt' || isNativeDecision(record)) {
       return this.json(res, 404, { error: 'not-found' });
     }
-    if (principal.kind === 'device' && this.isBrainApproval(record.sessionId)) {
+    if (principal.kind === 'device' && this.deviceBarredApproval(record.sessionId)) {
       return this.json(res, 404, { error: 'not-found' });
     }
     // `decision-v2` alone opens the plan dialog's detail (its record says `hasDetail`).
@@ -7492,7 +7555,7 @@ export class WebTerminalServer {
       return listed.pending.find((r) => r.id === id) ?? listed.recentlyResolved.find((r) => r.id === id);
     };
     const record = find();
-    if (!record || (principal.kind === 'device' && this.isBrainApproval(record.sessionId))) {
+    if (!record || (principal.kind === 'device' && this.deviceBarredApproval(record.sessionId))) {
       return this.json(res, 404, { error: 'not-found' });
     }
     // A native decision (a permission or a question) is declined by the
@@ -7529,13 +7592,14 @@ export class WebTerminalServer {
         const fresh = await this.authenticate(req, url, false).catch(() => ({ ok: false as const }));
         if (!fresh.ok || !sameCaller(fresh.principal)) return this.json(res, 401, { error: 'authorization-expired' });
         const current = find();
-        if (!current || (fresh.principal.kind === 'device' && this.isBrainApproval(current.sessionId))) {
+        if (!current || (fresh.principal.kind === 'device' && this.deviceBarredApproval(current.sessionId))) {
           return this.json(res, 404, { error: 'not-found' });
         }
         if (!this.mayInput(fresh.principal)) return this.refuseInput(res, fresh.principal, 'Input permission changed');
-        const authorize = async (): Promise<'ok' | 'expired' | 'read-only'> => {
+        const authorize = async (r: ApprovalRequest): Promise<'ok' | 'expired' | 'read-only'> => {
           const now = await this.authenticate(req, url, false).catch(() => ({ ok: false as const }));
           if (!now.ok || !sameCaller(now.principal)) return 'expired';
+          if (this.moaAuthorizeVerdict(now.principal, r) === 'expired') return 'expired';
           return this.mayInput(now.principal) ? 'ok' : 'read-only';
         };
         const result = await approvals.resolve({
@@ -7547,6 +7611,7 @@ export class WebTerminalServer {
           terminalPromptDecline: TERMINAL_PROMPT_WEB_DECLINE,
           authorize,
         });
+        if (!result.ok && result.reason === 'prompt-changed') this.deps.moaPromptRefused?.(current.sessionId);
         if (result.ok) {
           return this.json(res, 200, {
             state: result.request.state,
@@ -7656,7 +7721,7 @@ export class WebTerminalServer {
     // A record that is gone is NOT refused yet: its receipt may still replay
     // (the history keeps a few records, a receipt keeps a day).
     const record = find();
-    if (record && principal.kind === 'device' && this.isBrainApproval(record.sessionId)) {
+    if (record && principal.kind === 'device' && this.deviceBarredApproval(record.sessionId)) {
       return this.json(res, 404, { error: 'not-found' });
     }
     if (!clientCaps(req).decisionV2) {
@@ -7710,7 +7775,7 @@ export class WebTerminalServer {
         if (seen) return replyTo(seen);
         // A new execution needs a live record.
         const current = find();
-        if (!current || (fresh.principal.kind === 'device' && this.isBrainApproval(current.sessionId))) {
+        if (!current || (fresh.principal.kind === 'device' && this.deviceBarredApproval(current.sessionId))) {
           return this.json(res, 404, { error: 'not-found' });
         }
         let begun: AnswerReceiptBegin;
@@ -7724,6 +7789,7 @@ export class WebTerminalServer {
         const authorize = async (r: ApprovalRequest): Promise<'ok' | 'expired' | 'read-only'> => {
           const now = await this.authenticate(req, url, false).catch(() => ({ ok: false as const }));
           if (!now.ok || !sameCaller(now.principal)) return 'expired';
+          if (this.moaAuthorizeVerdict(now.principal, r) === 'expired') return 'expired';
           return needsInputGrant(r, 'answer') && !this.mayInput(now.principal) ? 'read-only' : 'ok';
         };
         let response: AnswerReceiptResponse;
@@ -7916,7 +7982,7 @@ export class WebTerminalServer {
     if (!id || !/^[A-Za-z0-9-]{16,128}$/.test(clientAnswerId)) return this.json(res, 404, { error: 'not-found' });
     const listed = approvals.list();
     const record = listed.pending.find((r) => r.id === id) ?? listed.recentlyResolved.find((r) => r.id === id);
-    if (record && principal.kind === 'device' && this.isBrainApproval(record.sessionId)) {
+    if (record && principal.kind === 'device' && this.deviceBarredApproval(record.sessionId)) {
       return this.json(res, 404, { error: 'not-found' });
     }
     let receipt;
@@ -8009,9 +8075,33 @@ export class WebTerminalServer {
     // `toolInputSummary` — and a brain pane id a device can then try elsewhere
     // — sitting in the replay window. FLAT, like the liveness gate: the desk
     // drives the brain over RPC, not this fan-out.
-    if (this.isBrainApproval(r.sessionId)) return;
-    // N3 — an approval opening or closing moves the pane's blocked state.
-    this.scheduleChatBlockedCheck(r.sessionId);
+    //
+    // #1772 — the Moa pane's own prompt is the exception while main vouches for
+    // the Moa pane, and a card published that way keeps its later events
+    // (press, resolve, expire, supersede) after Moa is off, so the phone that
+    // showed it can close it — and its chat badge with it.
+    const settles = e.type === 'resolve' || e.type === 'expire' || e.type === 'supersede';
+    if (this.isBrainApproval(r.sessionId)) {
+      const known = this.moaCardIds.has(r.id);
+      if (!known && !this.moaSession(r.sessionId)) return;
+      if (settles) this.moaCardIds.delete(r.id);
+      else if (!known) {
+        this.moaCardIds.add(r.id);
+        while (this.moaCardIds.size > MOA_CARD_IDS_MAX) {
+          const oldest = this.moaCardIds.values().next();
+          if (oldest.done) break;
+          this.moaCardIds.delete(oldest.value);
+        }
+      }
+      if (!this.moaSession(r.sessionId)) {
+        if (settles) this.releaseMoaChatBlocked(r.sessionId);
+      } else {
+        this.scheduleChatBlockedCheck(r.sessionId);
+      }
+    } else {
+      // N3 — an approval opening or closing moves the pane's blocked state.
+      this.scheduleChatBlockedCheck(r.sessionId);
+    }
     this.publish('approval', {
       sessionId: r.sessionId,
       // NOT `id`: the envelope's own `id` is the replay cursor, and identity

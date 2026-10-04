@@ -11,6 +11,8 @@ import type { TranscriptPage, TranscriptStatus } from '../../../shared/transcrip
 import type { DaemonSessionManager } from '../../DaemonSessionManager';
 import type { ChatBridge, ChatResolution, ChatSendOutcome, ChatSendRequest } from '../../chat/chatBridge';
 import type { MoaPaneFact } from '../moaPane';
+import type { ApprovalEvent, ApprovalRegistryApi, ApprovalRequest, ApprovalResolveParams, ApprovalResolveResult } from '../../approvals/types';
+import { TERMINAL_PROMPT_WEB_ANSWER } from '../../approvals/types';
 
 /**
  * The Moa (HQ brain) pane on the phone routes: which brain pane a paired
@@ -71,6 +73,15 @@ describe('the Moa pane on the phone routes', () => {
   let sendHook: ((req: ChatSendRequest) => Promise<void>) | null;
   let destroyed: string[];
   let chat: ChatBridge & { send: ReturnType<typeof vi.fn>; resolve: ReturnType<typeof vi.fn>; cancel: ReturnType<typeof vi.fn> };
+  // #1772 — a stand-in registry: the routes' own gates and authorize closures
+  // are what is under test, not the registry's fences.
+  let records: ApprovalRequest[];
+  let resolveCalls: Array<Omit<ApprovalResolveParams, 'authorize'>>;
+  let verdicts: string[];
+  let beforeAuthorize: (() => void) | null;
+  let resolveResult: ApprovalResolveResult | null;
+  let approvalListeners: Set<(e: ApprovalEvent) => void>;
+  let refused: string[];
 
   beforeEach(() => {
     panes = new Map([
@@ -84,6 +95,34 @@ describe('the Moa pane on the phone routes', () => {
     destroyed = [];
     resolveGate = null;
     sendHook = null;
+    records = [];
+    resolveCalls = [];
+    verdicts = [];
+    beforeAuthorize = null;
+    resolveResult = null;
+    approvalListeners = new Set();
+    refused = [];
+    const approvals: ApprovalRegistryApi = {
+      list: () => ({ pending: records.filter((r) => r.state === 'pending'), recentlyResolved: records.filter((r) => r.state !== 'pending') }),
+      pendingCount: () => records.filter((r) => r.state === 'pending').length,
+      resolve: async (params) => {
+        const { authorize, ...recorded } = params;
+        resolveCalls.push(recorded);
+        const pending = records.find((r) => r.id === params.id && r.state === 'pending');
+        if (!pending) return { ok: false, reason: 'not-found' };
+        beforeAuthorize?.();
+        const verdict = authorize ? await authorize(pending) : 'ok';
+        verdicts.push(verdict);
+        if (verdict !== 'ok') return { ok: false, reason: verdict === 'expired' ? 'unauthorized' : 'input-revoked', request: pending };
+        return resolveResult ?? { ok: true, durable: true, request: { ...pending, pressedAt: 1 } };
+      },
+      onEvent: (listener) => {
+        approvalListeners.add(listener);
+        return () => { approvalListeners.delete(listener); };
+      },
+      terminalPromptDetail: (id) => (records.some((r) => r.id === id && r.state === 'pending')
+        ? { id, command: 'rm -rf build', commandHash: 'h', commandBytes: 12, truncated: false } : null),
+    };
     const resolution: ChatResolution = { source: 'file', status: status() };
     chat = {
       resolve: vi.fn(async () => { await resolveGate?.(); return resolution; }),
@@ -140,6 +179,8 @@ describe('the Moa pane on the phone routes', () => {
       lifecycle: { create: async () => ({ id: 'new' }), destroy: async (id) => { destroyed.push(id); } },
       moaPane: () => moa,
       auditMoaSend: (entry) => { audits.push(entry); },
+      approvals,
+      moaPromptRefused: (sessionId) => { refused.push(sessionId); },
       log: () => { /* silent */ },
       assetsDir: os.tmpdir(),
     });
@@ -402,6 +443,136 @@ describe('the Moa pane on the phone routes', () => {
       moa = { ...HQ };
       const clear = await (await fetch(`${base()}/api/sessions/brain-hq/turns`, { headers: h })).json() as { chat?: { blocked?: unknown } };
       expect(clear.chat?.blocked).toBeUndefined();
+    });
+  });
+
+  describe('Moa\'s own permission prompt as an approval record (#1772)', () => {
+    const FP = 'f'.repeat(32);
+    const prompt = (over: Partial<ApprovalRequest> = {}): ApprovalRequest => ({
+      id: 'ap-moa', sessionId: 'brain-hq', agent: 'claude', kind: 'terminal_prompt', workspaceId: 'ws-hq',
+      createdAt: 1, state: 'pending', toolName: 'Bash', summary: 'rm -rf build', question: 'Do you want to proceed?',
+      choices: [{ key: '1', label: 'Yes' }, { key: '2', label: 'No' }], promptFingerprint: FP, ...over,
+    });
+    const caps = { 'X-Wmux-Client-Caps': 'terminal-prompt-answer, terminal-prompt-decline' };
+    const emit = (type: ApprovalEvent['type'], request: ApprovalRequest) => { for (const l of approvalListeners) l({ type, request }); };
+    const listIds = async (h: Record<string, string>) =>
+      ((await (await fetch(`${base()}/api/approvals`, { headers: { ...h, ...caps } })).json()) as { pending: Array<{ id: string }> }).pending.map((r) => r.id);
+    const answer = (h: Record<string, string>, id = 'ap-moa') =>
+      postJson(`${base()}/api/approvals/${id}`, { ...h, ...caps }, { decision: 'approve', choiceKey: '1', promptFingerprint: FP });
+
+    it('a device lists and answers the Moa pane\'s record while Moa is on — no other brain\'s, and none once Moa is off', async () => {
+      records.push(prompt(), prompt({ id: 'ap-other', sessionId: 'brain-other', workspaceId: 'ws-2' }));
+      await start();
+      const h = device('dev-1');
+      expect(await listIds(h)).toEqual(['ap-moa']);
+      const res = await answer(h);
+      expect(res.status).toBe(200);
+      expect(resolveCalls).toHaveLength(1);
+      expect(resolveCalls[0]).toMatchObject({ id: 'ap-moa', choiceKey: '1', promptFingerprint: FP, terminalPromptAnswer: TERMINAL_PROMPT_WEB_ANSWER });
+      expect((await answer(h, 'ap-other')).status).toBe(404);
+      for (const path of ['detail']) {
+        expect((await fetch(`${base()}/api/approvals/ap-moa/${path}`, { headers: { ...h, ...caps } })).status).toBe(200);
+        expect((await fetch(`${base()}/api/approvals/ap-other/${path}`, { headers: { ...h, ...caps } })).status).toBe(404);
+      }
+      moa = null;
+      expect(await listIds(h)).toEqual([]);
+      expect((await answer(h)).status).toBe(404);
+      expect((await postJson(`${base()}/api/approvals/ap-moa/decline`, { ...h, ...caps }, {})).status).toBe(404);
+      expect((await fetch(`${base()}/api/approvals/ap-moa/detail`, { headers: { ...h, ...caps } })).status).toBe(404);
+      expect(resolveCalls).toHaveLength(1);
+      // The operator's view of every brain is unchanged.
+      expect((await fetch(`${base()}/api/approvals`, { headers: { ...bearer(server.status().token as string), ...caps } })).status).toBe(200);
+    });
+
+    it('Moa switched off while an answer or a decline waits → the authorize re-check refuses, no key', async () => {
+      records.push(prompt());
+      await start();
+      const h = device('dev-1');
+      beforeAuthorize = () => { moa = null; };
+      const res = await answer(h);
+      expect(res.status).toBe(401);
+      moa = { ...HQ };
+      const declined = await postJson(`${base()}/api/approvals/ap-moa/decline`, { ...h, ...caps }, {});
+      expect(declined.status).toBe(401);
+      expect(verdicts).toEqual(['expired', 'expired']);
+      expect(panes.get('brain-hq')!.ptyProcess.write).not.toHaveBeenCalled();
+    });
+
+    it('a decision-v2 answer to the record of a Moa that is off is the same 404', async () => {
+      records.push(prompt());
+      await start();
+      const h = device('dev-1');
+      moa = null;
+      const res = await postJson(`${base()}/api/approvals/ap-moa/answer`, { ...h, 'X-Wmux-Client-Caps': 'decision-v2' },
+        { clientAnswerId: freshId(), formFingerprint: FP, action: 'approve' });
+      expect(res.status).toBe(404);
+      expect(resolveCalls).toEqual([]);
+    });
+
+    it('a prompt-changed refusal asks the daemon to look at the screen', async () => {
+      records.push(prompt());
+      await start();
+      const h = device('dev-1');
+      resolveResult = { ok: false, reason: 'prompt-changed', request: prompt() };
+      expect((await answer(h)).status).toBe(409);
+      expect(refused).toEqual(['brain-hq']);
+    });
+
+    it('/turns shows the record: a capable caller sees the approval id, an older one the terminal', async () => {
+      records.push(prompt());
+      moa = { ...HQ, dialog: { fingerprint: 'ab12' } };
+      await start();
+      const h = device('dev-1');
+      const read = async (extra: Record<string, string>) =>
+        ((await (await fetch(`${base()}/api/sessions/brain-hq/turns`, { headers: { ...h, ...extra } })).json()) as { chat?: { blocked?: unknown } }).chat?.blocked;
+      expect(await read(caps)).toEqual({ by: 'approval', approvalId: 'ap-moa' });
+      expect(await read({})).toEqual({ by: 'terminal' });
+      // Answered already: the badge stays, but it points at the terminal.
+      records[0] = prompt({ pressedAt: 5 });
+      expect(await read(caps)).toEqual({ by: 'terminal' });
+      // No record yet, only main's flag: the bare terminal block.
+      records.length = 0;
+      expect(await read(caps)).toEqual({ by: 'terminal' });
+    });
+
+    it('SSE: the card and its close reach the phone, and its chat badge clears, even after Moa is off; another brain\'s card never does', async () => {
+      records.push(prompt());
+      await start();
+      const h = device('dev-1');
+      emit('create', prompt());
+      emit('create', prompt({ id: 'ap-other', sessionId: 'brain-other' }));
+      const blocked = (await (await fetch(`${base()}/api/sessions/brain-hq/turns`, { headers: { ...h, ...caps } })).json()) as { chat?: { blocked?: unknown } };
+      expect(blocked.chat?.blocked).toEqual({ by: 'approval', approvalId: 'ap-moa' });
+      const ac = new AbortController();
+      const res = await fetch(`${base()}/api/events`, { signal: ac.signal, headers: { ...h, ...caps, Accept: 'text/event-stream' } });
+      const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+      let wire = '';
+      void (async () => {
+        try {
+          for (;;) {
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            wire += Buffer.from(chunk.value).toString('utf8');
+          }
+        } catch { /* aborted */ }
+      })();
+      const until = async (cond: () => boolean) => {
+        const deadline = Date.now() + 4000;
+        while (!cond()) {
+          if (Date.now() > deadline) throw new Error(`timed out: ${wire}`);
+          await new Promise((r) => setTimeout(r, 20));
+        }
+      };
+      try {
+        await until(() => wire.includes('"approvalId":"ap-moa"'));
+        moa = null;
+        records[0] = prompt({ state: 'expired', resolvedAt: 9 });
+        emit('expire', records[0]);
+        await until(() => wire.includes('"phase":"expire"') && wire.includes('chat.unblocked'));
+        expect(wire).not.toContain('ap-other');
+      } finally {
+        ac.abort();
+      }
     });
   });
 

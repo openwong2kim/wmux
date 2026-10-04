@@ -810,6 +810,8 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         // withdrawal closes the next check. See web/moaPane.ts.
         moaPane: currentMoaPane,
         auditMoaSend: (entry) => getDeviceStore().recordMoaSend(entry),
+        // #1772 — a refused answer to the Moa prompt looks at the screen once.
+        moaPromptRefused: (sessionId) => moaPrompt?.noteRefusedPress(sessionId),
         // #782 — the phone turn view. Lazy: the projector is built after the
         // first resume binding, so a getter resolves the live instance per
         // request rather than capturing a null at construction.
@@ -3141,6 +3143,7 @@ function registerRpcHandlers(
       // See the restore path.
       moaPane: currentMoaPane,
       auditMoaSend: (entry) => getDeviceStore().recordMoaSend(entry),
+      moaPromptRefused: (sessionId) => moaPrompt?.noteRefusedPress(sessionId),
       // See the restore path: lazy projector for the phone turn view (#782).
       projector: () => transcriptProjector,
       chat: () => chatBridge,
