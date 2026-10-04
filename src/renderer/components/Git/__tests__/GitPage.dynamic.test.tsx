@@ -74,12 +74,17 @@ beforeEach(() => {
       })),
       shipCommit: vi.fn(), shipPush: vi.fn(), shipCreatePr: vi.fn(),
       repoKey: vi.fn(async (p: string) => ({ key: remoteOf[p] ?? null })),
+      issueList: vi.fn(async () => ({ ok: true, issues: [] })),
+      loginStart: vi.fn(async () => ({ ok: false, message: 'no code', fallback: true })),
+      loginCancel: vi.fn(async () => undefined),
+      onLoginEvent: vi.fn(() => () => undefined),
     },
   };
   act(() => useStore.setState({
     workspaces: [workspace('a', '/code/alpha'), workspace('b', '/code/alpha-wt/feat'), workspace('c', '/code/beta')],
     activeWorkspaceId: 'a', startupDirectory: '', appRoute: 'git', paneGate: 'pending',
-    gitPage: initialGitPageState(),
+    // Most cases read PRs with the branch bar open; the reading-first defaults have their own test.
+    gitPage: { ...initialGitPageState(), tab: 'prs', barOpen: true },
   }));
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -97,6 +102,29 @@ const tab = (name: string) => container.querySelector(`[data-git-page-tab="${nam
 const scopeOption = (label: string) => [...container.querySelectorAll<HTMLElement>('[data-testid="git-scope"] [role="radio"]')].find((b) => b.textContent === label)!;
 
 describe('Git page', () => {
+  it('reading first: opens on Issues with the branch bar folded to one line, and remembers both', async () => {
+    act(() => useStore.setState({ gitPage: initialGitPageState() }));
+    act(() => root.render(createElement(GitPage)));
+    await settle();
+    expect(tab('issues').getAttribute('aria-selected')).toBe('true');
+    const line = container.querySelector('[data-git-bar-toggle]') as HTMLButtonElement;
+    expect(line.textContent).toContain('main');
+    expect(line.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('[data-git-ship-primary]')).toBeNull();
+    act(() => line.click());
+    await settle();
+    expect(container.querySelector('[data-git-ship-primary]')).not.toBeNull();
+    act(() => tab('prs').click());
+    act(() => root.unmount());
+    root = createRoot(container);
+    act(() => root.render(createElement(GitPage)));
+    await settle();
+    expect(tab('prs').getAttribute('aria-selected')).toBe('true');
+    expect(container.querySelector('[data-git-ship-primary]')).not.toBeNull();
+    act(() => (container.querySelector('.wmux-git-bar-collapse') as HTMLButtonElement).click());
+    expect(container.querySelector('[data-git-bar-toggle]')).not.toBeNull();
+  });
+
   it('This repo: the branch bar, then a list/detail split; worktrees live on their own tab', async () => {
     act(() => root.render(createElement(GitPage)));
     await settle();
@@ -176,19 +204,20 @@ describe('Git page', () => {
     expect(container.querySelectorAll('[data-git-repo-group="alpha"] [data-current="true"]').length).toBe(1);
   });
 
-  it('signed out of GitHub: Connect GitHub, falling back to the command to copy', async () => {
+  it('signed out of GitHub: the whole page is the connect card, falling back to the terminal sign-in', async () => {
     prList.mockResolvedValue({ ok: false, code: 'unauthenticated', message: 'GitHub CLI is not authenticated', provider: 'github' });
     act(() => root.render(createElement(GitPage)));
     await settle();
-    const connect = container.querySelector('[data-git-connect]')!;
+    const connect = container.querySelector('[data-gh-connect]')!;
     expect(connect).not.toBeNull();
-    // paneGate is not ready in this test, so no tab can open: the command shows instead.
-    await act(async () => { (connect.querySelector('[data-git-connect-button]') as HTMLButtonElement).click(); });
+    expect(container.querySelector('[data-git-page-tab]')).toBeNull();
+    // gh gave no code: the dialog offers the terminal sign-in instead.
+    await act(async () => { (connect.querySelector('[data-gh-connect-button]') as HTMLButtonElement).click(); });
     await settle();
-    expect(container.querySelector('[data-git-connect-command]')?.textContent).toContain('gh auth login --web');
+    expect(document.body.querySelector('[data-testid="gh-connect-dialog"]')).not.toBeNull();
     // Check again re-asks past the cache.
     prList.mockClear();
-    await act(async () => { (container.querySelector('[data-git-connect-recheck]') as HTMLButtonElement).click(); });
+    await act(async () => { (container.querySelector('[data-gh-connect-recheck]') as HTMLButtonElement).click(); });
     expect(prList).toHaveBeenCalledWith('/code/alpha', true);
   });
 
@@ -196,7 +225,7 @@ describe('Git page', () => {
     prList.mockResolvedValue({ ok: false, code: 'unauthenticated', message: 'GitLab CLI is not authenticated', provider: 'gitlab' });
     act(() => root.render(createElement(GitPage)));
     await settle();
-    expect(container.querySelector('[data-git-connect]')).toBeNull();
+    expect(container.querySelector('[data-gh-connect]')).toBeNull();
     expect(container.textContent).toContain('GitLab CLI is not authenticated');
   });
 
@@ -247,9 +276,9 @@ describe('Git page', () => {
     prList.mockResolvedValue({ ok: false, code: 'cli-missing', message: 'GitHub CLI (gh) is not installed', provider: 'github' });
     act(() => root.render(createElement(GitPage)));
     await settle();
-    expect(container.querySelector('[data-git-install]')).not.toBeNull();
-    expect(container.querySelector('[data-git-connect-button]')).toBeNull();
-    expect(container.querySelector('[data-git-connect-recheck]')).not.toBeNull();
+    expect(container.querySelector('[data-gh-connect-install]')).not.toBeNull();
+    expect(container.querySelector('[data-gh-connect-button]')).toBeNull();
+    expect(container.querySelector('[data-gh-connect-recheck]')).not.toBeNull();
   });
 
   it('reads nothing while the window is hidden, and loads when it is shown', async () => {

@@ -1,5 +1,9 @@
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
+import { isHandoffDrag } from '../Git/handoffDrag';
+
+/** How long a held drag waits over Workspaces before it opens. */
+export const SPRING_LOAD_MS = 500;
 import WebToggle from '../StatusBar/WebToggle';
 import { isMoaHqWorkspace } from '../../stores/slices/moaSlice';
 import { useStore } from '../../stores';
@@ -123,6 +127,26 @@ export default function SidebarNavigation({ compact = false, home = false }: {
     }] : []),
   ];
 
+  const springTimer = useRef<number | null>(null);
+  const cancelSpring = () => {
+    if (springTimer.current !== null) window.clearTimeout(springTimer.current);
+    springTimer.current = null;
+  };
+  useEffect(() => cancelSpring, []);
+  const springLoad = {
+    onDragOver: (e: React.DragEvent<HTMLButtonElement>) => {
+      if (!isHandoffDrag(e.dataTransfer)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'none';
+      if (springTimer.current !== null || useStore.getState().appRoute === 'workspaces') return;
+      springTimer.current = window.setTimeout(() => {
+        springTimer.current = null;
+        useStore.getState().setAppRoute('workspaces');
+      }, SPRING_LOAD_MS);
+    },
+    onDragLeave: cancelSpring,
+    onDrop: cancelSpring,
+  };
   return (
     <nav className={`wmux-sidebar-nav${compact ? ' wmux-sidebar-nav-compact' : ''}`} aria-label={t('sidebar.navigation')}>
       {entries.map(({ id, label, name, active, icon, onClick }) => {
@@ -138,6 +162,9 @@ export default function SidebarNavigation({ compact = false, home = false }: {
             aria-pressed={home ? undefined : active}
             title={compact ? name : undefined}
             onClick={onClick}
+            // Spring-loaded: an issue / PR dragged from the Git page and held
+            // over Workspaces opens it, so the drop can land on a pane or a row.
+            {...(id === 'home' ? springLoad : {})}
           >
             <span className="wmux-nav-icon" aria-hidden="true">{icon}</span>
             {!compact && <span className="wmux-nav-label min-w-0 flex-1 truncate text-left">{label}</span>}

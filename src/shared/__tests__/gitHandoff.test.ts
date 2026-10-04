@@ -26,6 +26,7 @@ describe('hand-off message', () => {
   it('an untrusted title becomes one safe, capped line', () => {
     const evil = 'Fix\nrm -rf /\r\u001b[31mred\u0007 "quoted"\u2028x';
     const t = sanitizeHandoffTitle(evil);
+    // eslint-disable-next-line no-control-regex
     expect(t).not.toMatch(/[\n\r\u001b\u0007\u2028]/);
     expect(t).not.toContain('"');
     expect(t).toBe("Fix rm -rf / [31mred 'quoted' x");

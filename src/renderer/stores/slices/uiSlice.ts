@@ -87,7 +87,7 @@ export function siteGuidesAutoEnablePatch(input: {
 }
 import type { FleetSortMode } from '../selectors/fleet';
 import { EMPTY_FILTER, type WorkspaceFilter } from '../../components/Sidebar/workspaceFilter';
-import { initialGitPageState, type GitPageState } from '../../components/Git/gitPageState';
+import { initialGitPageState, type GitDragContext, type GitHandoffOpen, type GitPageState } from '../../components/Git/gitPageState';
 import { multiviewColumnCount, type MultiviewArrangement } from '../../utils/multiviewGrid';
 import {
   normalizeRoleBinding,
@@ -209,6 +209,13 @@ export interface UISlice {
   // button waits on it. Session-only.
   gitMerge: Record<string, boolean>;
   setGitMerge: (repoKey: string, active: boolean) => void;
+  // An issue / PR drag from the Git page: its repo, set at dragstart and
+  // cleared at dragend (never exposed through DataTransfer).
+  gitDragContext: GitDragContext | null;
+  setGitDragContext: (ctx: GitDragContext | null) => void;
+  // The open hand-off confirm popover, or null.
+  gitHandoff: GitHandoffOpen | null;
+  setGitHandoff: (open: GitHandoffOpen | null) => void;
 
   // S-C1 Fleet View — full-screen cockpit overlay (Ctrl+Shift+A). Transient
   // UI state; never persisted (buildSessionData allowlist excludes it, like the
@@ -1126,6 +1133,14 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   gitMerge: {},
   setGitMerge: (repoKey, active) => set((state) => {
     if (state.gitMerge[repoKey] !== active) state.gitMerge[repoKey] = active;
+  }),
+  gitDragContext: null,
+  setGitDragContext: (ctx) => set((state) => {
+    state.gitDragContext = ctx;
+  }),
+  gitHandoff: null,
+  setGitHandoff: (open) => set((state) => {
+    state.gitHandoff = open;
   }),
 
   // ─── Rail route ──────────────────────────────────────────────────────────

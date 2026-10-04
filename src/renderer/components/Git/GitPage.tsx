@@ -24,6 +24,9 @@ import { PrSection } from './PrSection';
 import { IssueSection } from './IssueSection';
 import { GitDetail } from './GitDetail';
 import { useRepoGroups } from './repoGroups';
+import { GhConnectPage } from './GhConnectPage';
+import { useGhAuthGate } from './ghAuthGate';
+import type { GitDragContext } from './gitPageState';
 import { saveGitTab, type GitPageTab, type GitScope, type GitSelection } from './gitPageState';
 import type { PrSummary } from '../../../shared/prSurface';
 import type { IssueFilter, IssueSummary } from '../../../shared/issueSurface';
@@ -42,6 +45,15 @@ export default function GitPage() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [repoName, setRepoName] = useState<string | null>(null);
   const [resolved, setResolved] = useState<{ repoPath: string; mainPath: string } | null>(null);
+  // Signed out or no gh: the page is one connect card (re-read on refresh / after a login).
+  const gate = useGhAuthGate(resolved?.repoPath ?? null, refreshKey);
+  const recheck = () => setRefreshKey((k) => k + 1);
+  // Where a dragged item comes from, for "Start in a new worktree" after the drop:
+  // the repo and the active workspace (the fan-out's owner).
+  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
+  const groupContext = (repoPath: string): GitDragContext | undefined =>
+    activeWorkspaceId ? { repoPath, workspaceId: activeWorkspaceId } : undefined;
+  const repoContext = resolved ? groupContext(resolved.repoPath) : undefined;
   // Each list's last answer, so the detail pane can find the selected item.
   const [items, setItems] = useState<Record<string, PrSummary[] | IssueSummary[]>>({});
   // Bumped by every new list answer, so the list scroll can be restored once
@@ -103,6 +115,10 @@ export default function GitPage() {
 
       <GitTab layout="summary" refreshKey={refreshKey} onRepo={setRepoName} onResolved={setResolved} />
 
+      {(gate === 'unauthenticated' || gate === 'cli-missing') ? (
+        // Not connected (or gh missing): the whole page is the connect card.
+        <GhConnectPage gate={gate} onRecheck={recheck} onConnected={recheck} />
+      ) : (<>
       <div className="wmux-git-toolbar">
         <div role="tablist" aria-label={t('git.tab.label')} className="wmux-git-tabs">
           {TABS.map((tab) => (
@@ -157,6 +173,7 @@ export default function GitPage() {
                     selected={sel && sel.repoPath === resolved.repoPath ? sel.number : null}
                     onSelect={(n) => select(resolved.repoPath, n)}
                     onItems={publish(resolved.repoPath, kind)}
+                    dragContext={repoContext}
                   />
                 )
               ) : (
@@ -180,6 +197,7 @@ export default function GitPage() {
                   repoLabel={page.scope === 'repo' ? repoName ?? '' : repoLabelOf(sel.repoPath)}
                   pr={kind === 'pr' ? (selItem as PrSummary) : null}
                   issue={kind === 'issue' ? (selItem as IssueSummary) : null}
+                  repo={page.scope === 'repo' ? repoContext : groupContext(sel.repoPath)}
                 />
               ) : (
                 <GitDetail kind={kind} repoPath="" repoLabel="" />
@@ -188,6 +206,7 @@ export default function GitPage() {
           </div>
         )}
       </div>
+      </>)}
     </div>
   );
 }
@@ -233,7 +252,7 @@ function ListPane({ scrollKey, ready, children }: { scrollKey: string; ready: nu
   );
 }
 
-function RepoList({ tab, repoPath, refreshKey, active, filter, onFilter, selected, onSelect, onItems }: {
+function RepoList({ tab, repoPath, refreshKey, active, filter, onFilter, selected, onSelect, onItems, dragContext }: {
   tab: GitPageTab;
   repoPath: string;
   refreshKey: number;
@@ -244,6 +263,7 @@ function RepoList({ tab, repoPath, refreshKey, active, filter, onFilter, selecte
   selected: number | null;
   onSelect: (n: number) => void;
   onItems: (list: PrSummary[] | IssueSummary[]) => void;
+  dragContext?: GitDragContext;
 }) {
   return tab === 'issues' ? (
     <IssueSection
@@ -256,6 +276,7 @@ function RepoList({ tab, repoPath, refreshKey, active, filter, onFilter, selecte
       selected={selected}
       onSelect={(i) => onSelect(i.number)}
       onItems={onItems}
+      dragContext={dragContext}
     />
   ) : (
     <PrSection
@@ -266,6 +287,7 @@ function RepoList({ tab, repoPath, refreshKey, active, filter, onFilter, selecte
       selected={selected}
       onSelect={(p) => onSelect(p.number)}
       onItems={onItems}
+      dragContext={dragContext}
     />
   );
 }
@@ -282,6 +304,7 @@ function AllLists({ tab, refreshKey, filter, onFilter, sel, onSelect, publish }:
 }) {
   const t = useT();
   const groups = useRepoGroups(refreshKey);
+  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const [open, setOpen] = useState<Record<string, boolean>>({});
   if (groups === null) return <div className="wmux-git-note">{t('git.loading')}</div>;
   if (groups.length === 0) return <div className="wmux-git-note" data-git-all-empty>{t('git.allRepos.empty')}</div>;
@@ -313,6 +336,7 @@ function AllLists({ tab, refreshKey, filter, onFilter, sel, onSelect, publish }:
                 selected={sel && sel.repoPath === g.prPath ? sel.number : null}
                 onSelect={(n) => onSelect(g.prPath, n)}
                 onItems={publish(g.prPath)}
+                dragContext={activeWorkspaceId ? { repoPath: g.prPath, workspaceId: activeWorkspaceId } : undefined}
               />
             )}
           </section>

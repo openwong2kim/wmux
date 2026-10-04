@@ -19,6 +19,23 @@ import { getIssueBridge } from './IssueSection';
 import { relTime } from './useGitList';
 import type { PrSummary, PrComment } from '../../../shared/prSurface';
 import type { IssueDetail, IssueSummary } from '../../../shared/issueSurface';
+import { useStore } from '../../stores';
+import { parseIssueRef, issueUrlParts, serializeIssueRef } from '../../../shared/issueRef';
+import { parsePrDragRef, prUrlParts, serializePrDragRef } from '../../../shared/prDragRef';
+import type { HandoffRef } from '../../../shared/gitHandoff';
+import type { GitDragContext } from './gitPageState';
+
+/** The selected item as a hand-off ref (URL-checked), or null when its URL is not GitHub's shape. */
+function handoffRefOf(kind: 'pr' | 'issue', item: { number: number; title: string; url: string }): HandoffRef | null {
+  if (kind === 'issue') {
+    const p = issueUrlParts(item.url);
+    const ref = p ? parseIssueRef(serializeIssueRef({ ...p, title: item.title, url: item.url })) : null;
+    return ref ? { kind: 'issue', ref } : null;
+  }
+  const p = prUrlParts(item.url);
+  const ref = p ? parsePrDragRef(serializePrDragRef({ ...p, title: item.title, url: item.url })) : null;
+  return ref ? { kind: 'pr', ref } : null;
+}
 
 const md = (s: string) => renderBrainMarkdown(s, { links: true, githubHtml: true });
 
@@ -75,15 +92,21 @@ function DetailError({ label, error, retry }: { label: string; error: string; re
   );
 }
 
-function DetailHeader({ title, number, repo, url, state, author }: {
+function DetailHeader({ title, number, repo, url, state, author, handoff, repoContext }: {
   title: string;
   number: number;
   repo: string;
   url: string;
   state: React.ReactNode;
   author: string;
+  /** The item to hand to an agent (the keyboard / a11y twin of dragging it). */
+  handoff: HandoffRef | null;
+  repoContext?: GitDragContext;
 }): React.ReactElement {
   const t = useT();
+  const open = () => {
+    if (handoff) useStore.getState().setGitHandoff({ item: handoff, ...(repoContext ? { repo: repoContext } : {}) });
+  };
   return (
     <header className="wmux-git-detail-head" data-git-detail-head>
       <div className="wmux-git-detail-titlerow">
@@ -91,6 +114,16 @@ function DetailHeader({ title, number, repo, url, state, author }: {
         <div className="wmux-git-detail-actions">
           {/* Reserved for "who acts next" (the shared work-link model); empty until then. */}
           <div className="wmux-git-detail-slot" data-git-detail-slot />
+          {handoff && (
+            <button type="button" className={`wmux-git-button ${FOCUS_RING}`} onClick={open} data-git-send-agent>
+              {t('git.detail.sendToAgent')}
+            </button>
+          )}
+          {handoff?.kind === 'issue' && repoContext && (
+            <button type="button" className={`wmux-git-button ${FOCUS_RING}`} onClick={open} data-git-start-worktree>
+              {t('git.detail.startWorktree')}
+            </button>
+          )}
           <button
             type="button"
             className={`wmux-git-button ${FOCUS_RING}`}
@@ -212,10 +245,12 @@ function IssueBody({ repoPath, issue, refreshKey }: { repoPath: string; issue: I
   );
 }
 
-export function GitDetail({ kind, repoPath, repoLabel, pr, issue, refreshKey = 0 }: {
+export function GitDetail({ kind, repoPath, repoLabel, pr, issue, refreshKey = 0, repo }: {
   kind: 'pr' | 'issue';
   /** The page's refresh: the detail reads again too. */
   refreshKey?: number;
+  /** The repo and workspace the item belongs to (for "Start in a new worktree"). */
+  repo?: GitDragContext;
   repoPath: string;
   repoLabel: string;
   pr?: PrSummary | null;
@@ -225,7 +260,16 @@ export function GitDetail({ kind, repoPath, repoLabel, pr, issue, refreshKey = 0
   if (kind === 'pr' && pr) {
     return (
       <article className="wmux-git-detail" aria-label={pr.title} data-git-detail="pr">
-        <DetailHeader title={pr.title} number={pr.number} repo={repoLabel} url={pr.url} author={pr.author} state={<PrStepText pr={pr} />} />
+        <DetailHeader
+          title={pr.title}
+          number={pr.number}
+          repo={repoLabel}
+          url={pr.url}
+          author={pr.author}
+          state={<PrStepText pr={pr} />}
+          handoff={handoffRefOf('pr', pr)}
+          repoContext={repo}
+        />
         <PrBody key={`${repoPath}\0${pr.number}`} repoPath={repoPath} pr={pr} refreshKey={refreshKey} />
       </article>
     );
@@ -240,6 +284,8 @@ export function GitDetail({ kind, repoPath, repoLabel, pr, issue, refreshKey = 0
           url={issue.url}
           author={issue.author}
           state={<span className="wmux-git-step">{t(`git.issues.state.${issue.state}`)}</span>}
+          handoff={handoffRefOf('issue', issue)}
+          repoContext={repo}
         />
         <IssueBody key={`${repoPath}\0${issue.number}`} repoPath={repoPath} issue={issue} refreshKey={refreshKey} />
       </article>

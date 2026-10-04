@@ -53,6 +53,7 @@ import { useTerminalCopyShortcut } from '../../hooks/useTerminalCopyShortcut';
 import { useNotificationListener } from '../../hooks/useNotificationListener';
 import { useRpcBridge } from '../../hooks/useRpcBridge';
 import AgentMentionPicker from '../Palette/AgentMentionPicker';
+import HandoffPopover from '../Git/HandoffPopover';
 import { useWorkspaceMirrorPush } from '../../hooks/useWorkspaceMirrorPush';
 import { useMoaSync } from '../../hooks/useMoaSync';
 import { useResizeGuard } from '../../hooks/useResizeGuard';
@@ -2084,6 +2085,8 @@ export default function AppLayout() {
       {/* Always mounted: it opens on an event (⌘⇧2 / F2, sidebar) and renders
           nothing until then. */}
       <ErrorBoundary name="AgentMentionPicker"><AgentMentionPicker /></ErrorBoundary>
+      {/* The Git page's hand-off confirm (a drop on an agent pane / workspace row, or Send to agent…). */}
+      <ErrorBoundary name="HandoffPopover"><HandoffPopover /></ErrorBoundary>
       {commandPaletteVisible && (
         <ErrorBoundary name="CommandPalette">
           <Suspense fallback={null}><CommandPalette /></Suspense>

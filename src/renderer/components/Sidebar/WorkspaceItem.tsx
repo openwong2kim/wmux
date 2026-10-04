@@ -35,6 +35,7 @@ import { taskNeedsYou } from './sidebarTree';
 import { WORKSPACE_COLOR_IDS, WORKSPACE_COLOR_HEX, workspaceColorHex, workspaceColorLabelKey } from '../../../shared/workspaceColors';
 import { WORKSPACE_SNOOZE_PRESETS, workspaceSnoozeUntil } from '../../../shared/workspaceSettle';
 import { sendWorkspaceSettleCommand } from '../../hooks/useWorkspaceSettleBridge';
+import { isHandoffDrag, readHandoffDrop } from '../Git/handoffDrag';
 
 interface WorkspaceItemProps {
   /** A1: 부모(Sidebar)는 id만 내리고, 이 컴포넌트가 자기 ws를 self-subscribe해
@@ -365,6 +366,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState(workspace?.name ?? '');
   const [dropIndicator, setDropIndicator] = useState<'above' | 'below' | null>(null);
+  // An issue / PR from the Git page is held over this row.
+  const [handoffOver, setHandoffOver] = useState(false);
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
   const [wdOpen, setWdOpen] = useState(false);
   const [owOpen, setOwOpen] = useState(false);
@@ -760,6 +763,13 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
   };
 
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    // An issue / PR dragged from the Git page: this workspace's agent takes it.
+    if (isHandoffDrag(e.dataTransfer)) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      if (!handoffOver) setHandoffOver(true);
+      return;
+    }
     if (reorderOff) return;
     // A drag with no reorder source (a copy-only hand-off, or text from
     // outside) is not for this row: leave the drop unclaimed.
@@ -785,10 +795,21 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
     // currentTarget 밖으로 나갈 때만 인디케이터 제거
     if (!e.currentTarget.contains(e.relatedTarget as Node)) {
       setDropIndicator(null);
+      setHandoffOver(false);
     }
   };
 
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    if (isHandoffDrag(e.dataTransfer)) {
+      setHandoffOver(false);
+      e.preventDefault();
+      const item = readHandoffDrop(e.dataTransfer);
+      if (item) {
+        const st = useStore.getState();
+        st.setGitHandoff({ item, workspaceId, ...(st.gitDragContext ? { repo: st.gitDragContext } : {}), anchor: { x: e.clientX, y: e.clientY } });
+      }
+      return;
+    }
     if (reorderOff) return;
     setDropIndicator(null);
     // Reorder source comes from the store, not dataTransfer. No source
@@ -948,6 +969,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
+        data-handoff-over={handoffOver ? 'true' : undefined}
       >
         <div className="flex min-w-0 items-start gap-2">
         {/* Status indicator — #1481: one shared mark (AgentMarks.tsx), status
