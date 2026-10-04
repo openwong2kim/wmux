@@ -3161,12 +3161,13 @@ workspace gone, no desktop attached, or a desktop or daemon that predates it.
 Read a missing key as "no Moa". On a cold daemon this answer may wait up to a
 quarter of a second for the desktop's first snapshot, like the first list poll.
 
-Approvals and decisions raised in the HQ are not filtered: they reach
+Approvals and decisions raised by the HQ's panes are not filtered: they reach
 `GET /api/approvals`, `GET /api/events` and push exactly as any other
 workspace's do, so answer them from the approvals inbox as usual even while
 the HQ's rows are hidden. The HQ's orchestrator brain pane stays refused to a
-paired device like every brain pane (it is never listed, streamed or carried
-in a layout tree), and no route names a Moa session yet.
+paired device like every brain pane: it is never listed, streamed or carried
+in a layout tree, and a record whose `sessionId` is the brain pane is withheld
+from a device as before. No route names a Moa session yet.
 
 #### Workspace layout tree
 
