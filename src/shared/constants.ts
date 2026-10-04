@@ -524,6 +524,10 @@ export const IPC = {
   // Git page Issues view (gh CLI, 30s TTL, rate-limit breaker)
   GITHUB_ISSUE_LIST: 'github:issueList',
   GITHUB_ISSUE_DETAIL: 'github:issueDetail',
+  // Work links (src/shared/workLink.ts): renderer reads only; main is the sole writer.
+  WORK_LINK_LIST: 'workLink:list',
+  WORK_LINK_GET: 'workLink:get',
+  WORK_LINK_CHANGED: 'workLink:changed',
   DIALOG_PICK_FILE: 'dialog:pick-file',
   DIALOG_PICK_FOLDER: 'dialog:pick-folder',
   // File system

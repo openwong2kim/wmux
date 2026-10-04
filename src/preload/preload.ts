@@ -1151,6 +1151,19 @@ const electronAPI = {
         import('../shared/issueSurface').IssueDetailResult
       >,
   },
+  // Work links (docs/work-links.md): read-only here, main is the only writer.
+  // onChanged hands over the changed link ids; re-read what you show.
+  workLinks: {
+    list: (filter?: import('../shared/workLink').WorkLinkFilter) =>
+      ipcRenderer.invoke(IPC.WORK_LINK_LIST, filter ?? {}) as Promise<import('../shared/workLink').WorkLink[]>,
+    get: (id: string) =>
+      ipcRenderer.invoke(IPC.WORK_LINK_GET, id) as Promise<import('../shared/workLink').WorkLink | null>,
+    onChanged: (callback: (ids: string[]) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, ids: string[]) => callback(ids);
+      ipcRenderer.on(IPC.WORK_LINK_CHANGED, listener);
+      return () => { ipcRenderer.removeListener(IPC.WORK_LINK_CHANGED, listener); };
+    },
+  },
   // Deck Git 탭 — worktree list/add/remove(렌더러 전용, 파이프 미노출).
   worktree: {
     list: (repoPath: string) =>

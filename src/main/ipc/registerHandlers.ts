@@ -28,6 +28,7 @@ import { registerToolbarHandlers } from './handlers/toolbar.handler';
 import { registerDiffHandlers } from './handlers/diff.handler';
 import { registerWorktreeHandlers } from './handlers/worktree.handler';
 import { registerGithubHandlers } from './handlers/github.handler';
+import { registerWorkLinkHandlers } from './handlers/workLink.handler';
 import { registerMcpHandlers } from './handlers/mcp.handler';
 import { registerTokenUsageQuotaHandlers } from './handlers/tokenUsageQuota.handler';
 import { registerTokenUsageSurfaceHandlers } from './handlers/tokenUsageSurface.handler';
@@ -185,6 +186,8 @@ export function registerAllHandlers(
   const cleanupWorktree = registerWorktreeHandlers();
   // Deck Git 탭 PR 섹션 — gh CLI 기반(미설치/미인증은 fail-closed 안내).
   const cleanupGithub = registerGithubHandlers();
+  // Work links — read-only for the renderer (docs/work-links.md).
+  const cleanupWorkLinks = registerWorkLinkHandlers(getWindow);
   const cleanupMcp = options.mcpRegistrar
     ? registerMcpHandlers(options.mcpRegistrar, options.getMcpAuthToken ?? (() => null))
     : null;
@@ -505,6 +508,7 @@ export function registerAllHandlers(
     cleanupDiff();
     cleanupWorktree();
     cleanupGithub();
+    cleanupWorkLinks();
     if (cleanupMcp) cleanupMcp();
     cleanupTokenUsageQuota();
     cleanupTokenUsageSurface();
