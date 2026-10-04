@@ -1,19 +1,16 @@
-// ─── Right-side channel dock (Approach A) ────────────────────────────────
+// ─── Right-side dock (Approach A) ────────────────────────────────────────
 //
 // A collapsible flex column on the OPPOSITE edge from the workspace sidebar.
-// Holds the channel list (ChannelsPanel) at the top and the active
-// conversation (ChannelView) below. This replaces the old `position: fixed`
-// ChannelView overlay that covered the terminals — the dock is a flex sibling
+// It is Moa only (owner decision, 2026-10-04): the desktop Channels tab is
+// gone; channel data, the MCP channel tools and the phone's /api/channels
+// stay. This replaced the old `position: fixed` ChannelView overlay that
+// covered the terminals — the dock is a flex sibling
 // in AppLayout's root row, so it reflows the panes instead of floating over
 // them. Mounted only when `channelDockVisible` (uiSlice); auto-opens when a
 // channel is selected (channelsSlice.setActiveChannel), and opens AND closes
 // from the titlebar's DeckToggle (2026-08-18) — this component carries no
 // collapse control of its own, because one command deserves one button and a
 // chevron here was that command a second time.
-//
-// Header: the dock has NO header of its own. ChannelsPanel's section header
-// owns the single "Channels" title + unread total + new-channel, so the title
-// shows ONCE instead of being duplicated by a separate dock header.
 //
 // Width: clamped (not a hard 320px) so a narrow window doesn't crush the
 // terminals down to per-character wrapping. The dock gives back space when the
@@ -27,8 +24,6 @@
 import { useStore } from '../../stores';
 import { tokenAttrs } from '../../themes';
 import { useT } from '../../hooks/useT';
-import { ChannelsPanel, sumUnread } from './ChannelsPanel';
-import { ChannelView } from './ChannelView';
 import { DeckTabs } from '../Deck/DeckTabs';
 import { CommanderView } from '../Deck/CommanderView';
 import { MODEL_OPTIONS } from '../Deck/OrchestratorModelChip';
@@ -89,15 +84,6 @@ function CardModeLedger({ workspaceId, t }: { workspaceId: string; t: (key: stri
 }
 
 export default function ChannelDock(): React.ReactElement {
-  const activeDeckTab = useStore((s) => s.activeDeckTab);
-  const setActiveDeckTab = useStore((s) => s.setActiveDeckTab);
-  const channelUnread = useStore((s) => s.channelUnread);
-  // Human channel UI is frozen (PRD §4.1): the tab hides by default and is
-  // re-enabled in Settings as a read-only inspection surface. The setter
-  // snaps activeDeckTab back to commander when the tab is turned off, but a
-  // stale persisted 'channels' can never render either — the guard below.
-  const channelsTabVisible = useStore((s) => s.channelsTabVisible);
-  const setChannelsTabVisible = useStore((s) => s.setChannelsTabVisible);
   // Orchestrator 모델 — 컨트롤 바 칩에서 Agent 탭 인라인 드롭다운으로 이동.
   // DeckTabs는 순수 컴포넌트이므로 라벨·옵션·선택 콜백을 여기서 store와 잇는다.
   const t = useT();
@@ -105,7 +91,6 @@ export default function ChannelDock(): React.ReactElement {
   const setDeckBrainModel = useStore((s) => s.setDeckBrainModel);
   const commanderModelLabel =
     deckBrainModel === '' ? t('deck.orchestratorModelDefault') : claudeModelLabel(deckBrainModel);
-  const showChannelsView = activeDeckTab === 'channels' && channelsTabVisible;
 
   const moa = useStore((s) => s.moa);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId) || '';
@@ -165,16 +150,10 @@ export default function ChannelDock(): React.ReactElement {
       {...tokenAttrs('bgSurface', 'border')}
     >
       <DeckTabs
-        active={showChannelsView ? 'channels' : 'commander'}
-        // Pressing the Channels glyph IS the opt-in, exactly as the deleted
-        // sidebar Channels row was: `channelsTabVisible` ships FALSE, so
-        // hiding the glyph with it left an open deck no way at all to reach
-        // channels — the row used to cover that case from the other edge.
-        onSelect={(tab) => {
-          if (tab === 'channels' && !channelsTabVisible) setChannelsTabVisible(true);
-          setActiveDeckTab(tab);
-        }}
-        channelsUnread={sumUnread(channelUnread)}
+        // The right panel is Moa only: no Channels tab, so nothing to select.
+        active="commander"
+        showChannels={false}
+        onSelect={() => undefined}
         commanderModelLabel={commanderModelLabel}
         commanderModelOptions={MODEL_OPTIONS}
         commanderModelValue={deckBrainModel}
@@ -195,25 +174,7 @@ export default function ChannelDock(): React.ReactElement {
         t={t}
       />
 
-      {!showChannelsView ? (
-        // Commander tab — Moa's conversation (or today's per-workspace one).
-        commander
-      ) : (
-        // Channels tab — the classic list + conversation (unchanged).
-        <>
-          {/* Channel list — its own header now carries the collapse affordance
-              (merged from the old dock header to kill the duplicate "Channels"
-              title). Capped so a long catalog can't crowd out the conversation;
-              scrolls within its share. */}
-          <div className="shrink-0 max-h-[45%] overflow-y-auto">
-            <ChannelsPanel />
-          </div>
-
-          {/* Active conversation — fills the remaining height. Renders null when
-              no channel is active (you still see the list above). */}
-          <ChannelView />
-        </>
-      )}
+      {commander}
     </div>
   );
 }
