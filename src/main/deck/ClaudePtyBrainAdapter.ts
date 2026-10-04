@@ -38,7 +38,7 @@ import { getAccountStore } from '../account/accountStore';
 import { COMMANDER_MODE_ARG, COMMANDER_TOOL_SURFACE, COMMANDER_ONLY_TOOLS } from '../../shared/commanderSurface';
 import { ENV_KEYS, BRAIN_PTY_ID_PREFIX } from '../../shared/constants';
 import { mintCommanderToken, revokeCommanderToken } from './commanderTrust';
-import { registerBrainPty, type BrainPtyHookBlock } from './brainPtyHookBus';
+import { registerBrainPty, type BrainPtyHookBlock, type BrainPtyHookContext } from './brainPtyHookBus';
 import { installBrainSkills } from './brainSkills';
 import type { StopGateVerdict } from './stopGate';
 import { readLastAssistantMessage } from '../claude/lastAssistantMessage';
@@ -399,7 +399,9 @@ export function buildBrainSettingsProfile(opts: {
       // verdict has to travel on this one round trip — a second, independent
       // Stop hook would fire in PARALLEL with this one, so the turn would
       // already have ended by the time the block landed.
-      const gateFlag = event === 'Stop' ? ' --gate' : '';
+      // `UserPromptSubmit` runs it in CONTEXT mode: it prints the response's
+      // `additionalContext` (the HQ brain's view pointer) as hook output.
+      const gateFlag = event === 'Stop' ? ' --gate' : event === 'UserPromptSubmit' ? ' --context' : '';
       hooks[event] = [
         {
           matcher: '',
@@ -644,6 +646,10 @@ export interface ClaudePtyBrainAdapterDeps {
    *  rather than imported so the adapter never reaches into the WorkspaceMirror
    *  itself — the deck owns that lookup. */
   evaluateStopGate?: (workspaceId: string, consecutiveBlocks: number) => StopGateVerdict;
+  /** The context line for a prompt the human typed into this brain (which
+   *  workspace they were viewing), or null for none. Absent means never. The
+   *  deck owns the HQ / Moa / mirror lookup, like the Stop gate. */
+  viewContext?: (workspaceId: string) => string | null;
   sessionStartTimeoutMs?: number;
   turnTimeoutMs?: number;
   staleResumeWindowMs?: number;
@@ -805,7 +811,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
    *  TUI keeps working. The turn stays open — `turnStop` is neither nulled nor
    *  resolved, so no `turn-end` is emitted and TURN_TIMEOUT_MS stays the
    *  backstop. */
-  private onHookSignal(signal: AgentSignal): void | BrainPtyHookBlock {
+  private onHookSignal(signal: AgentSignal): void | BrainPtyHookBlock | BrainPtyHookContext {
     if (signal.kind === 'agent.session_start') {
       this.sessionStartSeen = true;
       this.sessionStarted?.resolve();
@@ -849,7 +855,10 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
         // stale-release deadline must measure from the latest submission.
         this.foreignTurnOpenedAt = now;
         this.foreignTurnPrompt = prompt;
-        if (repeat) return;
+        // Every human submission gets the pointer, a resubmission included:
+        // the model reads each prompt on its own.
+        const context = this.humanPromptContext();
+        if (repeat) return context;
         try {
           // Empty is still meaningful: older Claude hook payloads may omit the
           // prompt. The deck supplies a neutral fallback objective rather than
@@ -858,7 +867,10 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
         } catch {
           /* work tracking is best-effort — never surface into a hook */
         }
+        return context;
       }
+      // Our own send() (an automated wake): no pointer. The human did not
+      // send it, so what they happen to be viewing says nothing about it.
       return;
     }
     if (signal.kind !== 'agent.stop') return;
@@ -916,6 +928,19 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     this.consecutiveStopBlocks = 0;
     this.turnStop = null;
     waiter.resolve(signal);
+  }
+
+  /** The view pointer for a human-typed prompt, if the deck has one. A
+   *  throwing lookup adds nothing: a prompt must never fail over it. */
+  private humanPromptContext(): BrainPtyHookContext | undefined {
+    const lookup = this.deps.viewContext;
+    if (!lookup || !this._workspaceId) return undefined;
+    try {
+      const line = lookup(this._workspaceId);
+      return line ? { additionalContext: line } : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /** Run the injected Stop gate. Returns the refusal reason, or null to allow.

@@ -29,6 +29,7 @@ vi.mock('../../../ipc/handlers/metadata.handler', () => ({
 }));
 
 import { registerHooksRpc, relayHookSignalToDaemon } from '../hooks.rpc';
+import { registerBrainPty } from '../../../deck/brainPtyHookBus';
 import { DaemonNotificationRouter } from '../../../notification/DaemonNotificationRouter';
 
 function fakeWindow(): BrowserWindow {
@@ -394,5 +395,32 @@ describe('relayHookSignalToDaemon', () => {
     await relayHookSignalToDaemon(client, signal());
     const opts = (rpc.mock.calls[0] as unknown as unknown[])[2] as { timeoutMs: number };
     expect(opts.timeoutMs).toBeLessThan(2000);
+  });
+});
+
+describe('hooks.signal — brain-pty lane', () => {
+  it('returns a brain listener\'s context line on the response, with no relay', async () => {
+    const { router: hookRouter } = stubHookRouter();
+    const daemon = fakeDaemon({ connected: true });
+    const line = '[wmux context] viewing workspace "A" (ws-a), pane p, branch main, cwd /a';
+    const off = registerBrainPty('pty-brain', () => ({ additionalContext: line }));
+    try {
+      const res = await dispatchSignal(daemon.client, hookRouter, { kind: 'agent.user_prompt_submit', ptyId: 'pty-brain' });
+      expect(res).toEqual(expect.objectContaining({ ok: true, result: { ok: true, additionalContext: line } }));
+      expect(daemon.rpc).not.toHaveBeenCalled();
+    } finally {
+      off();
+    }
+  });
+
+  it('answers a plain ok when the listener adds nothing', async () => {
+    const { router: hookRouter } = stubHookRouter();
+    const off = registerBrainPty('pty-brain', () => undefined);
+    try {
+      const res = await dispatchSignal(null, hookRouter, { kind: 'agent.user_prompt_submit', ptyId: 'pty-brain' });
+      expect(res.result).toEqual({ ok: true });
+    } finally {
+      off();
+    }
   });
 });

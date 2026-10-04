@@ -20,7 +20,9 @@
 //      reason goes to stderr and the exit code is 2 (Claude Code's "do not let
 //      this hook's action proceed" contract). Only the terminal orchestrator's
 //      Stop hook is wired that way; every other invocation is byte-for-byte
-//      what it always was.
+//      what it always was. Likewise `--context` (the HQ brain's
+//      UserPromptSubmit) prints the endpoint's `additionalContext`, if any, as
+//      hook output and still exits 0.
 //
 // THIS FILE IS SELF-CONTAINED. It runs from inside a Claude Code plugin
 // where TypeScript transpilation is NOT available. Do not import anything
@@ -41,7 +43,8 @@ const HOOK_TIMEOUT_MS = 2000; // hard cap so we never slow Claude
 // (setupHooks.refreshHookBridge, run at boot), never by this number.
 //   0.2.0 — daemon-first targeting (daemon.hooks.signal → hooks.signal).
 //   0.3.0 — suffix-isolated lifecycle routing and bridge state.
-const BRIDGE_VERSION = '0.4.0';
+//   0.5.0 — `--context` mode (HQ brain UserPromptSubmit additionalContext).
+const BRIDGE_VERSION = '0.5.0';
 
 // A2 (2026-05-29 user dogfood: 8 connect-errors during a brief main-process
 // restart / handler-swap window): retry a TRANSIENT connect failure a few
@@ -870,6 +873,26 @@ async function sendToTargets(targets, buildRequest, timeoutMs = HOOK_TIMEOUT_MS)
   return { result, target };
 }
 
+// ----- `--context` — UserPromptSubmit additionalContext output -------------
+
+// Claude Code reads `hookSpecificOutput.additionalContext` from a
+// UserPromptSubmit hook's stdout and adds it to the prompt the model sees.
+// Only the HQ brain's profile passes `--context`, and only main's brain lane
+// ever answers with the field. Anything else — no field, an empty one, a
+// transport failure — writes nothing: the prompt goes through unchanged. A
+// prompt is never blocked from here, so this path never exits 2.
+function outputPromptContext(text) {
+  if (typeof text !== 'string' || text.length === 0) return false;
+  const out = {
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: text,
+    },
+  };
+  process.stdout.write(JSON.stringify(out) + '\n');
+  return true;
+}
+
 // ----- #783 — PreToolUse permission gate output --------------------------
 
 // The modern Claude Code PreToolUse hook contract reads JSON from stdout and
@@ -929,6 +952,8 @@ async function main() {
   // Anything else is ignored, so an older wmux running a newer profile behaves
   // as before.
   const gateMode = process.argv.slice(3).includes('--gate');
+  // `--context` is the HQ brain's UserPromptSubmit (prints additionalContext).
+  const contextMode = hookName === 'UserPromptSubmit' && process.argv.slice(3).includes('--context');
   const permissionGateMode = process.argv.slice(3).includes('--permission-gate');
   if (!hookName || !HOOK_TO_KIND[hookName]) {
     logEvent('unknown-hook-name', { argv: process.argv });
@@ -1032,7 +1057,9 @@ async function main() {
 
   // Endpoints to try, daemon first (see resolveTargets). No token for either
   // endpoint means wmux has never run for this user — drop as before.
-  const targets = resolveTargets(gateMode);
+  // Context mode is MAIN-only like the gate: the daemon has no brain lane and
+  // would answer `ok` with no context, silently dropping the pointer.
+  const targets = resolveTargets(gateMode || contextMode);
   if (targets.length === 0) {
     logEvent('no-auth-token', { paths: [getDaemonAuthTokenPath(), getAuthTokenPath()] });
     return;
@@ -1241,6 +1268,10 @@ async function main() {
     );
     gateExitCode = 2;
     logEvent('gate-fail-closed', { hook: hookName, target: targetName, error: rpcResult?.error });
+  }
+
+  if (contextMode && innerOk && outputPromptContext(rpcResult.result.additionalContext)) {
+    logEvent('prompt-context', { hook: hookName, target: targetName });
   }
 
   // X6 ③: a session-lifecycle capture that did NOT durably reach wmux (anything

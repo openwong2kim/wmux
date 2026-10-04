@@ -34,6 +34,7 @@ export class WorkspaceMirror {
   // null ⇒ the last push carried no roleBindings field (old renderer) — callers
   // must treat the bindings as UNKNOWN and round-trip, never as "unbound".
   private roleBindings: Record<string, unknown> | null = null;
+  private viewed: { workspaceId: string; paneId: string | null } | null = null;
   private setAt = 0;
   private populated = false;
   private sessionRestored = false;
@@ -53,6 +54,7 @@ export class WorkspaceMirror {
     this.fleets = new Map(payload.fleets.map((f) => [f.workspaceId, f]));
     this.roleBindings = payload.roleBindings ?? null;
     this.sessionRestored = payload.sessionRestored === true;
+    this.viewed = payload.viewed ? { ...payload.viewed } : null;
     // Stamp with our own clock, not the renderer's `payload.ts`: `peek().ageMs`
     // must be measured against the same clock the caller reads `now()` on, so a
     // clock skew between renderer and main can never make a snapshot look
@@ -120,6 +122,12 @@ export class WorkspaceMirror {
    */
   isSessionRestored(): boolean {
     return this.sessionRestored;
+  }
+
+  /** The workspace + pane the human is viewing, or null when unknown (nothing
+   *  pushed yet, or an old renderer that omits the field). */
+  getViewed(): { workspaceId: string; paneId: string | null } | null {
+    return this.viewed === null ? null : { ...this.viewed };
   }
 
   /** The per-workspace agent-status snapshot, or null when unknown. */

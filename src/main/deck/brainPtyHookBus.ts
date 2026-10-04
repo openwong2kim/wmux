@@ -29,9 +29,18 @@ export interface BrainPtyHookBlock {
   block: string;
 }
 
+/** Verdict a listener may return to ADD context to the prompt that produced
+ *  the signal. Only the HQ brain's UserPromptSubmit uses it: the line is relayed
+ *  to the bridge (`--context`), which hands it to Claude Code as
+ *  `additionalContext`. */
+export interface BrainPtyHookContext {
+  additionalContext: string;
+}
+
 /** Receives every hook signal that fired inside one brain pty. Returning a
- *  block asks the caller to refuse the hook; returning nothing allows it. */
-export type BrainPtyHookListener = (signal: AgentSignal) => void | BrainPtyHookBlock;
+ *  block asks the caller to refuse the hook; returning context adds it to the
+ *  prompt; returning nothing allows it as is. */
+export type BrainPtyHookListener = (signal: AgentSignal) => void | BrainPtyHookBlock | BrainPtyHookContext;
 
 const listeners = new Map<string, BrainPtyHookListener>();
 
@@ -57,7 +66,8 @@ export function isBrainPty(ptyId: string): boolean {
  * Deliver a hook signal to its brain pty, if it belongs to one. `consumed` is
  * true when the signal was claimed — the caller must then stop processing it
  * (no daemon relay, no notification, no EventBus tee). `block` carries the
- * listener's refusal, if any, back to the RPC response.
+ * listener's refusal, if any, back to the RPC response; `additionalContext`
+ * carries a context line the same way.
  *
  * A throwing listener is swallowed and yields NO block: a hook must never fail
  * because a brain adapter misbehaved, and a gate whose predicate crashed must
@@ -66,15 +76,19 @@ export function isBrainPty(ptyId: string): boolean {
  */
 export function deliverBrainPtyHookSignal(
   signal: AgentSignal,
-): { consumed: boolean; block?: string } {
+): { consumed: boolean; block?: string; additionalContext?: string } {
   const ptyId = signal.ptyId;
   if (!ptyId) return { consumed: false };
   const listener = listeners.get(ptyId);
   if (!listener) return { consumed: false };
   try {
     const verdict = listener(signal);
-    if (verdict && typeof verdict.block === 'string' && verdict.block.length > 0) {
+    if (verdict && 'block' in verdict && typeof verdict.block === 'string' && verdict.block.length > 0) {
       return { consumed: true, block: verdict.block };
+    }
+    if (verdict && 'additionalContext' in verdict
+      && typeof verdict.additionalContext === 'string' && verdict.additionalContext.length > 0) {
+      return { consumed: true, additionalContext: verdict.additionalContext };
     }
   } catch (err) {
     console.warn(`[deck] brain pty ${ptyId} hook listener threw: ${String(err)}`);

@@ -158,6 +158,16 @@ export function parseWorkspaceMirrorPayload(raw: unknown): WorkspaceMirrorPushPa
   if (Array.isArray(raw.pinnedIds)) {
     out.pinnedIds = raw.pinnedIds.filter((id): id is string => typeof id === 'string' && WORKSPACE_ID_RE.test(id));
   }
+  // The viewed workspace/pane (HQ brain context line). A bad workspace id drops
+  // the field (unknown); a bad pane id keeps the workspace with no pane.
+  if (isRecord(raw.viewed) && typeof raw.viewed.workspaceId === 'string'
+    && WORKSPACE_ID_RE.test(raw.viewed.workspaceId)) {
+    const paneId = raw.viewed.paneId;
+    out.viewed = {
+      workspaceId: raw.viewed.workspaceId,
+      paneId: typeof paneId === 'string' && PTY_ID_RE.test(paneId) ? paneId : null,
+    };
+  }
   return out;
 }
 
