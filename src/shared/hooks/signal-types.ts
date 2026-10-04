@@ -173,6 +173,14 @@ export interface HookSignalResponse {
    *  which Claude Code feeds back on exit 2). */
   block?: { reason: string };
   /**
+   * Present only for a bridge run with `--context` (the HQ brain's
+   * UserPromptSubmit hook): one line the bridge hands Claude Code as
+   * `hookSpecificOutput.additionalContext`, so the model sees which workspace
+   * the human was viewing when they typed. Absent = nothing to add, and the
+   * bridge then writes nothing at all.
+   */
+  additionalContext?: string;
+  /**
    * #783 — PreToolUse permission gate verdict. Present ONLY when a real
    * decision was reached: `allow` = proceed without prompting, `deny` = block.
    * The bridge translates it into the modern PreToolUse

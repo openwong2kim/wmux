@@ -42,6 +42,15 @@ describe('WorkspaceMirror', () => {
     expect(m.hasEverBeenPopulated()).toBe(true);
   });
 
+  it('stores the viewed pointer per push, and an old renderer leaves it unknown', () => {
+    const m = new WorkspaceMirror();
+    expect(m.getViewed()).toBeNull();
+    m.setSnapshot(payload({ viewed: { workspaceId: 'ws-1', paneId: 'pane-1' } }));
+    expect(m.getViewed()).toEqual({ workspaceId: 'ws-1', paneId: 'pane-1' });
+    m.setSnapshot(payload());
+    expect(m.getViewed()).toBeNull();
+  });
+
   it('peek reports age against the injected clock, not the renderer ts', () => {
     let clock = 5000;
     const m = new WorkspaceMirror(() => clock);

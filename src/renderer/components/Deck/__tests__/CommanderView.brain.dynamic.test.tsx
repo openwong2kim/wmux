@@ -214,7 +214,7 @@ describe('CommanderViewContent — brain surface', () => {
     const actions = [
       { id: 'recover-fleet' as const, label: 'Recover agents', prompt: 'recover please' },
     ];
-    mount({ activeWorkspaceId: 'ws-1', quickActions: actions, onQuickAction });
+    mount({ chatWorkspaceId: 'ws-1', quickActions: actions, onQuickAction });
 
     const chips = container.querySelectorAll('[data-deck-quick-action]');
     expect(chips).toHaveLength(1);
@@ -226,7 +226,7 @@ describe('CommanderViewContent — brain surface', () => {
 
   it('disables the recovery chip while a brain turn streams', () => {
     mount({
-      activeWorkspaceId: 'ws-1',
+      chatWorkspaceId: 'ws-1',
       quickActions: [{ id: 'recover-fleet' as const, label: 'Recover agents', prompt: 'x' }],
       brainBusy: true,
       brainMessages: brainTurn(),
@@ -240,7 +240,7 @@ describe('CommanderViewContent — brain surface', () => {
     // shows whenever there is a workspace to control. Their containers self-hide
     // without a preload (jsdom), so the bar is present but the recovery
     // sub-group is absent.
-    mount({ activeWorkspaceId: 'ws-1', quickActions: [] });
+    mount({ chatWorkspaceId: 'ws-1', quickActions: [] });
     expect(container.querySelector('[data-deck-control-bar]')).not.toBeNull();
     expect(container.querySelector('[data-deck-quick-actions]')).toBeNull();
   });
@@ -248,7 +248,7 @@ describe('CommanderViewContent — brain surface', () => {
   it('no longer renders the fan-out chip in the control bar (moved to the agent toolbar)', () => {
     // fan-out returned control bar → agent toolbar (DESIGN.md Decisions Log
     // 2026-07-20); the control bar must not carry the chip anymore.
-    mount({ activeWorkspaceId: 'ws-1', quickActions: [], threads: [], brainMessages: [] });
+    mount({ chatWorkspaceId: 'ws-1', quickActions: [], threads: [], brainMessages: [] });
     expect(container.querySelector('[data-deck-fanout-chip]')).toBeNull();
   });
 
@@ -262,7 +262,7 @@ describe('CommanderViewContent — brain surface', () => {
     // Real translator: the rail header interpolates {count} into the locale
     // string, which a key-echoing stub would silently swallow.
     setLocale('en');
-    mount({ brainPtyId: 'pty-1', brainMessages: brainTurn(), activeWorkspaceId: 'ws-1', t });
+    mount({ brainPtyId: 'pty-1', brainMessages: brainTurn(), chatWorkspaceId: 'ws-1', t });
     // The TUI replaces the chat surface entirely.
     expect(container.querySelector('[data-commander-brain-terminal]')).not.toBeNull();
     expect(container.querySelector('[data-channel-composer-input]')).toBeNull();
@@ -288,7 +288,7 @@ describe('CommanderViewContent — brain surface', () => {
     const wake = vi.fn(async () => ({ ok: true }));
     (window as unknown as { electronAPI: unknown }).electronAPI = { deck: { wake } };
     try {
-      mount({ brainPtyId: 'pty-1', activeWorkspaceId: 'ws-1' });
+      mount({ brainPtyId: 'pty-1', chatWorkspaceId: 'ws-1' });
       const btn = container.querySelector('[data-commander-wake-now]') as HTMLButtonElement;
       expect(btn).not.toBeNull();
       expect(btn.disabled).toBe(false);
@@ -300,16 +300,16 @@ describe('CommanderViewContent — brain surface', () => {
   });
 
   it('disables the Wake button while a brain turn streams; hides it without a pty', () => {
-    mount({ brainPtyId: 'pty-1', activeWorkspaceId: 'ws-1', brainBusy: true });
+    mount({ brainPtyId: 'pty-1', chatWorkspaceId: 'ws-1', brainBusy: true });
     const btn = container.querySelector('[data-commander-wake-now]') as HTMLButtonElement;
     expect(btn.disabled).toBe(true);
     // The bubble layouts keep their composer instead — no Wake button.
-    mount({ brainMessages: brainTurn(), activeWorkspaceId: 'ws-1' });
+    mount({ brainMessages: brainTurn(), chatWorkspaceId: 'ws-1' });
     expect(container.querySelector('[data-commander-wake-now]')).toBeNull();
   });
 
   it('without a brain pty the SDK layout is untouched: composer, no terminal', () => {
-    mount({ brainMessages: brainTurn(), activeWorkspaceId: 'ws-1' });
+    mount({ brainMessages: brainTurn(), chatWorkspaceId: 'ws-1' });
     expect(container.querySelector('[data-commander-brain-terminal]')).toBeNull();
     expect(container.querySelector('[data-channel-composer-input]')).not.toBeNull();
     expect(container.querySelector('[data-commander-report-rail-toggle]')).toBeNull();

@@ -540,11 +540,13 @@ export function registerHooksRpc(
     //     A claimed signal may come back with a BLOCK — the Stop gate refusing
     //     to let the orchestrator end its turn. It rides this response because
     //     a second, independent hook would race the one that ends the turn.
+    //     A claimed prompt-submit may come back with a context line instead
+    //     (the HQ brain's view pointer), carried the same way.
     const brainVerdict = deliverBrainPtyHookSignal(signal);
     if (brainVerdict.consumed) {
-      return brainVerdict.block
-        ? { ok: true, block: { reason: brainVerdict.block } }
-        : { ok: true };
+      if (brainVerdict.block) return { ok: true, block: { reason: brainVerdict.block } };
+      if (brainVerdict.additionalContext) return { ok: true, additionalContext: brainVerdict.additionalContext };
+      return { ok: true };
     }
     // An unclaimed prompt-submit used to be dropped RIGHT HERE, on the premise
     // that the brain lane was its only emitter, so an unclaimed one meant a

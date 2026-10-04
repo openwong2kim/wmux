@@ -35,6 +35,7 @@ export type MirrorSnapshotState = FleetSnapshotState & {
   orchestratorRoleBindings?: StoreState['orchestratorRoleBindings'];
   sessionRestored?: StoreState['sessionRestored'];
   sidebarPinnedIds?: StoreState['sidebarPinnedIds'];
+  activeWorkspaceId?: StoreState['activeWorkspaceId'];
 };
 
 /**
@@ -343,5 +344,16 @@ export function buildWorkspaceMirrorPayload(
     roleBindings: buildRoleBindings(state),
     sessionRestored: state.sessionRestored === true,
     pinnedIds: [...(state.sidebarPinnedIds ?? [])],
+    viewed: buildViewed(state),
   };
+}
+
+/** The active workspace and its active pane — what the human is looking at.
+ *  Undefined when no workspace is active. */
+export function buildViewed(state: MirrorSnapshotState): WorkspaceMirrorPushPayload['viewed'] {
+  const ws = state.activeWorkspaceId
+    ? state.workspaces.find((w) => w.id === state.activeWorkspaceId)
+    : undefined;
+  if (!ws) return undefined;
+  return { workspaceId: ws.id, paneId: ws.activePaneId || null };
 }
