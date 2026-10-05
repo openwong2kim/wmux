@@ -604,3 +604,27 @@ describe('MoaTranscriptChat — send feedback and the first screen', () => {
     expect(empty?.textContent).toContain('moa.panel.chatEmptyHint');
   });
 });
+
+describe('MoaTranscriptChat — the first send', () => {
+  it('a message sent before the brain existed shows as the sent bubble when the chat mounts mid-turn', async () => {
+    const { useStore } = await import('../../../../stores');
+    const prev = useStore.getState();
+    try {
+      useStore.setState({
+        moa: { ...(prev.moa ?? {}), hq: { workspaceId: 'ws-hq', state: 'ok' } } as never,
+        brainThreads: { 'ws-hq': { status: 'busy', messages: [{ id: 'm1', role: 'user', text: 'math.js에 빼기 함수 추가해줘', ts: Date.now() }] } } as never,
+      });
+      const { api, push } = fakeApi({ snapshot: vi.fn(async () => ({ events: [], cursor, hasMore: false, truncatedHead: false })) as never });
+      await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />));
+      for (let i = 0; i < 3; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+      expect(host.querySelector('[data-moa-chat-pending]')?.textContent).toContain('math.js에 빼기 함수 추가해줘');
+      expect(host.querySelector('[data-moa-chat-empty]')).toBeNull();
+      // The transcript records it: one bubble, not two.
+      await act(async () => push({ seq: 1, events: [{ id: 'u1', kind: 'user_text', text: 'math.js에 빼기 함수 추가해줘', ts: 2 }], cursor: { ...cursor, tailOffset: 150, fileSize: 150 } }));
+      expect(host.querySelector('[data-moa-chat-pending]')).toBeNull();
+      expect(host.querySelectorAll('.wmux-chat-user')).toHaveLength(1);
+    } finally {
+      useStore.setState({ moa: prev.moa, brainThreads: prev.brainThreads });
+    }
+  });
+});

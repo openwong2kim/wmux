@@ -22,10 +22,36 @@ describe('foldMoaReports', () => {
   it('with no reply after the completion, the report stands where the completion was; a failed completion folds nothing', () => {
     const events: TurnEvent[] = [
       { id: 'u1', kind: 'user_text', text: 'go', ts: 1 },
+      { id: 'moa-result:l1', kind: 'meta', subtype: 'unknown', label: '', ts: 2 },
       { id: 'moa-purpose:c1', kind: 'meta', subtype: 'unknown', label: 'complete', ts: 3 },
     ];
     expect(foldMoaReports(events, new Map([['moa-purpose:c1', complete(true)]])).events.map((e) => e.id)).toEqual(['u1', 'moa-report:moa-purpose:c1']);
-    expect(foldMoaReports(events, new Map([['moa-purpose:c1', complete(false)]])).events.map((e) => e.id)).toEqual(['u1', 'moa-purpose:c1']);
+    expect(foldMoaReports(events, new Map([['moa-purpose:c1', complete(false)]])).events.map((e) => e.id)).toEqual(['u1', 'moa-result:l1', 'moa-purpose:c1']);
+  });
+
+  it('a delegation that finished turns before Moa closed the work is claimed by that report, not drawn twice', () => {
+    const events: TurnEvent[] = [
+      { id: 'u1', kind: 'user_text', text: 'go', ts: 1 },
+      { id: 'moa-result:l1', kind: 'meta', subtype: 'unknown', label: '', ts: 2 },
+      { id: 'a1', kind: 'assistant_text', text: 'Shall I close it?', ts: 3, turnComplete: true },
+      { id: 'w1', kind: 'meta', subtype: 'turn_started', label: '', ts: 4 },
+      { id: 'moa-purpose:c1', kind: 'meta', subtype: 'unknown', label: 'complete', ts: 5 },
+      { id: 'a2', kind: 'assistant_text', text: 'Closed.', ts: 6, turnComplete: true },
+    ];
+    const { events: out, reports } = foldMoaReports(events, new Map([['moa-purpose:c1', complete(true)]]));
+    expect(out.map((e) => e.id)).toEqual(['u1', 'a1', 'w1', 'moa-report:a2']);
+    expect(reports.get('moa-report:a2')?.linkIds).toEqual(['l1']);
+  });
+
+  it('a completion that covers no delegation (small talk) is no report: the reply stays a message', () => {
+    const events: TurnEvent[] = [
+      { id: 'u1', kind: 'user_text', text: '고마워', ts: 1 },
+      { id: 'moa-purpose:c1', kind: 'meta', subtype: 'unknown', label: 'complete', ts: 2 },
+      { id: 'a1', kind: 'assistant_text', text: '천만에요.', ts: 3, turnComplete: true },
+    ];
+    const { events: out, reports } = foldMoaReports(events, new Map([['moa-purpose:c1', complete(true)]]));
+    expect(out.map((e) => e.id)).toEqual(['u1', 'a1']);
+    expect(reports.size).toBe(0);
   });
 
   it('a thank-you turn with no completion is left alone', () => {

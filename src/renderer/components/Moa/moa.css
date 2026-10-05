@@ -77,3 +77,8 @@
 [data-moa-chat][data-activity="hidden"] .wmux-chat-activity,
 [data-moa-chat][data-activity="hidden"] .wmux-chat-tool,
 [data-moa-chat][data-activity="hidden"] .wmux-chat-working { display: none; }
+
+/* The composer's placeholder in Moa's panel. The shared chat look draws it at
+ * 40% of the text colour, 2.5:1 on the panel in light themes (3.6:1 dark);
+ * 70% keeps it quieter than typed text and over 4.5:1 in every built-in look. */
+.wmux-dock :is(form, div) textarea.wmux-chat-input::placeholder { color: color-mix(in srgb, var(--text-main) 70%, transparent); }

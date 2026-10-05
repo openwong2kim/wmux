@@ -88,6 +88,13 @@ export function MoaPanelTop({
   }, [handoffResolve, onResolved]);
   const receipts = useMemo(() => receiptsApi ?? defaultReceiptsApi(), [receiptsApi]);
   const dock = useContext(MoaDockContext);
+  // Before Moa's first turn there is no brain and so no chat: the panel would
+  // be a bare composer. Say what to ask, once, until the first send.
+  const noBrain = useStore((s) => {
+    const hq = s.moa?.hq.workspaceId;
+    return !!hq && !s.brainPtyIds[hq];
+  });
+  const firstRun = noBrain && !dock && decisions.length === 0 && cards.length === 0 && delegatedApprovals.length === 0;
   // Main names a decision's workspace when it knows it; fall back to ours.
   const named = useMemo(
     () => decisions.map((d) => (d.workspaceName ? d : { ...d, workspaceName: workspaceName(d.workspaceId) })),
@@ -96,6 +103,12 @@ export function MoaPanelTop({
   return (
     // Focusable so an answer that empties the list has somewhere to put focus.
     <div data-moa-panel-top tabIndex={-1} className="shrink-0 outline-none">
+      {firstRun && (
+        <div className="px-3 pt-3 pb-1 flex flex-col gap-1" data-moa-first-run>
+          <p className="m-0 text-[13px] font-medium text-[var(--text-main)]">{t('moa.panel.chatEmpty')}</p>
+          <p className="m-0 text-[13px] leading-snug text-[var(--text-sub)]">{t('moa.panel.chatEmptyHint')}</p>
+        </div>
+      )}
       <MoaHandoffReceipts api={receipts} workspaceName={workspaceName} onOpenPane={onOpenPane} t={t} />
       {(() => {
         const waiting = (

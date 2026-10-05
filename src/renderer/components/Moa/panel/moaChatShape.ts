@@ -49,13 +49,19 @@ function turnSpans(events: readonly TurnEvent[]): Array<[number, number]> {
 const isReply = (e: TurnEvent): boolean => e.kind === 'assistant_text' && !e.thinking;
 
 /**
- * Fold each turn that closed its work into one report row. Turns without a
- * successful completion are left as they are (a delegation that finished
- * there still draws its own report card).
+ * Fold each turn that closed its work into one report row. It takes the
+ * delegations that finished in that turn, or since the last report (a link
+ * can finish turns before Moa closes the work). A completion that covers no
+ * delegation (Moa closing a turn of small talk) is no job: its reply stays a
+ * plain message and the completion is not drawn. Turns without a successful
+ * completion are left as they are (a delegation that finished there still
+ * draws its own report card until a report claims it).
  */
 export function foldMoaReports(events: readonly TurnEvent[], purposes: ReadonlyMap<string, MoaPurpose>): { events: TurnEvent[]; reports: Map<string, MoaReport> } {
   const reports = new Map<string, MoaReport>();
-  const out: TurnEvent[] = [];
+  let out: TurnEvent[] = [];
+  /** Result events drawn on their own so far, not yet claimed by a report. */
+  let unclaimed: string[] = [];
   const isCompletion = (e: TurnEvent) => {
     if (!isPurposeEventId(e.id)) return false;
     const p = purposes.get(e.id);
@@ -64,7 +70,16 @@ export function foldMoaReports(events: readonly TurnEvent[], purposes: ReadonlyM
   for (const [from, to] of turnSpans(events)) {
     const turn = events.slice(from, to);
     const last = turn.map(isCompletion).lastIndexOf(true);
-    if (last < 0) { out.push(...turn); continue; }
+    if (last < 0) {
+      out.push(...turn);
+      unclaimed.push(...turn.flatMap((e) => (resultLinkId(e.id) ? [e.id] : [])));
+      continue;
+    }
+    const inTurn = turn.flatMap((e) => (resultLinkId(e.id) ? [e.id] : []));
+    const claimed = [...unclaimed, ...inTurn];
+    if (claimed.length === 0) { out.push(...turn.filter((e) => !isCompletion(e))); continue; }
+    if (unclaimed.length) { const gone = new Set(unclaimed); out = out.filter((e) => !gone.has(e.id)); }
+    unclaimed = [];
     const input = purposes.get(turn[last].id)?.input ?? {};
     let at = -1;
     for (let i = turn.length - 1; i > last; i--) if (isReply(turn[i])) { at = i; break; }
@@ -77,7 +92,7 @@ export function foldMoaReports(events: readonly TurnEvent[], purposes: ReadonlyM
       ...(reply ? { reply } : {}),
       ...(summary ? { summary } : {}),
       ...(verification ? { verification } : {}),
-      linkIds: turn.flatMap((e) => { const l = resultLinkId(e.id); return l ? [l] : []; }),
+      linkIds: claimed.map((id) => resultLinkId(id) as string),
     });
     turn.forEach((e, i) => {
       if (i === (at >= 0 ? at : last)) out.push({ id, kind: 'meta', subtype: 'unknown', label: '', ...(e.ts !== undefined ? { ts: e.ts } : {}) });
