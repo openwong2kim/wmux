@@ -362,8 +362,12 @@ export const IPC = {
   //   renderer, TranscriptAppendData).
   DECK_MOA_DECISIONS: 'deck:moa:decisions',
   // Permission prompts of agents Moa delegated work to ({ approvals:
-  // MoaDelegatedApproval[] }), for the panel's "Waiting on you". Read-only.
+  // MoaDelegatedApproval[] }), for the panel's "Waiting on you".
   DECK_MOA_DELEGATED_APPROVALS: 'deck:moa:delegated-approvals',
+  // Answer one of those prompts in place ({ approvalId, choiceKey,
+  // promptFingerprint } → MoaApprovalAnswerResult). Main presses only a prompt
+  // it lists above, through the daemon's first-party desktop answer.
+  DECK_MOA_DELEGATED_ANSWER: 'deck:moa:delegated-answer',
   // A delegated task's result from its A2A completion evidence ({ workspaceId,
   // taskId } → { result: MoaTaskResult | null }), for Moa's result card.
   DECK_MOA_TASK_RESULT: 'deck:moa:task-result',

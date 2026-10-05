@@ -166,6 +166,11 @@ export interface MoaDelegatedApproval {
   toolName?: string;
   what?: string;
   createdAt: number;
+  /** The plain Yes and No of a dialog the daemon bound to its call (agent
+   *  text labels). Present only when it can be answered in place. */
+  choices?: Array<{ key: string; label: string; decision: 'approve' | 'deny' }>;
+  /** Echoed back with an answer: the daemon refuses it if the dialog changed. */
+  promptFingerprint?: string;
 }
 
 /** Moa's mascot states (the panel header, the titlebar icon). */

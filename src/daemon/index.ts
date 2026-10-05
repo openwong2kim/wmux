@@ -4462,6 +4462,13 @@ function registerRpcHandlers(
     if (!firstPartyOnly(ctx.clientId, 'daemon.moa.answerPrompt')) return { ok: false, reason: 'first-party-only' };
     return moaPromptRpc ? moaPromptRpc.answer(params) : { ok: false, reason: 'not-pending' };
   });
+  // The prompt of an agent Moa delegated work to, answered from Moa's panel.
+  // First-party only like the two above: main scopes it to Moa's delegated
+  // panes, and no agent, CLI verb or phone route reaches it.
+  pipeServer.onRpc('daemon.moa.answerDelegatedPrompt', async (params, ctx) => {
+    if (!firstPartyOnly(ctx.clientId, 'daemon.moa.answerDelegatedPrompt')) return { ok: false, reason: 'first-party-only' };
+    return moaPromptRpc ? moaPromptRpc.answerDelegated(params) : { ok: false, reason: 'not-pending' };
+  });
 
   const readDaemonAgentState = (id: string): {
     agentName: string | null;

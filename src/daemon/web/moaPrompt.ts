@@ -251,6 +251,30 @@ export class MoaPromptSync {
    * Moa pane is re-checked from inside the registry right before the key.
    */
   async answer(params: unknown): Promise<MoaAnswerResult> {
+    const sessionId = this.moaSessionId();
+    if (sessionId === null) return { ok: false, reason: 'not-pending' };
+    return this.press(params, sessionId, () => this.moaSessionId() === sessionId);
+  }
+
+  /**
+   * `daemon.moa.answerDelegatedPrompt` — the desktop's answer to the prompt
+   * of an agent Moa delegated work to, from Moa's "Waiting on you". Main
+   * decides which panes are delegated (only it knows the hand-offs) and names
+   * the pane; here the record must be that pane's pending `terminal_prompt`,
+   * never the Moa pane's own (that one has `answer`). Every fence of a phone
+   * answer applies, the same as `answer`.
+   */
+  async answerDelegated(params: unknown): Promise<MoaAnswerResult> {
+    const p = (params && typeof params === 'object' && !Array.isArray(params) ? params : {}) as Record<string, unknown>;
+    const sessionId = typeof p.sessionId === 'string' && p.sessionId.length > 0 && p.sessionId.length <= 128 ? p.sessionId : null;
+    if (!sessionId) return { ok: false, reason: 'invalid' };
+    if (sessionId === this.moaSessionId()) return { ok: false, reason: 'not-pending' };
+    return this.press(params, sessionId, () => sessionId !== this.moaSessionId());
+  }
+
+  /** Press one choice of `sessionId`'s pending `terminal_prompt` as a person
+   *  at this machine; `stillOk` is re-checked inside the registry before the key. */
+  private async press(params: unknown, sessionId: string, stillOk: () => boolean): Promise<MoaAnswerResult> {
     const p = (params && typeof params === 'object' && !Array.isArray(params) ? params : {}) as Record<string, unknown>;
     const id = typeof p.approvalId === 'string' && p.approvalId.length > 0 && p.approvalId.length <= 128 ? p.approvalId : null;
     const choiceKey = typeof p.choiceKey === 'string' && /^\d{1,2}$/.test(p.choiceKey) ? p.choiceKey : null;
@@ -258,8 +282,7 @@ export class MoaPromptSync {
       ? p.promptFingerprint : null;
     if (!id || !choiceKey || !promptFingerprint) return { ok: false, reason: 'invalid' };
     const registry = this.deps.registry();
-    const sessionId = this.moaSessionId();
-    if (!registry || sessionId === null) return { ok: false, reason: 'not-pending' };
+    if (!registry) return { ok: false, reason: 'not-pending' };
     const record = registry.list().pending.find((r) => r.id === id);
     if (!record || record.kind !== 'terminal_prompt' || isNativeDecision(record) || record.sessionId !== sessionId) {
       return { ok: false, reason: 'not-pending' };
@@ -275,8 +298,9 @@ export class MoaPromptSync {
       resolvedBy: 'desktop',
       resolver: 'human',
       terminalPromptAnswer: TERMINAL_PROMPT_WEB_ANSWER,
-      // Moa switched off (or the HQ changed) while the answer waited: no key.
-      authorize: async (r) => (this.moaSessionId() === r.sessionId ? 'ok' : 'expired'),
+      // The pane stopped being this answer's to press while it waited
+      // (Moa switched off, the HQ changed, it became the Moa pane): no key.
+      authorize: async (r) => (r.sessionId === sessionId && stillOk() ? 'ok' : 'expired'),
     });
     if (result.ok) return { ok: true, state: result.request.state };
     if (result.reason === 'prompt-changed') this.noteRefusedPress(sessionId);

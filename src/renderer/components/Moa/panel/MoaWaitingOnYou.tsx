@@ -5,7 +5,7 @@
 // the yellow eyebrow as its one state mark). Answers go to the decision's own
 // workspace, not to Moa's.
 import { createContext, useEffect, useRef, useState } from 'react';
-import type { MoaDelegatedApproval, MoaPendingDecision } from '../../../../shared/moa';
+import type { MoaApprovalAnswerResult, MoaDelegatedApproval, MoaPendingDecision } from '../../../../shared/moa';
 import Button from '../../ui/Button';
 import Input from '../../ui/Input';
 import { FOCUS_RING } from '../../focusRing';
@@ -29,6 +29,13 @@ export function answeredElsewhere(r: { ok: boolean; code?: string }): boolean {
 export interface DelegatedApprovalsApi {
   delegatedApprovals: () => Promise<{ approvals: MoaDelegatedApproval[] }>;
   onChanged?: (cb: () => void) => () => void;
+}
+
+/** Answers a delegated agent's prompt in place; defaults to the preload. */
+export type DelegatedAnswer = (args: { approvalId: string; choiceKey: string; promptFingerprint: string }) => Promise<MoaApprovalAnswerResult>;
+
+function defaultDelegatedAnswer(): DelegatedAnswer | undefined {
+  return window.electronAPI?.deck?.moa?.delegatedAnswer;
 }
 
 /** How often the prompts are read again while the section is mounted: the
@@ -61,6 +68,11 @@ export function useDelegatedApprovals(api: DelegatedApprovalsApi | undefined = d
   return rows;
 }
 
+/** The needs-you yellow for TEXT: the token mixed half into the text colour,
+ *  so it stays yellow and reads at >= 5.4:1 on the row's wash and the panel in
+ *  every built-in look (plain --accent-yellow is 2.4:1 on Paper's wash). */
+export const NEEDS_YOU_TEXT = 'text-[color-mix(in_srgb,var(--accent-yellow)_50%,var(--text-main))]';
+
 export const NEEDS_YOU_ROW =
   'rounded-[10px] px-3 py-2.5 border border-dashed border-[color-mix(in_srgb,var(--text-main)_30%,transparent)] bg-[color-mix(in_srgb,var(--text-main)_20%,transparent)]';
 
@@ -70,6 +82,7 @@ export function MoaWaitingOnYou({
   memoryApi,
   handoffResolve,
   delegatedApprovals = [],
+  delegatedAnswer = defaultDelegatedAnswer(),
   onOpenPty,
   conversationTaskId,
   onOpenConversation,
@@ -85,8 +98,10 @@ export function MoaWaitingOnYou({
   memoryApi?: MoaMemoryCardApi;
   /** Answers a hand-off card; defaults to the preload. */
   handoffResolve?: HandoffResolve;
-  /** Permission prompts of delegated agents; read-only rows. */
+  /** Permission prompts of delegated agents. */
   delegatedApprovals?: readonly MoaDelegatedApproval[];
+  /** Answers one of them in place (Allow once / Don't allow). */
+  delegatedAnswer?: DelegatedAnswer;
   /** Jump to the pane holding a prompt. */
   onOpenPty?: (workspaceId: string, ptyId: string) => void;
   t: (key: string, vars?: Record<string, string | number>) => string;
@@ -102,15 +117,16 @@ export function MoaWaitingOnYou({
   // (or the heading) instead of dropping to the page.
   const refocusAt = useRef<number | null>(null);
   const visible = decisions.filter((d) => !answered.has(d.decision.id));
+  const prompts = delegatedApprovals.filter((a) => !answered.has(a.id));
 
   useEffect(() => {
     // Forget ids main no longer reports, so a re-raised id shows again.
     setAnswered((prev) => {
-      const live = new Set(decisions.map((d) => d.decision.id));
+      const live = new Set([...decisions.map((d) => d.decision.id), ...delegatedApprovals.map((a) => a.id)]);
       const next = new Set([...prev].filter((id) => live.has(id)));
       return next.size === prev.size ? prev : next;
     });
-  }, [decisions]);
+  }, [decisions, delegatedApprovals]);
 
   useEffect(() => {
     const at = refocusAt.current;
@@ -123,7 +139,7 @@ export function MoaWaitingOnYou({
 
   // Nothing waiting: no heading, no "0" (no dead gauges). The section stays
   // mounted (hidden) only so the memory card can learn of a new card.
-  const total = visible.length + delegatedApprovals.length + (memoryPending ? 1 : 0);
+  const total = visible.length + prompts.length + (memoryPending ? 1 : 0);
 
   const resolve = async (d: MoaPendingDecision, resolution: string, dismiss = false): Promise<boolean> => {
     const text = resolution.trim();
@@ -141,7 +157,8 @@ export function MoaWaitingOnYou({
   };
 
   // A row leaves: focus moves to its neighbour, or to the panel's top region.
-  const markAnswered = (d: MoaPendingDecision) => {
+  const markAnswered = (d: MoaPendingDecision | MoaDelegatedApproval) => {
+    const id = 'decision' in d ? d.decision.id : d.id;
     if (total === 1) {
       // The last one: the section goes away, so focus moves to the panel's
       // top region (it is focusable for exactly this) rather than the page.
@@ -154,9 +171,10 @@ export function MoaWaitingOnYou({
         : listRef.current?.closest<HTMLElement>('[data-moa-panel-top]');
       top?.focus({ preventScroll: true });
     } else {
-      refocusAt.current = visible.findIndex((v) => v.decision.id === d.decision.id);
+      const at = visible.findIndex((v) => v.decision.id === id);
+      refocusAt.current = at >= 0 ? at : visible.length + prompts.findIndex((a) => a.id === id);
     }
-    setAnswered((prev) => new Set(prev).add(d.decision.id));
+    setAnswered((prev) => new Set(prev).add(id));
   };
 
   return (
@@ -168,7 +186,7 @@ export function MoaWaitingOnYou({
         className="m-0 text-[13px] font-medium text-[var(--text-main)] outline-none"
       >
         {t('moa.panel.waitingTitle')}{' '}
-        <span className="tabular-nums text-[var(--accent-yellow)]">{total}</span>
+        <span className={`tabular-nums ${NEEDS_YOU_TEXT}`}>{total}</span>
       </h3>
       <ul ref={listRef} className="m-0 p-0 list-none flex flex-col gap-1.5">
         <li data-moa-memory-row className={memoryPending ? 'flex flex-col min-h-0' : 'hidden'}>
@@ -194,29 +212,100 @@ export function MoaWaitingOnYou({
             t={t}
           />
         ))}
-        {delegatedApprovals.map((a) => (
-          // Read-only: the operator answers in the pane. Moa never answers it.
-          <li key={a.id} data-moa-delegated-approval={a.id} className={NEEDS_YOU_ROW}>
-            <div className="text-[11px] text-[var(--accent-yellow)] truncate">
-              {a.workspaceName || t('moa.panel.unknownWorkspace')}
-            </div>
-            <p className="m-0 mt-0.5 text-[13px] font-medium leading-snug text-[var(--text-main)] break-words">
-              {t('moa.panel.delegatedApproval', { agent: a.agentName })}
-            </p>
-            {a.what && (
-              <code className="block mt-1 font-mono text-[12px] text-[var(--text-sub)] break-all whitespace-pre-wrap" data-moa-delegated-approval-what>
-                {a.what}
-              </code>
-            )}
-            {onOpenPty && (
-              <Button variant="secondary" size="sm" className="mt-2" data-moa-delegated-approval-open onClick={() => onOpenPty(a.workspaceId, a.ptyId)}>
-                {t('moa.panel.openPane')}
-              </Button>
-            )}
-          </li>
+        {prompts.map((a) => (
+          <DelegatedApprovalRow
+            key={a.id}
+            item={a}
+            answer={delegatedAnswer}
+            onAnswered={() => markAnswered(a)}
+            onOpenPty={onOpenPty}
+            t={t}
+          />
         ))}
       </ul>
     </section>
+  );
+}
+
+/**
+ * A delegated agent's permission prompt. When the daemon bound the dialog to
+ * its call, it is answered here, once, through the operator's own press path
+ * (fingerprint, one key); otherwise it says so and points at the pane. Moa
+ * never answers it.
+ */
+function DelegatedApprovalRow({
+  item: a,
+  answer,
+  onAnswered,
+  onOpenPty,
+  t,
+}: {
+  item: MoaDelegatedApproval;
+  answer?: DelegatedAnswer;
+  onAnswered: () => void;
+  onOpenPty?: (workspaceId: string, ptyId: string) => void;
+  t: (key: string, vars?: Record<string, string | number>) => string;
+}): React.ReactElement {
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<'retry' | 'error' | null>(null);
+  const allow = a.choices?.find((c) => c.decision === 'approve');
+  const deny = a.choices?.find((c) => c.decision === 'deny');
+  const canAnswer = !!answer && !!allow && !!deny && !!a.promptFingerprint;
+  const press = async (key: string) => {
+    if (busy || !answer || !a.promptFingerprint) return;
+    setBusy(true);
+    setNotice(null);
+    let r: MoaApprovalAnswerResult;
+    try {
+      r = await answer({ approvalId: a.id, choiceKey: key, promptFingerprint: a.promptFingerprint });
+    } catch {
+      r = { ok: false, code: 'error' };
+    }
+    // Answered (or answered elsewhere a moment ago): the row leaves.
+    if (r.ok || r.code === 'not_pending') {
+      onAnswered();
+      return;
+    }
+    setBusy(false);
+    setNotice(r.code === 'answer_too_soon' ? 'retry' : 'error');
+  };
+  const questionId = `moa-delegated-${a.id}`;
+  return (
+    <li data-moa-delegated-approval={a.id} className={NEEDS_YOU_ROW}>
+      <div className={`text-[11px] ${NEEDS_YOU_TEXT} truncate`}>
+        {a.workspaceName || t('moa.panel.unknownWorkspace')}
+      </div>
+      <p id={questionId} className="m-0 mt-0.5 text-[13px] font-medium leading-snug text-[var(--text-main)] break-words">
+        {t('moa.panel.delegatedApproval', { agent: a.agentName })}
+      </p>
+      {a.what && (
+        <code className="block mt-1 font-mono text-[12px] text-[var(--text-sub)] break-all whitespace-pre-wrap" data-moa-delegated-approval-what>
+          {a.what}
+        </code>
+      )}
+      <div role="group" aria-labelledby={questionId} className="flex flex-wrap items-center gap-1.5 mt-2">
+        {canAnswer && (
+          <>
+            <Button variant="secondary" size="sm" disabled={busy} data-moa-delegated-approval-allow onClick={() => void press(allow!.key)}>
+              {t('moa.panel.delegatedAllowOnce')}
+            </Button>
+            <Button variant="secondary" size="sm" disabled={busy} data-moa-delegated-approval-deny onClick={() => void press(deny!.key)}>
+              {t('moa.panel.delegatedDeny')}
+            </Button>
+          </>
+        )}
+        {onOpenPty && (
+          <Button variant={canAnswer ? 'ghost' : 'secondary'} size="sm" data-moa-delegated-approval-open onClick={() => onOpenPty(a.workspaceId, a.ptyId)}>
+            {t('moa.panel.openPane')}
+          </Button>
+        )}
+      </div>
+      {notice && (
+        <p role="alert" className={`m-0 mt-1.5 text-[11px] ${notice === 'error' ? 'text-[var(--accent-red)]' : 'text-[var(--text-sub)]'}`} data-moa-delegated-approval-notice={notice}>
+          {t(notice === 'retry' ? 'moa.panel.approvalTooSoon' : 'moa.panel.delegatedAnswerFailed')}
+        </p>
+      )}
+    </li>
   );
 }
 
@@ -254,7 +343,7 @@ function DecisionRow({
   const questionId = `moa-decision-${decision.id}`;
   return (
     <li data-moa-decision={decision.id} data-workspace-id={item.workspaceId} className={NEEDS_YOU_ROW}>
-      <div className="text-[11px] text-[var(--accent-yellow)] truncate">
+      <div className={`text-[11px] ${NEEDS_YOU_TEXT} truncate`}>
         {item.workspaceName || t('moa.panel.unknownWorkspace')}
       </div>
       <p id={questionId} className="m-0 mt-0.5 text-[13px] font-medium leading-snug text-[var(--text-main)] break-words">

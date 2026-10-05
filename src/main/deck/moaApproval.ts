@@ -17,6 +17,8 @@ export interface MoaApprovalClient {
 
 export const MOA_PROMPT_RPC = 'daemon.moa.prompt';
 export const MOA_ANSWER_PROMPT_RPC = 'daemon.moa.answerPrompt';
+/** The same desktop answer for a delegated agent's prompt (main scopes it). */
+export const MOA_ANSWER_DELEGATED_PROMPT_RPC = 'daemon.moa.answerDelegatedPrompt';
 
 /** Refusals that mean "answered or gone elsewhere": the card just leaves. */
 const NOT_PENDING = new Set(['not-pending', 'not-found', 'already-resolved', 'already-answered', 'expired', 'prompt-gone', 'unauthorized']);
@@ -65,8 +67,14 @@ export async function readMoaApproval(client: MoaApprovalClient | null): Promise
   };
 }
 
-/** Press one of the prompt's choices from the desktop. */
-export async function answerMoaApproval(client: MoaApprovalClient | null, args: unknown): Promise<MoaApprovalAnswerResult> {
+/** Press one of the prompt's choices from the desktop: Moa's own (default), or
+ *  a delegated agent's (`method` MOA_ANSWER_DELEGATED_PROMPT_RPC, `sessionId`
+ *  in `args`, set by main). */
+export async function answerMoaApproval(
+  client: MoaApprovalClient | null,
+  args: unknown,
+  method: typeof MOA_ANSWER_PROMPT_RPC | typeof MOA_ANSWER_DELEGATED_PROMPT_RPC = MOA_ANSWER_PROMPT_RPC,
+): Promise<MoaApprovalAnswerResult> {
   const a = (args && typeof args === 'object' && !Array.isArray(args) ? args : {}) as Record<string, unknown>;
   const approvalId = text(a.approvalId);
   const choiceKey = text(a.choiceKey);
@@ -75,7 +83,9 @@ export async function answerMoaApproval(client: MoaApprovalClient | null, args: 
   if (!client) return { ok: false, code: 'error', reason: 'daemon-unavailable' };
   let answer: unknown;
   try {
-    answer = await client.rpc(MOA_ANSWER_PROMPT_RPC, { approvalId, choiceKey, promptFingerprint });
+    const sessionId = text(a.sessionId);
+    if (method === MOA_ANSWER_DELEGATED_PROMPT_RPC && !sessionId) return { ok: false, code: 'invalid' };
+    answer = await client.rpc(method, { approvalId, choiceKey, promptFingerprint, ...(method === MOA_ANSWER_DELEGATED_PROMPT_RPC ? { sessionId } : {}) });
   } catch (err) {
     return { ok: false, code: 'error', reason: String(err) };
   }

@@ -21,3 +21,24 @@ describe('selectDelegatedApprovals', () => {
     ]);
   });
 });
+
+describe('selectDelegatedApprovals — answerable in place', () => {
+  const base = { id: 'a1', sessionId: 'pty-h', workspaceId: 'ws-wmux', agent: 'claude', state: 'pending', toolName: 'Bash', summary: 'node test.js', createdAt: 10 };
+
+  it('a bound dialog carries its Yes and No, tagged, and its fingerprint', () => {
+    const [row] = selectDelegatedApprovals([{ ...base, choices: [{ key: '1', label: 'Yes' }, { key: '3', label: 'No' }], promptFingerprint: 'f'.repeat(32) }], scope);
+    expect(row).toMatchObject({
+      choices: [{ key: '1', label: 'Yes', decision: 'approve' }, { key: '3', label: 'No', decision: 'deny' }],
+      promptFingerprint: 'f'.repeat(32),
+    });
+  });
+
+  it('no fingerprint, a press already made, or only one of Yes/No: no in-place answer', () => {
+    const rows = selectDelegatedApprovals([
+      { ...base, id: 'x1', choices: [{ key: '1', label: 'Yes' }, { key: '2', label: 'No' }] },
+      { ...base, id: 'x2', choices: [{ key: '1', label: 'Yes' }, { key: '2', label: 'No' }], promptFingerprint: 'f'.repeat(32), pressedAt: 5 },
+      { ...base, id: 'x3', choices: [{ key: '1', label: 'Yes' }], promptFingerprint: 'f'.repeat(32) },
+    ], scope);
+    for (const row of rows) expect(row.choices).toBeUndefined();
+  });
+});

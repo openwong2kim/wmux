@@ -153,7 +153,7 @@ import { setMoaHandoffService } from '../../deck/moaHandoff';
 import { createMoaHandoffService } from '../../deck/moaHandoffHost';
 import { HANDOFF_NOTICE_OPTION, HANDOFF_OPTIONS, type MoaHandoffResolveResult } from '../../../shared/moaHandoff';
 import { MoaTranscript, type MoaTranscriptHint } from '../../deck/moaTranscript';
-import { answerMoaApproval, readMoaApproval } from '../../deck/moaApproval';
+import { answerMoaApproval, MOA_ANSWER_DELEGATED_PROMPT_RPC, readMoaApproval } from '../../deck/moaApproval';
 import { getAccountStore } from '../../account/accountStore';
 import type { MoaApproval, MoaApprovalAnswerResult, MoaDelegatedApproval, MoaPendingDecision } from '../../../shared/moa';
 import { selectDelegatedApprovals } from '../../deck/moaDelegatedApprovals';
@@ -2609,32 +2609,46 @@ export function registerDeckHandler(
   );
 
   // Permission prompts of agents Moa delegated work to (moaDelegatedApprovals).
+  const listDelegatedApprovals = async (): Promise<MoaDelegatedApproval[]> => {
+    const hq = getHqWorkspaceId();
+    const dc = opts.getDaemonClient?.() ?? null;
+    if (!hq || !dc) return [];
+    let listed: unknown;
+    try {
+      listed = await dc.rpc('daemon.approvals.list', {});
+    } catch {
+      return [];
+    }
+    const pending = (listed as { pending?: unknown } | null)?.pending;
+    if (!Array.isArray(pending)) return [];
+    const names = new Map((getWorkspaceMirror().getEntries() ?? []).map((e) => [e.id, e.name]));
+    const taskWorkspaces = new Set(
+      getTaskLedger().list({ ownerWorkspaceId: hq, openOnly: true }).map((e) => e.taskWorkspaceId),
+    );
+    return selectDelegatedApprovals(pending, {
+      handoffPtys: moaHandoffs?.openTargets() ?? new Map(),
+      taskWorkspaces,
+      workspaceName: (id) => names.get(id),
+    });
+  };
   ipcMain.removeHandler(IPC.DECK_MOA_DELEGATED_APPROVALS);
   ipcMain.handle(
     IPC.DECK_MOA_DELEGATED_APPROVALS,
-    wrapHandler(IPC.DECK_MOA_DELEGATED_APPROVALS, async (): Promise<{ approvals: MoaDelegatedApproval[] }> => {
-      const hq = getHqWorkspaceId();
-      const dc = opts.getDaemonClient?.() ?? null;
-      if (!hq || !dc) return { approvals: [] };
-      let listed: unknown;
-      try {
-        listed = await dc.rpc('daemon.approvals.list', {});
-      } catch {
-        return { approvals: [] };
-      }
-      const pending = (listed as { pending?: unknown } | null)?.pending;
-      if (!Array.isArray(pending)) return { approvals: [] };
-      const names = new Map((getWorkspaceMirror().getEntries() ?? []).map((e) => [e.id, e.name]));
-      const taskWorkspaces = new Set(
-        getTaskLedger().list({ ownerWorkspaceId: hq, openOnly: true }).map((e) => e.taskWorkspaceId),
-      );
-      return {
-        approvals: selectDelegatedApprovals(pending, {
-          handoffPtys: moaHandoffs?.openTargets() ?? new Map(),
-          taskWorkspaces,
-          workspaceName: (id) => names.get(id),
-        }),
-      };
+    wrapHandler(IPC.DECK_MOA_DELEGATED_APPROVALS, async (): Promise<{ approvals: MoaDelegatedApproval[] }> => ({
+      approvals: await listDelegatedApprovals(),
+    })),
+  );
+  // Answer one in place. Only a prompt the list above holds right now, so the
+  // renderer cannot aim the daemon's desktop answer at any other pane.
+  ipcMain.removeHandler(IPC.DECK_MOA_DELEGATED_ANSWER);
+  ipcMain.handle(
+    IPC.DECK_MOA_DELEGATED_ANSWER,
+    wrapHandler(IPC.DECK_MOA_DELEGATED_ANSWER, async (_event: Electron.IpcMainInvokeEvent, args: unknown): Promise<MoaApprovalAnswerResult> => {
+      const id = (args as { approvalId?: unknown } | null)?.approvalId;
+      const row = typeof id === 'string' ? (await listDelegatedApprovals()).find((a) => a.id === id) : undefined;
+      if (!row) return { ok: false, code: 'not_pending' };
+      if (!row.choices) return { ok: false, code: 'invalid' };
+      return answerMoaApproval(opts.getDaemonClient?.() ?? null, { ...(args as object), sessionId: row.ptyId }, MOA_ANSWER_DELEGATED_PROMPT_RPC);
     }),
   );
 
@@ -3813,6 +3827,7 @@ export function registerDeckHandler(
     moaTranscript.dispose();
     ipcMain.removeHandler(IPC.DECK_MOA_DECISIONS);
     ipcMain.removeHandler(IPC.DECK_MOA_DELEGATED_APPROVALS);
+    ipcMain.removeHandler(IPC.DECK_MOA_DELEGATED_ANSWER);
     ipcMain.removeHandler(IPC.DECK_MOA_TASK_RESULT);
     ipcMain.removeHandler(IPC.DECK_MOA_TRANSCRIPT_STATUS);
     ipcMain.removeHandler(IPC.DECK_MOA_TRANSCRIPT_SNAPSHOT);

@@ -465,3 +465,43 @@ describe('MoaPromptSync — the desktop answer', () => {
     expect(h.writes).toEqual([]);
   });
 });
+
+describe('MoaPromptSync — a delegated agent\'s prompt answered from Moa\'s panel', () => {
+  async function bound(h: Harness) {
+    h.push(withDialog());
+    await flush();
+    const view = h.sync.view()!;
+    expect(view.answerable).toBe(true);
+    h.clock.now += TERMINAL_PROMPT_MIN_ANSWER_AGE_MS;
+    return view;
+  }
+  const delegated = (h: Harness, view: { id: string; promptFingerprint?: string }, sessionId: string, choiceKey = '1') =>
+    h.sync.answerDelegated({ approvalId: view.id, choiceKey, promptFingerprint: view.promptFingerprint, sessionId });
+
+  it('never presses the Moa pane\'s own prompt (that has its own answer)', async () => {
+    const h = harness();
+    const view = await bound(h);
+    expect(await delegated(h, view, SID)).toEqual({ ok: false, reason: 'not-pending' });
+    expect(h.writes).toEqual([]);
+  });
+
+  it('refuses a record of another pane than the one main named, and an answer with no pane', async () => {
+    const h = harness();
+    const view = await bound(h);
+    h.resolves = false; // the record's pane is not the Moa pane any more
+    expect(await delegated(h, view, 'pty-worker')).toEqual({ ok: false, reason: 'not-pending' });
+    expect(await h.sync.answerDelegated({ approvalId: view.id, choiceKey: '1', promptFingerprint: view.promptFingerprint })).toEqual({ ok: false, reason: 'invalid' });
+    expect(h.writes).toEqual([]);
+  });
+
+  it('presses a worker pane\'s bound prompt once, as "desktop", with every fence of a phone answer', async () => {
+    const h = harness();
+    const view = await bound(h);
+    h.resolves = false; // the same record, now on a pane that is not Moa's
+    expect(await delegated(h, view, SID, '2')).toMatchObject({ ok: true });
+    expect(h.writes).toEqual([{ sessionId: SID, data: '2' }]);
+    expect(pending(h)[0]).toMatchObject({ resolvedBy: 'desktop', selectedChoiceKey: '2', decision: 'deny' });
+    expect(await delegated(h, view, SID, '1')).toEqual({ ok: false, reason: 'already-answered' });
+    expect(h.writes).toHaveLength(1);
+  });
+});

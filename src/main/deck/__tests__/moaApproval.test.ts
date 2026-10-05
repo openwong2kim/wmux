@@ -3,7 +3,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { answerMoaApproval, MOA_ANSWER_PROMPT_RPC, MOA_PROMPT_RPC, readMoaApproval } from '../moaApproval';
+import { answerMoaApproval, MOA_ANSWER_DELEGATED_PROMPT_RPC, MOA_ANSWER_PROMPT_RPC, MOA_PROMPT_RPC, readMoaApproval } from '../moaApproval';
 import { ALL_RPC_METHODS } from '../../../shared/rpc';
 import { METHOD_CAPABILITY } from '../../mcp/methodCapabilityMap';
 
@@ -57,6 +57,19 @@ describe('answerMoaApproval', () => {
     expect(await answerMoaApproval(client({ ok: false, reason }), args)).toMatchObject({ ok: false, code });
   });
 
+  it('a delegated answer carries the pane main named, and refuses one with no pane', async () => {
+    const c = client({ ok: true, state: 'pending' });
+    expect(await answerMoaApproval(c, { ...args, sessionId: 'pty-w' }, MOA_ANSWER_DELEGATED_PROMPT_RPC)).toEqual({ ok: true });
+    expect(c.rpc).toHaveBeenCalledWith(MOA_ANSWER_DELEGATED_PROMPT_RPC, { ...args, sessionId: 'pty-w' });
+    const d = client({ ok: true });
+    expect(await answerMoaApproval(d, args, MOA_ANSWER_DELEGATED_PROMPT_RPC)).toEqual({ ok: false, code: 'invalid' });
+    expect(d.rpc).not.toHaveBeenCalled();
+    // Moa's own answer never forwards a pane, even when one is passed.
+    const m = client({ ok: true });
+    await answerMoaApproval(m, { ...args, sessionId: 'pty-w' });
+    expect(m.rpc).toHaveBeenCalledWith(MOA_ANSWER_PROMPT_RPC, args);
+  });
+
   it('refuses malformed args without asking the daemon; no daemon is an error', async () => {
     const c = client({ ok: true });
     expect(await answerMoaApproval(c, { approvalId: 'ap-1' })).toEqual({ ok: false, code: 'invalid' });
@@ -66,7 +79,7 @@ describe('answerMoaApproval', () => {
 });
 
 describe('the Moa prompt RPCs are reachable from the renderer IPC only', () => {
-  const methods = [MOA_PROMPT_RPC, MOA_ANSWER_PROMPT_RPC];
+  const methods = [MOA_PROMPT_RPC, MOA_ANSWER_PROMPT_RPC, MOA_ANSWER_DELEGATED_PROMPT_RPC];
 
   it('are not RPC methods main routes, nor in the MCP capability map', () => {
     for (const method of methods) {
