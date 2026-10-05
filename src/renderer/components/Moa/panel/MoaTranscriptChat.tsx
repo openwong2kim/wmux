@@ -163,6 +163,10 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
   }, [hqId, retry]);
   const messages = useMemo(() => transcriptMessages(data.events, true), [data.events]);
   const [pending, setPending] = useState<Pending[]>([]);
+  // The latest events, for onNew to read after its await: the closure's copy
+  // is from the render that started the send.
+  const eventsRef = useRef(data.events);
+  eventsRef.current = data.events;
 
   // A sent message shows until the transcript records a new prompt (main may
   // wrap the text, so any new user row settles the oldest bubble) or the
@@ -187,6 +191,10 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
     if (!result.ok) throw new MessageNotSentError(t('moa.panel.sendFailed'));
     // /clear and /reset are commands, not messages: nothing to wait for.
     if (/^\/(clear|reset)$/.test(text.trim())) return;
+    // The transcript may have recorded the prompt while onSend was in flight.
+    // The settle effect already ran then, with nothing pending to clear, so a
+    // bubble added now would sit beside the real row until the next event.
+    if (eventsRef.current.some((e) => e.kind === 'user_text' && !before.has(e.id))) return;
     setPending((current) => [...current, { id: crypto.randomUUID(), text, before }].slice(-4));
   }, [busy, data.events, onSend, t]);
 

@@ -79,6 +79,20 @@ describe('MoaTranscriptChat', () => {
     expect(host.querySelector('[data-moa-chat-pending]')?.textContent).toContain('Check the release');
   });
 
+  it('a prompt the transcript records before the send resolves shows one bubble, not two', async () => {
+    const { api, push } = fakeApi();
+    let finish: (r: { ok: boolean }) => void = () => undefined;
+    const onSend = vi.fn(() => new Promise<{ ok: boolean }>((resolve) => { finish = resolve; }));
+    await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={onSend} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />));
+    await type('Check the release');
+    await act(async () => input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })));
+    expect(onSend).toHaveBeenCalledWith('Check the release');
+    await act(async () => push({ seq: 1, events: [{ id: 'u2', kind: 'user_text', text: 'Check the release', ts: 3 }], cursor: { ...cursor, tailOffset: 150, fileSize: 150 } }));
+    await act(async () => finish({ ok: true }));
+    expect(host.querySelector('[data-moa-chat-pending]')).toBeNull();
+    expect([...host.querySelectorAll('.wmux-chat-user')].filter((n) => n.textContent?.includes('Check the release'))).toHaveLength(1);
+  });
+
   it('a brain with no conversation yet reads as empty, not as a connection error', async () => {
     const { api } = fakeApi({ snapshot: vi.fn(async () => null) as never });
     await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />));
