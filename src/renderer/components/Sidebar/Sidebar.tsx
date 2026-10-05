@@ -364,6 +364,28 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
     // Leaving the list hands the stop back to the selected row.
     if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setKeyRowId(null);
   }, []);
+  // The stop must always sit on a row that is on screen. A row can leave
+  // without a blur — closed, filtered, snoozed, or folded away with its group
+  // while focus was elsewhere — and rows mount and unmount inside their own
+  // components without re-rendering this one, so the tree is watched: when no
+  // visible row holds the stop, it moves to the selected row, else the first.
+  const [treeEl, setTreeEl] = useState<HTMLDivElement | null>(null);
+  const activeRowIdRef = useRef(activeRowId);
+  activeRowIdRef.current = activeRowId;
+  useEffect(() => {
+    const el = treeEl;
+    if (!el) return;
+    const ensureStop = () => {
+      const rows = [...el.querySelectorAll<HTMLElement>('[data-sidebar-row]')].filter((r) => r.getClientRects().length > 0);
+      if (rows.length === 0 || rows.some((r) => r.tabIndex === 0)) return;
+      const next = rows.find((r) => r.getAttribute('data-sidebar-row') === activeRowIdRef.current) ?? rows[0];
+      setKeyRowId(next.getAttribute('data-sidebar-row'));
+    };
+    ensureStop();
+    const observer = new MutationObserver(ensureStop);
+    observer.observe(el, { childList: true, subtree: true, attributes: true, attributeFilter: ['tabindex'] });
+    return () => observer.disconnect();
+  }, [treeEl]);
 
   const renderTask = useCallback((id: string) => (
     <WorkspaceItem
@@ -470,7 +492,6 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
             onDuplicate={duplicateWorkspace}
             onReorder={reorderWorkspace}
             moaHq
-            tabStop
           />
         </div>
       )}
@@ -593,6 +614,7 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
             Detached tasks are ordinary rows; tasks whose owner is gone
             collect in the "From closed workspace" group below. */}
         <div
+          ref={setTreeEl}
           role="tree"
           aria-label={t('sidebar.workspaces')}
           className="space-y-0.5"

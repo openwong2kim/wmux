@@ -181,6 +181,10 @@
   background: transparent;
 }
 .wmux-sidebar .sidebar-row-task.sidebar-row-needs:hover { background: var(--hover-fill); }
+/* Selection still wins on a nested task: an active task that needs you keeps
+ * the selection fill (more specific than the flat-task rule above). */
+.wmux-sidebar .sidebar-row-task.sidebar-row-active.sidebar-row-needs,
+.wmux-sidebar .sidebar-row-task.sidebar-row-active.sidebar-row-needs:hover { background: var(--selection); }
 /* Keyboard focus: the app's ring (accent, inside the row), never the
  * browser's default. The row's line is the focus stop (WorkspaceItem). */
 .wmux-sidebar [data-sidebar-row] { border-radius: 10px; outline: none; }

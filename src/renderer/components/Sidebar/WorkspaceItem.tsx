@@ -537,7 +537,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
   // keyboard is on this row, so Tab walks rows' actions one row at a time
   // instead of every hidden button in the list.
   const [rowFocusWithin, setRowFocusWithin] = useState(false);
-  const innerTab = rowFocusWithin ? 0 : -1;
+  const innerTab = rowFocusWithin || moaHq ? 0 : -1;
   // A pane here is waiting out a usage limit: when nothing louder is going on
   // the workspace row draws the waiting clock instead of nothing (or a red ✕).
   const usageWaiting = useStore((s) => workspaceHasUsageLimitWaiting(s, workspaceId));
@@ -1051,9 +1051,13 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
     } else if (e.key === 'ArrowLeft' && expandable && rosterShown && rosterOpen) {
       e.preventDefault();
       setRosterOpen(false);
-    } else if (e.key === 'ArrowLeft' && taskRow) {
-      const ownerCard = e.currentTarget.closest('.sidebar-row')?.parentElement?.closest('.sidebar-row');
-      const ownerRow = ownerCard?.querySelector<HTMLElement>(':scope > [data-sidebar-row]');
+    } else if (e.key === 'ArrowLeft' && taskRow && taskOwnerId) {
+      // By the owner's id, not by DOM ancestry: a task in the owner's
+      // trailing group (started from the app, by the orchestrator, from a
+      // closed pane) is the owner card's sibling, not its descendant.
+      const scope = e.currentTarget.closest('[data-sidebar-tree]') ?? document;
+      const ownerRow = [...scope.querySelectorAll<HTMLElement>('[data-sidebar-row]')]
+        .find((el) => el.getAttribute('data-sidebar-row') === taskOwnerId);
       if (ownerRow) {
         e.preventDefault();
         ownerRow.focus();
@@ -1216,14 +1220,17 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
             ring sits on the line, never on the roster below it. */}
         <div
           className={`${hover.group} -mx-2.5 -my-2 flex min-w-0 items-start gap-2 px-2.5 py-2`}
-          role="treeitem"
-          aria-level={taskRow ? 2 : 1}
-          aria-selected={isActive}
-          aria-expanded={expandable && !editing ? rosterShown : undefined}
+          // Moa's HQ row sits above the list, outside the tree: a labelled
+          // group whose own buttons take Tab directly, no row stop.
+          role={moaHq ? 'group' : 'treeitem'}
+          aria-level={moaHq ? undefined : taskRow ? 2 : 1}
+          aria-selected={moaHq ? undefined : isActive}
+          aria-expanded={!moaHq && expandable && !editing ? rosterShown : undefined}
+          aria-current={moaHq && isActive ? 'true' : undefined}
           aria-label={rowLabel}
-          tabIndex={tabStop ? 0 : -1}
-          data-sidebar-row={workspaceId}
-          onKeyDown={handleRowKeyDown}
+          tabIndex={moaHq ? undefined : tabStop ? 0 : -1}
+          data-sidebar-row={moaHq ? undefined : workspaceId}
+          onKeyDown={moaHq ? undefined : handleRowKeyDown}
           onFocus={() => setRowFocusWithin(true)}
           onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setRowFocusWithin(false); }}
         >

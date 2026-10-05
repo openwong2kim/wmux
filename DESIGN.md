@@ -471,8 +471,13 @@ leaves the page.
   order (nested task and remote rows included), Enter or Space opens one
   (⌘/Ctrl adds it to the multiview), → opens its agents, ← folds them or
   steps out to the owner row, Shift+F10 opens the row menu. A row's own
-  buttons join the Tab order only while the keyboard is on that row. Focus is
-  the app's ring: 2px `--accent`, inside the row, never the browser default.
+  buttons join the Tab order only while the keyboard is on that row. When the
+  stop's row leaves (closed, filtered, snoozed, folded away), the stop moves to
+  the selected row, else the first visible one, so Tab always enters the list.
+  Remote rows answer the same keys (Shift+F10 opens their menu). Moa's HQ row
+  sits above the tree and is not part of it: no row stop, its own buttons take
+  Tab. Focus is the app's ring: 2px `--accent`, inside the row, never the
+  browser default.
 - **Order control:** a sort button in the header, left of the filter, names
   the current order (`Order: Attention`) and opens a three-item menu —
   Attention, Manual, Recent activity — the same setting as Settings ›

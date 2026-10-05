@@ -47,9 +47,11 @@ export default function SidebarSortMenu() {
 
   const onMenuKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key === 'Escape' || e.key === 'Tab') {
-      if (e.key === 'Escape') e.preventDefault();
+      // Both close the menu and hand focus back to its button, so focus never
+      // drops to the page; the next Tab goes on from there.
+      e.preventDefault();
       e.stopPropagation();
-      close(e.key === 'Escape');
+      close(true);
       return;
     }
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;

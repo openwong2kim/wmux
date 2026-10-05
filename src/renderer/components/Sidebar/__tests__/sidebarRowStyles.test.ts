@@ -35,6 +35,13 @@ describe('needs you vs selection', () => {
     expect(task).toContain('border-color: transparent');
     expect(task).toContain('background: transparent');
   });
+  it('keeps the selection fill on an active nested task that needs you', () => {
+    const rule2 = rule('.wmux-sidebar .sidebar-row-task.sidebar-row-active.sidebar-row-needs:hover');
+    expect(rule2).toContain('background: var(--selection)');
+    // It comes after (and is more specific than) the flat-task rule it overrides.
+    expect(css.indexOf('.sidebar-row-task.sidebar-row-active.sidebar-row-needs'))
+      .toBeGreaterThan(css.indexOf('.wmux-sidebar .sidebar-row-task.sidebar-row-needs:hover {'));
+  });
   it('rings keyboard focus in the accent, inside the row', () => {
     expect(rule('.wmux-sidebar [data-sidebar-row]:focus-visible')).toContain('outline: 2px solid var(--accent)');
   });

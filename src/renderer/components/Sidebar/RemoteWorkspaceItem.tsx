@@ -102,6 +102,11 @@ export default function RemoteWorkspaceItem({ workspace, isActive, onSelect, onD
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
             onSelect(workspace.key);
+          } else if ((e.key === 'F10' && e.shiftKey) || e.key === 'ContextMenu') {
+            // The row menu from the keyboard, as on a local row.
+            e.preventDefault();
+            const r = e.currentTarget.getBoundingClientRect();
+            setMenuPos({ x: r.left + 24, y: r.bottom - 4 });
           }
         }}
         onDoubleClick={() => {

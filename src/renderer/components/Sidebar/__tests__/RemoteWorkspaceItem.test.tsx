@@ -63,6 +63,19 @@ afterEach(() => {
 });
 
 describe('RemoteWorkspaceItem', () => {
+  it.each([
+    ['Shift+F10', { key: 'F10', shiftKey: true }],
+    ['the Menu key', { key: 'ContextMenu' }],
+  ])('opens its menu from the keyboard with %s, like a local row', (_label, init) => {
+    const { container, unmount } = render(
+      <RemoteWorkspaceItem workspace={WS} isActive={false} onSelect={vi.fn()} onDetach={vi.fn()} />,
+    );
+    const row = container.querySelector('[role="treeitem"]') as HTMLElement;
+    act(() => { row.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init })); });
+    expect(Array.from(container.querySelectorAll('button')).some((b) => /Detach/.test(b.textContent ?? ''))).toBe(true);
+    unmount();
+  });
+
   it('opens its menu on right-click', () => {
     const { container, unmount } = render(
       <RemoteWorkspaceItem workspace={WS} isActive={false} onSelect={vi.fn()} onDetach={vi.fn()} />,

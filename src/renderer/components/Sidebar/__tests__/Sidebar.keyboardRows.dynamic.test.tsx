@@ -10,6 +10,7 @@ import Sidebar from '../Sidebar';
 import MiniSidebar from '../MiniSidebar';
 import { useStore } from '../../../stores';
 import type { AgentStatus, Pane, Workspace } from '../../../../shared/types';
+import type { MoaState } from '../../../../shared/moa';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -171,5 +172,94 @@ describe('mini rail', () => {
     expect(btn('b').querySelector('[data-status-mark]')?.getAttribute('data-status-mark')).toBe('cross');
     // No text glyphs stand in for a status.
     expect(btn('a').textContent).not.toMatch(/[●✕○]/);
+  });
+});
+
+describe('review fixes (#1812)', () => {
+  const visibleStop = () => rows().filter((r) => r.tabIndex === 0).map((r) => r.dataset.sidebarRow);
+
+  it('moves the Tab stop to a visible row when the keyed row is closed, filtered out or snoozed', async () => {
+    seed({ a: 'idle', b: 'idle', c: 'idle' }, { active: 'a', ago: { a: 10, b: 10, c: 10 } });
+    act(() => root.render(<Sidebar />));
+    const keyTo = (id: string) => act(() => { rowOf(id).focus(); });
+    const blurOut = () => act(() => { (document.activeElement as HTMLElement | null)?.blur(); });
+
+    // Closed while focus sits elsewhere (no blur reaches the list).
+    keyTo('b');
+    expect(visibleStop()).toEqual(['b']);
+    await act(async () => { useStore.setState((st) => ({ workspaces: st.workspaces.filter((w) => w.id !== 'b') })); });
+    expect(visibleStop()).toEqual(['a']);
+
+    // Filtered out.
+    keyTo('c');
+    blurOut();
+    keyTo('c');
+    await act(async () => { useStore.setState({ sidebarFilter: { status: ['running'], kind: [], agent: [], other: [], hideTasks: false } } as never); });
+    await act(async () => { useStore.setState({ sidebarFilter: { status: [], kind: [], agent: [], other: [], hideTasks: false } } as never); });
+    expect(visibleStop().length).toBe(1);
+
+    // Snoozed into its own group.
+    keyTo('c');
+    await act(async () => {
+      useStore.setState((st) => ({ workspaceSettle: { ...st.workspaceSettle, states: { c: { snoozedUntil: NOW + 3_600_000 } } } }) as never);
+    });
+    expect(visibleStop().length).toBe(1);
+  });
+
+  it('keeps Moa\'s HQ row out of the tree: no treeitem, no second row stop', () => {
+    const moa: MoaState = {
+      config: { enabled: true, onboarded: true, level: 1, maxTurnsPerHour: 20, bubbles: true, reduceMotion: false, defaultReason: null },
+      hq: { workspaceId: 'moa', state: 'ok' },
+      archive: { unacked: 0, total: 0 },
+    } as MoaState;
+    seed({ a: 'idle', moa: 'idle', b: 'idle' }, { active: 'moa' });
+    act(() => useStore.setState({ moa, appRoute: 'workspaces' } as never));
+    act(() => root.render(<Sidebar />));
+    const hq = document.querySelector('[data-moa-hq-row]') as HTMLElement;
+    expect(hq).not.toBeNull();
+    expect(hq.closest('[role="tree"]')).toBeNull();
+    expect(hq.querySelector('[role="treeitem"]')).toBeNull();
+    expect(hq.querySelector('[data-sidebar-row]')).toBeNull();
+    // Its own buttons stay reachable.
+    expect([...hq.querySelectorAll<HTMLButtonElement>('[data-workspace-action]')].every((btn) => btn.tabIndex === 0)).toBe(true);
+    expect(visibleStop().length).toBe(1);
+  });
+
+  it('steps ← from a task in the owner\'s trailing group (started from the app) to the owner row', () => {
+    seed({ own: 'idle', tk: 'idle' }, { active: 'own' });
+    act(() => useStore.setState({
+      workspaces: [ws('own'), { ...ws('tk'), name: 'wtask: docs' }],
+      fanoutLineage: { tk: 'own' },
+      fanoutOrigin: { tk: { kind: 'gui' } },
+      fanoutRefreshSettled: true,
+      sidebarTaskGroupExpanded: {},
+    } as never));
+    act(() => root.render(<Sidebar />));
+    const task = rowOf('tk');
+    expect(task).not.toBeNull();
+    // A sibling of the owner card, not inside it.
+    expect(task.closest('.sidebar-row')?.parentElement?.closest('.sidebar-row')).toBeNull();
+    act(() => task.focus());
+    key(task, 'ArrowLeft');
+    expect(document.activeElement).toBe(rowOf('own'));
+  });
+
+  it('Tab out of the order menu lands on its button, not the page', () => {
+    seed({ a: 'idle', b: 'idle', c: 'idle' });
+    act(() => root.render(<Sidebar />));
+    const button = container.querySelector<HTMLButtonElement>('[data-sidebar-sort-toggle]')!;
+    act(() => button.click());
+    const item = container.querySelector<HTMLButtonElement>('[data-sort-option="manual"]')!;
+    vi.useRealTimers();
+    return new Promise<void>((done) => {
+      requestAnimationFrame(() => {
+        key(item, 'Tab');
+        expect(container.querySelector('[data-sidebar-sort-menu]')).toBeNull();
+        requestAnimationFrame(() => {
+          expect(document.activeElement).toBe(button);
+          done();
+        });
+      });
+    });
   });
 });
