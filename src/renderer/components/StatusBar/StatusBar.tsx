@@ -9,16 +9,13 @@ import { selectActiveWorkspaceSummary } from '../../stores/selectors/workspacePr
 import { tokenAttrs } from '../../themes';
 import { HIT_TARGET_24 } from '../hitArea';
 import { IconGear, IconCornerUpLeft } from '../icons';
-import { selectFleetPanes, sortFleetPanes, countNeedsAttention, type FleetPane } from '../../stores/selectors/fleet';
+import { selectFleetPanes, sortFleetPanes, countNeedsAttention, fleetHqId, type FleetPane } from '../../stores/selectors/fleet';
 import PluginStatusBarWidgets from '../../plugins/PluginStatusBarWidgets';
 import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
-import DeckToggle from '../Deck/DeckToggle';
 import MoaTitlebarButton from '../Moa/MoaTitlebarButton';
-import CommandPill from '../Titlebar/CommandPill';
-import SettingsButton from '../Titlebar/SettingsButton';
 import { FOCUS_RING } from '../focusRing';
 import type { StoreState } from '../../stores';
-import { RAIL_PAGE_TITLE_KEYS } from '../Titlebar/railPageTitle';
+import { RAIL_PAGE_TITLE_KEYS, workspaceChromeInTitlebar } from '../Titlebar/railPageTitle';
 import { displayWorkspaceName, resolveTaskLink } from '../../utils/fanoutProvenance';
 import { showWorkspaces } from '../../utils/showWorkspaces';
 
@@ -159,6 +156,8 @@ export default function StatusBar() {
   // re-render only when a count actually changes.
   const fleetVitals = useStore(
     useShallow((s) => {
+      // Moa's HQ is the main bot, not a worker: off the vitals as off Fleet.
+      const hqId = fleetHqId(s);
       const panes = selectFleetPanes({
         workspaces: s.workspaces,
         surfaceAgentStatus: s.surfaceAgentStatus,
@@ -167,7 +166,7 @@ export default function StatusBar() {
         surfacePendingQuestion: s.surfacePendingQuestion,
         remoteWorkspaces: s.remoteWorkspaces,
         usageLimitWaiting: s.usageLimitWaiting,
-      }).filter(isFleetAgentRow);
+      }).filter((p) => isFleetAgentRow(p) && p.workspaceId !== hqId);
       return {
         running: panes.filter((p) => p.agentStatus === 'running').length,
         needsYou: countNeedsAttention(panes),
@@ -177,6 +176,7 @@ export default function StatusBar() {
   // Jump to the most urgent pane — computed at click time (no subscription).
   const jumpToUrgent = () => {
     const s = useStore.getState();
+    const hqId = fleetHqId(s);
     const panes = sortFleetPanes(
       selectFleetPanes({
         workspaces: s.workspaces,
@@ -186,7 +186,7 @@ export default function StatusBar() {
         surfacePendingQuestion: s.surfacePendingQuestion,
         remoteWorkspaces: s.remoteWorkspaces,
         usageLimitWaiting: s.usageLimitWaiting,
-      }).filter(isFleetAgentRow),
+      }).filter((p) => isFleetAgentRow(p) && p.workspaceId !== hqId),
       'attention',
     );
     const target = panes[0];
@@ -206,6 +206,9 @@ export default function StatusBar() {
   // On a rail page the workspace's name, task link and branch belong to the
   // Workspaces page under it: the titlebar names the page instead.
   const railPageTitleKey = useStore((s) => RAIL_PAGE_TITLE_KEYS[s.appRoute]);
+  // On the Workspaces page an open sidebar already shows them (the highlighted
+  // row), so the titlebar carries them only while it is hidden.
+  const showWorkspaceChrome = useStore(workspaceChromeInTitlebar);
 
   // Prefix mode (tmux-style Ctrl+B)
   const prefixMode = useStore((s) => s.prefixMode);
@@ -237,10 +240,10 @@ export default function StatusBar() {
       {/* Left: current workspace (back at its original status-row spot —
           owner call) + transient indicators (prefix mode, branch, badge) */}
       <div className="flex items-center gap-3 min-w-0" style={noDrag}>
-        <span className="text-[13px] text-[var(--text-main)] font-medium truncate" data-titlebar-title {...tokenAttrs('textMain', 'text')}>{railPageTitleKey ? t(railPageTitleKey) : displayWorkspaceName(activeWs.name, taskOwner.isTask) || 'wmux'}</span>
+        {(railPageTitleKey || showWorkspaceChrome) && <span className="text-[13px] text-[var(--text-main)] font-medium truncate" data-titlebar-title {...tokenAttrs('textMain', 'text')}>{railPageTitleKey ? t(railPageTitleKey) : displayWorkspaceName(activeWs.name, taskOwner.isTask) || 'wmux'}</span>}
         {/* #1481 — inside a fan-out task, one hop back to the workspace that
             fanned it out. A link, so steel on hover; muted at rest. */}
-        {!railPageTitleKey && taskOwner.ownerId && (
+        {showWorkspaceChrome && taskOwner.ownerId && (
           <button
             type="button"
             className={`flex min-w-0 items-center gap-1 rounded px-1 min-h-[24px] text-[11px] text-[var(--text-muted)] hover:text-[var(--accent-blue)] transition-colors ${FOCUS_RING}`}
@@ -264,7 +267,7 @@ export default function StatusBar() {
           </span>
         )}
         {/* The branch is the shortcut to the Git page (no button of its own). */}
-        {!railPageTitleKey && branch && (
+        {showWorkspaceChrome && branch && (
           <button
             type="button"
             className={`min-w-0 truncate rounded px-1 min-h-[24px] text-[11px] text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--hover-fill)] transition-colors ${FOCUS_RING}`}
@@ -286,9 +289,9 @@ export default function StatusBar() {
         <PluginStatusBarWidgets alignment="left" />
       </div>
 
-      {/* Draggable gap — the titlebar's remaining grab surface — with the
-          search & command pill centred in it (only the pill is no-drag). */}
-      <CommandPill />
+      {/* Draggable gap: the titlebar's grab surface. The command palette has
+          no titlebar entry; ⌘K and the rail's More menu open it. */}
+      <div className="flex-1 min-w-0 h-full" data-titlebar-drag-gap />
 
       {/* Right: status indicators */}
       <div className="flex items-center shrink-0 gap-2" style={noDrag}>
@@ -325,13 +328,12 @@ export default function StatusBar() {
         <NotificationBellBadgeView unreadCount={unreadCount} onActivate={toggleNotificationPanel} />
         {/* A5: 메모리 + 시각(시계 커서 의존) — 분리된 소형 컴포넌트. */}
         <StatusClockTime />
-        {/* The titlebar's right end: Moa (while it is on), the tools-panel
-            toggle, then Settings — icon buttons of one size, 4px apart, left
-            of the Windows window controls (the titlebar reserves their strip). */}
+        {/* The titlebar's right end: Moa's button while Moa is on (the right
+            panel's only toggle), left of the Windows window controls (the
+            titlebar reserves their strip). Settings lives in the rail's More
+            menu. */}
         <span className="flex items-center gap-1">
           <MoaTitlebarButton />
-          <DeckToggle />
-          <SettingsButton />
         </span>
       </div>
     </div>

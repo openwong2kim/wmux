@@ -24,6 +24,7 @@ import { installAltClickTrackingGuard } from '../../utils/altClickUnderMouseTrac
 import { createOsc52Handler } from '../../utils/osc52Clipboard';
 import { gateUserInput, type UserInputTerminal } from '../../../shared/terminal/userInputGate';
 import { installShellPromptModeReset, shellPromptModeResetFor } from '../../../shared/terminal/shellPromptModeReset';
+import { fitsHeld, onFitsReleased } from '../../utils/layoutTransitionGate';
 
 export interface RemoteMirrorTerminalProps {
   /** null while the pane attach is still in flight. */
@@ -213,6 +214,8 @@ export default function RemoteMirrorTerminal({ attachId, error, insecureTranspor
   const fitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** When the pending timer is due. A later request never postpones it. */
   const fitDueAtRef = useRef(0);
+  /** A fit pass skipped while a layout transition held fits. */
+  const fitHeldDebtRef = useRef(false);
   /** The user's terminal font size is the fit's UPPER BOUND, not its output —
    *  read through a ref so the fit callback can stay identity-stable. */
   const maxFontSizeRef = useRef(terminalFontSize);
@@ -560,10 +563,23 @@ export default function RemoteMirrorTerminal({ attachId, error, insecureTranspor
       fitTimerRef.current = null;
       fitFrameRef.current = requestAnimationFrame(() => {
         fitFrameRef.current = null;
+        // An animated layout change (the sidebar toggle) holds fits: a pass
+        // now would ask the remote for a mid-animation grid. The release
+        // below runs the one pass instead.
+        if (fitsHeld()) {
+          fitHeldDebtRef.current = true;
+          return;
+        }
         runFit();
       });
     }, delayMs);
   }, [runFit]);
+
+  useEffect(() => onFitsReleased(() => {
+    if (!fitHeldDebtRef.current) return;
+    fitHeldDebtRef.current = false;
+    scheduleFit();
+  }), [scheduleFit]);
 
   // Re-fit when the box changes size. A mirror in a non-active workspace lives
   // inside `display:none` (WorkspaceCenter's hidden-but-alive rule), where every
@@ -573,7 +589,15 @@ export default function RemoteMirrorTerminal({ attachId, error, insecureTranspor
   useEffect(() => {
     const box = boxRef.current;
     if (!box || typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(() => scheduleFit(FIT_DEBOUNCE_MS));
+    // Through the layout-transition gate: ticks during a held transition
+    // become one fit on release, never one remote resize per frame.
+    const ro = new ResizeObserver(() => {
+      if (fitsHeld()) {
+        fitHeldDebtRef.current = true;
+        return;
+      }
+      scheduleFit(FIT_DEBOUNCE_MS);
+    });
     ro.observe(box);
     return () => ro.disconnect();
   }, [scheduleFit]);

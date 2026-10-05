@@ -185,9 +185,14 @@ describe('MoaTaskCards', () => {
     expect(toggle.textContent).toContain('Alpha');
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     expect(container.querySelector('[data-moa-task-details]')).toBeNull();
+    const title = toggle.querySelector('[data-moa-task-title]') as HTMLElement;
+    expect(title.className).toContain('truncate');
 
     await act(async () => { toggle.click(); });
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    // Open: the title wraps instead of truncating.
+    expect(title.className).not.toContain('truncate');
+    expect(title.className).toContain('whitespace-normal');
     const details = container.querySelector('[data-moa-task-details]') as HTMLElement;
     expect(details.id).toBe(toggle.getAttribute('aria-controls'));
     // Only the decision that still waits is listed.

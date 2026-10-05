@@ -50,10 +50,13 @@
 }
 [data-chat-view] .wmux-chat-activity > summary::-webkit-details-marker { display: none; }
 [data-chat-view] .wmux-chat-activity > summary:hover { color: color-mix(in srgb, var(--text-main) 70%, transparent); }
+[data-chat-view] .wmux-chat-activity > summary { min-height: 24px; }
 [data-chat-view] .wmux-chat-activity > summary svg { transition: transform var(--motion-feedback) var(--motion-ease-out); }
 [data-chat-view] .wmux-chat-activity[open] > summary svg { transform: rotate(90deg); }
-[data-chat-view] .wmux-chat-tool-label { color: color-mix(in srgb, var(--text-main) 50%, transparent); }
-[data-chat-view] .wmux-chat-tool-label strong { color: color-mix(in srgb, var(--text-main) 80%, transparent); }
+/* Quiet tool rows: the name is secondary at rest and comes up on hover. */
+[data-chat-view] .wmux-chat-tool-label { min-height: 24px; color: color-mix(in srgb, var(--text-main) 50%, transparent); }
+[data-chat-view] .wmux-chat-tool-label strong { color: var(--text-sub); font-weight: 600; transition: color var(--motion-feedback) var(--motion-ease-out); }
+[data-chat-view] .wmux-chat-tool:hover .wmux-chat-tool-label strong { color: var(--text-main); }
 [data-chat-view] .wmux-chat-tool-summary,
 [data-chat-view] .wmux-chat-detail summary,
 [data-chat-view] .wmux-chat-thinking summary { color: color-mix(in srgb, var(--text-main) 45%, transparent); }
@@ -256,7 +259,8 @@ form[data-channel-composer] .wmux-channel-send.wmux-chat-send:disabled,
 @media (prefers-reduced-motion: reduce) {
   [data-chat-view] .wmux-chat-composer,
   form[data-channel-composer].wmux-chat-composer,
-  [data-chat-view] .wmux-chat-activity > summary svg { transition: none; }
+  [data-chat-view] .wmux-chat-activity > summary svg,
+  [data-chat-view] .wmux-chat-tool-label strong { transition: none; }
 }
 [data-chat-view] .wmux-chat-assistant > .wmux-chat-receipt { padding-left: 0; padding-right: 0; }
 

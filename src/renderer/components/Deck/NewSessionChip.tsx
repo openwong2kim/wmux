@@ -61,6 +61,26 @@ export interface NewSessionChipProps {
   t?: (key: string) => string;
 }
 
+/** Clear the brain, then wake a fresh one. Shared by the chip and Moa's
+ *  options menu; never rejects. */
+export async function startNewSession(api: NewSessionApi, workspaceId: string): Promise<void> {
+  try {
+    const res = await api.clear(workspaceId);
+    // Only wake a clear that actually happened. Waking a failed clear would
+    // spin the OLD conversation back up and read as "the button did
+    // nothing, twice".
+    if (res?.ok) {
+      await api.wake(workspaceId).catch(() => {
+        /* best-effort: a busy/rejected wake still leaves a fresh brain
+           ready for the operator's next message */
+      });
+    }
+  } catch {
+    /* the deck surfaces brain errors on its own stream; a failed clear
+       leaves the existing conversation untouched, which is the safe end */
+  }
+}
+
 /** How long the armed state waits for the second click before disarming. */
 const ARM_TIMEOUT_MS = 4000;
 
@@ -110,25 +130,7 @@ export function NewSessionChip({
     }
     disarm();
     setRunning(true);
-    void (async () => {
-      try {
-        const res = await api.clear(workspaceId);
-        // Only wake a clear that actually happened. Waking a failed clear would
-        // spin the OLD conversation back up and read as "the button did
-        // nothing, twice".
-        if (res?.ok) {
-          await api.wake(workspaceId).catch(() => {
-            /* best-effort: a busy/rejected wake still leaves a fresh brain
-               ready for the operator's next message */
-          });
-        }
-      } catch {
-        /* the deck surfaces brain errors on its own stream; a failed clear
-           leaves the existing conversation untouched, which is the safe end */
-      } finally {
-        setRunning(false);
-      }
-    })();
+    void startNewSession(api, workspaceId).finally(() => setRunning(false));
   }, [armed, running, api, workspaceId, disarm, clearDisarm]);
 
   if (!workspaceId) return null;

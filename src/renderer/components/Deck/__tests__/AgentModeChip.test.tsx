@@ -10,6 +10,7 @@ import { act } from 'react';
 import { readFileSync } from 'node:fs';
 import { join as pathJoin } from 'node:path';
 import { AgentModeChip, type AgentModeApi } from '../AgentModeChip';
+import { notifyAgentModeChanged } from '../deckModeBus';
 import type { AgentMode } from '../../../../main/deck/deckAutonomyStore';
 
 const t = (k: string) => k; // identity — assert on keys
@@ -32,16 +33,32 @@ afterEach(() => { while (cleanups.length) cleanups.pop()!(); });
 
 function fakeApi(initial: AgentMode): { api: AgentModeApi; sets: AgentMode[] } {
   const sets: AgentMode[] = [];
+  // Main stores the mode: a read after a set returns what was set.
+  let stored = initial;
   return {
     sets,
     api: {
-      get: async () => ({ mode: initial }),
-      set: async (_ws, mode) => { sets.push(mode); return { ok: true, mode }; },
+      get: async () => ({ mode: stored }),
+      set: async (_ws, mode) => { sets.push(mode); stored = mode; return { ok: true, mode }; },
     },
   };
 }
 
 describe('AgentModeChip', () => {
+  it('re-reads when the mode changes elsewhere (Settings › Moa)', async () => {
+    let current: AgentMode = 'assist';
+    const api: AgentModeApi = { get: async () => ({ mode: current }), set: async (_ws, mode) => ({ ok: true, mode }) };
+    const { container, cleanup } = render(<AgentModeChip api={api} workspaceId="ws-1" t={t} />);
+    cleanups.push(cleanup);
+    await flush();
+    const chip = () => container.querySelector('[data-agent-mode-chip] button')!;
+    expect(chip().textContent).toContain('deck.mode.assist');
+    current = 'danger';
+    act(() => notifyAgentModeChanged());
+    await flush();
+    expect(chip().textContent).toContain('deck.mode.danger');
+  });
+
   it('renders the current mode label after the initial read', async () => {
     const { api } = fakeApi('danger');
     const { container, cleanup } = render(<AgentModeChip api={api} workspaceId="ws-1" t={t} />);

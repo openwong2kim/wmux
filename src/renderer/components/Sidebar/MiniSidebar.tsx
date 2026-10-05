@@ -10,12 +10,13 @@ import { useGlanceBoardOrder } from './useGlanceBoardOrder';
 import { partitionWorkspaceSettle, workspaceSettleGroupOf } from './workspaceSettleGroups';
 import { resolveTaskLink } from '../../utils/fanoutProvenance';
 import { tokenAttrs } from '../../themes';
-import { collapseDirection, expandDirection } from './sidebarGlyphs';
+import { expandDirection } from './sidebarGlyphs';
 import { IconPlus, IconChevronDir, IconGear } from '../icons';
 import { FOCUS_RING } from '../focusRing';
 import SidebarNavigation from './SidebarNavigation';
 import { workspaceColorHex } from '../../../shared/workspaceColors';
 import PresetPicker from './PresetPicker';
+import RailMoreMenu from './RailMoreMenu';
 import { listedWorkspaces, moaHqId as selectMoaHqId } from '../Moa/moaHqGuard';
 
 /** PresetPicker width (w-52), used to keep the flyout on-screen. */
@@ -23,8 +24,9 @@ const PICKER_MENU_WIDTH = 208;
 
 /**
  * `rail` (desktop): the icon rail on the window frame, beside the sheet —
- * the pages Workspaces, Fleet, Schedules and Remote on top, the sidebar
- * toggle alone at the foot (Settings and Search live in the titlebar). While the in-sheet sidebar is open (`collapsed` false) the
+ * the pages Workspaces, Fleet, Schedules and Remote on top, the More menu
+ * alone at the foot (Settings lives in it; the sidebar toggle and Search live
+ * in the titlebar). While the in-sheet sidebar is open (`collapsed` false) the
  * rail carries no workspace list; collapsed, it adds the workspace avatars,
  * so the collapsed mode and the rail are one column. Arrow keys move focus
  * between its buttons. Adapted from MonoCode (hardbeat920/monocode@6bd432ca,
@@ -349,9 +351,11 @@ export default function MiniSidebar({ rail = false, collapsed = true }: { rail?:
 
       {/* Footer — expand + status */}
       <div className="flex flex-col items-center gap-2 py-2 border-t border-[var(--bg-surface)]" style={{ borderColor: 'var(--border-soft)' }}>
-        {/* The rail's foot holds only the sidebar toggle; Settings is in the
-            titlebar (SettingsButton). The web mirror keeps its own. */}
-        {!readOnly && !rail && <button
+        {/* The rail's foot holds the More menu (Settings, shortcuts, updates,
+            version); the sidebar toggle lives in the titlebar. The web
+            mirror has no titlebar, so it keeps its gear and chevron. */}
+        {rail ? <RailMoreMenu /> : <>
+        {!readOnly && <button
           type="button"
           className={`ui-icon-btn w-8 h-8 ${FOCUS_RING}`}
           aria-label={t('settings.title')}
@@ -362,18 +366,15 @@ export default function MiniSidebar({ rail = false, collapsed = true }: { rail?:
         >
           <IconGear size={16} />
         </button>}
-
-        {/* Sidebar toggle — expands when collapsed; on the rail beside an open
-            sidebar it collapses it (the sidebar's own footer is gone). */}
         <button
           className={`w-8 h-8 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--hover-fill)] transition-colors duration-150 font-mono text-caption ${FOCUS_RING}`}
           onClick={toggleSidebar}
-          data-sidebar-collapse={collapsed ? undefined : ''}
-          title={collapsed ? t('sidebar.expandTooltip') : t('sidebar.hideTooltip')}
-          aria-label={collapsed ? t('sidebar.expandTooltip') : t('sidebar.hideTooltip')}
+          title={t('sidebar.expandTooltip')}
+          aria-label={t('sidebar.expandTooltip')}
         >
-          <IconChevronDir dir={collapsed ? expandDirection(sidebarPosition) : collapseDirection(sidebarPosition)} />
+          <IconChevronDir dir={expandDirection(sidebarPosition)} />
         </button>
+        </>}
       </div>
     </div>
   );

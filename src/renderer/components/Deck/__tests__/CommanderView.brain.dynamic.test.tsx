@@ -11,6 +11,7 @@ import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { CommanderViewContent, MOA_BLOCK_CODES, MOA_BLOCK_KEY, isMoaBlockCode, type CommanderViewContentProps } from '../CommanderView';
 import { applyBrainEvent, type DeckBrainMessage } from '../deckBrain';
+import { setDeckHeaderSlot } from '../deckHeaderSlot';
 import { t, setLocale } from '../../../i18n';
 
 // The embed attaches a real xterm to a real daemon session (window.electronAPI),
@@ -465,26 +466,55 @@ describe('CommanderViewContent — surfaced rate-limit notices (real locale)', (
 describe('CommanderViewContent — Moa slots', () => {
   const chatNode = createElement('div', { 'data-test-moa-chat': true }, 'bubbles');
   const topNode = createElement('div', { 'data-test-moa-top': true });
+  // The header slot DeckTabs registers in the real dock.
+  let slot: HTMLDivElement;
+  beforeEach(() => {
+    slot = document.createElement('div');
+    document.body.appendChild(slot);
+    act(() => setDeckHeaderSlot(slot));
+  });
+  afterEach(() => {
+    act(() => setDeckHeaderSlot(null));
+    slot.remove();
+  });
+  const openMenu = () => act(() => (slot.querySelector('[data-moa-header-more]') as HTMLButtonElement).click());
+  const menuItem = (key: string) => document.querySelector(`[data-pane-menu-action="${key}"]`) as HTMLButtonElement | null;
 
   it('opens on the chat look: no terminal is mounted until asked for', () => {
     const onViewChange = vi.fn();
     mount({ brainPtyId: 'pty-hq', chatWorkspaceId: 'ws-hq', moa: { top: topNode, chat: chatNode, view: 'chat', onViewChange } });
-    expect(container.querySelector('[data-test-moa-top]')).not.toBeNull();
+    // The chat draws the top inside its own scroll; the panel does not repeat it.
+    expect(container.querySelector('[data-test-moa-top]')).toBeNull();
     expect(container.querySelector('[data-test-moa-chat]')).not.toBeNull();
     expect(container.querySelector('[data-commander-brain-terminal]')).toBeNull();
-    const toggle = container.querySelector('[data-moa-terminal-toggle]') as HTMLButtonElement;
-    expect(toggle.getAttribute('aria-pressed')).toBe('false');
-    act(() => toggle.click());
+    openMenu();
+    expect(menuItem('view')?.textContent).toBe('moa.panel.viewAsTerminal');
+    act(() => menuItem('view')!.click());
     expect(onViewChange).toHaveBeenCalledWith('terminal');
   });
 
+  it('draws no control rows: Mode, Loop, Schedules, New session, Wake and the view switch are in the ⋯ menu', () => {
+    for (const brainPtyId of ['pty-hq', null]) {
+      mount({ brainPtyId, chatWorkspaceId: 'ws-hq', moa: { top: topNode, chat: chatNode, view: 'chat', onViewChange: vi.fn() } });
+      expect(container.querySelector('[data-agent-mode-chip], [data-deck-new-session], [data-commander-wake-now], [data-moa-terminal-toggle], .wmux-agent-tools-toggle')).toBeNull();
+      // Nothing to show, so the bar is hidden as empty.
+      const bar = container.querySelector('[data-deck-control-bar]');
+      expect(bar?.childElementCount ?? 0).toBe(0);
+      expect(slot.querySelector('[data-moa-header-more]')).not.toBeNull();
+    }
+  });
+
   it('the terminal view mounts the brain pty exactly once, in place of the chat', () => {
-    mount({ brainPtyId: 'pty-hq', chatWorkspaceId: 'ws-hq', moa: { chat: chatNode, view: 'terminal', onViewChange: vi.fn() } });
+    const onViewChange = vi.fn();
+    mount({ brainPtyId: 'pty-hq', chatWorkspaceId: 'ws-hq', moa: { chat: chatNode, view: 'terminal', onViewChange } });
     const embeds = container.querySelectorAll('[data-commander-brain-terminal]');
     expect(embeds).toHaveLength(1);
     expect(embeds[0].getAttribute('data-pty-id')).toBe('pty-hq');
     expect(container.querySelector('[data-test-moa-chat]')).toBeNull();
-    expect(container.querySelector('[data-moa-terminal-toggle]')?.getAttribute('aria-pressed')).toBe('true');
+    openMenu();
+    expect(menuItem('view')?.textContent).toBe('moa.panel.viewAsChat');
+    act(() => menuItem('view')!.click());
+    expect(onViewChange).toHaveBeenCalledWith('chat');
   });
 
   it('before the brain is up, the composer speaks of Moa, not the orchestrator', () => {
@@ -498,15 +528,41 @@ describe('CommanderViewContent — Moa slots', () => {
   it('without a transcript source the terminal is the only view, and there is no toggle', () => {
     mount({ brainPtyId: 'pty-hq', chatWorkspaceId: 'ws-hq', moa: { chat: null, view: 'chat', onViewChange: vi.fn() } });
     expect(container.querySelectorAll('[data-commander-brain-terminal]')).toHaveLength(1);
-    expect(container.querySelector('[data-moa-terminal-toggle]')).toBeNull();
+    openMenu();
+    expect(menuItem('settings')).not.toBeNull();
+    expect(menuItem('view')).toBeNull();
   });
 
   it('Waiting on you and the task cards replace the HQ decision card and ledger', () => {
+    // Terminal view, and the bubble layout before the brain is up: the panel
+    // draws the top itself (the chat view carries it inside its scroll).
     for (const brainPtyId of ['pty-hq', null]) {
-      mount({ brainPtyId, chatWorkspaceId: 'ws-hq', moa: { top: topNode, chat: chatNode, view: 'chat', onViewChange: vi.fn() } });
+      mount({ brainPtyId, chatWorkspaceId: 'ws-hq', moa: { top: topNode, chat: chatNode, view: 'terminal', onViewChange: vi.fn() } });
       expect(container.querySelector('[data-test-moa-top]')).not.toBeNull();
       expect(container.querySelector('[data-test-decision-card]')).toBeNull();
       expect(container.querySelector('[data-test-ledger]')).toBeNull();
+    }
+  });
+
+  it('over the terminal the top is capped with its own scroll; the bubble layout keeps it in the one scroll', () => {
+    mount({ brainPtyId: 'pty-hq', chatWorkspaceId: 'ws-hq', moa: { top: topNode, chat: chatNode, view: 'terminal', onViewChange: vi.fn() } });
+    const cap = container.querySelector('[data-moa-pty-top]') as HTMLElement;
+    expect(cap.querySelector('[data-test-moa-top]')).not.toBeNull();
+    expect(cap.className).toContain('max-h-[30%]');
+    expect(cap.className).toContain('overflow-y-auto');
+    expect(cap.nextElementSibling?.compareDocumentPosition(container.querySelector('[data-commander-brain-terminal]')!)).toBeTruthy();
+    mount({ brainPtyId: null, chatWorkspaceId: 'ws-hq', moa: { top: topNode, chat: chatNode, view: 'chat', onViewChange: vi.fn() } });
+    expect(container.querySelector('[data-moa-pty-top]')).toBeNull();
+    expect(container.querySelector('[data-commander-threads] [data-test-moa-top]')).not.toBeNull();
+  });
+
+  it("Moa's panel draws no Fleet roster; without Moa the roster stays, in either layout", () => {
+    const fleetSlot = createElement('div', { 'data-test-fleet-roster': true });
+    for (const brainPtyId of ['pty-hq', null]) {
+      mount({ brainPtyId, chatWorkspaceId: 'ws-hq', fleetSlot, moa: { top: topNode, chat: chatNode, view: 'chat', onViewChange: vi.fn() } });
+      expect(container.querySelector('[data-test-fleet-roster]')).toBeNull();
+      mount({ brainPtyId, chatWorkspaceId: 'ws-a', fleetSlot });
+      expect(container.querySelector('[data-test-fleet-roster]')).not.toBeNull();
     }
   });
 
@@ -523,7 +579,8 @@ describe('CommanderViewContent — Moa slots', () => {
     (window as unknown as { electronAPI: unknown }).electronAPI = { deck: { wake } };
     try {
       mount({ brainPtyId: 'pty-hq', chatWorkspaceId: 'ws-hq', moa: { chat: chatNode, view: 'chat', onViewChange: vi.fn() } });
-      act(() => (container.querySelector('[data-commander-wake-now]') as HTMLButtonElement).click());
+      openMenu();
+      act(() => menuItem('wake')!.click());
       expect(wake).toHaveBeenCalledWith('ws-hq');
     } finally {
       delete (window as unknown as { electronAPI?: unknown }).electronAPI;

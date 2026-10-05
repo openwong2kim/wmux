@@ -47,3 +47,17 @@
 .moa-bubble { animation: moa-bubble-in var(--motion-feedback, 120ms) cubic-bezier(0.22, 1, 0.36, 1) both; }
 .moa-bubble[data-motion="reduced"] { animation: none; }
 @keyframes moa-bubble-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+
+/* Moa's chat composer: ONE bordered field. The chat's sticky footer paints
+ * --bg-base with rounded top corners, which on the panel's mantle read as a
+ * second frame around the field; here it takes the panel's own fill. The
+ * send button already sits inside the field's border (its footer row). */
+[data-moa-chat] .wmux-chat-footer { background: var(--bg-mantle); border-radius: 0; }
+/* The key hint shows only while the field is focused and empty. Hidden, not
+ * removed, so Stop and Send keep their place at the right. A disabled field
+ * keeps it: there the line says why (Moa is working). */
+[data-moa-chat] .wmux-chat-composer:not(:focus-within):not(:has(.wmux-chat-input:disabled)) .wmux-chat-composer-footer > span,
+[data-moa-chat] .wmux-chat-composer:has(.wmux-chat-input:not(:placeholder-shown)) .wmux-chat-composer-footer > span { visibility: hidden; }
+/* Waiting on you, delegated work and the briefing, at the top of the chat's
+ * scroll: a gap before the conversation starts. */
+.wmux-moa-chat-top { margin-bottom: 12px; }

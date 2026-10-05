@@ -4,6 +4,7 @@ import { answersFromReply, type FormAnswers } from '../../../shared/chatv2/quest
 import { isOtherOption, type UserQuestionPrompt, type UserQuestionReply } from '../../../shared/chatv2/userQuestion';
 import { CHATV2_ANSWER_ARM_MS } from '../../../shared/chatv2/limits';
 import { S } from './strings';
+import { IconCheck, IconX } from '../icons';
 
 // When this renderer first saw each request, by request id. The arm counts
 // from here, not from the daemon's stamp, so a clock skew between the two can
@@ -50,7 +51,12 @@ export function ApprovalCard({ block, onAnswer }: { block: Block; onAnswer: Answ
   const decided = approval.decided ?? answered;
   if (decided) {
     const label = decided === 'allow' ? S.allowed : decided === 'deny' ? S.denied : S.cancelled;
-    return <div className="wmux-chatv2-decided" data-decision={decided}>{label}</div>;
+    return (
+      <div className="wmux-chatv2-decided" data-decision={decided}>
+        {decided !== 'cancelled' && <span aria-hidden>{decided === 'allow' ? <IconCheck size={12} /> : <IconX size={12} />}</span>}
+        {label}
+      </div>
+    );
   }
   const answer = async (decision: 'allow' | 'deny') => {
     setSending(true);
@@ -68,7 +74,7 @@ export function ApprovalCard({ block, onAnswer }: { block: Block; onAnswer: Answ
   );
 }
 
-export function QuestionCard({ prompt, onAnswer }: { prompt: UserQuestionPrompt; onAnswer: Answer }) {
+export function QuestionCard({ prompt, onAnswer, enter }: { prompt: UserQuestionPrompt; onAnswer: Answer; enter?: boolean }) {
   const armed = useArmed(prompt.requestId);
   const [picked, setPicked] = useState<Record<string, string[]>>({});
   const [custom, setCustom] = useState<Record<string, string>>({});
@@ -92,7 +98,7 @@ export function QuestionCard({ prompt, onAnswer }: { prompt: UserQuestionPrompt;
   };
   const disabled = !armed || sending || answered;
   return (
-    <div className="wmux-chatv2-card" role="group" aria-label={prompt.title ?? prompt.questions[0]?.prompt} data-chatv2-question={prompt.requestId}>
+    <div className="wmux-chatv2-card" role="group" aria-label={prompt.title ?? prompt.questions[0]?.prompt} data-chatv2-question={prompt.requestId} data-enter={enter || undefined}>
       {prompt.questions.map((question) => (
         <fieldset key={question.id} className="wmux-chatv2-question">
           <legend>{question.header ? <span className="wmux-chatv2-card-title">{question.header}</span> : null}{question.prompt}</legend>

@@ -24,10 +24,11 @@ afterEach(() => {
 });
 
 describe('titlebar branch', () => {
+  // The branch shows while the sidebar is hidden (DESIGN.md "Titlebar").
   it('opens the Git page', () => {
     const rootPane: Pane = { id: 'p', type: 'leaf', activeSurfaceId: 's', surfaces: [{ id: 's', ptyId: 'pty', title: '', shell: 'zsh', cwd: '/r', surfaceType: 'terminal' }] };
     const ws: Workspace = { id: 'a', name: 'a', rootPane, activePaneId: 'p', metadata: { gitBranch: 'feat/x' } } as Workspace;
-    act(() => useStore.setState({ workspaces: [ws], activeWorkspaceId: 'a', appRoute: 'workspaces' }));
+    act(() => useStore.setState({ workspaces: [ws], activeWorkspaceId: 'a', appRoute: 'workspaces', sidebarVisible: false }));
     act(() => root.render(<StatusBar />));
     const branch = container.querySelector<HTMLButtonElement>('[data-titlebar-branch]')!;
     expect(branch.textContent).toContain('feat/x');

@@ -171,3 +171,13 @@ describe('Fleet board idle column', () => {
     expect(container.querySelector('[data-fleet-idle-peek]')).toBeNull();
   });
 });
+
+describe('Fleet board and Moa', () => {
+  it('leaves Moa\'s HQ workspace off the board and its counts: Moa is the main bot, not a worker', async () => {
+    act(() => useStore.setState({ workspaces: agents(5), surfaceAgent: agentIdentities(5), fleetIdleExpanded: true, moa: null, moaHqSeed: 'ws-0' }));
+    await mount();
+    expect(container.querySelector('[data-fleet-card][data-workspace-id="ws-0"]')).toBeNull();
+    expect(container.querySelectorAll('[data-fleet-card]')).toHaveLength(4);
+    expect(container.querySelector('[data-fleet-stat="idle"]')?.textContent).toContain('4');
+  });
+});

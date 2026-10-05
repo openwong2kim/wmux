@@ -8,7 +8,7 @@ interface RouteState {
 /**
  * Panes and workspaces live on the Workspaces page. Any action that changes
  * them from somewhere else (the palette, a titlebar chip, the preset picker,
- * the tools-panel toggle, a workspace shortcut) brings that page forward,
+ * Moa's titlebar button, a workspace shortcut) brings that page forward,
  * because otherwise it would act behind an inert page the user cannot see.
  * Run the action first, then call this.
  */

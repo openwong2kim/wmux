@@ -32,7 +32,9 @@ export function transcriptMessages(events: readonly TurnEvent[], groupActivity =
     }
     const row: ChatRow = { event, ...(event.kind === 'tool_use' ? { result: results.get(event.toolUseId) } : {}) };
     if (ends && turn) { row.receipt = { start: turn.start, end: event.ts, replies: turn.replies }; turn = null; }
-    const activity = event.kind === 'tool_use' || event.kind === 'tool_result' && !event.files?.length || event.kind === 'assistant_text' && event.thinking;
+    // A failed call stays out of the fold: someone has to see it.
+    const failed = event.kind === 'tool_use' ? results.get(event.toolUseId)?.ok === false : event.kind === 'tool_result' && !event.ok;
+    const activity = !failed && (event.kind === 'tool_use' || event.kind === 'tool_result' && !event.files?.length || event.kind === 'assistant_text' && event.thinking);
     if (groupActivity && activity) {
       const previous = rows.at(-1);
       if (previous?.activity) previous.activity.push(row);
@@ -48,4 +50,22 @@ export function transcriptMessages(events: readonly TurnEvent[], groupActivity =
       metadata: { custom: { row } },
     }, event.id, { type: 'complete', reason: 'stop' });
   });
+}
+
+export type ActivityLabel = { key: 'chat.groupRead' | 'chat.groupEdited' | 'chat.groupRan' | 'chat.groupSearched'; count: number };
+
+const FAMILY: [RegExp, ActivityLabel['key'], number][] = [
+  [/^(multi)?edit$|^write$|^notebookedit$/i, 'chat.groupEdited', 2],
+  [/^read$/i, 'chat.groupRead', 3],
+  [/^bash$/i, 'chat.groupRan', 3],
+  [/^(grep|glob)$/i, 'chat.groupSearched', 3],
+];
+
+/** "Read 3 files" when every call in a fold is one kind and there are enough of them; else null. */
+export function activityLabel(activity: readonly ChatRow[]): ActivityLabel | null {
+  const names = activity.flatMap((row) => (row.event.kind === 'tool_use' ? [row.event.name] : []));
+  for (const [pattern, key, min] of FAMILY) {
+    if (names.length >= min && names.every((name) => pattern.test(name))) return { key, count: names.length };
+  }
+  return null;
 }

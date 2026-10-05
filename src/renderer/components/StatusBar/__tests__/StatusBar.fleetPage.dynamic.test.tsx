@@ -48,4 +48,16 @@ describe('titlebar fleet vitals', () => {
     act(() => useStore.getState().setAppRoute('settings'));
     expect(container.querySelector('[data-statusbar-running]')).not.toBeNull();
   });
+
+  it("leave Moa's HQ out: the main bot is not a worker", () => {
+    act(() => useStore.setState({
+      workspaces: [ws('a'), ws('hq')], activeWorkspaceId: 'a', appRoute: 'workspaces', fleetViewVisible: false,
+      moa: null, moaHqSeed: 'hq',
+      surfaceAgent: { 'pty-a': { name: 'Claude Code', status: 'running' }, 'pty-hq': { name: 'Claude Code', status: 'awaiting_input' } },
+      surfaceAgentStatus: { 'pty-a': 'running', 'pty-hq': 'awaiting_input' },
+    }));
+    act(() => root.render(<StatusBar />));
+    expect(container.querySelector('[data-statusbar-running]')?.textContent).toContain('1');
+    expect(container.querySelector('[data-statusbar-needs]')).toBeNull();
+  });
 });

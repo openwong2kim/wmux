@@ -14,7 +14,8 @@ import {
 } from '../../stores/selectors/fleet';
 import type { AgentStatus } from '../../../shared/types';
 import { shellDisplayName } from '../../utils/ptyCreateOptions';
-import { ORCH_ROLES, bindingEnforcesModel, bindingSkipPermissionsFlag } from '../../../shared/orchestratorRole';
+import { bindingEnforcesModel, bindingSkipPermissionsFlag } from '../../../shared/orchestratorRole';
+import { paneRoleOptions } from '../FleetView/paneRoleOptions';
 
 /**
  * Bridge P2① — the Fleet roster inside the deck's Orchestrator tab.
@@ -170,9 +171,7 @@ export default function DeckFleet({
           // built-in vocabulary; surface it as an extra option so the <select>
           // never renders blank for a known-but-custom role.
           const role = paneRole[p.paneId] ?? '';
-          const roleOptions = role && !(ORCH_ROLES as readonly string[]).includes(role)
-            ? [role, ...ORCH_ROLES]
-            : [...ORCH_ROLES];
+          const roleOptions = paneRoleOptions(role);
           // D2 — the enforced agent/model for this role, shown as a muted
           // sub-label so the operator sees what a worker will actually launch as.
           // Gated on the binding REALLY injecting the model (bindingEnforcesModel),

@@ -9,7 +9,7 @@
 // (defaulting to window.electronAPI.deck.schedules in the container), so the
 // whole panel unit-tests under jsdom with a fake api and zero store wiring.
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
 import type { DeckSchedule } from '../../../main/deck/deckScheduleStore';
@@ -57,9 +57,15 @@ export function DeckSchedulesPanel({
   api,
   workspaceId,
   workspaceName,
+  hideTrigger = false,
+  openRequest = 0,
   t: tProp,
 }: {
   api?: DeckSchedulesApi;
+  /** Moa's panel opens schedules from its options menu: no chip here. */
+  hideTrigger?: boolean;
+  /** Each increment acts as one click on the (hidden) chip. */
+  openRequest?: number;
   /** M1.5: the workspace new schedules bind to (the deck's active one). */
   workspaceId?: string;
   /** Resolve a workspaceId to its display name for the row chips. */
@@ -93,6 +99,14 @@ export function DeckSchedulesPanel({
   useEffect(() => {
     if (open) void refresh();
   }, [open, refresh]);
+
+  // The chip's click, for a caller that hides the chip (Moa's options menu).
+  const lastRequest = useRef(openRequest);
+  useEffect(() => {
+    if (openRequest === lastRequest.current) return;
+    lastRequest.current = openRequest;
+    setOpen((v) => !v);
+  }, [openRequest]);
 
   if (!resolvedApi) return null;
 
@@ -129,7 +143,7 @@ export function DeckSchedulesPanel({
 
   return (
     <>
-      <button
+      {!hideTrigger && <button
         type="button"
         data-deck-schedules-toggle
         aria-expanded={open}
@@ -141,7 +155,7 @@ export function DeckSchedulesPanel({
       >
         {t('deck.schedules') || 'Schedules'}
         {schedules.some((s) => s.enabled) ? ` (${schedules.filter((s) => s.enabled).length})` : ''}
-      </button>
+      </button>}
 
       {open && (
         <div

@@ -1734,6 +1734,7 @@ function UpdateStatus() {
             variant="secondary"
             onClick={handleCheck}
             disabled={state === 'checking' || state === 'downloading'}
+            data-settings-check-update
           >
             {t('settings.checkUpdate')}
           </Button>

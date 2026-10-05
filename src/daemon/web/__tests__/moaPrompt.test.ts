@@ -1,7 +1,7 @@
 // #1772 — the Moa pane's own permission dialog as a `terminal_prompt` record:
 // created from main's pushed dialog, expired on every way the Moa pane or its
 // dialog can go, and answered from the desktop behind the registry's fences.
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -43,6 +43,24 @@ const FETCH = [
 ];
 const INPUT = { command: 'rm -rf build/cache', description: 'Remove the build cache' };
 const SID = 'brain-hq';
+
+// The registry writes approvals.json (real disk I/O) inside each mutation and
+// emits that mutation's events only after the write lands, so no fixed number
+// of ticks is enough on a loaded CI runner. Every write is tracked so `flush`
+// can await them.
+const diskWrites = vi.hoisted(() => new Set<Promise<boolean>>());
+vi.mock('../../approvals/approvalStore', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../approvals/approvalStore')>();
+  return {
+    ...actual,
+    saveApprovalState: (...args: Parameters<typeof actual.saveApprovalState>) => {
+      const write = actual.saveApprovalState(...args);
+      diskWrites.add(write);
+      void write.finally(() => diskWrites.delete(write));
+      return write;
+    },
+  };
+});
 
 let tmpDir: string;
 
@@ -120,9 +138,24 @@ const withDialog = (fingerprint = 'aa11', over: Partial<NonNullable<MoaPaneFact[
 });
 const noDialog = (sessionId = SID): MoaPaneFact => ({ sessionId, workspaceId: 'ws-hq' });
 
-/** Lets the queued notes, expiries and screen checks run. */
+/**
+ * Lets the queued notes, expiries and screen checks run to the end. Everything
+ * here but the disk write is microtasks (screen reads and delays are injected),
+ * so the work is done once a few ticks pass with no write in flight. A write's
+ * events can start more work (a press starts a screen check), hence the loop.
+ */
 async function flush(): Promise<void> {
-  for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0));
+  let quiet = 0;
+  for (let i = 0; quiet < 3; i++) {
+    if (i >= 1_000) throw new Error('flush: the registry never went quiet');
+    await new Promise((r) => setTimeout(r, 0));
+    if (diskWrites.size === 0) {
+      quiet += 1;
+      continue;
+    }
+    quiet = 0;
+    await Promise.allSettled([...diskWrites]);
+  }
 }
 const pending = (h: Harness) => h.registry.list().pending;
 

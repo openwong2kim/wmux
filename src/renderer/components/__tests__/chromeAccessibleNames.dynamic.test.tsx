@@ -12,7 +12,6 @@ import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { useStore } from '../../stores';
 import { DeckTabs } from '../Deck/DeckTabs';
-import DeckToggle from '../Deck/DeckToggle';
 
 let container: HTMLDivElement;
 let root: Root;
@@ -69,23 +68,5 @@ describe('chrome accessible names — rendered', () => {
     expect(buttons.length).toBeGreaterThan(0);
     const unnamed = buttons.filter((b) => !isReadable(accessibleName(b)));
     expect(unnamed.map((b) => b.outerHTML.slice(0, 80))).toEqual([]);
-  });
-
-  it('names the deck toggle, and carries its signal into the name', () => {
-    act(() => root.render(createElement(DeckToggle)));
-    const quiet = container.querySelector('[data-deck-toggle]') as HTMLButtonElement;
-    expect(quiet.getAttribute('data-deck-signal')).toBe('false');
-    const quietName = accessibleName(quiet);
-    expect(isReadable(quietName)).toBe(true);
-
-    act(() => useStore.setState({ channelUnread: { general: 2 } }));
-    const loud = container.querySelector('[data-deck-toggle]') as HTMLButtonElement;
-    expect(loud.getAttribute('data-deck-signal')).toBe('true');
-    // The red dot is aria-hidden decoration, so the signal has to reach the
-    // name or a screen-reader user is told only "Expand dock" while a sighted
-    // one can see there is a reason to press it.
-    const loudName = accessibleName(loud);
-    expect(loudName.startsWith(quietName)).toBe(true);
-    expect(loudName.length).toBeGreaterThan(quietName.length);
   });
 });
