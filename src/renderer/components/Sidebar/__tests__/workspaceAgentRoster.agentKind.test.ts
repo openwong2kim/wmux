@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { rosterShowsAgentKind } from '../WorkspaceAgentRoster';
 
 const rosterSource = readFileSync(
   resolve(process.cwd(), 'src/renderer/components/Sidebar/WorkspaceAgentRoster.tsx'),
@@ -21,7 +22,7 @@ describe('roster agent kind', () => {
   it('names only non-Claude agents, in muted text', () => {
     // Only beside a real title: without one the title slot already shows the
     // agent name, and printing it again would read "Codex CLI Codex CLI".
-    expect(rosterSource).toMatch(/row\.surfaceTitle && row\.slug && row\.slug !== 'claude' && \(/);
+    expect(rosterSource).toContain('{rosterShowsAgentKind(row) && (');
     // The trailer no longer repeats the vendor.
     expect(rosterSource).toContain('rosterSecondaryLabel(row, { showVendor: false })');
     const at = rosterSource.indexOf('data-roster-agent-kind');
@@ -33,5 +34,20 @@ describe('roster agent kind', () => {
   it('the collapsed summary counts each status group instead of drawing glyphs', () => {
     expect(rosterSource).toContain('<span>{group.length}</span>');
     expect(rosterSource).not.toContain('data-roster-chip-extra');
+  });
+});
+
+describe('rosterShowsAgentKind', () => {
+  const row = (surfaceTitle: string, slug: string, agentName: string) => ({ surfaceTitle, slug, agentName });
+  it('names a non-Claude agent beside a title of its own', () => {
+    expect(rosterShowsAgentKind(row('fix flaky test', 'codex', 'Codex CLI'))).toBe(true);
+  });
+  it('does not repeat the agent when the title already is it', () => {
+    expect(rosterShowsAgentKind(row('Codex', 'codex', 'Codex CLI'))).toBe(false);
+    expect(rosterShowsAgentKind(row('codex cli', 'codex', 'Codex CLI'))).toBe(false);
+  });
+  it('never marks Claude or an untitled row', () => {
+    expect(rosterShowsAgentKind(row('refactor', 'claude', 'Claude Code'))).toBe(false);
+    expect(rosterShowsAgentKind(row('', 'codex', 'Codex CLI'))).toBe(false);
   });
 });

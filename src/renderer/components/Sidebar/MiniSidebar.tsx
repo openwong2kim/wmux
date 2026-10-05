@@ -3,7 +3,8 @@ import { useCallback, useMemo, useRef, useState, type KeyboardEvent } from 'reac
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { selectWorkspaceRailSummary } from '../../stores/selectors/workspaceProjections';
-import { formatStaleMinutes, selectAllWorkspaceAgentStatus, selectAllWorkspaceUnverifiableMinutes } from '../../stores/selectors/fleet';
+import { formatStaleMinutes, selectAllWorkspaceAgentStatus, selectAllWorkspaceUnverifiableMinutes, selectWorkspaceAttentionClasses } from '../../stores/selectors/fleet';
+import { StatusMarkView } from './AgentMarks';
 import { useT } from '../../hooks/useT';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
 import { useGlanceBoardOrder } from './useGlanceBoardOrder';
@@ -51,6 +52,9 @@ export default function MiniSidebar({ rail = false, collapsed = true }: { rail?:
   // window, in whole minutes of silence. Same roll-up, minute-granular so the
   // shallow compare holds between clock ticks.
   const unverifiableMinutesById = useStore(useShallow(selectAllWorkspaceUnverifiableMinutes));
+  // The full row's rule: plain `waiting` with no question is idle, so the rail
+  // draws it as idle too.
+  const attentionClassById = useStore(useShallow(selectWorkspaceAttentionClasses));
   // Needs-you-first ordering (attentionOrder.ts) — display only, same setting
   // and same roll-up as the full sidebar so the two surfaces never disagree.
   // #1481 — the same three-way order as the full sidebar; reorder pauses for
@@ -190,8 +194,8 @@ export default function MiniSidebar({ rail = false, collapsed = true }: { rail?:
           const dropAllowed = (fromId: string) =>
             !sidebarAttentionFirst || (isPinned && pinnedIds.includes(fromId));
           const unreadCount = notifications.filter((n) => !n.read && n.workspaceId === ws.id).length;
-          const agentStatus = agentStatusById[ws.id] ?? 'idle';
-          const agentIcon = agentStatus !== 'idle' ? AGENT_STATUS_ICON[agentStatus] : null;
+          const rolled = agentStatusById[ws.id] ?? 'idle';
+          const agentStatus = rolled === 'waiting' && attentionClassById[ws.id] !== 'needsYou' ? 'idle' : rolled;
           // Unverifiable: the rail's filled glyph goes hollow and stops
           // pulsing — the same "running, but nobody has heard from it" ring the
           // full sidebar draws, in the one glyph this 48px rail can afford.
@@ -200,6 +204,13 @@ export default function MiniSidebar({ rail = false, collapsed = true }: { rail?:
           // remain distinguishable in the 48px rail.
           const label = `${ws.name.charAt(0).toUpperCase()}${railIndex + 1}`;
           const railColor = workspaceColorHex(ws.color);
+          // Status by shape (the sidebar's StatusMarkView), and in words for
+          // the accessible name: "name, status".
+          const statusText = unverifiableMinutes
+            ? t('workspace.agentUnverifiable', { time: formatStaleMinutes(unverifiableMinutes) })
+            : attentionClassById[ws.id] === 'needsYou' && (agentStatus === 'waiting' || agentStatus === 'awaiting_input') ? t('workspace.needsYou')
+              : agentStatus !== 'idle' ? t(AGENT_STATUS_ICON[agentStatus].labelKey) : undefined;
+          const railName = [ws.name, statusText].filter(Boolean).join(', ');
 
           const handleClick = (e: React.MouseEvent<HTMLButtonElement>) => {
             // Suppress click that fires immediately after a drag.
@@ -310,7 +321,10 @@ export default function MiniSidebar({ rail = false, collapsed = true }: { rail?:
                 onDragOver={handleDragOver}
                 onDragLeave={handleDragLeave}
                 onDrop={handleDrop}
-                title={`${ws.name} (Ctrl+${railIndex + 1})`}
+                title={`${railName} (Ctrl+${railIndex + 1})`}
+                aria-label={railName}
+                aria-current={isActive ? 'true' : undefined}
+                data-rail-workspace={ws.id}
               >
                 {label}
                 {unreadCount > 0 && (
@@ -323,19 +337,9 @@ export default function MiniSidebar({ rail = false, collapsed = true }: { rail?:
                     {unreadCount > 9 ? '9+' : unreadCount}
                   </span>
                 )}
-                {agentIcon && (
-                  <span
-                    // The cross gets a box sized to its own glyph, mirroring the
-                    // full row: the dot's footprint is 6px and the ✕ is 10px.
-                    className={`absolute -bottom-0.5 -right-0.5 text-[10px] leading-none ${agentIcon.shape === 'cross' ? 'w-2.5 h-2.5 flex items-center justify-center font-bold' : ''} ${agentIcon.className} ${agentStatus === 'running' && !unverifiableMinutes ? 'animate-pulse' : ''}`}
-                    title={unverifiableMinutes
-                      ? t('workspace.agentUnverifiable', { time: formatStaleMinutes(unverifiableMinutes) })
-                      : `${ws.agentName ? `${ws.agentName} — ` : ''}${t(agentIcon.labelKey)}`}
-                  >
-                    {/* Error is the one red status told apart by FORM, not hue
-                        (agentStatusIcon.ts) — the rail mirrors that ✕. A silent
-                        running agent is the hollow ring. */}
-                    {unverifiableMinutes ? '○' : agentIcon.shape === 'cross' ? '✕' : agentIcon.dot}
+                {statusText && (
+                  <span className="absolute -bottom-0.5 -right-0.5 flex items-center justify-center rounded-full bg-[var(--bg-mantle)]" data-rail-status>
+                    <StatusMarkView status={agentStatus} unverifiable={unverifiableMinutes > 0} />
                   </span>
                 )}
               </button>

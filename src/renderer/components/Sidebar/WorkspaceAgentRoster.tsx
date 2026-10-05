@@ -113,11 +113,13 @@ interface WorkspaceRosterSummaryProps {
   /** Fan-out tasks nested under this roster's pane rows — counted on the
    *  collapsed chip, since folding the roster also hides them. */
   paneTaskCount?: number;
-  /** How many of those need you — red on the folded chip, so a task asking
-   *  for you never disappears behind a fold. */
+  /** How many of those need you — needs-you yellow on the folded chip, so a
+   *  task asking for you never disappears behind a fold. */
   paneTaskNeedYou?: number;
   open: boolean;
   onToggle: () => void;
+  /** Tab order (the row's roving tabindex hands it out). */
+  tabIndex?: number;
 }
 
 /** Consecutive runs of the same status, so each run carries ONE mark. */
@@ -143,6 +145,20 @@ export function groupChipAgents(agents: readonly RosterChipAgent[]): RosterChipA
  * Previously the title was rendered ONLY when a leaf had 2+ surfaces, so the
  * single-surface panes that make up most workspaces never showed it at all.
  */
+/**
+ * Whether a roster row names its agent kind after the title: only non-Claude
+ * agents, only beside a real title, and not when the title already is the
+ * agent ("Codex" beside "Codex CLI" says the same thing twice).
+ */
+export function rosterShowsAgentKind(row: Pick<WorkspaceAgentRosterRow, 'surfaceTitle' | 'slug' | 'agentName'>): boolean {
+  if (!row.surfaceTitle || !row.slug || row.slug === 'claude') return false;
+  const title = row.surfaceTitle.trim().toLowerCase();
+  const name = (row.agentName ?? '').trim().toLowerCase();
+  if (!name) return true;
+  const startsWord = (a: string, b: string) => a === b || a.startsWith(`${b} `);
+  return !(startsWord(name, title) || startsWord(title, name));
+}
+
 export function rosterPrimaryLabel(row: WorkspaceAgentRosterRow): string {
   // Truthiness, not `??`: the row type allows an empty title, and `??` would
   // let `''` win the lead. The trailer already tests truthiness, so `??` here
@@ -236,6 +252,7 @@ function WorkspaceRosterSummary({
   paneTaskNeedYou = 0,
   open,
   onToggle,
+  tabIndex,
 }: WorkspaceRosterSummaryProps) {
   const t = useT();
   const roster = { agentCount, stashedCount };
@@ -262,6 +279,7 @@ function WorkspaceRosterSummary({
       // behind that already-proven guard instead of leaving the mousedown
       // preventDefault below as the single line of defence.
       data-workspace-agent-roster
+      tabIndex={tabIndex}
       // The chevron is 8px and the count 10px type: the control measured ~20x14.
       // HIT_TARGET_24_ROW gives it a 24px box, refunds only the HEIGHT (so the
       // row keeps its own) and pays the ~4px of width in full — the name column
@@ -269,7 +287,7 @@ function WorkspaceRosterSummary({
       // over the end of the workspace name. `self-center` rides in the recipe:
       // the row is items-start, so a 24px box pinned to the top would float the
       // chevron above the caption line it belongs to.
-      className={`${HIT_TARGET_24_ROW} flex-shrink-0 gap-0.5 rounded-md px-0.5 text-[10px] font-mono tabular-nums text-[color-mix(in_srgb,var(--text-main)_45%,transparent)] transition-colors hover:text-[var(--text-main)] ${FOCUS_RING}`}
+      className={`${HIT_TARGET_24_ROW} flex-shrink-0 gap-0.5 rounded-md px-0.5 text-[11px] font-mono tabular-nums text-[color-mix(in_srgb,var(--text-main)_45%,transparent)] transition-colors hover:text-[var(--text-main)] ${FOCUS_RING}`}
       aria-expanded={open}
       aria-controls={rosterListId(workspaceId)}
       aria-label={ariaLabel}
@@ -305,7 +323,8 @@ function WorkspaceRosterSummary({
           The accessible name carries the full count. */}
       {(() => {
         const active = groupChipAgents(agents).filter((group) => group[0].status !== 'idle');
-        if (active.length === 0) return agentCount > 0 ? <span>{agentCount}</span> : null;
+        // One idle agent: the chevron alone (a "1" restates the row).
+        if (active.length === 0) return agentCount > 1 ? <span>{agentCount}</span> : null;
         return active.map((group, gi) => (
           <span key={`${group[0].status}-${gi}`} className="flex items-center gap-0.5" data-roster-chip-group={group[0].status}>
             <StatusMarkView status={group[0].status} quiet neutralRunning />
@@ -467,7 +486,7 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
               <div className="min-w-0">
                 {startsStashedGroup && (
                   <div
-                    className="mt-1 flex items-center gap-1.5 border-t border-[var(--border-soft)] pt-1 pr-1 text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)]"
+                    className="mt-1 flex items-center gap-1.5 border-t border-[var(--border-soft)] pt-1 pr-1 text-[11px] font-mono uppercase tracking-widest text-[var(--text-muted)]"
                     // Not a heading: the rows below it are already listed under
                     // the disclosure's own accessible name, and announcing a
                     // second level would imply a nesting that is not there.
@@ -551,14 +570,14 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
                         <IconExternalLink size={9} />
                       </span>
                     )}
-                    <span className="min-w-0 flex-1 truncate text-[10px] font-semibold text-[var(--text-main)]">
+                    <span className="min-w-0 flex-1 truncate text-[11px] font-semibold text-[var(--text-main)]">
                       {primary}
                     </span>
                     {/* Claude is the default agent and gets no mark; any other
                         agent names itself in muted text so the exception is
                         the only thing that reads. */}
-                    {row.surfaceTitle && row.slug && row.slug !== 'claude' && (
-                      <span className="max-w-[35%] flex-none truncate text-[10px] text-[var(--text-muted)]" data-roster-agent-kind>
+                    {rosterShowsAgentKind(row) && (
+                      <span className="max-w-[35%] flex-none truncate text-[11px] text-[var(--text-muted)]" data-roster-agent-kind>
                         {agentLabel}
                       </span>
                     )}
@@ -572,15 +591,15 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
                         it lasts; the coordinate stays in the tooltip. */}
                     {inlineActivity ? (
                       <>
-                        <span className="flex-none text-[10px] text-[var(--text-muted)]">·</span>
-                        <span className="min-w-0 max-w-[55%] flex-none truncate text-[10px] text-[var(--text-muted)]" data-roster-activity>
+                        <span className="flex-none text-[11px] text-[var(--text-muted)]">·</span>
+                        <span className="min-w-0 max-w-[55%] flex-none truncate text-[11px] text-[var(--text-muted)]" data-roster-activity>
                           {inlineActivity}
                         </span>
                       </>
                     ) : secondary && (
                       <>
-                        <span className="flex-none text-[10px] text-[var(--text-muted)]">·</span>
-                        <span className="max-w-[40%] flex-none truncate text-[10px] font-mono text-[var(--text-muted)]">
+                        <span className="flex-none text-[11px] text-[var(--text-muted)]">·</span>
+                        <span className="max-w-[40%] flex-none truncate text-[11px] font-mono text-[var(--text-muted)]">
                           {secondary}
                         </span>
                       </>
@@ -608,12 +627,12 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
                       activity; the word is in the accessible name. */}
                   {row.stashed ? (
                     <span
-                      className={`flex-none whitespace-nowrap text-[10px] ${exited ? 'text-[var(--text-muted)]' : statusIcon.className}`}
+                      className={`flex-none whitespace-nowrap text-[11px] ${exited ? 'text-[var(--text-muted)]' : statusIcon.className}`}
                     >
                       {statusLabel}
                     </span>
                   ) : elapsed ? (
-                    <span className="flex-none whitespace-nowrap text-[10px] font-mono tabular-nums text-[var(--text-muted)]" data-roster-elapsed>
+                    <span className="flex-none whitespace-nowrap text-[11px] font-mono tabular-nums text-[var(--text-muted)]" data-roster-elapsed>
                       {elapsed}
                     </span>
                   ) : null}
@@ -652,14 +671,14 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
                     stashed agent burns tokens whether or not anyone remembers
                     it, and "3d ago" is the cheapest possible reminder. */}
                 {row.stashed && stashedAgo && (
-                  <div className="truncate pl-[37px] pr-1 text-[10px] text-[var(--text-muted)]">
+                  <div className="truncate pl-[37px] pr-1 text-[11px] text-[var(--text-muted)]">
                     {stashedAgo}
                   </div>
                 )}
                 {/* The question opens as an amber second line only while it waits for an answer. */}
                 {row.pendingQuestion && (
                   <div
-                    className="truncate pl-[37px] pr-1 text-[10px] text-[var(--accent-yellow)]"
+                    className="truncate pl-[37px] pr-1 text-[11px] text-[var(--accent-yellow)]"
                     title={row.pendingQuestion}
                   >
                     ? {row.pendingQuestion}
@@ -714,7 +733,7 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
                     >
                       {/* No agent here any more: no status mark, muted name. */}
                       <span className="h-2.5 w-2.5 flex-none" aria-hidden="true" />
-                      <span className="min-w-0 flex-1 truncate text-[10px] text-[var(--text-muted)]">{label}</span>
+                      <span className="min-w-0 flex-1 truncate text-[11px] text-[var(--text-muted)]">{label}</span>
                     </button>
                     {taskControls}
                   </div>

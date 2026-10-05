@@ -125,10 +125,10 @@ export function seenUpdates(
 const unseenCache = new WeakMap<object, Record<string, true>>();
 const unseenWsCache = new WeakMap<object, Record<string, true>>();
 
-/** A tab that wants a look: it needs you or it finished. */
+/** A tab that wants a look: it needs you, it failed or it finished. */
 function wantsALook(entry: FleetSeenEntry): boolean {
   const cls = fleetAttentionClass({ agentStatus: entry.status, unverifiable: false }, entry.question);
-  return cls === 'needsYou' || cls === 'finished';
+  return cls === 'needsYou' || cls === 'error' || cls === 'finished';
 }
 
 /**

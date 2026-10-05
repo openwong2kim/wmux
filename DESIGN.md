@@ -464,6 +464,18 @@ leaves the page.
   actions reveal wherever the card shows its hover fill, and keyboard focus on
   the row reveals the same layout. Hovering a nested task row reveals only
   that row's actions, never its owner's. The list never scrolls sideways.
+- **Keyboard:** the rows are a tree (`role="tree"`, each row's line a
+  `treeitem`) with one Tab stop — the row the keyboard was last on, else the
+  selected row, else the first. ↑ ↓ Home End move between rows in screen
+  order (nested task and remote rows included), Enter or Space opens one
+  (⌘/Ctrl adds it to the multiview), → opens its agents, ← folds them or
+  steps out to the owner row, Shift+F10 opens the row menu. A row's own
+  buttons join the Tab order only while the keyboard is on that row. Focus is
+  the app's ring: 2px `--accent`, inside the row, never the browser default.
+- **Order control:** a sort button in the header, left of the filter, names
+  the current order (`Order: Attention`) and opens a three-item menu —
+  Attention, Manual, Recent activity — the same setting as Settings ›
+  Appearance › Sidebar.
 - **Moa's workspace** is app-owned and never in the list, its count, the
   filter, the collapsed rail or Ctrl+N (the numbers skip it). While it is
   the active workspace it shows as its own row above the Workspaces header;
@@ -516,7 +528,9 @@ always neutral (the fill ladder).
   (`AGENT_STATUS_ICON.mark`): running = filled muted dot · needs input =
   `--accent-yellow` ring · error = red ✕ (SVG) · complete = muted check ·
   unconfirmed = hollow `--accent` ring · usage-limit hold = muted clock ·
-  idle = no mark. Selection is never painted as a status.
+  idle = no mark. Selection is never painted as a status. The collapsed
+  rail draws the same marks (`StatusMarkView`), never text glyphs, and names
+  each workspace `name, status` for assistive tech.
 - **Needs you is `--accent-yellow` everywhere** — the sidebar ring, its
   labels and counts, the rail badge and Fleet's Needs you section — so one
   state never wears two colours (and a white-accent look still reads it).
@@ -529,9 +543,13 @@ always neutral (the fill ladder).
   fill; the one solid fill per surface is the
   primary button (`--primary-fill`, white on dark looks, ink on Paper, the
   accent on Graphite and Amber Line).
-- **No washes.** A row that needs you is a content-20% fill with a dashed
-  content-30% border (`ui.css`), not a red wash; the 1px transparent border
-  is reserved at rest so a row never shifts when it starts asking.
+- **No washes.** A row that needs you is a dashed content-30% border over a
+  fill one step below the selection (`--selection-subtle`; `--selection-hover`
+  on hover), not a red wash; the 1px transparent border is reserved at rest so
+  a row never shifts when it starts asking. Selection wins: a selected row
+  that needs you takes the `--selection` fill and a 1px `--accent` ring
+  outside the dash. A nested task row draws no box of its own (no dash, no
+  fill): its mark and its question line say it.
 - **Attention renditions:** one event is drawn at most twice (the evidence
   row plus one global count). The titlebar vitals step aside on the Fleet
   page, whose summary line already says them.
@@ -745,6 +763,7 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-09-25 | Agent mention picker (⌘⇧2 / F2): the command-palette panel with a second footer row — a message field and one Send button that is the primary (warm) only while a message and a target are both there, otherwise secondary — and a one-line status slot under it that swaps the key hints for the send result (sent in `--text-main`, stored in `--text-sub`, refused in `--accent-red`). Rows are pane-level: status mark, agent name, muted tab title, workspace, mono coordinate; no agent logos. Sidebar roster rows get a hover/focus `@` that does the picker's Enter without the picker. Drag-and-drop stays | Addressing another agent by dragging a card pasted a whole markdown block and needed the mouse. A palette keeps one list and one grammar; the send result belongs next to the field that caused it, not in a toast that vanishes while the user reads it |
 | 2026-09-27 | Owner decision: the sidebar's Fleet shortcut carries the Fleet board's live counts as small trailing 11px text — `needs you N · running M`, each part hidden at zero, nothing at all when both are zero. Only the needs-you count is warm (`--accent`, one meaning-point); running is `--text-muted`; no chip or fill. The compact rail has no room for numbers, so it reuses its existing 5px warm dot, shown only while something needs you. The label always keeps its width: on a narrow sidebar running drops out first and needs you shrinks to its bare number (at the 220px minimum only the number shows). The accessible name (and the rail tooltip) is built from the same visible strings, so it contains what is shown: `Fleet, needs you 2, running 3`. The numbers are the lengths of the board's own Needs you and Running sections (`selectFleetBoard`), so finished and unconfirmed rows count as needs you, exactly as on the board | The shortcut is the Fleet destination's own rollup, not a third rendition of any one event: a row's red wash stays the evidence, the footer chip stays its own (narrower) count, and this says where to go. Counting the board's sections instead of re-deriving status means the shortcut and the board can never disagree. Running stays neutral so a busy fleet does not spend the amber budget on work that needs nothing |
 | 2026-09-27 | Owner decision: fan-out tasks nest under the pane that requested them, not in one block under the workspace — `Workspace › roster pane row (fold chevron + ⑂ count) › tasks`, plus one trailing `From closed pane` group for tasks whose requesting pane is gone or unknown (GUI, orchestrator, legacy stamps); the workspace-level `From closed workspace` group stays. Fold state, rollup and Close finished move to the pane; the task row's `by …` line and the roster's `N requested` count are removed; Fleet keeps its requester text. No new amber: the count is muted, needs-you is red only while folded | With two agent panes fanning out, one block under the workspace plus a `by …` line on every task made the eye join rows to panes by reading. The tree says it by position, costs no extra line per task, and Fleet — which has no tree — is the one place the text is still needed |
+| 2026-10-05 | Sidebar critique fixes: rows become a keyboard tree (one Tab stop, arrows, → / ←, row actions only after the row has focus); errors get their own Attention tier between needs you and finished, with an `Error` word; a needs-you row shows its question instead of the branch; the needs fill drops below the selection and a selected needs-you row adds an accent ring; status words and the roster chip move onto the name line; the rail draws the shared marks; a header order button | A sidebar row was reachable only by pointer, a selected needs-you row looked unselected, the row said who was waiting but not on what, and an old error sorted among finished rows. Fleet keeps counting errors under Needs you (#1807), so the sidebar's tier changes order and wording only, not the shared counts |
 | 2026-09-27 | Owner decision: attached remote workspaces join the one workspace list instead of a bordered section under it. In Attention they sort with the local rows by their most urgent agent pane on the same scale (a stale mirror counts as idle, its status is frozen); in Manual and Recent they follow the local rows in attach order. Never pinned, dragged or given a Ctrl+N hint. The host line leads with a muted server glyph (no new amber), a mirror whose agent needs you carries the local row's needs-you wash, red dot and label, a stale row is dimmed, and the header count and workspace search include remote rows | One glance board: a remote agent that needs you was invisible below every local row. The glyph says "another machine" without a host header, and dimming is already the convention for not live |
 | 2026-10-01 | Owner decision: Settings gains a **Computer use** tab, last in the Agents group after Browser. It holds the opt-in switch (off by default; its description states that screenshots and window text go to the agent's model provider), the native helper's status as a Badge (success when ready, neutral otherwise — never amber), the global stop key as `ui-code`, and two read-only rows saying what is asked per app and what is never allowed. No primary button on the tab | Letting agents drive other apps is its own question — it is not about the agent browser, and folding it into Browser would bury a new security boundary under unrelated rows. The state lives in its own `~/.wmux/computer-use.json` (main-owned, not the daemon's `config.json`) because the MCP server reads it too |
 | 2026-10-03 | **Proposed (owner-directed, pending final approval):** neutral glass look — zero-saturation tokens with a content-mix fill ladder, one blue state accent (running/focus), amber = approval, emerald = done, solid white primary, borderless 26px chips, 6/8/12/16px radii, card rows with two muted metadata lines, 40px chrome module, platform UI font with a 10–14px scale, dark-only window glass, always-visible turn footer. Replaces the amber/steel grammar, the bevel surfacing, Inter, the four-step scale and the 36px module; wmux icons are kept. See "Proposal — Neutral glass look" | Owner call after reviewing a first, more conservative draft: adopt the reference look nearly as-is rather than blending it with the existing grammar. Colour carries state only, so the screen reads calm and every coloured mark means something; translucency and fills instead of outlines give the modern finish |
@@ -798,21 +817,30 @@ no empty reply row or reserved gap under the latest prompt.
   resets. While dragging only a 1px steel guide follows the pointer; the width
   is committed on release, so terminals refit once rather than on every move.
   The titlebar's left segment follows the width. The compact rail stays 48px.
-- **Workspace row:** status mark · name (13px) · collapsed summary · needs-you
-  label · hover actions. The collapsed summary is one status mark and a count per
-  non-idle status group, most urgent first (the total alone when all are idle);
-  it stays visible at rest. The git line uses the branch and worktree icons;
+- **Workspace row:** status mark · name (13px) · collapsed summary · status
+  word, all on the name line, so the line under it has the row's full width.
+  The status word is `Needs you` (yellow) or `Error` (red); it never steps
+  aside for the hover actions. The collapsed summary is one status mark and a
+  count per non-idle status group, most urgent first (the total alone when all
+  are idle); it stays visible at rest — except on a row whose only agent is
+  idle, where the chevron waits for hover or focus and draws no `1`. A
+  needs-you row's second line is the agent's question (one line, plain text,
+  full text in the tooltip and the row's accessible name) instead of the git
+  line, with the actions at its end. On a narrow git line the branch keeps at
+  least ~5 characters: the `+N −M` counts give way first (they stay in the
+  tooltip), then the sync badge; the PR badge always stays. The git line uses the branch and worktree icons;
   no text glyphs that can render as emoji (⎇ ⊕ ⚠ ✓ ✗).
 - **Agent row:** status mark · title · agent kind (non-Claude only) · muted trailer (live
   activity while running, else the pane coordinate) · elapsed time since the
-  last activity, right-aligned (10px like the rest of the roster row, muted,
-  tabular). A pending question
-  keeps its own red second line. Stashed rows keep their status word (their
+  last activity, right-aligned (11px like the rest of the roster row, muted,
+  tabular — the 11px metadata floor). A pending question
+  keeps its own needs-you yellow second line. Stashed rows keep their status word (their
   proof of life, 2026-08-24).
 - **Agent kind:** no identity glyph. Claude is the default and gets no mark;
-  any other agent names itself in muted 10px text after the title (its display
+  any other agent names itself in muted 11px text after the title (its display
   name, e.g. `Codex CLI`, truncating before the title does), and only when the
-  row has its own title — otherwise the title slot already is the agent name.
+  row has its own title that is not the agent itself — a `Codex` title beside
+  `Codex CLI` would say it twice, and the title slot already is the agent.
   The trailer no longer repeats the vendor. Shells get nothing.
   The name stays in the tooltip and accessible name. Never a vendor logo or
   favicon (trademarks; written permission required).
@@ -821,7 +849,7 @@ no empty reply row or reserved gap under the latest prompt.
   (2026-09-27): `Workspace › pane row › tasks`, indented on a hairline guide.
   The pane row itself carries the group's fold chevron and a muted mono
   `⑂ N` count; folded with a task that needs you it reads `⑂ M/N` with M in
-  red (the only rendition while folded). Its ⋮ (revealed on hover or focus,
+  needs-you yellow (the only rendition while folded). Its ⋮ (revealed on hover or focus,
   like the row's `@`, named for its pane) holds `Show K finished tasks
   waiting for review` and `Close finished tasks (N)`. A pane with no tasks
   renders as before; an open pane whose agent ended keeps a muted row (no
@@ -829,13 +857,15 @@ no empty reply row or reserved gap under the latest prompt.
   holds the origin's surface now — a stashed pane included — else, for an
   origin without a surface, to its pane; never by pty id. Tasks with no such
   pane — the requesting tab closed, the GUI or the orchestrator asked, or the
-  stamp predates origins — collect in one trailing `From closed pane` group
-  under the owner, with the rollup line below. Folding the roster folds its
+  stamp predates origins — collect in one trailing group under the owner,
+  with the rollup line below. Its name says who asked: `Started from the app`
+  (the GUI), `Started by the orchestrator`, `From closed pane` (a pane origin,
+  or none recorded), or `Other tasks` for a mix. Folding the roster folds its
   pane groups, so a task that needs you must still show: the roster holds
   open while one of its tasks is the active workspace, re-opens each time
   one more starts needing you (and does not fold when its owner moves to the
   background then), stays open while the workspace is being renamed, and its
-  collapsed summary adds a muted `⑂ N` — `⑂ M/N` with M red when M of them
+  collapsed summary adds a muted `⑂ N` — `⑂ M/N` with M yellow when M of them
   need you (said in its accessible name too). Fold state is kept per owner
   and pane and dropped when the pane or owner closes; the old per-owner key
   is carried over once. Nested task rows use their own hover group, so
@@ -843,12 +873,12 @@ no empty reply row or reserved gap under the latest prompt.
   order; a task that needs you lifts its owner in the Attention order. A group is open
   while its owner is active or one of its tasks needs you, otherwise folded; a
   user toggle is remembered, and a group always opens while one of its own
-  tasks is the active workspace. A task row carries no "Needs you" word (its
-  wash and red ring stay; the rollup names the count) and shows its shortcut
+  tasks is the active workspace. A task row carries no "Needs you" word and
+  no box (its yellow ring and question line stay; the rollup names the count) and shows its shortcut
   hint only on hover — the indent leaves the name no width to spare. A rollup line (the "From closed pane" and "From closed workspace" groups) reads `N tasks · M need
   you` and draws nothing at zero; `· K to review` follows when K > 0 — a
   muted link (steel on hover) that opens Fleet with its first Ready to review
-  row selected; "need you" is red only while the group is
+  row selected; "need you" is yellow only while the group is
   folded (unfolded, the task row is the evidence). Its ⋮ menu holds `Close
   finished tasks (N)`: finished means every agent pane in the task reports
   complete (idle never counts); the confirm lists the tasks by name, each is
@@ -872,9 +902,12 @@ no empty reply row or reserved gap under the latest prompt.
   truncates first. A closed requester keeps the same coordinate-first order.
   Inside a task workspace the titlebar's workspace name is followed by a muted
   `↰ <owner>` link (steel on hover) that jumps to the owner.
-- **Order:** Attention (default), Manual, or Recent activity — Settings ›
-  Appearance › Sidebar. Attention: needs you → finished (a turn that ended and
-  was not looked at) → running → unconfirmed → idle; within a class the most
+- **Order:** Attention (default), Manual, or Recent activity — the header's
+  order button or Settings › Appearance › Sidebar. Attention: needs you →
+  error (a failed turn: its own tier, so an old error never sinks below a
+  fresh finish; Fleet still lists it under Needs you and counts it there) →
+  finished (a turn that ended and was not looked at) → running → unconfirmed
+  → idle; within a class the most
   recent event first. Plain `waiting` with no question is idle here, as in
   Fleet, and draws no "Needs you" wash or label. A fan-out owner scores as its
   most urgent nested task, so a task that needs you lifts its group. A

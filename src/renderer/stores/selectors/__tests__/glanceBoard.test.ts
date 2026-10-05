@@ -70,6 +70,16 @@ describe('selectWorkspaceAttentionScores', () => {
     expect(scores.b).toBe(attentionScore(ATTENTION_CLASS_RANK.needsYou, Math.floor((NOW - 60_000) / 60_000)));
     expect(scores.b < scores.c && scores.c < scores.a).toBe(true);
   });
+
+  it('keeps an old error above a fresh finish and below a question: errors never sink', () => {
+    // f is the oldest stamp (i = 5), a the newest.
+    const s = state({ a: 'complete', b: 'running', c: 'idle', d: 'awaiting_input', e: 'idle', f: 'error' });
+    const scores = selectWorkspaceAttentionScores(s);
+    expect(fleetAttentionClass({ agentStatus: 'error', unverifiable: false })).toBe('error');
+    expect(scores.d < scores.f && scores.f < scores.a && scores.a < scores.b && scores.b < scores.c).toBe(true);
+    // Fleet still lists the error under Needs you.
+    expect(sectionOfAttentionClass('error')).toBe('needsYou');
+  });
 });
 
 const rec = (status: AgentStatus, rev = 0, seenRev = rev) => ({ entry: { status }, rev, seenRev });

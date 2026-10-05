@@ -272,6 +272,15 @@ export function IconFolder({ size = 14 }: { size?: number }) {
   );
 }
 
+/** Sort — the sidebar's order menu: two arrows, down and up. */
+export function IconSort({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <path d="M4.5 2.5 v9 M2.5 9.5 l2 2 l2 -2 M9.5 11.5 v-9 M7.5 4.5 l2 -2 l2 2" />
+    </Icon>
+  );
+}
+
 /** Star — snippets. Replaces the ★ glyph. */
 export function IconStar({ size = 14 }: { size?: number }) {
   return <Icon size={size}><polygon points="7,1.8 8.6,5.2 12.2,5.6 9.5,8.1 10.3,11.7 7,9.8 3.7,11.7 4.5,8.1 1.8,5.6 5.4,5.2" /></Icon>;

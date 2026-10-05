@@ -36,6 +36,7 @@ import { WORKSPACE_COLOR_IDS, WORKSPACE_COLOR_HEX, workspaceColorHex, workspaceC
 import { WORKSPACE_SNOOZE_PRESETS, workspaceSnoozeUntil } from '../../../shared/workspaceSettle';
 import { sendWorkspaceSettleCommand } from '../../hooks/useWorkspaceSettleBridge';
 import { isOurHandoffDrag, takeHandoffDrop } from '../Git/handoffDrag';
+import { sanitizeDisplayText } from '../../../shared/phoneText';
 
 interface WorkspaceItemProps {
   /** A1: 부모(Sidebar)는 id만 내리고, 이 컴포넌트가 자기 ws를 self-subscribe해
@@ -85,7 +86,14 @@ interface WorkspaceItemProps {
   /** Moa's app-owned HQ workspace: Close and Archive are shown but disabled
    *  (with the reason), and it is not a reorder or pin target. */
   moaHq?: boolean;
+  /** This row is the list's one Tab stop (roving tabindex, Sidebar owns it);
+   *  every other row is reached with the arrow keys. */
+  tabStop?: boolean;
 }
+
+/** Longest question the row keeps (it truncates on screen; the full text is
+ *  in the tooltip and Fleet's detail). */
+const ROW_QUESTION_MAX = 240;
 
 /**
  * X1 — PR badge for the current branch. Color encodes state; the trailing
@@ -102,7 +110,7 @@ export function PrBadge({ pr }: { pr: PrStatus }): React.ReactElement {
   const checksGlyph =
     pr.checks === 'passing' ? <IconCheck size={9} />
     : pr.checks === 'failing' ? <IconX size={9} />
-    : pr.checks === 'pending' ? '●'
+    : pr.checks === 'pending' ? <svg width="5" height="5" viewBox="0 0 5 5" aria-hidden="true"><circle cx="2.5" cy="2.5" r="2.5" fill="currentColor" /></svg>
     : null;
   const checksColor =
     pr.checks === 'passing' ? 'var(--accent-green)'
@@ -134,7 +142,7 @@ export function PrBadge({ pr }: { pr: PrStatus }): React.ReactElement {
  * 브랜치가 잡힌 워크스페이스는 항상 최소 1개의 불이 켜진다(clean이면 green).
  * 숫자는 항상 동반(맨 화살표는 모호 — GitHub Desktop #9282).
  */
-export function GitSyncBadge({ sync }: { sync: GitSyncStatus }): React.ReactElement | null {
+export function GitSyncBadge({ sync, compact = false }: { sync: GitSyncStatus; compact?: boolean }): React.ReactElement | null {
   const t = useT();
   const ahead = sync.hasUpstream ? sync.ahead : 0;
   const behind = sync.hasUpstream ? sync.behind : 0;
@@ -142,23 +150,70 @@ export function GitSyncBadge({ sync }: { sync: GitSyncStatus }): React.ReactElem
   return (
     <span
       className="flex items-center gap-1.5 flex-shrink-0 font-mono"
-      title={t('workspace.gitSyncTooltip', { ahead, behind, dirty: sync.dirty })}
+      title={`${t('workspace.gitSyncTooltip', { ahead, behind, dirty: sync.dirty })}${compact && ((sync.added ?? 0) + (sync.removed ?? 0)) > 0 ? ` · +${sync.added ?? 0} −${sync.removed ?? 0}` : ''}`}
       data-git-signal
     >
-      {clean && <span style={{ color: 'var(--accent-green)' }}>●</span>}
+      {clean && <span className="inline-flex" data-git-clean style={{ color: 'var(--accent-green)' }}><svg width="6" height="6" viewBox="0 0 6 6" aria-hidden="true"><circle cx="3" cy="3" r="3" fill="currentColor" /></svg></span>}
       {/* Uncommitted files are information, not attention: amber is reserved for "needs you". */}
       {/* Line counts vs HEAD, coloured like a diff. Adapted from MonoCode
           (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx), MIT
           License, Copyright (c) 2026 Nick. The changed-path count stays the
           fallback when the line counts could not be read, or read none (only
           untracked files changed). */}
-      {(sync.added ?? 0) > 0 && <span data-git-diff="added" style={{ color: 'var(--accent-green)' }}>+{sync.added}</span>}
-      {(sync.removed ?? 0) > 0 && <span data-git-diff="removed" style={{ color: 'var(--accent-red)' }}>−{sync.removed}</span>}
-      {sync.dirty > 0 && (sync.added ?? 0) + (sync.removed ?? 0) === 0 && <span style={{ color: 'var(--text-subtle)' }}>·{sync.dirty}</span>}
+      {!compact && (sync.added ?? 0) > 0 && <span data-git-diff="added" style={{ color: 'var(--accent-green)' }}>+{sync.added}</span>}
+      {!compact && (sync.removed ?? 0) > 0 && <span data-git-diff="removed" style={{ color: 'var(--accent-red)' }}>−{sync.removed}</span>}
+      {sync.dirty > 0 && (compact || (sync.added ?? 0) + (sync.removed ?? 0) === 0) && <span style={{ color: 'var(--text-subtle)' }}>·{sync.dirty}</span>}
       {ahead > 0 && <span style={{ color: 'var(--accent-blue)' }}>↑{ahead}</span>}
       {behind > 0 && <span style={{ color: 'var(--accent-red)' }}>↓{behind}</span>}
     </span>
   );
+}
+
+/** The branch keeps at least this much of the git line (icon + ~5 chars). */
+export const GIT_LINE_BRANCH_MIN_PX = 56;
+
+/**
+ * How much of the git line gives way so the branch name stays readable at
+ * narrow widths: 0 shows everything, 1 drops the +/− line counts (they stay
+ * in the tooltip), 2 drops the sync badge too. The PR badge always stays.
+ * Steps one tier per measure while the branch is squeezed below its floor.
+ */
+export function nextGitLineTier(tier: number, branch: { clientWidth: number; scrollWidth: number }): number {
+  const squeezed = branch.clientWidth < Math.min(branch.scrollWidth, GIT_LINE_BRANCH_MIN_PX);
+  return squeezed ? Math.min(tier + 1, 2) : tier;
+}
+
+/** The tier for the git line's current width, re-measured on every resize. */
+function useGitLineTier(deps: readonly unknown[]) {
+  const lineRef = useRef<HTMLDivElement>(null);
+  const branchRef = useRef<HTMLSpanElement>(null);
+  const [tier, setTier] = useState(0);
+  const steppedAt = useRef(0);
+  const measure = useCallback(() => {
+    const line = lineRef.current;
+    const branch = branchRef.current;
+    if (!line || !branch) return;
+    // Wider than where the last step happened: start over and measure again.
+    if (line.clientWidth > steppedAt.current + 1 && steppedAt.current > 0) {
+      steppedAt.current = 0;
+      setTier(0);
+      return;
+    }
+    setTier((current) => {
+      const next = nextGitLineTier(current, branch);
+      if (next !== current) steppedAt.current = line.clientWidth;
+      return next;
+    });
+  }, []);
+  useLayoutEffect(measure, [measure, tier, ...deps]);
+  useEffect(() => {
+    const line = lineRef.current;
+    if (!line || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => measure());
+    ro.observe(line);
+    return () => ro.disconnect();
+  }, [measure]);
+  return { lineRef, branchRef, tier };
 }
 
 /**
@@ -167,8 +222,14 @@ export function GitSyncBadge({ sync }: { sync: GitSyncStatus }): React.ReactElem
  * latest terminal notification. Renders nothing until metadata arrives —
  * zero-config, no reserved blank space.
  */
-function WorkspaceContextLine({ metadata, onPortClick, actions, metaHiddenOnHover }: {
+function WorkspaceContextLine({ metadata, onPortClick, actions, metaHiddenOnHover, question, innerTab }: {
   metadata: WorkspaceMetadata;
+  /** A needs-you row's question: it takes the git line's place, with the
+   *  row's actions at its end. */
+  question?: string;
+  /** Tab order of the line's own buttons: reachable only once the row has
+   *  keyboard focus (roving tabindex). */
+  innerTab?: number;
   /** X3 — open http://localhost:<port> in this workspace's browser pane. */
   onPortClick: (port: number) => void;
   /** The row's hover actions, at the end of the git line. */
@@ -178,17 +239,25 @@ function WorkspaceContextLine({ metadata, onPortClick, actions, metaHiddenOnHove
   metaHiddenOnHover?: string;
 }): React.ReactElement | null {
   const t = useT();
+  const { lineRef, branchRef, tier } = useGitLineTier([metadata.gitBranch, metadata.gitSync, metadata.pr, question]);
   const ports = metadata.listeningPorts ?? [];
   const hasContext = ports.length > 0;
   const note = metadata.lastNotificationText;
-  if (!metadata.gitBranch && !hasContext && !note) return null;
+  if (!question && !metadata.gitBranch && !hasContext && !note) return null;
   return (
     <>
+      {question && (
+        <div className="flex items-center gap-2 mt-1 min-w-0" data-row-question data-git-signal-line>
+          <span className="min-w-0 flex-1 truncate font-sans" title={question}>{question}</span>
+          {actions}
+        </div>
+      )}
       {/* Git 신호등 행 — 이름 바로 아래 전용 줄(owner 2026-07-20: 행이 위아래로
           두꺼워져도 OK). 브랜치·신호등·PR을 한 줄에, 포트·알림은 다음 줄로. */}
-      {metadata.gitBranch && (
-        <div className="flex items-center gap-2 mt-1 text-[11px] leading-4 tabular-nums text-[color-mix(in_srgb,var(--text-main)_45%,transparent)] min-w-0" data-git-signal-line>
+      {!question && metadata.gitBranch && (
+        <div ref={lineRef} className="flex items-center gap-2 mt-1 text-[11px] leading-4 tabular-nums text-[color-mix(in_srgb,var(--text-main)_45%,transparent)] min-w-0" data-git-signal-line data-git-line-tier={tier || undefined}>
           <span
+            ref={branchRef}
             className="min-w-0 truncate"
             title={`${t('workspace.gitBranch')}: ${metadata.gitBranch}${metadata.gitIsWorktree ? ` (${t('workspace.gitWorktree')})` : ''}`}
           >
@@ -197,10 +266,10 @@ function WorkspaceContextLine({ metadata, onPortClick, actions, metaHiddenOnHove
             {metadata.gitBranch}
             {metadata.gitIsWorktree ? <span className="ml-1 inline-flex align-[-1px]" aria-hidden="true"><IconWorktree size={10} /></span> : null}
           </span>
-          {metadata.gitSync && (
+          {metadata.gitSync && tier < 2 && (
             actions
-              ? <span className={`flex flex-shrink-0 ${metaHiddenOnHover ?? ''}`}><GitSyncBadge sync={metadata.gitSync} /></span>
-              : <GitSyncBadge sync={metadata.gitSync} />
+              ? <span className={`flex flex-shrink-0 ${metaHiddenOnHover ?? ''}`}><GitSyncBadge sync={metadata.gitSync} compact={tier >= 1} /></span>
+              : <GitSyncBadge sync={metadata.gitSync} compact={tier >= 1} />
           )}
           {metadata.pr && (
             actions
@@ -218,6 +287,7 @@ function WorkspaceContextLine({ metadata, onPortClick, actions, metaHiddenOnHove
                 <button
                   key={p}
                   type="button"
+                  tabIndex={innerTab}
                   className="cursor-pointer hover:text-[var(--text-main)] hover:underline"
                   title={t('workspace.openPortTooltip', { port: p })}
                   aria-label={t('workspace.openPortTooltip', { port: p })}
@@ -375,7 +445,7 @@ function shortenPath(path: string, maxLen = 25): string {
   return `.../${parts.slice(-2).join('/')}`;
 }
 
-function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutIndex = index, onSelect, onCtrlSelect, onRename, onClose, onArchive, onCopyInfo, onDuplicate, onReorder, taskRow = false, shortcutHintHidden = false, nestedTaskIds, renderTask, onCloseTask, moaHq = false }: WorkspaceItemProps) {
+function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutIndex = index, onSelect, onCtrlSelect, onRename, onClose, onArchive, onCopyInfo, onDuplicate, onReorder, taskRow = false, shortcutHintHidden = false, nestedTaskIds, renderTask, onCloseTask, moaHq = false, tabStop = false }: WorkspaceItemProps) {
   const t = useT();
   // A1: 자기 ws만 구독 — 배경 ws churn/다른 항목 변경에는 리렌더되지 않는다.
   const workspace = useStore(selectWorkspaceById(workspaceId));
@@ -446,6 +516,28 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
   const attentionClass = useStore((s) => selectWorkspaceAttentionClasses(s)[workspaceId] ?? 'idle');
   const needsYou = attentionClass === 'needsYou' && (agentStatus === 'waiting' || agentStatus === 'awaiting_input');
   const markStatus = agentStatus === 'waiting' && attentionClass !== 'needsYou' ? 'idle' : agentStatus;
+  // A failed turn is its own tier (fleetAttentionClass): it says "Error" where
+  // a needs-you row says "Needs you", and sorts above finished and idle rows
+  // however old it is. Fleet still lists it under Needs you.
+  const errored = attentionClass === 'error';
+  // A needs-you row's second line is what the agent asked — the reason the row
+  // is waiting — instead of the branch. Plain text, one line.
+  const rawQuestion = useStore((s) => {
+    if (!needsYou) return '';
+    const ws = s.workspaces.find((w) => w.id === workspaceId);
+    if (!ws) return '';
+    for (const surf of collectWorkspaceTerminalSurfaces(ws)) {
+      const q = surf.ptyId ? s.surfacePendingQuestion?.[surf.ptyId]?.trim() : undefined;
+      if (q) return q;
+    }
+    return '';
+  });
+  const question = needsYou ? sanitizeDisplayText(rawQuestion, ROW_QUESTION_MAX) : undefined;
+  // Roving tabindex: the row's own buttons join the Tab order only while the
+  // keyboard is on this row, so Tab walks rows' actions one row at a time
+  // instead of every hidden button in the list.
+  const [rowFocusWithin, setRowFocusWithin] = useState(false);
+  const innerTab = rowFocusWithin ? 0 : -1;
   // A pane here is waiting out a usage limit: when nothing louder is going on
   // the workspace row draws the waiting clock instead of nothing (or a red ✕).
   const usageWaiting = useStore((s) => workspaceHasUsageLimitWaiting(s, workspaceId));
@@ -511,7 +603,14 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
   /** Rows whose roster summary must not wait for the pointer — see its JSX.
    *  #1481 — the summary now names who is here and what they are doing, which
    *  is the reason to scan the list, so it no longer hides at rest. */
-  const rosterAlwaysShown = rosterShown || hasRoster || paneTaskIds.length > 0;
+  // One idle agent and nothing else: a "› 1" on every quiet row says nothing
+  // the status column does not, so its chip waits for hover or focus like the
+  // other chrome (and draws no count).
+  const quietSingle = rosterCounts.agentCount === 1 && rosterCounts.stashedCount === 0
+    && paneTaskIds.length === 0 && (rosterCounts.agents[0]?.status ?? 'idle') === 'idle';
+  const rosterAlwaysShown = rosterShown || (hasRoster && !quietSingle) || paneTaskIds.length > 0;
+  /** → opens the roster (and the tasks under it), ← folds it. */
+  const expandable = hasRoster || paneTaskIds.length > 0;
   // Newly selected workspaces reveal their agents automatically; workspaces
   // that move to the background collapse back to the count. The user can still
   // explicitly toggle either state until selection changes again.
@@ -928,6 +1027,46 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
     }, t)
     : undefined;
 
+  // The treeitem's name: the workspace, what it is waiting on, and (for a
+  // question) the question itself, like Fleet's row.
+  const statusWord = needsYou ? t('workspace.needsYou')
+    : unverifiableMinutes > 0 ? t('workspace.agentUnverifiable', { time: formatStaleMinutes(unverifiableMinutes) })
+      : markStatus !== 'idle' ? t(AGENT_STATUS_ICON[markStatus].labelKey)
+        : usageWaiting ? t('usageLimit.waiting') : undefined;
+  const rowLabel = [displayName, statusWord, question].filter(Boolean).join(', ');
+
+  // Keys on the row itself (the list moves between rows, Sidebar.tsx): Enter
+  // or Space opens it (⌘/Ctrl adds it to the multiview), → opens its agents,
+  // ← folds them or steps out to the owner row, Shift+F10 opens its menu.
+  const handleRowKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget || editing) return;
+    const cmdOrCtrl = window.electronAPI?.platform === 'darwin' ? e.metaKey : e.ctrlKey;
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      if (cmdOrCtrl) onCtrlSelect(workspaceId);
+      else onSelect(workspaceId);
+    } else if (e.key === 'ArrowRight' && expandable && !rosterShown) {
+      e.preventDefault();
+      setRosterOpen(true);
+    } else if (e.key === 'ArrowLeft' && expandable && rosterShown && rosterOpen) {
+      e.preventDefault();
+      setRosterOpen(false);
+    } else if (e.key === 'ArrowLeft' && taskRow) {
+      const ownerCard = e.currentTarget.closest('.sidebar-row')?.parentElement?.closest('.sidebar-row');
+      const ownerRow = ownerCard?.querySelector<HTMLElement>(':scope > [data-sidebar-row]');
+      if (ownerRow) {
+        e.preventDefault();
+        ownerRow.focus();
+      }
+    } else if ((e.key === 'F10' && e.shiftKey) || e.key === 'ContextMenu') {
+      if (readOnly) return;
+      e.preventDefault();
+      const r = e.currentTarget.getBoundingClientRect();
+      setWdOpen(false);
+      setMenuPos({ x: r.left + 24, y: r.bottom - 4 });
+    }
+  };
+
   const hasProfile = workspace.profile !== undefined;
   // Color tag (optional). Undefined → every style below falls back to exactly
   // the pre-feature rendering, so an untagged workspace is pixel-identical.
@@ -953,7 +1092,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
   // free of margins of its own. `pointer-events` follow visibility. Focus
   // anywhere on the row line reveals the cluster exactly as hover does, and
   // hides the same metadata, so a Tab into the row never overflows the line.
-  const actionsOnGitLine = !!metadata?.gitBranch;
+  const actionsOnGitLine = !!metadata?.gitBranch || !!question;
   // A nested task row has no width to spare on its name line (78px of text
   // at the 220px minimum): without a branch, its actions get a line of their
   // own, the height its sibling rows' git line takes, so the row never
@@ -968,6 +1107,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
         {/* Folder icon — reveals this workspace's cwd in the OS file manager. */}
         <button
           data-workspace-action="explorer"
+          tabIndex={innerTab}
           className={`${HIT_TARGET_24_IN_CLUSTER} rounded-md text-[color-mix(in_srgb,var(--text-main)_50%,transparent)] hover:bg-[var(--selection)] hover:text-[var(--text-main)] text-[10px] font-mono`}
           onClick={(e) => { e.stopPropagation(); handleOpenExplorer(); }}
           title={t('workspace.openInExplorer', { app: fileManagerName(t) })}
@@ -979,6 +1119,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
         {/* Copy session info button */}
         <button
           data-workspace-action="copy-info"
+          tabIndex={innerTab}
           className={`${HIT_TARGET_24_IN_CLUSTER} rounded-md text-[color-mix(in_srgb,var(--text-main)_50%,transparent)] hover:bg-[var(--selection)] hover:text-[var(--text-main)] text-[10px] font-mono`}
           onClick={(e) => { e.stopPropagation(); onCopyInfo(workspaceId); }}
           title={t('workspace.copyInfo')}
@@ -995,6 +1136,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
             read (aria-disabled, not `disabled`). */}
         <button
           data-workspace-action="close"
+          tabIndex={innerTab}
           className={`${HIT_TARGET_24_IN_CLUSTER} rounded-md text-[color-mix(in_srgb,var(--text-main)_50%,transparent)] text-[10px] font-mono ${moaHq ? 'opacity-50 cursor-default' : 'hover:bg-[var(--selection)] hover:text-[var(--accent-red)]'}`}
           onClick={(e) => { e.stopPropagation(); if (moaHq) return; setMenuPos(null); setCloseConfirmPos(anchorOf(e.currentTarget)); }}
           title={moaHq ? t('moa.guard.reason') : t('workspace.close')}
@@ -1047,7 +1189,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
         {...tokenAttrs('bgSurface', 'bg')}
         // Card states (idle / hover / active / needs you) are painted by the
         // .wmux-sidebar .sidebar-row rules in ui.css.
-        className={`sidebar-row px-2.5 ${taskRow ? 'py-1.5' : 'py-2'} cursor-pointer rounded-md select-none ${needsYou ? 'sidebar-row-needs' : ''} ${
+        className={`sidebar-row px-2.5 ${taskRow ? 'sidebar-row-task py-1.5' : 'py-2'} cursor-pointer rounded-md select-none ${needsYou ? 'sidebar-row-needs' : ''} ${
           isActive ? 'sidebar-row-active' : ''
         }`}
         style={isMultiview ? { borderLeft: '2px solid var(--accent-blue)' } : undefined}
@@ -1069,7 +1211,22 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
             card's own padding (ui.css: 8px 10px), so the actions reveal
             wherever the card paints its hover fill, without moving a pixel of
             content. */}
-        <div className={`${hover.group} -mx-2.5 -my-2 flex min-w-0 items-start gap-2 px-2.5 py-2`}>
+        {/* It is also the row's keyboard stop (a treeitem with roving
+            tabindex): focus here reveals the same actions hover does, and the
+            ring sits on the line, never on the roster below it. */}
+        <div
+          className={`${hover.group} -mx-2.5 -my-2 flex min-w-0 items-start gap-2 px-2.5 py-2`}
+          role="treeitem"
+          aria-level={taskRow ? 2 : 1}
+          aria-selected={isActive}
+          aria-expanded={expandable && !editing ? rosterShown : undefined}
+          aria-label={rowLabel}
+          tabIndex={tabStop ? 0 : -1}
+          data-sidebar-row={workspaceId}
+          onKeyDown={handleRowKeyDown}
+          onFocus={() => setRowFocusWithin(true)}
+          onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setRowFocusWithin(false); }}
+        >
         {/* Status indicator — #1481: one shared mark (AgentMarks.tsx), status
             told by shape. Idle draws nothing: an active-but-idle workspace
             is no longer painted green, because green means "finished" and
@@ -1169,6 +1326,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
                   // nobody sees until they hover the row is not one.
                   <button
                     type="button"
+                    tabIndex={innerTab}
                     data-workspace-action="project-badge"
                     className={`text-[10px] leading-none flex-shrink-0 font-mono cursor-pointer hover:underline ${projectState.trust === 'trusted' ? restHiddenNameLine : ''}`}
                     style={{
@@ -1216,14 +1374,84 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
                     · {idleLabel}
                   </span>
                 )}
-                {!actionsOnGitLine && !actionsOnOwnLine && actionCluster('-ml-1')}
+                {/* The trailing chrome rides the name line, so the line under
+                    it (branch or question) gets the row's full width. */}
+                <span className="ml-auto flex flex-shrink-0 items-center gap-1" data-row-trailing>
+                  {!actionsOnGitLine && !actionsOnOwnLine && actionCluster('-ml-1')}
+                {/* #997 — roster disclosure + agent count. Lives on this row, not on
+                    a line of its own: see WorkspaceRosterSummary's own comment. */}
+                {!editing && (
+                  // The wrapper carries the rest-state fade so the summary's own
+                  // internals stay untouched; it takes over the flex-item traits
+                  // (self-center, no shrink) the button had as a direct child.
+                  //
+                  // Two rows keep it at rest. A workspace whose only entries are
+                  // stashed panes has nothing else to show it is not empty (see the
+                  // stash-glyph comment in WorkspaceAgentRoster.tsx), and an expanded
+                  // roster must keep the control that collapses it reachable.
+                  <span className={`inline-flex flex-shrink-0 ${rosterAlwaysShown ? '' : restHiddenNameLine}`}>
+                    <WorkspaceRosterSummaryMemo
+                      tabIndex={innerTab}
+                      workspaceId={workspaceId}
+                      agentCount={rosterCounts.agentCount}
+                      stashedCount={rosterCounts.stashedCount}
+                      agents={rosterShown ? undefined : rosterCounts.agents}
+                      extra={rosterCounts.extra}
+                      paneTaskCount={paneTaskIds.length}
+                      paneTaskNeedYou={paneTaskNeedYou}
+                      open={rosterShown}
+                      onToggle={toggleRoster}
+                    />
+                  </span>
+                )}
+
+                {/* The blocked-agent label, right-aligned. It replaces the play/pause
+                    mark this row used to carry: "running" is already the accent dot,
+                    and a paused glyph never said what it was paused ON. Words do.
+                    On hover the row's chrome comes back and the label steps aside for
+                    it (the dashed fill and the amber ring keep saying "needs you"); the active
+                    row, which shows its chrome permanently, keeps the label too. */}
+                {/* #1481 — not on a nested task row: its fill and amber ring stay, and the
+                    owner's rollup line already says "N need you" for the group. */}
+                {/* The label stays on hover and focus: the actions sit on the second
+                    line, so they never need its width. */}
+                {needsYou && !taskRow && (
+                  <span className="font-sans text-[11px] font-medium text-[var(--accent-yellow)] flex-shrink-0" data-row-needs-you>
+                    {t('workspace.needsYou')}
+                  </span>
+                )}
+                {errored && !taskRow && (
+                  <span className="font-sans text-[11px] font-medium text-[var(--accent-red)] flex-shrink-0" data-row-error>
+                    {t('workspace.agentError')}
+                  </span>
+                )}
+
+                {/* Shortcut hint */}
+                {/* #1481 — a nested task row is indented, so even the active one gives
+                    the hint back to its name at rest. */}
+                {/* #1481 review — Ctrl+N follows the stored order, which nesting no
+                    longer mirrors on screen; a nested task row would show a hint out
+                    of sequence with the rows around it, so it shows none. */}
+                {/* Ctrl+N follows the stored (manual) order, which only Manual shows
+                    on screen; in the other orders a hint would name a shortcut out of
+                    sequence with the rows around it, so none is drawn — except on a
+                    pinned row: the pinned group leads the stored order and is shown
+                    as stored, so its numbers match the screen. */}
+                {!taskRow && !moaHq && !shortcutHintHidden && (!sortPaused || pinned) && (
+                  <span className={`text-[11px] tabular-nums text-[color-mix(in_srgb,var(--text-main)_35%,transparent)] flex-shrink-0 ${restHiddenNameLine}`}>
+                    {shortcutIndex >= 0 && shortcutIndex < 9 ? `^${shortcutIndex + 1}` : ''}
+                  </span>
+                )}
+                </span>
               </div>
-              {metadata && (
+              {(metadata || question) && (
                 <WorkspaceContextLine
-                  metadata={metadata}
+                  metadata={metadata ?? {}}
                   onPortClick={handlePortClick}
                   actions={actionsOnGitLine ? actionCluster('-ml-2') : null}
                   metaHiddenOnHover={hover.hideOnHover}
+                  question={question}
+                  innerTab={innerTab}
                 />
               )}
               {actionsOnOwnLine && (
@@ -1234,63 +1462,6 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
             </>
           )}
         </div>
-
-        {/* #997 — roster disclosure + agent count. Lives on this row, not on
-            a line of its own: see WorkspaceRosterSummary's own comment. */}
-        {!editing && (
-          // The wrapper carries the rest-state fade so the summary's own
-          // internals stay untouched; it takes over the flex-item traits
-          // (self-center, no shrink) the button had as a direct child.
-          //
-          // Two rows keep it at rest. A workspace whose only entries are
-          // stashed panes has nothing else to show it is not empty (see the
-          // stash-glyph comment in WorkspaceAgentRoster.tsx), and an expanded
-          // roster must keep the control that collapses it reachable.
-          <span className={`inline-flex self-center flex-shrink-0 ${rosterAlwaysShown ? '' : restHidden}`}>
-            <WorkspaceRosterSummaryMemo
-              workspaceId={workspaceId}
-              agentCount={rosterCounts.agentCount}
-              stashedCount={rosterCounts.stashedCount}
-              agents={rosterShown ? undefined : rosterCounts.agents}
-              extra={rosterCounts.extra}
-              paneTaskCount={paneTaskIds.length}
-              paneTaskNeedYou={paneTaskNeedYou}
-              open={rosterShown}
-              onToggle={toggleRoster}
-            />
-          </span>
-        )}
-
-        {/* The blocked-agent label, right-aligned. It replaces the play/pause
-            mark this row used to carry: "running" is already the accent dot,
-            and a paused glyph never said what it was paused ON. Words do.
-            On hover the row's chrome comes back and the label steps aside for
-            it (the dashed fill and the amber ring keep saying "needs you"); the active
-            row, which shows its chrome permanently, keeps the label too. */}
-        {/* #1481 — not on a nested task row: its fill and amber ring stay, and the
-            owner's rollup line already says "N need you" for the group. */}
-        {needsYou && !taskRow && (
-          <span className={`font-sans text-[11px] font-medium text-[var(--accent-yellow)] flex-shrink-0 mt-0.5 ${isActive ? '' : hover.hideOnHover}`}>
-            {t('workspace.needsYou')}
-          </span>
-        )}
-
-        {/* Shortcut hint */}
-        {/* #1481 — a nested task row is indented, so even the active one gives
-            the hint back to its name at rest. */}
-        {/* #1481 review — Ctrl+N follows the stored order, which nesting no
-            longer mirrors on screen; a nested task row would show a hint out
-            of sequence with the rows around it, so it shows none. */}
-        {/* Ctrl+N follows the stored (manual) order, which only Manual shows
-            on screen; in the other orders a hint would name a shortcut out of
-            sequence with the rows around it, so none is drawn — except on a
-            pinned row: the pinned group leads the stored order and is shown
-            as stored, so its numbers match the screen. */}
-        {!taskRow && !moaHq && !shortcutHintHidden && (!sortPaused || pinned) && (
-          <span className={`text-[11px] tabular-nums text-[color-mix(in_srgb,var(--text-main)_35%,transparent)] flex-shrink-0 mt-0.5 ${restHidden}`}>
-            {shortcutIndex >= 0 && shortcutIndex < 9 ? `^${shortcutIndex + 1}` : ''}
-          </span>
-        )}
 
         </div>
         {/* Mounted only when expanded: a collapsed list would subscribe to the

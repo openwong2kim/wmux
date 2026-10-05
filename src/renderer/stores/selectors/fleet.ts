@@ -1010,20 +1010,22 @@ export function fleetIdleForMs(ptyId: string, ctx: FleetGroupContext): number | 
 
 /**
  * #1481 glance board — the one attention classification both surfaces use.
- * Fleet folds it into four sections (sectionOfAttentionClass); the sidebar
- * sorts workspaces by it. Order of urgency: needs you → finished (a turn that
- * ended and has not been looked at: `complete` is retained until the pane is
- * focused) → running → unconfirmed (running, but silent past the hook window)
- * → idle.
+ * Fleet folds it into its sections (sectionOfAttentionClass); the sidebar
+ * sorts workspaces by it. Order of urgency: needs you → error (a failed turn,
+ * its own tier so an old error never sinks below a fresh finish) → finished
+ * (a turn that ended and has not been looked at: `complete` is retained until
+ * the pane is focused) → running → unconfirmed (running, but silent past the
+ * hook window) → idle.
  */
-export type FleetAttentionClass = 'needsYou' | 'finished' | 'running' | 'unconfirmed' | 'idle';
+export type FleetAttentionClass = 'needsYou' | 'error' | 'finished' | 'running' | 'unconfirmed' | 'idle';
 
 export const ATTENTION_CLASS_RANK: Record<FleetAttentionClass, number> = {
   needsYou: 0,
-  finished: 1,
-  running: 2,
-  unconfirmed: 3,
-  idle: 4,
+  error: 1,
+  finished: 2,
+  running: 3,
+  unconfirmed: 4,
+  idle: 5,
 };
 
 export function fleetAttentionClass(
@@ -1034,8 +1036,9 @@ export function fleetAttentionClass(
   if (pane.unverifiable) return 'unconfirmed';
   switch (pane.agentStatus) {
     case 'awaiting_input':
-    case 'error':
       return 'needsYou';
+    case 'error':
+      return 'error';
     case 'waiting':
       return question ? 'needsYou' : 'idle';
     case 'complete':
@@ -1049,7 +1052,8 @@ export function fleetAttentionClass(
 
 /** Fleet's section for a class. Needs you holds what waits on a person
  *  (input, errors, stopped supervision, unconfirmed); a finished turn is a
- *  look, not a decision, so it has its own section. */
+ *  look, not a decision, so it has its own section. Errors are their own
+ *  class for the sidebar's order and word, and still a Needs you row here. */
 export function sectionOfAttentionClass(cls: FleetAttentionClass): FleetSection {
   if (cls === 'running') return 'running';
   if (cls === 'idle') return 'idle';

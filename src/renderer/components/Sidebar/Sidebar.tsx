@@ -24,6 +24,8 @@ import { useT } from '../../hooks/useT';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
 import { tokenAttrs } from '../../themes';
 import { collapseDirection } from './sidebarGlyphs';
+import { nextRowIndex } from './sidebarRowKeys';
+import SidebarSortMenu from './SidebarSortMenu';
 import { IconPlus, IconChevronDir, IconGear } from '../icons';
 import { FOCUS_RING } from '../focusRing';
 import { HIT_TARGET_24 } from '../hitArea';
@@ -332,6 +334,37 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
     setWsSearch('');
     useStore.getState().setSidebarFilter(EMPTY_FILTER);
   }, []);
+  // Keyboard (roving tabindex, the rail's arrow-key pattern): the list is one
+  // Tab stop — the row the keyboard was last on while inside, else the
+  // selected row, else the first — and ↑ ↓ Home End move between rows in
+  // screen order, nested task and remote rows included. Each row handles its
+  // own Enter, → / ← and Shift+F10 (WorkspaceItem.tsx).
+  const [keyRowId, setKeyRowId] = useState<string | null>(null);
+  const activeRowId = activeRemoteKey ? `${REMOTE_ROW_PREFIX}${activeRemoteKey}` : activeWorkspaceId;
+  const firstRowId = tree.top[0]?.id ?? null;
+  const tabStopId = keyRowId
+    ?? (activeRowId && (filteredWorkspaces.some((w) => w.id === activeRowId) || remoteByRowId.has(activeRowId)) ? activeRowId : firstRowId);
+  const onTreeKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement;
+    if (!target.hasAttribute('data-sidebar-row')) return;
+    if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    const rows = [...e.currentTarget.querySelectorAll<HTMLElement>('[data-sidebar-row]')]
+      .filter((el) => el.getClientRects().length > 0);
+    const next = nextRowIndex(e.key, rows.indexOf(target), rows.length);
+    if (next === null) return;
+    e.preventDefault();
+    rows[next].focus();
+    rows[next].scrollIntoView?.({ block: 'nearest' });
+  }, []);
+  const onTreeFocus = useCallback((e: React.FocusEvent<HTMLDivElement>) => {
+    const id = (e.target as HTMLElement).getAttribute('data-sidebar-row');
+    if (id) setKeyRowId(id);
+  }, []);
+  const onTreeBlur = useCallback((e: React.FocusEvent<HTMLDivElement>) => {
+    // Leaving the list hands the stop back to the selected row.
+    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setKeyRowId(null);
+  }, []);
+
   const renderTask = useCallback((id: string) => (
     <WorkspaceItem
       workspaceId={id}
@@ -348,8 +381,9 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
       onDuplicate={duplicateWorkspace}
       onReorder={reorderWorkspace}
       taskRow
+      tabStop={id === tabStopId}
     />
-  ), [shownActiveId, multiviewIds, workspaces, listed, setActiveWorkspace, handleCtrlSelect, renameWorkspace, handleClose, handleArchive, handleCopySessionInfo, duplicateWorkspace, reorderWorkspace]);
+  ), [tabStopId, shownActiveId, multiviewIds, workspaces, listed, setActiveWorkspace, handleCtrlSelect, renameWorkspace, handleClose, handleArchive, handleCopySessionInfo, duplicateWorkspace, reorderWorkspace]);
 
   // One top-level node: a remote mirror, a task row whose owner is filtered
   // out, or a workspace row with its nested tasks. `inSettleGroup` rows sit
@@ -360,6 +394,8 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
       return (
         <RemoteWorkspaceItem
           key={node.id}
+          rowId={node.id}
+          tabStop={node.id === tabStopId}
           workspace={rw}
           isActive={rw.key === activeRemoteKey}
           onSelect={setActiveRemoteKey}
@@ -389,6 +425,7 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
           onDuplicate={duplicateWorkspace}
           onReorder={reorderWorkspace}
           shortcutHintHidden={inSettleGroup}
+          tabStop={ws.id === tabStopId}
           nestedTaskIds={node.taskIds.length > 0 ? node.taskIds : undefined}
           renderTask={node.taskIds.length > 0 ? renderTask : undefined}
           onCloseTask={node.taskIds.length > 0 ? handleClose : undefined}
@@ -433,6 +470,7 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
             onDuplicate={duplicateWorkspace}
             onReorder={reorderWorkspace}
             moaHq
+            tabStop
           />
         </div>
       )}
@@ -441,9 +479,13 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
         <span className="wmux-sidebar-total" data-sidebar-total>
           {narrowed ? t('sidebar.filter.count', { shown: shownCount, total: listedCount }) : listedCount}
         </span>
+        {/* The order is a visible choice here, not only in Settings. */}
+        {listedCount >= 2 && <span className="ml-auto flex">
+          <SidebarSortMenu />
+        </span>}
         {listedCount >= 3 && <button
           type="button"
-          className={`ui-icon-btn relative ml-auto h-7 w-7 ${FOCUS_RING}`}
+          className={`ui-icon-btn relative h-7 w-7 ${FOCUS_RING}`}
           onClick={() => (wsSearchOpen ? closeWsSearch() : openWsSearch())}
           data-filter-active={narrowed ? 'true' : undefined}
           // A filter for this list — distinct from the rail's Search &
@@ -458,7 +500,7 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
         {!readOnly && <button
           ref={pickerButtonRef}
           type="button"
-          className={`ui-icon-btn ${listedCount >= 3 ? '' : 'ml-auto '}h-7 w-7 ${FOCUS_RING}`}
+          className={`ui-icon-btn ${listedCount >= 2 ? '' : 'ml-auto '}h-7 w-7 ${FOCUS_RING}`}
           onClick={togglePicker}
           title={t('sidebar.newWorkspace')}
           aria-label={t('sidebar.newWorkspace')}
@@ -550,6 +592,15 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
             the rest in the owner's trailing "From closed pane" group.
             Detached tasks are ordinary rows; tasks whose owner is gone
             collect in the "From closed workspace" group below. */}
+        <div
+          role="tree"
+          aria-label={t('sidebar.workspaces')}
+          className="space-y-0.5"
+          onKeyDown={onTreeKeyDown}
+          onFocus={onTreeFocus}
+          onBlur={onTreeBlur}
+          data-sidebar-tree
+        >
         {tree.top.map((node) => renderNode(node, tree.taskIds))}
         {/* Until the first lineage + ledger refresh lands, a task whose owner
             is not yet known to be gone is not called orphaned: it waits as a
@@ -580,6 +631,7 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
             {settleTrees[kind].top.map((node) => renderNode(node, settleTrees[kind].taskIds, true))}
           </WorkspaceSettleGroup>
         ))}
+        </div>
 
         {/* #1011 — put-away workspaces: configuration snapshots, one click
             back to live. Collapsed by default; empty → invisible. */}

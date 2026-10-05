@@ -65,7 +65,9 @@ describe('GitSyncBadge', () => {
 
   it('keeps clean green and behind red', () => {
     const clean = signals(render(<GitSyncBadge sync={sync({})} />));
-    expect(clean[0].textContent).toBe('●');
+    // A drawn dot, not a text glyph that can render as an emoji disc.
+    expect(clean[0].hasAttribute('data-git-clean')).toBe(true);
+    expect(clean[0].querySelector('svg circle')).not.toBeNull();
     expect(clean[0].style.color).toBe('var(--accent-green)');
 
     const behind = signals(render(<GitSyncBadge sync={sync({ behind: 3 })} />));

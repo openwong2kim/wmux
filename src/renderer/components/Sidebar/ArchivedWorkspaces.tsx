@@ -60,10 +60,10 @@ export default function ArchivedWorkspaces() {
                     ? { backgroundColor: workspaceColorHex(entry.color) }
                     : { border: '1px solid var(--text-muted)' }}
                 />
-                <span className="min-w-0 flex-1 truncate text-[10px] font-semibold text-[var(--text-main)]">
+                <span className="min-w-0 flex-1 truncate text-[11px] font-semibold text-[var(--text-main)]">
                   {entry.name}
                 </span>
-                <span className="flex-none text-[10px] text-[var(--text-muted)]">
+                <span className="flex-none text-[11px] text-[var(--text-muted)]">
                   {timeAgo(entry.archivedAt)}
                 </span>
               </button>
@@ -88,7 +88,7 @@ export default function ArchivedWorkspaces() {
                 onMouseLeave={() => setArmedId(null)}
               >
                 {armedId === entry.id
-                  ? <span className="text-[10px]">{t('workspace.deletePermanentlyConfirm')}</span>
+                  ? <span className="text-[11px]">{t('workspace.deletePermanentlyConfirm')}</span>
                   : <span aria-hidden="true" className="text-[10px] font-mono">✕</span>}
               </button>
             </div>

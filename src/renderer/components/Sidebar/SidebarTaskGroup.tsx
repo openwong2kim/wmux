@@ -20,6 +20,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { selectWorkspaceAgentStatus } from '../../stores/selectors/fleet';
 import { useT } from '../../hooks/useT';
+import type { TranslationKey } from '../../i18n/locales/en';
 import { IconChevron, IconFanOut, IconMoreVertical } from '../icons';
 import { FOCUS_RING } from '../focusRing';
 import { HIT_TARGET_24 } from '../hitArea';
@@ -489,7 +490,7 @@ function PaneTaskGroupInner({ ownerId, paneId, paneName, taskIds, ownerActive, r
       <button
         type="button"
         draggable={false}
-        className={`flex-none self-center inline-flex items-center gap-0.5 rounded-md px-1 text-[10px] font-mono tabular-nums text-[var(--text-muted)] hover:text-[var(--text-sub)] ${FOCUS_RING}`}
+        className={`flex-none self-center inline-flex items-center gap-0.5 rounded-md px-1 text-[11px] font-mono tabular-nums text-[var(--text-muted)] hover:text-[var(--text-sub)] ${FOCUS_RING}`}
         aria-expanded={expanded}
         aria-controls={expanded ? listId : undefined}
         aria-label={toggleLabel}
@@ -565,9 +566,25 @@ interface ClosedPaneTaskGroupProps {
  * longer runs an agent), the GUI or the orchestrator asked, or the stamp
  * predates origins. One trailing group under the owner, after its roster.
  */
+/**
+ * The trailing group's name, from who asked for its tasks: tasks started
+ * from the app (the GUI) or by the orchestrator never had a pane, so "From
+ * closed pane" would be false for them. A pane origin, or none recorded (a
+ * stamp older than origins), keeps the closed-pane name; a mix of kinds is
+ * "Other tasks".
+ */
+export function closedGroupLabelKey(kinds: readonly (string | undefined)[]): TranslationKey {
+  const set = new Set(kinds.map((k) => (k === 'gui' || k === 'orchestrator' ? k : 'pane')));
+  if (set.size > 1) return 'sidebar.tasks.otherGroup';
+  if (set.has('gui')) return 'sidebar.tasks.guiGroup';
+  if (set.has('orchestrator')) return 'sidebar.tasks.orchestratorGroup';
+  return 'sidebar.tasks.closedPaneGroup';
+}
+
 function ClosedPaneTaskGroupInner({ ownerId, ownerName, taskIds, ownerActive, renderTask, onCloseWorkspace }: ClosedPaneTaskGroupProps) {
   const t = useT();
   const { closedPane } = usePaneTaskSplit(ownerId, taskIds);
+  const originKinds = useStore(useShallow((s) => closedPane.map((id) => s.fanoutOrigin[id]?.kind)));
   if (closedPane.length === 0) return null;
   return (
     <SidebarTaskGroup
@@ -575,7 +592,7 @@ function ClosedPaneTaskGroupInner({ ownerId, ownerName, taskIds, ownerActive, re
       foldKey={closedPaneFoldKey(ownerId)}
       taskIds={closedPane}
       ownerActive={ownerActive}
-      label={t('sidebar.tasks.closedPaneGroup')}
+      label={t(closedGroupLabelKey(originKinds))}
       ownerName={ownerName}
       renderTask={renderTask}
       onCloseWorkspace={onCloseWorkspace}

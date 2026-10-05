@@ -97,17 +97,17 @@ export default function OrphanSessions() {
                   forced-colors), but not asserting the amber alive grammar. */}
               <span className="sidebar-dot h-1.5 w-1.5 flex-none rounded-full bg-[var(--text-muted)]" />
               <span className="flex min-w-0 flex-1 items-baseline gap-1">
-                <span className="min-w-0 flex-1 truncate text-[10px] font-semibold text-[var(--text-main)]">
+                <span className="min-w-0 flex-1 truncate text-[11px] font-semibold text-[var(--text-main)]">
                   {session.label}
                 </span>
                 {session.cwd && (
-                  <span className="max-w-[40%] flex-none truncate text-[10px] font-mono text-[var(--text-muted)]">
+                  <span className="max-w-[40%] flex-none truncate text-[11px] font-mono text-[var(--text-muted)]">
                     {session.cwd}
                   </span>
                 )}
               </span>
               {ago && (
-                <span className="flex-none text-[10px] text-[var(--text-muted)]">{ago}</span>
+                <span className="flex-none text-[11px] text-[var(--text-muted)]">{ago}</span>
               )}
             </button>
             {armedKill === session.id ? (

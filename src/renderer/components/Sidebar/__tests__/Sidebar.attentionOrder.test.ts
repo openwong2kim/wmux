@@ -54,8 +54,9 @@ describe('MiniSidebar — ordering wiring', () => {
     expect(miniSrc).not.toMatch(/fromIndex\s*===?\s*i\b/);
   });
 
-  it('mirrors the error cross instead of a second red dot', () => {
-    expect(miniSrc).toContain("agentIcon.shape === 'cross'");
+  it('draws status by shape with the sidebar\'s own mark, never a text glyph', () => {
+    expect(miniSrc).toContain('<StatusMarkView status={agentStatus}');
+    expect(miniSrc).not.toMatch(/'✕'|'○'|agentIcon\.dot/);
   });
 });
 

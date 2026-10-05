@@ -3,7 +3,7 @@
 // the counts and the red marks while the hold stands, and comes back once the
 // reset passed without a release.
 import { describe, it, expect } from 'vitest';
-import { countNeedsAttention, fleetAttentionClass, fleetRow, selectFleetPanes } from '../fleet';
+import { countNeedsAttention, fleetAttentionClass, fleetRow, sectionOfAttentionClass, selectFleetPanes } from '../fleet';
 import { selectWorkspaceAgentRoster } from '../workspaceAgentRoster';
 import { rowStatusMark } from '../../../components/Sidebar/AgentMarks';
 import {
@@ -59,7 +59,8 @@ describe('usage-limit waiting presentation', () => {
     const [expired] = selectFleetPanes({ ...fleetBase, usageLimitWaiting: {} });
     expect(expired.agentStatus).toBe('error');
     expect(expired.usageLimitWaiting).toBeUndefined();
-    expect(fleetAttentionClass(expired)).toBe('needsYou');
+    expect(fleetAttentionClass(expired)).toBe('error');
+    expect(sectionOfAttentionClass(fleetAttentionClass(expired))).toBe('needsYou');
   });
 
   it('Sidebar roster: no red ✕ and no attention while held; a waiting clock instead', () => {
