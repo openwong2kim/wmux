@@ -30,14 +30,19 @@ interface PaneRow {
   agents?: Array<{ ptyId?: unknown; surfaceId?: unknown; agentName?: unknown; agentStatus?: unknown }>;
 }
 
-/** A pane.list answer (operator dispatch: { ok, result }, or the bare list). */
-function paneRows(res: unknown): PaneRow[] {
+/** The panes of a pane.list answer. Operator dispatch wraps it as
+ *  { ok, result }; pane.rpc answers { asOfSeq, bootId, panes }. Exported for
+ *  the unit test, which feeds the real envelope. */
+export function paneRows(res: unknown): PaneRow[] {
   const r = res as { ok?: boolean; result?: unknown } | null;
-  const list = r && typeof r === 'object' && 'result' in r ? r.result : res;
-  return Array.isArray(list) ? (list as PaneRow[]) : [];
+  const body = r && typeof r === 'object' && 'result' in r ? r.result : res;
+  if (Array.isArray(body)) return body as PaneRow[];
+  const panes = body && typeof body === 'object' ? (body as { panes?: unknown }).panes : undefined;
+  return Array.isArray(panes) ? (panes as PaneRow[]) : [];
 }
 
-async function resolveTarget(
+/** Exported for the unit test. */
+export async function resolveTarget(
   invoke: Invoke,
   getWindow: () => BrowserWindow | null,
   sel: { ptyId?: string; paneId?: string },

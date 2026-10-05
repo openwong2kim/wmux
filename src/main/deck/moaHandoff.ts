@@ -412,7 +412,10 @@ export class MoaHandoffService {
     if (!sel.ptyId && !sel.paneId) return { ok: false, error: 'no_target' };
     if (sel.ptyId && isBrainPtyId(sel.ptyId)) return { ok: false, error: 'target_is_hq' };
     const t = await this.ports.resolveTarget(sel).catch(() => null);
-    if (!t) return { ok: false, error: 'no_target' };
+    if (!t) {
+      console.warn(`[moa:handoff] no pane with an agent matches ${sel.ptyId ?? sel.paneId}`);
+      return { ok: false, error: 'no_target' };
+    }
     // A card in the HQ's own slot would stop Moa's own wake loop.
     if (t.workspaceId === hq || isBrainPtyId(t.ptyId)) return { ok: false, error: 'target_is_hq' };
     if (!t.agentName) return { ok: false, error: 'no_agent' };
