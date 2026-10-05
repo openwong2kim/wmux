@@ -4,7 +4,7 @@
 // opens or closes the right panel (where Moa's chat lives); with Moa off there
 // is neither the button nor the panel (Layout/moaDockGate). With the panel off screen it carries Moa's notices (moaNotice):
 // a short bubble for a new decision or a finished delegation, then a dot —
-// yellow while a decision waits on the operator, grey for an unseen reply.
+// attention orange while a decision waits on the operator, grey for an unseen reply.
 //
 // "On screen" means the dock is open AND shown: on the Workspaces page, or
 // beside any rail page but Settings. Bubbles, dots and "seen" follow it. The

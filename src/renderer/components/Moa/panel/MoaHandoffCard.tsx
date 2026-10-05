@@ -96,8 +96,7 @@ export function MoaHandoffCard({
   const titleId = `moa-handoff-${decision.id}`;
   return (
     <li data-moa-decision={decision.id} data-moa-handoff data-workspace-id={item.workspaceId} className={NEEDS_YOU_ROW}>
-      {/* Yellow marks the state (the dot); amber text on the needs-you wash
-          fell under 3:1 in light themes. */}
+      {/* The attention-orange dot marks the state; the words keep the text colour. */}
       <div className="flex items-center gap-1 text-[12px] text-[var(--text-main)] min-w-0">
         <span aria-hidden="true" className="shrink-0 w-1.5 h-1.5 rounded-full bg-[var(--attention)]" />
         <span className="truncate">{t('moa.handoff.eyebrow')}</span>

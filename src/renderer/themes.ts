@@ -339,10 +339,10 @@ export const ATTENTION_COLORS: Record<BuiltinThemeId, AttentionColors> = {
   tint: { fill: '#FF8A4C', text: '#FF9A62', ink: '#1A171D' },
   zinc: { fill: '#FB8A3C', text: '#FB923C', ink: '#09090B' },
   graphite: { fill: '#FF8A3D', text: '#FF9550', ink: '#0B0C0E' },
-  paper: { fill: '#EA620F', text: '#A8400A', ink: '#17171C' },
+  paper: { fill: '#CE560D', text: '#A8400A', ink: '#000000' },
   'amber-line': { fill: '#FF7A26', text: '#FF8A3D', ink: '#121212' },
   mono: { fill: '#FF8A3D', text: '#FF9550', ink: '#1A171B' },
-  'mono-light': { fill: '#E85F0C', text: '#A33F09', ink: '#141414' },
+  'mono-light': { fill: '#D8580B', text: '#A33F09', ink: '#141414' },
   amber: { fill: '#FF7A2E', text: '#FF8A45', ink: '#151517' },
   'catppuccin-mocha': { fill: '#FAB387', text: '#FAB387', ink: '#1E1E2E' },
   monochrome: { fill: '#FF8A3D', text: '#FF9550', ink: '#080808' },
@@ -350,8 +350,8 @@ export const ATTENTION_COLORS: Record<BuiltinThemeId, AttentionColors> = {
   'red-dynasty': { fill: '#FF9A3C', text: '#FFA552', ink: '#1A0A0A' },
   nightowl: { fill: '#F08A3E', text: '#F59A55', ink: '#1E1B16' },
   void: { fill: '#FF8A3D', text: '#FF9550', ink: '#000000' },
-  hinomaru: { fill: '#E35F12', text: '#9A3B08', ink: '#140F0C' },
-  taegeuk: { fill: '#E05A0C', text: '#983A08', ink: '#1A1A2E' },
+  hinomaru: { fill: '#CA5510', text: '#9A3B08', ink: '#000000' },
+  taegeuk: { fill: '#CE530B', text: '#983A08', ink: '#000000' },
 };
 
 /** The CSS custom properties a look's block sets for the attention orange. */

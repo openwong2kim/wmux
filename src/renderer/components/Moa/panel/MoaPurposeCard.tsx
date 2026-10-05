@@ -107,7 +107,7 @@ export function MoaPurposeCard({ purpose, waiting, t }: {
   const tasks = kind === 'fanout' && Array.isArray(input.titles) ? (input.titles as unknown[]).filter((x): x is string => typeof x === 'string') : [];
   return (
     <div className="my-1.5 rounded-[10px] px-3 py-2 bg-[color-mix(in_srgb,var(--text-main)_5%,transparent)]" data-moa-purpose={kind}>
-      {/* Yellow is the state mark only (a dot); the words stay text colours,
+      {/* The attention orange is the state mark only (a dot); the words stay text colours,
           which keep their contrast on the card's wash in every theme. */}
       <div className="text-[12px] text-[var(--text-sub)]">
         {t(`moa.purpose.${kind}`, { count: tasks.length })}

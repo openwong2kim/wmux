@@ -1,8 +1,7 @@
 // Moa's needs-you rows wear the sidebar's attention grammar: words in
 // --attention-text, a dashed --attention border, over --selection-subtle (the
 // text colour mixed into the panel, 8% on dark looks, 5% on light ones). The
-// words must read at 4.5:1 on that fill in every look; the dash keeps the
-// 3:1 the attention palette guarantees on the page (attentionColors.test.ts).
+// words must read at 4.5:1 and the dash at 3:1 on that fill, in every look.
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -13,12 +12,12 @@ import { NEEDS_YOU_ROW, NEEDS_YOU_TEXT } from '../panel/MoaWaitingOnYou';
 const ids = Object.keys(UI_THEME_TOKENS) as BuiltinThemeId[];
 
 describe('Moa needs-you contrast', () => {
-  it.each(ids)('%s: the row\'s words read at 4.5:1 on its fill, its dash at 3:1 on the page', (id) => {
+  it.each(ids)('%s: the row\'s words read at 4.5:1 and its dash at 3:1 on its fill', (id) => {
     const p = deriveBuiltinPalette(id);
     const c = ATTENTION_COLORS[id];
     const fill = mixHex(p.bgBase, p.textMain, isLight(p.bgBase) ? 0.05 : 0.08);
     expect(getContrastRatio(c.text, fill), `${id} text on ${fill}`).toBeGreaterThanOrEqual(4.5);
-    expect(getContrastRatio(c.fill, p.bgBase), `${id} dash on ${p.bgBase}`).toBeGreaterThanOrEqual(3);
+    expect(getContrastRatio(c.fill, fill), `${id} dash on ${fill}`).toBeGreaterThanOrEqual(3);
   });
 
   it('the rows use the attention tokens, never the caution yellow', () => {

@@ -544,8 +544,9 @@ always neutral (the fill ladder).
   it). One orange hue family (≈21–29°), its own value per look
   (`ATTENTION_COLORS` in `themes.ts`, emitted into each look's block in
   `globals.css`): `--attention` is the vivid fill for dashes, marks, dots and
-  the badge (≥ 3:1 on the page and sidebar); `--attention-text` carries words
-  and counts (≥ 4.5:1 on page, sidebar, fill and frame — on light looks a
+  the badge (≥ 3:1 on the page and sidebar, and on a needs-you row's
+  `--selection-subtle` / `--selection-hover` fill); `--attention-text` carries words
+  and counts (≥ 4.5:1 on page, sidebar, row fill and frame — on light looks a
   darker orange of the same hue); `--attention-ink` is the badge's digits
   (≥ 4.5:1 on the fill). Never a color-mix; never the caution yellow
   (`--accent-yellow`, which stays for warnings) and never the error red.

@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { ATTENTION_COLORS, THEME_STYLES, UI_THEME_TOKENS, attentionCssVars, deriveBuiltinPalette, type BuiltinThemeId } from '../themes';
-import { getContrastRatio } from '../tailwindPalette';
+import { getContrastRatio, isLight, mixHex } from '../tailwindPalette';
 
 const css = readFileSync(path.join(__dirname, '..', 'styles', 'globals.css'), 'utf8');
 const ids = Object.keys(UI_THEME_TOKENS) as BuiltinThemeId[];
@@ -47,6 +47,22 @@ describe('attention orange', () => {
     expect(getContrastRatio(c.ink, c.fill), `${id} badge digits`).toBeGreaterThanOrEqual(4.5);
     for (const bg of [p.bgBase, p.bgMantle]) {
       expect(getContrastRatio(c.fill, bg), `${id} fill on ${bg}`).toBeGreaterThanOrEqual(3);
+    }
+  });
+
+  // A needs-you row (sidebar, Moa's cards) draws the dash over --selection-subtle,
+  // and over --selection-hover on hover, on the page or the sidebar column: the
+  // text colour mixed in at 5% / 10% on light looks, 8% / 15% on dark ones
+  // (globals.css). Non-text contrast: the dash at 3:1; the words at 4.5:1.
+  it.each(ids)('%s: on a needs-you row\'s fills, the dash reads at 3:1 and the words at 4.5:1', (id) => {
+    const p = deriveBuiltinPalette(id);
+    const c = ATTENTION_COLORS[id];
+    const [subtle, hover] = isLight(p.bgBase) ? [0.05, 0.10] : [0.08, 0.15];
+    for (const bg of [p.bgBase, p.bgMantle]) {
+      const rowFill = mixHex(bg, p.textMain, subtle);
+      expect(getContrastRatio(c.fill, rowFill), `${id} dash on ${rowFill}`).toBeGreaterThanOrEqual(3);
+      expect(getContrastRatio(c.fill, mixHex(bg, p.textMain, hover)), `${id} dash on hover`).toBeGreaterThanOrEqual(3);
+      expect(getContrastRatio(c.text, rowFill), `${id} words on ${rowFill}`).toBeGreaterThanOrEqual(4.5);
     }
   });
 

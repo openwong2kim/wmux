@@ -4,7 +4,7 @@
 // titlebar icon. Two events pop a short bubble: a NEW pending decision (any
 // workspace, from `deck.moa.decisions()`) and a delegation that just finished
 // (a WorkLink turning `done`). After MOA_BUBBLE_MS the bubble collapses to a
-// dot on the icon: yellow while any decision is pending, grey for a report or
+// dot on the icon: attention orange while any decision is pending, grey for a report or
 // reply the operator has not seen (a finished delegation, or a new assistant
 // message on Moa's transcript). Opening the panel clears the grey dot.
 //
@@ -88,7 +88,7 @@ export function moaNoticeReducer(s: MoaNoticeState, a: MoaNoticeAction): MoaNoti
   }
 }
 
-/** The dot on the icon: yellow while a decision waits, grey for an unseen report. */
+/** The dot on the icon: attention orange while a decision waits, grey for an unseen report. */
 export type MoaDot = 'waiting' | 'reply' | null;
 
 export function moaDot(s: Pick<MoaNoticeState, 'pending' | 'unseen'>): MoaDot {

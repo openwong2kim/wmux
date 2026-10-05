@@ -1,7 +1,7 @@
 // Delegated work as task cards (WorkLinks, docs/work-links.md). One line per
 // card at rest: the title, its state, the workspace doing it. Expanding a card
 // shows what hangs off it: the decisions it raised that still wait, the A2A
-// task's state, and the PR. Colour carries state only: needs-you is yellow,
+// task's state, and the PR. Colour carries state only: needs-you is the attention orange,
 // blocked is red, everything else stays neutral.
 // Work Moa handed off (origin moa / moa-auto) also shows the worker's last
 // question (untrusted agent text, plain text only) and a way to its pane.
