@@ -191,6 +191,19 @@
   .wmux-nav-button, .wmux-sidebar .sidebar-row { transition: none; }
 }
 
+/* Sidebar collapse/expand (SidebarSlot). The transition exists only while a
+ * toggle runs ([data-animating]), so a drag-resize of the width never eases.
+ * The duration must match SIDEBAR_TOGGLE_MS. The titlebar's left segment, when
+ * present, eases in step with it. */
+.wmux-sidebar-slot[data-animating] { transition: width 190ms ease-out; }
+.wmux-app-root:has(.wmux-sidebar-slot[data-animating]) .wmux-titlebar-segment {
+  transition: width 190ms ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .wmux-sidebar-slot[data-animating],
+  .wmux-app-root:has(.wmux-sidebar-slot[data-animating]) .wmux-titlebar-segment { transition: none; }
+}
+
 /* ─── Buttons: shared base ──────────────────────────────────────────────── */
 .ui-btn {
   display: inline-flex;
@@ -984,6 +997,9 @@
 .wmux-fleet-editor input { flex: 1; min-width: 0; height: 28px; padding: 0 8px; border: 1px solid var(--border-soft); border-radius: 5px; background: var(--bg-mantle); color: var(--text-main); font-size: 12px; outline: none; }
 .wmux-fleet-editor input:focus-visible { border-color: var(--accent-blue); }
 .wmux-fleet-editor-text { flex: 1; min-width: 0; font-size: 12px; color: var(--text-main); }
+/* Role picker: the roles wrap, and the pane's current role is the selected one. */
+.wmux-fleet-editor[data-fleet-editor="role"] { flex-wrap: wrap; }
+.wmux-fleet-editor button[aria-pressed="true"] { background: var(--selection); color: var(--text-main); }
 .wmux-fleet-editor button { min-height: 28px; padding: 2px 10px; border: 1px solid var(--border-soft); border-radius: 5px; font-size: 12px; color: var(--text-main); }
 .wmux-fleet-editor button.is-destructive { color: var(--accent-red); }
 .wmux-fleet-card:hover, .wmux-fleet-card[aria-selected="true"] { background: var(--bg-surface); }
@@ -1771,6 +1787,14 @@
 .wmux-panel-toggle[aria-pressed="true"] { background: var(--selection); color: var(--text-main); }
 /* Titlebar right end: icon-only, one 28px square each (tools panel, Settings). */
 .wmux-titlebar .wmux-panel-toggle { width: 28px; padding: 0; gap: 0; }
+/* The titlebar's panel toggles (sidebar at the left, Moa / tools panel at the
+   right) are a matched pair of bare icons: no fill at rest or when on — the
+   icon's filled bar and aria-pressed/aria-expanded carry the state — and only
+   the hover fill and the focus ring. */
+.wmux-titlebar .wmux-panel-toggle,
+.wmux-titlebar .wmux-panel-toggle[aria-expanded="true"],
+.wmux-titlebar .wmux-panel-toggle[aria-pressed="true"] { background: transparent; }
+.wmux-titlebar .wmux-panel-toggle:hover { background: var(--hover-fill); color: var(--text-main); }
 .wmux-chat-toggle button { border-radius: 6px; color: color-mix(in srgb, var(--text-main) 50%, transparent); }
 .wmux-chat-toggle button[aria-pressed="true"] { background: var(--selection); color: var(--text-main); }
 .wmux-deck-tabs { min-height: 40px; padding: 0 12px; gap: 4px; border-bottom: 0; }

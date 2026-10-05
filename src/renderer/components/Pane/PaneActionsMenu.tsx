@@ -50,6 +50,8 @@ interface PaneActionsMenuProps {
   triggerRef?: React.RefObject<HTMLElement | null>;
   items: PaneActionItem[];
   onClose: () => void;
+  /** Non-interactive text under the items (e.g. the version line). */
+  footer?: React.ReactNode;
 }
 
 /** Item box: px-2.5 py-1.5 around a 12px line — matches ContextMenu's MenuItem.
@@ -60,7 +62,7 @@ const ESTIMATED_ITEM_HEIGHT = 27;
  *  this width puts the menu's left edge at the cursor (see SurfaceTabs). */
 export const PANE_ACTIONS_MENU_WIDTH = 216;
 
-export default function PaneActionsMenu({ anchor, triggerRef, items, onClose }: PaneActionsMenuProps) {
+export default function PaneActionsMenu({ anchor, triggerRef, items, onClose, footer }: PaneActionsMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const firstItemRef = useRef<HTMLButtonElement>(null);
   // Where focus was when the menu opened — nulled by the outside-click closer,
@@ -80,7 +82,7 @@ export default function PaneActionsMenu({ anchor, triggerRef, items, onClose }: 
     if (!el) return;
     const measured = el.getBoundingClientRect().height;
     setHeight((prev) => (Math.abs(prev - measured) < 1 ? prev : measured));
-  }, [items.length]);
+  }, [items.length, footer]);
 
   // Close on window resize — native menu behavior. The anchor this menu was
   // placed against has moved, and re-placing against its stale rect would pin
@@ -249,6 +251,15 @@ export default function PaneActionsMenu({ anchor, triggerRef, items, onClose }: 
           </button>
         </div>
       ))}
+      {footer && (
+        <div
+          className="mt-1 mx-2 pt-1.5 pb-1 border-t text-[11px] truncate"
+          style={{ borderColor: 'var(--bg-overlay)', color: 'var(--text-subtle)' }}
+          data-pane-menu-footer
+        >
+          {footer}
+        </div>
+      )}
     </div>,
     document.body,
   );

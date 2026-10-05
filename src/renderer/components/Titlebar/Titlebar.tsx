@@ -2,7 +2,8 @@ import { useEffect, useState, useCallback, useRef, type CSSProperties } from 're
 import { useStore } from '../../stores';
 import { tokenAttrs } from '../../themes';
 import StatusBar from '../StatusBar/StatusBar';
-import { RAIL_PAGE_TITLE_KEYS } from './railPageTitle';
+import { workspaceChromeInTitlebar } from './railPageTitle';
+import SidebarToggle from './SidebarToggle';
 import { useT } from '../../hooks/useT';
 import { FOCUS_RING } from '../focusRing';
 import { IconPlus } from '../icons';
@@ -36,6 +37,11 @@ export const TITLEBAR_HEIGHT = 40;
 // 로고가 초록 버튼에 겹친다(owner-reported 2026-07-18) — x=12 배치 기준
 // 초록 끝 ~65px + 여백 15px.
 export const MAC_TRAFFIC_LIGHT_RESERVE = 80;
+
+/** Where the `wmux` wordmark starts, past the traffic-light reserve (or the
+ *  window's left edge). One inset for the open and the collapsed segment, so
+ *  the brand never moves when the sidebar toggles. */
+export const BRAND_INSET = 12;
 
 // Lazy + guarded platform read: module-level `window` access crashes node-env
 // test imports, and electronAPI may be absent under jsdom (see the
@@ -145,9 +151,10 @@ export default function Titlebar() {
     });
   }, []);
   const closePicker = useCallback(() => setPickerOpen(false), []);
-  // New workspace belongs to the Workspaces page: a rail page hides it.
-  const onRailPage = useStore((s) => s.appRoute in RAIL_PAGE_TITLE_KEYS);
-  useEffect(() => { if (onRailPage) setPickerOpen(false); }, [onRailPage]);
+  // New workspace belongs to the Workspaces page, and only while the sidebar
+  // is hidden: an open sidebar's header already carries it, and a rail page
+  // hides it. The picker closes with its button.
+  const showWorkspaceChrome = useStore(workspaceChromeInTitlebar);
 
   useTitleBarOverlaySync();
 
@@ -155,6 +162,10 @@ export default function Titlebar() {
   // The mantle segment mirrors it only when the sidebar is docked left —
   // docked right there is no panel below the top-left corner to fuse with.
   const compactSegment = sidebarPosition === 'left' && !sidebarVisible;
+  // Left collapsed, the 48px segment cannot hold the +; the rail's own + is
+  // its home then (MiniSidebar).
+  const showPlus = showWorkspaceChrome && !compactSegment;
+  useEffect(() => { if (!showPlus) setPickerOpen(false); }, [showPlus]);
   // #1481 — the expanded width is the user's (drag handle, persisted).
   const sidebarWidth = useStore((s) => s.sidebarWidth);
   // The icon rail (48px) always sits on the frame at the left; the open
@@ -195,11 +206,15 @@ export default function Titlebar() {
       {...tokenAttrs('bgBase', 'bg')}
     >
       <div
-        className={`wmux-titlebar-segment flex items-center shrink-0 gap-2 ${compactSegment ? 'px-1 justify-center' : 'px-3'} overflow-hidden ${leftSegmentWidth ? 'bg-[var(--bg-mantle)]' : ''}`}
+        className={`wmux-titlebar-segment flex items-center shrink-0 gap-2 ${compactSegment ? 'pr-2' : 'pr-3'} overflow-hidden ${leftSegmentWidth ? 'bg-[var(--bg-mantle)]' : ''}`}
         style={{
-          width: leftSegmentWidth || undefined,
-          // 트래픽 라이트를 세그먼트 안에 품을 때는 px-3 대신 예약 폭 안쪽 패딩.
-          paddingLeft: reserveInSegment ? MAC_TRAFFIC_LIGHT_RESERVE : undefined,
+          // Collapsed, the brand and the toggle outgrow the rail's 48px: the
+          // segment takes their width instead (the look paints it transparent).
+          width: compactSegment ? undefined : leftSegmentWidth || undefined,
+          // The brand starts BRAND_INSET past the traffic lights, whether the
+          // segment holds their reserve (open) or the header does (collapsed),
+          // so it stays put when the sidebar toggles.
+          paddingLeft: (reserveInSegment ? MAC_TRAFFIC_LIGHT_RESERVE : 0) + BRAND_INSET,
           // Fuse with the sidebar below via the same inset hairline seam.
           boxShadow: leftSegmentWidth ? 'inset -1px 0 0 var(--stroke)' : undefined,
         }}
@@ -208,11 +223,14 @@ export default function Titlebar() {
         <span className="text-[14px] font-semibold text-[var(--text-main)] tracking-tight" {...tokenAttrs('textMain', 'text')}>
           wmux
         </span>
-        {!compactSegment && !onRailPage && <button
+        {/* Left to right: wmux, the sidebar toggle (the slot the + held: the
+            segment's end while the sidebar is open), then the + when shown. */}
+        <SidebarToggle className={compactSegment ? undefined : 'ml-auto'} />
+        {showPlus && <button
           ref={plusBtnRef}
           type="button"
           onClick={togglePicker}
-          className={`flex items-center justify-center w-6 h-6 rounded-md text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--hover-fill)] transition-colors duration-150 ml-auto ${FOCUS_RING}`}
+          className={`flex items-center justify-center w-6 h-6 rounded-md text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--hover-fill)] transition-colors duration-150 ${FOCUS_RING}`}
           style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}
           title={t('sidebar.newWorkspaceTooltip')}
           aria-label={t('sidebar.newWorkspaceTooltip')}
@@ -220,7 +238,7 @@ export default function Titlebar() {
         >
           <IconPlus size={14} />
         </button>}
-        {pickerOpen && !onRailPage && (
+        {pickerOpen && showPlus && (
           <PresetPicker
             onClose={closePicker}
             anchorStyle={{ left: pickerLeft, top: TITLEBAR_HEIGHT + 4 }}

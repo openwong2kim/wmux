@@ -45,7 +45,9 @@ beforeEach(() => {
       onPaneError: noopSub,
     },
   };
-  act(() => useStore.setState({ sidebarPosition: 'left', sidebarVisible: true }));
+  // The titlebar + exists only while the sidebar is hidden and the left
+  // segment is free to hold it (docked right).
+  act(() => useStore.setState({ sidebarPosition: 'right', sidebarVisible: false, appRoute: 'workspaces' }));
 });
 
 function render(): HTMLDivElement {

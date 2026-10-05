@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-// The icon rail (MiniSidebar `rail`): shortcuts in order, Settings and the
-// sidebar toggle at the foot, the workspace list only while collapsed, arrow
+// The icon rail (MiniSidebar `rail`): shortcuts in order, the More menu
+// (Settings, shortcuts, updates, version) at the foot, the workspace list only while collapsed, arrow
 // keys between buttons, and Fleet's needs-you count as a number badge.
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -62,25 +62,68 @@ describe('sidebar icon rail', () => {
     expect(git().querySelector('[data-git-nav-signal]')).not.toBeNull();
   });
 
-  it('keeps only the sidebar toggle at its foot (Settings lives in the titlebar)', async () => {
+  it('keeps only the More menu at its foot: no chevron, Settings inside it', async () => {
     await act(async () => root.render(<MiniSidebar rail collapsed={false} />));
-    expect(container.querySelector('[data-onboarding-target="settings-button"]')).toBeNull();
-    expect(container.querySelector('[data-sidebar-collapse]')).not.toBeNull();
+    const more = container.querySelector<HTMLButtonElement>('[data-rail-more]')!;
+    expect(more.getAttribute('aria-label')).toBe('More');
+    expect(more.getAttribute('aria-haspopup')).toBe('menu');
+    // The onboarding step that points at Settings now points at its menu.
+    expect(more.getAttribute('data-onboarding-target')).toBe('settings-button');
+    expect(container.querySelector('[data-sidebar-collapse]')).toBeNull();
+    expect(container.querySelector('[aria-label^="Hide sidebar"], [aria-label^="Expand sidebar"]')).toBeNull();
   });
 
-  it('shows no workspace list beside an open sidebar, and offers to collapse it', async () => {
+  it('opens Settings, Keyboard shortcuts and Check for updates from the More menu, over the version line', async () => {
+    (globalThis as { __APP_VERSION__?: string }).__APP_VERSION__ = '9.9.9';
+    const checkForUpdates = vi.fn(async () => ({ status: 'not-available' }));
+    vi.stubGlobal('electronAPI', { platform: 'darwin', updater: { checkForUpdates } });
+    await act(async () => root.render(<MiniSidebar rail collapsed={false} />));
+    const more = () => container.querySelector<HTMLButtonElement>('[data-rail-more]')!;
+    const item = (key: string) => document.querySelector<HTMLButtonElement>(`[data-pane-menu-action="${key}"]`);
+    act(() => more().click());
+    expect(more().getAttribute('aria-expanded')).toBe('true');
+    const menu = document.querySelector('[data-pane-actions-menu]')!;
+    expect(menu.getAttribute('role')).toBe('menu');
+    expect([...menu.querySelectorAll('[role="menuitem"]')].map((b) => b.textContent)).toEqual(['Settings⌘,', 'Keyboard shortcuts', 'Check for updates']);
+    expect(menu.querySelector('[data-pane-menu-footer]')?.textContent).toBe('wmux v9.9.9');
+
+    act(() => item('settings')!.click());
+    expect(useStore.getState().appRoute).toBe('settings');
+    expect(document.querySelector('[data-pane-actions-menu]')).toBeNull();
+
+    act(() => useStore.setState({ appRoute: 'workspaces' }));
+    act(() => more().click());
+    act(() => item('shortcuts')!.click());
+    expect(useStore.getState().appRoute).toBe('settings');
+    expect(useStore.getState().settingsInitialTab).toBe('shortcuts');
+
+    act(() => useStore.setState({ appRoute: 'workspaces', settingsInitialTab: null }));
+    act(() => more().click());
+    act(() => item('check-updates')!.click());
+    expect(checkForUpdates).toHaveBeenCalledTimes(1);
+    expect(useStore.getState().settingsInitialTab).toBe('general');
+    delete (globalThis as { __APP_VERSION__?: string }).__APP_VERSION__;
+  });
+
+  it('closes the More menu on Escape and hands focus back to its button', async () => {
+    await act(async () => root.render(<MiniSidebar rail collapsed={false} />));
+    const more = container.querySelector<HTMLButtonElement>('[data-rail-more]')!;
+    more.focus();
+    act(() => more.click());
+    expect(document.activeElement?.getAttribute('data-pane-menu-action')).toBe('settings');
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    expect(document.querySelector('[data-pane-actions-menu]')).toBeNull();
+    expect(document.activeElement).toBe(more);
+  });
+
+  it('shows no workspace list beside an open sidebar', async () => {
     await act(async () => root.render(<MiniSidebar rail collapsed={false} />));
     expect(container.querySelector('[data-mini-add-workspace]')).toBeNull();
-    const toggle = container.querySelector<HTMLButtonElement>('[data-sidebar-collapse]')!;
-    expect(toggle).not.toBeNull();
-    act(() => toggle.click());
-    expect(useStore.getState().sidebarVisible).toBe(false);
   });
 
   it('adds the workspace list when collapsed', async () => {
     await act(async () => root.render(<MiniSidebar rail collapsed />));
     expect(container.querySelector('[data-mini-add-workspace]')).not.toBeNull();
-    expect(container.querySelector('[data-sidebar-collapse]')).toBeNull();
   });
 
   it('moves focus between buttons with the arrow keys, wrapping at the ends', async () => {
