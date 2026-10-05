@@ -56,6 +56,7 @@ export const S = {
   showOutput: 'Output',
   showMore: 'Show full output',
   bodyGone: 'The full output is no longer kept.',
+  openFile: 'Open file',
   subagent: 'Subagent',
   steps: (n: number) => (n === 1 ? '1 step' : `${n} steps`),
   find: 'Find in conversation',

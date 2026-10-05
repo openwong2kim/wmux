@@ -571,9 +571,18 @@
 .wmux-chatv2-reasoning summary::-webkit-details-marker, .wmux-chatv2-tool summary::-webkit-details-marker, .wmux-chatv2-subagent summary::-webkit-details-marker { display: none; }
 .wmux-chatv2-reasoning summary { color: var(--text-sub); font-size: 12px; }
 .wmux-chatv2-reasoning-body { margin-top: 2px; padding-left: 10px; color: var(--text-sub); font-size: 12.5px; line-height: 1.6; white-space: pre-wrap; }
-.wmux-chatv2-tool-line { display: flex; align-items: baseline; gap: 7px; min-width: 0; font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); font-size: 12px; line-height: 1.7; color: var(--text-sub); }
-.wmux-chatv2-tool-title { flex-shrink: 0; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-main); }
+.wmux-chatv2-tool-line { display: flex; align-items: center; gap: 7px; min-width: 0; min-height: 24px; font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); font-size: 12px; line-height: 1.7; color: var(--text-sub); }
+/* Tool rows are quiet: the title is secondary at rest and comes up on hover or open. */
+.wmux-chatv2-tool-title { min-width: 0; max-width: 70%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-sub); transition: color var(--motion-feedback) var(--motion-ease-out); }
+.wmux-chatv2-tool-line:hover .wmux-chatv2-tool-title, details[open] > .wmux-chatv2-tool-line .wmux-chatv2-tool-title { color: var(--text-main); }
+.wmux-chatv2-tool-verb { font-weight: 600; }
 .wmux-chatv2-tool-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-sub); font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); font-size: 12px; }
+.wmux-chatv2-diffstat { display: inline-flex; flex-shrink: 0; gap: 5px; font-variant-numeric: tabular-nums; }
+.wmux-chatv2-diffstat [data-kind="add"] { color: var(--accent-green); }
+.wmux-chatv2-diffstat [data-kind="del"] { color: var(--accent-red); }
+.wmux-chatv2-chevron { display: inline-flex; flex-shrink: 0; color: var(--text-muted); transform: rotate(90deg); transition: transform var(--motion-feedback) var(--motion-ease-out); }
+details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(-90deg); }
+.wmux-chatv2-group-rows { display: flex; flex-direction: column; gap: 2px; margin: 2px 0 2px 4px; padding-left: 10px; box-shadow: inset 1px 0 0 var(--border-soft); }
 .wmux-chatv2-step-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wmux-chatv2-glyph { flex-shrink: 0; width: 1ch; text-align: center; color: var(--text-muted); }
 .wmux-chatv2-glyph[data-state="running"] { color: var(--accent); }
@@ -583,6 +592,34 @@
 .wmux-chatv2-pre { max-height: 280px; overflow: auto; margin: 4px 0 4px 15px; padding: 6px 8px; border-radius: 6px; background: var(--bg-mantle); color: var(--text-sub); font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); font-size: 11.5px; line-height: 1.55; white-space: pre; }
 .wmux-chatv2-line[data-kind="add"] { color: var(--accent-green); }
 .wmux-chatv2-line[data-kind="del"] { color: var(--accent-red); }
+/* Diff and shell bodies keep the one .wmux-chatv2-pre fill; the inner pre scrolls. */
+.wmux-chatv2-pre:is([data-diff], [data-shell]) { overflow: hidden; max-height: none; padding: 6px 0; white-space: normal; }
+.wmux-chatv2-pre:is([data-diff], [data-shell]) > pre { margin: 0; overflow: auto; white-space: pre; }
+.wmux-chatv2-pre[data-diff] > pre { max-height: 280px; }
+.wmux-chatv2-pre[data-diff] .wmux-chatv2-line { display: block; padding: 0 8px; }
+.wmux-chatv2-pre[data-diff] .wmux-chatv2-line[data-kind="add"] { background: color-mix(in srgb, var(--accent-green) 8%, transparent); box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent-green) 50%, transparent); }
+.wmux-chatv2-pre[data-diff] .wmux-chatv2-line[data-kind="del"] { background: color-mix(in srgb, var(--accent-red) 8%, transparent); box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent-red) 50%, transparent); }
+.wmux-chatv2-evidence { display: block; max-width: 100%; padding: 0 8px 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-sub); font: inherit; text-align: left; }
+.wmux-chatv2-evidence:hover { color: var(--accent-blue); text-decoration: underline; text-underline-offset: 2px; }
+.wmux-chatv2-shell-command { padding: 0 8px 2px; color: var(--text-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.wmux-chatv2-pre[data-shell] > pre, .wmux-chatv2-pre[data-shell] > .wmux-chatv2-body-more { padding: 0 8px; }
+/* Output scrolls past ~9rem; an edge fades only while there is more beyond it
+   (a scroll-driven timeline is inactive, so no fade, when nothing overflows). */
+@property --wmux-chatv2-fade-top { syntax: '<length>'; inherits: false; initial-value: 0px; }
+@property --wmux-chatv2-fade-bottom { syntax: '<length>'; inherits: false; initial-value: 0px; }
+@keyframes wmux-chatv2-scroll-fade {
+  from { --wmux-chatv2-fade-top: 0px; --wmux-chatv2-fade-bottom: 18px; }
+  8% { --wmux-chatv2-fade-top: 18px; }
+  92% { --wmux-chatv2-fade-bottom: 18px; }
+  to { --wmux-chatv2-fade-top: 18px; --wmux-chatv2-fade-bottom: 0px; }
+}
+.wmux-chatv2-shell-output {
+  max-height: 9rem;
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 var(--wmux-chatv2-fade-top), #000 calc(100% - var(--wmux-chatv2-fade-bottom)), transparent);
+  mask-image: linear-gradient(to bottom, transparent, #000 var(--wmux-chatv2-fade-top), #000 calc(100% - var(--wmux-chatv2-fade-bottom)), transparent);
+  animation: wmux-chatv2-scroll-fade linear both;
+  animation-timeline: scroll(self);
+}
 .wmux-chatv2-tasks ul { margin: 2px 0 0; padding: 0; list-style: none; }
 .wmux-chatv2-tasks li { display: flex; gap: 7px; font-size: 12.5px; line-height: 1.6; }
 .wmux-chatv2-tasks li[data-status="completed"] { color: var(--text-sub); text-decoration: line-through; }
@@ -597,7 +634,10 @@
 .wmux-chatv2-card { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 4px 15px; padding: 8px 10px; border: 1px solid var(--border-soft); border-radius: 10px; background: var(--bg-mantle); }
 .wmux-chatv2-card-title { display: block; color: var(--text-sub); font-size: 11.5px; font-weight: 500; letter-spacing: .02em; }
 .wmux-chatv2-card-actions { display: flex; flex-wrap: wrap; gap: 6px; }
-.wmux-chatv2-decided { margin-left: 15px; color: var(--text-muted); font-size: 12px; }
+.wmux-chatv2-decided { display: flex; align-items: center; gap: 5px; margin-left: 15px; color: var(--text-muted); font-size: 12px; }
+.wmux-chatv2-decided:is([data-decision="allow"], [data-decision="deny"]) { color: var(--text-sub); }
+.wmux-chatv2-decided[data-decision="allow"] > span { display: inline-flex; color: var(--accent-green); }
+.wmux-chatv2-decided[data-decision="deny"] > span { display: inline-flex; color: var(--accent-red); }
 .wmux-chatv2-question { display: flex; flex-direction: column; gap: 4px; min-width: 0; margin: 0; padding: 0; border: 0; }
 .wmux-chatv2-question legend { margin-bottom: 2px; padding: 0; line-height: 1.5; }
 .wmux-chatv2-option { display: flex; align-items: baseline; gap: 7px; cursor: pointer; line-height: 1.5; }
@@ -645,8 +685,12 @@
   .wmux-chatv2-column, .wmux-chatv2-dock { padding-left: 8px; padding-right: 8px; }
   .wmux-chatv2-user { max-width: 92%; }
 }
+/* Rows appended after the first load fade in once. */
+@keyframes wmux-chatv2-enter { from { opacity: 0; } }
+.wmux-chatv2-column [data-enter] { animation: wmux-chatv2-enter 150ms var(--motion-ease-out) both; }
 @media (prefers-reduced-motion: reduce) {
-  .wmux-chatv2-btn, .wmux-chatv2-composer, .wmux-chatv2-send { transition: none; }
+  .wmux-chatv2-btn, .wmux-chatv2-composer, .wmux-chatv2-send, .wmux-chatv2-tool-title, .wmux-chatv2-chevron { transition: none; }
+  .wmux-chatv2-column [data-enter] { animation: none; }
 }
 
 /* Named tabs distinguish navigation from the adjacent web action. */
@@ -2120,7 +2164,7 @@ html[data-fullscreen] .wmux-shell-body {
 .wmux-chatv2-card { border: 0; background: var(--selection-subtle); }
 .wmux-chatv2-pre, .wmux-chatv2-input-line { background: var(--selection-subtle); }
 .wmux-chatv2-input-line { box-shadow: inset 0 0 0 1px var(--line); }
-.wmux-chatv2-steps { box-shadow: inset 1px 0 0 var(--stroke); }
+.wmux-chatv2-steps, .wmux-chatv2-group-rows { box-shadow: inset 1px 0 0 var(--stroke); }
 .wmux-chatv2-find { box-shadow: inset 0 -1px 0 var(--stroke); }
 .wmux-chatv2-user { background: var(--selection); }
 .wmux-chatv2-btn { border-radius: var(--chip-radius); background: var(--selection); box-shadow: none; }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { transcriptMessages, type ChatRow } from '../chatMessages';
+import { activityLabel, transcriptMessages, type ChatRow } from '../chatMessages';
 import { formatDuration } from '../ChatMessage';
 import { mergeTranscriptEvents } from '../transcriptState';
 import type { TurnEvent } from '../../../../shared/transcript/turnEvents';
@@ -23,7 +23,7 @@ describe('transcript message projection', () => {
     expect(mergeTranscriptEvents([call, result], [user, call], true)).toEqual([user, call, result]);
   });
   it('groups work without swallowing an answer or a file review card', () => {
-    const file: TurnEvent = { ...result, files: [{ path: 'app.ts', patch: '+hi', additions: 1, deletions: 0 }] };
+    const file: TurnEvent = { ...result, ok: true, files: [{ path: 'app.ts', patch: '+hi', additions: 1, deletions: 0 }] };
     const rows = transcriptMessages([user, call, file, { id: 'a', kind: 'assistant_text', text: 'done' }], true);
     expect(rows.map((row) => row.id)).toEqual(['u', 'activity:t', 'r', 'a']);
     expect((rows[1].metadata.custom.row as { activity: unknown[] }).activity).toHaveLength(1);
@@ -54,5 +54,18 @@ describe('transcript message projection', () => {
     expect(formatDuration(55_000)).toBe('55s');
     expect(formatDuration(243_000)).toBe('4m 3s');
     expect(formatDuration(3_720_000)).toBe('1h 2m');
+  });
+  it('keeps a failed call out of the activity fold', () => {
+    const read = (id: string): TurnEvent => ({ id, kind: 'tool_use', toolUseId: `use-${id}`, name: 'Read', argSummary: id });
+    const ok = (id: string): TurnEvent => ({ id: `r-${id}`, kind: 'tool_result', toolUseId: `use-${id}`, ok: true, bytes: 1 });
+    const rows = transcriptMessages([user, read('a'), ok('a'), call, result, read('b'), ok('b')], true);
+    expect(rows.map((row) => row.id)).toEqual(['u', 'activity:a', 't', 'activity:b']);
+  });
+  it('names a fold of one kind of call, and only past its threshold', () => {
+    const use = (name: string, id = name): ChatRow => ({ event: { id, kind: 'tool_use', toolUseId: id, name, argSummary: '' } });
+    expect(activityLabel([use('Read', '1'), use('Read', '2'), use('Read', '3')])).toEqual({ key: 'chat.groupRead', count: 3 });
+    expect(activityLabel([use('Read', '1'), use('Read', '2')])).toBeNull();
+    expect(activityLabel([use('Edit', '1'), use('Write', '2')])).toEqual({ key: 'chat.groupEdited', count: 2 });
+    expect(activityLabel([use('Bash', '1'), use('Read', '2'), use('Grep', '3')])).toBeNull();
   });
 });
