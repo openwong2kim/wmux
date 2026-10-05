@@ -38,13 +38,23 @@ describe('nextFirstBootSurface — ordering', () => {
     expect(nextFirstBootSurface({ ...s, surfaceShowing: true, otherSurfaceOpen: true })).toBeNull();
     s = { ...s, autoUpdatePromptPending: false };
     expect(nextFirstBootSurface(s)).toBe('featureNotice');
-    s = { ...s, featureNoticePending: false };
+    // The toast is up (not a modal layer): the tour waits until it is dismissed.
+    s = { ...s, featureNoticePending: false, surfaceShowing: true };
+    expect(nextFirstBootSurface(s)).toBeNull();
+    s = { ...s, surfaceShowing: false };
     expect(nextFirstBootSurface(s)).toBe('onboarding');
     expect(nextFirstBootSurface({ ...s, surfaceShowing: true })).toBeNull();
     s = { ...s, onboardingCompleted: true };
     expect(nextFirstBootSurface(s)).toBe('cheatSheet');
     s = { ...s, cheatSheetPending: false };
     expect(nextFirstBootSurface(s)).toBeNull();
+  });
+
+  it('an upgrader with the announcement toast still up gets neither the tour nor the cheat sheet', () => {
+    const toastUp = { ...idle, surfaceShowing: true };
+    expect(nextFirstBootSurface({ ...toastUp, onboardingCompleted: false, onFleetPage: true })).toBeNull();
+    expect(nextFirstBootSurface({ ...toastUp, cheatSheetPending: true })).toBeNull();
+    expect(nextFirstBootSurface({ ...idle, cheatSheetPending: true })).toBe('cheatSheet');
   });
 
   it('waits for the probes and the launch-time hooks check to settle', () => {

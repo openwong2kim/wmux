@@ -823,16 +823,11 @@ export default function AppLayout() {
 
   // ─── First-run wizard + cheat sheet (T8a) ───────────────────────────────
   // Local visibility state for the wizard (null = hidden, otherwise mode).
-  // The cheat sheet visibility is derived from uiSlice: it mounts whenever
-  // the first run is completed AND the user has not permanently dismissed it.
-  // Flipping `cheatSheetDismissed` back to false from Settings (T8b) is what
-  // re-mounts the cheat sheet — observing the slice directly here removes the
-  // earlier local-state gate that left the Settings button dead (C1 fix).
+  // The cheat sheet mounts only while `cheatSheetForceShown` is set: the `?`
+  // prefix action and the Settings button force-show it immediately, and the
+  // first-boot queue auto-shows it once (using up `!cheatSheetDismissed`).
   const firstRunCompleted = useStore((s) => s.firstRunCompleted);
   const cheatSheetDismissed = useStore((s) => s.cheatSheetDismissed);
-  // Bypasses the dismissed gate when the `?` prefix action sets it. Without
-  // this subscription here the component never mounts after a permanent
-  // dismissal, so the override would have nothing to react to.
   const cheatSheetForceShown = useStore((s) => s.cheatSheetForceShown);
   const setFirstRunCompleted = useStore((s) => s.setFirstRunCompleted);
   const [showFirstRunWizard, setShowFirstRunWizard] = useState<'firstRun' | 'reopen' | null>(null);
@@ -852,6 +847,12 @@ export default function AppLayout() {
   // The one-time "New: …" announcement, decided once the first-run probe
   // says whether this is a fresh install.
   const [featureNoticePending, setFeatureNoticePending] = useState(false);
+  // The announcement toast is not a modal layer, so the queue holds while it
+  // is still on screen (persistent until dismissed).
+  const [featureNoticeToastId, setFeatureNoticeToastId] = useState<string | null>(null);
+  const featureNoticeShowing = useStore(
+    (s) => featureNoticeToastId !== null && s.toasts.some((toast) => toast.id === featureNoticeToastId),
+  );
   const settingsPanelVisible = useStore((s) => s.settingsPanelVisible);
   const modalLayerCount = useSyncExternalStore(subscribeModalLayers, openModalLayerCount);
   // The launch-time hooks check has answered (or has no bridge to ask): its
@@ -1574,7 +1575,8 @@ export default function AppLayout() {
       if (!cancelled) {
         setFirstRunCompleted(true);
         setFirstRunProbeSettled(true);
-        setFeatureNoticePending(prWakeNoticePending());
+        // No announcement: a failed probe cannot tell a fresh install from an
+        // upgrade, and a fresh install must never get a "New: …" toast.
       }
     });
     return () => {
@@ -1617,6 +1619,19 @@ export default function AppLayout() {
     void window.electronAPI?.deck?.modelSet?.(deckBrainModelLive, deckBrainEffortLive);
   }, [deckBrainModelLive, deckBrainEffortLive]);
 
+  // An upgrader may answer the update question in Settings › General before
+  // the queue reaches the prompt: any change after hydration answers it.
+  const autoUpdateEnabled = useStore((s) => s.autoUpdateEnabled);
+  const hydratedAutoUpdateRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (!sessionLoaded) return;
+    if (hydratedAutoUpdateRef.current === null) {
+      hydratedAutoUpdateRef.current = autoUpdateEnabled;
+      return;
+    }
+    if (autoUpdateEnabled !== hydratedAutoUpdateRef.current) setShowAutoUpdatePrompt(false);
+  }, [sessionLoaded, autoUpdateEnabled]);
+
   // ─── First-boot queue: one self-opening surface at a time ────────────
   // The wizard owns the first impression; after it, the legacy update
   // question (upgraders only), the one-time "New: …" toast (upgraders only),
@@ -1632,7 +1647,7 @@ export default function AppLayout() {
     wizardOpen: showFirstRunWizard !== null,
     wizardRanThisBoot: firstRunWizardRanThisBoot,
     otherSurfaceOpen: modalLayerCount > 0 || settingsPanelVisible,
-    surfaceShowing: autoUpdatePromptOpen || onboardingActive || cheatSheetForceShown,
+    surfaceShowing: autoUpdatePromptOpen || onboardingActive || cheatSheetForceShown || featureNoticeShowing,
     autoUpdatePromptPending: showAutoUpdatePrompt,
     featureNoticePending,
     firstRunCompleted,
@@ -1651,7 +1666,7 @@ export default function AppLayout() {
         break;
       case 'featureNotice':
         setFeatureNoticePending(false);
-        showPrWakeNoticeOnce();
+        setFeatureNoticeToastId(showPrWakeNoticeOnce());
         break;
       case 'onboarding':
         startOnboarding();
@@ -2215,9 +2230,9 @@ export default function AppLayout() {
       )}
 
       {/* Keyboard cheat sheet (T8a / Plan 1.18). Mounted only while shown:
-          by the `?` prefix action, or once by the first-boot queue after the
-          tour (#1276) — never by itself on a first run. Settings › First-run
-          setup re-arms that one showing. */}
+          the `?` prefix action and Settings › First-run setup force-show it
+          immediately; the first-boot queue auto-shows it once, after the tour
+          (#1276) — never by itself on a first run. */}
       {firstRunCompleted && cheatSheetForceShown && <KeyboardCheatSheet />}
 
       {companyViewVisible && (

@@ -63,6 +63,9 @@ export function requestHooksInstallPrompt(): void {
 
 type Phase = 'hidden' | 'prompt' | 'installing' | 'done' | 'error';
 
+/** How long the launch check may take before it is reported done anyway. */
+export const LAUNCH_CHECK_REPORT_TIMEOUT_MS = 10_000;
+
 export function HooksInstallPrompt({
   api,
   t,
@@ -216,9 +219,22 @@ export function HooksInstallPrompt({
   useEffect(() => {
     if (!checkOnMount || launchCheckDoneRef.current || launchCheck === 'wait') return;
     launchCheckDoneRef.current = true;
-    const done = () => onLaunchCheckDoneRef.current?.();
-    if (launchCheck === 'check') void maybePrompt().finally(done);
-    else done();
+    // Reported once: when the check answers, or after a bound so a bridge
+    // that never answers cannot hold the first-boot queue for the whole boot.
+    let reported = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const done = () => {
+      if (reported) return;
+      reported = true;
+      if (timer !== undefined) clearTimeout(timer);
+      onLaunchCheckDoneRef.current?.();
+    };
+    if (launchCheck !== 'check') {
+      done();
+      return;
+    }
+    timer = setTimeout(done, LAUNCH_CHECK_REPORT_TIMEOUT_MS);
+    void maybePrompt().finally(done);
   }, [checkOnMount, launchCheck, maybePrompt]);
 
   // Deferral ended with an ask still pending: that ask is as old as the

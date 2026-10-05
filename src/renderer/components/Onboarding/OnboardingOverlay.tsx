@@ -32,8 +32,9 @@ export default function OnboardingOverlay({
 }: OnboardingOverlayProps) {
   const [currentIndex, setCurrentIndex] = useState(0);
 
-  // Filter to only steps whose target actually exists in the DOM.
-  // Re-evaluated on every render so freshly-mounted targets are picked up.
+  // Filter to only steps whose target is on screen (or on a page the tour
+  // brings up for that step). Re-evaluated on every render so freshly-mounted
+  // targets are picked up.
   const availableSteps = useMemo(() => {
     return steps.filter((step) => resolveStepTarget(step) !== null);
   }, [steps, currentIndex]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -46,6 +47,13 @@ export default function OnboardingOverlay({
   }, [availableSteps.length, onComplete]);
 
   const step = availableSteps[currentIndex] as OnboardingStep | undefined;
+
+  // A step on another page brings that page up, so its spotlight lands on
+  // something visible rather than on the covered page underneath.
+  const stepPage = step?.page;
+  useEffect(() => {
+    if (stepPage && useStore.getState().appRoute !== stepPage) useStore.getState().setAppRoute(stepPage);
+  }, [stepPage]);
 
   // Hold the hover-revealed agent toolbar up while a step points at it, and
   // let it go on the next step or when the tour ends.

@@ -4839,6 +4839,17 @@ export function FirstRunStatusView({ status, onOpenWizard, onShowCheatSheet }: F
   );
 }
 
+/**
+ * Settings › First-run setup › "Show keyboard cheat sheet": shown now, like the
+ * `?` prefix action, with Settings out of the way (the sheet sits under it).
+ * The first-boot queue only auto-shows it after the tour, which this button
+ * must not wait for.
+ */
+export function showCheatSheetFromSettings(): void {
+  useStore.getState().setCheatSheetForceShown(true);
+  useStore.getState().setSettingsPanelVisible(false);
+}
+
 function TabFirstRunSetup() {
   const [status, setStatus] = useState<FirstRunCheckResult | null>(null);
 
@@ -4865,19 +4876,13 @@ function TabFirstRunSetup() {
     window.dispatchEvent(new CustomEvent(FIRST_RUN_REOPEN_EVENT));
   }, []);
 
-  const handleShowCheatSheet = useCallback(() => {
-    // Shown now, like the `?` prefix action, with Settings out of the way (the
-    // sheet sits under it). The first-boot queue only auto-shows it after the
-    // tour, which this button must not wait for.
-    useStore.getState().setCheatSheetForceShown(true);
-    useStore.getState().setSettingsPanelVisible(false);
-  }, []);
+
 
   return (
     <FirstRunStatusView
       status={status}
       onOpenWizard={handleOpenWizard}
-      onShowCheatSheet={handleShowCheatSheet}
+      onShowCheatSheet={showCheatSheetFromSettings}
     />
   );
 }

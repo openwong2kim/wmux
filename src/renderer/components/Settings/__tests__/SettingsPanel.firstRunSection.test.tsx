@@ -14,7 +14,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { formatFirstRunDate, FirstRunStatusView } from '../SettingsPanel';
+import { formatFirstRunDate, FirstRunStatusView, showCheatSheetFromSettings } from '../SettingsPanel';
+import { useStore } from '../../../stores';
 import type { FirstRunCheckResult } from '../../../../shared/firstRun';
 
 // ─── Test fixtures ────────────────────────────────────────────────────────────
@@ -186,14 +187,17 @@ describe('FirstRunStatusView action wiring', () => {
     expect(dispatched[0].type).toBe('wmux:firstrun-reopen');
   });
 
-  it('"Show keyboard cheat sheet" handler calls setCheatSheetDismissed(false)', () => {
-    // Approach A (per T8b spec): flip uiSlice flag back to false. T8a's
-    // AppLayout effect re-mounts the cheat sheet on observing the change.
-    const setCheatSheetDismissed = vi.fn();
-    const handler = () => setCheatSheetDismissed(false);
-    handler();
-    expect(setCheatSheetDismissed).toHaveBeenCalledTimes(1);
-    expect(setCheatSheetDismissed).toHaveBeenCalledWith(false);
+  it('"Show keyboard cheat sheet" force-shows the sheet now and closes Settings', () => {
+    // The production handler, not a re-implementation: it must not wait for
+    // the first-boot queue (which auto-shows the sheet only after the tour).
+    const st = useStore.getState();
+    st.setCheatSheetForceShown(false);
+    st.setCheatSheetDismissed(true);
+    st.setSettingsPanelVisible(true);
+    showCheatSheetFromSettings();
+    expect(useStore.getState().cheatSheetForceShown).toBe(true);
+    expect(useStore.getState().settingsPanelVisible).toBe(false);
+    useStore.getState().setCheatSheetForceShown(false);
   });
 });
 

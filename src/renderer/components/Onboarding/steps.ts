@@ -1,4 +1,5 @@
 import type { MediaClipId } from '../../assets/media';
+import type { AppRoute } from '../../stores/slices/uiSlice';
 
 export interface OnboardingStep {
   id: string;
@@ -16,12 +17,29 @@ export interface OnboardingStep {
   /** The target lives on the hover-revealed agent toolbar: hold the bar up
    *  while this step is on screen. */
   revealsAgentToolbar?: boolean;
+  /** The rail page the target lives on. The tour brings that page up before
+   *  the step (it starts on Fleet, where the Workspaces page sits covered and
+   *  inert underneath). */
+  page?: AppRoute;
 }
 
-/** The selector a step spotlights right now, or null when nothing matches. */
+/** On screen: not inside a covered (inert) or hidden part of the app. */
+export function isTargetVisible(el: Element): boolean {
+  return !el.closest('[inert], [hidden]');
+}
+
+/**
+ * The selector a step spotlights right now, or null when nothing matches. A
+ * mounted target counts only when it is visible, except for a step with a
+ * `page`: the tour brings that page up first, and the page's `inert` is only
+ * lifted in the same commit, after this check has run.
+ */
 export function resolveStepTarget(step: OnboardingStep): string | null {
-  if (document.querySelector(step.targetSelector)) return step.targetSelector;
-  if (step.fallbackSelector && document.querySelector(step.fallbackSelector)) return step.fallbackSelector;
+  for (const selector of [step.targetSelector, step.fallbackSelector]) {
+    if (!selector) continue;
+    const el = document.querySelector(selector);
+    if (el && (step.page !== undefined || isTargetVisible(el))) return selector;
+  }
   return null;
 }
 
@@ -48,6 +66,7 @@ export const ONBOARDING_STEPS: OnboardingStep[] = [
     targetSelector: '[data-onboarding-target="fanout"]',
     fallbackSelector: '[data-onboarding-target="pane-area"]',
     revealsAgentToolbar: true,
+    page: 'workspaces',
     placement: 'top',
     media: 'worktrees',
   },
@@ -56,6 +75,7 @@ export const ONBOARDING_STEPS: OnboardingStep[] = [
     titleKey: 'onboarding.step3.title',
     descriptionKey: 'onboarding.step3.description',
     targetSelector: '[data-onboarding-target="status-bar"]',
+    page: 'workspaces',
     placement: 'top',
   },
   {

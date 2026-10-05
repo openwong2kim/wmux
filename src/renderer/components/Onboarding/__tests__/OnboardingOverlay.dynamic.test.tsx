@@ -9,6 +9,7 @@ import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import OnboardingOverlay from '../OnboardingOverlay';
 import type { OnboardingStep } from '../steps';
+import { useStore } from '../../../stores';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -143,5 +144,38 @@ describe('OnboardingOverlay', () => {
     expect(media.dataset.motion).toBe('reduced');
     expect(media.querySelector('video')).toBeNull();
     expect(media.querySelector('img')?.getAttribute('src')).toMatch(/worktrees-poster.*\.webp/);
+  });
+});
+
+describe('OnboardingOverlay on a covered page', () => {
+  it('skips a target under the inert page, and brings up the page a step names', async () => {
+    useStore.getState().setAppRoute('fleet');
+    // The Workspaces page sits mounted but inert under Fleet.
+    const covered = document.createElement('div');
+    covered.setAttribute('inert', '');
+    const onWorkspaces = document.createElement('div');
+    onWorkspaces.id = 'target-ws';
+    const hidden = document.createElement('div');
+    hidden.id = 'target-hidden';
+    covered.append(onWorkspaces, hidden);
+    document.body.appendChild(covered);
+    const steps: OnboardingStep[] = [
+      STEPS[0],
+      { id: 'ws', titleKey: 'onboarding.step2.title', descriptionKey: 'onboarding.step2.description', targetSelector: '#target-ws', placement: 'top', page: 'workspaces' },
+      { id: 'hidden', titleKey: 'onboarding.step3.title', descriptionKey: 'onboarding.step3.description', targetSelector: '#target-hidden', placement: 'top' },
+    ];
+    try {
+      await act(async () => {
+        root.render(createElement(OnboardingOverlay, { onComplete: vi.fn(), steps }));
+      });
+      // The invisible step without a page is not counted.
+      expect(q('onboarding-card').textContent).toContain('1 / 2');
+      await act(async () => q('onboarding-next').click());
+      expect(useStore.getState().appRoute).toBe('workspaces');
+      expect(q('onboarding-card').textContent).toContain('Fan out in parallel');
+    } finally {
+      covered.remove();
+      useStore.getState().setAppRoute('workspaces');
+    }
   });
 });

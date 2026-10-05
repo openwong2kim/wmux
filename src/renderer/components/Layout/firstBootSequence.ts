@@ -32,7 +32,8 @@ export interface FirstBootQueueState {
   wizardRanThisBoot: boolean;
   /** Some modal layer (a Dialog, the tour card) or the Settings panel is open. */
   otherSurfaceOpen: boolean;
-  /** A queued surface is already on screen (latched by the caller). */
+  /** A queued surface is already on screen (latched by the caller), including
+   *  the announcement toast until it is dismissed. */
   surfaceShowing: boolean;
 
   /** An upgrade from a build that never stored the auto-update choice. */

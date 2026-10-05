@@ -8,6 +8,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react';
 import {
   HooksInstallPrompt,
+  LAUNCH_CHECK_REPORT_TIMEOUT_MS,
   requestHooksInstallPrompt,
   type HooksBridgeApi,
 } from '../HooksInstallPrompt';
@@ -669,5 +670,21 @@ describe('HooksInstallPrompt launch-check signal (first-boot queue)', () => {
     render(<HooksInstallPrompt api={apiOf()} t={t} launchCheck="skip" onLaunchCheckDone={done} />);
     await flush();
     expect(done).toHaveBeenCalledTimes(1);
+  });
+
+  it('a bridge that never answers is reported done after the bound, once', async () => {
+    vi.useFakeTimers();
+    try {
+      const done = vi.fn();
+      render(
+        <HooksInstallPrompt api={apiOf({ status: () => new Promise(() => undefined) })} t={t} onLaunchCheckDone={done} />,
+      );
+      await act(async () => { await Promise.resolve(); });
+      expect(done).not.toHaveBeenCalled();
+      await act(async () => { vi.advanceTimersByTime(LAUNCH_CHECK_REPORT_TIMEOUT_MS); });
+      expect(done).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
