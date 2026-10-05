@@ -7,6 +7,7 @@ import {
   raiseDecisionIfFree,
   isIssueProposalDecision,
   replaceStaleDecision,
+  hasBrainBlockingDecision,
   resolveDecision,
   clearDecision,
   clearResolvedDecision,
@@ -366,5 +367,36 @@ describe('renderDecisionBlock provenance (round 3)', () => {
     const block = renderDecisionBlock(loadWorkspaceDecision('ws-1', dir)!);
     expect(block).toContain('the human decided: human answer');
     expect(block).not.toContain('(self)');
+  });
+});
+
+describe('main-owned cards in the store', () => {
+  it('replaceStaleDecision never swaps out a stale moa-handoff card, and the origin survives a reload', async () => {
+    writeFileSync(
+      getDeckDecisionPath(dir),
+      JSON.stringify({
+        'ws-1': {
+          id: 'dec-h', question: 'Moa proposes…', options: ['Hand off', 'Edit', 'Cancel'], context: '',
+          status: 'pending', raisedAt: 1, origin: 'moa-handoff', ref: 'h1',
+        },
+      }),
+    );
+    expect(await replaceStaleDecision('ws-1', 'dec-h', 60_000, { question: 'Mine now?' }, dir)).toBeNull();
+    expect(loadWorkspaceDecision('ws-1', dir)).toMatchObject({ id: 'dec-h', origin: 'moa-handoff' });
+  });
+});
+
+describe('hasBrainBlockingDecision', () => {
+  it('a pending main-owned card blocks no wake but still counts as pending', () => {
+    writeFileSync(
+      getDeckDecisionPath(dir),
+      JSON.stringify({
+        'ws-1': { id: 'h', question: 'Moa proposes…', options: [], context: '', status: 'pending', raisedAt: 1, origin: 'moa-handoff' },
+        'ws-2': { id: 'q', question: 'Brain asks?', options: [], context: '', status: 'pending', raisedAt: 1 },
+      }),
+    );
+    expect(hasBrainBlockingDecision('ws-1', dir)).toBe(false);
+    expect(hasPendingDecision('ws-1', dir)).toBe(true);
+    expect(hasBrainBlockingDecision('ws-2', dir)).toBe(true);
   });
 });

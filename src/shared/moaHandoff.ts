@@ -65,9 +65,22 @@ export function buildHandoffText(body: string, taskId: string, auto = false): st
 /** Room the label takes, with its separator (task ids are bounded). */
 export const HANDOFF_LABEL_RESERVE_CHARS = buildHandoffLabel('x'.repeat(40), true).length + 2;
 
+/** Text as the tripwire compares it: compatibility-normalized (NFKC, so
+ *  full-width and other look-alike forms fold), control and format characters
+ *  (zero-width, bidi marks) dropped, whitespace runs collapsed, lowercased. */
+export function normalizeForMarker(text: string): string {
+  return text
+    .normalize('NFKC')
+    .replace(/[\p{Cc}\p{Cf}]/gu, (c) => (/\s/.test(c) ? ' ' : ''))
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+}
+
+const MARKER_NORMALIZED = normalizeForMarker(HANDOFF_MARKER);
+
 /** Does this text carry the provenance marker? The non-operator tripwire. */
 export function containsHandoffMarker(text: unknown): boolean {
-  return typeof text === 'string' && text.toLowerCase().includes(HANDOFF_MARKER.toLowerCase());
+  return typeof text === 'string' && normalizeForMarker(text).includes(MARKER_NORMALIZED);
 }
 
 /** Byte length in UTF-8. */

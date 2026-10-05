@@ -93,6 +93,7 @@ vi.mock('../../../deck/deckDecisionStore', async (orig) => {
     loadDeckDecisions: vi.fn(() => ({})),
     loadWorkspaceDecision: vi.fn(() => null),
     hasPendingDecision: vi.fn(() => pendingRef.current),
+    hasBrainBlockingDecision: vi.fn(() => pendingRef.current),
     raiseDecision: vi.fn(async (workspaceId: string, args: Omit<RaisedDecision, 'workspaceId'>) => {
       raised.push({ workspaceId, ...args });
       return null;

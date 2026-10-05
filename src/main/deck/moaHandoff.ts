@@ -172,6 +172,9 @@ export interface MoaHandoffPorts {
     presetTaskId?: string;
   }) => Promise<OperatorTaskDelivery>;
   release: (linkId: string | undefined, taskId: string | undefined) => Promise<void>;
+  /** The canonical state of an A2A task (the operator's), null when it does
+   *  not exist, undefined when it could not be read. */
+  taskState?: (taskId: string) => Promise<string | null | undefined>;
   registerCheck: (key: string, check: DeliveryCheck) => () => void;
   /** Something Moa's panel shows moved (cards, receipts). */
   notify?: () => void;
@@ -237,7 +240,9 @@ export function buildHandoffCard(r: Pick<HandoffRecord, 'title' | 'body' | 'targ
   context: string;
 } {
   const agent = oneLine(r.target.agentName || 'the agent', 40);
-  const preview = r.body.length > HANDOFF_PREVIEW_CHARS ? `${r.body.slice(0, HANDOFF_PREVIEW_CHARS)}… (the whole text is in Moa's panel)` : r.body;
+  // By code point, so a cut never splits a surrogate pair.
+  const chars = [...r.body];
+  const preview = chars.length > HANDOFF_PREVIEW_CHARS ? `${chars.slice(0, HANDOFF_PREVIEW_CHARS).join('')}… (the whole text is in Moa's panel)` : r.body;
   const notes: string[] = [];
   if (r.foldsNewlines) notes.push(`${agent} takes one line: line breaks will be joined with " — ".`);
   if (r.willQueue) notes.push(`${agent} is working right now: the hand-off will queue behind its current turn.`);
@@ -372,7 +377,7 @@ export class MoaHandoffService {
   receipts(): MoaAutoHandoffReceipt[] {
     const since = this.now() - RECEIPT_TTL_MS;
     return Object.values(this.file.items)
-      .filter((r) => r.auto && r.taskId && r.state === 'delivered' && r.createdAt >= since)
+      .filter((r) => r.auto && r.taskId && r.state === 'delivered' && !isEnded(r.taskState) && r.createdAt >= since)
       .sort((a, b) => b.createdAt - a.createdAt)
       .map((r) => ({
         id: r.id,
@@ -522,7 +527,13 @@ export class MoaHandoffService {
       ...(link ? { linkId: link.id } : {}), ...(auto ? { auto: true } : {}), ...(busy ? { skipStops: 1 } : {}),
     };
     this.put(sending);
-    await this.save();
+    if (!(await this.save())) {
+      // Without the record on disk, a restart mid-delivery could not tell
+      // whose task this is: deliver nothing.
+      await this.ports.release(link?.id, undefined).catch(() => undefined);
+      this.put({ ...record, state: 'failed' });
+      return { delivered: false, why: 'the hand-off could not be saved' };
+    }
     let unregister = (): void => undefined;
     let guardKey: string | undefined;
     if (auto) {
@@ -553,9 +564,20 @@ export class MoaHandoffService {
       const why = sent.ok ? (sent.reason ?? sent.note ?? 'not delivered') : sent.message;
       return { delivered: false, why, ...(sent.ok && sent.note ? { note: sent.note } : {}) };
     }
-    const delivered: HandoffRecord = { ...sending, state: 'delivered', taskId: sent.taskId ?? taskId, taskState: 'submitted' };
+    // Re-read: the task's own events (a fast completion, a question) may have
+    // landed while the send was still answering; never roll them back.
+    const latest = this.get(record.id) ?? sending;
+    const delivered: HandoffRecord = {
+      ...latest, state: 'delivered', taskId: sent.taskId ?? taskId,
+      taskState: latest.taskState ?? 'submitted',
+    };
     this.put(delivered);
-    await this.save();
+    if (!(await this.save()) && !(await this.save())) {
+      // The text landed; the disk still says "delivering". Memory holds the
+      // truth for this run, and after a restart reconcile() settles the record
+      // from the task's canonical state instead of assuming either outcome.
+      console.warn(`[moa:handoff] ${record.id} was delivered but could not be saved; it is settled from the task state after a restart`);
+    }
     this.notify();
     return { delivered: true, taskId: delivered.taskId, why: 'delivered', ...(sent.note ? { note: sent.note } : {}) };
   }
@@ -742,6 +764,16 @@ export class MoaHandoffService {
       // A delivery the app stopped in the middle of: its outcome is unknown,
       // so its task is released and the operator told.
       if (r.state === 'delivering' && this.now() - r.at > STALE_DELIVERY_MS) {
+        // Settle from the task's canonical state: a task that exists and is
+        // open was delivered; one that ended stays ended; only a task that
+        // never came to be is released with a notice.
+        const canonical = r.taskId && this.ports.taskState ? await this.ports.taskState(r.taskId).catch(() => undefined) : undefined;
+        if (canonical === undefined && r.taskId && this.ports.taskState) continue; // unreadable now: try again later
+        if (typeof canonical === 'string') {
+          this.put({ ...r, state: 'delivered', taskState: canonical });
+          changed = true;
+          continue;
+        }
         await this.ports.release(r.linkId, r.taskId).catch(() => undefined);
         this.put({ ...r, state: 'failed', taskState: 'canceled' });
         await this.raiseNotice(this.get(r.id)!, 'wmux stopped while it was delivering it');

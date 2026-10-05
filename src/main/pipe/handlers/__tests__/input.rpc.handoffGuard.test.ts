@@ -12,6 +12,7 @@ import { registerInputRpc } from '../input.rpc';
 import type { GatedSubmitOptions, GatedSubmitResult } from '../../../../shared/ptyMessageDelivery';
 import type { BrowserWindow } from 'electron';
 import type { PTYManager } from '../../../pty/PTYManager';
+import { registerDeliveryCheck } from '../../deliveryGuards';
 
 vi.mock('../_bridge', () => ({ sendToRenderer: vi.fn() }));
 
@@ -192,5 +193,39 @@ describe('hand-off delivery guard', () => {
     const start = clock;
     expect(await send({ deadlineAt: clock + 25_000 })).toMatchObject({ ok: false, reason: 'user_typing' });
     expect(clock - start).toBeLessThanOrEqual(4_500);
+  });
+});
+
+describe('a main-registered delivery check (guardKey)', () => {
+  it('a refusal before the Enter returns guard_refused, takes the text back out, and sends no Enter', async () => {
+    let atEnter = false;
+    const off = registerDeliveryCheck('k1', {
+      beforePaste: () => null,
+      beforeEnter: () => { atEnter = true; return 'a workspace mode changed'; },
+    });
+    try {
+      const res = await send({ guardKey: 'k1' });
+      expect(atEnter).toBe(true);
+      expect(res).toMatchObject({ ok: false, reason: 'guard_refused', pasted: true });
+      expect(writes).toEqual([PASTE, '\x15']);
+      expect(writes).not.toContain('\r');
+    } finally {
+      off();
+    }
+  });
+
+  it('a refusal before the paste writes nothing', async () => {
+    const off = registerDeliveryCheck('k2', { beforePaste: () => 'mode changed', beforeEnter: () => null });
+    try {
+      expect(await send({ guardKey: 'k2' })).toMatchObject({ ok: false, reason: 'guard_refused' });
+      expect(writes).toEqual([]);
+    } finally {
+      off();
+    }
+  });
+
+  it('a key with nothing registered refuses', async () => {
+    expect(await send({ guardKey: 'gone' })).toMatchObject({ ok: false, reason: 'guard_refused' });
+    expect(writes).toEqual([]);
   });
 });

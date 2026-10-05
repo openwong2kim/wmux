@@ -201,6 +201,16 @@ export function hasPendingDecision(workspaceId: string, dir?: string): boolean {
   return d !== null && d.status === 'pending';
 }
 
+/** The wake-suppression predicate: a pending decision the workspace's BRAIN is
+ *  waiting on. A main-owned card (an issue proposal, a Moa hand-off) waits on
+ *  the operator, not on this workspace's brain, so it blocks no wake, loop,
+ *  schedule or heartbeat. (hasPendingDecision still counts it, so nothing
+ *  raises over it.) Never throws. */
+export function hasBrainBlockingDecision(workspaceId: string, dir?: string): boolean {
+  const d = loadWorkspaceDecision(workspaceId, dir);
+  return d !== null && d.status === 'pending' && !isMainOwnedDecision(d);
+}
+
 // Told after every decision write (raise, replace, resolve, clear), so a
 // reader that mirrors decision state (work links) never keeps a stale copy.
 // A listener cannot break a write.
@@ -365,6 +375,7 @@ export async function replaceStaleDecision(
         !prev ||
         prev.status !== 'pending' ||
         prev.id !== expectedId ||
+        isMainOwnedDecision(prev) ||
         !isDecisionStale(prev, ttlMs)
       ) {
         return prev; // CAS failed — leave whatever is there (incl. a human resolve) intact

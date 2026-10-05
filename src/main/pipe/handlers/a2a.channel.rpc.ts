@@ -46,7 +46,7 @@
 // owned by ChannelService inside its per-channel critical section (plan KTD3),
 // bridged to the EventBus in DaemonClient.ts / DaemonNotificationRouter.ts.
 
-import { refuseHandoffMarker } from './a2a.rpc';
+import { refuseHandoffMarker } from '../handoffMarkerTripwire';
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
 import type { RpcContext } from '../../../shared/rpc';

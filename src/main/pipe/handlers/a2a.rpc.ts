@@ -1,5 +1,5 @@
 import type { BrowserWindow } from 'electron';
-import { containsHandoffMarker } from '../../../shared/moaHandoff';
+import { refuseHandoffMarker } from '../handoffMarkerTripwire';
 import type { RpcRouter } from '../RpcRouter';
 import type { RpcContext } from '../../../shared/rpc';
 import { isHostedCaller } from '../../../shared/rpc';
@@ -75,18 +75,7 @@ function withOperatorOrigin(
   return out;
 }
 
-/**
- * Tripwire: only main's operator lane writes Moa's hand-off provenance line
- * (moaHandoff.ts). A non-operator caller whose text carries it is refused.
- * The line is a label, not an authentication boundary — this only stops a
- * caller from passing its own text off as an operator-approved hand-off.
- */
-export function refuseHandoffMarker(method: string, text: unknown, ctx: RpcContext | undefined): { error: string } | null {
-  if (ctx?.operator === true || !containsHandoffMarker(text)) return null;
-  return {
-    error: `${method}: this text carries the line wmux adds to operator-approved hand-offs; only the operator's hand-off may send it. To give work to another workspace's agent, Moa uses moa_propose_handoff.`,
-  };
-}
+export { refuseHandoffMarker } from '../handoffMarkerTripwire';
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
@@ -653,7 +642,7 @@ export function registerA2aRpc(
   // 해석·승인 게이트 등 렌더러 UI 반응성 로직은 그대로). 워커 spawn **전에**
   // await — 이후 전이(working/completed)가 데몬 게이트에서 태스크를 찾도록.
   router.register('a2a.task.send', async (params, ctx) => {
-    const marked = refuseHandoffMarker('a2a.task.send', params.message, ctx);
+    const marked = refuseHandoffMarker('a2a.task.send', [params.message, params.title], ctx);
     if (marked) return marked;
     // Forward the VALIDATED commander binding (RpcRouter set it from the
     // per-spawn token; never read from the wire, so any caller-supplied value

@@ -274,6 +274,11 @@ export function registerDeckRpc(router: RpcRouter, getWindow: GetWindow, deps: D
     const taskId = typeof params['taskId'] === 'string' && params['taskId'] ? params['taskId'] : undefined;
     const existing = loadWorkspaceDecision(ws);
     let decision: WorkspaceDecision | null;
+    // A main-owned card (an issue proposal, a Moa hand-off) is never replaced
+    // by a brain's question, stale or not: only a human answers it.
+    if (existing && isMainOwnedDecision(existing)) {
+      return { ok: false, error: 'decision_pending', id: existing.id };
+    }
     if (existing && existing.status === 'pending') {
       // STALE REPLACE (WP3): the re-examine turn explicitly offers "re-raise a
       // sharper question, which replaces this one". That contract only exists

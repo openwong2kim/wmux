@@ -22,6 +22,7 @@ import { deliverOperatorTask, releaseUndelivered } from '../git/handoff';
 import { registerDeliveryCheck } from '../pipe/deliveryGuards';
 import { DEFAULT_MAX_SNAPSHOT_AGE_MS } from './stopGate';
 import type { AgentStatus } from '../../shared/types';
+import { HUMAN_WORKSPACE_ID } from '../../shared/channels';
 
 type Invoke = (method: string, params: Record<string, unknown>) => Promise<unknown>;
 
@@ -135,6 +136,17 @@ export function createMoaHandoffService(opts: {
     invoke: opts.invoke,
     deliver: (args) => deliverOperatorTask(opts.invoke, args),
     release: (linkId, taskId) => releaseUndelivered(linkDeps, linkId, taskId),
+    taskState: async (taskId) => {
+      const res = (await opts.invoke('a2a.task.query', { workspaceId: HUMAN_WORKSPACE_ID }).catch(() => null)) as
+        | { ok?: boolean; result?: { tasks?: unknown } }
+        | null;
+      const tasks = res && res.ok !== false && Array.isArray(res.result?.tasks) ? (res.result!.tasks as Array<Record<string, unknown>>) : null;
+      if (!tasks) return undefined;
+      const t = tasks.find((x) => x.id === taskId);
+      if (!t) return null;
+      const st = (t.status as { state?: unknown } | undefined)?.state ?? t.state;
+      return typeof st === 'string' ? st : undefined;
+    },
     registerCheck: (key, check) => registerDeliveryCheck(key, check),
     notify: opts.notify,
   });

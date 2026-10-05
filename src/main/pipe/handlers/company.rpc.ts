@@ -1,4 +1,5 @@
 import type { BrowserWindow } from 'electron';
+import { refuseHandoffMarker } from '../handoffMarkerTripwire';
 import type { RpcRouter } from '../RpcRouter';
 import { sendToRenderer } from './_bridge';
 import type { RpcContext } from '../../../shared/rpc';
@@ -132,6 +133,8 @@ export function registerCompanyRpc(router: RpcRouter, getWindow: GetWindow): voi
    * params: { message: string }
    */
   router.register('company.broadcast', (params, ctx) => {
+    const marked = refuseHandoffMarker('company.broadcast', params['message'], ctx);
+    if (marked) return Promise.resolve(marked);
     if (typeof params['message'] !== 'string' || params['message'].length === 0) {
       throw new Error('company.broadcast: missing required param "message"');
     }
@@ -147,6 +150,8 @@ export function registerCompanyRpc(router: RpcRouter, getWindow: GetWindow): voi
    * params: { deptId: string; message: string }
    */
   router.register('company.sendDept', (params, ctx) => {
+    const marked = refuseHandoffMarker('company.sendDept', params['message'], ctx);
+    if (marked) return Promise.resolve(marked);
     if (typeof params['deptId'] !== 'string' || params['deptId'].trim().length === 0) {
       throw new Error('company.sendDept: missing required param "deptId"');
     }
@@ -166,6 +171,8 @@ export function registerCompanyRpc(router: RpcRouter, getWindow: GetWindow): voi
    * params: { deptId: string; memberId: string; message: string }
    */
   router.register('company.sendMember', (params, ctx) => {
+    const marked = refuseHandoffMarker('company.sendMember', params['message'], ctx);
+    if (marked) return Promise.resolve(marked);
     if (typeof params['deptId'] !== 'string' || params['deptId'].trim().length === 0) {
       throw new Error('company.sendMember: missing required param "deptId"');
     }
@@ -250,6 +257,8 @@ export function registerCompanyRpc(router: RpcRouter, getWindow: GetWindow): voi
   });
 
   router.register('company.a2a.send', (params, ctx) => {
+    const marked = refuseHandoffMarker('company.a2a.send', params['message'], ctx);
+    if (marked) return Promise.resolve(marked);
     if (typeof params['from'] !== 'string' || params['from'].trim().length === 0) {
       throw new Error('company.a2a.send: missing required param "from"');
     }
@@ -270,6 +279,8 @@ export function registerCompanyRpc(router: RpcRouter, getWindow: GetWindow): voi
   });
 
   router.register('company.a2a.broadcast', (params, ctx) => {
+    const marked = refuseHandoffMarker('company.a2a.broadcast', params['message'], ctx);
+    if (marked) return Promise.resolve(marked);
     if (typeof params['from'] !== 'string' || params['from'].trim().length === 0) {
       throw new Error('company.a2a.broadcast: missing required param "from"');
     }

@@ -478,3 +478,33 @@ describe('a2a delivery methods — operator origin is stamped, never trusted fro
     expect(forwarded.operatorOrigin).toBe(true);
   });
 });
+
+describe('a2a.task.send — main-only delivery fields', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const fields = { deliveryGuardKey: 'moa-auto-1', presetTaskId: 'task-00000000-0000-4000-8000-000000000000' };
+  const sentParams = (): Record<string, unknown> =>
+    sendToRendererMock.mock.calls.find((c) => c[1] === 'a2a.task.send')![2] as Record<string, unknown>;
+
+  it('forwards the guard key and preset task id on the operator lane with a gated delivery', async () => {
+    sendToRendererMock.mockResolvedValue({ ok: true, taskId: fields.presetTaskId });
+    const send = captureTaskSend(makeWorker());
+    await send({ workspaceId: 'ws-human', to: 'ws-to', message: 'hi', gatedDelivery: true, ...fields }, { origin: 'local', operator: true } as RpcContext);
+    expect(sentParams()).toMatchObject(fields);
+  });
+
+  it('strips both off the operator lane, and the guard key without a gated delivery', async () => {
+    sendToRendererMock.mockResolvedValue({ ok: true, taskId: 't' });
+    const send = captureTaskSend(makeWorker());
+    await send({ workspaceId: 'ws-a', to: 'ws-to', message: 'hi', gatedDelivery: true, ...fields }, { origin: 'local' } as RpcContext);
+    expect(sentParams()).not.toHaveProperty('deliveryGuardKey');
+    expect(sentParams()).not.toHaveProperty('presetTaskId');
+
+    vi.clearAllMocks();
+    sendToRendererMock.mockResolvedValue({ ok: true, taskId: 't' });
+    await send({ workspaceId: 'ws-human', to: 'ws-to', message: 'hi', ...fields }, { origin: 'local', operator: true } as RpcContext);
+    expect(sentParams()).not.toHaveProperty('deliveryGuardKey');
+  });
+});

@@ -571,3 +571,25 @@ describe('main-owned cards — no brain resolves or raises one', () => {
     expect(args).not.toHaveProperty('ref');
   });
 });
+
+describe('main-owned cards — a stale one is never replaced by a brain question', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetCommanderTrustForTesting();
+  });
+
+  it('deck.requestDecision refuses to replace a TTL-expired moa-handoff card', async () => {
+    decisionRef.current = {
+      id: 'dec-h', question: 'Moa proposes…', options: ['Hand off', 'Edit', 'Cancel'], context: '',
+      status: 'pending', raisedAt: Date.now() - 24 * 60 * 60_000, origin: 'moa-handoff', ref: 'h1',
+    };
+    ttlMock.mockReturnValue(60_000);
+    const token = mintCommanderToken('ws-1');
+    const res = (await setup().dispatch({
+      id: '1', method: 'deck.requestDecision', params: { token, question: 'Replace it?' },
+    })) as { result?: unknown };
+    expect(res.result).toEqual({ ok: false, error: 'decision_pending', id: 'dec-h' });
+    expect(replaceStaleDecisionMock).not.toHaveBeenCalled();
+    expect(raiseDecisionMock).not.toHaveBeenCalled();
+  });
+});

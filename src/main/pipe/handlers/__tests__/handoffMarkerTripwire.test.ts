@@ -37,3 +37,47 @@ describe('hand-off marker tripwire', () => {
     expect(refuseHandoffMarker('a2a.task.update', 'all good', { origin: 'local' } as never)).toBeNull();
   });
 });
+
+describe('hand-off marker tripwire — disguised and other paths', () => {
+  const variants = [
+    marked.replace('Handed', 'Ha​nded'), // zero-width space
+    marked.replace('Moa', 'M‮oa'), // bidi override
+    marked.replace('(Handed off by you', '（Handed off by you'), // full-width parenthesis
+    marked.replace(' off ', '  off\t'), // whitespace games
+    marked.replace('Handed', 'Ha\u0000nded'), // a NUL that sanitizePtyText strips
+  ];
+
+  it('folds look-alike and hidden characters before matching', () => {
+    for (const v of variants) {
+      expect(refuseHandoffMarker('x', v, { origin: 'local' } as never), JSON.stringify(v)).not.toBeNull();
+    }
+  });
+
+  it('a2a.task.send checks the title too', () => {
+    expect(refuseHandoffMarker('a2a.task.send', ['plain', marked], { origin: 'local' } as never)).not.toBeNull();
+  });
+
+  it('input.send refuses a NUL-split marker that only appears once sanitized', async () => {
+    const router = new RpcRouter();
+    const write = vi.fn();
+    registerInputRpc(router, { write, get: () => undefined } as unknown as PTYManager, () => ({}) as BrowserWindow);
+    const res = await router.dispatch({ id: '2', method: 'input.send', params: { workspaceId: 'ws-a', ptyId: 'pty-1', text: variants[4] } });
+    expect(res.ok).toBe(false);
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('company sends are refused off the operator lane', async () => {
+    const { registerCompanyRpc } = await import('../company.rpc');
+    const router = new RpcRouter();
+    registerCompanyRpc(router, () => ({}) as BrowserWindow);
+    for (const [method, params] of [
+      ['company.broadcast', { message: marked }],
+      ['company.sendMember', { deptId: 'd', memberId: 'm', message: marked }],
+      ['company.a2a.send', { from: 'a', to: 'b', message: marked }],
+    ] as const) {
+      const res = (await router.dispatch({ id: method, method, params })) as { ok: boolean; result?: { error?: string } };
+      expect(res.result?.error ?? '', method).toMatch(/operator-approved hand-offs/);
+    }
+    expect(sendToRendererMock).not.toHaveBeenCalled();
+  });
+});

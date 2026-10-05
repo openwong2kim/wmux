@@ -302,3 +302,37 @@ describe('send — mid-stream adapter error', () => {
     expect(mgr.getStatus().status).toBe('idle');
   });
 });
+
+describe('CommanderSessionManager — turn origin (the no-click hand-off gate)', () => {
+  it('records the origin only for an accepted turn; a refused request leaves it alone', async () => {
+    const adapter = new FakeAdapter();
+    adapter.setScript([{ type: 'turn-end', sessionId: null }]);
+    const mgr = new CommanderSessionManager({ adapter, sink: vi.fn() });
+    expect(mgr.turnOrigin).toBeNull();
+
+    // A wake that was queued behind an operator turn: refused while busy, so it
+    // must not mark the running operator turn as a wake…
+    let release: () => void = () => undefined;
+    adapter.hold(new Promise<void>((r) => { release = r; }));
+    const human = mgr.send('operator prompt', { origin: 'human' });
+    expect(mgr.turnOrigin).toBe('human');
+    expect(await mgr.send('wake prompt', { origin: 'automation' })).toEqual({ ok: false, code: 'busy' });
+    expect(mgr.turnOrigin).toBe('human');
+    release();
+    await human;
+
+    // …and once the wake does run, a later operator request that is refused
+    // cannot make it read as the operator's.
+    adapter.hold(new Promise<void>((r) => { release = r; }));
+    const wake = mgr.send('wake prompt', { origin: 'automation' });
+    expect(mgr.turnOrigin).toBe('automation');
+    expect(await mgr.send('operator prompt', { origin: 'human' })).toEqual({ ok: false, code: 'busy' });
+    expect(mgr.turnOrigin).toBe('automation');
+    release();
+    await wake;
+
+    // A turn the operator typed straight into the TUI.
+    mgr.notifyForeignTurnStart();
+    expect(mgr.turnOrigin).toBe('human');
+  });
+});

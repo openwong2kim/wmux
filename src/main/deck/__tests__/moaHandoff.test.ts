@@ -271,7 +271,9 @@ describe('moa hand-off — danger mode without a click', () => {
     expect(await r.svc.stop(res.id)).toEqual({ ok: true });
     expect(r.invoke).toHaveBeenCalledWith('input.sendKey', expect.objectContaining({ ptyId: 'pty-1', key: 'escape' }));
     expect(r.release).toHaveBeenCalledWith('link-1', res.taskId);
-    expect(r.svc.receipts()[0].stopped).toBe(true);
+    expect(r.svc.get(res.id)?.stopped).toBe(true);
+    // A stopped (canceled) task's receipt offers no Stop any more.
+    expect(r.svc.receipts()).toHaveLength(0);
   });
 });
 
@@ -431,5 +433,66 @@ describe('moa hand-off — review fixes', () => {
     expect(fresh.release).toHaveBeenCalled();
     expect(fresh.slots.get(SEAL)?.options).toEqual(['OK']);
     hang();
+  });
+});
+
+describe('moa hand-off — panel review round 2', () => {
+  it('a save that fails before delivery delivers nothing and releases the link', async () => {
+    const r = rig();
+    await propose(r);
+    const d = r.slots.get(SEAL)!;
+    // From here on every write fails.
+    const notADir = path.join(dir, 'plain-file');
+    fs.writeFileSync(notADir, 'x');
+    (r.ports as { filePath?: string }).filePath = path.join(notADir, 'moa-handoffs.json');
+    const res = await r.svc.resolve(SEAL, d.id, 'handoff');
+    expect(res).toMatchObject({ ok: true, delivered: false });
+    expect(r.deliver).not.toHaveBeenCalled();
+    expect(r.release).toHaveBeenCalledWith('link-1', undefined);
+  });
+
+  it('after a restart, a "delivering" record is settled from the canonical task state', async () => {
+    let now = 1_000_000;
+    const r = rig({ now: () => now });
+    let finish: () => void = () => undefined;
+    r.deliver.mockImplementationOnce((args: { presetTaskId: string }) => new Promise((res) => {
+      finish = () => res({ ok: true, taskId: args.presetTaskId, delivered: true, assurance: 'assured' });
+    }));
+    await propose(r);
+    void r.svc.resolve(SEAL, r.slots.get(SEAL)!.id, 'handoff');
+    await new Promise((res) => setTimeout(res, 10));
+    // The app stops here: disk says "delivering". The task exists and is open.
+    now += 5 * 60_000;
+    const after = rig({ now: () => now, taskState: async () => 'working' }, r.file);
+    await after.svc.reconcile();
+    expect(after.release).not.toHaveBeenCalled();
+    const rec = Object.values((after.svc as unknown as { file: { items: Record<string, { state: string; taskState?: string }> } }).file.items)[0];
+    expect(rec).toMatchObject({ state: 'delivered', taskState: 'working' });
+    finish();
+  });
+
+  it('a task event that lands before the send answers is not rolled back', async () => {
+    const r = rig();
+    r.deliver.mockImplementationOnce(async (args: { presetTaskId: string }) => {
+      // The worker finished before the delivery call returned.
+      r.svc.noteTaskState(args.presetTaskId, 'completed');
+      return { ok: true, taskId: args.presetTaskId, delivered: true, assurance: 'assured' };
+    });
+    r.modes[HQ] = 'danger';
+    r.modes[SEAL] = 'danger';
+    const res = await propose(r);
+    if (!res.ok || res.mode !== 'auto') throw new Error('expected auto');
+    expect(r.svc.byTask(res.taskId)?.taskState).toBe('completed');
+    // …so Stop cannot reach a later turn in that pane, and the receipt is gone.
+    expect(await r.svc.stop(res.id)).toEqual({ ok: false });
+    expect(r.svc.receipts()).toHaveLength(0);
+  });
+
+  it('the card preview never splits a surrogate pair', async () => {
+    const r = rig();
+    await propose(r, `${'a'.repeat(599)}😀${'b'.repeat(50)}`);
+    const ctx = r.slots.get(SEAL)!.context;
+    expect(ctx).toContain('😀…');
+    expect(ctx).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
   });
 });

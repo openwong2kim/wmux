@@ -1,6 +1,6 @@
 import type { BrowserWindow } from 'electron';
 import { getDeliveryCheck } from '../deliveryGuards';
-import { containsHandoffMarker } from '../../../shared/moaHandoff';
+import { refuseHandoffMarker } from '../handoffMarkerTripwire';
 import { usageLimitHoldDetail } from '../../usageLimit/paneUsageLimits';
 import {
   DELIVERY_RESERVE_MS,
@@ -1135,12 +1135,10 @@ export function registerInputRpc(
     }
 
     // Tripwire: the hand-off provenance line is written only by main's operator
-    // lane (moaHandoff.ts). A label, not an authentication boundary.
-    if (ctx?.operator !== true && containsHandoffMarker(text)) {
-      throw new Error(
-        "input.send: this text carries the line wmux adds to operator-approved hand-offs; only the operator's hand-off may send it. Moa gives work to another workspace with moa_propose_handoff.",
-      );
-    }
+    // lane (moaHandoff.ts). A label, not an authentication boundary. Checked on
+    // the text as given and again on what is actually written (below).
+    const marked = refuseHandoffMarker('input.send', text, ctx);
+    if (marked) throw new Error(marked.error);
 
     const callerWs = typeof params['workspaceId'] === 'string' ? params['workspaceId'] : undefined;
 
@@ -1270,6 +1268,9 @@ export function registerInputRpc(
     // ran a shell command and then an empty line.
     const submitRequested = params['submit'] === true;
     const bodyText = submitRequested ? stripTrailingEnter(safeText) : safeText;
+    // Again on exactly what is written (after sanitizing and any rewrite).
+    const markedAfter = refuseHandoffMarker('input.send', bodyText, ctx);
+    if (markedAfter) throw new Error(markedAfter.error);
     // Resolve the receipt workspace BEFORE the first write so its round-trip
     // never lands inside the text→Enter gap the delay below protects (nor
     // between a fresh-context command and the text). On the owner lane the pane
