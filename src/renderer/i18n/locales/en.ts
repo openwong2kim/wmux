@@ -2677,8 +2677,6 @@ export const en = {
   'moa.result.noChecks': "Not verified by wmux",
   'moa.result.moreFiles': "+{count} more files",
   'moa.result.open': "Open agent",
-  'moa.panel.working': "Working",
-  'moa.panel.activity': "Activity",
   'moa.panel.activityShow': "Moa is working. Show its activity",
   'moa.panel.activityHide': "Hide Moa's activity",
   'moa.panel.delegatedApproval': "{agent} is asking to run this",

@@ -2060,8 +2060,6 @@ export const ko = {
   'moa.result.noChecks': "wmux가 검증하지 않음",
   'moa.result.moreFiles': "파일 {count}개 더",
   'moa.result.open': "에이전트 열기",
-  'moa.panel.working': "작업 중",
-  'moa.panel.activity': "활동",
   'moa.panel.activityShow': "Moa가 작업 중입니다. 활동 보기",
   'moa.panel.activityHide': "Moa 활동 숨기기",
   'moa.panel.delegatedApproval': "{agent}이(가) 실행 허가를 기다립니다",

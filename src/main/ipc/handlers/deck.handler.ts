@@ -157,7 +157,7 @@ import { answerMoaApproval, readMoaApproval } from '../../deck/moaApproval';
 import { getAccountStore } from '../../account/accountStore';
 import type { MoaApproval, MoaApprovalAnswerResult, MoaDelegatedApproval, MoaPendingDecision } from '../../../shared/moa';
 import { selectDelegatedApprovals } from '../../deck/moaDelegatedApprovals';
-import { resultFromEvidence, type MoaTaskResult } from '../../../shared/moaResult';
+import { resultFromTask, type MoaTaskResult } from '../../../shared/moaResult';
 import {
   beginOrContinueDeckWork,
   clearActiveDeckWork,
@@ -2651,8 +2651,8 @@ export function registerDeckHandler(
       }
       const tasks = (answer as { tasks?: unknown } | null)?.tasks;
       const list = Array.isArray(tasks) ? tasks : tasks ? [tasks] : [];
-      const task = list.find((t) => !!t && typeof t === 'object' && (t as { id?: unknown }).id === taskId) as { evidence?: unknown } | undefined;
-      return { result: resultFromEvidence(task?.evidence) };
+      const task = list.find((t) => !!t && typeof t === 'object' && (t as { id?: unknown }).id === taskId);
+      return { result: resultFromTask(task) };
     }),
   );
 

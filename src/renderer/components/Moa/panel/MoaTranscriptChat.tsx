@@ -239,11 +239,13 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
       aria-expanded={showActivity}
       aria-label={t(showActivity ? 'moa.panel.activityHide' : 'moa.panel.activityShow')}
       title={t(showActivity ? 'moa.panel.activityHide' : 'moa.panel.activityShow')}
-      className={`wmux-moa-working order-first inline-flex items-center gap-1.5 h-6 px-1.5 rounded-[6px] text-[11px] text-[var(--text-sub)] hover:bg-[var(--hover-fill)] ${FOCUS_RING}`}
+      // A dot, not a word: the header row has no room beside "Main bot" at
+      // the dock's width. The label and tooltip say what it is.
+      className={`wmux-moa-working order-first inline-flex items-center justify-center w-6 h-6 rounded-[6px] hover:bg-[var(--hover-fill)] ${showActivity ? 'bg-[var(--selection-emphasis)]' : ''} ${FOCUS_RING}`}
       data-moa-working-toggle
+      data-busy={busy ? 'true' : undefined}
     >
-      {busy && <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-[var(--text-sub)]" />}
-      {busy ? t('moa.panel.working') : t('moa.panel.activity')}
+      <span aria-hidden="true" className={`w-2 h-2 rounded-full ${busy ? 'bg-[var(--text-sub)]' : 'border border-[var(--text-sub)]'}`} />
     </button>,
     headerSlot,
   ) : null;

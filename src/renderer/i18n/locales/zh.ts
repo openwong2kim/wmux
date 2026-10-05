@@ -2193,8 +2193,6 @@ export const zh = {
   'moa.result.noChecks': "未经 wmux 验证",
   'moa.result.moreFiles': "另有 {count} 个文件",
   'moa.result.open': "打开代理",
-  'moa.panel.working': "工作中",
-  'moa.panel.activity': "活动",
   'moa.panel.activityShow': "Moa 正在工作。显示活动",
   'moa.panel.activityHide': "隐藏 Moa 的活动",
   'moa.panel.delegatedApproval': "{agent} 正在请求运行以下内容",

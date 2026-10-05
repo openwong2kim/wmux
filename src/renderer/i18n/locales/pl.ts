@@ -2654,8 +2654,6 @@ export const pl = {
   'moa.result.noChecks': "Niezweryfikowane przez wmux",
   'moa.result.moreFiles': "+{count} plików więcej",
   'moa.result.open': "Otwórz agenta",
-  'moa.panel.working': "Pracuje",
-  'moa.panel.activity': "Aktywność",
   'moa.panel.activityShow': "Moa pracuje. Pokaż aktywność",
   'moa.panel.activityHide': "Ukryj aktywność Moa",
   'moa.panel.delegatedApproval': "{agent} prosi o zgodę na uruchomienie",

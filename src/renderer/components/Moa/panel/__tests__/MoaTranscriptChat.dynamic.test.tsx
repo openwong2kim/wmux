@@ -105,7 +105,7 @@ describe('MoaTranscriptChat', () => {
       expect(chat.dataset.activity).toBe('hidden');
       const toggle = slot.querySelector('[data-moa-working-toggle]') as HTMLButtonElement;
       expect(toggle.tagName).toBe('BUTTON');
-      expect(toggle.textContent).toBe('moa.panel.working');
+      expect(toggle.dataset.busy).toBe('true');
       expect(toggle.getAttribute('aria-expanded')).toBe('false');
       expect(toggle.getAttribute('aria-label')).toBe('moa.panel.activityShow');
       await act(async () => { toggle.click(); });

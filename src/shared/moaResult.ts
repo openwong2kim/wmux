@@ -41,6 +41,12 @@ export function resultFromEvidence(evidence: unknown): MoaTaskResult | null {
   };
 }
 
+/** From a full A2A task: its completion evidence rides on `status.evidence`. */
+export function resultFromTask(task: unknown): MoaTaskResult | null {
+  const status = isRecord(task) ? task.status : undefined;
+  return resultFromEvidence(isRecord(status) ? status.evidence : undefined);
+}
+
 /**
  * From a work link's durable `result`, when the link carries one. The field is
  * read loosely (summary, verified/verifiedItemCount, checks/itemCount, files),
