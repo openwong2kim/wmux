@@ -838,17 +838,6 @@
 .wmux-ws-filter-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 8px 18px; font-size: 12px; color: var(--text-sub); }
 .wmux-ws-filter-empty p { margin: 0; }
 
-/* Titlebar search & command pill: a faint fill, no outline (one boundary).
- * Its lane is the titlebar's drag gap; under ~260px the label folds away and
- * the icon and shortcut remain. */
-.wmux-command-pill-lane { flex: 1; min-width: 0; height: 100%; display: flex; align-items: center; justify-content: center; padding: 0 12px; container-type: inline-size; }
-.wmux-command-pill { display: inline-flex; align-items: center; gap: 8px; height: 26px; max-width: 320px; min-width: 0; padding: 0 8px 0 10px; border-radius: 8px; background: var(--selection-subtle); color: var(--text-sub); font-size: 12px; line-height: 1; white-space: nowrap; transition: background-color 120ms, color 120ms; }
-.wmux-command-pill:hover { background: var(--selection); color: var(--text-main); }
-.wmux-command-pill > svg { flex: none; }
-.wmux-command-pill-label { overflow: hidden; text-overflow: ellipsis; }
-.wmux-command-pill-kbd { flex: none; margin-left: 4px; font-family: inherit; font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
-@container (max-width: 260px) { .wmux-command-pill-label { display: none; } .wmux-command-pill-kbd { margin-left: 0; } }
-
 /* A rail page fills the sheet over the Workspaces page, which stays mounted
  * underneath at full size, so a page never changes terminal geometry. The
  * sheet's own edge is the page's only boundary. */
@@ -2109,6 +2098,9 @@ html[data-fullscreen] .wmux-shell-body {
 /* Dock: Briefing is set off by space; the Assist box is the wrapper's one
  * hairline (its inner form draws none); composers carry no extra shadow. */
 [data-commander-layout="chat"] [data-deck-briefing] { border-bottom: 0; }
+/* Moa's top runs edge to edge (its cards carry their own inset), so the
+   briefing in it takes the cards' 12px inset. */
+[data-moa-top] [data-deck-briefing], .wmux-moa-chat-top [data-deck-briefing] { padding-left: 12px; padding-right: 12px; }
 [data-commander-composer] form[data-channel-composer].wmux-chat-composer { border: 0; box-shadow: none; }
 [data-commander-layout="chat"] [data-commander-composer] { background: transparent; border-color: var(--line); }
 :root:is([data-theme="mono-light"], [data-theme="paper"], [data-theme="hinomaru"], [data-theme="taegeuk"]) form[data-channel-composer].wmux-chat-composer,

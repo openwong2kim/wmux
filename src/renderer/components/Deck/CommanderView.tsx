@@ -660,7 +660,7 @@ export function CommanderViewContent({
         {/* Moa: Waiting on you, delegated work and the briefing scroll with the
             conversation, one column (the negative margin undoes this list's
             padding: the sections bring their own). */}
-        {moa?.top && <div className="-mx-4 -mt-3">{moa.top}</div>}
+        {moa?.top && <div className="-mx-4 -mt-3" data-moa-top>{moa.top}</div>}
         {/* No empty-state paragraph. It said "Ask the orchestrator to run your
             agents, or @mention agent panes to command them directly" — three
             centred lines saying what the composer's own placeholder ("Tell the

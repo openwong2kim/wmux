@@ -7,7 +7,7 @@ import { displayCombo, effectiveBindings } from '../../../shared/keymap';
 
 /**
  * The sidebar's show/hide toggle, in the titlebar's left segment right after
- * the `wmux` wordmark (the slot the + used). It is the tools-panel toggle (DeckToggle) mirrored:
+ * the `wmux` wordmark (the slot the + used). It mirrors Moa's panel toggle at the other end:
  * same 28px square, stroke and hover, with the bar drawn on the sidebar's
  * side, so the two read as a pair. Neither has a fill at rest or when on:
  * the state is the icon's filled bar and `aria-pressed`. The name stays put;

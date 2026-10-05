@@ -27,6 +27,8 @@ const COMPONENTS = join(__dirname, '..');
 /** The chrome this lane owns: titlebar, sidebar, pane tab strip, deck header. */
 const CHROME_FILES = [
   'Titlebar/Titlebar.tsx',
+  'Titlebar/SidebarToggle.tsx',
+  'Sidebar/RailMoreMenu.tsx',
   'StatusBar/StatusBar.tsx',
   'Sidebar/Sidebar.tsx',
   'Sidebar/WorkspaceItem.tsx',
@@ -43,7 +45,6 @@ const CHROME_FILES = [
   'Sidebar/AttachRemoteModal.tsx',
   'Pane/SurfaceTabs.tsx',
   'Deck/DeckTabs.tsx',
-  'Deck/DeckToggle.tsx',
   'Moa/MoaTitlebarButton.tsx',
   'Moa/MoaBubble.tsx',
   'StatusBar/PhoneConnectWizard.tsx',

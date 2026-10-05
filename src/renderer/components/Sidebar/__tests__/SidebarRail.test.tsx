@@ -73,7 +73,7 @@ describe('sidebar icon rail', () => {
     expect(container.querySelector('[aria-label^="Hide sidebar"], [aria-label^="Expand sidebar"]')).toBeNull();
   });
 
-  it('opens Settings, Keyboard shortcuts and Check for updates from the More menu, over the version line', async () => {
+  it('opens the command palette, Settings, Keyboard shortcuts and Check for updates from the More menu, over the version line', async () => {
     (globalThis as { __APP_VERSION__?: string }).__APP_VERSION__ = '9.9.9';
     const checkForUpdates = vi.fn(async () => ({ status: 'not-available' }));
     vi.stubGlobal('electronAPI', { platform: 'darwin', updater: { checkForUpdates } });
@@ -84,9 +84,14 @@ describe('sidebar icon rail', () => {
     expect(more().getAttribute('aria-expanded')).toBe('true');
     const menu = document.querySelector('[data-pane-actions-menu]')!;
     expect(menu.getAttribute('role')).toBe('menu');
-    expect([...menu.querySelectorAll('[role="menuitem"]')].map((b) => b.textContent)).toEqual(['Settings⌘,', 'Keyboard shortcuts', 'Check for updates']);
+    expect([...menu.querySelectorAll('[role="menuitem"]')].map((b) => b.textContent)).toEqual(['Command palette⌘K', 'Settings⌘,', 'Turn on Moa…', 'Keyboard shortcuts', 'Check for updates']);
     expect(menu.querySelector('[data-pane-menu-footer]')?.textContent).toBe('wmux v9.9.9');
 
+    act(() => item('command-palette')!.click());
+    expect(useStore.getState().commandPaletteVisible).toBe(true);
+    act(() => useStore.setState({ commandPaletteVisible: false }));
+
+    act(() => more().click());
     act(() => item('settings')!.click());
     expect(useStore.getState().appRoute).toBe('settings');
     expect(document.querySelector('[data-pane-actions-menu]')).toBeNull();
@@ -105,12 +110,27 @@ describe('sidebar icon rail', () => {
     delete (globalThis as { __APP_VERSION__?: string }).__APP_VERSION__;
   });
 
+  it('offers Turn on Moa… only while Moa is off, opening Settings › Moa', async () => {
+    await act(async () => root.render(<MiniSidebar rail collapsed={false} />));
+    const more = () => container.querySelector<HTMLButtonElement>('[data-rail-more]')!;
+    const item = () => document.querySelector<HTMLButtonElement>('[data-pane-menu-action="turn-on-moa"]');
+    act(() => more().click());
+    expect(item()?.textContent).toBe('Turn on Moa…');
+    act(() => item()!.click());
+    expect(useStore.getState().appRoute).toBe('settings');
+    expect(useStore.getState().settingsInitialTab).toBe('moa');
+    act(() => useStore.setState({ appRoute: 'workspaces', settingsInitialTab: null, moa: { config: { enabled: true }, hq: { workspaceId: null, state: 'unset' } } as never }));
+    act(() => more().click());
+    expect(item()).toBeNull();
+    act(() => useStore.setState({ moa: null }));
+  });
+
   it('closes the More menu on Escape and hands focus back to its button', async () => {
     await act(async () => root.render(<MiniSidebar rail collapsed={false} />));
     const more = container.querySelector<HTMLButtonElement>('[data-rail-more]')!;
     more.focus();
     act(() => more.click());
-    expect(document.activeElement?.getAttribute('data-pane-menu-action')).toBe('settings');
+    expect(document.activeElement?.getAttribute('data-pane-menu-action')).toBe('command-palette');
     act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
     expect(document.querySelector('[data-pane-actions-menu]')).toBeNull();
     expect(document.activeElement).toBe(more);
@@ -176,60 +196,28 @@ describe('sidebar icon rail', () => {
   });
 });
 
-describe('the Moa rail entry', () => {
+describe('Moa and the rail', () => {
   const moa = (enabled: boolean, state: 'ok' | 'hq-missing' | 'unset' = 'ok') => ({
     config: { enabled, onboarded: true, level: 1 as const, maxTurnsPerHour: 20, bubbles: true, reduceMotion: false, defaultReason: null },
     hq: { workspaceId: state === 'unset' ? null : 'hq', state },
     archive: { unacked: 0, total: 0 },
   });
   const ws = (id: string) => ({ id, name: id, rootPane: { id: `${id}-p`, type: 'leaf' as const, surfaces: [], activeSurfaceId: '' }, activePaneId: `${id}-p` });
-  const entry = () => container.querySelector<HTMLButtonElement>('[data-sidebar-nav="moa"]');
   const current = () => [...container.querySelectorAll('[data-sidebar-nav][aria-current="page"]')].map((el) => el.getAttribute('data-sidebar-nav'));
 
-  it('shows after Git, named, only while Moa is on and its workspace exists', async () => {
-    useStore.setState({ workspaces: [ws('a'), ws('hq')], activeWorkspaceId: 'a', activeRemoteKey: null, moa: moa(false) } as never);
+  it('has no Moa entry: the panel is its home', async () => {
+    useStore.setState({ workspaces: [ws('a'), ws('hq')], activeWorkspaceId: 'a', activeRemoteKey: null, moa: moa(true) } as never);
     await act(async () => root.render(<MiniSidebar rail collapsed={false} />));
-    expect(entry()).toBeNull();
-    act(() => useStore.setState({ moa: moa(true, 'hq-missing') } as never));
-    expect(entry()).toBeNull();
-    act(() => useStore.setState({ moa: moa(true, 'unset') } as never));
-    expect(entry()).toBeNull();
-    act(() => useStore.setState({ moa: moa(true) } as never));
-    expect(navIds()).toEqual(['home', 'fleet', 'schedules', 'remote', 'git', 'moa']);
-    expect(entry()!.getAttribute('aria-label')).toBe('Moa');
-  });
-
-  it('opens the HQ on Workspaces from any page and is the current place while it is active', async () => {
-    useStore.setState({ workspaces: [ws('a'), ws('hq')], activeWorkspaceId: 'a', activeRemoteKey: null, appRoute: 'git', moa: moa(true) } as never);
-    const openMoaHq = vi.spyOn(useStore.getState(), 'openMoaHq');
-    await act(async () => root.render(<MiniSidebar rail collapsed={false} />));
-    expect(current()).toEqual(['git']);
-    act(() => entry()!.click());
-    expect(openMoaHq).toHaveBeenCalledTimes(1);
-    expect(useStore.getState().activeWorkspaceId).toBe('hq');
-    expect(useStore.getState().appRoute).toBe('workspaces');
-    // One current item: Moa, not Workspaces.
-    expect(current()).toEqual(['moa']);
-    act(() => useStore.getState().setActiveWorkspace('a'));
-    expect(current()).toEqual(['home']);
-    openMoaHq.mockRestore();
+    expect(navIds()).toEqual(['home', 'fleet', 'schedules', 'remote', 'git']);
+    expect(container.querySelector('[data-sidebar-nav="moa"]')).toBeNull();
   });
 
   it('Workspaces leads back from the HQ to the first listed workspace', async () => {
     useStore.setState({ workspaces: [ws('hq'), ws('a')], activeWorkspaceId: 'hq', activeRemoteKey: null, appRoute: 'workspaces', moa: moa(true) } as never);
     await act(async () => root.render(<MiniSidebar rail collapsed={false} />));
-    expect(current()).toEqual(['moa']);
+    expect(current()).toEqual(['home']);
     act(() => container.querySelector<HTMLButtonElement>('[data-sidebar-nav="home"]')!.click());
     expect(useStore.getState().activeWorkspaceId).toBe('a');
     expect(current()).toEqual(['home']);
-  });
-
-  it('keeps arrow-key navigation reaching it', async () => {
-    useStore.setState({ workspaces: [ws('a'), ws('hq')], activeWorkspaceId: 'a', activeRemoteKey: null, moa: moa(true) } as never);
-    await act(async () => root.render(<MiniSidebar rail collapsed={false} />));
-    const git = container.querySelector<HTMLButtonElement>('[data-sidebar-nav="git"]')!;
-    git.focus();
-    act(() => { git.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); });
-    expect(document.activeElement).toBe(entry());
   });
 });

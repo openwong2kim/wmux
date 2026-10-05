@@ -12,9 +12,7 @@ import { IconGear, IconCornerUpLeft } from '../icons';
 import { selectFleetPanes, sortFleetPanes, countNeedsAttention, type FleetPane } from '../../stores/selectors/fleet';
 import PluginStatusBarWidgets from '../../plugins/PluginStatusBarWidgets';
 import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
-import DeckToggle from '../Deck/DeckToggle';
 import MoaTitlebarButton from '../Moa/MoaTitlebarButton';
-import CommandPill from '../Titlebar/CommandPill';
 import { FOCUS_RING } from '../focusRing';
 import type { StoreState } from '../../stores';
 import { RAIL_PAGE_TITLE_KEYS, workspaceChromeInTitlebar } from '../Titlebar/railPageTitle';
@@ -292,9 +290,9 @@ export default function StatusBar() {
         <PluginStatusBarWidgets alignment="left" />
       </div>
 
-      {/* Draggable gap — the titlebar's remaining grab surface — with the
-          search & command pill centred in it (only the pill is no-drag). */}
-      <CommandPill />
+      {/* Draggable gap: the titlebar's grab surface. The command palette has
+          no titlebar entry; ⌘K and the rail's More menu open it. */}
+      <div className="flex-1 min-w-0 h-full" data-titlebar-drag-gap />
 
       {/* Right: status indicators */}
       <div className="flex items-center shrink-0 gap-2" style={noDrag}>
@@ -337,7 +335,6 @@ export default function StatusBar() {
             Settings lives in the rail's More menu. */}
         <span className="flex items-center gap-1">
           <MoaTitlebarButton />
-          <DeckToggle />
         </span>
       </div>
     </div>

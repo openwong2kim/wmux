@@ -2,7 +2,7 @@
 // The titlebar's workspace chrome (name, branch, New workspace) has one home at
 // a time: the open sidebar shows them (its header + and the highlighted row),
 // so the titlebar carries them only while the sidebar is hidden. A rail page
-// names itself instead. Search & commands is global and always stays.
+// names itself instead. The command palette has no titlebar entry.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -38,6 +38,7 @@ const title = () => container.querySelector('[data-titlebar-title]')?.textConten
 const plus = () => !!container.querySelector('[data-onboarding-target="add-workspace"]');
 const branch = () => !!container.querySelector('[data-titlebar-branch]');
 const search = () => !!container.querySelector('[data-command-pill]');
+const dragGap = () => container.querySelector<HTMLElement>('[data-titlebar-drag-gap]');
 const toggle = () => container.querySelector<HTMLButtonElement>('[data-sidebar-toggle]')!;
 const mount = (state: Partial<ReturnType<typeof useStore.getState>>) => {
   act(() => useStore.setState({ workspaces: [ws], activeWorkspaceId: 'a', appRoute: 'workspaces', sidebarPosition: 'left', sidebarVisible: true, ...state }));
@@ -45,9 +46,13 @@ const mount = (state: Partial<ReturnType<typeof useStore.getState>>) => {
 };
 
 describe('titlebar workspace chrome', () => {
-  it('sidebar shown: no name, branch or +; the pill and the toggle stay', () => {
+  it('sidebar shown: no name, branch, + or search pill; the toggle and the drag gap stay', () => {
     mount({});
-    expect([title(), plus(), branch(), search()]).toEqual([null, false, false, true]);
+    // The palette has no titlebar entry (⌘K and the More menu open it); the
+    // freed space is one drag gap with nothing that opts out of dragging.
+    expect(dragGap()).not.toBeNull();
+    expect(dragGap()!.style.getPropertyValue('-webkit-app-region')).toBe('');
+    expect([title(), plus(), branch(), search()]).toEqual([null, false, false, false]);
     expect(toggle().getAttribute('aria-pressed')).toBe('true');
     // Settings keeps the Workspaces titlebar, so it follows the same rule.
     act(() => useStore.setState({ appRoute: 'settings' }));
@@ -56,7 +61,7 @@ describe('titlebar workspace chrome', () => {
 
   it('sidebar collapsed: the name and branch return; the + is the rail\'s when docked left', () => {
     mount({ sidebarVisible: false });
-    expect([title(), plus(), branch(), search()]).toEqual(['Workspace 1', false, true, true]);
+    expect([title(), plus(), branch(), search()]).toEqual(['Workspace 1', false, true, false]);
     expect(toggle().getAttribute('aria-pressed')).toBe('false');
     // Docked right, the left segment is free, so the + stays in the titlebar.
     act(() => useStore.setState({ sidebarPosition: 'right' }));
@@ -68,7 +73,7 @@ describe('titlebar workspace chrome', () => {
       mount({ sidebarVisible, sidebarPosition: 'right' });
       for (const [route, name] of [['git', 'Git'], ['fleet', 'Fleet'], ['schedules', 'Schedules'], ['remote', 'Remote']] as const) {
         act(() => useStore.setState({ appRoute: route }));
-        expect([title(), plus(), branch(), search()]).toEqual([name, false, false, true]);
+        expect([title(), plus(), branch(), search()]).toEqual([name, false, false, false]);
       }
     }
   });

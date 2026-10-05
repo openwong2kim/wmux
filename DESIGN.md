@@ -97,7 +97,7 @@ in the terminal whatever the chrome accent.
 
 ```
 ┌ frame ─ titlebar 40px ───────────────────────────────────────────────┐
-│ [lights][◧ wmux     ]         ( Search & commands ⌘K )     [vitals][▣]│
+│ [lights][wmux      ◧]            (drag region)            [vitals][Moa]│
 ├──┬───────────────────────────────────────────────────────────────────┤
 │  │╭ sheet ────────────────────────────────────────────────────────╮ │
 │r │ sidebar   │ pane tab strip                       │ tools dock    │ │
@@ -150,11 +150,11 @@ bar is a drag region; each interactive child opts out with `no-drag`.
   The toggle takes the slot the `+` held: the segment's end while the
   sidebar is open, right after the wordmark when it is collapsed (the
   segment then takes their width instead of the rail's 48px; the look
-  paints it transparent). The toggle is the tools-panel toggle mirrored
-  (same 28px square, 16px icon and stroke; the bar drawn on the sidebar's
-  side), so the two read as a pair at the bar's two ends. **Both titlebar
-  panel toggles are bare icons:** no fill at rest and none when on — the
-  icon's filled bar and `aria-pressed` / `aria-expanded` carry the state —
+  paints it transparent). It is a 28px square with a 16px panel icon (the
+  bar drawn on the sidebar's side), the left-hand pair of Moa's panel toggle
+  at the bar's other end. **Both titlebar panel toggles are bare icons:** no
+  fill at rest and none when on — the icon and `aria-pressed` /
+  `aria-expanded` carry the state —
   only the `--hover-fill` on hover and the focus ring. The sidebar toggle's
   name stays "Show sidebar" with the state in `aria-pressed`; the tooltip
   names the action and Ctrl+Shift+B.
@@ -168,17 +168,14 @@ bar is a drag region; each interactive child opts out with `no-drag`.
   segment has no room). On a rail page (Git, Fleet, Schedules, Remote) the
   title is the page's name, with no `+` and no branch, whatever the sidebar
   does. Settings follows the Workspaces rule.
-- **Centre: the search pill.** A small filled pill, "Search & commands" with
-  the palette shortcut, centred in the drag gap. It opens the command palette
-  over whatever page is shown; it is not a page. Only the pill opts out of
-  dragging — the gap around it still drags. A narrow titlebar folds it to its
-  icon and shortcut.
+- **Centre: the drag region.** Nothing sits between the left segment and the
+  right cluster; the whole gap drags the window. The command palette has no
+  titlebar entry: ⌘K (Ctrl+K on Windows and Linux) opens it, and the rail's
+  More menu lists it so it stays discoverable.
 - **Right:** Fleet vitals as appearing chips (`N running`, `N need you`; only
   when nonzero, and dropped while Fleet is the page), the account usage when
-  it matters, then two 28px icon buttons 4px apart with the same hover fill:
-  Moa's icon while Moa is on, else the **tools-panel toggle** (icon only;
-  its name and open state are in the tooltip, accessible name and
-  `aria-expanded`; one dot when the collapsed dock holds unread channels).
+  it matters, then Moa's icon, the right panel's only toggle, while Moa is
+  on. With Moa off there is no right panel and no toggle (see Tools panel).
   Settings is not here: it lives in the rail's More menu (and ⌘,).
 - **Windows:** the native window controls sit at the right edge in the
   `titleBarOverlay` strip, drawn in the colour the frame actually paints
@@ -205,15 +202,17 @@ navigates through it.
   rail's More menu or ⌘,.
 - **The rail's foot** holds one `⋯` **More** button (named "More",
   `aria-haspopup="menu"`). Its menu, beside the rail and level with the
-  button: Settings (with ⌘,), Keyboard shortcuts (Settings › Shortcuts),
+  button: Command palette (with ⌘K), Settings (with ⌘,), Turn on Moa…
+  (only while Moa is off; opens Settings › Moa), Keyboard shortcuts
+  (Settings › Shortcuts),
   Check for updates (opens Settings › General, where the check reports, and
   starts it), then the version line as muted text. It is the pane actions
   menu's body (arrows, Enter, Escape, focus back on the button). The sidebar
   toggle is in the titlebar, so the foot carries no chevron.
-- **Moa** follows Git while Moa is on and its workspace exists: a monogram
-  `M` in the rail's stroke style (no logo). It is not a page — it opens
-  Moa's app-owned workspace on the Workspaces page, and it (not Workspaces)
-  is the current item while that workspace is active there.
+- **Moa has no rail entry.** Its panel is its home, and the panel's ⋯ menu
+  (View as terminal) shows its terminal in place. Moa's workspace stays out
+  of the workspace list; when it is the active workspace (Settings › Moa),
+  Workspaces leads back to the first listed one.
 - **Rail item:** a 19px icon on a 40px square. The current page is a soft
   `--selection` square (plus the look's `--select-ring`) marked
   `aria-current="page"`; hover is
@@ -475,9 +474,15 @@ leaves the page.
 
 ## Tools panel (Workspaces page)
 
-The dock opposite the sidebar, opened and closed from the titlebar toggle.
-Its header strip holds **Orchestrator** (the default) and, once opted in,
-**Channels**. Git is not here: it is a page on the rail.
+The dock opposite the sidebar is **Moa's**, and exists only while Moa is on.
+With Moa off nothing is drawn on that edge, the terminals take the full width
+(one refit), and the titlebar has no panel toggle; the panel's saved open
+state is kept, so turning Moa back on restores it as it was left. With Moa on,
+Moa's titlebar icon is the only toggle, and the first time Moa is ever turned
+on the panel opens once on Moa's conversation. Turning Moa on lives in
+Settings › Moa and the rail's More menu. With Moa off, task status and fan-out
+work are read in Fleet (the sidebar's Tasks line opens Fleet). Git is not here:
+it is a page on the rail.
 
 ## The one-boundary rule
 
@@ -748,7 +753,7 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-10-04 | The Git page leads with the repo: `owner/repo` with its open issue and PR counts, then Issues and Pull requests; branches and worktrees (the branch bar, the ship button) move into a secondary Worktrees tab. The Git page sits beside the tools dock instead of covering it, and an issue or PR dropped on the dock goes to Moa | The owner reads the repo's issues and PRs on this page and rarely its branches, so the branch chrome above the lists was noise. Covering the dock hid Moa exactly when work was being routed to it, and the jump from panes-plus-dock to one full-width page read as the window's proportions changing. Measuring the dock instead of reflowing keeps every terminal at its size |
 | 2026-10-04 | The repo name in the Git page header is a repo switcher (All repos, each open workspace's repo, Follow active workspace); it replaces the This repo / All repos control. A pick sticks across workspace switches and restarts | The owner asked how to move between repos on the page. A page that jumped whenever the active workspace changed made reading another repo's issues impossible, and one control in the place the eye already reads the repo name beats a second, separate scope control |
 | 2026-10-04 | On a rail page the titlebar names the page (Git, Fleet, Schedules, Remote) and hides `+` and the workspace's name and branch; Search & commands stays | Owner feedback: the workspace's title and New workspace read as part of the Git page while they act on the Workspaces page under it. Search & commands is global, so it stays |
-| 2026-10-05 | Owner feedback, one PR: the titlebar shows New workspace and the workspace's name and branch only while the sidebar is collapsed; the order is `wmux` then a sidebar toggle mirroring the tools-panel toggle, both bare icons with no rest or on fill; Settings leaves the titlebar for a `⋯` More menu at the rail's foot (Settings, Keyboard shortcuts, Check for updates, version), replacing the collapse chevron; the sidebar eases open and closed in 190ms with one PTY refit per pane; every rail page but Settings sits beside the tools dock; Moa's HQ is off the Fleet board, its counts, the titlebar vitals and fleet_triage, and Fleet rows gain Role…; Moa's panel drops its roster and control rows for one header `⋯` menu and scrolls as one column | The open sidebar already shows New workspace and the active workspace, so the titlebar repeated them. The brand anchors the corner, and a toggle that matches the other end's reads as a pair. Rarely used controls and duplicated sections crowded Moa's panel, clipped its decision cards and repeated the briefing. Moa vanished on Fleet, Schedules and Remote and its button navigated away; Moa is the main bot, not a worker. Refitting per animation frame would thrash every terminal. Removing the roster took away the only GUI for a pane's role, so Fleet rows carry it now |
+| 2026-10-05 | Owner feedback, one PR: the right panel and its toggle exist only while Moa is on; the titlebar shows New workspace and the workspace's name and branch only while the sidebar is collapsed, and drops the search pill (⌘K and the More menu open the palette); the rail drops the Moa `M` entry; the order is `wmux` then a sidebar toggle mirroring the tools-panel toggle, both bare icons with no rest or on fill; Settings leaves the titlebar for a `⋯` More menu at the rail's foot (Settings, Keyboard shortcuts, Check for updates, version), replacing the collapse chevron; the sidebar eases open and closed in 190ms with one PTY refit per pane; every rail page but Settings sits beside the tools dock; Moa's HQ is off the Fleet board, its counts, the titlebar vitals and fleet_triage, and Fleet rows gain Role…; Moa's panel drops its roster and control rows for one header `⋯` menu and scrolls as one column | The open sidebar already shows New workspace and the active workspace, so the titlebar repeated them. The rail's `M` read as a mystery letter and duplicated Moa's panel; the search pill duplicated ⌘K, which the More menu now lists. With Moa off the panel held only an off card and a ledger Fleet already shows. The brand anchors the corner, and a toggle that matches the other end's reads as a pair. Rarely used controls and duplicated sections crowded Moa's panel, clipped its decision cards and repeated the briefing. Moa vanished on Fleet, Schedules and Remote and its button navigated away; Moa is the main bot, not a worker. Refitting per animation frame would thrash every terminal. Removing the roster took away the only GUI for a pane's role, so Fleet rows carry it now |
 | 2026-10-05 | A fan-out task's mission channel reads in Fleet, as the selected task's Conversation at the foot beside the preview; Moa's task cards, Waiting on you and the deck ledger link to it. No channel list returns | The Channels tab left with the Moa-only right panel (#1771), and with it the only desktop view of worker reports, instructions and ledger transitions. The foot is already Fleet's selection detail, so the conversation follows the selection without reflowing the columns |
 
 ### Desktop conversation view
