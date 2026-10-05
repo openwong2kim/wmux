@@ -645,3 +645,29 @@ describe('HooksInstallPrompt — first boot (never on top of the Welcome dialog)
     expect(el.textContent).toContain('hooks.prompt.doneTitle');
   });
 });
+
+describe('HooksInstallPrompt launch-check signal (first-boot queue)', () => {
+  it('reports the launch check done after it asked, and when there was nothing to ask', async () => {
+    const asked = vi.fn();
+    const el = render(<HooksInstallPrompt api={apiOf()} t={t} onLaunchCheckDone={asked} />);
+    await flush();
+    await flush();
+    expect(el.querySelector('[data-hooks-install-prompt]')).toBeTruthy();
+    expect(asked).toHaveBeenCalledTimes(1);
+
+    const quiet = vi.fn();
+    render(
+      <HooksInstallPrompt api={apiOf({ status: async () => ({ installed: true }) })} t={t} onLaunchCheckDone={quiet} />,
+    );
+    await flush();
+    await flush();
+    expect(quiet).toHaveBeenCalledTimes(1);
+  });
+
+  it('a skipped launch check is done at once', async () => {
+    const done = vi.fn();
+    render(<HooksInstallPrompt api={apiOf()} t={t} launchCheck="skip" onLaunchCheckDone={done} />);
+    await flush();
+    expect(done).toHaveBeenCalledTimes(1);
+  });
+});

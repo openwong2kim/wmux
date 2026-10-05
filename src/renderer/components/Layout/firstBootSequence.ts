@@ -19,6 +19,9 @@ export interface FirstBootQueueState {
   firstRunSettled: boolean;
   /** session.load() has resolved or failed. */
   sessionSettled: boolean;
+  /** Launch-time checks that may open their own dialog (the hooks install
+   *  ask) have answered, so nothing queued opens in the same moment. */
+  launchChecksSettled: boolean;
   /** The first-run wizard (either mode) is mounted. */
   wizardOpen: boolean;
   /**
@@ -53,7 +56,7 @@ export interface FirstBootQueueState {
  * keyboard cheat sheet (once, after the tour).
  */
 export function nextFirstBootSurface(s: FirstBootQueueState): FirstBootSurface | null {
-  if (!s.firstRunSettled || !s.sessionSettled) return null;
+  if (!s.firstRunSettled || !s.sessionSettled || !s.launchChecksSettled) return null;
   if (s.wizardOpen || s.surfaceShowing || s.otherSurfaceOpen) return null;
   // A fresh install answered the update question in the wizard and has no
   // previous version to announce changes against.

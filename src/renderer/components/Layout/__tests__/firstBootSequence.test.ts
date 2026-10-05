@@ -10,6 +10,7 @@ import type { FirstBootQueueState } from '../firstBootSequence';
 const idle: FirstBootQueueState = {
   firstRunSettled: true,
   sessionSettled: true,
+  launchChecksSettled: true,
   wizardOpen: false,
   wizardRanThisBoot: false,
   otherSurfaceOpen: false,
@@ -46,10 +47,12 @@ describe('nextFirstBootSurface — ordering', () => {
     expect(nextFirstBootSurface(s)).toBeNull();
   });
 
-  it('waits for both probes to settle', () => {
+  it('waits for the probes and the launch-time hooks check to settle', () => {
     const s = { ...idle, featureNoticePending: true };
     expect(nextFirstBootSurface({ ...s, firstRunSettled: false })).toBeNull();
     expect(nextFirstBootSurface({ ...s, sessionSettled: false })).toBeNull();
+    // The hooks ask opens after an async probe: the toast must not land with it.
+    expect(nextFirstBootSurface({ ...s, launchChecksSettled: false })).toBeNull();
     expect(nextFirstBootSurface(s)).toBe('featureNotice');
   });
 

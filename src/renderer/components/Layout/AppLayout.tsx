@@ -854,6 +854,12 @@ export default function AppLayout() {
   const [featureNoticePending, setFeatureNoticePending] = useState(false);
   const settingsPanelVisible = useStore((s) => s.settingsPanelVisible);
   const modalLayerCount = useSyncExternalStore(subscribeModalLayers, openModalLayerCount);
+  // The launch-time hooks check has answered (or has no bridge to ask): its
+  // dialog opens after an async probe, so the queue waits for that answer.
+  const [hooksLaunchCheckDone, setHooksLaunchCheckDone] = useState(
+    () => !window.electronAPI?.deck?.hooksBridge,
+  );
+  const handleHooksLaunchCheckDone = useCallback(() => setHooksLaunchCheckDone(true), []);
   const t = useT();
 
   useRefusedInstallNotice(t);
@@ -1621,6 +1627,8 @@ export default function AppLayout() {
   const firstBootNext = nextFirstBootSurface({
     firstRunSettled: firstRunProbeSettled,
     sessionSettled: sessionLoaded || sessionLoadFailed,
+    launchChecksSettled: hooksLaunchCheckDone
+      || hooksLaunchCheck({ firstRunSettled: firstRunProbeSettled, firstRunWizardRanThisBoot }) === 'skip',
     wizardOpen: showFirstRunWizard !== null,
     wizardRanThisBoot: firstRunWizardRanThisBoot,
     otherSurfaceOpen: modalLayerCount > 0 || settingsPanelVisible,
@@ -1633,6 +1641,9 @@ export default function AppLayout() {
     cheatSheetPending: !cheatSheetDismissed,
   });
   useEffect(() => {
+    // A dialog that mounted in this same commit has registered its layer
+    // already (child effects run first) but not yet re-rendered us.
+    if (!firstBootNext || openModalLayerCount() > 0) return;
     const st = useStore.getState();
     switch (firstBootNext) {
       case 'autoUpdatePrompt':
@@ -1651,7 +1662,7 @@ export default function AppLayout() {
         st.setCheatSheetForceShown(true);
         break;
     }
-  }, [firstBootNext, startOnboarding]);
+  }, [firstBootNext, modalLayerCount, startOnboarding]);
 
   // Re-reconcile when daemon connects late (respawn/reconnect after the
   // startup reconcile already ran). Gating + abort/timeout/preserve logic
@@ -2234,6 +2245,7 @@ export default function AppLayout() {
         t={t}
         launchCheck={hooksLaunchCheck({ firstRunSettled: firstRunProbeSettled, firstRunWizardRanThisBoot })}
         deferred={showFirstRunWizard !== null}
+        onLaunchCheckDone={handleHooksLaunchCheckDone}
       />
       </div>
       </div>

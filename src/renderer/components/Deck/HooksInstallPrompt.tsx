@@ -69,6 +69,7 @@ export function HooksInstallPrompt({
   checkOnMount = true,
   launchCheck = 'check',
   deferred = false,
+  onLaunchCheckDone,
 }: {
   api: HooksBridgeApi;
   t: (key: string) => string;
@@ -82,6 +83,10 @@ export function HooksInstallPrompt({
    *  initial ask stays pending and is re-checked once this clears, instead of
    *  opening on top. An install or refusal already in flight stays visible. */
   deferred?: boolean;
+  /** The launch-time check has answered (asked, or found nothing to ask). The
+   *  first-boot queue holds its own surfaces until then, so nothing opens in
+   *  the same moment as this dialog. */
+  onLaunchCheckDone?: () => void;
 }): React.ReactElement | null {
   const [phase, setPhase] = useState<Phase>('hidden');
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
@@ -118,7 +123,7 @@ export function HooksInstallPrompt({
   // Both triggers funnel here: consult the durable refusal, then verify hooks
   // are actually missing, then show. Status errors fail-soft to "don't prompt"
   // — a broken status check must never nag a user whose hooks are fine.
-  const maybePrompt = useCallback(() => {
+  const maybePrompt = useCallback((): Promise<void> => {
     const epoch = dismissEpochRef.current;
     const seq = ++prefSeqRef.current;
     const checkStatus = () =>
@@ -135,11 +140,8 @@ export function HooksInstallPrompt({
           // are fine.
         });
     // Older preload: no durable preference to consult, behave as before.
-    if (!api.getPromptPreference) {
-      void checkStatus();
-      return;
-    }
-    api
+    if (!api.getPromptPreference) return checkStatus();
+    return api
       .getPromptPreference()
       .then((pref) => {
         // Superseded by a newer read — that one owns the cache and will run
@@ -163,7 +165,7 @@ export function HooksInstallPrompt({
         // otherwise stand on the last one, so an IPC hiccup cannot re-nag
         // someone who already refused.
         if (lastKnownSuppressedRef.current === true) return;
-        void checkStatus();
+        return checkStatus();
       });
   }, [api]);
 
@@ -209,10 +211,14 @@ export function HooksInstallPrompt({
   // One launch check per mount, and only once the gate opens: a fresh profile
   // mounts this before the first-run probe knows the wizard is coming.
   const launchCheckDoneRef = useRef(false);
+  const onLaunchCheckDoneRef = useRef(onLaunchCheckDone);
+  onLaunchCheckDoneRef.current = onLaunchCheckDone;
   useEffect(() => {
     if (!checkOnMount || launchCheckDoneRef.current || launchCheck === 'wait') return;
     launchCheckDoneRef.current = true;
-    if (launchCheck === 'check') maybePrompt();
+    const done = () => onLaunchCheckDoneRef.current?.();
+    if (launchCheck === 'check') void maybePrompt().finally(done);
+    else done();
   }, [checkOnMount, launchCheck, maybePrompt]);
 
   // Deferral ended with an ask still pending: that ask is as old as the
@@ -350,14 +356,24 @@ export function HooksInstallPromptContainer({
   t,
   launchCheck,
   deferred,
+  onLaunchCheckDone,
 }: {
   t: (key: string) => string;
   launchCheck?: HooksLaunchCheck;
   deferred?: boolean;
+  onLaunchCheckDone?: () => void;
 }): React.ReactElement | null {
   const api = (window as unknown as {
     electronAPI?: { deck?: { hooksBridge?: HooksBridgeApi } };
   }).electronAPI?.deck?.hooksBridge;
   if (!api) return null;
-  return <HooksInstallPrompt api={api} t={t} launchCheck={launchCheck} deferred={deferred} />;
+  return (
+    <HooksInstallPrompt
+      api={api}
+      t={t}
+      launchCheck={launchCheck}
+      deferred={deferred}
+      onLaunchCheckDone={onLaunchCheckDone}
+    />
+  );
 }
