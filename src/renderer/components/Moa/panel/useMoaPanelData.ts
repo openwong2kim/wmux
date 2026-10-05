@@ -3,6 +3,7 @@
 // change signals instead of polling.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { MoaPendingDecision } from '../../../../shared/moa';
+import type { MoaAutoHandoffReceipt } from '../../../../shared/moaHandoff';
 import { deriveLinkState, type WorkLink, type WorkLinkFilter } from '../../../../shared/workLink';
 
 export interface MoaDecisionsApi {
@@ -112,4 +113,34 @@ export function useWorkLinks(enabled: boolean, api: WorkLinksApi | undefined = d
     EMPTY_LINKS,
   );
   return value;
+}
+
+export interface MoaHandoffReceiptsApi {
+  handoffReceipts: () => Promise<{ receipts: MoaAutoHandoffReceipt[] }>;
+  handoffStop: (args: { id: string }) => Promise<{ ok: boolean }>;
+  onChanged?: (cb: () => void) => () => void;
+}
+
+const EMPTY_RECEIPTS: MoaAutoHandoffReceipt[] = [];
+
+export const defaultReceiptsApi = (): MoaHandoffReceiptsApi | undefined => {
+  const moa = window.electronAPI?.deck?.moa;
+  return moa?.handoffReceipts
+    ? { handoffReceipts: moa.handoffReceipts, handoffStop: moa.handoffStop, onChanged: moa.onChanged }
+    : undefined;
+};
+
+/** Moa's recent auto hand-offs, newest first; re-read on DECK_MOA_CHANGED. */
+export function useMoaHandoffReceipts(api: MoaHandoffReceiptsApi | undefined) {
+  const receiptsFn = api?.handoffReceipts;
+  const read = useCallback(
+    () => receiptsFn!().then((r) => [...(r?.receipts ?? [])].sort((a, b) => b.at - a.at)),
+    [receiptsFn],
+  );
+  const { value, refresh } = useReread<MoaAutoHandoffReceipt[]>(
+    receiptsFn ? read : null,
+    api?.onChanged ?? null,
+    EMPTY_RECEIPTS,
+  );
+  return { receipts: value, refresh };
 }

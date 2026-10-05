@@ -797,6 +797,15 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
             data-testid="moa-issue-proposals"
           />
         </SettingRow>
+        <SettingRow id="moaautohandoff" label={t('moa.settings.autoHandoff')} description={t('moa.settings.autoHandoffDesc')}>
+          <Switch
+            checked={moa?.config.autoHandoff !== false}
+            onCheckedChange={(v) => { void patchConfig({ autoHandoff: v }); }}
+            aria-label={t('moa.settings.autoHandoff')}
+            disabled={!loaded}
+            data-testid="moa-auto-handoff"
+          />
+        </SettingRow>
         <SettingRow id="moaissuepoll" label={t('moa.settings.issuePoll')} description={t('moa.settings.issuePollDesc')}>
           <Input
             type="number"

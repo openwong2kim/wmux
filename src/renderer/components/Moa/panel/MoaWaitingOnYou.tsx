@@ -10,6 +10,7 @@ import Button from '../../ui/Button';
 import Input from '../../ui/Input';
 import { FOCUS_RING } from '../../focusRing';
 import { MoaMemoryCard, type MoaMemoryCardApi } from '../MoaMemoryCard';
+import { MoaHandoffCard, type HandoffResolve } from './MoaHandoffCard';
 
 export type ResolveDecision = (args: { workspaceId: string; id: string; resolution: string }) => Promise<{ ok: boolean; code?: string }>;
 
@@ -26,6 +27,7 @@ export function MoaWaitingOnYou({
   decisions,
   onResolve,
   memoryApi,
+  handoffResolve,
   conversationTaskId,
   onOpenConversation,
   t,
@@ -38,6 +40,8 @@ export function MoaWaitingOnYou({
   onResolve: ResolveDecision;
   /** Injected in tests; the card defaults to the preload. */
   memoryApi?: MoaMemoryCardApi;
+  /** Answers a hand-off card; defaults to the preload. */
+  handoffResolve?: HandoffResolve;
   t: (key: string, vars?: Record<string, string | number>) => string;
 }): React.ReactElement | null {
   // The memory card fetches its own card (and re-reads on DECK_MOA_CHANGED),
@@ -85,6 +89,12 @@ export function MoaWaitingOnYou({
     } catch {
       return false;
     }
+    markAnswered(d);
+    return true;
+  };
+
+  // A row leaves: focus moves to its neighbour, or to the panel's top region.
+  const markAnswered = (d: MoaPendingDecision) => {
     if (total === 1) {
       // The last one: the section goes away, so focus moves to the panel's
       // top region (it is focusable for exactly this) rather than the page.
@@ -93,7 +103,6 @@ export function MoaWaitingOnYou({
       refocusAt.current = visible.findIndex((v) => v.decision.id === d.decision.id);
     }
     setAnswered((prev) => new Set(prev).add(d.decision.id));
-    return true;
   };
 
   return (
@@ -111,7 +120,16 @@ export function MoaWaitingOnYou({
         <li data-moa-memory-row className={memoryPending ? 'flex flex-col min-h-0' : 'hidden'}>
           <MoaMemoryCard api={memoryApi} onPendingChange={setMemoryPending} t={t} />
         </li>
-        {visible.map((d) => (
+        {visible.map((d) => d.handoff ? (
+          <MoaHandoffCard
+            key={d.decision.id}
+            item={d}
+            handoff={d.handoff}
+            resolve={handoffResolve}
+            onDone={() => markAnswered(d)}
+            t={t}
+          />
+        ) : (
           <DecisionRow
             key={d.decision.id}
             item={d}

@@ -567,6 +567,7 @@ const electronAPI = {
         ...(opts?.waitQuiet ? { waitQuiet: true } : {}),
         ...(opts?.waitQuiet && opts.expectAgent ? { expectAgent: opts.expectAgent } : {}),
         ...(opts?.waitQuiet && opts.deadlineAt !== undefined ? { deadlineAt: opts.deadlineAt } : {}),
+        ...(opts?.waitQuiet && typeof opts.guardKey === 'string' ? { guardKey: opts.guardKey } : {}),
       }) as Promise<
         import('../shared/ptyMessageDelivery').GatedSubmitResult
       >,
@@ -825,6 +826,14 @@ const electronAPI = {
       // Every workspace's pending decision ("Waiting on you").
       decisions: () =>
         ipcRenderer.invoke(IPC.DECK_MOA_DECISIONS) as Promise<{ decisions: import('../shared/moa').MoaPendingDecision[] }>,
+      // Moa's hand-offs: answer a hand-off card (a body only when the operator
+      // edited it), the recent auto hand-offs, and stopping one of them.
+      handoffResolve: (args: import('../shared/moaHandoff').MoaHandoffResolveRequest) =>
+        ipcRenderer.invoke(IPC.DECK_MOA_HANDOFF_RESOLVE, args) as Promise<import('../shared/moaHandoff').MoaHandoffResolveResult>,
+      handoffReceipts: () =>
+        ipcRenderer.invoke(IPC.DECK_MOA_HANDOFF_RECEIPTS) as Promise<{ receipts: import('../shared/moaHandoff').MoaAutoHandoffReceipt[] }>,
+      handoffStop: (args: { id: string }) =>
+        ipcRenderer.invoke(IPC.DECK_MOA_HANDOFF_STOP, args) as Promise<{ ok: boolean }>,
       // The HQ brain's transcript as turn events (chat look over the terminal brain).
       transcript: {
         status: () =>

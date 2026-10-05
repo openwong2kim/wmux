@@ -23,6 +23,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
 import type { WorkspaceDecision } from '../../../main/deck/deckDecisionStore';
+import { HANDOFF_NOTICE_OPTION } from '../../../shared/moaHandoff';
 
 export interface DeckDecisionApi {
   get: (workspaceId: string) => Promise<{ decision: WorkspaceDecision | null }>;
@@ -132,6 +133,13 @@ export function DeckDecisionCard({
   // transient (consumed by the resuming turn).
   if (!decision || decision.status !== 'pending') return null;
 
+  // A hand-off Moa proposed is answered in Moa's panel only (it has Edit and
+  // the full body there); here it just says so. Main's one-option failure
+  // notice ("OK") stays answerable in place.
+  const handoffElsewhere =
+    decision.origin === 'moa-handoff' &&
+    !(decision.options.length === 1 && decision.options[0] === HANDOFF_NOTICE_OPTION);
+
   const submit = async (resolution: string): Promise<void> => {
     const text = resolution.trim();
     if (!text || submitting || !workspaceId) return;
@@ -171,7 +179,12 @@ export function DeckDecisionCard({
           {decision.context}
         </div>
       )}
-      {decision.options.length > 0 && (
+      {handoffElsewhere && (
+        <div data-deck-decision-handoff className="text-[12px] text-[color-mix(in_srgb,var(--text-main)_70%,transparent)]" {...tokenAttrs('textMain', 'text')}>
+          {t('deck.decisionHandoffElsewhere') || "Moa proposed a hand-off here. Answer it in Moa's panel."}
+        </div>
+      )}
+      {!handoffElsewhere && decision.options.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
           {decision.options.map((opt) => (
             <button
@@ -187,7 +200,7 @@ export function DeckDecisionCard({
           ))}
         </div>
       )}
-      <div className="flex items-center gap-2">
+      {!handoffElsewhere && <div className="flex items-center gap-2">
         <input
           type="text"
           data-decision-answer
@@ -211,7 +224,7 @@ export function DeckDecisionCard({
         >
           {t('deck.decisionResolve') || 'Resolve'}
         </button>
-      </div>
+      </div>}
     </div>
   );
 }

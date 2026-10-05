@@ -7,7 +7,10 @@ import { useStore } from '../../../stores';
 import type { MoaPendingDecision } from '../../../../shared/moa';
 import { MoaWaitingOnYou, answeredElsewhere, type ResolveDecision } from './MoaWaitingOnYou';
 import { MoaTaskCards } from './MoaTaskCards';
-import { selectTaskCards, useWorkLinks, type WorkLinksApi } from './useMoaPanelData';
+import { defaultReceiptsApi, selectTaskCards, useWorkLinks, type MoaHandoffReceiptsApi, type WorkLinksApi } from './useMoaPanelData';
+import { defaultHandoffResolve, type HandoffResolve } from './MoaHandoffCard';
+import { MoaHandoffReceipts } from './MoaHandoffReceipts';
+import { focusNotificationTarget, focusPaneByPtyId, type FocusTargetState } from '../../../hooks/useNotificationListener';
 import type { CommanderViewProps } from '../../Deck/CommanderView';
 
 type T = (key: string, vars?: Record<string, string | number>) => string;
@@ -18,11 +21,23 @@ const defaultResolve: ResolveDecision = async (args) => {
   return resolve(args);
 };
 
+/** Jump to a pane: by its pty when known (Fleet's path), else the workspace
+ *  and then the pane inside it. */
+export function openMoaPane(workspaceId: string, paneId?: string, ptyId?: string): void {
+  const get = () => useStore.getState() as unknown as FocusTargetState;
+  if (ptyId && focusPaneByPtyId(get, ptyId)) return;
+  focusNotificationTarget(get, { workspaceId });
+  if (paneId) useStore.getState().focusPaneSurface(workspaceId, paneId);
+}
+
 export function MoaPanelTop({
   decisions,
   onResolved,
   resolve = defaultResolve,
   linksApi,
+  handoffResolve = defaultHandoffResolve,
+  receiptsApi,
+  onOpenPane = openMoaPane,
   t,
 }: {
   decisions: readonly MoaPendingDecision[];
@@ -30,6 +45,9 @@ export function MoaPanelTop({
   onResolved?: () => void;
   resolve?: ResolveDecision;
   linksApi?: WorkLinksApi;
+  handoffResolve?: HandoffResolve;
+  receiptsApi?: MoaHandoffReceiptsApi;
+  onOpenPane?: (workspaceId: string, paneId?: string) => void;
   t: T;
 }): React.ReactElement {
   const links = useWorkLinks(true, linksApi ?? window.electronAPI?.workLinks);
@@ -50,6 +68,12 @@ export function MoaPanelTop({
     if (r.ok || answeredElsewhere(r)) onResolved?.();
     return r;
   }, [resolve, onResolved]);
+  const onHandoffResolve = useCallback<HandoffResolve>(async (req) => {
+    const r = await handoffResolve(req);
+    if (r.ok || r.code === 'not_pending') onResolved?.();
+    return r;
+  }, [handoffResolve, onResolved]);
+  const receipts = useMemo(() => receiptsApi ?? defaultReceiptsApi(), [receiptsApi]);
   // Main names a decision's workspace when it knows it; fall back to ours.
   const named = useMemo(
     () => decisions.map((d) => (d.workspaceName ? d : { ...d, workspaceName: workspaceName(d.workspaceId) })),
@@ -58,10 +82,11 @@ export function MoaPanelTop({
   return (
     // Focusable so an answer that empties the list has somewhere to put focus.
     <div data-moa-panel-top tabIndex={-1} className="shrink-0 max-h-[30%] overflow-y-auto outline-none">
-      <MoaWaitingOnYou decisions={named} onResolve={onResolve}
+      <MoaHandoffReceipts api={receipts} workspaceName={workspaceName} onOpenPane={onOpenPane} t={t} />
+      <MoaWaitingOnYou decisions={named} onResolve={onResolve} handoffResolve={onHandoffResolve}
         conversationTaskId={conversationTaskId} onOpenConversation={openConversation} t={t} />
       <MoaTaskCards links={cards} pendingDecisions={decisions} workspaceName={workspaceName}
-        conversationTaskId={conversationTaskId} onOpenConversation={openConversation} t={t} />
+        conversationTaskId={conversationTaskId} onOpenConversation={openConversation} onOpenPane={onOpenPane} t={t} />
     </div>
   );
 }

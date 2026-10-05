@@ -3,6 +3,8 @@
 // shows what hangs off it: the decisions it raised that still wait, the A2A
 // task's state, and the PR. Colour carries state only: needs-you is yellow,
 // blocked is red, everything else stays neutral.
+// Work Moa handed off (origin moa / moa-auto) also shows the worker's last
+// question (untrusted agent text, plain text only) and a way to its pane.
 import { useState } from 'react';
 import type { MoaPendingDecision } from '../../../../shared/moa';
 import type { WorkLink } from '../../../../shared/workLink';
@@ -28,6 +30,7 @@ export function MoaTaskCards({
   onOpenPr = openPrExternally,
   conversationTaskId,
   onOpenConversation,
+  onOpenPane,
   t,
 }: {
   links: readonly WorkLink[];
@@ -38,6 +41,8 @@ export function MoaTaskCards({
   conversationTaskId?: (workspaceId: string) => string | undefined;
   /** Show that task's conversation in Fleet. */
   onOpenConversation?: (taskId: string) => void;
+  /** Focus the pane doing the work. */
+  onOpenPane?: (workspaceId: string, paneId?: string) => void;
   t: T;
 }): React.ReactElement | null {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
@@ -61,6 +66,8 @@ export function MoaTaskCards({
           const decisions = link.decisionIds.map((id) => pendingById.get(id)).filter((d): d is MoaPendingDecision => !!d);
           const owner = workspaceName(link.owner.workspaceId) || t('moa.panel.unknownWorkspace');
           const taskId = onOpenConversation ? conversationTaskId?.(link.owner.workspaceId) : undefined;
+          const fromMoa = link.origin === 'moa' || link.origin === 'moa-auto';
+          const a2aId = fromMoa && !taskId ? link.a2aTaskId : undefined;
           return (
             <li key={link.id} data-moa-task={link.id} data-state={link.state}>
               {/* Disclosure: focus stays on this button when it opens; the
@@ -77,8 +84,15 @@ export function MoaTaskCards({
                   <IconChevron size={12} />
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block text-[13px] text-[var(--text-main)] truncate">
-                    {link.title || t('moa.panel.untitledTask')}
+                  <span className="flex items-center gap-1.5 min-w-0">
+                    <span className="min-w-0 truncate text-[13px] text-[var(--text-main)]">
+                      {link.title || t('moa.panel.untitledTask')}
+                    </span>
+                    {link.origin === 'moa-auto' && (
+                      <span className="shrink-0 rounded px-1 text-[10px] leading-[14px] text-[var(--text-sub)] border border-[var(--line)]" data-moa-task-auto>
+                        {t('moa.panel.autoTag')}
+                      </span>
+                    )}
                   </span>
                   <span className="block text-[11px] text-[var(--text-sub)] truncate">
                     <span className={STATE_CLASS[link.state]} data-moa-task-state>{t(`moa.panel.state.${link.state}`)}</span>
@@ -101,6 +115,11 @@ export function MoaTaskCards({
                   )}
                   {link.a2aState && (
                     <div data-moa-task-a2a>{t('moa.panel.a2aLine', { state: t(`moa.panel.a2a.${link.a2aState}`) })}</div>
+                  )}
+                  {fromMoa && link.lastQuestion && (
+                    <div data-moa-task-last-question className="max-h-[120px] overflow-y-auto whitespace-pre-wrap break-words">
+                      {t('moa.panel.lastQuestion', { text: link.lastQuestion.text })}
+                    </div>
                   )}
                   {link.pr && (
                     <div data-moa-task-pr className="flex items-center gap-1.5 min-w-0">
@@ -134,7 +153,23 @@ export function MoaTaskCards({
                       {t('moa.panel.openConversation')}
                     </button>
                   )}
-                  {decisions.length === 0 && !link.a2aState && !link.pr && !taskId && (
+                  {a2aId && (
+                    <div data-moa-task-a2a-id className="min-w-0 break-all">
+                      {t('moa.panel.a2aTaskId')}{' '}
+                      <span className="select-all font-mono text-[11px] text-[var(--text-main)]">{a2aId}</span>
+                    </div>
+                  )}
+                  {fromMoa && onOpenPane && (
+                    <button
+                      type="button"
+                      onClick={() => onOpenPane(link.owner.workspaceId, link.owner.paneId)}
+                      className={`self-start text-[var(--accent)] hover:underline underline-offset-2 ${FOCUS_RING}`}
+                      data-moa-task-open-pane
+                    >
+                      {t('moa.panel.openPane')}
+                    </button>
+                  )}
+                  {decisions.length === 0 && !link.a2aState && !link.pr && !taskId && !a2aId && !(fromMoa && (onOpenPane || link.lastQuestion)) && (
                     <div>{t('moa.panel.taskNoDetails')}</div>
                   )}
                 </div>
