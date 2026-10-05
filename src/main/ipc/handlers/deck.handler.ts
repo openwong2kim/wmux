@@ -292,8 +292,8 @@ export function buildFleetTailLine(snapshot: FleetSnapshot | null): string | und
 /** The HQ's ramp level, injected with the ambient blocks on the HQ's turns. */
 export const MOA_LEVEL_LINES: Record<1 | 2 | 3, string> = {
   1: '[moa] Level 1 — observe and report: surface decisions and completion reports to the human. Delegate work only when the human asks you to.',
-  2: '[moa] Level 2 — delegate on request: when the human asks, plan and delegate the work to workspace agents and track it.',
-  3: '[moa] Level 3 — autonomous: you may delegate and follow through on your own, within the workspace modes.',
+  2: '[moa] Level 2 — delegate on request: when the human asks, plan the work, delegate it to workspace agents via moa_propose_handoff, and track it.',
+  3: '[moa] Level 3 — autonomous: you may delegate (via moa_propose_handoff) and follow through on your own, within the workspace modes.',
 };
 
 export function renderAutonomyBlock(mode: AgentMode): string | null {

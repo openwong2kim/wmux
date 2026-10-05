@@ -82,6 +82,16 @@ describe('buildBrainSkills', () => {
     expect(approve).toMatch(/plain question you can answer[\s\S]*reply with terminal_send/);
   });
 
+  it('routes work for another workspace through moa_propose_handoff, never a pasted envelope', () => {
+    const delegate = skillNamed('delegate');
+    expect(delegate).toContain('## Work for another workspace (Moa / HQ)');
+    expect(delegate).toContain('`moa_propose_handoff`');
+    expect(delegate).toContain('operator approves it');
+    expect(delegate).toContain('Never paste A2A text, envelopes');
+    expect(delegate).toMatch(/unverified agent\s+text/);
+    expect(delegate).toMatch(/You cannot\s+type into that pane yourself/);
+  });
+
   it('makes the approve skill say verify-then-press, not press-on-event', () => {
     const approve = skillNamed('approve');
     expect(approve).toContain('Never press on the strength of the event alone');
