@@ -55,7 +55,8 @@ import { useWindowDisplayed } from './useWindowDisplayed';
 import { createDeadInputWatchdog } from '../terminal/deadInputWatchdog';
 import { awaitParseBarrier } from '../terminal/parseBarrier';
 import { STALE_REPLAY_INPUT_MODE_RESETS, STALE_REPLAY_ALIVE_SHELL_RESETS, STALE_REPLAY_DISPLAY_RESETS, staleReplayResetLevel } from '../../shared/terminal/staleReplayModeReset';
-import { installShellPromptModeReset } from '../../shared/terminal/shellPromptModeReset';
+import { installShellPromptModeReset, shellPromptModeResetFor } from '../../shared/terminal/shellPromptModeReset';
+import { paneForegroundProbe } from '../terminal/paneForegroundProbe';
 import { attachAltScreenWheel, PAGE_SCROLL_AGENTS } from '../terminal/altScreenWheel';
 import { RestingCursorGuard } from '../terminal/restingCursor';
 import { restoreSeam } from '../../shared/restoreSeam';
@@ -976,6 +977,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         const fromBottom = Math.max(0, term.buffer.active.baseY - term.buffer.active.viewportY);
         discardTerminalOutput(term);
         term.reset();
+        shellPromptModeResetFor(term)?.reset();
         // Historical bytes — clipboard bridge muted (#998).
         writeReplayed(term, bytes, replayMuteRef.current);
         term.write(STALE_REPLAY_INPUT_MODE_RESETS);
@@ -1258,7 +1260,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // junk. The guard watches this pane's own OSC 133 prompt marks and clears
     // those modes terminal-side once the shell owns the pane again. Once per
     // terminal, not per mount: an adopted terminal keeps the state it folded.
-    installShellPromptModeReset(terminal);
+    // #1794: on the desktop the reset also waits for process truth, so a TUI
+    // still alive behind the prompt (background launch, Ctrl+Z) keeps its
+    // mouse. Each mount binds its own probe (an adopting mount replaces it).
+    const promptModeGuard = installShellPromptModeReset(terminal, {
+      isForegroundGone: paneForegroundProbe(ptyId, window.electronAPI.pty),
+    });
 
     const fitAddon = fixedGeometryRef.current
       ? new FixedGeometryFitAddon(() => fixedGeometryRef.current)
@@ -2425,6 +2432,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // own bracketed-paste markers if it pre-wrapped the payload.
     let inputBuffer = '';
     const onDataDisposable = terminal.onData((data) => {
+      // #1794: a reset is owed for leaked mouse / focus modes but has not
+      // applied yet (process truth pending, or queued behind output): the
+      // reports are the dead TUI's, not the shell's. Before anything else.
+      if (promptModeGuard.dropsReport(data)) return;
       // X6 ②: the user is driving this shell themselves — retract any pending
       // resume offer so the pill can't fire into a session they've moved on in.
       //
@@ -2552,6 +2563,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       const fromBottom = Math.max(0, terminal.buffer.active.baseY - terminal.buffer.active.viewportY);
       discardTerminalOutput(terminal); // stale retained backlog + dirty flag
       terminal.reset();
+      shellPromptModeResetFor(terminal)?.reset();
       // The scanner labels every held chunk at its source. Historical bytes
       // are muted for their exact parse lifetime; live output is not muted.
       for (const chunk of st.buffer) {
@@ -2738,7 +2750,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         lastFlushRecoveredBytes = recoveredBytes;
         if (pendingFlushReset) {
           pendingFlushReset = false;
-          if (recoveredBytes > 0) terminal.reset();
+          if (recoveredBytes > 0) {
+            terminal.reset();
+            shellPromptModeResetFor(terminal)?.reset();
+          }
         }
         resetStaleReplayModes(recoveredBytes);
       });
@@ -2805,7 +2820,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
               // bytes to xterm before reset() so the byte order xterm sees is
               // identical to the old direct-write path.
               flushTerminalOutput(terminal);
-              if (lastFlushRecoveredBytes > 0) terminal.reset();
+              if (lastFlushRecoveredBytes > 0) {
+                terminal.reset();
+                shellPromptModeResetFor(terminal)?.reset();
+              }
             } else {
               pendingFlushReset = true;
             }

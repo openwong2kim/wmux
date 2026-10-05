@@ -12,5 +12,5 @@ export {
   staleReplayResetLevel,
 } from './staleReplayModeReset';
 export { gateUserInput } from './userInputGate';
-export { installShellPromptModeReset } from './shellPromptModeReset';
+export { installShellPromptModeReset, shellPromptModeResetFor } from './shellPromptModeReset';
 export { capSixelImageSize } from './sixelCap';
