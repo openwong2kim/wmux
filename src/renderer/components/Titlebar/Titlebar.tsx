@@ -191,10 +191,10 @@ export default function Titlebar() {
         <span className="text-[14px] font-semibold text-[var(--text-main)] tracking-tight" {...tokenAttrs('textMain', 'text')}>
           wmux
         </span>
-        {/* Left to right: wmux, then the sidebar toggle (the segment's end
-            while the sidebar is open). New workspace is never here: the
-            sidebar's header and the rail carry it. */}
-        <SidebarToggle className={compactSegment ? undefined : 'ml-auto'} />
+        {/* Left to right: wmux, then the sidebar toggle right beside it (the
+            segment's 8px gap), open or collapsed. New workspace is never
+            here: the sidebar's header and the rail carry it. */}
+        <SidebarToggle />
       </div>
       {/* The status strip (P1.5) fills the rest of the bar: transient
           indicators on the left, the status/clock/settings cluster pinned

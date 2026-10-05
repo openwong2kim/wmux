@@ -147,10 +147,9 @@ bar is a drag region; each interactive child opts out with `no-drag`.
   toggle** (on Windows and Linux the wordmark is at the far left). The
   wordmark starts `BRAND_INSET` (12px) past the reserve whether the sidebar
   is open or collapsed, so the brand never moves when the sidebar toggles.
-  The toggle sits at the segment's end while the
-  sidebar is open, right after the wordmark when it is collapsed (the
-  segment then takes their width instead of the rail's 48px; the look
-  paints it transparent). It is a 28px square with a 16px panel icon (the
+  The toggle sits right after the wordmark, 8px from it, whether the
+  sidebar is open or collapsed (collapsed, the segment takes their width
+  instead of the rail's 48px; the look paints it transparent). It is a 28px square with a 16px panel icon (the
   bar drawn on the sidebar's side), the left-hand pair of Moa's panel toggle
   at the bar's other end. **Both titlebar panel toggles are bare icons:** no
   fill at rest and none when on — the icon and `aria-pressed` /

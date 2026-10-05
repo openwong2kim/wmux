@@ -102,6 +102,8 @@ describe('titlebar workspace chrome', () => {
     expect(order()).toEqual(['wmux', 'toggle']);
     expect(brandX()).toBe(open);
     expect(open).toBe(MAC_TRAFFIC_LIGHT_RESERVE + BRAND_INSET);
+    // The toggle sits right beside the brand, never pushed to the segment's end.
+    expect(toggle().className).not.toMatch(/\bml-auto\b/);
   });
 
 });
