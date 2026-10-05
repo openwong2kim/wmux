@@ -136,9 +136,13 @@ jobs:
       # lint debt. The strict step below blocks only on its fixed list of 7
       # files; lint regressions in any other new or changed file are not
       # blocked anywhere in this workflow. See #1287.
+      # continue-on-error does not bound a hang. This step takes ~90 s on
+      # windows-latest, but once it sat for 32 min and the job hit its 30 min
+      # cap before a single test ran (run 37361972608, attempt 1).
       - name: ESLint (repo-wide, advisory, non-blocking)
         run: npx eslint --ext .ts,.tsx .
         continue-on-error: true
+        timeout-minutes: 10
 
       # Strict lint on files added/modified by the cross-platform port. Any
       # new error here is a real regression introduced by porting work.
