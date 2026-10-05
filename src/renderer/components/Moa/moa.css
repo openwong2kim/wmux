@@ -69,3 +69,9 @@
 .wmux-moa-dock { max-height: 50vh; overflow-y: auto; overflow-x: hidden; outline: none; }
 .wmux-moa-dock:not(:has([data-moa-waiting]:not(.hidden))) { display: none; }
 .wmux-moa-dock [data-moa-waiting] { padding: 0; }
+
+/* Tool activity stays out of Moa's chat unless the operator opens it from
+ * the header's working control: the conversation reads as messages. */
+[data-moa-chat][data-activity="hidden"] .wmux-chat-activity,
+[data-moa-chat][data-activity="hidden"] .wmux-chat-tool,
+[data-moa-chat][data-activity="hidden"] .wmux-chat-working { display: none; }

@@ -6,6 +6,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { setDeckHeaderSlot } from '../../../Deck/deckHeaderSlot';
 import MoaTranscriptChat, { tidyMoaUserText, type MoaApprovalApi, type MoaTranscriptApi } from '../MoaTranscriptChat';
 import type { MoaApproval, MoaApprovalAnswerResult } from '../../../../../shared/moa';
 import type { TranscriptAppendData, TranscriptPage, TurnEvent } from '../../../../../shared/transcript/turnEvents';
@@ -91,6 +92,33 @@ describe('MoaTranscriptChat', () => {
     await act(async () => finish({ ok: true }));
     expect(host.querySelector('[data-moa-chat-pending]')).toBeNull();
     expect([...host.querySelectorAll('.wmux-chat-user')].filter((n) => n.textContent?.includes('Check the release'))).toHaveLength(1);
+  });
+
+  it('tool activity is hidden; while Moa works a header control says so and opens it', async () => {
+    const slot = document.createElement('div');
+    document.body.append(slot);
+    setDeckHeaderSlot(slot);
+    try {
+      const { api } = fakeApi();
+      await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />));
+      const chat = host.querySelector('[data-moa-chat]') as HTMLElement;
+      expect(chat.dataset.activity).toBe('hidden');
+      const toggle = slot.querySelector('[data-moa-working-toggle]') as HTMLButtonElement;
+      expect(toggle.tagName).toBe('BUTTON');
+      expect(toggle.textContent).toBe('moa.panel.working');
+      expect(toggle.getAttribute('aria-expanded')).toBe('false');
+      expect(toggle.getAttribute('aria-label')).toBe('moa.panel.activityShow');
+      await act(async () => { toggle.click(); });
+      expect(chat.dataset.activity).toBe('shown');
+      expect(toggle.getAttribute('aria-expanded')).toBe('true');
+      // Idle and collapsed: the control goes away.
+      await act(async () => { toggle.click(); });
+      await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />));
+      expect(slot.querySelector('[data-moa-working-toggle]')).toBeNull();
+    } finally {
+      setDeckHeaderSlot(null);
+      slot.remove();
+    }
   });
 
   it('a brain with no conversation yet reads as empty, not as a connection error', async () => {

@@ -7,6 +7,7 @@
 // Loaded lazily (like ChatView): assistant-ui stays out of the main bundle
 // until Moa's panel actually shows a conversation.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { AssistantRuntimeProvider, MessageNotSentError, useExternalStoreRuntime, type AppendMessage } from '@assistant-ui/react';
 import { useT } from '../../../hooks/useT';
 import { useStore } from '../../../stores';
@@ -17,6 +18,8 @@ import { Thread } from '../../Chat/assistant-ui/Thread';
 import { useComposerDraft } from '../../Chat/chatDrafts';
 import Button from '../../ui/Button';
 import { MoaDockContext, NEEDS_YOU_ROW } from './MoaWaitingOnYou';
+import { useDeckHeaderSlot } from '../../Deck/deckHeaderSlot';
+import { FOCUS_RING } from '../../focusRing';
 import type { ChatBridgeApi } from '../../../../shared/transcript/turnEvents';
 import type { MoaApproval } from '../../../../shared/moa';
 import '../moa.css';
@@ -204,12 +207,33 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
   const empty = messages.length === 0 && pending.length === 0;
   // A callback ref: the dock mounts with the composer's footer.
   const [dockEl, setDockEl] = useState<HTMLDivElement | null>(null);
+  // Tool activity (folded tool rows, "The agent is working…") is hidden: the
+  // chat reads as messages. While Moa works, a small control beside its name
+  // in the panel header says so, and opens the activity on demand.
+  const [showActivity, setShowActivity] = useState(false);
+  const headerSlot = useDeckHeaderSlot();
+  const activityToggle = (busy || showActivity) && headerSlot ? createPortal(
+    <button
+      type="button"
+      onClick={() => setShowActivity((v) => !v)}
+      aria-expanded={showActivity}
+      aria-label={t(showActivity ? 'moa.panel.activityHide' : 'moa.panel.activityShow')}
+      title={t(showActivity ? 'moa.panel.activityHide' : 'moa.panel.activityShow')}
+      className={`wmux-moa-working order-first inline-flex items-center gap-1.5 h-6 px-1.5 rounded-[6px] text-[11px] text-[var(--text-sub)] hover:bg-[var(--hover-fill)] ${FOCUS_RING}`}
+      data-moa-working-toggle
+    >
+      {busy && <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-[var(--text-sub)]" />}
+      {busy ? t('moa.panel.working') : t('moa.panel.activity')}
+    </button>,
+    headerSlot,
+  ) : null;
   return (
     <MoaDockContext.Provider value={dockEl}>
     <ChatPtyContext.Provider value={ptyId}>
       <ChatCodeBlockContext.Provider value={bridge?.codeBlock ?? null}>
       <AssistantRuntimeProvider runtime={runtime}>
-        <div className="flex flex-col flex-1 min-h-0" data-moa-chat>
+        {activityToggle}
+        <div className="flex flex-col flex-1 min-h-0" data-moa-chat data-activity={showActivity ? 'shown' : 'hidden'}>
           <Thread
             composer={runtime.thread.composer}
             empty={empty}
