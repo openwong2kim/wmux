@@ -41,11 +41,15 @@ async function settle(): Promise<void> {
   }
 }
 
+let links: WorkLink[] = [LINK];
+
 beforeEach(() => {
   openExternal.mockReset();
+  window.localStorage.clear();
+  links = [LINK];
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     pty: { write: vi.fn() },
-    workLinks: { list: async () => [LINK], onChanged: () => () => undefined },
+    workLinks: { list: async () => links, onChanged: () => () => undefined },
     deck: { moa: { decisions: async () => ({ decisions: [] }), onChanged: () => () => undefined } },
     github: { repoKey: async () => ({ key: 'github.com/acme/app' }) },
     shell: { openExternal },
@@ -112,5 +116,36 @@ describe('FleetView — tickets', () => {
     await settle();
     expect(container.querySelector('[data-fleet-ticket-detail="wl-1"]')).not.toBeNull();
     expect(container.querySelector('[data-fleet-ticket-issue]')).toBeNull();
+  });
+
+  it('a working ticket stays quiet: not in Needs you, no Needs you count', async () => {
+    act(() => { root.render(React.createElement(FleetView)); });
+    await settle();
+    expect(container.querySelector('[data-fleet-ticket]')).toBeNull();
+    expect(container.querySelector('[data-filter="attention"]')).toBeNull();
+    expect(container.querySelector('[data-fleet-section="needsYou"]')).toBeNull();
+  });
+
+  it('a finished ticket asks once in Needs you; viewing its report clears it', async () => {
+    links = [{ ...LINK, a2aState: 'completed', state: 'done' }];
+    act(() => { root.render(React.createElement(FleetView)); });
+    await settle();
+    const report = container.querySelector<HTMLButtonElement>('[data-fleet-ticket="wl-1"]')!;
+    expect(report).not.toBeNull();
+    expect(report.closest('[role=listbox]')?.querySelector('[data-fleet-section="needsYou"]')).not.toBeNull();
+    expect(container.querySelector('[data-filter="attention"]')?.textContent).toContain('1');
+    // Open it: the report is viewed, and stays put while it is selected.
+    act(() => report.click());
+    await settle();
+    expect(container.querySelector('[data-fleet-ticket-detail="wl-1"]')).not.toBeNull();
+    expect(container.querySelector('[data-fleet-ticket="wl-1"]')).not.toBeNull();
+    expect(container.querySelector('[data-filter="attention"]')).toBeNull();
+    // Selection moves on: the ticket leaves Needs you, still under Tickets.
+    act(() => container.querySelector<HTMLElement>('[data-fleet-card]')!.focus());
+    await settle();
+    expect(container.querySelector('[data-fleet-ticket="wl-1"]')).toBeNull();
+    act(() => container.querySelector<HTMLButtonElement>('[data-filter="tickets"]')!.click());
+    await settle();
+    expect(container.querySelector('[data-fleet-ticket="wl-1"]')).not.toBeNull();
   });
 });

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { WorkLink } from '../../../../shared/workLink';
 import type { MoaPendingDecision } from '../../../../shared/moa';
 import type { Task, TaskState } from '../../../../shared/types';
-import { buildFleetTickets, openTicketFor, ticketIssueUrl, ticketStateOf, TICKET_RECENT_MS } from '../fleetTickets';
+import { buildFleetTickets, openTicketFor, ticketAttention, ticketIssueUrl, ticketStateOf, TICKET_RECENT_MS } from '../fleetTickets';
 
 const NOW = 1_000_000_000_000;
 
@@ -90,5 +90,30 @@ describe('ticketIssueUrl', () => {
   it('has no URL for a repo that is not on GitHub', () => {
     expect(ticketIssueUrl('gitlab.com/acme/app', { title: 'x' })).toBeNull();
     expect(ticketIssueUrl(null, { title: 'x' })).toBeNull();
+  });
+});
+
+describe('ticketAttention — Moa interrupts only for a decision and the final report', () => {
+  const base = { id: 'wl-1', decisionIds: [] as string[], updatedAt: NOW };
+
+  it('a queued or working ticket stays quiet', () => {
+    expect(ticketAttention({ ...base, state: 'queued' }, {})).toBeNull();
+    expect(ticketAttention({ ...base, state: 'working' }, {})).toBeNull();
+  });
+
+  it('asks while a linked decision is pending, and only then', () => {
+    expect(ticketAttention({ ...base, state: 'needs-you', decisionIds: ['d-1'] }, {})).toBe('decision');
+    const [ticket] = buildFleetTickets({ links: [link({ a2aState: 'working', decisionIds: ['d-1'] })], decisions: [decision('d-1')], a2aTasks: {}, now: NOW });
+    expect(ticketAttention(ticket, {})).toBe('decision');
+    const [resolved] = buildFleetTickets({ links: [link({ a2aState: 'working', decisionIds: ['d-1'] })], decisions: [], a2aTasks: {}, now: NOW });
+    expect(ticketAttention(resolved, {})).toBeNull();
+  });
+
+  it('asks once with the final report, done or failed, until that report is viewed', () => {
+    expect(ticketAttention({ ...base, state: 'done' }, {})).toBe('report');
+    expect(ticketAttention({ ...base, state: 'failed' }, {})).toBe('report');
+    expect(ticketAttention({ ...base, state: 'done' }, { 'wl-1': NOW })).toBeNull();
+    // A later report (the job reopened and ended again) asks again.
+    expect(ticketAttention({ ...base, state: 'done', updatedAt: NOW + 1 }, { 'wl-1': NOW })).toBe('report');
   });
 });

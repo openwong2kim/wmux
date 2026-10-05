@@ -42,7 +42,7 @@ import { formatIdle, IDLE_SHOW_AFTER_MS, IDLE_TICK_MS } from '../../utils/idleTi
 import { IconCheck, IconChevron, IconPlus } from '../icons';
 // Read-only: Moa's own readers of delegated work and pending decisions.
 import { useMoaDecisions, useWorkLinks } from '../Moa/panel/useMoaPanelData';
-import { buildFleetTickets, openTicketFor, type FleetTicket } from './fleetTickets';
+import { buildFleetTickets, loadSeenReports, openTicketFor, saveSeenReports, ticketAttention, type FleetTicket } from './fleetTickets';
 import { TicketDetail, TicketRow, ticketKey } from './TicketList';
 
 /** True when a key event comes from a text-entry control. */
@@ -254,13 +254,26 @@ export default function FleetView() {
     () => buildFleetTickets({ links: workLinks, decisions: moaDecisions, a2aTasks, now }),
     [workLinks, moaDecisions, a2aTasks, now],
   );
-  const visibleTickets = useMemo(() => {
-    if (filter !== 'tickets') return [];
+  const matchesTicket = useCallback((ticket: FleetTicket) => {
     const term = query.trim().toLocaleLowerCase();
-    if (!term) return tickets;
-    return tickets.filter((ticket) => [ticket.title, ticket.request, ticket.agent]
-      .some((value) => value?.toLocaleLowerCase().includes(term)));
-  }, [tickets, filter, query]);
+    return !term || [ticket.title, ticket.request, ticket.agent].some((value) => value?.toLocaleLowerCase().includes(term));
+  }, [query]);
+  const visibleTickets = useMemo(
+    () => (filter === 'tickets' ? tickets.filter(matchesTicket) : []),
+    [tickets, filter, matchesTicket],
+  );
+  // A ticket asks for the operator only while a decision of its waits, and
+  // once with its final report (until viewed). Those tickets join Needs you;
+  // queued and working ones stay under the Tickets filter. A report just
+  // viewed stays in place while it is selected, so the row does not vanish
+  // under the reader.
+  const [seenReports, setSeenReports] = useState<Record<string, number>>(loadSeenReports);
+  const [stickyReport, setStickyReport] = useState<string | null>(null);
+  const attentionTickets = useMemo(
+    () => (filter !== 'all' && filter !== 'attention' ? [] : tickets.filter((ticket) =>
+      (ticketAttention(ticket, seenReports) !== null || ticket.id === stickyReport) && matchesTicket(ticket))),
+    [tickets, filter, seenReports, stickyReport, matchesTicket],
+  );
 
   // Roving order = DOM order: needs-you rows, ready-to-review rows, running
   // rows, the idle toggle, then the idle rows when expanded — or, on the
@@ -268,13 +281,14 @@ export default function FleetView() {
   // and one sentinel.
   const rovingKeys = useMemo(() => (filter === 'tickets' ? visibleTickets.map((ticket) => ticketKey(ticket.id)) : [
     ...visibleGroups.needsYou.map((row) => row.pane.paneId),
+    ...attentionTickets.map((ticket) => ticketKey(ticket.id)),
     ...visibleReview.map((entry) => reviewRowKey(entry.workspaceId)),
     ...visibleGroups.running.map((row) => row.pane.paneId),
     ...(idleToggleShown ? [IDLE_TOGGLE_KEY] : []),
     ...(idleShown ? visibleGroups.idle.map((row) => row.pane.paneId) : []),
-  ]), [filter, visibleTickets, visibleGroups, visibleReview, idleToggleShown, idleShown]);
+  ]), [filter, visibleTickets, attentionTickets, visibleGroups, visibleReview, idleToggleShown, idleShown]);
   const matchCount = filter === 'tickets' ? visibleTickets.length
-    : visibleGroups.needsYou.length + visibleReview.length + visibleGroups.running.length + visibleGroups.idle.length;
+    : visibleGroups.needsYou.length + attentionTickets.length + visibleReview.length + visibleGroups.running.length + visibleGroups.idle.length;
   const idleOldestMs = visibleGroups.idle.reduce<number | undefined>(
     (max, row) => (row.idleForMs !== undefined && (max === undefined || row.idleForMs > max) ? row.idleForMs : max),
     undefined,
@@ -284,7 +298,7 @@ export default function FleetView() {
   const focusedKey = rovingKeys[focusedIdx];
   const selectedPane = visibleRows.find((row) => row.pane.paneId === focusedKey)?.pane;
   const focusedReview = visibleReview.find((entry) => reviewRowKey(entry.workspaceId) === focusedKey);
-  const focusedTicket = visibleTickets.find((ticket) => ticketKey(ticket.id) === focusedKey);
+  const focusedTicket = [...visibleTickets, ...attentionTickets].find((ticket) => ticketKey(ticket.id) === focusedKey);
   const previewPtyId = detailOpen && tab === 'fleet' && selectedPane?.surfaceType === 'terminal'
     ? selectedPane.ptyId : '';
   // The selected fan-out task's conversation. A task an "Open conversation"
@@ -885,7 +899,7 @@ export default function FleetView() {
     return () => { cancelled = true; window.clearInterval(id); };
   }, []);
   // No agents: a call to action, plus the newest finished A2A tasks.
-  const empty = fleetAgentCount(groups, reviewQueue.length) === 0 && filter !== 'tickets';
+  const empty = fleetAgentCount(groups, reviewQueue.length) === 0 && attentionTickets.length === 0 && filter !== 'tickets';
   const recentDone = useMemo(() => (!empty ? [] : Object.values(a2aTasks)
     .filter((task) => task.status.state === 'completed')
     .sort((a, b) => Date.parse(b.status.timestamp ?? '') - Date.parse(a.status.timestamp ?? ''))
@@ -901,7 +915,7 @@ export default function FleetView() {
   // the one pressed). Pressing the pressed chip shows everything again.
   const allRows = [...groups.needsYou, ...groups.running, ...groups.idle];
   const filters: { id: Exclude<FleetFilter, 'all'>; label: string; count: number }[] = [
-    { id: 'attention', label: t('fleet.section.needsYou'), count: groups.needsYou.length },
+    { id: 'attention', label: t('fleet.section.needsYou'), count: groups.needsYou.length + tickets.filter((tk) => ticketAttention(tk, seenReports) !== null).length },
     { id: 'running', label: t('fleet.section.running'), count: groups.running.length },
     { id: 'complete', label: t('fleet.filter.replied'), count: allRows.filter((r) => matchesFleetFilter(r, 'complete')).length },
     { id: 'idle', label: t('workspace.agentIdle'), count: groups.idle.length },
@@ -980,6 +994,20 @@ export default function FleetView() {
       </div>
     );
   };
+  const renderTicket = (ticket: FleetTicket) => (
+    <div key={`ticket:${ticket.id}`} role="presentation" className="wmux-fleet-row">
+      <TicketRow
+        ticket={ticket}
+        assignee={assigneeOf(ticket)}
+        focused={ticketKey(ticket.id) === focusedKey}
+        now={now}
+        onFocus={() => setFocusedPaneId(ticketKey(ticket.id))}
+        onSelect={selectTicket}
+        onJump={jumpToTicket}
+        t={t}
+      />
+    </div>
+  );
   const sectionHead = (id: 'needsYou' | 'review' | 'running', count: number) => (
     <div key={`section:${id}`} role="presentation" className="wmux-fleet-section-header" data-fleet-section={id}>
       <span className={`wmux-board-col-dot is-${id}`} aria-hidden="true" />
@@ -997,6 +1025,16 @@ export default function FleetView() {
   const detailPane = selectedPane?.surfaceType === 'terminal' ? selectedPane : undefined;
   const showDetail = tab === 'fleet' && detailOpen && !empty
     && (focusedTicket !== undefined || detailPane !== undefined || conversationTask !== undefined);
+  // Viewing a final report clears its attention; it stays put while selected.
+  const viewedReport = showDetail && focusedTicket && ticketAttention(focusedTicket, seenReports) === 'report' ? focusedTicket : undefined;
+  useEffect(() => {
+    if (!viewedReport) return;
+    setStickyReport(viewedReport.id);
+    setSeenReports((prev) => saveSeenReports({ ...prev, [viewedReport.id]: viewedReport.updatedAt }, new Set(tickets.map((tk) => tk.id))));
+  }, [viewedReport, tickets]);
+  useEffect(() => {
+    if (stickyReport && focusedPaneId !== ticketKey(stickyReport)) setStickyReport(null);
+  }, [stickyReport, focusedPaneId]);
 
   return (
     // The Fleet rail page: one attention list, the detail area under it.
@@ -1124,29 +1162,17 @@ export default function FleetView() {
           </div>
         ) : (
           <>
-            {filter !== 'tickets' && visibleGroups.needsYou.length === 0 && visibleReview.length === 0 && visibleGroups.running.length === 0 && (
+            {filter !== 'tickets' && visibleGroups.needsYou.length === 0 && attentionTickets.length === 0 && visibleReview.length === 0 && visibleGroups.running.length === 0 && (
               <p className="wmux-fleet-quiet" aria-hidden="true" data-fleet-all-quiet>{t('fleet.allQuiet')}</p>
             )}
             <div ref={listRef} role="listbox" aria-label={t('fleet.title')} className="wmux-fleet-list">
               {/* One flat keyed sibling array (headers interleaved), so a row
                   that changes section keeps its DOM node — and its focus. */}
-              {filter === 'tickets' ? visibleTickets.map((ticket) => (
-                <div key={ticket.id} role="presentation" className="wmux-fleet-row">
-                  <TicketRow
-                    ticket={ticket}
-                    assignee={assigneeOf(ticket)}
-                    focused={ticketKey(ticket.id) === focusedKey}
-                    now={now}
-                    onFocus={() => setFocusedPaneId(ticketKey(ticket.id))}
-                    onSelect={selectTicket}
-                    onJump={jumpToTicket}
-                    t={t}
-                  />
-                </div>
-              )) : [
-                ...(visibleGroups.needsYou.length === 0 ? [] : [
-                  sectionHead('needsYou', visibleGroups.needsYou.length),
+              {filter === 'tickets' ? visibleTickets.map(renderTicket) : [
+                ...(visibleGroups.needsYou.length + attentionTickets.length === 0 ? [] : [
+                  sectionHead('needsYou', visibleGroups.needsYou.length + attentionTickets.length),
                   ...visibleGroups.needsYou.map(renderRow),
+                  ...attentionTickets.map(renderTicket),
                 ]),
                 // Ready to review: task-level rows, drawn only when non-empty.
                 ...(visibleReview.length === 0 ? [] : [

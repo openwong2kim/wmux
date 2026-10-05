@@ -164,3 +164,42 @@ export function ticketIssueUrl(repoKey: string | null | undefined, ticket: Pick<
   const query = `title=${encodeURIComponent(ticket.title)}${body ? `&body=${encodeURIComponent(body)}` : ''}`;
   return `https://github.com/${encodeURIComponent(parts[1])}/${encodeURIComponent(parts[2])}/issues/new?${query}`;
 }
+
+/**
+ * Why a ticket asks for the operator, or null when it stays quiet. Moa is the
+ * operator's chief of staff: a delegated job interrupts only for a decision
+ * Moa cannot make, and once with its final report. Queued and working
+ * tickets never ask — they are visible under the Tickets filter and as their
+ * pane's title, and nowhere else.
+ *
+ * `seenReports` maps a ticket id to the `updatedAt` of the report the
+ * operator has already viewed; a report that changed since asks again.
+ */
+export function ticketAttention(
+  ticket: Pick<FleetTicket, 'id' | 'state' | 'decisionIds' | 'updatedAt'>,
+  seenReports: Readonly<Record<string, number>>,
+): 'decision' | 'report' | null {
+  if (ticket.decisionIds.length > 0) return 'decision';
+  if ((ticket.state === 'done' || ticket.state === 'failed') && seenReports[ticket.id] !== ticket.updatedAt) return 'report';
+  return null;
+}
+
+const SEEN_REPORTS_KEY = 'wmux.fleet.ticketReportsSeen';
+
+/** The final reports already viewed (per viewer, this machine). Never throws. */
+export function loadSeenReports(): Record<string, number> {
+  try {
+    const raw = JSON.parse(window.localStorage.getItem(SEEN_REPORTS_KEY) ?? '{}') as unknown;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+    return Object.fromEntries(Object.entries(raw).filter(([, v]) => typeof v === 'number')) as Record<string, number>;
+  } catch {
+    return {};
+  }
+}
+
+/** Remember a viewed report, keeping only tickets still listed. */
+export function saveSeenReports(seen: Record<string, number>, liveIds: ReadonlySet<string>): Record<string, number> {
+  const kept = Object.fromEntries(Object.entries(seen).filter(([id]) => liveIds.has(id)));
+  try { window.localStorage.setItem(SEEN_REPORTS_KEY, JSON.stringify(kept)); } catch { /* storage off: in memory only */ }
+  return kept;
+}

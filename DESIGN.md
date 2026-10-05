@@ -977,7 +977,13 @@ differently in the two places, and in the order `fleet_triage` returns.
 - **Tickets:** Moa's delegated work, one row per job — a hand-off waiting for
   its click, or a WorkLink with its A2A task. A chat message is never a
   ticket. States: Queued, Working, Needs your decision (yellow), Done
-  (green), Failed (red); finished tickets stay listed for a day. A ticket's
+  (green), Failed (red); finished tickets stay listed for a day. Moa is the
+  operator's chief of staff, so a ticket interrupts only for a decision Moa
+  cannot make and once with its final report: it joins Needs you while a
+  linked decision is pending, and when it is done or failed until that
+  report is viewed (it stays in place while selected). Queued and working
+  tickets are quiet: the Tickets filter and the pane's title only, no badge,
+  count or toast; the rail and sidebar counts stay the panes'. A ticket's
   detail holds the request, the decisions still waiting (each opens its
   workspace's decision card), the result and its verification count, Jump
   to agent, and Open as GitHub issue when the workspace's origin is on
