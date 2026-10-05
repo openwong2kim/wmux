@@ -39,6 +39,8 @@ import {
   type WorkspaceDecision,
 } from '../../deck/deckDecisionStore';
 import { getMoaHandoffService } from '../../deck/moaHandoff';
+import { plainLanguageRefusal } from '../../deck/plainLanguage';
+import { getHqWorkspaceId } from '../../deck/deckHqStore';
 import { loadWorkspaceMode } from '../../deck/deckAutonomyStore';
 import { loadDeckHeartbeat } from '../../deck/deckHeartbeatStore';
 import { hasReExamineLease } from '../../deck/reExamineLease';
@@ -186,6 +188,11 @@ export function registerDeckRpc(router: RpcRouter, getWindow: GetWindow, deps: D
     if (verification.length < MIN_WORK_VERIFICATION_CHARS) {
       return { ok: false, error: 'verification_required' };
     }
+    // Moa's report is the operator's to read: refuse internals.
+    if (ws === getHqWorkspaceId()) {
+      const refusal = plainLanguageRefusal([summary, verification]);
+      if (refusal) return refusal;
+    }
 
     // Brain PTYs are excluded from the mirror upstream, so only worker panes can
     // block. A stale/missing renderer snapshot cannot prove work outstanding and
@@ -282,6 +289,11 @@ export function registerDeckRpc(router: RpcRouter, getWindow: GetWindow, deps: D
       ? (params['options'] as unknown[]).filter((s): s is string => typeof s === 'string')
       : [];
     const context = typeof params['context'] === 'string' ? (params['context'] as string) : '';
+    // Moa's card is the operator's to read: refuse internals.
+    if (ws === getHqWorkspaceId()) {
+      const refusal = plainLanguageRefusal([question, context, ...options]);
+      if (refusal) return refusal;
+    }
     // Optional A2A task the decision is about: shown on that task's work link.
     // Best-effort — a missing or foreign task never fails the raise.
     const taskId = typeof params['taskId'] === 'string' && params['taskId'] ? params['taskId'] : undefined;

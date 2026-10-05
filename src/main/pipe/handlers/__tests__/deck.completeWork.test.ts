@@ -19,6 +19,11 @@ import {
 import type { FleetSnapshot, FleetSnapshotPane } from '../../../../shared/workspaceMirror';
 
 vi.mock('../_bridge', () => ({ sendToRenderer: vi.fn() }));
+const hqRef = vi.hoisted(() => ({ current: null as string | null }));
+vi.mock('../../../deck/deckHqStore', async (orig) => ({
+  ...(await orig<typeof import('../../../deck/deckHqStore')>()),
+  getHqWorkspaceId: () => hqRef.current,
+}));
 
 // The gate consults the renderer-derived fleet snapshot for local workers.
 const { snapshotRef } = vi.hoisted(() => ({ snapshotRef: { current: null as FleetSnapshot | null } }));
@@ -307,6 +312,29 @@ describe('deck.completeWork — compare-and-delete', () => {
     const surviving = loadActiveDeckWork(WS, workDirRef.current)!;
     expect(surviving.objective).toBe('second request');
     expect(surviving.id).not.toBe(firstId);
+  });
+});
+
+describe('deck.completeWork — Moa writes for the operator', () => {
+  afterEach(() => { hqRef.current = null; });
+
+  it('Moa\'s report with tool names, field names or ids is refused, to be restated plainly', async () => {
+    hqRef.current = WS;
+    beginOrContinueDeckWork(WS, 'objective', workDirRef.current, 1_000);
+    const res = await complete({ summary: 'Checked pane_list: foregroundProgram=null on daemon-0677445e', verification: 'Read hi.txt and it holds one line' });
+    expect(res).toMatchObject({ ok: false, error: 'not_plain_language' });
+    expect(res.terms).toEqual(['pane_list', 'foregroundProgram', 'daemon-0677445e']);
+    // Plain words pass, and another workspace's brain is not held to it.
+    expect(await complete({ summary: 'hi.txt now holds one line, hello world.', verification: 'I opened hi.txt and read the line.' })).toMatchObject({ ok: true });
+    hqRef.current = 'ws-other';
+    beginOrContinueDeckWork(WS, 'objective', workDirRef.current, 2_000);
+    expect(await complete({ summary: 'Checked pane_list output for the build', verification: 'pane_list shows the build pane idle' })).toMatchObject({ ok: true });
+  });
+
+  it('Moa\'s decision card with internals is refused too', async () => {
+    hqRef.current = WS;
+    const res = await router.dispatch({ id: 'd1', method: 'deck.requestDecision', params: { token, question: 'Restart ptyId daemon-0677445e?', options: ['yes', 'no'] } });
+    expect(res.ok && (res.result as Record<string, unknown>)).toMatchObject({ ok: false, error: 'not_plain_language' });
   });
 });
 
