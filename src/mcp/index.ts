@@ -496,14 +496,17 @@ function readThreadOwner(threadId: string): CodexThreadOwner | undefined {
  *
  * Where no owner can be recorded (Windows today) nothing changes for a call
  * whose thread has no owner record: the starter pane IS the pane for the
- * single-pane case. The parent is only inspected when a record exists, so
- * that path costs no process lookup.
+ * single-pane case. A call with a threadId inspects the parent first (once,
+ * when confirmed) so the owner probe also covers the parent's CODEX_HOME.
  */
 async function decideCodexMode(scope: CodexCallScope): Promise<NonNullable<CodexCallScope['mode']>> {
   if (codexParentClass === 'other') return 'legacy';
   if (!codexOwnerIndexAvailable()) {
-    if (!scope.threadId || !readThreadOwner(scope.threadId)) return 'legacy';
-    return (await classifyCodexParent()) === 'shared-server' ? 'thread-or-legacy' : 'legacy';
+    if (!scope.threadId) return 'legacy';
+    // Classified before the owner probe: Codex does not pass CODEX_HOME to
+    // MCP servers, so a non-default home is only known from the parent's path.
+    if ((await classifyCodexParent()) !== 'shared-server') return 'legacy';
+    return readThreadOwner(scope.threadId) ? 'thread-or-legacy' : 'legacy';
   }
   const parentClass = await classifyCodexParent();
   if (parentClass === 'other') return 'legacy';
@@ -1221,6 +1224,10 @@ async function requireWorkspaceId(): Promise<string> {
  * never throw.
  */
 async function resolveScopedReadWorkspaceId(): Promise<string> {
+  // A thread-only Codex call (#1778) has its thread's workspace or none: an
+  // empty id would let the renderer fall back to the UI-focused workspace, and
+  // the external pin below is shared by every unresolved thread.
+  if (threadOnlyScope()) return requireWorkspaceId();
   let wsId = await resolveWorkspaceId();
   if (wsId && (await isLiveWorkspace(wsId)) === 'absent') {
     invalidateWorkspaceId();

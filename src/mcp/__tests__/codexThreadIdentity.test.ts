@@ -11,6 +11,7 @@ import {
   isSharedServerArgv,
   matchOwnerToLiveAnchor,
   readCodexThreadOwner,
+  splitPsArgs,
   tokenizeCommandLine,
 } from '../codexThreadIdentity';
 
@@ -239,5 +240,25 @@ describe('codexOwnerIndexAvailable — where an owner can be recorded', () => {
     expect(codexOwnerIndexAvailable('win32')).toBe(false);
     expect(codexOwnerIndexAvailable('darwin')).toBe(true);
     expect(codexOwnerIndexAvailable('linux')).toBe(true);
+  });
+});
+
+describe('splitPsArgs — executable paths with spaces (POSIX ps)', () => {
+  const exe = '/Applications/Codex App/Contents/Resources/codex';
+  it('keeps a spaced executable path as one token, so the server still classifies', () => {
+    const argv = splitPsArgs(`${exe} app-server --listen unix:// --managed-daemon`, exe);
+    expect(argv).toEqual([exe, 'app-server', '--listen', 'unix://', '--managed-daemon']);
+    expect(classifyMcpParent([MCP_ENTRY, argv])).toBe('shared-server');
+    const home = '/tmp/cx home/packages/app-server-daemon/releases/0.160.0/bin/codex';
+    expect(codexHomeFromParentChain([splitPsArgs(`${home} app-server --managed-daemon`, home)])).toBe('/tmp/cx home');
+  });
+  it('aligns an argv[0] shorter than the executable (launched through PATH)', () => {
+    expect(splitPsArgs('codex app-server --managed-daemon', exe)).toEqual([exe, 'app-server', '--managed-daemon']);
+    expect(splitPsArgs('/usr/bin/env', '/usr/bin/env')).toEqual(['/usr/bin/env']);
+  });
+  it('reports an args line it cannot align as unreadable, so the chain is unknown, not other', () => {
+    expect(splitPsArgs('something else entirely', exe)).toEqual([]);
+    expect(splitPsArgs('codex app-server', '')).toEqual([]);
+    expect(classifyMcpParent([MCP_ENTRY, splitPsArgs('garbled', exe)])).toBe('unknown');
   });
 });

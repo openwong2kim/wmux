@@ -71,6 +71,9 @@ beforeEach(() => {
   vi.stubEnv('CODEX_HOME', home);
   // Owner records name the wmux instance; this suite plays the default one.
   vi.stubEnv('WMUX_DATA_SUFFIX', '');
+  // The default-home probe must not read the real ~/.codex.
+  vi.stubEnv('HOME', home);
+  vi.stubEnv('USERPROFILE', home);
   ownerIndex.value = true;
   parentChain.mockReset();
   parentChain.mockResolvedValue([MCP_ENTRY, SHARED_SERVER]);
@@ -235,6 +238,35 @@ describe('shared Codex app-server, owner index available (pane relay, non-Window
     expect(terminal?.workspaceId).toBe('ws-2');
   });
 
+  it.each([
+    ['pane_list', 'pane.list'],
+    ['surface_list', 'surface.list'],
+    ['pane_split', 'pane.split'],
+    ['surface_new', 'surface.new'],
+  ])('fails %s closed for an unresolved thread instead of using the focused workspace', async (tool, method) => {
+    const client = await connect();
+    const noOwner = await call(client, tool, {}, T3);
+    expect(noOwner.isError).toBe(true);
+    expect(noOwner.content[0].text).toMatch(/no wmux pane owns Codex thread/);
+    // An uninspectable parent is a retryable error for these tools too.
+    parentChain.mockResolvedValueOnce([]);
+    const fresh = await connect();
+    const unknown = await call(fresh, tool, {}, T3);
+    expect(unknown.isError).toBe(true);
+    expect(unknown.content[0].text).toMatch(/could not be inspected.*Retry/s);
+    await client.close();
+    await fresh.close();
+    expect(mockSendRpc.mock.calls.some((c) => c[0] === method)).toBe(false);
+  });
+
+  it('scopes pane_list to a resolved thread\'s own workspace', async () => {
+    recordOwner(T2, 'pty-b', 'ws-2');
+    const client = await connect();
+    await call(client, 'pane_list', {}, T2);
+    await client.close();
+    expect(mockSendRpc.mock.calls.find((c) => c[0] === 'pane.list')?.[1]).toEqual({ workspaceId: 'ws-2' });
+  });
+
   it('reports an unreachable wmux as retryable, without the setup-hooks hint', async () => {
     recordOwner(T1, 'pty-a', 'ws-1');
     const client = await connect();
@@ -256,8 +288,34 @@ describe('shared Codex app-server, no owner index (Windows today)', () => {
     await client.close();
     expect(res.isError).toBeFalsy();
     expect(whoamiParams()).toEqual([{ workspaceId: 'ws-s', senderPtyId: 'pty-s' }]);
-    // No owner record: the parent is not even inspected (no PowerShell/CIM).
+  });
+
+  it('inspects the parent once, and never for a threadless call', async () => {
+    const client = await connect();
+    await call(client, 'a2a_whoami', {});
     expect(parentChain).not.toHaveBeenCalled();
+    await call(client, 'a2a_whoami', {}, T1);
+    await call(client, 'a2a_whoami', {}, T2);
+    await client.close();
+    expect(parentChain).toHaveBeenCalledTimes(1);
+  });
+
+  it('finds an owner under the CODEX_HOME derived from the shared server\'s path', async () => {
+    // Codex passes no CODEX_HOME to the MCP server: only the daemon path names it.
+    const customHome = path.join(home, 'custom codex home');
+    vi.stubEnv('CODEX_HOME', '');
+    parentChain.mockResolvedValue([MCP_ENTRY, [
+      path.join(customHome, 'packages', 'app-server-daemon', 'releases', '0.160.0', 'bin', 'codex'),
+      'app-server', '--listen', 'unix://', '--managed-daemon',
+    ]]);
+    const saved = home;
+    home = customHome;
+    recordOwner(T1, 'pty-a', 'ws-1');
+    home = saved;
+    const client = await connect();
+    await call(client, 'a2a_whoami', {}, T1);
+    await client.close();
+    expect(whoamiParams()).toEqual([{ workspaceId: 'ws-1', senderPtyId: 'pty-a' }]);
   });
 
   it('keeps today\'s terminal routing for an ownerless thread', async () => {

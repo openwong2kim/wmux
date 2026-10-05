@@ -321,12 +321,17 @@ resumed thread, a closed pane or a restarted server is seen on the next call.
 The owner index is read from `CODEX_HOME`, which Codex does not pass to MCP
 servers, so the server also derives it from the shared server's executable
 path (`<CODEX_HOME>/packages/app-server-daemon/releases/<version>/bin/codex`).
+The parent's argv comes from `/proc` on Linux and from `ps` `comm` plus
+`args` elsewhere, so an executable path with spaces stays one token; an argv
+line that cannot be aligned counts as uninspectable, not as another parent.
 
 Where an owner can be recorded (the pane relay, off Windows), a call from a
 shared server is identified by its thread only. The PID walks, the cached
 identity, the commander token, the `WMUX_WORKSPACE_ID` / `WMUX_PTY_ID` env
 hints, the external-client terminal claim and the process-wide computer-use
-instance id are not used. A call fails with a `Workspace identity unknown`
+instance id are not used, and tools that would otherwise fall back to the
+focused workspace (`pane_list`, `surface_list`, `pane_split`, `surface_new`)
+fail instead. A call fails with a `Workspace identity unknown`
 error that names the reason instead of acting as another pane when:
 
 - its thread has no live owner (no owning pane, owning pane closed, another

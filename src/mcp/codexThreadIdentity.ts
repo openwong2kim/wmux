@@ -241,17 +241,61 @@ export async function readParentChain(startPid: number, timeoutMs = 5000): Promi
     const chain: string[][] = [];
     let pid = startPid;
     for (let hop = 0; hop < MAX_PARENT_HOPS && pid > 1; hop++) {
-      const { stdout } = await run('ps', ['-ww', '-o', 'ppid=', '-o', 'args=', '-p', String(pid)], { encoding: 'utf8', timeout: timeoutMs });
-      const m = /^\s*(\d+)\s+(.*)$/.exec(stdout.trim());
+      const proc = readProcEntry(pid);
+      if (proc) {
+        chain.push(proc.argv);
+        pid = proc.ppid;
+        continue;
+      }
+      // `args` is one space-joined string, so an executable path with spaces
+      // cannot be split from it alone; `comm` names the executable exactly.
+      const opts = { encoding: 'utf8' as const, timeout: timeoutMs };
+      const head = (await run('ps', ['-ww', '-o', 'ppid=', '-o', 'comm=', '-p', String(pid)], opts)).stdout;
+      const args = (await run('ps', ['-ww', '-o', 'args=', '-p', String(pid)], opts)).stdout;
+      const m = /^\s*(\d+)\s+(.*)$/.exec(head.trim());
       if (!m) break;
-      const argv = m[2].split(/\s+/).filter(Boolean);
-      chain.push(argv);
+      chain.push(splitPsArgs(args.trim(), m[2]));
       pid = Number(m[1]);
     }
     return chain;
   } catch {
     return [];
   }
+}
+
+/** Linux: the exact argv and ppid from /proc, or undefined where /proc is absent. */
+function readProcEntry(pid: number): { argv: string[]; ppid: number } | undefined {
+  if (process.platform !== 'linux') return undefined;
+  try {
+    const argv = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0');
+    if (argv[argv.length - 1] === '') argv.pop();
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    // `pid (comm) state ppid …` — comm may hold spaces and parentheses.
+    const ppid = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]);
+    return Number.isInteger(ppid) ? { argv, ppid } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Rebuild argv from `ps -o args=` with the executable taken from
+ * `ps -o comm=`, so a path with spaces (`/Applications/Codex App/…`) stays one
+ * token. The remaining arguments are split on whitespace. When the args line
+ * cannot be aligned with the executable, the entry is unreadable: [] makes the
+ * chain classify as 'unknown' (retried), never as a remembered 'other'.
+ */
+export function splitPsArgs(args: string, comm: string): string[] {
+  const exe = comm.trim();
+  if (!exe) return [];
+  const rest = (tail: string) => [exe, ...tail.split(/\s+/).filter(Boolean)];
+  if (args === exe) return [exe];
+  if (args.startsWith(`${exe} `)) return rest(args.slice(exe.length));
+  // argv[0] may be shorter than the resolved executable (`codex …` via PATH).
+  const base = exe.split('/').pop() ?? '';
+  const at = new RegExp(`(?:^|/)${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?: |$)`).exec(args);
+  if (!base || !at) return [];
+  return rest(args.slice(at.index + at[0].length));
 }
 
 // ── Owner index (v1, shared with wmux-codex-thread.mjs) ─────────────────────
