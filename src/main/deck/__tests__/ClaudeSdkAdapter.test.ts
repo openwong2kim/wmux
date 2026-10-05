@@ -364,7 +364,9 @@ describe('ClaudeSdkAdapter', () => {
     const moa = buildCommanderSystemPrompt(undefined, { moa: true }).replace(/\s+/g, ' ');
     expect(moa).toContain('Reach such an agent ONLY with moa_propose_handoff({ptyId, title, body})');
     expect(moa).toContain("terminal_send, terminal_send_key, terminal_read and send_message are refused for another workspace's pane, so never try them there.");
-    expect(moa).toContain('Hand the work THERE (moa_propose_handoff)');
+    expect(moa).toContain('Hand the work THERE (moa_propose_handoff takes a pane running an agent, never a bare shell)');
+    expect(moa).toContain('You CAN read files (Read, Grep, Glob) to check a result.');
+    expect(moa).not.toContain('an idle shell, or an agent');
     expect(moa).not.toContain('To act, use pane_split (spawn), terminal_send (instruct)');
     expect(moa).not.toContain('Send the work THERE with terminal_send');
     // A brain that is not Moa keeps the in-workspace guidance.

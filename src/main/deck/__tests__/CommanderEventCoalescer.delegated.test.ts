@@ -227,6 +227,20 @@ describe('buildEventPrompt for a Moa hand-off task', () => {
     expect(prompt).toContain('a2a_task_update({ task_id: "task-h", status: "completed" })');
   });
 
+  it('a reported completion tells the HQ to read the file itself, never the other workspace\'s pane', () => {
+    const prompt = buildEventPrompt(
+      [{
+        ptyId: 'a2a:task-h', kind: 'a2a.completed', source: 'a2a', agent: null, seq: 1, ts: 0,
+        a2a: { taskId: 'task-h', from: 'ws-hq', to: 'ws-seal', state: 'completed', handoff: {} },
+      }],
+      DEFAULT_AUTONOMY,
+      { remaining: 1, total: 1 },
+    );
+    expect(prompt).toContain('HAND-OFF DONE');
+    expect(prompt).toContain('read the file the request names with Read or Grep');
+    expect(prompt).not.toContain('terminal_read');
+  });
+
   it('an operator cancel is their answer: no re-proposal, no question, no replacement', () => {
     const prompt = buildEventPrompt(
       [{

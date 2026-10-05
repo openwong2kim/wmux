@@ -775,6 +775,41 @@ describe('moa hand-off — no wrong wakes, no stale cards', () => {
     expect(rig({}, r.file).svc.cardInfo(card.id)).toBeNull();
   });
 
+  it('a first sample on the prompt itself still counts as the turn under way', async () => {
+    let status = 'idle' as 'idle' | 'running' | 'awaiting_input';
+    let n = 0;
+    const r = rig({
+      agentBusy: () => status !== 'idle',
+      agentSample: () => ({ busy: status === 'running', ...(status === 'awaiting_input' ? { blocked: true } : {}), at: Date.now() + ++n }),
+    });
+    const taskId = await delivered(r);
+    // The agent took the text and hit a prompt before any sample saw it run.
+    status = 'awaiting_input';
+    expect(await r.svc.sweepTurnEnds()).toEqual([]);
+    status = 'idle';
+    expect(await r.svc.sweepTurnEnds()).toEqual([{ hq: HQ, taskId }]);
+  });
+
+  it('a task that fails or is canceled takes down its follow-up card too', async () => {
+    const r = rig();
+    const taskId = await delivered(r);
+    await r.svc.onWorkerStop('pty-1', 'claude', { text: 'Which file?', endsWithQuestion: true });
+    await propose(r, 'math.js.');
+    const card = r.slots.get(SEAL)!;
+    r.svc.noteTaskState(taskId, 'canceled');
+    await vi.waitFor(() => expect(r.svc.cardInfo(card.id)).toBeNull());
+    expect(r.slots.has(SEAL)).toBe(false);
+  });
+
+  it('an open task of a former HQ blocks a proposal to that pane, even a follow-up', async () => {
+    let hq = HQ;
+    const r = rig({ hqWorkspaceId: () => hq });
+    await delivered(r);
+    await r.svc.onWorkerStop('pty-1', 'claude', { text: 'Which file?', endsWithQuestion: true });
+    hq = 'ws-new-hq';
+    expect(await r.svc.propose('ws-new-hq', { ptyId: 'pty-1', body: 'math.js.' })).toMatchObject({ ok: false, error: 'task_open' });
+  });
+
   it('the requester close takes down that pane\'s card too', async () => {
     let busy = false;
     const r = rig({ agentBusy: () => busy });

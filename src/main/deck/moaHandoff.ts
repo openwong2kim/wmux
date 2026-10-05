@@ -504,8 +504,10 @@ export class MoaHandoffService {
     // One hand-off at a time per pane: while the agent is still working on the
     // last one, a second card would only repeat it. A task waiting on input is
     // different: a follow-up is how its question gets answered.
+    // Another (former) HQ's open task blocks it outright: delivery would not
+    // replace it, and two open tasks make every turn end ambiguous.
     const open = this.openTaskOnPty(t.ptyId);
-    if (open && open.hqWorkspaceId === hq && open.taskState !== 'input-required') {
+    if (open && (open.hqWorkspaceId !== hq || open.taskState !== 'input-required')) {
       return {
         ok: false,
         error: 'task_open',
@@ -785,7 +787,8 @@ export class MoaHandoffService {
     if (r.taskState !== state) {
       this.put({ ...r, taskState: state });
       void this.save();
-      if (state === 'completed') void this.closeMootCards(r.hqWorkspaceId, r.target.ptyId);
+      // Ended any way (done, failed, canceled): a follow-up card for it is moot.
+      if (isEnded(state)) void this.closeMootCards(r.hqWorkspaceId, r.target.ptyId);
     }
     return this.hqForTask(taskId);
   }
@@ -934,10 +937,10 @@ export class MoaHandoffService {
       const sample = this.ports.agentSample?.(r.target.workspaceId, r.target.ptyId)
         ?? ((busy): { busy: boolean; blocked?: boolean; at: number } | undefined => (busy === undefined ? undefined : { busy, at: this.now() }))(this.ports.agentBusy?.(r.target.workspaceId, r.target.ptyId));
       if (!sample) continue;
-      // Waiting on a permission prompt is mid-turn: the turn has not ended,
-      // and the running it was seen in still belongs to it.
-      if (sample.blocked) continue;
-      if (sample.busy) {
+      // Waiting on a permission prompt is mid-turn: never a turn end, but
+      // evidence of a turn under way (the first sample after delivery can be
+      // the prompt itself).
+      if (sample.busy || sample.blocked) {
         // Running evidence older than the last turn end is about that turn.
         if (!r.sawRunning && (!r.lastStop || sample.at > r.lastStop.at)) { this.put({ ...r, sawRunning: true }); changed = true; }
         continue;

@@ -298,6 +298,17 @@ describe('Claude Code 2.1.289: the command boxed between dashed rules', () => {
     expect(dialogMatchesToolCall(p, { name: 'Read', command })).toBe(false);
   });
 
+  it('with the top scrolled off, the box still gives the command, bound only as a top-cut dialog', () => {
+    const cut = BOXED.slice(3); // solid rule, title and description scrolled away
+    const p = parseTerminalPrompt(cut, { cols: 50 })!;
+    expect(p).toMatchObject({ topRuleFound: false, reason: 'This command requires approval', active: true, descriptionRows: [] });
+    expect(p.title).toBeUndefined();
+    expect(p.commandFull).toBe(command);
+    expect(dialogMatchesToolCall(p, { name: 'Bash', command })).toBe(false);
+    expect(dialogMatchesToolCall(p, { name: 'Bash', command }, { topCut: true })).toBe(true);
+    expect(dialogMatchesToolCall(p, { name: 'Bash', command: `${command} && rm -rf /` }, { topCut: true })).toBe(false);
+  });
+
   it('a dashed box with a non-gutter row inside is not this layout', () => {
     const odd = [...BOXED];
     odd[5] = ' result = m.subtract(5, 3);';

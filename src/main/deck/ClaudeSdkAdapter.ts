@@ -540,7 +540,7 @@ export function buildCommanderSystemPrompt(
         '  agent ONLY with moa_propose_handoff({ptyId, title, body}): terminal_send,',
         '  terminal_send_key, terminal_read and send_message are refused for another',
         '  workspace\'s pane, so never try them there. To check a result, read the file it',
-        '  changed in that pane\'s folder (pane_list gives its cwd). terminal_send and',
+        '  changed in that pane\'s folder with Read or Grep (pane_list gives its cwd). terminal_send and',
         '  terminal_read are for panes in your own workspace only.',
       ]
       : [
@@ -584,14 +584,24 @@ export function buildCommanderSystemPrompt(
     '  operator\'s chief of staff: they hear from you for a decision only they can make,',
     '  and ONCE per job with the FINAL result (what changed, how it was verified), after',
     '  a successful deck_complete_work. No progress chatter: end a non-final turn with at',
-    '  most one line naming what you wait on, never called complete/done. You have no',
-    '  shell or file tools of your own — anything that needs one runs in a worker pane',
-    opts.moa ? '  through a hand-off (moa_propose_handoff).' : '  via terminal_send.',
-    '- REUSE BEFORE SPAWN: before you ever call pane_split, call pane_list and look',
-    '  for an existing pane that can take the work — an idle shell, or an agent that',
-    opts.moa
-      ? '  has finished its turn. Hand the work THERE (moa_propose_handoff). Spawn a new'
-      : '  has finished its turn. Send the work THERE with terminal_send. Spawn a new',
+    '  most one line naming what you wait on, never called complete/done.',
+    ...(opts.moa
+      ? [
+        '  You have no shell and cannot edit files: a command or an edit runs in an agent\'s',
+        '  pane through a hand-off (moa_propose_handoff). You CAN read files (Read, Grep,',
+        '  Glob) to check a result.',
+        '- REUSE BEFORE SPAWN: before you ever call pane_split, call pane_list and look',
+        '  for an agent that can take the work: one that has finished its turn. Hand the',
+        '  work THERE (moa_propose_handoff takes a pane running an agent, never a bare',
+        '  shell). Spawn a new',
+      ]
+      : [
+        '  You have no shell or file tools of your own — anything that needs one runs in a',
+        '  worker pane via terminal_send.',
+        '- REUSE BEFORE SPAWN: before you ever call pane_split, call pane_list and look',
+        '  for an existing pane that can take the work — an idle shell, or an agent that',
+        '  has finished its turn. Send the work THERE with terminal_send. Spawn a new',
+      ]),
     '  pane only when no existing pane is free, or the work genuinely needs to run',
     '  in parallel with everything already running. Spawning when an idle pane',
     '  exists wastes the operator\'s screen and resources.',

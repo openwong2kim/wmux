@@ -308,16 +308,18 @@ export function parseTerminalPrompt(
 
 const DASHED_RULE = /^[╌╍┄┅]+$/;
 
-/** Where a boxed command sits: the dialog's solid top rule, the box's upper
- *  and lower dashed edges. */
+/** Where a boxed command sits: the dialog's solid top rule (-1 when it has
+ *  scrolled off), the box's upper and lower dashed edges. */
 interface BoxedCommand { top: number; upper: number; lower: number }
 
 /**
  * The boxed-command layout (Claude Code 2.1.289), found from the rule just
  * above the question: that rule is dashed, the rows between it and the next
  * dashed rule up are all gutter rows (at least one), and a solid full-width
- * rule sits above that. Anything else (an Edit dialog's dashed diff edges, a
- * dashed rule with no gutter rows inside) is not this layout: null.
+ * rule sits above that, or nothing does (the dialog's top scrolled off: the
+ * record then binds only by the pane's own call, as any top-cut dialog).
+ * Anything else (an Edit dialog's dashed diff edges, a dashed rule with no
+ * gutter rows inside) is not this layout: null.
  */
 function boxedCommand(
   lines: readonly string[],
@@ -340,7 +342,7 @@ function boxedCommand(
     const line = lines[i]!;
     if (isTopRule(line)) return DASHED_RULE.test(line.trim()) ? null : { top: i, upper, lower };
   }
-  return null;
+  return { top: -1, upper, lower };
 }
 
 /** The boxed layout read as the usual record: the first prose row is the
@@ -356,7 +358,15 @@ function parseBoxedPrompt(
 ): ParsedTerminalPrompt {
   const nonBlank = (from: number, to: number): string[] =>
     lines.slice(from, to).filter((line) => line.trim().length > 0);
-  const head = nonBlank(box.top + 1, box.upper);
+  const topRuleFound = box.top >= 0;
+  // With the top cut off, rows above the box may be anything the screen still
+  // shows: only a "<Tool> command" row there reads as the title, and only the
+  // rows after it as the description.
+  let head = nonBlank(box.top + 1, box.upper);
+  if (!topRuleFound) {
+    const t = head.findIndex((line) => toolFromDialogTitle(normalizePromptText(line)) !== undefined);
+    head = t >= 0 ? head.slice(t) : [];
+  }
   const commandRows = nonBlank(box.upper + 1, box.lower).map((line) => normalizePromptText(line.trim().replace(GUTTER, '')));
   const reasonRows = nonBlank(box.lower + 1, q).map(normalizePromptText);
   const cut = cutBefore || [...head, ...nonBlank(box.upper + 1, q)].some((line) => CUT_ROW.test(line));
@@ -392,7 +402,7 @@ function parseBoxedPrompt(
     question: cap(fullQuestion),
     options: fullOptions.map((o) => ({ ...o, label: cap(o.label) })),
     fingerprint,
-    topRuleFound: true,
+    topRuleFound,
     truncated,
     cut,
     active,
