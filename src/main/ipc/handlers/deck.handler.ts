@@ -153,6 +153,7 @@ import { setMoaHandoffService } from '../../deck/moaHandoff';
 import { createMoaHandoffService } from '../../deck/moaHandoffHost';
 import { HANDOFF_NOTICE_OPTION, HANDOFF_OPTIONS, type MoaHandoffResolveResult } from '../../../shared/moaHandoff';
 import { MoaTranscript, type MoaTranscriptHint } from '../../deck/moaTranscript';
+import { isSmallTalk } from '../../deck/smallTalk';
 import { answerMoaApproval, MOA_ANSWER_DELEGATED_PROMPT_RPC, readMoaApproval } from '../../deck/moaApproval';
 import { getAccountStore } from '../../account/accountStore';
 import type { MoaApproval, MoaApprovalAnswerResult, MoaDelegatedApproval, MoaPendingDecision } from '../../../shared/moa';
@@ -160,7 +161,6 @@ import { selectDelegatedApprovals } from '../../deck/moaDelegatedApprovals';
 import { resultFromTask, type MoaTaskResult } from '../../../shared/moaResult';
 import {
   beginOrContinueDeckWork,
-  isSmallTalk,
   clearActiveDeckWork,
   isDeckWorkParked,
   loadActiveDeckWork,

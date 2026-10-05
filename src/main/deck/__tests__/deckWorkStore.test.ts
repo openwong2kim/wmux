@@ -12,8 +12,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { isSmallTalk } from '../smallTalk';
 import {
-  isSmallTalk,
   beginOrContinueDeckWork,
   recordDeckWorkA2aTask,
   completeActiveDeckWork,
