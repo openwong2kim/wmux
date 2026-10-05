@@ -79,8 +79,8 @@ export function MoaMascot({ state, size, label }: MoaMascotProps) {
             : <path d="M54 77 Q57 82 60 78 Q63 82 66 77" />}
       </g>
     </g>
-    {!small && state === 'working' && <g className={anim('moa-dots')} data-moa-effect="dots" fill="var(--text-muted, #8E9BEF)"><circle cx="96" cy="30" r="3" /><circle cx="105" cy="23" r="3" /><circle cx="114" cy="16" r="3" /></g>}
-    {!small && state === 'needs-you' && <g data-moa-effect="bang"><circle cx="104" cy="31" r="10" fill="var(--accent-yellow, #FFD574)" /><path d="M104 25 V32 M104 37 V37.1" stroke={INK} strokeWidth="3" strokeLinecap="round" /></g>}
+    {!small && state === 'working' && <g className={anim('moa-dots')} data-moa-effect="dots" fill="var(--text-muted)"><circle cx="96" cy="30" r="3" /><circle cx="105" cy="23" r="3" /><circle cx="114" cy="16" r="3" /></g>}
+    {!small && state === 'needs-you' && <g data-moa-effect="bang"><circle cx="104" cy="31" r="10" fill="var(--accent-yellow)" /><path d="M104 25 V32 M104 37 V37.1" stroke={INK} strokeWidth="3" strokeLinecap="round" /></g>}
     {!small && state === 'done' && [12, 102].map((x) => <path key={x} className={anim('moa-heart')} data-moa-effect="heart" d={`M${x} 31 c-7 -8 -12 4 0 11 c12 -7 7 -19 0 -11`} fill="#F59CB6" />)}
   </svg>;
 }
