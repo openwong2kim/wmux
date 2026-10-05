@@ -28,6 +28,13 @@ const MAX_ORIGIN_HOPS = 4;
 // harmlessness gate allows a bridge over a no-op hook. A PowerShell start is
 // ~300 ms; a lookup that runs out is 'unknown' and retains pane delivery.
 const ORIGIN_LOOKUP_BUDGET_MS = 900;
+// Test-only override of that budget, so a suite about classification does not
+// depend on how fast a loaded CI runner starts PowerShell. Never set in use.
+const ORIGIN_LOOKUP_BUDGET_ENV = 'WMUX_CODEX_ORIGIN_LOOKUP_BUDGET_MS';
+function originLookupBudgetMs() {
+  const override = Number(process.env[ORIGIN_LOOKUP_BUDGET_ENV]);
+  return Number.isInteger(override) && override > 0 ? override : ORIGIN_LOOKUP_BUDGET_MS;
+}
 // On WSL this bridge is a Windows process and cannot see the Linux Codex that
 // spawned the launcher; the launcher (WSL_CODEX_HOOK in
 // src/shared/wslIntegration.ts) hands that argv over (parseHandedArgv). It
@@ -248,10 +255,11 @@ function ancestorChainWindows(startPid, timeout) {
 export function readAncestorChain(startPid = process.ppid) {
   const handed = process.env[HANDED_ARGV_ENV];
   if (typeof handed === 'string' && handed.length > 0) return [parseHandedArgv(handed)];
-  const deadline = Date.now() + ORIGIN_LOOKUP_BUDGET_MS;
+  const budget = originLookupBudgetMs();
+  const deadline = Date.now() + budget;
   const chain = [];
   try {
-    if (process.platform === 'win32') return ancestorChainWindows(startPid, ORIGIN_LOOKUP_BUDGET_MS);
+    if (process.platform === 'win32') return ancestorChainWindows(startPid, budget);
     let pid = startPid;
     for (let hop = 0; hop < MAX_ORIGIN_HOPS && pid > 1; hop++) {
       const remaining = deadline - Date.now();

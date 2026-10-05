@@ -78,6 +78,35 @@ function wshUsable(): boolean {
 
 const WSH_USABLE = wshUsable();
 
+/**
+ * A PowerShell that opens `file` exclusively, prints `locked`, and keeps it for
+ * `seconds`. A failed Open exits nonzero instead of sleeping without the lock.
+ */
+function lockHolder(file: string, seconds: number): ChildProcess {
+  return spawn(
+    PS,
+    ['-NoProfile', '-NonInteractive', '-Command',
+      `$ErrorActionPreference='Stop'; $s=[System.IO.File]::Open(${q(file)},'Open','Read','None'); ` +
+      `[Console]::Out.WriteLine('locked'); [Console]::Out.Flush(); Start-Sleep -Seconds ${seconds}; $s.Close()`],
+    { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+}
+
+/**
+ * Resolves once the holder reports the lock taken. Event-driven rather than a
+ * wall-clock poll: a cold PowerShell start on a loaded runner can outlast any
+ * fixed deadline, and the test's own timeout already bounds the wait.
+ */
+function heldBy(child: ChildProcess): Promise<ChildProcess> {
+  let stderr = '';
+  child.stderr?.on('data', (d) => { stderr += String(d); });
+  return new Promise((resolve, reject) => {
+    child.stdout?.on('data', (d) => { if (String(d).includes('locked')) resolve(child); });
+    child.once('error', reject);
+    child.once('exit', (code) => reject(new Error(`holder exited (${String(code)}) before it took the lock: ${stderr}`)));
+  });
+}
+
 describe.skipIf(!onWindows)('install waiter (real processes, real locks)', () => {
   let sandbox: string;
   let root: string;
@@ -109,21 +138,11 @@ describe.skipIf(!onWindows)('install waiter (real processes, real locks)', () =>
     try { fs.rmSync(sandbox, { recursive: true, force: true }); } catch { /* lock lingers */ }
   });
 
-  /** Holds heldExe open until killed. Returns once the lock is actually taken. */
-  function holdRoot(seconds = 120): ChildProcess {
-    const child = spawn(
-      PS,
-      ['-NoProfile', '-NonInteractive', '-Command',
-        `$s=[System.IO.File]::Open(${q(heldExe)},'Open','Read','None'); Start-Sleep -Seconds ${seconds}; $s.Close()`],
-      { windowsHide: true, stdio: 'ignore' },
-    );
+  /** Holds heldExe open until killed. Resolves once the lock is actually taken. */
+  function holdRoot(seconds = 120): Promise<ChildProcess> {
+    const child = lockHolder(heldExe, seconds);
     children.push(child);
-    const deadline = Date.now() + 15_000;
-    while (Date.now() < deadline) {
-      try { const fd = fs.openSync(heldExe, 'r+'); fs.closeSync(fd); } catch { return child; }
-      execFileSync(PS, ['-NoProfile', '-Command', 'Start-Sleep -Milliseconds 200'], { windowsHide: true });
-    }
-    throw new Error('holder never took the lock');
+    return heldBy(child);
   }
 
   function writeWaiter(plan: WaiterPlan): void {
@@ -151,8 +170,8 @@ describe.skipIf(!onWindows)('install waiter (real processes, real locks)', () =>
     return { status: res.status, timedOut: res.status === null };
   }
 
-  it('blocks while a tracked process is alive, and never launches meanwhile', () => {
-    const holder = holdRoot();
+  it('blocks while a tracked process is alive, and never launches meanwhile', async () => {
+    const holder = await holdRoot();
     // Budget comfortably longer than our patience: the waiter must still be
     // waiting when we give up, and must not have launched the installer.
     writeWaiter(plan([holder.pid as number], 90_000));
@@ -166,11 +185,11 @@ describe.skipIf(!onWindows)('install waiter (real processes, real locks)', () =>
     expect(fs.readFileSync(abortMarker, 'utf-8')).toContain('interrupted before it could report');
   }, 120_000);
 
-  it('gives up instead of waiting forever on a process that will not die', () => {
+  it('gives up instead of waiting forever on a process that will not die', async () => {
     // taskkill is best-effort. Before the wait was bounded, a survivor left the
     // waiter blocked forever — and wmux had already quit, so the update stalled
     // with nothing to show for it on the next boot.
-    const holder = holdRoot();
+    const holder = await holdRoot();
     writeWaiter(plan([holder.pid as number], 3_000));
 
     expect(runWaiter(60_000).status).toBe(3);
@@ -178,7 +197,7 @@ describe.skipIf(!onWindows)('install waiter (real processes, real locks)', () =>
     expect(fs.existsSync(setupStamp)).toBe(false);
   }, 120_000);
 
-  it('#1084 — force-kills a hung force-kill-eligible pid instead of refusing over it', () => {
+  it('#1084 — force-kills a hung force-kill-eligible pid instead of refusing over it', async () => {
     // The incident this closes: a process app.quit() already asked to exit
     // sits at 0% CPU past the lock budget, and the waiter refused rather
     // than ending it. Same holder as the "gives up" test above, but this
@@ -191,7 +210,7 @@ describe.skipIf(!onWindows)('install waiter (real processes, real locks)', () =>
     fs.writeFileSync(path.join(root, 'Update.exe'), 'x');
     fs.writeFileSync(path.join(root, 'app-1.0.0', 'icudtl.dat'), 'x');
 
-    const holder = holdRoot();
+    const holder = await holdRoot();
     writeWaiter(plan([holder.pid as number], 60_000, [holder.pid as number], 3_000));
 
     expect(runWaiter(60_000).status).toBe(0);
@@ -202,11 +221,11 @@ describe.skipIf(!onWindows)('install waiter (real processes, real locks)', () =>
     expect(() => process.kill(holder.pid as number, 0)).toThrow();
   }, 120_000);
 
-  it('#1084 — still refuses a hung pid that is NOT force-kill-eligible (the daemon path)', () => {
+  it('#1084 — still refuses a hung pid that is NOT force-kill-eligible (the daemon path)', async () => {
     // Same shape as the eligible case above, but forceKillEligiblePids stays
     // empty — this is the daemon's own contract, unchanged: nothing but the
     // graceful daemon.shutdown RPC may end it, so a hang still refuses.
-    const holder = holdRoot();
+    const holder = await holdRoot();
     writeWaiter(plan([holder.pid as number], 3_000));
 
     expect(runWaiter(60_000).status).toBe(3);
@@ -214,8 +233,8 @@ describe.skipIf(!onWindows)('install waiter (real processes, real locks)', () =>
     expect(fs.existsSync(setupStamp)).toBe(false);
   }, 120_000);
 
-  it('launches the installer once the tracked process is gone and the root is clear', () => {
-    const holder = holdRoot();
+  it('launches the installer once the tracked process is gone and the root is clear', async () => {
+    const holder = await holdRoot();
     holder.kill();
     // Wait for the lock to actually drop before starting the waiter, so this
     // test measures the launch path rather than kill latency.
@@ -248,12 +267,12 @@ describe.skipIf(!onWindows)('install waiter (real processes, real locks)', () =>
     expect(fs.existsSync(abortMarker)).toBe(false);
   }, 120_000);
 
-  it('aborts instead of launching when an UNTRACKED process still holds the root', () => {
+  it('aborts instead of launching when an UNTRACKED process still holds the root', async () => {
     // The TOCTOU case: an MCP host spawned a fresh server into the directory
     // after we took our pid snapshot. Every pid we know about is gone, so the
     // handle waits pass — only the lock probe stands between us and destroying
     // the install.
-    holdRoot();
+    await holdRoot();
     const doomed = spawn(PS, ['-NoProfile', '-NonInteractive', '-Command', 'exit'], {
       windowsHide: true, stdio: 'ignore',
     });
@@ -718,21 +737,17 @@ describe.skipIf(!onWindows)('#1264 — the waiter must outlive the app that spaw
     try { fs.rmSync(sandbox, { recursive: true, force: true }); } catch { /* lock lingers */ }
   });
 
-  /** Holds a binary under the install root open for `seconds`, outside the job. */
-  function holdRootFor(seconds: number): void {
-    const child = spawn(
-      PS,
-      ['-NoProfile', '-NonInteractive', '-Command',
-        `$s=[System.IO.File]::Open(${q(heldExe)},'Open','Read','None'); Start-Sleep -Seconds ${seconds}; $s.Close()`],
-      { windowsHide: true, stdio: 'ignore' },
-    );
+  /**
+   * Holds a binary under the install root open, outside the job, until the
+   * test kills it. Released by the test rather than on a timer: the stub's
+   * Add-Type compile can take longer than any fixed window on a loaded runner,
+   * and a lock that clears while the job is still alive lets the in-job waiter
+   * launch the installer before the job ever closes.
+   */
+  function holdRootUntilKilled(): Promise<ChildProcess> {
+    const child = lockHolder(heldExe, 600);
     children.push(child);
-    const deadline = Date.now() + 15_000;
-    while (Date.now() < deadline) {
-      try { const fd = fs.openSync(heldExe, 'r+'); fs.closeSync(fd); } catch { return; }
-      execFileSync(PS, ['-NoProfile', '-Command', 'Start-Sleep -Milliseconds 100'], { windowsHide: true });
-    }
-    throw new Error('holder never took the lock');
+    return heldBy(child);
   }
 
   /**
@@ -868,32 +883,34 @@ describe.skipIf(!onWindows)('#1264 — the waiter must outlive the app that spaw
     return fs.existsSync(p);
   }
 
-  it('the in-tree wscript transport is killed with the job (the reported defect)', () => {
+  it('the in-tree wscript transport is killed with the job (the reported defect)', async () => {
     // This is the CONTROL, and it is the mechanism proof: same script, same
     // hidden launcher, started the way the app used to start it — as a child.
     const stamp = path.join(waiterDir, 'launched-w.txt');
     const script = path.join(waiterDir, 'wait-and-install-w.ps1');
     const vbs = path.join(waiterDir, 'launch-waiter-w.vbs');
     writeWaiterFor(stamp, script, vbs);
-    holdRootFor(12);
+    const holder = await holdRootUntilKilled();
 
     if (!requireJobArmed(runInsideDyingJob([
       `Start-Process -FilePath ${q(WSCRIPT)} -ArgumentList '//B','//Nologo',${q(vbs)} -WindowStyle Hidden`,
     ]))) return;
+    // The job closed with the stub; only now does the root clear.
+    holder.kill();
 
     // It really did start: the launch stamp is the waiter's first act.
     expect(fs.existsSync(stamp)).toBe(true);
-    // ...and then the job closed. The lock clears ~8s after the parent died,
+    // ...and then the job closed. The lock cleared right after the parent died,
     // so a SURVIVING waiter would have launched the stub installer by now.
     expect(waitFor(setupStamp, 25_000)).toBe(false);
   }, 180_000);
 
-  it('the scheduled-task transport survives the job and runs the installer', () => {
+  it('the scheduled-task transport survives the job and runs the installer', async () => {
     const stamp = path.join(waiterDir, 'launched-s.txt');
     const script = path.join(waiterDir, 'wait-and-install-s.ps1');
     const vbs = path.join(waiterDir, 'launch-waiter-s.vbs');
     writeWaiterFor(stamp, script, vbs);
-    holdRootFor(12);
+    const holder = await holdRootUntilKilled();
 
     const taskName = `wmux-update-t${Date.now().toString(36).replace(/[^A-Za-z0-9]/g, '')}`;
     // The REAL definition, through the real builders — so an XML the importer
@@ -914,6 +931,7 @@ describe.skipIf(!onWindows)('#1264 — the waiter must outlive the app that spaw
       `& ${q(SCHTASKS)} ${psArr(buildScheduledTaskRunArgs(taskName))} | Out-Null`,
       `if ($LASTEXITCODE -ne 0) { exit 5 }`,
     ]))) return;
+    holder.kill();
 
     expect(fs.existsSync(stamp)).toBe(true);
     // The parent is gone and its job closed with it. The scheduler's child is

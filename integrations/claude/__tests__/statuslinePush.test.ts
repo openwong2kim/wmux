@@ -274,22 +274,29 @@ describe('statusline live-usage push', () => {
     writeToken();
     const pipe = socketPathFor('mute');
     const sockets = new Set<net.Socket>();
-    const server = net.createServer((sock) => { sockets.add(sock); });
+    let closed = 0;
+    const server = net.createServer((sock) => {
+      sockets.add(sock);
+      // Flowing, so the child's hang-up is read and 'close' fires.
+      sock.resume();
+      sock.on('close', () => { closed += 1; });
+    });
     await new Promise<void>((r) => server.listen(pipe, r));
     try {
-      // Best of two, so one slow node startup cannot make the budget look spent.
       removeToken();
-      const a = await run(input(40), socketPathFor('absent'));
-      const b = await run(input(40), socketPathFor('absent'));
-      const baseline = a.ms <= b.ms ? a : b;
+      const baseline = await run(input(40), socketPathFor('absent'));
       writeToken();
       clearState();
       const r = await run(input(40), pipe);
       expect(r).toMatchObject({ code: 0, stderr: '', stdout: baseline.stdout });
-      // The push runs in a detached child; the statusline itself only pays
-      // for the spawn, never for the 300 ms wait.
-      expect(r.ms - baseline.ms).toBeLessThan(250);
+      // The push runs in a detached child that gives up after its 300 ms wait
+      // and drops the connection. Had the statusline waited for it, that drop
+      // would have landed before the statusline exited. Ordering, not a
+      // wall-clock budget: a loaded Windows runner spent 298 ms on the spawn
+      // alone, so a timing margin under the 300 ms wait cannot tell the two apart.
+      expect(closed).toBe(0);
       await waitFor(() => sockets.size === 1);
+      await waitFor(() => closed === 1);
     } finally {
       await settle();
       for (const sk of sockets) sk.destroy();

@@ -23,10 +23,13 @@ function makeHelper(mode: string, extra: Partial<ConstructorParameters<typeof He
     ...extra,
   });
   helpers.push(helper);
-  const requests = () => (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8').trim().split('\n') : []);
-  const releases = () => (fs.existsSync(`${logFile}.params`)
-    ? fs.readFileSync(`${logFile}.params`, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>)
-    : []);
+  // The helper appends while these poll, so a read can land between the
+  // append's open (file exists, empty) and its write, or mid-write (Windows
+  // AV/fs makes that window wide). Only newline-terminated lines are records;
+  // the unterminated tail is dropped.
+  const lines = (file: string) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').slice(0, -1) : []);
+  const requests = () => lines(logFile);
+  const releases = () => lines(`${logFile}.params`).map((l) => JSON.parse(l) as Record<string, unknown>);
   return { helper, requests, releases };
 }
 

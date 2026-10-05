@@ -30,7 +30,9 @@ class FakeEventSource {
 
 const openStreams = () => FakeEventSource.all.filter((e) => !e.closed);
 const b64 = (s: string) => Buffer.from(s, 'utf8').toString('base64');
-const flush = () => new Promise((r) => setTimeout(r, 0));
+// setImmediate, not setTimeout(0): the rationing test flushes ~400 times, and
+// each timer wait (>= 1 ms, coarser on Windows) pushed it past 5 s on CI.
+const flush = () => new Promise((r) => setImmediate(r));
 const until = async (cond: () => boolean, ms = 2000) => {
   const end = Date.now() + ms;
   while (!cond() && Date.now() < end) await new Promise((r) => setTimeout(r, 5));

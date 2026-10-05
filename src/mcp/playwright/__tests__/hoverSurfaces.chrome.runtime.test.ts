@@ -113,6 +113,19 @@ const WINDOWS_CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.e
  */
 const LAUNCH_TIMEOUT_MS = 30_000;
 
+/**
+ * The launch bound where the mode is required (requiredOnThisRunner).
+ *
+ * The short bound only exists to skip fast where Chrome may be absent; where
+ * the mode is required a timeout fails either way, so there it only turns a
+ * slow launch red. The first chrome.exe start on a fresh Windows runner is a
+ * cold start (binary scan, new profile dir): across 70 green Windows Baseline
+ * runs, setup for BOTH launches took 7.6-30.7 s (median ~13 s), and twice the
+ * single headless launch did not answer within 30 s (2026-10-05). 120 s is
+ * still well below Playwright's own 180 s default.
+ */
+const REQUIRED_LAUNCH_TIMEOUT_MS = 120_000;
+
 /** How long teardown waits for Chrome to exit before killing its process
  *  (see the afterAll below). */
 const BROWSER_CLOSE_WAIT_MS = 10_000;
@@ -172,6 +185,10 @@ function requiredOnThisRunner(mode: (typeof MODES)[number]): boolean {
   return mode.headless;
 }
 
+function launchBoundFor(mode: (typeof MODES)[number]): number {
+  return requiredOnThisRunner(mode) ? REQUIRED_LAUNCH_TIMEOUT_MS : LAUNCH_TIMEOUT_MS;
+}
+
 function reason(error: unknown): string {
   return error instanceof Error ? error.message.split('\n')[0] : String(error);
 }
@@ -223,10 +240,16 @@ function harnessFor(mode: (typeof MODES)[number]): Harness {
 
     // Chrome refuses to start under the isolate setup's temp USERPROFILE on the
     // Windows runner, which skipped every case here; see realProfileBrowserEnv.
+    // Playwright's own timeout kills a Chrome that did not answer, so it does
+    // not keep cold-starting next to the following mode's launch, and its error
+    // carries the launch call log. The race below stays as a backstop.
+    const bound = launchBoundFor(mode);
+    const launchStarted = Date.now();
     const launching = chromium.launch({
       channel: 'chrome',
       headless: mode.headless,
       env: realProfileBrowserEnv(),
+      timeout: bound,
     });
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -234,8 +257,8 @@ function harnessFor(mode: (typeof MODES)[number]): Harness {
         launching,
         new Promise<never>((_resolve, rejectRace) => {
           timer = setTimeout(
-            () => rejectRace(new Error(`launch did not answer within ${LAUNCH_TIMEOUT_MS} ms`)),
-            LAUNCH_TIMEOUT_MS,
+            () => rejectRace(new Error(`launch did not answer within ${bound} ms`)),
+            bound + 5_000,
           );
         }),
       ])) as Browser;
@@ -243,6 +266,10 @@ function harnessFor(mode: (typeof MODES)[number]): Harness {
       skipReason = mode.headless
         ? `Google Chrome would not launch: ${reason(error)}`
         : `no display for a headed Chrome: ${reason(error)}`;
+      // The whole error, with Playwright's launch call log, and the elapsed
+      // time: the skip reason keeps only the first line.
+      // eslint-disable-next-line no-console
+      console.log(`[hoverSurfaces.chrome ${mode.name}] launch failed after ${Date.now() - launchStarted} ms:`, error);
       // A launch that only LOST the race is still going to produce a browser;
       // close it rather than leave the process behind.
       void launching.then((late) => (late as Browser | null)?.close?.()).catch(() => undefined);
@@ -310,7 +337,7 @@ function harnessFor(mode: (typeof MODES)[number]): Harness {
       // eslint-disable-next-line no-console
       console.log(`[hoverSurfaces.chrome ${mode.name}] skipping: ${skipReason}`);
     }
-  }, LAUNCH_TIMEOUT_MS + 30_000);
+  }, launchBoundFor(mode) + 35_000);
 
   // Vitest's default hook timeout is 10 s, which closing a real browser and a
   // real server does not always fit on a loaded CI runner — observed as

@@ -190,6 +190,13 @@ describe('NotificationPanel dismissal', () => {
     webview.tabIndex = 0;
     document.body.appendChild(webview);
     await openPanel();
+    // The drawer moves focus to its first unread row in a requestAnimationFrame
+    // (jsdom: a ~16 ms interval). Let that frame land first: on a slow runner
+    // it otherwise fires between the blur and the drawer's next-tick
+    // activeElement check, pulling focus off the <webview> so it stays open.
+    await act(async () => {
+      await new Promise<void>((r) => requestAnimationFrame(() => r()));
+    });
     act(() => {
       webview.focus();
       window.dispatchEvent(new Event('blur'));

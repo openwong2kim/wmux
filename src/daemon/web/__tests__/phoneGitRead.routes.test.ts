@@ -39,7 +39,9 @@ describe('phone Git read routes', { timeout: 30_000 }, () => {
     init(path.join(root, 'app'));
     init(path.join(root, 'brain-repo'));
     fs.mkdirSync(path.join(root, 'plain'));
-  });
+    // Four git.exe spawns. The suite's 30 s timeout covers tests, not hooks, so
+    // without this the hook kept the 10 s default and timed out on Windows CI.
+  }, 30_000);
   afterAll(() => {
     process.env.HOME = savedHome.HOME; process.env.USERPROFILE = savedHome.USERPROFILE;
     fs.rmSync(root, { recursive: true, force: true });

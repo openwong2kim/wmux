@@ -290,6 +290,11 @@ describe('wmux-codex-notify under a fake Codex parent', () => {
       CODEX_HOME: path.join(home, '.codex'),
       WMUX_PIPE_NAME: pipe,
       WMUX_TEST_CHILD: JSON.stringify(child),
+      // A lookup that runs out of its 900 ms budget reads as 'unknown' and
+      // keeps pane delivery, so a refusal here would hinge on how fast a
+      // loaded runner starts PowerShell (Windows). These tests are about the
+      // classification, so give the real lookup room to finish.
+      WMUX_CODEX_ORIGIN_LOOKUP_BUDGET_MS: '10000',
     });
     if (opts.identity !== false) {
       // The identity of the pane that happened to start the shared server.

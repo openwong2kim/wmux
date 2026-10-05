@@ -372,11 +372,20 @@ describe('phone worktree creation', { timeout: 60_000 }, () => {
   // The real thing on Windows: a process holding the half-made worktree.
   it.runIf(process.platform === 'win32')('leaves a locked checkout alone while a process holds it on Windows', async () => {
     const { requestId, dir } = await cutOff('held-win');
-    const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { cwd: dir, stdio: 'ignore' });
+    // The holder enters the directory itself and only then says so. Probing
+    // while a child starts there races its loader: the probe opens the
+    // directory for DELETE, the child's open of its startup cwd then fails,
+    // and Windows starts it in the system directory, which holds nothing.
+    const holder = spawn(process.execPath, ['-e', 'process.chdir(process.argv[1]); process.stdout.write("ready\\n"); setInterval(() => {}, 1000)', dir], { stdio: ['ignore', 'pipe', 'pipe'] });
     try {
-      await once(holder, 'spawn');
-      // A new process holds its current directory a moment after it starts.
-      await vi.waitFor(async () => expect(await windowsDirectoryHold(dir)).toBe('in-use'), { timeout: 10_000, interval: 50 });
+      let stderr = '';
+      holder.stderr.on('data', (d) => { stderr += String(d); });
+      await new Promise<void>((resolve, reject) => {
+        holder.stdout.on('data', (d) => { if (String(d).includes('ready')) resolve(); });
+        holder.once('error', reject);
+        holder.once('exit', (code) => reject(new Error(`holder exited (${String(code)}) before holding the directory: ${stderr}`)));
+      });
+      expect(await windowsDirectoryHold(dir)).toBe('in-use');
       const calls: string[][] = [];
       expect((await create(service({ git: recording(calls) }), repo, 'held-win', { requestId })).receipt).toEqual(retryable(requestId));
       expect(issued(calls, 'worktree', 'unlock') || issued(calls, 'worktree', 'remove')).toBe(false);

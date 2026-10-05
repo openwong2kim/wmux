@@ -70,7 +70,12 @@ describe('findCodexRolloutByCwd', () => {
 
   it('refuses when there are more candidates than it reads, instead of binding the first one it read', () => {
     rollout(A);
-    for (let i = 1; i <= MAX_HEAD_READS; i += 1) rollout(uuid(100 + i), { cwd: path.join(cwd, `other-${i}`) }, LAUNCH + 2_000);
+    // The budget refusal is decided from file names alone, so the fillers skip
+    // the ~30KB base_instructions: 65 full-size writes are the whole cost of
+    // this test and timed it out on a loaded Windows runner.
+    for (let i = 1; i <= MAX_HEAD_READS; i += 1) {
+      rollout(uuid(100 + i), { cwd: path.join(cwd, `other-${i}`), base_instructions: undefined }, LAUNCH + 2_000);
+    }
     expect(findCodexRolloutByCwd(query())).toEqual({ ok: false, reason: 'budget' });
   });
 

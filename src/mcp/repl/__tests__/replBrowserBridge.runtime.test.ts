@@ -206,14 +206,21 @@ describe('repl_run browser bridge (real child)', () => {
   });
 
   it('makes a replacement session wait for browser calls its killed predecessor left running', async () => {
-    let landedAt = 0;
+    // Ordering is observed in this process only. Comparing the child's
+    // Date.now() with this one's crosses two process clocks, which on Windows
+    // disagree by a millisecond often enough to fail a causally ordered pair.
+    const order: string[] = [];
     const tools = new Map<string, CollectedTool>();
     tools.set('browser_navigate', {
       name: 'browser_navigate',
       shape: { url: z.string() },
-      handler: async () => {
+      handler: async (args) => {
+        if (args.url === 'https://probe.test') {
+          order.push('probe');
+          return { content: [{ type: 'text', text: 'probed' }] };
+        }
         await new Promise((resolve) => setTimeout(resolve, 3_000));
-        landedAt = Date.now();
+        order.push('landed');
         return { content: [{ type: 'text', text: 'navigated' }] };
       },
     });
@@ -229,14 +236,14 @@ describe('repl_run browser bridge (real child)', () => {
         binding,
       );
       expect(killed.fatal).toBeTruthy();
-      expect(landedAt).toBe(0);
+      expect(order).toEqual([]);
 
       const second = registry.acquire('slow', os.tmpdir());
       expect(second.created).toBe(true);
-      const outcome = await second.session.run('Date.now()', 10_000, binding);
+      const outcome = await second.session.run('await browser.navigate({ url: "https://probe.test" }); 1', 10_000, binding);
       expect(outcome.ok).toBe(true);
-      expect(landedAt).toBeGreaterThan(0);
-      expect(Number(outcome.result?.text)).toBeGreaterThanOrEqual(landedAt);
+      // The replacement's first statement only ran once the predecessor's call landed.
+      expect(order).toEqual(['landed', 'probe']);
     } finally {
       registry.disposeAll();
     }

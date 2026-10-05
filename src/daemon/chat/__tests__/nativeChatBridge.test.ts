@@ -1012,11 +1012,13 @@ describe('cancel', () => {
   it('a send right after an ESC waits out the quiet window before pasting', async () => {
     const f = running();
     const delays: number[] = [];
-    const bridge = createChatBridge({ ...f.deps, delay: async (ms) => { delays.push(ms); } });
-    f.shell.escAt = Date.now();
+    // Pin the bridge clock: wall time spent in send() before the quiet-window
+    // check (slow CI runners) would otherwise shrink the measured wait.
+    const t = Date.now();
+    const bridge = createChatBridge({ ...f.deps, now: () => t, delay: async (ms) => { delays.push(ms); } });
+    f.shell.escAt = t - 50;
     await bridge.send(phoneSend('next'));
-    expect(delays[0]).toBeGreaterThan(200);
-    expect(delays[0]).toBeLessThanOrEqual(300);
+    expect(delays[0]).toBe(250);
   });
 
   it('desktop keeps its enum: unavailable without a registry or on a native binding', async () => {

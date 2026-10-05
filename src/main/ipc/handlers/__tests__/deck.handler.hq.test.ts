@@ -124,6 +124,7 @@ import { getTaskLedger } from '../../../deck/taskLedgerHost';
 import { __resetStartupDeckReconcileForTest } from '../../../deck/deckOrphanReconcile';
 import { mintCommanderToken } from '../../../deck/commanderTrust';
 import { registerBrainPty } from '../../../deck/brainPtyHookBus';
+import { __resetMoaPaneFeedForTest, setMoaPanePush } from '../../../deck/moaPaneFeed';
 
 class FakeAdapter implements BrainAdapter {
   sessionId: string | null = null;
@@ -214,6 +215,12 @@ beforeEach(async () => {
   __resetWorkspaceMirrorForTest();
   __resetHqMemoryForTest();
   __resetStartupDeckReconcileForTest();
+  // A daemon that takes every Moa pane push. With no transport the feed arms a
+  // module-level backoff retry (500 ms, doubling) on real time; when it fires
+  // inside a fake-timer window it re-arms as a fake timer, so
+  // vi.getTimerCount() below would count it depending on wall-clock speed.
+  __resetMoaPaneFeedForTest();
+  setMoaPanePush(async () => ({ ok: true }));
   vi.spyOn(console, 'log').mockImplementation(() => undefined);
   vi.spyOn(console, 'warn').mockImplementation(() => undefined);
   await setHqWorkspaceId(null);
