@@ -69,7 +69,10 @@ export function SidebarSlot({
       data-animating={animating ? '' : undefined}
       // Clip only while animating: the resize handle sits 4px outside the
       // sidebar's edge and must stay reachable when the column is at rest.
-      style={{ width: visible ? width : 0, overflow: animating ? 'hidden' : undefined }}
+      // `clip`, not `hidden`: a hidden box is still a scroll container, so a
+      // focus inside the half-open sidebar scrolled it sideways (measured:
+      // 148px), shifting its left edge out of view.
+      style={{ width: visible ? width : 0, overflow: animating ? 'clip' : undefined }}
       inert={!visible}
       onTransitionEnd={onTransitionEnd}
       data-testid="sidebar-slot"

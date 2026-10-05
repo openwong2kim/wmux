@@ -2119,23 +2119,14 @@ html[data-fullscreen] .wmux-shell-body {
 [data-commander-layout="chat"] [data-commander-composer] { background: transparent; border-color: var(--line); }
 :root:is([data-theme="mono-light"], [data-theme="paper"], [data-theme="hinomaru"], [data-theme="taegeuk"]) form[data-channel-composer].wmux-chat-composer,
 :root:is([data-theme="mono-light"], [data-theme="paper"], [data-theme="hinomaru"], [data-theme="taegeuk"]) [data-chat-view] .wmux-chat-composer { box-shadow: none; background: transparent; }
-/* Sidebar rows: hover is a whisper next to the selection pill, and the hover
- * actions float over the row's right edge while the text under them fades —
- * the row's layout never changes width. */
+/* Sidebar rows: hover is a whisper next to the selection pill. The hover
+ * actions stay in flow at the end of the name line (WorkspaceItem.tsx): an
+ * overlay painted over the roster chip, and a fade on the text column hid the
+ * git line too — and, as a descendant rule, every nested task row's text
+ * whenever the owner card was hovered. */
 .wmux-sidebar .sidebar-row { position: relative; }
 .wmux-sidebar .sidebar-row:not(.sidebar-row-active):not(.sidebar-row-needs):hover {
   background: color-mix(in srgb, var(--text-main) 3%, transparent);
-}
-.wmux-sidebar [data-workspace-actions] {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  max-width: none !important;
-  margin: 0;
-}
-.wmux-sidebar .sidebar-row:is(:hover, :focus-within) [data-workspace-text] {
-  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 96px), transparent calc(100% - 64px));
-  mask-image: linear-gradient(to right, #000 calc(100% - 96px), transparent calc(100% - 64px));
 }
 /* Pane toolbar: groups are set apart by space, the view switch by its fill. */
 .wmux-chat-toggle { margin: 0 6px; }

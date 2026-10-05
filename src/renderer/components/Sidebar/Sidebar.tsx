@@ -515,9 +515,12 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
       /* The list container absorbs dragover for sidebar-internal reorder
           drags so the gaps between WorkspaceItem rows (and the empty area
           below the last row) don't paint a 🚫 cursor mid-drag. External
-          drags hover-through the container untouched. */
+          drags hover-through the container untouched.
+          `overflow-y-auto` alone computes overflow-x to auto: a row a few px
+          too wide made the whole list swipe sideways, cutting the status marks
+          at the left edge. The list never scrolls horizontally. */
       <div
-        className="flex-1 min-h-0 overflow-y-auto px-0 pb-2 space-y-0.5"
+        className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-0 pb-2 space-y-0.5"
         onPointerEnter={onListPointerEnter}
         onPointerLeave={onListPointerLeave}
         onFocusCapture={onListFocus}

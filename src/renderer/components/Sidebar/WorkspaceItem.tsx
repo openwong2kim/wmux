@@ -340,7 +340,8 @@ function hoverRecipes(taskRow: boolean) {
       gapRow: TASK_REST_HIDDEN_GAP_ROW,
       gapNameLine: TASK_REST_HIDDEN_GAP_NAME_LINE,
       hideOnHover: 'group-hover/task:hidden',
-      cluster: 'group-hover/task:opacity-100 group-hover/task:pointer-events-auto group-hover/task:max-w-none group-hover/task:overflow-visible',
+      cluster: 'group-hover/task:opacity-100 group-hover/task:pointer-events-auto',
+      clusterSlot: 'group-hover/task:max-w-none group-hover/task:overflow-visible group-hover/task:ml-auto group-hover/task:pl-0.5',
     }
     : {
       group: 'group',
@@ -348,7 +349,8 @@ function hoverRecipes(taskRow: boolean) {
       gapRow: REST_HIDDEN_GAP_ROW,
       gapNameLine: REST_HIDDEN_GAP_NAME_LINE,
       hideOnHover: 'group-hover:hidden',
-      cluster: 'group-hover:opacity-100 group-hover:pointer-events-auto group-hover:max-w-none group-hover:overflow-visible',
+      cluster: 'group-hover:opacity-100 group-hover:pointer-events-auto',
+      clusterSlot: 'group-hover:max-w-none group-hover:overflow-visible group-hover:ml-auto group-hover:pl-0.5',
     };
 }
 
@@ -956,7 +958,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
         {...tokenAttrs('bgSurface', 'bg')}
         // Card states (idle / hover / active / needs you) are painted by the
         // .wmux-sidebar .sidebar-row rules in ui.css.
-        className={`${hover.group} sidebar-row px-2.5 ${taskRow ? 'py-1.5' : 'py-2'} cursor-pointer rounded-md select-none ${needsYou ? 'sidebar-row-needs' : ''} ${
+        className={`sidebar-row px-2.5 ${taskRow ? 'py-1.5' : 'py-2'} cursor-pointer rounded-md select-none ${needsYou ? 'sidebar-row-needs' : ''} ${
           isActive ? 'sidebar-row-active' : ''
         }`}
         style={isMultiview ? { borderLeft: '2px solid var(--accent-blue)' } : undefined}
@@ -970,7 +972,11 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
         onDrop={handleDrop}
         data-handoff-over={handoffOver ? 'true' : undefined}
       >
-        <div className="flex min-w-0 items-start gap-2">
+        {/* The hover group is this line, not the card: the card also holds the
+            expanded roster and its nested task rows, and `:hover` reaches every
+            ancestor, so a pointer on a nested task would reveal this row's
+            chrome too and cut its name for buttons nobody is pointing at. */}
+        <div className={`${hover.group} flex min-w-0 items-start gap-2`}>
         {/* Status indicator — #1481: one shared mark (AgentMarks.tsx), status
             told by shape. Idle draws nothing: an active-but-idle workspace
             is no longer painted green, because green means "finished" and
@@ -1117,6 +1123,74 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
                     · {idleLabel}
                   </span>
                 )}
+                {/* Hover actions, at the end of the NAME line. Each is a real
+                    24x24 target; they sit in a cluster because three 24px boxes
+                    do not fit side by side in this column: the cluster's gap-3
+                    is exactly what the members' side refunds give back, so
+                    consecutive boxes TILE instead of overlapping (see
+                    hitArea.ts).
+
+                    In flow, not floating over the row: revealed, the cluster
+                    takes its own width out of the name and nothing else. The
+                    git line below keeps its full width, and the roster chip
+                    beside both lines stays visible and clickable. The outer
+                    span owns the cluster's footprint: at rest it is weightless
+                    (`max-w-0`, and `-ml-1` cancels the name line's gap);
+                    shown, `ml-auto` pins it to the line's end and `pl-0.5`
+                    plus the gap gives back the 6px the first member's left
+                    refund reaches over, so its box never covers the name. The
+                    margins live on the span, not the cluster: hitArea.ts keeps
+                    a cluster free of margins of its own.
+
+                    `pointer-events` follow visibility: an invisible control
+                    must not take a click meant for the row under it.
+                    `focus-within` reveals the cluster for the keyboard. */}
+                {!readOnly && <span className={`flex flex-shrink-0 items-center self-center max-w-0 overflow-hidden -ml-1 ${hover.clusterSlot} focus-within:max-w-none focus-within:overflow-visible focus-within:ml-auto focus-within:pl-0.5`}>
+                <div
+                  data-workspace-actions
+                  className={`${HIT_TARGET_24_CLUSTER} opacity-0 pointer-events-none transition-opacity duration-150 ${hover.cluster} focus-within:opacity-100 focus-within:pointer-events-auto`}
+                >
+                  {/* Folder icon — reveals this workspace's cwd in the OS file manager. */}
+                  <button
+                    data-workspace-action="explorer"
+                    className={`${HIT_TARGET_24_IN_CLUSTER} rounded-md text-[color-mix(in_srgb,var(--text-main)_50%,transparent)] hover:bg-[var(--selection)] hover:text-[var(--text-main)] text-[10px] font-mono`}
+                    onClick={(e) => { e.stopPropagation(); handleOpenExplorer(); }}
+                    title={t('workspace.openInExplorer', { app: fileManagerName(t) })}
+                    aria-label={t('workspace.openInExplorer', { app: fileManagerName(t) })}
+                  >
+                    <IconFolder size={11} />
+                  </button>
+
+                  {/* Copy session info button */}
+                  <button
+                    data-workspace-action="copy-info"
+                    className={`${HIT_TARGET_24_IN_CLUSTER} rounded-md text-[color-mix(in_srgb,var(--text-main)_50%,transparent)] hover:bg-[var(--selection)] hover:text-[var(--text-main)] text-[10px] font-mono`}
+                    onClick={(e) => { e.stopPropagation(); onCopyInfo(workspaceId); }}
+                    title={t('workspace.copyInfo')}
+                    aria-label={t('workspace.copyInfo')}
+                  >
+                    <IconCopy size={11} />
+                  </button>
+
+                  {/* Close button — asks for confirmation first (anti-misclick). Last in
+                      the cluster: a pointer overshooting it to the right leaves the
+                      cluster instead of landing on the one control here that kills a
+                      workspace. */}
+                  {/* Moa's HQ: present but disabled, focusable so the reason can be
+                      read (aria-disabled, not `disabled`). */}
+                  <button
+                    data-workspace-action="close"
+                    className={`${HIT_TARGET_24_IN_CLUSTER} rounded-md text-[color-mix(in_srgb,var(--text-main)_50%,transparent)] text-[10px] font-mono ${moaHq ? 'opacity-50 cursor-default' : 'hover:bg-[var(--selection)] hover:text-[var(--accent-red)]'}`}
+                    onClick={(e) => { e.stopPropagation(); if (moaHq) return; setMenuPos(null); setCloseConfirmPos(anchorOf(e.currentTarget)); }}
+                    title={moaHq ? t('moa.guard.reason') : t('workspace.close')}
+                    aria-label={t('workspace.close')}
+                    aria-disabled={moaHq || undefined}
+                    aria-description={moaHq ? t('moa.guard.reason') : undefined}
+                  >
+                    <IconX size={11} />
+                  </button>
+                </div>
+                </span>}
               </div>
               {metadata && <WorkspaceContextLine metadata={metadata} onPortClick={handlePortClick} />}
             </>
@@ -1180,72 +1254,6 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
           </span>
         )}
 
-        {/* Hover actions. Each drew an 11px glyph in a 13px box; each is now a
-            real 24x24 target. They sit in a cluster because three 24px boxes do
-            not fit in the 57px this row used to give them: the cluster's gap-3
-            is exactly what the members' side refunds give back, so consecutive
-            boxes TILE instead of overlapping (see hitArea.ts). That matters
-            most for the last one — with a symmetric refund and no matching gap,
-            close would have owned the right 4px of Copy, and the later sibling
-            wins the pointer.
-
-            `pointer-events` follow visibility: the boxes are 24px tall in a
-            ~23px row, so at rest they extend a fraction past the row's edge,
-            and an invisible control must not take a click meant for the row
-            under it. `focus-within` reveals the cluster for the keyboard, which
-            could previously focus a button it could not see.
-
-            `max-w-0 overflow-hidden` collapses the cluster at rest for the same
-            reason the rest of the chrome collapses (REST_HIDDEN): three 24px
-            boxes held ~72px of the name's column to show nothing. The overflow
-            comes back on reveal — the members' `-mx-1.5` refunds live outside
-            the cluster's content box, and a clipped refund is a smaller target.
-            No negative left margin here: hitArea.ts forbids one on a cluster
-            (chromeHitArea.test.ts asserts it), so this one item keeps its gap. */}
-        {!readOnly && <div
-          data-workspace-actions
-          className={`${HIT_TARGET_24_CLUSTER} flex-shrink-0 opacity-0 pointer-events-none max-w-0 overflow-hidden transition-opacity duration-150 ${hover.cluster} focus-within:opacity-100 focus-within:pointer-events-auto focus-within:max-w-none focus-within:overflow-visible`}
-        >
-          {/* Folder icon — reveals this workspace's cwd in the OS file manager. */}
-          <button
-            data-workspace-action="explorer"
-            className={`${HIT_TARGET_24_IN_CLUSTER} rounded-md text-[color-mix(in_srgb,var(--text-main)_50%,transparent)] hover:bg-[var(--selection)] hover:text-[var(--text-main)] text-[10px] font-mono`}
-            onClick={(e) => { e.stopPropagation(); handleOpenExplorer(); }}
-            title={t('workspace.openInExplorer', { app: fileManagerName(t) })}
-            aria-label={t('workspace.openInExplorer', { app: fileManagerName(t) })}
-          >
-            <IconFolder size={11} />
-          </button>
-
-          {/* Copy session info button */}
-          <button
-            data-workspace-action="copy-info"
-            className={`${HIT_TARGET_24_IN_CLUSTER} rounded-md text-[color-mix(in_srgb,var(--text-main)_50%,transparent)] hover:bg-[var(--selection)] hover:text-[var(--text-main)] text-[10px] font-mono`}
-            onClick={(e) => { e.stopPropagation(); onCopyInfo(workspaceId); }}
-            title={t('workspace.copyInfo')}
-            aria-label={t('workspace.copyInfo')}
-          >
-            <IconCopy size={11} />
-          </button>
-
-          {/* Close button — asks for confirmation first (anti-misclick). Last in
-              the cluster, at the sidebar's edge: a pointer overshooting the row
-              to the right leaves the cluster entirely instead of landing on the
-              one control here that kills a workspace. */}
-          {/* Moa's HQ: present but disabled, focusable so the reason can be
-              read (aria-disabled, not `disabled`). */}
-          <button
-            data-workspace-action="close"
-            className={`${HIT_TARGET_24_IN_CLUSTER} rounded-md text-[color-mix(in_srgb,var(--text-main)_50%,transparent)] text-[10px] font-mono ${moaHq ? 'opacity-50 cursor-default' : 'hover:bg-[var(--selection)] hover:text-[var(--accent-red)]'}`}
-            onClick={(e) => { e.stopPropagation(); if (moaHq) return; setMenuPos(null); setCloseConfirmPos(anchorOf(e.currentTarget)); }}
-            title={moaHq ? t('moa.guard.reason') : t('workspace.close')}
-            aria-label={t('workspace.close')}
-            aria-disabled={moaHq || undefined}
-            aria-description={moaHq ? t('moa.guard.reason') : undefined}
-          >
-            <IconX size={11} />
-          </button>
-        </div>}
         </div>
         {/* Mounted only when expanded: a collapsed list would subscribe to the
             whole roster projection to render nothing. */}
