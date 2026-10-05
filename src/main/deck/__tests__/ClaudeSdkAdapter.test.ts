@@ -383,6 +383,7 @@ describe('ClaudeSdkAdapter', () => {
     expect(flat).toContain('decide by production impact');
     expect(flat).toContain('ONLY for: taste, a release, an irreversible action outside wmux, a security-boundary change, or a real fork where the operator\'s intent is ambiguous.');
     expect(flat).toContain('Every question carries your recommended option, listed first.');
+    expect(flat).toContain('Its context says why you are asking: what blocks you and what each answer changes.');
     expect(flat).toContain('ONCE per job with the FINAL result (what changed, how it was verified)');
     expect(flat).toContain('No progress chatter');
     expect(flat).not.toContain('short PROGRESS update');

@@ -118,6 +118,11 @@ export function MoaHandoffCard({
           {handoff.body}
         </div>
       )}
+      {handoff.askReason && (
+        <p className="m-0 mt-1 text-[11px] leading-snug text-[var(--text-sub)]" data-moa-handoff-reason={handoff.askReason}>
+          {t(`moa.handoff.reason.${handoff.askReason}`)}
+        </p>
+      )}
       {handoff.foldsNewlines && (
         <p className="m-0 mt-1 text-[11px] leading-snug text-[var(--text-sub)]" data-moa-handoff-folds>
           {t('moa.handoff.foldsNewlines')}

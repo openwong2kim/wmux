@@ -74,6 +74,11 @@ describe('MoaHandoffCard', () => {
     expect(q('[data-moa-handoff-queue]').textContent).toBe('moa.handoff.willQueue(Claude)');
   });
 
+  it('says why the hand-off waits for a click', async () => {
+    await render([handoffDecision('h3', { askReason: 'hourly-cap' })], vi.fn());
+    expect(q('[data-moa-handoff-reason="hourly-cap"]').textContent).toBe('moa.handoff.reason.hourly-cap');
+  });
+
   it('Hand off sends no body (main delivers its own) and the row leaves', async () => {
     const resolve = vi.fn(async () => ({ ok: true, delivered: true }) as MoaHandoffResolveResult);
     await render([handoffDecision('h3')], resolve);

@@ -110,7 +110,14 @@ export interface MoaHandoffCardInfo {
   foldsNewlines: boolean;
   /** The agent was mid-turn when the card was raised: the text will queue. */
   willQueue: boolean;
+  /** Why this hand-off waits for a click instead of going on its own. */
+  askReason?: HandoffAskReason;
 }
+
+/** Why a hand-off asks: outside text, auto hand-off off in Settings, a
+ *  workspace outside danger mode, this hour's auto cap reached, or an
+ *  automatic delivery that did not go through. */
+export type HandoffAskReason = 'external' | 'auto-off' | 'not-danger' | 'hourly-cap' | 'delivery-failed';
 
 /** DECK_MOA_HANDOFF_RESOLVE's request: the card by id; a body only on Edit. */
 export interface MoaHandoffResolveRequest {

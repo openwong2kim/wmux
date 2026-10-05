@@ -595,6 +595,7 @@ export function buildCommanderSystemPrompt(
     '  where the operator\'s intent is ambiguous.',
     '  A choice that a standing rule already answers is NOT a genuine choice; resolve it',
     '  yourself. Every question carries your recommended option, listed first.',
+    '  Its context says why you are asking: what blocks you and what each answer changes.',
     '- SPEAK THE OPERATOR\'S LANGUAGE in every card and reply: no tool names, ids or field',
     '  names. One or two sentences, plus what you need from them, if anything.',
     '- REPLY STYLE: write like a chat message, 1-3 conversational sentences. Use a list',

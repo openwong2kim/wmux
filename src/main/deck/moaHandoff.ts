@@ -57,6 +57,7 @@ import {
   HANDOFF_PREVIEW_CHARS,
   buildHandoffText,
   handoffBodyRefusal,
+  type HandoffAskReason,
   type MoaAutoHandoffReceipt,
   type MoaHandoffCardInfo,
   type MoaHandoffResolveResult,
@@ -113,6 +114,8 @@ export interface HandoffRecord {
   lastStop?: { at: number; text: string };
   /** The HQ closed the task itself (requesterComplete). */
   closedByHq?: boolean;
+  /** Why the card asks instead of delivering on its own. */
+  askReason?: HandoffAskReason;
   /** The worker was seen mid-turn (agent status) since its last turn end. */
   sawRunning?: boolean;
   /** wmux itself ended the task (not the operator): its pane closed or its
@@ -440,6 +443,7 @@ export class MoaHandoffService {
       targetPtyId: r.target.ptyId,
       foldsNewlines: r.foldsNewlines,
       willQueue: r.willQueue,
+      ...(r.askReason ? { askReason: r.askReason } : {}),
     };
   }
 
@@ -529,6 +533,9 @@ export class MoaHandoffService {
       // The failed try is kept as what it was (a canceled task, no receipt)
       // under its own id; the card below is a new record.
       record.id = randomUUID();
+      record.askReason = 'delivery-failed';
+    } else {
+      record.askReason = this.askReasonOf(record);
     }
     return this.raiseCard(record);
   }
@@ -562,6 +569,14 @@ export class MoaHandoffService {
       && this.ports.modeOf(r.target.workspaceId) === 'danger'
       && this.ports.modeOf(r.hqWorkspaceId) === 'danger'
     );
+  }
+
+  /** Which part of the auto rule sends this hand-off to a card. */
+  private askReasonOf(r: HandoffRecord): HandoffAskReason {
+    if (r.externalSource) return 'external';
+    if (!this.ports.autoHandoffEnabled()) return 'auto-off';
+    if (this.ports.modeOf(r.target.workspaceId) !== 'danger' || this.ports.modeOf(r.hqWorkspaceId) !== 'danger') return 'not-danger';
+    return 'hourly-cap';
   }
 
   private autoAllowed(r: HandoffRecord): boolean {
