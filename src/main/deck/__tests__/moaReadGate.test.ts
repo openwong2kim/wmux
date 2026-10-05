@@ -28,6 +28,11 @@ let mainRoots: unknown;
 let requests: Array<Record<string, unknown>>;
 
 const POSIX = process.platform !== 'win32';
+// The gate finds main by wmux's own naming: a socket in $HOME on POSIX, a
+// per-user named pipe on Windows (a unique data suffix keeps it private).
+const SUFFIX = POSIX ? '' : `-mrgtest${process.pid}`;
+const TOKEN_FILE = `.wmux${SUFFIX}-auth-token`;
+const mainAddress = (): string => (POSIX ? path.join(home, '.wmux.sock') : `\\\\.\\pipe\\wmux${SUFFIX}-${os.userInfo().username}`);
 
 async function startMain(reply: 'ok' | 'silent' = 'ok'): Promise<void> {
   server = net.createServer((sock) => {
@@ -41,7 +46,7 @@ async function startMain(reply: 'ok' | 'silent' = 'ok'): Promise<void> {
       if (reply === 'ok') sock.write(`${JSON.stringify({ id: req.id, ok: true, result: { roots: mainRoots } })}\n`);
     });
   });
-  await new Promise<void>((resolve) => server!.listen(path.join(home, '.wmux.sock'), resolve));
+  await new Promise<void>((resolve) => server!.listen(mainAddress(), resolve));
 }
 
 beforeEach(() => {
@@ -51,7 +56,7 @@ beforeEach(() => {
   repo = path.join(dir, 'repo');
   outside = path.join(dir, 'outside');
   fs.mkdirSync(home);
-  fs.writeFileSync(path.join(home, '.wmux-auth-token'), 'tok\n');
+  fs.writeFileSync(path.join(home, TOKEN_FILE), 'tok\n');
   fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
   fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
   fs.mkdirSync(outside);
@@ -72,7 +77,7 @@ afterEach(async () => {
 
 function gate(tool: string, input: Record<string, unknown>, opts: { cwd?: string; raw?: string } = {}) {
   return new Promise<{ status: number | null; stdout: string; allowed: boolean }>((resolve) => {
-    const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, HOME: home, USERPROFILE: home };
+    const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, HOME: home, USERPROFILE: home, ...(SUFFIX ? { WMUX_DATA_SUFFIX: SUFFIX } : {}) };
     const child = spawn(process.execPath, [script], { env });
     let stdout = '';
     child.stdout.on('data', (d) => { stdout += d.toString('utf8'); });
@@ -86,7 +91,7 @@ const ask = (r: { status: number | null; stdout: string }) => {
   expect(r.stdout).toBe('');
 };
 
-describe.skipIf(!POSIX)('the read gate script', () => {
+describe('the read gate script', () => {
   it('allows a Read inside a root main names, asking main on its own client lane', async () => {
     await startMain();
     const r = await gate('Read', { file_path: path.join(repo, 'math.js') });
@@ -101,21 +106,22 @@ describe.skipIf(!POSIX)('the read gate script', () => {
     ask(await gate('Read', { file_path: path.join(repo, 'math.js') }));
     await new Promise((r) => server!.close(r));
     await startMain();
-    fs.rmSync(path.join(home, '.wmux-auth-token'));
+    fs.rmSync(path.join(home, TOKEN_FILE));
     ask(await gate('Read', { file_path: path.join(repo, 'math.js') }));
   });
 
   it('a poisoned answer (/, $HOME or above it, wmux\'s data, ~/.claude) gives no root', async () => {
     fs.writeFileSync(path.join(home, '.zshrc'), 'x\n');
-    fs.mkdirSync(path.join(home, '.wmux'));
-    fs.writeFileSync(path.join(home, '.wmux', 'config.json'), '{}\n');
+    const data = path.join(home, `.wmux${SUFFIX}`);
+    fs.mkdirSync(data);
+    fs.writeFileSync(path.join(data, 'config.json'), '{}\n');
     fs.mkdirSync(path.join(home, '.claude'));
     fs.writeFileSync(path.join(home, '.claude', 'settings.json'), '{}\n');
     await startMain();
-    for (const poison of ['/', home, dir, path.join(home, '.wmux'), path.join(home, '.claude')]) {
+    for (const poison of ['/', home, dir, data, path.join(home, '.claude')]) {
       mainRoots = [poison];
       ask(await gate('Read', { file_path: path.join(home, '.zshrc') }));
-      ask(await gate('Read', { file_path: path.join(home, '.wmux', 'config.json') }));
+      ask(await gate('Read', { file_path: path.join(data, 'config.json') }));
       ask(await gate('Read', { file_path: path.join(home, '.claude', 'settings.json') }));
     }
   });
@@ -128,8 +134,17 @@ describe.skipIf(!POSIX)('the read gate script', () => {
 
   it('asks for a symlink that leads out of the root, and for a hard-linked file', async () => {
     await startMain();
-    fs.symlinkSync(path.join(outside, 'secret.txt'), path.join(repo, 'leak.js'));
-    ask(await gate('Read', { file_path: path.join(repo, 'leak.js') }));
+    try {
+      fs.symlinkSync(path.join(outside, 'secret.txt'), path.join(repo, 'leak.js'));
+      ask(await gate('Read', { file_path: path.join(repo, 'leak.js') }));
+    } catch (err) {
+      if (POSIX) throw err; // Windows without the symlink right: nothing to test
+    }
+    if (!POSIX) {
+      // A junction needs no privilege on Windows.
+      fs.symlinkSync(outside, path.join(repo, 'jn'), 'junction');
+      ask(await gate('Read', { file_path: path.join(repo, 'jn', 'secret.txt') }));
+    }
     fs.linkSync(path.join(outside, 'secret.txt'), path.join(repo, 'hard.txt'));
     ask(await gate('Read', { file_path: path.join(repo, 'hard.txt') }));
   });
@@ -151,6 +166,31 @@ describe.skipIf(!POSIX)('the read gate script', () => {
     ask(await gate('Read', { file_path: path.join(repo, 'gh', 'hosts.yml') }));
     fs.writeFileSync(path.join(repo, 'config.json'), '{}\n');
     expect((await gate('Read', { file_path: path.join(repo, 'config.json') })).allowed).toBe(true);
+  });
+
+  it('asks for a path the tool would open as another name (trailing whitespace, Windows trailing dot or space)', async () => {
+    await startMain();
+    // A decoy whose literal name is no secret, beside the real secret. Claude
+    // Code trims the path it reads (U+00A0 too), so the decoy was vetted and
+    // the secret read. Git checks this name out on every platform.
+    fs.writeFileSync(path.join(repo, 'tls.key'), 'SECRET\n');
+    fs.writeFileSync(path.join(repo, 'tls.key\u00a0'), 'decoy\n');
+    ask(await gate('Read', { file_path: path.join(repo, 'tls.key\u00a0') }));
+    ask(await gate('Grep', { pattern: 'x', path: path.join(repo, 'tls.key\u00a0') }));
+    ask(await gate('Read', { file_path: `${path.join(repo, 'math.js')} ` }));
+    expect((await gate('Read', { file_path: path.join(repo, 'math.js') })).allowed).toBe(true);
+    if (POSIX) return;
+    // Win32 drops trailing dots and spaces when ripgrep opens a path; only
+    // the \\?\ form can create these names.
+    fs.writeFileSync(path.join(repo, 'server.pem'), 'SECRET\n');
+    for (const name of ['server.pem ', 'server.pem.']) {
+      fs.writeFileSync(`\\\\?\\${path.join(repo, name)}`, 'decoy\n');
+      ask(await gate('Read', { file_path: path.join(repo, name) }));
+      ask(await gate('Grep', { pattern: 'x', path: path.join(repo, name) }));
+    }
+    fs.mkdirSync(`\\\\?\\${path.join(repo, '.git ')}`);
+    fs.writeFileSync(`\\\\?\\${path.join(repo, '.git ', 'config')}`, 'decoy\n');
+    ask(await gate('Grep', { pattern: 'x', path: path.join(repo, '.git ', 'config') }));
   });
 
   it('Grep: one safe file only; a directory always asks, whatever its glob or type', async () => {

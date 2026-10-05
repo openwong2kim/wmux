@@ -177,6 +177,12 @@ function askMain() {
 // A target inside a root, as a real path, or null.
 function scoped(raw, cwd, roots) {
   if (typeof raw !== 'string' || !raw) return null;
+  // The path vetted here must be the one the tool opens. Claude Code trims
+  // the path (U+00A0 too), and on Windows ripgrep's Win32 open drops trailing
+  // dots and spaces of every part, while realpath (\\\\?\\ form) keeps them:
+  // a planted "server.pem " would be vetted as itself and read as server.pem.
+  if (raw !== raw.trim()) return null;
+  if (WIN && raw.split(/[\\\\/]+/).some((s) => s !== '.' && s !== '..' && /[. ]$/.test(s))) return null;
   const abs = path.isAbsolute(raw) ? raw : (typeof cwd === 'string' ? path.resolve(cwd, raw) : null);
   if (!abs) return null;
   const rp = real(abs);
