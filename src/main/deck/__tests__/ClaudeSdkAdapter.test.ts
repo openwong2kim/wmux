@@ -364,7 +364,8 @@ describe('ClaudeSdkAdapter', () => {
     const flat = buildCommanderSystemPrompt().replace(/\s+/g, ' ');
     expect(flat).toContain('REPLY STYLE: write like a chat message, 1-3 conversational sentences.');
     expect(flat).toContain('Use a list only when the operator asked for one or there are 3+ parallel items; no bold headings.');
-    expect(flat).toContain('When you hand work off, say one line ("Handed to <agent> in <workspace>.") and nothing more until the result.');
+    expect(flat).toContain('When you hand work off, say one line ("Handed to <agent> in <workspace>."; for a card the operator still has to approve, "Asked to hand this to <agent> in <workspace>.") and nothing more until the result.');
+    expect(flat).toContain('Never narrate your steps between tool calls.');
   });
 
   it('a hand-off body is the request, its scope and how to verify, with no checkout ceremony', () => {
