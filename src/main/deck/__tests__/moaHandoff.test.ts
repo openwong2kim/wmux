@@ -392,14 +392,29 @@ describe('moa hand-off — review fixes', () => {
     expect((await r.svc.onWorkerStop('pty-1', 'claude', { text: 'Which module first?', endsWithQuestion: true }))?.movedToInputRequired).toBe(true);
   });
 
-  it('two open hand-offs in one pane: a turn end moves neither', async () => {
+  it('a follow-up hand-off to the same pane ends the one it replaces, so a turn end has one owner', async () => {
     const r = rig();
     await propose(r);
     await r.svc.resolve(SEAL, r.slots.get(SEAL)!.id, 'handoff');
-    await propose(r, 'Second job.');
+    const first = (r.deliver.mock.calls[0][0] as { presetTaskId: string }).presetTaskId;
+    await propose(r, 'Second job: answer to your question.');
     await r.svc.resolve(SEAL, r.slots.get(SEAL)!.id, 'handoff');
+    const second = (r.deliver.mock.calls[1][0] as { presetTaskId: string }).presetTaskId;
+    expect(r.release).toHaveBeenCalledWith('link-1', first);
+    expect(r.svc.byTask(first)?.taskState).toBe('canceled');
     const out = await r.svc.onWorkerStop('pty-1', 'claude', { text: 'Which one?', endsWithQuestion: true });
-    expect(out?.movedToInputRequired).toBe(false);
+    expect(out).toMatchObject({ taskId: second, movedToInputRequired: true });
+  });
+
+  it('the wake quotes the END of the worker\'s words, where its question is', async () => {
+    const r = rig();
+    await propose(r);
+    await r.svc.resolve(SEAL, r.slots.get(SEAL)!.id, 'handoff');
+    const taskId = (r.deliver.mock.calls[0][0] as { presetTaskId: string }).presetTaskId;
+    await r.svc.onWorkerStop('pty-1', 'claude', { text: `${'context '.repeat(80)}Which framework is it?`, endsWithQuestion: true });
+    const q = r.svc.handoffDetail(taskId)!.question!;
+    expect(q.endsWith('Which framework is it?')).toBe(true);
+    expect([...q].length).toBeLessThanOrEqual(281);
   });
 
   it('Cancel tells the HQ', async () => {

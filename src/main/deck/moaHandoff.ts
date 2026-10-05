@@ -72,6 +72,8 @@ const MAX_RECORDS = 500;
 /** How long an auto hand-off's receipt stays in Moa's panel. */
 const RECEIPT_TTL_MS = 24 * 60 * 60_000;
 const HOUR_MS = 60 * 60_000;
+/** Characters of the worker's closing words a wake quotes (its tail). */
+const WAKE_QUESTION_CHARS = 280;
 /** A delivery or a claimed card older than this is one the app did not finish. */
 const STALE_DELIVERY_MS = 2 * 60_000;
 
@@ -367,7 +369,11 @@ export class MoaHandoffService {
   handoffDetail(taskId: string): { question?: string } | null {
     const r = this.byTask(taskId);
     if (!r) return null;
-    return r.lastQuestion && r.taskState === 'input-required' ? { question: r.lastQuestion } : {};
+    if (!r.lastQuestion || r.taskState !== 'input-required') return {};
+    // The question is where the worker ended: keep the END of its closing
+    // words, which the wake's quote would otherwise cut off.
+    const chars = [...r.lastQuestion];
+    return { question: chars.length > WAKE_QUESTION_CHARS ? `…${chars.slice(-WAKE_QUESTION_CHARS).join('')}` : r.lastQuestion };
   }
 
   /** The HQ is waiting on a hand-off it proposed: a card the operator has not
@@ -604,6 +610,13 @@ export class MoaHandoffService {
       taskState: latest.taskState ?? 'submitted',
     };
     this.put(delivered);
+    // A new hand-off to the same pane replaces the one still open there (a
+    // follow-up answers it): end the older task so the pane holds one, and a
+    // turn end is never ambiguous between two.
+    for (const old of this.openTasksOnPty(record.target.ptyId)) {
+      if (old.id === delivered.id || old.hqWorkspaceId !== delivered.hqWorkspaceId) continue;
+      await this.cancelTask(old);
+    }
     // The worker is a TUI agent that may never report its own state: the task
     // is under way once the text landed, and only from 'working' can a later
     // question move it to input-required.
