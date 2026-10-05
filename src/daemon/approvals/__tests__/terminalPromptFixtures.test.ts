@@ -77,6 +77,13 @@ const EXPECTED: Record<string, { looksLikePrompt: boolean; parsed: Parsed | null
     looksLikePrompt: true,
     parsed: { options: 2, active: false, topRuleFound: false, answerable: true },
   },
+  // Claude Code 2.1.289 boxes the command between dashed rules, at the prose
+  // indent. The dashed edge is not the dialog's top: the solid rule is, so the
+  // "Bash command" title reads and the record can bind.
+  'claude-bash-boxed-01.json': {
+    looksLikePrompt: true,
+    parsed: { tool: 'Bash', options: 3, active: true, topRuleFound: true, answerable: true },
+  },
   // No digits: arrows + Enter only.
   'claude-bypass-warning-menu.json': { looksLikePrompt: false, parsed: null },
   // #1567: the wrapped option 2 is one option now, so "3. No" is kept and the

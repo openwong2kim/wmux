@@ -220,6 +220,11 @@ export function parseTerminalPrompt(
     if (isTopRule(lines[i]!)) { top = i + 1; break; }
   }
   const topRuleFound = top >= 0;
+  // Claude Code 2.1.289 boxes the command: a dashed rule, gutter rows, a
+  // dashed rule, then the reason, all at the prose indent. The rule found
+  // above is then the box's LOWER edge, not the dialog's top.
+  const boxed = topRuleFound ? boxedCommand(lines, top - 1, q, isTopRule) : null;
+  if (boxed) return parseBoxedPrompt(lines, boxed, q, fullOptions, cut, active);
   const body = lines.slice(topRuleFound ? top : 0, q).filter((line) => line.trim().length > 0);
   if (body.some((line) => CUT_ROW.test(line))) cut = true;
   // The prose indent. With the top rule on screen it is the body's own
@@ -295,6 +300,99 @@ export function parseTerminalPrompt(
     options,
     fingerprint,
     topRuleFound,
+    truncated,
+    cut,
+    active,
+  };
+}
+
+const DASHED_RULE = /^[╌╍┄┅]+$/;
+
+/** Where a boxed command sits: the dialog's solid top rule, the box's upper
+ *  and lower dashed edges. */
+interface BoxedCommand { top: number; upper: number; lower: number }
+
+/**
+ * The boxed-command layout (Claude Code 2.1.289), found from the rule just
+ * above the question: that rule is dashed, the rows between it and the next
+ * dashed rule up are all gutter rows (at least one), and a solid full-width
+ * rule sits above that. Anything else (an Edit dialog's dashed diff edges, a
+ * dashed rule with no gutter rows inside) is not this layout: null.
+ */
+function boxedCommand(
+  lines: readonly string[],
+  lower: number,
+  q: number,
+  isTopRule: (line: string) => boolean,
+): BoxedCommand | null {
+  if (lower < 0 || lower >= q || !DASHED_RULE.test(lines[lower]!.trim())) return null;
+  let upper = lower - 1;
+  let gutter = 0;
+  for (; upper >= 0; upper--) {
+    const text = lines[upper]!.trim();
+    if (DASHED_RULE.test(text)) break;
+    if (!text) continue;
+    if (!GUTTER.test(text)) return null;
+    gutter++;
+  }
+  if (upper < 0 || gutter === 0) return null;
+  for (let i = upper - 1; i >= 0; i--) {
+    const line = lines[i]!;
+    if (isTopRule(line)) return DASHED_RULE.test(line.trim()) ? null : { top: i, upper, lower };
+  }
+  return null;
+}
+
+/** The boxed layout read as the usual record: the first prose row is the
+ *  title, the prose rows above the box are the call's description, the gutter
+ *  rows the command, and the prose under the box the reason. */
+function parseBoxedPrompt(
+  lines: readonly string[],
+  box: BoxedCommand,
+  q: number,
+  fullOptions: Array<{ key: string; label: string; selected: boolean }>,
+  cutBefore: boolean,
+  active: boolean,
+): ParsedTerminalPrompt {
+  const nonBlank = (from: number, to: number): string[] =>
+    lines.slice(from, to).filter((line) => line.trim().length > 0);
+  const head = nonBlank(box.top + 1, box.upper);
+  const commandRows = nonBlank(box.upper + 1, box.lower).map((line) => normalizePromptText(line.trim().replace(GUTTER, '')));
+  const reasonRows = nonBlank(box.lower + 1, q).map(normalizePromptText);
+  const cut = cutBefore || [...head, ...nonBlank(box.upper + 1, q)].some((line) => CUT_ROW.test(line));
+  let truncated = false;
+  const cap = (text: string): string => {
+    if (text.length <= PROMPT_MAX_LINE_CHARS) return text;
+    truncated = true;
+    return `${text.slice(0, PROMPT_MAX_LINE_CHARS)}…`;
+  };
+  const fullTitle = head.length > 0 ? normalizePromptText(head[0]!) : undefined;
+  const descriptionRows = head.slice(1).map(normalizePromptText);
+  const fullReason = reasonRows.length > 0 ? reasonRows.join(' ') : undefined;
+  const fullQuestion = normalizePromptText(lines[q]!);
+  // Same hash parts as the unboxed layout: the command is the gutter rows.
+  const fingerprint = hashParts([
+    fullTitle ?? '',
+    fullQuestion,
+    fullReason ?? '',
+    normalizePromptText(commandRows.join(' ')),
+    fullOptions.map((o) => [o.key, normalizePromptText(o.label)]),
+  ]);
+  if (commandRows.length > PROMPT_MAX_COMMAND_LINES) truncated = true;
+  const title = fullTitle !== undefined ? cap(fullTitle) : undefined;
+  const reason = fullReason !== undefined ? cap(fullReason) : undefined;
+  return {
+    ...(title ? { title } : {}),
+    commandLines: commandRows.slice(0, PROMPT_MAX_COMMAND_LINES).map(cap),
+    commandRows,
+    descriptionRows,
+    commandText: commandRows.join(' · '),
+    commandFull: normalizePromptText(commandRows.join(' ')),
+    ...(reason ? { reason } : {}),
+    question: cap(fullQuestion),
+    options: fullOptions.map((o) => ({ ...o, label: cap(o.label) })),
+    fingerprint,
+    topRuleFound: true,
     truncated,
     cut,
     active,

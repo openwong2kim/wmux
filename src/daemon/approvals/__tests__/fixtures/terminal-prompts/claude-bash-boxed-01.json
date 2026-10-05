@@ -1,0 +1,48 @@
+{
+  "tui": "claude",
+  "version": "Claude Code 2.1.289",
+  "cols": 50,
+  "rows": 24,
+  "modes": [
+    "1000",
+    "1002",
+    "1003",
+    "1004",
+    "1006",
+    "1049",
+    "2004",
+    "2031"
+  ],
+  "cursor": [
+    3,
+    20
+  ],
+  "keysSent": "(prompt drawn)",
+  "note": "Bash permission, 2.1.289 boxed command: dashed rules around gutter rows, reason under the box, 50 columns",
+  "screen": [
+    "⏺ Verifying subtract function works",
+    "  ⎿  $ node -e \"import('./math.js').then(m => { ",
+    "     const result = m.subtract(5, 3); ",
+    "     console.log('subtract(5, 3) =', result, '✓');",
+    "     console.log('Test passed:', result === 2); ",
+    "     })\"",
+    "     ",
+    "──────────────────────────────────────────────────",
+    " Bash command",
+    " Verify subtract function works",
+    "╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+    " │ node -e \"import('./math.js').then(m => { const",
+    " │ result = m.subtract(5, 3);",
+    " │ console.log('subtract(5, 3) =', result, '✓');",
+    " │ console.log('Test passed:', result === 2); })\"",
+    "╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+    " This command requires approval",
+    "     ",
+    " Do you want to proceed?",
+    " ❯ 1. Yes",
+    "   2. Yes, and don’t ask again for: node *",
+    "   3. No",
+    "",
+    " Esc to cancel · Tab to amend"
+  ]
+}

@@ -252,3 +252,56 @@ describe('the top rule, the No label, and binding to a call', () => {
     expect(dialogMatchesToolCall(parsed, { name: 'Write', command: 'rm -rf build/cache', description: 'Remove the build cache' })).toBe(false);
   });
 });
+
+describe('Claude Code 2.1.289: the command boxed between dashed rules', () => {
+  // Measured (fixtures/terminal-prompts/claude-bash-boxed-01.json): title and
+  // description above a dashed box, gutter rows inside, the reason under it,
+  // all at the prose indent.
+  const BOXED = [
+    '──────────────────────────────────────────────────',
+    ' Bash command',
+    ' Verify subtract function works',
+    '╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌',
+    ' │ node -e "import(\'./math.js\').then(m => { const',
+    ' │ result = m.subtract(5, 3);',
+    ' │ console.log(\'Test passed:\', result === 2); })"',
+    '╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌',
+    ' This command requires approval',
+    '',
+    ' Do you want to proceed?',
+    ' ❯ 1. Yes',
+    '   2. Yes, and don’t ask again for: node *',
+    '   3. No',
+    '',
+    ' Esc to cancel · Tab to amend',
+  ];
+  const command = 'node -e "import(\'./math.js\').then(m => { const result = m.subtract(5, 3); console.log(\'Test passed:\', result === 2); })"';
+
+  it('reads the solid rule as the top: title, description, command and reason each in place', () => {
+    const p = parseTerminalPrompt(BOXED, { cols: 50 })!;
+    expect(p).toMatchObject({
+      title: 'Bash command',
+      descriptionRows: ['Verify subtract function works'],
+      reason: 'This command requires approval',
+      topRuleFound: true,
+      active: true,
+    });
+    expect(p.commandFull).toBe(command);
+    expect(terminalPromptAnswerability(p)).toEqual({ answerable: true, choices: [{ key: '1', label: 'Yes' }, { key: '3', label: 'No' }] });
+  });
+
+  it('binds to its call, and not to another command or description', () => {
+    const p = parseTerminalPrompt(BOXED, { cols: 50 })!;
+    expect(dialogMatchesToolCall(p, { name: 'Bash', command, description: 'Verify subtract function works' })).toBe(true);
+    expect(dialogMatchesToolCall(p, { name: 'Bash', command: `${command} && rm -rf x` })).toBe(false);
+    expect(dialogMatchesToolCall(p, { name: 'Bash', command, description: 'Something else' })).toBe(false);
+    expect(dialogMatchesToolCall(p, { name: 'Read', command })).toBe(false);
+  });
+
+  it('a dashed box with a non-gutter row inside is not this layout', () => {
+    const odd = [...BOXED];
+    odd[5] = ' result = m.subtract(5, 3);';
+    const p = parseTerminalPrompt(odd, { cols: 50 })!;
+    expect(p.title).not.toBe('Bash command');
+  });
+});
