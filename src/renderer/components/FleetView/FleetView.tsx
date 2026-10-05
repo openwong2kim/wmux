@@ -23,13 +23,9 @@ import {
 import { fleetChangedSinceSeen, type FleetSeenEntry } from '../../stores/slices/uiSlice';
 import { tailForPty } from '../../utils/terminalTail';
 import { onTerminalRegistered } from '../../hooks/useTerminal';
-import FleetBoardCard from './FleetBoardCard';
+import FleetCard from './FleetCard';
 import PresetPicker from '../Sidebar/PresetPicker';
-import {
-  BOARD_COLUMNS, boardAgentCount, boardLayout, buildBoardColumns, foldByOwner, moveOnBoard, rowApprovalIndex, visibleChips,
-  type BoardChip, type BoardColumn, type BoardGrid, type BoardGroup, type BoardItem,
-} from './fleetBoardModel';
-import { resolveTaskLink } from '../../utils/fanoutProvenance';
+import { fleetAgentCount, moveInList, rowApprovalIndex, visibleChips, type BoardChip, type ListMove } from './fleetBoardModel';
 import { selectScheduleNavSummary } from '../../stores/selectors/schedules';
 import { formatNextShort } from '../Schedules/format';
 import FleetReviewRow, { reviewBusyKind, reviewPrVerb, reviewRowKey, type ReviewEditorKind } from './FleetReviewRow';
@@ -44,6 +40,10 @@ import { findMission } from '../../stores/selectors/missions';
 import { fleetTitle, matchesFleetFilter, type FleetFilter } from './fleetPresentation';
 import { formatIdle, IDLE_SHOW_AFTER_MS, IDLE_TICK_MS } from '../../utils/idleTime';
 import { IconCheck, IconChevron, IconPlus } from '../icons';
+// Read-only: Moa's own readers of delegated work and pending decisions.
+import { useMoaDecisions, useWorkLinks } from '../Moa/panel/useMoaPanelData';
+import { buildFleetTickets, openTicketFor, type FleetTicket } from './fleetTickets';
+import { TicketDetail, TicketRow, ticketKey } from './TicketList';
 
 /** True when a key event comes from a text-entry control. */
 function isEditableTarget(target: EventTarget | null): boolean {
@@ -59,8 +59,6 @@ function attr(value: string): string {
 /** How long a sidebar "N to review" request waits for its row to appear. */
 const FOCUS_REVIEW_WAIT_MS = 5_000;
 
-/** Idle agents named in the collapsed Idle column before "+N more". */
-const IDLE_PEEK = 5;
 
 /** Roving key of the collapsed "Idle N" row (pane ids never take this form). */
 const IDLE_TOGGLE_KEY = 'fleet:idle-toggle';
@@ -130,7 +128,9 @@ export default function FleetView() {
   const [focusedPaneId, setFocusedPaneId] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<FleetFilter>('all');
-  const [previewOpen, setPreviewOpen] = useState(false);
+  // The detail area under the list (recent output, conversation, ticket).
+  // Opened by a deliberate selection or Space, never by the mount focus.
+  const [detailOpen, setDetailOpen] = useState(false);
   // The one inline row editor that is open (message / label / close confirm).
   const [editor, setEditor] = useState<{ paneId: string; kind: FleetEditorKind } | null>(null);
   // The inline confirm open under a review row (close task / create PR).
@@ -232,78 +232,63 @@ export default function FleetView() {
     for (const entry of reviewQueue) if (settledIds.has(entry.workspaceId)) onBoard.add(entry.workspaceId);
     return onBoard.size;
   }, [groups, reviewQueue, settledIds]);
-  // Idle stays collapsed to its count unless expanded, or unless the user is
-  // searching (a hidden match would read as none).
+  // Idle stays collapsed to one summary row unless expanded, or unless the
+  // user is searching / filtering to idle (a hidden match would read as none).
   const idleForced = filter === 'idle' || query.trim() !== '';
   const idleShown = fleetIdleExpanded || idleForced;
-  // The four board columns (the same sections as the sidebar and
-  // fleet.triage; finished panes split into Ready to review).
-  const columns = useMemo(
-    () => buildBoardColumns(visibleGroups, visibleReview, reviewRowKey),
-    [visibleGroups, visibleReview],
-  );
-  // How many agents and finished tasks exist at all — the layout follows
-  // the fleet, not the search.
-  const boardCount = useMemo(
-    () => boardAgentCount(buildBoardColumns(groups, reviewQueue, reviewRowKey)),
-    [groups, reviewQueue],
-  );
-  const layout = boardLayout(boardCount);
-  const dense = layout === 'dense';
-  // Dense board: a mission's cards fold under the first of them.
-  const fanoutLineage = useStore((s) => s.fanoutLineage);
-  const fanoutSpawnOwner = useStore((s) => s.fanoutSpawnOwner);
-  const [openFolds, setOpenFolds] = useState<Set<string>>(() => new Set());
-  const ownerOf = useCallback((item: BoardItem) => {
-    const ws = item.kind === 'pane' ? item.row.pane.workspaceId : item.entry.workspaceId;
-    const link = resolveTaskLink(missions[ws], fanoutLineage[ws], fanoutSpawnOwner[ws]);
-    return link?.ownerId || undefined;
-  }, [missions, fanoutLineage, fanoutSpawnOwner]);
-  const columnGroups = useMemo(() => {
-    const out = {} as Record<BoardColumn, BoardGroup[]>;
-    for (const c of BOARD_COLUMNS) {
-      out[c] = dense ? foldByOwner(columns[c], ownerOf) : columns[c].map((lead) => ({ lead, folded: [] }));
-    }
-    return out;
-  }, [columns, dense, ownerOf]);
-  // Focusable keys per column in display order (folded cards are hidden;
-  // the idle column starts with its count toggle).
-  const grid = useMemo<BoardGrid>(() => {
-    const keysOf = (c: BoardColumn) => columnGroups[c].flatMap((g) => [
-      g.lead.key,
-      ...(g.owner && openFolds.has(`${c}:${g.owner}`) ? g.folded.map((f) => f.key) : []),
-    ]);
-    return {
-      needsYou: keysOf('needsYou'),
-      running: keysOf('running'),
-      review: keysOf('review'),
-      idle: columns.idle.length === 0 ? [] : [
-        ...(idleForced ? [] : [IDLE_TOGGLE_KEY]),
-        ...(idleShown ? keysOf('idle') : []),
-      ],
-    };
-  }, [columnGroups, openFolds, columns.idle.length, idleForced, idleShown]);
-  const rovingKeys = useMemo(() => BOARD_COLUMNS.flatMap((c) => grid[c]), [grid]);
+  // The collapsed "Idle N" row is itself a roving option (so an all-idle fleet
+  // still has a focus target); it is replaced by a plain header while a
+  // search or the idle filter forces the rows open.
+  const idleToggleShown = visibleGroups.idle.length > 0 && !idleForced;
   const visibleRows = useMemo(
-    () => BOARD_COLUMNS.flatMap((c) => columns[c]).flatMap((item) => (item.kind === 'pane' ? [item.row] : [])),
-    [columns],
+    () => [...visibleGroups.needsYou, ...visibleGroups.running, ...(idleShown ? visibleGroups.idle : [])],
+    [visibleGroups, idleShown],
   );
-  const matchCount = BOARD_COLUMNS.reduce((n, c) => n + columns[c].length, 0);
+
+  // Tickets: Moa's delegated work (WorkLinks and hand-offs waiting for a
+  // click), read through Moa's own readers while Fleet is open.
+  const workLinks = useWorkLinks(true);
+  const { decisions: moaDecisions } = useMoaDecisions(true);
+  const a2aTasks = useStore((s) => s.a2aTasks);
+  const tickets = useMemo(
+    () => buildFleetTickets({ links: workLinks, decisions: moaDecisions, a2aTasks, now }),
+    [workLinks, moaDecisions, a2aTasks, now],
+  );
+  const visibleTickets = useMemo(() => {
+    if (filter !== 'tickets') return [];
+    const term = query.trim().toLocaleLowerCase();
+    if (!term) return tickets;
+    return tickets.filter((ticket) => [ticket.title, ticket.request, ticket.agent]
+      .some((value) => value?.toLocaleLowerCase().includes(term)));
+  }, [tickets, filter, query]);
+
+  // Roving order = DOM order: needs-you rows, ready-to-review rows, running
+  // rows, the idle toggle, then the idle rows when expanded — or, on the
+  // Tickets filter, the tickets. Keys are pane ids, review keys, ticket keys
+  // and one sentinel.
+  const rovingKeys = useMemo(() => (filter === 'tickets' ? visibleTickets.map((ticket) => ticketKey(ticket.id)) : [
+    ...visibleGroups.needsYou.map((row) => row.pane.paneId),
+    ...visibleReview.map((entry) => reviewRowKey(entry.workspaceId)),
+    ...visibleGroups.running.map((row) => row.pane.paneId),
+    ...(idleToggleShown ? [IDLE_TOGGLE_KEY] : []),
+    ...(idleShown ? visibleGroups.idle.map((row) => row.pane.paneId) : []),
+  ]), [filter, visibleTickets, visibleGroups, visibleReview, idleToggleShown, idleShown]);
+  const matchCount = filter === 'tickets' ? visibleTickets.length
+    : visibleGroups.needsYou.length + visibleReview.length + visibleGroups.running.length + visibleGroups.idle.length;
   const idleOldestMs = visibleGroups.idle.reduce<number | undefined>(
     (max, row) => (row.idleForMs !== undefined && (max === undefined || row.idleForMs > max) ? row.idleForMs : max),
     undefined,
   );
-  // Preserve the selected pane when live status updates reorder the list.
+  // Preserve the selected row when live status updates reorder the list.
   const focusedIdx = Math.max(0, rovingKeys.indexOf(focusedPaneId ?? ''));
   const focusedKey = rovingKeys[focusedIdx];
   const selectedPane = visibleRows.find((row) => row.pane.paneId === focusedKey)?.pane;
   const focusedReview = visibleReview.find((entry) => reviewRowKey(entry.workspaceId) === focusedKey);
-  // A short fleet opens its preview: there is room, and it is the point.
-  useEffect(() => { if (layout === 'list') setPreviewOpen(true); }, [layout]);
-  const previewPtyId = previewOpen && tab === 'fleet' && selectedPane?.surfaceType === 'terminal'
+  const focusedTicket = visibleTickets.find((ticket) => ticketKey(ticket.id) === focusedKey);
+  const previewPtyId = detailOpen && tab === 'fleet' && selectedPane?.surfaceType === 'terminal'
     ? selectedPane.ptyId : '';
   // The selected fan-out task's conversation. A task an "Open conversation"
-  // link asked for that has no item on the board (closed, workspace gone)
+  // link asked for that has no row on the list (closed, workspace gone)
   // stays pinned until the selection moves.
   const missionsByWorkspace = useStore((s) => s.missionsByWorkspace);
   const [pinnedTask, setPinnedTask] = useState<{ taskId: string; atKey: string | null } | null>(null);
@@ -481,7 +466,7 @@ export default function FleetView() {
       const review = visibleReview.find((entry) => reviewRowKey(entry.workspaceId) === focusedKey);
       const el = !focusedKey ? null : review
         ? listRef.current?.querySelector<HTMLElement>(`[data-fleet-review-row][data-workspace-id="${attr(review.workspaceId)}"]`)
-        : listRef.current?.querySelector<HTMLElement>(`[data-board-key="${attr(focusedKey)}"]`);
+        : listRef.current?.querySelector<HTMLElement>(`[data-fleet-key="${attr(focusedKey)}"]`);
       if (el) { el.focus(); return true; }
     } else if (tab === 'approvals' && inbox.length > 0) {
       const rows = bodyRef.current?.querySelectorAll<HTMLElement>('[role=option]');
@@ -571,8 +556,11 @@ export default function FleetView() {
     });
   }, [fleetFocusReview, reviewQueue, setFleetFocusReview]);
 
-  // An "Open conversation" link: select the task's card (or its review row)
-  // with nothing hiding it. Waits a few seconds for the task records to load.
+
+  // An "Open conversation" link: select the task's row (its review row once
+  // it is finished, else its pane's row) with nothing hiding it, and open the
+  // detail area that shows the conversation. Waits a few seconds for the
+  // task records to load.
   const fleetFocusTask = useStore((s) => s.fleetFocusTask);
   const setFleetFocusTask = useStore((s) => s.setFleetFocusTask);
   useEffect(() => {
@@ -590,34 +578,32 @@ export default function FleetView() {
     setTab('fleet');
     setQuery('');
     setFilter('all');
+    setDetailOpen(true);
     const ws = task.paneGroupId;
     if (ws && settledIds.has(ws)) setShowSettled(true);
-    // Resolve against the items the board draws once the filters are clear:
-    // a finished task is its review row, not its pane's card.
-    const all = buildBoardColumns(groups, reviewQueue, reviewRowKey);
-    const itemWs = (item: BoardItem) => (item.kind === 'pane' ? (item.row.pane.remote ? undefined : item.row.pane.workspaceId) : item.entry.workspaceId);
-    const column = ws ? BOARD_COLUMNS.find((c) => all[c].some((item) => itemWs(item) === ws)) : undefined;
-    const target = column ? all[column].find((item) => itemWs(item) === ws) : undefined;
-    const key = target?.key ?? null;
-    if (column && target) {
-      if (column === 'idle') setFleetIdleExpanded(true);
-      // A dense board folds a mission's cards under the first: open that fold.
-      const owner = dense ? foldByOwner(all[column], ownerOf).find((g) => g.folded.includes(target))?.owner : undefined;
-      if (owner) setOpenFolds((prev) => new Set(prev).add(`${column}:${owner}`));
+    // Resolve against the full list once the filters are clear.
+    const review = ws ? reviewQueue.find((entry) => entry.workspaceId === ws) : undefined;
+    const localRow = (row: FleetRow) => !row.pane.remote && row.pane.workspaceId === ws;
+    const paneRow = ws ? [...groups.needsYou, ...groups.running].find(localRow) : undefined;
+    const idleRow = ws && !review && !paneRow ? groups.idle.find(localRow) : undefined;
+    const key = review ? reviewRowKey(review.workspaceId) : (paneRow ?? idleRow)?.pane.paneId ?? null;
+    if (key) {
+      if (idleRow) setFleetIdleExpanded(true);
       setPinnedTask(null);
-      setFocusedPaneId(target.key);
+      setFocusedPaneId(key);
     } else {
-      // Nothing on the board: keep today's selection and show the task.
+      // Nothing on the list: keep today's selection and show the task.
       const at = focusedKey ?? null;
       setFocusedPaneId(at);
       setPinnedTask({ taskId: task.id, atKey: at });
     }
     requestAnimationFrame(() => {
-      if (key) listRef.current?.querySelector(`[data-board-key="${attr(key)}"], [data-fleet-review-row][data-workspace-id="${attr(ws ?? '')}"]`)
+      if (key) listRef.current?.querySelector(`[data-fleet-key="${attr(key)}"], [data-fleet-review-row][data-workspace-id="${attr(ws ?? '')}"]`)
         ?.scrollIntoView?.({ block: 'nearest' });
       focusActiveItemRef.current();
     });
-  }, [fleetFocusTask, missionsByWorkspace, groups, reviewQueue, settledIds, focusedKey, dense, ownerOf, setFleetFocusTask, setTab, setFleetIdleExpanded]);
+  }, [fleetFocusTask, missionsByWorkspace, groups, reviewQueue, settledIds, focusedKey, setFleetFocusTask, setTab, setFleetIdleExpanded]);
+
 
   // The ⋮ menu that is open, if any (its close function), so Escape closes the
   // menu rather than the overlay.
@@ -684,7 +670,7 @@ export default function FleetView() {
     return () => cancelAnimationFrame(raf);
   }, [focusActiveItem]);
 
-  // A card that changes column is a new element: when the one holding focus
+  // A row that changes section is a new element: when the one holding focus
   // moves, focus follows it instead of falling to the page.
   const focusInsideRef = useRef(false);
   useEffect(() => {
@@ -697,7 +683,13 @@ export default function FleetView() {
       focusActiveItemRef.current();
     });
     return () => cancelAnimationFrame(raf);
-  }, [grid]);
+  }, [rovingKeys]);
+
+  // Move the list selection; a deliberate move opens the detail area.
+  const selectKey = useCallback((key: string | null) => {
+    setFocusedPaneId(key);
+    if (key) setDetailOpen(true);
+  }, []);
 
   // Keyboard (상시 크롬 재설계): 모달 시절의 전역 window 캡처 리스너 + Tab 트랩을
   // 걷어냈다. 대신 이 핸들러는 패널 DOM에 onKeyDownCapture로 붙어 "포커스가 패널
@@ -710,28 +702,21 @@ export default function FleetView() {
       if (e.key === 'Escape') {
         e.preventDefault();
         e.stopPropagation();
-        // Innermost first: an open ⋮ menu, then an open row editor, then Fleet.
+        // Innermost first: an open ⋮ menu, a row editor, the detail area,
+        // another tab, then Fleet itself.
         if (closeRowMenuRef.current) closeRowMenuRef.current();
         else if (editor || reviewEditor) closeEditor();
+        else if (detailOpen && tab === 'fleet') setDetailOpen(false);
         else if (tab !== 'fleet') setTab('fleet');
         else setVisible(false);
         return;
       }
       const plain = !e.ctrlKey && !e.metaKey && !e.altKey && !isEditableTarget(e.target);
-      // `/` finds; 1–4 go to a column — never while typing.
+      // `/` finds — never while typing.
       if (plain && e.key === '/') {
         e.preventDefault();
         if (tab !== 'fleet') setTab('fleet');
         requestAnimationFrame(() => panelRef.current?.querySelector<HTMLInputElement>('input[type=search]')?.focus());
-        return;
-      }
-      if (plain && tab === 'fleet' && /^[1-4]$/.test(e.key)) {
-        e.preventDefault();
-        const next = moveOnBoard(grid, focusedKey ?? null, Number(e.key) as 1 | 2 | 3 | 4);
-        if (next) {
-          setFocusedPaneId(next);
-          requestAnimationFrame(() => { focusActiveItemRef.current(); });
-        }
         return;
       }
       // Approvals tab: Enter approves the focused row (guard #5 — non-critical
@@ -758,12 +743,12 @@ export default function FleetView() {
       const onOptionRow =
         active instanceof HTMLElement && active.getAttribute('role') === 'option' &&
         !!panelRef.current?.contains(active);
-      // Space shows or hides the preview. Cards are buttons, so Space would
+      // Space shows or hides the detail area. Rows are buttons, so Space would
       // otherwise click — and jump away.
       if (tab === 'fleet' && onOptionRow && e.key === ' ' && plain) {
         e.preventDefault();
         e.stopPropagation();
-        setPreviewOpen((open) => !open);
+        setDetailOpen((open) => !open);
         return;
       }
       if (tab === 'approvals' && inbox.length > 0 && onOptionRow) {
@@ -823,7 +808,7 @@ export default function FleetView() {
         const row = visibleRows.find((r) => r.pane.paneId === focusedKey);
         const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
         // a — open the Approvals tab on the request waiting on this agent's
-        // workspace (else on the list as it is). It never approves: the card
+        // workspace (else on the list as it is). It never approves: the row
         // does not show the request text and several may be waiting, so the
         // user reads the row and approves it there (rowApprovalIndex).
         if (row && key === 'a') {
@@ -832,7 +817,7 @@ export default function FleetView() {
           const idx = rowApprovalIndex(inbox, row.pane.workspaceId);
           if (idx >= 0) setInboxIdx(idx);
           setTab('approvals');
-          // The focused card unmounts with the tab switch; put focus on the row.
+          // The focused row unmounts with the tab switch; put focus on the row.
           requestAnimationFrame(() => { focusActiveItemRef.current(); });
           return;
         }
@@ -857,11 +842,10 @@ export default function FleetView() {
       e.preventDefault();
       e.stopPropagation();
       if (tab === 'fleet' && rovingKeys.length > 0) {
-        // ↑↓ within a column, ←→ across columns, Home/End in the column.
-        const move = e.key === 'ArrowUp' ? 'up' : e.key === 'ArrowDown' ? 'down'
-          : e.key === 'ArrowLeft' ? 'left' : e.key === 'ArrowRight' ? 'right'
-          : e.key === 'Home' ? 'home' : 'end';
-        setFocusedPaneId(moveOnBoard(grid, focusedKey ?? null, move));
+        // One list: ↑↓ (and ←→) step through it, Home/End go to its ends.
+        const move: ListMove = e.key === 'Home' ? 'home' : e.key === 'End' ? 'end'
+          : e.key === 'ArrowUp' || e.key === 'ArrowLeft' ? 'up' : 'down';
+        selectKey(moveInList(rovingKeys, focusedKey ?? null, move));
         return;
       }
       if (tab === 'approvals' && inbox.length > 0) {
@@ -883,38 +867,10 @@ export default function FleetView() {
           setRemoteIdx((i) => Math.max(i - 1, 0));
         }
       }
-    }, [tab, setTab, grid, rovingKeys.length, inbox, inboxIdx, remoteInbox, remoteIdx, dismissRemoteItem, setVisible,
-      editor, reviewEditor, closeEditor, visibleRows, focusedKey, verbsFor,
+    }, [tab, setTab, rovingKeys, inbox, inboxIdx, remoteInbox, remoteIdx, dismissRemoteItem, setVisible,
+      editor, reviewEditor, closeEditor, detailOpen, visibleRows, focusedKey, verbsFor, selectKey,
       focusedReview, openReviewDiff, openReviewEditor, jumpToReviewTask]);
 
-  // ── Board data that only the board shows ───────────────────────────────
-  // Workspaces with an A2A request waiting for a decision (the card's chip).
-  const approvalWorkspaces = useMemo(() => new Set(inbox.flatMap((it) =>
-    (it.source === 'a2a' ? [it.senderWorkspaceId, it.receiverWorkspaceId] : []))), [inbox]);
-  // Work-task ledger status per task workspace, read per owner (first-party
-  // IPC) and re-read when that owner's ledger changes.
-  const [ledger, setLedger] = useState<Record<string, string>>({});
-  const ownerKey = useMemo(() => [...new Set(panes.map((p) =>
-    resolveTaskLink(missions[p.workspaceId], fanoutLineage[p.workspaceId], fanoutSpawnOwner[p.workspaceId])?.ownerId)
-    .filter((id): id is string => Boolean(id)))].sort().join(','), [panes, missions, fanoutLineage, fanoutSpawnOwner]);
-  useEffect(() => {
-    const api = window.electronAPI?.deck?.ledger;
-    if (!api?.summary || !ownerKey) return undefined;
-    const owners = ownerKey.split(',');
-    const byOwner: Record<string, Record<string, string>> = {};
-    let cancelled = false;
-    const load = async (owner: string) => {
-      try {
-        const summary = await api.summary(owner);
-        byOwner[owner] = Object.fromEntries([...(summary.rows ?? []), ...(summary.finishedRows ?? [])]
-          .map((row) => [row.taskWorkspaceId, row.status]));
-        if (!cancelled) setLedger(Object.assign({}, ...Object.values(byOwner)));
-      } catch { /* no chip: the ledger stays what it was */ }
-    };
-    for (const owner of owners) void load(owner);
-    const off = api.onChanged?.(({ workspaceId }) => { if (owners.includes(workspaceId)) void load(workspaceId); });
-    return () => { cancelled = true; off?.(); };
-  }, [ownerKey]);
   // Summary strip: account usage, the next scheduled run, phones watching.
   const usage = useStore((s) => (s.anthropicUsageEnabled ? s.anthropicUsage.snapshot : null));
   const scheduleNav = useStore(useShallow(selectScheduleNavSummary));
@@ -928,12 +884,12 @@ export default function FleetView() {
     const id = window.setInterval(poll, 10_000);
     return () => { cancelled = true; window.clearInterval(id); };
   }, []);
-  // The empty board's "recently finished": the newest completed A2A tasks.
-  const a2aTasks = useStore((s) => s.a2aTasks);
-  const recentDone = useMemo(() => (layout !== 'empty' ? [] : Object.values(a2aTasks)
+  // No agents: a call to action, plus the newest finished A2A tasks.
+  const empty = fleetAgentCount(groups, reviewQueue.length) === 0 && filter !== 'tickets';
+  const recentDone = useMemo(() => (!empty ? [] : Object.values(a2aTasks)
     .filter((task) => task.status.state === 'completed')
     .sort((a, b) => Date.parse(b.status.timestamp ?? '') - Date.parse(a.status.timestamp ?? ''))
-    .slice(0, 3)), [a2aTasks, layout]);
+    .slice(0, 3)), [a2aTasks, empty]);
   // "+ New agent" opens the same picker as the titlebar +.
   const [pickerAnchor, setPickerAnchor] = useState<{ left: number; top: number } | null>(null);
   const openPicker = (e: React.MouseEvent<HTMLElement>) => {
@@ -941,176 +897,120 @@ export default function FleetView() {
     setPickerAnchor({ left: Math.max(8, Math.min(r.left, window.innerWidth - 216)), top: r.bottom + 4 });
   };
 
-  const counts = {
-    needsYou: columns.needsYou.length, running: columns.running.length,
-    review: columns.review.length, idle: columns.idle.length,
-  };
+  // Filter chips: each counts its rows and is hidden at zero (unless it is
+  // the one pressed). Pressing the pressed chip shows everything again.
+  const allRows = [...groups.needsYou, ...groups.running, ...groups.idle];
+  const filters: { id: Exclude<FleetFilter, 'all'>; label: string; count: number }[] = [
+    { id: 'attention', label: t('fleet.section.needsYou'), count: groups.needsYou.length },
+    { id: 'running', label: t('fleet.section.running'), count: groups.running.length },
+    { id: 'complete', label: t('fleet.filter.replied'), count: allRows.filter((r) => matchesFleetFilter(r, 'complete')).length },
+    { id: 'idle', label: t('workspace.agentIdle'), count: groups.idle.length },
+    { id: 'tickets', label: t('fleet.filter.tickets'), count: tickets.length },
+  ];
   const nextRun = scheduleNav.nextRunAt !== null && scheduleNav.nextRunAt > now ? scheduleNav.nextRunAt : null;
   const chips = visibleChips([
-    { id: 'needsYou', count: counts.needsYou },
-    { id: 'running', count: counts.running },
-    { id: 'review', count: counts.review },
-    { id: 'idle', count: counts.idle },
     { id: 'approvals', count: inbox.length },
     { id: 'lan', count: remoteInbox.length },
     { id: 'usage', text: usage ? t('fleetBoard.usage', { session: Math.round(usage.sessionPct), weekly: Math.round(usage.weeklyPct) }) : '' },
     { id: 'next', text: nextRun !== null ? t('fleetBoard.nextSchedule', { time: formatNextShort(nextRun, now) }) : '' },
     { id: 'phones', count: phones },
   ]);
-  // With no agents the board is a call to action, but waiting approvals and
+  // With no agents the page is a call to action, but waiting approvals and
   // LAN messages still need their way in.
-  const stripChips = layout === 'empty' ? chips.filter((c) => c.id === 'approvals' || c.id === 'lan') : chips;
+  const stripChips = empty ? chips.filter((c) => c.id === 'approvals' || c.id === 'lan') : chips;
   const chipLabel = (chip: BoardChip): string => {
     if (chip.text) return chip.text;
     if (chip.id === 'approvals') return t('fleetBoard.approvals', { count: chip.count ?? 0 });
     if (chip.id === 'lan') return t('fleetBoard.lan', { count: chip.count ?? 0 });
-    if (chip.id === 'phones') return t('fleetBoard.phones', { count: chip.count ?? 0 });
-    return t(`fleetBoard.col.${chip.id}`);
+    return t('fleetBoard.phones', { count: chip.count ?? 0 });
   };
 
   const idleSummary = idleOldestMs !== undefined && idleOldestMs >= IDLE_SHOW_AFTER_MS
     ? t('fleet.section.idleOldest', { count: visibleGroups.idle.length, age: formatIdle(idleOldestMs) })
     : t('fleet.section.idle', { count: visibleGroups.idle.length });
 
-  const renderItem = (item: BoardItem, column: BoardColumn) => {
-    if (item.kind === 'review') {
-      const entry = item.entry;
-      return (
-        <FleetReviewRow
-          key={item.key}
-          entry={entry}
-          now={now}
-          focused={item.key === focusedKey}
-          onFocus={() => setFocusedPaneId(item.key)}
-          onOpenDiff={openReviewDiff}
-          onJump={jumpToReviewTask}
-          onEdit={openReviewEditor}
-          onMenuOpenChange={onRowMenuOpenChange}
-          editor={reviewEditor?.workspaceId === entry.workspaceId ? reviewEditor.kind : undefined}
-          onEditorDone={finishReviewEditor}
-        />
-      );
-    }
-    const { row } = item;
+  // Tickets: who holds one, and where a ticket's jump lands.
+  const workspaceName = useCallback((id: string) => workspaces.find((w) => w.id === id)?.name ?? '', [workspaces]);
+  const assigneeOf = (ticket: FleetTicket) => [workspaceName(ticket.workspaceId) || t('fleet.ticket.unknownWorkspace'), ticket.agent]
+    .filter(Boolean).join(' · ');
+  const paneOfTicket = (ticket: FleetTicket) => panes.find((p) => !p.remote && p.workspaceId === ticket.workspaceId
+    && (!ticket.paneId || p.paneId === ticket.paneId));
+  const selectTicket = useCallback((ticket: FleetTicket) => {
+    const key = ticketKey(ticket.id);
+    setDetailOpen((open) => (focusedKey === key ? !open : true));
+    setFocusedPaneId(key);
+  }, [focusedKey]);
+  const jumpToTicket = (ticket: FleetTicket) => {
+    const pane = paneOfTicket(ticket);
+    if (pane) { jump(pane); return; }
+    focusNotificationTarget(() => useStore.getState(), { workspaceId: ticket.workspaceId });
+    finishJump();
+  };
+  // A ticket's decision card waits in its workspace's decision slot.
+  const openTicketDecision = (ticket: FleetTicket) => {
+    focusNotificationTarget(() => useStore.getState(), { workspaceId: ticket.workspaceId });
+    finishJump();
+  };
+
+  const renderRow = (row: FleetRow) => {
     const card = row.pane;
+    const ticket = card.remote ? undefined : openTicketFor(tickets, card.workspaceId, card.paneId);
+    const focused = card.paneId === focusedKey;
     return (
       <div key={`${card.workspaceId}:${card.paneId}:${card.surfaceId}`} role="presentation" className="wmux-fleet-row">
-        <FleetBoardCard
+        <FleetCard
           card={card}
           row={row}
-          column={column}
-          focused={card.paneId === focusedKey}
-          dense={dense}
-          now={now}
-          changed={column === 'needsYou' && fleetChangedSinceSeen(fleetLastSeen, card.ptyId, card.agentStatus, surfacePendingQuestion[fleetTargetPtyId(card)])}
-          ledgerStatus={ledger[card.workspaceId]}
-          approvalPending={approvalWorkspaces.has(card.workspaceId)}
-          resource={card.ptyId ? resources[card.ptyId] : undefined}
+          ticketTitle={ticket?.title || undefined}
+          changed={row.section === 'needsYou' && fleetChangedSinceSeen(fleetLastSeen, card.ptyId, card.agentStatus, surfacePendingQuestion[fleetTargetPtyId(card)])}
+          focused={focused}
           onJump={jump}
           onFocus={() => setFocusedPaneId(card.paneId)}
+          resource={card.ptyId ? resources[card.ptyId] : undefined}
         />
-        <FleetRowMenu pane={card} verbs={verbsFor(card)} focused={card.paneId === focusedKey} onJump={jump}
+        <button type="button" className="wmux-fleet-row-detail" tabIndex={-1} data-fleet-detail-toggle
+          aria-expanded={focused && detailOpen} aria-controls="fleet-detail"
+          title={t('fleet.inspect.toggle')} aria-label={t('fleet.inspect.toggle')}
+          onClick={() => { setDetailOpen((open) => (focused ? !open : true)); setFocusedPaneId(card.paneId); }}>
+          <IconChevron size={12} />
+        </button>
+        <FleetRowMenu pane={card} verbs={verbsFor(card)} focused={focused} onJump={jump}
           onEdit={openEditor} onMenuOpenChange={onRowMenuOpenChange} />
         {editor?.paneId === card.paneId && <FleetRowEditor pane={card} kind={editor.kind} onDone={closeEditor} />}
       </div>
     );
   };
-  const ownerName = (ownerId: string) => workspaces.find((w) => w.id === ownerId)?.name ?? '';
-  const renderColumn = (column: BoardColumn) => {
-    const items = columns[column];
-    // No dead gauges: a column with nothing in it is not drawn.
-    if (items.length === 0) return null;
-    const section = column === 'review' ? 'review' : column;
-    return (
-      <section key={column} className="wmux-board-col" data-board-column={column} aria-label={t(`fleetBoard.col.${column}`)}>
-        {column === 'idle' && items.length > 0 && !idleForced ? (
-          <button
-            type="button"
-            role="option"
-            aria-selected={focusedKey === IDLE_TOGGLE_KEY}
-            aria-expanded={idleShown}
-            tabIndex={focusedKey === IDLE_TOGGLE_KEY ? 0 : -1}
-            className="wmux-board-col-head is-toggle"
-            data-fleet-section="idle"
-            data-fleet-idle-toggle
-            data-board-key={IDLE_TOGGLE_KEY}
-            onFocus={() => setFocusedPaneId(IDLE_TOGGLE_KEY)}
-            onClick={() => setFleetIdleExpanded(!fleetIdleExpanded)}
-          >
-            <span className="wmux-fleet-idle-chevron" aria-hidden="true"><IconChevron size={12} /></span>
-            <span>{idleSummary}</span>
-          </button>
-        ) : (
-          <h3 className="wmux-board-col-head" data-fleet-section={section}>
-            {column !== 'idle' && <span className={`wmux-board-col-dot is-${column}`} aria-hidden="true" />}
-            <span>{column === 'idle' ? idleSummary : t(`fleetBoard.col.${column}`)}</span>
-            {column !== 'idle' && <span className="wmux-board-col-count">{items.length}</span>}
-          </h3>
-        )}
-        {column === 'idle' && !idleShown && (
-          // Collapsed: a glance at who is idle — name and idle time, five at most.
-          <div className="wmux-board-idle-peek" data-fleet-idle-peek>
-            {items.slice(0, IDLE_PEEK).map((item) => (item.kind === 'pane' ? (
-              <button key={item.key} type="button" tabIndex={-1} className="wmux-board-idle-row"
-                onClick={() => jump(item.row.pane)} data-pty-id={item.row.pane.ptyId}>
-                <span className="truncate">{fleetTitle(item.row.pane, missions[item.row.pane.workspaceId])}</span>
-                <span className="wmux-board-elapsed" data-usage-waiting={item.row.pane.usageLimitWaiting || undefined}>
-                  {item.row.pane.usageLimitWaiting ? t('usageLimit.waiting')
-                    : item.row.idleForMs !== undefined && item.row.idleForMs >= IDLE_SHOW_AFTER_MS ? formatIdle(item.row.idleForMs) : ''}
-                </span>
-              </button>
-            ) : null))}
-            {items.length > IDLE_PEEK && (
-              <button type="button" tabIndex={-1} className="wmux-board-fold" onClick={() => setFleetIdleExpanded(true)}>
-                {t('fleetBoard.more', { count: items.length - IDLE_PEEK })}
-              </button>
-            )}
-          </div>
-        )}
-        {(column !== 'idle' || idleShown) && (
-          <div className="wmux-board-col-body">
-            {columnGroups[column].map((group) => {
-              const foldKey = group.owner ? `${column}:${group.owner}` : '';
-              const open = foldKey !== '' && openFolds.has(foldKey);
-              return [
-                renderItem(group.lead, column),
-                ...(group.folded.length > 0 ? [
-                  <button key={`fold:${foldKey}`} type="button" className="wmux-board-fold" aria-expanded={open}
-                    data-fleet-fold={group.owner}
-                    onClick={() => setOpenFolds((prev) => {
-                      const next = new Set(prev);
-                      if (next.has(foldKey)) next.delete(foldKey); else next.add(foldKey);
-                      return next;
-                    })}>
-                    {t('fleetBoard.fold', { count: group.folded.length, owner: ownerName(group.owner ?? '') })}
-                  </button>,
-                  ...(open ? group.folded.map((item) => renderItem(item, column)) : []),
-                ] : []),
-              ];
-            })}
-          </div>
-        )}
-      </section>
-    );
-  };
+  const sectionHead = (id: 'needsYou' | 'review' | 'running', count: number) => (
+    <div key={`section:${id}`} role="presentation" className="wmux-fleet-section-header" data-fleet-section={id}>
+      <span className={`wmux-board-col-dot is-${id}`} aria-hidden="true" />
+      <span>{t(`fleet.section.${id}`)}</span>
+      <span className="wmux-board-col-count">{count}</span>
+    </div>
+  );
 
   const kbd = (keys: string, label: string) => (
     <span className="wmux-board-key"><kbd>{keys}</kbd>{label}</span>
   );
 
+  // What the detail area shows for the selection: a ticket, or the selected
+  // agent's recent output and its task's conversation.
+  const detailPane = selectedPane?.surfaceType === 'terminal' ? selectedPane : undefined;
+  const showDetail = tab === 'fleet' && detailOpen && !empty
+    && (focusedTicket !== undefined || detailPane !== undefined || conversationTask !== undefined);
+
   return (
-    // The Fleet rail page: a four-column attention board.
+    // The Fleet rail page: one attention list, the detail area under it.
     <div
       ref={panelRef}
       tabIndex={-1}
       role="region"
       aria-label={t('fleet.title')}
       data-fleet-view
-      data-layout={layout}
+      data-layout={empty ? 'empty' : 'list'}
       onKeyDownCapture={handleKeyDown}
       onFocusCapture={() => { focusInsideRef.current = true; }}
       onBlurCapture={(e) => {
-        // Focus leaving for somewhere else (not just a removed card) ends it.
+        // Focus leaving for somewhere else (not just a removed row) ends it.
         if (e.relatedTarget instanceof Node && !e.currentTarget.contains(e.relatedTarget)) focusInsideRef.current = false;
       }}
       className="wmux-fleet-panel wmux-board flex flex-col h-full overflow-hidden outline-none"
@@ -1118,7 +1018,7 @@ export default function FleetView() {
       <div className="wmux-board-head">
         <h2 className="wmux-board-title">{t('fleet.title')}</h2>
         <span className="flex-1" />
-        {tab === 'fleet' && layout !== 'empty' && (
+        {tab === 'fleet' && !empty && (
           <>
             <input type="search" className="wmux-board-search" value={query} onChange={(event) => setQuery(event.target.value)}
               placeholder={t('fleet.search')} aria-label={t('fleet.search')}
@@ -1135,40 +1035,43 @@ export default function FleetView() {
             </button>
           </>
         )}
-        {layout !== 'empty' && (
+        {!empty && (
           <button type="button" className="wmux-board-btn" onClick={openPicker} data-fleet-new-agent>
             <IconPlus size={12} />{t('fleetBoard.newAgent')}
           </button>
         )}
       </div>
 
-      {(stripChips.length > 0 || settledCount > 0) && (
-        <div className="wmux-board-strip" data-fleet-summary>
-          {stripChips.map((chip) => {
-            const opens = chip.id === 'approvals' ? 'approvals' : chip.id === 'lan' ? 'remote' : null;
-            const body = (
-              <>
-                {chip.count !== undefined && ['needsYou', 'running', 'review'].includes(chip.id)
-                  && <span className={`wmux-board-col-dot is-${chip.id}`} aria-hidden="true" />}
-                {chip.count !== undefined && !opens && chip.id !== 'phones' && <strong>{chip.count}</strong>}
-                <span>{chipLabel(chip)}</span>
-              </>
-            );
-            return opens ? (
-              <button key={chip.id} type="button" className="wmux-board-stat is-action" data-fleet-stat={chip.id}
-                aria-pressed={tab === opens} onClick={() => setTab(tab === opens ? 'fleet' : opens)}>{body}</button>
-            ) : (
-              <span key={chip.id} className="wmux-board-stat" data-fleet-stat={chip.id}>{body}</span>
-            );
-          })}
-          {settledCount > 0 && (
-            <button type="button" className="wmux-board-stat is-action" data-fleet-stat="settled"
-              aria-pressed={showSettled} onClick={() => setShowSettled((v) => !v)}>
-              <span>{t('workspaceSettle.fleetChip', { count: settledCount })}</span>
-            </button>
-          )}
-        </div>
-      )}
+      <div className="wmux-board-strip" data-fleet-summary>
+        {tab === 'fleet' && !empty && (
+          <div className="wmux-fleet-filters" role="group" aria-label={t('fleet.filter.label')}>
+            {filters.filter((item) => item.count > 0 || item.id === filter).map((item) => (
+              <button key={item.id} type="button" aria-pressed={filter === item.id} data-filter={item.id}
+                onClick={() => setFilter(filter === item.id ? 'all' : item.id)}>
+                {item.id !== 'idle' && item.id !== 'tickets' && item.id !== 'complete'
+                  && <span className={`wmux-board-col-dot is-${item.id === 'attention' ? 'needsYou' : item.id}`} aria-hidden="true" />}
+                {item.label}<span>{item.count}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        {stripChips.map((chip) => {
+          const opens = chip.id === 'approvals' ? 'approvals' : chip.id === 'lan' ? 'remote' : null;
+          const body = <span>{chipLabel(chip)}</span>;
+          return opens ? (
+            <button key={chip.id} type="button" className="wmux-board-stat is-action" data-fleet-stat={chip.id}
+              aria-pressed={tab === opens} onClick={() => setTab(tab === opens ? 'fleet' : opens)}>{body}</button>
+          ) : (
+            <span key={chip.id} className="wmux-board-stat" data-fleet-stat={chip.id}>{body}</span>
+          );
+        })}
+        {settledCount > 0 && (
+          <button type="button" className="wmux-board-stat is-action" data-fleet-stat="settled"
+            aria-pressed={showSettled} onClick={() => setShowSettled((v) => !v)}>
+            <span>{t('workspaceSettle.fleetChip', { count: settledCount })}</span>
+          </button>
+        )}
+      </div>
 
       <div ref={bodyRef} className="wmux-board-body">
         {tab === 'approvals' || tab === 'remote' ? (
@@ -1191,13 +1094,18 @@ export default function FleetView() {
               <p className="wmux-board-quiet">{t('fleet.remote.empty')}</p>
             )}
           </div>
-        ) : layout === 'empty' ? (
+        ) : empty ? (
           <div className="wmux-board-empty" data-fleet-empty>
             <h3>{t('fleetBoard.empty.title')}</h3>
             <p>{t('fleetBoard.empty.body')}</p>
             <button type="button" className="wmux-board-cta" onClick={openPicker} data-fleet-new-agent>
               <IconPlus size={12} />{t('fleetBoard.newAgent')}
             </button>
+            {tickets.length > 0 && (
+              <button type="button" className="wmux-board-back" onClick={() => setFilter('tickets')} data-filter="tickets">
+                {t('fleet.filter.tickets')} {tickets.length}
+              </button>
+            )}
             {recentDone.length > 0 && (
               <ul className="wmux-board-recent" aria-label={t('fleetBoard.recent')}>
                 {recentDone.map((task) => (
@@ -1211,42 +1119,116 @@ export default function FleetView() {
           </div>
         ) : matchCount === 0 ? (
           <div className="wmux-fleet-empty">
-            <p>{t('fleet.noMatches')}</p>
+            <p>{filter === 'tickets' && !query.trim() ? t('fleet.ticket.empty') : t('fleet.noMatches')}</p>
             <button type="button" onClick={() => { setQuery(''); setFilter('all'); setShowSettled(true); }}>{t('fleet.resetFilters')}</button>
           </div>
         ) : (
-          <div ref={listRef} role="listbox" aria-label={t('fleet.title')} className="wmux-board-columns" data-layout={layout}
-            style={layout === 'list' ? undefined : {
-              // The drawn columns share the width; Idle keeps a narrow one.
-              gridTemplateColumns: [
-                ...(['needsYou', 'running', 'review'] as const).filter((c) => columns[c].length > 0).map(() => 'minmax(0, 1fr)'),
-                ...(columns.idle.length > 0 ? ['minmax(0, 0.6fr)'] : []),
-              ].join(' '),
-            }}>
-            {BOARD_COLUMNS.map(renderColumn)}
-          </div>
+          <>
+            {filter !== 'tickets' && visibleGroups.needsYou.length === 0 && visibleReview.length === 0 && visibleGroups.running.length === 0 && (
+              <p className="wmux-fleet-quiet" aria-hidden="true" data-fleet-all-quiet>{t('fleet.allQuiet')}</p>
+            )}
+            <div ref={listRef} role="listbox" aria-label={t('fleet.title')} className="wmux-fleet-list">
+              {/* One flat keyed sibling array (headers interleaved), so a row
+                  that changes section keeps its DOM node — and its focus. */}
+              {filter === 'tickets' ? visibleTickets.map((ticket) => (
+                <div key={ticket.id} role="presentation" className="wmux-fleet-row">
+                  <TicketRow
+                    ticket={ticket}
+                    assignee={assigneeOf(ticket)}
+                    focused={ticketKey(ticket.id) === focusedKey}
+                    now={now}
+                    onFocus={() => setFocusedPaneId(ticketKey(ticket.id))}
+                    onSelect={selectTicket}
+                    t={t}
+                  />
+                </div>
+              )) : [
+                ...(visibleGroups.needsYou.length === 0 ? [] : [
+                  sectionHead('needsYou', visibleGroups.needsYou.length),
+                  ...visibleGroups.needsYou.map(renderRow),
+                ]),
+                // Ready to review: task-level rows, drawn only when non-empty.
+                ...(visibleReview.length === 0 ? [] : [
+                  sectionHead('review', visibleReview.length),
+                  ...visibleReview.map((entry) => (
+                    <FleetReviewRow
+                      key={reviewRowKey(entry.workspaceId)}
+                      entry={entry}
+                      now={now}
+                      focused={reviewRowKey(entry.workspaceId) === focusedKey}
+                      onFocus={() => setFocusedPaneId(reviewRowKey(entry.workspaceId))}
+                      onOpenDiff={openReviewDiff}
+                      onJump={jumpToReviewTask}
+                      onEdit={openReviewEditor}
+                      onMenuOpenChange={onRowMenuOpenChange}
+                      editor={reviewEditor?.workspaceId === entry.workspaceId ? reviewEditor.kind : undefined}
+                      onEditorDone={finishReviewEditor}
+                    />
+                  )),
+                ]),
+                ...(visibleGroups.running.length === 0 ? [] : [
+                  sectionHead('running', visibleGroups.running.length),
+                  ...visibleGroups.running.map(renderRow),
+                ]),
+                ...(visibleGroups.idle.length === 0 ? [] : [idleToggleShown ? (
+                  <button
+                    key="section:idle"
+                    type="button"
+                    role="option"
+                    aria-selected={focusedKey === IDLE_TOGGLE_KEY}
+                    aria-expanded={idleShown}
+                    tabIndex={focusedKey === IDLE_TOGGLE_KEY ? 0 : -1}
+                    className="wmux-fleet-idle-toggle"
+                    data-fleet-section="idle"
+                    data-fleet-idle-toggle
+                    data-fleet-key={IDLE_TOGGLE_KEY}
+                    onFocus={() => setFocusedPaneId(IDLE_TOGGLE_KEY)}
+                    onClick={() => setFleetIdleExpanded(!fleetIdleExpanded)}
+                  >
+                    <span className="wmux-fleet-idle-chevron" aria-hidden="true"><IconChevron size={12} /></span>
+                    <span>{idleSummary}</span>
+                  </button>
+                ) : (
+                  <div key="section:idle" role="presentation" className="wmux-fleet-section-header" data-fleet-section="idle">{idleSummary}</div>
+                )]),
+                ...(idleShown ? visibleGroups.idle.map(renderRow) : []),
+              ]}
+            </div>
+          </>
         )}
       </div>
 
-      {tab === 'fleet' && ((previewOpen && selectedPane?.surfaceType === 'terminal') || conversationTask) && (
-        <div className="wmux-board-foot" data-fleet-foot>
-          {previewOpen && selectedPane?.surfaceType === 'terminal' && (
-            <div className="wmux-board-preview" data-fleet-preview>
-              <span className="wmux-board-preview-head">{t('fleetBoard.preview', { name: fleetTitle(selectedPane, missions[selectedPane.workspaceId]) })}</span>
-              <pre id="fleet-output-preview" tabIndex={0}>{tails[previewPtyId]?.join('\n') || t('fleet.previewEmpty')}</pre>
-            </div>
+      {showDetail && (
+        <div id="fleet-detail" className="wmux-board-foot" data-fleet-foot data-fleet-detail>
+          {focusedTicket ? (
+            <TicketDetail
+              ticket={focusedTicket}
+              assignee={assigneeOf(focusedTicket)}
+              cwd={paneOfTicket(focusedTicket)?.cwd ?? workspaces.find((w) => w.id === focusedTicket.workspaceId)?.metadata?.cwd}
+              decisions={moaDecisions}
+              onJump={jumpToTicket}
+              onOpenDecision={openTicketDecision}
+              t={t}
+            />
+          ) : (
+            <>
+              {detailPane && (
+                <div className="wmux-board-preview" data-fleet-preview>
+                  <span className="wmux-board-preview-head">{t('fleet.inspect.output', { name: fleetTitle(detailPane, missions[detailPane.workspaceId]) })}</span>
+                  <pre id="fleet-output-preview" tabIndex={0}>{tails[previewPtyId]?.join('\n') || t('fleet.previewEmpty')}</pre>
+                </div>
+              )}
+              {conversationTask && <TaskConversation key={conversationTask.id} task={conversationTask} now={now} t={t} />}
+            </>
           )}
-          {conversationTask && <TaskConversation key={conversationTask.id} task={conversationTask} now={now} t={t} />}
         </div>
       )}
 
-      {tab === 'fleet' && layout !== 'empty' && (
+      {tab === 'fleet' && !empty && (
         <div className="wmux-board-keys" aria-hidden="true">
-          {kbd('←→', t('fleetBoard.key.columns'))}
-          {kbd('↑↓', t('fleetBoard.key.cards'))}
-          {kbd('1–4', t('fleetBoard.key.jumpColumn'))}
+          {kbd('↑↓', t('fleet.key.move'))}
           {kbd('↵', t('fleet.jumpHint'))}
-          {kbd('Space', t('fleetBoard.key.preview'))}
+          {kbd('Space', t('fleet.key.details'))}
           {kbd('/', t('fleetBoard.key.search'))}
         </div>
       )}

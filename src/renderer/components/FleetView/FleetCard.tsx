@@ -11,6 +11,7 @@ import { getLocale, t } from '../../i18n';
 import { useStore } from '../../stores';
 import { IconCheck, IconChevronDir, IconExternalLink } from '../icons';
 import { fleetTitle } from './fleetPresentation';
+import { nowDoingLine } from './nowDoing';
 import { fleetRequesterText } from '../../utils/fanoutProvenance';
 import { useShallow } from 'zustand/react/shallow';
 import { formatIdle, IDLE_SHOW_AFTER_MS } from '../../utils/idleTime';
@@ -23,9 +24,8 @@ interface FleetCardProps {
   /** A2: card를 인자로 받는다 — 부모가 안정적인 단일 콜백(useCallback)을 그대로
    *  내릴 수 있어 memo(FleetCard)가 실효한다(카드마다 새 화살표 생성 회피). */
   onJump: (card: FleetPane) => void;
-  /** S-C2 live output tail — last ~3 plaintext lines of this pane's buffer.
-   *  Only meaningful for terminal cards with a ptyId; already plaintext. */
-  tail?: string[];
+  /** The title of the open ticket this pane is working on; it names the row. */
+  ticketTitle?: string;
   /** Section, detail and elapsed time from `groupFleetPanes`. Absent (tests,
    *  stand-alone renders) → derived from the card alone. */
   row?: FleetRow;
@@ -124,15 +124,16 @@ export function FleetCardEvidenceBadge({ task }: { task: Task | undefined }): Re
   );
 }
 
-/** Compact task row. Output belongs in the opt-in preview, not in every row. */
-function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onFocus }: FleetCardProps) {
+/** One agent's row. Terminal output belongs in the detail area, never here. */
+function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onFocus, ticketTitle }: FleetCardProps) {
   const t = useT();
   const icon = AGENT_STATUS_ICON[card.agentStatus];
   const mission = useStore((s) => s.missionByPaneGroup[card.workspaceId]);
   const evidenceTask = useStore((s) =>
     selectLatestCompletionEvidenceTask(s.a2aTasks, card.workspaceId, card.paneId, card.isActivePane),
   );
-  const displayName = fleetTitle(card, mission);
+  const displayName = ticketTitle || fleetTitle(card, mission);
+  const role = useStore((s) => s.paneRole[card.paneId]);
   // A fan-out task names who asked for it in every section, not only once it
   // is ready to review. Undefined for a workspace that is not a task.
   const requester = useStore(useShallow((s) => fleetRequesterText(s, card.workspaceId, t)));
@@ -165,16 +166,19 @@ function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onF
   // A pane held at its usage limit says so instead of a generic error detail.
   const usageLimit = useStore((s) => s.usageLimits[fleetTargetPtyId(card)] ?? (card.ptyId ? s.usageLimits[card.ptyId] : undefined));
   const limitNow = useUsageLimitNow(!!usageLimit);
+  // Kept past the turn's end, so a finished row can say what it did last.
+  const lastActivity = useStore((s) => s.surfaceLastActivity[fleetTargetPtyId(card)]);
+  const line = nowDoingLine(row, lastActivity, t);
   const detail = usageLimit
     ? usageLimitFleetDetail(usageLimitView(usageLimit, limitNow, getLocale()), t)
-    : row.detail ?? t(row.detailKey);
+    : line.text;
   const elapsed = row.idleForMs !== undefined && row.idleForMs >= IDLE_SHOW_AFTER_MS
     ? formatIdle(row.idleForMs) : undefined;
   const action = isAwaitingInput ? t('fleet.action.respond')
     : card.agentStatus === 'complete' ? t('fleet.action.result')
     : card.agentStatus === 'error' || card.unverifiable || supervisionStopped ? t('fleet.action.inspect')
     : t('fleet.action.open');
-  const showActivity = row.detailSource === 'activity';
+  const showActivity = line.kind === 'now' || line.kind === 'last';
 
   return (
     <button
@@ -189,6 +193,7 @@ function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onF
       data-status={card.agentStatus}
       data-unverifiable={card.unverifiable || undefined}
       data-pty-id={card.ptyId}
+      data-fleet-key={card.paneId}
       data-workspace-id={card.workspaceId}
       data-workspace-name={card.workspaceName}
       className="wmux-fleet-card"
@@ -233,6 +238,8 @@ function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onF
           {displayName !== card.workspaceName && <span>{card.workspaceName}</span>}
           {agentName && agentName !== displayName && <span>{agentName}</span>}
           {card.stashed && <span>{t('fleet.stashed')}</span>}
+          {/* The operator-assigned role (Role… in the row menu): plain text, not a state. */}
+          {role && <span data-fleet-chip="role" title={t('deck.fleetPreferredRole')}>{role}</span>}
           {resource && resource.rss > 0 && (
             <span data-fleet-resource data-rss-bytes={resource.rss} title={`${agentLabel(resource.image)}: ${formatRss(resource.rss)}`}>
               {formatRss(resource.rss)}
@@ -250,8 +257,12 @@ function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onF
       <span className="wmux-fleet-progress">
         <span className={`wmux-fleet-detail${showActivity && !usageLimit ? ' is-activity' : ''}`}
           data-fleet-activity={(showActivity && !usageLimit) || undefined}
+          data-fleet-now={usageLimit ? undefined : line.kind}
           data-fleet-usage-limit={usageLimit ? 'true' : undefined}
-          title={usageLimit?.message ? `${detail}\n${usageLimit.message}` : detail}>{detail}</span>
+          title={usageLimit?.message ? `${detail}\n${usageLimit.message}` : detail}>
+          {/* The agent's own question reads as speech. */}
+          {line.kind === 'question' && !usageLimit ? `“${detail}”` : detail}
+        </span>
         <span className="wmux-fleet-meta">
           {card.agentStatus === 'complete' && <FleetCardEvidenceBadge task={evidenceTask} />}
           {elapsed && <span data-fleet-elapsed>{elapsed}</span>}

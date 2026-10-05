@@ -317,6 +317,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     }
     if (closedPtyId && state.surfaceAgent) delete state.surfaceAgent[closedPtyId];
     if (closedPtyId && state.surfaceActivity) delete state.surfaceActivity[closedPtyId];
+    if (closedPtyId && state.surfaceLastActivity) delete state.surfaceLastActivity[closedPtyId];
     // Drop the pending question too: a leaked entry would let a REUSED ptyId
     // inherit a dead pane's question and read as blocked from birth.
     if (closedPtyId && state.surfacePendingQuestion) delete state.surfacePendingQuestion[closedPtyId];

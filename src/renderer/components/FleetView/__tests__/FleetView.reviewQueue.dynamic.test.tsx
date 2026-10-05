@@ -139,8 +139,8 @@ describe('FleetView — Ready to review', () => {
     mount();
     await settle();
     const sections = Array.from(container.querySelectorAll<HTMLElement>('[data-fleet-section]')).map((el) => el.dataset.fleetSection);
-    // Its own column; the task's finished pane is not shown twice.
-    expect(sections).toEqual(['running', 'review', 'idle']);
+    // Between Needs you (the finished pane) and Running.
+    expect(sections).toEqual(['needsYou', 'review', 'running', 'idle']);
     const row = reviewRow('ws-t1')!;
     expect(row).not.toBeNull();
     expect(reviewRow('ws-t2')).toBeNull();
@@ -190,12 +190,13 @@ describe('FleetView — Ready to review', () => {
     expect(container.querySelector('[data-fleet-review-row]')).toBeNull();
   });
 
-  it('drops a closed or detached task from the queue — its finished pane stays a plain card', async () => {
+  it('drops a closed or detached task from the queue — its finished pane stays in Needs you', async () => {
     act(() => { useStore.setState({ missionByPaneGroup: { 'ws-t1': mission('t1', { detachedAt: 2 }), 'ws-t2': mission('t2') } }); });
     mount();
     await settle();
     expect(container.querySelector('[data-fleet-review-row]')).toBeNull();
-    expect(container.querySelector('[data-fleet-card][data-workspace-id="ws-t1"]')?.getAttribute('data-column')).toBe('review');
+    expect(container.querySelector('[data-fleet-section="review"]')).toBeNull();
+    expect(container.querySelector('[data-fleet-card][data-workspace-id="ws-t1"]')?.getAttribute('data-status')).toBe('complete');
   });
 
   it('the ⋮ menu carries the review verbs; Open diff opens the task diff surface and closes Fleet', async () => {

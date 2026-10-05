@@ -244,8 +244,8 @@ navigates through it.
 
 ### Fleet
 
-A four-column attention board — see "Fleet page" after the Decisions Log
-for the full contract.
+One attention list with a detail area under it — see "Fleet page" after the
+Decisions Log for the full contract.
 
 ### Schedules
 
@@ -511,9 +511,10 @@ always neutral (the fill ladder).
   unconfirmed = hollow `--accent` ring · usage-limit hold = muted clock ·
   idle = no mark. Selection is never painted as a status.
 - **Needs you is `--accent-yellow` everywhere** — the sidebar ring, its
-  labels and counts, the rail badge and Fleet's Needs you column — so one
+  labels and counts, the rail badge and Fleet's Needs you section — so one
   state never wears two colours (and a white-accent look still reads it).
-- **Fleet board** — a card's dot takes its column's colour (see Fleet page).
+- **Fleet list** — a row's dot takes its status colour, the sidebar's grammar
+  (see Fleet page); a ticket's dot takes its ticket state.
 - **Diff counts** are green `+N` / red `−M`; red is otherwise reserved for
   errors and destructive actions.
 - **The accent** marks selection edges and underlines (per the look's
@@ -754,6 +755,7 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-10-05 | Owner feedback, one PR: the right panel and its toggle exist only while Moa is on; the titlebar never shows New workspace and shows the workspace's name and branch only while the sidebar is collapsed, and drops the search pill (⌘K and the More menu open the palette); the rail drops the Moa `M` entry; the order is `wmux` then a sidebar toggle mirroring the tools-panel toggle, both bare icons with no rest or on fill; Settings leaves the titlebar for a `⋯` More menu at the rail's foot (Settings, Keyboard shortcuts, Check for updates, version), replacing the collapse chevron; the sidebar eases open and closed in 190ms with one PTY refit per pane; every rail page but Settings sits beside the tools dock; Moa's HQ is off the Fleet board, its counts, the titlebar vitals and fleet_triage, and Fleet rows gain Role…; Moa's panel drops its roster and control rows for one header `⋯` menu and scrolls as one column | The open sidebar already shows New workspace and the active workspace, so the titlebar repeated them. The rail's `M` read as a mystery letter and duplicated Moa's panel; the search pill duplicated ⌘K, which the More menu now lists. With Moa off the panel held only an off card and a ledger Fleet already shows. The brand anchors the corner, and a toggle that matches the other end's reads as a pair. Rarely used controls and duplicated sections crowded Moa's panel, clipped its decision cards and repeated the briefing. Moa vanished on Fleet, Schedules and Remote and its button navigated away; Moa is the main bot, not a worker. Refitting per animation frame would thrash every terminal. Removing the roster took away the only GUI for a pane's role, so Fleet rows carry it now |
 | 2026-10-05 | A fan-out task's mission channel reads in Fleet, as the selected task's Conversation at the foot beside the preview; Moa's task cards, Waiting on you and the deck ledger link to it. No channel list returns | The Channels tab left with the Moa-only right panel (#1771), and with it the only desktop view of worker reports, instructions and ledger transitions. The foot is already Fleet's selection detail, so the conversation follows the selection without reflowing the columns |
 | 2026-10-05 | Chat tool calls fold: consecutive routine calls collapse into one line (`Read 4 files`, `Edited 2 files +5 −1`, `Ran 3 commands`, else `Ran N tool calls`); approvals, questions, failures, notices and replies never fold. Tool rows are quiet: the title is `--text-sub` at rest and `--text-main` on hover or open, the verb is 600 and the object 400, and an inline disclosure chevron points right and turns down (0→90°), like every other disclosure. Diff lines carry a 2px inset bar in `--accent-green`/`--accent-red` at 50% over an 8% fill of the same hue — the only coloured fill, because it is the diff's own state, not a wash. Rows appended after a chat first loads fade in over 150ms (`--motion-ease-out`), never on first load or an earlier page, and not under reduced motion | A long turn buried its reply under one row per call. Folding keeps the reply in view while anything that needs a person stays out of the fold; the 150ms fade is a one-shot state change (a row arriving), not perpetual motion, and the diff fill is how a diff says added and removed |
+| 2026-10-05 | Fleet returns to the attention list (one row per agent; Needs you, Ready to review, Running, folded Idle) in today's look, replacing the four-column board. Rows gain a now-doing sentence that outlives the turn (`Last: Edited foo.ts`), terminal output and the task Conversation move to a detail area under the list (selection, Space, Esc), and Moa's delegated work shows as tickets behind a Tickets chip, with an Open as GitHub issue action that only prefills | Columns split one glance into four reads, pushed finished panes away from the sidebar's own Needs you rule, and every card spent lines on chips; the raw glyph line (`✎ foo.ts`) read as code and vanished at turn end, so a finished row said nothing about what it did. A list answers "what needs me, in order" in one scan, the detail area keeps output and conversations one key away without putting terminal text in rows, and delegated work had no place to be followed once Moa handed it off |
 
 ### Desktop conversation view
 
@@ -931,68 +933,75 @@ tab is a plain label (Moa · Main bot); the model is chosen only in ⋯ › Mode
 Submenus are marked as such (`aria-haspopup`), and Escape steps back one level.
 A delegated-work title is one line at rest and wraps once its card is open.
 
-### Fleet page (2026-10-03, replaces the 2026-09-21 overlay)
+### Fleet page (2026-10-05 list; a rail page since 2026-10-03)
 
 Fleet is a rail page, not an overlay: it fills the sheet while the Workspaces
-page stays mounted, full size and inert underneath. It is an attention board
-(andon), not a map: four columns read from the sidebar's own classification
-(`fleetAttentionClass`), so a pane cannot read differently in the two places.
+page stays mounted, full size and inert underneath. It is an attention list
+(andon), not a map: one row per agent, in sections read from the sidebar's
+own classification (`fleetAttentionClass`), so a pane cannot read
+differently in the two places, and in the order `fleet_triage` returns.
 
-- **Columns:** Needs you (input requests, errors, stopped supervision,
-  unconfirmed panes) · Running · Ready to review (finished panes and finished
-  fan-out tasks, a task shown once) · Idle, which takes 0.6 of a column and
-  folds to its count with up to five names and their idle time (`+N more`
-  expands it). A column with nothing in it is not drawn; the drawn columns
-  share the width. Plain shells sit only in Idle and never keep the empty
-  state from showing.
+- **Sections:** Needs you (input requests, errors, stopped supervision,
+  unconfirmed panes and finished turns) · Ready to review (finished fan-out
+  tasks, one row per task) · Running · Idle, folded to one `Idle N · oldest
+  age` row that expands. A section head is sentence-case 12px text with a
+  status dot and its count; an empty section is not drawn. Plain shells sit
+  only in Idle and never keep the empty state from showing.
+- **Row:** status (dot and word), the title (an open ticket's title when the
+  pane holds one, else the task or pane name), workspace · agent · role ·
+  stash, the now-doing line, elapsed time and one verb (Respond, Review,
+  Check, Open). A row is a fill on hover (`--hover-fill`) and selection
+  (`--selection`), never a box or a rule. Two buttons share the right lane,
+  shown on hover or focus: details (a chevron that turns when open) and ⋮.
+  Rows never show terminal text.
+- **Now doing:** the agent's last tool, as a sentence (`Edited foo.ts`,
+  `Ran npm test`, `Read x.ts`, `Searched pat`) in the activity mono. A
+  running agent says what it is doing; a finished or idle one says
+  `Last: …` from the last tool it ran, which outlives the turn's end. An
+  agent that reports no tools (Codex, others) shows its last reply; a
+  question shows in quotes; error, stopped and unconfirmed rows keep their
+  label.
+- **Filters and summary:** the line under the title leads with the filter
+  chips — Needs you, Running, Replied, Idle, Tickets — each with its count,
+  hidden at zero; pressing the pressed chip shows everything again. Then
+  approvals, LAN messages, account usage, the next schedule and phones
+  watching, each only when it is not zero, and Settled. While Fleet is the
+  page, the titlebar drops its own running / need you counts and usage.
+- **Detail area:** under the list, opened by a deliberate selection (an
+  arrow move, the row's details button, Space) and never by the focus Fleet
+  takes when it opens; Esc closes it before it closes Fleet. It shows the
+  selected agent's last 20 lines of output and, for a fan-out task, its
+  Conversation beside them (stacked below 900px): read-only, oldest first,
+  live, in the mantle fill. Moa's task cards, Waiting on you rows and the
+  deck ledger's `#` open Fleet on that task with the detail open.
+- **Tickets:** Moa's delegated work, one row per job — a hand-off waiting for
+  its click, or a WorkLink with its A2A task. A chat message is never a
+  ticket. States: Queued, Working, Needs your decision (yellow), Done
+  (green), Failed (red); finished tickets stay listed for a day. A ticket's
+  detail holds the request, the decisions still waiting (each opens its
+  workspace's decision card), the result and its verification count, Jump
+  to agent, and Open as GitHub issue when the workspace's origin is on
+  GitHub: it opens a prefilled new-issue page in the browser and never
+  posts.
 - **Role:** a row's ⋮ menu holds Jump, Message (M), Stash (S), Label (L),
   Role… (R), then Close pane (⌫). Role… opens an inline picker under the row:
   None, then the roles (built-in, plus the pane's custom role), the current
   one selected; a pick writes the pane's role through the same path as the
-  dock roster and None clears it. It is the GUI for giving a pane a role
-  (Settings binds a role to an agent and model). A set role is a plain chip
-  on the card, without colour, since it is not a state.
-- **Moa is not on the board.** Moa's HQ workspace is the main bot, not a
-  worker: it is left off the columns, their counts and filters, the rail's
+  dock roster and None clears it. A set role is plain text on the row.
+- **Moa is not on the list.** Moa's HQ workspace is the main bot, not a
+  worker: it is left off the rows, their counts and filters, the rail's
   badge, the titlebar vitals and `fleet_triage`. Its decisions and
   permission prompts reach you through Moa's panel (Waiting on you) and its
   titlebar icon's dot.
-- **Card:** a 10px-radius fill (`--selection-subtle`, `--selection` when
-  hovered or selected) and no border. Line 1: status dot, name, agent,
-  elapsed time (a running turn from its start, anything else from its last
-  sign of life). Line 2: workspace, branch, ahead/behind, and the +/− diff on
-  Ready to review cards. Then one detail line (the question, the last
-  message, or the last activity in mono), chips (approval waiting, ledger
-  status, PR and CI, memory, supervision) and who asked for it. From twenty
-  agents a card drops to two lines and a mission's cards fold under the
-  first.
-- **Board dot colour = its column:** `--accent-yellow` waits on you (a red
-  cross for an error), `--accent` runs, `--accent-green` is ready to review,
-  idle is muted. A pane waiting out a usage limit draws a muted clock and
-  says Waiting with its reset time, on its card and in the folded Idle peek,
-  never in the error grammar.
-- **Summary line** under the title counts each column and shows approvals,
-  LAN messages, account usage, the next schedule and phones watching, each
-  only when it is not zero. While Fleet is the page, the titlebar drops its
-  own running / need you counts and the account usage.
-- **Empty and small fleets:** no agents is one call to action plus the three
-  newest finished tasks; up to three agents is one list with the preview
-  open. The preview at the foot shows the selected agent's last 20 lines.
-- **Conversation:** a selected fan-out task (its card or its Ready to
-  review row) also shows its mission channel at the foot, beside the
-  preview (stacked below 900px): read-only, oldest first, live, in the same
-  mantle fill. Authors and bodies use the UI face; code stays mono. Moa's
-  task cards, Waiting on you rows and the deck ledger's `#` open Fleet on
-  that task.
-- **Keys:** arrows move across and within columns, 1–4 jump to a column,
-  Enter jumps, Space toggles the preview, / searches, a opens the Approvals
-  tab with the request waiting on the agent focused (it never approves: the
-  card does not show the request, so the user reads the row and approves
-  there); m, s, l, Backspace, d, p and j as before. A jump to a
-  pane returns to the Workspaces page and hands it focus.
+- **Empty fleet:** no agents is one call to action, the Tickets way in when
+  there are any, and the three newest finished tasks.
+- **Keys:** ↑↓ (and ←→) move through the list and open the detail, Home/End
+  go to its ends, Enter jumps, Space toggles the detail, Esc closes it, /
+  searches, a opens the Approvals tab with the request waiting on the agent
+  focused (it never approves); m, s, l, r, Backspace, d, p and j as before.
+  A jump to a pane returns to the Workspaces page and hands it focus.
 
-**Ready to review (2026-09-25; a board column after Running since
-2026-10-03).** It lists fan-out TASKS, not panes: one row per task whose record is open
+**Ready to review (2026-09-25; between Needs you and Running).** It lists fan-out TASKS, not panes: one row per task whose record is open
 and not detached and whose every agent pane reports complete (the sidebar's
 close-finished rule; idle never counts). It is a section, not a tab: Fleet is
 one roving list, and a finished task belongs in the same glance as what needs

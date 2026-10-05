@@ -825,6 +825,19 @@ describe('PaneSlice', () => {
       expect(store.getState().surfaceActivity['pty-act']).toBe('✎ fleet.ts');
       store.getState().closePane(closing.id);
       expect(store.getState().surfaceActivity['pty-act']).toBeUndefined();
+      expect(store.getState().surfaceLastActivity['pty-act']).toBeUndefined();
+    });
+
+    it('keeps the last activity past the turn-boundary clear, so a finished row can say what it did', () => {
+      store.getState().setSurfaceActivity('pty-1', '→ types.ts');
+      store.getState().setSurfaceActivity('pty-1', '$ npm test');
+      // Stop / SessionStart / StopFailure send '' — the live line goes, the last one stays.
+      store.getState().setSurfaceActivity('pty-1', '');
+      expect(store.getState().surfaceActivity['pty-1']).toBeUndefined();
+      expect(store.getState().surfaceLastActivity['pty-1']).toBe('$ npm test');
+      // The next turn's first tool replaces it.
+      store.getState().setSurfaceActivity('pty-1', '✎ fleet.ts');
+      expect(store.getState().surfaceLastActivity['pty-1']).toBe('✎ fleet.ts');
     });
   });
 

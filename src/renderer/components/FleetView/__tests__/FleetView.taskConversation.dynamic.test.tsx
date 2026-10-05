@@ -3,7 +3,7 @@
 // Fleet shows a fan-out task's Conversation (its mission channel) for the
 // selected task: read-only, oldest first, loaded from the daemon as the human
 // seat and appended live. "Open conversation" links land on the same view,
-// and a task with nothing on the board still shows.
+// and a task with nothing on the list still shows.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as React from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -64,7 +64,14 @@ async function settle(): Promise<void> {
 }
 
 function card(paneId: string): HTMLElement {
-  return container.querySelector<HTMLElement>(`[data-board-key="${paneId}"]`)!;
+  return container.querySelector<HTMLElement>(`[data-fleet-key="${paneId}"]`)!;
+}
+/** Select a row and make sure the detail area (where the conversation shows) is open. */
+function select(paneId: string): void {
+  act(() => card(paneId).focus());
+  if (!container.querySelector('[data-fleet-detail]')) {
+    act(() => { card(paneId).dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true })); });
+  }
 }
 function conversationTexts(): string[] {
   return Array.from(container.querySelectorAll('[data-fleet-conversation] [data-channel-message-text]')).map((el) => el.textContent ?? '');
@@ -115,7 +122,7 @@ describe('FleetView — task conversation', () => {
   it('selecting a task shows its mission channel, oldest first, read-only', async () => {
     mount();
     await settle();
-    act(() => card('p1').focus());
+    select('p1');
     await settle();
     const conversation = container.querySelector('[data-fleet-conversation]')!;
     expect(conversation.getAttribute('data-channel-id')).toBe('ch-t1');
@@ -126,7 +133,7 @@ describe('FleetView — task conversation', () => {
     expect(conversation.querySelector('textarea, input, [contenteditable]')).toBeNull();
 
     // A plain agent has no conversation.
-    act(() => card('px').focus());
+    select('px');
     await settle();
     expect(container.querySelector('[data-fleet-conversation]')).toBeNull();
   });
@@ -134,7 +141,7 @@ describe('FleetView — task conversation', () => {
   it('a live post appends at the end', async () => {
     mount();
     await settle();
-    act(() => card('p1').focus());
+    select('p1');
     await settle();
     act(() => useStore.getState().appendMessageFromEvent(message('ch-t1', 3, 'ch-t1 done')));
     expect(conversationTexts()).toEqual(['ch-t1 instruction', 'ch-t1 report', 'ch-t1 done']);
@@ -144,14 +151,14 @@ describe('FleetView — task conversation', () => {
     act(() => useStore.setState({ channels: {} }));
     mount();
     await settle();
-    act(() => card('p1').focus());
+    select('p1');
     await settle();
     expect(rpc).toHaveBeenCalledWith('a2a.channel.list', expect.objectContaining({ workspaceId: 'ws-human' }));
     expect(useStore.getState().channels['ch-t1']).toBeDefined();
     expect(conversationTexts()).toEqual(['ch-t1 instruction', 'ch-t1 report']);
   });
 
-  it('Open conversation selects the task on the board', async () => {
+  it('Open conversation selects the task on the list', async () => {
     mount();
     await settle();
     act(() => card('px').focus());
@@ -163,7 +170,7 @@ describe('FleetView — task conversation', () => {
     expect(container.querySelector('[data-fleet-conversation]')?.getAttribute('data-channel-id')).toBe('ch-t2');
   });
 
-  it('a task with nothing on the board still shows until the selection moves', async () => {
+  it('a task with nothing on the list still shows until the selection moves', async () => {
     mount();
     await settle();
     act(() => useStore.getState().openTaskConversation('gone'));
@@ -177,7 +184,7 @@ describe('FleetView — task conversation', () => {
   it('names a post authored as a whole workspace (ledger lines) by that workspace', async () => {
     mount();
     await settle();
-    act(() => card('p1').focus());
+    select('p1');
     await settle();
     act(() => useStore.getState().appendMessageFromEvent({
       ...message('ch-t1', 3, '[ledger] t1 working→review_requested'), workspaceId: 'ws-t1', memberId: 'ws-t1', memberName: 'ws-t1',
@@ -206,26 +213,20 @@ describe('FleetView — task conversation', () => {
     expect(container.querySelector('[data-fleet-conversation]')?.getAttribute('data-channel-id')).toBe('ch-t1');
   });
 
-  it('on a dense board, Open conversation unfolds a task folded under its owner', async () => {
-    // 20 plain agents plus two tasks of one owner: the second task folds.
-    const extra = Array.from({ length: 20 }, (_, i) => workspace(`ws-a${i}`, `agent ${i}`, leaf(`pa${i}`, `pty-a${i}`)));
-    act(() => {
-      const st = useStore.getState();
-      const agents = { ...st.surfaceAgent };
-      const opened = { ...st.surfaceTurnOpenAt };
-      for (let i = 0; i < 20; i++) { agents[`pty-a${i}`] = { name: 'Claude Code', status: 'running' }; opened[`pty-a${i}`] = Date.now(); }
-      useStore.setState({ workspaces: [...st.workspaces, ...extra], surfaceAgent: agents, surfaceTurnOpenAt: opened });
-    });
+  it('Open conversation on an idle task expands Idle and selects its row', async () => {
+    act(() => useStore.setState({
+      surfaceAgent: { ...useStore.getState().surfaceAgent, 'pty-2': { name: 'Claude Code', status: 'idle' } },
+      surfaceTurnOpenAt: { 'pty-1': Date.now(), 'pty-x': Date.now() },
+      fleetIdleExpanded: false,
+    }));
     mount();
     await settle();
-    expect(container.querySelector('[data-fleet-view]')?.getAttribute('data-layout')).toBe('dense');
-    const folded = container.querySelector('[data-board-key="p1"]') ? 'p2' : 'p1';
-    const task = folded === 'p2' ? 't2' : 't1';
-    expect(container.querySelector(`[data-board-key="${folded}"]`)).toBeNull();
-    act(() => useStore.getState().openTaskConversation(task));
+    expect(card('p2')).toBeNull();
+    act(() => useStore.getState().openTaskConversation('t2'));
     await settle();
-    expect(card(folded)?.getAttribute('aria-selected')).toBe('true');
-    expect(container.querySelector('[data-fleet-conversation]')?.getAttribute('data-channel-id')).toBe(`ch-${task}`);
+    expect(useStore.getState().fleetIdleExpanded).toBe(true);
+    expect(card('p2')?.getAttribute('aria-selected')).toBe('true');
+    expect(container.querySelector('[data-fleet-conversation]')?.getAttribute('data-channel-id')).toBe('ch-t2');
   });
 
   it('a long conversation offers earlier messages, and a live post does not move them', async () => {
@@ -238,7 +239,7 @@ describe('FleetView — task conversation', () => {
     });
     mount();
     await settle();
-    act(() => card('p1').focus());
+    select('p1');
     await settle();
     expect(conversationTexts()).toHaveLength(200);
     expect(conversationTexts()[0]).toBe('m51');
@@ -265,7 +266,7 @@ describe('FleetView — task conversation', () => {
     });
     mount();
     await settle();
-    act(() => card('p1').focus());
+    select('p1');
     await settle();
     expect(conversationTexts()[0]).toBe('m201');
     const earlier = container.querySelector<HTMLButtonElement>('[data-fleet-conversation-earlier]')!;

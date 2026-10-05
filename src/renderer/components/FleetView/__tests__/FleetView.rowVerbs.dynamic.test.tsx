@@ -308,7 +308,7 @@ describe('FleetView — row verbs', () => {
     await flushRaf();
     const r = row('pty-5a');
     expect(r.dataset.status).toBe('awaiting_input');
-    expect(r.querySelector('.wmux-board-detail')?.textContent).toBe('“Which region?”');
+    expect(r.querySelector('.wmux-fleet-detail')?.textContent).toBe('“Which region?”');
     act(() => r.focus());
     key(r, 'm');
     const input = container.querySelector<HTMLInputElement>('[data-fleet-editor="message"] input')!;

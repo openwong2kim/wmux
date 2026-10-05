@@ -872,9 +872,8 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-page[data-rail-page="fleet"] .wmux-fleet-panel { width: 100%; }
 /* The Git page sits beside the dock (Moa); a Git page drag held over the dock. */
 [data-channel-dock][data-handoff-over] { outline: 1px dashed var(--accent); outline-offset: -2px; }
-/* Fleet board: four columns of cards. A card is a fill tone (no outline),
- * the selected card a stronger tone; column heads are text. Amber is spent
- * only on status dots and the empty board's one call to action. */
+/* Fleet page: a head, the summary line, the list and the detail area. Amber
+ * is spent only on status dots and the empty page's one call to action. */
 .wmux-board { container-type: inline-size; }
 .wmux-board-head { display: flex; align-items: center; gap: 8px; padding: 16px 20px 6px; }
 .wmux-board-title { margin: 0; font-size: 18px; font-weight: 600; color: var(--text-main); }
@@ -891,53 +890,41 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-board-col-dot.is-running { background: var(--accent); }
 .wmux-board-col-dot.is-review { background: var(--accent-green); }
 .wmux-board-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-.wmux-board-columns { flex: 1; min-height: 0; display: grid; gap: 12px; padding: 0 20px; }
-.wmux-board-columns[data-layout="list"] { display: flex; flex-direction: column; gap: 14px; max-width: 900px; overflow-y: auto; }
-.wmux-board-columns[data-layout="list"] > .wmux-board-col { flex-shrink: 0; }
-.wmux-board-col { display: flex; flex-direction: column; gap: 6px; min-width: 0; min-height: 0; }
-.wmux-board-columns:not([data-layout="list"]) .wmux-board-col-body { overflow-y: auto; }
-.wmux-board-col-body { display: flex; flex-direction: column; gap: 6px; min-height: 0; padding-bottom: 12px; }
-.wmux-board-col-head { display: flex; align-items: center; gap: 7px; min-height: 26px; margin: 0; padding: 0 2px; font-size: 12px; font-weight: 500; color: var(--text-sub); }
-.wmux-board-col-head.is-toggle { width: 100%; border-radius: 6px; text-align: left; }
-.wmux-board-col-head.is-toggle:hover, .wmux-board-col-head.is-toggle[aria-selected="true"] { background: var(--hover-fill); color: var(--text-main); }
-.wmux-board-col-head.is-toggle[aria-expanded="true"] .wmux-fleet-idle-chevron { transform: rotate(90deg); }
-.wmux-board-col-count { color: var(--text-muted); font-variant-numeric: tabular-nums; }
-.wmux-board-card { display: flex; flex-direction: column; gap: 5px; width: 100%; min-width: 0; padding: 10px 36px 10px 12px; border-radius: 10px; background: var(--selection-subtle); text-align: left; outline: none; }
-.wmux-board-card:hover { background: var(--selection); }
-.wmux-board-card[aria-selected="true"] { background: var(--selection-hover); }
-.wmux-board-card:focus-visible { box-shadow: inset 0 0 0 1px var(--accent); }
-.wmux-board-card[data-dense="true"] { gap: 3px; padding-top: 7px; padding-bottom: 7px; }
-.wmux-board-card-r1 { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 12px; color: var(--text-sub); }
-.wmux-board-dot { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 7px; height: 7px; border-radius: 9999px; background: currentColor; }
-.wmux-board-dot.is-hollow { background: transparent; box-shadow: inset 0 0 0 1px currentColor; }
-.wmux-board-dot[data-shape="cross"] { background: transparent; font-size: 13px; }
-.wmux-board-remote { display: inline-flex; color: var(--text-muted); }
-.wmux-board-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 500; color: var(--text-main); }
-.wmux-board-agent { flex: none; color: var(--text-muted); }
-.wmux-board-elapsed { margin-left: auto; flex: none; color: var(--text-muted); font-variant-numeric: tabular-nums; }
-.wmux-board-card-r2 { display: flex; flex-wrap: wrap; gap: 2px 8px; min-width: 0; font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px; color: var(--text-muted); }
-.wmux-board-add { color: var(--accent-green); }
-.wmux-board-del { color: var(--accent-red); }
-.wmux-board-detail { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 12px; line-height: 1.45; color: var(--text-main); }
-.wmux-board-detail.is-activity { font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px; color: var(--text-sub); }
-.wmux-board-card[data-dense="true"] .wmux-board-detail { -webkit-line-clamp: 1; }
-.wmux-board-chips { display: flex; flex-wrap: wrap; gap: 4px; }
-.wmux-board-chips:empty { display: none; }
-.wmux-board-chip { padding: 1px 7px; border-radius: 6px; background: var(--selection); font-size: 11px; color: var(--text-sub); }
-.wmux-board-chip.is-warn { color: var(--accent-yellow); }
-.wmux-board-lineage { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text-muted); }
-.wmux-board-lineage::before { content: '↳ '; }
-.wmux-board-idle-peek { display: flex; flex-direction: column; gap: 1px; }
-.wmux-board-idle-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 28px; padding: 0 8px; border-radius: 6px; font-size: 12px; color: var(--text-sub); text-align: left; }
-.wmux-board-idle-row:hover { background: var(--hover-fill); color: var(--text-main); }
-.wmux-board-fold { align-self: flex-start; padding: 2px 8px; border-radius: 6px; font-size: 11px; color: var(--text-muted); }
-.wmux-board-fold:hover { background: var(--hover-fill); color: var(--text-main); }
-.wmux-board-col .wmux-fleet-row > .wmux-fleet-row-trigger { top: 18px; transform: none; }
-/* Ready to review rows take the card shape inside a column. */
-.wmux-board-col .wmux-fleet-card { display: flex; flex-direction: column; align-items: stretch; gap: 4px; min-height: 0; padding: 10px 36px 10px 12px; border-bottom: 0; border-radius: 10px; background: var(--selection-subtle); }
-.wmux-board-col .wmux-fleet-card:hover, .wmux-board-col .wmux-fleet-card[aria-selected="true"] { background: var(--selection); }
-.wmux-board-col .wmux-fleet-card .wmux-fleet-action { display: none; }
-.wmux-board-col .wmux-fleet-editor { border-bottom: 0; }
+/* The Fleet list: one attention list. A row is a fill on hover or selection,
+ * never a box or a rule; section heads are sentence-case text with a dot. */
+.wmux-board .wmux-fleet-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 12px 12px; }
+.wmux-board .wmux-fleet-quiet { padding: 4px 20px 2px; }
+.wmux-board .wmux-fleet-section-header { display: flex; align-items: center; gap: 7px; padding: 14px 8px 4px; font-size: 12px; font-weight: 500; letter-spacing: normal; text-transform: none; color: var(--text-sub); }
+.wmux-board .wmux-fleet-card { border-bottom: 0; border-radius: 8px; min-height: 52px; }
+.wmux-board .wmux-fleet-card:hover { background: var(--hover-fill); }
+.wmux-board .wmux-fleet-card[aria-selected="true"] { background: var(--selection); }
+.wmux-board .wmux-fleet-idle-toggle { border-radius: 8px; font-size: 12px; }
+.wmux-board .wmux-fleet-idle-toggle:hover, .wmux-board .wmux-fleet-idle-toggle[aria-selected="true"] { background: var(--hover-fill); }
+.wmux-board .wmux-fleet-editor { border-bottom: 0; }
+/* Two trailing buttons share the row's right lane: details, then ⋮. */
+.wmux-board .wmux-fleet-row > .wmux-fleet-card { padding-right: 68px; }
+.wmux-fleet-row-detail { position: absolute; top: 50%; right: 36px; display: grid; place-items: center; width: 24px; height: 24px; transform: translateY(-50%); border-radius: 5px; color: var(--text-sub); opacity: 0; pointer-events: none; }
+.wmux-fleet-row:hover .wmux-fleet-row-detail, .wmux-fleet-row:focus-within .wmux-fleet-row-detail, .wmux-fleet-row-detail[aria-expanded="true"] { opacity: 1; pointer-events: auto; }
+.wmux-fleet-row-detail:hover { background: var(--hover-fill); color: var(--text-main); }
+.wmux-fleet-row-detail > svg { transition: transform 120ms; }
+.wmux-fleet-row-detail[aria-expanded="true"] > svg { transform: rotate(90deg); }
+/* Filter chips lead the summary line, in the stat chips' pill shape. */
+.wmux-board .wmux-fleet-filters { display: inline-flex; flex-wrap: wrap; gap: 6px; margin: 0; }
+.wmux-board .wmux-fleet-filters button { gap: 6px; height: 24px; min-height: 0; padding: 0 9px; border: 0; border-radius: 9999px; background: var(--selection-subtle); color: var(--text-sub); }
+.wmux-board .wmux-fleet-filters button:hover, .wmux-board .wmux-fleet-filters button[aria-pressed="true"] { background: var(--selection); color: var(--text-main); }
+.wmux-board .wmux-fleet-filters button > span:last-child { color: var(--text-muted); }
+/* A ticket's detail: the request, decisions waiting, the result. */
+.wmux-fleet-ticket-detail { min-width: 0; max-height: 320px; overflow-y: auto; padding: 10px 14px; border-radius: 10px; background: var(--bg-mantle); font-size: 13px; color: var(--text-main); }
+.wmux-fleet-ticket-head { display: flex; align-items: center; gap: 12px; min-width: 0; font-size: 12px; color: var(--text-sub); }
+.wmux-fleet-ticket-detail h4 { margin: 12px 0 4px; font-size: 11px; font-weight: 500; color: var(--text-muted); }
+.wmux-fleet-ticket-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
+.wmux-fleet-ticket-meta { margin: 4px 0 0; font-size: 12px; color: var(--text-sub); }
+.wmux-fleet-ticket-decisions { margin: 0; padding: 0; list-style: none; }
+.wmux-fleet-ticket-decisions button { padding: 2px 0; text-align: left; color: var(--accent); }
+.wmux-fleet-ticket-decisions button:hover { text-decoration: underline; }
+.wmux-fleet-ticket-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.wmux-fleet-ticket-actions button { height: 28px; padding: 0 10px; border-radius: 8px; background: var(--selection-subtle); font-size: 12px; color: var(--text-sub); }
+.wmux-fleet-ticket-actions button:hover { background: var(--selection); color: var(--text-main); }
 .wmux-board-panel { flex: 1; min-height: 0; overflow-y: auto; padding: 0 20px 16px; max-width: 900px; }
 .wmux-board-back { margin-bottom: 8px; padding: 2px 6px; border-radius: 6px; font-size: 12px; color: var(--text-sub); }
 .wmux-board-back:hover { background: var(--hover-fill); color: var(--text-main); }
@@ -953,12 +940,10 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-board-preview { flex: none; margin: 0 20px 8px; padding: 8px 12px; border-radius: 10px; background: var(--bg-mantle); }
 .wmux-board-preview-head { display: block; margin-bottom: 4px; font-size: 11px; color: var(--text-muted); }
 .wmux-board-preview pre { max-height: 220px; margin: 0; overflow: auto; font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px; line-height: 1.6; color: var(--text-sub); white-space: pre; }
-.wmux-board[data-layout="list"] .wmux-board-preview { max-width: 860px; }
 /* The selection's detail at the foot: the terminal preview and, for a
  * fan-out task, its conversation, side by side when both are open. */
 .wmux-board-foot { flex: none; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 8px; margin: 0 20px 8px; }
 .wmux-board-foot > .wmux-board-preview { margin: 0; max-width: none; }
-.wmux-board[data-layout="list"] .wmux-board-foot { max-width: 860px; }
 .wmux-board-conversation { min-width: 0; padding: 8px 12px; border-radius: 10px; background: var(--bg-mantle); }
 .wmux-board-conversation-log { display: flex; flex-direction: column; gap: 8px; max-height: 260px; overflow-y: auto; outline: none; }
 .wmux-board-conversation-log:focus-visible { box-shadow: inset 0 0 0 1px var(--accent); border-radius: 6px; }
@@ -973,8 +958,6 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-board-key kbd { padding: 1px 6px; border-radius: 5px; background: var(--selection-subtle); font-family: var(--font-mono, ui-monospace, monospace); font-size: 10.5px; }
 @container (max-width: 900px) {
   .wmux-board-foot { grid-auto-flow: row; }
-  .wmux-board-columns:not([data-layout="list"]) { grid-template-columns: repeat(2, minmax(0, 1fr)); overflow-y: auto; }
-  .wmux-board-columns:not([data-layout="list"]) .wmux-board-col-body { overflow: visible; }
 }
 .wmux-fleet-panel { container-type: inline-size; }
 .wmux-fleet-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 20px; flex-shrink: 0; }

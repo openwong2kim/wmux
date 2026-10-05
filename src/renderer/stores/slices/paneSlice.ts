@@ -225,12 +225,17 @@ export interface PaneSlice {
   // The string is derived + sanitized + throttled in the MAIN process
   // (hooks.rpc summarizeActivity, 3s leading-edge per-ptyId) and arrives on
   // METADATA_UPDATE.activity; the renderer only stores + renders it — never
-  // re-throttles, never re-sanitizes. Kept across Stop so a finished card still
-  // reads "✎ fleet.ts" rather than blank; cleared at the two real surface
-  // teardown sites (closePane here + closeSurface). Transient — never persisted
+  // re-throttles, never re-sanitizes. Cleared at every turn boundary (main's
+  // buildTurnBoundaryMetadata sends '') and at the two real surface teardown
+  // sites (closePane here + closeSurface). Transient — never persisted
   // (buildSessionData is an allowlist and deliberately omits it).
   surfaceActivity: Record<string, string>;
   setSurfaceActivity: (ptyId: string, activity: string | null) => void;
+  // The last non-empty activity line per ptyId. Unlike surfaceActivity it
+  // survives the turn-boundary clear, so a finished or idle Fleet row can say
+  // what the agent did last. Written by setSurfaceActivity; cleared only at the
+  // same teardown sites. Transient — never persisted.
+  surfaceLastActivity: Record<string, string>;
   // Per-surface "this agent ended its turn asking something" text, keyed by
   // ptyId. Populated from METADATA_UPDATE.pendingQuestion, which main derives
   // from the Stop hook's transcript — not from the rendered terminal, where a
@@ -746,6 +751,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
   }),
 
   surfaceActivity: {},
+  surfaceLastActivity: {},
   surfaceActivityAt: {},
   surfaceTurnOpenAt: {},
   surfaceTurnEndAt: {},
@@ -765,6 +771,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     // keeps the existing reference (immer), so React shallow-compares it away.
     if (activity) {
       state.surfaceActivity[ptyId] = activity;
+      state.surfaceLastActivity[ptyId] = activity;
       // The agent is demonstrably working again, so any question it was
       // blocked on has been answered. Without this the two fields disagree
       // exactly when a cross-pane orchestrator is most likely to read them:
@@ -1066,6 +1073,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
           if (s.ptyId) {
             delete state.surfaceAgent[s.ptyId];
             delete state.surfaceActivity[s.ptyId];
+            delete state.surfaceLastActivity[s.ptyId];
             delete state.surfacePendingQuestion[s.ptyId];
             delete state.surfaceLastMessage[s.ptyId];
             delete state.surfaceQuestionSeen[s.ptyId];

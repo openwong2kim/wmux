@@ -167,11 +167,12 @@ describe('FleetView — task triage', () => {
     seedFleet();
     mount();
     await flushRaf();
-    // Board columns: Needs you, Running, Ready to review (a finished turn).
-    expect(rows().map((row) => row.dataset.status)).toEqual(['awaiting_input', 'running', 'complete']);
-    expect(rows().map((row) => row.dataset.column)).toEqual(['needsYou', 'running', 'review']);
+    // One list: Needs you (the question, then the finished turn), then Running.
+    expect(rows().map((row) => row.dataset.status)).toEqual(['awaiting_input', 'complete', 'running']);
+    expect([...container.querySelectorAll<HTMLElement>('[data-fleet-section]')].map((el) => el.dataset.fleetSection))
+      .toEqual(['needsYou', 'running']);
     expect(rows()[0].textContent).toContain('Which deployment target?');
-    expect(rows()[1].textContent).toContain('wmux');
+    expect(rows()[2].textContent).toContain('wmux');
   });
 
   it('filters by task/project without stealing search focus, then navigates the results', async () => {
@@ -204,52 +205,84 @@ describe('FleetView — task triage', () => {
     await flushRaf();
     expect(document.activeElement?.getAttribute('data-pty-id')).toBe('pty-1');
     expect(rows()[0].dataset.ptyId).toBe('pty-1');
-    // End stays inside the column (pty-1 is alone in Needs you now).
-    key(rows()[0], 'End');
+    // One list: ↓ steps to the next row, End and Home go to its ends.
+    key(rows()[0], 'ArrowDown');
+    await flushRaf();
+    expect(document.activeElement).toBe(rows()[1]);
+    key(rows()[1], 'End');
+    await flushRaf();
+    // The last option is the collapsed Idle row (pty-3 went idle).
+    expect(document.activeElement?.hasAttribute('data-fleet-idle-toggle')).toBe(true);
+    key(document.activeElement!, 'Home');
     await flushRaf();
     expect(document.activeElement?.getAttribute('data-pty-id')).toBe('pty-1');
-    // → moves to the next non-empty column.
-    key(rows()[0], 'ArrowRight');
-    await flushRaf();
-    expect(document.activeElement?.getAttribute('data-pty-id')).toBe('pty-2');
   });
 
-  it('opens the preview of the selected card in a short fleet, and Space hides it without jumping', async () => {
+  it('opens the detail area on a deliberate selection, Space toggles it, Esc closes it before Fleet', async () => {
     const read = vi.spyOn(terminalTail, 'tailForPty').mockReturnValue(['real terminal output']);
+    seedFleet();
+    act(() => useStore.getState().setFleetViewVisible(true));
+    mount();
+    await flushRaf();
+    // The mount focus selects the first row but opens nothing, and reads no output.
+    expect(container.querySelector('[data-fleet-detail]')).toBeNull();
+    expect(read).not.toHaveBeenCalled();
+    // ↓ is a deliberate selection: the detail opens on that row (20 lines).
+    key(rows()[0], 'ArrowDown');
+    await flushRaf();
+    expect(read).toHaveBeenCalledWith('pty-2', 20);
+    expect(container.querySelector('#fleet-output-preview')?.textContent).toBe('real terminal output');
+    // Rows never carry terminal text; only the detail area does.
+    expect(rows().some((row) => row.textContent?.includes('real terminal output'))).toBe(false);
+    const focused = rows()[1];
+    key(focused, ' ');
+    await flushRaf();
+    expect(container.querySelector('[data-fleet-detail]')).toBeNull();
+    // Space did not click the row (no jump to its workspace).
+    expect(useStore.getState().activeWorkspaceId).not.toBe('ws-2');
+    key(focused, ' ');
+    expect(container.querySelector('#fleet-output-preview')).not.toBeNull();
+    // Esc closes the detail area first; the page stays.
+    key(focused, 'Escape');
+    expect(container.querySelector('[data-fleet-detail]')).toBeNull();
+    expect(useStore.getState().fleetViewVisible).toBe(true);
+    key(focused, 'Escape');
+    expect(useStore.getState().fleetViewVisible).toBe(false);
+  });
+
+  it('the row\'s details button selects that row and opens its detail', async () => {
+    vi.spyOn(terminalTail, 'tailForPty').mockReturnValue(['output of the running agent']);
     seedFleet();
     mount();
     await flushRaf();
-    // Three agents: one list, preview open for the selected card (20 lines).
-    expect(container.querySelector('.wmux-board')?.getAttribute('data-layout')).toBe('list');
-    expect(read).toHaveBeenCalledWith('pty-3', 20);
-    expect(container.querySelector('#fleet-output-preview')?.textContent).toBe('real terminal output');
-    const focused = rows()[0];
-    act(() => focused.focus());
-    key(focused, ' ');
+    const toggles = container.querySelectorAll<HTMLButtonElement>('[data-fleet-detail-toggle]');
+    act(() => toggles[2].click());
     await flushRaf();
-    expect(container.querySelector('#fleet-output-preview')).toBeNull();
-    // Space did not click the card (no jump to its workspace).
-    expect(useStore.getState().activeWorkspaceId).not.toBe('ws-3');
-    key(focused, ' ');
-    expect(container.querySelector('#fleet-output-preview')).not.toBeNull();
+    expect(toggles[2].getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('#fleet-output-preview')?.textContent).toBe('output of the running agent');
+    act(() => toggles[2].click());
+    expect(container.querySelector('[data-fleet-detail]')).toBeNull();
   });
 
-  it('has no tabs: approvals open from the summary only when there are some, and 1–4 jump to a column', async () => {
+  it('has no tabs: approvals open from the summary only when there are some; filter chips hide at zero', async () => {
     seedFleet();
     mount();
     await flushRaf();
     expect(container.querySelector('[role=tablist]')).toBeNull();
     expect(container.querySelector('[data-fleet-stat="approvals"]')).toBeNull();
-    // Zero-count summary chips are not drawn.
-    expect([...container.querySelectorAll('[data-fleet-stat]')].map((el) => el.getAttribute('data-fleet-stat')))
-      .toEqual(['needsYou', 'running', 'review']);
+    // Zero-count chips are not drawn (no idle agents, no tickets).
+    expect([...container.querySelectorAll('[data-filter]')].map((el) => el.getAttribute('data-filter')))
+      .toEqual(['attention', 'running', 'complete']);
+    // Running narrows the list; pressing it again shows everything.
+    click('[data-filter="running"]');
+    expect(rows().map((row) => row.dataset.ptyId)).toEqual(['pty-1']);
+    click('[data-filter="running"]');
+    expect(rows()).toHaveLength(3);
+    // The board's 1–4 column keys are gone.
     act(() => rows()[0].focus());
     key(rows()[0], '3');
     await flushRaf();
-    expect(document.activeElement?.getAttribute('data-column')).toBe('review');
-    key(document.activeElement!, '2');
-    await flushRaf();
-    expect(document.activeElement?.getAttribute('data-pty-id')).toBe('pty-1');
+    expect(document.activeElement).toBe(rows()[0]);
   });
 });
 
@@ -313,7 +346,7 @@ describe('FleetView — attention board sections', () => {
     mount();
     await flushRaf();
     expect(rows()[0].dataset.ptyId).toBe('pty-1');
-    expect(rows()[0].querySelector('.wmux-board-detail')?.textContent).toBe('Refactor done; 12 tests pass.');
+    expect(rows()[0].querySelector('.wmux-fleet-detail')?.textContent).toBe('Refactor done; 12 tests pass.');
   });
 
   it('shows a row\'s elapsed time since its newest activity stamp', async () => {
