@@ -1053,9 +1053,10 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 /* Focus is a ring, selection a fill: a focused selected row shows both. */
 .wmux-fleet-card:focus-visible { outline: 2px solid var(--accent) !important; outline-offset: -2px; }
 .wmux-fleet-status { display: flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 500; line-height: 1.4; }
-/* A needs-you row's word reads in the attention text colour (>= 4.5:1 on
- * every look); its dot keeps its own inline attention fill. */
+/* A needs-you row's (or ticket's) word reads in the attention text colour
+ * (>= 4.5:1 on every look); its dot keeps the vivid attention fill. */
 .wmux-fleet-status[style*="var(--attention)"] { color: var(--attention-text) !important; }
+.wmux-fleet-status[style*="var(--attention)"] > .wmux-fleet-dot { color: var(--attention); }
 .wmux-fleet-dot { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .wmux-fleet-dot.is-unconfirmed { background: transparent; border: 1px solid currentColor; }
 .wmux-fleet-dot[data-shape="cross"] { background: transparent; font-size: 14px; }

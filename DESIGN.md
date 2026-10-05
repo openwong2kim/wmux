@@ -1006,9 +1006,10 @@ differently in the two places, and in the order `fleet_triage` returns.
   is not drawn. Plain shells sit only in Idle and never keep the empty state
   from showing.
 - **One count:** the Needs you chip and the Needs you head read the same
-  two arrays (pane rows and decision tickets); the rail badge counts the
-  same pane rows (`selectFleetSectionCounts`) and leaves tickets out, which
-  its tooltip says. A polite live region announces the count when it
+  two arrays (pane rows and decision tickets); the rail badge and the titlebar's `N need you` count the
+  same pane rows (`selectFleetSectionCounts`) and leave tickets out, which
+  the rail's tooltip says — so the titlebar and the rail badge always agree,
+  and match the chip whenever no ticket waits on a decision. A polite live region announces the count when it
   changes, never when Fleet opens.
 - **Row:** status (dot and word), the title (an open ticket's title when the
   pane holds one, else the task or pane name), workspace · agent · role ·

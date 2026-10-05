@@ -11,7 +11,7 @@ type T = (key: string, vars?: Record<string, string | number>) => string;
 
 /** Colour carries state only: waits on you, failed, done; the rest is neutral. */
 const STATE_COLOR: Record<TicketState, string> = {
-  'needs-you': 'var(--accent-yellow)',
+  'needs-you': 'var(--attention)',
   failed: 'var(--accent-red)',
   done: 'var(--accent-green)',
   working: 'var(--text-sub)',
