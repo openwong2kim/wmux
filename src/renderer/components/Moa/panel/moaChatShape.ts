@@ -83,6 +83,12 @@ export function foldMoaReports(events: readonly TurnEvent[], purposes: ReadonlyM
     const input = purposes.get(turn[last].id)?.input ?? {};
     let at = -1;
     for (let i = turn.length - 1; i > last; i--) if (isReply(turn[i])) { at = i; break; }
+    // A reply carrying a code block keeps its own row: its fences are markers
+    // whose bodies only the chat's prose renderer fetches. The report then
+    // stands where the completion was, with the reply below it.
+    const fenced = at >= 0 && turn[at].kind === 'assistant_text'
+      && (!!(turn[at] as { codeBlocks?: unknown[] }).codeBlocks?.length || (turn[at] as { text: string }).text.includes('\u0000code:'));
+    if (fenced) at = -1;
     const anchor = at >= 0 ? turn[at] : turn[last];
     const id = `${REPORT_PREFIX}${anchor.id}`;
     const summary = str(input.summary);
@@ -108,8 +114,12 @@ export function foldNarration(events: readonly TurnEvent[]): TurnEvent[] {
   for (const [from, to] of turnSpans(events)) {
     const replies: number[] = [];
     for (let i = from; i < to; i++) if (isReply(out[i])) replies.push(i);
-    // A turn whose reply became a report card keeps no prose of its own.
-    const keep = out.slice(from, to).some((e) => reportIdOf(e.id)) ? -1 : replies.at(-1);
+    // A turn whose reply became a report card keeps no prose of its own; a
+    // reply after the report (one it could not absorb) is still the message.
+    let report = -1;
+    for (let i = from; i < to; i++) if (reportIdOf(out[i].id)) report = i;
+    const last = replies.at(-1);
+    const keep = report >= 0 && (last === undefined || last < report) ? -1 : last;
     for (const i of replies) if (i !== keep) out[i] = { ...(out[i] as Extract<TurnEvent, { kind: 'assistant_text' }>), thinking: true };
   }
   return out;

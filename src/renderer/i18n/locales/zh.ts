@@ -2197,7 +2197,7 @@ export const zh = {
   'moa.result.done': "已完成 · {workspace}",
   'moa.result.moreFiles': "另有 {count} 个文件",
   'moa.report.done': "已完成",
-  'moa.report.checked': "Moa 已核对：{text}",
+  'moa.report.checked': "Moa 的核对：{text}",
   'moa.report.notChecked': "Moa 尚未核对。以下是代理的汇报。",
   'moa.report.agentReport': "代理的汇报",
   'moa.panel.activityShowIdle': "显示 Moa 的活动",
