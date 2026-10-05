@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// Moa's mascot: the four states of the approved art, the small-size cut (body
+// Moa companion: four supported states, the small-size cut (body
 // and face only), per-instance gradient ids, and motion that stops under both
 // the OS reduced-motion preference and Moa's own Reduce motion setting.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -80,9 +80,22 @@ describe('MoaMascot', () => {
       expect(svg().getAttribute('data-moa-size')).toBe('small');
       expect(svg().getAttribute('width')).toBe(String(size));
       expect(container.querySelector('[data-moa-effect]')).toBeNull();
-      // body, sheen, two eyes, two cheeks, mouth: no limbs or tuft
-      expect(container.querySelectorAll('svg > g > *')).toHaveLength(7);
+      // State-specific eyes remain readable, without decorative effects.
+      expect(container.querySelector('[data-moa-gaze]')).not.toBeNull();
     }
+  });
+
+  it('eases bounded pointer gaze and resets it on leave', () => {
+    act(() => root.render(<MoaMascot state="idle" size={96} />));
+    vi.spyOn(svg(), 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0, width: 96, height: 96 } as DOMRect);
+    act(() => svg().dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: 96, clientY: 96 })));
+    expect(container.querySelector('[data-moa-gaze]')?.getAttribute('style')).toContain('translate(2px, 1.5px)');
+    act(() => svg().dispatchEvent(new MouseEvent('pointerout', { bubbles: true })));
+    expect(container.querySelector('[data-moa-gaze]')?.getAttribute('style')).toContain('translate(0px, 0px)');
+    act(() => useStore.setState({ moa: moa(true) } as never));
+    act(() => svg().dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: 96, clientY: 96 })));
+    expect(container.querySelector('[data-moa-gaze]')?.getAttribute('style')).toContain('transition: none');
+    expect(container.querySelector('[data-moa-gaze]')?.getAttribute('style')).toContain('translate(0px, 0px)');
   });
 
   it('is decorative without a label and an image with one', () => {

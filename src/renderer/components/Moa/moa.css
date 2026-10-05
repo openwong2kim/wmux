@@ -1,4 +1,4 @@
-/* Moa's mascot motion (approved art: Mascot6). The classes are only rendered
+/* SPDX-License-Identifier: MIT. Original Moa companion motion. The classes are only rendered
  * while motion is allowed (MoaMascot drops them under the OS reduced-motion
  * preference or Moa's own Reduce motion setting); the media query below is the
  * second guard for a preference that flips before React re-renders. */
@@ -18,11 +18,11 @@
 .moa-heart { animation: moa-heart 1.4s ease-in-out infinite; transform-origin: 50% 50%; transform-box: fill-box; }
 .moa-heart-late { animation-delay: 0.5s; }
 
-@keyframes moa-squish { 0%, 100% { transform: scale(1, 1); } 50% { transform: scale(1.05, 0.94); } }
+@keyframes moa-squish { 0%, 100% { transform: scale(1, 1); } 50% { transform: scale(1.025, 0.975); } }
 @keyframes moa-hop {
   0%, 100% { transform: translateY(0) scale(1, 1); }
   20% { transform: translateY(0) scale(1.08, 0.9); }
-  50% { transform: translateY(-14px) scale(0.95, 1.06); }
+  50% { transform: translateY(-4px) scale(0.95, 1.06); }
   80% { transform: translateY(0) scale(1.06, 0.93); }
 }
 @keyframes moa-shadow { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.08); } }

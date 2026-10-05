@@ -1,4 +1,4 @@
-import { useId, type ReactElement } from 'react';
+import { useId, useState } from 'react';
 import type { MoaMascotState } from '../../../shared/moa';
 import { useStore } from '../../stores';
 import { usePrefersReducedMotion } from '../ui/MediaPreview';
@@ -6,13 +6,13 @@ import './moa.css';
 
 export interface MoaMascotProps {
   state: MoaMascotState;
-  /** Rendered size in px. 20 and 28 draw only the body and the face. */
+  /** Rendered size in px. 20 and 28 draw only the body and the state-specific face. */
   size: number;
   /** Accessible name; omit for a decorative mascot. */
   label?: string;
 }
 
-/** At or under this size only the body and the >w< face are drawn. */
+/** At or under this size only the body and the face are drawn. */
 export const MOA_MASCOT_SMALL_MAX = 28;
 
 /** True when Moa should hold still: the OS asks for reduced motion, or Moa's
@@ -23,239 +23,64 @@ export function useMoaReducedMotion(): boolean {
   return os || setting;
 }
 
-// The approved art's palette (Mascot6, soft 3D). Character colours are art, not
-// chrome state, so they stay fixed across themes; the "needs you" mark and the
-// working dots take the theme's tokens.
+// SPDX-License-Identifier: MIT — original wmux SVG artwork and interaction.
 const INK = '#2A2547';
-const EYE = '#2B2440';
-const TUFT = '#8E9BEF';
-const RIM = '#5F69C4';
 
-const BODY_D = 'M60 34 C86 34 98 54 98 76 C98 96 84 104 60 104 C36 104 22 96 22 76 C22 54 34 34 60 34 Z';
-const RIM_D = 'M24 84 C28 98 40 103 60 103 C80 103 92 98 96 84 C90 96 78 100 60 100 C42 100 30 96 24 84 Z';
-const TUFT_CURL_D = 'M60 36 C58 26 64 22 66 18';
-const ARM_LEFT_D = 'M28 82 C20 82 18 92 26 94 C30 95 32 90 32 86 Z';
-const ARM_RIGHT_D = 'M92 82 C100 82 102 92 94 94 C90 95 88 90 88 86 Z';
-const ARM_LEFT_UP_D = 'M30 78 C24 68 16 62 12 64 C9 68 16 76 26 84 Z';
-const ARM_RIGHT_UP_D = 'M90 78 C96 68 104 62 108 64 C111 68 104 76 94 84 Z';
-
-const ink = (width = 3.2) => ({
-  fill: 'none',
-  stroke: INK,
-  strokeWidth: width,
-  strokeLinecap: 'round' as const,
-  strokeLinejoin: 'round' as const,
-});
-
-/**
- * Moa, the HQ main bot's character (approved art: soft 3D, four states).
- *
- * - idle: squishes and blinks, the tuft sways;
- * - working: eyes closed, hands together, three dots;
- * - needs-you: round eyes, one hand up, a small hop and a "!" mark;
- * - done: >▽< with both hands up and two hearts.
- *
- * At {@link MOA_MASCOT_SMALL_MAX}px and under (the titlebar icon) only the body
- * and the >w< face are drawn: limbs, tuft and effects would be noise at that
- * size. Motion stops under the OS reduced-motion preference and under Moa's
- * Reduce motion setting. Gradient ids are per instance (useId), so several
- * mascots on screen never share one another's paint servers.
- */
+/** Original lavender companion. Uses only the four states supplied by wmux. */
 export function MoaMascot({ state, size, label }: MoaMascotProps) {
   const reduce = useMoaReducedMotion();
   const uid = `moa${useId().replace(/[^\w-]/g, '')}`;
   const small = size <= MOA_MASCOT_SMALL_MAX;
-  const anim = (cls: string) => (reduce ? undefined : cls);
-  const id = { body: `${uid}-body`, nub: `${uid}-nub`, blush: `${uid}-blush`, shadow: `${uid}-shadow` };
-  const url = (k: keyof typeof id) => `url(#${id[k]})`;
-
-  const defs = (
-    <defs>
-      <radialGradient id={id.body} cx="38%" cy="30%" r="80%">
-        <stop offset="0%" stopColor="#E4E9FF" />
-        <stop offset="38%" stopColor="#BCC8FF" />
-        <stop offset="78%" stopColor="#8F9CF0" />
-        <stop offset="100%" stopColor="#6E79D6" />
-      </radialGradient>
-      <radialGradient id={id.blush} cx="50%" cy="50%" r="50%">
-        <stop offset="0%" stopColor="#FF8FAE" stopOpacity={0.9} />
-        <stop offset="100%" stopColor="#FF8FAE" stopOpacity={0} />
-      </radialGradient>
-      {!small && (
-        <>
-          <radialGradient id={id.nub} cx="35%" cy="30%" r="80%">
-            <stop offset="0%" stopColor="#DDE3FF" />
-            <stop offset="100%" stopColor="#8794E8" />
-          </radialGradient>
-          <radialGradient id={id.shadow} cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="#000" stopOpacity={0.55} />
-            <stop offset="100%" stopColor="#000" stopOpacity={0} />
-          </radialGradient>
-        </>
-      )}
-    </defs>
-  );
-
-  const common = {
-    width: size,
-    height: size,
-    className: 'moa-mascot',
-    'data-moa-mascot': state,
-    'data-moa-size': small ? 'small' : 'full',
-    'data-motion': reduce ? 'reduced' : 'full',
-    role: label ? 'img' : undefined,
-    'aria-label': label,
-    'aria-hidden': label ? undefined : true,
-    focusable: 'false' as const,
-  };
-
-  if (small) {
-    // Body + >w< face only; viewBox cropped to the body so it fills the icon.
-    return (
-      <svg {...common} viewBox="18 30 84 78" style={{ overflow: 'visible' }}>
-        {defs}
-        <g className={anim('moa-squish')}>
-          <path d={BODY_D} fill={url('body')} />
-          <ellipse cx="44" cy="48" rx="10" ry="5.5" transform="rotate(-25 44 48)" fill="#fff" opacity={0.8} />
-          <path d="M43 62 L50 66 L43 70" {...ink(4)} />
-          <path d="M77 62 L70 66 L77 70" {...ink(4)} />
-          <ellipse cx="39" cy="76" rx="9" ry="6" fill={url('blush')} />
-          <ellipse cx="81" cy="76" rx="9" ry="6" fill={url('blush')} />
-          <path d="M54 75 L57 79 L60 76 L63 79 L66 75" {...ink(3.2)} />
-        </g>
-      </svg>
-    );
-  }
-
-  const shell = (
-    <>
-      <path d={BODY_D} fill={url('body')} />
-      <path d={RIM_D} fill={RIM} opacity={0.35} />
-      <ellipse cx="44" cy="48" rx="10" ry="5.5" transform="rotate(-25 44 48)" fill="#fff" opacity={0.85} style={{ filter: 'blur(1.2px)' }} />
-      <circle cx="56" cy="43" r="2" fill="#fff" opacity={0.9} />
-      <path d="M92 62 C96 74 94 88 86 96" fill="none" stroke="#fff" strokeOpacity={0.35} strokeWidth={2.5} strokeLinecap="round" />
-    </>
-  );
-  const tuftCurl = (
-    <g className={anim('moa-tuft')}>
-      <path d={TUFT_CURL_D} fill="none" stroke={TUFT} strokeWidth={4} strokeLinecap="round" />
+  const [gaze, setGaze] = useState({ x: 0, y: 0 });
+  const anim = (name: string) => reduce ? undefined : name;
+  const eyes = state === 'working'
+    ? <><path d="M40 64 Q46 59 52 64" /><path d="M68 64 Q74 59 80 64" /></>
+    : state === 'done'
+      ? <><path d="M40 64 Q46 54 52 64" /><path d="M68 64 Q74 54 80 64" /></>
+      : <g className={anim('moa-blink')} stroke="none">
+          <ellipse cx="46" cy="64" rx="7" ry="9" fill="white" />
+          <ellipse cx="74" cy="64" rx="7" ry="9" fill="white" />
+          <g data-moa-gaze="" style={{ transform: `translate(${reduce ? 0 : gaze.x}px, ${reduce ? 0 : gaze.y}px)`, transition: reduce ? 'none' : 'transform 180ms ease-out' }}>
+            <ellipse cx="46" cy="65" rx="4" ry="6" fill={INK} />
+            <ellipse cx="74" cy="65" rx="4" ry="6" fill={INK} />
+            <circle cx="47" cy="63" r="1.5" fill="white" />
+            <circle cx="75" cy="63" r="1.5" fill="white" />
+          </g>
+        </g>;
+  return <svg width={size} height={size} viewBox={small ? '20 32 80 74' : '0 0 120 114'}
+    className="moa-mascot" data-moa-mascot={state} data-moa-size={small ? 'small' : 'full'}
+    data-motion={reduce ? 'reduced' : 'full'} role={label ? 'img' : undefined}
+    aria-label={label} aria-hidden={label ? undefined : true} focusable="false"
+    onPointerMove={(event) => {
+      if (reduce) return;
+      const box = event.currentTarget.getBoundingClientRect();
+      if (!box.width || !box.height) return;
+      const clamp = (n: number) => Math.max(-1, Math.min(1, n));
+      setGaze({ x: clamp((event.clientX - box.left) / box.width * 2 - 1) * 2,
+        y: clamp((event.clientY - box.top) / box.height * 2 - 1) * 1.5 });
+    }} onPointerLeave={() => setGaze({ x: 0, y: 0 })}>
+    <defs><radialGradient id={`${uid}-body`} cx="32%" cy="24%" r="90%">
+      <stop offset="0" stopColor="#EDF0FF" /><stop offset=".5" stopColor="#BAC5FF" />
+      <stop offset="1" stopColor="#7E8ADC" /></radialGradient></defs>
+    {!small && <ellipse cx="60" cy="106" rx="30" ry="4" fill={INK} opacity=".15" />}
+    <g className={anim(state === 'needs-you' ? 'moa-hop' : state === 'done' ? 'moa-squish-fast' : 'moa-squish')}>
+      {!small && <>
+        <path className={anim('moa-tuft')} d="M58 36 C51 22 71 28 67 16" fill="none" stroke="#8E9BEF" strokeWidth="4" strokeLinecap="round" />
+        <path className={anim(state === 'done' ? 'moa-wave-l' : '')} d={state === 'done' ? 'M31 79 Q10 60 13 72 Q18 84 32 88' : 'M30 80 Q14 81 24 92 L34 91'} fill="#A5B2F7" />
+        <path className={anim(state === 'done' ? 'moa-wave-r' : state === 'needs-you' ? 'moa-raise' : '')} d={state === 'done' || state === 'needs-you' ? 'M89 79 Q110 60 107 72 Q102 84 88 88' : 'M90 80 Q106 81 96 92 L86 91'} fill="#A5B2F7" />
+      </>}
+      <path d="M60 35 C83 35 96 49 97 73 C99 96 82 103 60 103 C38 103 21 96 23 73 C24 49 37 35 60 35 Z" fill={`url(#${uid}-body)`} stroke="#8793DE" strokeWidth="1.5" />
+      <path d="M35 51 Q42 41 52 42" stroke="white" strokeOpacity=".7" strokeWidth="4" strokeLinecap="round" fill="none" />
+      <ellipse cx="37" cy="76" rx="7" ry="4" fill="#F59CB6" opacity=".65" />
+      <ellipse cx="83" cy="76" rx="7" ry="4" fill="#F59CB6" opacity=".65" />
+      <g fill="none" stroke={INK} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">{eyes}
+        {state === 'needs-you' ? <ellipse cx="60" cy="79" rx="3" ry="4" fill={INK} stroke="none" />
+          : state === 'done' ? <path d="M53 76 Q60 89 67 76 Z" fill={INK} />
+            : <path d="M54 77 Q57 82 60 78 Q63 82 66 77" />}
+      </g>
     </g>
-  );
-  const cheeks = (cy: number, rx = 9, ry = 6) => (
-    <>
-      <ellipse cx="40" cy={cy} rx={rx} ry={ry} fill={url('blush')} />
-      <ellipse cx="80" cy={cy} rx={rx} ry={ry} fill={url('blush')} />
-    </>
-  );
-
-  let figure: ReactElement;
-  switch (state) {
-    case 'working':
-      figure = (
-        <>
-          <ellipse className={anim('moa-shadow')} cx="60" cy="107" rx="36" ry="7" fill={url('shadow')} />
-          <g className={anim('moa-squish')}>
-            {tuftCurl}
-            {shell}
-            <path d="M43 66 Q47 63 51 66" {...ink()} />
-            <path d="M69 66 Q73 63 77 66" {...ink()} />
-            {cheeks(76)}
-            <path d="M55 76 L57.5 79 L60 76.5 L62.5 79 L65 76" {...ink(2.4)} />
-            <path d="M44 86 C50 92 58 92 60 88 C62 92 70 92 76 86 C70 96 50 96 44 86 Z" fill={url('nub')} />
-          </g>
-          <g className={anim('moa-dots')} fill="var(--text-muted)" data-moa-effect="dots">
-            <circle cx="96" cy="30" r="3" />
-            <circle cx="105" cy="23" r="3" />
-            <circle cx="114" cy="16" r="3" />
-          </g>
-        </>
-      );
-      break;
-    case 'needs-you':
-      figure = (
-        <>
-          <ellipse cx="60" cy="107" rx="34" ry="7" fill={url('shadow')} />
-          <g className={anim('moa-hop')}>
-            <path d="M60 36 C60 26 60 22 60 16" fill="none" stroke={TUFT} strokeWidth={4} strokeLinecap="round" />
-            <path d={ARM_LEFT_D} fill={url('nub')} />
-            <g className={anim('moa-raise')}>
-              <path d={ARM_RIGHT_UP_D} fill={url('nub')} />
-            </g>
-            {shell}
-            <ellipse cx="46" cy="66" rx="4" ry="5" fill={EYE} />
-            <ellipse cx="74" cy="66" rx="4" ry="5" fill={EYE} />
-            <circle cx="47.3" cy="64.2" r="1.5" fill="#fff" />
-            <circle cx="75.3" cy="64.2" r="1.5" fill="#fff" />
-            {cheeks(77)}
-            <ellipse cx="60" cy="78" rx="3.5" ry="3" fill={EYE} />
-          </g>
-          <g className={anim('moa-bang')} data-moa-effect="bang">
-            <circle cx="104" cy="34" r="11" fill="var(--accent-yellow)" />
-            <path d="M104 28 L104 36" stroke={EYE} strokeWidth={3} strokeLinecap="round" />
-            <circle cx="104" cy="40.5" r="1.7" fill={EYE} />
-          </g>
-        </>
-      );
-      break;
-    case 'done':
-      figure = (
-        <>
-          <ellipse className={anim('moa-shadow')} cx="60" cy="107" rx="36" ry="7" fill={url('shadow')} />
-          <g className={anim('moa-squish-fast')}>
-            {tuftCurl}
-            <g className={anim('moa-wave-l')}>
-              <path d={ARM_LEFT_UP_D} fill={url('nub')} />
-            </g>
-            <g className={anim('moa-wave-r')}>
-              <path d={ARM_RIGHT_UP_D} fill={url('nub')} />
-            </g>
-            {shell}
-            <path d="M43 62 L50 66 L43 70" {...ink()} />
-            <path d="M77 62 L70 66 L77 70" {...ink()} />
-            {cheeks(76, 10, 6.5)}
-            <path d="M52 73 Q60 73 68 73 Q66 84 60 84 Q54 84 52 73 Z" fill={EYE} />
-            <path d="M55 80 Q60 77 65 80 Q63 83.5 60 83.5 Q57 83.5 55 80 Z" fill="#FF8FA3" />
-          </g>
-          <path
-            className={anim('moa-heart')}
-            data-moa-effect="heart"
-            d="M100 34 C100 30 106 30 106 34 C106 30 112 30 112 34 C112 39 106 42 106 44 C106 42 100 39 100 34 Z"
-            fill="#FF9DB5"
-          />
-          <path
-            className={reduce ? undefined : 'moa-heart moa-heart-late'}
-            data-moa-effect="heart"
-            d="M10 42 C10 39 14 39 14 42 C14 39 18 39 18 42 C18 46 14 48 14 50 C14 48 10 46 10 42 Z"
-            fill="#FF9DB5"
-          />
-        </>
-      );
-      break;
-    case 'idle':
-    default:
-      figure = (
-        <>
-          <ellipse className={anim('moa-shadow')} cx="60" cy="107" rx="36" ry="7" fill={url('shadow')} />
-          <g className={anim('moa-squish')}>
-            {tuftCurl}
-            <path d={ARM_LEFT_D} fill={url('nub')} />
-            <path d={ARM_RIGHT_D} fill={url('nub')} />
-            {shell}
-            <g className={anim('moa-blink')}>
-              <path d="M44 62 L50 66 L44 70" {...ink()} />
-              <path d="M76 62 L70 66 L76 70" {...ink()} />
-            </g>
-            {cheeks(76)}
-            <path d="M54 74 L57 78 L60 75 L63 78 L66 74" {...ink(2.6)} />
-          </g>
-        </>
-      );
-  }
-
-  return (
-    <svg {...common} viewBox="0 0 120 114">
-      {defs}
-      {figure}
-    </svg>
-  );
+    {!small && state === 'working' && <g className={anim('moa-dots')} data-moa-effect="dots" fill="var(--text-muted, #8E9BEF)"><circle cx="96" cy="30" r="3" /><circle cx="105" cy="23" r="3" /><circle cx="114" cy="16" r="3" /></g>}
+    {!small && state === 'needs-you' && <g data-moa-effect="bang"><circle cx="104" cy="31" r="10" fill="var(--accent-yellow, #FFD574)" /><path d="M104 25 V32 M104 37 V37.1" stroke={INK} strokeWidth="3" strokeLinecap="round" /></g>}
+    {!small && state === 'done' && [12, 102].map((x) => <path key={x} className={anim('moa-heart')} data-moa-effect="heart" d={`M${x} 31 c-7 -8 -12 4 0 11 c12 -7 7 -19 0 -11`} fill="#F59CB6" />)}
+  </svg>;
 }
