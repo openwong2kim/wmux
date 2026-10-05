@@ -151,6 +151,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'moaretro', tab: 'moa', labelKey: 'moa.settings.retro', descKey: 'moa.settings.retroDesc', synonyms: 'retro retrospective weekly review summary interruptions stalls 회고' },
   { id: 'moastats', tab: 'moa', labelKey: 'moa.settings.stats', descKey: 'moa.settings.statsDesc', synonyms: 'track record stats statistics clear reset delegation 실적' },
   { id: 'moaissueproposals', tab: 'moa', labelKey: 'moa.settings.issueProposals', descKey: 'moa.settings.issueProposalsDesc', synonyms: 'issue pr pull request propose new hand off github contributor 이슈 제안' },
+  { id: 'moaautohandoff', tab: 'moa', labelKey: 'moa.settings.autoHandoff', descKey: 'moa.settings.autoHandoffDesc', synonyms: 'hand off handoff auto danger delegate without asking card 위임 자동 핸드오프' },
   { id: 'moaissuepoll', tab: 'moa', labelKey: 'moa.settings.issuePoll', descKey: 'moa.settings.issuePollDesc', synonyms: 'poll interval minutes scan check github issue' },
   { id: 'moatrustedauthors', tab: 'moa', labelKey: 'moa.settings.trustedAuthors', descKey: 'moa.settings.trustedAuthorsDesc', synonyms: 'trusted author login github auto label wmux:auto' },
   { id: 'moaignoredrepos', tab: 'moa', labelKey: 'moa.settings.ignoredRepos', descKey: 'moa.settings.ignoredReposDesc', synonyms: 'ignore mute repo repository proposals' },
