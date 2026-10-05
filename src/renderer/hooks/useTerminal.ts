@@ -1263,9 +1263,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // #1794: on the desktop the reset also waits for process truth, so a TUI
     // still alive behind the prompt (background launch, Ctrl+Z) keeps its
     // mouse. Each mount binds its own probe (an adopting mount replaces it).
-    const promptModeGuard = installShellPromptModeReset(terminal, {
-      isForegroundGone: paneForegroundProbe(ptyId, window.electronAPI.pty),
-    });
+    // The browser build (wmux web, the only one exposing `hostPlatform`) has
+    // no process-truth channel (`pty.resources` is denied there), so it keeps
+    // the prompt-mark-only behaviour, like the phone page and the mirror.
+    const hasProcessTruth = typeof (window.electronAPI as { hostPlatform?: unknown }).hostPlatform !== 'function';
+    const promptModeGuard = installShellPromptModeReset(terminal, hasProcessTruth
+      ? { isForegroundGone: paneForegroundProbe(ptyId, window.electronAPI.pty) }
+      : undefined);
 
     const fitAddon = fixedGeometryRef.current
       ? new FixedGeometryFitAddon(() => fixedGeometryRef.current)
