@@ -17,6 +17,9 @@ export const ChatPtyContext = createContext('');
 /** Where code-block bodies come from. Unset = the daemon's (a pane's chat);
  *  Moa's chat reads its brain's transcript in main and sets its own. */
 export const ChatCodeBlockContext = createContext<ChatBridgeApi['codeBlock'] | null>(null);
+/** Lets a host draw a row of its own (Moa's result cards, inserted as synthetic
+ *  meta events) instead of the default rendering. Returns null to decline. */
+export const ChatRowRendererContext = createContext<((row: ChatRow) => React.ReactNode | null) | null>(null);
 type FetchCodeBlock = ChatBridgeApi['codeBlock'];
 const daemonCodeBlock: FetchCodeBlock = (args) => window.electronAPI.chat.codeBlock(args);
 
@@ -150,6 +153,8 @@ export function ChatMessage() {
 
 function ChatRowContent({ row }: { row: ChatRow }) {
   const t = useT();
+  const custom = useContext(ChatRowRendererContext)?.(row);
+  if (custom) return <>{custom}</>;
   const grouped = row.activity && activityLabel(row.activity);
   if (row.activity) return <details className="wmux-chat-activity"><summary><IconChevron size={12} />
     {grouped ? t(grouped.key, { count: grouped.count }) : `${t('chat.activity')} · ${row.activity.length}`}</summary>

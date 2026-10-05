@@ -364,6 +364,9 @@ export const IPC = {
   // Permission prompts of agents Moa delegated work to ({ approvals:
   // MoaDelegatedApproval[] }), for the panel's "Waiting on you". Read-only.
   DECK_MOA_DELEGATED_APPROVALS: 'deck:moa:delegated-approvals',
+  // A delegated task's result from its A2A completion evidence ({ workspaceId,
+  // taskId } → { result: MoaTaskResult | null }), for Moa's result card.
+  DECK_MOA_TASK_RESULT: 'deck:moa:task-result',
   //   DECK_MOA_HANDOFF_RESOLVE (invoke MoaHandoffResolveRequest): answer a
   //   hand-off card by id (main reads the body from its own store; an edited
   //   body is the operator's own input). DECK_MOA_HANDOFF_RECEIPTS (invoke):

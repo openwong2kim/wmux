@@ -157,6 +157,7 @@ import { answerMoaApproval, readMoaApproval } from '../../deck/moaApproval';
 import { getAccountStore } from '../../account/accountStore';
 import type { MoaApproval, MoaApprovalAnswerResult, MoaDelegatedApproval, MoaPendingDecision } from '../../../shared/moa';
 import { selectDelegatedApprovals } from '../../deck/moaDelegatedApprovals';
+import { resultFromEvidence, type MoaTaskResult } from '../../../shared/moaResult';
 import {
   beginOrContinueDeckWork,
   clearActiveDeckWork,
@@ -2631,6 +2632,30 @@ export function registerDeckHandler(
     }),
   );
 
+  // A delegated task's result for Moa's result card: the A2A task's completion
+  // evidence, read from the daemon by the receiver workspace (moaResult.ts).
+  ipcMain.removeHandler(IPC.DECK_MOA_TASK_RESULT);
+  ipcMain.handle(
+    IPC.DECK_MOA_TASK_RESULT,
+    wrapHandler(IPC.DECK_MOA_TASK_RESULT, async (_event: Electron.IpcMainInvokeEvent, raw: unknown): Promise<{ result: MoaTaskResult | null }> => {
+      const req = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+      const workspaceId = readWorkspaceId(req);
+      const taskId = typeof req.taskId === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(req.taskId) ? req.taskId : '';
+      const dc = opts.getDaemonClient?.() ?? null;
+      if (!workspaceId || !taskId || !dc) return { result: null };
+      let answer: unknown;
+      try {
+        answer = await dc.rpc('a2a.task.query', { workspaceId, view: 'page', taskId });
+      } catch {
+        return { result: null };
+      }
+      const tasks = (answer as { tasks?: unknown } | null)?.tasks;
+      const list = Array.isArray(tasks) ? tasks : tasks ? [tasks] : [];
+      const task = list.find((t) => !!t && typeof t === 'object' && (t as { id?: unknown }).id === taskId) as { evidence?: unknown } | undefined;
+      return { result: resultFromEvidence(task?.evidence) };
+    }),
+  );
+
   // Moa's hand-off cards and auto hand-off receipts (moaHandoff.ts).
   ipcMain.removeHandler(IPC.DECK_MOA_HANDOFF_RESOLVE);
   ipcMain.handle(
@@ -3782,6 +3807,7 @@ export function registerDeckHandler(
     moaTranscript.dispose();
     ipcMain.removeHandler(IPC.DECK_MOA_DECISIONS);
     ipcMain.removeHandler(IPC.DECK_MOA_DELEGATED_APPROVALS);
+    ipcMain.removeHandler(IPC.DECK_MOA_TASK_RESULT);
     ipcMain.removeHandler(IPC.DECK_MOA_TRANSCRIPT_STATUS);
     ipcMain.removeHandler(IPC.DECK_MOA_TRANSCRIPT_SNAPSHOT);
     ipcMain.removeHandler(IPC.DECK_MOA_TRANSCRIPT_SUBSCRIBE);

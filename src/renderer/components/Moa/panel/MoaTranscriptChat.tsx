@@ -13,7 +13,11 @@ import { useT } from '../../../hooks/useT';
 import { useStore } from '../../../stores';
 import { useTranscript } from '../../Chat/useTranscript';
 import { transcriptMessages } from '../../Chat/chatMessages';
-import { ChatCodeBlockContext, ChatPtyContext, UserText } from '../../Chat/ChatMessage';
+import { ChatCodeBlockContext, ChatPtyContext, ChatRowRendererContext, UserText } from '../../Chat/ChatMessage';
+import type { ChatRow } from '../../Chat/chatMessages';
+import { useWorkLinks, type WorkLinksApi } from './useMoaPanelData';
+import { MoaResultCard, moaResultEvents, resultLinkId, withResultEvents, type MoaTaskResultApi } from './MoaResultCard';
+import { openMoaPane } from './MoaPanelTop';
 import { Thread } from '../../Chat/assistant-ui/Thread';
 import { useComposerDraft } from '../../Chat/chatDrafts';
 import Button from '../../ui/Button';
@@ -99,11 +103,14 @@ export interface MoaTranscriptChatProps {
   api?: MoaTranscriptApi;
   /** Injected in tests; defaults to the preload. */
   approvalApi?: MoaApprovalApi;
+  /** Injected in tests; default to the preload. */
+  linksApi?: WorkLinksApi;
+  resultApi?: MoaTaskResultApi;
 }
 
 interface Pending { id: string; text: string; before: ReadonlySet<string> }
 
-export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, onTerminal, top, api, approvalApi }: MoaTranscriptChatProps) {
+export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, onTerminal, top, api, approvalApi, linksApi, resultApi }: MoaTranscriptChatProps) {
   const t = useT();
   const source = api ?? window.electronAPI?.deck?.moa?.transcript;
   const prompts = approvalApi ?? window.electronAPI?.deck?.moa;
@@ -122,7 +129,20 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
     firstHq.current = hqId;
     retry();
   }, [hqId, retry]);
-  const messages = useMemo(() => transcriptMessages(data.events, true), [data.events]);
+  // Delegated work that finished shows as a result card where it finished.
+  const links = useWorkLinks(true, linksApi ?? window.electronAPI?.workLinks);
+  const since = useMemo(() => data.events.find((e) => typeof e.ts === 'number')?.ts, [data.events]);
+  const shownEvents = useMemo(() => withResultEvents(data.events, moaResultEvents(links, since)), [data.events, links, since]);
+  const messages = useMemo(() => transcriptMessages(shownEvents, true), [shownEvents]);
+  const results = resultApi ?? window.electronAPI?.deck?.moa;
+  const wsNames = useStore((s) => s.workspaces);
+  const renderRow = useCallback((row: ChatRow) => {
+    const id = resultLinkId(row.event.id);
+    const link = id ? links.find((l) => l.id === id) : undefined;
+    if (!link) return null;
+    const workspaceName = wsNames.find((w) => w.id === link.owner.workspaceId)?.name;
+    return <MoaResultCard link={link} workspaceName={workspaceName} api={results as MoaTaskResultApi | undefined} onOpen={openMoaPane} t={t} />;
+  }, [links, wsNames, results, t]);
   const [pending, setPending] = useState<Pending[]>([]);
   // The latest events, for onNew to read after its await: the closure's copy
   // is from the render that started the send.
@@ -231,6 +251,7 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
     <MoaDockContext.Provider value={dockEl}>
     <ChatPtyContext.Provider value={ptyId}>
       <ChatCodeBlockContext.Provider value={bridge?.codeBlock ?? null}>
+      <ChatRowRendererContext.Provider value={renderRow}>
       <AssistantRuntimeProvider runtime={runtime}>
         {activityToggle}
         <div className="flex flex-col flex-1 min-h-0" data-moa-chat data-activity={showActivity ? 'shown' : 'hidden'}>
@@ -314,6 +335,7 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
           />
         </div>
       </AssistantRuntimeProvider>
+      </ChatRowRendererContext.Provider>
       </ChatCodeBlockContext.Provider>
     </ChatPtyContext.Provider>
     </MoaDockContext.Provider>

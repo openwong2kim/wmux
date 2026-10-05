@@ -121,6 +121,29 @@ describe('MoaTranscriptChat', () => {
     }
   });
 
+  it('a delegated task that finished shows a result card where it finished, with its result and a jump', async () => {
+    const { api } = fakeApi();
+    const link = {
+      id: 'l1', origin: 'moa', title: 'Add subtract to math.js', a2aTaskId: 't1', owner: { workspaceId: 'ws-w', paneId: 'p1' },
+      state: 'done', decisionIds: [], createdAt: 1, updatedAt: 1.5,
+    };
+    const linksApi = { list: vi.fn(async () => [link]), onChanged: vi.fn(() => () => undefined) };
+    const resultApi = { taskResult: vi.fn(async () => ({ result: { summary: 'subtract() added', verified: 1, checks: 2, files: ['math.js'] } })) };
+    await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} linksApi={linksApi as never} resultApi={resultApi} />));
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    const card = host.querySelector('[data-moa-result-card="l1"]') as HTMLElement;
+    expect(card).not.toBeNull();
+    expect(resultApi.taskResult).toHaveBeenCalledWith({ workspaceId: 'ws-w', taskId: 't1' });
+    expect(card.textContent).toContain('Add subtract to math.js');
+    expect(card.querySelector('[data-moa-result-summary]')?.textContent).toBe('subtract() added');
+    expect(card.querySelector('[data-moa-result-checks]')?.textContent).toBe('moa.result.checks');
+    expect(card.querySelector('[data-moa-result-files]')?.textContent).toBe('math.js');
+    expect(card.querySelector('[data-moa-result-open]')).not.toBeNull();
+    // Placed by time: after the user row (ts 1), before the reply (ts 2).
+    const order = [...host.querySelectorAll('.wmux-chat-user, [data-moa-result-card], .wmux-chat-assistant')].map((n) => n.matches('[data-moa-result-card]') ? 'card' : n.matches('.wmux-chat-user') ? 'user' : 'reply');
+    expect(order).toEqual(['user', 'card', 'reply']);
+  });
+
   it('a brain with no conversation yet reads as empty, not as a connection error', async () => {
     const { api } = fakeApi({ snapshot: vi.fn(async () => null) as never });
     await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />));

@@ -826,6 +826,8 @@ const electronAPI = {
       // Every workspace's pending decision ("Waiting on you").
       decisions: () =>
         ipcRenderer.invoke(IPC.DECK_MOA_DECISIONS) as Promise<{ decisions: import('../shared/moa').MoaPendingDecision[] }>,
+      taskResult: (args: { workspaceId: string; taskId: string }) =>
+        ipcRenderer.invoke(IPC.DECK_MOA_TASK_RESULT, args) as Promise<{ result: import('../shared/moaResult').MoaTaskResult | null }>,
       delegatedApprovals: () =>
         ipcRenderer.invoke(IPC.DECK_MOA_DELEGATED_APPROVALS) as Promise<{ approvals: import('../shared/moa').MoaDelegatedApproval[] }>,
       // Moa's hand-offs: answer a hand-off card (a body only when the operator
