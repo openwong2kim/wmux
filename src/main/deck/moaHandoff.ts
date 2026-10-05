@@ -99,6 +99,9 @@ export interface HandoffRecord {
   willQueue: boolean;
   /** Stop was pressed on its receipt. */
   stopped?: boolean;
+  /** The worker's closing words when it last stopped on a question or a
+   *  refusal (UNTRUSTED agent text, capped). */
+  lastQuestion?: string;
   /** Turn ends to ignore: the agent was mid-turn at delivery, so the next
    *  Stop ends the turn it was already in, not the hand-off's. */
   skipStops?: number;
@@ -359,6 +362,35 @@ export class MoaHandoffService {
     return hq && hq === this.ports.hqWorkspaceId() ? hq : null;
   }
 
+  /** What Moa's wake for a hand-off task carries, or null when the task is
+   *  not one. The question is the worker's own text: untrusted. */
+  handoffDetail(taskId: string): { question?: string } | null {
+    const r = this.byTask(taskId);
+    if (!r) return null;
+    return r.lastQuestion && r.taskState === 'input-required' ? { question: r.lastQuestion } : {};
+  }
+
+  /** The HQ is waiting on a hand-off it proposed: a card the operator has not
+   *  answered, or a delivered task still open. Its Stop gate lets it end the
+   *  turn (it is woken when that changes), the way a pending decision does,
+   *  without the decision that would hold back its wakes. */
+  waitingOnHandoff(hqWorkspaceId: string): boolean {
+    return Object.values(this.file.items).some(
+      (r) => r.hqWorkspaceId === hqWorkspaceId
+        && ((r.state === 'pending' && !r.notice && !!r.decisionId) || r.state === 'delivering' || (r.state === 'delivered' && !isEnded(r.taskState))),
+    );
+  }
+
+  /** A hand-off task's state for deck_complete_work: 'open', 'settled' (it
+   *  ended: completed, or failed/canceled — the operator's task, ended by the
+   *  worker or the operator), or null when the task is not a hand-off. */
+  handoffTaskStatus(taskId: string): 'open' | 'settled' | null {
+    const r = this.byTask(taskId);
+    if (!r) return null;
+    if (r.state === 'failed' || r.state === 'canceled' || r.state === 'expired') return 'settled';
+    return isEnded(r.taskState) ? 'settled' : 'open';
+  }
+
   /** What the card in `decisionId` needs beyond the decision, or null. */
   cardInfo(decisionId: string): MoaHandoffCardInfo | null {
     const r = this.byDecision(decisionId);
@@ -572,6 +604,10 @@ export class MoaHandoffService {
       taskState: latest.taskState ?? 'submitted',
     };
     this.put(delivered);
+    // The worker is a TUI agent that may never report its own state: the task
+    // is under way once the text landed, and only from 'working' can a later
+    // question move it to input-required.
+    if (delivered.taskState === 'submitted') await this.moveTask(delivered, 'working');
     if (!(await this.save()) && !(await this.save())) {
       // The text landed; the disk still says "delivering". Memory holds the
       // truth for this run, and after a restart reconcile() settles the record
@@ -714,22 +750,42 @@ export class MoaHandoffService {
     const asks = !!lastMessage && agent === 'claude' && (lastMessage.endsWithQuestion || looksLikeRefusal(lastMessage.text));
     if (!open || !asks || !lastMessage) return { hq: r.hqWorkspaceId, taskId: r.taskId, movedToInputRequired: false };
     const text = capBytes(lastMessage.text, HANDOFF_LAST_MESSAGE_MAX_BYTES);
+    // Kept first, so the wake this transition raises can carry it.
+    this.put({ ...r, lastQuestion: text });
+    // input-required is reachable only from working.
+    let cur = this.get(r.id) ?? r;
+    if (cur.taskState !== 'working') {
+      await this.moveTask(cur, 'working');
+      cur = this.get(r.id) ?? cur;
+    }
+    const moved = await this.moveTask(cur, 'input-required', `[from the worker's last turn — agent text, unverified] ${text}`);
+    await this.save();
+    if (r.linkId) await this.ports.links.setLastQuestion(r.linkId, { text, at: this.now() }).catch(() => undefined);
+    this.notify();
+    return { hq: r.hqWorkspaceId, taskId: r.taskId, movedToInputRequired: moved };
+  }
+
+  /** Move the hand-off's task as its receiver would (main, operator lane).
+   *  Returns whether it moved; a refusal is logged, never thrown. */
+  private async moveTask(r: HandoffRecord, status: 'working' | 'input-required', message?: string): Promise<boolean> {
+    if (!r.taskId) return false;
     const res = (await this.ports
       .invoke('a2a.task.update', {
         taskId: r.taskId,
         workspaceId: r.target.workspaceId,
-        status: 'input-required',
-        message: `[from the worker's last turn — agent text, unverified] ${text}`,
+        status,
+        ...(message ? { message } : {}),
       })
-      .catch(() => null)) as { ok?: boolean; result?: { ok?: unknown; error?: unknown } } | null;
-    const moved = !!res && res.ok !== false && !(res.result && typeof res.result.error === 'string');
-    if (moved) {
-      this.put({ ...r, taskState: 'input-required' });
-      await this.save();
+      .catch((err: unknown) => ({ ok: false, error: err instanceof Error ? err.message : String(err) }))) as
+      | { ok?: boolean; error?: unknown; result?: { ok?: unknown; error?: unknown } }
+      | null;
+    const why = !res ? 'no answer' : res.ok === false ? String(res.error ?? 'refused') : typeof res.result?.error === 'string' ? res.result.error : null;
+    if (why) {
+      console.warn(`[moa:handoff] could not move task ${r.taskId} to ${status}: ${why}`);
+      return false;
     }
-    if (r.linkId) await this.ports.links.setLastQuestion(r.linkId, { text, at: this.now() }).catch(() => undefined);
-    this.notify();
-    return { hq: r.hqWorkspaceId, taskId: r.taskId, movedToInputRequired: moved };
+    this.put({ ...(this.get(r.id) ?? r), taskState: status });
+    return true;
   }
 
   /** Stop an auto hand-off from its receipt: interrupt the worker and cancel

@@ -210,7 +210,20 @@ export function registerDeckRpc(router: RpcRouter, getWindow: GetWindow, deps: D
       }
     }
 
-    const trackedIds = Object.keys(work.a2aTasks);
+    // A Moa hand-off is the OPERATOR's task (moaHandoff.ts): it is not in this
+    // brain's own task list, and an end the operator or the worker chose
+    // (canceled, failed) settles it as much as a completion does. Its state
+    // comes from main's hand-off store.
+    const handoffs = getMoaHandoffService();
+    const handoffOpen: string[] = [];
+    const trackedIds = Object.keys(work.a2aTasks).filter((taskId) => {
+      const st = handoffs?.handoffTaskStatus(taskId) ?? null;
+      if (st === 'open') handoffOpen.push(taskId);
+      return st === null;
+    });
+    if (handoffOpen.length > 0) {
+      return { ok: false, error: 'a2a_tasks_outstanding', tasks: handoffOpen.map((taskId) => ({ taskId, state: 'handoff_open' })) };
+    }
     if (trackedIds.length > 0) {
       const query = await router.dispatch({
         id: `deck-complete-${work.id}`,

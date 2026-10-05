@@ -206,6 +206,9 @@ const handoffFake = vi.hoisted(() => ({
   noteTaskState: vi.fn((): string | null => null),
   onWorkerStop: vi.fn(async (): Promise<{ hq: string; taskId: string; movedToInputRequired: boolean } | null> => null),
   hqForTask: vi.fn((): string | null => null),
+  handoffDetail: vi.fn((): { question?: string } | null => null),
+  waitingOnHandoff: vi.fn(() => false),
+  handoffTaskStatus: vi.fn((): 'open' | 'settled' | null => null),
   cardInfo: vi.fn(() => null),
   receipts: vi.fn(() => []),
   stop: vi.fn(async () => ({ ok: true })),
@@ -1396,10 +1399,15 @@ describe('Moa hand-off wiring in deck.handler', () => {
   it('an A2A event for a hand-off task wakes the HQ that proposed it, not the operator lane', { timeout: 10_000 }, async () => {
     mockMode = 'danger';
     handoffFake.noteTaskState.mockReturnValue('ws-1');
+    handoffFake.handoffDetail.mockReturnValue({ question: 'Which stack is it?' });
     eventBus.emit({ type: 'a2a.task', workspaceId: 'ws-human', from: 'ws-human', to: 'ws-seal', taskId: 'task-h1', state: 'input-required' } as never);
     expect(handoffFake.noteTaskState).toHaveBeenCalledWith('task-h1', 'input-required');
     await vi.waitFor(() => expect(adapters.find((a) => a.workspaceId === 'ws-1')?.sentTexts.join('\n') ?? '').toContain('task-h1'), { timeout: 5_000 });
     expect(adapters.some((a) => a.workspaceId === 'ws-human')).toBe(false);
+    // The wake names it as the operator's hand-off and carries the question.
+    const sent = adapters.find((a) => a.workspaceId === 'ws-1')!.sentTexts.join('\n');
+    expect(sent).toContain('HAND-OFF NEEDS INPUT');
+    expect(sent).toContain('Which stack is it?');
   });
 
   it('a worker turn end reaches the hand-off store with its closing words; a repeat or an approval wait does not', async () => {

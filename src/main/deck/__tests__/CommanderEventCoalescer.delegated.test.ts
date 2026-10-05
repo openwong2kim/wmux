@@ -179,3 +179,21 @@ describe('buildEventPrompt with a task tag', () => {
     expect(prompt).toContain('worker-task=t1 ws=w1 pane=p(claude)');
   });
 });
+
+describe('buildEventPrompt for a Moa hand-off task', () => {
+  it('carries the worker question as unverified text and says the task is the operator\'s', () => {
+    const prompt = buildEventPrompt(
+      [{
+        ptyId: 'a2a:task-h', kind: 'a2a.input_required', source: 'a2a', agent: null, seq: 1, ts: 0,
+        a2a: { taskId: 'task-h', from: 'ws-human', to: 'ws-seal', state: 'input-required', handoff: { question: 'Which stack is it?' } },
+      }],
+      DEFAULT_AUTONOMY,
+      { remaining: 1, total: 1 },
+    );
+    expect(prompt).toContain('HAND-OFF NEEDS INPUT');
+    expect(prompt).toContain('Which stack is it?');
+    expect(prompt).toContain('unverified');
+    expect(prompt).toContain('cannot query, answer or cancel');
+    expect(prompt).not.toContain('reply with send_message');
+  });
+});

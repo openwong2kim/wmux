@@ -3023,6 +3023,17 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       const available = store.workspaces.map((w) => w.name).join(', ');
       return { error: `a2a.task.send: target "${to}" not found. Available: ${available}` };
     }
+    // Main stamps this on a new task from Moa, the HQ brain (never from the
+    // wire): work for another workspace goes through the operator's card.
+    const hqOnly = params.hqHandoffOnly as { allowedTargets?: unknown } | undefined;
+    if (!taskId && hqOnly && Array.isArray(hqOnly.allowedTargets) && !hqOnly.allowedTargets.includes(target.id)) {
+      return {
+        error:
+          `a2a.task.send: Moa does not send work straight to another workspace's agent ("${target.name}"). ` +
+          'Call moa_propose_handoff with that pane (ptyId from pane_list) and the task as plain instructions; ' +
+          'the operator approves it with one click and it arrives as their own instruction.',
+      };
+    }
     // The same-workspace self-guard moved BELOW pane-address resolution (see
     // decideSameWsSend) so a precise sibling-pane address is honored. A same-ws
     // send is now rejected only when it has NO address (ambiguous) or resolves to

@@ -1,4 +1,6 @@
 import type { BrowserWindow } from 'electron';
+import { getHqWorkspaceId } from '../../deck/deckHqStore';
+import { getTaskLedger } from '../../deck/taskLedgerHost';
 import { refuseHandoffMarker } from '../handoffMarkerTripwire';
 import type { RpcRouter } from '../RpcRouter';
 import type { RpcContext } from '../../../shared/rpc';
@@ -53,6 +55,7 @@ const INTERNAL_RENDERER_FIELDS = [
   'deliveryDeadlineAt',
   'deliveryGuardKey',
   'presetTaskId',
+  'hqHandoffOnly',
 ] as const;
 
 /**
@@ -674,6 +677,19 @@ export function registerA2aRpc(
     if (ctx?.commanderWorkspace) {
       sendParams.commanderWorkspaceId = ctx.commanderWorkspace;
       sendParams.workspaceId = ctx.commanderWorkspace;
+      // Moa (the HQ brain) gives work to another workspace only through a
+      // hand-off the operator approves (moa_propose_handoff). A new task from
+      // it may go to its own workspace and its own fan-out tasks; the renderer
+      // refuses any other target after it resolves `to`.
+      if (!params.taskId && ctx.commanderWorkspace === getHqWorkspaceId()) {
+        let own: string[] = [];
+        try {
+          own = getTaskLedger().list({ ownerWorkspaceId: ctx.commanderWorkspace }).map((e) => e.taskWorkspaceId);
+        } catch {
+          // a ledger we cannot read grants nothing extra
+        }
+        sendParams.hqHandoffOnly = { allowedTargets: [ctx.commanderWorkspace, ...own] };
+      }
     }
     // A NEW execute send's reply is held until the user answers the approval
     // prompt, which the 5 s bridge default gave up on long before (#1462). The

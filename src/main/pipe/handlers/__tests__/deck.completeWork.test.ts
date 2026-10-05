@@ -39,6 +39,7 @@ vi.mock('../../../deck/deckWorkStore', async (orig) => {
 });
 
 import { registerDeckRpc } from '../deck.rpc';
+import { setMoaHandoffService } from '../../../deck/moaHandoff';
 import {
   beginOrContinueDeckWork,
   recordDeckWorkA2aTask,
@@ -306,5 +307,28 @@ describe('deck.completeWork — compare-and-delete', () => {
     const surviving = loadActiveDeckWork(WS, workDirRef.current)!;
     expect(surviving.objective).toBe('second request');
     expect(surviving.id).not.toBe(firstId);
+  });
+});
+
+describe('deck.completeWork — Moa hand-off tasks', () => {
+  const statusOf = new Map<string, 'open' | 'settled'>();
+  beforeEach(() => {
+    statusOf.clear();
+    setMoaHandoffService({ handoffTaskStatus: (id: string) => statusOf.get(id) ?? null } as never);
+    beginOrContinueDeckWork(WS, 'objective', workDirRef.current, 1_000);
+    recordDeckWorkA2aTask(WS, { taskId: 'task-h', to: 'ws-seal', state: 'submitted', ts: 2_000 }, workDirRef.current);
+    // The operator's task is not in the HQ's own list.
+    taskQuery = () => ({ tasks: [] });
+  });
+  afterEach(() => setMoaHandoffService(null));
+
+  it('an open hand-off holds the work open', async () => {
+    statusOf.set('task-h', 'open');
+    expect(await complete()).toMatchObject({ ok: false, error: 'a2a_tasks_outstanding' });
+  });
+
+  it('a hand-off the operator or the worker ended (canceled, failed, completed) no longer holds it', async () => {
+    statusOf.set('task-h', 'settled');
+    expect(await complete()).toMatchObject({ ok: true });
   });
 });

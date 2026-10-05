@@ -298,8 +298,13 @@ export function buildFleetTailLine(snapshot: FleetSnapshot | null): string | und
  * receive ambient-turn instructions. Pure + exported for unit testing.
  */
 /** The HQ's ramp level, injected with the ambient blocks on the HQ's turns. */
+/** Every HQ turn: how work reaches another workspace's agent. The skill text
+ *  says the same, but a skill is not reliably loaded; this line always rides. */
+export const MOA_HANDOFF_LINE =
+  '[moa] Work for an agent in another workspace goes ONLY through moa_propose_handoff (target ptyId from pane_list, the task as plain instructions): the operator approves it and it arrives as their own instruction. send_message / terminal_send to another workspace is refused. After proposing, end your turn; you are woken with the result.';
+
 export const MOA_LEVEL_LINES: Record<1 | 2 | 3, string> = {
-  1: '[moa] Level 1 — observe and report: surface decisions and completion reports to the human. Delegate work only when the human asks you to.',
+  1: '[moa] Level 1 — observe and report: surface decisions and completion reports to the human. Delegate work only when the human asks you to, via moa_propose_handoff.',
   2: '[moa] Level 2 — delegate on request: when the human asks, plan the work, delegate it to workspace agents via moa_propose_handoff, and track it.',
   3: '[moa] Level 3 — autonomous: you may delegate (via moa_propose_handoff) and follow through on your own, within the workspace modes.',
 };
@@ -469,7 +474,11 @@ export function registerDeckHandler(
                 // on a human (gate rule 4) — the same signal that already
                 // suppresses every auto-wake releases the Stop gate. Read
                 // fresh per Stop, so resolve/clear re-arms with no state.
-                pendingDecision: hasBrainBlockingDecision(workspaceId),
+                // A hand-off the HQ proposed and is waiting on (a card the
+                // operator has not answered, or the worker's open task) is the
+                // same "waiting on a human" state, without the decision that
+                // would also hold back the wake that ends the wait.
+                pendingDecision: hasBrainBlockingDecision(workspaceId) || (moaHandoffs?.waitingOnHandoff(workspaceId) ?? false),
                 // Cap-out hysteresis (rule 5): once the gate has given up on
                 // this exact state, re-blocking on it next turn only re-buys
                 // the same refusal run.
@@ -1165,7 +1174,10 @@ export function registerDeckHandler(
     const autonomy = renderAutonomyBlock(mode);
     if (autonomy) ambient.push(autonomy);
     // The HQ's ramp level (Moa starts at level 1): what it may do on its own.
-    if (workspaceId === getHqWorkspaceId()) ambient.push(MOA_LEVEL_LINES[getMoaConfig().level]);
+    if (workspaceId === getHqWorkspaceId()) {
+      ambient.push(MOA_LEVEL_LINES[getMoaConfig().level]);
+      ambient.push(MOA_HANDOFF_LINE);
+    }
     // Binding operator policy next: the standing rules that let the brain resolve
     // a fork itself instead of escalating (and, in assist, guide what it
     // recommends). Injected for auto AND assist; never for off. Read fresh (the
@@ -1988,6 +2000,7 @@ export function registerDeckHandler(
       // A Moa hand-off is the operator's task (from = the operator), but it
       // reports to the HQ that proposed it: route by the hand-off store.
       const owner = moaHandoffs?.noteTaskState(ev.taskId, ev.state) ?? ev.from;
+      const handoffDetail = moaHandoffs?.handoffDetail(ev.taskId) ?? null;
       try {
         recordDeckWorkA2aTask(owner, {
           taskId: ev.taskId,
@@ -2033,6 +2046,9 @@ export function registerDeckHandler(
           ...(ev.verifiedItemCount !== undefined
             ? { verifiedItemCount: ev.verifiedItemCount }
             : {}),
+          // A hand-off is the operator's task: the wake says so and carries
+          // the worker's question, which the HQ cannot query for itself.
+          ...(handoffDetail ? { handoff: handoffDetail } : {}),
         },
       };
       // An HQ that cannot run right now (workspace gone or not yet observed)

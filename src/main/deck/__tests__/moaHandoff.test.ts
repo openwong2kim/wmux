@@ -309,7 +309,7 @@ describe('moa hand-off — the worker reports back', () => {
     await delivered(r);
     const out = await r.svc.onWorkerStop('pty-1', 'claude', { text: 'Audit done, report in AUDIT.md.', endsWithQuestion: false });
     expect(out).toMatchObject({ hq: HQ, movedToInputRequired: false });
-    expect(r.invoke).not.toHaveBeenCalledWith('a2a.task.update', expect.anything());
+    expect(r.invoke).not.toHaveBeenCalledWith('a2a.task.update', expect.objectContaining({ status: 'input-required' }));
   });
 
   it('a stop in a pane with no open hand-off is not ours', async () => {
@@ -494,5 +494,52 @@ describe('moa hand-off — panel review round 2', () => {
     const ctx = r.slots.get(SEAL)!.context;
     expect(ctx).toContain('😀…');
     expect(ctx).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+  });
+});
+
+
+describe('moa hand-off — live dogfood findings', () => {
+  async function delivered(r: Rig): Promise<string> {
+    await propose(r);
+    await r.svc.resolve(SEAL, r.slots.get(SEAL)!.id, 'handoff');
+    return (r.deliver.mock.calls[0][0] as { presetTaskId: string }).presetTaskId;
+  }
+  const statuses = (r: Rig): string[] =>
+    r.invoke.mock.calls.filter((c) => c[0] === 'a2a.task.update').map((c) => (c[1] as { status: string }).status);
+
+  it('a delivered task is marked working, so a later question can move it to input-required', async () => {
+    const r = rig();
+    const taskId = await delivered(r);
+    expect(statuses(r)).toEqual(['working']);
+    expect(r.svc.byTask(taskId)?.taskState).toBe('working');
+    await r.svc.onWorkerStop('pty-1', 'claude', { text: 'Which stack is it?', endsWithQuestion: true });
+    expect(statuses(r)).toEqual(['working', 'input-required']);
+  });
+
+  it('a task the delivery could not mark working is stepped through working before input-required', async () => {
+    const r = rig();
+    r.invoke.mockImplementation(async (_m: string, p: { status?: string }) =>
+      p.status === 'working' && r.invoke.mock.calls.length === 1 ? { ok: true, result: { error: 'busy' } } : { ok: true, result: { ok: true } });
+    const taskId = await delivered(r);
+    expect(r.svc.byTask(taskId)?.taskState).toBe('submitted');
+    const out = await r.svc.onWorkerStop('pty-1', 'claude', { text: 'Which stack is it?', endsWithQuestion: true });
+    expect(out?.movedToInputRequired).toBe(true);
+    expect(statuses(r).slice(-2)).toEqual(['working', 'input-required']);
+  });
+
+  it('the wake for the task carries the question; the HQ waits on the hand-off without a decision', async () => {
+    const r = rig();
+    await propose(r);
+    expect(r.svc.waitingOnHandoff(HQ)).toBe(true); // the card is up
+    await r.svc.resolve(SEAL, r.slots.get(SEAL)!.id, 'handoff');
+    const taskId = (r.deliver.mock.calls[0][0] as { presetTaskId: string }).presetTaskId;
+    expect(r.svc.waitingOnHandoff(HQ)).toBe(true); // the task is open
+    expect(r.svc.handoffTaskStatus(taskId)).toBe('open');
+    await r.svc.onWorkerStop('pty-1', 'claude', { text: 'Which stack is it?', endsWithQuestion: true });
+    expect(r.svc.handoffDetail(taskId)).toEqual({ question: 'Which stack is it?' });
+    r.svc.noteTaskState(taskId, 'canceled');
+    expect(r.svc.handoffTaskStatus(taskId)).toBe('settled');
+    expect(r.svc.waitingOnHandoff(HQ)).toBe(false);
+    expect(r.svc.handoffTaskStatus('task-other')).toBeNull();
   });
 });
