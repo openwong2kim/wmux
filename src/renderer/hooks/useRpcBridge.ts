@@ -64,6 +64,7 @@ import { remoteAgentKey } from '../../shared/remoteHosts';
 import { collectPaneTreeRemoteSessions } from '../../shared/paneUtils';
 import { findActivePtyId, buildWorkspaceListEntries } from './workspaceMirrorSnapshot';
 import { buildPhoneSidebarSnapshot } from './phoneSidebarSnapshot';
+import type { MoaPendingDecision } from '../../shared/moa';
 import { createSidebarDropLog } from '../../shared/phoneFleetSidebar';
 import { buildFleetTriage, fleetTriageScopeError } from '../utils/fleetTriage';
 import { workspaceCloseRefusal } from '../components/Moa/moaHqGuard';
@@ -925,7 +926,16 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // Phone Fleet only (reached through main's PhoneWorkspaces, never the
     // public RPC router): the sidebar's own labels, projected and bounded.
     const drops = createSidebarDropLog();
-    const snapshot = buildPhoneSidebarSnapshot(store, drops.report);
+    // Pending hand-off cards for the read-only notice; main's in-memory list,
+    // read per call so it is never staler than the snapshot itself.
+    let moaDecisions: MoaPendingDecision[] | undefined;
+    try {
+      const reply = await window.electronAPI?.deck?.moa?.decisions?.();
+      if (Array.isArray(reply?.decisions)) moaDecisions = reply.decisions;
+    } catch {
+      drops.report('moa.decisions');
+    }
+    const snapshot = buildPhoneSidebarSnapshot(store, drops.report, moaDecisions);
     const dropped = drops.summary();
     if (dropped) console.warn(`[phone] sidebar projection left out: ${dropped}`);
     return snapshot;

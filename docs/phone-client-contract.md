@@ -2654,6 +2654,11 @@ version bump.
 - **Channel posting from the phone** — deliberately behind a future
   `--allow-channel-post` grant. Reading, acking and joining (§9) are all this
   contract offers today.
+- **Answering a Moa hand-off from the phone** — v1 is the read-only
+  `moaHandoff` notice (see *Desktop sidebar fields*). v2 plans a new
+  authenticated route that resolves a pending hand-off card by its id alone,
+  with two answers, Hand off and Cancel. Edit stays desktop-only until a
+  contract for a phone text field exists.
 - **The relay is not deployed.** Until `WMUX_PUSH_RELAY_URL` and
   `WMUX_PUSH_RELAY_SECRET` are set on a daemon, push is inert by design — not an
   error, just nothing sent.
@@ -3129,6 +3134,24 @@ not the desktop fields.
   counts tasks waiting on the user, `toReview` counts open tasks whose every
   agent pane reported complete (Fleet's "Ready to review"), and `finished`
   counts tasks whose every agent pane reported complete.
+- `moaHandoff` — present only while a hand-off Moa proposed is waiting for the
+  operator in this workspace's decision slot (the workspace whose agent would
+  receive the work). Read-only notice:
+
+  ```json
+  "moaHandoff": { "agentName": "Claude Code", "title": "Fix the login redirect", "raisedAt": 1759600000000 }
+  ```
+
+  `agentName` is the receiving agent's display name (at most 64 characters),
+  `title` the first non-blank line of the proposed text with control and bidi
+  characters removed (one line, at most 80 characters), `raisedAt` epoch ms
+  when the card was raised. The text itself is never sent. Show it as "Moa
+  wants to hand work to <agentName>: <title>" and send the user to the desktop
+  to answer it; this version offers no way to approve, edit or cancel it from
+  the phone. It disappears on the next poll after the card is answered.
+  Omitted, never `null`, when nothing is pending, when the desktop is too old
+  to say, and when the desktop's reply was over its size budget (it is cut
+  right after the layout trees, before the pane placement).
 
 Each `panes[]` entry of `GET /api/workspaces` also carries `paneId` (same
 value and rules as on `GET /api/sessions`) when the desktop places that

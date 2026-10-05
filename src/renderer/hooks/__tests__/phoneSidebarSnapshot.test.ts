@@ -1,12 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { buildPhoneSidebarSnapshot } from '../phoneSidebarSnapshot';
+import { buildPhoneSidebarSnapshot, phoneHandoffTitle } from '../phoneSidebarSnapshot';
 import { resolveTaskLink } from '../../utils/fanoutProvenance';
 import { parsePhoneSidebarSnapshot, PHONE_SIDEBAR_LIMITS } from '../../../shared/phoneFleetSidebar';
 import type { StoreState } from '../../stores';
 import type { Workspace, Pane, PaneLeaf, Surface, AgentStatus } from '../../../shared/types';
 import type { WorkTask } from '../../../shared/workTask';
 import type { FanoutOrigin } from '../../../shared/fanoutOrigin';
-import type { MoaState } from '../../../shared/moa';
+import type { MoaPendingDecision, MoaState } from '../../../shared/moa';
 
 const NOW = 5_000_000;
 
@@ -455,5 +455,41 @@ describe('buildPhoneSidebarSnapshot — the Moa HQ', () => {
     // Main's answer wins once it arrives.
     const answered = buildPhoneSidebarSnapshot({ ...withMoa(moa(null, true, 'unset')), moaHqSeed: 'hq' } as StoreState);
     expect(answered).not.toHaveProperty('hqWorkspaceId');
+  });
+});
+
+describe('buildPhoneSidebarSnapshot — pending Moa hand-off notice', () => {
+  const ws = [workspace('a', [leaf('pa', [surface('sa', 'pty-a')])]), workspace('b', [leaf('pb', [surface('sb', 'pty-b')])])];
+  const card = (workspaceId: string, extra: Partial<MoaPendingDecision> = {}, options = ['Hand off', 'Edit', 'Cancel']): MoaPendingDecision => ({
+    workspaceId,
+    decision: { id: `d-${workspaceId}`, question: 'Hand this off?', options, context: '', raisedAt: 1_700_000_000_000 },
+    handoff: {
+      body: '\n  Fix the login redirect\nthen run the tests\n' + 'x'.repeat(16_000),
+      title: 'Fallback title', agentName: 'Claude Code', targetPaneId: 'pa', targetPtyId: 'pty-a', foldsNewlines: false, willQueue: false,
+    },
+    ...extra,
+  });
+
+  it('puts the notice on the target workspace row only while a hand-off card is pending, never the body', () => {
+    const snap = buildPhoneSidebarSnapshot(state({ workspaces: ws }), undefined, [card('a')]);
+    expect(snap.workspaces[0].moaHandoff).toEqual({ agentName: 'Claude Code', title: 'Fix the login redirect', raisedAt: 1_700_000_000_000 });
+    expect(snap.workspaces[1]).not.toHaveProperty('moaHandoff');
+    expect(JSON.stringify(snap)).not.toContain('then run the tests');
+    expect(parsePhoneSidebarSnapshot(snap)).toEqual(snap);
+  });
+
+  it('omits it without decisions, for a plain decision, and for the could-not-deliver notice', () => {
+    const plain: MoaPendingDecision = { ...card('a'), handoff: undefined };
+    for (const decisions of [undefined, [], [plain], [card('a', {}, ['OK'])]]) {
+      const snap = buildPhoneSidebarSnapshot(state({ workspaces: ws }), undefined, decisions);
+      expect(snap.workspaces.some((row) => 'moaHandoff' in row)).toBe(false);
+    }
+  });
+
+  it('sanitises the title: first non-blank line, control and bidi characters stripped, cut to 80', () => {
+    expect(phoneHandoffTitle('\r\n\t \n\u202eDo\u0007it\u2028second', 'f')).toBe('Do it');
+    expect(phoneHandoffTitle('y'.repeat(500), 'f')).toBe('y'.repeat(PHONE_SIDEBAR_LIMITS.moaHandoffTitle));
+    expect(phoneHandoffTitle('   \n\n', 'Fallback\ttitle')).toBe('Fallback title');
+    expect(phoneHandoffTitle(undefined, undefined)).toBeUndefined();
   });
 });

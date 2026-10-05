@@ -23,6 +23,8 @@
 //                   tab order, active tab) and `activePaneId`
 //   - HQ / moa:     `state.moa` (main's Moa state), as `isMoaHqWorkspace`
 //                   reads it
+//   - moaHandoff:   main's pending decisions (DECK_MOA_DECISIONS), passed in
+//                   by the caller: a pending hand-off card in that slot
 //
 // Store-free (state in, plain object out) so it is unit-testable directly.
 
@@ -40,12 +42,15 @@ import {
   type PhoneLayoutSurface,
   type PhoneLayoutSurfaceKind,
   type PhoneSidebarLayout,
+  type PhoneSidebarMoaHandoff,
   type PhoneSidebarPane,
   type PhoneSidebarSnapshot,
   type PhoneSidebarWorkspace,
   type SidebarDropReporter,
 } from '../../shared/phoneFleetSidebar';
 import type { Pane, Surface } from '../../shared/types';
+import type { MoaPendingDecision } from '../../shared/moa';
+import { HANDOFF_OPTIONS } from '../../shared/moaHandoff';
 import type { StoreState } from '../stores';
 import { resolveTaskLink } from '../utils/fanoutProvenance';
 import { computePaneAutoName, paneDisplayName } from '../utils/paneNaming';
@@ -130,12 +135,58 @@ function projectLayout(ws: StoreState['workspaces'][number]): PhoneSidebarLayout
 }
 
 /**
+ * The body's first non-blank line, made one safe line and cut to the bound;
+ * the card's own title when the body has none.
+ */
+export function phoneHandoffTitle(body: unknown, fallback: unknown): string | undefined {
+  const max = PHONE_SIDEBAR_LIMITS.moaHandoffTitle;
+  if (typeof body === 'string') {
+    // Look at a bounded head only: the body can be 16 KB.
+    const line = body.slice(0, 4 * max).split(/\r\n|[\n\r\u0085\u2028\u2029]/).find((l) => l.trim().length > 0);
+    const title = clampSidebarString(line, max);
+    if (title) return title;
+  }
+  return typeof fallback === 'string' ? clampSidebarString(fallback, max) : undefined;
+}
+
+/**
+ * Per workspace, the pending hand-off card the phone may show as a notice:
+ * only a card that still offers "Hand off" (not the could-not-deliver notice),
+ * the oldest when a slot somehow holds more than one. Never the body.
+ */
+export function pendingHandoffNotices(decisions: readonly MoaPendingDecision[] | undefined): Map<string, PhoneSidebarMoaHandoff> {
+  const out = new Map<string, PhoneSidebarMoaHandoff>();
+  for (const d of decisions ?? []) {
+    const info = d?.handoff;
+    if (!info || !isSidebarId(d.workspaceId) || !Array.isArray(d.decision?.options) || !d.decision.options.includes(HANDOFF_OPTIONS.handOff)) continue;
+    const raisedAt = d.decision.raisedAt;
+    if (typeof raisedAt !== 'number' || !Number.isSafeInteger(raisedAt) || raisedAt <= 0) continue;
+    const agentName = clampSidebarString(info.agentName, PHONE_SIDEBAR_LIMITS.moaHandoffAgentName);
+    const title = phoneHandoffTitle(info.body, info.title);
+    if (!agentName || !title) continue;
+    const prev = out.get(d.workspaceId);
+    if (!prev || raisedAt < prev.raisedAt) out.set(d.workspaceId, { agentName, title, raisedAt });
+  }
+  return out;
+}
+
+/**
  * One bad workspace, task record or pane never costs the whole snapshot: each
  * part is projected on its own, and a part that throws is left out and
  * reported to `onDrop` by a reason tag (never the value).
  */
-export function buildPhoneSidebarSnapshot(state: StoreState, onDrop: SidebarDropReporter = () => undefined): PhoneSidebarSnapshot {
+export function buildPhoneSidebarSnapshot(
+  state: StoreState,
+  onDrop: SidebarDropReporter = () => undefined,
+  moaDecisions?: readonly MoaPendingDecision[],
+): PhoneSidebarSnapshot {
   const workspaces = state.workspaces;
+  let handoffs = new Map<string, PhoneSidebarMoaHandoff>();
+  try {
+    handoffs = pendingHandoffNotices(moaDecisions);
+  } catch {
+    onDrop('workspace.moaHandoff');
+  }
   const liveIds = new Set(workspaces.map((w) => w.id));
   const linkOf = (id: string) =>
     resolveTaskLink(state.missionByPaneGroup[id], state.fanoutLineage[id], state.fanoutSpawnOwner[id]);
@@ -194,6 +245,8 @@ export function buildPhoneSidebarSnapshot(state: StoreState, onDrop: SidebarDrop
     } catch {
       onDrop('workspace.layout');
     }
+    const handoff = handoffs.get(ws.id);
+    if (handoff) row.moaHandoff = handoff;
     workspaceRows.push(row);
   });
 

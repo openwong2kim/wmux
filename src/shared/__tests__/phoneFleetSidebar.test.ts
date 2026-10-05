@@ -395,3 +395,27 @@ describe('workspace layout tree', () => {
     expect(dropped).toBe('workspace.layout.activePaneId×1');
   });
 });
+
+describe('pending Moa hand-off notice', () => {
+  const row = (moaHandoff: unknown) => ({ activeWorkspaceId: null, panes: [], workspaces: [{ id: 'ws-1', order: 0, pinned: false, moaHandoff }] });
+
+  it('keeps a valid notice and only its three fields', () => {
+    const notice = { agentName: 'Codex', title: 'Ship the fix', raisedAt: 1_700_000_000_000 };
+    expect(parsePhoneSidebarSnapshot(row({ ...notice, body: 'secret body' }))!.workspaces[0].moaHandoff).toEqual(notice);
+  });
+
+  it('drops a malformed notice on its own and keeps the row', () => {
+    for (const bad of [
+      { agentName: 'Codex', title: 'a\nb', raisedAt: 1 },
+      { agentName: 'Codex', title: 'x'.repeat(PHONE_SIDEBAR_LIMITS.moaHandoffTitle + 1), raisedAt: 1 },
+      { agentName: '', title: 'ok', raisedAt: 1 },
+      { agentName: 'Codex', title: 'ok', raisedAt: 0 },
+      'nope',
+    ]) {
+      const reasons: string[] = [];
+      const parsed = parsePhoneSidebarSnapshot(row(bad), (r) => reasons.push(r))!;
+      expect(parsed.workspaces[0]).toEqual({ id: 'ws-1', order: 0, pinned: false });
+      expect(reasons).toEqual(['workspace.moaHandoff']);
+    }
+  });
+});

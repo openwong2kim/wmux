@@ -150,6 +150,21 @@ describe('phone workspace bridge', () => {
       expect(fitted.workspaces.some((row) => row.layout)).toBe(false);
     }
   });
+  it('drops the hand-off notices right after the layout trees, before any pane data', () => {
+    const base = { workspaces: [{ id: 'ws-1', name: 'One', sessionId: 'pty-0' }] };
+    const sidebar: PhoneSidebarSnapshot = {
+      activeWorkspaceId: null,
+      workspaces: [{ id: 'ws-1', order: 0, pinned: false, moaHandoff: { agentName: 'Codex', title: 't'.repeat(80), raisedAt: 1_700_000_000_000 } }],
+      panes: [{ ptyId: 'pty-0', workspaceId: 'ws-1', paneId: 'p-0', surfaceTitle: 'title' }],
+    };
+    const size = (candidate: PhoneSidebarSnapshot) => Buffer.byteLength(JSON.stringify({ ...base, sidebar: candidate }));
+    expect(fitSidebarToBudget(base, sidebar, size(sidebar))).toEqual(sidebar);
+    const reasons: string[] = [];
+    const fitted = fitSidebarToBudget(base, sidebar, size(sidebar) - 1, (r) => reasons.push(r))!;
+    expect(fitted.workspaces[0]).toEqual({ id: 'ws-1', order: 0, pinned: false });
+    expect(fitted.panes).toEqual(sidebar.panes);
+    expect(reasons).toEqual(['budget.moaHandoff']);
+  });
   it('keeps every title whenever the sidebar fit without the pane placement (20 workspaces, 512 sessions)', () => {
     const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
     const owners = Array.from({ length: 10 }, (_, i) => `ws-${uuid(i)}`);

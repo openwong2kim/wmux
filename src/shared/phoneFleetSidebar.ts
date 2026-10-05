@@ -23,6 +23,9 @@ export const PHONE_SIDEBAR_LIMITS = {
   surfaceTitle: 100,
   paneName: 64,
   gitBranch: 200,
+  /** A pending hand-off notice (`PhoneSidebarWorkspace.moaHandoff`). */
+  moaHandoffTitle: 80,
+  moaHandoffAgentName: 64,
   /** Upper bound for counts and ahead/behind; anything larger is not a real value. */
   count: 1_000_000,
   /**
@@ -112,6 +115,21 @@ export interface PhoneSidebarWorkspace {
   task?: PhoneSidebarTaskLink;
   /** The workspace's visible split tree; absent when not projected or cut for size. */
   layout?: PhoneSidebarLayout;
+  /**
+   * A hand-off Moa proposed is waiting in this workspace's decision slot.
+   * Read-only notice: never the body, never anything that answers the card.
+   * Absent when no hand-off card is pending (or it was cut for size).
+   */
+  moaHandoff?: PhoneSidebarMoaHandoff;
+}
+
+export interface PhoneSidebarMoaHandoff {
+  /** The target agent's display name. */
+  agentName: string;
+  /** The body's first line, single-line and bounded. */
+  title: string;
+  /** Epoch ms the card was raised. */
+  raisedAt: number;
 }
 
 /**
@@ -305,6 +323,15 @@ function parseGitSync(value: unknown): PhoneSidebarWorkspace['gitSync'] {
   return { ahead, behind, hasUpstream: value.hasUpstream };
 }
 
+function parseMoaHandoff(value: unknown): PhoneSidebarMoaHandoff | undefined {
+  if (!isRecord(value)) return undefined;
+  const agentName = boundedString(value.agentName, PHONE_SIDEBAR_LIMITS.moaHandoffAgentName);
+  const title = boundedString(value.title, PHONE_SIDEBAR_LIMITS.moaHandoffTitle);
+  const raisedAt = timestamp(value.raisedAt);
+  if (agentName === undefined || title === undefined || raisedAt === undefined) return undefined;
+  return { agentName, title, raisedAt };
+}
+
 function parseWorkspace(value: unknown, drop: SidebarDropReporter): PhoneSidebarWorkspace | null {
   if (!isRecord(value)) return null;
   const id = idString(value.id);
@@ -330,6 +357,9 @@ function parseWorkspace(value: unknown, drop: SidebarDropReporter): PhoneSidebar
     const layout = parseLayout(value.layout, drop);
     if (layout) row.layout = layout;
   }
+  const moaHandoff = parseMoaHandoff(value.moaHandoff);
+  if (moaHandoff) row.moaHandoff = moaHandoff;
+  else if (value.moaHandoff !== undefined) drop('workspace.moaHandoff');
   return row;
 }
 

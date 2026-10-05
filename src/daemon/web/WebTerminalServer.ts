@@ -9318,6 +9318,7 @@ function sidebarWorkspaceFields(
     ...(row.gitBranch !== undefined ? { gitBranch: row.gitBranch } : {}),
     ...(row.gitIsWorktree !== undefined ? { gitIsWorktree: row.gitIsWorktree } : {}),
     ...(row.gitSync !== undefined ? { gitSync: row.gitSync } : {}),
+    ...(row.moaHandoff !== undefined ? { moaHandoff: row.moaHandoff } : {}),
     ...(taskSummary !== undefined ? { taskSummary } : {}),
     ...(task
       ? {

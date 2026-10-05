@@ -9472,6 +9472,19 @@ describe('WebTerminalServer', () => {
       }
     });
 
+    it('passes a pending Moa hand-off notice through on its workspace row only, never a body', async () => {
+      const notice = { agentName: 'Claude Code', title: 'Fix the login redirect', raisedAt: 1_700_000_000_500 };
+      const plain = sidebar();
+      const base = { ...plain, workspaces: plain.workspaces.map((w, i) => (i === 0 ? { ...w, moaHandoff: notice, body: 'x'.repeat(64) } : w)) };
+      attachDesktop(() => ({ workspaces: [], sidebar: base }));
+      const info = await startRO();
+      const body = await getJson(info.token as string, '/api/workspaces');
+      const workspaces = body.workspaces as Row[];
+      expect(workspaces.find((w) => w.id === 'ws-1')).toMatchObject({ moaHandoff: notice });
+      expect(workspaces.filter((w) => 'moaHandoff' in w).map((w) => w.id)).toEqual(['ws-1']);
+      expect(JSON.stringify(body)).not.toContain('x'.repeat(64));
+    });
+
     it('merges the layout tree narrowed to the row\'s own live sessions, and lists the rest as unplaced', async () => {
       const s1b = { ...live[0], id: 's1b' };
       live.push({ ...brainRow }, s1b);
