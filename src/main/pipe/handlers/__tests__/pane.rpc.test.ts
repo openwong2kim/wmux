@@ -1990,3 +1990,48 @@ describe('pane.rpc — fleet.triage', () => {
     expect(response.ok).toBe(false);
   });
 });
+
+describe('pane.list — the HQ also sees agents in other workspaces', () => {
+  const panesByWs: Record<string, unknown[]> = {
+    'ws-hq': [{ id: 'p-hq', agents: [] }],
+    'ws-wmux': [
+      {
+        id: 'p-1',
+        agents: [{ ptyId: 'pty-1', surfaceId: 's-1', agentName: 'claude', agentStatus: 'running', pendingQuestion: 'secret text' }],
+      },
+      { id: 'p-shell', agents: [] },
+      { id: 'p-stashed', stashed: true, agents: [{ ptyId: 'pty-x', agentName: 'codex', agentStatus: 'idle' }] },
+    ],
+  };
+  function setup(hqId: string | null): RpcRouter {
+    sendToRendererMock.mockReset();
+    sendToRendererMock.mockImplementation(async (_w: unknown, method: string, params: { workspaceId?: string }) => {
+      if (method === 'workspace.list') return [{ id: 'ws-hq', name: 'Moa' }, { id: 'ws-wmux', name: 'wmux' }];
+      if (method === 'pane.list') return panesByWs[params.workspaceId ?? ''] ?? [];
+      return null;
+    });
+    const router = new RpcRouter();
+    registerPaneRpc(router, () => ({}) as BrowserWindow, {
+      store: new MetadataStore({ eventBus: new EventBus() }),
+      getHqWorkspaceId: () => hqId,
+    });
+    return router;
+  }
+
+  it('lists each live agent pane elsewhere with metadata only', async () => {
+    const res = await setup('ws-hq').dispatch({ id: 'h1', method: 'pane.list', params: { workspaceId: 'ws-hq' } });
+    expect(res.ok).toBe(true);
+    const result = (res as { result: { panes: unknown[]; otherWorkspaceAgents?: unknown[] } }).result;
+    expect(result.panes).toHaveLength(1);
+    expect(result.otherWorkspaceAgents).toEqual([
+      { workspaceId: 'ws-wmux', workspaceName: 'wmux', paneId: 'p-1', ptyId: 'pty-1', agentName: 'claude', agentStatus: 'running' },
+    ]);
+  });
+
+  it('a non-HQ workspace gets no such field', async () => {
+    const res = await setup('ws-hq').dispatch({ id: 'h2', method: 'pane.list', params: { workspaceId: 'ws-wmux' } });
+    expect((res as { result: Record<string, unknown> }).result).not.toHaveProperty('otherWorkspaceAgents');
+    const none = await setup(null).dispatch({ id: 'h3', method: 'pane.list', params: { workspaceId: 'ws-hq' } });
+    expect((none as { result: Record<string, unknown> }).result).not.toHaveProperty('otherWorkspaceAgents');
+  });
+});

@@ -6,6 +6,7 @@ import type { PaneMetadata } from '../../../shared/types';
 import type { RpcContext } from '../../../shared/rpc';
 import { ORCH_ROLE_KEY } from '../../../shared/orchestratorRole';
 import { metadataStore, type MergeMode, type MetadataStore } from '../../metadata/MetadataStore';
+import { getHqWorkspaceId } from '../../deck/deckHqStore';
 import {
   hostedConfinement,
   hostedUnboundPaneMessage,
@@ -95,6 +96,60 @@ function guardRoleKey(
  */
 export interface PaneRpcOptions {
   store?: MetadataStore;
+  /** Injected in tests; defaults to the HQ store. */
+  getHqWorkspaceId?: () => string | null;
+}
+
+/** One agent pane in another workspace, as the HQ's pane.list reports it. */
+export interface OtherWorkspaceAgent {
+  workspaceId: string;
+  workspaceName: string;
+  paneId: string;
+  ptyId: string;
+  agentName: string;
+  agentStatus: string;
+}
+
+/** Cap on `otherWorkspaceAgents`, so a huge fleet cannot blow up the reply. */
+export const OTHER_WORKSPACE_AGENTS_MAX = 50;
+
+/**
+ * The agent panes of every workspace but `hqId`: metadata only (names,
+ * statuses, ids), never screen or transcript text. workspace.list already
+ * hands any caller each workspace's agent and pty ids, so this widens nothing;
+ * it saves Moa from concluding that an agent it cannot see in its own
+ * workspace has ended. A workspace whose list fails is skipped.
+ */
+async function listOtherWorkspaceAgents(getWindow: GetWindow, hqId: string): Promise<OtherWorkspaceAgent[]> {
+  const workspaces = await sendToRenderer(getWindow, 'workspace.list', {});
+  if (!Array.isArray(workspaces)) return [];
+  const out: OtherWorkspaceAgent[] = [];
+  for (const ws of workspaces as Array<{ id?: unknown; name?: unknown }>) {
+    if (typeof ws?.id !== 'string' || ws.id === hqId) continue;
+    let panes: unknown;
+    try {
+      panes = await sendToRenderer(getWindow, 'pane.list', { workspaceId: ws.id });
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(panes)) continue;
+    for (const pane of panes as Array<{ id?: unknown; stashed?: unknown; agents?: unknown }>) {
+      if (typeof pane?.id !== 'string' || pane.stashed === true || !Array.isArray(pane.agents)) continue;
+      for (const a of pane.agents as Array<{ ptyId?: unknown; agentName?: unknown; agentStatus?: unknown }>) {
+        if (typeof a?.ptyId !== 'string' || typeof a.agentName !== 'string') continue;
+        out.push({
+          workspaceId: ws.id,
+          workspaceName: typeof ws.name === 'string' ? ws.name : '',
+          paneId: pane.id,
+          ptyId: a.ptyId,
+          agentName: a.agentName,
+          agentStatus: typeof a.agentStatus === 'string' ? a.agentStatus : 'idle',
+        });
+        if (out.length >= OTHER_WORKSPACE_AGENTS_MAX) return out;
+      }
+    }
+  }
+  return out;
 }
 
 export function registerPaneRpc(
@@ -108,6 +163,7 @@ export function registerPaneRpc(
   getDaemonClient?: () => DaemonClient | null,
 ): void {
   const store = opts.store ?? metadataStore;
+  const hqWorkspaceId = opts.getHqWorkspaceId ?? (() => getHqWorkspaceId());
   /**
    * pane.list — returns all panes (leaf nodes) of the current workspace,
    * wrapped in a snapshot envelope. `asOfSeq` is the EventBus seq at the
@@ -239,10 +295,24 @@ export function registerPaneRpc(
       };
     });
 
+    // Moa's HQ holds no agents of its own: listing it also lists the agent
+    // panes in every other workspace, so "where is that agent" is one read.
+    // Best-effort: a failure leaves the field out, never fails the list.
+    const hqId = hqWorkspaceId();
+    let otherWorkspaceAgents: OtherWorkspaceAgent[] | undefined;
+    if (hqId && params['workspaceId'] === hqId) {
+      try {
+        otherWorkspaceAgents = await listOtherWorkspaceAgents(getWindow, hqId);
+      } catch (err) {
+        console.warn('[pane.rpc] other-workspace agents skipped:', err);
+      }
+    }
+
     return {
       asOfSeq: snapshot.asOfSeq,
       bootId: snapshot.bootId,
       panes: joined,
+      ...(otherWorkspaceAgents ? { otherWorkspaceAgents } : {}),
     };
   });
 
