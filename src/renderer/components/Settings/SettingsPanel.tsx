@@ -4723,8 +4723,8 @@ export function TabShortcuts() {
 //   - "Open setup wizard"  → dispatches FIRST_RUN_REOPEN_EVENT window event
 //                            (T8a's AppLayout listens and re-mounts the wizard
 //                            in mode='reopen').
-//   - "Show keyboard cheat sheet" → flips `cheatSheetDismissed` to false in
-//                            uiSlice; T8a's effect remounts the cheat sheet.
+//   - "Show keyboard cheat sheet" → force-shows the cheat sheet (as the `?`
+//                            prefix action does) and closes Settings.
 //
 // Section name is "First-run setup" (D7-C4 — avoids collision with the
 // existing "Onboarding" spotlight tutorial).
@@ -4841,7 +4841,6 @@ export function FirstRunStatusView({ status, onOpenWizard, onShowCheatSheet }: F
 
 function TabFirstRunSetup() {
   const [status, setStatus] = useState<FirstRunCheckResult | null>(null);
-  const setCheatSheetDismissed = useStore((s) => s.setCheatSheetDismissed);
 
   useEffect(() => {
     const api = firstRunBridgeOrNull();
@@ -4867,10 +4866,12 @@ function TabFirstRunSetup() {
   }, []);
 
   const handleShowCheatSheet = useCallback(() => {
-    // Approach A (per task brief): flip uiSlice flag back to false. T8a's
-    // AppLayout effect on cheatSheetDismissed → false re-mounts the cheat sheet.
-    setCheatSheetDismissed(false);
-  }, [setCheatSheetDismissed]);
+    // Shown now, like the `?` prefix action, with Settings out of the way (the
+    // sheet sits under it). The first-boot queue only auto-shows it after the
+    // tour, which this button must not wait for.
+    useStore.getState().setCheatSheetForceShown(true);
+    useStore.getState().setSettingsPanelVisible(false);
+  }, []);
 
   return (
     <FirstRunStatusView
