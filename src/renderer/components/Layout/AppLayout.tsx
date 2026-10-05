@@ -7,6 +7,7 @@ import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import Sidebar from '../Sidebar/Sidebar';
 import MiniSidebar from '../Sidebar/MiniSidebar';
+import { SidebarSlot } from './SidebarSlot';
 import { WorkspaceCenter } from './WorkspaceCenter';
 import { EmptyLeafFunnel } from './EmptyLeafFunnel';
 import { selectProjectCwdSignature } from '../../stores/selectors/appLayout';
@@ -747,7 +748,8 @@ export default function AppLayout() {
   // the panes under their floor, it collapses and reopens as an overlay
   // (dockLayout.ts). Re-opened when the window is wide enough again, if it
   // was open when it collapsed.
-  const sidebarWidthPx = useStore((s) => (s.sidebarVisible ? s.sidebarWidth : 0));
+  const sidebarWidth = useStore((s) => s.sidebarWidth);
+  const sidebarWidthPx = sidebarVisible ? sidebarWidth : 0;
   const [dockMode, shellRef] = useDockMode(sidebarWidthPx);
   const dockAutoCollapsed = useRef(false);
   useEffect(() => {
@@ -1985,11 +1987,13 @@ export default function AppLayout() {
       {/* The Workspaces page. Another rail page covers it (RailPage) while it
           stays mounted, full size and inert, so no PTY is resized or lost. */}
       <div className="contents" inert={appRoute !== 'workspaces' && !inspectModeActive} data-workspaces-page>
-      {sidebarVisible && (
+      {/* The column animates a toggle and holds terminal fits until it ends
+          (SidebarSlot), so panes refit once instead of per frame. */}
+      <SidebarSlot visible={sidebarVisible} width={sidebarWidth} position={sidebarPosition}>
         <ErrorBoundary name="Sidebar">
           <Sidebar chrome="sheet" />
         </ErrorBoundary>
-      )}
+      </SidebarSlot>
       <ErrorBoundary name="Main">
       {/* `relative` anchors ToolbarHost: the agent toolbar overlays this column
           rather than taking a row, so revealing it never resizes a PTY. */}
@@ -2046,8 +2050,8 @@ export default function AppLayout() {
           chevron, ~85% of it empty; one button on a row that already exists
           costs the terminals nothing. */}
       </div>
-      {/* The dock stays interactive beside the Git page (which covers only the
-          sidebar and the panes, so Moa is in reach); every other rail page
+      {/* The dock stays interactive beside every rail page but Settings (they
+          cover only the sidebar and the panes, so Moa is in reach); Settings
           covers it, inert, like the rest of the Workspaces page. Both dock
           modes live in this region: `contents` keeps the inline dock the same
           flex item it always was, and the overlay still positions against

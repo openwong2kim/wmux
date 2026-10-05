@@ -22,6 +22,7 @@ import { pasteClipboardImage } from '../utils/imagePaste';
 import { openTerminalUrl } from '../utils/browserPaneActions';
 import { runCopyWithFeedback } from '../utils/copyWithFeedback';
 import { claimFit } from '../utils/fitGuard';
+import { createFitScheduler } from '../utils/layoutTransitionGate';
 import { installAltClickTrackingGuard } from '../utils/altClickUnderMouseTracking';
 import { createMouseOwnedHint } from '../utils/mouseOwnedHint';
 import { resizeOrderFor, runOrderedFit, type CancelOrderedFit } from '../utils/resizeOrder';
@@ -1738,7 +1739,6 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // Track last sent dimensions to avoid redundant resizes
     let lastSentCols = 0;
     let lastSentRows = 0;
-    let resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
     // The container-resize fit, extracted so the selection-release retry below
     // runs the SAME path — including scroll preservation and sendResize —
@@ -2956,17 +2956,20 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // IMPORTANT: skip when the container has zero dimensions (display:none workspace).
     // Fitting a hidden terminal produces 0 cols/rows, which corrupts the PTY buffer
     // and manifests as "infinite content duplication" when switching back to it.
-    const resizeObserver = new ResizeObserver(() => {
-      if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
-      resizeDebounceTimer = setTimeout(() => {
-        resizeDebounceTimer = null;
+    // The scheduler debounces ticks and, while an animated layout change (the
+    // sidebar toggle) holds fits, defers them to one fit on release — never a
+    // PTY resize per animation frame.
+    const resizeScheduler = createFitScheduler({
+      debounceMs: 100,
+      fitNextFrame: () => {
         if (pendingFitRaf !== null) cancelAnimationFrame(pendingFitRaf);
         pendingFitRaf = requestAnimationFrame(() => {
           pendingFitRaf = null;
           runFit();
         });
-      }, 100);
+      },
     });
+    const resizeObserver = new ResizeObserver(() => resizeScheduler.onResize());
     resizeObserver.observe(container);
 
     return () => {
@@ -3012,7 +3015,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // inferring it from what the screen did.
       console.log(`[wmux:pane-adopt] ptyId=${ptyId} teardown=${canPark ? 'parked' : `disposed reason=${parkRefusal}`}`);
 
-      if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
+      resizeScheduler.dispose();
       if (pendingFitRaf !== null) cancelAnimationFrame(pendingFitRaf);
       if (isMac) { container.removeEventListener('paste', blockNativePaste, true); }
       detachAltClickGuard();
