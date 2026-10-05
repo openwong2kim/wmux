@@ -37,19 +37,24 @@ function clusterRegion(): string {
   return itemSource.slice(start, end);
 }
 
-/** The width the revealed cluster takes out of the name line, from its markup. */
-function revealedClusterSlotWidth(): number {
+/** The revealed cluster's own width, from its markup. */
+function clusterWidth(): number {
   const buttons = (clusterRegion().match(/data-workspace-action="/g) ?? []).length;
   expect(buttons).toBe(3);
   // N x 24px boxes and (N-1) gaps, less both side refunds of every member.
-  const cluster = buttons * 24 + (buttons - 1) * CLUSTER_GAP_PX - buttons * 2 * CLUSTER_SIDE_REFUND_PX;
-  // The slot's revealed left padding (`pl-0.5`) and the name line's `gap-1`.
-  const slotPad = Number(/hover\.clusterSlot\}[^`]*focus-within:pl-(\d+(?:\.\d+)?)/.exec(itemSource)?.[1] ?? NaN);
-  const nameGap = tw(/<div className="flex items-center gap-(\d+)">\s*\{\/\* The name truncates/.exec(itemSource)?.[1] ?? 'NaN');
-  return cluster + tw(String(slotPad)) + nameGap;
+  return buttons * 24 + (buttons - 1) * CLUSTER_GAP_PX - buttons * 2 * CLUSTER_SIDE_REFUND_PX;
 }
 
-/** Fixed width beside the text column on a hovered top-level row. */
+/** What the revealed slot takes out of a line: cluster + `pl-0.5` + the line's gap. */
+function slotWidth(lineGapPx: number): number {
+  const slotPad = /hover\.clusterSlot\}[^`]*focus-within:pl-(\d+(?:\.\d+)?)/.exec(itemSource)?.[1] ?? 'NaN';
+  return clusterWidth() + tw(slotPad) + lineGapPx;
+}
+
+const nameLineGap = () => tw(/<div className="flex items-center gap-(\d+)">\s*\{\/\* The name truncates/.exec(itemSource)?.[1] ?? 'NaN');
+const gitLineGap = () => tw(/<div className="flex items-center gap-(\d+) mt-1 [^"]*" data-git-signal-line>/.exec(itemSource)?.[1] ?? 'NaN');
+
+/** Fixed width beside the text column of a top-level row. */
 function rowChromeWidth(): number {
   const rowMargin = 2 * tw(/className="relative mx-(\d+) sidebar-row-enter"/.exec(itemSource)?.[1] ?? 'NaN');
   const padX = Number(/\.wmux-sidebar \.sidebar-row \{ border-radius: 10px; padding: \d+px (\d+)px; \}/.exec(uiCss)?.[1] ?? NaN);
@@ -61,20 +66,25 @@ function rowChromeWidth(): number {
 }
 
 describe('the hover actions take their own width and nothing else', () => {
-  it('lives in flow on the name line, not floated over the row', () => {
-    const nameLine = itemSource.indexOf('wmux-row-title');
-    const gitLine = itemSource.indexOf('{metadata && <WorkspaceContextLine');
-    const cluster = itemSource.indexOf('data-workspace-actions');
-    expect(cluster).toBeGreaterThan(nameLine);
-    expect(cluster).toBeLessThan(gitLine);
+  it('sit in flow — on the git line when there is one, else on the name line — never floated', () => {
+    // A row with a branch: the actions end the git line and the diff counts
+    // step aside for them while hovered, so the name never shrinks.
+    expect(itemSource).toContain("const actionsOnGitLine = !!metadata?.gitBranch;");
+    expect(itemSource).toContain("actions={actionsOnGitLine ? actionCluster('-ml-2') : null}");
+    expect(itemSource).toMatch(/actions\s*\? <span className=\{`flex flex-shrink-0 \$\{metaHiddenOnHover \?\? ''\}`\}><GitSyncBadge/);
+    // A row without one: the end of the name line.
+    const nameLineSlot = itemSource.indexOf("{!actionsOnGitLine && actionCluster('-ml-1')}");
+    expect(nameLineSlot).toBeGreaterThan(itemSource.indexOf('wmux-row-title'));
     // The overlay and the fade that hid the text under it are gone.
     expect(uiCss).not.toMatch(/\[data-workspace-actions\]\s*\{[^}]*position:\s*absolute/);
     expect(uiCss).not.toMatch(/\[data-workspace-text\]\s*\{[^}]*mask-image/);
   });
 
-  it('the derived cluster slot matches the 66px measured in the running app', () => {
-    // 60px cluster + 2px slot padding + 4px name-line gap (live, 264px sidebar).
-    expect(revealedClusterSlotWidth()).toBe(66);
+  it('the derived slot widths match the running app', () => {
+    // Measured live at 264px: cluster 60px, name-line slot 66px.
+    expect(clusterWidth()).toBe(60);
+    expect(slotWidth(nameLineGap())).toBe(66);
+    expect(slotWidth(gitLineGap())).toBe(70);
   });
 
   it.each([
@@ -82,13 +92,16 @@ describe('the hover actions take their own width and nothing else', () => {
     ['minimum', SIDEBAR_MIN_WIDTH],
   ])('at the %s width a hovered row does not overflow and keeps a readable name', (_label, width) => {
     const text = width - rowChromeWidth();
-    const name = text - revealedClusterSlotWidth();
-    // Content box never wider than the row: the name is the only shrinking item.
-    expect(rowChromeWidth() + revealedClusterSlotWidth()).toBeLessThan(width);
-    // ~8 characters of 13px text at the minimum, ~13 at the default. The git
-    // line below keeps the whole text column (`text`), cluster or not.
-    expect(name).toBeGreaterThanOrEqual(width === SIDEBAR_DEFAULT_WIDTH ? 110 : 64);
     expect(text).toBe(width === SIDEBAR_DEFAULT_WIDTH ? 176 : 132);
+    // Row with a git line: the name keeps the whole text column on hover, and
+    // the revealed slot still fits beside the branch icon (12px + 4px).
+    expect(slotWidth(gitLineGap()) + 16).toBeLessThan(text);
+    // Row without one: the name gives up exactly the slot and nothing else —
+    // ~8 characters of 13px text at the minimum, ~13 at the default.
+    const name = text - slotWidth(nameLineGap());
+    expect(name).toBeGreaterThanOrEqual(width === SIDEBAR_DEFAULT_WIDTH ? 110 : 64);
+    // Content box never wider than the row.
+    expect(rowChromeWidth() + slotWidth(nameLineGap())).toBeLessThan(width);
   });
 
   it('a nested task row never reveals its owner\'s actions', () => {

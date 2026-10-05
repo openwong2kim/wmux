@@ -167,10 +167,15 @@ export function GitSyncBadge({ sync }: { sync: GitSyncStatus }): React.ReactElem
  * latest terminal notification. Renders nothing until metadata arrives —
  * zero-config, no reserved blank space.
  */
-function WorkspaceContextLine({ metadata, onPortClick }: {
+function WorkspaceContextLine({ metadata, onPortClick, actions, metaHiddenOnHover }: {
   metadata: WorkspaceMetadata;
   /** X3 — open http://localhost:<port> in this workspace's browser pane. */
   onPortClick: (port: number) => void;
+  /** The row's hover actions, at the end of the git line. */
+  actions?: React.ReactNode;
+  /** Hides the diff counts while the row is hovered, so the actions take
+   *  their place instead of the branch's width. */
+  metaHiddenOnHover?: string;
 }): React.ReactElement | null {
   const t = useT();
   const ports = metadata.listeningPorts ?? [];
@@ -192,8 +197,13 @@ function WorkspaceContextLine({ metadata, onPortClick }: {
             {metadata.gitBranch}
             {metadata.gitIsWorktree ? <span className="ml-1 inline-flex align-[-1px]" aria-hidden="true"><IconWorktree size={10} /></span> : null}
           </span>
-          {metadata.gitSync && <GitSyncBadge sync={metadata.gitSync} />}
+          {metadata.gitSync && (
+            actions
+              ? <span className={`flex flex-shrink-0 ${metaHiddenOnHover ?? ''}`}><GitSyncBadge sync={metadata.gitSync} /></span>
+              : <GitSyncBadge sync={metadata.gitSync} />
+          )}
           {metadata.pr && <PrBadge pr={metadata.pr} />}
+          {actions}
         </div>
       )}
       {hasContext && (
@@ -919,6 +929,75 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
   // the pre-feature rendering, so an untagged workspace is pixel-identical.
   const tagColor = workspaceColorHex(workspace.color);
 
+  // Hover actions. Each is a real 24x24 target; they sit in a cluster because
+  // three 24px boxes do not fit side by side in this column: the cluster's
+  // gap-3 is exactly what the members' side refunds give back, so consecutive
+  // boxes TILE instead of overlapping (see hitArea.ts).
+  //
+  // In flow, never floated over the row. A row with a git line puts them at
+  // the end of that line, where they take the place of the diff counts while
+  // hovered — the right-side metadata steps aside, the name and the branch do
+  // not. A row without one puts them at the end of the name line, which
+  // truncates by exactly their width. Either way the roster chip beside both
+  // lines stays visible and clickable.
+  //
+  // The outer span owns the footprint: at rest it is weightless (`max-w-0`,
+  // and `restGap` cancels the line's own gap); shown, `ml-auto` pins it to
+  // the line's end and `pl-0.5` plus the gap gives back the 6px the first
+  // member's left refund reaches over, so its box never covers the text. The
+  // margins live on the span, not the cluster: hitArea.ts keeps a cluster
+  // free of margins of its own. `pointer-events` follow visibility, and
+  // `focus-within` reveals the cluster for the keyboard.
+  const actionsOnGitLine = !!metadata?.gitBranch;
+  const actionCluster = (restGap: '-ml-1' | '-ml-2') => readOnly ? null : (
+    <span className={`flex flex-shrink-0 items-center self-center max-w-0 overflow-hidden ${restGap} ${hover.clusterSlot} focus-within:max-w-none focus-within:overflow-visible focus-within:ml-auto focus-within:pl-0.5`}>
+      <div
+        data-workspace-actions
+        className={`${HIT_TARGET_24_CLUSTER} opacity-0 pointer-events-none transition-opacity duration-150 ${hover.cluster} focus-within:opacity-100 focus-within:pointer-events-auto`}
+      >
+        {/* Folder icon — reveals this workspace's cwd in the OS file manager. */}
+        <button
+          data-workspace-action="explorer"
+          className={`${HIT_TARGET_24_IN_CLUSTER} rounded-md text-[color-mix(in_srgb,var(--text-main)_50%,transparent)] hover:bg-[var(--selection)] hover:text-[var(--text-main)] text-[10px] font-mono`}
+          onClick={(e) => { e.stopPropagation(); handleOpenExplorer(); }}
+          title={t('workspace.openInExplorer', { app: fileManagerName(t) })}
+          aria-label={t('workspace.openInExplorer', { app: fileManagerName(t) })}
+        >
+          <IconFolder size={11} />
+        </button>
+
+        {/* Copy session info button */}
+        <button
+          data-workspace-action="copy-info"
+          className={`${HIT_TARGET_24_IN_CLUSTER} rounded-md text-[color-mix(in_srgb,var(--text-main)_50%,transparent)] hover:bg-[var(--selection)] hover:text-[var(--text-main)] text-[10px] font-mono`}
+          onClick={(e) => { e.stopPropagation(); onCopyInfo(workspaceId); }}
+          title={t('workspace.copyInfo')}
+          aria-label={t('workspace.copyInfo')}
+        >
+          <IconCopy size={11} />
+        </button>
+
+        {/* Close button — asks for confirmation first (anti-misclick). Last in
+            the cluster: a pointer overshooting it to the right leaves the
+            cluster instead of landing on the one control here that kills a
+            workspace. */}
+        {/* Moa's HQ: present but disabled, focusable so the reason can be
+            read (aria-disabled, not `disabled`). */}
+        <button
+          data-workspace-action="close"
+          className={`${HIT_TARGET_24_IN_CLUSTER} rounded-md text-[color-mix(in_srgb,var(--text-main)_50%,transparent)] text-[10px] font-mono ${moaHq ? 'opacity-50 cursor-default' : 'hover:bg-[var(--selection)] hover:text-[var(--accent-red)]'}`}
+          onClick={(e) => { e.stopPropagation(); if (moaHq) return; setMenuPos(null); setCloseConfirmPos(anchorOf(e.currentTarget)); }}
+          title={moaHq ? t('moa.guard.reason') : t('workspace.close')}
+          aria-label={t('workspace.close')}
+          aria-disabled={moaHq || undefined}
+          aria-description={moaHq ? t('moa.guard.reason') : undefined}
+        >
+          <IconX size={11} />
+        </button>
+      </div>
+    </span>
+  );
+
   return (
     <div
       className="relative mx-2 sidebar-row-enter"
@@ -1123,76 +1202,16 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
                     · {idleLabel}
                   </span>
                 )}
-                {/* Hover actions, at the end of the NAME line. Each is a real
-                    24x24 target; they sit in a cluster because three 24px boxes
-                    do not fit side by side in this column: the cluster's gap-3
-                    is exactly what the members' side refunds give back, so
-                    consecutive boxes TILE instead of overlapping (see
-                    hitArea.ts).
-
-                    In flow, not floating over the row: revealed, the cluster
-                    takes its own width out of the name and nothing else. The
-                    git line below keeps its full width, and the roster chip
-                    beside both lines stays visible and clickable. The outer
-                    span owns the cluster's footprint: at rest it is weightless
-                    (`max-w-0`, and `-ml-1` cancels the name line's gap);
-                    shown, `ml-auto` pins it to the line's end and `pl-0.5`
-                    plus the gap gives back the 6px the first member's left
-                    refund reaches over, so its box never covers the name. The
-                    margins live on the span, not the cluster: hitArea.ts keeps
-                    a cluster free of margins of its own.
-
-                    `pointer-events` follow visibility: an invisible control
-                    must not take a click meant for the row under it.
-                    `focus-within` reveals the cluster for the keyboard. */}
-                {!readOnly && <span className={`flex flex-shrink-0 items-center self-center max-w-0 overflow-hidden -ml-1 ${hover.clusterSlot} focus-within:max-w-none focus-within:overflow-visible focus-within:ml-auto focus-within:pl-0.5`}>
-                <div
-                  data-workspace-actions
-                  className={`${HIT_TARGET_24_CLUSTER} opacity-0 pointer-events-none transition-opacity duration-150 ${hover.cluster} focus-within:opacity-100 focus-within:pointer-events-auto`}
-                >
-                  {/* Folder icon — reveals this workspace's cwd in the OS file manager. */}
-                  <button
-                    data-workspace-action="explorer"
-                    className={`${HIT_TARGET_24_IN_CLUSTER} rounded-md text-[color-mix(in_srgb,var(--text-main)_50%,transparent)] hover:bg-[var(--selection)] hover:text-[var(--text-main)] text-[10px] font-mono`}
-                    onClick={(e) => { e.stopPropagation(); handleOpenExplorer(); }}
-                    title={t('workspace.openInExplorer', { app: fileManagerName(t) })}
-                    aria-label={t('workspace.openInExplorer', { app: fileManagerName(t) })}
-                  >
-                    <IconFolder size={11} />
-                  </button>
-
-                  {/* Copy session info button */}
-                  <button
-                    data-workspace-action="copy-info"
-                    className={`${HIT_TARGET_24_IN_CLUSTER} rounded-md text-[color-mix(in_srgb,var(--text-main)_50%,transparent)] hover:bg-[var(--selection)] hover:text-[var(--text-main)] text-[10px] font-mono`}
-                    onClick={(e) => { e.stopPropagation(); onCopyInfo(workspaceId); }}
-                    title={t('workspace.copyInfo')}
-                    aria-label={t('workspace.copyInfo')}
-                  >
-                    <IconCopy size={11} />
-                  </button>
-
-                  {/* Close button — asks for confirmation first (anti-misclick). Last in
-                      the cluster: a pointer overshooting it to the right leaves the
-                      cluster instead of landing on the one control here that kills a
-                      workspace. */}
-                  {/* Moa's HQ: present but disabled, focusable so the reason can be
-                      read (aria-disabled, not `disabled`). */}
-                  <button
-                    data-workspace-action="close"
-                    className={`${HIT_TARGET_24_IN_CLUSTER} rounded-md text-[color-mix(in_srgb,var(--text-main)_50%,transparent)] text-[10px] font-mono ${moaHq ? 'opacity-50 cursor-default' : 'hover:bg-[var(--selection)] hover:text-[var(--accent-red)]'}`}
-                    onClick={(e) => { e.stopPropagation(); if (moaHq) return; setMenuPos(null); setCloseConfirmPos(anchorOf(e.currentTarget)); }}
-                    title={moaHq ? t('moa.guard.reason') : t('workspace.close')}
-                    aria-label={t('workspace.close')}
-                    aria-disabled={moaHq || undefined}
-                    aria-description={moaHq ? t('moa.guard.reason') : undefined}
-                  >
-                    <IconX size={11} />
-                  </button>
-                </div>
-                </span>}
+                {!actionsOnGitLine && actionCluster('-ml-1')}
               </div>
-              {metadata && <WorkspaceContextLine metadata={metadata} onPortClick={handlePortClick} />}
+              {metadata && (
+                <WorkspaceContextLine
+                  metadata={metadata}
+                  onPortClick={handlePortClick}
+                  actions={actionsOnGitLine ? actionCluster('-ml-2') : null}
+                  metaHiddenOnHover={hover.hideOnHover}
+                />
+              )}
             </>
           )}
         </div>
