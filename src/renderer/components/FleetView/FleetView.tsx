@@ -1215,7 +1215,8 @@ export default function FleetView() {
               {detailPane && (
                 <div className="wmux-board-preview" data-fleet-preview>
                   <span className="wmux-board-preview-head">{t('fleet.inspect.output', { name: fleetTitle(detailPane, missions[detailPane.workspaceId]) })}</span>
-                  <pre id="fleet-output-preview" tabIndex={0}>{tails[previewPtyId]?.join('\n') || t('fleet.previewEmpty')}</pre>
+                  {/* A full-screen TUI pads its tail with blank lines; start at the first text. */}
+                  <pre id="fleet-output-preview" tabIndex={0}>{tails[previewPtyId]?.join('\n').replace(/^(?:[ \t]*\n)+/, '') || t('fleet.previewEmpty')}</pre>
                 </div>
               )}
               {conversationTask && <TaskConversation key={conversationTask.id} task={conversationTask} now={now} t={t} />}
