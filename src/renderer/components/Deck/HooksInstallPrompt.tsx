@@ -221,19 +221,18 @@ export function HooksInstallPrompt({
     launchCheckDoneRef.current = true;
     // Reported once: when the check answers, or after a bound so a bridge
     // that never answers cannot hold the first-boot queue for the whole boot.
+    if (launchCheck !== 'check') {
+      onLaunchCheckDoneRef.current?.();
+      return;
+    }
     let reported = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
     const done = () => {
       if (reported) return;
       reported = true;
-      if (timer !== undefined) clearTimeout(timer);
+      clearTimeout(timer);
       onLaunchCheckDoneRef.current?.();
     };
-    if (launchCheck !== 'check') {
-      done();
-      return;
-    }
-    timer = setTimeout(done, LAUNCH_CHECK_REPORT_TIMEOUT_MS);
+    const timer = setTimeout(done, LAUNCH_CHECK_REPORT_TIMEOUT_MS);
     void maybePrompt().finally(done);
   }, [checkOnMount, launchCheck, maybePrompt]);
 
