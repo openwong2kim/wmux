@@ -29,6 +29,12 @@ interface TurnEventBase {
   kind: TurnEventKind;
   /** Epoch ms from entry.timestamp; absent when the entry carried none. */
   ts?: number;
+  /**
+   * Belongs in the folded activity, not the conversation: set by main on the
+   * Moa chat's mid-turn narration and its internal tool calls (failed ones
+   * included). Never set by the daemon projector.
+   */
+  folded?: true;
 }
 
 export interface UserTextEvent extends TurnEventBase {

@@ -28,6 +28,19 @@ describe('transcript message projection', () => {
     expect(rows.map((row) => row.id)).toEqual(['u', 'activity:t', 'r', 'a']);
     expect((rows[1].metadata.custom.row as { activity: unknown[] }).activity).toHaveLength(1);
   });
+  it('folds events main marked as internal, failed calls and mid-turn text included, out of the conversation', () => {
+    const failedCall: TurnEvent = { ...call, folded: true };
+    const failed: TurnEvent = { ...result, ok: false, folded: true };
+    const narration: TurnEvent = { id: 'n', kind: 'assistant_text', text: 'Proposing the handoff…', folded: true };
+    const reply: TurnEvent = { id: 'a', kind: 'assistant_text', text: '넘겼습니다.', turnComplete: true, ts: 9 };
+    const rows = transcriptMessages([user, failedCall, failed, narration, reply], true);
+    expect(rows.map((row) => row.id)).toEqual(['u', 'activity:t', 'a']);
+    expect((rows[1].metadata.custom.row as ChatRow).activity?.map((r) => r.event.id)).toEqual(['t', 'n']);
+    // The receipt's reply (what Copy takes) is the final text only.
+    expect((rows[2].metadata.custom.row as ChatRow).receipt?.replies.map((r) => r.id)).toEqual(['a']);
+    // Unmarked, a failed call still stays in view.
+    expect(transcriptMessages([user, call, { ...result, ok: false }], true).map((row) => row.id)).toEqual(['u', 't']);
+  });
   it('folds an image source note into the prompt that carried the image', () => {
     const prompt: TurnEvent = { id: 'p', kind: 'user_text', text: '[Image #1] what is this?', hasImage: true };
     const note: TurnEvent = { id: 'n', kind: 'meta', subtype: 'caveat', label: 'Image source', images: ['/tmp/red.png'] };

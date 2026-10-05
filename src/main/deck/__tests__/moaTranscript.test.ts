@@ -6,8 +6,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { MoaTranscript, MOA_TRANSCRIPT_REASONS, parseNotedPrompts, rewritePastedPrompts, type NotedPrompt } from '../moaTranscript';
-import type { TranscriptAppendData } from '../../../shared/transcript/turnEvents';
+import { MoaTranscript, MOA_TRANSCRIPT_REASONS, foldMoaInternals, parseNotedPrompts, rewritePastedPrompts, type NotedPrompt } from '../moaTranscript';
+import type { TranscriptAppendData, TurnEvent } from '../../../shared/transcript/turnEvents';
 import { __resetMoaPaneFeedForTest, moaDialogUp, noteBrainHookSignal, setMoaPaneSource } from '../moaPaneFeed';
 
 const HQ_SESSION = '920b9112-1111-4222-8333-444455556666';
@@ -316,5 +316,23 @@ describe('the remembered prompts', () => {
     expect(parseNotedPrompts(null)).toEqual([]);
     expect(parseNotedPrompts({ prompts: 'x' })).toEqual([]);
     expect(parseNotedPrompts({ prompts: [{ at: 1, text: 'ok', hq: 'h' }, { at: 'x', text: 1 }] })).toEqual([{ at: 1, text: 'ok', hq: 'h' }]);
+  });
+});
+
+describe('foldMoaInternals — the chat shows Moa\'s replies, not its working', () => {
+  it('folds tool calls and text written mid-turn; keeps the text that ended the turn and the prompt', () => {
+    const events: TurnEvent[] = [
+      { id: 'u', kind: 'user_text', text: 'math.js에 빼기 함수 추가해줘' },
+      { id: 'th', kind: 'assistant_text', text: 'thinking', thinking: true },
+      { id: 't', kind: 'tool_use', toolUseId: 'x', name: 'mcp__wmux__terminal_send', argSummary: '' },
+      { id: 'r', kind: 'tool_result', toolUseId: 'x', ok: false, bytes: 10 },
+      { id: 'n', kind: 'assistant_text', text: 'Proposing the handoff to the agent in the other workspace.' },
+      { id: 'a', kind: 'assistant_text', text: '승인 카드를 올렸습니다.', turnComplete: true },
+    ];
+    const out = foldMoaInternals(events);
+    expect(out.filter((e) => e.folded).map((e) => e.id)).toEqual(['t', 'r', 'n']);
+    expect(out.find((e) => e.id === 'a')?.folded).toBeUndefined();
+    expect(out.find((e) => e.id === 'u')?.folded).toBeUndefined();
+    expect(out.find((e) => e.id === 'th')?.folded).toBeUndefined();
   });
 });

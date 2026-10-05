@@ -22,7 +22,7 @@ export function transcriptMessages(events: readonly TurnEvent[], groupActivity =
     if (event.kind === 'user_text' || event.kind === 'meta' && event.subtype === 'turn_started' && !(turn && !turn.replies.length)) {
       turn = { start: event.ts, replies: [] };
     }
-    if (event.kind === 'assistant_text' && !event.thinking) (turn ??= { replies: [] }).replies.push(event);
+    if (event.kind === 'assistant_text' && !event.thinking && !event.folded) (turn ??= { replies: [] }).replies.push(event);
     const ends = event.kind === 'assistant_text' && !event.thinking && event.turnComplete || event.kind === 'meta' && event.subtype === 'turn_complete';
     // An image's source note belongs to the prompt that carried the image.
     const previous = rows.at(-1);
@@ -34,7 +34,7 @@ export function transcriptMessages(events: readonly TurnEvent[], groupActivity =
     if (ends && turn) { row.receipt = { start: turn.start, end: event.ts, replies: turn.replies }; turn = null; }
     // A failed call stays out of the fold: someone has to see it.
     const failed = event.kind === 'tool_use' ? results.get(event.toolUseId)?.ok === false : event.kind === 'tool_result' && !event.ok;
-    const activity = !failed && (event.kind === 'tool_use' || event.kind === 'tool_result' && !event.files?.length || event.kind === 'assistant_text' && event.thinking);
+    const activity = event.folded || !failed && (event.kind === 'tool_use' || event.kind === 'tool_result' && !event.files?.length || event.kind === 'assistant_text' && event.thinking);
     if (groupActivity && activity) {
       const previous = rows.at(-1);
       if (previous?.activity) previous.activity.push(row);

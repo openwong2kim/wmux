@@ -119,6 +119,20 @@ export function rewritePastedPrompts<P extends { at: number; text: string }>(
   });
 }
 
+/**
+ * The operator reads Moa's replies, not its working: text Moa wrote between
+ * tool calls (its turn went on: no end_turn) and every tool call it made,
+ * failed ones included, are marked to fold into the activity view. Only the
+ * text that ended a turn stays in the conversation.
+ */
+export function foldMoaInternals(events: readonly TurnEvent[]): TurnEvent[] {
+  return events.map((e) => {
+    const internal = e.kind === 'tool_use' || e.kind === 'tool_result'
+      || (e.kind === 'assistant_text' && !e.thinking && !e.turnComplete);
+    return internal && !e.folded ? { ...e, folded: true as const } : e;
+  });
+}
+
 /** The projector's one session key. Never a daemon pty id. */
 const SESSION_KEY = 'moa-hq-brain';
 /** The projector's one client: the desktop renderer's Moa panel. */
@@ -200,7 +214,7 @@ export class MoaTranscript {
       emitAppend: (key, data, clientIds) => {
         if (key !== SESSION_KEY || !clientIds.includes(CLIENT_ID)) return;
         if (this.subscribedHq === null || this.subscribedHq !== this.activeHq()) return;
-        this.deps.emitAppend({ ...data, events: rewritePastedPrompts(data.events, this.hqPrompts(), this.assigned) });
+        this.deps.emitAppend({ ...data, events: foldMoaInternals(rewritePastedPrompts(data.events, this.hqPrompts(), this.assigned)) });
       },
       ...(deps.log ? { log: deps.log } : {}),
       ...(deps.debounceMs !== undefined ? { debounceMs: deps.debounceMs } : {}),
@@ -229,7 +243,7 @@ export class MoaTranscript {
     const before = opts?.before;
     const valid = typeof before === 'number' && Number.isFinite(before) && before >= 0;
     const page = this.projector.snapshot(SESSION_KEY, valid ? { before: Math.floor(before) } : undefined);
-    return page ? { ...page, events: rewritePastedPrompts(page.events, this.hqPrompts(), this.assigned) } : page;
+    return page ? { ...page, events: foldMoaInternals(rewritePastedPrompts(page.events, this.hqPrompts(), this.assigned)) } : page;
   }
 
   /** The prompt main is about to send to a workspace's brain (the operator's
