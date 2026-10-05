@@ -580,8 +580,8 @@
 .wmux-chatv2-diffstat { display: inline-flex; flex-shrink: 0; gap: 5px; font-variant-numeric: tabular-nums; }
 .wmux-chatv2-diffstat [data-kind="add"] { color: var(--accent-green); }
 .wmux-chatv2-diffstat [data-kind="del"] { color: var(--accent-red); }
-.wmux-chatv2-chevron { display: inline-flex; flex-shrink: 0; color: var(--text-muted); transform: rotate(90deg); transition: transform var(--motion-feedback) var(--motion-ease-out); }
-details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(-90deg); }
+.wmux-chatv2-chevron { display: inline-flex; flex-shrink: 0; color: var(--text-muted); transition: transform var(--motion-feedback) var(--motion-ease-out); }
+details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(90deg); }
 .wmux-chatv2-group-rows { display: flex; flex-direction: column; gap: 2px; margin: 2px 0 2px 4px; padding-left: 10px; box-shadow: inset 1px 0 0 var(--border-soft); }
 .wmux-chatv2-step-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wmux-chatv2-glyph { flex-shrink: 0; width: 1ch; text-align: center; color: var(--text-muted); }
@@ -599,7 +599,7 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-chatv2-pre[data-diff] .wmux-chatv2-line { display: block; padding: 0 8px; }
 .wmux-chatv2-pre[data-diff] .wmux-chatv2-line[data-kind="add"] { background: color-mix(in srgb, var(--accent-green) 8%, transparent); box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent-green) 50%, transparent); }
 .wmux-chatv2-pre[data-diff] .wmux-chatv2-line[data-kind="del"] { background: color-mix(in srgb, var(--accent-red) 8%, transparent); box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent-red) 50%, transparent); }
-.wmux-chatv2-evidence { display: inline-flex; align-items: center; gap: 4px; margin: 0 8px 4px; color: var(--text-sub); font: inherit; }
+.wmux-chatv2-evidence { display: inline-flex; align-items: center; gap: 4px; min-height: 24px; margin: -4px 0 0; padding: 0 8px; color: var(--text-sub); font: inherit; }
 .wmux-chatv2-evidence:hover { color: var(--accent-blue); text-decoration: underline; text-underline-offset: 2px; }
 .wmux-chatv2-shell-command { padding: 0 8px 2px; color: var(--text-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 .wmux-chatv2-pre[data-shell] > pre, .wmux-chatv2-pre[data-shell] > .wmux-chatv2-body-more { padding: 0 8px; }

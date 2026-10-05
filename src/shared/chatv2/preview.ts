@@ -154,7 +154,9 @@ function shellPreview(
 ): ToolPreview | undefined {
   const command = extractShellCommand(update, tool);
   const inferred = command ? inferShellIntent(command) : undefined;
-  if (!inferred) return undefined;
+  // The command itself, so a reader still sees what ran under a rewritten title.
+  const plain: ToolPreview | undefined = command ? { kind: "shell", title, command } : undefined;
+  if (!inferred) return plain;
   const inferredPath = inferred.path ? normalizePath(inferred.path) : undefined;
   if (inferred.verb === "Find" && inferred.query) {
     return {
@@ -163,15 +165,17 @@ function shellPreview(
       path: inferredPath,
       fileName: inferredPath ? basename(inferredPath) : undefined,
       query: inferred.query,
+      command,
     };
   }
-  if (!inferredPath) return undefined;
+  if (!inferredPath) return plain;
   return {
     kind: "shell",
     title,
     path: inferredPath,
     fileName: basename(inferredPath),
     startLine: inferred.startLine,
+    command,
   };
 }
 
@@ -496,6 +500,7 @@ export function mergeToolPreview(
     deletions: next.deletions ?? prev.deletions,
     contentOnly: next.lines ? next.contentOnly : prev.contentOnly,
     query: next.query || prev.query,
+    command: next.command || prev.command,
     lines:
       next.kind === "read" || next.kind === "search"
         ? undefined

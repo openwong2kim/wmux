@@ -4,6 +4,7 @@ import type { HarnessEvent } from '../../../../shared/chatv2/harnessEvents';
 import { newChatSession, type ToolPreview } from '../../../../shared/chatv2/session';
 import { groupToolRows, sessionRows, type TranscriptRow } from '../rows';
 import { absolutePath, toolLabelParts } from '../format';
+import { shellOutput } from '../Transcript';
 import { enteringKeys } from '../ChatV2View';
 
 function fold(events: HarnessEvent[]) {
@@ -110,6 +111,47 @@ describe('groupToolRows', () => {
     const after = applyHarnessEvents(before, [{ seq: 50, at: 99_000, event: { type: 'tool.started', callId: 'live', title: 'Read', kind: 'read', status: 'in_progress' } }]);
     const second = groupToolRows(sessionRows(after, cache), cache);
     expect(second[1]).toMatchObject({ kind: 'toolGroup', key: first[1].key, label: 'Read 4 files', state: 'running' });
+  });
+});
+
+describe('groupToolRows across pushes', () => {
+  it('keeps a mixed group whole (same key) when a later same-kind stretch would re-split it', () => {
+    const cache = new WeakMap();
+    const before = fold([user, ...read(), ...tool('execute'), ...read(), ...read()]);
+    // [read, exec, read, read] is one mixed group of 4 calls.
+    const first = groupToolRows(sessionRows(before, cache), cache);
+    expect(shape(first)).toEqual(['user', 'group:Ran 4 tool calls', 'footer']);
+    // One more read: read×3 at the end would now be its own group, splitting the mixed one.
+    const after = applyHarnessEvents(before, [
+      { seq: 90, at: 90_000, event: { type: 'tool.started', callId: 'late', title: 'Read', kind: 'read', status: 'in_progress', preview: { kind: 'read', path: '/repo/z.ts' } } },
+    ]);
+    const second = groupToolRows(sessionRows(after, cache), cache);
+    expect(shape(second)).toEqual(['user', 'group:Ran 5 tool calls', 'footer']);
+    expect(second[1].key).toBe(first[1].key);
+    // Without the earlier render, the same rows split by kind.
+    expect(shape(groupToolRows(sessionRows(after)))).toEqual(['user', 'tool', 'tool', 'group:Read 3 files', 'footer']);
+  });
+
+  it('keeps reasoning between two groups inside the first one', () => {
+    const rows = grouped([...read(), ...read(), ...read(), { type: 'reasoning.delta', text: 'now run' }, { type: 'message.completed' }, ...tool('execute'), ...tool('execute'), ...tool('execute')]);
+    expect(shape(rows)).toEqual(['user', 'group:Read 3 files', 'group:Ran 3 commands', 'footer']);
+    const group = rows[1];
+    if (group.kind !== 'toolGroup') throw new Error();
+    expect(group.rows.map((row) => row.kind)).toEqual(['tool', 'tool', 'tool', 'reasoning']);
+  });
+});
+
+describe('shellOutput', () => {
+  it('uses the preview output, else the result detail', () => {
+    expect(shellOutput('out', 'Bash: ls', 'ls')).toBe('out');
+    expect(shellOutput(undefined, 'a.ts\nb.ts', 'ls')).toBe('a.ts\nb.ts');
+  });
+
+  it('never shows the request detail as output, running or finished silent', () => {
+    expect(shellOutput(undefined, 'Bash: git add .', 'git add .')).toBe('');
+    // The request summary caps the command; a prefix still matches.
+    expect(shellOutput(undefined, 'Bash: echo aaaa', 'echo aaaaaaaa')).toBe('');
+    expect(shellOutput(undefined, undefined, 'true')).toBe('');
   });
 });
 

@@ -7,6 +7,7 @@
 import type { Block, Session } from '../../../shared/chatv2/session';
 import type { UserQuestionPrompt } from '../../../shared/chatv2/userQuestion';
 import { turnModelLabel } from './format';
+import { S } from './strings';
 
 export type ToolState = 'running' | 'done' | 'failed';
 
@@ -189,13 +190,15 @@ export function diffStats(block: Block): { additions: number; deletions: number 
 const SAME_MIN: Record<ToolFamily, number> = { read: 3, edit: 2, command: 3, search: 3, other: Infinity };
 const MIXED_MIN = 3;
 
+// English like the rest of chat v2 (strings.ts): its labels move into the
+// locale files, next to the legacy chat's `chat.group*`, when it leaves experimental.
 function groupLabel(family: ToolFamily | 'mixed', n: number): string {
   switch (family) {
-    case 'read': return `Read ${n} files`;
-    case 'edit': return `Edited ${n} files`;
-    case 'command': return `Ran ${n} commands`;
-    case 'search': return `Searched ${n} times`;
-    default: return `Ran ${n} tool calls`;
+    case 'read': return S.groupRead(n);
+    case 'edit': return S.groupEdited(n);
+    case 'command': return S.groupRan(n);
+    case 'search': return S.groupSearched(n);
+    default: return S.groupMixed(n);
   }
 }
 
@@ -204,8 +207,8 @@ function foldable(row: TranscriptRow): row is Extract<TranscriptRow, { kind: 'to
   return row.kind === 'tool' && row.state !== 'failed' && !row.block.approval;
 }
 
-// Groups of the previous call per cache, by first member row.
-const groupCache = new WeakMap<RowCache, WeakMap<TranscriptRow, ToolGroupRow>>();
+// Groups of the previous call per cache, by first member key.
+const groupCache = new WeakMap<RowCache, Map<string, ToolGroupRow>>();
 
 function sameMembers(a: TranscriptRow[], b: TranscriptRow[]): boolean {
   return a.length === b.length && a.every((row, index) => row === b[index]);
@@ -250,16 +253,51 @@ function runChunks(run: TranscriptRow[]): Chunk[] {
     }
   }
   flush();
-  // Reasoning trailing a chunk belongs to the run; never end a group on it.
-  return chunks.flatMap((chunk) => {
-    let last = chunk.members.length - 1;
-    while (last > 0 && chunk.members[last].kind === 'reasoning') last -= 1;
-    if (!chunk.folds || last === chunk.members.length - 1) return [chunk];
-    return [{ ...chunk, members: chunk.members.slice(0, last + 1) }, { members: chunk.members.slice(last + 1), family: chunk.family, folds: false }];
-  });
+  // A run ends on a call, so only reasoning between calls is here, and it stays with its chunk.
+  return chunks;
 }
 
-function toolGroup(members: TranscriptRow[], family: ToolFamily | 'mixed', previous: WeakMap<TranscriptRow, ToolGroupRow> | undefined): ToolGroupRow {
+/** The family a merged chunk reads as: its one kind, or mixed. */
+function mergedFamily(chunks: Chunk[]): ToolFamily | 'mixed' {
+  const families = new Set(chunks.map((chunk) => chunk.family));
+  return families.size === 1 ? chunks[0].family : 'mixed';
+}
+
+/**
+ * Chunks a run without breaking a group already on screen. A group keeps its
+ * first member (its key, so its open state) and at least all of its members:
+ * chunks are merged until they cover it, and only what follows is chunked
+ * afresh. Otherwise a mixed group that a later same-kind stretch re-splits
+ * would get a new key and remount closed while it streams.
+ */
+function pinnedChunks(run: TranscriptRow[], previous: Map<string, ToolGroupRow> | undefined): Chunk[] {
+  const pinAt = (from: number): number => {
+    for (let i = from; i < run.length; i += 1) {
+      const prior = previous?.get(run[i].key);
+      if (prior && prior.rows.every((member, k) => run[i + k]?.key === member.key)) return i;
+    }
+    return -1;
+  };
+  const chunks: Chunk[] = [];
+  let from = 0;
+  while (from < run.length) {
+    const pin = pinAt(from);
+    if (pin < 0) { chunks.push(...runChunks(run.slice(from))); break; }
+    if (pin > from) chunks.push(...runChunks(run.slice(from, pin)));
+    const held = previous!.get(run[pin].key)!.rows.length;
+    const next = pinAt(pin + held);
+    const rest = runChunks(run.slice(pin, next < 0 ? run.length : next));
+    let take = 0;
+    let covered = 0;
+    while (covered < held) covered += rest[take++].members.length;
+    const head = rest.slice(0, take);
+    chunks.push({ members: head.flatMap((chunk) => chunk.members), family: mergedFamily(head), folds: true }, ...rest.slice(take));
+    from = next < 0 ? run.length : next;
+  }
+  return chunks;
+}
+
+function toolGroup(members: TranscriptRow[], family: ToolFamily | 'mixed', previous: Map<string, ToolGroupRow> | undefined): ToolGroupRow {
   const tools = members.filter(foldable);
   let additions = 0;
   let deletions = 0;
@@ -279,7 +317,7 @@ function toolGroup(members: TranscriptRow[], family: ToolFamily | 'mixed', previ
     deletions,
     rows: members,
   };
-  const prior = previous?.get(members[0]);
+  const prior = previous?.get(members[0].key);
   return prior && prior.label === fresh.label && prior.state === fresh.state && sameMembers(prior.rows, members) ? prior : fresh;
 }
 
@@ -294,7 +332,7 @@ function toolGroup(members: TranscriptRow[], family: ToolFamily | 'mixed', previ
  */
 export function groupToolRows(rows: TranscriptRow[], cache: RowCache = new WeakMap()): TranscriptRow[] {
   const previous = groupCache.get(cache);
-  const groups = new WeakMap<TranscriptRow, ToolGroupRow>();
+  const groups = new Map<string, ToolGroupRow>();
   const out: TranscriptRow[] = [];
   let index = 0;
   while (index < rows.length) {
@@ -306,10 +344,10 @@ export function groupToolRows(rows: TranscriptRow[], cache: RowCache = new WeakM
       if (rows[end].kind === 'tool') last = end;
       end += 1;
     }
-    for (const chunk of runChunks(rows.slice(index, last + 1))) {
+    for (const chunk of pinnedChunks(rows.slice(index, last + 1), previous)) {
       if (!chunk.folds) { out.push(...chunk.members); continue; }
       const group = toolGroup(chunk.members, chunk.family, previous);
-      groups.set(chunk.members[0], group);
+      groups.set(chunk.members[0].key, group);
       out.push(group);
     }
     index = last + 1;

@@ -51,8 +51,8 @@
 [data-chat-view] .wmux-chat-activity > summary::-webkit-details-marker { display: none; }
 [data-chat-view] .wmux-chat-activity > summary:hover { color: color-mix(in srgb, var(--text-main) 70%, transparent); }
 [data-chat-view] .wmux-chat-activity > summary { min-height: 24px; }
-[data-chat-view] .wmux-chat-activity > summary svg { transform: rotate(90deg); transition: transform var(--motion-feedback) var(--motion-ease-out); }
-[data-chat-view] .wmux-chat-activity[open] > summary svg { transform: rotate(-90deg); }
+[data-chat-view] .wmux-chat-activity > summary svg { transition: transform var(--motion-feedback) var(--motion-ease-out); }
+[data-chat-view] .wmux-chat-activity[open] > summary svg { transform: rotate(90deg); }
 /* Quiet tool rows: the name is secondary at rest and comes up on hover. */
 [data-chat-view] .wmux-chat-tool-label { min-height: 24px; color: color-mix(in srgb, var(--text-main) 50%, transparent); }
 [data-chat-view] .wmux-chat-tool-label strong { color: var(--text-sub); font-weight: 600; transition: color var(--motion-feedback) var(--motion-ease-out); }

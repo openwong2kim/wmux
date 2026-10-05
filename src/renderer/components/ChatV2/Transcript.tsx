@@ -24,7 +24,8 @@ function StatusGlyph({ state }: { state: ToolState }) {
 }
 
 function previewSummary(preview: ToolPreview | undefined, title: string, cwd: string): string {
-  const value = preview?.path ? displayPath(preview.path, cwd) : preview?.query ?? (preview?.kind === 'shell' ? preview.title ?? '' : '');
+  // A shell preview's own title is the tool name ("Bash"), never a summary.
+  const value = preview?.path ? displayPath(preview.path, cwd) : preview?.query ?? '';
   return value && !title.includes(value) ? value : '';
 }
 
@@ -65,6 +66,13 @@ function ShellBody({ command, output, children }: { command: string | null; outp
     if (fade) el.dataset.fade = fade; else delete el.dataset.fade;
   };
   useLayoutEffect(edges, [output]);
+  // A closed <details> lays out nothing, so measure again whenever one around it opens.
+  useEffect(() => {
+    const opened: HTMLDetailsElement[] = [];
+    for (let el = ref.current?.parentElement; el; el = el.parentElement) if (el instanceof HTMLDetailsElement) opened.push(el);
+    opened.forEach((el) => el.addEventListener('toggle', edges));
+    return () => opened.forEach((el) => el.removeEventListener('toggle', edges));
+  }, [output]);
   return (
     <div className="wmux-chatv2-pre" data-shell>
       {command && <div className="wmux-chatv2-shell-command">$ {command}</div>}
@@ -155,6 +163,18 @@ function CappedText({ block, actions, render }: { block: Block; actions: Transcr
 // Titles the fold already rewrote into words ("Read a.ts" for `cat a.ts`) are not commands.
 const READABLE_TITLE = /^(Read|List|Find|Search|Edit|Write|Delete|Move|Fetch|Skill)\b/;
 
+/**
+ * What a command printed: the preview's output, else the result detail. The
+ * detail starts as the request ("Bash: git add .") and keeps it when the
+ * command printed nothing, so a detail that is just the request is no output.
+ */
+export function shellOutput(output: string | undefined, detail: string | undefined, command: string | null): string {
+  if (output) return output;
+  if (!detail) return '';
+  const request = /^[\w.-]+: ([\s\S]*)$/.exec(detail);
+  return request && command && command.startsWith(request[1]) ? '' : detail;
+}
+
 function ToolRow({ block, state, cwd, actions, findActive, enter }: { block: Block; state: ToolState; cwd: string; actions: TranscriptActions; findActive: boolean; enter?: boolean }) {
   const tool = block.tool;
   const preview = tool?.preview;
@@ -162,12 +182,12 @@ function ToolRow({ block, state, cwd, actions, findActive, enter }: { block: Blo
   const summary = previewSummary(preview, title, cwd);
   const family = toolFamily(block);
   const shell = family === 'command';
-  const command = shell && preview?.kind !== 'shell' && !READABLE_TITLE.test(title) ? title : null;
-  // While a command runs, `detail` is the request ("Bash: …"), not its output.
-  const output = shell ? preview?.output ?? (state === 'running' ? '' : tool?.detail ?? '') : '';
+  const command = shell ? preview?.command ?? (!preview && !READABLE_TITLE.test(title) ? title : null) : null;
+  const output = shell ? shellOutput(preview?.output, tool?.detail, command) : '';
   const stats = family === 'edit' ? diffStats(block) : null;
   const hasBody = shell ? !!(output || block.overflow?.output || block.overflow?.detail) : !!(preview?.lines?.length || preview?.output || tool?.detail);
-  const label = toolLabelParts(title, { command: !!command, running: state === 'running' });
+  // A title the fold left as the raw command gets a verb; a rewritten one has its own.
+  const label = toolLabelParts(title, { command: shell && !READABLE_TITLE.test(title), running: state === 'running' });
   const line = (
     <>
       <StatusGlyph state={state} />

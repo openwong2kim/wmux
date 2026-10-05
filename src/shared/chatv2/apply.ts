@@ -1000,6 +1000,7 @@ function samePreview(a?: ToolPreview, b?: ToolPreview): boolean {
     a.kind === b.kind &&
     a.path === b.path &&
     a.query === b.query &&
+    a.command === b.command &&
     a.fileName === b.fileName &&
     a.additions === b.additions &&
     a.deletions === b.deletions &&

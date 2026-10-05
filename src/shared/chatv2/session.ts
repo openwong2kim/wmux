@@ -87,6 +87,8 @@ export type ToolPreview = {
   /** Write supplied new contents without the previous file to compare. */
   contentOnly?: boolean;
   query?: string;
+  /** The command a shell call ran, kept after the fold rewrites its title. */
+  command?: string;
   lines?: ToolPreviewLine[];
   output?: string;
 };
