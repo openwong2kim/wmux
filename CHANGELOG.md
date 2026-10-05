@@ -1,3 +1,215 @@
+## [4.0.0-beta.1] — 2026-10-05
+
+### Added
+
+- **Moa knows which workspace you're looking at.** When you type to Moa while
+  viewing another workspace, it now also gets one line naming that workspace,
+  its active pane, branch and working directory. So "tell iOS about this" or
+  "merge this when it's green" points at the right thing. Before this, Moa had
+  no idea where you were and had to ask. The line never includes terminal
+  output. It's only added for messages you type yourself, only while Moa is on,
+  and not while you're viewing Moa's own workspace.
+
+- **Moa can press small approvals for you.** Settings → Moa has a new
+  "Press small approvals" switch, off by default. When it is on, a worker in a
+  workspace set to Danger that stops to ask permission to run a command or edit
+  a file is answered for you, and Moa is told afterwards. Anything that looks
+  destructive, every workspace not set to Danger, and every question still
+  wait for you. The HQ can deny another workspace's worker but never approve
+  one on its own judgement.
+
+- **Phone: talk to Moa.** While Moa is on, `/api/config` names Moa's own pane as `moaSessionId`, and a paired phone can read its conversation, send it messages, stop a turn and type into it, with the same transcript and input permissions as any pane. Before, every orchestrator pane was off limits to the phone. Only Moa's pane opens, and only for those routes. Switching Moa off, changing its workspace or losing it closes access at once, even for a request already in flight. Each phone send to Moa is recorded in the device audit log. (#1769)
+
+- **Hand an issue or PR to an agent by dragging it.** Drag a row from the Git
+  page onto an agent pane or a workspace in the sidebar (hold it over
+  Workspaces in the rail to get there). A small popover asks where it goes and
+  takes an optional note. The agent gets a short reference with the link and
+  the `gh` command to read the item, never the item's own text, and it waits
+  until nobody is typing in that pane. Work already running on the item is
+  flagged, with Send anyway. The detail header's **Send to agent…** does the
+  same from the keyboard, and **Start in a new worktree** opens the issue on
+  its own `issue-<n>-…` branch with your default agent.
+
+- **Connect GitHub from the Git page.** Signed out, the page shows one connect
+  card. Connect shows GitHub's one-time code in the app with Copy code & open
+  GitHub, and the page loads by itself once you finish in the browser. Before,
+  you had to sign in from a terminal tab and come back. gh still keeps the
+  credential; wmux stores no token.
+
+- **The right panel is Moa.** One conversation with Moa, whatever workspace is on screen: chat bubbles over Moa's terminal (with **View as terminal** when you need the real thing), the decisions waiting on you across every task at the top with one-click answers, and a card for each piece of work Moa handed out, expanding to its decisions, agent state and PR. With Moa off, the panel says so and links to Settings. (#1771)
+
+- **Moa has a face.** Moa's character sits in the panel header and the titlebar, idle, working, needing you or done. It stays still under the system's reduced-motion setting or Settings → Moa → Reduce motion. (#1771)
+
+- **Moa taps you on the shoulder.** With the panel closed, a short bubble under the titlebar icon says when a decision is waiting or delegated work has finished, then shrinks to a dot: yellow for a decision, grey for a reply you haven't seen. Turn it off with Settings → Moa → Bubble notifications. (#1771)
+
+- **Review and merge a pull request from the Git page.** The PR detail now
+  lists its changed files with their diffs, shows review threads under the
+  lines they are about, and lets you comment on a line, reply, approve,
+  request changes or comment. Squash and merge opens with the subject
+  "<title> (#n)" and an empty body, and is disabled with the reason while
+  checks fail or there are conflicts. Every action is tied to the commit you
+  were looking at: if new commits land meanwhile, wmux refuses and says so.
+
+- **CI on the PR, with the failure in front of you.** Each check is listed
+  with its status; a failed GitHub Actions run shows the end of its log as
+  plain text, with Open on GitHub and a Rerun failed jobs button that only
+  ever runs when you click it.
+
+- **Who acts next** shows in the PR header when wmux has linked work to it.
+
+- **Moa proposes new issues and PRs.** Turn it on in Settings › Moa › Issues and PRs (off by default; it needs Moa on with an HQ). For each GitHub repo open in a workspace, Moa checks for new issues and for new PRs from other people (every 10 minutes by default, using the Git page's cached reads) and asks with one card per item: hand it to that repo's workspace, not now, or ignore the repo. It only proposes and never sends without your answer. The one exception: an item labeled `wmux:auto` by you (the account gh is signed in as) or by a trusted author goes straight to a workspace set to Danger. An item is never proposed twice, and turning Moa or the setting off takes its open cards down. Cards appear once the Git page's hand-off path is available in the build. (#1775)
+
+- **Moa remembers precedents and skills you approve.** When you answer one of Moa's questions, or Moa drafts a skill, a "Remember this?" card appears in Moa's deck with Save and Discard. The card shows the full text that Save will keep, and a long text must be opened before Save is available. A saved answer becomes a precedent in Moa's memory, and a saved skill becomes a Claude Code skill in Moa's brain folder. Moa reads both at the start of a new conversation as background, not as instructions. Moa cannot write its memory itself: it can only leave proposals in one folder, and nothing is kept until you click Save. Settings → Moa lists what is kept, each with Remove, and has a switch to stop the proposals. With Moa off, nothing is proposed. (#1776)
+
+- **Moa keeps a track record and writes a weekly retro.** While Moa is on, wmux counts, per workspace and agent, how much work was handed out, how long it took to finish, nudges, decisions, approvals (pressed by rule or by you) and stalls. The counts come from wmux's own task data only, never task text, and are kept for 12 weeks. Moa reads them when it picks where to delegate, but cannot change them. Once a week (Monday 09:00 by default) Moa's briefing shows a short retro: how often you were asked compared with the week before, work that sat waiting for hours, questions that keep coming back, and the slowest work. It has Open details and Dismiss. Settings › Moa has the retro switch, its day and time, and Clear stats. With Moa off, nothing is counted or shown. (#1777)
+
+- `fanout_start` `agents[]` entries take an optional `effort` (e.g. `{agent: "claude", model: "claude-opus-5-5", effort: "medium"}` or `{agent: "codex", effort: "low"}`), so a worker no longer silently inherits the operator's global CLI effort. An agent without an effort flag ignores it and the reply carries a warning. (#1781)
+
+- **The phone can start an agent without a first message, or continue the previous conversation.** `POST …/chat/launch` now accepts an omitted or empty `prompt`, which types only the agent launcher. It also accepts `resume: true`, which runs `claude --continue` or `codex resume --last` in the pane's directory, with an optional first message after resuming. If there is no earlier conversation for that agent in that directory, the launch is refused with `resume-unavailable` before anything is typed. If another pane is still running that conversation, it is refused with `resume-in-use`. Bypass and YOLO still need the server ceiling and an explicit confirmation. `/api/config` advertises `chatLaunchBare` and `chatLaunchResume`, so the app shows these options only on daemons that support them. Before this change, a launch always needed a first message and always started a new conversation. (#1783)
+
+- **Moa's own permission prompt shows up where you are.** When Moa stops on its own permission prompt, the Moa chat now names what it wants to use, and a paired phone gets the same card in its approvals inbox. A card tied to the exact dialog on screen can be answered from the Moa chat, with the same checks as any other prompt card (still the prompt on screen, one answer only, not in the first moment it appears); otherwise it offers Answer in terminal. The phone shows the card but does not answer it yet. Moa's own automatic approvals never press it. (#1785)
+
+- **A fan-out task's conversation in Fleet.** Select a fan-out task on the Fleet board and its mission channel shows at the foot: worker reports, orchestrator instructions, ledger transitions and questions, read-only, oldest first and live. Moa's task cards and its Waiting on you rows have an "Open conversation" link to the same view, and so does the deck ledger's channel jump. Since the right panel became Moa only, the mission channel had no desktop view. (#1789)
+
+- **Set a pane's role from Fleet.** Each agent row's menu has Role… (or press
+  R), and the role shows on the card. (#1795)
+
+- **Moa asks before it hands work to another workspace.** When you ask Moa to
+  give a job to an agent in another workspace, a card now appears in that
+  workspace and in Moa's "Waiting on you": Hand off, Edit or Cancel. Only your
+  click sends it, and it arrives in the agent's pane as your own instruction,
+  with one line naming the task. Before, Moa typed a message headed "From:
+  Moa" into the pane, and a careful agent rightly refused it because it was
+  not your instruction; Moa never saw the refusal and the task stayed queued.
+
+- **Moa hears back from the agent.** When the agent stops on a question (or
+  declines), the task moves to "needs input" and Moa is told, with the agent's
+  last words marked as unverified. Moa's task card shows that question and
+  links to the pane. Closing the pane or quitting the agent cancels the task.
+
+- **Danger mode can skip the card.** When both the target workspace and Moa's
+  HQ are in danger mode, Moa may hand off without asking: you get a receipt in
+  Moa's panel with Stop and Open pane. Work built from GitHub or other outside
+  text always asks, and so does anything past six hand-offs per workspace per
+  hour. Turn it off in Settings › Moa › "Let Moa hand off to danger-mode
+  workspaces without asking".
+
+- **The phone shows a pending hand-off.** The paired phone sees that a
+  hand-off card is waiting in a workspace (read only; answer it on the desktop).
+
+### Changed
+
+- **No automated approve lands on a critical prompt or under a lowered owner.**
+  A brain or the HQ lane can no longer approve a prompt flagged as destructive;
+  it stays in your approval inbox. Lowering a workspace from Danger now lowers
+  the workers it already started, at once.
+
+- **The Git page opens on Issues**, then remembers your last tab, and the
+  branch bar is folded to one thin line until you open it.
+
+- **One panel button.** While Moa is on, the titlebar Moa icon opens and closes the right panel in place of the panel toggle. (#1771)
+
+- **The right panel is Moa only.** Its Channels tab is gone. Channels themselves stay: agents still use them, and the phone still lists them. (#1771)
+
+- **The Git page leads with the repo.** The header is the repo's `owner/repo`
+  with its open issue and pull request counts, and the page opens on Issues
+  and Pull requests. Branches, the ship button and worktrees move to a
+  secondary Worktrees tab.
+
+- **Pick the repo from the Git page header.** The repo name opens a list of
+  every repo in your open workspaces, plus All repos and Follow active
+  workspace. Type to filter. A picked repo stays, across restarts too, until
+  you pick another, so switching workspaces no longer moves the page.
+
+- **Moa stays in view on the Git page.** The page sits beside the tools
+  panel instead of covering it, and an issue or pull request dragged onto
+  the panel goes to Moa.
+
+- **The titlebar names the page you are on.** On Git, Fleet, Schedules and
+  Remote it shows the page's name instead of the workspace's name and
+  branch, and hides New workspace. Search & commands stays.
+
+- **Prerelease tags ship as GitHub prereleases.** A tag like `v4.0.0-beta.1`
+  now publishes a GitHub prerelease that is never marked latest, and is not
+  pushed to Chocolatey or WinGet. Existing installs are never offered it:
+  update.electronjs.org skips prereleases and the updater reads its manifests
+  from the latest release. Before, every `v*` tag went out as a full release to
+  every channel. (#1790)
+
+- **The titlebar stops repeating the sidebar.** New workspace is no longer in
+  the titlebar: use the sidebar's `+`, or the rail's when the sidebar is
+  collapsed. While the sidebar is open the titlebar also drops the
+  workspace's name and branch, which the highlighted row already shows;
+  collapse the sidebar and they come back. (#1795)
+
+- **A sidebar toggle in the titlebar.** Right after `wmux` sits a toggle that
+  pairs with Moa's panel toggle at the other end; Ctrl+Shift+B still works.
+  Both toggles are plain icons, with no fill unless you hover them. (#1795)
+
+- **A quieter titlebar.** The Search & commands box and the Settings gear
+  are gone; the middle of the titlebar is free space to drag the window.
+  ⌘K (Ctrl+K on Windows and Linux) still opens the command palette. (#1795)
+
+- **Settings moved to a More menu.** The `⋯` button at the foot of the rail
+  replaces the collapse arrow and holds Command palette (⌘K), Settings (⌘,),
+  Turn on Moa… (while Moa is off), Keyboard shortcuts, Check for updates and
+  the version. (#1795)
+
+- **No mystery "M" on the rail.** The rail no longer has an entry for Moa's
+  workspace; Moa's panel is its home, and its ⋯ menu shows Moa's terminal.
+  (#1795)
+
+- **No right panel while Moa is off.** With Moa off, the right panel held
+  only an off notice and a task list Fleet already shows, so it is gone and
+  the terminals take the full width. Turn Moa on from Settings › Moa or the
+  More menu; the panel opens the first time. The sidebar's Tasks line opens
+  Fleet while Moa is off. (#1795)
+
+- **The sidebar slides open and closed.** Terminals are refitted once when
+  the slide ends instead of on every frame, so nothing reflows mid-motion.
+  It snaps instantly if your system asks for reduced motion. (#1795)
+
+- **Moa stays beside every page.** Fleet, Schedules and Remote now leave
+  Moa's panel in view, as Git did, and Moa's button opens it in place
+  instead of leaving the page. (#1795)
+
+- **Moa is no longer a Fleet worker.** Moa's own workspace is left off the
+  Fleet board, its counts and the titlebar's running and need-you counts.
+  Its decisions still reach Waiting on you. (#1795)
+
+- **A calmer Moa panel.** The always-on Fleet list and control rows are gone;
+  Model, Mode, New session, Wake, the terminal view, Loop, Schedules and Moa
+  settings live in one `⋯` menu on Moa's header, with the mode shown as a
+  small label. The panel scrolls as one column (Waiting on you, delegated
+  work, then the chat), decision cards are never cut off, the briefing no
+  longer repeats a waiting decision, and the composer is a single field.
+  (#1795)
+
+- **Chat folds runs of tool calls into one line.** A turn that reads, edits and runs commands now shows "Read 4 files", "Edited 2 files +5 −1" and "Ran 3 commands". Click a line to see the calls behind it. Before, each call was its own row and a long turn buried the reply. Approvals, questions, failed calls and errors are never folded, so anything that needs you stays in view. Tool rows are quieter until you hover or open them. Edits show green and red line counts, and a diff block links to the file. Command output appears under a dim `$ command` line and fades where it scrolls, and a decided approval shows a check or a cross. New rows fade in gently, but not under reduced motion. (#1797)
+
+### Fixed
+
+- **Codex panes bind to their real conversation.** A fresh Codex pane, a fan-out worker especially, could be bound to Codex's internal title-generation thread, which writes no conversation record, and then stay without a turn view for good once the real turn was interrupted. A pane now binds only to a thread whose record exists, and a fresh pane finds its record from its working directory within seconds of launch; a directory shared by several Codex panes is left alone. The title thread's completion also no longer marks a long-running turn as done. (#1764)
+
+- **The forced-shutdown backstop requires a verified daemon script identity.** An unavailable command-line probe no longer permits terminating a process solely because its executable name matches. If identity cannot be verified and graceful shutdown also fails, the daemon may remain running; retry shutdown once process inspection is available. On Windows an update install uses the same shutdown, so in that rare case the install is refused and the update can be retried. The log now says when the backstop refused an unverifiable daemon instead of reporting that no daemon was found. Verified daemons started by a different host remain eligible for termination. (#1774)
+
+- The repo name on the Git page is no longer cut short while there is room
+  for it; hover it for the full name.
+
+- Handing an issue or pull request to an agent no longer says "Sent" when
+  wmux could only paste it (a busy Codex can take the paste and miss the
+  Enter): it says it was pasted and asks you to check the agent started.
+
+- **Moa's first message after a cold start reaches it whole.** When Moa's terminal brain had just started, a long first prompt could arrive with most of its beginning missing, and Moa then ran that turn without its instructions and context. The prompt is now typed as one paste. Moa checks what the terminal actually received; a damaged copy is discarded unrun and typed again. If it keeps arriving damaged, the turn stops with a message instead of running on part of the prompt. (#1788)
+
+- **Mouse and focus reports no longer get typed into the shell after an agent dies.** When a TUI agent such as Claude Code was killed or crashed, the mouse tracking and focus reporting it had turned on stayed on. Back at the shell prompt, every pointer move and focus change then landed in the prompt as junk like `[555;24;14M` or `[O[I`. wmux now watches for the shell's prompt to come back and switches those modes off in the terminal. On the desktop wmux first checks that the program is really gone, so one still running in the background or stopped with Ctrl+Z keeps its mouse. Bracketed paste is left alone, and the fix applies to desktop panes, remote mirror panes and the phone page. (#1794)
+
+- **Panes started from inside Claude Code are no longer "nested" sessions.**
+  If wmux itself was launched from a Claude Code session, new panes, and panes
+  restored after a restart, inherited Claude Code's session markers, so a
+  `claude` started there did not save its conversation and could not be
+  resumed. Your own settings such as `CLAUDE_CONFIG_DIR` are kept.
+
 ## [3.67.0] — 2026-10-04
 
 ### Added
