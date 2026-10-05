@@ -69,8 +69,10 @@ describe('MoaMemoryCard', () => {
     current = short;
     await act(async () => listeners.forEach((l) => l()));
     await flush();
-    expect(q('[data-moa-memory-card]')?.textContent).toContain('Remember this?');
+    expect(q('[data-moa-memory-card]')?.textContent).toContain('Save this as a skill for next time?');
     expect(q('[data-moa-memory-text]')?.textContent).toContain('Ask for the log first.');
+    // The frontmatter is Moa's, not the operator's.
+    expect(q('[data-moa-memory-text]')?.textContent).not.toContain('name: triage-ci');
     expect(q('[data-moa-memory-toggle]')).toBeNull();
     expect(pending).toHaveBeenLastCalledWith(true);
     // No free-text answer on this card.
@@ -114,5 +116,42 @@ describe('MoaMemoryCard', () => {
     expect(api.memoryResolve).toHaveBeenCalledWith({ id: 'c2', answer: 'discard', fullTextShown: false });
     expect(q('[role="alert"]')).not.toBeNull();
     expect(q('[data-moa-memory-card]')).not.toBeNull();
+  });
+
+  it('a precedent reads as one plain sentence: no frontmatter, id, kind or English boilerplate', async () => {
+    current = {
+      id: 'c3',
+      kind: 'precedent',
+      name: '97c3423382b5',
+      question: 'Remember this answer as a precedent for next time?',
+      description: 'math.js를 직접 볼 수 없습니다. 완료로 처리할까요?',
+      fullText: [
+        '---', 'name: 97c3423382b5', 'description: "math.js를 직접 볼 수 없습니다. 완료로 처리할까요?"', 'kind: precedent', '---',
+        'A past answer, not a rule: if the situation differs, ask again.', '',
+        'Question: math.js를 직접 볼 수 없습니다. 완료로 처리할까요?', 'Answer: 완료로 처리', 'Answered: 2026-10-05T12:00:00.000Z', 'Source task: none', '',
+      ].join('\n'),
+      replaces: false,
+    };
+    await act(async () => root.render(<MoaMemoryCard api={api} t={t} />));
+    await flush();
+    const text = q('[data-moa-memory-card]')!.textContent!;
+    expect(text).toContain('Remember your answer for next time?');
+    expect(q('[data-moa-memory-rule]')!.textContent).toBe('Next time Moa would ask “math.js를 직접 볼 수 없습니다. 완료로 처리할까요?”, it can go with “완료로 처리”.');
+    for (const raw of ['---', '97c3423382b5', 'kind:', 'precedent', 'A past answer', 'Answered:', 'Source task']) expect(text).not.toContain(raw);
+    expect(q('[data-moa-memory-text]')).toBeNull();
+    expect(q('[data-moa-memory-discard]')!.textContent).toBe('Not now');
+    await act(async () => q('[data-moa-memory-save]')!.click());
+    await flush();
+    expect(api.memoryResolve).toHaveBeenCalledWith({ id: 'c3', answer: 'save', fullTextShown: true });
+  });
+
+  it('in Korean, the card speaks Korean', async () => {
+    setLocale('ko');
+    current = { ...short, kind: 'precedent', fullText: '---\nname: x\nkind: precedent\n---\nQuestion: 진행할까요?\nAnswer: 네\n' };
+    await act(async () => root.render(<MoaMemoryCard api={api} t={t} />));
+    await flush();
+    expect(q('[data-moa-memory-card]')!.textContent).toContain('이 답을 다음에도 쓸까요?');
+    expect(q('[data-moa-memory-rule]')!.textContent).toContain('“네”');
+    expect(q('[data-moa-memory-discard]')!.textContent).toBe('나중에');
   });
 });

@@ -31,6 +31,27 @@ export function previewOf(fullText: string): { text: string; complete: boolean }
   return { text, complete: text === fullText.trimEnd() };
 }
 
+/**
+ * The card in plain words. The proposal file starts with frontmatter (name,
+ * description, kind) and markers that are for Moa, not the operator: they are
+ * left out. A precedent (main writes it from the operator's own answer) reads
+ * as one sentence, its question and answer; any other proposal shows its body.
+ */
+export function plainMemory(card: Pick<MoaMemoryCardData, 'kind' | 'fullText'>):
+  | { kind: 'precedent'; question: string; answer: string }
+  | { kind: 'text'; text: string } {
+  let body = card.fullText.replace(/\r\n/g, '\n');
+  const front = /^---\n[\s\S]*?\n---\n?/.exec(body);
+  if (front) body = body.slice(front[0].length);
+  body = body.split('\n').filter((line) => !/^\s*<!--.*-->\s*$/.test(line)).join('\n').trim();
+  if (card.kind === 'precedent') {
+    const question = /^Question:[ \t]*(.+)$/m.exec(body)?.[1]?.trim();
+    const answer = /^Answer:[ \t]*(.+)$/m.exec(body)?.[1]?.trim();
+    if (question && answer) return { kind: 'precedent', question, answer };
+  }
+  return { kind: 'text', text: body };
+}
+
 const BUTTON = `h-[26px] px-2 rounded-md text-[12px] transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${FOCUS_RING}`;
 
 export function MoaMemoryCard({
@@ -89,8 +110,12 @@ export function MoaMemoryCard({
 
   if (!card) return null;
 
-  const preview = previewOf(card.fullText);
+  const plain = plainMemory(card);
+  const shownText = plain.kind === 'text' ? plain.text : '';
+  const preview = plain.kind === 'text' ? previewOf(shownText) : { text: '', complete: true };
   const mustOpen = !preview.complete && !expanded;
+  const title = t(card.kind === 'precedent' ? 'moa.memoryCard.precedentTitle' : card.kind === 'skill' ? 'moa.memoryCard.skillTitle' : 'moa.memoryCard.noteTitle')
+    + (card.replaces ? ` ${t('moa.memoryCard.replaces')}` : '');
   const answer = async (choice: 'save' | 'discard'): Promise<void> => {
     if (submitting) return;
     setSubmitting(true);
@@ -120,22 +145,36 @@ export function MoaMemoryCard({
         {t('moa.memoryCard.eyebrow')}
       </div>
       <div className="text-[13px] font-semibold text-[var(--text-main)] leading-relaxed" {...tokenAttrs('textMain', 'text')}>
-        {card.question}
+        {title}
       </div>
-      <div className="text-[12px] text-[color-mix(in_srgb,var(--text-main)_70%,transparent)] leading-relaxed">
-        {card.description}
-      </div>
-      {/* The text Save writes, as plain text: data, never markup. */}
-      <pre
-        id={fullId}
-        data-moa-memory-text={expanded ? 'full' : 'preview'}
-        tabIndex={expanded ? 0 : undefined}
-        className={`m-0 rounded-md border border-[var(--line)] bg-[var(--bg-base)] px-2.5 py-2 text-[11px] font-mono leading-relaxed whitespace-pre-wrap break-words text-[var(--text-main)] shrink-0`}
-        {...tokenAttrs('textMain', 'text')}
-      >
-        {expanded ? card.fullText.trimEnd() : preview.text}
-        {!expanded && !preview.complete ? '\n…' : ''}
-      </pre>
+      {plain.kind === 'precedent' ? (
+        <>
+          {/* The operator's own answer and Moa's question: text, never markup. */}
+          <p data-moa-memory-rule className="m-0 text-[13px] text-[var(--text-main)] leading-relaxed break-words" {...tokenAttrs('textMain', 'text')}>
+            {t('moa.memoryCard.precedentRule', { question: plain.question, answer: plain.answer })}
+          </p>
+          <p className="m-0 text-[12px] text-[color-mix(in_srgb,var(--text-main)_75%,transparent)] leading-relaxed">
+            {t('moa.memoryCard.precedentNote')}
+          </p>
+        </>
+      ) : (
+        <>
+          <div className="text-[12px] text-[color-mix(in_srgb,var(--text-main)_75%,transparent)] leading-relaxed">
+            {card.description}
+          </div>
+          {/* What Save keeps, as plain text: data, never markup. */}
+          <pre
+            id={fullId}
+            data-moa-memory-text={expanded ? 'full' : 'preview'}
+            tabIndex={expanded ? 0 : undefined}
+            className={`m-0 rounded-md border border-[var(--line)] bg-[var(--bg-base)] px-2.5 py-2 text-[11px] font-mono leading-relaxed whitespace-pre-wrap break-words text-[var(--text-main)] shrink-0`}
+            {...tokenAttrs('textMain', 'text')}
+          >
+            {expanded ? shownText : preview.text}
+            {!expanded && !preview.complete ? '\n…' : ''}
+          </pre>
+        </>
+      )}
       {!preview.complete && (
         <button
           type="button"
@@ -145,7 +184,7 @@ export function MoaMemoryCard({
           onClick={() => setExpanded((v) => !v)}
           className={`${BUTTON} self-start shrink-0 text-[color-mix(in_srgb,var(--text-main)_70%,transparent)] hover:text-[var(--text-main)]`}
         >
-          {expanded ? t('moa.memoryCard.hideFull') : t('moa.memoryCard.showFull', { chars: card.fullText.length })}
+          {expanded ? t('moa.memoryCard.hideFull') : t('moa.memoryCard.showFull', { chars: shownText.length })}
         </button>
       )}
       <div className="flex flex-wrap items-center gap-1.5">
