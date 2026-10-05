@@ -30,6 +30,7 @@ let container: HTMLDivElement;
 let root: Root;
 const write = vi.fn();
 const setLabel = vi.fn(async () => ({ ok: true }));
+const setRole = vi.fn(async () => ({ ok: true }));
 const stashPane = vi.fn(() => true);
 const unstashPane = vi.fn(() => true);
 const closePane = vi.fn();
@@ -71,11 +72,11 @@ function openMenu(ptyId: string): HTMLElement[] {
 
 beforeEach(() => {
   vi.useRealTimers();
-  write.mockClear(); setLabel.mockClear(); stashPane.mockClear(); unstashPane.mockClear(); closePane.mockClear(); dispose.mockClear();
+  write.mockClear(); setLabel.mockClear(); setRole.mockClear(); stashPane.mockClear(); unstashPane.mockClear(); closePane.mockClear(); dispose.mockClear();
   setLabel.mockImplementation(async () => ({ ok: true }));
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     pty: { write, dispose },
-    metadata: { setLabel },
+    metadata: { setLabel, setRole },
   };
   act(() => {
     useStore.setState({
@@ -125,7 +126,7 @@ describe('FleetView — row verbs', () => {
     mount();
     await flushRaf();
     const items = openMenu('pty-1');
-    expect(items.map((el) => el.dataset.paneMenuAction)).toEqual(['jump', 'message', 'stash', 'label', 'close']);
+    expect(items.map((el) => el.dataset.paneMenuAction)).toEqual(['jump', 'message', 'stash', 'label', 'role', 'close']);
     act(() => { items[2].click(); });
     expect(stashPane).toHaveBeenCalledWith('p1', 'ws-1');
   });
@@ -396,5 +397,32 @@ describe('FleetView — row verbs', () => {
     expect(useStore.getState().fleetViewVisible).toBe(true);
     await flushRaf();
     expect(document.activeElement).toBe(row('pty-1'));
+  });
+
+  it('Role… in the menu opens the role picker; a pick calls metadata.setRole with the pane ids', async () => {
+    mount();
+    await flushRaf();
+    const items = openMenu('pty-1');
+    act(() => { items.find((el) => el.dataset.paneMenuAction === 'role')!.click(); });
+    const editor = container.querySelector<HTMLElement>('[data-fleet-editor="role"]')!;
+    // None (pressed: no role yet) plus the built-in roles.
+    expect([...editor.querySelectorAll<HTMLButtonElement>('button')].map((b) => b.dataset.fleetRole)).toEqual(['', 'Builder', 'Reviewer', 'Tester', 'Planner']);
+    expect(editor.querySelector('[data-fleet-role=""]')!.getAttribute('aria-pressed')).toBe('true');
+    act(() => { editor.querySelector<HTMLButtonElement>('[data-fleet-role="Reviewer"]')!.click(); });
+    expect(setRole).toHaveBeenCalledWith('p1', 'ws-1', 'Reviewer');
+    expect(container.querySelector('[data-fleet-editor="role"]')).toBeNull();
+  });
+
+  it('r opens the picker on a role-holding row, shows the role (custom too) on the card, and None clears it', async () => {
+    act(() => useStore.setState({ paneRole: { p1: 'Release captain' } }));
+    mount();
+    await flushRaf();
+    expect(row('pty-1').querySelector('[data-fleet-chip="role"]')?.textContent).toBe('Release captain');
+    act(() => row('pty-1').focus());
+    key(row('pty-1'), 'r');
+    const editor = container.querySelector<HTMLElement>('[data-fleet-editor="role"]')!;
+    expect(editor.querySelector('[data-fleet-role="Release captain"]')!.getAttribute('aria-pressed')).toBe('true');
+    act(() => { editor.querySelector<HTMLButtonElement>('[data-fleet-role=""]')!.click(); });
+    expect(setRole).toHaveBeenCalledWith('p1', 'ws-1', '');
   });
 });

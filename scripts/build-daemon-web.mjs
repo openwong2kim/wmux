@@ -105,12 +105,12 @@ const terminalSharedJs = buildSync({
   logLevel: 'error',
 }).outputFiles[0].text;
 // app.js feature-detects these and quietly degrades without them (no stale
-// replay reset, no input gate, sixel off), so a dropped re-export would ship
-// unnoticed. Refuse the build instead.
+// replay reset, no input gate, sixel off, no live prompt-mode reset), so a
+// dropped re-export would ship unnoticed. Refuse the build instead.
 {
   const sandbox = {};
   runInNewContext(terminalSharedJs, sandbox);
-  for (const name of ['staleReplayResetLevel', 'gateUserInput', 'capSixelImageSize']) {
+  for (const name of ['staleReplayResetLevel', 'gateUserInput', 'capSixelImageSize', 'installShellPromptModeReset', 'shellPromptModeResetFor']) {
     if (typeof sandbox.wmuxTerminalShared?.[name] !== 'function') {
       console.error(`build-daemon-web: the shared terminal bundle does not export ${name}()`);
       process.exit(1);

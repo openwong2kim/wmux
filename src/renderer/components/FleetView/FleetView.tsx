@@ -4,6 +4,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useT } from '../../hooks/useT';
 import {
   selectFleetBoard,
+  fleetHqId,
   selectHookRunningByPtyId,
   selectUnverifiablePaneMinutes,
   fleetTargetPtyId,
@@ -64,10 +65,10 @@ const IDLE_PEEK = 5;
 /** Roving key of the collapsed "Idle N" row (pane ids never take this form). */
 const IDLE_TOGGLE_KEY = 'fleet:idle-toggle';
 
-/** Fleet is a non-modal overlay above the tools dock. AppLayout owns its
- * positioning, so opening it never resizes terminal panes. The covered dock
- * stays mounted but inert; close restores it and the original focus target.
- * Subscriptions and polling run only while Fleet is open. */
+/** Fleet is a rail page beside the tools dock (the dock stays live next to
+ * it). RailPage owns its positioning, so opening it never resizes terminal
+ * panes; close restores the original focus target. Subscriptions and polling
+ * run only while Fleet is open. */
 export default function FleetView() {
   const t = useT();
   const setVisible = useStore((s) => s.setFleetViewVisible);
@@ -86,6 +87,9 @@ export default function FleetView() {
   const commandRunningByPtyId = useStore((s) => s.commandRunningByPtyId);
   const agentAliveByPtyId = useStore((s) => s.agentAliveByPtyId);
   const usageLimitWaiting = useStore((s) => s.usageLimitWaiting);
+  // Moa's HQ is left off the board (it is the main bot, not a worker). Only
+  // the id is subscribed, so Moa's other state changes never re-derive it.
+  const hqId = useStore(fleetHqId);
   const hookRunningByPtyId = useStore(useShallow(selectHookRunningByPtyId));
   const unverifiableMinutes = useStore(useShallow(selectUnverifiablePaneMinutes));
   const missions = useStore((s) => s.missionByPaneGroup);
@@ -159,7 +163,9 @@ export default function FleetView() {
       commandRunningByPtyId, agentAliveByPtyId, hookRunningByPtyId, remoteWorkspaces,
       surfaceLastMessage, surfaceOutputAt: useStore.getState().surfaceOutputAt,
       unverifiablePaneMinutes: unverifiableMinutes, usageLimitWaiting,
-    }, { now, sortMode: fleetSortMode }), [usageLimitWaiting, workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, supervisionByPtyId,
+      // fleetHqId reads the seed while `moa` is null: hand it the id resolved above.
+      moa: null, moaHqSeed: hqId,
+    }, { now, sortMode: fleetSortMode }), [usageLimitWaiting, hqId, workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, supervisionByPtyId,
     surfaceAgent, surfacePendingQuestion, surfaceActivityAt, surfaceTurnOpenAt,
     commandRunningByPtyId, agentAliveByPtyId, hookRunningByPtyId, remoteWorkspaces, unverifiableMinutes,
     surfaceLastMessage, now, fleetSortMode]);
@@ -810,7 +816,7 @@ export default function FleetView() {
         }
       }
 
-      // Fleet row verbs on the focused row: m message, s stash, l label,
+      // Fleet row verbs on the focused row: m message, s stash, l label, r role,
       // Backspace close. Only when the row itself holds focus — never while
       // typing in an input, textarea or contenteditable.
       if (tab === 'fleet' && onOptionRow && !e.ctrlKey && !e.metaKey && !e.altKey && !isEditableTarget(e.target)) {
@@ -830,11 +836,12 @@ export default function FleetView() {
           requestAnimationFrame(() => { focusActiveItemRef.current(); });
           return;
         }
-        if (row && !row.pane.remote && (key === 'm' || key === 's' || key === 'l' || key === 'Backspace')) {
+        if (row && !row.pane.remote && (key === 'm' || key === 's' || key === 'l' || key === 'r' || key === 'Backspace')) {
           e.preventDefault();
           e.stopPropagation();
           if (key === 's') toggleFleetStash(row.pane);
           else if (key === 'l') setEditor({ paneId: row.pane.paneId, kind: 'label' });
+          else if (key === 'r') setEditor({ paneId: row.pane.paneId, kind: 'role' });
           else if (key === 'Backspace') {
             if (verbsFor(row.pane).closeEnabled) setEditor({ paneId: row.pane.paneId, kind: 'close' });
           } else if (verbsFor(row.pane).messageEnabled) setEditor({ paneId: row.pane.paneId, kind: 'message' });

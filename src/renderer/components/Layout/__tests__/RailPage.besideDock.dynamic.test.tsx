@@ -1,19 +1,22 @@
 // @vitest-environment jsdom
 //
-// The Git page leaves the dock (Moa) in view beside it: the page is inset off
-// the dock's side of the sheet by measuring the dock, so nothing under it is
-// reflowed or resized; every other rail page still covers the whole sheet,
-// dock included. Focus left in the dock is dropped only when the page covers it.
+// Every rail page but Settings (Git, Fleet, Schedules, Remote) leaves the dock
+// (Moa) in view beside it: the page is inset off the dock's side of the sheet
+// by measuring the dock, so nothing under it is reflowed or resized; Settings
+// still covers the whole sheet, dock included. Focus left in the dock is
+// dropped only when the page covers it.
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useStore } from '../../../stores';
 import RailPage, { insetBesideDock } from '../RailPage';
+import { dockShownOn } from '../pagesBesideDock';
 
 vi.mock('../../Git/GitPage', () => ({ default: () => <div data-stub-git /> }));
 vi.mock('../../FleetView/FleetView', () => ({ default: () => <div data-stub-fleet /> }));
 vi.mock('../../Schedules/SchedulesView', () => ({ default: () => null }));
 vi.mock('../../Remote/RemotePage', () => ({ default: () => null }));
+vi.mock('../../Settings/SettingsPanel', () => ({ default: () => null }));
 
 const rect = (left: number, right: number) => ({ left, right, width: right - left, top: 0, bottom: 800, height: 800, x: left, y: 0, toJSON: () => ({}) }) as DOMRect;
 
@@ -67,16 +70,36 @@ describe('RailPage beside the dock', () => {
 
   const page = () => sheet.querySelector<HTMLElement>('.wmux-page');
 
-  it('the Git page ends at the dock; Fleet covers the whole sheet; switching never touches the sheet or the dock', () => {
+  it.each(['git', 'fleet', 'schedules', 'remote'] as const)('the %s page ends at the dock', (route) => {
     act(() => root.render(<RailPage />));
-    act(() => useStore.setState({ appRoute: 'git' }));
+    act(() => useStore.setState({ appRoute: route }));
+    expect(page()?.getAttribute('data-rail-page')).toBe(route);
     expect(page()?.style.right).toBe('320px');
     expect(page()?.style.left).toBe('0px');
     expect(page()?.getAttribute('data-beside-dock')).toBe('true');
+  });
+
+  it('the narrow-window overlay dock is measured the same way, so the page ends at it', () => {
+    // Overlay mode wraps the dock in [data-dock-overlay] inside the region.
+    const overlay = document.createElement('div');
+    overlay.setAttribute('data-dock-overlay', '');
+    dock.replaceWith(overlay);
+    overlay.appendChild(dock);
+    act(() => root.render(<RailPage />));
     act(() => useStore.setState({ appRoute: 'fleet' }));
-    expect(page()?.style.right).toBe('');
-    expect(page()?.getAttribute('data-beside-dock')).toBeNull();
+    expect(page()?.style.right).toBe('320px');
+  });
+
+  it('Settings covers the whole sheet, dock included; switching never touches the sheet or the dock', () => {
+    act(() => root.render(<RailPage />));
     act(() => useStore.setState({ appRoute: 'git' }));
+    expect(page()?.style.right).toBe('320px');
+    act(() => useStore.setState({ appRoute: 'settings' }));
+    expect(page()).toBeNull();
+    // The dock region goes inert under Settings (AppLayout gates it on this).
+    expect(dockShownOn('settings')).toBe(false);
+    expect(dockShownOn('fleet')).toBe(true);
+    act(() => useStore.setState({ appRoute: 'schedules' }));
     expect(page()?.style.right).toBe('320px');
     act(() => useStore.setState({ appRoute: 'workspaces' }));
     expect(page()).toBeNull();
@@ -111,12 +134,14 @@ describe('RailPage beside the dock', () => {
     observe.mockRestore();
   });
 
-  it('focus in the dock stays on the Git page and is dropped under a page that covers it', () => {
+  it('focus in the dock stays beside a rail page and is dropped under Settings, which covers it', () => {
     act(() => root.render(<RailPage />));
     dock.focus();
     act(() => useStore.setState({ appRoute: 'git' }));
     expect(document.activeElement).toBe(dock);
     act(() => useStore.setState({ appRoute: 'fleet' }));
+    expect(document.activeElement).toBe(dock);
+    act(() => useStore.setState({ appRoute: 'settings' }));
     expect(document.activeElement).not.toBe(dock);
   });
 });

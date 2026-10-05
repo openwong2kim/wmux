@@ -111,7 +111,7 @@ export function MoaMemoryCard({
   const body = (
     <div
       data-moa-memory-card={card.id}
-      className="flex flex-col min-h-0 max-h-full rounded-md px-4 py-3 space-y-2.5 border border-dashed border-[color-mix(in_srgb,var(--text-main)_30%,transparent)] bg-[color-mix(in_srgb,var(--text-main)_20%,transparent)]"
+      className="flex flex-col rounded-md px-4 py-3 space-y-2.5 border border-dashed border-[color-mix(in_srgb,var(--text-main)_30%,transparent)] bg-[color-mix(in_srgb,var(--text-main)_20%,transparent)]"
     >
       <div className="text-[11px] font-mono uppercase tracking-wider text-[var(--accent-yellow)]" {...tokenAttrs('warning', 'text')}>
         {t('moa.memoryCard.eyebrow')}
@@ -127,7 +127,7 @@ export function MoaMemoryCard({
         id={fullId}
         data-moa-memory-text={expanded ? 'full' : 'preview'}
         tabIndex={expanded ? 0 : undefined}
-        className={`m-0 rounded-md border border-[var(--line)] bg-[var(--bg-base)] px-2.5 py-2 text-[11px] font-mono leading-relaxed whitespace-pre-wrap break-words text-[var(--text-main)] ${expanded ? 'min-h-[6em] max-h-[50vh] flex-1 overflow-auto' : 'shrink-0 max-h-[9.5em] overflow-hidden'}`}
+        className={`m-0 rounded-md border border-[var(--line)] bg-[var(--bg-base)] px-2.5 py-2 text-[11px] font-mono leading-relaxed whitespace-pre-wrap break-words text-[var(--text-main)] shrink-0`}
         {...tokenAttrs('textMain', 'text')}
       >
         {expanded ? card.fullText.trimEnd() : preview.text}

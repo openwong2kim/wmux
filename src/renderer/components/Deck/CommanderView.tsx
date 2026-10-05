@@ -83,6 +83,7 @@ import { MoaMemoryCard } from '../Moa/MoaMemoryCard';
 import BrainTerminalEmbed from './BrainTerminalEmbed';
 import { DeckBriefingCard } from './DeckBriefingCard';
 import { AgentModeChipContainer } from './AgentModeChip';
+import { MoaHeaderMenu } from './MoaHeaderMenu';
 import { onAgentModeChanged } from './deckModeBus';
 import type { AgentMode } from '../../../main/deck/deckAutonomyStore';
 import Button from '../ui/Button';
@@ -124,7 +125,8 @@ export interface MoaBlock {
 
 /** What Moa mode adds to the pty layout. */
 export interface CommanderMoaSlots {
-  /** Rendered above everything else (Waiting on you, delegated work). */
+  /** Waiting on you, delegated work and the briefing. Drawn above the
+   *  terminal; the chat view already carries it inside its own scroll. */
   top?: React.ReactNode;
   /** The brain's transcript as chat bubbles, shown in place of the terminal
    *  while `view` is 'chat'. Null when there is no transcript source. */
@@ -191,7 +193,8 @@ export interface CommanderViewContentProps {
   /** 활성 pane의 라이브 cwd — 루프 설정 모달의 스킬 카탈로그 스캔 기준. */
   activePaneCwd?: string;
   /** P2① mission control — the Fleet roster slot, pinned above the thread.
-   *  Injected as a node so this surface stays presentational/store-free. */
+   *  Injected as a node so this surface stays presentational/store-free.
+   *  Not drawn in Moa mode (`moa` set). */
   fleetSlot?: React.ReactNode;
   /** D1 briefing — unread channel count for the active workspace (renderer-only
    *  overlay on the briefing card; main can't see it). */
@@ -284,6 +287,22 @@ export function CommanderViewContent({
   // — the state must survive the layout swap.
   const [railCollapsed, setRailCollapsed] = useState(true);
   const [automationExpanded, setAutomationExpanded] = useState(false);
+  // Moa's ⋯ menu opens Loop and Schedules: each bump is one click on the chip.
+  const [loopRequest, setLoopRequest] = useState(0);
+  const [schedulesRequest, setSchedulesRequest] = useState(0);
+  const moaHeaderMenu = moa ? (
+    <MoaHeaderMenu
+      t={t}
+      workspaceId={chatWorkspaceId}
+      brainBusy={brainBusy}
+      brainPtyId={brainPtyId}
+      chatAvailable={!!brainPtyId && moa.chat != null}
+      view={moa.view}
+      onViewChange={moa.onViewChange}
+      onOpenLoop={() => setLoopRequest((n) => n + 1)}
+      onOpenSchedules={() => setSchedulesRequest((n) => n + 1)}
+    />
+  ) : null;
   // The `#` jump for the ledger rows. The sidebar used to own this link; the
   // deck's rows own it now, so the sidebar could shrink to one navigation line
   // (DESIGN.md Layout Contract). The ledger summary is built in main from the
@@ -358,8 +377,18 @@ export function CommanderViewContent({
     chatWorkspaceId || quickActions.length > 0 ? (
       <div
         data-deck-control-bar
-        className={className}
+        // Moa: no always-on controls (they live in the header's ⋯ menu), so
+        // the row only shows while an opened loop/schedules panel, the approval
+        // countdown or a quick action has something in it.
+        className={moa ? `${className} empty:hidden` : className}
       >
+        {moa ? (
+          <>
+            <DeckLoopPanel t={t} workspaceId={chatWorkspaceId} cwd={activePaneCwd} hideTrigger openRequest={loopRequest} />
+            <DeckSchedulesPanel t={t} workspaceId={chatWorkspaceId} workspaceName={workspaceName} hideTrigger openRequest={schedulesRequest} />
+          </>
+        ) : (
+          <>
         {/* Mode = the single autonomy knob, always showing the current mode.
             모델 선택은 Agent 탭 인라인 드롭다운으로 이동(DESIGN.md Decisions
             Log 2026-07-20)했고, fan-out은 에이전트 툴바로 복귀했다. */}
@@ -379,6 +408,8 @@ export function CommanderViewContent({
         {chatWorkspaceId && (
           <NewSessionChipContainer t={t} workspaceId={chatWorkspaceId} busy={brainBusy} />
         )}
+          </>
+        )}
         {/* How long a displayed approval has before it auto-rejects. Renders
             nothing until a pending record carries a deadline. */}
         <DeckApprovalCountdown t={t} workspaceId={chatWorkspaceId} />
@@ -390,7 +421,8 @@ export function CommanderViewContent({
             the trailing edge stranded it alone on its own line with a gap).
             Neutral at rest, accent on hover (the DESIGN.md AI-action
             grammar), disabled while a turn streams. */}
-        {quickActions.some((action) => action.id !== 'recover-fleet' || recoveryPanes.length === 0 || !!brainPtyId) && (
+        {/* Not in Moa's panel: each recovered pane offers its own resume pill. */}
+        {!moa && quickActions.some((action) => action.id !== 'recover-fleet' || recoveryPanes.length === 0 || !!brainPtyId) && (
           <div data-deck-quick-actions className="flex flex-wrap gap-1.5">
             {quickActions.filter((action) => action.id !== 'recover-fleet' || recoveryPanes.length === 0 || !!brainPtyId).map((action) => (
               <button
@@ -430,7 +462,12 @@ export function CommanderViewContent({
         className="flex flex-col flex-1 min-h-0 bg-[var(--bg-mantle)]"
         {...tokenAttrs('bgMantle', 'bg')}
       >
-        {moa?.top}
+        {/* Moa's chat view carries its top inside the chat's own scroll. Over
+            the terminal it is capped with its own scroll, so pending decisions
+            can never squeeze the TUI to nothing. */}
+        {showTerminal && moa?.top && (
+          <div data-moa-pty-top className="shrink-0 max-h-[30%] overflow-y-auto">{moa.top}</div>
+        )}
         {/* Delegated tasks, pinned above everything: the ledger is the one
             state the brain, the workers and the Stop gate share. */}
         {!moa && (
@@ -446,10 +483,15 @@ export function CommanderViewContent({
             onLedgerPush={onLedgerPush}
           />
         )}
-        {/* One control row: the Fleet roster and the automation controls. */}
-        {fleetSlot}
+        {/* One control row: the Fleet roster and the automation controls. Moa's
+            panel draws no roster: the Fleet page lists every pane and Settings
+            binds roles. */}
+        {!moa && fleetSlot}
+        {moaHeaderMenu}
         {renderControlBar(
           'flex flex-wrap items-center gap-1 px-3 py-1.5 border-b border-[var(--stroke)] shrink-0',
+          // Moa: Wake and the view switch are in the header's ⋯ menu.
+          moa ? undefined :
           // Wake button — pty-layout only. With no composer, this is the
           // human's one-click "take a turn now"; the bubble layout's composer
           // already covers it. Disabled mid-turn: the busy reject would be the
@@ -472,22 +514,6 @@ export function CommanderViewContent({
               {t('deck.wakeNow') || 'Wake'}
             </button>
           ) : null}
-          {/* Moa: the chat look and the terminal are two views of ONE brain.
-              The terminal stays reachable for what only the TUI can show
-              (permission prompts, /login). Pressed = the terminal is showing. */}
-          {moaChatAvailable ? (
-            <button
-              type="button"
-              data-moa-terminal-toggle
-              aria-pressed={showTerminal}
-              onClick={() => moa!.onViewChange(showTerminal ? 'chat' : 'terminal')}
-              // Pressed reads as the emphasis fill, never a colour.
-              className={showTerminal ? `${ACTION_CHIP} !bg-[var(--selection-emphasis)] !text-[var(--text-main)]` : ACTION_CHIP}
-              {...tokenAttrs('textMain', 'text')}
-            >
-              {t('moa.panel.viewAsTerminal')}
-            </button>
-          ) : null}
           </>,
         )}
 
@@ -500,7 +526,7 @@ export function CommanderViewContent({
             top of the panel, above the TUI, never inside the collapsed rail.
             It is Moa's own: it shows whichever workspace the deck is on. When
             Moa owns the panel it is the first row of Waiting on you instead. */}
-        {!moa && <MoaMemoryCard t={t} className="px-3 pt-2 shrink-0 max-h-[55%] min-h-0 flex flex-col" />}
+        {!moa && <MoaMemoryCard t={t} className="px-3 pt-2 shrink-0 max-h-[55%] min-h-0 flex flex-col overflow-y-auto" />}
         {/* The brain pty is embedded here and nowhere else; in Moa's chat view
             it is not mounted at all until the operator asks for the terminal. */}
         {showTerminal ? (
@@ -518,7 +544,9 @@ export function CommanderViewContent({
             briefing) stay reachable here. Collapsed by default; the header
             carries the count, a busy dot, and an error affordance so a
             collapsed rail never hides something that needs the operator. */}
-        <div
+        {/* Moa's chat view IS the conversation (and says when Moa is working),
+            so the rail would only repeat it. */}
+        {showTerminal && <div
           className="border-t border-[var(--stroke)] shrink-0"
         >
           <button
@@ -564,15 +592,17 @@ export function CommanderViewContent({
                 : 'max-h-[30vh] overflow-y-auto px-4 pb-3 space-y-3'
             }
           >
-            <DeckBriefingCard
-              workspaceId={chatWorkspaceId}
-              t={t}
-              onJumpToPane={onJumpToPane}
-              resolvePtyPane={resolvePtyPane}
-              channelsUnread={channelsUnread}
-              onJumpToChannels={onJumpToChannels}
-              fleetSignature={fleetSignature}
-            />
+            {!moa && (
+              <DeckBriefingCard
+                workspaceId={chatWorkspaceId}
+                t={t}
+                onJumpToPane={onJumpToPane}
+                resolvePtyPane={resolvePtyPane}
+                channelsUnread={channelsUnread}
+                onJumpToChannels={onJumpToChannels}
+                fleetSignature={fleetSignature}
+              />
+            )}
             {!moa && (
               <DeckDecisionCard
                 workspaceId={chatWorkspaceId}
@@ -589,7 +619,7 @@ export function CommanderViewContent({
               </Fragment>
             ))}
           </div>
-        </div>
+        </div>}
       </div>
     );
   }
@@ -604,7 +634,6 @@ export function CommanderViewContent({
       className="flex flex-col flex-1 min-h-0 bg-[var(--bg-mantle)]"
       {...tokenAttrs('bgMantle', 'bg')}
     >
-      {moa?.top}
       {/* Delegated tasks, pinned above the roster (see the pty layout above). */}
       {!moa && (
         <DeckLedgerPanel
@@ -619,8 +648,9 @@ export function CommanderViewContent({
           onLedgerPush={onLedgerPush}
         />
       )}
-      {/* P2① — Fleet roster pinned above the thread (does not scroll with it). */}
-      {fleetSlot}
+      {/* P2① — Fleet roster pinned above the thread (does not scroll with it).
+          Not in Moa's panel (see the pty layout above). */}
+      {!moa && fleetSlot}
       {/* Message list — the brain conversation (Phase 2) plus the Phase 1
           @-mention fan-out threads. Chat convention: sticks to the bottom
           (newest message) as content streams in, unless the user scrolled up
@@ -631,6 +661,10 @@ export function CommanderViewContent({
         className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-3"
         data-commander-threads
       >
+        {/* Moa: Waiting on you, delegated work and the briefing scroll with the
+            conversation, one column (the negative margin undoes this list's
+            padding: the sections bring their own). */}
+        {moa?.top && <div className="-mx-4 -mt-3" data-moa-top>{moa.top}</div>}
         {/* No empty-state paragraph. It said "Ask the orchestrator to run your
             agents, or @mention agent panes to command them directly" — three
             centred lines saying what the composer's own placeholder ("Tell the
@@ -640,7 +674,8 @@ export function CommanderViewContent({
         {/* Reboot-recovery greeting card (P3b) — shown while recoverable panes
             exist and the card wasn't dismissed. One click sends the canned
             recovery prompt to the brain. */}
-        {recoveryPanes.length > 0 && (
+        {/* Not in Moa's panel: each recovered pane offers its own resume pill. */}
+        {!moa && recoveryPanes.length > 0 && (
           <div
             data-commander-recovery
             className="rounded-lg px-4 py-3 space-y-2 bg-[var(--selection-subtle)]"
@@ -686,15 +721,18 @@ export function CommanderViewContent({
             thread ABOVE the decision card; neutral chrome (amber stays reserved
             for the decision card + running dots). Self-contained + renders null
             when the config is disabled or there is nothing to brief. */}
-        <DeckBriefingCard
-          workspaceId={chatWorkspaceId}
-          t={t}
-          onJumpToPane={onJumpToPane}
-          resolvePtyPane={resolvePtyPane}
-          channelsUnread={channelsUnread}
-          onJumpToChannels={onJumpToChannels}
-          fleetSignature={fleetSignature}
-        />
+        {/* Moa's top already carries its briefing. */}
+        {!moa && (
+          <DeckBriefingCard
+            workspaceId={chatWorkspaceId}
+            t={t}
+            onJumpToPane={onJumpToPane}
+            resolvePtyPane={resolvePtyPane}
+            channelsUnread={channelsUnread}
+            onJumpToChannels={onJumpToChannels}
+            fleetSignature={fleetSignature}
+          />
+        )}
 
         {/* Decision gate — a brain-raised decision blocking the loop until the
             operator answers. Self-contained (hydrates from the durable store, so
@@ -765,6 +803,7 @@ export function CommanderViewContent({
           it never crowds the always-on controls. Each control's container
           self-hides when its preload API is absent, so pure jsdom parent tests
           are unaffected. */}
+      {moaHeaderMenu}
       {renderControlBar(
         'flex flex-wrap items-center gap-1 px-3 py-1.5 shrink-0',
       )}
@@ -1290,6 +1329,9 @@ export interface CommanderViewProps {
       onSend: (text: string) => Promise<{ ok: boolean }>;
       onInterrupt: () => void;
       onTerminal: () => void;
+      /** Waiting on you, delegated work and the briefing: drawn at the top of
+       *  the chat's own scroll, so the panel scrolls as one column. */
+      top?: React.ReactNode;
     }) => React.ReactNode;
   };
 }
@@ -1765,11 +1807,29 @@ export function CommanderView({ chatWorkspaceId: chatWorkspaceIdProp, viewedWork
   const brainBusy = brainThread.status === 'busy';
   const moaContent = useMemo((): CommanderMoaSlots | undefined => {
     if (!moaSlots) return undefined;
+    // Moa's column, in order: Waiting on you, delegated work, then the
+    // briefing, minus the decision lines Waiting on you already states.
+    const top = (
+      <>
+        {moaSlots.top}
+        <DeckBriefingCard
+          workspaceId={chatWorkspaceId}
+          t={t}
+          onJumpToPane={onJumpToPane}
+          resolvePtyPane={resolvePtyPane}
+          channelsUnread={channelsUnread}
+          onJumpToChannels={onJumpToChannels}
+          fleetSignature={fleetSignature}
+          omitDecision
+        />
+      </>
+    );
     const chat = brainPtyId && moaSlots.renderChat
-      ? moaSlots.renderChat({ brainPtyId, busy: brainBusy, onSend: handleBrainSend, onInterrupt, onTerminal: showTerminal })
+      ? moaSlots.renderChat({ brainPtyId, busy: brainBusy, onSend: handleBrainSend, onInterrupt, onTerminal: showTerminal, top })
       : null;
-    return { top: moaSlots.top, chat, view: brainView, onViewChange: setBrainView };
-  }, [moaSlots, brainPtyId, brainBusy, handleBrainSend, onInterrupt, showTerminal, brainView]);
+    return { top, chat, view: brainView, onViewChange: setBrainView };
+  }, [moaSlots, brainPtyId, brainBusy, handleBrainSend, onInterrupt, showTerminal, brainView,
+    chatWorkspaceId, t, onJumpToPane, resolvePtyPane, channelsUnread, onJumpToChannels, fleetSignature]);
 
   return (
     <CommanderViewContent

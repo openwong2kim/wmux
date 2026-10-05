@@ -227,3 +227,12 @@ describe("agent titles", () => {
     ).toBe("Explore the auth module");
   });
 });
+
+describe("shell previews keep the command", () => {
+  it("for a plain command and for one whose title is rewritten into a read", () => {
+    const shell = (command: string) => extractToolPreview({ title: "Bash", kind: "execute", rawInput: { command } }, { title: "Bash", kind: "execute" });
+    expect(shell("git status --short")).toMatchObject({ kind: "shell", command: "git status --short" });
+    expect(shell("cat package.json")).toMatchObject({ kind: "shell", path: "package.json", command: "cat package.json" });
+    expect(mergeToolPreview({ kind: "shell", output: "x" }, { kind: "shell", command: "ls" })?.command).toBe("ls");
+  });
+});

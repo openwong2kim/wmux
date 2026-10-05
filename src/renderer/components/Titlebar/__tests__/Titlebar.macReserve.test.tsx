@@ -9,7 +9,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createRoot } from 'react-dom/client';
 import { act } from 'react';
-import Titlebar, { MAC_TRAFFIC_LIGHT_RESERVE } from '../Titlebar';
+import Titlebar, { MAC_TRAFFIC_LIGHT_RESERVE, BRAND_INSET } from '../Titlebar';
 import { useStore } from '../../../stores';
 
 vi.mock('../../StatusBar/StatusBar', () => ({ default: () => null }));
@@ -51,7 +51,8 @@ describe('Titlebar macOS traffic-light reserve', () => {
     act(() => useStore.setState({ sidebarPosition: 'left', sidebarVisible: true, sidebarWidth: 264 }));
     const { header, segment } = render();
     expect(header.style.paddingLeft).toBe('0px');
-    expect(segment.style.paddingLeft).toBe(`${MAC_TRAFFIC_LIGHT_RESERVE}px`);
+    // …plus the wordmark's inset past the lights.
+    expect(segment.style.paddingLeft).toBe(`${MAC_TRAFFIC_LIGHT_RESERVE + BRAND_INSET}px`);
     // The segment spans the 48px icon rail plus the sheet sidebar (+1px edge).
     expect(segment.style.width).toBe('313px');
   });
@@ -68,6 +69,6 @@ describe('Titlebar macOS traffic-light reserve', () => {
     act(() => useStore.setState({ sidebarPosition: 'left', sidebarVisible: false }));
     const { header, segment } = render();
     expect(header.style.paddingLeft).toBe(`${MAC_TRAFFIC_LIGHT_RESERVE}px`);
-    expect(segment.style.paddingLeft).toBe('');
+    expect(segment.style.paddingLeft).toBe(`${BRAND_INSET}px`);
   });
 });

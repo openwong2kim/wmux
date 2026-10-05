@@ -3,13 +3,35 @@ import { useT } from '../../hooks/useT';
 import type { ChatV2RunMode } from '../../../shared/chatv2/ipc';
 import { Composer, setDraft, shortDir } from './Composer';
 import { FindBar } from './FindBar';
-import { sessionRows, type RowCache } from './rows';
+import { groupToolRows, sessionRows, type RowCache, type TranscriptRow } from './rows';
 import { S } from './strings';
 import { TranscriptRowView, type TranscriptActions } from './Transcript';
 import { useChatV2 } from './useChatV2';
 import { getChatV2Bridge } from './bridge';
 
 const NEAR_BOTTOM_PX = 48;
+
+/**
+ * Keys of rows appended after the transcript first loaded, so only those fade
+ * in. A row stays marked once marked (dropping the mark mid-fade would cut it);
+ * rows above the last one already shown (an earlier page) and a group that
+ * absorbed rows already shown are not new. The live footer and a question sit
+ * below the rows that stream in, so they do not count as "last shown".
+ */
+export function enteringKeys(rows: readonly TranscriptRow[], known: Set<string> | null, entered: Set<string>): Set<string> | null {
+  const keys = (row: TranscriptRow) => (row.kind === 'toolGroup' ? [row.key, ...row.rows.map((member) => member.key)] : [row.key]);
+  if (!known) return rows.length ? new Set(rows.flatMap(keys)) : null;
+  let lastKnown = -1;
+  rows.forEach((row, index) => {
+    if (row.kind !== 'footer' && row.kind !== 'question' && keys(row).some((key) => known.has(key))) lastKnown = index;
+  });
+  rows.forEach((row, index) => {
+    const own = keys(row);
+    if (index > lastKnown && !own.some((key) => known.has(key))) entered.add(row.key);
+    own.forEach((key) => known.add(key));
+  });
+  return known;
+}
 
 /**
  * Where a chat created now would run, as the daemon decides it. Asked again
@@ -58,7 +80,17 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
   const pinned = useRef(true);
 
   const rowCache = useRef<RowCache>(new WeakMap());
-  const rows = useMemo(() => (view ? sessionRows(view.session, rowCache.current) : []), [view]);
+  const rows = useMemo(() => (view ? groupToolRows(sessionRows(view.session, rowCache.current), rowCache.current) : []), [view]);
+  const knownKeys = useRef<Set<string> | null>(null);
+  const entered = useRef(new Set<string>());
+  const knownFor = useRef<string | undefined>(undefined);
+  if (knownFor.current !== view?.session.id) {
+    // Another chat's first load is a first load too.
+    knownFor.current = view?.session.id;
+    knownKeys.current = null;
+    entered.current = new Set();
+  }
+  knownKeys.current = enteringKeys(rows, knownKeys.current, entered.current);
   const actions = useMemo<TranscriptActions>(() => ({
     answer: (requestId, decision, answers) => controller?.answer(requestId, decision, answers) ?? Promise.resolve(false),
     body: (blockId, field, offset) => controller?.body(blockId, field, offset) ?? Promise.resolve(null),
@@ -166,7 +198,9 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
               row={row}
               cwd={view.session.cwd}
               actions={actions}
-              findActive={!!findId && 'block' in row && row.block.id === findId}
+              findActive={!!findId && (row.kind === 'toolGroup' ? row.rows.some((member) => 'block' in member && member.block.id === findId) : 'block' in row && row.block.id === findId)}
+              findId={row.kind === 'toolGroup' ? findId : undefined}
+              enter={entered.current.has(row.key)}
             />
           ))}
         </div>

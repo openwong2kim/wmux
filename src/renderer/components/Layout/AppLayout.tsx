@@ -7,6 +7,7 @@ import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import Sidebar from '../Sidebar/Sidebar';
 import MiniSidebar from '../Sidebar/MiniSidebar';
+import { SidebarSlot } from './SidebarSlot';
 import { WorkspaceCenter } from './WorkspaceCenter';
 import { EmptyLeafFunnel } from './EmptyLeafFunnel';
 import { selectProjectCwdSignature } from '../../stores/selectors/appLayout';
@@ -98,6 +99,7 @@ import {
 import { isChatV2Covering } from '../ChatV2/coverage';
 import { overlayColors } from '../../utils/titlebarOverlay';
 import { dockShownOn } from './pagesBesideDock';
+import { selectDockOpen, selectMoaOn, useMoaDockGate } from './moaDockGate';
 
 interface ReconcilePtySession extends DeadPaneSessionSnapshot {
   id: string;
@@ -741,17 +743,24 @@ export default function AppLayout() {
   // theme (overlay colors) does — see useUiScaleSync below.
   useUiScaleSync(uiScale);
   const sidebarVisible = useStore((s) => s.sidebarVisible);
-  const channelDockVisible = useStore((s) => s.channelDockVisible);
+  // The right panel renders only while Moa is on (moaDockGate); with Moa off
+  // the persisted open flag is kept but nothing is drawn.
+  const dockOpen = useStore(selectDockOpen);
+  useMoaDockGate();
   const sidebarPosition = useStore((s) => s.sidebarPosition);
   // The dock never pushes the sheet past the window: when inline would leave
   // the panes under their floor, it collapses and reopens as an overlay
   // (dockLayout.ts). Re-opened when the window is wide enough again, if it
   // was open when it collapsed.
-  const sidebarWidthPx = useStore((s) => (s.sidebarVisible ? s.sidebarWidth : 0));
+  const sidebarWidth = useStore((s) => s.sidebarWidth);
+  const sidebarWidthPx = sidebarVisible ? sidebarWidth : 0;
   const [dockMode, shellRef] = useDockMode(sidebarWidthPx);
   const dockAutoCollapsed = useRef(false);
   useEffect(() => {
     const st = useStore.getState();
+    // With Moa off there is no panel to collapse or restore: leave its flag,
+    // and forget a collapse from before, so it cannot reopen the panel later.
+    if (!selectMoaOn(st)) { dockAutoCollapsed.current = false; return; }
     if (dockMode === 'overlay' && st.channelDockVisible) {
       dockAutoCollapsed.current = true;
       st.setChannelDockVisible(false);
@@ -1985,11 +1994,13 @@ export default function AppLayout() {
       {/* The Workspaces page. Another rail page covers it (RailPage) while it
           stays mounted, full size and inert, so no PTY is resized or lost. */}
       <div className="contents" inert={appRoute !== 'workspaces' && !inspectModeActive} data-workspaces-page>
-      {sidebarVisible && (
+      {/* The column animates a toggle and holds terminal fits until it ends
+          (SidebarSlot), so panes refit once instead of per frame. */}
+      <SidebarSlot visible={sidebarVisible} width={sidebarWidth} position={sidebarPosition}>
         <ErrorBoundary name="Sidebar">
           <Sidebar chrome="sheet" />
         </ErrorBoundary>
-      )}
+      </SidebarSlot>
       <ErrorBoundary name="Main">
       {/* `relative` anchors ToolbarHost: the agent toolbar overlays this column
           rather than taking a row, so revealing it never resizes a PTY. */}
@@ -2040,27 +2051,27 @@ export default function AppLayout() {
           reflows the panes instead of the old fixed overlay that covered them.
           Holds the channel list + active conversation; collapsible. */}
       {/* Collapsed, the deck renders NOTHING here — the terminals take the
-          whole width. The way back is the titlebar's DeckToggle beside
-          Settings (owner decision 2026-08-18, replacing the 36px glyph rail).
+          whole width. The way back is Moa's titlebar button; with Moa off
+          there is no panel at all (owner decision 2026-08-18, replacing the 36px glyph rail).
           The rail spent a full-height column on four glyphs and an expand
           chevron, ~85% of it empty; one button on a row that already exists
           costs the terminals nothing. */}
       </div>
-      {/* The dock stays interactive beside the Git page (which covers only the
-          sidebar and the panes, so Moa is in reach); every other rail page
+      {/* The dock stays interactive beside every rail page but Settings (they
+          cover only the sidebar and the panes, so Moa is in reach); Settings
           covers it, inert, like the rest of the Workspaces page. Both dock
           modes live in this region: `contents` keeps the inline dock the same
           flex item it always was, and the overlay still positions against
           the sheet. */}
       <div className="contents" inert={!dockShownOn(appRoute) && !inspectModeActive} data-dock-region>
-      {channelDockVisible && dockMode === 'inline' && (
+      {dockOpen && dockMode === 'inline' && (
         <ErrorBoundary name="ChannelDock">
           <ChannelDock />
         </ErrorBoundary>
       )}
       {/* Too narrow for the dock beside the panes: it floats over them on the
           far edge instead, and never reflows a PTY. */}
-      {channelDockVisible && dockMode === 'overlay' && (
+      {dockOpen && dockMode === 'overlay' && (
         <div
           data-dock-overlay
           className={`absolute inset-y-0 z-30 flex max-w-full ${sidebarPosition === 'right' ? 'left-0' : 'right-0'}`}

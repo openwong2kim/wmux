@@ -219,7 +219,7 @@
   }
 
   function newTerm(cols, rows) {
-    return new Terminal({
+    return withPromptModeReset(new Terminal({
       cols: cols || 80,
       rows: rows || 24,
       fontFamily: 'ui-monospace, SFMono-Regular, "Cascadia Code", Menlo, Consolas, "DejaVu Sans Mono", monospace',
@@ -238,7 +238,46 @@
       // structurally (xterm.js#594), and this covers the perceptual half.
       smoothScrollDuration: 90,
       disableStdin: !allowInput
-    });
+    }));
+  }
+
+  /**
+   * #1792: clear the mouse / focus reporting a killed TUI left armed once the
+   * pane's shell prints its prompt again (OSC 133;A), so this page stops
+   * typing reports into that shell. The desktop's own module
+   * (src/shared/terminal/shellPromptModeReset.ts, via `wmuxTerminalShared`);
+   * without the shared bundle the terminal is returned unchanged.
+   */
+  function withPromptModeReset(t) {
+    var shared = window.wmuxTerminalShared;
+    if (shared && shared.installShellPromptModeReset) shared.installShellPromptModeReset(t);
+    return t;
+  }
+
+  /** The guard installed on `t` by withPromptModeReset, or null. */
+  function promptModeGuard(t) {
+    var shared = window.wmuxTerminalShared;
+    return shared && shared.shellPromptModeResetFor ? shared.shellPromptModeResetFor(t) || null : null;
+  }
+
+  /**
+   * #1794: this page reuses one terminal across panes, and a snapshot replay
+   * starts the stream over. Next to every `reset()`, the guard forgets the
+   * old stream too, or the new session's ConPTY `?1004h` is taken for a
+   * command's arm and focus reporting is cleared at its first prompt.
+   */
+  function resetPromptModeGuard(t) {
+    var g = promptModeGuard(t);
+    if (g) g.reset();
+  }
+
+  /**
+   * #1794: while a reset is owed but has not applied (it is queued behind
+   * output still being parsed), the mouse / focus reports are the dead TUI's.
+   */
+  function dropsLeakedReport(t, d) {
+    var g = promptModeGuard(t);
+    return !!(g && g.dropsReport(d));
   }
 
   /**
@@ -308,6 +347,7 @@
    */
   function repaint(t, bytes, inc, dec, tail) {
     t.reset();
+    resetPromptModeGuard(t);
     inc();
     try {
       if (tail) {
@@ -524,6 +564,7 @@
       // the user typed is sent (src/shared/terminal/userInputGate.ts).
       if (allowInput) term.onData(gateUserInput(term, function (d) {
         if (termRepaints > 0) return; // parser reply to a replayed query
+        if (dropsLeakedReport(term, d)) return;
         sendInput(d);
       }));
       attachTerminalKeys(term, sendInput, !allowInput, function () { return paneAcceptsCsiU(currentSession); }, function () { return paneAcceptsWin32(currentSession); });
@@ -1513,7 +1554,7 @@
     if (es) { es.close(); es = null; }
     currentSession = sessionId;
     if (attn[sessionId]) { delete attn[sessionId]; }
-    if (term) term.reset();
+    if (term) { term.reset(); resetPromptModeGuard(term); }
     var s = sessions.filter(function (x) { return x.id === sessionId; })[0];
     updateSwitcher(s);
     renderSheet();
@@ -1684,6 +1725,7 @@
       // nothing). Focus moves on an explicit tap only.
       tile.term.onData(gateUserInput(tile.term, function (d) {
         if (tile.repaints > 0) return; // parser reply to a replayed query
+        if (dropsLeakedReport(tile.term, d)) return;
         sendTo(tile.sessionId, d);
       }));
     }

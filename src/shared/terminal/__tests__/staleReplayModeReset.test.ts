@@ -233,10 +233,12 @@ describe('staleReplayResetLevel — the gate (#807)', () => {
 });
 
 describe('useTerminal stale-replay reset wiring (source-level lock)', () => {
+  // Windows checkouts are CRLF: normalize, or the fixed-size windows below
+  // shrink by one character per line there.
   const src = readFileSync(
     path.resolve(process.cwd(), 'src/renderer/hooks/useTerminal.ts'),
     'utf8',
-  );
+  ).replace(/\r\n/g, '\n');
 
   it('gates on the shared daemon-state predicate, not an inline resumeAgent check', () => {
     const idx = src.indexOf('const resetStaleReplayModes');
@@ -278,7 +280,7 @@ describe('useTerminal stale-replay reset wiring (source-level lock)', () => {
     // Site 1: the dead-snapshot paint (no resumeAgent gate — dead is dead).
     const deadSnapshotIdx = src.indexOf('const paintDeadSnapshot');
     expect(deadSnapshotIdx).toBeGreaterThan(-1);
-    const deadSnapshotBody = src.slice(deadSnapshotIdx, deadSnapshotIdx + 1400);
+    const deadSnapshotBody = src.slice(deadSnapshotIdx, deadSnapshotIdx + 1600);
     // The payload write, however it is spelled: #998 routes replay payloads
     // through writeReplayed() so the OSC 52 clipboard bridge stays muted while
     // stored bytes are parsed. What this locks is the ORDER — payload first,

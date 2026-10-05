@@ -76,14 +76,16 @@ describe('#747 — a deferred fit must be recorded and settled', () => {
     expect(src).toMatch(/pendingFitRaf/);
     expect(
       src,
-      'the queued fit frame is not cancelled next to the debounce timer in cleanup',
+      'the queued fit frame is not cancelled next to the resize scheduler in cleanup',
     ).toMatch(
-      /clearTimeout\(resizeDebounceTimer\);\s*if \(pendingFitRaf !== null\) cancelAnimationFrame\(pendingFitRaf\);/,
+      /resizeScheduler\.dispose\(\);\s*if \(pendingFitRaf !== null\) cancelAnimationFrame\(pendingFitRaf\);/,
     );
   });
 
   it('the ResizeObserver delegates to runFit instead of duplicating it', () => {
-    const start = src.indexOf('new ResizeObserver(');
+    // The observer feeds a fit scheduler (layoutTransitionGate), whose
+    // fitNextFrame callback is the one path into runFit.
+    const start = src.indexOf('createFitScheduler(');
     expect(start).toBeGreaterThan(-1);
     const block = src.slice(start, src.indexOf('resizeObserver.observe(', start));
     expect(block).toMatch(/runFit/);

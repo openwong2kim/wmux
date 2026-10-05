@@ -6,6 +6,7 @@ import { tokenAttrs } from '../../themes';
 import { IconRobot, IconHash } from '../icons';
 import { formatDeckCount } from './deckIconStyles';
 import type { DeckTab } from '../../stores/slices/deckSlice';
+import { setDeckHeaderSlot } from './deckHeaderSlot';
 
 export interface DeckTabsProps {
   active: DeckTab;
@@ -85,7 +86,9 @@ export function DeckTabs({
   // 드롭다운은 탭 button의 형제로, relative 래퍼 안에 절대배치한다.
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const modelMenuRef = useRef<HTMLDivElement>(null);
-  const canModelMenu = !!onCommanderModelSelect && !!commanderModelOptions?.length;
+  // Moa owns the tab: the model is picked in its ⋯ menu (Model ›), so the tab
+  // is a plain label and opens no second model menu.
+  const canModelMenu = !commanderTitle && !!onCommanderModelSelect && !!commanderModelOptions?.length;
   useEffect(() => {
     if (!modelMenuOpen) return;
     const onDoc = (e: MouseEvent) => {
@@ -224,6 +227,12 @@ export function DeckTabs({
         <div data-deck-header-tools className="wmux-deck-header-tools">
           {afterTabs}
         </div>
+      )}
+      {/* Moa owns the panel: its mode chip and options menu are portalled in
+          here by CommanderView, which holds the state they act on. Hidden
+          while empty (Moa off, or its workspace missing). */}
+      {commanderTitle && (
+        <div ref={setDeckHeaderSlot} data-moa-header-slot className="flex items-center ml-auto shrink-0 pr-1.5 gap-1 empty:hidden" />
       )}
       {rightSlot && (
         <div data-deck-header-controls className="flex items-center ml-auto shrink-0 pr-1.5 gap-0.5">

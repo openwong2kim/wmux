@@ -9,3 +9,11 @@ export const RAIL_PAGE_TITLE_KEYS: Partial<Record<AppRoute, TranslationKey>> = {
   remote: 'sidebar.remote',
   git: 'git.title',
 };
+
+/** Whether the titlebar carries the workspace's name, task link and branch.
+ *  Only while the sidebar is hidden: an open sidebar already shows them (the
+ *  highlighted row), and a rail page names itself instead. New workspace is
+ *  never in the titlebar: the sidebar's header and the rail carry it. */
+export function workspaceChromeInTitlebar(s: { appRoute: AppRoute; sidebarVisible: boolean }): boolean {
+  return !(s.appRoute in RAIL_PAGE_TITLE_KEYS) && !s.sidebarVisible;
+}

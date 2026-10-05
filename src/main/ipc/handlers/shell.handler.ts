@@ -28,6 +28,8 @@ const BLOCKED_EXTENSIONS = new Set<string>([
   '.exe', '.bat', '.cmd', '.com', '.scr', '.pif', '.ps1',
   '.vbs', '.vbe', '.js', '.jse', '.wsf', '.wsh', '.msi',
   '.reg', '.lnk', '.hta', '.cpl',
+  // macOS and POSIX: Finder runs these (or opens them in Terminal) on open.
+  '.command', '.app', '.tool', '.terminal', '.workflow', '.sh',
 ]);
 
 export function registerShellHandlers(): () => void {

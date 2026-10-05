@@ -74,6 +74,19 @@ describe('approval arm', () => {
   });
 });
 
+describe('decided approval', () => {
+  it('shows a check for allowed, a cross for denied, and no mark for cancelled', async () => {
+    const decided = (requestId: string, decision: 'allow' | 'deny' | 'cancelled'): Block =>
+      ({ id: requestId, role: 'tool', text: 'Edit', approval: { requestId, requestedAt: 0, decided: decision } });
+    for (const [decision, label, marked] of [['allow', 'Allowed', true], ['deny', 'Denied', true], ['cancelled', 'Cancelled', false]] as const) {
+      await act(async () => root.render(<ApprovalCard block={decided(`r-d-${decision}`, decision)} onAnswer={vi.fn(async () => true)} />));
+      const row = host.querySelector(`[data-decision="${decision}"]`);
+      expect(row?.textContent).toBe(label);
+      expect(!!row?.querySelector('svg')).toBe(marked);
+    }
+  });
+});
+
 describe('question card', () => {
   it('arms like an approval and answers with the picked option keys and free text', async () => {
     vi.useFakeTimers({ now: 50_000 });

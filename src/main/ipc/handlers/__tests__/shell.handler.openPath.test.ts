@@ -155,6 +155,7 @@ describe('shell.handler — SHELL_OPEN_PATH', () => {
       '.exe', '.bat', '.cmd', '.com', '.scr', '.pif', '.ps1',
       '.vbs', '.vbe', '.js', '.jse', '.wsf', '.wsh', '.msi',
       '.reg', '.lnk', '.hta', '.cpl',
+      '.command', '.app', '.tool', '.terminal', '.workflow', '.sh',
     ];
 
     for (const ext of blockedSamples) {

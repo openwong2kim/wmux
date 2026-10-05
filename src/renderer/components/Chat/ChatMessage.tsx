@@ -9,7 +9,7 @@ import { renderBrainMarkdown } from '../Deck/BrainMarkdown';
 import { formatChatTime } from '../Deck/deckBrain';
 import { IconCheck, IconChevron, IconCopy } from '../icons';
 import { useT } from '../../hooks/useT';
-import type { ChatRow, TurnReceipt } from './chatMessages';
+import { activityLabel, type ChatRow, type TurnReceipt } from './chatMessages';
 import { ChatSentImages } from './ChatAttachmentViews';
 import { withoutImageTokens } from './chatAttachments';
 
@@ -150,7 +150,9 @@ export function ChatMessage() {
 
 function ChatRowContent({ row }: { row: ChatRow }) {
   const t = useT();
-  if (row.activity) return <details className="wmux-chat-activity"><summary><IconChevron size={12} />{t('chat.activity')} · {row.activity.length}</summary>
+  const grouped = row.activity && activityLabel(row.activity);
+  if (row.activity) return <details className="wmux-chat-activity"><summary><IconChevron size={12} />
+    {grouped ? t(grouped.key, { count: grouped.count }) : `${t('chat.activity')} · ${row.activity.length}`}</summary>
     {row.activity.map((child) => <ChatRowContent key={child.event.id} row={child} />)}
   </details>;
   const { event, result } = row;

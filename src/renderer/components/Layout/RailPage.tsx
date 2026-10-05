@@ -77,8 +77,9 @@ function useInsetBesideDock(enabled: boolean, page: React.RefObject<HTMLDivEleme
  * The page the rail has swapped into the sheet, drawn over the Workspaces
  * page (sidebar, panes, dock) that stays mounted and inert underneath — so
  * PTYs, scrollback, the WebGL atlas and IME state survive the round trip and
- * no terminal is ever resized. The Git page covers only the sidebar and the
- * panes: the dock stays in view and in reach beside it. Settings also stays
+ * no terminal is ever resized. Every page but Settings covers only the sidebar
+ * and the panes: the dock stays in view and in reach beside it, inline or as
+ * the narrow-window overlay. Settings covers the whole sheet; it also stays
  * mounted while inspect mode is picking colours, when it shrinks to its
  * floating bar.
  */

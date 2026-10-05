@@ -182,12 +182,15 @@ function DecisionRow({
         {decision.question}
       </p>
       {decision.context && (
-        <p className="m-0 mt-0.5 text-[11px] leading-snug text-[var(--text-sub)] break-words line-clamp-3">{decision.context}</p>
+        <p className="m-0 mt-0.5 text-[11px] leading-snug text-[var(--text-sub)] break-words">{decision.context}</p>
       )}
       {decision.options.length > 0 ? (
-        <div role="group" aria-labelledby={questionId} className="flex flex-wrap gap-1.5 mt-2">
+        // Stacked, full width: an answer of any length wraps inside its own
+        // button at any dock width, never clipped by its neighbour.
+        <div role="group" aria-labelledby={questionId} className="flex flex-col gap-1.5 mt-2">
           {decision.options.map((opt) => (
-            <Button key={opt} variant="secondary" size="sm" disabled={busy} data-moa-decision-option onClick={() => void answer(opt)}>
+            <Button key={opt} variant="secondary" size="sm" disabled={busy} data-moa-decision-option onClick={() => void answer(opt)}
+              className="w-full !h-auto !justify-start !whitespace-normal !py-1.5 text-left break-words">
               {opt}
             </Button>
           ))}

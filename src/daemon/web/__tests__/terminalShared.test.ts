@@ -27,6 +27,8 @@ type Shared = {
   STALE_REPLAY_INPUT_MODE_RESETS: string;
   gateUserInput: unknown;
   capSixelImageSize: (addon: object, pixelLimit: number) => boolean;
+  installShellPromptModeReset: (term: Terminal) => { readonly appliedCount: number; readonly dropping: boolean };
+  shellPromptModeResetFor: (term: Terminal) => { readonly appliedCount: number } | undefined;
 };
 type Repaint = (t: Terminal, bytes: string, inc: () => void, dec: () => void, tail?: string) => void;
 type Tail = (meta: Record<string, unknown> | null) => string;
@@ -65,10 +67,20 @@ beforeAll(() => {
   const close = appJs.indexOf('\n  }\n', end);
   const src = appJs.slice(start, close + 4);
   const sandbox: Record<string, unknown> = { window: { wmuxTerminalShared: shared } };
-  runInNewContext(`${src}\nthis.repaint = repaint; this.staleReplayTail = staleReplayTail;`, sandbox);
+  runInNewContext(`${guardHelpersSource()}\n${src}\nthis.repaint = repaint; this.staleReplayTail = staleReplayTail;`, sandbox);
   repaint = sandbox.repaint as Repaint;
   staleReplayTail = sandbox.staleReplayTail as Tail;
 });
+
+/** app.js's prompt-mode guard helpers, withPromptModeReset through dropsLeakedReport (#1794). */
+function guardHelpersSource(): string {
+  const start = appJs.indexOf('  function withPromptModeReset(');
+  const last = appJs.indexOf('  function dropsLeakedReport(');
+  expect(start).toBeGreaterThan(-1);
+  expect(last).toBeGreaterThan(start);
+  const close = appJs.indexOf('\n  }\n', last);
+  return appJs.slice(start, close + 4);
+}
 
 /** Resolves once everything queued so far has been parsed. */
 const flush = (t: Terminal) => new Promise<void>((resolve) => t.write('', resolve));
@@ -108,9 +120,89 @@ describe('shared terminal bundle (wmuxTerminalShared)', () => {
 
   it('the build refuses a bundle that drops one of these exports', () => {
     const build = readSource(join(repoRoot, 'scripts', 'build-daemon-web.mjs'));
-    expect(build).toContain("['staleReplayResetLevel', 'gateUserInput', 'capSixelImageSize']");
+    expect(build).toContain("['staleReplayResetLevel', 'gateUserInput', 'capSixelImageSize', 'installShellPromptModeReset', 'shellPromptModeResetFor']");
   });
 });
+
+const CONPTY_START = '\x1b[?9001h\x1b[?1004h';
+const PS_PROMPT = '\x1b]133;D;0\x07\x1b]133;A\x07PS C:\\> \x1b]133;B\x07';
+
+describe('live prompt-mode reset on the phone page (app.js, #1792)', () => {
+  it('every page terminal gets the guard: a killed agent stops typing mouse / focus reports at the prompt', async () => {
+    const start = appJs.indexOf('  function withPromptModeReset(');
+    expect(start).toBeGreaterThan(-1);
+    const close = appJs.indexOf('\n  }\n', start);
+    const sandbox: Record<string, unknown> = { window: { wmuxTerminalShared: shared } };
+    runInNewContext(`${appJs.slice(start, close + 4)}\nthis.withPromptModeReset = withPromptModeReset;`, sandbox);
+    const withPromptModeReset = sandbox.withPromptModeReset as (t: Terminal) => Terminal;
+    // newTerm() is the only constructor the page uses, and it goes through the wrapper.
+    expect(appJs).toContain('return withPromptModeReset(new Terminal({');
+
+    const t = withPromptModeReset(new Terminal({ allowProposedApi: true }));
+    const prompt = '\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07';
+    t.write('\x1b[?2004h' + prompt + '\x1b]133;C\x07' + '\x1b[?1003h\x1b[?1006h\x1b[?1004h');
+    await flush(t);
+    expect(t.modes.mouseTrackingMode).toBe('any');
+    // Killed: the shell prints its prompt with no ?1003l / ?1004l before it.
+    t.write(prompt);
+    await flush(t);
+    expect(t.modes.mouseTrackingMode).toBe('none');
+    expect(t.modes.sendFocusMode).toBe(false);
+    expect(t.modes.bracketedPasteMode).toBe(true);
+    expect(shared.installShellPromptModeReset(t).appliedCount).toBe(1);
+  });
+
+  it("#1794 a pane switch (reset + snapshot repaint) keeps the new session's ConPTY focus mode", async () => {
+    const { withPromptModeReset } = guardHelpers();
+    const t = withPromptModeReset(new Terminal({ allowProposedApi: true }));
+    // Pane A at a plain prompt: the guard's phase is 'prompt'.
+    t.write(CONPTY_START + PS_PROMPT + '\x1b]133;C\x07dir\r\n' + PS_PROMPT);
+    await flush(t);
+    // Switch: repaint() resets the terminal (and, through app.js, the guard)
+    // and replays pane B, a fresh PowerShell session.
+    repaint(t, CONPTY_START + 'Windows PowerShell\r\n' + PS_PROMPT, () => undefined, () => undefined);
+    await flush(t);
+    expect(t.modes.sendFocusMode).toBe(true);
+    expect(shared.installShellPromptModeReset(t).appliedCount).toBe(0);
+  });
+
+  it('#1794 drops mouse / focus reports while the reset is queued behind output; typing passes', async () => {
+    const { withPromptModeReset, dropsLeakedReport } = guardHelpers();
+    const t = withPromptModeReset(new Terminal({ allowProposedApi: true }));
+    const seen: boolean[] = [];
+    // An OSC the test owns, parsed after the prompt but before the guard's marker.
+    t.parser.registerOscHandler(9999, () => {
+      seen.push(dropsLeakedReport(t, '\x1b[<35;24;14M'), dropsLeakedReport(t, '\x1b[O'), dropsLeakedReport(t, 'l'));
+      return true;
+    });
+    t.write(PS_PROMPT + '\x1b]133;C\x07' + '\x1b[?1003h\x1b[?1006h\x1b[?1004h');
+    await flush(t);
+    t.write(PS_PROMPT + 'x'.repeat(100_000) + '\x1b]9999;probe\x07');
+    await flush(t);
+    expect(seen).toEqual([true, true, false]);
+    expect(dropsLeakedReport(t, '\x1b[<35;24;14M')).toBe(false);
+    expect(t.modes.mouseTrackingMode).toBe('none');
+  });
+
+  it('#1794 every onData path and every reset of the page goes through the guard', () => {
+    expect(appJs).toContain('if (dropsLeakedReport(term, d)) return;');
+    expect(appJs).toContain('if (dropsLeakedReport(tile.term, d)) return;');
+    expect(appJs).toContain('if (term) { term.reset(); resetPromptModeGuard(term); }');
+    expect(appJs).toContain('    t.reset();\n    resetPromptModeGuard(t);\n');
+  });
+});
+
+function guardHelpers() {
+  const sandbox: Record<string, unknown> = { window: { wmuxTerminalShared: shared } };
+  runInNewContext(
+    `${guardHelpersSource()}\nthis.withPromptModeReset = withPromptModeReset; this.dropsLeakedReport = dropsLeakedReport;`,
+    sandbox,
+  );
+  return {
+    withPromptModeReset: sandbox.withPromptModeReset as (t: Terminal) => Terminal,
+    dropsLeakedReport: sandbox.dropsLeakedReport as (t: Terminal, d: string) => boolean,
+  };
+}
 
 describe('web snapshot repaint + stale-replay reset (app.js)', () => {
   it('★ shell at its prompt (commandRunning false): disarms mouse + focus, keeps bracketed paste', async () => {

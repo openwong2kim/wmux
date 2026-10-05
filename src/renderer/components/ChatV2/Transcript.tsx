@@ -1,4 +1,4 @@
-import { memo, useEffect, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { renderBrainMarkdown } from '../Deck/BrainMarkdown';
 import type { AgentStep, Block, ToolPreview } from '../../../shared/chatv2/session';
 import { claudeModelLabel } from '../../../shared/claudeModels';
@@ -6,8 +6,9 @@ import { displayPath } from '../../../shared/chatv2/paths';
 import { taskListProgressLabel } from '../../../shared/chatv2/taskList';
 import type { FormAnswers } from '../../../shared/chatv2/questions';
 import { ApprovalCard, QuestionCard } from './Cards';
-import { formatClockTime, formatWorkingDuration } from './format';
-import type { ToolState, TranscriptRow } from './rows';
+import { absolutePath, formatClockTime, formatWorkingDuration, toolLabelParts } from './format';
+import { diffStats, toolFamily, type ToolGroupRow, type ToolState, type TranscriptRow } from './rows';
+import { IconChevron, IconExternalLink } from '../icons';
 import type { BodyRead } from './controller';
 import { S } from './strings';
 
@@ -23,24 +24,85 @@ function StatusGlyph({ state }: { state: ToolState }) {
 }
 
 function previewSummary(preview: ToolPreview | undefined, title: string, cwd: string): string {
-  const value = preview?.path ? displayPath(preview.path, cwd) : preview?.query ?? (preview?.kind === 'shell' ? preview.title ?? '' : '');
+  // A shell preview's own title is the tool name ("Bash"), never a summary.
+  const value = preview?.path ? displayPath(preview.path, cwd) : preview?.query ?? '';
   return value && !title.includes(value) ? value : '';
 }
 
-function PreviewBody({ preview }: { preview: ToolPreview }) {
+function PreviewBody({ preview, cwd }: { preview: ToolPreview; cwd: string }) {
   if (preview.lines?.length) {
+    const path = preview.kind === 'write' && preview.path;
     return (
-      <pre className="wmux-chatv2-pre">
-        {preview.lines.map((line, index) => (
-          <span key={index} className="wmux-chatv2-line" data-kind={line.kind}>
-            {line.kind === 'add' ? '+' : line.kind === 'del' ? '-' : ' '} {line.text}{'\n'}
-          </span>
-        ))}
-      </pre>
+      <div className="wmux-chatv2-pre" data-diff>
+        {path && (
+          // The row title already names the path; this is where it leads.
+          <button type="button" className="wmux-chatv2-evidence" title={displayPath(path, cwd)} onClick={() => void window.electronAPI?.shell?.openPath?.(absolutePath(path, cwd))}>
+            {S.openFile}<IconExternalLink size={11} />
+          </button>
+        )}
+        <pre>
+          {preview.lines.map((line, index) => (
+            <span key={index} className="wmux-chatv2-line" data-kind={line.kind}>
+              {line.kind === 'add' ? '+' : line.kind === 'del' ? '-' : ' '} {line.text}
+            </span>
+          ))}
+        </pre>
+      </div>
     );
   }
   return preview.output ? <pre className="wmux-chatv2-pre">{preview.output}</pre> : null;
 }
+
+/** A command and what it printed: a dim `$ command` line, then the output, faded where it scrolls. */
+function ShellBody({ command, output, children }: { command: string | null; output: string; children?: React.ReactNode }) {
+  const ref = useRef<HTMLPreElement>(null);
+  // Which edges have more beyond them: those fade.
+  const edges = () => {
+    const el = ref.current;
+    if (!el) return;
+    const top = el.scrollTop > 1;
+    const bottom = el.scrollTop + el.clientHeight < el.scrollHeight - 1;
+    const fade = top && bottom ? 'both' : top ? 'top' : bottom ? 'bottom' : '';
+    if (fade) el.dataset.fade = fade; else delete el.dataset.fade;
+  };
+  useLayoutEffect(edges, [output]);
+  // A closed <details> lays out nothing, so measure again whenever one around it opens.
+  useEffect(() => {
+    const opened: HTMLDetailsElement[] = [];
+    for (let el = ref.current?.parentElement; el; el = el.parentElement) if (el instanceof HTMLDetailsElement) opened.push(el);
+    opened.forEach((el) => el.addEventListener('toggle', edges));
+    return () => opened.forEach((el) => el.removeEventListener('toggle', edges));
+  }, [output]);
+  return (
+    <div className="wmux-chatv2-pre" data-shell>
+      {command && <div className="wmux-chatv2-shell-command">$ {command}</div>}
+      {output && <pre ref={ref} className="wmux-chatv2-shell-output" onScroll={edges}>{output}</pre>}
+      {children}
+    </div>
+  );
+}
+
+/** Green `+N` and red `−M` for an edit; nothing when both are zero. */
+function DiffStats({ additions, deletions }: { additions: number; deletions: number }) {
+  if (!additions && !deletions) return null;
+  return (
+    <span className="wmux-chatv2-diffstat">
+      {additions > 0 && <span data-kind="add">+{additions}</span>}
+      {deletions > 0 && <span data-kind="del">{'\u2212'}{deletions}</span>}
+    </span>
+  );
+}
+
+function ToolLabel({ verb, object }: { verb: string; object: string }) {
+  return (
+    <span className="wmux-chatv2-tool-title">
+      <span className="wmux-chatv2-tool-verb">{verb}</span>
+      {object && <> <span className="wmux-chatv2-tool-object">{object}</span></>}
+    </span>
+  );
+}
+
+const Chevron = () => <span className="wmux-chatv2-chevron" aria-hidden><IconChevron size={12} /></span>;
 
 /**
  * The part a byte cap cut, fetched on request (`bodies`). `text` undefined =
@@ -98,27 +160,61 @@ function CappedText({ block, actions, render }: { block: Block; actions: Transcr
   );
 }
 
-function ToolRow({ block, state, cwd, actions, findActive }: { block: Block; state: ToolState; cwd: string; actions: TranscriptActions; findActive: boolean }) {
+// Titles the fold already rewrote into words ("Read a.ts" for `cat a.ts`) are not commands.
+const READABLE_TITLE = /^(Read|List|Find|Search|Edit|Write|Delete|Move|Fetch|Skill)\b/;
+
+/**
+ * What a command printed: the preview's output, else the result detail. The
+ * detail starts as the request ("Bash: git add .") and keeps it when the
+ * command printed nothing, so a detail that is just the request is no output.
+ */
+export function shellOutput(output: string | undefined, detail: string | undefined, command: string | null): string {
+  if (output) return output;
+  if (!detail) return '';
+  const request = /^[\w.-]+: ([\s\S]*)$/.exec(detail);
+  return request && command && command.startsWith(request[1]) ? '' : detail;
+}
+
+function ToolRow({ block, state, cwd, actions, findActive, enter }: { block: Block; state: ToolState; cwd: string; actions: TranscriptActions; findActive: boolean; enter?: boolean }) {
   const tool = block.tool;
+  const preview = tool?.preview;
   const title = tool?.title || block.text || tool?.kind || 'Tool';
-  const summary = previewSummary(tool?.preview, title, cwd);
-  const hasBody = !!(tool?.preview?.lines?.length || tool?.preview?.output || tool?.detail);
+  const summary = previewSummary(preview, title, cwd);
+  const family = toolFamily(block);
+  const shell = family === 'command';
+  const command = shell ? preview?.command ?? (!preview && !READABLE_TITLE.test(title) ? title : null) : null;
+  const output = shell ? shellOutput(preview?.output, tool?.detail, command) : '';
+  const stats = family === 'edit' ? diffStats(block) : null;
+  const hasBody = shell ? !!(output || block.overflow?.output || block.overflow?.detail) : !!(preview?.lines?.length || preview?.output || tool?.detail);
+  // A title the fold left as the raw command gets a verb; a rewritten one has its own.
+  const label = toolLabelParts(title, { command: shell && !READABLE_TITLE.test(title), running: state === 'running' });
   const line = (
     <>
       <StatusGlyph state={state} />
-      <span className="wmux-chatv2-tool-title">{title}</span>
+      <ToolLabel verb={label.verb} object={label.object} />
       {summary && <span className="wmux-chatv2-tool-summary">{summary}</span>}
+      {stats && <DiffStats additions={stats.additions} deletions={stats.deletions} />}
+      {hasBody && <Chevron />}
     </>
   );
   return (
-    <div className="wmux-chatv2-tool" data-block-id={block.id} data-find-active={findActive || undefined}>
+    <div className="wmux-chatv2-tool" data-block-id={block.id} data-find-active={findActive || undefined} data-enter={enter || undefined}>
       {hasBody ? (
         <details>
           <summary className="wmux-chatv2-tool-line">{line}</summary>
-          {tool?.preview && <PreviewBody preview={tool.preview} />}
-          {block.overflow?.output && <FullBody block={block} field="output" actions={actions} />}
-          {tool?.detail && <pre className="wmux-chatv2-pre">{tool.detail}</pre>}
-          {block.overflow?.detail && <FullBody block={block} field="detail" actions={actions} />}
+          {shell ? (
+            <ShellBody command={command} output={output}>
+              {block.overflow?.output && <FullBody block={block} field="output" actions={actions} />}
+              {block.overflow?.detail && <FullBody block={block} field="detail" actions={actions} />}
+            </ShellBody>
+          ) : (
+            <>
+              {preview && <PreviewBody preview={preview} cwd={cwd} />}
+              {block.overflow?.output && <FullBody block={block} field="output" actions={actions} />}
+              {tool?.detail && <pre className="wmux-chatv2-pre">{tool.detail}</pre>}
+              {block.overflow?.detail && <FullBody block={block} field="detail" actions={actions} />}
+            </>
+          )}
         </details>
       ) : (
         <div className="wmux-chatv2-tool-line">{line}</div>
@@ -128,21 +224,47 @@ function ToolRow({ block, state, cwd, actions, findActive }: { block: Block; sta
   );
 }
 
+/** "Read 3 files": the folded calls behind one line, opened on demand (or by find). */
+function ToolGroupView({ row, cwd, actions, findId, findActive, enter }: { row: ToolGroupRow; cwd: string; actions: TranscriptActions; findId?: string | null; findActive: boolean; enter?: boolean }) {
+  const ref = useRef<HTMLDetailsElement>(null);
+  // Open before the view scrolls a find match inside into place.
+  useLayoutEffect(() => { if (findActive && ref.current) ref.current.open = true; }, [findActive]);
+  const space = row.label.indexOf(' ');
+  return (
+    <div className="wmux-chatv2-tool" data-tool-group={row.count} data-enter={enter || undefined}>
+      <details ref={ref}>
+        <summary className="wmux-chatv2-tool-line">
+          <StatusGlyph state={row.state} />
+          <ToolLabel verb={row.label.slice(0, space)} object={row.label.slice(space + 1)} />
+          <DiffStats additions={row.additions} deletions={row.deletions} />
+          <Chevron />
+        </summary>
+        <div className="wmux-chatv2-group-rows">
+          {row.rows.map((member) => (
+            <TranscriptRowView key={member.key} row={member} cwd={cwd} actions={actions} findActive={!!findId && 'block' in member && member.block.id === findId} />
+          ))}
+        </div>
+      </details>
+    </div>
+  );
+}
+
 function stepState(step: AgentStep): ToolState {
   if (step.status === 'failed' || step.status === 'cancelled') return 'failed';
   return step.status === 'completed' || step.kind !== 'tool' ? 'done' : 'running';
 }
 
-function SubagentRow({ block, state, actions, findActive }: { block: Block; state: ToolState; actions: TranscriptActions; findActive: boolean }) {
+function SubagentRow({ block, state, actions, findActive, enter }: { block: Block; state: ToolState; actions: TranscriptActions; findActive: boolean; enter?: boolean }) {
   const run = block.agentRun!;
   const meta = [run.agentType, run.model && claudeModelLabel(run.model), S.steps(run.steps.length)].filter(Boolean).join(' · ');
   return (
-    <div className="wmux-chatv2-subagent" data-block-id={block.id} data-find-active={findActive || undefined}>
+    <div className="wmux-chatv2-subagent" data-block-id={block.id} data-find-active={findActive || undefined} data-enter={enter || undefined}>
       <details>
         <summary className="wmux-chatv2-tool-line">
           <StatusGlyph state={state} />
           <span className="wmux-chatv2-tool-title">{run.name || S.subagent}</span>
           <span className="wmux-chatv2-tool-summary">{meta}</span>
+          <Chevron />
         </summary>
         <ol className="wmux-chatv2-steps">
           {run.steps.map((step) => (
@@ -159,7 +281,7 @@ function SubagentRow({ block, state, actions, findActive }: { block: Block; stat
 }
 
 /** Live turns tick every second; finished ones show the stored duration and end time. */
-function TurnFooter({ row }: { row: Extract<TranscriptRow, { kind: 'footer' }> }) {
+function TurnFooter({ row, enter }: { row: Extract<TranscriptRow, { kind: 'footer' }>; enter?: boolean }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!row.live) return;
@@ -171,7 +293,7 @@ function TurnFooter({ row }: { row: Extract<TranscriptRow, { kind: 'footer' }> }
   const endedAt = !row.live && row.startedAt != null && row.durationMs != null ? row.startedAt + row.durationMs : null;
   const outcome = row.outcome === 'interrupted' ? S.interrupted : row.outcome === 'failed' ? S.failed : row.outcome === 'usage-limited' ? S.usageLimited : null;
   return (
-    <div className="wmux-chatv2-footer" data-live={row.live || undefined} aria-live={row.live ? 'off' : undefined}>
+    <div className="wmux-chatv2-footer" data-live={row.live || undefined} data-enter={enter || undefined} aria-live={row.live ? 'off' : undefined}>
       {row.live && <span className="wmux-chatv2-live-dot" aria-hidden />}
       <span>{label}</span>
       {endedAt != null && <><span aria-hidden>·</span><span>{formatClockTime(endedAt)}</span></>}
@@ -180,13 +302,18 @@ function TurnFooter({ row }: { row: Extract<TranscriptRow, { kind: 'footer' }> }
   );
 }
 
-export const TranscriptRowView = memo(function TranscriptRowView({ row, cwd, actions, findActive }: {
+export const TranscriptRowView = memo(function TranscriptRowView({ row, cwd, actions, findActive, findId, enter }: {
   row: TranscriptRow;
   cwd: string;
   actions: TranscriptActions;
   findActive: boolean;
+  /** The find match, for a group to mark the member it holds. */
+  findId?: string | null;
+  /** Appended after the view first loaded: fades in once. */
+  enter?: boolean;
 }) {
-  const active = { 'data-find-active': findActive || undefined };
+  const active = { 'data-find-active': findActive || undefined, 'data-enter': enter || undefined };
+  const entering = { 'data-enter': enter || undefined };
   switch (row.kind) {
     case 'user':
       return <div className="wmux-chatv2-user" data-block-id={row.block.id} {...active}><CappedText block={row.block} actions={actions} render={(text) => text} /></div>;
@@ -198,15 +325,17 @@ export const TranscriptRowView = memo(function TranscriptRowView({ row, cwd, act
       );
     case 'reasoning':
       return (
-        <details className="wmux-chatv2-reasoning" data-block-id={row.block.id}>
+        <details className="wmux-chatv2-reasoning" data-block-id={row.block.id} {...entering}>
           <summary>{row.block.streaming ? `${S.thinking}…` : S.thinking}</summary>
           <div className="wmux-chatv2-reasoning-body"><CappedText block={row.block} actions={actions} render={(text) => text} /></div>
         </details>
       );
     case 'tool':
-      return <ToolRow block={row.block} state={row.state} cwd={cwd} actions={actions} findActive={findActive} />;
+      return <ToolRow block={row.block} state={row.state} cwd={cwd} actions={actions} findActive={findActive} enter={enter} />;
+    case 'toolGroup':
+      return <ToolGroupView row={row} cwd={cwd} actions={actions} findId={findId} findActive={findActive} enter={enter} />;
     case 'subagent':
-      return <SubagentRow block={row.block} state={row.state} actions={actions} findActive={findActive} />;
+      return <SubagentRow block={row.block} state={row.state} actions={actions} findActive={findActive} enter={enter} />;
     case 'tasks': {
       const list = row.block.taskList!;
       return (
@@ -226,14 +355,14 @@ export const TranscriptRowView = memo(function TranscriptRowView({ row, cwd, act
     case 'plan':
       return <div className="wmux-chatv2-plan" data-block-id={row.block.id} {...active}><CappedText block={row.block} actions={actions} render={renderBrainMarkdown} /></div>;
     case 'image':
-      return <div className="wmux-chatv2-meta" data-block-id={row.block.id}>{row.block.image?.name ?? row.block.text}</div>;
+      return <div className="wmux-chatv2-meta" data-block-id={row.block.id} {...entering}>{row.block.image?.name ?? row.block.text}</div>;
     case 'notice':
-      return <div className="wmux-chatv2-notice" data-tone={row.tone} role={row.tone === 'error' ? 'alert' : undefined}>{row.block.text}</div>;
+      return <div className="wmux-chatv2-notice" data-tone={row.tone} role={row.tone === 'error' ? 'alert' : undefined} {...entering}>{row.block.text}</div>;
     case 'meta':
-      return <div className="wmux-chatv2-meta">{row.block.text}</div>;
+      return <div className="wmux-chatv2-meta" {...entering}>{row.block.text}</div>;
     case 'question':
-      return <QuestionCard prompt={row.prompt} onAnswer={actions.answer} />;
+      return <QuestionCard prompt={row.prompt} onAnswer={actions.answer} enter={enter} />;
     case 'footer':
-      return <TurnFooter row={row} />;
+      return <TurnFooter row={row} enter={enter} />;
   }
 });

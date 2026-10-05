@@ -22,7 +22,7 @@
 // in the container), so the whole panel unit-tests under jsdom with a fake api
 // and zero store wiring. Renders nothing when the preload is absent.
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
 import { DeckLoopModal } from './DeckLoopModal';
@@ -61,9 +61,15 @@ export function DeckLoopPanel({
   api,
   workspaceId,
   cwd,
+  hideTrigger = false,
+  openRequest = 0,
   t: tProp,
 }: {
   api?: DeckLoopApi;
+  /** Moa's panel opens the loop from its options menu: no chip here. */
+  hideTrigger?: boolean;
+  /** Each increment acts as one click on the (hidden) chip. */
+  openRequest?: number;
   /** The workspace this deck view is bound to — the loop is per-workspace. */
   workspaceId?: string;
   /** 활성 pane cwd — 모달의 스킬 카탈로그 스캔 기준(선택). */
@@ -100,6 +106,17 @@ export function DeckLoopPanel({
     void refresh();
   }, [refresh]);
 
+  // The chip's click, for a caller that hides the chip (Moa's options menu).
+  const loopRef = useRef(loop);
+  loopRef.current = loop;
+  const lastRequest = useRef(openRequest);
+  useEffect(() => {
+    if (openRequest === lastRequest.current) return;
+    lastRequest.current = openRequest;
+    if (loopRef.current) setOpen((v) => !v);
+    else setModalOpen(true);
+  }, [openRequest]);
+
   if (!resolvedApi) return null;
 
   const passing = loop ? loop.tasks.filter((task) => task.passes).length : 0;
@@ -107,7 +124,7 @@ export function DeckLoopPanel({
 
   return (
     <>
-      <button
+      {!hideTrigger && <button
         type="button"
         data-deck-loop-toggle
         aria-expanded={loop ? open : modalOpen}
@@ -136,7 +153,7 @@ export function DeckLoopPanel({
               loop.status === 'paused' ? ` · ${t('deck.loopPaused') || 'paused'}` : ''
             }`
           : t('deck.loopStartChip') || 'Start a loop'}
-      </button>
+      </button>}
 
       {open && loop && (
         <div

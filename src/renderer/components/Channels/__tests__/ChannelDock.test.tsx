@@ -45,16 +45,17 @@ describe('channel dock — wiring regression guard', () => {
     expect(channelView).toMatch(/data-channel-view-wrapper/);
   });
 
-  it('AppLayout mounts ChannelDock gated on channelDockVisible (not the old overlay)', () => {
+  it('AppLayout mounts ChannelDock gated on the open flag AND Moa being on (not the old overlay)', () => {
     expect(appLayout).toMatch(/import ChannelDock from '\.\.\/Channels\/ChannelDock'/);
     // Collapsed means absent again (owner decision 2026-08-18): the 36px glyph
     // rail that used to stand in for the dock is gone, and the way back is the
-    // titlebar's DeckToggle. Nothing may render on this edge while collapsed —
-    // that is the whole point, the terminals take the width.
-    expect(appLayout).toContain("channelDockVisible && dockMode === 'inline' && (");
+    // titlebar's Moa button. Nothing may render on this edge while collapsed,
+    // or at all while Moa is off — the terminals take the width.
+    expect(appLayout).toContain('const dockOpen = useStore(selectDockOpen);');
+    expect(appLayout).toContain("dockOpen && dockMode === 'inline' && (");
     // Too narrow for the panes' floor: the dock leaves the row and floats over
     // the panes on the far edge (dockLayout.ts), so the sheet never overflows.
-    expect(appLayout).toContain("channelDockVisible && dockMode === 'overlay' && (");
+    expect(appLayout).toContain("dockOpen && dockMode === 'overlay' && (");
     expect(appLayout).toMatch(/data-dock-overlay[\s\S]{0,200}absolute inset-y-0/);
     expect(appLayout).not.toMatch(/<DeckMiniRail\s*\/>/);
     expect(appLayout).toMatch(/<ChannelDock\s*\/>/);
@@ -76,13 +77,14 @@ describe('channel dock — wiring regression guard', () => {
   });
 });
 
-describe('channel dock beside the Git page (Moa stays in reach)', () => {
-  it('the dock is its own region, outside the inert Workspaces page, and only the Git page leaves it live', () => {
+describe('channel dock beside the rail pages (Moa stays in reach)', () => {
+  it('the dock is its own region, outside the inert Workspaces page, and every rail page but Settings leaves it live', () => {
     const region = appLayout.slice(appLayout.indexOf('data-dock-region') - 200, appLayout.indexOf('data-dock-region'));
     expect(region).toMatch(/inert=\{!dockShownOn\(appRoute\) && !inspectModeActive\}/);
-    // The one shared rule: the Workspaces page, and Git beside the dock.
+    // The one shared rule: the Workspaces page, and every rail page but
+    // Settings beside the dock.
     const besideDock = read('components/Layout/pagesBesideDock.ts');
-    expect(besideDock).toMatch(/PAGES_BESIDE_DOCK[^=]*= new Set<AppRoute>\(\['git'\]\)/);
+    expect(besideDock).toMatch(/PAGES_BESIDE_DOCK[^=]*= new Set<AppRoute>\(\['git', 'fleet', 'schedules', 'remote'\]\)/);
     expect(besideDock).toMatch(/route === 'workspaces' \|\| PAGES_BESIDE_DOCK\.has\(route\)/);
     // The dock is mounted inside that region, not inside a data-workspaces-page wrapper.
     const dockAt = appLayout.indexOf('<ChannelDock />');
@@ -91,7 +93,7 @@ describe('channel dock beside the Git page (Moa stays in reach)', () => {
     expect(regionAt).toBeLessThan(dockAt);
     expect(lastPageWrapperBefore).toBeLessThan(regionAt);
     // The narrow-window overlay dock lives in the same region, so it too stays
-    // live beside Git and is what the page measures.
+    // live beside a rail page and is what the page measures.
     const overlayAt = appLayout.indexOf('data-dock-overlay');
     const regionEnd = appLayout.indexOf('data-workspaces-page', regionAt);
     expect(overlayAt).toBeGreaterThan(regionAt);

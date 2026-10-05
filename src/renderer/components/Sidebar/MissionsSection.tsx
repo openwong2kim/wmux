@@ -34,9 +34,9 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import type { WorkTask } from '../../../shared/workTask';
-import { ownerForTaskLedger, summarizeMissions } from '../../stores/selectors/missions';
+import { summarizeMissions } from '../../stores/selectors/missions';
 import { FOCUS_RING } from '../focusRing';
-import { moaOwnsPanel } from '../Moa/panel/moaPanelMode';
+import { selectMoaOn } from '../Layout/moaDockGate';
 
 /**
  * 모든 부모 캐시를 평탄화·정렬한 미션 목록(순수 함수 — 테스트 가능). open을 먼저,
@@ -99,18 +99,13 @@ function useLiveMissions(): WorkTask[] {
  */
 export function openTaskLedger(wanted: WorkTask['status'] = 'open'): void {
   const state = useStore.getState();
-  // Moa owns the panel: its conversation and task cards are fleet-wide, so the
-  // line opens the panel where it is. Hopping to the owner workspace would only
-  // move the operator away from what they were looking at.
-  if (!moaOwnsPanel(state.moa)) {
-    const liveIds = new Set(state.workspaces.map((w) => w.id));
-    const owner = ownerForTaskLedger(
-      state.missionsByWorkspace,
-      state.activeWorkspaceId,
-      wanted,
-      (task) => !task.paneGroupId || liveIds.has(task.paneGroupId),
-    );
-    if (owner) state.setActiveWorkspace(owner);
+  // With Moa off there is no right panel: task status and fan-out work are
+  // read in Fleet. With Moa on, its conversation and task cards are
+  // fleet-wide, so the line opens the panel where it is.
+  // The same test as the dock gate: no panel is drawn unless Moa is on.
+  if (!selectMoaOn(state)) {
+    state.setAppRoute('fleet');
+    return;
   }
   state.setChannelDockVisible(true);
   state.setActiveDeckTab('commander');

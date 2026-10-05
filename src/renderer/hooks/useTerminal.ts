@@ -22,6 +22,7 @@ import { pasteClipboardImage } from '../utils/imagePaste';
 import { openTerminalUrl } from '../utils/browserPaneActions';
 import { runCopyWithFeedback } from '../utils/copyWithFeedback';
 import { claimFit } from '../utils/fitGuard';
+import { createFitScheduler } from '../utils/layoutTransitionGate';
 import { installAltClickTrackingGuard } from '../utils/altClickUnderMouseTracking';
 import { createMouseOwnedHint } from '../utils/mouseOwnedHint';
 import { resizeOrderFor, runOrderedFit, type CancelOrderedFit } from '../utils/resizeOrder';
@@ -55,6 +56,8 @@ import { useWindowDisplayed } from './useWindowDisplayed';
 import { createDeadInputWatchdog } from '../terminal/deadInputWatchdog';
 import { awaitParseBarrier } from '../terminal/parseBarrier';
 import { STALE_REPLAY_INPUT_MODE_RESETS, STALE_REPLAY_ALIVE_SHELL_RESETS, STALE_REPLAY_DISPLAY_RESETS, staleReplayResetLevel } from '../../shared/terminal/staleReplayModeReset';
+import { installShellPromptModeReset, shellPromptModeResetFor } from '../../shared/terminal/shellPromptModeReset';
+import { paneForegroundProbe } from '../terminal/paneForegroundProbe';
 import { attachAltScreenWheel, PAGE_SCROLL_AGENTS } from '../terminal/altScreenWheel';
 import { RestingCursorGuard } from '../terminal/restingCursor';
 import { restoreSeam } from '../../shared/restoreSeam';
@@ -975,6 +978,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         const fromBottom = Math.max(0, term.buffer.active.baseY - term.buffer.active.viewportY);
         discardTerminalOutput(term);
         term.reset();
+        shellPromptModeResetFor(term)?.reset();
         // Historical bytes — clipboard bridge muted (#998).
         writeReplayed(term, bytes, replayMuteRef.current);
         term.write(STALE_REPLAY_INPUT_MODE_RESETS);
@@ -1251,6 +1255,22 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // new React mount. Share the mute with the terminal instance so an
     // in-flight replay cannot become live-authorized during that handoff.
     replayMuteRef.current = getTerminalReplayMute(terminal);
+
+    // #1792: a TUI agent killed mid-run leaves mouse / focus reporting armed,
+    // and the shell that takes the prompt back gets every report as typed
+    // junk. The guard watches this pane's own OSC 133 prompt marks and clears
+    // those modes terminal-side once the shell owns the pane again. Once per
+    // terminal, not per mount: an adopted terminal keeps the state it folded.
+    // #1794: on the desktop the reset also waits for process truth, so a TUI
+    // still alive behind the prompt (background launch, Ctrl+Z) keeps its
+    // mouse. Each mount binds its own probe (an adopting mount replaces it).
+    // The browser build (wmux web, the only one exposing `hostPlatform`) has
+    // no process-truth channel (`pty.resources` is denied there), so it keeps
+    // the prompt-mark-only behaviour, like the phone page and the mirror.
+    const hasProcessTruth = typeof (window.electronAPI as { hostPlatform?: unknown }).hostPlatform !== 'function';
+    const promptModeGuard = installShellPromptModeReset(terminal, hasProcessTruth
+      ? { isForegroundGone: paneForegroundProbe(ptyId, window.electronAPI.pty) }
+      : undefined);
 
     const fitAddon = fixedGeometryRef.current
       ? new FixedGeometryFitAddon(() => fixedGeometryRef.current)
@@ -1738,7 +1758,6 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // Track last sent dimensions to avoid redundant resizes
     let lastSentCols = 0;
     let lastSentRows = 0;
-    let resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
     // The container-resize fit, extracted so the selection-release retry below
     // runs the SAME path — including scroll preservation and sendResize —
@@ -2417,6 +2436,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // own bracketed-paste markers if it pre-wrapped the payload.
     let inputBuffer = '';
     const onDataDisposable = terminal.onData((data) => {
+      // #1794: a reset is owed for leaked mouse / focus modes but has not
+      // applied yet (process truth pending, or queued behind output): the
+      // reports are the dead TUI's, not the shell's. Before anything else.
+      if (promptModeGuard.dropsReport(data)) return;
       // X6 ②: the user is driving this shell themselves — retract any pending
       // resume offer so the pill can't fire into a session they've moved on in.
       //
@@ -2544,6 +2567,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       const fromBottom = Math.max(0, terminal.buffer.active.baseY - terminal.buffer.active.viewportY);
       discardTerminalOutput(terminal); // stale retained backlog + dirty flag
       terminal.reset();
+      shellPromptModeResetFor(terminal)?.reset();
       // The scanner labels every held chunk at its source. Historical bytes
       // are muted for their exact parse lifetime; live output is not muted.
       for (const chunk of st.buffer) {
@@ -2730,7 +2754,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         lastFlushRecoveredBytes = recoveredBytes;
         if (pendingFlushReset) {
           pendingFlushReset = false;
-          if (recoveredBytes > 0) terminal.reset();
+          if (recoveredBytes > 0) {
+            terminal.reset();
+            shellPromptModeResetFor(terminal)?.reset();
+          }
         }
         resetStaleReplayModes(recoveredBytes);
       });
@@ -2797,7 +2824,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
               // bytes to xterm before reset() so the byte order xterm sees is
               // identical to the old direct-write path.
               flushTerminalOutput(terminal);
-              if (lastFlushRecoveredBytes > 0) terminal.reset();
+              if (lastFlushRecoveredBytes > 0) {
+                terminal.reset();
+                shellPromptModeResetFor(terminal)?.reset();
+              }
             } else {
               pendingFlushReset = true;
             }
@@ -2956,17 +2986,20 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // IMPORTANT: skip when the container has zero dimensions (display:none workspace).
     // Fitting a hidden terminal produces 0 cols/rows, which corrupts the PTY buffer
     // and manifests as "infinite content duplication" when switching back to it.
-    const resizeObserver = new ResizeObserver(() => {
-      if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
-      resizeDebounceTimer = setTimeout(() => {
-        resizeDebounceTimer = null;
+    // The scheduler debounces ticks and, while an animated layout change (the
+    // sidebar toggle) holds fits, defers them to one fit on release — never a
+    // PTY resize per animation frame.
+    const resizeScheduler = createFitScheduler({
+      debounceMs: 100,
+      fitNextFrame: () => {
         if (pendingFitRaf !== null) cancelAnimationFrame(pendingFitRaf);
         pendingFitRaf = requestAnimationFrame(() => {
           pendingFitRaf = null;
           runFit();
         });
-      }, 100);
+      },
     });
+    const resizeObserver = new ResizeObserver(() => resizeScheduler.onResize());
     resizeObserver.observe(container);
 
     return () => {
@@ -3012,7 +3045,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // inferring it from what the screen did.
       console.log(`[wmux:pane-adopt] ptyId=${ptyId} teardown=${canPark ? 'parked' : `disposed reason=${parkRefusal}`}`);
 
-      if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
+      resizeScheduler.dispose();
       if (pendingFitRaf !== null) cancelAnimationFrame(pendingFitRaf);
       if (isMac) { container.removeEventListener('paste', blockNativePaste, true); }
       detachAltClickGuard();

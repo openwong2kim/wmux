@@ -1,16 +1,16 @@
 // ─── Moa's titlebar icon ─────────────────────────────────────────────────────
 //
-// While Moa is on, its mascot sits in the titlebar's right end, before the
-// tools-panel toggle. Clicking it opens or closes the right panel (where Moa's
-// chat lives). With the panel off screen it carries Moa's notices (moaNotice):
+// While Moa is on, its mascot sits in the titlebar's right end. Clicking it
+// opens or closes the right panel (where Moa's chat lives); with Moa off there
+// is neither the button nor the panel (Layout/moaDockGate). With the panel off screen it carries Moa's notices (moaNotice):
 // a short bubble for a new decision or a finished delegation, then a dot —
 // yellow while a decision waits on the operator, grey for an unseen reply.
 //
-// "On screen" is DeckToggle's reading (the dock is open AND shown: on the
-// Workspaces page, or beside Git): bubbles, dots and "seen" follow it. The transcript subscription
-// follows the dock's mount flag instead (AppLayout mounts it on
-// `channelDockVisible` alone), so it can never be dropped while the panel holds
-// its own.
+// "On screen" means the dock is open AND shown: on the Workspaces page, or
+// beside any rail page but Settings. Bubbles, dots and "seen" follow it. The
+// transcript subscription follows the dock's mount flag instead (AppLayout
+// mounts it on selectDockOpen alone), so it can never be dropped while the
+// panel holds its own.
 
 import { useCallback, useEffect, useState } from 'react';
 import { useStore } from '../../stores';
@@ -74,9 +74,9 @@ function MoaTitlebarButtonOn() {
 
   const openPanel = useCallback(() => {
     const st = useStore.getState();
-    // Beside Git the panel opens in place; from another page, on Workspaces.
+    // Beside a rail page the panel opens in place; from Settings, on Workspaces.
     if (!dockShownOn(st.appRoute)) showWorkspaces(st);
-    // Land on the conversation, as the tools-panel toggle does.
+    // Land on the conversation.
     st.setActiveDeckTab('commander');
     st.setChannelDockVisible(true);
     dispatch({ type: 'seen' });
@@ -86,8 +86,8 @@ function MoaTitlebarButtonOn() {
   const dot = onScreen ? null : moaDot(state);
   const mascot: MoaMascotState = bubble?.kind === 'done' ? 'done' : state.pending.length > 0 ? 'needs-you' : 'idle';
 
-  // Named "Moa" (open state is aria-expanded): the tools-panel toggle beside
-  // it already reads "Show / Hide Moa" while Moa owns the panel.
+  // Named "Moa"; the open state is aria-expanded. It is the right panel's
+  // only toggle (the panel exists only while Moa is on).
   const base = t('moa.mascot.name');
   const suffix =
     dot === 'waiting'

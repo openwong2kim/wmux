@@ -265,6 +265,24 @@ describe('DeckTabs', () => {
     expect(tab('channels').getAttribute('aria-label')).toBe('deck.tabChannels (3 unread)');
   });
 
+  it("Moa's tab is a plain label: no second model menu (Model lives in its ⋯ menu)", () => {
+    const onCommanderModelSelect = vi.fn();
+    mount({
+      active: 'commander',
+      commanderModelLabel: 'Default',
+      commanderModelOptions: [...MODEL_OPTIONS],
+      onCommanderModelSelect,
+      moa: { commanderTitle: 'Moa', commanderSubtitle: 'Main bot', commanderIcon: createElement('svg') },
+    });
+    const el = tab('commander');
+    expect(el.getAttribute('aria-haspopup')).toBeNull();
+    expect(el.querySelector('.wmux-deck-tab-chevron')).toBeNull();
+    act(() => el.click());
+    expect(container.querySelector('[data-commander-model-menu]')).toBeNull();
+    // The current model stays readable in the name.
+    expect(el.getAttribute('aria-label')).toBe('Moa · Main bot (Default)');
+  });
+
   it('keeps the Orchestrator name and glyph without Moa', () => {
     mount({ active: 'commander' });
     expect(tab('commander').querySelector('[data-deck-tab-subtitle]')).toBeNull();
