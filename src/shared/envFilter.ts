@@ -5,7 +5,8 @@
  *
  *   INTERNAL — wmux/Electron/빌드 툴링 내부 변수. 사람 셸이든 에이전트든
  *     **무조건** strip. (ELECTRON_*, VITE_*, WMUX_AUTH*, ORIGINAL_XDG_*,
- *     NODE_OPTIONS, ELECTRON_RUN_AS_NODE) — Electron 감지 누설·RPC 토큰 유출·
+ *     NODE_OPTIONS, ELECTRON_RUN_AS_NODE, plus agent-nesting markers such as
+ *     CLAUDE_CODE_CHILD_SESSION — see isNestingMarker) — Electron 감지 누설·RPC 토큰 유출·
  *     커스텀 플래그로의 재진입을 막는다.
  *
  *   CREDENTIAL — 자격증명 이름(`*_TOKEN`/`*_SECRET`/`*_PASSWORD`/`*_CREDENTIALS`/

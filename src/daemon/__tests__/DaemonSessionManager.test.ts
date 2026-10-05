@@ -286,7 +286,7 @@ describe('DaemonSessionManager', () => {
   // Instance-isolation suffix (WMUX_DATA_SUFFIX) must always reflect THIS
   // daemon's own instance, never a value carried in a replayed/persisted env
   // blob — otherwise a recovered pane could be pointed at a DIFFERENT instance's
-  // control pipe. stripReservedAuth keeps non-auth WMUX_* from a supplied env, so
+  // control pipe. stripReservedSuppliedEnv keeps WMUX_DATA_SUFFIX in a supplied env, so
   // the daemon forces its own inherited suffix over the blob (and scrubs it when
   // the daemon itself has none).
   it("forces the daemon's own WMUX_DATA_SUFFIX over a replayed env blob", () => {
@@ -331,7 +331,7 @@ describe('DaemonSessionManager', () => {
         id: 'suffix-case',
         cmd: 'cmd.exe',
         cwd: '.',
-        env: { wmux_data_suffix: '-stale', FOO: 'bar' }, // lowercase variant survives stripReservedAuth
+        env: { wmux_data_suffix: '-stale', FOO: 'bar' }, // lowercase variant survives stripReservedSuppliedEnv
       });
       const spawned = lastMockPty?.spawnEnv ?? {};
       const anyVariant = Object.keys(spawned).some((k) => k.toUpperCase() === 'WMUX_DATA_SUFFIX');
