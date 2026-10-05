@@ -143,6 +143,17 @@ describe('AgentDetector', () => {
       expect(cb.mock.calls[0][0]).toMatchObject({ agent: 'Claude Code', status: 'waiting' });
     });
 
+    it('does NOT read Claude Code 2.1.289\'s mid-turn tip as idle', () => {
+      const { det, cb } = claudeGated();
+      det.feed('  ⎿  Tip: Hit shift+tab to cycle between manual mode, auto-accept edit mode, and plan mode\n');
+      // ANSI-stripped, the TUI's cell moves leave no spaces.
+      det.feed('⎿Tip:Hitshift+tabtocyclebetweenmanualmode\n');
+      expect(cb).not.toHaveBeenCalled();
+      // The idle footer still is.
+      det.feed('  ⏵⏵ accept edits on (shift+tab to cycle)\n');
+      expect(cb.mock.calls.map((c: unknown[]) => (c[0] as { status: string }).status)).toContain('waiting');
+    });
+
     it('REGRESSION (R3): does NOT match "esc to interrupt" — Claude in-flight hint, not idle', () => {
       const { det, cb } = claudeGated();
       det.feed('press esc to interrupt\n');

@@ -186,7 +186,11 @@ const AGENT_PATTERNS: AgentPattern[] = [
       // cancel), not when the agent is idle. Including it produced
       // false-positive "waiting" notifications mid-turn. Removed.
       { regex: /bypass\s*permissions\s*on/,      status: 'waiting',          message: 'Ready for input' },
-      { regex: /shift\+tab\s*to\s*cycle/,        status: 'waiting',          message: 'Ready for input' },
+      // Not the mid-turn tip Claude Code 2.1.289 prints under a running tool
+      // ("Tip: Hit shift+tab to cycle between manual mode, …"): read as idle,
+      // it ended a turn that was still running, and woke Moa on a worker that
+      // was about to ask for permission.
+      { regex: /(?<![Hh]it\s*)shift\+tab\s*to\s*cycle/, status: 'waiting',          message: 'Ready for input' },
       // Approval prompts — Claude Code is paused mid-turn waiting for the user
       // to pick an option. Orchestrators can react to 'awaiting_input' to feed
       // pre-approved answers without waiting for the full turn to end.

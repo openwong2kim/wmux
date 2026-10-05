@@ -730,3 +730,24 @@ describe('a key or click in the pane refreshes the record instead of wedging it'
     expect(scheduled).toEqual([]);
   });
 });
+
+describe('terminal_prompt binding with calls made side by side', () => {
+  it('a hook naming another tool than the newest pending call does not take that call\'s name or binding', async () => {
+    const h = makeRegistry();
+    // Moa called Grep and an MCP tool together; the dialog is the Bash-titled
+    // one above, the hook names Bash, the transcript's newest call is the MCP one.
+    h.pane.pending = { id: 'toolu_mcp', name: 'mcp__wmux__a2a_task_query', input: { task_id: 't-1' }, unanswered: 2 };
+    await h.registry.noteTerminalPrompt({ sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', source: 'hook', toolName: 'Bash', toolInput: CALL.input });
+    const [record] = h.registry.list().pending;
+    expect(record?.toolName).toBe('Bash');
+    expect(record?.promptFingerprint).toBeUndefined();
+  });
+
+  it('the same tool as the hook still binds by the transcript\'s call', async () => {
+    const h = makeRegistry();
+    await h.registry.noteTerminalPrompt({ sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', source: 'detector', toolName: 'Bash' });
+    const [record] = h.registry.list().pending;
+    expect(record).toMatchObject({ toolName: 'Bash', toolUseId: 'toolu_01' });
+    expect(record?.promptFingerprint).toEqual(expect.any(String));
+  });
+});

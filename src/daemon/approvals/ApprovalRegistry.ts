@@ -1388,6 +1388,10 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     } catch (err) {
       this.deps.log?.('warn', `[approvals] transcript read failed for ${sessionId}: ${String(err)}`);
     }
+    // Parallel calls: the newest pending call need not be the one the dialog
+    // asks about. When the hook names another tool, that call is not this
+    // dialog's (it labelled a Grep dialog with the MCP call made beside it).
+    if (pending && note.toolName && pending.name !== note.toolName) pending = null;
     if (pending) {
       return {
         id: pending.id,
