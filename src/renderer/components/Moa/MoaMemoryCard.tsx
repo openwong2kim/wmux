@@ -113,7 +113,10 @@ export function MoaMemoryCard({
       data-moa-memory-card={card.id}
       className="flex flex-col rounded-md px-4 py-3 space-y-2.5 border border-dashed border-[color-mix(in_srgb,var(--text-main)_30%,transparent)] bg-[color-mix(in_srgb,var(--text-main)_20%,transparent)]"
     >
-      <div className="text-[11px] font-mono uppercase tracking-wider text-[var(--accent-yellow)]" {...tokenAttrs('warning', 'text')}>
+      {/* Yellow marks the state (the dot); amber text on this 20% wash read
+          2.2:1 in light themes, so the words take the text colour. */}
+      <div className="flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-wider text-[var(--text-main)]" {...tokenAttrs('textMain', 'text')}>
+        <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-[var(--accent-yellow)]" />
         {t('moa.memoryCard.eyebrow')}
       </div>
       <div className="text-[13px] font-semibold text-[var(--text-main)] leading-relaxed" {...tokenAttrs('textMain', 'text')}>
@@ -165,7 +168,7 @@ export function MoaMemoryCard({
           {t('moa.memoryCard.discard')}
         </button>
         {mustOpen && (
-          <span className="text-[11px] text-[color-mix(in_srgb,var(--text-main)_60%,transparent)]">
+          <span className="text-[12px] text-[color-mix(in_srgb,var(--text-main)_75%,transparent)]">
             {t('moa.memoryCard.readToSave')}
           </span>
         )}

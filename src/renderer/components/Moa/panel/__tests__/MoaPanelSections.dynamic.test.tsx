@@ -303,3 +303,31 @@ describe('Open conversation links (#1779)', () => {
     expect(onOpenConversation).toHaveBeenCalledWith('wtask-1');
   });
 });
+
+describe('MoaPanelTop — one report, first run', () => {
+  it('a job Moa handed out that is done leaves Delegated work (its report card tells it); other done work stays', async () => {
+    const list = vi.fn(async () => [
+      link('moa-done', { title: 'Done by Moa', state: 'done', a2aTaskId: 't1' }),
+      link('moa-running', { title: 'Running' }),
+      link('manual-done', { title: 'Manual', origin: 'manual', state: 'done' }),
+    ]);
+    await act(async () => root.render(createElement(MoaPanelTop, { decisions: [], linksApi: { list, onChanged: () => () => undefined }, t })));
+    await act(async () => { await Promise.resolve(); });
+    expect([...container.querySelectorAll('[data-moa-task]')].map((el) => el.getAttribute('data-moa-task')).sort()).toEqual(['manual-done', 'moa-running']);
+  });
+
+  it('before Moa\'s first turn (no brain, nothing waiting) it says what to ask; once the brain runs it does not', async () => {
+    const { useStore } = await import('../../../../stores');
+    const prev = useStore.getState();
+    try {
+      useStore.setState({ moa: { ...(prev.moa ?? {}), hq: { workspaceId: 'ws-hq', state: 'ok' } } as never, brainPtyIds: {} });
+      const linksApi = { list: vi.fn(async () => []), onChanged: () => () => undefined };
+      await act(async () => root.render(createElement(MoaPanelTop, { decisions: [], linksApi, approvalsApi: { delegatedApprovals: async () => ({ approvals: [] }) }, t })));
+      expect(container.querySelector('[data-moa-first-run]')?.textContent).toContain('moa.panel.chatEmptyHint');
+      await act(async () => { useStore.setState({ brainPtyIds: { 'ws-hq': 'pty-hq' } }); });
+      expect(container.querySelector('[data-moa-first-run]')).toBeNull();
+    } finally {
+      useStore.setState({ moa: prev.moa, brainPtyIds: prev.brainPtyIds });
+    }
+  });
+});

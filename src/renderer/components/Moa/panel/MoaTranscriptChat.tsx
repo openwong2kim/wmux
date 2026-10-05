@@ -39,6 +39,8 @@ export type MoaApprovalApi = Pick<MoaPreload, 'approval' | 'approvalAnswer'> & P
 
 /** While Moa waits on its prompt: how often its record is read again (it trails the hook by ~1 s). */
 const APPROVAL_POLL_MS = 2_000;
+/** A turn the store opened this recently, while no chat was mounted, is the operator's send. */
+const FIRST_SEND_WINDOW_MS = 60_000;
 /** Pages read back on open to reach the operator's first message. */
 const AUTO_PAGES = 6;
 
@@ -231,6 +233,24 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
   useEffect(() => {
     if (!busy) setPending([]);
   }, [busy]);
+  // The first message is sent from the panel's bare composer, before Moa's
+  // brain (and so this chat) exists: its words are the open turn main's send
+  // recorded in the store. Shown once as the sent bubble, so the panel does not
+  // sit blank (or on the first-run guidance) while the brain starts.
+  const openTurnText = useStore((s) => {
+    if (!hqId) return null;
+    const last = s.brainThreads[hqId]?.messages.findLast((m) => m.role === 'user');
+    return last && Date.now() - (last.ts ?? 0) < FIRST_SEND_WINDOW_MS ? last.text : null;
+  });
+  const seeded = useRef(false);
+  useEffect(() => {
+    if (seeded.current || !busy || data.loading || !openTurnText?.trim() || MOA_WAKE_TEXT.test(openTurnText)) return;
+    seeded.current = true;
+    const users = data.events.filter((e) => e.kind === 'user_text');
+    if (users.some((e) => e.kind === 'user_text' && e.text.trim() === openTurnText.trim())) return;
+    setPending((current) => (current.length ? current
+      : [{ id: crypto.randomUUID(), text: openTurnText, before: new Set(users.map((e) => e.id)) }]));
+  }, [busy, data.loading, data.events, openTurnText]);
 
   const onNew = useCallback(async (message: AppendMessage) => {
     const text = message.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
