@@ -33,7 +33,9 @@ beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'moa-handoff-'));
 });
 afterEach(() => {
-  fs.rmSync(dir, { recursive: true, force: true });
+  // A store write a test left in flight (noteTaskState saves without waiting)
+  // can still add a file while the dir is removed: retry on ENOTEMPTY.
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
 });
 
 function rig(over: Partial<MoaHandoffPorts> = {}, file = path.join(dir, 'moa-handoffs.json')): Rig {
@@ -760,6 +762,7 @@ describe('moa hand-off — no wrong wakes, no stale cards', () => {
     await vi.waitFor(() => expect(r.svc.cardInfo(card.id)).toBeNull());
     expect(r.slots.has(SEAL)).toBe(false);
     expect(r.svc.byDecision(card.id)).toBeNull();
+    await r.svc.save();
   });
 
   it('finishing the job (deck_complete_work) takes down every unanswered card Moa raised', async () => {
@@ -799,6 +802,7 @@ describe('moa hand-off — no wrong wakes, no stale cards', () => {
     r.svc.noteTaskState(taskId, 'canceled');
     await vi.waitFor(() => expect(r.svc.cardInfo(card.id)).toBeNull());
     expect(r.slots.has(SEAL)).toBe(false);
+    await r.svc.save();
   });
 
   it('an open task of a former HQ blocks a proposal to that pane, even a follow-up', async () => {
@@ -822,6 +826,8 @@ describe('moa hand-off — no wrong wakes, no stale cards', () => {
     await new Promise((res) => setTimeout(res, 0));
     expect(r.svc.cardInfo(card.id)).not.toBeNull();
     expect(r.slots.get(SEAL)).toBe(card);
+    // noteTaskState saves without waiting: let its write land before cleanup.
+    await r.svc.save();
   });
 
   it('the requester close takes down that pane\'s card too', async () => {
