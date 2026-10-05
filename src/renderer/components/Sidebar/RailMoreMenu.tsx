@@ -63,6 +63,8 @@ export default function RailMoreMenu() {
     ...(moaOff ? [{
       key: 'turn-on-moa',
       label: t('rail.turnOnMoa'),
+      // A power mark, not Moa's mascot: the mascot is Moa's own titlebar icon.
+      icon: <Icon size={13}><path d="M7 2v5" /><path d="M4.2 4.2a4 4 0 1 0 5.6 0" /></Icon>,
       onSelect: () => useStore.getState().openSettingsTab('moa'),
     }] : []),
     {
