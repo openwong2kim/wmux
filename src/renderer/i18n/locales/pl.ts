@@ -2649,6 +2649,7 @@ export const pl = {
   'moa.panel.answerSend': "Odpowiedz",
   'moa.panel.answerFailed': "Nie udało się wysłać odpowiedzi. Spróbuj ponownie.",
   'moa.panel.dismiss': "Niepotrzebne",
+  'moa.panel.delegatedApproval': "{agent} prosi o zgodę na uruchomienie",
   'moa.panel.tasksTitle': "Zlecona praca",
   'moa.panel.untitledTask': "Zadanie bez tytułu",
   'moa.panel.taskNoDetails': "Na razie nic do pokazania.",

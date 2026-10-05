@@ -2188,6 +2188,7 @@ export const zh = {
   'moa.panel.answerSend': "回答",
   'moa.panel.answerFailed': "无法发送这个回答。请重试。",
   'moa.panel.dismiss': "不需要",
+  'moa.panel.delegatedApproval': "{agent} 正在请求运行以下内容",
   'moa.panel.tasksTitle': "已分派的工作",
   'moa.panel.untitledTask': "无标题任务",
   'moa.panel.taskNoDetails': "暂无可显示的内容。",

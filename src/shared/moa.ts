@@ -155,6 +155,19 @@ export interface MoaPendingDecision {
   dismissible?: true;
 }
 
+/** A permission prompt of an agent Moa delegated work to (Waiting on you).
+ *  `what` is agent-authored text (the command or file): render it as text. */
+export interface MoaDelegatedApproval {
+  id: string;
+  ptyId: string;
+  workspaceId: string;
+  workspaceName?: string;
+  agentName: string;
+  toolName?: string;
+  what?: string;
+  createdAt: number;
+}
+
 /** Moa's mascot states (the panel header, the titlebar icon). */
 export type MoaMascotState = 'idle' | 'working' | 'needs-you' | 'done';
 

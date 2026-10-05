@@ -9,7 +9,7 @@ import { createPortal } from 'react-dom';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../../stores';
 import type { MoaPendingDecision } from '../../../../shared/moa';
-import { MoaDockContext, MoaWaitingOnYou, answeredElsewhere, type ResolveDecision } from './MoaWaitingOnYou';
+import { MoaDockContext, MoaWaitingOnYou, answeredElsewhere, useDelegatedApprovals, type DelegatedApprovalsApi, type ResolveDecision } from './MoaWaitingOnYou';
 import { MoaTaskCards } from './MoaTaskCards';
 import { defaultReceiptsApi, selectTaskCards, useWorkLinks, type MoaHandoffReceiptsApi, type WorkLinksApi } from './useMoaPanelData';
 import { defaultHandoffResolve, type HandoffResolve } from './MoaHandoffCard';
@@ -42,6 +42,7 @@ export function MoaPanelTop({
   handoffResolve = defaultHandoffResolve,
   receiptsApi,
   onOpenPane = openMoaPane,
+  approvalsApi,
   t,
 }: {
   decisions: readonly MoaPendingDecision[];
@@ -52,8 +53,11 @@ export function MoaPanelTop({
   handoffResolve?: HandoffResolve;
   receiptsApi?: MoaHandoffReceiptsApi;
   onOpenPane?: (workspaceId: string, paneId?: string) => void;
+  /** Injected in tests; defaults to the preload. */
+  approvalsApi?: DelegatedApprovalsApi;
   t: T;
 }): React.ReactElement {
+  const delegatedApprovals = useDelegatedApprovals(approvalsApi);
   const links = useWorkLinks(true, linksApi ?? window.electronAPI?.workLinks);
   const pendingIds = useMemo(() => new Set(decisions.map((d) => d.decision.id)), [decisions]);
   const cards = useMemo(() => selectTaskCards(links, pendingIds), [links, pendingIds]);
@@ -91,6 +95,7 @@ export function MoaPanelTop({
       {(() => {
         const waiting = (
           <MoaWaitingOnYou decisions={named} onResolve={onResolve} handoffResolve={onHandoffResolve}
+            delegatedApprovals={delegatedApprovals} onOpenPty={(ws, ptyId) => openMoaPane(ws, undefined, ptyId)}
             conversationTaskId={conversationTaskId} onOpenConversation={openConversation} t={t} />
         );
         return dock ? createPortal(waiting, dock) : waiting;

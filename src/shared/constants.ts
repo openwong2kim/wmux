@@ -361,6 +361,9 @@ export const IPC = {
   //   ({ before? }) / SUBSCRIBE / UNSUBSCRIBE (invoke); APPEND (send, main →
   //   renderer, TranscriptAppendData).
   DECK_MOA_DECISIONS: 'deck:moa:decisions',
+  // Permission prompts of agents Moa delegated work to ({ approvals:
+  // MoaDelegatedApproval[] }), for the panel's "Waiting on you". Read-only.
+  DECK_MOA_DELEGATED_APPROVALS: 'deck:moa:delegated-approvals',
   //   DECK_MOA_HANDOFF_RESOLVE (invoke MoaHandoffResolveRequest): answer a
   //   hand-off card by id (main reads the body from its own store; an edited
   //   body is the operator's own input). DECK_MOA_HANDOFF_RECEIPTS (invoke):

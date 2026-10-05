@@ -155,7 +155,8 @@ import { HANDOFF_NOTICE_OPTION, HANDOFF_OPTIONS, type MoaHandoffResolveResult } 
 import { MoaTranscript, type MoaTranscriptHint } from '../../deck/moaTranscript';
 import { answerMoaApproval, readMoaApproval } from '../../deck/moaApproval';
 import { getAccountStore } from '../../account/accountStore';
-import type { MoaApproval, MoaApprovalAnswerResult, MoaPendingDecision } from '../../../shared/moa';
+import type { MoaApproval, MoaApprovalAnswerResult, MoaDelegatedApproval, MoaPendingDecision } from '../../../shared/moa';
+import { selectDelegatedApprovals } from '../../deck/moaDelegatedApprovals';
 import {
   beginOrContinueDeckWork,
   clearActiveDeckWork,
@@ -2600,6 +2601,36 @@ export function registerDeckHandler(
     }),
   );
 
+  // Permission prompts of agents Moa delegated work to (moaDelegatedApprovals).
+  ipcMain.removeHandler(IPC.DECK_MOA_DELEGATED_APPROVALS);
+  ipcMain.handle(
+    IPC.DECK_MOA_DELEGATED_APPROVALS,
+    wrapHandler(IPC.DECK_MOA_DELEGATED_APPROVALS, async (): Promise<{ approvals: MoaDelegatedApproval[] }> => {
+      const hq = getHqWorkspaceId();
+      const dc = opts.getDaemonClient?.() ?? null;
+      if (!hq || !dc) return { approvals: [] };
+      let listed: unknown;
+      try {
+        listed = await dc.rpc('daemon.approvals.list', {});
+      } catch {
+        return { approvals: [] };
+      }
+      const pending = (listed as { pending?: unknown } | null)?.pending;
+      if (!Array.isArray(pending)) return { approvals: [] };
+      const names = new Map((getWorkspaceMirror().getEntries() ?? []).map((e) => [e.id, e.name]));
+      const taskWorkspaces = new Set(
+        getTaskLedger().list({ ownerWorkspaceId: hq, openOnly: true }).map((e) => e.taskWorkspaceId),
+      );
+      return {
+        approvals: selectDelegatedApprovals(pending, {
+          handoffPtys: moaHandoffs?.openTargets() ?? new Map(),
+          taskWorkspaces,
+          workspaceName: (id) => names.get(id),
+        }),
+      };
+    }),
+  );
+
   // Moa's hand-off cards and auto hand-off receipts (moaHandoff.ts).
   ipcMain.removeHandler(IPC.DECK_MOA_HANDOFF_RESOLVE);
   ipcMain.handle(
@@ -3750,6 +3781,7 @@ export function registerDeckHandler(
     offDecisionsChanged();
     moaTranscript.dispose();
     ipcMain.removeHandler(IPC.DECK_MOA_DECISIONS);
+    ipcMain.removeHandler(IPC.DECK_MOA_DELEGATED_APPROVALS);
     ipcMain.removeHandler(IPC.DECK_MOA_TRANSCRIPT_STATUS);
     ipcMain.removeHandler(IPC.DECK_MOA_TRANSCRIPT_SNAPSHOT);
     ipcMain.removeHandler(IPC.DECK_MOA_TRANSCRIPT_SUBSCRIBE);

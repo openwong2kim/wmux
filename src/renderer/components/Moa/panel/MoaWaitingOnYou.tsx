@@ -5,7 +5,7 @@
 // the yellow eyebrow as its one state mark). Answers go to the decision's own
 // workspace, not to Moa's.
 import { createContext, useEffect, useRef, useState } from 'react';
-import type { MoaPendingDecision } from '../../../../shared/moa';
+import type { MoaDelegatedApproval, MoaPendingDecision } from '../../../../shared/moa';
 import Button from '../../ui/Button';
 import Input from '../../ui/Input';
 import { FOCUS_RING } from '../../focusRing';
@@ -25,6 +25,42 @@ export function answeredElsewhere(r: { ok: boolean; code?: string }): boolean {
   return !r.ok && r.code === 'not_pending';
 }
 
+/** Reads the delegated agents' permission prompts; defaults to the preload. */
+export interface DelegatedApprovalsApi {
+  delegatedApprovals: () => Promise<{ approvals: MoaDelegatedApproval[] }>;
+  onChanged?: (cb: () => void) => () => void;
+}
+
+/** How often the prompts are read again while the section is mounted: the
+ *  daemon has no change signal for them, and a prompt waits on the operator. */
+const DELEGATED_APPROVALS_POLL_MS = 3_000;
+
+function defaultDelegatedApprovalsApi(): DelegatedApprovalsApi | undefined {
+  const moa = window.electronAPI?.deck?.moa;
+  return moa?.delegatedApprovals ? { delegatedApprovals: moa.delegatedApprovals, onChanged: moa.onChanged } : undefined;
+}
+
+/** The permission prompts of agents Moa delegated work to (main filters them). */
+export function useDelegatedApprovals(api: DelegatedApprovalsApi | undefined = defaultDelegatedApprovalsApi()): readonly MoaDelegatedApproval[] {
+  const [rows, setRows] = useState<readonly MoaDelegatedApproval[]>([]);
+  useEffect(() => {
+    if (!api) return;
+    let alive = true;
+    const read = () => {
+      void api.delegatedApprovals().then((r) => {
+        if (!alive) return;
+        const next = Array.isArray(r?.approvals) ? r.approvals : [];
+        setRows((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
+      }).catch(() => undefined);
+    };
+    read();
+    const timer = setInterval(read, DELEGATED_APPROVALS_POLL_MS);
+    const off = api.onChanged?.(read);
+    return () => { alive = false; clearInterval(timer); off?.(); };
+  }, [api]);
+  return rows;
+}
+
 export const NEEDS_YOU_ROW =
   'rounded-[10px] px-3 py-2.5 border border-dashed border-[color-mix(in_srgb,var(--text-main)_30%,transparent)] bg-[color-mix(in_srgb,var(--text-main)_20%,transparent)]';
 
@@ -33,6 +69,8 @@ export function MoaWaitingOnYou({
   onResolve,
   memoryApi,
   handoffResolve,
+  delegatedApprovals = [],
+  onOpenPty,
   conversationTaskId,
   onOpenConversation,
   t,
@@ -47,6 +85,10 @@ export function MoaWaitingOnYou({
   memoryApi?: MoaMemoryCardApi;
   /** Answers a hand-off card; defaults to the preload. */
   handoffResolve?: HandoffResolve;
+  /** Permission prompts of delegated agents; read-only rows. */
+  delegatedApprovals?: readonly MoaDelegatedApproval[];
+  /** Jump to the pane holding a prompt. */
+  onOpenPty?: (workspaceId: string, ptyId: string) => void;
   t: (key: string, vars?: Record<string, string | number>) => string;
 }): React.ReactElement | null {
   // The memory card fetches its own card (and re-reads on DECK_MOA_CHANGED),
@@ -81,7 +123,7 @@ export function MoaWaitingOnYou({
 
   // Nothing waiting: no heading, no "0" (no dead gauges). The section stays
   // mounted (hidden) only so the memory card can learn of a new card.
-  const total = visible.length + (memoryPending ? 1 : 0);
+  const total = visible.length + delegatedApprovals.length + (memoryPending ? 1 : 0);
 
   const resolve = async (d: MoaPendingDecision, resolution: string, dismiss = false): Promise<boolean> => {
     const text = resolution.trim();
@@ -151,6 +193,27 @@ export function MoaWaitingOnYou({
             onOpenConversation={onOpenConversation}
             t={t}
           />
+        ))}
+        {delegatedApprovals.map((a) => (
+          // Read-only: the operator answers in the pane. Moa never answers it.
+          <li key={a.id} data-moa-delegated-approval={a.id} className={NEEDS_YOU_ROW}>
+            <div className="text-[11px] text-[var(--accent-yellow)] truncate">
+              {a.workspaceName || t('moa.panel.unknownWorkspace')}
+            </div>
+            <p className="m-0 mt-0.5 text-[13px] font-medium leading-snug text-[var(--text-main)] break-words">
+              {t('moa.panel.delegatedApproval', { agent: a.agentName })}
+            </p>
+            {a.what && (
+              <code className="block mt-1 font-mono text-[12px] text-[var(--text-sub)] break-all whitespace-pre-wrap" data-moa-delegated-approval-what>
+                {a.what}
+              </code>
+            )}
+            {onOpenPty && (
+              <Button variant="secondary" size="sm" className="mt-2" data-moa-delegated-approval-open onClick={() => onOpenPty(a.workspaceId, a.ptyId)}>
+                {t('moa.panel.openPane')}
+              </Button>
+            )}
+          </li>
         ))}
       </ul>
     </section>

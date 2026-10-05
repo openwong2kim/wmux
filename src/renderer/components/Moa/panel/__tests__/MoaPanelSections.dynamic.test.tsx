@@ -124,6 +124,23 @@ describe('MoaWaitingOnYou', () => {
   });
 });
 
+describe('MoaWaitingOnYou — a delegated agent\'s permission prompt', () => {
+  it('shows the agent, the command and a jump to its pane, counts it, and offers no answer', async () => {
+    const onOpenPty = vi.fn();
+    const delegatedApprovals = [{ id: 'ap1', ptyId: 'pty-w', workspaceId: 'ws-w', workspaceName: 'wmux', agentName: 'Claude Code', toolName: 'Bash', what: 'git push origin main', createdAt: 1 }];
+    await act(async () => root.render(createElement(MoaWaitingOnYou, { decisions: [], onResolve: vi.fn(), delegatedApprovals, onOpenPty, memoryApi: memoryApi(null).api, t })));
+    const row = container.querySelector('[data-moa-delegated-approval="ap1"]') as HTMLElement;
+    expect(row).not.toBeNull();
+    expect(row.textContent).toContain('wmux');
+    expect(row.querySelector('[data-moa-delegated-approval-what]')?.textContent).toBe('git push origin main');
+    expect(container.querySelector('#moa-waiting-title')?.textContent).toContain('1');
+    // Read-only: no option, no input, no answer button.
+    expect(row.querySelectorAll('[data-moa-decision-option], input, [data-moa-decision-dismiss]')).toHaveLength(0);
+    await act(async () => { (row.querySelector('[data-moa-delegated-approval-open]') as HTMLButtonElement).click(); });
+    expect(onOpenPty).toHaveBeenCalledWith('ws-w', 'pty-w');
+  });
+});
+
 describe('MoaWaitingOnYou — the "Remember this?" card', () => {
   const card = (id: string, fullText: string): MoaMemoryCardData => ({
     id, kind: 'skill', name: 'triage-ci', question: 'Remember this? Moa proposes a skill', description: 'Triage a red CI run', fullText, replaces: false,

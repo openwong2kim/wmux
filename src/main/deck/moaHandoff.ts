@@ -371,6 +371,17 @@ export class MoaHandoffService {
     return Object.values(this.file.items).find((r) => r.taskId === taskId) ?? null;
   }
 
+  /** Panes holding an open hand-off task: ptyId → where, and the agent. */
+  openTargets(): Map<string, { workspaceId: string; agentName: string }> {
+    const out = new Map<string, { workspaceId: string; agentName: string }>();
+    for (const r of Object.values(this.file.items)) {
+      if (r.state === 'delivered' && r.taskId && !isEnded(r.taskState)) {
+        out.set(r.target.ptyId, { workspaceId: r.target.workspaceId, agentName: r.target.agentName });
+      }
+    }
+    return out;
+  }
+
   /** The HQ closed this hand-off task itself (requesterComplete). */
   closedByHq(taskId: string): boolean {
     return this.byTask(taskId)?.closedByHq === true;

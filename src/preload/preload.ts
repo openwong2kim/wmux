@@ -826,6 +826,8 @@ const electronAPI = {
       // Every workspace's pending decision ("Waiting on you").
       decisions: () =>
         ipcRenderer.invoke(IPC.DECK_MOA_DECISIONS) as Promise<{ decisions: import('../shared/moa').MoaPendingDecision[] }>,
+      delegatedApprovals: () =>
+        ipcRenderer.invoke(IPC.DECK_MOA_DELEGATED_APPROVALS) as Promise<{ approvals: import('../shared/moa').MoaDelegatedApproval[] }>,
       // Moa's hand-offs: answer a hand-off card (a body only when the operator
       // edited it), the recent auto hand-offs, and stopping one of them.
       handoffResolve: (args: import('../shared/moaHandoff').MoaHandoffResolveRequest) =>

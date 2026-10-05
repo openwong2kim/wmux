@@ -2672,6 +2672,7 @@ export const en = {
   'moa.panel.answerSend': "Answer",
   'moa.panel.answerFailed': "Couldn't send that answer. Try again.",
   'moa.panel.dismiss': "Not needed",
+  'moa.panel.delegatedApproval': "{agent} is asking to run this",
   'moa.panel.tasksTitle': "Delegated work",
   'moa.panel.untitledTask': "Untitled task",
   'moa.panel.taskNoDetails': "Nothing to show yet.",

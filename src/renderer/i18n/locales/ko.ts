@@ -2055,6 +2055,7 @@ export const ko = {
   'moa.panel.answerSend': "답하기",
   'moa.panel.answerFailed': "답을 보내지 못했습니다. 다시 시도하세요.",
   'moa.panel.dismiss': "필요 없음",
+  'moa.panel.delegatedApproval': "{agent}이(가) 실행 허가를 기다립니다",
   'moa.panel.tasksTitle': "맡긴 작업",
   'moa.panel.untitledTask': "제목 없는 작업",
   'moa.panel.taskNoDetails': "아직 보여줄 내용이 없습니다.",
