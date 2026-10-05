@@ -140,7 +140,25 @@ export interface MoaTranscriptChatProps {
   decisionsApi?: MoaDecisionsApi;
 }
 
-interface Pending { id: string; text: string; before: ReadonlySet<string> }
+/** A sent bubble; `failed` holds the reason once main refused it late (after
+ *  the composer had already taken the send as accepted). */
+interface Pending { id: string; text: string; before: ReadonlySet<string>; failed?: string }
+
+/**
+ * The bubbles left when a turn ends without the transcript recording them.
+ * A send main refused after the composer's verdict window closes the store's
+ * open turn with an error: that bubble stays, marked not sent with its reason,
+ * so the message is never lost silently. Any other leftover goes.
+ */
+export function settleOnTurnEnd(pending: readonly Pending[], thread: { messages: ReadonlyArray<{ role: string; text: string; status?: string; errorText?: string }> } | undefined): Pending[] {
+  const messages = thread?.messages ?? [];
+  return pending.flatMap((p) => {
+    if (p.failed) return [p];
+    const at = messages.map((m) => m.role === 'user' && m.text === p.text).lastIndexOf(true);
+    const reply = at >= 0 ? messages[at + 1] : undefined;
+    return reply?.status === 'error' ? [{ ...p, failed: reply.errorText || '' }] : [];
+  });
+}
 
 export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, onTerminal, top, api, approvalApi, linksApi, resultApi, decisionsApi }: MoaTranscriptChatProps) {
   const t = useT();
@@ -226,13 +244,22 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
   useEffect(() => {
     setPending((current) => {
       if (current.length === 0) return current;
-      const fresh = data.events.filter((e) => e.kind === 'user_text' && !current[0].before.has(e.id));
-      return fresh.length ? current.slice(fresh.length) : current;
+      const live = current.filter((p) => !p.failed);
+      if (live.length === 0) return current;
+      const fresh = data.events.filter((e) => e.kind === 'user_text' && !live[0].before.has(e.id));
+      if (!fresh.length) return current;
+      const settled = new Set(live.slice(0, fresh.length).map((p) => p.id));
+      return current.filter((p) => !settled.has(p.id));
     });
   }, [data.events]);
   useEffect(() => {
-    if (!busy) setPending([]);
-  }, [busy]);
+    if (busy) return;
+    const thread = hqId ? useStore.getState().brainThreads[hqId] : undefined;
+    setPending((current) => {
+      const next = settleOnTurnEnd(current, thread);
+      return next.length === 0 && current.length === 0 ? current : next;
+    });
+  }, [busy, hqId]);
   // The first message is sent from the panel's bare composer, before Moa's
   // brain (and so this chat) exists: its words are the open turn main's send
   // recorded in the store. Shown once as the sent bubble, so the panel does not
@@ -256,6 +283,8 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
     const text = message.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
     if (!text.trim()) return;
     if (busy) throw new MessageNotSentError(t('moa.panel.busy'));
+    // Sending again settles an earlier refusal of the same words.
+    setPending((current) => current.filter((p) => !(p.failed !== undefined && p.text === text)));
     const before = new Set(data.events.filter((e) => e.kind === 'user_text').map((e) => e.id));
     // /clear and /reset are commands, not messages: nothing to wait for.
     const command = /^\/(clear|reset)$/.test(text.trim());
@@ -276,6 +305,24 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
   }, [busy, data.events, onSend, t]);
 
   const runtime = useExternalStoreRuntime({ messages, isRunning: false, isLoading: data.loading, isSendDisabled: busy, onNew });
+  // A late refusal puts the words back in the composer (when it is empty),
+  // so a retry is one Enter away even if the bubble is dismissed.
+  const restored = useRef(new Set<string>());
+  useEffect(() => {
+    for (const p of pending) {
+      if (p.failed === undefined || restored.current.has(p.id)) continue;
+      restored.current.add(p.id);
+      const composer = runtime.thread.composer;
+      if (!composer.getState().text.trim()) composer.setText(p.text);
+    }
+  }, [pending, runtime]);
+  const retrySend = useCallback((item: Pending) => {
+    runtime.thread.composer.setText('');
+    void onNew({ content: [{ type: 'text', text: item.text }] } as unknown as AppendMessage).catch(() => {
+      // Refused at once: the bubble is gone, so put the words back.
+      runtime.thread.composer.setText(item.text);
+    });
+  }, [onNew, runtime]);
   // The chat unmounts for the terminal view and with the panel: keep the draft.
   useComposerDraft(runtime, `moa:${hqId ?? ''}:${data.status.agentSessionId ?? 'new'}`);
 
@@ -395,7 +442,14 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
             pending={pending.map((item) => (
               <div key={item.id} className="wmux-chat-message wmux-chat-user wmux-chat-pending" data-moa-chat-pending>
                 <UserText>{item.text}</UserText>
-                <p className="wmux-chat-pending-caption">{t('chat.pendingSent')}</p>
+                {item.failed === undefined
+                  ? <p className="wmux-chat-pending-caption">{t('chat.pendingSent')}</p>
+                  : <p className="wmux-chat-pending-caption" role="alert" data-moa-chat-not-sent>
+                      {item.failed ? t('moa.panel.notSentReason', { reason: item.failed }) : t('moa.panel.notSent')}{' '}
+                      <button type="button" className="underline underline-offset-2" disabled={busy} onClick={() => retrySend(item)} data-moa-chat-retry>
+                        {t('moa.panel.retrySend')}
+                      </button>
+                    </p>}
               </div>
             ))}
             stop={busy && (

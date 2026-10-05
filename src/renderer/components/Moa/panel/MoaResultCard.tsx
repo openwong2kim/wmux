@@ -22,14 +22,35 @@ export interface MoaTaskResultApi {
   taskResult: (args: { workspaceId: string; taskId: string }) => Promise<{ result: MoaTaskResult | null }>;
 }
 
+/** When each done link was first seen done, for links whose report carries
+ *  no time of its own. updatedAt only grows, so the first sighting is the
+ *  earliest it can say. */
+const firstSeenDone = new Map<string, number>();
+
+/**
+ * When a done link finished: its stored result's time, else the first time
+ * this renderer saw it done. Never `updatedAt` as it is now: main rewrites it
+ * on links that are already done (a decision attached, a task state
+ * recorded), which would move the result past the turn that closed the job.
+ */
+export function finishedAt(link: WorkLink): number {
+  if (link.result?.at) return link.result.at;
+  const seen = firstSeenDone.get(link.id);
+  if (seen !== undefined) return seen;
+  firstSeenDone.set(link.id, link.updatedAt);
+  return link.updatedAt;
+}
+
 /** Delegated work that finished, as one synthetic event per task, at the
  *  moment it finished. Only tasks that finished within the loaded
  *  conversation, so an old result never lands in a fresh one. */
 export function moaResultEvents(links: readonly WorkLink[], since: number | undefined): TurnEvent[] {
   if (since === undefined) return [];
   return links
-    .filter((l) => (l.origin === 'moa' || l.origin === 'moa-auto') && l.state === 'done' && !!l.a2aTaskId && l.updatedAt >= since)
-    .map((l) => ({ id: `${RESULT_EVENT_PREFIX}${l.id}`, kind: 'meta' as const, subtype: 'unknown' as const, label: l.title ?? '', ts: l.updatedAt }));
+    .filter((l) => (l.origin === 'moa' || l.origin === 'moa-auto') && l.state === 'done' && !!l.a2aTaskId)
+    .map((l) => ({ link: l, at: finishedAt(l) }))
+    .filter(({ at }) => at >= since)
+    .map(({ link: l, at }) => ({ id: `${RESULT_EVENT_PREFIX}${l.id}`, kind: 'meta' as const, subtype: 'unknown' as const, label: l.title ?? '', ts: at }));
 }
 
 /** The transcript with the result events placed by time (after every event
@@ -85,10 +106,17 @@ function useTaskResult(link: WorkLink, api: MoaTaskResultApi | undefined): MoaTa
   return own ?? result;
 }
 
+/** The agent's display name from its slug ('claude' → 'Claude'). */
+const agentName = (slug: string | undefined): string | undefined =>
+  slug ? (slug === 'claude' ? 'Claude Code' : slug.charAt(0).toUpperCase() + slug.slice(1)) : undefined;
+
 /** One finished delegation inside a report: what the agent said it did
  *  (its own words, folded), the files it named, and the jump to it. */
-function AgentReport({ link, api, onOpen, t }: {
+function AgentReport({ link, workspace, many, api, onOpen, t }: {
   link: WorkLink;
+  workspace: string;
+  /** One of several delegations in the report: it names its task and its jump. */
+  many: boolean;
   api?: MoaTaskResultApi;
   onOpen?: (workspaceId: string, paneId?: string) => void;
   t: (key: string, vars?: Record<string, string | number>) => string;
@@ -97,6 +125,11 @@ function AgentReport({ link, api, onOpen, t }: {
   const files = result?.files ?? [];
   return (
     <div className="mt-1.5" data-moa-result-card={link.id}>
+      {many && (
+        <p className="m-0 mt-1 text-[13px] font-medium leading-snug text-[var(--text-main)] break-words" data-moa-result-title>
+          {link.title || t('moa.panel.untitledTask')}
+        </p>
+      )}
       {result?.summary && (
         <details className="text-[13px] text-[var(--text-main)]" data-moa-result-details>
           <summary className="cursor-pointer text-[var(--text-sub)]">{t('moa.report.agentReport')}</summary>
@@ -112,7 +145,7 @@ function AgentReport({ link, api, onOpen, t }: {
       )}
       {onOpen && (
         <Button variant="secondary" size="sm" className="mt-2" data-moa-result-open onClick={() => onOpen(link.owner.workspaceId, link.owner.paneId)}>
-          {t('moa.panel.openPane')}
+          {many ? t('moa.report.openIn', { agent: agentName(link.agent) ?? t('moa.report.agent'), workspace }) : t('moa.panel.openPane')}
         </Button>
       )}
     </div>
@@ -147,7 +180,10 @@ export function MoaReportCard({ report, links, workspaceName, api, onOpen, t }: 
       <p className="m-0 mt-1 text-[13px] leading-snug text-[var(--text-sub)] break-words" data-moa-report-checked={report?.verification ? 'moa' : 'agent'}>
         {report?.verification ? t('moa.report.checked', { text: report.verification }) : t('moa.report.notChecked')}
       </p>
-      {links.map((link) => <AgentReport key={link.id} link={link} api={api} onOpen={onOpen} t={t} />)}
+      {links.map((link) => (
+        <AgentReport key={link.id} link={link} many={links.length > 1} api={api} onOpen={onOpen} t={t}
+          workspace={workspaceName(link.owner.workspaceId) || t('moa.panel.unknownWorkspace')} />
+      ))}
     </div>
   );
 }

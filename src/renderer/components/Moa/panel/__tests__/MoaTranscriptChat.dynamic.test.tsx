@@ -628,3 +628,69 @@ describe('MoaTranscriptChat — the first send', () => {
     }
   });
 });
+
+describe('MoaTranscriptChat — review fixes (#1808)', () => {
+  it('a done link whose updatedAt moves after the closing turn still lands in that turn\'s single report', async () => {
+    // main rewrites updatedAt on done links (a decision attached, a task
+    // state recorded): the result is timed by its own completion instead.
+    const moved = { ...RUN_LINK, id: 'l-moved', a2aTaskId: 't-moved', updatedAt: 99, result: { summary: 'subtract added', at: 11.5 } };
+    const { api } = fakeApi({ snapshot: vi.fn(async () => ({ events: RUN, cursor, hasMore: false, truncatedHead: false })) as never });
+    const linksApi = { list: vi.fn(async () => [moved]), onChanged: vi.fn(() => () => undefined) };
+    await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} linksApi={linksApi as never} />));
+    for (let i = 0; i < 3; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    const reports = host.querySelectorAll('[data-moa-report]');
+    expect(reports).toHaveLength(1);
+    expect(reports[0].querySelector('[data-moa-report-checked]')?.getAttribute('data-moa-report-checked')).toBe('moa');
+    expect(reports[0].querySelector('[data-moa-result-card="l-moved"]')).not.toBeNull();
+  });
+
+  it('a report covering two delegations names each task and gives each jump its own label', async () => {
+    const a = { ...RUN_LINK, id: 'la', a2aTaskId: 'ta', title: 'Add subtract', agent: 'claude', owner: { workspaceId: 'ws-a' }, result: { summary: 'done a', at: 11.2 } };
+    const b = { ...RUN_LINK, id: 'lb', a2aTaskId: 'tb', title: 'Add multiply', agent: 'codex', owner: { workspaceId: 'ws-b' }, result: { summary: 'done b', at: 11.4 } };
+    const { api } = fakeApi({ snapshot: vi.fn(async () => ({ events: RUN, cursor, hasMore: false, truncatedHead: false })) as never });
+    const linksApi = { list: vi.fn(async () => [a, b]), onChanged: vi.fn(() => () => undefined) };
+    await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} linksApi={linksApi as never} />));
+    for (let i = 0; i < 3; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    const report = host.querySelector('[data-moa-report]') as HTMLElement;
+    expect([...report.querySelectorAll('[data-moa-result-title]')].map((n) => n.textContent)).toEqual(['Add subtract', 'Add multiply']);
+    expect([...report.querySelectorAll('[data-moa-result-open]')].map((n) => n.textContent)).toEqual(['moa.report.openIn', 'moa.report.openIn']);
+    // With the real interpolation each jump names its agent and workspace.
+    const { MoaReportCard } = await import('../MoaResultCard');
+    const tv = (key: string, vars?: Record<string, string | number>) => (vars ? `${key}:${Object.values(vars).join('/')}` : key);
+    const names: Record<string, string> = { 'ws-a': 'api', 'ws-b': 'web' };
+    await act(async () => root.render(<MoaReportCard links={[a, b] as never} workspaceName={(id) => names[id]} onOpen={vi.fn()} t={tv} />));
+    expect([...host.querySelectorAll('[data-moa-result-open]')].map((n) => n.textContent)).toEqual(['moa.report.openIn:Claude Code/api', 'moa.report.openIn:Codex/web']);
+  });
+
+  it('a refusal that arrives after the send was taken as accepted keeps the bubble, marked not sent, with Retry and the draft restored', async () => {
+    const { useStore } = await import('../../../../stores');
+    const prev = useStore.getState();
+    try {
+      useStore.setState({ moa: { ...(prev.moa ?? {}), hq: { workspaceId: 'ws-hq', state: 'ok' } } as never, brainThreads: {} });
+      const { api } = fakeApi();
+      // The composer's verdict window passed: the send reads as accepted.
+      const onSend = vi.fn(async () => ({ ok: true }));
+      await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={onSend} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />));
+      await type('Check the release');
+      await act(async () => input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })));
+      await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy onSend={onSend} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />));
+      // Main refuses late: the store's open turn closes with an error.
+      await act(async () => {
+        useStore.setState({ brainThreads: { 'ws-hq': { status: 'idle', messages: [
+          { id: 'm1', role: 'user', text: 'Check the release', ts: Date.now() },
+          { id: 'm2', role: 'assistant', text: '', ts: Date.now(), status: 'error', errorText: 'Moa is off for this workspace' },
+        ] } } as never });
+        root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={onSend} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />);
+      });
+      const bubble = host.querySelector('[data-moa-chat-pending]') as HTMLElement;
+      expect(bubble?.textContent).toContain('Check the release');
+      expect(bubble.querySelector('[data-moa-chat-not-sent]')?.textContent).toContain('moa.panel.notSentReason');
+      expect(input().value).toBe('Check the release');
+      await act(async () => { (bubble.querySelector('[data-moa-chat-retry]') as HTMLButtonElement).click(); });
+      expect(onSend).toHaveBeenCalledTimes(2);
+      expect(host.querySelector('[data-moa-chat-not-sent]')).toBeNull();
+    } finally {
+      useStore.setState({ moa: prev.moa, brainThreads: prev.brainThreads });
+    }
+  });
+});
