@@ -180,22 +180,21 @@ export function pendingHandoffNotices(decisions: readonly MoaPendingDecision[] |
   return out;
 }
 
-/** The terminal PTYs of one leaf pane, or of the workspace's only agent pane when no pane is named. */
-function delegatedPtys(state: StoreState, ticket: FleetTicket): string[] {
+/**
+ * The delegated agent's PTY: the one agent tab in the named pane, or in the
+ * whole workspace when no pane is named. Fleet's `openTicketFor` rule, counted
+ * per agent tab: with two agent tabs in scope the job is not attributed, so
+ * another tab's prompt or name never lands on it.
+ */
+function delegatedPty(state: StoreState, ticket: FleetTicket): string | undefined {
   const ws = state.workspaces.find((w) => w.id === ticket.workspaceId);
-  if (!ws) return [];
-  const ptysOf = (leaf: ReturnType<typeof getWorkspaceLeafPanes>[number]) => leaf.surfaces
+  if (!ws) return undefined;
+  const leaves = getWorkspaceLeafPanes(ws).filter((leaf) => !ticket.paneId || leaf.id === ticket.paneId);
+  const agentPtys = leaves.flatMap((leaf) => leaf.surfaces)
     .filter((surface) => (surface.surfaceType ?? 'terminal') === 'terminal' && !!surface.ptyId && !isBrainPtyId(surface.ptyId))
-    .map((surface) => surface.ptyId as string);
-  const leaves = getWorkspaceLeafPanes(ws);
-  if (ticket.paneId) {
-    const leaf = leaves.find((l) => l.id === ticket.paneId);
-    return leaf ? ptysOf(leaf) : [];
-  }
-  // Fleet's `openTicketFor` rule: a ticket that names no pane names the
-  // workspace's agent only when there is exactly one.
-  const agentLeaves = leaves.filter((leaf) => ptysOf(leaf).some((pty) => !!state.surfaceAgent?.[pty]?.name));
-  return agentLeaves.length === 1 ? ptysOf(agentLeaves[0]) : [];
+    .map((surface) => surface.ptyId as string)
+    .filter((pty) => !!state.surfaceAgent?.[pty]?.name?.trim());
+  return agentPtys.length === 1 ? agentPtys[0] : undefined;
 }
 
 /**
@@ -217,14 +216,14 @@ export function projectMoaDelegations(
     // A link without its task is a hand-off still being delivered (or one
     // that failed to): not a job yet.
     if (!isSidebarId(ticket.a2aTaskId) || !isSidebarId(ticket.workspaceId)) continue;
-    const ptys = delegatedPtys(state, ticket);
+    const pty = delegatedPty(state, ticket);
     const ended = ticket.state === 'done' || ticket.state === 'failed';
     if (ended && now - ticket.updatedAt > PHONE_MOA_DELEGATION_RECENT_MS) continue;
     let phoneState: PhoneMoaDelegationState;
     if (ended) phoneState = ticket.state as 'done' | 'failed';
-    else if (ticket.state === 'needs-you' || ptys.some((pty) => surfaceAttentionStatus(state, pty) === 'awaiting_input')) phoneState = 'blocked';
+    else if (ticket.state === 'needs-you' || (pty !== undefined && surfaceAttentionStatus(state, pty) === 'awaiting_input')) phoneState = 'blocked';
     else phoneState = 'working';
-    const paneAgent = ptys.map((pty) => state.surfaceAgent?.[pty]?.name).find((name) => !!name?.trim());
+    const paneAgent = pty !== undefined ? state.surfaceAgent?.[pty]?.name : undefined;
     const agentName = clampSidebarString(
       paneAgent ?? (isAgentSlug(ticket.agent) ? agentSlugToDisplay(ticket.agent) : ticket.agent) ?? 'Agent',
       PHONE_SIDEBAR_LIMITS.moaDelegationAgentName,

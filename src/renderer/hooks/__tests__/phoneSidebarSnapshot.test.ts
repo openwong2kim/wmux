@@ -558,6 +558,22 @@ describe('buildPhoneSidebarSnapshot — Moa delegations', () => {
     expect(build([link('1', { owner: { workspaceId: 'a' } })], { status: { 'pty-a': 'awaiting_input' } }).moaDelegations?.[0].state).toBe('blocked');
   });
 
+  it('leaves the job unattributed when its pane holds two agent tabs', () => {
+    const twoTabs = [workspace('a', [leaf('pa', [surface('sa', 'pty-a'), surface('sa2', 'pty-a2')])])];
+    const snap = buildPhoneSidebarSnapshot(
+      state({ workspaces: twoTabs, status: { 'pty-a': 'running', 'pty-a2': 'awaiting_input' } }),
+      undefined, [], { links: [link('1')], now: T + 1000 },
+    );
+    // The other tab's prompt does not block it, and the name falls back to the handed-to agent.
+    expect(snap.moaDelegations?.[0]).toMatchObject({ state: 'working', agentName: 'Codex CLI' });
+    // Same with no pane named: two agent tabs in the workspace are ambiguous too.
+    const unnamed = buildPhoneSidebarSnapshot(
+      state({ workspaces: twoTabs, status: { 'pty-a': 'running', 'pty-a2': 'awaiting_input' } }),
+      undefined, [], { links: [link('1', { owner: { workspaceId: 'a' } })], now: T + 1000 },
+    );
+    expect(unnamed.moaDelegations?.[0].state).toBe('working');
+  });
+
   it('keeps finished jobs for 24 h only, and keeps open ones however old', () => {
     const now = T + DAY + 10;
     const snap = build([
