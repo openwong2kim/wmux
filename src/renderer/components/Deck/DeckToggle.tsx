@@ -38,7 +38,7 @@ export function deckHasSignal(unread: number): boolean {
 export default function DeckToggle() {
   const t = useT();
   // The dock shows on the Workspaces page and beside the pages that leave it
-  // in view (Git); under another page it is not on screen, whatever its flag says.
+  // in view (every rail page but Settings); under Settings it is not on screen, whatever its flag says.
   const shownHere = useStore((s) => dockShownOn(s.appRoute));
   const visible = useStore((s) => s.channelDockVisible) && shownHere;
   const setChannelDockVisible = useStore((s) => s.setChannelDockVisible);
@@ -72,8 +72,8 @@ export default function DeckToggle() {
     <button
       type="button"
       onClick={() => {
-        // Where the dock shows (Workspaces, or beside Git) it opens and closes
-        // in place. From another page: show the Workspaces page with the dock
+        // Where the dock shows (Workspaces, or beside a rail page) it opens and closes
+        // in place. From Settings: show the Workspaces page with the dock
         // open, so it never opens (and resizes the terminals) behind an inert page.
         if (!shownHere) showWorkspaces(useStore.getState());
         // Opening lands on the conversation (Moa's, or the orchestrator's),

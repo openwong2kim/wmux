@@ -143,8 +143,8 @@ describe('DeckToggle', () => {
     expect(useStore.getState().activeDeckTab).toBe('commander');
   });
 
-  it('from another page it reads closed and opens the dock on the Workspaces page', () => {
-    act(() => { useStore.setState({ channelDockVisible: true, appRoute: 'fleet' }); });
+  it('from Settings (a full sheet over the dock) it reads closed and opens the dock on the Workspaces page', () => {
+    act(() => { useStore.setState({ channelDockVisible: true, appRoute: 'settings' }); });
     mount();
     expect(btn().getAttribute('aria-expanded')).toBe('false');
     act(() => { btn().dispatchEvent(new MouseEvent('click', { bubbles: true })); });
@@ -153,16 +153,16 @@ describe('DeckToggle', () => {
     expect(btn().getAttribute('aria-expanded')).toBe('true');
   });
 
-  it('beside the Git page it reads the dock as shown and collapses and opens it in place', () => {
-    act(() => { useStore.setState({ channelDockVisible: true, appRoute: 'git' }); });
+  it.each(['git', 'fleet', 'schedules', 'remote'] as const)('beside the %s page it reads the dock as shown and collapses and opens it in place', (route) => {
+    act(() => { useStore.setState({ channelDockVisible: true, appRoute: route }); });
     mount();
     expect(btn().getAttribute('aria-expanded')).toBe('true');
     expect(btn().getAttribute('aria-label')).toBe('Hide tools panel');
     act(() => { btn().dispatchEvent(new MouseEvent('click', { bubbles: true })); });
-    expect(useStore.getState().appRoute).toBe('git');
+    expect(useStore.getState().appRoute).toBe(route);
     expect(useStore.getState().channelDockVisible).toBe(false);
     act(() => { btn().dispatchEvent(new MouseEvent('click', { bubbles: true })); });
-    expect(useStore.getState().appRoute).toBe('git');
+    expect(useStore.getState().appRoute).toBe(route);
     expect(useStore.getState().channelDockVisible).toBe(true);
   });
 });

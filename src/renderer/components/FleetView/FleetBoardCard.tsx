@@ -57,6 +57,8 @@ function FleetBoardCard({
   const t = useT();
   const icon = AGENT_STATUS_ICON[card.agentStatus];
   const mission = useStore((s) => s.missionByPaneGroup[card.workspaceId]);
+  // The operator-assigned role (Role… in the row menu), a plain chip.
+  const role = useStore((s) => s.paneRole[card.paneId]);
   const meta = useStore(useShallow((s) => {
     const m = s.workspaces.find((w) => w.id === card.workspaceId)?.metadata;
     return { branch: m?.gitBranch, sync: m?.gitSync ?? null, pr: m?.pr ?? null };
@@ -170,6 +172,7 @@ function FleetBoardCard({
             </span>
           )}
           {card.stashed && <span className="wmux-board-chip">{t('fleet.stashed')}</span>}
+          {role && <span className="wmux-board-chip" data-fleet-chip="role" title={t('deck.fleetPreferredRole')}>{role}</span>}
         </span>
       )}
       {!dense && requester && <span className="wmux-board-lineage" data-fleet-requester title={requester.text}>{requester.text}</span>}

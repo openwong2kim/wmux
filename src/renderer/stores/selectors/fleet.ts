@@ -7,6 +7,7 @@ import type { AttachedRemoteWorkspace } from '../slices/remoteWorkspacesSlice';
 import type { StoreState } from '../index';
 import { flattenAgentText } from '../../../shared/assistantPreview';
 import type { WorkTask } from '../../../shared/workTask';
+import { moaHqId } from '../slices/moaSlice';
 
 // ─── S-C1 Fleet View — derived "all agents, all workspaces" model ────────────
 //
@@ -1277,7 +1278,7 @@ export function fleetTitle(pane: FleetPane, mission?: WorkTask): string {
  *  FleetView subscribes to them shallowly (so the 2 s decay clock does not
  *  re-derive the board) and passes them in; a caller holding the live store
  *  omits them and they are derived from the same state here. */
-export type FleetBoardState = FleetSelectorState & Pick<StoreState, 'surfaceOutputAt'> & {
+export type FleetBoardState = FleetSelectorState & Pick<StoreState, 'surfaceOutputAt'> & Partial<Pick<StoreState, 'moa' | 'moaHqSeed'>> & {
   /** Produced by `selectUnverifiablePaneMinutes`; derived when absent. */
   unverifiablePaneMinutes?: Record<string, number>;
 };
@@ -1314,13 +1315,18 @@ export function selectFleetBoard(
 }
 
 /** The board's rows before grouping — shared by the board and its counts so
- *  both read the same panes with the same liveness inputs. */
+ *  both read the same panes with the same liveness inputs. Moa's HQ workspace
+ *  is left out: Moa is the main bot, not a worker on the board, and what it
+ *  waits on reaches the operator through its own panel ("Waiting on you" and
+ *  its permission card). `selectFleetPanes` itself keeps the HQ, since the
+ *  workspace mirror (pane_list) and per-workspace roll-ups read it. */
 function fleetBoardPanes(
   state: FleetBoardState,
   hookRunningByPtyId: Record<string, boolean>,
   unverifiable: Record<string, number>,
 ): FleetPane[] {
   const surfaceAgent = state.surfaceAgent ?? {};
+  const hq = moaHqId({ moa: state.moa ?? null, moaHqSeed: state.moaHqSeed });
   // Use the same turn/liveness inputs as the sidebar and Deck roster. Missing
   // these optional inputs silently classified active hook-driven turns as idle.
   return selectFleetPanes({
@@ -1338,7 +1344,7 @@ function fleetBoardPanes(
     agentAliveByPtyId: state.agentAliveByPtyId,
     hookRunningByPtyId,
     remoteWorkspaces: state.remoteWorkspaces,
-  }).map((pane) => ({
+  }).filter((pane) => pane.workspaceId !== hq).map((pane) => ({
     ...pane,
     agentName: surfaceAgent[pane.ptyId]?.name || pane.agentName,
     unverifiable: !!unverifiable[pane.ptyId],
@@ -1378,7 +1384,7 @@ export function selectFleetSectionCounts(state: FleetBoardState): FleetSectionCo
     state.workspaces, state.surfaceAgentStatus, state.surfaceActivity, state.paneLabel,
     state.supervisionByPtyId, state.surfaceAgent, state.surfacePendingQuestion, state.surfaceActivityAt,
     state.surfaceTurnOpenAt, state.commandRunningByPtyId, state.agentAliveByPtyId, state.remoteWorkspaces,
-    state.usageLimitWaiting,
+    state.usageLimitWaiting, moaHqId({ moa: state.moa ?? null, moaHqSeed: state.moaHqSeed }),
   ];
   const memo = sectionCountsMemo;
   if (memo && inputs.every((value, i) => Object.is(value, memo.inputs[i]))

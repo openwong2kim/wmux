@@ -7,7 +7,7 @@
 // yellow while a decision waits on the operator, grey for an unseen reply.
 //
 // "On screen" is DeckToggle's reading (the dock is open AND shown: on the
-// Workspaces page, or beside Git): bubbles, dots and "seen" follow it. The transcript subscription
+// Workspaces page, or beside any rail page but Settings): bubbles, dots and "seen" follow it. The transcript subscription
 // follows the dock's mount flag instead (AppLayout mounts it on
 // `channelDockVisible` alone), so it can never be dropped while the panel holds
 // its own.
@@ -74,7 +74,7 @@ function MoaTitlebarButtonOn() {
 
   const openPanel = useCallback(() => {
     const st = useStore.getState();
-    // Beside Git the panel opens in place; from another page, on Workspaces.
+    // Beside a rail page the panel opens in place; from Settings, on Workspaces.
     if (!dockShownOn(st.appRoute)) showWorkspaces(st);
     // Land on the conversation, as the tools-panel toggle does.
     st.setActiveDeckTab('commander');
