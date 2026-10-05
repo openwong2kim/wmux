@@ -4321,8 +4321,13 @@ export class WebTerminalServer {
     const owner = chatOwner(principal);
     const queue = caps.chatQueue === true && chat.queueEnabled?.() === true ? chat.queue?.(owner, sessionId) ?? [] : undefined;
     const events = queue !== undefined ? this.tagDeliveredRows(chat, sessionId, owner, body.events) : body.events;
+    // Only a terminal binding whose agent is not alive can be resumable; skip the lookup otherwise.
+    const resumable = resolution.source === 'file' && resolution.status.agentAlive !== true
+      ? await chat.resumable?.(sessionId).catch(() => false) ?? false : false;
+    if (res.destroyed || res.writableEnded) return;
+    if (moaWithdrawn()) return;
     this.json(res, 200, { ...body, ...(events !== undefined ? { events } : {}), chat: buildChatObject(resolution, projectChatBlocked(blocked, caps),
-      { ...(turn ? { turn } : {}), chatCancel: caps.chatCancel === true, ...(queue ? { queue } : {}),
+      { ...(turn ? { turn } : {}), resumable, chatCancel: caps.chatCancel === true, ...(queue ? { queue } : {}),
         accountStatus: this.opts?.allowTranscript === true && process.platform !== 'win32' &&
           this.deps.codexAccountStatus?.accountHome(sessionId) !== undefined }) });
   }
@@ -4765,6 +4770,8 @@ export class WebTerminalServer {
       // Launch body capabilities: `prompt` may be omitted, and `resume: true` is accepted.
       chatLaunchBare: true,
       chatLaunchResume: true,
+      // `resume: true` also continues a pane's own binding once its agent exited (`chat.resumable`).
+      chatResumeBound: true,
       chatVersion: 1,
     };
   }

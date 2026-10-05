@@ -75,7 +75,7 @@ function shellQuote(value: string): string {
 }
 
 /** PowerShell single quotes: also closed by the typographic single quotes, so those are doubled too. */
-function pwshQuote(value: string): string {
+export function pwshQuote(value: string): string {
   return `'${value.replace(/['\u2018\u2019\u201a\u201b]/g, (q) => q + q)}'`;
 }
 
@@ -105,10 +105,15 @@ export function resumeCommand(
     ...(model ? [quote(`--model=${model}`)] : []),
     ...(permission ? [permission] : []),
   ].join(' ');
+  return `${inResumeCwd(cwd, agent, shell)}\r`;
+}
+
+/** `line`, run only once the shell has changed to `cwd`. */
+export function inResumeCwd(cwd: string, line: string, shell: ResumeShell): string {
   // PowerShell 5.1 has no `&&`; `Set-Location -PassThru` yields nothing when it fails.
   return shell === 'pwsh'
-    ? `if (Set-Location -LiteralPath ${quote(cwd)} -PassThru -ErrorAction SilentlyContinue) { ${agent} }\r`
-    : `cd -- ${quote(cwd)} && ${agent}\r`;
+    ? `if (Set-Location -LiteralPath ${pwshQuote(cwd)} -PassThru -ErrorAction SilentlyContinue) { ${line} }`
+    : `cd -- ${shellQuote(cwd)} && ${line}`;
 }
 
 function modePermission(mode: ChatV2RunMode): 'bypassPermissions' | 'default' {

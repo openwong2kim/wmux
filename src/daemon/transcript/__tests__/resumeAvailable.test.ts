@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { clearResumeCache, latestClaudeSessionForCwd, latestResumeSession, RESUME_CACHE_MS } from '../resumeAvailable';
+import { boundSessionLives, clearResumeCache, latestClaudeSessionForCwd, latestResumeSession, RESUME_CACHE_MS } from '../resumeAvailable';
 
 let config: string;
 let cwd: string;
@@ -67,5 +67,23 @@ describe('latestResumeSession', () => {
     transcript(project(cwd), 'a', '{}\n');
     expect(await latestResumeSession('claude', cwd, env, RESUME_CACHE_MS - 1)).toBeUndefined();
     expect(await latestResumeSession('claude', cwd, env, RESUME_CACHE_MS)).toBe('a');
+  });
+});
+
+describe('boundSessionLives', () => {
+  it('needs a non-empty transcript inside the account root and an existing folder, cached for the resume window', async () => {
+    const env = { CLAUDE_CONFIG_DIR: config };
+    const id = '0f1e2d3c-4b5a-4987-8a6b-5c4d3e2f1a0b';
+    const file = path.join(project(cwd), `${id}.jsonl`);
+    const binding = { agent: 'claude', sessionId: id, cwd, transcriptPath: file };
+    expect(await boundSessionLives(binding, env, 0)).toBe(false);
+    transcript(project(cwd), id, '{"type":"user"}\n');
+    // The miss is cached; a later window sees the record.
+    expect(await boundSessionLives(binding, env, 1)).toBe(false);
+    expect(await boundSessionLives(binding, env, RESUME_CACHE_MS + 1)).toBe(true);
+    // Another account's root, a missing path, or a gone folder never count.
+    expect(await boundSessionLives(binding, { CLAUDE_CONFIG_DIR: cwd }, 0)).toBe(false);
+    expect(await boundSessionLives({ ...binding, transcriptPath: undefined }, env, 0)).toBe(false);
+    expect(await boundSessionLives({ ...binding, cwd: path.join(cwd, 'gone') }, env, 0)).toBe(false);
   });
 });

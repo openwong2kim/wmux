@@ -14,8 +14,12 @@ import type { CodexNativeInterrupt, CodexTurnRef } from '../web/codexPaneRelays'
 import { screenBlocksChatSend, screenShowsRunningTurn, screenShowsTurnEnding, titleShowsFinishedTurn } from '../transcript/chatScreenGate';
 import { claudeComposerRows, claudeComposerShows, deliverChatPrompt, type ChatScreenRows } from '../transcript/deliverChatPrompt';
 import { INTERRUPT_COOLDOWN_MS, interruptChatTurn, type ChatInterruptVerdict } from '../transcript/interruptChatTurn';
-import { codexRuntimeEnv, terminalLaunchCommand } from '../transcript/terminalLaunch';
-import { latestResumeSession } from '../transcript/resumeAvailable';
+import { boundResumeCommand, codexRuntimeEnv, resumeCwdUsable, terminalLaunchCommand } from '../transcript/terminalLaunch';
+import { boundSessionLives, latestResumeSession } from '../transcript/resumeAvailable';
+import { isUsableResumeBinding, type ResumeBinding } from '../../shared/agentResume';
+import { CHATV2_PROVIDER_SESSION_ID } from '../../shared/chatv2/ipc';
+import { classifyShell } from '../shell-integration';
+import { inResumeCwd, type ResumeShell } from './v2/handoff';
 import type { TerminalChatFailure, TerminalChatService } from '../transcript/TerminalChatService';
 import type { ChatSessionService } from './ChatSessionService';
 import { ChatSendReceiptStore, type StoredChatOutcome } from './ChatSendReceiptStore';
@@ -46,6 +50,10 @@ export interface ChatPane {
   meta: {
     id: string; state: string; pid: number; cwd: string; env: Record<string, string>;
     exec?: unknown; wslTarget?: unknown; spawnCwd?: string; incarnationId?: string;
+    /** The shell the pane was spawned with (picks the resume line's grammar). */
+    cmd?: string;
+    /** The conversation the pane last ran, kept after its agent exits. */
+    resumeBinding?: ResumeBinding;
     /** Set only for a pane created with a chosen account (contract v-next item 4). */
     paneAccount?: { vendor: 'claude' | 'codex' };
   };
@@ -111,10 +119,13 @@ export interface NativeChatBridgeDeps<P extends ChatPane> {
   /** Queue overrides (tests). */
   queueTtlMs?: number;
   queueTickMs?: number;
-  idleShell(pid: number, env: NodeJS.ProcessEnv): Promise<{ ok: true } | { ok: false; reason: 'missing' | 'unsupported-shell' | 'shell-has-children' }>;
+  /** `anyShell` also accepts PowerShell and cmd (the caller picked its grammar already). */
+  idleShell(pid: number, env: NodeJS.ProcessEnv, anyShell?: boolean): Promise<{ ok: true } | { ok: false; reason: 'missing' | 'unsupported-shell' | 'shell-has-children' }>;
   installedAgents(env: NodeJS.ProcessEnv): Promise<AgentLaunchOptions[]>;
   /** Whether a resume launch has a conversation to continue in `cwd` (default: the agent's own records). */
   latestResumeSession?(agent: TerminalLaunchAgent, cwd: string, env: NodeJS.ProcessEnv): Promise<string | undefined>;
+  /** Whether a pane's binding still names a conversation to continue (default: its transcript and folder exist). */
+  boundSessionLives?(binding: ResumeBinding, env: NodeJS.ProcessEnv): Promise<boolean>;
   /** Panes whose resume binding names this agent session (the daemon's own records). */
   panesBoundTo?(agent: TerminalLaunchAgent, sessionId: string): string[];
   /** Whether the agent takes a first message on its resume line (default RESUME_TAKES_PROMPT). */
@@ -467,6 +478,41 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
   };
 
   const unsupportedPlatform = (pane: ChatPane) => platform === 'win32' || !!pane.meta.wslTarget;
+
+  /**
+   * The grammar a bound resume is typed in: POSIX off Windows, PowerShell on
+   * it. Null for cmd.exe (no prompt integration), WSL (its idle shell cannot
+   * be proven from the host) and any other Windows shell.
+   */
+  const boundResumeShell = (pane: ChatPane): ResumeShell | null => {
+    if (pane.meta.wslTarget) return null;
+    if (platform !== 'win32') return 'posix';
+    // Split on both separators, so a Windows path classifies the same on any host.
+    return classifyShell((pane.meta.cmd ?? '').split(/[\\/]/).pop() ?? '') === 'pwsh' ? 'pwsh' : null;
+  };
+
+  /** The binding a `resume` launch continues exactly, when the pane has one (any agent). */
+  const boundOf = (pane: ChatPane | undefined): ResumeBinding | undefined =>
+    isUsableResumeBinding(pane?.meta.resumeBinding) ? pane.meta.resumeBinding : undefined;
+
+  /** Why a bound resume of `agent` cannot run, before the record lookup; undefined when it can. */
+  const boundRefusal = (binding: ResumeBinding, agent: string, shell: ResumeShell): ChatLaunchTag | undefined =>
+    binding.agent !== agent || !CHATV2_PROVIDER_SESSION_ID.test(binding.sessionId) || !resumeCwdUsable(binding.cwd, shell)
+      ? 'resume-unavailable' : undefined;
+
+  /**
+   * `/turns` `chat.resumable`: the pane's agent is not running, it keeps a
+   * binding a bound resume can type on this shell, and the conversation's
+   * record still exists (cached like the resume lookup).
+   */
+  const resumable = async (id: string): Promise<boolean> => {
+    const pane = deps.pane(id);
+    const binding = boundOf(pane);
+    if (!pane || !binding || !liveState(pane) || pane.meta.exec || deps.agentState(id).agentName) return false;
+    const shell = boundResumeShell(pane);
+    if (!shell || boundRefusal(binding, binding.agent, shell)) return false;
+    return (deps.boundSessionLives ?? boundSessionLives)(binding, { ...process.env, ...pane.meta.env });
+  };
 
   /** Launch readiness in the launch's own order, without enumerating processes. */
   const notReady = (id: string, pane: P | undefined, revision?: number): ChatLaunchReason | undefined => {
@@ -1533,14 +1579,24 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     let launched = false;
     try {
       const pane = deps.pane(id);
-      if (req.refuseConversation && await hasConversation(id)) return fail('conversation-exists');
-      if (pane && unsupportedPlatform(pane)) return fail('launch-unsupported', 'unsupported-shell');
+      // A resume on a pane that keeps a binding continues exactly that conversation
+      // (the pane's agent having exited); without `resume` the binding still refuses.
+      const bound = resume ? boundOf(pane) : undefined;
+      const boundShell = pane && bound ? boundResumeShell(pane) : null;
+      if (bound) {
+        if (deps.agentState(id).agentName) return fail('launch-not-ready', 'agent-running');
+        if (deps.managed()?.has(id)) return fail('conversation-exists');
+        if (!boundShell) return fail('launch-unsupported', 'unsupported-shell');
+      } else {
+        if (req.refuseConversation && await hasConversation(id)) return fail('conversation-exists');
+        if (pane && unsupportedPlatform(pane)) return fail('launch-unsupported', 'unsupported-shell');
+      }
       const revision = pane?.bridge.getInputRevision();
       const first = notReady(id, pane, revision);
       if (first || !pane) return fail('launch-not-ready', first ?? 'not-integrated');
       const env = { ...process.env, ...pane.meta.env };
       const idle = async (): Promise<ChatLaunchOutcome | undefined> => {
-        const shell = await deps.idleShell(pane.meta.pid, pane.meta.env);
+        const shell = await deps.idleShell(pane.meta.pid, pane.meta.env, boundShell === 'pwsh');
         // A vanished shell pid means the pane is being torn down: busy, not unsupported.
         if (!shell.ok) return shell.reason === 'missing' ? fail('launch-not-ready', 'shell-busy') : fail('launch-unsupported', shell.reason);
         const again = notReady(id, pane, revision);
@@ -1555,9 +1611,14 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       // it must be quotable; the agent then runs exactly where it was checked.
       const cwd = pane.meta.cwd || pane.meta.spawnCwd;
       const quoted = quotedCwd(cwd);
+      if (bound && boundShell) {
+        const refused = boundRefusal(bound, agent, boundShell);
+        if (refused) return fail(refused);
+        if (!await (deps.boundSessionLives ?? boundSessionLives)(bound, env)) return fail('resume-unavailable');
+      }
+      const boundCwd = bound && boundShell === 'posix' ? quotedCwd(bound.cwd) : undefined;
       if (resume) {
-        if (!cwd || !quoted) return fail('resume-unavailable');
-        const sessionId = await (deps.latestResumeSession ?? latestResumeSession)(agent, cwd, env);
+        const sessionId = bound?.sessionId ?? (cwd && quoted ? await (deps.latestResumeSession ?? latestResumeSession)(agent, cwd, env) : undefined);
         if (!sessionId) return fail('resume-unavailable');
         // Two agents appending to one conversation: refuse while another pane runs it.
         const holders = deps.panesBoundTo?.(agent, sessionId) ?? [];
@@ -1566,7 +1627,11 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
           return !!live && liveState(live) && slugOf(deps.agentState(other)) === agent;
         })) return fail('resume-in-use');
       }
-      if (agent === 'codex') {
+      if (bound && boundShell) {
+        try { command = boundResumeCommand(agent, bound.sessionId, req.prompt, req.mode, boundShell); }
+        catch { return fail('resume-unavailable'); }
+      }
+      if (agent === 'codex' && boundShell !== 'pwsh') {
         // Hook session_id can name an invocation rather than the conversation.
         // Observe the existing native TUI transport for authoritative thread IDs.
         await deps.relays.retire(id);
@@ -1582,13 +1647,17 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
         // Typed into an idle zsh/bash/sh prompt (idleShell refuses anything else), so the
         // shell's own "$PWD" is the directory Codex should start in; a tracked cwd can only lag it.
         // A resume names the directory its availability was checked in, so `--last` filters on that one.
-        command = withCodexRemote(command, relay.url, resume && quoted ? quoted : codexCdOperand());
+        command = withCodexRemote(command, relay.url, boundCwd ?? (resume && quoted ? quoted : codexCdOperand()));
       }
       // A pane created with a chosen account launches that vendor's agent on it,
       // whatever the shell's rc files exported (see withChosenAccountEnv).
-      command = withChosenAccountEnv(command, pane.meta, agent);
-      // After the account prefix, so `KEY=… ` applies to claude and not to cd.
-      if (resume && agent === 'claude') command = `cd -- ${quoted} && ${command}`;
+      // PowerShell has no one-command prefix; the pane's own environment carries the account there.
+      if (boundShell !== 'pwsh') command = withChosenAccountEnv(command, pane.meta, agent);
+      // After the account prefix, so `KEY=… ` applies to the agent and not to cd.
+      // A relay Codex is placed by its `--cd`; every other bound line changes folder first.
+      if (bound && boundShell) {
+        if (agent !== 'codex' || boundShell === 'pwsh') command = inResumeCwd(bound.cwd, command, boundShell);
+      } else if (resume && agent === 'claude') command = `cd -- ${quoted} && ${command}`;
       const secondIdle = await idle();
       if (secondIdle) return secondIdle;
       if (req.authorized) {
@@ -1642,6 +1711,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
   return {
     route,
     resolve,
+    resumable,
     managedSnapshot: (id) => deps.managed()?.snapshot(id) ?? null,
     turn: (id) => deps.chatAgentState(id).turn,
     blocked,

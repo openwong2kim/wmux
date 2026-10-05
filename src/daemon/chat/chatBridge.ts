@@ -310,6 +310,8 @@ export interface ChatBridge {
   /** Owner-bound receipt read; never dispatches. `unknown` when absent, for another owner or another pane. */
   receipt(owner: ChatOwner, id: string, clientMessageId: string): ChatSendReceiptView;
   launch(request: ChatLaunchRequest): Promise<ChatLaunchOutcome>;
+  /** Whether `resume:true` would continue the pane's own binding now (`/turns` `chat.resumable`). */
+  resumable?(id: string): Promise<boolean>;
   /** Phone skills rule: Claude `spawnCwd`; Codex live relay selection cwd, else `spawnCwd`. */
   skills(id: string, agent: TerminalLaunchAgent): Promise<ChatSkillCatalog>;
   /** Bridge-owned OpenCode watch: nudges phone watchers on TUI changes until `unwatch`. */

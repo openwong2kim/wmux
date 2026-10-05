@@ -3948,7 +3948,7 @@ function registerRpcHandlers(
     queue: chatQueue,
     onQueueEvent: (event) => webTerminalServer?.emitChatQueue(event),
     onCancelEvent: (event) => webTerminalServer?.emitChatCancel(event),
-    idleShell: (pid, env) => agentProcessTracker.idleShellState(pid, env),
+    idleShell: (pid, env, anyShell) => agentProcessTracker.idleShellState(pid, env, anyShell),
     installedAgents: (env) => installedAgentLaunchOptions(env),
     relays: {
       retire: (id) => codexPaneRelays.retire(id),

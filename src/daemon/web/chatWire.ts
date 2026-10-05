@@ -90,7 +90,7 @@ function skillsAgent(agent: string | undefined): boolean {
 export function buildChatObject(
   resolution: ChatResolution,
   blocked: ChatBlocked | undefined,
-  opts: { turn?: ChatTurn; chatCancel?: boolean; queue?: ChatQueueItemView[]; accountStatus?: boolean } = {},
+  opts: { turn?: ChatTurn; chatCancel?: boolean; queue?: ChatQueueItemView[]; accountStatus?: boolean; resumable?: boolean } = {},
 ): Record<string, unknown> {
   const { status } = resolution;
   const liveness = {
@@ -157,6 +157,8 @@ export function buildChatObject(
     historyTruncated: terminal?.historyTruncated === true,
     ...(resolution.source === 'tui' ? { maxSendBytes: OPENCODE_MAX_SEND_BYTES } : {}),
     ...liveness,
+    // `POST chat/launch {resume:true}` would continue this very conversation now.
+    resumable: opts.resumable === true,
     // Additive: the route passes it only to a caller that declared
     // `chat-cancel` or `chat-queue`, so an older client's object is unchanged.
     ...(opts.turn ? { turn: { ...opts.turn } } : {}),

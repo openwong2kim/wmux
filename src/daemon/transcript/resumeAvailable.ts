@@ -3,7 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import type { TerminalLaunchAgent } from '../../shared/transcript/terminalChat';
 import { canonicalDir, latestCodexRolloutForCwd } from './codexRolloutByCwd';
-import { codexSessionRoot } from './providers';
+import { checkNativeTranscriptPath, codexSessionRoot } from './providers';
+import type { ResumeBinding } from '../../shared/agentResume';
 
 /** Claude Code's project directory name for a cwd; names past 200 characters get a hash suffix. */
 const CLAUDE_NAME_MAX = 200;
@@ -108,4 +109,34 @@ export function latestResumeSession(
 /** Tests: forget every cached lookup. */
 export function clearResumeCache(): void {
   cache.clear();
+  boundCache.clear();
+}
+
+const boundCache = new Map<string, { until: number; result: Promise<boolean> }>();
+
+/**
+ * Whether a pane's resume binding still names a conversation the agent can
+ * continue: its recorded transcript is a non-empty file inside the account's
+ * own session root, and its folder still exists. Cached per (agent, session,
+ * transcript, folder, account root) for RESUME_CACHE_MS, like the lookup above.
+ */
+export function boundSessionLives(
+  binding: Pick<ResumeBinding, 'agent' | 'sessionId' | 'cwd' | 'transcriptPath'>,
+  env: Record<string, string | undefined>, now = Date.now(),
+): Promise<boolean> {
+  const defined: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) if (typeof value === 'string') defined[key] = value;
+  const account = binding.agent === 'claude' ? defined.CLAUDE_CONFIG_DIR ?? '' : codexSessionRoot(defined);
+  const key = JSON.stringify([binding.agent, binding.sessionId, binding.transcriptPath ?? '', binding.cwd, account]);
+  for (const [k, entry] of boundCache) if (entry.until <= now) boundCache.delete(k);
+  const hit = boundCache.get(key);
+  if (hit) return hit.result;
+  const file = binding.transcriptPath;
+  const result = (async () => {
+    if (!file || !checkNativeTranscriptPath(binding.agent, file, binding.sessionId, defined).ok) return false;
+    const [record, folder] = await Promise.all([fs.promises.stat(file), fs.promises.stat(binding.cwd)]);
+    return record.isFile() && record.size > 0 && folder.isDirectory();
+  })().catch(() => false);
+  boundCache.set(key, { until: now + RESUME_CACHE_MS, result });
+  return result;
 }

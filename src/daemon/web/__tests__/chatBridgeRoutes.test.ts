@@ -147,6 +147,7 @@ function makeFakeChat() {
       if (req.authorized && !(await req.authorized())) return { ok: false, error: 'authorization-expired', effect: 'none' };
       return { ok: true, effect: 'submitted' };
     },
+    resumable: false,
     skills: { state: 'ready', skills: [{ name: 'review', description: 'Review the diff', invocation: '$review', source: 'user' }] } as ChatSkillCatalog,
   };
   const bridge = {
@@ -159,6 +160,7 @@ function makeFakeChat() {
     receipt: vi.fn((owner: ChatOwner, id: string, cmid: string): ChatSendReceiptView =>
       box.receipts.get(`${owner}|${id}|${cmid}`) ?? { clientMessageId: cmid, state: 'unknown' }),
     launch: vi.fn((req: ChatLaunchRequest) => box.launch(req)),
+    resumable: vi.fn(async (_id: string) => box.resumable),
     skills: vi.fn(async () => box.skills),
     watch: vi.fn(),
     unwatch: vi.fn(),
@@ -360,11 +362,24 @@ describe('native chat routes (contract v0.3.1)', () => {
       expect(body).not.toHaveProperty('reset');
       expect(body.chat).toEqual({
         binding: 'terminal', agent: 'claude', agentSessionId: 'sess-a', historyEpoch: epoch,
-        historyTruncated: false, agentStatus: 'idle', agentAlive: true,
+        historyTruncated: false, agentStatus: 'idle', agentAlive: true, resumable: false,
         capabilities: { history: true, send: true, permissions: false, cancel: false, fileUndo: false, streaming: false, launch: false, skills: true },
       });
+      // A live agent is never resumable, so the lookup does not run.
+      expect(chat.resumable).not.toHaveBeenCalled();
       expect(decodeCursor(body.cursor)).toEqual({ v: 2, src: 'file', a: 'sess-a', e: epoch, head: 5, tail: 50, fileSize: 50 });
       expect(projectorMock.snapshot).toHaveBeenCalledWith('s1');
+    });
+
+    it('reads resumable from the bridge once the agent is not alive', async () => {
+      const info = await start();
+      const resolution = chatBox.resolution as Extract<ChatResolution, { source: 'file' }>;
+      chatBox.resolution = { ...resolution, status: { ...resolution.status, agentAlive: false } };
+      chatBox.resumable = true;
+      expect((await turns(bearer(info.token as string))).body.chat).toMatchObject({ agentAlive: false, resumable: true });
+      expect(chat.resumable).toHaveBeenCalledWith('s1');
+      chatBox.resumable = false;
+      expect((await turns(bearer(info.token as string))).body.chat.resumable).toBe(false);
     });
 
     it('never advertises Stop or image attachments, which the phone has no route for; queue passes through', async () => {
@@ -1349,7 +1364,7 @@ describe('native chat routes (contract v0.3.1)', () => {
       expect(await config(bearer(info.token as string))).toMatchObject({
         chatBinding: true, chatSend: true, chatLaunch: true, chatSkills: true, chatVersion: 1,
         chatLaunchModes: { claude: ['default'], codex: ['default'] },
-        chatLaunchBare: true, chatLaunchResume: true,
+        chatLaunchBare: true, chatLaunchResume: true, chatResumeBound: true,
       });
       expect((await config(bearer(info.token as string))).chatCancel).toBe(true);
       const ro = await config(device('ro', false));

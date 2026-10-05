@@ -581,6 +581,96 @@ describe('launch', () => {
     expect(f.typed).toHaveLength(2);
   });
 
+  describe('resume of a bound pane whose agent exited', () => {
+    const SID = '0f1e2d3c-4b5a-4987-8a6b-5c4d3e2f1a0b';
+    const bound = (f: ReturnType<typeof fixture>, extra: Record<string, unknown> = {}) => {
+      f.state.projector = FILE;
+      f.state.pane!.meta.resumeBinding = { agent: 'claude', sessionId: SID, cwd: '/proj', transcriptPath: '/t.jsonl',
+        permissionMode: 'bypassPermissions', ts: 1, ...extra };
+      f.deps.boundSessionLives = async () => true;
+      f.deps.latestResumeSession = async () => { throw new Error('the newest-conversation lookup must not run'); };
+    };
+    const phone = (agent: 'claude' | 'codex', extra: Record<string, unknown> = {}) =>
+      ({ id: 'pane', agent, resume: true, refuseConversation: true, ...extra });
+
+    it('types the exact session in the binding folder, with the request mode and prompt only', async () => {
+      const f = fixture();
+      bound(f);
+      expect(await createChatBridge(f.deps).launch(phone('claude', { prompt: "it's next" }))).toEqual({ ok: true, effect: 'submitted' });
+      f.shell.empty = true;
+      expect(await createChatBridge(f.deps).launch(phone('claude', { mode: 'bypass' }))).toMatchObject({ ok: true });
+      f.shell.empty = true;
+      bound(f, { agent: 'codex' });
+      expect(await createChatBridge(f.deps).launch(phone('codex', { prompt: 'go' }))).toMatchObject({ ok: true });
+      expect(f.typed).toEqual([
+        // The binding's stored bypass mode is never restored.
+        `cd -- '/proj' && claude --resume ${SID} -- 'it'\\''s next'\r`,
+        `cd -- '/proj' && claude --resume ${SID} --dangerously-skip-permissions\r`,
+        `codex resume --remote unix:///tmp/relay.sock --cd '/proj' ${SID} -- 'go'\r`,
+      ]);
+    });
+
+    it('refuses each case it cannot continue, typing nothing', async () => {
+      const f = fixture();
+      const attempt = async (setup: () => void, req = phone('claude')) => {
+        bound(f); f.shell.empty = true; setup();
+        return createChatBridge(f.deps).launch(req);
+      };
+      expect(await attempt(() => undefined, { id: 'pane', agent: 'claude', refuseConversation: true } as never))
+        .toEqual({ ok: false, error: 'conversation-exists', effect: 'none' });
+      expect(await attempt(() => { f.state.agent = { ...f.state.agent, agentName: 'Claude Code' }; }))
+        .toEqual({ ok: false, error: 'launch-not-ready', reason: 'agent-running', effect: 'none' });
+      f.state.agent = { ...f.state.agent, agentName: null };
+      expect(await attempt(() => { f.deps.boundSessionLives = async () => false; })).toMatchObject({ error: 'resume-unavailable' });
+      expect(await attempt(() => { f.state.pane!.meta.resumeBinding!.sessionId = 'abc; rm x'; })).toMatchObject({ error: 'resume-unavailable' });
+      expect(await attempt(() => { f.state.pane!.meta.resumeBinding!.cwd = "/it's"; })).toMatchObject({ error: 'resume-unavailable' });
+      expect(await attempt(() => undefined, phone('codex'))).toMatchObject({ error: 'resume-unavailable' });
+      expect(await attempt(() => { f.state.pendingApproval = 'ap'; })).toMatchObject({ error: 'launch-not-ready', reason: 'approval-pending' });
+      f.state.pendingApproval = undefined;
+      const other: ChatPane = { ...f.state.pane!, meta: { ...f.state.pane!.meta, id: 'other' } };
+      expect(await attempt(() => {
+        f.deps.pane = (id) => id === 'other' ? other : f.state.pane;
+        f.deps.agentState = (id) => id === 'other' ? { ...f.state.agent, agentName: 'Claude Code' } : { ...f.state.agent };
+        f.deps.panesBoundTo = () => ['pane', 'other'];
+      })).toMatchObject({ error: 'resume-in-use' });
+      expect(f.typed).toEqual([]);
+    });
+
+    it('types PowerShell on Windows, and refuses cmd.exe and WSL panes as unsupported shells', async () => {
+      const f = fixture();
+      bound(f, { cwd: 'C:\\Users\\me\\proj' });
+      f.deps.platform = 'win32';
+      const anyShell: unknown[] = [];
+      f.deps.idleShell = async (_pid, _env, any) => { anyShell.push(any); return { ok: true }; };
+      f.state.pane!.meta.cmd = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+      expect(await createChatBridge(f.deps).launch(phone('claude', { prompt: 'say "$HOME"\nthen stop' }))).toMatchObject({ ok: true });
+      expect(f.typed).toEqual([`if (Set-Location -LiteralPath 'C:\\Users\\me\\proj' -PassThru -ErrorAction SilentlyContinue) `
+        + `{ claude --resume ${SID} '--' "say \`"\`$HOME\`"\`nthen stop" }\r`]);
+      expect(anyShell).toEqual([true, true]);
+      f.shell.empty = true;
+      f.state.pane!.meta.cmd = 'C:\\Windows\\System32\\cmd.exe';
+      expect(await createChatBridge(f.deps).launch(phone('claude')))
+        .toEqual({ ok: false, error: 'launch-unsupported', reason: 'unsupported-shell', effect: 'none' });
+      expect(await createChatBridge(f.deps).resumable!('pane')).toBe(false);
+      f.state.pane!.meta.cmd = 'wsl.exe'; f.state.pane!.meta.wslTarget = { distro: 'Ubuntu' };
+      expect(await createChatBridge(f.deps).launch(phone('claude'))).toMatchObject({ error: 'launch-unsupported', reason: 'unsupported-shell' });
+      expect(f.typed).toHaveLength(1);
+    });
+
+    it('reads resumable only while the agent is gone and the record lives', async () => {
+      const f = fixture();
+      bound(f);
+      expect(await f.bridge.resumable!('pane')).toBe(true);
+      f.state.agent = { ...f.state.agent, agentName: 'Claude Code' };
+      expect(await f.bridge.resumable!('pane')).toBe(false);
+      f.state.agent = { ...f.state.agent, agentName: null };
+      f.deps.boundSessionLives = async () => false;
+      expect(await createChatBridge(f.deps).resumable!('pane')).toBe(false);
+      f.state.pane!.meta.resumeBinding = undefined;
+      expect(await f.bridge.resumable!('pane')).toBe(false);
+    });
+  });
+
   it('refuses resume + prompt for an agent whose resume line takes no prompt', async () => {
     const f = fixture();
     f.deps.latestResumeSession = async () => 'sess-1';
