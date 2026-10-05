@@ -113,6 +113,8 @@ export interface HandoffRecord {
   lastStop?: { at: number; text: string };
   /** The HQ closed the task itself (requesterComplete). */
   closedByHq?: boolean;
+  /** The worker was seen mid-turn (agent status) since its last turn end. */
+  sawRunning?: boolean;
   createdAt: number;
   at: number;
 }
@@ -154,7 +156,7 @@ export interface MoaHandoffPorts {
    *  `unknown` when the mirror cannot tell (no fresh snapshot). */
   paneState: (workspaceId: string, ptyId: string) => 'gone' | 'shell' | 'agent' | 'unknown';
   /** The pane's agent is mid-turn right now (mirror status), when known. */
-  agentBusy?: (workspaceId: string, ptyId: string) => boolean;
+  agentBusy?: (workspaceId: string, ptyId: string) => boolean | undefined;
   /** The operator canceled a card (no task exists to say so): tell the HQ. */
   onOperatorCancel?: (r: HandoffRecord) => void;
   decisions: {
@@ -768,6 +770,8 @@ export class MoaHandoffService {
       await this.save();
       return null;
     }
+    // This turn end is the hook's: the status sweep must not count it again.
+    if (r.sawRunning) this.put({ ...r, sawRunning: undefined });
     // Two open hand-offs in one pane: a turn end cannot be tied to either.
     const ambiguous = this.openTasksOnPty(ptyId).length > 1;
     const open = !ambiguous && (r.taskState === 'submitted' || r.taskState === 'working' || r.taskState === undefined);
@@ -852,6 +856,38 @@ export class MoaHandoffService {
     await this.save();
     this.notify();
     return { ok: true, result };
+  }
+
+  /**
+   * Turn ends seen by agent status alone. Claude sends no Stop hook when a
+   * turn is interrupted (Esc, a denied permission prompt), so a worker that
+   * then finishes leaves the task open with nothing to wake the HQ. Each
+   * mirror update samples every open hand-off's pane: running and then not
+   * running is one turn end, recorded like a Stop without closing words.
+   * Returns the tasks whose turn just ended (the HQ to wake). A hand-off still
+   * waiting behind the turn the agent was already in (skipStops) is left to
+   * the Stop hook, which can tell the two turns apart.
+   */
+  async sweepTurnEnds(): Promise<Array<{ hq: string; taskId: string }>> {
+    const ended: Array<{ hq: string; taskId: string }> = [];
+    let changed = false;
+    for (const r of Object.values(this.file.items)) {
+      if (r.state !== 'delivered' || !r.taskId || isEnded(r.taskState)) continue;
+      if (r.taskState === 'input-required' || r.skipStops) continue;
+      if (this.openTasksOnPty(r.target.ptyId).length > 1) continue;
+      const busy = this.ports.agentBusy?.(r.target.workspaceId, r.target.ptyId);
+      if (busy === undefined) continue;
+      if (busy) {
+        if (!r.sawRunning) { this.put({ ...r, sawRunning: true }); changed = true; }
+        continue;
+      }
+      if (!r.sawRunning) continue;
+      this.put({ ...r, sawRunning: undefined, lastStop: { at: this.now(), text: '' } });
+      changed = true;
+      ended.push({ hq: r.hqWorkspaceId, taskId: r.taskId });
+    }
+    if (changed) await this.save();
+    return ended;
   }
 
   /** Move the hand-off's task as its receiver would (main, operator lane).

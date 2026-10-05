@@ -116,8 +116,14 @@ export function createMoaHandoffService(opts: {
       if (!pane) return 'gone';
       return pane.isAgent === false ? 'shell' : 'agent';
     },
-    agentBusy: (workspaceId, ptyId) =>
-      getWorkspaceMirror().getFleetSnapshot(workspaceId)?.panes.find((p) => p.ptyId === ptyId)?.agentStatus === 'running',
+    // Undefined when the mirror cannot tell (no fresh snapshot, pane not in
+    // it): an unknown is never read as "the turn ended".
+    agentBusy: (workspaceId, ptyId) => {
+      const snap = getWorkspaceMirror().getFleetSnapshot(workspaceId);
+      if (!snap || Date.now() - snap.ts > DEFAULT_MAX_SNAPSHOT_AGE_MS) return undefined;
+      const pane = snap.panes.find((p) => p.ptyId === ptyId);
+      return pane ? pane.agentStatus === 'running' : undefined;
+    },
     ...(opts.onOperatorCancel ? { onOperatorCancel: opts.onOperatorCancel } : {}),
     decisions: {
       raiseIfFree: (id, card) => raiseDecisionIfFree(id, card),

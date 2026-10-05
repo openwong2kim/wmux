@@ -551,6 +551,7 @@ export function renderDecisionBlock(d: WorkspaceDecision): string {
   if (d.context) parts.push(`  context: ${d.context}`);
   parts.push(
     'Do not act until the human resolves this. If they just messaged you, they may be answering — otherwise wait.',
+    'If their message or a lookup already answers it, say so in one line and ask them to close the card with Not needed.',
   );
   return parts.join('\n');
 }

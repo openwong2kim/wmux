@@ -139,6 +139,8 @@ describe('deckDecisionStore', () => {
     const pending = renderDecisionBlock(d);
     expect(pending).toContain('BLOCKED');
     expect(pending).toContain('yes | no');
+    // A moot card is withdrawn by asking the operator to close it.
+    expect(pending).toContain('ask them to close the card with Not needed');
     const r = (await resolveDecision('ws-1', d.id, 'yes', dir))!;
     const resolved = renderDecisionBlock(r);
     expect(resolved).toContain('RESOLVED');
@@ -199,6 +201,7 @@ describe('deckDecisionStore', () => {
         '  options: yes | no',
         '  context: why',
         'Do not act until the human resolves this. If they just messaged you, they may be answering — otherwise wait.',
+        'If their message or a lookup already answers it, say so in one line and ask them to close the card with Not needed.',
       ].join('\n'),
     );
   });

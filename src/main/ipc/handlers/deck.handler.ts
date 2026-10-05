@@ -2001,6 +2001,24 @@ export function registerDeckHandler(
       } : {}),
     });
   };
+  /** Turn ends the status sweep saw (moaHandoff.sweepTurnEnds): the HQ is
+   *  woken the way a Stop wakes it, with no closing words to quote. */
+  const routeStatusTurnEnds = async (): Promise<void> => {
+    if (!moaHandoffs) return;
+    for (const { hq, taskId } of await moaHandoffs.sweepTurnEnds()) {
+      if (hq !== moaHandoffs.hqForTask(taskId) || hqPresence(hq) !== 'present') continue;
+      coalescer?.push({
+        workspaceId: hq,
+        ptyId: `a2a:${taskId}`,
+        kind: 'agent.stop',
+        source: 'detector',
+        agent: null,
+        seq: Date.now(),
+        ts: Date.now(),
+        a2a: { taskId, from: hq, to: moaHandoffs.byTask(taskId)?.target.workspaceId ?? '', state: 'working', handoff: {} },
+      });
+    }
+  };
   // Subscribed by startRuntime (with the master switch), not here.
   const onBusEvent: EventBusSubscriber = (ev) => {
     // Cross-workspace task receipts belong to the SENDER commander. The base
@@ -2305,6 +2323,8 @@ export function registerDeckHandler(
     moaProposals.sync();
     // A hand-off whose pane closed or whose agent left: card down, task canceled.
     void moaHandoffs?.reconcile().catch(() => undefined);
+    // A worker turn that ended with no Stop hook (interrupted, then finished).
+    void routeStatusTurnEnds().catch(() => undefined);
   };
   // The HQ store's setter refuses while the old/new HQ is mid-turn and, once
   // an HQ is designated, retires every other brain — both need the managers.

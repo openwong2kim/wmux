@@ -370,6 +370,8 @@ describe('ClaudeSdkAdapter', () => {
     expect(flat).toContain('ONCE per job with the FINAL result (what changed, how it was verified)');
     expect(flat).toContain('No progress chatter');
     expect(flat).not.toContain('short PROGRESS update');
+    expect(flat).toContain("SPEAK THE OPERATOR'S LANGUAGE in every card and reply: no tool names, ids or field names.");
+    expect(flat).toContain('If you find the answer to your own pending decision (a lookup, or their message), say so in one line and ask them to close the card with Not needed');
     expect(flat).not.toContain('a risky or irreversible action, or a genuine choice between approaches');
   });
 

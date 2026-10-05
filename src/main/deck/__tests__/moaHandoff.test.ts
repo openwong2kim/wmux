@@ -338,6 +338,36 @@ describe('moa hand-off — the worker reports back', () => {
     expect(await r.svc.requesterComplete(HQ, taskId)).toEqual({ ok: false, code: 'ended' });
   });
 
+  it('an interrupted turn (no Stop hook) ends by agent status: running, then idle', async () => {
+    let busy: boolean | undefined = false;
+    const r = rig({ agentBusy: () => busy });
+    const taskId = await delivered(r);
+    // Idle before the worker ever ran: no turn has ended yet.
+    expect(await r.svc.sweepTurnEnds()).toEqual([]);
+    expect(await r.svc.requesterComplete(HQ, taskId)).toEqual({ ok: false, code: 'turn_not_ended' });
+    busy = true;
+    expect(await r.svc.sweepTurnEnds()).toEqual([]);
+    expect(await r.svc.requesterComplete(HQ, taskId)).toEqual({ ok: false, code: 'turn_not_ended' });
+    // The mirror cannot tell: never read as a turn end.
+    busy = undefined;
+    expect(await r.svc.sweepTurnEnds()).toEqual([]);
+    busy = false;
+    expect(await r.svc.sweepTurnEnds()).toEqual([{ hq: HQ, taskId }]);
+    // Counted once.
+    expect(await r.svc.sweepTurnEnds()).toEqual([]);
+    expect(await r.svc.requesterComplete(HQ, taskId)).toMatchObject({ ok: true });
+  });
+
+  it('a turn end the Stop hook already reported is not counted again by status', async () => {
+    let busy = true;
+    const r = rig({ agentBusy: () => busy });
+    await delivered(r);
+    await r.svc.sweepTurnEnds();
+    await r.svc.onWorkerStop('pty-1', 'claude', { text: 'Done.', endsWithQuestion: false });
+    busy = false;
+    expect(await r.svc.sweepTurnEnds()).toEqual([]);
+  });
+
   it('a task waiting on the operator (a question at turn end) is not the HQ\'s to close', async () => {
     const r = rig();
     const taskId = await delivered(r);
