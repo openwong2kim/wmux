@@ -358,14 +358,45 @@ describe('moa hand-off — the worker reports back', () => {
     expect(await r.svc.requesterComplete(HQ, taskId)).toMatchObject({ ok: true });
   });
 
-  it('a turn end the Stop hook already reported is not counted again by status', async () => {
+  it('a turn end the Stop hook already reported is not counted again by status, and keeps its words', async () => {
     let busy = true;
-    const r = rig({ agentBusy: () => busy });
-    await delivered(r);
+    let at = 1_000;
+    const now = { t: 2_000 };
+    const r = rig({ agentSample: () => ({ busy, at }), now: () => now.t });
+    const taskId = await delivered(r);
     await r.svc.sweepTurnEnds();
+    expect(r.svc.byTask(taskId)?.sawRunning).toBe(true);
+    now.t = 3_000;
     await r.svc.onWorkerStop('pty-1', 'claude', { text: 'Done.', endsWithQuestion: false });
+    // One write: the hook's turn end cleared sawRunning and it stays cleared.
+    expect(r.svc.byTask(taskId)?.sawRunning).toBeUndefined();
+    // A running snapshot sampled before that turn end is about that turn.
+    at = 2_500;
+    expect(await r.svc.sweepTurnEnds()).toEqual([]);
+    expect(r.svc.byTask(taskId)?.sawRunning).toBeUndefined();
     busy = false;
     expect(await r.svc.sweepTurnEnds()).toEqual([]);
+    expect(await r.svc.requesterComplete(HQ, taskId)).toEqual({ ok: true, result: 'Done.' });
+  });
+
+  it('a queued hand-off whose earlier turn was interrupted (no Stop) still sees its own turn end', async () => {
+    let busy = true;
+    const r = rig({ agentBusy: () => busy });
+    r.state.target = target({ agentStatus: 'running' });
+    const taskId = await delivered(r);
+    expect(r.svc.byTask(taskId)?.skipStops).toBe(1);
+    // The earlier turn runs, then is interrupted: no Stop hook.
+    await r.svc.sweepTurnEnds();
+    busy = false;
+    expect(await r.svc.sweepTurnEnds()).toEqual([]);
+    expect(r.svc.byTask(taskId)?.skipStops).toBe(0);
+    // The hand-off's own turn runs and ends with a Stop: recorded, not skipped.
+    busy = true;
+    await r.svc.sweepTurnEnds();
+    const out = await r.svc.onWorkerStop('pty-1', 'claude', { text: 'Wrote the file.', endsWithQuestion: false });
+    expect(out).toMatchObject({ hq: HQ, taskId });
+    busy = false;
+    expect(await r.svc.requesterComplete(HQ, taskId)).toEqual({ ok: true, result: 'Wrote the file.' });
   });
 
   it('a task waiting on the operator (a question at turn end) is not the HQ\'s to close', async () => {
@@ -373,6 +404,21 @@ describe('moa hand-off — the worker reports back', () => {
     const taskId = await delivered(r);
     await r.svc.onWorkerStop('pty-1', 'claude', { text: 'Which module should I start with?', endsWithQuestion: true });
     expect(await r.svc.requesterComplete(HQ, taskId)).toEqual({ ok: false, code: 'needs_input' });
+  });
+
+  it('wmux ending a task (pane gone, or replaced by a newer hand-off) is marked as such; the operator\'s Stop is not', async () => {
+    const r = rig();
+    const first = await delivered(r);
+    // A newer hand-off to the same pane replaces the open one.
+    r.slots.clear();
+    await propose(r, 'A follow-up task.');
+    await r.svc.resolve(SEAL, r.slots.get(SEAL)!.id, 'handoff');
+    expect(r.svc.handoffDetail(first)).toEqual({ internalCancel: 'replaced' });
+    const second = (r.deliver.mock.calls[1][0] as { presetTaskId: string }).presetTaskId;
+    // Its pane closes.
+    r.state.pane = 'gone';
+    await r.svc.reconcile();
+    expect(r.svc.handoffDetail(second)).toEqual({ internalCancel: 'pane-gone' });
   });
 
   it('a stop in a pane with no open hand-off is not ours', async () => {

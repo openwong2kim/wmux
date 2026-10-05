@@ -240,4 +240,18 @@ describe('buildEventPrompt for a Moa hand-off task', () => {
     expect(prompt).toContain('do not re-propose it, ask about it or dispatch a replacement');
     expect(prompt).not.toContain('determine why');
   });
+
+  it('a cancel wmux made itself (pane gone) is reported neutrally, not as the operator\'s answer', () => {
+    const prompt = buildEventPrompt(
+      [{
+        ptyId: 'a2a:task-h', kind: 'a2a.canceled', source: 'a2a', agent: null, seq: 1, ts: 0,
+        a2a: { taskId: 'task-h', from: 'ws-hq', to: 'ws-seal', state: 'canceled', handoff: { internalCancel: 'pane-gone' } },
+      }],
+      DEFAULT_AUTONOMY,
+      { remaining: 1, total: 1 },
+    );
+    expect(prompt).toContain('HAND-OFF ENDED BY WMUX');
+    expect(prompt).toContain('its pane closed or its agent left');
+    expect(prompt).not.toContain('That is their answer');
+  });
 });

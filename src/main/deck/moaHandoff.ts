@@ -115,6 +115,9 @@ export interface HandoffRecord {
   closedByHq?: boolean;
   /** The worker was seen mid-turn (agent status) since its last turn end. */
   sawRunning?: boolean;
+  /** wmux itself ended the task (not the operator): its pane closed or its
+   *  agent left, or a newer hand-off to the same pane replaced it. */
+  internalCancel?: 'pane-gone' | 'replaced';
   createdAt: number;
   at: number;
 }
@@ -157,6 +160,9 @@ export interface MoaHandoffPorts {
   paneState: (workspaceId: string, ptyId: string) => 'gone' | 'shell' | 'agent' | 'unknown';
   /** The pane's agent is mid-turn right now (mirror status), when known. */
   agentBusy?: (workspaceId: string, ptyId: string) => boolean | undefined;
+  /** The same reading with the moment it was sampled (the mirror snapshot's
+   *  time), for the turn-end sweep. Absent: agentBusy, read as sampled now. */
+  agentSample?: (workspaceId: string, ptyId: string) => { busy: boolean; at: number } | undefined;
   /** The operator canceled a card (no task exists to say so): tell the HQ. */
   onOperatorCancel?: (r: HandoffRecord) => void;
   decisions: {
@@ -379,9 +385,10 @@ export class MoaHandoffService {
 
   /** What Moa's wake for a hand-off task carries, or null when the task is
    *  not one. The question is the worker's own text: untrusted. */
-  handoffDetail(taskId: string): { question?: string } | null {
+  handoffDetail(taskId: string): { question?: string; internalCancel?: 'pane-gone' | 'replaced' } | null {
     const r = this.byTask(taskId);
     if (!r) return null;
+    if (r.internalCancel) return { internalCancel: r.internalCancel };
     if (!r.lastQuestion || r.taskState !== 'input-required') return {};
     // The question is where the worker ended: keep the END of its closing
     // words, which the wake's quote would otherwise cut off.
@@ -628,7 +635,7 @@ export class MoaHandoffService {
     // turn end is never ambiguous between two.
     for (const old of this.openTasksOnPty(record.target.ptyId)) {
       if (old.id === delivered.id || old.hqWorkspaceId !== delivered.hqWorkspaceId) continue;
-      await this.cancelTask(old);
+      await this.cancelTask(old, 'replaced');
     }
     // The worker is a TUI agent that may never report its own state: the task
     // is under way once the text landed, and only from 'working' can a later
@@ -766,12 +773,11 @@ export class MoaHandoffService {
     if (!r || !r.taskId) return null;
     if (r.skipStops && r.skipStops > 0) {
       // The turn the agent was already in when the hand-off queued behind it.
-      this.put({ ...r, skipStops: r.skipStops - 1 });
+      // The hook reported that turn's end, so the sweep must not count it too.
+      this.put({ ...r, skipStops: r.skipStops - 1, sawRunning: undefined });
       await this.save();
       return null;
     }
-    // This turn end is the hook's: the status sweep must not count it again.
-    if (r.sawRunning) this.put({ ...r, sawRunning: undefined });
     // Two open hand-offs in one pane: a turn end cannot be tied to either.
     const ambiguous = this.openTasksOnPty(ptyId).length > 1;
     const open = !ambiguous && (r.taskState === 'submitted' || r.taskState === 'working' || r.taskState === undefined);
@@ -779,15 +785,19 @@ export class MoaHandoffService {
     if (!open || !asks || !lastMessage) {
       // A plain turn end on its own open task: remember it, so the HQ may close
       // the task with these words as its result (requesterComplete).
-      if (open) {
-        this.put({ ...r, lastStop: { at: this.now(), text: lastMessage ? capBytes(lastMessage.text, HANDOFF_LAST_MESSAGE_MAX_BYTES) : '' } });
-        await this.save();
-      }
+      // One write, and this turn end is the hook's: the status sweep must not
+      // count it again (sawRunning cleared in the same record).
+      this.put({
+        ...r,
+        sawRunning: undefined,
+        ...(open ? { lastStop: { at: this.now(), text: lastMessage ? capBytes(lastMessage.text, HANDOFF_LAST_MESSAGE_MAX_BYTES) : '' } } : {}),
+      });
+      await this.save();
       return { hq: r.hqWorkspaceId, taskId: r.taskId, movedToInputRequired: false };
     }
     const text = capBytes(lastMessage.text, HANDOFF_LAST_MESSAGE_MAX_BYTES);
     // Kept first, so the wake this transition raises can carry it.
-    this.put({ ...r, lastQuestion: text });
+    this.put({ ...r, sawRunning: undefined, lastQuestion: text });
     // input-required is reachable only from working.
     let cur = this.get(r.id) ?? r;
     if (cur.taskState !== 'working') {
@@ -873,15 +883,24 @@ export class MoaHandoffService {
     let changed = false;
     for (const r of Object.values(this.file.items)) {
       if (r.state !== 'delivered' || !r.taskId || isEnded(r.taskState)) continue;
-      if (r.taskState === 'input-required' || r.skipStops) continue;
+      if (r.taskState === 'input-required') continue;
       if (this.openTasksOnPty(r.target.ptyId).length > 1) continue;
-      const busy = this.ports.agentBusy?.(r.target.workspaceId, r.target.ptyId);
-      if (busy === undefined) continue;
-      if (busy) {
-        if (!r.sawRunning) { this.put({ ...r, sawRunning: true }); changed = true; }
+      const sample = this.ports.agentSample?.(r.target.workspaceId, r.target.ptyId)
+        ?? ((busy) => (busy === undefined ? undefined : { busy, at: this.now() }))(this.ports.agentBusy?.(r.target.workspaceId, r.target.ptyId));
+      if (!sample) continue;
+      if (sample.busy) {
+        // Running evidence older than the last turn end is about that turn.
+        if (!r.sawRunning && (!r.lastStop || sample.at > r.lastStop.at)) { this.put({ ...r, sawRunning: true }); changed = true; }
         continue;
       }
       if (!r.sawRunning) continue;
+      if (r.skipStops && r.skipStops > 0) {
+        // The turn the agent was in when the hand-off queued behind it ended
+        // with no Stop (interrupted): it is that turn's end, not the hand-off's.
+        this.put({ ...r, sawRunning: undefined, skipStops: r.skipStops - 1 });
+        changed = true;
+        continue;
+      }
       this.put({ ...r, sawRunning: undefined, lastStop: { at: this.now(), text: '' } });
       changed = true;
       ended.push({ hq: r.hqWorkspaceId, taskId: r.taskId });
@@ -928,10 +947,13 @@ export class MoaHandoffService {
     return { ok: true };
   }
 
-  private async cancelTask(r: HandoffRecord): Promise<void> {
+  private async cancelTask(r: HandoffRecord, internal?: HandoffRecord['internalCancel']): Promise<void> {
     if (!r.taskId || isEnded(r.taskState)) return;
+    // Marked before the release: the canceled event that wakes the HQ can
+    // arrive while it is in flight, and its wording depends on who ended it.
+    if (internal) this.put({ ...r, internalCancel: internal });
     await this.ports.release(r.linkId, r.taskId).catch(() => undefined);
-    this.put({ ...r, taskState: 'canceled' });
+    this.put({ ...(this.get(r.id) ?? r), taskState: 'canceled' });
   }
 
   /**
@@ -984,7 +1006,7 @@ export class MoaHandoffService {
         }
         this.put({ ...r, state: 'expired', decisionId: undefined });
       } else {
-        await this.cancelTask(r);
+        await this.cancelTask(r, 'pane-gone');
       }
       changed = true;
     }

@@ -124,6 +124,12 @@ export function createMoaHandoffService(opts: {
       const pane = snap.panes.find((p) => p.ptyId === ptyId);
       return pane ? pane.agentStatus === 'running' : undefined;
     },
+    agentSample: (workspaceId, ptyId) => {
+      const snap = getWorkspaceMirror().getFleetSnapshot(workspaceId);
+      if (!snap || Date.now() - snap.ts > DEFAULT_MAX_SNAPSHOT_AGE_MS) return undefined;
+      const pane = snap.panes.find((p) => p.ptyId === ptyId);
+      return pane ? { busy: pane.agentStatus === 'running', at: snap.ts } : undefined;
+    },
     ...(opts.onOperatorCancel ? { onOperatorCancel: opts.onOperatorCancel } : {}),
     decisions: {
       raiseIfFree: (id, card) => raiseDecisionIfFree(id, card),
