@@ -1,3 +1,178 @@
+## [4.0.0] — 2026-10-06
+
+wmux 4.0 is the ADE release. It also includes every change listed under 4.0.0-beta.1 below.
+
+### Added
+
+- **Fleet rows say what each agent is doing.** A row reads `Edited foo.ts` or
+  `Ran npm test` while the agent works, and `Last: Edited foo.ts` once it
+  stops. Before, a finished row said nothing about what the agent had done.
+  Agents that report no tools show their last reply. (#1799)
+
+- **A detail area under the Fleet list.** Selecting a row, or pressing Space,
+  shows the agent's recent terminal output and its task's conversation under
+  the list. Esc closes it. Rows themselves no longer show terminal text.
+  (#1799)
+
+- **Moa's delegated work as tickets in Fleet.** The Tickets chip lists each
+  hand-off and delegated task with its state (queued, working, needs your
+  decision, done or failed), who has it, the decisions it is waiting on, and
+  the worker's result with its verification. An agent working on a ticket is
+  named after it. A ticket only asks for you when Moa needs a decision and
+  once with its final report; queued and working tickets stay quiet.
+  (#1799)
+
+- **Resume an exited agent from the phone chat view.** When a pane's agent has
+  exited but the pane still holds its conversation, the phone can now continue
+  that same conversation, optionally with a first message, the same way the
+  desktop resume button does. Before, the phone could only say that the agent
+  had exited and to restart it in the terminal. This works in zsh, bash, sh and
+  in Windows PowerShell (there without a first message); cmd.exe, WSL, fish and
+  nu panes still need the terminal. (#1800)
+
+- **Fleet says what every agent is doing, not only plugin installs.** Claude
+  panes set up with `wmux setup-hooks` and Codex panes now show "Edited
+  foo.ts" or "Ran npm test" while they work and "Last: …" after the turn.
+  wmux reads the last tool from the agent's own transcript instead of a
+  per-tool hook, so this adds no cost to each tool call. Before, these rows
+  only showed the agent's last reply. (#1802)
+
+- **Delegated agents' permission prompts in Moa's Waiting on you.** When an agent Moa handed work to asks to run something, the prompt now shows in Waiting on you with the agent, the command and a jump to its pane. Before, only the titlebar count showed it. You answer in the pane; Moa does not answer it. (#1804)
+
+- **A result card when delegated work finishes.** Moa's chat shows a card where the task finished: what it was, the result, how many checks were verified, the changed files when known, and a jump to the agent. (#1804)
+
+- **Moa's own steps read as cards.** A hand-off it proposed, a question it asked (with its reason), work it finished and tasks it started show as small cards in the chat, never hidden with the tool activity. A question or hand-off still waiting on you says so. (#1804)
+
+- **Every hand-off card says why it waits for you:** outside danger mode, auto hand-off off, text from outside, this hour's limit reached, or an automatic delivery that did not go through. (#1804)
+
+- **Answer a delegated agent's permission prompt from Moa's panel.** Waiting on you offers Allow once and Don't allow for the agents Moa handed work to. Each answer is pressed once and only while the prompt on screen is still the same.
+
+- **Moa's delegated jobs reach the phone.** `GET /api/workspaces` now lists the jobs Moa handed to agents (`moaDelegations`): each job's agent, title and whether it is working, waiting on you, done or failed. Open jobs and jobs that ended in the last 24 hours are listed, at most 20. Only the title is sent, never the request, the result or the transcript. `/api/config` advertises `moaDelegations: true`. (#1810)
+
+- **Moa reads the repositories it handed work to without asking.** When Moa checks an agent's result, reading a file in that agent's repository, searching one file, or listing its files by name no longer stops on a permission prompt. This holds while the work is open, and up to an hour after it ends until Moa finishes the job. Searching a whole folder, secret files, `.git`, linked files and anything outside still ask, as do all edits and commands. Turn it off in Settings › Moa.
+
+- **Move through the sidebar with the keyboard.** Workspace rows now form one Tab stop. ↑ and ↓ move between rows, nested tasks included. Enter opens a row, → shows its agents and ← folds them. Shift+F10 opens the row menu. A row's own buttons come next in Tab order. Before this, Tab skipped the rows and walked through every hidden row button instead. (#1812)
+
+- **Change the sidebar order from its header.** A new order button next to the filter switches between Attention, Manual and Recent activity. Before, the order could only be changed in Settings. (#1812)
+
+### Changed
+
+- **Moa asks less and reports once.** Before Moa asks you anything, it now looks things up first (workspaces, panes, tasks, its memory) and decides by what matters in production. It still asks about taste, releases, irreversible actions outside wmux, security boundaries, or when what you want is unclear, and every question comes with its recommendation. It no longer sends progress updates: you hear from it once, when the job is done, with what changed and how it was checked. Canceling a hand-off now counts as your answer, so Moa no longer asks whether to drop the request. (#1798)
+
+- **Moa finishes a hand-off.** Before, a task Moa handed to another agent stayed open after the agent finished, so Moa could never close the request or report back. Once the agent's turn ends, Moa now checks the result, closes the task with the agent's last words recorded on it, and reports once. It still waits while the agent is working or waiting on you. (#1798)
+
+- **Fleet is an attention list again.** One row per agent, in the order the
+  sidebar uses: Needs you, Ready to review, Running, then a folded Idle row.
+  This replaces the four-column board. Filter chips for Needs you, Running,
+  Replied, Idle and Tickets lead the summary line, each with its count. Use
+  the arrow keys to move, Enter to jump, and `/` to search. (#1799)
+
+- **First launch asks one thing at a time.** A fresh install used to open the
+  welcome dialog, a "New: …" toast, a separate Automatic Updates question, the
+  spotlight tour and the keyboard cheat sheet almost at once, stacked on top of
+  each other. Now the welcome dialog carries the update choice as one switch,
+  announcements of new behaviour are shown only to people upgrading, the tour
+  starts the first time you open Fleet, and the cheat sheet appears once after
+  the tour instead of on every launch. Anything else that opens by itself waits
+  until the current dialog or Settings is closed.
+
+- **Moa's chat reads like a messenger.** Replies are short and conversational, a hand-off gets one line, and tool activity is hidden behind a small working dot next to Moa's name. Click the dot to show the activity. (#1804)
+
+- **Plain hand-offs.** A hand-off now carries your request, its scope and how to check it, and follows the agent's own checkout. Moa no longer adds a separate worktree, branch, result file or DONE line unless you ask, which also saves extra permission prompts. (#1804)
+
+- **The onboarding tour is text only.** Its last remaining recorded clip
+  showed an older sidebar layout; every step now keeps its text and its
+  spotlight on the real control.
+
+- **Fleet's Needs you holds decisions only.** Questions come first, then errors, stopped supervision and unconfirmed panes. Finished turns used to sit in Needs you beside the questions — twelve rows where four were decisions — and now fold into one `Finished N · newest 2m` row that expands like Idle. The rail badge and `fleet_triage` follow the same rule; `fleet_triage` gains a `finished` list. Moa's unread final reports get their own marked block instead of mixing with agent rows. (#1807)
+
+- **One Needs you count.** The filter chip, the section head and the rail badge now read the same rows, so they no longer show three different numbers; the rail's tooltip says Moa's tickets are counted only in Fleet. Screen readers hear the count when it changes. (#1807)
+
+- **Respond and check without leaving Fleet.** A row that needs input opens to the agent's question in full and the choices its prompt offers, with Reply, Open approval and Jump to pane above the output. An error row names the last error its terminal printed, and Check opens the detail on that line instead of jumping away. (#1807)
+
+- Moa's panel shows one final report per job: Moa's reply, how Moa checked it, the agent's own report folded, changed files and Open agent. Small talk stays a plain reply.
+
+- Moa's chat shows only each turn's final reply; its step-by-step narration and internal retries move into the activity view.
+
+- Your message appears in Moa's panel the moment you send it, and an empty panel says what to ask.
+
+- **A row that needs you shows the question.** The row's second line is now what the agent asked, in place of its branch. The "Needs you" label stays visible when you hover. (#1812)
+
+- **Errors stay near the top.** A failed agent turn says "Error" on its row and sorts above finished and idle rows, however old it is. Fleet still lists errors under Needs you. (#1812)
+
+- **The selected row is easy to spot.** A selected row that needs you now keeps a clear selection ring. Tasks nested under a workspace no longer draw a box inside its box. (#1812)
+
+- **Needs you is now a clear orange.** Each theme has its own shade of orange. It's used for the sidebar's ring, dashed outline and label, the rail badge, Fleet's Needs you chip and dot, and the titlebar count. It replaces the amber, which looked muddy brown on light themes. Warnings stay yellow and errors stay red. (#1812)
+
+- **One Needs you count everywhere.** The titlebar now counts agents that need you the same way Fleet and its sidebar badge do, errors included. The three numbers no longer disagree. (#1812)
+
+- **Status marks in the collapsed sidebar.** The collapsed sidebar now uses the same status marks as the full one. Screen readers hear each workspace's name and status. (#1812)
+
+- **Moa's "needs you" marks use the attention orange.** Waiting on you, the hand-off and memory cards, the titlebar dot and Moa's bubble now share the orange the sidebar and Fleet use, instead of the yellow.
+
+### Fixed
+
+- **Codex behind the shared background server gets its own pane identity for A2A.** A `codex` running on the shared app-server used to fail `a2a_whoami` and `send_message` with "Workspace identity unknown", or could act as the pane that started the server. The wmux MCP server now reads the conversation id Codex sends with every tool call and resolves it to the pane that owns that conversation, live, on every call. If no open pane owns it, the error says why instead of guessing. On Windows, where no pane records an owner yet, a single Codex pane keeps working as before. Claude Code, `codex --no-daemon` and other MCP clients are unchanged. (#1778, #1780)
+
+- **Moa finds agents in other workspaces.** Moa's own workspace holds no agents, so when it listed its panes it saw nothing. It could then decide a live agent had ended and ask whether to restart it. Listing Moa's workspace now also lists the agent panes in every other workspace (names and statuses only), and Moa is told to look there before it asks. (#1798)
+
+- **Close a decision Moa no longer needs.** A decision card from Moa or a workspace brain now has a **Not needed** action. The card closes, and the brain is told plainly that the operator dismissed it and that it must act on none of the options. Before, a card that had become moot stayed open, and clicking any option counted as an answer. (#1798)
+
+- **Decisions stay in view.** Pending decisions and hand-off cards now sit right above Moa's composer instead of at the top of the conversation, so you no longer scroll up to reach them. (#1798)
+
+- **One bubble per message in Moa's chat.** A message you sent no longer shows twice for a moment when Moa records it quickly. (#1798)
+
+- **A delegated job's result no longer disappears from its ticket after 30
+  minutes.** The worker's final report and its verification count are kept
+  with the ticket for as long as the ticket is listed. (#1802)
+
+- **Hovering a sidebar row no longer hides its text.** The row's folder, copy
+  and close buttons used to float over the row while the text under them faded
+  out, taking the branch and diff with the name. Hovering an owner workspace
+  also faded every fan-out task nested under it. The buttons now take their own
+  place: on a row with a branch they replace the diff counts while hovered, so
+  the name keeps its full width, and hovering a nested task no longer shows its
+  owner's buttons. The workspace list also no longer scrolls sideways, which
+  could cut the status marks off at the left edge.
+
+- **Fleet showed no output for agents in other workspaces.** The detail read only terminals drawn on screen, so most rows said "No terminal output available."; it now reads the session's text from the daemon. (#1807)
+
+- **Fleet wording, contrast and keyboard use.** One word for a finished turn (Finished), running rows in the present tense ("Running npm test"), one name per agent, readable key hints and search placeholder, a focus ring distinct from the selection, Shift+F10 for a row's menu, and no "Requester unknown". (#1807)
+
+- Better contrast for the composer placeholder and the yellow labels in Moa's panel; cards no longer scroll on their own.
+
+- A message Moa refuses after you sent it stays in the chat marked not sent, with the reason and Retry, and its words go back in the composer.
+
+- **Moa is no longer woken while a worker waits on a permission prompt.** A delegated agent sitting on a prompt, or Claude Code's mid-turn "shift+tab to cycle" tip, used to read as a finished turn. Moa then reported early or raised a second, unrequested hand-off card that stayed in Waiting on you.
+
+- **Moa's hand-off cards clear themselves.** A second hand-off for an agent that is still working is refused. Unanswered cards close when the agent's task completes or Moa finishes the job, so a finished job ends at "Waiting on you 0".
+
+- **Permission prompts from Claude Code 2.1.289 can be answered again from the phone and the desktop.** Its new dialog layout was not recognised, so every prompt read "answer in terminal".
+
+- **Moa's chat shows its replies, not its working.** Moa's narration between tool calls and its internal tool errors stay in the activity view. Moa delegates to other workspaces by hand-off first, replies in the language you wrote in, and treats a thank-you as conversation, not as a job to report on.
+
+- **A permission prompt names the tool it is really about.** When Moa ran two tools at once, its Grep prompt could read as a prompt for the other tool.
+
+- **The yellow labels in Waiting on you are readable in light themes.**
+
+- **Moa's "Remember this?" card speaks plainly.** A remembered answer reads as one sentence in your language instead of the raw memory file with its id and settings.
+
+- **Sidebar polish.**
+  - "Needs you" uses one colour everywhere, the titlebar count included.
+  - Small sidebar text is now at least 11px.
+  - At the narrowest sidebar width, branch names no longer disappear behind diff counts.
+  - Rows with one idle agent no longer show "› 1".
+  - Remote rows say "disconnected" when their host is unreachable.
+  - Tasks started from the app no longer appear under "From closed pane".
+  - Codex rows no longer say "Codex" twice.
+  - The filter menu no longer cuts off its last option in an 800px window.
+
+  (#1812)
+
+- **Codex thread identity follow-ups.** A Codex installed under a path with spaces is recognised as the shared background server again instead of falling back to the pane that started it. `pane_list`, `surface_list`, `pane_split` and `surface_new` from a Codex conversation that no open pane owns now fail with the identity error instead of acting on the focused workspace. On Windows, a non-default `CODEX_HOME` is found from the server's own path. (#1778, #1780, #1813)
+
+- **The orange "needs you" outline is easier to see in the light themes.** On Paper, Mono Light, Hinomaru and Taegeuk the dashed outline around a row that needs you was too faint against the row's background, especially on hover; its orange is slightly deeper now.
+
 ## [4.0.0-beta.1] — 2026-10-05
 
 ### Added
