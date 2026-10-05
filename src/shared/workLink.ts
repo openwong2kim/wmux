@@ -16,6 +16,7 @@
 import { ISSUE_REF_TITLE_MAX, issueUrlParts, type IssueRef } from './issueRef';
 import type { PrSummary } from './prSurface';
 import { isTaskState, type TaskState } from './types';
+import { isVerifiedItem } from './completionEvidence';
 
 export const WORK_LINK_STATES = [
   'queued',
@@ -97,10 +98,21 @@ export interface WorkLink {
   /** The worker's closing words when it last stopped on a question or a
    *  refusal (Stop hook). UNTRUSTED agent text, capped: show as text only. */
   lastQuestion?: { text: string; at: number };
+  /** The worker's final report, copied from the A2A task when it completed or
+   *  failed, so it outlives the task record (the daemon drops ended tasks
+   *  after 30 minutes). UNTRUSTED agent text, capped: show as text only. */
+  result?: WorkLinkResult;
   /** Decisions raised about this work, oldest first, at most WORK_LINK_LIMITS.MAX_DECISIONS. */
   decisionIds: string[];
   createdAt: number;
   updatedAt: number;
+}
+
+export interface WorkLinkResult {
+  summary: string;
+  /** Verified evidence items over all items, e.g. "2/3". */
+  verification?: string;
+  at: number;
 }
 
 export const WORK_LINK_LIMITS = {
@@ -109,6 +121,7 @@ export const WORK_LINK_LIMITS = {
   MAX_PATH: 1024,
   MAX_BRANCH: 255,
   MAX_LAST_QUESTION: 2048,
+  MAX_RESULT_SUMMARY: 2048,
 } as const;
 
 const ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
@@ -290,6 +303,15 @@ export function parseWorkLink(v: unknown): WorkLink | null {
     if (!isRecord(q) || typeof q.text !== 'string' || !isTime(q.at)) return null;
     out.lastQuestion = { text: q.text.slice(0, WORK_LINK_LIMITS.MAX_LAST_QUESTION), at: q.at };
   }
+  if (v.result !== undefined) {
+    const r = v.result;
+    if (!isRecord(r) || typeof r.summary !== 'string' || !r.summary || !isTime(r.at)) return null;
+    out.result = { summary: r.summary.slice(0, WORK_LINK_LIMITS.MAX_RESULT_SUMMARY), at: r.at };
+    if (r.verification !== undefined) {
+      if (typeof r.verification !== 'string' || !VERIFICATION_RE.test(r.verification)) return null;
+      out.result.verification = r.verification;
+    }
+  }
   if (v.decisionIds !== undefined) {
     if (!Array.isArray(v.decisionIds) || !v.decisionIds.every(isWorkLinkId)) return null;
     out.decisionIds = [...new Set(v.decisionIds as string[])].slice(-WORK_LINK_LIMITS.MAX_DECISIONS);
@@ -298,6 +320,38 @@ export function parseWorkLink(v: unknown): WorkLink | null {
 }
 
 export const isWorkLink = (v: unknown): v is WorkLink => parseWorkLink(v) !== null;
+
+const VERIFICATION_RE = /^\d{1,4}\/\d{1,4}$/;
+
+/** Text of an A2A message: a plain string (a pipe call) or its text parts. */
+function messageText(message: unknown): string {
+  if (typeof message === 'string') return message;
+  if (!isRecord(message) || !Array.isArray(message.parts)) return '';
+  return message.parts
+    .map((part) => (isRecord(part) && part.kind === 'text' && typeof part.text === 'string' ? part.text : ''))
+    .filter(Boolean)
+    .join('\n');
+}
+
+/**
+ * The final report of an A2A task that ended (completed or failed): the
+ * evidence summary, else the closing message, with the verified/total item
+ * count. Undefined for any other state or a report with no text. Accepts a
+ * full task or just `{ status }`; never throws.
+ */
+export function workLinkResultFromTask(task: unknown, at: number): WorkLinkResult | undefined {
+  const status = isRecord(task) && isRecord(task.status) ? task.status : undefined;
+  if (!status || (status.state !== 'completed' && status.state !== 'failed')) return undefined;
+  const evidence = isRecord(status.evidence) ? status.evidence : undefined;
+  const summary = ((typeof evidence?.summary === 'string' ? evidence.summary.trim() : '') || messageText(status.message).trim())
+    .slice(0, WORK_LINK_LIMITS.MAX_RESULT_SUMMARY);
+  if (!summary) return undefined;
+  const items = Array.isArray(evidence?.items) ? evidence.items.filter(isRecord) : [];
+  const verified = items.filter((item) => { try { return isVerifiedItem(item as never); } catch { return false; } }).length;
+  return items.length > 0 && items.length < 10_000
+    ? { summary, verification: `${verified}/${items.length}`, at }
+    : { summary, at };
+}
 
 // ─── Filter ────────────────────────────────────────────────────────────────
 

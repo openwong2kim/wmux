@@ -23,6 +23,16 @@ afterEach(() => {
 const sent = { origin: 'manual' as const, a2aTaskId: 'task-1', a2aState: 'submitted' as const, owner: { workspaceId: 'ws-1' } };
 
 describe('WorkLinkStore', () => {
+  it('keeps a finished task\'s report across later state-only updates and a reload', async () => {
+    const a = make();
+    await a.upsert(sent);
+    await a.upsert({ a2aTaskId: 'task-1', a2aState: 'completed', result: { summary: 'Done; tests pass.', verification: '1/1', at: 5 } });
+    await a.upsert({ a2aTaskId: 'task-1', a2aState: 'completed' });
+    await a.flush();
+    const [link] = make().list({});
+    expect(link.result).toEqual({ summary: 'Done; tests pass.', verification: '1/1', at: 5 });
+  });
+
   it('round-trips through the file', async () => {
     const a = make();
     const link = (await a.upsert({ ...sent, title: 'Fix it', requester: { workspaceId: 'ws-0', paneId: 'p-1' } }))!;

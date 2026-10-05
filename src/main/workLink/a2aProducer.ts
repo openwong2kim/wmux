@@ -5,6 +5,7 @@
 
 import { isTaskState, type TaskState } from '../../shared/types';
 import { getWorkLinkStore, type WorkLinkStore, type WorkLinkUpsert } from './workLinkStore';
+import { workLinkResultFromTask } from '../../shared/workLink';
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   !!v && typeof v === 'object' && !Array.isArray(v);
@@ -90,12 +91,21 @@ export function recordSentTask(link: WorkLinkUpsert | null, store?: WorkLinkStor
   }
 }
 
-/** Move an existing link to a task state it reached. A task with no link is
- *  left alone (only a send creates one). Never rejects. */
-export function recordTaskState(taskId: unknown, state: unknown, store?: WorkLinkStore): Promise<void> {
+/**
+ * Move an existing link to a task state it reached. A task with no link is
+ * left alone (only a send creates one). Never rejects.
+ *
+ * Every task transition main sees goes through here, so this is also where a
+ * finished task's report is kept: on `completed` or `failed`, the result in
+ * `task` (the committed task, or `{ status }` built from the update) is
+ * copied onto the link. The task record itself is dropped 30 minutes after
+ * it ends; the link, and the ticket that reads it, keep the report.
+ */
+export function recordTaskState(taskId: unknown, state: unknown, store?: WorkLinkStore, task?: unknown): Promise<void> {
   if (typeof taskId !== 'string' || !taskId || !isTaskState(state)) return Promise.resolve();
   try {
-    return (store ?? getWorkLinkStore()).upsert({ a2aTaskId: taskId, a2aState: state }).then(
+    const result = state === 'completed' || state === 'failed' ? workLinkResultFromTask(task, Date.now()) : undefined;
+    return (store ?? getWorkLinkStore()).upsert({ a2aTaskId: taskId, a2aState: state, ...(result ? { result } : {}) }).then(
       () => undefined,
       () => undefined,
     );

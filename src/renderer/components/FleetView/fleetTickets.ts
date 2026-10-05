@@ -114,7 +114,10 @@ export function buildFleetTickets({ links, decisions, a2aTasks, now }: TicketSou
     if (link.owner.paneId) ticket.paneId = link.owner.paneId;
     if (link.agent) ticket.agent = link.agent;
     if (link.a2aTaskId) ticket.a2aTaskId = link.a2aTaskId;
-    const result = state === 'done' || state === 'failed' ? ticketResultOf(task) : undefined;
+    // The report kept on the link first (it outlives the task record), then
+    // the task mirror; past both, the detail reads it back from the daemon.
+    const kept = link.result ? { summary: link.result.summary, ...(link.result.verification ? { verification: link.result.verification } : {}) } : undefined;
+    const result = state === 'done' || state === 'failed' ? kept ?? ticketResultOf(task) : undefined;
     if (result) ticket.result = result;
     out.push(ticket);
   }

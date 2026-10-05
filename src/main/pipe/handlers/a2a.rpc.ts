@@ -611,7 +611,7 @@ export function registerA2aRpc(
       if (gate.kind === 'ok') {
         if (cancelWorker) claudeWorker.cancel(cancelWorker);
         // Work link (best-effort): the daemon's committed state is the truth.
-        void recordTaskState(params.taskId, stateOfTask(gate.result.task));
+        void recordTaskState(params.taskId, stateOfTask(gate.result.task), undefined, gate.result.task);
         return sendToRenderer(getWindow, 'a2a.task.update', {
           ...params,
           daemonCommitted: true,
@@ -622,7 +622,11 @@ export function registerA2aRpc(
       // explicit ok from it counts as a committed cancel.
       const res = await sendToRenderer(getWindow, 'a2a.task.update', params);
       if (cancelWorker && isRecord(res) && res.ok === true) claudeWorker.cancel(cancelWorker);
-      if (isRecord(res) && res.ok === true) void recordTaskState(params.taskId, params.status);
+      if (isRecord(res) && res.ok === true) {
+        // No committed task on this path: its report is the update itself.
+        void recordTaskState(params.taskId, params.status, undefined,
+          { status: { state: params.status, message: params.message, evidence: params.evidence } });
+      }
       return res;
     }
     // Message-only update: may reopen an ended task (daemon first).

@@ -30,6 +30,7 @@ same records, so both show the same state.
 | `state` | `queued`, `running`, `needs-you`, `blocked`, `review`, `done` or `abandoned`. |
 | `reason?` | Only on `needs-you` (`decision`, `input-required`) and `blocked` (`task-failed`, `ci-failing`, `conflict`, `changes-requested`). `other` comes from a manual `setState`. |
 | `manualClose?` | `true` on a link closed by hand (`setState('abandoned')`). Only on `abandoned`. |
+| `result?` | `{ summary, verification?, at }`: the worker's final report, copied from the A2A task when it reaches `completed` or `failed` (evidence summary, else the closing message; `verification` is verified/total evidence items). Kept because the daemon drops ended tasks after 30 minutes. Untrusted text, summary capped at 2048 characters. |
 | `decisionIds` | Ids of the decisions raised about this work, oldest first, at most 32. |
 | `createdAt`, `updatedAt` | Epoch milliseconds. |
 

@@ -54,6 +54,16 @@ describe('buildFleetTickets', () => {
     expect(ticket.result?.verification).toBe('1/1');
   });
 
+  it('reads the report kept on the link before the task mirror', () => {
+    const [ticket] = buildFleetTickets({
+      links: [link({ a2aState: 'completed', state: 'done', result: { summary: 'Kept on the link.', verification: '2/2', at: NOW } })],
+      decisions: [],
+      a2aTasks: { 'task-1': task('completed', { evidence: { summary: 'From the mirror.', items: [] } }) },
+      now: NOW,
+    });
+    expect(ticket.result).toEqual({ summary: 'Kept on the link.', verification: '2/2' });
+  });
+
   it('lists a hand-off waiting for its click, keeps chat out, and drops old finished work', () => {
     const tickets = buildFleetTickets({
       links: [
