@@ -4,7 +4,7 @@
 // lifetime.
 
 import type { BrowserWindow } from 'electron';
-import { MoaHandoffService, type ResolvedTarget } from './moaHandoff';
+import { MoaHandoffService, type HandoffRecord, type ResolvedTarget } from './moaHandoff';
 import { getHqWorkspaceId, getMoaConfig, hqPresence, isMoaEnabled } from './deckHqStore';
 import { loadWorkspaceMode } from './deckAutonomyStore';
 import { loadLiveDeckWork } from './deckWorkStore';
@@ -74,6 +74,9 @@ export function createMoaHandoffService(opts: {
   invoke: Invoke;
   getWindow: () => BrowserWindow | null;
   notify: () => void;
+  /** The HQ's latest turn was started by the operator (not a wake). */
+  operatorTurn?: (hqWorkspaceId: string) => boolean;
+  onOperatorCancel?: (r: HandoffRecord) => void;
 }): MoaHandoffService {
   const links = getWorkLinkStore();
   const linkDeps = {
@@ -95,7 +98,7 @@ export function createMoaHandoffService(opts: {
     autoHandoffEnabled: () => getMoaConfig().autoHandoff !== false,
     hqServesOperatorRequest: () => {
       const hq = getHqWorkspaceId();
-      return hq !== null && loadLiveDeckWork(hq) !== null;
+      return hq !== null && loadLiveDeckWork(hq) !== null && opts.operatorTurn?.(hq) === true;
     },
     workspaceExists: (id) => (getWorkspaceMirror().getEntries() ?? []).some((e) => e.id === id),
     workspaceName: (id) => getWorkspaceMirror().getEntries()?.find((e) => e.id === id)?.name,
@@ -107,6 +110,9 @@ export function createMoaHandoffService(opts: {
       if (!pane) return 'gone';
       return pane.isAgent === false ? 'shell' : 'agent';
     },
+    agentBusy: (workspaceId, ptyId) =>
+      getWorkspaceMirror().getFleetSnapshot(workspaceId)?.panes.find((p) => p.ptyId === ptyId)?.agentStatus === 'running',
+    ...(opts.onOperatorCancel ? { onOperatorCancel: opts.onOperatorCancel } : {}),
     decisions: {
       raiseIfFree: (id, card) => raiseDecisionIfFree(id, card),
       load: (id) => loadWorkspaceDecision(id),

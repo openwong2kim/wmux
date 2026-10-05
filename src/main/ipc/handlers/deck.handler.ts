@@ -756,11 +756,32 @@ export function registerDeckHandler(
   // Moa's operator-approved hand-offs (moaHandoff.ts): the cards in target
   // slots, the delivery on a click (or in danger mode without one), and the
   // task → HQ map onBusEvent routes by. Off without the operator lane.
+  // Who started each workspace's latest brain turn: the operator (typed it) or
+  // an automatic wake (whose prompt can carry pane, PR or issue text). A
+  // danger-mode hand-off without a card is allowed only inside an operator
+  // turn; main decides that, never the brain.
+  const lastTurnStartedBy = new Map<string, 'operator' | 'wake'>();
   const moaHandoffs = opts.invokeOperatorRpc
     ? createMoaHandoffService({
         invoke: opts.invokeOperatorRpc,
         getWindow,
         notify: () => emitMoaChanged(),
+        operatorTurn: (hq) => lastTurnStartedBy.get(hq) === 'operator',
+        onOperatorCancel: (r) => {
+          if (hqPresence(r.hqWorkspaceId) !== 'present') return;
+          // No task exists for a canceled card: tell Moa the way a canceled
+          // task would, keyed by the hand-off id.
+          coalescer?.push({
+            workspaceId: r.hqWorkspaceId,
+            ptyId: `a2a:handoff-${r.id}`,
+            kind: 'a2a.canceled',
+            source: 'a2a',
+            agent: null,
+            seq: Date.now(),
+            ts: Date.now(),
+            a2a: { taskId: `handoff-${r.id}`, from: r.hqWorkspaceId, to: r.target.workspaceId, state: 'canceled' },
+          });
+        },
       })
     : null;
   setMoaHandoffService(moaHandoffs);
@@ -984,6 +1005,7 @@ export function registerDeckHandler(
         onForeignTurnStart: (prompt) => {
           // The default terminal brain has no deck composer: UserPromptSubmit is
           // the only place main sees that a human explicitly assigned work.
+          lastTurnStartedBy.set(workspaceId, 'operator');
           beginTrackedWork(workspaceId, prompt);
           coalescer?.notifyHumanSend(workspaceId);
         },
@@ -1233,6 +1255,7 @@ export function registerDeckHandler(
       // in that state, so this is the race/stale-renderer path.
       const refusal = refuseWhenModeOff(workspaceId);
       if (refusal) return refusal;
+      lastTurnStartedBy.set(workspaceId, 'operator');
       let fleetContext = typeof req.fleetContext === 'string' ? req.fleetContext : undefined;
       if (fleetContext && fleetContext.length > FLEET_CONTEXT_MAX_CHARS) {
         fleetContext = fleetContext.slice(0, FLEET_CONTEXT_MAX_CHARS) + '\n…(truncated)';
@@ -1516,6 +1539,7 @@ export function registerDeckHandler(
       human?: boolean;
     } = {},
   ): Promise<{ ok: boolean; code?: string; retryAfterMs?: number }> => {
+    if (!runOpts.human) lastTurnStartedBy.set(workspaceId, 'wake');
     if (!WORKSPACE_ID_RE.test(workspaceId)) {
       return { ok: false, code: 'invalid_workspace' as const };
     }
@@ -1944,8 +1968,8 @@ export function registerDeckHandler(
     const routed = await moaHandoffs!.onWorkerStop(ev.ptyId, ev.agent ?? null, ev.lastMessage);
     if (!routed || routed.movedToInputRequired) return;
     if (ev.kind !== 'agent.stop' && ev.kind !== 'agent.stop_failure') return;
-    const hq = routed.hq;
-    if (hqPresence(hq) !== 'present') return;
+    const hq = moaHandoffs!.hqForTask(routed.taskId);
+    if (!hq || hqPresence(hq) !== 'present') return;
     coalescer?.push({
       workspaceId: hq,
       ptyId: `a2a:${routed.taskId}`,

@@ -348,3 +348,88 @@ describe('moa hand-off — helpers', () => {
     expect(handoffTitle('Given\u0007 title', 'x')).toBe('Given title');
   });
 });
+
+describe('moa hand-off — review fixes', () => {
+  const danger = (r: Rig) => {
+    r.modes[HQ] = 'danger';
+    r.modes[SEAL] = 'danger';
+  };
+
+  it('parallel proposals cannot pass the hourly limit together', async () => {
+    const r = rig({ autoPerHour: () => 1 });
+    danger(r);
+    const [a, b] = await Promise.all([propose(r), propose(r)]);
+    expect([a, b].map((x) => (x.ok ? x.mode : x.error)).sort()).toEqual(['auto', 'card']);
+  });
+
+  it('a failed auto try leaves no receipt and does not count toward the limit', async () => {
+    const r = rig({ autoPerHour: () => 1 });
+    danger(r);
+    r.deliver.mockResolvedValueOnce({ ok: true, delivered: false, assurance: 'unverified', reason: 'user_typing' });
+    expect(await propose(r)).toMatchObject({ mode: 'card' });
+    expect(r.svc.receipts()).toHaveLength(0);
+    r.slots.clear();
+    expect(await propose(r)).toMatchObject({ mode: 'auto' });
+  });
+
+  it('Stop on an ended task sends no key', async () => {
+    const r = rig();
+    danger(r);
+    const res = await propose(r);
+    if (!res.ok || res.mode !== 'auto') throw new Error('expected auto');
+    r.svc.noteTaskState(res.taskId, 'completed');
+    expect(await r.svc.stop(res.id)).toEqual({ ok: false });
+    expect(r.invoke).not.toHaveBeenCalledWith('input.sendKey', expect.anything());
+  });
+
+  it('a hand-off queued behind a running turn ignores that turn\'s end', async () => {
+    const r = rig({ agentBusy: () => true });
+    await propose(r);
+    await r.svc.resolve(SEAL, r.slots.get(SEAL)!.id, 'handoff');
+    expect(await r.svc.onWorkerStop('pty-1', 'claude', { text: 'Old turn: shall I go on?', endsWithQuestion: true })).toBeNull();
+    expect((await r.svc.onWorkerStop('pty-1', 'claude', { text: 'Which module first?', endsWithQuestion: true }))?.movedToInputRequired).toBe(true);
+  });
+
+  it('two open hand-offs in one pane: a turn end moves neither', async () => {
+    const r = rig();
+    await propose(r);
+    await r.svc.resolve(SEAL, r.slots.get(SEAL)!.id, 'handoff');
+    await propose(r, 'Second job.');
+    await r.svc.resolve(SEAL, r.slots.get(SEAL)!.id, 'handoff');
+    const out = await r.svc.onWorkerStop('pty-1', 'claude', { text: 'Which one?', endsWithQuestion: true });
+    expect(out?.movedToInputRequired).toBe(false);
+  });
+
+  it('Cancel tells the HQ', async () => {
+    const onOperatorCancel = vi.fn();
+    const r = rig({ onOperatorCancel });
+    await propose(r);
+    await r.svc.resolve(SEAL, r.slots.get(SEAL)!.id, 'cancel');
+    expect(onOperatorCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('a card whose body could not be saved is taken down', async () => {
+    const r = rig({}, path.join(dir, 'missing-dir', 'nested', 'x.json'));
+    fs.writeFileSync(path.join(dir, 'missing-dir'), 'a file, so the directory cannot be created');
+    expect(await propose(r)).toMatchObject({ ok: false, error: 'error' });
+    expect(r.slots.has(SEAL)).toBe(false);
+  });
+
+  it('a delivery the app stopped in the middle of is released, with a notice', async () => {
+    let now = 1_000_000;
+    const r = rig({ now: () => now });
+    let hang: () => void = () => undefined;
+    r.deliver.mockImplementationOnce(() => new Promise((res) => { hang = () => res({ ok: false, code: 'error', message: 'x' }); }));
+    await propose(r);
+    void r.svc.resolve(SEAL, r.slots.get(SEAL)!.id, 'handoff');
+    await new Promise((res) => setTimeout(res, 10));
+    now += 5 * 60_000;
+    const fresh = rig({ now: () => now }, r.file);
+    await r.svc.save();
+    const reloaded = new MoaHandoffService({ ...fresh.ports, filePath: r.file });
+    await reloaded.reconcile();
+    expect(fresh.release).toHaveBeenCalled();
+    expect(fresh.slots.get(SEAL)?.options).toEqual(['OK']);
+    hang();
+  });
+});

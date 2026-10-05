@@ -11,11 +11,18 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { RpcMethod } from '../shared/rpc';
+import { GATED_NEW_TASK_SEND_MAIN_TIMEOUT_MS } from '../shared/freshContext';
+
+/** A danger-mode hand-off is delivered inside this call, and the gated
+ *  delivery may wait up to its own main-side timeout for the person to stop
+ *  typing. The call must outwait it: a client that gave up first would leave
+ *  Moa guessing whether the text landed. */
+export const PROPOSE_HANDOFF_TIMEOUT_MS = GATED_NEW_TASK_SEND_MAIN_TIMEOUT_MS + 15_000;
 
 type ToolResult = { content: { type: 'text'; text: string }[] };
 
 export interface MoaHandoffToolDeps {
-  callRpc: (method: RpcMethod, params: Record<string, unknown>) => Promise<ToolResult>;
+  callRpc: (method: RpcMethod, params: Record<string, unknown>, timeoutMs?: number) => Promise<ToolResult>;
   /** WMUX_COMMANDER_TOKEN; undefined outside a brain, and the RPC fails closed. */
   getCommanderToken: () => string | undefined;
 }
@@ -47,7 +54,7 @@ export function registerMoaHandoffTool(register: McpServer['tool'], deps: MoaHan
       if (paneId) params.paneId = paneId;
       if (title) params.title = title;
       if (external_source !== undefined) params.externalSource = external_source;
-      return deps.callRpc('deck.proposeHandoff', params);
+      return deps.callRpc('deck.proposeHandoff', params, PROPOSE_HANDOFF_TIMEOUT_MS);
     },
   );
 }

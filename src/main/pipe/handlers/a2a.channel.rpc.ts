@@ -46,6 +46,7 @@
 // owned by ChannelService inside its per-channel critical section (plan KTD3),
 // bridged to the EventBus in DaemonClient.ts / DaemonNotificationRouter.ts.
 
+import { refuseHandoffMarker } from './a2a.rpc';
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
 import type { RpcContext } from '../../../shared/rpc';
@@ -335,7 +336,10 @@ export function registerA2aChannelRpc(
   router.register('a2a.channel.create', (p, ctx) => forward('a2a.channel.create', p, true, ctx));
   router.register('a2a.channel.join', (p, ctx) => forward('a2a.channel.join', p, true, ctx));
   router.register('a2a.channel.leave', (p, ctx) => forward('a2a.channel.leave', p, true, ctx));
-  router.register('a2a.channel.post', (p, ctx) => forward('a2a.channel.post', p, true, ctx));
+  // A pinned mention lands in an agent's prompt, so a post may not carry the
+  // hand-off line either (moaHandoff.ts; a label, not authentication).
+  router.register('a2a.channel.post', async (p, ctx) =>
+    refuseHandoffMarker('a2a.channel.post', p.text, ctx) ?? forward('a2a.channel.post', p, true, ctx));
   router.register('a2a.channel.invite', (p, ctx) => forward('a2a.channel.invite', p, true, ctx));
 
   // Mission RPCs (J0 §3) — same forwarder, same D5 stamp discipline: mutating

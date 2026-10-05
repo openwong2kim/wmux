@@ -447,8 +447,9 @@ export function registerA2aRpc(
   // A2A protocol — whoami/discover/broadcast/skills는 렌더러 소유 그대로.
   router.register('a2a.whoami', (params) => sendToRenderer(getWindow, 'a2a.whoami', params));
   router.register('a2a.discover', (params) => sendToRenderer(getWindow, 'a2a.discover', params));
-  router.register('a2a.broadcast', (params, ctx) =>
-    sendToRenderer(getWindow, 'a2a.broadcast', withOperatorOrigin(params, ctx)));
+  router.register('a2a.broadcast', async (params, ctx) =>
+    refuseHandoffMarker('a2a.broadcast', params.message, ctx)
+    ?? sendToRenderer(getWindow, 'a2a.broadcast', withOperatorOrigin(params, ctx)));
   router.register('meta.setSkills', (params) => sendToRenderer(getWindow, 'meta.setSkills', params));
 
   // task.query — 데몬 정본 + 렌더러 캐시 병합(envelope PR4).

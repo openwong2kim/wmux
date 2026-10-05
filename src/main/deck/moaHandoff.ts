@@ -72,6 +72,8 @@ const MAX_RECORDS = 500;
 /** How long an auto hand-off's receipt stays in Moa's panel. */
 const RECEIPT_TTL_MS = 24 * 60 * 60_000;
 const HOUR_MS = 60 * 60_000;
+/** A delivery or a claimed card older than this is one the app did not finish. */
+const STALE_DELIVERY_MS = 2 * 60_000;
 
 export type HandoffState = 'pending' | 'delivering' | 'delivered' | 'canceled' | 'failed' | 'expired';
 
@@ -97,6 +99,9 @@ export interface HandoffRecord {
   willQueue: boolean;
   /** Stop was pressed on its receipt. */
   stopped?: boolean;
+  /** Turn ends to ignore: the agent was mid-turn at delivery, so the next
+   *  Stop ends the turn it was already in, not the hand-off's. */
+  skipStops?: number;
   createdAt: number;
   at: number;
 }
@@ -137,6 +142,10 @@ export interface MoaHandoffPorts {
   /** The pane's state in the workspace mirror: gone, a shell, or an agent.
    *  `unknown` when the mirror cannot tell (no fresh snapshot). */
   paneState: (workspaceId: string, ptyId: string) => 'gone' | 'shell' | 'agent' | 'unknown';
+  /** The pane's agent is mid-turn right now (mirror status), when known. */
+  agentBusy?: (workspaceId: string, ptyId: string) => boolean;
+  /** The operator canceled a card (no task exists to say so): tell the HQ. */
+  onOperatorCancel?: (r: HandoffRecord) => void;
   decisions: {
     raiseIfFree: (
       workspaceId: string,
@@ -257,6 +266,8 @@ function readFile(p: string): HandoffFile {
   for (const [k, v] of Object.entries(items as Record<string, unknown>)) {
     const r = v as Partial<HandoffRecord> | null;
     if (r && r.id === k && typeof r.hqWorkspaceId === 'string' && r.target && typeof r.target.ptyId === 'string'
+      && typeof r.target.workspaceId === 'string' && typeof r.target.paneId === 'string'
+      && typeof r.target.agentName === 'string' && typeof r.title === 'string'
       && typeof r.body === 'string' && typeof r.state === 'string' && typeof r.createdAt === 'number') {
       empty.items[k] = r as HandoffRecord;
     }
@@ -307,15 +318,22 @@ export class MoaHandoffService {
     for (const x of old.slice(0, all.length - MAX_RECORDS)) delete this.file.items[x.id];
   }
 
-  save(): Promise<void> {
+  /** Persist. A failed write is logged and reported (false); memory stays the truth. */
+  save(): Promise<boolean> {
     return this.serialize(async () => {
       try {
         await atomicWriteJSON(this.ports.filePath ?? getMoaHandoffsPath(), this.file);
+        return true;
       } catch (err) {
         console.warn(`[moa:handoff] could not save: ${String(err)}`);
+        return false;
       }
     });
   }
+
+  /** One proposal at a time: the hourly auto count is read and taken in one
+   *  step, and two calls can never deliver side by side. */
+  private readonly proposals = createSerialChain();
 
   get(id: string): HandoffRecord | null {
     return this.file.items[id] ?? null;
@@ -331,7 +349,9 @@ export class MoaHandoffService {
 
   /** The HQ a hand-off task reports to, or null when the task is not one. */
   hqForTask(taskId: string): string | null {
-    return this.byTask(taskId)?.hqWorkspaceId ?? null;
+    const hq = this.byTask(taskId)?.hqWorkspaceId ?? null;
+    // An HQ that is no longer the HQ runs no brain: report to the current one.
+    return hq && hq === this.ports.hqWorkspaceId() ? hq : null;
   }
 
   /** What the card in `decisionId` needs beyond the decision, or null. */
@@ -352,7 +372,7 @@ export class MoaHandoffService {
   receipts(): MoaAutoHandoffReceipt[] {
     const since = this.now() - RECEIPT_TTL_MS;
     return Object.values(this.file.items)
-      .filter((r) => r.auto && r.taskId && r.createdAt >= since)
+      .filter((r) => r.auto && r.taskId && r.state === 'delivered' && r.createdAt >= since)
       .sort((a, b) => b.createdAt - a.createdAt)
       .map((r) => ({
         id: r.id,
@@ -368,7 +388,14 @@ export class MoaHandoffService {
 
   // ── propose ───────────────────────────────────────────────────────────────
 
-  async propose(
+  propose(
+    callerWorkspaceId: string,
+    params: { ptyId?: unknown; paneId?: unknown; body?: unknown; title?: unknown; externalSource?: unknown },
+  ): Promise<ProposeResult> {
+    return this.proposals(() => this.proposeNow(callerWorkspaceId, params));
+  }
+
+  private async proposeNow(
     callerWorkspaceId: string,
     params: { ptyId?: unknown; paneId?: unknown; body?: unknown; title?: unknown; externalSource?: unknown },
   ): Promise<ProposeResult> {
@@ -422,6 +449,9 @@ export class MoaHandoffService {
       record.auto = undefined;
       record.taskId = undefined;
       record.linkId = undefined;
+      // The failed try is kept as what it was (a canceled task, no receipt)
+      // under its own id; the card below is a new record.
+      record.id = randomUUID();
     }
     return this.raiseCard(record);
   }
@@ -434,7 +464,12 @@ export class MoaHandoffService {
       .catch(() => null);
     if (!decision) return { ok: false, error: 'busy' };
     this.put({ ...record, state: 'pending', decisionId: decision.id });
-    await this.save();
+    if (!(await this.save())) {
+      // A card whose body is not on disk could not be answered after a restart.
+      await this.ports.decisions.clearPendingIfUnchanged(ws, decision).catch(() => false);
+      delete this.file.items[record.id];
+      return { ok: false, error: 'error', message: 'the hand-off could not be saved' };
+    }
     this.notify();
     return { ok: true, mode: 'card', id: record.id };
   }
@@ -457,7 +492,7 @@ export class MoaHandoffService {
     const since = this.now() - HOUR_MS;
     const limit = this.ports.autoPerHour?.() ?? HANDOFF_AUTO_PER_HOUR_DEFAULT;
     const recent = Object.values(this.file.items).filter(
-      (x) => x.auto && x.target.workspaceId === r.target.workspaceId && x.createdAt >= since,
+      (x) => x.auto && (x.state === 'delivered' || x.state === 'delivering') && x.target.workspaceId === r.target.workspaceId && x.createdAt >= since,
     ).length;
     return recent < limit;
   }
@@ -478,7 +513,11 @@ export class MoaHandoffService {
       ...(record.target.agentSlug ? { agent: record.target.agentSlug } : {}),
     }).catch(() => null);
     // Recorded before the send: the task's first events must already route to Moa.
-    const sending: HandoffRecord = { ...record, body, state: 'delivering', taskId, ...(link ? { linkId: link.id } : {}), ...(auto ? { auto: true } : {}) };
+    const busy = this.ports.agentBusy?.(record.target.workspaceId, record.target.ptyId) === true;
+    const sending: HandoffRecord = {
+      ...record, body, state: 'delivering', taskId, at: this.now(),
+      ...(link ? { linkId: link.id } : {}), ...(auto ? { auto: true } : {}), ...(busy ? { skipStops: 1 } : {}),
+    };
     this.put(sending);
     await this.save();
     let unregister = (): void => undefined;
@@ -559,6 +598,11 @@ export class MoaHandoffService {
         this.put({ ...r, state: 'canceled', decisionId: undefined });
         await this.save();
         this.notify();
+        try {
+          this.ports.onOperatorCancel?.(r);
+        } catch {
+          /* best-effort */
+        }
         return { ok: true, delivered: false };
       }
       const res = await this.deliver({ ...r, decisionId: undefined }, body, false);
@@ -604,16 +648,18 @@ export class MoaHandoffService {
       this.put({ ...r, taskState: state });
       void this.save();
     }
-    return r.hqWorkspaceId;
+    return this.hqForTask(taskId);
   }
 
   /** The open hand-off task in this pane (the newest), or null. */
   openTaskOnPty(ptyId: string): HandoffRecord | null {
-    return (
-      Object.values(this.file.items)
-        .filter((r) => r.target.ptyId === ptyId && r.state === 'delivered' && r.taskId && !isEnded(r.taskState))
-        .sort((a, b) => b.createdAt - a.createdAt)[0] ?? null
-    );
+    return this.openTasksOnPty(ptyId)[0] ?? null;
+  }
+
+  private openTasksOnPty(ptyId: string): HandoffRecord[] {
+    return Object.values(this.file.items)
+      .filter((r) => r.target.ptyId === ptyId && r.state === 'delivered' && r.taskId && !isEnded(r.taskState))
+      .sort((a, b) => b.createdAt - a.createdAt);
   }
 
   /**
@@ -631,7 +677,15 @@ export class MoaHandoffService {
   ): Promise<{ hq: string; taskId: string; movedToInputRequired: boolean } | null> {
     const r = this.openTaskOnPty(ptyId);
     if (!r || !r.taskId) return null;
-    const open = r.taskState === 'submitted' || r.taskState === 'working' || r.taskState === undefined;
+    if (r.skipStops && r.skipStops > 0) {
+      // The turn the agent was already in when the hand-off queued behind it.
+      this.put({ ...r, skipStops: r.skipStops - 1 });
+      await this.save();
+      return null;
+    }
+    // Two open hand-offs in one pane: a turn end cannot be tied to either.
+    const ambiguous = this.openTasksOnPty(ptyId).length > 1;
+    const open = !ambiguous && (r.taskState === 'submitted' || r.taskState === 'working' || r.taskState === undefined);
     const asks = !!lastMessage && agent === 'claude' && (lastMessage.endsWithQuestion || looksLikeRefusal(lastMessage.text));
     if (!open || !asks || !lastMessage) return { hq: r.hqWorkspaceId, taskId: r.taskId, movedToInputRequired: false };
     const text = capBytes(lastMessage.text, HANDOFF_LAST_MESSAGE_MAX_BYTES);
@@ -658,6 +712,8 @@ export class MoaHandoffService {
   async stop(id: string): Promise<{ ok: boolean }> {
     const r = this.get(id);
     if (!r || !r.taskId) return { ok: false };
+    // An ended task's pane may be running something else now: never interrupt it.
+    if (r.state !== 'delivered' || isEnded(r.taskState) || r.stopped) return { ok: false };
     await this.ports.invoke('input.sendKey', { ptyId: r.target.ptyId, key: 'escape', workspaceId: r.target.workspaceId }).catch(() => null);
     await this.cancelTask(r);
     this.put({ ...this.get(id)!, stopped: true });
@@ -680,6 +736,26 @@ export class MoaHandoffService {
   async reconcile(): Promise<void> {
     let changed = false;
     for (const r of Object.values(this.file.items)) {
+      // A delivery the app stopped in the middle of: its outcome is unknown,
+      // so its task is released and the operator told.
+      if (r.state === 'delivering' && this.now() - r.at > STALE_DELIVERY_MS) {
+        await this.ports.release(r.linkId, r.taskId).catch(() => undefined);
+        this.put({ ...r, state: 'failed', taskState: 'canceled' });
+        await this.raiseNotice(this.get(r.id)!, 'wmux stopped while it was delivering it');
+        changed = true;
+        continue;
+      }
+      // A card answered by a click that the app did not live to deliver: the
+      // decision is gone and the record still pending. Ask again.
+      if (r.state === 'pending' && !r.notice && r.decisionId) {
+        const d = this.ports.decisions.load(r.target.workspaceId);
+        if ((!d || d.id !== r.decisionId) && !this.answering.has(r.decisionId) && this.now() - r.at > STALE_DELIVERY_MS) {
+          const res = await this.raiseCard({ ...r, decisionId: undefined });
+          if (!res.ok) this.put({ ...r, state: 'expired', decisionId: undefined });
+          changed = true;
+          continue;
+        }
+      }
       const live = r.state === 'pending' && !r.notice ? 'card' : r.state === 'delivered' && !isEnded(r.taskState) ? 'task' : null;
       if (!live) continue;
       const ws = r.target.workspaceId;

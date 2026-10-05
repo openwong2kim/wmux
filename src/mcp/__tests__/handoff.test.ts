@@ -3,7 +3,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { registerMoaHandoffTool } from '../handoff';
+import { registerMoaHandoffTool, PROPOSE_HANDOFF_TIMEOUT_MS } from '../handoff';
 import { COMMANDER_ONLY_TOOLS, COMMANDER_RPC_METHODS } from '../../shared/commanderSurface';
 import { FIRST_PARTY_METHODS } from '../../main/mcp/firstParty';
 
@@ -25,7 +25,9 @@ describe('moa_propose_handoff', () => {
     const res = await handler({ ptyId: 'pty-7', body: 'Fix the flaky test', title: 'Flaky test', external_source: true });
     expect(callRpc).toHaveBeenCalledWith('deck.proposeHandoff', {
       token: 'tok-hq', ptyId: 'pty-7', body: 'Fix the flaky test', title: 'Flaky test', externalSource: true,
-    });
+    }, PROPOSE_HANDOFF_TIMEOUT_MS);
+    // The call outwaits a danger-mode delivery's gated wait.
+    expect(PROPOSE_HANDOFF_TIMEOUT_MS).toBeGreaterThan(45_000);
     // The result is passed through untouched.
     expect(JSON.stringify(res)).toContain('"mode\\":\\"card');
   });
