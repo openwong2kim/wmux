@@ -51,43 +51,6 @@ export function selectMissionChannelIds(
   return out;
 }
 
-/**
- * Which workspace's deck should the sidebar's task line open?
- *
- * The summary counts EVERY workspace's tasks, but the deck panel is
- * per-workspace: it reads the ledger of the workspace that is active. Landing
- * on an empty panel after clicking "3 open" is the dead link that made this
- * function necessary.
- *
- *   - the active workspace owns a matching task → null (stay where you are).
- *   - it does not → the owner of the most recent matching task.
- *   - nothing matches anywhere → null (the caller renders no line at all).
- *
- * "Most recent" is `createdAt`: WorkTask carries no updatedAt, and a task's
- * creation is the only ordering the record actually has.
- */
-export function ownerForTaskLedger(
-  byWorkspace: Readonly<Record<string, WorkTask[]>>,
-  activeWorkspaceId: string | null | undefined,
-  wanted: WorkTask['status'],
-  isLive: (task: WorkTask) => boolean,
-): string | null {
-  let bestOwner: string | null = null;
-  let bestAt = -Infinity;
-  for (const [ownerId, tasks] of Object.entries(byWorkspace)) {
-    for (const task of tasks) {
-      if (task.status !== wanted || !isLive(task)) continue;
-      // The active workspace has one — the deck is already pointed at it.
-      if (ownerId === activeWorkspaceId) return null;
-      if (task.createdAt > bestAt) {
-        bestAt = task.createdAt;
-        bestOwner = ownerId;
-      }
-    }
-  }
-  return bestOwner;
-}
-
 /** The first cached task, across every workspace, that matches. */
 export function findMission(
   byWorkspace: Readonly<Record<string, WorkTask[]>>,

@@ -99,6 +99,7 @@ import {
 import { isChatV2Covering } from '../ChatV2/coverage';
 import { overlayColors } from '../../utils/titlebarOverlay';
 import { dockShownOn } from './pagesBesideDock';
+import { selectDockOpen, selectMoaOn, useMoaDockGate } from './moaDockGate';
 
 interface ReconcilePtySession extends DeadPaneSessionSnapshot {
   id: string;
@@ -742,7 +743,10 @@ export default function AppLayout() {
   // theme (overlay colors) does — see useUiScaleSync below.
   useUiScaleSync(uiScale);
   const sidebarVisible = useStore((s) => s.sidebarVisible);
-  const channelDockVisible = useStore((s) => s.channelDockVisible);
+  // The right panel renders only while Moa is on (moaDockGate); with Moa off
+  // the persisted open flag is kept but nothing is drawn.
+  const dockOpen = useStore(selectDockOpen);
+  useMoaDockGate();
   const sidebarPosition = useStore((s) => s.sidebarPosition);
   // The dock never pushes the sheet past the window: when inline would leave
   // the panes under their floor, it collapses and reopens as an overlay
@@ -754,6 +758,8 @@ export default function AppLayout() {
   const dockAutoCollapsed = useRef(false);
   useEffect(() => {
     const st = useStore.getState();
+    // With Moa off there is no panel to collapse or restore: leave its flag.
+    if (!selectMoaOn(st)) return;
     if (dockMode === 'overlay' && st.channelDockVisible) {
       dockAutoCollapsed.current = true;
       st.setChannelDockVisible(false);
@@ -2044,8 +2050,8 @@ export default function AppLayout() {
           reflows the panes instead of the old fixed overlay that covered them.
           Holds the channel list + active conversation; collapsible. */}
       {/* Collapsed, the deck renders NOTHING here — the terminals take the
-          whole width. The way back is the titlebar's DeckToggle beside
-          Settings (owner decision 2026-08-18, replacing the 36px glyph rail).
+          whole width. The way back is Moa's titlebar button; with Moa off
+          there is no panel at all (owner decision 2026-08-18, replacing the 36px glyph rail).
           The rail spent a full-height column on four glyphs and an expand
           chevron, ~85% of it empty; one button on a row that already exists
           costs the terminals nothing. */}
@@ -2057,14 +2063,14 @@ export default function AppLayout() {
           flex item it always was, and the overlay still positions against
           the sheet. */}
       <div className="contents" inert={!dockShownOn(appRoute) && !inspectModeActive} data-dock-region>
-      {channelDockVisible && dockMode === 'inline' && (
+      {dockOpen && dockMode === 'inline' && (
         <ErrorBoundary name="ChannelDock">
           <ChannelDock />
         </ErrorBoundary>
       )}
       {/* Too narrow for the dock beside the panes: it floats over them on the
           far edge instead, and never reflows a PTY. */}
-      {channelDockVisible && dockMode === 'overlay' && (
+      {dockOpen && dockMode === 'overlay' && (
         <div
           data-dock-overlay
           className={`absolute inset-y-0 z-30 flex max-w-full ${sidebarPosition === 'right' ? 'left-0' : 'right-0'}`}
