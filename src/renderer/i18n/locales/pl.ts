@@ -2616,6 +2616,7 @@ export const pl = {
   'moa.panel.answerPlaceholder': "Wpisz odpowiedź…",
   'moa.panel.answerSend': "Odpowiedz",
   'moa.panel.answerFailed': "Nie udało się wysłać odpowiedzi. Spróbuj ponownie.",
+  'moa.panel.dismiss': "Niepotrzebne",
   'moa.panel.tasksTitle': "Zlecona praca",
   'moa.panel.untitledTask': "Zadanie bez tytułu",
   'moa.panel.taskNoDetails': "Na razie nic do pokazania.",
