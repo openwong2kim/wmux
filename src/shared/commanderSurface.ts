@@ -153,6 +153,10 @@ export const COMMANDER_ONLY_TOOLS: readonly string[] = [
   // prompts by being the pane, and the press scope only ever authorizes a press
   // into a DELEGATED task workspace — which is a thing only an orchestrator has.
   'approval_press',
+  // Moa (HQ) hands work to an agent in ANOTHER workspace. The tool only
+  // PROPOSES: main stores the body and the operator approves it with a card
+  // (or main delivers it itself in danger mode) — see shared/moaHandoff.ts.
+  'moa_propose_handoff',
 ];
 
 /** Names in COMMANDER_ONLY_TOOLS that ALSO exist in full/core under a
@@ -210,6 +214,9 @@ export const COMMANDER_RPC_METHODS: ReadonlySet<string> = new Set<string>([
   'deck.completeWork',
   'deck.requestDecision',
   'deck.resolveDecision',
+  // Moa's operator-approved hand-off (moa_propose_handoff). Raises a card;
+  // nothing reaches the target pane until the operator answers it.
+  'deck.proposeHandoff',
   // events
   'events.poll',
   // agent-to-agent + channels + missions

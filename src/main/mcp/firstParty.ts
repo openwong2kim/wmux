@@ -209,6 +209,10 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   // WP3). Same per-spawn-token auth; the handler server-enforces auto-mode +
   // staleness + substance, so a non-commander or premature caller fails closed.
   'deck.resolveDecision',
+  // Moa (HQ brain) hand-off proposal (moa_propose_handoff tool). Same
+  // per-spawn-token auth; the handler refuses any caller that is not the HQ
+  // brain, and delivery waits for the operator's card answer.
+  'deck.proposeHandoff',
   // events
   'events.poll',
   // browser (Playwright + packaged CDP/RPC fallbacks)

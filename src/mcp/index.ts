@@ -37,6 +37,7 @@ import { registerExtractionTools } from './playwright/tools/extraction';
 import { registerChannelTools } from './channels';
 import { registerFanOutTools } from './fanout';
 import { registerLedgerUpdateTool, registerLedgerListTool, registerLedgerBrainUpdateTool } from './ledger';
+import { registerMoaHandoffTool } from './handoff';
 import { registerWorktaskTools } from './worktask';
 import { registerGitTools } from './git';
 import { registerPaneLifecycleTools } from './paneLifecycle';
@@ -2011,6 +2012,13 @@ if (COMMANDER_MODE) {
       return callRpc('approval.press', params);
     },
   );
+
+  // Moa's operator-approved hand-off to another workspace's agent. Registered
+  // last so the commander tools/list order matches COMMANDER_ONLY_TOOLS.
+  registerMoaHandoffTool(registerCommanderOnly, {
+    callRpc,
+    getCommanderToken: () => ctx.commanderToken,
+  });
 }
 
 // Hook the MCP initialize handshake so wmux substrate learns the declared

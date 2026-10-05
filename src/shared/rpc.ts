@@ -418,6 +418,7 @@ export type RpcMethod =
   | 'deck.completeWork'
   | 'deck.requestDecision'
   | 'deck.resolveDecision'
+  | 'deck.proposeHandoff'
   | 'deck.state.prune'
   | 'browser.tabs'
   | 'browser.open'
@@ -663,6 +664,7 @@ export const ALL_RPC_METHODS = [
   'deck.completeWork',
   'deck.requestDecision',
   'deck.resolveDecision',
+  'deck.proposeHandoff',
   'deck.state.prune',
   'browser.tabs',
   'browser.open',

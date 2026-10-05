@@ -328,6 +328,10 @@ export const DEFAULT_ALLOWED_TOOLS: string[] = [
   // brain ask permission to call it would only add a prompt in front of a gate
   // that is already there, on the one path that exists to keep workers moving.
   WMUX('approval_press'),
+  // Commander-only: Moa's hand-off proposal. Auto-allowed because it delivers
+  // nothing by itself — it raises an operator card (Hand off / Edit / Cancel),
+  // and the server refuses any caller that is not the HQ brain.
+  WMUX('moa_propose_handoff'),
 ];
 
 // Built-in CLI tools the orchestrator must NEVER hold. `allowedTools` only
