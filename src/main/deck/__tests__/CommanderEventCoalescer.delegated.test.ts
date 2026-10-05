@@ -213,6 +213,20 @@ describe('buildEventPrompt for a Moa hand-off task', () => {
     expect(prompt).toContain('deck_complete_work');
   });
 
+  it('a turn end seen by status alone (no closing words) still tells the HQ to check and close it itself', () => {
+    const prompt = buildEventPrompt(
+      [{
+        ptyId: 'a2a:task-h', kind: 'agent.stop', source: 'detector', agent: null, seq: 1, ts: 0,
+        a2a: { taskId: 'task-h', from: 'ws-hq', to: 'ws-seal', state: 'working', handoff: {} },
+      }],
+      DEFAULT_AUTONOMY,
+      { remaining: 1, total: 1 },
+    );
+    expect(prompt).toContain('leaving no closing words for you');
+    expect(prompt).toContain('Never ask the operator to check it for you.');
+    expect(prompt).toContain('a2a_task_update({ task_id: "task-h", status: "completed" })');
+  });
+
   it('an operator cancel is their answer: no re-proposal, no question, no replacement', () => {
     const prompt = buildEventPrompt(
       [{
