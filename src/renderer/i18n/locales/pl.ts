@@ -1652,7 +1652,7 @@ export const pl = {
   'deck.newSessionConfirmBusy': 'Przerwać i rozpocząć nową sesję?',
   'deck.newSessionTooltip':
     'Zastąp orkiestratora tego obszaru roboczego świeżą sesją, żeby zaczynał od Twoich plików projektu bez nieaktualnych założeń. Mózg zapomina dotychczasową rozmowę — zapis w #commander pozostaje jako ślad. Panele, worktree, pętle i harmonogramy pozostają nietknięte.',
-  'deck.reportRail': 'Raporty {count}',
+  'deck.reportRail': 'Wieści od Moa {count}',
   'deck.reportRailDecision': '1 decyzja',
   'deck.limit.resetsSoon': 'wkrótce reset',
   'deck.limit.resetsIn': 'reset za {rel}',
@@ -3045,7 +3045,7 @@ export const pl = {
   'strip.needsYouTooltip': 'Przejdź do panelu, który Cię potrzebuje',
   // Command Deck Phase 2 — the Orchestrator brain (Agent SDK).
   'deck.commander': 'Orkiestrator',
-  'deck.commanderThinking': 'Orkiestrator pracuje…',
+  'deck.commanderThinking': 'Moa pracuje…',
   'deck.commanderStop': 'Zatrzymaj',
   'deck.commanderUnavailable': 'Orkiestrator jest niedostępny',
   'deck.commanderBusy': 'Polecenie już się wykonuje.',

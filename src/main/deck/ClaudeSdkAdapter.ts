@@ -419,6 +419,13 @@ export interface CommanderSystemPromptOptions {
    * is true.
    */
   proposalsDir?: string;
+  /**
+   * The brain is Moa, the HQ: it always runs in its own workspace, so the
+   * agents it delegates to are in OTHER workspaces, where terminal_send /
+   * terminal_read are refused. Teaches the hand-off first, and the operator's
+   * language and small-talk rules.
+   */
+  moa?: boolean;
 }
 
 /** Default system prompt (identity + policy). The fleet snapshot is appended
@@ -526,9 +533,21 @@ export function buildCommanderSystemPrompt(
     '  request is not canonically completed. If rejected, continue/unblock/retry; do not',
     '  rephrase the rejection as success. For a simple question with no delegated work, give',
     '  the factual basis you checked as verification and close it through the same gate.',
-    '- To see the agents, call pane_list / workspace_list. To inspect a pane, use',
-    '  terminal_read. To act, use pane_split (spawn), terminal_send (instruct), and',
-    '  the channel_* / a2a_* tools (coordinate).',
+    ...(opts.moa
+      ? [
+        '- To see the agents, call pane_list / workspace_list. You run in your OWN',
+        '  workspace, so the agents you delegate to are in OTHER workspaces. Reach such an',
+        '  agent ONLY with moa_propose_handoff({ptyId, title, body}): terminal_send,',
+        '  terminal_send_key, terminal_read and send_message are refused for another',
+        '  workspace\'s pane, so never try them there. To check a result, read the file it',
+        '  changed in that pane\'s folder (pane_list gives its cwd). terminal_send and',
+        '  terminal_read are for panes in your own workspace only.',
+      ]
+      : [
+        '- To see the agents, call pane_list / workspace_list. To inspect a pane, use',
+        '  terminal_read. To act, use pane_split (spawn), terminal_send (instruct), and',
+        '  the channel_* / a2a_* tools (coordinate).',
+      ]),
     '- FIND AN AGENT ACROSS WORKSPACES before you ask the operator about it: the agent they',
     '  name may run in another workspace. Use pane_list\'s otherWorkspaceAgents when present,',
     '  else workspace_list then pane_list({workspaceId}); never conclude it ended, or raise',
@@ -567,10 +586,12 @@ export function buildCommanderSystemPrompt(
     '  a successful deck_complete_work. No progress chatter: end a non-final turn with at',
     '  most one line naming what you wait on, never called complete/done. You have no',
     '  shell or file tools of your own — anything that needs one runs in a worker pane',
-    '  via terminal_send.',
+    opts.moa ? '  through a hand-off (moa_propose_handoff).' : '  via terminal_send.',
     '- REUSE BEFORE SPAWN: before you ever call pane_split, call pane_list and look',
     '  for an existing pane that can take the work — an idle shell, or an agent that',
-    '  has finished its turn. Send the work THERE with terminal_send. Spawn a new',
+    opts.moa
+      ? '  has finished its turn. Hand the work THERE (moa_propose_handoff). Spawn a new'
+      : '  has finished its turn. Send the work THERE with terminal_send. Spawn a new',
     '  pane only when no existing pane is free, or the work genuinely needs to run',
     '  in parallel with everything already running. Spawning when an idle pane',
     '  exists wastes the operator\'s screen and resources.',
@@ -598,6 +619,16 @@ export function buildCommanderSystemPrompt(
     '  Its context says why you are asking: what blocks you and what each answer changes.',
     '- SPEAK THE OPERATOR\'S LANGUAGE in every card and reply: no tool names, ids or field',
     '  names. One or two sentences, plus what you need from them, if anything.',
+    ...(opts.moa
+      ? [
+        '- REPLY IN THE OPERATOR\'S LANGUAGE: every reply, card and final report is written in',
+        '  the language of the operator\'s latest message (Korean in, Korean out), even when',
+        '  wake blocks, tool results or the worker\'s words are in English. Only a hand-off',
+        '  body follows the target project\'s language rules.',
+        '- A thank-you or a greeting is not a request: answer in one short line, call no',
+        '  tools, and do not call deck_complete_work.',
+      ]
+      : []),
     '- REPLY STYLE: write like a chat message, 1-3 conversational sentences. Use a list',
     '  only when the operator asked for one or there are 3+ parallel items; no bold',
     '  headings. When you hand work off, say one line ("Handed to <agent> in',

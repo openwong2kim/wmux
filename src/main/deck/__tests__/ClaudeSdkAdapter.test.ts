@@ -360,6 +360,26 @@ describe('ClaudeSdkAdapter', () => {
     expect(prompt).toContain('If the operator corrects an escalation you raised');
   });
 
+  it('Moa reaches other workspaces by hand-off first, never by terminal_send', () => {
+    const moa = buildCommanderSystemPrompt(undefined, { moa: true }).replace(/\s+/g, ' ');
+    expect(moa).toContain('Reach such an agent ONLY with moa_propose_handoff({ptyId, title, body})');
+    expect(moa).toContain("terminal_send, terminal_send_key, terminal_read and send_message are refused for another workspace's pane, so never try them there.");
+    expect(moa).toContain('Hand the work THERE (moa_propose_handoff)');
+    expect(moa).not.toContain('To act, use pane_split (spawn), terminal_send (instruct)');
+    expect(moa).not.toContain('Send the work THERE with terminal_send');
+    // A brain that is not Moa keeps the in-workspace guidance.
+    const plain = buildCommanderSystemPrompt().replace(/\s+/g, ' ');
+    expect(plain).toContain('To act, use pane_split (spawn), terminal_send (instruct)');
+    expect(plain).not.toContain('moa_propose_handoff({ptyId');
+  });
+
+  it('Moa answers in the operator\'s language, and small talk is not work', () => {
+    const moa = buildCommanderSystemPrompt(undefined, { moa: true }).replace(/\s+/g, ' ');
+    expect(moa).toContain("REPLY IN THE OPERATOR'S LANGUAGE: every reply, card and final report is written in the language of the operator's latest message (Korean in, Korean out)");
+    expect(moa).toContain("Only a hand-off body follows the target project's language rules.");
+    expect(moa).toContain('A thank-you or a greeting is not a request: answer in one short line, call no tools, and do not call deck_complete_work.');
+  });
+
   it('replies read like chat: 1-3 sentences, lists only when due, one line per hand-off', () => {
     const flat = buildCommanderSystemPrompt().replace(/\s+/g, ' ');
     expect(flat).toContain('REPLY STYLE: write like a chat message, 1-3 conversational sentences.');

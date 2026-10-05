@@ -1672,7 +1672,7 @@ export const en = {
   'deck.newSessionConfirmBusy': 'Interrupt & start new session?',
   'deck.newSessionTooltip':
     'Replace this workspace’s orchestrator with a fresh session, so it starts from your project files with no stale assumptions. The brain forgets the conversation so far — the #commander transcript stays as the record. Panes, worktrees, loops and schedules are untouched.',
-  'deck.reportRail': 'Reports {count}',
+  'deck.reportRail': 'Moa\'s updates {count}',
   'deck.reportRailDecision': '1 decision',
   'deck.limit.resetsSoon': 'resets soon',
   'deck.limit.resetsIn': 'resets in {rel}',
@@ -3070,7 +3070,7 @@ export const en = {
   'strip.needsYouTooltip': 'Jump to the pane that needs you',
   // Command Deck Phase 2 — the Orchestrator brain (Agent SDK).
   'deck.commander': 'Orchestrator',
-  'deck.commanderThinking': 'Orchestrator is working…',
+  'deck.commanderThinking': 'Moa is working…',
   'deck.commanderStop': 'Stop',
   'deck.commanderUnavailable': 'The orchestrator is unavailable',
   'deck.commanderBusy': 'A command is already running.',

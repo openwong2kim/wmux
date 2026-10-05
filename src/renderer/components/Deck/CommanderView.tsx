@@ -561,7 +561,7 @@ export function CommanderViewContent({
               className={railHasError ? 'text-[var(--accent-red)]' : undefined}
               {...(railHasError ? tokenAttrs('danger', 'text') : {})}
             >
-              {(t('deck.reportRail') || 'Reports {count}').replace(
+              {(t('deck.reportRail') || 'Moa\'s updates {count}').replace(
                 '{count}',
                 String(railMessages.length),
               )}
@@ -580,7 +580,7 @@ export function CommanderViewContent({
                   aria-hidden="true"
                   className="inline-block w-2 h-2 rounded-full border border-[var(--accent)] border-t-transparent animate-spin"
                 />
-                <span>{t('deck.commanderThinking') || 'Orchestrator is working…'}</span>
+                <span>{t('deck.commanderThinking') || 'Moa is working…'}</span>
               </span>
             )}
           </button>
@@ -780,7 +780,7 @@ export function CommanderViewContent({
             className="text-[12px] text-[color-mix(in_srgb,var(--text-main)_50%,transparent)] flex-1"
             {...tokenAttrs('textMain', 'text')}
           >
-            {t('deck.commanderThinking') || 'Orchestrator is working…'}
+            {t('deck.commanderThinking') || 'Moa is working…'}
           </span>
           <button
             type="button"

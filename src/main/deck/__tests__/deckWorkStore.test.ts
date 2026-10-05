@@ -13,6 +13,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
+  isSmallTalk,
   beginOrContinueDeckWork,
   recordDeckWorkA2aTask,
   completeActiveDeckWork,
@@ -619,5 +620,20 @@ describe('renderActiveDeckWorkBlock', () => {
     // The two sentences that turned a stale record into an order.
     expect(block).not.toContain('You OWN');
     expect(block).not.toContain('Continue delegating');
+  });
+});
+
+describe('deckWorkStore — small talk is not work', () => {
+  it('reads a thank-you or a greeting, alone, as small talk', () => {
+    for (const t of ['고마워', '고마워요!', '감사합니다 :)', '수고했어 ㅎㅎ', '정말 고마워요 🙏', '안녕하세요', 'ㄱㅅ', 'Thanks!', 'thank you so much', 'hi Moa', 'Good morning', 'nice work']) {
+      expect(isSmallTalk(t), t).toBe(true);
+    }
+  });
+
+  it('anything that asks for something is work', () => {
+    for (const t of ['math.js에 빼기 함수 추가해줘', '고마워, 이제 테스트도 돌려줘', 'thanks, now run the tests', 'ok', '네', '좋아', 'hi, what is running?', '', '   ']) {
+      expect(isSmallTalk(t), t).toBe(false);
+    }
+    expect(isSmallTalk('고마워 '.repeat(20))).toBe(false);
   });
 });

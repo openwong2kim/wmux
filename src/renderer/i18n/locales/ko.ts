@@ -1174,7 +1174,7 @@ export const ko = {
   'deck.newSessionConfirmBusy': '중단하고 새 세션을 시작할까요?',
   'deck.newSessionTooltip':
     '이 워크스페이스의 agent를 새 세션으로 교체합니다. 낡은 가정 없이 프로젝트 파일부터 다시 읽습니다. 브레인은 지금까지의 대화를 잊습니다 — #commander 기록은 그대로 남습니다. pane·워크트리·루프·예약은 건드리지 않습니다.',
-  'deck.reportRail': '보고 {count}',
+  'deck.reportRail': 'Moa 소식 {count}',
   'deck.reportRailDecision': '결정 1건',
   'deck.limit.resetsSoon': '곧 초기화됨',
   'deck.limit.resetsIn': '{rel} 후 초기화',
@@ -2533,7 +2533,7 @@ export const ko = {
   'strip.needsYouTooltip': '응답이 필요한 pane으로 이동',
   // 커맨드 데크 Phase 2 — agent 두뇌(Agent SDK).
   'deck.commander': 'agent',
-  'deck.commanderThinking': 'agent가 작업 중…',
+  'deck.commanderThinking': 'Moa가 일하는 중…',
   'deck.commanderStop': '중지',
   'deck.commanderUnavailable': 'agent를 사용할 수 없습니다',
   'deck.commanderBusy': '이미 실행 중인 명령이 있습니다.',

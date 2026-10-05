@@ -160,6 +160,7 @@ import { selectDelegatedApprovals } from '../../deck/moaDelegatedApprovals';
 import { resultFromTask, type MoaTaskResult } from '../../../shared/moaResult';
 import {
   beginOrContinueDeckWork,
+  isSmallTalk,
   clearActiveDeckWork,
   isDeckWorkParked,
   loadActiveDeckWork,
@@ -854,6 +855,9 @@ export function registerDeckHandler(
         );
         return;
       }
+      // A thank-you or a greeting asks for nothing: it neither opens a request
+      // Moa must finish and report, nor joins the one in flight as a follow-up.
+      if (isSmallTalk(humanText)) return;
       const result = beginOrContinueDeckWork(workspaceId, humanText);
       if (result?.superseded) surfaceStrandedWork(workspaceId, result.superseded, 'superseded');
     } catch (err) {
@@ -1054,6 +1058,8 @@ export function registerDeckHandler(
           // than handed a write policy it can only fail at.
           memoryWrites: vendor !== 'claude-pty',
           ...(moaProposalsDir ? { proposalsDir: moaProposalsDir } : {}),
+          // The HQ brain is Moa: it delegates across workspaces by hand-off.
+          ...(workspaceId === getHqWorkspaceId() && isMoaEnabled() ? { moa: true } : {}),
         }),
         ...(fleetContext ? { fleetContext } : {}),
         ...(persisted ? { resumeSessionId: persisted.sessionId } : {}),
