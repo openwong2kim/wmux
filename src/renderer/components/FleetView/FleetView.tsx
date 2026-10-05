@@ -4,6 +4,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useT } from '../../hooks/useT';
 import {
   selectFleetBoard,
+  fleetHqId,
   selectHookRunningByPtyId,
   selectUnverifiablePaneMinutes,
   fleetTargetPtyId,
@@ -20,7 +21,6 @@ import {
   focusNotificationTarget,
 } from '../../hooks/useNotificationListener';
 import { fleetChangedSinceSeen, type FleetSeenEntry } from '../../stores/slices/uiSlice';
-import { moaHqId } from '../../stores/slices/moaSlice';
 import { tailForPty } from '../../utils/terminalTail';
 import { onTerminalRegistered } from '../../hooks/useTerminal';
 import FleetBoardCard from './FleetBoardCard';
@@ -89,7 +89,7 @@ export default function FleetView() {
   const usageLimitWaiting = useStore((s) => s.usageLimitWaiting);
   // Moa's HQ is left off the board (it is the main bot, not a worker). Only
   // the id is subscribed, so Moa's other state changes never re-derive it.
-  const hqId = useStore(moaHqId);
+  const hqId = useStore(fleetHqId);
   const hookRunningByPtyId = useStore(useShallow(selectHookRunningByPtyId));
   const unverifiableMinutes = useStore(useShallow(selectUnverifiablePaneMinutes));
   const missions = useStore((s) => s.missionByPaneGroup);
@@ -163,7 +163,7 @@ export default function FleetView() {
       commandRunningByPtyId, agentAliveByPtyId, hookRunningByPtyId, remoteWorkspaces,
       surfaceLastMessage, surfaceOutputAt: useStore.getState().surfaceOutputAt,
       unverifiablePaneMinutes: unverifiableMinutes, usageLimitWaiting,
-      // moaHqId reads the seed while `moa` is null: hand it the id resolved above.
+      // fleetHqId reads the seed while `moa` is null: hand it the id resolved above.
       moa: null, moaHqSeed: hqId,
     }, { now, sortMode: fleetSortMode }), [usageLimitWaiting, hqId, workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, supervisionByPtyId,
     surfaceAgent, surfacePendingQuestion, surfaceActivityAt, surfaceTurnOpenAt,

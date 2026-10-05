@@ -9,14 +9,13 @@ import { selectActiveWorkspaceSummary } from '../../stores/selectors/workspacePr
 import { tokenAttrs } from '../../themes';
 import { HIT_TARGET_24 } from '../hitArea';
 import { IconGear, IconCornerUpLeft } from '../icons';
-import { selectFleetPanes, sortFleetPanes, countNeedsAttention, type FleetPane } from '../../stores/selectors/fleet';
+import { selectFleetPanes, sortFleetPanes, countNeedsAttention, fleetHqId, type FleetPane } from '../../stores/selectors/fleet';
 import PluginStatusBarWidgets from '../../plugins/PluginStatusBarWidgets';
 import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
 import MoaTitlebarButton from '../Moa/MoaTitlebarButton';
 import { FOCUS_RING } from '../focusRing';
 import type { StoreState } from '../../stores';
 import { RAIL_PAGE_TITLE_KEYS, workspaceChromeInTitlebar } from '../Titlebar/railPageTitle';
-import { moaHqId } from '../../stores/slices/moaSlice';
 import { displayWorkspaceName, resolveTaskLink } from '../../utils/fanoutProvenance';
 import { showWorkspaces } from '../../utils/showWorkspaces';
 
@@ -158,7 +157,7 @@ export default function StatusBar() {
   const fleetVitals = useStore(
     useShallow((s) => {
       // Moa's HQ is the main bot, not a worker: off the vitals as off Fleet.
-      const hqId = moaHqId(s);
+      const hqId = fleetHqId(s);
       const panes = selectFleetPanes({
         workspaces: s.workspaces,
         surfaceAgentStatus: s.surfaceAgentStatus,
@@ -177,7 +176,7 @@ export default function StatusBar() {
   // Jump to the most urgent pane — computed at click time (no subscription).
   const jumpToUrgent = () => {
     const s = useStore.getState();
-    const hqId = moaHqId(s);
+    const hqId = fleetHqId(s);
     const panes = sortFleetPanes(
       selectFleetPanes({
         workspaces: s.workspaces,

@@ -7,7 +7,6 @@ import type { AttachedRemoteWorkspace } from '../slices/remoteWorkspacesSlice';
 import type { StoreState } from '../index';
 import { flattenAgentText } from '../../../shared/assistantPreview';
 import type { WorkTask } from '../../../shared/workTask';
-import { moaHqId } from '../slices/moaSlice';
 
 // ─── S-C1 Fleet View — derived "all agents, all workspaces" model ────────────
 //
@@ -1314,6 +1313,14 @@ export function selectFleetBoard(
   return { panes, groups };
 }
 
+/** The workspace Fleet leaves off as Moa's: the HQ while Moa is on. With Moa
+ *  off there is no panel to show it, so its panes stay on the board. Before
+ *  main's first answer, the remembered HQ. */
+export function fleetHqId(state: Pick<FleetBoardState, 'moa' | 'moaHqSeed'>): string | null {
+  if (state.moa) return state.moa.config.enabled ? state.moa.hq.workspaceId ?? null : null;
+  return state.moaHqSeed ?? null;
+}
+
 /** The board's rows before grouping — shared by the board and its counts so
  *  both read the same panes with the same liveness inputs. Moa's HQ workspace
  *  is left out: Moa is the main bot, not a worker on the board, and what it
@@ -1326,7 +1333,7 @@ function fleetBoardPanes(
   unverifiable: Record<string, number>,
 ): FleetPane[] {
   const surfaceAgent = state.surfaceAgent ?? {};
-  const hq = moaHqId({ moa: state.moa ?? null, moaHqSeed: state.moaHqSeed });
+  const hq = fleetHqId(state);
   // Use the same turn/liveness inputs as the sidebar and Deck roster. Missing
   // these optional inputs silently classified active hook-driven turns as idle.
   return selectFleetPanes({
@@ -1384,7 +1391,7 @@ export function selectFleetSectionCounts(state: FleetBoardState): FleetSectionCo
     state.workspaces, state.surfaceAgentStatus, state.surfaceActivity, state.paneLabel,
     state.supervisionByPtyId, state.surfaceAgent, state.surfacePendingQuestion, state.surfaceActivityAt,
     state.surfaceTurnOpenAt, state.commandRunningByPtyId, state.agentAliveByPtyId, state.remoteWorkspaces,
-    state.usageLimitWaiting, moaHqId({ moa: state.moa ?? null, moaHqSeed: state.moaHqSeed }),
+    state.usageLimitWaiting, fleetHqId(state),
   ];
   const memo = sectionCountsMemo;
   if (memo && inputs.every((value, i) => Object.is(value, memo.inputs[i]))

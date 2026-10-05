@@ -758,8 +758,9 @@ export default function AppLayout() {
   const dockAutoCollapsed = useRef(false);
   useEffect(() => {
     const st = useStore.getState();
-    // With Moa off there is no panel to collapse or restore: leave its flag.
-    if (!selectMoaOn(st)) return;
+    // With Moa off there is no panel to collapse or restore: leave its flag,
+    // and forget a collapse from before, so it cannot reopen the panel later.
+    if (!selectMoaOn(st)) { dockAutoCollapsed.current = false; return; }
     if (dockMode === 'overlay' && st.channelDockVisible) {
       dockAutoCollapsed.current = true;
       st.setChannelDockVisible(false);
