@@ -7,27 +7,36 @@
 // PostToolUse hook would have produced.
 //
 // Rules, each from a way this could go wrong:
-//   - A hook wins. A session that delivers any `agent.activity` hook is
-//     hook-fed until its next session start; its watcher stops and stays off,
-//     so the two sources never alternate on one row.
+//   - A hook wins. A session whose hooks report its tools (HOOK_ACTIVITY_KINDS,
+//     the same set main uses) is hook-fed until its next session start or its
+//     agent's death; its watcher stops and stays off, so the two sources never
+//     alternate on one row.
 //   - Never revive a finished pane. An activity-only update marks the pane
 //     running, so a line is sent only while the tail shows a turn in progress
-//     (its newest event is a tool call or result). A tail that ends on the
-//     agent's reply sends nothing; Codex's own turn-end record sends a clear.
+//     (its newest event is a tool call or result). A batch that ends on the
+//     agent's reply or a new prompt sends nothing and drops any line held back
+//     by the gap; Codex's own turn-end record sends a clear.
+//   - Positive liveness only. A pane is tailed while the process tracker says
+//     its agent is alive, or (no attribution yet) while it has sent a live hook
+//     (a prompt, a session start, a tool). After a death only a new session
+//     start revives it: a late Stop from the dead agent does not. Two panes
+//     bound to one transcript (a resumed session) keep only the one whose agent
+//     spoke last.
 //   - Appended bytes only, bounded. A watcher starts at the file's current end
 //     (no history replay), reads at most READ_CAP_BYTES per tick, and skips to
-//     the last JUMP_WINDOW_BYTES when it falls far behind. Per-session state is
-//     a path, an offset and the last line sent.
+//     the last JUMP_WINDOW_BYTES when it falls far behind. A replaced file (new
+//     inode, or an offset that is no longer a line boundary) re-seats at the
+//     end. Per-session state is a path, an inode, an offset and the last line.
 //   - Lifecycle by reconcile. One unref'd timer; each tick re-derives the set
-//     of sessions that should be watched (live agent, readable transcript,
-//     supported agent, not hook-fed) and drops the rest, so an agent exit or a
-//     closed pane can never leak a watcher.
+//     of sessions that should be watched and drops the rest, so an agent exit
+//     or a closed pane can never leak a watcher.
 
 import type { ResumeBinding } from '../../shared/agentResume';
 import type { TurnEvent } from '../../shared/transcript/turnEvents';
 import { parseTranscriptLine } from './parseEntry';
 import { parseCodexLineDetailed } from './parseCodexEntry';
-import { readTranscriptDelta, readTranscriptPage, statTranscript } from './readTail';
+import { isLineBoundary, readTranscriptDelta, readTranscriptPage, statTranscript } from './readTail';
+import { HOOK_ACTIVITY_KINDS } from '../../shared/hooks/hookActivityKinds';
 import { MAX_RAW_LEN, summarizeActivity } from '../../shared/activitySummary';
 
 /** Most bytes read for one session in one tick. */
@@ -39,6 +48,9 @@ const DEFAULT_POLL_MS = 1500;
 const DEFAULT_MIN_GAP_MS = 2000;
 
 type ParseLine = (line: string, offset: number) => TurnEvent[];
+
+/** Hook kinds that prove an agent is running in the pane (not a turn end). */
+const LIVE_HOOK_KINDS: ReadonlySet<string> = new Set(['agent.session_start', 'agent.user_prompt_submit']);
 
 const record = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {});
 
@@ -119,6 +131,8 @@ export interface TranscriptActivityDeps {
 interface Watch {
   path: string;
   parse: ParseLine;
+  /** The file's identity when the watch started; a new one means replaced. */
+  ino: number;
   offset: number;
   /** The line last sent ('' after a clear, undefined at a turn's start). */
   sent?: string;
@@ -133,27 +147,40 @@ interface Watch {
  * own turn-end record arrived, or null when there is nothing to say.
  */
 export function activityFromEvents(events: readonly TurnEvent[]): string | null {
+  return readBatch(events).line;
+}
+
+/**
+ * The batch's verdict: `line` as activityFromEvents, and `quiet` when the
+ * newest event says no tool is running (a reply, a prompt or a turn end), so
+ * a line still held back must not be sent.
+ */
+function readBatch(events: readonly TurnEvent[]): { line: string | null; quiet: boolean } {
   let lastTool: string | undefined;
   for (const event of events) if (event.kind === 'tool_use' && event.argSummary) lastTool = event.argSummary;
   for (let i = events.length - 1; i >= 0; i--) {
     const event = events[i];
     if (event.kind === 'meta') {
-      if (event.subtype === 'turn_complete' || event.subtype === 'turn_aborted') return '';
+      if (event.subtype === 'turn_complete' || event.subtype === 'turn_aborted') return { line: '', quiet: true };
       continue;
     }
-    if (event.kind === 'tool_use' || event.kind === 'tool_result') return lastTool ?? null;
+    if (event.kind === 'tool_use' || event.kind === 'tool_result') return { line: lastTool ?? null, quiet: false };
     // The agent's reply or a new prompt: not mid-tool, so nothing to report.
-    return null;
+    return { line: null, quiet: true };
   }
-  return null;
+  return { line: null, quiet: false };
 }
 
 export class TranscriptActivityWatcher {
   private readonly watches = new Map<string, Watch>();
   private readonly hookFed = new Set<string>();
-  /** Last hook signal per session, and when the tracker first said "dead". */
-  private readonly hookAt = new Map<string, number>();
+  /** Newest live hook (prompt, session start, tool) and session start per pane. */
+  private readonly liveHookAt = new Map<string, number>();
+  private readonly sessionStartAt = new Map<string, number>();
+  /** When the tracker first reported the pane's agent dead. */
   private readonly deadSince = new Map<string, number>();
+  /** Monotonic stamp, so two signals in one millisecond still order. */
+  private seq = 0;
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly now: () => number;
 
@@ -172,7 +199,8 @@ export class TranscriptActivityWatcher {
     this.timer = null;
     this.watches.clear();
     this.hookFed.clear();
-    this.hookAt.clear();
+    this.liveHookAt.clear();
+    this.sessionStartAt.clear();
     this.deadSince.clear();
   }
 
@@ -183,11 +211,13 @@ export class TranscriptActivityWatcher {
 
   /** Every resolved hook signal for the session. */
   noteHookSignal(sessionId: string, kind: string): void {
-    this.hookAt.set(sessionId, this.now());
-    if (kind === 'agent.activity') {
+    const at = ++this.seq;
+    if (LIVE_HOOK_KINDS.has(kind) || HOOK_ACTIVITY_KINDS.has(kind)) this.liveHookAt.set(sessionId, at);
+    if (HOOK_ACTIVITY_KINDS.has(kind)) {
       this.hookFed.add(sessionId);
       this.watches.delete(sessionId);
     } else if (kind === 'agent.session_start') {
+      this.sessionStartAt.set(sessionId, at);
       this.hookFed.delete(sessionId);
       this.watches.delete(sessionId);
     } else if (kind === 'agent.stop' || kind === 'agent.stop_failure' || kind === 'agent.user_prompt_submit') {
@@ -201,35 +231,67 @@ export class TranscriptActivityWatcher {
   dropSession(sessionId: string): void {
     this.watches.delete(sessionId);
     this.hookFed.delete(sessionId);
-    this.hookAt.delete(sessionId);
+    this.liveHookAt.delete(sessionId);
+    this.sessionStartAt.delete(sessionId);
     this.deadSince.delete(sessionId);
   }
 
-  /** The agent is running: the tracker says so, or a hook spoke since it died. */
+  /**
+   * Positive evidence that this pane's agent runs: the tracker says alive,
+   * or, unattributed, a live hook from the pane. After a recorded death only
+   * the tracker or a session start newer than the death counts — a late Stop
+   * from the dead agent does not.
+   */
   private agentAlive(id: string): boolean {
     const tracked = this.deps.isAgentAlive(id);
-    if (tracked !== false) {
+    if (tracked === true) {
       this.deadSince.delete(id);
       return true;
     }
-    if (!this.deadSince.has(id)) this.deadSince.set(id, this.now());
-    return (this.hookAt.get(id) ?? -1) >= (this.deadSince.get(id) ?? 0);
+    if (tracked === false && !this.deadSince.has(id)) {
+      this.deadSince.set(id, ++this.seq);
+      // The dead agent's hooks no longer speak for this pane.
+      this.hookFed.delete(id);
+    }
+    const dead = this.deadSince.get(id);
+    if (dead !== undefined) return (this.sessionStartAt.get(id) ?? 0) > dead;
+    return this.liveHookAt.has(id);
   }
 
   tick(): void {
     const live = new Set(this.deps.listSessionIds());
     for (const id of [...this.hookFed]) if (!live.has(id)) this.hookFed.delete(id);
-    for (const map of [this.hookAt, this.deadSince]) for (const id of [...map.keys()]) if (!live.has(id)) map.delete(id);
+    for (const map of [this.liveHookAt, this.sessionStartAt, this.deadSince]) {
+      for (const id of [...map.keys()]) if (!live.has(id)) map.delete(id);
+    }
     for (const [id] of this.watches) if (!live.has(id)) this.watches.delete(id);
     for (const id of live) {
       try {
         this.reconcile(id);
-        const watch = this.watches.get(id);
-        if (watch) this.read(id, watch);
+      } catch {
+        this.watches.delete(id);
+      }
+    }
+    this.dropSharedTranscripts();
+    for (const [id, watch] of [...this.watches]) {
+      try {
+        this.read(id, watch);
       } catch {
         // One unreadable transcript must never stop the others.
         this.watches.delete(id);
       }
+    }
+  }
+
+  /** One transcript, one pane: the pane whose agent spoke last keeps it. */
+  private dropSharedTranscripts(): void {
+    const byPath = new Map<string, string>();
+    for (const [id, watch] of this.watches) {
+      const other = byPath.get(watch.path);
+      if (other === undefined) { byPath.set(watch.path, id); continue; }
+      const keep = (this.liveHookAt.get(id) ?? 0) > (this.liveHookAt.get(other) ?? 0) ? id : other;
+      this.watches.delete(keep === id ? other : id);
+      byPath.set(watch.path, keep);
     }
   }
 
@@ -249,7 +311,7 @@ export class TranscriptActivityWatcher {
       return;
     }
     // Start at the end: only what the agent writes from now on.
-    this.watches.set(id, { path, parse, offset: stat.size, sentAt: 0 });
+    this.watches.set(id, { path, parse, ino: stat.ino, offset: stat.size, sentAt: 0 });
   }
 
   private read(id: string, watch: Watch): void {
@@ -259,9 +321,13 @@ export class TranscriptActivityWatcher {
       return;
     }
     let events: TurnEvent[] = [];
-    if (stat.size < watch.offset) {
-      // Rewritten or rotated: re-seat at the new end, report nothing.
+    const replaced = stat.ino !== watch.ino
+      || (watch.offset > 0 && watch.offset <= stat.size && !isLineBoundary(watch.path, watch.offset));
+    if (replaced || stat.size < watch.offset) {
+      // Rewritten, replaced or rotated: re-seat at the new end, report nothing.
+      watch.ino = stat.ino;
       watch.offset = stat.size;
+      watch.pending = undefined;
     } else if (stat.size - watch.offset > READ_CAP_BYTES) {
       const page = readTranscriptPage(watch.path, { maxBytes: JUMP_WINDOW_BYTES, parseLine: watch.parse });
       if (!page) { this.watches.delete(id); return; }
@@ -277,8 +343,11 @@ export class TranscriptActivityWatcher {
       }
     }
     if (events.some((event) => event.kind === 'user_text')) watch.sent = undefined;
-    const next = activityFromEvents(events);
-    if (next !== null) watch.pending = next;
+    const { line, quiet } = readBatch(events);
+    // A turn that moved past its tools must not have a held-back line sent
+    // later: nothing (an interrupt sends no Stop) would ever clear it.
+    if (quiet) watch.pending = undefined;
+    if (line !== null) watch.pending = line;
     this.flush(id, watch);
   }
 

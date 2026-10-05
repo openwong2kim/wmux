@@ -1,3 +1,4 @@
+import { HOOK_ACTIVITY_KINDS } from '../../shared/hooks/hookActivityKinds';
 import type { BrowserWindow } from 'electron';
 import type { DaemonClient } from '../DaemonClient';
 import type { AgentStatus } from '../../shared/types';
@@ -816,9 +817,10 @@ export class DaemonNotificationRouter {
           } else if (ev.signal) {
             // agent.activity, or a kind this build does not know yet: the
             // throttled Fleet View line. Unknown kinds are safe here — the
-            // branch can only ever write the activity metadata field. The
-            // pane's hook now owns its line for this agent session.
-            this.hookActivityPanes.add(payload.sessionId);
+            // branch can only ever write the activity metadata field. A tool
+            // hook (the same set the daemon's watcher reads) owns the pane's
+            // line for this agent session.
+            if (metadataKind && HOOK_ACTIVITY_KINDS.has(metadataKind)) this.hookActivityPanes.add(payload.sessionId);
             if (this.activityThrottle.allow(payload.sessionId)) {
               broadcastMetadataUpdate(win, {
                 ptyId: payload.sessionId,
@@ -1327,6 +1329,9 @@ export class DaemonNotificationRouter {
     };
 
     const onAgentProcessExit = (payload: { sessionId: string; slug?: string | null }) => {
+      // The agent whose hooks owned the line is gone; the next one (a hookless
+      // Codex in the same pane) may report from its transcript.
+      this.hookActivityPanes.delete(payload.sessionId);
       try {
         if (!payload.slug) return;
         const paneName = this.lastAgentNameByPty.get(payload.sessionId);

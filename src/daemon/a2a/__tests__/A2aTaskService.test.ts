@@ -471,6 +471,16 @@ describe('B(패널) teardown force-fail 진입점', () => {
     log.close();
   });
 
+  it('hands every force-failed task to the caller, so main can record it on its work link', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await svc.createTask({ id: 'sub', title: 'T', from: { workspaceId: 'ws-s', name: 'S' }, to: { workspaceId: 'ws-gone', name: 'G' } });
+    const seen: string[] = [];
+    await svc.failTasksForWorkspaceRemoved('ws-gone', 'gone', (task) => { seen.push(`${task.id}:${task.status.state}`); });
+    expect(seen).toEqual(['sub:failed']);
+    log.close();
+  });
+
   it('force-fail은 멱등 — 락 대기 중 종단된 태스크는 재커밋하지 않는다(재호출 no-op)', async () => {
     const log = newLog();
     const svc = newService(log);

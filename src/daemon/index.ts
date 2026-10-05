@@ -91,7 +91,7 @@ import { DEFAULT_COMPANY_ID, CHANNELS_EPOCH } from '../shared/channels';
 // (로그·machineId는 채널 부트 게이트 산출물 공유 — 별도 개방 금지.)
 import { A2aTaskService, type CreateTaskInput } from './a2a/A2aTaskService';
 import { WorkTaskService } from './worktask/WorkTaskService';
-import { isTaskState, type AgentStatus, type Message } from '../shared/types';
+import { isTaskState, type AgentStatus, type Message, type Task } from '../shared/types';
 import { ProcessMonitor } from './ProcessMonitor';
 import { AgentProcessTracker } from './AgentProcessTracker';
 import { checkWslAgentRunning, reportedAgentForPane, WslPidWatcher } from './wslAgentProcess';
@@ -5445,23 +5445,28 @@ function registerRpcHandlers(
     // (로그)에서 force-fail한다 — 렌더러 캐시에서만 죽이면 재시작 시 restoreFromLog가
     // 부활시켜 정본이 실제와 어긋난다. per-member purge(paneSlice)는 teardown이
     // 아니므로 제외. 로그 커밋을 await해 응답 전 내구화(데몬 미가용 아님 — 동일 프로세스).
+    // Tasks this purge failed, returned to main so their work links record the
+    // failure and its reason like any other transition.
+    const failedA2aTasks: Task[] = [];
     if (a2aTaskService && memberId === undefined && principalId === undefined) {
       try {
         const n = await a2aTaskService.failTasksForWorkspaceRemoved(
           workspaceId,
           'Receiver workspace was removed before this task completed.',
+          (task) => { failedA2aTasks.push(task); },
         );
         if (n > 0) log('info', `A2A: force-failed ${n} task(s) for removed workspace ${workspaceId}`);
       } catch (err) {
         log('warn', `A2A: failTasksForWorkspaceRemoved(${workspaceId}) failed:`, err);
       }
     }
-    return channelService.purgeMembership({
+    const purged = await channelService.purgeMembership({
       workspaceId,
       verifiedWorkspaceId,
       ...(memberId !== undefined ? { memberId } : {}),
       ...(principalId !== undefined ? { principalId } : {}),
     });
+    return failedA2aTasks.length > 0 && purged && typeof purged === 'object' ? { ...purged, failedA2aTasks } : purged;
   });
 
   // a2a.channel.operatorJoin — 오퍼레이터(사람)가 에이전트들이 만든 비공개 채널에

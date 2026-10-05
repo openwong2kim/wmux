@@ -34,6 +34,11 @@ vi.mock('../../../deck/deckWorkspaceTeardown', () => ({
   surfaceStrandedWork: vi.fn(),
 }));
 
+const recordTaskStateMock = vi.fn(async () => undefined);
+vi.mock('../../../workLink/a2aProducer', () => ({
+  recordTaskState: (...args: unknown[]) => recordTaskStateMock(...(args as [])),
+}));
+
 let mockHq: string | null = null;
 vi.mock('../../../deck/deckHqStore', () => ({
   getHqWorkspaceId: () => mockHq,
@@ -210,6 +215,16 @@ describe('channelLocal.handler — CHANNEL_MUTATE_LOCAL', () => {
   });
 
   describe('whole-workspace purgeMembership teardown trigger', () => {
+    it('records each A2A task the daemon force-failed on its work link, like any other transition', async () => {
+      installHandler();
+      const failed = { id: 'task-9', status: { state: 'failed', evidence: { summary: 'Receiver workspace was removed.', items: [] } } };
+      rpc.mockResolvedValueOnce({ ok: true, result: { removed: 1, failedA2aTasks: [failed] } });
+      recordTaskStateMock.mockClear();
+      const handler = getHandler(IPC.CHANNEL_MUTATE_LOCAL);
+      await handler(fakeEvent, 'a2a.channel.purgeMembership', { verifiedWorkspaceId: 'ws-ceo', workspaceId: 'ws-remove-me' });
+      expect(recordTaskStateMock).toHaveBeenCalledWith('task-9', 'failed', undefined, failed);
+    });
+
     it('triggers teardown exactly once on whole-workspace purge (both memberId and principalId absent)', async () => {
       installHandler();
       const handler = getHandler(IPC.CHANNEL_MUTATE_LOCAL);

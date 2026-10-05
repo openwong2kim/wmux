@@ -78,6 +78,7 @@ interface CapturedListeners {
   prompt?: (payload: { sessionId: string; event: unknown }) => void;
   died?: (payload: { sessionId: string }) => void;
   transcript?: (payload: { sessionId: string; activity: string }) => void;
+  processExit?: (payload: { sessionId: string; slug?: string | null }) => void;
 }
 
 function makeRouter(opts: {
@@ -91,6 +92,7 @@ function makeRouter(opts: {
       if (event === 'session:prompt') captured.prompt = cb as CapturedListeners['prompt'];
       if (event === 'session:died') captured.died = cb as CapturedListeners['died'];
       if (event === 'session:transcriptActivity') captured.transcript = cb as CapturedListeners['transcript'];
+      if (event === 'session:agentProcessExit') captured.processExit = cb as CapturedListeners['processExit'];
     }),
     off: vi.fn(),
   } as unknown as DaemonClient;
@@ -836,6 +838,26 @@ describe('DaemonNotificationRouter — M1 side-effect replay', () => {
       broadcastMetadataUpdateMock.mockClear();
       captured.transcript!({ sessionId: 'pty-a', activity: '$ npm test' });
       expect(broadcastMetadataUpdateMock).toHaveBeenCalledWith(null, { ptyId: 'pty-a', activity: '$ npm test' });
+    } finally {
+      router.stop();
+    }
+  });
+
+  it('only a tool hook owns a pane\'s line, and the owner is released when its agent exits', async () => {
+    const { router, captured } = makeRouter();
+    try {
+      const toolEvent = (kind: string) => ({ ...activityEvent('Read'), hookKind: kind, signal: hookSignal({ kind: kind as never, payload: { tool_name: 'Read', tool_input: {} } }) });
+      // A tool_started hook owns the line, as the daemon's watcher assumes.
+      captured.agent!({ sessionId: 'pty-b', event: toolEvent('agent.tool_started') });
+      await flushMicrotasks();
+      broadcastMetadataUpdateMock.mockClear();
+      captured.transcript!({ sessionId: 'pty-b', activity: '$ ls' });
+      expect(broadcastMetadataUpdateMock).not.toHaveBeenCalled();
+      // The agent exits; a hookless agent next in the pane may report.
+      captured.processExit!({ sessionId: 'pty-b', slug: 'claude' });
+      broadcastMetadataUpdateMock.mockClear();
+      captured.transcript!({ sessionId: 'pty-b', activity: '$ ls' });
+      expect(broadcastMetadataUpdateMock).toHaveBeenCalledWith(null, { ptyId: 'pty-b', activity: '$ ls' });
     } finally {
       router.stop();
     }

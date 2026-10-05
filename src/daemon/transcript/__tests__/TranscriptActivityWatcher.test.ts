@@ -113,10 +113,98 @@ describe('TranscriptActivityWatcher — lifecycle', () => {
     expect(h.sent).toEqual([['pty-1', '✎ new.ts']]);
   });
 
-  it('an agent the tracker never attributed is watched while the binding exists', () => {
+  it('an unattributed pane is watched only once its own agent has spoken', () => {
+    // Recovered after a daemon restart, or a probe that failed: a binding
+    // alone is not evidence that an agent runs here.
     const h = harness('claude', { alive: undefined });
     h.watcher.tick();
+    expect(h.watcher.watchedSessions()).toEqual([]);
+    h.watcher.noteHookSignal('pty-1', 'agent.user_prompt_submit');
+    h.watcher.tick();
     expect(h.watcher.watchedSessions()).toEqual(['pty-1']);
+  });
+
+  it('a late hook from a dead agent does not revive the pane; only a session start does', () => {
+    const h = harness('claude');
+    h.watcher.tick();
+    h.state.alive = false;
+    h.watcher.tick();
+    for (const kind of ['agent.stop', 'agent.user_prompt_submit', 'agent.stop_failure']) {
+      h.watcher.noteHookSignal('pty-1', kind);
+      h.watcher.tick();
+      expect(h.watcher.watchedSessions()).toEqual([]);
+    }
+    h.watcher.noteHookSignal('pty-1', 'agent.session_start');
+    h.watcher.tick();
+    expect(h.watcher.watchedSessions()).toEqual(['pty-1']);
+  });
+
+  it('two panes bound to one transcript (a resumed session): the one that spoke last keeps it', () => {
+    const file = path.join(dir, 'shared.jsonl');
+    fs.writeFileSync(file, '');
+    const sent: Array<[string, string]> = [];
+    const watcher = new TranscriptActivityWatcher({
+      listSessionIds: () => ['pty-old', 'pty-new'],
+      getBinding: () => ({ agent: 'claude', sessionId: 's', cwd: dir, transcriptPath: file, ts: 0 }),
+      isAgentAlive: () => undefined,
+      emit: (id, activity) => sent.push([id, activity]),
+      minGapMs: 0,
+    });
+    watcher.noteHookSignal('pty-old', 'agent.session_start');
+    watcher.noteHookSignal('pty-new', 'agent.session_start');
+    watcher.tick();
+    expect(watcher.watchedSessions()).toEqual(['pty-new']);
+    append(file, claudeTool('a', 'Read', { file_path: '/repo/a.ts' }));
+    watcher.tick();
+    expect(sent).toEqual([['pty-new', '→ a.ts']]);
+  });
+
+  it('a tool hook (tool_started, awaiting_permission) also makes the pane hook-fed', () => {
+    for (const kind of ['agent.tool_started', 'agent.awaiting_permission']) {
+      const h = harness('claude');
+      h.watcher.tick();
+      h.watcher.noteHookSignal('pty-1', kind);
+      append(h.file, claudeTool('a', 'Edit', { file_path: '/repo/x.ts' }));
+      h.watcher.tick();
+      expect(h.sent).toEqual([]);
+    }
+  });
+
+  it('a held-back line is dropped when the turn moves on to a reply (an interrupt sends no Stop)', () => {
+    const h = harness('claude');
+    const watcher = new TranscriptActivityWatcher({
+      listSessionIds: () => ['pty-1'],
+      getBinding: () => ({ agent: 'claude', sessionId: 's', cwd: dir, transcriptPath: h.file, ts: 0 }),
+      isAgentAlive: () => true,
+      emit: (id, activity) => h.sent.push([id, activity]),
+      now: () => 10_000,
+      minGapMs: 2000,
+    });
+    watcher.tick();
+    append(h.file, claudeTool('a', 'Read', { file_path: '/repo/a.ts' }));
+    watcher.tick(); // sent
+    append(h.file, claudeTool('b', 'Edit', { file_path: '/repo/b.ts' }));
+    watcher.tick(); // held back by the gap
+    append(h.file, claudeText('Stopped.'));
+    watcher.tick();
+    watcher.tick();
+    expect(h.sent).toEqual([['pty-1', '→ a.ts']]);
+  });
+
+  it('a file replaced at the same path re-seats at its end instead of reading from the old offset', () => {
+    const h = harness('claude');
+    h.watcher.tick();
+    append(h.file, claudeTool('a', 'Read', { file_path: '/repo/a.ts' }));
+    h.watcher.tick();
+    // Replace: a new file (new inode), larger than the old offset.
+    const tmp = `${h.file}.new`;
+    fs.writeFileSync(tmp, `${'x'.repeat(5000)}\n${claudeTool('old', 'Bash', { command: 'from the replaced file' })}\n`);
+    fs.renameSync(tmp, h.file);
+    h.watcher.tick();
+    expect(h.sent).toEqual([['pty-1', '→ a.ts']]);
+    append(h.file, claudeTool('c', 'Grep', { pattern: 'fresh' }));
+    h.watcher.tick();
+    expect(h.sent.at(-1)).toEqual(['pty-1', '⌕ fresh']);
   });
 
   it('a hook-fed session stands down until its next session start', () => {

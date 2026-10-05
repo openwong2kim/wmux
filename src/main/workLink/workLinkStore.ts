@@ -17,6 +17,7 @@
 
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
+import { TERMINAL_STATES } from '../../shared/types';
 import { getWmuxDir } from '../../daemon/config';
 import { atomicReadJSONSync, atomicWriteJSON } from '../../daemon/util/atomicWrite';
 import { loadDeckDecisions, onDecisionsChanged } from '../deck/deckDecisionStore';
@@ -121,8 +122,13 @@ export class WorkLinkStore {
         : prev.origin === 'manual' && input.origin === 'issue'
           ? 'issue'
           : prev.origin;
+      // A task that is live again (reopened) has no final report yet: the old
+      // one belongs to a turn that ended, and a later end without text must
+      // not inherit it.
+      const reopened = input.a2aState !== undefined && !TERMINAL_STATES.includes(input.a2aState);
       const merged = parseWorkLink({
         ...(prev ?? { state: 'queued', decisionIds: [], createdAt: now }),
+        ...(reopened ? { result: undefined } : {}),
         ...stripUndefined(input),
         id: prev?.id ?? input.id ?? randomUUID(),
         origin,

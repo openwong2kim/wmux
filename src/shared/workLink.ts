@@ -306,7 +306,7 @@ export function parseWorkLink(v: unknown): WorkLink | null {
   if (v.result !== undefined) {
     const r = v.result;
     if (!isRecord(r) || typeof r.summary !== 'string' || !r.summary || !isTime(r.at)) return null;
-    out.result = { summary: r.summary.slice(0, WORK_LINK_LIMITS.MAX_RESULT_SUMMARY), at: r.at };
+    out.result = { summary: capText(r.summary, WORK_LINK_LIMITS.MAX_RESULT_SUMMARY), at: r.at };
     if (r.verification !== undefined) {
       if (typeof r.verification !== 'string' || !VERIFICATION_RE.test(r.verification)) return null;
       out.result.verification = r.verification;
@@ -322,6 +322,14 @@ export function parseWorkLink(v: unknown): WorkLink | null {
 export const isWorkLink = (v: unknown): v is WorkLink => parseWorkLink(v) !== null;
 
 const VERIFICATION_RE = /^\d{1,4}\/\d{1,4}$/;
+
+/** `s` cut to at most `max` UTF-16 units without splitting a surrogate pair. */
+export function capText(s: string, max: number): string {
+  if (s.length <= max) return s;
+  const code = s.charCodeAt(max - 1);
+  // A high surrogate at the cut would be left without its low half.
+  return s.slice(0, code >= 0xd800 && code <= 0xdbff ? max - 1 : max);
+}
 
 /** Text of an A2A message: a plain string (a pipe call) or its text parts. */
 function messageText(message: unknown): string {
@@ -343,8 +351,10 @@ export function workLinkResultFromTask(task: unknown, at: number): WorkLinkResul
   const status = isRecord(task) && isRecord(task.status) ? task.status : undefined;
   if (!status || (status.state !== 'completed' && status.state !== 'failed')) return undefined;
   const evidence = isRecord(status.evidence) ? status.evidence : undefined;
-  const summary = ((typeof evidence?.summary === 'string' ? evidence.summary.trim() : '') || messageText(status.message).trim())
-    .slice(0, WORK_LINK_LIMITS.MAX_RESULT_SUMMARY);
+  const summary = capText(
+    (typeof evidence?.summary === 'string' ? evidence.summary.trim() : '') || messageText(status.message).trim(),
+    WORK_LINK_LIMITS.MAX_RESULT_SUMMARY,
+  );
   if (!summary) return undefined;
   const items = Array.isArray(evidence?.items) ? evidence.items.filter(isRecord) : [];
   const verified = items.filter((item) => { try { return isVerifiedItem(item as never); } catch { return false; } }).length;

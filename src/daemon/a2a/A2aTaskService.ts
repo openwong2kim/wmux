@@ -540,7 +540,11 @@ export class A2aTaskService {
    *
    * @returns 실제로 failed로 커밋된 태스크 수.
    */
-  async failTasksForWorkspaceRemoved(workspaceId: string, reason: string): Promise<number> {
+  async failTasksForWorkspaceRemoved(
+    workspaceId: string,
+    reason: string,
+    onFailed?: (task: Task) => void,
+  ): Promise<number> {
     // 스냅샷 후 순회 — 락 안에서 status가 바뀌므로 순회 중 Map 변형 회피.
     const targets = [...this.tasks.values()].filter(
       (t) =>
@@ -574,7 +578,14 @@ export class A2aTaskService {
         this.applyPayload(payload);
         return true;
       });
-      if (ok) failed++;
+      if (ok) {
+        failed++;
+        // Main records the transition on the task's work link (its report).
+        const task = this.tasks.get(target.id);
+        if (task) {
+          try { onFailed?.(task); } catch { /* a reader's failure never undoes the commit */ }
+        }
+      }
     }
     return failed;
   }

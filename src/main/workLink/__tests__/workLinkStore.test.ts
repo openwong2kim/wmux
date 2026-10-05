@@ -23,6 +23,15 @@ afterEach(() => {
 const sent = { origin: 'manual' as const, a2aTaskId: 'task-1', a2aState: 'submitted' as const, owner: { workspaceId: 'ws-1' } };
 
 describe('WorkLinkStore', () => {
+  it('drops the old report when the task is reopened, so a later end without text has none', async () => {
+    const a = make();
+    await a.upsert(sent);
+    await a.upsert({ a2aTaskId: 'task-1', a2aState: 'completed', result: { summary: 'First run.', at: 5 } });
+    await a.upsert({ a2aTaskId: 'task-1', a2aState: 'working' });
+    await a.upsert({ a2aTaskId: 'task-1', a2aState: 'completed' });
+    expect(a.list({})[0].result).toBeUndefined();
+  });
+
   it('keeps a finished task\'s report across later state-only updates and a reload', async () => {
     const a = make();
     await a.upsert(sent);

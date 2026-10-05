@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { recordTaskState } from '../a2aProducer';
-import { parseWorkLink, workLinkResultFromTask, WORK_LINK_LIMITS } from '../../../shared/workLink';
+import { capText, parseWorkLink, workLinkResultFromTask, WORK_LINK_LIMITS } from '../../../shared/workLink';
 import type { WorkLinkStore } from '../workLinkStore';
 
 function fakeStore() {
@@ -53,5 +53,19 @@ describe('recordTaskState — the final report is kept on the link', () => {
       id: 'wl-1', origin: 'manual', state: 'done', owner: { workspaceId: 'ws-1' }, decisionIds: [], createdAt: 1, updatedAt: 1,
       result: { summary: 'ok', verification: 'all of them', at: 1 },
     })).toBeNull();
+  });
+
+  it('never splits a surrogate pair at the cap', () => {
+    const max = WORK_LINK_LIMITS.MAX_RESULT_SUMMARY;
+    // An emoji (two UTF-16 units) straddling the cut.
+    const text = `${'a'.repeat(max - 1)}😀tail`;
+    expect(capText(text, max)).toBe('a'.repeat(max - 1));
+    const fromTask = workLinkResultFromTask({ status: { state: 'completed', evidence: { summary: text, items: [] } } }, 1)?.summary ?? '';
+    expect(fromTask.endsWith('a')).toBe(true);
+    const parsed = parseWorkLink({
+      id: 'wl-1', origin: 'manual', state: 'done', owner: { workspaceId: 'ws-1' }, decisionIds: [], createdAt: 1, updatedAt: 1,
+      result: { summary: text, at: 1 },
+    });
+    expect(parsed?.result?.summary).toBe('a'.repeat(max - 1));
   });
 });
