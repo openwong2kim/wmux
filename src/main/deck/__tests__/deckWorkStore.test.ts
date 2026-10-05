@@ -625,7 +625,7 @@ describe('renderActiveDeckWorkBlock', () => {
 
 describe('deckWorkStore — small talk is not work', () => {
   it('reads a thank-you or a greeting, alone, as small talk', () => {
-    for (const t of ['고마워', '고마워요!', '감사합니다 :)', '수고했어 ㅎㅎ', '정말 고마워요 🙏', '안녕하세요', 'ㄱㅅ', 'Thanks!', 'thank you so much', 'hi Moa', 'Good morning', 'nice work']) {
+    for (const t of ['ㅋㅋㅋ', 'ㅎㅎ', 'lol', 'haha', '👍', '🙏🙏', 'ㅋㅋ 👍', '고마워', '고마워요!', '감사합니다 :)', '수고했어 ㅎㅎ', '정말 고마워요 🙏', '안녕하세요', 'ㄱㅅ', 'Thanks!', 'thank you so much', 'hi Moa', 'Good morning', 'nice work']) {
       expect(isSmallTalk(t), t).toBe(true);
     }
   });

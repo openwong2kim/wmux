@@ -15,12 +15,16 @@ const SMALL_TALK_WORDS = [
   'awesome', 'so', 'much', 'very', 'a\\s+lot', 'moa',
 ];
 const SMALL_TALK_RE = new RegExp(`^(?:(?:${SMALL_TALK_WORDS.join('|')})\\s*)+$`, 'iu');
+/** A message of laughter, emoji and punctuation only. */
+const LAUGHTER_ONLY_RE = /^(?:[ㅋㅎㅠㅜ^~.!?\s]|\p{Extended_Pictographic}|\p{Emoji_Modifier}|\u200d|\ufe0f|\b(?:lol|lmao|haha+|hehe+|ha|kk+)\b)+$/iu;
 /** Longest message still read as small talk; longer text says something more. */
 const SMALL_TALK_MAX_CHARS = 40;
 
 /** A thank-you or greeting with nothing asked: not work. Such a message must
  *  not open (or extend) an [active-work] record, or Moa would report it done. */
 export function isSmallTalk(text: string): boolean {
+  // Laughter or emoji alone (ㅋㅋㅋ, lol, 👍) asks for nothing either.
+  if (text.trim() && LAUGHTER_ONLY_RE.test(text.normalize('NFC').trim())) return true;
   const t = text
     // NFC, not NFKC: NFKC turns ㄱㅅ / ㅋㅋ into conjoining jamo.
     .normalize('NFC')

@@ -32,7 +32,8 @@ export function transcriptMessages(events: readonly TurnEvent[], groupActivity =
     }
     const row: ChatRow = { event, ...(event.kind === 'tool_use' ? { result: results.get(event.toolUseId) } : {}) };
     if (ends && turn) { row.receipt = { start: turn.start, end: event.ts, replies: turn.replies }; turn = null; }
-    // A failed call stays out of the fold: someone has to see it.
+    // A failed call stays out of the fold (someone has to see it), unless the
+    // transcript's owner marked it `folded` (Moa's internal calls).
     const failed = event.kind === 'tool_use' ? results.get(event.toolUseId)?.ok === false : event.kind === 'tool_result' && !event.ok;
     const activity = event.folded || !failed && (event.kind === 'tool_use' || event.kind === 'tool_result' && !event.files?.length || event.kind === 'assistant_text' && event.thinking);
     if (groupActivity && activity) {
