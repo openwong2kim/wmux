@@ -11,9 +11,31 @@ function api(over: Partial<PaneForegroundApi>): PaneForegroundApi {
 
 describe('paneForegroundProbe (#1794 review item 1)', () => {
   it('Windows: a shell with no descendant is gone', async () => {
-    const a = api({ resources: async () => ({ p1: { rss: 1 } }) });
+    // Even while pty.list still says a command runs (a reading from before the prompt).
+    const a = api({
+      resources: async () => ({ p1: { rss: 1 } }),
+      list: async () => [{ id: 'p1', commandRunning: true }],
+    });
     expect(await paneForegroundProbe('p1', a)({ promptAt: 0 })).toBe(true);
-    expect(a.list).not.toHaveBeenCalled();
+  });
+
+  it('WSL pane: the Windows tree cannot see its Linux processes, so it is not asked', async () => {
+    const resources = vi.fn(async () => ({ p1: { rss: 1 } }));
+    const a = api({
+      resources,
+      list: async () => [{ id: 'p1', commandRunning: false, wslTarget: { distro: 'Ubuntu' }, liveAgent: 'claude' }],
+    });
+    expect(await paneForegroundProbe('p1', a, () => AGENT_DEATH_LAG_MS)({ promptAt: 0 })).toBe(false);
+    expect(resources).not.toHaveBeenCalled();
+    const b = api({ resources, list: async () => [{ id: 'p1', commandRunning: false, wslTarget: { distro: 'Ubuntu' } }] });
+    expect(await paneForegroundProbe('p1', b)({ promptAt: 0 })).toBe(true);
+  });
+
+  it('a failing pty.list still lets the tree answer; neither answering is unknown', async () => {
+    const a = api({ list: async () => { throw new Error('x'); }, resources: async () => ({ p1: { rss: 1, image: 'node.exe' } }) });
+    expect(await paneForegroundProbe('p1', a)({ promptAt: 0 })).toBe(false);
+    const b = api({ list: async () => { throw new Error('x'); } });
+    expect(await paneForegroundProbe('p1', b)({ promptAt: 0 })).toBeUndefined();
   });
 
   it('Windows: any descendant (a Start-Process background TUI) is alive', async () => {
