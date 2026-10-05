@@ -314,26 +314,47 @@ thread id **and** the MCP server's parent is positively a shared app-server
 (`app-server --managed-daemon`, or a non-stdio `--listen`; wrappers that
 re-run the MCP entry itself are skipped), the server resolves that call's pane
 from the ownership index above and requires it to be a live pid-map anchor of
-this wmux instance. The workspace is the one main resolves now. Nothing about
-it is cached, so a resumed thread, a closed pane or a restarted server is seen
-on the next call.
+this wmux instance. The parent must be the Codex executable itself (a node
+shim or another program carrying the same arguments does not count). The
+workspace is the one main resolves now. Nothing about it is cached, so a
+resumed thread, a closed pane or a restarted server is seen on the next call.
+The owner index is read from `CODEX_HOME`, which Codex does not pass to MCP
+servers, so the server also derives it from the shared server's executable
+path (`<CODEX_HOME>/packages/app-server-daemon/releases/<version>/bin/codex`).
 
-For such a call the PID walks, the cached identity, the commander token and
-the `WMUX_WORKSPACE_ID` / `WMUX_PTY_ID` env hints are not used. A thread with
-no live owner fails with a `Workspace identity unknown` error that names the
-reason (no owning pane, owning pane closed, another wmux instance) instead of
-acting as another pane. Any other parent — Claude Code, `codex --no-daemon`, a
-stdio app-server, a script run by Codex's shell tool, an external MCP client —
-cannot claim a thread id and keeps the existing resolution.
+Where an owner can be recorded (the pane relay, off Windows), a call from a
+shared server is identified by its thread only. The PID walks, the cached
+identity, the commander token, the `WMUX_WORKSPACE_ID` / `WMUX_PTY_ID` env
+hints, the external-client terminal claim and the process-wide computer-use
+instance id are not used. A call fails with a `Workspace identity unknown`
+error that names the reason instead of acting as another pane when:
 
-Diagnostics go to the MCP server's stderr: `identity: parent shared-codex-server`,
+- its thread has no live owner (no owning pane, owning pane closed, another
+  wmux instance);
+- it carries no valid `_meta.threadId`;
+- the parent process could not be inspected (a timeout or `ps` failure), or
+  wmux is not reachable. Both are retryable, and an uninspectable parent is
+  never remembered.
+
+Any other parent — Claude Code, `codex --no-daemon`, a stdio app-server, a
+script run by Codex's shell tool, an external MCP client — cannot claim a
+thread id and keeps the existing resolution. A call without a thread id whose
+parent could not be inspected also keeps it.
+
+On Windows the pane relay is not used, so no owner is recorded for a session
+behind the shared server. There a call whose thread has no owner record keeps
+the existing resolution: the walk to the pane that started the server, which is
+right for a single Codex pane. A thread that does have a live owner still
+resolves to it. A Windows owner writer is a separate follow-up.
+
+Diagnostics go to the MCP server's stderr: `identity: parent shared-server`,
 `identity: codex-thread HIT ws=… pty=…` or `identity: codex-thread MISS <reason>`.
 
 A thread has an owner only when a pane recorded one: wmux's own Codex launches
-(through the pane relay) and a pane-side `SessionStart` do. A `codex` typed in a
-PowerShell pane that starts or joins the shared server records none (the shell
-guard from #1584 covers bash and zsh only), so its A2A calls fail closed until
-it is started through wmux or with `--no-daemon`.
+(through the pane relay, off Windows) and a pane-side `SessionStart` do. A
+`codex` typed in a shell that starts or joins the shared server records none
+(the shell guard from #1584 covers bash and zsh only), so off Windows its A2A
+calls fail closed until it is started through wmux or with `--no-daemon`.
 
 ## Identity on the main pipe (#1111)
 
