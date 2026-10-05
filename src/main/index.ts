@@ -906,6 +906,9 @@ ipcMain.handle(IPC.GATED_SUBMIT, async (_e, ptyId: unknown, text: unknown, agent
               Number.isFinite((opts as { deadlineAt: number }).deadlineAt)
                 ? { deadlineAt: (opts as { deadlineAt: number }).deadlineAt }
                 : {}),
+              ...(typeof (opts as { guardKey?: unknown }).guardKey === 'string'
+                ? { guardKey: ((opts as { guardKey: string }).guardKey).slice(0, 128) }
+                : {}),
             }
           : {}),
         ...gatedSubmitTaskContext(opts),
@@ -1235,6 +1238,7 @@ onAutonomyWritten(() => {
 // data dir before the Deck stores are first read (once per registration).
 const disposeDeckHandler = registerDeckHandler(() => mainWindow, {
   getDaemonClient: () => daemonClient,
+  invokeOperatorRpc: (method, params) => invokeRendererRpc(method, params),
 });
 // The track record's first start waits for the deck handler: it decides Moa's
 // switch for a new install (ensureMoaDefault), which reads as on until then.

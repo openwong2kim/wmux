@@ -535,3 +535,39 @@ describe('deck.requestDecision — stale replace', () => {
     expect(raiseDecisionMock).not.toHaveBeenCalled();
   });
 });
+
+describe('main-owned cards — no brain resolves or raises one', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetCommanderTrustForTesting();
+  });
+
+  it('deck.resolveDecision refuses a Moa hand-off card even in danger mode with a lease', async () => {
+    decisionRef.current = {
+      id: 'dec-h', question: 'Moa proposes…', options: ['Hand off', 'Edit', 'Cancel'], context: '',
+      status: 'pending', raisedAt: Date.now() - 3 * 60 * 60_000, origin: 'moa-handoff', ref: 'h1',
+    };
+    modeMock.mockReturnValue('danger');
+    const token = mintCommanderToken('ws-1');
+    grantReExamineLease('ws-1', 'dec-h');
+    const res = (await setup().dispatch({
+      id: '1', method: 'deck.resolveDecision',
+      params: { token, id: 'dec-h', resolution: 'Hand off — a binding rule settles this hand-off.' },
+    })) as { result?: { ok: boolean; error?: string } };
+    expect(res.result).toEqual({ ok: false, error: 'main_owned' });
+    expect(resolveDecisionMock).not.toHaveBeenCalled();
+  });
+
+  it('deck.requestDecision never forwards an origin from the wire', async () => {
+    decisionRef.current = null;
+    raiseDecisionMock.mockResolvedValue({ id: 'd', question: 'q', options: [], context: '', status: 'pending', raisedAt: 1 });
+    const token = mintCommanderToken('ws-1');
+    await setup().dispatch({
+      id: '1', method: 'deck.requestDecision',
+      params: { token, question: 'q', origin: 'moa-handoff', ref: 'x' },
+    });
+    const args = raiseDecisionMock.mock.calls[0][1] as Record<string, unknown>;
+    expect(args).not.toHaveProperty('origin');
+    expect(args).not.toHaveProperty('ref');
+  });
+});

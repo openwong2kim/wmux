@@ -143,10 +143,14 @@ import {
   hasPendingDecision,
   raiseDecision,
   isIssueProposalDecision,
+  isMainOwnedDecision,
   onDecisionsChanged,
   type WorkspaceDecision,
 } from '../../deck/deckDecisionStore';
 import { startMoaIssueProposals } from '../../deck/moaIssueProposalsHost';
+import { setMoaHandoffService } from '../../deck/moaHandoff';
+import { createMoaHandoffService } from '../../deck/moaHandoffHost';
+import { HANDOFF_NOTICE_OPTION, HANDOFF_OPTIONS, type MoaHandoffResolveResult } from '../../../shared/moaHandoff';
 import { MoaTranscript, type MoaTranscriptHint } from '../../deck/moaTranscript';
 import { answerMoaApproval, readMoaApproval } from '../../deck/moaApproval';
 import { getAccountStore } from '../../account/accountStore';
@@ -232,6 +236,9 @@ export interface RegisterDeckHandlerOptions {
      *  Optional: only the terminal brain has hook signals to report. */
     onTranscriptHint?: (hint: MoaTranscriptHint) => void;
   }) => BrainAdapter;
+  /** The operator-lane RPC (main's invokeRendererRpc): Moa's hand-offs deliver
+   *  through it, as the operator's own input. Absent ⇒ hand-offs are off. */
+  invokeOperatorRpc?: (method: string, params: Record<string, unknown>) => Promise<unknown>;
   /** M2 startup-reconcile delay (ms) before resolved-but-unconsumed decisions
    *  are resumed headlessly. Deferred so daemon/session recovery settles first;
    *  injected small in tests. */
@@ -746,6 +753,18 @@ export function registerDeckHandler(
   });
   const moaProposals = moaIssueProposals.service;
 
+  // Moa's operator-approved hand-offs (moaHandoff.ts): the cards in target
+  // slots, the delivery on a click (or in danger mode without one), and the
+  // task → HQ map onBusEvent routes by. Off without the operator lane.
+  const moaHandoffs = opts.invokeOperatorRpc
+    ? createMoaHandoffService({
+        invoke: opts.invokeOperatorRpc,
+        getWindow,
+        notify: () => emitMoaChanged(),
+      })
+    : null;
+  setMoaHandoffService(moaHandoffs);
+
   /**
    * A request record has LEFT the store — superseded by a newer human request,
    * or dropped by a conversation clear. It can no longer be closed by
@@ -1101,17 +1120,18 @@ export function registerDeckHandler(
     pendingActiveWorkBlocks.delete(workspaceId);
     trackContextMemory.forget(workspaceId);
   };
-  /** The workspace's decision as its brain may see it: an issue-proposal card
-   *  (moaIssueProposals.ts) is main's, never rendered into a turn or re-examined. */
+  /** The workspace's decision as its brain may see it: a main-owned card (an
+   *  issue proposal, a Moa hand-off) is main's, never rendered into a turn or
+   *  re-examined. */
   const loadBrainDecision = (workspaceId: string): WorkspaceDecision | null => {
     const d = loadWorkspaceDecision(workspaceId);
-    return isIssueProposalDecision(d) ? null : d;
+    return isMainOwnedDecision(d) ? null : d;
   };
   const withLoopContext = (workspaceId: string, text: string): string => {
     // Mode is read fresh here (not cached) so a Settings flip between turns
     // takes effect immediately — same rationale as the heartbeat's per-tick read.
     const mode = loadWorkspaceMode(workspaceId);
-    // Moa's issue-proposal cards are main's, never a brain's [decision].
+    // Main-owned cards are main's, never a brain's [decision].
     const decision = loadBrainDecision(workspaceId);
     const loop = loadWorkspaceLoopState(workspaceId);
     const activeWork = loadActiveDeckWork(workspaceId);
@@ -1914,14 +1934,40 @@ export function registerDeckHandler(
     // Master switch: off drops every push at the entry.
     isEnabled: () => isMoaEnabled(),
   });
+  /**
+   * A worker turn end in a pane holding an open hand-off task. A question or a
+   * refusal moves the task to input-required (that A2A event wakes Moa through
+   * the map above); any other turn end is passed to the HQ as the worker's
+   * stop, so Moa can read the pane. Completion is never inferred here.
+   */
+  const routeHandoffStop = async (ev: Extract<Parameters<EventBusSubscriber>[0], { type: 'agent.lifecycle' }>): Promise<void> => {
+    const routed = await moaHandoffs!.onWorkerStop(ev.ptyId, ev.agent ?? null, ev.lastMessage);
+    if (!routed || routed.movedToInputRequired) return;
+    if (ev.kind !== 'agent.stop' && ev.kind !== 'agent.stop_failure') return;
+    const hq = routed.hq;
+    if (hqPresence(hq) !== 'present') return;
+    coalescer?.push({
+      workspaceId: hq,
+      ptyId: `a2a:${routed.taskId}`,
+      kind: ev.kind,
+      source: ev.source,
+      agent: ev.agent,
+      seq: ev.seq,
+      ts: ev.ts,
+      ...(ev.lastMessage ? { lastMessage: ev.lastMessage } : {}),
+    });
+  };
   // Subscribed by startRuntime (with the master switch), not here.
   const onBusEvent: EventBusSubscriber = (ev) => {
     // Cross-workspace task receipts belong to the SENDER commander. The base
     // workspaceId is server-stamped === from, but use `from` explicitly so a
     // future event-shape change cannot wake the receiver or a third workspace.
     if (ev.type === 'a2a.task') {
+      // A Moa hand-off is the operator's task (from = the operator), but it
+      // reports to the HQ that proposed it: route by the hand-off store.
+      const owner = moaHandoffs?.noteTaskState(ev.taskId, ev.state) ?? ev.from;
       try {
-        recordDeckWorkA2aTask(ev.from, {
+        recordDeckWorkA2aTask(owner, {
           taskId: ev.taskId,
           to: ev.to,
           state: ev.state,
@@ -1950,7 +1996,7 @@ export function registerDeckHandler(
         : ev.state === 'input-required' ? 'a2a.input_required' as const
         : 'a2a.canceled' as const;
       const receipt: CoalescerInput = {
-        workspaceId: ev.from,
+        workspaceId: owner,
         ptyId: `a2a:${ev.taskId}`,
         kind,
         source: 'a2a',
@@ -1971,7 +2017,7 @@ export function registerDeckHandler(
       // would have its receipt consumed by a refused flush: park it in the
       // durable backlog instead, replayed when the HQ is seen again.
       const hq = getHqWorkspaceId();
-      if (hq !== null && ev.from === hq && hqPresence(hq) !== 'present') {
+      if (hq !== null && owner === hq && hqPresence(hq) !== 'present') {
         void getTaskLedger()
           .recordOrphanedEvent({ ownerWorkspaceId: hq, seq: ev.seq, payload: receipt })
           .catch((err) => console.warn(`[deck] could not park an a2a receipt for HQ ${hq}: ${String(err)}`));
@@ -2046,6 +2092,10 @@ export function registerDeckHandler(
     // Waking the deck brain on one would announce work that never ended —
     // same class of false "finished" the alarm exists to suppress.
     if (ev.decision === 'internal') return;
+    // A pane holding an open Moa hand-off: its turn ends go to the HQ.
+    if (moaHandoffs && ev.kind !== 'agent.awaiting_input' && ev.decision !== 'dedup') {
+      void routeHandoffStop(ev).catch(() => undefined);
+    }
     const lifecycleInput = {
       workspaceId: ev.workspaceId,
       ptyId: ev.ptyId,
@@ -2202,6 +2252,8 @@ export function registerDeckHandler(
     else void publishMoaPane(); // unchanged answers are not re-sent
     lastHqPresence = presence;
     moaProposals.sync();
+    // A hand-off whose pane closed or whose agent left: card down, task canceled.
+    void moaHandoffs?.reconcile().catch(() => undefined);
   };
   // The HQ store's setter refuses while the old/new HQ is mid-turn and, once
   // an HQ is designated, retires every other brain — both need the managers.
@@ -2468,10 +2520,42 @@ export function registerDeckHandler(
           workspaceId,
           ...(workspaceName ? { workspaceName } : {}),
           decision: { id: d.id, question: d.question, options: d.options, context: d.context, raisedAt: d.raisedAt },
+          ...(d.origin === 'moa-handoff' && moaHandoffs?.cardInfo(d.id) ? { handoff: moaHandoffs.cardInfo(d.id)! } : {}),
         });
       }
       decisions.sort((a, b) => b.decision.raisedAt - a.decision.raisedAt);
       return { decisions };
+    }),
+  );
+
+  // Moa's hand-off cards and auto hand-off receipts (moaHandoff.ts).
+  ipcMain.removeHandler(IPC.DECK_MOA_HANDOFF_RESOLVE);
+  ipcMain.handle(
+    IPC.DECK_MOA_HANDOFF_RESOLVE,
+    wrapHandler(IPC.DECK_MOA_HANDOFF_RESOLVE, async (_event: Electron.IpcMainInvokeEvent, raw: unknown): Promise<MoaHandoffResolveResult> => {
+      const req = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+      const workspaceId = readWorkspaceId(req);
+      const id = typeof req.id === 'string' ? req.id : '';
+      const action = req.action === 'handoff' || req.action === 'cancel' ? req.action : null;
+      if (!workspaceId || !id || !action) return { ok: false, code: 'invalid' };
+      // The edited body is the operator's own input; absent = main's stored one.
+      const body = typeof req.body === 'string' ? req.body : undefined;
+      const r = moaHandoffs ? await moaHandoffs.resolve(workspaceId, id, action, body) : null;
+      return r ?? { ok: false, code: 'not_pending' };
+    }),
+  );
+  ipcMain.removeHandler(IPC.DECK_MOA_HANDOFF_RECEIPTS);
+  ipcMain.handle(
+    IPC.DECK_MOA_HANDOFF_RECEIPTS,
+    wrapHandler(IPC.DECK_MOA_HANDOFF_RECEIPTS, async () => ({ receipts: moaHandoffs?.receipts() ?? [] })),
+  );
+  ipcMain.removeHandler(IPC.DECK_MOA_HANDOFF_STOP);
+  ipcMain.handle(
+    IPC.DECK_MOA_HANDOFF_STOP,
+    wrapHandler(IPC.DECK_MOA_HANDOFF_STOP, async (_event: Electron.IpcMainInvokeEvent, raw: unknown) => {
+      const id = raw && typeof raw === 'object' ? (raw as { id?: unknown }).id : undefined;
+      if (typeof id !== 'string' || !moaHandoffs) return { ok: false };
+      return moaHandoffs.stop(id);
     }),
   );
 
@@ -3191,6 +3275,9 @@ export function registerDeckHandler(
       // A full headless (no-deck-open) startup reconcile is the M2 follow-up.
       if (workspaceId && decision?.status === 'resolved' && isIssueProposalDecision(decision)) {
         void moaProposals.handleResolved(workspaceId, decision).catch(() => undefined);
+      } else if (workspaceId && decision?.status === 'resolved' && isMainOwnedDecision(decision)) {
+        // A hand-off card claimed by a click that did not finish clearing it.
+        void clearResolvedDecision(workspaceId, decision.id).catch(() => undefined);
       } else if (workspaceId && decision?.status === 'resolved') {
         // Queued acquire (P1): a one-shot resume must await a slot, not silently
         // drop on a full gate — the answer would sit forever with autonomy off.
@@ -3223,6 +3310,20 @@ export function registerDeckHandler(
         const r = await moaMemory.resolve(id, resolution);
         if (r.ok) emitMoaChanged();
         return r.ok ? { ok: true } : { ok: false, code: r.code ?? 'not_pending' };
+      }
+      // A Moa hand-off card: by id only, the answer is main's to act on. Edit
+      // needs the operator's text, which only the hand-off card carries
+      // (DECK_MOA_HANDOFF_RESOLVE); a bare "Edit" leaves the card up.
+      const current = loadWorkspaceDecision(workspaceId);
+      if (current && current.id === id && current.origin === 'moa-handoff') {
+        const answer = resolution.trim();
+        if (answer === HANDOFF_OPTIONS.edit) return { ok: false, code: 'edit_needs_body' };
+        const action = answer === HANDOFF_OPTIONS.handOff ? 'handoff' as const
+          : answer === HANDOFF_NOTICE_OPTION ? 'ack' as const
+          : 'cancel' as const;
+        const r = moaHandoffs ? await moaHandoffs.resolve(workspaceId, id, action) : null;
+        if (!r) return { ok: false, code: 'not_pending' };
+        return r.ok ? { ok: true } : { ok: false, code: r.code };
       }
       const decision = await resolveDecision(workspaceId, id, resolution);
       if (!decision || decision.status !== 'resolved') {
@@ -3424,6 +3525,10 @@ export function registerDeckHandler(
     for (const [workspaceId, decision] of Object.entries(loadDeckDecisions())) {
       // Moa's memory card key is not a workspace: never resume a brain for it.
       if (workspaceId === MOA_MEMORY_DECISION_KEY) continue;
+      if (decision.status === 'resolved' && decision.origin === 'moa-handoff') {
+        await clearResolvedDecision(workspaceId, decision.id).catch(() => undefined);
+        continue;
+      }
       if (decision.status === 'resolved' && !(await moaProposals.handleResolved(workspaceId, decision))) {
         // Provenance-aware prompt (round-3 P2): a stranded brain self-resolution
         // resumes as the brain's OWN answer, never as "the operator resolved".
@@ -3532,6 +3637,10 @@ export function registerDeckHandler(
   return () => {
     app.removeListener('before-quit', disposeAll);
     moaIssueProposals.dispose();
+    setMoaHandoffService(null);
+    ipcMain.removeHandler(IPC.DECK_MOA_HANDOFF_RESOLVE);
+    ipcMain.removeHandler(IPC.DECK_MOA_HANDOFF_RECEIPTS);
+    ipcMain.removeHandler(IPC.DECK_MOA_HANDOFF_STOP);
     if (reconcileTimer) clearTimeout(reconcileTimer);
     clearInterval(ledgerReconcileTimer);
     stopOrphanReconcile();

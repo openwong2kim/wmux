@@ -18,7 +18,7 @@
 
 import type { WorkspaceAutonomy } from './deckAutonomyStore';
 import type { WorkspaceDecision } from './deckDecisionStore';
-import { isDecisionStale, isIssueProposalDecision } from './deckDecisionStore';
+import { isDecisionStale, isMainOwnedDecision } from './deckDecisionStore';
 import type { FleetSnapshot, FleetSnapshotPane } from '../../shared/workspaceMirror';
 import { isAgentPane } from './stopGate';
 
@@ -168,8 +168,9 @@ export class DeckHeartbeat {
     if (!(ttl > 0) || !this.deps.getDecision || !this.deps.reExamineDecision) return;
     const decision = this.safe(() => this.deps.getDecision?.(workspaceId) ?? null, null);
     if (!decision || decision.status !== 'pending') return;
-    // Moa's issue-proposal cards are main's to answer, never a brain's question.
-    if (isIssueProposalDecision(decision)) return;
+    // Main-owned cards (issue proposals, Moa's hand-offs) are main's to
+    // answer, never a brain's question.
+    if (isMainOwnedDecision(decision)) return;
     if (!isDecisionStale(decision, ttl, now)) return;
     // Debounce: skip if we already re-pinged THIS decision id within the last TTL
     // window. A different id (re-raised question) resets the debounce; the

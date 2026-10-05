@@ -158,7 +158,7 @@ async function reserved<T>(h: HandoffRef, busy: () => T, run: () => Promise<T>):
 /** A send that delivered nothing: cancel its task so the link reads abandoned
  *  (and a retry is not blocked by it); close the link by hand if the cancel
  *  did not take. */
-async function releaseUndelivered(deps: HandoffDeps, linkId: string | undefined, taskId: string | undefined): Promise<void> {
+export async function releaseUndelivered(deps: HandoffDeps, linkId: string | undefined, taskId: string | undefined): Promise<void> {
   let cancelled = false;
   if (taskId) {
     const res = (await deps.invoke('a2a.task.cancel', { taskId, workspaceId: HUMAN_WORKSPACE_ID }).catch(() => null)) as
@@ -187,50 +187,80 @@ export async function sendHandoff(deps: HandoffDeps, raw: unknown): Promise<Hand
       ...(target.agentSlug ? { agent: target.agentSlug } : {}),
     }).catch(() => null);
     const message = buildHandoffMessage(item, typeof req.note === 'string' ? req.note : undefined);
-    const res = (await deps.invoke('a2a.task.send', {
-      workspaceId: HUMAN_WORKSPACE_ID,
-      to: target.workspaceId,
-      paneId: target.paneId,
-      ...(target.surfaceId ? { surfaceId: target.surfaceId } : {}),
-      title: taskTitle(item),
-      message,
-      ...(link ? { workLinkId: link.id } : {}),
-      gatedDelivery: true,
-      // Paste the fixed reference itself, not a "query the task" nudge.
-      referenceDelivery: true,
-    }).catch((err: unknown) => ({ ok: false, error: err instanceof Error ? err.message : String(err) }))) as {
-      ok?: boolean;
-      error?: string;
-      result?: { taskId?: unknown; error?: unknown; delivery?: { notified?: unknown; submit?: unknown; hint?: unknown; reason?: unknown } };
-    };
-    if (!res || res.ok === false) {
+    const sent = await deliverOperatorTask(deps.invoke, { target, title: taskTitle(item), message, ...(link ? { workLinkId: link.id } : {}) });
+    if (!sent.ok) {
       await releaseUndelivered(deps, link?.id, undefined);
-      return { ok: false, code: 'error', message: res?.error ?? 'the send failed' };
+      return { ok: false, code: sent.code, message: sent.message };
     }
-    const result = res.result ?? {};
-    if (typeof result.error === 'string') {
-      await releaseUndelivered(deps, link?.id, undefined);
-      return { ok: false, code: 'refused', message: result.error };
-    }
-    const taskId = typeof result.taskId === 'string' ? result.taskId : undefined;
-    const delivered = result.delivery?.notified === true;
-    // Only a delivery that says so is assured; anything else may be pasted
-    // and never submitted.
-    const assurance = result.delivery?.submit === 'assured' ? 'assured' as const : 'unverified' as const;
-    const hint = typeof result.delivery?.hint === 'string' ? result.delivery.hint : undefined;
-    const why = result.delivery?.reason;
-    const reason = !delivered && typeof why === 'string' && /^[a-z_]{1,40}$/.test(why) ? why : undefined;
-    if (!delivered) await releaseUndelivered(deps, link?.id, taskId);
+    if (!sent.delivered) await releaseUndelivered(deps, link?.id, sent.taskId);
     return {
       ok: true,
       linkId: link?.id ?? '',
-      ...(taskId ? { taskId } : {}),
-      delivered,
-      ...(delivered ? { assurance } : {}),
-      ...(hint ? { note: hint } : {}),
-      ...(reason ? { reason } : {}),
+      ...(sent.taskId ? { taskId: sent.taskId } : {}),
+      delivered: sent.delivered,
+      ...(sent.delivered ? { assurance: sent.assurance } : {}),
+      ...(sent.note ? { note: sent.note } : {}),
+      ...(sent.reason ? { reason: sent.reason } : {}),
     };
   });
+}
+
+/** What one operator-lane delivery did. */
+export type OperatorTaskDelivery =
+  | { ok: false; code: 'error' | 'refused'; message: string }
+  | {
+      ok: true;
+      taskId?: string;
+      delivered: boolean;
+      assurance: 'assured' | 'unverified';
+      note?: string;
+      reason?: string;
+    };
+
+/**
+ * Send `message` as a new A2A task to `target` over the operator lane, with
+ * the gated delivery: the renderer pastes only into the addressed pane's live
+ * agent, as is (no envelope, no "query the task" nudge), main waits until
+ * nobody is typing there, and checks right before the paste and the Enter that
+ * the same agent is still there (plus the check registered under `guardKey`).
+ * Shared by the Git page's hand-off and Moa's (moaHandoff.ts). The caller
+ * releases an undelivered task.
+ */
+export async function deliverOperatorTask(
+  invoke: HandoffDeps['invoke'],
+  args: { target: HandoffTarget; title: string; message: string; workLinkId?: string; guardKey?: string; presetTaskId?: string },
+): Promise<OperatorTaskDelivery> {
+  const { target } = args;
+  const res = (await invoke('a2a.task.send', {
+    workspaceId: HUMAN_WORKSPACE_ID,
+    to: target.workspaceId,
+    paneId: target.paneId,
+    ...(target.surfaceId ? { surfaceId: target.surfaceId } : {}),
+    title: args.title,
+    message: args.message,
+    ...(args.workLinkId ? { workLinkId: args.workLinkId } : {}),
+    gatedDelivery: true,
+    // Paste the text itself, not a "query the task" nudge.
+    referenceDelivery: true,
+    ...(args.guardKey ? { deliveryGuardKey: args.guardKey } : {}),
+    ...(args.presetTaskId ? { presetTaskId: args.presetTaskId } : {}),
+  }).catch((err: unknown) => ({ ok: false, error: err instanceof Error ? err.message : String(err) }))) as {
+    ok?: boolean;
+    error?: string;
+    result?: { taskId?: unknown; error?: unknown; delivery?: { notified?: unknown; submit?: unknown; hint?: unknown; reason?: unknown } };
+  };
+  if (!res || res.ok === false) return { ok: false, code: 'error', message: res?.error ?? 'the send failed' };
+  const result = res.result ?? {};
+  if (typeof result.error === 'string') return { ok: false, code: 'refused', message: result.error };
+  const taskId = typeof result.taskId === 'string' ? result.taskId : undefined;
+  const delivered = result.delivery?.notified === true;
+  // Only a delivery that says so is assured; anything else may be pasted
+  // and never submitted.
+  const assurance = result.delivery?.submit === 'assured' ? 'assured' as const : 'unverified' as const;
+  const note = typeof result.delivery?.hint === 'string' ? result.delivery.hint : undefined;
+  const why = result.delivery?.reason;
+  const reason = !delivered && typeof why === 'string' && /^[a-z_]{1,40}$/.test(why) ? why : undefined;
+  return { ok: true, ...(taskId ? { taskId } : {}), delivered, assurance, ...(note ? { note } : {}), ...(reason ? { reason } : {}) };
 }
 
 /** The worktree branch: issue-<n>-<slug>, or pr-<n>-<suffix> (a PR can be

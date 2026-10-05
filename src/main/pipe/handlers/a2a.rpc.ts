@@ -1,4 +1,5 @@
 import type { BrowserWindow } from 'electron';
+import { containsHandoffMarker } from '../../../shared/moaHandoff';
 import type { RpcRouter } from '../RpcRouter';
 import type { RpcContext } from '../../../shared/rpc';
 import { isHostedCaller } from '../../../shared/rpc';
@@ -50,6 +51,8 @@ const INTERNAL_RENDERER_FIELDS = [
   'requirePaneIdentity',
   'livePaneIds',
   'deliveryDeadlineAt',
+  'deliveryGuardKey',
+  'presetTaskId',
 ] as const;
 
 /**
@@ -70,6 +73,19 @@ function withOperatorOrigin(
   for (const k of INTERNAL_RENDERER_FIELDS) delete out[k];
   if (ctx?.operator) out.operatorOrigin = true;
   return out;
+}
+
+/**
+ * Tripwire: only main's operator lane writes Moa's hand-off provenance line
+ * (moaHandoff.ts). A non-operator caller whose text carries it is refused.
+ * The line is a label, not an authentication boundary — this only stops a
+ * caller from passing its own text off as an operator-approved hand-off.
+ */
+export function refuseHandoffMarker(method: string, text: unknown, ctx: RpcContext | undefined): { error: string } | null {
+  if (ctx?.operator === true || !containsHandoffMarker(text)) return null;
+  return {
+    error: `${method}: this text carries the line wmux adds to operator-approved hand-offs; only the operator's hand-off may send it. To give work to another workspace's agent, Moa uses moa_propose_handoff.`,
+  };
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -554,6 +570,8 @@ export function registerA2aRpc(
   // 메시지 배달/이벤트 방출(렌더러 UI 반응성 로직 보존). 데몬 reject → 렌더러
   // 미접촉 반환(재판정 금지). 데몬 unavailable → 현행 렌더러-검증 경로 폴백.
   router.register('a2a.task.update', async (rawParams, ctx) => {
+    const marked = refuseHandoffMarker('a2a.task.update', rawParams.message, ctx);
+    if (marked) return marked;
     const params = withOperatorOrigin(rawParams, ctx);
     // 메시지 선검증(shared validateMessage — 렌더러와 동일 계약): 데몬 커밋 후
     // 렌더러가 메시지를 거부해 캐시-데몬이 갈라지는 창을 닫는다.
@@ -634,6 +652,8 @@ export function registerA2aRpc(
   // 해석·승인 게이트 등 렌더러 UI 반응성 로직은 그대로). 워커 spawn **전에**
   // await — 이후 전이(working/completed)가 데몬 게이트에서 태스크를 찾도록.
   router.register('a2a.task.send', async (params, ctx) => {
+    const marked = refuseHandoffMarker('a2a.task.send', params.message, ctx);
+    if (marked) return marked;
     // Forward the VALIDATED commander binding (RpcRouter set it from the
     // per-spawn token; never read from the wire, so any caller-supplied value
     // is dropped first). The renderer's reply-delivery guards need it: an
@@ -646,6 +666,15 @@ export function registerA2aRpc(
     // `workspaceId` on the wire would carry its privilege into someone else's.
     let sendParams: Record<string, unknown> = withOperatorOrigin(params, ctx);
     delete sendParams.commanderWorkspaceId;
+    // A main-registered delivery check (deliveryGuards.ts), kept only on the
+    // operator lane. It can only add a refusal, never skip a check.
+    if (ctx?.operator === true && typeof params.deliveryGuardKey === 'string' && params.gatedDelivery === true) {
+      sendParams.deliveryGuardKey = params.deliveryGuardKey;
+    }
+    // A task id main minted for a new operator send (moaHandoff.ts).
+    if (ctx?.operator === true && typeof params.presetTaskId === 'string' && !params.taskId) {
+      sendParams.presetTaskId = params.presetTaskId;
+    }
     // A trusted in-process caller (Git page, fanout, Moa) that created the work
     // link first names it here, so the new task joins that link instead of
     // starting a twin. Never taken from an external caller; main-only.

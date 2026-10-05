@@ -1,0 +1,708 @@
+// ─── Moa's hand-offs — work for another workspace, approved by the operator ──
+//
+// Moa (the HQ brain) used to delegate by pasting an A2A envelope ("From: Moa")
+// into another workspace's agent. A careful agent refuses that, rightly: it is
+// not the operator's instruction. Now Moa calls `moa_propose_handoff`
+// (deck.proposeHandoff) and main does the rest:
+//
+//   1. STORE. Main keeps the body (≤16 KB, and short enough for the A2A
+//      message cap with the label), the target pane, its agent, and later the
+//      task id. Moa's text never reaches the pane on Moa's say-so.
+//   2. CARD. A decision card in the TARGET workspace's slot (raiseDecisionIfFree,
+//      origin 'moa-handoff'): Hand off / Edit / Cancel. It shows in Moa's
+//      "Waiting on you". A taken slot answers `busy`. The card says when the
+//      agent takes one line only (newlines folded) or is mid-turn (it queues).
+//      A main-owned card is never shown to a brain and no brain can resolve it.
+//   3. DELIVERY on a human click, by card id only: main reads the body from
+//      this store (an edited body is the operator's own input from the
+//      renderer), then sends it as a new A2A task over the operator lane with
+//      the gated delivery (handoff.ts deliverOperatorTask): the text lands as
+//      the operator's own typing, no envelope, plus one provenance line
+//      (buildHandoffLabel). That line is a LABEL for the worker, NOT an
+//      authentication boundary: anyone who can type can type it.
+//   4. FEEDBACK. The task is the operator's, so A2A events name the operator
+//      as the sender; this store maps task id → HQ so deck.handler routes them
+//      to Moa. A worker's Claude Stop hook that ends on a question or a refusal,
+//      with the task still open, moves the task to input-required (its closing
+//      words ride along as UNTRUSTED text); completion is only ever explicit.
+//      Another stop is passed to Moa as a turn end. A closed pane or an agent
+//      that left cancels the task.
+//   5. FAILURE. An undelivered hand-off releases its task and link
+//      (releaseUndelivered) and puts a notice card ([OK]) in the target slot.
+//
+// DANGER MODE (owner decision): with the TARGET workspace and the HQ both in
+// `danger` mode, Settings › Moa › auto hand-off on, a body that did not come
+// from outside sources, and fewer than HANDOFF_AUTO_PER_HOUR_DEFAULT auto
+// hand-offs to that target in the last hour, main delivers at once, no card.
+// Modes are read here from the stores, never taken from the brain, and read
+// again right before the paste and before the Enter (a registered delivery
+// check); any change falls back to the card. Every auto hand-off leaves a
+// receipt (Moa's panel: Stop / Open pane) and a WorkLink with origin 'moa-auto'.
+
+import { randomUUID } from 'node:crypto';
+import path from 'node:path';
+import { getWmuxDir } from '../../daemon/config';
+import { atomicReadJSONSync, atomicWriteJSON } from '../../daemon/util/atomicWrite';
+import { createSerialChain } from './serialChain';
+import type { AgentMode } from './deckAutonomyStore';
+import type { DecisionOrigin, WorkspaceDecision } from './deckDecisionStore';
+import { generateId, type AgentStatus } from '../../shared/types';
+import { resolveAgentSlug } from '../../shared/ptyMessageDelivery';
+import { isBrainPtyId } from '../../shared/constants';
+import {
+  HANDOFF_AUTO_PER_HOUR_DEFAULT,
+  HANDOFF_LAST_MESSAGE_MAX_BYTES,
+  HANDOFF_NOTICE_OPTION,
+  HANDOFF_OPTIONS,
+  HANDOFF_PREVIEW_CHARS,
+  buildHandoffText,
+  handoffBodyRefusal,
+  type MoaAutoHandoffReceipt,
+  type MoaHandoffCardInfo,
+  type MoaHandoffResolveResult,
+} from '../../shared/moaHandoff';
+import type { WorkLink, WorkLinkReason, WorkLinkState } from '../../shared/workLink';
+import type { WorkLinkUpsert } from '../workLink/workLinkStore';
+import type { OperatorTaskDelivery } from '../git/handoff';
+import type { HandoffTarget } from '../../shared/gitHandoff';
+import type { DeliveryCheck } from '../pipe/deliveryGuards';
+
+const TITLE_MAX = 80;
+const MAX_RECORDS = 500;
+/** How long an auto hand-off's receipt stays in Moa's panel. */
+const RECEIPT_TTL_MS = 24 * 60 * 60_000;
+const HOUR_MS = 60 * 60_000;
+
+export type HandoffState = 'pending' | 'delivering' | 'delivered' | 'canceled' | 'failed' | 'expired';
+
+export interface HandoffRecord {
+  id: string;
+  hqWorkspaceId: string;
+  target: HandoffTarget & { agentName: string };
+  title: string;
+  body: string;
+  /** The body carries text from outside (GitHub, the web): it always asks. */
+  externalSource: boolean;
+  state: HandoffState;
+  /** Delivered without a click (danger mode). */
+  auto?: boolean;
+  /** The card (or the failure notice) in the target slot. */
+  decisionId?: string;
+  notice?: boolean;
+  taskId?: string;
+  linkId?: string;
+  /** Last A2A state seen for the task. */
+  taskState?: string;
+  foldsNewlines: boolean;
+  willQueue: boolean;
+  /** Stop was pressed on its receipt. */
+  stopped?: boolean;
+  createdAt: number;
+  at: number;
+}
+
+/** A target pane as main resolved it. */
+export interface ResolvedTarget {
+  workspaceId: string;
+  paneId: string;
+  surfaceId?: string;
+  ptyId: string;
+  agentName: string | null;
+  agentStatus: AgentStatus | null;
+}
+
+export type ProposeResult =
+  | { ok: true; mode: 'card'; id: string }
+  | { ok: true; mode: 'auto'; id: string; taskId: string }
+  | {
+      ok: false;
+      error: 'moa_off' | 'not_hq' | 'busy' | 'target_is_hq' | 'no_target' | 'no_agent' | 'body_empty' | 'body_too_long' | 'error';
+      message?: string;
+    };
+
+export interface MoaHandoffPorts {
+  hqWorkspaceId: () => string | null;
+  /** Moa on, the HQ designated and present. */
+  moaReady: () => boolean;
+  modeOf: (workspaceId: string) => AgentMode;
+  /** Settings › Moa › auto hand-off (absent = on). */
+  autoHandoffEnabled: () => boolean;
+  /** The operator asked Moa for something in this request (a live direct
+   *  request), so the body is Moa's reading of the operator, not a relay of a
+   *  wake's outside text. False ⇒ the auto path is not taken. */
+  hqServesOperatorRequest: () => boolean;
+  workspaceExists: (workspaceId: string) => boolean;
+  workspaceName: (workspaceId: string) => string | undefined;
+  resolveTarget: (sel: { ptyId?: string; paneId?: string }) => Promise<ResolvedTarget | null>;
+  /** The pane's state in the workspace mirror: gone, a shell, or an agent.
+   *  `unknown` when the mirror cannot tell (no fresh snapshot). */
+  paneState: (workspaceId: string, ptyId: string) => 'gone' | 'shell' | 'agent' | 'unknown';
+  decisions: {
+    raiseIfFree: (
+      workspaceId: string,
+      card: { question: string; options: string[]; context: string; origin: DecisionOrigin; ref: string },
+    ) => Promise<WorkspaceDecision | null>;
+    load: (workspaceId: string) => WorkspaceDecision | null;
+    resolve: (workspaceId: string, id: string, resolution: string) => Promise<WorkspaceDecision | null>;
+    clearResolved: (workspaceId: string, id: string) => Promise<void>;
+    clearPendingIfUnchanged: (workspaceId: string, expected: WorkspaceDecision) => Promise<boolean>;
+  };
+  links: {
+    upsert: (input: WorkLinkUpsert) => Promise<WorkLink | null>;
+    setState: (id: string, state: WorkLinkState, reason?: WorkLinkReason) => Promise<WorkLink | null>;
+    setLastQuestion: (id: string, q: { text: string; at: number }) => Promise<void>;
+  };
+  /** The operator-lane RPC (main's own; never an external caller's). */
+  invoke: (method: string, params: Record<string, unknown>) => Promise<unknown>;
+  deliver: (args: {
+    target: HandoffTarget;
+    title: string;
+    message: string;
+    workLinkId?: string;
+    guardKey?: string;
+    presetTaskId?: string;
+  }) => Promise<OperatorTaskDelivery>;
+  release: (linkId: string | undefined, taskId: string | undefined) => Promise<void>;
+  registerCheck: (key: string, check: DeliveryCheck) => () => void;
+  /** Something Moa's panel shows moved (cards, receipts). */
+  notify?: () => void;
+  autoPerHour?: () => number;
+  now?: () => number;
+  filePath?: string;
+}
+
+export function getMoaHandoffsPath(dir: string = getWmuxDir()): string {
+  return path.join(dir, 'moa-handoffs.json');
+}
+
+/** One line of card text: control and format characters become spaces. */
+function oneLine(raw: string, max: number): string {
+  const clean = raw.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ' ').replace(/\s+/g, ' ').trim();
+  const chars = [...clean];
+  return chars.length > max ? `${chars.slice(0, max - 1).join('').trimEnd()}…` : clean;
+}
+
+/** The hand-off's title: the one Moa gave, else the body's first line. */
+export function handoffTitle(title: unknown, body: string): string {
+  const given = typeof title === 'string' ? oneLine(title, TITLE_MAX) : '';
+  if (given) return given;
+  const first = body.trim().split('\n').find((l) => l.trim()) ?? '';
+  return oneLine(first, TITLE_MAX) || 'Task from Moa';
+}
+
+/** The agent takes no multi-line paste (the renderer folds newlines for an
+ *  agent it cannot name as a known TUI). */
+export function foldsNewlines(agentName: string | null): boolean {
+  return !resolveAgentSlug(agentName ?? undefined);
+}
+
+/** Cut to `max` UTF-8 bytes on a character boundary. */
+function capBytes(s: string, max: number): string {
+  const enc = new TextEncoder();
+  if (enc.encode(s).length <= max) return s;
+  let out = '';
+  let n = 0;
+  for (const ch of s) {
+    const b = enc.encode(ch).length;
+    if (n + b > max - 3) break;
+    out += ch;
+    n += b;
+  }
+  return `${out}…`;
+}
+
+// Refusal phrasing, read only when the turn ended without a question mark.
+const REFUSAL_RE =
+  /\b(?:I\s+(?:can(?:not|'t|’t)|won(?:'|’)t|will\s+not|am\s+not\s+(?:able|going)\s+to|(?:must|have\s+to)\s+decline|decline)|I'm\s+not\s+(?:able|going)\s+to|not\s+(?:an?\s+)?(?:instruction|request)\s+from\s+(?:you|the\s+(?:user|operator)))\b/i;
+
+/** Did the worker's closing words end on a refusal? A heuristic on agent
+ *  text: it only decides whether to ask Moa to look, never anything else. */
+export function looksLikeRefusal(text: string): boolean {
+  return REFUSAL_RE.test(text.slice(-HANDOFF_PREVIEW_CHARS * 2));
+}
+
+/** The card's question and context. Fixed templates around Moa's text. */
+export function buildHandoffCard(r: Pick<HandoffRecord, 'title' | 'body' | 'target' | 'foldsNewlines' | 'willQueue'>, workspaceName: string): {
+  question: string;
+  options: string[];
+  context: string;
+} {
+  const agent = oneLine(r.target.agentName || 'the agent', 40);
+  const preview = r.body.length > HANDOFF_PREVIEW_CHARS ? `${r.body.slice(0, HANDOFF_PREVIEW_CHARS)}… (the whole text is in Moa's panel)` : r.body;
+  const notes: string[] = [];
+  if (r.foldsNewlines) notes.push(`${agent} takes one line: line breaks will be joined with " — ".`);
+  if (r.willQueue) notes.push(`${agent} is working right now: the hand-off will queue behind its current turn.`);
+  return {
+    question: `Moa proposes handing "${r.title}" to ${agent} in ${oneLine(workspaceName, 60)}. Hand it off as your instruction?`,
+    options: [HANDOFF_OPTIONS.handOff, HANDOFF_OPTIONS.edit, HANDOFF_OPTIONS.cancel],
+    context: [...notes, `Moa wrote: ${preview}`].join('\n'),
+  };
+}
+
+interface HandoffFile {
+  version: 1;
+  items: Record<string, HandoffRecord>;
+}
+
+function readFile(p: string): HandoffFile {
+  const empty: HandoffFile = { version: 1, items: {} };
+  let raw: unknown;
+  try {
+    raw = atomicReadJSONSync(p);
+  } catch {
+    return empty;
+  }
+  const items = (raw as { items?: unknown } | null)?.items;
+  if (!items || typeof items !== 'object') return empty;
+  for (const [k, v] of Object.entries(items as Record<string, unknown>)) {
+    const r = v as Partial<HandoffRecord> | null;
+    if (r && r.id === k && typeof r.hqWorkspaceId === 'string' && r.target && typeof r.target.ptyId === 'string'
+      && typeof r.body === 'string' && typeof r.state === 'string' && typeof r.createdAt === 'number') {
+      empty.items[k] = r as HandoffRecord;
+    }
+  }
+  return empty;
+}
+
+let service: MoaHandoffService | null = null;
+/** The running service (deck.handler installs it), or null. */
+export function getMoaHandoffService(): MoaHandoffService | null {
+  return service;
+}
+export function setMoaHandoffService(s: MoaHandoffService | null): void {
+  service = s;
+}
+
+export class MoaHandoffService {
+  private loaded: HandoffFile | null = null;
+  private readonly serialize = createSerialChain();
+  private readonly answering = new Set<string>();
+
+  constructor(private readonly ports: MoaHandoffPorts) {}
+
+  private now(): number {
+    return this.ports.now?.() ?? Date.now();
+  }
+
+  private get file(): HandoffFile {
+    if (!this.loaded) this.loaded = readFile(this.ports.filePath ?? getMoaHandoffsPath());
+    return this.loaded;
+  }
+
+  private notify(): void {
+    try {
+      this.ports.notify?.();
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  private put(r: HandoffRecord): void {
+    this.file.items[r.id] = { ...r, at: this.now() };
+    const all = Object.values(this.file.items);
+    if (all.length <= MAX_RECORDS) return;
+    const old = all
+      .filter((x) => x.id !== r.id && (x.state === 'canceled' || x.state === 'failed' || x.state === 'expired' || (x.state === 'delivered' && isEnded(x.taskState))))
+      .sort((a, b) => a.at - b.at);
+    for (const x of old.slice(0, all.length - MAX_RECORDS)) delete this.file.items[x.id];
+  }
+
+  save(): Promise<void> {
+    return this.serialize(async () => {
+      try {
+        await atomicWriteJSON(this.ports.filePath ?? getMoaHandoffsPath(), this.file);
+      } catch (err) {
+        console.warn(`[moa:handoff] could not save: ${String(err)}`);
+      }
+    });
+  }
+
+  get(id: string): HandoffRecord | null {
+    return this.file.items[id] ?? null;
+  }
+
+  byDecision(decisionId: string): HandoffRecord | null {
+    return Object.values(this.file.items).find((r) => r.decisionId === decisionId) ?? null;
+  }
+
+  byTask(taskId: string): HandoffRecord | null {
+    return Object.values(this.file.items).find((r) => r.taskId === taskId) ?? null;
+  }
+
+  /** The HQ a hand-off task reports to, or null when the task is not one. */
+  hqForTask(taskId: string): string | null {
+    return this.byTask(taskId)?.hqWorkspaceId ?? null;
+  }
+
+  /** What the card in `decisionId` needs beyond the decision, or null. */
+  cardInfo(decisionId: string): MoaHandoffCardInfo | null {
+    const r = this.byDecision(decisionId);
+    if (!r || r.state !== 'pending' || r.notice) return null;
+    return {
+      body: r.body,
+      title: r.title,
+      agentName: r.target.agentName,
+      targetPaneId: r.target.paneId,
+      targetPtyId: r.target.ptyId,
+      foldsNewlines: r.foldsNewlines,
+      willQueue: r.willQueue,
+    };
+  }
+
+  receipts(): MoaAutoHandoffReceipt[] {
+    const since = this.now() - RECEIPT_TTL_MS;
+    return Object.values(this.file.items)
+      .filter((r) => r.auto && r.taskId && r.createdAt >= since)
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .map((r) => ({
+        id: r.id,
+        taskId: r.taskId as string,
+        title: r.title,
+        targetWorkspaceId: r.target.workspaceId,
+        ...(this.ports.workspaceName(r.target.workspaceId) ? { targetWorkspaceName: this.ports.workspaceName(r.target.workspaceId) } : {}),
+        targetPaneId: r.target.paneId,
+        at: r.createdAt,
+        ...(r.stopped ? { stopped: true } : {}),
+      }));
+  }
+
+  // ── propose ───────────────────────────────────────────────────────────────
+
+  async propose(
+    callerWorkspaceId: string,
+    params: { ptyId?: unknown; paneId?: unknown; body?: unknown; title?: unknown; externalSource?: unknown },
+  ): Promise<ProposeResult> {
+    if (!this.ports.moaReady()) return { ok: false, error: 'moa_off' };
+    const hq = this.ports.hqWorkspaceId();
+    if (!hq || callerWorkspaceId !== hq) return { ok: false, error: 'not_hq' };
+    const refusal = handoffBodyRefusal(params.body);
+    if (refusal) return { ok: false, error: refusal };
+    const body = (params.body as string).trim();
+    const sel = {
+      ...(typeof params.ptyId === 'string' && params.ptyId ? { ptyId: params.ptyId } : {}),
+      ...(typeof params.paneId === 'string' && params.paneId ? { paneId: params.paneId } : {}),
+    };
+    if (!sel.ptyId && !sel.paneId) return { ok: false, error: 'no_target' };
+    if (sel.ptyId && isBrainPtyId(sel.ptyId)) return { ok: false, error: 'target_is_hq' };
+    const t = await this.ports.resolveTarget(sel).catch(() => null);
+    if (!t) return { ok: false, error: 'no_target' };
+    // A card in the HQ's own slot would stop Moa's own wake loop.
+    if (t.workspaceId === hq || isBrainPtyId(t.ptyId)) return { ok: false, error: 'target_is_hq' };
+    if (!t.agentName) return { ok: false, error: 'no_agent' };
+    const now = this.now();
+    const record: HandoffRecord = {
+      id: randomUUID(),
+      hqWorkspaceId: hq,
+      target: {
+        workspaceId: t.workspaceId,
+        paneId: t.paneId,
+        ptyId: t.ptyId,
+        agentName: t.agentName,
+        ...(t.surfaceId ? { surfaceId: t.surfaceId } : {}),
+        ...(resolveAgentSlug(t.agentName) ? { agentSlug: resolveAgentSlug(t.agentName) } : {}),
+      },
+      title: handoffTitle(params.title, body),
+      body,
+      // Unsure counts as outside: only an explicit false from a call made
+      // while the operator's own request is live is taken as Moa's text.
+      externalSource: params.externalSource === true || !this.ports.hqServesOperatorRequest(),
+      state: 'pending',
+      foldsNewlines: foldsNewlines(t.agentName),
+      willQueue: t.agentStatus === 'running',
+      createdAt: now,
+      at: now,
+    };
+    if (this.autoAllowed(record)) {
+      const res = await this.deliver(record, body, true);
+      if (res.delivered && res.taskId) return { ok: true, mode: 'auto', id: record.id, taskId: res.taskId };
+      // Anything short of a delivery (a mode flipped mid-way, the agent
+      // left, someone typed) falls back to the card.
+      console.warn(`[moa:handoff] auto hand-off to ${t.workspaceId} did not go through (${res.why}); asking with a card`);
+      record.state = 'pending';
+      record.auto = undefined;
+      record.taskId = undefined;
+      record.linkId = undefined;
+    }
+    return this.raiseCard(record);
+  }
+
+  private async raiseCard(record: HandoffRecord): Promise<ProposeResult> {
+    const ws = record.target.workspaceId;
+    const card = buildHandoffCard(record, this.ports.workspaceName(ws) ?? ws);
+    const decision = await this.ports.decisions
+      .raiseIfFree(ws, { ...card, origin: 'moa-handoff', ref: record.id })
+      .catch(() => null);
+    if (!decision) return { ok: false, error: 'busy' };
+    this.put({ ...record, state: 'pending', decisionId: decision.id });
+    await this.save();
+    this.notify();
+    return { ok: true, mode: 'card', id: record.id };
+  }
+
+  // ── danger-mode auto path ───────────────────────────────────────────────────
+
+  /** The auto rule, from the stores at this moment. Never a brain's word. */
+  private autoRuleHolds(r: Pick<HandoffRecord, 'hqWorkspaceId' | 'target' | 'externalSource'>): boolean {
+    return (
+      this.ports.autoHandoffEnabled()
+      && !r.externalSource
+      && this.ports.hqWorkspaceId() === r.hqWorkspaceId
+      && this.ports.modeOf(r.target.workspaceId) === 'danger'
+      && this.ports.modeOf(r.hqWorkspaceId) === 'danger'
+    );
+  }
+
+  private autoAllowed(r: HandoffRecord): boolean {
+    if (!this.autoRuleHolds(r)) return false;
+    const since = this.now() - HOUR_MS;
+    const limit = this.ports.autoPerHour?.() ?? HANDOFF_AUTO_PER_HOUR_DEFAULT;
+    const recent = Object.values(this.file.items).filter(
+      (x) => x.auto && x.target.workspaceId === r.target.workspaceId && x.createdAt >= since,
+    ).length;
+    return recent < limit;
+  }
+
+  // ── delivery ──────────────────────────────────────────────────────────────
+
+  private async deliver(
+    record: HandoffRecord,
+    body: string,
+    auto: boolean,
+  ): Promise<{ delivered: boolean; taskId?: string; why: string; note?: string }> {
+    const taskId = generateId('task');
+    const link = await this.ports.links.upsert({
+      origin: auto ? 'moa-auto' : 'moa',
+      owner: { workspaceId: record.target.workspaceId, paneId: record.target.paneId },
+      requester: { workspaceId: record.hqWorkspaceId },
+      title: record.title,
+      ...(record.target.agentSlug ? { agent: record.target.agentSlug } : {}),
+    }).catch(() => null);
+    // Recorded before the send: the task's first events must already route to Moa.
+    const sending: HandoffRecord = { ...record, body, state: 'delivering', taskId, ...(link ? { linkId: link.id } : {}), ...(auto ? { auto: true } : {}) };
+    this.put(sending);
+    await this.save();
+    let unregister = (): void => undefined;
+    let guardKey: string | undefined;
+    if (auto) {
+      guardKey = `moa-auto-${record.id}`;
+      const check = (): string | null =>
+        this.autoRuleHolds(record) ? null : 'a workspace mode or the auto hand-off setting changed';
+      unregister = this.ports.registerCheck(guardKey, { beforePaste: check, beforeEnter: check });
+    }
+    let sent: OperatorTaskDelivery;
+    try {
+      sent = await this.ports.deliver({
+        target: record.target,
+        title: `Moa: ${record.title}`,
+        message: buildHandoffText(body, taskId, auto),
+        ...(link ? { workLinkId: link.id } : {}),
+        ...(guardKey ? { guardKey } : {}),
+        presetTaskId: taskId,
+      });
+    } catch (err) {
+      sent = { ok: false, code: 'error', message: err instanceof Error ? err.message : String(err) };
+    } finally {
+      unregister();
+    }
+    if (!sent.ok || !sent.delivered) {
+      await this.ports.release(link?.id, sent.ok ? (sent.taskId ?? taskId) : taskId).catch(() => undefined);
+      this.put({ ...sending, state: 'failed' });
+      await this.save();
+      const why = sent.ok ? (sent.reason ?? sent.note ?? 'not delivered') : sent.message;
+      return { delivered: false, why, ...(sent.ok && sent.note ? { note: sent.note } : {}) };
+    }
+    const delivered: HandoffRecord = { ...sending, state: 'delivered', taskId: sent.taskId ?? taskId, taskState: 'submitted' };
+    this.put(delivered);
+    await this.save();
+    this.notify();
+    return { delivered: true, taskId: delivered.taskId, why: 'delivered', ...(sent.note ? { note: sent.note } : {}) };
+  }
+
+  // ── the operator's answer ─────────────────────────────────────────────────
+
+  /**
+   * The operator answered card `decisionId` in `workspaceId`. By id only: the
+   * body is this store's, unless the operator edited it (`editedBody`, their
+   * own input). Returns null when the decision is not a hand-off card.
+   */
+  async resolve(
+    workspaceId: string,
+    decisionId: string,
+    action: 'handoff' | 'cancel' | 'ack',
+    editedBody?: string,
+  ): Promise<MoaHandoffResolveResult | null> {
+    const r = this.byDecision(decisionId);
+    if (!r || r.target.workspaceId !== workspaceId) return null;
+    const d = this.ports.decisions.load(workspaceId);
+    if (!d || d.id !== decisionId || d.status !== 'pending') return { ok: false, code: 'not_pending' };
+    if (this.answering.has(decisionId)) return { ok: false, code: 'not_pending' };
+    let body = r.body;
+    if (action === 'handoff' && editedBody !== undefined) {
+      const refusal = handoffBodyRefusal(editedBody);
+      if (refusal) return { ok: false, code: refusal };
+      body = editedBody.trim();
+    }
+    this.answering.add(decisionId);
+    try {
+      const label = r.notice ? HANDOFF_NOTICE_OPTION : action === 'handoff' ? HANDOFF_OPTIONS.handOff : HANDOFF_OPTIONS.cancel;
+      // Claim the card first: a second click (or another window) finds it gone.
+      const claimed = await this.ports.decisions.resolve(workspaceId, decisionId, label).catch(() => null);
+      if (!claimed) return { ok: false, code: 'not_pending' };
+      await this.ports.decisions.clearResolved(workspaceId, decisionId).catch(() => undefined);
+      if (r.notice) {
+        this.put({ ...r, decisionId: undefined, notice: undefined });
+        await this.save();
+        this.notify();
+        return { ok: true, delivered: false };
+      }
+      if (action !== 'handoff') {
+        this.put({ ...r, state: 'canceled', decisionId: undefined });
+        await this.save();
+        this.notify();
+        return { ok: true, delivered: false };
+      }
+      const res = await this.deliver({ ...r, decisionId: undefined }, body, false);
+      if (!res.delivered) {
+        await this.raiseNotice(this.get(r.id) ?? r, res.why);
+        return { ok: true, delivered: false, note: res.why };
+      }
+      return { ok: true, delivered: true, ...(res.taskId ? { taskId: res.taskId } : {}), ...(res.note ? { note: res.note } : {}) };
+    } finally {
+      this.answering.delete(decisionId);
+    }
+  }
+
+  /** A notice card in the target slot saying the hand-off did not go through.
+   *  Only while the workspace exists: never in the HQ's slot. */
+  private async raiseNotice(r: HandoffRecord, why: string): Promise<void> {
+    const ws = r.target.workspaceId;
+    if (!this.ports.workspaceExists(ws) || ws === this.ports.hqWorkspaceId()) return;
+    const d = await this.ports.decisions
+      .raiseIfFree(ws, {
+        question: `Could not hand off "${r.title}" to ${oneLine(r.target.agentName, 40)}: ${oneLine(why, 200)}`,
+        options: [HANDOFF_NOTICE_OPTION],
+        context: 'Nothing was submitted, and the task was canceled. Ask Moa again, or give the agent the work yourself.',
+        origin: 'moa-handoff',
+        ref: r.id,
+      })
+      .catch(() => null);
+    if (d) {
+      this.put({ ...r, decisionId: d.id, notice: true });
+      await this.save();
+    }
+    this.notify();
+  }
+
+  // ── feedback ──────────────────────────────────────────────────────────────
+
+  /** An A2A state for a task: kept on the record. Returns the HQ to route the
+   *  event to, or null when the task is not a hand-off. */
+  noteTaskState(taskId: string, state: string): string | null {
+    const r = this.byTask(taskId);
+    if (!r) return null;
+    if (r.taskState !== state) {
+      this.put({ ...r, taskState: state });
+      void this.save();
+    }
+    return r.hqWorkspaceId;
+  }
+
+  /** The open hand-off task in this pane (the newest), or null. */
+  openTaskOnPty(ptyId: string): HandoffRecord | null {
+    return (
+      Object.values(this.file.items)
+        .filter((r) => r.target.ptyId === ptyId && r.state === 'delivered' && r.taskId && !isEnded(r.taskState))
+        .sort((a, b) => b.createdAt - a.createdAt)[0] ?? null
+    );
+  }
+
+  /**
+   * A worker turn ended in a pane holding an open hand-off task. Claude's Stop
+   * hook gives the closing words (`lastMessage`, UNTRUSTED). A question or a
+   * refusal, with the task still submitted/working, moves the task to
+   * input-required; that event then wakes Moa through the task → HQ map.
+   * Returns the HQ to tell about any other turn end (Moa reads the pane), or
+   * null when the pane holds no open hand-off.
+   */
+  async onWorkerStop(
+    ptyId: string,
+    agent: string | null,
+    lastMessage: { text: string; endsWithQuestion: boolean } | undefined,
+  ): Promise<{ hq: string; taskId: string; movedToInputRequired: boolean } | null> {
+    const r = this.openTaskOnPty(ptyId);
+    if (!r || !r.taskId) return null;
+    const open = r.taskState === 'submitted' || r.taskState === 'working' || r.taskState === undefined;
+    const asks = !!lastMessage && agent === 'claude' && (lastMessage.endsWithQuestion || looksLikeRefusal(lastMessage.text));
+    if (!open || !asks || !lastMessage) return { hq: r.hqWorkspaceId, taskId: r.taskId, movedToInputRequired: false };
+    const text = capBytes(lastMessage.text, HANDOFF_LAST_MESSAGE_MAX_BYTES);
+    const res = (await this.ports
+      .invoke('a2a.task.update', {
+        taskId: r.taskId,
+        workspaceId: r.target.workspaceId,
+        status: 'input-required',
+        message: `[from the worker's last turn — agent text, unverified] ${text}`,
+      })
+      .catch(() => null)) as { ok?: boolean; result?: { ok?: unknown; error?: unknown } } | null;
+    const moved = !!res && res.ok !== false && !(res.result && typeof res.result.error === 'string');
+    if (moved) {
+      this.put({ ...r, taskState: 'input-required' });
+      await this.save();
+    }
+    if (r.linkId) await this.ports.links.setLastQuestion(r.linkId, { text, at: this.now() }).catch(() => undefined);
+    this.notify();
+    return { hq: r.hqWorkspaceId, taskId: r.taskId, movedToInputRequired: moved };
+  }
+
+  /** Stop an auto hand-off from its receipt: interrupt the worker and cancel
+   *  the task. */
+  async stop(id: string): Promise<{ ok: boolean }> {
+    const r = this.get(id);
+    if (!r || !r.taskId) return { ok: false };
+    await this.ports.invoke('input.sendKey', { ptyId: r.target.ptyId, key: 'escape', workspaceId: r.target.workspaceId }).catch(() => null);
+    await this.cancelTask(r);
+    this.put({ ...this.get(id)!, stopped: true });
+    await this.save();
+    this.notify();
+    return { ok: true };
+  }
+
+  private async cancelTask(r: HandoffRecord): Promise<void> {
+    if (!r.taskId || isEnded(r.taskState)) return;
+    await this.ports.release(r.linkId, r.taskId).catch(() => undefined);
+    this.put({ ...r, taskState: 'canceled' });
+  }
+
+  /**
+   * Match the records to the panes (run on every workspace mirror push): a
+   * card whose pane closed or whose agent left is taken down; an open task
+   * whose pane closed or whose agent left is canceled.
+   */
+  async reconcile(): Promise<void> {
+    let changed = false;
+    for (const r of Object.values(this.file.items)) {
+      const live = r.state === 'pending' && !r.notice ? 'card' : r.state === 'delivered' && !isEnded(r.taskState) ? 'task' : null;
+      if (!live) continue;
+      const ws = r.target.workspaceId;
+      const pane = this.ports.workspaceExists(ws) ? this.ports.paneState(ws, r.target.ptyId) : 'gone';
+      if (pane === 'agent' || pane === 'unknown') continue;
+      if (live === 'card') {
+        const d = r.decisionId ? this.ports.decisions.load(ws) : null;
+        if (d && d.id === r.decisionId && d.status === 'pending') {
+          await this.ports.decisions.clearPendingIfUnchanged(ws, d).catch(() => false);
+        }
+        this.put({ ...r, state: 'expired', decisionId: undefined });
+      } else {
+        await this.cancelTask(r);
+      }
+      changed = true;
+    }
+    if (changed) {
+      await this.save();
+      this.notify();
+    }
+  }
+}
+
+function isEnded(state: string | undefined): boolean {
+  return state === 'completed' || state === 'failed' || state === 'canceled';
+}

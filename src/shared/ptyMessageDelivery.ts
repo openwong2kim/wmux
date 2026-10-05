@@ -227,7 +227,10 @@ export interface GatedSubmitRefusal {
      *  not be verified (a local pty, no daemon, or a failed read). */
     | 'agent_unverified'
     /** A `waitQuiet` delivery ran past its deadline; the sender has given up. */
-    | 'deadline';
+    | 'deadline'
+    /** A `waitQuiet` delivery carrying main's `guardKey`: main's own check for
+     *  that delivery refused it (e.g. Moa's auto hand-off saw a mode change). */
+    | 'guard_refused';
   detail: string;
   pasted?: boolean;
   /** With `pasted`: whether the pasted text was cleared again (best effort:
@@ -266,4 +269,8 @@ export interface GatedSubmitOptions {
   /** With `waitQuiet`: epoch ms after which nothing is written (main stamps
    *  it from the send's own timeout). */
   deadlineAt?: number;
+  /** With `waitQuiet`: a key main registered for this delivery (deliveryGuards
+   *  in main). Main runs that delivery's own check before the paste and before
+   *  the Enter; an unknown key refuses. Only adds checks, never removes one. */
+  guardKey?: string;
 }

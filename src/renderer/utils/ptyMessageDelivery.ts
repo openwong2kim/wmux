@@ -71,6 +71,7 @@ export async function gatedSubmitToPty(
         waitQuiet: true,
         ...(options.expectAgent ? { expectAgent: options.expectAgent } : {}),
         ...(options.deadlineAt !== undefined ? { deadlineAt: options.deadlineAt } : {}),
+        ...(options.guardKey ? { guardKey: options.guardKey } : {}),
       }
     : {};
   try {
