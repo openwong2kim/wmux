@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type TransitionEvent } from 'react';
+import { useEffect, useLayoutEffect, useState, type ReactNode, type TransitionEvent } from 'react';
 import { holdFits, onFitsReleased, releaseFits } from '../../utils/layoutTransitionGate';
 
 /** Must match `.wmux-sidebar-slot[data-animating]` in ui.css. */
@@ -33,20 +33,23 @@ export function SidebarSlot({
   children: ReactNode;
 }) {
   const [animating, setAnimating] = useState(false);
-  const prevVisible = useRef(visible);
+  const [prevVisible, setPrevVisible] = useState(visible);
+  const [toggleSeq, setToggleSeq] = useState(0);
+  // Derived during render (state-from-props), not in an effect: an effect
+  // would commit one frame with visible=false and animating=false, unmounting
+  // the sidebar only to remount it — losing its scroll and local state.
+  if (prevVisible !== visible) {
+    setPrevVisible(visible);
+    const animate = !prefersReducedMotion();
+    setAnimating(animate);
+    if (animate) setToggleSeq((n) => n + 1);
+  }
 
   // Layout effect: the hold must be in place before the first animated frame
-  // reaches the panes' ResizeObservers.
+  // reaches the panes' ResizeObservers. A re-toggle mid-animation extends it.
   useLayoutEffect(() => {
-    if (prevVisible.current === visible) return;
-    prevVisible.current = visible;
-    if (prefersReducedMotion()) {
-      setAnimating(false);
-      return;
-    }
-    holdFits(SIDEBAR_TOGGLE_FALLBACK_MS);
-    setAnimating(true);
-  }, [visible]);
+    if (toggleSeq > 0) holdFits(SIDEBAR_TOGGLE_FALLBACK_MS);
+  }, [toggleSeq]);
 
   // transitionend, the fallback timer and unmount all end the animation here.
   useEffect(() => onFitsReleased(() => setAnimating(false)), []);

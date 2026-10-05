@@ -2,7 +2,7 @@
 //
 // A sidebar toggle animates the column's width and holds terminal fits until
 // the transition ends: each pane resizes its PTY exactly once, not per frame.
-import { act } from 'react';
+import { act, useEffect } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SidebarSlot, SIDEBAR_TOGGLE_FALLBACK_MS } from '../SidebarSlot';
@@ -50,11 +50,20 @@ let host: HTMLDivElement;
 let root: Root;
 let reducedMotion = false;
 
+/** Stands in for the Sidebar and counts its mounts. */
+let mounts = 0;
+function Probe() {
+  useEffect(() => {
+    mounts++;
+  }, []);
+  return <div data-stub-sidebar />;
+}
+
 function render(visible: boolean, width = 264) {
   act(() => {
     root.render(
       <SidebarSlot visible={visible} width={width} position="left">
-        <div data-stub-sidebar />
+        <Probe />
       </SidebarSlot>,
     );
   });
@@ -73,6 +82,7 @@ function fireTransitionEnd(target: Element, propertyName: string) {
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'requestAnimationFrame', 'cancelAnimationFrame'] });
   reducedMotion = false;
+  mounts = 0;
   window.matchMedia = ((q: string) => ({ matches: reducedMotion && q.includes('reduce') })) as unknown as typeof window.matchMedia;
   host = document.createElement('div');
   document.body.appendChild(host);
@@ -164,5 +174,37 @@ describe('SidebarSlot fit hold', () => {
     expect(fitsHeld()).toBe(false);
     expect(slot().hasAttribute('data-animating')).toBe(false);
     expect(host.querySelector('[data-stub-sidebar]')).toBeNull();
+  });
+
+  it('a collapse keeps the sidebar mounted (never remounts it)', () => {
+    render(true);
+    expect(mounts).toBe(1);
+    render(false);
+    // Animating from the very render that collapses it: no frame without it.
+    expect(slot().hasAttribute('data-animating')).toBe(true);
+    expect(mounts).toBe(1);
+    fireTransitionEnd(slot(), 'width');
+    expect(host.querySelector('[data-stub-sidebar]')).toBeNull();
+    expect(mounts).toBe(1);
+  });
+
+  it('an expand mounts the sidebar exactly once', () => {
+    render(false);
+    expect(mounts).toBe(0);
+    render(true);
+    expect(mounts).toBe(1);
+    fireTransitionEnd(slot(), 'width');
+    expect(mounts).toBe(1);
+    expect(host.querySelector('[data-stub-sidebar]')).not.toBeNull();
+  });
+
+  it('a re-toggle mid-collapse keeps the same sidebar instance', () => {
+    render(true);
+    render(false);
+    render(true);
+    expect(mounts).toBe(1);
+    expect(fitsHeld()).toBe(true);
+    fireTransitionEnd(slot(), 'width');
+    expect(mounts).toBe(1);
   });
 });

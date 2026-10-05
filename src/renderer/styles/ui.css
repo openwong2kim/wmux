@@ -193,15 +193,10 @@
 
 /* Sidebar collapse/expand (SidebarSlot). The transition exists only while a
  * toggle runs ([data-animating]), so a drag-resize of the width never eases.
- * The duration must match SIDEBAR_TOGGLE_MS. The titlebar's left segment, when
- * present, eases in step with it. */
+ * The duration must match SIDEBAR_TOGGLE_MS. */
 .wmux-sidebar-slot[data-animating] { transition: width 190ms ease-out; }
-.wmux-app-root:has(.wmux-sidebar-slot[data-animating]) .wmux-titlebar-segment {
-  transition: width 190ms ease-out;
-}
 @media (prefers-reduced-motion: reduce) {
-  .wmux-sidebar-slot[data-animating],
-  .wmux-app-root:has(.wmux-sidebar-slot[data-animating]) .wmux-titlebar-segment { transition: none; }
+  .wmux-sidebar-slot[data-animating] { transition: none; }
 }
 
 /* ─── Buttons: shared base ──────────────────────────────────────────────── */

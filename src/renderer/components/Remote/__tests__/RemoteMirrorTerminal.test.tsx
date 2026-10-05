@@ -15,6 +15,7 @@ import { act } from 'react';
 import RemoteMirrorTerminal from '../RemoteMirrorTerminal';
 import { useStore } from '../../../stores';
 import { getLeafPanes } from '../../../../shared/paneUtils';
+import { holdFits, releaseFits } from '../../../utils/layoutTransitionGate';
 
 // One shared log so "before open()" is an assertion about the same clock.
 // Two independent counters would compare cleanly and prove nothing.
@@ -643,6 +644,39 @@ describe('RemoteMirrorTerminal', () => {
       expect(paneResize).toHaveBeenCalledTimes(2);
       expect(paneResize).toHaveBeenLastCalledWith('a1', 100, 48);
       unmount();
+    });
+
+    it('a sidebar toggle asks the remote once, after the transition, not per frame', async () => {
+      const roCallbacks: Array<() => void> = [];
+      vi.stubGlobal('ResizeObserver', class {
+        constructor(cb: () => void) { roCallbacks.push(cb); }
+        observe() {}
+        disconnect() {}
+      });
+      try {
+        const box = { w: 448, h: 726 };
+        const { unmount } = await mountAttached(box, { cols: 36, rows: 44 });
+        expect(paneResize).toHaveBeenCalledTimes(1);
+
+        holdFits(1000);
+        // The animation: the box grows every frame, one frame stalls past the
+        // fit debounce (a busy main thread).
+        for (let f = 1; f <= 12; f++) {
+          box.w = 448 + Math.round((352 * f) / 12);
+          act(() => { roCallbacks.forEach((cb) => cb()); });
+          await act(async () => { await vi.advanceTimersByTimeAsync(f === 6 ? 300 : 16); });
+        }
+        expect(paneResize).toHaveBeenCalledTimes(1);
+
+        act(() => releaseFits()); // transitionend
+        await settle(30_000);
+        expect(paneResize).toHaveBeenCalledTimes(2);
+        expect(paneResize).toHaveBeenLastCalledWith('a1', 100, 48);
+        unmount();
+      } finally {
+        releaseFits();
+        vi.unstubAllGlobals();
+      }
     });
 
     it('a font change while shrunk measures the new ceiling first and ends at the configured font', async () => {
