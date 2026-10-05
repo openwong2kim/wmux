@@ -360,6 +360,13 @@ describe('ClaudeSdkAdapter', () => {
     expect(prompt).toContain('If the operator corrects an escalation you raised');
   });
 
+  it('replies read like chat: 1-3 sentences, lists only when due, one line per hand-off', () => {
+    const flat = buildCommanderSystemPrompt().replace(/\s+/g, ' ');
+    expect(flat).toContain('REPLY STYLE: write like a chat message, 1-3 conversational sentences.');
+    expect(flat).toContain('Use a list only when the operator asked for one or there are 3+ parallel items; no bold headings.');
+    expect(flat).toContain('When you hand work off, say one line ("Handed to <agent> in <workspace>.") and nothing more until the result.');
+  });
+
   it('a hand-off body is the request, its scope and how to verify, with no checkout ceremony', () => {
     const flat = buildCommanderSystemPrompt().replace(/\s+/g, ' ');
     expect(flat).toContain("DELEGATION CONTRACT — a dispatch or hand-off body is the operator's request in plain words, its SCOPE (what the worker must NOT do) and HOW TO VERIFY it.");
