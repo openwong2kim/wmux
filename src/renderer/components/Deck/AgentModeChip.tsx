@@ -38,7 +38,7 @@ export interface AgentModeApi {
 }
 
 /** Order shown in the dropdown, least → most autonomous. */
-const MODE_ORDER: readonly AgentMode[] = ['off', 'assist', 'danger'];
+export const MODE_ORDER: readonly AgentMode[] = ['off', 'assist', 'danger'];
 
 // Per-mode DOT so the CURRENT autonomy state reads at a glance (the chip is the
 // one always-visible answer to "why is it quiet/talking?"). The chip body stays
@@ -83,11 +83,61 @@ function modeText(mode: AgentMode): string {
   return MODE_TEXT[mode] ?? MODE_TEXT.off;
 }
 
-function modeLabel(t: (k: string) => string, mode: AgentMode): string {
+export function modeLabel(t: (k: string) => string, mode: AgentMode): string {
   return t(`deck.mode.${mode}`) || mode;
 }
-function modeDesc(t: (k: string) => string, mode: AgentMode): string {
+export function modeDesc(t: (k: string) => string, mode: AgentMode): string {
   return t(`deck.mode.${mode}Desc`) || '';
+}
+
+/** The workspace's mode and the one way to change it, shared by the chip and
+ *  Moa's options menu. `null` until the first read (or with no api). */
+export function useAgentMode(
+  api: AgentModeApi | undefined,
+  workspaceId: string | undefined,
+): { mode: AgentMode | null; pick: (next: AgentMode) => void } {
+  const [mode, setMode] = useState<AgentMode | null>(null);
+
+  useEffect(() => {
+    if (!api || !workspaceId) {
+      setMode(null);
+      return;
+    }
+    let cancelled = false;
+    api
+      .get(workspaceId)
+      .then((r) => { if (!cancelled) setMode(r.mode ?? 'off'); })
+      .catch(() => { if (!cancelled) setMode('off'); });
+    return () => { cancelled = true; };
+  }, [api, workspaceId]);
+
+  const pick = useCallback(
+    (next: AgentMode) => {
+      if (!api || !workspaceId) return;
+      const prev = mode;
+      setMode(next); // optimistic
+      api
+        .set(workspaceId, next)
+        .then((r) => {
+          if (r.ok && r.mode) setMode(r.mode);
+          else setMode(prev);
+          // Sibling surfaces re-read the mode from main: `off` disables the
+          // composer, so a flip has to reach it without a remount.
+          notifyAgentModeChanged();
+        })
+        .catch(() => {
+          setMode(prev);
+          notifyAgentModeChanged();
+        });
+      // Raising autonomy means the orchestrator is about to rely on lifecycle
+      // signals — if the hook bridge is missing, this is the moment to say so.
+      // The prompt re-checks install status itself (no-op when installed).
+      if (next !== 'off') requestHooksInstallPrompt();
+    },
+    [api, workspaceId, mode],
+  );
+
+  return { mode, pick };
 }
 
 export function AgentModeChip({
@@ -100,7 +150,7 @@ export function AgentModeChip({
   workspaceId: string;
   t: (key: string) => string;
 }): React.ReactElement | null {
-  const [mode, setMode] = useState<AgentMode | null>(null);
+  const { mode, pick: pickMode } = useAgentMode(api, workspaceId);
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   // Where the dropdown fits, measured on every open. The chip lives in a bar at
@@ -112,15 +162,6 @@ export function AgentModeChip({
   // Clamp to whichever side has more room and cap the height there, so every
   // option is always reachable (scrolling when it has to be).
   const [menuFit, setMenuFit] = useState<{ below: boolean; maxHeight: number } | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .get(workspaceId)
-      .then((r) => { if (!cancelled) setMode(r.mode ?? 'off'); })
-      .catch(() => { if (!cancelled) setMode('off'); });
-    return () => { cancelled = true; };
-  }, [api, workspaceId]);
 
   // Measure the room around the chip whenever the menu opens (and on resize,
   // since the deck rail grows/shrinks with the window).
@@ -161,27 +202,9 @@ export function AgentModeChip({
   const pick = useCallback(
     (next: AgentMode) => {
       setOpen(false);
-      const prev = mode;
-      setMode(next); // optimistic
-      api
-        .set(workspaceId, next)
-        .then((r) => {
-          if (r.ok && r.mode) setMode(r.mode);
-          else setMode(prev);
-          // Sibling surfaces re-read the mode from main: `off` disables the
-          // composer, so a flip has to reach it without a remount.
-          notifyAgentModeChanged();
-        })
-        .catch(() => {
-          setMode(prev);
-          notifyAgentModeChanged();
-        });
-      // Raising autonomy means the orchestrator is about to rely on lifecycle
-      // signals — if the hook bridge is missing, this is the moment to say so.
-      // The prompt re-checks install status itself (no-op when installed).
-      if (next !== 'off') requestHooksInstallPrompt();
+      pickMode(next);
     },
-    [api, workspaceId, mode],
+    [pickMode],
   );
 
   if (mode === null) return null; // pre-first-read; avoids a label flash

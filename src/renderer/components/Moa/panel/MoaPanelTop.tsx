@@ -1,6 +1,7 @@
 // The top of Moa's panel: what waits on you (every workspace's pending
-// decision), then the work Moa handed out. Capped so the conversation below
-// always keeps most of the column; it scrolls within its share.
+// decision), then the work Moa handed out. No height of its own: it scrolls
+// with the conversation as one column (the chat draws it at the top of its
+// scroll), so a long card grows instead of hiding behind an inner scrollbar.
 import { Suspense, lazy, useCallback, useMemo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../../stores';
@@ -57,7 +58,7 @@ export function MoaPanelTop({
   );
   return (
     // Focusable so an answer that empties the list has somewhere to put focus.
-    <div data-moa-panel-top tabIndex={-1} className="shrink-0 max-h-[30%] overflow-y-auto outline-none">
+    <div data-moa-panel-top tabIndex={-1} className="shrink-0 outline-none">
       <MoaWaitingOnYou decisions={named} onResolve={onResolve}
         conversationTaskId={conversationTaskId} onOpenConversation={openConversation} t={t} />
       <MoaTaskCards links={cards} pendingDecisions={decisions} workspaceName={workspaceName}
@@ -72,11 +73,11 @@ type RenderChat = NonNullable<NonNullable<CommanderViewProps['moa']>['renderChat
 
 /** CommanderView's chat slot: the transcript chat when main exposes the HQ
  *  transcript, else nothing (the terminal stays the only view). */
-export const renderMoaChat: RenderChat = ({ brainPtyId, busy, onSend, onInterrupt, onTerminal }) => {
+export const renderMoaChat: RenderChat = ({ brainPtyId, busy, onSend, onInterrupt, onTerminal, top }) => {
   if (!window.electronAPI?.deck?.moa?.transcript) return null;
   return (
     <Suspense fallback={null}>
-      <LazyMoaTranscriptChat ptyId={brainPtyId} busy={busy} onSend={onSend} onInterrupt={onInterrupt} onTerminal={onTerminal} />
+      <LazyMoaTranscriptChat ptyId={brainPtyId} busy={busy} onSend={onSend} onInterrupt={onInterrupt} onTerminal={onTerminal} top={top} />
     </Suspense>
   );
 };

@@ -260,6 +260,34 @@ describe('DeckBriefingCard — render guards', () => {
   });
 });
 
+describe("DeckBriefingCard — Moa's panel (omitDecision)", () => {
+  const decision = { id: 'dec-1', question: 'Ship it?', options: [], context: '', status: 'pending' as const, raisedAt: 1 };
+
+  it('renders nothing when the decision was all it had to say (Waiting on you says it)', async () => {
+    const { api } = makeApi({
+      briefing: briefing({ panes: [], pendingDecision: decision, coldStart: true,
+        changed: { finished: [], newlyBlocked: [], errored: [], newDecision: true } }),
+      autoShow: true,
+    });
+    await mount({ api, workspaceId: 'ws-1', omitDecision: true });
+    expect(container.querySelector('[data-deck-briefing]')).toBeNull();
+  });
+
+  it('keeps the rest of the briefing but never restates the decision', async () => {
+    const { api } = makeApi({
+      briefing: briefing({ panes: [pane('p-1', 'running')], pendingDecision: decision, coldStart: true,
+        changed: { finished: ['p-2'], newlyBlocked: [], errored: [], newDecision: true } }),
+      autoShow: true,
+    });
+    await mount({ api, workspaceId: 'ws-1', omitDecision: true, t: (k: string) => k });
+    const card = container.querySelector('[data-deck-briefing]');
+    expect(card).not.toBeNull();
+    expect(container.querySelector('[data-briefing-decision]')).toBeNull();
+    expect(card!.textContent).not.toContain('deck.briefing.headline.decisionOnly');
+    expect(card!.textContent).not.toContain('deck.briefing.delta.newDecision');
+  });
+});
+
 describe('DeckBriefingCard — headline composition (i18n)', () => {
   it('composes the headline from counts via t(), not from a main-supplied string', async () => {
     const panes = [

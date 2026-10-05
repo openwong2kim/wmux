@@ -122,8 +122,13 @@ describe('right panel — Moa running', () => {
     await act(async () => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })));
     expect(send).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'ws-hq', text: 'Status?' }));
 
-    // View as terminal: exactly one embed, of the HQ brain …
-    await act(async () => { (host.querySelector('[data-moa-terminal-toggle]') as HTMLButtonElement).click(); });
+    // No control rows under the header or above the composer: they are all
+    // in the header's ⋯ menu.
+    expect(host.querySelector('[data-agent-mode-chip], [data-deck-new-session], [data-commander-wake-now], .wmux-agent-tools-toggle')).toBeNull();
+    // View as terminal, from the ⋯ menu: exactly one embed, of the HQ brain …
+    const more = host.querySelector('[data-deck-tabs] [data-moa-header-slot] [data-moa-header-more]') as HTMLButtonElement;
+    await act(async () => { more.click(); });
+    await act(async () => { (document.querySelector('[data-pane-menu-action="view"]') as HTMLButtonElement).click(); });
     expect(terminalPty()).toEqual(['pty-hq']);
     // … and it stays the HQ's when the operator looks at another workspace.
     await act(async () => { useStore.setState({ activeWorkspaceId: 'ws-b' }); });

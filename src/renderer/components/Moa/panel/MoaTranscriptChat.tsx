@@ -19,6 +19,7 @@ import Button from '../../ui/Button';
 import { NEEDS_YOU_ROW } from './MoaWaitingOnYou';
 import type { ChatBridgeApi } from '../../../../shared/transcript/turnEvents';
 import type { MoaApproval } from '../../../../shared/moa';
+import '../moa.css';
 
 /** The preload's `deck.moa.transcript` (main reads the HQ brain; no pty id). */
 export type MoaTranscriptApi = NonNullable<NonNullable<NonNullable<Window['electronAPI']>['deck']>['moa']>['transcript'];
@@ -88,6 +89,8 @@ export interface MoaTranscriptChatProps {
   onInterrupt: () => void;
   /** Swap to the terminal view (prompts only the TUI shows). */
   onTerminal: () => void;
+  /** The panel's top sections, drawn first inside the chat's scroll. */
+  top?: React.ReactNode;
   /** Injected in tests; defaults to the preload. */
   api?: MoaTranscriptApi;
   /** Injected in tests; defaults to the preload. */
@@ -96,7 +99,7 @@ export interface MoaTranscriptChatProps {
 
 interface Pending { id: string; text: string; before: ReadonlySet<string> }
 
-export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, onTerminal, api, approvalApi }: MoaTranscriptChatProps) {
+export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, onTerminal, top, api, approvalApi }: MoaTranscriptChatProps) {
   const t = useT();
   const source = api ?? window.electronAPI?.deck?.moa?.transcript;
   const prompts = approvalApi ?? window.electronAPI?.deck?.moa;
@@ -202,11 +205,14 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
             disabled={busy}
             placeholder={t('moa.panel.placeholder')}
             hint={busy ? t('moa.panel.busy') : undefined}
-            history={data.hasMore && !data.loading && (
-              <button type="button" className="wmux-chat-earlier ui-btn" disabled={data.loadingEarlier} onClick={() => void data.loadEarlier()}>
-                {data.loadingEarlier ? t('chat.loading') : t('chat.loadEarlier')}
-              </button>
-            )}
+            history={<>
+              {top && <div className="wmux-moa-chat-top" data-moa-chat-top>{top}</div>}
+              {data.hasMore && !data.loading && (
+                <button type="button" className="wmux-chat-earlier ui-btn" disabled={data.loadingEarlier} onClick={() => void data.loadEarlier()}>
+                  {data.loadingEarlier ? t('chat.loading') : t('chat.loadEarlier')}
+                </button>
+              )}
+            </>}
             // A snapshot that is not there yet (no brain turn so far) reads as
             // a quiet empty conversation, not a connection error.
             welcome={!empty ? null : data.loading

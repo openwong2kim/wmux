@@ -41,6 +41,9 @@ export function MoaTaskCards({
   t: T;
 }): React.ReactElement | null {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
+  // The whole section folds to its heading, so a long list never pushes the
+  // conversation out of reach.
+  const [sectionOpen, setSectionOpen] = useState(true);
   if (links.length === 0) return null;
   const pendingById = new Map(pendingDecisions.map((d) => [d.decision.id, d]));
   const toggle = (id: string) =>
@@ -52,9 +55,22 @@ export function MoaTaskCards({
   return (
     <section data-moa-tasks aria-labelledby="moa-tasks-title" className="px-3 pt-2 pb-1">
       <h3 id="moa-tasks-title" className="m-0 mb-1 text-[13px] font-medium text-[var(--text-main)]">
-        {t('moa.panel.tasksTitle')}
+        <button
+          type="button"
+          aria-expanded={sectionOpen}
+          aria-controls="moa-tasks-list"
+          onClick={() => setSectionOpen((v) => !v)}
+          data-moa-tasks-toggle
+          className={`flex items-center gap-1.5 rounded-md text-left ${FOCUS_RING}`}
+        >
+          <span aria-hidden="true" className={`shrink-0 text-[var(--text-muted)] transition-transform ${sectionOpen ? 'rotate-90' : ''}`}>
+            <IconChevron size={12} />
+          </span>
+          {t('moa.panel.tasksTitle')}
+          <span className="tabular-nums text-[var(--text-sub)] font-normal">{links.length}</span>
+        </button>
       </h3>
-      <ul className="m-0 p-0 list-none flex flex-col">
+      <ul id="moa-tasks-list" hidden={!sectionOpen} className="m-0 p-0 list-none flex flex-col">
         {links.map((link) => {
           const open = expanded.has(link.id);
           const regionId = `moa-task-${link.id}`;
