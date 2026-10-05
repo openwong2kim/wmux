@@ -8,6 +8,7 @@ import {
   isInternalEnvKey,
   isCredentialEnvKey,
   stripCredentialValues,
+  isNestingMarker,
 } from '../envFilter';
 
 describe('isSensitiveEnvKey', () => {
@@ -287,5 +288,46 @@ describe('terminal capability defaults (#680)', () => {
     expect(env.GITHUB_TOKEN).toBeUndefined();
     expect(env.ELECTRON_RUN_AS_NODE).toBeUndefined();
     expect(Object.keys(env).sort()).toEqual(['COLORTERM', 'PATH', 'TERM', 'TERM_PROGRAM'].sort());
+  });
+});
+
+describe('agent-nesting markers', () => {
+  const base: NodeJS.ProcessEnv = {
+    PATH: '/usr/bin',
+    CLAUDE_CODE_CHILD_SESSION: '1',
+    CLAUDECODE: '1',
+    AI_AGENT: 'claude-code',
+    CLAUDE_CODE_SESSION_ID: 'abc',
+    claude_code_entrypoint: 'cli',
+    CLAUDE_CONFIG_DIR: '/Users/me/.claude-work',
+    ANTHROPIC_BASE_URL: 'https://example.invalid',
+    CLAUDE_CODE_EFFORT_LEVEL: 'high',
+  };
+  const markers = ['CLAUDE_CODE_CHILD_SESSION', 'CLAUDECODE', 'AI_AGENT', 'CLAUDE_CODE_SESSION_ID', 'claude_code_entrypoint'];
+
+  it('is an internal (always-strip) key, case-insensitive, without a CLAUDE* sweep', () => {
+    expect(isNestingMarker('claudecode')).toBe(true);
+    expect(isInternalEnvKey('Claude_Code_Child_Session')).toBe(true);
+    expect(isInternalEnvKey('CLAUDE_CONFIG_DIR')).toBe(false);
+    expect(isInternalEnvKey('ANTHROPIC_BASE_URL')).toBe(false);
+    expect(isInternalEnvKey('CLAUDE_CODE_EFFORT_LEVEL')).toBe(false);
+    // Not a profile secret: a profile may set CLAUDE_CODE_SANDBOXED on purpose.
+    expect(isSensitiveEnvKey('CLAUDE_CODE_SANDBOXED')).toBe(false);
+  });
+
+  it.each([
+    ['interactive', buildInteractiveShellEnv],
+    ['gated', buildGatedAutomationEnv],
+  ])('%s builder drops markers and keeps user CLAUDE*/ANTHROPIC* config', (_name, build) => {
+    const env = build(base);
+    for (const key of markers) expect(env[key]).toBeUndefined();
+    expect(env.CLAUDE_CONFIG_DIR).toBe('/Users/me/.claude-work');
+    expect(env.ANTHROPIC_BASE_URL).toBe('https://example.invalid');
+    expect(env.CLAUDE_CODE_EFFORT_LEVEL).toBe('high');
+    expect(env.PATH).toBe('/usr/bin');
+  });
+
+  it('does not report markers as withheld credentials', () => {
+    expect(withheldCredentialNames(base)).toEqual([]);
   });
 });

@@ -21,7 +21,8 @@ import { restoreSeam } from '../shared/restoreSeam';
 import { buildExecArgs } from './execWrapper';
 import { dropMissingAccountDirs, pinAccountEnv } from './phone/paneAccountSpawn';
 import { windowsPowerShellPolicyArgs } from '../shared/pwshExecutionPolicy';
-import { buildSafeChildEnv } from '../shared/envFilter';
+import { buildSafeChildEnv, isNestingMarker } from '../shared/envFilter';
+import { CLAUDE_SANDBOXED_ENV } from '../shared/agentFirstRun';
 import { isMac, parseWindowsBuildNumber } from '../shared/platform';
 import { shouldUseBundledConpty, spawnWithConptyPolicy } from '../shared/conptyWindows';
 import { getWindowsDefaultShell, resolveBareShellName, resolveLaunchableWindowsExe } from '../shared/shellResolution';
@@ -42,15 +43,29 @@ const RESERVED_AUTH_PREFIX = /^WMUX_AUTH/i;
 const RESERVED_PREFIX = /^WMUX_/i;
 
 /**
- * Return a fresh env copy with the daemon's reserved auth-token namespace
- * removed. Applied to every child env regardless of caller (substrate
- * invariant). WMUX_AUTH* is reserved, so this can never drop a legitimate
- * user/profile key.
+ * Return a fresh copy of a caller-supplied env with the keys no caller can
+ * legitimately supply removed. Applied to every supplied env, fresh create and
+ * recovery replay alike (substrate invariant):
+ *  - WMUX_AUTH*: the daemon's RPC auth token must never reach a child.
+ *  - WMUX_SOCKET_PATH: only local (non-daemon) mode sets it; main never forces
+ *    it for a daemon pane and the profile overlay skips WMUX_*. Present here it
+ *    can only be a parent instance's path (a pre-fix persisted blob), which the
+ *    CLI/MCP would try first and fail on with that instance's auth.
+ *  - agent-nesting markers (CLAUDE_CODE_CHILD_SESSION, CLAUDECODE, …): a
+ *    persisted blob written before main stripped them would otherwise replay
+ *    them and turn a claude in the recovered pane into a nested session. The
+ *    one exception is CLAUDE_CODE_SANDBOXED, which wmux sets on purpose for
+ *    fan-out and automation panes (skips claude's folder-trust dialog).
+ * None of these can be an intentional user/profile key, so this cannot strip
+ * one; CLAUDE_CONFIG_DIR and other CLAUDE_* config are untouched.
  */
-function stripReservedAuth(env: Record<string, string>): Record<string, string> {
+function stripReservedSuppliedEnv(env: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(env)) {
     if (RESERVED_AUTH_PREFIX.test(k)) continue;
+    const upper = k.toUpperCase();
+    if (upper === ENV_KEYS.SOCKET_PATH) continue;
+    if (isNestingMarker(k) && upper !== CLAUDE_SANDBOXED_ENV) continue;
     out[k] = v;
   }
   return out;
@@ -461,19 +476,24 @@ export class DaemonSessionManager extends EventEmitter {
     // (a profile can never set it) so this can't strip a user/profile key. This
     // bounds the trusted-env contract: a misbehaving/legacy caller that passes
     // a raw env can at worst leak ITS inherited vars, never wmux's auth token.
+    // The same pass drops WMUX_SOCKET_PATH and agent-nesting markers, which no
+    // caller supplies on purpose either (see stripReservedSuppliedEnv), so new
+    // and recovered panes alike come up without them.
     //
     // The fallback (no supplied env) carries NO caller-forced identity, so it
     // also drops the whole WMUX_* namespace — otherwise a daemon launched from
     // a wmux pane would leak its own inherited WMUX_WORKSPACE_ID/SURFACE_ID/
     // SOCKET_PATH into a session that should have none. Mirrors resolveSpawnEnv.
-    // KNOWN LIMITATION: a supplied env is replayed verbatim (minus AUTH), so a
-    // sessions.json written before the main-side identity-strip fix can still
-    // carry a stale identity on recovery. New sessions persist a clean env;
-    // pre-fix contaminated blobs are accepted rather than migrated (re-deriving
-    // identity on replay would need session→workspace/surface plumbing the
-    // daemon deliberately does not have).
+    // KNOWN LIMITATION: WMUX_WORKSPACE_ID / WMUX_SURFACE_ID /
+    // WMUX_WORKSPACE_NAME are replayed as persisted. They are spawn-time stamps:
+    // a sessions.json written before the main-side identity-strip fix can carry
+    // a parent pane's ids, and a pane later adopted into another workspace or
+    // onto a new surface keeps its old ids (MEMBER_ID / PTY_ID are the session
+    // id, which recovery keeps, so they stay correct). Re-deriving them on
+    // replay would need session→workspace/surface plumbing the daemon
+    // deliberately does not have.
     const env = params.env
-      ? stripReservedAuth(params.env)
+      ? stripReservedSuppliedEnv(params.env)
       : stripReservedNamespace(buildSafeChildEnv(globalThis.process.env));
 
     // X6 ③: stamp the pane's own daemon session id into its env so the Claude
@@ -488,8 +508,8 @@ export class DaemonSessionManager extends EventEmitter {
 
     // Instance-isolation suffix: force the child onto THIS daemon's instance (its
     // own inherited WMUX_DATA_SUFFIX), overriding whatever a replayed session.env
-    // blob carried. The recovery path above runs stripReservedAuth, which strips
-    // only WMUX_AUTH* — so a persisted (or hand-edited) WMUX_DATA_SUFFIX would
+    // blob carried. The recovery path above runs stripReservedSuppliedEnv, which
+    // keeps the rest of WMUX_* — so a persisted (or hand-edited) WMUX_DATA_SUFFIX would
     // otherwise survive verbatim and could point a recovered pane at a DIFFERENT
     // instance's control pipe. Sourced ONLY from the daemon's own process.env (the
     // authoritative instance key, inherited from main at spawn), never a child-

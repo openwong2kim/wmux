@@ -33,6 +33,40 @@ const INTERNAL_EXACT: ReadonlySet<string> = new Set([
   'ELECTRON_RUN_AS_NODE',
 ]);
 
+// ── Agent-nesting markers: always strip (part of the INTERNAL class) ─────
+// What a running agent session stamps on its children. A wmux started from
+// inside Claude Code inherits them, and a claude in one of its panes would then
+// treat itself as a nested session: it stops writing its transcript, so the
+// conversation cannot be resumed, or it reports to the parent's sockets.
+// Exact names and narrow prefixes only — never a /^CLAUDE/ sweep: user config
+// such as CLAUDE_CONFIG_DIR (the account dir) and endpoints/credentials
+// (ANTHROPIC_BASE_URL, CLAUDE_CODE_USE_BEDROCK, …) must survive.
+const NESTING_MARKERS: ReadonlySet<string> = new Set([
+  'CLAUDECODE',
+  'AI_AGENT',
+  'CLAUDE_PID',
+  'CLAUDE_PROJECT_DIR',
+  'CLAUDE_ENV_FILE',
+  'CLAUDE_CODE_ENTRYPOINT',
+  'CLAUDE_CODE_SSE_PORT',
+  'CLAUDE_CODE_CHILD_SESSION',
+  'CLAUDE_CODE_EXECPATH',
+  'CLAUDE_CODE_SANDBOXED',
+  // What a running claude exports to its hooks and Bash (claude 2.1.288).
+  'CLAUDE_EFFORT',
+]);
+const NESTING_MARKER_PREFIXES: ReadonlyArray<string> = [
+  'CLAUDE_CODE_SESSION_',
+  'CLAUDE_CODE_MESSAGING_',
+  'CLAUDE_AGENT_SDK_',
+];
+
+/** Is `key` an agent-nesting marker? Case-insensitive. */
+export function isNestingMarker(key: string): boolean {
+  const upper = key.toUpperCase();
+  return NESTING_MARKERS.has(upper) || NESTING_MARKER_PREFIXES.some((prefix) => upper.startsWith(prefix));
+}
+
 // ── CREDENTIAL: gated 스폰에서만 strip ───────────────────────────────────
 const CREDENTIAL_PATTERNS: ReadonlyArray<RegExp> = [
   /_TOKEN$/,        // GITHUB_TOKEN, NPM_TOKEN, …
@@ -117,14 +151,20 @@ function applyTerminalCapabilityDefaults(env: Record<string, string>): void {
   forceTerminalIdentity(env);
 }
 
-/**
- * wmux/Electron/빌드 내부 변수인가 — 두 정책 모두에서 strip 대상.
- * 매칭은 case-insensitive(키를 대문자화) — 소문자 우회를 막는다.
- */
-export function isInternalEnvKey(key: string): boolean {
+/** wmux/Electron/build-tooling internals (case-insensitive). */
+function isWmuxInternalKey(key: string): boolean {
   const k = key.toUpperCase();
   if (INTERNAL_EXACT.has(k)) return true;
   return INTERNAL_PATTERNS.some((re) => re.test(k));
+}
+
+/**
+ * Stripped under both policies: wmux/Electron/build internals plus
+ * agent-nesting markers. Case-insensitive, so a lower-case spelling cannot
+ * slip through.
+ */
+export function isInternalEnvKey(key: string): boolean {
+  return isWmuxInternalKey(key) || isNestingMarker(key);
 }
 
 /**
@@ -144,7 +184,11 @@ export function isCredentialEnvKey(key: string): boolean {
  * dropSecretKeys가 이 의미에 의존). 테스트용으로 노출.
  */
 export function isSensitiveEnvKey(key: string): boolean {
-  return isInternalEnvKey(key) || isCredentialEnvKey(key);
+  // Nesting markers are deliberately left out: this predicate is also the
+  // workspace-profile secret-name policy, and a profile that sets e.g.
+  // CLAUDE_CODE_SANDBOXED on purpose must not be flagged as a secret. The
+  // profile overlay runs after the spawn filter, so such a value still lands.
+  return isWmuxInternalKey(key) || isCredentialEnvKey(key);
 }
 
 /** baseEnv에서 `drop(key)`가 참인 키와 undefined 값을 뺀 fresh 사본. */
@@ -182,7 +226,7 @@ export function buildInteractiveShellEnv(
 export function buildGatedAutomationEnv(
   baseEnv: NodeJS.ProcessEnv = globalThis.process.env,
 ): Record<string, string> {
-  const env = buildFilteredEnv(baseEnv, isSensitiveEnvKey);
+  const env = buildFilteredEnv(baseEnv, (key) => isInternalEnvKey(key) || isCredentialEnvKey(key));
   applyTerminalCapabilityDefaults(env);
   return env;
 }
