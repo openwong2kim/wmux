@@ -84,6 +84,12 @@ const EXPECTED: Record<string, { looksLikePrompt: boolean; parsed: Parsed | null
     looksLikePrompt: true,
     parsed: { tool: 'Bash', options: 3, active: true, topRuleFound: true, answerable: true },
   },
+  // The same layout with a command short enough to draw without the gutter:
+  // the "Bash command" title says the box holds the command.
+  'claude-bash-boxed-02-short.json': {
+    looksLikePrompt: true,
+    parsed: { tool: 'Bash', options: 3, active: true, topRuleFound: true, answerable: true },
+  },
   // No digits: arrows + Enter only.
   'claude-bypass-warning-menu.json': { looksLikePrompt: false, parsed: null },
   // #1567: the wrapped option 2 is one option now, so "3. No" is kept and the

@@ -309,6 +309,47 @@ describe('Claude Code 2.1.289: the command boxed between dashed rules', () => {
     expect(dialogMatchesToolCall(p, { name: 'Bash', command: `${command} && rm -rf /` }, { topCut: true })).toBe(false);
   });
 
+  it('a command short enough to need no gutter is still the command, under a "<Tool> command" title', () => {
+    const short = [
+      '──────────────────────────────────────────────────',
+      ' Bash command',
+      ' Run shell command',
+      '╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌',
+      ' node math.test.js',
+      '╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌',
+      ' This command requires approval',
+      '',
+      ' Do you want to proceed?',
+      ' ❯ 1. Yes',
+      '   2. No',
+      '',
+      ' Esc to cancel · Tab to amend',
+    ];
+    const p = parseTerminalPrompt(short, { cols: 50 })!;
+    expect(p).toMatchObject({ title: 'Bash command', commandFull: 'node math.test.js', reason: 'This command requires approval' });
+    // A call with no description of its own: Claude's label is not compared.
+    expect(dialogMatchesToolCall(p, { name: 'Bash', command: 'node math.test.js' })).toBe(true);
+    expect(dialogMatchesToolCall(p, { name: 'Bash', command: 'node other.js' })).toBe(false);
+  });
+
+  it('a dashed box under any other title (an Edit dialog\'s diff) is not this layout', () => {
+    const edit = [
+      '──────────────────────────────────────────────────',
+      ' Edit file',
+      ' notes.txt',
+      '╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌',
+      ' 2 -beta',
+      ' 2 +BETA',
+      '╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌',
+      ' Do you want to make this edit to notes.txt?',
+      ' ❯ 1. Yes',
+      '   2. No',
+      '',
+      ' Esc to cancel · Tab to amend',
+    ];
+    expect(parseTerminalPrompt(edit, { cols: 50 })?.title).not.toBe('Edit file');
+  });
+
   it('a dashed box with a non-gutter row inside is not this layout', () => {
     const odd = [...BOXED];
     odd[5] = ' result = m.subtract(5, 3);';

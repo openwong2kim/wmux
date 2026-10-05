@@ -1,0 +1,46 @@
+{
+  "tui": "claude",
+  "version": "Claude Code 2.1.289",
+  "cols": 50,
+  "rows": 22,
+  "modes": [
+    "1000",
+    "1002",
+    "1003",
+    "1004",
+    "1006",
+    "1049",
+    "2004",
+    "2031"
+  ],
+  "cursor": [
+    3,
+    18
+  ],
+  "keysSent": "(prompt drawn)",
+  "note": "Bash permission, 2.1.289 boxed command too short for the gutter: bare row between dashed rules, 50 columns",
+  "screen": [
+    "          -5, '",
+    "     … +8 lines ",
+    "     ",
+    "⏺ 테스트를 실행합니다.",
+    "     ",
+    "⏺ Running node math.test.js",
+    "  ⎿  $ node math.test.js",
+    "",
+    "──────────────────────────────────────────────────",
+    " Bash command",
+    " Run shell command",
+    "╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+    " node math.test.js",
+    "╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+    " This command requires approval",
+    "",
+    " Do you want to proceed?",
+    " ❯ 1. Yes",
+    "   2. Yes, and don’t ask again for: node *",
+    "   3. No",
+    "",
+    " Esc to cancel · Tab to amend"
+  ]
+}

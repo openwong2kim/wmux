@@ -329,20 +329,31 @@ function boxedCommand(
 ): BoxedCommand | null {
   if (lower < 0 || lower >= q || !DASHED_RULE.test(lines[lower]!.trim())) return null;
   let upper = lower - 1;
+  let rows = 0;
   let gutter = 0;
   for (; upper >= 0; upper--) {
     const text = lines[upper]!.trim();
     if (DASHED_RULE.test(text)) break;
     if (!text) continue;
-    if (!GUTTER.test(text)) return null;
-    gutter++;
+    rows++;
+    if (GUTTER.test(text)) gutter++;
   }
-  if (upper < 0 || gutter === 0) return null;
+  if (upper < 0 || rows === 0) return null;
+  // Gutter rows are the command whatever surrounds them. A short command is
+  // drawn without the gutter: then only the "<Tool> command" title says the
+  // box holds a command (an Edit dialog's dashed edges hold its diff).
+  const allGutter = gutter === rows;
   for (let i = upper - 1; i >= 0; i--) {
     const line = lines[i]!;
-    if (isTopRule(line)) return DASHED_RULE.test(line.trim()) ? null : { top: i, upper, lower };
+    if (!isTopRule(line)) continue;
+    if (DASHED_RULE.test(line.trim())) return null;
+    if (allGutter) return { top: i, upper, lower };
+    const title = lines.slice(i + 1, upper).find((l) => l.trim().length > 0);
+    return gutter === 0 && title !== undefined && toolFromDialogTitle(normalizePromptText(title)) !== undefined
+      ? { top: i, upper, lower }
+      : null;
   }
-  return { top: -1, upper, lower };
+  return allGutter ? { top: -1, upper, lower } : null;
 }
 
 /** The boxed layout read as the usual record: the first prose row is the
