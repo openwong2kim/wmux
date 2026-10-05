@@ -265,6 +265,9 @@ export function registerDeckRpc(router: RpcRouter, getWindow: GetWindow, deps: D
     // request with an older completion verdict.
     const completed = completeActiveDeckWork(ws, work);
     if (!completed) return { ok: false, error: 'active_work_changed' };
+    // The job is done: hand-off cards Moa raised for it and the operator never
+    // answered are moot, and would keep "Waiting on you" above zero.
+    if (handoffs && ws === getHqWorkspaceId()) await handoffs.closeMootCards(ws).catch(() => 0);
     return { ok: true, workId: work.id, summary, verification };
   });
 

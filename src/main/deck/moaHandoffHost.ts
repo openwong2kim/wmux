@@ -122,13 +122,19 @@ export function createMoaHandoffService(opts: {
       const snap = getWorkspaceMirror().getFleetSnapshot(workspaceId);
       if (!snap || Date.now() - snap.ts > DEFAULT_MAX_SNAPSHOT_AGE_MS) return undefined;
       const pane = snap.panes.find((p) => p.ptyId === ptyId);
-      return pane ? pane.agentStatus === 'running' : undefined;
+      // A permission prompt is mid-turn: the agent is still busy with it.
+      return pane ? pane.agentStatus === 'running' || pane.agentStatus === 'awaiting_input' : undefined;
     },
     agentSample: (workspaceId, ptyId) => {
       const snap = getWorkspaceMirror().getFleetSnapshot(workspaceId);
       if (!snap || Date.now() - snap.ts > DEFAULT_MAX_SNAPSHOT_AGE_MS) return undefined;
       const pane = snap.panes.find((p) => p.ptyId === ptyId);
-      return pane ? { busy: pane.agentStatus === 'running', at: snap.ts } : undefined;
+      if (!pane) return undefined;
+      return {
+        busy: pane.agentStatus === 'running',
+        ...(pane.agentStatus === 'awaiting_input' ? { blocked: true } : {}),
+        at: snap.ts,
+      };
     },
     ...(opts.onOperatorCancel ? { onOperatorCancel: opts.onOperatorCancel } : {}),
     decisions: {

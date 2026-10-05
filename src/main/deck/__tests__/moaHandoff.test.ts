@@ -162,13 +162,18 @@ describe('moa hand-off — the card', () => {
   });
 
   it('warns on the card when the agent folds newlines or is mid-turn', async () => {
-    const r = rig();
+    let busy = true;
+    const r = rig({ agentBusy: () => busy });
     r.state.target = target({ agentName: 'some-cli', agentStatus: 'running' });
     await propose(r);
     const d = r.slots.get(SEAL)!;
     expect(d.context).toMatch(/takes one line/);
     expect(d.context).toMatch(/will queue/);
     expect(r.svc.cardInfo(d.id)).toMatchObject({ foldsNewlines: true, willQueue: true });
+    // "Working right now" follows the agent's live status, not the moment
+    // Moa proposed: once its turn ended the card stops saying so.
+    busy = false;
+    expect(r.svc.cardInfo(d.id)).toMatchObject({ willQueue: false });
   });
 });
 
@@ -282,11 +287,12 @@ describe('moa hand-off — danger mode without a click', () => {
   });
 
   it('over the hourly limit asks with a card', async () => {
-    const r = rig({ autoPerHour: () => 2 });
+    // A pane per hand-off: one pane holds one working hand-off at a time.
+    const r = rig({ autoPerHour: () => 2, resolveTarget: async (sel) => target({ ptyId: sel.ptyId, paneId: `pane-${sel.ptyId}` }) });
     danger(r);
-    expect(await propose(r)).toMatchObject({ mode: 'auto' });
-    expect(await propose(r)).toMatchObject({ mode: 'auto' });
-    expect(await propose(r)).toMatchObject({ mode: 'card' });
+    expect(await propose(r, undefined, { ptyId: 'pty-1' })).toMatchObject({ mode: 'auto' });
+    expect(await propose(r, undefined, { ptyId: 'pty-2' })).toMatchObject({ mode: 'auto' });
+    expect(await propose(r, undefined, { ptyId: 'pty-3' })).toMatchObject({ mode: 'card' });
   });
 
   it('Stop interrupts the worker and cancels the task', async () => {
@@ -435,8 +441,9 @@ describe('moa hand-off — the worker reports back', () => {
   it('wmux ending a task (pane gone, or replaced by a newer hand-off) is marked as such; the operator\'s Stop is not', async () => {
     const r = rig();
     const first = await delivered(r);
-    // A newer hand-off to the same pane replaces the open one.
+    // A newer hand-off to the same pane (answering its question) replaces the open one.
     r.slots.clear();
+    await r.svc.onWorkerStop('pty-1', 'claude', { text: 'Which one?', endsWithQuestion: true });
     await propose(r, 'A follow-up task.');
     await r.svc.resolve(SEAL, r.slots.get(SEAL)!.id, 'handoff');
     expect(r.svc.handoffDetail(first)).toEqual({ internalCancel: 'replaced' });
@@ -493,9 +500,9 @@ describe('moa hand-off — review fixes', () => {
   };
 
   it('parallel proposals cannot pass the hourly limit together', async () => {
-    const r = rig({ autoPerHour: () => 1 });
+    const r = rig({ autoPerHour: () => 1, resolveTarget: async (sel) => target({ ptyId: sel.ptyId, paneId: `pane-${sel.ptyId}` }) });
     danger(r);
-    const [a, b] = await Promise.all([propose(r), propose(r)]);
+    const [a, b] = await Promise.all([propose(r, undefined, { ptyId: 'pty-1' }), propose(r, undefined, { ptyId: 'pty-2' })]);
     expect([a, b].map((x) => (x.ok ? x.mode : x.error)).sort()).toEqual(['auto', 'card']);
   });
 
@@ -532,6 +539,8 @@ describe('moa hand-off — review fixes', () => {
     await propose(r);
     await r.svc.resolve(SEAL, r.slots.get(SEAL)!.id, 'handoff');
     const first = (r.deliver.mock.calls[0][0] as { presetTaskId: string }).presetTaskId;
+    // The worker asked a question: a follow-up is how it gets answered.
+    await r.svc.onWorkerStop('pty-1', 'claude', { text: 'Which module?', endsWithQuestion: true });
     await propose(r, 'Second job: answer to your question.');
     await r.svc.resolve(SEAL, r.slots.get(SEAL)!.id, 'handoff');
     const second = (r.deliver.mock.calls[1][0] as { presetTaskId: string }).presetTaskId;
@@ -691,5 +700,93 @@ describe('moa hand-off — live dogfood findings', () => {
     expect(r.svc.handoffTaskStatus(taskId)).toBe('settled');
     expect(r.svc.waitingOnHandoff(HQ)).toBe(false);
     expect(r.svc.handoffTaskStatus('task-other')).toBeNull();
+  });
+});
+
+describe('moa hand-off — no wrong wakes, no stale cards', () => {
+  async function delivered(r: Rig): Promise<string> {
+    await propose(r);
+    await r.svc.resolve(SEAL, r.slots.get(SEAL)!.id, 'handoff');
+    return (r.deliver.mock.calls[0][0] as { presetTaskId: string }).presetTaskId;
+  }
+
+  it('a worker sitting on a permission prompt has not ended its turn (the run\'s exact sequence)', async () => {
+    // Delivered → running → Bash prompt → running → second prompt → running → idle.
+    let status = 'idle' as 'idle' | 'running' | 'awaiting_input';
+    let n = 0;
+    const r = rig({
+      agentBusy: () => status !== 'idle',
+      agentSample: () => ({ busy: status === 'running', ...(status === 'awaiting_input' ? { blocked: true } : {}), at: Date.now() + ++n }),
+    });
+    const taskId = await delivered(r);
+    const steps: Array<typeof status> = ['running', 'awaiting_input', 'running', 'awaiting_input', 'awaiting_input', 'running'];
+    for (const s of steps) {
+      status = s;
+      expect(await r.svc.sweepTurnEnds()).toEqual([]);
+    }
+    // Moa may not close the task while the worker waits on a prompt.
+    status = 'awaiting_input';
+    await r.svc.onWorkerStop('pty-1', 'claude', { text: 'Done.', endsWithQuestion: false });
+    expect(await r.svc.requesterComplete(HQ, taskId)).toEqual({ ok: false, code: 'target_working' });
+    status = 'running';
+    await r.svc.sweepTurnEnds();
+    // The real turn end wakes once.
+    status = 'idle';
+    expect(await r.svc.sweepTurnEnds()).toEqual([{ hq: HQ, taskId }]);
+    expect(await r.svc.sweepTurnEnds()).toEqual([]);
+  });
+
+  it('a second proposal for a pane whose hand-off is still working is refused, and raises no card', async () => {
+    const r = rig();
+    const taskId = await delivered(r);
+    const res = await propose(r, 'Report the result of the subtract task.');
+    expect(res).toMatchObject({ ok: false, error: 'task_open' });
+    expect(r.slots.has(SEAL)).toBe(false);
+    // Once the task is done, a new job for that pane is a card again.
+    r.svc.noteTaskState(taskId, 'completed');
+    expect(await propose(r, 'A new job.')).toMatchObject({ ok: true, mode: 'card' });
+  });
+
+  it('a card for a pane whose task completes is taken down (requester close)', async () => {
+    const r = rig();
+    const taskId = await delivered(r);
+    // A follow-up card raised while the worker was asking a question.
+    await r.svc.onWorkerStop('pty-1', 'claude', { text: 'Add a test too?', endsWithQuestion: true });
+    expect(await propose(r, 'Yes, add one test.')).toMatchObject({ ok: true, mode: 'card' });
+    const card = r.slots.get(SEAL)!;
+    expect(r.svc.waitingOnHandoff(HQ)).toBe(true);
+    // The task completes (the worker's own close, seen as an A2A event).
+    r.svc.noteTaskState(taskId, 'completed');
+    await vi.waitFor(() => expect(r.svc.cardInfo(card.id)).toBeNull());
+    expect(r.slots.has(SEAL)).toBe(false);
+    expect(r.svc.byDecision(card.id)).toBeNull();
+  });
+
+  it('finishing the job (deck_complete_work) takes down every unanswered card Moa raised', async () => {
+    const r = rig();
+    await propose(r);
+    const card = r.slots.get(SEAL)!;
+    expect(await r.svc.closeMootCards('ws-other-hq')).toBe(0);
+    expect(r.slots.get(SEAL)).toBe(card);
+    expect(await r.svc.closeMootCards(HQ)).toBe(1);
+    expect(r.slots.has(SEAL)).toBe(false);
+    expect(r.svc.waitingOnHandoff(HQ)).toBe(false);
+    // The record is not pending any more after a restart either.
+    expect(rig({}, r.file).svc.cardInfo(card.id)).toBeNull();
+  });
+
+  it('the requester close takes down that pane\'s card too', async () => {
+    let busy = false;
+    const r = rig({ agentBusy: () => busy });
+    const taskId = await delivered(r);
+    await r.svc.onWorkerStop('pty-1', 'claude', { text: 'Which file?', endsWithQuestion: true });
+    await propose(r, 'math.js.');
+    expect(r.slots.has(SEAL)).toBe(true);
+    // Back to working, the worker finishes; Moa closes the task.
+    r.svc.noteTaskState(taskId, 'working');
+    await r.svc.onWorkerStop('pty-1', 'claude', { text: 'Added subtract.', endsWithQuestion: false });
+    busy = false;
+    expect(await r.svc.requesterComplete(HQ, taskId)).toMatchObject({ ok: true });
+    expect(r.slots.has(SEAL)).toBe(false);
   });
 });

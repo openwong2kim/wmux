@@ -359,4 +359,16 @@ describe('deck.completeWork — Moa hand-off tasks', () => {
     statusOf.set('task-h', 'settled');
     expect(await complete()).toMatchObject({ ok: true });
   });
+
+  it('finishing Moa\'s job takes down its unanswered hand-off cards', async () => {
+    const closeMootCards = vi.fn(async () => 1);
+    setMoaHandoffService({ handoffTaskStatus: () => 'settled', closeMootCards } as never);
+    hqRef.current = WS;
+    try {
+      expect(await complete()).toMatchObject({ ok: true });
+      expect(closeMootCards).toHaveBeenCalledWith(WS);
+    } finally {
+      hqRef.current = null;
+    }
+  });
 });
