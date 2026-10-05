@@ -135,7 +135,7 @@ export function MoaTaskCards({
                     <div data-moa-task-a2a>{t('moa.panel.a2aLine', { state: t(`moa.panel.a2a.${link.a2aState}`) })}</div>
                   )}
                   {fromMoa && link.lastQuestion && (
-                    <div data-moa-task-last-question className="max-h-[120px] overflow-y-auto whitespace-pre-wrap break-words">
+                    <div data-moa-task-last-question className="whitespace-pre-wrap break-words">
                       {t('moa.panel.lastQuestion', { text: link.lastQuestion.text })}
                     </div>
                   )}

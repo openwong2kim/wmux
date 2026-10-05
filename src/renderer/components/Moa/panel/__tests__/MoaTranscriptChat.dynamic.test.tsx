@@ -123,7 +123,7 @@ describe('MoaTranscriptChat', () => {
     }
   });
 
-  it('with Moa idle, folded activity can still be opened; a failed call is never hidden', async () => {
+  it('with Moa idle, folded activity can still be opened, labelled as activity (not as working); failed calls fold with it', async () => {
     const slot = document.createElement('div');
     document.body.append(slot);
     setDeckHeaderSlot(slot);
@@ -139,16 +139,18 @@ describe('MoaTranscriptChat', () => {
       const toggle = slot.querySelector('[data-moa-working-toggle]') as HTMLButtonElement;
       expect(toggle).not.toBeNull();
       expect(toggle.dataset.busy).toBeUndefined();
+      expect(toggle.getAttribute('aria-label')).toBe('moa.panel.activityShowIdle');
       await act(async () => { toggle.click(); });
       expect((host.querySelector('[data-moa-chat]') as HTMLElement).dataset.activity).toBe('shown');
     } finally {
       setDeckHeaderSlot(null);
       slot.remove();
     }
-    // The hide rule covers the fold and the working line, never a tool row.
+    // The hide rule covers the fold, the working line and a failed tool row
+    // (Moa's own retry): the operator reads replies, not tool errors.
     const css = readFileSync(path.join(__dirname, '../../moa.css'), 'utf8');
     const rule = css.slice(css.indexOf('[data-moa-chat][data-activity="hidden"]'));
-    expect(rule.slice(0, rule.indexOf('}'))).not.toContain('.wmux-chat-tool');
+    expect(rule.slice(0, rule.indexOf('}'))).toContain('.wmux-chat-tool');
   });
 
   it('an empty result answer (a transient miss) is asked again instead of remembered', async () => {
@@ -172,7 +174,7 @@ describe('MoaTranscriptChat', () => {
     }
   });
 
-  it('a delegated task that finished shows a result card where it finished, with its result and a jump', async () => {
+  it('a delegated task that finished, before Moa closed the work, shows its report card where it finished: not checked by Moa, the agent\'s words folded', async () => {
     const { api } = fakeApi();
     const link = {
       id: 'l1', origin: 'moa', title: 'Add subtract to math.js', a2aTaskId: 't1', owner: { workspaceId: 'ws-w', paneId: 'p1' },
@@ -185,11 +187,16 @@ describe('MoaTranscriptChat', () => {
     const card = host.querySelector('[data-moa-result-card="l1"]') as HTMLElement;
     expect(card).not.toBeNull();
     expect(resultApi.taskResult).toHaveBeenCalledWith({ workspaceId: 'ws-w', taskId: 't1' });
-    expect(card.textContent).toContain('Add subtract to math.js');
+    const report = card.closest('[data-moa-report]') as HTMLElement;
+    expect(report.querySelector('[data-moa-report-title]')?.textContent).toBe('Add subtract to math.js');
+    expect(report.querySelector('[data-moa-report-checked]')?.getAttribute('data-moa-report-checked')).toBe('agent');
+    // The agent's own words: folded, rendered as text (markdown), not raw.
+    const details = card.querySelector('[data-moa-result-details]') as HTMLDetailsElement;
+    expect(details.open).toBe(false);
     expect(card.querySelector('[data-moa-result-summary]')?.textContent).toBe('subtract() added');
-    expect(card.querySelector('[data-moa-result-checks]')?.textContent).toBe('moa.result.checks');
     expect(card.querySelector('[data-moa-result-files]')?.textContent).toBe('math.js');
-    expect(card.querySelector('[data-moa-result-open]')).not.toBeNull();
+    expect(card.querySelector('[data-moa-result-open]')?.textContent).toBe('moa.panel.openPane');
+    expect(host.textContent).not.toContain('moa.result.checks');
     // Placed by time: after the user row (ts 1), before the reply (ts 2).
     const order = [...host.querySelectorAll('.wmux-chat-user, [data-moa-result-card], .wmux-chat-assistant')].map((n) => n.matches('[data-moa-result-card]') ? 'card' : n.matches('.wmux-chat-user') ? 'user' : 'reply');
     expect(order).toEqual(['user', 'card', 'reply']);
@@ -444,5 +451,156 @@ describe('tidyMoaUserText', () => {
       { id: '4', kind: 'assistant_text', text: '<pasted_content id="c">quoted</pasted_content>' },
     ], 'Instructions sent to Moa');
     expect(out.map((e) => e.text)).toEqual(['Instructions sent to Moa', 'Instructions sent to Moa', 'plain', '<pasted_content id="c">quoted</pasted_content>']);
+  });
+});
+
+// The sequence from a real run (2026-10-05): a cross-workspace request, a
+// refused direct send, a hand-off, a wake, Moa checking the file, the
+// delegation finishing, and Moa closing the work with its final reply.
+const RUN_LINK = {
+  id: 'l1', origin: 'moa', title: 'math.js에 빼기 함수 추가', a2aTaskId: 't-run', owner: { workspaceId: 'ws-demo', paneId: 'p1' },
+  state: 'done', decisionIds: [], createdAt: 1, updatedAt: 11.5,
+};
+const tool = (id: string, toolUseId: string, name: string, inline: string, ts: number) =>
+  ({ id, kind: 'tool_use', toolUseId, name, argSummary: name, input: { n: 1, bytes: inline.length, inline }, ts }) as unknown as TurnEvent;
+const toolResult = (id: string, toolUseId: string, ok: boolean, inline: string, ts: number) =>
+  ({ id, kind: 'tool_result', toolUseId, ok, bytes: inline.length, output: { n: 1, bytes: inline.length, inline }, ts }) as unknown as TurnEvent;
+const RUN: TurnEvent[] = [
+  { id: 'u1', kind: 'user_text', text: 'math.js에 빼기 함수 추가해줘', ts: 1 },
+  tool('t1', 'x1', 'mcp__wmux__terminal_send', '{}', 2),
+  toolResult('r1', 'x1', false, 'cross-workspace send refused', 3),
+  { id: 'a1', kind: 'assistant_text', text: 'Proposing the handoff to the agent in the other workspace, since direct send was refused.', ts: 4 },
+  tool('t2', 'x2', 'mcp__wmux__moa_propose_handoff', '{"title":"math.js에 빼기 함수 추가"}', 5),
+  toolResult('r2', 'x2', true, '{"ok":true,"id":"h1"}', 6),
+  { id: 'a2', kind: 'assistant_text', text: '승인 카드를 올렸습니다.', ts: 7, turnComplete: true },
+  { id: 'w1', kind: 'user_text', text: '[pane-events] stop', ts: 8 },
+  { id: 'a3', kind: 'assistant_text', text: "I have the checkout path, so I'll read math.js directly.", ts: 9 },
+  tool('t3', 'x3', 'Read', '{}', 10),
+  toolResult('r3', 'x3', true, 'export function subtract', 10.5),
+  { id: 'a4', kind: 'assistant_text', text: 'Verified: subtract exists. Closing the task and the work.', ts: 11 },
+  tool('t4', 'x4', 'mcp__wmux__deck_complete_work', '{"summary":"math.js에 subtract(a,b)를 추가함","verification":"math.js 2행을 직접 읽어 확인"}', 12),
+  toolResult('r4', 'x4', true, '{"ok":true}', 12.5),
+  { id: 'a5', kind: 'assistant_text', text: 'math.js에 `subtract(a,b)`를 추가했습니다.', ts: 13, turnComplete: true },
+];
+
+describe('MoaTranscriptChat — one job, one report', () => {
+  async function renderRun() {
+    const { api } = fakeApi({ snapshot: vi.fn(async () => ({ events: RUN, cursor, hasMore: false, truncatedHead: false })) as never });
+    const linksApi = { list: vi.fn(async () => [RUN_LINK]), onChanged: vi.fn(() => () => undefined) };
+    const resultApi = { taskResult: vi.fn(async () => ({ result: { summary: '**✓ 완료**\n\n| 항목 | 내용 |\n|---|---|\n| math.js | subtract 추가 |', verified: 0, checks: 1, files: ['math.js'] } })) };
+    await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} linksApi={linksApi as never} resultApi={resultApi} />));
+    for (let i = 0; i < 3; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+  }
+  const visibleReplies = () => [...host.querySelectorAll('.wmux-chat-assistant .wmux-chat-prose')]
+    .filter((n) => !n.closest('.wmux-chat-activity') && !n.closest('.wmux-chat-thinking'))
+    .map((n) => n.textContent);
+
+  it('the turn that closed the work draws ONE report: Moa\'s reply, what Moa checked, the agent\'s report folded, a jump', async () => {
+    await renderRun();
+    const reports = host.querySelectorAll('[data-moa-report]');
+    expect(reports).toHaveLength(1);
+    const report = reports[0] as HTMLElement;
+    expect(report.querySelector('[data-moa-report-reply]')?.textContent).toContain('subtract(a,b)');
+    const checked = report.querySelector('[data-moa-report-checked]') as HTMLElement;
+    expect(checked.dataset.moaReportChecked).toBe('moa');
+    expect(checked.textContent).toBe('moa.report.checked');
+    // The delegation's result lives inside the report, never as a card of its own.
+    expect(host.querySelectorAll('[data-moa-result-card]')).toHaveLength(1);
+    expect(report.querySelector('[data-moa-result-card="l1"]')).not.toBeNull();
+    // Its markdown is rendered (a table), not shown as raw pipes.
+    expect(report.querySelector('[data-moa-result-summary] table')).not.toBeNull();
+    expect(report.querySelector('[data-moa-result-summary]')?.textContent).not.toContain('|');
+    expect(report.querySelector('[data-moa-result-open]')).not.toBeNull();
+    // No separate "Work completed" card, and the reply is not drawn twice.
+    expect(host.querySelector('[data-moa-purpose="complete"]')).toBeNull();
+    expect(visibleReplies().filter((t) => t?.includes('subtract(a,b)'))).toHaveLength(0);
+  });
+
+  it('only each turn\'s final reply reads as a message; narration and failed calls fold into the activity', async () => {
+    await renderRun();
+    expect(visibleReplies()).toEqual(['승인 카드를 올렸습니다.']);
+    for (const line of ['Proposing the handoff', 'checkout path', 'Closing the task']) {
+      const at = [...host.querySelectorAll('.wmux-chat-thinking')].find((n) => n.textContent?.includes(line));
+      expect(at?.closest('.wmux-chat-activity'), line).not.toBeNull();
+    }
+    // The refused send is a tool row (hidden with the activity by moa.css), and
+    // the hand-off that went through keeps its card.
+    const failed = [...host.querySelectorAll('.wmux-chat-tool')].find((n) => n.textContent?.includes('mcp__wmux__terminal_send'));
+    expect(failed).toBeDefined();
+    expect(host.querySelectorAll('[data-moa-purpose="handoff"]')).toHaveLength(1);
+  });
+
+  it('a call of Moa\'s own that did not go through shows only with the activity', async () => {
+    const slot = document.createElement('div');
+    document.body.append(slot);
+    setDeckHeaderSlot(slot);
+    try {
+      const evs: TurnEvent[] = [
+        { id: 'u1', kind: 'user_text', text: 'Go', ts: 1 },
+        tool('t1', 'x1', 'mcp__wmux__moa_propose_handoff', '{"title":"x"}', 2),
+        toolResult('r1', 'x1', false, 'missing body', 3),
+        { id: 'a1', kind: 'assistant_text', text: 'Proposed.', ts: 4, turnComplete: true },
+      ];
+      const { api } = fakeApi({ snapshot: vi.fn(async () => ({ events: evs, cursor, hasMore: false, truncatedHead: false })) as never });
+      await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />));
+      expect(host.querySelector('[data-moa-purpose-failed]')).toBeNull();
+      await act(async () => { (slot.querySelector('[data-moa-working-toggle]') as HTMLButtonElement).click(); });
+      expect(host.querySelector('[data-moa-purpose-failed]')).not.toBeNull();
+    } finally {
+      setDeckHeaderSlot(null);
+      slot.remove();
+    }
+  });
+});
+
+describe('MoaTranscriptChat — send feedback and the first screen', () => {
+  it('the operator\'s bubble shows the moment they send, before the brain\'s transcript records it', async () => {
+    const { api } = fakeApi();
+    const onSend = vi.fn(() => new Promise<{ ok: boolean }>(() => undefined));
+    await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={onSend} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />));
+    await type('Check the release');
+    await act(async () => input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })));
+    expect(host.querySelector('[data-moa-chat-pending]')?.textContent).toContain('Check the release');
+  });
+
+  it('a send Moa refuses takes its bubble back', async () => {
+    const { api } = fakeApi();
+    const onSend = vi.fn(async () => ({ ok: false }));
+    await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={onSend} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />));
+    await type('Check the release');
+    await act(async () => input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })));
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(host.querySelector('[data-moa-chat-pending]')).toBeNull();
+  });
+
+  it('pages back on its own until the operator\'s first message is in view, and stops at a bound', async () => {
+    const tail: TurnEvent[] = [{ id: 'a9', kind: 'assistant_text', text: 'Done.', ts: 9, turnComplete: true }];
+    const head: TurnEvent[] = [{ id: 'u1', kind: 'user_text', text: 'Add subtract', ts: 1 }];
+    const snapshot = vi.fn(async (opts?: { before?: number }) => (opts?.before === undefined
+      ? { events: tail, cursor: { ...cursor, headOffset: 50 }, hasMore: true, truncatedHead: false }
+      : { events: head, cursor: { ...cursor, headOffset: 0 }, hasMore: false, truncatedHead: false }));
+    const { api } = fakeApi({ snapshot: snapshot as never });
+    await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />));
+    for (let i = 0; i < 3; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(snapshot).toHaveBeenCalledWith({ before: 50 });
+    expect(host.querySelector('.wmux-chat-user')?.textContent).toContain('Add subtract');
+
+    // A transcript with no operator message at all is not read to its start.
+    act(() => root.unmount());
+    root = createRoot(host);
+    let head2 = 1000;
+    const endless = vi.fn(async () => ({ events: [{ id: `a${head2}`, kind: 'assistant_text', text: 'x', ts: head2 }], cursor: { ...cursor, headOffset: head2-- }, hasMore: true, truncatedHead: false }));
+    const { api: api2 } = fakeApi({ snapshot: endless as never });
+    await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq2" busy={false} onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api2} />));
+    for (let i = 0; i < 20; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(endless.mock.calls.length).toBeLessThanOrEqual(7);
+  });
+
+  it('a brain whose transcript holds only main\'s own wake prompts shows the first-run guidance', async () => {
+    const evs: TurnEvent[] = [{ id: 'w1', kind: 'user_text', text: '[fleet-snapshot] nothing yet', ts: 1 }];
+    const { api } = fakeApi({ snapshot: vi.fn(async () => ({ events: evs, cursor, hasMore: false, truncatedHead: false })) as never });
+    await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />));
+    const empty = host.querySelector('[data-moa-chat-empty]');
+    expect(empty?.textContent).toContain('moa.panel.chatEmptyHint');
   });
 });

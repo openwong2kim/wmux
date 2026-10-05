@@ -107,9 +107,13 @@ export function MoaPurposeCard({ purpose, waiting, t }: {
   const tasks = kind === 'fanout' && Array.isArray(input.titles) ? (input.titles as unknown[]).filter((x): x is string => typeof x === 'string') : [];
   return (
     <div className="my-1.5 rounded-[10px] px-3 py-2 bg-[color-mix(in_srgb,var(--text-main)_5%,transparent)]" data-moa-purpose={kind}>
-      <div className={`text-[11px] ${waiting ? 'text-[var(--accent-yellow)]' : 'text-[var(--text-sub)]'}`}>
+      {/* Yellow is the state mark only (a dot); the words stay text colours,
+          which keep their contrast on the card's wash in every theme. */}
+      <div className="text-[12px] text-[var(--text-sub)]">
         {t(`moa.purpose.${kind}`, { count: tasks.length })}
-        {waiting && <> · <span data-moa-purpose-waiting>{t('moa.purpose.waiting')}</span></>}
+        {waiting && <> · <span className="inline-flex items-center gap-1 text-[var(--text-main)]" data-moa-purpose-waiting>
+          <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-[var(--accent-yellow)]" />{t('moa.purpose.waiting')}
+        </span></>}
         {failed && <> · <span className="text-[var(--accent-red)]" data-moa-purpose-failed>{t('moa.purpose.failed')}</span></>}
       </div>
       {title && <p className="m-0 mt-0.5 text-[13px] font-medium leading-snug text-[var(--text-main)] break-words">{title}</p>}
@@ -122,7 +126,7 @@ export function MoaPurposeCard({ purpose, waiting, t }: {
         </ul>
       )}
       {(purpose.rawInput || purpose.rawResult) && (
-        <details className="mt-1 text-[11px] text-[var(--text-sub)]" data-moa-purpose-raw>
+        <details className="mt-1 text-[12px] text-[var(--text-sub)]" data-moa-purpose-raw>
           <summary className="cursor-pointer">{t('moa.purpose.raw')}</summary>
           {purpose.rawInput && <pre className="m-0 mt-1 font-mono whitespace-pre-wrap break-all">{purpose.rawInput}</pre>}
           {purpose.rawResult && <pre className="m-0 mt-1 font-mono whitespace-pre-wrap break-all">{purpose.rawResult}</pre>}
