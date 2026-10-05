@@ -72,6 +72,8 @@
 
 /* Tool activity stays out of Moa's chat unless the operator opens it from
  * the header's activity control: the conversation reads as messages. A failed
- * call is drawn outside the fold and stays visible: a failure is news. */
+ * call of Moa's own is drawn outside the fold but is activity too (Moa retries
+ * it itself; what reaches the operator is its reply or a decision). */
 [data-moa-chat][data-activity="hidden"] .wmux-chat-activity,
+[data-moa-chat][data-activity="hidden"] .wmux-chat-tool,
 [data-moa-chat][data-activity="hidden"] .wmux-chat-working { display: none; }

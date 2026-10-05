@@ -60,7 +60,12 @@ export function MoaPanelTop({
   const delegatedApprovals = useDelegatedApprovals(approvalsApi);
   const links = useWorkLinks(true, linksApi ?? window.electronAPI?.workLinks);
   const pendingIds = useMemo(() => new Set(decisions.map((d) => d.decision.id)), [decisions]);
-  const cards = useMemo(() => selectTaskCards(links, pendingIds), [links, pendingIds]);
+  // A job Moa handed out that is done is told once, by its report card in the
+  // chat; Delegated work keeps what is still under way.
+  const cards = useMemo(
+    () => selectTaskCards(links, pendingIds).filter((l) => !(l.state === 'done' && (l.origin === 'moa' || l.origin === 'moa-auto'))),
+    [links, pendingIds],
+  );
   const names = useStore(useShallow((s) => s.workspaces.map((w) => `${w.id}\u0000${w.name}`)));
   const workspaceName = useMemo(() => {
     const map = new Map(names.map((pair) => pair.split('\u0000') as [string, string]));

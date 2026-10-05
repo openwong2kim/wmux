@@ -96,7 +96,12 @@ export function MoaHandoffCard({
   const titleId = `moa-handoff-${decision.id}`;
   return (
     <li data-moa-decision={decision.id} data-moa-handoff data-workspace-id={item.workspaceId} className={NEEDS_YOU_ROW}>
-      <div className="text-[11px] text-[var(--accent-yellow)] truncate">{t('moa.handoff.eyebrow')}</div>
+      {/* Yellow marks the state (the dot); amber text on the needs-you wash
+          fell under 3:1 in light themes. */}
+      <div className="flex items-center gap-1 text-[12px] text-[var(--text-main)] min-w-0">
+        <span aria-hidden="true" className="shrink-0 w-1.5 h-1.5 rounded-full bg-[var(--accent-yellow)]" />
+        <span className="truncate">{t('moa.handoff.eyebrow')}</span>
+      </div>
       <p id={titleId} className="m-0 mt-0.5 text-[13px] font-medium leading-snug text-[var(--text-main)] break-words" data-moa-handoff-target>
         {target}
       </p>
@@ -113,28 +118,28 @@ export function MoaHandoffCard({
       ) : (
         <div
           data-moa-handoff-body
-          className="mt-1.5 max-h-[160px] overflow-y-auto whitespace-pre-wrap break-words text-[12px] leading-snug text-[var(--text-sub)]"
+          className="mt-1.5 whitespace-pre-wrap break-words text-[13px] leading-snug text-[var(--text-sub)]"
         >
           {handoff.body}
         </div>
       )}
       {handoff.askReason && (
-        <p className="m-0 mt-1 text-[11px] leading-snug text-[var(--text-sub)]" data-moa-handoff-reason={handoff.askReason}>
+        <p className="m-0 mt-1 text-[13px] leading-snug text-[var(--text-sub)]" data-moa-handoff-reason={handoff.askReason}>
           {t(`moa.handoff.reason.${handoff.askReason}`)}
         </p>
       )}
       {handoff.foldsNewlines && (
-        <p className="m-0 mt-1 text-[11px] leading-snug text-[var(--text-sub)]" data-moa-handoff-folds>
+        <p className="m-0 mt-1 text-[13px] leading-snug text-[var(--text-sub)]" data-moa-handoff-folds>
           {t('moa.handoff.foldsNewlines')}
         </p>
       )}
       {handoff.willQueue && (
-        <p className="m-0 mt-1 text-[11px] leading-snug text-[var(--text-sub)]" data-moa-handoff-queue>
+        <p className="m-0 mt-1 text-[13px] leading-snug text-[var(--text-sub)]" data-moa-handoff-queue>
           {t('moa.handoff.willQueue', { agent: handoff.agentName })}
         </p>
       )}
       {note ? (
-        <p role="status" className="m-0 mt-1.5 text-[11px] text-[var(--text-sub)]" data-moa-handoff-note>{note}</p>
+        <p role="status" className="m-0 mt-1.5 text-[13px] text-[var(--text-sub)]" data-moa-handoff-note>{note}</p>
       ) : (
         <div role="group" aria-labelledby={titleId} className="flex flex-wrap gap-1.5 mt-2">
           {editing ? (
@@ -162,7 +167,7 @@ export function MoaHandoffCard({
         </div>
       )}
       {error && (
-        <p role="alert" className="m-0 mt-1.5 text-[11px] text-[var(--accent-red)]" data-moa-handoff-error>{error}</p>
+        <p role="alert" className="m-0 mt-1.5 text-[13px] text-[var(--accent-red)]" data-moa-handoff-error>{error}</p>
       )}
     </li>
   );

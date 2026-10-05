@@ -17,7 +17,8 @@ import { ChatCodeBlockContext, ChatPtyContext, ChatRowRendererContext, UserText 
 import type { ChatRow } from '../../Chat/chatMessages';
 import { useMoaDecisions, useWorkLinks, type MoaDecisionsApi, type WorkLinksApi } from './useMoaPanelData';
 import { MoaPurposeCard, isPurposeEventId, liftPurposeEvents, purposeWaits } from './MoaPurposeCard';
-import { MoaResultCard, moaResultEvents, resultLinkId, withResultEvents, type MoaTaskResultApi } from './MoaResultCard';
+import { MoaReportCard, moaResultEvents, resultLinkId, withResultEvents, type MoaTaskResultApi } from './MoaResultCard';
+import { foldMoaReports, foldNarration, reportIdOf } from './moaChatShape';
 import { openMoaPane } from './MoaPanelTop';
 import { Thread } from '../../Chat/assistant-ui/Thread';
 import { useComposerDraft } from '../../Chat/chatDrafts';
@@ -38,6 +39,8 @@ export type MoaApprovalApi = Pick<MoaPreload, 'approval' | 'approvalAnswer'> & P
 
 /** While Moa waits on its prompt: how often its record is read again (it trails the hook by ~1 s). */
 const APPROVAL_POLL_MS = 2_000;
+/** Pages read back on open to reach the operator's first message. */
+const AUTO_PAGES = 6;
 
 /**
  * deck.moa.transcript in the shape useTranscript reads. Keyed by the brain's
@@ -163,23 +166,53 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
   // cards, lifted out before the chat folds tool rows.
   const lifted = useMemo(() => liftPurposeEvents(hideMoaWakes(data.events)), [data.events]);
   const { decisions: pendingDecisions } = useMoaDecisions(true, decisionsApi);
-  const shownEvents = useMemo(() => withResultEvents(lifted.events, moaResultEvents(links, since)), [lifted.events, links, since]);
+  // One report per finished job, and only each turn's last reply as a
+  // message: narration folds into the activity (moaChatShape).
+  const folded = useMemo(() => foldMoaReports(withResultEvents(lifted.events, moaResultEvents(links, since)), lifted.purposes), [lifted, links, since]);
+  const shownEvents = useMemo(() => foldNarration(folded.events), [folded.events]);
   const messages = useMemo(() => transcriptMessages(shownEvents, true), [shownEvents]);
   const results = resultApi ?? window.electronAPI?.deck?.moa;
   const wsNames = useStore((s) => s.workspaces);
+  // Tool activity (folded tool rows, "The agent is working…") is hidden: the
+  // chat reads as messages. While Moa works, a small control beside its name
+  // in the panel header says so, and opens the activity on demand.
+  const [showActivity, setShowActivity] = useState(false);
   const renderRow = useCallback((row: ChatRow) => {
     if (row.event.id.startsWith(WAKE_PREFIX)) return <></>;
     if (isPurposeEventId(row.event.id)) {
       const purpose = lifted.purposes.get(row.event.id);
-      return purpose ? <MoaPurposeCard purpose={purpose} waiting={purposeWaits(purpose, pendingDecisions)} t={t} /> : null;
+      // A call that did not go through is Moa's own retry, not news: it shows
+      // with the rest of the activity.
+      if (!purpose || (purpose.ok === false && !showActivity)) return <></>;
+      return <MoaPurposeCard purpose={purpose} waiting={purposeWaits(purpose, pendingDecisions)} t={t} />;
+    }
+    const workspaceName = (id: string) => wsNames.find((w) => w.id === id)?.name;
+    const api = results as MoaTaskResultApi | undefined;
+    const reportId = reportIdOf(row.event.id);
+    if (reportId) {
+      const report = folded.reports.get(reportId);
+      if (!report) return <></>;
+      const reported = report.linkIds.flatMap((id) => links.filter((l) => l.id === id));
+      return <MoaReportCard report={report} links={reported} workspaceName={workspaceName} api={api} onOpen={openMoaPane} t={t} />;
     }
     const id = resultLinkId(row.event.id);
     const link = id ? links.find((l) => l.id === id) : undefined;
-    if (!link) return null;
-    const workspaceName = wsNames.find((w) => w.id === link.owner.workspaceId)?.name;
-    return <MoaResultCard link={link} workspaceName={workspaceName} api={results as MoaTaskResultApi | undefined} onOpen={openMoaPane} t={t} />;
-  }, [lifted, pendingDecisions, links, wsNames, results, t]);
+    if (!link) return id ? <></> : null;
+    return <MoaReportCard links={[link]} workspaceName={workspaceName} api={api} onOpen={openMoaPane} t={t} />;
+  }, [lifted, folded, pendingDecisions, links, wsNames, results, showActivity, t]);
   const [pending, setPending] = useState<Pending[]>([]);
+  // The first page is a byte window of the brain's transcript; one exchange
+  // with Moa's context and tool output can fill it, which hid the operator's
+  // own first message behind "Load earlier messages". Page back on our own
+  // until an operator message is in view (bounded).
+  const autoPages = useRef(0);
+  const { hasMore, loading, loadingEarlier, loadEarlier } = data;
+  const operatorShown = useMemo(() => data.events.some((e) => e.kind === 'user_text' && !MOA_WAKE_TEXT.test(e.text)), [data.events]);
+  useEffect(() => {
+    if (operatorShown || !hasMore || loading || loadingEarlier || autoPages.current >= AUTO_PAGES) return;
+    autoPages.current += 1;
+    void loadEarlier();
+  }, [operatorShown, hasMore, loading, loadingEarlier, loadEarlier]);
   // The latest events, for onNew to read after its await: the closure's copy
   // is from the render that started the send.
   const eventsRef = useRef(data.events);
@@ -204,15 +237,22 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
     if (!text.trim()) return;
     if (busy) throw new MessageNotSentError(t('moa.panel.busy'));
     const before = new Set(data.events.filter((e) => e.kind === 'user_text').map((e) => e.id));
-    const result = await onSend(text).catch(() => ({ ok: false }));
-    if (!result.ok) throw new MessageNotSentError(t('moa.panel.sendFailed'));
     // /clear and /reset are commands, not messages: nothing to wait for.
-    if (/^\/(clear|reset)$/.test(text.trim())) return;
-    // The transcript may have recorded the prompt while onSend was in flight.
-    // The settle effect already ran then, with nothing pending to clear, so a
-    // bubble added now would sit beside the real row until the next event.
-    if (eventsRef.current.some((e) => e.kind === 'user_text' && !before.has(e.id))) return;
-    setPending((current) => [...current, { id: crypto.randomUUID(), text, before }].slice(-4));
+    const command = /^\/(clear|reset)$/.test(text.trim());
+    // The bubble shows the moment the operator sends, not when the brain's
+    // transcript records the prompt (seconds later). The settle effect drops
+    // it once that row lands, even while onSend is still in flight.
+    const id = crypto.randomUUID();
+    if (!command) setPending((current) => [...current, { id, text, before }].slice(-4));
+    const result = await onSend(text).catch(() => ({ ok: false }));
+    if (!result.ok) {
+      setPending((current) => current.filter((p) => p.id !== id));
+      throw new MessageNotSentError(t('moa.panel.sendFailed'));
+    }
+    // The prompt landed while onSend was in flight: no bubble beside the row.
+    if (eventsRef.current.some((e) => e.kind === 'user_text' && !before.has(e.id))) {
+      setPending((current) => current.filter((p) => p.id !== id));
+    }
   }, [busy, data.events, onSend, t]);
 
   const runtime = useExternalStoreRuntime({ messages, isRunning: false, isLoading: data.loading, isSendDisabled: busy, onNew });
@@ -260,27 +300,37 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
       void readApproval();
     }
   }, [approval, prompts, readApproval]);
-  const empty = messages.length === 0 && pending.length === 0;
+  // Hidden wakes and bare markers are rows too: the conversation is empty
+  // until something the operator can read is in it.
+  const empty = pending.length === 0 && !shownEvents.some((e) => e.kind === 'user_text' || (e.kind === 'assistant_text' && !e.thinking)
+    || isPurposeEventId(e.id) || !!reportIdOf(e.id) || !!resultLinkId(e.id));
   // A callback ref: the dock mounts with the composer's footer.
   const [dockEl, setDockEl] = useState<HTMLDivElement | null>(null);
-  // Tool activity (folded tool rows, "The agent is working…") is hidden: the
-  // chat reads as messages. While Moa works, a small control beside its name
-  // in the panel header says so, and opens the activity on demand.
-  const [showActivity, setShowActivity] = useState(false);
   const headerSlot = useDeckHeaderSlot();
   // Shown while Moa works and whenever there is folded activity to open, so a
   // finished turn's steps stay reachable.
   const hasActivity = useMemo(
-    () => messages.some((m) => !!(m.metadata?.custom as { row?: ChatRow } | undefined)?.row?.activity),
-    [messages],
+    () => messages.some((m) => {
+      const row = (m.metadata?.custom as { row?: ChatRow } | undefined)?.row;
+      if (!row) return false;
+      if (row.activity) return true;
+      // A failed call sits outside the fold but is activity all the same.
+      const { event } = row;
+      return event.kind === 'tool_use' ? row.result?.ok === false
+        : event.kind === 'tool_result' ? !event.ok
+        : isPurposeEventId(event.id) && lifted.purposes.get(event.id)?.ok === false;
+    }),
+    [messages, lifted],
   );
+  // Idle, the control only opens what Moa did: it never says Moa is working.
+  const activityLabel = t(showActivity ? 'moa.panel.activityHide' : busy ? 'moa.panel.activityShow' : 'moa.panel.activityShowIdle');
   const activityToggle = (busy || showActivity || hasActivity) && headerSlot ? createPortal(
     <button
       type="button"
       onClick={() => setShowActivity((v) => !v)}
       aria-expanded={showActivity}
-      aria-label={t(showActivity ? 'moa.panel.activityHide' : 'moa.panel.activityShow')}
-      title={t(showActivity ? 'moa.panel.activityHide' : 'moa.panel.activityShow')}
+      aria-label={activityLabel}
+      title={activityLabel}
       // A dot, not a word: the header row has no room beside "Main bot" at
       // the dock's width. The label and tooltip say what it is.
       className={`wmux-moa-working order-first inline-flex items-center justify-center w-6 h-6 rounded-[6px] hover:bg-[var(--hover-fill)] ${showActivity ? 'bg-[var(--selection-emphasis)]' : ''} ${FOCUS_RING}`}
