@@ -171,11 +171,11 @@ export default function SidebarNavigation({ compact = false, home = false }: {
 }
 
 /**
- * Trailing counts on the Fleet shortcut. Only Needs you is amber (the attention
- * signal); Running stays muted. The label never gives way to them: when the
- * row is too narrow, Running drops out first and then Needs you shrinks to its
- * number (ui.css). The compact rail has no room for numbers, so it keeps a
- * single amber dot while anything needs you. The accessible name carries the
+ * Trailing counts on the Fleet shortcut. Only Needs you is the --attention
+ * orange (the attention signal); Running stays muted. The label never gives way
+ * to them: when the row is too narrow, Running drops out first and then Needs
+ * you shrinks to its number (ui.css). The compact rail has no room for numbers, so it keeps a
+ * single orange dot while anything needs you. The accessible name carries the
  * full text in every variant.
  */
 function FleetCounts({ compact, badge = false, needsYou, needsText, runningText }: {
