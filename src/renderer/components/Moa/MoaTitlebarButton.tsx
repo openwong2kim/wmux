@@ -120,7 +120,7 @@ function MoaTitlebarButtonOn() {
           {dot && (
             <span
               className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full"
-              style={{ background: dot === 'waiting' ? 'var(--accent-yellow)' : 'var(--text-muted)' }}
+              style={{ background: dot === 'waiting' ? 'var(--attention)' : 'var(--text-muted)' }}
               data-moa-titlebar-dot={dot}
             />
           )}

@@ -99,7 +99,7 @@ export function MoaHandoffCard({
       {/* Yellow marks the state (the dot); amber text on the needs-you wash
           fell under 3:1 in light themes. */}
       <div className="flex items-center gap-1 text-[12px] text-[var(--text-main)] min-w-0">
-        <span aria-hidden="true" className="shrink-0 w-1.5 h-1.5 rounded-full bg-[var(--accent-yellow)]" />
+        <span aria-hidden="true" className="shrink-0 w-1.5 h-1.5 rounded-full bg-[var(--attention)]" />
         <span className="truncate">{t('moa.handoff.eyebrow')}</span>
       </div>
       <p id={titleId} className="m-0 mt-0.5 text-[13px] font-medium leading-snug text-[var(--text-main)] break-words" data-moa-handoff-target>

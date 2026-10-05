@@ -57,7 +57,9 @@ export default function MoaBubble({ bubble, anchor, reduceMotion, onOpen, onLate
   }, [onLater]);
 
   const waiting = bubble.kind === 'decision';
-  const tone = waiting ? 'var(--accent-yellow)' : 'var(--accent-green)';
+  // Needs you is the attention orange: words in its text shade, the dot in its fill.
+  const tone = waiting ? 'var(--attention-text)' : 'var(--accent-green)';
+  const dot = waiting ? 'var(--attention)' : 'var(--accent-green)';
   const head = waiting ? t('moa.bubble.needsYou') : t('moa.bubble.done');
   const style: CSSProperties = {
     position: 'fixed',
@@ -100,7 +102,7 @@ export default function MoaBubble({ bubble, anchor, reduceMotion, onOpen, onLate
         }}
       />
       <span className="flex items-center gap-1.5 text-[11px] font-medium" style={{ color: tone }}>
-        <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full" style={{ background: tone }} />
+        <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full" style={{ background: dot }} />
         {head}
       </span>
       <span className="text-[13px] leading-[19px] text-[var(--text-main)] line-clamp-2 break-words" data-moa-bubble-line>

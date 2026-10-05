@@ -6,8 +6,9 @@
 // Discard exist here: no free-text answer. Re-read whenever main says Moa
 // moved (a card went up, was answered, or the next one replaced it).
 //
-// Same needs-you grammar as the decision card (content-20% fill, dashed
-// content-30% border, the amber eyebrow as its one state mark).
+// Same needs-you grammar as the decision card and the sidebar (a dashed
+// attention-orange border over the selection-subtle fill, the orange dot as
+// its one state mark).
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { tokenAttrs } from '../../themes';
@@ -138,12 +139,11 @@ export function MoaMemoryCard({
   const body = (
     <div
       data-moa-memory-card={card.id}
-      className="flex flex-col rounded-md px-4 py-3 space-y-2.5 border border-dashed border-[color-mix(in_srgb,var(--text-main)_30%,transparent)] bg-[color-mix(in_srgb,var(--text-main)_20%,transparent)]"
+      className="flex flex-col rounded-md px-4 py-3 space-y-2.5 border border-dashed border-[var(--attention)] bg-[var(--selection-subtle)]"
     >
-      {/* Yellow marks the state (the dot); amber text on this 20% wash read
-          2.2:1 in light themes, so the words take the text colour. */}
+      {/* The orange dot marks the state; the eyebrow words keep the text colour. */}
       <div className="flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-wider text-[var(--text-main)]" {...tokenAttrs('textMain', 'text')}>
-        <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-[var(--accent-yellow)]" />
+        <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-[var(--attention)]" />
         {t('moa.memoryCard.eyebrow')}
       </div>
       <div className="text-[13px] font-semibold text-[var(--text-main)] leading-relaxed" {...tokenAttrs('textMain', 'text')}>

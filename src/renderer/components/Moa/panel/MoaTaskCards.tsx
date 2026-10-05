@@ -14,7 +14,7 @@ import { FOCUS_RING } from '../../focusRing';
 type T = (key: string, vars?: Record<string, string | number>) => string;
 
 const STATE_CLASS: Partial<Record<WorkLink['state'], string>> = {
-  'needs-you': 'text-[var(--accent-yellow)]',
+  'needs-you': 'text-[var(--attention-text)]',
   blocked: 'text-[var(--accent-red)]',
 };
 
@@ -125,7 +125,7 @@ export function MoaTaskCards({
                     <ul className="m-0 p-0 list-none flex flex-col gap-0.5" data-moa-task-decisions>
                       {decisions.map((d) => (
                         <li key={d.decision.id} className="text-[var(--text-main)] break-words">
-                          <span className="text-[var(--accent-yellow)]">{t('moa.panel.decisionWaiting')}</span>{' '}
+                          <span className="text-[var(--attention-text)]">{t('moa.panel.decisionWaiting')}</span>{' '}
                           {d.decision.question}
                         </li>
                       ))}

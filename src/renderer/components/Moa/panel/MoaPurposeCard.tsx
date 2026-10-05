@@ -112,7 +112,7 @@ export function MoaPurposeCard({ purpose, waiting, t }: {
       <div className="text-[12px] text-[var(--text-sub)]">
         {t(`moa.purpose.${kind}`, { count: tasks.length })}
         {waiting && <> · <span className="inline-flex items-center gap-1 text-[var(--text-main)]" data-moa-purpose-waiting>
-          <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-[var(--accent-yellow)]" />{t('moa.purpose.waiting')}
+          <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-[var(--attention)]" />{t('moa.purpose.waiting')}
         </span></>}
         {failed && <> · <span className="text-[var(--accent-red)]" data-moa-purpose-failed>{t('moa.purpose.failed')}</span></>}
       </div>

@@ -220,7 +220,7 @@ describe('Moa bubble', () => {
     tick(1);
     expect(bubble()).toBeNull();
     expect(dot()).toBe('waiting');
-    expect(button()!.querySelector('[data-moa-titlebar-dot]')!.getAttribute('style')).toContain('--accent-yellow');
+    expect(button()!.querySelector('[data-moa-titlebar-dot]')!.getAttribute('style')).toContain('--attention');
   });
 
   it('shows one bubble at a time: the newest decision replaces the last, a finished task never displaces a decision', async () => {

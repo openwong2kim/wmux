@@ -1,8 +1,8 @@
 // "Waiting on you": every workspace's pending decision, answerable in place,
 // with Moa's own "Remember this?" card (MoaMemoryCard) as the first row.
 // A decision is the one thing on screen waiting on the operator, so each row
-// wears the needs-you grammar (content-20% fill, dashed content-30% border,
-// the yellow eyebrow as its one state mark). Answers go to the decision's own
+// wears the needs-you grammar (a dashed attention-orange border over the
+// selection-subtle fill, the orange eyebrow as its one state mark). Answers go to the decision's own
 // workspace, not to Moa's.
 import { createContext, useEffect, useRef, useState } from 'react';
 import type { MoaApprovalAnswerResult, MoaDelegatedApproval, MoaPendingDecision } from '../../../../shared/moa';
@@ -68,13 +68,15 @@ export function useDelegatedApprovals(api: DelegatedApprovalsApi | undefined = d
   return rows;
 }
 
-/** The needs-you yellow for TEXT: the token mixed half into the text colour,
- *  so it stays yellow and reads at >= 5.4:1 on the row's wash and the panel in
- *  every built-in look (plain --accent-yellow is 2.4:1 on Paper's wash). */
-export const NEEDS_YOU_TEXT = 'text-[color-mix(in_srgb,var(--accent-yellow)_50%,var(--text-main))]';
+/** Needs you is the attention orange (DESIGN.md, colour grammar): words in
+ *  `--attention-text`, the look's darker same-hue orange (4.5:1 on its
+ *  surfaces); marks, dashes and dots in `--attention`. */
+export const NEEDS_YOU_TEXT = 'text-[var(--attention-text)]';
 
+/** A row that needs you: the sidebar's grammar, a dashed `--attention`
+ *  border over a fill one step below the selection. */
 export const NEEDS_YOU_ROW =
-  'rounded-[10px] px-3 py-2.5 border border-dashed border-[color-mix(in_srgb,var(--text-main)_30%,transparent)] bg-[color-mix(in_srgb,var(--text-main)_20%,transparent)]';
+  'rounded-[10px] px-3 py-2.5 border border-dashed border-[var(--attention)] bg-[var(--selection-subtle)]';
 
 export function MoaWaitingOnYou({
   decisions,
