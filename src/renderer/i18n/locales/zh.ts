@@ -2146,6 +2146,7 @@ export const zh = {
   'moa.panel.subtitle': "主机器人",
   'moa.panel.mascot.working': "工作中",
   'moa.panel.mascot.needs-you': "需要你",
+  'moa.panel.waitingJump': '{count} 项等待你处理 ↑',
   'moa.panel.waitingTitle': "等你决定",
   'moa.panel.unknownWorkspace': "未知工作区",
   'moa.panel.answerPlaceholder': "输入你的回答…",

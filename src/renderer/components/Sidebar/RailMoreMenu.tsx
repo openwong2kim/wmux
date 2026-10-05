@@ -79,11 +79,18 @@ export default function RailMoreMenu() {
       icon: <IconRefresh size={13} />,
       // Settings › General shows the check's progress and result (it listens
       // to the updater's events), so the menu opens it and starts the check.
+      // Where no event follows (dev builds, unsupported platforms) or the
+      // call fails, the answer comes back here and is said in a toast.
       onSelect: () => {
-        useStore.getState().openSettingsTab('general');
+        const st = useStore.getState();
+        st.openSettingsTab('general');
         const check = window.electronAPI?.updater?.checkForUpdates;
-        // Failures surface in Settings through the updater's error event.
-        check?.().catch(() => undefined);
+        if (!check) return;
+        check()
+          .then((r) => {
+            if (r?.status === 'not-available') st.pushToast({ level: 'info', message: t('settings.upToDate') });
+          })
+          .catch(() => st.pushToast({ level: 'warn', message: t('settings.updateFailed') }));
       },
     },
   ];

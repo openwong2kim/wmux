@@ -21,6 +21,43 @@ import type { ChatBridgeApi } from '../../../../shared/transcript/turnEvents';
 import type { MoaApproval } from '../../../../shared/moa';
 import '../moa.css';
 
+/**
+ * Waiting on you sits at the top of the one scrolling column, and the chat
+ * sticks to its bottom, so in a long conversation a new decision lands out of
+ * view, while the titlebar bubble and dot stay quiet because the panel is
+ * open. This watches the section and reports when it holds decisions the
+ * operator cannot see, so the panel can say so above the composer.
+ */
+export function useWaitingOutOfView(rootRef: React.RefObject<HTMLElement | null>): { count: number; jump: () => void } {
+  const [count, setCount] = useState(0);
+  const [hidden, setHidden] = useState(false);
+  const targetRef = useRef<Element | null>(null);
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    let io: IntersectionObserver | null = null;
+    const attach = () => {
+      const waiting = root.querySelector('[data-moa-waiting]');
+      setCount(root.querySelectorAll('[data-moa-decision]').length);
+      if (waiting === targetRef.current) return;
+      io?.disconnect();
+      io = null;
+      targetRef.current = waiting;
+      setHidden(false);
+      if (waiting && typeof IntersectionObserver !== 'undefined') {
+        io = new IntersectionObserver(([entry]) => setHidden(!entry.isIntersecting));
+        io.observe(waiting);
+      }
+    };
+    attach();
+    const mo = new MutationObserver(attach);
+    mo.observe(root, { childList: true, subtree: true });
+    return () => { mo.disconnect(); io?.disconnect(); };
+  }, [rootRef]);
+  const jump = useCallback(() => targetRef.current?.scrollIntoView({ block: 'start' }), []);
+  return { count: hidden ? count : 0, jump };
+}
+
 /** The preload's `deck.moa.transcript` (main reads the HQ brain; no pty id). */
 export type MoaTranscriptApi = NonNullable<NonNullable<NonNullable<Window['electronAPI']>['deck']>['moa']>['transcript'];
 
@@ -193,11 +230,13 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
     }
   }, [approval, prompts, readApproval]);
   const empty = messages.length === 0 && pending.length === 0;
+  const chatRootRef = useRef<HTMLDivElement | null>(null);
+  const waitingOutOfView = useWaitingOutOfView(chatRootRef);
   return (
     <ChatPtyContext.Provider value={ptyId}>
       <ChatCodeBlockContext.Provider value={bridge?.codeBlock ?? null}>
       <AssistantRuntimeProvider runtime={runtime}>
-        <div className="flex flex-col flex-1 min-h-0" data-moa-chat>
+        <div ref={chatRootRef} className="flex flex-col flex-1 min-h-0" data-moa-chat>
           <Thread
             composer={runtime.thread.composer}
             empty={empty}
@@ -234,6 +273,12 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
               </button>
             )}
             notices={<>
+              {waitingOutOfView.count > 0 && (
+                <button type="button" className={`${NEEDS_YOU_ROW} mx-3 my-1.5 text-left text-[13px] text-[var(--text-main)]`}
+                  onClick={waitingOutOfView.jump} data-moa-waiting-jump>
+                  {t('moa.panel.waitingJump', { count: waitingOutOfView.count })}
+                </button>
+              )}
               {/* A dialog only the TUI shows holds the turn (and so the
                   composer): this is the one way forward, drawn as a
                   needs-you row with the action, not a footnote. */}

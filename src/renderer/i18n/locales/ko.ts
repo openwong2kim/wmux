@@ -2010,6 +2010,7 @@ export const ko = {
   'moa.panel.subtitle': "메인 봇",
   'moa.panel.mascot.working': "작업 중",
   'moa.panel.mascot.needs-you': "확인 필요",
+  'moa.panel.waitingJump': '응답 대기 {count}건 ↑',
   'moa.panel.waitingTitle': "나를 기다리는 결정",
   'moa.panel.unknownWorkspace': "알 수 없는 워크스페이스",
   'moa.panel.answerPlaceholder': "답을 입력하세요…",

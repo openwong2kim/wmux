@@ -18,10 +18,12 @@ const t = (k: string) => k;
 const flush = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 
 function apis() {
+  // Main stores the mode: a read after a set returns what was set.
+  let stored: 'off' | 'assist' | 'danger' = 'assist';
   return {
     modeApi: {
-      get: vi.fn(async () => ({ mode: 'assist' as const })),
-      set: vi.fn(async (_ws: string, mode: 'off' | 'assist' | 'danger') => ({ ok: true, mode })),
+      get: vi.fn(async () => ({ mode: stored })),
+      set: vi.fn(async (_ws: string, mode: 'off' | 'assist' | 'danger') => { stored = mode; return { ok: true, mode }; }),
     },
     sessionApi: { clear: vi.fn(async () => ({ ok: true })), wake: vi.fn(async () => ({ ok: true })) },
     wake: vi.fn(async () => ({ ok: true })),

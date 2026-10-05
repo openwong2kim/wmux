@@ -27,7 +27,7 @@ import { FOCUS_RING } from '../focusRing';
 import { IconChevron } from '../icons';
 import type { AgentMode } from '../../../main/deck/deckAutonomyStore';
 import { requestHooksInstallPrompt } from './HooksInstallPrompt';
-import { notifyAgentModeChanged } from './deckModeBus';
+import { notifyAgentModeChanged, onAgentModeChanged } from './deckModeBus';
 
 export interface AgentModeApi {
   get: (workspaceId: string) => Promise<{ mode: AgentMode | null }>;
@@ -104,11 +104,17 @@ export function useAgentMode(
       return;
     }
     let cancelled = false;
-    api
-      .get(workspaceId)
-      .then((r) => { if (!cancelled) setMode(r.mode ?? 'off'); })
-      .catch(() => { if (!cancelled) setMode('off'); });
-    return () => { cancelled = true; };
+    const read = () => {
+      api
+        .get(workspaceId)
+        .then((r) => { if (!cancelled) setMode(r.mode ?? 'off'); })
+        .catch(() => { if (!cancelled) setMode('off'); });
+    };
+    read();
+    // A flip made elsewhere (Settings › Moa, another chip) must reach this
+    // label too: Moa's header shows the mode at all times, Danger in red.
+    const off = onAgentModeChanged(read);
+    return () => { cancelled = true; off(); };
   }, [api, workspaceId]);
 
   const pick = useCallback(

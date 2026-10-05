@@ -104,9 +104,12 @@ describe('sidebar icon rail', () => {
 
     act(() => useStore.setState({ appRoute: 'workspaces', settingsInitialTab: null }));
     act(() => more().click());
-    act(() => item('check-updates')!.click());
+    act(() => useStore.setState({ toasts: [] }));
+    await act(async () => { item('check-updates')!.click(); await Promise.resolve(); await Promise.resolve(); });
     expect(checkForUpdates).toHaveBeenCalledTimes(1);
     expect(useStore.getState().settingsInitialTab).toBe('general');
+    // No updater event follows a 'not-available' answer: the menu says it.
+    expect(useStore.getState().toasts.map((x) => x.message)).toContain('Up to date');
     delete (globalThis as { __APP_VERSION__?: string }).__APP_VERSION__;
   });
 
