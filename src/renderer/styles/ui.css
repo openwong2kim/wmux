@@ -1941,6 +1941,9 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
   background: var(--bg-mantle);
 }
 .wmux-deck-tablist { align-self: stretch; align-items: flex-end; flex-wrap: nowrap; }
+/* Moa's tab (a 28px avatar and its name) fills the 40px header row so the
+ * avatar sits centred instead of on the bottom line. */
+.wmux-deck-tab[data-deck-tab-named="true"] { min-height: 40px; height: 40px; }
 .wmux-deck-tab {
   position: relative;
   min-height: 32px;

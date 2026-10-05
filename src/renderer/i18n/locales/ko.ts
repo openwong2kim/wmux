@@ -2046,7 +2046,6 @@ export const ko = {
   'moa.missing.recreate': "Moa 워크스페이스 다시 만들기",
   'moa.missing.failed': "Moa 워크스페이스를 다시 만들지 못했습니다. 설정 → Moa에서 다시 시도하세요.",
   'moa.panel.title': "Moa",
-  'moa.panel.subtitle': "메인 봇",
   'moa.panel.mascot.working': "작업 중",
   'moa.panel.mascot.needs-you': "확인 필요",
   'moa.panel.waitingTitle': "나를 기다리는 결정",

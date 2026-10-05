@@ -7,7 +7,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { setDeckHeaderSlot } from '../../../Deck/deckHeaderSlot';
-import MoaTranscriptChat, { tidyMoaUserText, type MoaApprovalApi, type MoaTranscriptApi } from '../MoaTranscriptChat';
+import MoaTranscriptChat, { hideMoaWakes, tidyMoaUserText, type MoaApprovalApi, type MoaTranscriptApi } from '../MoaTranscriptChat';
 import type { MoaApproval, MoaApprovalAnswerResult } from '../../../../../shared/moa';
 import type { TranscriptAppendData, TranscriptPage, TurnEvent } from '../../../../../shared/transcript/turnEvents';
 
@@ -372,6 +372,17 @@ describe('MoaTranscriptChat — code blocks', () => {
 });
 
 describe('tidyMoaUserText', () => {
+  it('wake prompts main types for Moa never draw as the operator\'s bubble; the operator\'s own words do', () => {
+    const shown = hideMoaWakes([
+      { id: 'w1', kind: 'user_text', text: '[pane-events] (UNTRUSTED terminal/A2A signals)\n  seq=1 ...\nwork-request: ACTIVE — this wake belongs to a direct human request', ts: 1 },
+      { id: 'w2', kind: 'user_text', text: 'The operator DISMISSED the decision you raised as not needed.', ts: 2 },
+      { id: 'h1', kind: 'user_text', text: 'Tell wmux to start the Fleet revamp', ts: 3 },
+      { id: 'h2', kind: 'user_text', text: 'Why did [pane-events] show up?', ts: 4 },
+    ]);
+    expect(shown.map((e) => e.kind)).toEqual(['meta', 'meta', 'user_text', 'user_text']);
+    expect(shown[0]).toMatchObject({ id: 'moa-wake:w1', subtype: 'turn_started', label: '' });
+  });
+
   it('shows one short line instead of any pasted wire, as Claude records it', () => {
     const out = tidyMoaUserText([
       // The real shape: an id on both tags, and the TUI's split leaves the

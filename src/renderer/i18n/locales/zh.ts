@@ -2179,7 +2179,6 @@ export const zh = {
   'moa.missing.recreate': "重新创建 Moa 工作区",
   'moa.missing.failed': "无法重新创建 Moa 的工作区。请在“设置 → Moa”中重试。",
   'moa.panel.title': "Moa",
-  'moa.panel.subtitle': "主机器人",
   'moa.panel.mascot.working': "工作中",
   'moa.panel.mascot.needs-you': "需要你",
   'moa.panel.waitingTitle': "等你决定",

@@ -25,7 +25,7 @@ import Button from '../../ui/Button';
 import { MoaDockContext, NEEDS_YOU_ROW } from './MoaWaitingOnYou';
 import { useDeckHeaderSlot } from '../../Deck/deckHeaderSlot';
 import { FOCUS_RING } from '../../focusRing';
-import type { ChatBridgeApi } from '../../../../shared/transcript/turnEvents';
+import type { ChatBridgeApi, TurnEvent } from '../../../../shared/transcript/turnEvents';
 import type { MoaApproval } from '../../../../shared/moa';
 import '../moa.css';
 
@@ -57,6 +57,31 @@ export function tidyMoaUserText<E extends { kind: string; text?: string }>(event
     e.kind === 'user_text' && typeof e.text === 'string' && e.text.includes('<pasted_content')
       ? { ...e, text: instructionsLabel }
       : e);
+}
+
+/**
+ * The prompts main types for Moa itself (pane events, a fleet snapshot, the
+ * decision resume lines, Wake, a loop's kickoff, the startup reconcile) are not
+ * the operator's words: they never draw as a user bubble. Each becomes an
+ * invisible turn start, so the turn still begins there.
+ */
+// Start-anchored, and only openings main itself writes: an operator prompt
+// (even one main prefixed with context blocks) never matches.
+const MOA_WAKE_TEXT = new RegExp('^\\s*(?:' + [
+  String.raw`\[pane-events\]`,
+  String.raw`\[fleet-snapshot\]`,
+  String.raw`The operator (?:just resolved|DISMISSED) the decision you raised`,
+  String.raw`A decision you (?:SELF-RESOLVED|raised has been pending too long)`,
+  String.raw`The operator pressed the Wake button`,
+  String.raw`The loop above has just started`,
+  String.raw`A human request is still active after wmux startup`,
+].join('|') + ')');
+const WAKE_PREFIX = 'moa-wake:';
+
+export function hideMoaWakes(events: readonly TurnEvent[]): TurnEvent[] {
+  return events.map((e) => (e.kind === 'user_text' && MOA_WAKE_TEXT.test(e.text)
+    ? { id: `${WAKE_PREFIX}${e.id}`, kind: 'meta' as const, subtype: 'turn_started' as const, label: '', ...(e.ts !== undefined ? { ts: e.ts } : {}) }
+    : e));
 }
 
 export function moaTranscriptBridge(
@@ -136,13 +161,14 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
   const since = useMemo(() => data.events.find((e) => typeof e.ts === 'number')?.ts, [data.events]);
   // Moa's own hand-offs, decisions, completions and fan-outs read as purpose
   // cards, lifted out before the chat folds tool rows.
-  const lifted = useMemo(() => liftPurposeEvents(data.events), [data.events]);
+  const lifted = useMemo(() => liftPurposeEvents(hideMoaWakes(data.events)), [data.events]);
   const { decisions: pendingDecisions } = useMoaDecisions(true, decisionsApi);
   const shownEvents = useMemo(() => withResultEvents(lifted.events, moaResultEvents(links, since)), [lifted.events, links, since]);
   const messages = useMemo(() => transcriptMessages(shownEvents, true), [shownEvents]);
   const results = resultApi ?? window.electronAPI?.deck?.moa;
   const wsNames = useStore((s) => s.workspaces);
   const renderRow = useCallback((row: ChatRow) => {
+    if (row.event.id.startsWith(WAKE_PREFIX)) return <></>;
     if (isPurposeEventId(row.event.id)) {
       const purpose = lifted.purposes.get(row.event.id);
       return purpose ? <MoaPurposeCard purpose={purpose} waiting={purposeWaits(purpose, pendingDecisions)} t={t} /> : null;

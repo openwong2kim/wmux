@@ -107,6 +107,10 @@ describe('right panel — Moa running', () => {
     const tab = host.querySelector('[data-deck-tab="commander"]')!;
     expect(tab.querySelector('.wmux-deck-tab-label')?.textContent).toBe('Moa');
     expect(tab.querySelector('[data-moa-mascot="needs-you"]')).not.toBeNull();
+    // Just the name: no 'Main bot' subtitle, and the tab fills the header row
+    // so the avatar sits centred (ui.css, data-deck-tab-named).
+    expect(tab.querySelector('[data-deck-tab-subtitle]')).toBeNull();
+    expect(tab.getAttribute('data-deck-tab-named')).toBe('true');
     // Bubbles over the HQ brain, not its terminal (the chat chunk is lazy).
     await vi.waitFor(async () => {
       await act(async () => { await new Promise((r) => setTimeout(r, 10)); });

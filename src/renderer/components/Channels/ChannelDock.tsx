@@ -196,7 +196,6 @@ export default function ChannelDock(): React.ReactElement {
           // Moa's model is chosen in its ⋯ › Model; the tab is a label.
           ? {
               commanderTitle: t('moa.panel.title'),
-              commanderSubtitle: t('moa.panel.subtitle'),
               commanderIcon: <MoaMascot state={mascot} size={28} />,
               commanderStatusLabel: mascot === 'idle' ? undefined : t(`moa.panel.mascot.${mascot}`),
             }

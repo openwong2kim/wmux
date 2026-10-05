@@ -149,6 +149,7 @@ export function DeckTabs({
             title={label}
             data-deck-tab={tab.id}
             data-active={isActive ? 'true' : undefined}
+            data-deck-tab-named={isCommander && commanderTitle ? 'true' : undefined}
             {...(tabHasModelMenu ? { 'aria-haspopup': 'menu', 'aria-expanded': modelMenuOpen } : {})}
             onClick={() => {
               // 비활성 → 탭 선택(기존 동작). 활성 Agent 탭 재클릭 → 모델 메뉴 토글.
