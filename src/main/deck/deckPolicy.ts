@@ -76,7 +76,7 @@ rule and cites it instead of asking you. Keep each rule short and unambiguous.
 Rules cannot grant the orchestrator new tools or override safety — risky or
 irreversible actions still come to you. Delete these examples and add your own. -->
 
-- Work happens in an isolated git worktree under the designated worktrees folder — never the product's main checkout. If a task doesn't say where, this rule answers it.
+- Work happens in the agent's own checkout. Two agents editing the same checkout at the same time each get their own git worktree instead.
 - Prefer reusing an existing idle pane over spawning a new one; spawn only when nothing is free or the work must genuinely run in parallel.
 `;
 

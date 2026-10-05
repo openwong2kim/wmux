@@ -63,11 +63,11 @@ describe('ensureDeckPolicySeed', () => {
     expect(fs.existsSync(getDeckPolicyPath(dir))).toBe(false);
     ensureDeckPolicySeed(dir);
     const seeded = fs.readFileSync(getDeckPolicyPath(dir), 'utf8');
-    expect(seeded).toContain('isolated git worktree');
+    expect(seeded).toContain("the agent's own checkout");
     // The seed is loadable and wrapped under the binding header.
     const block = loadDeckPolicyBlock(dir)!;
     expect(block).toContain('## Operator policy (BINDING standing rules)');
-    expect(block).toContain('isolated git worktree');
+    expect(block).toContain("the agent's own checkout");
   });
 
   it('NEVER overwrites an existing policy file (operator edits are sacred)', () => {
@@ -86,6 +86,6 @@ describe('ensureDeckPolicySeed', () => {
     expect(fs.existsSync(freshDir)).toBe(false);
     ensureDeckPolicySeed(freshDir);
     expect(fs.existsSync(getDeckPolicyPath(freshDir))).toBe(true);
-    expect(loadDeckPolicyBlock(freshDir)!).toContain('isolated git worktree');
+    expect(loadDeckPolicyBlock(freshDir)!).toContain("the agent's own checkout");
   });
 });
