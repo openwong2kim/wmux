@@ -810,6 +810,20 @@ describe('moa hand-off — no wrong wakes, no stale cards', () => {
     expect(await r.svc.propose('ws-new-hq', { ptyId: 'pty-1', body: 'math.js.' })).toMatchObject({ ok: false, error: 'task_open' });
   });
 
+  it('a task ending closes only its own follow-up card, not another job\'s card on the same pane', async () => {
+    const r = rig();
+    const t1 = await delivered(r);
+    r.svc.noteTaskState(t1, 'completed');
+    // A new job for the same pane: its card follows no task.
+    expect(await propose(r, 'A different job.')).toMatchObject({ ok: true, mode: 'card' });
+    const card = r.slots.get(SEAL)!;
+    // A late end event of the old task (completed → canceled).
+    r.svc.noteTaskState(t1, 'canceled');
+    await new Promise((res) => setTimeout(res, 0));
+    expect(r.svc.cardInfo(card.id)).not.toBeNull();
+    expect(r.slots.get(SEAL)).toBe(card);
+  });
+
   it('the requester close takes down that pane\'s card too', async () => {
     let busy = false;
     const r = rig({ agentBusy: () => busy });

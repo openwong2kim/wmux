@@ -116,6 +116,9 @@ export interface HandoffRecord {
   closedByHq?: boolean;
   /** Why the card asks instead of delivering on its own. */
   askReason?: HandoffAskReason;
+  /** The open task this card follows up (it answers that task's question):
+   *  the card is moot once that task ends, and only then. */
+  followsTaskId?: string;
   /** The worker was seen mid-turn (agent status) since its last turn end. */
   sawRunning?: boolean;
   /** wmux itself ended the task (not the operator): its pane closed or its
@@ -515,6 +518,7 @@ export class MoaHandoffService {
       };
     }
     const now = this.now();
+    const follows = open?.taskId;
     const record: HandoffRecord = {
       id: randomUUID(),
       hqWorkspaceId: hq,
@@ -534,6 +538,7 @@ export class MoaHandoffService {
       state: 'pending',
       foldsNewlines: foldsNewlines(t.agentName),
       willQueue: t.agentStatus === 'running',
+      ...(follows ? { followsTaskId: follows } : {}),
       createdAt: now,
       at: now,
     };
@@ -788,7 +793,7 @@ export class MoaHandoffService {
       this.put({ ...r, taskState: state });
       void this.save();
       // Ended any way (done, failed, canceled): a follow-up card for it is moot.
-      if (isEnded(state)) void this.closeMootCards(r.hqWorkspaceId, r.target.ptyId);
+      if (isEnded(state)) void this.closeMootCards(r.hqWorkspaceId, { taskId });
     }
     return this.hqForTask(taskId);
   }
@@ -912,7 +917,7 @@ export class MoaHandoffService {
     }
     this.put({ ...(this.get(r.id) ?? cur), taskState: 'completed', closedByHq: true });
     await this.save();
-    await this.closeMootCards(hqWorkspaceId, r.target.ptyId);
+    await this.closeMootCards(hqWorkspaceId, { taskId });
     this.notify();
     return { ok: true, result };
   }
@@ -1009,16 +1014,17 @@ export class MoaHandoffService {
   }
 
   /**
-   * Take down the HQ's unanswered hand-off cards: those for one pane when its
-   * task completed, or all of them (`ptyId` absent) when the HQ finished the
-   * job (deck_complete_work). The work they asked for is done, so they would
-   * only sit in "Waiting on you". Returns how many were closed.
+   * Take down the HQ's unanswered hand-off cards: the follow-up cards of one
+   * task when that task ended (another job's card on the same pane stays), or
+   * all of them (`scope` absent) when the HQ finished the job
+   * (deck_complete_work). They would only sit in "Waiting on you". Returns
+   * how many were closed.
    */
-  async closeMootCards(hqWorkspaceId: string, ptyId?: string): Promise<number> {
+  async closeMootCards(hqWorkspaceId: string, scope?: { taskId: string }): Promise<number> {
     let closed = 0;
     for (const r of Object.values(this.file.items)) {
       if (r.hqWorkspaceId !== hqWorkspaceId || r.state !== 'pending' || r.notice || !r.decisionId) continue;
-      if (ptyId !== undefined && r.target.ptyId !== ptyId) continue;
+      if (scope && r.followsTaskId !== scope.taskId) continue;
       if (this.answering.has(r.decisionId)) continue;
       const ws = r.target.workspaceId;
       const d = this.ports.decisions.load(ws);
