@@ -351,9 +351,6 @@ describe('ClaudeSdkAdapter', () => {
     expect(prompt).toContain('[policy]');
     expect(prompt).toContain('binding policy rules');
     expect(prompt).toContain('recalled memory');
-    // The old positive trigger no longer stands alone unqualified: "a genuine
-    // choice between approaches" is now bound to "WHERE NO standing rule ...".
-    expect(prompt).toMatch(/genuine choice between approaches WHERE NO standing rule or convention/);
     expect(prompt).toContain('a standing rule already answers is NOT a genuine choice');
     // Mechanics preserved.
     expect(prompt).toContain('END YOUR TURN');
@@ -361,6 +358,19 @@ describe('ClaudeSdkAdapter', () => {
     expect(prompt).toContain('routine progress updates');
     // Learnings loop: persist an operator correction so it is not re-raised.
     expect(prompt).toContain('If the operator corrects an escalation you raised');
+  });
+
+  it('pins the chief-of-staff escalation policy: lookups first, a closed list of asks, one final report', () => {
+    const prompt = buildCommanderSystemPrompt().replace(/'\s*\n\s*'/g, ' ');
+    const flat = prompt.replace(/\s+/g, ' ');
+    expect(flat).toContain('First exhaust the cheap lookups (workspace_list, pane_list, a2a_task_query, the ledger, memory): a question a lookup answers is never asked.');
+    expect(flat).toContain('decide by production impact');
+    expect(flat).toContain('ONLY for: taste, a release, an irreversible action outside wmux, a security-boundary change, or a real fork where the operator\'s intent is ambiguous.');
+    expect(flat).toContain('Every question carries your recommended option, listed first.');
+    expect(flat).toContain('ONCE per job with the FINAL result (what changed, how it was verified)');
+    expect(flat).toContain('No progress chatter');
+    expect(flat).not.toContain('short PROGRESS update');
+    expect(flat).not.toContain('a risky or irreversible action, or a genuine choice between approaches');
   });
 
   it('GLM profile injects the compatible base-url / auth-token', async () => {

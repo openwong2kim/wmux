@@ -506,8 +506,10 @@ export function renderActiveDeckWorkBlock(work: ActiveDeckWork): string {
     'Continue delegating, unblock workers, inspect artifacts, and run or delegate independent verification.',
     'Only after every required pane/A2A task is complete and the acceptance checks pass, call',
     'deck_complete_work({summary, verification}). The server rejects finalization while tracked work is outstanding.',
-    'Do not tell the operator the work is done unless that tool call succeeds. If blocked on a real human fork,',
-    'use deck_ask_decision and leave this work active.',
+    'Do not tell the operator the work is done unless that tool call succeeds; that one final report is all they',
+    'hear, so no progress reports. Settle forks yourself (lookups first, then production impact). Use',
+    'deck_ask_decision only for taste, a release, an irreversible outside action, a security-boundary change or',
+    'ambiguous operator intent, with your recommended option first, and leave this work active.',
   );
   return lines.join('\n');
 }

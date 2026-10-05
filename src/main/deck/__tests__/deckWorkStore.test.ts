@@ -553,6 +553,15 @@ describe('renderActiveDeckWorkBlock', () => {
     expect(block).toMatch(/do NOT finish it/i);
   });
 
+  it('asks only for the closed list of forks, with a recommendation, and forbids progress reports', () => {
+    beginOrContinueDeckWork('ws-1', 'ship the roster', dir, 1_000);
+    const flat = renderActiveDeckWorkBlock(loadActiveDeckWork('ws-1', dir)!).replace(/\s+/g, ' ');
+    expect(flat).toContain('that one final report is all they hear, so no progress reports.');
+    expect(flat).toContain('Settle forks yourself (lookups first, then production impact).');
+    expect(flat).toContain('Use deck_ask_decision only for taste, a release, an irreversible outside action, a security-boundary change or ambiguous operator intent, with your recommended option first, and leave this work active.');
+    expect(flat).not.toContain('If blocked on a real human fork');
+  });
+
   it('lists tracked tasks as POINTERS and tells the brain to query canonical state', () => {
     beginOrContinueDeckWork('ws-1', 'objective', dir, 1_000);
     recordDeckWorkA2aTask(
