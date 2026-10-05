@@ -875,6 +875,11 @@ export interface DaemonEvent {
     // watching, or null when it could not attribute one.
     //   agent.processExit → { slug: string | null }
     | 'agent.processExit'
+    // The last tool an agent with no per-tool hook ran, read from its own
+    // transcript (TranscriptActivityWatcher). Same meaning as a PostToolUse
+    // activity line; '' clears it.
+    //   agent.transcriptActivity → { activity: string }
+    | 'agent.transcriptActivity'
     | 'prompt.event'
     | 'notification.event'
     | 'cwd.changed'

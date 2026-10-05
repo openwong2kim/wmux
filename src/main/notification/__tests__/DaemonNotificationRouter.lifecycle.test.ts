@@ -77,6 +77,7 @@ interface CapturedListeners {
   agent?: (payload: { sessionId: string; event: unknown }) => void;
   prompt?: (payload: { sessionId: string; event: unknown }) => void;
   died?: (payload: { sessionId: string }) => void;
+  transcript?: (payload: { sessionId: string; activity: string }) => void;
 }
 
 function makeRouter(opts: {
@@ -89,6 +90,7 @@ function makeRouter(opts: {
       if (event === 'session:agent') captured.agent = cb as CapturedListeners['agent'];
       if (event === 'session:prompt') captured.prompt = cb as CapturedListeners['prompt'];
       if (event === 'session:died') captured.died = cb as CapturedListeners['died'];
+      if (event === 'session:transcriptActivity') captured.transcript = cb as CapturedListeners['transcript'];
     }),
     off: vi.fn(),
   } as unknown as DaemonClient;
@@ -815,6 +817,29 @@ describe('DaemonNotificationRouter — M1 side-effect replay', () => {
       ...(withSignal ? { signal: hookSignal({ kind: 'agent.session_start' }) } : {}),
     };
   }
+
+  it('a transcript line reaches the row, and a hook-fed pane keeps its hook line until a new session', async () => {
+    const { router, captured } = makeRouter();
+    try {
+      broadcastMetadataUpdateMock.mockClear();
+      captured.transcript!({ sessionId: 'pty-a', activity: '✎ foo.ts' });
+      expect(broadcastMetadataUpdateMock).toHaveBeenLastCalledWith(null, { ptyId: 'pty-a', activity: '✎ foo.ts' });
+
+      captured.agent!({ sessionId: 'pty-a', event: activityEvent('Read') });
+      await flushMicrotasks();
+      broadcastMetadataUpdateMock.mockClear();
+      captured.transcript!({ sessionId: 'pty-a', activity: '$ npm test' });
+      expect(broadcastMetadataUpdateMock).not.toHaveBeenCalled();
+
+      captured.agent!({ sessionId: 'pty-a', event: sessionStartEvent() });
+      await flushMicrotasks();
+      broadcastMetadataUpdateMock.mockClear();
+      captured.transcript!({ sessionId: 'pty-a', activity: '$ npm test' });
+      expect(broadcastMetadataUpdateMock).toHaveBeenCalledWith(null, { ptyId: 'pty-a', activity: '$ npm test' });
+    } finally {
+      router.stop();
+    }
+  });
 
   it('session_start clears BOTH the activity line and the pending question', async () => {
     const { router, captured } = makeRouter();

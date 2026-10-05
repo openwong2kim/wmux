@@ -134,6 +134,7 @@ import { deriveAgentLiveness } from './hooks/agentLiveness';
 import { agentSlugToDisplay, isAgentSignal, type AgentSignal } from '../shared/hooks/signal-types';
 import { checkNativeTranscriptPath } from './transcript/providers';
 import { TranscriptProjector } from './transcript/TranscriptProjector';
+import { TranscriptActivityWatcher } from './transcript/TranscriptActivityWatcher';
 import { TranscriptDiscovery, DISCOVERABLE_AGENT } from './transcript/TranscriptDiscovery';
 import { admitCodexCapture, gateCodexStop } from './transcript/codexCapture';
 import { CodexCwdBinder, describeCodexPane, readProcessStartMs, type CodexPaneFacts } from './transcript/codexRolloutByCwd';
@@ -253,6 +254,9 @@ let automationEngine: AutomationEngine | null = null;
 // handle at fire time and a null is simply "not configured yet".
 let webhookSink: WebhookSink | null = null;
 let transcriptProjector: TranscriptProjector | null = null;
+// Fleet's now-doing line for panes with no per-tool hook (setup-hooks installs,
+// Codex): tails the agent's own transcript. Guarded like the projector.
+let transcriptActivity: TranscriptActivityWatcher | null = null;
 // Phone native chat bridge (contract v0.3.1). Built in registerRpcHandlers next
 // to the services it wraps; the web server reads it lazily per request.
 let chatBridge: ChatBridge | null = null;
@@ -3556,29 +3560,31 @@ function registerRpcHandlers(
   // Guarded like hookIngest: a second registerRpcHandlers call must not mint a
   // second projector, or the first one's fs.watch handles and poll timers would
   // be orphaned with no owner to tear them down.
+  // The persisted binding is the ONLY source of the transcript path — no
+  // cwd→slug derivation (agentResume.ts rejects that mapping as
+  // version-drift-prone, which is why the path is persisted at all). Shared by
+  // the projector and the activity watcher, so both read the same file.
+  const resolveTranscriptBinding = (id: string): ResumeBinding | undefined => {
+    const pane = sessionManager.getSession(id);
+    const live = codexPaneRelays.liveSelection(id, pane);
+    if (live.live) {
+      const selection = live.selection;
+      return selection ? { agent: 'codex', sessionId: selection.threadId, cwd: selection.cwd,
+        transcriptPath: selection.transcriptPath, ts: Date.now() } : undefined;
+    }
+    // The Moa pane's transcript is known only to main (a brain's hooks go
+    // there), so it arrives with the pushed fact and is read from memory —
+    // never persisted, see web/moaPane.ts. Only while the fact still
+    // resolves to this live brain pane.
+    const fact = currentMoaPane();
+    const binding = pane?.meta.resumeBinding
+      ?? (fact?.sessionId === id && resolveMoaPane(fact, (sid) => sessionManager.getSession(sid)) ? fact.binding : undefined);
+    const current = agentDisplayToSlug(readDaemonAgentState(id).agentName ?? '');
+    return current && binding?.agent !== current ? undefined : binding;
+  };
   if (!transcriptProjector) {
     transcriptProjector = new TranscriptProjector({
-      // The persisted binding is the ONLY source of the transcript path — no
-      // cwd→slug derivation (agentResume.ts rejects that mapping as
-      // version-drift-prone, which is why the path is persisted at all).
-      getResumeBinding: (id) => {
-        const pane = sessionManager.getSession(id);
-        const live = codexPaneRelays.liveSelection(id, pane);
-        if (live.live) {
-          const selection = live.selection;
-          return selection ? { agent: 'codex', sessionId: selection.threadId, cwd: selection.cwd,
-            transcriptPath: selection.transcriptPath, ts: Date.now() } : undefined;
-        }
-        // The Moa pane's transcript is known only to main (a brain's hooks go
-        // there), so it arrives with the pushed fact and is read from memory —
-        // never persisted, see web/moaPane.ts. Only while the fact still
-        // resolves to this live brain pane.
-        const fact = currentMoaPane();
-        const binding = pane?.meta.resumeBinding
-          ?? (fact?.sessionId === id && resolveMoaPane(fact, (sid) => sessionManager.getSession(sid)) ? fact.binding : undefined);
-        const current = agentDisplayToSlug(readDaemonAgentState(id).agentName ?? '');
-        return current && binding?.agent !== current ? undefined : binding;
-      },
+      getResumeBinding: resolveTranscriptBinding,
       // #782 — splits an absent binding into `stale-session` (agent running, no
       // binding yet) vs `no-hook` (no agent detected → hooks not installed).
       getDetectedAgent: (id) => sessionManager.getSession(id)?.meta.lastDetectedAgent,
@@ -3614,6 +3620,26 @@ function registerRpcHandlers(
     pipeServer.onClientClose((clientId) => projectorForClose.dropClient(clientId));
   }
   const projector = transcriptProjector;
+  if (!transcriptActivity) {
+    transcriptActivity = new TranscriptActivityWatcher({
+      listSessionIds: () => sessionManager.listLiveSessions().map((s) => s.id),
+      // Moa's brain reports its tools through its own hooks, to main.
+      getBinding: (id) => (currentMoaPane()?.sessionId === id ? undefined : resolveTranscriptBinding(id)),
+      // Process truth when the tracker attributed one; else the detected agent.
+      // A Codex pane driven through the shared app-server counts while live.
+      isAgentAlive: (id) => {
+        const tracked = agentProcessTracker.statusFor(id);
+        if (tracked !== undefined) return tracked || codexPaneRelays.liveSelection(id, sessionManager.getSession(id)).live;
+        return !!sessionManager.getSession(id)?.meta.lastDetectedAgent
+          || codexPaneRelays.liveSelection(id, sessionManager.getSession(id)).live;
+      },
+      emit: (sessionId, activity) => {
+        const event: DaemonEvent = { type: 'agent.transcriptActivity', sessionId, data: { activity } };
+        pipeServer.broadcast(event);
+      },
+    });
+    transcriptActivity.start();
+  }
 
   // Chat View — F9 early availability. Guarded like the projector: a second
   // registerRpcHandlers call must not mint a second searcher, or the first
@@ -4142,6 +4168,8 @@ function registerRpcHandlers(
       // no Chat surface open.
       onTranscriptNudge: (sessionId, kind, agentSessionId) => {
         projector.nudge(sessionId, kind, agentSessionId);
+        // A hook-fed session's own activity line wins over the transcript.
+        transcriptActivity?.noteHookSignal(sessionId, kind);
         // #782 — phone turn-view nudge. Non-recording: bypasses attentionLog so
         // a busy pane cannot evict a pending approval and blank the badge on
         // replay (CRITICAL 3). Delivered only to devices watching this pane; a
@@ -5941,6 +5969,7 @@ function wireEvents(
     chatSessions?.drop(payload.id);
     chatSubscribers.delete(payload.id);
     transcriptProjector?.dropPty(payload.id);
+    transcriptActivity?.dropSession(payload.id);
     terminalChat?.dropPty(payload.id);
     // …and nothing left to discover a transcript FOR.
     transcriptDiscovery?.cancel(payload.id);
@@ -6531,6 +6560,7 @@ function wireEvents(
     chatSessions?.drop(payload.id);
     chatSubscribers.delete(payload.id);
     transcriptProjector?.dropPty(payload.id);
+    transcriptActivity?.dropSession(payload.id);
     terminalChat?.dropPty(payload.id);
     // …and nothing left to discover a transcript FOR.
     transcriptDiscovery?.cancel(payload.id);
@@ -6768,6 +6798,7 @@ async function shutdown(
   for (const timer of chatPushTimers.values()) clearTimeout(timer);
   chatPushTimers.clear(); chatSubscribers.clear();
   transcriptProjector?.dispose();
+  transcriptActivity?.dispose();
   terminalChat?.dispose();
   // Same for the discovery searches — unref'd watch handles and poll timers.
   transcriptDiscovery?.dispose();
