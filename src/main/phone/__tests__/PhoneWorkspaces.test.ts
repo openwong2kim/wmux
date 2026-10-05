@@ -165,6 +165,25 @@ describe('phone workspace bridge', () => {
     expect(fitted.panes).toEqual(sidebar.panes);
     expect(reasons).toEqual(['budget.moaHandoff']);
   });
+  it("drops Moa's delegated jobs whole after the layout trees, before the hand-off notices", () => {
+    const base = { workspaces: [{ id: 'ws-1', name: 'One', sessionId: 'pty-0' }] };
+    const sidebar: PhoneSidebarSnapshot = {
+      activeWorkspaceId: null,
+      workspaces: [{ id: 'ws-1', order: 0, pinned: false, moaHandoff: { agentName: 'Codex', title: 't'.repeat(80), raisedAt: 1_700_000_000_000 } }],
+      panes: [{ ptyId: 'pty-0', workspaceId: 'ws-1', paneId: 'p-0', surfaceTitle: 'title' }],
+      moaDelegations: [{ taskId: 'task-1', workspaceId: 'ws-1', agentName: 'Codex CLI', title: 'Ship it', state: 'working', since: 1_700_000_000_000 }],
+    };
+    const size = (candidate: PhoneSidebarSnapshot) => Buffer.byteLength(JSON.stringify({ ...base, sidebar: candidate }));
+    const reasons: string[] = [];
+    const fitted = fitSidebarToBudget(base, sidebar, size(sidebar) - 1, (r) => reasons.push(r))!;
+    expect(fitted).not.toHaveProperty('moaDelegations');
+    expect(fitted.workspaces).toEqual(sidebar.workspaces);
+    expect(reasons).toEqual(['budget.moaDelegations']);
+    // A later cut never brings the list back.
+    const tighter = fitSidebarToBudget(base, sidebar, size(fitted) - 1)!;
+    expect(tighter).not.toHaveProperty('moaDelegations');
+    expect(tighter.workspaces[0]).not.toHaveProperty('moaHandoff');
+  });
   it('keeps every title whenever the sidebar fit without the pane placement (20 workspaces, 512 sessions)', () => {
     const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
     const owners = Array.from({ length: 10 }, (_, i) => `ws-${uuid(i)}`);

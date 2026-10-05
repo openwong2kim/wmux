@@ -25,6 +25,10 @@
 //                   reads it
 //   - moaHandoff:   main's pending decisions (DECK_MOA_DECISIONS), passed in
 //                   by the caller: a pending hand-off card in that slot
+//   - moaDelegations: Fleet's own tickets (`buildFleetTickets` over main's
+//                   WorkLinks, passed in, the same decisions and the A2A
+//                   mirror), the Moa-origin ones only; a pane's prompt from
+//                   `surfaceAttentionStatus`
 //
 // Store-free (state in, plain object out) so it is unit-testable directly.
 
@@ -43,6 +47,9 @@ import {
   type PhoneLayoutSurfaceKind,
   type PhoneSidebarLayout,
   type PhoneSidebarMoaHandoff,
+  type PhoneMoaDelegation,
+  type PhoneMoaDelegationState,
+  PHONE_MOA_DELEGATION_RECENT_MS,
   type PhoneSidebarPane,
   type PhoneSidebarSnapshot,
   type PhoneSidebarWorkspace,
@@ -55,9 +62,12 @@ import type { StoreState } from '../stores';
 import { resolveTaskLink } from '../utils/fanoutProvenance';
 import { computePaneAutoName, paneDisplayName } from '../utils/paneNaming';
 import { buildSidebarTree, paneRowsFinished, splitTasksByPane, taskRollup } from '../components/Sidebar/sidebarTree';
-import { selectWorkspaceAgentStatus } from '../stores/selectors/fleet';
+import { selectWorkspaceAgentStatus, surfaceAttentionStatus } from '../stores/selectors/fleet';
 import { selectWorkspaceAgentRoster, agentSurfaceTitle } from '../stores/selectors/workspaceAgentRoster';
 import { isTaskReadyForReview } from '../stores/selectors/reviewQueue';
+import { buildFleetTickets, type FleetTicket } from '../components/FleetView/fleetTickets';
+import type { WorkLink } from '../../shared/workLink';
+import { agentSlugToDisplay, isAgentSlug } from '../../shared/agentIdentity';
 
 function nonEmpty(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
@@ -170,6 +180,62 @@ export function pendingHandoffNotices(decisions: readonly MoaPendingDecision[] |
   return out;
 }
 
+/** The terminal PTYs of one leaf pane, or of the workspace's only agent pane when no pane is named. */
+function delegatedPtys(state: StoreState, ticket: FleetTicket): string[] {
+  const ws = state.workspaces.find((w) => w.id === ticket.workspaceId);
+  if (!ws) return [];
+  const ptysOf = (leaf: ReturnType<typeof getWorkspaceLeafPanes>[number]) => leaf.surfaces
+    .filter((surface) => (surface.surfaceType ?? 'terminal') === 'terminal' && !!surface.ptyId && !isBrainPtyId(surface.ptyId))
+    .map((surface) => surface.ptyId as string);
+  const leaves = getWorkspaceLeafPanes(ws);
+  if (ticket.paneId) {
+    const leaf = leaves.find((l) => l.id === ticket.paneId);
+    return leaf ? ptysOf(leaf) : [];
+  }
+  // Fleet's `openTicketFor` rule: a ticket that names no pane names the
+  // workspace's agent only when there is exactly one.
+  const agentLeaves = leaves.filter((leaf) => ptysOf(leaf).some((pty) => !!state.surfaceAgent?.[pty]?.name));
+  return agentLeaves.length === 1 ? ptysOf(agentLeaves[0]) : [];
+}
+
+/**
+ * Moa's delegated jobs for the phone: Fleet's tickets with a Moa origin and
+ * an A2A task, newest first, bounded. `blocked` is a pending Moa decision,
+ * the task asking for input, or the delegated pane waiting on a prompt
+ * (approval, permission, question). Never the request or the result.
+ */
+export function projectMoaDelegations(
+  state: StoreState,
+  links: readonly WorkLink[],
+  decisions: readonly MoaPendingDecision[],
+  now: number,
+): PhoneMoaDelegation[] {
+  const tickets = buildFleetTickets({ links, decisions, a2aTasks: state.a2aTasks ?? {}, now });
+  const out: PhoneMoaDelegation[] = [];
+  for (const ticket of tickets) {
+    if (ticket.origin !== 'moa' && ticket.origin !== 'moa-auto') continue;
+    // A link without its task is a hand-off still being delivered (or one
+    // that failed to): not a job yet.
+    if (!isSidebarId(ticket.a2aTaskId) || !isSidebarId(ticket.workspaceId)) continue;
+    const ptys = delegatedPtys(state, ticket);
+    const ended = ticket.state === 'done' || ticket.state === 'failed';
+    if (ended && now - ticket.updatedAt > PHONE_MOA_DELEGATION_RECENT_MS) continue;
+    let phoneState: PhoneMoaDelegationState;
+    if (ended) phoneState = ticket.state as 'done' | 'failed';
+    else if (ticket.state === 'needs-you' || ptys.some((pty) => surfaceAttentionStatus(state, pty) === 'awaiting_input')) phoneState = 'blocked';
+    else phoneState = 'working';
+    const paneAgent = ptys.map((pty) => state.surfaceAgent?.[pty]?.name).find((name) => !!name?.trim());
+    const agentName = clampSidebarString(
+      paneAgent ?? (isAgentSlug(ticket.agent) ? agentSlugToDisplay(ticket.agent) : ticket.agent) ?? 'Agent',
+      PHONE_SIDEBAR_LIMITS.moaDelegationAgentName,
+    ) ?? 'Agent';
+    const title = clampSidebarString(ticket.title, PHONE_SIDEBAR_LIMITS.moaDelegationTitle) ?? 'Untitled task';
+    if (!Number.isSafeInteger(ticket.updatedAt) || ticket.updatedAt <= 0) continue;
+    out.push({ taskId: ticket.a2aTaskId, workspaceId: ticket.workspaceId, agentName, title, state: phoneState, since: ticket.updatedAt });
+  }
+  return out.sort((a, b) => b.since - a.since).slice(0, PHONE_SIDEBAR_LIMITS.moaDelegations);
+}
+
 /**
  * One bad workspace, task record or pane never costs the whole snapshot: each
  * part is projected on its own, and a part that throws is left out and
@@ -179,6 +245,7 @@ export function buildPhoneSidebarSnapshot(
   state: StoreState,
   onDrop: SidebarDropReporter = () => undefined,
   moaDecisions?: readonly MoaPendingDecision[],
+  workLinks?: { links: readonly WorkLink[]; now: number },
 ): PhoneSidebarSnapshot {
   const workspaces = state.workspaces;
   let handoffs = new Map<string, PhoneSidebarMoaHandoff>();
@@ -343,6 +410,18 @@ export function buildPhoneSidebarSnapshot(
   // only while Moa is on and main reports its workspace present.
   const hqId = moaHqId(state);
   const hqWorkspaceId = isSidebarId(hqId) ? hqId : undefined;
+  // Only with main's WorkLinks and decisions both in hand: an empty list must
+  // mean "no jobs", and a job must not read as working because the decision
+  // blocking it could not be read.
+  let moaDelegations: PhoneMoaDelegation[] | undefined;
+  if (workLinks && moaDecisions) {
+    try {
+      moaDelegations = projectMoaDelegations(state, workLinks.links, moaDecisions, workLinks.now);
+    } catch {
+      onDrop('moaDelegations');
+    }
+  }
+
   const moaOn = state.moa?.config.enabled === true && state.moa.hq.state === 'ok' && hqWorkspaceId !== undefined && liveIds.has(hqWorkspaceId);
 
   return {
@@ -351,5 +430,6 @@ export function buildPhoneSidebarSnapshot(
     panes: paneRows,
     ...(hqWorkspaceId !== undefined ? { hqWorkspaceId } : {}),
     ...(moaOn ? { moa: true as const } : {}),
+    ...(moaDelegations ? { moaDelegations } : {}),
   };
 }

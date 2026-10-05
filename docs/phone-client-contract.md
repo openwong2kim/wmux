@@ -375,7 +375,7 @@ GET /api/events?since=<cursor>     (Bearer)
 
 ```
 GET /api/config    → {allowInput, allowUpload, allowTranscript, inlineImages?, liveActivityPush?,
-                      gatedTools, gateEnabled?, fleetSidebar?, moa?, moaSessionId?, channels?, terminalPromptDetail?,
+                      gatedTools, gateEnabled?, fleetSidebar?, moaDelegations?, moa?, moaSessionId?, channels?, terminalPromptDetail?,
                       terminalPromptDecline?, protocolVersion, minProtocolVersion,
                       serverVersion, hostPlatform}
 GET /api/sessions  → {sessions: [{id, cwd, spawnCwd?, cols, rows, state, agent, lastActivity,
@@ -3151,7 +3151,7 @@ not the desktop fields.
   the phone. It disappears on the next poll after the card is answered.
   Omitted, never `null`, when nothing is pending, when the desktop is too old
   to say, and when the desktop's reply was over its size budget (it is cut
-  right after the layout trees, before the pane placement).
+  after the layout trees and `moaDelegations`, before the pane placement).
 
 Each `panes[]` entry of `GET /api/workspaces` also carries `paneId` (same
 value and rules as on `GET /api/sessions`) when the desktop places that
@@ -3159,6 +3159,52 @@ session in a pane of that workspace.
 
 Top level of `GET /api/workspaces`: `activeWorkspaceId` — the workspace the
 desktop is showing, present only when it is one of the listed rows.
+
+Top level of `GET /api/workspaces`: `moaDelegations` — the jobs Moa handed to
+agents, the same jobs the desktop Fleet lists as tickets. `/api/config` carries
+`moaDelegations: true` when this daemon can serve the key (a desktop bridge is
+wired); like `fleetSidebar` it describes support, not presence. Read-only:
+
+```json
+"moaDelegations": [
+  { "taskId": "task-…", "workspaceId": "ws-…", "agentName": "Claude Code",
+    "title": "Fix the login redirect", "state": "blocked", "since": 1759600000000 },
+  { "taskId": "task-…", "workspaceId": "ws-…", "agentName": "Codex CLI",
+    "title": "Add the retry test", "state": "done", "since": 1759590000000 }
+]
+```
+
+- **Which jobs.** A job Moa handed off (operator-approved or automatic) that
+  has an A2A task. Every open job (`working`, `blocked`) however old, plus jobs
+  that ended (`done`, `failed`) within the last 24 hours. At most 20, newest
+  `since` first; past 20 the oldest are left out. A hand-off Moa only proposed
+  is not a job yet: it is the `moaHandoff` notice on its workspace row.
+- `taskId` — the A2A task id. Stable for the job's life; key rows by it.
+- `workspaceId` — the workspace doing the work. It may name a workspace that is
+  not in `workspaces[]`: finished workers' workspaces are often closed. Show
+  the job anyway, with no link to the row.
+- `agentName` — the receiving agent's display name (at most 64 characters):
+  the name the desktop shows for the agent in that pane, else the agent the
+  job was handed to, else `Agent`.
+- `title` — the job's title, one line with control and bidi characters
+  removed, at most 80 characters (`Untitled task` when there is none).
+- `state` — `working`, `blocked`, `done` or `failed`. `blocked` means the job
+  waits on someone: a Moa decision about it is pending, the task asked for
+  input, or the agent's pane waits on a prompt (an approval or permission
+  prompt, or a question it asked). Send the user to the desktop to answer it;
+  this version answers nothing from the phone. `done` covers a job whose PR is
+  waiting for review or merged; `failed`, a task that failed. Treat an unknown
+  value as `working`.
+- `since` — epoch ms the job last changed on the desktop's record (delivered,
+  started, asked, answered, ended). A pane prompt that blocks a job does not
+  move it.
+
+The request text, the agent's report, its verification and any transcript are
+never sent. The key is an empty array when the desktop has no such jobs, and
+omitted, never `null`, when the desktop is too old to say, when it could not
+read its job records for this poll, and when its reply was over its size
+budget (the list goes whole, right after the layout trees). Read an absent key
+as "unknown", not as "no jobs": keep showing what the last poll returned.
 
 #### The Moa HQ (`role`, `moa`)
 

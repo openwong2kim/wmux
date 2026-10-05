@@ -419,3 +419,39 @@ describe('pending Moa hand-off notice', () => {
     }
   });
 });
+
+describe("Moa's delegated jobs", () => {
+  const snap = (moaDelegations: unknown) => ({ activeWorkspaceId: null, panes: [], workspaces: [], moaDelegations });
+  const job = (taskId: string, since: number, extra: Record<string, unknown> = {}) => ({
+    taskId, workspaceId: 'ws-1', agentName: 'Codex CLI', title: 'Ship it', state: 'working', since, ...extra,
+  });
+
+  it('keeps only the six fields, newest first, and an empty list as empty', () => {
+    const parsed = parsePhoneSidebarSnapshot(snap([job('t1', 1), { ...job('t2', 2, { state: 'blocked' }), result: 'secret', request: 'secret' }]))!;
+    expect(parsed.moaDelegations).toEqual([job('t2', 2, { state: 'blocked' }), job('t1', 1)]);
+    expect(JSON.stringify(parsed)).not.toContain('secret');
+    expect(parsePhoneSidebarSnapshot(snap([]))!.moaDelegations).toEqual([]);
+    expect(parsePhoneSidebarSnapshot(snap(undefined))).not.toHaveProperty('moaDelegations');
+  });
+
+  it('drops a malformed job on its own, a duplicate, and anything past the cap', () => {
+    const reasons: string[] = [];
+    const bad = [
+      job('a', 1, { state: 'queued' }),
+      job('b', 1, { title: 'a\nb' }),
+      job('c', 1, { title: 'x'.repeat(PHONE_SIDEBAR_LIMITS.moaDelegationTitle + 1) }),
+      job('d', 0),
+      job('e', 1, { agentName: '' }),
+      { ...job('f', 1), workspaceId: undefined },
+      'nope',
+    ];
+    const many = Array.from({ length: PHONE_SIDEBAR_LIMITS.moaDelegations + 2 }, (_, i) => job(`ok-${i}`, i + 1));
+    const parsed = parsePhoneSidebarSnapshot(snap([...bad, job('ok-0', 9), ...many]), (r) => reasons.push(r))!;
+    expect(parsed.moaDelegations).toHaveLength(PHONE_SIDEBAR_LIMITS.moaDelegations);
+    expect(reasons.filter((r) => r === 'moaDelegations.row')).toHaveLength(bad.length);
+    expect(reasons).toContain('moaDelegations.duplicate');
+    expect(reasons).toContain('moaDelegations.overLimit');
+    expect(parsePhoneSidebarSnapshot(snap('nope'), (r) => reasons.push(r))).not.toHaveProperty('moaDelegations');
+    expect(reasons.at(-1)).toBe('moaDelegations');
+  });
+});

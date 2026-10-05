@@ -26,6 +26,10 @@ export const PHONE_SIDEBAR_LIMITS = {
   /** A pending hand-off notice (`PhoneSidebarWorkspace.moaHandoff`). */
   moaHandoffTitle: 80,
   moaHandoffAgentName: 64,
+  /** Moa's delegated jobs (`PhoneSidebarSnapshot.moaDelegations`). */
+  moaDelegations: 20,
+  moaDelegationTitle: 80,
+  moaDelegationAgentName: 64,
   /** Upper bound for counts and ahead/behind; anything larger is not a real value. */
   count: 1_000_000,
   /**
@@ -132,6 +136,31 @@ export interface PhoneSidebarMoaHandoff {
   raisedAt: number;
 }
 
+/** A delegated job's state as the phone sees it. */
+export const PHONE_MOA_DELEGATION_STATES = ['working', 'blocked', 'done', 'failed'] as const;
+export type PhoneMoaDelegationState = (typeof PHONE_MOA_DELEGATION_STATES)[number];
+
+/** How long a finished (done / failed) delegation stays listed. */
+export const PHONE_MOA_DELEGATION_RECENT_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * One job Moa handed to an agent: the desktop Fleet's ticket for it, reduced
+ * to what the phone may show. Never the request, the result or a transcript.
+ */
+export interface PhoneMoaDelegation {
+  /** The A2A task carrying the job. */
+  taskId: string;
+  /** The workspace doing the work; it may since have been closed. */
+  workspaceId: string;
+  /** The receiving agent's display name. */
+  agentName: string;
+  /** The job's title, single-line and bounded. */
+  title: string;
+  state: PhoneMoaDelegationState;
+  /** Epoch ms the job last changed on the desktop's record. */
+  since: number;
+}
+
 /**
  * Surface kinds the phone may see: the desktop's surface types, plus 'other'
  * for anything newer. A parser maps an unknown kind to 'other' rather than
@@ -204,6 +233,13 @@ export interface PhoneSidebarSnapshot {
   hqWorkspaceId?: string;
   /** Moa is on and its HQ workspace exists. Absent otherwise. */
   moa?: true;
+  /**
+   * Moa's delegated jobs, newest first: every open one plus those that ended
+   * within PHONE_MOA_DELEGATION_RECENT_MS, at most `moaDelegations`. Present
+   * (possibly empty) whenever the desktop computed it; absent from an older
+   * desktop, on a failed read, or when cut for size.
+   */
+  moaDelegations?: PhoneMoaDelegation[];
 }
 
 /**
@@ -330,6 +366,33 @@ function parseMoaHandoff(value: unknown): PhoneSidebarMoaHandoff | undefined {
   const raisedAt = timestamp(value.raisedAt);
   if (agentName === undefined || title === undefined || raisedAt === undefined) return undefined;
   return { agentName, title, raisedAt };
+}
+
+function parseMoaDelegation(value: unknown): PhoneMoaDelegation | undefined {
+  if (!isRecord(value)) return undefined;
+  const taskId = idString(value.taskId);
+  const workspaceId = idString(value.workspaceId);
+  const agentName = boundedString(value.agentName, PHONE_SIDEBAR_LIMITS.moaDelegationAgentName);
+  const title = boundedString(value.title, PHONE_SIDEBAR_LIMITS.moaDelegationTitle);
+  const since = timestamp(value.since);
+  const state = (PHONE_MOA_DELEGATION_STATES as readonly unknown[]).includes(value.state) ? value.state as PhoneMoaDelegationState : undefined;
+  if (taskId === undefined || workspaceId === undefined || agentName === undefined || title === undefined || since === undefined || state === undefined) return undefined;
+  return { taskId, workspaceId, agentName, title, state, since };
+}
+
+function parseMoaDelegations(value: unknown[], drop: SidebarDropReporter): PhoneMoaDelegation[] {
+  const out: PhoneMoaDelegation[] = [];
+  const seen = new Set<string>();
+  for (const raw of value) {
+    if (out.length >= PHONE_SIDEBAR_LIMITS.moaDelegations) { drop('moaDelegations.overLimit'); break; }
+    const row = parseMoaDelegation(raw);
+    if (!row) { drop('moaDelegations.row'); continue; }
+    if (seen.has(row.taskId)) { drop('moaDelegations.duplicate'); continue; }
+    seen.add(row.taskId);
+    out.push(row);
+  }
+  // Newest first, whatever order the producer used.
+  return out.sort((a, b) => b.since - a.since);
 }
 
 function parseWorkspace(value: unknown, drop: SidebarDropReporter): PhoneSidebarWorkspace | null {
@@ -562,6 +625,8 @@ export function parsePhoneSidebarSnapshot(value: unknown, onDrop?: SidebarDropRe
   else if (value.hqWorkspaceId !== undefined) drop('hqWorkspaceId');
   if (value.moa === true) snapshot.moa = true;
   else if (value.moa !== undefined) drop('moa');
+  if (Array.isArray(value.moaDelegations)) snapshot.moaDelegations = parseMoaDelegations(value.moaDelegations, drop);
+  else if (value.moaDelegations !== undefined) drop('moaDelegations');
   return snapshot;
 }
 

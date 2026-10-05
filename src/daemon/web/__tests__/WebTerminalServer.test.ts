@@ -9485,6 +9485,22 @@ describe('WebTerminalServer', () => {
       expect(JSON.stringify(body)).not.toContain('x'.repeat(64));
     });
 
+    it("passes Moa's delegated jobs through at the top level, including a closed workspace's, and nothing when the desktop sent none", async () => {
+      const jobs = [
+        { taskId: 'task-2', workspaceId: 'ws-closed', agentName: 'Codex CLI', title: 'Done job', state: 'done', since: 1_700_000_000_900 },
+        { taskId: 'task-1', workspaceId: 'ws-1', agentName: 'Claude Code', title: 'Open job', state: 'blocked', since: 1_700_000_000_500 },
+      ];
+      attachDesktop(() => ({ workspaces: [], sidebar: { ...sidebar(), moaDelegations: [...jobs].reverse().map((j) => ({ ...j, result: 'secret report' })) } }));
+      const info = await startRO();
+      const body = await getJson(info.token as string, '/api/workspaces');
+      expect(body.moaDelegations).toEqual(jobs);
+      expect(JSON.stringify(body)).not.toContain('secret report');
+      await server.stop();
+      attachDesktop(() => ({ workspaces: [], sidebar: sidebar() }));
+      const older = await startRO();
+      expect(await getJson(older.token as string, '/api/workspaces')).not.toHaveProperty('moaDelegations');
+    });
+
     it('merges the layout tree narrowed to the row\'s own live sessions, and lists the rest as unplaced', async () => {
       const s1b = { ...live[0], id: 's1b' };
       live.push({ ...brainRow }, s1b);
@@ -10125,6 +10141,7 @@ describe('WebTerminalServer', () => {
       attachDesktop(() => ({ workspaces: [], sidebar: sidebar() }));
       info = await startRO();
       expect((await getJson(info.token as string, '/api/config')).fleetSidebar).toBe(true);
+      expect((await getJson(info.token as string, '/api/config')).moaDelegations).toBe(true);
     });
 
     it('omits fleetSidebar from a daemon with no desktop bridge wired', async () => {
@@ -10137,7 +10154,9 @@ describe('WebTerminalServer', () => {
       try {
         const res = await fetch(`http://127.0.0.1:${info.port}/api/config`, { headers: bearer(info.token as string) });
         expect(res.status).toBe(200);
-        expect('fleetSidebar' in ((await res.json()) as Record<string, unknown>)).toBe(false);
+        const config = (await res.json()) as Record<string, unknown>;
+        expect('fleetSidebar' in config).toBe(false);
+        expect('moaDelegations' in config).toBe(false);
       } finally {
         await bare.stop();
       }

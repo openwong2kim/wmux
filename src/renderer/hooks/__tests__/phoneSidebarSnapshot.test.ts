@@ -7,6 +7,7 @@ import type { Workspace, Pane, PaneLeaf, Surface, AgentStatus } from '../../../s
 import type { WorkTask } from '../../../shared/workTask';
 import type { FanoutOrigin } from '../../../shared/fanoutOrigin';
 import type { MoaPendingDecision, MoaState } from '../../../shared/moa';
+import type { WorkLink } from '../../../shared/workLink';
 
 const NOW = 5_000_000;
 
@@ -491,5 +492,93 @@ describe('buildPhoneSidebarSnapshot — pending Moa hand-off notice', () => {
     expect(phoneHandoffTitle('y'.repeat(500), 'f')).toBe('y'.repeat(PHONE_SIDEBAR_LIMITS.moaHandoffTitle));
     expect(phoneHandoffTitle('   \n\n', 'Fallback\ttitle')).toBe('Fallback title');
     expect(phoneHandoffTitle(undefined, undefined)).toBeUndefined();
+  });
+});
+
+describe('buildPhoneSidebarSnapshot — Moa delegations', () => {
+  const T = 1_700_000_000_000;
+  const DAY = 24 * 60 * 60 * 1000;
+  const ws = [
+    workspace('a', [leaf('pa', [surface('sa', 'pty-a')])]),
+    workspace('b', [leaf('pb', [surface('sb', 'pty-b')])]),
+  ];
+  const link = (id: string, extra: Partial<WorkLink> = {}): WorkLink => ({
+    id: `wl-${id}`,
+    origin: 'moa',
+    title: `Job ${id}`,
+    a2aTaskId: `task-${id}`,
+    a2aState: 'working',
+    owner: { workspaceId: 'a', paneId: 'pa' },
+    agent: 'codex',
+    state: 'running',
+    decisionIds: [],
+    createdAt: T,
+    updatedAt: T,
+    ...extra,
+  });
+  const decision = (id: string, workspaceId = 'a'): MoaPendingDecision => ({
+    workspaceId,
+    decision: { id, question: 'Which branch?', options: ['main', 'dev'], context: '', raisedAt: T },
+  });
+  const build = (links: WorkLink[], opts: { decisions?: MoaPendingDecision[]; status?: Record<string, AgentStatus>; now?: number } = {}) =>
+    buildPhoneSidebarSnapshot(state({ workspaces: ws, status: opts.status }), undefined, opts.decisions ?? [], { links, now: opts.now ?? T + 1000 });
+
+  it("lists Moa-origin jobs with an A2A task only, named by the pane's agent, never the request or result", () => {
+    const snap = build([
+      link('1', { result: { summary: 'secret report', at: T } as WorkLink['result'] }),
+      link('manual', { origin: 'manual' }),
+      link('undelivered', { a2aTaskId: undefined }),
+      link('auto', { origin: 'moa-auto', owner: { workspaceId: 'b' }, agent: undefined, updatedAt: T - 5 }),
+    ], { status: { 'pty-a': 'running' } });
+    expect(snap.moaDelegations).toEqual([
+      { taskId: 'task-1', workspaceId: 'a', agentName: 'Claude Code', title: 'Job 1', state: 'working', since: T },
+      { taskId: 'task-auto', workspaceId: 'b', agentName: 'Agent', title: 'Job auto', state: 'working', since: T - 5 },
+    ]);
+    expect(JSON.stringify(snap)).not.toContain('secret report');
+    expect(parsePhoneSidebarSnapshot(snap)).toEqual(snap);
+  });
+
+  it('falls back to the link agent slug when the pane has no agent, and bounds the title', () => {
+    const snap = build([link('1', { title: '\u202eFix\nit ' + 'y'.repeat(200) })]);
+    expect(snap.moaDelegations?.[0].agentName).toBe('Codex CLI');
+    expect(snap.moaDelegations?.[0].title).toBe(('Fix it ' + 'y'.repeat(200)).slice(0, PHONE_SIDEBAR_LIMITS.moaDelegationTitle));
+  });
+
+  it('is blocked while a linked Moa decision is pending, and working again once it is answered', () => {
+    const pending = build([link('1', { decisionIds: ['d1'] })], { decisions: [decision('d1')] });
+    expect(pending.moaDelegations?.[0].state).toBe('blocked');
+    const answered = build([link('1', { decisionIds: ['d1'] })], { decisions: [] });
+    expect(answered.moaDelegations?.[0].state).toBe('working');
+  });
+
+  it("is blocked while the delegated pane waits on a prompt, and not for another workspace's prompt", () => {
+    expect(build([link('1')], { status: { 'pty-a': 'awaiting_input' } }).moaDelegations?.[0].state).toBe('blocked');
+    expect(build([link('1')], { status: { 'pty-b': 'awaiting_input' } }).moaDelegations?.[0].state).toBe('working');
+    // No pane named: the workspace's only agent pane stands in.
+    expect(build([link('1', { owner: { workspaceId: 'a' } })], { status: { 'pty-a': 'awaiting_input' } }).moaDelegations?.[0].state).toBe('blocked');
+  });
+
+  it('keeps finished jobs for 24 h only, and keeps open ones however old', () => {
+    const now = T + DAY + 10;
+    const snap = build([
+      link('old-done', { a2aState: 'completed', state: 'done', updatedAt: T }),
+      link('fresh-failed', { a2aState: 'failed', state: 'blocked', reason: 'task-failed', updatedAt: T + 20 }),
+      link('old-open', { updatedAt: T - DAY }),
+    ], { now });
+    expect(snap.moaDelegations?.map((d) => [d.taskId, d.state])).toEqual([['task-fresh-failed', 'failed'], ['task-old-open', 'working']]);
+  });
+
+  it('orders newest first and caps the list', () => {
+    const links = Array.from({ length: 30 }, (_, i) => link(String(i), { updatedAt: T + i }));
+    const list = build(links, { now: T + 100 }).moaDelegations ?? [];
+    expect(list).toHaveLength(PHONE_SIDEBAR_LIMITS.moaDelegations);
+    expect(list[0].taskId).toBe('task-29');
+    expect(list.every((d, i) => i === 0 || list[i - 1].since >= d.since)).toBe(true);
+  });
+
+  it('is empty with no jobs, and absent when the links or the decisions could not be read', () => {
+    expect(build([]).moaDelegations).toEqual([]);
+    expect(buildPhoneSidebarSnapshot(state({ workspaces: ws }), undefined, [])).not.toHaveProperty('moaDelegations');
+    expect(buildPhoneSidebarSnapshot(state({ workspaces: ws }), undefined, undefined, { links: [link('1')], now: T })).not.toHaveProperty('moaDelegations');
   });
 });

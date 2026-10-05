@@ -65,6 +65,7 @@ import { collectPaneTreeRemoteSessions } from '../../shared/paneUtils';
 import { findActivePtyId, buildWorkspaceListEntries } from './workspaceMirrorSnapshot';
 import { buildPhoneSidebarSnapshot } from './phoneSidebarSnapshot';
 import type { MoaPendingDecision } from '../../shared/moa';
+import type { WorkLink } from '../../shared/workLink';
 import { createSidebarDropLog } from '../../shared/phoneFleetSidebar';
 import { buildFleetTriage, fleetTriageScopeError } from '../utils/fleetTriage';
 import { workspaceCloseRefusal } from '../components/Moa/moaHqGuard';
@@ -944,7 +945,15 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     } catch {
       drops.report('moa.decisions');
     }
-    const snapshot = buildPhoneSidebarSnapshot(store, drops.report, moaDecisions);
+    // Main's WorkLinks for Moa's delegated jobs (Fleet's ticket source).
+    let workLinks: { links: WorkLink[]; now: number } | undefined;
+    try {
+      const links = await window.electronAPI?.workLinks?.list({});
+      if (Array.isArray(links)) workLinks = { links, now: Date.now() };
+    } catch {
+      drops.report('moa.workLinks');
+    }
+    const snapshot = buildPhoneSidebarSnapshot(store, drops.report, moaDecisions, workLinks);
     const dropped = drops.summary();
     if (dropped) console.warn(`[phone] sidebar projection left out: ${dropped}`);
     return snapshot;
