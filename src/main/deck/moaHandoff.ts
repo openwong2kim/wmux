@@ -573,9 +573,10 @@ export class MoaHandoffService {
 
   /** Which part of the auto rule sends this hand-off to a card. */
   private askReasonOf(r: HandoffRecord): HandoffAskReason {
-    if (r.externalSource) return 'external';
-    if (!this.ports.autoHandoffEnabled()) return 'auto-off';
+    // The most basic reason first: outside danger mode nothing goes on its own.
     if (this.ports.modeOf(r.target.workspaceId) !== 'danger' || this.ports.modeOf(r.hqWorkspaceId) !== 'danger') return 'not-danger';
+    if (!this.ports.autoHandoffEnabled()) return 'auto-off';
+    if (r.externalSource) return 'external';
     return 'hourly-cap';
   }
 

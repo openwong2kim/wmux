@@ -83,6 +83,8 @@ const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim
 
 /** Still waiting on the operator: the same list Waiting on you shows. */
 export function purposeWaits(p: MoaPurpose, decisions: readonly MoaPendingDecision[]): boolean {
+  // A call that did not go through raised nothing to wait on.
+  if (p.ok === false) return false;
   if (p.kind === 'decision') return !!p.resultId && decisions.some((d) => d.decision.id === p.resultId);
   if (p.kind === 'handoff') {
     const title = str(p.input.title);
