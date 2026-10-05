@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { setMoaHandoffService } from '../../../deck/moaHandoff';
 import type { BrowserWindow } from 'electron';
 import { RpcRouter } from '../../RpcRouter';
 import { registerA2aRpc } from '../a2a.rpc';
@@ -385,5 +386,60 @@ describe('a2a.task.update — #1598 orphaned tasks and receiver cancel', () => {
       params: { taskId: 't1', workspaceId: 'ws-b', status: 'canceled' },
     });
     expect(worker.cancel).not.toHaveBeenCalled();
+  });
+});
+
+describe('a2a.task.update — the HQ closes a hand-off it proposed', () => {
+  beforeEach(() => sendToRendererMock.mockReset());
+  afterEach(() => setMoaHandoffService(null));
+
+  function handoffs(complete = vi.fn(async () => ({ ok: true as const, result: 'done: wrote hi' }))) {
+    setMoaHandoffService({
+      byTask: (id: string) => (id === 't-h' ? { hqWorkspaceId: 'ws-hq' } : null),
+      requesterComplete: complete,
+    } as never);
+    return complete;
+  }
+
+  it('a caller proving its pane in the HQ goes through the hand-off service, not the receiver rules', async () => {
+    const complete = handoffs();
+    const calls: DaemonCall[] = [];
+    rendererWithPanes([{ id: 'pane-hq', surfacePtyIds: ['pty-hq'] }]);
+    const res = await setup(pinnedTaskDaemon(calls)).dispatch({
+      id: 'h1', method: 'a2a.task.update',
+      params: { taskId: 't-h', workspaceId: 'ws-hq', status: 'completed', senderPtyId: 'pty-hq' },
+    });
+    expect((res as { result: unknown }).result).toEqual({ ok: true, taskId: 't-h', status: 'completed', result: 'done: wrote hi' });
+    expect(complete).toHaveBeenCalledWith('ws-hq', 't-h');
+    expect(calls).toHaveLength(0);
+  });
+
+  it('a refusal (the worker is still working) comes back as an error and moves nothing', async () => {
+    handoffs(vi.fn(async () => ({ ok: false as const, code: 'target_working' as const })) as never);
+    rendererWithPanes([{ id: 'pane-hq', surfacePtyIds: ['pty-hq'] }]);
+    const res = await setup(pinnedTaskDaemon([])).dispatch({
+      id: 'h2', method: 'a2a.task.update',
+      params: { taskId: 't-h', workspaceId: 'ws-hq', status: 'completed', senderPtyId: 'pty-hq' },
+    });
+    expect(((res as { result: { error?: string } }).result).error).toMatch(/target_working/);
+    expect(rendererUpdateCalls()).toHaveLength(0);
+  });
+
+  it('no proof of being the HQ, or another workspace, is never routed to the close', async () => {
+    const complete = handoffs();
+    rendererWithPanes([{ id: 'pane-hq', surfacePtyIds: ['pty-hq'] }]);
+    const unproven = await setup(pinnedTaskDaemon([])).dispatch({
+      id: 'h3', method: 'a2a.task.update',
+      params: { taskId: 't-h', workspaceId: 'ws-hq', status: 'completed', senderPtyId: 'pty-forged' },
+    });
+    expect(((unproven as { result: { error?: string } }).result).error).toMatch(/only the HQ that proposed/);
+    const calls: DaemonCall[] = [];
+    await setup(pinnedTaskDaemon(calls)).dispatch({
+      id: 'h4', method: 'a2a.task.update',
+      params: { taskId: 't-h', workspaceId: 'ws-other', status: 'completed', senderPtyId: 'pty-hq' },
+    });
+    expect(complete).not.toHaveBeenCalled();
+    // The other workspace took the ordinary receiver path.
+    expect(calls.some((c) => c.method === 'a2a.task.update')).toBe(true);
   });
 });

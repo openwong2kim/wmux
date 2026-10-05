@@ -312,6 +312,39 @@ describe('moa hand-off — the worker reports back', () => {
     expect(r.invoke).not.toHaveBeenCalledWith('a2a.task.update', expect.objectContaining({ status: 'input-required' }));
   });
 
+  it('the HQ that proposed it closes the task only after the worker\'s turn ended, with its closing words as the result', async () => {
+    let busy = false;
+    const r = rig({ agentBusy: () => busy });
+    const taskId = await delivered(r);
+    // Before any turn end: refused, nothing moved.
+    expect(await r.svc.requesterComplete(HQ, taskId)).toEqual({ ok: false, code: 'turn_not_ended' });
+    await r.svc.onWorkerStop('pty-1', 'claude', { text: 'Wrote hello.txt with one line: hi.', endsWithQuestion: false });
+    // Another workspace never closes it, and a worker mid-turn again is not done.
+    expect(await r.svc.requesterComplete('ws-other', taskId)).toEqual({ ok: false, code: 'not_requester' });
+    busy = true;
+    expect(await r.svc.requesterComplete(HQ, taskId)).toEqual({ ok: false, code: 'target_working' });
+    expect(r.invoke).not.toHaveBeenCalledWith('a2a.task.update', expect.objectContaining({ status: 'completed' }));
+    busy = false;
+    expect(await r.svc.requesterComplete(HQ, taskId)).toEqual({ ok: true, result: 'Wrote hello.txt with one line: hi.' });
+    expect(r.invoke).toHaveBeenCalledWith('a2a.task.update', expect.objectContaining({
+      taskId, workspaceId: SEAL, status: 'completed',
+      evidence: expect.objectContaining({ summary: 'Wrote hello.txt with one line: hi.' }),
+    }));
+    // deck_complete_work reads the hand-off as settled; the record survives a reload.
+    expect(r.svc.handoffTaskStatus(taskId)).toBe('settled');
+    expect(r.svc.closedByHq(taskId)).toBe(true);
+    const reloaded = rig({}, r.file);
+    expect(reloaded.svc.byTask(taskId)).toMatchObject({ taskState: 'completed', closedByHq: true, lastStop: { text: 'Wrote hello.txt with one line: hi.' } });
+    expect(await r.svc.requesterComplete(HQ, taskId)).toEqual({ ok: false, code: 'ended' });
+  });
+
+  it('a task waiting on the operator (a question at turn end) is not the HQ\'s to close', async () => {
+    const r = rig();
+    const taskId = await delivered(r);
+    await r.svc.onWorkerStop('pty-1', 'claude', { text: 'Which module should I start with?', endsWithQuestion: true });
+    expect(await r.svc.requesterComplete(HQ, taskId)).toEqual({ ok: false, code: 'needs_input' });
+  });
+
   it('a stop in a pane with no open hand-off is not ours', async () => {
     const r = rig();
     expect(await r.svc.onWorkerStop('pty-9', 'claude', { text: 'Done?', endsWithQuestion: true })).toBeNull();

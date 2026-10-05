@@ -1989,6 +1989,16 @@ export function registerDeckHandler(
       seq: ev.seq,
       ts: ev.ts,
       ...(ev.lastMessage ? { lastMessage: ev.lastMessage } : {}),
+      // A plain turn end on the hand-off: the wake tells Moa how to close it.
+      ...(ev.kind === 'agent.stop' ? {
+        a2a: {
+          taskId: routed.taskId,
+          from: hq,
+          to: moaHandoffs!.byTask(routed.taskId)?.target.workspaceId ?? '',
+          state: 'working' as const,
+          handoff: {},
+        },
+      } : {}),
     });
   };
   // Subscribed by startRuntime (with the master switch), not here.
@@ -2025,6 +2035,9 @@ export function registerDeckHandler(
         ev.state !== 'input-required' &&
         ev.state !== 'canceled'
       ) return;
+      // The HQ closed this hand-off itself, in the turn that is acting on it:
+      // a second wake would only repeat that turn's report.
+      if (ev.state === 'completed' && moaHandoffs?.closedByHq(ev.taskId)) return;
       const kind =
         ev.state === 'completed' ? 'a2a.completed' as const
         : ev.state === 'failed' ? 'a2a.failed' as const

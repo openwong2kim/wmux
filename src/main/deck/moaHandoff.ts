@@ -107,6 +107,12 @@ export interface HandoffRecord {
   /** Turn ends to ignore: the agent was mid-turn at delivery, so the next
    *  Stop ends the turn it was already in, not the hand-off's. */
   skipStops?: number;
+  /** The worker's last turn end on this task without a question: when, and
+   *  its closing words (UNTRUSTED agent text, capped). What lets the HQ close
+   *  the task, and what the task result carries. */
+  lastStop?: { at: number; text: string };
+  /** The HQ closed the task itself (requesterComplete). */
+  closedByHq?: boolean;
   createdAt: number;
   at: number;
 }
@@ -355,6 +361,11 @@ export class MoaHandoffService {
 
   byTask(taskId: string): HandoffRecord | null {
     return Object.values(this.file.items).find((r) => r.taskId === taskId) ?? null;
+  }
+
+  /** The HQ closed this hand-off task itself (requesterComplete). */
+  closedByHq(taskId: string): boolean {
+    return this.byTask(taskId)?.closedByHq === true;
   }
 
   /** The HQ a hand-off task reports to, or null when the task is not one. */
@@ -761,7 +772,15 @@ export class MoaHandoffService {
     const ambiguous = this.openTasksOnPty(ptyId).length > 1;
     const open = !ambiguous && (r.taskState === 'submitted' || r.taskState === 'working' || r.taskState === undefined);
     const asks = !!lastMessage && agent === 'claude' && (lastMessage.endsWithQuestion || looksLikeRefusal(lastMessage.text));
-    if (!open || !asks || !lastMessage) return { hq: r.hqWorkspaceId, taskId: r.taskId, movedToInputRequired: false };
+    if (!open || !asks || !lastMessage) {
+      // A plain turn end on its own open task: remember it, so the HQ may close
+      // the task with these words as its result (requesterComplete).
+      if (open) {
+        this.put({ ...r, lastStop: { at: this.now(), text: lastMessage ? capBytes(lastMessage.text, HANDOFF_LAST_MESSAGE_MAX_BYTES) : '' } });
+        await this.save();
+      }
+      return { hq: r.hqWorkspaceId, taskId: r.taskId, movedToInputRequired: false };
+    }
     const text = capBytes(lastMessage.text, HANDOFF_LAST_MESSAGE_MAX_BYTES);
     // Kept first, so the wake this transition raises can carry it.
     this.put({ ...r, lastQuestion: text });
@@ -776,6 +795,63 @@ export class MoaHandoffService {
     if (r.linkId) await this.ports.links.setLastQuestion(r.linkId, { text, at: this.now() }).catch(() => undefined);
     this.notify();
     return { hq: r.hqWorkspaceId, taskId: r.taskId, movedToInputRequired: moved };
+  }
+
+  /**
+   * The HQ that proposed a hand-off closes its task as completed, after the
+   * worker's turn ended. The worker's closing words become the task's result
+   * (its completion evidence, kept on the durable task). Refused for a task the
+   * HQ did not propose, before the worker's turn ended, while the worker is
+   * mid-turn again, or while the task waits on the operator (input-required).
+   * Main moves the task through the operator lane, as the receiver would.
+   */
+  async requesterComplete(
+    hqWorkspaceId: string,
+    taskId: string,
+  ): Promise<{ ok: true; result: string } | { ok: false; code: 'not_requester' | 'ended' | 'needs_input' | 'turn_not_ended' | 'target_working' | 'error'; message?: string }> {
+    const r = this.byTask(taskId);
+    if (!r || r.hqWorkspaceId !== hqWorkspaceId || r.state !== 'delivered') return { ok: false, code: 'not_requester' };
+    if (isEnded(r.taskState)) return { ok: false, code: 'ended' };
+    if (r.taskState === 'input-required') return { ok: false, code: 'needs_input' };
+    if (!r.lastStop) return { ok: false, code: 'turn_not_ended' };
+    if (this.ports.agentBusy?.(r.target.workspaceId, r.target.ptyId)) return { ok: false, code: 'target_working' };
+    const words = r.lastStop.text.trim();
+    const result = words || 'The agent ended its turn without a closing message.';
+    let cur = r;
+    if (cur.taskState !== 'working') {
+      await this.moveTask(cur, 'working');
+      cur = this.get(r.id) ?? cur;
+    }
+    // Marked before the move: the task's completed event can arrive while the
+    // update is still in flight, and that wake must already be skipped.
+    this.put({ ...(this.get(r.id) ?? cur), closedByHq: true });
+    const res = (await this.ports
+      .invoke('a2a.task.update', {
+        taskId,
+        workspaceId: cur.target.workspaceId,
+        status: 'completed',
+        message: `[closed by Moa after the worker's turn ended — its last message, agent text, unverified] ${result}`,
+        evidence: {
+          summary: result,
+          items: [{
+            kind: 'inspection',
+            status: 'unverified',
+            summary: "The worker's closing message when its turn ended (agent text, not verified by wmux).",
+          }],
+        },
+      })
+      .catch((err: unknown) => ({ ok: false, error: err instanceof Error ? err.message : String(err) }))) as
+      | { ok?: boolean; error?: unknown; result?: { ok?: unknown; error?: unknown } }
+      | null;
+    const why = !res ? 'no answer' : res.ok === false ? String(res.error ?? 'refused') : typeof res.result?.error === 'string' ? res.result.error : null;
+    if (why) {
+      this.put({ ...(this.get(r.id) ?? cur), closedByHq: undefined });
+      return { ok: false, code: 'error', message: why };
+    }
+    this.put({ ...(this.get(r.id) ?? cur), taskState: 'completed', closedByHq: true });
+    await this.save();
+    this.notify();
+    return { ok: true, result };
   }
 
   /** Move the hand-off's task as its receiver would (main, operator lane).

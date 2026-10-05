@@ -197,6 +197,22 @@ describe('buildEventPrompt for a Moa hand-off task', () => {
     expect(prompt).not.toContain('reply with send_message');
   });
 
+  it('a worker turn end tells the HQ how to close the task, quoting the words as unverified', () => {
+    const prompt = buildEventPrompt(
+      [{
+        ptyId: 'a2a:task-h', kind: 'agent.stop', source: 'hook', agent: 'claude', seq: 1, ts: 0,
+        lastMessage: { text: 'Wrote hello.txt.', endsWithQuestion: false },
+        a2a: { taskId: 'task-h', from: 'ws-hq', to: 'ws-seal', state: 'working', handoff: {} },
+      }],
+      DEFAULT_AUTONOMY,
+      { remaining: 1, total: 1 },
+    );
+    expect(prompt).toContain('HAND-OFF TURN ENDED');
+    expect(prompt).toContain('Wrote hello.txt.');
+    expect(prompt).toContain('a2a_task_update({ task_id: "task-h", status: "completed" })');
+    expect(prompt).toContain('deck_complete_work');
+  });
+
   it('an operator cancel is their answer: no re-proposal, no question, no replacement', () => {
     const prompt = buildEventPrompt(
       [{
