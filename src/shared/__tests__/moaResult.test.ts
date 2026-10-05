@@ -18,8 +18,10 @@ describe('moa task result', () => {
   });
 
   it('prefers the work link\'s durable result, read loosely; none means null', () => {
-    expect(resultFromWorkLink({ result: { summary: 'done', verifiedItemCount: 2, itemCount: 3 } }))
+    // The durable shape the work link stores: { summary, verification: "2/3", at }.
+    expect(resultFromWorkLink({ result: { summary: 'done', verification: '2/3', at: 5 } }))
       .toEqual({ summary: 'done', verified: 2, checks: 3 });
-    expect(resultFromWorkLink({ id: 'l1' })).toBeNull();
+    expect(resultFromWorkLink({ result: { summary: 'done', at: 5 } })).toEqual({ summary: 'done', verified: 0, checks: 0 });
+    expect(resultFromWorkLink({})).toBeNull();
   });
 });

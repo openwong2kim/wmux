@@ -4,6 +4,7 @@
 // A2A task's completion evidence. Every string is agent text: render as text.
 import { isVerifiedItem } from './completionEvidence';
 import type { EvidenceItem } from './types';
+import type { WorkLinkResult } from './workLink';
 
 export interface MoaTaskResult {
   summary?: string;
@@ -48,23 +49,13 @@ export function resultFromTask(task: unknown): MoaTaskResult | null {
 }
 
 /**
- * From a work link's durable `result`, when the link carries one. The field is
- * read loosely (summary, verified/verifiedItemCount, checks/itemCount, files),
- * so an older or newer link shape degrades to "no result" instead of failing.
+ * From a work link's durable `result` ({ summary, verification: "2/3", at }),
+ * when the link carries one. It names no files.
  */
-export function resultFromWorkLink(link: unknown): MoaTaskResult | null {
-  const r = isRecord(link) ? link.result : undefined;
-  if (!isRecord(r)) return null;
-  const num = (...vs: unknown[]): number => {
-    for (const v of vs) if (typeof v === 'number' && Number.isFinite(v) && v >= 0) return v;
-    return 0;
-  };
-  const summary = text(r.summary);
-  const files = pathsOf(r.files);
-  return {
-    ...(summary ? { summary: capped(summary) } : {}),
-    verified: num(r.verified, r.verifiedItemCount),
-    checks: num(r.checks, r.itemCount),
-    ...(files ? { files } : {}),
-  };
+export function resultFromWorkLink(link: { result?: WorkLinkResult } | null | undefined): MoaTaskResult | null {
+  const r = link?.result;
+  const summary = text(r?.summary);
+  if (!r || !summary) return null;
+  const m = typeof r.verification === 'string' ? /^\s*(\d+)\s*\/\s*(\d+)\s*$/.exec(r.verification) : null;
+  return { summary: capped(summary), verified: m ? Number(m[1]) : 0, checks: m ? Number(m[2]) : 0 };
 }

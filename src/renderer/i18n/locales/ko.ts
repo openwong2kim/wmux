@@ -2102,6 +2102,7 @@ export const ko = {
   'moa.handoff.reason.external': "외부(GitHub, 웹)에서 온 내용이라 항상 묻습니다.",
   'moa.handoff.reason.hourly-cap': "이 워크스페이스로 보내는 이번 시간 자동 hand-off 한도에 도달했습니다.",
   'moa.handoff.reason.delivery-failed': "자동 전달이 되지 않아 묻습니다.",
+  'moa.handoff.reason.hq-moved': "이 제안 뒤에 Moa가 다른 워크스페이스로 옮겨서 묻습니다.",
   'moa.handoff.handOff': "Hand off",
   'moa.handoff.edit': "편집",
   'moa.handoff.cancel': "취소",

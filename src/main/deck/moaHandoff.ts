@@ -436,6 +436,7 @@ export class MoaHandoffService {
     const r = this.byDecision(decisionId);
     if (!r || r.state !== 'pending' || r.notice) return null;
     return {
+      id: r.id,
       body: r.body,
       title: r.title,
       agentName: r.target.agentName,
@@ -573,6 +574,8 @@ export class MoaHandoffService {
 
   /** Which part of the auto rule sends this hand-off to a card. */
   private askReasonOf(r: HandoffRecord): HandoffAskReason {
+    // Moa moved to another workspace since this was proposed.
+    if (this.ports.hqWorkspaceId() !== r.hqWorkspaceId) return 'hq-moved';
     // The most basic reason first: outside danger mode nothing goes on its own.
     if (this.ports.modeOf(r.target.workspaceId) !== 'danger' || this.ports.modeOf(r.hqWorkspaceId) !== 'danger') return 'not-danger';
     if (!this.ports.autoHandoffEnabled()) return 'auto-off';

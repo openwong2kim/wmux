@@ -2235,6 +2235,7 @@ export const zh = {
   'moa.handoff.reason.external': "内容来自外部（GitHub、网页），因此总是询问。",
   'moa.handoff.reason.hourly-cap': "本小时发往该工作区的自动移交已达上限。",
   'moa.handoff.reason.delivery-failed': "自动发送未成功，因此询问你。",
+  'moa.handoff.reason.hq-moved': "提议之后 Moa 移到了其他工作区，因此询问。",
   'moa.handoff.handOff': "Hand off",
   'moa.handoff.edit': "编辑",
   'moa.handoff.cancel': "取消",

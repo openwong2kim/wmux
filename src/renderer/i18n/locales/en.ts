@@ -2719,6 +2719,7 @@ export const en = {
   'moa.handoff.reason.external': "The text came from outside (GitHub, the web), so it always asks.",
   'moa.handoff.reason.hourly-cap': "This hour's automatic hand-offs to this workspace reached the limit.",
   'moa.handoff.reason.delivery-failed': "Sending it automatically did not go through, so it asks you.",
+  'moa.handoff.reason.hq-moved': "Moa moved to another workspace since it proposed this, so it asks.",
   'moa.handoff.handOff': "Hand off",
   'moa.handoff.edit': "Edit",
   'moa.handoff.cancel': "Cancel",

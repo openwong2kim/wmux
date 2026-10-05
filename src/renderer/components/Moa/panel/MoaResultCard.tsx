@@ -48,7 +48,11 @@ export function resultLinkId(eventId: string): string | null {
   return eventId.startsWith(RESULT_EVENT_PREFIX) ? eventId.slice(RESULT_EVENT_PREFIX.length) : null;
 }
 
-const fetched = new Map<string, MoaTaskResult | null>();
+/** Real results only: a null may be a transient miss (daemon busy, task log
+ *  unavailable), so it is asked again rather than remembered. */
+const fetched = new Map<string, MoaTaskResult>();
+/** Waits before asking again after an empty answer. */
+export const RESULT_RETRY_MS = [3_000, 10_000, 30_000] as const;
 
 function useTaskResult(link: WorkLink, api: MoaTaskResultApi | undefined): MoaTaskResult | null {
   const own = resultFromWorkLink(link);
@@ -58,12 +62,24 @@ function useTaskResult(link: WorkLink, api: MoaTaskResultApi | undefined): MoaTa
   useEffect(() => {
     if (hasOwn || !taskId || !api || fetched.has(taskId)) return;
     let alive = true;
-    void api.taskResult({ workspaceId: link.owner.workspaceId, taskId }).then((r) => {
-      fetched.set(taskId, r?.result ?? null);
-      if (alive) setResult(r?.result ?? null);
-    }).catch(() => undefined);
-    return () => { alive = false; };
-  }, [hasOwn, taskId, api, link.owner.workspaceId]);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const ask = (attempt: number) => {
+      void api.taskResult({ workspaceId: link.owner.workspaceId, taskId }).then((r) => {
+        if (!alive) return;
+        if (r?.result) {
+          fetched.set(taskId, r.result);
+          setResult(r.result);
+        } else if (attempt < RESULT_RETRY_MS.length) {
+          timer = setTimeout(() => ask(attempt + 1), RESULT_RETRY_MS[attempt]);
+        }
+      }).catch(() => {
+        if (alive && attempt < RESULT_RETRY_MS.length) timer = setTimeout(() => ask(attempt + 1), RESULT_RETRY_MS[attempt]);
+      });
+    };
+    ask(0);
+    return () => { alive = false; if (timer) clearTimeout(timer); };
+    // A newer link (a task event moved it) asks again from the start.
+  }, [hasOwn, taskId, api, link.owner.workspaceId, link.updatedAt]);
   return own ?? result;
 }
 

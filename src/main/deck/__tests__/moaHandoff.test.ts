@@ -121,6 +121,16 @@ describe('moa hand-off — the card', () => {
     r.state.auto = true;
     await propose(r, 'Third task.', { externalSource: true });
     expect(r.svc.cardInfo(r.slots.get(SEAL)!.id)?.askReason).toBe('external');
+    expect(r.svc.cardInfo(r.slots.get(SEAL)!.id)?.id).toEqual(expect.any(String));
+  });
+
+  it('a card left over after Moa moved workspaces says so, not that the hourly cap was reached', async () => {
+    let hq = HQ;
+    const r = rig({ hqWorkspaceId: () => hq });
+    await propose(r);
+    const record = r.svc.byDecision(r.slots.get(SEAL)!.id)!;
+    hq = 'ws-new-hq';
+    expect((r.svc as unknown as { askReasonOf: (x: unknown) => string }).askReasonOf(record)).toBe('hq-moved');
   });
 
   it('raises a main-owned card in the TARGET slot and delivers nothing', async () => {

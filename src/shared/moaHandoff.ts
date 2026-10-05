@@ -99,6 +99,8 @@ export function handoffBodyRefusal(body: unknown): 'body_empty' | 'body_too_long
 
 /** What the renderer's hand-off card needs beyond the decision itself. */
 export interface MoaHandoffCardInfo {
+  /** The hand-off's own id, the one moa_propose_handoff returned. */
+  id?: string;
   /** The full body Moa proposed (the Edit field starts from it). */
   body: string;
   /** A short title for the receipt and the task. */
@@ -117,7 +119,7 @@ export interface MoaHandoffCardInfo {
 /** Why a hand-off asks: outside text, auto hand-off off in Settings, a
  *  workspace outside danger mode, this hour's auto cap reached, or an
  *  automatic delivery that did not go through. */
-export type HandoffAskReason = 'external' | 'auto-off' | 'not-danger' | 'hourly-cap' | 'delivery-failed';
+export type HandoffAskReason = 'external' | 'auto-off' | 'not-danger' | 'hourly-cap' | 'delivery-failed' | 'hq-moved';
 
 /** DECK_MOA_HANDOFF_RESOLVE's request: the card by id; a body only on Edit. */
 export interface MoaHandoffResolveRequest {

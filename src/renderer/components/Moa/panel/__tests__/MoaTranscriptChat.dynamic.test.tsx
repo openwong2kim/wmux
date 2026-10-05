@@ -4,6 +4,8 @@
 // the shared useTranscript and drawn by the shared Chat components, with the
 // composer routed to the brain send instead of the pane chat bridge.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { setDeckHeaderSlot } from '../../../Deck/deckHeaderSlot';
@@ -118,6 +120,55 @@ describe('MoaTranscriptChat', () => {
     } finally {
       setDeckHeaderSlot(null);
       slot.remove();
+    }
+  });
+
+  it('with Moa idle, folded activity can still be opened; a failed call is never hidden', async () => {
+    const slot = document.createElement('div');
+    document.body.append(slot);
+    setDeckHeaderSlot(slot);
+    try {
+      const evs: TurnEvent[] = [
+        { id: 'u1', kind: 'user_text', text: 'Go', ts: 1 },
+        { id: 't1', kind: 'tool_use', toolUseId: 'x1', name: 'Read', argSummary: 'a', ts: 2 } as unknown as TurnEvent,
+        { id: 'r1', kind: 'tool_result', toolUseId: 'x1', ok: true, ts: 3 } as unknown as TurnEvent,
+        { id: 'a1', kind: 'assistant_text', text: 'Done.', ts: 4, turnComplete: true },
+      ];
+      const { api } = fakeApi({ snapshot: vi.fn(async () => ({ events: evs, cursor, hasMore: false, truncatedHead: false })) as never });
+      await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />));
+      const toggle = slot.querySelector('[data-moa-working-toggle]') as HTMLButtonElement;
+      expect(toggle).not.toBeNull();
+      expect(toggle.dataset.busy).toBeUndefined();
+      await act(async () => { toggle.click(); });
+      expect((host.querySelector('[data-moa-chat]') as HTMLElement).dataset.activity).toBe('shown');
+    } finally {
+      setDeckHeaderSlot(null);
+      slot.remove();
+    }
+    // The hide rule covers the fold and the working line, never a tool row.
+    const css = readFileSync(path.join(__dirname, '../../moa.css'), 'utf8');
+    const rule = css.slice(css.indexOf('[data-moa-chat][data-activity="hidden"]'));
+    expect(rule.slice(0, rule.indexOf('}'))).not.toContain('.wmux-chat-tool');
+  });
+
+  it('an empty result answer (a transient miss) is asked again instead of remembered', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { api } = fakeApi();
+      const link = { id: 'l2', origin: 'moa', title: 'Retry me', a2aTaskId: 't2', owner: { workspaceId: 'ws-w' }, state: 'done', decisionIds: [], createdAt: 1, updatedAt: 1.5 };
+      const linksApi = { list: vi.fn(async () => [link]), onChanged: vi.fn(() => () => undefined) };
+      const taskResult = vi.fn()
+        .mockResolvedValueOnce({ result: null })
+        .mockResolvedValue({ result: { summary: 'second time lucky', verified: 0, checks: 1 } });
+      await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} linksApi={linksApi as never} resultApi={{ taskResult }} />));
+      for (let i = 0; i < 5; i++) await act(async () => { await Promise.resolve(); });
+      expect(host.querySelector('[data-moa-result-card="l2"] [data-moa-result-summary]')).toBeNull();
+      await act(async () => { vi.advanceTimersByTime(3_000); });
+      for (let i = 0; i < 5; i++) await act(async () => { await Promise.resolve(); });
+      expect(taskResult).toHaveBeenCalledTimes(2);
+      expect(host.querySelector('[data-moa-result-card="l2"] [data-moa-result-summary]')?.textContent).toBe('second time lucky');
+    } finally {
+      vi.useRealTimers();
     }
   });
 

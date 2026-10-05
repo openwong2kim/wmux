@@ -268,7 +268,13 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
   // in the panel header says so, and opens the activity on demand.
   const [showActivity, setShowActivity] = useState(false);
   const headerSlot = useDeckHeaderSlot();
-  const activityToggle = (busy || showActivity) && headerSlot ? createPortal(
+  // Shown while Moa works and whenever there is folded activity to open, so a
+  // finished turn's steps stay reachable.
+  const hasActivity = useMemo(
+    () => messages.some((m) => !!(m.metadata?.custom as { row?: ChatRow } | undefined)?.row?.activity),
+    [messages],
+  );
+  const activityToggle = (busy || showActivity || hasActivity) && headerSlot ? createPortal(
     <button
       type="button"
       onClick={() => setShowActivity((v) => !v)}

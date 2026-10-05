@@ -677,8 +677,8 @@ export function buildCommanderSystemPrompt(
     `- Do NOT spawn more than ${spawnCap} panes in a session unless the operator asks.`,
     '- You cannot close panes or tear down workspaces in this version; if cleanup is',
     '  needed, tell the operator what to remove.',
-    '- Be concise. The operator reads your prose in a chat dock, and every tool call',
-    '  shows up as a chip — narrate intent, not mechanics.',
+    '- Be concise. The operator reads your prose in a chat dock; your tool calls stay',
+    '  hidden unless they open them, so they see results, not steps. Write the result.',
     '',
     ...memorySection,
   ].join('\n');

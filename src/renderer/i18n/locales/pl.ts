@@ -2696,6 +2696,7 @@ export const pl = {
   'moa.handoff.reason.external': "Tekst pochodzi z zewnątrz (GitHub, sieć), więc zawsze pyta.",
   'moa.handoff.reason.hourly-cap': "Osiągnięto limit automatycznych przekazań do tego obszaru w tej godzinie.",
   'moa.handoff.reason.delivery-failed': "Automatyczne wysłanie się nie powiodło, więc pyta.",
+  'moa.handoff.reason.hq-moved': "Moa przeniósł się do innego obszaru po tej propozycji, więc pyta.",
   'moa.handoff.handOff': "Hand off",
   'moa.handoff.edit': "Edytuj",
   'moa.handoff.cancel': "Anuluj",

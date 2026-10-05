@@ -86,10 +86,8 @@ export function purposeWaits(p: MoaPurpose, decisions: readonly MoaPendingDecisi
   // A call that did not go through raised nothing to wait on.
   if (p.ok === false) return false;
   if (p.kind === 'decision') return !!p.resultId && decisions.some((d) => d.decision.id === p.resultId);
-  if (p.kind === 'handoff') {
-    const title = str(p.input.title);
-    return decisions.some((d) => !!d.handoff && (!title || d.handoff.title === title));
-  }
+  // By the id the proposal returned: a title can repeat across proposals.
+  if (p.kind === 'handoff') return !!p.resultId && decisions.some((d) => d.handoff?.id === p.resultId);
   return false;
 }
 
