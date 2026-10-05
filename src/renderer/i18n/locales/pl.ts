@@ -770,6 +770,7 @@ export const pl = {
   'fleet.ticket.decisions': 'Czeka na Ciebie',
   'fleet.ticket.handoffWaiting': 'Przekazanie czeka na Twoje kliknięcie',
   'fleet.ticket.result': 'Wynik',
+  'fleet.ticket.resultGone': 'Wynik nie jest już przechowywany (zakończone zadania są przechowywane przez 30 minut).',
   'fleet.ticket.verification': 'Weryfikacja: sprawdzono {value}',
   'fleet.ticket.jump': 'Przejdź do agenta',
   'fleet.ticket.empty': 'Brak zleconej pracy z ostatniej doby',

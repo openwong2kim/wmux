@@ -988,7 +988,9 @@ differently in the two places, and in the order `fleet_triage` returns.
   count or toast; the rail and sidebar counts stay the panes'. A ticket's
   detail holds the request, the decisions still waiting (each opens its
   workspace's decision card), the result and its verification count (read
-  back from the durable task record after a reload), and Jump to agent.
+  back from the daemon's task record after a reload; that record keeps a
+  finished task for 30 minutes, after which the ticket says the result is
+  no longer kept, and that counts as the report shown), and Jump to agent.
   An unapproved hand-off never retitles a pane, and a ticket that names no
   pane titles one only when its workspace runs a single agent.
 - **Role:** a row's ⋮ menu holds Jump, Message (M), Stash (S), Label (L),

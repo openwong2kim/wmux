@@ -82,27 +82,31 @@ interface TicketDetailProps {
   decisions: readonly MoaPendingDecision[];
   onJump: (ticket: FleetTicket) => void;
   onOpenDecision: (ticket: FleetTicket) => void;
-  /** The result is on screen (the final report has been shown). */
+  /** The final report is on screen (its result, or that it is no longer kept). */
   onResultShown?: (ticket: FleetTicket) => void;
   t: T;
 }
 
-/** The task out of an `a2a.task.query` page view, bare or in the router's envelope. */
-function taskFromQuery(reply: unknown): Task | undefined {
+/** A page-view reply: the task, a definitive "not found", or nothing usable. */
+function readQueryReply(reply: unknown): { task?: Task; gone: boolean } {
   const rec = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
-  const body = rec(reply) && rec(reply.result) ? reply.result : reply;
+  if (!rec(reply) || reply.ok === false) return { gone: false };
+  const body = rec(reply.result) ? reply.result : reply;
+  if (rec(body) && typeof body.error === 'string') return { gone: /not found/.test(body.error) };
   const task = rec(body) ? body.task : undefined;
-  return rec(task) && rec(task.status) ? (task as unknown as Task) : undefined;
+  return rec(task) && rec(task.status) ? { task: task as unknown as Task, gone: false } : { gone: false };
 }
 
 /**
  * A finished ticket's result. The renderer's task mirror is memory only, so
- * after a reload the result is read back from the durable copy (the daemon's
- * task record, which keeps the completion evidence) through main's
- * `a2a.task.query`, the same read agents use.
+ * after a reload the result is read back from the daemon's durable task
+ * record through main's `a2a.task.query`, the same read agents use. That
+ * record keeps a finished task for 30 minutes; past that the daemon answers
+ * "not found" and the result is gone for good (`gone`). A failed read is
+ * neither: it is tried again the next time the ticket opens.
  */
-function useTicketResult(ticket: FleetTicket): FleetTicket['result'] {
-  const [loaded, setLoaded] = useState<{ id: string; result: FleetTicket['result'] } | null>(null);
+function useTicketResult(ticket: FleetTicket): { result: FleetTicket['result']; gone: boolean } {
+  const [loaded, setLoaded] = useState<{ id: string; result: FleetTicket['result']; gone: boolean } | null>(null);
   const ended = ticket.state === 'done' || ticket.state === 'failed';
   const need = ended && !ticket.result && !!ticket.a2aTaskId;
   useEffect(() => {
@@ -111,17 +115,25 @@ function useTicketResult(ticket: FleetTicket): FleetTicket['result'] {
     if (typeof invoke !== 'function') return undefined;
     let cancelled = false;
     invoke('a2a.task.query', { workspaceId: ticket.workspaceId, view: 'page', taskId: ticket.a2aTaskId })
-      .then((reply) => { if (!cancelled) setLoaded({ id: ticket.id, result: ticketResultOf(taskFromQuery(reply)) }); }, () => undefined);
+      .then((reply) => {
+        if (cancelled) return;
+        const { task, gone } = readQueryReply(reply);
+        const result = ticketResultOf(task);
+        if (result || gone) setLoaded({ id: ticket.id, result, gone: !result && gone });
+      }, () => undefined);
     return () => { cancelled = true; };
   }, [need, ticket.id, ticket.a2aTaskId, ticket.workspaceId]);
-  return ticket.result ?? (loaded?.id === ticket.id ? loaded.result : undefined);
+  if (ticket.result) return { result: ticket.result, gone: false };
+  return loaded?.id === ticket.id ? { result: loaded.result, gone: loaded.gone } : { result: undefined, gone: false };
 }
 
 export function TicketDetail({ ticket, assignee, decisions, onJump, onOpenDecision, onResultShown, t }: TicketDetailProps) {
-  const result = useTicketResult(ticket);
+  const { result, gone } = useTicketResult(ticket);
+  // The final report is on screen: its result, or the definitive word that
+  // the result is no longer kept.
   useEffect(() => {
-    if (result) onResultShown?.(ticket);
-  }, [result, ticket, onResultShown]);
+    if (result || gone) onResultShown?.(ticket);
+  }, [result, gone, ticket, onResultShown]);
   const waiting = decisions.filter((d) => ticket.decisionIds.includes(d.decision.id));
   return (
     <section className="wmux-fleet-ticket-detail" data-fleet-ticket-detail={ticket.id}
@@ -162,6 +174,12 @@ export function TicketDetail({ ticket, assignee, decisions, onJump, onOpenDecisi
               {t('fleet.ticket.verification', { value: result.verification })}
             </p>
           )}
+        </>
+      )}
+      {gone && (
+        <>
+          <h4>{t('fleet.ticket.result')}</h4>
+          <p className="wmux-fleet-ticket-meta" data-fleet-ticket-result-gone>{t('fleet.ticket.resultGone')}</p>
         </>
       )}
       <div className="wmux-fleet-ticket-actions">

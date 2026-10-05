@@ -814,6 +814,7 @@ export const en = {
   'fleet.ticket.decisions': 'Waiting on you',
   'fleet.ticket.handoffWaiting': 'Hand-off waiting for your click',
   'fleet.ticket.result': 'Result',
+  'fleet.ticket.resultGone': 'The result is no longer kept (finished tasks are kept for 30 minutes).',
   'fleet.ticket.verification': 'Verification {value} items checked',
   'fleet.ticket.jump': 'Jump to agent',
   'fleet.ticket.empty': 'No delegated work in the last day',

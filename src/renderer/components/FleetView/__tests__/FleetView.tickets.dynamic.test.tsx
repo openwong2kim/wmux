@@ -171,4 +171,17 @@ describe('FleetView — tickets', () => {
     expect(container.querySelector('[data-fleet-ticket-result]')).toBeNull();
     expect(container.querySelector('[data-filter="attention"]')?.textContent).toContain('1');
   });
+
+  it('a report whose result is no longer kept says so, and choosing it counts as viewed', async () => {
+    links = [{ ...LINK, a2aState: 'completed', state: 'done' }];
+    // The daemon keeps a finished task for 30 minutes; after that it is not found.
+    rpcInvoke.mockImplementation(async () => ({ ok: true, result: { error: 'a2a_task_query: task task-1 not found (or filtered out by status/role/updated_since)' } }));
+    act(() => { root.render(React.createElement(FleetView)); });
+    await settle();
+    act(() => container.querySelector<HTMLButtonElement>('[data-fleet-ticket="wl-1"]')!.click());
+    await settle();
+    expect(container.querySelector('[data-fleet-ticket-result-gone]')?.textContent).toContain('no longer kept');
+    expect(container.querySelector('[data-filter="attention"]')).toBeNull();
+  });
 });
+

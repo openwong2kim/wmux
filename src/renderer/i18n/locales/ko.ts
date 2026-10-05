@@ -472,6 +472,7 @@ export const ko = {
   'fleet.ticket.decisions': '결정 대기',
   'fleet.ticket.handoffWaiting': '핸드오프가 클릭을 기다리는 중',
   'fleet.ticket.result': '결과',
+  'fleet.ticket.resultGone': '결과가 더 이상 보관되지 않습니다(끝난 작업은 30분 동안 보관됩니다).',
   'fleet.ticket.verification': '검증 {value}개 확인됨',
   'fleet.ticket.jump': '에이전트로 이동',
   'fleet.ticket.empty': '최근 하루 동안 위임된 작업이 없습니다',

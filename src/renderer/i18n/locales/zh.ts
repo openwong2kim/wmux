@@ -1065,6 +1065,7 @@ export const zh = {
   'fleet.ticket.decisions': '等待你处理',
   'fleet.ticket.handoffWaiting': '移交正等待你点击',
   'fleet.ticket.result': '结果',
+  'fleet.ticket.resultGone': '结果已不再保留（已完成的任务保留 30 分钟）。',
   'fleet.ticket.verification': '验证：已检查 {value} 项',
   'fleet.ticket.jump': '跳转到代理',
   'fleet.ticket.empty': '最近一天没有委派的工作',
