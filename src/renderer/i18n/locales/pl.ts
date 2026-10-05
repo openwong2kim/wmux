@@ -2610,7 +2610,6 @@ export const pl = {
   'moa.panel.subtitle': "Główny bot",
   'moa.panel.mascot.working': "pracuje",
   'moa.panel.mascot.needs-you': "potrzebuje ciebie",
-  'moa.panel.waitingJump': 'Czeka na Ciebie: {count} ↑',
   'moa.panel.waitingTitle': "Czeka na ciebie",
   'moa.panel.unknownWorkspace': "Nieznany obszar roboczy",
   'moa.panel.answerPlaceholder': "Wpisz odpowiedź…",

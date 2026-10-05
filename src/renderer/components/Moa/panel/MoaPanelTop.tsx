@@ -2,11 +2,14 @@
 // decision), then the work Moa handed out. No height of its own: it scrolls
 // with the conversation as one column (the chat draws it at the top of its
 // scroll), so a long card grows instead of hiding behind an inner scrollbar.
-import { Suspense, lazy, useCallback, useMemo } from 'react';
+// Waiting on you is the exception: with the chat on screen it docks above the
+// composer (MoaDockContext), so a decision is never scrolled out of reach.
+import { Suspense, lazy, useCallback, useContext, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../../stores';
 import type { MoaPendingDecision } from '../../../../shared/moa';
-import { MoaWaitingOnYou, answeredElsewhere, type ResolveDecision } from './MoaWaitingOnYou';
+import { MoaDockContext, MoaWaitingOnYou, answeredElsewhere, type ResolveDecision } from './MoaWaitingOnYou';
 import { MoaTaskCards } from './MoaTaskCards';
 import { defaultReceiptsApi, selectTaskCards, useWorkLinks, type MoaHandoffReceiptsApi, type WorkLinksApi } from './useMoaPanelData';
 import { defaultHandoffResolve, type HandoffResolve } from './MoaHandoffCard';
@@ -75,6 +78,7 @@ export function MoaPanelTop({
     return r;
   }, [handoffResolve, onResolved]);
   const receipts = useMemo(() => receiptsApi ?? defaultReceiptsApi(), [receiptsApi]);
+  const dock = useContext(MoaDockContext);
   // Main names a decision's workspace when it knows it; fall back to ours.
   const named = useMemo(
     () => decisions.map((d) => (d.workspaceName ? d : { ...d, workspaceName: workspaceName(d.workspaceId) })),
@@ -84,8 +88,13 @@ export function MoaPanelTop({
     // Focusable so an answer that empties the list has somewhere to put focus.
     <div data-moa-panel-top tabIndex={-1} className="shrink-0 outline-none">
       <MoaHandoffReceipts api={receipts} workspaceName={workspaceName} onOpenPane={onOpenPane} t={t} />
-      <MoaWaitingOnYou decisions={named} onResolve={onResolve} handoffResolve={onHandoffResolve}
-        conversationTaskId={conversationTaskId} onOpenConversation={openConversation} t={t} />
+      {(() => {
+        const waiting = (
+          <MoaWaitingOnYou decisions={named} onResolve={onResolve} handoffResolve={onHandoffResolve}
+            conversationTaskId={conversationTaskId} onOpenConversation={openConversation} t={t} />
+        );
+        return dock ? createPortal(waiting, dock) : waiting;
+      })()}
       <MoaTaskCards links={cards} pendingDecisions={decisions} workspaceName={workspaceName}
         conversationTaskId={conversationTaskId} onOpenConversation={openConversation} onOpenPane={onOpenPane} t={t} />
     </div>

@@ -2633,7 +2633,6 @@ export const en = {
   'moa.panel.subtitle': "Main bot",
   'moa.panel.mascot.working': "working",
   'moa.panel.mascot.needs-you': "needs you",
-  'moa.panel.waitingJump': '{count} waiting on you ↑',
   'moa.panel.waitingTitle': "Waiting on you",
   'moa.panel.unknownWorkspace': "Unknown workspace",
   'moa.panel.answerPlaceholder': "Type your answer…",

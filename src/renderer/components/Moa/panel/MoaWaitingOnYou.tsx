@@ -4,13 +4,18 @@
 // wears the needs-you grammar (content-20% fill, dashed content-30% border,
 // the yellow eyebrow as its one state mark). Answers go to the decision's own
 // workspace, not to Moa's.
-import { useEffect, useRef, useState } from 'react';
+import { createContext, useEffect, useRef, useState } from 'react';
 import type { MoaPendingDecision } from '../../../../shared/moa';
 import Button from '../../ui/Button';
 import Input from '../../ui/Input';
 import { FOCUS_RING } from '../../focusRing';
 import { MoaMemoryCard, type MoaMemoryCardApi } from '../MoaMemoryCard';
 import { MoaHandoffCard, type HandoffResolve } from './MoaHandoffCard';
+
+/** Where Waiting on you docks: right above the chat's composer, so a card
+ *  stays in view however far the chat is scrolled. Null (no chat on screen)
+ *  draws it inline at the top of the panel. */
+export const MoaDockContext = createContext<HTMLElement | null>(null);
 
 export type ResolveDecision = (args: { workspaceId: string; id: string; resolution: string; dismiss?: boolean }) => Promise<{ ok: boolean; code?: string }>;
 
@@ -98,7 +103,12 @@ export function MoaWaitingOnYou({
     if (total === 1) {
       // The last one: the section goes away, so focus moves to the panel's
       // top region (it is focusable for exactly this) rather than the page.
-      listRef.current?.closest<HTMLElement>('[data-moa-panel-top]')?.focus();
+      // Docked above the composer, the emptied dock hides: focus the composer.
+      const docked = listRef.current?.closest('[data-moa-dock]');
+      const target = docked
+        ? docked.closest('[data-moa-chat]')?.querySelector<HTMLElement>('textarea')
+        : listRef.current?.closest<HTMLElement>('[data-moa-panel-top]');
+      target?.focus();
     } else {
       refocusAt.current = visible.findIndex((v) => v.decision.id === d.decision.id);
     }

@@ -16,53 +16,10 @@ import { ChatCodeBlockContext, ChatPtyContext, UserText } from '../../Chat/ChatM
 import { Thread } from '../../Chat/assistant-ui/Thread';
 import { useComposerDraft } from '../../Chat/chatDrafts';
 import Button from '../../ui/Button';
-import { NEEDS_YOU_ROW } from './MoaWaitingOnYou';
+import { MoaDockContext, NEEDS_YOU_ROW } from './MoaWaitingOnYou';
 import type { ChatBridgeApi } from '../../../../shared/transcript/turnEvents';
 import type { MoaApproval } from '../../../../shared/moa';
 import '../moa.css';
-
-/**
- * Waiting on you sits at the top of the one scrolling column, and the chat
- * sticks to its bottom, so in a long conversation a new decision lands out of
- * view, while the titlebar bubble and dot stay quiet because the panel is
- * open. This watches the section and reports when it holds decisions the
- * operator cannot see, so the panel can say so above the composer.
- *
- * `root` is the panel's top container only, never the chat: the chat body
- * mutates on every streamed token, and a rescan per token would be O(DOM).
- */
-export function useWaitingOutOfView(root: HTMLElement | null): { count: number; jump: () => void } {
-  const [count, setCount] = useState(0);
-  const [hidden, setHidden] = useState(false);
-  const targetRef = useRef<Element | null>(null);
-  useEffect(() => {
-    if (!root) {
-      targetRef.current = null;
-      setCount(0);
-      return;
-    }
-    let io: IntersectionObserver | null = null;
-    const attach = () => {
-      const waiting = root.querySelector('[data-moa-waiting]');
-      setCount(root.querySelectorAll('[data-moa-decision]').length);
-      if (waiting === targetRef.current) return;
-      io?.disconnect();
-      io = null;
-      targetRef.current = waiting;
-      setHidden(false);
-      if (waiting && typeof IntersectionObserver !== 'undefined') {
-        io = new IntersectionObserver(([entry]) => setHidden(!entry.isIntersecting));
-        io.observe(waiting);
-      }
-    };
-    attach();
-    const mo = new MutationObserver(attach);
-    mo.observe(root, { childList: true, subtree: true });
-    return () => { mo.disconnect(); io?.disconnect(); targetRef.current = null; };
-  }, [root]);
-  const jump = useCallback(() => targetRef.current?.scrollIntoView({ block: 'start' }), []);
-  return { count: hidden ? count : 0, jump };
-}
 
 /** The preload's `deck.moa.transcript` (main reads the HQ brain; no pty id). */
 export type MoaTranscriptApi = NonNullable<NonNullable<NonNullable<Window['electronAPI']>['deck']>['moa']>['transcript'];
@@ -132,7 +89,8 @@ export interface MoaTranscriptChatProps {
   onInterrupt: () => void;
   /** Swap to the terminal view (prompts only the TUI shows). */
   onTerminal: () => void;
-  /** The panel's top sections, drawn first inside the chat's scroll. */
+  /** The panel's top sections, drawn first inside the chat's scroll (Waiting
+   *  on you portals itself into the dock above the composer). */
   top?: React.ReactNode;
   /** Injected in tests; defaults to the preload. */
   api?: MoaTranscriptApi;
@@ -244,10 +202,10 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
     }
   }, [approval, prompts, readApproval]);
   const empty = messages.length === 0 && pending.length === 0;
-  // A callback ref: the top container mounts with the chat's history slot.
-  const [topEl, setTopEl] = useState<HTMLDivElement | null>(null);
-  const waitingOutOfView = useWaitingOutOfView(topEl);
+  // A callback ref: the dock mounts with the composer's footer.
+  const [dockEl, setDockEl] = useState<HTMLDivElement | null>(null);
   return (
+    <MoaDockContext.Provider value={dockEl}>
     <ChatPtyContext.Provider value={ptyId}>
       <ChatCodeBlockContext.Provider value={bridge?.codeBlock ?? null}>
       <AssistantRuntimeProvider runtime={runtime}>
@@ -260,7 +218,7 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
             placeholder={t('moa.panel.placeholder')}
             hint={busy ? t('moa.panel.busy') : undefined}
             history={<>
-              {top && <div ref={setTopEl} className="wmux-moa-chat-top" data-moa-chat-top>{top}</div>}
+              {top && <div className="wmux-moa-chat-top" data-moa-chat-top>{top}</div>}
               {data.hasMore && !data.loading && (
                 <button type="button" className="wmux-chat-earlier ui-btn" disabled={data.loadingEarlier} onClick={() => void data.loadEarlier()}>
                   {data.loadingEarlier ? t('chat.loading') : t('chat.loadEarlier')}
@@ -288,12 +246,10 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
               </button>
             )}
             notices={<>
-              {waitingOutOfView.count > 0 && (
-                <button type="button" className={`${NEEDS_YOU_ROW} mx-3 my-1.5 text-left text-[13px] text-[var(--text-main)]`}
-                  onClick={waitingOutOfView.jump} data-moa-waiting-jump>
-                  {t('moa.panel.waitingJump', { count: waitingOutOfView.count })}
-                </button>
-              )}
+              {/* Decisions and hand-off cards (Waiting on you) dock here,
+                  above the composer: sticky with it, the chat scrolling
+                  above them. */}
+              <div ref={setDockEl} className="wmux-moa-dock" data-moa-dock />
               {/* A dialog only the TUI shows holds the turn (and so the
                   composer): this is the one way forward, drawn as a
                   needs-you row with the action, not a footnote. */}
@@ -336,5 +292,6 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
       </AssistantRuntimeProvider>
       </ChatCodeBlockContext.Provider>
     </ChatPtyContext.Provider>
+    </MoaDockContext.Provider>
   );
 }

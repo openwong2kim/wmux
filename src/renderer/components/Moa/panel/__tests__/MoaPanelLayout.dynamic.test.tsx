@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 //
-// Moa's panel scrolls as ONE column: Waiting on you, then delegated work, then
-// the chat, all inside the chat's own scroller. No card gets a height or a
-// scroll of its own, and quick replies stack full width. Mounted through the
-// real dock and store.
+// Moa's panel scrolls as ONE column: delegated work, then the chat, inside the
+// chat's own scroller, with Waiting on you docked above the composer so a
+// decision stays in view at any scroll position. No card gets a height or a
+// scroll of its own (the dock alone caps its height), and quick replies stack
+// full width. Mounted through the real dock and store.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -115,15 +116,20 @@ async function render() {
 const before = (a: Element, b: Element) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
 
 describe('Moa panel — one column', () => {
-  it('orders Waiting on you, delegated work, then the chat, all inside the chat scroller', async () => {
+  it('orders delegated work, then the chat, with Waiting on you docked above the composer', async () => {
     await render();
     const scroller = host.querySelector('[data-moa-chat] .wmux-chat-viewport')!;
     const waiting = host.querySelector('[data-moa-waiting]')!;
     const tasks = host.querySelector('[data-moa-tasks]')!;
     const messages = host.querySelector('[data-moa-chat] .wmux-chat-messages')!;
-    for (const el of [waiting, tasks, messages]) expect(scroller.contains(el)).toBe(true);
-    expect(before(waiting, tasks)).toBe(true);
+    const footer = host.querySelector('[data-moa-chat] .wmux-chat-footer')!;
+    const composer = footer.querySelector('.wmux-chat-composer')!;
+    for (const el of [tasks, messages]) expect(scroller.contains(el)).toBe(true);
     expect(before(tasks, messages)).toBe(true);
+    // The sticky footer holds the dock, right above the composer.
+    expect(footer.querySelector('[data-moa-dock]')?.contains(waiting)).toBe(true);
+    expect(before(messages, waiting)).toBe(true);
+    expect(before(waiting, composer)).toBe(true);
     // No roster, no recovery notice, no control rows.
     expect(host.querySelector('[data-deck-fleet], [data-commander-recovery], [data-deck-quick-actions], [data-commander-report-rail-toggle]')).toBeNull();
   });
@@ -133,6 +139,9 @@ describe('Moa panel — one column', () => {
     const panel = host.querySelector('[data-commander-view]')!;
     const offenders = [...panel.querySelectorAll<HTMLElement>('*')].filter((el) => {
       if (el.classList.contains('wmux-chat-viewport')) return false;
+      // The dock caps its height so a pile of cards never pushes the
+      // composer out of the sticky footer (moa.css); cards inside it don't.
+      if (el.hasAttribute('data-moa-dock')) return false;
       const cls = typeof el.className === 'string' ? el.className : '';
       if (/(^|\s)(overflow(-[xy])?-(auto|scroll|hidden)|max-h-\S+|line-clamp-\S+)/.test(cls)) return true;
       const st = el.style;
