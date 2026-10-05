@@ -26,10 +26,12 @@ interface TicketRowProps {
   now: number;
   onFocus: () => void;
   onSelect: (ticket: FleetTicket) => void;
+  /** Enter jumps to the agent, as on an agent row; a click selects. */
+  onJump: (ticket: FleetTicket) => void;
   t: T;
 }
 
-function TicketRowImpl({ ticket, assignee, focused, now, onFocus, onSelect, t }: TicketRowProps) {
+function TicketRowImpl({ ticket, assignee, focused, now, onFocus, onSelect, onJump, t }: TicketRowProps) {
   const title = ticket.title || t('fleet.ticket.untitled');
   const state = t(`fleet.ticket.state.${ticket.state}`);
   return (
@@ -41,6 +43,11 @@ function TicketRowImpl({ ticket, assignee, focused, now, onFocus, onSelect, t }:
       tabIndex={focused ? 0 : -1}
       onFocus={onFocus}
       onClick={() => onSelect(ticket)}
+      onKeyDown={(event) => {
+        if (event.key !== 'Enter' || event.ctrlKey || event.metaKey || event.altKey) return;
+        event.preventDefault();
+        onJump(ticket);
+      }}
       className="wmux-fleet-card wmux-fleet-ticket"
       data-fleet-ticket={ticket.id}
       data-fleet-key={ticketKey(ticket.id)}

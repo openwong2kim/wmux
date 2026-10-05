@@ -1139,6 +1139,7 @@ export default function FleetView() {
                     now={now}
                     onFocus={() => setFocusedPaneId(ticketKey(ticket.id))}
                     onSelect={selectTicket}
+                    onJump={jumpToTicket}
                     t={t}
                   />
                 </div>

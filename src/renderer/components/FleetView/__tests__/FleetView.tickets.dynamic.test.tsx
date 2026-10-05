@@ -95,6 +95,11 @@ describe('FleetView — tickets', () => {
     const issue = container.querySelector<HTMLButtonElement>('[data-fleet-ticket-issue]')!;
     act(() => issue.click());
     expect(openExternal).toHaveBeenCalledWith('https://github.com/acme/app/issues/new?title=Fix%20the%20login%20redirect');
+
+    // Enter on the ticket jumps to the agent working on it, as on an agent row.
+    act(() => ticket.focus());
+    act(() => { ticket.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
+    expect(useStore.getState().appRoute).toBe('workspaces');
   });
 
   it('hides the GitHub action when the repo is not on GitHub', async () => {
