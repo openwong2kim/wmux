@@ -43,6 +43,20 @@ describe('foldMoaReports', () => {
     expect(reports.get('moa-report:a2')?.linkIds).toEqual(['l1']);
   });
 
+  it('a final reply with a code block keeps its own row; the report stands at the completion', () => {
+    const events: TurnEvent[] = [
+      { id: 'u1', kind: 'user_text', text: 'go', ts: 1 },
+      { id: 'moa-result:l1', kind: 'meta', subtype: 'unknown', label: '', ts: 2 },
+      { id: 'moa-purpose:c1', kind: 'meta', subtype: 'unknown', label: 'complete', ts: 3 },
+      { id: 'a1', kind: 'assistant_text', text: 'Here is the diff:\u0000code:1\u0000', ts: 4, turnComplete: true },
+    ];
+    const { events: out, reports } = foldMoaReports(events, new Map([['moa-purpose:c1', complete(true)]]));
+    expect(out.map((e) => e.id)).toEqual(['u1', 'moa-report:moa-purpose:c1', 'a1']);
+    expect(reports.get('moa-report:moa-purpose:c1')?.reply).toBeUndefined();
+    // And that reply is still the turn's message, not narration.
+    expect((foldNarration(out).find((e) => e.id === 'a1') as { thinking?: boolean }).thinking).toBeUndefined();
+  });
+
   it('a completion that covers no delegation (small talk) is no report: the reply stays a message', () => {
     const events: TurnEvent[] = [
       { id: 'u1', kind: 'user_text', text: '고마워', ts: 1 },

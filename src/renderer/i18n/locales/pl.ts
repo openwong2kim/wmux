@@ -2658,7 +2658,7 @@ export const pl = {
   'moa.result.done': "Gotowe · {workspace}",
   'moa.result.moreFiles': "+{count} plików więcej",
   'moa.report.done': "Gotowe",
-  'moa.report.checked': "Sprawdzone przez Moa: {text}",
+  'moa.report.checked': "Jak Moa sprawdziła: {text}",
   'moa.report.notChecked': "Moa jeszcze tego nie sprawdziła. Oto, co zgłosił agent.",
   'moa.report.agentReport': "Raport agenta",
   'moa.panel.activityShowIdle': "Pokaż aktywność Moa",

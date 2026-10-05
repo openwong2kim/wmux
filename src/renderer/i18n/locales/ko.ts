@@ -2064,7 +2064,7 @@ export const ko = {
   'moa.result.done': "완료 · {workspace}",
   'moa.result.moreFiles': "파일 {count}개 더",
   'moa.report.done': "완료",
-  'moa.report.checked': "Moa가 확인함: {text}",
+  'moa.report.checked': "Moa의 확인: {text}",
   'moa.report.notChecked': "Moa가 아직 확인하지 않았습니다. 아래는 에이전트가 보고한 내용입니다.",
   'moa.report.agentReport': "에이전트 보고",
   'moa.panel.activityShowIdle': "Moa 활동 보기",

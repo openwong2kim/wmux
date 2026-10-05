@@ -2680,7 +2680,7 @@ export const en = {
   'moa.result.done': "Done · {workspace}",
   'moa.result.moreFiles': "+{count} more files",
   'moa.report.done': "Done",
-  'moa.report.checked': "Checked by Moa: {text}",
+  'moa.report.checked': "How Moa checked: {text}",
   'moa.report.notChecked': "Not checked by Moa yet. This is what the agent reported.",
   'moa.report.agentReport': "Reported by the agent",
   'moa.panel.activityShowIdle': "Show Moa's activity",
