@@ -358,3 +358,23 @@ describe('resolveSpawnEnv — the reserved namespace and the fan-out task port',
     expect(env.WMUX_TASK_PORT).toBe('3202');
   });
 });
+
+describe('resolveSpawnEnv — nesting markers from an overlay', () => {
+  it('a profile or account env cannot re-add a nesting marker; CLAUDE_CONFIG_DIR and the sandboxed flag stay', () => {
+    for (const policy of ['gated', 'passthrough'] as const) {
+      const env = resolveSpawnEnv(
+        { PATH: '/bin', CLAUDE_CODE_CHILD_SESSION: '1' },
+        { CLAUDE_CODE_CHILD_SESSION: '1', claudecode: '1', CLAUDE_CODE_SANDBOXED: '1', CLAUDE_CONFIG_DIR: '/acc/profile' },
+        { WMUX_WORKSPACE_ID: 'ws-1' },
+        undefined,
+        policy,
+        { CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDE_CONFIG_DIR: '/acc/bound' },
+      );
+      expect(env.CLAUDE_CODE_CHILD_SESSION).toBeUndefined();
+      expect(env.claudecode).toBeUndefined();
+      expect(env.CLAUDE_CODE_ENTRYPOINT).toBeUndefined();
+      expect(env.CLAUDE_CODE_SANDBOXED).toBe('1');
+      expect(env.CLAUDE_CONFIG_DIR).toBe('/acc/profile');
+    }
+  });
+});

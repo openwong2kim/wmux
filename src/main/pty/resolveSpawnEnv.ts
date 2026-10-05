@@ -1,4 +1,5 @@
-import { buildGatedAutomationEnv, buildInteractiveShellEnv, forceTerminalIdentity } from '../../shared/envFilter';
+import { buildGatedAutomationEnv, buildInteractiveShellEnv, forceTerminalIdentity, isNestingMarker } from '../../shared/envFilter';
+import { CLAUDE_SANDBOXED_ENV } from '../../shared/agentFirstRun';
 import { ENV_KEYS } from '../../shared/constants';
 import type { EnvPolicy } from '../../shared/spawnKind';
 
@@ -105,6 +106,15 @@ export function resolveSpawnEnv(
   // win32 before writing each key, so the last overlay (profile) truly wins.
   applyOverlay(env, accountEnv);
   applyOverlay(env, profileEnv);
+  // The overlays run after the builder's strip, so drop agent-nesting markers
+  // (CLAUDE_CODE_CHILD_SESSION, CLAUDECODE, …) again: a profile or account env
+  // must not turn a claude in this pane into a nested session either. The one
+  // marker wmux sets on purpose, CLAUDE_CODE_SANDBOXED (fan-out and automation
+  // panes skip claude's folder-trust dialog), stays. CLAUDE_CONFIG_DIR and
+  // other CLAUDE_* config are not markers and are kept.
+  for (const key of Object.keys(env)) {
+    if (isNestingMarker(key) && key.toUpperCase() !== CLAUDE_SANDBOXED_ENV) delete env[key];
+  }
   for (const [k, v] of Object.entries(identity)) {
     if (typeof v === 'string') env[k] = v;
   }
