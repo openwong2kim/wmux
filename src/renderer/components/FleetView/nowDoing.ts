@@ -33,7 +33,10 @@ export function nowDoingLine(row: FleetRow, lastActivity: string | undefined, t:
       const now = activitySentence(row.detail, t);
       if (now) return { text: now, kind: 'now' };
     }
-    if (row.pane.agentStatus !== 'running' && row.pane.surfaceType === 'terminal') {
+    // Only a turn that is over says what it did last: a pane asking for input
+    // (a permission prompt, no question text) keeps "Needs your input".
+    const ended = row.pane.agentStatus === 'complete' || row.pane.agentStatus === 'idle' || row.pane.agentStatus === 'waiting';
+    if (ended && row.pane.surfaceType === 'terminal') {
       const last = activitySentence(flattenAgentText(lastActivity ?? ''), t);
       if (last) return { text: t('fleet.now.last', { text: last }), kind: 'last' };
     }

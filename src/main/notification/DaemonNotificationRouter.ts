@@ -746,6 +746,7 @@ export class DaemonNotificationRouter {
               activity: '',
               pendingQuestion: '',
               lastMessage: '',
+              lastActivity: '',
             });
             // #1680 — the receipt a fresh-context step waits on after typing
             // `/clear` (Claude) or `/new` (Codex): both bridges reach the daemon

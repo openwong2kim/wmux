@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 //
 // Moa's delegated work shows in Fleet as tickets: the pane working on one is
-// named after it, the Tickets chip lists them, and a ticket's detail offers a
-// prefilled GitHub issue (opened in the browser, never posted).
+// named after it, the Tickets chip lists them, and a finished ticket's result
+// is read back from the durable task copy.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as React from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -42,16 +42,22 @@ async function settle(): Promise<void> {
 }
 
 let links: WorkLink[] = [LINK];
+/** main's a2a.task.query, answering from the durable task copy. */
+const rpcInvoke = vi.fn(async (method: string, params: Record<string, unknown>) => (method === 'a2a.task.query' && params.taskId === 'task-1'
+  ? { id: 'q', ok: true, result: { task: { id: 'task-1', kind: 'task', history: [], artifacts: [], metadata: { title: 'Fix the login redirect' },
+    status: { state: 'completed', timestamp: new Date().toISOString(), evidence: { summary: 'Redirect fixed; e2e passes.', items: [] } } } } }
+  : { ok: false }));
 
 beforeEach(() => {
   openExternal.mockReset();
+  rpcInvoke.mockClear();
   window.localStorage.clear();
   links = [LINK];
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     pty: { write: vi.fn() },
     workLinks: { list: async () => links, onChanged: () => () => undefined },
     deck: { moa: { decisions: async () => ({ decisions: [] }), onChanged: () => () => undefined } },
-    github: { repoKey: async () => ({ key: 'github.com/acme/app' }) },
+    rpc: { invoke: rpcInvoke },
     shell: { openExternal },
   };
   act(() => {
@@ -96,26 +102,14 @@ describe('FleetView — tickets', () => {
     await settle();
     const detail = container.querySelector('[data-fleet-ticket-detail="wl-1"]')!;
     expect(detail).not.toBeNull();
-    const issue = container.querySelector<HTMLButtonElement>('[data-fleet-ticket-issue]')!;
-    act(() => issue.click());
-    expect(openExternal).toHaveBeenCalledWith('https://github.com/acme/app/issues/new?title=Fix%20the%20login%20redirect');
+    // Nothing on a ticket opens anything outside the app.
+    expect(container.querySelector('[data-fleet-ticket-issue]')).toBeNull();
+    expect(openExternal).not.toHaveBeenCalled();
 
     // Enter on the ticket jumps to the agent working on it, as on an agent row.
     act(() => ticket.focus());
     act(() => { ticket.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
     expect(useStore.getState().appRoute).toBe('workspaces');
-  });
-
-  it('hides the GitHub action when the repo is not on GitHub', async () => {
-    (window as unknown as { electronAPI: { github: unknown } }).electronAPI.github = { repoKey: async () => ({ key: null }) };
-    act(() => { root.render(React.createElement(FleetView)); });
-    await settle();
-    act(() => container.querySelector<HTMLButtonElement>('[data-filter="tickets"]')!.click());
-    await settle();
-    act(() => container.querySelector<HTMLButtonElement>('[data-fleet-ticket="wl-1"]')!.click());
-    await settle();
-    expect(container.querySelector('[data-fleet-ticket-detail="wl-1"]')).not.toBeNull();
-    expect(container.querySelector('[data-fleet-ticket-issue]')).toBeNull();
   });
 
   it('a working ticket stays quiet: not in Needs you, no Needs you count', async () => {
@@ -134,10 +128,14 @@ describe('FleetView — tickets', () => {
     expect(report).not.toBeNull();
     expect(report.closest('[role=listbox]')?.querySelector('[data-fleet-section="needsYou"]')).not.toBeNull();
     expect(container.querySelector('[data-filter="attention"]')?.textContent).toContain('1');
-    // Open it: the report is viewed, and stays put while it is selected.
+    // Open it: the result comes from the durable task copy (the renderer's
+    // mirror is empty, as after a reload), the report is viewed, and the row
+    // stays put while it is selected.
     act(() => report.click());
     await settle();
     expect(container.querySelector('[data-fleet-ticket-detail="wl-1"]')).not.toBeNull();
+    expect(rpcInvoke).toHaveBeenCalledWith('a2a.task.query', { workspaceId: 'ws-1', view: 'page', taskId: 'task-1' });
+    expect(container.querySelector('[data-fleet-ticket-result]')?.textContent).toBe('Redirect fixed; e2e passes.');
     expect(container.querySelector('[data-fleet-ticket="wl-1"]')).not.toBeNull();
     expect(container.querySelector('[data-filter="attention"]')).toBeNull();
     // Selection moves on: the ticket leaves Needs you, still under Tickets.
@@ -147,5 +145,30 @@ describe('FleetView — tickets', () => {
     act(() => container.querySelector<HTMLButtonElement>('[data-filter="tickets"]')!.click());
     await settle();
     expect(container.querySelector('[data-fleet-ticket="wl-1"]')).not.toBeNull();
+  });
+
+  it('a report is not viewed when it was never shown, or the selection only fell onto it', async () => {
+    links = [{ ...LINK, a2aState: 'completed', state: 'done' }];
+    act(() => { root.render(React.createElement(FleetView)); });
+    await settle();
+    // Open the agent row's detail, then the agent goes: the selection falls onto
+    // the report ticket with the detail open. That is not the operator's choice.
+    act(() => container.querySelector<HTMLButtonElement>('[data-fleet-detail-toggle]')!.click());
+    await settle();
+    act(() => { useStore.setState({ workspaces: [] }); });
+    await settle();
+    expect(container.querySelector('[data-fleet-ticket-detail="wl-1"]')).not.toBeNull();
+    expect(container.querySelector('[data-filter="attention"]')?.textContent).toContain('1');
+
+    // Chosen, but the result cannot be read: still not viewed.
+    rpcInvoke.mockImplementation(async () => ({ ok: false }));
+    const chosen = () => container.querySelector<HTMLButtonElement>('[data-fleet-ticket="wl-1"]')!;
+    act(() => chosen().click());
+    await settle();
+    // The click toggles: the detail was already open on this row.
+    if (!container.querySelector('[data-fleet-ticket-detail="wl-1"]')) { act(() => chosen().click()); await settle(); }
+    expect(container.querySelector('[data-fleet-ticket-detail="wl-1"]')).not.toBeNull();
+    expect(container.querySelector('[data-fleet-ticket-result]')).toBeNull();
+    expect(container.querySelector('[data-filter="attention"]')?.textContent).toContain('1');
   });
 });

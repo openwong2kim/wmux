@@ -830,6 +830,7 @@ describe('DaemonNotificationRouter — M1 side-effect replay', () => {
         activity: '',
         pendingQuestion: '',
         lastMessage: '',
+        lastActivity: '',
       });
       // Still metadata-only: no toast, no lifecycle tee.
       expect(dispatchNotificationMock).not.toHaveBeenCalled();
@@ -855,6 +856,7 @@ describe('DaemonNotificationRouter — M1 side-effect replay', () => {
         activity: '',
         pendingQuestion: '',
         lastMessage: '',
+        lastActivity: '',
       });
     } finally {
       router.stop();

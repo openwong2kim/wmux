@@ -35,4 +35,9 @@ describe('nowDoingLine', () => {
     const failed = nowDoingLine(fleetRow(pane({ agentStatus: 'error' })), '✎ foo.ts', t);
     expect(failed.kind).toBe('status');
   });
+
+  it('a pane asking for input with no question (a permission prompt) keeps saying so', () => {
+    const line = nowDoingLine(fleetRow(pane({ agentStatus: 'awaiting_input' })), '$ npm test', t);
+    expect(line).toEqual({ text: 'Needs your input', kind: 'status' });
+  });
 });

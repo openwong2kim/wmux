@@ -232,10 +232,11 @@ export interface PaneSlice {
   surfaceActivity: Record<string, string>;
   setSurfaceActivity: (ptyId: string, activity: string | null) => void;
   // The last non-empty activity line per ptyId. Unlike surfaceActivity it
-  // survives the turn-boundary clear, so a finished or idle Fleet row can say
-  // what the agent did last. Written by setSurfaceActivity; cleared only at the
-  // same teardown sites. Transient — never persisted.
+  // survives a Stop's clear, so a finished or idle Fleet row can say what the
+  // agent did last. Written by setSurfaceActivity; cleared on a session start
+  // (clearSurfaceLastActivity) and at the same teardown sites. Transient.
   surfaceLastActivity: Record<string, string>;
+  clearSurfaceLastActivity: (ptyId: string) => void;
   // Per-surface "this agent ended its turn asking something" text, keyed by
   // ptyId. Populated from METADATA_UPDATE.pendingQuestion, which main derives
   // from the Stop hook's transcript — not from the rendered terminal, where a
@@ -787,6 +788,10 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
       delete state.surfaceActivity[ptyId];
       delete state.surfaceActivityAt[ptyId];
     }
+  }),
+
+  clearSurfaceLastActivity: (ptyId) => set((state: StoreState) => {
+    if (ptyId) delete state.surfaceLastActivity[ptyId];
   }),
 
   setSurfacePendingQuestion: (ptyId, question) => set((state: StoreState) => {

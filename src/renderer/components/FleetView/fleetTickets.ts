@@ -139,30 +139,20 @@ export function buildFleetTickets({ links, decisions, a2aTasks, now }: TicketSou
   return out.sort((a, b) => rank[a.state] - rank[b.state] || b.updatedAt - a.updatedAt);
 }
 
-/** The open ticket a pane is working on, if any: matched on the pane, else on
- *  its workspace when the ticket names no pane. */
-export function openTicketFor(tickets: readonly FleetTicket[], workspaceId: string, paneId: string): FleetTicket | undefined {
-  const open = tickets.filter((t) => t.workspaceId === workspaceId && t.state !== 'done' && t.state !== 'failed');
-  return open.find((t) => t.paneId === paneId) ?? open.find((t) => !t.paneId);
-}
-
-/** Longest issue body put in the URL; browsers and GitHub refuse much longer ones. */
-const ISSUE_BODY_MAX = 4000;
-
 /**
- * A prefilled "new issue" URL for a ticket, or null when the repo is not on
- * GitHub. `repoKey` is main's `host/owner/repo` for the workspace's origin.
- * Nothing is posted: the user reviews and submits the form themselves.
+ * The open ticket a pane is working on, if any. A hand-off nobody has
+ * approved is not work yet, so it never names a pane. A ticket that names no
+ * pane names the workspace's agent only when there is exactly one.
  */
-export function ticketIssueUrl(repoKey: string | null | undefined, ticket: Pick<FleetTicket, 'title' | 'request' | 'result'>): string | null {
-  const parts = repoKey?.split('/') ?? [];
-  if (parts.length !== 3 || parts[0] !== 'github.com' || !parts[1] || !parts[2]) return null;
-  const sections = [ticket.request?.trim()];
-  if (ticket.result) sections.push(`Result: ${ticket.result.summary}`);
-  let body = sections.filter(Boolean).join('\n\n');
-  if (body.length > ISSUE_BODY_MAX) body = `${body.slice(0, ISSUE_BODY_MAX)}…`;
-  const query = `title=${encodeURIComponent(ticket.title)}${body ? `&body=${encodeURIComponent(body)}` : ''}`;
-  return `https://github.com/${encodeURIComponent(parts[1])}/${encodeURIComponent(parts[2])}/issues/new?${query}`;
+export function openTicketFor(
+  tickets: readonly FleetTicket[],
+  workspaceId: string,
+  paneId: string,
+  agentPanesInWorkspace: number,
+): FleetTicket | undefined {
+  const open = tickets.filter((t) => t.workspaceId === workspaceId && t.origin !== 'handoff'
+    && t.state !== 'done' && t.state !== 'failed');
+  return open.find((t) => t.paneId === paneId) ?? (agentPanesInWorkspace === 1 ? open.find((t) => !t.paneId) : undefined);
 }
 
 /**

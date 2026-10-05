@@ -839,6 +839,13 @@ describe('PaneSlice', () => {
       store.getState().setSurfaceActivity('pty-1', '✎ fleet.ts');
       expect(store.getState().surfaceLastActivity['pty-1']).toBe('✎ fleet.ts');
     });
+
+    it('a session start (/clear, a restarted agent) drops the retained line', () => {
+      store.getState().setSurfaceActivity('pty-1', '$ npm test');
+      store.getState().setSurfaceActivity('pty-1', '');
+      store.getState().clearSurfaceLastActivity('pty-1');
+      expect(store.getState().surfaceLastActivity['pty-1']).toBeUndefined();
+    });
   });
 
   // The two transient maps that were still leaking at this teardown site: a

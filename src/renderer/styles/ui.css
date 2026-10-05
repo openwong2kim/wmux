@@ -889,6 +889,7 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-board-col-dot.is-needsYou { background: var(--accent-yellow); }
 .wmux-board-col-dot.is-running { background: var(--accent); }
 .wmux-board-col-dot.is-review { background: var(--accent-green); }
+.wmux-board-col-count { color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .wmux-board-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 /* The Fleet list: one attention list. A row is a fill on hover or selection,
  * never a box or a rule; section heads are sentence-case text with a dot. */

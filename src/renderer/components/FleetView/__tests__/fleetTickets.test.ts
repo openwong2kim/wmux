@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { WorkLink } from '../../../../shared/workLink';
 import type { MoaPendingDecision } from '../../../../shared/moa';
 import type { Task, TaskState } from '../../../../shared/types';
-import { buildFleetTickets, openTicketFor, ticketAttention, ticketIssueUrl, ticketStateOf, TICKET_RECENT_MS } from '../fleetTickets';
+import { buildFleetTickets, openTicketFor, ticketAttention, ticketStateOf, TICKET_RECENT_MS } from '../fleetTickets';
 
 const NOW = 1_000_000_000_000;
 
@@ -76,20 +76,25 @@ describe('buildFleetTickets', () => {
       links: [link({ a2aState: 'working' }), link({ id: 'wl-2', a2aTaskId: 'task-2', owner: { workspaceId: 'ws-1', paneId: 'p9' }, a2aState: 'completed', state: 'done' })],
       decisions: [], a2aTasks: {}, now: NOW,
     });
-    expect(openTicketFor(tickets, 'ws-1', 'p1')?.id).toBe('wl-1');
-    expect(openTicketFor(tickets, 'ws-1', 'p9')).toBeUndefined();
-  });
-});
-
-describe('ticketIssueUrl', () => {
-  it('prefills a new GitHub issue and nothing else', () => {
-    const url = ticketIssueUrl('github.com/acme/app', { title: 'Fix login', request: 'Make it redirect', result: { summary: 'Done' } });
-    expect(url).toBe(`https://github.com/acme/app/issues/new?title=Fix%20login&body=${encodeURIComponent('Make it redirect\n\nResult: Done')}`);
+    expect(openTicketFor(tickets, 'ws-1', 'p1', 2)?.id).toBe('wl-1');
+    expect(openTicketFor(tickets, 'ws-1', 'p9', 2)).toBeUndefined();
   });
 
-  it('has no URL for a repo that is not on GitHub', () => {
-    expect(ticketIssueUrl('gitlab.com/acme/app', { title: 'x' })).toBeNull();
-    expect(ticketIssueUrl(null, { title: 'x' })).toBeNull();
+  it('an unapproved hand-off never names the target pane', () => {
+    const tickets = buildFleetTickets({
+      links: [],
+      decisions: [decision('d-1', {
+        handoff: { body: 'b', title: 'Proposed work', agentName: 'codex', targetPaneId: 'p1', targetPtyId: 'pty-1', foldsNewlines: false, willQueue: false },
+      })],
+      a2aTasks: {}, now: NOW,
+    });
+    expect(openTicketFor(tickets, 'ws-1', 'p1', 1)).toBeUndefined();
+  });
+
+  it('a ticket that names no pane names a row only when its workspace has one agent', () => {
+    const tickets = buildFleetTickets({ links: [link({ a2aState: 'working', owner: { workspaceId: 'ws-1' } })], decisions: [], a2aTasks: {}, now: NOW });
+    expect(openTicketFor(tickets, 'ws-1', 'p1', 1)?.id).toBe('wl-1');
+    expect(openTicketFor(tickets, 'ws-1', 'p1', 2)).toBeUndefined();
   });
 });
 

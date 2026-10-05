@@ -179,7 +179,7 @@ export function buildTurnBoundaryMetadata(
   kind: AgentSignal['kind'],
   stopMessage: AgentLastMessage | null,
   leftoverWork = 0,
-): { activity: string; pendingQuestion: string; lastMessage: string; agentStatus?: 'complete' | 'error' } | null {
+): { activity: string; pendingQuestion: string; lastMessage: string; lastActivity?: ''; agentStatus?: 'complete' | 'error' } | null {
   if (kind !== 'agent.stop' && kind !== 'agent.session_start' && kind !== 'agent.stop_failure') {
     return null;
   }
@@ -189,6 +189,9 @@ export function buildTurnBoundaryMetadata(
     // not the grapheme cut: the whole question is the point of the row.
     pendingQuestion: stopMessage?.endsWithQuestion ? flattenAgentText(stopMessage.text) : '',
     lastMessage: assistantPreview(stopMessage?.text ?? '') ?? '',
+    // A fresh session also drops the retained last-activity line, which a
+    // Stop keeps so the finished row can say what the turn did.
+    ...(kind === 'agent.session_start' ? { lastActivity: '' as const } : {}),
     // #1096 — a lead stop with background agents still running is not a turn
     // end, so it must not stamp the hook-authoritative completion status: the
     // pane sat on Completed for the whole `Waiting for N background agent(s)`

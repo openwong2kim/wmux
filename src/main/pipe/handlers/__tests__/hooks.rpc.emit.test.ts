@@ -242,6 +242,14 @@ describe('hooks.signal — agent.lifecycle event tee', () => {
     const call = broadcastMetadataUpdateMock.mock.calls[0][1] as Record<string, unknown>;
     expect(call).toMatchObject({ ptyId: 'pty-1', activity: '' });
     expect(call).not.toHaveProperty('agentStatus');
+    // A fresh session also drops the retained last-activity line.
+    expect(call).toMatchObject({ lastActivity: '' });
+  });
+
+  it('only a session start drops the retained last activity; a Stop keeps it', () => {
+    expect(buildTurnBoundaryMetadata('agent.session_start', null)).toMatchObject({ lastActivity: '' });
+    expect(buildTurnBoundaryMetadata('agent.stop', null)).not.toHaveProperty('lastActivity');
+    expect(buildTurnBoundaryMetadata('agent.stop_failure', null)).not.toHaveProperty('lastActivity');
   });
 
   it('emits agent.lifecycle on dedup decision but skips sendNotification', async () => {

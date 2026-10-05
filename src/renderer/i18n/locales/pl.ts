@@ -772,7 +772,6 @@ export const pl = {
   'fleet.ticket.result': 'Wynik',
   'fleet.ticket.verification': 'Weryfikacja: sprawdzono {value}',
   'fleet.ticket.jump': 'Przejdź do agenta',
-  'fleet.ticket.openIssue': 'Otwórz jako zgłoszenie GitHub',
   'fleet.ticket.empty': 'Brak zleconej pracy z ostatniej doby',
   'fleet.review.statusLabel': 'Ukończone',
   'fleet.review.files': 'Zmienione pliki: {count}',

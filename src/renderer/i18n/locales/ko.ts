@@ -474,7 +474,6 @@ export const ko = {
   'fleet.ticket.result': '결과',
   'fleet.ticket.verification': '검증 {value}개 확인됨',
   'fleet.ticket.jump': '에이전트로 이동',
-  'fleet.ticket.openIssue': 'GitHub 이슈로 열기',
   'fleet.ticket.empty': '최근 하루 동안 위임된 작업이 없습니다',
   'fleet.review.statusLabel': '완료',
   'fleet.review.files': '파일 {count}개 변경',

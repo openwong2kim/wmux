@@ -269,6 +269,9 @@ export default function FleetView() {
   // under the reader.
   const [seenReports, setSeenReports] = useState<Record<string, number>>(loadSeenReports);
   const [stickyReport, setStickyReport] = useState<string | null>(null);
+  // The ticket the operator chose (click, arrow key or Space) — only its
+  // report counts as viewed, never one the selection fell onto.
+  const [explicitTicket, setExplicitTicket] = useState<string | null>(null);
   const attentionTickets = useMemo(
     () => (filter !== 'all' && filter !== 'attention' ? [] : tickets.filter((ticket) =>
       (ticketAttention(ticket, seenReports) !== null || ticket.id === stickyReport) && matchesTicket(ticket))),
@@ -702,6 +705,7 @@ export default function FleetView() {
   // Move the list selection; a deliberate move opens the detail area.
   const selectKey = useCallback((key: string | null) => {
     setFocusedPaneId(key);
+    setExplicitTicket(key?.startsWith('ticket:') ? key.slice('ticket:'.length) : null);
     if (key) setDetailOpen(true);
   }, []);
 
@@ -762,6 +766,7 @@ export default function FleetView() {
       if (tab === 'fleet' && onOptionRow && e.key === ' ' && plain) {
         e.preventDefault();
         e.stopPropagation();
+        if (focusedTicket) setExplicitTicket(focusedTicket.id);
         setDetailOpen((open) => !open);
         return;
       }
@@ -882,7 +887,7 @@ export default function FleetView() {
         }
       }
     }, [tab, setTab, rovingKeys, inbox, inboxIdx, remoteInbox, remoteIdx, dismissRemoteItem, setVisible,
-      editor, reviewEditor, closeEditor, detailOpen, visibleRows, focusedKey, verbsFor, selectKey,
+      editor, reviewEditor, closeEditor, detailOpen, visibleRows, focusedKey, focusedTicket, verbsFor, selectKey,
       focusedReview, openReviewDiff, openReviewEditor, jumpToReviewTask]);
 
   // Summary strip: account usage, the next scheduled run, phones watching.
@@ -947,12 +952,18 @@ export default function FleetView() {
   const workspaceName = useCallback((id: string) => workspaces.find((w) => w.id === id)?.name ?? '', [workspaces]);
   const assigneeOf = (ticket: FleetTicket) => [workspaceName(ticket.workspaceId) || t('fleet.ticket.unknownWorkspace'), ticket.agent]
     .filter(Boolean).join(' · ');
+  const agentPanesByWorkspace = useMemo(() => {
+    const out = new Map<string, number>();
+    for (const p of panes) if (!p.remote && p.agentName) out.set(p.workspaceId, (out.get(p.workspaceId) ?? 0) + 1);
+    return out;
+  }, [panes]);
   const paneOfTicket = (ticket: FleetTicket) => panes.find((p) => !p.remote && p.workspaceId === ticket.workspaceId
     && (!ticket.paneId || p.paneId === ticket.paneId));
   const selectTicket = useCallback((ticket: FleetTicket) => {
     const key = ticketKey(ticket.id);
     setDetailOpen((open) => (focusedKey === key ? !open : true));
     setFocusedPaneId(key);
+    setExplicitTicket(ticket.id);
   }, [focusedKey]);
   const jumpToTicket = (ticket: FleetTicket) => {
     const pane = paneOfTicket(ticket);
@@ -968,7 +979,7 @@ export default function FleetView() {
 
   const renderRow = (row: FleetRow) => {
     const card = row.pane;
-    const ticket = card.remote ? undefined : openTicketFor(tickets, card.workspaceId, card.paneId);
+    const ticket = card.remote ? undefined : openTicketFor(tickets, card.workspaceId, card.paneId, agentPanesByWorkspace.get(card.workspaceId) ?? 0);
     const focused = card.paneId === focusedKey;
     return (
       <div key={`${card.workspaceId}:${card.paneId}:${card.surfaceId}`} role="presentation" className="wmux-fleet-row">
@@ -1025,13 +1036,14 @@ export default function FleetView() {
   const detailPane = selectedPane?.surfaceType === 'terminal' ? selectedPane : undefined;
   const showDetail = tab === 'fleet' && detailOpen && !empty
     && (focusedTicket !== undefined || detailPane !== undefined || conversationTask !== undefined);
-  // Viewing a final report clears its attention; it stays put while selected.
-  const viewedReport = showDetail && focusedTicket && ticketAttention(focusedTicket, seenReports) === 'report' ? focusedTicket : undefined;
-  useEffect(() => {
-    if (!viewedReport) return;
-    setStickyReport(viewedReport.id);
-    setSeenReports((prev) => saveSeenReports({ ...prev, [viewedReport.id]: viewedReport.updatedAt }, new Set(tickets.map((tk) => tk.id))));
-  }, [viewedReport, tickets]);
+  // A final report counts as viewed once its result was on screen for a
+  // ticket the operator chose; it then stays put while selected.
+  const onResultShown = useCallback((ticket: FleetTicket) => {
+    if (ticket.id !== explicitTicket || focusedPaneId !== ticketKey(ticket.id)) return;
+    if (ticketAttention(ticket, seenReports) !== 'report') return;
+    setStickyReport(ticket.id);
+    setSeenReports((prev) => saveSeenReports({ ...prev, [ticket.id]: ticket.updatedAt }, new Set(tickets.map((tk) => tk.id))));
+  }, [explicitTicket, focusedPaneId, seenReports, tickets]);
   useEffect(() => {
     if (stickyReport && focusedPaneId !== ticketKey(stickyReport)) setStickyReport(null);
   }, [stickyReport, focusedPaneId]);
@@ -1231,10 +1243,10 @@ export default function FleetView() {
             <TicketDetail
               ticket={focusedTicket}
               assignee={assigneeOf(focusedTicket)}
-              cwd={paneOfTicket(focusedTicket)?.cwd ?? workspaces.find((w) => w.id === focusedTicket.workspaceId)?.metadata?.cwd}
               decisions={moaDecisions}
               onJump={jumpToTicket}
               onOpenDecision={openTicketDecision}
+              onResultShown={onResultShown}
               t={t}
             />
           ) : (

@@ -4,7 +4,8 @@
 import { memo, useEffect, useState } from 'react';
 import type { MoaPendingDecision } from '../../../shared/moa';
 import { formatIdle } from '../../utils/idleTime';
-import { ticketIssueUrl, type FleetTicket, type TicketState } from './fleetTickets';
+import type { Task } from '../../../shared/types';
+import { ticketResultOf, type FleetTicket, type TicketState } from './fleetTickets';
 
 type T = (key: string, vars?: Record<string, string | number>) => string;
 
@@ -78,31 +79,49 @@ export const TicketRow = memo(TicketRowImpl);
 interface TicketDetailProps {
   ticket: FleetTicket;
   assignee: string;
-  /** The assignee's working directory, for the GitHub remote lookup. */
-  cwd?: string;
   decisions: readonly MoaPendingDecision[];
   onJump: (ticket: FleetTicket) => void;
   onOpenDecision: (ticket: FleetTicket) => void;
+  /** The result is on screen (the final report has been shown). */
+  onResultShown?: (ticket: FleetTicket) => void;
   t: T;
 }
 
-/** main's `host/owner/repo` for a checkout's origin; null when unknown. */
-function useRepoKey(cwd: string | undefined): string | null {
-  const [key, setKey] = useState<string | null>(null);
-  useEffect(() => {
-    setKey(null);
-    const repoKey = window.electronAPI?.github?.repoKey;
-    if (!cwd || typeof repoKey !== 'function') return undefined;
-    let cancelled = false;
-    repoKey(cwd).then((r) => { if (!cancelled) setKey(r?.key ?? null); }, () => undefined);
-    return () => { cancelled = true; };
-  }, [cwd]);
-  return key;
+/** The task out of an `a2a.task.query` page view, bare or in the router's envelope. */
+function taskFromQuery(reply: unknown): Task | undefined {
+  const rec = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+  const body = rec(reply) && rec(reply.result) ? reply.result : reply;
+  const task = rec(body) ? body.task : undefined;
+  return rec(task) && rec(task.status) ? (task as unknown as Task) : undefined;
 }
 
-export function TicketDetail({ ticket, assignee, cwd, decisions, onJump, onOpenDecision, t }: TicketDetailProps) {
-  const repoKey = useRepoKey(cwd);
-  const issueUrl = ticketIssueUrl(repoKey, ticket);
+/**
+ * A finished ticket's result. The renderer's task mirror is memory only, so
+ * after a reload the result is read back from the durable copy (the daemon's
+ * task record, which keeps the completion evidence) through main's
+ * `a2a.task.query`, the same read agents use.
+ */
+function useTicketResult(ticket: FleetTicket): FleetTicket['result'] {
+  const [loaded, setLoaded] = useState<{ id: string; result: FleetTicket['result'] } | null>(null);
+  const ended = ticket.state === 'done' || ticket.state === 'failed';
+  const need = ended && !ticket.result && !!ticket.a2aTaskId;
+  useEffect(() => {
+    if (!need || !ticket.a2aTaskId) return undefined;
+    const invoke = window.electronAPI?.rpc?.invoke;
+    if (typeof invoke !== 'function') return undefined;
+    let cancelled = false;
+    invoke('a2a.task.query', { workspaceId: ticket.workspaceId, view: 'page', taskId: ticket.a2aTaskId })
+      .then((reply) => { if (!cancelled) setLoaded({ id: ticket.id, result: ticketResultOf(taskFromQuery(reply)) }); }, () => undefined);
+    return () => { cancelled = true; };
+  }, [need, ticket.id, ticket.a2aTaskId, ticket.workspaceId]);
+  return ticket.result ?? (loaded?.id === ticket.id ? loaded.result : undefined);
+}
+
+export function TicketDetail({ ticket, assignee, decisions, onJump, onOpenDecision, onResultShown, t }: TicketDetailProps) {
+  const result = useTicketResult(ticket);
+  useEffect(() => {
+    if (result) onResultShown?.(ticket);
+  }, [result, ticket, onResultShown]);
   const waiting = decisions.filter((d) => ticket.decisionIds.includes(d.decision.id));
   return (
     <section className="wmux-fleet-ticket-detail" data-fleet-ticket-detail={ticket.id}
@@ -134,25 +153,19 @@ export function TicketDetail({ ticket, assignee, cwd, decisions, onJump, onOpenD
           </ul>
         </>
       )}
-      {ticket.result && (
+      {result && (
         <>
           <h4>{t('fleet.ticket.result')}</h4>
-          <p className="wmux-fleet-ticket-text" data-fleet-ticket-result>{ticket.result.summary}</p>
-          {ticket.result.verification && (
+          <p className="wmux-fleet-ticket-text" data-fleet-ticket-result>{result.summary}</p>
+          {result.verification && (
             <p className="wmux-fleet-ticket-meta" data-fleet-ticket-verification>
-              {t('fleet.ticket.verification', { value: ticket.result.verification })}
+              {t('fleet.ticket.verification', { value: result.verification })}
             </p>
           )}
         </>
       )}
       <div className="wmux-fleet-ticket-actions">
         <button type="button" onClick={() => onJump(ticket)} data-fleet-ticket-jump>{t('fleet.ticket.jump')}</button>
-        {issueUrl && (
-          <button type="button" data-fleet-ticket-issue
-            onClick={() => { void window.electronAPI?.shell?.openExternal?.(issueUrl); }}>
-            {t('fleet.ticket.openIssue')}
-          </button>
-        )}
       </div>
     </section>
   );

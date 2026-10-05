@@ -494,6 +494,13 @@ export interface MetadataUpdatePayload {
    * send ''.
    */
   lastMessage?: string;
+  /**
+   * The retained last activity line (the renderer's `surfaceLastActivity`)
+   * outlives a Stop, so a finished row can say what it did. Only a session
+   * start sends it, as '' — a fresh session (startup, `/clear`, a restarted
+   * agent) must not inherit the previous session's line.
+   */
+  lastActivity?: '';
   // External RPC channels (meta.setStatus / meta.setProgress) write through
   // the same payload. Renderer applies these to the active workspace when no
   // ptyId/workspaceId is provided.

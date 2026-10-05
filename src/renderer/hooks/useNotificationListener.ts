@@ -693,7 +693,7 @@ export function useNotificationListener() {
       // workspace metadata — pull it OUT here, alongside ptyId, so it can never
       // flow into `...rest` and get written into updateWorkspaceMetadata by
       // applyToWorkspace's spread.
-      const { ptyId, workspaceId: payloadWsId, activity, pendingQuestion, lastMessage, paneId, paneLabel, paneRole, agentSlug, hookKind, settled, ...rest } = payload;
+      const { ptyId, workspaceId: payloadWsId, activity, pendingQuestion, lastMessage, lastActivity, paneId, paneLabel, paneRole, agentSlug, hookKind, settled, ...rest } = payload;
 
       // The orchestrator's own brain pty (the `claude-pty` vendor's embedded
       // Claude Code TUI) is not a fleet agent. The daemon has no idea it is
@@ -820,6 +820,8 @@ export function useNotificationListener() {
         // agent resumed after any older complete/waiting state. Reconcile both
         // mirrors here, where event order is known; a selector cannot compare
         // the timestamp with an attention state that carries no timestamp.
+        // A session start drops the retained last-activity line (a Stop keeps it).
+        if (lastActivity === '') state.clearSurfaceLastActivity(ptyId);
         if (typeof activity === 'string') {
           state.setSurfaceActivity(ptyId, activity);
           // Only activity-ONLY payloads need lifecycle reconciliation. When

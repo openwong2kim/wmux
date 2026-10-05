@@ -816,7 +816,6 @@ export const en = {
   'fleet.ticket.result': 'Result',
   'fleet.ticket.verification': 'Verification {value} items checked',
   'fleet.ticket.jump': 'Jump to agent',
-  'fleet.ticket.openIssue': 'Open as GitHub issue',
   'fleet.ticket.empty': 'No delegated work in the last day',
 
   // Fleet View — Remote tab (LanLink PR-5 read-only remote-peer inbox)
