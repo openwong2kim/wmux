@@ -63,7 +63,7 @@ describe('WI-002 senderPtyId provenance (source-level invariant)', () => {
     // thread-resolved pane — neither another call's MY_PTY_ID nor the daemon
     // starter's env hint.
     expect(mcpIndexSrc).toMatch(
-      /function\s+getTaskSenderPtyId\s*\(\s*\)\s*:\s*string\s*\{\s*if\s*\(\s*SHARED_CODEX_PARENT\s*\)\s*return\s+codexCallScope\.getStore\(\)\?\.ptyId\s*\?\?\s*''\s*;\s*return\s+MY_PTY_ID\s*\|\|\s*ENV_PTY_HINT\s*;?\s*\}/,
+      /function\s+getTaskSenderPtyId\s*\(\s*\)\s*:\s*string\s*\{\s*const\s+threadScope\s*=\s*threadOnlyScope\(\)\s*;\s*if\s*\(\s*threadScope\s*\)\s*return\s+threadScope\.ptyId\s*\?\?\s*''\s*;\s*return\s+MY_PTY_ID\s*\|\|\s*ENV_PTY_HINT\s*;?\s*\}/,
     );
   });
 
@@ -85,7 +85,7 @@ describe('WI-002 senderPtyId provenance (source-level invariant)', () => {
     // verifiedPtyId = the walk hit, or (#1778) only THIS call's thread pane for
     // a shared Codex app-server — never a weak source, never another call's pane.
     expect(mcpIndexSrc).toMatch(
-      /function\s+verifiedPtyId\s*\(\s*\)\s*:\s*string\s*\{\s*if\s*\(\s*SHARED_CODEX_PARENT\s*\)\s*return\s+codexCallScope\.getStore\(\)\?\.ptyId\s*\?\?\s*''\s*;\s*return\s+MY_PTY_ID\s*;\s*\}/,
+      /function\s+verifiedPtyId\s*\(\s*\)\s*:\s*string\s*\{\s*const\s+threadScope\s*=\s*threadOnlyScope\(\)\s*;\s*if\s*\(\s*threadScope\s*\)\s*return\s+threadScope\.ptyId\s*\?\?\s*''\s*;\s*return\s+MY_PTY_ID\s*;\s*\}/,
     );
     // Lock the WHOLE arrow body, not just its prefix. The earlier `\b`-only
     // assertion (review P2: codex + code-reviewer both caught it) would pass

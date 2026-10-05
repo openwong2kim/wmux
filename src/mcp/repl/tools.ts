@@ -12,7 +12,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { REPL_RUN_BROWSER_TOOLS, createBrowserBridge } from '../browser-repl/bridge';
+import { REPL_RUN_BROWSER_TOOLS, captureDispatchContext, createBrowserBridge } from '../browser-repl/bridge';
 import { renderImageLegend, textWithImages } from '../browser-repl/runCollect';
 import { getConnectionScope } from '../connectionScope';
 import type { CollectedTool } from '../playwright/toolCollector';
@@ -87,7 +87,7 @@ export function resolveReplBrowser(
     // would be a different run wearing this one's clothes.
     call: createBrowserBridge(
       access.tools,
-      { scope, record: false, label: 'repl_run' },
+      { scope, record: false, label: 'repl_run', context: captureDispatchContext() },
       REPL_RUN_BROWSER_TOOLS,
     ),
     refusal: REPL_BROWSER_PROFILE_REFUSAL,

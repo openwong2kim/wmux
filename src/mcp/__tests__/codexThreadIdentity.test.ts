@@ -5,6 +5,8 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   classifyMcpParent,
+  codexHomeFromParentChain,
+  codexOwnerIndexAvailable,
   codexThreadIdFromExtra,
   isSharedServerArgv,
   matchOwnerToLiveAnchor,
@@ -73,10 +75,30 @@ describe('classifyMcpParent — who may vouch for a threadId', () => {
     expect(classifyMcpParent([['node', 'evil.js', './.wmux/mcp/index.js'], ['pwsh', '-c', 'node evil.js ./.wmux/mcp/index.js'], SHARED_SERVER])).toBe('other');
     expect(classifyMcpParent([['node', 'C:\\Users\\u\\.wmux\\mcp\\index.js', '--extra'], SHARED_SERVER])).toBe('other');
   });
-  it('rejects an unknown or unreadable parent', () => {
-    expect(classifyMcpParent([])).toBe('other');
-    expect(classifyMcpParent([[]])).toBe('other');
-    expect(classifyMcpParent([MCP_ENTRY])).toBe('other');
+  it('reports an empty, unreadable or wrapper-only chain as unknown, never other', () => {
+    expect(classifyMcpParent([])).toBe('unknown');
+    expect(classifyMcpParent([[]])).toBe('unknown');
+    expect(classifyMcpParent([MCP_ENTRY])).toBe('unknown');
+  });
+  it('requires the Codex executable itself and app-server as the parsed subcommand', () => {
+    // A node shim or any program merely carrying the arguments does not qualify.
+    expect(isSharedServerArgv(['node', '/opt/codex/bin/codex.js', 'app-server', '--managed-daemon'])).toBe(false);
+    expect(isSharedServerArgv(['python3', 'app-server', '--managed-daemon'])).toBe(false);
+    // `app-server` as an unrelated argument, not the subcommand.
+    expect(isSharedServerArgv(['codex', 'exec', 'app-server', '--managed-daemon'])).toBe(false);
+    expect(isSharedServerArgv(['codex', '-m', 'app-server', 'exec', '--managed-daemon'])).toBe(false);
+    // The real daemon shapes: macOS managed release, the Windows long-path form.
+    expect(isSharedServerArgv(['/Users/u/.codex/packages/app-server-daemon/releases/0.160.0-aarch64-apple-darwin/bin/codex', 'app-server', '--listen', 'unix://', '--managed-daemon'])).toBe(true);
+    expect(isSharedServerArgv(['\\\\?\\C:\\Users\\u\\cx\\packages\\app-server-daemon\\releases\\0.160.0\\bin\\codex.exe', 'app-server', '--listen', 'unix://', '--managed-daemon'])).toBe(true);
+    expect(isSharedServerArgv(['codex-aarch64-apple-darwin', 'app-server', '--listen', 'unix://'])).toBe(true);
+  });
+  it('skips the real launcher shapes: wmux flags, cmd /d /s /c, the dev bundle', () => {
+    expect(classifyMcpParent([['node', '/Users/u/.wmux/mcp/index.js', '--core', '--role=Reviewer'], SHARED_SERVER])).toBe('shared-server');
+    expect(classifyMcpParent([['node', '/Users/u/.wmux/mcp/index.js', '--commander'], SHARED_SERVER])).toBe('shared-server');
+    expect(classifyMcpParent([['cmd.exe', '/d', '/s', '/c', 'node', 'C:\\Users\\u\\.wmux\\mcp\\index.js'], SHARED_SERVER])).toBe('shared-server');
+    expect(classifyMcpParent([['node', '/src/wmux/dist/mcp/mcp/entry.js'], SHARED_SERVER])).toBe('shared-server');
+    // Anything else after the entry is not ours.
+    expect(classifyMcpParent([['node', '/Users/u/.wmux/mcp/index.js', '--role=x', 'evil'], SHARED_SERVER])).toBe('other');
   });
   it('parses the Windows command line of the real daemon', () => {
     const argv = tokenizeCommandLine('"C:\\Program Files\\codex\\codex.exe" app-server --listen unix:// --managed-daemon');
@@ -176,7 +198,7 @@ describe('index.ts wiring (source-level invariant, #1778)', () => {
 
   it('never falls back to the cache or the daemon env hint for a shared-server call', () => {
     const resolve = src.slice(src.indexOf('async function resolveWorkspaceId'));
-    const threadBranch = resolve.indexOf('isSharedCodexParent()');
+    const threadBranch = resolve.indexOf("codexScope?.mode === 'thread'");
     expect(threadBranch).toBeGreaterThan(0);
     expect(threadBranch).toBeLessThan(resolve.indexOf('workspaceResolved && MY_WORKSPACE_ID'));
     expect(threadBranch).toBeLessThan(resolve.indexOf('ENV_WORKSPACE_HINT'));
@@ -190,10 +212,32 @@ describe('index.ts wiring (source-level invariant, #1778)', () => {
 
   it('does not freeze the computer caller identity for a shared-server thread', () => {
     const fn = src.slice(src.indexOf('function resolveComputerCallerIdentity'));
-    expect(fn.indexOf('isSharedCodexParent()')).toBeLessThan(fn.indexOf('resolveFrozenComputerCallerIdentity()'));
+    expect(fn.indexOf("codexScope?.mode === 'thread'")).toBeLessThan(fn.indexOf('resolveFrozenComputerCallerIdentity()'));
   });
 
   it('does not cache a thread-resolved identity for terminal routing', () => {
-    expect(src).toMatch(/cacheVerifiedWorkspaceId:\s*\(wsId: string\)\s*=>\s*\{\s*if\s*\(codexCallScope\.getStore\(\)\?\.viaThread\)\s*return;/);
+    expect(src).toMatch(/cacheVerifiedWorkspaceId:\s*\(wsId: string\)\s*=>\s*\{\s*if\s*\(threadOnlyScope\(\)\)\s*return;/);
+  });
+});
+
+describe('codexHomeFromParentChain — CODEX_HOME is not passed to MCP children', () => {
+  it('derives the home from the managed daemon executable', () => {
+    const mac = ['/tmp/cx home/packages/app-server-daemon/releases/0.160.0-aarch64-apple-darwin/bin/codex', 'app-server', '--listen', 'unix://', '--managed-daemon'];
+    expect(codexHomeFromParentChain([MCP_ENTRY, mac])).toBe('/tmp/cx home');
+    const win = ['\\\\?\\C:\\Users\\u\\cx\\packages\\app-server-daemon\\releases\\0.160.0-x86_64-pc-windows-msvc\\bin\\codex.exe', 'app-server', '--managed-daemon'];
+    expect(codexHomeFromParentChain([win])).toBe('C:\\Users\\u\\cx');
+  });
+  it('derives nothing from another shape or a non-shared parent', () => {
+    expect(codexHomeFromParentChain([SHARED_SERVER])).toBe('');
+    expect(codexHomeFromParentChain([['/x/packages/app-server-daemon/releases/1/bin/codex', '--no-daemon']])).toBe('');
+    expect(codexHomeFromParentChain([])).toBe('');
+  });
+});
+
+describe('codexOwnerIndexAvailable — where an owner can be recorded', () => {
+  it('is false on Windows (no pane relay), true elsewhere', () => {
+    expect(codexOwnerIndexAvailable('win32')).toBe(false);
+    expect(codexOwnerIndexAvailable('darwin')).toBe(true);
+    expect(codexOwnerIndexAvailable('linux')).toBe(true);
   });
 });

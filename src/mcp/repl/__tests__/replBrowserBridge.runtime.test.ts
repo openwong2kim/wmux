@@ -6,6 +6,7 @@
  * child proves it. The browser handlers are fakes in the collector's shape.
  */
 import * as os from 'os';
+import { AsyncLocalStorage } from 'async_hooks';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
@@ -299,5 +300,37 @@ describe('repl_run browser bridge (real child)', () => {
     const outcome = await session.run('let browser = "mine"; browser', 10_000, binding);
     expect(outcome.ok).toBe(true);
     expect(outcome.result?.text).toBe("'mine'");
+  });
+});
+
+describe('repl_run browser bridge — the calling dispatch\'s context (#1778)', () => {
+  it('runs a reused session\'s browser call in the context of the call that sent it, not the one that spawned it', async () => {
+    // Stands in for any per-call AsyncLocalStorage, e.g. the Codex thread scope:
+    // the child's messages arrive in the SPAWNING call's context.
+    const perCall = new AsyncLocalStorage<string>();
+    const seen: Array<string | undefined> = [];
+    const tools = new Map<string, CollectedTool>([[
+      'browser_navigate',
+      {
+        name: 'browser_navigate',
+        shape: { url: z.string() },
+        handler: async () => {
+          seen.push(perCall.getStore());
+          return { content: [{ type: 'text', text: 'navigated' }] };
+        },
+      },
+    ]]);
+    const session = makeSession();
+    const runAs = (thread: string) =>
+      perCall.run(thread, () =>
+        session.run(
+          'await browser.navigate({ url: "https://example.com" }); 1',
+          10_000,
+          resolveReplBrowser({ tools, profile: 'full' }, undefined),
+        ),
+      );
+    expect((await runAs('thread-1')).ok).toBe(true);
+    expect((await runAs('thread-2')).ok).toBe(true);
+    expect(seen).toEqual(['thread-1', 'thread-2']);
   });
 });

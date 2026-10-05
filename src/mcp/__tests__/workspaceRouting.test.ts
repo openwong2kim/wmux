@@ -122,7 +122,7 @@ describe('MCP workspace routing (source-level invariants)', () => {
     expect(block).toContain('claimPinnedRoute');
     // The verified-cache getter is gated on workspaceResolved (R1), and never
     // serves a shared Codex app-server caller, whose identity is per call (#1778).
-    expect(block).toMatch(/workspaceResolved\s*&&\s*!SHARED_CODEX_PARENT\s*\?\s*MY_WORKSPACE_ID\s*:\s*''/);
+    expect(block).toMatch(/workspaceResolved\s*&&\s*!threadOnlyScope\(\)\s*\?\s*MY_WORKSPACE_ID\s*:\s*''/);
   });
 
   it('stale RPC outcomes invalidate identity and only the route generation they used', () => {

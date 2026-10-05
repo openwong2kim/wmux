@@ -9,6 +9,7 @@
  * guarantees. The bridge adds only what direct calls skip: the SDK's Zod
  * validation, and the connection scope that MCP dispatch would have set.
  */
+import { AsyncLocalStorage } from 'async_hooks';
 import { z } from 'zod';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { CollectedTool } from '../playwright/toolCollector';
@@ -158,6 +159,20 @@ export interface BrowserBridgeOptions {
   readonly record?: boolean;
   /** Tool name used in refusal messages; defaults to browser_repl. */
   readonly label?: string;
+  /**
+   * Every AsyncLocalStorage store of the dispatch that started this run
+   * (`AsyncLocalStorage.snapshot()`), re-entered around each call. A session
+   * outlives the call that spawned it, and its messages arrive in the spawning
+   * call's context — so without this a later call's `browser.*` would run with
+   * the first call's per-call state, e.g. another Codex thread's pane (#1778).
+   */
+  readonly context?: <R>(fn: () => R) => R;
+}
+
+/** The dispatch's AsyncLocalStorage context, where the runtime can capture it. */
+export function captureDispatchContext(): BrowserBridgeOptions['context'] {
+  const snapshot = (AsyncLocalStorage as { snapshot?: () => <R>(fn: () => R) => R }).snapshot;
+  return typeof snapshot === 'function' ? snapshot() : undefined;
 }
 
 export type BridgeCall = (name: string, args: Record<string, unknown>) => Promise<BridgeOutcome>;
@@ -313,7 +328,7 @@ export function createBrowserBridge(
   const allowed = new Set(allowedTools);
   const label = options.label ?? 'browser_repl';
 
-  return async (name, rawArgs) => {
+  const bridgeCall: BridgeCall = async (name, rawArgs) => {
     const started = Date.now();
     const ledgerFor = (args: Record<string, unknown>, status: string) =>
       `${name}(${summarizeArgs(args)}) ${status} ${Date.now() - started}ms`;
@@ -399,4 +414,8 @@ export function createBrowserBridge(
       ...(images.length > 0 && { images }),
     };
   };
+  // Outermost, so the per-call stores below (listing capture, recording
+  // suppression) still nest inside the restored context.
+  const { context } = options;
+  return context ? (name, rawArgs) => context(() => bridgeCall(name, rawArgs)) : bridgeCall;
 }

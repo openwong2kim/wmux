@@ -48,10 +48,14 @@ import { AsyncLocalStorage } from 'async_hooks';
 import {
   classifyMcpParent,
   codexHome,
+  codexHomeFromParentChain,
+  codexOwnerIndexAvailable,
   codexThreadIdFromExtra,
   matchOwnerToLiveAnchor,
   readCodexThreadOwner,
   readParentChain,
+  type CodexThreadOwner,
+  type McpParentClass,
 } from './codexThreadIdentity';
 import { getWmuxMcpServerInstructions, resolveMcpServerVersion } from './serverMetadata';
 import { unlistToolsFromListing } from './listFilter';
@@ -93,11 +97,26 @@ export interface WmuxServerCtx {
 interface CodexCallScope {
   /** `_meta.threadId` of this call ('' when absent or malformed). */
   threadId: string;
+  /**
+   * How this call is identified, decided when the call starts:
+   * - 'thread': only this call's thread-resolved pane. No cache, env hint,
+   *   commander token, external pin or process-wide fallback of any kind.
+   * - 'thread-or-legacy': try the thread; on a miss become 'legacy'. Only
+   *   where no owner index can exist yet (Windows), so a miss there is not
+   *   evidence of a foreign caller.
+   * - 'legacy': the pre-#1778 paths (walks, cache, env hints).
+   */
+  mode?: 'thread' | 'thread-or-legacy' | 'legacy';
   /** The thread owner's live pane, once resolved for this call. */
   ptyId?: string;
-  viaThread?: boolean;
   /** Why the thread could not be resolved, for the identity error. */
-  missReason?: string;
+  miss?: CodexThreadMiss;
+}
+
+interface CodexThreadMiss {
+  reason: string;
+  /** 'hooks': an owner record is missing; 'retry': a transient failure. */
+  hint?: 'hooks' | 'retry';
 }
 
 // The bounded default for terminal_read when the caller names no explicit cap.
@@ -426,33 +445,93 @@ let workspaceResolved = false;
 // PER CALL from the thread's recorded owner pane (codexThreadIdentity.ts) and
 // never cached — the same server can outlive the pane, and a thread can be
 // resumed in another pane. The per-call state rides AsyncLocalStorage, set by
-// the registration wrapper below.
+// the registration wrapper below, which decides the call's mode up front so
+// every identity reader sees a decided mode.
 const codexCallScope = new AsyncLocalStorage<CodexCallScope>();
-// Parent classification is fixed for the connection: asked lazily, only when a
-// call carries a threadId, so Claude Code and other clients never pay for it.
-let sharedCodexParentCheck: Promise<boolean> | null = null;
-let SHARED_CODEX_PARENT = false;
-function isSharedCodexParent(): Promise<boolean> {
-  sharedCodexParentCheck ??= (async () => {
-    const start = ctx.callerPpid ?? (await getParentPid(ctx.callerPid)) ?? -1;
-    const chain = await readParentChain(start);
-    if (chain.length === 0) {
-      // Lookup failed (cold PowerShell/CIM, timeout): answer 'other' for this
-      // call but do not fix it for the server's life — the next call retries.
-      sharedCodexParentCheck = null;
-      logIdentity('parent lookup failed (will retry)');
-      return false;
+// The parent classification, remembered only once CONFIRMED ('shared-server'
+// or 'other'). 'unknown' (lookup timeout, ps/CIM failure) is never remembered,
+// so the next call asks again.
+let codexParentClass: 'shared-server' | 'other' | null = null;
+let codexParentHome = '';
+let codexParentCheck: Promise<McpParentClass> | null = null;
+function classifyCodexParent(): Promise<McpParentClass> {
+  if (codexParentClass) return Promise.resolve(codexParentClass);
+  codexParentCheck ??= (async () => {
+    try {
+      const start = ctx.callerPpid ?? (await getParentPid(ctx.callerPid)) ?? -1;
+      const chain = await readParentChain(start);
+      const parentClass = classifyMcpParent(chain);
+      if (parentClass !== 'unknown') {
+        codexParentClass = parentClass;
+        codexParentHome = codexHomeFromParentChain(chain);
+      }
+      logIdentity(`parent ${parentClass}`);
+      return parentClass;
+    } finally {
+      codexParentCheck = null;
     }
-    SHARED_CODEX_PARENT = classifyMcpParent(chain) === 'shared-server';
-    logIdentity(`parent ${SHARED_CODEX_PARENT ? 'shared-codex-server' : 'other'}`);
-    return SHARED_CODEX_PARENT;
   })();
-  return sharedCodexParentCheck;
+  return codexParentCheck;
 }
+
+function readThreadOwner(threadId: string): CodexThreadOwner | undefined {
+  for (const home of new Set([process.env.CODEX_HOME || '', codexParentHome, codexHome({ ...process.env, CODEX_HOME: '' })])) {
+    if (!home) continue;
+    const owner = readCodexThreadOwner(threadId, home);
+    if (owner) return owner;
+  }
+  return undefined;
+}
+
+/**
+ * Decide how this call is identified (see CodexCallScope.mode).
+ *
+ * Where an owner index can exist (the pane relay, off Windows) a confirmed
+ * shared parent identifies by thread ONLY: a missing threadId or an
+ * unresolvable thread is an error, never a fall back to the daemon starter's
+ * identity. An 'unknown' parent fails the same way for a call that carries a
+ * threadId (retryable), while a threadless call proceeds as before — a client
+ * that sends no threadId must not break because `ps` is unavailable.
+ *
+ * Where no owner can be recorded (Windows today) nothing changes for a call
+ * whose thread has no owner record: the starter pane IS the pane for the
+ * single-pane case. The parent is only inspected when a record exists, so
+ * that path costs no process lookup.
+ */
+async function decideCodexMode(scope: CodexCallScope): Promise<NonNullable<CodexCallScope['mode']>> {
+  if (codexParentClass === 'other') return 'legacy';
+  if (!codexOwnerIndexAvailable()) {
+    if (!scope.threadId || !readThreadOwner(scope.threadId)) return 'legacy';
+    return (await classifyCodexParent()) === 'shared-server' ? 'thread-or-legacy' : 'legacy';
+  }
+  const parentClass = await classifyCodexParent();
+  if (parentClass === 'other') return 'legacy';
+  if (parentClass === 'unknown') {
+    if (!scope.threadId) return 'legacy';
+    scope.miss = { reason: 'the parent process of this MCP server could not be inspected', hint: 'retry' };
+    return 'thread';
+  }
+  if (!scope.threadId) {
+    scope.miss = { reason: 'the call carried no valid Codex thread id (_meta.threadId)' };
+  }
+  return 'thread';
+}
+
 function withCodexCallScope(fn: (...a: unknown[]) => unknown): (...a: unknown[]) => unknown {
   // The SDK passes the request `extra` (carrying `_meta`) as the LAST argument.
-  return (...args: unknown[]) =>
-    codexCallScope.run({ threadId: codexThreadIdFromExtra(args[args.length - 1]) }, () => fn(...args));
+  return (...args: unknown[]) => {
+    const scope: CodexCallScope = { threadId: codexThreadIdFromExtra(args[args.length - 1]) };
+    return codexCallScope.run(scope, async () => {
+      scope.mode = await decideCodexMode(scope);
+      return fn(...args);
+    });
+  };
+}
+
+/** This call's scope when it identifies by thread only. */
+function threadOnlyScope(): CodexCallScope | undefined {
+  const scope = codexCallScope.getStore();
+  return scope?.mode === 'thread' ? scope : undefined;
 }
 
 /**
@@ -464,19 +543,35 @@ function resolveViaCodexThread(
   scope: CodexCallScope,
   entries: Array<{ pid: string; ptyId: string; workspaceId: string }> | undefined,
 ): PidMapLookup {
-  const owner = readCodexThreadOwner(scope.threadId, codexHome(process.env));
+  if (scope.miss) return { status: 'miss' };
+  const owner = readThreadOwner(scope.threadId);
   const result = matchOwnerToLiveAnchor(scope.threadId, owner, entries, process.env.WMUX_DATA_SUFFIX || '');
   if (result.status === 'hit') {
     // Per call ONLY: the process-wide MY_PTY_ID is never written here, or a
     // concurrent call of another thread could read this pane (verifiedPtyId).
+    scope.mode = 'thread';
     scope.ptyId = result.ptyId;
-    scope.viaThread = true;
     logIdentity(`codex-thread HIT ws=${result.wsId} pty=${result.ptyId}`);
     return { status: 'hit', wsId: result.wsId, ptyId: result.ptyId };
   }
-  scope.missReason = result.reason;
+  scope.miss = { reason: result.reason, ...(owner ? {} : { hint: 'hooks' as const }) };
   logIdentity(`codex-thread MISS ${result.reason}`);
   return { status: 'miss' };
+}
+
+/** The identity error for a thread-only call that has no pane. */
+function codexIdentityError(scope: CodexCallScope): Error {
+  const miss = scope.miss ?? { reason: 'the thread could not be resolved' };
+  const next =
+    miss.hint === 'hooks'
+      ? ' Run `wmux setup-hooks` for Codex if its hooks are not installed, then start or resume the conversation from a wmux pane.'
+      : miss.hint === 'retry'
+        ? ' Retry the call in a few seconds.'
+        : '';
+  return new Error(
+    'Workspace identity unknown. This MCP server runs under a shared Codex app-server, so its pane ' +
+      `comes from the calling thread, and ${miss.reason}.${next}`,
+  );
 }
 
 /**
@@ -510,7 +605,8 @@ function resolveViaCodexThread(
  * thread-resolved pane and nothing process-wide.
  */
 function verifiedPtyId(): string {
-  if (SHARED_CODEX_PARENT) return codexCallScope.getStore()?.ptyId ?? '';
+  const threadScope = threadOnlyScope();
+  if (threadScope) return threadScope.ptyId ?? '';
   return MY_PTY_ID;
 }
 
@@ -518,7 +614,8 @@ function getTaskSenderPtyId(): string {
   // Under a shared Codex server both MY_PTY_ID (another call's thread) and the
   // env hint (the daemon starter's pane) may name a different pane: only this
   // call's thread-resolved pane counts.
-  if (SHARED_CODEX_PARENT) return codexCallScope.getStore()?.ptyId ?? '';
+  const threadScope = threadOnlyScope();
+  if (threadScope) return threadScope.ptyId ?? '';
   return MY_PTY_ID || ENV_PTY_HINT;
 }
 
@@ -816,6 +913,11 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
   let mappings: Record<string, string> | undefined;
   let entries: Array<{ pid: string; ptyId: string; workspaceId: string }> | undefined;
   let resolved: { workspaceId?: unknown; ptyId?: unknown } | null | undefined;
+  const codexScope = codexCallScope.getStore();
+  const viaThread = codexScope?.mode === 'thread' || codexScope?.mode === 'thread-or-legacy';
+  // A thread-only call never uses main's server-side walk, so it does not ask
+  // main to snapshot the process table for it.
+  if (codexScope?.mode === 'thread' && codexScope.miss) return { status: 'miss' };
   try {
     // callerPid lets main resolve our identity SERVER-SIDE: it walks our process
     // tree on its end (unsandboxed, reusing the port-watcher's process snapshot)
@@ -824,20 +926,30 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
     // hints — leaving the client-side walk as its only, blocked, path. Older
     // main builds ignore the field and omit `resolved`, so we fall through to
     // the client-side walk unchanged (graceful degradation).
-    const result = await sendRpc('a2a.resolve.identity' as RpcMethod, { callerPid: ctx.callerPid });
+    const result = await sendRpc(
+      'a2a.resolve.identity' as RpcMethod,
+      codexScope?.mode === 'thread' ? {} : { callerPid: ctx.callerPid },
+    );
     mappings = (result as { mappings: Record<string, string> }).mappings;
     entries = (result as { entries?: Array<{ pid: string; ptyId: string; workspaceId: string }> }).entries;
     resolved = (result as { resolved?: { workspaceId?: unknown; ptyId?: unknown } | null }).resolved;
   } catch {
     logIdentity('resolve.identity rpc-down');
+    if (codexScope?.mode === 'thread') {
+      codexScope.miss = { reason: 'the wmux main process is not reachable (it may be starting or restarting)', hint: 'retry' };
+    }
     return { status: 'rpc-down' };
   }
 
   // Shared Codex app-server (#1778): both walks below would climb through the
   // daemon to whichever pane started it, so this call's own thread decides.
-  const codexScope = codexCallScope.getStore();
-  if (codexScope?.threadId && (await isSharedCodexParent())) {
-    return resolveViaCodexThread(codexScope, entries);
+  // 'thread-or-legacy' continues with the walks on a miss (resolveViaCodexThread
+  // leaves the mode unchanged; it is flipped to 'legacy' here).
+  if (codexScope && viaThread) {
+    const lookup = resolveViaCodexThread(codexScope, entries);
+    if (codexScope.mode === 'thread') return lookup;
+    codexScope.mode = 'legacy';
+    codexScope.miss = undefined;
   }
 
   // Server-side walk HIT (PROPER fix). main correlated our process tree to a
@@ -951,14 +1063,16 @@ async function resolveWorkspaceId(): Promise<string> {
   // No cache, no commander token, no env hint — each of those would name the
   // daemon's starter pane or a previous call's pane.
   const codexScope = codexCallScope.getStore();
-  if (codexScope?.threadId && (await isSharedCodexParent())) {
+  if (codexScope?.mode === 'thread') {
     const lookup = await lookupPidMapWorkspace();
     return lookup.status === 'hit' ? lookup.wsId : '';
   }
 
-  if (workspaceResolved && MY_WORKSPACE_ID) return MY_WORKSPACE_ID;
+  if (codexScope?.mode !== 'thread-or-legacy' && workspaceResolved && MY_WORKSPACE_ID) return MY_WORKSPACE_ID;
 
   const lookup = await lookupPidMapWorkspace();
+  // A thread-or-legacy call that hit its thread is now thread-only.
+  if (threadOnlyScope()) return lookup.status === 'hit' ? lookup.wsId : '';
   if (lookup.status === 'hit') {
     MY_WORKSPACE_ID = lookup.wsId;
     // MY_PTY_ID is set inside lookupPidMapWorkspace on the hit (so the
@@ -1080,15 +1194,8 @@ async function getParentPid(pid: number): Promise<number | null> {
 async function requireWorkspaceId(): Promise<string> {
   const wsId = await resolveWorkspaceId();
   if (!wsId) {
-    const codexScope = codexCallScope.getStore();
-    if (codexScope?.threadId && SHARED_CODEX_PARENT) {
-      throw new Error(
-        'Workspace identity unknown. This MCP server runs under a shared Codex app-server, so its pane ' +
-        `comes from the calling thread, and ${codexScope.missReason ?? 'the thread could not be resolved'}. ` +
-        'Run `wmux setup-hooks` for Codex if its hooks are not installed, then start or resume the ' +
-        'conversation from a wmux pane.'
-      );
-    }
+    const threadScope = threadOnlyScope();
+    if (threadScope) throw codexIdentityError(threadScope);
     throw new Error(
       'Workspace identity unknown. This MCP server cannot determine which workspace it belongs to. ' +
       'Make sure you are running inside a wmux terminal workspace.'
@@ -1133,6 +1240,19 @@ async function resolveScopedReadWorkspaceId(): Promise<string> {
 // (issue #163). The cache getter honors workspaceResolved so a stale identity
 // invalidated by callRpc re-resolves instead of being served from cache.
 async function resolveTerminalRouteBound(explicitPtyId?: string) {
+  // Shared Codex app-server (#1778): a thread-only call routes to its thread's
+  // pane or nowhere. It must never reach the commander route or the external
+  // claim below — an unresolved thread would otherwise be pinned to a shared
+  // "MCP" workspace that every other unresolved thread also lands on.
+  const codexScope = codexCallScope.getStore();
+  if (codexScope?.mode === 'thread' || codexScope?.mode === 'thread-or-legacy') {
+    const lookup = await lookupPidMapWorkspace();
+    if (codexScope.mode === 'thread') {
+      if (lookup.status !== 'hit') throw codexIdentityError(codexScope);
+      return { workspaceId: lookup.wsId, ptyId: explicitPtyId };
+    }
+  }
+
   // Commander brain (P3b): a live WMUX_COMMANDER_TOKEN grants fleet-wide
   // explicit-ptyId targeting via main's deck.resolvePaneRoute — the brain's
   // subprocess has no pane ancestry, so the ordinary rules below would
@@ -1149,9 +1269,9 @@ async function resolveTerminalRouteBound(explicitPtyId?: string) {
       lookupPidMapWorkspace,
       // A shared Codex server's identity is per call (#1778): never served from
       // or written to the process cache.
-      getCachedVerifiedWorkspaceId: () => (workspaceResolved && !SHARED_CODEX_PARENT ? MY_WORKSPACE_ID : ''),
+      getCachedVerifiedWorkspaceId: () => (workspaceResolved && !threadOnlyScope() ? MY_WORKSPACE_ID : ''),
       cacheVerifiedWorkspaceId: (wsId: string) => {
-        if (codexCallScope.getStore()?.viaThread) return;
+        if (threadOnlyScope()) return;
         MY_WORKSPACE_ID = wsId;
         workspaceResolved = true;
       },
@@ -2037,13 +2157,20 @@ function resolveComputerCallerIdentity(): Promise<{ senderPtyId: string } | { ca
   // Shared Codex app-server (#1778): one server serves many threads, so the
   // identity is this call's thread pane (stable for that thread), decided per
   // call and never frozen for the server.
+  // An unresolved thread gets no identity at all: the process-wide instance id
+  // would let every unresolved thread share one consent.
   const codexScope = codexCallScope.getStore();
-  if (codexScope?.threadId) {
-    return isSharedCodexParent().then(async (shared) => {
-      if (!shared) return resolveFrozenComputerCallerIdentity();
-      try { await requireWorkspaceId(); } catch { /* no pane: instance id */ }
-      return codexScope.ptyId ? { senderPtyId: codexScope.ptyId } : { callerInstance: COMPUTER_CALLER_INSTANCE };
-    });
+  if (codexScope?.mode === 'thread' || codexScope?.mode === 'thread-or-legacy') {
+    return (async () => {
+      try {
+        await requireWorkspaceId();
+      } catch (err) {
+        if (codexScope.mode === 'thread') throw err;
+      }
+      // A thread-or-legacy miss has become 'legacy' by now.
+      if (codexScope.mode !== 'thread') return resolveFrozenComputerCallerIdentity();
+      return { senderPtyId: codexScope.ptyId as string };
+    })();
   }
   return resolveFrozenComputerCallerIdentity();
 }

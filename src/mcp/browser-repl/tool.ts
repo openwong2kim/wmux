@@ -20,7 +20,7 @@ import {
   type RegisterWmuxToolsOptions,
   type WmuxToolSpec,
 } from '../toolCatalog';
-import { BROWSER_REPL_TOOLS, createBrowserBridge } from './bridge';
+import { BROWSER_REPL_TOOLS, captureDispatchContext, createBrowserBridge } from './bridge';
 import { renderImageLegend, textWithImages } from './runCollect';
 import { BrowserReplSession, type BrowserReplRunOutcome } from './BrowserReplSession';
 
@@ -273,7 +273,7 @@ export function createBrowserReplCatalog(
       // Captured HERE, inside the MCP dispatch, and re-entered per call: the
       // worker's messages arrive outside this AsyncLocalStorage context.
       const scope = getConnectionScope();
-      const bridge = createBrowserBridge(tools, { surfaceId, scope });
+      const bridge = createBrowserBridge(tools, { surfaceId, scope, context: captureDispatchContext() });
       const session = getSession(() => new BrowserReplSession(BROWSER_REPL_TOOLS));
       const resolvedTimeout = clampTimeout(timeout);
       try {
