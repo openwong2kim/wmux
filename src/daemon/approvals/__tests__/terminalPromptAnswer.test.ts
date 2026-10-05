@@ -743,6 +743,26 @@ describe('terminal_prompt binding with calls made side by side', () => {
     expect(record?.promptFingerprint).toBeUndefined();
   });
 
+  it('with the hook\'s own evidence (hookSessionId), a parallel call of another tool still leaves it unanswerable, and no answer loops', async () => {
+    const h = makeRegistry({ agentSessionId: () => 'conv-1' });
+    h.pane.pending = { id: 'toolu_mcp', name: 'mcp__wmux__a2a_task_query', input: { task_id: 't-1' }, unanswered: 2 };
+    const note = { sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', source: 'hook' as const, toolName: 'Bash', toolInput: CALL.input, hookSessionId: 'conv-1', toolUseId: 'toolu_01' };
+    await h.registry.noteTerminalPrompt(note);
+    const [record] = h.registry.list().pending;
+    expect(record).toMatchObject({ toolName: 'Bash' });
+    expect(record?.promptFingerprint).toBeUndefined();
+    expect(record?.choices).toBeUndefined();
+    // Noted again (a repeat hook, a re-read): still one record, still not answerable.
+    await h.registry.noteTerminalPrompt(note);
+    expect(h.registry.list().pending).toHaveLength(1);
+    expect(h.registry.list().pending[0]?.promptFingerprint).toBeUndefined();
+    settle(h);
+    const res = await answer(h, record!, { promptFingerprint: 'f'.repeat(32) });
+    expect(res).toMatchObject({ ok: false, reason: 'answer-in-terminal' });
+    expect(h.writes).toEqual([]);
+    expect(h.registry.list().pending).toHaveLength(1);
+  });
+
   it('the same tool as the hook still binds by the transcript\'s call', async () => {
     const h = makeRegistry();
     await h.registry.noteTerminalPrompt({ sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', source: 'detector', toolName: 'Bash' });
