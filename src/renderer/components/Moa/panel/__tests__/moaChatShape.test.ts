@@ -94,3 +94,15 @@ describe('foldNarration', () => {
     expect(['a1', 'a2', 'a3'].map(thinking)).toEqual([true, false, true]);
   });
 });
+
+describe('moaResultEvents timing', () => {
+  it('times a done link by its result, else by when it was first seen done, never by a later updatedAt', async () => {
+    const { moaResultEvents } = await import('../MoaResultCard');
+    const base = { origin: 'moa', a2aTaskId: 't', owner: { workspaceId: 'w' }, state: 'done', decisionIds: [], createdAt: 1 } as const;
+    const withResult = { ...base, id: 'r1', updatedAt: 90, result: { summary: 's', at: 5 } };
+    expect(moaResultEvents([withResult] as never, 0)[0].ts).toBe(5);
+    const bare = { ...base, id: 'r2', updatedAt: 7 };
+    expect(moaResultEvents([bare] as never, 0)[0].ts).toBe(7);
+    expect(moaResultEvents([{ ...bare, updatedAt: 95 }] as never, 0)[0].ts).toBe(7);
+  });
+});
