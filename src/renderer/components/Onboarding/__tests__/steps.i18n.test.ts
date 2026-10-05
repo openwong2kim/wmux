@@ -25,11 +25,12 @@ describe('ONBOARDING_STEPS i18n coverage (#452)', () => {
 });
 
 describe('ONBOARDING_STEPS media', () => {
-  it('only references clips that exist, each with a poster for reduced motion', () => {
-    for (const step of ONBOARDING_STEPS) {
-      if (!step.media) continue;
-      const clip = MEDIA_CLIPS[step.media];
-      expect(clip, step.id).toBeDefined();
+  it('carries no recorded clips: they showed layouts that have since changed', () => {
+    for (const step of ONBOARDING_STEPS) expect(step.media, step.id).toBeUndefined();
+  });
+
+  it('every remaining clip has a poster for reduced motion', () => {
+    for (const clip of Object.values(MEDIA_CLIPS)) {
       expect(clip.src).toMatch(/\.webm/);
       expect(clip.poster).toMatch(/\.webp/);
     }

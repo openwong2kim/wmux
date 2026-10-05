@@ -68,7 +68,7 @@ export const ONBOARDING_STEPS: OnboardingStep[] = [
     revealsAgentToolbar: true,
     page: 'workspaces',
     placement: 'top',
-    media: 'worktrees',
+    // No clip: the recording showed a sidebar layout that has since changed.
   },
   {
     id: 'open-browser',
