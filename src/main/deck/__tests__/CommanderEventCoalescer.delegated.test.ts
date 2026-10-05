@@ -196,4 +196,18 @@ describe('buildEventPrompt for a Moa hand-off task', () => {
     expect(prompt).toContain('cannot query, answer or cancel');
     expect(prompt).not.toContain('reply with send_message');
   });
+
+  it('an operator cancel is their answer: no re-proposal, no question, no replacement', () => {
+    const prompt = buildEventPrompt(
+      [{
+        ptyId: 'a2a:handoff-h1', kind: 'a2a.canceled', source: 'a2a', agent: null, seq: 1, ts: 0,
+        a2a: { taskId: 'handoff-h1', from: 'ws-hq', to: 'ws-wmux', state: 'canceled', handoff: {} },
+      }],
+      DEFAULT_AUTONOMY,
+      { remaining: 1, total: 1 },
+    );
+    expect(prompt).toContain('HAND-OFF CANCELED');
+    expect(prompt).toContain('do not re-propose it, ask about it or dispatch a replacement');
+    expect(prompt).not.toContain('determine why');
+  });
 });

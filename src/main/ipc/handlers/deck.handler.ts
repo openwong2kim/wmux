@@ -788,7 +788,7 @@ export function registerDeckHandler(
             agent: null,
             seq: Date.now(),
             ts: Date.now(),
-            a2a: { taskId: `handoff-${r.id}`, from: r.hqWorkspaceId, to: r.target.workspaceId, state: 'canceled' },
+            a2a: { taskId: `handoff-${r.id}`, from: r.hqWorkspaceId, to: r.target.workspaceId, state: 'canceled', handoff: {} },
           });
         },
       })

@@ -1336,7 +1336,11 @@ function renderEventLine(
       ? `(HAND-OFF NEEDS INPUT — the agent in ${sanitizeSnippet(a2a.to)} is waiting on the operator.${q} You cannot query, answer or cancel this task: it is the operator's. Tell the operator the question in your own words, or propose a follow-up hand-off with moa_propose_handoff, then end your turn.)`
       : e.kind === 'a2a.completed'
         ? `(HAND-OFF DONE — the agent in ${sanitizeSnippet(a2a.to)} reported completion. Read its pane with terminal_read to check the result before you report it.)`
-        : `(HAND-OFF ${e.kind === 'a2a.failed' ? 'FAILED' : 'CANCELED'} — the operator's task to ${sanitizeSnippet(a2a.to)} ended without completion. Report it; propose a new hand-off only if the operator still wants the work.)`;
+        : e.kind === 'a2a.canceled'
+          // The operator canceled their own hand-off: that IS the answer, so
+          // Moa neither asks about it nor tries again.
+          ? `(HAND-OFF CANCELED — the operator canceled the task to ${sanitizeSnippet(a2a.to)}. That is their answer: do not re-propose it, ask about it or dispatch a replacement. If it was the whole request, close it with deck_complete_work, citing the cancel as the basis.)`
+          : `(HAND-OFF FAILED — the operator's task to ${sanitizeSnippet(a2a.to)} ended without completion. Report it; propose a new hand-off only if the operator still wants the work.)`;
   } else if (e.kind === 'a2a.completed') {
     const grade =
       a2a?.verifiedItemCount === undefined
