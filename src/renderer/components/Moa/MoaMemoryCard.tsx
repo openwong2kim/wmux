@@ -45,8 +45,10 @@ export function plainMemory(card: Pick<MoaMemoryCardData, 'kind' | 'fullText'>):
   if (front) body = body.slice(front[0].length);
   body = body.split('\n').filter((line) => !/^\s*<!--.*-->\s*$/.test(line)).join('\n').trim();
   if (card.kind === 'precedent') {
-    const question = /^Question:[ \t]*(.+)$/m.exec(body)?.[1]?.trim();
-    const answer = /^Answer:[ \t]*(.+)$/m.exec(body)?.[1]?.trim();
+    // Whole fields, every line: Save keeps them, so the operator sees them all.
+    const m = /(?:^|\n)Question:[ \t]*([\s\S]*?)\nAnswer:[ \t]*([\s\S]*?)(?:\nAnswered:[^\n]*)?(?:\nSource task:[^\n]*)?\s*$/.exec(body);
+    const question = m?.[1]?.trim();
+    const answer = m?.[2]?.trim();
     if (question && answer) return { kind: 'precedent', question, answer };
   }
   return { kind: 'text', text: body };
@@ -150,7 +152,7 @@ export function MoaMemoryCard({
       {plain.kind === 'precedent' ? (
         <>
           {/* The operator's own answer and Moa's question: text, never markup. */}
-          <p data-moa-memory-rule className="m-0 text-[13px] text-[var(--text-main)] leading-relaxed break-words" {...tokenAttrs('textMain', 'text')}>
+          <p data-moa-memory-rule className="m-0 text-[13px] text-[var(--text-main)] leading-relaxed break-words whitespace-pre-wrap" {...tokenAttrs('textMain', 'text')}>
             {t('moa.memoryCard.precedentRule', { question: plain.question, answer: plain.answer })}
           </p>
           <p className="m-0 text-[12px] text-[color-mix(in_srgb,var(--text-main)_75%,transparent)] leading-relaxed">

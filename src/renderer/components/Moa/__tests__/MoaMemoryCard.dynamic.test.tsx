@@ -145,6 +145,23 @@ describe('MoaMemoryCard', () => {
     expect(api.memoryResolve).toHaveBeenCalledWith({ id: 'c3', answer: 'save', fullTextShown: true });
   });
 
+  it('a multi-line question and answer are shown whole before Save, so the operator sees what is kept', async () => {
+    const question = 'math.js를 직접 볼 수 없습니다.\n완료로 처리할까요?';
+    const answer = '완료로 처리하되\n다음엔 테스트 결과도 받아와';
+    current = {
+      ...short,
+      id: 'c4',
+      kind: 'precedent',
+      fullText: `---\nname: x\nkind: precedent\n---\nA past answer, not a rule: if the situation differs, ask again.\n\nQuestion: ${question}\nAnswer: ${answer}\nAnswered: 2026-10-05T12:00:00.000Z\nSource task: none\n`,
+    };
+    await act(async () => root.render(<MoaMemoryCard api={api} t={t} />));
+    await flush();
+    const rule = q('[data-moa-memory-rule]')!.textContent!;
+    expect(rule).toContain('다음엔 테스트 결과도 받아와');
+    expect(rule).toContain('완료로 처리할까요?');
+    expect(rule).not.toContain('Answered:');
+  });
+
   it('in Korean, the card speaks Korean', async () => {
     setLocale('ko');
     current = { ...short, kind: 'precedent', fullText: '---\nname: x\nkind: precedent\n---\nQuestion: 진행할까요?\nAnswer: 네\n' };
