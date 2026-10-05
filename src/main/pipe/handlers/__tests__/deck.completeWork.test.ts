@@ -45,6 +45,7 @@ vi.mock('../../../deck/deckWorkStore', async (orig) => {
 
 import { registerDeckRpc } from '../deck.rpc';
 import { setMoaHandoffService } from '../../../deck/moaHandoff';
+import { setMoaReadRootsRefresher } from '../../../deck/moaReadGate';
 import {
   beginOrContinueDeckWork,
   recordDeckWorkA2aTask,
@@ -358,6 +359,20 @@ describe('deck.completeWork — Moa hand-off tasks', () => {
   it('a hand-off the operator or the worker ended (canceled, failed, completed) no longer holds it', async () => {
     statusOf.set('task-h', 'settled');
     expect(await complete()).toMatchObject({ ok: true });
+  });
+
+  it('finishing Moa\'s job refreshes its read roots at once', async () => {
+    const refresh = vi.fn(async () => undefined);
+    setMoaReadRootsRefresher(refresh);
+    setMoaHandoffService({ handoffTaskStatus: () => 'settled', closeMootCards: async () => 0 } as never);
+    hqRef.current = WS;
+    try {
+      expect(await complete()).toMatchObject({ ok: true });
+      expect(refresh).toHaveBeenCalledTimes(1);
+    } finally {
+      hqRef.current = null;
+      setMoaReadRootsRefresher(null);
+    }
   });
 
   it('finishing Moa\'s job takes down its unanswered hand-off cards', async () => {

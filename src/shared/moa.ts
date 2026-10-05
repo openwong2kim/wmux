@@ -34,9 +34,12 @@ export interface MoaConfig {
   /** Moa may hand off to a workspace in danger mode without a card, while the
    *  HQ is in danger mode too. Never applies to any other target. Absent = on. */
   autoHandoff?: boolean;
+  /** Moa reads files (Read, Grep, Glob) in the repos it delegated to without a
+   *  permission prompt (moaReadGate.ts). Absent = on. */
+  readWithoutAsking?: boolean;
 }
 
-export type MoaConfigPatch = Partial<Pick<MoaConfig, 'onboarded' | 'level' | 'maxTurnsPerHour' | 'bubbles' | 'reduceMotion' | 'approvalPress' | 'memoryProposals' | 'issueProposals' | 'trustedAuthors' | 'issuePollMinutes' | 'ignoredRepos' | 'autoHandoff'>>;
+export type MoaConfigPatch = Partial<Pick<MoaConfig, 'onboarded' | 'level' | 'maxTurnsPerHour' | 'bubbles' | 'reduceMotion' | 'approvalPress' | 'memoryProposals' | 'issueProposals' | 'trustedAuthors' | 'issuePollMinutes' | 'ignoredRepos' | 'autoHandoff' | 'readWithoutAsking'>>;
 
 export interface MoaState {
   config: MoaConfig;

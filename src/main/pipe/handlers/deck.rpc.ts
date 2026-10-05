@@ -39,6 +39,7 @@ import {
   type WorkspaceDecision,
 } from '../../deck/deckDecisionStore';
 import { getMoaHandoffService } from '../../deck/moaHandoff';
+import { refreshMoaReadRoots } from '../../deck/moaReadGate';
 import { plainLanguageRefusal } from '../../deck/plainLanguage';
 import { getHqWorkspaceId } from '../../deck/deckHqStore';
 import { loadWorkspaceMode } from '../../deck/deckAutonomyStore';
@@ -268,6 +269,8 @@ export function registerDeckRpc(router: RpcRouter, getWindow: GetWindow, deps: D
     // The job is done: hand-off cards Moa raised for it and the operator never
     // answered are moot, and would keep "Waiting on you" above zero.
     if (handoffs && ws === getHqWorkspaceId()) await handoffs.closeMootCards(ws).catch(() => 0);
+    // The job is settled: the repos it read stop being readable without asking.
+    if (ws === getHqWorkspaceId()) await refreshMoaReadRoots();
     return { ok: true, workId: work.id, summary, verification };
   });
 

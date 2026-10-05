@@ -124,6 +124,12 @@ export interface HandoffRecord {
   /** wmux itself ended the task (not the operator): its pane closed or its
    *  agent left, or a newer hand-off to the same pane replaced it. */
   internalCancel?: 'pane-gone' | 'replaced';
+  /** The target's repository (`git rev-parse --show-toplevel` of its pane,
+   *  taken at delivery and vetted): the one place Moa's read gate may let it
+   *  read without asking (moaReadGate.ts). Absent = unverifiable, it asks. */
+  repoRoot?: string;
+  /** When the task ended (completed, failed or canceled). */
+  endedAt?: number;
   createdAt: number;
   at: number;
 }
@@ -199,6 +205,9 @@ export interface MoaHandoffPorts {
     presetTaskId?: string;
   }) => Promise<OperatorTaskDelivery>;
   release: (linkId: string | undefined, taskId: string | undefined) => Promise<void>;
+  /** The vetted repository root of the pane (moaReadGate.resolveRepoRoot),
+   *  or null when it cannot be verified. Read once, at delivery. */
+  repoRootOf?: (workspaceId: string, ptyId: string) => Promise<string | null>;
   /** The canonical state of an A2A task (the operator's), null when it does
    *  not exist, undefined when it could not be read. */
   taskState?: (taskId: string) => Promise<string | null | undefined>;
@@ -341,7 +350,8 @@ export class MoaHandoffService {
   }
 
   private put(r: HandoffRecord): void {
-    this.file.items[r.id] = { ...r, at: this.now() };
+    const ended = isEnded(r.taskState) && r.endedAt === undefined ? { endedAt: this.now() } : {};
+    this.file.items[r.id] = { ...r, ...ended, at: this.now() };
     const all = Object.values(this.file.items);
     if (all.length <= MAX_RECORDS) return;
     const old = all
@@ -388,6 +398,21 @@ export class MoaHandoffService {
       }
     }
     return out;
+  }
+
+  /** What Moa's read roots are made of (moaReadGate.computeReadRoots): the
+   *  current HQ's delivered hand-offs that carry a vetted repository. */
+  readRootSources(): Array<{ repoRoot?: string; taskId?: string; open: boolean; endedAt?: number; paneGone?: boolean }> {
+    const hq = this.ports.hqWorkspaceId();
+    return Object.values(this.file.items)
+      .filter((r) => r.hqWorkspaceId === hq && r.state === 'delivered' && r.taskId && r.repoRoot)
+      .map((r) => ({
+        repoRoot: r.repoRoot,
+        taskId: r.taskId,
+        open: !isEnded(r.taskState),
+        ...(r.endedAt !== undefined ? { endedAt: r.endedAt } : {}),
+        ...(r.internalCancel === 'pane-gone' ? { paneGone: true } : {}),
+      }));
   }
 
   /** The HQ closed this hand-off task itself (requesterComplete). */
@@ -692,6 +717,10 @@ export class MoaHandoffService {
     // is under way once the text landed, and only from 'working' can a later
     // question move it to input-required.
     if (delivered.taskState === 'submitted') await this.moveTask(delivered, 'working');
+    // Where Moa may later read the result without a prompt. Unverifiable
+    // (no repository, $HOME, …) leaves it out: those reads keep asking.
+    const repoRoot = await this.ports.repoRootOf?.(record.target.workspaceId, record.target.ptyId).catch(() => null);
+    if (repoRoot) this.put({ ...(this.get(record.id) ?? delivered), repoRoot });
     if (!(await this.save()) && !(await this.save())) {
       // The text landed; the disk still says "delivering". Memory holds the
       // truth for this run, and after a restart reconcile() settles the record

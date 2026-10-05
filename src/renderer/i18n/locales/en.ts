@@ -1381,6 +1381,8 @@ export const en = {
   'moa.settings.issueProposalsDesc': "For each repo open in a workspace, Moa asks whether to hand a new issue, or a new PR from someone else, to that repo's workspace. It only proposes: nothing is sent until you choose Hand off. Needs Moa's HQ. Off by default.",
   'moa.settings.autoHandoff': "Let Moa hand off to danger-mode workspaces without asking",
   'moa.settings.autoHandoffDesc': "Only when both the workspace and Moa's HQ are in danger mode. Hand-offs built from GitHub text always ask.",
+  'moa.settings.readWithoutAsking': "Let Moa read the repos it delegated to without asking",
+  'moa.settings.readWithoutAskingDesc': "Read, Grep and Glob only, inside the repository of an agent Moa handed work to, until about an hour after the job ends. Secret files, .git and anything outside still ask; edits and commands always do.",
   'moa.settings.issuePoll': "Check every (minutes)",
   'moa.settings.issuePollDesc': "How often Moa reads the open repos' issues and PRs, through the Git page's cached reads.",
   'moa.settings.trustedAuthors': "Trusted authors",

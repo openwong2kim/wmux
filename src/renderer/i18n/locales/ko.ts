@@ -901,6 +901,8 @@ export const ko = {
   'moa.settings.issueProposalsDesc': "워크스페이스에 열린 저장소마다, 새 이슈나 다른 사람이 올린 새 PR을 그 저장소의 워크스페이스에 맡길지 Moa가 물어봅니다. 제안만 하고, Hand off를 고르기 전에는 아무것도 보내지 않습니다. Moa HQ가 있어야 합니다. 기본값은 꺼짐입니다.",
   'moa.settings.autoHandoff': "위험 모드 워크스페이스에는 묻지 않고 넘기기",
   'moa.settings.autoHandoffDesc': "워크스페이스와 Moa HQ가 모두 위험 모드일 때만 적용됩니다. GitHub 텍스트로 만든 넘기기는 항상 묻습니다.",
+  'moa.settings.readWithoutAsking': "Moa가 위임한 저장소를 묻지 않고 읽기",
+  'moa.settings.readWithoutAskingDesc': "Read·Grep·Glob만, Moa가 일을 맡긴 에이전트의 저장소 안에서, 작업이 끝난 뒤 약 1시간까지. 비밀 파일·.git·그 밖의 경로는 계속 묻고, 수정과 명령은 항상 묻습니다.",
   'moa.settings.issuePoll': "확인 주기(분)",
   'moa.settings.issuePollDesc': "열린 저장소의 이슈와 PR을 얼마나 자주 읽을지 정합니다. Git 페이지의 캐시된 읽기를 그대로 씁니다.",
   'moa.settings.trustedAuthors': "신뢰하는 작성자",

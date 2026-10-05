@@ -1365,6 +1365,8 @@ export const pl = {
   'moa.settings.issueProposalsDesc': "Dla każdego repozytorium otwartego w obszarze roboczym Moa pyta, czy przekazać nowe zgłoszenie albo nowy PR od kogoś innego do obszaru roboczego tego repozytorium. Tylko proponuje: nic nie jest wysyłane, dopóki nie wybierzesz Hand off. Wymaga HQ Moa. Domyślnie wyłączone.",
   'moa.settings.autoHandoff': "Pozwól Moa przekazywać do obszarów w trybie niebezpiecznym bez pytania",
   'moa.settings.autoHandoffDesc': "Tylko gdy zarówno obszar roboczy, jak i HQ Moa są w trybie niebezpiecznym. Przekazania zbudowane z tekstu z GitHuba zawsze pytają.",
+  'moa.settings.readWithoutAsking': "Pozwól Moa czytać repozytoria, którym zleciła pracę, bez pytania",
+  'moa.settings.readWithoutAskingDesc': "Tylko Read, Grep i Glob, wewnątrz repozytorium agenta, któremu Moa przekazała pracę, do około godziny po zakończeniu zadania. Pliki z sekretami, .git i wszystko poza nim nadal wymagają zgody; edycje i polecenia zawsze.",
   'moa.settings.issuePoll': "Sprawdzaj co (minuty)",
   'moa.settings.issuePollDesc': "Jak często Moa czyta zgłoszenia i PR-y otwartych repozytoriów, przez buforowane odczyty strony Git.",
   'moa.settings.trustedAuthors': "Zaufani autorzy",

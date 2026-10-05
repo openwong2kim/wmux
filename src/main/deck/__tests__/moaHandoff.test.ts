@@ -845,3 +845,31 @@ describe('moa hand-off — no wrong wakes, no stale cards', () => {
     expect(r.slots.has(SEAL)).toBe(false);
   });
 });
+
+describe('moa hand-off — read roots for Moa\'s read gate', () => {
+  it('captures the vetted repository at delivery and offers it while the task is open, then with its end time', async () => {
+    const asked: string[] = [];
+    const r = rig({ repoRootOf: async (ws, pty) => { asked.push(`${ws}/${pty}`); return '/repos/demo'; } });
+    await propose(r);
+    await r.svc.resolve(SEAL, r.slots.get(SEAL)!.id, 'handoff');
+    const taskId = (r.deliver.mock.calls[0][0] as { presetTaskId: string }).presetTaskId;
+    expect(asked).toEqual([`${SEAL}/pty-1`]);
+    expect(r.svc.readRootSources()).toEqual([{ repoRoot: '/repos/demo', taskId, open: true }]);
+    r.svc.noteTaskState(taskId, 'completed');
+    const [ended] = r.svc.readRootSources();
+    expect(ended).toMatchObject({ repoRoot: '/repos/demo', open: false, endedAt: expect.any(Number) });
+  });
+
+  it('an unverifiable repository (null) gives no source; a closed pane is marked', async () => {
+    const r = rig({ repoRootOf: async () => null });
+    await propose(r);
+    await r.svc.resolve(SEAL, r.slots.get(SEAL)!.id, 'handoff');
+    expect(r.svc.readRootSources()).toEqual([]);
+    const s = rig({ repoRootOf: async () => '/repos/demo' }, path.join(dir, 'b.json'));
+    await propose(s);
+    await s.svc.resolve(SEAL, s.slots.get(SEAL)!.id, 'handoff');
+    s.state.pane = 'gone';
+    await s.svc.reconcile();
+    expect(s.svc.readRootSources()).toEqual([expect.objectContaining({ open: false, paneGone: true })]);
+  });
+});

@@ -806,6 +806,15 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
             data-testid="moa-auto-handoff"
           />
         </SettingRow>
+        <SettingRow id="moareadwithoutasking" label={t('moa.settings.readWithoutAsking')} description={t('moa.settings.readWithoutAskingDesc')}>
+          <Switch
+            checked={moa?.config.readWithoutAsking !== false}
+            onCheckedChange={(v) => { void patchConfig({ readWithoutAsking: v }); }}
+            aria-label={t('moa.settings.readWithoutAsking')}
+            disabled={!loaded}
+            data-testid="moa-read-without-asking"
+          />
+        </SettingRow>
         <SettingRow id="moaissuepoll" label={t('moa.settings.issuePoll')} description={t('moa.settings.issuePollDesc')}>
           <Input
             type="number"

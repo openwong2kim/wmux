@@ -40,6 +40,7 @@ import { ENV_KEYS, BRAIN_PTY_ID_PREFIX } from '../../shared/constants';
 import { mintCommanderToken, revokeCommanderToken } from './commanderTrust';
 import { registerBrainPty, type BrainPtyHookBlock, type BrainPtyHookContext } from './brainPtyHookBus';
 import { installBrainSkills } from './brainSkills';
+import { buildReadGateScript } from './moaReadGate';
 import { buildProposalGateScript } from './commanderToolSandbox';
 import type { StopGateVerdict } from './stopGate';
 import { readLastAssistantMessage } from '../claude/lastAssistantMessage';
@@ -405,6 +406,10 @@ export function buildBrainSettingsProfile(opts: {
    *  through that script instead, which allows only `.md` files directly in
    *  the proposals folder. Null/absent = the hard deny every other brain gets. */
   proposalGateScriptPath?: string | null;
+  /** Moa's read gate (moaReadGate.ts) and the roots file it reads: Read, Grep
+   *  and Glob inside a delegated repo pass without a prompt. Absent = every
+   *  such read prompts as before. */
+  readGate?: { scriptPath: string; rootsPath: string } | null;
 }): Record<string, unknown> {
   const proposalGate = opts.proposalGateScriptPath ?? null;
   const denied = proposalGate
@@ -428,6 +433,14 @@ export function buildBrainSettingsProfile(opts: {
     preToolUse.push({
       matcher: PROPOSAL_GATED_TOOLS.join('|'),
       hooks: [{ type: 'command', command: `${quoteArg(opts.nodePath)} ${quoteArg(proposalGate)}` }],
+    });
+  }
+  if (opts.readGate) {
+    // Allows or stays silent (the normal prompt); it never exits 2, so a read
+    // it cannot vouch for is asked about, never refused.
+    preToolUse.push({
+      matcher: 'Read|Grep|Glob',
+      hooks: [{ type: 'command', command: `${quoteArg(opts.nodePath)} ${quoteArg(opts.readGate.scriptPath)} ${quoteArg(opts.readGate.rootsPath)}` }],
     });
   }
   const hooks: Record<string, unknown> = {
@@ -737,6 +750,9 @@ export interface ClaudePtyBrainAdapterDeps {
   /** The Moa proposal gate: Write/Edit allowed only for `.md` files directly
    *  in this folder. Absent = Write and Edit stay hard-denied. */
   proposalGate?: { proposalsDir: string };
+  /** Moa's read gate: the roots file main keeps (moaReadGate.ts). Absent = no
+   *  gate, every read outside the brain home prompts. */
+  readGate?: { rootsPath: string };
   /** Fired with the daemon session id the moment the pty exists, so the deck
    *  can embed the live terminal, and with `null` on every teardown so the
    *  deck retires a terminal that no longer exists. */
@@ -1258,6 +1274,22 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     }
   }
 
+  /** Write Moa's read gate beside the profile, or return null (every read
+   *  outside the brain home then prompts, as before). */
+  private writeReadGate(dir: string, stamp: string): { scriptPath: string; rootsPath: string } | null {
+    const gate = this.deps.readGate;
+    if (!gate) return null;
+    try {
+      const scriptPath = path.join(dir, `read-gate-${stamp}.cjs`);
+      fs.writeFileSync(scriptPath, buildReadGateScript(), { encoding: 'utf8', mode: 0o600 });
+      this.profilePaths.push(scriptPath);
+      return { scriptPath, rootsPath: gate.rootsPath };
+    } catch (err) {
+      console.warn(`[deck] could not write Moa's read gate; reads keep prompting: ${String(err)}`);
+      return null;
+    }
+  }
+
   /** Write the generated profile + MCP config, returning their paths. */
   private writeProfile(): { settingsPath: string; mcpConfigPath: string | null } {
     const dir = path.join(this.wmuxDir, 'brain-profiles');
@@ -1283,10 +1315,11 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
       denyScriptPath = null;
     }
     const proposalGateScriptPath = this.writeProposalGate(dir, stamp);
+    const readGate = this.writeReadGate(dir, stamp);
     fs.writeFileSync(
       settingsPath,
       JSON.stringify(
-        buildBrainSettingsProfile({ bridgePath, nodePath, denyScriptPath, proposalGateScriptPath }),
+        buildBrainSettingsProfile({ bridgePath, nodePath, denyScriptPath, proposalGateScriptPath, readGate }),
         null,
         2,
       ),

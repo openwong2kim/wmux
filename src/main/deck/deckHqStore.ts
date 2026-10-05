@@ -105,6 +105,8 @@ interface HqFile {
   /** Moa may hand off to a danger-mode workspace without a card (moaHandoff.ts),
    *  while the HQ is in danger mode too. Absent = on. */
   moaAutoHandoff?: boolean;
+  /** Moa reads its delegated repos without a prompt (moaReadGate.ts). Absent = on. */
+  moaReadWithoutAsking?: boolean;
   /** Logins whose `wmux:auto` items may be handed off without a card. */
   moaTrustedAuthors?: string[];
   /** Minutes between proposal scans; absent = the default. */
@@ -140,7 +142,7 @@ function isValidHqFile(data: unknown): data is Record<string, unknown> {
   if (o.hqMaxTurnsPerHour !== undefined
     && !(typeof o.hqMaxTurnsPerHour === 'number' && Number.isInteger(o.hqMaxTurnsPerHour) && o.hqMaxTurnsPerHour >= 1)) return false;
   if (o.archivedDecisions !== undefined && !Array.isArray(o.archivedDecisions)) return false;
-  for (const k of ['moaOnboarded', 'moaBubbles', 'moaReduceMotion', 'hqApprovalPress', 'moaMemoryProposals', 'moaIssueProposals', 'moaAutoHandoff'] as const) {
+  for (const k of ['moaOnboarded', 'moaBubbles', 'moaReduceMotion', 'hqApprovalPress', 'moaMemoryProposals', 'moaIssueProposals', 'moaAutoHandoff', 'moaReadWithoutAsking'] as const) {
     if (o[k] !== undefined && typeof o[k] !== 'boolean') return false;
   }
   if (o.moaLevel !== undefined && o.moaLevel !== 1 && o.moaLevel !== 2 && o.moaLevel !== 3) return false;
@@ -171,6 +173,7 @@ function sanitize(o: Record<string, unknown>): HqFile {
   if (typeof o.archiveAckedAt === 'number') out.archiveAckedAt = o.archiveAckedAt;
   if (typeof o.moaIssueProposals === 'boolean') out.moaIssueProposals = o.moaIssueProposals;
   if (typeof o.moaAutoHandoff === 'boolean') out.moaAutoHandoff = o.moaAutoHandoff;
+  if (typeof o.moaReadWithoutAsking === 'boolean') out.moaReadWithoutAsking = o.moaReadWithoutAsking;
   if (Array.isArray(o.moaTrustedAuthors)) out.moaTrustedAuthors = parseTrustedAuthors(o.moaTrustedAuthors);
   if (typeof o.moaIssuePollMinutes === 'number') {
     const n = issuePollMinutes(o.moaIssuePollMinutes);
@@ -417,6 +420,7 @@ export function getMoaConfig(dir?: string): MoaConfig {
     memoryProposals: file.moaMemoryProposals !== false,
     issueProposals: file.moaIssueProposals === true,
     autoHandoff: file.moaAutoHandoff !== false,
+    readWithoutAsking: file.moaReadWithoutAsking !== false,
     trustedAuthors: file.moaTrustedAuthors ?? [],
     issuePollMinutes: file.moaIssuePollMinutes ?? MOA_ISSUE_POLL_MINUTES_DEFAULT,
     ignoredRepos: file.moaIgnoredRepos ?? [],
@@ -466,6 +470,7 @@ export async function setMoaConfig(patch: MoaConfigPatch, dir?: string): Promise
   if (typeof patch.memoryProposals === 'boolean') next.moaMemoryProposals = patch.memoryProposals;
   if (typeof patch.issueProposals === 'boolean') next.moaIssueProposals = patch.issueProposals;
   if (typeof patch.autoHandoff === 'boolean') next.moaAutoHandoff = patch.autoHandoff;
+  if (typeof patch.readWithoutAsking === 'boolean') next.moaReadWithoutAsking = patch.readWithoutAsking;
   if (patch.trustedAuthors !== undefined) next.moaTrustedAuthors = parseTrustedAuthors(patch.trustedAuthors);
   const minutes = issuePollMinutes(patch.issuePollMinutes);
   if (minutes !== null) next.moaIssuePollMinutes = minutes;

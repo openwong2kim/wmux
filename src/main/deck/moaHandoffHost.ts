@@ -21,6 +21,7 @@ import { getWorkLinkStore } from '../workLink/workLinkStore';
 import { deliverOperatorTask, releaseUndelivered } from '../git/handoff';
 import { registerDeliveryCheck } from '../pipe/deliveryGuards';
 import { DEFAULT_MAX_SNAPSHOT_AGE_MS } from './stopGate';
+import { resolveRepoRoot } from './moaReadGate';
 import type { AgentStatus } from '../../shared/types';
 import { HUMAN_WORKSPACE_ID } from '../../shared/channels';
 
@@ -154,6 +155,13 @@ export function createMoaHandoffService(opts: {
     invoke: opts.invoke,
     deliver: (args) => deliverOperatorTask(opts.invoke, args),
     release: (linkId, taskId) => releaseUndelivered(linkDeps, linkId, taskId),
+    // A pane's cwd is what it reported (OSC 7): only a successful git
+    // toplevel that is not $HOME or above it becomes a read root.
+    repoRootOf: async (workspaceId, ptyId) => {
+      const snap = getWorkspaceMirror().getFleetSnapshot(workspaceId);
+      const cwd = snap?.panes.find((p) => p.ptyId === ptyId)?.cwd;
+      return resolveRepoRoot(cwd);
+    },
     taskState: async (taskId) => {
       const res = (await opts.invoke('a2a.task.query', { workspaceId: HUMAN_WORKSPACE_ID }).catch(() => null)) as
         | { ok?: boolean; result?: { tasks?: unknown } }

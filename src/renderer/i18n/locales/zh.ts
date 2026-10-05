@@ -1463,6 +1463,8 @@ export const zh = {
   'moa.settings.issueProposalsDesc': "对于在工作区中打开的每个仓库，Moa 会询问是否把新议题或他人提交的新 PR 交给该仓库的工作区。它只提议：在你选择 Hand off 之前不会发送任何内容。需要 Moa 的 HQ。默认关闭。",
   'moa.settings.autoHandoff': "允许 Moa 无需询问即可移交给危险模式工作区",
   'moa.settings.autoHandoffDesc': "仅当工作区和 Moa 的 HQ 都处于危险模式时。根据 GitHub 文本构建的移交始终会询问。",
+  'moa.settings.readWithoutAsking': "让 Moa 无需询问即可读取它委派的仓库",
+  'moa.settings.readWithoutAskingDesc': "仅限 Read、Grep 和 Glob，仅在 Moa 交付工作的代理的仓库内，直到任务结束后约一小时。机密文件、.git 和其他位置仍会询问；编辑和命令始终会询问。",
   'moa.settings.issuePoll': "检查间隔（分钟）",
   'moa.settings.issuePollDesc': "Moa 读取已打开仓库的议题和 PR 的频率，使用 Git 页面的缓存读取。",
   'moa.settings.trustedAuthors': "受信任的作者",

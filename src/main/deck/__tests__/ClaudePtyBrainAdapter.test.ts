@@ -393,6 +393,23 @@ describe('buildBrainSettingsProfile', () => {
     const noBridge = buildBrainSettingsProfile({ bridgePath: null, nodePath: '/usr/bin/node' });
     expect((noBridge.hooks as Record<string, unknown>).Stop).toBeUndefined();
   });
+
+  it('Moa\'s read gate hooks Read, Grep and Glob with its roots file, and only when given', () => {
+    type Entry = { matcher: string; hooks: Array<{ command: string }> };
+    const withGate = buildBrainSettingsProfile({
+      bridgePath: null,
+      nodePath: '/usr/bin/node',
+      readGate: { scriptPath: '/tmp/brain-profiles/read-gate-1.cjs', rootsPath: '/home/.wmux/moa-read-roots.json' },
+    });
+    const pre = (withGate.hooks as { PreToolUse: Entry[] }).PreToolUse;
+    const gate = pre.find((e) => e.matcher === 'Read|Grep|Glob');
+    expect(gate?.hooks[0].command).toContain('read-gate-1.cjs');
+    expect(gate?.hooks[0].command).toContain('moa-read-roots.json');
+    // Reads are never added to the deny list: the gate allows or asks.
+    expect((withGate.permissions as { deny: string[] }).deny).not.toContain('Read');
+    const without = buildBrainSettingsProfile({ bridgePath: null, nodePath: '/usr/bin/node' });
+    expect((without.hooks as { PreToolUse: Entry[] }).PreToolUse.some((e) => e.matcher === 'Read|Grep|Glob')).toBe(false);
+  });
 });
 
 describe('buildDenyScript', () => {
