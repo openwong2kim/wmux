@@ -144,6 +144,31 @@ describe('MoaTranscriptChat', () => {
     expect(order).toEqual(['user', 'card', 'reply']);
   });
 
+  it('Moa\'s own decision and fan-out calls read as purpose cards outside the activity fold, waiting state from Waiting on you', async () => {
+    const callEvents: TurnEvent[] = [
+      { id: 'u1', kind: 'user_text', text: 'Ship it', ts: 1 },
+      { id: 'c1', kind: 'tool_use', toolUseId: 'tu1', name: 'mcp__wmux__deck_ask_decision', argSummary: 'x', input: { n: 1, bytes: 10, inline: '{"question":"Ship to main?","context":"CI is red on one flaky test"}' }, ts: 2 } as unknown as TurnEvent,
+      { id: 'r1', kind: 'tool_result', toolUseId: 'tu1', ok: true, bytes: 10, output: { n: 1, bytes: 10, inline: '{"ok":true,"id":"d1"}' }, ts: 3 } as unknown as TurnEvent,
+      { id: 'c2', kind: 'tool_use', toolUseId: 'tu2', name: 'mcp__wmux__fanout_start', argSummary: 'x', input: { n: 1, bytes: 10, inline: '{"titles":["lint","tests"]}' }, ts: 4 } as unknown as TurnEvent,
+      { id: 'c3', kind: 'tool_use', toolUseId: 'tu3', name: 'mcp__wmux__pane_list', argSummary: 'x', input: { n: 1, bytes: 2, inline: '{}' }, ts: 5 } as unknown as TurnEvent,
+    ];
+    const { api } = fakeApi({ snapshot: vi.fn(async () => ({ events: callEvents, cursor, hasMore: false, truncatedHead: false })) as never });
+    const decisionsApi = { decisions: vi.fn(async () => ({ decisions: [{ workspaceId: 'ws-hq', decision: { id: 'd1', question: 'Ship to main?', options: [], context: '', raisedAt: 2 } }] })), onChanged: vi.fn(() => () => undefined) };
+    await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} decisionsApi={decisionsApi as never} />));
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    const decision = host.querySelector('[data-moa-purpose="decision"]') as HTMLElement;
+    expect(decision).not.toBeNull();
+    expect(decision.closest('.wmux-chat-activity')).toBeNull();
+    expect(decision.textContent).toContain('Ship to main?');
+    expect(decision.textContent).toContain('CI is red on one flaky test');
+    expect(decision.querySelector('[data-moa-purpose-waiting]')).not.toBeNull();
+    expect(decision.querySelector('[data-moa-purpose-raw] pre')?.textContent).toContain('"question"');
+    const fanout = host.querySelector('[data-moa-purpose="fanout"]') as HTMLElement;
+    expect([...fanout.querySelectorAll('[data-moa-purpose-tasks] li')].map((li) => li.textContent)).toEqual(['lint', 'tests']);
+    // Ordinary tool calls stay in the (hidden) activity.
+    expect(host.querySelectorAll('[data-moa-purpose]')).toHaveLength(2);
+  });
+
   it('a brain with no conversation yet reads as empty, not as a connection error', async () => {
     const { api } = fakeApi({ snapshot: vi.fn(async () => null) as never });
     await act(async () => root.render(<MoaTranscriptChat ptyId="pty-hq" busy={false} onSend={vi.fn()} onInterrupt={vi.fn()} onTerminal={vi.fn()} api={api} />));

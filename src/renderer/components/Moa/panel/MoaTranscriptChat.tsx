@@ -15,7 +15,8 @@ import { useTranscript } from '../../Chat/useTranscript';
 import { transcriptMessages } from '../../Chat/chatMessages';
 import { ChatCodeBlockContext, ChatPtyContext, ChatRowRendererContext, UserText } from '../../Chat/ChatMessage';
 import type { ChatRow } from '../../Chat/chatMessages';
-import { useWorkLinks, type WorkLinksApi } from './useMoaPanelData';
+import { useMoaDecisions, useWorkLinks, type MoaDecisionsApi, type WorkLinksApi } from './useMoaPanelData';
+import { MoaPurposeCard, isPurposeEventId, liftPurposeEvents, purposeWaits } from './MoaPurposeCard';
 import { MoaResultCard, moaResultEvents, resultLinkId, withResultEvents, type MoaTaskResultApi } from './MoaResultCard';
 import { openMoaPane } from './MoaPanelTop';
 import { Thread } from '../../Chat/assistant-ui/Thread';
@@ -106,11 +107,12 @@ export interface MoaTranscriptChatProps {
   /** Injected in tests; default to the preload. */
   linksApi?: WorkLinksApi;
   resultApi?: MoaTaskResultApi;
+  decisionsApi?: MoaDecisionsApi;
 }
 
 interface Pending { id: string; text: string; before: ReadonlySet<string> }
 
-export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, onTerminal, top, api, approvalApi, linksApi, resultApi }: MoaTranscriptChatProps) {
+export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, onTerminal, top, api, approvalApi, linksApi, resultApi, decisionsApi }: MoaTranscriptChatProps) {
   const t = useT();
   const source = api ?? window.electronAPI?.deck?.moa?.transcript;
   const prompts = approvalApi ?? window.electronAPI?.deck?.moa;
@@ -132,17 +134,25 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
   // Delegated work that finished shows as a result card where it finished.
   const links = useWorkLinks(true, linksApi ?? window.electronAPI?.workLinks);
   const since = useMemo(() => data.events.find((e) => typeof e.ts === 'number')?.ts, [data.events]);
-  const shownEvents = useMemo(() => withResultEvents(data.events, moaResultEvents(links, since)), [data.events, links, since]);
+  // Moa's own hand-offs, decisions, completions and fan-outs read as purpose
+  // cards, lifted out before the chat folds tool rows.
+  const lifted = useMemo(() => liftPurposeEvents(data.events), [data.events]);
+  const { decisions: pendingDecisions } = useMoaDecisions(true, decisionsApi);
+  const shownEvents = useMemo(() => withResultEvents(lifted.events, moaResultEvents(links, since)), [lifted.events, links, since]);
   const messages = useMemo(() => transcriptMessages(shownEvents, true), [shownEvents]);
   const results = resultApi ?? window.electronAPI?.deck?.moa;
   const wsNames = useStore((s) => s.workspaces);
   const renderRow = useCallback((row: ChatRow) => {
+    if (isPurposeEventId(row.event.id)) {
+      const purpose = lifted.purposes.get(row.event.id);
+      return purpose ? <MoaPurposeCard purpose={purpose} waiting={purposeWaits(purpose, pendingDecisions)} t={t} /> : null;
+    }
     const id = resultLinkId(row.event.id);
     const link = id ? links.find((l) => l.id === id) : undefined;
     if (!link) return null;
     const workspaceName = wsNames.find((w) => w.id === link.owner.workspaceId)?.name;
     return <MoaResultCard link={link} workspaceName={workspaceName} api={results as MoaTaskResultApi | undefined} onOpen={openMoaPane} t={t} />;
-  }, [links, wsNames, results, t]);
+  }, [lifted, pendingDecisions, links, wsNames, results, t]);
   const [pending, setPending] = useState<Pending[]>([]);
   // The latest events, for onNew to read after its await: the closure's copy
   // is from the render that started the send.
