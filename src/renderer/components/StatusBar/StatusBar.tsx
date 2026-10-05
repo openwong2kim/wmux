@@ -313,13 +313,12 @@ export default function StatusBar() {
             // min-h only: the chip is text, so it is already wide enough — it
             // was the 13px line-height that put it under the pointer floor, and
             // the 40px titlebar absorbs the extra height with no layout change.
-            // Needs you wears one colour everywhere: the sidebar's ring and
-            // label, the rail badge and this count (DESIGN.md colour grammar).
-            className="flex items-center gap-1.5 min-h-[24px] font-semibold text-[var(--accent-yellow)] hover:opacity-80 transition-opacity"
+            // Needs you wears one colour everywhere — the attention orange: the
+            // sidebar's ring and label, the rail badge and this count.
+            className="flex items-center gap-1.5 min-h-[24px] font-semibold text-[var(--attention-text)] hover:opacity-80 transition-opacity"
             title={t('strip.needsYouTooltip') || 'Jump to the pane that needs you'}
-            {...tokenAttrs('warning', 'text')}
           >
-            <span aria-hidden="true" className="w-[6px] h-[6px] rounded-full bg-[var(--accent-yellow)]" />
+            <span aria-hidden="true" className="w-[6px] h-[6px] rounded-full bg-[var(--attention)]" />
             {(t('strip.needsYou') || '{count} need you').replace('{count}', String(fleetVitals.needsYou))}
           </button>
         )}

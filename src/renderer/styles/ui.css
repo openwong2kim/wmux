@@ -93,7 +93,7 @@
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-.wmux-nav-count-needs { color: var(--accent-yellow); font-weight: 500; }
+.wmux-nav-count-needs { color: var(--attention-text); font-weight: 500; }
 .wmux-nav-count-running { display: flex; column-gap: 4px; }
 .wmux-nav-count-short { display: none; }
 /* Narrow sidebar (the 220px minimum): the needs-you number alone. */
@@ -160,7 +160,7 @@
  * accent ring outside the dash. Red stays for errors. */
 .wmux-sidebar .sidebar-row.sidebar-row-needs {
   background: var(--selection-subtle);
-  border-color: color-mix(in srgb, var(--text-main) 30%, transparent);
+  border-color: var(--attention);
   border-style: dashed;
   color: var(--text-main);
   box-shadow: none;
@@ -202,7 +202,7 @@
   height: 5px;
   padding: 0;
   border-radius: 50%;
-  background: var(--accent-yellow);
+  background: var(--attention);
 }
 .wmux-pane-header { padding-inline: 3px; }
 .wmux-workspace-menu {
@@ -918,7 +918,7 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-board-stat strong { color: var(--text-main); font-weight: 600; font-variant-numeric: tabular-nums; }
 .wmux-board-stat.is-action:hover, .wmux-board-stat[aria-pressed="true"] { background: var(--selection); color: var(--text-main); }
 .wmux-board-col-dot { flex: none; width: 7px; height: 7px; border-radius: 9999px; background: var(--text-muted); }
-.wmux-board-col-dot.is-needsYou { background: var(--accent-yellow); }
+.wmux-board-col-dot.is-needsYou { background: var(--attention); }
 .wmux-board-col-dot.is-running { background: var(--accent); }
 .wmux-board-col-dot.is-review { background: var(--accent-green); }
 .wmux-board-col-count { color: var(--text-muted); font-variant-numeric: tabular-nums; }
@@ -1022,7 +1022,7 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-fleet-filters button { display: flex; align-items: center; gap: 7px; min-height: 28px; padding: 3px 8px; border: 1px solid transparent; border-radius: 5px; font-size: 12px; color: var(--text-sub); }
 .wmux-fleet-filters button:hover { background: var(--bg-surface); }
 .wmux-fleet-filters button[aria-pressed="true"] { background: var(--bg-surface); border-color: var(--border-soft); color: var(--text-main); }
-.wmux-fleet-filters button[data-filter="attention"] { color: var(--accent-red); }
+.wmux-fleet-filters button[data-filter="attention"] { color: var(--attention-text); }
 .wmux-fleet-filters button span { font-size: 11px; font-variant-numeric: tabular-nums; }
 .wmux-fleet-toolbar { display: flex; align-items: center; gap: 12px; }
 .wmux-fleet-toolbar input { flex: 1; min-width: 0; height: 32px; padding: 0 10px; border: 1px solid var(--border-soft); border-radius: 6px; background: var(--bg-mantle); color: var(--text-main); font-size: 12px; outline: none; }
@@ -1053,6 +1053,9 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 /* Focus is a ring, selection a fill: a focused selected row shows both. */
 .wmux-fleet-card:focus-visible { outline: 2px solid var(--accent) !important; outline-offset: -2px; }
 .wmux-fleet-status { display: flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 500; line-height: 1.4; }
+/* A needs-you row's word reads in the attention text colour (>= 4.5:1 on
+ * every look); its dot keeps its own inline attention fill. */
+.wmux-fleet-status[style*="var(--attention)"] { color: var(--attention-text) !important; }
 .wmux-fleet-dot { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .wmux-fleet-dot.is-unconfirmed { background: transparent; border: 1px solid currentColor; }
 .wmux-fleet-dot[data-shape="cross"] { background: transparent; font-size: 14px; }
@@ -1862,7 +1865,7 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-deck-tab[aria-selected="true"] { background: var(--selection); color: var(--text-main); }
 .wmux-deck-tab:focus-visible { outline-color: var(--accent); }
 .wmux-deck-tab-count { min-width: 0; height: auto; padding: 0; border-radius: 0; background: transparent; color: var(--text-muted); }
-.wmux-fleet-filters button[data-filter="attention"] { color: var(--accent-yellow); }
+.wmux-fleet-filters button[data-filter="attention"] { color: var(--attention-text); }
 .wmux-fleet-list { gap: 2px; }
 .wmux-fleet-card { border-bottom: 0; border-radius: 6px; padding: 8px 10px; }
 .wmux-fleet-row > .wmux-fleet-card { padding-right: 40px; }
@@ -2071,8 +2074,8 @@ html[data-fullscreen] .wmux-shell-body {
   width: 7px;
   height: 7px;
   border-radius: 9999px;
-  /* Needs you wears one colour everywhere (DESIGN.md colour grammar). */
-  background: var(--accent-yellow);
+  /* Needs you wears one colour everywhere: the attention orange. */
+  background: var(--attention);
 }
 .wmux-rail .wmux-nav-badge {
   top: 2px;
@@ -2084,18 +2087,13 @@ html[data-fullscreen] .wmux-shell-body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  /* The page colour as ink: >= 4.5:1 on the needs-you yellow on dark looks;
-   * light looks deepen the fill below so the light ink still reads. */
-  color: var(--bg-base);
+  /* Each look's attention ink: >= 4.5:1 on its attention fill
+   * (attentionColors.test.ts). */
+  color: var(--attention-ink);
   font-size: 10px;
   font-weight: 600;
   line-height: 1;
   font-variant-numeric: tabular-nums;
-}
-/* Light looks: their needs-you yellow is too light for page-colour digits, so
- * the badge deepens it toward the text colour (>= 5:1 on all four). */
-:root:is([data-theme="mono-light"], [data-theme="paper"], [data-theme="hinomaru"], [data-theme="taegeuk"]) .wmux-rail .wmux-nav-badge {
-  background: color-mix(in srgb, var(--accent-yellow) 80%, var(--text-main));
 }
 .wmux-rail > div:last-child { border-top: 0; }
 .wmux-frame-row > .wmux-shell-body { margin-left: 0; }

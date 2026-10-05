@@ -19,19 +19,19 @@ export const AGENT_STATUS_ICON: Record<AgentStatus, {
   /**
    * #1481 — the sidebar row's mark: status told by SHAPE first and colour
    * second, so it survives colour-blindness and forced-colors. running = filled
-   * muted dot · needs input = --accent-yellow ring · error = cross · complete = muted
+   * muted dot · needs input = --attention ring · error = cross · complete = muted
    * check · idle = nothing. (Unconfirmed keeps its own hollow accent ring, drawn
    * by the caller from the unverifiable signal, not from this table.)
    */
   mark: StatusMark;
 }> = {
-  // Status vocabulary (DESIGN.md Colour grammar): --accent-yellow for "needs you", as on the Fleet board; running
+  // Status vocabulary (DESIGN.md Colour grammar): --attention (the needs-you orange) for "needs you", as on the Fleet board; running
   // and complete are muted (--text-sub), red is for errors only, idle draws
   // nothing. DeckFleet.dotColor keeps its own copy of this mapping.
   running:        { dot: '●', className: 'text-[var(--text-sub)]',      labelKey: 'workspace.agentRunning',       dotVar: 'var(--text-sub)',        glowClass: 'sidebar-dot-running', shape: 'dot', mark: 'dot' },
   complete:       { dot: '●', className: 'text-[var(--text-sub)]',      labelKey: 'workspace.agentComplete',      dotVar: 'var(--text-sub)',  glowClass: '',                    shape: 'dot', mark: 'check' },
   error:          { dot: '●', className: 'text-[var(--accent-red)]',    labelKey: 'workspace.agentError',         dotVar: 'var(--accent-red)',    glowClass: 'sidebar-dot-error',   shape: 'cross', mark: 'cross' },
-  waiting:        { dot: '●', className: 'text-[var(--accent-yellow)]', labelKey: 'workspace.agentWaiting',       dotVar: 'var(--accent-yellow)', glowClass: 'sidebar-dot-waiting', shape: 'dot', mark: 'ring' },
-  awaiting_input: { dot: '●', className: 'text-[var(--accent-yellow)]', labelKey: 'workspace.agentAwaitingInput', dotVar: 'var(--accent-yellow)', glowClass: 'sidebar-dot-waiting', shape: 'dot', mark: 'ring' },
+  waiting:        { dot: '●', className: 'text-[var(--attention)]', labelKey: 'workspace.agentWaiting',       dotVar: 'var(--attention)', glowClass: 'sidebar-dot-waiting', shape: 'dot', mark: 'ring' },
+  awaiting_input: { dot: '●', className: 'text-[var(--attention)]', labelKey: 'workspace.agentAwaitingInput', dotVar: 'var(--attention)', glowClass: 'sidebar-dot-waiting', shape: 'dot', mark: 'ring' },
   idle:           { dot: '●', className: 'text-[var(--text-muted)]',    labelKey: 'workspace.agentIdle',          dotVar: 'var(--text-muted)',    glowClass: '',                    shape: 'dot', mark: 'none' },
 };

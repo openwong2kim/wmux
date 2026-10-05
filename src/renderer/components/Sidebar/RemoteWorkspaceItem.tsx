@@ -126,7 +126,7 @@ export default function RemoteWorkspaceItem({ workspace, isActive, onSelect, onD
             className="w-1.5 h-1.5 rounded-full flex-shrink-0"
             style={tagHex
               ? { backgroundColor: tagHex }
-              : { backgroundColor: needsYou ? 'var(--accent-yellow)' : isActive && !workspace.stale ? 'var(--accent)' : 'var(--text-muted)' }}
+              : { backgroundColor: needsYou ? 'var(--attention)' : isActive && !workspace.stale ? 'var(--accent)' : 'var(--text-muted)' }}
           />
           <div className="flex-1 min-w-0">
             {editing ? (
@@ -170,7 +170,7 @@ export default function RemoteWorkspaceItem({ workspace, isActive, onSelect, onD
             </div>
           </div>
           {needsYou && (
-            <span className="font-sans text-[11px] font-medium text-[var(--accent-yellow)] flex-shrink-0" data-remote-needs-you>
+            <span className="font-sans text-[11px] font-medium text-[var(--attention-text)] flex-shrink-0" data-remote-needs-you>
               {t('workspace.needsYou')}
             </span>
           )}

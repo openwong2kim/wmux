@@ -352,7 +352,7 @@ function WorkspaceRosterSummary({
         <span className="flex items-center gap-0.5" data-roster-chip-tasks={paneTaskCount} data-roster-chip-needs-you={paneTaskNeedYou || undefined}>
           <IconFanOut size={8} />
           {paneTaskNeedYou > 0 ? (
-            <span><span className="font-semibold text-[var(--accent-yellow)]">{paneTaskNeedYou}</span>/{paneTaskCount}</span>
+            <span><span className="font-semibold text-[var(--attention-text)]">{paneTaskNeedYou}</span>/{paneTaskCount}</span>
           ) : paneTaskCount}
         </span>
       )}
@@ -678,7 +678,7 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
                 {/* The question opens as an amber second line only while it waits for an answer. */}
                 {row.pendingQuestion && (
                   <div
-                    className="truncate pl-[37px] pr-1 text-[11px] text-[var(--accent-yellow)]"
+                    className="truncate pl-[37px] pr-1 text-[11px] text-[var(--attention-text)]"
                     title={row.pendingQuestion}
                   >
                     ? {row.pendingQuestion}

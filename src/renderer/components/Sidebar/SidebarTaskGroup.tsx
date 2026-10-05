@@ -404,7 +404,7 @@ function SidebarTaskGroup({ groupKey, foldKey, taskIds, ownerActive, label, owne
                 {/* Amber only while folded: then this line is the only place the
                     blocked task shows. Unfolded, the task row itself carries
                     the amber (attention grammar: two renditions, not three). */}
-                <span className={expanded ? '' : 'font-semibold text-[var(--accent-yellow)]'}>
+                <span className={expanded ? '' : 'font-semibold text-[var(--attention-text)]'}>
                   {t('strip.needsYou', { count: rollup.needYou })}
                 </span>
               </>
@@ -509,7 +509,7 @@ function PaneTaskGroupInner({ ownerId, paneId, paneName, taskIds, ownerActive, r
         <span className="flex-none" aria-hidden="true"><IconFanOut size={9} /></span>
         {redCount ? (
           <span aria-hidden="true">
-            <span className="font-semibold text-[var(--accent-yellow)]" data-pane-task-red>{rollup.needYou}</span>/{rollup.tasks}
+            <span className="font-semibold text-[var(--attention-text)]" data-pane-task-red>{rollup.needYou}</span>/{rollup.tasks}
           </span>
         ) : (
           <span aria-hidden="true">{rollup.tasks}</span>

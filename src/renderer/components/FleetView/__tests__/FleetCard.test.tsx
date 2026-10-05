@@ -73,7 +73,7 @@ describe('FleetCard — task-first rows', () => {
     const html = render({ card: card({ agentStatus: 'waiting' }) });
     expect(html).toContain('Idle');
     expect(html).not.toContain('Waiting');
-    expect(html).not.toContain('var(--accent-yellow)');
+    expect(html).not.toContain('var(--attention)');
     expect(html).toContain('var(--text-sub)');
   });
 

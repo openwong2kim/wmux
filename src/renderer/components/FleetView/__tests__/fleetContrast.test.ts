@@ -1,12 +1,12 @@
 // Fleet's small text clears WCAG AA (4.5:1) on every look: the key hints,
 // the search placeholder and the detail headings use --text-subtle, never
-// --text-muted, and the rail's needs-you badge keeps page-colour digits at
-// 4.5:1 on every look (light looks deepen the yellow fill).
+// --text-muted, and the rail's needs-you badge is the attention orange with
+// each look's own ink at 4.5:1.
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { deriveBuiltinPalette, UI_THEME_TOKENS, type BuiltinThemeId } from '../../../themes';
-import { getContrastRatio, mixHex } from '../../../tailwindPalette';
+import { ATTENTION_COLORS, deriveBuiltinPalette, UI_THEME_TOKENS, type BuiltinThemeId } from '../../../themes';
+import { getContrastRatio } from '../../../tailwindPalette';
 
 const LOOKS = ['tint', 'zinc', 'graphite', 'paper', 'amber-line'] as const;
 const css = readFileSync(path.join(__dirname, '..', '..', '..', 'styles', 'ui.css'), 'utf8');
@@ -34,17 +34,20 @@ describe('Fleet text contrast', () => {
     expect(rule('.wmux-fleet-request h3')).toContain('color: var(--text-subtle)');
   });
 
-  it('the rail badge is needs-you yellow with page-colour digits at 4.5:1 on every built-in look', () => {
-    expect(rule('.wmux-rail .wmux-nav-badge')).toContain('color: var(--bg-base)');
-    expect(rule('.wmux-rail .wmux-nav-count')).toContain('background: var(--accent-yellow)');
-    const lightSelector = ':root:is([data-theme="mono-light"], [data-theme="paper"], [data-theme="hinomaru"], [data-theme="taegeuk"]) .wmux-rail .wmux-nav-badge';
-    expect(rule(lightSelector)).toContain('background: color-mix(in srgb, var(--accent-yellow) 80%, var(--text-main))');
-    const light = new Set(['mono-light', 'paper', 'hinomaru', 'taegeuk']);
+  it('the rail badge is the attention orange with its own ink at 4.5:1 on every built-in look', () => {
+    expect(rule('.wmux-rail .wmux-nav-badge')).toContain('color: var(--attention-ink)');
+    expect(rule('.wmux-rail .wmux-nav-count')).toContain('background: var(--attention)');
+    // No muddy deepening mix: each look picks its own orange.
+    expect(css).not.toContain('color-mix(in srgb, var(--accent-yellow) 80%, var(--text-main));\n}\n.wmux-rail');
     for (const id of Object.keys(UI_THEME_TOKENS) as BuiltinThemeId[]) {
-      const p = deriveBuiltinPalette(id);
-      // color-mix in srgb is a channel-wise mix: mixHex(a, b, t) = a + (b - a) * t.
-      const fill = light.has(id) ? mixHex(p.accentYellow, p.textMain, 0.2) : p.accentYellow;
-      expect(getContrastRatio(p.bgBase, fill), id).toBeGreaterThanOrEqual(4.5);
+      const c = ATTENTION_COLORS[id];
+      expect(getContrastRatio(c.ink, c.fill), id).toBeGreaterThanOrEqual(4.5);
     }
+  });
+
+  it('the Needs you chip, section dot and row word use the attention colours', () => {
+    expect(rule('.wmux-fleet-filters button[data-filter="attention"]')).toContain('color: var(--attention-text)');
+    expect(rule('.wmux-board-col-dot.is-needsYou')).toContain('background: var(--attention)');
+    expect(rule('.wmux-fleet-status[style*="var(--attention)"]')).toContain('color: var(--attention-text)');
   });
 });

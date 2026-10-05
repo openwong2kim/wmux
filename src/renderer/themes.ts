@@ -319,6 +319,47 @@ export const UI_THEME_TOKENS: Record<BuiltinThemeId, UIThemeTokens> = {
   },
 };
 
+// ─── Attention orange (needs you) ───────────────────────────────────────────
+//
+// The one colour that means "an agent is waiting on you" (owner decision
+// 2026-10-06): the sidebar's dash, mark and label, the rail badge and dot,
+// Fleet's Needs you chip and dot, and the titlebar count. One orange hue
+// family (≈21–29°), tuned per look so it stays vivid there; never the
+// caution yellow (`warning`) and never the error red (`danger`).
+//   fill — dashes, marks, dots, badge fill (≥ 3:1 on the page and sidebar)
+//   text — words and counts (≥ 4.5:1 on page, sidebar, fill and frame); on
+//          light looks a darker orange of the same hue
+//   ink  — badge digits on the fill (≥ 4.5:1)
+// globals.css carries these as --attention / --attention-text /
+// --attention-ink in each look's block (locked by attentionColors.test.ts).
+
+export interface AttentionColors { fill: string; text: string; ink: string }
+
+export const ATTENTION_COLORS: Record<BuiltinThemeId, AttentionColors> = {
+  tint: { fill: '#FF8A4C', text: '#FF9A62', ink: '#1A171D' },
+  zinc: { fill: '#FB8A3C', text: '#FB923C', ink: '#09090B' },
+  graphite: { fill: '#FF8A3D', text: '#FF9550', ink: '#0B0C0E' },
+  paper: { fill: '#EA620F', text: '#A8400A', ink: '#17171C' },
+  'amber-line': { fill: '#FF7A26', text: '#FF8A3D', ink: '#121212' },
+  mono: { fill: '#FF8A3D', text: '#FF9550', ink: '#1A171B' },
+  'mono-light': { fill: '#E85F0C', text: '#A33F09', ink: '#141414' },
+  amber: { fill: '#FF7A2E', text: '#FF8A45', ink: '#151517' },
+  'catppuccin-mocha': { fill: '#FAB387', text: '#FAB387', ink: '#1E1E2E' },
+  monochrome: { fill: '#FF8A3D', text: '#FF9550', ink: '#080808' },
+  'stars-and-stripes': { fill: '#FF9248', text: '#FF9C5A', ink: '#0C1428' },
+  'red-dynasty': { fill: '#FF9A3C', text: '#FFA552', ink: '#1A0A0A' },
+  nightowl: { fill: '#F08A3E', text: '#F59A55', ink: '#1E1B16' },
+  void: { fill: '#FF8A3D', text: '#FF9550', ink: '#000000' },
+  hinomaru: { fill: '#E35F12', text: '#9A3B08', ink: '#140F0C' },
+  taegeuk: { fill: '#E05A0C', text: '#983A08', ink: '#1A1A2E' },
+};
+
+/** The CSS custom properties a look's block sets for the attention orange. */
+export function attentionCssVars(id: BuiltinThemeId): Record<string, string> {
+  const c = ATTENTION_COLORS[id];
+  return { '--attention': c.fill, '--attention-text': c.text, '--attention-ink': c.ink };
+}
+
 // Which xterm palette each built-in theme uses for terminal rendering.
 export const BUILTIN_XTERM_PALETTE: Record<BuiltinThemeId, XtermPaletteId> = {
   tint: 'tint-dark',

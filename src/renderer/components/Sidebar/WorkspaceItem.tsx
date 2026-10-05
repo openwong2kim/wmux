@@ -1416,7 +1416,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
                 {/* The label stays on hover and focus: the actions sit on the second
                     line, so they never need its width. */}
                 {needsYou && !taskRow && (
-                  <span className="font-sans text-[11px] font-medium text-[var(--accent-yellow)] flex-shrink-0" data-row-needs-you>
+                  <span className="font-sans text-[11px] font-medium text-[var(--attention-text)] flex-shrink-0" data-row-needs-you>
                     {t('workspace.needsYou')}
                   </span>
                 )}
