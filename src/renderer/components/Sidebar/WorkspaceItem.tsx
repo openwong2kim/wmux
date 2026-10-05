@@ -173,8 +173,8 @@ function WorkspaceContextLine({ metadata, onPortClick, actions, metaHiddenOnHove
   onPortClick: (port: number) => void;
   /** The row's hover actions, at the end of the git line. */
   actions?: React.ReactNode;
-  /** Hides the diff counts while the row is hovered, so the actions take
-   *  their place instead of the branch's width. */
+  /** Hides the diff counts and the PR badge while the row is hovered or
+   *  focused, so the actions take their place instead of the branch's width. */
   metaHiddenOnHover?: string;
 }): React.ReactElement | null {
   const t = useT();
@@ -202,7 +202,11 @@ function WorkspaceContextLine({ metadata, onPortClick, actions, metaHiddenOnHove
               ? <span className={`flex flex-shrink-0 ${metaHiddenOnHover ?? ''}`}><GitSyncBadge sync={metadata.gitSync} /></span>
               : <GitSyncBadge sync={metadata.gitSync} />
           )}
-          {metadata.pr && <PrBadge pr={metadata.pr} />}
+          {metadata.pr && (
+            actions
+              ? <span className={`flex flex-shrink-0 ${metaHiddenOnHover ?? ''}`}><PrBadge pr={metadata.pr} /></span>
+              : <PrBadge pr={metadata.pr} />
+          )}
           {actions}
         </div>
       )}
@@ -349,18 +353,18 @@ function hoverRecipes(taskRow: boolean) {
       restHidden: TASK_REST_HIDDEN,
       gapRow: TASK_REST_HIDDEN_GAP_ROW,
       gapNameLine: TASK_REST_HIDDEN_GAP_NAME_LINE,
-      hideOnHover: 'group-hover/task:hidden',
-      cluster: 'group-hover/task:opacity-100 group-hover/task:pointer-events-auto',
-      clusterSlot: 'group-hover/task:max-w-none group-hover/task:overflow-visible group-hover/task:ml-auto group-hover/task:pl-0.5',
+      hideOnHover: 'group-hover/task:hidden group-focus-within/task:hidden',
+      cluster: 'group-hover/task:opacity-100 group-hover/task:pointer-events-auto group-focus-within/task:opacity-100 group-focus-within/task:pointer-events-auto',
+      clusterSlot: 'group-hover/task:max-w-none group-hover/task:overflow-visible group-hover/task:ml-auto group-hover/task:pl-0.5 group-focus-within/task:max-w-none group-focus-within/task:overflow-visible group-focus-within/task:ml-auto group-focus-within/task:pl-0.5',
     }
     : {
       group: 'group',
       restHidden: REST_HIDDEN,
       gapRow: REST_HIDDEN_GAP_ROW,
       gapNameLine: REST_HIDDEN_GAP_NAME_LINE,
-      hideOnHover: 'group-hover:hidden',
-      cluster: 'group-hover:opacity-100 group-hover:pointer-events-auto',
-      clusterSlot: 'group-hover:max-w-none group-hover:overflow-visible group-hover:ml-auto group-hover:pl-0.5',
+      hideOnHover: 'group-hover:hidden group-focus-within:hidden',
+      cluster: 'group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto',
+      clusterSlot: 'group-hover:max-w-none group-hover:overflow-visible group-hover:ml-auto group-hover:pl-0.5 group-focus-within:max-w-none group-focus-within:overflow-visible group-focus-within:ml-auto group-focus-within:pl-0.5',
     };
 }
 
@@ -935,25 +939,31 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
   // boxes TILE instead of overlapping (see hitArea.ts).
   //
   // In flow, never floated over the row. A row with a git line puts them at
-  // the end of that line, where they take the place of the diff counts while
-  // hovered — the right-side metadata steps aside, the name and the branch do
-  // not. A row without one puts them at the end of the name line, which
-  // truncates by exactly their width. Either way the roster chip beside both
-  // lines stays visible and clickable.
+  // the end of that line, where they take the place of the diff counts and
+  // the PR badge while revealed — the right-side metadata steps aside, the
+  // name and the branch do not. A top-level row without one puts them at the
+  // end of the name line, which truncates by exactly their width. Either way
+  // the roster chip beside both lines stays visible and clickable.
   //
   // The outer span owns the footprint: at rest it is weightless (`max-w-0`,
   // and `restGap` cancels the line's own gap); shown, `ml-auto` pins it to
   // the line's end and `pl-0.5` plus the gap gives back the 6px the first
   // member's left refund reaches over, so its box never covers the text. The
   // margins live on the span, not the cluster: hitArea.ts keeps a cluster
-  // free of margins of its own. `pointer-events` follow visibility, and
-  // `focus-within` reveals the cluster for the keyboard.
+  // free of margins of its own. `pointer-events` follow visibility. Focus
+  // anywhere on the row line reveals the cluster exactly as hover does, and
+  // hides the same metadata, so a Tab into the row never overflows the line.
   const actionsOnGitLine = !!metadata?.gitBranch;
-  const actionCluster = (restGap: '-ml-1' | '-ml-2') => readOnly ? null : (
-    <span className={`flex flex-shrink-0 items-center self-center max-w-0 overflow-hidden ${restGap} ${hover.clusterSlot} focus-within:max-w-none focus-within:overflow-visible focus-within:ml-auto focus-within:pl-0.5`}>
+  // A nested task row has no width to spare on its name line (78px of text
+  // at the 220px minimum): without a branch, its actions get a line of their
+  // own, the height its sibling rows' git line takes, so the row never
+  // changes height on hover.
+  const actionsOnOwnLine = !actionsOnGitLine && taskRow;
+  const actionCluster = (restGap: '-ml-1' | '-ml-2' | '') => readOnly ? null : (
+    <span className={`flex flex-shrink-0 items-center self-center max-w-0 overflow-hidden ${restGap} ${hover.clusterSlot}`}>
       <div
         data-workspace-actions
-        className={`${HIT_TARGET_24_CLUSTER} opacity-0 pointer-events-none transition-opacity duration-150 ${hover.cluster} focus-within:opacity-100 focus-within:pointer-events-auto`}
+        className={`${HIT_TARGET_24_CLUSTER} opacity-0 pointer-events-none transition-opacity duration-150 ${hover.cluster}`}
       >
         {/* Folder icon — reveals this workspace's cwd in the OS file manager. */}
         <button
@@ -1054,8 +1064,12 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
         {/* The hover group is this line, not the card: the card also holds the
             expanded roster and its nested task rows, and `:hover` reaches every
             ancestor, so a pointer on a nested task would reveal this row's
-            chrome too and cut its name for buttons nobody is pointing at. */}
-        <div className={`${hover.group} flex min-w-0 items-start gap-2`}>
+            chrome too and cut its name for buttons nobody is pointing at.
+            The negative margin and matching padding stretch the line over the
+            card's own padding (ui.css: 8px 10px), so the actions reveal
+            wherever the card paints its hover fill, without moving a pixel of
+            content. */}
+        <div className={`${hover.group} -mx-2.5 -my-2 flex min-w-0 items-start gap-2 px-2.5 py-2`}>
         {/* Status indicator — #1481: one shared mark (AgentMarks.tsx), status
             told by shape. Idle draws nothing: an active-but-idle workspace
             is no longer painted green, because green means "finished" and
@@ -1202,7 +1216,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
                     · {idleLabel}
                   </span>
                 )}
-                {!actionsOnGitLine && actionCluster('-ml-1')}
+                {!actionsOnGitLine && !actionsOnOwnLine && actionCluster('-ml-1')}
               </div>
               {metadata && (
                 <WorkspaceContextLine
@@ -1211,6 +1225,11 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
                   actions={actionsOnGitLine ? actionCluster('-ml-2') : null}
                   metaHiddenOnHover={hover.hideOnHover}
                 />
+              )}
+              {actionsOnOwnLine && (
+                <div className="mt-0.5 flex min-h-[18px] items-center justify-end" data-row-actions-line>
+                  {actionCluster('')}
+                </div>
               )}
             </>
           )}
