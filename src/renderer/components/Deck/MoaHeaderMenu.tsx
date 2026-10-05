@@ -85,6 +85,12 @@ export function MoaHeaderMenu({
   // runs right after and must not undo that.
   const closeMenu = useCallback(() => setMenu((m) => (m === 'main' ? null : m)), []);
   const closeSub = useCallback(() => setMenu(null), []);
+  // Escape in a submenu steps back to the main menu, on the item that opened it.
+  const [focusKey, setFocusKey] = useState<string | undefined>(undefined);
+  const backToMain = useCallback(() => {
+    if (menu === 'model' || menu === 'mode') setFocusKey(menu);
+    setMenu('main');
+  }, [menu]);
 
   if (!slot) return null;
 
@@ -100,6 +106,7 @@ export function MoaHeaderMenu({
     {
       key: 'model',
       label: `${t('moa.panel.menu.model') || 'Model'}: ${modelLabel}`,
+      hasPopup: true,
       onSelect: () => setMenu('model'),
     },
     ...(mode !== null
@@ -107,6 +114,7 @@ export function MoaHeaderMenu({
           key: 'mode',
           label: `${t('deck.mode.label') || 'Mode'}: ${modeLabel(t, mode)}`,
           title: modeDesc(t, mode),
+          hasPopup: true,
           onSelect: () => setMenu('mode'),
         }]
       : []),
@@ -183,6 +191,7 @@ export function MoaHeaderMenu({
     el.focus();
     const r = el.getBoundingClientRect();
     setAnchor({ top: r.top, left: r.left, right: r.right, bottom: r.bottom });
+    setFocusKey(undefined);
     setMenu((m) => (m ? null : 'main'));
   };
 
@@ -233,6 +242,10 @@ export function MoaHeaderMenu({
           triggerRef={buttonRef}
           items={menu === 'model' ? modelItems : menu === 'mode' ? modeItems : mainItems}
           onClose={menu === 'main' ? closeMenu : closeSub}
+          onEscape={menu === 'main' ? undefined : backToMain}
+          initialFocusKey={menu === 'main' ? focusKey : undefined}
+          // Every close lands on ⋯, also after a submenu (its opener is gone).
+          restoreFocusTo={buttonRef}
         />
       )}
       {/* To the body: the header row would clip a fixed overlay. */}

@@ -462,8 +462,12 @@ export function CommanderViewContent({
         className="flex flex-col flex-1 min-h-0 bg-[var(--bg-mantle)]"
         {...tokenAttrs('bgMantle', 'bg')}
       >
-        {/* Moa's chat view carries its top inside the chat's own scroll. */}
-        {showTerminal && moa?.top}
+        {/* Moa's chat view carries its top inside the chat's own scroll. Over
+            the terminal it is capped with its own scroll, so pending decisions
+            can never squeeze the TUI to nothing. */}
+        {showTerminal && moa?.top && (
+          <div data-moa-pty-top className="shrink-0 max-h-[30%] overflow-y-auto">{moa.top}</div>
+        )}
         {/* Delegated tasks, pinned above everything: the ledger is the one
             state the brain, the workers and the Stop gate share. */}
         {!moa && (

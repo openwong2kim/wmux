@@ -86,7 +86,9 @@ export function DeckTabs({
   // 드롭다운은 탭 button의 형제로, relative 래퍼 안에 절대배치한다.
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const modelMenuRef = useRef<HTMLDivElement>(null);
-  const canModelMenu = !!onCommanderModelSelect && !!commanderModelOptions?.length;
+  // Moa owns the tab: the model is picked in its ⋯ menu (Model ›), so the tab
+  // is a plain label and opens no second model menu.
+  const canModelMenu = !commanderTitle && !!onCommanderModelSelect && !!commanderModelOptions?.length;
   useEffect(() => {
     if (!modelMenuOpen) return;
     const onDoc = (e: MouseEvent) => {

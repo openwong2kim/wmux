@@ -4,7 +4,7 @@
 // stays quiet because the panel is open: the panel then names it above the
 // composer, and the row scrolls back to it.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { act, useRef } from 'react';
+import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { useWaitingOutOfView } from '../MoaTranscriptChat';
 
@@ -19,12 +19,16 @@ const report = (visible: boolean) => act(() => observed!.cb([{ isIntersecting: v
 let host: HTMLDivElement;
 let root: Root;
 let result: ReturnType<typeof useWaitingOutOfView>;
-function Probe({ decisions }: { decisions: number }) {
-  const ref = useRef<HTMLDivElement | null>(null);
-  result = useWaitingOutOfView(ref);
+function Probe({ decisions, tokens = 0 }: { decisions: number; tokens?: number }) {
+  const [top, setTop] = useState<HTMLDivElement | null>(null);
+  result = useWaitingOutOfView(top);
   return (
-    <div ref={ref}>
-      {decisions > 0 && <section data-moa-waiting>{Array.from({ length: decisions }, (_, i) => <div key={i} data-moa-decision />)}</section>}
+    <div>
+      <div ref={setTop} data-moa-chat-top>
+        {decisions > 0 && <section data-moa-waiting>{Array.from({ length: decisions }, (_, i) => <div key={i} data-moa-decision />)}</section>}
+      </div>
+      {/* The chat body: streams a node per token. */}
+      <div data-chat-body>{Array.from({ length: tokens }, (_, i) => <span key={i}>t</span>)}</div>
     </div>
   );
 }
@@ -54,6 +58,19 @@ describe('Waiting on you out of view', () => {
     expect(scroll).toHaveBeenCalledWith({ block: 'start' });
     report(true);
     expect(result.count).toBe(0);
+  });
+
+  it('watches only the top container: streamed chat tokens never rescan', async () => {
+    const observe = vi.spyOn(MutationObserver.prototype, 'observe');
+    const scans = vi.spyOn(Element.prototype, 'querySelectorAll');
+    await act(async () => root.render(<Probe decisions={1} />));
+    expect(observe.mock.calls.map(([el]) => (el as Element).hasAttribute('data-moa-chat-top'))).toEqual([true]);
+    const before = scans.mock.calls.length;
+    for (let n = 1; n <= 5; n++) await act(async () => root.render(<Probe decisions={1} tokens={n} />));
+    await act(async () => { await Promise.resolve(); });
+    expect(scans.mock.calls.length).toBe(before);
+    observe.mockRestore();
+    scans.mockRestore();
   });
 
   it('says nothing when there is no decision', async () => {

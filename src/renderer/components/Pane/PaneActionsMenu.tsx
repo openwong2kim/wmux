@@ -37,6 +37,8 @@ export interface PaneActionItem {
   onSelect: () => void;
   /** Draw a divider above this item (zoom, matching the cluster's border-l). */
   separatorBefore?: boolean;
+  /** Opens a submenu: aria-haspopup="menu" and a trailing ›. */
+  hasPopup?: boolean;
 }
 
 interface PaneActionsMenuProps {
@@ -52,6 +54,13 @@ interface PaneActionsMenuProps {
   onClose: () => void;
   /** Non-interactive text under the items (e.g. the version line). */
   footer?: React.ReactNode;
+  /** Replaces onClose for Escape (a submenu steps back to its parent). */
+  onEscape?: () => void;
+  /** The item focused on open, by key. Default: the first item. */
+  initialFocusKey?: string;
+  /** Where focus returns on close, instead of wherever it was on open (a
+   *  submenu opened from a menu that is gone by then). */
+  restoreFocusTo?: React.RefObject<HTMLElement | null>;
 }
 
 /** Item box: px-2.5 py-1.5 around a 12px line — matches ContextMenu's MenuItem.
@@ -62,7 +71,7 @@ const ESTIMATED_ITEM_HEIGHT = 27;
  *  this width puts the menu's left edge at the cursor (see SurfaceTabs). */
 export const PANE_ACTIONS_MENU_WIDTH = 216;
 
-export default function PaneActionsMenu({ anchor, triggerRef, items, onClose, footer }: PaneActionsMenuProps) {
+export default function PaneActionsMenu({ anchor, triggerRef, items, onClose, footer, onEscape, initialFocusKey, restoreFocusTo }: PaneActionsMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
   const firstItemRef = useRef<HTMLButtonElement>(null);
   // Where focus was when the menu opened — nulled by the outside-click closer,
@@ -110,8 +119,11 @@ export default function PaneActionsMenu({ anchor, triggerRef, items, onClose, fo
   // focus() on a detached element is a no-op, and the next Tab starts from the
   // document as it always did.
   useEffect(() => {
-    restoreFocusRef.current = document.activeElement;
-    firstItemRef.current?.focus();
+    restoreFocusRef.current = restoreFocusTo?.current ?? document.activeElement;
+    const initial = initialFocusKey
+      ? menuRef.current?.querySelector<HTMLButtonElement>(`[data-pane-menu-action="${initialFocusKey}"]`)
+      : null;
+    (initial ?? firstItemRef.current)?.focus();
     return () => {
       const el = restoreFocusRef.current;
       if (el instanceof HTMLElement) el.focus();
@@ -148,7 +160,7 @@ export default function PaneActionsMenu({ anchor, triggerRef, items, onClose, fo
       if (e.key === 'Escape') {
         e.preventDefault();
         e.stopPropagation();
-        onClose();
+        (onEscape ?? onClose)();
       }
     };
     const onDown = (e: MouseEvent) => {
@@ -172,7 +184,7 @@ export default function PaneActionsMenu({ anchor, triggerRef, items, onClose, fo
       document.removeEventListener('keydown', onKey, true);
       document.removeEventListener('mousedown', onDown);
     };
-  }, [onClose, triggerRef]);
+  }, [onClose, onEscape, triggerRef]);
 
   const pos = placePopover(anchor, { width: PANE_ACTIONS_MENU_WIDTH, height });
 
@@ -218,6 +230,7 @@ export default function PaneActionsMenu({ anchor, triggerRef, items, onClose, fo
             // buttons and is undefined inside a menu.
             role={item.active !== undefined ? 'menuitemcheckbox' : 'menuitem'}
             aria-checked={item.active}
+            aria-haspopup={item.hasPopup ? 'menu' : undefined}
             data-pane-menu-action={item.key}
             // aria-disabled, not disabled: a disabled button drops out of the
             // tab order, so a keyboard user cannot reach it to READ why it is
@@ -247,6 +260,9 @@ export default function PaneActionsMenu({ anchor, triggerRef, items, onClose, fo
               >
                 {item.shortcut}
               </span>
+            )}
+            {item.hasPopup && (
+              <span aria-hidden="true" className="ml-2 shrink-0" style={{ color: 'var(--text-subtle)' }}>›</span>
             )}
           </button>
         </div>

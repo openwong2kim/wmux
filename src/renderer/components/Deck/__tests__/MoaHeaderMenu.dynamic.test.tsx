@@ -108,6 +108,34 @@ describe('MoaHeaderMenu', () => {
     expect(slot.querySelector('[data-moa-mode-chip]')?.getAttribute('data-moa-mode-chip')).toBe('off');
   });
 
+  it('Model and Mode announce their submenus; Escape in one steps back to the main menu on its opener', async () => {
+    await mount();
+    await openMenu();
+    expect(item('model')?.getAttribute('aria-haspopup')).toBe('menu');
+    expect(item('mode')?.getAttribute('aria-haspopup')).toBe('menu');
+    expect(item('wake')?.getAttribute('aria-haspopup')).toBeNull();
+    act(() => item('mode')!.click());
+    expect(item('mode:off')).not.toBeNull();
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    // Back in the main menu, not closed, focus on Mode.
+    expect(item('mode:off')).toBeNull();
+    expect(item('settings')).not.toBeNull();
+    expect(document.activeElement).toBe(item('mode'));
+    // A second Escape closes everything and lands on ⋯.
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    expect(document.querySelector('[data-pane-actions-menu]')).toBeNull();
+    expect(document.activeElement).toBe(more());
+  });
+
+  it('picking from a submenu closes the menu and lands on ⋯', async () => {
+    await mount();
+    await openMenu();
+    act(() => item('model')!.click());
+    act(() => item('model:default')!.click());
+    expect(document.querySelector('[data-pane-actions-menu]')).toBeNull();
+    expect(document.activeElement).toBe(more());
+  });
+
   it('Model opens a submenu with the main bot model options', async () => {
     await mount();
     await openMenu();

@@ -27,14 +27,20 @@ import '../moa.css';
  * view, while the titlebar bubble and dot stay quiet because the panel is
  * open. This watches the section and reports when it holds decisions the
  * operator cannot see, so the panel can say so above the composer.
+ *
+ * `root` is the panel's top container only, never the chat: the chat body
+ * mutates on every streamed token, and a rescan per token would be O(DOM).
  */
-export function useWaitingOutOfView(rootRef: React.RefObject<HTMLElement | null>): { count: number; jump: () => void } {
+export function useWaitingOutOfView(root: HTMLElement | null): { count: number; jump: () => void } {
   const [count, setCount] = useState(0);
   const [hidden, setHidden] = useState(false);
   const targetRef = useRef<Element | null>(null);
   useEffect(() => {
-    const root = rootRef.current;
-    if (!root) return;
+    if (!root) {
+      targetRef.current = null;
+      setCount(0);
+      return;
+    }
     let io: IntersectionObserver | null = null;
     const attach = () => {
       const waiting = root.querySelector('[data-moa-waiting]');
@@ -52,8 +58,8 @@ export function useWaitingOutOfView(rootRef: React.RefObject<HTMLElement | null>
     attach();
     const mo = new MutationObserver(attach);
     mo.observe(root, { childList: true, subtree: true });
-    return () => { mo.disconnect(); io?.disconnect(); };
-  }, [rootRef]);
+    return () => { mo.disconnect(); io?.disconnect(); targetRef.current = null; };
+  }, [root]);
   const jump = useCallback(() => targetRef.current?.scrollIntoView({ block: 'start' }), []);
   return { count: hidden ? count : 0, jump };
 }
@@ -230,13 +236,14 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
     }
   }, [approval, prompts, readApproval]);
   const empty = messages.length === 0 && pending.length === 0;
-  const chatRootRef = useRef<HTMLDivElement | null>(null);
-  const waitingOutOfView = useWaitingOutOfView(chatRootRef);
+  // A callback ref: the top container mounts with the chat's history slot.
+  const [topEl, setTopEl] = useState<HTMLDivElement | null>(null);
+  const waitingOutOfView = useWaitingOutOfView(topEl);
   return (
     <ChatPtyContext.Provider value={ptyId}>
       <ChatCodeBlockContext.Provider value={bridge?.codeBlock ?? null}>
       <AssistantRuntimeProvider runtime={runtime}>
-        <div ref={chatRootRef} className="flex flex-col flex-1 min-h-0" data-moa-chat>
+        <div className="flex flex-col flex-1 min-h-0" data-moa-chat>
           <Thread
             composer={runtime.thread.composer}
             empty={empty}
@@ -245,7 +252,7 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
             placeholder={t('moa.panel.placeholder')}
             hint={busy ? t('moa.panel.busy') : undefined}
             history={<>
-              {top && <div className="wmux-moa-chat-top" data-moa-chat-top>{top}</div>}
+              {top && <div ref={setTopEl} className="wmux-moa-chat-top" data-moa-chat-top>{top}</div>}
               {data.hasMore && !data.loading && (
                 <button type="button" className="wmux-chat-earlier ui-btn" disabled={data.loadingEarlier} onClick={() => void data.loadEarlier()}>
                   {data.loadingEarlier ? t('chat.loading') : t('chat.loadEarlier')}

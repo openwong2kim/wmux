@@ -76,7 +76,7 @@ function MoaTitlebarButtonOn() {
     const st = useStore.getState();
     // Beside a rail page the panel opens in place; from Settings, on Workspaces.
     if (!dockShownOn(st.appRoute)) showWorkspaces(st);
-    // Land on the conversation, as the tools-panel toggle does.
+    // Land on the conversation.
     st.setActiveDeckTab('commander');
     st.setChannelDockVisible(true);
     dispatch({ type: 'seen' });
@@ -86,8 +86,8 @@ function MoaTitlebarButtonOn() {
   const dot = onScreen ? null : moaDot(state);
   const mascot: MoaMascotState = bubble?.kind === 'done' ? 'done' : state.pending.length > 0 ? 'needs-you' : 'idle';
 
-  // Named "Moa" (open state is aria-expanded): the tools-panel toggle beside
-  // it already reads "Show / Hide Moa" while Moa owns the panel.
+  // Named "Moa"; the open state is aria-expanded. It is the right panel's
+  // only toggle (the panel exists only while Moa is on).
   const base = t('moa.mascot.name');
   const suffix =
     dot === 'waiting'

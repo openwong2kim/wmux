@@ -544,6 +544,18 @@ describe('CommanderViewContent — Moa slots', () => {
     }
   });
 
+  it('over the terminal the top is capped with its own scroll; the bubble layout keeps it in the one scroll', () => {
+    mount({ brainPtyId: 'pty-hq', chatWorkspaceId: 'ws-hq', moa: { top: topNode, chat: chatNode, view: 'terminal', onViewChange: vi.fn() } });
+    const cap = container.querySelector('[data-moa-pty-top]') as HTMLElement;
+    expect(cap.querySelector('[data-test-moa-top]')).not.toBeNull();
+    expect(cap.className).toContain('max-h-[30%]');
+    expect(cap.className).toContain('overflow-y-auto');
+    expect(cap.nextElementSibling?.compareDocumentPosition(container.querySelector('[data-commander-brain-terminal]')!)).toBeTruthy();
+    mount({ brainPtyId: null, chatWorkspaceId: 'ws-hq', moa: { top: topNode, chat: chatNode, view: 'chat', onViewChange: vi.fn() } });
+    expect(container.querySelector('[data-moa-pty-top]')).toBeNull();
+    expect(container.querySelector('[data-commander-threads] [data-test-moa-top]')).not.toBeNull();
+  });
+
   it("Moa's panel draws no Fleet roster; without Moa the roster stays, in either layout", () => {
     const fleetSlot = createElement('div', { 'data-test-fleet-roster': true });
     for (const brainPtyId of ['pty-hq', null]) {
