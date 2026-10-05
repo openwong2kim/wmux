@@ -1,13 +1,8 @@
-import { useEffect, useState, useCallback, useRef, type CSSProperties } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { useStore } from '../../stores';
 import { tokenAttrs } from '../../themes';
 import StatusBar from '../StatusBar/StatusBar';
-import { workspaceChromeInTitlebar } from './railPageTitle';
 import SidebarToggle from './SidebarToggle';
-import { useT } from '../../hooks/useT';
-import { FOCUS_RING } from '../focusRing';
-import { IconPlus } from '../icons';
-import PresetPicker from '../Sidebar/PresetPicker';
 import { SIDEBAR_COMPACT_WIDTH } from '../../utils/sidebarLayout';
 import { overlayColors } from '../../utils/titlebarOverlay';
 
@@ -125,7 +120,6 @@ function useFullscreenAttribute(): void {
 }
 
 export default function Titlebar() {
-  const t = useT();
   useFullscreenAttribute();
   const sidebarVisible = useStore((s) => s.sidebarVisible);
   const sidebarPosition = useStore((s) => s.sidebarPosition);
@@ -133,28 +127,6 @@ export default function Titlebar() {
   const isMac = platform === 'darwin';
   const isWin = platform === 'win32';
   const macFullscreen = useMacFullscreen(isMac);
-  const [pickerOpen, setPickerOpen] = useState(false);
-  // Anchor the preset dropdown UNDER the + button. Measured at open time
-  // (the button's viewport rect), clamped so the 208px menu never overflows
-  // the window — without this the picker's legacy sidebar anchor (`right-2`)
-  // resolved against the full-width header and opened at the far right edge.
-  const plusBtnRef = useRef<HTMLButtonElement | null>(null);
-  const [pickerLeft, setPickerLeft] = useState(8);
-  const togglePicker = useCallback(() => {
-    setPickerOpen((v) => {
-      if (!v) {
-        const r = plusBtnRef.current?.getBoundingClientRect();
-        const menuWidth = 208; // w-52
-        if (r) setPickerLeft(Math.max(8, Math.min(r.left, window.innerWidth - menuWidth - 8)));
-      }
-      return !v;
-    });
-  }, []);
-  const closePicker = useCallback(() => setPickerOpen(false), []);
-  // New workspace belongs to the Workspaces page, and only while the sidebar
-  // is hidden: an open sidebar's header already carries it, and a rail page
-  // hides it. The picker closes with its button.
-  const showWorkspaceChrome = useStore(workspaceChromeInTitlebar);
 
   useTitleBarOverlaySync();
 
@@ -162,10 +134,6 @@ export default function Titlebar() {
   // The mantle segment mirrors it only when the sidebar is docked left —
   // docked right there is no panel below the top-left corner to fuse with.
   const compactSegment = sidebarPosition === 'left' && !sidebarVisible;
-  // Left collapsed, the 48px segment cannot hold the +; the rail's own + is
-  // its home then (MiniSidebar).
-  const showPlus = showWorkspaceChrome && !compactSegment;
-  useEffect(() => { if (!showPlus) setPickerOpen(false); }, [showPlus]);
   // #1481 — the expanded width is the user's (drag handle, persisted).
   const sidebarWidth = useStore((s) => s.sidebarWidth);
   // The icon rail (48px) always sits on the frame at the left; the open
@@ -223,27 +191,10 @@ export default function Titlebar() {
         <span className="text-[14px] font-semibold text-[var(--text-main)] tracking-tight" {...tokenAttrs('textMain', 'text')}>
           wmux
         </span>
-        {/* Left to right: wmux, the sidebar toggle (the slot the + held: the
-            segment's end while the sidebar is open), then the + when shown. */}
+        {/* Left to right: wmux, then the sidebar toggle (the segment's end
+            while the sidebar is open). New workspace is never here: the
+            sidebar's header and the rail carry it. */}
         <SidebarToggle className={compactSegment ? undefined : 'ml-auto'} />
-        {showPlus && <button
-          ref={plusBtnRef}
-          type="button"
-          onClick={togglePicker}
-          className={`flex items-center justify-center w-6 h-6 rounded-md text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[var(--hover-fill)] transition-colors duration-150 ${FOCUS_RING}`}
-          style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}
-          title={t('sidebar.newWorkspaceTooltip')}
-          aria-label={t('sidebar.newWorkspaceTooltip')}
-          data-onboarding-target="add-workspace"
-        >
-          <IconPlus size={14} />
-        </button>}
-        {pickerOpen && showPlus && (
-          <PresetPicker
-            onClose={closePicker}
-            anchorStyle={{ left: pickerLeft, top: TITLEBAR_HEIGHT + 4 }}
-          />
-        )}
       </div>
       {/* The status strip (P1.5) fills the rest of the bar: transient
           indicators on the left, the status/clock/settings cluster pinned

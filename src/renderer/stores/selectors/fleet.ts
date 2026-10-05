@@ -1313,12 +1313,11 @@ export function selectFleetBoard(
   return { panes, groups };
 }
 
-/** The workspace Fleet leaves off as Moa's: the HQ while Moa is on. With Moa
- *  off there is no panel to show it, so its panes stay on the board. Before
- *  main's first answer, the remembered HQ. */
+/** The workspace Fleet leaves off as Moa's: the known HQ, whether or not Moa
+ *  is on. Main may report no HQ id while Moa is off, so the remembered one
+ *  (the seed) still counts: Moa's own terminal is never a worker. */
 export function fleetHqId(state: Pick<FleetBoardState, 'moa' | 'moaHqSeed'>): string | null {
-  if (state.moa) return state.moa.config.enabled ? state.moa.hq.workspaceId ?? null : null;
-  return state.moaHqSeed ?? null;
+  return state.moa?.hq.workspaceId ?? state.moaHqSeed ?? null;
 }
 
 /** The board's rows before grouping — shared by the board and its counts so

@@ -1,19 +1,16 @@
 // @vitest-environment jsdom
 //
-// #1284 — the only UI path to "Attach remote workspace…" is the titlebar +
-// button: it opens PresetPicker, whose last row swaps the dropdown for
-// AttachRemoteModal. The sidebar header that used to own this button was
-// removed in #418, which left a second, never-opened picker behind in
-// Sidebar.tsx and made the flow look unreachable. Pin the live path so the
-// control cannot silently lose its call site again.
+// #1284 — "Attach remote workspace…" is the last row of the New workspace
+// picker. The titlebar no longer carries a +, so the sidebar's header + (and,
+// collapsed, the rail's, covered by MiniSidebar.attachRemote) is the path.
+// Pin it so the control cannot silently lose its call site again.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createRoot } from 'react-dom/client';
 import { act } from 'react';
-import Titlebar from '../Titlebar';
+import Sidebar from '../Sidebar';
 import { useStore } from '../../../stores';
 
-vi.mock('../../StatusBar/StatusBar', () => ({ default: () => null }));
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
@@ -26,7 +23,17 @@ let hostsList: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   hostsList = vi.fn().mockResolvedValue([]);
   const noopSub = vi.fn(() => () => { /* noop unsubscribe */ });
-  (window as unknown as { electronAPI: unknown }).electronAPI = {
+  // The sidebar reads more of the preload than this flow needs: anything not
+  // given below resolves to an empty answer that doubles as an unsubscribe.
+  const call = () => {
+    const p = Promise.resolve([]);
+    return Object.assign(() => undefined, { then: p.then.bind(p), catch: p.catch.bind(p), finally: p.finally.bind(p) });
+  };
+  const stub = (): unknown => new Proxy(call, { get: (_t, key) => (key === 'then' ? undefined : stub()) });
+  const withFallback = (o: Record<string, unknown>): unknown => new Proxy(o, {
+    get: (t, key: string) => (key in t ? (t[key] && typeof t[key] === 'object' && !Array.isArray(t[key]) ? withFallback(t[key] as Record<string, unknown>) : t[key]) : stub()),
+  });
+  (window as unknown as { electronAPI: unknown }).electronAPI = withFallback({
     platform: 'linux',
     window: {},
     remote: {
@@ -44,17 +51,15 @@ beforeEach(() => {
       onPaneExit: noopSub,
       onPaneError: noopSub,
     },
-  };
-  // The titlebar + exists only while the sidebar is hidden and the left
-  // segment is free to hold it (docked right).
-  act(() => useStore.setState({ sidebarPosition: 'right', sidebarVisible: false, appRoute: 'workspaces' }));
+  });
+  act(() => useStore.setState({ sidebarPosition: 'left', sidebarVisible: true, appRoute: 'workspaces', readOnly: false }));
 });
 
 function render(): HTMLDivElement {
   const container = document.createElement('div');
   document.body.appendChild(container);
   const root = createRoot(container);
-  act(() => root.render(<Titlebar />));
+  act(() => root.render(<Sidebar chrome="sheet" />));
   cleanups.push(() => {
     act(() => root.unmount());
     container.remove();
@@ -68,12 +73,12 @@ function findAttachRow(container: HTMLElement): HTMLButtonElement | undefined {
   );
 }
 
-describe('Titlebar + button reaches Attach remote workspace (#1284)', () => {
+describe('Sidebar header + reaches Attach remote workspace (#1284)', () => {
   it('opens the preset picker, which offers the attach-remote row', () => {
     const container = render();
     expect(findAttachRow(container)).toBeUndefined();
 
-    const plus = container.querySelector('[data-onboarding-target="add-workspace"]') as HTMLButtonElement;
+    const plus = container.querySelector('[aria-label="New workspace"]') as HTMLButtonElement;
     expect(plus).not.toBeNull();
     act(() => plus.click());
 
@@ -82,7 +87,7 @@ describe('Titlebar + button reaches Attach remote workspace (#1284)', () => {
 
   it('swaps the picker for AttachRemoteModal when the row is chosen', async () => {
     const container = render();
-    const plus = container.querySelector('[data-onboarding-target="add-workspace"]') as HTMLButtonElement;
+    const plus = container.querySelector('[aria-label="New workspace"]') as HTMLButtonElement;
     act(() => plus.click());
 
     const attachRow = findAttachRow(container);

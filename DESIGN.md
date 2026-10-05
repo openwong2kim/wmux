@@ -147,7 +147,7 @@ bar is a drag region; each interactive child opts out with `no-drag`.
   toggle** (on Windows and Linux the wordmark is at the far left). The
   wordmark starts `BRAND_INSET` (12px) past the reserve whether the sidebar
   is open or collapsed, so the brand never moves when the sidebar toggles.
-  The toggle takes the slot the `+` held: the segment's end while the
+  The toggle sits at the segment's end while the
   sidebar is open, right after the wordmark when it is collapsed (the
   segment then takes their width instead of the rail's 48px; the look
   paints it transparent). It is a 28px square with a 16px panel icon (the
@@ -158,16 +158,16 @@ bar is a drag region; each interactive child opts out with `no-drag`.
   only the `--hover-fill` on hover and the focus ring. The sidebar toggle's
   name stays "Show sidebar" with the state in `aria-pressed`; the tooltip
   names the action and Ctrl+Shift+B.
-- **Page title and New workspace: one home at a time.** While the sidebar is
-  open it already shows them (its `Workspaces N +` header and the
-  highlighted row), so the titlebar shows neither the `+`, the workspace's
-  name, its task link nor its branch. With the sidebar collapsed they
-  return right of the segment: the name, the task link and the branch (the
-  shortcut to Git); the `+` returns at the segment's end when the sidebar is
-  docked right, and is the rail's own `+` when it is docked left (the 48px
-  segment has no room). On a rail page (Git, Fleet, Schedules, Remote) the
-  title is the page's name, with no `+` and no branch, whatever the sidebar
-  does. Settings follows the Workspaces rule.
+- **No New workspace in the titlebar, ever.** The sidebar's `Workspaces N +`
+  header carries it while the sidebar is open, and the rail's own `+` while
+  it is collapsed, docked left or right.
+- **Page title: one home at a time.** While the sidebar is open the
+  highlighted row already names the workspace, so the titlebar shows
+  neither the workspace's name, its task link nor its branch. With the
+  sidebar collapsed they return right of the segment: the name, the task
+  link and the branch (the shortcut to Git). On a rail page (Git, Fleet,
+  Schedules, Remote) the title is the page's name, with no branch, whatever
+  the sidebar does. Settings follows the Workspaces rule.
 - **Centre: the drag region.** Nothing sits between the left segment and the
   right cluster; the whole gap drags the window. The command palette has no
   titlebar entry: ⌘K (Ctrl+K on Windows and Linux) opens it, and the rail's
@@ -223,8 +223,7 @@ navigates through it.
   Fleet, Schedules, Remote — leaves the dock in view and usable, so Moa is in
   reach; the page is inset off the dock by measuring it, never by reflowing
   the sheet, whether the dock sits inline or floats as the narrow-window
-  overlay; the dock's toggle and Moa's titlebar icon open and close it in
-  place there). Settings alone covers the whole sheet, dock included. The
+  overlay; Moa's titlebar icon opens and closes it in place there). Settings alone covers the whole sheet, dock included. The
   Workspaces page stays mounted at full size and **inert** under every page, so no terminal is resized or unmounted
   and PTYs, scrollback, the WebGL atlas and IME state survive the round trip.
   Showing a page drops focus left in the panes, and the focus self-heal runs
@@ -236,7 +235,7 @@ navigates through it.
   (also in fullscreen) and carries the workspace list as its compact form,
   so the collapsed sidebar and the rail are one column. A toggle eases the
   sidebar's width over 190ms (ease-out; instant under
-  `prefers-reduced-motion`), with the titlebar segment in step. Terminal fits
+  `prefers-reduced-motion`); the titlebar segment does not animate. Terminal fits
   are held for the whole transition and released on the column's own
   `width` `transitionend` (or a fallback timer), so each pane's PTY is
   resized exactly once per toggle. Dragging the sidebar's edge never
@@ -753,7 +752,7 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-10-04 | The Git page leads with the repo: `owner/repo` with its open issue and PR counts, then Issues and Pull requests; branches and worktrees (the branch bar, the ship button) move into a secondary Worktrees tab. The Git page sits beside the tools dock instead of covering it, and an issue or PR dropped on the dock goes to Moa | The owner reads the repo's issues and PRs on this page and rarely its branches, so the branch chrome above the lists was noise. Covering the dock hid Moa exactly when work was being routed to it, and the jump from panes-plus-dock to one full-width page read as the window's proportions changing. Measuring the dock instead of reflowing keeps every terminal at its size |
 | 2026-10-04 | The repo name in the Git page header is a repo switcher (All repos, each open workspace's repo, Follow active workspace); it replaces the This repo / All repos control. A pick sticks across workspace switches and restarts | The owner asked how to move between repos on the page. A page that jumped whenever the active workspace changed made reading another repo's issues impossible, and one control in the place the eye already reads the repo name beats a second, separate scope control |
 | 2026-10-04 | On a rail page the titlebar names the page (Git, Fleet, Schedules, Remote) and hides `+` and the workspace's name and branch; Search & commands stays | Owner feedback: the workspace's title and New workspace read as part of the Git page while they act on the Workspaces page under it. Search & commands is global, so it stays |
-| 2026-10-05 | Owner feedback, one PR: the right panel and its toggle exist only while Moa is on; the titlebar shows New workspace and the workspace's name and branch only while the sidebar is collapsed, and drops the search pill (⌘K and the More menu open the palette); the rail drops the Moa `M` entry; the order is `wmux` then a sidebar toggle mirroring the tools-panel toggle, both bare icons with no rest or on fill; Settings leaves the titlebar for a `⋯` More menu at the rail's foot (Settings, Keyboard shortcuts, Check for updates, version), replacing the collapse chevron; the sidebar eases open and closed in 190ms with one PTY refit per pane; every rail page but Settings sits beside the tools dock; Moa's HQ is off the Fleet board, its counts, the titlebar vitals and fleet_triage, and Fleet rows gain Role…; Moa's panel drops its roster and control rows for one header `⋯` menu and scrolls as one column | The open sidebar already shows New workspace and the active workspace, so the titlebar repeated them. The rail's `M` read as a mystery letter and duplicated Moa's panel; the search pill duplicated ⌘K, which the More menu now lists. With Moa off the panel held only an off card and a ledger Fleet already shows. The brand anchors the corner, and a toggle that matches the other end's reads as a pair. Rarely used controls and duplicated sections crowded Moa's panel, clipped its decision cards and repeated the briefing. Moa vanished on Fleet, Schedules and Remote and its button navigated away; Moa is the main bot, not a worker. Refitting per animation frame would thrash every terminal. Removing the roster took away the only GUI for a pane's role, so Fleet rows carry it now |
+| 2026-10-05 | Owner feedback, one PR: the right panel and its toggle exist only while Moa is on; the titlebar never shows New workspace and shows the workspace's name and branch only while the sidebar is collapsed, and drops the search pill (⌘K and the More menu open the palette); the rail drops the Moa `M` entry; the order is `wmux` then a sidebar toggle mirroring the tools-panel toggle, both bare icons with no rest or on fill; Settings leaves the titlebar for a `⋯` More menu at the rail's foot (Settings, Keyboard shortcuts, Check for updates, version), replacing the collapse chevron; the sidebar eases open and closed in 190ms with one PTY refit per pane; every rail page but Settings sits beside the tools dock; Moa's HQ is off the Fleet board, its counts, the titlebar vitals and fleet_triage, and Fleet rows gain Role…; Moa's panel drops its roster and control rows for one header `⋯` menu and scrolls as one column | The open sidebar already shows New workspace and the active workspace, so the titlebar repeated them. The rail's `M` read as a mystery letter and duplicated Moa's panel; the search pill duplicated ⌘K, which the More menu now lists. With Moa off the panel held only an off card and a ledger Fleet already shows. The brand anchors the corner, and a toggle that matches the other end's reads as a pair. Rarely used controls and duplicated sections crowded Moa's panel, clipped its decision cards and repeated the briefing. Moa vanished on Fleet, Schedules and Remote and its button navigated away; Moa is the main bot, not a worker. Refitting per animation frame would thrash every terminal. Removing the roster took away the only GUI for a pane's role, so Fleet rows carry it now |
 | 2026-10-05 | A fan-out task's mission channel reads in Fleet, as the selected task's Conversation at the foot beside the preview; Moa's task cards, Waiting on you and the deck ledger link to it. No channel list returns | The Channels tab left with the Moa-only right panel (#1771), and with it the only desktop view of worker reports, instructions and ledger transitions. The foot is already Fleet's selection detail, so the conversation follows the selection without reflowing the columns |
 
 ### Desktop conversation view
@@ -925,7 +924,12 @@ Waiting on you, Delegated work (folds to its heading and count), the briefing
 (only what Waiting on you does not already say; never two lines that say the
 same thing), then the chat. No card has its own height or scroller; long cards
 grow, and a decision's quick replies stack full width. Agent recovery lives on
-each pane's resume pill, not in Moa's panel.
+each pane's resume pill, not in Moa's panel. In terminal view the top sections (Waiting on
+you, delegated work, briefing) are capped at 30% of the panel with their own
+scroll, so the TUI always keeps most of the column. While Moa owns the tab, the
+tab is a plain label (Moa · Main bot); the model is chosen only in ⋯ › Model.
+Submenus are marked as such (`aria-haspopup`), and Escape steps back one level.
+A delegated-work title is one line at rest and wraps once its card is open.
 
 ### Fleet page (2026-10-03, replaces the 2026-09-21 overlay)
 

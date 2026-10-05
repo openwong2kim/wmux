@@ -8,6 +8,19 @@ import { effectiveBindings } from '../../../shared/keymap';
 import { shortcutLabel } from '../../utils/shortcutLabel';
 import { selectMoaOn } from '../Layout/moaDockGate';
 
+/** Focus an element once it is on screen. Settings mounts lazily, so it is
+ *  looked for over the next frames (about a second), then given up. */
+function focusWhenShown(selector: string, frames = 60): void {
+  if (typeof requestAnimationFrame !== 'function') return;
+  const el = document.querySelector<HTMLElement>(selector);
+  if (el) {
+    el.focus();
+    el.scrollIntoView?.({ block: 'center' });
+    return;
+  }
+  if (frames > 0) requestAnimationFrame(() => focusWhenShown(selector, frames - 1));
+}
+
 /** `__APP_VERSION__` is a build-time define; tests run without it. */
 function appVersion(): string {
   return typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '';
@@ -80,20 +93,13 @@ export default function RailMoreMenu() {
       key: 'check-updates',
       label: t('settings.checkUpdate'),
       icon: <IconRefresh size={13} />,
-      // Settings › General shows the check's progress and result (it listens
-      // to the updater's events), so the menu opens it and starts the check.
-      // Where no event follows (dev builds, unsupported platforms) or the
-      // call fails, the answer comes back here and is said in a toast.
+      // Settings › General owns the check: its button shows checking and
+      // progress and is disabled while one runs. The menu opens it and puts
+      // focus on that button, so the check itself is one more press there and
+      // never runs twice or out of the widget's sight.
       onSelect: () => {
-        const st = useStore.getState();
-        st.openSettingsTab('general');
-        const check = window.electronAPI?.updater?.checkForUpdates;
-        if (!check) return;
-        check()
-          .then((r) => {
-            if (r?.status === 'not-available') st.pushToast({ level: 'info', message: t('settings.upToDate') });
-          })
-          .catch(() => st.pushToast({ level: 'warn', message: t('settings.updateFailed') }));
+        useStore.getState().openSettingsTab('general');
+        focusWhenShown('[data-settings-check-update]');
       },
     },
   ];

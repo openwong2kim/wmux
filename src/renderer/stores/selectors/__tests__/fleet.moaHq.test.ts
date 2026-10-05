@@ -43,12 +43,15 @@ describe('Fleet board without Moa\'s HQ', () => {
     expect(selectFleetSectionCounts(useStore.getState()).running).toBe(before - 1);
   });
 
-  it('keeps the HQ on the board while Moa is off: no panel shows it then', () => {
+  it('leaves the known HQ off with Moa off too, even when main reports no HQ id', () => {
     const before = selectFleetSectionCounts(useStore.getState()).running;
     useStore.setState({ moa: { config: { enabled: false }, hq: { workspaceId: 'ws-3' } } as never });
-    expect(boardWorkspaces().rows).toContain('ws-3');
-    expect(selectFleetSectionCounts(useStore.getState()).running).toBe(before);
-    useStore.setState({ moa: { config: { enabled: true }, hq: { workspaceId: 'ws-3' } } as never });
     expect(boardWorkspaces().rows).not.toContain('ws-3');
+    expect(selectFleetSectionCounts(useStore.getState()).running).toBe(before - 1);
+    // Off, main answers with no HQ id: the remembered one still counts.
+    useStore.setState({ moa: { config: { enabled: false }, hq: { workspaceId: null } } as never, moaHqSeed: 'ws-3' });
+    expect(boardWorkspaces().rows).not.toContain('ws-3');
+    const triage = buildFleetTriage(useStore.getState(), { includeIdle: true }, now);
+    expect([...triage.needsYou, ...triage.running, ...(triage.idle.rows ?? [])].map((r) => r.workspaceId)).not.toContain('ws-3');
   });
 });

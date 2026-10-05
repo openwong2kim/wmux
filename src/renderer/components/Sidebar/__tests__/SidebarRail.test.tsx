@@ -104,12 +104,18 @@ describe('sidebar icon rail', () => {
 
     act(() => useStore.setState({ appRoute: 'workspaces', settingsInitialTab: null }));
     act(() => more().click());
-    act(() => useStore.setState({ toasts: [] }));
-    await act(async () => { item('check-updates')!.click(); await Promise.resolve(); await Promise.resolve(); });
-    expect(checkForUpdates).toHaveBeenCalledTimes(1);
+    // Settings owns the check (its button shows checking, and is disabled
+    // while one runs): the menu opens it and focuses that button, never
+    // starting a check of its own.
+    const settingsButton = document.createElement('button');
+    settingsButton.setAttribute('data-settings-check-update', '');
+    document.body.appendChild(settingsButton);
+    act(() => item('check-updates')!.click());
+    await act(async () => { await new Promise((r) => requestAnimationFrame(() => r(null))); });
+    expect(checkForUpdates).not.toHaveBeenCalled();
     expect(useStore.getState().settingsInitialTab).toBe('general');
-    // No updater event follows a 'not-available' answer: the menu says it.
-    expect(useStore.getState().toasts.map((x) => x.message)).toContain('Up to date');
+    expect(document.activeElement).toBe(settingsButton);
+    settingsButton.remove();
     delete (globalThis as { __APP_VERSION__?: string }).__APP_VERSION__;
   });
 

@@ -8,7 +8,6 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import Titlebar, { BRAND_INSET, MAC_TRAFFIC_LIGHT_RESERVE } from '../Titlebar';
 import { useStore } from '../../../stores';
-import { t } from '../../../i18n';
 import type { Pane, Workspace } from '../../../../shared/types';
 
 let container: HTMLDivElement;
@@ -59,13 +58,13 @@ describe('titlebar workspace chrome', () => {
     expect([title(), plus(), branch()]).toEqual([null, false, false]);
   });
 
-  it('sidebar collapsed: the name and branch return; the + is the rail\'s when docked left', () => {
+  it('sidebar collapsed: the name and branch return; never a + (the rail has it)', () => {
     mount({ sidebarVisible: false });
     expect([title(), plus(), branch(), search()]).toEqual(['Workspace 1', false, true, false]);
     expect(toggle().getAttribute('aria-pressed')).toBe('false');
-    // Docked right, the left segment is free, so the + stays in the titlebar.
+    // Docked right too: owner decision, no + in the titlebar ever.
     act(() => useStore.setState({ sidebarPosition: 'right' }));
-    expect([title(), plus(), branch()]).toEqual(['Workspace 1', true, true]);
+    expect([title(), plus(), branch()]).toEqual(['Workspace 1', false, true]);
   });
 
   it('rail pages name the page with no + or branch, whatever the sidebar does', () => {
@@ -105,17 +104,4 @@ describe('titlebar workspace chrome', () => {
     expect(open).toBe(MAC_TRAFFIC_LIGHT_RESERVE + BRAND_INSET);
   });
 
-  it('closes an open New workspace picker when its + goes away', () => {
-    mount({ sidebarPosition: 'right', sidebarVisible: false, workspaces: [], activeWorkspaceId: undefined });
-    act(() => container.querySelector<HTMLButtonElement>('[data-onboarding-target="add-workspace"]')!.click());
-    const pickerShown = () => container.textContent?.includes(t('sidebar.emptyWorkspace'));
-    expect(pickerShown()).toBe(true);
-    act(() => useStore.setState({ sidebarVisible: true }));
-    act(() => useStore.setState({ sidebarVisible: false }));
-    expect(pickerShown()).toBe(false);
-    act(() => container.querySelector<HTMLButtonElement>('[data-onboarding-target="add-workspace"]')!.click());
-    act(() => useStore.setState({ appRoute: 'git' }));
-    act(() => useStore.setState({ appRoute: 'workspaces' }));
-    expect(pickerShown()).toBe(false);
-  });
 });
