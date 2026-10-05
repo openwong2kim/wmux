@@ -8,7 +8,7 @@ import type { FormAnswers } from '../../../shared/chatv2/questions';
 import { ApprovalCard, QuestionCard } from './Cards';
 import { absolutePath, formatClockTime, formatWorkingDuration, toolLabelParts } from './format';
 import { diffStats, toolFamily, type ToolGroupRow, type ToolState, type TranscriptRow } from './rows';
-import { IconChevron } from '../icons';
+import { IconChevron, IconExternalLink } from '../icons';
 import type { BodyRead } from './controller';
 import { S } from './strings';
 
@@ -34,14 +34,15 @@ function PreviewBody({ preview, cwd }: { preview: ToolPreview; cwd: string }) {
     return (
       <div className="wmux-chatv2-pre" data-diff>
         {path && (
-          <button type="button" className="wmux-chatv2-evidence" title={S.openFile} onClick={() => void window.electronAPI?.shell?.openPath?.(absolutePath(path, cwd))}>
-            {displayPath(path, cwd)}
+          // The row title already names the path; this is where it leads.
+          <button type="button" className="wmux-chatv2-evidence" title={displayPath(path, cwd)} onClick={() => void window.electronAPI?.shell?.openPath?.(absolutePath(path, cwd))}>
+            {S.openFile}<IconExternalLink size={11} />
           </button>
         )}
         <pre>
           {preview.lines.map((line, index) => (
             <span key={index} className="wmux-chatv2-line" data-kind={line.kind}>
-              {line.kind === 'add' ? '+' : line.kind === 'del' ? '-' : ' '} {line.text}{'\n'}
+              {line.kind === 'add' ? '+' : line.kind === 'del' ? '-' : ' '} {line.text}
             </span>
           ))}
         </pre>
@@ -53,10 +54,21 @@ function PreviewBody({ preview, cwd }: { preview: ToolPreview; cwd: string }) {
 
 /** A command and what it printed: a dim `$ command` line, then the output, faded where it scrolls. */
 function ShellBody({ command, output, children }: { command: string | null; output: string; children?: React.ReactNode }) {
+  const ref = useRef<HTMLPreElement>(null);
+  // Which edges have more beyond them: those fade.
+  const edges = () => {
+    const el = ref.current;
+    if (!el) return;
+    const top = el.scrollTop > 1;
+    const bottom = el.scrollTop + el.clientHeight < el.scrollHeight - 1;
+    const fade = top && bottom ? 'both' : top ? 'top' : bottom ? 'bottom' : '';
+    if (fade) el.dataset.fade = fade; else delete el.dataset.fade;
+  };
+  useLayoutEffect(edges, [output]);
   return (
     <div className="wmux-chatv2-pre" data-shell>
       {command && <div className="wmux-chatv2-shell-command">$ {command}</div>}
-      {output && <pre className="wmux-chatv2-shell-output">{output}</pre>}
+      {output && <pre ref={ref} className="wmux-chatv2-shell-output" onScroll={edges}>{output}</pre>}
       {children}
     </div>
   );

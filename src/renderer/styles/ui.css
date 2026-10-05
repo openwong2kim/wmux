@@ -599,27 +599,15 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-chatv2-pre[data-diff] .wmux-chatv2-line { display: block; padding: 0 8px; }
 .wmux-chatv2-pre[data-diff] .wmux-chatv2-line[data-kind="add"] { background: color-mix(in srgb, var(--accent-green) 8%, transparent); box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent-green) 50%, transparent); }
 .wmux-chatv2-pre[data-diff] .wmux-chatv2-line[data-kind="del"] { background: color-mix(in srgb, var(--accent-red) 8%, transparent); box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent-red) 50%, transparent); }
-.wmux-chatv2-evidence { display: block; max-width: 100%; padding: 0 8px 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-sub); font: inherit; text-align: left; }
+.wmux-chatv2-evidence { display: inline-flex; align-items: center; gap: 4px; margin: 0 8px 4px; color: var(--text-sub); font: inherit; }
 .wmux-chatv2-evidence:hover { color: var(--accent-blue); text-decoration: underline; text-underline-offset: 2px; }
 .wmux-chatv2-shell-command { padding: 0 8px 2px; color: var(--text-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 .wmux-chatv2-pre[data-shell] > pre, .wmux-chatv2-pre[data-shell] > .wmux-chatv2-body-more { padding: 0 8px; }
-/* Output scrolls past ~9rem; an edge fades only while there is more beyond it
-   (a scroll-driven timeline is inactive, so no fade, when nothing overflows). */
-@property --wmux-chatv2-fade-top { syntax: '<length>'; inherits: false; initial-value: 0px; }
-@property --wmux-chatv2-fade-bottom { syntax: '<length>'; inherits: false; initial-value: 0px; }
-@keyframes wmux-chatv2-scroll-fade {
-  from { --wmux-chatv2-fade-top: 0px; --wmux-chatv2-fade-bottom: 18px; }
-  8% { --wmux-chatv2-fade-top: 18px; }
-  92% { --wmux-chatv2-fade-bottom: 18px; }
-  to { --wmux-chatv2-fade-top: 18px; --wmux-chatv2-fade-bottom: 0px; }
-}
-.wmux-chatv2-shell-output {
-  max-height: 9rem;
-  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 var(--wmux-chatv2-fade-top), #000 calc(100% - var(--wmux-chatv2-fade-bottom)), transparent);
-  mask-image: linear-gradient(to bottom, transparent, #000 var(--wmux-chatv2-fade-top), #000 calc(100% - var(--wmux-chatv2-fade-bottom)), transparent);
-  animation: wmux-chatv2-scroll-fade linear both;
-  animation-timeline: scroll(self);
-}
+/* Output scrolls past ~9rem; an edge fades while there is more beyond it. */
+.wmux-chatv2-shell-output { max-height: 9rem; }
+.wmux-chatv2-shell-output[data-fade="top"] { -webkit-mask-image: linear-gradient(to bottom, transparent, #000 18px); mask-image: linear-gradient(to bottom, transparent, #000 18px); }
+.wmux-chatv2-shell-output[data-fade="bottom"] { -webkit-mask-image: linear-gradient(to top, transparent, #000 18px); mask-image: linear-gradient(to top, transparent, #000 18px); }
+.wmux-chatv2-shell-output[data-fade="both"] { -webkit-mask-image: linear-gradient(to bottom, transparent, #000 18px, #000 calc(100% - 18px), transparent); mask-image: linear-gradient(to bottom, transparent, #000 18px, #000 calc(100% - 18px), transparent); }
 .wmux-chatv2-tasks ul { margin: 2px 0 0; padding: 0; list-style: none; }
 .wmux-chatv2-tasks li { display: flex; gap: 7px; font-size: 12.5px; line-height: 1.6; }
 .wmux-chatv2-tasks li[data-status="completed"] { color: var(--text-sub); text-decoration: line-through; }

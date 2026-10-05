@@ -211,9 +211,81 @@ function sameMembers(a: TranscriptRow[], b: TranscriptRow[]): boolean {
   return a.length === b.length && a.every((row, index) => row === b[index]);
 }
 
+type Chunk = { members: TranscriptRow[]; family: ToolFamily | 'mixed'; folds: boolean };
+
 /**
- * Folds runs of consecutive routine tool calls (see `foldable`) into one
- * `toolGroup` row. Reasoning between two calls rides inside the run; reasoning
+ * Splits one run into what it shows as: each same-kind stretch that reaches
+ * its threshold is its own chunk, and the calls between such stretches merge
+ * into one mixed chunk (folded from MIXED_MIN calls, else left as rows).
+ * Reasoning stays with the call before it.
+ */
+function runChunks(run: TranscriptRow[]): Chunk[] {
+  const segments: { members: TranscriptRow[]; family: ToolFamily; tools: number }[] = [];
+  for (const row of run) {
+    const family = row.kind === 'tool' ? toolFamily(row.block) : null;
+    const open = segments.at(-1);
+    if (open && (family === null || family === open.family)) {
+      open.members.push(row);
+      if (family) open.tools += 1;
+    } else {
+      segments.push({ members: [row], family: family ?? 'other', tools: 1 });
+    }
+  }
+  const chunks: Chunk[] = [];
+  let mixed: TranscriptRow[] = [];
+  let mixedTools = 0;
+  const flush = () => {
+    if (!mixed.length) return;
+    chunks.push({ members: mixed, family: 'mixed', folds: mixedTools >= MIXED_MIN });
+    mixed = [];
+    mixedTools = 0;
+  };
+  for (const segment of segments) {
+    if (segment.tools >= SAME_MIN[segment.family]) {
+      flush();
+      chunks.push({ members: segment.members, family: segment.family, folds: true });
+    } else {
+      mixed.push(...segment.members);
+      mixedTools += segment.tools;
+    }
+  }
+  flush();
+  // Reasoning trailing a chunk belongs to the run; never end a group on it.
+  return chunks.flatMap((chunk) => {
+    let last = chunk.members.length - 1;
+    while (last > 0 && chunk.members[last].kind === 'reasoning') last -= 1;
+    if (!chunk.folds || last === chunk.members.length - 1) return [chunk];
+    return [{ ...chunk, members: chunk.members.slice(0, last + 1) }, { members: chunk.members.slice(last + 1), family: chunk.family, folds: false }];
+  });
+}
+
+function toolGroup(members: TranscriptRow[], family: ToolFamily | 'mixed', previous: WeakMap<TranscriptRow, ToolGroupRow> | undefined): ToolGroupRow {
+  const tools = members.filter(foldable);
+  let additions = 0;
+  let deletions = 0;
+  for (const row of tools) {
+    if (toolFamily(row.block) !== 'edit') continue;
+    const stats = diffStats(row.block);
+    additions += stats.additions;
+    deletions += stats.deletions;
+  }
+  const fresh: ToolGroupRow = {
+    kind: 'toolGroup',
+    key: `group:${members[0].key}`,
+    label: groupLabel(family, tools.length),
+    count: tools.length,
+    state: tools.some((row) => row.state === 'running') ? 'running' : 'done',
+    additions,
+    deletions,
+    rows: members,
+  };
+  const prior = previous?.get(members[0]);
+  return prior && prior.label === fresh.label && prior.state === fresh.state && sameMembers(prior.rows, members) ? prior : fresh;
+}
+
+/**
+ * Folds runs of consecutive routine tool calls (see `foldable`) into
+ * `toolGroup` rows: same-kind stretches first, mixed leftovers after. Reasoning between two calls rides inside the run; reasoning
  * after the last call stays outside, so a live "Thinking" never hides. Anything
  * else — text, approvals, questions, failures, notices — ends the run. The
  * group is keyed by its first member, so it keeps its place (and its open
@@ -234,35 +306,10 @@ export function groupToolRows(rows: TranscriptRow[], cache: RowCache = new WeakM
       if (rows[end].kind === 'tool') last = end;
       end += 1;
     }
-    const members = rows.slice(index, last + 1);
-    const tools = members.filter(foldable);
-    const families = new Set(tools.map((row) => toolFamily(row.block)));
-    const family = families.size === 1 ? [...families][0] : 'mixed';
-    const folds = family === 'mixed' ? tools.length >= MIXED_MIN : tools.length >= SAME_MIN[family];
-    if (!folds) {
-      out.push(...members);
-    } else {
-      let additions = 0;
-      let deletions = 0;
-      for (const row of tools) {
-        if (toolFamily(row.block) !== 'edit') continue;
-        const stats = diffStats(row.block);
-        additions += stats.additions;
-        deletions += stats.deletions;
-      }
-      const fresh: ToolGroupRow = {
-        kind: 'toolGroup',
-        key: `group:${members[0].key}`,
-        label: groupLabel(family, tools.length),
-        count: tools.length,
-        state: tools.some((row) => row.state === 'running') ? 'running' : 'done',
-        additions,
-        deletions,
-        rows: members,
-      };
-      const prior = previous?.get(members[0]);
-      const group = prior && prior.label === fresh.label && prior.state === fresh.state && sameMembers(prior.rows, members) ? prior : fresh;
-      groups.set(members[0], group);
+    for (const chunk of runChunks(rows.slice(index, last + 1))) {
+      if (!chunk.folds) { out.push(...chunk.members); continue; }
+      const group = toolGroup(chunk.members, chunk.family, previous);
+      groups.set(chunk.members[0], group);
       out.push(group);
     }
     index = last + 1;

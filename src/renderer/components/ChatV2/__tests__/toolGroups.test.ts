@@ -52,6 +52,15 @@ describe('groupToolRows', () => {
     expect(shape(grouped([...read(), ...tool('execute')]))).toEqual(['user', 'tool', 'tool', 'footer']);
   });
 
+  it('splits a run into same-kind groups before folding what is left as mixed', () => {
+    const rows = grouped([...read(), ...read(), ...read(), ...read(), ...edit(5, 1), ...edit(0, 0), ...tool('execute'), ...tool('execute'), ...tool('execute')]);
+    expect(shape(rows)).toEqual(['user', 'group:Read 4 files', 'group:Edited 2 files', 'group:Ran 3 commands', 'footer']);
+    expect(rows[2]).toMatchObject({ additions: 5, deletions: 1 });
+    // Two calls between two same-kind groups are too few to fold.
+    const between = grouped([...read(), ...read(), ...read(), ...tool('execute'), ...edit(1, 0), ...read(), ...read(), ...read()]);
+    expect(shape(between)).toEqual(['user', 'group:Read 3 files', 'tool', 'tool', 'group:Read 3 files', 'footer']);
+  });
+
   it('never folds a failed tool: it splits the run', () => {
     const rows = grouped([...read(), ...read(), ...read(), ...tool('read', { status: 'failed' }), ...read(), ...read()]);
     expect(shape(rows)).toEqual(['user', 'group:Read 3 files', 'tool', 'tool', 'tool', 'footer']);
