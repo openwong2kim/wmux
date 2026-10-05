@@ -21,7 +21,7 @@ import {
   focusNotificationTarget,
 } from '../../hooks/useNotificationListener';
 import { fleetChangedSinceSeen, type FleetSeenEntry } from '../../stores/slices/uiSlice';
-import { tailForPty } from '../../utils/terminalTail';
+import { tailForPtyOrDaemon } from '../../utils/terminalTail';
 import { onTerminalRegistered } from '../../hooks/useTerminal';
 import FleetCard from './FleetCard';
 import PresetPicker from '../Sidebar/PresetPicker';
@@ -419,32 +419,43 @@ export default function FleetView() {
   useEffect(() => {
     setTails({});
     if (!previewPtyId) return;
+    let cancelled = false;
+    // A background pane has no renderer buffer: its tail comes from the daemon.
     const refresh = () => {
-      const tail = tailForPty(previewPtyId, previewTailLines);
-      setTails((prev) => {
-        const before = prev[previewPtyId];
-        return before?.length === tail.length && tail.every((line, i) => before[i] === line)
-          ? prev : { [previewPtyId]: tail };
+      void tailForPtyOrDaemon(previewPtyId, previewTailLines).then((tail) => {
+        if (cancelled) return;
+        setTails((prev) => {
+          const before = prev[previewPtyId];
+          return before?.length === tail.length && tail.every((line, i) => before[i] === line)
+            ? prev : { [previewPtyId]: tail };
+        });
       });
     };
     refresh();
     const id = window.setInterval(refresh, 750);
     const unsub = onTerminalRegistered(refresh);
-    return () => { window.clearInterval(id); unsub(); };
+    return () => { cancelled = true; window.clearInterval(id); unsub(); };
   }, [previewPtyId, previewTailLines]);
 
   // Error rows say what failed: the last error line of each one's terminal,
-  // read on the minute tick (error rows are few; the read is bounded).
-  const errorLines = useMemo(() => {
-    const out: Record<string, string> = {};
-    for (const row of groups.needsYou) {
-      const pane = row.pane;
-      if (pane.agentStatus !== 'error' || pane.remote || pane.surfaceType !== 'terminal') continue;
-      const line = lastErrorLine(tailForPty(fleetTargetPtyId(pane), 40));
-      if (line) out[pane.paneId] = line;
-    }
-    return out;
-  }, [groups, now]);
+  // read when the set of error rows changes and on the minute tick (error
+  // rows are few; each read is bounded).
+  const errorTargets = groups.needsYou
+    .filter((row) => row.pane.agentStatus === 'error' && !row.pane.remote && row.pane.surfaceType === 'terminal')
+    .map((row) => `${row.pane.paneId}\n${fleetTargetPtyId(row.pane)}`).join('\t');
+  const [errorLines, setErrorLines] = useState<Record<string, string>>({});
+  useEffect(() => {
+    let cancelled = false;
+    const targets = errorTargets ? errorTargets.split('\t').map((pair) => pair.split('\n')) : [];
+    void Promise.all(targets.map(async ([paneId, ptyId]) => [paneId, lastErrorLine(await tailForPtyOrDaemon(ptyId, 40))] as const))
+      .then((found) => {
+        if (cancelled) return;
+        const next: Record<string, string> = {};
+        for (const [paneId, line] of found) if (line) next[paneId] = line;
+        setErrorLines((prev) => (JSON.stringify(prev) === JSON.stringify(next) ? prev : next));
+      });
+    return () => { cancelled = true; };
+  }, [errorTargets, now]);
 
   // TASK-6 — per-pane agent resource attribution. The whole component is
   // mount-gated on `fleetViewVisible`, so this interval exists ONLY while the

@@ -60,7 +60,7 @@ function key(element: Element, name: string, init: KeyboardEventInit = {}): void
 }
 
 beforeEach(() => {
-  vi.spyOn(terminalTail, 'tailForPty').mockImplementation((ptyId: string) => TAILS[ptyId] ?? []);
+  vi.spyOn(terminalTail, 'tailForPtyOrDaemon').mockImplementation(async (ptyId: string) => TAILS[ptyId] ?? []);
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     pty: { write: () => undefined, dispose: () => undefined },
     metadata: { setLabel: async () => ({ ok: true }) },

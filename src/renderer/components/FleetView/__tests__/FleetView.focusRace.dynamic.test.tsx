@@ -225,7 +225,7 @@ describe('FleetView — task triage', () => {
   });
 
   it('opens the detail area on a deliberate selection, Space toggles it, Esc closes it before Fleet', async () => {
-    const read = vi.spyOn(terminalTail, 'tailForPty').mockReturnValue(['real terminal output']);
+    const read = vi.spyOn(terminalTail, 'tailForPtyOrDaemon').mockResolvedValue(['real terminal output']);
     seedFleet();
     act(() => useStore.setState({ fleetFinishedExpanded: true }));
     act(() => useStore.getState().setFleetViewVisible(true));
@@ -261,7 +261,7 @@ describe('FleetView — task triage', () => {
   });
 
   it('the row\'s details button selects that row and opens its detail', async () => {
-    vi.spyOn(terminalTail, 'tailForPty').mockReturnValue(['output of the running agent']);
+    vi.spyOn(terminalTail, 'tailForPtyOrDaemon').mockResolvedValue(['output of the running agent']);
     seedFleet();
     mount();
     await flushRaf();

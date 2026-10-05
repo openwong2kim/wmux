@@ -181,3 +181,31 @@ export function tailForPty(ptyId: string, n = 3): string[] {
   }
   return out;
 }
+
+/**
+ * Fleet's tail for any pane: the renderer's xterm buffer when the pane is
+ * mounted, else the daemon's plain-text snapshot (`pty.readText`) — a pane in
+ * a background or cold-parked workspace has no renderer buffer, which left
+ * Fleet's detail saying "No terminal output available." for most rows.
+ * Wrapped rows are joined into their logical line. Never throws; [] when
+ * neither source has text.
+ */
+export async function tailForPtyOrDaemon(ptyId: string, n: number): Promise<string[]> {
+  const local = tailForPty(ptyId, n);
+  if (local.length > 0 || !ptyId) return local;
+  const api = window.electronAPI?.pty;
+  if (typeof api?.readText !== 'function') return [];
+  try {
+    const res = await api.readText(ptyId, { scrollback: n * 4 });
+    if (!res?.success) return [];
+    const lines: string[] = [];
+    for (const row of res.rows) {
+      if (row.wrapped && lines.length > 0) lines[lines.length - 1] += row.text;
+      else lines.push(row.text);
+    }
+    while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
+    return lines.slice(-n);
+  } catch {
+    return [];
+  }
+}
