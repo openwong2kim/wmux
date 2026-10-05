@@ -1041,7 +1041,7 @@ const electronAPI = {
         ipcRenderer.invoke(IPC.DECK_DECISION_GET, { workspaceId }) as Promise<{
           decision: import('../main/deck/deckDecisionStore').WorkspaceDecision | null;
         }>,
-      resolve: (args: { workspaceId: string; id: string; resolution: string }) =>
+      resolve: (args: { workspaceId: string; id: string; resolution: string; dismiss?: boolean }) =>
         ipcRenderer.invoke(IPC.DECK_DECISION_RESOLVE, args) as Promise<{
           ok: boolean;
           code?: string;

@@ -2559,6 +2559,7 @@ export function registerDeckHandler(
           ...(workspaceName ? { workspaceName } : {}),
           decision: { id: d.id, question: d.question, options: d.options, context: d.context, raisedAt: d.raisedAt },
           ...(d.origin === 'moa-handoff' && moaHandoffs?.cardInfo(d.id) ? { handoff: moaHandoffs.cardInfo(d.id)! } : {}),
+          ...(isMainOwnedDecision(d) ? {} : { dismissible: true as const }),
         });
       }
       decisions.sort((a, b) => b.decision.raisedAt - a.decision.raisedAt);
@@ -3290,8 +3291,15 @@ export function registerDeckHandler(
     'never acted on — the turn that resolved it did not complete. This is YOUR OWN ' +
     'resolution, not a human answer: if it still holds, act on it now and continue; if it ' +
     'no longer applies, raise a fresh decision instead.';
+  // The operator closed the card as not needed: say so plainly, so the brain
+  // never takes one of its options as the answer.
+  const DECISION_DISMISSED_PROMPT =
+    'The operator DISMISSED the decision you raised as not needed (see the [decision] block ' +
+    'above). They chose none of its options: do NOT act on any of them. Carry on from the ' +
+    'current state; if a real fork still remains, raise a fresh decision.';
   const resumePromptFor = (d: WorkspaceDecision): string =>
-    d.resolvedBy === 'brain' ? DECISION_SELF_RESUME_PROMPT : DECISION_RESUME_PROMPT;
+    d.dismissed ? DECISION_DISMISSED_PROMPT
+      : d.resolvedBy === 'brain' ? DECISION_SELF_RESUME_PROMPT : DECISION_RESUME_PROMPT;
 
   ipcMain.removeHandler(IPC.DECK_DECISION_GET);
   ipcMain.handle(
@@ -3341,7 +3349,16 @@ export function registerDeckHandler(
       if (!workspaceId) return { ok: false, code: 'invalid_workspace' };
       const id = typeof req.id === 'string' ? req.id : '';
       const resolution = typeof req.resolution === 'string' ? req.resolution : '';
-      if (!id || !resolution.trim()) return { ok: false, code: 'invalid' };
+      // "Not needed": the operator closes a brain's card without choosing.
+      const dismiss = req.dismiss === true;
+      if (!id || (!dismiss && !resolution.trim())) return { ok: false, code: 'invalid' };
+      if (dismiss) {
+        // Only a brain's own card: a main-owned card (hand-off, proposal) and
+        // the memory card have their own answers.
+        const cur = workspaceId === MOA_MEMORY_DECISION_KEY ? null : loadWorkspaceDecision(workspaceId);
+        if (!cur || cur.id !== id || cur.status !== 'pending') return { ok: false, code: 'not_pending' };
+        if (isMainOwnedDecision(cur)) return { ok: false, code: 'not_dismissible' };
+      }
       // A "Remember this?" card is not a workspace's decision: no brain waits
       // on it and no turn resumes. The lane saves or discards, then clears it.
       if (workspaceId === MOA_MEMORY_DECISION_KEY) {
@@ -3363,7 +3380,7 @@ export function registerDeckHandler(
         if (!r) return { ok: false, code: 'not_pending' };
         return r.ok ? { ok: true } : { ok: false, code: r.code };
       }
-      const decision = await resolveDecision(workspaceId, id, resolution);
+      const decision = await resolveDecision(workspaceId, id, resolution, undefined, 'human', { dismissed: dismiss });
       if (!decision || decision.status !== 'resolved') {
         // Stale id, already resolved, or empty answer — nothing to resume.
         return { ok: false, code: 'not_pending' };
@@ -3372,7 +3389,7 @@ export function registerDeckHandler(
       if (await moaProposals.handleResolved(workspaceId, decision)) return { ok: true, decision };
       // The operator answered one of Moa's own decisions: offer to keep the
       // answer as a precedent. A no-op while Moa or proposals are off.
-      if (workspaceId === getHqWorkspaceId()) {
+      if (workspaceId === getHqWorkspaceId() && !decision.dismissed) {
         void moaMemory.offerPrecedent({
           decisionId: decision.id,
           question: decision.question,
@@ -3404,7 +3421,7 @@ export function registerDeckHandler(
       // reject is fine — the resolution rides withLoopContext on the next turn
       // (event / schedule / human) and is consumed then. Fire-and-forget: the
       // renderer only needs the resolve's accept, not the turn's outcome.
-      void runTurnForWorkspace(DECISION_RESUME_PROMPT, workspaceId, { queued: true }).catch(() => {
+      void runTurnForWorkspace(resumePromptFor(decision), workspaceId, { queued: true }).catch(() => {
         /* best-effort resume — the durable resolved decision rides the next turn */
       });
       return { ok: true, decision };

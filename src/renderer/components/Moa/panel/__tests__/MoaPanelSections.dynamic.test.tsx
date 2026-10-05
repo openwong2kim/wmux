@@ -110,6 +110,18 @@ describe('MoaWaitingOnYou', () => {
     expect(container.querySelector('[data-moa-decision="d6"]')).not.toBeNull();
     expect(container.querySelector('[role="alert"]')).toBeNull();
   });
+
+  it('"Not needed" closes a dismissible card without choosing; other cards have no such action', async () => {
+    const onResolve = vi.fn(async () => ({ ok: true }));
+    const decisions = [{ ...decision('d8', 'ws-a', ['yes', 'no']), dismissible: true as const }, decision('d9', 'ws-b', ['Open'])];
+    await act(async () => root.render(createElement(MoaWaitingOnYou, { decisions, onResolve, t })));
+    expect(container.querySelector('[data-moa-decision="d9"] [data-moa-decision-dismiss]')).toBeNull();
+    const dismiss = container.querySelector('[data-moa-decision="d8"] [data-moa-decision-dismiss]') as HTMLButtonElement;
+    expect(dismiss.textContent).toBe('moa.panel.dismiss');
+    await act(async () => { dismiss.click(); });
+    expect(onResolve).toHaveBeenCalledWith({ workspaceId: 'ws-a', id: 'd8', resolution: '', dismiss: true });
+    expect(container.querySelector('[data-moa-decision="d8"]')).toBeNull();
+  });
 });
 
 describe('MoaWaitingOnYou — the "Remember this?" card', () => {

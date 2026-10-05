@@ -60,14 +60,16 @@ import type { BrainAdapter, BrainEvent } from '../../../deck/BrainAdapter';
 import type { MoaTranscriptHint } from '../../../deck/moaTranscript';
 import { getWorkspaceMirror, __resetWorkspaceMirrorForTest } from '../../../workspace/WorkspaceMirror';
 import { __resetHqMemoryForTest, setHqWorkspaceId, setMoaEnabled } from '../../../deck/deckHqStore';
-import { clearDecision, raiseDecision, resolveDecision } from '../../../deck/deckDecisionStore';
+import { clearDecision, loadWorkspaceDecision, raiseDecision, raiseDecisionIfFree, resolveDecision } from '../../../deck/deckDecisionStore';
 import { __resetStartupDeckReconcileForTest } from '../../../deck/deckOrphanReconcile';
 import { MOA_MEMORY_DECISION_KEY, type MoaPendingDecision } from '../../../../shared/moa';
 
+const sentPrompts: string[] = [];
 class FakeAdapter implements BrainAdapter {
   sessionId: string | null = null;
   start(): void { /* nothing to start */ }
-  async *send(): AsyncIterable<BrainEvent> {
+  async *send(prompt: string): AsyncIterable<BrainEvent> {
+    sentPrompts.push(prompt);
     yield { type: 'turn-end', sessionId: null } as BrainEvent;
   }
   interrupt(): void { /* no in-flight turn */ }
@@ -100,6 +102,7 @@ beforeEach(async () => {
   cleanup = null;
   captured.clear();
   adapterOpts = [];
+  sentPrompts.length = 0;
   pushed.length = 0;
   __resetWorkspaceMirrorForTest();
   __resetHqMemoryForTest();
@@ -141,6 +144,7 @@ describe('DECK_MOA_DECISIONS', () => {
     expect(list[0]).toEqual({
       workspaceId: 'ws-c',
       decision: { id: expect.any(String), question: 'which branch?', options: [], context: '', raisedAt: 3_000 },
+      dismissible: true,
     });
     expect(list[1]).toMatchObject({
       workspaceId: 'ws-a',
@@ -167,6 +171,30 @@ describe('DECK_MOA_DECISIONS', () => {
       .toMatchObject({ ok: true });
     expect(changedPushes()).toBeGreaterThanOrEqual(before + 2);
     expect(await decisions()).toEqual([]);
+  });
+
+  it('"Not needed" closes a brain\'s card and tells the brain to act on none of its options', async () => {
+    mirror([{ id: 'ws-hq', name: 'Moa' }]);
+    await setHqWorkspaceId('ws-hq');
+    const d = await raiseDecision('ws-hq', { question: 'claude --continue?', options: ['yes', 'no'] });
+    expect(await invoke(IPC.DECK_DECISION_RESOLVE, { workspaceId: 'ws-hq', id: d!.id, resolution: '', dismiss: true }))
+      .toMatchObject({ ok: true, decision: { status: 'resolved', dismissed: true, resolvedBy: 'human' } });
+    expect(await decisions()).toEqual([]);
+    for (let i = 0; i < 50 && sentPrompts.length === 0; i++) await new Promise((r) => setTimeout(r, 5));
+    expect(sentPrompts).toHaveLength(1);
+    expect(sentPrompts[0]).toContain('[decision] DISMISSED');
+    expect(sentPrompts[0]).toContain('do NOT act on any of them');
+    expect(sentPrompts[0]).not.toContain('the human decided');
+    // No "Remember this?" precedent for a card nobody answered.
+    expect(loadWorkspaceDecision(MOA_MEMORY_DECISION_KEY)).toBeNull();
+  });
+
+  it('"Not needed" is refused for a main-owned card, which stays pending', async () => {
+    const d = await raiseDecisionIfFree('ws-a', { question: 'Open an issue?', options: ['Open', 'Skip'], origin: 'issue-proposal' });
+    expect((await decisions())[0]).not.toHaveProperty('dismissible');
+    expect(await invoke(IPC.DECK_DECISION_RESOLVE, { workspaceId: 'ws-a', id: d!.id, resolution: '', dismiss: true }))
+      .toEqual({ ok: false, code: 'not_dismissible' });
+    expect(loadWorkspaceDecision('ws-a')).toMatchObject({ id: d!.id, status: 'pending' });
   });
 
   it('stops pushing after the handler is disposed', async () => {

@@ -52,6 +52,9 @@ export interface WorkspaceDecision {
    *  survive to the next resume turn (the human's answer — never droppable).
    *  Absent on legacy records ⇒ treated as 'human' (the conservative read). */
   resolvedBy?: DecisionResolvedBy;
+  /** The operator closed the card as not needed instead of answering it
+   *  (resolvedBy 'human'). The brain must act on none of its options. */
+  dismissed?: true;
   raisedAt: number;
   resolvedAt?: number;
   /** Who raised it, when not the workspace's brain. `issue-proposal`: Moa's
@@ -75,6 +78,9 @@ export const MAIN_OWNED_ORIGINS: readonly DecisionOrigin[] = ['issue-proposal', 
 export type DecisionResolvedBy = 'human' | 'brain';
 
 const WORKSPACE_ID_RE = /^[A-Za-z0-9._-]{1,80}$/;
+
+/** The resolution text a dismissed card is stored with. */
+export const DISMISSED_RESOLUTION = 'Not needed (dismissed by the operator)';
 
 export const DECISION_LIMITS = {
   MAX_QUESTION_CHARS: 1000,
@@ -122,6 +128,7 @@ function sanitizeDecision(raw: unknown): WorkspaceDecision | null {
     ...(status === 'resolved' && (o.resolvedBy === 'human' || o.resolvedBy === 'brain')
       ? { resolvedBy: o.resolvedBy as DecisionResolvedBy }
       : {}),
+    ...(status === 'resolved' && o.dismissed === true ? { dismissed: true as const } : {}),
     raisedAt: typeof o.raisedAt === 'number' && Number.isFinite(o.raisedAt) ? o.raisedAt : 0,
     ...(typeof o.resolvedAt === 'number' && Number.isFinite(o.resolvedAt)
       ? { resolvedAt: o.resolvedAt }
@@ -407,8 +414,11 @@ export async function resolveDecision(
   resolution: string,
   dir?: string,
   resolvedBy: DecisionResolvedBy = 'human',
+  opts: { dismissed?: boolean } = {},
 ): Promise<WorkspaceDecision | null> {
-  const answer = resolution.trim();
+  // Only the operator dismisses: a brain resolve never carries the flag.
+  const dismissed = opts.dismissed === true && resolvedBy === 'human';
+  const answer = dismissed ? DISMISSED_RESOLUTION : resolution.trim();
   if (!answer) return null;
   // Fast no-op WITHOUT a disk write for a stale resolve (wrong id / already
   // resolved / no decision); the serialized mutate below re-checks
@@ -430,6 +440,7 @@ export async function resolveDecision(
         status: 'resolved',
         resolution: answer.slice(0, DECISION_LIMITS.MAX_RESOLUTION_CHARS),
         resolvedBy,
+        ...(dismissed ? { dismissed: true as const } : {}),
         resolvedAt: Date.now(),
       };
     },
@@ -508,6 +519,13 @@ export async function clearResolvedDecision(
  */
 export function renderDecisionBlock(d: WorkspaceDecision): string {
   if (d.status === 'resolved') {
+    if (d.dismissed) {
+      return [
+        `[decision] DISMISSED — the operator closed this decision as not needed: ${d.question}`,
+        'They chose none of its options. Do NOT act on any of them; carry on from the',
+        'current state, and raise a fresh decision only if a real fork remains.',
+      ].join('\n');
+    }
     // Provenance-aware (round-3 review P2): a brain self-resolution must never
     // be presented as the human's answer — a stranded self-resolve that resumes
     // later (turn errored after the resolve landed) says so honestly.

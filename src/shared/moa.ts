@@ -151,6 +151,8 @@ export interface MoaPendingDecision {
   };
   /** Present on a hand-off Moa proposed (origin 'moa-handoff'). */
   handoff?: import('./moaHandoff').MoaHandoffCardInfo;
+  /** A brain's own card: the operator may close it as not needed. */
+  dismissible?: true;
 }
 
 /** Moa's mascot states (the panel header, the titlebar icon). */

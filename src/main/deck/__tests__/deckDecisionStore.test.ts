@@ -145,6 +145,19 @@ describe('deckDecisionStore', () => {
     expect(resolved).toContain('yes');
   });
 
+  it('a dismissed decision survives a reload and renders as no answer, never as an option', async () => {
+    const d = (await raiseDecision('ws-1', { question: 'Continue the old session?', options: ['yes', 'no'] }, dir))!;
+    await resolveDecision('ws-1', d.id, '', dir, 'human', { dismissed: true });
+    const loaded = loadWorkspaceDecision('ws-1', dir)!;
+    expect(loaded).toMatchObject({ status: 'resolved', dismissed: true, resolvedBy: 'human' });
+    const block = renderDecisionBlock(loaded);
+    expect(block).toContain('DISMISSED');
+    expect(block).not.toContain('the human decided');
+    // A brain resolve can never carry the flag.
+    const e = (await raiseDecision('ws-2', { question: 'Q?' }, dir))!;
+    expect(await resolveDecision('ws-2', e.id, 'x', dir, 'brain', { dismissed: true })).not.toHaveProperty('dismissed');
+  });
+
   it('resolveDecision returns null on a stale resolve (no double-transition kick)', async () => {
     const d = (await raiseDecision('ws-1', { question: 'Q?' }, dir))!;
     expect(await resolveDecision('ws-1', d.id, 'answer', dir)).toMatchObject({ status: 'resolved' });
