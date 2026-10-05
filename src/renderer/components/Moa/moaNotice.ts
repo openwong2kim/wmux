@@ -224,7 +224,8 @@ export function useMoaNotices({ enabled, onScreen, hqId, bubbles, text }: UseMoa
       // A reset push is a re-snapshot of history (the first push after every
       // subscribe, or a new brain session), not a new message.
       if (data?.reset) return;
-      if (data?.events?.some((e) => e.kind === 'assistant_text')) {
+      // A reply, not Moa's mid-turn narration (main folds that into activity).
+      if (data?.events?.some((e) => e.kind === 'assistant_text' && !e.folded)) {
         dispatch({ type: 'reply', quiet: live.current.quiet });
       }
     });

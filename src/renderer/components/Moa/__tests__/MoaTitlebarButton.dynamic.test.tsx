@@ -322,6 +322,14 @@ describe('Moa reply dot', () => {
     expect(dot()).toBe('none');
   });
 
+  it('Moa\'s mid-turn narration (folded by main) does not mark it; the reply does', async () => {
+    await mount();
+    act(() => append!({ seq: 1, events: [{ id: 'n1', kind: 'assistant_text', text: 'Proposing the hand-off.', folded: true }], cursor: {} as never }));
+    expect(dot()).toBe('none');
+    act(() => append!({ seq: 2, events: [{ id: 'a1', kind: 'assistant_text', text: '넘겼습니다.', turnComplete: true }], cursor: {} as never }));
+    expect(dot()).toBe('reply');
+  });
+
   it('holds its own transcript subscription whether or not the panel is mounted', async () => {
     await mount();
     expect(api.deck.moa.transcript.subscribe).toHaveBeenCalledTimes(1);
