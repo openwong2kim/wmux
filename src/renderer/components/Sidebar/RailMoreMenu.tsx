@@ -6,6 +6,7 @@ import { Icon, IconGear, IconKeyboard, IconRefresh } from '../icons';
 import PaneActionsMenu, { PANE_ACTIONS_MENU_WIDTH, type PaneActionItem } from '../Pane/PaneActionsMenu';
 import { effectiveBindings } from '../../../shared/keymap';
 import { shortcutLabel } from '../../utils/shortcutLabel';
+import { selectMoaOn } from '../Layout/moaDockGate';
 
 /** `__APP_VERSION__` is a build-time define; tests run without it. */
 function appVersion(): string {
@@ -25,7 +26,9 @@ export default function RailMoreMenu() {
   const overrides = useStore((s) => s.shortcutOverrides);
   // With Moa off there is no right panel and no titlebar toggle: this entry
   // (and Settings › Moa) is where Moa is turned on.
-  const moaOff = useStore((s) => !s.moa?.config.enabled);
+  // Same answer as the dock gate, including the boot moment before main
+  // has said whether Moa is on.
+  const moaOff = useStore((s) => !selectMoaOn(s));
   const platform = (typeof window === 'undefined' ? undefined : window.electronAPI?.platform) ?? 'linux';
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const [anchor, setAnchor] = useState<{ top: number; left: number; right: number; bottom: number } | null>(null);

@@ -70,7 +70,8 @@ export function MoaTaskCards({
           <span className="tabular-nums text-[var(--text-sub)] font-normal">{links.length}</span>
         </button>
       </h3>
-      <ul id="moa-tasks-list" hidden={!sectionOpen} className="m-0 p-0 list-none flex flex-col">
+      {/* `hidden` alone loses to the flex utility, so the class carries it. */}
+      <ul id="moa-tasks-list" hidden={!sectionOpen} className={`m-0 p-0 list-none flex-col ${sectionOpen ? 'flex' : 'hidden'}`}>
         {links.map((link) => {
           const open = expanded.has(link.id);
           const regionId = `moa-task-${link.id}`;

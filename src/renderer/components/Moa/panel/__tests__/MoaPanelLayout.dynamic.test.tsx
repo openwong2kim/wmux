@@ -160,5 +160,7 @@ describe('Moa panel — one column', () => {
     await act(async () => toggle.click());
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     expect((host.querySelector('#moa-tasks-list') as HTMLElement).hidden).toBe(true);
+    // The attribute alone loses to a display utility: the class must fold it too.
+    expect((host.querySelector('#moa-tasks-list') as HTMLElement).classList.contains('flex')).toBe(false);
   });
 });
