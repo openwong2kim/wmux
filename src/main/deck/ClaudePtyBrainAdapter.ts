@@ -406,10 +406,10 @@ export function buildBrainSettingsProfile(opts: {
    *  through that script instead, which allows only `.md` files directly in
    *  the proposals folder. Null/absent = the hard deny every other brain gets. */
   proposalGateScriptPath?: string | null;
-  /** Moa's read gate (moaReadGate.ts) and the roots file it reads: Read, Grep
-   *  and Glob inside a delegated repo pass without a prompt. Absent = every
-   *  such read prompts as before. */
-  readGate?: { scriptPath: string; rootsPath: string } | null;
+  /** Moa's read gate script (moaReadGate.ts): Read, Grep and Glob inside a
+   *  delegated repo pass without a prompt. Absent = every such read prompts
+   *  as before. */
+  readGate?: { scriptPath: string } | null;
 }): Record<string, unknown> {
   const proposalGate = opts.proposalGateScriptPath ?? null;
   const denied = proposalGate
@@ -440,7 +440,7 @@ export function buildBrainSettingsProfile(opts: {
     // it cannot vouch for is asked about, never refused.
     preToolUse.push({
       matcher: 'Read|Grep|Glob',
-      hooks: [{ type: 'command', command: `${quoteArg(opts.nodePath)} ${quoteArg(opts.readGate.scriptPath)} ${quoteArg(opts.readGate.rootsPath)}` }],
+      hooks: [{ type: 'command', command: `${quoteArg(opts.nodePath)} ${quoteArg(opts.readGate.scriptPath)}` }],
     });
   }
   const hooks: Record<string, unknown> = {
@@ -750,9 +750,9 @@ export interface ClaudePtyBrainAdapterDeps {
   /** The Moa proposal gate: Write/Edit allowed only for `.md` files directly
    *  in this folder. Absent = Write and Edit stay hard-denied. */
   proposalGate?: { proposalsDir: string };
-  /** Moa's read gate: the roots file main keeps (moaReadGate.ts). Absent = no
-   *  gate, every read outside the brain home prompts. */
-  readGate?: { rootsPath: string };
+  /** Moa's read gate (moaReadGate.ts). Absent = no gate, every read outside
+   *  the brain home prompts. */
+  readGate?: true;
   /** Fired with the daemon session id the moment the pty exists, so the deck
    *  can embed the live terminal, and with `null` on every teardown so the
    *  deck retires a terminal that no longer exists. */
@@ -839,6 +839,8 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
   /** Live daemon session id (the ptyId) while the TUI runs. */
   private ptyId: string | null = null;
   private profilePaths: string[] = [];
+  /** Moa's read gate written for this spawn, checked before every turn. */
+  private readGateScriptPath: string | null = null;
   private unregisterHooks: (() => void) | null = null;
   private unsubscribeData: (() => void) | null = null;
   private unsubscribeExit: (() => void) | null = null;
@@ -1276,17 +1278,36 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
 
   /** Write Moa's read gate beside the profile, or return null (every read
    *  outside the brain home then prompts, as before). */
-  private writeReadGate(dir: string, stamp: string): { scriptPath: string; rootsPath: string } | null {
-    const gate = this.deps.readGate;
-    if (!gate) return null;
+  private writeReadGate(dir: string, stamp: string): { scriptPath: string } | null {
+    if (!this.deps.readGate) return null;
     try {
       const scriptPath = path.join(dir, `read-gate-${stamp}.cjs`);
       fs.writeFileSync(scriptPath, buildReadGateScript(), { encoding: 'utf8', mode: 0o600 });
       this.profilePaths.push(scriptPath);
-      return { scriptPath, rootsPath: gate.rootsPath };
+      this.readGateScriptPath = scriptPath;
+      return { scriptPath };
     } catch (err) {
       console.warn(`[deck] could not write Moa's read gate; reads keep prompting: ${String(err)}`);
       return null;
+    }
+  }
+
+  /** The read gate is a file any same-user process could edit: before each
+   *  turn, put main's own script back if its content changed. */
+  ensureReadGateIntact(): void {
+    const scriptPath = this.readGateScriptPath;
+    if (!scriptPath) return;
+    const expected = buildReadGateScript();
+    try {
+      if (fs.readFileSync(scriptPath, 'utf8') === expected) return;
+    } catch {
+      /* missing: rewrite it */
+    }
+    try {
+      fs.writeFileSync(scriptPath, expected, { encoding: 'utf8', mode: 0o600 });
+      console.warn('[deck] Moa\'s read gate had changed on disk; rewrote it');
+    } catch (err) {
+      console.warn(`[deck] could not restore Moa's read gate: ${String(err)}`);
     }
   }
 
@@ -1660,6 +1681,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
       yield { type: 'error', message: 'commander session disposed' };
       return;
     }
+    this.ensureReadGateIntact();
 
     if (!this.ptyId) {
       let spawned = await this.spawn(this._sessionId);

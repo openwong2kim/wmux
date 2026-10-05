@@ -96,6 +96,14 @@ export const WMUX_HOOK_BRIDGE_CLIENT_NAME = 'wmux-hook-bridge';
 export const WMUX_STATUSLINE_CLIENT_NAME = 'wmux-statusline';
 
 /**
+ * Stable `clientName` reported by Moa's read gate (the PreToolUse hook main
+ * generates for the HQ brain, src/main/deck/moaReadGate.ts) when it asks the
+ * MAIN pipe which repositories Moa may read without a prompt
+ * (`deck.moaReadRoots`). Its own one-method lane, like the statusline's.
+ */
+export const WMUX_READ_GATE_CLIENT_NAME = 'wmux-read-gate';
+
+/**
  * `clientName` values that must NEVER be promoted to first-party recognition
  * through `mcp.firstPartyClients` in `~/.wmux/config.json` (issue #636).
  * Compared case-insensitively. Enforced by `setConfiguredFirstPartyClients`
@@ -125,6 +133,7 @@ export const NON_IDENTIFYING_CLIENT_NAMES: ReadonlySet<string> = new Set<string>
   WMUX_CLI_CLIENT_NAME,
   WMUX_HOOK_BRIDGE_CLIENT_NAME,
   WMUX_STATUSLINE_CLIENT_NAME,
+  WMUX_READ_GATE_CLIENT_NAME,
 ]);
 
 /**
@@ -537,6 +546,7 @@ export type RpcMethod =
   | 'company.provisionCeo'
   | 'hooks.signal'
   | 'usage.rateLimits'
+  | 'deck.moaReadRoots'
   | 'a2a.channel.list'
   | 'a2a.channel.get'
   | 'a2a.channel.getMessages'
@@ -774,6 +784,7 @@ export const ALL_RPC_METHODS = [
   'company.provisionCeo',
   'hooks.signal',
   'usage.rateLimits',
+  'deck.moaReadRoots',
   'a2a.channel.list',
   'a2a.channel.get',
   'a2a.channel.getMessages',

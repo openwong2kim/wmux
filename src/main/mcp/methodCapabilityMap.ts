@@ -602,6 +602,9 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   // Live Claude Code rate limits from the bundled statusline script — the same
   // internal caller class as hooks.signal.
   'usage.rateLimits': { capability: 'wmux.internal' },
+  // Moa's read gate asks which repositories it may read without a prompt.
+  // Read-only, answered from main's memory; the same internal caller class.
+  'deck.moaReadRoots': { capability: 'wmux.internal' },
 };
 
 /**

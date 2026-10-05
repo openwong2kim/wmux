@@ -154,7 +154,7 @@ import { createMoaHandoffService } from '../../deck/moaHandoffHost';
 import { HANDOFF_NOTICE_OPTION, HANDOFF_OPTIONS, type MoaHandoffResolveResult } from '../../../shared/moaHandoff';
 import { MoaTranscript, type MoaTranscriptHint } from '../../deck/moaTranscript';
 import { isSmallTalk } from '../../deck/smallTalk';
-import { computeReadRoots, getReadRootsPath, isAcceptableReadRoot, READ_ROOT_OPEN_TTL_MS, setMoaReadRootsRefresher, writeReadRoots } from '../../deck/moaReadGate';
+import { computeReadRoots, isAcceptableReadRoot, setMoaReadRoots, setMoaReadRootsRefresher } from '../../deck/moaReadGate';
 import { createSerialChain } from '../../deck/serialChain';
 import { answerMoaApproval, MOA_ANSWER_DELEGATED_PROMPT_RPC, readMoaApproval } from '../../deck/moaApproval';
 import { getAccountStore } from '../../account/accountStore';
@@ -237,9 +237,8 @@ export interface RegisterDeckHandlerOptions {
     loadMemory?: () => string;
     /** Moa's proposals folder, when its brain may write proposals there. */
     moaProposalsDir?: string;
-    /** Moa's read roots file, when its brain may read delegated repos
-     *  without a prompt (moaReadGate.ts). */
-    moaReadRootsPath?: string;
+    /** Moa's brain may read delegated repos without a prompt (moaReadGate.ts). */
+    moaReadGate?: boolean;
     /** How a terminal brain reports each hook signal's session id and
      *  transcript path (the HQ's right-panel transcript binds from these).
      *  Optional: only the terminal brain has hook signals to report. */
@@ -449,7 +448,7 @@ export function registerDeckHandler(
       onForeignSessionId: (sessionId: string) => void;
       loadMemory?: () => string;
       moaProposalsDir?: string;
-      moaReadRootsPath?: string;
+      moaReadGate?: boolean;
       onTranscriptHint?: (hint: MoaTranscriptHint) => void;
     }) => {
       // BYOB M0: the vendor picker decides which brain runtime serves this
@@ -543,7 +542,7 @@ export function registerDeckHandler(
             onForeignSessionId: adapterOpts.onForeignSessionId,
             ...(adapterOpts.loadMemory ? { loadMemory: adapterOpts.loadMemory } : {}),
             ...(adapterOpts.moaProposalsDir ? { proposalGate: { proposalsDir: adapterOpts.moaProposalsDir } } : {}),
-            ...(adapterOpts.moaReadRootsPath ? { readGate: { rootsPath: adapterOpts.moaReadRootsPath } } : {}),
+            ...(adapterOpts.moaReadGate ? { readGate: true } : {}),
             ...(adapterOpts.onTranscriptHint ? { onTranscriptHint: adapterOpts.onTranscriptHint } : {}),
             // The workspace mode IS the launch policy (owner decision
             // 2026-08-01): assist launches claude in accept-edits, danger in
@@ -826,29 +825,20 @@ export function registerDeckHandler(
     fanoutRoots = { hq, at: Date.now(), paths };
     return paths;
   };
-  let readRootsWritten: { key: string; at: number } | null = null;
   const readRootsChain = createSerialChain();
   const writeReadRootsNow = async (): Promise<void> => {
     const hq = getHqWorkspaceId();
     const enabled = isMoaEnabled() && hq !== null && hqPresence(hq) === 'present' && getMoaConfig().readWithoutAsking !== false;
     const work = enabled && hq ? loadLiveDeckWork(hq) : null;
-    const roots = computeReadRoots({
+    // In memory only: the gate asks main for them (deck.moaReadRoots). A file
+    // on disk could be rewritten by any same-user process, a worker included.
+    setMoaReadRoots(computeReadRoots({
       now: Date.now(),
       enabled,
       handoffs: enabled ? moaHandoffs?.readRootSources() ?? [] : [],
       liveTaskIds: new Set(Object.keys(work?.a2aTasks ?? {})),
       fanoutWorktrees: enabled && hq ? await openFanoutWorktrees(hq) : [],
-    });
-    const key = JSON.stringify(roots.map((r) => r.path));
-    // Open roots are re-stamped well before they lapse; an unchanged set in
-    // between is not rewritten on every mirror push.
-    if (readRootsWritten && readRootsWritten.key === key && Date.now() - readRootsWritten.at < READ_ROOT_OPEN_TTL_MS / 2) return;
-    try {
-      writeReadRoots(getReadRootsPath(), roots);
-      readRootsWritten = { key, at: Date.now() };
-    } catch (err) {
-      console.warn(`[deck] could not write Moa's read roots: ${String(err)}`);
-    }
+    }));
   };
   /** One write at a time; never throws. */
   const refreshReadRoots = (): Promise<void> => readRootsChain(writeReadRootsNow).catch(() => undefined);
@@ -1061,8 +1051,8 @@ export function registerDeckHandler(
     const isMoaHqPty = vendor === 'claude-pty' && workspaceId === getHqWorkspaceId() && isMoaEnabled();
     const moaProposalsDir = isMoaHqPty && isMoaMemoryProposalsEnabled() ? moaMemory.proposalsDir : undefined;
     // Read once per spawn: turning the setting off drops the hook from the
-    // next brain and empties the roots file at once (refreshReadRoots).
-    const moaReadRootsPath = isMoaHqPty && getMoaConfig().readWithoutAsking !== false ? getReadRootsPath() : undefined;
+    // next brain and empties main's roots at once (refreshReadRoots).
+    const moaReadGate = isMoaHqPty && getMoaConfig().readWithoutAsking !== false;
     // Only a Claude runtime's session id names a Claude transcript.
     const claudeRuntime = vendor === 'claude' || vendor === 'claude-pty';
     // The adapter's foreign-turn callback needs the manager the adapter is
@@ -1103,7 +1093,7 @@ export function registerDeckHandler(
         ...(fullPower ? { fullPower: true } : {}),
         ...(isMoaHqPty ? { loadMemory: () => loadCommanderMemory({ workspaceId }) } : {}),
         ...(moaProposalsDir ? { moaProposalsDir } : {}),
-        ...(moaReadRootsPath ? { moaReadRootsPath } : {}),
+        ...(moaReadGate ? { moaReadGate: true } : {}),
       }),
       sink: (event) => emit(workspaceId, event),
       startOptions: {
@@ -2515,7 +2505,7 @@ export function registerDeckHandler(
       const patch = (raw && typeof raw === 'object' && !Array.isArray(raw)) ? (raw as MoaConfigPatch) : {};
       if (!(await setMoaConfig(patch))) return { ok: false, code: 'store_corrupt' };
       emitMoaChanged();
-      // Turned off: the roots file empties now, not at the next spawn.
+      // Turned off: main's roots empty now, not at the next spawn.
       if (patch.readWithoutAsking !== undefined) void refreshReadRoots();
       // Approvals already waiting when the lane is turned on get their pass now.
       if (patch.approvalPress === true) runHqAutoPress();

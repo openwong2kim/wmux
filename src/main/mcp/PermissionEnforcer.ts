@@ -67,6 +67,7 @@ import { COMMANDER_RPC_METHODS } from '../../shared/commanderSurface';
 import { WMUX_CLI_METHODS, isInternalCliClient } from './internalCli';
 import { HOOK_BRIDGE_METHODS, isHookBridgeClient } from './hookBridge';
 import { STATUSLINE_PUSH_METHODS, isStatuslinePushClient } from './statuslinePush';
+import { READ_GATE_METHODS, isReadGateClient } from './readGateLane';
 import { isLocalExternalWireContext } from './rpcProvenance';
 
 export type EnforcerOutcome =
@@ -343,6 +344,18 @@ export function check(input: EnforcerInput): EnforcerOutcome {
     !input.trustLookupFailed &&
     input.trust?.status !== 'denied' &&
     STATUSLINE_PUSH_METHODS.has(input.method)
+  ) {
+    return { kind: 'allow' };
+  }
+
+  // Moa's read gate asks main for its read roots: `deck.moaReadRoots` only,
+  // read-only. Its own set and name (readGateLane.ts). Same four guards.
+  if (
+    isLocalExternalWireContext(input.ctx) &&
+    isReadGateClient(input.ctx.clientName) &&
+    !input.trustLookupFailed &&
+    input.trust?.status !== 'denied' &&
+    READ_GATE_METHODS.has(input.method)
   ) {
     return { kind: 'allow' };
   }
