@@ -103,12 +103,14 @@ export function MoaWaitingOnYou({
     if (total === 1) {
       // The last one: the section goes away, so focus moves to the panel's
       // top region (it is focusable for exactly this) rather than the page.
-      // Docked above the composer, the emptied dock hides: focus the composer.
+      // Docked above the composer, the section is portalled out of that
+      // region, so it is found through the chat. Not the composer: a resumed
+      // turn disables it at once, which would drop focus to the page.
       const docked = listRef.current?.closest('[data-moa-dock]');
-      const target = docked
-        ? docked.closest('[data-moa-chat]')?.querySelector<HTMLElement>('textarea')
+      const top = docked
+        ? docked.closest('[data-moa-chat]')?.querySelector<HTMLElement>('[data-moa-panel-top]')
         : listRef.current?.closest<HTMLElement>('[data-moa-panel-top]');
-      target?.focus();
+      top?.focus({ preventScroll: true });
     } else {
       refocusAt.current = visible.findIndex((v) => v.decision.id === d.decision.id);
     }

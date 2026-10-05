@@ -62,10 +62,10 @@
  * scroll: a gap before the conversation starts. */
 .wmux-moa-chat-top { margin-bottom: 12px; }
 /* Waiting on you, docked above the composer: it stays in view however far
- * the chat is scrolled. Its own scroll past a third of the window, so a pile
+ * the chat is scrolled. Its own scroll past half the window, so a pile
  * of cards never pushes the composer away; the cards draw their own needs-you
  * rows, so the dock adds no boundary. Edge to edge with the composer. With
  * nothing waiting it takes no room (and no footer gap). */
-.wmux-moa-dock { max-height: 34vh; overflow-y: auto; overflow-x: hidden; outline: none; }
+.wmux-moa-dock { max-height: 50vh; overflow-y: auto; overflow-x: hidden; outline: none; }
 .wmux-moa-dock:not(:has([data-moa-waiting]:not(.hidden))) { display: none; }
 .wmux-moa-dock [data-moa-waiting] { padding: 0; }
