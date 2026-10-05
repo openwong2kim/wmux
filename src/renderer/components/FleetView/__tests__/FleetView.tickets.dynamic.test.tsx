@@ -43,7 +43,7 @@ async function settle(): Promise<void> {
 
 let links: WorkLink[] = [LINK];
 /** main's a2a.task.query, answering from the durable task copy. */
-const rpcInvoke = vi.fn(async (method: string, params: Record<string, unknown>) => (method === 'a2a.task.query' && params.taskId === 'task-1'
+const rpcInvoke = vi.fn(async (method: string, params: Record<string, unknown>): Promise<unknown> => (method === 'a2a.task.query' && params.taskId === 'task-1'
   ? { id: 'q', ok: true, result: { task: { id: 'task-1', kind: 'task', history: [], artifacts: [], metadata: { title: 'Fix the login redirect' },
     status: { state: 'completed', timestamp: new Date().toISOString(), evidence: { summary: 'Redirect fixed; e2e passes.', items: [] } } } } }
   : { ok: false }));
