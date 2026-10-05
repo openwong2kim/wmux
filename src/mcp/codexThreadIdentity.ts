@@ -248,7 +248,9 @@ export async function readParentChain(startPid: number, timeoutMs = 5000): Promi
         continue;
       }
       // `args` is one space-joined string, so an executable path with spaces
-      // cannot be split from it alone; `comm` names the executable exactly.
+      // cannot be split from it alone; `comm` gives argv[0] as one token. It is
+      // what the process was started as (on macOS argv[0] verbatim), not a
+      // spoof-proof executable identity.
       const opts = { encoding: 'utf8' as const, timeout: timeoutMs };
       const head = (await run('ps', ['-ww', '-o', 'ppid=', '-o', 'comm=', '-p', String(pid)], opts)).stdout;
       const args = (await run('ps', ['-ww', '-o', 'args=', '-p', String(pid)], opts)).stdout;
@@ -279,8 +281,8 @@ function readProcEntry(pid: number): { argv: string[]; ppid: number } | undefine
 }
 
 /**
- * Rebuild argv from `ps -o args=` with the executable taken from
- * `ps -o comm=`, so a path with spaces (`/Applications/Codex App/…`) stays one
+ * Rebuild argv from `ps -o args=` with argv[0] taken from `ps -o comm=`
+ * (as started, not a verified executable path), so a path with spaces (`/Applications/Codex App/…`) stays one
  * token. The remaining arguments are split on whitespace. When the args line
  * cannot be aligned with the executable, the entry is unreadable: [] makes the
  * chain classify as 'unknown' (retried), never as a remembered 'other'.
