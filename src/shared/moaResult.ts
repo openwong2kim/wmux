@@ -16,7 +16,10 @@ export interface MoaTaskResult {
   files?: string[];
 }
 
-const SUMMARY_MAX = 600;
+// The agent's whole report is shown (folded, as markdown) in Moa's report
+// card, so the cap matches what a work link stores (MAX_RESULT_SUMMARY): a
+// shorter one cut tables and code fences mid-way.
+const SUMMARY_MAX = 2048;
 const FILES_MAX = 20;
 
 const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
