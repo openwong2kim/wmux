@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createElement } from 'react';
-import FleetCard, { FleetCardMissionLine, FleetCardEvidenceBadge } from '../FleetCard';
+import FleetCard, { agentDisplayName, FleetCardMissionLine, FleetCardEvidenceBadge } from '../FleetCard';
 import { fleetRow, type FleetPane } from '../../../stores/selectors/fleet';
 import { fleetTitle } from '../fleetPresentation';
 import type { WorkTask } from '../../../../shared/workTask';
@@ -38,7 +38,7 @@ describe('FleetCard — task-first rows', () => {
     const html = render({ card: card({ activity: '✎ fleet.ts' }) });
     expect(html).toContain('data-fleet-activity');
     expect(html).toContain('data-fleet-now="now"');
-    expect(html).toContain('Edited fleet.ts');
+    expect(html).toContain('Editing fleet.ts');
     expect(html).not.toContain('✎');
   });
 
@@ -88,9 +88,9 @@ describe('FleetCard — task-first rows', () => {
 
   it('labels response completion without claiming task success', () => {
     const html = render({ card: card({ agentStatus: 'complete' }) });
-    expect(html).toContain('Turn complete');
-    expect(html).toContain('Response finished');
-    expect(html).toContain('Review');
+    expect(html).toContain('>Finished<');
+    expect(html).toContain('Turn finished');
+    expect(html).toContain('See result');
   });
 
   it('shows stale running evidence as unconfirmed', () => {
@@ -117,12 +117,43 @@ describe('FleetCard — task-first rows', () => {
   });
 });
 
+describe('FleetCard — one name, a short label', () => {
+  it('names a known agent by its display name, whatever the title says', () => {
+    expect(agentDisplayName('claude')).toBe('Claude Code');
+    expect(agentDisplayName('✳ Claude Code')).toBe('Claude Code');
+    expect(agentDisplayName('codex')).toBe('Codex CLI');
+    expect(agentDisplayName('my build')).toBe('my build');
+  });
+
+  it('keeps the accessible name short: name, status, place, the question clipped', () => {
+    const question = 'q'.repeat(200);
+    const html = renderToStaticMarkup(createElement(FleetCard, {
+      card: card({ agentStatus: 'awaiting_input' }), focused: false, onJump: noop,
+      row: { pane: card({ agentStatus: 'awaiting_input' }), section: 'needsYou', detail: question, detailSource: 'question', detailKey: 'fleet.needsYourInput' },
+    }));
+    const label = /aria-label="([^"]*)"/.exec(html)?.[1] ?? '';
+    expect(label.startsWith('alpha, Needs input, alpha, ')).toBe(true);
+    expect(label.length).toBeLessThan(140);
+    expect(label).not.toContain('Respond');
+  });
+
+  it('shows an error row\'s last error line in the now-doing slot, in mono', () => {
+    const html = renderToStaticMarkup(createElement(FleetCard, {
+      card: card({ agentStatus: 'error' }), focused: false, onJump: noop, errorLine: 'Error: build failed',
+    }));
+    expect(html).toContain('data-fleet-now="error"');
+    expect(html).toContain('is-activity');
+    expect(html).toContain('Error: build failed');
+    expect(html).toContain('Check');
+  });
+});
+
 describe('FleetCard — #1343 remote rows', () => {
   it('marks a remote agent with the origin glyph and names the host in the label', () => {
     const html = render({ card: card({ ptyId: 'remote:h1:s1', surfaceType: 'remote-terminal', remote: { hostId: 'h1', hostLabel: 'build-box' } }) });
     expect(html).toContain('data-fleet-remote');
     expect(html).toContain('title="@build-box"');
-    expect(html).toMatch(/aria-label="[^"]*, alpha, build-box,/);
+    expect(html).toMatch(/aria-label="[^"]*, alpha, build-box"/);
   });
 
   it('renders no origin glyph for a local agent', () => {

@@ -21,7 +21,7 @@ function pane(ptyId: string, overrides: Partial<FleetPane> = {}): FleetPane {
 const ids = (rows: FleetRow[]) => rows.map((row) => row.pane.ptyId);
 const only = (panes: FleetPane[], ctx: Parameters<typeof groupFleetPanes>[1] = {}) => {
   const g = groupFleetPanes(panes, ctx);
-  const all = [...g.needsYou, ...g.running, ...g.idle];
+  const all = [...g.needsYou, ...g.finished, ...g.running, ...g.idle];
   expect(all).toHaveLength(1);
   return all[0];
 };
@@ -61,10 +61,10 @@ describe('groupFleetPanes — status → section and detail (the SSOT table)', (
     expect(row).toMatchObject({ section: 'needsYou', detailKey: 'fleet.detail.supervisionStopped' });
   });
 
-  it('complete → needsYou with the last message, else "Response finished"', () => {
+  it('complete → finished (a look, not a decision) with the last message, else "Turn finished"', () => {
     expect(only([pane('c', { agentStatus: 'complete' })], { surfaceLastMessage: { c: 'All tests pass.' } }))
-      .toMatchObject({ section: 'needsYou', detail: 'All tests pass.', detailSource: 'lastMessage' });
-    expect(only([pane('c', { agentStatus: 'complete' })])).toMatchObject({ section: 'needsYou', detailKey: 'fleet.detail.complete' });
+      .toMatchObject({ section: 'finished', detail: 'All tests pass.', detailSource: 'lastMessage' });
+    expect(only([pane('c', { agentStatus: 'complete' })])).toMatchObject({ section: 'finished', detailKey: 'fleet.detail.complete' });
   });
 
   it('running → running with the tool activity, else "Turn in progress"', () => {
@@ -114,11 +114,12 @@ describe('groupFleetPanes — elapsed time and ordering', () => {
       pane('err', { agentStatus: 'error' }),
       pane('ask', { agentStatus: 'awaiting_input' }),
     ], { now, surfaceOutputAt: { 'c-old': now - 7_200_000, 'c-new': now - 60_000, err: now - 1 } });
-    expect(ids(g.needsYou)).toEqual(['ask', 'err', 'c-new', 'c-old']);
+    expect(ids(g.needsYou)).toEqual(['ask', 'err']);
+    expect(ids(g.finished)).toEqual(['c-new', 'c-old']);
   });
 
   it("'workspace' sort mode keeps the input order inside each section", () => {
-    const g = groupFleetPanes([pane('b', { agentStatus: 'complete' }), pane('a', { agentStatus: 'awaiting_input' })], {
+    const g = groupFleetPanes([pane('b', { agentStatus: 'error' }), pane('a', { agentStatus: 'awaiting_input' })], {
       sortMode: 'workspace',
     });
     expect(ids(g.needsYou)).toEqual(['b', 'a']);
@@ -133,7 +134,7 @@ describe('groupFleetPanes — elapsed time and ordering', () => {
 });
 
 describe('groupFleetPanes — Needs you severity and agent text', () => {
-  it('orders Needs you by severity: stopped, input, error, unconfirmed, finished', () => {
+  it('orders Needs you decisions first: input, error, stopped, unconfirmed; finished leaves it', () => {
     const g = groupFleetPanes([
       pane('done', { agentStatus: 'complete' }),
       pane('stale', { agentStatus: 'running', unverifiable: true }),
@@ -141,7 +142,8 @@ describe('groupFleetPanes — Needs you severity and agent text', () => {
       pane('ask', { agentStatus: 'waiting' }),
       pane('halt', { agentStatus: 'idle', supervision: { status: 'stopped', restartCount: 2 } }),
     ], { surfacePendingQuestion: { ask: 'Continue?' } });
-    expect(ids(g.needsYou)).toEqual(['halt', 'ask', 'err', 'stale', 'done']);
+    expect(ids(g.needsYou)).toEqual(['ask', 'err', 'halt', 'stale']);
+    expect(ids(g.finished)).toEqual(['done']);
   });
 
   it('flattens bidi / zero-width characters out of a running row\'s activity', () => {

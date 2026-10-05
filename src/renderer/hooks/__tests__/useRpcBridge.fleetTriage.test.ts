@@ -44,6 +44,8 @@ describe('buildFleetTriage', () => {
     expect(result.generatedAt).toBe(NOW);
     // Input requests first (most recent first), then the remote error.
     expect(result.needsYou.map((row) => row.paneId)).toEqual(['p2', 'p1', 'pr']);
+    // A finished turn is its own section, not a decision in Needs you.
+    expect(result.finished.map((row) => [row.paneId, row.reason])).toEqual([['p6', 'complete']]);
     expect(result.running.map((row) => row.paneId)).toEqual(['p3']);
   });
 
@@ -155,8 +157,10 @@ describe('buildFleetTriage', () => {
       surfaceAgentStatus: { ...base.surfaceAgentStatus, ...status },
     });
     const result = buildFleetTriage(useStore.getState(), { includeIdle: true }, NOW);
-    const returned = result.needsYou.length + result.running.length + (result.idle.rows?.length ?? 0);
+    const returned = result.needsYou.length + result.finished.length + result.running.length + (result.idle.rows?.length ?? 0);
     expect(returned).toBe(FLEET_TRIAGE_MAX_ROWS);
+    expect(result.finished).toEqual([]);
+    expect(result.omitted?.finished).toBe(1);
     expect(result.running).toEqual([]);
     expect(result.omitted?.needsYou).toBeGreaterThan(0);
     expect(result.omitted?.running).toBe(1);

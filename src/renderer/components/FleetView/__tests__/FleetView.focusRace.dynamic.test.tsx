@@ -167,12 +167,16 @@ describe('FleetView — task triage', () => {
     seedFleet();
     mount();
     await flushRaf();
-    // One list: Needs you (the question, then the finished turn), then Running.
-    expect(rows().map((row) => row.dataset.status)).toEqual(['awaiting_input', 'complete', 'running']);
+    // One list: Needs you (the question), the finished turn folded into one
+    // row, then Running. A finished turn is a look, not a decision.
+    expect(rows().map((row) => row.dataset.status)).toEqual(['awaiting_input', 'running']);
     expect([...container.querySelectorAll<HTMLElement>('[data-fleet-section]')].map((el) => el.dataset.fleetSection))
-      .toEqual(['needsYou', 'running']);
+      .toEqual(['needsYou', 'finished', 'running']);
+    expect(container.querySelector('[data-fleet-finished-toggle]')?.textContent).toBe('Finished 1');
     expect(rows()[0].textContent).toContain('Which deployment target?');
-    expect(rows()[2].textContent).toContain('wmux');
+    expect(rows()[1].textContent).toContain('wmux');
+    click('[data-fleet-finished-toggle]');
+    expect(rows().map((row) => row.dataset.status)).toEqual(['awaiting_input', 'complete', 'running']);
   });
 
   it('filters by task/project without stealing search focus, then navigates the results', async () => {
@@ -193,7 +197,8 @@ describe('FleetView — task triage', () => {
     expect(rows()).toHaveLength(0);
     expect(container.textContent).toContain('No panes match this view');
     click('.wmux-fleet-empty button');
-    expect(rows()).toHaveLength(3);
+    // The finished turn folds again once the search is cleared.
+    expect(rows()).toHaveLength(2);
   });
 
   it('keeps the selected pane across live reordering and scopes keyboard navigation to the filter', async () => {
@@ -205,11 +210,12 @@ describe('FleetView — task triage', () => {
     await flushRaf();
     expect(document.activeElement?.getAttribute('data-pty-id')).toBe('pty-1');
     expect(rows()[0].dataset.ptyId).toBe('pty-1');
-    // One list: ↓ steps to the next row, End and Home go to its ends.
+    // One list: ↓ steps to the next row (the folded Finished row), End and
+    // Home go to its ends.
     key(rows()[0], 'ArrowDown');
     await flushRaf();
-    expect(document.activeElement).toBe(rows()[1]);
-    key(rows()[1], 'End');
+    expect(document.activeElement?.hasAttribute('data-fleet-finished-toggle')).toBe(true);
+    key(document.activeElement!, 'End');
     await flushRaf();
     // The last option is the collapsed Idle row (pty-3 went idle).
     expect(document.activeElement?.hasAttribute('data-fleet-idle-toggle')).toBe(true);
@@ -221,6 +227,7 @@ describe('FleetView — task triage', () => {
   it('opens the detail area on a deliberate selection, Space toggles it, Esc closes it before Fleet', async () => {
     const read = vi.spyOn(terminalTail, 'tailForPty').mockReturnValue(['real terminal output']);
     seedFleet();
+    act(() => useStore.setState({ fleetFinishedExpanded: true }));
     act(() => useStore.getState().setFleetViewVisible(true));
     mount();
     await flushRaf();
@@ -228,7 +235,10 @@ describe('FleetView — task triage', () => {
     expect(container.querySelector('[data-fleet-detail]')).toBeNull();
     expect(read).not.toHaveBeenCalled();
     // ↓ is a deliberate selection: the detail opens on that row (20 lines).
+    // The first ↓ lands on the Finished row, the next on its finished turn.
     key(rows()[0], 'ArrowDown');
+    await flushRaf();
+    key(document.activeElement!, 'ArrowDown');
     await flushRaf();
     expect(read).toHaveBeenCalledWith('pty-2', 20);
     expect(container.querySelector('#fleet-output-preview')?.textContent).toBe('real terminal output');
@@ -256,11 +266,13 @@ describe('FleetView — task triage', () => {
     mount();
     await flushRaf();
     const toggles = container.querySelectorAll<HTMLButtonElement>('[data-fleet-detail-toggle]');
-    act(() => toggles[2].click());
+    act(() => toggles[1].click());
     await flushRaf();
-    expect(toggles[2].getAttribute('aria-expanded')).toBe('true');
+    expect(toggles[1].getAttribute('aria-expanded')).toBe('true');
+    // A pointer twin of Space: out of the listbox's accessibility tree.
+    expect(toggles[1].getAttribute('aria-hidden')).toBe('true');
     expect(container.querySelector('#fleet-output-preview')?.textContent).toBe('output of the running agent');
-    act(() => toggles[2].click());
+    act(() => toggles[1].click());
     expect(container.querySelector('[data-fleet-detail]')).toBeNull();
   });
 
@@ -272,12 +284,16 @@ describe('FleetView — task triage', () => {
     expect(container.querySelector('[data-fleet-stat="approvals"]')).toBeNull();
     // Zero-count chips are not drawn (no idle agents, no tickets).
     expect([...container.querySelectorAll('[data-filter]')].map((el) => el.getAttribute('data-filter')))
-      .toEqual(['attention', 'running', 'complete']);
+      .toEqual(['attention', 'running', 'finished']);
     // Running narrows the list; pressing it again shows everything.
     click('[data-filter="running"]');
     expect(rows().map((row) => row.dataset.ptyId)).toEqual(['pty-1']);
     click('[data-filter="running"]');
-    expect(rows()).toHaveLength(3);
+    expect(rows()).toHaveLength(2);
+    // Finished opens its fold and lists only the finished turns.
+    click('[data-filter="finished"]');
+    expect(rows().map((row) => row.dataset.ptyId)).toEqual(['pty-2']);
+    click('[data-filter="finished"]');
     // The board's 1–4 column keys are gone.
     act(() => rows()[0].focus());
     key(rows()[0], '3');
@@ -342,6 +358,7 @@ describe('FleetView — attention board sections', () => {
     act(() => useStore.setState({
       surfaceAgentStatus: { 'pty-1': 'complete' },
       surfaceLastMessage: { 'pty-1': 'Refactor done; 12 tests pass.' },
+      fleetFinishedExpanded: true,
     }));
     mount();
     await flushRaf();
@@ -432,6 +449,7 @@ describe('FleetView — remote rows and browser help stay wired', () => {
 describe('FleetView — a rail page: a jump returns to Workspaces', () => {
   it('goes back to Workspaces on the jumped-to workspace', async () => {
     seedFleet();
+    act(() => useStore.setState({ fleetFinishedExpanded: true }));
     act(() => useStore.getState().setFleetViewVisible(true));
     mount();
     await flushRaf();

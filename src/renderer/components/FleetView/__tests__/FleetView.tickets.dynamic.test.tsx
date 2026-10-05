@@ -120,14 +120,16 @@ describe('FleetView — tickets', () => {
     expect(container.querySelector('[data-fleet-section="needsYou"]')).toBeNull();
   });
 
-  it('a finished ticket asks once in Needs you; viewing its report clears it', async () => {
+  it('a finished ticket asks once, as a marked final report apart from Needs you; viewing it clears it', async () => {
     links = [{ ...LINK, a2aState: 'completed', state: 'done' }];
     act(() => { root.render(React.createElement(FleetView)); });
     await settle();
     const report = container.querySelector<HTMLButtonElement>('[data-fleet-ticket="wl-1"]')!;
     expect(report).not.toBeNull();
-    expect(report.closest('[role=listbox]')?.querySelector('[data-fleet-section="needsYou"]')).not.toBeNull();
-    expect(container.querySelector('[data-filter="attention"]')?.textContent).toContain('1');
+    // Its own block, never mixed with pane rows; a report is a read, not a decision.
+    expect(report.closest('[role=listbox]')?.querySelector('[data-fleet-section="reports"]')?.textContent).toContain('Final reports');
+    expect(container.querySelector('[data-fleet-section="needsYou"]')).toBeNull();
+    expect(container.querySelector('[data-filter="attention"]')).toBeNull();
     // Open it: the result comes from the durable task copy (the renderer's
     // mirror is empty, as after a reload), the report is viewed, and the row
     // stays put while it is selected.
@@ -137,8 +139,7 @@ describe('FleetView — tickets', () => {
     expect(rpcInvoke).toHaveBeenCalledWith('a2a.task.query', { workspaceId: 'ws-1', view: 'page', taskId: 'task-1' });
     expect(container.querySelector('[data-fleet-ticket-result]')?.textContent).toBe('Redirect fixed; e2e passes.');
     expect(container.querySelector('[data-fleet-ticket="wl-1"]')).not.toBeNull();
-    expect(container.querySelector('[data-filter="attention"]')).toBeNull();
-    // Selection moves on: the ticket leaves Needs you, still under Tickets.
+    // Selection moves on: the ticket leaves the reports block, still under Tickets.
     act(() => container.querySelector<HTMLElement>('[data-fleet-card]')!.focus());
     await settle();
     expect(container.querySelector('[data-fleet-ticket="wl-1"]')).toBeNull();
@@ -158,7 +159,7 @@ describe('FleetView — tickets', () => {
     act(() => { useStore.setState({ workspaces: [] }); });
     await settle();
     expect(container.querySelector('[data-fleet-ticket-detail="wl-1"]')).not.toBeNull();
-    expect(container.querySelector('[data-filter="attention"]')?.textContent).toContain('1');
+    expect(container.querySelector('[data-fleet-section="reports"]')).not.toBeNull();
 
     // Chosen, but the result cannot be read: still not viewed.
     rpcInvoke.mockImplementation(async () => ({ ok: false }));
@@ -169,7 +170,9 @@ describe('FleetView — tickets', () => {
     if (!container.querySelector('[data-fleet-ticket-detail="wl-1"]')) { act(() => chosen().click()); await settle(); }
     expect(container.querySelector('[data-fleet-ticket-detail="wl-1"]')).not.toBeNull();
     expect(container.querySelector('[data-fleet-ticket-result]')).toBeNull();
-    expect(container.querySelector('[data-filter="attention"]')?.textContent).toContain('1');
+    // Still unviewed: it stays in the reports block after the selection moves.
+    act(() => { useStore.setState({ workspaces: [] }); });
+    expect(container.querySelector('[data-fleet-section="reports"]')).not.toBeNull();
   });
 
   it('a report whose result is no longer kept says so, and choosing it counts as viewed', async () => {

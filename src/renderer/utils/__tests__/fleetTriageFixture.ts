@@ -1,6 +1,7 @@
 // Shared store fixture for the fleet.triage payload test and the FleetView
 // parity test: one agent asking for input on its active tab, one asking on a
-// BACKGROUND tab, one running, one remote agent in error, and two idle panes.
+// BACKGROUND tab, one running, one remote agent in error, one finished turn
+// (its own section, not Needs you) and two idle panes.
 import { useStore } from '../../stores';
 import type { Workspace, Pane, Surface } from '../../../shared/types';
 import type { WorkTask } from '../../../shared/workTask';
@@ -10,7 +11,7 @@ export const REMOTE_KEY = remoteAgentKey('host-1', 'rsession-9');
 
 /** paneId → the pty the Fleet card is keyed on (its ACTIVE surface). */
 export const ACTIVE_PTY_BY_PANE: Record<string, string> = {
-  p1: 'pty-1', p2: 'pty-2a', p3: 'pty-3', pr: REMOTE_KEY, p4: 'pty-4', p5: 'pty-5',
+  p1: 'pty-1', p2: 'pty-2a', p3: 'pty-3', pr: REMOTE_KEY, p4: 'pty-4', p5: 'pty-5', p6: 'pty-6',
 };
 
 function surface(id: string, ptyId: string, extra: Partial<Surface> = {}): Surface {
@@ -45,8 +46,9 @@ export function seedFleetTriageStore(now: number, extra: Partial<ReturnType<type
         leaf('p4', [surface('s4', 'pty-4', { title: 'delta old' })]),
         leaf('p5', [surface('s5', 'pty-5', { title: 'delta recent' })]),
       ]), 'p4'),
+      workspace('ws-6', 'epsilon', leaf('p6', [surface('s6', 'pty-6', { title: 'epsilon done' })]), 'p6'),
     ],
-    surfaceAgentStatus: { 'pty-1': 'awaiting_input', 'pty-2b': 'awaiting_input' },
+    surfaceAgentStatus: { 'pty-1': 'awaiting_input', 'pty-2b': 'awaiting_input', 'pty-6': 'complete' },
     surfacePendingQuestion: { 'pty-1': 'Run the migration now?', 'pty-2b': 'Which branch should I use?' },
     surfaceAgent: {
       'pty-1': { name: 'Claude Code', status: 'waiting' },
@@ -61,6 +63,7 @@ export function seedFleetTriageStore(now: number, extra: Partial<ReturnType<type
       'pty-2b': now - 60_000,
       'pty-4': now - 3 * 3_600_000,
       'pty-5': now - 10 * 60_000,
+      'pty-6': now - 2 * 60_000,
     },
     missionByPaneGroup: { 'ws-3': { title: 'Ship fleet triage' } as WorkTask },
     remoteWorkspaces: [{

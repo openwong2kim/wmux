@@ -251,6 +251,9 @@ export interface UISlice {
   // collapsed to one summary row. Session-only: not in buildSessionData.
   fleetIdleExpanded: boolean;
   setFleetIdleExpanded: (expanded: boolean) => void;
+  // The same for the Finished section (turns that ended, not yet looked at).
+  fleetFinishedExpanded: boolean;
+  setFleetFinishedExpanded: (expanded: boolean) => void;
   // One-shot request from the sidebar's `N to review` link: Fleet consumes it
   // (focuses the first Ready to review row) and clears it. Session-only.
   fleetFocusReview: boolean;
@@ -1192,6 +1195,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setFleetIdleExpanded: (expanded) => set((state) => {
     state.fleetIdleExpanded = expanded;
+  }),
+
+  fleetFinishedExpanded: false,
+
+  setFleetFinishedExpanded: (expanded) => set((state) => {
+    state.fleetFinishedExpanded = expanded;
   }),
 
   fleetFocusReview: false,

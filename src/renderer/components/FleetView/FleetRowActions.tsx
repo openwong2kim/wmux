@@ -114,13 +114,11 @@ interface FleetRowMenuProps {
   /** Told the menu's close function while it is open (null once closed), so
    *  FleetView's Escape handler can close the menu instead of the overlay. */
   onMenuOpenChange?: (close: (() => void) | null) => void;
-  /** Roving slot owner — only its trigger is in the Tab order. */
-  focused: boolean;
   onJump: (pane: FleetPane) => void;
   onEdit: (pane: FleetPane, kind: FleetEditorKind) => void;
 }
 
-export function FleetRowMenu({ pane, verbs, focused, onJump, onEdit, onMenuOpenChange }: FleetRowMenuProps) {
+export function FleetRowMenu({ pane, verbs, onJump, onEdit, onMenuOpenChange }: FleetRowMenuProps) {
   const t = useT();
   const [anchor, setAnchor] = useState<{ top: number; left: number; right: number; bottom: number } | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -194,7 +192,10 @@ export function FleetRowMenu({ pane, verbs, focused, onJump, onEdit, onMenuOpenC
         ref={triggerRef}
         type="button"
         className="wmux-fleet-row-trigger"
-        tabIndex={focused ? 0 : -1}
+        // Pointer twin of the row's keys (Shift+F10 / the Menu key open it
+        // from the row): kept out of the listbox's tree and tab order.
+        tabIndex={-1}
+        aria-hidden="true"
         title={t('pane.moreActions')}
         aria-label={t('pane.moreActions')}
         aria-haspopup="menu"

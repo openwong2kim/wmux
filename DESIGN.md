@@ -763,6 +763,7 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-10-05 | A fan-out task's mission channel reads in Fleet, as the selected task's Conversation at the foot beside the preview; Moa's task cards, Waiting on you and the deck ledger link to it. No channel list returns | The Channels tab left with the Moa-only right panel (#1771), and with it the only desktop view of worker reports, instructions and ledger transitions. The foot is already Fleet's selection detail, so the conversation follows the selection without reflowing the columns |
 | 2026-10-05 | Chat tool calls fold: consecutive routine calls collapse into one line (`Read 4 files`, `Edited 2 files +5 −1`, `Ran 3 commands`, else `Ran N tool calls`); approvals, questions, failures, notices and replies never fold. Tool rows are quiet: the title is `--text-sub` at rest and `--text-main` on hover or open, the verb is 600 and the object 400, and an inline disclosure chevron points right and turns down (0→90°), like every other disclosure. Diff lines carry a 2px inset bar in `--accent-green`/`--accent-red` at 50% over an 8% fill of the same hue — the only coloured fill, because it is the diff's own state, not a wash. Rows appended after a chat first loads fade in over 150ms (`--motion-ease-out`), never on first load or an earlier page, and not under reduced motion | A long turn buried its reply under one row per call. Folding keeps the reply in view while anything that needs a person stays out of the fold; the 150ms fade is a one-shot state change (a row arriving), not perpetual motion, and the diff fill is how a diff says added and removed |
 | 2026-10-05 | Fleet returns to the attention list (one row per agent; Needs you, Ready to review, Running, folded Idle) in today's look, replacing the four-column board. Rows gain a now-doing sentence that outlives the turn (`Last: Edited foo.ts`), terminal output and the task Conversation move to a detail area under the list (selection, Space, Esc), and Moa's delegated work shows as tickets behind a Tickets chip that interrupt only for a pending decision and once with the final report | Columns split one glance into four reads, pushed finished panes away from the sidebar's own Needs you rule, and every card spent lines on chips; the raw glyph line (`✎ foo.ts`) read as code and vanished at turn end, so a finished row said nothing about what it did. A list answers "what needs me, in order" in one scan, the detail area keeps output and conversations one key away without putting terminal text in rows, and delegated work had no place to be followed once Moa handed it off |
+| 2026-10-05 | Fleet's Needs you holds decisions only (questions first, then errors, stopped supervision, unconfirmed); finished turns leave it for a folded `Finished N · newest age` row, in Fleet, the rail badge and `fleet_triage` (which gains a `finished` list) alike — this supersedes the 2026-09-27 note that finished rows count as needs you. Moa's final reports sit in their own marked block. The chip, head and badge read one set of arrays; a live region says the count. A Needs you row's detail leads with the question in full and the prompt's choices (or Open approval / Reply / Jump), an error row names its last error line and Check opens the detail on it. One word (Finished), present tense while running, `--text-subtle` for small hint text, a focus ring distinct from selection, the row's side buttons out of the listbox tree (Shift+F10 opens the menu), and the rail badge in needs-you yellow | A design critique found 12 rows in Needs you of which 4 were decisions, three counts that disagreed (11/12/13), a question cut off at narrow widths with `No terminal output available.` beneath it, error rows that only said `Check the terminal`, five words for one finished state, 2.5–3.4:1 hint text, and an indigo badge for an amber state. A finished turn is something to glance at, not something blocking, so it folds like Idle; one set of arrays makes the counts unable to drift |
 | 2026-10-05 | Sidebar row hover actions return to the row's flow: they end the git line in place of the diff counts and PR badge, end the name line on a branchless top-level row, or take a line of their own on a branchless nested task; focus reveals them like hover (amends "row actions floating over a faded right edge", 2026-10-03). No fade on the text column; a nested task row's hover never reveals its owner's actions; the workspace list clips horizontal overflow and the sidebar column clips (not scrolls) while it animates | The overlay covered the roster chip, the fade took the branch and diff with the name, and as a descendant rule it faded every nested task row while the owner card was hovered, so a hovered sidebar read as "fleet: ba", "wtas…". A hidden-overflow column is still a scroll container: a focus inside the half-open sidebar scrolled it 148px sideways |
 
 ### Desktop conversation view
@@ -949,28 +950,45 @@ page stays mounted, full size and inert underneath. It is an attention list
 own classification (`fleetAttentionClass`), so a pane cannot read
 differently in the two places, and in the order `fleet_triage` returns.
 
-- **Sections:** Needs you (input requests, errors, stopped supervision,
-  unconfirmed panes and finished turns) · Ready to review (finished fan-out
-  tasks, one row per task) · Running · Idle, folded to one `Idle N · oldest
-  age` row that expands. A section head is sentence-case 12px text with a
-  status dot and its count; an empty section is not drawn. Plain shells sit
-  only in Idle and never keep the empty state from showing.
+- **Sections:** Needs you (decisions only: input requests first, then
+  errors, stopped supervision and unconfirmed panes, plus tickets waiting on
+  a decision) · Final reports (Moa tickets whose final report is unread, a
+  marked block of their own) · Ready to review (finished fan-out tasks, one
+  row per task) · Finished (turns that ended and have not been looked at),
+  folded to one `Finished N · newest age` row that expands · Running · Idle,
+  folded to one `Idle N · oldest age` row that expands. A finished turn wants
+  a look, not a decision, so it never sits in Needs you. A section head is
+  sentence-case 12px text with a status dot and its count; an empty section
+  is not drawn. Plain shells sit only in Idle and never keep the empty state
+  from showing.
+- **One count:** the Needs you chip and the Needs you head read the same
+  two arrays (pane rows and decision tickets); the rail badge counts the
+  same pane rows (`selectFleetSectionCounts`) and leaves tickets out, which
+  its tooltip says. A polite live region announces the count when it
+  changes, never when Fleet opens.
 - **Row:** status (dot and word), the title (an open ticket's title when the
   pane holds one, else the task or pane name), workspace · agent · role ·
-  stash, the now-doing line, elapsed time and one verb (Respond, Review,
-  Check, Open). A row is a fill on hover (`--hover-fill`) and selection
-  (`--selection`), never a box or a rule. Two buttons share the right lane,
-  shown on hover or focus: details (a chevron that turns when open) and ⋮.
-  Rows never show terminal text.
-- **Now doing:** the agent's last tool, as a sentence (`Edited foo.ts`,
-  `Ran npm test`, `Read x.ts`, `Searched pat`) in the activity mono. A
-  running agent says what it is doing; a finished or idle one says
-  `Last: …` from the last tool it ran, which outlives the turn's end. An
-  agent that reports no tools (Codex, others) shows its last reply; a
-  question shows in quotes; error, stopped and unconfirmed rows keep their
-  label.
+  stash, the now-doing line, elapsed time under it and one verb (Respond,
+  See result, Check, Open). One word for a finished turn — Finished — in
+  the chip, the fold and the row's status. A row is a fill on hover
+  (`--hover-fill`) and selection (`--selection`), never a box or a rule;
+  keyboard focus is a 2px `--accent` ring on top, so a focused selected row
+  shows both. Two buttons share the right lane, shown on hover or focus:
+  details (a chevron that turns when open) and ⋮; both are pointer twins of
+  keys (Space, Shift+F10) and stay out of the listbox's tree. A row's
+  accessible name is its title, status, workspace and (for a question or an
+  error) that text clipped. Rows never show terminal text, except an error
+  row's last error line.
+- **Now doing:** the agent's tool, as a sentence in the activity mono. A
+  running agent says what it is doing in the present tense (`Editing
+  foo.ts`, `Running npm test`); a finished or idle one says `Last: …` in the
+  past tense (`Last: Ran npm test`), from the last tool it ran, which
+  outlives the turn's end. An agent that reports no tools (Codex, others)
+  shows its last reply; a question shows in quotes and wraps to two lines;
+  an error row shows the last `Error:` / stderr-shaped line of its terminal
+  (mono), else its label; stopped and unconfirmed rows keep their label.
 - **Filters and summary:** the line under the title leads with the filter
-  chips — Needs you, Running, Replied, Idle, Tickets — each with its count,
+  chips — Needs you, Running, Finished, Idle, Tickets — each with its count,
   hidden at zero; pressing the pressed chip shows everything again. Then
   approvals, LAN messages, account usage, the next schedule and phones
   watching, each only when it is not zero, and Settled. While Fleet is the
@@ -978,19 +996,29 @@ differently in the two places, and in the order `fleet_triage` returns.
 - **Detail area:** under the list, opened by a deliberate selection (an
   arrow move, the row's details button, Space) and never by the focus Fleet
   takes when it opens; Esc closes it before it closes Fleet. It shows the
-  selected agent's last 20 lines of output and, for a fan-out task, its
+  selected agent's last 20 lines of output (40 for an error row, its error
+  line marked and scrolled into view) and, for a fan-out task, its
   Conversation beside them (stacked below 900px): read-only, oldest first,
   live, in the mantle fill. Moa's task cards, Waiting on you rows and the
-  deck ledger's `#` open Fleet on that task with the detail open.
+  deck ledger's `#` open Fleet on that task with the detail open. For a
+  Needs you row the detail leads with what it asks, above the output: the
+  question in full (never truncated), the numbered choices of the prompt
+  drawn at the bottom of its terminal (read-only), then Open approval (when
+  an Approvals row waits on that workspace), Reply… (the row's composer;
+  never on a permission prompt) and Jump to pane. An error row leads with
+  its last error line. Check (an error, stopped or unconfirmed row's verb,
+  click or Enter) opens this detail in place instead of jumping.
 - **Tickets:** Moa's delegated work, one row per job — a hand-off waiting for
   its click, or a WorkLink with its A2A task. A chat message is never a
   ticket. States: Queued, Working, Needs your decision (yellow), Done
   (green), Failed (red); finished tickets stay listed for a day. Moa is the
   operator's chief of staff, so a ticket interrupts only for a decision Moa
   cannot make and once with its final report: it joins Needs you while a
-  linked decision is pending, and when it is done or failed until that
-  report has been shown on a ticket the operator chose (it stays in place
-  while selected; a selection that merely falls onto it does not count).
+  linked decision is pending; when it is done or failed it sits in the
+  Final reports block (never among pane rows, never in the Needs you count)
+  until that report has been shown on a ticket the operator chose (it stays
+  in place while selected; a selection that merely falls onto it does not
+  count).
   Queued and working
   tickets are quiet: the Tickets filter and the pane's title only, no badge,
   count or toast; the rail and sidebar counts stay the panes'. A ticket's
@@ -1014,9 +1042,11 @@ differently in the two places, and in the order `fleet_triage` returns.
 - **Empty fleet:** no agents is one call to action, the Tickets way in when
   there are any, and the three newest finished tasks.
 - **Keys:** ↑↓ (and ←→) move through the list and open the detail, Home/End
-  go to its ends, Enter jumps, Space toggles the detail, Esc closes it, /
-  searches, a opens the Approvals tab with the request waiting on the agent
-  focused (it never approves); m, s, l, r, Backspace, d, p and j as before.
+  go to its ends, Enter jumps (Check rows open their detail), Space toggles
+  the detail, Esc closes it, / searches, Shift+F10 or the Menu key opens
+  the row's ⋮ menu, a opens the Approvals tab with the request waiting on
+  the agent focused (it never approves); m, s, l, r, Backspace, d, p and j
+  as before.
   A jump to a pane returns to the Workspaces page and hands it focus.
 
 **Ready to review (2026-09-25; between Needs you and Running).** It lists fan-out TASKS, not panes: one row per task whose record is open

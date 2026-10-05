@@ -139,8 +139,8 @@ describe('FleetView — Ready to review', () => {
     mount();
     await settle();
     const sections = Array.from(container.querySelectorAll<HTMLElement>('[data-fleet-section]')).map((el) => el.dataset.fleetSection);
-    // Between Needs you (the finished pane) and Running.
-    expect(sections).toEqual(['needsYou', 'review', 'running', 'idle']);
+    // After Needs you (empty here) and before the folded finished pane and Running.
+    expect(sections).toEqual(['review', 'finished', 'running', 'idle']);
     const row = reviewRow('ws-t1')!;
     expect(row).not.toBeNull();
     expect(reviewRow('ws-t2')).toBeNull();
@@ -162,8 +162,9 @@ describe('FleetView — Ready to review', () => {
     act(() => { useStore.setState({ fanoutOrigin: { 'ws-t1': { kind: 'gui' } } }); });
     expect(text()).toBe('Started by you');
     expect(reviewRow('ws-t1')!.textContent).toContain('owner project');
+    // Unknown says nothing rather than "Requester unknown".
     act(() => { useStore.setState({ fanoutOrigin: {}, fanoutProvenance: {} }); });
-    expect(text()).toBe('Requester unknown');
+    expect(text()).toBeUndefined();
   });
 
   it('names the requester on a task row in every section, not only Ready to review', async () => {
@@ -190,8 +191,8 @@ describe('FleetView — Ready to review', () => {
     expect(container.querySelector('[data-fleet-review-row]')).toBeNull();
   });
 
-  it('drops a closed or detached task from the queue — its finished pane stays in Needs you', async () => {
-    act(() => { useStore.setState({ missionByPaneGroup: { 'ws-t1': mission('t1', { detachedAt: 2 }), 'ws-t2': mission('t2') } }); });
+  it('drops a closed or detached task from the queue — its finished pane stays under Finished', async () => {
+    act(() => { useStore.setState({ missionByPaneGroup: { 'ws-t1': mission('t1', { detachedAt: 2 }), 'ws-t2': mission('t2') }, fleetFinishedExpanded: true }); });
     mount();
     await settle();
     expect(container.querySelector('[data-fleet-review-row]')).toBeNull();

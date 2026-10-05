@@ -68,14 +68,18 @@ export interface FleetTriageRow {
 
 export interface FleetTriageResult {
   generatedAt: number;
+  /** Waiting on a person: input requests, errors, stopped supervision,
+   *  unconfirmed panes. */
   needsYou: FleetTriageRow[];
+  /** Turns that ended and have not been looked at (reason 'complete'). */
+  finished: FleetTriageRow[];
   running: FleetTriageRow[];
   idle: { count: number; oldestIdleMs?: number; rows?: FleetTriageRow[] };
   /** What was asked about: one workspace id, or 'fleet'. A hosted plugin's
    *  request is bound to its own workspace, so this is the scope actually read. */
   scope: string;
   /** Rows left out per section once the row or byte budget was reached. */
-  omitted?: { needsYou?: number; running?: number; idle?: number };
+  omitted?: { needsYou?: number; finished?: number; running?: number; idle?: number };
 }
 
 export interface FleetTriageParams {
@@ -127,22 +131,24 @@ export function buildFleetTriage(
     (max, row) => (row.idleForMs !== undefined && (max === undefined || row.idleForMs > max) ? row.idleForMs : max),
     undefined,
   );
-  // Spend the row budget most-urgent first: needs you, then running, then idle.
+  // Spend the row budget most-urgent first: needs you, finished, running, idle.
   let budget = FLEET_TRIAGE_MAX_ROWS;
   const omitted: NonNullable<FleetTriageResult['omitted']> = {};
-  const take = (rows: FleetRow[], section: 'needsYou' | 'running' | 'idle'): FleetTriageRow[] => {
+  const take = (rows: FleetRow[], section: 'needsYou' | 'finished' | 'running' | 'idle'): FleetTriageRow[] => {
     const kept = rows.slice(0, Math.max(0, budget));
     budget -= kept.length;
     if (kept.length < rows.length) omitted[section] = rows.length - kept.length;
     return kept.map(toRow);
   };
   const needsYou = take(groups.needsYou.filter(inScope), 'needsYou');
+  const finished = take(groups.finished.filter(inScope), 'finished');
   const running = take(groups.running.filter(inScope), 'running');
   const idleRows = params.includeIdle ? take(idle, 'idle') : undefined;
   const build = (): FleetTriageResult => ({
     generatedAt: now,
     scope: params.workspaceId ?? 'fleet',
     needsYou,
+    finished,
     running,
     idle: {
       count: idle.length,
@@ -155,8 +161,8 @@ export function buildFleetTriage(
   // arrives as whole JSON with an honest omitted count.
   const bytes = (r: FleetTriageResult) => new TextEncoder().encode(JSON.stringify(r, null, 2)).length;
   let result = build();
-  const order: Array<['idle' | 'running' | 'needsYou', FleetTriageRow[]]> = [
-    ['idle', idleRows ?? []], ['running', running], ['needsYou', needsYou],
+  const order: Array<['idle' | 'finished' | 'running' | 'needsYou', FleetTriageRow[]]> = [
+    ['idle', idleRows ?? []], ['finished', finished], ['running', running], ['needsYou', needsYou],
   ];
   for (const [section, rows] of order) {
     while (rows.length > 0 && bytes(result) > FLEET_TRIAGE_MAX_BYTES) {

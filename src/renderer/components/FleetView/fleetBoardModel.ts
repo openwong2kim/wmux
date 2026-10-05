@@ -10,10 +10,10 @@ import type { InboxItem } from '../../stores/selectors/approvalInbox';
  * Idle but is not an agent, so a window of shells still reads as "no agents".
  */
 export function fleetAgentCount(
-  groups: { needsYou: readonly FleetRow[]; running: readonly FleetRow[]; idle: readonly FleetRow[] },
+  groups: { needsYou: readonly FleetRow[]; finished: readonly FleetRow[]; running: readonly FleetRow[]; idle: readonly FleetRow[] },
   reviewCount: number,
 ): number {
-  return groups.needsYou.length + groups.running.length + reviewCount
+  return groups.needsYou.length + groups.finished.length + groups.running.length + reviewCount
     + groups.idle.filter((row) => Boolean(row.pane.agentName)).length;
 }
 

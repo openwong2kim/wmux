@@ -879,6 +879,7 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-board-title { margin: 0; font-size: 18px; font-weight: 600; color: var(--text-main); }
 .wmux-board-search { width: min(280px, 40%); height: 28px; padding: 0 10px; border-radius: 8px; background: var(--selection-subtle); color: var(--text-main); font-size: 12px; outline: none; }
 .wmux-board-search:focus-visible { box-shadow: 0 0 0 1px var(--line-strong); }
+.wmux-board-search::placeholder { color: var(--text-subtle); }
 .wmux-board-btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 8px; background: var(--selection-subtle); color: var(--text-sub); font-size: 12px; }
 .wmux-board-btn:hover { background: var(--selection); color: var(--text-main); }
 .wmux-board-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 4px 20px 12px; }
@@ -920,7 +921,7 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 /* A ticket's detail: the request, decisions waiting, the result. */
 .wmux-fleet-ticket-detail { min-width: 0; max-height: 320px; overflow-y: auto; padding: 10px 14px; border-radius: 10px; background: var(--bg-mantle); font-size: 13px; color: var(--text-main); }
 .wmux-fleet-ticket-head { display: flex; align-items: center; gap: 12px; min-width: 0; font-size: 12px; color: var(--text-sub); }
-.wmux-fleet-ticket-detail h4 { margin: 12px 0 4px; font-size: 11px; font-weight: 500; color: var(--text-muted); }
+.wmux-fleet-ticket-detail h3 { margin: 12px 0 4px; font-size: 11px; font-weight: 500; color: var(--text-subtle); }
 .wmux-fleet-ticket-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
 .wmux-fleet-ticket-meta { margin: 4px 0 0; font-size: 12px; color: var(--text-sub); }
 .wmux-fleet-ticket-decisions { margin: 0; padding: 0; list-style: none; }
@@ -943,7 +944,19 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-board-recent li > span:first-child { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
 .wmux-board-preview { flex: none; margin: 0 20px 8px; padding: 8px 12px; border-radius: 10px; background: var(--bg-mantle); }
 .wmux-board-preview-head { display: block; margin-bottom: 4px; font-size: 11px; color: var(--text-muted); }
-.wmux-board-preview pre { max-height: 220px; margin: 0; overflow: auto; font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px; line-height: 1.6; color: var(--text-sub); white-space: pre; }
+.wmux-board-preview pre { position: relative; max-height: 220px; margin: 0; overflow: auto; font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px; line-height: 1.6; color: var(--text-sub); white-space: pre; }
+/* Check lands here: the error line the row names, as a neutral fill. */
+.wmux-fleet-error-line { background: var(--selection); color: var(--text-main); border-radius: 3px; }
+/* A Needs you row's detail: the question (or error) in full, its choices,
+ * then the ways to act; the output sits under it. */
+.wmux-board-foot-stack { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.wmux-board-foot-stack > .wmux-board-preview { margin: 0; }
+.wmux-fleet-request { min-width: 0; padding: 10px 14px; border-radius: 10px; background: var(--bg-mantle); font-size: 13px; color: var(--text-main); }
+.wmux-fleet-request h3 { margin: 0 0 4px; font-size: 11px; font-weight: 500; color: var(--text-subtle); }
+.wmux-fleet-request-text { margin: 0; max-height: 160px; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
+.wmux-fleet-request-text.is-evidence { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; }
+.wmux-fleet-request-choices { margin: 8px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--text-sub); overflow-wrap: anywhere; }
+.wmux-fleet-request-choices li[data-current] { color: var(--text-main); font-weight: 500; }
 /* The selection's detail at the foot: the terminal preview and, for a
  * fan-out task, its conversation, side by side when both are open. */
 .wmux-board-foot { flex: none; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 8px; margin: 0 20px 8px; }
@@ -957,9 +970,9 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 /* People talk here: the author and the body read in the UI face (code stays mono). */
 .wmux-board-conversation [data-channel-message-author] { font-family: var(--font-ui); font-size: 12px; font-weight: 500; }
 .wmux-board-conversation [data-channel-message-text] { font-family: var(--font-ui); font-size: 13px; line-height: 1.45; }
-.wmux-board-keys { flex: none; display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 8px 20px 12px; font-size: 11px; color: var(--text-muted); }
+.wmux-board-keys { flex: none; display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 8px 20px 12px; font-size: 11px; color: var(--text-subtle); }
 .wmux-board-key { display: inline-flex; align-items: center; gap: 5px; }
-.wmux-board-key kbd { padding: 1px 6px; border-radius: 5px; background: var(--selection-subtle); font-family: var(--font-mono, ui-monospace, monospace); font-size: 10.5px; }
+.wmux-board-key kbd { padding: 1px 6px; border-radius: 5px; background: var(--selection-subtle); color: var(--text-sub); font-family: var(--font-mono, ui-monospace, monospace); font-size: 10.5px; }
 @container (max-width: 900px) {
   .wmux-board-foot { grid-auto-flow: row; }
 }
@@ -1006,7 +1019,8 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-fleet-editor button { min-height: 28px; padding: 2px 10px; border: 1px solid var(--border-soft); border-radius: 5px; font-size: 12px; color: var(--text-main); }
 .wmux-fleet-editor button.is-destructive { color: var(--accent-red); }
 .wmux-fleet-card:hover, .wmux-fleet-card[aria-selected="true"] { background: var(--bg-surface); }
-.wmux-fleet-card:focus-visible { outline: none !important; box-shadow: inset 2px 0 var(--accent-blue); }
+/* Focus is a ring, selection a fill: a focused selected row shows both. */
+.wmux-fleet-card:focus-visible { outline: 2px solid var(--accent) !important; outline-offset: -2px; }
 .wmux-fleet-status { display: flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 500; line-height: 1.4; }
 .wmux-fleet-dot { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .wmux-fleet-dot.is-unconfirmed { background: transparent; border: 1px solid currentColor; }
@@ -1021,6 +1035,8 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-fleet-context > span + span::before { content: '·'; margin-right: 6px; color: var(--text-muted); }
 .wmux-fleet-detail { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text-sub); }
 .wmux-fleet-detail.is-activity { font-family: var(--font-mono, monospace); }
+/* A question wraps to two lines at any width; the detail holds it in full. */
+.wmux-fleet-detail.is-question { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: normal; overflow-wrap: anywhere; }
 .wmux-fleet-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 11px; color: var(--text-sub); }
 .wmux-fleet-meta:empty { display: none; }
 .wmux-fleet-action { display: flex; justify-content: flex-end; align-items: center; gap: 3px; font-size: 11px; white-space: nowrap; color: var(--text-sub); }
@@ -1034,7 +1050,7 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 /* The idle summary carries an age ("oldest 3m"); uppercase would turn it into
  * "3M", which reads as months or millions. */
 .wmux-fleet-idle-toggle, .wmux-fleet-section-header[data-fleet-section="idle"] { text-transform: none; letter-spacing: normal; }
-.wmux-fleet-idle-toggle:focus-visible { outline: none !important; box-shadow: inset 2px 0 var(--accent-blue); }
+.wmux-fleet-idle-toggle:focus-visible { outline: 2px solid var(--accent) !important; outline-offset: -2px; }
 .wmux-fleet-idle-chevron { display: inline-flex; transition: transform 120ms; }
 .wmux-fleet-idle-toggle[aria-expanded="true"] .wmux-fleet-idle-chevron { transform: rotate(90deg); }
 .wmux-fleet-empty button { margin-top: 12px; padding: 4px 10px; min-height: 28px; border: 1px solid var(--border-soft); border-radius: 5px; color: var(--text-main); }
@@ -1821,7 +1837,6 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-fleet-row > .wmux-fleet-card { padding-right: 40px; }
 .wmux-fleet-card:hover { background: var(--hover-fill); }
 .wmux-fleet-card[aria-selected="true"] { background: var(--selection); }
-.wmux-fleet-card:focus-visible { box-shadow: inset 0 0 0 1px var(--accent); }
 .wmux-fleet-row-trigger { border-radius: 6px; background: var(--selection); }
 .wmux-fleet-editor { border-bottom-color: var(--stroke); }
 .wmux-fleet-editor input,
@@ -2022,7 +2037,8 @@ html[data-fullscreen] .wmux-shell-body {
   width: 7px;
   height: 7px;
   border-radius: 9999px;
-  background: var(--accent);
+  /* Needs you wears one colour everywhere (DESIGN.md colour grammar). */
+  background: var(--accent-yellow);
 }
 .wmux-rail .wmux-nav-badge {
   top: 2px;
@@ -2034,7 +2050,8 @@ html[data-fullscreen] .wmux-shell-body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: var(--bg-base);
+  /* A dark ink derived from the badge colour reads on every look. */
+  color: color-mix(in srgb, var(--accent-yellow) 15%, #000);
   font-size: 10px;
   font-weight: 600;
   line-height: 1;

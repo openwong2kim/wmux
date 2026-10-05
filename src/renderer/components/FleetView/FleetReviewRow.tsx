@@ -325,7 +325,10 @@ function FleetReviewRow({ entry, focused, now, onFocus, onOpenDiff, onJump, onEd
         ref={triggerRef}
         type="button"
         className="wmux-fleet-row-trigger"
-        tabIndex={focused ? 0 : -1}
+        // Pointer twin of the row's keys (Shift+F10 / the Menu key open it
+        // from the row): kept out of the listbox's tree and tab order.
+        tabIndex={-1}
+        aria-hidden="true"
         title={t('pane.moreActions')}
         aria-label={t('pane.moreActions')}
         aria-haspopup="menu"

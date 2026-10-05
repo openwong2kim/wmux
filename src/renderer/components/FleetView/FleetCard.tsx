@@ -17,6 +17,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { formatIdle, IDLE_SHOW_AFTER_MS } from '../../utils/idleTime';
 import { useUsageLimitNow } from '../Pane/UsageLimitChip';
 import { usageLimitFleetDetail, usageLimitView } from '../Pane/usageLimitPresentation';
+import { AGENT_IDENTITIES } from '../../../shared/agentIdentity';
 
 interface FleetCardProps {
   card: FleetPane;
@@ -31,6 +32,11 @@ interface FleetCardProps {
   row?: FleetRow;
   /** Status differs from what Fleet showed when it was last closed. */
   changed?: boolean;
+  /** An error row's last error line from its terminal tail, if any. */
+  errorLine?: string;
+  /** A Check row (error, stopped, unconfirmed) opens its detail in place
+   *  instead of jumping; absent → it jumps like any row. */
+  onInspect?: (card: FleetPane) => void;
   onFocus?: () => void;
   /** TASK-6 — per-pane agent resource attribution: summed RAM (bytes) of this
    *  pane's shell + descendant tree, and the heaviest child's image name. Only
@@ -56,6 +62,23 @@ function formatRss(bytes: number): string {
   const mb = bytes / (1024 * 1024);
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
   return `${Math.round(mb)} MB`;
+}
+
+const AGENT_DISPLAY_BY_NAME = new Map<string, string>(
+  AGENT_IDENTITIES.flatMap((a) => [[a.slug, a.display], [a.display.toLowerCase(), a.display]]),
+);
+
+/** One name per agent: a terminal title or detector name that is a known
+ *  agent ("claude", "✳ Claude Code") reads as its display name. */
+export function agentDisplayName(raw: string): string {
+  const clean = raw.replace(/^[✳✻✽✶✢*]\s*/, '').trim();
+  return AGENT_DISPLAY_BY_NAME.get(clean.toLowerCase()) ?? clean;
+}
+
+/** An accessible name clips agent text so a long question does not drown it. */
+function clipForLabel(text: string): string {
+  const chars = Array.from(text);
+  return chars.length <= 80 ? text : `${chars.slice(0, 79).join('')}…`;
 }
 
 /**
@@ -125,7 +148,7 @@ export function FleetCardEvidenceBadge({ task }: { task: Task | undefined }): Re
 }
 
 /** One agent's row. Terminal output belongs in the detail area, never here. */
-function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onFocus, ticketTitle }: FleetCardProps) {
+function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onFocus, ticketTitle, errorLine, onInspect }: FleetCardProps) {
   const t = useT();
   const icon = AGENT_STATUS_ICON[card.agentStatus];
   const mission = useStore((s) => s.missionByPaneGroup[card.workspaceId]);
@@ -137,7 +160,7 @@ function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onF
   // A fan-out task names who asked for it in every section, not only once it
   // is ready to review. Undefined for a workspace that is not a task.
   const requester = useStore(useShallow((s) => fleetRequesterText(s, card.workspaceId, t)));
-  const agentName = card.agentName || (card.surfaceType === 'terminal' ? card.title : card.surfaceType);
+  const agentName = agentDisplayName(card.agentName || (card.surfaceType === 'terminal' ? card.title : card.surfaceType));
   const supervision = card.supervision;
   const supervisionStopped = supervision?.status === 'stopped';
   const supervisionLabel = supervision
@@ -168,27 +191,34 @@ function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onF
   const limitNow = useUsageLimitNow(!!usageLimit);
   // Kept past the turn's end, so a finished row can say what it did last.
   const lastActivity = useStore((s) => s.surfaceLastActivity[fleetTargetPtyId(card)]);
-  const line = nowDoingLine(row, lastActivity, t);
+  const line = nowDoingLine(row, lastActivity, t, errorLine);
   const detail = usageLimit
     ? usageLimitFleetDetail(usageLimitView(usageLimit, limitNow, getLocale()), t)
     : line.text;
   const elapsed = row.idleForMs !== undefined && row.idleForMs >= IDLE_SHOW_AFTER_MS
     ? formatIdle(row.idleForMs) : undefined;
+  const checks = !isAwaitingInput && card.agentStatus !== 'complete'
+    && (card.agentStatus === 'error' || !!card.unverifiable || supervisionStopped);
   const action = isAwaitingInput ? t('fleet.action.respond')
     : card.agentStatus === 'complete' ? t('fleet.action.result')
-    : card.agentStatus === 'error' || card.unverifiable || supervisionStopped ? t('fleet.action.inspect')
+    : checks ? t('fleet.action.inspect')
     : t('fleet.action.open');
-  const showActivity = line.kind === 'now' || line.kind === 'last';
+  // Machine evidence (a tool line, an error line) reads in the activity mono.
+  const showActivity = line.kind === 'now' || line.kind === 'last' || line.kind === 'error';
+  // Name, status, place, and what it asks (or the error it printed), clipped:
+  // the verb and the rest of the row are one arrow key away in the detail.
+  const said = !usageLimit && (line.kind === 'question' || line.kind === 'error') ? clipForLabel(detail) : '';
 
   return (
     <button
       type="button"
       role="option"
       aria-selected={focused}
-      aria-label={`${displayName}, ${statusLabel}, ${card.workspaceName}${requester ? `, ${requester.text}` : ''}${card.remote ? `, ${card.remote.hostLabel}` : ''}${supervision ? `, ${supervisionLabel}` : ''}${changed ? `, ${t('fleet.changedSinceSeen')}` : ''}, ${detail}, ${action}`}
+      aria-label={[displayName, statusLabel, card.workspaceName, card.remote?.hostLabel,
+        changed ? t('fleet.changedSinceSeen') : '', said].filter(Boolean).join(', ')}
       tabIndex={focused ? 0 : -1}
       onFocus={onFocus}
-      onClick={() => onJump(card)}
+      onClick={() => (checks && onInspect ? onInspect(card) : onJump(card))}
       data-fleet-card
       data-status={card.agentStatus}
       data-unverifiable={card.unverifiable || undefined}
@@ -255,7 +285,7 @@ function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onF
         {requester && <span className="wmux-fleet-requester" data-fleet-requester title={requester.text}>{requester.text}</span>}
       </span>
       <span className="wmux-fleet-progress">
-        <span className={`wmux-fleet-detail${showActivity && !usageLimit ? ' is-activity' : ''}`}
+        <span className={`wmux-fleet-detail${showActivity && !usageLimit ? ' is-activity' : ''}${line.kind === 'question' && !usageLimit ? ' is-question' : ''}`}
           data-fleet-activity={(showActivity && !usageLimit) || undefined}
           data-fleet-now={usageLimit ? undefined : line.kind}
           data-fleet-usage-limit={usageLimit ? 'true' : undefined}

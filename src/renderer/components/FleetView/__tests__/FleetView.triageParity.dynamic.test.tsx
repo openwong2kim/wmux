@@ -23,7 +23,7 @@ beforeEach(() => {
     metadata: { setLabel: async () => ({ ok: true }) },
   };
   act(() => {
-    seedFleetTriageStore(Date.now(), { fleetActiveTab: 'fleet', fleetIdleExpanded: true });
+    seedFleetTriageStore(Date.now(), { fleetActiveTab: 'fleet', fleetIdleExpanded: true, fleetFinishedExpanded: true });
   });
 });
 
@@ -35,7 +35,7 @@ afterEach(() => {
 
 /** Section → the ACTIVE pty of each rendered card, in DOM order. */
 function renderedSections(): Record<string, string[]> {
-  const out: Record<string, string[]> = { needsYou: [], running: [], idle: [] };
+  const out: Record<string, string[]> = { needsYou: [], finished: [], running: [], idle: [] };
   let section = '';
   for (const el of container.querySelectorAll<HTMLElement>('[data-fleet-section], [data-fleet-card]')) {
     if (el.dataset.fleetSection) section = el.dataset.fleetSection;
@@ -55,11 +55,14 @@ describe('FleetView ↔ fleet.triage parity', () => {
     const cardKeys = (rows: { paneId: string }[]) => rows.map((row) => ACTIVE_PTY_BY_PANE[row.paneId]);
     const expected = {
       needsYou: cardKeys(payload.needsYou),
+      finished: cardKeys(payload.finished),
       running: cardKeys(payload.running),
       idle: cardKeys(payload.idle.rows ?? []),
     };
 
+    // Needs you holds decisions only; the finished turn has its own section.
     expect(expected.needsYou).toHaveLength(3);
+    expect(expected.finished).toEqual(['pty-6']);
     expect(expected.running).toHaveLength(1);
     expect(expected.idle).toHaveLength(2);
     expect(renderedSections()).toEqual(expected);

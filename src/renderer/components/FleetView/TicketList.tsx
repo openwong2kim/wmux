@@ -66,9 +66,14 @@ function TicketRowImpl({ ticket, assignee, focused, now, onFocus, onSelect, onJu
         <span className="wmux-fleet-detail" title={ticket.result?.summary ?? ticket.request}>
           {ticket.result?.summary ?? ticket.request ?? ''}
         </span>
+        {/* Elapsed time sits where an agent row puts it, under the line. */}
+        <span className="wmux-fleet-meta">
+          <span data-fleet-elapsed>{formatIdle(Math.max(0, now - ticket.updatedAt))}</span>
+        </span>
       </span>
-      <span className="wmux-fleet-action">
-        <span>{formatIdle(Math.max(0, now - ticket.updatedAt))}</span>
+      <span className="wmux-fleet-action" aria-hidden="true">
+        <span>{t(ticket.state === 'needs-you' ? 'fleet.action.respond'
+          : ticket.state === 'done' || ticket.state === 'failed' ? 'fleet.action.result' : 'fleet.action.open')}</span>
       </span>
     </button>
   );
@@ -147,13 +152,13 @@ export function TicketDetail({ ticket, assignee, decisions, onJump, onOpenDecisi
       </div>
       {ticket.request && (
         <>
-          <h4>{t('fleet.ticket.request')}</h4>
+          <h3>{t('fleet.ticket.request')}</h3>
           <p className="wmux-fleet-ticket-text" data-fleet-ticket-request>{ticket.request}</p>
         </>
       )}
       {waiting.length > 0 && (
         <>
-          <h4>{t('fleet.ticket.decisions')}</h4>
+          <h3>{t('fleet.ticket.decisions')}</h3>
           <ul className="wmux-fleet-ticket-decisions">
             {waiting.map((d) => (
               <li key={d.decision.id}>
@@ -167,7 +172,7 @@ export function TicketDetail({ ticket, assignee, decisions, onJump, onOpenDecisi
       )}
       {result && (
         <>
-          <h4>{t('fleet.ticket.result')}</h4>
+          <h3>{t('fleet.ticket.result')}</h3>
           <p className="wmux-fleet-ticket-text" data-fleet-ticket-result>{result.summary}</p>
           {result.verification && (
             <p className="wmux-fleet-ticket-meta" data-fleet-ticket-verification>
@@ -178,7 +183,7 @@ export function TicketDetail({ ticket, assignee, decisions, onJump, onOpenDecisi
       )}
       {gone && (
         <>
-          <h4>{t('fleet.ticket.result')}</h4>
+          <h3>{t('fleet.ticket.result')}</h3>
           <p className="wmux-fleet-ticket-meta" data-fleet-ticket-result-gone>{t('fleet.ticket.resultGone')}</p>
         </>
       )}

@@ -83,6 +83,8 @@ beforeEach(() => {
       ...useStore.getInitialState(),
       locale: 'en',
       fleetActiveTab: 'fleet',
+      // p1 and p3 finished their turns: show the Finished rows.
+      fleetFinishedExpanded: true,
       workspaces: [
         // p1 has a sibling, so it is closable; ws-3's p3 is a workspace root.
         workspace('ws-1', 'alpha', branch('b1', [

@@ -161,13 +161,21 @@ describe('Fleet shortcut counts', () => {
     }
   });
 
+  it('a finished turn is not counted as needs you', () => {
+    seed();
+    act(() => root.render(<SidebarNavigation />));
+    act(() => useStore.setState({ surfaceAgentStatus: { 'pty-4': 'complete' }, surfacePendingQuestion: {}, remoteWorkspaces: [] }));
+    expect(counts().needsYou).toBeUndefined();
+  });
+
   it('keeps only the needs-you count, as a number badge, on the compact rail, with the numbers in its name', () => {
     seed();
     act(() => root.render(<SidebarNavigation compact />));
     expect(container.querySelectorAll('[data-fleet-nav-count]')).toHaveLength(1);
     expect(container.querySelector('[data-fleet-nav-count="needsYou"]')?.textContent).toBe('3');
     expect(button('fleet').getAttribute('aria-label')).toBe('Fleet, needs you 3, running 1');
-    expect(button('fleet').title).toBe(button('fleet').getAttribute('aria-label'));
+    // The tooltip says the badge counts agents only (tickets live in Fleet).
+    expect(button('fleet').title).toBe('Fleet, needs you 3, running 1 (agents only, tickets are counted in Fleet)');
 
     act(() => useStore.setState({ surfaceAgentStatus: {}, surfacePendingQuestion: {}, remoteWorkspaces: [] }));
     expect(container.querySelectorAll('[data-fleet-nav-count]')).toHaveLength(0);

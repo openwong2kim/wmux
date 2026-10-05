@@ -378,7 +378,8 @@ type CountState = {
  * that tells panes apart leads and the workspace comes last, so a narrow row
  * truncates the workspace first (`includesOwner`: the workspace is part of
  * it). Otherwise the plain requester line. Undefined for a workspace that is
- * not a fan-out task.
+ * not a fan-out task, and when the requester is unknown: a row says nothing
+ * rather than "Requester unknown".
  */
 export function fleetRequesterText(
   state: RequesterState & CountState,
@@ -392,6 +393,7 @@ export function fleetRequesterText(
   );
   if (!link && !state.fanoutOrigin?.[taskWorkspaceId]) return undefined;
   const requester = resolveTaskRequester(state, taskWorkspaceId);
+  if (requester.kind === 'unknown') return undefined;
   if (requester.kind === 'pane') {
     const wsId = requester.live ? requester.workspaceId : link?.ownerId;
     const wsName = state.workspaces.find((w) => w.id === wsId)?.name;

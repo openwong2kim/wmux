@@ -34,6 +34,9 @@ export default function SidebarNavigation({ compact = false, home = false }: {
   const runningText = fleetCounts.running > 0 ? t('sidebar.fleetRunning', { count: fleetCounts.running }) : '';
   // Built from the visible strings, so the spoken name contains what is shown.
   const fleetName = [t('fleet.title'), needsText, runningText].filter(Boolean).join(', ');
+  // The rail counts agent rows only: Moa's tickets are read while Fleet is
+  // open, so the tooltip says the badge leaves them out.
+  const fleetTip = needsText || runningText ? `${fleetName} (${t('sidebar.fleetAgentsOnly')})` : fleetName;
   // Scheduled runs: shown once a daemon answers automation.list. Needs you =
   // runs awaiting a response + schedules whose last run failed; otherwise the
   // next run time, muted. Scheduled runs never appear in Fleet itself.
@@ -138,6 +141,7 @@ export default function SidebarNavigation({ compact = false, home = false }: {
   return (
     <nav className={`wmux-sidebar-nav${compact ? ' wmux-sidebar-nav-compact' : ''}`} aria-label={t('sidebar.navigation')}>
       {entries.map(({ id, label, name, active, icon, onClick }) => {
+        const tip = id === 'fleet' ? fleetTip : name;
         return (
           <Fragment key={id}><button
             type="button"
@@ -148,7 +152,7 @@ export default function SidebarNavigation({ compact = false, home = false }: {
             // in-sheet list's items are toggles.
             aria-current={home && active ? 'page' : undefined}
             aria-pressed={home ? undefined : active}
-            title={compact ? name : undefined}
+            title={compact ? tip : undefined}
             onClick={onClick}
             // Spring-loaded: an issue / PR dragged from the Git page and held
             // over Workspaces opens it, so the drop can land on a pane or a row.
