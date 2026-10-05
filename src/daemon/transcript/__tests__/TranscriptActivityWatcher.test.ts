@@ -28,11 +28,11 @@ function append(file: string, ...lines: string[]): void {
   fs.appendFileSync(file, lines.map((l) => `${l}\n`).join(''));
 }
 
-function harness(agent: 'claude' | 'codex', opts: { alive?: boolean } = {}) {
+function harness(agent: 'claude' | 'codex', opts: { alive?: boolean | undefined } = {}) {
   const file = path.join(dir, `${agent}.jsonl`);
   fs.writeFileSync(file, `${JSON.stringify({ type: 'summary', summary: 'old session' })}\n`);
   let now = 10_000;
-  const state = { alive: opts.alive ?? true, sessions: ['pty-1'] };
+  const state: { alive: boolean | undefined; sessions: string[] } = { alive: 'alive' in opts ? opts.alive : true, sessions: ['pty-1'] };
   const sent: Array<[string, string]> = [];
   const binding: ResumeBinding = { agent, sessionId: 's', cwd: dir, transcriptPath: file, ts: 0 };
   const watcher = new TranscriptActivityWatcher({
@@ -95,6 +95,28 @@ describe('TranscriptActivityWatcher — lifecycle', () => {
     h.watcher.tick();
     expect(h.watcher.watchedSessions()).toEqual([]);
     h.watcher.dispose();
+  });
+
+  it('a new agent in the same pane is watched again after the old one died', () => {
+    const h = harness('claude');
+    h.watcher.tick();
+    h.state.alive = false; // /exit: the tracker records the death and stays false
+    h.advance(10);
+    h.watcher.tick();
+    expect(h.watcher.watchedSessions()).toEqual([]);
+    h.advance(10);
+    h.watcher.noteHookSignal('pty-1', 'agent.session_start'); // a new `claude` starts
+    h.watcher.tick();
+    expect(h.watcher.watchedSessions()).toEqual(['pty-1']);
+    append(h.file, claudeTool('n', 'Edit', { file_path: '/repo/new.ts' }));
+    h.watcher.tick();
+    expect(h.sent).toEqual([['pty-1', '✎ new.ts']]);
+  });
+
+  it('an agent the tracker never attributed is watched while the binding exists', () => {
+    const h = harness('claude', { alive: undefined });
+    h.watcher.tick();
+    expect(h.watcher.watchedSessions()).toEqual(['pty-1']);
   });
 
   it('a hook-fed session stands down until its next session start', () => {

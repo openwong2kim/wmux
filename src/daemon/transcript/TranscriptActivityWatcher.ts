@@ -102,8 +102,13 @@ export interface TranscriptActivityDeps {
   listSessionIds: () => string[];
   /** The session's transcript binding — the projector's own resolver. */
   getBinding: (sessionId: string) => ResumeBinding | undefined;
-  /** True while the pane's agent process is alive. */
-  isAgentAlive: (sessionId: string) => boolean;
+  /**
+   * The process tracker's word on the pane's agent: true alive, false died,
+   * undefined never attributed. A false is sticky until the tracker re-arms,
+   * so a hook signal from the pane after the death counts as a live agent
+   * (a new `claude` in the same pane).
+   */
+  isAgentAlive: (sessionId: string) => boolean | undefined;
   /** Report a line ('' clears) for the session. */
   emit: (sessionId: string, activity: string) => void;
   now?: () => number;
@@ -146,6 +151,9 @@ export function activityFromEvents(events: readonly TurnEvent[]): string | null 
 export class TranscriptActivityWatcher {
   private readonly watches = new Map<string, Watch>();
   private readonly hookFed = new Set<string>();
+  /** Last hook signal per session, and when the tracker first said "dead". */
+  private readonly hookAt = new Map<string, number>();
+  private readonly deadSince = new Map<string, number>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly now: () => number;
 
@@ -164,6 +172,8 @@ export class TranscriptActivityWatcher {
     this.timer = null;
     this.watches.clear();
     this.hookFed.clear();
+    this.hookAt.clear();
+    this.deadSince.clear();
   }
 
   /** Sessions currently tailed (tests and diagnostics). */
@@ -173,6 +183,7 @@ export class TranscriptActivityWatcher {
 
   /** Every resolved hook signal for the session. */
   noteHookSignal(sessionId: string, kind: string): void {
+    this.hookAt.set(sessionId, this.now());
     if (kind === 'agent.activity') {
       this.hookFed.add(sessionId);
       this.watches.delete(sessionId);
@@ -190,11 +201,25 @@ export class TranscriptActivityWatcher {
   dropSession(sessionId: string): void {
     this.watches.delete(sessionId);
     this.hookFed.delete(sessionId);
+    this.hookAt.delete(sessionId);
+    this.deadSince.delete(sessionId);
+  }
+
+  /** The agent is running: the tracker says so, or a hook spoke since it died. */
+  private agentAlive(id: string): boolean {
+    const tracked = this.deps.isAgentAlive(id);
+    if (tracked !== false) {
+      this.deadSince.delete(id);
+      return true;
+    }
+    if (!this.deadSince.has(id)) this.deadSince.set(id, this.now());
+    return (this.hookAt.get(id) ?? -1) >= (this.deadSince.get(id) ?? 0);
   }
 
   tick(): void {
     const live = new Set(this.deps.listSessionIds());
     for (const id of [...this.hookFed]) if (!live.has(id)) this.hookFed.delete(id);
+    for (const map of [this.hookAt, this.deadSince]) for (const id of [...map.keys()]) if (!live.has(id)) map.delete(id);
     for (const [id] of this.watches) if (!live.has(id)) this.watches.delete(id);
     for (const id of live) {
       try {
@@ -209,7 +234,7 @@ export class TranscriptActivityWatcher {
   }
 
   private reconcile(id: string): void {
-    const binding = this.hookFed.has(id) || !this.deps.isAgentAlive(id) ? undefined : this.deps.getBinding(id);
+    const binding = this.hookFed.has(id) || !this.agentAlive(id) ? undefined : this.deps.getBinding(id);
     const parse = binding ? PARSERS[binding.agent] : undefined;
     const path = binding?.transcriptPath;
     const current = this.watches.get(id);

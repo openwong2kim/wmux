@@ -3625,14 +3625,11 @@ function registerRpcHandlers(
       listSessionIds: () => sessionManager.listLiveSessions().map((s) => s.id),
       // Moa's brain reports its tools through its own hooks, to main.
       getBinding: (id) => (currentMoaPane()?.sessionId === id ? undefined : resolveTranscriptBinding(id)),
-      // Process truth when the tracker attributed one; else the detected agent.
-      // A Codex pane driven through the shared app-server counts while live.
-      isAgentAlive: (id) => {
-        const tracked = agentProcessTracker.statusFor(id);
-        if (tracked !== undefined) return tracked || codexPaneRelays.liveSelection(id, sessionManager.getSession(id)).live;
-        return !!sessionManager.getSession(id)?.meta.lastDetectedAgent
-          || codexPaneRelays.liveSelection(id, sessionManager.getSession(id)).live;
-      },
+      // Process truth when the tracker attributed one; a Codex pane driven
+      // through the shared app-server counts while its relay is live.
+      isAgentAlive: (id) => (codexPaneRelays.liveSelection(id, sessionManager.getSession(id)).live
+        ? true
+        : agentProcessTracker.statusFor(id)),
       emit: (sessionId, activity) => {
         const event: DaemonEvent = { type: 'agent.transcriptActivity', sessionId, data: { activity } };
         pipeServer.broadcast(event);
