@@ -2575,7 +2575,7 @@ export const zh = {
   'strip.needsYou': '{count} 个需要你处理',
   'sidebar.fleetNeedsYou': '需要你 {count}',
   'sidebar.fleetRunning': '运行中 {count}',
-  'sidebar.fleetAgentsOnly': '仅统计智能体，工单在 Fleet 中统计',
+  'sidebar.fleetTipAgentsOnly': '{name}（仅统计智能体，工单在 Fleet 中统计）',
   'strip.needsYouTooltip': '跳转到需要你的面板',
   'deck.commander': '编排器',
   'deck.commanderThinking': '编排器工作中…',

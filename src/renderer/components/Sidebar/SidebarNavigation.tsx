@@ -36,7 +36,7 @@ export default function SidebarNavigation({ compact = false, home = false }: {
   const fleetName = [t('fleet.title'), needsText, runningText].filter(Boolean).join(', ');
   // The rail counts agent rows only: Moa's tickets are read while Fleet is
   // open, so the tooltip says the badge leaves them out.
-  const fleetTip = needsText || runningText ? `${fleetName} (${t('sidebar.fleetAgentsOnly')})` : fleetName;
+  const fleetTip = needsText || runningText ? t('sidebar.fleetTipAgentsOnly', { name: fleetName }) : fleetName;
   // Scheduled runs: shown once a daemon answers automation.list. Needs you =
   // runs awaiting a response + schedules whose last run failed; otherwise the
   // next run time, muted. Scheduled runs never appear in Fleet itself.

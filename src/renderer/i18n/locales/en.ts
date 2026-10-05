@@ -183,7 +183,7 @@ export const en = {
   'sidebar.search': 'Search & commands',
   'sidebar.fleetNeedsYou': 'needs you {count}',
   'sidebar.fleetRunning': 'running {count}',
-  'sidebar.fleetAgentsOnly': 'agents only, tickets are counted in Fleet',
+  'sidebar.fleetTipAgentsOnly': '{name} (agents only, tickets are counted in Fleet)',
   'sidebar.agents': 'Agents',
   'sidebar.notifications': 'Notifications',
   'sidebar.workspaces': 'Workspaces',

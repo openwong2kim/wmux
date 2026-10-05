@@ -179,7 +179,7 @@ export const ko = {
   'sidebar.search': '검색 및 명령',
   'sidebar.fleetNeedsYou': '확인 필요 {count}',
   'sidebar.fleetRunning': '실행 중 {count}',
-  'sidebar.fleetAgentsOnly': '에이전트만 집계, 티켓은 Fleet에서 집계',
+  'sidebar.fleetTipAgentsOnly': '{name} (에이전트만 집계, 티켓은 Fleet에서 집계)',
   'sidebar.agents': '에이전트',
   'sidebar.notifications': '알림',
   'sidebar.workspaces': '워크스페이스',

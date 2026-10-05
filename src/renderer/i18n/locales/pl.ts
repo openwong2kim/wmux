@@ -156,7 +156,7 @@ export const pl = {
   'sidebar.search': 'Szukaj i polecenia',
   'sidebar.fleetNeedsYou': 'potrzebuje Cię {count}',
   'sidebar.fleetRunning': 'pracuje {count}',
-  'sidebar.fleetAgentsOnly': 'tylko agenci, zgłoszenia są liczone we Fleet',
+  'sidebar.fleetTipAgentsOnly': '{name} (tylko agenci, zgłoszenia są liczone we Fleet)',
   'sidebar.agents': 'Agenci',
   'sidebar.notifications': 'Powiadomienia',
   'fleet.overview': '{count} łącznie · {running} aktywnych',
