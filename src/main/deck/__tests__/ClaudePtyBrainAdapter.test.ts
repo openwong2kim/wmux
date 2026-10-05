@@ -1781,6 +1781,8 @@ function makeColdTui(opts: ColdTuiOptions = {}) {
   let coldBareWrite = true;
   let pastes = 0;
   let pasteOpen = false;
+  // Hook runs armed and not yet reported (a slow hook outlives the turn).
+  let hooksRunning = 0;
   const write = host.write.bind(host);
   host.write = (id, data) => {
     write(id, data);
@@ -1800,6 +1802,7 @@ function makeColdTui(opts: ColdTuiOptions = {}) {
       if (!box) return;
       const prompt = box;
       const report = (): void => {
+        if (opts.hookDelayMs) hooksRunning -= 1;
         const verdict = deliverBrainPtyHookSignal(signal('agent.user_prompt_submit', id, { payload: { prompt } }));
         verdicts.push(verdict);
         if (box === prompt) box = '';
@@ -1817,8 +1820,10 @@ function makeColdTui(opts: ColdTuiOptions = {}) {
           opts.stopDelayMs ?? 0,
         );
       };
-      if (opts.hookDelayMs) setTimeout(report, opts.hookDelayMs);
-      else report();
+      if (opts.hookDelayMs) {
+        hooksRunning += 1;
+        setTimeout(report, opts.hookDelayMs);
+      } else report();
       return;
     }
     let text: string;
@@ -1836,7 +1841,7 @@ function makeColdTui(opts: ColdTuiOptions = {}) {
     box += text;
   };
   const pasteWrites = (): number => host.writes.filter((w) => w.data.startsWith('\u001b[200~')).length;
-  return { host, accepted, verdicts, pasteWrites };
+  return { host, accepted, verdicts, pasteWrites, hooksRunning: () => hooksRunning };
 }
 
 const LONG_PROMPT = Array.from({ length: 400 }, (_, i) => `word${i}`).join(' ');
@@ -1869,12 +1874,15 @@ describe('a cold-start prompt that reaches the TUI incomplete (#1787)', () => {
   });
 
   it('refuses a damaged copy the second Enter resubmits while a slow hook holds the box', async () => {
-    const { host, accepted, verdicts } = makeColdTui({
+    const { host, accepted, verdicts, hooksRunning } = makeColdTui({
       damage: (n, text) => (n === 1 ? tailOnly(text) : text),
       hookDelayMs: 150,
     });
     const adapter = makeAdapter(host);
     const events = await collect(adapter.send(LONG_PROMPT));
+    // The turn ends on the first Stop; every Enter still in its hook reports
+    // after that, and none of them may run anything either.
+    await vi.waitFor(() => expect(hooksRunning()).toBe(0));
     // Both submissions of the damaged box were refused (and, depending on the
     // hook's timing, the full prompt's own resubmission too): the full prompt
     // ran exactly once and nothing else ran.

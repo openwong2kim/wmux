@@ -94,6 +94,13 @@ const PROMPT_VERIFY_WINDOW_MS = 5_000;
  *  RUNS. The proof is Claude Code printing the refusal reason, which carries a
  *  token unique to it. Longer than the bridge's own 2 s answer timeout. */
 const REFUSAL_CONFIRM_MS = 3_000;
+/** How long a send() whose attempt was refused waits for the report of that
+ *  attempt's other Enter before it types again. With a slow hook the second
+ *  Enter resubmits the damaged copy still in the box, and its report lands
+ *  about 3 x SUBMIT_DELAY_MS after the first; read once the next attempt is
+ *  typed, it would be taken as that attempt's verdict. Bounded, because the
+ *  first Enter may have been swallowed and that report never comes. */
+const ENTER_REPORT_WAIT_MS = 3_000;
 /** How long after our prompt was accepted the very next report of the same
  *  text is taken as a resubmission of it (the second Enter landing while the
  *  first's hook still held the box) rather than the human sending it again. */
@@ -807,6 +814,7 @@ export interface ClaudePtyBrainAdapterDeps {
   pasteModeSettleMs?: number;
   promptVerifyWindowMs?: number;
   refusalConfirmMs?: number;
+  enterReportWaitMs?: number;
 }
 
 /** One pending waiter — resolved by a hook signal, a timeout, or dispose(). */
@@ -895,6 +903,10 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
   private pendingRefusals = new Map<string, Waiter<void>>();
   private refusalOutput = '';
   private refusalSeq = 0;
+  /** Enters the current typing attempt wrote that no UserPromptSubmit has
+   *  reported yet, and who waits for the count to reach zero. */
+  private entersUnreported = 0;
+  private entersReported: Waiter<void> | null = null;
   /** Our prompt as last accepted, while a resubmission of it is refused. */
   private lastOwnSubmit: { text: string; at: number } | null = null;
   /** Resolved by interrupt(): a prompt being retried is not typed again. */
@@ -1007,6 +1019,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     // that turn is already tracked by `turnStop`.
     if (signal.kind === 'agent.user_prompt_submit') {
       const rawPrompt = typeof signal.payload['prompt'] === 'string' ? signal.payload['prompt'] : null;
+      if (this.ownPromptPending !== null) this.noteEnterReported();
       // Our own prompt arriving damaged (#1787) is refused before anything
       // else sees it: the block keeps the TUI from running half a prompt, and
       // send() types it again. It is neither the human's nor a foreign turn.
@@ -1177,6 +1190,20 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     if (!last || rawPrompt === null || Date.now() - last.at > DUPLICATE_SUBMIT_MS) return undefined;
     if (normalizeForPromptMatch(rawPrompt) !== last.text) return undefined;
     return { block: "wmux: the orchestrator's prompt was submitted twice; the second copy was not run." };
+  }
+
+  private noteEnterReported(): void {
+    if (this.entersUnreported > 0) this.entersUnreported -= 1;
+    if (this.entersUnreported > 0) return;
+    this.entersReported?.resolve();
+    this.entersReported = null;
+  }
+
+  /** Resolves once every Enter of the current attempt has been reported. */
+  private entersAllReported(): Promise<void> {
+    if (this.entersUnreported === 0) return Promise.resolve();
+    this.entersReported ??= createWaiter<void>();
+    return this.entersReported.promise;
   }
 
   /** Resolves once every refusal issued so far has been seen taking effect. */
@@ -1878,6 +1905,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     this.deps.host.write(ptyId, bracketed ? `${PASTE_START}${prompt}${PASTE_END}` : prompt);
     await delay(submitDelayMs);
     if (this._disposed) return;
+    this.entersUnreported += 1;
     this.deps.host.write(ptyId, '\r');
     // Belt-and-braces second Enter: the first can still be swallowed when it
     // lands during a TUI redraw right after the previous turn (observed in
@@ -1898,6 +1926,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
       await delay(submitDelayMs);
       if (this._disposed || this.promptVerdict === null) return;
     }
+    this.entersUnreported += 1;
     this.deps.host.write(ptyId, '\r');
   }
 
@@ -1930,6 +1959,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
       for (let attempt = 1; ; attempt++) {
         const verdict = createWaiter<{ ok: true } | { ok: false; received: number }>();
         this.promptVerdict = verdict;
+        this.entersUnreported = 0;
         try {
           await this.typePrompt(ptyId, prompt, submitDelayMs);
         } catch (err) {
@@ -1958,6 +1988,15 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
           `[deck] terminal brain received ${settled.received} of ${own.length} prompt characters ` +
           `(attempt ${attempt} of ${PROMPT_ATTEMPTS}) — refused it`,
         );
+        // The attempt's other Enter may still be in its hook: its report (a
+        // resubmitted damaged copy) is refused here, never read as the next
+        // attempt's verdict.
+        await Promise.race([
+          this.entersAllReported(),
+          ended(),
+          delay(this.deps.enterReportWaitMs ?? ENTER_REPORT_WAIT_MS),
+        ]);
+        if (this._disposed) return null;
         // Typed again only after the refusal is seen taking effect: a bridge
         // that missed main's answer let the damaged copy run, and typing again
         // on top of it would run the prompt twice.
@@ -1979,6 +2018,8 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
       }
     } finally {
       this.promptVerdict = null;
+      this.entersUnreported = 0;
+      this.entersReported = null;
       this.ownPromptPending = null;
       this.pendingRefusals.clear();
       if (this.promptInterrupted === interrupted) this.promptInterrupted = null;
