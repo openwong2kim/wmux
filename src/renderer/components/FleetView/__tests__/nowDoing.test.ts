@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { fleetRow, type FleetPane } from '../../../stores/selectors/fleet';
 import { t } from '../../../i18n';
-import { lastErrorLine, lastErrorLineIndex, nowDoingLine, promptChoices } from '../nowDoing';
+import { fleetAskOf, lastErrorLine, lastErrorLineIndex, nowDoingLine, promptChoices } from '../nowDoing';
 
 function pane(overrides: Partial<FleetPane> = {}): FleetPane {
   return {
@@ -87,5 +87,22 @@ describe('promptChoices', () => {
     expect(promptChoices(['1. only one'])).toEqual([]);
     expect(promptChoices(['1. a', '3. c'])).toEqual([]);
     expect(promptChoices(['plain output'])).toEqual([]);
+  });
+});
+
+describe('fleetAskOf', () => {
+  const needsYou = (overrides: Partial<FleetPane>) => ({ ...fleetRow(pane(overrides)), section: 'needsYou' as const });
+
+  it('treats waiting like awaiting_input, with or without question text', () => {
+    expect(fleetAskOf(needsYou({ agentStatus: 'waiting' }))).toBe('input');
+    expect(fleetAskOf(needsYou({ agentStatus: 'awaiting_input' }))).toBe('input');
+  });
+
+  it('checks errors, stopped supervision and unconfirmed panes; nothing outside Needs you', () => {
+    expect(fleetAskOf(needsYou({ agentStatus: 'error' }))).toBe('check');
+    expect(fleetAskOf(needsYou({ agentStatus: 'waiting', supervision: { status: 'stopped', restartCount: 1 } }))).toBe('check');
+    expect(fleetAskOf(needsYou({ agentStatus: 'running', unverifiable: true }))).toBe('check');
+    expect(fleetAskOf(fleetRow(pane({ agentStatus: 'running' })))).toBeUndefined();
+    expect(fleetAskOf(undefined)).toBeUndefined();
   });
 });

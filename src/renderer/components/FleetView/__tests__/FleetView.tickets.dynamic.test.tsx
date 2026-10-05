@@ -186,5 +186,23 @@ describe('FleetView — tickets', () => {
     expect(container.querySelector('[data-fleet-ticket-result-gone]')?.textContent).toContain('no longer kept');
     expect(container.querySelector('[data-filter="attention"]')).toBeNull();
   });
+
+  it('pressing Needs you while a final report is selected keeps that report row and its selection', async () => {
+    links = [{ ...LINK, a2aState: 'completed', state: 'done' }];
+    act(() => { root.render(React.createElement(FleetView)); });
+    await settle();
+    const report = () => container.querySelector<HTMLButtonElement>('[data-fleet-ticket="wl-1"]');
+    act(() => report()!.click());
+    await settle();
+    act(() => report()!.focus());
+    // A pane needs input, so the Needs you chip is drawn.
+    act(() => { useStore.setState({ surfaceAgentStatus: { ...useStore.getState().surfaceAgentStatus, 'pty-1': 'awaiting_input' } }); });
+    await settle();
+    act(() => container.querySelector<HTMLButtonElement>('[data-filter="attention"]')!.click());
+    await settle();
+    expect(report()).not.toBeNull();
+    expect(report()!.getAttribute('aria-selected')).toBe('true');
+    expect(report()!.getAttribute('tabindex')).toBe('0');
+  });
 });
 

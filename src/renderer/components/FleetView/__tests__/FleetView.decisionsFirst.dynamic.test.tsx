@@ -177,6 +177,38 @@ describe('FleetView — respond and check in place', () => {
   });
 });
 
+describe('FleetView — review follow-ups', () => {
+  it('a waiting agent in Needs you gets the request panel too', async () => {
+    act(() => { useStore.setState({
+      surfaceAgentStatus: { ...useStore.getState().surfaceAgentStatus, 'pty-3': 'waiting' },
+      surfacePendingQuestion: { ...useStore.getState().surfacePendingQuestion, 'pty-3': 'Keep going with the next file?' },
+    }); });
+    mount();
+    await flushRaf();
+    act(() => row('pty-3').focus());
+    key(row('pty-3'), ' ');
+    await flushRaf();
+    expect(container.querySelector('[data-fleet-request="input"] [data-fleet-request-text]')?.textContent)
+      .toBe('Keep going with the next file?');
+  });
+
+  it('the detail shows the error line with the same sanitizing as the row', async () => {
+    TAILS['pty-2'] = ['> build', 'Error: bad\u202E txt.exe\u202C\u200B path', 'exit 1'];
+    try {
+      mount();
+      await flushRaf();
+      const rowLine = row('pty-2').querySelector('[data-fleet-now="error"]')?.textContent;
+      act(() => { row('pty-2').focus(); row('pty-2').click(); });
+      await flushRaf();
+      const detailLine = container.querySelector('[data-fleet-request="check"] [data-fleet-request-text]')?.textContent;
+      expect(rowLine).toBe('Error: bad txt.exe path');
+      expect(detailLine).toBe(rowLine);
+    } finally {
+      TAILS['pty-2'] = ['> npm run build', 'Error: build failed at step 3', '    at compile (build.ts:4:2)', 'exit 1'];
+    }
+  });
+});
+
 describe('FleetView — listbox semantics', () => {
   it('row buttons outside the options are hidden from the tree; Shift+F10 opens the row menu', async () => {
     mount();

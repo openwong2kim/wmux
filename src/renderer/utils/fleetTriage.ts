@@ -162,7 +162,7 @@ export function buildFleetTriage(
   const bytes = (r: FleetTriageResult) => new TextEncoder().encode(JSON.stringify(r, null, 2)).length;
   let result = build();
   const order: Array<['idle' | 'finished' | 'running' | 'needsYou', FleetTriageRow[]]> = [
-    ['idle', idleRows ?? []], ['finished', finished], ['running', running], ['needsYou', needsYou],
+    ['idle', idleRows ?? []], ['running', running], ['finished', finished], ['needsYou', needsYou],
   ];
   for (const [section, rows] of order) {
     while (rows.length > 0 && bytes(result) > FLEET_TRIAGE_MAX_BYTES) {

@@ -45,7 +45,8 @@ import { useMoaDecisions, useWorkLinks } from '../Moa/panel/useMoaPanelData';
 import { buildFleetTickets, loadSeenReports, openTicketFor, saveSeenReports, ticketAttention, type FleetTicket } from './fleetTickets';
 import { TicketDetail, TicketRow, ticketKey } from './TicketList';
 import FleetRequestPanel from './FleetRequestPanel';
-import { lastErrorLine, lastErrorLineIndex, promptChoices } from './nowDoing';
+import { flattenAgentText } from '../../../shared/assistantPreview';
+import { fleetAskOf, lastErrorLine, lastErrorLineIndex, promptChoices } from './nowDoing';
 
 /** True when a key event comes from a text-entry control. */
 function isEditableTarget(target: EventTarget | null): boolean {
@@ -304,9 +305,13 @@ export default function FleetView() {
     () => (filter !== 'all' && filter !== 'attention' ? [] : decisionTickets.filter(matchesTicket)),
     [decisionTickets, filter, matchesTicket],
   );
+  // Under the Needs you filter a report is not listed, except the one being
+  // read: pressing the chip must not pull the selected row out from under it.
   const visibleReportTickets = useMemo(
-    () => (filter !== 'all' ? [] : reportTickets.filter(matchesTicket)),
-    [reportTickets, filter, matchesTicket],
+    () => (filter === 'all' ? reportTickets.filter(matchesTicket)
+      : filter === 'attention' ? reportTickets.filter((ticket) => ticket.id === stickyReport || ticketKey(ticket.id) === focusedPaneId)
+      : []),
+    [reportTickets, filter, matchesTicket, stickyReport, focusedPaneId],
   );
   const attentionTickets = useMemo(
     () => [...visibleDecisionTickets, ...visibleReportTickets],
@@ -344,12 +349,8 @@ export default function FleetView() {
   const focusedKey = rovingKeys[focusedIdx];
   const selectedRow = visibleRows.find((row) => row.pane.paneId === focusedKey);
   const selectedPane = selectedRow?.pane;
-  // What the selected Needs you row asks of the operator, if anything: an
-  // answer (input) or a look at what went wrong (check).
-  const selectedAsk: 'input' | 'check' | undefined = selectedRow?.section !== 'needsYou' ? undefined
-    : selectedRow.pane.agentStatus === 'awaiting_input' || selectedRow.detailSource === 'question' ? 'input'
-    : selectedRow.pane.agentStatus === 'error' || selectedRow.pane.unverifiable
-      || selectedRow.pane.supervision?.status === 'stopped' ? 'check' : undefined;
+  // What the selected Needs you row asks of the operator, if anything.
+  const selectedAsk = fleetAskOf(selectedRow);
   // An error row reads further back, so its error line is in the preview.
   const previewTailLines = selectedAsk === 'check' ? 40 : 20;
   const focusedReview = visibleReview.find((entry) => reviewRowKey(entry.workspaceId) === focusedKey);
@@ -1424,7 +1425,7 @@ export default function FleetView() {
                       kind={selectedAsk}
                       text={selectedAsk === 'input'
                         ? surfacePendingQuestion[fleetTargetPtyId(detailPane)]?.trim() || undefined
-                        : (errorIdx >= 0 ? previewLines[errorIdx].trim() : errorLines[detailPane.paneId])}
+                        : (errorIdx >= 0 ? flattenAgentText(previewLines[errorIdx].trim()) || undefined : errorLines[detailPane.paneId])}
                       fallback={t(selectedRow.detailKey)}
                       choices={selectedAsk === 'input' ? promptChoices(previewLines) : []}
                       onOpenApproval={rowApprovalIndex(inbox, detailPane.workspaceId) >= 0 ? () => openApprovalFor(detailPane) : undefined}

@@ -1,11 +1,11 @@
 // Fleet's small text clears WCAG AA (4.5:1) on every look: the key hints,
 // the search placeholder and the detail headings use --text-subtle, never
-// --text-muted, and the rail's needs-you badge draws a dark ink on its
-// --accent-yellow fill (white on Paper's warning is 3.7:1).
+// --text-muted, and the rail's needs-you badge keeps page-colour digits at
+// 4.5:1 on every look (light looks deepen the yellow fill).
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { deriveBuiltinPalette } from '../../../themes';
+import { deriveBuiltinPalette, UI_THEME_TOKENS, type BuiltinThemeId } from '../../../themes';
 import { getContrastRatio, mixHex } from '../../../tailwindPalette';
 
 const LOOKS = ['tint', 'zinc', 'graphite', 'paper', 'amber-line'] as const;
@@ -34,13 +34,17 @@ describe('Fleet text contrast', () => {
     expect(rule('.wmux-fleet-request h3')).toContain('color: var(--text-subtle)');
   });
 
-  it('the rail badge is needs-you yellow with an ink that reads on every look', () => {
-    const badge = rule('.wmux-rail .wmux-nav-badge');
-    expect(badge).toContain('color: color-mix(in srgb, var(--accent-yellow) 15%, #000)');
+  it('the rail badge is needs-you yellow with page-colour digits at 4.5:1 on every built-in look', () => {
+    expect(rule('.wmux-rail .wmux-nav-badge')).toContain('color: var(--bg-base)');
     expect(rule('.wmux-rail .wmux-nav-count')).toContain('background: var(--accent-yellow)');
-    for (const id of LOOKS) {
-      const yellow = deriveBuiltinPalette(id).accentYellow;
-      expect(getContrastRatio(mixHex(yellow, '#000000', 0.85), yellow), id).toBeGreaterThanOrEqual(4.5);
+    const lightSelector = ':root:is([data-theme="mono-light"], [data-theme="paper"], [data-theme="hinomaru"], [data-theme="taegeuk"]) .wmux-rail .wmux-nav-badge';
+    expect(rule(lightSelector)).toContain('background: color-mix(in srgb, var(--accent-yellow) 80%, var(--text-main))');
+    const light = new Set(['mono-light', 'paper', 'hinomaru', 'taegeuk']);
+    for (const id of Object.keys(UI_THEME_TOKENS) as BuiltinThemeId[]) {
+      const p = deriveBuiltinPalette(id);
+      // color-mix in srgb is a channel-wise mix: mixHex(a, b, t) = a + (b - a) * t.
+      const fill = light.has(id) ? mixHex(p.accentYellow, p.textMain, 0.2) : p.accentYellow;
+      expect(getContrastRatio(p.bgBase, fill), id).toBeGreaterThanOrEqual(4.5);
     }
   });
 });

@@ -2050,12 +2050,18 @@ html[data-fullscreen] .wmux-shell-body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  /* A dark ink derived from the badge colour reads on every look. */
-  color: color-mix(in srgb, var(--accent-yellow) 15%, #000);
+  /* The page colour as ink: >= 4.5:1 on the needs-you yellow on dark looks;
+   * light looks deepen the fill below so the light ink still reads. */
+  color: var(--bg-base);
   font-size: 10px;
   font-weight: 600;
   line-height: 1;
   font-variant-numeric: tabular-nums;
+}
+/* Light looks: their needs-you yellow is too light for page-colour digits, so
+ * the badge deepens it toward the text colour (>= 5:1 on all four). */
+:root:is([data-theme="mono-light"], [data-theme="paper"], [data-theme="hinomaru"], [data-theme="taegeuk"]) .wmux-rail .wmux-nav-badge {
+  background: color-mix(in srgb, var(--accent-yellow) 80%, var(--text-main));
 }
 .wmux-rail > div:last-child { border-top: 0; }
 .wmux-frame-row > .wmux-shell-body { margin-left: 0; }

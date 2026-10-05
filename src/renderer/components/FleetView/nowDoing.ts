@@ -99,3 +99,18 @@ export function promptChoices(lines: readonly string[]): PromptChoice[] {
   }
   return found.length >= 2 ? found : [];
 }
+
+/**
+ * What a Needs you row asks of the operator: an answer (input) or a look at
+ * what went wrong (check); undefined outside Needs you. Read the same way as
+ * the row's rank there: a stopped supervisor or an unconfirmed pane is a
+ * check; awaiting_input and waiting are requests, with or without question
+ * text; an error is a check.
+ */
+export function fleetAskOf(row: FleetRow | undefined): 'input' | 'check' | undefined {
+  if (!row || row.section !== 'needsYou') return undefined;
+  const { pane } = row;
+  if (pane.supervision?.status === 'stopped' || pane.unverifiable) return 'check';
+  if (pane.agentStatus === 'awaiting_input' || pane.agentStatus === 'waiting' || row.detailSource === 'question') return 'input';
+  return pane.agentStatus === 'error' ? 'check' : undefined;
+}
