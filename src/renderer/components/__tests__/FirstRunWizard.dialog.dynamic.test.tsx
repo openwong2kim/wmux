@@ -171,3 +171,27 @@ describe('FirstRunWizard dialog', () => {
     expect(primaries().map((b) => b.dataset.testid)).toEqual(['first-run-wizard-fallback-continue']);
   });
 });
+
+describe('FirstRunWizard auto-update row', () => {
+  it('asks the update question as one switch row, on by default, writing the setting on change', async () => {
+    installBridge({ mcpRegistered: true, hooksInstalled: true });
+    const setAutoUpdateEnabled = vi.fn();
+    (window as unknown as { electronAPI: { settings: unknown } }).electronAPI.settings = { setAutoUpdateEnabled };
+    useStore.getState().setAutoUpdateEnabled(true);
+    await mount();
+    const sw = byId('first-run-wizard-auto-update-switch');
+    expect(sw.getAttribute('role')).toBe('switch');
+    expect(sw.getAttribute('aria-checked')).toBe('true');
+    await act(async () => sw.click());
+    expect(useStore.getState().autoUpdateEnabled).toBe(false);
+    expect(setAutoUpdateEnabled).toHaveBeenCalledWith(false);
+    expect(byId('first-run-wizard-auto-update-switch').getAttribute('aria-checked')).toBe('false');
+    useStore.getState().setAutoUpdateEnabled(true);
+  });
+
+  it('is left to Settings when the wizard is reopened', async () => {
+    installBridge({ mcpRegistered: true, hooksInstalled: true });
+    await mount(vi.fn(), 'reopen');
+    expect(byId('first-run-wizard-auto-update')).toBeNull();
+  });
+});

@@ -19,7 +19,7 @@ class NoopResizeObserver {
 }
 
 const STEPS: OnboardingStep[] = [
-  { id: 'a', titleKey: 'onboarding.step1.title', descriptionKey: 'onboarding.step1.description', targetSelector: '#target-a', placement: 'bottom', media: 'fleet-board' },
+  { id: 'a', titleKey: 'onboarding.step1.title', descriptionKey: 'onboarding.step1.description', targetSelector: '#target-a', placement: 'bottom', media: 'worktrees' },
   { id: 'b', titleKey: 'onboarding.step4.title', descriptionKey: 'onboarding.step4.description', targetSelector: '#target-b', placement: 'top' },
 ];
 
@@ -68,7 +68,7 @@ describe('OnboardingOverlay', () => {
     const media = q('onboarding-media');
     expect(media.getAttribute('role')).toBe('img');
     expect(media.getAttribute('aria-label')).toBe('Every agent, one board');
-    expect(media.querySelector('video')?.getAttribute('src')).toMatch(/fleet-board.*\.webm/);
+    expect(media.querySelector('video')?.getAttribute('src')).toMatch(/worktrees.*\.webm/);
 
     const primaries = card.querySelectorAll('.ui-btn-primary');
     expect(primaries).toHaveLength(1);
@@ -142,6 +142,6 @@ describe('OnboardingOverlay', () => {
     const media = q('onboarding-media');
     expect(media.dataset.motion).toBe('reduced');
     expect(media.querySelector('video')).toBeNull();
-    expect(media.querySelector('img')?.getAttribute('src')).toMatch(/fleet-board-poster.*\.webp/);
+    expect(media.querySelector('img')?.getAttribute('src')).toMatch(/worktrees-poster.*\.webp/);
   });
 });

@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback, lazy, Suspense } from 'react';
+import { useEffect, useState, useRef, useCallback, useSyncExternalStore, lazy, Suspense } from 'react';
 import { isBrowserBackend } from '../../../shared/browserBackend';
 import { deliverChatDrop } from '../Chat/chatAttachments';
 import type { AgentSlug } from '../../../shared/events';
@@ -14,7 +14,9 @@ import { selectProjectCwdSignature } from '../../stores/selectors/appLayout';
 import { selectInboxOwnsApprovals } from '../../stores/selectors/approvalInbox';
 import { shouldShowInstallError, shouldReannounceAfterError, isSmartAppControlHold, truncateReason } from './updateNoticePolicy';
 import { isInstallBlockedByWindowsReason } from '../../../shared/installAbortReasons';
-import { hooksLaunchCheck, shouldShowAutoUpdatePrompt, shouldShowCheatSheet, shouldStartOnboarding } from './firstBootSequence';
+import { hooksLaunchCheck, nextFirstBootSurface } from './firstBootSequence';
+import { markPrWakeNoticeSeen, prWakeNoticePending, showPrWakeNoticeOnce } from '../../hooks/prWakeNotice';
+import { openModalLayerCount, subscribeModalLayers } from '../ui/modalLayer';
 import { registerSessionSaver, saveSessionNow } from '../../utils/sessionSaveBridge';
 import { resolveReconcileRebind } from '../../hooks/resolveReconcileRebind';
 import { getLeafPanes, getWorkspaceLeafPanes } from '../../../shared/paneUtils';
@@ -783,7 +785,6 @@ export default function AppLayout() {
   // stores/selectors/appLayout.ts) that don't change on churn or switch.
   const hasActiveWorkspace = useStore((s) => s.workspaces.some((w) => w.id === s.activeWorkspaceId));
   const projectCwdSignature = useStore(selectProjectCwdSignature);
-  const workspaceCount = useStore((s) => s.workspaces.length);
   // Fix 0 startup gate. See state machine diagram at top of file.
   const paneGate = useStore((s) => s.paneGate);
   const setPaneGate = useStore((s) => s.setPaneGate);
@@ -844,7 +845,15 @@ export default function AppLayout() {
   // wizard is coming.
   const [firstRunProbeSettled, setFirstRunProbeSettled] = useState(false);
 
+  // Pending = an upgrade from a build that never stored the choice; showing =
+  // the first-boot queue opened it (latched until a button is pressed).
   const [showAutoUpdatePrompt, setShowAutoUpdatePrompt] = useState(false);
+  const [autoUpdatePromptOpen, setAutoUpdatePromptOpen] = useState(false);
+  // The one-time "New: …" announcement, decided once the first-run probe
+  // says whether this is a fresh install.
+  const [featureNoticePending, setFeatureNoticePending] = useState(false);
+  const settingsPanelVisible = useStore((s) => s.settingsPanelVisible);
+  const modalLayerCount = useSyncExternalStore(subscribeModalLayers, openModalLayerCount);
   const t = useT();
 
   useRefusedInstallNotice(t);
@@ -1405,8 +1414,7 @@ export default function AppLayout() {
           useStore.getState().markSessionSettingsLoaded();
           sessionLoadedRef.current = true;
           setSessionLoaded(true);
-          // First ever launch — ask about auto-update
-          setShowAutoUpdatePrompt(true);
+          // First ever launch: the welcome dialog's auto-update row asks.
           return;
         }
 
@@ -1548,8 +1556,11 @@ export default function AppLayout() {
       if (!result.shown) {
         setShowFirstRunWizard('firstRun');
         setFirstRunWizardRanThisBoot(true);
+        // A fresh install has no earlier behaviour to announce a change to.
+        markPrWakeNoticeSeen();
       } else {
         setFirstRunCompleted(true);
+        setFeatureNoticePending(prWakeNoticePending());
       }
     }).catch(() => {
       // Best-effort. If main is unreachable, fall back to "completed" so
@@ -1557,6 +1568,7 @@ export default function AppLayout() {
       if (!cancelled) {
         setFirstRunCompleted(true);
         setFirstRunProbeSettled(true);
+        setFeatureNoticePending(prWakeNoticePending());
       }
     });
     return () => {
@@ -1599,25 +1611,47 @@ export default function AppLayout() {
     void window.electronAPI?.deck?.modelSet?.(deckBrainModelLive, deckBrainEffortLive);
   }, [deckBrainModelLive, deckBrainEffortLive]);
 
-  // ─── First-run onboarding (spotlight) detection ─────────────────────
-  // D8: spotlight stays gated behind firstRunCompleted so the wizard always
-  // wins the first impression. Once the wizard completes/dismisses, the
-  // spotlight tutorial picks up the UI tour for single-workspace users.
-  // #1164: it also waits out a pending auto-update consent — the spotlight's
-  // z-9999 backdrop would cover the prompt's buttons, the same stacked-overlay
-  // pointer-deadness the wizard/prompt pair had. First-boot order: wizard →
-  // consent → spotlight.
+  // ─── First-boot queue: one self-opening surface at a time ────────────
+  // The wizard owns the first impression; after it, the legacy update
+  // question (upgraders only), the one-time "New: …" toast (upgraders only),
+  // the spotlight tour (first visit to the Fleet page) and the keyboard cheat
+  // sheet (once, after the tour) each wait until nothing else is open — no
+  // dialog, no Settings panel, no other queued surface. Each start is latched
+  // here: the surface's own modal layer must not count against itself.
+  const firstBootNext = nextFirstBootSurface({
+    firstRunSettled: firstRunProbeSettled,
+    sessionSettled: sessionLoaded || sessionLoadFailed,
+    wizardOpen: showFirstRunWizard !== null,
+    wizardRanThisBoot: firstRunWizardRanThisBoot,
+    otherSurfaceOpen: modalLayerCount > 0 || settingsPanelVisible,
+    surfaceShowing: autoUpdatePromptOpen || onboardingActive || cheatSheetForceShown,
+    autoUpdatePromptPending: showAutoUpdatePrompt,
+    featureNoticePending,
+    firstRunCompleted,
+    onboardingCompleted,
+    onFleetPage: appRoute === 'fleet',
+    cheatSheetPending: !cheatSheetDismissed,
+  });
   useEffect(() => {
-    if (shouldStartOnboarding({
-      sessionLoaded,
-      autoUpdatePromptPending: showAutoUpdatePrompt,
-      firstRunCompleted,
-      onboardingCompleted,
-      workspaceCount,
-    })) {
-      startOnboarding();
+    const st = useStore.getState();
+    switch (firstBootNext) {
+      case 'autoUpdatePrompt':
+        setAutoUpdatePromptOpen(true);
+        break;
+      case 'featureNotice':
+        setFeatureNoticePending(false);
+        showPrWakeNoticeOnce();
+        break;
+      case 'onboarding':
+        startOnboarding();
+        break;
+      case 'cheatSheet':
+        // Shown once: used up as it opens, then shown like the `?` action.
+        st.setCheatSheetDismissed(true);
+        st.setCheatSheetForceShown(true);
+        break;
     }
-  }, [sessionLoaded, firstRunCompleted, onboardingCompleted, workspaceCount, showAutoUpdatePrompt, startOnboarding]);
+  }, [firstBootNext, startOnboarding]);
 
   // Re-reconcile when daemon connects late (respawn/reconnect after the
   // startup reconcile already ran). Gating + abort/timeout/preserve logic
@@ -2146,26 +2180,17 @@ export default function AppLayout() {
         <OnboardingOverlay onComplete={() => { completeOnboarding(); }} />
       )}
 
-      {/* First-run auto-update prompt. #1164 — gated behind the first-run
-          wizard: on a fresh boot both surfaces fire at once (session.load()
-          nulls → prompt, firstRun.check() → wizard), and the wizard's
-          --z-dialog backdrop then covers the prompt's buttons, producing a
-          pointer-dead stack that only the keyboard can escape. Sequencing
-          instead of stacking: the wizard owns the first impression (the same
-          D8 ruling that gates the onboarding spotlight), and the consent
-          question — still pending — appears the moment it closes. It also
-          waits for the wizard probe to settle (firstRunCompleted), or it
-          would flash for a frame before the wizard mounts over it. */}
-      {shouldShowAutoUpdatePrompt({
-        pending: showAutoUpdatePrompt,
-        wizardOpen: showFirstRunWizard !== null,
-        firstRunSettled: firstRunCompleted,
-      }) && (
+      {/* Auto-update consent for an upgrade that never stored the choice
+          (#1164). A fresh install answers it in the welcome dialog's row;
+          this one opens through the first-boot queue, never over another
+          surface. */}
+      {autoUpdatePromptOpen && (
         <AutoUpdatePrompt
           onChoose={(enabled) => {
             useStore.getState().setAutoUpdateEnabled(enabled);
             window.electronAPI.settings.setAutoUpdateEnabled(enabled);
             setShowAutoUpdatePrompt(false);
+            setAutoUpdatePromptOpen(false);
           }}
         />
       )}
@@ -2178,27 +2203,11 @@ export default function AppLayout() {
         <FirstRunWizard mode={showFirstRunWizard} onClose={handleWizardClose} />
       )}
 
-      {/* Keyboard cheat sheet (T8a / Plan 1.18). Mounts derivatively from
-          firstRunCompleted + !cheatSheetDismissed so that flipping
-          cheatSheetDismissed=false from Settings (T8b) immediately re-mounts
-          the sheet. The component itself is a no-op when dismissed (D11).
-          `cheatSheetForceShown` (set by the `?` prefix action) bypasses the
-          permanent dismissal so the cheat sheet can always be pulled back up. */}
-      {/* #1276: waits its turn after the consent prompt and the spotlight tour. */}
-      {shouldShowCheatSheet({
-        firstRunCompleted,
-        sessionSettled: sessionLoaded || sessionLoadFailed,
-        dismissed: cheatSheetDismissed,
-        forceShown: cheatSheetForceShown,
-        autoUpdatePromptPending: showAutoUpdatePrompt,
-        onboardingActiveOrStarting: onboardingActive || shouldStartOnboarding({
-          sessionLoaded,
-          autoUpdatePromptPending: showAutoUpdatePrompt,
-          firstRunCompleted,
-          onboardingCompleted,
-          workspaceCount,
-        }),
-      }) && <KeyboardCheatSheet />}
+      {/* Keyboard cheat sheet (T8a / Plan 1.18). Mounted only while shown:
+          by the `?` prefix action, or once by the first-boot queue after the
+          tour (#1276) — never by itself on a first run. Settings › First-run
+          setup re-arms that one showing. */}
+      {firstRunCompleted && cheatSheetForceShown && <KeyboardCheatSheet />}
 
       {companyViewVisible && (
         <CompanyView onClose={() => setCompanyViewVisible(false)} />

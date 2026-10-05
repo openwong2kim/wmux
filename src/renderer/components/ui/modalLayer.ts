@@ -57,6 +57,23 @@ interface Layer {
 
 const layers: Layer[] = [];
 let nextSeq = 0;
+const layerListeners = new Set<() => void>();
+
+/** How many modal layers are open. The first-boot queue waits for zero, so
+ *  a tour or tip never opens over a dialog the user is working in. */
+export function openModalLayerCount(): number {
+  return layers.length;
+}
+
+/** Called after a layer opens or closes (useSyncExternalStore-compatible). */
+export function subscribeModalLayers(listener: () => void): () => void {
+  layerListeners.add(listener);
+  return () => layerListeners.delete(listener);
+}
+
+function notifyLayerListeners(): void {
+  for (const listener of [...layerListeners]) listener();
+}
 
 /**
  * The layer that owns the keyboard: among open layers that do not contain
@@ -168,9 +185,11 @@ export function useModalLayer({ onEscape, passive = false }: ModalLayerOptions):
   useEffect(() => {
     const layer = layerRef.current as Layer;
     layers.push(layer);
+    notifyLayerListeners();
     return () => {
       const i = layers.indexOf(layer);
       if (i !== -1) layers.splice(i, 1);
+      notifyLayerListeners();
       const active = document.activeElement;
       const focusWasOurs = isOrphaned() || (!!layer.el && active instanceof Node && layer.el.contains(active));
       // Focus that moved on purpose (into a terminal) stays where it went.

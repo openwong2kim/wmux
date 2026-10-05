@@ -1,137 +1,91 @@
 /**
- * #1164 — first-boot overlay sequencing: wizard → auto-update consent →
- * onboarding spotlight, never stacked.
+ * First-boot queue: one self-opening surface at a time, in a fixed order,
+ * and nothing a fresh install does not need (#1164, #1276).
  */
 import { describe, it, expect } from 'vitest';
-import { hooksLaunchCheck, shouldShowAutoUpdatePrompt, shouldShowCheatSheet, shouldStartOnboarding } from '../firstBootSequence';
+import { hooksLaunchCheck, nextFirstBootSurface } from '../firstBootSequence';
+import type { FirstBootQueueState } from '../firstBootSequence';
 
-describe('shouldShowCheatSheet (#1276)', () => {
-  const base = {
-    firstRunCompleted: true,
-    sessionSettled: true,
-    dismissed: false,
-    forceShown: false,
-    autoUpdatePromptPending: false,
-    onboardingActiveOrStarting: false,
-  };
+/** A settled boot with nothing open and nothing pending. */
+const idle: FirstBootQueueState = {
+  firstRunSettled: true,
+  sessionSettled: true,
+  wizardOpen: false,
+  wizardRanThisBoot: false,
+  otherSurfaceOpen: false,
+  surfaceShowing: false,
+  autoUpdatePromptPending: false,
+  featureNoticePending: false,
+  firstRunCompleted: true,
+  onboardingCompleted: true,
+  onFleetPage: false,
+  cheatSheetPending: false,
+};
 
-  it('fresh boot: stays hidden while the consent prompt is pending after the wizard closes', () => {
-    expect(shouldShowCheatSheet({ ...base, autoUpdatePromptPending: true })).toBe(false);
-  });
-
-  it('waits out the spotlight tour (running or about to start), then shows', () => {
-    expect(shouldShowCheatSheet({ ...base, onboardingActiveOrStarting: true })).toBe(false);
-    expect(shouldShowCheatSheet(base)).toBe(true);
-  });
-
-  it('stays behind the wizard and honours the permanent opt-out', () => {
-    expect(shouldShowCheatSheet({ ...base, firstRunCompleted: false })).toBe(false);
-    expect(shouldShowCheatSheet({ ...base, dismissed: true })).toBe(false);
-  });
-
-  it('holds until session.load() settles (no mount-then-unmount flicker)', () => {
-    expect(shouldShowCheatSheet({ ...base, sessionSettled: false })).toBe(false);
-  });
-
-  it('returning user (marker present, tour unfinished): firstRun resolves before session load → tour starts, then the sheet shows — never hidden for good', () => {
-    // Mirrors AppLayout: the start effect and the gate read the same inputs,
-    // and the effect re-runs on sessionLoaded.
-    const onboarding = {
-      autoUpdatePromptPending: false,
-      firstRunCompleted: true,
-      onboardingCompleted: false,
-      workspaceCount: 1,
-    };
-    const sheet = (sessionLoaded: boolean, onboardingActive: boolean, onboardingCompleted = false) =>
-      shouldShowCheatSheet({
-        ...base,
-        sessionSettled: sessionLoaded,
-        onboardingActiveOrStarting: onboardingActive
-          || shouldStartOnboarding({ ...onboarding, onboardingCompleted, sessionLoaded }),
-      });
-
-    // 1. firstRun.check resolved, session.load still in flight: nothing yet.
-    expect(shouldStartOnboarding({ ...onboarding, sessionLoaded: false })).toBe(false);
-    expect(sheet(false, false)).toBe(false);
-    // 2. session lands (workspaceCount 1→1): the effect's sessionLoaded dep changed, so it starts the tour.
-    expect(shouldStartOnboarding({ ...onboarding, sessionLoaded: true })).toBe(true);
-    expect(sheet(true, false)).toBe(false);
-    // 3. tour running.
-    expect(sheet(true, true)).toBe(false);
-    // 4. tour skipped/completed → the sheet shows.
-    expect(sheet(true, false, true)).toBe(true);
-  });
-
-  it('a failed session.load() settles the gate — the sheet still shows', () => {
-    // sessionLoaded stays false on failure, so the tour never starts; the sheet must not wait on it.
-    const starting = shouldStartOnboarding({
-      sessionLoaded: false,
-      autoUpdatePromptPending: false,
-      firstRunCompleted: true,
-      onboardingCompleted: false,
-      workspaceCount: 1,
-    });
-    expect(shouldShowCheatSheet({ ...base, sessionSettled: true, onboardingActiveOrStarting: starting })).toBe(true);
-  });
-
-  it('a user-initiated `?` open is never gated by the first-boot sequence', () => {
-    expect(shouldShowCheatSheet({
-      ...base,
-      dismissed: true,
-      forceShown: true,
+describe('nextFirstBootSurface — ordering', () => {
+  it('upgrader with everything pending: update question → New toast → tour → cheat sheet, one at a time', () => {
+    let s: FirstBootQueueState = {
+      ...idle,
       autoUpdatePromptPending: true,
-      onboardingActiveOrStarting: true,
-    })).toBe(true);
+      featureNoticePending: true,
+      onboardingCompleted: false,
+      onFleetPage: true,
+      cheatSheetPending: true,
+    };
+    expect(nextFirstBootSurface(s)).toBe('autoUpdatePrompt');
+    // While it is on screen (its own modal layer counts too), nothing else starts.
+    expect(nextFirstBootSurface({ ...s, surfaceShowing: true, otherSurfaceOpen: true })).toBeNull();
+    s = { ...s, autoUpdatePromptPending: false };
+    expect(nextFirstBootSurface(s)).toBe('featureNotice');
+    s = { ...s, featureNoticePending: false };
+    expect(nextFirstBootSurface(s)).toBe('onboarding');
+    expect(nextFirstBootSurface({ ...s, surfaceShowing: true })).toBeNull();
+    s = { ...s, onboardingCompleted: true };
+    expect(nextFirstBootSurface(s)).toBe('cheatSheet');
+    s = { ...s, cheatSheetPending: false };
+    expect(nextFirstBootSurface(s)).toBeNull();
+  });
+
+  it('waits for both probes to settle', () => {
+    const s = { ...idle, featureNoticePending: true };
+    expect(nextFirstBootSurface({ ...s, firstRunSettled: false })).toBeNull();
+    expect(nextFirstBootSurface({ ...s, sessionSettled: false })).toBeNull();
+    expect(nextFirstBootSurface(s)).toBe('featureNotice');
+  });
+
+  it('never opens over the wizard, a dialog or the Settings panel', () => {
+    const s = { ...idle, onboardingCompleted: false, onFleetPage: true };
+    expect(nextFirstBootSurface({ ...s, wizardOpen: true })).toBeNull();
+    expect(nextFirstBootSurface({ ...s, otherSurfaceOpen: true })).toBeNull();
+    // The next one waits; once the dialog closes it starts.
+    expect(nextFirstBootSurface(s)).toBe('onboarding');
   });
 });
 
-describe('shouldShowAutoUpdatePrompt', () => {
-  it('fresh boot: holds the prompt while the wizard probe is unresolved and while the wizard is open', () => {
-    // session.load() → null resolves before firstRun.check(): no flash.
-    expect(shouldShowAutoUpdatePrompt({ pending: true, wizardOpen: false, firstRunSettled: false })).toBe(false);
-    expect(shouldShowAutoUpdatePrompt({ pending: true, wizardOpen: true, firstRunSettled: false })).toBe(false);
-  });
-
-  it('fresh boot: releases the still-pending prompt once the wizard closes (Escape / Skip / complete)', () => {
-    // handleWizardClose clears the wizard and settles firstRunCompleted in one pass.
-    expect(shouldShowAutoUpdatePrompt({ pending: true, wizardOpen: false, firstRunSettled: true })).toBe(true);
-  });
-
-  it('upgrade install (marker exists, no wizard) still shows the prompt', () => {
-    expect(shouldShowAutoUpdatePrompt({ pending: true, wizardOpen: false, firstRunSettled: true })).toBe(true);
-  });
-
-  it('a reopened wizard hides a pending prompt, and nothing shows once answered', () => {
-    expect(shouldShowAutoUpdatePrompt({ pending: true, wizardOpen: true, firstRunSettled: true })).toBe(false);
-    expect(shouldShowAutoUpdatePrompt({ pending: false, wizardOpen: false, firstRunSettled: true })).toBe(false);
-  });
-});
-
-describe('shouldStartOnboarding', () => {
-  const base = {
-    sessionLoaded: true,
-    autoUpdatePromptPending: false,
-    firstRunCompleted: true,
+describe('nextFirstBootSurface — fresh install', () => {
+  const fresh: FirstBootQueueState = {
+    ...idle,
+    wizardRanThisBoot: true,
     onboardingCompleted: false,
-    workspaceCount: 1,
+    cheatSheetPending: true,
   };
 
-  it('starts after the wizard and the consent are both done', () => {
-    expect(shouldStartOnboarding(base)).toBe(true);
+  it('hides "New: …" toasts and the separate update modal (the wizard row asked)', () => {
+    const s = { ...fresh, featureNoticePending: true, autoUpdatePromptPending: true };
+    expect(nextFirstBootSurface({ ...s, wizardOpen: true })).toBeNull();
+    // After the wizard closes, still nothing: no toast, no modal, no tour, no sheet.
+    expect(nextFirstBootSurface(s)).toBeNull();
   });
 
-  it('waits out a pending consent prompt', () => {
-    expect(shouldStartOnboarding({ ...base, autoUpdatePromptPending: true })).toBe(false);
+  it('starts the tour only on the first visit to the Fleet page, after the wizard', () => {
+    expect(nextFirstBootSurface({ ...fresh, firstRunCompleted: false, onFleetPage: true })).toBeNull();
+    expect(nextFirstBootSurface(fresh)).toBeNull();
+    expect(nextFirstBootSurface({ ...fresh, onFleetPage: true })).toBe('onboarding');
   });
 
-  it('stays behind the wizard and the session load', () => {
-    expect(shouldStartOnboarding({ ...base, firstRunCompleted: false })).toBe(false);
-    expect(shouldStartOnboarding({ ...base, sessionLoaded: false })).toBe(false);
-  });
-
-  it('does not restart for completed onboarding or multi-workspace users', () => {
-    expect(shouldStartOnboarding({ ...base, onboardingCompleted: true })).toBe(false);
-    expect(shouldStartOnboarding({ ...base, workspaceCount: 2 })).toBe(false);
+  it('never auto-opens the cheat sheet before the tour is done', () => {
+    expect(nextFirstBootSurface({ ...fresh, onFleetPage: false })).toBeNull();
+    expect(nextFirstBootSurface({ ...fresh, onboardingCompleted: true })).toBe('cheatSheet');
   });
 });
 

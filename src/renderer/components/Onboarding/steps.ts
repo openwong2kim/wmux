@@ -39,7 +39,7 @@ export const ONBOARDING_STEPS: OnboardingStep[] = [
     descriptionKey: 'onboarding.step1.description',
     targetSelector: '[data-sidebar-nav="fleet"]',
     placement: 'right',
-    media: 'fleet-board',
+    // No clip: the recording showed a Fleet layout that has since changed.
   },
   {
     id: 'fan-out',

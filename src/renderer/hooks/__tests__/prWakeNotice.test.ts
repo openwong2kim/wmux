@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest';
 import { useStore } from '../../stores';
-import { PR_WAKE_NOTICE_KEY, showPrWakeNoticeOnce } from '../prWakeNotice';
+import { PR_WAKE_NOTICE_KEY, markPrWakeNoticeSeen, prWakeNoticePending, showPrWakeNoticeOnce } from '../prWakeNotice';
 
 function memoryStorage(): Pick<Storage, 'getItem' | 'setItem'> {
   const m = new Map<string, string>();
@@ -29,5 +29,23 @@ describe('PR wake one-time notice', () => {
     expect(showPrWakeNoticeOnce(throwing)).toBe(false);
     expect(showPrWakeNoticeOnce(null)).toBe(false);
     expect(useStore.getState().toasts).toHaveLength(0);
+  });
+});
+
+describe('PR wake notice on a fresh install', () => {
+  beforeEach(() => useStore.getState().clearToasts());
+
+  it('marking it seen (fresh install) means it never shows, now or later', () => {
+    const storage = memoryStorage();
+    expect(prWakeNoticePending(storage)).toBe(true);
+    markPrWakeNoticeSeen(storage);
+    expect(prWakeNoticePending(storage)).toBe(false);
+    expect(showPrWakeNoticeOnce(storage)).toBe(false);
+    expect(useStore.getState().toasts).toHaveLength(0);
+  });
+
+  it('is not pending without storage', () => {
+    expect(prWakeNoticePending(null)).toBe(false);
+    expect(prWakeNoticePending({ getItem: () => { throw new Error('blocked'); } })).toBe(false);
   });
 });

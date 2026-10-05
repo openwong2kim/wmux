@@ -30,6 +30,7 @@ import { useStore } from '../stores';
 import { useT } from '../hooks/useT';
 import Dialog, { DialogBody, DialogFooter, DialogHeader } from './ui/Dialog';
 import Button from './ui/Button';
+import Switch from './ui/Switch';
 import MediaPreview from './ui/MediaPreview';
 import { MEDIA_CLIPS } from '../assets/media';
 import { IconCheck, IconWarning } from './icons';
@@ -606,6 +607,10 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
                   onInstall={() => void handleInstallStatusline()}
                 />
               )}
+
+              {/* The update question used to be its own modal right after this
+                  one. Reopen mode leaves it to Settings, which owns the toggle. */}
+              {mode === 'firstRun' && <AutoUpdateBlock />}
             </div>
 
             {/* Tier 2 inline registration error (D10) */}
@@ -830,6 +835,36 @@ export function ClaudeStatusBlock({
         />
       )}
     </div>
+  );
+}
+
+/**
+ * Automatic update checks as one row with a switch, on by default (the same
+ * default the updater and the store start from). Flipping it writes the
+ * setting right away; Settings › General changes it later.
+ */
+export function AutoUpdateBlock() {
+  const t = useT();
+  const enabled = useStore((s) => s.autoUpdateEnabled);
+  const setEnabled = (next: boolean) => {
+    useStore.getState().setAutoUpdateEnabled(next);
+    window.electronAPI?.settings?.setAutoUpdateEnabled(next);
+  };
+  return (
+    <SetupRow
+      status={enabled ? 'ok' : 'todo'}
+      testId="first-run-wizard-auto-update"
+      title={t('settings.autoUpdate')}
+      detail={t('settings.autoUpdateDesc')}
+      action={
+        <Switch
+          checked={enabled}
+          onCheckedChange={setEnabled}
+          aria-label={t('settings.autoUpdate')}
+          data-testid="first-run-wizard-auto-update-switch"
+        />
+      }
+    />
   );
 }
 
