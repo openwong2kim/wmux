@@ -33,11 +33,6 @@ export function terminalLaunchCommand(agent: unknown, prompt: unknown, mode: unk
   return head + flags + (prompt === undefined ? '' : " -- '" + prompt.replace(/'/g, "'\\''") + "'");
 }
 
-/** A first message as one PowerShell double-quoted word: backtick escapes, newlines as `n.
- * Typographic double quotes also close the string there, so they are escaped too. */
-const pwshPrompt = (prompt: string): string =>
-  '"' + prompt.replace(/[`$"\u201c\u201d\u201e]/g, (c) => '`' + c).replace(/\n/g, '`n') + '"';
-
 /** The cwd forms each shell's resume line takes: a POSIX absolute path, or a Windows one. */
 // eslint-disable-next-line no-control-regex -- refusing controls is the point
 const CONTROL = /[\0-\x1f\x7f]/;
@@ -50,18 +45,18 @@ export function resumeCwdUsable(cwd: string, shell: ResumeShell): boolean {
 /** Resume EXACTLY `sessionId` (Claude `--resume <id>`, Codex `resume <id>`) with the request's own
  * mode and first message, through the same rewrite the desktop resume uses. Never a stored
  * permission mode. The caller places the folder (`inResumeCwd`, or a relay's `--cd`).
- * Every token is fixed or pattern-checked. */
+ * Every token is fixed or pattern-checked. PowerShell takes no first message: Windows
+ * PowerShell, and pwsh calling a .cmd shim, pass native arguments without escaping inner
+ * quotes, so no quoting can keep a prompt one argument there. */
 export function boundResumeCommand(agent: unknown, sessionId: string, prompt: unknown, mode: unknown, shell: ResumeShell): string {
   if (!CHATV2_PROVIDER_SESSION_ID.test(sessionId) || (agent !== 'claude' && agent !== 'codex')) throw new Error('Invalid session');
-  // The prompt is validated here even when PowerShell quotes it below.
-  const posix = terminalLaunchCommand(agent, prompt, mode);
-  const launch = shell === 'posix' ? posix : terminalLaunchCommand(agent, undefined, mode);
+  if (shell === 'pwsh' && prompt !== undefined) throw new Error('No first message under PowerShell');
+  const launch = terminalLaunchCommand(agent, prompt, mode);
   // Pane folder = binding folder, so the rewrite takes its exact-session branch.
   const line = toResumeCommand(launch, { agent, sessionId, cwd: '/', ts: 0 }, '/');
   const exact = resumeGrammarFor(agent)?.withId(sessionId);
   if (!exact || !line.startsWith(`${agent} ${exact}`)) throw new Error('Not an exact resume');
-  // Quoted, so PowerShell passes `--` on instead of reading it as its own end of parameters.
-  return shell === 'pwsh' && typeof prompt === 'string' ? `${line} '--' ${pwshPrompt(prompt)}` : line;
+  return line;
 }
 
 const startingAccounts = new Map<string, Promise<void>>();

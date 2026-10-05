@@ -587,6 +587,7 @@ describe('launch', () => {
       f.state.projector = FILE;
       f.state.pane!.meta.resumeBinding = { agent: 'claude', sessionId: SID, cwd: '/proj', transcriptPath: '/t.jsonl',
         permissionMode: 'bypassPermissions', ts: 1, ...extra };
+      f.state.pane!.meta.cmd = '/bin/zsh';
       f.deps.boundSessionLives = async () => true;
       f.deps.latestResumeSession = async () => { throw new Error('the newest-conversation lookup must not run'); };
     };
@@ -636,38 +637,73 @@ describe('launch', () => {
       expect(f.typed).toEqual([]);
     });
 
-    it('types PowerShell on Windows, and refuses cmd.exe and WSL panes as unsupported shells', async () => {
+    it('types PowerShell on Windows with the pane account, takes no prompt there, and refuses cmd.exe and WSL', async () => {
       const f = fixture();
       bound(f, { cwd: 'C:\\Users\\me\\proj' });
       f.deps.platform = 'win32';
       const anyShell: unknown[] = [];
       f.deps.idleShell = async (_pid, _env, any) => { anyShell.push(any); return { ok: true }; };
       f.state.pane!.meta.cmd = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
-      expect(await createChatBridge(f.deps).launch(phone('claude', { prompt: 'say "$HOME"\nthen stop' }))).toMatchObject({ ok: true });
+      // Native arguments are not re-quoted there, so a first message is refused before anything is typed.
+      expect(await createChatBridge(f.deps).launch(phone('claude', { prompt: 'a "b c" d' })))
+        .toEqual({ ok: false, error: 'resume-prompt-unsupported', effect: 'none' });
+      expect(anyShell).toEqual([]);
+      f.state.pane!.meta.paneAccount = { vendor: 'claude' };
+      f.state.pane!.meta.env = { CLAUDE_CONFIG_DIR: "C:\\acc\\o'k" };
+      expect(await createChatBridge(f.deps).launch(phone('claude'))).toMatchObject({ ok: true });
       expect(f.typed).toEqual([`if (Set-Location -LiteralPath 'C:\\Users\\me\\proj' -PassThru -ErrorAction SilentlyContinue) `
-        + `{ claude --resume ${SID} '--' "say \`"\`$HOME\`"\`nthen stop" }\r`]);
+        + `{ $env:CLAUDE_CONFIG_DIR = 'C:\\acc\\o''k'; claude --resume ${SID} }\r`]);
       expect(anyShell).toEqual([true, true]);
       f.shell.empty = true;
       f.state.pane!.meta.cmd = 'C:\\Windows\\System32\\cmd.exe';
       expect(await createChatBridge(f.deps).launch(phone('claude')))
         .toEqual({ ok: false, error: 'launch-unsupported', reason: 'unsupported-shell', effect: 'none' });
-      expect(await createChatBridge(f.deps).resumable!('pane')).toBe(false);
       f.state.pane!.meta.cmd = 'wsl.exe'; f.state.pane!.meta.wslTarget = { distro: 'Ubuntu' };
       expect(await createChatBridge(f.deps).launch(phone('claude'))).toMatchObject({ error: 'launch-unsupported', reason: 'unsupported-shell' });
       expect(f.typed).toHaveLength(1);
     });
 
-    it('reads resumable only while the agent is gone and the record lives', async () => {
+    it('re-checks the record uncached at launch, while /turns reads the cache', async () => {
       const f = fixture();
       bound(f);
-      expect(await f.bridge.resumable!('pane')).toBe(true);
+      const fresh: boolean[] = [];
+      f.deps.boundSessionLives = async (_b, _env, isFresh) => { fresh.push(isFresh); return !isFresh; };
+      const bridge = createChatBridge(f.deps);
+      expect(await bridge.resumable!('pane')).toBe(true);
+      // The cache still says yes, but the record is gone now: nothing is typed.
+      expect(await bridge.launch(phone('claude'))).toEqual({ ok: false, error: 'resume-unavailable', effect: 'none' });
+      expect(fresh).toEqual([false, true]);
+      expect(f.typed).toEqual([]);
+    });
+
+    it('reads resumable false wherever the launch would refuse', async () => {
+      const f = fixture();
+      bound(f);
+      const read = () => createChatBridge(f.deps).resumable!('pane');
+      expect(await read()).toBe(true);
       f.state.agent = { ...f.state.agent, agentName: 'Claude Code' };
-      expect(await f.bridge.resumable!('pane')).toBe(false);
+      expect(await read()).toBe(false);
       f.state.agent = { ...f.state.agent, agentName: null };
+      f.managed.has.mockReturnValueOnce(true);
+      expect(await read()).toBe(false);
+      for (const cmd of ['/opt/homebrew/bin/fish', '/usr/local/bin/nu']) {
+        f.state.pane!.meta.cmd = cmd;
+        expect(await read(), cmd).toBe(false);
+        expect(await createChatBridge(f.deps).launch(phone('claude')), cmd).toMatchObject({ error: 'launch-unsupported', reason: 'unsupported-shell' });
+      }
+      f.state.pane!.meta.cmd = '/bin/zsh';
+      const other: ChatPane = { ...f.state.pane!, meta: { ...f.state.pane!.meta, id: 'other' } };
+      f.deps.pane = (id) => id === 'other' ? other : f.state.pane;
+      f.deps.agentState = (id) => id === 'other' ? { ...f.state.agent, agentName: 'Claude Code' } : { ...f.state.agent };
+      f.deps.panesBoundTo = () => ['pane', 'other'];
+      expect(await read()).toBe(false);
+      f.deps.panesBoundTo = () => [];
       f.deps.boundSessionLives = async () => false;
-      expect(await createChatBridge(f.deps).resumable!('pane')).toBe(false);
+      expect(await read()).toBe(false);
+      f.deps.boundSessionLives = async () => true;
       f.state.pane!.meta.resumeBinding = undefined;
-      expect(await f.bridge.resumable!('pane')).toBe(false);
+      expect(await read()).toBe(false);
+      expect(f.typed).toEqual([]);
     });
   });
 

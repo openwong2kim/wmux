@@ -4213,19 +4213,25 @@ conversation instead: Claude by its `agentSessionId` (`claude --resume <id>`),
 Codex by its thread id (`codex resume <id>`), in the binding's own folder. It is
 the line the desktop resume pill types. The id must be a lowercase UUID, and the
 line is built from fixed tokens only. `prompt` follows the same rules as above
-(the first message after the resume). `mode` is the request's own: the
+(the first message after the resume; not on PowerShell, see below). `mode` is the request's own: the
 binding's previous permission mode is never restored, and the dangerous-mode
 rules are unchanged.
 
-- **POSIX shells** (zsh, bash, sh on macOS and Linux): Claude is typed as
+- **POSIX shells** (zsh, bash and sh on macOS and Linux; any other shell there,
+  such as fish or nu, is `launch-unsupported`): Claude is typed as
   `cd -- '<cwd>' && claude --resume <id>`, Codex as
   `codex resume --remote <relay> --cd '<cwd>' <id>`. A folder that cannot be one
   single-quoted word is `resume-unavailable`.
 - **Windows PowerShell and pwsh**: `if (Set-Location -LiteralPath '<cwd>' -PassThru
   -ErrorAction SilentlyContinue) { claude --resume <id> }`, likewise for
-  `codex resume <id>` (no relay there). The first message goes after a quoted
-  `'--'` as one double-quoted word with backtick escapes. The folder must be a
-  drive-absolute path.
+  `codex resume <id>` (no relay there). A pane created with a chosen account
+  sets it first inside the block (`$env:CLAUDE_CONFIG_DIR = '<dir>'; …`, or
+  `CODEX_HOME`). The folder must be a drive-absolute path. **No first message
+  here:** Windows PowerShell, and pwsh calling a `.cmd` shim, pass native
+  arguments without escaping inner quotes, so a `prompt` cannot be kept one
+  argument. A bound resume with a `prompt` on a PowerShell pane answers
+  `409 resume-prompt-unsupported` and types nothing; resume without one, then
+  send the message through `POST …/chat/messages`.
 - **cmd.exe and WSL panes** answer `409 launch-unsupported`,
   `reason:"unsupported-shell"`, and are never `resumable`: cmd.exe has no prompt
   integration to prove an empty prompt, and a WSL pane's shell idles inside the
@@ -4234,13 +4240,17 @@ rules are unchanged.
 The agent may start a new session id on resume. The binding then moves and
 `historyEpoch` changes, so re-read the conversation as a new one.
 
-`chat.resumable` (terminal bindings) is `true` only while the agent is not
-alive, the pane keeps a binding the pane's shell can resume as above, and that
-conversation's record still exists: its transcript is a non-empty file in the
-agent account's own session folder and its folder exists. The lookup is cached
-for 30 s, like the one above, so it can lag a deleted record by that long. A
-launch re-checks everything, and a record gone by then is
-`409 resume-unavailable`.
+`chat.resumable` (terminal bindings) is `false` wherever a bound resume launch
+(without a prompt) would refuse before typing, checked in the launch's order:
+the agent is running, the pane holds a managed conversation, the shell is not
+one of the above (fish, nu, cmd.exe, WSL), the binding's id or folder fails its
+check, the conversation's record is gone, or another live pane runs it. The
+record must be a non-empty transcript inside the session root of the account
+the pane launches with (`CLAUDE_CONFIG_DIR` or `CODEX_HOME` when set; no other
+root counts) and its folder must exist. For `resumable` that lookup is cached
+for 30 s, like the one above. The launch re-checks the record without the
+cache, so a record deleted meanwhile is `409 resume-unavailable`, and the
+pane-state checks (empty prompt, approvals) apply as for any launch.
 Receipts and the binding wait are the same as for any launch.
 
 The daemon re-authorizes once more as the last await before the launcher is
@@ -4276,7 +4286,7 @@ changes; never persist it.
 | `resume` with nothing to continue in the pane's cwd; on a bound pane: the record is gone or unreadable, the id or folder fails its check, or `agent` is not the binding's agent | 409 | `{error:"resume-unavailable"}` | `none` |
 | `resume` of a conversation another live pane is running | 409 | `{error:"resume-in-use"}` | `none` |
 | `resume` on a bound pane whose agent is still running | 409 | `{error:"launch-not-ready", reason:"agent-running"}` | `none` |
-| `resume` + `prompt` for an agent that cannot take both | 409 | `{error:"resume-prompt-unsupported"}` | `none` |
+| `resume` + `prompt` for an agent that cannot take both, or a bound resume with a `prompt` on a PowerShell pane | 409 | `{error:"resume-prompt-unsupported"}` | `none` |
 | shell not ready | 409 | `{error:"launch-not-ready", reason:"shell-not-empty"\|"shell-busy"\|"approval-pending"\|"not-integrated"}` | `none` |
 | shell cannot launch | 409 | `{error:"launch-unsupported", reason:"unsupported-shell"\|"shell-has-children"}` | `none` |
 | same id, different request | 409 | `{error:"launch-id-conflict"}` | `none` |

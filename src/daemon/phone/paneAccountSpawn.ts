@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { ENV_KEYS } from '../../shared/constants';
 import { PANE_ACCOUNT_ENV_KEY, type PaneAccountVendor } from '../../shared/phonePaneAccount';
+import { pwshQuote, type ResumeShell } from '../chat/v2/handoff';
 
 const ACCOUNT_KEYS = ['CLAUDE_CONFIG_DIR', 'CODEX_HOME'] as const;
 const PHONE_PANE_ID = /^web-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -54,11 +55,18 @@ export function withChosenAccountEnv(
   command: string,
   meta: { env: Record<string, string>; paneAccount?: { vendor: PaneAccountVendor } },
   agent: PaneAccountVendor,
+  shell: ResumeShell = 'posix',
 ): string {
   if (meta.paneAccount?.vendor !== agent) return command;
   const key = PANE_ACCOUNT_ENV_KEY[agent];
   const dir = meta.env[key];
-  return pinnable(dir) ? `${key}=${shellQuote(dir)} ${command}` : command;
+  if (shell === 'posix') return pinnable(dir) ? `${key}=${shellQuote(dir)} ${command}` : command;
+  if (!pinnable(dir)) return command;
+  // PowerShell has no one-command prefix, so the key is set in the shell first. A control
+  // character would end the typed line early, so such a folder cannot be pinned at all.
+  // eslint-disable-next-line no-control-regex -- refusing controls is the point
+  if (/[\x00-\x1f\x7f]/.test(dir)) throw new Error('Unpinnable account folder');
+  return `$env:${key} = ${pwshQuote(dir)}; ${command}`;
 }
 
 /**
