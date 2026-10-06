@@ -35,6 +35,7 @@ import {
   buildDenyScript,
   buildBrainLaunchCommand,
   flattenPromptForPty,
+  tuiDialogExcerpt,
   classifyReportedPrompt,
   lastPasteModeToggle,
   printedText,
@@ -660,6 +661,26 @@ describe('the spawned command line', () => {
     expect(host.created[0].command).not.toContain('--dangerously-skip-permissions');
     adapter.dispose();
     await turn;
+  });
+});
+
+// Claude Code 2.1.290's folder-trust dialog as the pty received it (the path
+// shortened). Ink places every word with a column move and colours it mid-line.
+const REAL_TRUST_DIALOG = "\u001b7\u001b[r\u001b8\u001b[?25h\u001b[?25l\u001b[?2004h\u001b[?2031h\u001b[?1004h\r\r\n\u001b[38;5;220m────────────────────────────────────────────────────────────────────────────────\u001b[39m\r\r\n\u001b[2G\u001b[38;5;220m\u001b[1mAccessing\u001b[12Gworkspace:\u001b[22m\u001b[39m\r\r\n\r\r\n\u001b[2G\u001b[1m/Users/me/projects/real\u001b[22m\r\r\n\u001b[2G\u001b[1mdlg/cwd\u001b[22m\r\r\n\r\r\n\u001b[2GQuick\u001b[8Gsafety\u001b[15Gcheck:\u001b[22GIs\u001b[25Gthis\u001b[30Ga\u001b[32Gproject\u001b[40Gyou\u001b[44Gcreated\u001b[52Gor\u001b[55Gone\u001b[59Gyou\u001b[63Gtrust?\u001b[70G(Like\u001b[76Gyour\r\r\n\u001b[2Gown\u001b[6Gcode,\u001b[12Ga\u001b[14Gwell-known\u001b[25Gopen\u001b[30Gsource\u001b[37Gproject,\u001b[46Gor\u001b[49Gwork\u001b[54Gfrom\u001b[59Gyour\u001b[64Gteam).\u001b[71GIf\u001b[74Gnot,\r\r\n\u001b[2Gtake\u001b[7Ga\u001b[9Gmoment\u001b[16Gto\u001b[19Greview\u001b[26Gwhat's\u001b[33Gin\u001b[36Gthis\u001b[41Gfolder\u001b[48Gfirst.\r\r\n\r\r\n\u001b[2GClaude\u001b[9GCode'll\u001b[17Gbe\u001b[20Gable\u001b[25Gto\u001b[28Gread,\u001b[34Gedit,\u001b[40Gand\u001b[44Gexecute\u001b[52Gfiles\u001b[58Ghere.\r\r\n\r\r\n\u001b[2G\u001b[38;5;246mSecurity\u001b[11Gguide\u001b[39m\r\r\n\r\r\n\u001b[2G\u001b[38;5;153m❯\u001b[4GNo,\u001b[8Gexit\u001b[39m\r\r\n\u001b[4GYes,\u001b[9GI\u001b[11Gtrust\u001b[17Gthis\u001b[22Gfolder\r\r\n\r\r\n\u001b[2G\u001b[38;5;246mEnter\u001b[8Gto\u001b[11Gconfirm\u001b[19G·\u001b[21GEsc\u001b[25Gto\u001b[28Gcancel\u001b[39m\r\r\n\u001b[1C\u001b[4A\u001b[>0q\u001b[?u\u001b[c";
+
+describe('tuiDialogExcerpt', () => {
+  it('reads Claude Code\'s own trust dialog as whole lines, options last', () => {
+    const excerpt = tuiDialogExcerpt(REAL_TRUST_DIALOG);
+    const lines = excerpt.split('\n');
+    expect(lines.slice(-3)).toEqual(['❯ No, exit', 'Yes, I trust this folder', 'Enter to confirm · Esc to cancel']);
+    expect(lines).toContain("Claude Code'll be able to read, edit, and execute files here.");
+    expect(excerpt.length).toBeLessThanOrEqual(300);
+    expect(excerpt).not.toContain('\u001b');
+    expect(excerpt).not.toMatch(/[\u2500-\u257f]/);
+  });
+
+  it('keeps a line whole when colour codes sit inside it', () => {
+    expect(tuiDialogExcerpt('\u001b[2G\u001b[38;5;153m❯\u001b[4G\u001b[1mYes\u001b[22m, proceed\u001b[39m\r\n')).toBe('❯ Yes, proceed');
   });
 });
 

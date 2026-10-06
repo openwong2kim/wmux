@@ -652,26 +652,30 @@ const DIALOG_EXCERPT_MAX_CHARS = 300;
 
 /**
  * A short plain-text excerpt of what a startup dialog says, from the raw pty
- * output the TUI printed before SessionStart. Only what the TUI itself drew:
- * escape sequences are dropped (a cursor-forward becomes the spaces it stands
- * for), box-drawing frames are trimmed, and the repeated redraws of one Ink
- * frame collapse to one copy of each line. The excerpt is the tail, because
- * the dialog's question and options sit at the bottom of the screen.
+ * output the TUI printed before SessionStart. Only what the TUI itself drew.
+ * Claude Code's Ink frames place each word with a cursor move and colour it
+ * mid-line, so colours are dropped and a cursor-forward or column move becomes
+ * the space it stands for; any other control sequence ends the line. Box frames
+ * are trimmed and the repeated redraws of one frame collapse to one copy of
+ * each line. The excerpt is the tail, where the question's options sit.
  */
 export function tuiDialogExcerpt(raw: string): string {
   /* eslint-disable no-control-regex -- matching terminal escapes is the point */
   const plain = raw
-    .replace(/\x1b\[(\d*)C/g, (_m, n: string) => ' '.repeat(Math.min(Number(n) || 1, 200)))
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b\[[0-9;:]*m/g, '')
+    .replace(/\x1b\[(\d*)C/g, (_m, n: string) => ' '.repeat(Math.min(Number(n) || 1, 200)))
+    .replace(/\x1b\[\d*G/g, ' ')
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '\n')
-    .replace(/\x1b[@-_]/g, '')
+    .replace(/\x1b[()][0-9A-Za-z]/g, '')
+    .replace(/\x1b[0-9=>@-_]/g, '')
     .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '\n');
   /* eslint-enable no-control-regex */
   const out: string[] = [];
   let length = 0;
   const lines = plain.split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].replace(/[─-╿]/g, ' ').replace(/\s+/g, ' ').trim();
+    const line = lines[i].replace(/[\u2500-\u257f]/g, ' ').replace(/\s+/g, ' ').trim();
     if (!/[\p{L}\p{N}]/u.test(line) || out.includes(line)) continue;
     if (length + line.length > DIALOG_EXCERPT_MAX_CHARS) {
       if (out.length === 0) out.push(`…${line.slice(-(DIALOG_EXCERPT_MAX_CHARS - 1))}`);
