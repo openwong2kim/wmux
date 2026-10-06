@@ -17,6 +17,8 @@
 // Off means no list, no packet, no model call.
 
 import type { PolicyBook } from './deckPolicy';
+import { keystrokesForAgent } from '../../daemon/approvals/approvalKeystrokes';
+import { isNativeDecision, type ApprovalRequest } from '../../daemon/approvals/types';
 import {
   SHADOW_DAILY_CAP_DEFAULT,
   buildDecisionPacket,
@@ -49,6 +51,7 @@ export interface ShadowApprovalRecord {
   choices?: unknown;
   questionShape?: unknown;
   channel?: unknown;
+  native?: unknown;
   attribution?: unknown;
   createdAt?: unknown;
   resolvedAt?: unknown;
@@ -105,8 +108,15 @@ export function ownerChoiceOf(r: ShadowApprovalRecord): { outcome: string; owner
   if (r.state === 'resolved') {
     if (typeof r.selectedChoiceKey === 'string') return { outcome: 'resolved', ownerChoiceKey: r.selectedChoiceKey };
     if (r.decision === 'deny') return { outcome: 'resolved', ownerChoiceKey: 'deny' };
-    // An approve with no key presses the first option.
-    if (r.decision === 'approve') return { outcome: 'resolved', ownerChoiceKey: choices[0]?.key ?? null };
+    // An approve with no key types the agent's approve keystroke ('1' for
+    // Claude), which selects the choice whose key is that digit — not
+    // necessarily choices[0], whose key keeps the TUI's original index. When
+    // the pressed choice cannot be named, there is nothing to compare.
+    if (r.decision === 'approve') {
+      const pressed = typeof r.agent === 'string' ? keystrokesForAgent(r.agent)?.approve : undefined;
+      const hit = pressed !== undefined ? choices.find((c) => c.key === pressed) : undefined;
+      return { outcome: 'resolved', ownerChoiceKey: hit?.key ?? null };
+    }
     return { outcome: 'resolved', ownerChoiceKey: null };
   }
   if (r.state === 'expired' && typeof r.localAnswer === 'string') {
@@ -127,6 +137,7 @@ export function createMoaShadowFeed(ports: MoaShadowFeedPorts): MoaShadowFeed {
   let running: Promise<void> | null = null;
   let again = false;
   let timerArmed = false;
+  let fullLogged = false;
 
   const closeOut = async (pending: ShadowApprovalRecord[], ended: ShadowApprovalRecord[]): Promise<void> => {
     const open = ledger.openKeys();
@@ -169,6 +180,9 @@ export function createMoaShadowFeed(ports: MoaShadowFeedPorts): MoaShadowFeed {
     const prs = numbers.length > 0 ? await ports.readPrs(fullAsker.cwd, numbers).catch(() => [] as ShadowPrFacts[]) : [];
     const packet = buildDecisionPacket({ recordId: String(r.id), question, choices, asker: fullAsker, screenLines, prs });
     const result = await ports.judge(buildJudgePrompt(book.text, packet));
+    if (result.refused) {
+      return esc('judge-refused', `the judge was not run: ${result.error ?? 'refused'}`);
+    }
     if (result.reply === null) {
       return esc('judge-failed', `the judge call failed: ${result.error ?? 'unknown'}`, { tokens: result.tokens, ms: result.ms });
     }
@@ -189,13 +203,20 @@ export function createMoaShadowFeed(ports: MoaShadowFeedPorts): MoaShadowFeed {
   };
 
   const judgeNew = async (pending: ShadowApprovalRecord[]): Promise<void> => {
+    if (ledger.isFull()) {
+      if (!fullLogged) log('[moa-shadow] the shadow ledger is full; nothing more is judged');
+      fullLogged = true;
+      return;
+    }
     let wait = Infinity;
     for (const r of pending) {
       if (!ports.isEnabled()) return;
       const id = str(r.id);
       const ptyId = str(r.sessionId);
       if (!id || !ptyId || r.state !== 'pending' || r.kind !== 'awaiting_input') continue;
-      if (r.channel === 'native-rpc' || ports.isBrainPty(ptyId)) continue;
+      // The agent's own server holds a native decision (channel 'native-rpc',
+      // or 'none' when the kill switch was off): not a question in the pane.
+      if (isNativeDecision(r as Pick<ApprovalRequest, 'channel' | 'native'>) || ports.isBrainPty(ptyId)) continue;
       const question = str(r.question) ?? '';
       const choices = choicesOf(r);
       const asker: ShadowAsker = {
@@ -218,19 +239,16 @@ export function createMoaShadowFeed(ports: MoaShadowFeedPorts): MoaShadowFeed {
       const decision = prior
         ? { verdict: 'escalate' as const, choiceKey: null, ruleId: null, reasonCode: 'id-reused', why: '', tokens: { input: 0, output: 0 }, ms: 0 }
         : await decide(r, asker, question, choices);
+      const row0 = { key, askedAt, askerPtyId: ptyId, question, options: choices.map((c) => c.label), packetHash, ...decision };
       try {
-        const { row } = await ledger.record({
-          key,
-          askedAt,
-          askerPtyId: ptyId,
-          question,
-          options: choices.map((c) => c.label),
-          packetHash,
-          ...decision,
-        });
+        const { row } = await ledger.record(row0);
         log(`[moa-shadow] ${key} ${row.verdict}${row.ruleId ? ` ${row.ruleId}` : ''} (${row.reasonCode})${calledModel(row) ? ` ${row.tokens.input}+${row.tokens.output} tok ${row.ms}ms` : ''}`);
       } catch (err) {
+        // Kept in memory: the question is not judged again and its call still
+        // counts against the daily cap.
+        ledger.rememberUnwritten(row0);
         log(`[moa-shadow] could not record ${key}: ${String(err)}`);
+        if (ledger.isFull()) return;
       }
     }
     if (wait !== Infinity && !timerArmed) {

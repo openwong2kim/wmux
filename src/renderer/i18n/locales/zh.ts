@@ -1415,6 +1415,7 @@ export const zh = {
   'moa.settings.shadowJudge': "影子判定（仅记录）",
   'moa.settings.shadowJudgeDesc': "当代理向你提问时，Moa 会依据 deck-policy.md 中带编号的规则判断它会如何回答，并与你的实际回答一起记录。它不会回答或按下任何东西，每个问题仍然等你决定。每个问题调用一次 Claude（每天最多 200 次）。默认关闭。 需要开启 Moa。",
   'moa.settings.shadowReadout': "{decisions} 次判定 · 一致率 {agreement}（已比较 {compared} 次）· {escalations} 次转交 · 今日 {tokens} tokens",
+  'moa.settings.shadowFull': "影子判定记录已满（20 MB），不再进行判定。将 moa-shadow/decisions.jsonl 移走即可重新开始。",
   'moa.settings.retro': "每周回顾",
   'moa.settings.retroDesc': "Moa 开启时，每周在 Moa 的简报中显示一段简短总结：你被询问的次数、等待过久的工作、重复的问题和最慢的工作。",
   'moa.settings.retroWhenDesc': "本地时间。回顾上一个完整的星期（周一到周日）。",

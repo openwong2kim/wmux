@@ -53,6 +53,10 @@ export interface MoaShadowStats {
   agreed: number;
   tokensToday: number;
   callsToday: number;
+  /** Decisions this run could not write (memory only). */
+  unwritten: number;
+  /** The shadow log is full: nothing more is judged. */
+  full: boolean;
 }
 
 export type MoaConfigPatch = Partial<Pick<MoaConfig, 'onboarded' | 'level' | 'maxTurnsPerHour' | 'bubbles' | 'reduceMotion' | 'approvalPress' | 'memoryProposals' | 'issueProposals' | 'trustedAuthors' | 'issuePollMinutes' | 'ignoredRepos' | 'autoHandoff' | 'readWithoutAsking' | 'shadowJudge'>>;

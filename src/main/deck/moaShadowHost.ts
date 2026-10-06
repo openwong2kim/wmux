@@ -4,8 +4,6 @@
 // workspace mirror, the GitHub PR reader, and the owner's claude binary run
 // with the brain's env scrub in a dedicated cwd under the wmux data dir.
 
-import * as fs from 'node:fs';
-import * as path from 'node:path';
 import { getWmuxDir } from '../../daemon/config';
 import { isBrainPtyId } from '../../shared/constants';
 import type { DaemonClient } from '../DaemonClient';
@@ -16,7 +14,7 @@ import { resolveClaudeExecutable } from './ClaudeSdkAdapter';
 import { scrubBrainSpawnEnv } from './ClaudePtyBrainAdapter';
 import { loadPolicyBook } from './deckPolicy';
 import { getMoaConfig } from './deckHqStore';
-import { SHADOW_SCREEN_LINES, runJudge, type JudgeRunResult, type ShadowPrFacts } from './moaShadowJudge';
+import { SHADOW_SCREEN_LINES, prepareJudgeDir, runJudge, type JudgeRunResult, type ShadowPrFacts } from './moaShadowJudge';
 import { MoaShadowLedger, type ShadowStats } from './moaShadowLedger';
 import { createMoaShadowFeed, type MoaShadowFeed } from './moaShadowFeed';
 
@@ -116,15 +114,18 @@ export function startMoaShadow(getDaemonClient: () => DaemonClient | null): MoaS
       const executable = resolveClaudeExecutable();
       // A JS entrypoint needs a node to run it; the judge does not guess one.
       if (!executable || executable.endsWith('.js')) {
-        return { reply: null, error: 'no claude executable', tokens: { input: 0, output: 0 }, ms: 0 };
+        return { reply: null, error: 'no claude executable', refused: true, tokens: { input: 0, output: 0 }, ms: 0 };
       }
-      const cwd = path.join(getWmuxDir(), 'moa-shadow', 'judge');
+      // A fresh empty dir per call, never under the wmux data dir.
+      const prepared = prepareJudgeDir();
+      if ('error' in prepared) {
+        return { reply: null, error: `unsafe judge dir: ${prepared.error}`, refused: true, tokens: { input: 0, output: 0 }, ms: 0 };
+      }
       try {
-        fs.mkdirSync(cwd, { recursive: true });
-      } catch (err) {
-        return { reply: null, error: `cwd: ${String(err)}`.slice(0, 200), tokens: { input: 0, output: 0 }, ms: 0 };
+        return await runJudge(prompt, { executable, cwd: prepared.dir, env: scrubBrainSpawnEnv(process.env) });
+      } finally {
+        prepared.cleanup();
       }
-      return runJudge(prompt, { executable, cwd, env: scrubBrainSpawnEnv(process.env) });
     },
   });
   return feed;

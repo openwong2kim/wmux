@@ -1317,6 +1317,7 @@ export const pl = {
   'moa.settings.shadowJudge': "Sędzia w cieniu (tylko zapis)",
   'moa.settings.shadowJudgeDesc': "Gdy agent zadaje Ci pytanie, Moa ustala na podstawie numerowanych reguł z deck-policy.md, co by odpowiedziała, i zapisuje to obok Twojej prawdziwej odpowiedzi. Niczego nie odpowiada ani nie naciska; każde pytanie nadal czeka na Ciebie. Jedno wywołanie Claude na pytanie (do 200 dziennie). Domyślnie wyłączone. Wymaga włączonej Moa.",
   'moa.settings.shadowReadout': "{decisions} decyzji · zgodność {agreement} ({compared} porównanych) · {escalations} przekazanych · {tokens} tokenów dziś",
+  'moa.settings.shadowFull': "Dziennik sędziego w cieniu jest pełny (20 MB), więc nic więcej nie jest oceniane. Przenieś moa-shadow/decisions.jsonl, aby zacząć nowy.",
   'moa.settings.retro': "Cotygodniowe podsumowanie",
   'moa.settings.retroDesc': "Raz w tygodniu, gdy Moa jest włączona, krótkie podsumowanie w briefingu Moa: jak często Cię pytano, praca, która długo czekała, powtarzające się pytania i najwolniejsza praca.",
   'moa.settings.retroWhenDesc': "Czas lokalny. Obejmuje ostatni pełny tydzień, od poniedziałku do niedzieli.",

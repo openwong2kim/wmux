@@ -1333,6 +1333,7 @@ export const en = {
   'moa.settings.shadowJudge': "Shadow judge (records only)",
   'moa.settings.shadowJudgeDesc': "When an agent asks you a question, Moa decides what it would answer from the numbered rules in deck-policy.md and records that next to your real answer. It answers nothing and presses nothing; every question still waits for you. Uses one Claude call per question (up to 200 a day). Off by default. Needs Moa on.",
   'moa.settings.shadowReadout': "{decisions} decisions · {agreement} agreement ({compared} compared) · {escalations} escalations · {tokens} tokens today",
+  'moa.settings.shadowFull': "The shadow log is full (20 MB), so nothing more is judged. Move moa-shadow/decisions.jsonl aside to start a new one.",
   'moa.settings.retro': "Weekly retro",
   'moa.settings.retroDesc': "Once a week, while Moa is on, a short summary on Moa's briefing: how often you were asked, work that sat waiting, repeated questions and the slowest work.",
   'moa.settings.retroWhenDesc': "Local time. It reviews the last full week, Monday to Sunday.",

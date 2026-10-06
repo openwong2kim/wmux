@@ -68,6 +68,10 @@ export interface ShadowStats {
   tokensToday: number;
   /** Model calls since local midnight (the daily cap counts these). */
   callsToday: number;
+  /** Decisions made this run that could not be written (kept in memory only). */
+  unwritten: number;
+  /** The log reached SHADOW_MAX_BYTES: nothing more is judged or written. */
+  full: boolean;
 }
 
 export function getShadowLedgerPath(wmuxDir: string): string {
@@ -104,6 +108,9 @@ export class MoaShadowLedger {
   private readonly decisions = new Map<string, ShadowDecisionRow>();
   private readonly outcomes = new Map<string, ShadowOutcomeRow>();
   private readonly rows: ShadowRow[] = [];
+  /** key → a decision whose append failed. Never re-judged, still counted. */
+  private readonly unwritten = new Map<string, ShadowDecisionRow>();
+  private full = false;
   private readonly serial = createSerialChain();
   private readonly now: () => number;
   private readonly log: (line: string) => void;
@@ -113,6 +120,11 @@ export class MoaShadowLedger {
     this.now = opts.now ?? Date.now;
     this.log = opts.log ?? ((l) => console.warn(l));
     this.replay();
+    try {
+      this.full = fs.statSync(this.file).size > SHADOW_MAX_BYTES;
+    } catch {
+      this.full = false;
+    }
   }
 
   private replay(): void {
@@ -154,7 +166,10 @@ export class MoaShadowLedger {
     await fs.promises.mkdir(path.dirname(this.file), { recursive: true });
     try {
       const stat = await fs.promises.stat(this.file);
-      if (stat.size > SHADOW_MAX_BYTES) throw new Error('shadow ledger is full');
+      if (stat.size > SHADOW_MAX_BYTES) {
+        this.full = true;
+        throw new Error('shadow ledger is full');
+      }
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
     }
@@ -163,7 +178,21 @@ export class MoaShadowLedger {
   }
 
   get(key: string): ShadowDecisionRow | null {
-    return this.decisions.get(key) ?? null;
+    return this.decisions.get(key) ?? this.unwritten.get(key) ?? null;
+  }
+
+  isFull(): boolean {
+    return this.full;
+  }
+
+  /**
+   * Keep a decision whose write failed, in memory only: get() returns it so
+   * the same question is not judged again, and stats() counts its model call
+   * against the daily cap. It has no outcome (nothing on disk to join to).
+   */
+  rememberUnwritten(row: Omit<ShadowDecisionRow, 'kind' | 'mode'>): void {
+    if (this.decisions.has(row.key) || this.unwritten.has(row.key)) return;
+    this.unwritten.set(row.key, { ...row, kind: 'decision', mode: 'shadow' });
   }
 
   hasOutcome(key: string): boolean {
@@ -231,7 +260,15 @@ export class MoaShadowLedger {
 
   stats(): ShadowStats {
     const midnight = localMidnight(this.now());
-    const s: ShadowStats = { decisions: 0, answered: 0, escalations: 0, compared: 0, agreed: 0, tokensToday: 0, callsToday: 0 };
+    const s: ShadowStats = {
+      decisions: 0, answered: 0, escalations: 0, compared: 0, agreed: 0, tokensToday: 0, callsToday: 0,
+      unwritten: this.unwritten.size, full: this.full,
+    };
+    for (const row of this.unwritten.values()) {
+      if (row.askedAt < midnight) continue;
+      s.tokensToday += row.tokens.input + row.tokens.output;
+      if (calledModel(row)) s.callsToday += 1;
+    }
     for (const row of this.rows) {
       if (row.kind === 'decision') {
         s.decisions += 1;

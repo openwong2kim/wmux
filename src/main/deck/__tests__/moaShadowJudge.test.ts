@@ -1,12 +1,16 @@
 import { describe, it, expect } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import type { ChildProcess } from 'node:child_process';
 import {
   buildDecisionPacket,
   buildJudgePrompt,
   extractPrNumbers,
   judgeArgs,
+  prepareJudgeDir,
   precheckAlwaysEscalate,
   runJudge,
   shadowPacketHash,
@@ -170,14 +174,15 @@ describe('validateJudgeReply', () => {
 });
 
 describe('judgeArgs', () => {
-  it('pins model, effort, project-only settings, no tools and an empty strict MCP config', () => {
+  it('pins model, effort, no settings files, no tools and an empty strict MCP config', () => {
     const args = judgeArgs();
     const after = (flag: string) => args[args.indexOf(flag) + 1];
     expect(args[0]).toBe('-p');
     expect(after('--output-format')).toBe('json');
     expect(after('--model')).toBe('claude-opus-5-5');
     expect(after('--effort')).toBe('medium');
-    expect(after('--setting-sources')).toBe('project');
+    // No settings file at all: not the user's, not one planted near the cwd.
+    expect(after('--setting-sources')).toBe('');
     expect(after('--tools')).toBe('');
     expect(args).toContain('--strict-mcp-config');
     expect(after('--mcp-config')).toBe('{"mcpServers":{}}');
@@ -232,5 +237,34 @@ describe('runJudge (spawn mocked)', () => {
     expect(bad.reply).toBeNull();
     const err = await runJudge('p', { executable: 'c', cwd: '/tmp', env: {}, spawn: () => fakeChild('{"is_error":true,"result":"x"}').child });
     expect(err.reply).toBeNull();
+  });
+});
+
+describe('prepareJudgeDir', () => {
+  it('makes a fresh empty dir under the root and removes it on cleanup', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-judge-root-'));
+    try {
+      const r = prepareJudgeDir(root);
+      if ('error' in r) throw new Error(r.error);
+      expect(path.dirname(r.dir)).toBe(root);
+      expect(fs.readdirSync(r.dir)).toEqual([]);
+      r.cleanup();
+      expect(fs.existsSync(r.dir)).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['.claude', 'CLAUDE.md', 'CLAUDE.local.md'])('refuses when the root holds %s, leaving nothing behind', (name) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-judge-root-'));
+    try {
+      if (name === '.claude') fs.mkdirSync(path.join(root, name));
+      else fs.writeFileSync(path.join(root, name), 'planted');
+      const r = prepareJudgeDir(root);
+      expect('error' in r).toBe(true);
+      expect(fs.readdirSync(root)).toEqual([name]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

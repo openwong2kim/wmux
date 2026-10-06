@@ -18,11 +18,16 @@
 // Measured against Claude Code 2.1.292 on 2026-10-07 (macOS), with the exact
 // argv judgeArgs() builds and the brain's env scrub (scrubBrainSpawnEnv):
 //   (a) hooks: `--debug hooks --debug-file <scratch>` logged 0 `Hook <Event>`
-//       lines with judgeArgs() (stream-json for the init event); the control run with
-//       `--setting-sources user,project` logged 2 (the user's SessionStart hook
-//       fired). The user's ~/.claude/CLAUDE.md was not in context either (asked
-//       to quote any instruction file, the judge answered NONE; the control
-//       quoted it).
+//       lines with judgeArgs() (stream-json for the init event); the control run
+//       with `--setting-sources user,project` logged 2 (the user's SessionStart
+//       hook fired). `--setting-sources ""` loads no settings file at all and
+//       subscription auth still works (`--bare` is not used: it skips the
+//       keychain read). With `project` instead, a planted
+//       `<cwd>/.claude/settings.json` SessionStart hook FIRED and a planted
+//       `<cwd>/CLAUDE.md` canary reached the model; with `""` the hook did not
+//       fire and the model answered NONE. No CLAUDE.md, user or planted, is in
+//       context. The judge also runs in a fresh mkdtemp dir checked for a
+//       `.claude/` or CLAUDE.md up to the temp root (prepareJudgeDir).
 //   (b) tools: the stream-json `system/init` event reported `"tools":[]` and
 //       `"mcp_servers":[]` with `--tools "" --strict-mcp-config --mcp-config
 //       {"mcpServers":{}}`. `--json-schema` was NOT adopted: it works by adding
@@ -35,6 +40,9 @@
 
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import * as crypto from 'node:crypto';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import type { PolicyBook } from './deckPolicy';
 
 export const SHADOW_JUDGE_MODEL = 'claude-opus-5-5';
@@ -324,7 +332,7 @@ export function judgeArgs(): string[] {
     '--output-format', 'json',
     '--model', SHADOW_JUDGE_MODEL,
     '--effort', SHADOW_JUDGE_EFFORT,
-    '--setting-sources', 'project',
+    '--setting-sources', '',
     '--tools', '',
     '--strict-mcp-config',
     '--mcp-config', '{"mcpServers":{}}',
@@ -333,11 +341,45 @@ export function judgeArgs(): string[] {
   ];
 }
 
+/** Files Claude Code reads from a directory or its parents. */
+const PLANTABLE = ['.claude', 'CLAUDE.md', 'CLAUDE.local.md'];
+
+/**
+ * A fresh, empty directory for one judge call, outside anything wmux owns:
+ * `mkdtemp` under the OS temp root. Refused (`{ error }`, the dir removed) when
+ * the dir or any parent up to and including that root holds a `.claude/` or a
+ * CLAUDE.md — a same-user write there would otherwise reach the judge.
+ */
+export function prepareJudgeDir(root: string = os.tmpdir()): { dir: string; cleanup: () => void } | { error: string } {
+  let dir: string;
+  try {
+    dir = fs.mkdtempSync(path.join(root, 'wmux-moa-judge-'));
+  } catch (err) {
+    return { error: `mkdtemp: ${String(err)}`.slice(0, 200) };
+  }
+  const cleanup = (): void => {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+  };
+  const top = path.resolve(root);
+  for (let d = dir; ; d = path.dirname(d)) {
+    for (const name of PLANTABLE) {
+      if (fs.existsSync(path.join(d, name))) {
+        cleanup();
+        return { error: `found ${path.join(d, name)}` };
+      }
+    }
+    if (d === top || path.dirname(d) === d) break;
+  }
+  return { dir, cleanup };
+}
+
 export interface JudgeRunResult {
   /** The model's reply text (`result`), or null when the call failed. */
   reply: string | null;
   /** Why the call failed (timeout, exit code, unreadable output). */
   error?: string;
+  /** Set when no model call was made at all (no executable, an unsafe dir). */
+  refused?: true;
   tokens: { input: number; output: number };
   ms: number;
 }

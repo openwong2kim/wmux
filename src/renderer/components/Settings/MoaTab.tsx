@@ -700,6 +700,11 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
             })}
           </SettingNote>
         )}
+        {shadow?.full && (
+          <SettingNote tone="warning" data-testid="moa-shadow-full">
+            {t('moa.settings.shadowFull')}
+          </SettingNote>
+        )}
         {/* Full power tunes settingSources/canUseTool — both SDK-only knobs. The
             terminal brain (an interactive TUI) and ACP brains ignore the flag
             entirely (see createAdapter in deck.handler), so with the terminal

@@ -163,11 +163,73 @@ describe('moaShadowFeed', () => {
   });
 });
 
+describe('moaShadowFeed — review fixes', () => {
+  it('a failed write is not judged again and still counts against the daily cap', async () => {
+    const { feed, ledger, judge, state } = setup({ dailyCap: 1 });
+    vi.spyOn(ledger, 'record').mockRejectedValue(new Error('EIO'));
+    await feed.onApprovalsChanged();
+    await feed.onApprovalsChanged();
+    expect(judge).toHaveBeenCalledTimes(1);
+    expect(ledger.stats()).toMatchObject({ callsToday: 1, unwritten: 1 });
+    // A second question is now past the cap: no model call.
+    state.pending = [record(), record({ id: 'rec-2', sessionId: 'pty-b' })];
+    await feed.onApprovalsChanged();
+    expect(judge).toHaveBeenCalledTimes(1);
+  });
+
+  it('a full ledger stops judging and says so in the stats', async () => {
+    const file = path.join(dir, 'moa-shadow', 'decisions.jsonl');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '');
+    fs.truncateSync(file, 20 * 1024 * 1024 + 1);
+    const { feed, ledger, judge } = setup();
+    await feed.onApprovalsChanged();
+    await feed.onApprovalsChanged();
+    expect(judge).not.toHaveBeenCalled();
+    expect(ledger.stats().full).toBe(true);
+  });
+
+  it('a ledger that fills during a write stops further judging', async () => {
+    const { feed, ledger, judge, state } = setup();
+    vi.spyOn(ledger, 'record').mockImplementation(async () => {
+      (ledger as unknown as { full: boolean }).full = true;
+      throw new Error('shadow ledger is full');
+    });
+    await feed.onApprovalsChanged();
+    state.pending = [record(), record({ id: 'rec-2', sessionId: 'pty-b' })];
+    await feed.onApprovalsChanged();
+    expect(judge).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips a native decision on channel 'none' (kill switch off)", async () => {
+    const { feed, ledger, judge } = setup({
+      pending: [record({ channel: 'none', native: { adapter: 'opencode', requestId: 'r' } })],
+    });
+    await feed.onApprovalsChanged();
+    expect(judge).not.toHaveBeenCalled();
+    expect(ledger.openKeys()).toEqual([]);
+  });
+
+  it('a refused judge dir escalates without counting a model call', async () => {
+    const { feed, ledger, judge } = setup();
+    judge.mockResolvedValueOnce({ reply: null, refused: true, error: 'unsafe judge dir: found CLAUDE.md', tokens: { input: 0, output: 0 }, ms: 0 });
+    await feed.onApprovalsChanged();
+    expect(ledger.get(shadowKey('pty-a', 'rec-1'))).toMatchObject({ verdict: 'escalate', reasonCode: 'judge-refused' });
+    expect(ledger.stats().callsToday).toBe(0);
+  });
+});
+
 describe('ownerChoiceOf', () => {
   it('maps resolves, denies, a keyless approve and terminal answers', () => {
     expect(ownerChoiceOf(record({ state: 'resolved', selectedChoiceKey: '2' }))).toEqual({ outcome: 'resolved', ownerChoiceKey: '2' });
     expect(ownerChoiceOf(record({ state: 'resolved', decision: 'deny' }))).toEqual({ outcome: 'resolved', ownerChoiceKey: 'deny' });
     expect(ownerChoiceOf(record({ state: 'resolved', decision: 'approve' }))).toEqual({ outcome: 'resolved', ownerChoiceKey: '1' });
+    // A keyless approve types Claude's '1'. When option 1 was dropped, the
+    // first listed choice is '2' — scoring it as the owner's answer was wrong.
+    const dropped = [{ key: '2', label: 'B' }, { key: '3', label: 'C' }];
+    expect(ownerChoiceOf(record({ state: 'resolved', decision: 'approve', choices: dropped }))).toEqual({ outcome: 'resolved', ownerChoiceKey: null });
+    // An agent whose approve keystroke is unknown: no comparison.
+    expect(ownerChoiceOf(record({ state: 'resolved', decision: 'approve', agent: 'unknown-agent' }))).toEqual({ outcome: 'resolved', ownerChoiceKey: null });
     expect(ownerChoiceOf(record({ state: 'expired', localAnswer: ' Reuse it ' }))).toEqual({ outcome: 'answered-in-terminal', ownerChoiceKey: '1' });
     expect(ownerChoiceOf(record({ state: 'expired', localAnswer: 'something typed' }))).toEqual({ outcome: 'answered-in-terminal', ownerChoiceKey: null });
     expect(ownerChoiceOf(record({ state: 'superseded' }))).toEqual({ outcome: 'superseded', ownerChoiceKey: null });

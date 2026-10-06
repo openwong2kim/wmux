@@ -854,6 +854,7 @@ export const ko = {
   'moa.settings.shadowJudge': "그림자 판정 (기록만)",
   'moa.settings.shadowJudgeDesc': "에이전트가 질문하면 Moa가 deck-policy.md의 번호 규칙으로 무엇을 답했을지 판단해, 실제 답과 나란히 기록합니다. 아무것도 답하거나 누르지 않으며, 모든 질문은 그대로 직접 답을 기다립니다. 질문마다 Claude 호출 1회(하루 최대 200회)를 씁니다. 기본은 꺼짐입니다. Moa가 켜져 있어야 합니다.",
   'moa.settings.shadowReadout': "판정 {decisions}건 · 일치율 {agreement} (비교 {compared}건) · 넘김 {escalations}건 · 오늘 토큰 {tokens}",
+  'moa.settings.shadowFull': "그림자 판정 기록이 가득 찼습니다(20 MB). 더 이상 판정하지 않습니다. 새로 시작하려면 moa-shadow/decisions.jsonl을 다른 곳으로 옮기세요.",
   'moa.settings.retro': "주간 회고",
   'moa.settings.retroDesc': "Moa가 켜져 있으면 일주일에 한 번 Moa 브리핑에 짧은 요약을 보여 줍니다: 얼마나 자주 물어봤는지, 오래 기다린 일, 반복된 질문, 가장 느린 일.",
   'moa.settings.retroWhenDesc': "현지 시각 기준. 지난 한 주(월요일~일요일)를 돌아봅니다.",
