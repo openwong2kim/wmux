@@ -757,6 +757,59 @@ describe('ClaudePtyBrainAdapter — turn mapping', () => {
     adapter.dispose();
   });
 
+  // The blocked send leaves the pty alive, so the NEXT send skips the spawn.
+  // It used to type the message and Enter into the dialog still open, which
+  // picked the dialog's default ("exit"): claude died with code 1 and every
+  // send alternated between the blocked error and a dead session.
+  it('never types into a dialog still open on a later send, and resumes once SessionStart lands', async () => {
+    const host = makeHost();
+    const adapter = makeAdapter(host);
+    host.nextBanner =
+      '\x1b[?25l\x1b[2J\x1b[H╭────────╮\r\n│ Do you trust the files in this folder? │\r\n' +
+      '│ \x1b[1m❯ 1. Yes, proceed\x1b[22m │\r\n│ 2. No, exit │\r\n╰────────╯\r\n';
+    const first = await collect(adapter.send('summarise the fleet'));
+    expect(first).toHaveLength(1);
+    expect(first[0]).toMatchObject({ type: 'error' });
+    const ptyId = host.created[0].id;
+
+    const second = await collect(adapter.send('summarise the fleet'));
+    expect(second).toHaveLength(1);
+    expect((second[0] as { message: string }).message).toMatch(/answer it in the terminal/i);
+    const excerpt = (second[0] as { tuiDialog?: { excerpt: string } }).tuiDialog?.excerpt ?? '';
+    expect(excerpt).toContain('Do you trust the files in this folder?');
+    expect(excerpt).toContain('2. No, exit');
+    expect(excerpt).not.toContain('\x1b');
+    expect(excerpt).not.toMatch(/[│╭]/);
+    // Nothing typed, the same pty kept, no respawn.
+    expect(host.writes).toEqual([]);
+    expect(host.created).toHaveLength(1);
+    expect(host.destroyed).toEqual([]);
+
+    // The user answered the dialog in the terminal: the TUI starts.
+    expect(deliverBrainPtyHookSignal(signal('agent.session_start', ptyId)).consumed).toBe(true);
+    const third = collect(adapter.send('summarise the fleet'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    expect(host.writes.every((w) => w.id === ptyId)).toBe(true);
+    expect(host.writes.map((w) => w.data).join('')).toContain('summarise the fleet');
+    deliverBrainPtyHookSignal(signal('agent.stop', ptyId, { agentSessionId: 'sess-ok' }));
+    const events = await third;
+    expect(events.some((e) => e.type === 'error')).toBe(false);
+    expect(events.at(-1)).toEqual({ type: 'turn-end', sessionId: 'sess-ok' });
+    expect(host.created).toHaveLength(1);
+    adapter.dispose();
+  });
+
+  it('still types into a pty that printed nothing (slow start, no SessionStart)', async () => {
+    const host = makeHost();
+    const adapter = makeAdapter(host);
+    const turn = collect(adapter.send('hi'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    deliverBrainPtyHookSignal(signal('agent.stop', host.created[0].id, { agentSessionId: 'sess-quiet' }));
+    const events = await turn;
+    expect(events.at(-1)).toEqual({ type: 'turn-end', sessionId: 'sess-quiet' });
+    adapter.dispose();
+  });
+
   it('runs the turn normally when SessionStart lands despite a noisy banner', async () => {
     const host = makeHost();
     const adapter = makeAdapter(host, { sessionStartTimeoutMs: 2_000 });

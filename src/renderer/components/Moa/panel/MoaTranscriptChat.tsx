@@ -141,8 +141,9 @@ export interface MoaTranscriptChatProps {
 }
 
 /** A sent bubble; `failed` holds the reason once main refused it late (after
- *  the composer had already taken the send as accepted). */
-interface Pending { id: string; text: string; before: ReadonlySet<string>; failed?: string }
+ *  the composer had already taken the send as accepted). `tuiDialog` is set
+ *  when the refusal was the brain's TUI stopped on a startup dialog. */
+interface Pending { id: string; text: string; before: ReadonlySet<string>; failed?: string; tuiDialog?: { excerpt: string } }
 
 /**
  * The bubbles left when a turn ends without the transcript recording them.
@@ -150,13 +151,14 @@ interface Pending { id: string; text: string; before: ReadonlySet<string>; faile
  * open turn with an error: that bubble stays, marked not sent with its reason,
  * so the message is never lost silently. Any other leftover goes.
  */
-export function settleOnTurnEnd(pending: readonly Pending[], thread: { messages: ReadonlyArray<{ role: string; text: string; status?: string; errorText?: string }> } | undefined): Pending[] {
+export function settleOnTurnEnd(pending: readonly Pending[], thread: { messages: ReadonlyArray<{ role: string; text: string; status?: string; errorText?: string; tuiDialog?: { excerpt: string } }> } | undefined): Pending[] {
   const messages = thread?.messages ?? [];
   return pending.flatMap((p) => {
     if (p.failed) return [p];
     const at = messages.map((m) => m.role === 'user' && m.text === p.text).lastIndexOf(true);
     const reply = at >= 0 ? messages[at + 1] : undefined;
-    return reply?.status === 'error' ? [{ ...p, failed: reply.errorText || '' }] : [];
+    if (reply?.status !== 'error') return [];
+    return [{ ...p, failed: reply.errorText || '', ...(reply.tuiDialog ? { tuiDialog: reply.tuiDialog } : {}) }];
   });
 }
 
@@ -444,6 +446,20 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
                 <UserText>{item.text}</UserText>
                 {item.failed === undefined
                   ? <p className="wmux-chat-pending-caption">{t('chat.pendingSent')}</p>
+                  : item.tuiDialog
+                  // A dialog only the TUI shows refused the send: say what it
+                  // asks and offer the way to it, since the chat hides the
+                  // terminal the error would otherwise point at.
+                  ? <div className="wmux-chat-pending-caption flex flex-col gap-1.5" role="alert" data-moa-chat-dialog>
+                      <span>{t('moa.panel.notSent')} {t('moa.panel.terminalHint')}</span>
+                      {item.tuiDialog.excerpt && <code className="font-mono text-[12px] text-[var(--text-sub)] break-words whitespace-pre-wrap" data-moa-chat-dialog-excerpt>{item.tuiDialog.excerpt}</code>}
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button variant="secondary" size="sm" onClick={onTerminal} data-moa-chat-dialog-terminal>{t('moa.panel.answerInTerminal')}</Button>
+                        <button type="button" className="underline underline-offset-2" disabled={busy} onClick={() => retrySend(item)} data-moa-chat-retry>
+                          {t('moa.panel.retrySend')}
+                        </button>
+                      </div>
+                    </div>
                   : <p className="wmux-chat-pending-caption" role="alert" data-moa-chat-not-sent>
                       {item.failed ? t('moa.panel.notSentReason', { reason: item.failed }) : t('moa.panel.notSent')}{' '}
                       <button type="button" className="underline underline-offset-2" disabled={busy} onClick={() => retrySend(item)} data-moa-chat-retry>

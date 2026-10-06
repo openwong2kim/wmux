@@ -647,6 +647,42 @@ export function buildBrainLaunchCommand(opts: {
   return isWindows ? `& ${line}` : line;
 }
 
+/** Upper bound on the dialog excerpt shown in Moa's chat. */
+const DIALOG_EXCERPT_MAX_CHARS = 300;
+
+/**
+ * A short plain-text excerpt of what a startup dialog says, from the raw pty
+ * output the TUI printed before SessionStart. Only what the TUI itself drew:
+ * escape sequences are dropped (a cursor-forward becomes the spaces it stands
+ * for), box-drawing frames are trimmed, and the repeated redraws of one Ink
+ * frame collapse to one copy of each line. The excerpt is the tail, because
+ * the dialog's question and options sit at the bottom of the screen.
+ */
+export function tuiDialogExcerpt(raw: string): string {
+  /* eslint-disable no-control-regex -- matching terminal escapes is the point */
+  const plain = raw
+    .replace(/\x1b\[(\d*)C/g, (_m, n: string) => ' '.repeat(Math.min(Number(n) || 1, 200)))
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '\n')
+    .replace(/\x1b[@-_]/g, '')
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '\n');
+  /* eslint-enable no-control-regex */
+  const out: string[] = [];
+  let length = 0;
+  const lines = plain.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].replace(/[─-╿]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!/[\p{L}\p{N}]/u.test(line) || out.includes(line)) continue;
+    if (length + line.length > DIALOG_EXCERPT_MAX_CHARS) {
+      if (out.length === 0) out.push(`…${line.slice(-(DIALOG_EXCERPT_MAX_CHARS - 1))}`);
+      break;
+    }
+    out.push(line);
+    length += line.length + 1;
+  }
+  return out.reverse().join('\n');
+}
+
 /** Flatten a prompt into ONE line. The TUI submits on Enter, so an embedded
  *  newline would send a half-written prompt. Control characters are dropped for
  *  the same reason (a stray ESC would open the TUI's own menus). */
@@ -859,6 +895,15 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
   private sessionStarted: Waiter<void> | null = null;
   /** True once the CURRENT pty's SessionStart hook landed. Reset per spawn. */
   private sessionStartSeen = false;
+  /** True while the CURRENT pty is stopped on a startup dialog: it printed but
+   *  never fired SessionStart. Held across sends, so a send after the blocked
+   *  one stands down too instead of typing into the dialog (its Enter would
+   *  pick the dialog's default, which can be "exit"). Cleared by any hook
+   *  from this pty, which proves the TUI got past the dialog. */
+  private blockedOnDialog = false;
+  /** The current pty's output until SessionStart, tail-capped: the source of
+   *  the dialog excerpt shown with the blocked error. */
+  private preStartOutput = '';
   /** Set only between a send()'s keystroke and its accepted Stop. A second
    *  Stop for the same turn finds it null and is ignored — the "exactly one
    *  turn-end" half of the manager contract. */
@@ -997,6 +1042,8 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
    *  resolved, so no `turn-end` is emitted and TURN_TIMEOUT_MS stays the
    *  backstop. */
   private onHookSignal(signal: AgentSignal): void | BrainPtyHookBlock | BrainPtyHookContext {
+    // Any hook at all means the TUI is past its startup dialog.
+    this.blockedOnDialog = false;
     if (this.deps.onTranscriptHint) {
       try {
         const raw = signal.payload?.['transcript_path'];
@@ -1509,6 +1556,8 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     const started = createWaiter<void>();
     this.sessionStarted = started;
     this.sessionStartSeen = false;
+    this.blockedOnDialog = false;
+    this.preStartOutput = '';
     this.banner = '';
     this.bannerWatching = true;
     // CLAIM the id and INSTALL the listeners BEFORE the session exists.
@@ -1534,6 +1583,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
         this.pasteModeToggledAt = Date.now();
       }
       this.noteRefusalOutput(chunk);
+      if (!this.sessionStartSeen) this.preStartOutput = (this.preStartOutput + chunk).slice(-16 * 1024);
       // Long enough to hold a `ESC[?2004h` split anywhere.
       this.pasteModeCarry = scan.slice(-7);
       if (!this.bannerWatching) return;
@@ -1641,6 +1691,8 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     this.closeForeignTurn();
     this.bannerWatching = false;
     this.consecutiveStopBlocks = 0;
+    this.blockedOnDialog = false;
+    this.preStartOutput = '';
     this.unregisterHooks?.();
     this.unregisterHooks = null;
     this.unsubscribeData?.();
@@ -1755,15 +1807,25 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
       // (BrainTerminalEmbed). We deliberately do NOT answer the dialog for the
       // user: trusting a folder and granting permissions are their calls, and
       // the pty stays alive so the next send() reuses the answered session.
-      if (spawned.blockedOnTui) {
-        yield {
-          type: 'error',
-          message:
-            'Claude Code is waiting on a prompt of its own (folder trust, permissions, or sign-in). ' +
-            'Answer it in the terminal, then send your message again.',
-        };
-        return;
-      }
+      // A SessionStart that landed while the resume probe waited clears it.
+      this.blockedOnDialog = spawned.blockedOnTui && !this.sessionStartSeen;
+    }
+
+    // Checked on EVERY send, not only the one that spawned: the pty outlives
+    // the blocked turn, and the next send must not type into a dialog nobody
+    // answered yet. Its Enter picks the dialog's default, which can be "exit":
+    // the brain then died with code 1, and sends alternated between this error
+    // and a dead session.
+    if (this.blockedOnDialog) {
+      const excerpt = tuiDialogExcerpt(this.preStartOutput);
+      yield {
+        type: 'error',
+        message:
+          'Claude Code is waiting on a prompt of its own (folder trust, permissions, or sign-in). ' +
+          'Answer it in the terminal, then send your message again.',
+        tuiDialog: { excerpt },
+      };
+      return;
     }
 
     const ptyId = this.ptyId;

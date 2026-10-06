@@ -73,6 +73,9 @@ export interface DeckBrainMessage {
   status?: DeckBrainStatus;
   /** Assistant only: populated on an `error` event. */
   errorText?: string;
+  /** Assistant only: the error was the brain's TUI stopped on a startup
+   *  dialog; `excerpt` is what the dialog says (see BrainEvent `tuiDialog`). */
+  tuiDialog?: { excerpt: string };
   /** Assistant only: surfaced rate-limit notices for this turn (M3). */
   limitNotices?: DeckLimitNotice[];
 }
@@ -217,7 +220,12 @@ export function applyBrainEvent(
       next = { ...target, status: 'done' };
       break;
     case 'error':
-      next = { ...target, status: 'error', errorText: event.message };
+      next = {
+        ...target,
+        status: 'error',
+        errorText: event.message,
+        ...(event.tuiDialog ? { tuiDialog: { excerpt: event.tuiDialog.excerpt } } : {}),
+      };
       break;
     case 'limit': {
       // `retrying` is silent (the SDK auto-recovers) — event exists only for a

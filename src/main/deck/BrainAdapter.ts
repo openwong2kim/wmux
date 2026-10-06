@@ -85,7 +85,15 @@ export type BrainEvent =
     }
   | { type: 'tool-end'; name: string; ok: boolean; toolId?: string }
   | { type: 'turn-end'; sessionId: string | null; usage?: BrainUsage }
-  | { type: 'error'; message: string }
+  | {
+      type: 'error';
+      message: string;
+      /** Set when the turn stood down because the brain's TUI is stopped on a
+       *  startup dialog (folder trust, permissions, sign-in) that only its
+       *  terminal can answer. `excerpt` is a short plain-text tail of what the
+       *  dialog says, so the chat can show it next to a way to the terminal. */
+      tuiDialog?: { excerpt: string };
+    }
   // Main changed this workspace's decision slot outside a brain turn (Moa's
   // issue proposals). Carries nothing: the decision card refetches.
   | { type: 'decision-changed' }
