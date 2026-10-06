@@ -84,4 +84,17 @@ describe('workspace.close and live agent panes', () => {
     expect(res.ok).toBe(true);
     expect(dispose).toHaveBeenCalledWith('pty-b');
   });
+
+  it('a workspace that owns a remote session is refused without force (no local pty to detect an agent in)', async () => {
+    const remote = ws('r');
+    (remote.rootPane as { surfaces: unknown[] }).surfaces = [{
+      id: 'r-s', ptyId: '', title: '', shell: '', cwd: '', surfaceType: 'remote-terminal',
+      remoteOwned: true, remoteHostId: 'host-1', remoteSessionId: 'sess-1',
+    } as never];
+    useStore.setState({ workspaces: [ws('a'), remote], activeWorkspaceId: 'a', moa: moa(null), moaHqSeed: null });
+    const res = await handleRpcMethod('workspace.close', { id: 'r' }) as { error?: string };
+    expect(res.error).toMatch(/1 remote session\(s\).*--force/);
+    expect(useStore.getState().workspaces.map((w) => w.id)).toEqual(['a', 'r']);
+  });
 });
+

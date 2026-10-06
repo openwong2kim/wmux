@@ -168,7 +168,11 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
   };
 
   // ── HQ status and its one-click recovery ──
-  const [hqBusy, setHqBusy] = useState(false);
+  const [localHqBusy, setHqBusy] = useState(false);
+  // A recreate running anywhere (the missing notice starts one on its own)
+  // holds these buttons too: a second setup would race the first.
+  const setupInFlight = useStore((s) => s.moaHqSetupInFlight);
+  const hqBusy = localHqBusy || setupInFlight;
   const [hqFailed, setHqFailed] = useState(false);
   const runHqAction = async (action: () => Promise<boolean>) => {
     setHqBusy(true);

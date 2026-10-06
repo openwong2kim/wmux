@@ -80,4 +80,14 @@ describe('MoaHqMissingNotice', () => {
     expect(notices()).toHaveLength(1);
     expect(notices()[0].id).not.toBe(first.id);
   });
+
+  it('a second loss of the same id, after it recovered, is recreated again', async () => {
+    await act(async () => root.render(<MoaHqMissingNotice />));
+    await act(async () => useStore.setState({ moa: moa('hq-missing') } as never));
+    expect(createMoaHq).toHaveBeenCalledTimes(1);
+    await act(async () => useStore.setState({ moa: moa('ok') } as never));
+    await act(async () => useStore.setState({ moa: moa('hq-missing') } as never));
+    expect(createMoaHq).toHaveBeenCalledTimes(2);
+  });
 });
+

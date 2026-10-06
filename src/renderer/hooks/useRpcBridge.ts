@@ -14,7 +14,7 @@ import type { PaneSearchResult, PaneSearchResponse } from '../../shared/types';
 import { generateId } from '../../shared/types';
 import { isTaskEnded, isVerifiedTaskSender } from '../../shared/a2aReopen';
 import { applyTaskQueryView } from '../../shared/a2aTaskQueryView';
-import { getLeafPanes, getWorkspaceLeafPanes, getWorkspacePtyIds } from '../../shared/paneUtils';
+import { getLeafPanes, getWorkspaceLeafPanes, getWorkspacePtyIds, getWorkspaceRemoteSessions } from '../../shared/paneUtils';
 import { findStashedEntry, paneStashedError, stashedPaneLiveness } from '../../shared/paneStash';
 import { applyRoleAgent, bindingEnforcesModel, launchRefusesPositionalPrompt, normalizeRoleBinding, sanitizeOrchRole } from '../../shared/orchestratorRole';
 import {
@@ -1052,6 +1052,17 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
             `workspace.close: refusing to close "${ws.name}" (${id}) — ${agents.length} agent pane(s) ` +
             `are still running in it (${[...new Set(agents)].join(', ')}). ` +
             'Check that this is the workspace you mean, then re-run with --force.',
+        };
+      }
+      // A remote-terminal surface has no local pty, so no agent is detected
+      // in it here — yet the close ends its session on the remote host. Treat
+      // every session the workspace owns there as possibly holding one.
+      const remote = getWorkspaceRemoteSessions(ws).length;
+      if (remote > 0) {
+        return {
+          error:
+            `workspace.close: refusing to close "${ws.name}" (${id}) — closing it ends ${remote} ` +
+            'remote session(s) it owns, and whatever runs in them. Re-run with --force if that is intended.',
         };
       }
     }

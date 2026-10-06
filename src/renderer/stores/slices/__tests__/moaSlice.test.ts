@@ -191,5 +191,23 @@ describe('recreating a lost HQ', () => {
     expect(id).toMatch(/^ws-/);
     expect(opts).toBeUndefined();
   });
+
+  it('overlapping calls share one setup: no second workspace, no second (resetting) setup', async () => {
+    const lost: MoaState = { ...moa('hq-old'), hq: { workspaceId: 'hq-old', state: 'hq-missing' } };
+    useStore.setState({ moa: lost } as never);
+    mainState = moa('hq-old');
+    let finish!: (r: MoaSetupResult) => void;
+    setup.mockImplementation(() => new Promise((r) => { finish = r; }));
+    const first = useStore.getState().createMoaHq();
+    expect(useStore.getState().moaHqSetupInFlight).toBe(true);
+    const second = useStore.getState().createMoaHq();
+    finish({ ok: true });
+    expect(await first).toEqual({ ok: true });
+    expect(await second).toEqual({ ok: true });
+    expect(setup).toHaveBeenCalledTimes(1);
+    expect(setup).toHaveBeenCalledWith('hq-old', { rebind: true });
+    expect(useStore.getState().workspaces.filter((w) => w.name === 'Moa').map((w) => w.id)).toEqual(['hq-old']);
+    expect(useStore.getState().moaHqSetupInFlight).toBe(false);
+  });
 });
 

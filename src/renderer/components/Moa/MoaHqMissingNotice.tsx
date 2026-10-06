@@ -17,13 +17,19 @@ export default function MoaHqMissingNotice() {
   // Bumped after a failed attempt so the notice comes back while still missing
   // (the toast's action dismisses it).
   const [attempt, setAttempt] = useState(0);
-  // The lost id the automatic attempt already ran for. Once per id: a failing
-  // recreate must not loop, so the toast takes over after it.
+  // The lost id the automatic attempt already ran for. Once per loss: a
+  // failing recreate must not loop, so the toast takes over after it.
   const autoTried = useRef<string | null>(null);
   const [autoFailed, setAutoFailed] = useState(false);
 
   useEffect(() => {
-    if (!missing || !lostId || autoTried.current === lostId) return;
+    // Recovered: forget the attempt, so a later loss of the same id (the
+    // recreate reuses it) is retried rather than ignored in silence.
+    if (!missing) {
+      autoTried.current = null;
+      return;
+    }
+    if (!lostId || autoTried.current === lostId) return;
     autoTried.current = lostId;
     setAutoFailed(false);
     void useStore.getState().createMoaHq().then((res) => {

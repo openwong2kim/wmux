@@ -305,6 +305,13 @@ export async function reconcileOrphanDeckState(
   }
 }
 
+/** Whether a work link's owner still counts as live for the closed-workspace
+ *  settle: listed now, or the HQ. A missing HQ is not closed — it comes back
+ *  under the same id — so its links are kept, like its Deck state above. */
+export function workLinkOwnerLive(live: ReadonlySet<string>, hq: string | null): (workspaceId: string) => boolean {
+  return (workspaceId) => live.has(workspaceId) || workspaceId === hq;
+}
+
 let startupDeckReconcileDone = false;
 
 export function isStartupDeckReconcileDone(): boolean {

@@ -203,7 +203,7 @@ import {
 } from '../../deck/deckScheduleStore';
 import { sweepOrphanAtomicTemps } from '../../../daemon/util/atomicWrite';
 import { getWmuxDir } from '../../../daemon/config';
-import { isStartupDeckReconcileDone, tryStartupDeckReconcile } from '../../deck/deckOrphanReconcile';
+import { isStartupDeckReconcileDone, tryStartupDeckReconcile, workLinkOwnerLive } from '../../deck/deckOrphanReconcile';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -2284,7 +2284,7 @@ export function registerDeckHandler(
   // the real data dir: a test's dir never holds the work-link store.
   const settleClosedWorkLinks = opts.dir
     ? undefined
-    : (live: ReadonlySet<string>) => getWorkLinkStore().abandonOrphaned((id) => live.has(id));
+    : (live: ReadonlySet<string>) => getWorkLinkStore().abandonOrphaned(workLinkOwnerLive(live, getHqWorkspaceId()));
   const heartbeatWorkspaceIds = (): string[] => {
     // WMX-06: retry startup orphan reconcile on heartbeat tick if not already completed
     if (!isStartupDeckReconcileDone()) {

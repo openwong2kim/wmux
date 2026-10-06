@@ -192,7 +192,8 @@ export function registerChannelLocalHandlers(getDaemonClient: () => DaemonClient
         // Links owned by the removed workspace can never finish: settle them
         // so no "running" card points at a workspace that no longer exists.
         const removedWs = (p.workspaceId as string).trim();
-        void getWorkLinkStore().abandonOrphaned((id) => id !== removedWs);
+        // The HQ keeps its links (its Deck state outlives a removal too).
+        void getWorkLinkStore().abandonOrphaned((id) => id !== removedWs || id === getHqWorkspaceId());
         try {
           const wsId = removedWs;
           await teardownWorkspaceDeckState(wsId, {
