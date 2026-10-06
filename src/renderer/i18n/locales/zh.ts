@@ -1368,6 +1368,7 @@ export const zh = {
   'settings.computerUseElevatedNote': 'wmux 正以管理员身份运行。电脑操控可能借此操作管理员程序，因此拒绝以提升的权限运行。请不使用“以管理员身份运行”重新启动 wmux。',
   'settings.computerUseUnsignedNote': '此版本包含 Windows 辅助程序，但尚未进行发布签名，因此在签名版本发布之前 wmux 不会开启电脑操控。',
   'settings.computerUseStopKeyNoHelperDesc': '未占用：此版本没有辅助程序，因此没有可停止的操作。',
+  'settings.computerUseStopKeyUnsignedDesc': '未占用：辅助程序尚未进行发布签名，电脑操控无法运行，因此没有可停止的操作。',
   'settings.computerUseStopKeyOffDesc': '仅在开启电脑操控时占用；届时在任意位置按下即可一次停止所有代理。',
   'settings.computerUseOnWithoutHelperNote': '电脑操控已开启，但此版本没有辅助程序：代理仍能看到该工具，但每次调用都会失败。请暂时将其关闭。',
   'settings.computerUseSaveFailed': '无法保存设置：{error}',

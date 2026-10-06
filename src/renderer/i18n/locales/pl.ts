@@ -1264,6 +1264,7 @@ export const pl = {
   'settings.computerUseElevatedNote': 'wmux działa jako administrator, a sterowanie komputerem nie uruchamia się z podwyższonymi uprawnieniami, bo mogłoby sterować aplikacjami administratora. Uruchom wmux ponownie bez opcji „Uruchom jako administrator”.',
   'settings.computerUseUnsignedNote': 'Ta wersja zawiera program pomocniczy dla Windows, ale nie ma on jeszcze podpisu wydania, więc wmux nie pozwoli włączyć sterowania komputerem do czasu podpisanego wydania.',
   'settings.computerUseStopKeyNoHelperDesc': 'Nieaktywny: ta wersja nie ma programu pomocniczego, więc nie ma czego zatrzymywać.',
+  'settings.computerUseStopKeyUnsignedDesc': 'Nieaktywny: program pomocniczy nie ma jeszcze podpisu wydania, więc sterowanie komputerem nie działa i nie ma czego zatrzymywać.',
   'settings.computerUseStopKeyOffDesc': 'Aktywny tylko, gdy sterowanie komputerem jest włączone; wtedy naciśnięcie go w dowolnym miejscu zatrzymuje wszystkich agentów naraz.',
   'settings.computerUseOnWithoutHelperNote': 'Sterowanie komputerem jest włączone, ale ta wersja nie ma programu pomocniczego: agenci nadal widzą to narzędzie, a każde wywołanie kończy się błędem. Na razie je wyłącz.',
   'settings.computerUseSaveFailed': 'Nie udało się zapisać ustawienia: {error}',

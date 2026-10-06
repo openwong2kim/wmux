@@ -1280,6 +1280,7 @@ export const en = {
   'settings.computerUseElevatedNote': 'wmux is running as administrator, and computer use refuses to run elevated because it could drive administrator apps. Restart wmux without “Run as administrator” to use it.',
   'settings.computerUseUnsignedNote': 'This build includes the Windows helper, but it is not release-signed yet, so wmux keeps computer use off until a signed release.',
   'settings.computerUseStopKeyNoHelperDesc': 'Not held: this build has no helper, so there is nothing for it to stop.',
+  'settings.computerUseStopKeyUnsignedDesc': 'Not held: the helper is not release-signed yet, so computer use cannot run and there is nothing for it to stop.',
   'settings.computerUseStopKeyOffDesc': 'Held only while computer use is on; then pressing it anywhere stops all agents at once.',
   'settings.computerUseOnWithoutHelperNote': 'Computer use is on, but this build has no helper: agents still see the tool and every call fails. Turn it off for now.',
   'settings.computerUseSaveFailed': 'Could not save the setting: {error}',

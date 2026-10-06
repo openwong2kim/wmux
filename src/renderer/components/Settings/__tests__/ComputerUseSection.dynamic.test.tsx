@@ -57,6 +57,10 @@ describe('Settings › Computer use', () => {
     expect(el.textContent).toContain('Not signed yet');
     expect(el.textContent).toContain('not release-signed yet');
     expect(el.textContent).not.toContain('Not in this build yet');
+    // The stop-key row must not claim the build has no helper either.
+    const stopRow = el.querySelector('[data-setting-id="computerusestop"]') as HTMLElement;
+    expect(stopRow.textContent).toContain('not release-signed yet');
+    expect(el.textContent).not.toContain('this build has no helper');
   });
 
   it('shows the stored state, the helper status and the stop key', async () => {
