@@ -21,6 +21,7 @@
 import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import ts from 'typescript';
 
 describe('AppLayout — axis A session-save invariants', () => {
   const appLayoutPath = path.join(__dirname, '..', 'AppLayout.tsx');
@@ -80,8 +81,29 @@ describe('AppLayout — axis A session-save invariants', () => {
     expect(source).not.toMatch(/addEventListener\('beforeunload', saveSession\)/);
   });
 
-  it('persists the Anthropic usage opt-in explicitly, including false', () => {
-    expect(source).toMatch(/anthropicUsageEnabled:\s*state\.anthropicUsageEnabled/);
+  it.each([true, false])('serializes the Anthropic usage opt-in as %s', (enabled) => {
+    // Execute the production builder without bootstrapping AppLayout's UI.
+    const tree = ts.createSourceFile('AppLayout.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const builder = tree.statements.find(
+      (node) => ts.isFunctionDeclaration(node) && node.name?.text === 'buildSessionData',
+    );
+    expect(builder, 'buildSessionData declaration not found').toBeDefined();
+    const code = ts.transpileModule(builder!.getText(tree), {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+    const build = new Function('useStore', `${code}; return buildSessionData(new Map());`);
+    const snapshot = build({ getState: () => ({
+      anthropicUsageEnabled: enabled,
+      workspaces: [],
+      archivedWorkspaces: [],
+      orchestratorRoleBindings: {},
+      layoutTemplates: [],
+      recentCommands: [],
+      toolbarSnippets: [],
+    }) });
+    const persisted = JSON.parse(JSON.stringify(snapshot));
+    expect(Object.hasOwn(persisted, 'anthropicUsageEnabled')).toBe(true);
+    expect(persisted.anthropicUsageEnabled).toBe(enabled);
   });
 
   it('persists the usage-limit auto-resume setting explicitly, including false', () => {

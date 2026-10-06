@@ -1018,7 +1018,8 @@ export function useNotificationListener() {
     });
     // loadSession normally restores this opt-in and starts main's poller.
     // Mirror it again after subscribing as a safe fallback if this listener
-    // mounts after hydration; UsagePoller.setEnabled is idempotent.
+    // mounts after hydration; the IPC toggle calls UsagePoller.start()/stop(),
+    // which are individually idempotent.
     if (useStore.getState().anthropicUsageEnabled) {
       window.electronAPI.usage.setEnabled(true);
     }
