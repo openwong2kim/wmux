@@ -804,6 +804,7 @@ export const ko = {
   'settings.computerUseStopKeyUnsignedDesc': '잡혀 있지 않음: 헬퍼가 아직 릴리스 서명되지 않아 컴퓨터 사용이 실행되지 않으므로 멈출 대상이 없습니다.',
   'settings.computerUseStopKeyOffDesc': '컴퓨터 사용이 켜져 있을 때만 잡습니다. 그때 어디서든 누르면 모든 에이전트가 한 번에 멈춥니다.',
   'settings.computerUseOnWithoutHelperNote': '컴퓨터 사용이 켜져 있지만 이 빌드에는 헬퍼가 없습니다. 에이전트에게 도구는 보이지만 모든 호출이 실패하니 지금은 꺼 두세요.',
+  'settings.computerUseOnUnsignedNote': '컴퓨터 사용이 켜져 있지만 이 빌드의 Windows 헬퍼는 아직 릴리스 서명이 없어 wmux가 실행하지 않습니다. 에이전트에게 도구는 보이지만 모든 호출이 실패하니 지금은 꺼 두세요.',
   'settings.computerUseSaveFailed': '설정을 저장하지 못했습니다: {error}',
   'settings.tabAccounts': '계정',
   'settings.tabNetwork': '네트워크',

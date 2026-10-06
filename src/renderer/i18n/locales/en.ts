@@ -1283,6 +1283,7 @@ export const en = {
   'settings.computerUseStopKeyUnsignedDesc': 'Not held: the helper is not release-signed yet, so computer use cannot run and there is nothing for it to stop.',
   'settings.computerUseStopKeyOffDesc': 'Held only while computer use is on; then pressing it anywhere stops all agents at once.',
   'settings.computerUseOnWithoutHelperNote': 'Computer use is on, but this build has no helper: agents still see the tool and every call fails. Turn it off for now.',
+  'settings.computerUseOnUnsignedNote': 'Computer use is on, but the Windows helper in this build is not release-signed yet, so wmux does not run it: agents still see the tool and every call fails. Turn it off for now.',
   'settings.computerUseSaveFailed': 'Could not save the setting: {error}',
   'settings.tabAccounts': 'Accounts',
   'settings.tabNetwork': 'Network',

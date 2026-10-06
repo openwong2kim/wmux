@@ -1267,6 +1267,7 @@ export const pl = {
   'settings.computerUseStopKeyUnsignedDesc': 'Nieaktywny: program pomocniczy nie ma jeszcze podpisu wydania, więc sterowanie komputerem nie działa i nie ma czego zatrzymywać.',
   'settings.computerUseStopKeyOffDesc': 'Aktywny tylko, gdy sterowanie komputerem jest włączone; wtedy naciśnięcie go w dowolnym miejscu zatrzymuje wszystkich agentów naraz.',
   'settings.computerUseOnWithoutHelperNote': 'Sterowanie komputerem jest włączone, ale ta wersja nie ma programu pomocniczego: agenci nadal widzą to narzędzie, a każde wywołanie kończy się błędem. Na razie je wyłącz.',
+  'settings.computerUseOnUnsignedNote': 'Sterowanie komputerem jest włączone, ale program pomocniczy dla Windows w tej wersji nie ma jeszcze podpisu wydania, więc wmux go nie uruchamia: agenci nadal widzą to narzędzie, a każde wywołanie kończy się błędem. Na razie je wyłącz.',
   'settings.computerUseSaveFailed': 'Nie udało się zapisać ustawienia: {error}',
   'settings.tabAccounts': 'Konta',
   'settings.tabNetwork': 'Sieć',

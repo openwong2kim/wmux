@@ -97,7 +97,8 @@ export function TabComputerUse() {
       </SettingsSection>
       {noHelper && state && (
         <SettingNote>
-          {t(state.enabled ? 'settings.computerUseOnWithoutHelperNote'
+          {t(state.enabled && state.helper === 'unsigned' ? 'settings.computerUseOnUnsignedNote'
+            : state.enabled ? 'settings.computerUseOnWithoutHelperNote'
             : state.helper === 'missing' ? 'settings.computerUseNoHelperNote'
               : state.helper === 'unsigned' ? 'settings.computerUseUnsignedNote'
               : state.helper === 'elevated' ? 'settings.computerUseElevatedNote' : 'settings.computerUseUnsupportedNote')}

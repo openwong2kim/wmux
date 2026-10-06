@@ -1371,6 +1371,7 @@ export const zh = {
   'settings.computerUseStopKeyUnsignedDesc': '未占用：辅助程序尚未进行发布签名，电脑操控无法运行，因此没有可停止的操作。',
   'settings.computerUseStopKeyOffDesc': '仅在开启电脑操控时占用；届时在任意位置按下即可一次停止所有代理。',
   'settings.computerUseOnWithoutHelperNote': '电脑操控已开启，但此版本没有辅助程序：代理仍能看到该工具，但每次调用都会失败。请暂时将其关闭。',
+  'settings.computerUseOnUnsignedNote': '电脑操控已开启，但此版本的 Windows 辅助程序尚未进行发布签名，因此 wmux 不会运行它：代理仍能看到该工具，但每次调用都会失败。请暂时将其关闭。',
   'settings.computerUseSaveFailed': '无法保存设置：{error}',
   'settings.tabKeyboard': '键盘',
   'settings.tabClaudeCode': 'Claude Code',

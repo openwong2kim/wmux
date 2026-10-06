@@ -63,6 +63,16 @@ describe('Settings › Computer use', () => {
     expect(el.textContent).not.toContain('this build has no helper');
   });
 
+  it('a switch left on with an unsigned Windows helper gives the unsigned reason and can still go off', async () => {
+    const onUnsigned: ComputerUseSettingsPayload = { ...base, enabled: true, helper: 'unsigned' };
+    const el = await render({ get: async () => onUnsigned, set: async () => ({ ...onUnsigned, enabled: false }) });
+    const sw = el.querySelector('[role="switch"]') as HTMLButtonElement;
+    expect(sw.getAttribute('aria-checked')).toBe('true');
+    expect(sw.disabled || sw.getAttribute('aria-disabled') === 'true').toBe(false);
+    expect(el.textContent).toContain('Computer use is on, but the Windows helper in this build is not release-signed yet');
+    expect(el.textContent).not.toContain('this build has no helper');
+  });
+
   it('shows the stored state, the helper status and the stop key', async () => {
     const el = await render({ get: async () => base, set: async () => base });
     const sw = el.querySelector('[role="switch"]') as HTMLButtonElement;
