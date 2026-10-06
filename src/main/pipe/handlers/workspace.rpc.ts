@@ -88,7 +88,7 @@ export function registerWorkspaceRpc(router: RpcRouter, getWindow: GetWindow, de
       (deps.guards ?? getFanOutGuards()).markTask(created, owner);
     } catch (err) {
       try {
-        await sendToRenderer(getWindow, 'workspace.close', { id: created });
+        await sendToRenderer(getWindow, 'workspace.close', { id: created, force: true });
       } catch {
         // best-effort; the error below names the workspace either way
       }
@@ -129,17 +129,41 @@ export function registerWorkspaceRpc(router: RpcRouter, getWindow: GetWindow, de
 
   /**
    * workspace.close — removes a workspace
-   * params: { id: string }
+   * params: { id: string, force?: boolean, senderPtyId?: string }
+   *
+   * Without `force`, two closes are refused because a caller can make them by
+   * mistake and they destroy work nobody asked to lose:
+   *   - the caller's own workspace (an agent closing the pane it runs in —
+   *     e.g. mistaking a fan-out accept's owner workspace id for a task's);
+   *   - a workspace with live agent panes (checked in the renderer, which
+   *     owns agent detection).
+   * The caller is known from a commander binding or a stated senderPtyId (the
+   * CLI sends its pane's WMUX_PTY_ID). Trusting a stated pty is safe here: it
+   * can only add a refusal, and `force` lifts it. An unresolvable one skips
+   * the own-workspace check rather than failing the close. The HQ refusal is
+   * absolute: `force` never lifts it.
    */
-  router.register('workspace.close', async (params) => {
+  router.register('workspace.close', async (params, ctx) => {
     if (typeof params['id'] !== 'string') {
       throw new Error('workspace.close: missing required param "id"');
     }
+    const id = params['id'];
     // The HQ workspace is app-owned: no CLI or MCP caller may close it.
-    if (params['id'] === (deps.getHqWorkspaceId ?? getHqWorkspaceId)()) {
-      throw new Error(`workspace.close: ${params['id']} is the HQ workspace and cannot be closed`);
+    if (id === (deps.getHqWorkspaceId ?? getHqWorkspaceId)()) {
+      throw new Error(`workspace.close: ${id} is the HQ workspace and cannot be closed`);
     }
-    const result = await sendToRenderer(getWindow, 'workspace.close', { id: params['id'] });
+    const force = params['force'] === true;
+    if (!force) {
+      const senderPtyId = typeof params['senderPtyId'] === 'string' ? params['senderPtyId'].trim() : '';
+      const callerWs = ctx?.commanderWorkspace || (senderPtyId ? await resolveCaller(senderPtyId) : null);
+      if (callerWs === id) {
+        throw new Error(
+          `workspace.close: refusing to close ${id} — it is the workspace this call comes from. ` +
+          'Closing it ends your own session. Re-run with --force if that is really intended.',
+        );
+      }
+    }
+    const result = await sendToRenderer(getWindow, 'workspace.close', { id, ...(force ? { force: true } : {}) });
     // #922 PR-A — retire any claim bound to this workspace, but ONLY once the
     // close actually happened.
     //
@@ -160,7 +184,7 @@ export function registerWorkspaceRpc(router: RpcRouter, getWindow: GetWindow, de
     // handler does not recognise leaves the claim alone, which is the safe way
     // to be wrong.
     if (isRecord(result) && result['ok'] === true) {
-      revokeWorkspaceClaimTokensFor(params['id']);
+      revokeWorkspaceClaimTokensFor(id);
     }
     return result;
   });

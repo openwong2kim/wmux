@@ -33,7 +33,8 @@ WORKSPACE COMMANDS
   list-workspaces                   List all workspaces
   new-workspace [--name <name>]     Create a new workspace
   focus-workspace <id>              Focus a workspace by ID
-  close-workspace <id>              Close a workspace by ID
+  close-workspace <id> [--force]    Close a workspace by ID (--force: even your
+                                    own workspace or one with live agent panes)
   current-workspace                 Show the active workspace
 
 SURFACE COMMANDS

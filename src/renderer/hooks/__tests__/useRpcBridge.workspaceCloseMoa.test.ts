@@ -28,7 +28,7 @@ let dispose: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   dispose = vi.fn(() => Promise.resolve());
   (window as unknown as { electronAPI: unknown }).electronAPI = { pty: { dispose } };
-  useStore.setState({ paneGate: 'ready' });
+  useStore.setState({ paneGate: 'ready', surfaceAgent: {} });
 });
 
 describe('workspace.close and Moa', () => {
@@ -60,5 +60,28 @@ describe('workspace.close and Moa', () => {
     expect(res.ok).toBe(true);
     expect(dispose).toHaveBeenCalledWith('pty-a');
     expect(useStore.getState().workspaces.map((w) => w.id)).toEqual(['hq', 'b']);
+  });
+});
+
+describe('workspace.close and live agent panes', () => {
+  it('a workspace with a running agent is refused without force and nothing is disposed', async () => {
+    useStore.setState({
+      workspaces: [ws('a'), ws('b')], activeWorkspaceId: 'a', moa: moa(null), moaHqSeed: null,
+      surfaceAgent: { 'pty-b': { name: 'Claude Code', status: 'idle' } },
+    });
+    const res = await handleRpcMethod('workspace.close', { id: 'b' }) as { error?: string };
+    expect(res.error).toMatch(/1 agent pane\(s\) are still running in it \(Claude Code\).*--force/);
+    expect(dispose).not.toHaveBeenCalled();
+    expect(useStore.getState().workspaces.map((w) => w.id)).toEqual(['a', 'b']);
+  });
+
+  it('with force it closes', async () => {
+    useStore.setState({
+      workspaces: [ws('a'), ws('b')], activeWorkspaceId: 'a', moa: moa(null), moaHqSeed: null,
+      surfaceAgent: { 'pty-b': { name: 'Claude Code', status: 'idle' } },
+    });
+    const res = await handleRpcMethod('workspace.close', { id: 'b', force: true }) as { ok?: boolean };
+    expect(res.ok).toBe(true);
+    expect(dispose).toHaveBeenCalledWith('pty-b');
   });
 });

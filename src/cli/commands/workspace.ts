@@ -88,12 +88,21 @@ export async function handleWorkspace(
     }
 
     case 'close-workspace': {
-      const id = args[0];
+      const id = args.find((a) => !a.startsWith('--'));
       if (!id) {
         console.error('Error: close-workspace requires <id>');
         process.exit(1);
       }
-      response = await sendRequest('workspace.close', { id });
+      // Without --force, main refuses this shell's own workspace and the
+      // renderer refuses a workspace with live agent panes. The pane hint is
+      // how main recognises "own"; it can only add a refusal.
+      const force = args.includes('--force');
+      const senderPtyId = process.env[ENV_KEYS.PTY_ID]?.trim();
+      response = await sendRequest('workspace.close', {
+        id,
+        ...(force ? { force: true } : {}),
+        ...(senderPtyId ? { senderPtyId } : {}),
+      });
       if (jsonMode) {
         printResult(response);
       } else {

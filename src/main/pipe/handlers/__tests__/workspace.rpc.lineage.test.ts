@@ -87,7 +87,7 @@ describe('workspace creation inherits the fan-out lineage stamp', () => {
     });
     const res = await router.dispatch({ id: '1', method: 'workspace.new', params: { senderPtyId: 'pty-worker' } });
     expect(errorOf(res)).toMatch(/could not be stamped/);
-    expect(sendToRendererMock).toHaveBeenCalledWith(expect.anything(), 'workspace.close', { id: 'ws-new' });
+    expect(sendToRendererMock).toHaveBeenCalledWith(expect.anything(), 'workspace.close', { id: 'ws-new', force: true });
   });
 
   it('end to end: a workspace a worker created cannot fan out', async () => {
