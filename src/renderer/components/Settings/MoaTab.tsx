@@ -21,6 +21,7 @@ import {
   parseTrustedAuthors,
   type MoaConfigPatch,
   type MoaMemoryItem,
+  type MoaShadowStats,
 } from '../../../shared/moa';
 import type { RetroSchedule } from '../../../shared/trackRecord';
 import type { AgentMode } from '../../../main/deck/deckAutonomyStore';
@@ -142,6 +143,24 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
     }
     await refreshMoa();
   };
+
+  // ── Shadow judge readout: re-read when Moa moves, and every 30 s while on ──
+  const shadowOn = moa?.config.shadowJudge === true;
+  const [shadow, setShadow] = useState<MoaShadowStats | null>(null);
+  useEffect(() => {
+    let live = true;
+    const api = window.electronAPI.deck?.moa;
+    if (!api?.shadowStats) return;
+    const read = () => {
+      api.shadowStats().then((s) => { if (live) setShadow(s ?? null); }, () => { /* keep the last readout */ });
+    };
+    read();
+    const timer = shadowOn ? window.setInterval(read, 30_000) : undefined;
+    return () => {
+      live = false;
+      if (timer !== undefined) window.clearInterval(timer);
+    };
+  }, [moa, shadowOn]);
 
   // ── Master switch ──
   const [switchFailed, setSwitchFailed] = useState(false);
@@ -661,6 +680,26 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
             data-testid="moa-approval-press"
           />
         </SettingRow>
+        <SettingRow id="moashadowjudge" label={t('moa.settings.shadowJudge')} description={t('moa.settings.shadowJudgeDesc')}>
+          <Switch
+            checked={shadowOn}
+            onCheckedChange={(v) => { void patchConfig({ shadowJudge: v }); }}
+            aria-label={t('moa.settings.shadowJudge')}
+            disabled={!loaded}
+            data-testid="moa-shadow-judge"
+          />
+        </SettingRow>
+        {shadow && (shadowOn || shadow.decisions > 0) && (
+          <SettingNote className="tabular-nums" data-testid="moa-shadow-readout">
+            {t('moa.settings.shadowReadout', {
+              decisions: shadow.decisions,
+              agreement: shadow.compared > 0 ? `${Math.round((shadow.agreed / shadow.compared) * 100)}%` : '—',
+              compared: shadow.compared,
+              escalations: shadow.escalations,
+              tokens: shadow.tokensToday.toLocaleString(),
+            })}
+          </SettingNote>
+        )}
         {/* Full power tunes settingSources/canUseTool — both SDK-only knobs. The
             terminal brain (an interactive TUI) and ACP brains ignore the flag
             entirely (see createAdapter in deck.handler), so with the terminal

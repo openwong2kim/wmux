@@ -113,6 +113,7 @@ import { createWorkspaceFactsPublisher, invalidateAutonomyCache, registerWorkspa
 import { publishMoaPane, setMoaPanePush } from './deck/moaPaneFeed';
 import { reconcileOwnerDowngrades } from './worktask/taskAutonomy';
 import { createHqAutoPress, setHqAutoPress } from './deck/hqApprovalLane';
+import { startMoaShadow } from './deck/moaShadowHost';
 import { getTaskLedger } from './deck/taskLedgerHost';
 import { createTrackRecordFeed, setTrackRecordFeed, type TrackApprovalRecord } from './deck/trackRecordFeed';
 import { getTrackRecordStore } from './deck/trackRecordStore';
@@ -1943,6 +1944,11 @@ app.on('ready', async () => {
       // A new approval, or one settled elsewhere: the lane re-lists.
       client.on('approvals:changed', () => { void hqAutoPress.run(); });
       client.on('approvals:changed', () => { void trackRecordFeed.onApprovalsChanged(); });
+      // Moa's shadow judge (records only); a first pass catches questions
+      // already waiting on this daemon.
+      const moaShadow = startMoaShadow(() => daemonClient);
+      client.on('approvals:changed', () => { void moaShadow.onApprovalsChanged(); });
+      void moaShadow.onApprovalsChanged();
       // Handler swap to daemon-routed mode. The microsecond window where
       // pty/* handlers are torn down and re-registered is the same
       // surface the original code used; the swap is logged for the

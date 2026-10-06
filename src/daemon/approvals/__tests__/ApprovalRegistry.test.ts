@@ -572,6 +572,23 @@ describe('ApprovalRegistry — supersede and expire', () => {
     expect(dropped).toEqual([survivor]);
   });
 
+  it('a question answered at the terminal keeps the reported answer as localAnswer', async () => {
+    const h = makeRegistry();
+    await awaitingInput(h.registry);
+    await settle();
+    await h.registry.expireForSession('pty-a', 'answered-locally', 'awaiting_input', { 'Any question?': 'Second\u0007 option' });
+    await settle();
+    const [ended] = h.registry.list().recentlyResolved;
+    expect(ended).toMatchObject({ state: 'expired', localAnswer: 'Second option' });
+
+    // Another way out (the turn ended) carries no answer.
+    await awaitingInput(h.registry);
+    await settle();
+    await h.registry.expireForSession('pty-a', 'turn-ended');
+    await settle();
+    expect(h.registry.list().recentlyResolved[0]?.localAnswer).toBeUndefined();
+  });
+
   it('expiring a pane with nothing pending emits nothing', async () => {
     const h = makeRegistry();
     await h.registry.expireForSession('pty-a', 'pane-gone');

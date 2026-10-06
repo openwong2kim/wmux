@@ -10,6 +10,8 @@ import {
   ensureDeckPolicySeed,
   getDeckPolicyPath,
   DEFAULT_POLICY_BUDGET_CHARS,
+  parsePolicyBook,
+  loadPolicyBook,
 } from '../deckPolicy';
 
 let dir: string;
@@ -87,5 +89,58 @@ describe('ensureDeckPolicySeed', () => {
     ensureDeckPolicySeed(freshDir);
     expect(fs.existsSync(getDeckPolicyPath(freshDir))).toBe(true);
     expect(loadDeckPolicyBlock(freshDir)!).toContain("the agent's own checkout");
+  });
+});
+
+describe('parsePolicyBook', () => {
+  const FIXTURE = [
+    '<!-- [R-in-comment] never a rule -->',
+    '# House rules',
+    '- [R-merge-green] Merge a PR whose required checks are all green.',
+    '* [R-reuse-pane] Reuse an idle pane before spawning a new one.',
+    '[R-bare-line] A rule without a bullet still counts.',
+    '- [R-merge-green] A duplicate id is ignored.',
+    '- [R-empty]',
+    '- [Not-a-rule] wrong prefix',
+    '- plain bullet, no id',
+    '',
+    '## Always escalate',
+    '- Anything about billing',
+    '- anything about billing',
+    '* customer data',
+    '- [R-inside-escalate] still a rule, not a phrase',
+    '',
+    '## Notes',
+    '- not an escalation phrase',
+  ].join('\n');
+
+  it('parses rule ids, first id wins, comments and malformed ids ignored', () => {
+    const book = parsePolicyBook(FIXTURE);
+    expect([...book.rules.keys()]).toEqual(['R-merge-green', 'R-reuse-pane', 'R-bare-line', 'R-inside-escalate']);
+    expect(book.rules.get('R-merge-green')).toBe('Merge a PR whose required checks are all green.');
+  });
+
+  it('collects the always-escalate section only, lowercased and deduped', () => {
+    expect(parsePolicyBook(FIXTURE).alwaysEscalate).toEqual(['anything about billing', 'customer data']);
+  });
+
+  it('returns an empty book for text with no rules', () => {
+    const book = parsePolicyBook('- just prose\n');
+    expect(book.rules.size).toBe(0);
+    expect(book.alwaysEscalate).toEqual([]);
+  });
+
+  it('loadPolicyBook cuts on a line boundary at the budget', () => {
+    const filler = '- filler line that is not a rule\n'.repeat(Math.ceil(DEFAULT_POLICY_BUDGET_CHARS / 33));
+    fs.writeFileSync(getDeckPolicyPath(dir), `- [R-first] kept\n${filler}- [R-last] past the budget\n`);
+    const book = loadPolicyBook(dir);
+    if (!book) throw new Error('expected a book');
+    expect(book.text.length).toBeLessThanOrEqual(DEFAULT_POLICY_BUDGET_CHARS);
+    expect(book.rules.has('R-first')).toBe(true);
+    expect(book.rules.has('R-last')).toBe(false);
+  });
+
+  it('loadPolicyBook is null for a missing file', () => {
+    expect(loadPolicyBook(dir)).toBeNull();
   });
 });

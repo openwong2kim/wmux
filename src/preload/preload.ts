@@ -809,6 +809,8 @@ const electronAPI = {
         ipcRenderer.invoke(IPC.DECK_MOA_ARCHIVE_LIST) as Promise<{ decisions: import('../shared/moa').MoaArchivedDecision[] }>,
       archiveAck: () => ipcRenderer.invoke(IPC.DECK_MOA_ARCHIVE_ACK) as Promise<{ ok: boolean }>,
       resetStore: () => ipcRenderer.invoke(IPC.DECK_MOA_STORE_RESET) as Promise<{ ok: boolean }>,
+      shadowStats: () =>
+        ipcRenderer.invoke(IPC.DECK_MOA_SHADOW_STATS) as Promise<import('../shared/moa').MoaShadowStats>,
       memoryList: () =>
         ipcRenderer.invoke(IPC.DECK_MOA_MEMORY_LIST) as Promise<{ items: import('../shared/moa').MoaMemoryItem[] }>,
       memoryDelete: (kind: import('../shared/moa').MoaMemoryItem['kind'], name: string) =>

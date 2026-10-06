@@ -107,3 +107,79 @@ export function ensureDeckPolicySeed(dir: string = getWmuxDir()): void {
     /* raced/created concurrently, or the dir is unwritable — leave it */
   }
 }
+
+// ─── Policy book: numbered rules for the shadow judge (moaShadowJudge.ts) ────
+//
+// The same file carries rule IDs the judge must cite. Convention:
+//   - a rule is one line whose text (after an optional `-`/`*` bullet) starts
+//     with `[R-<id>]`, e.g. `- [R-merge-green] Merge a PR whose checks are green.`
+//     The id is lowercase letters, digits and dashes; the first line with an id
+//     wins, a later duplicate is ignored.
+//   - an `## Always escalate` section lists, one bullet per line, phrases that
+//     send a question straight to the owner without asking the model.
+// HTML comments are ignored, so the seed's guidance never parses as a rule.
+
+export interface PolicyBook {
+  rules: Map<string, string>;
+  alwaysEscalate: string[];
+}
+
+const RULE_LINE_RE = /^\s*(?:[-*]\s+)?\[(R-[a-z0-9][a-z0-9-]{0,47})\]\s*(.*)$/;
+const HEADING_RE = /^\s*#{1,6}\s+(.*?)\s*#*\s*$/;
+const ALWAYS_ESCALATE_HEADING_RE = /^always escalate$/i;
+/** Most always-escalate phrases kept, and their length cap. */
+const ALWAYS_ESCALATE_MAX = 64;
+const ALWAYS_ESCALATE_PHRASE_MAX = 120;
+
+/** Parse a policy book. Pure; never throws. */
+export function parsePolicyBook(text: string): PolicyBook {
+  const rules = new Map<string, string>();
+  const alwaysEscalate: string[] = [];
+  let inEscalate = false;
+  const body = text.replace(/<!--[\s\S]*?(?:-->|$)/g, '');
+  for (const line of body.split(/\r?\n/)) {
+    const heading = HEADING_RE.exec(line);
+    if (heading) {
+      inEscalate = ALWAYS_ESCALATE_HEADING_RE.test(heading[1] ?? '');
+      continue;
+    }
+    const rule = RULE_LINE_RE.exec(line);
+    if (rule) {
+      const id = rule[1] as string;
+      const ruleText = (rule[2] ?? '').trim();
+      if (ruleText && !rules.has(id)) rules.set(id, ruleText);
+      continue;
+    }
+    if (inEscalate) {
+      const item = /^\s*[-*]\s+(.*)$/.exec(line)?.[1]?.trim().toLowerCase();
+      if (item && alwaysEscalate.length < ALWAYS_ESCALATE_MAX && !alwaysEscalate.includes(item)) {
+        alwaysEscalate.push(item.slice(0, ALWAYS_ESCALATE_PHRASE_MAX));
+      }
+    }
+  }
+  return { rules, alwaysEscalate };
+}
+
+/**
+ * The policy book as the judge sees it: the file's text (comments stripped,
+ * cut to DEFAULT_POLICY_BUDGET_CHARS) and what it parses to. Null when there
+ * is no file or nothing in it. Never throws.
+ */
+export function loadPolicyBook(dir?: string): (PolicyBook & { text: string }) | null {
+  let content: string;
+  try {
+    content = fs.readFileSync(getDeckPolicyPath(dir), 'utf8');
+  } catch {
+    return null;
+  }
+  // Parse what the judge is shown, so a rule cut off by the budget is not a
+  // rule it can cite.
+  let text = content.replace(/<!--[\s\S]*?(?:-->|$)/g, '').trim();
+  if (text.length > DEFAULT_POLICY_BUDGET_CHARS) {
+    // Cut on a line boundary: half a rule must not parse as the whole rule.
+    text = text.slice(0, DEFAULT_POLICY_BUDGET_CHARS);
+    text = text.slice(0, Math.max(0, text.lastIndexOf('\n'))).trim();
+  }
+  if (!text) return null;
+  return { ...parsePolicyBook(text), text };
+}

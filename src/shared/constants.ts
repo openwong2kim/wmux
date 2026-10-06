@@ -343,6 +343,8 @@ export const IPC = {
   DECK_MOA_ARCHIVE_LIST: 'deck:moa:archive:list',
   DECK_MOA_ARCHIVE_ACK: 'deck:moa:archive:ack',
   DECK_MOA_STORE_RESET: 'deck:moa:store:reset',
+  //   DECK_MOA_SHADOW_STATS — the shadow judge's readout (MoaShadowStats).
+  DECK_MOA_SHADOW_STATS: 'deck:moa:shadow:stats',
   //   DECK_MOA_MEMORY_LIST / _DELETE: what Moa remembers (saved precedents,
   //   notes and skills, all approved by the operator) and deleting one by
   //   { kind, name }. DECK_MOA_CHANGED also says this list moved.

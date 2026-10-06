@@ -59,6 +59,7 @@ import { DeckHeartbeat } from '../../deck/DeckHeartbeat';
 import { CommanderEventCoalescer, type CoalescerInput } from '../../deck/CommanderEventCoalescer';
 import { notifyFanoutCaller, shouldNotifyCaller, installFanoutCallerLedgerNotify } from '../../deck/fanoutCallerNotify';
 import { runHqAutoPress, takeHqPressPointer } from '../../deck/hqApprovalLane';
+import { getMoaShadowStats, runMoaShadow } from '../../deck/moaShadowHost';
 import { trackContextMemory } from '../../deck/trackRecordFeed';
 import { getTrackRecordStore } from '../../deck/trackRecordStore';
 import { notifyPrOwner, setPrOwnerSink } from '../../deck/prOwnerNotify';
@@ -2516,9 +2517,14 @@ export function registerDeckHandler(
       if (patch.readWithoutAsking !== undefined) void refreshReadRoots();
       // Approvals already waiting when the lane is turned on get their pass now.
       if (patch.approvalPress === true) runHqAutoPress();
+      // Same for questions already waiting when the shadow judge is turned on.
+      if (patch.shadowJudge === true) runMoaShadow();
       return { ok: true };
     }),
   );
+
+  ipcMain.removeHandler(IPC.DECK_MOA_SHADOW_STATS);
+  ipcMain.handle(IPC.DECK_MOA_SHADOW_STATS, wrapHandler(IPC.DECK_MOA_SHADOW_STATS, async () => getMoaShadowStats()));
 
   // First run and "Recreate Moa workspace": the renderer has just created the
   // app-owned workspace; make it the HQ at ramp level 1 (observe and report:
@@ -3919,6 +3925,7 @@ export function registerDeckHandler(
     ipcMain.removeHandler(IPC.DECK_MOA_ARCHIVE_LIST);
     ipcMain.removeHandler(IPC.DECK_MOA_ARCHIVE_ACK);
     ipcMain.removeHandler(IPC.DECK_MOA_STORE_RESET);
+    ipcMain.removeHandler(IPC.DECK_MOA_SHADOW_STATS);
     ipcMain.removeHandler(IPC.DECK_MOA_MEMORY_LIST);
     ipcMain.removeHandler(IPC.DECK_MOA_MEMORY_DELETE);
     ipcMain.removeHandler(IPC.DECK_MOA_MEMORY_CARD);

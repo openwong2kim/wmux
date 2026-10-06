@@ -24,6 +24,8 @@ export interface PrReviewHead {
   mergeable: string;
   /** CLEAN, DIRTY, BLOCKED, BEHIND, UNSTABLE, HAS_HOOKS, DRAFT or UNKNOWN. */
   mergeStateStatus: string;
+  /** Label names, when the read asked for them. */
+  labels?: string[];
 }
 
 /** gh's own grouping of a check's state. */

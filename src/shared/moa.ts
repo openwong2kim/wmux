@@ -37,9 +37,25 @@ export interface MoaConfig {
   /** Moa reads files (Read, Grep, Glob) in the repos it delegated to without a
    *  permission prompt (moaReadGate.ts). Absent = on. */
   readWithoutAsking?: boolean;
+  /** Opt-in: Moa's shadow judge records what it would answer agents' questions
+   *  from the policy book, and whether the owner agreed. It answers nothing.
+   *  Absent = off. */
+  shadowJudge?: boolean;
 }
 
-export type MoaConfigPatch = Partial<Pick<MoaConfig, 'onboarded' | 'level' | 'maxTurnsPerHour' | 'bubbles' | 'reduceMotion' | 'approvalPress' | 'memoryProposals' | 'issueProposals' | 'trustedAuthors' | 'issuePollMinutes' | 'ignoredRepos' | 'autoHandoff' | 'readWithoutAsking'>>;
+/** The shadow judge's readout (Settings › Moa). */
+export interface MoaShadowStats {
+  decisions: number;
+  answered: number;
+  escalations: number;
+  /** Ended questions where both the judge and the owner named a choice. */
+  compared: number;
+  agreed: number;
+  tokensToday: number;
+  callsToday: number;
+}
+
+export type MoaConfigPatch = Partial<Pick<MoaConfig, 'onboarded' | 'level' | 'maxTurnsPerHour' | 'bubbles' | 'reduceMotion' | 'approvalPress' | 'memoryProposals' | 'issueProposals' | 'trustedAuthors' | 'issuePollMinutes' | 'ignoredRepos' | 'autoHandoff' | 'readWithoutAsking' | 'shadowJudge'>>;
 
 export interface MoaState {
   config: MoaConfig;

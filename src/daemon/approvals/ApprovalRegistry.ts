@@ -376,6 +376,22 @@ function copyRequest(r: ApprovalRequest): ApprovalRequest {
   };
 }
 
+/** Cap on `localAnswer` (an option label; labels are capped far below this). */
+const LOCAL_ANSWER_MAX = 200;
+
+/**
+ * The answer Claude reported for this record's question: the only entry when
+ * there is one, else the entry keyed by the record's question text. A
+ * multi-question prompt with no exact match yields nothing.
+ */
+function localAnswerFor(r: ApprovalRequest, answered: Readonly<Record<string, string>>): string | undefined {
+  const entries = Object.entries(answered);
+  const hit = entries.length === 1
+    ? entries[0]?.[1]
+    : r.question !== undefined && Object.prototype.hasOwnProperty.call(answered, r.question) ? answered[r.question] : undefined;
+  return boundRecordText(hit, LOCAL_ANSWER_MAX);
+}
+
 /** A refusal that wrote nothing because the screen is not what the answer was for. */
 function changedResult(r: ApprovalRequest): ApprovalResolveResult {
   return { ok: false, reason: 'prompt-changed', request: copyRequest(r) };
@@ -3654,6 +3670,10 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       }
       r.state = 'expired';
       r.resolvedAt = this.now();
+      if (reason === 'answered-locally' && answered && r.kind === 'awaiting_input') {
+        const local = localAnswerFor(r, answered);
+        if (local) r.localAnswer = local;
+      }
       // #783 — cancel the broker waiter so the bridge defers immediately.
       if (r.kind === 'awaiting_permission') {
         this.deps.notifyGateDropped?.(r.id);

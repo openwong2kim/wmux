@@ -58,7 +58,7 @@ const MAX_ENTRIES = 64;
 const MAX_THREADS = 100;
 const MAX_THREAD_COMMENTS = 50;
 
-const HEAD_FIELDS = 'number,title,url,state,isDraft,headRefOid,headRefName,baseRefName,mergeable,mergeStateStatus';
+const HEAD_FIELDS = 'number,title,url,state,isDraft,headRefOid,headRefName,baseRefName,mergeable,mergeStateStatus,labels';
 const STATE_FIELDS = `${HEAD_FIELDS},statusCheckRollup`;
 
 const THREADS_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
@@ -106,6 +106,9 @@ export function mapReviewHead(raw: unknown): PrReviewHead | null {
     baseRefName: str(j.baseRefName),
     mergeable: str(j.mergeable) || 'UNKNOWN',
     mergeStateStatus: str(j.mergeStateStatus) || 'UNKNOWN',
+    ...(Array.isArray(j.labels)
+      ? { labels: (j.labels as unknown[]).map((l) => str((l as Record<string, unknown> | null)?.name)).filter(Boolean) }
+      : {}),
   };
 }
 

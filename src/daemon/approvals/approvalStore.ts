@@ -133,6 +133,8 @@ function coerceRequest(raw: unknown): ApprovalRequest | null {
   // through, so a hand-edited file cannot invent a risk level a client would
   // then have to interpret.
   if (o['risk'] === 'critical') out.risk = 'critical';
+  const localAnswer = boundRecordText(o['localAnswer'], 200);
+  if (localAnswer) out.localAnswer = localAnswer;
   // Bounded and cleaned on the way in, like every other text field here.
   const toolName = boundRecordText(o['toolName'], TERMINAL_PROMPT_TOOL_NAME_MAX);
   if (toolName) out.toolName = toolName;

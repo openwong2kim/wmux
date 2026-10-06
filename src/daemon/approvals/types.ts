@@ -264,6 +264,14 @@ export interface ApprovalRequest {
    */
   selectedChoiceKey?: string;
   /**
+   * `awaiting_input` expired as answered at the terminal: the option label
+   * Claude reported for this question (PostToolUse `tool_response.answers`),
+   * sanitized and capped. Lets main's Moa shadow judge compare its answer with
+   * the owner's (moaShadowFeed.ts). Display-only, never a key to press.
+   * Daemon-internal: `approvalWire` is an allowlist and never copies it.
+   */
+  localAnswer?: string;
+  /**
    * The pane tail the registry actually looked at when it made the resolve
    * decision — the verified screen on a success, the REJECTED screen on a
    * 'prompt-gone' refusal (which is the forensically useful one: it is the
