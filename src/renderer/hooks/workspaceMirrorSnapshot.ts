@@ -261,7 +261,12 @@ export function buildFleetSnapshots(state: FleetSnapshotState, ts: number): Flee
         // `surfaceAgentStatus` but not the question.
         // #1509 — and an open dialog the user already looked at: the shared
         // helper reads it from the pane's lifecycle status.
-        const att = surfaceAttentionStatus(state, s.ptyId);
+        // 2026-10-07 — the shared helper no longer promotes the question (the
+        // human "needs you" means a dialog is open), so the mirror, which
+        // feeds machines, keeps the promotion here.
+        const att = state.surfacePendingQuestion?.[s.ptyId]?.trim()
+          ? 'awaiting_input'
+          : surfaceAttentionStatus(state, s.ptyId);
         if (att === undefined) continue;
         const isActiveSurface = s.id === leaf.activeSurfaceId;
         const row: FleetSnapshotPane = {

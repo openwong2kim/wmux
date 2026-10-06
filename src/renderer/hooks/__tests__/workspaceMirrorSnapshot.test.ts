@@ -486,9 +486,7 @@ describe('buildFleetSnapshots — stashed panes (#977)', () => {
 describe('buildFleetSnapshots — pending question (#1168)', () => {
   const ws = workspace('ws-1', 'alpha', leaf('p1', [surface('s1', 'pty-1')]), 'p1');
 
-  // 2026-10-07 — a Stop minted the question, so the turn is finished: the
-  // mirror reports what the sidebar and Fleet show, not awaiting_input.
-  it('reports complete for a question the stop delivered alongside complete', () => {
+  it('reports awaiting_input for a question the stop delivered alongside complete', () => {
     const st = {
       workspaces: [ws],
       surfaceAgentStatus: { 'pty-1': 'complete' as AgentStatus },
@@ -497,12 +495,12 @@ describe('buildFleetSnapshots — pending question (#1168)', () => {
     } satisfies FleetSelectorState;
     const [fleet] = buildFleetSnapshots(st, 42);
     expect(fleet.panes).toHaveLength(1);
-    expect(fleet.panes[0]).toMatchObject({ ptyId: 'pty-1', agentStatus: 'complete' });
+    expect(fleet.panes[0]).toMatchObject({ ptyId: 'pty-1', agentStatus: 'awaiting_input' });
   });
 
-  it('does not read a question that outlived its retained status as blocked', () => {
+  it('reports a question that outlived its retained status', () => {
     // Focusing the pane clears `surfaceAgentStatus`; nothing clears the
-    // question. The turn ended on it, so no dialog blocks the pane.
+    // question. The pane is still blocked, so the row still has to say so.
     const st = {
       workspaces: [ws],
       surfaceAgentStatus: {},
@@ -510,7 +508,7 @@ describe('buildFleetSnapshots — pending question (#1168)', () => {
       surfacePendingQuestion: { 'pty-1': 'Which branch should I target?' },
     } satisfies FleetSelectorState;
     const [fleet] = buildFleetSnapshots(st, 42);
-    expect(fleet.panes[0]?.agentStatus).not.toBe('awaiting_input');
+    expect(fleet.panes[0]).toMatchObject({ ptyId: 'pty-1', agentStatus: 'awaiting_input' });
   });
 
   it('leaves the base derivation alone when there is no question', () => {

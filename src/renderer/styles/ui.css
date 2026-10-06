@@ -190,12 +190,13 @@
 .wmux-sidebar .sidebar-row-task.sidebar-row-active.sidebar-row-needs:hover { background: var(--selection); }
 /* Attention blink (owner decision 2026-10-07; classes from attentionBlink.ts).
  * Opacity only, on an overlay painted between the row's fill and its content
- * (z-index 0 makes the row the stacking context, the overlay sits at -1), so
+ * (z-index 0 makes a pulsing row its own stacking context, the overlay sits at
+ * -1; scoped to pulsing rows so no other row's popovers change layer), so
  * nothing moves and the text stays on top. Needs you pulses --attention; a
  * finished turn's single pulse is the neutral --selection-subtle. One pulse is
  * three soft beats over 1.5s; "remind" replays it at the start of every
  * interval (one keyframe set per interval, so no timer runs). */
-.wmux-sidebar .sidebar-row { position: relative; z-index: 0; }
+.wmux-sidebar .sidebar-row.sidebar-row-pulse { position: relative; z-index: 0; }
 .wmux-sidebar .sidebar-row.sidebar-row-pulse::after {
   content: '';
   position: absolute;

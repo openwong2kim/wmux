@@ -195,7 +195,10 @@ export default function MiniSidebar({ rail = false, collapsed = true }: { rail?:
             !sidebarAttentionFirst || (isPinned && pinnedIds.includes(fromId));
           const unreadCount = notifications.filter((n) => !n.read && n.workspaceId === ws.id).length;
           const rolled = agentStatusById[ws.id] ?? 'idle';
-          const agentStatus = rolled === 'waiting' && attentionClassById[ws.id] !== 'needsYou' ? 'idle' : rolled;
+          // Same as the full row: a turn-end `waiting` that is not needs you
+          // draws the finished check when it ended on a question, else nothing.
+          const cls = attentionClassById[ws.id];
+          const agentStatus = rolled === 'waiting' && cls !== 'needsYou' ? (cls === 'finished' ? 'complete' : 'idle') : rolled;
           // Unverifiable: the rail's filled glyph goes hollow and stops
           // pulsing — the same "running, but nobody has heard from it" ring the
           // full sidebar draws, in the one glyph this 48px rail can afford.
