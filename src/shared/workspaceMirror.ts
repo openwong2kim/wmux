@@ -65,15 +65,6 @@ export interface FleetSnapshotPane {
    * "this is a shell".
    */
   isAgent?: boolean;
-  /**
-   * TRUE when `agentStatus` is `awaiting_input` only because the turn ENDED on
-   * a question (a transcript-derived pending question), not because a dialog
-   * is open. Machines (the completion gate, the busy check) keep reading
-   * `agentStatus`; the human briefing reads this to classify the pane as
-   * finished, the way the sidebar and Fleet do (owner decision 2026-10-07).
-   * Omitted otherwise, and by an older renderer.
-   */
-  endedOnQuestion?: boolean;
 }
 
 /** Per-workspace agent-status snapshot. `ts` is the renderer push timestamp. */

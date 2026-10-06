@@ -390,6 +390,7 @@ export const ATTENTION_HAIRLINE_PERCENT: Record<BuiltinThemeId, number> = {
   'stars-and-stripes': 60,
   'red-dynasty': 54,
   nightowl: 66,
+  'gruvbox-dark-hard': 73,
   void: 54,
   hinomaru: 98,
   taegeuk: 98,

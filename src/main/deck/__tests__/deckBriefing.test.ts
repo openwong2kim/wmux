@@ -22,7 +22,7 @@ import type { WorkspaceDecision } from '../deckDecisionStore';
 import type { WorkspaceLoopState } from '../deckLoopStateStore';
 import type { AgentStatus } from '../../../shared/types';
 
-const snap = (panes: { ptyId: string; agentStatus: AgentStatus; agentName?: string; endedOnQuestion?: boolean }[]): FleetSnapshot => ({
+const snap = (panes: { ptyId: string; agentStatus: AgentStatus; agentName?: string }[]): FleetSnapshot => ({
   workspaceId: 'ws-1',
   ts: 1,
   panes: panes.map((p) => ({
@@ -30,7 +30,6 @@ const snap = (panes: { ptyId: string; agentStatus: AgentStatus; agentName?: stri
     agentName: p.agentName ?? null,
     agentStatus: p.agentStatus,
     isActivePane: false,
-    ...(p.endedOnQuestion ? { endedOnQuestion: true } : {}),
   })),
 });
 
@@ -90,21 +89,19 @@ describe('buildWorkspaceBriefing — priority ordering', () => {
     expect(b).not.toHaveProperty('panes');
   });
 
-  // 2026-10-07 — the sidebar and Fleet rule (fleetAttentionClass): a plain
-  // turn-end `waiting` is idle, and a turn that ended on a question is finished.
-  it('a plain waiting is idle and a turn that ended on a question is finished', () => {
+  // 2026-10-07 — the sidebar and Fleet rule: a turn that ended with no
+  // question (`waiting`) is idle, not blocked.
+  it('a plain turn-end waiting is idle, not blocked', () => {
     const b = buildWorkspaceBriefing({
       ...baseInputs,
       snapshot: snap([
         { ptyId: 'p-run', agentStatus: 'running' },
         { ptyId: 'p-wait', agentStatus: 'waiting' },
-        { ptyId: 'p-asked', agentStatus: 'awaiting_input', endedOnQuestion: true },
       ]),
     });
-    expect(b.topPane?.ptyId).toBe('p-asked');
-    expect(b.topPane?.reason).toBe('finished');
+    expect(b.topPane?.ptyId).toBe('p-run');
     expect(b.blockedPtyIds).toEqual([]);
-    expect(b.counts).toMatchObject({ blocked: 0, done: 1, running: 1, idle: 1 });
+    expect(b.counts).toMatchObject({ blocked: 0, running: 1, idle: 1 });
   });
 
   it('equal-priority panes break ties by ptyId so the named pane never flickers', () => {
@@ -438,7 +435,7 @@ describe('rising edge through build → briefingSignal → isNewlyActionable', (
     expect(isNewlyActionable(after, again)).toBe(false);
   });
 
-  it('a turn-end `waiting` is not a blocked edge; a dialog is', () => {
+  it('a turn-end `waiting` is not a blocked edge; awaiting_input is', () => {
     const before = observe([{ ptyId: 'p', agentStatus: 'running' }]);
     expect(isNewlyActionable(before, observe([{ ptyId: 'p', agentStatus: 'waiting' }]))).toBe(false);
     expect(isNewlyActionable(before, observe([{ ptyId: 'p', agentStatus: 'awaiting_input' }]))).toBe(true);

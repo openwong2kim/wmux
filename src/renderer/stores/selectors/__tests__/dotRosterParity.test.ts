@@ -87,10 +87,11 @@ function expectDotCoversRoster(s: StoreState, workspaceId: string): void {
 }
 
 describe('#1168 — workspace dot vs. roster', () => {
-  it('reads a turn that ended on a question as finished in both, not awaiting input', () => {
-    // The two derivations must still agree. Since 2026-10-07 neither promotes
-    // a transcript-derived question (a Stop minted it, so the turn is over)
-    // to awaiting_input: needs you means a dialog is open.
+  it('reports the pane as awaiting input when a transcript-derived question is pending', () => {
+    // The failure this pins: the stop payload settled the pane to 'complete'
+    // (a green dot) while the transcript scan found an unanswered question. The
+    // roster promotes that to awaiting_input and prints the question; the dot
+    // read green over the top of it.
     const s = state({
       workspaces: [workspace('ws-1', leaf('p1', [surface('s1', 'pty-1')]), 'p1')],
       surfaceAgent: { 'pty-1': { name: 'Claude Code', status: 'complete' } },
@@ -99,14 +100,14 @@ describe('#1168 — workspace dot vs. roster', () => {
     });
 
     expect(selectWorkspaceAgentRoster(s, 'ws-1').rows[0]).toMatchObject({
-      status: 'complete',
-      needsAttention: false,
+      status: 'awaiting_input',
+      needsAttention: true,
     });
-    expect(selectWorkspaceAgentStatus(s, 'ws-1')).toBe('complete');
+    expect(selectWorkspaceAgentStatus(s, 'ws-1')).toBe('awaiting_input');
     expectDotCoversRoster(s, 'ws-1');
   });
 
-  it('does not read a turn-end question on a BACKGROUND tab as awaiting input', () => {
+  it('finds a pending question on a BACKGROUND tab of the active pane', () => {
     // The dot's whole reason to exist is the pane the user is not looking at.
     const s = state({
       workspaces: [
@@ -123,7 +124,7 @@ describe('#1168 — workspace dot vs. roster', () => {
       surfacePendingQuestion: { 'pty-bg': 'Overwrite the existing file?' },
     });
 
-    expect(selectWorkspaceAgentStatus(s, 'ws-1')).not.toBe('awaiting_input');
+    expect(selectWorkspaceAgentStatus(s, 'ws-1')).toBe('awaiting_input');
     expectDotCoversRoster(s, 'ws-1');
   });
 
@@ -147,7 +148,7 @@ describe('#1168 — workspace dot vs. roster', () => {
     expectDotCoversRoster(s, 'ws-1');
   });
 
-  it('does not read a turn-end question on a stashed pane as awaiting input', () => {
+  it('lights the dot for a question asked by a pane that is stashed, not on screen', () => {
     // #977's rule ("a stashed agent is off-screen, not off-duty") meets #1168:
     // the stash is the one place where the dot is the ONLY thing that can carry
     // the signal, since the pane is on no other surface in the app.
@@ -166,9 +167,8 @@ describe('#1168 — workspace dot vs. roster', () => {
     });
 
     const stashedRow = selectWorkspaceAgentRoster(s, 'ws-1').rows.find((r) => r.stashed);
-    expect(stashedRow).toMatchObject({ needsAttention: false });
-    expect(stashedRow?.status).not.toBe('awaiting_input');
-    expect(selectWorkspaceAgentStatus(s, 'ws-1')).not.toBe('awaiting_input');
+    expect(stashedRow).toMatchObject({ status: 'awaiting_input', needsAttention: true });
+    expect(selectWorkspaceAgentStatus(s, 'ws-1')).toBe('awaiting_input');
     expectDotCoversRoster(s, 'ws-1');
   });
 

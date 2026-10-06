@@ -407,6 +407,7 @@
   --attention: #FE8019;
   --attention-text: #FE9040;
   --attention-ink: #1D2021;
+  --attention-hairline: color-mix(in srgb, var(--attention) 73%, transparent);
   --bg-overlay-scrim: rgba(0, 0, 0, 0.55);
   --surface-highlight: #FFFFFF;
   --accent-rgb: 254, 128, 25;

@@ -178,18 +178,18 @@ describe('FleetView — respond and check in place', () => {
 });
 
 describe('FleetView — review follow-ups', () => {
-  // 2026-10-07 — a turn that ended on a question is finished, not Needs you,
-  // so it opens no request panel.
-  it('a turn that ended on a question opens no request panel', async () => {
+  it('a waiting agent in Needs you gets the request panel too', async () => {
     act(() => { useStore.setState({
       surfaceAgentStatus: { ...useStore.getState().surfaceAgentStatus, 'pty-3': 'waiting' },
       surfacePendingQuestion: { ...useStore.getState().surfacePendingQuestion, 'pty-3': 'Keep going with the next file?' },
     }); });
     mount();
     await flushRaf();
-    // It folds under the finished rows instead of sitting in Needs you.
-    expect(container.querySelector('[data-pty-id="pty-3"]')).toBeNull();
-    expect(container.querySelector('[data-fleet-finished-toggle]')).not.toBeNull();
+    act(() => row('pty-3').focus());
+    key(row('pty-3'), ' ');
+    await flushRaf();
+    expect(container.querySelector('[data-fleet-request="input"] [data-fleet-request-text]')?.textContent)
+      .toBe('Keep going with the next file?');
   });
 
   it('the detail shows the error line with the same sanitizing as the row', async () => {

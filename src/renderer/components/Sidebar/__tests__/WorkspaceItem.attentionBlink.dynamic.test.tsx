@@ -89,24 +89,30 @@ afterEach(() => {
 });
 
 describe('state split: needs you vs finished', () => {
-  it('a turn that ended on a question gets the done dot, a dialog keeps the dash', async () => {
-    const question = 'Want me to open a PR?';
+  it('a turn that ended with no question gets the done dot and no border', async () => {
     seed({
-      surfaceAgent: { 'pty-ws': { name: 'Claude Code', status: 'waiting' } },
-      surfaceAgentStatus: { 'pty-ws': 'waiting' },
-      surfacePendingQuestion: { 'pty-ws': question },
+      surfaceAgent: { 'pty-ws': { name: 'Claude Code', status: 'complete' } },
+      surfaceAgentStatus: { 'pty-ws': 'complete' },
       // Changed since it was last in view.
-      sidebarSeen: { 'pty-ws': { entry: { status: 'waiting', question }, rev: 1, seenRev: 0 } },
+      sidebarSeen: { 'pty-ws': { entry: { status: 'complete' }, rev: 1, seenRev: 0 } },
     });
     await render();
     expect(card().className).not.toContain('sidebar-row-needs');
     expect(card().className).not.toContain('sidebar-row-pulse');
     expect(container.querySelector('[data-sidebar-done]')).not.toBeNull();
+  });
 
-    // A question or approval dialog keeps the dash and has no done dot.
-    seed(dialog);
+  it('a turn that ended on a question needs you: border and pulse, no done dot', async () => {
+    const question = 'Should I target A or B?';
+    seed({
+      surfaceAgent: { 'pty-ws': { name: 'Claude Code', status: 'complete' } },
+      surfaceAgentStatus: { 'pty-ws': 'complete' },
+      surfacePendingQuestion: { 'pty-ws': question },
+      sidebarSeen: { 'pty-ws': { entry: { status: 'complete', question }, rev: 1, seenRev: 0 } },
+    });
     await render();
     expect(card().className).toContain('sidebar-row-needs');
+    expect(card().className).toContain('sidebar-row-pulse-remind-60s');
     expect(container.querySelector('[data-sidebar-done]')).toBeNull();
   });
 });

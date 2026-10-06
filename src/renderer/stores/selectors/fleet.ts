@@ -401,10 +401,10 @@ export function surfaceAttentionStatus(
   state: Pick<FleetSelectorState, 'surfaceAgentStatus' | 'surfaceAgent' | 'surfacePendingQuestion' | 'usageLimitWaiting'>,
   ptyId: string,
 ): AgentStatus | undefined {
-  // A transcript-derived pending question (#1168) is NOT read here: it is
-  // minted only by a Stop, so the turn is over and nothing is blocked. Owner
-  // decision 2026-10-07 — needs you means "you must act" (a dialog is open);
-  // a turn that ended on a question is a finished turn.
+  // #1168 — a transcript-derived pending question outranks whatever the stop
+  // payload settled this surface to, exactly as it does in
+  // workspaceAgentRoster.
+  if (state.surfacePendingQuestion?.[ptyId]?.trim()) return 'awaiting_input';
   if (state.surfaceAgent?.[ptyId]?.status === 'awaiting_input') return 'awaiting_input';
   const status = state.surfaceAgentStatus[ptyId];
   return isQuietUsageLimitError(state.usageLimitWaiting, ptyId, status) ? undefined : status;
@@ -798,8 +798,8 @@ export function selectLatestCompletionEvidenceTask(
 }
 
 // Panes that need you, by the shared class (fleetAttentionClass): a dialog is
-// open (awaiting_input) or supervision stopped. A turn-end `waiting` is not
-// one — needs you means "you must act" (owner decision 2026-10-07).
+// open or the turn ended on a question (both read awaiting_input here), or
+// supervision stopped. A turn that ended with no question is not one.
 export function countNeedsAttention(panes: FleetPane[]): number {
   return panes.filter((p) => fleetAttentionClass(p) === 'needsYou').length;
 }
@@ -1038,9 +1038,7 @@ export function fleetAttentionClass(
     case 'error':
       return 'error';
     case 'waiting':
-      // The turn ended. Ending on a question is still a finished turn to look
-      // at, not a dialog that blocks the agent (owner decision 2026-10-07).
-      return question ? 'finished' : 'idle';
+      return question ? 'needsYou' : 'idle';
     case 'complete':
       return 'finished';
     case 'running':
@@ -1048,13 +1046,6 @@ export function fleetAttentionClass(
     default:
       return 'idle';
   }
-}
-
-/** The status mark a row draws under the shared class: plain `waiting` (the
- *  turn ended) is idle, and `waiting` on a question is a finished turn. */
-export function attentionMarkStatus(status: AgentStatus, question?: string): AgentStatus {
-  if (status !== 'waiting') return status;
-  return question ? 'complete' : 'idle';
 }
 
 /** Fleet's section for a class. Needs you holds what waits on a person
@@ -1206,7 +1197,7 @@ export function fleetRow(pane: FleetPane, ctx: FleetGroupContext = {}): FleetRow
         : { ...base, section, detailKey: 'fleet.needsYourInput' };
     case 'waiting':
       return question
-        ? { ...base, section, detail: question, detailSource: 'question', detailKey: 'fleet.detail.complete' }
+        ? { ...base, section, detail: question, detailSource: 'question', detailKey: 'fleet.needsYourInput' }
         : lastMessage
           ? { ...base, section, detail: lastMessage, detailSource: 'lastMessage', detailKey: 'fleet.detail.idle' }
           : { ...base, section, detailKey: 'fleet.detail.idle' };
@@ -1234,6 +1225,7 @@ function needsYouRank(row: FleetRow): number {
   if (row.pane.unverifiable) return 3;
   switch (row.pane.agentStatus) {
     case 'awaiting_input':
+    case 'waiting':
       return 0;
     case 'error':
       return 1;

@@ -517,11 +517,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
   // paint a "Needs you" row that sorts to the bottom.
   const attentionClass = useStore((s) => selectWorkspaceAttentionClasses(s)[workspaceId] ?? 'idle');
   const needsYou = attentionClass === 'needsYou' && (agentStatus === 'waiting' || agentStatus === 'awaiting_input');
-  // A turn-end `waiting` that is not needs you draws the finished check when
-  // the turn ended on a question, else nothing (attentionMarkStatus).
-  const markStatus = agentStatus === 'waiting' && attentionClass !== 'needsYou'
-    ? attentionClass === 'finished' ? 'complete' : 'idle'
-    : agentStatus;
+  const markStatus = agentStatus === 'waiting' && attentionClass !== 'needsYou' ? 'idle' : agentStatus;
   // A failed turn is its own tier (fleetAttentionClass): it says "Error" where
   // a needs-you row says "Needs you", and sorts above finished and idle rows
   // however old it is. Fleet still lists it under Needs you.
@@ -550,8 +546,9 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
   // Glance board (2026-09-25): something here changed since it was last in
   // view, and it wants a look. Fleet's changed-dot rule: --text-main, never amber.
   const unseen = useStore((s) => !!selectSidebarUnseenWorkspaces(s)[workspaceId]);
-  // 2026-10-07 — a finished turn draws no dash; the unseen dot is its "done"
-  // dot, cleared when the workspace is viewed.
+  // 2026-10-07 — a turn that finished with no question draws no needs-you
+  // border; the unseen dot is its "done" dot, cleared when the workspace is
+  // viewed. A turn that ended on a question is needs you, not done.
   const done = unseen && attentionClass === 'finished';
   // Attention blink: a CSS class picked from state (attentionBlink.ts). Never
   // on a row whose workspace is on screen, never under reduced motion.

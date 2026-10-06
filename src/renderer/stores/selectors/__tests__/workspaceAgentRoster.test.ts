@@ -229,18 +229,16 @@ describe('selectWorkspaceAgentRoster', () => {
       return selectWorkspaceAgentRoster(state({ workspaces: [ws], ...extra }), 'ws-1').rows[0];
     };
 
-    // 2026-10-07 — a Stop minted the question, so the turn is finished: the
-    // question rides along but no longer promotes the row to awaiting_input.
-    it('a transcript-derived pending question rides along without promoting to awaiting_input', () => {
+    it('a transcript-derived pending question is the strongest evidence', () => {
       const row = base({
         surfaceAgent: { 'pty-1': { name: 'A', status: 'running' } },
         surfaceAgentStatus: { 'pty-1': 'complete' },
         surfacePendingQuestion: { 'pty-1': 'Shall I merge?' },
         surfaceActivityAt: { 'pty-1': NOW },
       });
-      expect(row.status).toBe('complete');
+      expect(row.status).toBe('awaiting_input');
       expect(row.pendingQuestion).toBe('Shall I merge?');
-      expect(row.needsAttention).toBe(false);
+      expect(row.needsAttention).toBe(true);
     });
 
     // #1176 — seen/unseen for BLOCKED agents: the dot stays red either way;
@@ -252,9 +250,9 @@ describe('selectWorkspaceAgentRoster', () => {
         surfaceQuestionSeen: { 'pty-1': 'Shall I merge?' },
       });
       expect(seen.questionSeen).toBe(true);
-      // The turn ended on it, so nothing is blocked (2026-10-07).
-      expect(seen.status).toBe('idle');
-      expect(seen.needsAttention).toBe(false);
+      // Still blocked — the red dot and needsAttention are untouched.
+      expect(seen.status).toBe('awaiting_input');
+      expect(seen.needsAttention).toBe(true);
 
       const unseen = base({
         surfaceAgent: { 'pty-1': { name: 'A', status: 'idle' } },
@@ -729,9 +727,9 @@ describe('selectWorkspaceAgentRoster — stashed panes', () => {
       'ws-1',
     );
 
-    expect(r.rows[0].status).toBe('idle');
+    expect(r.rows[0].status).toBe('awaiting_input');
     expect(r.rows[0].pendingQuestion).toBe('Apply this patch?');
-    expect(r.rows[0].needsAttention).toBe(false);
+    expect(r.rows[0].needsAttention).toBe(true);
   });
 
   it('never marks a stashed row focused — it is not on screen', () => {

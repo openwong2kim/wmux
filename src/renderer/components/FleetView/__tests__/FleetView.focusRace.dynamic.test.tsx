@@ -131,7 +131,7 @@ function seedFleet(): void {
       workspace('ws-2', 'marketing', leaf('p2', [surface('s2', 'pty-2', { surfaceType: 'terminal', title: '✳ Launch video' })]), 'p2'),
       workspace('ws-3', 'ios', leaf('p3', [surface('s3', 'pty-3', { surfaceType: 'terminal', title: 'Claude Code' })]), 'p3'),
     ],
-    surfaceAgent: { 'pty-1': { name: 'Codex CLI', status: 'running' }, 'pty-2': { name: 'Claude Code', status: 'idle' }, 'pty-3': { name: 'Claude Code', status: 'awaiting_input' } },
+    surfaceAgent: { 'pty-1': { name: 'Codex CLI', status: 'running' }, 'pty-2': { name: 'Claude Code', status: 'idle' }, 'pty-3': { name: 'Claude Code', status: 'idle' } },
     surfaceAgentStatus: { 'pty-2': 'complete' },
     surfacePendingQuestion: { 'pty-3': 'Which deployment target?' },
     surfaceTurnOpenAt: { 'pty-1': Date.now() },
@@ -206,11 +206,7 @@ describe('FleetView — task triage', () => {
     mount();
     await flushRaf();
     act(() => rows().find((row) => row.dataset.ptyId === 'pty-1')!.focus());
-    act(() => useStore.setState({
-      surfaceAgentStatus: { 'pty-1': 'error', 'pty-2': 'complete' },
-      surfaceAgent: { ...useStore.getState().surfaceAgent, 'pty-3': { name: 'Claude Code', status: 'idle' } },
-      surfacePendingQuestion: {},
-    }));
+    act(() => useStore.setState({ surfaceAgentStatus: { 'pty-1': 'error', 'pty-2': 'complete' }, surfacePendingQuestion: {} }));
     await flushRaf();
     expect(document.activeElement?.getAttribute('data-pty-id')).toBe('pty-1');
     expect(rows()[0].dataset.ptyId).toBe('pty-1');
