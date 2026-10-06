@@ -452,7 +452,7 @@ export default function MoaTranscriptChat({ ptyId, busy, onSend, onInterrupt, on
                   // terminal the error would otherwise point at.
                   ? <div className="wmux-chat-pending-caption flex flex-col gap-1.5" role="alert" data-moa-chat-dialog>
                       <span>{t('moa.panel.notSent')} {t('moa.panel.terminalHint')}</span>
-                      {item.tuiDialog.excerpt && <code className="font-mono text-[12px] text-[var(--text-sub)] break-words whitespace-pre-wrap" data-moa-chat-dialog-excerpt>{item.tuiDialog.excerpt}</code>}
+                      {item.tuiDialog.excerpt && <code className="block self-stretch text-left font-mono text-[12px] text-[var(--text-sub)] break-words whitespace-pre-wrap" data-moa-chat-dialog-excerpt>{item.tuiDialog.excerpt}</code>}
                       <div className="flex flex-wrap items-center gap-2">
                         <Button variant="secondary" size="sm" onClick={onTerminal} data-moa-chat-dialog-terminal>{t('moa.panel.answerInTerminal')}</Button>
                         <button type="button" className="underline underline-offset-2" disabled={busy} onClick={() => retrySend(item)} data-moa-chat-retry>
