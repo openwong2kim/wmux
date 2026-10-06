@@ -172,6 +172,26 @@ export function isUsableResumeBinding(binding: unknown): binding is ResumeBindin
   );
 }
 
+const UUID_RE = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+
+/**
+ * #1823: whether `sessionId` has the shape `agent`'s resume grammar accepts.
+ * Claude session ids and Codex thread ids are both UUIDs; a Codex rollout
+ * filename stem (`rollout-<local time>-<uuid>`) is neither, and stored under
+ * `agent: 'claude'` it made a Codex pane offer `claude --resume rollout-…`.
+ * Other agents keep their own id formats, so only these two are checked.
+ */
+export function isPlausibleResumeSessionId(agent: string, sessionId: string): boolean {
+  if (agent === 'claude' || agent === 'codex') return UUID_RE.test(sessionId);
+  return sessionId.length > 0;
+}
+
+/** The parts of a Codex rollout filename stem (`rollout-YYYY-MM-DDTHH-MM-SS-<uuid>`). */
+export function parseCodexRolloutStem(stem: string): { year: string; month: string; day: string; threadId: string } | undefined {
+  const m = /^rollout-(\d{4})-(\d{2})-(\d{2})T\d{2}-\d{2}-\d{2}-([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/i.exec(stem);
+  return m ? { year: m[1], month: m[2], day: m[3], threadId: m[4] } : undefined;
+}
+
 /**
  * Unquoted tokens that mean "already resuming" or "not a resumable run" →
  * leave the command unchanged. `--continue`/`--resume`/`-c`/`-r` already

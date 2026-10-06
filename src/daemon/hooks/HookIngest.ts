@@ -61,7 +61,7 @@ import { ENV_KEYS, isBrainPty } from '../../shared/constants';
 import { hasCriticalRisk } from '../../shared/criticalPatterns';
 // Pure regex/lookup module (no electron), already imported by src/daemon/index.ts.
 import { agentDisplayToSlug, agentStatusToSignalKind, type AgentEventStatus } from '../../main/pty/AgentDetector';
-import type { ResumeBinding, PermissionMode } from '../../shared/agentResume';
+import { isPlausibleResumeSessionId, type ResumeBinding, type PermissionMode } from '../../shared/agentResume';
 import type { ApprovalHookSink, TerminalPromptNote } from '../approvals/types';
 import { claudeQuestionsForm, extractAskUserQuestion } from '../approvals/askUserQuestion';
 import { boundRecordText, isClaudeFamilyAgent, TERMINAL_PROMPT_TOOL_NAME_MAX } from '../approvals/terminalPrompt';
@@ -185,6 +185,8 @@ export interface HookIngestDeps {
    * no spool window — the daemon IS the destination.
    */
   applyResumeBinding: (ptyId: string, binding: ResumeBinding) => void;
+  /** #1823: slug of the agent process alive in the pane right now, if known. */
+  liveAgentFor?: (ptyId: string) => string | undefined;
   log?: (level: 'info' | 'warn' | 'error', message: string) => void;
   /** Injected for test determinism. */
   now?: () => number;
@@ -322,6 +324,21 @@ function readPermissionMode(payload: Record<string, unknown>): PermissionMode | 
  * `/repo/../other`. Byte-for-byte the same rules main's hooks.rpc applies, so
  * a signal routes to the same pane whichever pipe it arrives on.
  */
+/**
+ * #1823: a signal that names claude but whose own session evidence is a Codex
+ * rollout (`rollout-*.jsonl` transcript, or the bridge's rollout-stem id).
+ * Only a Codex hook invoking the Claude bridge produces that; the stem is
+ * matched on the basename so a POSIX or Windows path decides the same way.
+ */
+function isCrossProviderSignal(signal: AgentSignal): boolean {
+  if (signal.agent !== 'claude') return false;
+  if (typeof signal.agentSessionId === 'string' && /^rollout-/i.test(signal.agentSessionId)) return true;
+  const claimed = signal.payload?.transcript_path;
+  if (typeof claimed !== 'string') return false;
+  const base = claimed.split(/[\\/]/).pop() ?? '';
+  return /^rollout-.*\.jsonl$/i.test(base);
+}
+
 function normalizeCwd(p: string): string {
   let out = p.replace(/\\/g, '/');
   if (/^[A-Z]:\//.test(out)) {
@@ -607,6 +624,15 @@ export class HookIngest {
    * the oldest go first; a request is answered once.
    */
   private readonly answeredRequests = new Set<string>();
+  /** #1823: panes already logged for a provider mismatch (log once per pane). */
+  private readonly mismatchLogged = new Set<string>();
+
+  private noteMismatch(sessionId: string, message: string): void {
+    if (this.mismatchLogged.has(sessionId)) return;
+    this.mismatchLogged.add(sessionId);
+    if (this.mismatchLogged.size > 1024) this.mismatchLogged.delete(this.mismatchLogged.values().next().value as string);
+    this.deps.log?.('warn', message);
+  }
   /** Every signal refused because its claimed pane is not live here. Never decremented. */
   private refusedClaimCount = 0;
   /** Gate ptyIds already logged as allowed-on-refusal (bounded, like refusedClaims). */
@@ -888,6 +914,15 @@ export class HookIngest {
       return { ok: false, reason: 'no-workspace-match' };
     }
 
+    // #1823: a Claude-bridge signal carrying a Codex rollout (a Codex hook
+    // pointed at the Claude bridge) contradicts itself. Dropped before it can
+    // mark the pane hook-governed for claude or bind a `claude --resume` to a
+    // rollout filename stem. ok:true so the bridge has nothing to retry.
+    if (isCrossProviderSignal(signal)) {
+      this.noteMismatch(sessionId, `[hooks] dropped ${signal.agent} signals on ${sessionId}: they carry a Codex rollout (a Codex hook is invoking the Claude bridge)`);
+      return { ok: true };
+    }
+
     // Hook authority: EVERY resolved signal marks the pane hook-governed for
     // this agent, including the non-emit kinds (SessionStart, per-tool
     // activity) — freshness tracks "the bridge is alive on this pane", not
@@ -990,7 +1025,16 @@ export class HookIngest {
       // the stale one and the new session must be captured.
       const routed = sessions.find((s) => s.id === sessionId);
       const prevAgent = routed?.resumeBinding?.agent;
-      if (signal.ptyId !== sessionId && prevAgent && prevAgent !== signal.agent
+      // #1823: the binding is only as good as the pane's agent. A different
+      // agent's process alive in the pane, or an id the agent's resume grammar
+      // cannot take, means the signal is not about this pane's conversation.
+      // An exited agent reports no live slug, so switching agents still binds.
+      const liveAgent = this.deps.liveAgentFor?.(sessionId);
+      if (liveAgent && liveAgent !== signal.agent) {
+        this.noteMismatch(sessionId, `[hooks] refused ${signal.agent} resume binding on ${sessionId}: ${liveAgent} is the agent running there`);
+      } else if (!isPlausibleResumeSessionId(signal.agent, signal.agentSessionId)) {
+        this.noteMismatch(sessionId, `[hooks] refused ${signal.agent} resume binding on ${sessionId}: session id is not ${signal.agent}-shaped`);
+      } else if (signal.ptyId !== sessionId && prevAgent && prevAgent !== signal.agent
           && routed?.lastDetectedAgent !== signal.agent) {
         this.deps.log?.(
           'info',

@@ -55,7 +55,7 @@ describe('StateWriter', () => {
   });
 
   it('load skips a resume binding missing its folder and keeps the session and the others', () => {
-    const good = { agent: 'claude', sessionId: 'good-id', cwd: '/tmp', ts: 1 };
+    const good = { agent: 'claude', sessionId: '0a1b2c3d-0000-4000-8000-000000000002', cwd: '/tmp', ts: 1 };
     const missingFolder = { agent: 'codex', sessionId: 'bad-id', ts: 1 } as unknown as DaemonSession['resumeBinding'];
     writer.saveImmediate(makeState([
       makeSession({ id: 'broken', resumeBinding: missingFolder }),

@@ -12,7 +12,8 @@ import {
 import { AsyncQueue } from './util/AsyncQueue';
 import { stripCredentialValues } from '../shared/envFilter';
 import { isPidAlive } from './phantomExit';
-import { isUsableResumeBinding } from '../shared/agentResume';
+import { isUsableResumeBinding, isPlausibleResumeSessionId } from '../shared/agentResume';
+import { healCrossProviderBinding } from './transcript/healResumeBinding';
 
 /**
  * 영속 직전 자격증명 *값*을 제거한 DaemonState fresh 사본. 모든 sessions.json write
@@ -493,7 +494,15 @@ export class StateWriter {
     // recovered, only without its resume offer. Persisted like the timestamp
     // heal below, so the file stops carrying it and the warning is not repeated.
     for (const s of state.sessions) {
-      if (s.resumeBinding !== undefined && !isUsableResumeBinding(s.resumeBinding)) {
+      // #1823: a Claude binding over a Codex rollout stem becomes the Codex
+      // binding it should have been, or goes; persisted like the heals below.
+      const healed = healCrossProviderBinding(s);
+      if (healed) {
+        this.warn(`[StateWriter] ${healed} a Codex rollout resume binding stored as claude on session ${s.id}`);
+        restamped = true;
+      }
+      if (s.resumeBinding !== undefined && (!isUsableResumeBinding(s.resumeBinding)
+          || !isPlausibleResumeSessionId(s.resumeBinding.agent, s.resumeBinding.sessionId))) {
         this.warn(`[StateWriter] skipped an incomplete resume binding on session ${s.id}`);
         delete s.resumeBinding;
         restamped = true;

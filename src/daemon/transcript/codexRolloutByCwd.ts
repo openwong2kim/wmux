@@ -70,7 +70,7 @@ function dayDirs(root: string, from: number, to: number): string[] {
 
 interface SessionMeta { id?: unknown; cwd?: unknown; timestamp?: unknown; originator?: unknown; source?: unknown; thread_source?: unknown }
 
-function readSessionMeta(file: string): SessionMeta | undefined {
+export function readSessionMeta(file: string): SessionMeta | undefined {
   let fd: number | undefined;
   try {
     fd = fs.openSync(file, 'r');

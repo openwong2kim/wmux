@@ -213,7 +213,7 @@ describe('HookIngest', () => {
       const res = ingest.handle(makeSignal({
         ptyId: 'pty-a',
         kind: 'agent.session_start',
-        agentSessionId: 'origin-1',
+        agentSessionId: '0a1b2c3d-0000-4000-8000-000000000001',
         payload: { session_id: 'raw-uuid' },
       }));
       expect(res).toEqual({ ok: true });
@@ -255,10 +255,10 @@ describe('HookIngest', () => {
       ingest.handle(makeSignal({
         ptyId: 'pty-a',
         kind: 'agent.session_start',
-        agentSessionId: 'origin-1',
+        agentSessionId: '0a1b2c3d-0000-4000-8000-000000000001',
       }));
       expect(fixture.bindings).toHaveLength(1);
-      expect(fixture.bindings[0].binding.sessionId).toBe('origin-1');
+      expect(fixture.bindings[0].binding.sessionId).toBe('0a1b2c3d-0000-4000-8000-000000000001');
     });
   });
 
@@ -419,7 +419,7 @@ describe('HookIngest', () => {
       ingest.handle(makeSignal({
         ptyId: 'pty-a',
         kind: 'agent.input_answered',
-        agentSessionId: 'origin-1',
+        agentSessionId: '0a1b2c3d-0000-4000-8000-000000000001',
       }));
       expect(fixture.bindings).toHaveLength(0);
       expect(fixture.nudges).toHaveLength(0);
@@ -683,21 +683,76 @@ describe('HookIngest', () => {
   });
 
   describe('resume binding', () => {
+    // #1823: a Codex hook pointed at the Claude bridge sends `agent: 'claude'`
+    // with the rollout's filename stem as the id. Shape from the report.
+    const ROLLOUT_STEM = 'rollout-2026-10-03T12-48-30-01234567-89ab-7cde-8fab-0123456789ab';
+    const rolloutSignal = (kind: AgentSignalKind) => makeSignal({
+      ptyId: 'pty-a',
+      kind,
+      cwd: 'C:\\work\\repo',
+      agentSessionId: ROLLOUT_STEM,
+      payload: { transcript_path: `C:\\Users\\me\\.codex\\sessions\\2026\\10\\03\\${ROLLOUT_STEM}.jsonl` },
+    });
+
+    it('drops a Claude-bridge signal that carries a Codex rollout, logging once per pane (#1823)', () => {
+      const logs: string[] = [];
+      const i = new HookIngest({ ...fixture.deps, log: (_level: string, m: string) => { logs.push(m); } });
+      expect(i.handle(rolloutSignal('agent.session_start'))).toEqual({ ok: true });
+      expect(i.handle(rolloutSignal('agent.stop'))).toEqual({ ok: true });
+      expect(fixture.bindings).toEqual([]);
+      expect(fixture.emitted).toEqual([]);
+      expect(i.router.isGovernedFor('pty-a', 'claude', 10_000)).toBe(false);
+      expect(logs.filter((m) => m.includes('Codex rollout'))).toHaveLength(1);
+    });
+
+    it('drops it on the transcript basename alone, POSIX or Windows (#1823)', () => {
+      for (const transcript_path of [
+        `/home/me/.codex/sessions/2026/10/03/${ROLLOUT_STEM}.jsonl`,
+        `C:\\Users\\me\\.codex\\sessions\\2026\\10\\03\\${ROLLOUT_STEM}.jsonl`,
+      ]) {
+        ingest.handle(makeSignal({
+          ptyId: 'pty-a',
+          kind: 'agent.stop',
+          agentSessionId: '01234567-89ab-7cde-8fab-0123456789ab',
+          payload: { transcript_path },
+        }));
+      }
+      expect(fixture.bindings).toEqual([]);
+    });
+
+    it('refuses a binding whose id the agent cannot resume, but keeps the signal (#1823)', () => {
+      expect(ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.stop', agentSessionId: 'not-a-uuid' }))).toEqual({ ok: true });
+      expect(fixture.bindings).toEqual([]);
+      expect(fixture.emitted).toHaveLength(1);
+    });
+
+    it('refuses a binding for a different agent than the one alive in the pane (#1823)', () => {
+      let live: string | undefined = 'codex';
+      const i = new HookIngest({ ...fixture.deps, liveAgentFor: () => live });
+      const claudeStop = makeSignal({ ptyId: 'pty-a', kind: 'agent.stop', agentSessionId: '0a1b2c3d-0000-4000-8000-000000000001' });
+      i.handle(claudeStop);
+      expect(fixture.bindings).toEqual([]);
+      // Codex exited and the operator started Claude: switching still binds.
+      live = undefined;
+      i.handle({ ...claudeStop, ts: 2_000 });
+      expect(fixture.bindings.map((b) => b.binding.agent)).toEqual(['claude']);
+    });
+
     it('captures on session-lifecycle kinds, with permission mode and transcript path', () => {
       ingest.handle(makeSignal({
         ptyId: 'pty-a',
         kind: 'agent.session_start',
-        agentSessionId: 'origin-1',
-        payload: { permissionMode: 'bypassPermissions', transcript_path: projectsPath('origin-1') },
+        agentSessionId: '0a1b2c3d-0000-4000-8000-000000000001',
+        payload: { permissionMode: 'bypassPermissions', transcript_path: projectsPath('0a1b2c3d-0000-4000-8000-000000000001') },
       }));
       expect(fixture.bindings).toEqual([{
         ptyId: 'pty-a',
         binding: {
           agent: 'claude',
-          sessionId: 'origin-1',
+          sessionId: '0a1b2c3d-0000-4000-8000-000000000001',
           cwd: '/repo',
           permissionMode: 'bypassPermissions',
-          transcriptPath: projectsPath('origin-1'),
+          transcriptPath: projectsPath('0a1b2c3d-0000-4000-8000-000000000001'),
           ts: 1_000,
         },
       }]);
@@ -711,20 +766,20 @@ describe('HookIngest', () => {
       const res = ingest.handle(makeSignal({
         ptyId: 'pty-a',
         kind: 'agent.stop',
-        agentSessionId: 'origin-1',
-        payload: { transcript_path: '/etc/origin-1.jsonl' },
+        agentSessionId: '0a1b2c3d-0000-4000-8000-000000000001',
+        payload: { transcript_path: '/etc/0a1b2c3d-0000-4000-8000-000000000001.jsonl' },
       }));
       expect(res).toEqual({ ok: true });
       expect(fixture.bindings).toHaveLength(1);
       expect(fixture.bindings[0].binding.transcriptPath).toBeUndefined();
-      expect(fixture.bindings[0].binding.sessionId).toBe('origin-1');
+      expect(fixture.bindings[0].binding.sessionId).toBe('0a1b2c3d-0000-4000-8000-000000000001');
     });
 
     it('refuses a transcript_path whose basename is not the agent session id', () => {
       ingest.handle(makeSignal({
         ptyId: 'pty-a',
         kind: 'agent.stop',
-        agentSessionId: 'origin-1',
+        agentSessionId: '0a1b2c3d-0000-4000-8000-000000000001',
         payload: { transcript_path: projectsPath('someone-else') },
       }));
       expect(fixture.bindings[0].binding.transcriptPath).toBeUndefined();
@@ -734,10 +789,10 @@ describe('HookIngest', () => {
       ingest.handle(makeSignal({
         ptyId: 'pty-a',
         kind: 'agent.stop',
-        agentSessionId: 'origin-1',
+        agentSessionId: '0a1b2c3d-0000-4000-8000-000000000001',
         payload: {
           transcript_path: path.join(
-            os.homedir(), '.claude', 'projects', '..', '..', 'origin-1.jsonl',
+            os.homedir(), '.claude', 'projects', '..', '..', '0a1b2c3d-0000-4000-8000-000000000001.jsonl',
           ),
         },
       }));
@@ -753,24 +808,24 @@ describe('HookIngest', () => {
       i.handle(makeSignal({
         ptyId: 'pty-a',
         kind: 'agent.stop',
-        agentSessionId: 'origin-1',
-        payload: { transcript_path: '/opt/claude-cfg/projects/-repo/origin-1.jsonl' },
+        agentSessionId: '0a1b2c3d-0000-4000-8000-000000000001',
+        payload: { transcript_path: '/opt/claude-cfg/projects/-repo/0a1b2c3d-0000-4000-8000-000000000001.jsonl' },
       }));
       expect(f.bindings[0].binding.transcriptPath)
-        .toBe('/opt/claude-cfg/projects/-repo/origin-1.jsonl');
+        .toBe('/opt/claude-cfg/projects/-repo/0a1b2c3d-0000-4000-8000-000000000001.jsonl');
     });
 
     it('drops an unknown permission mode instead of persisting it', () => {
       ingest.handle(makeSignal({
         ptyId: 'pty-a',
-        agentSessionId: 'origin-1',
+        agentSessionId: '0a1b2c3d-0000-4000-8000-000000000001',
         payload: { permissionMode: 'yolo' },
       }));
       expect(fixture.bindings[0].binding.permissionMode).toBeUndefined();
     });
 
     it('skips kinds that carry no session identity', () => {
-      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.activity', agentSessionId: 'origin-1' }));
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.activity', agentSessionId: '0a1b2c3d-0000-4000-8000-000000000001' }));
       ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.stop' })); // no agentSessionId
       expect(fixture.bindings).toHaveLength(0);
     });
@@ -779,7 +834,7 @@ describe('HookIngest', () => {
       const f = makeDeps();
       f.deps.applyResumeBinding = () => { throw new Error('state write failed'); };
       const i = new HookIngest(f.deps);
-      expect(i.handle(makeSignal({ ptyId: 'pty-a', agentSessionId: 'origin-1' }))).toEqual({ ok: true });
+      expect(i.handle(makeSignal({ ptyId: 'pty-a', agentSessionId: '0a1b2c3d-0000-4000-8000-000000000001' }))).toEqual({ ok: true });
       expect(f.emitted).toHaveLength(1);
     });
   });
@@ -802,7 +857,7 @@ describe('HookIngest', () => {
       it(`fires for ${kind}`, () => {
         const f = makeDeps();
         const i = new HookIngest(f.deps);
-        i.handle(makeSignal({ ptyId: 'pty-a', kind, agentSessionId: 'origin-1' }));
+        i.handle(makeSignal({ ptyId: 'pty-a', kind, agentSessionId: '0a1b2c3d-0000-4000-8000-000000000001' }));
         expect(f.nudges).toEqual([{ sessionId: 'pty-a', kind }]);
       });
     }
@@ -816,8 +871,8 @@ describe('HookIngest', () => {
       i.handle(makeSignal({
         ptyId: 'pty-a',
         kind: 'agent.stop',
-        agentSessionId: 'origin-1',
-        payload: { transcript_path: '/t/origin-1.jsonl' },
+        agentSessionId: '0a1b2c3d-0000-4000-8000-000000000001',
+        payload: { transcript_path: '/t/0a1b2c3d-0000-4000-8000-000000000001.jsonl' },
       }));
       expect(order).toEqual(['binding', 'nudge']);
     });
@@ -1322,7 +1377,7 @@ describe('HookIngest — a signal whose claimed pane is gone is refused (#1523)'
     kind: 'agent.stop',
     agent: 'codex',
     cwd: '/repo',
-    agentSessionId: 'codex-conv',
+    agentSessionId: '0a1b2c3d-0000-7000-8000-00000000c0de',
     ...overrides,
   });
 
@@ -1409,7 +1464,7 @@ describe('HookIngest — a signal whose claimed pane is gone is refused (#1523)'
     const res = ingest.handle(codexStop({ ptyId: 'pty-other', workspaceId: 'ws-2', cwd: '/other' }));
     expect(res.ok).toBe(true);
     expect(fixture.bindings).toEqual([
-      expect.objectContaining({ ptyId: 'pty-other', binding: expect.objectContaining({ agent: 'codex', sessionId: 'codex-conv' }) }),
+      expect.objectContaining({ ptyId: 'pty-other', binding: expect.objectContaining({ agent: 'codex', sessionId: '0a1b2c3d-0000-7000-8000-00000000c0de' }) }),
     ]);
   });
 

@@ -125,7 +125,7 @@ import { isWslDistroSpawnArgs } from '../shared/wslDistro';
 import { randomUUID } from 'node:crypto';
 import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf_hooks';
 import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS, isBrainPty } from '../shared/constants';
-import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, isProvisionalCapture, normalizeResumeCwd, isUsableResumeBinding } from '../shared/agentResume';
+import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, isProvisionalCapture, normalizeResumeCwd, isUsableResumeBinding, isPlausibleResumeSessionId } from '../shared/agentResume';
 import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug, AGENT_SLUG_SET, isAgentSlug } from '../shared/agentIdentity';
 import type { AgentEventStatus } from '../main/pty/AgentDetector';
@@ -1233,6 +1233,8 @@ function spoolRecordToBinding(rec: Record<string, unknown>): { ptyId: string; bi
   const cwd = typeof rec.cwd === 'string' ? rec.cwd : null;
   const agent = typeof rec.agent === 'string' ? rec.agent : 'claude';
   if (!ptyId || !sessionId || !cwd || !KNOWN_AGENT_SLUGS.has(agent)) return null;
+  // #1823: a spooled rollout stem under agent 'claude' would re-poison at boot.
+  if (!isPlausibleResumeSessionId(agent, sessionId)) return null;
   const permissionMode = typeof rec.permissionMode === 'string' && KNOWN_PERMISSION_MODES.has(rec.permissionMode)
     ? (rec.permissionMode as ResumeBinding['permissionMode'])
     : undefined;
@@ -3437,6 +3439,12 @@ function registerRpcHandlers(
     // A binding without its folder can never be resumed (`--resume` is
     // cwd-scoped) and must not be stored: refuse it like an empty one.
     if (!managed || !isUsableResumeBinding(resumeBinding)) return false;
+    // #1823: the RPC and main's hooks.signal fallback reach here without
+    // HookIngest's checks; an id the agent cannot resume is never stored.
+    if (!isPlausibleResumeSessionId(resumeBinding.agent, resumeBinding.sessionId)) {
+      log('warn', `[resume] refused ${resumeBinding.agent} binding for ${id}: session id is not ${resumeBinding.agent}-shaped`);
+      return false;
+    }
     // The daemon's own hook ingest validates the claimed transcript path before
     // it gets here, but this function is ALSO the body of the
     // `daemon.setResumeBinding` RPC, and main's hooks.signal fallback calls that
@@ -4146,6 +4154,10 @@ function registerRpcHandlers(
         }
       },
       applyResumeBinding: (id, binding) => { applyResumeBinding(id, binding); },
+      liveAgentFor: (id) => {
+        const tracked = agentProcessTracker.identityFor(id);
+        return tracked?.alive ? tracked.slug : undefined;
+      },
       log: (level, message) => log(level, message),
       isAutomationPane: (id) => automationEngine?.ownsPane(id) === true,
       // M2 — hook-sourced awaiting_input is the ONLY thing that mints an

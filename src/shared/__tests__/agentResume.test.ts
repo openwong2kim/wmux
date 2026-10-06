@@ -12,6 +12,8 @@ import {
   PERMISSION_FLAG,
   type ResumeBinding,
   type PermissionMode,
+  isPlausibleResumeSessionId,
+  parseCodexRolloutStem,
 } from '../agentResume';
 
 const CWD = 'D:\\wmux';
@@ -458,5 +460,22 @@ describe('isProvisionalCapture (#1624 — Codex first-turn title thread)', () =>
   it('keeps the existing Claude SessionStart rule', () => {
     const prev = binding({ transcriptPath: '/p/abc-123.jsonl' });
     expect(isProvisionalCapture(prev, binding({ sessionId: 'new-456' }))).toBe(true);
+  });
+});
+
+describe('isPlausibleResumeSessionId / parseCodexRolloutStem (#1823)', () => {
+  const stem = 'rollout-2026-10-03T12-48-30-01234567-89ab-7cde-8fab-0123456789ab';
+
+  it('takes only a UUID for claude and codex, never a rollout stem', () => {
+    expect(isPlausibleResumeSessionId('claude', '6f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f')).toBe(true);
+    expect(isPlausibleResumeSessionId('codex', '01234567-89ab-7cde-8fab-0123456789ab')).toBe(true);
+    expect(isPlausibleResumeSessionId('claude', stem)).toBe(false);
+    expect(isPlausibleResumeSessionId('codex', stem)).toBe(false);
+    expect(isPlausibleResumeSessionId('opencode', 'ses_abc')).toBe(true);
+  });
+
+  it('splits a rollout stem into its local date and thread id', () => {
+    expect(parseCodexRolloutStem(stem)).toEqual({ year: '2026', month: '10', day: '03', threadId: '01234567-89ab-7cde-8fab-0123456789ab' });
+    expect(parseCodexRolloutStem('01234567-89ab-7cde-8fab-0123456789ab')).toBeUndefined();
   });
 });
