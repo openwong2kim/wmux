@@ -2083,6 +2083,7 @@ export const ko = {
   'moa.panel.mascot.needs-you': "확인 필요",
   'moa.panel.waitingTitle': "나를 기다리는 결정",
   'moa.panel.unknownWorkspace': "알 수 없는 워크스페이스",
+  'moa.panel.closedWorkspace': "닫힌 워크스페이스",
   'moa.panel.answerPlaceholder': "답을 입력하세요…",
   'moa.panel.answerSend': "답하기",
   'moa.panel.answerFailed': "답을 보내지 못했습니다. 다시 시도하세요.",

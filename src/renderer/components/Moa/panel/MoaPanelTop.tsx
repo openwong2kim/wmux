@@ -63,7 +63,11 @@ export function MoaPanelTop({
   // A job Moa handed out that is done is told once, by its report card in the
   // chat; Delegated work keeps what is still under way.
   const cards = useMemo(
-    () => selectTaskCards(links, pendingIds).filter((l) => !(l.state === 'done' && (l.origin === 'moa' || l.origin === 'moa-auto'))),
+    // Only work handed out through Moa or by the operator (an issue / PR from
+    // the Git page). A 'manual' link is one agent's A2A task to another — an
+    // orchestrator pane's delegations listed here read as Moa's own.
+    () => selectTaskCards(links.filter((l) => l.origin !== 'manual'), pendingIds)
+      .filter((l) => !(l.state === 'done' && (l.origin === 'moa' || l.origin === 'moa-auto'))),
     [links, pendingIds],
   );
   const names = useStore(useShallow((s) => s.workspaces.map((w) => `${w.id}\u0000${w.name}`)));

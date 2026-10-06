@@ -574,6 +574,26 @@ describe('Moa settings IPC', () => {
     expect(prompts.at(-1)).toContain('[moa] Level 1');
   });
 
+  it('a rebind of the lost HQ under its own id keeps its settings and only turns Moa on', async () => {
+    expect(await invoke(IPC.DECK_MOA_SETUP, { workspaceId: 'ws-moa' })).toMatchObject({ ok: true });
+    expect(await invoke(IPC.DECK_MOA_CONFIG_SET, { level: 3 })).toEqual({ ok: true });
+    await invoke(IPC.DECK_MOA_SET, { enabled: false });
+    vi.mocked(setWorkspaceMode).mockClear();
+    vi.mocked(setWorkspaceAutonomy).mockClear();
+
+    expect(await invoke(IPC.DECK_MOA_SETUP, { workspaceId: 'ws-moa', rebind: true })).toEqual({ ok: true, archived: 0 });
+    expect(getHqWorkspaceId()).toBe('ws-moa');
+    expect(getMoaConfig()).toMatchObject({ enabled: true, level: 3 });
+    expect(vi.mocked(setWorkspaceMode)).not.toHaveBeenCalled();
+    expect(vi.mocked(setWorkspaceAutonomy)).not.toHaveBeenCalled();
+  });
+
+  it('rebind for an id that is not the HQ is a normal setup', async () => {
+    expect(await invoke(IPC.DECK_MOA_SETUP, { workspaceId: 'ws-new', rebind: true })).toMatchObject({ ok: true });
+    expect(getHqWorkspaceId()).toBe('ws-new');
+    expect(getMoaConfig()).toMatchObject({ level: 1 });
+  });
+
   it('setup refuses an invalid workspace id', async () => {
     expect(await invoke(IPC.DECK_MOA_SETUP, { workspaceId: '../x' })).toEqual({ ok: false, code: 'invalid_workspace' });
   });

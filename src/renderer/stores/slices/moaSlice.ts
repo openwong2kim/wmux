@@ -126,11 +126,19 @@ export const createMoaSlice: StateCreator<StoreState, [['zustand/immer', never]]
     const pending = get().moaHqPendingId;
     const reused = pending && get().workspaces.some((w) => w.id === pending) ? pending : null;
     const reuse = reused !== null;
+    // The HQ's workspace is gone (closed, or a session load lost it): bring it
+    // back under the SAME id. Everything Moa keeps is keyed by that id — the
+    // brain's session and home (so its conversation resumes), its decisions,
+    // work and settings — so a new id would start Moa over from nothing.
+    const hq = get().moa?.hq;
+    const lost = !reuse && hq?.state === 'hq-missing' && hq.workspaceId
+      && !get().workspaces.some((w) => w.id === hq.workspaceId) ? hq.workspaceId : null;
     let id = reused ?? '';
     if (!reuse) {
       set((state: StoreState) => {
         const ordinal = state.nextWorkspaceOrdinal ?? 1;
         const ws = createWorkspace(MOA_WORKSPACE_NAME, ordinal);
+        if (lost) ws.id = lost;
         state.nextWorkspaceOrdinal = ordinal + 1;
         state.workspaces.push(ws);
         id = ws.id;
@@ -138,7 +146,7 @@ export const createMoaSlice: StateCreator<StoreState, [['zustand/immer', never]]
     }
     let result: MoaSetupResult;
     try {
-      result = await api.setup(id);
+      result = await api.setup(id, lost ? { rebind: true } : undefined);
     } catch {
       result = { ok: false, code: 'failed' };
     }

@@ -169,6 +169,7 @@ import {
   loadActiveDeckWorks,
   loadLiveDeckWork,
   loadLiveDeckWorks,
+  operatorDecisionContext,
   recordDeckWorkA2aTask,
   renderActiveDeckWorkBlock,
   renderActiveDeckWorkReminderLine,
@@ -2278,10 +2279,16 @@ export function registerDeckHandler(
   // whose edge event was dropped. Reviewed workspaces are those with a live
   // manager OR a resting mode other than 'off'; the coalescer's own gates decide
   // whether a wake actually fires (the tick conditions only skip obvious no-ops).
+  // The work links of workspaces that are gone (closed while the app was down,
+  // or before this settle existed) are settled with the startup sweep. Only on
+  // the real data dir: a test's dir never holds the work-link store.
+  const settleClosedWorkLinks = opts.dir
+    ? undefined
+    : (live: ReadonlySet<string>) => getWorkLinkStore().abandonOrphaned((id) => live.has(id));
   const heartbeatWorkspaceIds = (): string[] => {
     // WMX-06: retry startup orphan reconcile on heartbeat tick if not already completed
     if (!isStartupDeckReconcileDone()) {
-      void tryStartupDeckReconcile({ dir: opts.dir });
+      void tryStartupDeckReconcile({ dir: opts.dir, settleClosedWork: settleClosedWorkLinks });
     }
     const ids = new Set<string>(managers.keys());
     // Durable direct requests arm the heartbeat even when the workspace's
@@ -2528,6 +2535,18 @@ export function registerDeckHandler(
       const workspaceId = readWorkspaceId(req);
       if (!workspaceId) return { ok: false, code: 'invalid_workspace' };
       if (isHqStoreCorrupt()) return { ok: false, code: 'store_corrupt' };
+      // A lost HQ recreated under its own id: everything Moa keeps is keyed by
+      // that id (the brain's session and home, decisions, work, mode), so it is
+      // back as it was. Only make sure the switch is on — resetting the mode,
+      // autonomy and level here would undo the operator's settings.
+      if (req.rebind === true && getHqWorkspaceId() === workspaceId) {
+        if (!isMoaEnabled()) {
+          if (!(await setMoaEnabled(true))) return { ok: false, code: 'store_corrupt', committed: true };
+          startRuntime();
+        }
+        emitMoaChanged();
+        return { ok: true, archived: 0 };
+      }
       let designated: Awaited<ReturnType<typeof setHqWorkspaceId>>;
       try {
         designated = await setHqWorkspaceId(workspaceId);
@@ -2652,7 +2671,7 @@ export function registerDeckHandler(
         decisions.push({
           workspaceId,
           ...(workspaceName ? { workspaceName } : {}),
-          decision: { id: d.id, question: d.question, options: d.options, context: d.context, raisedAt: d.raisedAt },
+          decision: { id: d.id, question: d.question, options: d.options, context: operatorDecisionContext(d.context), raisedAt: d.raisedAt },
           ...(d.origin === 'moa-handoff' && moaHandoffs?.cardInfo(d.id) ? { handoff: moaHandoffs.cardInfo(d.id)! } : {}),
           ...(isMainOwnedDecision(d) ? {} : { dismissible: true as const }),
         });
@@ -2848,7 +2867,7 @@ export function registerDeckHandler(
         }
         return;
       }
-      void tryStartupDeckReconcile({ dir: opts.dir }).then((done) => {
+      void tryStartupDeckReconcile({ dir: opts.dir, settleClosedWork: settleClosedWorkLinks }).then((done) => {
         if (done) stopOrphanReconcile();
       });
     }, 2500);

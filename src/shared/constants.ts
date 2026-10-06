@@ -331,6 +331,8 @@ export const IPC = {
   //   { onboarded, level, maxTurnsPerHour, bubbles, reduceMotion }.
   //   DECK_MOA_SETUP { workspaceId } makes a just-created workspace the HQ at
   //   level 1 and turns Moa on (first run, and "Recreate Moa workspace").
+  //   With `rebind: true` and the current HQ's own id it only turns Moa on:
+  //   the lost HQ came back under its id, so its settings are kept.
   //   DECK_MOA_ARCHIVE_LIST / _ACK: the decisions the HQ migration archived and
   //   their one-time notice. DECK_MOA_STORE_RESET moves an unreadable
   //   deck-hq.json aside and starts over (Moa off, no HQ).

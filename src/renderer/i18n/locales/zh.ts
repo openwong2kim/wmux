@@ -2214,6 +2214,7 @@ export const zh = {
   'moa.panel.mascot.needs-you': "需要你",
   'moa.panel.waitingTitle': "等你决定",
   'moa.panel.unknownWorkspace': "未知工作区",
+  'moa.panel.closedWorkspace': "已关闭的工作区",
   'moa.panel.answerPlaceholder': "输入你的回答…",
   'moa.panel.answerSend': "回答",
   'moa.panel.answerFailed': "无法发送这个回答。请重试。",

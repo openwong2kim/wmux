@@ -172,7 +172,7 @@ export function MoaReportCard({ report, links, workspaceName, api, onOpen, t }: 
   return (
     <div className="my-2 rounded-[10px] px-3 py-2.5 bg-[color-mix(in_srgb,var(--text-main)_5%,transparent)]" data-moa-report>
       <div className="text-[11px] text-[var(--text-sub)] truncate">
-        {one ? t('moa.result.done', { workspace: workspaceName(one.owner.workspaceId) || t('moa.panel.unknownWorkspace') }) : t('moa.report.done')}
+        {one ? t('moa.result.done', { workspace: workspaceName(one.owner.workspaceId) || t('moa.panel.closedWorkspace') }) : t('moa.report.done')}
       </div>
       {title && <p className="m-0 mt-0.5 text-[13px] font-medium leading-snug text-[var(--text-main)] break-words" data-moa-report-title>{title}</p>}
       {report?.reply && <div className="wmux-moa-report-md mt-1 text-[13px] text-[var(--text-main)] break-words" data-moa-report-reply>{renderBrainMarkdown(report.reply)}</div>}
@@ -182,7 +182,7 @@ export function MoaReportCard({ report, links, workspaceName, api, onOpen, t }: 
       </p>
       {links.map((link) => (
         <AgentReport key={link.id} link={link} many={links.length > 1} api={api} onOpen={onOpen} t={t}
-          workspace={workspaceName(link.owner.workspaceId) || t('moa.panel.unknownWorkspace')} />
+          workspace={workspaceName(link.owner.workspaceId) || t('moa.panel.closedWorkspace')} />
       ))}
     </div>
   );

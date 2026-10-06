@@ -42,6 +42,7 @@ import { teardownWorkspaceDeckState } from '../../deck/deckWorkspaceTeardown';
 import { getHqWorkspaceId } from '../../deck/deckHqStore';
 import { renderStrandedDeckWorkBlock } from '../../deck/deckWorkStore';
 import { recordTaskState } from '../../workLink/a2aProducer';
+import { getWorkLinkStore } from '../../workLink/workLinkStore';
 
 /** Positive allow-list — only channel/principal-mutating methods may ride the
  *  renderer trust path. Reads and every other RPC are rejected so this surface
@@ -188,8 +189,12 @@ export function registerChannelLocalHandlers(getDaemonClient: () => DaemonClient
             if (task && typeof task === 'object') void recordTaskState((task as { id?: unknown }).id, 'failed', undefined, task);
           }
         }
+        // Links owned by the removed workspace can never finish: settle them
+        // so no "running" card points at a workspace that no longer exists.
+        const removedWs = (p.workspaceId as string).trim();
+        void getWorkLinkStore().abandonOrphaned((id) => id !== removedWs);
         try {
-          const wsId = (p.workspaceId as string).trim();
+          const wsId = removedWs;
           await teardownWorkspaceDeckState(wsId, {
             // Log only: raising a Deck decision here would re-create state for the workspace
             // being removed (the decision step of the teardown runs right after this callback).

@@ -309,11 +309,21 @@ describe('MoaPanelTop — one report, first run', () => {
     const list = vi.fn(async () => [
       link('moa-done', { title: 'Done by Moa', state: 'done', a2aTaskId: 't1' }),
       link('moa-running', { title: 'Running' }),
-      link('manual-done', { title: 'Manual', origin: 'manual', state: 'done' }),
+      link('issue-done', { title: 'Issue', origin: 'issue', issue: { host: 'github.com', owner: 'o', repo: 'r', number: 1, title: 'Issue', url: 'https://github.com/o/r/issues/1' }, state: 'done' }),
     ]);
     await act(async () => root.render(createElement(MoaPanelTop, { decisions: [], linksApi: { list, onChanged: () => () => undefined }, t })));
     await act(async () => { await Promise.resolve(); });
-    expect([...container.querySelectorAll('[data-moa-task]')].map((el) => el.getAttribute('data-moa-task')).sort()).toEqual(['manual-done', 'moa-running']);
+    expect([...container.querySelectorAll('[data-moa-task]')].map((el) => el.getAttribute('data-moa-task')).sort()).toEqual(['issue-done', 'moa-running']);
+  });
+
+  it('another agent\'s A2A tasks (manual links) are not Moa\'s delegations and are not listed', async () => {
+    const list = vi.fn(async () => [
+      link('moa-running', { title: 'Running' }),
+      link('orchestrator-running', { title: 'Orchestrator: fix', origin: 'manual', a2aTaskId: 't9' }),
+    ]);
+    await act(async () => root.render(createElement(MoaPanelTop, { decisions: [], linksApi: { list, onChanged: () => () => undefined }, t })));
+    await act(async () => { await Promise.resolve(); });
+    expect([...container.querySelectorAll('[data-moa-task]')].map((el) => el.getAttribute('data-moa-task'))).toEqual(['moa-running']);
   });
 
   it('before Moa\'s first turn (no brain, nothing waiting) it says what to ask; once the brain runs it does not', async () => {

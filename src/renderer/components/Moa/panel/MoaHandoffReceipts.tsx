@@ -44,7 +44,7 @@ export function MoaHandoffReceipts({
     <section data-moa-handoff-receipts aria-label={t('moa.receipts.title')} className="px-3 pt-2 pb-1">
       <ul className="m-0 p-0 list-none flex flex-col gap-1">
         {visible.map((r) => {
-          const name = r.targetWorkspaceName || workspaceName(r.targetWorkspaceId) || t('moa.panel.unknownWorkspace');
+          const name = r.targetWorkspaceName || workspaceName(r.targetWorkspaceId) || t('moa.panel.closedWorkspace');
           const isStopped = r.stopped || stopped.has(r.id);
           return (
             <li key={r.id} data-moa-handoff-receipt={r.id} className="flex flex-col gap-1 rounded-md border border-[var(--line)] px-2 py-1.5 text-[12px] text-[var(--text-sub)]">

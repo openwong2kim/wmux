@@ -2698,6 +2698,7 @@ export const en = {
   'moa.panel.mascot.needs-you': "needs you",
   'moa.panel.waitingTitle': "Waiting on you",
   'moa.panel.unknownWorkspace': "Unknown workspace",
+  'moa.panel.closedWorkspace': "Closed workspace",
   'moa.panel.answerPlaceholder': "Type your answer…",
   'moa.panel.answerSend': "Answer",
   'moa.panel.answerFailed': "Couldn't send that answer. Try again.",

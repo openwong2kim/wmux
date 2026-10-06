@@ -323,6 +323,9 @@ export async function tryStartupDeckReconcile(opts?: {
   dir?: string;
   log?: (line: string) => void;
   maxSnapshotAgeMs?: number;
+  /** Settle work outside the deck stores whose workspace is gone (the work
+   *  links). Runs under the same restored-session rule as the sweep. */
+  settleClosedWork?: (liveIds: ReadonlySet<string>) => Promise<unknown>;
 }): Promise<boolean> {
   if (startupDeckReconcileDone) return true;
   const mirror = getWorkspaceMirror();
@@ -350,6 +353,7 @@ export async function tryStartupDeckReconcile(opts?: {
     const liveIds = entries.map((e) => e.id);
     try {
       await reconcileOrphanDeckState(liveIds, opts);
+      await opts?.settleClosedWork?.(new Set(liveIds));
       return true;
     } catch (err) {
       opts?.log?.(`startup reconcile error: ${String(err)}`);

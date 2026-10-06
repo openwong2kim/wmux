@@ -803,8 +803,8 @@ const electronAPI = {
         ipcRenderer.invoke(IPC.DECK_MOA_STATE) as Promise<import('../shared/moa').MoaState>,
       setConfig: (patch: import('../shared/moa').MoaConfigPatch) =>
         ipcRenderer.invoke(IPC.DECK_MOA_CONFIG_SET, patch) as Promise<{ ok: boolean; code?: string }>,
-      setup: (workspaceId: string) =>
-        ipcRenderer.invoke(IPC.DECK_MOA_SETUP, { workspaceId }) as Promise<import('../shared/moa').MoaSetupResult>,
+      setup: (workspaceId: string, opts?: { rebind?: boolean }) =>
+        ipcRenderer.invoke(IPC.DECK_MOA_SETUP, { workspaceId, ...(opts?.rebind ? { rebind: true } : {}) }) as Promise<import('../shared/moa').MoaSetupResult>,
       archiveList: () =>
         ipcRenderer.invoke(IPC.DECK_MOA_ARCHIVE_LIST) as Promise<{ decisions: import('../shared/moa').MoaArchivedDecision[] }>,
       archiveAck: () => ipcRenderer.invoke(IPC.DECK_MOA_ARCHIVE_ACK) as Promise<{ ok: boolean }>,

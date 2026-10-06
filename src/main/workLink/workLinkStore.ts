@@ -167,6 +167,20 @@ export class WorkLinkStore {
     }
   }
 
+  /** Settle the links whose owner workspace is gone. A closed workspace's
+   *  task can never finish, so its link would otherwise read `running` or
+   *  `queued` forever (the daemon fails only the tasks it still tracks). A
+   *  link with a PR is left alone: the PR outlives the workspace and its own
+   *  state still says where the work stands. Returns how many were settled. */
+  async abandonOrphaned(isLive: (workspaceId: string) => boolean): Promise<number> {
+    let settled = 0;
+    for (const link of [...this.cache().values()]) {
+      if (link.state === 'done' || link.state === 'abandoned' || link.pr || isLive(link.owner.workspaceId)) continue;
+      if (await this.setState(link.id, 'abandoned')) settled += 1;
+    }
+    return settled;
+  }
+
   /** Record that a decision is about this link's work, then re-derive. */
   async attachDecision(id: string, decisionId: string): Promise<WorkLink | null> {
     try {

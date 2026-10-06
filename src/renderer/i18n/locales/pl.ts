@@ -2676,6 +2676,7 @@ export const pl = {
   'moa.panel.mascot.needs-you': "potrzebuje ciebie",
   'moa.panel.waitingTitle': "Czeka na ciebie",
   'moa.panel.unknownWorkspace': "Nieznany obszar roboczy",
+  'moa.panel.closedWorkspace': "Zamknięty obszar roboczy",
   'moa.panel.answerPlaceholder': "Wpisz odpowiedź…",
   'moa.panel.answerSend': "Odpowiedz",
   'moa.panel.answerFailed': "Nie udało się wysłać odpowiedzi. Spróbuj ponownie.",

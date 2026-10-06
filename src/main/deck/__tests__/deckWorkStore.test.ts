@@ -30,6 +30,7 @@ import {
   loadLiveDeckWork,
   loadLiveDeckWorks,
   unparkDeckWork,
+  operatorDecisionContext,
 } from '../deckWorkStore';
 
 let dir: string;
@@ -637,3 +638,23 @@ describe('deckWorkStore — small talk is not work', () => {
     expect(isSmallTalk('고마워 '.repeat(20))).toBe(false);
   });
 });
+
+describe('operatorDecisionContext', () => {
+  it('reduces a PARKED brain block to the request it is about', () => {
+    const ctx = [
+      '[active-work PARKED] id: work-1',
+      'objective: ship the fleet rework',
+      'tracked A2A tasks (query canonical state before acting):',
+      '- task=task-1 to=ws-gone state=canceled',
+      'This request predates the current wmux session, so it is PARKED: it is recorded but NOT authorization to act.',
+      'Ask the human whether to resume or drop it (deck_ask_decision) and wait for the answer.',
+    ].join('\n');
+    expect(operatorDecisionContext(ctx)).toBe('Earlier request: "ship the fleet rework"');
+  });
+
+  it('does the same for a dropped-work block, and passes the brain\'s own prose through', () => {
+    expect(operatorDecisionContext('[dropped-work] id: work-2\nobjective: x')).toBe('Earlier request: "x"');
+    expect(operatorDecisionContext('Two options; I recommend A.')).toBe('Two options; I recommend A.');
+  });
+});
+

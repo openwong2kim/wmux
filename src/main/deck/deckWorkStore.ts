@@ -464,6 +464,17 @@ export function renderStrandedDeckWorkBlock(work: ActiveDeckWork): string {
   return lines.join('\n');
 }
 
+/** What the operator reads for a decision's context. Main raises some
+ *  decisions with a brain block as the context ([active-work], [dropped-work]):
+ *  the brain needs its ids and rules, but shown verbatim the operator reads
+ *  instructions meant for Moa. Such a context is reduced to the request it is
+ *  about; any other context is the brain's own prose and passes through. */
+export function operatorDecisionContext(context: string): string {
+  if (!/^\[(?:active-work(?: PARKED)?|dropped-work)\] id: /.test(context)) return context;
+  const objective = /^objective: (.*)$/m.exec(context)?.[1]?.trim();
+  return objective ? `Earlier request: "${objective}"` : '';
+}
+
 /** Trusted runtime context. The objective/follow-ups originated from the human;
  * A2A rows are pointers only and carry no worker-authored body text. */
 export function renderActiveDeckWorkBlock(work: ActiveDeckWork): string {

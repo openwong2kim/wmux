@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
-// While Moa is on and its workspace is gone, one persistent notice offers to
+// While Moa is on and its workspace is gone, Moa recreates it on its own, once
+// per lost id. Only when that fails does one persistent notice offer to
 // recreate it; it goes away when the state recovers.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react';
@@ -35,33 +36,46 @@ afterEach(() => {
 });
 
 describe('MoaHqMissingNotice', () => {
-  it('shows one persistent notice on hq-missing and hides it once the state recovers', () => {
-    act(() => root.render(<MoaHqMissingNotice />));
+  it('recreates the lost workspace on its own, once, and shows no notice when that works', async () => {
+    await act(async () => root.render(<MoaHqMissingNotice />));
+    expect(createMoaHq).not.toHaveBeenCalled();
+    await act(async () => useStore.setState({ moa: moa('hq-missing') } as never));
+    expect(createMoaHq).toHaveBeenCalledTimes(1);
     expect(notices()).toHaveLength(0);
-    act(() => useStore.setState({ moa: moa('hq-missing') } as never));
+    // The same lost id never triggers a second automatic attempt.
+    await act(async () => useStore.setState({ moa: { ...moa('hq-missing') } } as never));
+    expect(createMoaHq).toHaveBeenCalledTimes(1);
+  });
+
+  it('when the automatic attempt fails, shows one persistent notice and hides it once the state recovers', async () => {
+    createMoaHq.mockResolvedValueOnce({ ok: false, code: 'failed' });
+    await act(async () => root.render(<MoaHqMissingNotice />));
+    await act(async () => useStore.setState({ moa: moa('hq-missing') } as never));
     expect(notices()).toHaveLength(1);
     expect(notices()[0].message).toBe("Moa's workspace is gone. Moa can't work until it is recreated.");
     expect(notices()[0].persist).toBe(true);
-    act(() => useStore.setState({ moa: moa('ok') } as never));
+    await act(async () => useStore.setState({ moa: moa('ok') } as never));
     expect(notices()).toHaveLength(0);
   });
 
-  it('says nothing while Moa is off or its workspace is fine', () => {
-    act(() => root.render(<MoaHqMissingNotice />));
+  it('does nothing while Moa is off or its workspace is fine', async () => {
+    await act(async () => root.render(<MoaHqMissingNotice />));
     for (const m of [moa('hq-missing', false), moa('ok'), moa('unset'), moa('hq-unknown')]) {
-      act(() => useStore.setState({ moa: m } as never));
+      await act(async () => useStore.setState({ moa: m } as never));
       expect(notices()).toHaveLength(0);
     }
+    expect(createMoaHq).not.toHaveBeenCalled();
   });
 
-  it('its action recreates the workspace, and comes back if that fails', async () => {
-    act(() => useStore.setState({ moa: moa('hq-missing') } as never));
-    act(() => root.render(<MoaHqMissingNotice />));
+  it('the notice\'s action recreates the workspace, and comes back if that fails', async () => {
+    createMoaHq.mockResolvedValueOnce({ ok: false, code: 'failed' });
+    await act(async () => useStore.setState({ moa: moa('hq-missing') } as never));
+    await act(async () => root.render(<MoaHqMissingNotice />));
     createMoaHq.mockResolvedValueOnce({ ok: false, code: 'failed' });
     const first = notices()[0];
     // ToastContainer runs the action, then dismisses the toast.
     await act(async () => { first.action!.onClick(); useStore.getState().dismissToast(first.id); });
-    expect(createMoaHq).toHaveBeenCalledTimes(1);
+    expect(createMoaHq).toHaveBeenCalledTimes(2);
     expect(useStore.getState().toasts.some((t) => t.level === 'error')).toBe(true);
     expect(notices()).toHaveLength(1);
     expect(notices()[0].id).not.toBe(first.id);

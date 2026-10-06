@@ -81,7 +81,9 @@ export function MoaTaskCards({
           const open = expanded.has(link.id);
           const regionId = `moa-task-${link.id}`;
           const decisions = link.decisionIds.map((id) => pendingById.get(id)).filter((d): d is MoaPendingDecision => !!d);
-          const owner = workspaceName(link.owner.workspaceId) || t('moa.panel.unknownWorkspace');
+          // A link's owner is always a local workspace: one the list no longer
+          // has was closed, which is what the operator needs to read.
+          const owner = workspaceName(link.owner.workspaceId) || t('moa.panel.closedWorkspace');
           const taskId = onOpenConversation ? conversationTaskId?.(link.owner.workspaceId) : undefined;
           const fromMoa = link.origin === 'moa' || link.origin === 'moa-auto';
           const a2aId = fromMoa && !taskId ? link.a2aTaskId : undefined;
