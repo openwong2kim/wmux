@@ -362,8 +362,8 @@ and never uses the clipboard.
   override (an absolute path to a locally built helper) works only in dev
   builds, so an environment variable cannot swap the input-injecting process
   in an installed wmux. A packaged wmux checks the helper against a SHA-256
-  pinned at build time and keeps computer use off until the helper is
-  release-signed (`docs/computer-use-windows.md`).
+  pinned at build time and refuses one that does not match; a release
+  signature is not required (`docs/computer-use-windows.md`).
 
 ## Performance targets (spike acceptance)
 
