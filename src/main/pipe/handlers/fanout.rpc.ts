@@ -1227,6 +1227,11 @@ export function registerFanOutRpc(
       idempotencyKey: callerKey,
       taskCount: parsed.titles.length,
       repoPath: callerRepoRoot,
+      // The OWNER's workspace — the caller's own, never a task's (no task has
+      // a workspace yet; each task's is in the completed poll's result.tasks[]).
+      // `workspaceId` is the deprecated alias kept for older callers: an agent
+      // read it as a task workspace and closed its own.
+      ownerWorkspaceId: callerWorkspaceId,
       workspaceId: callerWorkspaceId,
       ...(warnings.length > 0 ? { warnings } : {}),
     };

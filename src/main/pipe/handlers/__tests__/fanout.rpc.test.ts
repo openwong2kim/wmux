@@ -282,6 +282,8 @@ describe('task.fanout.start — happy path (so the rejections below mean somethi
       status: 'accepted',
       taskCount: 2,
       repoPath: CALLER_REPO_ROOT,
+      ownerWorkspaceId: CALLER_WS,
+      // Deprecated alias, kept for older callers.
       workspaceId: CALLER_WS,
     });
     await h.flush();
@@ -536,12 +538,19 @@ describe('the caller is answered without waiting for the fan-out', () => {
 
     const result: FanOutResult = {
       ok: true,
-      tasks: [{ index: 0, title: 'first task', ok: true, taskId: 'wtask-1' }],
+      tasks: [
+        { index: 0, title: 'first task', ok: true, taskId: 'wtask-1', workspaceId: 'ws-task-1' },
+        { index: 1, title: 'second task', ok: true, taskId: 'wtask-2', workspaceId: 'ws-task-2' },
+      ],
     };
     h.finishRun(result);
     await h.flush();
 
-    expect(await h.call(goodParams())).toMatchObject({ ok: true, status: 'completed', result });
+    const done = await h.call(goodParams()) as { result?: FanOutResult };
+    expect(done).toMatchObject({ ok: true, status: 'completed', result });
+    // Each task names its OWN workspace — never the owner's.
+    expect(done.result?.tasks.map((t) => t.workspaceId)).toEqual(['ws-task-1', 'ws-task-2']);
+    expect(done.result?.tasks.map((t) => t.workspaceId)).not.toContain(CALLER_WS);
     // Three calls, ONE run: polling must never re-fan-out.
     expect(h.start).toHaveBeenCalledTimes(1);
   });

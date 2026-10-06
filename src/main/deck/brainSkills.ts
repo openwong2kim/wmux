@@ -145,7 +145,9 @@ Use a plain pane split when the work is one worker, or is read-only.
 - **It returns before it finishes.** The first call answers
   \`{ status: "accepted" }\`. Poll by calling AGAIN with the SAME
   \`idempotency_key\`; you will get \`awaiting_approval\`, then \`running\`, then
-  \`completed\` with the per-task result.
+  \`completed\` with the per-task result. The accept's \`ownerWorkspaceId\`
+  (and its deprecated alias \`workspaceId\`) is YOUR workspace, never a task's;
+  each task's own workspace is \`workspaceId\` in \`result.tasks[]\`.
 - **The operator must approve it.** The prompt is never auto-approved. A
   \`denied\` answer is a real outcome, not an error to retry around, and there
   are four reasons: \`declined\` (they said no), \`timeout\` (nobody was at the
