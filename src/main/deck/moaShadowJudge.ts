@@ -28,8 +28,10 @@
 //       {"mcpServers":{}}`. `--json-schema` was NOT adopted: it works by adding
 //       a synthetic StructuredOutput tool (stop_reason tool_use, 2 turns), which
 //       breaks "zero tools"; main validates the JSON instead.
-//   (c) tokens: see SHADOW_JUDGE_TOKENS_NOTE below (measured on a real packet
-//       in the live smoke).
+//   (c) tokens: a real judge call in the live smoke (one AskUserQuestion from a
+//       Claude pane, a 2-rule book, a 40-line screen tail) used 4,607 input
+//       tokens (cache creation + read included) and 90 output tokens in 4.8 s.
+//       The bare CLI floor with this system prompt is ~1.3k input tokens.
 
 import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import * as crypto from 'node:crypto';
@@ -49,11 +51,6 @@ const WHY_MAX_CHARS = 500;
 const REASON_CODE_MAX_CHARS = 48;
 /** Most bytes read from the judge's stdout. */
 const STDOUT_MAX_BYTES = 256 * 1024;
-
-/** (c) measured on the live smoke's real packet; recorded in the PR too. */
-export const SHADOW_JUDGE_TOKENS_NOTE =
-  'Per call (2026-10-07, Claude Code 2.1.292, claude-opus-5-5 medium): ~1.3k system+book ' +
-  'input tokens before the packet, the packet itself (budget 12 KiB), and 100-250 output tokens.';
 
 // ── Pre-check ────────────────────────────────────────────────────────────────
 
