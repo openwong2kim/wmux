@@ -16,11 +16,11 @@ export const WINDOWS_HELPER_PIN: WindowsHelperPin = {
 
 /**
  * The helper status Settings and every call see. On Windows, wmux running
- * as administrator reports `elevated`. A packaged Windows build
- * whose helper is not release-signed, or that carries no pin, reports the
- * helper as missing, so the switch cannot turn on and agents get the plain
- * "not in this build" answer. Until SignPath runs a release policy every
- * packaged Windows build is in this state; dev builds are unaffected.
+ * as administrator reports `elevated`. A packaged Windows build whose helper
+ * is not release-signed reports `unsigned` (the helper ships, wmux just does
+ * not run it), and one that carries no pin reports `missing`; either way the
+ * switch cannot turn on. Until SignPath runs a release policy every packaged
+ * Windows build is `unsigned`; dev builds are unaffected.
  */
 export function effectiveHelperStatus(
   status: ComputerHelperStatus,
@@ -30,5 +30,6 @@ export function effectiveHelperStatus(
   // The helper refuses to run elevated (it would drive elevated apps).
   if (opts.selfElevated === true) return 'elevated';
   if (!opts.isPackaged) return status;
-  return opts.pin.releaseSigned && /^[0-9a-f]{64}$/.test(opts.pin.sha256) ? status : 'missing';
+  if (!opts.pin.releaseSigned) return 'unsigned';
+  return /^[0-9a-f]{64}$/.test(opts.pin.sha256) ? status : 'missing';
 }

@@ -147,7 +147,18 @@ const ELEVATED_EXIT = /\bexit code 72\b|refusing to run elevated/;
 
 /** Why a helper that is not ready cannot be used, in words an agent can relay. */
 function notReadyError(helperPath: string | null): ComputerError {
-  return helperStatus(helperPath) === 'elevated' ? elevatedError() : helperMissingError();
+  const status = helperStatus(helperPath);
+  if (status === 'elevated') return elevatedError();
+  return status === 'unsigned' ? helperUnsignedError() : helperMissingError();
+}
+
+/** A packaged Windows build whose helper has no release signature (helperPin.ts). */
+export function helperUnsignedError(): ComputerError {
+  return new ComputerError(
+    'helper_unavailable',
+    'this wmux build ships the computer-use helper for Windows without a release signature, so wmux does not run it; ' +
+      'a signed release will turn it on. Tell the user that desktop computer use is not available in this build, and do not try other ways to control the desktop',
+  );
 }
 
 function elevatedError(): ComputerError {

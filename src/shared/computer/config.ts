@@ -48,9 +48,10 @@ export interface ComputerUseSettingsPayload {
   /**
    * `missing`: this build has no helper binary yet; `unsupported`: no helper
    * exists for this OS; `elevated`: wmux runs as administrator and the helper
-   * refuses to (Windows).
+   * refuses to (Windows); `unsigned`: the packaged Windows helper has no
+   * release signature yet, so wmux does not run it.
    */
-  helper: 'ready' | 'missing' | 'unsupported' | 'elevated';
+  helper: 'ready' | 'missing' | 'unsupported' | 'elevated' | 'unsigned';
   /** The global stop key, as an Electron accelerator. */
   stopKey: string;
   /**

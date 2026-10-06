@@ -103,7 +103,7 @@ jobs:
 
       # Only a release-signing policy with a Valid chain marks the helper
       # release-signed. Without that mark a packaged wmux reports the helper as
-      # missing and computer use cannot be turned on (src/main/computer/helperPin.ts);
+      # unsigned and computer use cannot be turned on (src/main/computer/helperPin.ts);
       # a test-signed or unsigned helper still ships, for the dogfood.
       - name: Replace the unsigned helper with the signed one
         if: env.HELPER_SIGNING_ENABLED == 'true'

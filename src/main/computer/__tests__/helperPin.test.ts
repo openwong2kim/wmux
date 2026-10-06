@@ -4,9 +4,16 @@ import { WINDOWS_HELPER_PIN, effectiveHelperStatus } from '../helperPin';
 const SIGNED = { sha256: 'f'.repeat(64), releaseSigned: true };
 
 describe('packaged Windows helper gate', () => {
-  it('reports a ready helper as missing in a packaged Windows build without a release signature or pin', () => {
+  it('reports a shipped helper without a release signature as unsigned, not missing (4.0.0 Windows)', () => {
     const opts = { platform: 'win32' as const, isPackaged: true };
-    expect(effectiveHelperStatus('ready', { ...opts, pin: { ...SIGNED, releaseSigned: false } })).toBe('missing');
+    // What every packaged Windows build carries until SignPath release-signs the helper.
+    expect(effectiveHelperStatus('ready', { ...opts, pin: { ...SIGNED, releaseSigned: false } })).toBe('unsigned');
+    expect(effectiveHelperStatus('ready', { ...opts, pin: { sha256: '', releaseSigned: false } })).toBe('unsigned');
+    expect(effectiveHelperStatus('ready', { ...opts, pin: { ...SIGNED, releaseSigned: false }, selfElevated: true })).toBe('elevated');
+  });
+
+  it('reports a release-signed helper without a pin as missing', () => {
+    const opts = { platform: 'win32' as const, isPackaged: true };
     expect(effectiveHelperStatus('ready', { ...opts, pin: { ...SIGNED, sha256: '' } })).toBe('missing');
     expect(effectiveHelperStatus('ready', { ...opts, pin: SIGNED })).toBe('ready');
   });

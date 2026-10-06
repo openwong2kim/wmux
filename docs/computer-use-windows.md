@@ -89,7 +89,7 @@ API token secret is not set, so in practice the helper ships **unsigned**.
   release signature.** The release job marks the helper release-signed only
   when the policy is `release-signing` and `Get-AuthenticodeSignature` says
   `Valid` and the signer's thumbprint equals the repo variable
-  `SIGNPATH_RELEASE_SIGNER_THUMBPRINT`. Without that mark, Settings shows the helper as not in this build,
+  `SIGNPATH_RELEASE_SIGNER_THUMBPRINT`. Without that mark, Settings shows the helper as not signed yet,
   the switch cannot turn on, and the spawn is refused. Dev builds are
   unaffected.
 - SmartScreen judges files that carry the Mark of the Web, which is the

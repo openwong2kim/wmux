@@ -56,7 +56,8 @@ export function TabComputerUse() {
     state.helper === 'ready'
       ? <Badge tone="success">{t('settings.computerUseHelperReady')}</Badge>
       : <Badge>{t(state.helper === 'missing' ? 'settings.computerUseHelperMissing'
-        : state.helper === 'elevated' ? 'settings.computerUseHelperElevated' : 'settings.computerUseHelperUnsupported')}</Badge>
+        : state.helper === 'unsigned' ? 'settings.computerUseHelperUnsigned'
+          : state.helper === 'elevated' ? 'settings.computerUseHelperElevated' : 'settings.computerUseHelperUnsupported')}</Badge>
   );
 
   return (
@@ -97,6 +98,7 @@ export function TabComputerUse() {
         <SettingNote>
           {t(state.enabled ? 'settings.computerUseOnWithoutHelperNote'
             : state.helper === 'missing' ? 'settings.computerUseNoHelperNote'
+              : state.helper === 'unsigned' ? 'settings.computerUseUnsignedNote'
               : state.helper === 'elevated' ? 'settings.computerUseElevatedNote' : 'settings.computerUseUnsupportedNote')}
         </SettingNote>
       )}

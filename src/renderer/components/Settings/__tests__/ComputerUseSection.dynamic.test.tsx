@@ -49,6 +49,16 @@ describe('formatStopKey', () => {
 });
 
 describe('Settings › Computer use', () => {
+  it('says why the switch is off when the Windows helper ships unsigned', async () => {
+    const unsigned: ComputerUseSettingsPayload = { ...base, helper: 'unsigned' };
+    const el = await render({ get: async () => unsigned, set: async () => unsigned });
+    const sw = el.querySelector('[role="switch"]') as HTMLButtonElement;
+    expect(sw.disabled || sw.getAttribute('aria-disabled') === 'true').toBe(true);
+    expect(el.textContent).toContain('Not signed yet');
+    expect(el.textContent).toContain('not release-signed yet');
+    expect(el.textContent).not.toContain('Not in this build yet');
+  });
+
   it('shows the stored state, the helper status and the stop key', async () => {
     const el = await render({ get: async () => base, set: async () => base });
     const sw = el.querySelector('[role="switch"]') as HTMLButtonElement;
