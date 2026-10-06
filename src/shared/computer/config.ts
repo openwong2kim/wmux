@@ -48,10 +48,15 @@ export interface ComputerUseSettingsPayload {
   /**
    * `missing`: this build has no helper binary yet; `unsupported`: no helper
    * exists for this OS; `elevated`: wmux runs as administrator and the helper
-   * refuses to (Windows); `unsigned`: the packaged Windows helper has no
-   * release signature yet, so wmux does not run it.
+   * refuses to (Windows).
    */
-  helper: 'ready' | 'missing' | 'unsupported' | 'elevated' | 'unsigned';
+  helper: 'ready' | 'missing' | 'unsupported' | 'elevated';
+  /**
+   * A packaged Windows build whose helper is not code-signed. It still runs
+   * (its SHA-256 pin is checked); Settings only notes that Defender or
+   * SmartScreen may warn about it.
+   */
+  helperUnsigned?: boolean;
   /** The global stop key, as an Electron accelerator. */
   stopKey: string;
   /**

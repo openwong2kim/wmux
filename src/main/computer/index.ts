@@ -11,7 +11,7 @@ import { ComputerService, computerUseShutDown, type ConsentRequester, type Helpe
 import { HelperProcess } from './HelperProcess';
 import { StopKey } from './stopKey';
 import { createHelperVerifier } from './verifyHelper';
-import { WINDOWS_HELPER_PIN, effectiveHelperStatus } from './helperPin';
+import { WINDOWS_HELPER_PIN, effectiveHelperStatus, helperUnsignedNotice } from './helperPin';
 import { isSelfElevated } from './selfElevation';
 import { resolveHelperPathFor, type HelperSpec } from './helperPath';
 
@@ -132,7 +132,7 @@ const verifyHelper = createHelperVerifier({
   windowsPin: WINDOWS_HELPER_PIN,
 });
 
-/** settings.ts's file check, plus the packaged-Windows signing gate (helperPin.ts). */
+/** settings.ts's file check, plus the packaged-Windows gates (helperPin.ts). */
 function helperStatus(helperPath: string | null): ComputerHelperStatus {
   return effectiveHelperStatus(rawHelperStatus(helperPath), {
     platform: process.platform,
@@ -147,18 +147,7 @@ const ELEVATED_EXIT = /\bexit code 72\b|refusing to run elevated/;
 
 /** Why a helper that is not ready cannot be used, in words an agent can relay. */
 function notReadyError(helperPath: string | null): ComputerError {
-  const status = helperStatus(helperPath);
-  if (status === 'elevated') return elevatedError();
-  return status === 'unsigned' ? helperUnsignedError() : helperMissingError();
-}
-
-/** A packaged Windows build whose helper has no release signature (helperPin.ts). */
-export function helperUnsignedError(): ComputerError {
-  return new ComputerError(
-    'helper_unavailable',
-    'this wmux build ships the computer-use helper for Windows without a release signature, so wmux does not run it; ' +
-      'a signed release will turn it on. Tell the user that desktop computer use is not available in this build, and do not try other ways to control the desktop',
-  );
+  return helperStatus(helperPath) === 'elevated' ? elevatedError() : helperMissingError();
 }
 
 function elevatedError(): ComputerError {
@@ -259,6 +248,7 @@ export function registerComputerUseIpc(getExistingService: () => ComputerService
     return {
       enabled,
       helper,
+      ...(helper === 'ready' && helperUnsignedNotice({ platform: process.platform, isPackaged: app.isPackaged, pin: WINDOWS_HELPER_PIN }) && { helperUnsigned: true }),
       stopKey: COMPUTER_ABORT_ACCELERATOR,
       stopKeyStatus: key.status(),
       ...(error && { error }),

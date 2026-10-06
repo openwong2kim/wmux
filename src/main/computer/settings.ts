@@ -7,12 +7,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { computerUseConfigPath, readComputerUseEnabled } from '../../shared/computer/config';
 
-/**
- * `elevated`: wmux runs as administrator, and the helper refuses to (Windows).
- * `unsigned`: a packaged Windows build ships the helper without a release
- * signature, so it is not run (helperPin.ts).
- */
-export type ComputerHelperStatus = 'ready' | 'missing' | 'unsupported' | 'elevated' | 'unsigned';
+/** `elevated`: wmux runs as administrator, and the helper refuses to (Windows). */
+export type ComputerHelperStatus = 'ready' | 'missing' | 'unsupported' | 'elevated';
 
 export interface ComputerUseSettings {
   enabled: boolean;

@@ -42,8 +42,8 @@ export type HashFile = (path: string) => Promise<string>;
 
 /**
  * What a packaged Windows build baked in about the helper it ships
- * (helperPin.ts): the SHA-256 of the final, signed bytes, and whether those
- * bytes carry a release (not test) signature.
+ * (helperPin.ts): the SHA-256 of the final bytes, and whether those bytes
+ * carry a release (not test) signature, which only Settings reports.
  */
 export interface WindowsHelperPin {
   sha256: string;
@@ -90,9 +90,8 @@ const hashFileDefault: HashFile = (p) =>
   });
 
 /**
- * Windows, packaged builds. The helper must be release-signed (until the
- * signing policy is a real one, computer use stays off in packaged builds) and
- * its bytes must hash to the SHA-256 baked into the main bundle at build time.
+ * Windows, packaged builds. The helper's bytes must hash to the SHA-256 baked
+ * into the main bundle at build time. A release signature is not required.
  *
  * The pin detects corruption, a partial update and antivirus tampering. It is
  * NOT a security boundary: everything under the install directory
@@ -109,10 +108,7 @@ async function verifyWindowsHelper(
   readIdentity: ReadFileIdentity,
   hashFile: HashFile,
 ): Promise<void> {
-  if (!pin?.releaseSigned) {
-    throw new ComputerError('helper_unavailable', 'this wmux build does not include a release-signed computer-use helper');
-  }
-  if (!/^[0-9a-f]{64}$/.test(pin.sha256)) {
+  if (!pin || !/^[0-9a-f]{64}$/.test(pin.sha256)) {
     throw new ComputerError('helper_unavailable', 'this wmux build carries no fingerprint for its computer-use helper');
   }
   let before: string;

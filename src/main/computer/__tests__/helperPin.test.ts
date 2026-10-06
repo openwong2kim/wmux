@@ -1,20 +1,23 @@
 import { describe, expect, it } from 'vitest';
-import { WINDOWS_HELPER_PIN, effectiveHelperStatus } from '../helperPin';
+import { WINDOWS_HELPER_PIN, effectiveHelperStatus, helperUnsignedNotice } from '../helperPin';
 
 const SIGNED = { sha256: 'f'.repeat(64), releaseSigned: true };
 
 describe('packaged Windows helper gate', () => {
-  it('reports a shipped helper without a release signature as unsigned, not missing (4.0.0 Windows)', () => {
+  it('reports a pinned helper without a release signature as ready (4.0.0 Windows)', () => {
     const opts = { platform: 'win32' as const, isPackaged: true };
-    // What every packaged Windows build carries until SignPath release-signs the helper.
-    expect(effectiveHelperStatus('ready', { ...opts, pin: { ...SIGNED, releaseSigned: false } })).toBe('unsigned');
-    expect(effectiveHelperStatus('ready', { ...opts, pin: { sha256: '', releaseSigned: false } })).toBe('unsigned');
+    // What every packaged Windows build carries while SignPath is not set up.
+    expect(effectiveHelperStatus('ready', { ...opts, pin: { ...SIGNED, releaseSigned: false } })).toBe('ready');
     expect(effectiveHelperStatus('ready', { ...opts, pin: { ...SIGNED, releaseSigned: false }, selfElevated: true })).toBe('elevated');
+    expect(helperUnsignedNotice({ ...opts, pin: { ...SIGNED, releaseSigned: false } })).toBe(true);
+    expect(helperUnsignedNotice({ ...opts, pin: SIGNED })).toBe(false);
+    expect(helperUnsignedNotice({ platform: 'win32', isPackaged: false, pin: { ...SIGNED, releaseSigned: false } })).toBe(false);
   });
 
-  it('reports a release-signed helper without a pin as missing', () => {
+  it('reports a packaged Windows build without a pin as missing, signed or not', () => {
     const opts = { platform: 'win32' as const, isPackaged: true };
     expect(effectiveHelperStatus('ready', { ...opts, pin: { ...SIGNED, sha256: '' } })).toBe('missing');
+    expect(effectiveHelperStatus('ready', { ...opts, pin: { sha256: '', releaseSigned: false } })).toBe('missing');
     expect(effectiveHelperStatus('ready', { ...opts, pin: SIGNED })).toBe('ready');
   });
 

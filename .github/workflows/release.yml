@@ -102,9 +102,9 @@ jobs:
           output-artifact-directory: out/signed-helper
 
       # Only a release-signing policy with a Valid chain marks the helper
-      # release-signed. Without that mark a packaged wmux reports the helper as
-      # unsigned and computer use cannot be turned on (src/main/computer/helperPin.ts);
-      # a test-signed or unsigned helper still ships, for the dogfood.
+      # release-signed. The mark gates nothing: a packaged wmux runs any helper
+      # whose bytes match the pin, and without the mark Settings only notes
+      # that Defender or SmartScreen may warn about it (src/main/computer/helperPin.ts).
       - name: Replace the unsigned helper with the signed one
         if: env.HELPER_SIGNING_ENABLED == 'true'
         shell: pwsh

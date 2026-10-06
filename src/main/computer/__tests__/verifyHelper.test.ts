@@ -200,15 +200,21 @@ describe('Windows helper pin', () => {
     expect((await refusal(verify(WIN_EXE))).message).toContain('reinstall');
   });
 
-  it('refuses a build whose helper is not release-signed, without hashing', async () => {
+  it('accepts a helper without a release signature whose bytes match the pin', async () => {
     const { verify, hashFile } = winVerifier({ sha256: GOOD, releaseSigned: false });
-    expect((await refusal(verify(WIN_EXE))).message).toContain('release-signed');
-    expect(hashFile).not.toHaveBeenCalled();
+    await expect(verify(WIN_EXE)).resolves.toBeUndefined();
+    expect(hashFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('still refuses a helper without a release signature whose bytes do not match the pin', async () => {
+    const { verify } = winVerifier({ sha256: GOOD, releaseSigned: false }, async () => `${'a'.repeat(63)}b`);
+    expect((await refusal(verify(WIN_EXE))).message).toContain('does not match');
   });
 
   it('refuses a build with no pin', async () => {
     await refusal(winVerifier(undefined).verify(WIN_EXE));
     await refusal(winVerifier({ sha256: '', releaseSigned: true }).verify(WIN_EXE));
+    await refusal(winVerifier({ sha256: '', releaseSigned: false }).verify(WIN_EXE));
   });
 
   it('refuses a missing helper', async () => {

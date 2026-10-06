@@ -56,8 +56,7 @@ export function TabComputerUse() {
     state.helper === 'ready'
       ? <Badge tone="success">{t('settings.computerUseHelperReady')}</Badge>
       : <Badge>{t(state.helper === 'missing' ? 'settings.computerUseHelperMissing'
-        : state.helper === 'unsigned' ? 'settings.computerUseHelperUnsigned'
-          : state.helper === 'elevated' ? 'settings.computerUseHelperElevated' : 'settings.computerUseHelperUnsupported')}</Badge>
+        : state.helper === 'elevated' ? 'settings.computerUseHelperElevated' : 'settings.computerUseHelperUnsupported')}</Badge>
   );
 
   return (
@@ -81,10 +80,9 @@ export function TabComputerUse() {
           label={t('settings.computerUseStopKey')}
           description={t(
             stopKeyUnavailable ? 'settings.computerUseStopKeyUnavailableDesc'
-              : state?.helper === 'unsigned' ? 'settings.computerUseStopKeyUnsignedDesc'
-                : noHelper ? 'settings.computerUseStopKeyNoHelperDesc'
-                  : state?.stopKeyStatus === 'held' ? 'settings.computerUseStopKeyDesc'
-                    : 'settings.computerUseStopKeyOffDesc',
+              : noHelper ? 'settings.computerUseStopKeyNoHelperDesc'
+                : state?.stopKeyStatus === 'held' ? 'settings.computerUseStopKeyDesc'
+                  : 'settings.computerUseStopKeyOffDesc',
           )}
         >
           {state && (
@@ -97,13 +95,12 @@ export function TabComputerUse() {
       </SettingsSection>
       {noHelper && state && (
         <SettingNote>
-          {t(state.enabled && state.helper === 'unsigned' ? 'settings.computerUseOnUnsignedNote'
-            : state.enabled ? 'settings.computerUseOnWithoutHelperNote'
+          {t(state.enabled ? 'settings.computerUseOnWithoutHelperNote'
             : state.helper === 'missing' ? 'settings.computerUseNoHelperNote'
-              : state.helper === 'unsigned' ? 'settings.computerUseUnsignedNote'
               : state.helper === 'elevated' ? 'settings.computerUseElevatedNote' : 'settings.computerUseUnsupportedNote')}
         </SettingNote>
       )}
+      {state?.helper === 'ready' && state.helperUnsigned && <SettingNote>{t('settings.computerUseHelperUnsignedNote')}</SettingNote>}
       {stopKeyUnavailable && state && (
         <SettingNote tone="danger">
           {t('settings.computerUseStopKeyUnavailableNote', { key: formatStopKey(state.stopKey, isMac) })}

@@ -49,28 +49,20 @@ describe('formatStopKey', () => {
 });
 
 describe('Settings › Computer use', () => {
-  it('says why the switch is off when the Windows helper ships unsigned', async () => {
-    const unsigned: ComputerUseSettingsPayload = { ...base, helper: 'unsigned' };
-    const el = await render({ get: async () => unsigned, set: async () => unsigned });
+  it('lets an unsigned Windows helper turn on, with one note about Defender or SmartScreen', async () => {
+    const unsigned: ComputerUseSettingsPayload = { ...ready, helperUnsigned: true };
+    const el = await render({ get: async () => unsigned, set: async () => ({ ...unsigned, enabled: true }) });
     const sw = el.querySelector('[role="switch"]') as HTMLButtonElement;
-    expect(sw.disabled || sw.getAttribute('aria-disabled') === 'true').toBe(true);
-    expect(el.textContent).toContain('Not signed yet');
-    expect(el.textContent).toContain('not release-signed yet');
+    expect(sw.disabled || sw.getAttribute('aria-disabled') === 'true').toBe(false);
+    expect(el.textContent).toContain('Windows Defender or SmartScreen may warn');
     expect(el.textContent).not.toContain('Not in this build yet');
-    // The stop-key row must not claim the build has no helper either.
-    const stopRow = el.querySelector('[data-setting-id="computerusestop"]') as HTMLElement;
-    expect(stopRow.textContent).toContain('not release-signed yet');
-    expect(el.textContent).not.toContain('this build has no helper');
+    await act(async () => { sw.click(); });
+    expect(sw.getAttribute('aria-checked')).toBe('true');
   });
 
-  it('a switch left on with an unsigned Windows helper gives the unsigned reason and can still go off', async () => {
-    const onUnsigned: ComputerUseSettingsPayload = { ...base, enabled: true, helper: 'unsigned' };
-    const el = await render({ get: async () => onUnsigned, set: async () => ({ ...onUnsigned, enabled: false }) });
-    const sw = el.querySelector('[role="switch"]') as HTMLButtonElement;
-    expect(sw.getAttribute('aria-checked')).toBe('true');
-    expect(sw.disabled || sw.getAttribute('aria-disabled') === 'true').toBe(false);
-    expect(el.textContent).toContain('Computer use is on, but the Windows helper in this build is not release-signed yet');
-    expect(el.textContent).not.toContain('this build has no helper');
+  it('shows no unsigned note for a signed or non-Windows helper', async () => {
+    const el = await render({ get: async () => ready, set: async () => ready });
+    expect(el.textContent).not.toContain('code-signed');
   });
 
   it('shows the stored state, the helper status and the stop key', async () => {

@@ -85,13 +85,15 @@ API token secret is not set, so in practice the helper ships **unsigned**.
   `app.asar`. `scripts/__tests__/computerHelperRelease.test.mjs` fails the
   build if the order changes, because signing after the pin would make every
   packaged wmux refuse its own helper.
-- **A packaged Windows wmux keeps computer use off until the helper carries a
-  release signature.** The release job marks the helper release-signed only
-  when the policy is `release-signing` and `Get-AuthenticodeSignature` says
-  `Valid` and the signer's thumbprint equals the repo variable
-  `SIGNPATH_RELEASE_SIGNER_THUMBPRINT`. Without that mark, Settings shows the helper as not signed yet,
-  the switch cannot turn on, and the spawn is refused. Dev builds are
-  unaffected.
+- **A release signature is not required.** A packaged Windows wmux runs the
+  helper whenever its bytes match the SHA-256 pin baked into the build; a
+  helper that does not match is refused. The release job marks the helper
+  release-signed only when the policy is `release-signing` and
+  `Get-AuthenticodeSignature` says `Valid` and the signer's thumbprint equals
+  the repo variable `SIGNPATH_RELEASE_SIGNER_THUMBPRINT`. Without that mark,
+  Settings shows one note that the helper is not code-signed and that Windows
+  Defender or SmartScreen may warn about it; the switch still turns on. Dev
+  builds are unaffected.
 - SmartScreen judges files that carry the Mark of the Web, which is the
   downloaded Setup.exe. The helper is unpacked by the installer and has no
   MOTW, so SmartScreen does not prompt for it. Defender real-time and cloud
@@ -376,12 +378,12 @@ by screenshot coordinates. The click lands on the intended item every time.
 
 ### 6. Packaged build
 
-1. Build a packaged wmux with a staged helper and the release mark forced for
-   the test: `npm run build:computer-use-windows`,
-   `$env:WMUX_WIN_HELPER_RELEASE_SIGNED = "true"`, `npm run make`. Install it;
-   computer use works.
-2. Without that variable the packaged build shows the helper as not in this
-   build and the switch stays off.
+1. Build a packaged wmux with a staged, unsigned helper:
+   `npm run build:computer-use-windows`, `npm run make`. Install it; Settings
+   shows the helper ready with the not-code-signed note, the switch turns on,
+   and computer use works.
+2. With `$env:WMUX_WIN_HELPER_RELEASE_SIGNED = "true"` set before `make`, the
+   same build shows no note.
 3. Append one byte to the installed
    `resources\computer-use-windows\wmux-computer-use.exe`: the next call
    answers `helper_unavailable` (fail closed). A dev build pointed at the same
