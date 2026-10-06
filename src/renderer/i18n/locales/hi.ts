@@ -227,7 +227,7 @@ export const hi = {
   'settings.attentionBlinkRemind1m': '1 मिनट',
   'settings.attentionBlinkRemind5m': '5 मिनट',
   'settings.attentionBlinkFinished': 'पूरे हुए टर्न',
-  'settings.attentionBlinkFinishedDesc': 'जो पूरा हुआ टर्न आपने अभी नहीं देखा, वह धराशायी किनारे की जगह एक छोटा बिंदु दिखाता है। एक बार ब्लिंक चुनने पर पूरा होने पर पंक्ति भी ब्लिंक करती है।',
+  'settings.attentionBlinkFinishedDesc': 'जो पूरा हुआ टर्न आपने अभी नहीं देखा, वह “आपकी ज़रूरत है” वाले किनारे की जगह एक छोटा बिंदु दिखाता है। एक बार ब्लिंक चुनने पर पूरा होने पर पंक्ति भी ब्लिंक करती है।',
   'settings.attentionBlinkFinishedDot': 'केवल बिंदु',
   'settings.attentionBlinkFinishedPulse': 'एक बार ब्लिंक',
   'settings.sidebarLeft': 'बाएँ',

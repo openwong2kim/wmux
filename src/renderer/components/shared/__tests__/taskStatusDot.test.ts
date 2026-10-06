@@ -22,9 +22,14 @@ describe('taskStatusDot', () => {
   });
 
   it('turns red when the worker needs somebody', () => {
-    for (const s of ['awaiting_input', 'waiting', 'error'] as AgentStatus[]) {
+    for (const s of ['awaiting_input', 'error'] as AgentStatus[]) {
       expect(taskStatusDot('working', s).tone).toBe('attention');
     }
+  });
+
+  // 2026-10-07 — needs you means "you must act": a turn-end `waiting` is not.
+  it('does not call a worker whose turn ended "needs you"', () => {
+    expect(taskStatusDot('working', 'waiting').tone).not.toBe('attention');
   });
 
   it('is gray when nothing is known about the worker', () => {

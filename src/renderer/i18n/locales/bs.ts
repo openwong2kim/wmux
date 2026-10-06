@@ -227,7 +227,7 @@ export const bs = {
   'settings.attentionBlinkRemind1m': '1 min',
   'settings.attentionBlinkRemind5m': '5 min',
   'settings.attentionBlinkFinished': 'Završeni potezi',
-  'settings.attentionBlinkFinishedDesc': 'Završeni potez koji još niste pogledali prikazuje malu tačku umjesto isprekidanog okvira. Treptaj jednom također zatreperi red kad završi.',
+  'settings.attentionBlinkFinishedDesc': 'Završeni potez koji još niste pogledali prikazuje malu tačku umjesto okvira „treba vas“. Treptaj jednom također zatreperi red kad završi.',
   'settings.attentionBlinkFinishedDot': 'Samo tačka',
   'settings.attentionBlinkFinishedPulse': 'Treptaj jednom',
   'settings.sidebarLeft': 'Lijevo',

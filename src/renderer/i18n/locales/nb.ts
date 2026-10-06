@@ -227,7 +227,7 @@ export const nb = {
   'settings.attentionBlinkRemind1m': '1 min',
   'settings.attentionBlinkRemind5m': '5 min',
   'settings.attentionBlinkFinished': 'Fullførte runder',
-  'settings.attentionBlinkFinishedDesc': 'En fullført runde du ikke har sett, viser en liten prikk i stedet for den stiplede kanten. Blink én gang får også raden til å blinke når den fullføres.',
+  'settings.attentionBlinkFinishedDesc': 'En fullført runde du ikke har sett, viser en liten prikk i stedet for kanten for «trenger deg». Blink én gang får også raden til å blinke når den fullføres.',
   'settings.attentionBlinkFinishedDot': 'Bare prikk',
   'settings.attentionBlinkFinishedPulse': 'Blink én gang',
   'settings.sidebarLeft': 'Venstre',

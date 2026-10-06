@@ -1982,7 +1982,7 @@ export const en = {
   'settings.attentionBlinkRemind1m': '1 min',
   'settings.attentionBlinkRemind5m': '5 min',
   'settings.attentionBlinkFinished': 'Finished turns',
-  'settings.attentionBlinkFinishedDesc': 'A finished turn you have not looked at shows a small dot instead of the dashed border. Pulse once also flashes the row when it finishes.',
+  'settings.attentionBlinkFinishedDesc': 'A finished turn you have not looked at shows a small dot instead of the needs-you border. Pulse once also flashes the row when it finishes.',
   'settings.attentionBlinkFinishedDot': 'Dot only',
   'settings.attentionBlinkFinishedPulse': 'Pulse once',
   'settings.sidebarLeft': 'Left',

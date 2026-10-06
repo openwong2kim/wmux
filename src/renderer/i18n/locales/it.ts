@@ -227,7 +227,7 @@ export const it = {
   'settings.attentionBlinkRemind1m': '1 min',
   'settings.attentionBlinkRemind5m': '5 min',
   'settings.attentionBlinkFinished': 'Turni terminati',
-  'settings.attentionBlinkFinishedDesc': 'Un turno terminato che non hai ancora visto mostra un piccolo punto invece del bordo tratteggiato. Lampeggia una volta fa lampeggiare anche la riga quando termina.',
+  'settings.attentionBlinkFinishedDesc': 'Un turno terminato che non hai ancora visto mostra un piccolo punto invece del bordo «ha bisogno di te». Lampeggia una volta fa lampeggiare anche la riga quando termina.',
   'settings.attentionBlinkFinishedDot': 'Solo punto',
   'settings.attentionBlinkFinishedPulse': 'Lampeggia una volta',
   'settings.sidebarLeft': 'Sinistra',

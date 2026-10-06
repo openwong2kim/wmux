@@ -1959,7 +1959,7 @@ export const pl = {
   'settings.attentionBlinkRemind1m': '1 min',
   'settings.attentionBlinkRemind5m': '5 min',
   'settings.attentionBlinkFinished': 'Zakończone tury',
-  'settings.attentionBlinkFinishedDesc': 'Zakończona tura, której jeszcze nie oglądano, pokazuje małą kropkę zamiast przerywanej ramki. Mrugnij raz sprawia też, że wiersz mignie po zakończeniu.',
+  'settings.attentionBlinkFinishedDesc': 'Zakończona tura, której jeszcze nie oglądano, pokazuje małą kropkę zamiast ramki „potrzebuje cię”. Mrugnij raz sprawia też, że wiersz mignie po zakończeniu.',
   'settings.attentionBlinkFinishedDot': 'Tylko kropka',
   'settings.attentionBlinkFinishedPulse': 'Mrugnij raz',
   'settings.sidebarLeft': 'Lewo',

@@ -231,7 +231,7 @@ export const ja = {
   'settings.attentionBlinkRemind1m': '1分',
   'settings.attentionBlinkRemind5m': '5分',
   'settings.attentionBlinkFinished': '完了したターン',
-  'settings.attentionBlinkFinishedDesc': 'まだ見ていない完了したターンは、破線の枠ではなく小さな点で示されます。1回点滅を選ぶと、完了時に行も点滅します。',
+  'settings.attentionBlinkFinishedDesc': 'まだ見ていない完了したターンは、対応が必要な枠ではなく小さな点で示されます。1回点滅を選ぶと、完了時に行も点滅します。',
   'settings.attentionBlinkFinishedDot': '点のみ',
   'settings.attentionBlinkFinishedPulse': '1回点滅',
   'settings.sidebarLeft': '左',

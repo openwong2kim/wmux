@@ -227,7 +227,7 @@ export const da = {
   'settings.attentionBlinkRemind1m': '1 min',
   'settings.attentionBlinkRemind5m': '5 min',
   'settings.attentionBlinkFinished': 'Afsluttede ture',
-  'settings.attentionBlinkFinishedDesc': 'En afsluttet tur, du ikke har set, viser en lille prik i stedet for den stiplede kant. Blink én gang får også rækken til at blinke, når den afsluttes.',
+  'settings.attentionBlinkFinishedDesc': 'En afsluttet tur, du ikke har set, viser en lille prik i stedet for kanten for “har brug for dig”. Blink én gang får også rækken til at blinke, når den afsluttes.',
   'settings.attentionBlinkFinishedDot': 'Kun prik',
   'settings.attentionBlinkFinishedPulse': 'Blink én gang',
   'settings.sidebarLeft': 'Venstre',

@@ -227,7 +227,7 @@ export const tr = {
   'settings.attentionBlinkRemind1m': '1 dk',
   'settings.attentionBlinkRemind5m': '5 dk',
   'settings.attentionBlinkFinished': 'Biten turlar',
-  'settings.attentionBlinkFinishedDesc': 'Henüz bakmadığınız biten bir tur, kesikli kenarlık yerine küçük bir nokta gösterir. Bir kez yanıp sön, satırın bittiğinde de yanıp sönmesini sağlar.',
+  'settings.attentionBlinkFinishedDesc': 'Henüz bakmadığınız biten bir tur, “sizi bekliyor” kenarlığı yerine küçük bir nokta gösterir. Bir kez yanıp sön, satırın bittiğinde de yanıp sönmesini sağlar.',
   'settings.attentionBlinkFinishedDot': 'Yalnızca nokta',
   'settings.attentionBlinkFinishedPulse': 'Bir kez yanıp sön',
   'settings.sidebarLeft': 'Sol',

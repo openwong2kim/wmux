@@ -152,7 +152,25 @@ function cap(s: string, max: number): string {
  * inflated every count.
  */
 function agentPanes(snapshot: FleetSnapshot | null): FleetSnapshot['panes'] {
-  return (snapshot?.panes ?? []).filter((p) => p.ptyId !== '');
+  return (snapshot?.panes ?? [])
+    .filter((p) => p.ptyId !== '')
+    .map((p) => {
+      const status = briefingStatus(p);
+      return status === p.agentStatus ? p : { ...p, agentStatus: status };
+    });
+}
+
+/**
+ * The status a person is shown, by the sidebar and Fleet rule
+ * (fleetAttentionClass, owner decision 2026-10-07: needs you means a dialog is
+ * open). The mirror keeps `awaiting_input` for a turn that ended on a question
+ * because machines read it as "waiting on an answer"; the briefing is for the
+ * operator, so that pane is finished, and a plain turn-end `waiting` is idle.
+ */
+export function briefingStatus(p: Pick<FleetSnapshot['panes'][number], 'agentStatus' | 'endedOnQuestion'>): AgentStatus {
+  if (p.endedOnQuestion) return 'complete';
+  if (p.agentStatus === 'waiting') return 'idle';
+  return p.agentStatus;
 }
 
 function reasonFor(status: AgentStatus): BriefingReason {

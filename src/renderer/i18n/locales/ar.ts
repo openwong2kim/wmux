@@ -227,7 +227,7 @@ export const ar = {
   'settings.attentionBlinkRemind1m': '1 د',
   'settings.attentionBlinkRemind5m': '5 د',
   'settings.attentionBlinkFinished': 'الأدوار المنتهية',
-  'settings.attentionBlinkFinishedDesc': 'الدور المنتهي الذي لم تطّلع عليه يظهر بنقطة صغيرة بدل الإطار المتقطع. خيار الوميض مرة يجعل الصف يومض أيضًا عند انتهائه.',
+  'settings.attentionBlinkFinishedDesc': 'الدور المنتهي الذي لم تطّلع عليه يظهر بنقطة صغيرة بدل إطار «يحتاجك». خيار الوميض مرة يجعل الصف يومض أيضًا عند انتهائه.',
   'settings.attentionBlinkFinishedDot': 'نقطة فقط',
   'settings.attentionBlinkFinishedPulse': 'وميض مرة',
   'settings.sidebarLeft': 'يسار',

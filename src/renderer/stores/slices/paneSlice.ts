@@ -342,7 +342,7 @@ export interface PaneSlice {
 // dropped a background worker's dead turn — `surfaceAgentStatus` never
 // retained it, so the fleet selector read the pane as idle and the deck's
 // level snapshot could not see it at all. It does NOT reach the "N need you"
-// chip (countNeedsAttention counts awaiting_input/waiting only); it reaches
+// chip (countNeedsAttention counts open dialogs only); it reaches
 // the red dot the roster already draws for it.
 const ATTENTION_STATUSES: ReadonlySet<AgentStatus> = new Set<AgentStatus>([
   'complete',

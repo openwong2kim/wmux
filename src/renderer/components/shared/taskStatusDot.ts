@@ -54,16 +54,14 @@ function dot(tone: TaskDotTone, labelKey?: string): TaskStatusDot {
 }
 
 /**
- * Worker states that mean "somebody has to answer". `waiting` counts with
- * `awaiting_input` for the same reason the titlebar's "N need you" chip counts
- * it (stores/selectors/fleet.ts countNeedsAttention): the turn ended and the
- * agent is idle ON YOU. `error` counts too — a worker that died mid-task is the
- * loudest thing the panel can be asked to show.
+ * Worker states that mean "somebody has to answer", by the sidebar and Fleet
+ * rule (fleetAttentionClass, owner decision 2026-10-07): a dialog is open
+ * (`awaiting_input`). A turn-end `waiting` is not one — the turn finished and
+ * nothing blocks. `error` counts too — a worker that died mid-task is the
+ * loudest thing the panel can be asked to show (Fleet lists it under Needs you).
  */
 function workerNeedsSomebody(workerStatus: AgentStatus | null): boolean {
-  return (
-    workerStatus === 'awaiting_input' || workerStatus === 'waiting' || workerStatus === 'error'
-  );
+  return workerStatus === 'awaiting_input' || workerStatus === 'error';
 }
 
 /**

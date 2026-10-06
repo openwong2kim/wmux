@@ -106,6 +106,8 @@ function parsePane(raw: unknown): FleetSnapshotPane | null {
   // ("unknown"), never be coerced to `false` — that is the value the gates read
   // as "this is a shell, do not hold the turn for it".
   if (typeof raw.isAgent === 'boolean') pane.isAgent = raw.isAgent;
+  // Only an explicit true: the human briefing then reads the pane as finished.
+  if (raw.endedOnQuestion === true) pane.endedOnQuestion = true;
   return pane;
 }
 

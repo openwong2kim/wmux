@@ -114,6 +114,26 @@ describe('parseWorkspaceMirrorPayload — defensive renderer-trust validation', 
     const panes = parsed?.fleets[0].panes ?? [];
     expect(panes.map((p) => p.isAgent)).toEqual([true, false, undefined, undefined]);
   });
+
+  // 2026-10-07 — the human briefing reads it; only an explicit true travels.
+  it('carries endedOnQuestion only when it is true', () => {
+    const parsed = parseWorkspaceMirrorPayload({
+      ts: 1,
+      entries: [{ id: 'ws-1', name: 'a' }],
+      fleets: [
+        {
+          workspaceId: 'ws-1',
+          ts: 1,
+          panes: [
+            { ptyId: 'pty-1', agentName: null, agentStatus: 'awaiting_input', isActivePane: true, endedOnQuestion: true },
+            { ptyId: 'pty-2', agentName: null, agentStatus: 'awaiting_input', isActivePane: false, endedOnQuestion: 'yes' },
+            { ptyId: 'pty-3', agentName: null, agentStatus: 'awaiting_input', isActivePane: false },
+          ],
+        },
+      ],
+    });
+    expect((parsed?.fleets[0].panes ?? []).map((p) => p.endedOnQuestion)).toEqual([true, undefined, undefined]);
+  });
 });
 
 describe('parseWorkspaceMirrorPayload — roleBindings passthrough (3-way review: Codex)', () => {

@@ -227,7 +227,7 @@ export const ptBR = {
   'settings.attentionBlinkRemind1m': '1 min',
   'settings.attentionBlinkRemind5m': '5 min',
   'settings.attentionBlinkFinished': 'Turnos concluídos',
-  'settings.attentionBlinkFinishedDesc': 'Um turno concluído que você ainda não viu mostra um pequeno ponto em vez da borda tracejada. Piscar uma vez também faz a linha piscar ao terminar.',
+  'settings.attentionBlinkFinishedDesc': 'Um turno concluído que você ainda não viu mostra um pequeno ponto em vez da borda de “precisa de você”. Piscar uma vez também faz a linha piscar ao terminar.',
   'settings.attentionBlinkFinishedDot': 'Só ponto',
   'settings.attentionBlinkFinishedPulse': 'Piscar uma vez',
   'settings.sidebarLeft': 'Esquerda',

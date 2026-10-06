@@ -357,12 +357,13 @@ describe('sortFleetPanes', () => {
 // ─── countNeedsAttention ─────────────────────────────────────────────────────
 
 describe('countNeedsAttention', () => {
-  it('counts awaiting_input and waiting, ignores everything else', () => {
+  it('counts awaiting_input, ignores everything else', () => {
     const panes = selectFleetPanes(fixture());
     expect(countNeedsAttention(panes)).toBe(1); // only p1 (awaiting_input)
   });
 
-  it('counts both awaiting_input and waiting states', () => {
+  // 2026-10-07 — the shared class: a turn-end `waiting` is not needs you.
+  it('counts an open dialog, not a turn-end waiting', () => {
     const base: FleetPane = { workspaceId: 'w', workspaceName: 'w', paneId: 'x', surfaceId: 'x', ptyId: 'x', agentStatus: 'idle', title: 'x', surfaceType: 'terminal', isActivePane: false, unverifiable: false };
     const panes: FleetPane[] = [
       { ...base, paneId: '1', agentStatus: 'awaiting_input' },
@@ -370,7 +371,7 @@ describe('countNeedsAttention', () => {
       { ...base, paneId: '3', agentStatus: 'running' },
       { ...base, paneId: '4', agentStatus: 'complete' },
     ];
-    expect(countNeedsAttention(panes)).toBe(2);
+    expect(countNeedsAttention(panes)).toBe(1);
   });
 });
 

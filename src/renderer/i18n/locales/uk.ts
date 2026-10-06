@@ -227,7 +227,7 @@ export const uk = {
   'settings.attentionBlinkRemind1m': '1 хв',
   'settings.attentionBlinkRemind5m': '5 хв',
   'settings.attentionBlinkFinished': 'Завершені ходи',
-  'settings.attentionBlinkFinishedDesc': 'Завершений хід, який ви ще не переглянули, показує маленьку крапку замість пунктирної рамки. «Блимнути один раз» також змушує рядок блимнути після завершення.',
+  'settings.attentionBlinkFinishedDesc': 'Завершений хід, який ви ще не переглянули, показує маленьку крапку замість рамки «потрібні ви». «Блимнути один раз» також змушує рядок блимнути після завершення.',
   'settings.attentionBlinkFinishedDot': 'Лише крапка',
   'settings.attentionBlinkFinishedPulse': 'Блимнути один раз',
   'settings.sidebarLeft': 'Ліворуч',

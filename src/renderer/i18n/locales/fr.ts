@@ -227,7 +227,7 @@ export const fr = {
   'settings.attentionBlinkRemind1m': '1 min',
   'settings.attentionBlinkRemind5m': '5 min',
   'settings.attentionBlinkFinished': 'Tours terminés',
-  'settings.attentionBlinkFinishedDesc': 'Un tour terminé que vous n’avez pas encore vu affiche un petit point au lieu de la bordure en pointillés. Clignoter une fois fait aussi clignoter la ligne à la fin.',
+  'settings.attentionBlinkFinishedDesc': 'Un tour terminé que vous n’avez pas encore vu affiche un petit point au lieu de la bordure « a besoin de vous ». Clignoter une fois fait aussi clignoter la ligne à la fin.',
   'settings.attentionBlinkFinishedDot': 'Point seul',
   'settings.attentionBlinkFinishedPulse': 'Clignoter une fois',
   'settings.sidebarLeft': 'Gauche',

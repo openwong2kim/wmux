@@ -227,7 +227,7 @@ export const es = {
   'settings.attentionBlinkRemind1m': '1 min',
   'settings.attentionBlinkRemind5m': '5 min',
   'settings.attentionBlinkFinished': 'Turnos terminados',
-  'settings.attentionBlinkFinishedDesc': 'Un turno terminado que aún no has visto muestra un pequeño punto en lugar del borde discontinuo. Parpadear una vez también hace parpadear la fila al terminar.',
+  'settings.attentionBlinkFinishedDesc': 'Un turno terminado que aún no has visto muestra un pequeño punto en lugar del borde de «te necesita». Parpadear una vez también hace parpadear la fila al terminar.',
   'settings.attentionBlinkFinishedDot': 'Solo punto',
   'settings.attentionBlinkFinishedPulse': 'Parpadear una vez',
   'settings.sidebarLeft': 'Izquierda',

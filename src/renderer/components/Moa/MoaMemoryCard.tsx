@@ -6,8 +6,8 @@
 // Discard exist here: no free-text answer. Re-read whenever main says Moa
 // moved (a card went up, was answered, or the next one replaced it).
 //
-// Same needs-you grammar as the decision card and the sidebar (a dashed
-// attention-orange border over the selection-subtle fill, the orange dot as
+// Same needs-you grammar as the Waiting on you rows and the sidebar (a 1px
+// attention-orange hairline over the selection-subtle fill, the orange dot as
 // its one state mark).
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -139,7 +139,7 @@ export function MoaMemoryCard({
   const body = (
     <div
       data-moa-memory-card={card.id}
-      className="flex flex-col rounded-md px-4 py-3 space-y-2.5 border border-dashed border-[var(--attention)] bg-[var(--selection-subtle)]"
+      className="flex flex-col rounded-md px-4 py-3 space-y-2.5 border border-solid border-[var(--attention-hairline,var(--attention))] bg-[var(--selection-subtle)]"
     >
       {/* The orange dot marks the state; the eyebrow words keep the text colour. */}
       <div className="flex items-center gap-1.5 text-[11px] font-mono uppercase tracking-wider text-[var(--text-main)]" {...tokenAttrs('textMain', 'text')}>

@@ -496,6 +496,8 @@ describe('buildFleetSnapshots — pending question (#1168)', () => {
     const [fleet] = buildFleetSnapshots(st, 42);
     expect(fleet.panes).toHaveLength(1);
     expect(fleet.panes[0]).toMatchObject({ ptyId: 'pty-1', agentStatus: 'awaiting_input' });
+    // 2026-10-07 — flagged, so the human briefing reads it as finished.
+    expect(fleet.panes[0].endedOnQuestion).toBe(true);
   });
 
   it('reports a question that outlived its retained status', () => {
@@ -543,6 +545,8 @@ describe('buildFleetSnapshots — open dialog outlives the focus clear (#1509)',
     };
     const [fleet] = buildFleetSnapshots(st, 7);
     expect(fleet.panes.find((p) => p.ptyId === 'pty-a')).toMatchObject({ agentStatus: 'awaiting_input' });
+    // A real dialog is never flagged as a turn that ended on a question.
+    expect(fleet.panes.find((p) => p.ptyId === 'pty-a')?.endedOnQuestion).toBeUndefined();
     expect(fleet.panes.find((p) => p.ptyId === 'pty-b')?.agentStatus).not.toBe('awaiting_input');
   });
 

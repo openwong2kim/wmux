@@ -227,7 +227,7 @@ export const de = {
   'settings.attentionBlinkRemind1m': '1 Min.',
   'settings.attentionBlinkRemind5m': '5 Min.',
   'settings.attentionBlinkFinished': 'Beendete Durchgänge',
-  'settings.attentionBlinkFinishedDesc': 'Ein beendeter Durchgang, den du noch nicht angesehen hast, zeigt statt des gestrichelten Rahmens einen kleinen Punkt. Einmal blinken lässt die Zeile beim Beenden zusätzlich aufblinken.',
+  'settings.attentionBlinkFinishedDesc': 'Ein beendeter Durchgang, den du noch nicht angesehen hast, zeigt statt des „Braucht dich“-Rahmens einen kleinen Punkt. Einmal blinken lässt die Zeile beim Beenden zusätzlich aufblinken.',
   'settings.attentionBlinkFinishedDot': 'Nur Punkt',
   'settings.attentionBlinkFinishedPulse': 'Einmal blinken',
   'settings.sidebarLeft': 'Links',

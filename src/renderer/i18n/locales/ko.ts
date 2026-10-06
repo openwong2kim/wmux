@@ -1470,7 +1470,7 @@ export const ko = {
   'settings.attentionBlinkRemind1m': '1분',
   'settings.attentionBlinkRemind5m': '5분',
   'settings.attentionBlinkFinished': '끝난 턴',
-  'settings.attentionBlinkFinishedDesc': '아직 보지 않은 끝난 턴은 점선 테두리 대신 작은 점으로 표시됩니다. 1회 깜빡임을 고르면 끝날 때 행도 한 번 깜빡입니다.',
+  'settings.attentionBlinkFinishedDesc': '아직 보지 않은 끝난 턴은 응답 필요 테두리 대신 작은 점으로 표시됩니다. 1회 깜빡임을 고르면 끝날 때 행도 한 번 깜빡입니다.',
   'settings.attentionBlinkFinishedDot': '점만',
   'settings.attentionBlinkFinishedPulse': '1회 깜빡임',
   'settings.sidebarLeft': '왼쪽',

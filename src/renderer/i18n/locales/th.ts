@@ -227,7 +227,7 @@ export const th = {
   'settings.attentionBlinkRemind1m': '1 นาที',
   'settings.attentionBlinkRemind5m': '5 นาที',
   'settings.attentionBlinkFinished': 'รอบที่เสร็จแล้ว',
-  'settings.attentionBlinkFinishedDesc': 'รอบที่เสร็จแล้วซึ่งคุณยังไม่ได้ดูจะแสดงเป็นจุดเล็กแทนกรอบเส้นประ เลือกกะพริบครั้งเดียวเพื่อให้แถวกะพริบเมื่อเสร็จด้วย',
+  'settings.attentionBlinkFinishedDesc': 'รอบที่เสร็จแล้วซึ่งคุณยังไม่ได้ดูจะแสดงเป็นจุดเล็กแทนกรอบ “ต้องการคุณ” เลือกกะพริบครั้งเดียวเพื่อให้แถวกะพริบเมื่อเสร็จด้วย',
   'settings.attentionBlinkFinishedDot': 'จุดเท่านั้น',
   'settings.attentionBlinkFinishedPulse': 'กะพริบครั้งเดียว',
   'settings.sidebarLeft': 'ซ้าย',

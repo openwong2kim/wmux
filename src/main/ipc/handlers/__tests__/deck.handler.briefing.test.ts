@@ -145,7 +145,7 @@ let acquireWhenAvailableSpy: ReturnType<typeof vi.spyOn>;
 
 function seedMirror(
   workspaceId: string,
-  panes: { ptyId: string; agentStatus: AgentStatus; agentName?: string }[],
+  panes: { ptyId: string; agentStatus: AgentStatus; agentName?: string; endedOnQuestion?: boolean }[],
   entryName = 'Proj',
 ): void {
   const payload: WorkspaceMirrorPushPayload = {
@@ -160,6 +160,7 @@ function seedMirror(
           agentName: p.agentName ?? null,
           agentStatus: p.agentStatus,
           isActivePane: false,
+          ...(p.endedOnQuestion ? { endedOnQuestion: true } : {}),
         })),
       },
     ],
@@ -287,7 +288,7 @@ describe('DECK_BRIEFING_GET', () => {
     seedMirror('ws-1', [
       { ptyId: 'p-run', agentStatus: 'running' },
       { ptyId: 'p-b', agentStatus: 'awaiting_input' },
-      { ptyId: 'p-a', agentStatus: 'waiting' },
+      { ptyId: 'p-a', agentStatus: 'awaiting_input' },
     ]);
     const r = (await invoke(IPC.DECK_BRIEFING_GET, { workspaceId: 'ws-1' })) as unknown as {
       briefing: WorkspaceBriefing;
@@ -296,6 +297,22 @@ describe('DECK_BRIEFING_GET', () => {
     // would have been empty here.
     expect(r.briefing.changed).toBeNull();
     expect(r.briefing.blockedPtyIds).toEqual(['p-a', 'p-b']);
+  });
+
+  // 2026-10-07 — the human briefing uses the sidebar and Fleet rule: a turn
+  // that ended on a question (the mirror keeps awaiting_input for machines and
+  // flags it) is finished, and a plain turn-end `waiting` is idle.
+  it('does not count a turn that ended on a question, or a plain waiting, as needs you', async () => {
+    seedMirror('ws-1', [
+      { ptyId: 'p-dialog', agentStatus: 'awaiting_input' },
+      { ptyId: 'p-asked', agentStatus: 'awaiting_input', endedOnQuestion: true },
+      { ptyId: 'p-wait', agentStatus: 'waiting' },
+    ]);
+    const r = (await invoke(IPC.DECK_BRIEFING_GET, { workspaceId: 'ws-1' })) as unknown as {
+      briefing: WorkspaceBriefing;
+    };
+    expect(r.briefing.blockedPtyIds).toEqual(['p-dialog']);
+    expect(r.briefing.counts.blocked).toBe(1);
   });
 
   it('mirror rows with no PTY (empty leaves, browser/editor surfaces) are not agents', async () => {

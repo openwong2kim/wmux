@@ -227,7 +227,7 @@ export const ru = {
   'settings.attentionBlinkRemind1m': '1 мин',
   'settings.attentionBlinkRemind5m': '5 мин',
   'settings.attentionBlinkFinished': 'Завершённые ходы',
-  'settings.attentionBlinkFinishedDesc': 'Завершённый ход, который вы ещё не видели, показывает маленькую точку вместо пунктирной рамки. «Мигнуть один раз» также заставляет строку мигнуть при завершении.',
+  'settings.attentionBlinkFinishedDesc': 'Завершённый ход, который вы ещё не видели, показывает маленькую точку вместо рамки «нужны вы». «Мигнуть один раз» также заставляет строку мигнуть при завершении.',
   'settings.attentionBlinkFinishedDot': 'Только точка',
   'settings.attentionBlinkFinishedPulse': 'Мигнуть один раз',
   'settings.sidebarLeft': 'Слева',

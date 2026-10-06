@@ -264,9 +264,9 @@ export function buildFleetSnapshots(state: FleetSnapshotState, ts: number): Flee
         // 2026-10-07 — the shared helper no longer promotes the question (the
         // human "needs you" means a dialog is open), so the mirror, which
         // feeds machines, keeps the promotion here.
-        const att = state.surfacePendingQuestion?.[s.ptyId]?.trim()
-          ? 'awaiting_input'
-          : surfaceAttentionStatus(state, s.ptyId);
+        const shared = surfaceAttentionStatus(state, s.ptyId);
+        const endedOnQuestion = !!state.surfacePendingQuestion?.[s.ptyId]?.trim() && shared !== 'awaiting_input';
+        const att = endedOnQuestion ? 'awaiting_input' : shared;
         if (att === undefined) continue;
         const isActiveSurface = s.id === leaf.activeSurfaceId;
         const row: FleetSnapshotPane = {
@@ -276,6 +276,7 @@ export function buildFleetSnapshots(state: FleetSnapshotState, ts: number): Flee
           agentName: derived.isActivePane && isActiveSurface ? (derived.agentName ?? null) : null,
           agentStatus: att,
           isActivePane: derived.isActivePane && isActiveSurface,
+          ...(endedOnQuestion ? { endedOnQuestion: true } : {}),
         };
         // Omitted, never `false`, when the identity is unknown — see agentIdentity.
         const surfaceIsAgent = agentIdentity(s.ptyId, leaf.id);

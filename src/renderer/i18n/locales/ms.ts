@@ -227,7 +227,7 @@ export const ms = {
   'settings.attentionBlinkRemind1m': '1 min',
   'settings.attentionBlinkRemind5m': '5 min',
   'settings.attentionBlinkFinished': 'Giliran selesai',
-  'settings.attentionBlinkFinishedDesc': 'Giliran selesai yang belum anda lihat menunjukkan titik kecil dan bukan sempadan putus-putus. Kelip sekali juga membuat baris berkelip apabila selesai.',
+  'settings.attentionBlinkFinishedDesc': 'Giliran selesai yang belum anda lihat menunjukkan titik kecil dan bukan sempadan “perlukan anda”. Kelip sekali juga membuat baris berkelip apabila selesai.',
   'settings.attentionBlinkFinishedDot': 'Titik sahaja',
   'settings.attentionBlinkFinishedPulse': 'Kelip sekali',
   'settings.sidebarLeft': 'Kiri',

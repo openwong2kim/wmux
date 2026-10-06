@@ -528,7 +528,7 @@ export const zh = {
   'settings.attentionBlinkRemind1m': '1 分钟',
   'settings.attentionBlinkRemind5m': '5 分钟',
   'settings.attentionBlinkFinished': '已完成的轮次',
-  'settings.attentionBlinkFinishedDesc': '尚未查看的已完成轮次显示为小圆点，而不是虚线边框。选择闪烁一次时，完成时该行也会闪烁。',
+  'settings.attentionBlinkFinishedDesc': '尚未查看的已完成轮次显示为小圆点，而不是“需要你”的边框。选择闪烁一次时，完成时该行也会闪烁。',
   'settings.attentionBlinkFinishedDot': '仅圆点',
   'settings.attentionBlinkFinishedPulse': '闪烁一次',
   'settings.sidebarLeft': '左',

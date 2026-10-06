@@ -227,7 +227,7 @@ export const zhTW = {
   'settings.attentionBlinkRemind1m': '1 分鐘',
   'settings.attentionBlinkRemind5m': '5 分鐘',
   'settings.attentionBlinkFinished': '已完成的回合',
-  'settings.attentionBlinkFinishedDesc': '尚未查看的已完成回合會顯示為小圓點，而不是虛線邊框。選擇閃爍一次時，完成時該列也會閃爍。',
+  'settings.attentionBlinkFinishedDesc': '尚未查看的已完成回合會顯示為小圓點，而不是「需要你」的邊框。選擇閃爍一次時，完成時該列也會閃爍。',
   'settings.attentionBlinkFinishedDot': '僅圓點',
   'settings.attentionBlinkFinishedPulse': '閃爍一次',
   'settings.sidebarLeft': '左側',

@@ -227,7 +227,7 @@ export const vi = {
   'settings.attentionBlinkRemind1m': '1 phút',
   'settings.attentionBlinkRemind5m': '5 phút',
   'settings.attentionBlinkFinished': 'Lượt đã xong',
-  'settings.attentionBlinkFinishedDesc': 'Lượt đã xong mà bạn chưa xem hiển thị một chấm nhỏ thay cho viền nét đứt. Nhấp nháy một lần cũng làm hàng nhấp nháy khi hoàn tất.',
+  'settings.attentionBlinkFinishedDesc': 'Lượt đã xong mà bạn chưa xem hiển thị một chấm nhỏ thay cho viền “cần bạn”. Nhấp nháy một lần cũng làm hàng nhấp nháy khi hoàn tất.',
   'settings.attentionBlinkFinishedDot': 'Chỉ chấm',
   'settings.attentionBlinkFinishedPulse': 'Nhấp nháy một lần',
   'settings.sidebarLeft': 'Trái',
