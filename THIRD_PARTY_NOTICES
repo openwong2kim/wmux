@@ -751,7 +751,7 @@ package as an optional dependency — see that entry in this file.)
 
 ================================================================================
 
-@modelcontextprotocol/sdk@1.30.0
+@modelcontextprotocol/sdk@1.32.1
 License: MIT
 Author: Anthropic, PBC (https://anthropic.com)
 Repository: https://github.com/modelcontextprotocol/typescript-sdk
@@ -9592,7 +9592,7 @@ END OF SUMMARY
 
 ================================================================================
 
-proxy-addr@2.0.7
+proxy-addr@2.0.8
 License: MIT
 Author: Douglas Christopher Wilson <doug@somethingdoug.com>
 Repository: jshttp/proxy-addr
@@ -10344,7 +10344,7 @@ SOFTWARE.
 
 ================================================================================
 
-smol-toml@1.7.1
+smol-toml@1.9.0
 License: BSD-3-Clause
 Author: Cynthia Rey <cynthia@cynthia.dev>
 Repository: github:squirrelchat/smol-toml
