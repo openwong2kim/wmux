@@ -15,7 +15,7 @@ import { FOCUS_RING } from '../focusRing';
 import { HIT_TARGET_24_ROW } from '../hitArea';
 import { timeAgo } from '../../utils/timeAgo';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
-import { fleetIdleForMs, formatStaleMinutes, selectUnverifiablePaneMinutes } from '../../stores/selectors/fleet';
+import { attentionMarkStatus, fleetIdleForMs, formatStaleMinutes, selectUnverifiablePaneMinutes } from '../../stores/selectors/fleet';
 import { StatusMarkView } from './AgentMarks';
 import { selectSidebarUnseen } from '../../stores/selectors/sidebarSeen';
 import { formatIdle, IDLE_SHOW_AFTER_MS, IDLE_TICK_MS } from '../../utils/idleTime';
@@ -549,9 +549,9 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
                       box-shadow, so forced-colors keeps every one. #1176 — a
                       SEEN question drops only the animated glow. */}
                   <StatusMarkView
-                    // Plain waiting with no question is idle in the shared
+                    // A turn-end `waiting` is idle or finished in the shared
                     // class (fleetAttentionClass), so it draws no ring here.
-                    status={row.status === 'waiting' && !row.pendingQuestion ? 'idle' : row.status}
+                    status={attentionMarkStatus(row.status, row.pendingQuestion)}
                     unverifiable={!!unverifiableLabel}
                     quiet={!!row.questionSeen && !row.attentionStatus}
                     usageWaiting={!!row.usageLimitWaiting}
@@ -675,10 +675,12 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
                     {stashedAgo}
                   </div>
                 )}
-                {/* The question opens as an amber second line only while it waits for an answer. */}
+                {/* The question the turn ended on, as a muted second line: the
+                    turn is finished, so it is not drawn as needs you
+                    (owner decision 2026-10-07). */}
                 {row.pendingQuestion && (
                   <div
-                    className="truncate pl-[37px] pr-1 text-[11px] text-[var(--attention-text)]"
+                    className="truncate pl-[37px] pr-1 text-[11px] text-[var(--text-muted)]"
                     title={row.pendingQuestion}
                   >
                     ? {row.pendingQuestion}

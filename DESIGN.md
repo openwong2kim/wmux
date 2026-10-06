@@ -538,18 +538,22 @@ always neutral (the fill ladder).
   idle = no mark. Selection is never painted as a status. The collapsed
   rail draws the same marks (`StatusMarkView`), never text glyphs, and names
   each workspace `name, status` for assistive tech.
-- **Needs you is the attention orange everywhere** — the sidebar ring, dash,
+- **Needs you is the attention orange everywhere** — the sidebar ring, hairline,
   labels and counts, the collapsed rail's mark, the rail badge and dot,
   Fleet's Needs you chip, section dot and row word, and the titlebar count —
   so one state never wears two colours (and a white-accent look still reads
   it). One orange hue family (≈21–29°), its own value per look
   (`ATTENTION_COLORS` in `themes.ts`, emitted into each look's block in
-  `globals.css`): `--attention` is the vivid fill for dashes, marks, dots and
+  `globals.css`): `--attention` is the vivid fill for marks, dots and
   the badge (≥ 3:1 on the page and sidebar, and on a needs-you row's
   `--selection-subtle` / `--selection-hover` fill); `--attention-text` carries words
   and counts (≥ 4.5:1 on page, sidebar, row fill and frame — on light looks a
   darker orange of the same hue); `--attention-ink` is the badge's digits
-  (≥ 4.5:1 on the fill). Never a color-mix; never the caution yellow
+  (≥ 4.5:1 on the fill); `--attention-hairline` is the needs-you row's
+  border, the fill mixed toward transparent at the lowest per-look
+  percentage that still reads at 3:1 on the row's fills and the column
+  (`ATTENTION_HAIRLINE_PERCENT`, 54–98%; the one sanctioned mix). Otherwise
+  never a color-mix; never the caution yellow
   (`--accent-yellow`, which stays for warnings) and never the error red.
 - **Fleet list** — a row's dot takes its status colour, the sidebar's grammar
   (see Fleet page); a ticket's dot takes its ticket state.
@@ -560,13 +564,19 @@ always neutral (the fill ladder).
   fill; the one solid fill per surface is the
   primary button (`--primary-fill`, white on dark looks, ink on Paper, the
   accent on Graphite and Amber Line).
-- **No washes.** A row that needs you is a dashed `--attention` border over a
+- **No washes.** A row that needs you is a 1px solid `--attention-hairline`
+  border (a quiet attention-orange hairline, not a dash; 2026-10-07) over a
   fill one step below the selection (`--selection-subtle`; `--selection-hover`
   on hover), not a red wash; the 1px transparent border is reserved at rest so
   a row never shifts when it starts asking. Selection wins: a selected row
   that needs you takes the `--selection` fill and a 1px `--accent` ring
-  outside the dash. A nested task row draws no box of its own (no dash, no
-  fill): its mark and its question line say it.
+  outside the hairline. A nested task row draws no box of its own (no
+  hairline, no fill): its mark and its question line say it. The hairline
+  means "you must act": a question, approval or permission dialog is open. A
+  turn that finished, even on a question in its closing message, draws no
+  hairline; it
+  shows the done dot until its workspace is viewed. The Attention blink
+  pulse (Motion) is a momentary opacity overlay, not a resting wash.
 - **Attention renditions:** one event is drawn at most twice (the evidence
   row plus one global count). The titlebar vitals step aside on the Fleet
   page, whose summary line already says them.
@@ -723,7 +733,21 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 
 - Minimal-functional. Spinners and the blinking cursor are the only
   perpetual motion; the welcome dialog and onboarding tour clips loop only
-  while on screen and never under reduced motion.
+  while on screen and never under reduced motion. The one opt-in exception is
+  the Attention blink setting's Continuous option (below): the user chose it.
+- **Attention blink** (Settings → Appearance → Sidebar, per user). A sidebar
+  row that waits on a question, approval or permission dialog pulses: Off
+  (the hairline only), Once (three soft beats over ~1.5s when the wait starts),
+  Once + remind (the default: the same pulse, then again every 30s / 1 min
+  (default) / 5 min while it still waits) or Continuous (a slow ~2s pulse
+  until answered). A finished turn has its own choice: Dot only (default) or
+  Pulse once. The pulse is an opacity-only overlay between the row's fill and
+  its content (`--attention` for needs you, `--selection-subtle` for a
+  finished turn), so nothing moves; it is a CSS animation class picked from
+  state, never a per-row timer. A row whose workspace is active or on screen
+  never pulses, the row's own status mark does not breathe while the row can
+  pulse (Off means still), and `prefers-reduced-motion` forces Off. Moa's
+  Reduce motion setting is Moa's own and does not apply here.
 - Tokens: feedback 120ms (`--motion-feedback`), ease-out
   `cubic-bezier(0.22, 1, 0.36, 1)`; transitions only for state changes
   (hover, expand, open). Theme swaps are not animated. Reduced motion
@@ -802,6 +826,8 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-10-05 | Fleet returns to the attention list (one row per agent; Needs you, Ready to review, Running, folded Idle) in today's look, replacing the four-column board. Rows gain a now-doing sentence that outlives the turn (`Last: Edited foo.ts`), terminal output and the task Conversation move to a detail area under the list (selection, Space, Esc), and Moa's delegated work shows as tickets behind a Tickets chip that interrupt only for a pending decision and once with the final report | Columns split one glance into four reads, pushed finished panes away from the sidebar's own Needs you rule, and every card spent lines on chips; the raw glyph line (`✎ foo.ts`) read as code and vanished at turn end, so a finished row said nothing about what it did. A list answers "what needs me, in order" in one scan, the detail area keeps output and conversations one key away without putting terminal text in rows, and delegated work had no place to be followed once Moa handed it off |
 | 2026-10-05 | Fleet's Needs you holds decisions only (questions first, then errors, stopped supervision, unconfirmed); finished turns leave it for a folded `Finished N · newest age` row, in Fleet, the rail badge and `fleet_triage` (which gains a `finished` list) alike — this supersedes the 2026-09-27 note that finished rows count as needs you. Moa's final reports sit in their own marked block. The chip, head and badge read one set of arrays; a live region says the count. A Needs you row's detail leads with the question in full and the prompt's choices (or Open approval / Reply / Jump), an error row names its last error line and Check opens the detail on it. One word (Finished), present tense while running, `--text-subtle` for small hint text, a focus ring distinct from selection, the row's side buttons out of the listbox tree (Shift+F10 opens the menu), and the rail badge in needs-you yellow | A design critique found 12 rows in Needs you of which 4 were decisions, three counts that disagreed (11/12/13), a question cut off at narrow widths with `No terminal output available.` beneath it, error rows that only said `Check the terminal`, five words for one finished state, 2.5–3.4:1 hint text, and an indigo badge for an amber state. A finished turn is something to glance at, not something blocking, so it folds like Idle; one set of arrays makes the counts unable to drift |
 | 2026-10-05 | Sidebar row hover actions return to the row's flow: they end the git line in place of the diff counts and PR badge, end the name line on a branchless top-level row, or take a line of their own on a branchless nested task; focus reveals them like hover (amends "row actions floating over a faded right edge", 2026-10-03). No fade on the text column; a nested task row's hover never reveals its owner's actions; the workspace list clips horizontal overflow and the sidebar column clips (not scrolls) while it animates | The overlay covered the roster chip, the fade took the branch and diff with the name, and as a descendant rule it faded every nested task row while the owner card was hovered, so a hovered sidebar read as "fleet: ba", "wtas…". A hidden-overflow column is still a scroll container: a focus inside the half-open sidebar scrolled it 148px sideways |
+| 2026-10-07 | Owner: blink rows that wait on you; per-user setting; default once + remind every 1 min; finished turns drop the needs-you border for a done dot; reduced motion forces off. Needs you now means a question, approval or permission dialog is open: a turn that ended on a question in its closing message (`pendingQuestion`, minted only by a Stop) is a finished turn in the sidebar, Fleet, the titlebar count and the rail alike. The Continuous option is the documented exception to "perpetual motion only spinners/cursor" | "Done" and "you must act" looked the same: agents end most turns on an offer ("Want me to …?"), and each one drew the dash and counted as needs you. A pulse catches the eye for the rows that block; the setting lets each user choose how loud, and Continuous is allowed because the user opts in |
+| 2026-10-07 | Owner: the needs-you row border goes from dashed to a 1px solid hairline, as quiet as contrast allows: `--attention-hairline` = the look's `--attention` mixed toward transparent at the lowest percentage that keeps 3:1 against `--selection-subtle`, `--selection-hover` and the column behind, measured per look (54–98%; light looks need nearly the full colour). Box shape, radius, the reserved transparent border, the fill and the selected row's accent ring are unchanged; Moa's Waiting on you rows follow | The dash read as busy chrome. One shared percentage could not pass on both dark and light looks, so each look carries its own, pinned by a contrast test |
 
 ### Desktop conversation view
 
@@ -960,7 +986,9 @@ no empty reply row or reserved gap under the latest prompt.
   now needs you or has finished. Tracked per agent tab, not per pane. On
   screen means the active workspace, plus the multiview grid only while the
   active workspace is in it, and no local workspace while a remote mirror is
-  showing. It clears as soon as the workspace is on screen.
+  showing. It clears as soon as the workspace is on screen. On a finished
+  turn it is the row's done dot (`data-sidebar-done`), which stands in for
+  the hairline a finished turn no longer draws (2026-10-07).
 
 ### Sidebar shortcuts and Agent dock refinement (2026-09-21)
 

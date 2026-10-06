@@ -371,10 +371,39 @@ export const ATTENTION_COLORS: Record<BuiltinThemeId, AttentionColors> = {
   taegeuk: { fill: '#CE530B', text: '#983A08', ink: '#000000' },
 };
 
+/** The needs-you row's 1px hairline (owner decision 2026-10-07): the
+ *  attention fill mixed toward transparent at the LOWEST percentage that still
+ *  reads at 3:1 against the row's fills (--selection-subtle and
+ *  --selection-hover) and the column behind it, per look. Light looks need
+ *  nearly the full colour; one shared value could not pass everywhere. */
+export const ATTENTION_HAIRLINE_PERCENT: Record<BuiltinThemeId, number> = {
+  tint: 67,
+  zinc: 62,
+  graphite: 63,
+  paper: 97,
+  'amber-line': 71,
+  mono: 66,
+  'mono-light': 98,
+  amber: 72,
+  'catppuccin-mocha': 55,
+  monochrome: 58,
+  'stars-and-stripes': 60,
+  'red-dynasty': 54,
+  nightowl: 66,
+  void: 54,
+  hinomaru: 98,
+  taegeuk: 98,
+};
+
 /** The CSS custom properties a look's block sets for the attention orange. */
 export function attentionCssVars(id: BuiltinThemeId): Record<string, string> {
   const c = ATTENTION_COLORS[id];
-  return { '--attention': c.fill, '--attention-text': c.text, '--attention-ink': c.ink };
+  return {
+    '--attention': c.fill,
+    '--attention-text': c.text,
+    '--attention-ink': c.ink,
+    '--attention-hairline': `color-mix(in srgb, var(--attention) ${ATTENTION_HAIRLINE_PERCENT[id]}%, transparent)`,
+  };
 }
 
 // Which xterm palette each built-in theme uses for terminal rendering.

@@ -59,7 +59,9 @@ describe('sidebar class ⇄ Fleet section parity', () => {
     const base = { agentStatus: 'running', unverifiable: false } as Pick<FleetPane, 'agentStatus' | 'unverifiable' | 'supervision'>;
     expect(fleetAttentionClass({ ...base, unverifiable: true })).toBe('unconfirmed');
     expect(fleetAttentionClass({ ...base, agentStatus: 'complete' })).toBe('finished');
-    expect(fleetAttentionClass({ ...base, agentStatus: 'waiting' }, 'Which one?')).toBe('needsYou');
+    // 2026-10-07 — a turn that ended on a question is finished, not needs you.
+    expect(fleetAttentionClass({ ...base, agentStatus: 'waiting' }, 'Which one?')).toBe('finished');
+    expect(fleetAttentionClass({ ...base, agentStatus: 'awaiting_input' })).toBe('needsYou');
     expect(fleetAttentionClass({ ...base, agentStatus: 'waiting' })).toBe('idle');
   });
 });

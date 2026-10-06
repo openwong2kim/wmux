@@ -89,6 +89,7 @@ import Checkbox from '../ui/Checkbox';
 import Select from '../ui/Select';
 import Input from '../ui/Input';
 import SegmentedControl from '../ui/SegmentedControl';
+import { resolveAttentionRemindMs } from '../Sidebar/attentionBlink';
 import Badge from '../ui/Badge';
 import TokenUsageTab from './tabs/TokenUsageTab';
 import './settings.css';
@@ -3556,6 +3557,12 @@ function TabAppearance() {
   const setSidebarSortMode = useStore((s) => s.setSidebarSortMode);
   const sidebarShowPaneCoordinates = useStore((s) => s.sidebarShowPaneCoordinates);
   const setSidebarShowPaneCoordinates = useStore((s) => s.setSidebarShowPaneCoordinates);
+  const attentionBlink = useStore((s) => s.attentionBlink);
+  const setAttentionBlink = useStore((s) => s.setAttentionBlink);
+  const attentionBlinkRemindMs = useStore((s) => s.attentionBlinkRemindMs);
+  const setAttentionBlinkRemindMs = useStore((s) => s.setAttentionBlinkRemindMs);
+  const attentionBlinkFinished = useStore((s) => s.attentionBlinkFinished);
+  const setAttentionBlinkFinished = useStore((s) => s.setAttentionBlinkFinished);
   const workspaceSettleIdleDays = useStore((s) => s.workspaceSettle.idleDays);
   const setSidebarPosition = useStore((s) => s.setSidebarPosition);
   const multiviewArrangement = useStore((s) => s.multiviewArrangement);
@@ -3709,6 +3716,47 @@ function TabAppearance() {
             checked={sidebarShowPaneCoordinates}
             onChange={setSidebarShowPaneCoordinates}
             label={t('settings.sidebarShowPaneCoordinates')}
+          />
+        </SettingRow>
+        {/* 2026-10-07 — per user; once + remind every minute by default.
+            Reduced motion forces every pulse off whatever this says. */}
+        <SettingRow id="attentionblink" label={t('settings.attentionBlink')} description={t('settings.attentionBlinkDesc')}>
+          <SegmentedControl
+            value={attentionBlink}
+            onValueChange={setAttentionBlink}
+            options={[
+              { value: 'off', label: t('settings.attentionBlinkOff') },
+              { value: 'once', label: t('settings.attentionBlinkOnce') },
+              { value: 'remind', label: t('settings.attentionBlinkRemind') },
+              { value: 'continuous', label: t('settings.attentionBlinkContinuous') },
+            ]}
+          />
+        </SettingRow>
+        {attentionBlink === 'remind' && (
+          <SettingRow label={t('settings.attentionBlinkRemindEvery')}>
+            <SegmentedControl
+              value={String(attentionBlinkRemindMs)}
+              onValueChange={(v) => setAttentionBlinkRemindMs(resolveAttentionRemindMs(Number(v)))}
+              options={[
+                { value: '30000', label: t('settings.attentionBlinkRemind30s') },
+                { value: '60000', label: t('settings.attentionBlinkRemind1m') },
+                { value: '300000', label: t('settings.attentionBlinkRemind5m') },
+              ]}
+            />
+          </SettingRow>
+        )}
+        <SettingRow
+          id="attentionblinkfinished"
+          label={t('settings.attentionBlinkFinished')}
+          description={t('settings.attentionBlinkFinishedDesc')}
+        >
+          <SegmentedControl
+            value={attentionBlinkFinished}
+            onValueChange={setAttentionBlinkFinished}
+            options={[
+              { value: 'dot', label: t('settings.attentionBlinkFinishedDot') },
+              { value: 'pulse', label: t('settings.attentionBlinkFinishedPulse') },
+            ]}
           />
         </SettingRow>
         {/* Main owns the value (it runs the idle rule while the window is

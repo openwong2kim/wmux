@@ -35,9 +35,10 @@ describe('groupFleetPanes — status → section and detail (the SSOT table)', (
     expect(bare.detail).toBeUndefined();
   });
 
-  it('waiting WITH a pending question → needsYou with the question', () => {
+  // 2026-10-07 — the turn ended on the question: a finished turn, not a dialog.
+  it('waiting WITH a pending question → finished with the question', () => {
     const row = only([pane('w', { agentStatus: 'waiting' })], { surfacePendingQuestion: { w: 'Ship it?' } });
-    expect(row).toMatchObject({ section: 'needsYou', detail: 'Ship it?', detailSource: 'question' });
+    expect(row).toMatchObject({ section: 'finished', detail: 'Ship it?', detailSource: 'question' });
   });
 
   it('waiting WITHOUT a question → idle with the last message, else the idle fallback', () => {
@@ -139,11 +140,17 @@ describe('groupFleetPanes — Needs you severity and agent text', () => {
       pane('done', { agentStatus: 'complete' }),
       pane('stale', { agentStatus: 'running', unverifiable: true }),
       pane('err', { agentStatus: 'error' }),
-      pane('ask', { agentStatus: 'waiting' }),
+      pane('ask', { agentStatus: 'awaiting_input' }),
       pane('halt', { agentStatus: 'idle', supervision: { status: 'stopped', restartCount: 2 } }),
     ], { surfacePendingQuestion: { ask: 'Continue?' } });
     expect(ids(g.needsYou)).toEqual(['ask', 'err', 'halt', 'stale']);
     expect(ids(g.finished)).toEqual(['done']);
+  });
+
+  it('a turn that ended on a question leaves Needs you for finished', () => {
+    const g = groupFleetPanes([pane('ended', { agentStatus: 'waiting' })], { surfacePendingQuestion: { ended: 'Continue?' } });
+    expect(ids(g.needsYou)).toEqual([]);
+    expect(ids(g.finished)).toEqual(['ended']);
   });
 
   it('flattens bidi / zero-width characters out of a running row\'s activity', () => {
@@ -167,6 +174,8 @@ describe('background tab that needs you (attentionPtyId)', () => {
   it('records the background pty and reads its question for the row detail', () => {
     const state = {
       workspaces: [ws], surfaceAgentStatus: {}, surfaceActivity: {},
+      // A real dialog on the background tab (the pane's lifecycle status).
+      surfaceAgent: { 'pty-back': { name: 'Claude Code', status: 'awaiting_input' as const } },
       surfacePendingQuestion: { 'pty-back': 'Which region?' },
     };
     const [p] = selectFleetPanes(state);

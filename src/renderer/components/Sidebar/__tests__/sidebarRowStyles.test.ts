@@ -17,10 +17,12 @@ const rule = (selector: string): string => {
 };
 
 describe('needs you vs selection', () => {
-  it('fills a needs-you row one step below the selection, with the dash', () => {
+  // Owner decision 2026-10-07: a 1px solid attention hairline, not a dash.
+  it('fills a needs-you row one step below the selection, with the hairline', () => {
     const needs = rule('.wmux-sidebar .sidebar-row.sidebar-row-needs');
     expect(needs).toContain('background: var(--selection-subtle)');
-    expect(needs).toContain('border-style: dashed');
+    expect(needs).toContain('border-style: solid');
+    expect(needs).toContain('border-color: var(--attention-hairline, var(--attention))');
   });
   it('lifts a needs-you row on hover', () => {
     expect(rule('.wmux-sidebar .sidebar-row.sidebar-row-needs:hover')).toContain('background: var(--selection-hover)');

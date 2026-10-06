@@ -1,5 +1,6 @@
 // Moa's needs-you rows wear the sidebar's attention grammar: words in
-// --attention-text, a dashed --attention border, over --selection-subtle (the
+// --attention-text, a 1px --attention-hairline border (2026-10-07; its own
+// per-look contrast test is in attentionColors.test.ts), over --selection-subtle (the
 // text colour mixed into the panel, 8% on dark looks, 5% on light ones). The
 // words must read at 4.5:1 and the dash at 3:1 on that fill, in every look.
 import { describe, expect, it } from 'vitest';
@@ -22,7 +23,7 @@ describe('Moa needs-you contrast', () => {
 
   it('the rows use the attention tokens, never the caution yellow', () => {
     expect(NEEDS_YOU_TEXT).toBe('text-[var(--attention-text)]');
-    expect(NEEDS_YOU_ROW).toContain('border-[var(--attention)]');
+    expect(NEEDS_YOU_ROW).toContain('border-[var(--attention-hairline,var(--attention))]');
     expect(NEEDS_YOU_ROW).toContain('bg-[var(--selection-subtle)]');
     const dir = path.join(__dirname, '..');
     for (const file of ['MoaMemoryCard.tsx', 'MoaBubble.tsx', 'MoaMascot.tsx', 'MoaTitlebarButton.tsx',

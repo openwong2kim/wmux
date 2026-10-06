@@ -21,6 +21,7 @@ import { retentionMigrationDone, markRetentionMigrationDone } from '../retention
 import { decUnread } from './notificationSlice';
 import { mergeDeadPaneRecovery, type DeadPaneRecovery } from '../../../shared/ptyRecovery';
 import { stashedPaneLiveness } from '../../../shared/paneStash';
+import { resolveAttentionBlink, resolveAttentionBlinkFinished, resolveAttentionRemindMs } from '../../components/Sidebar/attentionBlink';
 import { clampSidebarWidth, dropOwnerFoldKeys, movePinned, pinnedFirst, pruneTaskGroupExpanded, resolveSidebarSortMode, sortModeMigratedToAttention, unpinNestedTasks } from '../../utils/sidebarLayout';
 import {
   collectLeafIds,
@@ -1376,6 +1377,9 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (typeof data.sidebarShowPaneCoordinates === 'boolean') {
         state.sidebarShowPaneCoordinates = data.sidebarShowPaneCoordinates;
       }
+      state.attentionBlink = resolveAttentionBlink(data.attentionBlink);
+      state.attentionBlinkRemindMs = resolveAttentionRemindMs(data.attentionBlinkRemindMs);
+      state.attentionBlinkFinished = resolveAttentionBlinkFinished(data.attentionBlinkFinished);
       // #1481 — the sort mode supersedes the attention flag; a session that
       // predates it carries only the flag, which maps onto 'attention'.
       state.sidebarSortMode = resolveSidebarSortMode(data);

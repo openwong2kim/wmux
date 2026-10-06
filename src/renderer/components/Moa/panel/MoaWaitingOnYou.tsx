@@ -1,7 +1,7 @@
 // "Waiting on you": every workspace's pending decision, answerable in place,
 // with Moa's own "Remember this?" card (MoaMemoryCard) as the first row.
 // A decision is the one thing on screen waiting on the operator, so each row
-// wears the needs-you grammar (a dashed attention-orange border over the
+// wears the needs-you grammar (a 1px attention-orange hairline over the
 // selection-subtle fill, the orange eyebrow as its one state mark). Answers go to the decision's own
 // workspace, not to Moa's.
 import { createContext, useEffect, useRef, useState } from 'react';
@@ -73,10 +73,10 @@ export function useDelegatedApprovals(api: DelegatedApprovalsApi | undefined = d
  *  surfaces); marks, dashes and dots in `--attention`. */
 export const NEEDS_YOU_TEXT = 'text-[var(--attention-text)]';
 
-/** A row that needs you: the sidebar's grammar, a dashed `--attention`
+/** A row that needs you: the sidebar's grammar, a 1px `--attention-hairline`
  *  border over a fill one step below the selection. */
 export const NEEDS_YOU_ROW =
-  'rounded-[10px] px-3 py-2.5 border border-dashed border-[var(--attention)] bg-[var(--selection-subtle)]';
+  'rounded-[10px] px-3 py-2.5 border border-solid border-[var(--attention-hairline,var(--attention))] bg-[var(--selection-subtle)]';
 
 export function MoaWaitingOnYou({
   decisions,

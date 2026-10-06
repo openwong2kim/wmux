@@ -303,6 +303,8 @@ describe('FleetView — row verbs', () => {
           leaf('p5x', [surface('s5x', 'pty-5x')]),
         ]), 'p5')],
         surfaceAgentStatus: {},
+        // A real dialog on the background tab (its lifecycle status).
+        surfaceAgent: { 'pty-5b': { name: 'Claude Code', status: 'awaiting_input' } },
         surfacePendingQuestion: { 'pty-5b': 'Which region?' },
       });
     });
@@ -332,6 +334,8 @@ describe('FleetView — row verbs', () => {
         ]), 'p5')],
         activeWorkspaceId: 'ws-5',
         surfaceAgentStatus: {},
+        // A real dialog on the background tab (its lifecycle status).
+        surfaceAgent: { 'pty-5b': { name: 'Claude Code', status: 'awaiting_input' } },
         surfacePendingQuestion: { 'pty-5b': 'Which region?' },
       });
     });

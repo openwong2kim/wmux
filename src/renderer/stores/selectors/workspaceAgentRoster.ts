@@ -6,7 +6,7 @@ import { remoteAgentKey } from '../../../shared/remoteHosts';
 import { agentDisplayToSlug } from '../../../shared/agentIdentity';
 import type { StoreState } from '../index';
 import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
-import { HOOK_RUNNING_TTL_MS, isHookRunning, isQuietUsageLimitError, pickStashedRepresentativeSurface, resolveRemoteAgent } from './fleet';
+import { attentionMarkStatus, HOOK_RUNNING_TTL_MS, isHookRunning, isQuietUsageLimitError, pickStashedRepresentativeSurface, resolveRemoteAgent } from './fleet';
 
 /** One detected agent session, kept attached to the terminal surface that owns it. */
 export interface WorkspaceAgentRosterRow {
@@ -217,13 +217,12 @@ export function selectWorkspaceAgentRoster(
           ? 'idle'
           : agent.status;
 
-      // A transcript-derived pending question is the strongest evidence that
-      // this agent needs input. Otherwise an unseen attention state outranks
-      // the retained lifecycle state. A fresh activity stamp can promote idle
-      // to running, while complete/waiting/error remain explicit states.
-      let status: AgentStatus = pendingQuestion
-        ? 'awaiting_input'
-        : attentionStatus ?? lifecycleStatus;
+      // An unseen attention state outranks the retained lifecycle state. A
+      // transcript-derived question no longer promotes to awaiting_input: a
+      // Stop minted it, so the turn is finished (owner decision 2026-10-07).
+      // A fresh activity stamp can promote idle to running, while
+      // complete/waiting/error remain explicit states.
+      let status: AgentStatus = attentionStatus ?? lifecycleStatus;
       if (
         !attentionStatus &&
         !pendingQuestion &&
@@ -313,8 +312,6 @@ export function selectWorkspaceAgentRoster(
     let status: AgentStatus;
     if (liveness === 'exited') {
       status = 'error';
-    } else if (pendingQuestion) {
-      status = 'awaiting_input';
     } else {
       const lifecycle: AgentStatus =
         (agent?.status === 'running' && !hookRunning) || isQuietUsageLimitError(state.usageLimitWaiting, ptyId, agent?.status)
@@ -497,13 +494,13 @@ export function chipStatusRank(status: AgentStatus): number {
  */
 export function buildRosterChip(projection: WorkspaceAgentRosterProjection): RosterChip {
   const visible = projection.rows.filter((row) => !row.stashed);
-  const eff = (row: WorkspaceAgentRosterRow) => (row.status === 'waiting' && !row.pendingQuestion ? 'idle' : row.status);
+  const eff = (row: WorkspaceAgentRosterRow) => attentionMarkStatus(row.status, row.pendingQuestion);
   const ranked = visible
     .map((row, index) => ({ row, index }))
     .sort((a, b) => chipStatusRank(eff(a.row)) - chipStatusRank(eff(b.row)) || a.index - b.index)
-    // Plain waiting with no question is idle in the shared class
+    // A turn-end `waiting` is idle or finished in the shared class
     // (fleetAttentionClass) — the summary must not draw it as needs you.
-    .map(({ row }) => ({ slug: row.slug, agentName: row.agentName, status: row.status === 'waiting' && !row.pendingQuestion ? 'idle' as const : row.status }));
+    .map(({ row }) => ({ slug: row.slug, agentName: row.agentName, status: eff(row) }));
   return {
     agentCount: projection.agentCount,
     stashedCount: projection.stashedCount,

@@ -9,7 +9,9 @@ import { useT } from '../../hooks/useT';
 import type { TranslationKey } from '../../i18n/locales/en';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
 import { StatusMarkView } from './AgentMarks';
-import { selectSidebarUnseenWorkspaces } from '../../stores/selectors/sidebarSeen';
+import { selectSidebarUnseenWorkspaces, visibleWorkspaceIds } from '../../stores/selectors/sidebarSeen';
+import { attentionPulseClass } from './attentionBlink';
+import { usePrefersReducedMotion } from '../ui/MediaPreview';
 import { workspaceHasUsageLimitWaiting } from '../../stores/slices/usageLimitSlice';
 import { selectWorkspaceAttentionClasses } from '../../stores/selectors/fleet';
 import { IconCopy, IconX, IconGear, IconChevron, IconBell, IconFolder, IconTerminal, IconExternalLink, IconCheck, IconGitBranch, IconWorktree, IconWarning, IconFanOut, IconPin } from '../icons';
@@ -515,7 +517,11 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
   // paint a "Needs you" row that sorts to the bottom.
   const attentionClass = useStore((s) => selectWorkspaceAttentionClasses(s)[workspaceId] ?? 'idle');
   const needsYou = attentionClass === 'needsYou' && (agentStatus === 'waiting' || agentStatus === 'awaiting_input');
-  const markStatus = agentStatus === 'waiting' && attentionClass !== 'needsYou' ? 'idle' : agentStatus;
+  // A turn-end `waiting` that is not needs you draws the finished check when
+  // the turn ended on a question, else nothing (attentionMarkStatus).
+  const markStatus = agentStatus === 'waiting' && attentionClass !== 'needsYou'
+    ? attentionClass === 'finished' ? 'complete' : 'idle'
+    : agentStatus;
   // A failed turn is its own tier (fleetAttentionClass): it says "Error" where
   // a needs-you row says "Needs you", and sorts above finished and idle rows
   // however old it is. Fleet still lists it under Needs you.
@@ -544,6 +550,28 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
   // Glance board (2026-09-25): something here changed since it was last in
   // view, and it wants a look. Fleet's changed-dot rule: --text-main, never amber.
   const unseen = useStore((s) => !!selectSidebarUnseenWorkspaces(s)[workspaceId]);
+  // 2026-10-07 — a finished turn draws no dash; the unseen dot is its "done"
+  // dot, cleared when the workspace is viewed.
+  const done = unseen && attentionClass === 'finished';
+  // Attention blink: a CSS class picked from state (attentionBlink.ts). Never
+  // on a row whose workspace is on screen, never under reduced motion.
+  const blinkMode = useStore((s) => s.attentionBlink);
+  const blinkRemindMs = useStore((s) => s.attentionBlinkRemindMs);
+  const blinkFinished = useStore((s) => s.attentionBlinkFinished);
+  const onScreen = useStore((s) => visibleWorkspaceIds(s).has(workspaceId));
+  const reducedMotion = usePrefersReducedMotion();
+  const visible = isActive || onScreen;
+  // Whether this wait has already been on screen: "once" is then spent and
+  // "remind" waits a full interval. Reset when the wait ends (render-time
+  // derived state, no effect).
+  const [seenThisWait, setSeenThisWait] = useState(false);
+  if (needsYou && visible && !seenThisWait) setSeenThisWait(true);
+  if (!needsYou && seenThisWait) setSeenThisWait(false);
+  // A nested task row draws no box of its own, so it does not pulse either.
+  const pulseClass = taskRow ? '' : attentionPulseClass({
+    needsYou, done, visible, reducedMotion, seenThisWait,
+    mode: blinkMode, remindMs: blinkRemindMs, finished: blinkFinished,
+  });
   const toggleSidebarPin = useStore((s) => s.toggleSidebarPin);
   // Settle / snooze (main owns both; the menu only sends the verbs). Scalars,
   // so a push about another workspace does not re-render this row.
@@ -1193,7 +1221,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
         {...tokenAttrs('bgSurface', 'bg')}
         // Card states (idle / hover / active / needs you) are painted by the
         // .wmux-sidebar .sidebar-row rules in ui.css.
-        className={`sidebar-row px-2.5 ${taskRow ? 'sidebar-row-task py-1.5' : 'py-2'} cursor-pointer rounded-md select-none ${needsYou ? 'sidebar-row-needs' : ''} ${
+        className={`sidebar-row px-2.5 ${taskRow ? 'sidebar-row-task py-1.5' : 'py-2'} cursor-pointer rounded-md select-none ${needsYou ? 'sidebar-row-needs' : ''} ${pulseClass} ${
           isActive ? 'sidebar-row-active' : ''
         }`}
         style={isMultiview ? { borderLeft: '2px solid var(--accent-blue)' } : undefined}
@@ -1242,6 +1270,9 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
         <span className="mt-1 flex-none">
           <StatusMarkView
             status={markStatus}
+            // The row's pulse setting owns its motion, so the mark does not
+            // breathe on its own (Off means still).
+            quiet={needsYou}
             unverifiable={unverifiableMinutes > 0}
             usageWaiting={usageWaiting}
             label={unverifiableMinutes > 0
@@ -1299,6 +1330,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
                     aria-label={t('sidebar.changedSinceSeen')}
                     title={t('sidebar.changedSinceSeen')}
                     data-sidebar-unseen
+                    data-sidebar-done={done ? '' : undefined}
                   />
                 )}
                 {pinned && !taskRow && (
