@@ -1315,7 +1315,7 @@ export const pl = {
   'moa.settings.approvalPress': "Zatwierdzaj drobne prośby",
   'moa.settings.approvalPressDesc': "Gdy pracownik w obszarze roboczym w trybie Danger prosi o zgodę na uruchomienie polecenia lub edycję pliku, wmux zgadza się za Ciebie i informuje o tym Moa. Wszystko, co wygląda na destrukcyjne, oraz każdy obszar roboczy poza trybem Danger nadal czeka na Ciebie. Domyślnie wyłączone.",
   'moa.settings.shadowJudge': "Sędzia w cieniu (tylko zapis)",
-  'moa.settings.shadowJudgeDesc': "Gdy agent zadaje Ci pytanie, Moa ustala na podstawie numerowanych reguł z deck-policy.md, co by odpowiedziała, i zapisuje to obok Twojej prawdziwej odpowiedzi. Niczego nie odpowiada ani nie naciska; każde pytanie nadal czeka na Ciebie. Jedno wywołanie Claude na pytanie (do 200 dziennie). Domyślnie wyłączone.",
+  'moa.settings.shadowJudgeDesc': "Gdy agent zadaje Ci pytanie, Moa ustala na podstawie numerowanych reguł z deck-policy.md, co by odpowiedziała, i zapisuje to obok Twojej prawdziwej odpowiedzi. Niczego nie odpowiada ani nie naciska; każde pytanie nadal czeka na Ciebie. Jedno wywołanie Claude na pytanie (do 200 dziennie). Domyślnie wyłączone. Wymaga włączonej Moa.",
   'moa.settings.shadowReadout': "{decisions} decyzji · zgodność {agreement} ({compared} porównanych) · {escalations} przekazanych · {tokens} tokenów dziś",
   'moa.settings.retro': "Cotygodniowe podsumowanie",
   'moa.settings.retroDesc': "Raz w tygodniu, gdy Moa jest włączona, krótkie podsumowanie w briefingu Moa: jak często Cię pytano, praca, która długo czekała, powtarzające się pytania i najwolniejsza praca.",

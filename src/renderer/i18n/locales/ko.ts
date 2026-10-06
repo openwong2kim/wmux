@@ -852,7 +852,7 @@ export const ko = {
   'moa.settings.approvalPress': "작은 승인 대신 누르기",
   'moa.settings.approvalPressDesc': "위험(Danger) 모드 워크스페이스의 워커가 명령 실행이나 파일 수정 허락을 물으면 wmux가 대신 허락하고 Moa에게 나중에 알립니다. 파괴적으로 보이는 작업과 위험 모드가 아닌 워크스페이스는 그대로 직접 확인합니다. 기본은 꺼짐입니다.",
   'moa.settings.shadowJudge': "그림자 판정 (기록만)",
-  'moa.settings.shadowJudgeDesc': "에이전트가 질문하면 Moa가 deck-policy.md의 번호 규칙으로 무엇을 답했을지 판단해, 실제 답과 나란히 기록합니다. 아무것도 답하거나 누르지 않으며, 모든 질문은 그대로 직접 답을 기다립니다. 질문마다 Claude 호출 1회(하루 최대 200회)를 씁니다. 기본은 꺼짐입니다.",
+  'moa.settings.shadowJudgeDesc': "에이전트가 질문하면 Moa가 deck-policy.md의 번호 규칙으로 무엇을 답했을지 판단해, 실제 답과 나란히 기록합니다. 아무것도 답하거나 누르지 않으며, 모든 질문은 그대로 직접 답을 기다립니다. 질문마다 Claude 호출 1회(하루 최대 200회)를 씁니다. 기본은 꺼짐입니다. Moa가 켜져 있어야 합니다.",
   'moa.settings.shadowReadout': "판정 {decisions}건 · 일치율 {agreement} (비교 {compared}건) · 넘김 {escalations}건 · 오늘 토큰 {tokens}",
   'moa.settings.retro': "주간 회고",
   'moa.settings.retroDesc': "Moa가 켜져 있으면 일주일에 한 번 Moa 브리핑에 짧은 요약을 보여 줍니다: 얼마나 자주 물어봤는지, 오래 기다린 일, 반복된 질문, 가장 느린 일.",

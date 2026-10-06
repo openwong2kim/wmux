@@ -101,6 +101,8 @@ describe('precheckAlwaysEscalate', () => {
 
   it('matches option labels and the book phrases too', () => {
     expect(precheckAlwaysEscalate('Which one?', ['Delete it', 'Keep it'])).toBe('delete');
+    expect(precheckAlwaysEscalate('Remove the stale branches?', [])).toBe('delete');
+    expect(precheckAlwaysEscalate('Remove the unused import?', [])).toBeNull();
     expect(precheckAlwaysEscalate('Charge the customer card?', [], ['customer card'])).toBe('book-always-escalate');
   });
 

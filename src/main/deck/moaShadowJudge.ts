@@ -18,7 +18,7 @@
 // Measured against Claude Code 2.1.292 on 2026-10-07 (macOS), with the exact
 // argv judgeArgs() builds and the brain's env scrub (scrubBrainSpawnEnv):
 //   (a) hooks: `--debug hooks --debug-file <scratch>` logged 0 `Hook <Event>`
-//       lines under `--setting-sources project`; the control run with
+//       lines with judgeArgs() (stream-json for the init event); the control run with
 //       `--setting-sources user,project` logged 2 (the user's SessionStart hook
 //       fired). The user's ~/.claude/CLAUDE.md was not in context either (asked
 //       to quote any instruction file, the judge answered NONE; the control
@@ -71,7 +71,12 @@ export const ALWAYS_ESCALATE_CATEGORIES: ReadonlyArray<{ code: string; re: RegEx
     code: 'external-posting',
     re: /\b(?:publish\w*|tweet\w*|announce\w*)\b|\bpost\w*\b[^.?!\n]{0,30}\b(?:to|on)\b|\bcomment\w*\s+on\b|\bsend\w*\s+(?:an?\s+)?(?:email|message|dm)\b/i,
   },
-  { code: 'delete', re: /\b(?:delet\w*|remov\w*|rm\s+-rf?|drop\s+(?:table|database)|wipe\w*|purg\w*|destroy\w*)\b/i },
+  {
+    code: 'delete',
+    // `remove` only with a destructive object: "Remove the unused import?" is an
+    // ordinary refactor question.
+    re: /\b(?:delet\w*|rm\s+-rf?|drop\s+(?:table|database)|wipe\w*|purg\w*|destroy\w*)\b|\bremov\w*\s+(?:[\w-]+\s+){0,3}(?:branch\w*|repo\w*|files?|data|director\w*|folders?|workspaces?|worktrees?)\b/i,
+  },
   { code: 'migration', re: /\bmigrat\w*\b/i },
 ];
 

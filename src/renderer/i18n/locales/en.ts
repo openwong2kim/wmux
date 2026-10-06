@@ -1331,7 +1331,7 @@ export const en = {
   'moa.settings.approvalPress': "Press small approvals",
   'moa.settings.approvalPressDesc': "When a worker in a Danger workspace stops to ask permission to run a command or edit a file, wmux says yes for you and tells Moa afterwards. Anything that looks destructive, and every workspace not set to Danger, still waits for you. Off by default.",
   'moa.settings.shadowJudge': "Shadow judge (records only)",
-  'moa.settings.shadowJudgeDesc': "When an agent asks you a question, Moa decides what it would answer from the numbered rules in deck-policy.md and records that next to your real answer. It answers nothing and presses nothing; every question still waits for you. Uses one Claude call per question (up to 200 a day). Off by default.",
+  'moa.settings.shadowJudgeDesc': "When an agent asks you a question, Moa decides what it would answer from the numbered rules in deck-policy.md and records that next to your real answer. It answers nothing and presses nothing; every question still waits for you. Uses one Claude call per question (up to 200 a day). Off by default. Needs Moa on.",
   'moa.settings.shadowReadout': "{decisions} decisions · {agreement} agreement ({compared} compared) · {escalations} escalations · {tokens} tokens today",
   'moa.settings.retro': "Weekly retro",
   'moa.settings.retroDesc': "Once a week, while Moa is on, a short summary on Moa's briefing: how often you were asked, work that sat waiting, repeated questions and the slowest work.",
