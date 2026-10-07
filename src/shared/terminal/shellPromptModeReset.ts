@@ -71,6 +71,15 @@
  * resolution's id, and when the parser reaches the marker the conditions are
  * checked again. If they no longer hold, the DECRSTs inside are swallowed.
  *
+ * Replayed focus arm. xterm answers every `?1004h` it parses with an
+ * immediate focus report, and a reattach replays the pane's stored output
+ * (ConPTY's own `?1004h` preamble on every Windows session, the snapshot's
+ * mode tail, a dead agent's arm). Each replayed arm therefore typed one
+ * `ESC[I`/`ESC[O` into whatever owns the PTY now; in a console a killed agent
+ * left in VT-input mode that is `[O` on the PowerShell prompt. When the caller
+ * supplies `isReplaying`, that one answer is dropped. The mode itself still
+ * applies: a live program that armed it keeps getting later focus changes.
+ *
  * `reset()` must be called next to every `terminal.reset()`: a pane switch or
  * a snapshot replay starts a new stream (ConPTY's preamble included), and the
  * guard's phase from the old one would otherwise count that preamble's ?1004h
@@ -114,6 +123,15 @@ export type ForegroundGoneProbe = (ctx: { promptAt: number }) =>
 export interface ShellPromptModeResetOptions {
   /** Desktop only. Omit to let the prompt mark alone decide. */
   isForegroundGone?: ForegroundGoneProbe;
+  /**
+   * True while stored output (a reattach replay or snapshot) is being parsed.
+   * xterm answers every `?1004h` it parses with an immediate `ESC[I`/`ESC[O`
+   * through onData, so a REPLAYED `?1004h` sends a focus report that no
+   * running program asked for. While this returns true, that one answer is
+   * dropped by `dropsReport()`. Omit it where the caller already drops every
+   * onData during a repaint (phone page, remote mirror).
+   */
+  isReplaying?: () => boolean;
   /** Delay before asking again after an `undefined` answer. Default 5 s. */
   recheckMs?: number;
   /** Answers asked for per prompt before giving up (the drop then stays until a new owner). Default 8. */
@@ -128,6 +146,8 @@ export interface ShellPromptModeResetOptions {
 const MOUSE_TRACKING_MODES: ReadonlySet<number> = new Set([9, 1000, 1002, 1003]);
 const FOCUS_REPORTING_MODE = 1004;
 const FOCUS_RESET = '\x1b[?1004l';
+const FOCUS_IN_REPORT = '\x1b[I';
+const FOCUS_OUT_REPORT = '\x1b[O';
 /** The alive-shell reset without focus: what a mouse-only leak gets. */
 const MOUSE_ONLY_RESETS = STALE_REPLAY_ALIVE_SHELL_RESETS.replace(FOCUS_RESET, '');
 
@@ -161,7 +181,10 @@ export interface ShellPromptModeReset extends Disposable {
   readonly appliedCount: number;
   /** True while mouse / focus reports are being held back (see `dropsReport`). */
   readonly dropping: boolean;
-  /** Whether onData should drop `data`: a pure mouse/focus report while a reset is owed. */
+  /**
+   * Whether onData should drop `data`: a pure mouse/focus report while a reset
+   * is owed, or xterm's answer to a replayed `?1004h` (see `isReplaying`).
+   */
   dropsReport(data: string): boolean;
   /** Forget everything folded so far. Call next to every `terminal.reset()`. */
   reset(): void;
@@ -228,8 +251,22 @@ export function installShellPromptModeReset(
   /** Inside a guard marker whose re-validation failed: swallow its DECRSTs. */
   let veto = false;
   let applied = 0;
+  /**
+   * A replayed `?1004h` just parsed: xterm's own answer to it (one focus
+   * report, emitted synchronously right after this guard's handler returns)
+   * is dropped. Cleared on a microtask, so it can never outlive the parse
+   * slice that set it and eat a real focus change later.
+   */
+  let replayFocusAnswerPending = false;
 
   const now = () => (opts.now ?? Date.now)();
+  const isReplayingNow = (): boolean => {
+    try {
+      return opts.isReplaying?.() === true;
+    } catch {
+      return false;
+    }
+  };
 
   const stopResolving = () => {
     resolution = 'idle';
@@ -316,6 +353,10 @@ export function installShellPromptModeReset(
     let mouseOn = term.modes.mouseTrackingMode !== 'none';
     for (const p of params) {
       if (typeof p !== 'number') continue;
+      if (p === FOCUS_REPORTING_MODE && !replayFocusAnswerPending && isReplayingNow()) {
+        replayFocusAnswerPending = true;
+        queueMicrotask(() => { replayFocusAnswerPending = false; });
+      }
       const mouse = MOUSE_TRACKING_MODES.has(p);
       const focus = p === FOCUS_REPORTING_MODE && (phase !== 'unknown' || mouseOn);
       if (mouse) mouseOn = true;
@@ -365,9 +406,14 @@ export function installShellPromptModeReset(
     get appliedCount() { return applied; },
     get dropping() { return resolution !== 'idle'; },
     dropsReport(data: string) {
+      if (replayFocusAnswerPending && (data === FOCUS_IN_REPORT || data === FOCUS_OUT_REPORT)) {
+        replayFocusAnswerPending = false;
+        return true;
+      }
       return resolution !== 'idle' && isMouseOrFocusReport(data);
     },
     reset() {
+      replayFocusAnswerPending = false;
       stopResolving();
       phase = 'unknown';
       armedSincePrompt = false;

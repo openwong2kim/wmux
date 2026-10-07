@@ -683,6 +683,32 @@ const electronAPI = {
     set: (vendor: 'claude' | 'codex', on: boolean) =>
       ipcRenderer.invoke(IPC.ACCOUNT_ROTATION_SET, { vendor, on }) as Promise<{ ok: boolean }>,
   },
+  // agy (Antigravity CLI) accounts: one machine-wide sign-in, swapped by main.
+  // Snapshots carry emails, labels and quota fractions only — never a credential.
+  agyAccounts: {
+    list: () =>
+      ipcRenderer.invoke(IPC.AGY_ACCOUNT_LIST) as Promise<
+        import('../shared/agyAccounts').AgyAccountsSnapshot & {
+          login: import('../main/account/AgyAccountService').AgyLoginState;
+        }
+      >,
+    addCurrent: (label?: string) =>
+      ipcRenderer.invoke(IPC.AGY_ACCOUNT_ADD_CURRENT, { label }) as Promise<import('../shared/agyAccounts').AgyAccount>,
+    beginLogin: () =>
+      ipcRenderer.invoke(IPC.AGY_ACCOUNT_LOGIN_BEGIN) as Promise<import('../main/account/AgyAccountService').AgyLoginState>,
+    cancelLogin: () => ipcRenderer.invoke(IPC.AGY_ACCOUNT_LOGIN_CANCEL) as Promise<{ ok: boolean }>,
+    activate: (id: string) => ipcRenderer.invoke(IPC.AGY_ACCOUNT_ACTIVATE, { id }) as Promise<{ ok: boolean }>,
+    rename: (id: string, label: string) =>
+      ipcRenderer.invoke(IPC.AGY_ACCOUNT_RENAME, { id, label }) as Promise<{ ok: boolean }>,
+    remove: (id: string) => ipcRenderer.invoke(IPC.AGY_ACCOUNT_REMOVE, { id }) as Promise<{ ok: boolean }>,
+    setAutoRotate: (on: boolean) =>
+      ipcRenderer.invoke(IPC.AGY_ACCOUNT_SET_AUTO_ROTATE, { on }) as Promise<{ ok: boolean }>,
+    onChanged: (callback: () => void) => {
+      const listener = (): void => callback();
+      ipcRenderer.on(IPC.AGY_ACCOUNT_CHANGED, listener);
+      return () => { ipcRenderer.removeListener(IPC.AGY_ACCOUNT_CHANGED, listener); };
+    },
+  },
   // Scheduled runs. Invokes pass through to the daemon's automation.* RPCs and
   // never reject for a missing daemon (empty lists / `{ ok:false }`). onPush
   // carries daemon events + connect-time snapshots; onOpenRun is an OS toast

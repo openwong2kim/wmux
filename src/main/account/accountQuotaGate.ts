@@ -3,15 +3,19 @@
 // Kept out of pty.handler.ts (which imports electron) so it can be tested.
 
 import { splitModelEnvMarker } from '../../shared/workerLaunch';
+import { stripPromptFileArgument } from '../../shared/promptFileArgument';
 import {
   envSetsKey,
   heldLaunchNotice,
   isCompoundLine,
   isNewSessionLaunch,
   launchInlineEnvKeys,
+  launchOptionValue,
   launchStem,
 } from '../../shared/accountQuota';
+import { agyModelFamily, type AgyLaunchDecision, type AgyModelFamily } from '../../shared/agyAccounts';
 import { getAccountRotationService, type RotationDecision } from './AccountRotationService';
+import { getAgyAccountService } from './AgyAccountService';
 import { VENDOR_ENV_KEYS, type Vendor } from './accountStore';
 
 export interface QuotaLaunchOptions {
@@ -22,6 +26,8 @@ export interface QuotaLaunchOptions {
 
 export interface AccountQuotaGateDeps {
   prepareLaunch?: (vendor: Vendor, workspaceId: string | undefined) => Promise<RotationDecision>;
+  /** agy branch: its machine-wide sign-in is handled by the agy account service. */
+  prepareAgyLaunch?: (family: AgyModelFamily) => Promise<AgyLaunchDecision>;
   platform?: string;
 }
 
@@ -34,7 +40,9 @@ export interface AccountQuotaGateDeps {
  * account (the vendor's config-dir key in the pane/profile env, or an inline
  * `KEY=… claude` prefix) is the user's choice and is left alone. A fan-out
  * worker line's model-env marker is wmux's own prefix, not a user command:
- * the checks run on the launch after it, and a hold keeps it. Never throws.
+ * the checks run on the launch after it, and a hold keeps it. Its prompt-file
+ * argument is wmux's own read of the task prompt, not a command chain, so it
+ * does not stop a hold. Never throws.
  */
 export async function withAccountQuota<T extends QuotaLaunchOptions>(
   options: T | undefined,
@@ -43,6 +51,7 @@ export async function withAccountQuota<T extends QuotaLaunchOptions>(
   if (!options?.initialCommand) return options;
   const { marker, command } = splitModelEnvMarker(options.initialCommand);
   const stem = launchStem(command);
+  if (stem === 'agy') return withAgyAccountQuota(options, { prepareLaunch: deps.prepareAgyLaunch });
   if (stem !== 'claude' && stem !== 'codex') return options;
   if (!isNewSessionLaunch(stem, command)) return options;
   const key = VENDOR_ENV_KEYS[stem];
@@ -53,7 +62,7 @@ export async function withAccountQuota<T extends QuotaLaunchOptions>(
     if (decision.kind === 'switch') return { ...options, env: { ...options.env, ...decision.env } };
     if (decision.kind === 'hold') {
       // Holding replaces the launch; never drop commands chained after it.
-      if (isCompoundLine(command)) {
+      if (isCompoundLine(stripPromptFileArgument(command))) {
         console.warn(`[account-rotation] ${stem} accounts are all out of quota, but the launch line runs other commands too: launching unchanged`);
         return options;
       }
@@ -62,6 +71,48 @@ export async function withAccountQuota<T extends QuotaLaunchOptions>(
     }
   } catch (err) {
     console.warn(`[account-rotation] launch gate failed, launching unchanged: ${String(err)}`);
+  }
+  return options;
+}
+
+export interface AgyQuotaGateDeps {
+  prepareLaunch?: (family: AgyModelFamily) => Promise<AgyLaunchDecision>;
+}
+
+/**
+ * The agy branch of the launch gate. agy keeps one machine-wide sign-in, so the
+ * agy account service may switch that sign-in to a registered account with
+ * quota before the line runs (only with its switch on, never away from an
+ * account picked by hand), judged on the quota of the model family the line
+ * launches. The same rules as Claude and Codex apply: only a
+ * new session is gated (not `--continue`, `--conversation` or a management
+ * subcommand), a fan-out worker's model-env marker is kept, and a hold never
+ * drops commands chained after the launch. Never throws.
+ */
+export async function withAgyAccountQuota<T extends QuotaLaunchOptions>(
+  options: T | undefined,
+  deps: AgyQuotaGateDeps = {},
+): Promise<T | undefined> {
+  if (!options?.initialCommand) return options;
+  const { marker, command } = splitModelEnvMarker(options.initialCommand);
+  if (launchStem(command) !== 'agy' || !isNewSessionLaunch('agy', command)) return options;
+  try {
+    // Only the quota of the model family this launch runs on decides (`--model`, else agy's Gemini default).
+    const family = agyModelFamily(launchOptionValue(command, '--model'));
+    const prepare = deps.prepareLaunch ?? ((f: AgyModelFamily) => getAgyAccountService().prepareLaunch(f));
+    const decision = await prepare(family);
+    if (decision.ok) return options;
+    if (isCompoundLine(stripPromptFileArgument(command))) {
+      console.warn('[agy-accounts] agy accounts are all out of quota, but the launch line runs other commands too: launching unchanged');
+      return options;
+    }
+    const scope = decision.reason === 'active-exhausted' ? 'active' : 'all';
+    console.warn(scope === 'active'
+      ? '[agy-accounts] agy launch held: the active agy account is out of quota and may not be switched away from'
+      : '[agy-accounts] agy launch held: every registered agy account is out of quota');
+    return { ...options, initialCommand: marker + heldLaunchNotice('agy', decision.availableAtMs, scope) };
+  } catch (err) {
+    console.warn(`[agy-accounts] launch gate failed, launching unchanged: ${String(err)}`);
   }
   return options;
 }

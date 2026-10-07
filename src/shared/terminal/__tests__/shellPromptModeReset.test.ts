@@ -462,3 +462,86 @@ describe('installShellPromptModeReset — ConPTY focus (#1794 review item 4)', (
     expect(writes.join('')).not.toContain('?1004h');
   });
 });
+
+describe('installShellPromptModeReset — replayed focus arm', () => {
+  /**
+   * xterm.js (the browser build) answers every `?1004h` it parses with an
+   * immediate focus report through onData, from its built-in DECSET handler.
+   * @xterm/headless has no such answer, so it is simulated here by a handler
+   * registered BEFORE the guard: xterm runs later-registered handlers first,
+   * so this one runs after the guard's, exactly where the built-in does.
+   */
+  function makeAnswering(isReplaying: () => boolean) {
+    const term = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
+    const forwarded: string[] = [];
+    const dropped: string[] = [];
+    let guardRef: ReturnType<typeof installShellPromptModeReset> | null = null;
+    const onData = (data: string) => {
+      if (guardRef?.dropsReport(data)) dropped.push(data);
+      else forwarded.push(data);
+    };
+    term.parser.registerCsiHandler({ prefix: '?', final: 'h' }, (params) => {
+      if (params.includes(1004)) onData(`${ESC}[O`);
+      return false;
+    });
+    const guard = installShellPromptModeReset(term, { isReplaying });
+    guardRef = guard;
+    const feed = (data: string) => new Promise<void>((resolve) => term.write(data, resolve));
+    return { term, guard, forwarded, dropped, onData, feed };
+  }
+
+  it("drops xterm's answer to a replayed ?1004h but keeps the mode armed", async () => {
+    const { term, forwarded, dropped, feed } = makeAnswering(() => true);
+    await feed(CONPTY_START + 'PS C:\\> ');
+    expect(dropped).toEqual([`${ESC}[O`]);
+    expect(forwarded).toEqual([]);
+    expect(term.modes.sendFocusMode).toBe(true);
+  });
+
+  it('drops the answer to every replayed ?1004h in one chunk', async () => {
+    const { dropped, forwarded, feed } = makeAnswering(() => true);
+    // ConPTY's preamble in the ring, then the snapshot's mode tail.
+    await feed(CONPTY_START + 'PS C:\\> ' + `${ESC}[?1004h`);
+    expect(dropped).toEqual([`${ESC}[O`, `${ESC}[O`]);
+    expect(forwarded).toEqual([]);
+  });
+
+  it('forwards the answer to a live ?1004h (a running program asked for it)', async () => {
+    const { forwarded, dropped, feed } = makeAnswering(() => false);
+    await feed(PROMPT + COMMAND + AGENT_ARMS);
+    expect(forwarded).toEqual([`${ESC}[O`]);
+    expect(dropped).toEqual([]);
+  });
+
+  it('never drops a later, real focus change', async () => {
+    let replaying = true;
+    const { forwarded, dropped, onData, feed } = makeAnswering(() => replaying);
+    await feed(CONPTY_START);
+    expect(dropped).toHaveLength(1);
+    // Even with the replay mute still held (it fails closed), the drop was one-shot.
+    onData(`${ESC}[I`);
+    replaying = false;
+    onData(`${ESC}[O`);
+    expect(forwarded).toEqual([`${ESC}[I`, `${ESC}[O`]);
+  });
+
+  it('a throwing isReplaying counts as live', async () => {
+    const { forwarded, dropped, feed } = makeAnswering(() => { throw new Error('disposed'); });
+    await feed(CONPTY_START);
+    expect(forwarded).toEqual([`${ESC}[O`]);
+    expect(dropped).toEqual([]);
+  });
+
+  it('without isReplaying nothing changes (phone page, mirror)', async () => {
+    const term = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
+    const seen: boolean[] = [];
+    let guardRef: ReturnType<typeof installShellPromptModeReset> | null = null;
+    term.parser.registerCsiHandler({ prefix: '?', final: 'h' }, (params) => {
+      if (params.includes(1004)) seen.push(guardRef?.dropsReport(`${ESC}[O`) ?? false);
+      return false;
+    });
+    guardRef = installShellPromptModeReset(term);
+    await new Promise<void>((resolve) => term.write(CONPTY_START, resolve));
+    expect(seen).toEqual([false]);
+  });
+});

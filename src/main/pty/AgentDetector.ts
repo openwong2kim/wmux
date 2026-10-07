@@ -377,6 +377,10 @@ const AGENT_PATTERNS: AgentPattern[] = [
       { regex: /^\s*Do\s*you\s*trust\s*the\s*contents\s*of\s*this\s*project\?/, status: 'awaiting_input', message: 'Project trust prompt' },
       { regex: /^\s*esc\s*to\s*cancel/,                                        status: 'running',        message: 'Working' },
       { regex: /^\s*\?\s*for\s*shortcuts/,                                     status: 'waiting',        message: 'Ready for input' },
+      // A request refused for quota. Error forms only: the model picker shows
+      // "Quota available" / "Quota exhausted" labels in normal use. Pane status
+      // only: account choice reads the quota sensor, never pane text.
+      { regex: /\bRESOURCE_EXHAUSTED\b|\bout\s+of\s+quota\b|\bquota\s+(?:has\s+been\s+)?exceeded\b|\bexhausted\s+your\s+(?:\w+\s+)?quota\b/i, status: 'error', message: 'Quota exhausted' },
     ],
   },
 

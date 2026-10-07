@@ -116,13 +116,14 @@ export function launchStem(command: string | undefined): string {
 
 // What makes a launch something other than a new agent session: resuming one
 // (its conversation already lives on an account), or a management
-// subcommand. From `claude --help` / `codex --help`. `codex exec` (alias `e`)
+// subcommand. From `claude --help` / `codex --help` / `agy --help` (1.2.15). `codex exec` (alias `e`)
 // is a new session that spends quota, so it is not listed.
-const NON_SESSION_FLAGS: Record<'claude' | 'codex', ReadonlySet<string>> = {
+const NON_SESSION_FLAGS: Record<QuotaProvider, ReadonlySet<string>> = {
   claude: new Set(['--resume', '-r', '--continue', '-c', '--version', '-v', '--help', '-h']),
   codex: new Set(['--version', '-V', '--help', '-h']),
+  agy: new Set(['--continue', '-c', '--conversation', '--version', '--help', '-h']),
 };
-const NON_SESSION_SUBCOMMANDS: Record<'claude' | 'codex', ReadonlySet<string>> = {
+const NON_SESSION_SUBCOMMANDS: Record<QuotaProvider, ReadonlySet<string>> = {
   claude: new Set([
     'agents', 'attach', 'auth', 'auto-mode', 'config', 'doctor', 'gateway', 'import', 'install', 'kill', 'login',
     'logout', 'logs', 'mcp', 'plugin', 'plugins', 'purge', 'respawn', 'rm', 'setup-token', 'stop', 'ultrareview',
@@ -133,18 +134,34 @@ const NON_SESSION_SUBCOMMANDS: Record<'claude' | 'codex', ReadonlySet<string>> =
     'exec-server', 'features', 'fork', 'help', 'login', 'logout', 'mcp', 'migrate-rollouts', 'plugin',
     'queue', 'remote-control', 'resume', 'review', 'sandbox', 'unarchive', 'update',
   ]),
+  agy: new Set([
+    'agent', 'agents', 'changelog', 'help', 'install', 'mcp', 'mic-serve', 'models', 'plugin', 'plugins',
+    'remote-control', 'update',
+  ]),
 };
 
 /** Whether a `claude` / `codex` launch line starts a new agent session (the
  *  only kind quota rotation may move or hold). Options are matched by the
  *  part before `=`; only the FIRST positional argument can be a subcommand,
  *  so prompt words (`claude fix the install script`) never are. */
-export function isNewSessionLaunch(vendor: 'claude' | 'codex', command: string | undefined): boolean {
+export function isNewSessionLaunch(vendor: QuotaProvider, command: string | undefined): boolean {
   const tokens = launchTokens(command);
   const args = tokens.slice(tokens.findIndex((t) => !ENV_ASSIGNMENT.test(t)) + 1).map((t) => t.replace(/["']/g, ''));
   if (args.some((a) => a.startsWith('-') && NON_SESSION_FLAGS[vendor].has(a.split('=')[0]))) return false;
   const first = args.find((a) => !a.startsWith('-'));
   return first === undefined || !NON_SESSION_SUBCOMMANDS[vendor].has(first);
+}
+
+/** Value of a launch option (`--model x` or `--model=x`), unquoted; null when absent. */
+export function launchOptionValue(command: string | undefined, name: string): string | null {
+  const tokens = launchTokens(command);
+  const args = tokens.slice(tokens.findIndex((t) => !ENV_ASSIGNMENT.test(t)) + 1);
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i].replace(/["']/g, '');
+    if (arg === name) return args[i + 1]?.replace(/["']/g, '') ?? null;
+    if (arg.startsWith(`${name}=`)) return arg.slice(name.length + 1);
+  }
+  return null;
 }
 
 /** Whether the line does more than launch the agent — chaining (`;`, `&&`,
@@ -166,7 +183,12 @@ export function envSetsKey(env: Record<string, string> | undefined, key: string,
 }
 
 /** Text a held launch prints instead of starting the agent. Shell-neutral. */
-export function heldLaunchNotice(provider: QuotaProvider, availableAtMs: number | null): string {
-  const when = availableAtMs ? ` The first one frees up at ${new Date(availableAtMs).toLocaleString()}.` : '';
+export function heldLaunchNotice(provider: QuotaProvider, availableAtMs: number | null, scope: 'all' | 'active' = 'all'): string {
+  const at = availableAtMs ? new Date(availableAtMs).toLocaleString() : '';
+  if (scope === 'active') {
+    const when = at ? ` It frees up at ${at}.` : '';
+    return `echo "wmux: ${provider} was not started - the active ${provider} account is out of quota and wmux may not switch away from it.${when}"`;
+  }
+  const when = at ? ` The first one frees up at ${at}.` : '';
   return `echo "wmux: ${provider} was not started - every registered ${provider} account is out of quota.${when}"`;
 }

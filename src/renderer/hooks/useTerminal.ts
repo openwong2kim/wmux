@@ -1269,9 +1269,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // no process-truth channel (`pty.resources` is denied there), so it keeps
     // the prompt-mark-only behaviour, like the phone page and the mirror.
     const hasProcessTruth = typeof (window.electronAPI as { hostPlatform?: unknown }).hostPlatform !== 'function';
-    const promptModeGuard = installShellPromptModeReset(terminal, hasProcessTruth
-      ? { isForegroundGone: paneForegroundProbe(ptyId, window.electronAPI.pty) }
-      : undefined);
+    // A replayed `?1004h` makes xterm answer with a focus report on the spot;
+    // nothing running asked for it, so the guard drops that one answer while
+    // stored output is being parsed (the same mute the OSC 52 bridge reads).
+    const promptModeGuard = installShellPromptModeReset(terminal, {
+      isReplaying: () => isReplayMuted(replayMuteRef.current),
+      ...(hasProcessTruth ? { isForegroundGone: paneForegroundProbe(ptyId, window.electronAPI.pty) } : {}),
+    });
 
     const fitAddon = fixedGeometryRef.current
       ? new FixedGeometryFitAddon(() => fixedGeometryRef.current)
