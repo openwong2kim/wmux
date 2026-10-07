@@ -103,7 +103,9 @@ export function requiredChecksGreen(facts: PrLaneFacts, headSha: string): LaneCh
 
 /** Release, CI and dependency paths: [reason, test]. Paths are repo-relative. */
 const RELEASE_PATHS: ReadonlyArray<[string, (p: string) => boolean]> = [
-  ['package-manifest', (p) => p === 'package.json' || p === 'package-lock.json'],
+  ['package-manifest', (p) => /(?:^|\/)package(?:-lock)?\.json$/.test(p)],
+  ['dependency-patch', (p) => p.startsWith('patches/')],
+  ['build-config', (p) => p.startsWith('build/')],
   ['changelog', (p) => p === 'CHANGELOG.md'],
   ['ci-config', (p) => p.startsWith('.github/')],
   ['release-script', (p) => /^scripts\/(?:collect-changelog|gen-api-reference|generate-notices|release[^/]*)\.[cm]?[jt]s$/.test(p)],

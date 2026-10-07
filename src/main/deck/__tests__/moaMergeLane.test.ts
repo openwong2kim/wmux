@@ -110,6 +110,9 @@ describe('merge lane predicates on recorded fixtures', () => {
     expect(releasePathReason('THIRD_PARTY_NOTICES')).toBe('license');
     expect(releasePathReason('src/shared/prReview.ts')).toBeNull();
     expect(releasePathReason('docs/package.json.md')).toBeNull();
+    expect(releasePathReason('scripts/sub/package.json')).toBe('package-manifest');
+    expect(releasePathReason('patches/@xterm+xterm+6.0.0.patch')).toBe('dependency-patch');
+    expect(releasePathReason('build/entitlements.mac.plist')).toBe('build-config');
   });
 
   it('a Windows path refuses (the fork fixture touches winSnapshotNative.ts)', () => {

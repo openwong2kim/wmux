@@ -16,6 +16,7 @@
 //
 // Nothing constructs this at module load.
 
+import fs from 'node:fs';
 import path from 'node:path';
 import { atomicReadJSONSync, atomicWriteJSON } from '../../daemon/util/atomicWrite';
 import type { MergeEffectStatus } from '../../shared/moaAsk';
@@ -81,7 +82,12 @@ export class MoaEffectStore {
   constructor(wmuxDir: string, private readonly now: () => number = Date.now) {
     this.file = path.join(wmuxDir, MOA_DELEGATE_DIRNAME, MOA_EFFECTS_FILENAME);
     const saved = atomicReadJSONSync<{ version?: unknown; effects?: unknown }>(this.file);
-    if (saved === null) return;
+    if (saved === null) {
+      // Unreadable is not empty: starting blank would overwrite the file and
+      // drop its uncertain rows. Refuse, like an invalid row.
+      if (fs.existsSync(this.file)) throw new Error('Unreadable moa effect storage');
+      return;
+    }
     if (saved.version !== 1 || !Array.isArray(saved.effects)) throw new Error('Invalid moa effect storage');
     for (const e of saved.effects) {
       if (!isMergeEffectRecord(e)) throw new Error('Invalid moa effect entry');

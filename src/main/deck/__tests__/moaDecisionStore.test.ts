@@ -126,6 +126,44 @@ describe('MoaDecisionStore idempotency (AnswerReceiptStore semantics)', () => {
     }
   });
 
+  it('a reused askId with any body change is id-reused, even one the question hash leaves out', async () => {
+    const store = new MoaDecisionStore(dir);
+    await newTicket(store, Q, 'ask-1');
+    const changed: MoaAskBody = { ...Q, options: [{ key: '1', label: 'Yes', description: 'and delete the old one' }, { key: '2', label: 'No' }] };
+    expect((await store.begin({ asker: ASKER, askId: 'ask-1', body: changed, mode: 'auto' })).kind).toBe('reused');
+  });
+
+  it('an askId spelled like a generated key cannot reach the ticket of an ask without one', async () => {
+    const store = new MoaDecisionStore(dir);
+    const d = await newTicket(store, Q);
+    const r = await store.begin({ asker: ASKER, askId: `q:${moaQuestionHash(ASKER, Q)}`, body: Q, mode: 'auto' });
+    expect(r.kind).toBe('new');
+    expect(r.kind === 'new' && r.decision.ticketId).not.toBe(d.ticketId);
+  });
+
+  it('another agent in the same pane cannot read the ticket', async () => {
+    const store = new MoaDecisionStore(dir);
+    const d = await newTicket(store, Q);
+    expect(store.getForAsker({ ...ASKER, agent: 'codex' }, d.ticketId)).toBeNull();
+    expect(store.getForAsker(ASKER, d.ticketId)?.id).toBe(d.id);
+  });
+
+  it('an unreadable file refuses to load instead of starting empty', () => {
+    fs.mkdirSync(path.dirname(file()), { recursive: true });
+    fs.writeFileSync(file(), '{ torn');
+    expect(() => new MoaDecisionStore(dir)).toThrow();
+  });
+
+  it('a stored answer of the wrong shape refuses to load', async () => {
+    const store = new MoaDecisionStore(dir);
+    const d = await newTicket(store, Q);
+    await store.settle(d.id, { status: 'answered', judge: null, ruleId: 'R-x', reasonCode: 'rule_match', why: 'w', answer: { choiceKey: '1' } });
+    const saved = JSON.parse(fs.readFileSync(file(), 'utf8'));
+    saved.decisions[0].answer = {};
+    fs.writeFileSync(file(), JSON.stringify(saved));
+    expect(() => new MoaDecisionStore(dir)).toThrow();
+  });
+
   it('old records are pruned after the retention', async () => {
     let now = 1_000_000;
     const store = new MoaDecisionStore(dir, () => now);

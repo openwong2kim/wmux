@@ -15,6 +15,7 @@
 // read or written.
 
 import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { atomicReadJSONSync, atomicWriteJSON } from '../../daemon/util/atomicWrite';
 import { receiptHash } from '../../daemon/approvals/AnswerReceiptStore';
@@ -30,7 +31,7 @@ import {
   type MoaOwnerAnswer,
   type MoaReceiptState,
 } from '../../shared/moaDecision';
-import { MOA_TICKET_ID_RE, parseMoaAskInput } from '../../shared/moaAsk';
+import { MOA_ASK_ID_RE, MOA_ASK_OPTION_KEY_RE, MOA_TICKET_ID_RE, parseMoaAskInput } from '../../shared/moaAsk';
 import { shadowPacketHash } from './moaShadowJudge';
 
 /** How long a record is kept after it was created. */
@@ -60,9 +61,18 @@ export function moaQuestionHash(asker: MoaAsker, body: MoaAskBody): string {
   }).slice(0, 32);
 }
 
-/** The idempotency key (sha256 hex). */
+/**
+ * The idempotency key (sha256 hex). A caller's askId and a generated question
+ * key live in separate namespaces, so an askId spelled "q:<hash>" cannot land
+ * on another request's ticket.
+ */
 export function moaAskKey(asker: MoaAsker, askId: string | undefined, questionHash: string): string {
-  return receiptHash([asker.ptyId, asker.workspaceId, askId ?? `q:${questionHash}`]);
+  return receiptHash([asker.ptyId, asker.workspaceId, asker.agent, askId !== undefined ? `id:${askId}` : `q:${questionHash}`]);
+}
+
+/** The whole validated body, so a reused askId with any change is id-reused. */
+function bodyHash(body: MoaAskBody): string {
+  return receiptHash(body);
 }
 
 export type MoaBegin =
@@ -107,7 +117,31 @@ export function isMoaDecisionRecord(v: unknown): v is MoaDecision {
     && (d.resolvedBy === null || RESOLVED_BY.has(d.resolvedBy))
     && (d.ruleId === null || typeof d.ruleId === 'string')
     && typeof d.reasonCode === 'string' && typeof d.why === 'string'
-    && Number.isSafeInteger(d.createdAt) && (d.resolvedAt === null || Number.isSafeInteger(d.resolvedAt));
+    && Number.isSafeInteger(d.createdAt) && (d.resolvedAt === null || Number.isSafeInteger(d.resolvedAt))
+    && (d.askId === undefined || (typeof d.askId === 'string' && MOA_ASK_ID_RE.test(d.askId)))
+    && (d.repo === undefined || (!!d.repo && typeof d.repo === 'object' && typeof d.repo.key === 'string' && typeof d.repo.path === 'string'))
+    && (d.judge === null || isJudgeResult(d.judge))
+    && (d.answer === undefined || isStoredAnswer(d.answer, d.kind));
+}
+
+function isJudgeResult(j: unknown): boolean {
+  const r = j as MoaJudgeResult;
+  return !!r && typeof r === 'object'
+    && (r.verdict === 'answer' || r.verdict === 'go' || r.verdict === 'escalate')
+    && (r.choiceKey === undefined || typeof r.choiceKey === 'string')
+    && (r.ruleId === undefined || typeof r.ruleId === 'string')
+    && typeof r.reasonCode === 'string' && typeof r.why === 'string'
+    && !!r.tokens && Number.isFinite(r.tokens.input) && Number.isFinite(r.tokens.output)
+    && Number.isFinite(r.ms);
+}
+
+/** A question is answered with a choice key, a merge with a verdict. */
+function isStoredAnswer(a: unknown, kind: MoaDecision['kind']): boolean {
+  if (!a || typeof a !== 'object') return false;
+  const r = a as { choiceKey?: unknown; actionVerdict?: unknown };
+  return kind === 'question'
+    ? typeof r.choiceKey === 'string' && MOA_ASK_OPTION_KEY_RE.test(r.choiceKey) && !('actionVerdict' in r)
+    : (r.actionVerdict === 'go' || r.actionVerdict === 'no-go') && !('choiceKey' in r);
 }
 
 /** A stored body is one parseMoaAskInput would have produced. */
@@ -140,7 +174,12 @@ export class MoaDecisionStore {
   ) {
     this.file = path.join(wmuxDir, MOA_DELEGATE_DIRNAME, MOA_DECISIONS_FILENAME);
     const saved = atomicReadJSONSync<{ version?: unknown; decisions?: unknown }>(this.file);
-    if (saved === null) return;
+    if (saved === null) {
+      // Unreadable is not empty: starting blank would overwrite the file and
+      // drop its uncertain rows. Refuse, like an invalid row.
+      if (fs.existsSync(this.file)) throw new Error('Unreadable moa decision storage');
+      return;
+    }
     if (saved.version !== 1 || !Array.isArray(saved.decisions)) throw new Error('Invalid moa decision storage');
     for (const d of saved.decisions) {
       if (!isMoaDecisionRecord(d)) throw new Error('Invalid moa decision entry');
@@ -157,7 +196,7 @@ export class MoaDecisionStore {
    */
   async begin(input: { asker: MoaAsker; askId?: string; body: MoaAskBody; mode: MoaDecisionMode; repo?: { key: string; path: string } }): Promise<MoaBegin> {
     const questionHash = moaQuestionHash(input.asker, input.body);
-    const seen = this.peek(input.asker, input.askId, questionHash);
+    const seen = this.peek(input.asker, input.askId, input.body);
     if (seen) return seen;
     let owned = 0;
     for (const row of this.rows.values()) if (row.asker.ptyId === input.asker.ptyId) owned++;
@@ -195,11 +234,12 @@ export class MoaDecisionStore {
   }
 
   /** What this asker's key already stands for, or null when it is unused. */
-  peek(asker: MoaAsker, askId: string | undefined, questionHash: string): Exclude<MoaBegin, { kind: 'new' | 'full' }> | null {
+  peek(asker: MoaAsker, askId: string | undefined, body: MoaAskBody): Exclude<MoaBegin, { kind: 'new' | 'full' }> | null {
     this.prune();
+    const questionHash = moaQuestionHash(asker, body);
     const existing = this.rows.get(moaAskKey(asker, askId, questionHash));
     if (!existing) return null;
-    if (existing.questionHash !== questionHash) return { kind: 'reused', decision: existing };
+    if (existing.questionHash !== questionHash || bodyHash(existing.body) !== bodyHash(body)) return { kind: 'reused', decision: existing };
     return { kind: 'replay', decision: existing };
   }
 
@@ -311,7 +351,7 @@ export class MoaDecisionStore {
   getForAsker(asker: MoaAsker, ticketId: string): MoaDecision | null {
     for (const row of this.rows.values()) {
       if (row.ticketId !== ticketId) continue;
-      return row.asker.ptyId === asker.ptyId && row.asker.workspaceId === asker.workspaceId ? row : null;
+      return row.asker.ptyId === asker.ptyId && row.asker.workspaceId === asker.workspaceId && row.asker.agent === asker.agent ? row : null;
     }
     return null;
   }
