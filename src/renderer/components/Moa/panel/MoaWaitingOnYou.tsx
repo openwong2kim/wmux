@@ -4,8 +4,9 @@
 // wears the needs-you grammar (a 1px attention-orange hairline over the
 // selection-subtle fill, the orange eyebrow as its one state mark). Answers go to the decision's own
 // workspace, not to Moa's.
-import { createContext, useEffect, useRef, useState } from 'react';
+import { Fragment, createContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { MoaApprovalAnswerResult, MoaDelegatedApproval, MoaPendingDecision } from '../../../../shared/moa';
+import type { MoaDecision } from '../../../../shared/moaDecision';
 import Button from '../../ui/Button';
 import Input from '../../ui/Input';
 import { FOCUS_RING } from '../../focusRing';
@@ -78,6 +79,8 @@ export const NEEDS_YOU_TEXT = 'text-[var(--attention-text)]';
 export const NEEDS_YOU_ROW =
   'rounded-[10px] px-3 py-2.5 border border-solid border-[var(--attention-hairline,var(--attention))] bg-[var(--selection-subtle)]';
 
+const NO_TICKETS: readonly MoaDecision[] = [];
+
 export function MoaWaitingOnYou({
   decisions,
   onResolve,
@@ -88,9 +91,15 @@ export function MoaWaitingOnYou({
   onOpenPty,
   conversationTaskId,
   onOpenConversation,
+  delegateTickets = NO_TICKETS,
+  renderDelegateTicket,
   t,
 }: {
   decisions: readonly MoaPendingDecision[];
+  /** Moa's delegate: moa_ask tickets escalated to the owner (empty while off). */
+  delegateTickets?: readonly MoaDecision[];
+  /** Draws one ticket; `onDone` takes the row out once it is settled. */
+  renderDelegateTicket?: (ticket: MoaDecision, onDone: () => void) => ReactNode;
   /** The fan-out task (WorkTask id) a workspace runs, when it is one. */
   conversationTaskId?: (workspaceId: string) => string | undefined;
   /** Show that task's conversation in Fleet. */
@@ -120,15 +129,16 @@ export function MoaWaitingOnYou({
   const refocusAt = useRef<number | null>(null);
   const visible = decisions.filter((d) => !answered.has(d.decision.id));
   const prompts = delegatedApprovals.filter((a) => !answered.has(a.id));
+  const tickets = renderDelegateTicket ? delegateTickets.filter((d) => !answered.has(d.id)) : [];
 
   useEffect(() => {
     // Forget ids main no longer reports, so a re-raised id shows again.
     setAnswered((prev) => {
-      const live = new Set([...decisions.map((d) => d.decision.id), ...delegatedApprovals.map((a) => a.id)]);
+      const live = new Set([...decisions.map((d) => d.decision.id), ...delegatedApprovals.map((a) => a.id), ...delegateTickets.map((d) => d.id)]);
       const next = new Set([...prev].filter((id) => live.has(id)));
       return next.size === prev.size ? prev : next;
     });
-  }, [decisions, delegatedApprovals]);
+  }, [decisions, delegatedApprovals, delegateTickets]);
 
   useEffect(() => {
     const at = refocusAt.current;
@@ -141,7 +151,7 @@ export function MoaWaitingOnYou({
 
   // Nothing waiting: no heading, no "0" (no dead gauges). The section stays
   // mounted (hidden) only so the memory card can learn of a new card.
-  const total = visible.length + prompts.length + (memoryPending ? 1 : 0);
+  const total = visible.length + prompts.length + tickets.length + (memoryPending ? 1 : 0);
 
   const resolve = async (d: MoaPendingDecision, resolution: string, dismiss = false): Promise<boolean> => {
     const text = resolution.trim();
@@ -159,7 +169,7 @@ export function MoaWaitingOnYou({
   };
 
   // A row leaves: focus moves to its neighbour, or to the panel's top region.
-  const markAnswered = (d: MoaPendingDecision | MoaDelegatedApproval) => {
+  const markAnswered = (d: MoaPendingDecision | MoaDelegatedApproval | MoaDecision) => {
     const id = 'decision' in d ? d.decision.id : d.id;
     if (total === 1) {
       // The last one: the section goes away, so focus moves to the panel's
@@ -223,6 +233,9 @@ export function MoaWaitingOnYou({
             onOpenPty={onOpenPty}
             t={t}
           />
+        ))}
+        {tickets.map((d) => (
+          <Fragment key={d.id}>{renderDelegateTicket!(d, () => markAnswered(d))}</Fragment>
         ))}
       </ul>
     </section>

@@ -839,6 +839,25 @@ const electronAPI = {
         ipcRenderer.invoke(IPC.DECK_MOA_DELEGATED_APPROVALS) as Promise<{ approvals: import('../shared/moa').MoaDelegatedApproval[] }>,
       delegatedAnswer: (args: { approvalId: string; choiceKey: string; promptFingerprint: string }) =>
         ipcRenderer.invoke(IPC.DECK_MOA_DELEGATED_ANSWER, args) as Promise<import('../shared/moa').MoaApprovalAnswerResult>,
+      // Moa's delegate (moa_ask tickets): list, answer an escalated one, the
+      // per-rule auto toggle, and main's change events. Owner-only: no pipe
+      // route reaches these.
+      delegateList: () =>
+        ipcRenderer.invoke(IPC.DECK_MOA_DELEGATE_LIST) as Promise<import('../shared/moaDecision').MoaDelegateListResult>,
+      delegateResolve: (args: import('../shared/moaDecision').MoaResolveRequest) =>
+        ipcRenderer.invoke(IPC.DECK_MOA_DELEGATE_RESOLVE, args) as Promise<import('../shared/moaDecision').MoaResolveResult>,
+      delegateAutoSet: (args: import('../shared/moaDecision').MoaAutoRuleSetRequest) =>
+        ipcRenderer.invoke(IPC.DECK_MOA_DELEGATE_AUTO_SET, args) as Promise<import('../shared/moaDecision').MoaAutoRuleSetResult>,
+      onDelegateDecision: (callback: (event: import('../shared/moaDecision').MoaDecisionEvent) => void) => {
+        const listener = (_e: Electron.IpcRendererEvent, data: import('../shared/moaDecision').MoaDecisionEvent): void => callback(data);
+        ipcRenderer.on(IPC.DECK_MOA_DELEGATE_DECISION_EVENT, listener);
+        return () => { ipcRenderer.removeListener(IPC.DECK_MOA_DELEGATE_DECISION_EVENT, listener); };
+      },
+      onDelegateEffect: (callback: (event: import('../shared/moaDecision').MoaEffectEvent) => void) => {
+        const listener = (_e: Electron.IpcRendererEvent, data: import('../shared/moaDecision').MoaEffectEvent): void => callback(data);
+        ipcRenderer.on(IPC.DECK_MOA_DELEGATE_EFFECT_EVENT, listener);
+        return () => { ipcRenderer.removeListener(IPC.DECK_MOA_DELEGATE_EFFECT_EVENT, listener); };
+      },
       // Moa's hand-offs: answer a hand-off card (a body only when the operator
       // edited it), the recent auto hand-offs, and stopping one of them.
       handoffResolve: (args: import('../shared/moaHandoff').MoaHandoffResolveRequest) =>

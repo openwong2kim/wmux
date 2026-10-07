@@ -32,6 +32,7 @@ import { registerGithubHandlers } from './handlers/github.handler';
 import { registerPrReviewHandlers } from './handlers/prReview.handler';
 import { registerWorkLinkHandlers } from './handlers/workLink.handler';
 import { registerTrackRecordHandlers } from './handlers/trackRecord.handler';
+import { registerMoaDelegateHandlers } from './handlers/moaDelegate.handler';
 import { registerGitShipHandlers } from './handlers/gitShip.handler';
 import { registerGhLoginHandlers } from './handlers/ghLogin.handler';
 import { registerMcpHandlers } from './handlers/mcp.handler';
@@ -198,6 +199,8 @@ export function registerAllHandlers(
   const cleanupWorkLinks = registerWorkLinkHandlers(getWindow);
   // Moa's track record — the retro card and its schedule (Settings → Moa).
   const cleanupTrackRecord = registerTrackRecordHandlers(getWindow);
+  // Moa's delegate — the owner's side (renderer only; inert while it is off).
+  const cleanupMoaDelegate = registerMoaDelegateHandlers(getWindow);
   const cleanupGitShip = registerGitShipHandlers();
   const cleanupGhLogin = registerGhLoginHandlers(getWindow);
   const cleanupMcp = options.mcpRegistrar
@@ -524,6 +527,7 @@ export function registerAllHandlers(
     cleanupPrReview();
     cleanupWorkLinks();
     cleanupTrackRecord();
+    cleanupMoaDelegate();
     cleanupGitShip();
     cleanupGhLogin();
     if (cleanupMcp) cleanupMcp();

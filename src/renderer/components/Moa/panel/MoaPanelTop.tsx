@@ -9,11 +9,14 @@ import { createPortal } from 'react-dom';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../../stores';
 import type { MoaPendingDecision } from '../../../../shared/moa';
+import type { MoaDecision } from '../../../../shared/moaDecision';
 import { MoaDockContext, MoaWaitingOnYou, answeredElsewhere, useDelegatedApprovals, type DelegatedApprovalsApi, type ResolveDecision } from './MoaWaitingOnYou';
 import { MoaTaskCards } from './MoaTaskCards';
 import { defaultReceiptsApi, selectTaskCards, useWorkLinks, type MoaHandoffReceiptsApi, type WorkLinksApi } from './useMoaPanelData';
 import { defaultHandoffResolve, type HandoffResolve } from './MoaHandoffCard';
 import { MoaHandoffReceipts } from './MoaHandoffReceipts';
+import { MoaDelegateActivity, MoaDelegateTicketRow } from './MoaDelegateCards';
+import { defaultDelegateApi, selectAutoRules, selectEffectRows, selectOpenTickets, selectUnreceipted, useMoaDelegate, type MoaDelegateApi } from './moaDelegateData';
 import { focusNotificationTarget, focusPaneByPtyId, type FocusTargetState } from '../../../hooks/useNotificationListener';
 import type { CommanderViewProps } from '../../Deck/CommanderView';
 
@@ -43,6 +46,7 @@ export function MoaPanelTop({
   receiptsApi,
   onOpenPane = openMoaPane,
   approvalsApi,
+  delegateApi,
   t,
 }: {
   decisions: readonly MoaPendingDecision[];
@@ -55,6 +59,8 @@ export function MoaPanelTop({
   onOpenPane?: (workspaceId: string, paneId?: string) => void;
   /** Injected in tests; defaults to the preload. */
   approvalsApi?: DelegatedApprovalsApi;
+  /** Moa's delegate (moa_ask tickets); injected in tests, defaults to the preload. */
+  delegateApi?: MoaDelegateApi;
   t: T;
 }): React.ReactElement {
   const delegatedApprovals = useDelegatedApprovals(approvalsApi);
@@ -91,6 +97,17 @@ export function MoaPanelTop({
     return r;
   }, [handoffResolve, onResolved]);
   const receipts = useMemo(() => receiptsApi ?? defaultReceiptsApi(), [receiptsApi]);
+  // Moa's delegate: with it off (or only recording) every list is empty and
+  // nothing below draws.
+  const delegate = useMemo(() => delegateApi ?? defaultDelegateApi(), [delegateApi]);
+  const { state: delegateState, refresh: refreshDelegate } = useMoaDelegate(delegate);
+  const tickets = useMemo(() => selectOpenTickets(delegateState), [delegateState]);
+  const effectRows = useMemo(() => selectEffectRows(delegateState, Date.now()), [delegateState]);
+  const unreceipted = useMemo(() => selectUnreceipted(delegateState), [delegateState]);
+  const autoRules = useMemo(() => selectAutoRules(delegateState), [delegateState]);
+  const renderTicket = useCallback((d: MoaDecision, onDone: () => void) => (
+    <MoaDelegateTicketRow decision={d} resolve={delegate!.delegateResolve} onDone={() => { onDone(); refreshDelegate(); }} workspaceName={workspaceName} t={t} />
+  ), [delegate, refreshDelegate, workspaceName, t]);
   const dock = useContext(MoaDockContext);
   // Before Moa's first turn there is no brain and so no chat: the panel would
   // be a bare composer. Say what to ask, once, until the first send.
@@ -98,7 +115,7 @@ export function MoaPanelTop({
     const hq = s.moa?.hq.workspaceId;
     return !!hq && !s.brainPtyIds[hq];
   });
-  const firstRun = noBrain && !dock && decisions.length === 0 && cards.length === 0 && delegatedApprovals.length === 0;
+  const firstRun = noBrain && !dock && decisions.length === 0 && cards.length === 0 && delegatedApprovals.length === 0 && tickets.length === 0;
   // Main names a decision's workspace when it knows it; fall back to ours.
   const named = useMemo(
     () => decisions.map((d) => (d.workspaceName ? d : { ...d, workspaceName: workspaceName(d.workspaceId) })),
@@ -118,10 +135,15 @@ export function MoaPanelTop({
         const waiting = (
           <MoaWaitingOnYou decisions={named} onResolve={onResolve} handoffResolve={onHandoffResolve}
             delegatedApprovals={delegatedApprovals} onOpenPty={(ws, ptyId) => openMoaPane(ws, undefined, ptyId)}
-            conversationTaskId={conversationTaskId} onOpenConversation={openConversation} t={t} />
+            conversationTaskId={conversationTaskId} onOpenConversation={openConversation}
+            delegateTickets={tickets} renderDelegateTicket={delegate ? renderTicket : undefined} t={t} />
         );
         return dock ? createPortal(waiting, dock) : waiting;
       })()}
+      {delegate && (
+        <MoaDelegateActivity effects={effectRows} unreceipted={unreceipted} rules={autoRules}
+          autoSet={delegate.delegateAutoSet} onChanged={refreshDelegate} t={t} />
+      )}
       <MoaTaskCards links={cards} pendingDecisions={decisions} workspaceName={workspaceName}
         conversationTaskId={conversationTaskId} onOpenConversation={openConversation} onOpenPane={onOpenPane} t={t} />
     </div>

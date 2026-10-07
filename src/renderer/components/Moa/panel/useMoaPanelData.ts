@@ -20,7 +20,7 @@ const EMPTY_DECISIONS: MoaPendingDecision[] = [];
 const EMPTY_LINKS: WorkLink[] = [];
 
 /** Re-read on a change signal, coalescing a burst into one read. */
-function useReread<T>(
+export function useReread<T>(
   read: (() => Promise<T>) | null,
   subscribe: ((cb: () => void) => () => void) | null,
   initial: T,
