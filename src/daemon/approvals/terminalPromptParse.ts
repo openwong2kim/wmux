@@ -42,6 +42,12 @@
 // TUI broke inside a word (a long path) is matched against the call's command
 // by `dialogMatchesToolCall`, never by joining rows with spaces.
 //
+// Two dialogs are titled by something other than "<Tool> command" (measured on
+// Claude Code 2.1.292): "Fetch" (WebFetch) boxes `url: …` and `prompt: …`
+// rows, asks "Do you want to allow Claude to fetch this content?" — wrapped
+// over two rows in a narrow pane — and draws no footer; "Read file" boxes
+// `Read(<path>)` and asks "Do you want to proceed?" like a Bash dialog.
+//
 // Biased to refuse, like every screen check that could lead to a keystroke: a
 // grid without the question row followed by option rows numbered 1..n in
 // order parses to null.
@@ -122,6 +128,8 @@ export const PROMPT_MAX_OPTIONS = 9;
 export const PROMPT_FINGERPRINT_HEX = 32;
 
 const QUESTION_ROW = /\bDo you want to (?:proceed|make this edit|create|allow)\b.*\?\s*$/i;
+/** Rows the question may take once a narrow pane wraps it. */
+const QUESTION_MAX_ROWS = 3;
 const OPTION_ROW = /^([❯>›»])?\s*(\d{1,2})[.)]\s+(\S.*)$/;
 /** The gutter a newer Claude Code draws left of each command row. */
 const GUTTER = /^[│┃]\s?/;
@@ -173,10 +181,24 @@ export function parseTerminalPrompt(
     return `${text.slice(0, PROMPT_MAX_LINE_CHARS)}…`;
   };
 
-  // The LAST question row on screen is the live dialog.
+  // The LAST question on screen is the live dialog. `q` is its last row; a
+  // question a narrow pane wrapped starts at `questionStart`, on the rows at
+  // its indent right above (a one-row question is always read as one row).
   let q = -1;
-  lines.forEach((line, i) => { if (QUESTION_ROW.test(line.trim())) q = i; });
+  let questionStart = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (!/\?\s*$/.test(lines[i]!)) continue;
+    for (let start = i; start >= 0 && start > i - QUESTION_MAX_ROWS; start--) {
+      if (start < i && (!lines[start]!.trim() || indentOf(lines[start]!) !== indentOf(lines[i]!))) break;
+      if (QUESTION_ROW.test(normalizePromptText(lines.slice(start, i + 1).join(' ')))) {
+        q = i;
+        questionStart = start;
+        break;
+      }
+    }
+  }
   if (q < 0) return null;
+  const fullQuestion = normalizePromptText(lines.slice(questionStart, q + 1).join(' '));
 
   let cut = false;
   // Option rows directly under the question, numbered 1..n in order. A label
@@ -207,32 +229,37 @@ export function parseTerminalPrompt(
   if (selectedCount > 1) return null;
 
   // ACTIVE: the footer right under the options (one blank row allowed), then
-  // nothing but blank rows to the bottom of the grid.
+  // nothing but blank rows to the bottom of the grid. A dialog Claude draws
+  // with no footer (FOOTERLESS_TOOLS) is active once its title says it is
+  // one and nothing but blank rows follows its options.
   let f = after;
   if (f < lines.length && !lines[f]!.trim()) f++;
   const footerBelow = f < lines.length && FOOTER_ROW.test(lines[f]!.trim());
   const blankAfterFooter = footerBelow && lines.slice(f + 1).every((line) => !line.trim());
-  const active = selectedCount === 1 && footerBelow && blankAfterFooter;
+  const activity: Activity = {
+    withFooter: selectedCount === 1 && footerBelow && blankAfterFooter,
+    footerless: selectedCount === 1 && lines.slice(after).every((line) => !line.trim()),
+  };
 
   // The dialog body: up from the question to its top rule, or the grid top.
   let top = -1;
-  for (let i = q - 1; i >= 0; i--) {
+  for (let i = questionStart - 1; i >= 0; i--) {
     if (isTopRule(lines[i]!)) { top = i + 1; break; }
   }
   const topRuleFound = top >= 0;
   // Claude Code 2.1.289 boxes the command: a dashed rule, gutter rows, a
   // dashed rule, then the reason, all at the prose indent. The rule found
   // above is then the box's LOWER edge, not the dialog's top.
-  const boxed = topRuleFound ? boxedCommand(lines, top - 1, q, isTopRule) : null;
-  if (boxed) return parseBoxedPrompt(lines, boxed, q, fullOptions, cut, active);
-  const body = lines.slice(topRuleFound ? top : 0, q).filter((line) => line.trim().length > 0);
+  const boxed = topRuleFound ? boxedCommand(lines, top - 1, questionStart, isTopRule) : null;
+  if (boxed) return parseBoxedPrompt(lines, boxed, questionStart, fullQuestion, fullOptions, cut, activity);
+  const body = lines.slice(topRuleFound ? top : 0, questionStart).filter((line) => line.trim().length > 0);
   if (body.some((line) => CUT_ROW.test(line))) cut = true;
   // The prose indent. With the top rule on screen it is the body's own
   // minimum; with the top cut off, the visible rows may all be command rows,
   // so the question row (prose, like the title and the reason) sets it.
   const minIndent = topRuleFound
     ? (body.length > 0 ? Math.min(...body.map(indentOf)) : 0)
-    : indentOf(lines[q]!);
+    : indentOf(lines[questionStart]!);
 
   // Rows at the body's own indent are its prose: the first is the title, the
   // ones after the indented command block are the reason (the TUI may wrap it
@@ -262,7 +289,6 @@ export function parseTerminalPrompt(
   }
   const gutterDrawn = gutterRows.length > 0;
   const fullReason = reasonParts.length > 0 ? reasonParts.join(' ') : undefined;
-  const fullQuestion = normalizePromptText(lines[q]!);
 
   // The hash takes the FULL text. Caps below are for display only; hashing a
   // capped field would let two dialogs that differ past the cap collide.
@@ -302,8 +328,29 @@ export function parseTerminalPrompt(
     topRuleFound,
     truncated,
     cut,
-    active,
+    active: isActive(activity, fullTitle),
   };
+}
+
+/** The two ways a dialog can read as active (see parseTerminalPrompt). */
+interface Activity {
+  /** One cursor, the footer right under the options, blank rows after it. */
+  withFooter: boolean;
+  /** One cursor and nothing but blank rows after the options. */
+  footerless: boolean;
+}
+
+/**
+ * Tools whose dialog Claude Code draws with no `Esc to …` footer (2.1.292:
+ * the Fetch dialog ends at its last option, `3. No, … (esc)`). Only a dialog
+ * whose title names one of these may read as active without the footer.
+ */
+const FOOTERLESS_TOOLS: ReadonlySet<string> = new Set(['WebFetch']);
+
+function isActive(activity: Activity, title: string | undefined): boolean {
+  if (activity.withFooter) return true;
+  const tool = toolFromDialogTitle(title);
+  return activity.footerless && tool !== undefined && FOOTERLESS_TOOLS.has(tool);
 }
 
 const DASHED_RULE = /^[╌╍┄┅]+$/;
@@ -362,10 +409,11 @@ function boxedCommand(
 function parseBoxedPrompt(
   lines: readonly string[],
   box: BoxedCommand,
-  q: number,
+  questionStart: number,
+  fullQuestion: string,
   fullOptions: Array<{ key: string; label: string; selected: boolean }>,
   cutBefore: boolean,
-  active: boolean,
+  activity: Activity,
 ): ParsedTerminalPrompt {
   const nonBlank = (from: number, to: number): string[] =>
     lines.slice(from, to).filter((line) => line.trim().length > 0);
@@ -379,8 +427,8 @@ function parseBoxedPrompt(
     head = t >= 0 ? head.slice(t) : [];
   }
   const commandRows = nonBlank(box.upper + 1, box.lower).map((line) => normalizePromptText(line.trim().replace(GUTTER, '')));
-  const reasonRows = nonBlank(box.lower + 1, q).map(normalizePromptText);
-  const cut = cutBefore || [...head, ...nonBlank(box.upper + 1, q)].some((line) => CUT_ROW.test(line));
+  const reasonRows = nonBlank(box.lower + 1, questionStart).map(normalizePromptText);
+  const cut = cutBefore || [...head, ...nonBlank(box.upper + 1, questionStart)].some((line) => CUT_ROW.test(line));
   let truncated = false;
   const cap = (text: string): string => {
     if (text.length <= PROMPT_MAX_LINE_CHARS) return text;
@@ -390,7 +438,6 @@ function parseBoxedPrompt(
   const fullTitle = head.length > 0 ? normalizePromptText(head[0]!) : undefined;
   const descriptionRows = head.slice(1).map(normalizePromptText);
   const fullReason = reasonRows.length > 0 ? reasonRows.join(' ') : undefined;
-  const fullQuestion = normalizePromptText(lines[q]!);
   // Same hash parts as the unboxed layout: the command is the gutter rows.
   const fingerprint = hashParts([
     fullTitle ?? '',
@@ -416,7 +463,7 @@ function parseBoxedPrompt(
     topRuleFound,
     truncated,
     cut,
-    active,
+    active: isActive(activity, fullTitle),
   };
 }
 
@@ -625,11 +672,44 @@ export function terminalPromptAnswerability(
   return { answerable, choices: answerable ? choices : [] };
 }
 
-/** "Bash command" → "Bash": the tool a permission dialog's title names. */
+/**
+ * Dialog titles that name their tool some other way, exactly as Claude Code
+ * 2.1.292 draws them. Exact strings on purpose: the Edit and Write dialogs'
+ * titles ("Edit file", "Create file") must keep naming no tool, because the
+ * screen does not spell their call for `dialogMatchesToolCall`.
+ */
+const TITLED_TOOLS: ReadonlyMap<string, string> = new Map([
+  ['Fetch', 'WebFetch'],
+  ['Read file', 'Read'],
+]);
+
+/** "Bash command" → "Bash", "Fetch" → "WebFetch": the tool a permission dialog's title names. */
 export function toolFromDialogTitle(title: string | undefined): string | undefined {
-  const m = title ? /^(\w[\w-]*) command$/i.exec(title) : null;
-  return m ? m[1] : undefined;
+  if (!title) return undefined;
+  const m = /^(\w[\w-]*) command$/i.exec(title);
+  return m ? m[1] : TITLED_TOOLS.get(title);
 }
+
+/**
+ * What the box of a titled dialog (TITLED_TOOLS) spells for a call, or null
+ * when the call cannot be drawn there. `command` is the call's subject
+ * (`commandOfToolInput`: the path, the URL), `detail` the second field the
+ * box shows (WebFetch's `prompt`). The URL is compared as Claude draws it,
+ * parsed and re-serialized (`https://example.com` → `https://example.com/`).
+ */
+const TITLED_BOX: Readonly<Record<string, (command: string, detail: string | undefined) => string | null>> = {
+  Read: (command) => `Read(${command})`,
+  WebFetch: (command, detail) => {
+    if (!detail) return null;
+    let href: string;
+    try {
+      href = new URL(command.trim()).href;
+    } catch {
+      return null;
+    }
+    return `url: ${href} prompt: ${detail}`;
+  },
+};
 
 /**
  * Do these screen rows spell `target` from `start` to its end? Each row must
@@ -678,6 +758,11 @@ function rowsMatchAt(rows: readonly string[], target: string, suffix: boolean): 
  * command rows must be a TAIL of the call's command (at least one such row on
  * screen), and the caller must have bound the call by its exact `tool_use` id
  * — the screen alone cannot say which call a headless dialog is for.
+ *
+ * A titled dialog (Read, WebFetch) binds only whole, title on screen: its box
+ * rows must spell exactly what TITLED_BOX draws for the call (`description`
+ * carries WebFetch's `prompt`). The prose above its box ("Claude wants to
+ * fetch content from …") is Claude's own and is not compared.
  */
 export function dialogMatchesToolCall(
   parsed: ParsedTerminalPrompt,
@@ -685,6 +770,12 @@ export function dialogMatchesToolCall(
   opts: { topCut?: boolean } = {},
 ): boolean {
   const topCut = opts.topCut === true;
+  const titledBox = Object.prototype.hasOwnProperty.call(TITLED_BOX, call.name) ? TITLED_BOX[call.name] : undefined;
+  if (titledBox) {
+    if (topCut || !parsed.topRuleFound || toolFromDialogTitle(parsed.title) !== call.name) return false;
+    const target = titledBox(call.command, call.description ? normalizePromptText(call.description) : undefined);
+    return target !== null && rowsMatchAt(parsed.commandRows, normalizePromptText(target), false) === 0;
+  }
   if (topCut) {
     if (parsed.topRuleFound) return false;
     if (parsed.title !== undefined && toolFromDialogTitle(parsed.title) !== call.name) return false;

@@ -77,6 +77,14 @@ There is no "No, keep planning" row in this build.
 | Write (create) / Edit | `1. Yes`, `2. Yes, and switch to accept edits … for this session (shift+tab)` (wraps to two rows), `3. No` | `1`, `3` act immediately. `3` (No) rejects with no text prompt. `Tab` turns the focused row into an amend field (`1. Yes, and tell Claude what to do next`); `Tab` again restores it |
 | Bash | `1. Yes`, `2. Yes, and always allow access to <dir> from this project`, `3. Yes, and switch to auto mode …`, `4. No` | Digits act immediately. `4` (No) interrupts the turn ("What should Claude do instead?") |
 | Bash, grid too short | Command top scrolled off; option list windowed with a `↓` marker (`4. No` not drawn at 80x11) | A digit still works for an option that is not drawn |
+| Fetch (WebFetch, 2.1.292) | `1. Yes`, `2. Yes, and don't ask again for <host>`, `3. No, and tell Claude what to do differently (esc)` | `1` fetches at once. `3` and `Esc` both reject and interrupt the turn ("What should Claude do instead?"). No footer is drawn |
+| Read file (Read outside the project, 2.1.292) | `1. Yes`, `2. Yes, allow reading from <dir> during this session`, `3. No` | Footer `Esc to cancel · Tab to amend`, as Bash |
+
+The Fetch and Read screens were captured on Claude Code 2.1.292 in manual mode
+(`--permission-mode default`), in a pane of an isolated wmux daemon
+(`WMUX_DATA_SUFFIX`), read with `daemon.readSessionText` and padded to the
+grid height; the narrow variants are the same dialog after a pane resize. They
+are in `claude-2.1.292/` (alternate screen).
 
 ## Claude Code — other menus
 

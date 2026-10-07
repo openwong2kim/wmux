@@ -26,21 +26,9 @@ const DIALOG = [
   ' Esc to cancel · Tab to amend',
 ];
 const IDLE = ['● Done.', '', '> '];
-// A WebFetch dialog as Claude Code draws it: no `Esc to cancel` footer, so the
-// parser does not read it as active, yet it is up and owns the keyboard.
-const FETCH = [
-  '────────────────────────────────────────────────────────────',
-  ' Fetch',
-  '   Claude wants to fetch content from example.net',
-  '╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌',
-  '   url: https://example.net/',
-  '   prompt: What is the page title?',
-  '╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌',
-  ' Do you want to allow Claude to fetch this content?',
-  ' ❯ 1. Yes',
-  "   2. Yes, and don't ask again for example.net",
-  '   3. No, and tell Claude what to do differently (esc)',
-];
+// The same dialog with its footer wrapped onto a second row: the parser does
+// not read it as active, yet it is up and owns the keyboard.
+const WRAPPED_FOOTER = [...DIALOG.slice(0, -1), ' Esc to cancel · Tab to', ' amend'];
 const INPUT = { command: 'rm -rf build/cache', description: 'Remove the build cache' };
 const SID = 'brain-hq';
 
@@ -286,10 +274,10 @@ describe('MoaPromptSync — the record follows main\'s dialog', () => {
     expect(pending(h).map((r) => r.id)).toEqual([a!.id]);
   });
 
-  it('main\'s flag cleared while a dialog the parser cannot read as active (WebFetch) is still up keeps the card', async () => {
+  it('main\'s flag cleared while a dialog the parser cannot read as active (a wrapped footer) is still up keeps the card', async () => {
     const h = harness();
-    h.rows = FETCH;
-    h.push(withDialog('ff01', { toolName: 'WebFetch', toolInput: { url: 'https://example.net/', prompt: 'What is the page title?' } }));
+    h.rows = WRAPPED_FOOTER;
+    h.push(withDialog('ff01'));
     await flush();
     expect(pending(h)).toHaveLength(1);
     expect(h.sync.view()).toMatchObject({ answerable: false });
