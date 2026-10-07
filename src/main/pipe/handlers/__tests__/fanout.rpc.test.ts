@@ -1795,6 +1795,28 @@ describe('a WSL caller pane is resolved to the Windows path of its directory', (
     expect(gitDirs()).toContain('\\\\wsl$\\Ubuntu-24.04\\home\\me\\repo');
   });
 
+  it("a \\\\wsl$ repository git refuses names git's cause, not just 'not a repository'", async () => {
+    // Git for Windows refuses a \\wsl$ share it does not trust; seen live on
+    // Windows 11 + Ubuntu 24.04 with Git 2.55.
+    const h = setup({
+      platform: 'win32',
+      cwd: '/home/me/repo',
+      daemonSessions: [{ id: 'pty-1', wslTarget: { distribution: 'Ubuntu', user: 'me' } }],
+    });
+    vi.mocked(git).mockImplementation(async () => ({
+      stdout: '',
+      stderr:
+        "fatal: detected dubious ownership in repository at '//wsl$/Ubuntu/home/me/repo'\n" +
+        "'//wsl$/Ubuntu/home/me/repo' may refer to a non-local directory\n",
+      code: 128,
+    }));
+    const err = errorOf(await h.call(goodParams()));
+    expect(err.code).toBe('FAILED_PRECONDITION');
+    expect(err.message).toContain('\\\\wsl$\\Ubuntu\\home\\me\\repo');
+    expect(err.message).toMatch(/\(git: fatal: detected dubious ownership in repository at '\/\/wsl\$\/Ubuntu\/home\/me\/repo' '\/\/wsl\$/);
+    expect(h.start).not.toHaveBeenCalled();
+  });
+
   it('a distro-internal path with no known distro is refused by name, not guessed', async () => {
     const h = setup({ platform: 'win32', cwd: '/home/me/repo', daemonSessions: [{ id: 'pty-1' }] });
     const err = errorOf(await h.call(goodParams()));

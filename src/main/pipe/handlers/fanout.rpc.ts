@@ -294,17 +294,26 @@ function normalizeRepoInput(raw: string, platform: NodeJS.Platform = process.pla
  * git toplevel of `dir`, realpath'd, or null. `--show-toplevel` so any
  * subdirectory of the caller's repo normalises to the same answer, and realpath
  * so a symlinked worktree cannot alias a different repository.
+ *
+ * `refusal` is what git said when it answered no root. It is not always "not a
+ * repository": Git for Windows refuses a WSL caller's `\\wsl$\…` repository
+ * for "dubious ownership", and the caller needs that cause to fix it.
  */
-async function repoRootOf(dir: string): Promise<string | null> {
+async function repoRootOf(dir: string): Promise<{ root: string | null; refusal: string }> {
   const res = await runGit(['rev-parse', '--show-toplevel'], dir);
-  if (res.code !== 0) return null;
+  if (res.code !== 0) return { root: null, refusal: gitRefusal(res.stderr) };
   const top = res.stdout.trim();
-  if (top.length === 0) return null;
+  if (top.length === 0) return { root: null, refusal: '' };
   try {
-    return fs.realpathSync(top);
+    return { root: fs.realpathSync(top), refusal: '' };
   } catch {
-    return top;
+    return { root: top, refusal: '' };
   }
+}
+
+/** git's stderr as one bounded line, for an error message. */
+function gitRefusal(stderr: string): string {
+  return stderr.replace(/\s+/g, ' ').trim().slice(0, 400);
 }
 
 /**
@@ -465,7 +474,7 @@ async function deriveCallerRepoRoot(
   if (!resolved) {
     return { code: 'FAILED_PRECONDITION', message: `the calling terminal has an unusable working directory` };
   }
-  const root = await repoRootOf(resolved);
+  const { root, refusal } = await repoRootOf(resolved);
   if (!root && !opts.requireRepo) {
     // worktree:false needs no repository: the tasks write into their own
     // folders under the wmux data dir. The anchor is still the caller's own
@@ -480,7 +489,7 @@ async function deriveCallerRepoRoot(
   if (!root) {
     return {
       code: 'FAILED_PRECONDITION',
-      message: `the calling terminal's directory is not inside a git repository: ${resolved}`,
+      message: `the calling terminal's directory is not inside a git repository: ${resolved}${refusal ? ` (git: ${refusal})` : ''}`,
     };
   }
   return { root };

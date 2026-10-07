@@ -459,16 +459,19 @@ export function normalizeCallerCwd(raw: string, platform: NodeJS.Platform = proc
 /** The git toplevel of `dir`, realpath'd, or ''. Same rule as the fan-out
  *  gate's repoRootOf: `--show-toplevel` so any subdirectory normalises to the
  *  same answer, and realpath so a symlinked path cannot alias a different
- *  repository (or make two names for one repo look like two repos). */
-async function callerRepoRoot(exec: WorktaskExec, dir: string): Promise<string> {
+ *  repository (or make two names for one repo look like two repos).
+ *  `refusal` is git's stderr when it answered no root: a WSL caller's
+ *  `\\wsl$\…` repository is refused for "dubious ownership", which is not
+ *  "not a repository", and the caller needs the real cause. */
+async function callerRepoRoot(exec: WorktaskExec, dir: string): Promise<{ root: string; refusal: string }> {
   const res = await exec('git', ['rev-parse', '--show-toplevel'], dir);
-  if (res.code !== 0) return '';
+  if (res.code !== 0) return { root: '', refusal: res.stderr.replace(/\s+/g, ' ').trim().slice(0, 400) };
   const top = res.stdout.trim();
-  if (top.length === 0) return '';
+  if (top.length === 0) return { root: '', refusal: '' };
   try {
-    return fs.realpathSync(top);
+    return { root: fs.realpathSync(top), refusal: '' };
   } catch {
-    return top;
+    return { root: top, refusal: '' };
   }
 }
 
@@ -697,11 +700,11 @@ export function registerWorktaskRpc(router: RpcRouter, deps: WorktaskRpcDeps): v
           'name a task, or call from a pane whose cwd is a git repository',
       };
     }
-    const repoRoot = await callerRepoRoot(exec, resolved);
+    const { root: repoRoot, refusal } = await callerRepoRoot(exec, resolved);
     if (!repoRoot) {
       return {
         code: 'FAILED_PRECONDITION',
-        message: `the calling terminal's directory is not inside a git repository: ${resolved}`,
+        message: `the calling terminal's directory is not inside a git repository: ${resolved}${refusal ? ` (git: ${refusal})` : ''}`,
       };
     }
     return { repoRoot, cwd: repoRoot };
