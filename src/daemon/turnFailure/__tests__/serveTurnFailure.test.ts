@@ -5,10 +5,11 @@ import { buildTurnFailedPushPayload, turnFailedPushCollapseId, TURN_FAILED_KIND 
 import { deriveAgentLiveness } from '../../hooks/agentLiveness';
 
 /** A bridge-shaped holder with the same dedup rule as `DaemonPTYBridge.noteTurnFailure`. */
-function holder(turnId?: string) {
+function holder(turnId?: string, at: (ts: number) => { turnId?: string; current: boolean } | null = () => ({ ...(turnId ? { turnId } : {}), current: true })) {
   let held: TurnFailure | undefined;
   return {
-    getTurnId: () => turnId,
+    held: () => held,
+    turnAt: at,
     noteTurnFailure(failure: TurnFailure) {
       if (held && held.turnId === failure.turnId) return { failure: held, fresh: false };
       held = failure;
@@ -22,10 +23,11 @@ describe('serveTurnFailure', () => {
     const h = holder('t1:abc.3');
     const pushed: TurnFailure[] = [];
     const payload = { error: 'rate_limit', last_assistant_message: 'You hit your limit · resets 3pm', error_details: 'raw 429 body' };
-    const first = serveTurnFailure(h, classifyClaudeStopFailure(payload, 1000), { push: (f) => pushed.push(f) });
+    const first = serveTurnFailure(h, classifyClaudeStopFailure(payload, 1000), { ts: 1000, push: (f) => pushed.push(f) })!.failure;
     // A repeat delivery later keeps the first `at`: identical on every surface.
-    const again = serveTurnFailure(h, classifyClaudeStopFailure(payload, 2000), { push: (f) => pushed.push(f) });
-    expect(again).toBe(first);
+    const again = serveTurnFailure(h, classifyClaudeStopFailure(payload, 2000), { ts: 1000, push: (f) => pushed.push(f) })!;
+    expect(again).toEqual({ failure: first, current: true });
+    expect(again.failure).toBe(first);
     expect(pushed).toEqual([first]);
     expect(first).toEqual({ reason: 'rate-limited', provider: 'claude', providerCode: 'rate_limit',
       message: 'You hit your limit · resets 3pm', at: 1000, turnId: 't1:abc.3' });
@@ -38,8 +40,21 @@ describe('serveTurnFailure', () => {
   });
 
   it('sends no turn id before the pane has had an episode', () => {
-    const f = serveTurnFailure(holder(undefined), classifyClaudeStopFailure({ error: 'billing_error' }, 5));
+    const f = serveTurnFailure(holder(undefined), classifyClaudeStopFailure({ error: 'billing_error' }, 5), { ts: 5 })!.failure;
     expect(f).toEqual({ reason: 'quota', provider: 'claude', providerCode: 'billing_error', at: 5 });
+  });
+});
+
+describe('serveTurnFailure — a late delivery', () => {
+  it('stamps the turn it ended, and neither holds nor pushes it when the next turn already opened', () => {
+    const h = holder(undefined, (ts) => (ts >= 500 ? { turnId: 't1:n.2', current: true } : ts >= 100 ? { turnId: 't1:n.1', current: false } : null));
+    const pushed: TurnFailure[] = [];
+    const late = serveTurnFailure(h, classifyClaudeStopFailure({ error: 'rate_limit' }, 900), { ts: 300, push: (f) => pushed.push(f) });
+    expect(late).toEqual({ failure: { reason: 'rate-limited', provider: 'claude', providerCode: 'rate_limit', at: 900, turnId: 't1:n.1' }, current: false });
+    expect(h.held()).toBeUndefined();
+    expect(pushed).toEqual([]);
+    // Older than both episodes: dropped.
+    expect(serveTurnFailure(h, classifyClaudeStopFailure({ error: 'rate_limit' }, 900), { ts: 50 })).toBeUndefined();
   });
 });
 

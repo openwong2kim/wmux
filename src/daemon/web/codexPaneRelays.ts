@@ -32,7 +32,7 @@ export interface CodexPaneRelayHooks {
   serverLost?:(id:string)=>void;
   /** A turn of a thread pane `id` (its committed owner) owns completed with
    * status `failed`; `turn` is the notification's unparsed `turn` object. */
-  turnFailed?:(id:string,owner:ManagedSession,turn:unknown)=>void;
+  turnFailed?:(id:string,owner:ManagedSession,threadId:string,turn:unknown)=>void;
 }
 /** One Codex request, keyed by (relay incarnation, thread, server request id). */
 export interface CodexDecisionRef {relayId:string; threadId:string; requestId:string; method?:string}
@@ -123,9 +123,9 @@ export class CodexPaneRelays {
         decisionSettled:(requestId,threadId,reason)=>{
           this.hooks.decisionSettled?.(id,{relayId:entry.relayId,threadId,requestId},reason);
         },
-        turnFailed:(_threadId,turn)=>{
+        turnFailed:(threadId,turn)=>{
           if (entry.retired || this.entries.get(id) !== entry || !entry.owner) return;
-          this.hooks.turnFailed?.(id,entry.owner,turn);
+          this.hooks.turnFailed?.(id,entry.owner,threadId,turn);
         },
       }});
       this.creating.add(creation);

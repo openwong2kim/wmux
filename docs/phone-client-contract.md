@@ -4678,8 +4678,17 @@ never carries `lastFailure`.
 The relay reports a failure only for a thread the pane itself owns (the
 server sends a thread's notifications to every connection subscribed to it).
 That `turn/completed` also ends the pane's turn, and the daemon sends the
-`idle` frame with `failure` for it. A Codex failure has no `/api/history`
-entry of its own: history records Claude hook outcomes only.
+`idle` frame with `failure` for it. History records it as one `failed` entry
+with `failure`; a Codex Stop that arrives afterwards for the same turn is not
+recorded as `completed`. The held failure belongs to the Codex thread it
+happened in, so `chat.lastFailure` is omitted once the pane moved to another
+thread, as for a Claude conversation.
+
+**A late delivery.** Hook delivery is retried and can arrive after the next
+turn started. The daemon files a failure by when it happened, not when it
+arrived: one that predates the open turn is stamped with the turn it ended,
+kept for history only, and never held, pushed or sent on a liveness frame,
+so a running turn is never shown as failed.
 
 **Where it appears.**
 

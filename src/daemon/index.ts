@@ -317,7 +317,7 @@ let sessionLifecycle: WebSessionLifecycle | null = null;
 let persistCodexRelayState: ((id:string,owner:ManagedSession)=>void) | undefined;
 let noteCodexServerLost: ((id:string)=>void) | undefined;
 /** Contract v-next item 1: a Codex turn on a daemon-owned relay failed (set at boot). */
-let noteCodexTurnFailed: ((id:string, turn:unknown)=>void) | undefined;
+let noteCodexTurnFailed: ((id:string, threadId:string, turn:unknown)=>void) | undefined;
 /** The `turn_failed` push (contract §7), set at boot once the push sender exists. */
 let pushTurnFailed: ((sessionId:string, failure:TurnFailure)=>void) | undefined;
 // Late-bound: the pipe server that carries notices exists only after boot.
@@ -373,9 +373,9 @@ const codexPaneRelays = new CodexPaneRelays(undefined,()=>log('warn','[phone] Co
       log('info',`[codex-relay] the Codex account server under ${id} is gone; its running turn is over`);
       noteCodexServerLost?.(id);
     },
-    turnFailed: (id,owner,turn)=>{
+    turnFailed: (id,owner,threadId,turn)=>{
       if (isBrainPty({ id, env: owner.meta.env })) return;
-      noteCodexTurnFailed?.(id,turn);
+      noteCodexTurnFailed?.(id,threadId,turn);
     },
   });
 // Contract v-next item 2: account status read from a pane's live relay account.
@@ -4093,14 +4093,19 @@ function registerRpcHandlers(
         // Computed once, here, and handed unchanged to history, the liveness
         // frame and the push, so `turnId`/`at` match on every surface. The
         // same filters history applies: a vetoed or held delivery is not one.
-        const failure = data.signal.kind === 'agent.stop_failure' && data.status === 'error' && historySession
+        // A late delivery (the next turn already opened) is stamped with the
+        // turn it ended, kept for history only, and never shown as live.
+        const served = data.signal.kind === 'agent.stop_failure' && data.status === 'error' && historySession
           && !['internal', 'veto', 'pending'].includes(data.decision ?? '')
           && !isBrainPty({ id: sessionId, env: historySession.meta.env })
           ? serveTurnFailure(historySession.bridge, classifyClaudeStopFailure(data.signal.payload ?? {}, now), {
+            ts: Number.isFinite(data.signal.ts) ? data.signal.ts : now,
             ...(data.signal.agentSessionId ? { agentSessionId: data.signal.agentSessionId } : {}),
             push: (f) => pushTurnFailed?.(sessionId, f),
           })
           : undefined;
+        const failure = served?.failure;
+        const liveFailure = served?.current ? served.failure : undefined;
         // Scheduled runs keep their own history; they are not phone runs.
         const automationPane = automationEngine?.ownsPane(sessionId) === true;
         if (historySession && !automationPane) recordHistory(store => store.ingest(sessionId, historySession.meta.env, data, historySession.meta.handoffFrom, failure));
@@ -4135,7 +4140,7 @@ function registerRpcHandlers(
           const endedAt = confirmedStopAt(projector.snapshot(sessionId)?.events, data.signal.payload?.['turn-id']);
           if (endedAt !== undefined) hookBridge.noteTranscriptTurnEnd(endedAt);
         } else {
-          hookBridge?.noteAgentStatus(data.status, true, questionAt);
+          hookBridge?.noteAgentStatus(data.status, true, questionAt, false, data.signal.ts);
         }
         const event: DaemonEvent = { type: 'agent.event', sessionId, data };
         pipeServer.broadcast(event);
@@ -4145,8 +4150,8 @@ function registerRpcHandlers(
         // WebTerminalServer.emitAgentLiveness). Harmless when the web server is
         // off or nobody opened the pane's turn view.
         webTerminalServer?.emitAgentLiveness({
-          ...deriveAgentLiveness(sessionId, data, failure?.at ?? now),
-          ...(failure ? { failure } : {}),
+          ...deriveAgentLiveness(sessionId, data, liveFailure?.at ?? now),
+          ...(liveFailure ? { failure: liveFailure } : {}),
         });
         // A turn may have ended: the phone chat queue delivers its next item.
         nativeChatBridge?.nudgeQueue(sessionId);
@@ -8002,15 +8007,30 @@ async function main(): Promise<void> {
   // the pane's own relay. The relay is the proof the turn ended, so it also
   // closes the episode (as a recorded transcript end does) and settles the
   // phone header with the failure on it.
-  noteCodexTurnFailed = (id, turn) => {
+  noteCodexTurnFailed = (id, threadId, turn) => {
     const session = sessionManager.getSession(id);
     if (!session) return;
     const now = Date.now();
     const classified = classifyCodexTurnCompleted(turn, now);
     if (!classified) return;
-    const failure = serveTurnFailure(session.bridge, classified, { push: (f) => pushTurnFailed?.(id, f) });
+    // The thread id is the conversation id `/turns` resolves for a Codex pane,
+    // so a pane that moved to another thread does not show this failure.
+    const served = serveTurnFailure(session.bridge, classified, { ts: now, agentSessionId: threadId, push: (f) => pushTurnFailed?.(id, f) });
+    if (!served) return;
+    const { failure } = served;
     session.bridge.noteTranscriptTurnEnd(now);
-    webTerminalServer?.emitAgentLiveness({ sessionId: id, state: 'idle', agent: agentSlugToDisplay('codex'), at: failure.at, failure });
+    // History records Codex turns too (the notify hook's Stop): the failed
+    // turn gets its own entry, and a Stop for that same turn is not recorded
+    // as completed.
+    const nativeTurnId = (turn as { id?: unknown }).id;
+    if (typeof nativeTurnId === 'string' && automationEngine?.ownsPane(id) !== true) {
+      recordHistory(store => store.codexTurnFailed(id, session.meta.env, agentSlugToDisplay('codex'), nativeTurnId, failure, session.meta.handoffFrom));
+    }
+    if (served.current) {
+      webTerminalServer?.emitAgentLiveness({ sessionId: id, state: 'idle', agent: agentSlugToDisplay('codex'), at: failure.at, failure });
+    }
+    // The turn is over: a send queued behind it goes now, as on any turn end.
+    nativeChatBridge?.nudgeQueue(id);
   };
 
   recordHistory(store => store.reconcileLiveSessions(new Set(sessionManager.listLiveSessions().map(s => s.id))));

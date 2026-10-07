@@ -33,6 +33,8 @@ export class RunHistoryStore {
   private active = new Map<string, ActiveRun>();
   private readonly file: string;
   private dirty = false;
+  /** `sessionId\0nativeTurnId` of Codex turns recorded as failed (bounded). */
+  private readonly failedCodexTurns = new Set<string>();
   constructor(directory: string) {
     this.file = path.join(directory, 'phone-run-history.json');
     let value: HistoryFile | undefined;
@@ -96,6 +98,10 @@ export class RunHistoryStore {
     const outcome = kind === 'agent.stop_failure' && data.status === 'error' ? 'failed'
       : kind === 'agent.stop' && data.status === 'complete' ? 'completed' : null;
     if (!outcome || ['internal','veto','pending'].includes(data.decision ?? '')) return;
+    // A Codex Stop for a turn its relay already reported failed is that same
+    // turn ending, not a completion.
+    const codexTurn = data.signal.agent === 'codex' ? data.signal.payload['turn-id'] : undefined;
+    if (typeof codexTurn === 'string' && this.failedCodexTurns.has(`${sessionId}\0${codexTurn}`)) return;
     const id = createHash('sha256').update(JSON.stringify([sessionId,data.signal.agentSessionId,kind,at])).digest('hex');
     if (this.entries.some(e => e.id === id)) {
       if (this.dirty) this.save();
@@ -106,6 +112,23 @@ export class RunHistoryStore {
     const summary = outcome === 'completed' && typeof reported === 'string' && reported.trim() ? reported : data.message;
     this.append({id,sessionId,workspace,agent,outcome,at,summary:clean(summary,600),...(handoffFrom ? {handoffFrom} : {}),
       ...(outcome === 'failed' && failure ? {failure} : {})});
+  }
+
+  /**
+   * A Codex turn its pane's relay reported `failed` (Codex has no StopFailure
+   * hook). One entry per native turn, carrying the typed failure.
+   */
+  codexTurnFailed(sessionId: string, env: Record<string,string>, agent: string, nativeTurnId: string, failure: TurnFailure, handoffFrom?: StoredHandoffFrom) {
+    if (isBrainPty({id:sessionId,env})) return;
+    const key = `${sessionId}\0${nativeTurnId}`;
+    if (this.failedCodexTurns.size >= 1024) this.failedCodexTurns.clear();
+    this.failedCodexTurns.add(key);
+    const id = createHash('sha256').update(JSON.stringify([sessionId,'codex-turn-failed',nativeTurnId])).digest('hex');
+    if (this.entries.some(e => e.id === id)) return;
+    this.active.delete(sessionId);
+    const workspace = clean(env[ENV_KEYS.WORKSPACE_NAME] ?? env[ENV_KEYS.WORKSPACE_ID] ?? '', 160);
+    this.append({id,sessionId,workspace,agent:clean(agent,80),outcome:'failed',at:failure.at,summary:'Turn failed',
+      ...(handoffFrom ? {handoffFrom} : {}),failure});
   }
 
   reconcileLiveSessions(live: ReadonlySet<string>) {

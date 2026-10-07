@@ -141,6 +141,8 @@ export class DaemonPTYBridge extends EventEmitter {
   private turnSeq = 0;
   private turnOpen = false;
   private turnOpenedAt = 0;
+  /** When the episode before the current one opened (0 = none). */
+  private prevTurnOpenedAt = 0;
   /**
    * The typed failure of the last turn (phone contract v-next item 1), and the
    * agent conversation it happened in. Lives until the next episode opens (a
@@ -589,7 +591,7 @@ export class DaemonPTYBridge extends EventEmitter {
    * Terminal states settle the turn and block later byte-only redraws;
    * explicit running activity opens the gate again for autonomous work.
    */
-  noteAgentStatus(status: AgentEventStatus, authoritative = false, questionAt?: number, provisional = false): void {
+  noteAgentStatus(status: AgentEventStatus, authoritative = false, questionAt?: number, provisional = false, signalTs?: number): void {
     // #1463 — any hook is turn evidence. SessionStart re-sets `preTurn` after
     // its own edge (noteSessionStart); detector statuses are not evidence.
     if (authoritative) {
@@ -603,7 +605,9 @@ export class DaemonPTYBridge extends EventEmitter {
         this.lastTurnStartedAt = Date.now();
         // The first hook after a settle is an autonomous turn; later hooks, and
         // any hook behind an unanswered dialog, belong to the open episode.
-        if (!this.awaitingHuman) this.openTurn(true);
+        // A hook-opened episode starts when the hook fired, not when it
+        // arrived: `turnAt` compares a later hook's own timestamp against it.
+        if (!this.awaitingHuman) this.openTurn(true, signalTs);
         // The agent's own hook: whatever opened the episode, it is a turn.
         this.bootEpisode = false;
       }
@@ -711,7 +715,7 @@ export class DaemonPTYBridge extends EventEmitter {
   }
 
   /** `resume`: a running edge that is not a submit may reopen a detector-closed episode. */
-  private openTurn(resume = false): void {
+  private openTurn(resume = false, signalTs?: number): void {
     if (this.turnOpen) return;
     this.turnOpen = true;
     if (resume && this.turnSoftClosed) {
@@ -721,7 +725,11 @@ export class DaemonPTYBridge extends EventEmitter {
     this.turnSoftClosed = false;
     this.turnSeq += 1;
     this.lastFailure = null;
-    this.turnOpenedAt = Date.now();
+    this.prevTurnOpenedAt = this.turnOpenedAt;
+    const now = Date.now();
+    // Only a plausible hook time (not in the future, not older than the 2 s
+    // hook budget allows plus margin) replaces the receive time.
+    this.turnOpenedAt = signalTs !== undefined && Number.isFinite(signalTs) && signalTs <= now && now - signalTs < 10_000 ? signalTs : now;
     this.bootEpisode = this.codexBootWindow;
   }
 
@@ -800,9 +808,17 @@ export class DaemonPTYBridge extends EventEmitter {
     };
   }
 
-  /** The current episode's `t1:` id, or undefined before the first episode. */
-  getTurnId(): string | undefined {
-    return this.turnSeq > 0 ? `t1:${this.turnNonce}.${this.turnSeq}` : undefined;
+  /**
+   * Which episode an event that happened at `ts` belongs to. Hook delivery is
+   * retried and interleaved, so a turn end can arrive after the next turn
+   * opened. `current`: the open (or last) episode; otherwise the one before
+   * it. Null when it predates both. Before the first episode: current, no id.
+   */
+  turnAt(ts: number): { turnId?: string; current: boolean } | null {
+    if (this.turnSeq === 0) return { current: true };
+    if (ts >= this.turnOpenedAt) return { turnId: `t1:${this.turnNonce}.${this.turnSeq}`, current: true };
+    if (this.turnSeq > 1 && ts >= this.prevTurnOpenedAt) return { turnId: `t1:${this.turnNonce}.${this.turnSeq - 1}`, current: false };
+    return null;
   }
 
   /**
@@ -853,7 +869,7 @@ export class DaemonPTYBridge extends EventEmitter {
    */
   noteSessionStart(signalTs: number, source: unknown): void {
     const atIdlePrompt = this.explicitTerminalStatus && this.settledStatus === 'waiting' && !this.awaitingHuman;
-    const { preTurn, turnEvidenceAt, turnOpen, turnSeq, turnOpenedAt, turnSoftClosed, codexBootWindow, bootEpisode, lastFailure } = this;
+    const { preTurn, turnEvidenceAt, turnOpen, turnSeq, turnOpenedAt, prevTurnOpenedAt, turnSoftClosed, codexBootWindow, bootEpisode, lastFailure } = this;
     this.noteAgentStatus('running', true);
     this.codexBootWindow = codexBootWindow;
     // The session start is not turn evidence itself: a duplicate delivery of
@@ -866,6 +882,7 @@ export class DaemonPTYBridge extends EventEmitter {
     this.turnSeq = turnSeq;
     this.lastFailure = lastFailure;
     this.turnOpenedAt = turnOpenedAt;
+    this.prevTurnOpenedAt = prevTurnOpenedAt;
     this.turnSoftClosed = turnSoftClosed;
     this.bootEpisode = bootEpisode;
     if (!isFreshSessionSource(source)) {

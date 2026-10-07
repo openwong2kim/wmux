@@ -38,6 +38,17 @@ describe('durable phone results', () => {
     expect(reloaded[0]?.failure).toBeUndefined();
     expect(reloaded[1]?.failure).toEqual({ reason: 'rate-limited', provider: 'claude', message: 'You hit your limit', at: 150 });
   });
+  it('records a Codex turn its relay reported failed once, and not its Stop as completed', () => {
+    const failure = { reason: 'quota' as const, provider: 'codex' as const, providerCode: 'usageLimitExceeded', at: 300, turnId: 't1:c.1' };
+    const store = new RunHistoryStore(root);
+    store.codexTurnFailed('pane',{},'Codex CLI','turn-9',failure);
+    store.codexTurnFailed('pane',{},'Codex CLI','turn-9',failure);
+    const stop = (turn: string): HookAgentEventData => ({ ...signal('agent.stop','complete',400), agent:'Codex CLI',
+      signal:{ kind:'agent.stop', agent:'codex', agentSessionId:'thread-1', cwd:'/repo', payload:{ 'turn-id': turn }, ts:400 } });
+    store.ingest('pane',{},stop('turn-9'));
+    store.ingest('pane',{},stop('turn-10'));
+    expect(new RunHistoryStore(root).list().entries.map(e => [e.outcome, e.failure?.providerCode])).toEqual([['completed', undefined], ['failed', 'usageLimitExceeded']]);
+  });
   it('never treats subagent completion, idle detector or a continuing lead as done', () => {
     const store = new RunHistoryStore(root);
     store.ingest('pane',{},signal('agent.subagent_stop','complete'));
