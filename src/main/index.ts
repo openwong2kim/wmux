@@ -453,6 +453,11 @@ let isQuitting = false;
 // tells before-quit to additionally tear the daemon down (daemon.shutdown +
 // pid-kill backstop) for an explicit full exit.
 let fullShutdownRequested = false;
+// Windows sends WM_ENDSESSION to every top-level window, so a logoff can
+// reach more than one main window's 'session-end' listener (an update-recovery
+// window adopted while the old one is still being torn down). The emergency
+// save and daemon race must run once.
+let sessionEndHandled = false;
 
 // Prevent multiple instances — focus existing window instead
 const gotLock = app.requestSingleInstanceLock();
@@ -2484,6 +2489,15 @@ function adoptMainWindow(win: BrowserWindow): void {
   attachWindowRecovery(win);
   resetPollCacheOnRendererLoad(win);
 
+  // Windows logoff/shutdown/restart. WM_ENDSESSION is a per-window message:
+  // Electron emits 'session-end' on the BrowserWindow that received it and
+  // never on `app`, so this has to be wired on every main window.
+  if (process.platform === 'win32') {
+    win.on('session-end', () => {
+      void onWindowsSessionEnd();
+    });
+  }
+
   win.on('closed', () => {
     // Guarded: a recovery window may be adopted while the old reference is
     // still being torn down, and only the current one may clear the binding.
@@ -2914,56 +2928,66 @@ app.on('before-quit', async (e) => {
 // Electron fires 'session-end' on WM_ENDSESSION, which is the last reliable
 // signal before Windows force-kills the process. The 'before-quit' async
 // handler may not complete in time, so we do a synchronous emergency save here.
-if (process.platform === 'win32') {
-  app.on('session-end' as any, async () => {
-    console.log('[Main] session-end received — flush pending session write + daemon race');
-    try {
-      // v2 RCA fix (reboot-reattach): the previous block built a FRESH
-      // `new SessionManager()`, `load()`ed the on-disk snapshot, and `save()`d
-      // it back. That did NOT capture the renderer's latest layout — it merely
-      // re-confirmed whatever stale (possibly `.bak`-fallback fossil) snapshot
-      // was already on disk, overwriting nothing useful and resurrecting fossils.
-      // The renderer now persists ptyId changes the instant they happen
-      // (event-driven session.save → synchronous main-side write), so disk
-      // already holds the latest layout here. Flush the LIVE singleton's
-      // pending debounced write as a safety net — a no-op today (saveDebounced
-      // has no production callers; SESSION_SAVE goes through sync save()), but
-      // it keeps this path correct if a debounced producer ever appears. Never
-      // reload-and-resave stale state.
-      //
-      // Use the module-level `sessionManager` (imported at top) directly — the
-      // former `require('./ipc/handlers/session.handler')` here was left literal
-      // in the bundle and threw MODULE_NOT_FOUND at runtime (same bundling bug
-      // as #463), silently failing this flush on every shutdown.
-      sessionManager.flushSync();
-    } catch (err) {
-      console.error('[Main] session-end flushSync failed:', err);
-    }
+//
+// WM_ENDSESSION is delivered per window, and Electron emits 'session-end' only
+// on BaseWindow/BrowserWindow (electron_api_base_window.cc), never on `app`.
+// The listener therefore lives in adoptMainWindow(); an earlier listener on
+// `app`, cast through `as any` because the type had no such event, never ran,
+// so a logoff skipped this save entirely.
+//
+// Only the synchronous part before the first `await` is guaranteed to run:
+// Windows may end the process as soon as the window returns from
+// WM_ENDSESSION, so the daemon race below is best effort.
+async function onWindowsSessionEnd(): Promise<void> {
+  if (sessionEndHandled) return;
+  sessionEndHandled = true;
+  console.log('[Main] session-end received — flush pending session write + daemon race');
+  try {
+    // v2 RCA fix (reboot-reattach): the previous block built a FRESH
+    // `new SessionManager()`, `load()`ed the on-disk snapshot, and `save()`d
+    // it back. That did NOT capture the renderer's latest layout — it merely
+    // re-confirmed whatever stale (possibly `.bak`-fallback fossil) snapshot
+    // was already on disk, overwriting nothing useful and resurrecting fossils.
+    // The renderer now persists ptyId changes the instant they happen
+    // (event-driven session.save → synchronous main-side write), so disk
+    // already holds the latest layout here. Flush the LIVE singleton's
+    // pending debounced write as a safety net — a no-op today (saveDebounced
+    // has no production callers; SESSION_SAVE goes through sync save()), but
+    // it keeps this path correct if a debounced producer ever appears. Never
+    // reload-and-resave stale state.
+    //
+    // Use the module-level `sessionManager` (imported at top) directly — the
+    // former `require('./ipc/handlers/session.handler')` here was left literal
+    // in the bundle and threw MODULE_NOT_FOUND at runtime (same bundling bug
+    // as #463), silently failing this flush on every shutdown.
+    sessionManager.flushSync();
+  } catch (err) {
+    console.error('[Main] session-end flushSync failed:', err);
+  }
 
-    if (daemonClient?.isConnected) {
-      // Phase A — A5. Race daemon.shutdown against the WM_ENDSESSION budget
-      // (~5 s before Windows SIGKILLs us) so the daemon can complete its
-      // atomic RingBuffer dumps before we tear down the pipe. Leave a 1 s
-      // safety margin for disconnectSync + Electron's own teardown.
-      //
-      // 4 s is the documented floor pending the T5 dynamic test
-      // measurement (Task #15). The harness exists at
-      // scripts/daemon-shutdown-dynamic.mjs; rerun on the target box and
-      // adjust if measured p99 latency calls for a smaller value.
-      const A5_TIMEOUT_MS = 4_000;
-      const race = await raceDaemonShutdown(daemonClient, A5_TIMEOUT_MS);
-      if (!race.ok) {
-        console.warn(
-          `[Main] session-end daemon.shutdown race failed (${A5_TIMEOUT_MS} ms): ${race.error}`,
-        );
-      }
-      try {
-        daemonClient.disconnectSync();
-      } catch {
-        // best effort — process is about to die
-      }
+  if (daemonClient?.isConnected) {
+    // Phase A — A5. Race daemon.shutdown against the WM_ENDSESSION budget
+    // (~5 s before Windows SIGKILLs us) so the daemon can complete its
+    // atomic RingBuffer dumps before we tear down the pipe. Leave a 1 s
+    // safety margin for disconnectSync + Electron's own teardown.
+    //
+    // 4 s is the documented floor pending the T5 dynamic test
+    // measurement (Task #15). The harness exists at
+    // scripts/daemon-shutdown-dynamic.mjs; rerun on the target box and
+    // adjust if measured p99 latency calls for a smaller value.
+    const A5_TIMEOUT_MS = 4_000;
+    const race = await raceDaemonShutdown(daemonClient, A5_TIMEOUT_MS);
+    if (!race.ok) {
+      console.warn(
+        `[Main] session-end daemon.shutdown race failed (${A5_TIMEOUT_MS} ms): ${race.error}`,
+      );
     }
-  });
+    try {
+      daemonClient.disconnectSync();
+    } catch {
+      // best effort — process is about to die
+    }
+  }
 }
 
 app.on('activate', () => {

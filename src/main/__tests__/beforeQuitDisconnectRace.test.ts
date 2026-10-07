@@ -28,8 +28,17 @@ describe('before-quit daemon lifecycle — source invariants (tmux persistence)'
   const indexSrc = fs.readFileSync(indexPath, 'utf-8');
   const beforeQuitBlock = indexSrc.slice(
     indexSrc.indexOf("app.on('before-quit'"),
-    indexSrc.indexOf("app.on('session-end'"),
+    // The session-end handler follows before-quit; a missing end marker would
+    // make indexOf return -1 and the slice silently run to end of file.
+    indexSrc.indexOf('async function onWindowsSessionEnd('),
   );
+
+  it('slices a bounded before-quit block', () => {
+    const start = indexSrc.indexOf("app.on('before-quit'");
+    const end = indexSrc.indexOf('async function onWindowsSessionEnd(');
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+  });
 
   it('captures daemonClient into clientAtQuit before any await/race', () => {
     expect(indexSrc).toMatch(/const\s+clientAtQuit\s*=\s*daemonClient\s*;/);

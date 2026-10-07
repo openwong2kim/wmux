@@ -16,27 +16,70 @@ describe('A5 — session-end (WM_ENDSESSION) handler invariants', () => {
   const src = fs.readFileSync(mainIndexPath, 'utf-8');
 
   function extractHandler(): string {
-    const marker = "app.on('session-end' as any";
+    const marker = 'async function onWindowsSessionEnd(';
     const start = src.indexOf(marker);
-    expect(start, "session-end registration not found").toBeGreaterThanOrEqual(0);
-    // The handler is the only call until the next top-level statement; slice
-    // a generous window — the assertions below are all string-pattern based.
-    return src.slice(start, start + 3000);
+    expect(start, 'session-end handler not found').toBeGreaterThanOrEqual(0);
+    const end = src.indexOf("\napp.on('activate'", start);
+    expect(end, 'end of the session-end handler not found').toBeGreaterThan(start);
+    return src.slice(start, end);
   }
 
-  it('is registered inside a win32 platform guard', () => {
-    // The marker must live inside a `process.platform === 'win32'` block.
-    // Pattern: the win32 guard appears before the handler registration.
-    const winIdx = src.lastIndexOf("if (process.platform === 'win32')");
-    const handlerIdx = src.indexOf("app.on('session-end'");
-    expect(winIdx).toBeLessThan(handlerIdx);
-    expect(winIdx).toBeGreaterThanOrEqual(0);
+  function extractAdoptMainWindow(): string {
+    const start = src.indexOf('function adoptMainWindow(win: BrowserWindow): void {');
+    expect(start, 'adoptMainWindow not found').toBeGreaterThanOrEqual(0);
+    // The registration sits at the top of the function; a bounded window keeps
+    // the assertions from matching some later, unrelated listener.
+    return src.slice(start, start + 1200);
+  }
+
+  it('is never registered on app, which does not emit session-end', () => {
+    // Electron 41 emits 'session-end' only on BaseWindow/BrowserWindow
+    // (WM_ENDSESSION is per window; electron_api_base_window.cc). The
+    // `app.on('session-end' as any, …)` this replaced compiled through the
+    // cast and never ran, so a Windows logoff skipped the emergency save.
+    expect(src).not.toMatch(/app\.(on|once|addListener)\(\s*'session-end'/);
+    expect(src).not.toMatch(/'session-end'\s+as\s+any/);
   });
 
-  it('handler is async (await Promise.race is allowed)', () => {
+  it('is registered on every adopted main window, inside a win32 guard', () => {
+    const adopt = extractAdoptMainWindow();
+    const guardIdx = adopt.indexOf("if (process.platform === 'win32') {");
+    const regIdx = adopt.indexOf("win.on('session-end',");
+    expect(guardIdx).toBeGreaterThan(0);
+    expect(regIdx).toBeGreaterThan(guardIdx);
+    expect(adopt.slice(regIdx, regIdx + 120)).toMatch(/onWindowsSessionEnd\(\)/);
+  });
+
+  it('every main window goes through adoptMainWindow', () => {
+    // A window built without adoptMainWindow would miss the listener. All
+    // createWindow() call sites must be followed by an adoptMainWindow call.
+    const creates = src.match(/=\s*createWindow\(/g) ?? [];
+    const adopts = src.match(/\n\s*adoptMainWindow\(/g) ?? [];
+    expect(creates.length).toBeGreaterThan(0);
+    expect(adopts.length).toBe(creates.length);
+  });
+
+  it('runs once even when several windows receive WM_ENDSESSION', () => {
     const handler = extractHandler();
-    // session-end registration body opens with `async () => {` (or async function).
-    expect(handler).toMatch(/'session-end'\s+as\s+any[\s\S]{0,40}async\s*\(\s*\)\s*=>/);
+    const guardIdx = handler.indexOf('if (sessionEndHandled) return;');
+    const setIdx = handler.indexOf('sessionEndHandled = true;');
+    const flushIdx = handler.indexOf('sessionManager.flushSync()');
+    expect(guardIdx).toBeGreaterThan(0);
+    expect(setIdx).toBeGreaterThan(guardIdx);
+    // The flag flips before anything else so a second window's listener,
+    // dispatched while the first is still awaiting, returns at once.
+    expect(flushIdx).toBeGreaterThan(setIdx);
+    expect(src).toMatch(/let\s+sessionEndHandled\s*=\s*false\s*;/);
+  });
+
+  it('flushes synchronously before the first await', () => {
+    // Windows may end the process once the window returns from WM_ENDSESSION,
+    // so only the synchronous prefix of the handler is guaranteed to run.
+    const handler = extractHandler();
+    const flushIdx = handler.indexOf('sessionManager.flushSync()');
+    const awaitIdx = handler.indexOf('await ');
+    expect(flushIdx).toBeGreaterThan(0);
+    expect(awaitIdx).toBeGreaterThan(flushIdx);
   });
 
   it('flushes the live singleton via flushSync (no stale reload-resave)', () => {
