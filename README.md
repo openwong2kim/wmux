@@ -54,19 +54,19 @@ winget install openwong2kim.wmux    # or: choco install wmux
 
 When an agent stops to ask you something — a Claude Code question (single or multi-select, several questions, or an "Other" answer) or a permission prompt — it lands on your iPhone as a push notification. Answer it in the Inbox and the pane on your desktop moves on. Terminals and agent output travel straight from the daemon on your machine to your phone. Push notifications pass through the project's relay as sealed envelopes it cannot read; only the lock-screen Live Activity carries a few plain counts. Details: [the phone client contract](docs/phone-client-contract.md).
 
-<img alt="An agent's question in the iPhone Inbox is answered there; the desktop pane receives the answer and the agent edits, tests and commits while the Inbox reads Nothing is waiting on you" src="docs/readme/phone.gif" width="900" />
+<img alt="An agent's question in the iPhone Inbox is answered by picking Three dots; the desktop pane receives the answer and the agent edits, tests and commits while the Inbox reads Nothing is waiting on you" src="docs/readme/phone.gif" width="900" />
 
 ### One prompt, N worktrees
 
 Fan one prompt out into up to 8 tasks, each in its own git worktree on a fresh `wtask/*` branch with its own agent pane. Review the diffs, tick the hunks you want across files, and adopt them as one all-or-nothing `git apply` — your tree takes the whole selection or stays untouched. Then close the task (the worktree is removed only after a clean check) or open a pull request. See [fan-out task environments](docs/how-to/fan-out-task-environment.md) for ports and prepared worktrees.
 
-<img alt="Two worktree tasks from one prompt reach Ready to review in Fleet; in the diff review a hunk is ticked in two files, Adopt applies both, and Close removes the worktree" src="docs/readme/worktrees.gif" width="900" />
+<img alt="Two worktree tasks from one prompt reach Ready to review in Fleet; in the diff review a hunk is ticked in src/truncate.js and another in test/truncate.test.js, Adopt (2) applies them, and Close removes the worktree" src="docs/readme/worktrees.gif" width="900" />
 
 ### Git page
 
 **Git** on the rail shows a repo's issues and pull requests. A pull request lists its checks, and a failed GitHub Actions run shows the end of its log right there, with **Rerun failed jobs**. Read the diff, comment on a line, approve or request changes, and squash and merge — every action is tied to the commit you were looking at. To hand an issue or PR to an agent, drag its row onto the agent's pane or a workspace in the sidebar; the agent gets a short reference with the link, never the item's text. Signed out? Connect GitHub from the page itself; `gh` keeps the credential.
 
-<img alt="The Git page lists a repo's pull requests with the one whose CI is failing first; its detail shows the failed check, its log and the diff" src="docs/readme/git.gif" width="900" />
+<img alt="The Git page lists a repo's pull requests led by #12, whose CI is failing; its detail shows the failed check test (node 22), its failure log and the diff" src="docs/readme/git.gif" width="900" />
 
 ### Fleet
 
@@ -80,17 +80,17 @@ Your agents drive a browser through wmux's MCP tools — navigate, click, type, 
 
 **Built-in browser panes.** A browser pane opens as a split beside the agent, and each agent gets its own.
 
-<img alt="Two agents each open their own built-in browser pane beside their terminal and answer from it" src="docs/readme/browser-builtin.gif" width="900" />
+<img alt="Two agents each open their own built-in browser pane beside their terminal (nodejs.org and MDN) and answer from it" src="docs/readme/browser-builtin.gif" width="900" />
 
 **A dedicated Chrome over CDP.** Agents drive a real Chrome, each in its own tab, with a persistent profile separate from your daily browser — sign in once and the logins stick. See [browser backends](docs/browser-backends.md) for what CDP can and cannot do.
 
-<img alt="With the dedicated Chrome backend, two agents drive their own tabs and each answers from its page" src="docs/readme/browser-chrome.gif" width="900" />
+<img alt="With the dedicated Chrome backend, two agents drive their own tabs (the nodejs.org download page and the Python docs) and answer" src="docs/readme/browser-chrome.gif" width="900" />
 
 ### Claude Code and Codex, talking
 
 Agents in different panes message each other through wmux, whichever CLI they run. Here Claude Code changes a function and asks the Codex pane next to it for a review with `send_message`; Codex replies the same way with a missing test case, and Claude adds it.
 
-<img alt="Claude Code changes a function and asks Codex in the next pane for a review over wmux; Codex replies with a missing test case and Claude adds it" src="docs/readme/a2a.gif" width="900" />
+<img alt="Claude Code changes slugify() and asks Codex in the next pane for a review over wmux; Codex replies with a missing test case, Claude adds it and the tests pass" src="docs/readme/a2a.gif" width="900" />
 
 ### Survives quit, crash, and reboot
 
@@ -100,13 +100,13 @@ A standalone daemon owns every terminal, so quitting the app leaves your session
 
 After a crash or a reboot, a recovered pane offers **Resume**: it types the agent command back in, with the exact conversation when wmux knows which one the pane held. Panes declared in `wmux.json` are supervised and restarted automatically.
 
-<img alt="After a crash, the recovered pane offers Resume, then resume this session, and the exact conversation comes back" src="docs/readme/survive-resume.gif" width="900" />
+<img alt="After a crash, the recovered pane offers Resume Claude, then resume this session, and the exact conversation comes back" src="docs/readme/survive-resume.gif" width="900" />
 
 ### Usage limits and accounts
 
 When Claude Code or Codex hits its usage limit, the pane pauses: its header and its Fleet row say when the limit resets, and wmux holds scheduled prompts and agent messages for that pane instead of typing them into a turn that cannot run. Turn on **Resume at reset** for a pane (or "Continue after a usage limit resets" in Settings, off by default) and it continues by itself when the window resets. With several of your own Claude or Codex subscriptions registered, **Switch Claude accounts by quota** and **Switch Codex accounts by quota** in Settings → Accounts (both off by default) start a new pane on the account with the most quota left when the workspace's own account is out of quota. Settings → Token usage shows each provider's usage windows.
 
-<img alt="An agent is paused by a usage limit; the pane header shows when it resets, Resume at reset is armed, and at the reset the agent continues and finishes" src="docs/readme/limits.gif" width="900" />
+<img alt="An agent is paused by a usage limit; the pane header shows when it resets, Resume at reset is armed, and at the reset wmux sends the continue message and the agent finishes" src="docs/readme/limits.gif" width="900" />
 
 ## More
 
