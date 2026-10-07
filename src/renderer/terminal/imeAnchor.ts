@@ -938,12 +938,15 @@ export function attachImeAnchor(
     // within the sub-pixel rounding it exists to absorb. A wider gap means it
     // is stale: after a font-size change xterm resizes the grid before it
     // re-syncs the textarea, so `style.height` still holds the OLD cell height
-    // for the new rows — and a font step is a full pixel or more. Trusting it
-    // there painted the Korean preedit rows away from the caret.
+    // for the new rows. Trusting it there painted the Korean preedit rows away
+    // from the caret. Compared over the whole grid, not per cell: xterm sizes
+    // the screen to round(cell * rows), so a live cell height is always under
+    // a pixel off the box in total, while one zoom step (as little as 0.5px
+    // per cell on a 2x display) is rows/2 pixels or more.
     const cellHeight = xtermCellHeight !== null
       && xtermCellHeight > 0
       && fromLayout > 0
-      && Math.abs(xtermCellHeight - fromLayout) <= 1
+      && Math.abs(xtermCellHeight * rows - screen.clientHeight) < 1
       ? xtermCellHeight
       : fromLayout;
     return {

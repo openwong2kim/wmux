@@ -331,18 +331,19 @@ describe('#874 attachImeAnchor', () => {
     // xterm rounds the cell to whole device pixels; clientHeight/rows does not.
     // Using the layout number would leave a fractional correction on every
     // frame and put a transform on the element when nothing needs moving.
-    // Rounding can only ever account for a sub-pixel gap (see the next test
-    // for what a wider one means).
-    const dom = buildTerminalDom(10, 16.4, 39);
+    // Rounding can only ever account for a sub-pixel gap over the whole grid
+    // (see the next tests for what a wider one means): a 2x display's 16.5px
+    // cell on 39 rows gives a 644px box (round(643.5)), i.e. 16.51px a row.
+    const dom = buildTerminalDom(10, 644 / 39, 39);
     const { terminal, onRender, state } = makeTerminal(dom);
     const handle = attachImeAnchor(terminal);
     Object.assign(state, { baseY: 6, viewportY: 4, cursorY: 10, cursorX: 0 });
-    dom.textarea.style.top = `${10 * 16}px`;
+    dom.textarea.style.top = `${10 * 16.5}px`;
     dom.textarea.style.left = '0px';
-    dom.textarea.style.height = '16px'; // what _syncTextArea writes
+    dom.textarea.style.height = '16.5px'; // what _syncTextArea writes
     onRender.fire(undefined);
-    // Exactly two cells of drift at xterm's 16px, not 2 * 16.4.
-    expect(translateOf(dom.textarea)?.dy).toBe(32);
+    // Exactly two cells of drift at xterm's 16.5px, not 2 * 644 / 39.
+    expect(translateOf(dom.textarea)?.dy).toBe(33);
     handle.dispose();
   });
 
@@ -360,6 +361,26 @@ describe('#874 attachImeAnchor', () => {
     onRender.fire(undefined);
     // Two cells of scrolled-viewport drift at the box's 14px.
     expect(translateOf(dom.textarea)?.dy).toBeCloseTo(28, 6);
+    handle.dispose();
+  });
+
+  it.each([
+    ['one font step at 1x (17px -> 16px cells)', 17, 16],
+    ['one font step on a 2x display (17px -> 16.5px cells)', 17, 16.5],
+  ])('ignores a stale cell height after %s', (_label, stale, fresh) => {
+    // A single zoom step moves the cell by a pixel or less, so a per-cell
+    // tolerance cannot tell it from rounding. Over the whole grid it can:
+    // xterm sizes the screen to round(cell * rows), so a live cell height is
+    // never a pixel off the box in total, and a stale one is rows/2 or more.
+    const dom = buildTerminalDom(10, fresh, 39);
+    const { terminal, onRender, state } = makeTerminal(dom);
+    const handle = attachImeAnchor(terminal);
+    Object.assign(state, { baseY: 6, viewportY: 4, cursorY: 10, cursorX: 0 });
+    dom.textarea.style.top = `${10 * fresh}px`;
+    dom.textarea.style.left = '0px';
+    dom.textarea.style.height = `${stale}px`;
+    onRender.fire(undefined);
+    expect(translateOf(dom.textarea)?.dy).toBeCloseTo(2 * fresh, 6);
     handle.dispose();
   });
 
