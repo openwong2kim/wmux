@@ -128,4 +128,24 @@ describe('wslPathToHost refuses Linux names Windows would read differently', () 
       expect(wslPathToHost(`/home/me/a${ch}b`, 'Ubuntu')).toHaveProperty('error');
     }
   });
+
+  it('refuses a trailing dot or space, which Win32 strips onto a sibling', () => {
+    // Seen live on Windows 11: a WSL pane in /mnt/d/x/alias. (not a repo) was
+    // fanned out from D:\x\alias, a different repository.
+    for (const p of ['/mnt/d/x/alias.', '/mnt/d/x/alias ', '/mnt/d/x/alias./sub', '/home/me/repo.', '/home/me/repo..']) {
+      expect(wslPathToHost(p, 'Ubuntu')).toMatchObject({ error: expect.stringMatching(/cannot be translated safely/) });
+    }
+  });
+
+  it('refuses a device name, with or without an extension', () => {
+    for (const name of ['con', 'NUL', 'aux.txt', 'com1', 'LPT9.log', 'com¹']) {
+      expect(wslPathToHost(`/mnt/d/x/${name}`, 'Ubuntu')).toHaveProperty('error');
+    }
+  });
+
+  it('keeps names that only resemble those', () => {
+    for (const p of ['/mnt/d/x/.git', '/mnt/d/x/a.b', '/mnt/d/x/console', '/mnt/d/x/com10', '/mnt/d/x/nul_', '/mnt/d/x/..', '/mnt/d/x/./y']) {
+      expect(wslPathToHost(p, 'Ubuntu')).toHaveProperty('path');
+    }
+  });
 });

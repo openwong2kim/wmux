@@ -1837,6 +1837,16 @@ describe('a WSL caller pane is resolved to the Windows path of its directory', (
     expect(vi.mocked(git)).not.toHaveBeenCalled();
   });
 
+  it('a trailing dot is refused, never stripped onto the sibling repo', async () => {
+    // Win32 opens D:\x\alias for D:\x\alias. — live, that was another repo.
+    const h = setup({ platform: 'win32', cwd: '/mnt/d/x/alias.', daemonSessions: [] });
+    answerFor('D:\\x\\alias');
+    const err = errorOf(await h.call(goodParams()));
+    expect(err.code).toBe('FAILED_PRECONDITION');
+    expect(err.message).toMatch(/cannot be translated safely/);
+    expect(vi.mocked(git)).not.toHaveBeenCalled();
+  });
+
   it('a non-WSL Windows caller is unchanged', async () => {
     const h = setup({ platform: 'win32', cwd: 'D:\\work\\repo\\src', daemonSessions: [] });
     answerFor('D:\\work\\repo');

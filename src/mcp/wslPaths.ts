@@ -87,7 +87,8 @@ export function fromAgentPath(agentPath: string, env: NodeJS.ProcessEnv = proces
  * distro-internal path and goes through `\\wsl$\`, which still names the same
  * directory). Returns an error string instead of a guess: a distro-internal
  * path with no (valid) distro, a path holding a character that is a separator
- * or reserved on Windows, or anything that is not an absolute Linux path.
+ * or reserved on Windows, a name Win32 reads as another file (trailing dot or
+ * space, device name), or anything that is not an absolute Linux path.
  */
 export function wslPathToHost(
   linuxPath: string,
@@ -105,6 +106,18 @@ export function wslPathToHost(
   if (/[\\:*?"<>|]/.test(linuxPath)) {
     return {
       error: `${JSON.stringify(linuxPath)} contains a character (\\ : * ? " < > |) that means something else in a Windows path, so it cannot be translated safely`,
+    };
+  }
+  // Win32 drops a trailing dot or space from every path segment, so
+  // `/mnt/d/x/repo.` would open `D:\x\repo` (seen live: a different
+  // repository). A reserved device name (`con`, `nul.txt`, `com1`) opens the
+  // device, not the directory. `.` and `..` are segments, not names.
+  const unsafe = linuxPath
+    .split('/')
+    .find((s) => s !== '.' && s !== '..' && (/[. ]$/.test(s) || /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(\..*)?$/i.test(s)));
+  if (unsafe !== undefined) {
+    return {
+      error: `${JSON.stringify(linuxPath)} has a name (${JSON.stringify(unsafe)}) that Windows reads as a different file (a trailing dot or space, or a device name), so it cannot be translated safely`,
     };
   }
   // fromAgentPath only needs a non-empty distro to switch on; the drive
