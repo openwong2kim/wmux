@@ -138,7 +138,7 @@ import { TranscriptProjector } from './transcript/TranscriptProjector';
 import { TranscriptActivityWatcher } from './transcript/TranscriptActivityWatcher';
 import { TranscriptDiscovery, DISCOVERABLE_AGENT } from './transcript/TranscriptDiscovery';
 import { admitCodexCapture, gateCodexStop } from './transcript/codexCapture';
-import { CodexCwdBinder, describeCodexPane, readProcessStartMs, type CodexPaneFacts } from './transcript/codexRolloutByCwd';
+import { CodexCwdBinder, codexLiveFor, describeCodexPane, readProcessStartMs, type CodexPaneFacts } from './transcript/codexRolloutByCwd';
 import { PushSender } from './push/PushSender';
 import { RelayTransport } from './push/RelayTransport';
 import { LiveActivityPusher, type LiveActivityCounts } from './push/LiveActivityPusher';
@@ -3660,16 +3660,22 @@ function registerRpcHandlers(
   if (!codexCwdBinder) {
     // Launch marker: the Codex process's start time, else the OSC 133
     // command-start that launched it. Neither (tmux, no shell integration) is unknown.
-    const paneFacts = (s: { id: string; cwd: string; resumeBinding?: ResumeBinding; lastDetectedAgent?: string }): CodexPaneFacts => {
+    const paneFacts = (s: { id: string; cwd: string; resumeBinding?: ResumeBinding }): CodexPaneFacts => {
       const tracked = agentProcessTracker.identityFor(s.id);
+      const managed = sessionManager.getSession(s.id);
       const launchAt = codexProcessStart.get(s.id)
-        ?? sessionManager.getSession(s.id)?.promptLog.recent(256).filter((e) => e.type === 'command_start').pop()?.ts;
+        ?? managed?.promptLog.recent(256).filter((e) => e.type === 'command_start').pop()?.ts;
+      // Untracked: the boot-local identity, never the persisted lastDetectedAgent
+      // a recovered shell inherits (codexLiveFor).
+      const screenAgent = tracked ? undefined : managed?.bridge.getLastAgent();
+      const liveSlug = tracked ? undefined
+        : canonicalIdentityFor(agentProcessTracker, s.id, screenAgent ? agentDisplayToSlug(screenAgent) : undefined)?.slug;
       return {
         id: s.id,
         cwd: s.cwd,
         ...(s.resumeBinding ? { binding: s.resumeBinding } : {}),
         ...(launchAt !== undefined ? { launchAt } : {}),
-        codexLive: tracked ? tracked.alive && tracked.slug === 'codex' : s.lastDetectedAgent === 'codex',
+        codexLive: codexLiveFor(tracked, liveSlug),
       };
     };
     codexCwdBinder = new CodexCwdBinder({

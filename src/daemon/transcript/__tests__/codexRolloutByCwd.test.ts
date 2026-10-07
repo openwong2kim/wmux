@@ -7,7 +7,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { ResumeBinding } from '../../../shared/agentResume';
 import {
-  CodexCwdBinder, describeCodexPane, findCodexRolloutByCwd, LAUNCH_WINDOW_MS, latestCodexRolloutForCwd, MAX_HEAD_READS, parseEtime,
+  CodexCwdBinder, codexLiveFor, describeCodexPane, findCodexRolloutByCwd, LAUNCH_WINDOW_MS, latestCodexRolloutForCwd, MAX_HEAD_READS, parseEtime,
   type CodexCwdQuery, type CodexPaneFacts,
 } from '../codexRolloutByCwd';
 
@@ -115,9 +115,34 @@ describe('describeCodexPane', () => {
     expect(decision.kind === 'query' && [...(decision.query.exclude ?? [])]).toEqual([A]);
   });
 
+  it('binds next to a recovered pane that only remembers an earlier Codex run', () => {
+    // A recovered PowerShell pane in the same folder: lastDetectedAgent is still
+    // `codex` and it holds the old run's binding, but nothing runs there, the
+    // tracker never attributed a process and no hook or screen named Codex.
+    const recovered = pane({ id: 'pty-a', binding: binding(A, LAUNCH - 3_600_000), launchAt: undefined, codexLive: codexLiveFor(undefined, undefined) });
+    const decision = describeCodexPane(pane(), [recovered], env);
+    expect(decision).toMatchObject({ kind: 'query', query: { cwd, notBefore: LAUNCH } });
+    expect(decision.kind === 'query' && [...(decision.query.exclude ?? [])]).toEqual([A]);
+  });
+
   it('skips a pane already bound for its current run, but not one bound for an earlier run', () => {
     expect(describeCodexPane(pane({ binding: binding(A, LAUNCH + 1) }), [])).toEqual({ kind: 'skip' });
     expect(describeCodexPane(pane({ binding: binding(A, LAUNCH - 60_000) }), []).kind).toBe('query');
+  });
+});
+
+describe('codexLiveFor', () => {
+  it('trusts the tracked process when there is one', () => {
+    expect(codexLiveFor({ slug: 'codex', alive: true }, undefined)).toBe(true);
+    expect(codexLiveFor({ slug: 'codex', alive: false }, 'codex')).toBe(false);
+    expect(codexLiveFor({ slug: 'claude', alive: true }, 'codex')).toBe(false);
+  });
+
+  it('untracked, counts only a live identity from this daemon run', () => {
+    expect(codexLiveFor(undefined, 'codex')).toBe(true);
+    expect(codexLiveFor(undefined, 'claude')).toBe(false);
+    // A recovered shell: only the persisted lastDetectedAgent says codex, and it is not an input.
+    expect(codexLiveFor(undefined, undefined)).toBe(false);
   });
 });
 
