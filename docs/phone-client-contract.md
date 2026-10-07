@@ -5241,7 +5241,7 @@ characters; anything else is dropped.
 ### Coordination with open work
 
 - #1658 (Claude AskUserQuestion form) edits `HookIngest.ts` and this document.
-  Item 1 wires into the same `StopFailure` emission path, so #1658 lands first.
+  Item 1 (served) wires into the same `StopFailure` emission path.
 - #1657 (Codex notify attribution) is why a hand-typed Codex gets no typed
   failure in item 1.
 - #1660 (`/app` desktop UI) edits `src/shared/types.ts` and this document;
