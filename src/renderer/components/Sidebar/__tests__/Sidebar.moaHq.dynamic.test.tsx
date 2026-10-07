@@ -141,8 +141,8 @@ describe("Moa's HQ is left out of the workspace list", () => {
     act(() => root.render(<MiniSidebar />));
     const titles = [...container.querySelectorAll('button[title]')].map((b) => b.getAttribute('title'))
       .filter((t) => /\(Ctrl\+\d\)$/.test(t ?? ''));
-    expect(titles.at(-1)).toBe('l (Ctrl+9)');
-    expect(titles).toHaveLength(9);
+    // The HQ is stored fifth; the rail skips it exactly as the keymap does.
+    expect(titles).toEqual([...names.slice(0, 8).map((n, i) => `${n} (Ctrl+${i + 1})`), 'l (Ctrl+9)']);
 
     function Harness(): null { useKeyboard(); return null; }
     act(() => root.render(<Harness />));
