@@ -13,6 +13,7 @@
 import { useState } from 'react';
 import type { MergeEffect, MoaDecision, MoaResolveResult, MoaRuleView, MoaUnreceiptedMerge } from '../../../../shared/moaDecision';
 import type { MoaAskOption } from '../../../../shared/moaAsk';
+import { agentSlugToDisplay, isAgentSlug } from '../../../../shared/agentIdentity';
 import Button from '../../ui/Button';
 import Switch from '../../ui/Switch';
 import { NEEDS_YOU_ROW, NEEDS_YOU_TEXT } from './MoaWaitingOnYou';
@@ -245,6 +246,50 @@ function MergeBody({ titleId, decision, prNumber, expectHead, context, suggestGo
   );
 }
 
+/** An asker's agent slug as the owner reads it ("Claude Code"). */
+export function agentLabel(slug: string, t: T): string {
+  if (isAgentSlug(slug)) return agentSlugToDisplay(slug);
+  return slug || t('moa.delegate.delivery.theAgent');
+}
+
+/** Delivery failure reasons with a plain line; others read as the generic one. */
+const DELIVERY_REASONS = ['pane-gone', 'restart', 'timeout', 'agent_changed', 'write_failed'] as const;
+
+/** What the owner answered, in a few words. */
+function answerText(d: MoaDecision, t: T): string {
+  if (d.status === 'refused') return t('moa.delegate.answer.dismissed');
+  if (d.answer && 'choiceKey' in d.answer) {
+    const key = d.answer.choiceKey;
+    const opt = d.body.type === 'question' ? d.body.options.find((o) => o.key === key) : undefined;
+    return opt?.label ?? key;
+  }
+  return t(d.answer && 'actionVerdict' in d.answer && d.answer.actionVerdict === 'go' ? 'moa.delegate.answer.go' : 'moa.delegate.answer.no-go');
+}
+
+/** One answer's way back to the asker: "Delivered to Claude Code". */
+export function MoaDelegateDeliveryRow({ decision: d, t }: { decision: MoaDecision; t: T }): React.ReactElement | null {
+  const delivery = d.delivery;
+  if (!delivery) return null;
+  const agent = agentLabel(delivery.agent, t);
+  const what = d.body.type === 'question' ? d.body.question : t('moa.delegate.effectLine', { pr: d.body.prNumber });
+  const reason = delivery.state === 'failed' && delivery.reason
+    ? t(`moa.delegate.deliveryReason.${(DELIVERY_REASONS as readonly string[]).includes(delivery.reason) ? delivery.reason : 'other'}`)
+    : null;
+  return (
+    <li data-moa-delegate-delivery={d.id} data-state={delivery.state}
+      className="flex flex-col gap-0.5 rounded-md border border-[var(--line)] px-2 py-1.5 text-[12px] text-[var(--text-sub)]">
+      <div className="truncate">{what}</div>
+      <div className="flex items-baseline gap-1.5">
+        <span className="min-w-0 flex-1 truncate text-[var(--text-main)]">{answerText(d, t)}</span>
+        <span className={`shrink-0 ${delivery.state === 'failed' ? 'text-[var(--accent-red)]' : delivery.state === 'delivered' ? 'text-[var(--text-main)]' : ''}`}>
+          {t(`moa.delegate.delivery.${delivery.state}`, { agent })}
+        </span>
+      </div>
+      {reason && <p className="m-0 text-[11px] leading-snug break-words" data-moa-delegate-delivery-reason>{reason}</p>}
+    </li>
+  );
+}
+
 const EFFECT_STATUS_KEY: Record<MergeEffect['status'], string> = {
   pending: 'moa.delegate.effect.pending',
   inFlight: 'moa.delegate.effect.running',
@@ -255,6 +300,7 @@ const EFFECT_STATUS_KEY: Record<MergeEffect['status'], string> = {
 
 export function MoaDelegateActivity({
   effects,
+  deliveries = [],
   unreceipted,
   rules,
   autoSet,
@@ -262,6 +308,8 @@ export function MoaDelegateActivity({
   t,
 }: {
   effects: readonly MergeEffect[];
+  /** Answers on their way back to the asker (selectDeliveryRows). */
+  deliveries?: readonly MoaDecision[];
   /** The lane audit: PRs merged lately with no lane receipt (display only). */
   unreceipted: readonly MoaUnreceiptedMerge[];
   rules: readonly MoaRuleView[];
@@ -270,11 +318,12 @@ export function MoaDelegateActivity({
   onChanged?: () => void;
   t: T;
 }): React.ReactElement | null {
-  if (effects.length === 0 && unreceipted.length === 0 && rules.length === 0) return null;
+  if (effects.length === 0 && deliveries.length === 0 && unreceipted.length === 0 && rules.length === 0) return null;
   return (
     <section data-moa-delegate-activity aria-label={t('moa.delegate.title')} className="px-3 pt-2 pb-1 flex flex-col gap-1">
-      {(effects.length > 0 || unreceipted.length > 0) && (
+      {(effects.length > 0 || deliveries.length > 0 || unreceipted.length > 0) && (
         <ul className="m-0 p-0 list-none flex flex-col gap-1">
+          {deliveries.map((d) => <MoaDelegateDeliveryRow key={d.id} decision={d} t={t} />)}
           {effects.map((e) => (
             <li key={e.id} data-moa-delegate-effect={e.id} data-status={e.status}
               className="flex flex-col gap-0.5 rounded-md border border-[var(--line)] px-2 py-1.5 text-[12px] text-[var(--text-sub)]">

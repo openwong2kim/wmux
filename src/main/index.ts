@@ -1962,7 +1962,12 @@ app.on('ready', async () => {
       client.on('approvals:changed', () => { void moaShadow.onApprovalsChanged(); });
       void moaShadow.onApprovalsChanged();
       // Moa's delegate: registers its service only while the ask mode is on.
-      startMoaDelegate({ getDaemonClient: () => daemonClient });
+      startMoaDelegate({
+        getDaemonClient: () => daemonClient,
+        // An owner's answer reaches the asker's pane through the same gated
+        // paste as a hand-off: approval gate, typing guard, then Enter.
+        submit: (ptyId, text, agent) => inputRpc.gatedSubmit(ptyId, text, agent, { waitQuiet: true }),
+      });
       // Handler swap to daemon-routed mode. The microsecond window where
       // pty/* handlers are torn down and re-registered is the same
       // surface the original code used; the swap is logged for the

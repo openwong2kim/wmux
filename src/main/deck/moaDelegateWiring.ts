@@ -34,6 +34,10 @@ import { MoaEffectStore } from './moaEffectStore';
 import { MoaMergeExecutor } from './moaMergeExecutor';
 import { MoaAskService, type MoaAskConfig } from './moaAskService';
 import { findShadowJudgment, readPaneScreen, runMoaJudge } from './moaShadowHost';
+import type { AskerPaneState, CourierSendResult } from './moaAnswerCourier';
+import { getWorkspaceMirror } from '../workspace/WorkspaceMirror';
+import { DEFAULT_MAX_SNAPSHOT_AGE_MS } from './stopGate';
+import type { GatedSubmitResult } from '../../shared/ptyMessageDelivery';
 
 const execFileAsync = promisify(execFile);
 /** Expire stale escalations and reconcile uncertain merges this often. */
@@ -67,6 +71,9 @@ export function syncMoaAskSwitch(mode: MoaAskMode, switchPath: string = moaAskSw
 
 export interface MoaDelegateWiringDeps {
   getDaemonClient: () => DaemonClient | null;
+  /** Main's gated paste-and-submit (input.rpc gatedSubmit with waitQuiet):
+   *  how an answer reaches the asker's pane. Without it nothing is pasted. */
+  submit?: (ptyId: string, text: string, agent: string) => Promise<GatedSubmitResult>;
   wmuxDir?: string;
   log?: (line: string) => void;
 }
@@ -117,6 +124,32 @@ async function askerBranches(getDaemonClient: () => DaemonClient | null, asker: 
   return [...out];
 }
 
+/** The asker's pane as the fleet mirror sees it. A stale or missing
+ *  snapshot is `unknown` (wait), never `gone`. */
+export function askerPaneState(asker: MoaAsker): AskerPaneState {
+  const snap = getWorkspaceMirror().getFleetSnapshot(asker.workspaceId);
+  if (!snap || Date.now() - snap.ts > DEFAULT_MAX_SNAPSHOT_AGE_MS) return 'unknown';
+  const pane = snap.panes.find((p) => p.ptyId === asker.ptyId);
+  if (!pane) return 'gone';
+  if (pane.isAgent === false) return 'gone';
+  // Mid-turn, or a prompt in front of it: the paste would queue or land in
+  // the dialog.
+  return pane.agentStatus === 'running' || pane.agentStatus === 'awaiting_input' ? 'busy' : 'idle';
+}
+
+/** Refusals that wrote nothing (or took it back out): try again later. */
+const RETRY_REASONS: ReadonlySet<string> = new Set([
+  'approval_pending', 'gate_unavailable', 'usage_limited', 'user_typing', 'deadline', 'agent_unverified', 'fresh_context_busy',
+]);
+
+/** A gated submit's result, as the courier reads it. */
+export function courierResultOf(r: GatedSubmitResult): CourierSendResult {
+  if (r.ok) return { ok: true };
+  // Pasted and not taken back out: a second paste would double it.
+  const retry = RETRY_REASONS.has(r.reason) && (!r.pasted || r.cleared === true);
+  return { ok: false, retry, reason: r.reason };
+}
+
 function configNow(): MoaAskConfig {
   const cfg = getMoaConfig();
   return {
@@ -133,6 +166,7 @@ function build(d: MoaDelegateWiringDeps): MoaAskService {
   const log = d.log ?? ((l: string) => console.log(l));
   const decisions = new MoaDecisionStore(dir);
   const effects = new MoaEffectStore(dir);
+  const submit = d.submit;
   const facts = {
     readFresh: async (repoPath: string, key: string, n: number) => {
       const r = await ghPrReviewService.laneFacts(repoPath, key, n);
@@ -178,6 +212,14 @@ function build(d: MoaDelegateWiringDeps): MoaAskService {
     },
     askerBranches: (asker, repoPath) => askerBranches(d.getDaemonClient, asker, repoPath),
     priorJudgment: findShadowJudgment,
+    ...(submit
+      ? {
+          answerPane: {
+            state: askerPaneState,
+            send: async (asker: MoaAsker, text: string) => courierResultOf(await submit(asker.ptyId, text, asker.agent)),
+          },
+        }
+      : {}),
     mergedSince: async (repo, sinceIso) => {
       const r = await ghPrReviewService.mergedSince(repo.path, repo.key, sinceIso);
       return r.ok ? r.value.map((m) => ({ prNumber: m.number, title: m.title, mergedAt: m.mergedAt, headRefOid: m.headRefOid })) : null;
