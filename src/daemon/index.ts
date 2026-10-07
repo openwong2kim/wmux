@@ -132,13 +132,16 @@ import { agentDisplayToSlug, AGENT_SLUG_SET, isAgentSlug } from '../shared/agent
 import type { AgentEventStatus } from '../main/pty/AgentDetector';
 import { HookIngest, type HookArbitration } from './hooks/HookIngest';
 import { deriveAgentLiveness } from './hooks/agentLiveness';
+import { classifyClaudeStopFailure, classifyCodexTurnCompleted, type TurnFailure } from '../shared/phoneTurnFailure';
+import { serveTurnFailure } from './turnFailure/serveTurnFailure';
+import { buildTurnFailedPushPayload, turnFailedPushCollapseId } from './push/turnFailedPushPayload';
 import { agentSlugToDisplay, isAgentSignal, type AgentSignal } from '../shared/hooks/signal-types';
 import { checkNativeTranscriptPath } from './transcript/providers';
 import { TranscriptProjector } from './transcript/TranscriptProjector';
 import { TranscriptActivityWatcher } from './transcript/TranscriptActivityWatcher';
 import { TranscriptDiscovery, DISCOVERABLE_AGENT } from './transcript/TranscriptDiscovery';
 import { admitCodexCapture, gateCodexStop } from './transcript/codexCapture';
-import { CodexCwdBinder, describeCodexPane, readProcessStartMs, type CodexPaneFacts } from './transcript/codexRolloutByCwd';
+import { CodexCwdBinder, codexLiveFor, describeCodexPane, readProcessStartMs, type CodexPaneFacts } from './transcript/codexRolloutByCwd';
 import { PushSender } from './push/PushSender';
 import { RelayTransport } from './push/RelayTransport';
 import { LiveActivityPusher, type LiveActivityCounts } from './push/LiveActivityPusher';
@@ -313,6 +316,10 @@ let deviceStore: DeviceStore | null = null;
 let sessionLifecycle: WebSessionLifecycle | null = null;
 let persistCodexRelayState: ((id:string,owner:ManagedSession)=>void) | undefined;
 let noteCodexServerLost: ((id:string)=>void) | undefined;
+/** Contract v-next item 1: a Codex turn on a daemon-owned relay failed (set at boot). */
+let noteCodexTurnFailed: ((id:string, threadId:string, turn:unknown)=>void) | undefined;
+/** The `turn_failed` push (contract §7), set at boot once the push sender exists. */
+let pushTurnFailed: ((sessionId:string, failure:TurnFailure)=>void) | undefined;
 // Late-bound: the pipe server that carries notices exists only after boot.
 let notifyCodexIdentityRefused: ((id:string,reason:string)=>void) | undefined;
 const codexRefusalNoticedAt = new Map<string,number>();
@@ -365,6 +372,10 @@ const codexPaneRelays = new CodexPaneRelays(undefined,()=>log('warn','[phone] Co
     serverLost: (id)=>{
       log('info',`[codex-relay] the Codex account server under ${id} is gone; its running turn is over`);
       noteCodexServerLost?.(id);
+    },
+    turnFailed: (id,owner,threadId,turn)=>{
+      if (isBrainPty({ id, env: owner.meta.env })) return;
+      noteCodexTurnFailed?.(id,threadId,turn);
     },
   });
 // Contract v-next item 2: account status read from a pane's live relay account.
@@ -777,6 +788,7 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         // own credentials, exactly like one the operator just started.
         devices: getDeviceStore(),
         runHistory: getRunHistory,
+        turnFailure: (id) => sessionManager.getSession(id)?.bridge.getLastFailure(),
         inputReceipts: getInputReceipts,
         phoneWorktrees: () => getPhoneWorktrees(sessionManager),
         answerReceipts: getAnswerReceipts,
@@ -3099,6 +3111,7 @@ function registerRpcHandlers(
       // M3 — see the restore path for why the roster is injected at both sites.
       devices: getDeviceStore(),
       runHistory: getRunHistory,
+      turnFailure: (id) => sessionManager.getSession(id)?.bridge.getLastFailure(),
       inputReceipts: getInputReceipts,
       phoneWorktrees: () => getPhoneWorktrees(sessionManager),
       answerReceipts: getAnswerReceipts,
@@ -3660,16 +3673,22 @@ function registerRpcHandlers(
   if (!codexCwdBinder) {
     // Launch marker: the Codex process's start time, else the OSC 133
     // command-start that launched it. Neither (tmux, no shell integration) is unknown.
-    const paneFacts = (s: { id: string; cwd: string; resumeBinding?: ResumeBinding; lastDetectedAgent?: string }): CodexPaneFacts => {
+    const paneFacts = (s: { id: string; cwd: string; resumeBinding?: ResumeBinding }): CodexPaneFacts => {
       const tracked = agentProcessTracker.identityFor(s.id);
+      const managed = sessionManager.getSession(s.id);
       const launchAt = codexProcessStart.get(s.id)
-        ?? sessionManager.getSession(s.id)?.promptLog.recent(256).filter((e) => e.type === 'command_start').pop()?.ts;
+        ?? managed?.promptLog.recent(256).filter((e) => e.type === 'command_start').pop()?.ts;
+      // Untracked: the boot-local identity, never the persisted lastDetectedAgent
+      // a recovered shell inherits (codexLiveFor).
+      const screenAgent = tracked ? undefined : managed?.bridge.getLastAgent();
+      const liveSlug = tracked ? undefined
+        : canonicalIdentityFor(agentProcessTracker, s.id, screenAgent ? agentDisplayToSlug(screenAgent) : undefined)?.slug;
       return {
         id: s.id,
         cwd: s.cwd,
         ...(s.resumeBinding ? { binding: s.resumeBinding } : {}),
         ...(launchAt !== undefined ? { launchAt } : {}),
-        codexLive: tracked ? tracked.alive && tracked.slug === 'codex' : s.lastDetectedAgent === 'codex',
+        codexLive: codexLiveFor(tracked, liveSlug),
       };
     };
     codexCwdBinder = new CodexCwdBinder({
@@ -4075,9 +4094,27 @@ function registerRpcHandlers(
       listLiveSessions: () => sessionManager.listLiveSessions(),
       emitAgentEvent: (sessionId, data) => {
         const historySession = sessionManager.getSession(sessionId);
+        const now = Date.now();
+        // Contract v-next item 1: a Claude StopFailure is a typed turn failure.
+        // Computed once, here, and handed unchanged to history, the liveness
+        // frame and the push, so `turnId`/`at` match on every surface. The
+        // same filters history applies: a vetoed or held delivery is not one.
+        // A late delivery (the next turn already opened) is stamped with the
+        // turn it ended, kept for history only, and never shown as live.
+        const served = data.signal.kind === 'agent.stop_failure' && data.status === 'error' && historySession
+          && !['internal', 'veto', 'pending'].includes(data.decision ?? '')
+          && !isBrainPty({ id: sessionId, env: historySession.meta.env })
+          ? serveTurnFailure(historySession.bridge, classifyClaudeStopFailure(data.signal.payload ?? {}, now), {
+            ts: Number.isFinite(data.signal.ts) ? data.signal.ts : now,
+            ...(data.signal.agentSessionId ? { agentSessionId: data.signal.agentSessionId } : {}),
+            push: (f) => pushTurnFailed?.(sessionId, f),
+          })
+          : undefined;
+        const failure = served?.failure;
+        const liveFailure = served?.current ? served.failure : undefined;
         // Scheduled runs keep their own history; they are not phone runs.
         const automationPane = automationEngine?.ownsPane(sessionId) === true;
-        if (historySession && !automationPane) recordHistory(store => store.ingest(sessionId, historySession.meta.env, data, historySession.meta.handoffFrom));
+        if (historySession && !automationPane) recordHistory(store => store.ingest(sessionId, historySession.meta.env, data, historySession.meta.handoffFrom, failure));
         if (automationPane) {
           automationEngine?.onAgentEvent(sessionId, {
             kind: data.signal.kind,
@@ -4109,7 +4146,7 @@ function registerRpcHandlers(
           const endedAt = confirmedStopAt(projector.snapshot(sessionId)?.events, data.signal.payload?.['turn-id']);
           if (endedAt !== undefined) hookBridge.noteTranscriptTurnEnd(endedAt);
         } else {
-          hookBridge?.noteAgentStatus(data.status, true, questionAt);
+          hookBridge?.noteAgentStatus(data.status, true, questionAt, false, data.signal.ts);
         }
         const event: DaemonEvent = { type: 'agent.event', sessionId, data };
         pipeServer.broadcast(event);
@@ -4118,7 +4155,10 @@ function registerRpcHandlers(
         // state (non-recording, coalesced, watchers only — see
         // WebTerminalServer.emitAgentLiveness). Harmless when the web server is
         // off or nobody opened the pane's turn view.
-        webTerminalServer?.emitAgentLiveness(deriveAgentLiveness(sessionId, data, Date.now()));
+        webTerminalServer?.emitAgentLiveness({
+          ...deriveAgentLiveness(sessionId, data, liveFailure?.at ?? now),
+          ...(liveFailure ? { failure: liveFailure } : {}),
+        });
         // A turn may have ended: the phone chat queue delivers its next item.
         nativeChatBridge?.nudgeQueue(sessionId);
         // Outbound notification sinks: the END of a turn, and only the real one.
@@ -7245,6 +7285,14 @@ async function main(): Promise<void> {
   // normally empty — and a banner delivered before a restart is not retracted,
   // because which pushes were delivered is not persisted.
   approvalPushRouter.adopt(approvalRegistry.list().pending);
+  // Contract §7 `turn_failed`: one push per failed turn (serveTurnFailure only
+  // calls this for a failure it had not held). Presence is consulted like an
+  // approval's, but a suppressed one is DROPPED, not parked: someone at the
+  // desk sees the pane, and a failure is not a question waiting on them.
+  pushTurnFailed = (sessionId, failure) => {
+    if (shouldSuppressPush({ state: desktopPresence.snapshot(), now: Date.now(), config: presenceConfig() })) return;
+    pushSender.notify(buildTurnFailedPushPayload(sessionId, failure), { collapseId: turnFailedPushCollapseId(sessionId) });
+  };
   const pipeServer = new DaemonPipeServer(config.daemon.pipeName);
   // A re-list nudge for main's HQ approval lane (deck/hqApprovalLane.ts).
   // Subscribed here, not above: that listener runs before `pipeServer` exists.
@@ -7960,6 +8008,35 @@ async function main(): Promise<void> {
   // was running is over, and no Stop hook or transcript end will say so.
   noteCodexServerLost = (id) => {
     sessionManager.getSession(id)?.bridge.noteServerLost();
+  };
+  // Contract v-next item 1, Codex half: `turn/completed {status:'failed'}` on
+  // the pane's own relay. The relay is the proof the turn ended, so it also
+  // closes the episode (as a recorded transcript end does) and settles the
+  // phone header with the failure on it.
+  noteCodexTurnFailed = (id, threadId, turn) => {
+    const session = sessionManager.getSession(id);
+    if (!session) return;
+    const now = Date.now();
+    const classified = classifyCodexTurnCompleted(turn, now);
+    if (!classified) return;
+    // The thread id is the conversation id `/turns` resolves for a Codex pane,
+    // so a pane that moved to another thread does not show this failure.
+    const served = serveTurnFailure(session.bridge, classified, { ts: now, agentSessionId: threadId, push: (f) => pushTurnFailed?.(id, f) });
+    if (!served) return;
+    const { failure } = served;
+    session.bridge.noteTranscriptTurnEnd(now);
+    // History records Codex turns too (the notify hook's Stop): the failed
+    // turn gets its own entry, and a Stop for that same turn is not recorded
+    // as completed.
+    const nativeTurnId = (turn as { id?: unknown }).id;
+    if (typeof nativeTurnId === 'string' && automationEngine?.ownsPane(id) !== true) {
+      recordHistory(store => store.codexTurnFailed(id, session.meta.env, agentSlugToDisplay('codex'), nativeTurnId, failure, session.meta.handoffFrom));
+    }
+    if (served.current) {
+      webTerminalServer?.emitAgentLiveness({ sessionId: id, state: 'idle', agent: agentSlugToDisplay('codex'), at: failure.at, failure });
+    }
+    // The turn is over: a send queued behind it goes now, as on any turn end.
+    nativeChatBridge?.nudgeQueue(id);
   };
 
   recordHistory(store => store.reconcileLiveSessions(new Set(sessionManager.listLiveSessions().map(s => s.id))));

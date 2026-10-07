@@ -162,6 +162,38 @@ describe('the auto merge lane', () => {
     expect(h.decisions.list()[0]).toMatchObject({ resolvedBy: 'moa-auto', ruleId: 'R-merge-green', receipt: 'done' });
   });
 
+  it('the judge sees the facts a merge rule needs: author, required checks, merge state and the lane verdict', async () => {
+    const h = build(world({ facts: { ...OPEN_GREEN, mergeStateStatus: 'CLEAN' } }));
+    await askAndSettle(h);
+    const prompt = String((h.judge.mock.calls[0] as unknown[] | undefined)?.[0]);
+    const prs = JSON.parse(/=== PULL REQUESTS[^\n]*\n(.*)/.exec(prompt)![1]) as Array<Record<string, unknown>>;
+    expect(prs[0]).toMatchObject({ number: 1858, author: OPEN_GREEN.author, mergeStateStatus: 'CLEAN' });
+    expect((prs[0].checks as Array<{ name: string; isRequired: boolean }>).filter((c) => c.isRequired).map((c) => c.name).sort())
+      .toEqual(['Baseline (ubuntu-22.04)', 'validate']);
+    const lane = JSON.parse(/=== MERGE LANE \(checked by wmux[^\n]*\n(.*)/.exec(prompt)![1]);
+    expect(lane).toEqual({ passed: true, failed: [] });
+    // Kept on the decision for the owner's card.
+    expect(h.decisions.list()[0]?.lane).toEqual({ ok: true, reasons: [] });
+  });
+
+  it('a failing lane reaches the judge as failed, with its reasons', async () => {
+    const h = build(world({ branches: ['someone-else'] }));
+    await askAndSettle(h);
+    const prompt = String((h.judge.mock.calls[0] as unknown[] | undefined)?.[0]);
+    expect(JSON.parse(/=== MERGE LANE \(checked by wmux[^\n]*\n(.*)/.exec(prompt)![1])).toEqual({ passed: false, failed: ['branch-not-bound'] });
+    expect(h.decisions.list()[0]?.lane).toEqual({ ok: false, reasons: ['branch-not-bound'] });
+  });
+
+  it('a judge timeout keeps the lane reasons on the escalation', async () => {
+    const h = build(world({ branches: ['someone-else'], judgeReply: { reply: null, error: 'timeout', tokens: { input: 0, output: 0 }, ms: 60_000 } }));
+    const { view } = await askAndSettle(h);
+    expect(view.status).toBe('escalated');
+    expect(view.reasonCode).toBe('lane-branch-not-bound');
+    expect(view.why).toContain('the judge call failed: timeout');
+    expect(view.why).toContain('(lane: branch-not-bound)');
+    expect(h.decisions.list()[0]?.lane).toEqual({ ok: false, reasons: ['branch-not-bound'] });
+  });
+
   it('shadow and suggest record the judge but answer nothing', async () => {
     for (const mode of ['shadow', 'suggest'] as MoaAskMode[]) {
       const h = build(world({ config: { mode, autoRules: ['R-merge-green'], trustedAuthors: ['openwong2kim'] } }));

@@ -50,6 +50,22 @@ export interface PidWalkHit {
  */
 const DEFAULT_MAX_DEPTH = 16;
 
+export interface PidWalkOptions {
+  maxDepth?: number;
+  /**
+   * Creation time of a live process, or null when it cannot be read. Enables
+   * the pid-reuse guard: Windows never re-parents an orphan, so when a parent
+   * exits its children keep the dead pid as their ppid, and once Windows hands
+   * that number to a new process (a new pane's shell, say) the orphan looks
+   * like that process's child. A parent created after its child is such a
+   * reused pid, and the walk ends there. An unreadable time proves nothing and
+   * is not treated as reuse.
+   */
+  createdAt?: (pid: number) => bigint | null;
+  /** The process whose parent is `startPid` (the caller), so the first edge is checked too. */
+  child?: number;
+}
+
 /**
  * Walk the process tree upward from `startPid`, returning the FIRST (closest)
  * ancestor that is a live anchor, or null if none is reachable within the cap.
@@ -64,21 +80,43 @@ const DEFAULT_MAX_DEPTH = 16;
  *   2. A parent <= 0, equal to the child, or absent from the table ends the walk
  *      (root reached / unknown).
  *   3. `maxDepth` caps the hop count regardless.
+ *
+ * With `createdAt`, a reused parent pid also ends the walk (PidWalkOptions).
  */
 export function walkToOwningAnchor(
   startPid: number,
   ppidByPid: ReadonlyMap<number, number>,
   anchorByPid: ReadonlyMap<number, OwningAnchor>,
-  opts: { maxDepth?: number } = {},
+  opts: PidWalkOptions = {},
 ): PidWalkHit | null {
   const maxDepth = opts.maxDepth ?? DEFAULT_MAX_DEPTH;
   if (!Number.isInteger(startPid) || startPid <= 0) return null;
 
+  const read = opts.createdAt;
+  const created = new Map<number, bigint | null>();
+  const createdAt = (pid: number): bigint | null => {
+    const cached = created.get(pid);
+    if (cached !== undefined) return cached;
+    const value = read ? read(pid) : null;
+    created.set(pid, value);
+    return value;
+  };
+  // The edge child → parent is stale when the parent is provably newer.
+  const reused = (child: number | undefined, parent: number): boolean => {
+    if (!read || child === undefined) return false;
+    const c = createdAt(child);
+    const p = c === null ? null : createdAt(parent);
+    return c !== null && p !== null && p > c;
+  };
+
   const visited = new Set<number>();
   let current = startPid;
+  let child = opts.child;
   for (let depth = 0; depth <= maxDepth; depth++) {
     if (visited.has(current)) break; // cycle guard
     visited.add(current);
+    // The real ancestor is gone; whatever holds its pid now is not ours.
+    if (reused(child, current)) break;
 
     const anchor = anchorByPid.get(current);
     if (anchor) return { anchor, pid: current, depth };
@@ -89,6 +127,7 @@ export function walkToOwningAnchor(
     // A non-positive, self-referential, or NaN parent is the end of a real
     // chain (or a corrupt one) — stop rather than chase it.
     if (!Number.isInteger(parent) || parent <= 0 || parent === current) break;
+    child = current;
     current = parent;
   }
   return null;

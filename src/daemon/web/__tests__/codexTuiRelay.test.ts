@@ -526,12 +526,14 @@ describe.skipIf(process.platform === 'win32')('phone answers to Codex approvals'
     const raw:string[]=[];const unmatched:number[]=[];
     const pending:Array<{requestId:string;request:CodexDecisionRequest}>=[];
     const settled:Array<{requestId:string;threadId:string;reason:CodexDecisionSettledReason}>=[];
+    const failed:Array<{threadId:string;turn:unknown}>=[];
     const owners:{current:Owner}={current:o.owner ?? (id=>id===owned ? {paneId:'pty-a',live:true} : {paneId:'pty-b',live:true})};
     const policy:CodexRelayPolicy={paneId:'pty-a',identity:()=>threadIdentityEnv({id:'pty-a',env:{}},{}),serverProven:()=>true,
       owner:(id)=>owners.current(id),recordOwner:()=>{/* not exercised here */},
       unmatchedResponse:(count)=>{unmatched.push(count);},
       decisionPending:(requestId,r)=>{pending.push({requestId,request:r});},
-      decisionSettled:(requestId,threadId,reason)=>{settled.push({requestId,threadId,reason});}};
+      decisionSettled:(requestId,threadId,reason)=>{settled.push({requestId,threadId,reason});},
+      turnFailed:(threadId,turn)=>{failed.push({threadId,turn});}};
     const f=await fixture({policy,answerConfirmMs:o.answerConfirmMs,onUpstreamRequest:(r,text)=>{if(r.method===undefined)raw.push(text);}});
     const client=await f.connect();
     const deliver=async(frame:object)=>{
@@ -544,7 +546,7 @@ describe.skipIf(process.platform === 'win32')('phone answers to Codex approvals'
       client.send(JSON.stringify({id:101,method:'model/list',params:{}}));await got;
     };
     await settle();
-    return {f,client,raw,unmatched,pending,settled,owners,deliver,settle};
+    return {f,client,raw,unmatched,pending,settled,failed,owners,deliver,settle};
   }
 
   it('records an owned approval, injects the bare answer under the server id (id 0 included), and confirms it only on resolved', async () => {
@@ -569,6 +571,18 @@ describe.skipIf(process.platform === 'win32')('phone answers to Codex approvals'
       expect(t.raw).toHaveLength(1);
       expect(t.unmatched).toEqual([1]);
       expect(t.settled).toEqual([]);
+    } finally { t.client.terminate();await t.f.cleanup(); }
+  });
+
+  it('reports a failed turn only for a thread this pane owns, and only when it failed', async () => {
+    const t=await open();
+    try {
+      const failedTurn={id:'turn-1',status:'failed',error:{message:'limit',codexErrorInfo:'usageLimitExceeded'}};
+      await t.deliver({method:'turn/completed',params:{threadId:owned,turn:failedTurn}});
+      await t.deliver({method:'turn/completed',params:{threadId:foreign,turn:{...failedTurn,id:'turn-2'}}});
+      await t.deliver({method:'turn/completed',params:{threadId:owned,turn:{id:'turn-3',status:'completed'}}});
+      await t.settle();
+      expect(t.failed).toEqual([{threadId:owned,turn:failedTurn}]);
     } finally { t.client.terminate();await t.f.cleanup(); }
   });
 

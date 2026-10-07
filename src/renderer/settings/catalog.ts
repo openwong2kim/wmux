@@ -153,6 +153,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'moamemoryproposals', tab: 'moa', labelKey: 'moa.settings.memoryProposals', descKey: 'moa.settings.memoryProposalsDesc', synonyms: 'remember precedent skill proposal memory save 기억 판례 스킬' },
   { id: 'moaapprovalpress', tab: 'moa', labelKey: 'moa.settings.approvalPress', descKey: 'moa.settings.approvalPressDesc', synonyms: 'approval approve press permission prompt auto yes danger worker 승인' },
   { id: 'moashadowjudge', tab: 'moa', labelKey: 'moa.settings.shadowJudge', descKey: 'moa.settings.shadowJudgeDesc', synonyms: 'shadow judge policy rule delegate answer question agreement record 그림자 판정' },
+  { id: 'moaaskmode', tab: 'moa', labelKey: 'moa.settings.askMode', descKey: 'moa.settings.askModeDesc', synonyms: 'delegate moa_ask ask mode suggest auto off pause kill switch daily cap 위임 대리 자동 일시정지 한도' },
   { id: 'moaretro', tab: 'moa', labelKey: 'moa.settings.retro', descKey: 'moa.settings.retroDesc', synonyms: 'retro retrospective weekly review summary interruptions stalls 회고' },
   { id: 'moastats', tab: 'moa', labelKey: 'moa.settings.stats', descKey: 'moa.settings.statsDesc', synonyms: 'track record stats statistics clear reset delegation 실적' },
   { id: 'moaissueproposals', tab: 'moa', labelKey: 'moa.settings.issueProposals', descKey: 'moa.settings.issueProposalsDesc', synonyms: 'issue pr pull request propose new hand off github contributor 이슈 제안' },

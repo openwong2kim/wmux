@@ -64,6 +64,7 @@ import {
   type ShadowPrFacts,
 } from './moaShadowJudge';
 import { MOA_AUTO_DAILY_CAP_DEFAULT } from '../../shared/moa';
+import { COURIER_MAX_WAIT_MS, MoaAnswerCourier, type AskerPaneState, type CourierSendResult } from './moaAnswerCourier';
 
 /** What the service reads from the owner's settings, on every call. */
 export interface MoaAskConfig {
@@ -100,9 +101,26 @@ export interface MoaAskServicePorts {
   /** PRs merged since `sinceIso` in a repo (the audit). */
   mergedSince?: (repo: { key: string; path: string }, sinceIso: string) => Promise<Array<Omit<MoaUnreceiptedMerge, 'repoKey'>> | null>;
   judgeDailyCap?: number;
+  /** The asker's pane, for pasting a later answer back as a new turn
+   *  (moaAnswerCourier.ts). Without it nothing is delivered. */
+  answerPane?: {
+    state: (asker: MoaAsker) => AskerPaneState;
+    send: (asker: MoaAsker, text: string, wanted: () => boolean) => Promise<CourierSendResult>;
+    retryMs?: number;
+    setTimer?: (fn: () => void, ms: number) => () => void;
+  };
   now?: () => number;
   log?: (line: string) => void;
 }
+
+/** What an asker told `escalated` should do next. */
+export const ESCALATED_NEXT =
+  "The owner answers this on Moa's card. End your turn now without restating the question; " +
+  'the answer arrives in this pane as a new message.';
+
+/** How long an automatic answer waits for the asker's own poll before it is
+ *  pasted into the pane. */
+export const AUTO_DELIVERY_GRACE_MS = 20_000;
 
 const MERGE_CHOICES = [
   { key: 'go', label: 'Merge it' },
@@ -133,10 +151,25 @@ export class MoaAskService implements MoaDelegateServicePort {
   private readonly autoReserved = new Set<string>();
   /** Background judging, by decision id (tests await it). */
   private readonly work = new Map<string, Promise<void>>();
+  private readonly courier: MoaAnswerCourier | null;
 
   constructor(private readonly ports: MoaAskServicePorts) {
     this.now = ports.now ?? Date.now;
     this.log = ports.log ?? ((l) => console.log(l));
+    const pane = ports.answerPane;
+    this.courier = pane
+      ? new MoaAnswerCourier({
+          get: (id) => ports.decisions.get(id),
+          setDelivery: (id, delivery, from) => ports.decisions.setDelivery(id, delivery, from),
+          paneState: pane.state,
+          send: pane.send,
+          onChange: (d) => this.emitDecision('updated', d),
+          now: this.now,
+          log: this.log,
+          ...(pane.retryMs !== undefined ? { retryMs: pane.retryMs } : {}),
+          ...(pane.setTimer ? { setTimer: pane.setTimer } : {}),
+        })
+      : null;
   }
 
   // ── moa.ask / moa.askStatus ────────────────────────────────────────────────
@@ -166,7 +199,16 @@ export class MoaAskService implements MoaDelegateServicePort {
     if (this.ports.getConfig().mode === 'off') return { ok: false, code: 'off', message: 'moa_ask is off' };
     const d = this.ports.decisions.getForAsker(asker, ticketId);
     if (!d) return { ok: false, code: 'unknown-ticket', message: 'no such ticket for this pane' };
-    return { ok: true, ticket: ticketView(d, d.kind === 'merge' ? this.ports.effects.get(mergeEffectId(d.id)) : null) };
+    const view = ticketView(d, d.kind === 'merge' ? this.ports.effects.get(mergeEffectId(d.id)) : null);
+    // The asker has its final answer: nothing more to paste into its pane.
+    if (view.status === 'answered' || view.status === 'refused') await this.courier?.seen(d.id);
+    return { ok: true, ticket: view.status === 'escalated' ? { ...view, next: ESCALATED_NEXT } : view };
+  }
+
+  /** The delegate went off or this service is being replaced: no answer is
+   *  pasted by this instance any more. */
+  stop(): void {
+    this.courier?.stop();
   }
 
   /** Wait for background judging (tests, shutdown). */
@@ -176,7 +218,13 @@ export class MoaAskService implements MoaDelegateServicePort {
 
   private ticketOf(d: MoaDecision, replayed: boolean) {
     const view = ticketView(d, d.kind === 'merge' ? this.ports.effects.get(mergeEffectId(d.id)) : null);
-    return { ticketId: d.ticketId, status: view.status, ...(replayed ? { replayed: true as const } : {}), ...(view.pollAfterMs ? { pollAfterMs: view.pollAfterMs } : {}) };
+    return {
+      ticketId: d.ticketId,
+      status: view.status,
+      ...(replayed ? { replayed: true as const } : {}),
+      ...(view.pollAfterMs ? { pollAfterMs: view.pollAfterMs } : {}),
+      ...(view.status === 'escalated' ? { next: ESCALATED_NEXT } : {}),
+    };
   }
 
   // ── Judging ────────────────────────────────────────────────────────────────
@@ -200,6 +248,9 @@ export class MoaAskService implements MoaDelegateServicePort {
     }
     if (!settled) return;
     this.emitDecision('updated', settled);
+    // An answer the asker may have stopped polling for: pasted back unless
+    // its own poll reads it first.
+    if (settled.status === 'answered') void this.courier?.schedule(settled, AUTO_DELIVERY_GRACE_MS);
     // Settled first, then the effect: a crash between the two is repaired at
     // startup (repairMissingEffects), and the executor re-checks everything.
     if (auto && settled.status === 'answered' && settled.receipt === 'done') await this.enqueueAndRun(settled, 'moa-auto');
@@ -213,11 +264,12 @@ export class MoaAskService implements MoaDelegateServicePort {
     choices: ReadonlyArray<{ key: string; label: string }>,
     cwd: string,
     prs: ShadowPrFacts[],
+    lane?: { passed: boolean; failed: string[] },
   ): Promise<MoaJudgeResult | MoaSettlement> {
     const prior = this.ports.priorJudgment?.(d.questionHash);
     if (prior) return prior;
     if (this.judgeCallsToday() >= (this.ports.judgeDailyCap ?? SHADOW_DAILY_CAP_DEFAULT)) {
-      return esc('daily-cap', 'the daily cap of judge calls is reached; ask the owner');
+      return esc('daily-cap', 'the daily cap of judge calls is reached; the owner answers it in the Moa panel');
     }
     const screen = await this.ports.readScreen(d.asker.ptyId).catch(() => [] as string[]);
     const notes = d.body.context ? [`[agent's note] ${d.body.context}`] : [];
@@ -228,6 +280,7 @@ export class MoaAskService implements MoaDelegateServicePort {
       asker: { ...d.asker, ...(cwd ? { cwd } : {}), attribution: 'exact' },
       screenLines: [...screen, ...notes],
       prs,
+      ...(lane ? { lane } : {}),
     });
     const result = await this.ports.judge(buildJudgePrompt(book.text, packet));
     if (result.refused) return esc('judge-refused', `the judge was not run: ${result.error ?? 'refused'}`);
@@ -252,17 +305,17 @@ export class MoaAskService implements MoaDelegateServicePort {
   private async decideQuestion(d: MoaDecision, cwd: string): Promise<{ settlement: MoaSettlement; auto: false }> {
     if (d.body.type !== 'question') throw new Error('not a question');
     const book = this.ports.loadBook();
-    if (!book || book.rules.size === 0) return { settlement: esc('no-policy-book', 'the policy book has no rules; ask the owner'), auto: false };
+    if (!book || book.rules.size === 0) return { settlement: esc('no-policy-book', 'the policy book has no rules; the owner answers it in the Moa panel'), auto: false };
     const category = precheckAlwaysEscalate(d.body.question, d.body.options.map((o) => o.label), book.alwaysEscalate);
-    if (category) return { settlement: esc(`always-escalate-${category}`, `this is a "${category}" question; ask the owner`), auto: false };
+    if (category) return { settlement: esc(`always-escalate-${category}`, `this is a "${category}" question; the owner answers it in the Moa panel`), auto: false };
     const j = await this.judgeOnce(d, book, d.body.question, d.body.options, cwd, []);
     if (!isJudge(j)) return { settlement: j, auto: false };
     // A free question has no deterministic predicate: never auto, in any mode.
-    if (j.verdict !== 'answer' || !j.ruleId) return { settlement: esc(j.reasonCode, 'Moa would not settle this; ask the owner', j), auto: false };
-    const why = d.mode === 'shadow' ? 'recorded only; ask the owner' : 'Moa suggested an answer to the owner; ask the owner';
+    if (j.verdict !== 'answer' || !j.ruleId) return { settlement: esc(j.reasonCode, 'Moa would not settle this; the owner answers it in the Moa panel', j), auto: false };
+    const why = d.mode === 'shadow' ? 'recorded only; the owner answers it in the Moa panel' : 'Moa suggested an answer to the owner; the owner answers it in the Moa panel';
     if (d.mode === 'auto') {
       const e = moaAutoEligibility({ book, ruleId: j.ruleId, ownerAutoRules: this.ports.getConfig().autoRules, kind: 'question', predicatePassed: false });
-      return { settlement: esc(e.eligible ? 'auto-no-predicate' : `auto-${e.reason}`, 'a question never settles by itself; ask the owner', j), auto: false };
+      return { settlement: esc(e.eligible ? 'auto-no-predicate' : `auto-${e.reason}`, 'a question never settles by itself; the owner answers it in the Moa panel', j), auto: false };
     }
     return { settlement: esc(d.mode === 'shadow' ? 'shadow' : 'suggested', why, j), auto: false };
   }
@@ -275,38 +328,50 @@ export class MoaAskService implements MoaDelegateServicePort {
     try {
       facts = await this.ports.facts.readFresh(d.repo.path, d.repo.key, body.prNumber);
     } catch {
-      return { settlement: esc('lane-read-failed', 'the pull request could not be read; ask the owner'), auto: false };
+      return { settlement: esc('lane-read-failed', 'the pull request could not be read; the owner answers it in the Moa panel'), auto: false };
     }
     if (facts.number !== body.prNumber) return { settlement: refuse('pr-mismatch', 'GitHub answered for another pull request'), auto: false };
     if (facts.state !== 'OPEN') return { settlement: refuse('not-open', `the pull request is ${facts.state.toLowerCase() || 'not open'}`), auto: false };
     if (facts.headRefOid !== body.expectHead) return { settlement: refuse('head-moved', 'the pull request has another head than expectHead'), auto: false };
     const lane = await this.evaluateLane(d, facts);
+    const laneFacts = { passed: lane.ok, failed: lane.failures.map((f) => f.reason) };
+    const withLane = (r: { settlement: MoaSettlement; auto: boolean }) => ({ ...r, settlement: { ...r.settlement, lane: { ok: lane.ok, reasons: laneFacts.failed } } });
     const book = this.ports.loadBook();
-    if (!book || book.rules.size === 0) return { settlement: esc('no-policy-book', 'the policy book has no rules; ask the owner'), auto: false };
+    if (!book || book.rules.size === 0) return withLane({ settlement: esc('no-policy-book', 'the policy book has no rules; the owner answers it in the Moa panel'), auto: false });
     const question = `Merge pull request #${body.prNumber} (head ${body.expectHead.slice(0, 12)}) into ${facts.baseRefName || 'its base'}?`;
+    // The facts a rule like "required checks green, the owner's own PR" needs,
+    // as wmux read them; the lane's verdict rides in its own packet section.
     const prs: ShadowPrFacts[] = [{
-      number: facts.number, state: facts.state, isDraft: facts.isDraft, headSha: facts.headRefOid, mergeStateStatus: '',
-      labels: facts.labels, checks: facts.checks.map((c) => ({ name: c.name, bucket: c.bucket })),
+      number: facts.number,
+      state: facts.state,
+      isDraft: facts.isDraft,
+      headSha: facts.headRefOid,
+      mergeStateStatus: facts.mergeStateStatus ?? 'UNKNOWN',
+      author: facts.author,
+      labels: facts.labels,
+      checks: facts.checks.map((c) => ({ name: c.name, bucket: c.bucket, isRequired: c.isRequired === true })),
     }];
-    const j = await this.judgeOnce(d, book, question, MERGE_CHOICES, cwd, prs);
-    if (!isJudge(j)) return { settlement: j, auto: false };
-    const laneWhy = lane.ok ? '' : ` (lane: ${lane.failures.map((f) => f.reason).join(', ')})`;
-    if (j.verdict !== 'go' || !j.ruleId) return { settlement: esc(lane.ok ? j.reasonCode : laneCode(lane), `Moa would not merge this${laneWhy}; ask the owner`, j), auto: false };
-    if (d.mode !== 'auto') return { settlement: esc(d.mode === 'shadow' ? 'shadow' : 'suggested', `recorded for the owner${laneWhy}; ask the owner`, j), auto: false };
+    const laneWhy = lane.ok ? '' : ` (lane: ${laneFacts.failed.join(', ')})`;
+    const j = await this.judgeOnce(d, book, question, MERGE_CHOICES, cwd, prs, laneFacts);
+    // A judge that failed (a timeout, the cap) still leaves the lane's own
+    // objections on the card.
+    if (!isJudge(j)) return withLane({ settlement: { ...j, ...(lane.ok ? {} : { reasonCode: laneCode(lane), why: `${j.why}${laneWhy}` }) }, auto: false });
+    if (j.verdict !== 'go' || !j.ruleId) return withLane({ settlement: esc(lane.ok ? j.reasonCode : laneCode(lane), `Moa would not merge this${laneWhy}; the owner answers it in the Moa panel`, j), auto: false });
+    if (d.mode !== 'auto') return withLane({ settlement: esc(d.mode === 'shadow' ? 'shadow' : 'suggested', `recorded for the owner${laneWhy}; the owner answers it in the Moa panel`, j), auto: false });
     const cfg = this.ports.getConfig();
     const e = moaAutoEligibility({ book, ruleId: j.ruleId, ownerAutoRules: cfg.autoRules, kind: 'merge', predicatePassed: lane.ok });
-    if (!e.eligible) return { settlement: esc(e.reason === 'predicate-failed' ? laneCode(lane) : `auto-${e.reason}`, `Moa may not merge this by itself${laneWhy}; ask the owner`, j), auto: false };
-    if (cfg.autoPaused) return { settlement: esc('auto-paused', 'automatic answers are paused; ask the owner', j), auto: false };
+    if (!e.eligible) return withLane({ settlement: esc(e.reason === 'predicate-failed' ? laneCode(lane) : `auto-${e.reason}`, `Moa may not merge this by itself${laneWhy}; the owner answers it in the Moa panel`, j), auto: false });
+    if (cfg.autoPaused) return withLane({ settlement: esc('auto-paused', 'automatic answers are paused; the owner answers it in the Moa panel', j), auto: false });
     // Checked and reserved in one synchronous step (no await in between), so
     // two judgements finishing together cannot both take the last slot.
     if (this.autoAnswersToday() + this.autoReserved.size >= (cfg.autoDailyCap ?? MOA_AUTO_DAILY_CAP_DEFAULT)) {
-      return { settlement: esc('auto-daily-cap', 'the daily cap of automatic answers is reached; ask the owner', j), auto: false };
+      return withLane({ settlement: esc('auto-daily-cap', 'the daily cap of automatic answers is reached; the owner answers it in the Moa panel', j), auto: false });
     }
     this.autoReserved.add(d.id);
-    return {
+    return withLane({
       settlement: { status: 'answered', judge: j, ruleId: j.ruleId, reasonCode: 'auto-merge', why: j.why || `rule ${j.ruleId}`, answer: { actionVerdict: 'go' } },
       auto: true,
-    };
+    });
   }
 
   private async evaluateLane(d: MoaDecision, facts: PrLaneFacts): Promise<LaneVerdict> {
@@ -388,6 +453,15 @@ export class MoaAskService implements MoaDelegateServicePort {
       });
       this.emitEffect(effect);
     }
+    // Deliveries still queued when main stopped, and final answers main
+    // stopped before it could queue (a crash between saving the answer and
+    // saving `waiting`): recent ones only, so an old record is never pasted.
+    const since = this.now() - COURIER_MAX_WAIT_MS;
+    for (const d of this.ports.decisions.list()) {
+      const queued = d.delivery?.state === 'waiting';
+      const lost = !d.delivery && (d.resolvedBy === 'owner' || d.resolvedBy === 'moa-auto') && d.resolvedAt !== null && d.resolvedAt >= since;
+      if (queued || lost) void this.courier?.schedule(d);
+    }
     await this.tick();
   }
 
@@ -454,6 +528,8 @@ export class MoaAskService implements MoaDelegateServicePort {
     const r = await this.ports.decisions.resolveByOwner(req.decisionId, req.answer);
     if (!r.ok) return r;
     this.emitDecision('updated', r.decision);
+    // The asker ended its turn on the escalation: its answer is pasted back.
+    void this.courier?.schedule(r.decision);
     if (req.answer.type === 'merge' && req.answer.approve) {
       const effect = await this.enqueueAndRun(r.decision, 'owner');
       return { ok: true, decision: r.decision, ...(effect ? { effect } : {}) };

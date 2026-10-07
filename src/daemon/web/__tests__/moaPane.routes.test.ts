@@ -12,7 +12,7 @@ import type { DaemonSessionManager } from '../../DaemonSessionManager';
 import type { ChatBridge, ChatResolution, ChatSendOutcome, ChatSendRequest } from '../../chat/chatBridge';
 import type { MoaPaneFact } from '../moaPane';
 import type { ApprovalEvent, ApprovalRegistryApi, ApprovalRequest, ApprovalResolveParams, ApprovalResolveResult } from '../../approvals/types';
-import { TERMINAL_PROMPT_WEB_ANSWER, TERMINAL_PROMPT_WEB_DECLINE } from '../../approvals/types';
+import { TERMINAL_PROMPT_WEB_ANSWER } from '../../approvals/types';
 import { ApprovalRegistry, TERMINAL_PROMPT_MIN_ANSWER_AGE_MS } from '../../approvals/ApprovalRegistry';
 
 /**
@@ -677,8 +677,9 @@ describe('the Moa pane on the phone routes', () => {
   });
 
   describe('Moa\'s own prompt against the real registry (#1772)', () => {
-    // A WebFetch dialog: the parser does not read it as active, so its card is
-    // informational (answerable:false) — Moa's prompts today.
+    // A WebFetch dialog. The registry binds it (the desktop's Moa chat may
+    // answer it), but a device only ever gets Moa's card as informational
+    // (answerable:false) and its press and decline are refused (#1786).
     const FETCH = [
       '────────────────────────────────────────────────────────────',
       ' Fetch',
@@ -724,32 +725,24 @@ describe('the Moa pane on the phone routes', () => {
       });
       const [card] = registry.list().pending;
       expect(card).toMatchObject({ sessionId: 'brain-hq', kind: 'terminal_prompt' });
-      expect(card!.promptFingerprint).toBeUndefined();
+      expect(card!.promptFingerprint).toMatch(/^[0-9a-f]{32}$/);
       await start();
       const h = device('dev-1');
       const listed = (await (await fetch(`${base()}/api/approvals`, { headers: { ...h, ...caps } })).json()) as { pending: Array<Record<string, unknown>> };
       expect(listed.pending.map((r) => r['id'])).toEqual([card!.id]);
       expect(listed.pending[0]).not.toHaveProperty('choices');
+      expect(listed.pending[0]).not.toHaveProperty('promptFingerprint');
 
-      const pressed = await postJson(`${base()}/api/approvals/${card!.id}`, { ...h, ...caps }, { decision: 'approve', choiceKey: '1', promptFingerprint: 'f'.repeat(32) });
-      expect([pressed.status, await pressed.json()]).toEqual([501, { error: 'answer-in-terminal', reason: 'unsupported-shape' }]);
       const decline = async () => postJson(`${base()}/api/approvals/${card!.id}/decline`, { ...h, ...caps }, {});
       let declined = await decline();
       expect([declined.status, await declined.json()]).toEqual([425, { error: 'answer-too-soon', effect: 'none' }]);
       clock.now += TERMINAL_PROMPT_MIN_ANSWER_AGE_MS;
+      // Past the reflex guard and with the record's own fingerprint — what the
+      // registry itself would press — a device still never presses it.
+      const pressed = await postJson(`${base()}/api/approvals/${card!.id}`, { ...h, ...caps }, { decision: 'approve', choiceKey: '1', promptFingerprint: card!.promptFingerprint });
+      expect([pressed.status, await pressed.json()]).toEqual([501, { error: 'answer-in-terminal', reason: 'unsupported-shape' }]);
       declined = await decline();
       expect([declined.status, await declined.json()]).toEqual([409, { error: 'prompt-unverified', effect: 'none' }]);
-
-      // The registry refuses the same press and decline on its own too.
-      const viaRegistry = await registry.resolve({
-        id: card!.id, decision: 'approve', choiceKey: '1', promptFingerprint: 'f'.repeat(32), resolvedBy: 'device:dev-1',
-        terminalPromptAnswer: TERMINAL_PROMPT_WEB_ANSWER,
-      });
-      expect(viaRegistry).toMatchObject({ ok: false, reason: 'answer-in-terminal', answerRefusal: 'unsupported-shape' });
-      const declinedViaRegistry = await registry.resolve({
-        id: card!.id, decision: 'deny', resolvedBy: 'device:dev-1', terminalPromptDecline: TERMINAL_PROMPT_WEB_DECLINE,
-      });
-      expect(declinedViaRegistry).toMatchObject({ ok: false, reason: 'prompt-unverified' });
 
       expect(writes).toEqual([]);
       expect(panes.get('brain-hq')!.ptyProcess.write).not.toHaveBeenCalled();

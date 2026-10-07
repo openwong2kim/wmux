@@ -165,10 +165,17 @@ export function codexComposerVisible(rows: ChatScreenRows | null): boolean {
   return tail.slice(at + 1).some(row => /^\s*\S.+ · (?:[A-Za-z]:[\\/]|\/|~)/.test(row));
 }
 
-/** Codex 0.156/0.157 TUI; positive evidence, not an absence-of-errors heuristic.
+/** The shortcut hint Codex draws under its footer: `? for shortcuts` (0.157),
+ * then `← for agents · ? for shortcuts` (0.158), which a narrow pane cuts to
+ * `? for shortcut` when a right-aligned `⚠ N warning(s) · f2 to view` badge
+ * shares the row. */
+const CODEX_SHORTCUT_HINT = /^\s*(?:← for agents · )?\? for shortcuts?(?:\s+⚠\s*\d+ warnings? · f2 to view)?$/;
+
+/** Codex 0.156–0.158 TUI; positive evidence, not an absence-of-errors heuristic.
  * Match only the bottom composer with its own model/cwd footer. 0.157 adds a
- * `? for shortcuts` hint under the footer; with `undimmed` rows a prompt row
- * holding only dim text (placeholder or suggestion) is empty, typed text is not. */
+ * shortcut hint under the footer (CODEX_SHORTCUT_HINT); with `undimmed` rows a
+ * prompt row holding only dim text (placeholder or suggestion) is empty, typed
+ * text is not. */
 export function codexComposerEmpty(rows: ChatScreenRows | null): boolean {
   if (!rows || codexScreenBlocked(rows)) return false;
   const tail = rows.map(row => row.trimEnd());
@@ -177,7 +184,7 @@ export function codexComposerEmpty(rows: ChatScreenRows | null): boolean {
   if (at === undefined) return false;
   const empty = /^\s*› Ask Codex to do anything\s*$/.test(tail[at]) || /^\s*›$/.test(rows.undimmed?.[at]?.trimEnd() ?? '');
   if (!empty) return false;
-  const below = tail.slice(at + 1).filter(row => row.trim() && !/^\s*\? for shortcuts$/.test(row));
+  const below = tail.slice(at + 1).filter(row => row.trim() && !CODEX_SHORTCUT_HINT.test(row));
   return below.length === 1 && /^\s*\S.+ · (?:[A-Za-z]:[\\/]|\/|~)/.test(below[0]);
 }
 

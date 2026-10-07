@@ -13,6 +13,7 @@
 import { useState } from 'react';
 import type { MergeEffect, MoaDecision, MoaResolveResult, MoaRuleView, MoaUnreceiptedMerge } from '../../../../shared/moaDecision';
 import type { MoaAskOption } from '../../../../shared/moaAsk';
+import { agentSlugToDisplay, isAgentSlug } from '../../../../shared/agentIdentity';
 import Button from '../../ui/Button';
 import Switch from '../../ui/Switch';
 import { NEEDS_YOU_ROW, NEEDS_YOU_TEXT } from './MoaWaitingOnYou';
@@ -37,10 +38,19 @@ export const LANE_REASONS = [
  * "(lane: <reason>, <reason>)" and the reason code is `lane-<first reason>`.
  * Display only; nothing here decides anything.
  */
-export function laneReasonsOf(d: Pick<MoaDecision, 'reasonCode' | 'why'>): string[] {
+/** A `lane-<reason>` code the lane itself wrote. `lane-read-failed` is not
+ *  one: the PR could not be read, so nothing was checked. */
+export function isLaneFailureCode(code: string): boolean {
+  return code.startsWith('lane-') && code !== 'lane-read-failed';
+}
+
+export function laneReasonsOf(d: Pick<MoaDecision, 'reasonCode' | 'why' | 'lane'>): string[] {
+  // The verdict main kept on the decision is the source; the text is for
+  // records written before it was kept.
+  if (d.lane) return d.lane.reasons;
   const m = /\(lane: ([^)]*)\)/.exec(d.why);
   if (m) return m[1].split(',').map((r) => r.trim()).filter(Boolean);
-  return d.reasonCode.startsWith('lane-') ? [d.reasonCode.slice('lane-'.length)] : [];
+  return isLaneFailureCode(d.reasonCode) ? [d.reasonCode.slice('lane-'.length)] : [];
 }
 
 /** A lane reason in plain words; an unknown code is shown as is. */
@@ -68,6 +78,25 @@ export function effectReasonText(reason: string, t: T): string {
 }
 
 export const shortHead = (sha: string): string => sha.slice(0, 7);
+
+/** Escalation codes main writes (moaAskService.ts) that have a plain line. */
+export const ESCALATION_REASONS = [
+  'shadow', 'suggested', 'auto-paused', 'auto-daily-cap', 'daily-cap', 'judge-failed', 'judge-refused',
+  'no-policy-book', 'lane-read-failed', 'internal-error', 'restart-uncertain', 'auto-no-predicate',
+  'auto-unknown-rule', 'auto-book-auto-off', 'auto-owner-toggle-off', 'auto-predicate-mismatch', 'book-always-escalate',
+] as const;
+
+/**
+ * Why Moa sent a ticket to the owner, in the owner's language. Main's `why`
+ * is written for the asking agent and in English, so the card never shows it:
+ * a known code has its own line, an always-escalate category names its topic,
+ * and anything else (a judge's own code) reads as the generic line.
+ */
+export function escalationReasonText(code: string, t: T): string {
+  if ((ESCALATION_REASONS as readonly string[]).includes(code)) return t(`moa.delegate.reason.${code}`);
+  if (code.startsWith('always-escalate-')) return t('moa.delegate.reason.always-escalate', { topic: code.slice('always-escalate-'.length) });
+  return t('moa.delegate.reason.other');
+}
 
 /** What the owner sees of a ticket's asker: its workspace's name, else the agent. */
 function eyebrow(d: MoaDecision, workspaceName: (id: string) => string | undefined, t: T): string {
@@ -124,6 +153,7 @@ export function MoaDelegateTicketRow({
           context={body.context}
           suggested={judge?.verdict === 'answer' ? judge.choiceKey : undefined}
           suggestion={judge && judge.verdict !== 'escalate' ? { ruleId: judge.ruleId, why: judge.why } : null}
+          decision={d}
           busy={busy}
           onChoose={(choiceKey) => void send({ type: 'choice', choiceKey })}
           t={t}
@@ -158,6 +188,48 @@ export function MoaDelegateTicketRow({
   );
 }
 
+/** Characters of the agent's own note the card shows. */
+export const AGENT_NOTE_MAX = 280;
+
+/** Clip agent text to `max` characters (whitespace runs folded). */
+export function clipAgentText(text: string, max = AGENT_NOTE_MAX): string {
+  const t = text.replace(/\s+/g, ' ').trim();
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+}
+
+/**
+ * The asker's own `context`, set apart from everything wmux checked: its own
+ * label, a plain left rule (no fill, no colour: colour carries state), muted
+ * text, clipped. Nothing in it was verified, and the card never presents it
+ * next to Approve as if it were.
+ */
+function AgentNote({ text, t }: { text: string; t: T }) {
+  return (
+    <div className="mt-1.5 border-l-2 border-[var(--line)] pl-2" data-moa-delegate-agent-note>
+      <div className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-sub)]">{t('moa.delegate.agentNote')}</div>
+      <p className="m-0 text-[11px] italic leading-snug text-[var(--text-sub)] break-words line-clamp-3">{clipAgentText(text)}</p>
+    </div>
+  );
+}
+
+/** Why it came to the owner (mapped from the code), and Moa's own reason
+ *  when the judge gave one. Lane reasons have their own block. */
+function EscalationReason({ decision: d, t }: { decision: MoaDecision; t: T }) {
+  const code = isLaneFailureCode(d.reasonCode) ? null : d.reasonCode;
+  const judgeWhy = d.judge && d.judge.verdict === 'escalate' ? d.judge.why : '';
+  if (!code && !judgeWhy) return null;
+  return (
+    <div className="mt-1 text-[11px] leading-snug text-[var(--text-sub)] break-words" data-moa-delegate-why>
+      {code && <p className="m-0" data-moa-delegate-reason={code}>{escalationReasonText(code, t)}</p>}
+      {judgeWhy && (
+        <p className="m-0" data-moa-delegate-judge-why>
+          <span className="text-[var(--text-main)]">{t('moa.delegate.moaReason')}</span> {judgeWhy}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function Suggestion({ label, ruleId, why, t }: { label: string; ruleId?: string; why: string; t: T }) {
   return (
     <div className="mt-1.5 text-[11px] leading-snug text-[var(--text-sub)] break-words" data-moa-delegate-suggestion>
@@ -168,13 +240,14 @@ function Suggestion({ label, ruleId, why, t }: { label: string; ruleId?: string;
   );
 }
 
-function QuestionBody({ titleId, question, options, context, suggested, suggestion, busy, onChoose, t }: {
+function QuestionBody({ titleId, question, options, context, suggested, suggestion, decision, busy, onChoose, t }: {
   titleId: string;
   question: string;
   options: MoaAskOption[];
   context?: string;
   suggested?: string;
   suggestion: { ruleId?: string; why: string } | null;
+  decision: MoaDecision;
   busy: boolean;
   onChoose: (key: string) => void;
   t: T;
@@ -183,7 +256,6 @@ function QuestionBody({ titleId, question, options, context, suggested, suggesti
   return (
     <>
       <p id={titleId} className="m-0 mt-0.5 text-[13px] font-medium leading-snug text-[var(--text-main)] break-words">{question}</p>
-      {context && <p className="m-0 mt-0.5 text-[11px] leading-snug text-[var(--text-sub)] break-words">{context}</p>}
       {pick && suggestion && (
         <>
           <Suggestion label={pick.label} ruleId={suggestion.ruleId} why={suggestion.why} t={t} />
@@ -193,6 +265,7 @@ function QuestionBody({ titleId, question, options, context, suggested, suggesti
           </Button>
         </>
       )}
+      {!(pick && suggestion) && <EscalationReason decision={decision} t={t} />}
       <div role="group" aria-labelledby={titleId} className="flex flex-col gap-1.5 mt-2">
         {options.map((o) => (
           <Button key={o.key} variant="secondary" size="sm" disabled={busy} data-moa-delegate-option={o.key}
@@ -202,6 +275,7 @@ function QuestionBody({ titleId, question, options, context, suggested, suggesti
           </Button>
         ))}
       </div>
+      {context && <AgentNote text={context} t={t} />}
     </>
   );
 }
@@ -224,15 +298,22 @@ function MergeBody({ titleId, decision, prNumber, expectHead, context, suggestGo
         {t('moa.delegate.mergeTitle', { pr: prNumber })}{' '}
         <code className="font-mono text-[12px] text-[var(--text-sub)]" data-moa-delegate-head>{shortHead(expectHead)}</code>
       </p>
-      {context && <p className="m-0 mt-0.5 text-[11px] leading-snug text-[var(--text-sub)] break-words">{context}</p>}
       {failures.length > 0 ? (
-        <ul className="m-0 mt-1 pl-4 text-[11px] leading-snug text-[var(--text-sub)]" data-moa-delegate-lane>
-          {failures.map((r) => <li key={r} data-lane-failure={r}>{laneReasonText(r, t)}</li>)}
-        </ul>
-      ) : decision.why ? (
-        <p className="m-0 mt-1 text-[11px] leading-snug text-[var(--text-sub)] break-words" data-moa-delegate-why>{decision.why}</p>
+        <div className="mt-1" data-moa-delegate-lane-block>
+          <div className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-sub)]">{t('moa.delegate.checkedByWmux')}</div>
+          <ul className="m-0 pl-4 text-[11px] leading-snug text-[var(--text-main)]" data-moa-delegate-lane>
+            {failures.map((r) => <li key={r} data-lane-failure={r}>{laneReasonText(r, t)}</li>)}
+          </ul>
+        </div>
+      ) : decision.lane?.ok ? (
+        <div className="mt-1" data-moa-delegate-lane-block>
+          <div className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-sub)]">{t('moa.delegate.checkedByWmux')}</div>
+          <p className="m-0 text-[11px] leading-snug text-[var(--text-main)]" data-moa-delegate-lane-ok>{t('moa.delegate.laneOk')}</p>
+        </div>
       ) : null}
-      {suggestGo && <Suggestion label={t('moa.delegate.approve')} ruleId={suggestGo.ruleId} why={suggestGo.why} t={t} />}
+      {suggestGo
+        ? <Suggestion label={t('moa.delegate.approve')} ruleId={suggestGo.ruleId} why={suggestGo.why} t={t} />
+        : <EscalationReason decision={decision} t={t} />}
       <div role="group" aria-labelledby={titleId} className="flex flex-wrap items-center gap-1.5 mt-2">
         <Button variant="secondary" size="sm" disabled={busy} data-moa-delegate-approve onClick={() => onAnswer(true)}>
           {t('moa.delegate.approve')}
@@ -241,7 +322,52 @@ function MergeBody({ titleId, decision, prNumber, expectHead, context, suggestGo
           {t('moa.delegate.decline')}
         </Button>
       </div>
+      {context && <AgentNote text={context} t={t} />}
     </>
+  );
+}
+
+/** An asker's agent slug as the owner reads it ("Claude Code"). */
+export function agentLabel(slug: string, t: T): string {
+  if (isAgentSlug(slug)) return agentSlugToDisplay(slug);
+  return slug || t('moa.delegate.delivery.theAgent');
+}
+
+/** Delivery failure reasons with a plain line; others read as the generic one. */
+const DELIVERY_REASONS = ['pane-gone', 'restart', 'timeout', 'agent_changed', 'write_failed'] as const;
+
+/** What the owner answered, in a few words. */
+function answerText(d: MoaDecision, t: T): string {
+  if (d.status === 'refused') return t('moa.delegate.answer.dismissed');
+  if (d.answer && 'choiceKey' in d.answer) {
+    const key = d.answer.choiceKey;
+    const opt = d.body.type === 'question' ? d.body.options.find((o) => o.key === key) : undefined;
+    return opt?.label ?? key;
+  }
+  return t(d.answer && 'actionVerdict' in d.answer && d.answer.actionVerdict === 'go' ? 'moa.delegate.answer.go' : 'moa.delegate.answer.no-go');
+}
+
+/** One answer's way back to the asker: "Delivered to Claude Code". */
+export function MoaDelegateDeliveryRow({ decision: d, t }: { decision: MoaDecision; t: T }): React.ReactElement | null {
+  const delivery = d.delivery;
+  if (!delivery) return null;
+  const agent = agentLabel(delivery.agent, t);
+  const what = d.body.type === 'question' ? d.body.question : t('moa.delegate.effectLine', { pr: d.body.prNumber });
+  const reason = delivery.state === 'failed' && delivery.reason
+    ? t(`moa.delegate.deliveryReason.${(DELIVERY_REASONS as readonly string[]).includes(delivery.reason) ? delivery.reason : 'other'}`)
+    : null;
+  return (
+    <li data-moa-delegate-delivery={d.id} data-state={delivery.state}
+      className="flex flex-col gap-0.5 rounded-md border border-[var(--line)] px-2 py-1.5 text-[12px] text-[var(--text-sub)]">
+      <div className="truncate">{what}</div>
+      <div className="flex items-baseline gap-1.5">
+        <span className="min-w-0 flex-1 truncate text-[var(--text-main)]">{answerText(d, t)}</span>
+        <span className={`shrink-0 ${delivery.state === 'failed' ? 'text-[var(--accent-red)]' : delivery.state === 'delivered' ? 'text-[var(--text-main)]' : ''}`}>
+          {t(`moa.delegate.delivery.${delivery.state}`, { agent })}
+        </span>
+      </div>
+      {reason && <p className="m-0 text-[11px] leading-snug break-words" data-moa-delegate-delivery-reason>{reason}</p>}
+    </li>
   );
 }
 
@@ -255,6 +381,7 @@ const EFFECT_STATUS_KEY: Record<MergeEffect['status'], string> = {
 
 export function MoaDelegateActivity({
   effects,
+  deliveries = [],
   unreceipted,
   rules,
   autoSet,
@@ -262,6 +389,8 @@ export function MoaDelegateActivity({
   t,
 }: {
   effects: readonly MergeEffect[];
+  /** Answers on their way back to the asker (selectDeliveryRows). */
+  deliveries?: readonly MoaDecision[];
   /** The lane audit: PRs merged lately with no lane receipt (display only). */
   unreceipted: readonly MoaUnreceiptedMerge[];
   rules: readonly MoaRuleView[];
@@ -270,11 +399,12 @@ export function MoaDelegateActivity({
   onChanged?: () => void;
   t: T;
 }): React.ReactElement | null {
-  if (effects.length === 0 && unreceipted.length === 0 && rules.length === 0) return null;
+  if (effects.length === 0 && deliveries.length === 0 && unreceipted.length === 0 && rules.length === 0) return null;
   return (
     <section data-moa-delegate-activity aria-label={t('moa.delegate.title')} className="px-3 pt-2 pb-1 flex flex-col gap-1">
-      {(effects.length > 0 || unreceipted.length > 0) && (
+      {(effects.length > 0 || deliveries.length > 0 || unreceipted.length > 0) && (
         <ul className="m-0 p-0 list-none flex flex-col gap-1">
+          {deliveries.map((d) => <MoaDelegateDeliveryRow key={d.id} decision={d} t={t} />)}
           {effects.map((e) => (
             <li key={e.id} data-moa-delegate-effect={e.id} data-status={e.status}
               className="flex flex-col gap-0.5 rounded-md border border-[var(--line)] px-2 py-1.5 text-[12px] text-[var(--text-sub)]">
@@ -345,7 +475,7 @@ function AutoRules({ rules, autoSet, onChanged, t }: {
                   <p role="alert" className="m-0 text-[11px] text-[var(--accent-red)]">{t('moa.delegate.toggleFailed')}</p>
                 )}
               </div>
-              <Switch checked={on} aria-labelledby={labelId} disabled={r.ruleId in pending}
+              <Switch checked={on} aria-label={t('moa.delegate.ruleToggle', { rule: r.ruleId })} aria-describedby={labelId} disabled={r.ruleId in pending}
                 onCheckedChange={(next) => void toggle(r.ruleId, next)} data-moa-delegate-rule-toggle={r.ruleId} />
             </li>
           );

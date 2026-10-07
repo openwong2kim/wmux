@@ -87,3 +87,38 @@ describe('walkToOwningAnchor — server-side ancestor walk', () => {
     expect(walkToOwningAnchor(777, ppids({ 1: 0 }), anchors({ 888: SHELL }))).toBeNull();
   });
 });
+
+describe('walkToOwningAnchor — reused parent pids (createdAt)', () => {
+  const at = (times: Record<number, bigint>) => (pid: number) => times[pid] ?? null;
+
+  it('stops where a parent is newer than its child (the pid went to a later process)', () => {
+    // MCP(10) → app-server(20) → dead update loop, whose pid 30 is now a newer pane shell.
+    const ppidByPid = ppids({ 10: 20, 20: 30, 30: 40 });
+    const anchorByPid = anchors({ 30: SHELL });
+    expect(walkToOwningAnchor(20, ppidByPid, anchorByPid, { child: 10, createdAt: at({ 10: 3n, 20: 2n, 30: 9n }) })).toBeNull();
+    expect(walkToOwningAnchor(20, ppidByPid, anchorByPid, { child: 10, createdAt: at({ 10: 3n, 20: 2n, 30: 1n }) }))
+      .toEqual({ anchor: SHELL, pid: 30, depth: 1 });
+  });
+
+  it('checks the first edge from `child` to `startPid`', () => {
+    const anchorByPid = anchors({ 20: SHELL });
+    expect(walkToOwningAnchor(20, ppids({ 20: 1 }), anchorByPid, { child: 10, createdAt: at({ 10: 3n, 20: 9n }) })).toBeNull();
+    // Without `child` the start itself has no edge to check.
+    expect(walkToOwningAnchor(20, ppids({ 20: 1 }), anchorByPid, { createdAt: at({ 10: 3n, 20: 9n }) })).not.toBeNull();
+  });
+
+  it('treats an unreadable time as no evidence, and an equal time as intact', () => {
+    const ppidByPid = ppids({ 10: 20, 20: 30 });
+    const anchorByPid = anchors({ 30: SHELL });
+    expect(walkToOwningAnchor(10, ppidByPid, anchorByPid, { createdAt: at({ 10: 5n }) })).not.toBeNull();
+    expect(walkToOwningAnchor(10, ppidByPid, anchorByPid, { createdAt: at({ 20: 9n, 30: 5n }) })).not.toBeNull();
+    expect(walkToOwningAnchor(10, ppidByPid, anchorByPid, { createdAt: at({ 10: 5n, 20: 5n, 30: 5n }) })).not.toBeNull();
+  });
+
+  it('reads each pid at most once', () => {
+    const reads: number[] = [];
+    const createdAt = (pid: number) => { reads.push(pid); return BigInt(100 - pid); };
+    walkToOwningAnchor(10, ppids({ 10: 20, 20: 30, 30: 40 }), anchors({ 40: SHELL }), { child: 5, createdAt });
+    expect(reads.sort((a, b) => a - b)).toEqual([5, 10, 20, 30, 40]);
+  });
+});

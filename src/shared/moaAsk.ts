@@ -11,9 +11,11 @@
 //   pending    the judge is still deciding; poll again after `pollAfterMs`.
 //   answered   final. `answer` holds the choice (or the action verdict), the
 //              rule it rests on, and who settled it.
-//   escalated  Moa will not settle it: ask the owner yourself, as you do today.
-//              The ticket stays open in Moa's panel; if the owner answers it
-//              there, a later poll returns `answered` (resolvedBy 'owner').
+//   escalated  Moa will not settle it: the owner answers it on Moa's card.
+//              The asker ends its turn without restating the question; the
+//              owner's answer is pasted into its pane as a new turn
+//              (moaAnswerCourier.ts), and a later poll returns `answered`
+//              (resolvedBy 'owner').
 //   refused    final. A deterministic check refused it (for a merge: a lane
 //              predicate, see moaMergeLane.ts) or the request itself was
 //              rejected (`id-reused`). Do not proceed.
@@ -119,6 +121,8 @@ export interface MoaAskTicket {
   /** This ticket already existed for the same key and body. */
   replayed?: true;
   pollAfterMs?: number;
+  /** With `escalated`: what the asker should do now. */
+  next?: string;
 }
 
 export type MoaAskRefusalCode =
@@ -171,6 +175,8 @@ export interface MoaTicketView {
   /** A merge action's execution, once an effect exists. */
   effect?: MoaAskEffectView;
   pollAfterMs?: number;
+  /** With `escalated`: what the asker should do now. */
+  next?: string;
   createdAt: number;
   resolvedAt: number | null;
 }

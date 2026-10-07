@@ -261,6 +261,11 @@ const INJECTED_USER_TAGS: ReadonlyArray<{
   { tag: 'local-command-stdout', subtype: 'command_output', label: 'Local command output' },
   { tag: 'local-command-caveat', subtype: 'caveat', label: 'Local command caveat' },
   { tag: 'system-reminder', subtype: 'system_reminder', label: 'System reminder' },
+  // `!` shell mode: the command the operator ran, then what it printed. Both
+  // are written as `role:'user'` entries; neither is a message to the agent.
+  { tag: 'bash-input', subtype: 'bash_input', label: 'Shell command' },
+  { tag: 'bash-stdout', subtype: 'bash_output', label: 'Shell output' },
+  { tag: 'bash-stderr', subtype: 'bash_output', label: 'Shell output' },
 ];
 
 /** Contents of the first `<tag>…</tag>`, or '' — used only for meta labels. */
@@ -310,7 +315,12 @@ function injectedLabel(head: string, tag: string): string {
     const args = innerTag(head, 'command-args');
     return (args ? `${name} ${args}` : name).slice(0, MAX_META_LABEL_CHARS);
   }
-  // `local-command-stdout` deliberately keeps its generic label: the body can
+  if (tag === 'bash-input') {
+    // The command the operator typed after `!`, on one line: their own words,
+    // like a slash command's name and args.
+    return innerTag(head, 'bash-input').replace(/\s+/g, ' ').slice(0, MAX_META_LABEL_CHARS);
+  }
+  // `local-command-stdout` (and `bash-stdout` / `bash-stderr`) deliberately keep their generic label: the body can
   // carry anything the command printed, and the meta row must not become a
   // second broadcast path for it (the injected-user test pins this).
   return '';

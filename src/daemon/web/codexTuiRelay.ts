@@ -66,6 +66,9 @@ export interface CodexRelayPolicy {
   decisionPending?: (requestId:string, request:CodexDecisionRequest) => void;
   /** A request reported by `decisionPending` is over without `answer`. */
   decisionSettled?: (requestId:string, threadId:string, reason:CodexDecisionSettledReason) => void;
+  /** A turn of a thread this pane owns completed with status `failed`.
+   * `turn` is the notification's `turn` object, unparsed (phoneTurnFailure.ts classifies it). */
+  turnFailed?: (threadId:string, turn:unknown) => void;
 }
 
 /** How a TUI whose server link was lost is re-attached: the relay re-dials
@@ -488,6 +491,13 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
             endedTurns.delete(old);
           }
           settleTurnWaiters(key,status);
+          // Only for a thread this pane owns: the server fans a thread's
+          // notifications out to every connection subscribed to it, so
+          // another pane's failure must not be attributed to this one.
+          const owner = status === 'failed' ? options.policy?.owner(message.params.threadId) : undefined;
+          if (owner?.paneId === options.policy?.paneId && owner?.live) {
+            try {options.policy?.turnFailed?.(message.params.threadId,turn);} catch {/* A notice never breaks the stream. */}
+          }
         }
       }
       if (message && message.method === undefined && isRequestId(message.id) && resumes.delete(message.id)) noteResumedTurns(message.result);

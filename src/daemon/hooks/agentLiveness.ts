@@ -14,6 +14,7 @@
  * also takes as types only).
  */
 import type { AgentSignal } from '../../shared/hooks/signal-types';
+import type { TurnFailure } from '../../shared/phoneTurnFailure';
 
 /**
  * The subset of an `agent.event` payload the projection reads. Both shapes
@@ -59,6 +60,12 @@ export interface AgentLivenessBody {
   agent: string;
   /** ms epoch the state was entered. The phone renders elapsed from this. */
   at: number;
+  /**
+   * Contract v-next item 1: on the `idle` frame that ends a failed turn only.
+   * Attached by the emit site (never derived here); the pane stream strips
+   * `message` (see `WebTerminalServer.deliverPaneLiveness`).
+   */
+  failure?: TurnFailure;
 }
 
 /**
@@ -115,7 +122,11 @@ export function deriveAgentLiveness(
   const subagentStop = data.hookKind === 'agent.subagent_stop'
     || data.signal?.kind === 'agent.subagent_stop';
   if (subagentStop) state = 'busy';
-  else if (data.status === 'complete') state = 'idle';
+  // `error` is a turn that ended on a failure (Claude Code's StopFailure hook):
+  // the turn is over, so the header settles exactly as a finished one does.
+  // Without this branch it fell through to `busy` and a pane that hit a usage
+  // limit read "working" until its next turn.
+  else if (data.status === 'complete' || data.status === 'error') state = 'idle';
   else if (data.status === 'awaiting_input') state = 'awaiting_input';
   else if (data.hookKind === 'agent.awaiting_permission') state = 'awaiting_permission';
   else if (data.hookKind === 'agent.tool_started') state = 'tool';

@@ -1040,6 +1040,17 @@ async function main() {
     return;
   }
 
+  // A fan-out worker under Moa's delegate (main's delegateSpawnPolicy): its
+  // own PreToolUse hook refuses AskUserQuestion and sends it to moa_ask, so no
+  // dialog opens and nothing waits on the owner here. Reporting it would leave
+  // a needs-you record that no answer ever retires.
+  if (hookName === 'PreToolUse'
+      && !permissionGateMode
+      && process.env.WMUX_MOA_DELEGATE_WORKER === '1') {
+    logEvent('skip-pretooluse', { tool: 'AskUserQuestion', reason: 'moa-delegate-worker' });
+    return;
+  }
+
   // PostToolUse source-side throttle (see ACTIVITY_STAMP_THROTTLE_MS). Keyed
   // by the pane (WMUX_PTY_ID) when running inside wmux, else by the Claude
   // session id, else by cwd — the same identity the server routes on, so

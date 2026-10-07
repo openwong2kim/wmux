@@ -1458,7 +1458,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
    * screen (the Moa pane's main-side flag) and must not expire on that alone.
    *
    * Presence, not answerability: a dialog the parser does not read as active
-   * (a WebFetch dialog has no `Esc to cancel` footer) is still up while its
+   * (its footer wrapped, a status row drawn under it) is still up while its
    * cursor row owns the bottom of the screen, so the looser screen checks the
    * awaiting-state verifier uses count too. One read is one sample; the caller
    * wants a few in a row before it believes the dialog is gone.
@@ -1500,7 +1500,9 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     if (read?.parsed.plan) return this.buildPlanPrompt(note, read, binding);
     const parsed = read?.parsed ?? null;
     const command = binding ? commandOfToolInput(binding.name, binding.input) : undefined;
-    const description = typeof binding?.input['description'] === 'string' ? binding.input['description'] : undefined;
+    // The dialog's second field: a Bash call's description, a WebFetch call's prompt.
+    const detail = binding?.input[binding.name === 'WebFetch' ? 'prompt' : 'description'];
+    const description = typeof detail === 'string' ? detail : undefined;
     const toolName = binding?.name ?? note.toolName ?? toolFromDialogTitle(parsed?.title);
     // The call's own input is the source of the summary; the screen only when
     // there is no call to read it from.

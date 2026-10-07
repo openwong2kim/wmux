@@ -21,6 +21,7 @@ import { GIT_HARDENING_CONFIG, type GitRunner } from '../sessionDiff';
 import { MIN_PHONE_PROTOCOL_VERSION, PHONE_PROTOCOL_VERSION } from '../protocolVersion';
 import { OutputModeTracker } from '../../util/outputModeTracker';
 import { capSnapshot } from '../snapshotWindow';
+import type { TurnFailure } from '../../../shared/phoneTurnFailure';
 
 /** A directory that exists on every CI platform: `POST /api/sessions` refuses a cwd that doesn't. */
 const EXISTING_DIR = fs.realpathSync(os.tmpdir());
@@ -520,6 +521,7 @@ describe('WebTerminalServer', () => {
   const settingsRevision = 'a'.repeat(64)+'.'+'b'.repeat(64);
 
   /** #1163 — the daemon's canonical agent state per session, as the server reads it. */
+  let turnFailures: Record<string, { failure: TurnFailure; agentSessionId?: string }> = {};
   let agentStates: Record<string, { agentName: string | null; agentStatus: 'idle' | 'running' | 'awaiting_input' }>;
   /** #1342 — the daemon's resume state per session, as the server reads it. */
   let resumeStates: Record<string, { binding?: ResumeBinding; commandRunning?: boolean; agentProcessAlive?: boolean; resumeAgent?: string }>;
@@ -596,6 +598,7 @@ describe('WebTerminalServer', () => {
       setGateEnabled: (enabled) => { gateArmed = enabled; },
       agentState: (id) => agentStates[id],
       resumeState: (id) => resumeStates[id],
+      turnFailure: (id) => turnFailures[id],
       // The first-paint wait, short so a "desktop does not answer" case costs little.
       desktopSidebarFirstPaintMs: 150,
       now: () => Date.now() + clockOffsetMs,
@@ -7263,6 +7266,26 @@ describe('WebTerminalServer', () => {
       }
     });
 
+    it('contract v-next item 1: rows carry lastFailure (message only with the grant); config says turnFailure', async () => {
+      const failure: TurnFailure = { reason: 'quota', provider: 'codex', providerCode: 'usageLimitExceeded', message: 'Usage limit', at: 5, turnId: 't1:q.1' };
+      turnFailures = { s1: { failure } };
+      try {
+        const rows = async (token: string) => ((await (await fetch(`${base()}/api/sessions`, { headers: bearer(token) })).json()) as {
+          sessions: Array<{ id: string; lastFailure?: TurnFailure }>;
+        }).sessions;
+        const ro = await startRO();
+        expect(((await (await fetch(`${base()}/api/config`, { headers: bearer(ro.token as string) })).json()) as { turnFailure?: boolean }).turnFailure).toBe(true);
+        const plain = await rows(ro.token as string);
+        expect(plain.find((s) => s.id === 's1')?.lastFailure).toEqual({ reason: 'quota', provider: 'codex', providerCode: 'usageLimitExceeded', at: 5, turnId: 't1:q.1' });
+        expect(plain.find((s) => s.id === 's2')).not.toHaveProperty('lastFailure');
+        await server.stop();
+        const rt = await startWithTranscript();
+        expect((await rows(rt.token as string)).find((s) => s.id === 's1')?.lastFailure).toEqual(failure);
+      } finally {
+        turnFailures = {};
+      }
+    });
+
     it('★ /api/sessions carries liveness state (never the tool) with no stream or watcher', async () => {
       const info = await startRO();
       // No SSE client, no turn-view watcher: the whole point of the list field
@@ -7356,6 +7379,29 @@ describe('WebTerminalServer', () => {
         await waitForWire(state, 'event: agent.liveness');
         expect(state.wire).toContain('"state":"awaiting_input"');
         expect(state.wire).toContain('"sessionId":"s1"');
+      } finally {
+        ac.abort();
+        await done;
+      }
+    });
+
+    it('contract v-next item 1: the pane stream carries the failure without its message', async () => {
+      const info = await startRO();
+      const ac = new AbortController();
+      const res = await fetch(
+        `${base()}/api/stream?session=s1&token=${encodeURIComponent(info.token as string)}`,
+        { signal: ac.signal },
+      );
+      expect(res.status).toBe(200);
+      const { state, done } = pumpSse(res);
+      try {
+        server.emitAgentLiveness({
+          sessionId: 's1', state: 'idle', agent: 'Claude Code', at: 9,
+          failure: { reason: 'rate-limited', provider: 'claude', providerCode: 'rate_limit', message: 'You hit your limit', at: 9, turnId: 't1:a.1' },
+        });
+        await waitForWire(state, 'event: agent.liveness');
+        expect(state.wire).toContain('"failure":{"reason":"rate-limited","provider":"claude","providerCode":"rate_limit","at":9,"turnId":"t1:a.1"}');
+        expect(state.wire).not.toContain('You hit your limit');
       } finally {
         ac.abort();
         await done;

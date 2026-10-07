@@ -30,6 +30,9 @@ export interface CodexPaneRelayHooks {
    * answered after a lost link, or none came back): a turn it was running is
    * over, with no Stop hook or transcript end. */
   serverLost?:(id:string)=>void;
+  /** A turn of a thread pane `id` (its committed owner) owns completed with
+   * status `failed`; `turn` is the notification's unparsed `turn` object. */
+  turnFailed?:(id:string,owner:ManagedSession,threadId:string,turn:unknown)=>void;
 }
 /** One Codex request, keyed by (relay incarnation, thread, server request id). */
 export interface CodexDecisionRef {relayId:string; threadId:string; requestId:string; method?:string}
@@ -119,6 +122,10 @@ export class CodexPaneRelays {
         },
         decisionSettled:(requestId,threadId,reason)=>{
           this.hooks.decisionSettled?.(id,{relayId:entry.relayId,threadId,requestId},reason);
+        },
+        turnFailed:(threadId,turn)=>{
+          if (entry.retired || this.entries.get(id) !== entry || !entry.owner) return;
+          this.hooks.turnFailed?.(id,entry.owner,threadId,turn);
         },
       }});
       this.creating.add(creation);

@@ -397,6 +397,35 @@ export function collectTreeCpuTimes(
 }
 
 /**
+ * Creation time of one live process (FILETIME, 100 ns units), or null when it
+ * cannot be read: not Windows, the native path is unavailable, the process is
+ * gone, or it is protected. Used to reject a parent pid that Windows handed to
+ * a newer process (see serverSidePidWalk.ts).
+ */
+export function tryProcessCreatedAt(pid: number): bigint | null {
+  if (!Number.isInteger(pid) || pid <= 0 || loadFailed) return null;
+  const b = loadBindings();
+  if (!b) {
+    loadFailed = true;
+    return null;
+  }
+  try {
+    const raw = b.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+    const handle = typeof raw === 'bigint' ? raw : BigInt(raw);
+    if (handle === 0n) return null;
+    try {
+      const creation = Buffer.alloc(8);
+      if (!b.GetProcessTimes(raw, creation, Buffer.alloc(8), Buffer.alloc(8), Buffer.alloc(8))) return null;
+      return creation.readBigUInt64LE(0);
+    } finally {
+      b.CloseHandle(raw);
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Cumulative CPU time (kernel + user, in 100 ns units) of every process in the
  * trees rooted at `rootPids`, roots included. Used to turn two samples into a
  * CPU percentage for wmux and everything it started. See

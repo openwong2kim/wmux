@@ -101,6 +101,33 @@ export interface MoaDecision {
   createdAt: number;
   resolvedAt: number | null;
   receipt: MoaReceiptState;
+  /** The answer's way back to the asker's pane (main/deck/moaAnswerCourier.ts). */
+  delivery?: MoaAnswerDelivery;
+  /** A merge's lane verdict (moaMergeLane.ts) on the fresh read it was
+   *  decided on: wmux's own check, shown to the owner as checked facts.
+   *  Display only: the executor re-reads and re-checks before any merge. */
+  lane?: { ok: boolean; reasons: string[] };
+}
+
+/**
+ * An answer pasted into the asker's pane as a new turn, so a worker that
+ * ended its turn on an escalation continues without a nudge.
+ *   waiting    queued: the pane is mid-turn, on a prompt, or someone types.
+ *   sending    the paste was started. Found on load, it is never sent again
+ *              (it may have landed): it reads as failed, reason 'restart'.
+ *   delivered  pasted and submitted.
+ *   seen       the asker read the final answer itself (moa_ask_status), so
+ *              nothing is pasted.
+ *   failed     not delivered: `reason` says why (the pane closed, ...).
+ */
+export type MoaDeliveryState = 'waiting' | 'sending' | 'delivered' | 'seen' | 'failed';
+
+export interface MoaAnswerDelivery {
+  state: MoaDeliveryState;
+  /** The asker's agent slug, for "Delivered to <agent>". */
+  agent: string;
+  at: number;
+  reason?: string;
 }
 
 /** Most attempts at one merge effect before it stays refused. */
@@ -146,7 +173,7 @@ export function ticketView(d: MoaDecision, effect?: MergeEffect | null): MoaTick
   if (d.receipt === 'uncertain' && d.status === 'pending') {
     status = 'escalated';
     reasonCode = 'restart-uncertain';
-    why = 'wmux restarted while this was being decided; ask the owner';
+    why = "wmux restarted while this was being decided; the owner answers it in Moa's panel";
   }
   const view: MoaTicketView = {
     ticketId: d.ticketId,
@@ -196,6 +223,9 @@ export interface MoaDelegateListResult {
   rules: MoaRuleView[];
   /** The lane audit's last answer (display only), when it ran. */
   unreceiptedMerges?: MoaUnreceiptedMerge[];
+  /** With the delegate off: tickets still escalated from when it was on.
+   *  Their askers wait, so the panel says so instead of hiding them. */
+  waitingWhileOff?: number;
 }
 
 /**

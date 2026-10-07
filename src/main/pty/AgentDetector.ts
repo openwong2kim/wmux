@@ -497,10 +497,14 @@ function candidateLines(text: string): string[] {
  * next non-blank row is that option row, or when the option is glued onto the
  * question row by padding. Ink's diff redraw can skip unchanged cells, so the
  * `.` after the `1` is optional.
+ *
+ * The WebFetch dialog asks `Do you want to allow Claude to fetch this
+ * content?` (Claude Code 2.1.292); a narrow pane wraps it after `fetch` or
+ * `this`, and the rest is read off the next row like a wrapped filename.
  */
 const DIALOG_FRAME = '[\\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]';
 const DIALOG_QUESTION_RE = new RegExp(
-  `(?:^|${DIALOG_FRAME})(Do\\s*you\\s*want\\s*to\\s*(?:(proceed)\\?|(?:create|overwrite|make\\s*this\\s*edit\\s*to)(?:\\s*\\S[^?]*\\?)?))`,
+  `(?:^|${DIALOG_FRAME})(Do\\s*you\\s*want\\s*to\\s*(?:(proceed\\?|allow\\s*Claude\\s*to\\s*fetch(?:\\s*this(?:\\s*content\\?)?)?)|(?:create|overwrite|make\\s*this\\s*edit\\s*to)(?:\\s*\\S[^?]*\\?)?))`,
   'g',
 );
 const DIALOG_OPTION_RE = new RegExp(`^${DIALOG_FRAME}*❯\\s*1\\.?\\s*Yes\\b`);
@@ -511,8 +515,9 @@ const ROW_BREAK_G = new RegExp(ROW_BREAK_RE.source, 'g');
 const MAX_DIALOG_ROW = 4096;
 interface DialogQuestion {
   text: string;
+  /** A `proceed?` or WebFetch question ("Approval requested"), not a file edit. */
   proceed: boolean;
-  /** `make this edit to` wrapped before its filename. */
+  /** `make this edit to` wrapped before its filename, or the fetch question before its end. */
   needsFilename: boolean;
   /** The whole-line pass emitted an approval in the feed that drew this row. */
   reported: boolean;

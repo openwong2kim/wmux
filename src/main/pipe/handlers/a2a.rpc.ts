@@ -19,6 +19,7 @@ import { flagOrphanedTask, isPagedTaskQuery, pagedTaskId, shapeTaskQueryResult, 
 import { defaultSnapshot } from '../../pty/portWatch';
 import type { PortSnapshot, SnapshotFn } from '../../pty/portWatch';
 import { walkToOwningAnchor } from '../../pty/serverSidePidWalk';
+import { tryProcessCreatedAt } from '../../pty/winSnapshotNative';
 import type { OwningAnchor } from '../../pty/serverSidePidWalk';
 import { recordSentTask, recordTaskState, reopenedState, stateOfTask, workLinkFromSentTask } from '../../workLink/a2aProducer';
 import { noteTrackReply } from '../../deck/trackRecordFeed';
@@ -204,7 +205,12 @@ export function registerA2aRpc(
   router: RpcRouter,
   getWindow: GetWindow,
   claudeWorker: ClaudeWorker,
-  opts: { snapshot?: SnapshotFn; getDaemonClient?: () => DaemonClient | null } = {},
+  opts: {
+    snapshot?: SnapshotFn;
+    getDaemonClient?: () => DaemonClient | null;
+    /** Process creation time for the walk's pid-reuse guard; tests inject one. */
+    createdAt?: (pid: number) => bigint | null;
+  } = {},
 ): void {
   const getDaemonClient = opts.getDaemonClient;
   // Server-side process-tree snapshot for handshake identity resolution. Shared
@@ -213,6 +219,7 @@ export function registerA2aRpc(
   // caches a resolved identity, so a successful handshake never re-fires; only
   // the miss/fallback path re-snaps.
   const snapshotFn: SnapshotFn = opts.snapshot ?? defaultSnapshot;
+  const createdAt = opts.createdAt ?? tryProcessCreatedAt;
   let snapInflight: Promise<PortSnapshot> | null = null;
   async function getCoalescedSnapshot(): Promise<PortSnapshot | null> {
     if (!snapInflight) {
@@ -392,8 +399,11 @@ export function registerA2aRpc(
           }
         }
         const parentPid = snapshot.ppidByPid.get(callerPid);
+        // Creation times reject a reused parent pid: a Codex app-server that
+        // updated itself is orphaned, and its dead parent's pid may now be a
+        // new pane's shell (Windows only; elsewhere the reader returns null).
         const hit = parentPid !== undefined
-          ? walkToOwningAnchor(parentPid, snapshot.ppidByPid, anchorByPid)
+          ? walkToOwningAnchor(parentPid, snapshot.ppidByPid, anchorByPid, { createdAt, child: callerPid })
           : null;
         if (hit) resolved = { workspaceId: hit.anchor.workspaceId, ptyId: hit.anchor.ptyId };
       }

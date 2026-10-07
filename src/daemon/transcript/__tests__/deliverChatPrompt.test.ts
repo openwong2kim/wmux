@@ -214,3 +214,40 @@ describe('Codex 0.157 composer', () => {
     expect(codexComposerEmpty(rows)).toBe(false);
   });
 });
+
+describe('Codex 0.158 composer', () => {
+  // 0.158 draws `← for agents · ? for shortcuts` under the footer, and a
+  // weekly-limit warning adds a right-aligned `⚠ 1 warning · f2 to view`.
+  const render = async (bytes: string, cols = 80) => {
+    const outcome = await generateTextSnapshot({ cols, rows: 24, scrollback: 0, initial: Buffer.from(bytes), undimmed: true });
+    if (!outcome.ok) throw new Error('snapshot failed');
+    return Object.assign(outcome.rows.map((r) => r.text), { undimmed: outcome.rows.map((r) => r.undimmed ?? r.text) });
+  };
+  const screen = (prompt: string, hint: string) =>
+    `• pong\r\n\r\n› ${prompt}\x1b[0m\r\n\r\n  GPT-5.6-Sol low · D:\\work · Reply with pong\r\n  ${hint}`;
+  const placeholder = '\x1b[2mAsk Codex to do anything\x1b[22m';
+
+  it('is empty under the 0.158 hint row, with or without the warning badge', async () => {
+    expect(codexComposerEmpty(await render(screen(placeholder, '← for agents · ? for shortcuts')))).toBe(true);
+    expect(codexComposerEmpty(await render(screen(placeholder, `← for agents · ? for shortcuts${' '.repeat(20)}⚠ 1 warning · f2 to view`)))).toBe(true);
+    // A narrow pane cuts the hint to make room for the badge.
+    expect(codexComposerEmpty(await render(screen(placeholder, '← for agents · ? for shortcut  ⚠ 1 warning · f2 to view'), 60))).toBe(true);
+    expect(codexComposerEmpty(await render(screen('\x1b[2mExplain this codebase\x1b[22m', '← for agents · ? for shortcuts')))).toBe(true);
+  });
+
+  it('matches the rows captured from a live 0.158 pane on Windows', () => {
+    // From the daemon text render of native Windows codex-cli 0.158.0 panes.
+    const top = ['  12:56 AM', '                     ⚠ weekly limit: 19% left', '', '› Ask Codex to do anything', ''];
+    expect(codexComposerEmpty([...top, '  GPT-5.6-Sol low · ~\\AppData\\Local\\Temp\\cx80work · Call …', '  ← for agents · ? for shortcuts'])).toBe(true);
+    expect(codexComposerEmpty([...top, '  GPT-5.6-Sol low · D:\\wmux-work\\wv1780b\\work · Run wmux …',
+      '  ← for agents · ? for shortcut  ⚠ 1 warning · f2 to view'])).toBe(true);
+    expect(codexComposerEmpty([...top, '  GPT-5.6-Sol low · D:\\wmux-work\\wv1780b\\work · Run wmux channel check',
+      `  ← for agents · ? for shortcuts${' '.repeat(61)}⚠ 1 warning · f2 to view`])).toBe(true);
+  });
+
+  it('still refuses typed text and any other row under the footer', async () => {
+    expect(codexComposerEmpty(await render(screen('half-typed', '← for agents · ? for shortcuts')))).toBe(false);
+    expect(codexComposerEmpty(await render(screen(placeholder, '← for agents · Press enter to confirm')))).toBe(false);
+    expect(codexComposerEmpty(await render(screen(placeholder, '← for agents · ? for shortcuts  Press enter to confirm')))).toBe(false);
+  });
+});

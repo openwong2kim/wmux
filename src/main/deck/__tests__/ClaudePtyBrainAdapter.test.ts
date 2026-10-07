@@ -325,59 +325,70 @@ describe('buildBrainSettingsProfile', () => {
     expect(allow.every((t) => t.startsWith('mcp__wmux__'))).toBe(true);
   });
 
+  type Leaf = { type: string; command: string; args?: string[] };
+  const BRIDGE = '/home/.wmux/hooks/wmux-bridge.mjs';
+
   it('wires Stop + SessionStart to the bundled bridge, and only Stop gates', () => {
-    const hooks = profile.hooks as Record<string, Array<{ hooks: Array<{ command: string }> }>>;
-    for (const event of ['Stop', 'SessionStart']) {
-      const command = hooks[event][0].hooks[0].command;
-      expect(command).toContain('wmux-bridge.mjs');
-      expect(command).toContain(event);
-    }
-    expect(hooks.Stop[0].hooks[0].command).toContain('--gate');
-    expect(hooks.SessionStart[0].hooks[0].command).not.toContain('--gate');
+    const hooks = profile.hooks as Record<string, Array<{ hooks: Leaf[] }>>;
+    expect(hooks.Stop[0].hooks[0]).toEqual({ type: 'command', command: '/usr/bin/node', args: [BRIDGE, 'Stop', '--gate'] });
+    expect(hooks.SessionStart[0].hooks[0]).toEqual({ type: 'command', command: '/usr/bin/node', args: [BRIDGE, 'SessionStart'] });
   });
 
   it('runs UserPromptSubmit in context mode (never gated)', () => {
-    const hooks = profile.hooks as Record<string, Array<{ hooks: Array<{ command: string }> }>>;
-    const command = hooks.UserPromptSubmit[0].hooks[0].command;
-    expect(command).toContain('UserPromptSubmit --context');
-    expect(command).not.toContain('--gate');
-    expect(hooks.Stop[0].hooks[0].command).not.toContain('--context');
+    const hooks = profile.hooks as Record<string, Array<{ hooks: Leaf[] }>>;
+    expect(hooks.UserPromptSubmit[0].hooks[0].args).toEqual([BRIDGE, 'UserPromptSubmit', '--context']);
+    expect(hooks.Stop[0].hooks[0].args).not.toContain('--context');
   });
 
   it('wires PermissionRequest to the bridge as a signal only, so main sees the brain\'s own dialog (phone Moa pane)', () => {
-    const hooks = profile.hooks as Record<string, Array<{ hooks: Array<{ command: string }> }>>;
-    const command = hooks.PermissionRequest[0].hooks[0].command;
-    expect(command).toContain('wmux-bridge.mjs');
-    expect(command).toContain('PermissionRequest');
-    expect(command).not.toContain('--gate');
-    expect(command).not.toContain('--context');
+    const hooks = profile.hooks as Record<string, Array<{ hooks: Leaf[] }>>;
+    expect(hooks.PermissionRequest[0].hooks[0].args).toEqual([BRIDGE, 'PermissionRequest']);
   });
 
   it('reports a permission dialog (PermissionRequest) and its end (PostToolUse) without gating', () => {
-    const hooks = profile.hooks as Record<string, Array<{ matcher: string; hooks: Array<{ command: string }> }>>;
+    const hooks = profile.hooks as Record<string, Array<{ matcher: string; hooks: Leaf[] }>>;
     for (const event of ['PermissionRequest', 'PostToolUse']) {
-      const command = hooks[event][0].hooks[0].command;
       expect(hooks[event][0].matcher).toBe('');
-      expect(command).toContain('wmux-bridge.mjs');
-      expect(command.endsWith(` ${event}`)).toBe(true);
+      expect(hooks[event][0].hooks[0].args).toEqual([BRIDGE, event]);
     }
   });
 
   it('backstops each denied tool with a PreToolUse hook that names the tool', () => {
-    const pre = profile.hooks as { PreToolUse: Array<{ matcher: string; hooks: Array<{ command: string }> }> };
+    const pre = profile.hooks as { PreToolUse: Array<{ matcher: string; hooks: Leaf[] }> };
     const matchers = pre.PreToolUse.map((g) => g.matcher);
     expect(matchers).toContain('Bash');
     expect(matchers).toContain('AskUserQuestion');
     for (const group of pre.PreToolUse) {
-      const command = group.hooks[0].command;
-      expect(command).toContain('/tmp/brain-profiles/deny-1.js');
-      expect(command.endsWith(` ${group.matcher}`)).toBe(true);
-      // Windows-quoting regression guard (F8): the hook command is run by
-      // Claude Code's OWN shell — a PowerShell on Windows, which reads neither
-      // of this module's quoters. Exactly two double-quoted path arguments and
-      // a bare tool name is the only shape that survives both shells, so no
-      // quoted argument may contain a quote of its own.
-      expect(command).toMatch(/^"[^"]+" "[^"]+" [A-Za-z]+$/);
+      expect(group.hooks[0]).toEqual({
+        type: 'command',
+        command: '/usr/bin/node',
+        args: ['/tmp/brain-profiles/deny-1.js', group.matcher],
+      });
+    }
+  });
+
+  // Windows regression guard: a shell-form hook runs through Git Bash when
+  // Claude Code finds one and through PowerShell when it does not, and
+  // PowerShell cannot parse `"<node>" "<script>" Stop` (a leading quoted token
+  // is a string expression). Every leaf is exec form, so no shell and no
+  // quoting stands between the paths and the spawned process.
+  it('emits every hook in exec form, passing paths with spaces and quotes through untouched', () => {
+    const nodePath = 'C:\\Program Files\\wmux\\wmux.exe';
+    const dir = "C:\\Users\\O'Brien Smith\\AppData\\Roaming\\wmux\\brain-profiles";
+    const all = buildBrainSettingsProfile({
+      bridgePath: `${dir}\\wmux-bridge.mjs`,
+      nodePath,
+      denyScriptPath: `${dir}\\deny-1.js`,
+      proposalGateScriptPath: `${dir}\\proposal-gate-1.cjs`,
+      readGate: { scriptPath: `${dir}\\read-gate-1.cjs` },
+    });
+    const leaves = Object.values(all.hooks as Record<string, Array<{ hooks: Leaf[] }>>)
+      .flatMap((groups) => groups.flatMap((g) => g.hooks));
+    expect(leaves.length).toBeGreaterThan(10);
+    for (const leaf of leaves) {
+      expect(leaf.type).toBe('command');
+      expect(leaf.command).toBe(nodePath);
+      expect(leaf.args?.[0]?.startsWith(`${dir}\\`)).toBe(true);
     }
   });
 
@@ -387,8 +398,8 @@ describe('buildBrainSettingsProfile', () => {
       nodePath: '/usr/bin/node',
       denyScriptPath: null,
     });
-    const pre = noScript.hooks as { PreToolUse: Array<{ hooks: Array<{ command: string }> }> };
-    expect(pre.PreToolUse[0].hooks[0].command).toContain('process.exit(2)');
+    const pre = noScript.hooks as { PreToolUse: Array<{ hooks: Leaf[] }> };
+    expect(pre.PreToolUse[0].hooks[0]).toEqual({ type: 'command', command: '/usr/bin/node', args: ['-e', 'process.exit(2)'] });
   });
 
   it('omits the signal hooks when no bridge could be located', () => {
@@ -397,7 +408,7 @@ describe('buildBrainSettingsProfile', () => {
   });
 
   it('Moa\'s read gate hooks Read, Grep and Glob, and only when given', () => {
-    type Entry = { matcher: string; hooks: Array<{ command: string }> };
+    type Entry = { matcher: string; hooks: Array<{ command: string; args?: string[] }> };
     const withGate = buildBrainSettingsProfile({
       bridgePath: null,
       nodePath: '/usr/bin/node',
@@ -405,7 +416,7 @@ describe('buildBrainSettingsProfile', () => {
     });
     const pre = (withGate.hooks as { PreToolUse: Entry[] }).PreToolUse;
     const gate = pre.find((e) => e.matcher === 'Read|Grep|Glob');
-    expect(gate?.hooks[0].command).toContain('read-gate-1.cjs');
+    expect(gate?.hooks[0].args).toEqual(['/tmp/brain-profiles/read-gate-1.cjs']);
     // Reads are never added to the deny list: the gate allows or asks.
     expect((withGate.permissions as { deny: string[] }).deny).not.toContain('Read');
     const without = buildBrainSettingsProfile({ bridgePath: null, nodePath: '/usr/bin/node' });
@@ -1703,7 +1714,7 @@ it('allows every commander surface tool in the PTY runtime and settings profile'
 // ── Moa: proposal gate and first-turn memory ─────────────────────────────────
 
 describe('the Moa proposal gate in the profile', () => {
-  type Pre = { PreToolUse: Array<{ matcher: string; hooks: Array<{ command: string }> }> };
+  type Pre = { PreToolUse: Array<{ matcher: string; hooks: Array<{ command: string; args?: string[] }> }> };
   const base = { bridgePath: null, nodePath: '/usr/bin/node', denyScriptPath: '/tmp/deny.js' };
 
   it('is absent by default: Write and Edit stay hard-denied, no gate hook', () => {
@@ -1711,7 +1722,7 @@ describe('the Moa proposal gate in the profile', () => {
     const deny = (profile.permissions as { deny: string[] }).deny;
     expect(deny).toContain('Write');
     expect(deny).toContain('Edit');
-    expect((profile.hooks as Pre).PreToolUse.some((g) => g.hooks[0].command.includes('proposal-gate'))).toBe(false);
+    expect((profile.hooks as Pre).PreToolUse.some((g) => g.hooks[0].args?.some((a) => a.includes('proposal-gate')))).toBe(false);
   });
 
   it('moves Write and Edit from the deny list to the gate script; everything else stays denied', () => {
@@ -1720,7 +1731,7 @@ describe('the Moa proposal gate in the profile', () => {
     expect(deny).toEqual(['Agent', 'Task', 'Bash', 'MultiEdit', 'NotebookEdit', 'AskUserQuestion']);
     const groups = (profile.hooks as Pre).PreToolUse;
     const gate = groups.find((g) => g.matcher === 'Write|Edit')!;
-    expect(gate.hooks[0].command).toBe('"/usr/bin/node" "/tmp/proposal-gate-1.cjs"');
+    expect(gate.hooks[0]).toEqual({ type: 'command', command: '/usr/bin/node', args: ['/tmp/proposal-gate-1.cjs'] });
     expect(groups.some((g) => g.matcher === 'Write' || g.matcher === 'Edit')).toBe(false);
   });
 

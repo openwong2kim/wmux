@@ -286,6 +286,43 @@ describe('Settings › Moa › limits and switches', () => {
     expect(api.moa.setConfig).toHaveBeenCalledWith({ maxTurnsPerHour: 30 });
   });
 
+  it("Moa's delegate: the ask mode is chosen here and saved through setConfig", async () => {
+    await render(moaState());
+    const select = q<HTMLSelectElement>('[data-testid="moa-ask-mode"]')!;
+    expect(select.value).toBe('off');
+    expect([...select.options].map((o) => o.value)).toEqual(['off', 'shadow', 'suggest', 'auto']);
+    // The kill switch and the cap belong to auto mode only.
+    expect(q('[data-testid="moa-auto-paused"]')).toBeNull();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!.call(select, 'suggest');
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await flush();
+    expect(api.moa.setConfig).toHaveBeenCalledWith({ askMode: 'suggest' });
+  });
+
+  it("Moa's delegate in auto: the pause switch and the daily cap", async () => {
+    const st = moaState();
+    await render({ ...st, config: { ...st.config, askMode: 'auto', autoDailyCap: 10 } });
+    await click(q('[data-testid="moa-auto-paused"]')!);
+    expect(api.moa.setConfig).toHaveBeenCalledWith({ autoPaused: true });
+    const input = q<HTMLInputElement>('[data-testid="moa-auto-daily-cap"]')!;
+    expect(input.value).toBe('10');
+    const type = async (value: string) => {
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      await act(async () => { input.dispatchEvent(new FocusEvent('focusout', { bubbles: true })); });
+      await flush();
+    };
+    await type('900');
+    expect(q('[data-testid="moa-auto-daily-cap-invalid"]')).not.toBeNull();
+    expect(api.moa.setConfig).not.toHaveBeenCalledWith(expect.objectContaining({ autoDailyCap: expect.anything() }));
+    await type('3');
+    expect(api.moa.setConfig).toHaveBeenCalledWith({ autoDailyCap: 3 });
+  });
+
   it('bubble notifications: mirrors the setting and writes it', async () => {
     await render(moaState());
     const sw = rowSwitch('moabubbles')!;

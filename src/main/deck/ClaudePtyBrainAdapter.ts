@@ -367,12 +367,8 @@ const DENY_REASONS: Record<string, string> = {
 /**
  * The generated deny script: one file, invoked as `node deny.js <ToolName>`.
  *
- * A FILE rather than an inline `node -e "…"` payload because the hook command
- * is run by Claude Code's own shell — on Windows a PowerShell, which reads
- * neither of this module's quoters. A path argument carries no metacharacters
- * and no embedded quotes, so it survives both shells and the JSON encoding of
- * the settings file on top of them. The reasons live in the script, not the
- * command line, for the same reason.
+ * A FILE rather than an inline `node -e "…"` payload: the reasons live in the
+ * script, so the hook's argv stays a path and a tool name (see brainHook).
  */
 export function buildDenyScript(): string {
   return [
@@ -386,6 +382,22 @@ export function buildDenyScript(): string {
     'process.exit(2);',
     '',
   ].join('\n');
+}
+
+/**
+ * One hook leaf in exec form: Claude Code spawns `command` with `args`
+ * directly, with no shell in between (hook `args`, Claude Code 2.1.139+).
+ *
+ * Not a shell command line. On Windows Claude Code runs a shell-form hook
+ * through Git Bash when it finds one and through PowerShell when it does not
+ * (2.1.120+). PowerShell reads a line that starts with a quoted token as a
+ * string expression, so `"<node>" "<script>" Stop` fails to parse there
+ * ("Unexpected token") and every brain hook exits 1: no turn protocol, and a
+ * deny backstop that no longer blocks. No one quoting of a path with spaces
+ * is valid in both shells; exec form needs none.
+ */
+export function brainHook(nodePath: string, args: string[]): { type: 'command'; command: string; args: string[] } {
+  return { type: 'command', command: nodePath, args };
 }
 
 /**
@@ -431,12 +443,7 @@ export function buildBrainSettingsProfile(opts: {
   const preToolUse: unknown[] = denied.map((tool) => ({
     matcher: tool,
     hooks: [
-      {
-        type: 'command',
-        command: denyScriptPath
-          ? `${quoteArg(opts.nodePath)} ${quoteArg(denyScriptPath)} ${tool}`
-          : `${quoteArg(opts.nodePath)} -e "process.exit(2)"`,
-      },
+      brainHook(opts.nodePath, denyScriptPath ? [denyScriptPath, tool] : ['-e', 'process.exit(2)']),
     ],
   }));
   if (proposalGate) {
@@ -444,7 +451,7 @@ export function buildBrainSettingsProfile(opts: {
     // file and exits 2 for everything else, including its own errors.
     preToolUse.push({
       matcher: PROPOSAL_GATED_TOOLS.join('|'),
-      hooks: [{ type: 'command', command: `${quoteArg(opts.nodePath)} ${quoteArg(proposalGate)}` }],
+      hooks: [brainHook(opts.nodePath, [proposalGate])],
     });
   }
   if (opts.readGate) {
@@ -452,7 +459,7 @@ export function buildBrainSettingsProfile(opts: {
     // it cannot vouch for is asked about, never refused.
     preToolUse.push({
       matcher: 'Read|Grep|Glob',
-      hooks: [{ type: 'command', command: `${quoteArg(opts.nodePath)} ${quoteArg(opts.readGate.scriptPath)}` }],
+      hooks: [brainHook(opts.nodePath, [opts.readGate.scriptPath])],
     });
   }
   const hooks: Record<string, unknown> = {
@@ -479,16 +486,11 @@ export function buildBrainSettingsProfile(opts: {
       // already have ended by the time the block landed.
       // `UserPromptSubmit` runs it in CONTEXT mode: it prints the response's
       // `additionalContext` (the HQ brain's view pointer) as hook output.
-      const gateFlag = event === 'Stop' ? ' --gate' : event === 'UserPromptSubmit' ? ' --context' : '';
+      const modeFlag = event === 'Stop' ? ['--gate'] : event === 'UserPromptSubmit' ? ['--context'] : [];
       hooks[event] = [
         {
           matcher: '',
-          hooks: [
-            {
-              type: 'command',
-              command: `${quoteArg(opts.nodePath)} ${quoteArg(opts.bridgePath)} ${event}${gateFlag}`,
-            },
-          ],
+          hooks: [brainHook(opts.nodePath, [opts.bridgePath, event, ...modeFlag])],
         },
       ];
     }

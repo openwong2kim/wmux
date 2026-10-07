@@ -65,6 +65,22 @@ export function selectEffectRows(state: MoaDelegateListResult, now: number): Mer
     .slice(0, EFFECT_ROWS_MAX);
 }
 
+/** Tickets still escalated while the delegate is off (0 when it is on). */
+export function selectWaitingWhileOff(state: MoaDelegateListResult): number {
+  return state.mode === 'off' ? state.waitingWhileOff ?? 0 : 0;
+}
+
+/** Answers on their way back to the asker (or there already), newest
+ *  first: the owner sees the answer was not left in the store. A row leaves
+ *  a day after its last move. */
+export function selectDeliveryRows(state: MoaDelegateListResult, now: number): MoaDecision[] {
+  if (!delegateShown(state)) return [];
+  return state.decisions
+    .filter((d) => d.delivery && now - d.delivery.at <= EFFECT_SHOWN_MS)
+    .sort((a, b) => (b.delivery?.at ?? 0) - (a.delivery?.at ?? 0))
+    .slice(0, EFFECT_ROWS_MAX);
+}
+
 /** The lane audit's last answer: PRs merged lately, in repos the lane
  *  touched, with no lane receipt. Display only, listed quietly. */
 export function selectUnreceipted(state: MoaDelegateListResult): MoaUnreceiptedMerge[] {

@@ -55,6 +55,65 @@ describe('native Codex transcript', () => {
   });
 });
 
+describe('a Codex session file not written yet (first turn pending)', () => {
+  it('reads as an available, empty conversation, then as the file once Codex writes it', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-native-'));
+    const sessions = path.join(home, 'sessions'); fs.mkdirSync(sessions);
+    // Codex creates the date directories lazily too.
+    const file = path.join(sessions, '2026', '10', '07', `rollout-2026-10-07T00-00-00-${nativeId}.jsonl`);
+    const projector = new TranscriptProjector({ getResumeBinding: () => ({ agent: 'codex', sessionId: nativeId, cwd: home, transcriptPath: file, ts: 1 }), getSessionEnv: () => ({ CODEX_HOME: home }), emitAppend: () => undefined });
+    try {
+      expect(checkNativeTranscriptPath('codex', file, nativeId, { CODEX_HOME: home })).toEqual({ ok: true, reason: '', pending: true });
+      expect(projector.status('pane')).toMatchObject({ available: true, reason: 'ok', agentSessionId: nativeId, sizeBytes: 0 });
+      expect(projector.snapshot('pane')).toEqual({ events: [], cursor: { headOffset: 0, tailOffset: 0, fileSize: 0, mtimeMs: 0 }, hasMore: false, truncatedHead: false });
+      expect(projector.delta('pane', 0)).toMatchObject({ events: [], reset: false });
+      expect(projector.staleCursor('pane', 0)).toBe(false);
+
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, user + '\n');
+      expect(checkNativeTranscriptPath('codex', file, nativeId, { CODEX_HOME: home })).toEqual({ ok: true, reason: '' });
+      expect(projector.delta('pane', 0)?.events.map((e) => e.kind)).toEqual(['user_text']);
+    } finally { projector.dispose(); fs.rmSync(home, { recursive: true, force: true }); }
+  });
+
+  it('still refuses a missing file whose containment does not hold', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-native-'));
+    const sessions = path.join(home, 'sessions'); fs.mkdirSync(sessions);
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-elsewhere-'));
+    try {
+      const check = (file: string) => checkNativeTranscriptPath('codex', file, nativeId, { CODEX_HOME: home });
+      // Outside the sessions root, lexical escape, wrong thread id.
+      expect(check(path.join(home, `rollout-x-${nativeId}.jsonl`)).ok).toBe(false);
+      expect(check(`${sessions}/2026/../../rollout-x-${nativeId}.jsonl`).ok).toBe(false);
+      expect(check(path.join(sessions, 'rollout-x-00000000-2222-4333-8444-555555555555.jsonl')).ok).toBe(false);
+      // Symlinks need a privilege on Windows runners; the containment rule is the same.
+      if (process.platform !== 'win32') {
+        // A directory symlinked out of the root: the nearest existing ancestor resolves outside.
+        fs.symlinkSync(elsewhere, path.join(sessions, 'link'));
+        expect(check(path.join(sessions, 'link', `rollout-x-${nativeId}.jsonl`)).ok).toBe(false);
+        // A dangling symlink is not a file Codex has yet to write.
+        const dangling = path.join(sessions, `rollout-d-${nativeId}.jsonl`);
+        fs.symlinkSync(path.join(sessions, 'nowhere.jsonl'), dangling);
+        expect(check(dangling).ok).toBe(false);
+        // A dangling symlink as a missing DATE DIRECTORY reads as ENOENT too:
+        // it must refuse, not be climbed past to `sessions/`.
+        fs.symlinkSync(path.join(elsewhere, 'gone'), path.join(sessions, '2027'));
+        expect(check(path.join(sessions, '2027', '01', '01', `rollout-x-${nativeId}.jsonl`)).ok).toBe(false);
+        // A plain file where a directory should be refuses as well.
+        fs.writeFileSync(path.join(sessions, '2028'), '');
+        expect(check(path.join(sessions, '2028', '01', `rollout-x-${nativeId}.jsonl`)).ok).toBe(false);
+      }
+      // The ancestor walk is bounded (same 64 as the Claude guard).
+      const deep = path.join(sessions, ...Array.from({ length: 70 }, (_, i) => `d${i}`), `rollout-x-${nativeId}.jsonl`);
+      expect(check(deep).ok).toBe(false);
+      expect(check(path.join(sessions, ...Array.from({ length: 10 }, (_, i) => `d${i}`), `rollout-x-${nativeId}.jsonl`))).toEqual({ ok: true, reason: '', pending: true });
+
+      const projector = new TranscriptProjector({ getResumeBinding: () => ({ agent: 'codex', sessionId: nativeId, cwd: home, transcriptPath: path.join(home, `rollout-x-${nativeId}.jsonl`), ts: 1 }), getSessionEnv: () => ({ CODEX_HOME: home }), emitAppend: () => undefined });
+      try { expect(projector.status('pane')).toEqual({ available: false, reason: 'unsafe-transcript-path' }); } finally { projector.dispose(); }
+    } finally { fs.rmSync(home, { recursive: true, force: true }); fs.rmSync(elsewhere, { recursive: true, force: true }); }
+  });
+});
+
 describe('existing Codex PTY composer', () => {
   const screen = ['› Ask Codex to do anything', '', '  GPT-6-Astra low · /tmp/project'];
   it('requires the known empty composer and refuses drafts and dialogs', () => {

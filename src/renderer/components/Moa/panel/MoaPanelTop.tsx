@@ -16,7 +16,7 @@ import { defaultReceiptsApi, selectTaskCards, useWorkLinks, type MoaHandoffRecei
 import { defaultHandoffResolve, type HandoffResolve } from './MoaHandoffCard';
 import { MoaHandoffReceipts } from './MoaHandoffReceipts';
 import { MoaDelegateActivity, MoaDelegateTicketRow } from './MoaDelegateCards';
-import { defaultDelegateApi, selectAutoRules, selectEffectRows, selectOpenTickets, selectUnreceipted, useMoaDelegate, type MoaDelegateApi } from './moaDelegateData';
+import { defaultDelegateApi, selectAutoRules, selectDeliveryRows, selectEffectRows, selectOpenTickets, selectUnreceipted, selectWaitingWhileOff, useMoaDelegate, type MoaDelegateApi } from './moaDelegateData';
 import { focusNotificationTarget, focusPaneByPtyId, type FocusTargetState } from '../../../hooks/useNotificationListener';
 import type { CommanderViewProps } from '../../Deck/CommanderView';
 
@@ -111,11 +111,15 @@ export function MoaPanelTop({
     return () => clearInterval(timer);
   }, [delegate]);
   const effectRows = useMemo(() => selectEffectRows(delegateState, clock), [delegateState, clock]);
+  const deliveryRows = useMemo(() => selectDeliveryRows(delegateState, clock), [delegateState, clock]);
   const unreceipted = useMemo(() => selectUnreceipted(delegateState), [delegateState]);
+  const waitingWhileOff = selectWaitingWhileOff(delegateState);
   const autoRules = useMemo(() => selectAutoRules(delegateState), [delegateState]);
+  // The locale, so a language switch redraws the cards (`t` itself is stable).
+  const locale = useStore((s) => s.locale);
   const renderTicket = useCallback((d: MoaDecision, onDone: () => void) => (
     <MoaDelegateTicketRow decision={d} resolve={delegate!.delegateResolve} onDone={() => { onDone(); refreshDelegate(); }} workspaceName={workspaceName} t={t} />
-  ), [delegate, refreshDelegate, workspaceName, t]);
+  ), [delegate, refreshDelegate, workspaceName, t, locale]);
   const dock = useContext(MoaDockContext);
   // Before Moa's first turn there is no brain and so no chat: the panel would
   // be a bare composer. Say what to ask, once, until the first send.
@@ -148,8 +152,13 @@ export function MoaPanelTop({
         );
         return dock ? createPortal(waiting, dock) : waiting;
       })()}
+      {waitingWhileOff > 0 && (
+        <p className="m-0 px-3 pt-2 text-[12px] leading-snug text-[var(--text-sub)]" data-moa-delegate-waiting-off role="status">
+          {t('moa.delegate.waitingWhileOff', { count: waitingWhileOff })}
+        </p>
+      )}
       {delegate && (
-        <MoaDelegateActivity effects={effectRows} unreceipted={unreceipted} rules={autoRules}
+        <MoaDelegateActivity effects={effectRows} deliveries={deliveryRows} unreceipted={unreceipted} rules={autoRules}
           autoSet={delegate.delegateAutoSet} onChanged={refreshDelegate} t={t} />
       )}
       <MoaTaskCards links={cards} pendingDecisions={decisions} workspaceName={workspaceName}

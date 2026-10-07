@@ -13,7 +13,7 @@ import { MOA_ASK_LIMITS, MOA_ASK_STATUS_TOOL, MOA_ASK_TOOL } from '../shared/moa
 
 export const MOA_ASK_DESCRIPTION =
   'Ask Moa (the owner\'s delegate) instead of the owner. Returns at once with {ticketId, status}; poll moa_ask_status. ' +
-  'answered: proceed with answer. escalated: ask the owner yourself. refused: do not proceed. ' +
+  'answered: proceed with answer. escalated: the owner answers on Moa\'s card; end your turn without restating it, the answer arrives in this pane. refused: do not proceed. ' +
   'Give question+options, or action {type:"merge", prNumber, expectHead} for a PR in your repo. ' +
   'askId makes a retry return the same ticket.';
 

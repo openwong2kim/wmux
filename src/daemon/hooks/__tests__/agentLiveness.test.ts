@@ -68,6 +68,26 @@ describe('deriveAgentLiveness', () => {
     expect(isTerminalLiveness(body.state)).toBe(true);
   });
 
+  it('a turn that ended on a failure (StopFailure) settles the pane as idle, not busy', () => {
+    // HookIngest projects `agent.stop_failure` as status:'error'. The turn is
+    // over, so every liveness surface (fleet and pane SSE, the list row) must
+    // read idle; `busy` here left a rate-limited pane "working" indefinitely.
+    const body = deriveAgentLiveness(
+      's1',
+      data({
+        status: 'error',
+        message: 'Turn failed (API error)',
+        hookKind: 'agent.stop_failure',
+        signal: signal('agent.stop_failure', { error: 'rate_limit', tool_name: 'Bash' }),
+      }),
+      7,
+    );
+    expect(body).toEqual({ sessionId: 's1', state: 'idle', agent: 'Claude Code', at: 7 });
+    expect(isTerminalLiveness(body.state)).toBe(true);
+    // A detector-sourced error status (no hook envelope) settles the same way.
+    expect(deriveAgentLiveness('s1', { agent: 'Codex CLI', status: 'error', source: 'detector' }, 8).state).toBe('idle');
+  });
+
   it('★ a finished SUBAGENT does not settle the pane', () => {
     // agent.subagent_stop arrives as status:'complete' ("Subagent finished")
     // while the pane's own turn keeps going. Read at face value it flips the

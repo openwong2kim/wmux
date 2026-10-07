@@ -213,10 +213,15 @@ type ResolveResult = {
 
 // Inject a fake process snapshot so the walk + prune run without spawning the
 // real Win32_Process PowerShell. `listeners` is irrelevant to identity.
-function setupRouterWithSnapshot(ppidByPid: Map<number, number>): RpcRouter {
+// Creation times default to unreadable, so fake pids never reach the real process table.
+function setupRouterWithSnapshot(
+  ppidByPid: Map<number, number>,
+  createdAt: (pid: number) => bigint | null = () => null,
+): RpcRouter {
   const router = new RpcRouter();
   registerA2aRpc(router, () => fakeWindow, makeWorker(), {
     snapshot: async () => ({ ppidByPid, listeners: [] }),
+    createdAt,
   });
   return router;
 }
@@ -351,5 +356,35 @@ describe('a2a.resolve.identity — server-side walk (callerPid)', () => {
     const result = await dispatchResolve(setupRouterWithSnapshot(ppidByPid), { callerPid: 49076 });
 
     expect(result.resolved).toBeNull(); // self-pid is never treated as our own anchor
+  });
+
+  it('stops at a reused parent pid: a self-updated Codex app-server is not adopted by a newer pane', async () => {
+    // The app-server (20000) updated itself: its parent, the old update loop
+    // (30000), exited, and Windows gave 30000 to a pane shell opened later.
+    // The ppid table still says 20000 → 30000.
+    fs.writeFileSync(path.join(dirRef.current, '30000'), 'daemon-new-pane');
+    sendToRendererMock.mockResolvedValue({ workspaceId: 'ws-other' });
+    const ppidByPid = new Map<number, number>([[10000, 20000], [20000, 30000], [30000, 40000]]);
+    const created: Record<number, bigint> = { 10000: 300n, 20000: 200n, 30000: 900n, 40000: 50n };
+    const createdAt = (pid: number) => created[pid] ?? null;
+
+    const result = await dispatchResolve(setupRouterWithSnapshot(ppidByPid, createdAt), { callerPid: 10000 });
+    expect(result.resolved).toBeNull();
+
+    // The same chain with a parent older than its child resolves as before.
+    created[30000] = 100n;
+    const intact = await dispatchResolve(setupRouterWithSnapshot(ppidByPid, createdAt), { callerPid: 10000 });
+    expect(intact.resolved).toEqual({ workspaceId: 'ws-other', ptyId: 'daemon-new-pane' });
+  });
+
+  it('checks the caller → parent edge too', async () => {
+    // The MCP's own parent died and its pid went to a newer pane shell.
+    fs.writeFileSync(path.join(dirRef.current, '20000'), 'daemon-new-pane');
+    sendToRendererMock.mockResolvedValue({ workspaceId: 'ws-other' });
+    const ppidByPid = new Map<number, number>([[10000, 20000], [20000, 1]]);
+    const created: Record<number, bigint> = { 10000: 300n, 20000: 900n };
+
+    const result = await dispatchResolve(setupRouterWithSnapshot(ppidByPid, (pid) => created[pid] ?? null), { callerPid: 10000 });
+    expect(result.resolved).toBeNull();
   });
 });

@@ -27,6 +27,7 @@ import {
   ticketView,
   type MoaDecision,
   type MoaDecisionMode,
+  type MoaAnswerDelivery,
   type MoaJudgeResult,
   type MoaOwnerAnswer,
   type MoaReceiptState,
@@ -90,6 +91,8 @@ export interface MoaSettlement {
   why: string;
   /** Required when `status` is answered. */
   answer?: MoaDecision['answer'];
+  /** A merge's lane verdict on the fresh read it was decided on. */
+  lane?: MoaDecision['lane'];
 }
 
 export type MoaOwnerResolve =
@@ -121,7 +124,17 @@ export function isMoaDecisionRecord(v: unknown): v is MoaDecision {
     && (d.askId === undefined || (typeof d.askId === 'string' && MOA_ASK_ID_RE.test(d.askId)))
     && (d.repo === undefined || (!!d.repo && typeof d.repo === 'object' && typeof d.repo.key === 'string' && typeof d.repo.path === 'string'))
     && (d.judge === null || isJudgeResult(d.judge))
-    && (d.answer === undefined || isStoredAnswer(d.answer, d.kind));
+    && (d.answer === undefined || isStoredAnswer(d.answer, d.kind))
+    && (d.delivery === undefined || isDelivery(d.delivery))
+    && (d.lane === undefined || (!!d.lane && typeof d.lane.ok === 'boolean' && Array.isArray(d.lane.reasons) && d.lane.reasons.every((r) => typeof r === 'string')));
+}
+
+const DELIVERY_STATES: ReadonlySet<string> = new Set(['waiting', 'sending', 'delivered', 'seen', 'failed']);
+
+function isDelivery(v: unknown): v is MoaAnswerDelivery {
+  const r = v as MoaAnswerDelivery;
+  return !!r && typeof r === 'object' && DELIVERY_STATES.has(r.state) && typeof r.agent === 'string'
+    && Number.isSafeInteger(r.at) && (r.reason === undefined || typeof r.reason === 'string');
 }
 
 function isJudgeResult(j: unknown): boolean {
@@ -184,7 +197,10 @@ export class MoaDecisionStore {
     for (const d of saved.decisions) {
       if (!isMoaDecisionRecord(d)) throw new Error('Invalid moa decision entry');
       // Judged when main stopped: it may or may not have finished. Never again.
-      this.rows.set(d.askKey, d.receipt === 'inFlight' ? { ...d, receipt: 'uncertain' } : d);
+      let row: MoaDecision = d.receipt === 'inFlight' ? { ...d, receipt: 'uncertain' } : d;
+      // A paste that was started may have landed: never sent twice.
+      if (row.delivery?.state === 'sending') row = { ...row, delivery: { ...row.delivery, state: 'failed', reason: 'restart' } };
+      this.rows.set(d.askKey, row);
     }
   }
 
@@ -263,6 +279,7 @@ export class MoaDecisionStore {
       reasonCode: s.reasonCode,
       why: s.why,
       ...(s.status === 'answered' && s.answer ? { answer: s.answer } : {}),
+      ...(s.lane ? { lane: { ok: s.lane.ok, reasons: [...s.lane.reasons] } } : {}),
       resolvedBy: s.status === 'answered' ? 'moa-auto' : s.status === 'refused' ? 'refused' : null,
       resolvedAt: s.status === 'escalated' ? null : at,
       receipt,
@@ -347,6 +364,28 @@ export class MoaDecisionStore {
     return expired;
   }
 
+  /**
+   * Record the answer's delivery to the asker. `from` (when given) must be the
+   * state on record, or nothing changes (null): two callers cannot both move
+   * a delivery on. Settled decisions only. A failed write leaves the row as it
+   * was and rejects.
+   */
+  async setDelivery(id: string, delivery: MoaAnswerDelivery, from?: MoaAnswerDelivery['state'] | null): Promise<MoaDecision | null> {
+    const key = this.keyOf(id);
+    const row = key ? this.rows.get(key) : undefined;
+    if (!key || !row || row.resolvedAt === null) return null;
+    if (from !== undefined && (row.delivery?.state ?? null) !== from) return null;
+    const next: MoaDecision = { ...row, delivery: { ...delivery } };
+    this.rows.set(key, next);
+    try {
+      await this.save();
+    } catch (err) {
+      if (this.rows.get(key) === next) this.rows.set(key, row);
+      throw err;
+    }
+    return next;
+  }
+
   /** The asker's own ticket; another asker's id reads as unknown (null). */
   getForAsker(asker: MoaAsker, ticketId: string): MoaDecision | null {
     for (const row of this.rows.values()) {
@@ -382,5 +421,21 @@ export class MoaDecisionStore {
       atomicWriteJSON(this.file, { version: 1, decisions: [...this.rows.values()] }));
     this.writes = run.catch(() => undefined);
     return run;
+  }
+}
+
+/**
+ * Escalated tickets the owner can still answer, read from disk WITHOUT
+ * writing anything: the panel's notice while the delegate is off. A missing
+ * file is 0 and is never created; an unreadable one is 0.
+ */
+export function countOpenTicketsReadOnly(wmuxDir: string, now: number = Date.now()): number {
+  const file = path.join(wmuxDir, MOA_DELEGATE_DIRNAME, MOA_DECISIONS_FILENAME);
+  if (!fs.existsSync(file)) return 0;
+  try {
+    const store = new MoaDecisionStore(wmuxDir, () => now);
+    return store.list().filter((d) => ownerCanResolve(d) && d.createdAt > now - MOA_ESCALATION_TTL_MS).length;
+  } catch {
+    return 0;
   }
 }

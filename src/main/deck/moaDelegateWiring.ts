@@ -34,6 +34,11 @@ import { MoaEffectStore } from './moaEffectStore';
 import { MoaMergeExecutor } from './moaMergeExecutor';
 import { MoaAskService, type MoaAskConfig } from './moaAskService';
 import { findShadowJudgment, readPaneScreen, runMoaJudge } from './moaShadowHost';
+import type { AskerPaneState, CourierSendResult } from './moaAnswerCourier';
+import { getWorkspaceMirror } from '../workspace/WorkspaceMirror';
+import { DEFAULT_MAX_SNAPSHOT_AGE_MS } from './stopGate';
+import type { GatedSubmitResult } from '../../shared/ptyMessageDelivery';
+import { registerDeliveryCheck } from '../pipe/deliveryGuards';
 
 const execFileAsync = promisify(execFile);
 /** Expire stale escalations and reconcile uncertain merges this often. */
@@ -67,6 +72,9 @@ export function syncMoaAskSwitch(mode: MoaAskMode, switchPath: string = moaAskSw
 
 export interface MoaDelegateWiringDeps {
   getDaemonClient: () => DaemonClient | null;
+  /** Main's gated paste-and-submit (input.rpc gatedSubmit with waitQuiet):
+   *  how an answer reaches the asker's pane. Without it nothing is pasted. */
+  submit?: (ptyId: string, text: string, agent: string, guardKey: string) => Promise<GatedSubmitResult>;
   wmuxDir?: string;
   log?: (line: string) => void;
 }
@@ -77,6 +85,10 @@ interface Running {
 }
 
 let running: Running | null = null;
+/** The stores, built once per data dir and kept across off → on: two
+ *  instances of one store would each write their own map over the file. */
+let stores: { dir: string; decisions: MoaDecisionStore; effects: MoaEffectStore } | null = null;
+let guardSeq = 0;
 let deps: MoaDelegateWiringDeps | null = null;
 let settingsWatched = false;
 /** Owner logins by GitHub host (the owner's own PRs are trusted authors). */
@@ -117,6 +129,32 @@ async function askerBranches(getDaemonClient: () => DaemonClient | null, asker: 
   return [...out];
 }
 
+/** The asker's pane as the fleet mirror sees it. A stale or missing
+ *  snapshot is `unknown` (wait), never `gone`. */
+export function askerPaneState(asker: MoaAsker): AskerPaneState {
+  const snap = getWorkspaceMirror().getFleetSnapshot(asker.workspaceId);
+  if (!snap || Date.now() - snap.ts > DEFAULT_MAX_SNAPSHOT_AGE_MS) return 'unknown';
+  const pane = snap.panes.find((p) => p.ptyId === asker.ptyId);
+  if (!pane) return 'gone';
+  if (pane.isAgent === false) return 'gone';
+  // Mid-turn, or a prompt in front of it: the paste would queue or land in
+  // the dialog.
+  return pane.agentStatus === 'running' || pane.agentStatus === 'awaiting_input' ? 'busy' : 'idle';
+}
+
+/** Refusals that wrote nothing (or took it back out): try again later. */
+const RETRY_REASONS: ReadonlySet<string> = new Set([
+  'approval_pending', 'gate_unavailable', 'usage_limited', 'user_typing', 'deadline', 'agent_unverified', 'fresh_context_busy',
+]);
+
+/** A gated submit's result, as the courier reads it. */
+export function courierResultOf(r: GatedSubmitResult): CourierSendResult {
+  if (r.ok) return { ok: true };
+  // Pasted and not taken back out: a second paste would double it.
+  const retry = RETRY_REASONS.has(r.reason) && (!r.pasted || r.cleared === true);
+  return { ok: false, retry, reason: r.reason };
+}
+
 function configNow(): MoaAskConfig {
   const cfg = getMoaConfig();
   return {
@@ -131,8 +169,9 @@ function configNow(): MoaAskConfig {
 function build(d: MoaDelegateWiringDeps): MoaAskService {
   const dir = d.wmuxDir ?? getWmuxDir();
   const log = d.log ?? ((l: string) => console.log(l));
-  const decisions = new MoaDecisionStore(dir);
-  const effects = new MoaEffectStore(dir);
+  if (!stores || stores.dir !== dir) stores = { dir, decisions: new MoaDecisionStore(dir), effects: new MoaEffectStore(dir) };
+  const { decisions, effects } = stores;
+  const submit = d.submit;
   const facts = {
     readFresh: async (repoPath: string, key: string, n: number) => {
       const r = await ghPrReviewService.laneFacts(repoPath, key, n);
@@ -178,6 +217,25 @@ function build(d: MoaDelegateWiringDeps): MoaAskService {
     },
     askerBranches: (asker, repoPath) => askerBranches(d.getDaemonClient, asker, repoPath),
     priorJudgment: findShadowJudgment,
+    ...(submit
+      ? {
+          answerPane: {
+            state: askerPaneState,
+            send: async (asker: MoaAsker, text: string, wanted: () => boolean) => {
+              // Asked right before the paste and the Enter (input.rpc), so a
+              // poll that read the answer meanwhile stops the paste.
+              const key = `moa-answer:${++guardSeq}`;
+              const check = () => (wanted() ? null : 'the asker already read this answer');
+              const unregister = registerDeliveryCheck(key, { beforePaste: check, beforeEnter: check });
+              try {
+                return courierResultOf(await submit(asker.ptyId, text, asker.agent, key));
+              } finally {
+                unregister();
+              }
+            },
+          },
+        }
+      : {}),
     mergedSince: async (repo, sinceIso) => {
       const r = await ghPrReviewService.mergedSince(repo.path, repo.key, sinceIso);
       return r.ok ? r.value.map((m) => ({ prNumber: m.number, title: m.title, mergedAt: m.mergedAt, headRefOid: m.headRefOid })) : null;
@@ -211,6 +269,7 @@ export function refreshMoaDelegate(): MoaAskService | null {
   syncMoaAskSwitch(mode);
   if (mode === 'off') {
     if (running) {
+      running.service.stop();
       for (const t of running.timers) clearInterval(t);
       running = null;
       setMoaDelegateService(null);

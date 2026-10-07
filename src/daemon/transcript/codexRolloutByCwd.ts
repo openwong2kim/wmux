@@ -214,7 +214,7 @@ export interface CodexPaneFacts {
   binding?: ResumeBinding;
   /** Epoch ms the pane's current agent launched; undefined when unknown. */
   launchAt?: number;
-  /** A Codex process is (or, untracked, was last detected) running in the pane. */
+  /** A Codex process runs in the pane (see codexLiveFor). */
   codexLive: boolean;
 }
 
@@ -223,6 +223,22 @@ export type CodexPaneDecision =
   | { kind: 'wait' }
   | { kind: 'refuse'; reason: 'shared-cwd' }
   | { kind: 'query'; query: CodexCwdQuery };
+
+/**
+ * Whether a pane counts as running Codex for the shared-cwd check. Process
+ * truth wins when the tracker attributed a process. Without one, only evidence
+ * from this daemon's lifetime counts: `liveSlug` is the pane's canonical
+ * identity (a fresh hook, or this PTY's own screen). The persisted
+ * `lastDetectedAgent` is deliberately not an input: recovery, a supervised
+ * restart and a promotion all carry it onto a fresh shell where nothing runs,
+ * so it would mark that pane as a live Codex until it closed.
+ */
+export function codexLiveFor(
+  tracked: { slug?: string; alive: boolean } | undefined,
+  liveSlug: string | undefined,
+): boolean {
+  return tracked ? tracked.alive && tracked.slug === 'codex' : liveSlug === 'codex';
+}
 
 /** The pane holds a rollout binding captured during its current Codex run. */
 export function boundForCurrentRun(pane: Pick<CodexPaneFacts, 'binding' | 'launchAt'>): boolean {

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { GhPrReviewService, mapLaneFacts, mapReviewHead } from '../GhPrReviewService';
+import { GhPrReviewService, LANE_PR_QUERY, mapLaneFacts, mapReviewHead } from '../GhPrReviewService';
 import { GhRateBreaker } from '../ghRateBreaker';
 
 // Recorded answers (2026-10-07): LANE_PR_QUERY for #1858 (merged) and #1829
@@ -71,6 +71,14 @@ describe('mapLaneFacts', () => {
     delete pr.isCrossRepository;
     const f = mapLaneFacts(raw);
     expect(f).toMatchObject({ checks: [], checksTruncated: false, isCrossRepository: true });
+  });
+
+  it('asks for and reads mergeStateStatus; a fixture without it leaves it out', () => {
+    expect(LANE_PR_QUERY).toMatch(/\bmergeStateStatus\b/);
+    const raw = read('lane-pr1858.json') as { data: { repository: { pullRequest: Record<string, unknown> } } };
+    expect(mapLaneFacts(raw)).not.toHaveProperty('mergeStateStatus');
+    raw.data.repository.pullRequest.mergeStateStatus = 'CLEAN';
+    expect(mapLaneFacts(raw)?.mergeStateStatus).toBe('CLEAN');
   });
 
   it('is null for anything that is not a PR', () => {

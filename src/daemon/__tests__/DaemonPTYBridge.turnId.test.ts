@@ -94,6 +94,62 @@ describe('DaemonPTYBridge — running-episode turn id', () => {
     expect(second.startedAt).toBeGreaterThan(first.startedAt ?? Infinity);
   });
 
+  it('a StopFailure (status error) ends the episode: /turns reads idle under the same id', () => {
+    bridge.noteInput('do the thing\r');
+    vi.advanceTimersByTime(100);
+    feed(BIG);
+    const first = turn();
+    expect(first.state).toBe('running');
+    bridge.noteAgentStatus('error', true);
+    expect(bridge.getAgentStatus()).toBe('error');
+    expect(turn()).toEqual({ ...first, state: 'idle' });
+  });
+
+  it('holds a turn failure until the next episode opens, not through a session start or a repeat', () => {
+    expect(bridge.turnAt(Date.now())).toEqual({ current: true });
+    bridge.noteInput('go\r');
+    const id = bridge.turnAt(Date.now())?.turnId;
+    expect(id).toBe(turn().id);
+    bridge.noteAgentStatus('error', true);
+    const failure = { reason: 'rate-limited' as const, provider: 'claude' as const, at: 1, turnId: id };
+    expect(bridge.noteTurnFailure(failure, 'conv-1')).toEqual({ failure, fresh: true });
+    // The same turn again keeps the first object.
+    expect(bridge.noteTurnFailure({ ...failure, at: 2 })).toEqual({ failure, fresh: false });
+    // A SessionStart (resume, compaction) is not a new turn.
+    bridge.noteSessionStart(Date.now(), 'resume');
+    expect(bridge.getLastFailure()).toEqual({ failure, agentSessionId: 'conv-1' });
+    // The next prompt starts one: the failure is gone.
+    vi.advanceTimersByTime(1000);
+    bridge.noteInput('continue\r');
+    expect(bridge.turnAt(Date.now())?.turnId).not.toBe(id);
+    expect(bridge.getLastFailure()).toBeUndefined();
+  });
+
+  it('files a turn end by when it happened: a late one belongs to the turn before the open one', () => {
+    bridge.noteInput('first\r');
+    const first = turn().id;
+    vi.advanceTimersByTime(200);
+    const failedAt = Date.now();
+    bridge.noteAgentStatus('error', true);
+    vi.advanceTimersByTime(1000);
+    // An instant retry opens the next episode before the StopFailure is delivered.
+    bridge.noteInput('retry\r');
+    const second = turn().id;
+    expect(second).not.toBe(first);
+    expect(bridge.turnAt(failedAt)).toEqual({ turnId: first, current: false });
+    expect(bridge.turnAt(Date.now())).toEqual({ turnId: second, current: true });
+    expect(bridge.turnAt(failedAt - 10_000)).toBeNull();
+  });
+
+  it('a hook-opened episode starts at the hook time, so a fast failure of that turn is current', () => {
+    const hookTs = Date.now();
+    vi.advanceTimersByTime(300); // the hook is delivered late
+    bridge.noteAgentStatus('running', true, undefined, false, hookTs);
+    expect(turn().startedAt).toBe(hookTs);
+    // The turn failed 100 ms after it started, before the start hook arrived.
+    expect(bridge.turnAt(hookTs + 100)).toEqual({ turnId: turn().id, current: true });
+  });
+
   it('opens a new episode on the first running edge after a settle: a hook or a byte promotion', () => {
     bridge.noteInput('go\r');
     const first = turn().id;

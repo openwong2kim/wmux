@@ -62,6 +62,21 @@ describe('moaDelegateWiring', () => {
     expect(JSON.parse(fs.readFileSync(state.switchPath, 'utf8'))).toEqual({ enabled: false });
   });
 
+  it('off → on stops the old service and reuses the same stores (one writer per file)', () => {
+    state.config = { enabled: true, askMode: 'suggest' };
+    const first = startMoaDelegate({ getDaemonClient: () => null, wmuxDir: dir, log: () => undefined })!;
+    const stop = vi.spyOn(first, 'stop');
+    state.config = { enabled: true, askMode: 'off' };
+    refreshMoaDelegate();
+    expect(stop).toHaveBeenCalledTimes(1);
+    state.config = { enabled: true, askMode: 'suggest' };
+    const second = refreshMoaDelegate()!;
+    expect(second).not.toBe(first);
+    type WithPorts = { ports: { decisions: unknown; effects: unknown } };
+    expect((second as unknown as WithPorts).ports.decisions).toBe((first as unknown as WithPorts).ports.decisions);
+    expect((second as unknown as WithPorts).ports.effects).toBe((first as unknown as WithPorts).ports.effects);
+  });
+
   it('saving the settings starts and stops the delegate without a reconnect', () => {
     expect(startMoaDelegate({ getDaemonClient: () => null, wmuxDir: dir, log: () => undefined })).toBeNull();
     const saved = () => { for (const l of state.written) l(); };
