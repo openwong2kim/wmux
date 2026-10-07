@@ -248,7 +248,9 @@ rather than dropping the event, the same rule `TurnEventKind` follows. `tool`
 carries the tool name when the daemon knows it, and only for the two tool
 states. `at` is the ms epoch the state was entered: render elapsed time from it
 rather than from when the event arrived, because the event may have waited out a
-coalescing window.
+coalescing window. A turn that ended on a failure (a Claude `StopFailure`, e.g.
+a usage limit) reads `idle`, like any finished turn; the same holds for the
+`liveness` on `/api/sessions` rows.
 
 Use this for a persistent activity header, and **do not derive that header from
 the turn snapshot instead**. An agent that stalls mid-turn writes nothing, so a
@@ -4639,9 +4641,9 @@ shared app-server, no provable pane (see #1657). OpenCode: none.
 
 The frame that ends a failed turn carries `state: "idle"` plus `failure`. The
 turn is over, so `idle` is the truthful state, and a client that ignores
-`failure` renders what a finished turn renders. Today's daemon projects a
-`StopFailure` onto `state: "busy"` (`deriveAgentLiveness` has no branch for
-`status: "error"`); the implementation of this item maps it to `idle`.
+`failure` renders what a finished turn renders. The `idle` half is served
+already: `deriveAgentLiveness` maps `status: "error"` (a `StopFailure`) to
+`idle`; daemons before it reported `busy` there.
 
 ### 2. Codex account status (read-only, served)
 

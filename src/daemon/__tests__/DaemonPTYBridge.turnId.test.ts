@@ -94,6 +94,17 @@ describe('DaemonPTYBridge — running-episode turn id', () => {
     expect(second.startedAt).toBeGreaterThan(first.startedAt ?? Infinity);
   });
 
+  it('a StopFailure (status error) ends the episode: /turns reads idle under the same id', () => {
+    bridge.noteInput('do the thing\r');
+    vi.advanceTimersByTime(100);
+    feed(BIG);
+    const first = turn();
+    expect(first.state).toBe('running');
+    bridge.noteAgentStatus('error', true);
+    expect(bridge.getAgentStatus()).toBe('error');
+    expect(turn()).toEqual({ ...first, state: 'idle' });
+  });
+
   it('opens a new episode on the first running edge after a settle: a hook or a byte promotion', () => {
     bridge.noteInput('go\r');
     const first = turn().id;
