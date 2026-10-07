@@ -109,11 +109,13 @@ export default function ChannelDock(): React.ReactElement {
   const hqBusy = useStore((s) => mode.kind === 'moa' && s.brainThreads[mode.hqId]?.status === 'busy');
   const mascot = moaMascotState({ busy: hqBusy, pendingDecisions: decisions.length });
   const openMoaSettings = useCallback(() => useStore.getState().openSettingsTab('moa'), []);
+  // `t` is one stable function: the locale is what changes, so it is a dep.
+  const locale = useStore((s) => s.locale);
   const moaSlots = useMemo(
     () => (mode.kind === 'moa'
       ? { top: <MoaPanelTop decisions={decisions} onResolved={refreshDecisions} t={t} />, renderChat: renderMoaChat }
       : undefined),
-    [mode.kind, decisions, refreshDecisions, t],
+    [mode.kind, decisions, refreshDecisions, t, locale],
   );
 
   const commander = (() => {

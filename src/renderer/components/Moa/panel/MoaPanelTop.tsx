@@ -115,9 +115,11 @@ export function MoaPanelTop({
   const unreceipted = useMemo(() => selectUnreceipted(delegateState), [delegateState]);
   const waitingWhileOff = selectWaitingWhileOff(delegateState);
   const autoRules = useMemo(() => selectAutoRules(delegateState), [delegateState]);
+  // The locale, so a language switch redraws the cards (`t` itself is stable).
+  const locale = useStore((s) => s.locale);
   const renderTicket = useCallback((d: MoaDecision, onDone: () => void) => (
     <MoaDelegateTicketRow decision={d} resolve={delegate!.delegateResolve} onDone={() => { onDone(); refreshDelegate(); }} workspaceName={workspaceName} t={t} />
-  ), [delegate, refreshDelegate, workspaceName, t]);
+  ), [delegate, refreshDelegate, workspaceName, t, locale]);
   const dock = useContext(MoaDockContext);
   // Before Moa's first turn there is no brain and so no chat: the panel would
   // be a bare composer. Say what to ask, once, until the first send.

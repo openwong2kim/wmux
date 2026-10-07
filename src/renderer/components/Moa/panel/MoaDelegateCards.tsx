@@ -73,6 +73,25 @@ export function effectReasonText(reason: string, t: T): string {
 
 export const shortHead = (sha: string): string => sha.slice(0, 7);
 
+/** Escalation codes main writes (moaAskService.ts) that have a plain line. */
+export const ESCALATION_REASONS = [
+  'shadow', 'suggested', 'auto-paused', 'auto-daily-cap', 'daily-cap', 'judge-failed', 'judge-refused',
+  'no-policy-book', 'lane-read-failed', 'internal-error', 'restart-uncertain', 'auto-no-predicate',
+  'auto-unknown-rule', 'auto-book-auto-off', 'auto-owner-toggle-off', 'auto-predicate-mismatch', 'book-always-escalate',
+] as const;
+
+/**
+ * Why Moa sent a ticket to the owner, in the owner's language. Main's `why`
+ * is written for the asking agent and in English, so the card never shows it:
+ * a known code has its own line, an always-escalate category names its topic,
+ * and anything else (a judge's own code) reads as the generic line.
+ */
+export function escalationReasonText(code: string, t: T): string {
+  if ((ESCALATION_REASONS as readonly string[]).includes(code)) return t(`moa.delegate.reason.${code}`);
+  if (code.startsWith('always-escalate-')) return t('moa.delegate.reason.always-escalate', { topic: code.slice('always-escalate-'.length) });
+  return t('moa.delegate.reason.other');
+}
+
 /** What the owner sees of a ticket's asker: its workspace's name, else the agent. */
 function eyebrow(d: MoaDecision, workspaceName: (id: string) => string | undefined, t: T): string {
   const ws = workspaceName(d.asker.workspaceId) || t('moa.panel.unknownWorkspace');
@@ -128,6 +147,7 @@ export function MoaDelegateTicketRow({
           context={body.context}
           suggested={judge?.verdict === 'answer' ? judge.choiceKey : undefined}
           suggestion={judge && judge.verdict !== 'escalate' ? { ruleId: judge.ruleId, why: judge.why } : null}
+          decision={d}
           busy={busy}
           onChoose={(choiceKey) => void send({ type: 'choice', choiceKey })}
           t={t}
@@ -186,6 +206,24 @@ function AgentNote({ text, t }: { text: string; t: T }) {
   );
 }
 
+/** Why it came to the owner (mapped from the code), and Moa's own reason
+ *  when the judge gave one. Lane reasons have their own block. */
+function EscalationReason({ decision: d, t }: { decision: MoaDecision; t: T }) {
+  const code = d.reasonCode.startsWith('lane-') ? null : d.reasonCode;
+  const judgeWhy = d.judge && d.judge.verdict === 'escalate' ? d.judge.why : '';
+  if (!code && !judgeWhy) return null;
+  return (
+    <div className="mt-1 text-[11px] leading-snug text-[var(--text-sub)] break-words" data-moa-delegate-why>
+      {code && <p className="m-0" data-moa-delegate-reason={code}>{escalationReasonText(code, t)}</p>}
+      {judgeWhy && (
+        <p className="m-0" data-moa-delegate-judge-why>
+          <span className="text-[var(--text-main)]">{t('moa.delegate.moaReason')}</span> {judgeWhy}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function Suggestion({ label, ruleId, why, t }: { label: string; ruleId?: string; why: string; t: T }) {
   return (
     <div className="mt-1.5 text-[11px] leading-snug text-[var(--text-sub)] break-words" data-moa-delegate-suggestion>
@@ -196,13 +234,14 @@ function Suggestion({ label, ruleId, why, t }: { label: string; ruleId?: string;
   );
 }
 
-function QuestionBody({ titleId, question, options, context, suggested, suggestion, busy, onChoose, t }: {
+function QuestionBody({ titleId, question, options, context, suggested, suggestion, decision, busy, onChoose, t }: {
   titleId: string;
   question: string;
   options: MoaAskOption[];
   context?: string;
   suggested?: string;
   suggestion: { ruleId?: string; why: string } | null;
+  decision: MoaDecision;
   busy: boolean;
   onChoose: (key: string) => void;
   t: T;
@@ -220,6 +259,7 @@ function QuestionBody({ titleId, question, options, context, suggested, suggesti
           </Button>
         </>
       )}
+      {!(pick && suggestion) && <EscalationReason decision={decision} t={t} />}
       <div role="group" aria-labelledby={titleId} className="flex flex-col gap-1.5 mt-2">
         {options.map((o) => (
           <Button key={o.key} variant="secondary" size="sm" disabled={busy} data-moa-delegate-option={o.key}
@@ -264,10 +304,10 @@ function MergeBody({ titleId, decision, prNumber, expectHead, context, suggestGo
           <div className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-sub)]">{t('moa.delegate.checkedByWmux')}</div>
           <p className="m-0 text-[11px] leading-snug text-[var(--text-main)]" data-moa-delegate-lane-ok>{t('moa.delegate.laneOk')}</p>
         </div>
-      ) : decision.why ? (
-        <p className="m-0 mt-1 text-[11px] leading-snug text-[var(--text-sub)] break-words" data-moa-delegate-why>{decision.why}</p>
       ) : null}
-      {suggestGo && <Suggestion label={t('moa.delegate.approve')} ruleId={suggestGo.ruleId} why={suggestGo.why} t={t} />}
+      {suggestGo
+        ? <Suggestion label={t('moa.delegate.approve')} ruleId={suggestGo.ruleId} why={suggestGo.why} t={t} />
+        : <EscalationReason decision={decision} t={t} />}
       <div role="group" aria-labelledby={titleId} className="flex flex-wrap items-center gap-1.5 mt-2">
         <Button variant="secondary" size="sm" disabled={busy} data-moa-delegate-approve onClick={() => onAnswer(true)}>
           {t('moa.delegate.approve')}
@@ -429,7 +469,7 @@ function AutoRules({ rules, autoSet, onChanged, t }: {
                   <p role="alert" className="m-0 text-[11px] text-[var(--accent-red)]">{t('moa.delegate.toggleFailed')}</p>
                 )}
               </div>
-              <Switch checked={on} aria-labelledby={labelId} disabled={r.ruleId in pending}
+              <Switch checked={on} aria-label={t('moa.delegate.ruleToggle', { rule: r.ruleId })} aria-describedby={labelId} disabled={r.ruleId in pending}
                 onCheckedChange={(next) => void toggle(r.ruleId, next)} data-moa-delegate-rule-toggle={r.ruleId} />
             </li>
           );

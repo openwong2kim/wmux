@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { AGENT_NOTE_MAX, MoaDelegateActivity, MoaDelegateTicketRow, effectReasonText, laneReasonText, laneReasonsOf } from '../MoaDelegateCards';
+import { AGENT_NOTE_MAX, MoaDelegateActivity, MoaDelegateTicketRow, effectReasonText, escalationReasonText, laneReasonText, laneReasonsOf } from '../MoaDelegateCards';
 import { MoaPanelTop } from '../MoaPanelTop';
 import { selectAutoRules, selectDeliveryRows, selectEffectRows, selectOpenTickets, selectUnreceipted, selectWaitingWhileOff, type MoaDelegateApi } from '../moaDelegateData';
 import type { MergeEffect, MoaDecision, MoaDelegateListResult, MoaRuleView } from '../../../../../shared/moaDecision';
@@ -157,6 +157,19 @@ describe('merge card', () => {
     expect(container.querySelector('[data-moa-delegate-agent-note]')!.textContent).toBe('moa.delegate.agentNoteuse 8080');
   });
 
+  it("never shows main's agent-facing why; the code is worded in the owner's language, Moa's reason labeled", async () => {
+    const d = mergeTicket(9, {
+      reasonCode: 'auto-paused', why: 'automatic answers are paused; the owner answers it in the Moa panel', lane: { ok: true, reasons: [] },
+      judge: { verdict: 'escalate', reasonCode: 'review_not_verified', why: 'no 3-model review is recorded', tokens: { input: 1, output: 1 }, ms: 1 },
+    });
+    await act(async () => root.render(createElement('ul', null, createElement(MoaDelegateTicketRow, { decision: d, resolve: vi.fn(), onDone: vi.fn(), workspaceName: name, t }))));
+    expect(container.textContent).not.toContain('the owner answers it');
+    expect(container.querySelector('[data-moa-delegate-reason]')!.textContent).toBe('moa.delegate.reason.auto-paused');
+    expect(container.querySelector('[data-moa-delegate-judge-why]')!.textContent).toBe('moa.delegate.moaReason no 3-model review is recorded');
+    expect(escalationReasonText('always-escalate-release', t)).toBe('moa.delegate.reason.always-escalate(release)');
+    expect(escalationReasonText('some_judge_code', t)).toBe('moa.delegate.reason.other');
+  });
+
   it('reads the lane reasons main wrote, and words them', () => {
     expect(laneReasonsOf({ reasonCode: 'lane-head-moved', why: 'Moa may not merge this by itself (lane: head-moved, windows-path); ask the owner' }))
       .toEqual(['head-moved', 'windows-path']);
@@ -177,6 +190,8 @@ describe('rules and activity', () => {
     expect(toggles).toHaveLength(2);
     expect(toggles[0].getAttribute('aria-checked')).toBe('false');
     expect(toggles[1].getAttribute('aria-checked')).toBe('true');
+    // Each switch has its own accessible name.
+    expect(toggles[0].getAttribute('aria-label')).toBe('moa.delegate.ruleToggle(R-merge-green)');
     expect(container.querySelectorAll('[data-moa-delegate-agreement]')).toHaveLength(1);
     expect(container.textContent).toContain('moa.delegate.agreement(4,5)');
     await act(async () => { toggles[0].click(); });
