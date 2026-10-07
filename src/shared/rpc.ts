@@ -603,6 +603,11 @@ export type RpcMethod =
   // task workspace); updates are authorized by the ledger's canActorSet.
   | 'ledger.list'
   | 'ledger.update'
+  // Moa's delegate (pipe/handlers/moa.rpc.ts, shared/moaAsk.ts) — an agent
+  // asks Moa instead of the owner. Async ticket + poll; the asker is stamped
+  // from senderPtyId; `off` (nothing recorded) while the delegate is off.
+  | 'moa.ask'
+  | 'moa.askStatus'
   // Task lifecycle on the pipe (pipe/handlers/worktask.rpc.ts) — the half of
   // fan-out that finishes a task. Local-origin only, owner-scoped against
   // `task.mission.list`, and `task.close` / `task.pr` additionally raise a
@@ -817,6 +822,8 @@ export const ALL_RPC_METHODS = [
   'task.fanout.start',
   'ledger.list',
   'ledger.update',
+  'moa.ask',
+  'moa.askStatus',
   'task.gate.run',
   'task.gate.cancel',
   'task.adopt',

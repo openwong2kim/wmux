@@ -151,6 +151,12 @@ describe('FIRST_PARTY_METHODS source invariant', () => {
       // issue #285 — supervisor pane/surface lifecycle (reserved wmux.internal)
       'surface.new',
       'surface.close',
+      // Moa's delegate (moa_ask / moa_ask_status): reserved so no plugin can
+      // declare it. It only records a ticket for the verified calling pane;
+      // nothing acts without the owner's switches, and the handler answers
+      // `off` while the delegate is off.
+      'moa.ask',
+      'moa.askStatus',
       // `company.a2a.*` was here for the six company_a2a_* tools; both the
       // tools and the grants are gone (the least-privilege assertion below is
       // what would have caught them lingering).

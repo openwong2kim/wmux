@@ -20,6 +20,7 @@ import {
   setMoaEnabled,
   ensureMoaDefault,
   getMoaConfig,
+  setMoaAutoRules,
   isHqApprovalPressEnabled,
   setMoaConfig,
   addMoaIgnoredRepo,
@@ -378,6 +379,19 @@ describe('deckHqStore — Moa defaults (once per install)', () => {
 });
 
 describe('deckHqStore — Moa settings', () => {
+  it('the delegate is off by default; unknown values read as off, never corrupt', async () => {
+    expect(getMoaConfig(dir)).toMatchObject({ askMode: 'off', autoRules: [], autoDailyCap: 10, autoPaused: false });
+    expect(await setMoaConfig({ askMode: 'suggest', autoDailyCap: 3, autoPaused: true }, dir)).toBe(true);
+    expect(await setMoaAutoRules(['R-b', 'not a rule', 'R-a', 'R-b'], dir)).toBe(true);
+    expect(getMoaConfig(dir)).toMatchObject({ askMode: 'suggest', autoRules: ['R-a', 'R-b'], autoDailyCap: 3, autoPaused: true });
+    await setMoaConfig({ askMode: 'yolo' as 'auto', autoDailyCap: 999 }, dir);
+    expect(getMoaConfig(dir)).toMatchObject({ askMode: 'suggest', autoDailyCap: 3 });
+    const raw = JSON.parse(fs.readFileSync(getDeckHqPath(dir), 'utf8')) as Record<string, unknown>;
+    fs.writeFileSync(getDeckHqPath(dir), JSON.stringify({ ...raw, moaAskMode: 'yolo', moaAutoRules: [1, 'R-c'] }));
+    __resetHqMemoryForTest();
+    expect(getMoaConfig(dir)).toMatchObject({ enabled: true, askMode: 'off', autoRules: ['R-c'] });
+  });
+
   it('has defaults and keeps only valid patches', async () => {
     expect(getMoaConfig(dir)).toMatchObject({ level: 1, maxTurnsPerHour: 12, bubbles: true, reduceMotion: false });
     expect(await setMoaConfig({ level: 2, maxTurnsPerHour: 30, bubbles: false, reduceMotion: true, onboarded: true }, dir)).toBe(true);

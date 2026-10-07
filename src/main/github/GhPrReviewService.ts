@@ -483,6 +483,41 @@ export class GhPrReviewService {
     }));
   }
 
+  /** Moa's merge lane read (LANE_PR_QUERY): always fresh, never cached, so a
+   *  lane predicate never runs on an answer older than this call. */
+  laneFacts(repoPath: string, key: string, number: number): Promise<PrReviewRead<PrLaneFacts>> {
+    return this.read(async () => {
+      const { host, owner, repo } = this.repo(key);
+      const out = await this.gh(host, [
+        'api', 'graphql', '--hostname', host,
+        '-f', `query=${LANE_PR_QUERY}`, '-f', `owner=${owner}`, '-f', `repo=${repo}`, '-F', `number=${number}`,
+      ], repoPath);
+      const facts = mapLaneFacts(JSON.parse(out));
+      if (!facts) throw new Error('could not read the pull request');
+      return facts;
+    });
+  }
+
+  /** PRs merged since `sinceIso` (newest first, at most `limit`): the lane
+   *  audit's read. Never cached. */
+  mergedSince(repoPath: string, key: string, sinceIso: string, limit = 50): Promise<PrReviewRead<Array<{ number: number; title: string; mergedAt: string; headRefOid: string }>>> {
+    return this.read(async () => {
+      const { host } = this.repo(key);
+      const out = await this.gh(host, [
+        'pr', 'list', '--repo', key, '--state', 'merged', '--limit', String(limit),
+        '--search', `merged:>=${sinceIso}`, '--json', 'number,title,mergedAt,headRefOid',
+      ], repoPath);
+      const raw = JSON.parse(out) as unknown;
+      if (!Array.isArray(raw)) return [];
+      return raw.flatMap((r) => {
+        const o = r as Record<string, unknown>;
+        return typeof o.number === 'number' && typeof o.mergedAt === 'string' && typeof o.headRefOid === 'string'
+          ? [{ number: o.number, title: str(o.title), mergedAt: o.mergedAt, headRefOid: o.headRefOid }]
+          : [];
+      });
+    });
+  }
+
   /** A comment on one line of the diff at the head the person saw. */
   comment(repoPath: string, key: string, number: number, req: PrCommentRequest): Promise<PrWriteResult> {
     return this.write(async () => {

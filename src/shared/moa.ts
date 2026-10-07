@@ -49,7 +49,18 @@ export interface MoaConfig {
   /** Policy rule ids the owner allowed to settle by themselves (the per-rule
    *  toggle, set only through DECK_MOA_DELEGATE_AUTO_SET). Absent = none. */
   autoRules?: string[];
+  /** Most decisions Moa may settle by itself per local day (auto mode).
+   *  Absent = MOA_AUTO_DAILY_CAP_DEFAULT. */
+  autoDailyCap?: number;
+  /** The kill switch: true stops every automatic answer and merge at once,
+   *  whatever the mode and the per-rule toggles say. Absent = off. */
+  autoPaused?: boolean;
 }
+
+/** Auto answers per local day when the owner set no cap. */
+export const MOA_AUTO_DAILY_CAP_DEFAULT = 10;
+/** Bounds on the auto cap Settings accepts. */
+export const MOA_AUTO_DAILY_CAP_RANGE = { min: 0, max: 200 } as const;
 
 /** The shadow judge's readout (Settings › Moa). */
 export interface MoaShadowStats {
@@ -67,7 +78,7 @@ export interface MoaShadowStats {
   full: boolean;
 }
 
-export type MoaConfigPatch = Partial<Pick<MoaConfig, 'onboarded' | 'level' | 'maxTurnsPerHour' | 'bubbles' | 'reduceMotion' | 'approvalPress' | 'memoryProposals' | 'issueProposals' | 'trustedAuthors' | 'issuePollMinutes' | 'ignoredRepos' | 'autoHandoff' | 'readWithoutAsking' | 'shadowJudge'>>;
+export type MoaConfigPatch = Partial<Pick<MoaConfig, 'onboarded' | 'level' | 'maxTurnsPerHour' | 'bubbles' | 'reduceMotion' | 'approvalPress' | 'memoryProposals' | 'issueProposals' | 'trustedAuthors' | 'issuePollMinutes' | 'ignoredRepos' | 'autoHandoff' | 'readWithoutAsking' | 'shadowJudge' | 'askMode' | 'autoDailyCap' | 'autoPaused'>>;
 
 export interface MoaState {
   config: MoaConfig;
