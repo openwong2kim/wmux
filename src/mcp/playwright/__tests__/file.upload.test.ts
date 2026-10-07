@@ -198,6 +198,54 @@ describe('browser_file_upload sandbox', () => {
     expect(log.setFiles).toBeNull();
   });
 
+  it.runIf(process.platform === 'win32')(
+    'rejects a junction reached through a trailing dot or space, which Windows strips',
+    async () => {
+      // Node checks through `\\?\`, where `escape.` does not exist, so the
+      // gate never realpaths it; Chromium opens `escape\secret.txt` through
+      // the junction (measured with Electron 41). Refuse before any check.
+      write(path.join(OUTSIDE, 'secret.txt'));
+      const link = path.join(UPLOADS, 'escape-dot');
+      try { fs.rmdirSync(link); } catch { /* not there yet */ }
+      fs.symlinkSync(OUTSIDE, link, 'junction');
+      try {
+        const { page, log } = makePage();
+        getPage.mockResolvedValue(page);
+
+        for (const p of [`${link}.\\secret.txt`, `${link} \\secret.txt`, `${link}\\secret.txt.`]) {
+          const res = await upload({ paths: [p] });
+          expect(res.isError, p).toBe(true);
+          expect(text(res)).toContain('that Windows opens as a different file');
+        }
+        expect(log.setFiles).toBeNull();
+      } finally {
+        fs.rmdirSync(link);
+      }
+    },
+  );
+
+  it.runIf(process.platform === 'win32')('rejects a device name inside the root', async () => {
+    const { page, log } = makePage();
+    getPage.mockResolvedValue(page);
+
+    const res = await upload({ paths: [path.join(UPLOADS, 'nul.txt')] });
+
+    expect(res.isError).toBe(true);
+    expect(text(res)).toContain('"nul.txt"');
+    expect(log.setFiles).toBeNull();
+  });
+
+  it('accepts names that only look like the ones Windows rewrites', async () => {
+    const file = write(path.join(UPLOADS, '.hidden', 'a.b.mp4'));
+    const { page, log } = makePage();
+    getPage.mockResolvedValue(page);
+
+    const res = await upload({ paths: [file] });
+
+    expect(res.isError).toBeUndefined();
+    expect(log.setFiles?.files).toEqual([fs.realpathSync(file)]);
+  });
+
   it('rejects a UNC path', async () => {
     const { page, log } = makePage();
     getPage.mockResolvedValue(page);

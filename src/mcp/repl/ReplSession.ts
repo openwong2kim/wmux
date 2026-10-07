@@ -36,6 +36,7 @@ import {
   lateCallRefusal,
   type RunImage,
 } from '../browser-repl/runCollect';
+import { win32AliasedName } from '../wslPaths';
 import { buildRunnerBootstrap } from './replRunnerSource';
 import { OutputBuffer, truncateText, type TruncatedText } from './truncate';
 
@@ -218,6 +219,20 @@ export class ReplSession {
 
     // Validated before spawn so a bad cwd reads as a bad cwd, not as an opaque
     // ENOENT from a process that never started.
+    //
+    // On Windows, Node stats through the `\\?\` namespace but CreateProcess
+    // normalizes the working directory: with `D:\x\repo.` and `D:\x\repo`
+    // both on disk (a WSL caller can create the first), the stat below finds
+    // `repo.` and the runtime starts in `repo`. Refuse such a name outright.
+    if (process.platform === 'win32') {
+      const aliased = win32AliasedName(path.resolve(options.cwd));
+      if (aliased !== undefined) {
+        throw new Error(
+          `cwd has a name (${JSON.stringify(aliased)}) that Windows reads as a different directory ` +
+            `(a trailing dot or space, or a device name): ${options.cwd}`,
+        );
+      }
+    }
     let stat: fs.Stats;
     try {
       stat = fs.statSync(options.cwd);

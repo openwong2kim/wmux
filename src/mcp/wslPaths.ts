@@ -74,6 +74,25 @@ export function fromAgentPath(agentPath: string, env: NodeJS.ProcessEnv = proces
 }
 
 /**
+ * The first name in `p` that a plain Win32 open reads as some other file, or
+ * undefined when there is none. Segments split on `/` and `\`.
+ *
+ * Win32 drops a trailing dot or space from a name, so `D:\x\repo.` opens
+ * `D:\x\repo`, and a reserved device name (`con`, `nul.txt`, `com1`) opens the
+ * device. Node's own fs calls go through the `\\?\` namespace, where neither
+ * rule applies, so a check made with Node (existsSync, realpathSync, statSync)
+ * and the open that follows in another program (Chromium's file picker,
+ * CreateProcess's working directory) can name two different files. Measured
+ * on NTFS: existsSync(`uploads\link.\f`) is false while Chromium reads
+ * `uploads\link\f` through the junction. `.` and `..` are segments, not names.
+ */
+export function win32AliasedName(p: string): string | undefined {
+  return p
+    .split(/[\\/]/)
+    .find((s) => s !== '.' && s !== '..' && (/[.\s]$/.test(s) || /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(\..*)?$/i.test(s)));
+}
+
+/**
  * A WSL pane's Linux cwd, as the Windows host process must open it, for a
  * caller that has no WMUX_WSL_* env of its own (the main process reading a
  * pane's reported cwd):
@@ -108,14 +127,10 @@ export function wslPathToHost(
       error: `${JSON.stringify(linuxPath)} contains a character (\\ : * ? " < > |) that means something else in a Windows path, so it cannot be translated safely`,
     };
   }
-  // Win32 drops a trailing dot or space from every path segment, so
-  // `/mnt/d/x/repo.` would open `D:\x\repo` (seen live: a different
-  // repository); other trailing whitespace is trimmed by the callers' own
-  // normalizers, with the same effect. A reserved device name (`con`, `nul.txt`, `com1`) opens the
-  // device, not the directory. `.` and `..` are segments, not names.
-  const unsafe = linuxPath
-    .split('/')
-    .find((s) => s !== '.' && s !== '..' && (/[.\s]$/.test(s) || /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(\..*)?$/i.test(s)));
+  // A name Win32 reads as another file: `/mnt/d/x/repo.` would open
+  // `D:\x\repo` (seen live: a different repository); other trailing
+  // whitespace is trimmed by the callers' own normalizers, with the same effect.
+  const unsafe = win32AliasedName(linuxPath);
   if (unsafe !== undefined) {
     return {
       error: `${JSON.stringify(linuxPath)} has a name (${JSON.stringify(unsafe)}) that Windows reads as a different file (a trailing dot or space, or a device name), so it cannot be translated safely`,
