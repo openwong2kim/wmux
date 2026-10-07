@@ -7,7 +7,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { MoaAsker, MoaAskRequest } from '../../../shared/moaAsk';
-import { MoaDecisionStore } from '../moaDecisionStore';
+import { MoaDecisionStore, countOpenTicketsReadOnly } from '../moaDecisionStore';
 import { MoaEffectStore } from '../moaEffectStore';
 import { MoaMergeExecutor } from '../moaMergeExecutor';
 import { MoaAskService, ESCALATED_NEXT } from '../moaAskService';
@@ -177,5 +177,20 @@ describe('answerLine', () => {
     const label = { ...base, body: { ...Q_REQ.body, options: [{ key: 'x', label: 'two\nlines\u001b[2J' }, { key: 'y', label: 'B' }] }, answer: { choiceKey: 'x' } } as typeof base;
     // eslint-disable-next-line no-control-regex
     expect(answerLine(label)).not.toMatch(/[\n\u001b]/);
+  });
+});
+
+describe('countOpenTicketsReadOnly (the panel notice while the delegate is off)', () => {
+  it('counts escalated tickets without writing, and creates nothing when there is no file', async () => {
+    expect(countOpenTicketsReadOnly(dir)).toBe(0);
+    expect(fs.existsSync(path.join(dir, 'moa-delegate'))).toBe(false);
+    const h = build({ pane: () => 'busy' });
+    await escalatedTicket(h);
+    const file = path.join(dir, 'moa-delegate', 'decisions.json');
+    const before = fs.readFileSync(file, 'utf8');
+    const mtime = fs.statSync(file).mtimeMs;
+    expect(countOpenTicketsReadOnly(dir)).toBe(1);
+    expect(fs.readFileSync(file, 'utf8')).toBe(before);
+    expect(fs.statSync(file).mtimeMs).toBe(mtime);
   });
 });

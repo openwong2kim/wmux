@@ -9,7 +9,7 @@ import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { MoaDelegateActivity, MoaDelegateTicketRow, effectReasonText, laneReasonText, laneReasonsOf } from '../MoaDelegateCards';
 import { MoaPanelTop } from '../MoaPanelTop';
-import { selectAutoRules, selectDeliveryRows, selectEffectRows, selectOpenTickets, selectUnreceipted, type MoaDelegateApi } from '../moaDelegateData';
+import { selectAutoRules, selectDeliveryRows, selectEffectRows, selectOpenTickets, selectUnreceipted, selectWaitingWhileOff, type MoaDelegateApi } from '../moaDelegateData';
 import type { MergeEffect, MoaDecision, MoaDelegateListResult, MoaRuleView } from '../../../../../shared/moaDecision';
 
 let container: HTMLDivElement;
@@ -209,6 +209,14 @@ describe('an answer on its way back to the asker', () => {
   it('leaves after a day, and draws nothing with the delegate off', () => {
     expect(selectDeliveryRows(list([answered('delivered', 0)]), 25 * 60 * 60 * 1000)).toEqual([]);
     expect(selectDeliveryRows({ ...list([answered('delivered')]), mode: 'off' }, 2_000)).toEqual([]);
+  });
+});
+
+describe('the delegate off with tickets still open', () => {
+  it('counts them for the notice only while off', () => {
+    expect(selectWaitingWhileOff({ mode: 'off', decisions: [], effects: [], rules: [], waitingWhileOff: 8 })).toBe(8);
+    expect(selectWaitingWhileOff({ mode: 'off', decisions: [], effects: [], rules: [] })).toBe(0);
+    expect(selectWaitingWhileOff({ mode: 'suggest', decisions: [], effects: [], rules: [], waitingWhileOff: 8 })).toBe(0);
   });
 });
 

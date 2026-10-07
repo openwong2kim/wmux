@@ -423,3 +423,19 @@ export class MoaDecisionStore {
     return run;
   }
 }
+
+/**
+ * Escalated tickets the owner can still answer, read from disk WITHOUT
+ * writing anything: the panel's notice while the delegate is off. A missing
+ * file is 0 and is never created; an unreadable one is 0.
+ */
+export function countOpenTicketsReadOnly(wmuxDir: string, now: number = Date.now()): number {
+  const file = path.join(wmuxDir, MOA_DELEGATE_DIRNAME, MOA_DECISIONS_FILENAME);
+  if (!fs.existsSync(file)) return 0;
+  try {
+    const store = new MoaDecisionStore(wmuxDir, () => now);
+    return store.list().filter((d) => ownerCanResolve(d) && d.createdAt > now - MOA_ESCALATION_TTL_MS).length;
+  } catch {
+    return 0;
+  }
+}

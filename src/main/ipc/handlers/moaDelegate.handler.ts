@@ -4,7 +4,8 @@
 // these channels (shared/moaDecision.ts, the owner IPC note).
 //
 // The backend registers its service in moaDelegatePorts only while the
-// delegate is on. A null service is "mode off": LIST answers empty and
+// delegate is on. A null service is "mode off": LIST answers empty (plus a
+// read-only count of tickets still escalated from before) and
 // RESOLVE / AUTO_SET refuse, so with every switch off nothing here touches
 // disk or the judge.
 //
@@ -22,10 +23,14 @@ import {
   type MoaResolveResult,
 } from '../../../shared/moaDecision';
 import { getMoaDelegateService, type MoaDelegateServicePort } from '../../deck/moaDelegatePorts';
+import { countOpenTicketsReadOnly } from '../../deck/moaDecisionStore';
+import { getWmuxDir } from '../../../daemon/config';
 import { wrapHandler } from '../wrapHandler';
 
 export interface MoaDelegateHandlerPorts {
   getService?: () => MoaDelegateServicePort | null;
+  /** Open tickets left from when the delegate was on (read only). */
+  countOpenWhileOff?: () => number;
 }
 
 const OFF_MESSAGE = 'delegate is off';
@@ -40,6 +45,7 @@ export function createMoaDelegateHandlers(
   ports: MoaDelegateHandlerPorts = {},
 ) {
   const getService = ports.getService ?? getMoaDelegateService;
+  const countOpenWhileOff = ports.countOpenWhileOff ?? (() => countOpenTicketsReadOnly(getWmuxDir()));
   let subscribed: MoaDelegateServicePort | null = null;
   let unsubscribe: (() => void) | null = null;
 
@@ -75,7 +81,11 @@ export function createMoaDelegateHandlers(
   return {
     list: async (): Promise<MoaDelegateListResult> => {
       const s = service();
-      return s ? s.list() : moaDelegateOffList();
+      if (s) return s.list();
+      // Off: nothing is started or written, but tickets escalated while it
+      // was on still have askers waiting on them.
+      const waiting = countOpenWhileOff();
+      return waiting > 0 ? { ...moaDelegateOffList(), waitingWhileOff: waiting } : moaDelegateOffList();
     },
     resolve: async (raw: unknown): Promise<MoaResolveResult> => {
       const parsed = parseMoaResolveRequest(raw);

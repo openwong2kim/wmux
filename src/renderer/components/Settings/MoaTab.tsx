@@ -14,6 +14,8 @@ import { isMoaHqWorkspace } from '../../stores/slices/moaSlice';
 import { useT } from '../../hooks/useT';
 import { CLAUDE_EFFORT_LEVELS, CLAUDE_MODEL_OPTIONS } from '../../../shared/claudeModels';
 import {
+  MOA_AUTO_DAILY_CAP_DEFAULT,
+  MOA_AUTO_DAILY_CAP_RANGE,
   MOA_MAX_TURNS_PER_HOUR_RANGE,
   MOA_ISSUE_POLL_MINUTES_DEFAULT,
   MOA_ISSUE_POLL_MINUTES_RANGE,
@@ -24,6 +26,7 @@ import {
   type MoaShadowStats,
 } from '../../../shared/moa';
 import type { RetroSchedule } from '../../../shared/trackRecord';
+import type { MoaAskMode } from '../../../shared/moaAsk';
 import type { AgentMode } from '../../../main/deck/deckAutonomyStore';
 import { notifyBriefingConfigChanged } from '../Deck/deckBriefingConfigBus';
 import { notifyAgentModeChanged, onAgentModeChanged } from '../Deck/deckModeBus';
@@ -75,6 +78,17 @@ export function parseProposalPoll(raw: string): number | null {
   const n = Number(s);
   return n >= MOA_ISSUE_POLL_MINUTES_RANGE.min && n <= MOA_ISSUE_POLL_MINUTES_RANGE.max ? n : null;
 }
+
+/** The daily cap of Moa's automatic answers from the field, or null when out of range. */
+export function parseAutoDailyCap(raw: string): number | null {
+  const s = raw.trim();
+  if (!/^\d+$/.test(s)) return null;
+  const n = Number(s);
+  return n >= MOA_AUTO_DAILY_CAP_RANGE.min && n <= MOA_AUTO_DAILY_CAP_RANGE.max ? n : null;
+}
+
+const ASK_MODES: readonly MoaAskMode[] = ['off', 'shadow', 'suggest', 'auto'];
+const isAskMode = (v: string): v is MoaAskMode => (ASK_MODES as readonly string[]).includes(v);
 
 export interface TabMoaProps {
   /** Settings' owned-dialog counter: while a dialog this tab opened is up,
@@ -302,6 +316,22 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
     }
     setCapInvalid(false);
     if (n !== storedCap) void patchConfig({ maxTurnsPerHour: n });
+  };
+
+  // ── Moa's delegate: the ask mode, the kill switch and the daily cap ──
+  const askMode: MoaAskMode = moa?.config.askMode ?? 'off';
+  const storedDailyCap = moa?.config.autoDailyCap ?? MOA_AUTO_DAILY_CAP_DEFAULT;
+  const [dailyCapDraft, setDailyCapDraft] = useState('');
+  const [dailyCapInvalid, setDailyCapInvalid] = useState(false);
+  useEffect(() => {
+    setDailyCapDraft(String(storedDailyCap));
+    setDailyCapInvalid(false);
+  }, [storedDailyCap]);
+  const commitDailyCap = () => {
+    if (!loaded) return;
+    const n = parseAutoDailyCap(dailyCapDraft);
+    setDailyCapInvalid(n === null);
+    if (n !== null && n !== storedDailyCap) void patchConfig({ autoDailyCap: n });
   };
 
   // ── Issue and PR proposals ──
@@ -704,6 +734,55 @@ export function TabMoa({ registerDialog }: TabMoaProps) {
           <SettingNote tone="warning" data-testid="moa-shadow-full">
             {t('moa.settings.shadowFull')}
           </SettingNote>
+        )}
+        <SettingRow id="moaaskmode" label={t('moa.settings.askMode')} description={t('moa.settings.askModeDesc')}>
+          <Select
+            aria-label={t('moa.settings.askMode')}
+            value={askMode}
+            disabled={!loaded}
+            onChange={(e) => { if (isAskMode(e.target.value)) void patchConfig({ askMode: e.target.value }); }}
+            className="settings-select"
+            data-testid="moa-ask-mode"
+          >
+            {ASK_MODES.map((m) => <option key={m} value={m}>{t(`moa.settings.askMode.${m}`)}</option>)}
+          </Select>
+        </SettingRow>
+        {askMode === 'auto' && (
+          <>
+            <SettingRow id="moaautopaused" label={t('moa.settings.autoPaused')} description={t('moa.settings.autoPausedDesc')}>
+              <Switch
+                checked={moa?.config.autoPaused === true}
+                onCheckedChange={(v) => { void patchConfig({ autoPaused: v }); }}
+                aria-label={t('moa.settings.autoPaused')}
+                disabled={!loaded}
+                data-testid="moa-auto-paused"
+              />
+            </SettingRow>
+            <SettingRow id="moaautodailycap" label={t('moa.settings.autoDailyCap')} description={t('moa.settings.autoDailyCapDesc')}>
+              <Input
+                type="number"
+                inputMode="numeric"
+                min={MOA_AUTO_DAILY_CAP_RANGE.min}
+                max={MOA_AUTO_DAILY_CAP_RANGE.max}
+                step={1}
+                value={dailyCapDraft}
+                disabled={!loaded}
+                aria-label={t('moa.settings.autoDailyCap')}
+                aria-invalid={dailyCapInvalid || undefined}
+                onChange={(e) => setDailyCapDraft(e.target.value)}
+                onBlur={commitDailyCap}
+                onKeyDown={(e) => { if (e.key === 'Enter') commitDailyCap(); }}
+                className="settings-input tabular-nums text-center"
+                style={{ width: 96 }}
+                data-testid="moa-auto-daily-cap"
+              />
+            </SettingRow>
+            {dailyCapInvalid && (
+              <SettingNote tone="danger" role="alert" data-testid="moa-auto-daily-cap-invalid">
+                {t('moa.settings.autoDailyCapInvalid', { min: MOA_AUTO_DAILY_CAP_RANGE.min, max: MOA_AUTO_DAILY_CAP_RANGE.max })}
+              </SettingNote>
+            )}
+          </>
         )}
         {/* Full power tunes settingSources/canUseTool — both SDK-only knobs. The
             terminal brain (an interactive TUI) and ACP brains ignore the flag

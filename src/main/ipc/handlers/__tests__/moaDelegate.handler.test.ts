@@ -48,10 +48,17 @@ function fakeService() {
   return { svc, listeners, unsubscribe };
 }
 
+describe('moaDelegate handler — off with tickets left open', () => {
+  it('says how many still wait, instead of hiding them', async () => {
+    const h = createMoaDelegateHandlers(() => null, { getService: () => null, countOpenWhileOff: () => 3 });
+    expect(await h.list()).toEqual({ mode: 'off', decisions: [], effects: [], rules: [], waitingWhileOff: 3 });
+  });
+});
+
 describe('moaDelegate handler — off (no service)', () => {
   it('lists the empty off shape and refuses resolve / auto-set', async () => {
     const { win, send } = fakeWindow();
-    const h = createMoaDelegateHandlers(() => win, { getService: () => null });
+    const h = createMoaDelegateHandlers(() => win, { getService: () => null, countOpenWhileOff: () => 0 });
     expect(await h.list()).toEqual({ mode: 'off', decisions: [], effects: [], rules: [] });
     const r = await h.resolve({ decisionId: DECISION_ID, answer: { type: 'dismiss' } });
     expect(r).toMatchObject({ ok: false, code: 'invalid' });

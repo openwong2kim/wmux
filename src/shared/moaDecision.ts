@@ -223,6 +223,9 @@ export interface MoaDelegateListResult {
   rules: MoaRuleView[];
   /** The lane audit's last answer (display only), when it ran. */
   unreceiptedMerges?: MoaUnreceiptedMerge[];
+  /** With the delegate off: tickets still escalated from when it was on.
+   *  Their askers wait, so the panel says so instead of hiding them. */
+  waitingWhileOff?: number;
 }
 
 /**

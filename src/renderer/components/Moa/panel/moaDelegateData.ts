@@ -65,6 +65,11 @@ export function selectEffectRows(state: MoaDelegateListResult, now: number): Mer
     .slice(0, EFFECT_ROWS_MAX);
 }
 
+/** Tickets still escalated while the delegate is off (0 when it is on). */
+export function selectWaitingWhileOff(state: MoaDelegateListResult): number {
+  return state.mode === 'off' ? state.waitingWhileOff ?? 0 : 0;
+}
+
 /** Answers on their way back to the asker (or there already), newest
  *  first: the owner sees the answer was not left in the store. A row leaves
  *  a day after its last move. */
