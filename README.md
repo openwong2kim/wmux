@@ -104,7 +104,7 @@ After a crash or a reboot, a recovered pane offers **Resume**: it types the agen
 
 ### Usage limits and accounts
 
-When Claude Code or Codex hits its usage limit, the pane pauses: its header and its Fleet row say when the limit resets, and wmux holds scheduled prompts and agent messages for that pane instead of typing them into a turn that cannot run. Turn on **Resume at reset** for a pane (or "Continue after a usage limit resets" in Settings, off by default) and it continues by itself when the window resets. With several of your own Claude or Codex subscriptions registered, **Switch accounts by quota** in Settings → Accounts starts a new pane on the account with the most quota left when the workspace's own account is out of quota. Settings → Token usage shows each provider's usage windows.
+When Claude Code or Codex hits its usage limit, the pane pauses: its header and its Fleet row say when the limit resets, and wmux holds scheduled prompts and agent messages for that pane instead of typing them into a turn that cannot run. Turn on **Resume at reset** for a pane (or "Continue after a usage limit resets" in Settings, off by default) and it continues by itself when the window resets. With several of your own Claude or Codex subscriptions registered, **Switch Claude accounts by quota** and **Switch Codex accounts by quota** in Settings → Accounts (both off by default) start a new pane on the account with the most quota left when the workspace's own account is out of quota. Settings → Token usage shows each provider's usage windows.
 
 <img alt="An agent hits its usage limit; the pane pauses and shows when it resets, then continues by itself at the reset" src="docs/readme/limits.gif" width="900" />
 
