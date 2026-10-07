@@ -2585,7 +2585,7 @@ function registerRpcHandlers(
           cols: live?.meta.cols ?? managed.meta.cols ?? 80,
           rows: live?.meta.rows ?? managed.meta.rows ?? 24,
         };
-      });
+      }, () => sessionManager.getSession(p.id)?.bridge.outputModes ?? managed.bridge.outputModes);
       sessionPipes.set(p.id, pipe);
 
       // #557: demote a stuck-'attached' session to 'detached' if its authed

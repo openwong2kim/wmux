@@ -4,6 +4,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { getSessionSocketPath } from '../shared/constants';
 import type { RingBuffer } from './RingBuffer';
+import type { OutputModeTracker } from './util/outputModeTracker';
+import { readRingWithModes } from './sessionTextReplay';
 import { generateSnapshot, MAX_SCROLLBACK } from './HeadlessSnapshot';
 import {
   createSessionPipeMarkers,
@@ -66,6 +68,15 @@ export class SessionPipe {
      * the flush ships raw bytes exactly as before.
      */
     private readonly getDims?: () => { cols: number; rows: number },
+    /**
+     * #1843: the session's output-mode tracker. A fullscreen TUI switches its
+     * modes (alt screen, mouse tracking, bracketed paste) once, at startup;
+     * after enough output those bytes have aged out of the ring, and a replay
+     * without them leaves the renderer on the normal buffer with the mouse
+     * off. Every replay below is led by the tracker's preamble. Absent (tests,
+     * older call sites) replays the ring as-is.
+     */
+    private readonly getOutputModes?: () => Pick<OutputModeTracker, 'preamble'> | null,
   ) {
     this.markers = createSessionPipeMarkers(authToken);
   }
@@ -192,8 +203,12 @@ export class SessionPipe {
    * cleared mid-parse (prefix no longer intact), the snapshot is discarded
    * and the fresh full read ships raw — fail-open, never a gap.
    */
+  private readRing(): { raw: Buffer; replay: Buffer } {
+    return readRingWithModes(this.ringBuffer, this.getOutputModes?.() ?? null);
+  }
+
   private async flushRingBuffer(socket: net.Socket): Promise<void> {
-    const buffered = this.ringBuffer.readAll();
+    const { raw: buffered, replay } = this.readRing();
     // Instrumentation for #35 (scrollback-empty-after-restart). Pairs
     // with `[recovery] session X bytes=N` on daemon startup and
     // `Suspended session X (buffer: N bytes)` on shutdown. If those
@@ -205,7 +220,7 @@ export class SessionPipe {
       `[SessionPipe.flush] sessionId=${this.sessionId} bytes=${buffered.length}`,
     );
 
-    let payload = buffered;
+    let payload = replay;
     const dims = this.getDims?.();
     if (dims && buffered.length >= ATTACH_SNAPSHOT_MIN_BYTES) {
       // Reuses the resync path's HeadlessSnapshot (global concurrency-1
@@ -217,7 +232,10 @@ export class SessionPipe {
       const outcome = await generateSnapshot({
         cols: dims.cols,
         rows: dims.rows,
-        initial: buffered,
+        // Led by the mode preamble, so an alt screen the ring no longer
+        // carries still makes the snapshot decline (raw replay below) and
+        // mouse / paste modes reach the modes tail.
+        initial: replay,
         // This layer has no renderer config, and the renderer's xterm scrollback
         // is user-configurable (default 10k) above the snapshot DEFAULT (5k). A
         // successful snapshot would otherwise truncate history the raw replay
@@ -238,7 +256,7 @@ export class SessionPipe {
         // that live delta until the next resync (silent output loss). `after`
         // ⊇ `buffered` by the append-only prefix property; a wrap only makes it
         // a fresh honest raw read — either way `after` is the correct payload.
-        payload = this.ringBuffer.readAll();
+        payload = this.readRing().replay;
         // eslint-disable-next-line no-console
         console.log(
           `[SessionPipe.flush] sessionId=${this.sessionId} mode=raw fallbackReason=no-gain snapshot=${outcome.payload.length} raw=${payload.length}`,
@@ -248,12 +266,12 @@ export class SessionPipe {
         // the new read" proves the delta is exactly the new tail. A wrap or
         // clear mid-parse (prefix broken) discards the snapshot and ships
         // the fresh raw read — fail-open, never a gap.
-        const after = this.ringBuffer.readAll();
+        const { raw: after, replay: afterReplay } = this.readRing();
         const wrapped =
           after.length < buffered.length ||
           !after.subarray(0, buffered.length).equals(buffered);
         if (wrapped) {
-          payload = after;
+          payload = afterReplay;
           // eslint-disable-next-line no-console
           console.log(
             `[SessionPipe.flush] sessionId=${this.sessionId} snapshot discarded (ring wrapped mid-parse) bytes=${after.length}`,
@@ -271,7 +289,7 @@ export class SessionPipe {
         // Snapshot failed (alt-screen, margins, budget, ...) — ship raw. Same
         // live-delta hazard as the no-gain branch: re-read the ring so bytes
         // that arrived during the failed parse are retransmitted, not dropped.
-        payload = this.ringBuffer.readAll();
+        payload = this.readRing().replay;
         // eslint-disable-next-line no-console
         console.log(
           `[SessionPipe.flush] sessionId=${this.sessionId} mode=raw fallbackReason=${outcome.reason}${'detail' in outcome && outcome.detail ? ` detail=${outcome.detail}` : ''}`,
@@ -445,7 +463,7 @@ export class SessionPipe {
       // the ring, arm the tee. Nothing can arrive between these statements.
       socket.write(this.markers.resyncBegin);
       this.flushed = false;
-      const initial = this.ringBuffer.readAll();
+      const initial = this.readRing().replay;
       opts.bridge.on('data', tee);
 
       let outcome: Awaited<ReturnType<typeof opts.generate>>;
@@ -499,7 +517,7 @@ export class SessionPipe {
       // every tee'd byte — the classic replay, gap-free because this block
       // is synchronous.
       teeQueue.length = 0;
-      const raw = this.ringBuffer.readAll();
+      const raw = this.readRing().replay;
       socket.write(RIS);
       socket.write(raw);
       socket.write(this.markers.flushDone);

@@ -258,7 +258,15 @@ describe('OutputModeTracker', () => {
 
   it('ignores private modes it does not track and non-private mode changes', () => {
     const t = new OutputModeTracker();
-    feed(t, '\x1b[?12h\x1b[?1004h\x1b[4h\x1b[20h');
+    feed(t, '\x1b[?12h\x1b[4h\x1b[20h');
+    expect(t.preamble(WINDOW_AFTER_EVERYTHING)).toBe('');
+  });
+
+  it('tracks focus reporting (?1004), which Codex and other TUIs switch on at startup', () => {
+    const t = new OutputModeTracker();
+    feed(t, '\x1b[?1004h');
+    expect(t.preamble(WINDOW_AFTER_EVERYTHING)).toBe('\x1b[?1004h');
+    feed(t, '\x1b[?1004l');
     expect(t.preamble(WINDOW_AFTER_EVERYTHING)).toBe('');
   });
 

@@ -9,10 +9,10 @@
  * buffer while the bytes assume the alternate one — absolute-positioned frames
  * land interleaved over scrollback instead of repainting a screen.
  *
- * The local GUI never hits this because HeadlessSnapshot refuses alt-screen and
- * SessionPipe falls back to a full raw replay. The SSE path cannot afford that
- * (that is the whole reason the window exists), so it reconstructs the mode
- * state instead: this tracker is fed every chunk written to the ring — O(chunk)
+ * The local GUI hits it too once the ring itself wraps (#1843): the 8 MB ring
+ * drops the switch just the same, so SessionPipe's attach flush and re-flush
+ * lead their replay with this preamble as well. The SSE path reconstructs the
+ * mode state the same way: this tracker is fed every chunk written to the ring — O(chunk)
  * at write time — and answers in O(1) at stream-open time, which keeps
  * snapshotWindow.ts's "work per call is independent of buffer size" invariant.
  *
@@ -38,6 +38,7 @@ const MODE_DEFAULTS: ReadonlyMap<number, boolean> = new Map([
   [1005, false], // mouse encoding: UTF-8
   [1006, false], // mouse encoding: SGR
   [1015, false], // mouse encoding: urxvt
+  [1004, false], // focus in/out reporting
   [2004, false], // bracketed paste
 ]);
 
