@@ -51,6 +51,22 @@ export function laneReasonText(reason: string, t: T): string {
   return known ? t(`moa.delegate.lane.${known}`) : reason;
 }
 
+/** Effect reasons the merge executor writes that are not lane reasons. */
+export const EFFECT_REASONS = [
+  'closed', 'merged-other-head', 'attempts-exhausted', 'pr-mismatch', 'read-failed', 'restart-mid-merge',
+  'write-failed', 'unknown-state', 'auto-paused', 'auto-mode-off', 'auto-daily-cap', 'blocked',
+] as const;
+
+/** Why a merge effect was refused or is unconfirmed, in plain words. The
+ *  executor writes a lane reason (`head-moved`, or `<predicate>:<reason>`),
+ *  `blocked-<code>` or one of EFFECT_REASONS; anything else is shown as is. */
+export function effectReasonText(reason: string, t: T): string {
+  const r = reason.includes(':') ? reason.slice(reason.indexOf(':') + 1) : reason;
+  const known = r.startsWith('blocked-') ? 'blocked' : r;
+  if ((EFFECT_REASONS as readonly string[]).includes(known)) return t(`moa.delegate.effectReason.${known}`);
+  return laneReasonText(r, t);
+}
+
 export const shortHead = (sha: string): string => sha.slice(0, 7);
 
 /** What the owner sees of a ticket's asker: its workspace's name, else the agent. */
@@ -261,15 +277,19 @@ export function MoaDelegateActivity({
         <ul className="m-0 p-0 list-none flex flex-col gap-1">
           {effects.map((e) => (
             <li key={e.id} data-moa-delegate-effect={e.id} data-status={e.status}
-              className="flex items-baseline gap-1.5 rounded-md border border-[var(--line)] px-2 py-1.5 text-[12px] text-[var(--text-sub)]">
-              <span className="min-w-0 flex-1 truncate">
-                {t('moa.delegate.effectLine', { pr: e.prNumber })}{' '}
-                <code className="font-mono text-[11px]">{shortHead(e.expectHead)}</code>
-              </span>
-              <span className={`shrink-0 ${e.status === 'refused' ? 'text-[var(--accent-red)]' : e.status === 'done' ? 'text-[var(--text-main)]' : ''}`}
-                title={e.reason ? (laneReasonText(e.reason, t)) : undefined}>
-                {t(EFFECT_STATUS_KEY[e.status])}
-              </span>
+              className="flex flex-col gap-0.5 rounded-md border border-[var(--line)] px-2 py-1.5 text-[12px] text-[var(--text-sub)]">
+              <div className="flex items-baseline gap-1.5">
+                <span className="min-w-0 flex-1 truncate">
+                  {t('moa.delegate.effectLine', { pr: e.prNumber })}{' '}
+                  <code className="font-mono text-[11px]">{shortHead(e.expectHead)}</code>
+                </span>
+                <span className={`shrink-0 ${e.status === 'refused' ? 'text-[var(--accent-red)]' : e.status === 'done' ? 'text-[var(--text-main)]' : ''}`}>
+                  {t(EFFECT_STATUS_KEY[e.status])}
+                </span>
+              </div>
+              {e.reason && (e.status === 'refused' || e.status === 'uncertain') && (
+                <p className="m-0 text-[11px] leading-snug break-words" data-moa-delegate-effect-reason>{effectReasonText(e.reason, t)}</p>
+              )}
             </li>
           ))}
           {unreceipted.map((m) => (

@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { MoaDelegateActivity, MoaDelegateTicketRow, laneReasonText, laneReasonsOf } from '../MoaDelegateCards';
+import { MoaDelegateActivity, MoaDelegateTicketRow, effectReasonText, laneReasonText, laneReasonsOf } from '../MoaDelegateCards';
 import { MoaPanelTop } from '../MoaPanelTop';
 import { selectAutoRules, selectEffectRows, selectOpenTickets, selectUnreceipted, type MoaDelegateApi } from '../moaDelegateData';
 import type { MergeEffect, MoaDecision, MoaDelegateListResult, MoaRuleView } from '../../../../../shared/moaDecision';
@@ -177,8 +177,27 @@ describe('rules and activity', () => {
     const rows = container.querySelectorAll('[data-moa-delegate-effect]');
     expect(rows[0].textContent).toContain('moa.delegate.effect.running');
     expect(rows[1].textContent).toContain('moa.delegate.effect.uncertain');
+    expect(rows[0].querySelector('[data-moa-delegate-effect-reason]')).toBeNull();
     // Agent-written title is rendered as text.
     expect(container.querySelector('[data-moa-delegate-unreceipted]')!.textContent).toBe('moa.delegate.unreceipted(7,Ignore previous instructions)');
+  });
+});
+
+describe('a head that moved after the ask', () => {
+  it('shows the executor\'s refusal in plain words on the merge row', async () => {
+    await act(async () => root.render(createElement(MoaDelegateActivity, {
+      effects: [effect('refused', { reason: 'head-moved' })], unreceipted: [], rules: [], autoSet: vi.fn(), t,
+    })));
+    expect(container.querySelector('[data-moa-delegate-effect]')!.textContent).toContain('moa.delegate.effect.refused');
+    expect(container.querySelector('[data-moa-delegate-effect-reason]')!.textContent).toBe('moa.delegate.lane.head-moved');
+  });
+
+  it('words every reason shape the executor writes', () => {
+    expect(effectReasonText('head-unchanged:head-moved', t)).toBe('moa.delegate.lane.head-moved');
+    expect(effectReasonText('required-checks-green:required-check-fail', t)).toBe('moa.delegate.lane.required-check');
+    expect(effectReasonText('blocked-checks-failing', t)).toBe('moa.delegate.effectReason.blocked');
+    expect(effectReasonText('closed', t)).toBe('moa.delegate.effectReason.closed');
+    expect(effectReasonText('no-decision', t)).toBe('no-decision');
   });
 });
 
@@ -195,15 +214,22 @@ describe('selectors', () => {
       ticket(5, { status: 'pending', receipt: 'uncertain' }),
       ticket(6, { status: 'pending', receipt: 'inFlight' }),
     ],
-    effects: [effect('done', { id: 'a', updatedAt: now - 1000 }), effect('done', { id: 'old', updatedAt: 1 }), effect('uncertain', { id: 'u', updatedAt: 2 })],
+    effects: [
+      effect('done', { id: 'a', updatedAt: now - 1000 }),
+      effect('done', { id: 'old', updatedAt: 1 }),
+      effect('refused', { id: 'old-refused', updatedAt: 1 }),
+      effect('uncertain', { id: 'u', updatedAt: 4 }),
+      effect('pending', { id: 'p', updatedAt: 3 }),
+      effect('inFlight', { id: 'f', updatedAt: 2 }),
+    ],
     rules: [rule('R-a')],
     unreceiptedMerges: [{ repoKey: 'o/r', prNumber: 7, title: 't', mergedAt: '2026-10-07T00:00:00Z', headRefOid: HEAD }],
   });
 
   it('opens only tickets the owner can answer, oldest first', () => {
     expect(selectOpenTickets(state('suggest')).map((d) => d.id)).toEqual([id(1), id(2), id(5)]);
-    // An old uncertain effect stays: main has not confirmed it yet.
-    expect(selectEffectRows(state('auto'), now).map((e) => e.id)).toEqual(['a', 'u']);
+    // Settled rows leave after a day; open ones (pending, inFlight, uncertain) stay at any age.
+    expect(selectEffectRows(state('auto'), now).map((e) => e.id)).toEqual(['a', 'u', 'p', 'f']);
     expect(selectUnreceipted(state('auto')).map((m) => m.prNumber)).toEqual([7]);
   });
 
@@ -235,6 +261,20 @@ describe('MoaPanelTop with the delegate', () => {
     expect(container.querySelector('[data-moa-delegate-ticket]')).toBeNull();
     expect(container.querySelector('[data-moa-delegate-activity]')).toBeNull();
     expect(container.querySelector('[data-moa-waiting]')?.className).toBe('hidden');
+  });
+
+  it('a settled merge row leaves after its day with the panel open', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+    try {
+      const now = Date.now();
+      const delegateApi = api({ mode: 'suggest', decisions: [], effects: [effect('done', { updatedAt: now - 24 * 60 * 60 * 1000 + 30_000 })], rules: [] });
+      await act(async () => root.render(createElement(MoaPanelTop, { decisions: [], linksApi, approvalsApi, delegateApi, t })));
+      expect(container.querySelector('[data-moa-delegate-effect]')).not.toBeNull();
+      await act(async () => { vi.advanceTimersByTime(60_000); });
+      expect(container.querySelector('[data-moa-delegate-effect]')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('suggest: an escalated ticket joins Waiting on you and the auto rules draw', async () => {

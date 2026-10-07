@@ -54,12 +54,13 @@ export function selectOpenTickets(state: MoaDelegateListResult): MoaDecision[] {
 export const EFFECT_SHOWN_MS = 24 * 60 * 60 * 1000;
 export const EFFECT_ROWS_MAX = 5;
 
-/** Merge effects to show as status rows: the recent ones, newest first. An
- *  `uncertain` one (main could not confirm the merge yet) is a status here. */
+/** Merge effects to show as status rows, newest first. A settled one (done,
+ *  refused) leaves after a day; one still open (pending, inFlight, or
+ *  uncertain: main could not confirm it yet) stays whatever its age. */
 export function selectEffectRows(state: MoaDelegateListResult, now: number): MergeEffect[] {
   if (!delegateShown(state)) return [];
   return state.effects
-    .filter((e) => e.status === 'uncertain' || now - e.updatedAt <= EFFECT_SHOWN_MS)
+    .filter((e) => (e.status !== 'done' && e.status !== 'refused') || now - e.updatedAt <= EFFECT_SHOWN_MS)
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .slice(0, EFFECT_ROWS_MAX);
 }

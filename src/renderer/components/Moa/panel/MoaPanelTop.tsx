@@ -4,7 +4,7 @@
 // scroll), so a long card grows instead of hiding behind an inner scrollbar.
 // Waiting on you is the exception: with the chat on screen it docks above the
 // composer (MoaDockContext), so a decision is never scrolled out of reach.
-import { Suspense, lazy, useCallback, useContext, useMemo } from 'react';
+import { Suspense, lazy, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../../stores';
@@ -102,7 +102,15 @@ export function MoaPanelTop({
   const delegate = useMemo(() => delegateApi ?? defaultDelegateApi(), [delegateApi]);
   const { state: delegateState, refresh: refreshDelegate } = useMoaDelegate(delegate);
   const tickets = useMemo(() => selectOpenTickets(delegateState), [delegateState]);
-  const effectRows = useMemo(() => selectEffectRows(delegateState, Date.now()), [delegateState]);
+  // A coarse clock, so a settled merge row leaves after its day with the
+  // panel open and no new event.
+  const [clock, setClock] = useState(() => Date.now());
+  useEffect(() => {
+    if (!delegate) return undefined;
+    const timer = setInterval(() => setClock(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, [delegate]);
+  const effectRows = useMemo(() => selectEffectRows(delegateState, clock), [delegateState, clock]);
   const unreceipted = useMemo(() => selectUnreceipted(delegateState), [delegateState]);
   const autoRules = useMemo(() => selectAutoRules(delegateState), [delegateState]);
   const renderTicket = useCallback((d: MoaDecision, onDone: () => void) => (
