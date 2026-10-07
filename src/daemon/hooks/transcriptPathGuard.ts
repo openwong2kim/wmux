@@ -116,6 +116,12 @@ export interface TranscriptPathCheck {
   ok: boolean;
   /** Why it was refused, for the warn log. Empty when `ok`. */
   reason: string;
+  /**
+   * `ok` for a file the agent has not created yet: its containment was proven
+   * on the nearest existing ancestor (Codex writes its session file lazily, on
+   * the first turn). Readers treat a still-missing file as an empty conversation.
+   */
+  pending?: boolean;
 }
 
 /**

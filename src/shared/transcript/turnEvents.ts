@@ -166,7 +166,9 @@ export interface MetaEvent extends TurnEventBase {
    *
    * `command_output` and `system_reminder` name the Claude Code machinery that
    * is injected into `role:'user'` entries; without them those payloads render
-   * as if the operator had typed them.
+   * as if the operator had typed them. `bash_input` / `bash_output` are the
+   * same for Claude Code's `!` shell mode (`<bash-input>`, `<bash-stdout>`,
+   * `<bash-stderr>`).
    */
   subtype:
     | 'turn_started'
@@ -178,6 +180,8 @@ export interface MetaEvent extends TurnEventBase {
     | 'subagent'
     | 'command_output'
     | 'system_reminder'
+    | 'bash_input'
+    | 'bash_output'
     | 'unknown';
   label: string;
   /**

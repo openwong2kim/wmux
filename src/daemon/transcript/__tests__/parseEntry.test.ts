@@ -730,3 +730,25 @@ describe('parseTranscriptLine — tool bodies', () => {
     expect(bodies.get(last.id)?.get(1)).toContain(body);
   });
 });
+
+describe('parseTranscriptLine — `!` shell mode is never "You"', () => {
+  const line = (content: unknown, uuid: string) => JSON.stringify({
+    type: 'user', uuid, timestamp: '2026-10-07T00:00:00.000Z', message: { role: 'user', content },
+  });
+
+  it('maps bash-input to a bash_input meta labelled with the command, and its output to bash_output', () => {
+    const input = parseTranscriptLine(line('<bash-input>ls  -la\nsrc</bash-input>', 'u-1'), 0);
+    expect(input).toHaveLength(1);
+    expect(input[0]).toMatchObject({ kind: 'meta', subtype: 'bash_input', label: 'ls -la src' });
+
+    const output = parseTranscriptLine(line('<bash-stdout>secret-ish listing</bash-stdout><bash-stderr></bash-stderr>', 'u-2'), 100);
+    expect(output).toHaveLength(1);
+    expect(output[0]).toMatchObject({ kind: 'meta', subtype: 'bash_output', label: 'Shell output' });
+    // Output is not re-broadcast through the label (same rule as local-command-stdout).
+    expect(JSON.stringify(output)).not.toContain('secret-ish listing');
+
+    const stderrOnly = parseTranscriptLine(line([{ type: 'text', text: '<bash-stderr>boom</bash-stderr>' }], 'u-3'), 200);
+    expect(stderrOnly[0]).toMatchObject({ kind: 'meta', subtype: 'bash_output' });
+    expect([...input, ...output, ...stderrOnly].some((e) => e.kind === 'user_text')).toBe(false);
+  });
+});

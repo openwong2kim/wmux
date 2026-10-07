@@ -61,6 +61,17 @@ export const BUDGET_BYTES = 128 * 1024;
 
 /** Smallest window the budget loop will shrink to before giving up. */
 const MIN_READ_BYTES = 8 * 1024;
+/** A snapshot with fewer rows than this reads further back (see `reachPastOversized`). */
+const THIN_PAGE_EVENTS = 20;
+/** Bound on the extra bytes `reachPastOversized` reads (the same order as one oversized-line hunt). */
+const MAX_REACH_BACK_BYTES = 8 * 1024 * 1024;
+/** The page an empty transcript reads as (`readTranscriptPage` on a 0-byte file). */
+const EMPTY_PAGE = (): TranscriptPage => ({
+  events: [],
+  cursor: { headOffset: 0, tailOffset: 0, fileSize: 0, mtimeMs: 0 },
+  hasMore: false,
+  truncatedHead: false,
+});
 
 const DEFAULT_DEBOUNCE_MS = 150;
 const DEFAULT_POLL_MS = 3000;
@@ -168,7 +179,7 @@ export class TranscriptProjector {
   status(sessionId: string): TranscriptStatus {
     const resolved = this.resolvePath(sessionId);
     if (!resolved.ok) return { available: false, reason: resolved.reason };
-    const stat = statTranscript(resolved.transcriptPath);
+    const stat = statTranscript(resolved.transcriptPath) ?? (resolved.pending ? { size: 0, mtimeMs: 0, ino: 0 } : null);
     const basename = transcriptBasename(resolved.transcriptPath);
     if (!stat) {
       // Purged, rotated away, or on an unmounted volume.
@@ -232,6 +243,7 @@ export class TranscriptProjector {
   snapshot(sessionId: string, opts?: { before?: number }): TranscriptPage | null {
     const resolved = this.resolvePath(sessionId);
     if (!resolved.ok) return null;
+    if (this.notWrittenYet(resolved)) return EMPTY_PAGE();
 
     let maxBytes = TAIL_BYTES;
     let page = readTranscriptPage(resolved.transcriptPath, { ...opts, maxBytes, parseLine: (line, offset) => resolved.parse(line, offset).events });
@@ -248,7 +260,39 @@ export class TranscriptProjector {
       this.deps.log?.('warn', `[transcript] snapshot for ${sessionId} exceeded the byte budget; returning an empty page`);
       return { ...page, events: [] };
     }
-    return page;
+    return page ? this.reachPastOversized(page, resolved) : page;
+  }
+
+  /**
+   * A page whose window started inside one huge line holds only what follows
+   * that line: the fragment is dropped, and it can be most of the window.
+   * Claude Code writes large non-conversation entries (session-start
+   * attachments: skill and tool listings) between a prompt and its answer, so
+   * right after `/clear` the first page held the answer alone while the prompt
+   * and the `/clear` rows sat just before the fragment. Keep reading backward
+   * from the page head, prepending older rows, while the page is thin, the
+   * result stays within the budget, and the extra bytes read stay bounded.
+   * The cursor's tail is unchanged; its head moves to the oldest row added.
+   */
+  private reachPastOversized(
+    page: TranscriptPage,
+    resolved: { transcriptPath: string; parse: (line: string, offset: number) => ParsedTranscriptLine },
+  ): TranscriptPage {
+    let out = page;
+    // `probe` walks back through the oversized line; the page's head moves only
+    // when a window yields rows, so it stays a line boundary a later back page
+    // can start from (a window inside the line reports a mid-line head).
+    let probe = page.cursor.headOffset;
+    while (probe > 0 && out.events.length < THIN_PAGE_EVENTS && page.cursor.headOffset - probe < MAX_REACH_BACK_BYTES) {
+      const older = readTranscriptPage(resolved.transcriptPath, { before: probe, maxBytes: TAIL_BYTES, parseLine: (line, offset) => resolved.parse(line, offset).events });
+      if (!older || older.cursor.headOffset >= probe) break;
+      probe = older.cursor.headOffset;
+      if (older.events.length === 0) continue;
+      const events = [...older.events, ...out.events];
+      if (!withinBudget(events)) break;
+      out = { ...out, events, cursor: { ...out.cursor, headOffset: older.cursor.headOffset }, hasMore: older.hasMore, truncatedHead: older.truncatedHead };
+    }
+    return out;
   }
 
   /**
@@ -270,6 +314,7 @@ export class TranscriptProjector {
   ): { ok: true; page: TranscriptPage; lineEnds: number[] } | { ok: false; reason: string } {
     const resolved = this.resolvePath(sessionId);
     if (!resolved.ok) return { ok: false, reason: resolved.reason };
+    if (this.notWrittenYet(resolved)) return { ok: true, page: EMPTY_PAGE(), lineEnds: [] };
     const starts: number[] = [];
     const counts: number[] = [];
     const page = readTranscriptPage(resolved.transcriptPath, {
@@ -319,6 +364,7 @@ export class TranscriptProjector {
   staleCursor(sessionId: string, offset: number, cursorFileSize?: number): boolean {
     const resolved = this.resolvePath(sessionId);
     if (!resolved.ok) return true;
+    if (this.notWrittenYet(resolved)) return offset > 0;
     const stat = statTranscript(resolved.transcriptPath);
     return !stat || cursorStale(resolved.transcriptPath, stat.size, offset, cursorFileSize);
   }
@@ -330,6 +376,7 @@ export class TranscriptProjector {
   ): { events: TurnEvent[]; cursor: TranscriptPage['cursor']; reset: boolean; budgetDropped?: boolean } | null {
     const resolved = this.resolvePath(sessionId);
     if (!resolved.ok) return null;
+    if (this.notWrittenYet(resolved)) return { events: [], cursor: EMPTY_PAGE().cursor, reset: fromOffset > 0 };
     const stat = statTranscript(resolved.transcriptPath);
     if (!stat) return null;
 
@@ -602,7 +649,7 @@ export class TranscriptProjector {
   private resolvePath(
     sessionId: string,
   ):
-    | { ok: true; agent: string; transcriptPath: string; agentSessionId: string; parse: (line: string, offset: number) => ParsedTranscriptLine }
+    | { ok: true; agent: string; transcriptPath: string; agentSessionId: string; parse: (line: string, offset: number) => ParsedTranscriptLine; pending?: boolean }
     | { ok: false; reason: string } {
     let binding;
     try {
@@ -641,7 +688,17 @@ export class TranscriptProjector {
       agentSessionId: binding.sessionId,
       parse: provider.parse,
       agent: binding.agent,
+      ...(check.pending ? { pending: true } : {}),
     };
+  }
+
+  /**
+   * A path the guard accepted although nothing is written there yet (a fresh
+   * Codex thread: the session file appears on the first turn), and still
+   * missing now. Readers answer it as an empty conversation.
+   */
+  private notWrittenYet(resolved: { transcriptPath: string; pending?: boolean }): boolean {
+    return resolved.pending === true && !statTranscript(resolved.transcriptPath);
   }
 
   /**
