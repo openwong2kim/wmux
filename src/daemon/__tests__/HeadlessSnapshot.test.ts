@@ -269,3 +269,26 @@ describe('HeadlessSnapshot — fidelity round-trips', () => {
     expect(text).not.toContain('�');
   }, 30000);
 });
+
+describe('generateSnapshot — cursor visibility', () => {
+  it('shows the cursor on a renderer that still has it hidden when the stream showed it again', async () => {
+    const outcome = await generateSnapshot({
+      cols: 40,
+      rows: 6,
+      initial: Buffer.from('\x1b[?25lworking...\r\n\x1b[?25hdone\r\n$ ', 'utf8'),
+    });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+
+    // A reflush lands on the existing renderer behind a RIS, and xterm.js
+    // keeps DECTCEM across RIS, so the payload itself must show the cursor.
+    const renderer = new Terminal({ cols: 40, rows: 6, allowProposedApi: true });
+    const write = (d: string | Uint8Array) => new Promise<void>((r) => renderer.write(d, r));
+    await write('\x1b[?25l');
+    await write('\x1bc');
+    await write(outcome.payload);
+    const core = (renderer as unknown as { _core: { coreService: { isCursorHidden: boolean } } })._core;
+    expect(core.coreService.isCursorHidden).toBe(false);
+    renderer.dispose();
+  });
+});

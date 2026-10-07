@@ -411,7 +411,9 @@ async function generateInner(req: SnapshotRequest): Promise<SnapshotOutcome> {
     }
 
     const core = serializer.serialize();
-    const modesTail = buildModesTail(terminal, sgrMouse) + (cursor.hidden ? '\x1b[?25l' : '');
+    // Always assert the visibility: a reflush lands on a renderer whose cursor
+    // may still be hidden, and xterm.js keeps DECTCEM across the RIS prefix.
+    const modesTail = buildModesTail(terminal, sgrMouse) + (cursor.hidden ? '\x1b[?25l' : '\x1b[?25h');
     const payload = Buffer.concat([
       Buffer.from(core + modesTail + tail, 'utf8'),
       utf8Carry,
