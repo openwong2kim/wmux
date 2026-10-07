@@ -203,6 +203,34 @@ export class SgrMouseEncodingTracker {
   }
 }
 
+// eslint-disable-next-line no-control-regex
+const CURSOR_VISIBILITY_RE = /\x1b(?:\[\?25([hl])|\[!p|c)/g;
+
+/**
+ * Tracks DECTCEM (cursor shown/hidden, `?25h`/`?25l`), which the public xterm
+ * API does not expose and SerializeAddon does not restore. A full-screen TUI
+ * hides the cursor; a snapshot that left it visible would draw a stray block
+ * over the restored frame. RIS and DECSTR (soft reset) show it again.
+ */
+export class CursorVisibilityTracker {
+  private carry = '';
+  private _hidden = false;
+
+  feed(chunk: string): void {
+    const text = this.carry + chunk;
+    CURSOR_VISIBILITY_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = CURSOR_VISIBILITY_RE.exec(text)) !== null) {
+      this._hidden = m[1] === 'l';
+    }
+    this.carry = text.slice(-REGEX_CARRY_CHARS);
+  }
+
+  get hidden(): boolean {
+    return this._hidden;
+  }
+}
+
 /**
  * Number of bytes at the END of `buf` that form an incomplete UTF-8 sequence.
  * The headless feed decodes per-chunk; a multi-byte char split across chunks

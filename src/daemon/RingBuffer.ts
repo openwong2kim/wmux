@@ -54,6 +54,32 @@ const dumpChains = new Map<string, Promise<void>>();
  */
 const INITIAL_PHYSICAL_BYTES = 64 * 1024;
 
+/** A PTY size change at a point in the byte stream. `at` is a lifetime
+ *  offset (totalBytesWritten when the change took effect). */
+interface GeometryMark {
+  at: number;
+  cols: number;
+  rows: number;
+}
+
+/**
+ * The sizes the stored bytes were written at, relative to a readAll() copy:
+ * `start` applies from byte 0, and each change applies from its `offset` on.
+ * A replay that parses the whole ring at one width re-wraps history written
+ * at another — cursor-up redraws (Claude Code's inline TUI) then land on the
+ * wrong rows and stack into garbled frames. Replaying each stretch at its own
+ * width and resizing after (which reflows like the live terminal did) avoids it.
+ */
+export interface ReplayGeometry {
+  start: { cols: number; rows: number };
+  changes: Array<{ offset: number; cols: number; rows: number }>;
+}
+
+/** Bound on remembered size changes inside the ring window. A divider drag
+ *  sends a burst of them; past this the oldest in-window ones are merged into
+ *  the start size (a replay of that stretch is no worse than before this log). */
+const MAX_GEOMETRY_MARKS = 256;
+
 export class RingBuffer {
   private buffer: Buffer;
   private readonly capacity: number;  // logical ceiling — the max this ring will ever hold
@@ -61,6 +87,7 @@ export class RingBuffer {
   private writePos: number;   // next write position (0..physical-1)
   private length: number;     // bytes currently stored (<= physical)
   private totalWritten: number; // monotonic lifetime count (used as byte offset for PromptEventLog)
+  private geometry: GeometryMark[] = []; // size changes, oldest first (see ReplayGeometry)
 
   constructor(capacityBytes: number) {
     if (capacityBytes <= 0 || !Number.isInteger(capacityBytes)) {
@@ -143,6 +170,60 @@ export class RingBuffer {
    */
   get totalBytesWritten(): number {
     return this.totalWritten;
+  }
+
+  /**
+   * Record that the PTY now writes at `cols`×`rows`. Bytes written from here
+   * on were produced at this size. Repeats of the current size are ignored.
+   */
+  noteGeometry(cols: number, rows: number): void {
+    if (!(cols > 0 && rows > 0)) return;
+    const last = this.geometry[this.geometry.length - 1];
+    if (last && last.cols === cols && last.rows === rows) return;
+    if (last && last.at === this.totalWritten) {
+      // No bytes at the previous size — it never applied to anything.
+      this.geometry[this.geometry.length - 1] = { at: this.totalWritten, cols, rows };
+    } else {
+      this.geometry.push({ at: this.totalWritten, cols, rows });
+    }
+    this.pruneGeometry();
+  }
+
+  /**
+   * readAll() plus the sizes its bytes were written at, and the lifetime
+   * byte count at the read (`writtenAt`) so a later read can locate exactly
+   * the bytes that arrived since. `geometry` is undefined when no size was
+   * ever recorded.
+   */
+  readAllWithGeometry(): { data: Buffer; geometry: ReplayGeometry | undefined; writtenAt: number } {
+    const data = this.readAll();
+    const writtenAt = this.totalWritten;
+    this.pruneGeometry();
+    if (this.geometry.length === 0) return { data, geometry: undefined, writtenAt };
+    const windowStart = this.totalWritten - data.length;
+    const [first, ...rest] = this.geometry;
+    return {
+      data,
+      writtenAt,
+      geometry: {
+        start: { cols: first.cols, rows: first.rows },
+        changes: rest.map((m) => ({ offset: m.at - windowStart, cols: m.cols, rows: m.rows })),
+      },
+    };
+  }
+
+  /** Drop marks wholly before the stored window, keeping the one that applies
+   *  at the window's first byte, and merge past MAX_GEOMETRY_MARKS. */
+  private pruneGeometry(): void {
+    const windowStart = this.totalWritten - this.length;
+    let firstApplying = 0;
+    while (firstApplying + 1 < this.geometry.length && this.geometry[firstApplying + 1].at <= windowStart) {
+      firstApplying++;
+    }
+    if (firstApplying > 0) this.geometry.splice(0, firstApplying);
+    if (this.geometry.length > MAX_GEOMETRY_MARKS) {
+      this.geometry.splice(0, this.geometry.length - MAX_GEOMETRY_MARKS);
+    }
   }
 
   /**

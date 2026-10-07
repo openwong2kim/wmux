@@ -8,7 +8,7 @@
 //      SCREEN PARITY with the raw replay (headless re-parse of both match)
 //   2. small buffer → raw passthrough byte-identical to before
 //   3. no dims provider (legacy ctor) → raw passthrough regardless of size
-//   4. alt-screen content → fail-open raw (HeadlessSnapshot refuses)
+//   4. active DECSTBM margins → fail-open raw (HeadlessSnapshot refuses)
 //   5. live bytes written DURING the parse arrive after the snapshot (delta
 //      re-read), before FLUSH_DONE — no gap, no reorder
 import { describe, it, expect, afterEach } from 'vitest';
@@ -214,12 +214,12 @@ describe('SessionPipe initial-attach snapshot (TASK-10)', () => {
     expect(replaySegment(client.wire())!.equals(raw)).toBe(true);
   });
 
-  it('alt-screen history → fail-open raw replay', async () => {
-    // Enter the alternate screen (vim-style) and stay there: HeadlessSnapshot
-    // must refuse and the flush must ship the raw bytes.
+  it('margined history → fail-open raw replay', async () => {
+    // Leave a DECSTBM scroll region active: HeadlessSnapshot cannot serialize
+    // it, so it must refuse and the flush must ship the raw bytes.
     const raw = Buffer.concat([
       bigHistory(ATTACH_SNAPSHOT_MIN_BYTES),
-      Buffer.from('\x1b[?1049h\x1b[2Jvim-ish full screen content', 'utf8'),
+      Buffer.from('\x1b[2;10rmargined content', 'utf8'),
     ]);
     const ring = new RingBuffer(8 * 1024 * 1024);
     ring.write(raw);
@@ -230,6 +230,26 @@ describe('SessionPipe initial-attach snapshot (TASK-10)', () => {
     await waitFor(() => client.wire().includes(FLUSH_DONE_MARKER), 15_000);
 
     expect(replaySegment(client.wire())!.equals(raw)).toBe(true);
+  });
+
+  it('alt-screen history ships as a snapshot, not the raw ring', async () => {
+    // A full-screen TUI used to force raw: megabytes re-parsed on attach.
+    const raw = Buffer.concat([
+      bigHistory(ATTACH_SNAPSHOT_MIN_BYTES),
+      Buffer.from('\x1b[?1049h\x1b[2J\x1b[Hfull screen agent frame', 'utf8'),
+    ]);
+    const ring = new RingBuffer(8 * 1024 * 1024);
+    ring.write(raw);
+    const pipe = await startPipe(uniqueSessionId('alt'), ring, () => ({ cols: COLS, rows: ROWS }));
+
+    const client = await connectClient(pipe.getPipeName(), TOKEN);
+    clients.push(client);
+    await waitFor(() => client.wire().includes(FLUSH_DONE_MARKER), 15_000);
+
+    const replay = replaySegment(client.wire())!;
+    expect(replay.length).toBeLessThan(raw.length);
+    expect(replay.toString('utf8')).toContain('\x1b[?1049h');
+    expect(replay.toString('utf8')).toContain('full screen agent frame');
   });
 
   it('bytes arriving DURING the parse ship as a delta before FLUSH_DONE', async () => {
@@ -256,16 +276,36 @@ describe('SessionPipe initial-attach snapshot (TASK-10)', () => {
     expect(replay.length).toBeLessThan(raw.length); // still a snapshot, not raw
   });
 
+  it('a FULL ring keeps its snapshot when bytes arrive during the parse', async () => {
+    // A full ring drops its oldest bytes on every write. The old prefix check
+    // failed on any live byte and threw away the snapshot of every busy pane.
+    const raw = bigHistory(ATTACH_SNAPSHOT_MIN_BYTES * 2);
+    const ring = new RingBuffer(raw.length);
+    ring.write(raw); // exactly full
+    const liveMarker = Buffer.from('\r\nLIVE-DELTA-MARKER-full\r\n', 'utf8');
+    injectAfterFirstReadAll(ring, liveMarker);
+    const pipe = await startPipe(uniqueSessionId('full'), ring, () => ({ cols: COLS, rows: ROWS }));
+
+    const client = await connectClient(pipe.getPipeName(), TOKEN);
+    clients.push(client);
+
+    await waitFor(() => client.wire().includes(FLUSH_DONE_MARKER), 20_000);
+    const replay = replaySegment(client.wire())!;
+    expect(replay.includes(liveMarker)).toBe(true);
+    expect(replay.length).toBeLessThan(raw.length); // snapshot, not the raw ring
+  });
+
   // Deterministic mid-parse injection: the attach flush reads the ring once
-  // BEFORE the parse (`buffered`) and again AFTER (the delta re-read). Hooking
-  // the first readAll to append the live bytes right after it returns guarantees
-  // the delta is in the ring during the parse without racing a wall-clock sleep
-  // (which the shared concurrency-1 snapshot queue makes flaky).
+  // BEFORE the parse (`readAllWithGeometry`, which also captures the lifetime
+  // byte counter) and again AFTER (the delta re-read). Hooking that first read
+  // to append the live bytes right after it returns guarantees the delta is in
+  // the ring during the parse without racing a wall-clock sleep (which the
+  // shared concurrency-1 snapshot queue makes flaky).
   function injectAfterFirstReadAll(ring: RingBuffer, liveMarker: Buffer): void {
-    const origReadAll = ring.readAll.bind(ring);
+    const orig = ring.readAllWithGeometry.bind(ring);
     let injected = false;
-    (ring as unknown as { readAll: () => Buffer }).readAll = () => {
-      const out = origReadAll();
+    (ring as unknown as { readAllWithGeometry: typeof orig }).readAllWithGeometry = () => {
+      const out = orig();
       if (!injected) {
         injected = true;
         ring.write(liveMarker);
@@ -304,13 +344,13 @@ describe('SessionPipe initial-attach snapshot (TASK-10)', () => {
     expect(survived).toBeGreaterThan(5000);
   });
 
-  it('live delta during a FAILED parse (alt-screen) is not dropped', async () => {
-    // Alt-screen forces the snapshot to fail → the raw fallback branch. The fix
-    // re-reads the ring there, so bytes written while the (doomed) parse ran are
-    // retransmitted instead of silently lost until the next resync.
+  it('live delta during a FAILED parse (margins) is not dropped', async () => {
+    // Active margins force the snapshot to fail → the raw fallback branch. The
+    // fix re-reads the ring there, so bytes written while the (doomed) parse ran
+    // are retransmitted instead of silently lost until the next resync.
     const raw = Buffer.concat([
       bigHistory(ATTACH_SNAPSHOT_MIN_BYTES),
-      Buffer.from('\x1b[?1049h\x1b[2Jvim-ish full screen content', 'utf8'),
+      Buffer.from('\x1b[2;10rmargined content', 'utf8'),
     ]);
     const ring = new RingBuffer(8 * 1024 * 1024);
     ring.write(raw);

@@ -223,15 +223,15 @@ describe('SessionPipe.reflush — gap-free live re-flush', () => {
     expect(Buffer.concat(inputs).toString()).toContain('typed-during-resync');
   }, 20000);
 
-  it('degrades to raw replay and ships the ring bytes verbatim on alt-screen', async () => {
+  it('degrades to raw replay and ships the ring bytes verbatim on active margins', async () => {
     const ring = new RingBuffer(1024 * 1024);
     const bridge = new EventEmitter();
     const pipe = new SessionPipe(uniqueSessionId('raw'), ring, TOKEN);
     cleanups.push(() => pipe.stop());
     await pipe.start();
 
-    // Alt-screen forces the snapshot generator to decline.
-    const seed = Buffer.from('\x1b[?1049h\x1b[HALT SCREEN CONTENT\r\nsecond\r\n');
+    // Active DECSTBM margins force the snapshot generator to decline.
+    const seed = Buffer.from('\x1b[2;10rMARGINED CONTENT\r\nsecond\r\n');
     ring.write(seed);
 
     const client = await connectClient(pipe.getPipeName(), TOKEN);
@@ -240,7 +240,7 @@ describe('SessionPipe.reflush — gap-free live re-flush', () => {
 
     const result = await pipe.reflush({ bridge, cols: 80, rows: 24, generate: generateSnapshot });
     expect(result.mode).toBe('raw');
-    expect(result.fallbackReason).toBe('alt-screen');
+    expect(result.fallbackReason).toBe('margins');
 
     await waitFor(() => {
       const p = parseWire(client.wire());

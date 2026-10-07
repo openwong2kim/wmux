@@ -700,6 +700,9 @@ export class DaemonSessionManager extends EventEmitter {
       ? this.config.session.bufferSizeMb * 1024 * 1024
       : DEFAULT_BUFFER_SIZE;
     const ringBuffer = new RingBuffer(bufferSize);
+    // Replays parse each stretch of the ring at the size it was written at.
+    // Recovered scrollback below is assumed to be at the spawn size.
+    ringBuffer.noteGeometry(cols, rows);
 
     // Pre-fill ring buffer with saved scrollback (session recovery).
     //
@@ -1053,6 +1056,7 @@ export class DaemonSessionManager extends EventEmitter {
       managed.ptyProcess.resize(safeCols, safeRows);
       managed.meta.cols = safeCols;
       managed.meta.rows = safeRows;
+      managed.ringBuffer.noteGeometry(safeCols, safeRows);
       // Resize-redraw guard: stamp the bridge so the TUI's repaint burst
       // (arriving within RESIZE_REDRAW_GUARD_MS) does not reset the
       // AgentDetector emission dedup and re-fire stale prompt matches.

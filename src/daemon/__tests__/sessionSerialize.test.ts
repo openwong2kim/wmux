@@ -34,13 +34,16 @@ function wrappedTui() {
 const noLog = (): void => undefined;
 
 describe('serializeSession (#1853)', () => {
-  it('declines an alt-screen pane whose entry has aged out of the ring', async () => {
+  it('serializes an alt-screen pane on the alternate screen after its entry has aged out of the ring', async () => {
     const { ringBuffer, tracker } = wrappedTui();
     expect(ringBuffer.readAll().includes('\x1b[?1049h')).toBe(false);
 
     const result = await serializeSession({ ringBuffer, outputModes: tracker, cols: COLS, rows: ROWS }, undefined, noLog);
 
-    expect(result).toEqual({ ok: true, mode: 'unavailable', reason: 'alt-screen' });
+    // #1825 snapshots the alternate screen instead of declining it.
+    expect(result.mode).toBe('snapshot');
+    if (result.mode !== 'snapshot') return;
+    expect(Buffer.from(result.payloadBase64, 'base64').toString('utf8')).toContain('\x1b[?1049h');
   });
 
   it('★ without the mode tracker the same ring serializes as a normal-buffer snapshot', async () => {
@@ -49,6 +52,8 @@ describe('serializeSession (#1853)', () => {
     const { ringBuffer } = wrappedTui();
     const result = await serializeSession({ ringBuffer, outputModes: null, cols: COLS, rows: ROWS }, undefined, noLog);
     expect(result.mode).toBe('snapshot');
+    if (result.mode !== 'snapshot') return;
+    expect(Buffer.from(result.payloadBase64, 'base64').toString('utf8')).not.toContain('\x1b[?1049h');
   });
 
   it('still serializes a plain shell pane', async () => {

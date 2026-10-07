@@ -14,12 +14,18 @@
  * System invariant ("slower, never wrong"): every condition the snapshot
  * cannot reproduce faithfully returns `{ ok: false }` so the caller degrades
  * to the raw-replay ladder:
- *  - alternate screen buffer active (vim & friends — DECSC, saved titles and
- *    other unserialized state make fidelity unprovable),
  *  - DECSTBM scroll margins in effect (not serialized by the addon),
  *  - the stream ends inside an escape sequence too large to re-ship,
  *  - the parse exceeded its time budget,
  *  - anything thrown by xterm itself.
+ *
+ * The alternate screen IS snapshotted (SerializeAddon writes the normal
+ * buffer, then `?1049h` and the alternate one). It used to degrade to raw, but
+ * for a full-screen agent TUI raw meant re-parsing up to 8 MB on reveal — the
+ * pane sat blank meanwhile — and at the current width, garbling history
+ * written at another. Cursor visibility is restored from the stream
+ * (CursorVisibilityTracker). Not restored: the DECSC saved cursor and window
+ * titles; a TUI redraws its frame on its next output anyway.
  *
  * IMPORTANT (query safety): no `onData` handler is ever wired on the headless
  * terminal. It must never answer DA1/DSR/OSC color queries — the renderer's
@@ -30,10 +36,12 @@
 import { Terminal } from '@xterm/headless';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { applyUnicodeWidthModel } from '../shared/terminalUnicode';
+import type { ReplayGeometry } from './RingBuffer';
 import {
   PartialSequenceTracker,
   MarginTracker,
   SgrMouseEncodingTracker,
+  CursorVisibilityTracker,
   incompleteUtf8SuffixLength,
 } from './util/ansiStreamScan';
 
@@ -44,6 +52,13 @@ export interface SnapshotRequest {
   scrollback?: number;
   /** Raw history captured at T0 (ring buffer readAll). */
   initial: Buffer;
+  /**
+   * The sizes `initial` was written at (RingBuffer.readAllWithGeometry). Each
+   * stretch is parsed at its own size and the terminal is then resized to
+   * `cols`×`rows`, which reflows the way the live terminal did. Omitted: the
+   * whole history is parsed at `cols`×`rows`.
+   */
+  geometry?: ReplayGeometry;
   /**
    * Live-tee drain: returns (and removes) chunks that arrived since the last
    * call. Called repeatedly until it comes back empty. Omit for read-only
@@ -57,7 +72,6 @@ export interface SnapshotRequest {
 }
 
 export type SnapshotFallbackReason =
-  | 'alt-screen'
   | 'margins'
   | 'partial-tail-overflow'
   | 'budget'
@@ -195,8 +209,8 @@ async function generateTextInner(req: SnapshotRequest): Promise<TextSnapshotOutc
   const scrollback = clamp(req.scrollback ?? DEFAULT_SCROLLBACK, 0, MAX_SCROLLBACK);
 
   const terminal = new Terminal({
-    cols: req.cols,
-    rows: req.rows,
+    cols: req.geometry?.start.cols ?? req.cols,
+    rows: req.geometry?.start.rows ?? req.rows,
     scrollback,
     allowProposedApi: true,
     logLevel: 'off',
@@ -236,7 +250,7 @@ async function generateTextInner(req: SnapshotRequest): Promise<TextSnapshotOutc
       return true;
     };
 
-    if (!(await feed(req.initial))) {
+    if (!(await feedAtRecordedSizes(terminal, req, feed))) {
       return { ok: false, reason: 'budget' };
     }
     if (req.drainQueue) {
@@ -304,8 +318,8 @@ async function generateInner(req: SnapshotRequest): Promise<SnapshotOutcome> {
   const scrollback = clamp(req.scrollback ?? DEFAULT_SCROLLBACK, 0, MAX_SCROLLBACK);
 
   const terminal = new Terminal({
-    cols: req.cols,
-    rows: req.rows,
+    cols: req.geometry?.start.cols ?? req.cols,
+    rows: req.geometry?.start.rows ?? req.rows,
     scrollback,
     allowProposedApi: true,
     logLevel: 'off',
@@ -323,6 +337,7 @@ async function generateInner(req: SnapshotRequest): Promise<SnapshotOutcome> {
     const partialTail = new PartialSequenceTracker();
     const margins = new MarginTracker();
     const sgrMouse = new SgrMouseEncodingTracker();
+    const cursor = new CursorVisibilityTracker();
     // Bytes at a chunk tail that form an incomplete UTF-8 char — carried into
     // the next chunk; whatever remains at finalize is appended raw after the
     // snapshot so the renderer's byte stream stays contiguous.
@@ -359,6 +374,7 @@ async function generateInner(req: SnapshotRequest): Promise<SnapshotOutcome> {
         partialTail.feed(text);
         margins.feed(text);
         sgrMouse.feed(text);
+        cursor.feed(text);
         // Await the parse callback: backpressure AND an event-loop yield per
         // slice (xterm completes writes asynchronously).
         await new Promise<void>((resolve) => terminal.write(text, resolve));
@@ -367,7 +383,7 @@ async function generateInner(req: SnapshotRequest): Promise<SnapshotOutcome> {
       return true;
     };
 
-    if (!(await feed(req.initial))) {
+    if (!(await feedAtRecordedSizes(terminal, req, feed))) {
       return { ok: false, reason: 'budget' };
     }
     if (req.drainQueue) {
@@ -386,9 +402,6 @@ async function generateInner(req: SnapshotRequest): Promise<SnapshotOutcome> {
       }
     }
 
-    if (terminal.buffer.active.type === 'alternate') {
-      return { ok: false, reason: 'alt-screen' };
-    }
     if (margins.active) {
       return { ok: false, reason: 'margins' };
     }
@@ -398,7 +411,7 @@ async function generateInner(req: SnapshotRequest): Promise<SnapshotOutcome> {
     }
 
     const core = serializer.serialize();
-    const modesTail = buildModesTail(terminal, sgrMouse);
+    const modesTail = buildModesTail(terminal, sgrMouse) + (cursor.hidden ? '\x1b[?25l' : '');
     const payload = Buffer.concat([
       Buffer.from(core + modesTail + tail, 'utf8'),
       utf8Carry,
@@ -422,9 +435,8 @@ async function generateInner(req: SnapshotRequest): Promise<SnapshotOutcome> {
  * headless terminal's public modes, plus the SGR mouse-encoding pair the
  * public API does not expose (tracked from the raw stream).
  *
- * Not covered (accepted): DECSC saved cursor, cursor visibility (DECTCEM) —
- * apps that use them are overwhelmingly alt-screen TUIs, which already fell
- * back to raw replay above.
+ * Not covered (accepted): the DECSC saved cursor. Cursor visibility (DECTCEM)
+ * is appended by the caller from CursorVisibilityTracker.
  */
 function buildModesTail(terminal: Terminal, sgrMouse: SgrMouseEncodingTracker): string {
   const modes = terminal.modes;
@@ -462,6 +474,33 @@ function buildModesTail(terminal: Terminal, sgrMouse: SgrMouseEncodingTracker): 
   // (xterm has an internal timeout, so a crashed app cannot wedge painting).
   if (modes.synchronizedOutputMode) tail += '\x1b[?2026h';
   return tail;
+}
+
+/**
+ * Feed `req.initial`, resizing the terminal at each recorded size change so
+ * every stretch parses at the width it was written at, then settle at the
+ * requested size. Returns false when `feed` ran out of budget.
+ */
+async function feedAtRecordedSizes(
+  terminal: Terminal,
+  req: SnapshotRequest,
+  feed: (raw: Buffer) => Promise<boolean>,
+): Promise<boolean> {
+  const resizeTo = (cols: number, rows: number): void => {
+    const c = Math.max(1, Math.floor(cols));
+    const r = Math.max(1, Math.floor(rows));
+    if (terminal.cols !== c || terminal.rows !== r) terminal.resize(c, r);
+  };
+  let from = 0;
+  for (const change of req.geometry?.changes ?? []) {
+    const at = clamp(change.offset, from, req.initial.length);
+    if (at > from && !(await feed(req.initial.subarray(from, at)))) return false;
+    from = at;
+    resizeTo(change.cols, change.rows);
+  }
+  if (from < req.initial.length && !(await feed(req.initial.subarray(from)))) return false;
+  resizeTo(req.cols, req.rows);
+  return true;
 }
 
 function clamp(v: number, lo: number, hi: number): number {
