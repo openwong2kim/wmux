@@ -15,6 +15,8 @@ vi.mock('../../deck/deckHqStore', () => ({
 
 import {
   MOA_DELEGATE_MERGE_DENY,
+  MOA_DELEGATE_WORKER_ALLOW,
+  MOA_DELEGATE_WORKER_ENV,
   WORKER_ASK_DENY_REASON,
   isQuotable,
   buildWorkerDelegateSettings,
@@ -141,13 +143,22 @@ describe('withDelegateSpawnSettings', () => {
 });
 
 describe('the worker profile', () => {
-  it('denies AskUserQuestion and gh merges, with a hook that names moa_ask', () => {
+  it('keeps AskUserQuestion listed and refuses it in the hook, which names moa_ask', () => {
     const settingsPath = writeWorkerDelegateProfile(dir) as string;
     const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as {
-      permissions: { deny: string[] };
+      permissions: { allow: string[]; deny: string[] };
+      env: Record<string, string>;
       hooks: { PreToolUse: Array<{ matcher: string; hooks: Array<{ command: string }> }> };
     };
-    expect(settings.permissions.deny).toEqual(['AskUserQuestion', ...MOA_DELEGATE_MERGE_DENY]);
+    // A deny rule would drop the tool from the model's list, and the hook
+    // carrying the redirect would never run.
+    expect(settings.permissions.deny).toEqual([...MOA_DELEGATE_MERGE_DENY]);
+    expect(settings.permissions.deny).not.toContain('AskUserQuestion');
+    // moa_ask is never left to an auto-mode classifier.
+    expect(settings.permissions.allow).toEqual(['mcp__wmux__moa_ask', 'mcp__wmux__moa_ask_status']);
+    expect(MOA_DELEGATE_WORKER_ALLOW).toEqual(settings.permissions.allow);
+    // The plugin's bridge skips its own report for the refused call.
+    expect(settings.env).toEqual({ [MOA_DELEGATE_WORKER_ENV]: '1' });
     expect(settings.hooks.PreToolUse).toHaveLength(1);
     expect(settings.hooks.PreToolUse[0].matcher).toBe('AskUserQuestion');
     const scriptPath = path.join(dir, 'delegate', 'worker-deny-ask.js');
@@ -155,16 +166,22 @@ describe('the worker profile', () => {
     // POSIX modes only: Windows reports 0666 for any writable file.
     if (process.platform !== 'win32') expect((fs.statSync(settingsPath).mode & 0o777).toString(8)).toBe('600');
 
-    // The script blocks (exit 2) and says why, on stderr.
+    // The script blocks (exit 2) and says why, on stderr: ask moa_ask, poll
+    // moa_ask_status, and on an escalation end the turn without restating it.
     const run = spawnSync(process.execPath, [scriptPath], { encoding: 'utf8', env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } });
     expect(run.status).toBe(2);
-    expect(run.stderr).toContain('mcp__wmux__moa_ask');
+    expect(run.stderr).toContain('mcp__wmux__moa_ask ');
+    expect(run.stderr).toContain('mcp__wmux__moa_ask_status');
+    expect(run.stderr).toContain('without restating the question');
     expect(run.stderr.trim()).toBe(WORKER_ASK_DENY_REASON);
   });
 
-  it('without a deny script the deny rules still hold', () => {
+  it('without a deny script it falls back to the deny rule (no hook, no env)', () => {
     expect(buildWorkerDelegateSettings({ denyScriptPath: null })).toEqual({
-      permissions: { deny: ['AskUserQuestion', 'Bash(gh pr merge*)', 'Bash(gh api*merge*)'] },
+      permissions: {
+        allow: ['mcp__wmux__moa_ask', 'mcp__wmux__moa_ask_status'],
+        deny: ['AskUserQuestion', 'Bash(gh pr merge*)', 'Bash(gh api*merge*)'],
+      },
     });
   });
 
@@ -175,6 +192,6 @@ describe('the worker profile', () => {
     expect(fs.statSync(settingsPath).mtimeMs).toBe(first);
     fs.writeFileSync(settingsPath, '{"permissions":{"deny":[]}}');
     writeWorkerDelegateProfile(dir);
-    expect(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).permissions.deny).toContain('AskUserQuestion');
+    expect(JSON.parse(fs.readFileSync(settingsPath, 'utf8')).permissions.allow).toContain('mcp__wmux__moa_ask');
   });
 });

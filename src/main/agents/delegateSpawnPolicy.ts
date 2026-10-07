@@ -6,10 +6,15 @@
 //   - A fan-out worker cannot open AskUserQuestion. Its dialog draws in a
 //     terminal nobody is watching, and the plugin's PreToolUse hook turns it
 //     into an approval record that wakes the HQ brain by typing into its pty.
-//     The worker asks Moa through `moa_ask` instead.
+//     The tool stays LISTED: the spawn's own PreToolUse hook refuses it and
+//     tells the worker to call `moa_ask` instead. The worker's settings also
+//     set WMUX_MOA_DELEGATE_WORKER, which the plugin's bridge reads to skip
+//     its own AskUserQuestion report for a call this hook refuses.
 //   - Neither a fan-out worker nor an orchestrator brain may merge a PR through
 //     `gh`: a merge goes through the merge lane (moaMergeLane.ts), whose
 //     predicates read fresh facts.
+//   - `moa_ask` and `moa_ask_status` are allowed outright, so an auto-mode
+//     permission classifier never refuses a worker's merge request to Moa.
 //
 // Both ride the spawn's OWN `--settings` file, never the owner's user settings.
 //
@@ -20,10 +25,10 @@
 //
 // Measured on claude 2.1.292 (interactive TUI, a local fake Messages API):
 //   - `permissions.deny: ["AskUserQuestion"]` drops the tool from the model's
-//     tool list, so the call is never made and no PreToolUse hook (the
-//     plugin's included) ever sees it. The deny script below is the backstop
-//     for a build that still offers it, and the only place the redirect to
-//     moa_ask can be explained.
+//     tool list, so the call is never made and no PreToolUse hook ever sees
+//     it: the worker then asks in plain text and the redirect never reaches
+//     it. That rule is therefore only the fallback for a profile whose deny
+//     script could not be written (a refused tool beats an unwatched dialog).
 //   - `Bash(gh pr merge*)` and `Bash(gh api*merge*)` hold under
 //     --dangerously-skip-permissions, including a compound line
 //     (`cd x && gh pr merge 3`); `gh pr view` and a plain `gh api` read pass.
@@ -57,7 +62,14 @@ export const WORKER_ASK_DENY_REASON =
   'AskUserQuestion is turned off in this pane: its dialog draws in a terminal nobody is watching. ' +
   `Ask Moa instead: call mcp__wmux__${MOA_ASK_TOOL} with your question and 2-6 options, then poll ` +
   `mcp__wmux__${MOA_ASK_STATUS_TOOL} with the ticketId until it is no longer pending. If it comes back ` +
-  'escalated, end your turn with the question written out in plain text; the owner answers it.';
+  'escalated, the owner answers it on Moa\'s card: end your turn without restating the question. ' +
+  'The answer arrives in this pane as a new message.';
+
+/** The env var the worker's settings set; the plugin's bridge reads it. */
+export const MOA_DELEGATE_WORKER_ENV = 'WMUX_MOA_DELEGATE_WORKER';
+
+/** Tools the worker may call without a permission check. */
+export const MOA_DELEGATE_WORKER_ALLOW: readonly string[] = [`mcp__wmux__${MOA_ASK_TOOL}`, `mcp__wmux__${MOA_ASK_STATUS_TOOL}`];
 
 /** The worker's PreToolUse deny script, invoked as `node <script>`. */
 export function buildWorkerDenyScript(): string {
@@ -70,13 +82,15 @@ export function buildWorkerDenyScript(): string {
   ].join('\n');
 }
 
-/** The worker's `--settings` document. `denyScriptPath` null keeps the deny
- *  rules and drops the hook (the rule alone still refuses the tool). */
+/** The worker's `--settings` document. `denyScriptPath` null cannot refuse
+ *  AskUserQuestion in a hook, so it falls back to the deny rule. */
 export function buildWorkerDelegateSettings(opts: { denyScriptPath: string | null }): Record<string, unknown> {
+  const deny = opts.denyScriptPath ? [...MOA_DELEGATE_MERGE_DENY] : ['AskUserQuestion', ...MOA_DELEGATE_MERGE_DENY];
   const settings: Record<string, unknown> = {
-    permissions: { deny: ['AskUserQuestion', ...MOA_DELEGATE_MERGE_DENY] },
+    permissions: { allow: [...MOA_DELEGATE_WORKER_ALLOW], deny },
   };
   if (opts.denyScriptPath) {
+    settings.env = { [MOA_DELEGATE_WORKER_ENV]: '1' };
     settings.hooks = {
       PreToolUse: [
         {
@@ -134,7 +148,7 @@ export function writeWorkerDelegateProfile(dir: string): string | null {
   try {
     writeIfChanged(denyScriptPath, buildWorkerDenyScript());
   } catch (err) {
-    // The hook costs the explanation only; the deny rule still refuses.
+    // Without the hook the settings fall back to the deny rule.
     console.warn(`[moa-delegate] could not write the worker deny script: ${String(err)}`);
     denyScriptPath = null;
   }
