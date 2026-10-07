@@ -66,7 +66,7 @@ Fan one prompt out into up to 8 tasks, each in its own git worktree on a fresh `
 
 **Git** on the rail shows a repo's issues and pull requests. A pull request lists its checks, and a failed GitHub Actions run shows the end of its log right there, with **Rerun failed jobs**. Read the diff, comment on a line, approve or request changes, and squash and merge — every action is tied to the commit you were looking at. To hand an issue or PR to an agent, drag its row onto the agent's pane or a workspace in the sidebar; the agent gets a short reference with the link, never the item's text. Signed out? Connect GitHub from the page itself; `gh` keeps the credential.
 
-<img alt="The Git page lists a repo's pull requests with a failing CI check in front; a PR is reviewed, and an issue is dragged onto an agent pane" src="docs/readme/git.gif" width="900" />
+<img alt="The Git page lists a repo's pull requests with the failing check first, then opens a PR's detail showing the failed check" src="docs/readme/git.gif" width="900" />
 
 ### Fleet
 
