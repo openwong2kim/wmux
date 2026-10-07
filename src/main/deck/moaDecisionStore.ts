@@ -288,13 +288,22 @@ export class MoaDecisionStore {
   async expire(): Promise<MoaDecision[]> {
     const cutoff = this.now() - MOA_ESCALATION_TTL_MS;
     const expired: MoaDecision[] = [];
+    const before: Array<[string, MoaDecision, MoaDecision]> = [];
     for (const [key, row] of this.rows) {
       if (row.resolvedBy !== null || row.receipt === 'inFlight' || row.createdAt > cutoff || ticketView(row).status !== 'escalated') continue;
       const next: MoaDecision = { ...row, resolvedBy: 'expired', resolvedAt: this.now() };
       this.rows.set(key, next);
       expired.push(next);
+      before.push([key, row, next]);
     }
-    if (expired.length > 0) await this.save();
+    if (expired.length === 0) return expired;
+    try {
+      await this.save();
+    } catch (err) {
+      // Not on disk ⇒ not expired: the owner can still answer them.
+      for (const [key, row, next] of before) if (this.rows.get(key) === next) this.rows.set(key, row);
+      throw err;
+    }
     return expired;
   }
 

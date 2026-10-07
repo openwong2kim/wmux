@@ -26,8 +26,9 @@ export interface PrReviewHead {
   mergeStateStatus: string;
   /** Label names, when the read asked for them. */
   labels?: string[];
-  /** The author's login, when the read asked for it (`author`). */
-  author?: string;
+  /** The author's login, when the read asked for it (`author`); null for a
+   *  deleted ("ghost") account, as in PrLaneFacts. */
+  author?: string | null;
   /** When it was merged (ISO), or null while not merged — when asked for. */
   mergedAt?: string | null;
   /** The commit the merge made (for a squash: the new squash commit, never

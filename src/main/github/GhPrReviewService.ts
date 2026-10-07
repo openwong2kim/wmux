@@ -145,7 +145,7 @@ export function mapReviewHead(raw: unknown): PrReviewHead | null {
     ...(Array.isArray(j.labels)
       ? { labels: (j.labels as unknown[]).map((l) => str((l as Record<string, unknown> | null)?.name)).filter(Boolean) }
       : {}),
-    ...('author' in j ? { author: str((j.author as { login?: unknown } | null)?.login) } : {}),
+    ...('author' in j ? { author: str((j.author as { login?: unknown } | null)?.login) || null } : {}),
     ...('mergedAt' in j ? { mergedAt: str(j.mergedAt) || null } : {}),
     ...('mergeCommit' in j ? { mergeCommitOid: str((j.mergeCommit as { oid?: unknown } | null)?.oid) || null } : {}),
   };

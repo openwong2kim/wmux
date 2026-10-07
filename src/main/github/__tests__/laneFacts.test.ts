@@ -95,6 +95,6 @@ describe('mapReviewHead: author and merge evidence', () => {
     expect(head).not.toHaveProperty('author');
     expect(head).not.toHaveProperty('mergedAt');
     expect(head).not.toHaveProperty('mergeCommitOid');
-    expect(mapReviewHead({ number: 1, headRefOid: 'a'.repeat(40), mergedAt: null, mergeCommit: null })).toMatchObject({ mergedAt: null, mergeCommitOid: null });
+    expect(mapReviewHead({ number: 1, headRefOid: 'a'.repeat(40), mergedAt: null, mergeCommit: null, author: null })).toMatchObject({ mergedAt: null, mergeCommitOid: null, author: null });
   });
 });

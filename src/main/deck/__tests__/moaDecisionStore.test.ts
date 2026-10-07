@@ -184,4 +184,16 @@ describe('MoaDecisionStore settling', () => {
     expect(e).toMatchObject({ id: d.id, resolvedBy: 'expired', status: 'escalated' });
     expect(await store.resolveByOwner(d.id, { type: 'dismiss' })).toMatchObject({ ok: false, code: 'not-open' });
   });
+
+  it('an expiry that cannot be written is rolled back', async () => {
+    let now = 1_000_000;
+    const store = new MoaDecisionStore(dir, () => now);
+    const d = await newTicket(store, Q);
+    await store.settle(d.id, ESCALATE);
+    now += MOA_ESCALATION_TTL_MS + 1;
+    fs.rmSync(path.join(dir, 'moa-delegate'), { recursive: true, force: true });
+    fs.writeFileSync(path.join(dir, 'moa-delegate'), 'not a dir');
+    await expect(store.expire()).rejects.toThrow();
+    expect(store.get(d.id)).toMatchObject({ resolvedBy: null });
+  });
 });
