@@ -468,6 +468,11 @@ describe('Claude Code 2.1.292 screens (a wrapped question behind a │ gutter)',
     // A `│` that is not a gutter on every row stays part of the text.
     const half = V292.en.map((row) => row.replace(/^│ every/, 'every'));
     expect(askPickerUntouched(parseAskPicker(half), SCOPE)).toBe(false);
+    // Nor on a one-row question, which Claude draws without a gutter.
+    const color = single('Which color?', 'Color', [{ label: 'Red', description: 'warm' }, { label: 'Blue', description: 'cool' }]);
+    const barred = V292.short.map((row) => (row === 'Which color?' ? '│ Which color?' : row));
+    expect(barred).not.toEqual(V292.short);
+    expect(askPickerUntouched(parseAskPicker(barred), color)).toBe(false);
   });
 
   it('confirms the answer from the measured answered block', () => {

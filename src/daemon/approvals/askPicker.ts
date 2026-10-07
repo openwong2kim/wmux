@@ -214,8 +214,9 @@ function parseQuestionView(rows: readonly string[], start: number, bar: AskPicke
   }
   if (text.length === 0) return null;
   // A question that wraps draws a `│ ` gutter on every one of its rows (2.1.292);
-  // a one-row question draws none. Stripped only when every row carries it.
-  const question = text.every((row) => QUESTION_GUTTER.test(row))
+  // a one-row question draws none. Stripped only from several rows that all
+  // carry it: on one row a `│` is the question's own text.
+  const question = text.length > 1 && text.every((row) => QUESTION_GUTTER.test(row))
     ? text.map((row) => row.replace(QUESTION_GUTTER, '')).filter((row) => row.trim())
     : text;
   if (question.length === 0) return null;
