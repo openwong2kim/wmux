@@ -1,0 +1,4 @@
+# Local recordings and the clip tasks' own scenario modules never get committed.
+out/
+raw/
+scenes/
