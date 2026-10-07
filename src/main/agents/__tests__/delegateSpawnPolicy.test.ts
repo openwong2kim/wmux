@@ -152,7 +152,8 @@ describe('the worker profile', () => {
     expect(settings.hooks.PreToolUse[0].matcher).toBe('AskUserQuestion');
     const scriptPath = path.join(dir, 'delegate', 'worker-deny-ask.js');
     expect(settings.hooks.PreToolUse[0].hooks[0].command).toBe(`node "${scriptPath}"`);
-    expect((fs.statSync(settingsPath).mode & 0o777).toString(8)).toBe('600');
+    // POSIX modes only: Windows reports 0666 for any writable file.
+    if (process.platform !== 'win32') expect((fs.statSync(settingsPath).mode & 0o777).toString(8)).toBe('600');
 
     // The script blocks (exit 2) and says why, on stderr.
     const run = spawnSync(process.execPath, [scriptPath], { encoding: 'utf8', env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } });
