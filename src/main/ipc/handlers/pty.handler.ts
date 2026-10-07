@@ -1152,6 +1152,8 @@ export function registerPTYHandlers(
           cmd: string;
           state: string;
           pid?: number;
+          cols?: number;
+          rows?: number;
           cwd?: string;
           spawnCwd?: string;
           resumeAgent?: string;
@@ -1265,7 +1267,9 @@ export function registerPTYHandlers(
         // The daemon already told us this session's shell — record it, or a
         // pane recovered across an app restart loses its WSL path rewrite.
         recordPtyShell(session.id, session.cmd);
-        return { success: true, id: session.id, shell: session.cmd };
+        // The session's stored geometry: a hidden pane cannot measure its own,
+        // so it adopts this one instead (see the reattach in useTerminal).
+        return { success: true, id: session.id, shell: session.cmd, cols: session.cols, rows: session.rows };
       } catch (err) {
         // RCA A1 — RPC threw (timeout, ECONNRESET, handler swap mid-call).
         // This is a transient infrastructure failure, NOT proof the session is

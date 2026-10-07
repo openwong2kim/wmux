@@ -561,7 +561,7 @@ let webglTokenSeq = 0;
 
 // RCA A1 — reconnect-with-retry policy lives in its own module so it can be
 // unit-tested without xterm/zustand/electron. Bound to the live deps here.
-function reconnectPtyWithRetry(ptyId: string, isCurrent: () => boolean, onRecoveryError?: (message: string | null, info?: { cwdMissing?: boolean }) => void): Promise<void> {
+function reconnectPtyWithRetry(ptyId: string, isCurrent: () => boolean, onRecoveryError?: (message: string | null, info?: { cwdMissing?: boolean }) => void): Promise<{ cols: number; rows: number } | null> {
   return reconnectPtyWithRetryImpl(ptyId, isCurrent, {
     reconnect: (id) => window.electronAPI.pty.reconnect(id),
     onRecoveryError,
@@ -3207,7 +3207,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       reconnectInFlightRef.current = true;
       console.log(`[useTerminal] daemon reattach ptyId=${id} (${reason})`);
       return reconnectPtyWithRetry(id, () => ptyIdRef.current === id && terminalRef.current !== null, (message, info) => onRecoveryErrorRef.current?.(message, info))
-        .then(() => {
+        .then((stored) => {
           // #882 — the daemon starts every managed session at `viewerVisible:
           // true` and resets to true on detach, so a reattach that lands while
           // this pane is hidden (background workspace, minimized window) leaves
@@ -3222,7 +3222,26 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           // renderer's dedup cache may already "match" that stale value, so
           // the resize goes out unconditionally via sendResize (no dedup).
           const dims = proposedSafeDimensions(fitAddonRef.current, containerRef.current);
-          if (dims) sendResize(id, dims.cols, dims.rows);
+          if (dims) {
+            sendResize(id, dims.cols, dims.rows);
+            return;
+          }
+          // #1847: a hidden pane cannot measure itself, so it takes the
+          // session's stored size instead. Resizing xterm to it means output
+          // parsed while hidden (or flushed on reveal, before the reveal fit)
+          // wraps at the width the program drew for. Sending the same size
+          // back is not a SIGWINCH (the daemon skips unchanged geometry), but
+          // it is the desk's first resize, which unmutes a recovered session:
+          // without it that session's output stays out of the ring until the
+          // pane is shown, and anything past the held-output cap is lost.
+          const container = containerRef.current;
+          const term = terminalRef.current;
+          if (!stored || !term || fixedGeometryRef.current) return;
+          if (container && container.offsetWidth > 0 && container.offsetHeight > 0) return;
+          if (isSafeGeometry(stored.cols, stored.rows) && (term.cols !== stored.cols || term.rows !== stored.rows)) {
+            term.resize(stored.cols, stored.rows);
+          }
+          sendResize(id, stored.cols, stored.rows);
         })
         .finally(() => { inFlight = false; reconnectInFlightRef.current = false; });
     };

@@ -18,6 +18,12 @@ describe('reconnectPtyWithRetry (RCA A1 non-destructive contract)', () => {
     expect(clearPtyId).not.toHaveBeenCalled();
   });
 
+  it('success hands back the session geometry the daemon reported (#1847)', async () => {
+    const reconnect = vi.fn(async () => ({ success: true, cols: 283, rows: 81 }));
+    const got = await reconnectPtyWithRetry('pty-1', alwaysCurrent, { reconnect, clearPtyId: vi.fn(), sleep: noSleep, log: noLog });
+    expect(got).toEqual({ cols: 283, rows: 81 });
+  });
+
   it('permanent failure (transient:false) → clears immediately, no retry', async () => {
     const clearPtyId = vi.fn();
     const reconnect = vi.fn(async () => ({ success: false, transient: false, error: 'Session not found or dead' }));

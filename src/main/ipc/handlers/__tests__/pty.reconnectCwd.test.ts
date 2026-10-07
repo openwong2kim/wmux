@@ -53,6 +53,13 @@ describe('PTY_RECONNECT carries dead-session recovery metadata (#650)', () => {
   });
 });
 
+describe('PTY_RECONNECT reports the session geometry (#1847)', () => {
+  it('returns the stored cols/rows so a hidden pane can adopt them', () => {
+    expect(RECONNECT).toMatch(/cols\?: number;\s+rows\?: number;/);
+    expect(RECONNECT).toMatch(/return \{ success: true, id: session\.id, shell: session\.cmd, cols: session\.cols, rows: session\.rows \}/);
+  });
+});
+
 /**
  * Source-level regression lock (dogfood 2026-07-22, 30-session scaling branch):
  *

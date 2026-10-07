@@ -35,6 +35,9 @@ export interface ReconnectResult {
    */
   cwdMissing?: boolean;
   recovery?: DeadPaneRecovery;
+  /** The session's stored PTY geometry, reported on success. */
+  cols?: number;
+  rows?: number;
 }
 
 export interface ReconnectDeps {
@@ -56,7 +59,7 @@ export async function reconnectPtyWithRetry(
   ptyId: string,
   isCurrent: () => boolean,
   deps: ReconnectDeps,
-): Promise<void> {
+): Promise<{ cols: number; rows: number } | null> {
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const log = deps.log ?? ((level, message) => {
     // eslint-disable-next-line no-console
@@ -65,7 +68,7 @@ export async function reconnectPtyWithRetry(
 
   let lastErr = '<no error>';
   for (let attempt = 0; attempt <= RECONNECT_BACKOFFS_MS.length; attempt++) {
-    if (!isCurrent()) return; // terminal unmounted mid-retry — stop, mutate nothing
+    if (!isCurrent()) return null; // terminal unmounted mid-retry — stop, mutate nothing
     let result: ReconnectResult | undefined;
     try {
       result = await deps.reconnect(ptyId);
@@ -74,7 +77,10 @@ export async function reconnectPtyWithRetry(
       lastErr = err instanceof Error ? err.message : String(err);
       result = { success: false, transient: true, error: lastErr };
     }
-    if (result?.success) { if (isCurrent()) deps.onRecoveryError?.(null); return; }
+    if (result?.success) {
+      if (isCurrent()) deps.onRecoveryError?.(null);
+      return result.cols && result.rows ? { cols: result.cols, rows: result.rows } : null;
+    }
     if (result?.recoveryPending) {
       if (isCurrent()) {
         deps.onRecoveryError?.(
@@ -82,14 +88,14 @@ export async function reconnectPtyWithRetry(
           { cwdMissing: result.cwdMissing === true },
         );
       }
-      return; // Keep the original id, binding and scrollback. Retry is explicit.
+      return null; // Keep the original id, binding and scrollback. Retry is explicit.
     }
     lastErr = result?.error ?? '<no error>';
     // Permanent failure (daemon says the session is dead): clear now, no retry.
     if (result?.transient === false) {
       log('warn', `[useTerminal] pty.reconnect ${ptyId} permanent failure (${lastErr}) — clearing ptyId for self-create`);
       if (isCurrent()) deps.clearPtyId(ptyId, result.recovery);
-      return;
+      return null;
     }
     // Transient (or unknown): back off and retry unless attempts are exhausted.
     if (attempt < RECONNECT_BACKOFFS_MS.length) {
@@ -101,4 +107,5 @@ export async function reconnectPtyWithRetry(
   // surface doesn't keep a stale ptyId that silently never forwards input.
   log('error', `[useTerminal] pty.reconnect ${ptyId} still failing after ${RECONNECT_BACKOFFS_MS.length} retries (${lastErr}) — clearing ptyId`);
   if (isCurrent()) deps.clearPtyId(ptyId);
+  return null;
 }

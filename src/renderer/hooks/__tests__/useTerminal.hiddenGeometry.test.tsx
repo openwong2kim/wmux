@@ -11,7 +11,8 @@
 // Mounts the REAL useTerminal against a real xterm under jsdom.
 
 import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
-import { act, useRef } from 'react';
+import { act, useRef, type MutableRefObject } from 'react';
+import type { Terminal } from '@xterm/xterm';
 import { createRoot, type Root } from 'react-dom/client';
 import { FitAddon } from '@xterm/addon-fit';
 import { setDaemonModeActive } from '../../daemon/daemonMode';
@@ -24,7 +25,7 @@ vi.mock('@xterm/addon-webgl', () => ({
 }));
 
 const resize = vi.fn(async () => undefined);
-const reconnect = vi.fn(async () => ({ success: true }));
+const reconnect = vi.fn(async (): Promise<{ success: boolean; cols?: number; rows?: number }> => ({ success: true }));
 const unsub = () => () => undefined;
 // Laid-out size of every element; 0 models a display:none workspace.
 let layoutSize = 0;
@@ -66,6 +67,7 @@ beforeAll(() => {
 });
 
 let root: Root | null = null;
+let termRef: MutableRefObject<Terminal | null> | null = null;
 let host: HTMLDivElement | null = null;
 
 afterEach(() => {
@@ -74,15 +76,17 @@ afterEach(() => {
   root = null;
   host = null;
   resize.mockClear();
-  reconnect.mockClear();
+  reconnect.mockReset();
+  reconnect.mockImplementation(async () => ({ success: true }));
   setDaemonModeActive(false);
+  termRef = null;
 });
 
 async function mount(ptyId: string, visible: boolean) {
   const { useTerminal } = await import('../useTerminal');
   function Harness() {
     const ref = useRef<HTMLDivElement>(null);
-    useTerminal(ref, { ptyId, isVisible: visible });
+    termRef = useTerminal(ref, { ptyId, isVisible: visible }).terminal;
     return <div ref={ref} style={{ width: '100%', height: '100%' }} />;
   }
   host = document.createElement('div');
@@ -103,6 +107,40 @@ describe('useTerminal geometry of a hidden pane', { timeout: 60_000 }, () => {
       await mount('p-hidden', false);
       expect(reconnect).toHaveBeenCalledWith('p-hidden');
       expect(resize.mock.calls).toEqual([]);
+    } finally {
+      propose.mockRestore();
+    }
+  });
+
+  // The two follow-ups below are why a hidden pane must not just stay silent.
+  // A recovered session (daemon restart, reboot) is muted until the desk's
+  // first resize, so a pane that never resizes while hidden keeps its output
+  // out of the ring, and anything past the held-output cap is lost. And an
+  // xterm left at 80x24 under a 283-column PTY parses the hidden backlog at
+  // the wrong width on reveal, with no SIGWINCH to repair it, because the
+  // reveal fit sends the size the PTY already has.
+  it('a hidden pane re-sends the daemon geometry on reattach, which unmutes a recovered session', async () => {
+    const propose = vi.spyOn(FitAddon.prototype, 'proposeDimensions').mockReturnValue({ cols: 11, rows: 5 });
+    reconnect.mockImplementation(async () => ({ success: true, cols: 283, rows: 81 }));
+    try {
+      layoutSize = 0;
+      setDaemonModeActive(true);
+      await mount('p-recovered', false);
+      expect(resize.mock.calls).toEqual([['p-recovered', 283, 81]]);
+    } finally {
+      propose.mockRestore();
+    }
+  });
+
+  it('a hidden pane sizes its xterm to the PTY, so the hidden backlog wraps at the program width', async () => {
+    const propose = vi.spyOn(FitAddon.prototype, 'proposeDimensions').mockReturnValue({ cols: 11, rows: 5 });
+    reconnect.mockImplementation(async () => ({ success: true, cols: 283, rows: 81 }));
+    try {
+      layoutSize = 0;
+      setDaemonModeActive(true);
+      await mount('p-backlog', false);
+      expect(termRef?.current?.cols).toBe(283);
+      expect(termRef?.current?.rows).toBe(81);
     } finally {
       propose.mockRestore();
     }
