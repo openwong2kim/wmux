@@ -52,6 +52,12 @@ export function paneCwdOf(ptyId: string, workspaceId: string | undefined): strin
   return pane?.cwd ?? entry?.metadata?.cwd ?? undefined;
 }
 
+/** The pane's OWN cwd, with no workspace fallback ('' when wmux knows none):
+ *  moa_ask resolves a merge's repo from it, so it must be the asker's. */
+export function paneOwnCwdOf(ptyId: string, workspaceId: string): string {
+  return getWorkspaceMirror().getFleetSnapshot(workspaceId)?.panes.find((p) => p.ptyId === ptyId)?.cwd ?? '';
+}
+
 /** A pane's last screen lines through the daemon ([] when unreadable). */
 export async function readPaneScreen(getDaemonClient: () => DaemonClient | null, ptyId: string): Promise<string[]> {
   const dc = getDaemonClient();

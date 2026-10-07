@@ -114,7 +114,7 @@ import { createWorkspaceFactsPublisher, invalidateAutonomyCache, registerWorkspa
 import { publishMoaPane, setMoaPanePush } from './deck/moaPaneFeed';
 import { reconcileOwnerDowngrades } from './worktask/taskAutonomy';
 import { createHqAutoPress, setHqAutoPress } from './deck/hqApprovalLane';
-import { paneCwdOf, startMoaShadow } from './deck/moaShadowHost';
+import { paneOwnCwdOf, startMoaShadow } from './deck/moaShadowHost';
 import { startMoaDelegate } from './deck/moaDelegateWiring';
 import { getMoaDelegateService } from './deck/moaDelegatePorts';
 import { getTaskLedger } from './deck/taskLedgerHost';
@@ -1102,7 +1102,8 @@ registerLedgerRpc(rpcRouter, () => mainWindow);
 registerMoaRpc(rpcRouter, {
   getService: getMoaDelegateService,
   resolvePtyWorkspace: (ptyId) => resolvePtyOwnerWorkspace(() => mainWindow, ptyId),
-  paneCwd: (ptyId, workspaceId) => paneCwdOf(ptyId, workspaceId) ?? '',
+  // The pane's own cwd only: a workspace's cwd is not the asker's repo.
+  paneCwd: paneOwnCwdOf,
 });
 // Scheduled runs for agents: draft-only propose + redacted reads, relayed to
 // the daemon over main's first-party connection (pipe/handlers/automation.rpc.ts).

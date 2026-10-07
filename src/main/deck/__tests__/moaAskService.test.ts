@@ -112,11 +112,18 @@ function build(w: World) {
   });
   const settle = async () => {
     await service?.idle();
-    // The executor runs in the background after a settle.
-    for (let i = 0; i < 200 && effects.list().some((e) => e.status === 'pending' || e.status === 'inFlight'); i++) await new Promise((r) => setImmediate(r));
-    for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+    // The executor runs in the background after a settle (real file writes:
+    // poll on the clock, not on ticks). A merge that never returns stays
+    // inFlight, so the wait is bounded.
+    await until(() => !effects.list().some((e) => e.status === 'pending' || e.status === 'inFlight'), 500);
   };
   return { service, decisions, effects, executor, readFresh, merge, judge, readScreen, settle };
+}
+
+/** Poll `cond` every 5 ms for up to `ms`. */
+async function until(cond: () => boolean, ms = 2_000): Promise<void> {
+  const end = Date.now() + ms;
+  while (!cond() && Date.now() < end) await new Promise((r) => setTimeout(r, 5));
 }
 
 async function askAndSettle(h: ReturnType<typeof build>, req: MoaAskRequest = MERGE_REQ) {
@@ -178,7 +185,48 @@ describe('the auto merge lane', () => {
   });
 });
 
+describe('the daily cap under concurrency', () => {
+  it('one slot left and two auto merges judged together: exactly one is answered', async () => {
+    const w = world({ config: { mode: 'auto', autoRules: ['R-merge-green'], trustedAuthors: ['openwong2kim'], autoDailyCap: 1 } });
+    const h = build(w);
+    const releases: Array<() => void> = [];
+    h.judge.mockImplementation(() => new Promise<JudgeRunResult>((r) => { releases.push(() => r(GO)); }));
+    const other = 'f'.repeat(40);
+    // Both PRs read green on their own head.
+    h.readFresh.mockImplementation(async (_p: string, _k: string, n: number) => (n === 1858 ? OPEN_GREEN : { ...OPEN_GREEN, number: n, headRefOid: other, checksHeadOid: other }));
+    await h.service.ask(ASKER, '/repo', MERGE_REQ);
+    await h.service.ask(ASKER, '/repo', { body: { type: 'merge', prNumber: 1859, expectHead: other } });
+    await until(() => releases.length === 2);
+    expect(releases).toHaveLength(2);
+    for (const r of releases) r();
+    await h.settle();
+    const answered = h.decisions.list().filter((d) => d.resolvedBy === 'moa-auto');
+    expect(answered).toHaveLength(1);
+    expect(h.decisions.list().map((d) => d.reasonCode).sort()).toEqual(['auto-daily-cap', 'auto-merge']);
+  });
+
+  it('authorize refuses an auto effect once the owner lowered the cap below today\'s answers', async () => {
+    const w = world();
+    const h = build(w);
+    await askAndSettle(h);
+    const effect = h.effects.list()[0];
+    if (!effect) throw new Error('no effect');
+    w.config = { ...w.config, autoDailyCap: 0 };
+    expect(h.service.authorize(effect)).toBe('auto-daily-cap');
+  });
+});
+
 describe('red team: every one ends escalated or refused', () => {
+  it('a merge from a pane with no cwd of its own is refused as no-repo', async () => {
+    const h = build(world());
+    const r = await h.service.ask(ASKER, '', MERGE_REQ);
+    await h.settle();
+    if (!r.ok) throw new Error('refused');
+    const s = await h.service.status(ASKER, r.ticket.ticketId);
+    expect(s.ok && s.ticket).toMatchObject({ status: 'refused', reasonCode: 'no-repo' });
+    expect(h.readFresh).not.toHaveBeenCalled();
+  });
+
   it('a question in an auto rule\'s own words is never auto (no predicate)', async () => {
     const w = world({
       judgeReply: reply({ verdict: 'answer', choiceKey: '1', ruleId: 'R-merge-green', reasonCode: 'rule', why: 'the rule says so' }),
@@ -293,7 +341,7 @@ describe('idempotency', () => {
     h.judge.mockImplementationOnce(() => new Promise<JudgeRunResult>((r) => { release = () => r(GO); }));
     const first = await h.service.ask(ASKER, '/repo', MERGE_REQ);
     // Fresh lane read and the judge spawn happen in the background.
-    for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r));
+    await until(() => h.judge.mock.calls.length > 0);
     const retry = await h.service.ask(ASKER, '/repo', MERGE_REQ);
     expect(first.ok && retry.ok).toBe(true);
     if (!first.ok || !retry.ok) return;
@@ -419,7 +467,7 @@ describe('crashes', () => {
     const h = build(w);
     h.judge.mockImplementationOnce(() => new Promise<JudgeRunResult>(() => undefined));
     const r = await h.service.ask(ASKER, '/repo', Q_REQ);
-    for (let i = 0; i < 10; i++) await new Promise((res) => setImmediate(res));
+    await until(() => h.judge.mock.calls.length > 0);
     if (!r.ok) throw new Error('refused');
     const h2 = build(w);
     await h2.service.start();
@@ -435,7 +483,7 @@ describe('crashes', () => {
     const h = build(w);
     const enqueue = vi.spyOn(h.effects, 'enqueue').mockImplementationOnce(() => new Promise<MergeEffect>(() => undefined));
     await h.service.ask(ASKER, '/repo', MERGE_REQ);
-    for (let i = 0; i < 50; i++) await new Promise((r) => setImmediate(r));
+    await until(() => enqueue.mock.calls.length > 0);
     expect(enqueue).toHaveBeenCalled();
     expect(h.effects.list()).toHaveLength(0);
     // The owner turned the rule off meanwhile: the re-check refuses it.

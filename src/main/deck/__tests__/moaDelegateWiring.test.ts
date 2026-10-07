@@ -5,11 +5,12 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-const state = vi.hoisted(() => ({ config: { enabled: true, askMode: 'off' as string }, switchPath: '' }));
+const state = vi.hoisted(() => ({ config: { enabled: true, askMode: 'off' as string }, switchPath: '', written: new Set<() => void>() }));
 
 vi.mock('../deckHqStore', () => ({
   getMoaConfig: () => ({ ...state.config, autoRules: [], trustedAuthors: [] }),
   setMoaAutoRules: async () => true,
+  onHqStoreWritten: (l: () => void) => { state.written.add(l); return () => state.written.delete(l); },
 }));
 vi.mock('../../../shared/moaAskSwitch', async (orig) => ({
   ...(await orig<typeof import('../../../shared/moaAskSwitch')>()),
@@ -59,6 +60,22 @@ describe('moaDelegateWiring', () => {
     expect(refreshMoaDelegate()).toBeNull();
     expect(getMoaDelegateService()).toBeNull();
     expect(JSON.parse(fs.readFileSync(state.switchPath, 'utf8'))).toEqual({ enabled: false });
+  });
+
+  it('saving the settings starts and stops the delegate without a reconnect', () => {
+    expect(startMoaDelegate({ getDaemonClient: () => null, wmuxDir: dir, log: () => undefined })).toBeNull();
+    const saved = () => { for (const l of state.written) l(); };
+    state.config = { enabled: true, askMode: 'auto' };
+    saved();
+    expect(getMoaDelegateService()).not.toBeNull();
+    expect(JSON.parse(fs.readFileSync(state.switchPath, 'utf8'))).toEqual({ enabled: true });
+    state.config = { enabled: true, askMode: 'off' };
+    saved();
+    expect(getMoaDelegateService()).toBeNull();
+    expect(JSON.parse(fs.readFileSync(state.switchPath, 'utf8'))).toEqual({ enabled: false });
+    // One listener, however often main reconnects.
+    startMoaDelegate({ getDaemonClient: () => null, wmuxDir: dir, log: () => undefined });
+    expect(state.written.size).toBe(1);
   });
 
   it('Moa itself off means the delegate is off whatever the mode says', () => {

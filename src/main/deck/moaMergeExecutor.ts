@@ -1,6 +1,6 @@
 // ─── Moa's merge executor — runs the MergeEffect outbox (moaEffectStore.ts) ──
 //
-//   run(id):  authorize → claim (journal inFlight first) → FRESH lane read
+//   run(id):  claim (journal inFlight first) → authorize → FRESH lane read
 //             (MergeLaneFactsReader, never the TTL cache) → evaluateMergeLane
 //             (every predicate for 'moa-auto'; OWNER_APPROVED_PREDICATES for an
 //             owner's approval) → GhPrReviewService.merge() unchanged (it reads
@@ -10,7 +10,8 @@
 //             reconcileMergeEffect (MERGED with headRefOid === expectHead →
 //             done); a row that comes back `pending` runs again from the top.
 //
-// Nothing stored authorizes a merge. `authorize` is asked on every try: the
+// Nothing stored authorizes a merge. `authorize` is asked on every try, right
+// after the claim (a refusal then ends the claimed row `refused`): the
 // decision behind the effect must read answered/go NOW (a forged outbox row has
 // no such decision), and a 'moa-auto' effect must still be auto-eligible (book
 // attribute, the owner's toggle, the kill switch). A failure after the claim

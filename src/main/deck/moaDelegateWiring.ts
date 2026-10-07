@@ -26,7 +26,7 @@ import { detectRemote } from '../github/PrProvider';
 import { ghPrReviewService } from '../github/GhPrReviewService';
 import { ghIssueService } from '../github/GhIssueService';
 import { getTaskLedger } from './taskLedgerHost';
-import { getMoaConfig, setMoaAutoRules } from './deckHqStore';
+import { getMoaConfig, onHqStoreWritten, setMoaAutoRules } from './deckHqStore';
 import { loadPolicyBook } from './deckPolicy';
 import { setMoaDelegateService } from './moaDelegatePorts';
 import { MoaDecisionStore } from './moaDecisionStore';
@@ -78,6 +78,7 @@ interface Running {
 
 let running: Running | null = null;
 let deps: MoaDelegateWiringDeps | null = null;
+let settingsWatched = false;
 /** Owner logins by GitHub host (the owner's own PRs are trusted authors). */
 const ownerLogins = new Map<string, string>();
 
@@ -192,6 +193,13 @@ function build(d: MoaDelegateWiringDeps): MoaAskService {
  */
 export function startMoaDelegate(next: MoaDelegateWiringDeps): MoaAskService | null {
   deps = next;
+  // Every save of Moa's settings (mode, kill switch, cap, Moa's own switch)
+  // re-reads the mode: on registers the service and the MCP switch, off
+  // unregisters both, without waiting for the next daemon connect.
+  if (!settingsWatched) {
+    settingsWatched = true;
+    onHqStoreWritten(() => { refreshMoaDelegate(); });
+  }
   return refreshMoaDelegate();
 }
 

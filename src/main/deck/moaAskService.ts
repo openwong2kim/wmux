@@ -128,6 +128,9 @@ export class MoaAskService implements MoaDelegateServicePort {
   private readonly now: () => number;
   private readonly log: (line: string) => void;
   private lastAudit: MoaUnreceiptedMerge[] | undefined;
+  /** Auto answers decided but not yet settled: they hold a slot of the
+   *  daily cap, so concurrent judgements cannot all pass it. */
+  private readonly autoReserved = new Set<string>();
   /** Background judging, by decision id (tests await it). */
   private readonly work = new Map<string, Promise<void>>();
 
@@ -188,7 +191,13 @@ export class MoaAskService implements MoaDelegateServicePort {
     } catch (err) {
       s = esc('internal-error', `Moa could not decide this: ${String(err)}`.slice(0, 300));
     }
-    const settled = await this.ports.decisions.settle(d.id, s);
+    let settled: MoaDecision | null;
+    try {
+      settled = await this.ports.decisions.settle(d.id, s);
+    } finally {
+      // Settled (or not): the slot is now counted from the store, or freed.
+      this.autoReserved.delete(d.id);
+    }
     if (!settled) return;
     this.emitDecision('updated', settled);
     // Settled first, then the effect: a crash between the two is repaired at
@@ -288,9 +297,12 @@ export class MoaAskService implements MoaDelegateServicePort {
     const e = moaAutoEligibility({ book, ruleId: j.ruleId, ownerAutoRules: cfg.autoRules, kind: 'merge', predicatePassed: lane.ok });
     if (!e.eligible) return { settlement: esc(e.reason === 'predicate-failed' ? laneCode(lane) : `auto-${e.reason}`, `Moa may not merge this by itself${laneWhy}; ask the owner`, j), auto: false };
     if (cfg.autoPaused) return { settlement: esc('auto-paused', 'automatic answers are paused; ask the owner', j), auto: false };
-    if (this.autoAnswersToday() >= (cfg.autoDailyCap ?? MOA_AUTO_DAILY_CAP_DEFAULT)) {
+    // Checked and reserved in one synchronous step (no await in between), so
+    // two judgements finishing together cannot both take the last slot.
+    if (this.autoAnswersToday() + this.autoReserved.size >= (cfg.autoDailyCap ?? MOA_AUTO_DAILY_CAP_DEFAULT)) {
       return { settlement: esc('auto-daily-cap', 'the daily cap of automatic answers is reached; ask the owner', j), auto: false };
     }
+    this.autoReserved.add(d.id);
     return {
       settlement: { status: 'answered', judge: j, ruleId: j.ruleId, reasonCode: 'auto-merge', why: j.why || `rule ${j.ruleId}`, answer: { actionVerdict: 'go' } },
       auto: true,
@@ -342,6 +354,9 @@ export class MoaAskService implements MoaDelegateServicePort {
       const cfg = this.ports.getConfig();
       if (cfg.mode !== 'auto') return 'auto-mode-off';
       if (cfg.autoPaused) return 'auto-paused';
+      // This decision is one of today's auto answers; more than the cap (the
+      // owner lowered it since) refuses.
+      if (this.autoAnswersToday() > (cfg.autoDailyCap ?? MOA_AUTO_DAILY_CAP_DEFAULT)) return 'auto-daily-cap';
       const book = this.ports.loadBook();
       if (!book || !d.ruleId) return 'no-rule';
       // The lane predicate itself is re-run on the executor's fresh read.
