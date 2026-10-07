@@ -4,6 +4,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import { CHAT_QUEUE_MAX_ITEMS, ChatQueueStore } from '../ChatQueue';
+import { CHAT_MESSAGE_RETENTION_MS } from '../chatBridge';
 import { ChatSendReceiptStore } from '../ChatSendReceiptStore';
 
 const dirs: string[] = [];
@@ -76,6 +77,40 @@ describe('ChatQueueStore', () => {
     expect(new ChatSendReceiptStore(dir).view('device:a', 'pane', cmid)).toMatchObject({ state: 'submitted', result: 'sent' });
     const saved = JSON.parse(fs.readFileSync(path.join(dir, 'chat-send-receipts.json'), 'utf8'));
     expect(saved.version).toBe(1);
+  });
+
+  it('hides a final item past retention on read, before any write prunes it, but never an old active one', () => {
+    const dir = tmp();
+    let now = Date.now();
+    const store = new ChatQueueStore(dir, { now: () => now });
+    const [failed, waiting] = [id(), id()];
+    store.insert('device:a', 'pane', failed);
+    store.transition('device:a', failed, 'failed', 'expired');
+    store.insert('device:a', 'pane', waiting);
+    now += CHAT_MESSAGE_RETENTION_MS + 6 * 60 * 60 * 1000;
+    expect(store.list('pane').map((row) => row.clientMessageId)).toEqual([waiting]);
+    expect(store.get('device:a', failed)).toBeUndefined();
+    expect(store.get('device:a', waiting)?.state).toBe('queued');
+    expect(store.hasActive('pane')).toBe(true);
+    // Reads never write: the file still holds both until the next write.
+    const raw = JSON.parse(fs.readFileSync(path.join(dir, 'chat-queue.json'), 'utf8'));
+    expect(raw.entries).toHaveLength(2);
+  });
+
+  it('prunes final items past retention on load and rewrites the file', () => {
+    const dir = tmp();
+    const now = Date.now();
+    const old = now - CHAT_MESSAGE_RETENTION_MS - 6 * 60 * 60 * 1000;
+    const [stale, fresh, delivering] = [id(), id(), id()];
+    const row = (clientMessageId: string, state: string, at: number) =>
+      ({ clientMessageId, owner: 'device:a', paneId: 'pane', state, queuedAt: at, at });
+    fs.writeFileSync(path.join(dir, 'chat-queue.json'), JSON.stringify({ version: 1, entries: [
+      row(stale, 'failed', old), row(fresh, 'delivered', now - 1000), row(delivering, 'delivering', old),
+    ] }));
+    const store = new ChatQueueStore(dir, { now: () => now });
+    expect(store.list('pane').map((r) => [r.clientMessageId, r.state])).toEqual([[fresh, 'delivered'], [delivering, 'uncertain']]);
+    const saved = JSON.parse(fs.readFileSync(path.join(dir, 'chat-queue.json'), 'utf8'));
+    expect(saved.entries.map((r: { clientMessageId: string }) => r.clientMessageId)).toEqual([fresh, delivering]);
   });
 
   it('refuses a corrupt file', () => {

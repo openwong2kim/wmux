@@ -54,6 +54,9 @@ const OWNER = /^(?:operator|desktop|device:[A-Za-z0-9_-]{1,128})$/;
 
 export const isActiveQueueState = (state: ChatQueueState): boolean => state === 'queued' || state === 'delivering';
 
+/** A final record past retention. Active records never expire, whatever their age. */
+const expired = (row: ChatQueueRecord, cutoff: number): boolean => !isActiveQueueState(row.state) && row.at <= cutoff;
+
 function validRecord(value: unknown): value is ChatQueueRecord {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const row = value as Record<string, unknown>;
@@ -89,6 +92,9 @@ export class ChatQueueStore {
       else if (value.state === 'delivering') { this.records.push({ ...value, state: 'uncertain', reason: 'restart-uncertain', at }); changed = true; }
       else this.records.push(value);
     }
+    // Finals past retention go now: nothing else writes while the queue is idle.
+    const kept = this.pruned(this.records);
+    if (kept.length !== this.records.length) { this.records = kept; changed = true; }
     if (changed) {
       // Best effort: an unsaved rewrite loads the same way next time.
       try { this.save(this.records); } catch { /* see above */ }
@@ -97,12 +103,17 @@ export class ChatQueueStore {
 
   get(owner: ChatOwner, clientMessageId: string): Readonly<ChatQueueRecord> | undefined {
     const id = clientMessageId.toLowerCase();
-    return this.records.find((row) => row.owner === owner && row.clientMessageId === id);
+    const cutoff = this.cutoff();
+    return this.records.find((row) => row.owner === owner && row.clientMessageId === id && !expired(row, cutoff));
   }
 
-  /** The pane's records in enqueue order. */
+  /**
+   * The pane's records in enqueue order. A final record past retention is
+   * hidden here even before the next write prunes it.
+   */
   list(paneId: string): readonly Readonly<ChatQueueRecord>[] {
-    return this.records.filter((row) => row.paneId === paneId);
+    const cutoff = this.cutoff();
+    return this.records.filter((row) => row.paneId === paneId && !expired(row, cutoff));
   }
 
   /** Oldest `queued` record of the pane, any owner. */
@@ -167,15 +178,19 @@ export class ChatQueueStore {
     }
   }
 
+  private cutoff(): number {
+    return this.now() - CHAT_MESSAGE_RETENTION_MS;
+  }
+
   private pruned(records: ChatQueueRecord[]): ChatQueueRecord[] {
-    const cutoff = this.now() - CHAT_MESSAGE_RETENTION_MS;
+    const cutoff = this.cutoff();
     const kept: ChatQueueRecord[] = [];
     const finals = new Map<string, number>();
     // Newest first, so the per-pane/owner cap keeps the latest finals.
     for (let i = records.length - 1; i >= 0; i--) {
       const row = records[i];
       if (!isActiveQueueState(row.state)) {
-        if (row.at <= cutoff) continue;
+        if (expired(row, cutoff)) continue;
         const key = `${row.paneId}\n${row.owner}`;
         const count = finals.get(key) ?? 0;
         if (count >= KEEP_FINAL) continue;
