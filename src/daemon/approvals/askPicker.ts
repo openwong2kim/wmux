@@ -33,6 +33,11 @@
 // multi-select question draws the Submit tab too on Claude Code 2.1.288
 // (`←  ☐ Fruit  ✔ Submit  →`), and Enter on its Submit row draws the review.
 //
+// Claude Code 2.1.292 draws a question that wraps with a `│ ` gutter on each
+// of its rows (`│ How should we scope …` / `│ every daemon feature …`); a
+// one-row question, the option rows and their descriptions draw none. The
+// review screen draws the same gutter before a wrapped `● question` entry.
+//
 // Measured key effects (KEYS.md): on a single-select question a digit selects
 // and moves to the next tab (or, alone, submits); on a multi-select question a
 // digit only toggles its row and the cursor stays put; the free-text row of a
@@ -117,6 +122,8 @@ export interface AskAnswer {
 const RULE = /^─{10,}$/;
 const OPTION_ROW = /^(❯ | {2})(\d{1,2})\. (.*)$/;
 const CHECKBOX = /^\[( |✔)\] ?(.*)$/;
+const QUESTION_GUTTER = /^│ ?/;
+const REVIEW_GUTTER = /^│\s*/;
 const SUBMIT_ROW = /^(❯| ) {4}(Submit|Next)$/;
 const FREE_TEXT_PLACEHOLDER = /^Type something\.?$/;
 const ANSWERED_HEADER = "User answered Claude's questions:";
@@ -206,6 +213,12 @@ function parseQuestionView(rows: readonly string[], start: number, bar: AskPicke
     if (rows[i]!.trim()) text.push(rows[i]!.trim());
   }
   if (text.length === 0) return null;
+  // A question that wraps draws a `│ ` gutter on every one of its rows (2.1.292);
+  // a one-row question draws none. Stripped only when every row carries it.
+  const question = text.every((row) => QUESTION_GUTTER.test(row))
+    ? text.map((row) => row.replace(QUESTION_GUTTER, '')).filter((row) => row.trim())
+    : text;
+  if (question.length === 0) return null;
   const options: AskPickerRow[] = [];
   let multiSelect: boolean | undefined;
   let submitRow: { cursor: boolean; next: boolean } | undefined;
@@ -249,7 +262,7 @@ function parseQuestionView(rows: readonly string[], start: number, bar: AskPicke
   return {
     view: 'question',
     ...bar,
-    question: normalize(text.join(' ')),
+    question: normalize(question.join(' ')),
     options,
     multiSelect: multiSelect === true,
     ...(submitRow ? { submitRow } : {}),
@@ -282,7 +295,8 @@ function parseReviewView(rows: readonly string[], start: number, bar: AskPickerT
   let mode: 'question' | 'answer' | null = null;
   let i = start;
   for (; i < rows.length; i++) {
-    const text = rows[i]!.trim();
+    // 2.1.292 draws a wrapped entry's `● question` rows behind a `│ ` gutter.
+    const text = rows[i]!.trim().replace(REVIEW_GUTTER, '');
     if (text === 'Ready to submit your answers?') break;
     if (!text) {
       mode = null;

@@ -46,6 +46,13 @@ the bottom rule the picker draws only `N. Chat about this` and its key hint.
 The screens are in `claude-2.1.288/` (an 80×24 pane in the main buffer, not
 the alternate screen, so they sit apart from the fixtures above).
 
+Measured on Claude Code 2.1.292 (captured 2026-10-07 in an 80- and a 60-column
+pane): a question whose text wraps draws a `│ ` gutter on each of its rows; a
+one-row question draws none, and option rows and their (wrapped) descriptions
+draw none either. The review screen draws ` │ ` before each row of a wrapped
+`● question` entry; the answered block draws no gutter. Keys are unchanged.
+The screens are in `claude-2.1.292/` (main buffer).
+
 ## Claude Code — ExitPlanMode ("Would you like to proceed?")
 
 Options measured (default start): `1. Yes, and use auto mode`,

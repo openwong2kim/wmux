@@ -39,6 +39,12 @@ const SINGLE = {
   otherPasted: screen('claude-ask-other-02-after-paste.json'),
 };
 
+/** Claude Code 2.1.292: a question that wraps draws a `│ ` gutter on each of its rows (KEYS.md). */
+const WRAPPED = {
+  initial: screen('claude-2.1.292/claude-ask-wrap-en-01-initial-2.1.292.json'),
+  answered: screen('claude-2.1.292/claude-ask-wrap-en-02-answered-2.1.292.json'),
+};
+
 /** Move the picker's `❯` from the row starting `from` to the row starting `to` (both without their 2-column prefix). */
 function moveCursor(rows: readonly string[], from: string, to: string): string[] {
   return rows.map((row) => {
@@ -154,6 +160,22 @@ const COLOR_PAYLOAD = {
         { label: 'Red', description: 'warm' },
         { label: 'Green', description: 'calm' },
         { label: 'Blue', description: 'cool' },
+      ],
+    }],
+  },
+};
+
+const SCOPE_PAYLOAD = {
+  hook_event_name: 'PreToolUse',
+  tool_name: 'AskUserQuestion',
+  tool_input: {
+    questions: [{
+      question: 'How should we scope the next release? There are eight open pull requests and every daemon feature they need already shipped in four point zero.',
+      header: 'Scope',
+      multiSelect: false,
+      options: [
+        { label: 'All eight', description: 'Ship every open pull request in this release' },
+        { label: 'Only this chat', description: 'Ship only the chat work and leave the rest for later' },
       ],
     }],
   },
@@ -424,6 +446,26 @@ describe('answering the picker', () => {
     const result = await answer(h, record, { answers: [{ questionId: 'q0', keys: ['3'] }] });
     expect(result).toMatchObject({ ok: true, request: { state: 'resolved' } });
     expect(h.stepKeys).toEqual(['3']);
+  });
+
+  it('answers a question that wraps behind a │ gutter (Claude Code 2.1.292)', async () => {
+    const h = makeRegistry({}, WRAPPED.initial);
+    const record = await create(h, SCOPE_PAYLOAD);
+    h.script = [['1', WRAPPED.answered]];
+    const result = await answer(h, record, { answers: [{ questionId: 'q0', keys: ['1'] }] });
+    expect(result).toMatchObject({ ok: true, request: { state: 'resolved' } });
+    expect(h.stepKeys).toEqual(['1']);
+  });
+
+  it('still refuses a wrapped question that is not the record\'s, pressing nothing', async () => {
+    const changed = WRAPPED.initial.map((row) => row.replace('eight open pull requests', 'nine open pull requests'));
+    expect(changed).not.toEqual(WRAPPED.initial);
+    const h = makeRegistry({}, changed);
+    const record = await create(h, SCOPE_PAYLOAD);
+    const result = await answer(h, record, { answers: [{ questionId: 'q0', keys: ['1'] }] });
+    expect(result).toMatchObject({ ok: false, reason: 'prompt-changed' });
+    expect(h.stepKeys).toEqual([]);
+    expect(h.writes).toEqual([]);
   });
 
   it('types free text into a single question: its digit, the paste, Enter', async () => {

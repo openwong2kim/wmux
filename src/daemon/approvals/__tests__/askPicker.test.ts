@@ -384,6 +384,124 @@ describe('Claude Code 2.1.288 screens', () => {
   });
 });
 
+/**
+ * Claude Code 2.1.292, measured: a question that wraps draws a `│ ` gutter on
+ * each of its rows, and the review screen draws one before a wrapped entry
+ * (KEYS.md). The phone's answer was refused as `prompt-changed` on these.
+ */
+const V292_DIR = path.join(DIR, 'claude-2.1.292');
+const screen292 = (name: string): string[] =>
+  (JSON.parse(fs.readFileSync(path.join(V292_DIR, `claude-ask-${name}-2.1.292.json`), 'utf8')) as { screen: string[] }).screen;
+const V292 = {
+  en: screen292('wrap-en-01-initial'),
+  enAnswered: screen292('wrap-en-02-answered'),
+  ko: screen292('wrap-ko-01-initial'),
+  desc: screen292('wrap-desc-01-initial'),
+  short: screen292('short-01-initial'),
+  review: screen292('wrap-review-01-review'),
+};
+const SCOPE_TEXT = 'How should we scope the next release? There are eight open pull requests and every daemon feature they need already shipped in four point zero.';
+const KO_TEXT = '다음 릴리스 범위를 어떻게 잡을까요? 열린 풀 리퀘스트가 여덟 개이고 그것들이 필요로 하는 데몬 기능은 4.0.0에 다 나와 있습니다.';
+const single = (
+  question: string,
+  header: string,
+  options: Array<{ label: string; description?: string }>,
+): AskFormQuestion[] => claudeQuestionsForm({
+  tool_input: { questions: [{ question, header, multiSelect: false, options }] },
+})!.questions! as AskFormQuestion[];
+const SCOPE = single(SCOPE_TEXT, 'Scope', [
+  { label: 'All eight', description: 'Ship every open pull request in this release' },
+  { label: 'Only this chat', description: 'Ship only the chat work and leave the rest for later' },
+]);
+const KO_SCOPE = single(KO_TEXT, '범위', [
+  { label: '여덟 개 전부', description: '이번 릴리스에 열린 풀 리퀘스트를 모두 싣는다' },
+  { label: '이 채팅만', description: '채팅 작업만 싣고 나머지는 다음으로 미룬다' },
+]);
+
+describe('Claude Code 2.1.292 screens (a wrapped question behind a │ gutter)', () => {
+  it('reads a wrapped question without its gutter, and a one-row question as before', () => {
+    const picker = parseAskPicker(V292.en);
+    expect(picker).toMatchObject({ view: 'question', question: SCOPE_TEXT });
+    expect(askPickerUntouched(picker, SCOPE)).toBe(true);
+    expect(askPickerUntouched(parseAskPicker(V292.short), single('Which color?', 'Color', [
+      { label: 'Red', description: 'warm' },
+      { label: 'Blue', description: 'cool' },
+    ]))).toBe(true);
+  });
+
+  it('reads a wrapped Korean question, also when the row breaks inside a word', () => {
+    expect(askPickerUntouched(parseAskPicker(V292.ko), KO_SCOPE)).toBe(true);
+    // The same screen with the wrap moved inside 그것들이: no space at the break.
+    const midWord = V292.ko.map((row) => row
+      .replace(/^(│ 다음 .* 그것)들이$/, '$1')
+      .replace(/^│ 필요로/, '│ 들이 필요로'));
+    expect(midWord).not.toEqual(V292.ko);
+    expect(askPickerUntouched(parseAskPicker(midWord), KO_SCOPE)).toBe(true);
+  });
+
+  it('matches options whose descriptions wrap onto several rows', () => {
+    expect(askPickerUntouched(parseAskPicker(V292.desc), single(SCOPE_TEXT, 'Scope', [
+      { label: 'All eight', description: 'Ship every open pull request in this release, including the two that still wait for a Windows check from the owner' },
+      { label: 'Only this chat', description: 'Ship only the chat work and leave the rest of the open pull requests for the release after this one' },
+    ]))).toBe(true);
+    // A description cut short or changed is still another option.
+    expect(askPickerUntouched(parseAskPicker(V292.desc), single(SCOPE_TEXT, 'Scope', [
+      { label: 'All eight', description: 'Ship every open pull request in this release' },
+      { label: 'Only this chat', description: 'Ship only the chat work and leave the rest of the open pull requests for the release after this one' },
+    ]))).toBe(false);
+  });
+
+  it('still refuses another question, another option or a gutter on only some rows', () => {
+    const picker = parseAskPicker(V292.en);
+    expect(askPickerUntouched(picker, single(SCOPE_TEXT.replace('eight', 'nine'), 'Scope', [
+      { label: 'All eight', description: 'Ship every open pull request in this release' },
+      { label: 'Only this chat', description: 'Ship only the chat work and leave the rest for later' },
+    ]))).toBe(false);
+    expect(askPickerUntouched(picker, single(SCOPE_TEXT.slice(0, 37), 'Scope', [
+      { label: 'All eight', description: 'Ship every open pull request in this release' },
+      { label: 'Only this chat', description: 'Ship only the chat work and leave the rest for later' },
+    ]))).toBe(false);
+    expect(askPickerUntouched(picker, single(SCOPE_TEXT, 'Scope', [
+      { label: 'All nine', description: 'Ship every open pull request in this release' },
+      { label: 'Only this chat', description: 'Ship only the chat work and leave the rest for later' },
+    ]))).toBe(false);
+    // A `│` that is not a gutter on every row stays part of the text.
+    const half = V292.en.map((row) => row.replace(/^│ every/, 'every'));
+    expect(askPickerUntouched(parseAskPicker(half), SCOPE)).toBe(false);
+  });
+
+  it('confirms the answer from the measured answered block', () => {
+    const baseline = askConfirmBaseline(V292.en);
+    expect(answersConfirmed(V292.enAnswered, baseline, SCOPE, [{ keys: ['1'] }])).toBe(true);
+    expect(answersConfirmed(V292.enAnswered, baseline, SCOPE, [{ keys: ['2'] }])).toBe(false);
+  });
+
+  it('reads the review screen of two wrapped questions', () => {
+    const questions = claudeQuestionsForm({
+      tool_input: {
+        questions: [
+          {
+            question: SCOPE_TEXT,
+            header: 'Scope',
+            multiSelect: false,
+            options: [{ label: 'All eight', description: 'Ship all' }, { label: 'Only this chat', description: 'Ship chat only' }],
+          },
+          {
+            question: 'Which day should the release go out, given that the Windows checks for two of the pull requests are still waiting on the owner?',
+            header: 'Day',
+            multiSelect: false,
+            options: [{ label: 'Friday', description: 'End of week' }, { label: 'Monday', description: 'Start of week' }],
+          },
+        ],
+      },
+    })!.questions! as AskFormQuestion[];
+    const review = parseAskPicker(V292.review);
+    expect(review).toMatchObject({ view: 'review', entries: [{ question: SCOPE_TEXT, answer: 'All eight' }, { answer: 'Friday' }] });
+    expect(askScreenMeets(review, { view: 'review' }, questions, [{ keys: ['1'] }, { keys: ['1'] }])).toBe(true);
+    expect(askScreenMeets(review, { view: 'review' }, questions, [{ keys: ['1'] }, { keys: ['2'] }])).toBe(false);
+  });
+});
+
 describe('answerListMatches', () => {
   it('matches the labels in any order, joined by commas, across a wrap', () => {
     expect(answerListMatches('Basil, Cheese, anchovy', ['Cheese', 'Basil', 'anchovy'])).toBe(true);
