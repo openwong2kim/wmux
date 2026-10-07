@@ -86,7 +86,8 @@ export function fromAgentPath(agentPath: string, env: NodeJS.ProcessEnv = proces
  * root applies (a wsl.conf `automount.root` elsewhere is then read as a
  * distro-internal path and goes through `\\wsl$\`, which still names the same
  * directory). Returns an error string instead of a guess: a distro-internal
- * path with no (valid) distro, or anything that is not an absolute Linux path.
+ * path with no (valid) distro, a path holding a character that is a separator
+ * or reserved on Windows, or anything that is not an absolute Linux path.
  */
 export function wslPathToHost(
   linuxPath: string,
@@ -95,6 +96,16 @@ export function wslPathToHost(
 ): { path: string } | { error: string } {
   if (!linuxPath.startsWith('/') || linuxPath.startsWith('//')) {
     return { error: `${JSON.stringify(linuxPath)} is not an absolute Linux path` };
+  }
+  // `\` and `:` are ordinary characters in a Linux name but separators on
+  // Windows: `/home/me/repo/..\other` is ONE directory inside repo, yet as
+  // `\\wsl$\…\repo\..\other` it resolves to a sibling of repo. The rest of
+  // the Windows-reserved set cannot name the same file either. Refuse rather
+  // than translate into a different directory.
+  if (/[\\:*?"<>|]/.test(linuxPath)) {
+    return {
+      error: `${JSON.stringify(linuxPath)} contains a character (\\ : * ? " < > |) that means something else in a Windows path, so it cannot be translated safely`,
+    };
   }
   // fromAgentPath only needs a non-empty distro to switch on; the drive
   // mapping itself never reads the name.

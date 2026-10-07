@@ -114,3 +114,18 @@ describe('wslPathToHost', () => {
     expect(wslPathToHost('//server/share', 'Ubuntu')).toHaveProperty('error');
   });
 });
+
+describe('wslPathToHost refuses Linux names Windows would read differently', () => {
+  it('refuses a backslash segment that would climb to a sibling directory', () => {
+    // One directory named `..\other` inside repo, not repo's parent.
+    const res = wslPathToHost('/home/me/repo/..\\other', 'Ubuntu');
+    expect(res).toMatchObject({ error: expect.stringMatching(/cannot be translated safely/) });
+    expect(wslPathToHost('/mnt/d/repo/..\\other', undefined)).toHaveProperty('error');
+  });
+
+  it('refuses a colon and the rest of the Windows-reserved set', () => {
+    for (const ch of [':', '*', '?', '"', '<', '>', '|']) {
+      expect(wslPathToHost(`/home/me/a${ch}b`, 'Ubuntu')).toHaveProperty('error');
+    }
+  });
+});

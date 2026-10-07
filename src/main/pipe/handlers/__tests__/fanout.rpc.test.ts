@@ -1803,6 +1803,18 @@ describe('a WSL caller pane is resolved to the Windows path of its directory', (
     expect(vi.mocked(git)).not.toHaveBeenCalled();
   });
 
+  it('a backslash in a WSL directory name is refused, never resolved to a sibling repo', async () => {
+    const h = setup({
+      platform: 'win32',
+      cwd: '/home/me/repo/..\\other',
+      daemonSessions: [{ id: 'pty-1', wslTarget: { distribution: 'Ubuntu', user: 'me' } }],
+    });
+    const err = errorOf(await h.call(goodParams()));
+    expect(err.code).toBe('FAILED_PRECONDITION');
+    expect(err.message).toMatch(/cannot be translated safely/);
+    expect(vi.mocked(git)).not.toHaveBeenCalled();
+  });
+
   it('a non-WSL Windows caller is unchanged', async () => {
     const h = setup({ platform: 'win32', cwd: 'D:\\work\\repo\\src', daemonSessions: [] });
     answerFor('D:\\work\\repo');
