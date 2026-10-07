@@ -1465,11 +1465,12 @@ v1 paths.
 | `chatCancel` | Whether this caller may use `POST /api/sessions/<id>/chat/cancel`: the server runs with `--allow-transcript`, the caller has the input grant, and the chat bridge is wired |
 | `chatCancelOutcome` | `true` when `chatCancel` is true and the cancel receipt store loaded; omitted otherwise (never `false`). Advertises `cancel` on the cancel answer, the cancel receipt route and SSE `chat.cancel` (see Chat cancel outcome) |
 | `chatQueue` | Whether this caller's `chat-queue` sends are held by the daemon queue, and `DELETE …/chat/queue/<clientMessageId>` is open to it: the same condition as `chatSend`, plus a queue that loaded |
+| `chatSteer` | `true` when `chatQueue` is true and the daemon has steer: a send may carry `deliver`, and `PATCH …/chat/queue/<clientMessageId>` is open (see Chat queue, Steer); omitted otherwise (never `false`) |
 
 **Advertised = accepted.** The chat write keys (`chatSend`, `chatLaunch`,
-`chatQueue`, `chatCancel`, `chatCancelOutcome`) are computed from the same
+`chatQueue`, `chatSteer`, `chatCancel`, `chatCancelOutcome`) are computed from the same
 caller gates their routes (`POST …/chat/messages`, `…/chat/launch`,
-`…/chat/cancel`, `DELETE …/chat/queue/<id>`) check before they look at the
+`…/chat/cancel`, `DELETE` and `PATCH …/chat/queue/<id>`) check before they look at the
 pane: `--allow-transcript`, then the input grant, plus a wired chat bridge.
 The keys are a snapshot taken when `/api/config` is read: a caller that saw a
 key is not refused that write with 403 for the grants it held then, or 503
@@ -2082,8 +2083,8 @@ left there fails the item (`draft-present`) and stays as it was. A screen
 without the composer (a dialog, a usage view) holds the item like any other
 dialog, and fails it as `blocked` only when its time runs out.
 
-**Send answer.** 202 `{state:"queued", replayed:false, clientMessageId,
-effect:"queued"}`. A repeat with the same id and body answers 200 with the
+**Send answer.** 202 `{state:"queued", deliver, replayed:false, clientMessageId,
+effect:"queued"}` (`deliver` from a daemon with steer; see Steer). A repeat with the same id and body answers 200 with the
 item's current `state` (and `reason`), `replayed:true`, also after delivery
 started; `effect` is `queued` while it waits, `submitted` once delivered,
 `uncertain` for `uncertain`, and `none` otherwise. The same id with another
@@ -2121,7 +2122,7 @@ every `queued` item reads `canceled` (`daemon-restart`) and every `delivering`
 item `uncertain` (`restart-uncertain`); nothing is delivered.
 
 **`/turns`.** For a `chat-queue` caller on a daemon whose queue loaded, the
-chat object carries `queue: [{clientMessageId, state, reason?, queuedAt, at,
+chat object carries `queue: [{clientMessageId, state, reason?, deliver?, queuedAt, at,
 preview?}]`: the caller's own items on the pane, most recent kept, in enqueue
 order. `preview` is the first 80 characters, held in memory only (absent after
 a restart). `capabilities.queue` is `true` for a live Claude, Codex or
@@ -2148,12 +2149,86 @@ back. Needs the input grant (403 otherwise); only the owner's items are found.
 A 404 without one of these two `error` values means the route is missing (an
 older daemon).
 
-**SSE `chat.queue`.** `{sessionId, clientMessageId, state, reason?, at}` on
-every state change. `delivering` is sent only once the first write
+**SSE `chat.queue`.** `{sessionId, clientMessageId, state, reason?, deliver?, at}` on
+every state change, and once more (same `state`) when an item switches to
+`steer`. `delivering` is sent only once the first write
 is about to happen; an item the daemon holds back before that never shows
 `delivering` then `queued`. Live-only like `chat.blocked` (no `id:`, never replayed),
 and only to the item's owner among the pane's `/turns` watchers. `/turns` is
 the authoritative state after a reconnect.
+
+#### Steer
+
+Advertised by `/api/config` `chatSteer:true`. Every queue item has a `deliver`
+mode, memory-only like `preview` (absent after a restart, when the item is
+final anyway):
+
+| `deliver` | When it is typed |
+| --- | --- |
+| `next-turn` | After the running turn ends, one item per ended turn, as above. The default |
+| `steer` | Claude only: as soon as the pane allows, **during** the running turn. It goes into Claude's own composer queue, which applies it at the next tool boundary, exactly like a message typed into a running Claude in Terminal |
+
+On a Codex or OpenCode pane, `steer` behaves as `next-turn`, and the item
+reads `deliver:"next-turn"` everywhere (send answer, `/turns`, SSE, the PATCH
+answer), so the app can tell that "send now" was not available there.
+
+**Choosing steer at send time.** Add `"deliver":"steer"` to a `chat-queue`
+send. When the daemon would hold it (a turn runs, or the pane's queue is not
+empty), it is queued as a steer item and the daemon tries it at once; the
+answer is the usual 202 `{state:"queued", deliver:"steer", …, effect:"queued"}`
+and the delivery shows on SSE `chat.queue` (`delivering`, then `delivered`)
+and in `/turns`. When nothing would hold it, it is sent directly, as without
+the capability. Omitted `deliver` is `next-turn`.
+
+**Order.** The queue stays FIFO per pane, with one exception: while a Claude
+turn runs, the oldest `steer` item goes ahead of `next-turn` items, of any
+owner, that wait for the turn's end. A steer item is not held by them, so a
+pane whose queue is blocked by the any-owner rule can be unblocked by
+switching your item to steer. When the turn is not running, the head is
+delivered first, whatever its mode.
+
+**Same safety as a direct send.** A steer item is typed through the same
+guarded paste: bracketed paste, then Enter; only into Claude's empty composer
+on screen (a draft there holds it); never while an approval, a dialog or a
+screen without the composer is up (it is held, as `queued`, and fails as
+`blocked` or `prompt-active` only when its idle lifetime runs out); never while
+someone is typing into the pane (held); with the owner re-authorized before the
+first write and before Enter; at most once (`delivering` is final for a
+retry). A steer item delivered mid-turn opens no new episode: the receipt reads
+`submitted` with `queued:true`, and `next-turn` items still wait for the
+running turn's end.
+
+**`PATCH /api/sessions/<id>/chat/queue/<clientMessageId>`** with body exactly
+`{"deliver":"steer"}` switches a waiting item to steer (the app's "send now"
+on a queued bubble) and kicks the queue. Same gates as `DELETE`: the input
+grant (403 otherwise), owner-bound (another owner's item is not found). Any
+other body is 400 `invalid-chat-request`. There is no switch back.
+
+| Status | Body |
+| --- | --- |
+| 200 | `{state:"queued", deliver, clientMessageId}`: `deliver:"steer"`, also on a repeat; `deliver:"next-turn"` on Codex/OpenCode (unchanged). The delivery itself follows on SSE `chat.queue` |
+| 409 | `already-delivered` `{state}` |
+| 409 | `delivery-in-progress` `{state}` |
+| 409 | `queue-item-final` `{state, reason}`: `canceled`, `failed` or `uncertain` |
+| 404 | `queue-item-not-found` |
+| 404 | `pane-not-found` |
+| 400 | `invalid-chat-request` |
+
+Example, a pane busy with a long turn and another owner's item waiting:
+
+```
+POST /api/sessions/web-1/chat/messages   (X-Wmux-Client-Caps: chat-queue)
+{ …, "clientMessageId": "1791…-…", "text": "also add a test" }
+→ 202 {"state":"queued","deliver":"next-turn","replayed":false,"clientMessageId":"1791…-…","effect":"queued"}
+
+PATCH /api/sessions/web-1/chat/queue/1791…-…
+{"deliver":"steer"}
+→ 200 {"state":"queued","deliver":"steer","clientMessageId":"1791…-…"}
+
+SSE chat.queue {"sessionId":"web-1","clientMessageId":"1791…-…","state":"queued","deliver":"steer","at":…}
+SSE chat.queue {…,"state":"delivering","deliver":"steer",…}
+SSE chat.queue {…,"state":"delivered","deliver":"steer",…}
+```
 
 ---
 
@@ -4149,8 +4224,10 @@ with **no** `cursor`. Drop the rows and read again without one.
   not graphemes). When `chat.maxSendBytes` is present, also at most that many
   UTF-8 bytes; the daemon's own measurement of the exact OpenCode request stays
   authoritative. Newlines are allowed.
-- All four fields are required strings; any other key is
-  `400 invalid-chat-request`. The body cap is 96 KiB.
+- All four fields are required strings. One optional key, `deliver`
+  (`"next-turn"` or `"steer"`), applies only to a `chat-queue` send (see
+  Chat queue, Steer) and is ignored without that capability; any other value,
+  or any other key, is `400 invalid-chat-request`. The body cap is 96 KiB.
 
 **Grants.** `--allow-transcript` and input permission, both checked before the
 body is read and again after it with a fresh authentication of the same caller;
@@ -4233,6 +4310,10 @@ receipt); show it as queued until its `user_text` row appears in `/turns`. Absen
 `queued` means the prompt was submitted into an idle agent. A running Claude
 turn with a draft in the composer still answers `chat-busy`, and a running
 Codex turn is refused as before (`chat-busy` or `input-not-provably-empty`).
+Someone typing into the pane (a key, click or wheel turn in the last 3 seconds,
+including the daemon's own previous send) also answers `chat-busy`; retry after
+a moment. Pointer motion and focus reports from a desktop that shows the pane
+never count as typing.
 
 `opencode-receipts-full` reaches the daemon from the plugin as
 `{result:"unavailable", reason:"receipts-full"}`, so a daemon that predates the

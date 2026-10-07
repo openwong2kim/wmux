@@ -4628,7 +4628,11 @@ function registerRpcHandlers(
     return { agentName: readDaemonAgentState(id).agentName, bracketedPaste };
   });
   const readChatAgentState = (id: string) => {
-    const live = readDaemonAgentState(id);
+    const keyed = sessionManager.getSession(id)?.bridge;
+    // A chat send fences on keys only: a pointer drifting over a mouse-tracking
+    // TUI (Claude's fullscreen renderer) writes motion reports, not text.
+    const live = { ...readDaemonAgentState(id),
+      ...(keyed ? { keyInputQuiet: keyed.isKeyInputQuiet(), keyInputRevision: keyed.getKeyInputRevision() } : {}) };
     // A chat-v2 driver reports its own run state from its stream, not from
     // hooks or the screen.
     const driverStatus = chatV2Host?.statusForPane(id);
