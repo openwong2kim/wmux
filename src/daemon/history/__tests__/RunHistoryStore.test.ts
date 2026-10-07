@@ -20,6 +20,24 @@ describe('durable phone results', () => {
     expect(new RunHistoryStore(root).list().entries.map(x=>x.outcome)).toEqual(['failed','completed']);
     if (process.platform !== 'win32') expect(fs.statSync(path.join(root,'phone-run-history.json')).mode & 0o777).toBe(0o600);
   });
+  it('keeps the typed failure on a failed entry only, and re-validates it on load', () => {
+    const failure = { reason: 'rate-limited' as const, provider: 'claude' as const, providerCode: 'rate_limit', message: 'You hit your limit', at: 150, turnId: 't1:abc.2' };
+    const store = new RunHistoryStore(root);
+    store.ingest('pane',{},signal('agent.stop','complete'),undefined,failure);
+    store.ingest('pane',{},signal('agent.stop_failure','error',200),undefined,failure);
+    const [failed, completed] = new RunHistoryStore(root).list().entries;
+    expect(failed).toMatchObject({ outcome: 'failed', failure });
+    expect(completed?.failure).toBeUndefined();
+    // A tampered file: a bad reason drops the failure, a bad optional field drops only that field.
+    const file = path.join(root,'phone-run-history.json');
+    const raw = JSON.parse(fs.readFileSync(file,'utf8'));
+    raw.entries[1].failure = { ...failure, turnId: 'not-a-turn', providerCode: 'bad code!' };
+    raw.entries.push({ ...raw.entries[1], id: 'x', failure: { ...failure, reason: 'meltdown' } });
+    fs.writeFileSync(file, JSON.stringify(raw));
+    const reloaded = new RunHistoryStore(root).list().entries;
+    expect(reloaded[0]?.failure).toBeUndefined();
+    expect(reloaded[1]?.failure).toEqual({ reason: 'rate-limited', provider: 'claude', message: 'You hit your limit', at: 150 });
+  });
   it('never treats subagent completion, idle detector or a continuing lead as done', () => {
     const store = new RunHistoryStore(root);
     store.ingest('pane',{},signal('agent.subagent_stop','complete'));

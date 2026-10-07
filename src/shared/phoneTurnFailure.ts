@@ -1,7 +1,8 @@
 /**
  * Typed agent turn failure for the phone contract (docs/phone-client-contract.md,
- * "Proposed: contract v-next", item 1). CONTRACT ONLY: nothing serves these
- * fields yet.
+ * "Proposed: contract v-next", item 1). Served: the daemon classifies with
+ * the functions below and fans one result out to every surface
+ * (`src/daemon/turnFailure/serveTurnFailure.ts`).
  *
  * The rule is "known facts only". `reason` is a coarse, closed union derived
  * from the provider's own structured error code; `providerCode` carries that
@@ -172,4 +173,32 @@ export function withoutMessage(failure: TurnFailure): TurnFailure {
   const rest = { ...failure };
   delete rest.message;
   return rest;
+}
+
+const REASONS = new Set<TurnFailureReason>(['rate-limited', 'auth', 'quota', 'network', 'unknown']);
+const PROVIDERS = new Set<TurnFailureProvider>(['claude', 'codex']);
+const TURN_ID = /^t1:[A-Za-z0-9.:_-]{1,128}$/;
+
+/**
+ * A failure read back from disk (run history), re-validated field by field:
+ * undefined when the required fields do not hold, and any optional field that
+ * does not hold is dropped. The reserved fields are never restored.
+ */
+export function storedTurnFailureOf(value: unknown): TurnFailure | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const v = value as Record<string, unknown>;
+  if (typeof v.reason !== 'string' || !REASONS.has(v.reason as TurnFailureReason)) return undefined;
+  if (typeof v.provider !== 'string' || !PROVIDERS.has(v.provider as TurnFailureProvider)) return undefined;
+  if (typeof v.at !== 'number' || !Number.isFinite(v.at)) return undefined;
+  const status = v.httpStatus;
+  const message = clipProviderMessage(v.message);
+  return {
+    reason: v.reason as TurnFailureReason,
+    provider: v.provider as TurnFailureProvider,
+    ...(typeof v.providerCode === 'string' && PROVIDER_CODE.test(v.providerCode) ? { providerCode: v.providerCode } : {}),
+    ...(typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599 ? { httpStatus: status } : {}),
+    ...(message ? { message } : {}),
+    at: v.at,
+    ...(typeof v.turnId === 'string' && TURN_ID.test(v.turnId) ? { turnId: v.turnId } : {}),
+  };
 }

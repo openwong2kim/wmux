@@ -105,6 +105,26 @@ describe('DaemonPTYBridge — running-episode turn id', () => {
     expect(turn()).toEqual({ ...first, state: 'idle' });
   });
 
+  it('holds a turn failure until the next episode opens, not through a session start or a repeat', () => {
+    expect(bridge.getTurnId()).toBeUndefined();
+    bridge.noteInput('go\r');
+    const id = bridge.getTurnId();
+    expect(id).toBe(turn().id);
+    bridge.noteAgentStatus('error', true);
+    const failure = { reason: 'rate-limited' as const, provider: 'claude' as const, at: 1, turnId: id };
+    expect(bridge.noteTurnFailure(failure, 'conv-1')).toEqual({ failure, fresh: true });
+    // The same turn again keeps the first object.
+    expect(bridge.noteTurnFailure({ ...failure, at: 2 })).toEqual({ failure, fresh: false });
+    // A SessionStart (resume, compaction) is not a new turn.
+    bridge.noteSessionStart(Date.now(), 'resume');
+    expect(bridge.getLastFailure()).toEqual({ failure, agentSessionId: 'conv-1' });
+    // The next prompt starts one: the failure is gone.
+    vi.advanceTimersByTime(1000);
+    bridge.noteInput('continue\r');
+    expect(bridge.getTurnId()).not.toBe(id);
+    expect(bridge.getLastFailure()).toBeUndefined();
+  });
+
   it('opens a new episode on the first running edge after a settle: a hook or a byte promotion', () => {
     bridge.noteInput('go\r');
     const first = turn().id;

@@ -139,6 +139,7 @@ import { cursorMatches, decodeChatCursor, encodeChatCursor, type ReadSource } fr
 import { ChatLaunchReceiptStore, type LaunchReceiptState } from './chatLaunchReceipts';
 import { cancelEventBody, cancelReceiptResponse } from './chatCancelOutcome';
 import type { CodexAccountStatus } from '../../shared/phoneCodexAccountStatus';
+import { withoutMessage, type TurnFailure } from '../../shared/phoneTurnFailure';
 import type { ChatCancelEvent } from '../chat/chatCancelObserver';
 import {
   ChatV2Cancels,
@@ -638,6 +639,12 @@ interface WebTerminalServerDeps {
   };
   agentLaunchOptions?: (env?: NodeJS.ProcessEnv) => Promise<AgentLaunchOptions[]>;
   desktop?: () => DesktopPhoneBridge | null;
+  /**
+   * Contract v-next item 1: the pane's last turn failure while no later turn
+   * has started (held on the pane's bridge), with the agent conversation it
+   * happened in. Absent, or undefined for a pane, means none.
+   */
+  turnFailure?: (sessionId: string) => { failure: TurnFailure; agentSessionId?: string } | undefined;
   runHistory?: () => RunHistoryStore;
   inputReceipts?: () => InputReceiptStore;
   /** Receipts for `POST /api/approvals/:id/answer`. Absent ⇒ that route is 503. */
@@ -2527,6 +2534,9 @@ export class WebTerminalServer {
         // Contract v-next item 2. OMITTED, not false: needs the transcript
         // grant and a pane this caller may read that has a live Codex relay.
         ...(this.codexAccountStatusVisible() ? { codexAccountStatus: true } : {}),
+        // Contract v-next item 1: `failure` on /turns, the session rows,
+        // agent.liveness and history. Always, on every daemon that serves it.
+        turnFailure: true,
         agentLaunch: this.mayInput(principal) && this.deps.agentLaunchOptions !== undefined,
         // Contract v-next item 4. OMITTED, not false: `paneAccount` needs both
         // grants and a desktop that announced the account command on this connection.
@@ -2989,6 +2999,11 @@ export class WebTerminalServer {
      */
     liveness?: { state: AgentLivenessState; at: number };
     /**
+     * Contract v-next item 1: the pane's last turn failure, until the next turn
+     * starts. `message` only on a server started with `--allow-transcript`.
+     */
+    lastFailure?: TurnFailure;
+    /**
      * The agent's last message to the human, flattened to one line and cut to
      * `LAST_ASSISTANT_GRAPHEMES`. Present only on a server started with
      * `--allow-transcript` — it is conversation content, and it rides the same
@@ -3037,6 +3052,7 @@ export class WebTerminalServer {
         ...shellLabelOf(s.cmd),
         ...this.handoffRow(this.deps.sessionManager.getSession(s.id)?.meta.handoffFrom, principal),
         ...this.livenessSummary(s.id),
+        ...this.lastFailureSummary(s.id),
         ...this.lastAssistantSummary(s.id, reads),
         deferred: this.deps.sessionManager.getSession(s.id)?.deferred === true,
       }));
@@ -3066,6 +3082,13 @@ export class WebTerminalServer {
     for (const id of this.lastAssistantReads) {
       if (!liveIds.has(id)) this.lastAssistantReads.delete(id);
     }
+  }
+
+  /** The list row's `lastFailure`, without `message` unless the transcript grant is held. */
+  private lastFailureSummary(sessionId: string): { lastFailure?: TurnFailure } {
+    const held = this.deps.turnFailure?.(sessionId);
+    if (!held) return {};
+    return { lastFailure: this.opts?.allowTranscript === true ? { ...held.failure } : withoutMessage(held.failure) };
   }
 
   /**
@@ -4333,8 +4356,14 @@ export class WebTerminalServer {
       ? await chat.resumable?.(sessionId).catch(() => false) ?? false : false;
     if (res.destroyed || res.writableEnded) return;
     if (moaWithdrawn()) return;
+    // Contract v-next item 1: a failure held for a different conversation (the
+    // pane moved on before any turn ran) is not this conversation's.
+    const held = this.deps.turnFailure?.(sessionId);
+    const conversation = resolutionAgentSessionId(resolution);
+    const lastFailure = held && !(held.agentSessionId && conversation && held.agentSessionId !== conversation) ? held.failure : undefined;
     this.json(res, 200, { ...body, ...(events !== undefined ? { events } : {}), chat: buildChatObject(resolution, projectChatBlocked(blocked, caps),
       { ...(turn ? { turn } : {}), resumable, chatCancel: caps.chatCancel === true, ...(queue ? { queue } : {}),
+        ...(lastFailure ? { lastFailure } : {}),
         accountStatus: this.opts?.allowTranscript === true && process.platform !== 'win32' &&
           this.deps.codexAccountStatus?.accountHome(sessionId) !== undefined }) });
   }
@@ -8549,6 +8578,9 @@ export class WebTerminalServer {
       state: body.state,
       agent: body.agent,
       at: body.at,
+      // Contract v-next item 1, narrowed like `tool`: the provider's message
+      // is transcript-grade text this stream's grant does not cover.
+      ...(body.failure ? { failure: withoutMessage(body.failure) } : {}),
     });
     for (const client of this.clients) {
       if (client.sessionId !== body.sessionId) continue;

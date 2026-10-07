@@ -31,6 +31,7 @@ import { HARNESS_TITLE, type Block, type Session, type ToolPreview, type TurnOut
 import type { ChatV2Host } from '../chat/v2/types';
 import type { ChatCancelEvent } from '../chat/chatCancelObserver';
 import { CHAT_CANCEL_OBSERVE_MS, type ChatCancelEndedAs, type ChatCancelProgress } from '../../shared/phoneChatCancelOutcome';
+import type { TurnFailure } from '../../shared/phoneTurnFailure';
 
 /**
  * Wire mapping for the phone chat routes (contract §5.2, §6.2, §6.4). Pure, so
@@ -90,7 +91,7 @@ function skillsAgent(agent: string | undefined): boolean {
 export function buildChatObject(
   resolution: ChatResolution,
   blocked: ChatBlocked | undefined,
-  opts: { turn?: ChatTurn; chatCancel?: boolean; queue?: ChatQueueItemView[]; accountStatus?: boolean; resumable?: boolean } = {},
+  opts: { turn?: ChatTurn; chatCancel?: boolean; queue?: ChatQueueItemView[]; accountStatus?: boolean; resumable?: boolean; lastFailure?: TurnFailure } = {},
 ): Record<string, unknown> {
   const { status } = resolution;
   const liveness = {
@@ -162,6 +163,9 @@ export function buildChatObject(
     // Additive: the route passes it only to a caller that declared
     // `chat-cancel` or `chat-queue`, so an older client's object is unchanged.
     ...(opts.turn ? { turn: { ...opts.turn } } : {}),
+    // Contract v-next item 1: the conversation's last turn failure, until its
+    // next turn starts. Additive, with `message` (this route needs the grant).
+    ...(opts.lastFailure ? { lastFailure: { ...opts.lastFailure } } : {}),
     capabilities: {
       ...capabilities,
       ...(opts.queue !== undefined ? { queue: queueing, send: capabilities.send || queueing } : {}),

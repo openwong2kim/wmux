@@ -15,6 +15,7 @@ import { RESIZE_REDRAW_GUARD_MS } from '../main/notification/idleSuppression';
 import { stripReplayQuerySequences } from '../shared/replayQuerySanitizer';
 import { isFreshSessionSource } from '../shared/hooks/signal-types';
 import { titleShowsRunningTurn } from './transcript/chatScreenGate';
+import type { TurnFailure } from '../shared/phoneTurnFailure';
 
 /**
  * Daemon version of PTYBridge.
@@ -140,6 +141,12 @@ export class DaemonPTYBridge extends EventEmitter {
   private turnSeq = 0;
   private turnOpen = false;
   private turnOpenedAt = 0;
+  /**
+   * The typed failure of the last turn (phone contract v-next item 1), and the
+   * agent conversation it happened in. Lives until the next episode opens (a
+   * new `turnSeq`): a queued phone send that has not reached the PTY keeps it.
+   */
+  private lastFailure: { failure: TurnFailure; agentSessionId?: string } | null = null;
   /** An authoritative hook has reported on this pane: only hooks and the transcript end its episodes. */
   private hookSeen = false;
   /**
@@ -713,6 +720,7 @@ export class DaemonPTYBridge extends EventEmitter {
     }
     this.turnSoftClosed = false;
     this.turnSeq += 1;
+    this.lastFailure = null;
     this.turnOpenedAt = Date.now();
     this.bootEpisode = this.codexBootWindow;
   }
@@ -792,6 +800,28 @@ export class DaemonPTYBridge extends EventEmitter {
     };
   }
 
+  /** The current episode's `t1:` id, or undefined before the first episode. */
+  getTurnId(): string | undefined {
+    return this.turnSeq > 0 ? `t1:${this.turnNonce}.${this.turnSeq}` : undefined;
+  }
+
+  /**
+   * Record a failed turn. A failure already held for the same turn (or, with
+   * no turn id, any failure held since the last episode opened) is kept as
+   * is, so every surface serves one `turnId`/`at`; `fresh` is false then.
+   */
+  noteTurnFailure(failure: TurnFailure, agentSessionId?: string): { failure: TurnFailure; fresh: boolean } {
+    const held = this.lastFailure?.failure;
+    if (held && held.turnId === failure.turnId) return { failure: held, fresh: false };
+    this.lastFailure = { failure, ...(agentSessionId ? { agentSessionId } : {}) };
+    return { failure, fresh: true };
+  }
+
+  /** The failure of the last turn, while no later turn has started. */
+  getLastFailure(): { failure: TurnFailure; agentSessionId?: string } | undefined {
+    return this.lastFailure ?? undefined;
+  }
+
   /** When a lone Esc was last written to this PTY, from any source; 0 = never. */
   getLastEscAt(): number {
     return this.lastEscAt;
@@ -823,7 +853,7 @@ export class DaemonPTYBridge extends EventEmitter {
    */
   noteSessionStart(signalTs: number, source: unknown): void {
     const atIdlePrompt = this.explicitTerminalStatus && this.settledStatus === 'waiting' && !this.awaitingHuman;
-    const { preTurn, turnEvidenceAt, turnOpen, turnSeq, turnOpenedAt, turnSoftClosed, codexBootWindow, bootEpisode } = this;
+    const { preTurn, turnEvidenceAt, turnOpen, turnSeq, turnOpenedAt, turnSoftClosed, codexBootWindow, bootEpisode, lastFailure } = this;
     this.noteAgentStatus('running', true);
     this.codexBootWindow = codexBootWindow;
     // The session start is not turn evidence itself: a duplicate delivery of
@@ -834,6 +864,7 @@ export class DaemonPTYBridge extends EventEmitter {
     this.turnEvidenceAt = turnEvidenceAt;
     this.turnOpen = turnOpen;
     this.turnSeq = turnSeq;
+    this.lastFailure = lastFailure;
     this.turnOpenedAt = turnOpenedAt;
     this.turnSoftClosed = turnSoftClosed;
     this.bootEpisode = bootEpisode;

@@ -6,6 +6,7 @@ import { ENV_KEYS, isBrainPty } from '../../shared/constants';
 import type { HookAgentEventData } from '../hooks/HookIngest';
 import type { StoredHandoffFrom } from '../../shared/phonePaneAccount';
 import { storedHandoffOf } from '../phone/paneAccount';
+import { storedTurnFailureOf, type TurnFailure } from '../../shared/phoneTurnFailure';
 
 export interface RunHistoryEntry {
   id: string;
@@ -17,6 +18,8 @@ export interface RunHistoryEntry {
   summary: string;
   /** The pane's phone handoff lineage, when it was created with one. Optional so older files and loaders agree. */
   handoffFrom?: StoredHandoffFrom;
+  /** Contract v-next item 1: the typed failure, on `outcome: 'failed'` only. */
+  failure?: TurnFailure;
 }
 interface ActiveRun { sessionId: string; workspace: string; agent: string; startedAt: number; handoffFrom?: StoredHandoffFrom }
 interface HistoryFile { version: 1; entries: RunHistoryEntry[]; active: ActiveRun[] }
@@ -54,6 +57,13 @@ export class RunHistoryStore {
       Number.isFinite(e.at) && ['completed','failed','interrupted'].includes(e.outcome)).slice(-CAP);
     // A malformed lineage is dropped; the entry itself is kept.
     for (const e of this.entries) if (e.handoffFrom !== undefined && !storedHandoffOf(e.handoffFrom)) delete e.handoffFrom;
+    // Same rule for the failure: re-validated, and only a failed entry keeps one.
+    for (const e of this.entries) {
+      if (e.failure === undefined) continue;
+      const failure = e.outcome === 'failed' ? storedTurnFailureOf(e.failure) : undefined;
+      if (failure) e.failure = failure;
+      else delete e.failure;
+    }
     for (const a of value.active.slice(-256)) {
       if (a && typeof a.sessionId === 'string' && typeof a.workspace === 'string' && typeof a.agent === 'string' && Number.isFinite(a.startedAt)) {
         const handoffFrom = storedHandoffOf(a.handoffFrom);
@@ -69,7 +79,7 @@ export class RunHistoryStore {
     return { entries, nextOffset: offset + entries.length < newest.length ? offset + entries.length : null };
   }
 
-  ingest(sessionId: string, env: Record<string,string>, data: HookAgentEventData, handoffFrom?: StoredHandoffFrom) {
+  ingest(sessionId: string, env: Record<string,string>, data: HookAgentEventData, handoffFrom?: StoredHandoffFrom, failure?: TurnFailure) {
     if (isBrainPty({id:sessionId,env})) return;
     const kind = data.signal.kind;
     if (data.source !== 'hook') return;
@@ -94,7 +104,8 @@ export class RunHistoryStore {
     this.active.delete(sessionId);
     const reported = data.signal.payload.last_assistant_message;
     const summary = outcome === 'completed' && typeof reported === 'string' && reported.trim() ? reported : data.message;
-    this.append({id,sessionId,workspace,agent,outcome,at,summary:clean(summary,600),...(handoffFrom ? {handoffFrom} : {})});
+    this.append({id,sessionId,workspace,agent,outcome,at,summary:clean(summary,600),...(handoffFrom ? {handoffFrom} : {}),
+      ...(outcome === 'failed' && failure ? {failure} : {})});
   }
 
   reconcileLiveSessions(live: ReadonlySet<string>) {

@@ -31,6 +31,7 @@ import {
 import type { ChatSkillCatalog } from '../../../shared/transcript/chatSkills';
 import type { ChatCancelProgress } from '../../../shared/phoneChatCancelOutcome';
 import type { CodexAccountStatus } from '../../../shared/phoneCodexAccountStatus';
+import type { TurnFailure } from '../../../shared/phoneTurnFailure';
 
 /**
  * Phone native chat routes (contract v0.3.1) against a FAKE ChatBridge: the
@@ -176,6 +177,7 @@ describe('native chat routes (contract v0.3.1)', () => {
   let chatBox: ReturnType<typeof makeFakeChat>['box'];
   let chat: ReturnType<typeof makeFakeChat>['bridge'];
   let chatWired: boolean;
+  const heldFailures = new Map<string, { failure: TurnFailure; agentSessionId?: string }>();
   let projectorMock: { status: ReturnType<typeof vi.fn>; transcriptPath: ReturnType<typeof vi.fn>; snapshot: ReturnType<typeof vi.fn>; delta: ReturnType<typeof vi.fn>; staleCursor: ReturnType<typeof vi.fn> };
   let approvalRecords: ApprovalRequest[];
   let approvalListeners: Set<(e: ApprovalEvent) => void>;
@@ -223,6 +225,7 @@ describe('native chat routes (contract v0.3.1)', () => {
       list: () => [...roster].map(([deviceId, rec]) => ({ deviceId, name: deviceId, createdAt: 0, lastSeenAt: 0,
         allowInput: rec.allowInput, ...(rec.revoked ? { revokedAt: 1 } : {}) })),
     };
+    heldFailures.clear();
     const sessionManager = Object.assign(new EventEmitter(), {
       getSession: (id: string) => panes.get(id),
       listLiveSessions: () => [],
@@ -233,6 +236,7 @@ describe('native chat routes (contract v0.3.1)', () => {
       devices,
       projector: () => projectorMock as unknown as TranscriptProjector,
       chat: () => (chatWired ? chat : null),
+      turnFailure: (id) => heldFailures.get(id),
       codexAccountStatus: {
         accountHome: (id) => codexHomes.get(id),
         liveIds: () => [...codexHomes.keys()],
@@ -369,6 +373,17 @@ describe('native chat routes (contract v0.3.1)', () => {
       expect(chat.resumable).not.toHaveBeenCalled();
       expect(decodeCursor(body.cursor)).toEqual({ v: 2, src: 'file', a: 'sess-a', e: epoch, head: 5, tail: 50, fileSize: 50 });
       expect(projectorMock.snapshot).toHaveBeenCalledWith('s1');
+    });
+
+    it('contract v-next item 1: chat.lastFailure, with message, only for the conversation it happened in', async () => {
+      const info = await start();
+      const failure: TurnFailure = { reason: 'rate-limited', provider: 'claude', providerCode: 'rate_limit', message: 'You hit your limit', at: 7, turnId: 't1:x.4' };
+      expect((await turns(bearer(info.token as string))).body.chat).not.toHaveProperty('lastFailure');
+      heldFailures.set('s1', { failure, agentSessionId: 'sess-a' });
+      expect((await turns(bearer(info.token as string))).body.chat.lastFailure).toEqual(failure);
+      // The pane moved on to another conversation before any turn ran there.
+      heldFailures.set('s1', { failure, agentSessionId: 'sess-other' });
+      expect((await turns(bearer(info.token as string))).body.chat).not.toHaveProperty('lastFailure');
     });
 
     it('reads resumable from the bridge once the agent is not alive', async () => {

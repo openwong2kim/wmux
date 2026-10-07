@@ -236,7 +236,7 @@ JSON backlog fetch (Bearer only).
 | `notify` | `{...payload, tier, id, epoch}` |
 | `approval` | `{sessionId, approvalId, phase, state, agent, createdAt, tier, risk?, ...}` |
 | `transcript.nudge` | `{sessionId}` — the turn view for that pane has new content; re-fetch |
-| `agent.liveness` | `{sessionId, state, tool?, agent, at}` — what the pane is doing right now |
+| `agent.liveness` | `{sessionId, state, tool?, agent, at, failure?}` — what the pane is doing right now; `failure` only on the `idle` frame that ends a failed turn (contract v-next item 1) |
 | `gate.state` | `{gateEnabled}` — the permission gate was armed or disarmed |
 | `channel.mention` | `{channelId, seq, fromMemberName, text, postedAt, tier}` — a channel message mentioned the operator row; re-fetch `/api/channels` (§9). Recorded, not live-only |
 
@@ -382,7 +382,7 @@ GET /api/config    → {allowInput, allowUpload, allowTranscript, inlineImages?,
                       serverVersion, hostPlatform}
 GET /api/sessions  → {sessions: [{id, cwd, spawnCwd?, cols, rows, state, agent, lastActivity,
                       workspace?, workspaceId?, shell?, lastDetectedAgent?, cwdLeaf?,
-                      liveness?, lastAssistantText?, surfaceTitle?, paneName?, role?, deferred?}]}
+                      liveness?, lastFailure?, lastAssistantText?, surfaceTitle?, paneName?, role?, deferred?}]}
 POST /api/input?session=<id>   body: raw bytes
 ```
 
@@ -426,7 +426,9 @@ only while the desktop is attached; see *Desktop sidebar fields* below.
 
 `liveness` is `{state, at}` — the last agent state the daemon saw, with the same
 `state` union as the SSE event and no `tool`, dropped once a `busy`/`tool` state
-is too old to believe. `lastAssistantText` is a one-line cut of the agent's last
+is too old to believe. `lastFailure` is the pane's last turn failure until its
+next turn starts (contract v-next item 1; `message` only with
+`--allow-transcript`). `lastAssistantText` is a one-line cut of the agent's last
 message; it rides `--allow-transcript` and is absent until the first poll after
 the transcript changed.
 
@@ -2179,6 +2181,40 @@ Reject an envelope older than `PUSH_MAX_AGE_MS` (300 000 ms).
 
 If the extension does not run, the lock screen shows a fixed placeholder
 ("wmux — New activity"). That is the relay's ceiling, not a bug.
+
+### `turn_failed` — a turn ended on a failure
+
+Sent once per failed turn, never on a normal turn end, on a daemon that
+answers `turnFailure: true` (contract v-next item 1). It is the same failure
+the other surfaces serve: same `turnId`, same `at`. Sealed plaintext:
+
+```json
+{
+  "title": "Turn failed",
+  "body": "The agent hit a rate limit and stopped.",
+  "sessionId": "<pane session id>",
+  "kind": "turn_failed",
+  "turnId": "t1:…",
+  "at": 1758712345123,
+  "reason": "rate-limited",
+  "provider": "claude"
+}
+```
+
+`turnId` is absent when the daemon knows no turn id. `body` is a fixed
+sentence per `reason`. There is **no `message`** and **no `approvalId`**:
+the provider's text is transcript-grade, and this banner is shown on the lock
+screen. Read it from `/turns` `chat.lastFailure` once the app is open.
+Deduplicate against the other surfaces with `(sessionId, turnId)`, or
+`(sessionId, at)` without a `turnId`.
+
+APNs collapse id: `tf-<sessionId>` (at most 64 characters), so a pane's
+failure banner never replaces its approval banner (`ap-…`). Desktop presence
+applies as it does to approvals, except that a suppressed `turn_failed` is
+dropped, not held for later: the person at the desk sees the pane.
+
+An extension that does not know `kind` shows a plain banner. A current one
+should attach no category and deep-link to the pane named by `sessionId`.
 
 ### Retraction — an approval that ended after its push
 
@@ -4485,11 +4521,13 @@ only**, and every rule above for a `managed` binding applies:
 
 ---
 
-## Proposed: contract v-next (partly served)
+## Proposed: contract v-next (all served)
 
-> **Status: partly served on `main`, the rest proposed.**
+> **Status: every item is served on `main`.** The heading keeps its name so
+> existing references to it still resolve.
 >
-> - **Served** (described from serving code): item 2, Codex account status
+> - **Served** (described from serving code): item 1, typed turn failure
+>   (`turnFailure`); item 2, Codex account status
 >   (`codexAccountStatus`; #1668); item 3, the chat cancel outcome on the Esc
 >   path and the native Codex path (`chatCancelOutcome`; #1665, #1669);
 >   item 4, account per pane and handoff lineage (`paneAccount`,
@@ -4497,10 +4535,8 @@ only**, and every rule above for a `managed` binding applies:
 >   `GET /api/git/projects`, `GET …/git/branches` and `GET …/git/checks`
 >   (`gitProjects`, `gitChecks`; #1663); and item 5's worktree creation,
 >   `POST …/git/worktree` and its receipt (`gitWorktrees`; #1666).
-> - **Proposed — on hold pending client review:** item 1, typed turn failure
->   (`turnFailure`). No daemon serves it. Do not ship a client path that
->   depends on it until the matching `/api/config` key (below) appears on a
->   real daemon.
+> - Gate a client path on the `/api/config` key of its item (below): a
+>   daemon from before an item omits that key.
 >
 > Shared types: `src/shared/phoneTurnFailure.ts`,
 > `src/shared/phoneCodexAccountStatus.ts`, `src/shared/phoneChatCancelOutcome.ts`,
@@ -4516,7 +4552,7 @@ daemon"; never probe with a write.
 
 | Key | Present when | Advertises |
 | --- | --- | --- |
-| `turnFailure` | always, once served | `failure` on the surfaces in item 1 |
+| `turnFailure` (**served**) | always | `failure` on the surfaces in item 1, and the `turn_failed` push (§7) |
 | `codexAccountStatus` (**served**) | `--allow-transcript`, and a pane this caller may read has a live Codex relay | `GET /api/sessions/<id>/codex/account-status` |
 | `chatCancelOutcome` | `chatCancel` is true and the cancel receipt store loaded | **Served** (see Chat cancel outcome): `cancel` on the cancel answer, the cancel receipt route, `chat.cancel` SSE |
 | `paneAccount` (**served**) | caller may input, `--allow-transcript`, and the attached desktop announced `accounts.envForAccount` | `accountId` on `POST /api/sessions` and on `GET /api/agent-launch-options` |
@@ -4556,9 +4592,16 @@ when an `accountId` was sent.
 - Worktree removal is not in v1; the desktop's cleanup UI reclaims phone
   worktrees (item 5).
 
-### 1. Typed turn failure
+### 1. Typed turn failure (served)
 
-> **Proposed — on hold pending client review.** Not served.
+> **Served.** `/api/config` answers `turnFailure: true`. The daemon classifies
+> with `src/shared/phoneTurnFailure.ts` and fans one result out through
+> `src/daemon/turnFailure/serveTurnFailure.ts`: it is stamped with the pane's
+> current `t1:` turn id (the one `chat.turn.id` shows; absent before the
+> pane's first turn), held on the pane until its next turn opens, and handed
+> unchanged to every surface below and to the `turn_failed` push, so `turnId`
+> and `at` are identical everywhere. A second delivery of the same turn's
+> failure keeps the first object and sends no second push.
 
 When a turn ends in failure the daemon reports only what the provider said,
 in structured form:
@@ -4627,13 +4670,22 @@ stream (codex-cli 0.157.1 schema). `message` is `turn.error.message`;
 **Scope.** Claude: any pane with the wmux hook bridge installed. Codex: only
 panes with a daemon-owned relay (phone-created Codex panes on Unix). A `codex`
 typed by hand has no relay; its `notify` carries no failure detail and, from a
-shared app-server, no provable pane (see #1657). OpenCode: none.
+shared app-server, no provable pane (see #1657). OpenCode: none. The Moa
+(HQ brain) pane: none. Its hooks go to the desktop, never to the daemon
+(`WMUX_HOOKS_TO_MAIN`), and it registers no `StopFailure` hook, so its `/turns`
+never carries `lastFailure`.
+
+The relay reports a failure only for a thread the pane itself owns (the
+server sends a thread's notifications to every connection subscribed to it).
+That `turn/completed` also ends the pane's turn, and the daemon sends the
+`idle` frame with `failure` for it. A Codex failure has no `/api/history`
+entry of its own: history records Claude hook outcomes only.
 
 **Where it appears.**
 
 | Surface | Field | Lifetime | `message` |
 | --- | --- | --- | --- |
-| `/turns` `chat` | `chat.lastFailure` | until the next turn starts in that conversation | yes |
+| `/turns` `chat` | `chat.lastFailure` (terminal binding) | until the next turn starts in that conversation | yes |
 | `/api/sessions` row | `lastFailure` | until the next turn starts | only with `--allow-transcript` |
 | `/api/events` `agent.liveness` | `failure` on the frame that ends the turn | live-only | yes (the fleet copy already needs a `/turns` read) |
 | `/api/stream` `agent.liveness` | `failure` | live-only | **no** (same narrowing as `tool`) |
@@ -4641,9 +4693,18 @@ shared app-server, no provable pane (see #1657). OpenCode: none.
 
 The frame that ends a failed turn carries `state: "idle"` plus `failure`. The
 turn is over, so `idle` is the truthful state, and a client that ignores
-`failure` renders what a finished turn renders. The `idle` half is served
-already: `deriveAgentLiveness` maps `status: "error"` (a `StopFailure`) to
-`idle`; daemons before it reported `busy` there.
+`failure` renders what a finished turn renders. Daemons before #1873
+reported `busy` there.
+
+"The next turn starts" means the pane opens a new turn: a prompt reaches the
+agent (typed, or a queued phone send delivered to it) or the agent starts
+one by itself. A phone send still waiting in the queue keeps the failure.
+A daemon with the queue enabled delivers the next queued item as soon as
+the failed turn ends, so on such a pane the failure can be gone by the next
+read; the `agent.liveness` frame and the push are what carry it then.
+`chat.lastFailure` is also omitted when the pane has since moved to another
+conversation. The held failure lives in memory: a daemon restart drops it
+(history keeps its copy).
 
 ### 2. Codex account status (read-only, served)
 
