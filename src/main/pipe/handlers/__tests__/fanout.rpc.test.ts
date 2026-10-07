@@ -1756,10 +1756,13 @@ describe('a WSL caller pane is resolved to the Windows path of its directory', (
   // "not a git repository" for C:\mnt\d\... — path.resolve on win32 roots a
   // POSIX path on the current drive.
   const gitDirs = (): string[] => vi.mocked(git).mock.calls.map((c) => c[1] as string);
-  const answerFor = (root: string) => {
+  // `toplevel` is what git prints; it defaults to the root itself. A UNC
+  // answer would send repoRootOf's realpath out over the network on a Windows
+  // runner, so the \\wsl$ case answers with a local path instead.
+  const answerFor = (root: string, toplevel = root.replace(/\\/g, '/')) => {
     vi.mocked(git).mockImplementation(async (_args: string[], dir: string) =>
       dir.toLowerCase().startsWith(root.toLowerCase())
-        ? { stdout: `${root.replace(/\\/g, '/')}\n`, stderr: '', code: 0 }
+        ? { stdout: `${toplevel}\n`, stderr: '', code: 0 }
         : { stdout: '', stderr: 'fatal: not a git repository', code: 128 });
   };
 
@@ -1787,7 +1790,7 @@ describe('a WSL caller pane is resolved to the Windows path of its directory', (
         { id: 'pty-1', wslTarget: { distribution: 'Ubuntu-24.04', user: 'me' } },
       ],
     });
-    answerFor('\\\\wsl$\\Ubuntu-24.04\\home\\me\\repo');
+    answerFor('\\\\wsl$\\Ubuntu-24.04\\home\\me\\repo', CALLER_REPO_ROOT);
     expect(await h.call(goodParams())).toMatchObject({ ok: true, status: 'accepted' });
     expect(gitDirs()).toContain('\\\\wsl$\\Ubuntu-24.04\\home\\me\\repo');
   });
