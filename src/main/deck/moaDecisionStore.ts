@@ -30,7 +30,7 @@ import {
   type MoaOwnerAnswer,
   type MoaReceiptState,
 } from '../../shared/moaDecision';
-import { MOA_TICKET_ID_RE } from '../../shared/moaAsk';
+import { MOA_TICKET_ID_RE, parseMoaAskInput } from '../../shared/moaAsk';
 import { shadowPacketHash } from './moaShadowJudge';
 
 /** How long a record is kept after it was created. */
@@ -102,12 +102,24 @@ export function isMoaDecisionRecord(v: unknown): v is MoaDecision {
     && !!d.asker && typeof d.asker.ptyId === 'string' && typeof d.asker.workspaceId === 'string' && typeof d.asker.agent === 'string'
     && typeof d.askKey === 'string' && HEX64.test(d.askKey)
     && typeof d.questionHash === 'string' && HEX32.test(d.questionHash)
-    && (d.kind === 'question' || d.kind === 'merge') && !!d.body && d.body.type === d.kind
+    && (d.kind === 'question' || d.kind === 'merge') && !!d.body && typeof d.body === 'object' && d.body.type === d.kind && isValidBody(d.body)
     && MODES.has(d.mode) && STATUSES.has(d.status) && RECEIPTS.has(d.receipt)
     && (d.resolvedBy === null || RESOLVED_BY.has(d.resolvedBy))
     && (d.ruleId === null || typeof d.ruleId === 'string')
     && typeof d.reasonCode === 'string' && typeof d.why === 'string'
     && Number.isSafeInteger(d.createdAt) && (d.resolvedAt === null || Number.isSafeInteger(d.resolvedAt));
+}
+
+/** A stored body is one parseMoaAskInput would have produced. */
+function isValidBody(body: MoaAskBody): boolean {
+  const ctx = body.context !== undefined ? { context: body.context } : {};
+  const wire = body.type === 'question'
+    ? { question: body.question, options: body.options, ...(body.topic !== undefined ? { kind: body.topic } : {}), ...ctx }
+    : body.type === 'merge'
+      ? { action: { type: 'merge', prNumber: body.prNumber, expectHead: body.expectHead }, ...ctx }
+      : null;
+  const parsed = wire ? parseMoaAskInput(wire) : null;
+  return !!parsed?.ok && parsed.value.body.type === body.type;
 }
 
 /** The owner may answer a ticket the asker currently reads as escalated. */

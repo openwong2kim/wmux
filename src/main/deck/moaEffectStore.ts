@@ -45,6 +45,8 @@ export function isMergeEffectRecord(v: unknown): v is MergeEffect {
     && STATUSES.has(e.status)
     && Number.isSafeInteger(e.attempt) && e.attempt >= 0
     && (e.reason === undefined || typeof e.reason === 'string')
+    && (e.startedAt === undefined || Number.isSafeInteger(e.startedAt))
+    && (e.mergeCommitOid === undefined || isCommitSha(e.mergeCommitOid))
     && Number.isSafeInteger(e.createdAt) && Number.isSafeInteger(e.updatedAt);
 }
 

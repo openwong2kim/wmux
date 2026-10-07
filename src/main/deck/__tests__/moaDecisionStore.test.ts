@@ -115,6 +115,17 @@ describe('MoaDecisionStore idempotency (AnswerReceiptStore semantics)', () => {
     expect(() => new MoaDecisionStore(dir)).toThrow('Invalid moa decision entry');
   });
 
+  it('a stored body the validator would not produce refuses to load', async () => {
+    const store = new MoaDecisionStore(dir);
+    await newTicket(store);
+    const saved = JSON.parse(fs.readFileSync(file(), 'utf8'));
+    expect(() => new MoaDecisionStore(dir)).not.toThrow();
+    for (const body of [{ type: 'question', question: 'q?' }, { type: 'question', question: 'q?', options: [{ key: '1', label: 'only' }] }, { type: 'merge', prNumber: 1, expectHead: 'short' }]) {
+      fs.writeFileSync(file(), JSON.stringify({ ...saved, decisions: [{ ...saved.decisions[0], body }] }));
+      expect(() => new MoaDecisionStore(dir), JSON.stringify(body)).toThrow('Invalid moa decision entry');
+    }
+  });
+
   it('old records are pruned after the retention', async () => {
     let now = 1_000_000;
     const store = new MoaDecisionStore(dir, () => now);
