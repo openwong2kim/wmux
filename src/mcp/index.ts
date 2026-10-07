@@ -457,8 +457,15 @@ const codexCallScope = new AsyncLocalStorage<CodexCallScope>();
 let codexParentClass: 'shared-server' | 'other' | null = null;
 let codexParentHome = '';
 let codexParentCheck: Promise<McpParentClass> | null = null;
+// Where no owner index can exist (Windows today) an 'unknown' parent decides
+// exactly what 'other' does (legacy), so a lookup that keeps timing out would
+// cost its full 5 s on every threaded call for nothing. There it is remembered
+// for a while; elsewhere it fails the call as retryable and is asked again.
+const CODEX_PARENT_UNKNOWN_MEMO_MS = 60_000;
+let codexParentUnknownUntil = 0;
 function classifyCodexParent(): Promise<McpParentClass> {
   if (codexParentClass) return Promise.resolve(codexParentClass);
+  if (Date.now() < codexParentUnknownUntil) return Promise.resolve('unknown');
   codexParentCheck ??= (async () => {
     try {
       const start = ctx.callerPpid ?? (await getParentPid(ctx.callerPid)) ?? -1;
@@ -467,6 +474,8 @@ function classifyCodexParent(): Promise<McpParentClass> {
       if (parentClass !== 'unknown') {
         codexParentClass = parentClass;
         codexParentHome = codexHomeFromParentChain(chain);
+      } else if (!codexOwnerIndexAvailable()) {
+        codexParentUnknownUntil = Date.now() + CODEX_PARENT_UNKNOWN_MEMO_MS;
       }
       logIdentity(`parent ${parentClass}`);
       return parentClass;

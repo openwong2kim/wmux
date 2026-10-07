@@ -300,6 +300,29 @@ describe('shared Codex app-server, no owner index (Windows today)', () => {
     expect(parentChain).toHaveBeenCalledTimes(1);
   });
 
+  it('remembers an uninspectable parent for a minute instead of paying the lookup on every call', async () => {
+    // A lookup that keeps timing out costs 5 s each time, and here 'unknown'
+    // decides the same thing as 'other': the starter pane.
+    parentChain.mockResolvedValue([]);
+    let now = 1_000_000;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const client = await connect();
+      for (const thread of [T1, T2, T1]) {
+        const res = await call(client, 'a2a_whoami', {}, thread);
+        expect(res.isError).toBeFalsy();
+      }
+      expect(parentChain).toHaveBeenCalledTimes(1);
+      now += 60_001;
+      await call(client, 'a2a_whoami', {}, T1);
+      await client.close();
+      expect(parentChain).toHaveBeenCalledTimes(2);
+      expect(whoamiParams().every((p) => p.workspaceId === 'ws-s' && p.senderPtyId === 'pty-s')).toBe(true);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it('finds an owner under the CODEX_HOME derived from the shared server\'s path', async () => {
     // Codex passes no CODEX_HOME to the MCP server: only the daemon path names it.
     const customHome = path.join(home, 'custom codex home');
