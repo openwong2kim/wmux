@@ -114,6 +114,9 @@ describe('moaDelegate handler — events', () => {
     b.listeners[0].decision({ type: 'created', decision: { id: 'd' } as never });
     expect(send).toHaveBeenCalledWith(IPC.DECK_MOA_DELEGATE_DECISION_EVENT, { type: 'created', decision: { id: 'd' } });
 
+    b.listeners[0].audit!({ checkedAt: 1, unreceipted: [] });
+    expect(send).toHaveBeenCalledWith(IPC.DECK_MOA_DELEGATE_DECISION_EVENT, { checkedAt: 1, unreceipted: [] });
+
     current = null;
     await h.list();
     expect(b.unsubscribe).toHaveBeenCalledTimes(1);

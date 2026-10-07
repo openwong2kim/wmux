@@ -4,14 +4,15 @@
 // With the delegate off (no preload API, mode 'off' or 'shadow') every
 // selector here yields nothing, so the panel draws exactly what it did before.
 import { useCallback, useMemo } from 'react';
-import { ticketView, type MergeEffect, type MoaDecision, type MoaDecisionEvent, type MoaDelegateListResult, type MoaEffectEvent, type MoaResolveRequest, type MoaResolveResult, type MoaAutoRuleSetRequest, type MoaAutoRuleSetResult, type MoaRuleView } from '../../../../shared/moaDecision';
+import { ticketView, type MergeEffect, type MoaDecision, type MoaDecisionEvent, type MoaDelegateListResult, type MoaEffectEvent, type MoaResolveRequest, type MoaResolveResult, type MoaAutoRuleSetRequest, type MoaAutoRuleSetResult, type MoaRuleView, type MoaUnreceiptedMerge, type MoaAuditEvent } from '../../../../shared/moaDecision';
 import { useReread } from './useMoaPanelData';
 
 export interface MoaDelegateApi {
   delegateList: () => Promise<MoaDelegateListResult>;
   delegateResolve: (req: MoaResolveRequest) => Promise<MoaResolveResult>;
   delegateAutoSet: (req: MoaAutoRuleSetRequest) => Promise<MoaAutoRuleSetResult>;
-  onDelegateDecision?: (cb: (e: MoaDecisionEvent) => void) => () => void;
+  /** Decision events, and the lane audit's (it rides the same channel). */
+  onDelegateDecision?: (cb: (e: MoaDecisionEvent | MoaAuditEvent) => void) => () => void;
   onDelegateEffect?: (cb: (e: MoaEffectEvent) => void) => () => void;
   onChanged?: (cb: () => void) => () => void;
 }
@@ -53,21 +54,21 @@ export function selectOpenTickets(state: MoaDelegateListResult): MoaDecision[] {
 export const EFFECT_SHOWN_MS = 24 * 60 * 60 * 1000;
 export const EFFECT_ROWS_MAX = 5;
 
-/** Merge effects to show as status rows: the recent ones that are not
- *  unreceipted (those are listed apart), newest first. */
+/** Merge effects to show as status rows: the recent ones, newest first. An
+ *  `uncertain` one (main could not confirm the merge yet) is a status here. */
 export function selectEffectRows(state: MoaDelegateListResult, now: number): MergeEffect[] {
   if (!delegateShown(state)) return [];
   return state.effects
-    .filter((e) => e.status !== 'uncertain' && now - e.updatedAt <= EFFECT_SHOWN_MS)
+    .filter((e) => e.status === 'uncertain' || now - e.updatedAt <= EFFECT_SHOWN_MS)
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .slice(0, EFFECT_ROWS_MAX);
 }
 
-/** Merges whose outcome main could not confirm (stopped mid-merge, a failed
- *  write): main reconciles them; the panel only lists them, quietly. */
-export function selectUnreceipted(state: MoaDelegateListResult): MergeEffect[] {
+/** The lane audit's last answer: PRs merged lately, in repos the lane
+ *  touched, with no lane receipt. Display only, listed quietly. */
+export function selectUnreceipted(state: MoaDelegateListResult): MoaUnreceiptedMerge[] {
   if (!delegateShown(state)) return [];
-  return state.effects.filter((e) => e.status === 'uncertain').sort((a, b) => b.updatedAt - a.updatedAt);
+  return state.unreceiptedMerges ?? [];
 }
 
 /** Rules the owner may let Moa settle alone: the book says auto and binds a

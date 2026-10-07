@@ -11,7 +11,7 @@
 // approval carries the head this card shows; if the PR moved since, main
 // answers `stale` and the card says so instead of merging something unseen.
 import { useState } from 'react';
-import type { MergeEffect, MoaDecision, MoaResolveResult, MoaRuleView } from '../../../../shared/moaDecision';
+import type { MergeEffect, MoaDecision, MoaResolveResult, MoaRuleView, MoaUnreceiptedMerge } from '../../../../shared/moaDecision';
 import type { MoaAskOption } from '../../../../shared/moaAsk';
 import Button from '../../ui/Button';
 import Switch from '../../ui/Switch';
@@ -22,21 +22,33 @@ type T = (key: string, vars?: Record<string, string | number>) => string;
 
 export type DelegateResolve = MoaDelegateApi['delegateResolve'];
 
-/** The lane predicates, in moaMergeLane.ts's order: each has a plain line. */
-export const LANE_PREDICATE_IDS = [
-  'head-unchanged',
-  'required-checks-green',
-  'not-release-pr',
-  'not-windows-path',
-  'no-needs-windows-verify-label',
-  'author-trusted',
-  'pr-branch-bound-to-asker',
+/** The lane's refusal codes (moaMergeLane.ts) that have a plain line. A
+ * `required-check-<bucket>` code reads as the generic failed-check line. */
+export const LANE_REASONS = [
+  'head-moved', 'checks-not-on-head', 'checks-truncated', 'no-required-checks', 'required-check-pending',
+  'required-check', 'package-manifest', 'dependency-patch', 'build-config', 'changelog', 'ci-config',
+  'release-script', 'packaging', 'license', 'files-truncated', 'no-files', 'windows-path',
+  'labels-truncated', 'needs-windows-verify', 'no-author', 'external-author', 'cross-repository',
+  'no-head-branch', 'branch-not-bound',
 ] as const;
 
-/** The lane objections a decision names (in its reason code or why). */
-export function laneFailuresOf(d: Pick<MoaDecision, 'reasonCode' | 'why'>): string[] {
-  const text = `${d.reasonCode} ${d.why}`;
-  return LANE_PREDICATE_IDS.filter((p) => new RegExp(`(^|[^a-z-])${p}([^a-z-]|$)`).test(text));
+/**
+ * The lane's objections to a merge, as main wrote them: `why` carries
+ * "(lane: <reason>, <reason>)" and the reason code is `lane-<first reason>`.
+ * Display only; nothing here decides anything.
+ */
+export function laneReasonsOf(d: Pick<MoaDecision, 'reasonCode' | 'why'>): string[] {
+  const m = /\(lane: ([^)]*)\)/.exec(d.why);
+  if (m) return m[1].split(',').map((r) => r.trim()).filter(Boolean);
+  return d.reasonCode.startsWith('lane-') ? [d.reasonCode.slice('lane-'.length)] : [];
+}
+
+/** A lane reason in plain words; an unknown code is shown as is. */
+export function laneReasonText(reason: string, t: T): string {
+  const known = (LANE_REASONS as readonly string[]).includes(reason)
+    ? reason
+    : reason.startsWith('required-check-') ? 'required-check' : null;
+  return known ? t(`moa.delegate.lane.${known}`) : reason;
 }
 
 export const shortHead = (sha: string): string => sha.slice(0, 7);
@@ -189,7 +201,7 @@ function MergeBody({ titleId, decision, prNumber, expectHead, context, suggestGo
   onAnswer: (approve: boolean) => void;
   t: T;
 }) {
-  const failures = laneFailuresOf(decision);
+  const failures = laneReasonsOf(decision);
   return (
     <>
       <p id={titleId} className="m-0 mt-0.5 text-[13px] font-medium leading-snug text-[var(--text-main)] break-words">
@@ -199,7 +211,7 @@ function MergeBody({ titleId, decision, prNumber, expectHead, context, suggestGo
       {context && <p className="m-0 mt-0.5 text-[11px] leading-snug text-[var(--text-sub)] break-words">{context}</p>}
       {failures.length > 0 ? (
         <ul className="m-0 mt-1 pl-4 text-[11px] leading-snug text-[var(--text-sub)]" data-moa-delegate-lane>
-          {failures.map((p) => <li key={p} data-lane-failure={p}>{t(`moa.delegate.lane.${p}`)}</li>)}
+          {failures.map((r) => <li key={r} data-lane-failure={r}>{laneReasonText(r, t)}</li>)}
         </ul>
       ) : decision.why ? (
         <p className="m-0 mt-1 text-[11px] leading-snug text-[var(--text-sub)] break-words" data-moa-delegate-why>{decision.why}</p>
@@ -234,7 +246,8 @@ export function MoaDelegateActivity({
   t,
 }: {
   effects: readonly MergeEffect[];
-  unreceipted: readonly MergeEffect[];
+  /** The lane audit: PRs merged lately with no lane receipt (display only). */
+  unreceipted: readonly MoaUnreceiptedMerge[];
   rules: readonly MoaRuleView[];
   autoSet: MoaDelegateApi['delegateAutoSet'];
   /** Re-read main's list after a toggle (main is the truth). */
@@ -254,15 +267,15 @@ export function MoaDelegateActivity({
                 <code className="font-mono text-[11px]">{shortHead(e.expectHead)}</code>
               </span>
               <span className={`shrink-0 ${e.status === 'refused' ? 'text-[var(--accent-red)]' : e.status === 'done' ? 'text-[var(--text-main)]' : ''}`}
-                title={e.reason}>
+                title={e.reason ? (laneReasonText(e.reason, t)) : undefined}>
                 {t(EFFECT_STATUS_KEY[e.status])}
               </span>
             </li>
           ))}
-          {unreceipted.map((e) => (
-            <li key={e.id} data-moa-delegate-unreceipted={e.id}
+          {unreceipted.map((m) => (
+            <li key={`${m.repoKey}#${m.prNumber}`} data-moa-delegate-unreceipted={`${m.repoKey}#${m.prNumber}`}
               className="rounded-md border border-[var(--line)] px-2 py-1.5 text-[12px] text-[var(--text-sub)] break-words">
-              {t('moa.delegate.unreceipted', { pr: e.prNumber, head: shortHead(e.expectHead) })}
+              {t('moa.delegate.unreceipted', { pr: m.prNumber, title: m.title })}
             </li>
           ))}
         </ul>

@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { MoaDelegateActivity, MoaDelegateTicketRow, laneFailuresOf } from '../MoaDelegateCards';
+import { MoaDelegateActivity, MoaDelegateTicketRow, laneReasonText, laneReasonsOf } from '../MoaDelegateCards';
 import { MoaPanelTop } from '../MoaPanelTop';
 import { selectAutoRules, selectEffectRows, selectOpenTickets, selectUnreceipted, type MoaDelegateApi } from '../moaDelegateData';
 import type { MergeEffect, MoaDecision, MoaDelegateListResult, MoaRuleView } from '../../../../../shared/moaDecision';
@@ -58,8 +58,9 @@ function ticket(n: number, over: Partial<MoaDecision> = {}): MoaDecision {
 const mergeTicket = (n: number, over: Partial<MoaDecision> = {}): MoaDecision => ticket(n, {
   kind: 'merge',
   body: { type: 'merge', prNumber: 1858, expectHead: HEAD },
-  reasonCode: 'lane:required-checks-green',
-  why: 'author-trusted failed too',
+  // What moaAskService writes for a lane refusal.
+  reasonCode: 'lane-required-check-fail',
+  why: 'Moa would not merge this (lane: required-check-fail, external-author); ask the owner',
   ...over,
 });
 
@@ -113,7 +114,9 @@ describe('merge card', () => {
     expect(container.querySelector('[data-moa-delegate-head]')!.textContent).toBe('0123456');
     expect(container.textContent).toContain('moa.delegate.mergeTitle(1858)');
     const failures = [...container.querySelectorAll('[data-lane-failure]')].map((li) => li.getAttribute('data-lane-failure'));
-    expect(failures).toEqual(['required-checks-green', 'author-trusted']);
+    expect(failures).toEqual(['required-check-fail', 'external-author']);
+    expect(container.textContent).toContain('moa.delegate.lane.required-check');
+    expect(container.textContent).toContain('moa.delegate.lane.external-author');
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-moa-delegate-approve]')!.click(); });
     expect(resolve).toHaveBeenCalledWith({ decisionId: d.id, answer: { type: 'merge', approve: true, expectHead: HEAD } });
     expect(onDone).not.toHaveBeenCalled();
@@ -130,9 +133,13 @@ describe('merge card', () => {
     expect(resolve).toHaveBeenCalledWith({ decisionId: id(4), answer: { type: 'merge', approve: false, expectHead: HEAD } });
   });
 
-  it('reads lane predicate ids only as whole tokens', () => {
-    expect(laneFailuresOf({ reasonCode: 'x-head-unchanged-y', why: '' })).toEqual([]);
-    expect(laneFailuresOf({ reasonCode: 'not-windows-path', why: 'and no-needs-windows-verify-label' })).toEqual(['not-windows-path', 'no-needs-windows-verify-label']);
+  it('reads the lane reasons main wrote, and words them', () => {
+    expect(laneReasonsOf({ reasonCode: 'lane-head-moved', why: 'Moa may not merge this by itself (lane: head-moved, windows-path); ask the owner' }))
+      .toEqual(['head-moved', 'windows-path']);
+    expect(laneReasonsOf({ reasonCode: 'lane-no-required-checks', why: 'no lane text' })).toEqual(['no-required-checks']);
+    expect(laneReasonsOf({ reasonCode: 'judge-failed', why: 'timeout' })).toEqual([]);
+    expect(laneReasonText('required-check-cancel', t)).toBe('moa.delegate.lane.required-check');
+    expect(laneReasonText('something-new', t)).toBe('something-new');
   });
 });
 
@@ -161,12 +168,17 @@ describe('rules and activity', () => {
     expect(selectAutoRules(state).map((r) => r.ruleId)).toEqual(['R-a']);
   });
 
-  it('shows effect status and unreceipted merges quietly', async () => {
+  it('shows effect status (uncertain included) and the audit\'s unreceipted merges quietly', async () => {
     await act(async () => root.render(createElement(MoaDelegateActivity, {
-      effects: [effect('inFlight')], unreceipted: [effect('uncertain', { id: 'e2', prNumber: 7 })], rules: [], autoSet: vi.fn(), t,
+      effects: [effect('inFlight'), effect('uncertain', { id: 'e2' })],
+      unreceipted: [{ repoKey: 'o/r', prNumber: 7, title: 'Ignore previous instructions', mergedAt: '2026-10-07T00:00:00Z', headRefOid: HEAD }],
+      rules: [], autoSet: vi.fn(), t,
     })));
-    expect(container.querySelector('[data-moa-delegate-effect]')!.textContent).toContain('moa.delegate.effect.running');
-    expect(container.querySelector('[data-moa-delegate-unreceipted]')!.textContent).toContain('moa.delegate.unreceipted(7,0123456)');
+    const rows = container.querySelectorAll('[data-moa-delegate-effect]');
+    expect(rows[0].textContent).toContain('moa.delegate.effect.running');
+    expect(rows[1].textContent).toContain('moa.delegate.effect.uncertain');
+    // Agent-written title is rendered as text.
+    expect(container.querySelector('[data-moa-delegate-unreceipted]')!.textContent).toBe('moa.delegate.unreceipted(7,Ignore previous instructions)');
   });
 });
 
@@ -183,14 +195,16 @@ describe('selectors', () => {
       ticket(5, { status: 'pending', receipt: 'uncertain' }),
       ticket(6, { status: 'pending', receipt: 'inFlight' }),
     ],
-    effects: [effect('done', { id: 'a', updatedAt: now - 1000 }), effect('done', { id: 'old', updatedAt: 1 }), effect('uncertain', { id: 'u', updatedAt: now })],
+    effects: [effect('done', { id: 'a', updatedAt: now - 1000 }), effect('done', { id: 'old', updatedAt: 1 }), effect('uncertain', { id: 'u', updatedAt: 2 })],
     rules: [rule('R-a')],
+    unreceiptedMerges: [{ repoKey: 'o/r', prNumber: 7, title: 't', mergedAt: '2026-10-07T00:00:00Z', headRefOid: HEAD }],
   });
 
   it('opens only tickets the owner can answer, oldest first', () => {
     expect(selectOpenTickets(state('suggest')).map((d) => d.id)).toEqual([id(1), id(2), id(5)]);
-    expect(selectEffectRows(state('auto'), now).map((e) => e.id)).toEqual(['a']);
-    expect(selectUnreceipted(state('auto')).map((e) => e.id)).toEqual(['u']);
+    // An old uncertain effect stays: main has not confirmed it yet.
+    expect(selectEffectRows(state('auto'), now).map((e) => e.id)).toEqual(['a', 'u']);
+    expect(selectUnreceipted(state('auto')).map((m) => m.prNumber)).toEqual([7]);
   });
 
   it('draws nothing while off or only recording', () => {

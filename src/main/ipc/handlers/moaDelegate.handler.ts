@@ -64,6 +64,8 @@ export function createMoaDelegateHandlers(
         unsubscribe = s.subscribe({
           decision: (event) => send(IPC.DECK_MOA_DELEGATE_DECISION_EVENT, event),
           effect: (event) => send(IPC.DECK_MOA_DELEGATE_EFFECT_EVENT, event),
+          // The lane audit rides the decision channel (MoaAuditEvent).
+          audit: (event) => send(IPC.DECK_MOA_DELEGATE_DECISION_EVENT, event),
         });
       }
     }

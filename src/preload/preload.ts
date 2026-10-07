@@ -848,8 +848,9 @@ const electronAPI = {
         ipcRenderer.invoke(IPC.DECK_MOA_DELEGATE_RESOLVE, args) as Promise<import('../shared/moaDecision').MoaResolveResult>,
       delegateAutoSet: (args: import('../shared/moaDecision').MoaAutoRuleSetRequest) =>
         ipcRenderer.invoke(IPC.DECK_MOA_DELEGATE_AUTO_SET, args) as Promise<import('../shared/moaDecision').MoaAutoRuleSetResult>,
-      onDelegateDecision: (callback: (event: import('../shared/moaDecision').MoaDecisionEvent) => void) => {
-        const listener = (_e: Electron.IpcRendererEvent, data: import('../shared/moaDecision').MoaDecisionEvent): void => callback(data);
+      // Decision events; the lane audit's MoaAuditEvent rides the same channel.
+      onDelegateDecision: (callback: (event: import('../shared/moaDecision').MoaDecisionEvent | import('../shared/moaDecision').MoaAuditEvent) => void) => {
+        const listener = (_e: Electron.IpcRendererEvent, data: import('../shared/moaDecision').MoaDecisionEvent | import('../shared/moaDecision').MoaAuditEvent): void => callback(data);
         ipcRenderer.on(IPC.DECK_MOA_DELEGATE_DECISION_EVENT, listener);
         return () => { ipcRenderer.removeListener(IPC.DECK_MOA_DELEGATE_DECISION_EVENT, listener); };
       },
