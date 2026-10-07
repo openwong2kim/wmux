@@ -27,6 +27,8 @@ import { registerHelpTools } from './playwright/tools/help';
 import { randomUUID } from 'node:crypto';
 import { registerComputerTools } from './computer/tool';
 import { readComputerUseEnabled } from '../shared/computer/config';
+import { readMoaAskEnabled } from '../shared/moaAskSwitch';
+import { registerMoaAskTools } from './moaAsk';
 import { registerReplayTools } from './browser-replay/tool';
 import { ActionRing } from './browser-replay/actionRing';
 import { collectingServer, type CollectedTool } from './playwright/toolCollector';
@@ -2208,6 +2210,25 @@ registerComputerTools(server, MCP_CATALOG_OPTIONS, {
     return sendRpc(method, { ...params, ...identity }, timeoutMs);
   },
 });
+
+// moa_ask / moa_ask_status — Moa's delegate (src/mcp/moaAsk.ts). Same opt-in
+// pattern as computer use: only when the owner turned the ask mode on
+// (moa-ask.json), only in the full profile, appended after every other
+// full-profile tool, so the published surface is byte-identical for everyone
+// else. Main re-checks its own config on every call.
+if (SURFACE_PROFILE === 'full' && readMoaAskEnabled()) {
+  registerMoaAskTools(server, {
+    callRpc: (method, params) => callRpc(method, params),
+    // Hit-only, like computer use: resolve the workspace first so the
+    // PID-map walk has run, then send the verified pane (never the env hint).
+    getSenderPtyId: async () => {
+      if (!verifiedPtyId()) {
+        try { await requireWorkspaceId(); } catch { /* not-attributed in main */ }
+      }
+      return verifiedPtyId();
+    },
+  });
+}
 
 // === Commander-only registration lane ===
 // Tools that exist ONLY under --commander. They bypass the manifest filter on

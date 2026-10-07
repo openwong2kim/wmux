@@ -102,6 +102,7 @@ import { createFanOutService } from './worktask/createFanOutService';
 import { getWorkerTempDirSweeper, liveTempDirsFromSessions } from './worktask/fanoutTempDir';
 import { registerFanOutRpc } from './pipe/handlers/fanout.rpc';
 import { registerLedgerRpc } from './pipe/handlers/ledger.rpc';
+import { registerMoaRpc } from './pipe/handlers/moa.rpc';
 import { registerAutomationRpc } from './pipe/handlers/automation.rpc';
 import { registerWorktaskHandlers, type WorktaskServices } from './ipc/handlers/worktask.handler';
 import { registerWorktaskRpc } from './pipe/handlers/worktask.rpc';
@@ -113,7 +114,9 @@ import { createWorkspaceFactsPublisher, invalidateAutonomyCache, registerWorkspa
 import { publishMoaPane, setMoaPanePush } from './deck/moaPaneFeed';
 import { reconcileOwnerDowngrades } from './worktask/taskAutonomy';
 import { createHqAutoPress, setHqAutoPress } from './deck/hqApprovalLane';
-import { startMoaShadow } from './deck/moaShadowHost';
+import { paneCwdOf, startMoaShadow } from './deck/moaShadowHost';
+import { startMoaDelegate } from './deck/moaDelegateWiring';
+import { getMoaDelegateService } from './deck/moaDelegatePorts';
 import { getTaskLedger } from './deck/taskLedgerHost';
 import { createTrackRecordFeed, setTrackRecordFeed, type TrackApprovalRecord } from './deck/trackRecordFeed';
 import { getTrackRecordStore } from './deck/trackRecordStore';
@@ -1094,6 +1097,13 @@ registerGitHandoffHandlers({
 });
 registerFanOutRpc(rpcRouter, fanOutService, () => mainWindow, { getDaemonClient: () => daemonClient });
 registerLedgerRpc(rpcRouter, () => mainWindow);
+// Moa's delegate (moa_ask). Answers `off` with nothing recorded until the
+// owner turns the ask mode on (startMoaDelegate registers the service).
+registerMoaRpc(rpcRouter, {
+  getService: getMoaDelegateService,
+  resolvePtyWorkspace: (ptyId) => resolvePtyOwnerWorkspace(() => mainWindow, ptyId),
+  paneCwd: (ptyId, workspaceId) => paneCwdOf(ptyId, workspaceId) ?? '',
+});
 // Scheduled runs for agents: draft-only propose + redacted reads, relayed to
 // the daemon over main's first-party connection (pipe/handlers/automation.rpc.ts).
 registerAutomationRpc(rpcRouter, {
@@ -1950,6 +1960,8 @@ app.on('ready', async () => {
       const moaShadow = startMoaShadow(() => daemonClient);
       client.on('approvals:changed', () => { void moaShadow.onApprovalsChanged(); });
       void moaShadow.onApprovalsChanged();
+      // Moa's delegate: registers its service only while the ask mode is on.
+      startMoaDelegate({ getDaemonClient: () => daemonClient });
       // Handler swap to daemon-routed mode. The microsecond window where
       // pty/* handlers are torn down and re-registered is the same
       // surface the original code used; the swap is logged for the

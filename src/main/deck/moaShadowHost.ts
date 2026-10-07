@@ -15,7 +15,8 @@ import { scrubBrainSpawnEnv } from './ClaudePtyBrainAdapter';
 import { loadPolicyBook } from './deckPolicy';
 import { getMoaConfig } from './deckHqStore';
 import { SHADOW_SCREEN_LINES, prepareJudgeDir, runJudge, type JudgeRunResult, type ShadowPrFacts } from './moaShadowJudge';
-import { MoaShadowLedger, type ShadowStats } from './moaShadowLedger';
+import { MoaShadowLedger, calledModel, type ShadowStats } from './moaShadowLedger';
+import type { MoaJudgeResult } from '../../shared/moaDecision';
 import { createMoaShadowFeed, type MoaShadowFeed } from './moaShadowFeed';
 
 /** A GitHub read that has not answered by then is left out of the packet. */
@@ -41,6 +42,72 @@ export function screenLinesFromRows(rows: Array<{ text?: unknown; wrapped?: unkn
   }
   while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
   return lines.slice(-SHADOW_SCREEN_LINES);
+}
+
+/** The cwd wmux knows for a pane (the fleet mirror, else its workspace's). */
+export function paneCwdOf(ptyId: string, workspaceId: string | undefined): string | undefined {
+  const mirror = getWorkspaceMirror();
+  const entry = workspaceId ? mirror.getEntries()?.find((e) => e.id === workspaceId) : undefined;
+  const pane = workspaceId ? mirror.getFleetSnapshot(workspaceId)?.panes.find((p) => p.ptyId === ptyId) : undefined;
+  return pane?.cwd ?? entry?.metadata?.cwd ?? undefined;
+}
+
+/** A pane's last screen lines through the daemon ([] when unreadable). */
+export async function readPaneScreen(getDaemonClient: () => DaemonClient | null, ptyId: string): Promise<string[]> {
+  const dc = getDaemonClient();
+  if (!dc?.isConnected) return [];
+  const res = (await dc.rpc('daemon.readSessionText', { id: ptyId, scrollback: 0 }, { timeoutMs: SCREEN_READ_TIMEOUT_MS })) as {
+    mode?: string;
+    rows?: Array<{ text?: unknown; wrapped?: unknown }>;
+    rowsBelowCursor?: number;
+  };
+  return res?.mode === 'rows' && Array.isArray(res.rows) ? screenLinesFromRows(res.rows, res.rowsBelowCursor ?? 0) : [];
+}
+
+/** One judge call: the owner's claude, the brain's env scrub, a fresh empty
+ *  dir per call (shared by the shadow feed and moa_ask). */
+export async function runMoaJudge(prompt: string): Promise<JudgeRunResult> {
+  const executable = resolveClaudeExecutable();
+  // A JS entrypoint needs a node to run it; the judge does not guess one.
+  if (!executable || executable.endsWith('.js')) {
+    return { reply: null, error: 'no claude executable', refused: true, tokens: { input: 0, output: 0 }, ms: 0 };
+  }
+  // A fresh empty dir per call, never under the wmux data dir.
+  const prepared = prepareJudgeDir();
+  if ('error' in prepared) {
+    return { reply: null, error: `unsafe judge dir: ${prepared.error}`, refused: true, tokens: { input: 0, output: 0 }, ms: 0 };
+  }
+  try {
+    return await runJudge(prompt, { executable, cwd: prepared.dir, env: scrubBrainSpawnEnv(process.env) });
+  } finally {
+    prepared.cleanup();
+  }
+}
+
+/**
+ * What the shadow judge recorded for a question with this packet hash, while
+ * its record is still open (moaQuestionHash equals shadowPacketHash), so
+ * moa_ask does not judge the same question twice. Null when the shadow judge
+ * is off: its ledger is not even opened then.
+ */
+export function findShadowJudgment(packetHash: string): MoaJudgeResult | null {
+  if (!isShadowJudgeEnabled()) return null;
+  const l = getLedger();
+  for (const key of l.openKeys()) {
+    const row = l.get(key);
+    if (!row || row.packetHash !== packetHash || !calledModel(row)) continue;
+    return {
+      verdict: row.verdict,
+      ...(row.choiceKey ? { choiceKey: row.choiceKey } : {}),
+      ...(row.ruleId ? { ruleId: row.ruleId } : {}),
+      reasonCode: row.reasonCode,
+      why: row.why,
+      // Already paid for by the shadow judge: not a call of moa_ask's.
+      tokens: { input: 0, output: 0 },
+      ms: 0,
+    };
+  }
+  return null;
 }
 
 let ledger: MoaShadowLedger | null = null;
@@ -70,25 +137,14 @@ export function startMoaShadow(getDaemonClient: () => DaemonClient | null): MoaS
     loadBook: () => loadPolicyBook(),
     isBrainPty: isBrainPtyId,
     describePane: (ptyId, workspaceId) => {
-      const mirror = getWorkspaceMirror();
-      const entry = workspaceId ? mirror.getEntries()?.find((e) => e.id === workspaceId) : undefined;
-      const pane = workspaceId ? mirror.getFleetSnapshot(workspaceId)?.panes.find((p) => p.ptyId === ptyId) : undefined;
-      const cwd = pane?.cwd ?? entry?.metadata?.cwd ?? undefined;
+      const entry = workspaceId ? getWorkspaceMirror().getEntries()?.find((e) => e.id === workspaceId) : undefined;
+      const cwd = paneCwdOf(ptyId, workspaceId);
       return {
         ...(entry?.name ? { workspaceName: entry.name } : {}),
         ...(cwd ? { cwd } : {}),
       };
     },
-    readScreen: async (ptyId) => {
-      const dc = getDaemonClient();
-      if (!dc?.isConnected) return [];
-      const res = (await dc.rpc('daemon.readSessionText', { id: ptyId, scrollback: 0 }, { timeoutMs: SCREEN_READ_TIMEOUT_MS })) as {
-        mode?: string;
-        rows?: Array<{ text?: unknown; wrapped?: unknown }>;
-        rowsBelowCursor?: number;
-      };
-      return res?.mode === 'rows' && Array.isArray(res.rows) ? screenLinesFromRows(res.rows, res.rowsBelowCursor ?? 0) : [];
-    },
+    readScreen: (ptyId) => readPaneScreen(getDaemonClient, ptyId),
     readPrs: async (cwd, numbers) => {
       if (!cwd) return [];
       const remote = await withDeadline(detectRemote(cwd), PR_READ_DEADLINE_MS, null);
@@ -110,23 +166,7 @@ export function startMoaShadow(getDaemonClient: () => DaemonClient | null): MoaS
       });
       return (await Promise.all(reads)).filter((p): p is ShadowPrFacts => p !== null);
     },
-    judge: async (prompt): Promise<JudgeRunResult> => {
-      const executable = resolveClaudeExecutable();
-      // A JS entrypoint needs a node to run it; the judge does not guess one.
-      if (!executable || executable.endsWith('.js')) {
-        return { reply: null, error: 'no claude executable', refused: true, tokens: { input: 0, output: 0 }, ms: 0 };
-      }
-      // A fresh empty dir per call, never under the wmux data dir.
-      const prepared = prepareJudgeDir();
-      if ('error' in prepared) {
-        return { reply: null, error: `unsafe judge dir: ${prepared.error}`, refused: true, tokens: { input: 0, output: 0 }, ms: 0 };
-      }
-      try {
-        return await runJudge(prompt, { executable, cwd: prepared.dir, env: scrubBrainSpawnEnv(process.env) });
-      } finally {
-        prepared.cleanup();
-      }
-    },
+    judge: runMoaJudge,
   });
   return feed;
 }

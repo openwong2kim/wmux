@@ -330,6 +330,10 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   // authz) and ledger_list (commander-only tool, also in the commander lane).
   'ledger.list',
   'ledger.update',
+  // Moa's delegate — moa_ask / moa_ask_status (full profile, registered only
+  // when the owner turned the ask mode on).
+  'moa.ask',
+  'moa.askStatus',
   // Task lifecycle — the eight commander-only tools (task_gate_run,
   // task_gate_cancel, task_adopt, task_close, task_pr, git_status, git_log,
   // gh_pr_view).

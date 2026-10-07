@@ -538,6 +538,13 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'ledger.list':   { capability: 'ledger.read',  riskClass: 'a2a' },
   'ledger.update': { capability: 'ledger.write', riskClass: 'a2a' },
 
+  // --- Moa's delegate (pipe/handlers/moa.rpc.ts). Only the bundled server's
+  //     moa_ask / moa_ask_status call these (first-party lane); no plugin may
+  //     declare them. The handler stamps the asker from senderPtyId and answers
+  //     `off` while the delegate is off.
+  'moa.ask':       { capability: 'wmux.internal' },
+  'moa.askStatus': { capability: 'wmux.internal' },
+
   // --- Task lifecycle (pipe/handlers/worktask.rpc.ts) ---
   // The reads answer "what did this task produce"; the writes run the task's
   // own gate script, patch the parent repository, push a branch or remove a
