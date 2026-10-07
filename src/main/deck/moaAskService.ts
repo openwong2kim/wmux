@@ -64,7 +64,7 @@ import {
   type ShadowPrFacts,
 } from './moaShadowJudge';
 import { MOA_AUTO_DAILY_CAP_DEFAULT } from '../../shared/moa';
-import { MoaAnswerCourier, type AskerPaneState, type CourierSendResult } from './moaAnswerCourier';
+import { COURIER_MAX_WAIT_MS, MoaAnswerCourier, type AskerPaneState, type CourierSendResult } from './moaAnswerCourier';
 
 /** What the service reads from the owner's settings, on every call. */
 export interface MoaAskConfig {
@@ -105,9 +105,9 @@ export interface MoaAskServicePorts {
    *  (moaAnswerCourier.ts). Without it nothing is delivered. */
   answerPane?: {
     state: (asker: MoaAsker) => AskerPaneState;
-    send: (asker: MoaAsker, text: string) => Promise<CourierSendResult>;
+    send: (asker: MoaAsker, text: string, wanted: () => boolean) => Promise<CourierSendResult>;
     retryMs?: number;
-    setTimer?: (fn: () => void, ms: number) => void;
+    setTimer?: (fn: () => void, ms: number) => () => void;
   };
   now?: () => number;
   log?: (line: string) => void;
@@ -203,6 +203,12 @@ export class MoaAskService implements MoaDelegateServicePort {
     // The asker has its final answer: nothing more to paste into its pane.
     if (view.status === 'answered' || view.status === 'refused') await this.courier?.seen(d.id);
     return { ok: true, ticket: view.status === 'escalated' ? { ...view, next: ESCALATED_NEXT } : view };
+  }
+
+  /** The delegate went off or this service is being replaced: no answer is
+   *  pasted by this instance any more. */
+  stop(): void {
+    this.courier?.stop();
   }
 
   /** Wait for background judging (tests, shutdown). */
@@ -447,8 +453,15 @@ export class MoaAskService implements MoaDelegateServicePort {
       });
       this.emitEffect(effect);
     }
-    // Deliveries still queued when main stopped.
-    for (const d of this.ports.decisions.list()) if (d.delivery?.state === 'waiting') void this.courier?.schedule(d);
+    // Deliveries still queued when main stopped, and final answers main
+    // stopped before it could queue (a crash between saving the answer and
+    // saving `waiting`): recent ones only, so an old record is never pasted.
+    const since = this.now() - COURIER_MAX_WAIT_MS;
+    for (const d of this.ports.decisions.list()) {
+      const queued = d.delivery?.state === 'waiting';
+      const lost = !d.delivery && (d.resolvedBy === 'owner' || d.resolvedBy === 'moa-auto') && d.resolvedAt !== null && d.resolvedAt >= since;
+      if (queued || lost) void this.courier?.schedule(d);
+    }
     await this.tick();
   }
 

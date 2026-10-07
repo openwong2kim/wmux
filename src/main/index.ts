@@ -1966,7 +1966,7 @@ app.on('ready', async () => {
         getDaemonClient: () => daemonClient,
         // An owner's answer reaches the asker's pane through the same gated
         // paste as a hand-off: approval gate, typing guard, then Enter.
-        submit: (ptyId, text, agent) => inputRpc.gatedSubmit(ptyId, text, agent, { waitQuiet: true }),
+        submit: (ptyId, text, agent, guardKey) => inputRpc.gatedSubmit(ptyId, text, agent, { waitQuiet: true, guardKey }),
       });
       // Handler swap to daemon-routed mode. The microsecond window where
       // pty/* handlers are torn down and re-registered is the same

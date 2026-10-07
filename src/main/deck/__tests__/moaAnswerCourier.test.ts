@@ -26,14 +26,25 @@ let dir: string;
 beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-moa-courier-')); });
 afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
 
-function build(opts: { pane: () => AskerPaneState; send?: (text: string) => Promise<CourierSendResult> }) {
-  const decisions = new MoaDecisionStore(dir);
-  const effects = new MoaEffectStore(dir);
-  const timers: Array<() => void> = [];
-  const sent: string[] = [];
-  const send = vi.fn(async (_asker: MoaAsker, text: string): Promise<CourierSendResult> => {
-    sent.push(text);
-    return opts.send ? opts.send(text) : { ok: true };
+function build(opts: {
+  pane: () => AskerPaneState;
+  send?: (text: string, wanted: () => boolean) => Promise<CourierSendResult>;
+  /** Reuse these stores (the wiring keeps one pair across off → on). */
+  stores?: { decisions: MoaDecisionStore; effects: MoaEffectStore };
+  /** Share one timer queue and one paste log between services. */
+  timers?: Array<() => void>;
+  sent?: string[];
+}) {
+  const decisions = opts.stores?.decisions ?? new MoaDecisionStore(dir);
+  const effects = opts.stores?.effects ?? new MoaEffectStore(dir);
+  const timers: Array<() => void> = opts.timers ?? [];
+  const sent: string[] = opts.sent ?? [];
+  const send = vi.fn(async (_asker: MoaAsker, text: string, wanted: () => boolean): Promise<CourierSendResult> => {
+    // The real gated submit asks the registered check before the paste.
+    if (!wanted()) return { ok: false, retry: false, reason: 'guard_refused' };
+    const r = opts.send ? await opts.send(text, wanted) : { ok: true as const };
+    if (r.ok) sent.push(text);
+    return r;
   });
   const readFresh = vi.fn(async () => { throw new Error('unused'); });
   let service: MoaAskService | null = null;
@@ -58,7 +69,16 @@ function build(opts: { pane: () => AskerPaneState; send?: (text: string) => Prom
     readScreen: async () => [],
     resolveRepo: async () => null,
     askerBranches: async () => [],
-    answerPane: { state: () => opts.pane(), send, retryMs: 10, setTimer: (fn) => { timers.push(fn); } },
+    answerPane: {
+      state: () => opts.pane(),
+      send,
+      retryMs: 10,
+      setTimer: (fn) => {
+        let live = true;
+        timers.push(() => { if (live) fn(); });
+        return () => { live = false; };
+      },
+    },
     log: () => undefined,
   });
   /** Run the timers queued so far (the courier's retries). */
@@ -67,7 +87,7 @@ function build(opts: { pane: () => AskerPaneState; send?: (text: string) => Prom
     for (const fn of due) fn();
     await new Promise((r) => setTimeout(r, 5));
   };
-  return { service, decisions, send, sent, tick, timers };
+  return { service, decisions, effects, send, sent, tick, timers };
 }
 
 async function escalatedTicket(h: ReturnType<typeof build>) {
@@ -101,7 +121,7 @@ describe('the answer goes back to the asker', () => {
     const rec = h.decisions.get(decision.id)!;
     expect(rec.delivery).toMatchObject({ state: 'delivered', agent: 'claude' });
     // On disk too, and a second resolve or a restart does not send it again.
-    expect(JSON.parse(fs.readFileSync(path.join(dir, 'moa-delegate', 'decisions.json'), 'utf8')).decisions[0].delivery.state).toBe('delivered');
+    await vi.waitFor(() => expect(JSON.parse(fs.readFileSync(path.join(dir, 'moa-delegate', 'decisions.json'), 'utf8')).decisions[0].delivery.state).toBe('delivered'));
     const again = await h.service.resolveByOwner({ decisionId: decision.id, answer: { type: 'choice', choiceKey: 'look' } });
     expect(again.ok).toBe(false);
     await h.service.start();
@@ -115,6 +135,7 @@ describe('the answer goes back to the asker', () => {
     const { decision } = await escalatedTicket(h);
     await h.service.resolveByOwner({ decisionId: decision.id, answer: { type: 'choice', choiceKey: 'look' } });
     await vi.waitFor(() => expect(h.decisions.get(decision.id)?.delivery?.state).toBe('waiting'));
+    await vi.waitFor(() => expect(h.timers.length).toBe(1));
     await h.tick();
     await h.tick();
     expect(h.send).not.toHaveBeenCalled();
@@ -131,6 +152,7 @@ describe('the answer goes back to the asker', () => {
     const { decision } = await escalatedTicket(h);
     await h.service.resolveByOwner({ decisionId: decision.id, answer: { type: 'choice', choiceKey: 'look' } });
     await vi.waitFor(() => expect(h.decisions.get(decision.id)?.delivery?.reason).toBe('user_typing'));
+    await vi.waitFor(() => expect(h.timers.length).toBe(1));
     await h.tick();
     await vi.waitFor(() => expect(h.decisions.get(decision.id)?.delivery?.state).toBe('delivered'));
     expect(h.send).toHaveBeenCalledTimes(2);
@@ -192,5 +214,82 @@ describe('countOpenTicketsReadOnly (the panel notice while the delegate is off)'
     expect(countOpenTicketsReadOnly(dir)).toBe(1);
     expect(fs.readFileSync(file, 'utf8')).toBe(before);
     expect(fs.statSync(file).mtimeMs).toBe(mtime);
+  });
+});
+
+describe('review fixes: one courier, no lost or doubled answer', () => {
+  it('on → answer queued → off → on: exactly one paste, and no ticket lost', async () => {
+    let pane: AskerPaneState = 'busy';
+    const timers: Array<() => void> = [];
+    const sent: string[] = [];
+    const first = build({ pane: () => pane, timers, sent });
+    const { decision } = await escalatedTicket(first);
+    await first.service.resolveByOwner({ decisionId: decision.id, answer: { type: 'choice', choiceKey: 'rerun' } });
+    await vi.waitFor(() => expect(first.decisions.get(decision.id)?.delivery?.state).toBe('waiting'));
+    // Off: the old service stops. On: a new one on the SAME stores.
+    first.service.stop();
+    const second = build({ pane: () => pane, timers, sent, stores: { decisions: first.decisions, effects: first.effects } });
+    await second.service.start();
+    // A new ticket made by the new instance must survive.
+    const r = await second.service.ask(ASKER, '/repo', { askId: 'later', body: { type: 'question', question: 'Another one?', options: [{ key: 'a', label: 'A' }, { key: 'b', label: 'B' }] } });
+    expect(r.ok).toBe(true);
+    await second.service.idle();
+    pane = 'idle';
+    for (let i = 0; i < 4; i++) await first.tick();
+    await vi.waitFor(() => expect(second.decisions.get(decision.id)?.delivery?.state).toBe('delivered'));
+    expect(sent).toHaveLength(1);
+    expect(first.send).not.toHaveBeenCalled();
+    await vi.waitFor(() => {
+      const onDisk = JSON.parse(fs.readFileSync(path.join(dir, 'moa-delegate', 'decisions.json'), 'utf8')).decisions as Array<{ id: string; delivery?: { state: string } }>;
+      expect(onDisk).toHaveLength(2);
+      expect(onDisk.find((d) => d.id === decision.id)?.delivery?.state).toBe('delivered');
+    });
+  });
+
+  it('a crash between saving the answer and queueing it: startup delivers it', async () => {
+    const h = build({ pane: () => 'idle' });
+    const { decision } = await escalatedTicket(h);
+    // The answer is saved, the process dies before the courier ran.
+    await h.decisions.resolveByOwner(decision.id, { type: 'choice', choiceKey: 'rerun' });
+    expect(h.decisions.get(decision.id)?.delivery).toBeUndefined();
+    const after = build({ pane: () => 'idle', stores: { decisions: new MoaDecisionStore(dir), effects: new MoaEffectStore(dir) } });
+    await after.service.start();
+    await vi.waitFor(() => expect(after.decisions.get(decision.id)?.delivery?.state).toBe('delivered'));
+    expect(after.sent).toHaveLength(1);
+  });
+
+  it('an old answer with no delivery record is not pasted at startup', async () => {
+    let t = 1_000_000;
+    const h = build({ pane: () => 'idle' });
+    const { decision } = await escalatedTicket(h);
+    const old = new MoaDecisionStore(dir, () => t);
+    await old.resolveByOwner(decision.id, { type: 'choice', choiceKey: 'rerun' });
+    t += 3 * 60 * 60 * 1000;
+    const after = build({ pane: () => 'idle', stores: { decisions: new MoaDecisionStore(dir), effects: new MoaEffectStore(dir) } });
+    await after.service.start();
+    expect(after.send).not.toHaveBeenCalled();
+  });
+
+  it('the asker polls the answer while the paste waits: no paste, recorded as read by its poll', async () => {
+    let release: (() => void) | null = null;
+    let ticketId = '';
+    const h = build({
+      pane: () => 'idle',
+      // The gated submit waits for a quiet pane; the poll lands meanwhile and
+      // the check before the paste refuses it.
+      send: async (_text, wanted) => {
+        await new Promise<void>((r) => { release = r; });
+        return wanted() ? { ok: true } : { ok: false, retry: false, reason: 'guard_refused' };
+      },
+    });
+    const e = await escalatedTicket(h);
+    ticketId = e.ticketId;
+    await h.service.resolveByOwner({ decisionId: e.decision.id, answer: { type: 'choice', choiceKey: 'rerun' } });
+    await vi.waitFor(() => expect(h.decisions.get(e.decision.id)?.delivery?.state).toBe('sending'));
+    const s = await h.service.status(ASKER, ticketId);
+    expect(s.ok && s.ticket.status).toBe('answered');
+    release!();
+    await vi.waitFor(() => expect(h.decisions.get(e.decision.id)?.delivery).toMatchObject({ state: 'seen', reason: 'read-by-poll' }));
+    expect(h.sent).toHaveLength(0);
   });
 });

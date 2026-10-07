@@ -170,6 +170,14 @@ describe('merge card', () => {
     expect(escalationReasonText('some_judge_code', t)).toBe('moa.delegate.reason.other');
   });
 
+  it('a PR that could not be read is an escalation reason, never "Checked by wmux"', async () => {
+    const d = mergeTicket(10, { reasonCode: 'lane-read-failed', why: 'the pull request could not be read; the owner answers it in the Moa panel' });
+    expect(laneReasonsOf(d)).toEqual([]);
+    await act(async () => root.render(createElement('ul', null, createElement(MoaDelegateTicketRow, { decision: d, resolve: vi.fn(), onDone: vi.fn(), workspaceName: name, t }))));
+    expect(container.querySelector('[data-moa-delegate-lane-block]')).toBeNull();
+    expect(container.querySelector('[data-moa-delegate-reason]')!.textContent).toBe('moa.delegate.reason.lane-read-failed');
+  });
+
   it('reads the lane reasons main wrote, and words them', () => {
     expect(laneReasonsOf({ reasonCode: 'lane-head-moved', why: 'Moa may not merge this by itself (lane: head-moved, windows-path); ask the owner' }))
       .toEqual(['head-moved', 'windows-path']);

@@ -38,13 +38,19 @@ export const LANE_REASONS = [
  * "(lane: <reason>, <reason>)" and the reason code is `lane-<first reason>`.
  * Display only; nothing here decides anything.
  */
+/** A `lane-<reason>` code the lane itself wrote. `lane-read-failed` is not
+ *  one: the PR could not be read, so nothing was checked. */
+export function isLaneFailureCode(code: string): boolean {
+  return code.startsWith('lane-') && code !== 'lane-read-failed';
+}
+
 export function laneReasonsOf(d: Pick<MoaDecision, 'reasonCode' | 'why' | 'lane'>): string[] {
   // The verdict main kept on the decision is the source; the text is for
   // records written before it was kept.
   if (d.lane) return d.lane.reasons;
   const m = /\(lane: ([^)]*)\)/.exec(d.why);
   if (m) return m[1].split(',').map((r) => r.trim()).filter(Boolean);
-  return d.reasonCode.startsWith('lane-') ? [d.reasonCode.slice('lane-'.length)] : [];
+  return isLaneFailureCode(d.reasonCode) ? [d.reasonCode.slice('lane-'.length)] : [];
 }
 
 /** A lane reason in plain words; an unknown code is shown as is. */
@@ -209,7 +215,7 @@ function AgentNote({ text, t }: { text: string; t: T }) {
 /** Why it came to the owner (mapped from the code), and Moa's own reason
  *  when the judge gave one. Lane reasons have their own block. */
 function EscalationReason({ decision: d, t }: { decision: MoaDecision; t: T }) {
-  const code = d.reasonCode.startsWith('lane-') ? null : d.reasonCode;
+  const code = isLaneFailureCode(d.reasonCode) ? null : d.reasonCode;
   const judgeWhy = d.judge && d.judge.verdict === 'escalate' ? d.judge.why : '';
   if (!code && !judgeWhy) return null;
   return (

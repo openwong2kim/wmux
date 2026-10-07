@@ -14,6 +14,10 @@
 //             paste, `delivered` after it.
 //   seen      the asker read the final answer itself (moa_ask_status): a
 //             delivery still waiting is dropped, so it never reads it twice.
+//             A read that lands while the paste is under way stops it right
+//             before the paste (and the Enter): `wanted` goes false.
+//   stop      the delegate went off or the service was replaced: pending
+//             timers are cleared and no try starts or pastes after it.
 //
 // Exactly once: every move goes through MoaDecisionStore.setDelivery with the
 // state it expects, and a `sending` row found on load is never sent again.
@@ -31,11 +35,14 @@ export interface MoaAnswerCourierPorts {
   get: (decisionId: string) => MoaDecision | null;
   setDelivery: (decisionId: string, delivery: MoaAnswerDelivery, from: MoaAnswerDelivery['state'] | null) => Promise<MoaDecision | null>;
   paneState: (asker: MoaAsker) => AskerPaneState;
-  send: (asker: MoaAsker, text: string) => Promise<CourierSendResult>;
+  /** One gated paste. `wanted` is asked right before the paste and the
+   *  Enter; false refuses (nothing submitted). */
+  send: (asker: MoaAsker, text: string, wanted: () => boolean) => Promise<CourierSendResult>;
   /** A delivery moved (the panel re-reads). */
   onChange?: (d: MoaDecision) => void;
   now?: () => number;
-  setTimer?: (fn: () => void, ms: number) => void;
+  /** Schedule `fn`; returns its cancel. */
+  setTimer?: (fn: () => void, ms: number) => () => void;
   log?: (line: string) => void;
   /** Between tries while the pane is busy (default 5 s). */
   retryMs?: number;
@@ -77,7 +84,7 @@ export function answerLine(d: MoaDecision): string | null {
 
 export class MoaAnswerCourier {
   private readonly now: () => number;
-  private readonly setTimer: (fn: () => void, ms: number) => void;
+  private readonly setTimer: (fn: () => void, ms: number) => () => void;
   private readonly log: (line: string) => void;
   private readonly retryMs: number;
   private readonly maxWaitMs: number;
@@ -85,10 +92,19 @@ export class MoaAnswerCourier {
   private readonly trying = new Set<string>();
   /** When each delivery was first queued (for maxWaitMs). */
   private readonly queuedAt = new Map<string, number>();
+  /** Read by the asker while its paste was under way. */
+  private readonly seenWhileSending = new Set<string>();
+  /** Cancels of the timers still pending. */
+  private readonly timers = new Set<() => void>();
+  private stopped = false;
 
   constructor(private readonly ports: MoaAnswerCourierPorts) {
     this.now = ports.now ?? Date.now;
-    this.setTimer = ports.setTimer ?? ((fn, ms) => { const t = setTimeout(fn, ms); t.unref?.(); });
+    this.setTimer = ports.setTimer ?? ((fn, ms) => {
+      const t = setTimeout(fn, ms);
+      t.unref?.();
+      return () => clearTimeout(t);
+    });
     this.log = ports.log ?? ((l) => console.log(l));
     this.retryMs = ports.retryMs ?? COURIER_RETRY_MS;
     this.maxWaitMs = ports.maxWaitMs ?? COURIER_MAX_WAIT_MS;
@@ -100,7 +116,7 @@ export class MoaAnswerCourier {
    * first try (an auto answer the asker may still be polling for).
    */
   async schedule(d: MoaDecision, delayMs = 0): Promise<void> {
-    if (!answerLine(d)) return;
+    if (this.stopped || !answerLine(d)) return;
     const state = d.delivery?.state ?? null;
     if (state !== null && state !== 'waiting') return;
     if (state === null) {
@@ -108,7 +124,7 @@ export class MoaAnswerCourier {
       if (!rec) return;
     }
     if (!this.queuedAt.has(d.id)) this.queuedAt.set(d.id, this.now());
-    if (delayMs > 0) this.setTimer(() => { void this.attempt(d.id); }, delayMs);
+    if (delayMs > 0) this.after(d.id, delayMs);
     else await this.attempt(d.id);
   }
 
@@ -117,6 +133,12 @@ export class MoaAnswerCourier {
     const d = this.ports.get(decisionId);
     if (!d || !answerLine(d)) return;
     const state = d.delivery?.state ?? null;
+    if (state === 'sending') {
+      // The paste is under way: its guard refuses it before the paste (or
+      // the Enter), and the try records it as read by the poll.
+      this.seenWhileSending.add(decisionId);
+      return;
+    }
     if (state !== null && state !== 'waiting') return;
     await this.move(decisionId, { state: 'seen', agent: d.asker.agent, at: this.now() }, state);
     this.queuedAt.delete(decisionId);
@@ -124,7 +146,7 @@ export class MoaAnswerCourier {
 
   /** One try. Re-reads the decision: a `seen` or a finished delivery stops it. */
   async attempt(decisionId: string): Promise<void> {
-    if (this.trying.has(decisionId)) return;
+    if (this.stopped || this.trying.has(decisionId)) return;
     this.trying.add(decisionId);
     try {
       const d = this.ports.get(decisionId);
@@ -148,13 +170,24 @@ export class MoaAnswerCourier {
         return;
       }
       if (!(await this.move(decisionId, { state: 'sending', agent, at: this.now() }, 'waiting'))) return;
+      this.seenWhileSending.delete(decisionId);
+      const wanted = () => !this.stopped && !this.seenWhileSending.has(decisionId);
       let r: CourierSendResult;
       try {
-        r = await this.ports.send(d.asker, text);
+        r = await this.ports.send(d.asker, text, wanted);
       } catch (err) {
         r = { ok: false, retry: false, reason: `send-error: ${String(err)}`.slice(0, 120) };
       }
-      if (r.ok) {
+      const readByPoll = this.seenWhileSending.delete(decisionId);
+      if (!r.ok && this.stopped && !readByPoll) {
+        // Stopped mid-try (the delegate went off): nothing was submitted, so
+        // it waits for whichever service picks the queue up next.
+        await this.move(decisionId, { state: 'waiting', agent, at: this.now(), reason: 'stopped' }, 'sending');
+      } else if (!r.ok && readByPoll) {
+        // The asker read it itself while the paste waited: nothing was
+        // submitted, and the answer counts as delivered by its poll.
+        await this.finish(decisionId, { state: 'seen', agent, at: this.now(), reason: 'read-by-poll' }, 'sending');
+      } else if (r.ok) {
         await this.finish(decisionId, { state: 'delivered', agent, at: this.now() }, 'sending');
       } else if (r.retry) {
         // Refused before anything was submitted (someone typing, a prompt
@@ -168,8 +201,26 @@ export class MoaAnswerCourier {
     }
   }
 
+  /** Clear every pending try; nothing starts or pastes after this. A try
+   *  already past its paste finishes recording what happened. */
+  stop(): void {
+    this.stopped = true;
+    for (const cancel of this.timers) cancel();
+    this.timers.clear();
+    this.queuedAt.clear();
+  }
+
   private later(decisionId: string): void {
-    this.setTimer(() => { void this.attempt(decisionId); }, this.retryMs);
+    this.after(decisionId, this.retryMs);
+  }
+
+  private after(decisionId: string, ms: number): void {
+    if (this.stopped) return;
+    const cancel = this.setTimer(() => {
+      this.timers.delete(cancel);
+      void this.attempt(decisionId);
+    }, ms);
+    this.timers.add(cancel);
   }
 
   private async finish(decisionId: string, delivery: MoaAnswerDelivery, from: MoaAnswerDelivery['state']): Promise<void> {

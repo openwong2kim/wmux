@@ -38,6 +38,7 @@ import type { AskerPaneState, CourierSendResult } from './moaAnswerCourier';
 import { getWorkspaceMirror } from '../workspace/WorkspaceMirror';
 import { DEFAULT_MAX_SNAPSHOT_AGE_MS } from './stopGate';
 import type { GatedSubmitResult } from '../../shared/ptyMessageDelivery';
+import { registerDeliveryCheck } from '../pipe/deliveryGuards';
 
 const execFileAsync = promisify(execFile);
 /** Expire stale escalations and reconcile uncertain merges this often. */
@@ -73,7 +74,7 @@ export interface MoaDelegateWiringDeps {
   getDaemonClient: () => DaemonClient | null;
   /** Main's gated paste-and-submit (input.rpc gatedSubmit with waitQuiet):
    *  how an answer reaches the asker's pane. Without it nothing is pasted. */
-  submit?: (ptyId: string, text: string, agent: string) => Promise<GatedSubmitResult>;
+  submit?: (ptyId: string, text: string, agent: string, guardKey: string) => Promise<GatedSubmitResult>;
   wmuxDir?: string;
   log?: (line: string) => void;
 }
@@ -84,6 +85,10 @@ interface Running {
 }
 
 let running: Running | null = null;
+/** The stores, built once per data dir and kept across off → on: two
+ *  instances of one store would each write their own map over the file. */
+let stores: { dir: string; decisions: MoaDecisionStore; effects: MoaEffectStore } | null = null;
+let guardSeq = 0;
 let deps: MoaDelegateWiringDeps | null = null;
 let settingsWatched = false;
 /** Owner logins by GitHub host (the owner's own PRs are trusted authors). */
@@ -164,8 +169,8 @@ function configNow(): MoaAskConfig {
 function build(d: MoaDelegateWiringDeps): MoaAskService {
   const dir = d.wmuxDir ?? getWmuxDir();
   const log = d.log ?? ((l: string) => console.log(l));
-  const decisions = new MoaDecisionStore(dir);
-  const effects = new MoaEffectStore(dir);
+  if (!stores || stores.dir !== dir) stores = { dir, decisions: new MoaDecisionStore(dir), effects: new MoaEffectStore(dir) };
+  const { decisions, effects } = stores;
   const submit = d.submit;
   const facts = {
     readFresh: async (repoPath: string, key: string, n: number) => {
@@ -216,7 +221,18 @@ function build(d: MoaDelegateWiringDeps): MoaAskService {
       ? {
           answerPane: {
             state: askerPaneState,
-            send: async (asker: MoaAsker, text: string) => courierResultOf(await submit(asker.ptyId, text, asker.agent)),
+            send: async (asker: MoaAsker, text: string, wanted: () => boolean) => {
+              // Asked right before the paste and the Enter (input.rpc), so a
+              // poll that read the answer meanwhile stops the paste.
+              const key = `moa-answer:${++guardSeq}`;
+              const check = () => (wanted() ? null : 'the asker already read this answer');
+              const unregister = registerDeliveryCheck(key, { beforePaste: check, beforeEnter: check });
+              try {
+                return courierResultOf(await submit(asker.ptyId, text, asker.agent, key));
+              } finally {
+                unregister();
+              }
+            },
           },
         }
       : {}),
@@ -253,6 +269,7 @@ export function refreshMoaDelegate(): MoaAskService | null {
   syncMoaAskSwitch(mode);
   if (mode === 'off') {
     if (running) {
+      running.service.stop();
       for (const t of running.timers) clearInterval(t);
       running = null;
       setMoaDelegateService(null);
