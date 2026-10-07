@@ -80,17 +80,17 @@ Your agents drive a browser through wmux's MCP tools — navigate, click, type, 
 
 **Built-in browser panes.** A browser pane opens as a split beside the agent, and each agent gets its own.
 
-<img alt="Two agents each open their own built-in browser pane beside their terminal and browse at the same time" src="docs/readme/browser-builtin.gif" width="900" />
+<img alt="Two agents each open their own built-in browser pane beside their terminal and answer from it" src="docs/readme/browser-builtin.gif" width="900" />
 
 **A dedicated Chrome over CDP.** Agents drive a real Chrome, each in its own tab, with a persistent profile separate from your daily browser — sign in once and the logins stick. See [browser backends](docs/browser-backends.md) for what CDP can and cannot do.
 
-<img alt="Two agents drive their own tabs in a dedicated Chrome over CDP" src="docs/readme/browser-chrome.gif" width="900" />
+<img alt="With the dedicated Chrome backend, two agents drive their own tabs and each answers from its page" src="docs/readme/browser-chrome.gif" width="900" />
 
 ### Claude Code and Codex, talking
 
-Agents in different panes message each other through wmux, whichever CLI they run. Here Claude Code asks the Codex pane next to it for a review with `send_message`; Codex reads the change and sends its review back the same way, and Claude acts on it.
+Agents in different panes message each other through wmux, whichever CLI they run. Here Claude Code changes a function and asks the Codex pane next to it for a review with `send_message`; Codex replies the same way with a missing test case, and Claude adds it.
 
-<img alt="Claude Code asks Codex in the next pane for a review over wmux, Codex sends its review back, and Claude acts on it" src="docs/readme/a2a.gif" width="900" />
+<img alt="Claude Code changes a function and asks Codex in the next pane for a review over wmux; Codex replies with a missing test case and Claude adds it" src="docs/readme/a2a.gif" width="900" />
 
 ### Survives quit, crash, and reboot
 
@@ -100,13 +100,13 @@ A standalone daemon owns every terminal, so quitting the app leaves your session
 
 After a crash or a reboot, a recovered pane offers **Resume**: it types the agent command back in, with the exact conversation when wmux knows which one the pane held. Panes declared in `wmux.json` are supervised and restarted automatically.
 
-<img alt="After a crash, the recovered pane offers Resume and the exact agent conversation comes back" src="docs/readme/survive-resume.gif" width="900" />
+<img alt="After a crash, the recovered pane offers Resume, then resume this session, and the exact conversation comes back" src="docs/readme/survive-resume.gif" width="900" />
 
 ### Usage limits and accounts
 
 When Claude Code or Codex hits its usage limit, the pane pauses: its header and its Fleet row say when the limit resets, and wmux holds scheduled prompts and agent messages for that pane instead of typing them into a turn that cannot run. Turn on **Resume at reset** for a pane (or "Continue after a usage limit resets" in Settings, off by default) and it continues by itself when the window resets. With several of your own Claude or Codex subscriptions registered, **Switch Claude accounts by quota** and **Switch Codex accounts by quota** in Settings → Accounts (both off by default) start a new pane on the account with the most quota left when the workspace's own account is out of quota. Settings → Token usage shows each provider's usage windows.
 
-<img alt="An agent hits its usage limit; the pane pauses and shows when it resets, then continues by itself at the reset" src="docs/readme/limits.gif" width="900" />
+<img alt="An agent is paused by a usage limit; the pane header shows when it resets, Resume at reset is armed, and at the reset the agent continues and finishes" src="docs/readme/limits.gif" width="900" />
 
 ## More
 
