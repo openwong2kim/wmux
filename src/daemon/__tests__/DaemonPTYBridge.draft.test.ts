@@ -51,4 +51,27 @@ describe('DaemonPTYBridge — composer draft', () => {
     bridge.noteInput('\x03');
     expect(bridge.hasDraft()).toBe(false);
   });
+
+  // Claude Code's permission dialog takes a lone digit with no Enter after it.
+  // That digit answered the dialog; it never reached the composer. Before the
+  // fix it stayed a "draft" until the next Enter, so every later hand-off into
+  // the idle pane waited out its budget and was refused as `user_typing`.
+  it.each([['1'], ['2'], ['3']])('a lone %s answering a dialog is not a draft', (key) => {
+    bridge.noteAgentStatus('awaiting_input');
+    bridge.noteInput(key);
+    expect(bridge.getAgentStatus()).not.toBe('awaiting_input');
+    expect(bridge.hasDraft()).toBe(false);
+  });
+
+  it('an answer key keeps a draft that was already in the composer', () => {
+    bridge.noteInput('half-typed');
+    bridge.noteAgentStatus('awaiting_input');
+    bridge.noteInput('1');
+    expect(bridge.hasDraft()).toBe(true);
+  });
+
+  it('the same digit typed with no dialog up is still a draft', () => {
+    bridge.noteInput('1');
+    expect(bridge.hasDraft()).toBe(true);
+  });
 });

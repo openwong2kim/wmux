@@ -372,7 +372,11 @@ export class DaemonPTYBridge extends EventEmitter {
       if (this.sessionId) this.emit('inputSubmitted', { sessionId: this.sessionId });
     } else if (clearsComposer) {
       this.draftPending = false;
-    } else if (DaemonPTYBridge.typesDraftText(data)) {
+    } else if (!answerKey && DaemonPTYBridge.typesDraftText(data)) {
+      // Not for a lone digit that answered a dialog: it went to the dialog,
+      // not the composer. Counting it left a phantom draft that no Enter ever
+      // followed, so every later hand-off into the idle pane was refused as
+      // user_typing.
       this.draftPending = true;
     }
     // Input that reached a pane still blocked on a human. Carries sizes only,
