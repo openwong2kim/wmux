@@ -66,12 +66,16 @@ import {
   MOA_ISSUE_POLL_MINUTES_DEFAULT,
   MOA_ISSUE_POLL_MINUTES_RANGE,
   MOA_ISSUE_LIST_MAX,
+  MOA_AUTO_DAILY_CAP_DEFAULT,
+  MOA_AUTO_DAILY_CAP_RANGE,
   parseIgnoredRepos,
   parseTrustedAuthors,
   type MoaLevel,
   type MoaConfig,
   type MoaConfigPatch,
 } from '../../shared/moa';
+import { MOA_ASK_MODES, type MoaAskMode } from '../../shared/moaAsk';
+import { sanitizeAutoRules } from '../../shared/moaDecision';
 export type { MoaLevel, MoaConfig, MoaConfigPatch };
 
 export interface ArchivedHqDecision {
@@ -115,6 +119,14 @@ interface HqFile {
   moaIssuePollMinutes?: number;
   /** Repo keys the proposals skip ("Ignore this repo"). */
   moaIgnoredRepos?: string[];
+  /** moa_ask mode (moaAskService.ts). Absent or unknown = off. */
+  moaAskMode?: MoaAskMode;
+  /** Rule ids the owner allowed to settle by themselves. Absent = none. */
+  moaAutoRules?: string[];
+  /** Auto answers per local day. Absent = MOA_AUTO_DAILY_CAP_DEFAULT. */
+  moaAutoDailyCap?: number;
+  /** The auto kill switch. Absent = off. */
+  moaAutoPaused?: boolean;
   /** Archived decisions up to this archivedAt have been acknowledged. */
   archiveAckedAt?: number;
   /** Set once the non-HQ migration has completed for `hqWorkspaceId`. */
@@ -183,6 +195,13 @@ function sanitize(o: Record<string, unknown>): HqFile {
     if (n !== null) out.moaIssuePollMinutes = n;
   }
   if (Array.isArray(o.moaIgnoredRepos)) out.moaIgnoredRepos = parseIgnoredRepos(o.moaIgnoredRepos);
+  // The delegate's fields fail closed one by one (an unknown value reads as
+  // off / none), so they never mark the whole file corrupt.
+  if (typeof o.moaAskMode === 'string' && (MOA_ASK_MODES as readonly string[]).includes(o.moaAskMode)) out.moaAskMode = o.moaAskMode as MoaAskMode;
+  if (Array.isArray(o.moaAutoRules)) out.moaAutoRules = sanitizeAutoRules(o.moaAutoRules);
+  const cap = autoDailyCap(o.moaAutoDailyCap);
+  if (cap !== null) out.moaAutoDailyCap = cap;
+  if (typeof o.moaAutoPaused === 'boolean') out.moaAutoPaused = o.moaAutoPaused;
   return out;
 }
 
@@ -428,7 +447,30 @@ export function getMoaConfig(dir?: string): MoaConfig {
     trustedAuthors: file.moaTrustedAuthors ?? [],
     issuePollMinutes: file.moaIssuePollMinutes ?? MOA_ISSUE_POLL_MINUTES_DEFAULT,
     ignoredRepos: file.moaIgnoredRepos ?? [],
+    askMode: corrupt ? 'off' : file.moaAskMode ?? 'off',
+    autoRules: file.moaAutoRules ?? [],
+    autoDailyCap: file.moaAutoDailyCap ?? MOA_AUTO_DAILY_CAP_DEFAULT,
+    autoPaused: file.moaAutoPaused === true,
   };
+}
+
+/** A whole number within the auto cap's range, or null. */
+function autoDailyCap(n: unknown): number | null {
+  return typeof n === 'number' && Number.isInteger(n)
+    && n >= MOA_AUTO_DAILY_CAP_RANGE.min && n <= MOA_AUTO_DAILY_CAP_RANGE.max ? n : null;
+}
+
+/** The owner's per-rule auto toggles (renderer IPC only, through the Moa
+ *  delegate service). Returns false while the store is corrupt. */
+export async function setMoaAutoRules(ids: readonly string[], dir?: string): Promise<boolean> {
+  const next = sanitizeAutoRules([...ids]);
+  try {
+    await mutate(dir, (file) => write(dir, { ...file, moaAutoRules: next }));
+    return true;
+  } catch (err) {
+    if (err instanceof HqStoreCorruptError) return false;
+    throw err;
+  }
 }
 
 /** A whole number of minutes within the accepted range, or null. */
@@ -480,6 +522,10 @@ export async function setMoaConfig(patch: MoaConfigPatch, dir?: string): Promise
   const minutes = issuePollMinutes(patch.issuePollMinutes);
   if (minutes !== null) next.moaIssuePollMinutes = minutes;
   if (patch.ignoredRepos !== undefined) next.moaIgnoredRepos = parseIgnoredRepos(patch.ignoredRepos);
+  if (typeof patch.askMode === 'string' && (MOA_ASK_MODES as readonly string[]).includes(patch.askMode)) next.moaAskMode = patch.askMode;
+  const cap = autoDailyCap(patch.autoDailyCap);
+  if (cap !== null) next.moaAutoDailyCap = cap;
+  if (typeof patch.autoPaused === 'boolean') next.moaAutoPaused = patch.autoPaused;
   try {
     await mutate(dir, (file) => write(dir, { ...file, ...next }));
     return true;

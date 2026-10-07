@@ -12,6 +12,7 @@
 
 import type { MoaAsker, MoaAskRequest, MoaAskResult, MoaAskStatusResult } from '../../shared/moaAsk';
 import type {
+  MoaAuditEvent,
   MoaAutoRuleSetRequest,
   MoaAutoRuleSetResult,
   MoaDecisionEvent,
@@ -41,6 +42,8 @@ export interface MoaDelegateServicePort {
 export interface MoaDelegateEvents {
   decision(event: MoaDecisionEvent): void;
   effect(event: MoaEffectEvent): void;
+  /** Optional: the lane audit's findings (display only). */
+  audit?(event: MoaAuditEvent): void;
 }
 
 let service: MoaDelegateServicePort | null = null;

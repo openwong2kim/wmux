@@ -194,6 +194,22 @@ export interface MoaDelegateListResult {
   decisions: MoaDecision[];
   effects: MergeEffect[];
   rules: MoaRuleView[];
+  /** The lane audit's last answer (display only), when it ran. */
+  unreceiptedMerges?: MoaUnreceiptedMerge[];
+}
+
+/**
+ * A PR merged in the last 24 h, in a repo the lane has touched, with no lane
+ * receipt (no `done` MergeEffect): merged by hand, or around the lane. Display
+ * only; nothing acts on it.
+ */
+export interface MoaUnreceiptedMerge {
+  repoKey: string;
+  prNumber: number;
+  /** Agent- or contributor-written text: render it as text. */
+  title: string;
+  mergedAt: string;
+  headRefOid: string;
 }
 
 export type MoaOwnerAnswer =
@@ -229,6 +245,13 @@ export type MoaAutoRuleSetResult = { ok: true; autoRules: string[] } | { ok: fal
 export interface MoaDecisionEvent {
   type: 'created' | 'updated';
   decision: MoaDecision;
+}
+
+/** The lane audit ran (startup and daily). Rides the decision event channel
+ *  through the optional MoaDelegateEvents.audit listener. */
+export interface MoaAuditEvent {
+  checkedAt: number;
+  unreceipted: MoaUnreceiptedMerge[];
 }
 
 /** DECK_MOA_DELEGATE_EFFECT_EVENT. */

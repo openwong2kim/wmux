@@ -1,7 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { mapLaneFacts, mapReviewHead } from '../GhPrReviewService';
+import { GhPrReviewService, mapLaneFacts, mapReviewHead } from '../GhPrReviewService';
+import { GhRateBreaker } from '../ghRateBreaker';
 
 // Recorded answers (2026-10-07): LANE_PR_QUERY for #1858 (merged) and #1829
 // (open, from a fork; contributor login replaced), and `gh pr view 1858 --json
@@ -96,5 +97,28 @@ describe('mapReviewHead: author and merge evidence', () => {
     expect(head).not.toHaveProperty('mergedAt');
     expect(head).not.toHaveProperty('mergeCommitOid');
     expect(mapReviewHead({ number: 1, headRefOid: 'a'.repeat(40), mergedAt: null, mergeCommit: null, author: null })).toMatchObject({ mergedAt: null, mergeCommitOid: null, author: null });
+  });
+});
+
+describe('GhPrReviewService.laneFacts', () => {
+  it('reads fresh on every call (no TTL cache) and maps the answer', async () => {
+    const answer = JSON.stringify(read('lane-pr1858.json'));
+    const exec = vi.fn(async () => ({ stdout: answer }));
+    const svc = new GhPrReviewService(() => 1_000, exec as never, new GhRateBreaker(() => 1_000));
+    const a = await svc.laneFacts('/repo', 'github.com/openwong2kim/wmux', 1858);
+    const b = await svc.laneFacts('/repo', 'github.com/openwong2kim/wmux', 1858);
+    expect(a.ok && a.value.headRefOid).toBe('995e9d9a3124628f51c0a3989bf2eced7ea2f97c');
+    expect(b.ok).toBe(true);
+    expect(exec).toHaveBeenCalledTimes(2);
+    const args = (exec.mock.calls[0] as unknown as [string, string[]])[1];
+    expect(args.slice(0, 2)).toEqual(['api', 'graphql']);
+    expect(args).toContain('number=1858');
+  });
+
+  it('a non-PR answer is an error, never facts', async () => {
+    const exec = vi.fn(async () => ({ stdout: JSON.stringify({ data: { repository: { pullRequest: null } } }) }));
+    const svc = new GhPrReviewService(() => 1_000, exec as never, new GhRateBreaker(() => 1_000));
+    const r = await svc.laneFacts('/repo', 'github.com/openwong2kim/wmux', 1);
+    expect(r.ok).toBe(false);
   });
 });
