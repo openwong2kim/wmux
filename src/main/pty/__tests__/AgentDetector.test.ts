@@ -1180,6 +1180,60 @@ describe('AgentDetector', () => {
         });
       });
 
+      describe('the WebFetch dialog (Claude Code 2.1.292, replayed PTY bytes)', () => {
+        // Copied byte-for-byte from a 100-column pane of an isolated daemon,
+        // with no PermissionRequest hook installed: the detector is the only
+        // thing that raises this dialog's record there.
+        const FETCH_DRAW =
+          '\u001b[H\r\u001b[8B\u001b[38;2;153;153;153m⏺\u001b[3G\u001b[39m\u001b[1mFetch\u001b[22m(https://example.com)\r\u001b[2B'
+          + `\u001b[38;2;177;185;249m${'─'.repeat(100)}\r`
+          + '\u001b[1C\u001b[1B\u001b[1mFetch\r'
+          + '\u001b[1C\u001b[1B\u001b[22m\u001b[38;2;153;153;153mClaude wants to fetch content from example.com\r'
+          + `\u001b[1B\u001b[38;2;80;80;80m${'╌'.repeat(100)}\r`
+          + '\u001b[1C\u001b[1B\u001b[39murl:\u001b[7Ghttps://example.com/\r'
+          + '\u001b[1C\u001b[1Bprompt:\u001b[10GWhat\u001b[15Gis\u001b[18Gthe\u001b[22Gpage\u001b[27Gtitle?\r'
+          + `\u001b[1B\u001b[38;2;80;80;80m${'╌'.repeat(100)}\r`
+          + '\u001b[1C\u001b[1B\u001b[39mDo\u001b[5Gyou\u001b[9Gwant\u001b[14Gto\u001b[17Gallow\u001b[23GClaude\u001b[30Gto\u001b[33Gfetch\u001b[39Gthis\u001b[44Gcontent?\r'
+          + '\u001b[1C\u001b[1B\u001b[38;2;177;185;249m❯\u001b[4G\u001b[38;2;153;153;153m1. \u001b[38;2;177;185;249mYes\r'
+          + "\u001b[3C\u001b[1B\u001b[38;2;153;153;153m2. \u001b[39mYes,\u001b[12Gand\u001b[16Gdon't\u001b[22Gask\u001b[26Gagain\u001b[32Gfor\u001b[36G\u001b[1mexample.com\r"
+          + '\u001b[3C\u001b[1B\u001b[22m\u001b[38;2;153;153;153m3. \u001b[39mNo,\u001b[11Gand\u001b[15Gtell\u001b[20GClaude\u001b[27Gwhat\u001b[32Gto\u001b[35Gdo\u001b[38Gdifferently\u001b[50G\u001b[1m(esc)\r'
+          + '\u001b[4B\u001b[22m\u001b[K\r\u001b[2B\u001b[K\r\u001b[1B\u001b[K\r\u001b[1B\u001b[K\r\u001b[2C\u001b[1B\u001b[K\u001b[30;1H\u001b[19;2H';
+
+        it('emits awaiting_input once, however the frame is chunked', () => {
+          const whole = claudeGated();
+          whole.det.feed(FETCH_DRAW);
+          expect(statuses(whole.cb)).toEqual(APPROVAL);
+          for (const size of [1, 7, 64, 512]) {
+            const { det, cb } = claudeGated();
+            for (let i = 0; i < FETCH_DRAW.length; i += size) det.feed(FETCH_DRAW.slice(i, i + size));
+            expect(statuses(cb)).toEqual(APPROVAL);
+          }
+        });
+
+        it('a 50-column pane wraps the question after "this": still read, once, from the next row', () => {
+          // Same capture setup, the pane 50 columns wide when the dialog was drawn.
+          const NARROW_DRAW =
+            `\r\u001b[1B\u001b[38;2;80;80;80m${'╌'.repeat(50)}\u001b[39m\r\r\n`
+            + '\u001b[2GDo\u001b[5Gyou\u001b[9Gwant\u001b[14Gto\u001b[17Gallow\u001b[23GClaude\u001b[30Gto\u001b[33Gfetch\u001b[39Gthis\r\r\n'
+            + '\u001b[2Gcontent?\r\r\n'
+            + '\u001b[2G\u001b[38;2;177;185;249m❯\u001b[4G\u001b[38;2;153;153;153m1.\u001b[7G\u001b[38;2;177;185;249mYes\u001b[39m\r\r\n'
+            + "\u001b[4G\u001b[38;2;153;153;153m2.\u001b[7G\u001b[39mYes,\u001b[12Gand\u001b[16Gdon't\u001b[22Gask\u001b[26Gagain\u001b[32Gfor\u001b[36G\u001b[1mexample.net\u001b[22m\r\r\n"
+            + '\u001b[4G\u001b[38;2;153;153;153m3.\u001b[7G\u001b[39mNo,\u001b[11Gand\u001b[15Gtell\u001b[20GClaude\u001b[27Gwhat\u001b[32Gto\u001b[35Gdo\u001b[38Gdifferently\r\r\n'
+            + '\u001b[7G\u001b[1m(esc)\u001b[22m\r\r\n';
+          for (const size of [NARROW_DRAW.length, 1, 7, 64]) {
+            const { det, cb } = claudeGated();
+            for (let i = 0; i < NARROW_DRAW.length; i += size) det.feed(NARROW_DRAW.slice(i, i + size));
+            expect(statuses(cb)).toEqual(APPROVAL);
+          }
+        });
+
+        it('the question as transcript text, with no option row under it, stays silent', () => {
+          const { det, cb } = claudeGated();
+          det.feed('\u001b[38;2;255;255;255m● \u001b[mOK\u001b[K\r\n  Do you want to allow Claude to fetch this content?\u001b[K\r\n  END\u001b[K\r\n');
+          expect(cb).not.toHaveBeenCalled();
+        });
+      });
+
       it('a dialog row redrawn before the answer does not re-raise the dialog when a clear completes its line', () => {
         const { det, cb } = claudeGated();
         // The dialog is drawn, then laid out again two rows lower (diff redraw
