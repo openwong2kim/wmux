@@ -78,7 +78,10 @@ export async function reconnectPtyWithRetry(
       result = { success: false, transient: true, error: lastErr };
     }
     if (result?.success) {
-      if (isCurrent()) deps.onRecoveryError?.(null);
+      // A reconnect that settles after its terminal was replaced reports
+      // nothing: its geometry must not resize the terminal current now.
+      if (!isCurrent()) return null;
+      deps.onRecoveryError?.(null);
       return result.cols && result.rows ? { cols: result.cols, rows: result.rows } : null;
     }
     if (result?.recoveryPending) {

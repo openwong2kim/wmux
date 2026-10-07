@@ -24,6 +24,18 @@ describe('reconnectPtyWithRetry (RCA A1 non-destructive contract)', () => {
     expect(got).toEqual({ cols: 283, rows: 81 });
   });
 
+  it('a reconnect that lands after its terminal was replaced hands back no geometry (#1852)', async () => {
+    // The pane swapped to another session while this RPC was in flight; the
+    // stale result must not resize whatever terminal is current now.
+    let current = true;
+    const reconnect = vi.fn(async () => {
+      current = false;
+      return { success: true, cols: 283, rows: 81 };
+    });
+    const got = await reconnectPtyWithRetry('pty-old', () => current, { reconnect, clearPtyId: vi.fn(), sleep: noSleep, log: noLog });
+    expect(got).toBeNull();
+  });
+
   it('permanent failure (transient:false) → clears immediately, no retry', async () => {
     const clearPtyId = vi.fn();
     const reconnect = vi.fn(async () => ({ success: false, transient: false, error: 'Session not found or dead' }));
