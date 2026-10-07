@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fromAgentPath, toAgentPath, wslMountRoot } from '../wslPaths';
+import { fromAgentPath, toAgentPath, wslMountRoot, wslPathToHost } from '../wslPaths';
 
 const wsl = (mount?: string): NodeJS.ProcessEnv => ({
   WMUX_WSL_DISTRO: 'Ubuntu',
@@ -87,5 +87,30 @@ describe('fromAgentPath', () => {
     expect(fromAgentPath('a.png', env)).toBeNull();
     expect(fromAgentPath('./proj', env)).toBeNull();
     expect(fromAgentPath('a.png', {})).toBe('a.png');
+  });
+});
+
+describe('wslPathToHost', () => {
+  it('maps the drive mount without needing a distro, keeping spaces and dots', () => {
+    expect(wslPathToHost('/mnt/d/2026/1. coding/1. coding/260618.ax-tm', undefined))
+      .toEqual({ path: 'D:\\2026\\1. coding\\1. coding\\260618.ax-tm' });
+    expect(wslPathToHost('/mnt/c', undefined)).toEqual({ path: 'C:\\' });
+  });
+
+  it('honours a known automount root', () => {
+    expect(wslPathToHost('/e/x', 'Ubuntu', '/c/')).toEqual({ path: 'E:\\x' });
+  });
+
+  it("maps a distro-internal path into the distro's \\\\wsl$ share", () => {
+    expect(wslPathToHost('/home/me/my repo', 'Ubuntu-24.04')).toEqual({ path: '\\\\wsl$\\Ubuntu-24.04\\home\\me\\my repo' });
+    // `/mnt/cfoo` is not a drive.
+    expect(wslPathToHost('/mnt/cfoo', 'Ubuntu')).toEqual({ path: '\\\\wsl$\\Ubuntu\\mnt\\cfoo' });
+  });
+
+  it('refuses rather than guesses without a valid distro, or for a non-absolute path', () => {
+    expect(wslPathToHost('/home/me/repo', undefined)).toMatchObject({ error: expect.stringMatching(/distro is unknown/) });
+    expect(wslPathToHost('/home/me/repo', 'bad\\name')).toHaveProperty('error');
+    expect(wslPathToHost('repo', 'Ubuntu')).toHaveProperty('error');
+    expect(wslPathToHost('//server/share', 'Ubuntu')).toHaveProperty('error');
   });
 });

@@ -1092,7 +1092,7 @@ registerGitHandoffHandlers({
   invoke: (method, params) => invokeRendererRpc(method, params),
   startFanOut: (req) => startGuiFanOut(fanOutService, req),
 });
-registerFanOutRpc(rpcRouter, fanOutService, () => mainWindow);
+registerFanOutRpc(rpcRouter, fanOutService, () => mainWindow, { getDaemonClient: () => daemonClient });
 registerLedgerRpc(rpcRouter, () => mainWindow);
 // Scheduled runs for agents: draft-only propose + redacted reads, relayed to
 // the daemon over main's first-party connection (pipe/handlers/automation.rpc.ts).

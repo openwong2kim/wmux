@@ -14,9 +14,11 @@ import * as path from 'node:path';
 
 vi.mock('../../../workspace/ptyOwnership', () => ({ resolvePtyOwnerWorkspace: vi.fn() }));
 vi.mock('../../../git/git', () => ({ git: vi.fn() }));
+vi.mock('../_bridge', () => ({ sendToRenderer: vi.fn() }));
 
 import { resolvePtyOwnerWorkspace } from '../../../workspace/ptyOwnership';
 import { git } from '../../../git/git';
+import { sendToRenderer } from '../_bridge';
 import {
   parseGitLog,
   parseGitStatus,
@@ -79,6 +81,12 @@ function harness(opts?: {
   requestApproval?: TaskApprovalPort;
   /** The calling terminal's cwd, for the reads that name no task. */
   callerCwd?: (workspaceId: string, senderPtyId: string) => Promise<string>;
+  /** Use the real renderer surface lookup: pty-1's surface reports this cwd. */
+  surfaceCwd?: string;
+  /** Host platform the handler resolves paths for. Defaults to the real one. */
+  platform?: NodeJS.Platform;
+  /** What daemon.listSessions answers. */
+  sessions?: unknown[];
 }): Harness {
   const handlers = new Map<string, Handler>();
   const router = { register: (m: string, h: Handler) => handlers.set(m, h) } as unknown as RpcRouter;
@@ -98,6 +106,7 @@ function harness(opts?: {
   let missionParams: Record<string, unknown> | undefined;
   const daemon = {
     rpc: vi.fn(async (method: string, params: Record<string, unknown>) => {
+      if (method === 'daemon.listSessions' && opts?.sessions) return opts.sessions;
       if (method !== 'task.mission.list') throw new Error(`unexpected daemon rpc: ${method}`);
       missionParams = params;
       if (opts?.missionList === 'throw') throw new Error('daemon socket closed');
@@ -130,7 +139,8 @@ function harness(opts?: {
     daemon,
     exec: exec as unknown as WorktaskExec,
     requestApproval,
-    callerCwd,
+    callerCwd: opts?.surfaceCwd === undefined ? callerCwd : undefined,
+    platform: opts?.platform,
     getWindow: () => null,
     close: { closeTask } as unknown as TaskCloseService,
     pr: { createPr } as unknown as TaskPrService,
@@ -138,6 +148,13 @@ function harness(opts?: {
     gate: { run: gateRun, cancel: gateCancel } as unknown as TaskGateRunner,
     fileExists: () => opts?.onDisk !== false,
   };
+  if (opts?.surfaceCwd !== undefined) {
+    const cwd = opts.surfaceCwd;
+    vi.mocked(sendToRenderer).mockImplementation(async (_win, method: string) => {
+      if (method === 'surface.list') return [{ ptyId: 'pty-1', cwd }];
+      throw new Error(`unexpected renderer call: ${method}`);
+    });
+  }
   registerWorktaskRpc(router, deps);
 
   return {
@@ -823,5 +840,40 @@ describe('task approval dedupe and cap', () => {
     );
     expect(overflow).toMatchObject({ ok: false, error: { code: 'RESOURCE_EXHAUSTED' } });
     expect(requestApproval).toHaveBeenCalledTimes(TASK_APPROVALS_MAX_PENDING_PER_WORKSPACE);
+  });
+});
+
+describe('a WSL caller pane reads the Windows path of its own directory', () => {
+  const read = (h: Harness) => h.call('task.git.status', { senderPtyId: 'pty-1' });
+  const execDirs = (h: Harness): string[] => h.exec.mock.calls.map((c) => c[2] as string);
+
+  it('/mnt/d/<path with spaces and dots> becomes D:\\<same path>, never C:\\mnt', async () => {
+    const h = harness({ platform: 'win32', surfaceCwd: '/mnt/d/2026/1. coding/1. coding/260618.ax-tm' });
+    expect(await read(h)).toMatchObject({ ok: true, target: 'caller-repo' });
+    expect(execDirs(h)[0]).toBe('D:\\2026\\1. coding\\1. coding\\260618.ax-tm');
+  });
+
+  it("a distro-internal path goes through \\\\wsl$\\<the pane's own distro>", async () => {
+    const h = harness({
+      platform: 'win32',
+      surfaceCwd: '/home/me/repo',
+      sessions: [{ id: 'pty-1', wslTarget: { distribution: 'Ubuntu', user: 'me' } }],
+    });
+    expect(await read(h)).toMatchObject({ ok: true });
+    expect(execDirs(h)[0]).toBe('\\\\wsl$\\Ubuntu\\home\\me\\repo');
+  });
+
+  it('a distro-internal path with no known distro is refused by name', async () => {
+    const h = harness({ platform: 'win32', surfaceCwd: '/home/me/repo', sessions: [] });
+    const res = await read(h);
+    expect(res).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION' } });
+    expect(JSON.stringify(res)).toMatch(/WSL distro is unknown/);
+    expect(h.exec).not.toHaveBeenCalled();
+  });
+
+  it('a non-WSL Windows caller is unchanged', async () => {
+    const h = harness({ platform: 'win32', surfaceCwd: 'D:\\work\\repo' });
+    expect(await read(h)).toMatchObject({ ok: true });
+    expect(execDirs(h)[0]).toBe('D:\\work\\repo');
   });
 });

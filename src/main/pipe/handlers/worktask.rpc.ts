@@ -62,6 +62,7 @@ import { HUMAN_WORKSPACE_ID } from '../../../shared/channels';
 import { sendToRenderer } from './_bridge';
 import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
 import { git as runGit, type GitResult } from '../../git/git';
+import { hostCwdForPane } from '../../pty/wslCallerCwd';
 import { getExecEnv } from '../../../shared/execEnv';
 import { metaDirForWorktree } from '../../worktask/TaskWorktreeManager';
 import type { TaskCloseService } from '../../worktask/TaskCloseService';
@@ -210,7 +211,9 @@ export interface WorktaskRpcDeps {
   requestApproval?: TaskApprovalPort;
   /** Injected for tests; the caller's OWN working directory, for the reads that
    *  name no task. Defaults to the renderer surface lookup below. */
-  callerCwd?: (workspaceId: string, senderPtyId: string) => Promise<string>;
+  callerCwd?: (workspaceId: string, senderPtyId: string) => Promise<string | { error: string }>;
+  /** Injected for tests; defaults to process.platform. */
+  platform?: NodeJS.Platform;
 }
 
 /** Projection task, minimal shape (task.mission.list). */
@@ -387,8 +390,12 @@ async function resolveRepoInfo(worktreePath: string): Promise<{ repoRoot: string
  * workspace already has a pane in. These two calls only read, and only what
  * that pane's own shell could print.
  */
-function rendererCallerCwd(getWindow: GetWindow): (workspaceId: string, senderPtyId: string) => Promise<string> {
-  return async (workspaceId: string, senderPtyId: string): Promise<string> => {
+function rendererCallerCwd(
+  getWindow: GetWindow,
+  daemon: WorktaskRpcDaemonPort,
+  platform?: NodeJS.Platform,
+): (workspaceId: string, senderPtyId: string) => Promise<string | { error: string }> {
+  return async (workspaceId: string, senderPtyId: string): Promise<string | { error: string }> => {
     let ptyId = senderPtyId;
     if (!ptyId) {
       let list: unknown;
@@ -418,7 +425,12 @@ function rendererCallerCwd(getWindow: GetWindow): (workspaceId: string, senderPt
       if (!entry || typeof entry !== 'object') continue;
       const row = entry as Record<string, unknown>;
       if (row['ptyId'] !== ptyId) continue;
-      return typeof row['cwd'] === 'string' ? row['cwd'].trim() : '';
+      const reported = typeof row['cwd'] === 'string' ? row['cwd'].trim() : '';
+      if (!reported) return '';
+      // A WSL pane reports a Linux cwd; translate it here, where the pane's
+      // ptyId (and so its distro) is still known.
+      const host = await hostCwdForPane(reported, ptyId, { platform, daemonRpc: (m, p) => daemon.rpc(m, p) });
+      return 'error' in host ? host : host.cwd;
     }
     return '';
   };
@@ -433,14 +445,15 @@ function rendererCallerCwd(getWindow: GetWindow): (workspaceId: string, senderPt
  *  the calling pane — so a surface reporting `src` (or `.`, or '..') would have
  *  answered for whatever tree the daemon happens to be started in. A cwd is
  *  absolute or it is unusable; `resolve` then only folds `.`/`..` away. */
-export function normalizeCallerCwd(raw: string): string | null {
+export function normalizeCallerCwd(raw: string, platform: NodeJS.Platform = process.platform): string | null {
   const trimmed = raw.trim();
   if (trimmed.length === 0) return null;
   if (trimmed.startsWith('-')) return null;
   // eslint-disable-next-line no-control-regex
   if (/[\x00-\x1f\x7f]/.test(trimmed)) return null;
-  if (!path.isAbsolute(trimmed)) return null;
-  return path.resolve(trimmed);
+  const p = platform === 'win32' ? path.win32 : path.posix;
+  if (!p.isAbsolute(trimmed)) return null;
+  return p.resolve(trimmed);
 }
 
 /** The git toplevel of `dir`, realpath'd, or ''. Same rule as the fan-out
@@ -564,7 +577,7 @@ export function registerWorktaskRpc(router: RpcRouter, deps: WorktaskRpcDeps): v
   // disable.
   const exec: WorktaskExec = deps.exec ?? ((cmd, args, cwd) => runGitLike(cmd, args, cwd));
   const requestApproval: TaskApprovalPort = deps.requestApproval ?? rendererApprovalPort(deps.getWindow);
-  const callerCwd = deps.callerCwd ?? rendererCallerCwd(deps.getWindow);
+  const callerCwd = deps.callerCwd ?? rendererCallerCwd(deps.getWindow, deps.daemon, deps.platform);
   const register = (method: WorktaskRpcMethod, handler: Parameters<RpcRouter['register']>[1]): void =>
     router.register(method, handler);
 
@@ -672,7 +685,10 @@ export function registerWorktaskRpc(router: RpcRouter, deps: WorktaskRpcDeps): v
         ? params['senderPtyId'].trim()
         : '';
     const raw = await callerCwd(caller.workspaceId, senderPtyId);
-    const resolved = raw ? normalizeCallerCwd(raw) : null;
+    if (typeof raw === 'object') {
+      return { code: 'FAILED_PRECONDITION', message: `the calling terminal's working directory has no Windows path: ${raw.error}` };
+    }
+    const resolved = raw ? normalizeCallerCwd(raw, deps.platform) : null;
     if (!resolved) {
       return {
         code: 'FAILED_PRECONDITION',

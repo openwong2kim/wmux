@@ -17,6 +17,8 @@
  * life of a production process, and tests need to flip it.
  */
 
+import { isValidWslDistroName } from '../shared/wslDistro';
+
 const DEFAULT_MOUNT_ROOT = '/mnt/';
 
 /**
@@ -69,4 +71,39 @@ export function fromAgentPath(agentPath: string, env: NodeJS.ProcessEnv = proces
     if (m) return `${m[1].toUpperCase()}:\\${(m[2] ?? '').replace(/\//g, '\\')}`;
   }
   return null;
+}
+
+/**
+ * A WSL pane's Linux cwd, as the Windows host process must open it, for a
+ * caller that has no WMUX_WSL_* env of its own (the main process reading a
+ * pane's reported cwd):
+ *  - under the drive mount: `/mnt/d/a b/c` → `D:\a b\c` (the same rule as
+ *    fromAgentPath);
+ *  - anywhere else: `\\wsl$\<distro>\home\me\repo`, when the distro is known.
+ *
+ * `mount` is what `wslpath -u 'C:\'` answers inside the distro; the main
+ * process never learns it, so callers there omit it and the default `/mnt/`
+ * root applies (a wsl.conf `automount.root` elsewhere is then read as a
+ * distro-internal path and goes through `\\wsl$\`, which still names the same
+ * directory). Returns an error string instead of a guess: a distro-internal
+ * path with no (valid) distro, or anything that is not an absolute Linux path.
+ */
+export function wslPathToHost(
+  linuxPath: string,
+  distro: string | undefined,
+  mount = '',
+): { path: string } | { error: string } {
+  if (!linuxPath.startsWith('/') || linuxPath.startsWith('//')) {
+    return { error: `${JSON.stringify(linuxPath)} is not an absolute Linux path` };
+  }
+  // fromAgentPath only needs a non-empty distro to switch on; the drive
+  // mapping itself never reads the name.
+  const drive = fromAgentPath(linuxPath, { WMUX_WSL_DISTRO: distro || 'wsl', WMUX_WSL_MOUNT: mount });
+  if (drive !== null) return { path: drive };
+  if (!distro || !isValidWslDistroName(distro)) {
+    return {
+      error: `${JSON.stringify(linuxPath)} is inside a WSL distro's own filesystem, and the pane's WSL distro is unknown, so it has no Windows path`,
+    };
+  }
+  return { path: `\\\\wsl$\\${distro}${linuxPath.replace(/\//g, '\\')}` };
 }
