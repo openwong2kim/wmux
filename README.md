@@ -27,7 +27,7 @@ wmux is a desktop app where your coding agents work side by side, each in its ow
 
 - **Any CLI agent, natively on Windows and macOS.** Claude Code, Codex, Gemini, agy (Antigravity), and any other CLI agent run side by side in real PTYs — no WSL needed on Windows.
 - **Sessions owned by your own daemon.** Closing the app, a crash, or a reboot does not end your agents' sessions.
-- **Answer agents from your iPhone.** The iOS app pairs directly with the daemon on your machine; there is no third-party service in between.
+- **Answer agents from your iPhone.** The iOS app pairs directly with the daemon on your machine, with no third-party relay.
 - **One prompt, fanned out into git worktrees.** Each task gets its own worktree and agent, and you review the results hunk by hunk.
 
 ## Install
@@ -104,7 +104,7 @@ After a crash or a reboot, a recovered pane offers **Resume**: it types the agen
 
 ### Usage limits and accounts
 
-When Claude Code or Codex hits its usage limit, the pane pauses: its header and its Fleet row say when the limit resets, and wmux holds scheduled prompts and agent messages for that pane instead of typing them into a turn that cannot run. Turn on **Resume at reset** for a pane (or "Continue after a usage limit resets" in Settings, off by default) and it continues by itself when the window resets. With several of your own Claude or Codex subscriptions registered, **Switch accounts by quota** in Settings → Accounts starts new panes on the account with the most quota left. Settings → Token usage shows each provider's usage windows.
+When Claude Code or Codex hits its usage limit, the pane pauses: its header and its Fleet row say when the limit resets, and wmux holds scheduled prompts and agent messages for that pane instead of typing them into a turn that cannot run. Turn on **Resume at reset** for a pane (or "Continue after a usage limit resets" in Settings, off by default) and it continues by itself when the window resets. With several of your own Claude or Codex subscriptions registered, **Switch accounts by quota** in Settings → Accounts starts a new pane on the account with the most quota left when the workspace's own account is out of quota. Settings → Token usage shows each provider's usage windows.
 
 <img alt="An agent hits its usage limit; the pane pauses and shows when it resets, then continues by itself at the reset" src="docs/readme/limits.gif" width="900" />
 
