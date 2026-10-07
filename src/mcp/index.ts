@@ -1178,9 +1178,15 @@ async function getParentPid(pid: number): Promise<number | null> {
     if (process.platform === 'win32') {
       const path = await import('path');
       const ps = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+      // Windows never re-parents an orphan: a dead parent's pid stays as the
+      // ppid and may since belong to a newer process (a new pane's shell, after
+      // a Codex app-server updated itself). Only a parent created no later than
+      // the child is its parent; anything else ends the walk.
       const { stdout } = await execFileAsync(ps, [
         '-NoProfile', '-Command',
-        `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").ParentProcessId`,
+        `$c=Get-CimInstance Win32_Process -Filter "ProcessId=${pid}"; if ($c) { ` +
+          `$p=Get-CimInstance Win32_Process -Filter ("ProcessId=" + $c.ParentProcessId); ` +
+          `if ($p -and $p.CreationDate -le $c.CreationDate) { $c.ParentProcessId } }`,
       ], { encoding: 'utf8', windowsHide: true, timeout: 5000 });
       const parsed = parseInt(stdout.trim(), 10);
       return isNaN(parsed) ? null : parsed;

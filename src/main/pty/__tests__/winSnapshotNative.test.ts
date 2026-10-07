@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
@@ -9,6 +10,7 @@ import {
   PROCESSENTRY32W_SIZE,
   TCP_ROW4_SIZE,
   TCP_ROW6_SIZE,
+  tryProcessCreatedAt,
 } from '../winSnapshotNative';
 
 // ── fixtures ────────────────────────────────────────────────────────────────
@@ -137,6 +139,24 @@ describe('collectTreeCpuTimes', () => {
     const procs = [{ pid: 10, ppid: 11 }, { pid: 11, ppid: 10 }];
     const out = collectTreeCpuTimes(procs, [10], times({ 10: [100, 1], 11: [100, 2] }));
     expect(out.size).toBe(2);
+  });
+});
+
+describe.skipIf(process.platform !== 'win32')('tryProcessCreatedAt (Windows, live)', () => {
+  it('orders a parent before the child it spawns, and reads nothing for a pid that is not running', async () => {
+    const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 5000)'], { stdio: 'ignore', windowsHide: true });
+    try {
+      await new Promise<void>((resolve, reject) => { child.once('spawn', () => resolve()); child.once('error', reject); });
+      const self = tryProcessCreatedAt(process.pid);
+      const spawned = tryProcessCreatedAt(child.pid ?? -1);
+      expect(self).not.toBeNull();
+      expect(spawned).not.toBeNull();
+      expect((spawned ?? 0n) > (self ?? 0n)).toBe(true);
+    } finally {
+      child.kill();
+    }
+    expect(tryProcessCreatedAt(0)).toBeNull();
+    expect(tryProcessCreatedAt(-1)).toBeNull();
   });
 });
 
