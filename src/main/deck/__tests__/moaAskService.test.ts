@@ -184,6 +184,16 @@ describe('the auto merge lane', () => {
     expect(h.decisions.list()[0]?.lane).toEqual({ ok: false, reasons: ['branch-not-bound'] });
   });
 
+  it('a judge timeout keeps the lane reasons on the escalation', async () => {
+    const h = build(world({ branches: ['someone-else'], judgeReply: { reply: null, error: 'timeout', tokens: { input: 0, output: 0 }, ms: 60_000 } }));
+    const { view } = await askAndSettle(h);
+    expect(view.status).toBe('escalated');
+    expect(view.reasonCode).toBe('lane-branch-not-bound');
+    expect(view.why).toContain('the judge call failed: timeout');
+    expect(view.why).toContain('(lane: branch-not-bound)');
+    expect(h.decisions.list()[0]?.lane).toEqual({ ok: false, reasons: ['branch-not-bound'] });
+  });
+
   it('shadow and suggest record the judge but answer nothing', async () => {
     for (const mode of ['shadow', 'suggest'] as MoaAskMode[]) {
       const h = build(world({ config: { mode, autoRules: ['R-merge-green'], trustedAuthors: ['openwong2kim'] } }));

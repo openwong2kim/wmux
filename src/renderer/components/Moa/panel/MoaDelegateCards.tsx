@@ -38,7 +38,10 @@ export const LANE_REASONS = [
  * "(lane: <reason>, <reason>)" and the reason code is `lane-<first reason>`.
  * Display only; nothing here decides anything.
  */
-export function laneReasonsOf(d: Pick<MoaDecision, 'reasonCode' | 'why'>): string[] {
+export function laneReasonsOf(d: Pick<MoaDecision, 'reasonCode' | 'why' | 'lane'>): string[] {
+  // The verdict main kept on the decision is the source; the text is for
+  // records written before it was kept.
+  if (d.lane) return d.lane.reasons;
   const m = /\(lane: ([^)]*)\)/.exec(d.why);
   if (m) return m[1].split(',').map((r) => r.trim()).filter(Boolean);
   return d.reasonCode.startsWith('lane-') ? [d.reasonCode.slice('lane-'.length)] : [];

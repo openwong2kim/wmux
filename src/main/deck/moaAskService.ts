@@ -347,7 +347,9 @@ export class MoaAskService implements MoaDelegateServicePort {
     }];
     const laneWhy = lane.ok ? '' : ` (lane: ${laneFacts.failed.join(', ')})`;
     const j = await this.judgeOnce(d, book, question, MERGE_CHOICES, cwd, prs, laneFacts);
-    if (!isJudge(j)) return withLane({ settlement: j, auto: false });
+    // A judge that failed (a timeout, the cap) still leaves the lane's own
+    // objections on the card.
+    if (!isJudge(j)) return withLane({ settlement: { ...j, ...(lane.ok ? {} : { reasonCode: laneCode(lane), why: `${j.why}${laneWhy}` }) }, auto: false });
     if (j.verdict !== 'go' || !j.ruleId) return withLane({ settlement: esc(lane.ok ? j.reasonCode : laneCode(lane), `Moa would not merge this${laneWhy}; the owner answers it in the Moa panel`, j), auto: false });
     if (d.mode !== 'auto') return withLane({ settlement: esc(d.mode === 'shadow' ? 'shadow' : 'suggested', `recorded for the owner${laneWhy}; the owner answers it in the Moa panel`, j), auto: false });
     const cfg = this.ports.getConfig();
