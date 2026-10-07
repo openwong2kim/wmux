@@ -26,6 +26,14 @@ export interface PrReviewHead {
   mergeStateStatus: string;
   /** Label names, when the read asked for them. */
   labels?: string[];
+  /** The author's login, when the read asked for it (`author`). */
+  author?: string;
+  /** When it was merged (ISO), or null while not merged — when asked for. */
+  mergedAt?: string | null;
+  /** The commit the merge made (for a squash: the new squash commit, never
+   *  the PR's head), or null — when asked for (`mergeCommit`). A merged PR's
+   *  head is still `headRefOid`. */
+  mergeCommitOid?: string | null;
 }
 
 /** gh's own grouping of a check's state. */
@@ -42,11 +50,45 @@ export interface PrCheck {
   /** Set when the link is a GitHub Actions run (its log and rerun work). */
   runId?: string;
   jobId?: string;
+  /** Required by the base branch's protection for this PR, when the read
+   *  asked (GraphQL `isRequired(pullRequestNumber:)`; gh pr view has no such field). */
+  isRequired?: boolean;
 }
 
 export interface PrChecksState {
   head: PrReviewHead;
   checks: PrCheck[];
+}
+
+/**
+ * Everything Moa's merge lane decides on (main/deck/moaMergeLane.ts), from ONE
+ * GraphQL read (GhPrReviewService LANE_PR_QUERY), so the head, its checks,
+ * labels and files belong to the same moment. Always read fresh, never cached.
+ */
+export interface PrLaneFacts {
+  number: number;
+  /** OPEN, CLOSED or MERGED. */
+  state: string;
+  isDraft: boolean;
+  /** The head branch lives in a fork. */
+  isCrossRepository: boolean;
+  headRefOid: string;
+  headRefName: string;
+  baseRefName: string;
+  /** Null for a deleted ("ghost") account. */
+  author: string | null;
+  mergedAt: string | null;
+  mergeCommitOid: string | null;
+  labels: string[];
+  labelsTruncated: boolean;
+  /** Changed paths. `filesTruncated`: more files changed than were read. */
+  files: string[];
+  filesTruncated: boolean;
+  /** The commit the checks were read on (the last commit), or null. */
+  checksHeadOid: string | null;
+  /** Each check with its `isRequired` set. */
+  checks: PrCheck[];
+  checksTruncated: boolean;
 }
 
 export interface PrReviewComment {

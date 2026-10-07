@@ -1,0 +1,173 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "number": 1829,
+        "state": "OPEN",
+        "isDraft": false,
+        "isCrossRepository": true,
+        "headRefOid": "1d72d05bb440d9df216b91ec400719b334f74988",
+        "headRefName": "pr/app-cpu",
+        "baseRefName": "main",
+        "mergedAt": null,
+        "mergeCommit": null,
+        "author": {
+          "login": "external-contributor"
+        },
+        "labels": {
+          "totalCount": 1,
+          "nodes": [
+            {
+              "name": "needs-windows-verify"
+            }
+          ]
+        },
+        "files": {
+          "totalCount": 9,
+          "nodes": [
+            {
+              "path": "changelog.d/1829.md"
+            },
+            {
+              "path": "src/main/ipc/handlers/shell.handler.ts"
+            },
+            {
+              "path": "src/main/perf/__tests__/appCpu.test.ts"
+            },
+            {
+              "path": "src/main/perf/appCpu.ts"
+            },
+            {
+              "path": "src/main/pty/__tests__/winSnapshotNative.test.ts"
+            },
+            {
+              "path": "src/main/pty/winSnapshotNative.ts"
+            },
+            {
+              "path": "src/preload/preload.ts"
+            },
+            {
+              "path": "src/renderer/components/StatusBar/StatusClock.tsx"
+            },
+            {
+              "path": "src/shared/constants.ts"
+            }
+          ]
+        },
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "oid": "1d72d05bb440d9df216b91ec400719b334f74988",
+                "statusCheckRollup": {
+                  "contexts": {
+                    "totalCount": 10,
+                    "nodes": [
+                      {
+                        "__typename": "CheckRun",
+                        "name": "validate",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "detailsUrl": "https://github.com/openwong2kim/wmux/actions/runs/37544778105/job/112546044730",
+                        "startedAt": "2026-10-06T23:09:45Z",
+                        "completedAt": "2026-10-06T23:23:42Z",
+                        "isRequired": false
+                      },
+                      {
+                        "__typename": "CheckRun",
+                        "name": "Baseline (windows-latest)",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "detailsUrl": "https://github.com/openwong2kim/wmux/actions/runs/37544778121/job/112546426160",
+                        "startedAt": "2026-10-06T23:14:09Z",
+                        "completedAt": "2026-10-06T23:31:03Z",
+                        "isRequired": false
+                      },
+                      {
+                        "__typename": "CheckRun",
+                        "name": "bench",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "detailsUrl": "https://github.com/openwong2kim/wmux/actions/runs/37544778132/job/112549700875",
+                        "startedAt": "2026-10-06T23:24:01Z",
+                        "completedAt": "2026-10-06T23:30:13Z",
+                        "isRequired": false
+                      },
+                      {
+                        "__typename": "CheckRun",
+                        "name": "Baseline (macos-14)",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "detailsUrl": "https://github.com/openwong2kim/wmux/actions/runs/37544778121/job/112546426195",
+                        "startedAt": "2026-10-06T23:10:44Z",
+                        "completedAt": "2026-10-06T23:20:18Z",
+                        "isRequired": false
+                      },
+                      {
+                        "__typename": "CheckRun",
+                        "name": "Baseline (ubuntu-22.04)",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "detailsUrl": "https://github.com/openwong2kim/wmux/actions/runs/37544778121/job/112546425859",
+                        "startedAt": "2026-10-06T23:09:50Z",
+                        "completedAt": "2026-10-06T23:19:11Z",
+                        "isRequired": false
+                      },
+                      {
+                        "__typename": "CheckRun",
+                        "name": "bench-confirm",
+                        "status": "COMPLETED",
+                        "conclusion": "SKIPPED",
+                        "detailsUrl": "https://github.com/openwong2kim/wmux/actions/runs/37544778132/job/112552986203",
+                        "startedAt": "2026-10-06T23:30:14Z",
+                        "completedAt": "2026-10-06T23:30:13Z",
+                        "isRequired": false
+                      },
+                      {
+                        "__typename": "CheckRun",
+                        "name": "validate-runtime",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "detailsUrl": "https://github.com/openwong2kim/wmux/actions/runs/37544778105/job/112546045077",
+                        "startedAt": "2026-10-06T23:15:09Z",
+                        "completedAt": "2026-10-06T23:21:34Z",
+                        "isRequired": false
+                      },
+                      {
+                        "__typename": "CheckRun",
+                        "name": "computer-use-windows",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "detailsUrl": "https://github.com/openwong2kim/wmux/actions/runs/37544778105/job/112546045026",
+                        "startedAt": "2026-10-06T23:22:04Z",
+                        "completedAt": "2026-10-06T23:23:57Z",
+                        "isRequired": false
+                      },
+                      {
+                        "__typename": "CheckRun",
+                        "name": "artifact-contract",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "detailsUrl": "https://github.com/openwong2kim/wmux/actions/runs/37544778132/job/112552984970",
+                        "startedAt": "2026-10-06T23:30:15Z",
+                        "completedAt": "2026-10-06T23:30:22Z",
+                        "isRequired": false
+                      },
+                      {
+                        "__typename": "StatusContext",
+                        "context": "CodeRabbit",
+                        "state": "SUCCESS",
+                        "targetUrl": null,
+                        "isRequired": false
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

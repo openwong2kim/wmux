@@ -1,0 +1,21 @@
+{
+  "author": {
+    "login": "openwong2kim",
+    "is_bot": false
+  },
+  "baseRefName": "main",
+  "headRefName": "fix/daemon-ring-geometry-1825",
+  "headRefOid": "995e9d9a3124628f51c0a3989bf2eced7ea2f97c",
+  "isDraft": false,
+  "labels": [],
+  "mergeCommit": {
+    "oid": "6d286bee3eaa2c21d8b3ba54dd5a56f9526fa8b5"
+  },
+  "mergeStateStatus": "UNKNOWN",
+  "mergeable": "UNKNOWN",
+  "mergedAt": "2026-10-07T09:28:40Z",
+  "number": 1858,
+  "state": "MERGED",
+  "title": "fix(daemon): replay ring history at its written sizes (builds on #1825)",
+  "url": "https://github.com/openwong2kim/wmux/pull/1858"
+}

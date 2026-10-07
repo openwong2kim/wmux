@@ -1,6 +1,8 @@
 // Moa (the HQ main bot) — the shapes the renderer reads over the deck bridge.
 // Main is the source of truth (src/main/deck/deckHqStore.ts); these mirror it.
 
+import type { MoaAskMode } from './moaAsk';
+
 export type MoaLevel = 1 | 2 | 3;
 
 export type MoaHqState = 'unset' | 'ok' | 'hq-missing' | 'hq-unknown' | 'hq-store-corrupt';
@@ -41,6 +43,12 @@ export interface MoaConfig {
    *  from the policy book, and whether the owner agreed. It answers nothing.
    *  Absent = off. */
   shadowJudge?: boolean;
+  /** moa_ask (shared/moaAsk.ts): off, records only, suggests in the panel, or
+   *  may answer by itself where a rule is auto-eligible. Absent = 'off'. */
+  askMode?: MoaAskMode;
+  /** Policy rule ids the owner allowed to settle by themselves (the per-rule
+   *  toggle, set only through DECK_MOA_DELEGATE_AUTO_SET). Absent = none. */
+  autoRules?: string[];
 }
 
 /** The shadow judge's readout (Settings › Moa). */

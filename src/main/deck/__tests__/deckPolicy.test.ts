@@ -12,6 +12,8 @@ import {
   DEFAULT_POLICY_BUDGET_CHARS,
   parsePolicyBook,
   loadPolicyBook,
+  parseRuleAttrs,
+  moaAutoEligibility,
 } from '../deckPolicy';
 
 let dir: string;
@@ -142,5 +144,52 @@ describe('parsePolicyBook', () => {
 
   it('loadPolicyBook is null for a missing file', () => {
     expect(loadPolicyBook(dir)).toBeNull();
+  });
+});
+
+describe('policy rule attributes (auto, predicate)', () => {
+  const BOOK = [
+    '- [R-merge-green] {auto: true, predicate: merge-lane} Merge a PR whose required checks are green.',
+    '- [R-plain] No attributes, so never auto.',
+    '- [R-off] {auto: false, predicate: merge-lane} Explicitly off.',
+    '- [R-unknown-key] {auto: true, owner: yes} Unknown keys fail closed.',
+    '- [R-bad-pred] {auto: true, predicate: anything} Unknown predicates fail closed.',
+    '- [R-unclosed] {auto: true Merge everything.',
+    '- [R-question] {auto: true} A question rule with no predicate.',
+  ].join('\n');
+
+  it('parses attributes off the rule text, defaulting to auto false', () => {
+    const book = parsePolicyBook(BOOK);
+    expect(book.rules.get('R-merge-green')).toBe('Merge a PR whose required checks are green.');
+    expect(book.attrs.get('R-merge-green')).toEqual({ auto: true, predicate: 'merge-lane' });
+    expect(book.attrs.get('R-plain')).toEqual({ auto: false, predicate: null });
+    expect(book.attrs.get('R-off')).toEqual({ auto: false, predicate: 'merge-lane' });
+    expect(book.attrs.get('R-question')).toEqual({ auto: true, predicate: null });
+  });
+
+  it('a malformed block keeps the rule but reads as not auto', () => {
+    const book = parsePolicyBook(BOOK);
+    for (const id of ['R-unknown-key', 'R-bad-pred', 'R-unclosed']) {
+      expect(book.rules.has(id)).toBe(true);
+      expect(book.attrs.get(id)).toMatchObject({ auto: false, predicate: null });
+      expect(book.attrs.get(id)?.error).toBeTruthy();
+    }
+    expect(parseRuleAttrs('{auto: true, auto: true} x').attrs).toMatchObject({ auto: false, error: 'repeated attribute auto' });
+    expect(parseRuleAttrs('{auto: yes} x').attrs).toMatchObject({ auto: false, error: 'auto must be true or false' });
+    expect(parseRuleAttrs('{} x')).toEqual({ attrs: { auto: false, predicate: null }, text: 'x' });
+  });
+
+  it('auto eligibility needs the book flag, the owner toggle, the kind\'s predicate, and its fresh pass', () => {
+    const book = parsePolicyBook(BOOK);
+    const base = { book, ruleId: 'R-merge-green', ownerAutoRules: ['R-merge-green'], kind: 'merge' as const, predicatePassed: true };
+    expect(moaAutoEligibility(base)).toEqual({ eligible: true });
+    expect(moaAutoEligibility({ ...base, ownerAutoRules: [] })).toEqual({ eligible: false, reason: 'owner-toggle-off' });
+    expect(moaAutoEligibility({ ...base, predicatePassed: false })).toEqual({ eligible: false, reason: 'predicate-failed' });
+    expect(moaAutoEligibility({ ...base, ruleId: 'R-plain', ownerAutoRules: ['R-plain'] })).toEqual({ eligible: false, reason: 'book-auto-off' });
+    expect(moaAutoEligibility({ ...base, ruleId: 'R-nope', ownerAutoRules: ['R-nope'] })).toEqual({ eligible: false, reason: 'unknown-rule' });
+    // A free question has no predicate today: never auto, even with both flags.
+    expect(moaAutoEligibility({ ...base, ruleId: 'R-question', ownerAutoRules: ['R-question'], kind: 'question' })).toEqual({ eligible: false, reason: 'no-predicate' });
+    expect(moaAutoEligibility({ ...base, kind: 'question' })).toEqual({ eligible: false, reason: 'no-predicate' });
+    expect(moaAutoEligibility({ ...base, ruleId: 'R-question', ownerAutoRules: ['R-question'] })).toEqual({ eligible: false, reason: 'no-predicate' });
   });
 });

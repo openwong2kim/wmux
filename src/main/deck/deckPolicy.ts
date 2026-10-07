@@ -118,10 +118,73 @@ export function ensureDeckPolicySeed(dir: string = getWmuxDir()): void {
 //   - an `## Always escalate` section lists, one bullet per line, phrases that
 //     send a question straight to the owner without asking the model.
 // HTML comments are ignored, so the seed's guidance never parses as a rule.
+//
+// A rule may carry attributes in braces right after its id (steps 3-4: Moa
+// settling by itself):
+//   - [R-merge-green] {auto: true, predicate: merge-lane} Merge a PR whose …
+//   - `auto: true|false` — the book allows this rule to settle a decision
+//     without the owner. Default false.
+//   - `predicate: <id>` — the deterministic check bound to the rule; only ids
+//     in POLICY_RULE_PREDICATES count.
+// A malformed block (unclosed, an unknown key or value, a repeated key) keeps
+// the rule but reads as {auto: false, predicate: null} with `error` set:
+// fail closed. The braces are not part of the rule's text.
+//
+// Auto eligibility (moaAutoEligibility below) needs ALL of: the book's
+// `auto: true`, the owner's per-rule toggle (MoaConfig.autoRules, set only
+// through renderer IPC), and the rule's bound predicate being the one the
+// decision's kind is checked by — and then that predicate passing on a fresh
+// read. Agreement stats are display-only and never part of it.
+
+/** Deterministic checks a rule can be bound to. */
+export type PolicyRulePredicate = 'merge-lane';
+export const POLICY_RULE_PREDICATES: readonly PolicyRulePredicate[] = ['merge-lane'];
+
+export interface PolicyRuleAttrs {
+  auto: boolean;
+  predicate: PolicyRulePredicate | null;
+  /** Why the attribute block was ignored, when it was. */
+  error?: string;
+}
 
 export interface PolicyBook {
   rules: Map<string, string>;
+  /** Every rule's attributes (the defaults when it has none). */
+  attrs: Map<string, PolicyRuleAttrs>;
   alwaysEscalate: string[];
+}
+
+const NO_ATTRS: PolicyRuleAttrs = { auto: false, predicate: null };
+
+/** Split a rule's text into its leading `{…}` attributes and the rest. Pure. */
+export function parseRuleAttrs(ruleText: string): { attrs: PolicyRuleAttrs; text: string } {
+  if (!ruleText.startsWith('{')) return { attrs: NO_ATTRS, text: ruleText };
+  const end = ruleText.indexOf('}');
+  if (end < 0) return { attrs: { ...NO_ATTRS, error: 'unclosed attribute block' }, text: ruleText };
+  const text = ruleText.slice(end + 1).trim();
+  const fail = (error: string) => ({ attrs: { ...NO_ATTRS, error }, text });
+  let auto = false;
+  let predicate: PolicyRulePredicate | null = null;
+  const seen = new Set<string>();
+  const body = ruleText.slice(1, end).trim();
+  for (const part of body ? body.split(',') : []) {
+    const m = /^\s*([a-z]+)\s*:\s*([a-z0-9-]+)\s*$/.exec(part);
+    if (!m) return fail(`unreadable attribute "${part.trim().slice(0, 40)}"`);
+    const key = m[1] as string;
+    const value = m[2] as string;
+    if (seen.has(key)) return fail(`repeated attribute ${key}`);
+    seen.add(key);
+    if (key === 'auto') {
+      if (value !== 'true' && value !== 'false') return fail('auto must be true or false');
+      auto = value === 'true';
+    } else if (key === 'predicate') {
+      if (!(POLICY_RULE_PREDICATES as readonly string[]).includes(value)) return fail(`unknown predicate ${value}`);
+      predicate = value as PolicyRulePredicate;
+    } else {
+      return fail(`unknown attribute ${key}`);
+    }
+  }
+  return { attrs: { auto, predicate }, text };
 }
 
 const RULE_LINE_RE = /^\s*(?:[-*]\s+)?\[(R-[a-z0-9][a-z0-9-]{0,47})\]\s*(.*)$/;
@@ -134,6 +197,7 @@ const ALWAYS_ESCALATE_PHRASE_MAX = 120;
 /** Parse a policy book. Pure; never throws. */
 export function parsePolicyBook(text: string): PolicyBook {
   const rules = new Map<string, string>();
+  const attrs = new Map<string, PolicyRuleAttrs>();
   const alwaysEscalate: string[] = [];
   let inEscalate = false;
   const body = text.replace(/<!--[\s\S]*?(?:-->|$)/g, '');
@@ -146,8 +210,11 @@ export function parsePolicyBook(text: string): PolicyBook {
     const rule = RULE_LINE_RE.exec(line);
     if (rule) {
       const id = rule[1] as string;
-      const ruleText = (rule[2] ?? '').trim();
-      if (ruleText && !rules.has(id)) rules.set(id, ruleText);
+      const parsed = parseRuleAttrs((rule[2] ?? '').trim());
+      if (parsed.text && !rules.has(id)) {
+        rules.set(id, parsed.text);
+        attrs.set(id, parsed.attrs);
+      }
       continue;
     }
     if (inEscalate) {
@@ -157,7 +224,7 @@ export function parsePolicyBook(text: string): PolicyBook {
       }
     }
   }
-  return { rules, alwaysEscalate };
+  return { rules, attrs, alwaysEscalate };
 }
 
 /**
@@ -182,4 +249,39 @@ export function loadPolicyBook(dir?: string): (PolicyBook & { text: string }) | 
   }
   if (!text) return null;
   return { ...parsePolicyBook(text), text };
+}
+
+/** The predicate each decision kind is checked by; a kind with none can never
+ *  settle by itself (today: every free question). */
+export const ASK_KIND_PREDICATE: Readonly<Record<'question' | 'merge', PolicyRulePredicate | null>> = {
+  question: null,
+  merge: 'merge-lane',
+};
+
+export type AutoEligibility =
+  | { eligible: true }
+  | { eligible: false; reason: 'unknown-rule' | 'book-auto-off' | 'owner-toggle-off' | 'no-predicate' | 'predicate-mismatch' | 'predicate-failed' };
+
+/**
+ * Whether a decision the judge settled under `ruleId` may take effect without
+ * the owner. `predicatePassed` is the bound predicate's verdict on a FRESH
+ * read, taken just now by the caller; agreement stats are not an input. Pure.
+ */
+export function moaAutoEligibility(input: {
+  book: Pick<PolicyBook, 'rules' | 'attrs'>;
+  ruleId: string;
+  ownerAutoRules: readonly string[];
+  kind: 'question' | 'merge';
+  predicatePassed: boolean;
+}): AutoEligibility {
+  const { book, ruleId } = input;
+  if (!book.rules.has(ruleId)) return { eligible: false, reason: 'unknown-rule' };
+  const attrs = book.attrs.get(ruleId) ?? NO_ATTRS;
+  if (!attrs.auto) return { eligible: false, reason: 'book-auto-off' };
+  if (!input.ownerAutoRules.includes(ruleId)) return { eligible: false, reason: 'owner-toggle-off' };
+  const needed = ASK_KIND_PREDICATE[input.kind];
+  if (!needed || !attrs.predicate) return { eligible: false, reason: 'no-predicate' };
+  if (attrs.predicate !== needed) return { eligible: false, reason: 'predicate-mismatch' };
+  if (!input.predicatePassed) return { eligible: false, reason: 'predicate-failed' };
+  return { eligible: true };
 }

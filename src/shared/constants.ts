@@ -400,6 +400,19 @@ export const IPC = {
   //   tool or CLI verb.
   DECK_MOA_APPROVAL: 'deck:moa:approval',
   DECK_MOA_APPROVAL_ANSWER: 'deck:moa:approval:answer',
+  //   DECK_MOA_DELEGATE_* — Moa's delegate decisions (moa_ask tickets) and their
+  //   merge effects; shapes in src/shared/moaDecision.ts. Renderer-only: no
+  //   pipe RPC, MCP tool or CLI verb resolves a decision or toggles a rule.
+  //   LIST (invoke) → MoaDelegateListResult. RESOLVE (invoke MoaResolveRequest
+  //   → MoaResolveResult). AUTO_SET (invoke MoaAutoRuleSetRequest →
+  //   MoaAutoRuleSetResult): the owner's per-rule auto toggle. DECISION_EVENT
+  //   (send, main → renderer, MoaDecisionEvent) and EFFECT_EVENT (send,
+  //   MoaEffectEvent) say a record was created or changed.
+  DECK_MOA_DELEGATE_LIST: 'deck:moa:delegate:list',
+  DECK_MOA_DELEGATE_RESOLVE: 'deck:moa:delegate:resolve',
+  DECK_MOA_DELEGATE_AUTO_SET: 'deck:moa:delegate:auto:set',
+  DECK_MOA_DELEGATE_DECISION_EVENT: 'deck:moa:delegate:decision',
+  DECK_MOA_DELEGATE_EFFECT_EVENT: 'deck:moa:delegate:effect',
   //   HOOKS_BRIDGE_* — the Claude Code hook bridge (wmux setup-hooks, in-app).
   //   STATUS reports whether the wmux hook entries are installed in
   //   ~/.claude/settings.json; INSTALL performs the same idempotent install as

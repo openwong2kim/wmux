@@ -1,0 +1,195 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "number": 1858,
+        "state": "MERGED",
+        "isDraft": false,
+        "isCrossRepository": false,
+        "headRefOid": "995e9d9a3124628f51c0a3989bf2eced7ea2f97c",
+        "headRefName": "fix/daemon-ring-geometry-1825",
+        "baseRefName": "main",
+        "mergedAt": "2026-10-07T09:28:40Z",
+        "mergeCommit": {
+          "oid": "6d286bee3eaa2c21d8b3ba54dd5a56f9526fa8b5"
+        },
+        "author": {
+          "login": "openwong2kim"
+        },
+        "labels": {
+          "totalCount": 0,
+          "nodes": []
+        },
+        "files": {
+          "totalCount": 17,
+          "nodes": [
+            {
+              "path": "changelog.d/1825.md"
+            },
+            {
+              "path": "src/daemon/DaemonSessionManager.ts"
+            },
+            {
+              "path": "src/daemon/HeadlessSnapshot.ts"
+            },
+            {
+              "path": "src/daemon/RingBuffer.ts"
+            },
+            {
+              "path": "src/daemon/SessionPipe.ts"
+            },
+            {
+              "path": "src/daemon/__tests__/HeadlessSnapshot.geometry.test.ts"
+            },
+            {
+              "path": "src/daemon/__tests__/HeadlessSnapshot.test.ts"
+            },
+            {
+              "path": "src/daemon/__tests__/RingBuffer.geometry.test.ts"
+            },
+            {
+              "path": "src/daemon/__tests__/SessionPipe.attachSnapshot.test.ts"
+            },
+            {
+              "path": "src/daemon/__tests__/SessionPipe.reflush.test.ts"
+            },
+            {
+              "path": "src/daemon/__tests__/ansiStreamScan.test.ts"
+            },
+            {
+              "path": "src/daemon/__tests__/scrollbackRestoreInstrumentation.test.ts"
+            },
+            {
+              "path": "src/daemon/__tests__/sessionSerialize.test.ts"
+            },
+            {
+              "path": "src/daemon/__tests__/sessionTextReplay.geometry.test.ts"
+            },
+            {
+              "path": "src/daemon/sessionSerialize.ts"
+            },
+            {
+              "path": "src/daemon/sessionTextReplay.ts"
+            },
+            {
+              "path": "src/daemon/util/ansiStreamScan.ts"
+            }
+          ]
+        },
+        "commits": {
+          "nodes": [
+            {
+              "commit": {
+                "oid": "995e9d9a3124628f51c0a3989bf2eced7ea2f97c",
+                "statusCheckRollup": {
+                  "contexts": {
+                    "totalCount": 10,
+                    "nodes": [
+                      {
+                        "__typename": "CheckRun",
+                        "name": "validate",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "detailsUrl": "https://github.com/openwong2kim/wmux/actions/runs/37594569189/job/112703935838",
+                        "startedAt": "2026-10-07T08:33:39Z",
+                        "completedAt": "2026-10-07T08:48:18Z",
+                        "isRequired": false
+                      },
+                      {
+                        "__typename": "CheckRun",
+                        "name": "Baseline (windows-latest)",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "detailsUrl": "https://github.com/openwong2kim/wmux/actions/runs/37594569169/job/112703936275",
+                        "startedAt": "2026-10-07T08:33:44Z",
+                        "completedAt": "2026-10-07T08:51:16Z",
+                        "isRequired": false
+                      },
+                      {
+                        "__typename": "CheckRun",
+                        "name": "bench",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "detailsUrl": "https://github.com/openwong2kim/wmux/actions/runs/37594569190/job/112703935421",
+                        "startedAt": "2026-10-07T08:33:41Z",
+                        "completedAt": "2026-10-07T08:40:49Z",
+                        "isRequired": false
+                      },
+                      {
+                        "__typename": "CheckRun",
+                        "name": "Baseline (macos-14)",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "detailsUrl": "https://github.com/openwong2kim/wmux/actions/runs/37594569169/job/112703935837",
+                        "startedAt": "2026-10-07T08:33:46Z",
+                        "completedAt": "2026-10-07T08:46:02Z",
+                        "isRequired": false
+                      },
+                      {
+                        "__typename": "CheckRun",
+                        "name": "Baseline (ubuntu-22.04)",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "detailsUrl": "https://github.com/openwong2kim/wmux/actions/runs/37594569169/job/112703936161",
+                        "startedAt": "2026-10-07T08:33:39Z",
+                        "completedAt": "2026-10-07T08:43:59Z",
+                        "isRequired": false
+                      },
+                      {
+                        "__typename": "CheckRun",
+                        "name": "bench-confirm",
+                        "status": "COMPLETED",
+                        "conclusion": "SKIPPED",
+                        "detailsUrl": "https://github.com/openwong2kim/wmux/actions/runs/37594569190/job/112706598745",
+                        "startedAt": "2026-10-07T08:40:49Z",
+                        "completedAt": "2026-10-07T08:40:49Z",
+                        "isRequired": false
+                      },
+                      {
+                        "__typename": "CheckRun",
+                        "name": "validate-runtime",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "detailsUrl": "https://github.com/openwong2kim/wmux/actions/runs/37594569189/job/112703935443",
+                        "startedAt": "2026-10-07T08:33:39Z",
+                        "completedAt": "2026-10-07T08:41:27Z",
+                        "isRequired": false
+                      },
+                      {
+                        "__typename": "CheckRun",
+                        "name": "computer-use-windows",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "detailsUrl": "https://github.com/openwong2kim/wmux/actions/runs/37594569189/job/112703935852",
+                        "startedAt": "2026-10-07T08:33:40Z",
+                        "completedAt": "2026-10-07T08:35:22Z",
+                        "isRequired": false
+                      },
+                      {
+                        "__typename": "CheckRun",
+                        "name": "artifact-contract",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "detailsUrl": "https://github.com/openwong2kim/wmux/actions/runs/37594569190/job/112706597236",
+                        "startedAt": "2026-10-07T08:45:27Z",
+                        "completedAt": "2026-10-07T08:45:31Z",
+                        "isRequired": false
+                      },
+                      {
+                        "__typename": "StatusContext",
+                        "context": "CodeRabbit",
+                        "state": "SUCCESS",
+                        "targetUrl": null,
+                        "isRequired": false
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
