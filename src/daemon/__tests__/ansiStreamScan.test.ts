@@ -3,6 +3,7 @@ import {
   PartialSequenceTracker,
   MarginTracker,
   SgrMouseEncodingTracker,
+  CursorVisibilityTracker,
   incompleteUtf8SuffixLength,
   MAX_PENDING_TAIL_CHARS,
 } from '../util/ansiStreamScan';
@@ -203,5 +204,25 @@ describe('incompleteUtf8SuffixLength', () => {
   it('ignores completed multibyte chars that precede ASCII', () => {
     // '한' (complete) followed by 'A' — nothing at the tail is incomplete.
     expect(incompleteUtf8SuffixLength(Buffer.from('한A'))).toBe(0);
+  });
+});
+
+describe('CursorVisibilityTracker', () => {
+  const hiddenAfter = (...chunks: string[]): boolean => {
+    const t = new CursorVisibilityTracker();
+    for (const c of chunks) t.feed(c);
+    return t.hidden;
+  };
+
+  it('tracks ?25 inside a combined mode list', () => {
+    expect(hiddenAfter('\x1b[?12;25l')).toBe(true);
+    expect(hiddenAfter('\x1b[?25l', '\x1b[?12;25h')).toBe(false);
+    expect(hiddenAfter('\x1b[?25l', '\x1b[?1049;1000h')).toBe(true);
+    expect(hiddenAfter('\x1b[?250h\x1b[?25l')).toBe(true);
+  });
+
+  it('DECSTR shows the cursor; RIS keeps it hidden, as xterm.js does', () => {
+    expect(hiddenAfter('\x1b[?25l', '\x1b[!p')).toBe(false);
+    expect(hiddenAfter('\x1b[?25l', '\x1bc')).toBe(true);
   });
 });

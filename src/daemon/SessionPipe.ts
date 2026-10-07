@@ -222,7 +222,11 @@ export class SessionPipe {
 
     let payload = replay;
     const dims = this.getDims?.();
-    if (dims && buffered.length >= ATTACH_SNAPSHOT_MIN_BYTES) {
+    // A size change inside the ring garbles a raw replay (cursor-up redraws
+    // land on the wrong rows), so such a ring goes through the snapshot
+    // however small it is.
+    const otherSize = !!geometry?.changes.length;
+    if (dims && (buffered.length >= ATTACH_SNAPSHOT_MIN_BYTES || otherSize)) {
       // Reuses the resync path's HeadlessSnapshot (global concurrency-1
       // queue, alt-screen/margins/partial-tail fail-open ladder, DECSET
       // modes tail). No live tee here: unlike reflush there is no bridge
@@ -252,7 +256,7 @@ export class SessionPipe {
       // for (megabytes of overwritten history) compresses drastically.
       // Not when the size changed inside the ring: raw replays the history
       // at the current width, which garbles what was written at another.
-      if (outcome.ok && outcome.payload.length >= buffered.length && !geometry?.changes.length) {
+      if (outcome.ok && outcome.payload.length >= buffered.length && !otherSize) {
         // No gain — ship raw. But re-read the ring first: bytes written DURING
         // the await were gated off the socket (flushed=false) and are absent
         // from the pre-parse `buffered`. Shipping `buffered` here would drop

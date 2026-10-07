@@ -392,4 +392,36 @@ describe('SessionPipe initial-attach snapshot (TASK-10)', () => {
     // the delta must be present — that is the regression under test.
     expect(replay.includes(liveMarker)).toBe(true);
   });
+
+  it('a small ring with a size change inside it replays at its written sizes, not raw at the current width', async () => {
+    // An inline TUI box drawn at 80 cols and redrawn in place with cursor-up,
+    // then the pane narrowed to 40. Far below ATTACH_SNAPSHOT_MIN_BYTES, so this
+    // used to ship raw: at 40 cols every box row wraps, the cursor-up lands
+    // mid-box and the frames stack.
+    const box = (k: number) => `${`[frame ${k}]`.padEnd(70, '=')}\r\n${`[body ${k}]`.padEnd(70, '.')}\r\n`;
+    let raw = 'line before the box\r\n';
+    for (let k = 1; k <= 3; k++) raw += box(k) + (k < 3 ? '\x1b[2A\r' : '');
+    const ring = new RingBuffer(8 * 1024 * 1024);
+    ring.noteGeometry(80, ROWS);
+    ring.write(Buffer.from(raw, 'utf8'));
+    ring.noteGeometry(40, ROWS);
+    const pipe = await startPipe(uniqueSessionId('small-geom'), ring, () => ({ cols: 40, rows: ROWS }));
+
+    const client = await connectClient(pipe.getPipeName(), TOKEN);
+    clients.push(client);
+    await waitFor(() => client.wire().includes(FLUSH_DONE_MARKER), 15_000);
+    const replay = replaySegment(client.wire())!;
+
+    // Reference: what the live terminal showed — parsed at 80 cols, then narrowed.
+    const live = new Terminal({ cols: 80, rows: ROWS, allowProposedApi: true });
+    await new Promise<void>((resolve) => live.write(raw, resolve));
+    live.resize(40, ROWS);
+    const expected: string[] = [];
+    for (let y = 0; y < ROWS; y++) expected.push(live.buffer.active.getLine(y)?.translateToString(true) ?? '');
+    live.dispose();
+
+    const got = await screenOf(replay, 40, ROWS);
+    expect(got).toEqual(expected);
+    expect(got.filter((l) => l.startsWith('[frame')).length).toBe(1);
+  });
 });
