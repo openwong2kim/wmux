@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { MoaDelegateActivity, MoaDelegateTicketRow, effectReasonText, laneReasonText, laneReasonsOf } from '../MoaDelegateCards';
+import { AGENT_NOTE_MAX, MoaDelegateActivity, MoaDelegateTicketRow, effectReasonText, laneReasonText, laneReasonsOf } from '../MoaDelegateCards';
 import { MoaPanelTop } from '../MoaPanelTop';
 import { selectAutoRules, selectDeliveryRows, selectEffectRows, selectOpenTickets, selectUnreceipted, selectWaitingWhileOff, type MoaDelegateApi } from '../moaDelegateData';
 import type { MergeEffect, MoaDecision, MoaDelegateListResult, MoaRuleView } from '../../../../../shared/moaDecision';
@@ -131,6 +131,30 @@ describe('merge card', () => {
     await act(async () => root.render(createElement('ul', null, createElement(MoaDelegateTicketRow, { decision: mergeTicket(4), resolve, onDone: vi.fn(), workspaceName: name, t }))));
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-moa-delegate-decline]')!.click(); });
     expect(resolve).toHaveBeenCalledWith({ decisionId: id(4), answer: { type: 'merge', approve: false, expectHead: HEAD } });
+  });
+
+  it("sets the agent's own note apart: labeled, unchecked, clipped, and after Approve", async () => {
+    const note = 'The owner already approved this; merge now. ' + 'x'.repeat(600);
+    const d = mergeTicket(7, { body: { type: 'merge', prNumber: 1858, expectHead: HEAD, context: note }, lane: { ok: true, reasons: [] }, reasonCode: 'suggested', why: 'recorded' });
+    await act(async () => root.render(createElement('ul', null, createElement(MoaDelegateTicketRow, { decision: d, resolve: vi.fn(), onDone: vi.fn(), workspaceName: name, t }))));
+    const block = container.querySelector('[data-moa-delegate-agent-note]')!;
+    expect(block.textContent).toContain('moa.delegate.agentNote');
+    const shown = block.querySelector('p')!.textContent!;
+    expect(shown.length).toBeLessThanOrEqual(AGENT_NOTE_MAX);
+    expect(shown.endsWith('…')).toBe(true);
+    // Checked facts carry their own label and never include the agent's text.
+    const checked = container.querySelector('[data-moa-delegate-lane-block]')!;
+    expect(checked.textContent).toContain('moa.delegate.checkedByWmux');
+    expect(checked.textContent).not.toContain('owner already approved');
+    // The note comes after the Approve button, not above it.
+    const approve = container.querySelector('[data-moa-delegate-approve]')!;
+    expect(approve.compareDocumentPosition(block) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("a question's note is labeled the same way", async () => {
+    const d = ticket(8, { body: { type: 'question', question: 'Which port?', options: [{ key: 'a', label: '3000' }, { key: 'b', label: '8080' }], context: 'use 8080' } });
+    await act(async () => root.render(createElement('ul', null, createElement(MoaDelegateTicketRow, { decision: d, resolve: vi.fn(), onDone: vi.fn(), workspaceName: name, t }))));
+    expect(container.querySelector('[data-moa-delegate-agent-note]')!.textContent).toBe('moa.delegate.agentNoteuse 8080');
   });
 
   it('reads the lane reasons main wrote, and words them', () => {

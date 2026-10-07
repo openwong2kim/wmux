@@ -162,6 +162,30 @@ export function MoaDelegateTicketRow({
   );
 }
 
+/** Characters of the agent's own note the card shows. */
+export const AGENT_NOTE_MAX = 280;
+
+/** Clip agent text to `max` characters (whitespace runs folded). */
+export function clipAgentText(text: string, max = AGENT_NOTE_MAX): string {
+  const t = text.replace(/\s+/g, ' ').trim();
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+}
+
+/**
+ * The asker's own `context`, set apart from everything wmux checked: its own
+ * label, a plain left rule (no fill, no colour: colour carries state), muted
+ * text, clipped. Nothing in it was verified, and the card never presents it
+ * next to Approve as if it were.
+ */
+function AgentNote({ text, t }: { text: string; t: T }) {
+  return (
+    <div className="mt-1.5 border-l-2 border-[var(--line)] pl-2" data-moa-delegate-agent-note>
+      <div className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-sub)]">{t('moa.delegate.agentNote')}</div>
+      <p className="m-0 text-[11px] italic leading-snug text-[var(--text-sub)] break-words line-clamp-3">{clipAgentText(text)}</p>
+    </div>
+  );
+}
+
 function Suggestion({ label, ruleId, why, t }: { label: string; ruleId?: string; why: string; t: T }) {
   return (
     <div className="mt-1.5 text-[11px] leading-snug text-[var(--text-sub)] break-words" data-moa-delegate-suggestion>
@@ -187,7 +211,6 @@ function QuestionBody({ titleId, question, options, context, suggested, suggesti
   return (
     <>
       <p id={titleId} className="m-0 mt-0.5 text-[13px] font-medium leading-snug text-[var(--text-main)] break-words">{question}</p>
-      {context && <p className="m-0 mt-0.5 text-[11px] leading-snug text-[var(--text-sub)] break-words">{context}</p>}
       {pick && suggestion && (
         <>
           <Suggestion label={pick.label} ruleId={suggestion.ruleId} why={suggestion.why} t={t} />
@@ -206,6 +229,7 @@ function QuestionBody({ titleId, question, options, context, suggested, suggesti
           </Button>
         ))}
       </div>
+      {context && <AgentNote text={context} t={t} />}
     </>
   );
 }
@@ -228,11 +252,18 @@ function MergeBody({ titleId, decision, prNumber, expectHead, context, suggestGo
         {t('moa.delegate.mergeTitle', { pr: prNumber })}{' '}
         <code className="font-mono text-[12px] text-[var(--text-sub)]" data-moa-delegate-head>{shortHead(expectHead)}</code>
       </p>
-      {context && <p className="m-0 mt-0.5 text-[11px] leading-snug text-[var(--text-sub)] break-words">{context}</p>}
       {failures.length > 0 ? (
-        <ul className="m-0 mt-1 pl-4 text-[11px] leading-snug text-[var(--text-sub)]" data-moa-delegate-lane>
-          {failures.map((r) => <li key={r} data-lane-failure={r}>{laneReasonText(r, t)}</li>)}
-        </ul>
+        <div className="mt-1" data-moa-delegate-lane-block>
+          <div className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-sub)]">{t('moa.delegate.checkedByWmux')}</div>
+          <ul className="m-0 pl-4 text-[11px] leading-snug text-[var(--text-main)]" data-moa-delegate-lane>
+            {failures.map((r) => <li key={r} data-lane-failure={r}>{laneReasonText(r, t)}</li>)}
+          </ul>
+        </div>
+      ) : decision.lane?.ok ? (
+        <div className="mt-1" data-moa-delegate-lane-block>
+          <div className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-sub)]">{t('moa.delegate.checkedByWmux')}</div>
+          <p className="m-0 text-[11px] leading-snug text-[var(--text-main)]" data-moa-delegate-lane-ok>{t('moa.delegate.laneOk')}</p>
+        </div>
       ) : decision.why ? (
         <p className="m-0 mt-1 text-[11px] leading-snug text-[var(--text-sub)] break-words" data-moa-delegate-why>{decision.why}</p>
       ) : null}
@@ -245,6 +276,7 @@ function MergeBody({ titleId, decision, prNumber, expectHead, context, suggestGo
           {t('moa.delegate.decline')}
         </Button>
       </div>
+      {context && <AgentNote text={context} t={t} />}
     </>
   );
 }
