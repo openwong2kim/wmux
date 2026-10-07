@@ -50,6 +50,14 @@ describe('PaneSupervisor', () => {
       expect(deps.restartSession).not.toHaveBeenCalled();
     });
 
+    it('on-failure does not restart a clean exit node-pty reports with signal 0', () => {
+      const { sup, deps, advance } = makeHarness();
+      sup.arm('s', POLICY);
+      sup.onSessionDied({ id: 's', exitCode: 0, signal: 0 });
+      advance(60_000);
+      expect(deps.restartSession).not.toHaveBeenCalled();
+    });
+
     it('on-failure restarts a non-zero exit after the base backoff', () => {
       const { sup, deps, advance } = makeHarness();
       sup.arm('s', POLICY);

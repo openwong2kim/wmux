@@ -172,7 +172,9 @@ export class PaneSupervisor {
     // user-intent detection is platform-fragile by construction. User
     // intent is expressed by closing the pane (destroyed → disarm) or the
     // explicit stop action, never inferred from an exit code.
-    const success = payload.exitCode === 0 && payload.signal == null;
+    // node-pty reports signal 0 (not undefined) for an exit no signal caused,
+    // so 0 counts as "no signal".
+    const success = payload.exitCode === 0 && !payload.signal;
     const wantRestart = entry.policy.restart === 'always' || !success;
     if (!wantRestart) {
       this.deps.log('info', `[supervisor] ${payload.id} exited cleanly (on-failure) — not restarting`);
