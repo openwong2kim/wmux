@@ -460,8 +460,9 @@
    * @param {Terminal} term the xterm instance to wire.
    * @param {function(string): void} send sends bytes to THIS terminal's pane
    *        (a tile must not send to whichever pane is currently focused).
-   * @param {boolean} readOnly whether the pane is read-only (newline keys and
-   *        paste become no-ops; copy still works).
+   * @param {function(): boolean} readOnly whether the pane is read-only NOW
+   *        (newline keys and paste become no-ops; copy still works). A getter,
+   *        because the grant can change while the page is open (#1844).
    * @param {function(): boolean} acceptsCsiU whether THIS pane negotiated the
    *        kitty keyboard protocol (drives the Shift+Enter byte; see
    *        keyboardProtocol.js). A tile must query ITS session's state.
@@ -479,7 +480,7 @@
         var decision = window.wmuxWebKeys.decideWebKey(ev, {
           isMac: isMac,
           hasSelection: term.hasSelection(),
-          readOnly: readOnly,
+          readOnly: readOnly(),
           remoteAcceptsCsiU: acceptsCsiU ? acceptsCsiU() : false,
           remoteWin32Input: acceptsWin32 ? acceptsWin32() : false
         });
@@ -562,12 +563,14 @@
       // Answers xterm gives to device queries in the output (DA1, cursor and
       // size reports, XTSMGRAPHICS) are the pane owner's to give; only what
       // the user typed is sent (src/shared/terminal/userInputGate.ts).
-      if (allowInput) term.onData(gateUserInput(term, function (d) {
+      // Wired even while read-only: the grant can arrive later (#1844), and
+      // sendTo() checks it on every call.
+      term.onData(gateUserInput(term, function (d) {
         if (termRepaints > 0) return; // parser reply to a replayed query
         if (dropsLeakedReport(term, d)) return;
         sendInput(d);
       }));
-      attachTerminalKeys(term, sendInput, !allowInput, function () { return paneAcceptsCsiU(currentSession); }, function () { return paneAcceptsWin32(currentSession); });
+      attachTerminalKeys(term, sendInput, isReadOnly, function () { return paneAcceptsCsiU(currentSession); }, function () { return paneAcceptsWin32(currentSession); });
       // Auto-focus so typing and Ctrl+V work without a click first — a browser
       // only delivers the paste event to the focused xterm textarea.
       if (allowInput) term.focus();
@@ -711,8 +714,8 @@
     return r.json().then(function (b) { return (b && b.reason) || ''; }, function () { return ''; });
   }
 
-  function api(pathname) {
-    return fetch(pathname, { headers: authHeaders() }).then(function (r) {
+  function api(pathname, cache) {
+    return fetch(pathname, { headers: authHeaders(), cache: cache || 'default' }).then(function (r) {
       if (r.status === 401) {
         return readReason(r).then(function (reason) {
           requireToken(true, reason);
@@ -752,6 +755,13 @@
         readReason(r).then(function (reason) {
           if (token === probed) requireToken(true, reason);
         });
+      }
+      // A downgrade drops this device's streams, so the answer here is often
+      // the new grant (#1844).
+      if (r.ok && token === probed) {
+        r.json().then(function (cfg) {
+          if (token === probed) applyInputGrant(cfg.allowInput === true);
+        }).catch(function () { /* not JSON: leave the grant as it is */ });
       }
       // Anything else: a genuine outage, or a stale verdict about a token we
       // no longer use — the "reconnecting…" the caller set is the right answer.
@@ -827,7 +837,7 @@
           return readReason(r).then(function (reason) { requireToken(true, reason); });
         }
         if (r.status === 403) {
-          allowInput = false;   // stop firing at a door the server has shut
+          applyInputGrant(false);   // stop firing at a door the server has shut
           setConn('error', 'read-only');
           return;
         }
@@ -1713,30 +1723,30 @@
       sendKeys: function (seq) { sendTo(tile.sessionId, seq); },
       notify: touchScrollNotice
     });
-    if (allowInput) {
-      // Typing into a tile targets THAT tile's pane — and tapping it already
-      // made it the focused one, so "input goes to the focused tile" holds.
-      //
-      // Deliberately does NOT move focus: xterm's onData also carries the
-      // terminal's AUTOMATIC replies (DSR cursor reports, device attributes)
-      // that a TUI provokes on its own. Focusing here made every tile yank
-      // focus back on each reply, which pinned the page to whichever pane
-      // chattered most (caught in live dogfood — a tap looked like it did
-      // nothing). Focus moves on an explicit tap only.
-      tile.term.onData(gateUserInput(tile.term, function (d) {
-        if (tile.repaints > 0) return; // parser reply to a replayed query
-        if (dropsLeakedReport(tile.term, d)) return;
-        sendTo(tile.sessionId, d);
-      }));
-    }
+    // Typing into a tile targets THAT tile's pane — and tapping it already
+    // made it the focused one, so "input goes to the focused tile" holds.
+    // Wired even while read-only: the grant can arrive later (#1844), and
+    // sendTo() checks it on every call.
+    //
+    // Deliberately does NOT move focus: xterm's onData also carries the
+    // terminal's AUTOMATIC replies (DSR cursor reports, device attributes)
+    // that a TUI provokes on its own. Focusing here made every tile yank
+    // focus back on each reply, which pinned the page to whichever pane
+    // chattered most (caught in live dogfood — a tap looked like it did
+    // nothing). Focus moves on an explicit tap only.
+    tile.term.onData(gateUserInput(tile.term, function (d) {
+      if (tile.repaints > 0) return; // parser reply to a replayed query
+      if (dropsLeakedReport(tile.term, d)) return;
+      sendTo(tile.sessionId, d);
+    }));
     // Same copy/newline/paste handling as the 1-up terminal — Ctrl+C with a
     // selection must copy here too, never SIGINT the tile's process. Sends go
     // to THIS tile's pane, not whichever one is focused. Focus policy stays
     // local (a tile never grabs focus), which is why this is a caller arg.
-    // OUTSIDE `if (allowInput)`: a read-only split tile still needs copy —
-    // select-to-copy and Ctrl+C-with-selection must work there, only typing is
-    // gated on allowInput (the readOnly flag passed here decides newline/paste).
-    attachTerminalKeys(tile.term, function (d) { sendTo(tile.sessionId, d); }, !allowInput, function () { return paneAcceptsCsiU(tile.sessionId); }, function () { return paneAcceptsWin32(tile.sessionId); });
+    // A read-only split tile still needs copy — select-to-copy and
+    // Ctrl+C-with-selection must work there, only typing is gated on
+    // allowInput (the readOnly getter passed here decides newline/paste).
+    attachTerminalKeys(tile.term, function (d) { sendTo(tile.sessionId, d); }, isReadOnly, function () { return paneAcceptsCsiU(tile.sessionId); }, function () { return paneAcceptsWin32(tile.sessionId); });
     renderTileHead(tile);
     el.addEventListener('pointerdown', function () { focusTile(tile); });
 
@@ -1990,27 +2000,75 @@
     });
   }
 
+  function isReadOnly() { return !allowInput; }
+
+  /**
+   * #1844: the desktop can change this device's input grant while the page is
+   * open (Paired devices → "can type"). Everything on the page that depends on
+   * it follows from here, so an open viewer changes without a reload. The
+   * server still checks the grant on every write; this only decides what the
+   * page offers. `force` renders even when the value is unchanged (init).
+   */
+  function applyInputGrant(next, force) {
+    if (next === allowInput && !force) return;
+    var gained = next && !allowInput;
+    allowInput = next;
+    bannerEl.textContent = allowInput ? 'input enabled' : 'read-only';
+    bannerEl.setAttribute('data-mode', allowInput ? 'rw' : 'ro');
+    // A read-only viewer showing dead keys would be a lie.
+    if (allowInput) {
+      buildKeybar();
+      kbAgentBtn.removeAttribute('hidden');
+    } else {
+      kbKeysEl.innerHTML = '';
+      kbAgentBtn.setAttribute('hidden', '');
+      kbAgentBtn.setAttribute('aria-expanded', 'false');
+      kbAgentRow.setAttribute('hidden', '');
+    }
+    [term].concat(tiles.map(function (tl) { return tl.term; })).forEach(function (t) {
+      if (t) t.options.disableStdin = !allowInput;
+    });
+    if (gained && term && !tiles.length) term.focus();
+    if (!force) rescale();
+  }
+
+  // Re-read the grant while the page lives, on the same 10 s cadence the
+  // browser app uses (src/renderer/web/webPty.ts CONFIG_REFRESH_MS).
+  var GRANT_REFRESH_MS = 10000;
+  var grantTimer = null;
+  var grantInFlight = false;
+  function refreshInputGrant() {
+    // Not while the auth form is up: a refused token would re-raise it (and
+    // clear what the user is typing into it) on every tick.
+    if (grantInFlight || !token || overlayEl.getAttribute('data-show') === 'auth') return;
+    grantInFlight = true;
+    var asked = token;
+    api('/api/config', 'no-store').then(function (r) {
+      return r.ok ? r.json() : null;
+    }).then(function (cfg) {
+      if (cfg && token === asked) applyInputGrant(cfg.allowInput === true);
+    }).catch(function () { /* unreachable: the next tick asks again */ }).then(function () {
+      grantInFlight = false;
+    });
+  }
+  function startGrantPolling() {
+    if (grantTimer) return;
+    grantTimer = setInterval(refreshInputGrant, GRANT_REFRESH_MS);
+  }
+
   function init() {
     if (!token) { requireToken(false); return; }
     setConn('connecting', 'connecting…');
     showOverlay('loading', 'Connecting to wmux', 'Attaching to the daemon and loading live panes.');
     api('/api/config').then(function (r) { return r.json(); }).then(function (cfg) {
-      allowInput = cfg.allowInput === true;
       // Absent on a daemon predating the switch, which reads as on; the wasm
       // probe still decides whether the addon can run at all.
       inlineImagesEnabled = cfg.inlineImages !== false;
-      bannerEl.textContent = allowInput ? 'input enabled' : 'read-only';
-      bannerEl.setAttribute('data-mode', allowInput ? 'rw' : 'ro');
-      // The bar is always available for zoom; the keys only when input is on
-      // (a read-only viewer showing dead keys would be a lie).
+      // The bar is always available for zoom; the keys only when input is on.
       keybarEl.removeAttribute('hidden');
       $('#kb-fit').setAttribute('aria-pressed', fitMode ? 'true' : 'false');
-      if (allowInput) {
-        buildKeybar();
-      } else {
-        kbKeysEl.innerHTML = '';
-        kbAgentBtn.setAttribute('hidden', '');
-      }
+      applyInputGrant(cfg.allowInput === true, true);
+      startGrantPolling();
       // Before any stream opens: a device credential cannot ride a query string,
       // so without a ticket in hand the first EventSource would 401. A no-op
       // for an operator-token session, which needs none.
