@@ -1017,7 +1017,13 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
   // shell(PTY). The walk queries the OS process table by pid, so it works
   // identically whether we run inside the agent's tree (single child) or in
   // the broker (which starts from the shim's pid asserted at connect).
-  let currentPid = ctx.callerPpid ?? (await getParentPid(ctx.callerPid)) ?? -1;
+  // On Windows callerPpid is only the pid our parent had when we started: an
+  // orphan is never re-parented, so once Windows hands that pid to a newer
+  // process (a new pane's shell) it names a stranger. Ask getParentPid there,
+  // which checks creation times, so the first edge is checked like every later
+  // hop. Elsewhere an orphan is re-parented and callerPpid stays trustworthy.
+  const knownPpid = process.platform === 'win32' ? null : ctx.callerPpid;
+  let currentPid = knownPpid ?? (await getParentPid(ctx.callerPid)) ?? -1;
   let depth = 0;
   for (; depth < 10 && currentPid > 1; depth++) {
     const match = knownPids.get(currentPid);
