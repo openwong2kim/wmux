@@ -748,6 +748,7 @@
     // tear down the session that just came up — the verdict only applies while
     // `token` is still the one we asked with.
     var probed = token;
+    var probedSeq = grantSeq;
     var done = function () { authProbing = false; };
     fetch('/api/config', { headers: { Authorization: 'Bearer ' + probed } }).then(function (r) {
       done();
@@ -760,7 +761,7 @@
       // the new grant (#1844).
       if (r.ok && token === probed) {
         r.json().then(function (cfg) {
-          if (token === probed) applyInputGrant(cfg.allowInput === true);
+          if (token === probed && grantSeq === probedSeq) applyInputGrant(cfg.allowInput === true);
         }).catch(function () { /* not JSON: leave the grant as it is */ });
       }
       // Anything else: a genuine outage, or a stale verdict about a token we
@@ -2009,8 +2010,13 @@
    * server still checks the grant on every write; this only decides what the
    * page offers. `force` renders even when the value is unchanged (init).
    */
+  // Bumped on every grant change. A /api/config answer applies only if no
+  // change landed after its request started: a poll sent while input was
+  // allowed must not undo a revoke a 403 or a stream probe applied meanwhile.
+  var grantSeq = 0;
   function applyInputGrant(next, force) {
     if (next === allowInput && !force) return;
+    grantSeq += 1;
     var gained = next && !allowInput;
     allowInput = next;
     bannerEl.textContent = allowInput ? 'input enabled' : 'read-only';
@@ -2043,10 +2049,11 @@
     if (grantInFlight || !token || overlayEl.getAttribute('data-show') === 'auth') return;
     grantInFlight = true;
     var asked = token;
+    var askedSeq = grantSeq;
     api('/api/config', 'no-store').then(function (r) {
       return r.ok ? r.json() : null;
     }).then(function (cfg) {
-      if (cfg && token === asked) applyInputGrant(cfg.allowInput === true);
+      if (cfg && token === asked && grantSeq === askedSeq) applyInputGrant(cfg.allowInput === true);
     }).catch(function () { /* unreachable: the next tick asks again */ }).then(function () {
       grantInFlight = false;
     });

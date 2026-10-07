@@ -31,14 +31,24 @@ async function load() {
   const html = read('index.html').replace(/<script[\s\S]*?<\/script>/gi, '');
   const dom = new JSDOM(html, { url: 'https://desk.example/classic?token=t0k', runScripts: 'outside-only', pretendToBeVisual: true });
   const win = dom.window as unknown as Record<string, unknown>;
-  const state = { allowInput: false };
+  // `holdConfig` parks the next /api/config answer until `release()`;
+  // `inputStatus` is what /api/input answers.
+  const state = { allowInput: false, holdConfig: false, inputStatus: 200 };
+  let release: (() => void) | null = null;
   const inputs: string[] = [];
   const json = (body: unknown, status = 200) => ({ ok: status < 300, status, json: async () => body });
   win['fetch'] = vi.fn(async (input: unknown, init?: { body?: string }) => {
     const url = String(input);
-    if (url.startsWith('/api/config')) return json({ allowInput: state.allowInput });
+    if (url.startsWith('/api/config')) {
+      const body = { allowInput: state.allowInput };
+      if (state.holdConfig) return new Promise((r) => { release = () => r(json(body)); });
+      return json(body);
+    }
     if (url.startsWith('/api/sessions')) return json({ sessions: [{ id: 'p1', name: 'pane', cols: 80, rows: 24 }] });
-    if (url.startsWith('/api/input')) { inputs.push(String(init?.body)); return json({}); }
+    if (url.startsWith('/api/input')) {
+      if (state.inputStatus === 200) inputs.push(String(init?.body));
+      return json({}, state.inputStatus);
+    }
     return json({}, 403);
   });
   const intervals = new Map<number, () => void>();
@@ -86,7 +96,8 @@ async function load() {
   const banner = () => dom.window.document.getElementById('banner')?.textContent;
   const type = async (d: string) => { terms[0]?.dataHandlers.forEach((fn) => fn(d)); await settle(); };
   const tick = async () => { intervals.get(10000)?.(); await settle(); };
-  return { dom, state, inputs, terms, banner, type, tick };
+  const releaseConfig = async () => { release?.(); await settle(); };
+  return { dom, state, inputs, terms, banner, type, tick, releaseConfig };
 }
 
 describe('/classic follows a live input-grant change (#1844)', () => {
@@ -121,6 +132,28 @@ describe('/classic follows a live input-grant change (#1844)', () => {
     expect(page.terms[0]?.options.disableStdin).toBe(true);
     await page.type('b');
     expect(page.inputs).toEqual(['a']);
+    page.dom.window.close();
+  });
+
+  it('a revoke that lands while a poll is in flight is not undone by that poll', async () => {
+    const page = await load();
+    page.state.allowInput = true;
+    await page.tick();
+    expect(page.banner()).toBe('input enabled');
+
+    // A poll leaves while input is still allowed and its answer is held.
+    page.state.holdConfig = true;
+    await page.tick();
+    // Meanwhile the grant is revoked and a keystroke is refused.
+    page.state.inputStatus = 403;
+    await page.type('z');
+    expect(page.banner()).toBe('read-only');
+
+    // The stale answer arrives last.
+    await page.releaseConfig();
+
+    expect(page.banner()).toBe('read-only');
+    expect(page.terms[0]?.options.disableStdin).toBe(true);
     page.dom.window.close();
   });
 });
