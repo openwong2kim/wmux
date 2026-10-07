@@ -17,7 +17,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
-import { Cursor, Recorder, daemonRpc, instancePaths, normSuffix, loadPlaywright, readCdpPort, sleep, wmuxCli } from './lib.mjs';
+import { Cursor, Recorder, daemonRpc, instancePaths, normSuffix, loadPlaywright, readCdpPort, recordPid, sleep, verifyInstance, wmuxCli } from './lib.mjs';
 
 const { values: a } = parseArgs({
   options: {
@@ -46,6 +46,8 @@ if (fs.existsSync(path.join(out, 'frames'))) {
 const scene = (await import(pathToFileURL(path.resolve(a.scenario)).href)).default;
 if (typeof scene !== 'function') throw new Error(`${a.scenario} has no default export function`);
 
+const appPid = verifyInstance(a.suffix, app.cdpPort);
+console.log(`[rec] CDP ${app.cdpPort} is held by app ${appPid} of ${a.suffix}`);
 const { chromium } = loadPlaywright();
 const browser = await chromium.connectOverCDP(`http://127.0.0.1:${app.cdpPort}`);
 
@@ -96,6 +98,7 @@ const ctx = {
   mark: (n) => rec.mark(n),
   rpc: (method, params) => daemonRpc(a.suffix, method, params),
   cli: (args) => wmuxCli(a.suffix, args),
+  recordPid: (pid) => recordPid(a.suffix, pid),
   log: (...m) => console.log('[scene]', ...m),
   rec,
 };

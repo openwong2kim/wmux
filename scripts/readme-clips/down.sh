@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
-# Stop the isolated instance that launch.sh started, by its saved PIDs only.
+# Stop the isolated instance that launch.sh started, by its recorded PIDs only.
 #
 #   scripts/readme-clips/down.sh -readme3
 #
-# Order: dedicated Chrome (found by its own CDP port), the app (kill -9: a graceful
-# quit could install a downloaded update into /Applications), then the daemon
-# (daemon.shutdown RPC so it ends its panes, then kill -9 if it is still up), then
-# any PIDs a scenario appended to <state>/extra.pids. Never pkill, killall or a pattern.
+# A recorded PID is killed only while its process start time still matches the one
+# launch.sh recorded, so a PID that was reused (for example by the real wmux) is never
+# touched. Order: dedicated Chrome (found by the instance's own profile), the app
+# (kill -9: a graceful quit could install a downloaded update into /Applications), the
+# daemon (daemon.shutdown so it ends its panes, then kill -9 if it is still up), then
+# PIDs a scenario recorded in <state>/extra.pids. Never pkill, killall or a pattern.
+# Exits non-zero, listing what is left, if a process of this suffix is still running
+# that the kit did not record.
 set -uo pipefail
 
 SUFFIX="${1:-}"
@@ -16,44 +20,62 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 STATE="${READMECLIPS_STATE:-${TMPDIR:-/tmp}/readme-clips-state}/$SUFFIX"
 DATA="$HOME/.wmux$SUFFIX"
 PROFILE="$HOME/Library/Application Support/wmux$SUFFIX/chrome-agent-profile"
+LEFT=0
 
-# kill_checked <pid> <substring the command line must contain> <label>
-kill_checked() {
-  local pid="$1" must="$2" label="$3" cmd
-  [[ "$pid" =~ ^[0-9]+$ ]] || return 0
-  cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
-  if [[ -z "$cmd" ]]; then echo "[down] $label $pid already gone"; return 0; fi
-  if [[ "$cmd" != *"$must"* ]]; then echo "[down] $label $pid is not ours any more ($cmd); left alone"; return 0; fi
-  kill -9 "$pid" && echo "[down] killed $label $pid"
+# same_proc <pid> <recorded start time>: the PID is alive and is still the process we recorded.
+same_proc() {
+  [[ "$1" =~ ^[0-9]+$ && -n "$2" ]] || return 1
+  [[ "$(ps -o lstart= -p "$1" 2>/dev/null)" == "$2" ]]
 }
 
-# 1. Dedicated Chrome: its CDP port from the profile, then the one PID listening on it.
+# kill_recorded <label> <pid file> <start file>
+kill_recorded() {
+  local pid start
+  pid="$(cat "$2" 2>/dev/null)"; start="$(cat "$3" 2>/dev/null)"
+  [[ -n "$pid" ]] || return 0
+  if same_proc "$pid" "$start"; then kill -9 "$pid" && echo "[down] killed $1 $pid"
+  elif kill -0 "$pid" 2>/dev/null; then echo "[down] $1 $pid is a different process now; left alone"
+  else echo "[down] $1 $pid already gone"; fi
+}
+
+# 1. Dedicated Chrome: the PID listening on the port in this instance's own profile,
+#    and only if its command line carries that profile path.
 while IFS= read -r portfile; do
   port="$(head -1 "$portfile" 2>/dev/null)"
   [[ "$port" =~ ^[0-9]+$ ]] || continue
   for pid in $(lsof -nP -t -iTCP:"$port" -sTCP:LISTEN 2>/dev/null); do
-    kill_checked "$pid" "$PROFILE" "chrome"
+    if [[ "$(ps -p "$pid" -o command= 2>/dev/null)" == *"$PROFILE"* ]]; then kill -9 "$pid" && echo "[down] killed chrome $pid"; fi
   done
 done < <(find "$PROFILE" -maxdepth 2 -name DevToolsActivePort 2>/dev/null)
-[[ -f "$STATE/chrome.pid" ]] && kill_checked "$(cat "$STATE/chrome.pid")" "$PROFILE" "chrome"
 
 # 2. The app.
-[[ -f "$STATE/app.pid" ]] && kill_checked "$(cat "$STATE/app.pid")" "wmux.app" "app"
+kill_recorded app "$STATE/app.pid" "$STATE/app.start"
 
-# 3. The daemon.
-DPID="$(cat "$STATE/daemon.pid" 2>/dev/null || cat "$DATA/daemon.pid" 2>/dev/null || true)"
-if [[ -n "$DPID" ]] && kill -0 "$DPID" 2>/dev/null; then
+# 3. The daemon the app started.
+DPID="$(cat "$STATE/daemon.pid" 2>/dev/null)"
+if same_proc "$DPID" "$(cat "$STATE/daemon.start" 2>/dev/null)"; then
   node "$HERE/rpc.mjs" "$SUFFIX" daemon.shutdown '{}' >/dev/null 2>&1 && echo "[down] daemon.shutdown sent"
   for _ in $(seq 1 20); do kill -0 "$DPID" 2>/dev/null || break; sleep 0.25; done
-  kill -0 "$DPID" 2>/dev/null && kill_checked "$DPID" "wmux" "daemon"
 fi
+kill_recorded daemon "$STATE/daemon.pid" "$STATE/daemon.start"
 
-# 4. Anything a scenario recorded.
+# 4. Processes a scenario recorded (lib.mjs recordPid): "<pid>\t<start time>" per line.
 if [[ -f "$STATE/extra.pids" ]]; then
-  while read -r pid must; do
-    [[ -n "$pid" ]] && kill_checked "$pid" "${must:-$pid}" "extra"
+  while IFS=$'\t' read -r pid start; do
+    if same_proc "$pid" "$start"; then kill -9 "$pid" && echo "[down] killed extra $pid"; fi
   done <"$STATE/extra.pids"
 fi
 
-rm -f "$STATE/app.pid" "$STATE/cdp-port" "$STATE/daemon.pid" "$STATE/chrome.pid" "$STATE/extra.pids"
+# Anything of this suffix still alive was not started by the kit: report it, do not kill it.
+sleep 0.5
+for f in "$DATA/daemon.pid"; do
+  pid="$(cat "$f" 2>/dev/null)"
+  if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+    echo "[down] still running, not recorded by the kit: daemon $pid ($f). Stop it by hand." >&2
+    LEFT=1
+  fi
+done
+
+rm -f "$STATE/app.pid" "$STATE/app.start" "$STATE/cdp-port" "$STATE/daemon.pid" "$STATE/daemon.start" "$STATE/extra.pids"
+if (( LEFT )); then exit 1; fi
 echo "[down] $SUFFIX stopped (data kept in $DATA)"

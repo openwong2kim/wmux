@@ -6,7 +6,8 @@
 // Stops after --seconds, when --until-file appears, or on Ctrl+C. Run it next to rec.mjs
 // (two processes) to get both screencasts of one take; marks.json in both outputs uses
 // wall-clock-aligned times, so the composer can sync them.
-// Options: --port <cdp port> (default: read DevToolsActivePort from the instance's profile),
+// Options: --port <cdp port> (default: read DevToolsActivePort from the instance's profile;
+// either way the port must be held by a Chrome running that profile),
 // --match <url substring> (default: the first http(s) tab), --scenario <file.mjs> (optional,
 // gets { page, cursor, mark, sleep, log }), --out <dir>, --width 1440 --height 900.
 import fs from 'node:fs';
@@ -14,7 +15,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
-import { Cursor, Recorder, instancePaths, normSuffix, loadPlaywright, sleep } from './lib.mjs';
+import { spawnSync } from 'node:child_process';
+import { Cursor, Recorder, instancePaths, normSuffix, loadPlaywright, portListeners, sleep } from './lib.mjs';
 
 const { values: a } = parseArgs({
   options: {
@@ -64,6 +66,12 @@ if (fs.existsSync(path.join(out, 'frames'))) {
   process.exit(2);
 }
 
+// Only this instance's Chrome: the process on the port must carry its profile path.
+const owner = portListeners(port).find((pid) => spawnSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8' }).stdout.includes(paths.chromeProfile));
+if (!owner) {
+  console.error(`port ${port} is not held by the dedicated Chrome of ${a.suffix} (${paths.chromeProfile}); refusing`);
+  process.exit(1);
+}
 const { chromium } = loadPlaywright();
 const browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
 const pick = () => browser.contexts().flatMap((c) => c.pages())

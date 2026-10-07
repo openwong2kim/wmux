@@ -32,6 +32,44 @@ export function instancePaths(suffix) {
   };
 }
 
+/** Process start time as ps prints it; '' when the PID is not running. */
+export function procStart(pid) {
+  const r = spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8' });
+  return r.status === 0 ? r.stdout.trim() : '';
+}
+
+/** PIDs listening on a local TCP port. */
+export function portListeners(port) {
+  const r = spawnSync('lsof', ['-nP', '-t', `-iTCP:${port}`, '-sTCP:LISTEN'], { encoding: 'utf8' });
+  return r.stdout.split('\n').filter(Boolean).map(Number);
+}
+
+/**
+ * Prove the CDP port belongs to the app launch.sh started for this suffix, not to
+ * the real wmux (same bundle, same page URL) that may have taken the port after a
+ * crash: the recorded PID must still have its recorded start time and must be the
+ * process listening on the port. Throws otherwise.
+ */
+export function verifyInstance(suffix, port) {
+  const { stateDir } = instancePaths(suffix);
+  const pid = Number(fs.readFileSync(path.join(stateDir, 'app.pid'), 'utf8').trim());
+  const start = fs.readFileSync(path.join(stateDir, 'app.start'), 'utf8').trim();
+  if (!pid || !start || procStart(pid) !== start) {
+    throw new Error(`the app launch.sh started for ${suffix} is gone; relaunch it`);
+  }
+  if (!portListeners(port).includes(pid)) {
+    throw new Error(`CDP port ${port} is not held by app ${pid} of ${suffix}; refusing to drive it`);
+  }
+  return pid;
+}
+
+/** Remember a process a scenario started so down.sh can stop exactly it. */
+export function recordPid(suffix, pid) {
+  const start = procStart(pid);
+  if (!start) throw new Error(`pid ${pid} is not running`);
+  fs.appendFileSync(path.join(instancePaths(suffix).stateDir, 'extra.pids'), `${pid}\t${start}\n`);
+}
+
 /** The renderer CDP port that launch.sh read from the app log. */
 export function readCdpPort(suffix) {
   const file = path.join(instancePaths(suffix).stateDir, 'cdp-port');
@@ -78,7 +116,7 @@ export function scrubbedEnv(suffix) {
   for (const k of Object.keys(env)) {
     if (/^(CLAUDE|ANTHROPIC|AI_AGENT)/.test(k)) delete env[k];
   }
-  for (const k of ['WMUX_PTY_ID', 'WMUX_WORKSPACE_ID', 'WMUX_SURFACE_ID', 'WMUX_MEMBER_ID', 'WMUX_SOCKET_PATH']) delete env[k];
+  for (const k of ['WMUX_PTY_ID', 'WMUX_WORKSPACE_ID', 'WMUX_SURFACE_ID', 'WMUX_MEMBER_ID', 'WMUX_SOCKET_PATH', 'WMUX_WORKSPACE_NAME']) delete env[k];
   return env;
 }
 

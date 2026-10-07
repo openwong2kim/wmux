@@ -24,12 +24,20 @@ ffmpeg -hide_banner -loglevel error -y -i "$IN" \
 
 swift "$HERE/ocr.swift" "$OUT"/frames/s*.png >"$OUT/ocr.tsv" 2>/dev/null || echo "[check] OCR unavailable; review by eye only" >&2
 
-# The public identity (GitHub openwong2kim, open.wong2kim@gmail.com) is allowed; anything else that
-# matches is a finding. Only the frame and the kind are printed, never the matched text, so a
-# leaked identifier does not travel on into logs or chat.
+# Every match is a finding. An identity that may appear is opted in per run with
+# README_CLIPS_ALLOW (comma-separated literal strings, removed before matching); nothing
+# is allowed by default. Only the frame and the kind are printed, never the matched text,
+# so a leaked identifier does not travel on into logs or chat.
 : >"$OUT/flags.tsv"
+ALLOWED="$OUT/ocr.allowed.tsv"
+cp "$OUT/ocr.tsv" "$ALLOWED"
+IFS=',' read -ra ALLOW <<<"${README_CLIPS_ALLOW:-}"
+for s in "${ALLOW[@]+"${ALLOW[@]}"}" 127.0.0.1; do
+  [[ -n "$s" ]] || continue
+  S="$s" perl -i -pe 's/\Q$ENV{S}\E//gi' "$ALLOWED"
+done
 flag() { # kind regex
-  sed -e 's/open\.wong2kim@gmail\.com//g' -e 's/127\.0\.0\.1//g' "$OUT/ocr.tsv" | { LC_ALL=en_US.UTF-8 grep -E -i "$2" || true; } \
+  { LC_ALL=en_US.UTF-8 grep -E -i "$2" "$ALLOWED" || true; } \
     | cut -f1 | sort -u | while read -r f; do printf '%s\t%s\n' "$(basename "$f")" "$1"; done >>"$OUT/flags.tsv"
 }
 flag email '[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}'
@@ -47,7 +55,7 @@ while IFS= read -r name; do
   while IFS=$'\t' read -r f text; do
     norm="$(printf '%s' "$text" | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]')"
     [[ "$norm" == *"$key"* ]] && printf '%s\t%s\n' "$(basename "$f")" machine-name >>"$OUT/flags.tsv"
-  done <"$OUT/ocr.tsv"
+  done <"$ALLOWED"
 done < <(hostname -s; scutil --get LocalHostName 2>/dev/null; scutil --get ComputerName 2>/dev/null)
 
 DUR="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$IN")"

@@ -20,8 +20,8 @@ touch the instance's sockets or CDP port must run outside the Bash sandbox.
 
 ## Identity rule
 
-The owner's public identity, GitHub `openwong2kim` and `open.wong2kim@gmail.com`, may
-appear. Nothing else may: no other email or account name, no hostname, IP address,
+Only the owner's public identity (the repository's GitHub account and its public email,
+as named in your task) may appear. Nothing else may: no other email or account name, no hostname, IP address,
 token, home path, or Korean text. That goes for every frame, file name, commit, PR text
 and log. If anything else shows in a clip, re-record it. Do not cover it with a blur.
 
@@ -64,16 +64,26 @@ node scripts/readme-clips/rec.mjs --suffix readme5 --scenario scripts/readme-cli
 scripts/readme-clips/export.sh $TMPDIR/readme-clips/fleet/fleet.mp4 docs/readme/fleet.gif \
   --cut "asked..answered,moved-on..end"
 
-# 5. Privacy review: read every frame, not just the sheet.
-scripts/readme-clips/frame-check.sh docs/readme/fleet.gif
+# 5. Privacy review: read every frame, not just the sheet. Every email is flagged unless
+#    you opt the public identity in for this run.
+README_CLIPS_ALLOW="<public github name>,<public email>" scripts/readme-clips/frame-check.sh docs/readme/fleet.gif
 
 # 6. Stop the instance.
 scripts/readme-clips/down.sh readme5
 ```
 
 Run one instance at a time, because the machine is shared. Never use `pkill`, `killall`
-or a pattern kill. If a scenario starts its own process, append `<pid> <command
-substring>` to `<state>/extra.pids` and `down.sh` kills it too.
+or a pattern kill. The real wmux runs from the same `/Applications/wmux.app`, so the kit
+pins every PID to its start time:
+
+- `launch.sh` records the app and daemon PIDs with their start times.
+- `rec.mjs` refuses to connect unless the recorded app is still the same process and is
+  the one listening on the CDP port.
+- `rec-chrome.mjs` only connects to a Chrome running this instance's profile.
+- `down.sh` kills a PID only while its start time matches. If a process of the suffix is
+  left that the kit did not record, it reports it and exits non-zero.
+
+If a scenario starts its own process, call `recordPid(pid)` so `down.sh` stops it too.
 
 ## Scenario modules
 
@@ -100,6 +110,7 @@ export default async function scene({ page, cursor, mark, sleep, setTheme, rpc, 
 | `rpc(method, params)` | The isolated daemon over `daemon.sock` and `daemon-auth-token` |
 | `cli(args)` | The wmux CLI against the isolated instance, with identity stripped |
 | `app` | `suffix`, `dataDir`, `userData`, `chromeProfile`, `stateDir`, `cdpPort` |
+| `recordPid(pid)` | Records a process the scenario started (PID and start time) so `down.sh` stops it |
 
 Use selectors only (`data-testid`, roles, text), never screen coordinates. A selector
 fails loudly if the UI moves. A coordinate clicks whatever happens to be there.
@@ -134,7 +145,8 @@ await rpc('daemon.hooks.signal', {
 - Frame check: `frame-check.sh` writes one frame per second at the clip's own resolution,
   a contact sheet, `ocr.tsv` (macOS Vision, English and Korean), and `flags.tsv`. Flags
   cover emails, IPs, token-like words, hostnames, home paths, Korean text, `user@`, and
-  this machine's own names. Only frame names and the type of match are printed, so a leaked
+  this machine's own names. Nothing is allowed by default. `README_CLIPS_ALLOW` (literal
+  strings, comma-separated) opts an identity in for that run. Only frame names and the type of match are printed, so a leaked
   value is not copied into logs. A flagged frame means re-record. No flags does not mean
   the clip is clean: look at every frame yourself.
 

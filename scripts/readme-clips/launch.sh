@@ -5,7 +5,8 @@
 #   scripts/readme-clips/launch.sh -readme3 --reuse  # relaunch the same suffix (e.g. survive-quit)
 #
 # Saves the app PID and the renderer CDP port under $READMECLIPS_STATE/<suffix>
-# (default $TMPDIR/readme-clips-state/<suffix>). down.sh kills only that PID.
+# (default $TMPDIR/readme-clips-state/<suffix>), each PID with its start time.
+# down.sh kills only those processes.
 set -euo pipefail
 
 SUFFIX="${1:-}"
@@ -59,6 +60,8 @@ LOG="$STATE/app.log"
 nohup env "${UNSET[@]}" SHELL=/bin/zsh ZDOTDIR="$ZD" WMUX_DATA_SUFFIX="$SUFFIX" "$APP" </dev/null >>"$LOG" 2>&1 &
 PID=$!
 echo "$PID" >"$STATE/app.pid"
+# The start time pins the PID to this process: down.sh and rec.mjs refuse a reused PID.
+ps -o lstart= -p "$PID" >"$STATE/app.start"
 echo "[launch] $SUFFIX pid $PID, log $LOG"
 
 PORT=""
@@ -74,7 +77,9 @@ echo "$PORT" >"$STATE/cdp-port"
 # The daemon outlives the app (that is the survive-quit feature); remember it for down.sh.
 for _ in $(seq 1 40); do [[ -s "$DATA/daemon.pid" ]] && break; sleep 0.5; done
 if [[ -s "$DATA/daemon.pid" ]]; then
-  cp "$DATA/daemon.pid" "$STATE/daemon.pid"
+  DPID="$(cat "$DATA/daemon.pid")"
+  echo "$DPID" >"$STATE/daemon.pid"
+  ps -o lstart= -p "$DPID" >"$STATE/daemon.start"
 fi
 
 cat <<EOF
