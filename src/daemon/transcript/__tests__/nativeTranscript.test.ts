@@ -95,7 +95,18 @@ describe('a Codex session file not written yet (first turn pending)', () => {
         const dangling = path.join(sessions, `rollout-d-${nativeId}.jsonl`);
         fs.symlinkSync(path.join(sessions, 'nowhere.jsonl'), dangling);
         expect(check(dangling).ok).toBe(false);
+        // A dangling symlink as a missing DATE DIRECTORY reads as ENOENT too:
+        // it must refuse, not be climbed past to `sessions/`.
+        fs.symlinkSync(path.join(elsewhere, 'gone'), path.join(sessions, '2027'));
+        expect(check(path.join(sessions, '2027', '01', '01', `rollout-x-${nativeId}.jsonl`)).ok).toBe(false);
+        // A plain file where a directory should be refuses as well.
+        fs.writeFileSync(path.join(sessions, '2028'), '');
+        expect(check(path.join(sessions, '2028', '01', `rollout-x-${nativeId}.jsonl`)).ok).toBe(false);
       }
+      // The ancestor walk is bounded (same 64 as the Claude guard).
+      const deep = path.join(sessions, ...Array.from({ length: 70 }, (_, i) => `d${i}`), `rollout-x-${nativeId}.jsonl`);
+      expect(check(deep).ok).toBe(false);
+      expect(check(path.join(sessions, ...Array.from({ length: 10 }, (_, i) => `d${i}`), `rollout-x-${nativeId}.jsonl`))).toEqual({ ok: true, reason: '', pending: true });
 
       const projector = new TranscriptProjector({ getResumeBinding: () => ({ agent: 'codex', sessionId: nativeId, cwd: home, transcriptPath: path.join(home, `rollout-x-${nativeId}.jsonl`), ts: 1 }), getSessionEnv: () => ({ CODEX_HOME: home }), emitAppend: () => undefined });
       try { expect(projector.status('pane')).toEqual({ available: false, reason: 'unsafe-transcript-path' }); } finally { projector.dispose(); }

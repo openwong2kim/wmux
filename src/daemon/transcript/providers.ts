@@ -44,35 +44,51 @@ function checkCodexTranscriptPath(file: string, id: string, env?: Record<string,
   }
 }
 
+/** Same bound as the Claude guard's ancestor walk (`resolveIfPossible`). */
+const MAX_PENDING_WALK = 64;
+
 /**
  * Codex names its session file at thread start but writes it on the first
  * turn, so a fresh pane's binding points at a file (and possibly date
  * directories) that do not exist yet. That is an empty conversation, not a
- * refusal, as long as containment holds: the path is normalized (no `..`),
- * its name is this thread's, and the nearest ancestor that does exist
- * resolves inside the account's `sessions` root, so the file, once written,
- * lands there.
+ * refusal, as long as containment holds: the path has no `.` or `..`
+ * segment, its name is this thread's, every missing component is truly
+ * absent (nothing at all, not even a dangling symlink), and the nearest
+ * ancestor that does exist resolves inside the account's `sessions` root,
+ * so the file, once written, lands there.
+ *
+ * The segment check reads both separators rather than comparing against
+ * `path.normalize`, which on win32 rewrites `/` to `\` and so refused a
+ * slash-form path here that the existing-file branch (realpath) accepts.
  */
 function pendingCodexSessionFile(file: string, id: string, home: string, root: string): TranscriptPathCheck {
-  if (path.normalize(file) !== file || !path.basename(file).endsWith(`-${id}.jsonl`) || !root.startsWith(home + path.sep)) {
-    return { ok: false, reason: 'outside-account-session' };
+  const refuse = { ok: false, reason: 'outside-account-session' };
+  if (file.split(/[\\/]/).some((segment) => segment === '.' || segment === '..')
+      || !path.basename(file).endsWith(`-${id}.jsonl`) || !root.startsWith(home + path.sep)) {
+    return refuse;
   }
-  // Only a name nothing occupies: a dangling symlink also fails realpath with
-  // ENOENT, and it is not a file the agent has yet to write.
-  try { fs.lstatSync(file); return { ok: false, reason: 'outside-account-session' }; } catch { /* absent: go on */ }
-  let dir = path.dirname(file);
-  const missing: string[] = [path.basename(file)];
-  for (;;) {
-    try {
-      const real = fs.realpathSync(dir);
-      if (!fs.statSync(real).isDirectory()) return { ok: false, reason: 'outside-account-session' };
-      const target = path.join(real, ...missing);
-      return target.startsWith(root + path.sep) ? { ok: true, reason: '', pending: true } : { ok: false, reason: 'outside-account-session' };
-    } catch (error) {
-      const parent = path.dirname(dir);
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || parent === dir) return { ok: false, reason: 'unreadable' };
-      missing.unshift(path.basename(dir));
-      dir = parent;
+  let dir = file;
+  const missing: string[] = [];
+  for (let depth = 0; depth < MAX_PENDING_WALK; depth++) {
+    // Only an entry that does not exist at all may be skipped: a symlink
+    // (dangling or not) or anything else occupying the name refuses, since
+    // realpath reports ENOENT for a dangling link exactly as for a gap.
+    let occupied: fs.Stats | undefined;
+    try { occupied = fs.lstatSync(dir); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return { ok: false, reason: 'unreadable' };
     }
+    if (occupied) {
+      if (missing.length === 0) return refuse; // the file itself already exists as something else
+      let real: string;
+      try { real = fs.realpathSync(dir); } catch { return refuse; }
+      if (!fs.statSync(real).isDirectory()) return refuse;
+      const target = path.join(real, ...missing);
+      return target.startsWith(root + path.sep) ? { ok: true, reason: '', pending: true } : refuse;
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) return { ok: false, reason: 'unreadable' };
+    missing.unshift(path.basename(dir));
+    dir = parent;
   }
+  return refuse;
 }
