@@ -91,9 +91,15 @@ export function buildWorkerDelegateSettings(opts: { denyScriptPath: string | nul
   return settings;
 }
 
-/** A path that can sit inside double quotes on a POSIX or PowerShell line. */
-function isQuotable(p: string): boolean {
-  return !/['"`$]/.test(p);
+/**
+ * A path that reads back byte-identical from inside double quotes on a POSIX,
+ * PowerShell or cmd line: no quotes, no `$`/backtick (POSIX and PowerShell
+ * expand them), no `%`/`!` (cmd expands them), and no run of backslashes
+ * (POSIX collapses `\\` to `\`). Anything else could make the file written
+ * and the path passed to --settings differ.
+ */
+export function isQuotable(p: string): boolean {
+  return !/['"`$%!]/.test(p) && !/\\\\/.test(p);
 }
 
 /** Write `content` unless the file already holds it. */
@@ -114,7 +120,10 @@ function writeIfChanged(file: string, content: string): void {
 export function writeWorkerDelegateProfile(dir: string): string | null {
   const root = path.join(dir, 'delegate');
   const settingsPath = path.join(root, 'worker-settings.json');
-  if (!isQuotable(settingsPath)) return null;
+  if (!isQuotable(settingsPath)) {
+    console.warn(`[moa-delegate] the worker settings path cannot be quoted safely; workers launch unchanged: ${settingsPath}`);
+    return null;
+  }
   try {
     fs.mkdirSync(root, { recursive: true, mode: 0o700 });
   } catch (err) {
@@ -146,7 +155,10 @@ export function writeWorkerDelegateProfile(dir: string): string | null {
 export function spliceSettingsFlag(fullCommand: string, settingsPath: string): string {
   const { marker, command } = splitModelEnvMarker(fullCommand);
   if (marker) return marker + spliceSettingsFlag(command, settingsPath);
-  if (!isQuotable(settingsPath)) return command;
+  if (!isQuotable(settingsPath)) {
+    console.warn(`[moa-delegate] the settings path cannot be quoted safely; the launch is left unchanged: ${settingsPath}`);
+    return command;
+  }
   const tokens = tokenize(command);
   if (tokens.length === 0 || launcherStem(tokens[0].value) !== 'claude') return command;
   if (tokens.slice(1).some((t) => !t.quoted && /^--settings(=|$)/.test(t.value))) return command;

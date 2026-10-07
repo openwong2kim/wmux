@@ -212,3 +212,18 @@ describe('syncBrainContractFile', () => {
     expect(fs.readFileSync(target(), 'utf8')).toBe('operator notes');
   });
 });
+
+describe('syncBrainContractFile writes atomically', () => {
+  it('leaves no temp file behind and never a marker-less target', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-contract-atomic-'));
+    try {
+      expect(syncBrainContractFile(home, 'BODY')).toBe(true);
+      expect(syncBrainContractFile(home, 'BODY v2')).toBe(true);
+      const dir = path.join(home, '.claude');
+      expect(fs.readdirSync(dir)).toEqual(['CLAUDE.md']);
+      expect(fs.readFileSync(path.join(dir, 'CLAUDE.md'), 'utf8').startsWith(WMUX_CONTRACT_MARKER)).toBe(true);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+});

@@ -16,6 +16,7 @@ vi.mock('../../deck/deckHqStore', () => ({
 import {
   MOA_DELEGATE_MERGE_DENY,
   WORKER_ASK_DENY_REASON,
+  isQuotable,
   buildWorkerDelegateSettings,
   isMoaDelegateOn,
   spliceSettingsFlag,
@@ -80,6 +81,23 @@ describe('spliceSettingsFlag', () => {
 
   it('does not mistake a quoted prompt mentioning --settings for the flag', () => {
     expect(spliceSettingsFlag('claude "--settings is fine"', p)).toBe(`claude --settings="${p}" "--settings is fine"`);
+  });
+});
+
+describe('isQuotable', () => {
+  it('refuses every character a POSIX, PowerShell or cmd double-quoted word would rewrite', () => {
+    expect(isQuotable('/Users/me/.wmux/delegate/worker-settings.json')).toBe(true);
+    expect(isQuotable('C:\\Users\\me\\.wmux\\delegate\\worker-settings.json')).toBe(true);
+    for (const bad of ['/a"b', "/a'b", '/a`b', '/a$b', '/a%TEMP%/b', '/a!b', 'C:\\\\server\\share']) {
+      expect(isQuotable(bad)).toBe(false);
+    }
+  });
+
+  it('a refused path leaves the launch unchanged and warns once', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect(spliceSettingsFlag('claude "go"', '/a%b/s.json')).toBe('claude "go"');
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
   });
 });
 

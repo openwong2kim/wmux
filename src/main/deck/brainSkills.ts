@@ -363,11 +363,20 @@ export function syncBrainContractFile(brainHome: string, contract: string | null
   }
   const content = buildBrainContractFile(contract);
   if (existing === content) return true;
+  // Temp file + rename: a crash mid-write must never leave a torn file without
+  // the marker, which would then read as operator-owned forever.
+  const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
   try {
     fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(target, content, 'utf8');
+    fs.writeFileSync(tmp, content, 'utf8');
+    fs.renameSync(tmp, target);
     return true;
   } catch (err) {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      /* never created, or already renamed */
+    }
     console.warn(`[deck] could not write the brain contract file: ${String(err)}`);
     return false;
   }
