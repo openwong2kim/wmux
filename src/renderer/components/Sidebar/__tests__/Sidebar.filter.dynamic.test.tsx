@@ -67,7 +67,8 @@ describe('Sidebar workspace filter', () => {
     act(() => q<HTMLButtonElement>('[data-filter-option="sidebar.filter.status.needsYou"]')!.click());
     act(() => q<HTMLButtonElement>('[data-filter-option="sidebar.filter.status.running"]')!.click());
     expect(rows()).toEqual(['ask', 'run']);
-    expect(q('[data-sidebar-total]')!.textContent).toBe('2 of 4');
+    expect(q('[data-sidebar-total]')!.textContent).toBe('2/4');
+    expect(q('[data-sidebar-total]')!.getAttribute('aria-label')).toBe('2 of 4');
     expect(q('[data-sidebar-search-toggle]')!.getAttribute('data-filter-active')).toBe('true');
     // Escape closes the popover; the chips stay.
     act(() => { q('[data-ws-filter-search]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });

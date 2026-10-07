@@ -119,7 +119,9 @@
 }
 .wmux-sidebar-total {
   display: inline-flex;
+  flex-shrink: 0;
   align-items: center;
+  white-space: nowrap;
   height: 22px;
   padding: 0 8px;
   border-radius: 6px;
