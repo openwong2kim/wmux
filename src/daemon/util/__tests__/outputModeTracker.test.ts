@@ -262,6 +262,26 @@ describe('OutputModeTracker', () => {
     expect(t.preamble(WINDOW_AFTER_EVERYTHING)).toBe('');
   });
 
+  it('leaves out a mode whose switch the window still carries (#1853)', () => {
+    const t = new OutputModeTracker();
+    const wrapped = `${'x'.repeat(200)}\r\n`;
+    feed(t, wrapped + '\x1b[?7l');
+    // The window starts before the ?7l: replaying it applies the switch in
+    // order, after the wrapped line. Asserting it first would unwrap that line.
+    expect(t.preamble(0)).toBe('');
+    // Once the switch has aged out of the window, it is asserted.
+    expect(t.preamble(WINDOW_AFTER_EVERYTHING)).toBe('\x1b[?7l');
+  });
+
+  it('locates each mode switch by byte offset, multi-byte text included', () => {
+    const t = new OutputModeTracker();
+    feed(t, '한\x1b[?2004h글\x1b[?1000h'); // 3 + 8 + 3 bytes, then ?1000h at byte 14
+    expect(t.preamble(3)).toBe('');
+    expect(t.preamble(4)).toBe('\x1b[?2004h');
+    expect(t.preamble(14)).toBe('\x1b[?2004h');
+    expect(t.preamble(15)).toBe('\x1b[?1000h\x1b[?2004h');
+  });
+
   it('tracks focus reporting (?1004), which Codex and other TUIs switch on at startup', () => {
     const t = new OutputModeTracker();
     feed(t, '\x1b[?1004h');

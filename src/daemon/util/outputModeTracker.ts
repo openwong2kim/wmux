@@ -80,6 +80,12 @@ export class OutputModeTracker {
    */
   private lastAltEntryOffset = -1;
   private lastAltEntryMode = 0;
+  /**
+   * Absolute stream offset (bytes, ring coordinates) of each mode's last
+   * set/reset. A mode whose switch is still inside the replayed window replays
+   * itself, in order, so the preamble must leave it out (see {@link preamble}).
+   */
+  private readonly lastChangeOffset = new Map<number, number>();
 
   /**
    * Feed one decoded output chunk, in stream order.
@@ -106,6 +112,9 @@ export class OutputModeTracker {
     // offset once after the loop: converting per match would be O(chunk) each
     // time, and only the last entry can be the current one.
     let altEntryIndex = -1;
+    // Char index of each mode's last switch in `text`, resolved to byte
+    // offsets after the loop for the same reason.
+    const changedAt = new Map<number, number>();
     while ((m = MODE_RE.exec(text)) !== null) {
       if (m[1] === undefined) {
         if (m[0] === RIS) this.reset();
@@ -120,25 +129,36 @@ export class OutputModeTracker {
         // times leaves the value the last sequence asked for.
         if (!this.state.has(mode)) continue;
         this.state.set(mode, on);
+        changedAt.set(mode, m.index);
         if (on && ALT_SCREEN_MODES.includes(mode)) {
           altEntryIndex = m.index;
           this.lastAltEntryMode = mode;
         }
       }
     }
-    if (altEntryIndex >= 0) {
-      // Bytes from the entry's first char to the end of this chunk. `text` is
-      // carry + chunk and the carry is a verbatim char-suffix of the PREVIOUS
-      // chunk, so subtracting that byte length from the chunk's end offset is
-      // exact even when the sequence started before this chunk.
-      this.lastAltEntryOffset = streamEndOffset - Buffer.byteLength(text.slice(altEntryIndex), 'utf8');
+    // Bytes from a sequence's first char to the end of this chunk. `text` is
+    // carry + chunk and the carry is a verbatim char-suffix of the PREVIOUS
+    // chunk, so subtracting that byte length from the chunk's end offset is
+    // exact even when the sequence started before this chunk. Measured from
+    // the end backwards, one pass over `text` however many modes changed.
+    const indices = [...new Set([...changedAt.values(), ...(altEntryIndex >= 0 ? [altEntryIndex] : [])])].sort((a, b) => b - a);
+    const offsetOf = new Map<number, number>();
+    let bytesToEnd = 0;
+    let measuredFrom = text.length;
+    for (const index of indices) {
+      bytesToEnd += Buffer.byteLength(text.slice(index, measuredFrom), 'utf8');
+      measuredFrom = index;
+      offsetOf.set(index, streamEndOffset - bytesToEnd);
     }
+    for (const [mode, index] of changedAt) this.lastChangeOffset.set(mode, offsetOf.get(index) ?? streamEndOffset);
+    if (altEntryIndex >= 0) this.lastAltEntryOffset = offsetOf.get(altEntryIndex) ?? streamEndOffset;
     this.carry = text.slice(-CARRY_CHARS);
   }
 
   /** Back to power-on defaults, as RIS (`ESC c`) does to a real terminal. */
   reset(): void {
     for (const [mode, def] of MODE_DEFAULTS) this.state.set(mode, def);
+    this.lastChangeOffset.clear();
     this.lastAltEntryOffset = -1;
     this.lastAltEntryMode = 0;
   }
@@ -205,6 +225,11 @@ export class OutputModeTracker {
    *   window. Note this is an OFFSET comparison, not `!truncated`: the ring
    *   itself wraps, and an entry dropped by the wrap is just as absent.
    *
+   * Every other mode follows the same rule (#1853): it is asserted only when
+   * its last switch fell outside the window. Asserting a final state the
+   * window still reaches by itself would apply it too early — an `?7l` sent
+   * after a run of wrapped lines would re-parse those lines unwrapped.
+   *
    * Alt screen is asserted first and followed by an erase + cursor home: the
    * window that follows was produced by an app that owns the whole screen and
    * repaints by absolute positioning, so it must start from a known-blank grid
@@ -225,6 +250,7 @@ export class OutputModeTracker {
       if (ALT_SCREEN_MODES.includes(mode)) continue; // handled above
       const value = this.state.get(mode) ?? def;
       if (value === def) continue;
+      if ((this.lastChangeOffset.get(mode) ?? -1) >= windowStartOffset) continue; // the window replays it
       out += `\x1b[?${mode}${value ? 'h' : 'l'}`;
     }
     return out;

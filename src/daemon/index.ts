@@ -65,8 +65,9 @@ import { scheduleTokenFileReHarden } from '../shared/security';
 import { applyTaskQueryView } from '../shared/a2aTaskQueryView';
 import { normalizeLivePaneIds } from '../shared/a2aOrphanedTask';
 import type { WebTlsConfig } from '../shared/web';
-import { generateSnapshot, generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, generateTextSnapshotUnqueued, capTextRowsToFrameBudget, MAX_SCROLLBACK, type TextSnapshotOutcome } from './HeadlessSnapshot';
+import { generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, generateTextSnapshotUnqueued, capTextRowsToFrameBudget, MAX_SCROLLBACK, type TextSnapshotOutcome } from './HeadlessSnapshot';
 import { readSessionTextReplay } from './sessionTextReplay';
+import { serializeSession } from './sessionSerialize';
 import { AwaitingScreenVerifier, renderPaneScreen } from './AwaitingScreenVerifier';
 import { screenShowsAgentDialog } from './transcript/chatScreenGate';
 import { ApprovalPushRouter } from './push/approvalPushRouter';
@@ -587,7 +588,7 @@ function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalR
         cols: managed.meta.cols ?? 80,
         rows: managed.meta.rows ?? 24,
         scrollback: 0,
-        initial: managed.ringBuffer.readAll(),
+        initial: readSessionTextReplay(managed.ringBuffer, managed.bridge.outputModes),
       });
       if (!outcome.ok) return null;
       return outcome.rows.map((r) => r.text);
@@ -2737,33 +2738,16 @@ function registerRpcHandlers(
     if (!managed) {
       throw new Error(`SESSION_NOT_FOUND: ${p.id}`);
     }
-    const MAX_RPC_PAYLOAD_BYTES = 512 * 1024; // base64 ×1.37 + JSON stays < 1 MB
-    const scrollback = Math.min(typeof p.scrollback === 'number' ? p.scrollback : 2000, 10_000);
-    const base = {
-      cols: managed.meta.cols,
-      rows: managed.meta.rows,
-      initial: managed.ringBuffer.readAll(),
-    };
-    let outcome = await generateSnapshot({ ...base, scrollback });
-    if (outcome.ok && outcome.payload.length > MAX_RPC_PAYLOAD_BYTES) {
-      outcome = await generateSnapshot({ ...base, scrollback: 0 });
-    }
-    if (!outcome.ok) {
-      log('info', `[serialize] session=${p.id} unavailable reason=${outcome.reason}`);
-      return { ok: true, mode: 'unavailable', reason: outcome.reason };
-    }
-    if (outcome.payload.length > MAX_RPC_PAYLOAD_BYTES) {
-      log('info', `[serialize] session=${p.id} unavailable reason=too-large bytes=${outcome.payload.length}`);
-      return { ok: true, mode: 'unavailable', reason: 'too-large' };
-    }
-    log('info', `[serialize] session=${p.id} mode=snapshot payload=${outcome.payload.length}`);
-    return {
-      ok: true,
-      mode: 'snapshot',
-      payloadBase64: outcome.payload.toString('base64'),
-      cols: managed.meta.cols,
-      rows: managed.meta.rows,
-    };
+    return serializeSession(
+      {
+        ringBuffer: managed.ringBuffer,
+        outputModes: managed.bridge.outputModes,
+        cols: managed.meta.cols,
+        rows: managed.meta.rows,
+      },
+      p.scrollback,
+      (line) => log('info', `[serialize] session=${p.id} ${line}`),
+    );
   });
 
   // daemon.readSessionText (TASK-9 cold-park) — read-only PLAIN-TEXT snapshot
@@ -3955,7 +3939,7 @@ function registerRpcHandlers(
         cols: managed.meta.cols ?? 80,
         rows: managed.meta.rows ?? 24,
         scrollback: 0,
-        initial: managed.ringBuffer.readAll(),
+        initial: readSessionTextReplay(managed.ringBuffer, managed.bridge.outputModes),
         // The composer check tells a dimmed suggested prompt from typed input.
         undimmed: true,
       });
@@ -4811,7 +4795,7 @@ function registerRpcHandlers(
         cols: managed.meta.cols ?? 80,
         rows: managed.meta.rows ?? 24,
         scrollback: 0,
-        initial: managed.ringBuffer.readAll(),
+        initial: readSessionTextReplay(managed.ringBuffer, managed.bridge.outputModes),
       });
       return outcome.ok ? outcome.rows.map((r) => r.text).join('\n') : '';
     },

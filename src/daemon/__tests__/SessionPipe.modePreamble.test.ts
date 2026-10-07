@@ -162,6 +162,25 @@ describe('SessionPipe replays lead with the output-mode preamble (#1843)', () =>
     expect(count(replay, ALT_ON)).toBe(1);
   }, 30_000);
 
+  it('does not apply a later ?7l to earlier output still in the ring (#1853)', async () => {
+    const s = session();
+    // A line wider than the pane wraps; the program turns autowrap off after it.
+    s.write(`${'w'.repeat(COLS + 20)}\r\nafter\r\n\x1b[?7l`);
+    const ringBytes = s.ring.readAll();
+
+    const { wire } = await attach(s);
+    const replay = between(wire(), null, MARKERS.flushDone);
+
+    expect(replay.equals(ringBytes)).toBe(true);
+    const term = new Terminal({ cols: COLS, rows: ROWS, allowProposedApi: true });
+    try {
+      await new Promise<void>((resolve) => term.write(replay, resolve));
+      expect(term.buffer.active.getLine(1)?.translateToString(true)).toBe('w'.repeat(20));
+    } finally {
+      term.dispose();
+    }
+  });
+
   it('leaves a plain shell pane byte-identical, with no modes added', async () => {
     const s = session();
     for (let i = 0; s.ring.totalBytesWritten < 9 * 1024 * 1024; i++) {
