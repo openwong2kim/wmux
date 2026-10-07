@@ -17,9 +17,9 @@ Run Claude Code, Codex, Gemini, or any CLI agent side by side — native on **Wi
 
 [**Download**](https://github.com/openwong2kim/wmux/releases/latest) · [**Website**](https://www.wmux.app) · [**Docs**](docs/README.md) · [**iOS app**](https://apps.apple.com/app/wmux-workspace-for-ai-agents/id6797904556)
 
-<a href="https://www.wmux.app"><img alt="One prompt fans out into three agents in separate git worktrees; one agent asks a question, it is answered from an iPhone, and the agents finish" src="docs/readme/hero.gif" width="900" /></a>
+<a href="https://www.wmux.app"><img alt="One prompt fans out into three tasks, each on its own worktree branch; the one that asks shows under Needs you in Fleet, its question is answered in the iPhone Inbox, and all three end up in Ready to review" src="docs/readme/hero.gif" width="900" /></a>
 
-<sub>One prompt, three agents in three git worktrees — and the one question that came up, answered from a phone.</sub>
+<sub>One prompt, three tasks in three git worktrees — the one question that came up answered from a phone, and all three ready to review.</sub>
 
 </div>
 
@@ -54,25 +54,25 @@ winget install openwong2kim.wmux    # or: choco install wmux
 
 When an agent stops to ask you something — a Claude Code question (single or multi-select, several questions, or an "Other" answer) or a permission prompt — it lands on your iPhone as a push notification. Answer it in the Inbox and the pane on your desktop moves on. Terminals and agent output travel straight from the daemon on your machine to your phone. Push notifications pass through the project's relay as sealed envelopes it cannot read; only the lock-screen Live Activity carries a few plain counts. Details: [the phone client contract](docs/phone-client-contract.md).
 
-<img alt="An agent stops to ask a question; it lands in the iPhone Inbox, the answer is picked there, and the desktop pane moves on" src="docs/readme/phone.gif" width="900" />
+<img alt="An agent's question in the iPhone Inbox is answered there; the desktop pane receives the answer and the agent edits, tests and commits while the Inbox reads Nothing is waiting on you" src="docs/readme/phone.gif" width="900" />
 
 ### One prompt, N worktrees
 
 Fan one prompt out into up to 8 tasks, each in its own git worktree on a fresh `wtask/*` branch with its own agent pane. Review the diffs, tick the hunks you want across files, and adopt them as one all-or-nothing `git apply` — your tree takes the whole selection or stays untouched. Then close the task (the worktree is removed only after a clean check) or open a pull request. See [fan-out task environments](docs/how-to/fan-out-task-environment.md) for ports and prepared worktrees.
 
-<img alt="Two worktree tasks from one prompt; hunks ticked across files in the diff review, adopted into the working tree, then the task is closed" src="docs/readme/worktrees.gif" width="900" />
+<img alt="Two worktree tasks from one prompt reach Ready to review in Fleet; in the diff review a hunk is ticked in two files, Adopt applies both, and Close removes the worktree" src="docs/readme/worktrees.gif" width="900" />
 
 ### Git page
 
 **Git** on the rail shows a repo's issues and pull requests. A pull request lists its checks, and a failed GitHub Actions run shows the end of its log right there, with **Rerun failed jobs**. Read the diff, comment on a line, approve or request changes, and squash and merge — every action is tied to the commit you were looking at. To hand an issue or PR to an agent, drag its row onto the agent's pane or a workspace in the sidebar; the agent gets a short reference with the link, never the item's text. Signed out? Connect GitHub from the page itself; `gh` keeps the credential.
 
-<img alt="The Git page lists a repo's pull requests with the failing check first, then opens a PR's detail showing the failed check" src="docs/readme/git.gif" width="900" />
+<img alt="The Git page lists a repo's pull requests with the one whose CI is failing first; its detail shows the failed check, its log and the diff" src="docs/readme/git.gif" width="900" />
 
 ### Fleet
 
 Fleet (`⌘⇧A` on macOS, `Ctrl+Shift+A` on Windows and Linux) lists every agent across every workspace as one attention list: **Needs you** on top, then Ready to review, Running, and a folded Idle row. A row that needs you shows the agent's question; open it to reply, open the approval, or jump to the pane. Running rows say what the agent is doing (`Running npm test`), and finished rows say what it did last.
 
-<img alt="Fleet with an agent under Needs you showing its question; the question is answered from Fleet and the row moves on" src="docs/readme/fleet.gif" width="900" />
+<img alt="Fleet as an attention list: the agent that asks is on top under Needs you with its question and choices; it is answered from Fleet and the row leaves Needs you while the other agents finish" src="docs/readme/fleet.gif" width="900" />
 
 ### Two ways to browse
 
