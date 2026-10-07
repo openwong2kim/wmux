@@ -16,7 +16,12 @@ import path from 'node:path';
 import pkg from './package.json';
 
 const root = __dirname;
-const r = (p: string) => path.join(root, p);
+// Vite hands plugins slash-form ids on every OS (`C:/x/y.tsx` on Windows),
+// while path.join gives backslashes there. Every id this plugin compares goes
+// through `slash` so the table matches on Windows too (#1846). Not Vite's
+// normalizePath: it only converts backslashes when running on win32.
+const slash = (p: string) => p.replace(/\\/g, '/');
+const r = (p: string) => slash(path.join(root, p));
 const NULL_STUB = r('src/renderer/web/stubs/NullComponent.tsx');
 const WEB_TERMINAL = r('src/renderer/web/WebTerminal.tsx');
 
@@ -40,7 +45,7 @@ export const WEB_STUBS: Record<string, string> = {
   [r('src/renderer/components/StatusBar/WebToggle.tsx')]: NULL_STUB,
 };
 
-function webStubs(): Plugin {
+export function webStubs(): Plugin {
   return {
     name: 'wmux-web-stubs',
     enforce: 'pre',
@@ -48,10 +53,10 @@ function webStubs(): Plugin {
       if (!importer) return null;
       // The terminal stand-in wraps the real component: its own import of
       // Terminal.tsx must resolve to the file, not back to itself.
-      if (importer.split('?')[0] === WEB_TERMINAL) return null;
+      if (slash(importer.split('?')[0]) === WEB_TERMINAL) return null;
       const resolved = await this.resolve(source, importer, { ...options, skipSelf: true });
       if (!resolved) return null;
-      const stub = WEB_STUBS[resolved.id.split('?')[0]];
+      const stub = WEB_STUBS[slash(resolved.id.split('?')[0])];
       return stub ?? null;
     },
   };

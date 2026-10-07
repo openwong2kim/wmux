@@ -166,6 +166,12 @@ if (/<\/style/i.test(webAppCss)) buildFail('the stylesheet contains `</style`');
 // import.meta cannot exist in a classic script; Rollup would polyfill it from
 // document.currentScript.src, which is empty for an inline block.
 if (/import\.meta/.test(webAppJs)) buildFail('the bundle still reads import.meta');
+// The terminal stand-in must have replaced the desktop Terminal (vite.web.config
+// WEB_STUBS). If the swap silently misses — as it did on Windows (#1846) — the
+// page mounts the desktop Terminal for every pane and every one stays blank.
+for (const marker of ['data-web-terminal-waiting', 'data-web-input-resume']) {
+  if (!webAppJs.includes(marker)) buildFail(`the WebTerminal stand-in is missing (no ${marker}); the WEB_STUBS swap did not apply`);
+}
 // Every url() in the stylesheet must be one of our own emitted fonts: the CSP
 // gate below only sees <script src>/<link>, not what a stylesheet pulls in.
 const emitted = existsSync(join(appBuildDir, 'assets')) ? readdirSync(join(appBuildDir, 'assets')) : [];
