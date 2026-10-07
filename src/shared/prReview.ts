@@ -78,6 +78,8 @@ export interface PrLaneFacts {
   baseRefName: string;
   /** Null for a deleted ("ghost") account. */
   author: string | null;
+  /** GitHub's mergeStateStatus (CLEAN, BLOCKED, BEHIND, ...), when it was read. */
+  mergeStateStatus?: string;
   mergedAt: string | null;
   mergeCommitOid: string | null;
   labels: string[];

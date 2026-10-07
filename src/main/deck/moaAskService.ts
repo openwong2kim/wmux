@@ -258,6 +258,7 @@ export class MoaAskService implements MoaDelegateServicePort {
     choices: ReadonlyArray<{ key: string; label: string }>,
     cwd: string,
     prs: ShadowPrFacts[],
+    lane?: { passed: boolean; failed: string[] },
   ): Promise<MoaJudgeResult | MoaSettlement> {
     const prior = this.ports.priorJudgment?.(d.questionHash);
     if (prior) return prior;
@@ -273,6 +274,7 @@ export class MoaAskService implements MoaDelegateServicePort {
       asker: { ...d.asker, ...(cwd ? { cwd } : {}), attribution: 'exact' },
       screenLines: [...screen, ...notes],
       prs,
+      ...(lane ? { lane } : {}),
     });
     const result = await this.ports.judge(buildJudgePrompt(book.text, packet));
     if (result.refused) return esc('judge-refused', `the judge was not run: ${result.error ?? 'refused'}`);
@@ -326,32 +328,42 @@ export class MoaAskService implements MoaDelegateServicePort {
     if (facts.state !== 'OPEN') return { settlement: refuse('not-open', `the pull request is ${facts.state.toLowerCase() || 'not open'}`), auto: false };
     if (facts.headRefOid !== body.expectHead) return { settlement: refuse('head-moved', 'the pull request has another head than expectHead'), auto: false };
     const lane = await this.evaluateLane(d, facts);
+    const laneFacts = { passed: lane.ok, failed: lane.failures.map((f) => f.reason) };
+    const withLane = (r: { settlement: MoaSettlement; auto: boolean }) => ({ ...r, settlement: { ...r.settlement, lane: { ok: lane.ok, reasons: laneFacts.failed } } });
     const book = this.ports.loadBook();
-    if (!book || book.rules.size === 0) return { settlement: esc('no-policy-book', 'the policy book has no rules; the owner answers it in the Moa panel'), auto: false };
+    if (!book || book.rules.size === 0) return withLane({ settlement: esc('no-policy-book', 'the policy book has no rules; the owner answers it in the Moa panel'), auto: false });
     const question = `Merge pull request #${body.prNumber} (head ${body.expectHead.slice(0, 12)}) into ${facts.baseRefName || 'its base'}?`;
+    // The facts a rule like "required checks green, the owner's own PR" needs,
+    // as wmux read them; the lane's verdict rides in its own packet section.
     const prs: ShadowPrFacts[] = [{
-      number: facts.number, state: facts.state, isDraft: facts.isDraft, headSha: facts.headRefOid, mergeStateStatus: '',
-      labels: facts.labels, checks: facts.checks.map((c) => ({ name: c.name, bucket: c.bucket })),
+      number: facts.number,
+      state: facts.state,
+      isDraft: facts.isDraft,
+      headSha: facts.headRefOid,
+      mergeStateStatus: facts.mergeStateStatus ?? 'UNKNOWN',
+      author: facts.author,
+      labels: facts.labels,
+      checks: facts.checks.map((c) => ({ name: c.name, bucket: c.bucket, isRequired: c.isRequired === true })),
     }];
-    const j = await this.judgeOnce(d, book, question, MERGE_CHOICES, cwd, prs);
-    if (!isJudge(j)) return { settlement: j, auto: false };
-    const laneWhy = lane.ok ? '' : ` (lane: ${lane.failures.map((f) => f.reason).join(', ')})`;
-    if (j.verdict !== 'go' || !j.ruleId) return { settlement: esc(lane.ok ? j.reasonCode : laneCode(lane), `Moa would not merge this${laneWhy}; the owner answers it in the Moa panel`, j), auto: false };
-    if (d.mode !== 'auto') return { settlement: esc(d.mode === 'shadow' ? 'shadow' : 'suggested', `recorded for the owner${laneWhy}; the owner answers it in the Moa panel`, j), auto: false };
+    const laneWhy = lane.ok ? '' : ` (lane: ${laneFacts.failed.join(', ')})`;
+    const j = await this.judgeOnce(d, book, question, MERGE_CHOICES, cwd, prs, laneFacts);
+    if (!isJudge(j)) return withLane({ settlement: j, auto: false });
+    if (j.verdict !== 'go' || !j.ruleId) return withLane({ settlement: esc(lane.ok ? j.reasonCode : laneCode(lane), `Moa would not merge this${laneWhy}; the owner answers it in the Moa panel`, j), auto: false });
+    if (d.mode !== 'auto') return withLane({ settlement: esc(d.mode === 'shadow' ? 'shadow' : 'suggested', `recorded for the owner${laneWhy}; the owner answers it in the Moa panel`, j), auto: false });
     const cfg = this.ports.getConfig();
     const e = moaAutoEligibility({ book, ruleId: j.ruleId, ownerAutoRules: cfg.autoRules, kind: 'merge', predicatePassed: lane.ok });
-    if (!e.eligible) return { settlement: esc(e.reason === 'predicate-failed' ? laneCode(lane) : `auto-${e.reason}`, `Moa may not merge this by itself${laneWhy}; the owner answers it in the Moa panel`, j), auto: false };
-    if (cfg.autoPaused) return { settlement: esc('auto-paused', 'automatic answers are paused; the owner answers it in the Moa panel', j), auto: false };
+    if (!e.eligible) return withLane({ settlement: esc(e.reason === 'predicate-failed' ? laneCode(lane) : `auto-${e.reason}`, `Moa may not merge this by itself${laneWhy}; the owner answers it in the Moa panel`, j), auto: false });
+    if (cfg.autoPaused) return withLane({ settlement: esc('auto-paused', 'automatic answers are paused; the owner answers it in the Moa panel', j), auto: false });
     // Checked and reserved in one synchronous step (no await in between), so
     // two judgements finishing together cannot both take the last slot.
     if (this.autoAnswersToday() + this.autoReserved.size >= (cfg.autoDailyCap ?? MOA_AUTO_DAILY_CAP_DEFAULT)) {
-      return { settlement: esc('auto-daily-cap', 'the daily cap of automatic answers is reached; the owner answers it in the Moa panel', j), auto: false };
+      return withLane({ settlement: esc('auto-daily-cap', 'the daily cap of automatic answers is reached; the owner answers it in the Moa panel', j), auto: false });
     }
     this.autoReserved.add(d.id);
-    return {
+    return withLane({
       settlement: { status: 'answered', judge: j, ruleId: j.ruleId, reasonCode: 'auto-merge', why: j.why || `rule ${j.ruleId}`, answer: { actionVerdict: 'go' } },
       auto: true,
-    };
+    });
   }
 
   private async evaluateLane(d: MoaDecision, facts: PrLaneFacts): Promise<LaneVerdict> {

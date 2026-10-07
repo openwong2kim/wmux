@@ -91,6 +91,8 @@ export interface MoaSettlement {
   why: string;
   /** Required when `status` is answered. */
   answer?: MoaDecision['answer'];
+  /** A merge's lane verdict on the fresh read it was decided on. */
+  lane?: MoaDecision['lane'];
 }
 
 export type MoaOwnerResolve =
@@ -123,7 +125,8 @@ export function isMoaDecisionRecord(v: unknown): v is MoaDecision {
     && (d.repo === undefined || (!!d.repo && typeof d.repo === 'object' && typeof d.repo.key === 'string' && typeof d.repo.path === 'string'))
     && (d.judge === null || isJudgeResult(d.judge))
     && (d.answer === undefined || isStoredAnswer(d.answer, d.kind))
-    && (d.delivery === undefined || isDelivery(d.delivery));
+    && (d.delivery === undefined || isDelivery(d.delivery))
+    && (d.lane === undefined || (!!d.lane && typeof d.lane.ok === 'boolean' && Array.isArray(d.lane.reasons) && d.lane.reasons.every((r) => typeof r === 'string')));
 }
 
 const DELIVERY_STATES: ReadonlySet<string> = new Set(['waiting', 'sending', 'delivered', 'seen', 'failed']);
@@ -276,6 +279,7 @@ export class MoaDecisionStore {
       reasonCode: s.reasonCode,
       why: s.why,
       ...(s.status === 'answered' && s.answer ? { answer: s.answer } : {}),
+      ...(s.lane ? { lane: { ok: s.lane.ok, reasons: [...s.lane.reasons] } } : {}),
       resolvedBy: s.status === 'answered' ? 'moa-auto' : s.status === 'refused' ? 'refused' : null,
       resolvedAt: s.status === 'escalated' ? null : at,
       receipt,

@@ -103,6 +103,10 @@ export interface MoaDecision {
   receipt: MoaReceiptState;
   /** The answer's way back to the asker's pane (main/deck/moaAnswerCourier.ts). */
   delivery?: MoaAnswerDelivery;
+  /** A merge's lane verdict (moaMergeLane.ts) on the fresh read it was
+   *  decided on: wmux's own check, shown to the owner as checked facts.
+   *  Display only: the executor re-reads and re-checks before any merge. */
+  lane?: { ok: boolean; reasons: string[] };
 }
 
 /**
