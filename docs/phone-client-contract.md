@@ -1094,6 +1094,22 @@ A dialog found only on the screen, with no pending call to bind to or a call
 whose command differs, is **informational for everyone**. `summary` and `risk`
 come from the call's own input.
 
+**The dialog shapes read** (measured on Claude Code 2.1.292). Each binds as
+above and gives the same record; only what the rows must spell differs:
+
+| title | `toolName` | `summary` | the rows must spell | `question` | `choices` (when answerable) |
+| --- | --- | --- | --- | --- | --- |
+| `<Tool> command` (`Bash command`) | the tool | the command | the command (and its description) | `Do you want to proceed?` | `Yes`, a plain `No` |
+| `Fetch` | `WebFetch` | the URL | `url: <url>` and `prompt: <prompt>` in the dashed box; the URL as Claude parses it (`https://example.com` → `https://example.com/`) | `Do you want to allow Claude to fetch this content?` | `1. Yes`, `3. No, and tell Claude what to do differently (esc)` |
+| `Read file` | `Read` | the path | `Read(<path>)` in the dashed box | `Do you want to proceed?` | `1. Yes`, `3. No` |
+
+The Fetch dialog draws no `Esc to cancel` footer: it is active when nothing but
+blank rows follows its options, and a narrow pane wraps its question over two
+rows (read as one). Fetch and Read dialogs bind only with their title on screen,
+never with the top scrolled off. Their option 2 (`Yes, and don't ask again for
+<host>`, `Yes, allow reading from <dir> during this session`) is never a
+choice. Other titles (`Edit file`, `Create file`) stay informational.
+
 `choices` then holds only the plain `Yes` and a plain `No` (`No`, or `No, …`
 such as "No, and tell Claude what to do differently"). An option that writes a
 lasting rule — "Yes, and don't ask again for … commands", anything with
