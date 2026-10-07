@@ -13,9 +13,28 @@
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'node:path';
+import { realpathSync } from 'node:fs';
 import pkg from './package.json';
 
-const root = __dirname;
+// Vite's ids are realpaths, and on Windows the realpath upper-cases the drive
+// letter. __dirname keeps the caller's spelling, so a build started from
+// `cd /d d:\wmux` in cmd.exe gave `d:/…` keys against `D:/…` ids: the table
+// missed again (#1846). A case-folded compare is not enough: the stand-in id we
+// return must equal Vite's own id for that file, or WebTerminal is bundled twice
+// and the copy Pane renders never gets the page's stream hub. A mapped network
+// drive realpaths to a UNC path that Vite maps back to the letter, so that one
+// keeps the given spelling.
+export function canonicalRoot(dir: string, realpath: (p: string) => string = realpathSync.native): string {
+  try {
+    const real = realpath(dir);
+    if (!real.startsWith('\\\\') || dir.startsWith('\\\\')) return real;
+  } catch {
+    // Fall through to the given path.
+  }
+  return dir;
+}
+
+const root = canonicalRoot(__dirname);
 // Vite hands plugins slash-form ids on every OS (`C:/x/y.tsx` on Windows),
 // while path.join gives backslashes there. Every id this plugin compares goes
 // through `slash` so the table matches on Windows too (#1846). Not Vite's

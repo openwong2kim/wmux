@@ -3,7 +3,7 @@
 // shipped the desktop Terminal instead of WebTerminal. node:path is swapped for
 // its win32 join here so the Windows build is reproduced on any OS.
 import { describe, it, expect, vi } from 'vitest';
-import { webStubs } from '../../../../vite.web.config';
+import { canonicalRoot, webStubs } from '../../../../vite.web.config';
 
 vi.mock('node:path', async () => {
   const actual = await vi.importActual<typeof import('node:path')>('node:path');
@@ -38,5 +38,21 @@ describe('webStubs on Windows paths (#1846)', () => {
     const { resolve, result } = run(id('src/renderer/components/Terminal/Terminal.tsx'), id('src/renderer/web/WebTerminal.tsx'));
     expect(await result).toBeNull();
     expect(resolve).not.toHaveBeenCalled();
+  });
+});
+
+// Vite's ids are realpaths, which upper-case the drive letter, while a build
+// started from `cd /d d:\wmux` in cmd.exe gives __dirname a lower-case one.
+describe('canonicalRoot', () => {
+  it('takes the realpath spelling of the drive letter', () => {
+    expect(canonicalRoot('d:\\wmux', () => 'D:\\wmux')).toBe('D:\\wmux');
+  });
+
+  it('keeps a mapped drive letter that realpaths to a UNC path', () => {
+    expect(canonicalRoot('Z:\\wmux', () => '\\\\server\\share\\wmux')).toBe('Z:\\wmux');
+  });
+
+  it('keeps the given path when realpath fails', () => {
+    expect(canonicalRoot('D:\\wmux', () => { throw new Error('ENOENT'); })).toBe('D:\\wmux');
   });
 });
