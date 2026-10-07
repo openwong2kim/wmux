@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { buildBrainSkills, installBrainSkills, WMUX_SKILL_MARKER } from '../brainSkills';
+import { buildBrainSkills, installBrainSkills, syncBrainContractFile, WMUX_CONTRACT_MARKER, WMUX_SKILL_MARKER } from '../brainSkills';
 
 let tmpDir: string;
 
@@ -175,5 +175,40 @@ describe('installBrainSkills', () => {
     fs.mkdirSync(home);
     fs.writeFileSync(path.join(home, '.claude'), 'not a directory', 'utf8');
     expect(() => installBrainSkills(home)).not.toThrow();
+  });
+});
+
+describe('syncBrainContractFile', () => {
+  let home: string;
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-contract-'));
+  });
+  afterEach(() => {
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+  const target = (): string => path.join(home, '.claude', 'CLAUDE.md');
+
+  it('writes the contract under the marker and reports it as in place', () => {
+    expect(syncBrainContractFile(home, 'BODY')).toBe(true);
+    expect(fs.readFileSync(target(), 'utf8')).toBe(`${WMUX_CONTRACT_MARKER}\n\nBODY\n`);
+  });
+
+  it('with no contract writes nothing at all', () => {
+    expect(syncBrainContractFile(home, null)).toBe(false);
+    expect(fs.readdirSync(home)).toEqual([]);
+  });
+
+  it('an unreadable target (a directory) is neither written nor removed', () => {
+    fs.mkdirSync(target(), { recursive: true });
+    expect(syncBrainContractFile(home, 'BODY')).toBe(false);
+    expect(syncBrainContractFile(home, null)).toBe(false);
+    expect(fs.statSync(target()).isDirectory()).toBe(true);
+  });
+
+  it("removes only wmux's own file when the contract goes away", () => {
+    fs.mkdirSync(path.dirname(target()), { recursive: true });
+    fs.writeFileSync(target(), 'operator notes');
+    expect(syncBrainContractFile(home, null)).toBe(false);
+    expect(fs.readFileSync(target(), 'utf8')).toBe('operator notes');
   });
 });

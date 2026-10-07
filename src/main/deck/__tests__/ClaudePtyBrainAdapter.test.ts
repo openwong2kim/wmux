@@ -46,6 +46,7 @@ import {
   type DaemonClientLike,
 } from '../ClaudePtyBrainAdapter';
 import { deliverBrainPtyHookSignal, __resetBrainPtyHookBusForTesting } from '../brainPtyHookBus';
+import { WMUX_CONTRACT_MARKER } from '../brainSkills';
 import { __resetCommanderTrustForTesting } from '../commanderTrust';
 import type { AgentSignal } from '../../../shared/hooks/signal-types';
 import type { BrainEvent } from '../BrainAdapter';
@@ -2083,5 +2084,92 @@ describe('a cold-start prompt that reaches the TUI incomplete (#1787)', () => {
 
   it('reads printed text through cursor moves, styling and line wraps', () => {
     expect(printedText('\u001b[1m[wmux-\r\n  refused-3]\u001b[1Cwmux\u001b[22m')).toBe('[wmux-refused-3]wmux');
+  });
+});
+
+describe('the Moa delegate (contract file + merge deny)', () => {
+  const contractFile = (): string => path.join(tmpDir, 'brains', 'ws-1', '.claude', 'CLAUDE.md');
+  const profileDeny = (): string[] => {
+    const dir = path.join(tmpDir, 'brain-profiles');
+    const file = fs.readdirSync(dir).find((f) => f.startsWith('settings-'));
+    return (JSON.parse(fs.readFileSync(path.join(dir, file as string), 'utf8')) as { permissions: { deny: string[] } }).permissions.deny;
+  };
+  let lastDeny: string[] = [];
+  /** The first typed turn; the profile's deny list is captured before
+   *  dispose() unlinks the profile. */
+  async function firstTurn(over: Record<string, unknown>): Promise<string> {
+    const host = makeHost();
+    const adapter = makeAdapter(host, { loadMemory: () => 'MEMORY-X', ...over });
+    adapter.start({ systemPrompt: 'CONTRACT-BODY' });
+    const turn = collect(adapter.send('task'));
+    await vi.waitFor(() => expect(host.writes.length).toBeGreaterThan(0));
+    const typed = host.writes[0].data;
+    deliverBrainPtyHookSignal(signal('agent.stop', host.created[0].id, { agentSessionId: 's1' }));
+    await turn;
+    lastDeny = profileDeny();
+    adapter.dispose();
+    return typed;
+  }
+
+  it('off: the contract rides the first turn, no contract file, the deny list is unchanged', async () => {
+    const typed = await firstTurn({ moaDelegateOn: () => false, isHqBrain: () => true });
+    expect(typed).toContain('CONTRACT-BODY');
+    expect(fs.existsSync(contractFile())).toBe(false);
+    expect(lastDeny).toEqual((buildBrainSettingsProfile({ bridgePath: null, nodePath: 'n' }) as { permissions: { deny: string[] } }).permissions.deny);
+    expect(lastDeny).not.toContain('Bash(gh pr merge*)');
+  });
+
+  it('off by default: no switch file in the data dir means no file and no change', async () => {
+    const typed = await firstTurn({});
+    expect(typed).toContain('CONTRACT-BODY');
+    expect(fs.existsSync(contractFile())).toBe(false);
+    expect(lastDeny).not.toContain('Bash(gh pr merge*)');
+  });
+
+  it('on, HQ: the contract is a file and the first turn carries no contract body', async () => {
+    const typed = await firstTurn({ moaDelegateOn: () => true, isHqBrain: () => true });
+    expect(typed).not.toContain('CONTRACT-BODY');
+    expect(typed).toContain('MEMORY-X');
+    expect(typed).toContain('task');
+    const body = fs.readFileSync(contractFile(), 'utf8');
+    expect(body.startsWith(WMUX_CONTRACT_MARKER)).toBe(true);
+    expect(body).toContain('CONTRACT-BODY');
+    expect(lastDeny).toEqual(expect.arrayContaining(['Bash(gh pr merge*)', 'Bash(gh api*merge*)']));
+    // The operator's own CLAUDE.md beside it is never created or touched.
+    expect(fs.existsSync(path.join(tmpDir, 'brains', 'ws-1', 'CLAUDE.md'))).toBe(false);
+  });
+
+  it('on, not the HQ: no contract file, but the merge deny still applies', async () => {
+    const typed = await firstTurn({ moaDelegateOn: () => true, isHqBrain: () => false });
+    expect(typed).toContain('CONTRACT-BODY');
+    expect(fs.existsSync(contractFile())).toBe(false);
+    expect(lastDeny).toContain('Bash(gh pr merge*)');
+  });
+
+  it("on, HQ, with the operator's own .claude/CLAUDE.md: kept, and the contract rides the first turn", async () => {
+    fs.mkdirSync(path.dirname(contractFile()), { recursive: true });
+    fs.writeFileSync(contractFile(), 'MY OWN NOTES');
+    const typed = await firstTurn({ moaDelegateOn: () => true, isHqBrain: () => true });
+    expect(typed).toContain('CONTRACT-BODY');
+    expect(fs.readFileSync(contractFile(), 'utf8')).toBe('MY OWN NOTES');
+  });
+
+  it('turning it off removes the contract file an earlier spawn wrote', async () => {
+    await firstTurn({ moaDelegateOn: () => true, isHqBrain: () => true });
+    expect(fs.existsSync(contractFile())).toBe(true);
+    const typed = await firstTurn({ moaDelegateOn: () => false, isHqBrain: () => true });
+    expect(fs.existsSync(contractFile())).toBe(false);
+    expect(typed).toContain('CONTRACT-BODY');
+  });
+
+  it('a resolver that throws reads as off', async () => {
+    const typed = await firstTurn({ moaDelegateOn: () => { throw new Error('torn'); }, isHqBrain: () => true });
+    expect(typed).toContain('CONTRACT-BODY');
+    expect(fs.existsSync(contractFile())).toBe(false);
+  });
+
+  it('buildBrainSettingsProfile without mergeDeny is byte-identical to mergeDeny:false', () => {
+    const base = { bridgePath: '/b.mjs', nodePath: '/n', denyScriptPath: '/d.js' };
+    expect(JSON.stringify(buildBrainSettingsProfile(base))).toBe(JSON.stringify(buildBrainSettingsProfile({ ...base, mergeDeny: false })));
   });
 });

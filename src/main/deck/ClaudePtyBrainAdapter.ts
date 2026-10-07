@@ -39,7 +39,9 @@ import { COMMANDER_MODE_ARG, COMMANDER_TOOL_SURFACE, COMMANDER_ONLY_TOOLS } from
 import { ENV_KEYS, BRAIN_PTY_ID_PREFIX } from '../../shared/constants';
 import { mintCommanderToken, revokeCommanderToken } from './commanderTrust';
 import { registerBrainPty, type BrainPtyHookBlock, type BrainPtyHookContext } from './brainPtyHookBus';
-import { installBrainSkills } from './brainSkills';
+import { installBrainSkills, syncBrainContractFile } from './brainSkills';
+import { getHqWorkspaceId } from './deckHqStore';
+import { MOA_DELEGATE_MERGE_DENY, isMoaDelegateOn } from '../agents/delegateSpawnPolicy';
 import { buildReadGateScript } from './moaReadGate';
 import { buildProposalGateScript } from './commanderToolSandbox';
 import type { StopGateVerdict } from './stopGate';
@@ -417,6 +419,9 @@ export function buildBrainSettingsProfile(opts: {
    *  delegated repo pass without a prompt. Absent = every such read prompts
    *  as before. */
   readGate?: { scriptPath: string } | null;
+  /** The Moa delegate is on: `gh` merges are denied too, so a merge goes
+   *  through the merge lane (delegateSpawnPolicy). Absent/false = today's list. */
+  mergeDeny?: boolean;
 }): Record<string, unknown> {
   const proposalGate = opts.proposalGateScriptPath ?? null;
   const denied = proposalGate
@@ -494,7 +499,7 @@ export function buildBrainSettingsProfile(opts: {
     // this profile is the
     // brain's whole configuration, exactly like the SDK adapter's raw mode.
     permissions: {
-      deny: denied,
+      deny: opts.mergeDeny ? [...denied, ...MOA_DELEGATE_MERGE_DENY] : denied,
       // The wmux MCP surface is pre-approved so the brain never sits on a
       // permission prompt no human is watching. Everything not listed — and
       // every denied built-in above — still prompts or is refused.
@@ -800,6 +805,11 @@ export interface ClaudePtyBrainAdapterDeps {
   /** Moa's read gate (moaReadGate.ts). Absent = no gate, every read outside
    *  the brain home prompts. */
   readGate?: true;
+  /** The Moa delegate gate (delegateSpawnPolicy.isMoaDelegateOn), read per
+   *  spawn. Absent = read from `wmuxDir`. */
+  moaDelegateOn?: () => boolean;
+  /** Whether this brain is the HQ's (Moa). Absent = deck-hq.json in `wmuxDir`. */
+  isHqBrain?: () => boolean;
   /** Fired with the daemon session id the moment the pty exists, so the deck
    *  can embed the live terminal, and with `null` on every teardown so the
    *  deck retires a terminal that no longer exists. */
@@ -882,6 +892,12 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
   private _resumeUnvalidated = false;
   private _startOptions: BrainStartOptions = {};
   private _contextInjected = false;
+  /** The commander contract (start options' systemPrompt), kept past the
+   *  first turn so every spawn can rewrite the HQ contract file. */
+  private _contract: string | null = null;
+  /** This spawn's contract lives in the brain home's `.claude/CLAUDE.md`, so
+   *  the first turn does not carry it. */
+  private contractInFile = false;
   private _disposed = false;
 
   /** Live daemon session id (the ptyId) while the TUI runs. */
@@ -1030,6 +1046,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
 
   start(opts: BrainStartOptions): void {
     this._startOptions = opts;
+    this._contract = opts.systemPrompt ?? null;
     if (opts.resumeSessionId) {
       this._sessionId = opts.resumeSessionId;
       this._resumeUnvalidated = true;
@@ -1389,8 +1406,26 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     }
   }
 
+  /** The Moa delegate gate. A resolver that throws reads as off. */
+  private resolveDelegateOn(): boolean {
+    try {
+      return this.deps.moaDelegateOn ? this.deps.moaDelegateOn() : isMoaDelegateOn(this.wmuxDir);
+    } catch {
+      return false;
+    }
+  }
+
+  private resolveIsHq(): boolean {
+    try {
+      if (this.deps.isHqBrain) return this.deps.isHqBrain();
+      return !!this._workspaceId && getHqWorkspaceId(this.wmuxDir) === this._workspaceId;
+    } catch {
+      return false;
+    }
+  }
+
   /** Write the generated profile + MCP config, returning their paths. */
-  private writeProfile(): { settingsPath: string; mcpConfigPath: string | null } {
+  private writeProfile(mergeDeny: boolean): { settingsPath: string; mcpConfigPath: string | null } {
     const dir = path.join(this.wmuxDir, 'brain-profiles');
     // 0700 / 0600 throughout: the generated MCP config carries this spawn's
     // WMUX_COMMANDER_TOKEN, which is a bearer credential for the whole
@@ -1418,7 +1453,14 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     fs.writeFileSync(
       settingsPath,
       JSON.stringify(
-        buildBrainSettingsProfile({ bridgePath, nodePath, denyScriptPath, proposalGateScriptPath, readGate }),
+        buildBrainSettingsProfile({
+          bridgePath,
+          nodePath,
+          denyScriptPath,
+          proposalGateScriptPath,
+          readGate,
+          ...(mergeDeny ? { mergeDeny: true } : {}),
+        }),
         null,
         2,
       ),
@@ -1526,10 +1568,12 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
           'the wmux hook bridge could not be located — the terminal brain has no way to observe turn boundaries.',
       };
     }
+    // The Moa delegate, read once per spawn: a flip applies to the next TUI.
+    const delegateOn = this.resolveDelegateOn();
     let settingsPath: string;
     let mcpConfigPath: string | null;
     try {
-      ({ settingsPath, mcpConfigPath } = this.writeProfile());
+      ({ settingsPath, mcpConfigPath } = this.writeProfile(delegateOn));
     } catch (err) {
       return { error: `could not write the brain settings profile: ${String(err)}` };
     }
@@ -1613,6 +1657,11 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
         // profile; installBrainSkills never throws, so a skills write that
         // fails costs the skills, never the spawn.
         installBrainSkills(brainHome);
+        // With the Moa delegate on, the HQ brain's contract is a file its cwd
+        // loads rather than the body of its first typed turn. Off: no file,
+        // and a contract file an earlier run left behind is removed.
+        const contractOn = delegateOn && brainHome !== this.wmuxDir && this.resolveIsHq();
+        this.contractInFile = syncBrainContractFile(brainHome, contractOn ? this._contract : null);
       } catch {
         /* an unmakeable home surfaces as the spawn error below */
       }
@@ -1746,7 +1795,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     if (this._contextInjected) return text;
     this._contextInjected = true;
     const parts: string[] = [];
-    if (this._startOptions.systemPrompt) parts.push(this._startOptions.systemPrompt);
+    if (this._startOptions.systemPrompt && !this.contractInFile) parts.push(this._startOptions.systemPrompt);
     let memory = '';
     try {
       memory = this.deps.loadMemory?.() ?? '';
