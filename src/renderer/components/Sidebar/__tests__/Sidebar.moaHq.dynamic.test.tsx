@@ -127,6 +127,30 @@ describe("Moa's HQ is left out of the workspace list", () => {
     press('9');
     expect(useStore.getState().activeWorkspaceId).toBe('b');
   });
+
+  it('past eight workspaces only the last listed row is numbered 9, the row Ctrl+9 opens', () => {
+    seed();
+    const names = 'abcdefghijkl'.split('');
+    act(() => useStore.setState({ workspaces: [...names.slice(0, 4), 'moa', ...names.slice(4)].map(ws) } as never));
+    act(() => root.render(<Sidebar />));
+    const numberOf = (name: string) => ([...document.querySelectorAll('.sidebar-row')]
+      .find((r) => r.textContent?.startsWith(name)) as HTMLElement)
+      .querySelector('[data-shortcut-number]')?.getAttribute('data-shortcut-number') ?? null;
+    expect(names.map(numberOf)).toEqual(['1', '2', '3', '4', '5', '6', '7', '8', null, null, null, '9']);
+
+    act(() => root.render(<MiniSidebar />));
+    const titles = [...container.querySelectorAll('button[title]')].map((b) => b.getAttribute('title'))
+      .filter((t) => /\(Ctrl\+\d\)$/.test(t ?? ''));
+    expect(titles.at(-1)).toBe('l (Ctrl+9)');
+    expect(titles).toHaveLength(9);
+
+    function Harness(): null { useKeyboard(); return null; }
+    act(() => root.render(<Harness />));
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ctrlKey: true, key: '9', code: 'Digit9' }));
+    });
+    expect(useStore.getState().activeWorkspaceId).toBe('l');
+  });
 });
 
 describe('the HQ row while the HQ is active', () => {

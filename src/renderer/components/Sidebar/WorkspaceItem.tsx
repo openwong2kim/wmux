@@ -48,9 +48,9 @@ interface WorkspaceItemProps {
   isActive: boolean;
   isMultiview: boolean;
   index: number;
-  /** Position in the list the operator sees (Moa's HQ left out), which is
-   *  what Ctrl+N counts. Defaults to `index`. */
-  shortcutIndex?: number;
+  /** The Ctrl+N digit that reaches this row (see workspaceShortcutNumber), or
+   *  undefined when no digit does. */
+  shortcutNumber?: number;
   onSelect: (id: string) => void;
   onCtrlSelect: (id: string) => void;
   onRename: (id: string, name: string) => void;
@@ -447,7 +447,7 @@ function shortenPath(path: string, maxLen = 25): string {
   return `.../${parts.slice(-2).join('/')}`;
 }
 
-function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutIndex = index, onSelect, onCtrlSelect, onRename, onClose, onArchive, onCopyInfo, onDuplicate, onReorder, taskRow = false, shortcutHintHidden = false, nestedTaskIds, renderTask, onCloseTask, moaHq = false, tabStop = false }: WorkspaceItemProps) {
+function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumber, onSelect, onCtrlSelect, onRename, onClose, onArchive, onCopyInfo, onDuplicate, onReorder, taskRow = false, shortcutHintHidden = false, nestedTaskIds, renderTask, onCloseTask, moaHq = false, tabStop = false }: WorkspaceItemProps) {
   const t = useT();
   // A1: 자기 ws만 구독 — 배경 ws churn/다른 항목 변경에는 리렌더되지 않는다.
   const workspace = useStore(selectWorkspaceById(workspaceId));
@@ -1317,15 +1317,16 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutInde
                 {/* Ctrl+N follows the stored order, so each row always shows the
                     number its shortcut jumps to, left of the name, in every sort
                     mode — the numbers may read out of sequence in a sorted order.
-                    A nested task row, Moa's HQ and a row in the Snoozed/Settled
-                    group have none. */}
-                {!taskRow && !moaHq && !shortcutHintHidden && shortcutIndex >= 0 && shortcutIndex < 9 && (
+                    Ctrl+9 is the last workspace, so past eight rows only the last
+                    one shows 9 and the rows between show nothing. A nested task
+                    row, Moa's HQ and a row in the Snoozed/Settled group have none. */}
+                {!taskRow && !moaHq && !shortcutHintHidden && shortcutNumber !== undefined && (
                   // Drawn by CSS so the digit is not part of the row's text
                   // (selection, copy, accessible name).
                   <span
                     aria-hidden
                     className="flex-none text-[11px] font-semibold tabular-nums text-[var(--text-muted)] before:content-[attr(data-shortcut-number)]"
-                    data-shortcut-number={shortcutIndex + 1}
+                    data-shortcut-number={shortcutNumber}
                   />
                 )}
                 <span

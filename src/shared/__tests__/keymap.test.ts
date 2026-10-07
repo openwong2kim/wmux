@@ -19,6 +19,7 @@ import {
   sanitizeShortcutOverrides,
   ShortcutPressGuard,
   type ShortcutKeyEventLike,
+  workspaceShortcutNumber,
 } from '../keymap';
 
 /**
@@ -477,5 +478,22 @@ describe('UNBOUND_SHORTCUTS', () => {
     expect(rebindProblem('movePaneRight', 'Ctrl+D', bindings, 'win32', 'KeyB'))
       .toEqual({ kind: 'taken', by: 'splitHorizontal' });
     expect(rebindProblem('movePaneRight', 'Ctrl+Alt+P', bindings, 'win32', 'KeyB')).toBeNull();
+  });
+});
+
+describe('workspaceShortcutNumber', () => {
+  it('numbers the first eight and gives 9 to the last, like Ctrl+9 (12 workspaces)', () => {
+    const numbers = Array.from({ length: 12 }, (_, i) => workspaceShortcutNumber(i, 12));
+    expect(numbers).toEqual([1, 2, 3, 4, 5, 6, 7, 8, undefined, undefined, undefined, 9]);
+  });
+
+  it('keeps the last row on its own digit when there are eight or fewer', () => {
+    expect(Array.from({ length: 5 }, (_, i) => workspaceShortcutNumber(i, 5))).toEqual([1, 2, 3, 4, 5]);
+    expect(workspaceShortcutNumber(8, 9)).toBe(9);
+  });
+
+  it('has no digit for a row outside the list', () => {
+    expect(workspaceShortcutNumber(-1, 12)).toBeUndefined();
+    expect(workspaceShortcutNumber(12, 12)).toBeUndefined();
   });
 });

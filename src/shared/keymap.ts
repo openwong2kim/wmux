@@ -99,6 +99,18 @@ const ws = (n: number): KeymapEntry => ({
 });
 
 /**
+ * The Ctrl+N digit that reaches the workspace at `index` of `count` listed
+ * workspaces, or undefined when none does. Ctrl+1..8 take the first eight and
+ * Ctrl+9 the LAST one (browser tabs), so with more than nine the rows between
+ * the eighth and the last have no number.
+ */
+export function workspaceShortcutNumber(index: number, count: number): number | undefined {
+  if (index < 0 || index >= count) return undefined;
+  if (index < 8) return index + 1;
+  return index === count - 1 ? 9 : undefined;
+}
+
+/**
  * Every default binding, in the order Settings renders them. The first row of
  * an action is its primary (the one Settings shows); later rows of the same
  * action are aliases that the resolver also accepts until the user rebinds or

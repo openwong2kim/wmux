@@ -83,6 +83,12 @@ function profileArgs(profile) {
   return [BUNDLE_PATH, ...PROFILE_ARGS[profile]];
 }
 
+// An empty home for every server the probe starts. The MCP entry reads opt-in
+// switches from ~/.wmux (computer-use.json registers the `computer` tool), so
+// a developer who turned one on would otherwise see a surface the baseline
+// never ships, and the probe would fail locally while CI passes.
+const PROBE_HOME = mkdtempSync(path.join(os.tmpdir(), 'wmux-mcp-probe-home-'));
+
 function childEnvironment(profile) {
   const env = Object.fromEntries(
     Object.entries(process.env).filter(([, value]) => typeof value === 'string'),
@@ -92,6 +98,11 @@ function childEnvironment(profile) {
   // Only commander gets one: core is an optimization profile that claims no
   // role, so injecting a token there would probe a topology that never ships.
   delete env.WMUX_COMMANDER_TOKEN;
+  // Same for the developer's wmux data dir: HOME (USERPROFILE on Windows) is
+  // where os.homedir() looks, and the suffix would only pick a sibling of it.
+  env.HOME = PROBE_HOME;
+  env.USERPROFILE = PROBE_HOME;
+  delete env.WMUX_DATA_SUFFIX;
   if (profile === 'commander') env.WMUX_COMMANDER_TOKEN = 'wmux-protocol-probe';
   return env;
 }
@@ -551,4 +562,6 @@ async function main() {
 main().catch((error) => {
   console.error('[wmux-mcp-probe] failed:', error);
   process.exitCode = 1;
+}).finally(() => {
+  rmSync(PROBE_HOME, { recursive: true, force: true });
 });

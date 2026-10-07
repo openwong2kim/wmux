@@ -39,6 +39,7 @@ import {
 
 import PresetPicker from './PresetPicker';
 import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
+import { workspaceShortcutNumber } from '../../../shared/keymap';
 import { listedWorkspaces, moaHqId as selectMoaHqId, refuseWorkspaceClose } from '../Moa/moaHqGuard';
 
 /** Namespaces a remote row's id in the shared glance order. */
@@ -393,7 +394,7 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
       isActive={id === shownActiveId}
       isMultiview={multiviewIds.includes(id)}
       index={workspaces.findIndex((w) => w.id === id)}
-      shortcutIndex={listed.findIndex((w) => w.id === id)}
+      shortcutNumber={workspaceShortcutNumber(listed.findIndex((w) => w.id === id), listed.length)}
       onSelect={setActiveWorkspace}
       onCtrlSelect={handleCtrlSelect}
       onRename={renameWorkspace}
@@ -437,7 +438,7 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
           isActive={ws.id === shownActiveId}
           isMultiview={multiviewIds.includes(ws.id)}
           index={workspaces.indexOf(ws)}
-          shortcutIndex={listed.indexOf(ws)}
+          shortcutNumber={workspaceShortcutNumber(listed.indexOf(ws), listed.length)}
           onSelect={setActiveWorkspace}
           onCtrlSelect={handleCtrlSelect}
           onRename={renameWorkspace}

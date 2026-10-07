@@ -19,6 +19,7 @@ import { workspaceColorHex } from '../../../shared/workspaceColors';
 import PresetPicker from './PresetPicker';
 import RailMoreMenu from './RailMoreMenu';
 import { listedWorkspaces, moaHqId as selectMoaHqId } from '../Moa/moaHqGuard';
+import { workspaceShortcutNumber } from '../../../shared/keymap';
 
 /** PresetPicker width (w-52), used to keep the flyout on-screen. */
 const PICKER_MENU_WIDTH = 208;
@@ -185,6 +186,7 @@ export default function MiniSidebar({ rail = false, collapsed = true }: { rail?:
           // the tooltip, the reorder payload — uses the unfiltered position, so
           // a pinned row keeps its real number and drops land where it lives.
           const railIndex = workspaces.indexOf(ws);
+          const shortcutNumber = workspaceShortcutNumber(railIndex, workspaces.length);
           const isActive = ws.id === activeWorkspaceId;
           const isMultiview = multiviewIds.includes(ws.id);
           const isDragging = draggingIndex === i;
@@ -321,7 +323,7 @@ export default function MiniSidebar({ rail = false, collapsed = true }: { rail?:
                 onDragOver={handleDragOver}
                 onDragLeave={handleDragLeave}
                 onDrop={handleDrop}
-                title={`${railName} (Ctrl+${railIndex + 1})`}
+                title={shortcutNumber === undefined ? railName : `${railName} (Ctrl+${shortcutNumber})`}
                 aria-label={railName}
                 aria-current={isActive ? 'true' : undefined}
                 data-rail-workspace={ws.id}
