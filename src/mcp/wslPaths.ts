@@ -110,11 +110,12 @@ export function wslPathToHost(
   }
   // Win32 drops a trailing dot or space from every path segment, so
   // `/mnt/d/x/repo.` would open `D:\x\repo` (seen live: a different
-  // repository). A reserved device name (`con`, `nul.txt`, `com1`) opens the
+  // repository); other trailing whitespace is trimmed by the callers' own
+  // normalizers, with the same effect. A reserved device name (`con`, `nul.txt`, `com1`) opens the
   // device, not the directory. `.` and `..` are segments, not names.
   const unsafe = linuxPath
     .split('/')
-    .find((s) => s !== '.' && s !== '..' && (/[. ]$/.test(s) || /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(\..*)?$/i.test(s)));
+    .find((s) => s !== '.' && s !== '..' && (/[.\s]$/.test(s) || /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(\..*)?$/i.test(s)));
   if (unsafe !== undefined) {
     return {
       error: `${JSON.stringify(linuxPath)} has a name (${JSON.stringify(unsafe)}) that Windows reads as a different file (a trailing dot or space, or a device name), so it cannot be translated safely`,

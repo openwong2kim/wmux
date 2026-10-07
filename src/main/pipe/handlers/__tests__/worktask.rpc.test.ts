@@ -882,6 +882,14 @@ describe('a WSL caller pane reads the Windows path of its own directory', () => 
     expect(message).toMatch(/\(git: fatal: detected dubious ownership in repository at '\/\/wsl\$\/Ubuntu\/home\/me\/repo' '\/\/wsl\$/);
   });
 
+  it('a trailing space survives the surface read and is refused, not trimmed onto the sibling', async () => {
+    const h = harness({ platform: 'win32', surfaceCwd: '/mnt/d/x/alias ' });
+    const res = await read(h);
+    expect(res).toMatchObject({ ok: false, error: { code: 'FAILED_PRECONDITION' } });
+    expect(JSON.stringify(res)).toMatch(/cannot be translated safely/);
+    expect(h.exec).not.toHaveBeenCalled();
+  });
+
   it('a distro-internal path with no known distro is refused by name', async () => {
     const h = harness({ platform: 'win32', surfaceCwd: '/home/me/repo', sessions: [] });
     const res = await read(h);

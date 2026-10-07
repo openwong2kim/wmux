@@ -425,7 +425,10 @@ function rendererCallerCwd(
       if (!entry || typeof entry !== 'object') continue;
       const row = entry as Record<string, unknown>;
       if (row['ptyId'] !== ptyId) continue;
-      const reported = typeof row['cwd'] === 'string' ? row['cwd'].trim() : '';
+      // trimStart, not trim: a trailing space belongs to a WSL directory name
+      // and must reach the translator, which refuses it (normalizeCallerCwd
+      // trims what is left afterwards).
+      const reported = typeof row['cwd'] === 'string' ? row['cwd'].trimStart() : '';
       if (!reported) return '';
       // A WSL pane reports a Linux cwd; translate it here, where the pane's
       // ptyId (and so its distro) is still known.

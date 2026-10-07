@@ -132,7 +132,7 @@ describe('wslPathToHost refuses Linux names Windows would read differently', () 
   it('refuses a trailing dot or space, which Win32 strips onto a sibling', () => {
     // Seen live on Windows 11: a WSL pane in /mnt/d/x/alias. (not a repo) was
     // fanned out from D:\x\alias, a different repository.
-    for (const p of ['/mnt/d/x/alias.', '/mnt/d/x/alias ', '/mnt/d/x/alias./sub', '/home/me/repo.', '/home/me/repo..']) {
+    for (const p of ['/mnt/d/x/alias.', '/mnt/d/x/alias ', '/mnt/d/x/alias./sub', '/home/me/repo.', '/home/me/repo..', '/home/me/repo\t']) {
       expect(wslPathToHost(p, 'Ubuntu')).toMatchObject({ error: expect.stringMatching(/cannot be translated safely/) });
     }
   });

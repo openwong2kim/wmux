@@ -397,7 +397,10 @@ async function resolveSenderSurfaceCwd(
     if (!entry || typeof entry !== 'object') continue;
     const row = entry as Record<string, unknown>;
     if (row['ptyId'] !== senderPtyId) continue;
-    return typeof row['cwd'] === 'string' ? row['cwd'].trim() : '';
+    // trimStart, not trim: a trailing space is part of a WSL directory name
+    // (`/mnt/d/x/repo `), and dropping it here would name the sibling `repo`.
+    // The host-path normalizer trims what is left after translation.
+    return typeof row['cwd'] === 'string' ? row['cwd'].trimStart() : '';
   }
   return '';
 }
