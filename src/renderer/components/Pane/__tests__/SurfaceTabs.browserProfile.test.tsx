@@ -165,6 +165,16 @@ describe('SurfaceTabs — per-pane Chrome profile', () => {
     expect(toasts.at(-1)).toMatchObject({ level: 'error', message: 'at most 20 Chrome profiles' });
   });
 
+  it('New profile: aborts with a toast when the fresh profile list fails', async () => {
+    mount();
+    await openProfileSubmenu();
+    api.list.mockRejectedValueOnce(new Error('ipc down'));
+    await clickItem('profile-new');
+    expect(api.create).not.toHaveBeenCalled();
+    expect(api.bindPane).not.toHaveBeenCalled();
+    expect(useStore.getState().toasts.at(-1)).toMatchObject({ level: 'error' });
+  });
+
   it('Use workspace profile unbinds the pane', async () => {
     const { paneId, wsId } = mountWithBinding('work');
     await openProfileSubmenu();

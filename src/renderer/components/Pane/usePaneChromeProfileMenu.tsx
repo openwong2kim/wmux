@@ -76,8 +76,13 @@ export function usePaneChromeProfileMenu(opts: {
   const createForPane = useCallback(async () => {
     const api = window.electronAPI?.browser?.chromeProfiles;
     if (!api) return;
-    const name = paneProfileNameFrom(paneLabel, profiles);
+    let name: string;
     try {
+      // De-duplicate against a fresh list, never the menu's snapshot (empty if
+      // the open-time list failed): create() is idempotent on an existing name,
+      // so a collision would bind this pane to someone else's profile.
+      const { profiles: current } = await api.list();
+      name = paneProfileNameFrom(paneLabel, current);
       const res = await api.create(name);
       if (!res.ok) { fail(res, 'pane.browserProfileFailed'); return; }
     } catch {
@@ -85,7 +90,7 @@ export function usePaneChromeProfileMenu(opts: {
       return;
     }
     await bindPane(name);
-  }, [paneLabel, profiles, bindPane, fail]);
+  }, [paneLabel, bindPane, fail]);
 
   const reveal = useCallback(async () => {
     const api = window.electronAPI?.browser?.chromeProfiles;
