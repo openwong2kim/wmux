@@ -225,6 +225,29 @@ describe('#1919 — the fan-out learns when a worker agent never started', () =>
     expect(res.ok).toBe(true);
   });
 
+  // #1933 review — a missing identity is not a missing agent. Polls ask
+  // without `confirm` and only the one confirming read, after the bound, can
+  // fail the task.
+  it('fails a task only on the confirming read, and asks for it exactly once', async () => {
+    const agentRunning = vi.fn(async (_ptyId: string, opts?: { confirm?: boolean }) =>
+      opts?.confirm ? undefined : false,
+    );
+    const svc = service(makeDaemon().port, {
+      launchProbe: { agentRunning },
+      launchConfirmMs: 0,
+      launchPollMs: 0,
+    });
+    const res = await svc.start(req());
+    await svc.settleLaunchChecks();
+
+    expect(res.tasks[0].launchFailed).toBeUndefined();
+    expect(res.ok).toBe(true);
+    const confirms = agentRunning.mock.calls.filter(([, opts]) => opts?.confirm === true);
+    expect(confirms).toHaveLength(1);
+    expect(agentRunning.mock.calls.at(-1)?.[1]).toEqual({ confirm: true });
+    expect(agentRunning.mock.calls[0][1]).toBeUndefined();
+  });
+
   it('does not fail a pane that was closed before the final read', async () => {
     const probe = probeOf([false, undefined]);
     const svc = service(makeDaemon().port, { launchProbe: probe, launchConfirmMs: 0, launchPollMs: 0 });

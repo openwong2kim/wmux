@@ -117,6 +117,7 @@ import { GateFlagFile } from './gateFlagFile';
 import { WSL_GATE_FLAG_FILE } from '../shared/wslIntegration';
 import { CommandStartAgentProbe } from './commandStartAgentProbe';
 import { resolveCanonicalAgentIdentity, detectorSuppressedBy, reportedAgentName, provesLiveAgent, type CanonicalAgentIdentity } from './canonicalAgent';
+import { decideLaunchPresence, launchPresenceNeedsProcessRead, type IdleShellRead } from './launchPresence';
 import { Watchdog } from './Watchdog';
 import { selectRecoverableSessions } from './recoverySelector';
 import { isShutdownKillExit, SHUTDOWN_KILL_RECLASSIFY_MS } from './shutdownKill';
@@ -4641,6 +4642,35 @@ function registerRpcHandlers(
   pipeServer.onRpc('daemon.getAgentName', async (params) => {
     const id = typeof params['id'] === 'string' ? params['id'] : '';
     return readDaemonAgentState(id);
+  });
+  // #1919 / #1933 — the fan-out launch check: did the agent start in this
+  // pane? `absent` only on positive evidence (see launchPresence.ts). The
+  // process table is read only when `probeProcess` is set — the check polls
+  // cheaply and asks for the read once, after its bound — and only when no
+  // cheaper signal already decided.
+  pipeServer.onRpc('daemon.getLaunchPresence', async (params) => {
+    const id = typeof params['id'] === 'string' ? params['id'] : '';
+    const session = id ? sessionManager.getSession(id) : undefined;
+    const inputs = {
+      sessionExists: !!session,
+      agentName: readDaemonAgentState(id).agentName ?? null,
+      trackerAlive: agentProcessTracker.statusFor(id),
+      commandRunning: session?.promptLog.commandRunningIfKnown(),
+      isExec: !!session?.meta.exec,
+      isWsl: !!session?.meta.wslTarget,
+    };
+    let idleShell: IdleShellRead | undefined;
+    if (session && params['probeProcess'] === true && launchPresenceNeedsProcessRead(inputs)) {
+      try {
+        idleShell = await agentProcessTracker.idleShellState(session.meta.pid, session.meta.env, true);
+      } catch {
+        idleShell = 'error';
+      }
+    }
+    return {
+      ...decideLaunchPresence({ ...inputs, idleShell }),
+      incarnationId: session?.meta.incarnationId ?? null,
+    };
   });
   pipeServer.onRpc('daemon.getAgentState', async (params) => {
     const id = typeof params['id'] === 'string' ? params['id'] : '';

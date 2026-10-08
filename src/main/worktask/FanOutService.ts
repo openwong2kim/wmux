@@ -168,12 +168,16 @@ export interface FanOutRendererPort {
 
 /**
  * #1919 — "is an agent running in this pane right now?", asked after a task's
- * pane is spawned. `true` = an agent was seen, `false` = the pane's shell is
- * there and no agent runs in it, `undefined` = cannot tell (no daemon, the
- * pane is gone, the read failed). Only `false` ever counts against a launch.
+ * pane is spawned. `true` = an agent was seen; `false` = positive evidence
+ * that none runs (no agent identity, no agent process, and the pane's shell
+ * has no child process); `undefined` = cannot tell (no daemon, the pane is
+ * gone, identity not known yet, the read failed). Only `false` ever counts
+ * against a launch, and only from a `confirm` call: the check polls without
+ * it and asks with it once, after its bound, because confirming reads the
+ * process table.
  */
 export interface FanOutLaunchProbe {
-  agentRunning(ptyId: string): Promise<boolean | undefined>;
+  agentRunning(ptyId: string, opts?: { confirm?: boolean }): Promise<boolean | undefined>;
 }
 
 /** #1919 — how long a fan-out worker's agent has to show up in its pane before
@@ -1435,11 +1439,12 @@ export class FanOutService {
    * discards typeahead, a shell that was not ready yet). The pane then sits at
    * a bare prompt while every report says the task is running.
    *
-   * Polls the launch probe until an agent is seen or launchConfirmMs passes.
-   * Only a probe that answered "shell here, no agent" — and still does at the
-   * end — fails the task: an unknown answer (no daemon, pane closed, read
-   * error) is no evidence, so a check that never got a definite answer
-   * concludes nothing.
+   * Polls the launch probe until an agent is seen or launchConfirmMs passes,
+   * then asks once more with `confirm`. Only that confirming answer can fail
+   * the task, and only when it is `false` — positive evidence that no agent
+   * process runs in the pane. An unknown answer (no daemon, pane closed,
+   * identity not known yet, read error) is no evidence, so a check that never
+   * got a definite answer concludes nothing.
    *
    * On failure: the task result (the object every later poll reads) gets
    * `launchFailed`, `ok: false` and an error naming the pane and the line to
@@ -1464,17 +1469,20 @@ export class FanOutService {
     if (!AGENT_SLUG_SET.has(launcherStem(command))) return;
     const confirmMs = this.launchConfirmMs;
     const pollMs = this.launchPollMs;
-    const ask = (): Promise<boolean | undefined> => probe.agentRunning(ptyId).catch(() => undefined);
+    const ask = (confirm: boolean): Promise<boolean | undefined> =>
+      probe.agentRunning(ptyId, confirm ? { confirm: true } : undefined).catch(() => undefined);
     const run = async (): Promise<void> => {
       const started = Date.now();
       for (;;) {
-        if ((await ask()) === true) return;
+        if ((await ask(false)) === true) return;
         if (Date.now() - started >= confirmMs) break;
         await new Promise((resolve) => setTimeout(resolve, pollMs));
       }
-      // The last answer decides between "never started" and "could not tell":
-      // a pane that was closed meanwhile is not a failed launch.
-      if ((await ask()) !== false) return;
+      // The confirming answer decides between "never started" and "could not
+      // tell": only positive evidence of absence fails the task. A pane that
+      // was closed meanwhile, or an agent whose identity is still unknown,
+      // is not a failed launch.
+      if ((await ask(true)) !== false) return;
       const seconds = Math.round(confirmMs / 1000);
       task.launchFailed = true;
       task.ok = false;

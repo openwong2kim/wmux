@@ -20,6 +20,7 @@ import type { RpcMethod } from '../../shared/rpc';
 import { sendToRenderer } from '../pipe/handlers/_bridge';
 import { getProjectConfigStore } from '../project/ProjectConfigStore';
 import { FanOutService } from './FanOutService';
+import { createDaemonLaunchProbe } from './fanoutLaunchProbe';
 import { createWorkerTempDir, getWorkerTempDirSweeper, removeWorkerTempDir } from './fanoutTempDir';
 
 type GetWindow = () => BrowserWindow | null;
@@ -33,9 +34,6 @@ const FIRST_RUN_READ_LINES = 40;
 
 /** A viewport we cannot get quickly is a poll we skip, not a spawn we stall. */
 const FIRST_RUN_READ_TIMEOUT_MS = 1_000;
-
-/** One launch-probe read; a slow one is skipped, not waited on. */
-const LAUNCH_PROBE_TIMEOUT_MS = 2_000;
 
 export function createFanOutService(
   getDaemonClient: () => DaemonClient | null,
@@ -96,28 +94,9 @@ export function createFanOutService(
         dc.writeToSession(ptyId, sequence);
       },
     },
-    // #1919 — did the worker's agent actually start? The daemon's canonical
-    // agent identity for the pane (hook, attributed process, or banner) — the
-    // same read terminal_send and the chat surface use. A session it no longer
-    // knows answers with no incarnation id: that is a closed pane, not a
-    // failed launch, so it is reported as unknown.
-    launchProbe: {
-      agentRunning: async (ptyId: string): Promise<boolean | undefined> => {
-        const dc = getDaemonClient();
-        if (!dc?.isConnected) return undefined;
-        try {
-          const res = (await dc.rpc('daemon.getAgentName', { id: ptyId }, { timeoutMs: LAUNCH_PROBE_TIMEOUT_MS })) as {
-            agentName?: unknown;
-            incarnationId?: unknown;
-          } | null;
-          if (typeof res?.agentName === 'string' && res.agentName.length > 0) return true;
-          if (typeof res?.incarnationId !== 'string' || res.incarnationId.length === 0) return undefined;
-          return false;
-        } catch {
-          return undefined;
-        }
-      },
-    },
+    // #1919 — did the worker's agent actually start? `false` only on the
+    // daemon's positive evidence of absence (see fanoutLaunchProbe.ts).
+    launchProbe: createDaemonLaunchProbe(getDaemonClient),
     // Private TMPDIR per worker, removed once its task workspace is gone
     // (see fanoutTempDir.ts for the reconcile).
     workerTempDirs: {
