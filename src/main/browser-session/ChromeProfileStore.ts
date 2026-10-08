@@ -4,6 +4,7 @@ import { atomicReadJSONSync, atomicWriteJSON } from '../../daemon/util/atomicWri
 import { isUnsafeKey } from '../account/accountStore';
 import { validateBrowserProfileName } from './ProfileManager';
 import type { ChromePaneBindings } from '../../shared/chromePaneBinding';
+import type { WorkspaceMirror } from '../workspace/WorkspaceMirror';
 
 // ---------------------------------------------------------------------------
 // Chrome-backend profile registry + workspace bindings (Phase 2.5).
@@ -311,4 +312,21 @@ export class ChromeProfileStore {
       return gone.length;
     });
   }
+}
+
+/**
+ * Prune pane bindings against a renderer push — only a push from a renderer
+ * that RESTORED the saved session, and only when it sent the complete
+ * ptyId → paneId map. A failed or empty session load pushes a freshly
+ * generated tree, against which every real pane would look orphaned and lose
+ * its account for good (the same rule the Deck's startup reconcile follows).
+ */
+export function prunePaneBindingsFromMirror(
+  store: Pick<ChromeProfileStore, 'prunePanes'>,
+  mirror: Pick<WorkspaceMirror, 'isSessionRestored' | 'getKnownPaneIds'>,
+): Promise<number> {
+  if (!mirror.isSessionRestored()) return Promise.resolve(0);
+  const known = mirror.getKnownPaneIds();
+  if (known === null || known.size === 0) return Promise.resolve(0);
+  return store.prunePanes(known);
 }

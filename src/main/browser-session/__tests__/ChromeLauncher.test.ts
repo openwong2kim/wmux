@@ -294,6 +294,41 @@ describe('ChromeLauncherRegistry', () => {
     expect(childB.kill).toHaveBeenCalled();
   });
 
+  it('revealNewest activates the newest tab of a running pane profile and never launches one', async () => {
+    const child = makeChild();
+    spawnWritesPortFile(child);
+    let n = 0;
+    fetchMock.mockImplementation(async (url: string, init?: { method?: string }) => {
+      if (init?.method === 'PUT') return fetchOk({ id: `tgt-${++n}`, url: 'https://x.test/' });
+      if (String(url).endsWith('/json/list')) {
+        return fetchOk([
+          { id: 'tgt-1', url: 'https://x.test/', title: 'one', type: 'page' },
+          { id: 'tgt-2', url: 'https://x.test/', title: 'two', type: 'page' },
+        ]);
+      }
+      return fetchOk({});
+    });
+    const registry = new ChromeLauncherRegistry({
+      defaultDir: '/tmp/default-prof',
+      profilesDir: '/tmp/profiles',
+      store: makeStore({}),
+    });
+
+    // Nothing was ever launched for this profile: refuse, spawn nothing.
+    expect(await registry.revealNewest('pane-prof', 'ws-a')).toMatchObject({ ok: false });
+    expect(registry.peekLauncher('pane-prof')).toBeUndefined();
+    expect(spawnMock).not.toHaveBeenCalled();
+
+    const launcher = registry.forProfile('pane-prof');
+    await launcher.openTab('https://x.test/', 'ws-a');
+    await launcher.openTab('https://x.test/', 'ws-a');
+    expect(await registry.revealNewest('pane-prof', 'ws-a')).toEqual({ ok: true });
+    const activated = fetchMock.mock.calls.map(([u]) => String(u)).filter((u) => u.includes('/json/activate/'));
+    expect(activated).toEqual([expect.stringMatching(/\/json\/activate\/tgt-2$/)]);
+    // Another workspace's view of the same profile has nothing to show.
+    expect(await registry.revealNewest('pane-prof', 'ws-b')).toMatchObject({ ok: false });
+  });
+
   it('statusForWorkspace on the live profile probes actual listening, not just a parseable file', async () => {
     const prev = process.env.WMUX_LIVE_CHROME_DIR;
     process.env.WMUX_LIVE_CHROME_DIR = '/fake/live-user-data';

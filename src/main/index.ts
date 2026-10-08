@@ -153,7 +153,8 @@ import { claimCdpPort, probeCdpEndpointWithRetry } from './browser-session/cdpPo
 import { clearPrivateBrowserSession, trackPrivateBrowserContents } from './browser-session/privateSession';
 import { BrowserBackendStore } from './browser-session/BrowserBackendStore';
 import { ChromeLauncherRegistry } from './browser-session/ChromeLauncher';
-import { ChromeProfileStore } from './browser-session/ChromeProfileStore';
+import { ChromeProfileStore, prunePaneBindingsFromMirror } from './browser-session/ChromeProfileStore';
+import { CHROME_PANE_IPC } from '../shared/chromePaneBinding';
 import { ChromeSurfaceStore } from './browser-session/ChromeSurfaceStore';
 import { getActionCacheStore } from './browser-session/ActionCacheStore';
 import { getPromotedSkillStore } from './browser-session/PromotedSkillStore';
@@ -1548,6 +1549,7 @@ ipcMain.handle('browser:set-backend', (_event, value: unknown) => {
 ipcMain.handle('browser:chrome-profiles:list', () => ({
   profiles: chromeProfileStore.listProfiles(),
   bindings: chromeProfileStore.getBindings(),
+  paneBindings: chromeProfileStore.getPaneBindings(),
 }));
 ipcMain.handle('browser:chrome-profiles:create', async (_event, name: unknown) => {
   if (typeof name !== 'string') return { ok: false, error: 'invalid name' };
@@ -1581,6 +1583,49 @@ ipcMain.handle(
     }
   },
 );
+// Per-pane Chrome profiles (pane menu). Same shape as the workspace bind:
+// validation and the exclusivity rule live in the store.
+ipcMain.handle(
+  CHROME_PANE_IPC.bind,
+  async (_event, payload: { paneId?: unknown; workspaceId?: unknown; profileName?: unknown } | undefined) => {
+    const paneId = typeof payload?.paneId === 'string' ? payload.paneId : '';
+    const workspaceId = typeof payload?.workspaceId === 'string' ? payload.workspaceId : '';
+    const profileName =
+      payload?.profileName === null
+        ? null
+        : typeof payload?.profileName === 'string'
+          ? payload.profileName
+          : undefined;
+    if (!paneId || !workspaceId || profileName === undefined) return { ok: false, error: 'invalid payload' };
+    try {
+      await chromeProfileStore.setPaneBinding(paneId, workspaceId, profileName);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  },
+);
+ipcMain.handle(
+  CHROME_PANE_IPC.reveal,
+  async (_event, payload: { paneId?: unknown; workspaceId?: unknown } | undefined) => {
+    const paneId = typeof payload?.paneId === 'string' ? payload.paneId : '';
+    const workspaceId = typeof payload?.workspaceId === 'string' ? payload.workspaceId : '';
+    if (!paneId || !workspaceId) return { ok: false, error: 'invalid payload' };
+    try {
+      return await chromeRegistry.revealNewest(chromeProfileStore.profileFor(workspaceId, paneId), workspaceId);
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  },
+);
+// Pane bindings of panes that no longer exist are dropped against a restored
+// session's complete pane map. Fire-and-forget: a failed prune retries on the
+// next push and must never cost the mirror listener anything.
+getWorkspaceMirror().onSnapshot(() => {
+  prunePaneBindingsFromMirror(chromeProfileStore, getWorkspaceMirror()).catch((err) => {
+    console.warn('[chrome-profiles] pane-binding prune failed:', err);
+  });
+});
 // Discard/wake signals travel main → renderer: the renderer owns the <webview>
 // element, so main can only ask it to unmount (discard) or remount (wake).
 webviewCdpManager.setDiscardHooks({

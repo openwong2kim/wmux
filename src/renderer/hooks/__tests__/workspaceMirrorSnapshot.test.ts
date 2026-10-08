@@ -6,6 +6,7 @@ import {
   buildFleetSnapshots,
   buildWorkspaceMirrorPayload,
   buildRoleBindings,
+  buildPanePtys,
 } from '../workspaceMirrorSnapshot';
 import type { Workspace, Pane, Surface, AgentStatus } from '../../../shared/types';
 import type { FleetSelectorState } from '../../stores/selectors/fleet';
@@ -455,6 +456,22 @@ describe('buildRoleBindings — stashed panes (#977)', () => {
     // treats absence as authoritative exactly when ownership knows the pty — so
     // leaving it out let input.send skip the enforced model while stashed.
     expect(Object.keys(bindings).sort()).toEqual(['pty-st', 'pty-vis']);
+  });
+});
+
+describe('buildPanePtys — per-pane Chrome profiles', () => {
+  it('maps every surface pty to its pane, stashed panes included, and rides the payload', () => {
+    expect(buildPanePtys([w2, stashedWorkspace()])).toEqual({
+      'pty-2a-first': 'p2a',
+      'pty-2a': 'p2a',
+      'pty-2b': 'p2b',
+      'pty-vis': 'p-vis',
+      // A stashed pane missing here would read as gone and lose its binding.
+      'pty-st': 'p-st',
+    });
+    // An unspawned surface (empty ptyId) is no key at all.
+    expect(buildPanePtys([workspace('ws-e', 'e', leaf('p-e', [surface('s-e', '')]), 'p-e')])).toEqual({});
+    expect(buildWorkspaceMirrorPayload(state(), () => 1).panePtys).toEqual(buildPanePtys([w1, w2]));
   });
 });
 

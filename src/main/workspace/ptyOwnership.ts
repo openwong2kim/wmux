@@ -214,3 +214,39 @@ export async function resolveRoleBindingForPty(
   if (!result || typeof result !== 'object' || !('roleBinding' in result)) return undefined;
   return normalizeRoleBinding((result as Record<string, unknown>)['roleBinding']);
 }
+
+/**
+ * Resolve the pane that owns `ptyId` INSIDE `workspaceId` (per-pane Chrome
+ * profiles). Mirror-first: a fresh snapshot answers when it places the pty in
+ * that workspace and maps it to a pane, both read from the same push. Any
+ * other mirror verdict — stale, old renderer, pty spawned after the push, pty
+ * elsewhere — falls through to the renderer's `surface.list` for that one
+ * workspace (stashed panes included), so a PTY outside the workspace can never
+ * resolve. Returns null on a miss; the caller decides what a miss means.
+ * Throws only when the round-trip itself throws (renderer gone).
+ */
+export async function resolvePaneForPty(
+  getWindow: GetWindow,
+  ptyId: string,
+  workspaceId: string,
+): Promise<string | null> {
+  const mirror = getWorkspaceMirror();
+  const pane = mirror.peekPaneForPty(ptyId);
+  if (pane && pane.paneId && pane.ageMs < STALE_TRUST_MS) {
+    // Back-to-back with the read above (no await between): same snapshot.
+    const snapshot = mirror.peek();
+    if (snapshot && findWorkspaceIdForPty(ptyId, snapshot.entries) === workspaceId) {
+      return pane.paneId;
+    }
+  }
+  const rows = await sendToRenderer(getWindow, 'surface.list', { workspaceId, includeStashed: true });
+  if (!Array.isArray(rows)) return null;
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue;
+    const r = row as Record<string, unknown>;
+    if (r['ptyId'] === ptyId && typeof r['paneId'] === 'string' && r['paneId'].length > 0) {
+      return r['paneId'];
+    }
+  }
+  return null;
+}

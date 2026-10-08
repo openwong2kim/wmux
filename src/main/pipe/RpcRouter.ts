@@ -446,6 +446,15 @@ export class RpcRouter {
           : { kind: 'stale' };
     }
 
+    // The calling MCP server's own terminal, for per-pane Chrome profiles.
+    // Advisory attribution (see `RpcRequest.callerPtyId`): copied, never
+    // verified here — browser handlers only use it to narrow an already scoped
+    // workspace onto one of its panes, and ignore a PTY outside that workspace.
+    if (typeof request.callerPtyId === 'string') {
+      const callerPtyId = request.callerPtyId.trim();
+      if (callerPtyId.length > 0 && callerPtyId.length <= 128) ctx.callerPtyId = callerPtyId;
+    }
+
     // Spec §2.2: external-wire requests without `clientName` are recorded as
     // `legacy`. In-process dispatch is excluded by provenance, not by what it
     // sends: the renderer bridge (`operator`) sends no clientName by design,

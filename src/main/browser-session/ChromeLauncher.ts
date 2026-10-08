@@ -968,6 +968,41 @@ export class ChromeLauncher implements ChromeBackendClient {
     return out;
   }
 
+  /**
+   * Bring a wmux-opened tab, and its window, to the front. `/json/activate` is
+   * the HTTP form of CDP `Target.activateTarget`: it needs no socket (the
+   * watcher can be off), and Chrome raises the tab's window along with it. A
+   * minimized window is restored over the watcher socket when one is open.
+   */
+  async selectSurface(surfaceId: string): Promise<boolean> {
+    const record = this.surfaces.get(surfaceId);
+    if (!record?.targetId || !this.isRunning()) return false;
+    try {
+      await this.fetchJson(`/json/activate/${record.targetId}`);
+    } catch {
+      return false;
+    }
+    await this.restoreWindowOf(record.targetId);
+    return true;
+  }
+
+  /** Best effort: un-minimize the window holding `targetId`. */
+  private async restoreWindowOf(targetId: string): Promise<void> {
+    const socket = this.watcher;
+    if (!socket?.isOpen()) return;
+    try {
+      const reply = (await socket.send('Browser.getWindowForTarget', { targetId })) as {
+        windowId?: number;
+        bounds?: { windowState?: string };
+      };
+      if (typeof reply?.windowId === 'number' && reply.bounds?.windowState === 'minimized') {
+        await socket.send('Browser.setWindowBounds', { windowId: reply.windowId, bounds: { windowState: 'normal' } });
+      }
+    } catch {
+      /* the tab is already active; a window we could not restore is cosmetic */
+    }
+  }
+
   async closeSurface(surfaceId: string): Promise<boolean> {
     const record = this.surfaces.get(surfaceId);
     if (!record) return false;
@@ -1157,6 +1192,26 @@ export class ChromeLauncherRegistry {
       return { ...(workspaceId !== undefined && { workspaceId }), profile, client: launcher };
     }
     return null;
+  }
+
+  /**
+   * "Show in Chrome" for a pane: bring the newest tab of `profile` that belongs
+   * to `workspaceId` to the front. Never launches — a profile whose Chrome is
+   * not up has nothing to show, and spawning a browser to answer a click would
+   * be a surprise. Dedicated profiles only: on Live Chrome the newest tab may
+   * be the user's own.
+   */
+  async revealNewest(profile: string, workspaceId: string): Promise<{ ok: boolean; error?: string }> {
+    const launcher = this.peekLauncher(profile);
+    if (!(launcher instanceof ChromeLauncher) || !launcher.isRunning()) {
+      return { ok: false, error: `the Chrome for profile "${profile}" is not running` };
+    }
+    const tabs = await launcher.listTargets(workspaceId);
+    const newest = tabs[tabs.length - 1];
+    if (!newest) return { ok: false, error: `no open wmux tab in the Chrome for profile "${profile}"` };
+    return (await launcher.selectSurface(newest.surfaceId))
+      ? { ok: true }
+      : { ok: false, error: 'Chrome did not bring the tab to the front' };
   }
 
   /**

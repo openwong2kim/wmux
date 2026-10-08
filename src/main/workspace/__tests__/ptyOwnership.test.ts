@@ -17,6 +17,7 @@ import {
   assertWorkspaceOwnsPty,
   assertCallerMayAccessPty,
   resolveRoleBindingForPty,
+  resolvePaneForPty,
   type TaskOwnerLane,
 } from '../ptyOwnership';
 import { STALE_TRUST_MS } from '../../pipe/handlers/hooks.rpc';
@@ -31,7 +32,9 @@ const mockedSend = vi.mocked(sendToRenderer);
 const getWindow = () => null;
 
 /** Push a snapshot where ws-A owns pty-1/pty-2 and ws-B owns pty-3. */
-function pushSnapshot(overrides: { roleBindings?: Record<string, unknown> } = {}): void {
+function pushSnapshot(
+  overrides: { roleBindings?: Record<string, unknown>; panePtys?: Record<string, string> } = {},
+): void {
   getWorkspaceMirror().setSnapshot({
     ts: Date.now(),
     entries: [
@@ -268,5 +271,39 @@ describe('assertCallerMayAccessPty — task-owner lane (fan-out T5)', () => {
         lane({ commanderWorkspace: 'ws-A', openTaskWorkspacesOf: () => { throw new Error('disk'); } }),
       ),
     ).rejects.toThrow(/Cross-workspace/);
+  });
+});
+
+describe('resolvePaneForPty — per-pane Chrome profile caller', () => {
+  it('a fresh mirror placing the pty in the scoped workspace answers without a round-trip', async () => {
+    pushSnapshot({ panePtys: { 'pty-1': 'pane-1', 'pty-3': 'pane-3' } });
+    expect(await resolvePaneForPty(getWindow, 'pty-1', 'ws-A')).toBe('pane-1');
+    expect(mockedSend).not.toHaveBeenCalled();
+  });
+
+  it('a pty of another workspace never resolves, even though the mirror knows its pane', async () => {
+    pushSnapshot({ panePtys: { 'pty-1': 'pane-1', 'pty-3': 'pane-3' } });
+    mockedSend.mockResolvedValue([{ ptyId: 'pty-1', paneId: 'pane-1' }]);
+    expect(await resolvePaneForPty(getWindow, 'pty-3', 'ws-A')).toBeNull();
+    // The round-trip is scoped to the workspace, stash included.
+    expect(mockedSend).toHaveBeenCalledWith(getWindow, 'surface.list', { workspaceId: 'ws-A', includeStashed: true });
+  });
+
+  it('an old renderer (no panePtys) and a stale mirror both round-trip', async () => {
+    pushSnapshot();
+    mockedSend.mockResolvedValue([{ ptyId: 'pty-2', paneId: 'pane-2' }]);
+    expect(await resolvePaneForPty(getWindow, 'pty-2', 'ws-A')).toBe('pane-2');
+    expect(mockedSend).toHaveBeenCalledTimes(1);
+
+    pushSnapshot({ panePtys: { 'pty-2': 'pane-old' } });
+    vi.advanceTimersByTime(STALE_TRUST_MS + 1);
+    expect(await resolvePaneForPty(getWindow, 'pty-2', 'ws-A')).toBe('pane-2');
+    expect(mockedSend).toHaveBeenCalledTimes(2);
+  });
+
+  it('a pty no pane owns resolves to null', async () => {
+    pushSnapshot({ panePtys: {} });
+    mockedSend.mockResolvedValue([{ ptyId: 'pty-1', paneId: 'pane-1' }]);
+    expect(await resolvePaneForPty(getWindow, 'pty-ghost', 'ws-A')).toBeNull();
   });
 });

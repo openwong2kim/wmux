@@ -68,6 +68,19 @@ describe('RpcRouter dispatch envelope', () => {
     expect(ctx?.clientVersion).toBeUndefined();
   });
 
+  it('copies the envelope callerPtyId (trimmed) and drops an empty one', async () => {
+    const router = new RpcRouter();
+    const handler = vi.fn<HandlerSig>(async () => 'ok');
+    router.register('pane.list', handler);
+    await router.dispatch({ id: 'r-pty-1', method: 'pane.list', params: {}, callerPtyId: ' daemon-ab12 ' });
+    await router.dispatch({ id: 'r-pty-2', method: 'pane.list', params: {}, callerPtyId: '   ' });
+    await router.dispatch({ id: 'r-pty-3', method: 'pane.list', params: { callerPtyId: 'daemon-x' } });
+    expect(handler.mock.calls[0][1]?.callerPtyId).toBe('daemon-ab12');
+    expect(handler.mock.calls[1][1]?.callerPtyId).toBeUndefined();
+    // Only the envelope field counts; a params field is tool input, not identity.
+    expect(handler.mock.calls[2][1]?.callerPtyId).toBeUndefined();
+  });
+
   it('keeps legacy zero-arg / single-arg handlers working (backwards-compat)', async () => {
     const router = new RpcRouter();
     router.register('pane.list', async (params) => ({ echoed: params }));

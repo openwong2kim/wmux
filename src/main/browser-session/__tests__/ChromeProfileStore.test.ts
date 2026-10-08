@@ -7,7 +7,9 @@ import {
   DEFAULT_CHROME_PROFILE,
   LIVE_CHROME_PROFILE,
   getChromeProfilesPath,
+  prunePaneBindingsFromMirror,
 } from '../ChromeProfileStore';
+import { WorkspaceMirror } from '../../workspace/WorkspaceMirror';
 
 // Chrome-profile registry + workspace bindings (Phase 2.5). accountStore test
 // idiom: real tmpdir, persistence proven via a fresh instance.
@@ -167,5 +169,26 @@ describe('ChromeProfileStore', () => {
     expect(new ChromeProfileStore(dir).getPaneBindings()).toEqual({
       'pane-a': { workspaceId: 'ws-1', profile: 'p1' },
     });
+  });
+
+  it('mirror pushes prune only from a restored session that sent the pane map', async () => {
+    const store = new ChromeProfileStore(dir);
+    await store.create('p1');
+    await store.setPaneBinding('pane-a', 'ws-1', 'p1');
+    const mirror = new WorkspaceMirror();
+    const push = (extra: { sessionRestored?: boolean; panePtys?: Record<string, string> }) =>
+      mirror.setSnapshot({ ts: 1, entries: [{ id: 'ws-1', name: 'w' }], fleets: [], ...extra });
+
+    // A fresh default tree after a failed session load: never prune.
+    push({ panePtys: { 'pty-new': 'pane-new' } });
+    expect(await prunePaneBindingsFromMirror(store, mirror)).toBe(0);
+    // An old renderer that sends no map: unknown, never prune.
+    push({ sessionRestored: true });
+    expect(await prunePaneBindingsFromMirror(store, mirror)).toBe(0);
+    expect(store.getPaneBindings()).toHaveProperty('pane-a');
+
+    push({ sessionRestored: true, panePtys: { 'pty-new': 'pane-new' } });
+    expect(await prunePaneBindingsFromMirror(store, mirror)).toBe(1);
+    expect(new ChromeProfileStore(dir).getPaneBindings()).toEqual({});
   });
 });

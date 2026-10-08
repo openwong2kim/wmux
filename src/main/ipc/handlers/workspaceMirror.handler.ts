@@ -152,6 +152,18 @@ export function parseWorkspaceMirrorPayload(raw: unknown): WorkspaceMirrorPushPa
     }
     out.roleBindings = bindings;
   }
+  // ptyId → paneId (per-pane Chrome profiles). Same rule as roleBindings: an
+  // absent field stays absent ("unknown, round-trip"), and only plausible ids
+  // on both sides travel, because the pair becomes a routing decision.
+  if (isRecord(raw.panePtys)) {
+    const panePtys: Record<string, string> = {};
+    for (const [ptyId, paneId] of Object.entries(raw.panePtys)) {
+      if (PTY_ID_RE.test(ptyId) && typeof paneId === 'string' && PTY_ID_RE.test(paneId)) {
+        panePtys[ptyId] = paneId;
+      }
+    }
+    out.panePtys = panePtys;
+  }
   // Only a literal true counts: anything else keeps the startup Deck reconcile off.
   if (raw.sessionRestored === true) out.sessionRestored = true;
   // Sidebar pins (settle exemption). Absent (old renderer) stays absent.

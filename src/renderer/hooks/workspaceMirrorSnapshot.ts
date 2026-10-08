@@ -332,6 +332,25 @@ export function buildRoleBindings(state: MirrorSnapshotState): Record<string, un
   return out;
 }
 
+/**
+ * ptyId → paneId for every surface of every pane, stashed panes included
+ * (per-pane Chrome profiles). COMPLETE by construction, so main can resolve a
+ * calling PTY's pane locally and prune bindings of panes that are gone — which
+ * is exactly why the walk is workspace-OWNED: a visible-only map would make a
+ * stashed pane's binding look orphaned.
+ */
+export function buildPanePtys(workspaces: Workspace[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const w of workspaces) {
+    for (const leaf of getWorkspaceLeafPanes(w)) {
+      for (const s of leaf.surfaces) {
+        if (s.ptyId) out[s.ptyId] = leaf.id;
+      }
+    }
+  }
+  return out;
+}
+
 /** Assemble the full push payload from the live store state at `now()`. */
 export function buildWorkspaceMirrorPayload(
   state: MirrorSnapshotState,
@@ -343,6 +362,7 @@ export function buildWorkspaceMirrorPayload(
     entries: buildWorkspaceListEntries(state.workspaces),
     fleets: buildFleetSnapshots(state, ts),
     roleBindings: buildRoleBindings(state),
+    panePtys: buildPanePtys(state.workspaces),
     sessionRestored: state.sessionRestored === true,
     pinnedIds: [...(state.sidebarPinnedIds ?? [])],
     viewed: buildViewed(state),
