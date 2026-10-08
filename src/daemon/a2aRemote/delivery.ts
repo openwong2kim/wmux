@@ -88,7 +88,7 @@ export class A2aRemoteDelivery {
 
   constructor(deps: A2aRemoteDeliveryDeps) {
     this.deps = deps;
-    this.outbox = new OutboxStore({ dir: deps.dir, log: deps.log, onEnqueue: (rec) => this.onEnqueue(rec) });
+    this.outbox = new OutboxStore({ dir: deps.dir, log: deps.log, onEnqueue: (rec) => this.onEnqueue(rec), onAck: (recs) => this.onAck(recs) });
     this.hub = new A2aStreamHub({
       outbox: this.outbox,
       accept: (env, peer) => this.accept(env, peer),
@@ -381,6 +381,28 @@ export class A2aRemoteDelivery {
   private onEnqueue(rec: A2aOutboxRecordV1): void {
     this.sessions.get(rec.hostId)?.session.wake();
     this.hub.notify(rec.hostId);
+  }
+
+  /**
+   * The peer acked our replies / states (#1922): once nothing more of ours is
+   * owed on a task, its marker records when the other PC had all of it, so
+   * this side's task view can show its replies were applied there.
+   */
+  private onAck(recs: A2aOutboxRecordV1[]): void {
+    const tasks = new Set<string>();
+    for (const rec of recs) {
+      const taskId = rec.envelope.kind === 'reply' || rec.envelope.kind === 'state' ? taskOfEnvelope(rec.envelope, remoteTaskId) : null;
+      if (taskId) tasks.add(taskId);
+    }
+    if (tasks.size === 0) return;
+    const owed = new Set(this.outbox.pending(recs[0].hostId).map((r) => (r.envelope.kind === 'reply' || r.envelope.kind === 'state' ? r.envelope.taskId : undefined)));
+    for (const taskId of tasks) {
+      if (owed.has(taskId) || !this.deps.taskService.getTask(taskId)) continue;
+      void this.deps.taskService.markRemote({ taskId, replyAcked: true }).then(
+        (res) => { if (!res.ok) this.deps.log('warn', `[a2a-remote] ${taskId}: peer ack not recorded: ${res.error}`); },
+        (err: unknown) => this.deps.log('warn', `[a2a-remote] ${taskId}: peer ack not recorded: ${errMsg(err)}`),
+      );
+    }
   }
 
   private servedStatus(hostId: HostId, name: string): A2aRemoteHostStatus {

@@ -129,6 +129,8 @@ export interface A2aRemoteMarkPayload {
   receiptSync?: A2aRemoteReceipt;
   /** Task-level, outbound: the peer sent this receipt. */
   remoteReceipt?: A2aRemoteReceipt;
+  /** Task-level: the peer acked every reply / state of ours queued on this task. */
+  replyAcked?: true;
   timestamp: string;
 }
 

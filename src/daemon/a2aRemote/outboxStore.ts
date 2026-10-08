@@ -67,6 +67,8 @@ export interface OutboxStoreOptions {
   mintEpoch?: () => string;
   /** Called after a record was queued and persisted (the transport sends it now). */
   onEnqueue?: (record: A2aOutboxRecordV1) => void;
+  /** Called after records moved to `acked` and that was persisted (the peer has them). */
+  onAck?: (records: A2aOutboxRecordV1[]) => void;
 }
 
 export class OutboxStore {
@@ -76,6 +78,7 @@ export class OutboxStore {
   private readonly write: (filePath: string, data: unknown) => void;
   private readonly scheduleHarden: (filePath: string) => void;
   private readonly onEnqueue: (record: A2aOutboxRecordV1) => void;
+  private readonly onAck: (records: A2aOutboxRecordV1[]) => void;
   private epochValue = '';
   private seqByHost: Record<HostId, number> = {};
   /** Keyed `${hostId}:${seq}`. */
@@ -92,6 +95,7 @@ export class OutboxStore {
     this.write = opts.write ?? ((p, d): void => atomicWriteJSONSync(p, d));
     this.scheduleHarden = opts.scheduleHarden ?? ((): void => this.harden());
     this.onEnqueue = opts.onEnqueue ?? ((): void => undefined);
+    this.onAck = opts.onAck ?? ((): void => undefined);
     this.load(opts.mintEpoch ?? ((): string => crypto.randomUUID()));
   }
 
@@ -220,9 +224,16 @@ export class OutboxStore {
     const hits = [...this.records.values()].filter((r) => r.hostId === hostId && OPEN.has(r.state) && r.seq <= cursor.seq);
     if (hits.length === 0) return 0;
     const at = this.iso();
+    const acked = hits.map((r): A2aOutboxRecordV1 => ({ ...r, state: 'acked', updatedAt: at }));
     this.mutate(() => {
-      for (const r of hits) this.records.set(key(hostId, r.seq), { ...r, state: 'acked', updatedAt: at });
+      for (const r of acked) this.records.set(key(hostId, r.seq), r);
     });
+    // A listener failure must not turn a stored ack into a failed one.
+    try {
+      this.onAck(acked.map((r) => structuredClone(r)));
+    } catch (err) {
+      this.log('warn', `[a2a-remote] outbox ack listener failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
     return hits.length;
   }
 

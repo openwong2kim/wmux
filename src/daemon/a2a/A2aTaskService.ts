@@ -343,7 +343,10 @@ export class A2aTaskService {
         ? marker.inbox?.find((i) => i.messageId === r.messageId)
         : marker;
       if (!target) return;
-      if (r.stateSync !== undefined || r.sent !== undefined || r.read || r.receiptSync !== undefined || r.remoteReceipt !== undefined) {
+      if (r.stateSync !== undefined || r.sent !== undefined || r.read || r.receiptSync !== undefined || r.remoteReceipt !== undefined || r.replyAcked) {
+        // Something new of ours is queued for the peer: not all of it has arrived yet.
+        if (r.stateSync !== undefined || r.sent !== undefined) delete marker.replyDeliveredAt;
+        if (r.replyAcked && !marker.replyDeliveredAt) marker.replyDeliveredAt = r.timestamp;
         if (r.stateSync !== undefined) marker.stateSync = r.stateSync;
         if (r.sent !== undefined && !(marker.sent ?? []).includes(r.sent)) (marker.sent ??= []).push(r.sent);
         if (r.read && !marker.readAt) marker.readAt = r.timestamp;
@@ -723,6 +726,8 @@ export class A2aTaskService {
     receiptSync?: A2aRemoteReceipt;
     /** Outbound: the peer's receipt arrived. */
     remoteReceipt?: A2aRemoteReceipt;
+    /** The peer acked every reply / state of ours queued on this task (#1922). */
+    replyAcked?: true;
   }): Promise<{ ok: true; task: Task } | OpErr> {
     return this.withTaskLock(input.taskId, async () => {
       const task = this.tasks.get(input.taskId);
@@ -732,7 +737,7 @@ export class A2aTaskService {
       if (input.messageId !== undefined) {
         target = marker.inbox?.find((i) => i.messageId === input.messageId);
         if (!target) return { ok: false, error: `a2a.remote.mark: no inbound item ${input.messageId} on ${input.taskId}` };
-      } else if (marker.direction !== 'inbound' && input.stateSync === undefined && input.sent === undefined && input.remoteReceipt === undefined) {
+      } else if (marker.direction !== 'inbound' && input.stateSync === undefined && input.sent === undefined && input.remoteReceipt === undefined && input.replyAcked === undefined) {
         return { ok: false, error: 'a2a.remote.mark: only an inbound remote task has a delivery state' };
       }
       if ((input.read || input.receiptSync !== undefined) && marker.direction !== 'inbound') {
@@ -742,7 +747,7 @@ export class A2aTaskService {
         return { ok: false, error: 'a2a.remote.mark: only an outbound remote task takes the peer\'s receipt' };
       }
       const receipts = input.read === true || input.receiptSync !== undefined || input.remoteReceipt !== undefined;
-      const bookkeeping = input.stateSync !== undefined || input.sent !== undefined || receipts;
+      const bookkeeping = input.stateSync !== undefined || input.sent !== undefined || receipts || input.replyAcked === true;
       if (bookkeeping && input.messageId !== undefined) return { ok: false, error: 'a2a.remote.mark: stateSync/sent/receipts are task-level' };
       if (input.delivered !== true && !input.held && input.attempted === undefined && !bookkeeping) {
         return { ok: false, error: 'a2a.remote.mark: nothing to mark' };
@@ -755,13 +760,15 @@ export class A2aTaskService {
           && (input.sent === undefined || (marker.sent ?? []).includes(input.sent))
           && (input.read !== true || !!marker.readAt)
           && (input.receiptSync === undefined || receiptRank(marker.receiptSync) >= receiptRank(input.receiptSync))
-          && (input.remoteReceipt === undefined || (input.remoteReceipt === 'read' ? !!marker.remoteReadAt : !!marker.remoteDeliveredAt));
+          && (input.remoteReceipt === undefined || (input.remoteReceipt === 'read' ? !!marker.remoteReadAt : !!marker.remoteDeliveredAt))
+          && (input.replyAcked !== true || !!marker.replyDeliveredAt);
         body = {
           ...(input.stateSync !== undefined ? { stateSync: input.stateSync } : {}),
           ...(input.sent !== undefined ? { sent: input.sent } : {}),
           ...(input.read ? { read: true as const } : {}),
           ...(input.receiptSync !== undefined ? { receiptSync: input.receiptSync } : {}),
           ...(input.remoteReceipt !== undefined ? { remoteReceipt: input.remoteReceipt } : {}),
+          ...(input.replyAcked ? { replyAcked: true as const } : {}),
         };
       } else if (input.delivered === true) {
         unchanged = target.delivered === true && (!input.note || target.note === input.note) && (!input.ptyId || side.ptyId === input.ptyId);
