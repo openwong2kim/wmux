@@ -25,13 +25,29 @@ In QA/design-review mode, flag any code that doesn't match DESIGN.md.
   Keep a Changelog headings. Separate files cannot conflict — editing the one
   shared insertion point meant every merge left every other open PR dirty.
   See `changelog.d/README.md`.
-- **Release = explicit user action**: run
-  `node scripts/collect-changelog.mjs` to fold the fragments into
-  `CHANGELOG.md`, bump `package.json` version, rename
-  `[Unreleased]` → `[X.Y.Z] — YYYY-MM-DD`, run
-  `node scripts/gen-api-reference.mjs` (the generated header bakes the
-  version — the CI drift guard enforces this), commit `chore(release)`,
-  then push a `v*` tag (installer builds hang off the tag).
+- **Release = explicit user action.** Never start one unprompted. `main` is
+  protected, so a release is a PR like any other, in this order:
+  1. `git checkout -b release/X.Y.Z origin/main`
+  2. `node scripts/collect-changelog.mjs` — folds `changelog.d/*.md` into
+     `## [Unreleased]` (creating that heading if it is missing) and deletes
+     the fragments.
+  3. In `CHANGELOG.md`, rename `## [Unreleased]` → `## [X.Y.Z] — YYYY-MM-DD`
+     and put a fresh, empty `## [Unreleased]` above it. Never leave the file
+     without an `[Unreleased]` heading.
+  4. Bump the version in `package.json` **and** `package-lock.json` (both the
+     top-level `version` and `packages[""].version` — CI's lockfile lineage
+     guard fails otherwise).
+  5. `node scripts/gen-api-reference.mjs` — the generated header bakes the
+     version; CI's drift guard fails otherwise.
+  6. Commit `chore(release): X.Y.Z`, push, open the PR, wait for CI green,
+     squash-merge.
+  7. Wait for `main` CI to go green on the merge commit, then tag that commit
+     and push the tag:
+     `git tag -a vX.Y.Z <merge-sha> -m "wmux X.Y.Z"` and
+     `git push origin vX.Y.Z`. The tag push builds the installers and
+     publishes the GitHub release, WinGet and Chocolatey (a prerelease skips
+     the last two) — it cannot be undone, so it is the last step and only on
+     a green `main`.
 - Consequence accepted with this decision: same-version dev builds are not
   distinguishable by semver, so the stale-daemon auto-replacement triggers
   only on (a) pre-B′ daemons (missing version field) and (b) release-to-

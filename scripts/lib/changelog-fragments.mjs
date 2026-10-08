@@ -63,7 +63,8 @@ export function parseFragment(text, name = '<fragment>') {
     buffer = [];
   };
 
-  for (const line of text.split('\n')) {
+  // A fragment checked out with CRLF must not carry \r into its entries.
+  for (const line of text.replace(/\r\n/g, '\n').split('\n')) {
     const heading = /^###\s+(.+?)\s*$/.exec(line);
     if (heading) {
       flush();
@@ -111,14 +112,38 @@ export function collect(files) {
  * Entries already written directly under `[Unreleased]` are kept and the new
  * ones are appended after them — the fragment flow can be adopted without
  * having to move what is already there.
+ *
+ * A release renames `[Unreleased]` to the version, so the heading can be
+ * missing on the next fold. It is then created above the first `## ` heading
+ * (below any title) instead of failing the release.
+ *
+ * Line endings follow the input: a CRLF checkout comes back CRLF throughout.
  */
-export function applyToChangelog(changelog, merged) {
+export function applyToChangelog(input, merged) {
+  const crlf = input.includes('\r\n');
+  const folded = foldUnreleased(ensureUnreleased(input.replace(/\r\n/g, '\n')), merged);
+  return crlf ? folded.replace(/\n/g, '\r\n') : folded;
+}
+
+/** Add an empty `## [Unreleased]` above the first `## ` heading when absent (LF input). */
+export function ensureUnreleased(changelog) {
+  if (changelog.includes('## [Unreleased]')) return changelog;
+  const first = /^## /m.exec(changelog);
+  if (first) {
+    return `${changelog.slice(0, first.index)}## [Unreleased]\n\n${changelog.slice(first.index)}`;
+  }
+  const head = changelog.replace(/\n+$/, '');
+  return head ? `${head}\n\n## [Unreleased]\n` : '## [Unreleased]\n';
+}
+
+function foldUnreleased(changelog, merged) {
   const start = changelog.indexOf('## [Unreleased]');
-  if (start === -1) throw new Error('CHANGELOG.md has no "## [Unreleased]" heading');
   const after = changelog.indexOf('\n## ', start + 1);
   const end = after === -1 ? changelog.length : after + 1;
 
   const body = changelog.slice(start, end);
+  // Anything above [Unreleased] (a title, an intro) stays where it was.
+  const preamble = changelog.slice(0, start);
   const rest = changelog.slice(end);
 
   // Existing entries per section inside [Unreleased], so nothing is lost.
@@ -142,5 +167,5 @@ export function applyToChangelog(changelog, merged) {
     if (kept) parts.push(kept, '');
     for (const entry of merged[section] ?? []) parts.push(entry, '');
   }
-  return `${parts.join('\n').replace(/\n+$/, '')}\n\n${rest.replace(/^\n+/, '')}`;
+  return `${preamble}${parts.join('\n').replace(/\n+$/, '')}\n\n${rest.replace(/^\n+/, '')}`;
 }
