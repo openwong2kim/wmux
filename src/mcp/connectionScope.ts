@@ -37,6 +37,13 @@ export interface RpcIdentityState {
    * unrepresentable rather than merely avoided.
    */
   workspaceToken?: string;
+  /**
+   * The PTY this connection's caller runs in (`RpcRequest.callerPtyId`), so
+   * main can pick that pane's Chrome profile. Per connection for the same
+   * reason as `workspaceToken`: a process-global value would let one hosted
+   * caller drive the browser as another pane's account.
+   */
+  callerPtyId?: string;
 }
 
 export interface ConnectionScope {

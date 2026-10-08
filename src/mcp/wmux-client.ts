@@ -1,6 +1,7 @@
 import * as net from 'net';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
+import { AsyncLocalStorage } from 'async_hooks';
 import type { RpcMethod, RpcResponse } from '../shared/rpc';
 import { getPipeName, getAuthTokenPath, getTcpPortPath } from '../shared/constants';
 import { getConnectionScope } from './connectionScope';
@@ -61,11 +62,13 @@ export function clearClientIdentity(): void {
     scope.rpcIdentity.clientName = undefined;
     scope.rpcIdentity.clientVersion = undefined;
     scope.rpcIdentity.workspaceToken = undefined;
+    scope.rpcIdentity.callerPtyId = undefined;
     return;
   }
   CLIENT_NAME = undefined;
   CLIENT_VERSION = undefined;
   WORKSPACE_TOKEN = undefined;
+  CALLER_PTY_ID = undefined;
 }
 
 export function getClientIdentity(): { name?: string; version?: string } {
@@ -103,6 +106,46 @@ export function getWorkspaceToken(): string | undefined {
   const scope = getConnectionScope();
   if (scope) return scope.rpcIdentity.workspaceToken;
   return WORKSPACE_TOKEN;
+}
+
+// The PTY this caller runs in, stamped on every envelope as `callerPtyId` so
+// main can pick the caller's PANE browser profile (src/shared/chromePaneBinding.ts).
+// Set by index.ts from the server's own identity (PID-map walk, WMUX_PTY_ID
+// hint, external claim) — never from tool arguments, which only ever reach the
+// envelope's `params`. Scope-aware and cleared exactly like the claim token.
+let CALLER_PTY_ID: string | undefined;
+
+// A per-call source that overrides the connection value: a shared Codex
+// app-server (#1778) identifies each call by its own thread, so the
+// connection-wide value (the daemon starter's pane) must not be stamped there.
+// The source returns the call's pane, '' for "no pane — omit the field", or
+// undefined to defer to the connection value.
+const callerPtyIdSource = new AsyncLocalStorage<() => string | undefined>();
+
+export function setCallerPtyId(ptyId: string | undefined): void {
+  const trimmed = typeof ptyId === 'string' ? ptyId.trim() : '';
+  const value = trimmed.length > 0 ? trimmed : undefined;
+  const scope = getConnectionScope();
+  if (scope) {
+    scope.rpcIdentity.callerPtyId = value;
+    return;
+  }
+  CALLER_PTY_ID = value;
+}
+
+/** The callerPtyId the next envelope built in this context will carry. */
+export function getCallerPtyId(): string | undefined {
+  const source = callerPtyIdSource.getStore();
+  const fromCall = source ? source() : undefined;
+  if (fromCall !== undefined) return fromCall.length > 0 ? fromCall : undefined;
+  const scope = getConnectionScope();
+  if (scope) return scope.rpcIdentity.callerPtyId;
+  return CALLER_PTY_ID;
+}
+
+/** Run `fn` with a per-call callerPtyId source (see `callerPtyIdSource`). */
+export function runWithCallerPtyIdSource<T>(source: () => string | undefined, fn: () => T): T {
+  return callerPtyIdSource.run(source, fn);
 }
 
 // BYOB P4: commander role claim. Set once at startup by index.ts when the
@@ -176,6 +219,9 @@ function attemptRpc(
     // there is none — an empty string would read as a presented-but-stale
     // token to the lane PR-B adds, which must refuse rather than demote.
     if (identity.workspaceToken !== undefined) envelope.workspaceToken = identity.workspaceToken;
+    // Omitted, never '', when this caller has no known pane.
+    const callerPtyId = getCallerPtyId();
+    if (callerPtyId !== undefined) envelope.callerPtyId = callerPtyId;
     const request = JSON.stringify(envelope) + '\n';
 
     const socket = typeof target === 'string' ? net.connect(target) : net.connect(target);

@@ -1,7 +1,14 @@
 #!/usr/bin/env node
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { sendRpc, setClientIdentity, setCommanderRole, setWorkspaceToken } from './wmux-client';
+import {
+  runWithCallerPtyIdSource,
+  sendRpc,
+  setCallerPtyId,
+  setClientIdentity,
+  setCommanderRole,
+  setWorkspaceToken,
+} from './wmux-client';
 import { COMMANDER_TOOL_SURFACE, COMMANDER_ONLY_TOOLS } from '../shared/commanderSurface';
 import { CORE_TOOL_SURFACE } from '../shared/coreSurface';
 import { ROLE_TOOL_SURFACES, resolveRoleName } from '../shared/roleSurfaces';
@@ -539,7 +546,13 @@ function withCodexCallScope(fn: (...a: unknown[]) => unknown): (...a: unknown[])
     const scope: CodexCallScope = { threadId: codexThreadIdFromExtra(args[args.length - 1]) };
     return codexCallScope.run(scope, async () => {
       scope.mode = await decideCodexMode(scope);
-      return fn(...args);
+      // A thread-identified call stamps its OWN pane on every envelope (or
+      // none until resolved) — never the connection value, which names the
+      // pane that started the shared server.
+      return runWithCallerPtyIdSource(
+        () => (scope.mode === 'thread' ? scope.ptyId ?? '' : undefined),
+        () => fn(...args),
+      );
     });
   };
 }
@@ -633,6 +646,21 @@ function getTaskSenderPtyId(): string {
   const threadScope = threadOnlyScope();
   if (threadScope) return threadScope.ptyId ?? '';
   return MY_PTY_ID || ENV_PTY_HINT;
+}
+
+/**
+ * Publish this connection's pane as the envelope `callerPtyId`, so main can pick
+ * the pane's browser profile. Same precedence as the A2A sender (verified walk,
+ * then the weak WMUX_PTY_ID hint — the Windows walk misses often enough that
+ * hit-only would fail every bound pane closed there), then an external caller's
+ * claimed PTY. Advisory under the #113 same-user ceiling: main only ever uses it
+ * to narrow a caller already scoped to a workspace onto one of its panes.
+ * Called at every identity transition; a thread-identified Codex call carries
+ * its own per-call value instead (withCodexCallScope).
+ */
+function syncCallerPtyId(): void {
+  if (threadOnlyScope()) return;
+  setCallerPtyId(getTaskSenderPtyId() || getPinnedRoute()?.ptyId);
 }
 
 /**
@@ -889,6 +917,7 @@ function invalidateStaleRoute(pinnedRouteAtDispatch: PinnedRoute | null): void {
   // forever. Clearing both together makes the next call re-claim, which mints a
   // fresh token — the same recovery path a closed workspace already takes.
   setWorkspaceToken(undefined);
+  syncCallerPtyId();
 }
 
 /**
@@ -988,6 +1017,7 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
     typeof resolved.ptyId === 'string' && resolved.ptyId
   ) {
     MY_PTY_ID = resolved.ptyId;
+    syncCallerPtyId();
     logIdentity(`server-walk HIT ws=${resolved.workspaceId} pty=${resolved.ptyId}`);
     return { status: 'hit', wsId: resolved.workspaceId, ptyId: resolved.ptyId };
   }
@@ -1035,6 +1065,7 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
       // only there would leave it empty whenever a terminal op resolved identity
       // first (senderPtyId would then be silently absent on the next send).
       MY_PTY_ID = match.ptyId ?? '';
+      syncCallerPtyId();
       logIdentity(
         `walk HIT ws=${match.wsId} pty=${match.ptyId ?? ''} depth=${depth} mapSize=${knownPids.size}`,
       );
@@ -1154,6 +1185,7 @@ async function resolveWorkspaceId(): Promise<string> {
     MY_WORKSPACE_ID = '';
     MY_PTY_ID = '';
     workspaceResolved = false;
+    syncCallerPtyId();
   }
   return MY_WORKSPACE_ID;
 }
@@ -1308,7 +1340,11 @@ async function resolveTerminalRouteBound(explicitPtyId?: string) {
         workspaceResolved = true;
       },
       getPinnedRoute,
-      claimPinnedRoute: () => claimPinnedRoute({ sendRpc, onWorkspaceToken: setWorkspaceToken }),
+      claimPinnedRoute: async () => {
+        const route = await claimPinnedRoute({ sendRpc, onWorkspaceToken: setWorkspaceToken });
+        syncCallerPtyId();
+        return route;
+      },
     },
     explicitPtyId,
   );
@@ -2354,6 +2390,8 @@ function wireClientIdentityHook(): void {
       const version = info?.version?.trim() || undefined;
       if (!name) return;
       setClientIdentity(name, version);
+      // clearClientIdentity (transport close) dropped it with the name.
+      syncCallerPtyId();
       // Fire-and-forget — the trust DB write is best-effort; failures must
       // never block the MCP handshake from completing.
       sendRpc('mcp.identify', { name, version }).catch(() => {
@@ -2366,6 +2404,9 @@ function wireClientIdentityHook(): void {
 }
 
 wireClientIdentityHook();
+// The WMUX_PTY_ID hint is known before any identity call; publish it now so
+// the very first browser call already names its pane.
+syncCallerPtyId();
 
 // tools/list diet — drop the alias/sub-step/pre-merge names from every
 // profile's listing while keeping them callable (see

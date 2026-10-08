@@ -32,6 +32,7 @@ vi.mock('../codexThreadIdentity', async (importOriginal) => {
 vi.mock('../../shared/computer/config', () => ({ readComputerUseEnabled: () => true }));
 
 import { createWmuxServer } from '../index';
+import { getCallerPtyId } from '../wmux-client';
 
 const digest = (v: string) => createHash('sha256').update(v).digest('hex');
 const T1 = '019a0000-0000-7000-8000-000000000001';
@@ -65,6 +66,8 @@ function recordOwner(id: string, ptyId: string, workspaceId: string): void {
 
 type Handler = (method: string, params: Record<string, unknown>) => unknown;
 let extraRpc: Handler = () => ({});
+// The envelope `callerPtyId` each RPC would carry, read in its own call context.
+let stamps: Array<{ method: string; callerPtyId: string | undefined }> = [];
 
 beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-codex-server-'));
@@ -78,8 +81,10 @@ beforeEach(() => {
   parentChain.mockReset();
   parentChain.mockResolvedValue([MCP_ENTRY, SHARED_SERVER]);
   extraRpc = () => ({});
+  stamps = [];
   mockSendRpc.mockReset();
   mockSendRpc.mockImplementation(async (method: string, params: Record<string, unknown>) => {
+    stamps.push({ method, callerPtyId: getCallerPtyId() });
     if (method === 'a2a.resolve.identity') {
       return {
         mappings: Object.fromEntries(ENTRIES.map((e) => [e.pid, e.workspaceId])),
@@ -366,5 +371,39 @@ describe('shared Codex app-server, no owner index (Windows today)', () => {
       { workspaceId: 'ws-1', senderPtyId: 'pty-a' },
       { workspaceId: 'ws-s', senderPtyId: 'pty-s' },
     ]);
+  });
+});
+
+describe('envelope callerPtyId (per-pane browser profiles)', () => {
+  const stampsFor = (method: string) => stamps.filter((s) => s.method === method).map((s) => s.callerPtyId);
+
+  it('stamps each concurrent thread with its OWN pane, never the daemon starter\'s', async () => {
+    recordOwner(T1, 'pty-a', 'ws-1');
+    recordOwner(T2, 'pty-b', 'ws-2');
+    const client = await connect();
+    await Promise.all([call(client, 'a2a_whoami', {}, T1), call(client, 'a2a_whoami', {}, T2)]);
+    await client.close();
+    expect(stampsFor('a2a.whoami').sort()).toEqual(['pty-a', 'pty-b']);
+  });
+
+  it('stamps nothing for an unresolved thread', async () => {
+    const client = await connect();
+    await call(client, 'a2a_whoami', {}, T3);
+    await client.close();
+    // Every RPC of the call; mcp.identify is the connection handshake, not a call.
+    const inCall = stamps.filter((s) => s.method !== 'mcp.identify');
+    expect(inCall.length).toBeGreaterThan(0);
+    expect(inCall.every((s) => s.callerPtyId === undefined)).toBe(true);
+  });
+
+  it('outside a shared server, stamps the env hint until the walk names the pane', async () => {
+    parentChain.mockResolvedValue([MCP_ENTRY, ['zsh', '-l']]);
+    const client = await connect({ envPtyHint: 'pty-env' });
+    await call(client, 'a2a_whoami', {});
+    await client.close();
+    // The identity lookup goes out before the walk resolves; the call after it
+    // carries the walked pane (main's server-side walk answers pty-s here).
+    expect(stampsFor('a2a.resolve.identity')[0]).toBe('pty-env');
+    expect(stampsFor('a2a.whoami')).toEqual(['pty-s']);
   });
 });
