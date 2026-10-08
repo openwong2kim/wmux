@@ -82,6 +82,16 @@ describe('HeadlessSnapshot — fidelity round-trips', () => {
     await expectRoundTrip(bytes, 40, 10);
   });
 
+  it('ignores SGR 221 like the renderer does (xterm 6.0 grid parity)', async () => {
+    // xterm 6.1 applies kitty's "not bold" by default; the renderer keeps it
+    // off (replyParity.ts), so the snapshot grid must too or B restores plain.
+    const res = await generateSnapshot({ cols: 20, rows: 4, initial: Buffer.from('\x1b[1mA\x1b[221mB') });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const restored = await restoredTerminal(res.payload, 20, 4);
+    expect(restored.buffer.active.getLine(0)!.getCell(1)!.isBold()).not.toBe(0);
+  });
+
   it('restores bracketed-paste mode', async () => {
     const res = await generateSnapshot({
       cols: 80,

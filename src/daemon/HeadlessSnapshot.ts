@@ -36,6 +36,7 @@
 import { Terminal } from '@xterm/headless';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { applyUnicodeWidthModel } from '../shared/terminalUnicode';
+import { XTERM_60_VT_EXTENSIONS } from '../shared/terminal/replyParity';
 import type { ReplayGeometry } from './RingBuffer';
 import {
   PartialSequenceTracker,
@@ -214,6 +215,9 @@ async function generateTextInner(req: SnapshotRequest): Promise<TextSnapshotOutc
     scrollback,
     allowProposedApi: true,
     logLevel: 'off',
+    // Same grid as the renderer: xterm 6.1 would apply SGR 221/222, which the
+    // renderer keeps off (shared/terminal/replyParity.ts).
+    vtExtensions: { ...XTERM_60_VT_EXTENSIONS },
   });
   try {
     applyUnicodeWidthModel(terminal);
@@ -323,6 +327,9 @@ async function generateInner(req: SnapshotRequest): Promise<SnapshotOutcome> {
     scrollback,
     allowProposedApi: true,
     logLevel: 'off',
+    // Same grid as the renderer: xterm 6.1 would apply SGR 221/222, which the
+    // renderer keeps off (shared/terminal/replyParity.ts).
+    vtExtensions: { ...XTERM_60_VT_EXTENSIONS },
   });
   const serializer = new SerializeAddon();
   try {
