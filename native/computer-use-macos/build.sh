@@ -50,6 +50,17 @@ cp "$BIN" "$APP/Contents/MacOS/wmux-computer-use"
 sed "s/__VERSION__/$VERSION/g" "$HERE/Support/Info.plist" > "$APP/Contents/Info.plist"
 plutil -lint "$APP/Contents/Info.plist" >/dev/null
 
+# The icon System Settings shows next to the helper in the Privacy lists,
+# made from the app icon with the stock tools (sips, iconutil).
+ICONSET="$HERE/.build/AppIcon.iconset"
+mkdir -p "$ICONSET" "$APP/Contents/Resources"
+for size in 16 32 128 256 512; do
+  sips -s format png -z "$size" "$size" "$ROOT/assets/icon.png" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
+  double=$((size * 2))
+  sips -s format png -z "$double" "$double" "$ROOT/assets/icon.png" --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
+done
+iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
+
 if [ "$IDENTITY" = "-" ]; then
   echo "[computer-use-macos] signing ad-hoc"
   TIMESTAMP="--timestamp=none"
@@ -58,7 +69,7 @@ else
   TIMESTAMP="--timestamp"
 fi
 # The bundle has no nested code: signing it signs the executable and seals
-# Info.plist with it.
+# Info.plist and the icon with it.
 codesign --force --sign "$IDENTITY" --options runtime "$TIMESTAMP" \
   --identifier "$IDENTIFIER" "$APP"
 codesign --verify --strict --verbose=1 "$APP"
