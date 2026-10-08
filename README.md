@@ -8,7 +8,7 @@
 
 **Automate everything else. Do your true work.**
 
-Run Claude Code, Codex, Gemini, or any CLI agent side by side — native on **Windows and macOS** — and answer them from your **iPhone**.
+Run fleets of AI agents — Claude Code, Codex, Gemini, or any CLI — side by side, native on **Windows and macOS**. Let them drive a real browser for the work beyond code, and answer them from your **iPhone**.
 
 [![Windows 10/11](https://img.shields.io/badge/Windows-10%2F11-0078D6?logo=windows&logoColor=white)](https://github.com/openwong2kim/wmux/releases/latest)
 [![macOS](https://img.shields.io/badge/macOS-Apple%20Silicon-000000?logo=apple&logoColor=white)](https://github.com/openwong2kim/wmux/releases/latest)
@@ -25,7 +25,7 @@ Run Claude Code, Codex, Gemini, or any CLI agent side by side — native on **Wi
 
 </div>
 
-wmux is a desktop app where your coding agents work side by side, each in its own pane, while a background daemon on your own machine keeps every session alive. What sets it apart:
+wmux is a desktop app where your AI agents work side by side, each in its own pane, while a background daemon on your own machine keeps every session alive. What sets it apart:
 
 - **Any CLI agent, natively on Windows and macOS.** Claude Code, Codex, Gemini, agy (Antigravity), and any other CLI agent run side by side in real PTYs — no WSL needed on Windows.
 - **Sessions owned by your own daemon.** Closing the app, a crash, or a reboot does not end your agents' sessions.
