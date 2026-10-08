@@ -44,7 +44,15 @@ export const HELPER_IDLE_EXIT_MS = 5 * 60_000;
 // === Agent-facing actions ===
 
 export const COMPUTER_OBSERVE_ACTIONS = ['capabilities', 'listApps', 'listWindows', 'getAppState'] as const;
-export const COMPUTER_CONTROL_ACTIONS = ['click', 'setValue', 'type', 'pressKey', 'hotkey', 'scroll'] as const;
+export const COMPUTER_CONTROL_ACTIONS = ['openApp', 'click', 'setValue', 'type', 'pressKey', 'hotkey', 'scroll'] as const;
+
+/**
+ * Helper methods a protocol-2 helper may not have. Main calls one only when the
+ * helper's hello lists it in `capabilities.actions`, and otherwise answers
+ * `unsupported_action` (openApp) or skips it (configure), so an older or
+ * other-OS helper keeps working without a protocol bump.
+ */
+export const OPTIONAL_HELPER_METHODS = ['openApp', 'configure'] as const;
 export const COMPUTER_ACTIONS = [...COMPUTER_OBSERVE_ACTIONS, ...COMPUTER_CONTROL_ACTIONS] as const;
 
 export type ComputerObserveAction = (typeof COMPUTER_OBSERVE_ACTIONS)[number];
@@ -343,6 +351,20 @@ export interface HelperMethods {
   };
   /** Up events for what the helper tracked plus the listed input (see Held input above). Always safe. */
   releaseInput: { params: ReleaseInputParams; result: { released: boolean } };
+  /**
+   * Optional (OPTIONAL_HELPER_METHODS). Launches the app if it is not running,
+   * brings it to the foreground, and makes sure it has a window (reopens one
+   * when it has none). `app` is a listApps id, a bundle id, an app name or an
+   * absolute .app path. `window` is null only when the app has no window even
+   * after reopening (a menu-bar-only app).
+   */
+  openApp: { params: { app: string }; result: { app: AppInfo; window: WindowInfo | null } };
+  /**
+   * Optional (OPTIONAL_HELPER_METHODS). Runtime switches main pushes after the
+   * hello and whenever Settings change. `overlay`: draw the agent cursor and
+   * the halo around the target window while an input action runs.
+   */
+  configure: { params: { overlay: boolean }; result: { ok: true } };
 }
 
 export type HelperMethod = keyof HelperMethods;

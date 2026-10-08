@@ -42,6 +42,35 @@ export function readComputerUseEnabled(configPath: string = computerUseConfigPat
   return (parsed as Record<string, unknown>).enabled === true;
 }
 
+/**
+ * The per-app consent prompt is opt-in (owner decision 2026-10-08): with
+ * `askPerApp` absent or anything but a literal `true`, an agent may drive any
+ * unblocked app once computer use is on. Same file and fail-closed parsing as
+ * `enabled`, but "closed" here means "do not ask".
+ */
+export function readComputerUseAskPerApp(configPath: string = computerUseConfigPath()): boolean {
+  return readBooleanKey(configPath, 'askPerApp') === true;
+}
+
+/** The agent cursor and window halo. On unless the file says literal `false`. */
+export function readComputerUseOverlay(configPath: string = computerUseConfigPath()): boolean {
+  return readBooleanKey(configPath, 'overlay') !== false;
+}
+
+function readBooleanKey(configPath: string, key: 'askPerApp' | 'overlay'): boolean | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(configPath, 'utf-8'), (k, value) =>
+      k === '__proto__' || k === 'constructor' || k === 'prototype' ? undefined : value,
+    );
+  } catch {
+    return undefined;
+  }
+  if (!parsed || typeof parsed !== 'object') return undefined;
+  const value = (parsed as Record<string, unknown>)[key];
+  return typeof value === 'boolean' ? value : undefined;
+}
+
 /** What Settings › Computer use shows, over IPC. */
 export interface ComputerUseSettingsPayload {
   enabled: boolean;
@@ -64,6 +93,15 @@ export interface ComputerUseSettingsPayload {
    * `unavailable` when another app owns the chord (input is then refused).
    */
   stopKeyStatus: 'off' | 'held' | 'unavailable';
+  /** Ask before an agent drives each app (opt-in; default off). */
+  askPerApp?: boolean;
+  /** Agent cursor and window halo while an agent drives (default on). */
+  overlay?: boolean;
+  /**
+   * The helper's OS grants, from its last hello or capabilities read. Absent
+   * when the helper could not be asked (off, missing, unsupported).
+   */
+  permissions?: { accessibility: boolean; screenRecording: boolean };
   /** Set when the last write failed; the switch shows the state on disk. */
   error?: string;
 }
