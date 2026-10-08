@@ -42,6 +42,12 @@ export const de = {
 
   // Pane stash (#977) — the pane leaves the layout, its session keeps running.
   'pane.rename': 'Bereich umbenennen',
+  'pane.renameError.whitespace': "Bereichsnamen dürfen keine Leerzeichen enthalten",
+  'pane.renameError.reservedChar': "Bereichsnamen dürfen kein # oder @ enthalten",
+  'pane.renameError.leadingDigit': "Bereichsnamen dürfen nicht mit einer Ziffer beginnen",
+  'pane.renameError.autoName': "Namen wie w1-2 sind für automatische Bereichsnamen reserviert",
+  'pane.renameError.duplicate': "Ein anderer Bereich verwendet diesen Namen bereits",
+  'pane.renameError.failed': "Bereich konnte nicht umbenannt werden",
   'pane.stash': 'Bereich beiseitelegen',
   'pane.stashHint': 'Aus dem Layout entfernen — die Sitzung läuft weiter',
   'pane.unstash': 'Zurückholen',

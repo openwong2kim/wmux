@@ -1,4 +1,6 @@
 import type { AgentSlug } from '../../shared/events';
+import type { PaneLabelRejection } from '../../shared/paneLabelRules';
+import type { TranslationKey } from '../i18n/locales/en';
 
 // === P2 pane self-naming (pure helpers) ===
 //
@@ -9,9 +11,13 @@ import type { AgentSlug } from '../../shared/events';
 // the composer @-mention picker could not resolve before P2.
 //
 // A pane's *display name* is the user's explicit rename (`label`, persisted in
-// MetadataStore) when present, else the auto name. Labels are display-only and
-// MAY collide; routing always uses paneId (P1 infra), so a duplicate label is
-// harmless — the insert token (auto name) stays unique.
+// MetadataStore) when present, else the auto name. A label is also an address:
+// `#backend` (like `#w1-2`) resolves to the pane through `pane.resolveName`, so
+// MetadataStore enforces the label policy (src/shared/paneLabelRules.ts) — one
+// token, no `#`/`@`, no leading digit, not shaped like an auto name, unique
+// among live panes. Labels persisted before that policy may still break it and
+// even collide; resolution reports such a collision as ambiguous rather than
+// guessing, and the auto coordinate (`paneTag`) always stays unique.
 //
 // Both functions are pure + store-free so they are trivially unit-testable and
 // safe to call from selectors/render. Callers resolve the ordinals (layout
@@ -65,3 +71,24 @@ export function activeAgentSlug(
   return surface?.ptyId ? surfaceAgent?.[surface.ptyId]?.slug : undefined;
 }
 
+
+/** The always-unique tag of a pane: its auto coordinate without the agent
+ *  suffix, e.g. `#w1-2`. */
+export function paneTag(ws: { wsOrdinal?: number }, leaf: { ordinal?: number }): string {
+  return `#${computePaneAutoName(ws.wsOrdinal ?? 0, leaf.ordinal ?? 0)}`;
+}
+
+const LABEL_REJECTION_KEYS: Record<PaneLabelRejection, TranslationKey> = {
+  whitespace: 'pane.renameError.whitespace',
+  'reserved-char': 'pane.renameError.reservedChar',
+  'leading-digit': 'pane.renameError.leadingDigit',
+  'auto-name': 'pane.renameError.autoName',
+  duplicate: 'pane.renameError.duplicate',
+};
+
+/** The localized reason for a refused rename; an unknown code reads as a plain failure. */
+export function paneLabelRejectionKey(code: string | undefined): TranslationKey {
+  return code && Object.prototype.hasOwnProperty.call(LABEL_REJECTION_KEYS, code)
+    ? LABEL_REJECTION_KEYS[code as PaneLabelRejection]
+    : 'pane.renameError.failed';
+}

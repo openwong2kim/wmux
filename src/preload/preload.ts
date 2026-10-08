@@ -3,6 +3,7 @@ import type { ChatBridgeApi } from '../shared/transcript/turnEvents';
 import { CHATV2_IPC, type ChatV2BridgeApi, type ChatV2EventsPush, type ChatV2ResyncPush } from '../shared/chatv2/ipc';
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { IPC } from '../shared/constants';
+import type { PaneLabelRejection } from '../shared/paneLabelRules';
 import { CHROME_PANE_IPC, type ChromePaneBindings } from '../shared/chromePaneBinding';
 import type {
   AgySensorInstallResult,
@@ -531,8 +532,11 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.METADATA_SNAPSHOT) as Promise<Array<{ paneId: string; label: string; role: string }>>,
     // P2 GUI pane rename. Routes through MetadataStore (the sole label authority)
     // so the change persists + relays back to every renderer via METADATA_UPDATE.
+    // A label that breaks the pane label policy resolves { ok: false, code }.
     setLabel: (paneId: string, workspaceId: string, label: string) =>
-      ipcRenderer.invoke(IPC.METADATA_SET, paneId, workspaceId, label) as Promise<{ ok: boolean }>,
+      ipcRenderer.invoke(IPC.METADATA_SET, paneId, workspaceId, label) as Promise<
+        { ok: true } | { ok: false; code: PaneLabelRejection; error: string }
+      >,
     // Fleet dropdown → set a pane's operator-assigned orchestrator role. Routes
     // through MetadataStore (custom deep-merge) so it persists + relays back via
     // METADATA_UPDATE.paneRole. '' clears the assignment (unassigned sentinel).

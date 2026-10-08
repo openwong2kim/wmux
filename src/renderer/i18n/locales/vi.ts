@@ -42,6 +42,12 @@ export const vi = {
 
   // Pane stash (#977) — the pane leaves the layout, its session keeps running.
   'pane.rename': 'Đổi tên khung',
+  'pane.renameError.whitespace': "Tên khung không được chứa khoảng trắng",
+  'pane.renameError.reservedChar': "Tên khung không được chứa # hoặc @",
+  'pane.renameError.leadingDigit': "Tên khung không được bắt đầu bằng chữ số",
+  'pane.renameError.autoName': "Các tên như w1-2 được dành cho tên khung tự động",
+  'pane.renameError.duplicate': "Một khung khác đã dùng tên này",
+  'pane.renameError.failed': "Không thể đổi tên khung",
   'pane.stash': 'Cất khung',
   'pane.stashHint': 'Gỡ khỏi bố cục — phiên vẫn tiếp tục chạy',
   'pane.unstash': 'Đưa trở lại',

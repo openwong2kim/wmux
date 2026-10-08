@@ -42,6 +42,12 @@ export const tr = {
 
   // Pane stash (#977) — the pane leaves the layout, its session keeps running.
   'pane.rename': 'Bölmeyi yeniden adlandır',
+  'pane.renameError.whitespace': "Bölme adları boşluk içeremez",
+  'pane.renameError.reservedChar': "Bölme adları # veya @ içeremez",
+  'pane.renameError.leadingDigit': "Bölme adları rakamla başlayamaz",
+  'pane.renameError.autoName': "w1-2 gibi adlar otomatik bölme adları için ayrılmıştır",
+  'pane.renameError.duplicate': "Bu adı başka bir bölme zaten kullanıyor",
+  'pane.renameError.failed': "Bölme yeniden adlandırılamadı",
   'pane.stash': 'Bölmeyi kenara al',
   'pane.stashHint': 'Düzenden çıkarılır — oturum çalışmaya devam eder',
   'pane.unstash': 'Geri getir',

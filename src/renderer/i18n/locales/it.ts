@@ -42,6 +42,12 @@ export const it = {
 
   // Pane stash (#977) — the pane leaves the layout, its session keeps running.
   'pane.rename': 'Rinomina pannello',
+  'pane.renameError.whitespace': "I nomi dei pannelli non possono contenere spazi",
+  'pane.renameError.reservedChar': "I nomi dei pannelli non possono contenere # o @",
+  'pane.renameError.leadingDigit': "I nomi dei pannelli non possono iniziare con una cifra",
+  'pane.renameError.autoName': "I nomi come w1-2 sono riservati ai nomi automatici dei pannelli",
+  'pane.renameError.duplicate': "Un altro pannello usa già questo nome",
+  'pane.renameError.failed': "Impossibile rinominare il pannello",
   'pane.stash': 'Metti da parte il pannello',
   'pane.stashHint': 'Rimosso dal layout — la sessione resta in esecuzione',
   'pane.unstash': 'Riporta indietro',

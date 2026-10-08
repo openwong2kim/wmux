@@ -606,6 +606,12 @@ export const pl = {
   // The wording carries the whole promise: "stash" removes, "close" destroys,
   // and every string here says which one is happening.
   'pane.rename': 'Zmień nazwę panelu',
+  'pane.renameError.whitespace': "Nazwa panelu nie może zawierać spacji",
+  'pane.renameError.reservedChar': "Nazwa panelu nie może zawierać # ani @",
+  'pane.renameError.leadingDigit': "Nazwa panelu nie może zaczynać się od cyfry",
+  'pane.renameError.autoName': "Nazwy w rodzaju w1-2 są zarezerwowane dla automatycznych nazw paneli",
+  'pane.renameError.duplicate': "Inny panel używa już tej nazwy",
+  'pane.renameError.failed': "Nie udało się zmienić nazwy panelu",
   'pane.renameTab': 'Zmień nazwę karty',
   'pane.stash': 'Odłóż panel',
   'pane.stashHint': 'Znika z układu — sesja działa dalej',

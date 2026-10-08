@@ -42,6 +42,12 @@ export const ja = {
 
   // Pane stash (#977) — the pane leaves the layout, its session keeps running.
   'pane.rename': 'ペインの名前を変更',
+  'pane.renameError.whitespace': "ペイン名にスペースは使えません",
+  'pane.renameError.reservedChar': "ペイン名に # や @ は使えません",
+  'pane.renameError.leadingDigit': "ペイン名を数字で始めることはできません",
+  'pane.renameError.autoName': "w1-2 のような名前は自動ペイン名用に予約されています",
+  'pane.renameError.duplicate': "この名前は別のペインで使われています",
+  'pane.renameError.failed': "ペインの名前を変更できませんでした",
   'pane.stash': 'ペインを退避',
   'pane.stashHint': 'レイアウトから外します — セッションは動き続けます',
   'pane.unstash': '戻す',

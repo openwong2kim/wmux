@@ -42,6 +42,12 @@ export const bs = {
 
   // Pane stash (#977) — the pane leaves the layout, its session keeps running.
   'pane.rename': 'Preimenuj panel',
+  'pane.renameError.whitespace': "Naziv panela ne smije sadržavati razmake",
+  'pane.renameError.reservedChar': "Naziv panela ne smije sadržavati # ili @",
+  'pane.renameError.leadingDigit': "Naziv panela ne smije počinjati cifrom",
+  'pane.renameError.autoName': "Nazivi poput w1-2 rezervisani su za automatske nazive panela",
+  'pane.renameError.duplicate': "Drugi panel već koristi ovaj naziv",
+  'pane.renameError.failed': "Preimenovanje panela nije uspjelo",
   'pane.stash': 'Skloni panel',
   'pane.stashHint': 'Uklanja se iz izgleda — sesija nastavlja raditi',
   'pane.unstash': 'Vrati nazad',

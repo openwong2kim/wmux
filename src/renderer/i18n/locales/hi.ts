@@ -42,6 +42,12 @@ export const hi = {
 
   // Pane stash (#977) — the pane leaves the layout, its session keeps running.
   'pane.rename': 'पैनल का नाम बदलें',
+  'pane.renameError.whitespace': "पैनल के नाम में स्पेस नहीं हो सकते",
+  'pane.renameError.reservedChar': "पैनल के नाम में # या @ नहीं हो सकते",
+  'pane.renameError.leadingDigit': "पैनल का नाम अंक से शुरू नहीं हो सकता",
+  'pane.renameError.autoName': "w1-2 जैसे नाम स्वचालित पैनल नामों के लिए आरक्षित हैं",
+  'pane.renameError.duplicate': "कोई दूसरा पैनल पहले से यह नाम इस्तेमाल कर रहा है",
+  'pane.renameError.failed': "पैनल का नाम नहीं बदला जा सका",
   'pane.stash': 'पैनल किनारे रखें',
   'pane.stashHint': 'लेआउट से हटता है — सेशन चलता रहता है',
   'pane.unstash': 'वापस लाएँ',

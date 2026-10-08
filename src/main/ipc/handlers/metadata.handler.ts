@@ -9,6 +9,8 @@ import { gitSyncStatusCache } from '../../metadata/GitSyncStatusCache';
 import { PTYManager } from '../../pty/PTYManager';
 import { wrapHandler } from '../wrapHandler';
 import { metadataStore } from '../../metadata/MetadataStore';
+import { fetchLivePaneIds } from '../../metadata/livePaneIds';
+import { PaneLabelError, type PaneLabelRejection } from '../../../shared/paneLabelRules';
 import { ORCH_ROLE_KEY, readOrchRole } from '../../../shared/orchestratorRole';
 import { eventBus } from '../../events/EventBus';
 import { findWorkspaceIdForPty } from '../../pipe/handlers/hooks.rpc';
@@ -458,8 +460,18 @@ export function registerMetadataHandlers(
     paneId: string,
     workspaceId: string,
     label: string,
-  ) => {
-    metadataStore.set(paneId, { label }, { workspaceId });
+  ): Promise<{ ok: true } | { ok: false; code: PaneLabelRejection; error: string }> => {
+    const livePaneIds = typeof label === 'string' && label.trim().length > 0
+      ? await fetchLivePaneIds(getWindow)
+      : undefined;
+    try {
+      metadataStore.set(paneId, { label }, { workspaceId, ...(livePaneIds && { livePaneIds }) });
+    } catch (err) {
+      // A policy rejection is an answer for the rename field, not a failure:
+      // return its code so the UI can say why instead of silently reverting.
+      if (err instanceof PaneLabelError) return { ok: false, code: err.code, error: err.message };
+      throw err;
+    }
     return { ok: true };
   }));
 

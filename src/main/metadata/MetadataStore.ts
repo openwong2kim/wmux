@@ -32,6 +32,12 @@ import {
   PANE_METADATA_CUSTOM_MAX_ENTRIES,
 } from '../../shared/types';
 import { eventBus as defaultEventBus, EventBus } from '../events/EventBus';
+import {
+  PaneLabelError,
+  normalizePaneLabel,
+  paneLabelRejectionMessage,
+  paneLabelShapeError,
+} from '../../shared/paneLabelRules';
 
 // === Public types ===
 
@@ -48,6 +54,15 @@ export interface SetOptions {
    * matters for the event surface).
    */
   workspaceId?: string;
+  /**
+   * Ids of every pane that currently exists (stashed panes included), as the
+   * renderer reports them. Label uniqueness is checked only against these, so
+   * an entry left behind by a pane that closed without a `pane.closed` (a
+   * closed workspace, a crash) never blocks reusing its label. Omitted when
+   * the caller could not learn the live set: then every labeled entry counts,
+   * which can refuse a stale name but never admits a duplicate.
+   */
+  livePaneIds?: ReadonlySet<string>;
 }
 
 export type SetResult =
@@ -181,6 +196,9 @@ export class MetadataStore {
     const mode: MergeMode = opts.mergeMode ?? 'merge';
 
     const existing = this.map.get(paneId);
+    if (sanitized.label !== undefined) {
+      this.assertLabelAllowed(paneId, sanitized.label, existing?.metadata.label, opts.livePaneIds);
+    }
     const currentVersion = existing?.version ?? 0;
 
     if (opts.expectedVersion !== undefined && opts.expectedVersion !== currentVersion) {
@@ -436,6 +454,35 @@ export class MetadataStore {
       // eslint-disable-next-line no-console
       console.error('[MetadataStore] persist failed; suppressing event emit:', err);
       return false;
+    }
+  }
+
+  /**
+   * The pane label policy (src/shared/paneLabelRules.ts). Runs before any
+   * mutation so a rejected label leaves the version untouched. An empty label
+   * always clears, and re-setting the pane's own current label is always
+   * allowed — labels persisted before the policy existed are left alone rather
+   * than made impossible to keep.
+   */
+  private assertLabelAllowed(
+    paneId: string,
+    label: string,
+    currentLabel: string | undefined,
+    livePaneIds: ReadonlySet<string> | undefined,
+  ): void {
+    const trimmed = label.trim();
+    if (trimmed.length === 0) return;
+    if (currentLabel !== undefined && currentLabel.trim() === trimmed) return;
+    const shape = paneLabelShapeError(trimmed);
+    if (shape) throw new PaneLabelError(shape, paneLabelRejectionMessage(shape));
+    const wanted = normalizePaneLabel(trimmed);
+    for (const [otherId, entry] of this.map) {
+      if (otherId === paneId) continue;
+      if (livePaneIds && !livePaneIds.has(otherId)) continue;
+      const other = entry.metadata.label;
+      if (typeof other === 'string' && normalizePaneLabel(other) === wanted) {
+        throw new PaneLabelError('duplicate', paneLabelRejectionMessage('duplicate'));
+      }
     }
   }
 

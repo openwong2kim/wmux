@@ -42,6 +42,12 @@ export const th = {
 
   // Pane stash (#977) — the pane leaves the layout, its session keeps running.
   'pane.rename': 'เปลี่ยนชื่อพาเนล',
+  'pane.renameError.whitespace': "ชื่อพาเนลต้องไม่มีช่องว่าง",
+  'pane.renameError.reservedChar': "ชื่อพาเนลต้องไม่มี # หรือ @",
+  'pane.renameError.leadingDigit': "ชื่อพาเนลต้องไม่ขึ้นต้นด้วยตัวเลข",
+  'pane.renameError.autoName': "ชื่ออย่าง w1-2 สงวนไว้สำหรับชื่อพาเนลอัตโนมัติ",
+  'pane.renameError.duplicate': "มีพาเนลอื่นใช้ชื่อนี้อยู่แล้ว",
+  'pane.renameError.failed': "ไม่สามารถเปลี่ยนชื่อพาเนลได้",
   'pane.stash': 'เก็บพาเนลไว้ก่อน',
   'pane.stashHint': 'นำออกจากเลย์เอาต์ — เซสชันยังทำงานต่อ',
   'pane.unstash': 'นำกลับมา',

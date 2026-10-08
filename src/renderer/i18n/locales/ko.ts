@@ -314,6 +314,18 @@ export const ko = {
   'pane.maxLeavesReachedWithStash': '페인 한도 도달 ({count}개, 보관 {stashed}개 포함). 보관함에서 꺼내 닫거나, 보이는 페인을 닫으세요.',
 
   'pane.rename': '페인 이름 바꾸기',
+
+  'pane.renameError.whitespace': "페인 이름에는 공백을 쓸 수 없습니다",
+
+  'pane.renameError.reservedChar': "페인 이름에는 # 또는 @를 쓸 수 없습니다",
+
+  'pane.renameError.leadingDigit': "페인 이름은 숫자로 시작할 수 없습니다",
+
+  'pane.renameError.autoName': "w1-2 같은 이름은 자동 페인 이름용으로 예약되어 있습니다",
+
+  'pane.renameError.duplicate': "다른 페인이 이미 이 이름을 쓰고 있습니다",
+
+  'pane.renameError.failed': "페인 이름을 바꾸지 못했습니다",
   'pane.renameTab': '탭 이름 바꾸기',
 
   'pane.stash': '페인 치우기',

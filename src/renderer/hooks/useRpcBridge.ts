@@ -2195,6 +2195,13 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     return { paneId: target.id, workspaceId: wsId };
   }
 
+  if (method === 'pane.liveIds') {
+    // Internal main->renderer channel (no router entry): every pane that exists
+    // right now, stashed ones included, for MetadataStore's label-uniqueness
+    // check. Ids only — no labels, no layout.
+    return { paneIds: store.workspaces.flatMap((w) => getWorkspaceLeafPanes(w).map((l) => l.id)) };
+  }
+
   if (method === 'pane.validateWorkspace') {
     // M0-d follow-up (codex P1): main asks the renderer to confirm that a
     // caller-supplied `paneId` actually belongs to the caller's `workspaceId`.

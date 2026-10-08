@@ -42,6 +42,12 @@ export const nb = {
 
   // Pane stash (#977) — the pane leaves the layout, its session keeps running.
   'pane.rename': 'Gi panelet nytt navn',
+  'pane.renameError.whitespace': "Panelnavn kan ikke inneholde mellomrom",
+  'pane.renameError.reservedChar': "Panelnavn kan ikke inneholde # eller @",
+  'pane.renameError.leadingDigit': "Panelnavn kan ikke starte med et siffer",
+  'pane.renameError.autoName': "Navn som w1-2 er reservert for automatiske panelnavn",
+  'pane.renameError.duplicate': "Et annet panel bruker allerede dette navnet",
+  'pane.renameError.failed': "Kunne ikke gi panelet nytt navn",
   'pane.stash': 'Legg panelet til side',
   'pane.stashHint': 'Fjernes fra oppsettet — økten fortsetter å kjøre',
   'pane.unstash': 'Hent tilbake',

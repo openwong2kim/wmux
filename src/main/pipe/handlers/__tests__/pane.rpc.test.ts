@@ -320,9 +320,12 @@ describe('pane.rpc — metadata', () => {
       // M0-d follow-up (codex P1): paneId-present writes now round-trip
       // through `pane.validateWorkspace` to verify workspace membership.
       // The store write itself still happens in main — sendToRenderer is
-      // ONLY called for the validation IPC, never for the actual mutation.
-      expect(sendToRendererMock).toHaveBeenCalledTimes(1);
+      // ONLY called for the validation IPC and, because a label is being set,
+      // the live-pane read for the label uniqueness check; never for the
+      // actual mutation.
+      expect(sendToRendererMock).toHaveBeenCalledTimes(2);
       expect(sendToRendererMock.mock.calls[0][1]).toBe('pane.validateWorkspace');
+      expect(sendToRendererMock.mock.calls[1][1]).toBe('pane.liveIds');
       // The store committed the sanitized patch.
       const entry = store.get('pane-x');
       expect(entry.version).toBe(1);
@@ -330,6 +333,29 @@ describe('pane.rpc — metadata', () => {
       // P2: `role` is deprecated — the RPC drops it from the patch, so a sent
       // role never reaches the store (label/status/custom are unaffected).
       expect(entry.metadata.role).toBeUndefined();
+    });
+
+    it('returns the pane label policy refusal and leaves the pane untouched', async () => {
+      const { router, store } = setupWithStore();
+      store.set('pane-other', { label: 'backend' });
+      sendToRendererMock.mockImplementation((_w: unknown, method: string, params: Record<string, unknown>) => {
+        if (method === 'pane.liveIds') return Promise.resolve({ paneIds: ['pane-x', 'pane-other'] });
+        return Promise.resolve({ paneId: params['paneId'], workspaceId: params['workspaceId'] });
+      });
+      const dup = await router.dispatch({
+        id: 'rpc-dup',
+        method: 'pane.setMetadata',
+        params: { paneId: 'pane-x', workspaceId: 'ws-1', label: 'Backend' },
+      });
+      expect(dup.ok).toBe(false);
+      expect(dup.ok ? '' : dup.error).toMatch(/pane.setMetadata: another live pane already uses this label/);
+      const spaced = await router.dispatch({
+        id: 'rpc-space',
+        method: 'pane.setMetadata',
+        params: { paneId: 'pane-x', workspaceId: 'ws-1', label: 'two words' },
+      });
+      expect(spaced.ok ? '' : spaced.error).toMatch(/whitespace/);
+      expect(store.get('pane-x').version).toBe(0);
     });
 
     it('honors merge=false (mergeMode=replace) when caller passes it (paneId path)', async () => {
@@ -487,8 +513,10 @@ describe('pane.rpc — metadata', () => {
         params: { label: 'Active' },
       });
       expect(res.ok).toBe(true);
-      // sendToRenderer was called for the resolve, not for a write.
-      expect(sendToRendererMock).toHaveBeenCalledTimes(1);
+      // sendToRenderer was called for the resolve (and the live-pane read the
+      // label check needs), not for a write.
+      expect(sendToRendererMock).toHaveBeenCalledTimes(2);
+      expect(sendToRendererMock.mock.calls[1][1]).toBe('pane.liveIds');
       const [, method, payload] = sendToRendererMock.mock.calls[0];
       expect(method).toBe('pane.resolveActiveLeaf');
       expect(payload).toEqual({ workspaceId: undefined });
@@ -698,10 +726,11 @@ describe('pane.rpc — metadata', () => {
       // events emit with the right scope.
       const entry = store.get('pane-y');
       expect(entry.metadata.label).toBe('X');
-      // M0-d follow-up (codex P1): the only sendToRenderer call is the
-      // validateWorkspace round-trip — the workspace+pane pair gets
-      // confirmed by the renderer before MetadataStore commits.
-      expect(sendToRendererMock).toHaveBeenCalledTimes(1);
+      // M0-d follow-up (codex P1): the validateWorkspace round-trip confirms
+      // the workspace+pane pair before MetadataStore commits; the only other
+      // call is the live-pane read the label uniqueness check needs.
+      expect(sendToRendererMock).toHaveBeenCalledTimes(2);
+      expect(sendToRendererMock.mock.calls[1][1]).toBe('pane.liveIds');
       expect(sendToRendererMock.mock.calls[0][1]).toBe('pane.validateWorkspace');
       expect(sendToRendererMock.mock.calls[0][2]).toEqual({
         paneId: 'pane-y',
@@ -1355,14 +1384,14 @@ describe('pane.rpc — metadata', () => {
       const res = await asAgent(router, {
         paneId: 'pane-a',
         workspaceId: 'ws-1',
-        label: 'Worker 3',
+        label: 'Worker3',
         status: 'busy',
         custom: { [ROLE]: 'Builder', 'my.tool.state': 'ok' },
       });
 
       expect(res.ok).toBe(true);
       const meta = store.get('pane-a').metadata;
-      expect(meta.label).toBe('Worker 3');
+      expect(meta.label).toBe('Worker3');
       expect(meta.status).toBe('busy');
       expect(meta.custom?.['my.tool.state']).toBe('ok');
       expect(meta.custom?.[ROLE]).toBeUndefined();

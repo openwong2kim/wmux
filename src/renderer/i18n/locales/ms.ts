@@ -42,6 +42,12 @@ export const ms = {
 
   // Pane stash (#977) — the pane leaves the layout, its session keeps running.
   'pane.rename': 'Namakan semula panel',
+  'pane.renameError.whitespace': "Nama panel tidak boleh mengandungi ruang",
+  'pane.renameError.reservedChar': "Nama panel tidak boleh mengandungi # atau @",
+  'pane.renameError.leadingDigit': "Nama panel tidak boleh bermula dengan digit",
+  'pane.renameError.autoName': "Nama seperti w1-2 dikhaskan untuk nama panel automatik",
+  'pane.renameError.duplicate': "Panel lain sudah menggunakan nama ini",
+  'pane.renameError.failed': "Tidak dapat menamakan semula panel",
   'pane.stash': 'Ketepikan panel',
   'pane.stashHint': 'Dikeluarkan dari susun atur — sesi terus berjalan',
   'pane.unstash': 'Bawa kembali',

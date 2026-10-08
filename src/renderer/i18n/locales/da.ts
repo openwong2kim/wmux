@@ -42,6 +42,12 @@ export const da = {
 
   // Pane stash (#977) — the pane leaves the layout, its session keeps running.
   'pane.rename': 'Omdøb panel',
+  'pane.renameError.whitespace': "Panelnavne må ikke indeholde mellemrum",
+  'pane.renameError.reservedChar': "Panelnavne må ikke indeholde # eller @",
+  'pane.renameError.leadingDigit': "Panelnavne må ikke starte med et ciffer",
+  'pane.renameError.autoName': "Navne som w1-2 er reserveret til automatiske panelnavne",
+  'pane.renameError.duplicate': "Et andet panel bruger allerede dette navn",
+  'pane.renameError.failed': "Panelet kunne ikke omdøbes",
   'pane.stash': 'Læg panelet til side',
   'pane.stashHint': 'Fjernes fra layoutet — sessionen kører videre',
   'pane.unstash': 'Hent tilbage',

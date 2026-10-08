@@ -10,7 +10,7 @@ import {
 } from '../../utils/sessionInfoMarkdown';
 import { tokenAttrs } from '../../themes';
 import UsageLimitChip from './UsageLimitChip';
-import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
+import { computePaneAutoName, paneDisplayName, paneLabelRejectionKey } from '../../utils/paneNaming';
 import { findPane } from '../../../shared/paneUtils';
 import PaneDragGrip from './PaneDragGrip';
 import { FOCUS_RING } from '../focusRing';
@@ -559,6 +559,10 @@ export default function SurfaceTabs({
   // input, which fires onBlur=commitPaneRename first and would SAVE. This flag
   // lets that blur skip persistence so Escape discards (CodeRabbit review).
   const paneRenameCancelRef = useRef(false);
+  // A rename MetadataStore refused (the pane label policy): the editor stays
+  // open with the reason instead of silently snapping back to the old name.
+  const [paneRenameError, setPaneRenameError] = useState<string | null>(null);
+  const paneRenamePendingRef = useRef(false);
 
   // Double-click a tab to rename it (a free-text "mark" so a powershell is
   // easier to recognise). Edits surface.title directly — nothing auto-updates
@@ -650,6 +654,7 @@ export default function SurfaceTabs({
     // Clear any stale cancel flag from a prior edit whose unmount-blur didn't
     // fire (e.g. parent unmounted) — else this rename would refuse to save (GLM).
     paneRenameCancelRef.current = false;
+    setPaneRenameError(null);
     setPaneEditName(paneLabel ?? '');
     setPaneEditing(true);
   }, [paneLabel]);
@@ -786,14 +791,26 @@ export default function SurfaceTabs({
     // Escape set the cancel flag — discard without persisting and reset it.
     if (paneRenameCancelRef.current) {
       paneRenameCancelRef.current = false;
+      setPaneRenameError(null);
       setPaneEditing(false);
       return;
     }
+    if (paneRenamePendingRef.current) return;
+    paneRenamePendingRef.current = true;
     // Empty clears the custom label (reverts to the auto name). The renderer is
     // not the label authority — route through MetadataStore so the change
-    // persists (metadata.json) and relays back via pane.metadata.changed.
-    void window.electronAPI.metadata.setLabel(paneId, workspace.id, paneEditName.trim());
-    setPaneEditing(false);
+    // persists (metadata.json) and relays back via pane.metadata.changed. A
+    // refusal keeps the editor open with its reason; Escape discards.
+    void window.electronAPI.metadata.setLabel(paneId, workspace.id, paneEditName.trim())
+      .then((res) => {
+        if (res.ok) {
+          setPaneRenameError(null);
+          setPaneEditing(false);
+        } else {
+          setPaneRenameError(t(paneLabelRejectionKey(res.code)));
+        }
+      }, () => setPaneRenameError(t('pane.renameError.failed')))
+      .finally(() => { paneRenamePendingRef.current = false; });
   };
 
   // Always render the strip — even for a single surface — so the X button is
@@ -888,6 +905,7 @@ export default function SurfaceTabs({
           user names the pane (explicit intent to see it), or while the rename
           editor is open (reachable from the pane-actions menu). */}
       {(paneEditing || hasUserLabel || surfaces.length > 1) && (paneEditing ? (
+        <>
         <input
           ref={paneInputRef}
           data-pane-label-input
@@ -895,6 +913,9 @@ export default function SurfaceTabs({
           value={paneEditName}
           maxLength={64}
           placeholder={paneAutoName}
+          aria-invalid={paneRenameError ? true : undefined}
+          aria-describedby={paneRenameError ? `pane-rename-error-${paneId}` : undefined}
+          title={paneRenameError ?? undefined}
           onChange={(e) => setPaneEditName(e.target.value)}
           onBlur={commitPaneRename}
           onKeyDown={(e) => {
@@ -903,13 +924,28 @@ export default function SurfaceTabs({
               // Flag the cancel BEFORE exiting edit mode so the unmount-blur's
               // commitPaneRename discards instead of saving.
               paneRenameCancelRef.current = true;
+              setPaneRenameError(null);
               setPaneEditing(false);
             }
             e.stopPropagation();
           }}
           onClick={(e) => e.stopPropagation()}
-          {...tokenAttrs('accent', 'border')}
+          {...(paneRenameError ? tokenAttrs('danger', 'border') : tokenAttrs('accent', 'border'))}
+          style={paneRenameError ? { borderColor: 'var(--accent-red)' } : undefined}
         />
+        {paneRenameError && (
+          <span
+            id={`pane-rename-error-${paneId}`}
+            role="alert"
+            data-pane-rename-error
+            className="shrink-0 truncate max-w-[220px] text-[10px] text-[var(--accent-red)]"
+            title={paneRenameError}
+            {...tokenAttrs('danger', 'text')}
+          >
+            {paneRenameError}
+          </span>
+        )}
+        </>
       ) : (
         <span
           data-pane-label

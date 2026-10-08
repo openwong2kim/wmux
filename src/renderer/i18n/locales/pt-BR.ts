@@ -42,6 +42,12 @@ export const ptBR = {
 
   // Pane stash (#977) — the pane leaves the layout, its session keeps running.
   'pane.rename': 'Renomear painel',
+  'pane.renameError.whitespace': "Nomes de painel não podem conter espaços",
+  'pane.renameError.reservedChar': "Nomes de painel não podem conter # ou @",
+  'pane.renameError.leadingDigit': "Nomes de painel não podem começar com um dígito",
+  'pane.renameError.autoName': "Nomes como w1-2 são reservados para nomes automáticos de painel",
+  'pane.renameError.duplicate': "Outro painel já usa este nome",
+  'pane.renameError.failed': "Não foi possível renomear o painel",
   'pane.stash': 'Guardar painel',
   'pane.stashHint': 'Sai do layout — a sessão continua rodando',
   'pane.unstash': 'Trazer de volta',

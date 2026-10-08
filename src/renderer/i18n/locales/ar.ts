@@ -42,6 +42,12 @@ export const ar = {
 
   // Pane stash (#977) — the pane leaves the layout, its session keeps running.
   'pane.rename': 'إعادة تسمية الجزء',
+  'pane.renameError.whitespace': "لا يمكن أن يحتوي اسم الجزء على مسافات",
+  'pane.renameError.reservedChar': "لا يمكن أن يحتوي اسم الجزء على # أو @",
+  'pane.renameError.leadingDigit': "لا يمكن أن يبدأ اسم الجزء برقم",
+  'pane.renameError.autoName': "الأسماء مثل w1-2 محجوزة لأسماء الأجزاء التلقائية",
+  'pane.renameError.duplicate': "جزء آخر يستخدم هذا الاسم بالفعل",
+  'pane.renameError.failed': "تعذّرت إعادة تسمية الجزء",
   'pane.stash': 'وضع الجزء جانبًا',
   'pane.stashHint': 'يُزال من التخطيط — تستمر الجلسة في العمل',
   'pane.unstash': 'إعادة',

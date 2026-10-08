@@ -1051,6 +1051,12 @@ export const zh = {
 
   // Pane stash (#977) — the pane leaves the layout, its session keeps running.
   'pane.rename': '重命名面板',
+  'pane.renameError.whitespace': "面板名称不能包含空格",
+  'pane.renameError.reservedChar': "面板名称不能包含 # 或 @",
+  'pane.renameError.leadingDigit': "面板名称不能以数字开头",
+  'pane.renameError.autoName': "w1-2 这类名称保留给自动面板名称",
+  'pane.renameError.duplicate': "已有其他面板使用此名称",
+  'pane.renameError.failed': "无法重命名面板",
   'pane.renameTab': '重命名标签',
   'pane.stash': '收起面板',
   'pane.stashHint': '从布局中移除 — 会话继续运行',

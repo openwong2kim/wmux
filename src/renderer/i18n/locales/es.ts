@@ -42,6 +42,12 @@ export const es = {
 
   // Pane stash (#977) — the pane leaves the layout, its session keeps running.
   'pane.rename': 'Renombrar panel',
+  'pane.renameError.whitespace': "Los nombres de panel no pueden contener espacios",
+  'pane.renameError.reservedChar': "Los nombres de panel no pueden contener # ni @",
+  'pane.renameError.leadingDigit': "Los nombres de panel no pueden empezar con un dígito",
+  'pane.renameError.autoName': "Los nombres como w1-2 están reservados para los nombres automáticos de panel",
+  'pane.renameError.duplicate': "Otro panel ya usa este nombre",
+  'pane.renameError.failed': "No se pudo renombrar el panel",
   'pane.stash': 'Apartar panel',
   'pane.stashHint': 'Se quita del diseño — la sesión sigue en ejecución',
   'pane.unstash': 'Recuperar',

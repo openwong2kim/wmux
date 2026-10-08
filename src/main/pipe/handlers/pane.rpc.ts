@@ -6,6 +6,7 @@ import type { PaneMetadata } from '../../../shared/types';
 import type { RpcContext } from '../../../shared/rpc';
 import { ORCH_ROLE_KEY } from '../../../shared/orchestratorRole';
 import { metadataStore, type MergeMode, type MetadataStore } from '../../metadata/MetadataStore';
+import { fetchLivePaneIds } from '../../metadata/livePaneIds';
 import { getHqWorkspaceId } from '../../deck/deckHqStore';
 import {
   hostedConfinement,
@@ -672,6 +673,12 @@ export function registerPaneRpc(
       }
     }
 
+    // Label uniqueness is judged against the panes that exist right now, so a
+    // label is only worth a renderer round trip when one is being set.
+    const livePaneIds = typeof patch.label === 'string' && patch.label.trim().length > 0
+      ? await fetchLivePaneIds(getWindow)
+      : undefined;
+
     let result;
     try {
       // Passing workspaceId through unchanged (including undefined) lets
@@ -683,6 +690,7 @@ export function registerPaneRpc(
         mergeMode,
         workspaceId: target.workspaceId,
         ...(expectedVersion !== undefined && { expectedVersion }),
+        ...(livePaneIds && { livePaneIds }),
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

@@ -609,6 +609,12 @@ export const en = {
   // The wording carries the whole promise: "stash" removes, "close" destroys,
   // and every string here says which one is happening.
   'pane.rename': 'Rename pane',
+  'pane.renameError.whitespace': "Pane names can't contain spaces",
+  'pane.renameError.reservedChar': "Pane names can't contain # or @",
+  'pane.renameError.leadingDigit': "Pane names can't start with a digit",
+  'pane.renameError.autoName': "Names like w1-2 are reserved for automatic pane names",
+  'pane.renameError.duplicate': "Another pane already uses this name",
+  'pane.renameError.failed': "Could not rename the pane",
   'pane.renameTab': 'Rename tab',
   'pane.stash': 'Stash pane',
   'pane.stashHint': 'Remove from layout — the session keeps running',

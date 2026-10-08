@@ -42,6 +42,12 @@ export const uk = {
 
   // Pane stash (#977) — the pane leaves the layout, its session keeps running.
   'pane.rename': 'Перейменувати панель',
+  'pane.renameError.whitespace': "Назва панелі не може містити пробіли",
+  'pane.renameError.reservedChar': "Назва панелі не може містити # або @",
+  'pane.renameError.leadingDigit': "Назва панелі не може починатися з цифри",
+  'pane.renameError.autoName': "Назви на кшталт w1-2 зарезервовані для автоматичних назв панелей",
+  'pane.renameError.duplicate': "Цю назву вже використовує інша панель",
+  'pane.renameError.failed': "Не вдалося перейменувати панель",
   'pane.stash': 'Відкласти панель',
   'pane.stashHint': 'Прибрати з макета — сесія продовжить працювати',
   'pane.unstash': 'Повернути',

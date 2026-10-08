@@ -20,6 +20,7 @@ import { submitBracketedPasteToPty } from '../../utils/ptyMessageDelivery';
 import { disposePanePtys } from '../../utils/paneTeardown';
 import { findParent, findPane } from '../../../shared/paneUtils';
 import { findStashedEntry } from '../../../shared/paneStash';
+import { paneLabelRejectionKey } from '../../utils/paneNaming';
 import type { TranslationKey } from '../../i18n/locales/en';
 
 export type FleetEditorKind = 'message' | 'label' | 'role' | 'close';
@@ -261,7 +262,10 @@ export function FleetRowEditor({ pane, kind, onDone }: FleetRowEditorProps) {
       }
       submitBracketedPasteToPty(fleetTargetPtyId(fresh), text, { agent: agentName ?? pane.agentName });
     } else {
-      window.electronAPI.metadata.setLabel(pane.paneId, pane.workspaceId, value.trim()).catch((err: unknown) => {
+      window.electronAPI.metadata.setLabel(pane.paneId, pane.workspaceId, value.trim()).then((res) => {
+        // The pane label policy refused it: say why, not just that it failed.
+        if (!res.ok) useStore.getState().pushToast({ level: 'error', message: t(paneLabelRejectionKey(res.code)) });
+      }, (err: unknown) => {
         console.error('[fleet] setLabel failed', err);
         useStore.getState().pushToast({ level: 'error', message: t('fleet.label.failed') });
       });
