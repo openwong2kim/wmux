@@ -1,7 +1,8 @@
 # Cross-PC A2A (experimental)
 
 > **Goal:** let an agent in a pane on one of your PCs hand work to an agent in
-> a pane on another of your PCs on the same LAN, and get the reply back.
+> a pane on another of your PCs on the same LAN (or the same Tailscale
+> tailnet), and get the reply back.
 
 Cross-PC A2A connects wmux on two PCs you own, pane to pane. An agent on PC A
 sends a task to a linked pane on PC B with `send_message`; B's agent sees it
@@ -66,7 +67,8 @@ is the one that will accept connections, and PC A is the one that joins it.
 
    It names this PC (its machine name first, then up to four fallback IPv4
    addresses after `alt=`), the port, a one-time code, and the certificate
-   fingerprint. The section lists the addresses the other PC will try. The
+   fingerprint. The section lists the addresses the other PC will try; a
+   tailnet address is marked "(Tailscale)". The
    invite is valid for **10 minutes** and survives **5** wrong attempts; one
    invite pairs one PC. Send it to PC A over any channel you trust; it is
    meant to be pasted, not clicked.
@@ -254,9 +256,39 @@ turned on, the Mac can only be a joiner.
   address stable, and avoids sleep-related drops.
 - Invites use the machine name first. If company DNS does not resolve it, the
   joiner falls back to the IPv4 addresses listed in the invite. After
-  pairing, the joiner remembers both the name and the address it reached, so
-  a later DHCP address change is not a problem as long as one of them still
-  works. The certificate pin, not the address, is what identifies the PC.
+  pairing, the joiner remembers every address in the invite, the one it
+  reached first and the ones that did not answer last, so a later DHCP
+  address change is not a problem as long as one of them still works.
+  Whichever address answers is tried first on the next connection. The
+  certificate pin, not the address, is what identifies the PC.
+
+### Over Tailscale
+
+Cross-PC A2A also works between your own PCs on one
+[Tailscale](https://tailscale.com) tailnet, for example a desktop at the
+office and a laptop at home.
+
+- **The invite includes the tailnet address.** When the server PC is on a
+  tailnet, its invite lists its LAN addresses first and then its tailnet
+  address (100.x.y.z), marked "(Tailscale)" in the section. If the PC has
+  so many LAN addresses that they would fill the invite, the last slot is
+  kept for the tailnet address. Docker, WSL, Hyper-V and other virtual
+  adapters are still left out.
+- **Pair from either network.** A joiner on the same LAN reaches the LAN
+  address; a joiner elsewhere on the tailnet falls back to the tailnet
+  address after the LAN ones time out (a few seconds each).
+- **Roaming.** The joiner keeps every address from the invite, including
+  the ones that did not answer while pairing. When a laptop moves between
+  the office LAN and the tailnet, the next connection that gets through at
+  another address moves that address to the front, so only the first
+  reconnect after a move waits out the address that no longer answers (at
+  most 5 seconds per address).
+- **Nothing else changes.** The tailnet is only a route: identity is still
+  the certificate pin, pairing still needs a fresh invite, and links are
+  still made by people. The server needs the port open on its tailnet
+  interface just as on the LAN (Tailscale ACLs, if you use them, must allow
+  it). A company network that forbids Tailscale is unaffected: without a
+  tailnet address, invites and connections are the same as before.
 
 ## Troubleshooting
 
