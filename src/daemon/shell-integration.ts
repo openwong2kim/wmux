@@ -344,10 +344,12 @@ $global:__wmux_osc7 = {
 #
 # A loop typed at the prompt (for/foreach/while) is the exception: its body's
 # lookups are top level too, so the hook would stay armed for the whole loop
-# (a 20,000-command loop ran about 1.7-2x slower). It therefore also disarms
-# after 64 lookups on one line. A hand-typed line makes far fewer, and 64 armed
-# lookups cost a few milliseconds. The consequence: a cd placed after the first
-# 64 lookups on one line is reported at the next prompt, not immediately.
+# (a 20,000-command loop ran about 2x slower). It therefore also disarms after
+# 64 lookups on one line. Measured on 5.1: an armed lookup costs about 45 us, so
+# the cap bounds the cost of a line at about 3 ms, and long hand-typed lines
+# (pipelines, chains of ten commands) made at most 10 armed lookups. The
+# consequence: a cd placed after the first 64 lookups on one line is reported
+# at the next prompt, not immediately.
 #
 # An action the user already set is kept: it is chained while ours is armed and
 # restored when ours disarms.
