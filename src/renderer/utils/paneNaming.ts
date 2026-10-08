@@ -78,6 +78,20 @@ export function paneTag(ws: { wsOrdinal?: number }, leaf: { ordinal?: number }):
   return `#${computePaneAutoName(ws.wsOrdinal ?? 0, leaf.ordinal ?? 0)}`;
 }
 
+/** `paneName` (what the header shows) + `paneTag` (the unique address), the
+ *  pair every agent-facing pane listing carries so an agent can echo either. */
+export function paneNameFields(
+  paneLabel: Record<string, string> | undefined,
+  surfaceAgent: Record<string, { slug?: AgentSlug }> | undefined,
+  ws: { wsOrdinal?: number },
+  leaf: { id: string; ordinal?: number; metadata?: { label?: string }; activeSurfaceId?: string; surfaces: Array<{ id: string; ptyId?: string }> },
+): { paneName: string; paneTag: string } {
+  return {
+    paneName: leafDisplayName(paneLabel, ws, leaf, activeAgentSlug(surfaceAgent, leaf)),
+    paneTag: paneTag(ws, leaf),
+  };
+}
+
 const LABEL_REJECTION_KEYS: Record<PaneLabelRejection, TranslationKey> = {
   whitespace: 'pane.renameError.whitespace',
   'reserved-char': 'pane.renameError.reservedChar',

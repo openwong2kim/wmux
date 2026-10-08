@@ -191,6 +191,7 @@ describe('hostedWorkspaceBinding — decision', () => {
       'pane.clearMetadata',
       'pane.getMetadata',
       'pane.list',
+      'pane.resolveName',
       'pane.search',
       'pane.setMetadata',
       'pane.split',
@@ -201,6 +202,7 @@ describe('hostedWorkspaceBinding — decision', () => {
   it.each<[RpcMethod, 'read' | 'write']>([
     ['terminal.readEvents', 'read'],
     ['pane.getMetadata', 'read'],
+    ['pane.resolveName', 'read'],
     ['input.send', 'write'],
     ['input.sendKey', 'write'],
     ['pane.setMetadata', 'write'],

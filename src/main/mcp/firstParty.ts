@@ -174,6 +174,8 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   'surface.close',
   // panes + metadata
   'pane.list',
+  // pane-name targeting (#w1-2) on the terminal, pane and A2A tools
+  'pane.resolveName',
   'fleet.triage',
   'pane.search',
   'pane.getMetadata',

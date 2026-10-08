@@ -401,6 +401,8 @@ export type RpcMethod =
   | 'surface.focus'
   | 'surface.close'
   | 'pane.list'
+  // `#w1-2` / `#backend` → the pane's ids (MCP tools accept pane names).
+  | 'pane.resolveName'
   // The Fleet attention board (needs you / running / idle) as data.
   | 'fleet.triage'
   | 'pane.focus'
@@ -692,6 +694,7 @@ export const ALL_RPC_METHODS = [
   'surface.focus',
   'surface.close',
   'pane.list',
+  'pane.resolveName',
   'fleet.triage',
   'pane.focus',
   'pane.split',

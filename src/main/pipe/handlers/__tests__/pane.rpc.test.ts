@@ -2064,3 +2064,28 @@ describe('pane.list — the HQ also sees agents in other workspaces', () => {
     expect((none as { result: Record<string, unknown> }).result).not.toHaveProperty('otherWorkspaceAgents');
   });
 });
+
+describe('pane.rpc — pane.resolveName', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('forwards the name (and an explicit scope) and returns a miss as an answer', async () => {
+    sendToRendererMock.mockResolvedValue({ ok: false, reason: 'not_found', error: 'no pane named "#x"' });
+    const response = await register().dispatch({ id: 'n1', method: 'pane.resolveName', params: { name: '#x', workspaceId: 'ws-1' } });
+    expect(response).toMatchObject({ ok: true, result: { ok: false, reason: 'not_found' } });
+    expect(sendToRendererMock).toHaveBeenCalledWith(expect.any(Function), 'pane.resolveName', { name: '#x', workspaceId: 'ws-1' });
+  });
+
+  it('fails when the renderer cannot answer instead of reporting not_found', async () => {
+    sendToRendererMock.mockResolvedValue({ error: 'pane gate not ready', retryable: true });
+    const response = await register().dispatch({ id: 'n2', method: 'pane.resolveName', params: { name: '#w1-1' } });
+    expect(response.ok).toBe(false);
+  });
+
+  it('refuses a non-string scope instead of widening to every workspace', async () => {
+    const response = await register().dispatch({ id: 'n3', method: 'pane.resolveName', params: { name: '#w1-1', workspaceId: 7 } });
+    expect(response.ok).toBe(false);
+    expect(sendToRendererMock).not.toHaveBeenCalled();
+  });
+});

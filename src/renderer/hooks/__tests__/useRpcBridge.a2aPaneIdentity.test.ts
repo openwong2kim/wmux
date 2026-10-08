@@ -109,6 +109,24 @@ describe('useRpcBridge — pane-level A2A identity wiring', () => {
     expect(block).toMatch(/agentName: a\?\.name \?\? null/);
   });
 
+  // Pane tags: every agent-facing pane listing names the pane the way the
+  // header does (paneName) and by the unique address tools accept (paneTag).
+  it('pane.list, a2a.discover and a2a.whoami carry paneName + paneTag', () => {
+    const list = region("method === 'pane\\.list'", 'pane\\.focus');
+    expect(list).toContain('...paneNameFields(store.paneLabel, store.surfaceAgent, ws, l)');
+    const discover = region("method === 'a2a\\.discover'", "method === 'a2a\\.task\\.send'");
+    expect(discover).toContain('paneNameFields(store.paneLabel, store.surfaceAgent, w, leaf)');
+    expect(discover).toMatch(/\.\.\.names,/);
+    const whoami = region("method === 'a2a\\.whoami'", "method === 'a2a\\.discover'");
+    expect(whoami).toContain('paneNameFields(store.paneLabel, store.surfaceAgent, ws, selfLeaf)');
+  });
+
+  it('pane.resolveName answers from the pure resolver, scoped only by an explicit workspaceId', () => {
+    const block = region("method === 'pane\\.resolveName'", "method === 'pane\\.liveIds'");
+    expect(block).toContain('resolvePaneName(workspaces, store.paneLabel, store.surfaceAgent, name)');
+    expect(block).not.toMatch(/activeWorkspaceId/);
+  });
+
   it('a2a.task.send resolves an explicit address and HARD-rejects an invalid one (no active-pane fallback)', () => {
     const block = region("method === 'a2a\\.task\\.send'", "method === 'a2a\\.task\\.query'");
     // #977 — getWorkspaceLeafPanes: A2A delivery is an ADDRESS operation, so a

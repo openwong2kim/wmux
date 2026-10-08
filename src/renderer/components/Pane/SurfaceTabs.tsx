@@ -834,7 +834,7 @@ export default function SurfaceTabs({
     // silently failed. text/plain alone behaves like a paste and is
     // accepted by every chat client we have tested.
     const state = useStore.getState();
-    const md = buildPaneMarkdown(workspace, paneId, state.surfaceAgent, state);
+    const md = buildPaneMarkdown(workspace, paneId, state.surfaceAgent, state, state.paneLabel);
     e.dataTransfer.setData('text/plain', md);
     e.dataTransfer.effectAllowed = 'copy';
     setTerminalTextDropDragActive(true);

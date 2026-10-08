@@ -201,6 +201,8 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
 
   // --- Pane lifecycle ---
   'pane.list':   { capability: 'pane.read', riskClass: 'pane-lifecycle' },
+  // A name → ids lookup: the same ids pane.list already hands out.
+  'pane.resolveName': { capability: 'pane.read', riskClass: 'pane-lifecycle' },
   // The answer carries agent-authored output (last message, tool activity)
   // for every pane, so it is terminal content, not a pane listing: a
   // third-party plugin needs the same grant input.readScreen does.

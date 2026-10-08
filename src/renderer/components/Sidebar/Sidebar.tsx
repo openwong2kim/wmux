@@ -294,7 +294,7 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
     const ws = state.workspaces.find((w) => w.id === wsId);
     if (!ws) return;
 
-    await window.clipboardAPI.writeText(buildWorkspaceMarkdown(ws, state.surfaceAgent, state));
+    await window.clipboardAPI.writeText(buildWorkspaceMarkdown(ws, state.surfaceAgent, state, state.paneLabel));
 
     // 정본 토스트(toastSlice)로 피드백 — 기존 수동 DOM 토스트는 store 우회였다.
     pushToast({ level: 'info', message: t('workspace.copied') });

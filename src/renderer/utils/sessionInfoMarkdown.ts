@@ -1,6 +1,8 @@
 import type { Pane, PaneLeaf, Workspace } from '../../shared/types';
 import { getLeafPanes } from '../../shared/paneUtils';
+import type { AgentSlug } from '../../shared/events';
 import { surfaceForegroundProgram, type SurfaceAgentNames, type SurfaceProgramLiveness } from './surfaceProgram';
+import { paneNameFields } from './paneNaming';
 
 // MIME types for drag-and-drop payloads.
 // External AI chats (Claude Desktop, ChatGPT, Cursor) read text/plain.
@@ -41,6 +43,34 @@ const MCP_CONTROL_LINES = [
   '- List all surfaces: surface_list()',
 ];
 
+type MarkdownSurfaceAgents = SurfaceAgentNames & Readonly<Record<string, { slug?: AgentSlug } | undefined>>;
+
+/** Pane-chosen text on one line: a legacy label could still carry a newline,
+ *  which would otherwise forge a line of this markdown. */
+function oneLine(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/[\u0000-\u001f\u007f]/g, ' ').trim();
+}
+
+/** `- Pane tag: #w1-2`, plus `- Pane name: …` when the user labelled the pane.
+ *  The tag is what an agent passes to wmux tools in place of the ids. A pane
+ *  with no ordinals yet (a hand-built fixture, never a live pane) has no tag
+ *  worth printing — `#w0-0` would resolve to nothing. */
+function paneNameLines(
+  ws: Workspace,
+  leaf: PaneLeaf,
+  surfaceAgent: MarkdownSurfaceAgents,
+  paneLabel: Record<string, string> | undefined,
+  indent: string,
+): string[] {
+  const { paneName, paneTag } = paneNameFields(paneLabel, surfaceAgent as Record<string, { slug?: AgentSlug }>, ws, leaf);
+  const label = paneLabel?.[leaf.id] ?? leaf.metadata?.label;
+  const lines: string[] = [];
+  if (typeof ws.wsOrdinal === 'number' && typeof leaf.ordinal === 'number') lines.push(`${indent}- Pane tag: ${paneTag}`);
+  if (label && label.trim()) lines.push(`${indent}- Pane name: ${oneLine(paneName)}`);
+  return lines;
+}
+
 function renderSurfaceLines(
   leaf: PaneLeaf,
   paneIndex: number,
@@ -49,6 +79,9 @@ function renderSurfaceLines(
   out: string[],
   surfaceAgent: SurfaceAgentNames,
   liveness: SurfaceProgramLiveness,
+  // Pane-level lines (the pane tag) repeated under each of its surfaces, so the
+  // numbered list keeps its legacy shape.
+  paneLines: readonly string[] = [],
 ): number {
   let idx = paneIndex;
   for (const s of leaf.surfaces) {
@@ -57,11 +90,13 @@ function renderSurfaceLines(
 
     if (surfaceType === 'browser') {
       out.push(`${idx}. ${activeTag}Browser`);
+      out.push(...paneLines);
       out.push(`   - Surface ID: ${s.id}`);
       if (s.browserUrl) out.push(`   - URL: ${s.browserUrl}`);
     } else if (surfaceType === 'diff') {
       // J2 — diff 서피스는 PTY 없음. taskId만 표시(PTY ID 오표기 방지).
       out.push(`${idx}. ${activeTag}Diff`);
+      out.push(...paneLines);
       out.push(`   - Surface ID: ${s.id}`);
       if (s.diffTaskId) out.push(`   - Task ID: ${s.diffTaskId}`);
     } else if (surfaceType === 'remote-terminal') {
@@ -77,6 +112,7 @@ function renderSurfaceLines(
       // remote shell reports is the one live description, so it goes on its
       // own line where it is not pretending to be a shell name.
       out.push(`${idx}. ${activeTag}Remote terminal`);
+      out.push(...paneLines);
       out.push(`   - Surface ID: ${s.id}`);
       if (s.remoteHostId) out.push(`   - Host ID: ${s.remoteHostId}`);
       if (s.remoteSessionId) out.push(`   - Remote session: ${s.remoteSessionId}`);
@@ -87,6 +123,7 @@ function renderSurfaceLines(
       if (s.cwd) out.push(`   - CWD (remote): ${s.cwd}`);
     } else {
       out.push(`${idx}. ${activeTag}Terminal — ${surfaceForegroundProgram(s, surfaceAgent, liveness) || s.shell || 'unknown'}`);
+      out.push(...paneLines);
       out.push(`   - Surface ID: ${s.id}`);
       out.push(`   - PTY ID: ${s.ptyId}`);
       const cwd = meta?.cwd || s.cwd;
@@ -100,7 +137,12 @@ function renderSurfaceLines(
 }
 
 // Workspace-scoped markdown. Plain shells keep the legacy clipboard format.
-export function buildWorkspaceMarkdown(ws: Workspace, surfaceAgent: SurfaceAgentNames = {}, liveness: SurfaceProgramLiveness = {}): string {
+export function buildWorkspaceMarkdown(
+  ws: Workspace,
+  surfaceAgent: MarkdownSurfaceAgents = {},
+  liveness: SurfaceProgramLiveness = {},
+  paneLabel?: Record<string, string>,
+): string {
   const leaves = collectLeaves(ws.rootPane);
   const meta = ws.metadata;
 
@@ -114,7 +156,8 @@ export function buildWorkspaceMarkdown(ws: Workspace, surfaceAgent: SurfaceAgent
   let paneIndex = 1;
   for (const leaf of leaves) {
     const isActive = leaf.id === ws.activePaneId;
-    paneIndex = renderSurfaceLines(leaf, paneIndex, isActive, meta, lines, surfaceAgent, liveness);
+    const paneLines = paneNameLines(ws, leaf, surfaceAgent, paneLabel, '   ');
+    paneIndex = renderSurfaceLines(leaf, paneIndex, isActive, meta, lines, surfaceAgent, liveness, paneLines);
   }
 
   lines.push(...MCP_CONTROL_LINES);
@@ -125,12 +168,19 @@ export function buildWorkspaceMarkdown(ws: Workspace, surfaceAgent: SurfaceAgent
 // Pane-scoped markdown. Same body shape as workspace export, narrowed to a
 // single leaf so an external LLM can reason about one terminal/browser
 // without the noise of sibling panes.
-export function buildPaneMarkdown(ws: Workspace, paneId: string, surfaceAgent: SurfaceAgentNames = {}, liveness: SurfaceProgramLiveness = {}): string {
+export function buildPaneMarkdown(
+  ws: Workspace,
+  paneId: string,
+  surfaceAgent: MarkdownSurfaceAgents = {},
+  liveness: SurfaceProgramLiveness = {},
+  paneLabel?: Record<string, string>,
+): string {
   const leaf = findLeaf(ws.rootPane, paneId);
   const meta = ws.metadata;
 
   const lines: string[] = [
     `# wmux Pane in "${ws.name}"`,
+    ...(leaf ? paneNameLines(ws, leaf, surfaceAgent, paneLabel, '') : []),
     `- Workspace ID: ${ws.id}`,
     `- Pane ID: ${paneId}`,
     '',

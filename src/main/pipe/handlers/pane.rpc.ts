@@ -318,6 +318,41 @@ export function registerPaneRpc(
   });
 
   /**
+   * pane.resolveName — a pane name (`#w1-2`, `w1-2(claude)`, `#backend`) to the
+   * pane's ids. params: { name: string, workspaceId?: string }; omitted
+   * workspaceId searches every workspace. The renderer owns the names (layout
+   * ordinals + the paneLabel mirror), so it answers.
+   *
+   * Reply: { ok: true, target: { workspaceId, paneId, surfaceId, ptyId,
+   * paneName, paneTag } } | { ok: false, reason: 'invalid'|'not_found'|
+   * 'ambiguous', error }. A miss is an answer, not a failure, so a caller can
+   * tell "no such name" from "wmux is unreachable". Resolution grants nothing:
+   * callers route the returned ids through their usual authorization.
+   */
+  router.register('pane.resolveName', async (params) => {
+    const name = params['name'];
+    if (typeof name !== 'string') throw new Error('pane.resolveName: "name" must be a string');
+    // A malformed scope must not widen to every workspace (fleet.triage's rule).
+    const rawScope = params['workspaceId'];
+    if (rawScope !== undefined && typeof rawScope !== 'string') {
+      throw new Error('pane.resolveName: "workspaceId" must be a string');
+    }
+    const workspaceId = rawScope;
+    const res = (await sendToRenderer(getWindow, 'pane.resolveName', {
+      name,
+      ...(workspaceId ? { workspaceId } : {}),
+    })) as { ok?: unknown; error?: unknown } | null;
+    // A booting renderer answers { error, retryable } with no `ok` (pane.list's
+    // contract); surface that as a failure rather than as "not found".
+    if (!res || typeof res.ok !== 'boolean') {
+      throw new Error(
+        res && typeof res.error === 'string' ? res.error : 'pane.resolveName: renderer returned no answer',
+      );
+    }
+    return res;
+  });
+
+  /**
    * fleet.triage — the Fleet attention board (needs you / running / idle) as
    * data, computed in the renderer by the same selector the Fleet overlay
    * renders. params: { workspaceId?: string, includeIdle?: boolean }; omitted

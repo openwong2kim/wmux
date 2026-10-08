@@ -194,6 +194,7 @@ export const COMMANDER_RPC_METHODS: ReadonlySet<string> = new Set<string>([
   'surface.new',
   // panes + metadata (no close)
   'pane.list',
+  'pane.resolveName',
   'fleet.triage',
   'pane.search',
   'pane.getMetadata',

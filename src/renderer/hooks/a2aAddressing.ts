@@ -595,7 +595,7 @@ const PANE_TITLE_CAP = 40;
  *  dropped and the rest is truncated. Same defensive posture as the nudge's
  *  sanitizeA2aName — the title is DATA, and a long one must not be able to
  *  inflate an error payload either. */
-function sanitizePaneTitle(title: string): string {
+export function sanitizePaneTitle(title: string): string {
   // eslint-disable-next-line no-control-regex
   const flat = title.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
   return flat.length > PANE_TITLE_CAP ? `${flat.slice(0, PANE_TITLE_CAP - 1)}…` : flat;
