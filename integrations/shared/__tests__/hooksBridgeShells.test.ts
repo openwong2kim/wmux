@@ -191,4 +191,15 @@ describe('kiro through the shared bridge, installed layout', () => {
     expect(result).toMatchObject({ code: 0, stdout: '' });
     expect(signalFor('kiro-bash')?.params).toMatchObject({ kind: 'agent.stop', agent: 'kiro' });
   }, 60_000);
+
+  // Copied without the shared bridge beside it (the pre-move README habit):
+  // no signal, but still the bridge contract — exit 0, nothing on stdout.
+  it('still exits 0 silently when copied alone', async () => {
+    const lone = path.join(home, 'kiro alone');
+    fs.mkdirSync(lone, { recursive: true });
+    fs.copyFileSync(path.join(REPO_ROOT, 'integrations', 'kiro', 'bin', 'wmux-kiro-bridge.mjs'), path.join(lone, 'wmux-kiro-bridge.mjs'));
+    const result = await run(process.execPath, [path.join(lone, 'wmux-kiro-bridge.mjs')], 'kiro-lone', stop());
+    expect(result).toMatchObject({ code: 0, stdout: '', stderr: '' });
+    expect(signalFor('kiro-lone')).toBeUndefined();
+  }, 60_000);
 });

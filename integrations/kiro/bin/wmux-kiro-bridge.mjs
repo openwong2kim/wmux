@@ -24,18 +24,34 @@ import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { realpathSync } from 'node:fs';
 
+// Installed layout first, then the source checkout. Null when neither exists.
 async function loadShared() {
-  try {
-    // Present only in the installed layout; the catch covers a source checkout.
-    // eslint-disable-next-line import/no-unresolved
-    return await import('./wmux-hooks-bridge.mjs');
-  } catch (err) {
-    if (err?.code !== 'ERR_MODULE_NOT_FOUND') throw err;
-    return import('../../shared/bin/wmux-hooks-bridge.mjs');
+  // The first path exists only in the installed layout.
+  // eslint-disable-next-line import/no-unresolved
+  for (const load of [() => import('./wmux-hooks-bridge.mjs'), () => import('../../shared/bin/wmux-hooks-bridge.mjs')]) {
+    try {
+      return await load();
+    } catch (err) {
+      if (err?.code !== 'ERR_MODULE_NOT_FOUND') throw err;
+    }
   }
+  return null;
 }
 
-const shared = await loadShared();
+let shared = null;
+let loadError = null;
+try {
+  shared = await loadShared();
+} catch (err) {
+  loadError = err;
+}
+if (!shared) {
+  // Spawned by Kiro with the shared bridge missing (this file copied alone) or
+  // broken: the bridge contract is still exit 0, silently, never a stack trace
+  // into the host. Imported (tests): fail loudly instead.
+  if (invokedAsScript()) process.exit(0);
+  throw loadError ?? new Error('wmux-kiro-bridge: wmux-hooks-bridge.mjs not found beside it or in the source tree');
+}
 
 /** The Kiro envelope builder — the shared normaliser with the `kiro` flavour. */
 export function buildKiroEnvelope(payload, options = {}) {
