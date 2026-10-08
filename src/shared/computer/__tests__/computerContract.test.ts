@@ -8,7 +8,7 @@ import {
 } from '../errors';
 import { computeScreenshotScale, scaledSize, screenshotPointToWindow } from '../scale';
 import { COMPUTER_ACTIONS, isControlAction, isKey, normalizeKey, normalizeModifier, parseHelperLine, parseHotkey } from '../protocol';
-import { blockReasonFor, osChordRefusal, osPointerModifierRefusal } from '../blocklist';
+import { blockReasonFor, osChordRefusal, selectorBlockReasonFor } from '../blocklist';
 
 describe('computer errors', () => {
   it('gives every code at least one next step', () => {
@@ -123,9 +123,11 @@ describe('blocklist', () => {
     expect(blockReasonFor(app('/Applications/1Password.app', 'com.1password.1password'))).toBe('password-manager');
   });
 
-  it('blocks terminals and agent hosts', () => {
-    expect(blockReasonFor(app('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'))).toBe('terminal');
-    expect(blockReasonFor(app('/Applications/iTerm.app', 'com.googlecode.iterm2'))).toBe('terminal');
+  it('allows terminals and agent apps (owner decision 2026-10-08)', () => {
+    expect(blockReasonFor(app('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'))).toBeNull();
+    expect(blockReasonFor(app('/Applications/iTerm.app', 'com.googlecode.iterm2'))).toBeNull();
+    expect(blockReasonFor(app('/System/Applications/Utilities/Terminal.app', 'com.apple.Terminal'))).toBeNull();
+    expect(blockReasonFor(app('/Applications/Claude.app', 'com.anthropic.claudefordesktop'))).toBeNull();
   });
 
   it('blocks wmux by pid and by its own exe path', () => {
@@ -135,6 +137,7 @@ describe('blocklist', () => {
 
   it('blocks UAC and credential prompts', () => {
     expect(blockReasonFor(app('C:\\Windows\\System32\\consent.exe'))).toBe('credential-prompt');
+    expect(blockReasonFor(app('/System/Library/Frameworks/Security.framework/SecurityAgent.app', 'com.apple.SecurityAgent'))).toBe('credential-prompt');
   });
 
   it('allows ordinary apps', () => {
@@ -186,62 +189,69 @@ describe('key vocabulary', () => {
   });
 });
 
-describe('blocklist additions', () => {
+describe('blocklist after the 2026-10-08 trim', () => {
   const app = (path: string, bundleId?: string) => ({ pid: 99, path, ...(bundleId && { bundleId }) });
 
-  it('blocks system settings, script runners and process managers on both OSes', () => {
-    for (const exe of ['C:\\Windows\\System32\\Taskmgr.exe', 'C:\\Windows\\regedit.exe', 'C:\\Windows\\ImmersiveControlPanel\\SystemSettings.exe']) {
-      expect(blockReasonFor(app(exe)), exe).toBe('system-tool');
+  it('allows system settings, script runners and process managers on both OSes', () => {
+    for (const exe of ['C:\\Windows\\System32\\Taskmgr.exe', 'C:\\Windows\\regedit.exe', 'C:\\Windows\\ImmersiveControlPanel\\SystemSettings.exe', 'C:\\Windows\\explorer.exe']) {
+      expect(blockReasonFor(app(exe)), exe).toBeNull();
     }
-    for (const id of ['com.apple.systempreferences', 'com.apple.ScriptEditor2', 'com.apple.Automator', 'com.apple.shortcuts', 'com.apple.ActivityMonitor']) {
-      expect(blockReasonFor(app(`/Applications/${id}.app`, id)), id).toBe('system-tool');
+    for (const id of ['com.apple.systempreferences', 'com.apple.ScriptEditor2', 'com.apple.Automator', 'com.apple.shortcuts', 'com.apple.ActivityMonitor', 'com.apple.dt.Xcode']) {
+      expect(blockReasonFor(app(`/Applications/${id}.app`, id)), id).toBeNull();
     }
   });
 
-  it('blocks more shells and terminals', () => {
-    expect(blockReasonFor(app('C:\\Windows\\System32\\wsl.exe'))).toBe('terminal');
-    for (const host of ['powershell_ise.exe', 'mshta.exe', 'wscript.exe', 'cscript.exe']) {
-      expect(blockReasonFor(app(`C:\\Windows\\System32\\${host}`)), host).toBe('system-tool');
+  it('still blocks password managers, wmux and credential prompts', () => {
+    expect(blockReasonFor(app('/System/Applications/Passwords.app', 'com.apple.Passwords'))).toBe('password-manager');
+    expect(blockReasonFor(app('/Applications/wmux.app', 'com.electron.wmux'))).toBe('wmux');
+    expect(blockReasonFor(app('C:\\Windows\\System32\\LogonUI.exe'))).toBe('credential-prompt');
+  });
+});
+
+describe('openApp selector check', () => {
+  it('refuses a blocked app by name, bundle id, listApps id or path before launch', () => {
+    for (const selector of ['1Password', 'bitwarden', 'Keychain Access', 'Passwords', 'com.1password.1password', 'COM.BITWARDEN.DESKTOP', '/Applications/1Password.app', '/Applications/1Password.app/', 'C:\\Program Files\\KeePassXC\\KeePassXC.exe']) {
+      expect(selectorBlockReasonFor(selector), selector).toBe('password-manager');
     }
-    expect(blockReasonFor(app('C:\\Program Files\\Git\\git-bash.exe'))).toBe('terminal');
-    expect(blockReasonFor(app('/Applications/Warp.app', 'dev.warp.Warp-Preview'))).toBe('terminal');
-    expect(blockReasonFor(app('/Applications/Rio.app', 'com.raphaelamorim.rio'))).toBe('terminal');
+    expect(selectorBlockReasonFor('wmux')).toBe('wmux');
+    expect(selectorBlockReasonFor('com.electron.wmux')).toBe('wmux');
+    expect(selectorBlockReasonFor('/apps/renamed.app', { selfExePath: '/apps/renamed.app' })).toBe('wmux');
+    expect(selectorBlockReasonFor('pid:42', { selfPids: new Set([42]) })).toBe('wmux');
   });
 
-  it('still lets ordinary apps through', () => {
-    expect(blockReasonFor(app('C:\\Windows\\notepad.exe'))).toBeNull();
-    expect(blockReasonFor(app('/System/Applications/TextEdit.app', 'com.apple.TextEdit'))).toBeNull();
+  it('lets other selectors through', () => {
+    for (const selector of ['Terminal', 'System Settings', 'com.apple.systempreferences', 'Xcode', '/Applications/Safari.app', 'pid:7', '']) {
+      expect(selectorBlockReasonFor(selector), selector).toBeNull();
+    }
   });
 });
 
 describe('OS-wide chord refusal', () => {
   it('lets ordinary bare keys through', () => {
-    for (const key of ['Escape', 'Tab', 'Enter', 'F5', 'a']) {
+    for (const key of ['Escape', 'Tab', 'Enter', 'F3', 'F4', 'F5', 'F11', 'F12', 'a']) {
       expect(osChordRefusal('win32', [], key)).toBeNull();
       expect(osChordRefusal('darwin', [], key)).toBeNull();
     }
-    expect(osChordRefusal('win32', [], 'F11')).toBeNull();
   });
 
-  it('refuses the macOS function keys bound to system UI by default', () => {
-    for (const key of ['F3', 'F4', 'F11', 'F12']) expect(osChordRefusal('darwin', [], key), key).not.toBeNull();
-    expect(osChordRefusal('darwin', ['meta'], 'F3')).not.toBeNull();
-    expect(osChordRefusal('darwin', ['meta'], 'F5')).not.toBeNull();
-    expect(osChordRefusal('darwin', ['meta', 'alt'], 'F5')).not.toBeNull();
-    expect(osChordRefusal('darwin', ['meta', 'alt'], '8')).not.toBeNull();
-    expect(osChordRefusal('darwin', ['ctrl', 'alt', 'meta'], '8')).not.toBeNull();
-    expect(osChordRefusal('darwin', ['meta'], '8')).toBeNull();
+  it('allows app switching, Start / Spotlight and Mission Control', () => {
+    for (const [mods, key] of [[['meta'], 'Tab'], [['meta'], 'Space'], [['ctrl'], 'Space'], [['ctrl'], 'ArrowUp'], [['ctrl'], 'F2'], [['meta', 'shift'], '4'], [['meta', 'alt'], 'd']] as const) {
+      expect(osChordRefusal('darwin', mods, key), [...mods, key].join('+')).toBeNull();
+    }
+    for (const [mods, key] of [[['alt'], 'Tab'], [['meta'], 'r'], [['meta'], 'd'], [['ctrl'], 'Escape'], [['alt'], 'Escape'], [['alt'], 'Space'], [['meta'], 'Tab']] as const) {
+      expect(osChordRefusal('win32', mods, key), [...mods, key].join('+')).toBeNull();
+    }
   });
 
-  it('refuses Alt+Space on Windows', () => {
-    expect(osChordRefusal('win32', ['alt'], 'Space')).not.toBeNull();
-    expect(osChordRefusal('win32', ['ctrl'], 'Space')).toBeNull();
-  });
-
-  it('refuses a Windows-key click but not other modified clicks', () => {
-    expect(osPointerModifierRefusal('win32', ['meta'])).not.toBeNull();
-    expect(osPointerModifierRefusal('win32', ['ctrl', 'shift'])).toBeNull();
-    expect(osPointerModifierRefusal('darwin', ['meta'])).toBeNull();
+  it('refuses lock screen, log out and force quit', () => {
+    for (const [mods, key] of [[['meta', 'ctrl'], 'q'], [['meta', 'shift'], 'q'], [['meta', 'alt', 'shift'], 'q'], [['meta', 'alt'], 'Escape']] as const) {
+      expect(osChordRefusal('darwin', mods, key), [...mods, key].join('+')).not.toBeNull();
+    }
+    for (const [mods, key] of [[['meta'], 'l'], [['meta'], 'x'], [['ctrl', 'alt'], 'Delete'], [['ctrl', 'shift'], 'Escape']] as const) {
+      expect(osChordRefusal('win32', mods, key), [...mods, key].join('+')).not.toBeNull();
+    }
+    // Cmd+Q quits only the target app.
+    expect(osChordRefusal('darwin', ['meta'], 'q')).toBeNull();
   });
 
   it('refuses the stop key on every platform', () => {

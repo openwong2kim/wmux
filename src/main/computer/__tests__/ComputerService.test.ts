@@ -277,45 +277,45 @@ describe('ComputerService', () => {
     expect(calls.length).toBe(before);
   });
 
-  it('refuses OS-wide chords on Windows before consent, lock or helper', async () => {
+  it('refuses only lock, sign-out and force-quit chords on Windows, before consent, lock or helper', async () => {
     const { service, calls, consent } = makeService({ platform: 'win32' });
     const { snapshotId } = await service.getAppState(AGENT_A, { app: 'Notepad' });
     consent.mockClear();
     const before = calls.length;
-    for (const keys of [['win', 'r'], ['meta', 'd'], ['alt', 'tab'], ['alt', 'shift', 'Tab'], ['alt', 'esc'], ['ctrl', 'Escape'], ['ctrl', 'shift', 'esc'], ['ctrl', 'alt', 'shift', 'esc'], ['ctrl', 'alt', 'delete']]) {
+    for (const keys of [['win', 'l'], ['meta', 'x'], ['ctrl', 'shift', 'esc'], ['ctrl', 'alt', 'shift', 'esc'], ['ctrl', 'alt', 'delete']]) {
       const err = await service.control(AGENT_A, { action: 'hotkey', snapshotId, keys }).catch((e: unknown) => e);
       expect(err, keys.join('+')).toBeInstanceOf(ComputerError);
       expect((err as ComputerError).code).toBe('shortcut_blocked');
     }
     expect(calls.length).toBe(before);
     expect(service.inputHolder()).toBeNull();
-    // App-level chords still go through.
-    for (const keys of [['ctrl', 's'], ['alt', 'F4'], ['ctrl', 'shift', 'Tab']]) {
-      expect(await codeOf(service.control(AGENT_A, { action: 'hotkey', snapshotId, keys }))).toBe('resolved');
-    }
-  });
-
-  it('refuses OS-wide chords on macOS but keeps Cmd shortcuts', async () => {
-    const { service } = makeService({ platform: 'darwin' });
-    const { snapshotId } = await service.getAppState(AGENT_A, { app: 'Notepad' });
-    for (const keys of [['cmd', 'tab'], ['cmd', 'space'], ['ctrl', 'space'], ['cmd', 'option', 'esc'], ['ctrl', 'cmd', 'q'], ['cmd', 'shift', 'q'], ['cmd', 'opt', 'd'], ['cmd', 'shift', '4'], ['ctrl', 'up'], ['ctrl', 'F2'], ['ctrl', 'alt', 'shift', 'esc']]) {
-      expect(await codeOf(service.control(AGENT_A, { action: 'hotkey', snapshotId, keys })), keys.join('+')).toBe('shortcut_blocked');
-    }
-    for (const keys of [['cmd', 's'], ['cmd', 'q'], ['ctrl', 'cmd', 'f'], ['cmd', 'shift', 't'], ['alt', 'tab']]) {
+    // App-level chords, app switching and Start go through.
+    for (const keys of [['ctrl', 's'], ['alt', 'F4'], ['ctrl', 'shift', 'Tab'], ['alt', 'tab'], ['win', 'r'], ['ctrl', 'Escape']]) {
       expect(await codeOf(service.control(AGENT_A, { action: 'hotkey', snapshotId, keys })), keys.join('+')).toBe('resolved');
     }
   });
 
-  it('refuses modifiers on actions that would drop them, and a Windows-key click', async () => {
+  it('refuses only lock, log-out and force-quit chords on macOS', async () => {
+    const { service } = makeService({ platform: 'darwin' });
+    const { snapshotId } = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    for (const keys of [['cmd', 'option', 'esc'], ['ctrl', 'cmd', 'q'], ['cmd', 'shift', 'q'], ['ctrl', 'alt', 'shift', 'esc']]) {
+      expect(await codeOf(service.control(AGENT_A, { action: 'hotkey', snapshotId, keys })), keys.join('+')).toBe('shortcut_blocked');
+    }
+    for (const keys of [['cmd', 's'], ['cmd', 'q'], ['ctrl', 'cmd', 'f'], ['cmd', 'shift', 't'], ['alt', 'tab'], ['cmd', 'tab'], ['cmd', 'space'], ['ctrl', 'up']]) {
+      expect(await codeOf(service.control(AGENT_A, { action: 'hotkey', snapshotId, keys })), keys.join('+')).toBe('resolved');
+    }
+  });
+
+  it('refuses modifiers on actions that would drop them, and sends modified clicks', async () => {
     const { service, calls } = makeService({ platform: 'win32' });
     const { snapshotId } = await service.getAppState(AGENT_A, { app: 'Notepad' });
     const before = calls.length;
     expect(await codeOf(service.control(AGENT_A, { action: 'pressKey', snapshotId, key: 'a', modifiers: ['ctrl'] }))).toBe('invalid_argument');
     expect(await codeOf(service.control(AGENT_A, { action: 'type', snapshotId, text: 'x', modifiers: ['shift'] }))).toBe('invalid_argument');
     expect(await codeOf(service.control(AGENT_A, { action: 'scroll', snapshotId, index: 1, modifiers: ['ctrl'] }))).toBe('invalid_argument');
-    expect(await codeOf(service.control(AGENT_A, { action: 'click', snapshotId, index: 1, modifiers: ['meta'] }))).toBe('shortcut_blocked');
     expect(calls.length).toBe(before);
     expect(await codeOf(service.control(AGENT_A, { action: 'click', snapshotId, index: 1, modifiers: ['ctrl'] }))).toBe('resolved');
+    expect(await codeOf(service.control(AGENT_A, { action: 'click', snapshotId, index: 1, modifiers: ['meta'] }))).toBe('resolved');
   });
 
   it('re-checks the snapshot and the stop cooldown after a long consent wait', async () => {
@@ -605,20 +605,15 @@ describe('ComputerService with the real approval queue', () => {
 describe('explorer.exe windows', () => {
   const explorer: AppInfo = { id: 'c:\\windows\\explorer.exe', name: 'Explorer', pid: 20, path: 'C:\\Windows\\explorer.exe' };
   const folder = win(explorer, { className: 'CabinetWClass', shellLocation: 'C:\\Users\\me\\Documents' });
-  const controlPanel = win(explorer, { id: 'w-21', className: 'CabinetWClass', shellLocation: '::{26EE0668-A00A-44D7-9371-BEB064C98683}' });
   const runDialog = win(explorer, { id: 'w-22', className: '#32770', ownerId: '65552' });
 
-  function explorerService(live: () => WindowInfo) {
-    const { helper, calls } = fakeHelper({ Explorer: { app: explorer, window: folder } });
+  it('are ordinary windows now, with locations still behind consent', async () => {
+    const { helper } = fakeHelper({ Explorer: { app: explorer, window: folder } });
     const request = helper.request;
-    helper.request = (async (method: HelperMethod, params: Record<string, unknown>) => {
-      if (method === 'listWindows') return { windows: [folder, controlPanel, runDialog] };
-      if (method === 'resolveTarget' && String(params.app).startsWith('pid:')) {
-        calls.push({ method, params });
-        return { app: explorer, window: live() };
-      }
-      return (request as (m: HelperMethod, p: unknown) => Promise<unknown>)(method, params);
-    }) as HelperLike['request'];
+    helper.request = (async (method: HelperMethod, params: Record<string, unknown>) =>
+      method === 'listWindows'
+        ? { windows: [folder, runDialog] }
+        : (request as (m: HelperMethod, p: unknown) => Promise<unknown>)(method, params)) as HelperLike['request'];
     const service = new ComputerService({
       isEnabled: () => true,
       createHelper: () => helper,
@@ -627,25 +622,10 @@ describe('explorer.exe windows', () => {
       blockContext: () => ({}),
       platform: 'win32',
     });
-    return { service, calls };
-  }
-
-  it('lists only folder windows on a filesystem path as usable, and keeps locations behind consent', async () => {
-    const { service } = explorerService(() => folder);
     const { windows } = await service.listWindows(AGENT_A);
-    expect(windows.find((w) => w.id === folder.id)?.blocked).toBeUndefined();
-    expect(windows.find((w) => w.id === controlPanel.id)?.blocked).toBeTruthy();
-    expect(windows.find((w) => w.id === runDialog.id)?.blocked).toBeTruthy();
+    expect(windows.every((w) => w.blocked === undefined)).toBe(true);
     expect(windows.every((w) => w.shellLocation === undefined && w.title === '')).toBe(true);
-  });
-
-  it('re-checks the live location before input, since a folder window can navigate', async () => {
-    let live = folder;
-    const { service, calls } = explorerService(() => live);
     const state = await service.getAppState(AGENT_A, { app: 'Explorer' });
     expect(await codeOf(service.control(AGENT_A, { action: 'click', snapshotId: state.snapshotId, index: 1 }))).toBe('resolved');
-    live = { ...folder, shellLocation: controlPanel.shellLocation };
-    expect(await codeOf(service.control(AGENT_A, { action: 'click', snapshotId: state.snapshotId, index: 1 }))).toBe('app_blocked');
-    expect(calls.filter((c) => c.method === 'click')).toHaveLength(1);
   });
 });

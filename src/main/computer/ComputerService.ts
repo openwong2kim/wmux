@@ -18,9 +18,6 @@ import {
   BLOCK_REASON_TEXT,
   blockReasonFor,
   osChordRefusal,
-  osPointerModifierRefusal,
-  windowBlockReasonFor,
-  windowRuleDependsOnLocation,
   type BlockContext,
 } from '../../shared/computer/blocklist';
 import {
@@ -237,13 +234,7 @@ export class ComputerService {
     }
     return {
       windows: windows.map((w) => {
-        // appId is the lower-cased exe path on Windows, which is all the
-        // per-window rule needs.
-        const windowReason = windowBlockReasonFor({ path: w.appId }, w);
-        const blocked =
-          blockedByPid.get(w.pid) ??
-          (ctx.selfPids?.has(w.pid) ? BLOCK_REASON_TEXT.wmux : undefined) ??
-          (windowReason ? BLOCK_REASON_TEXT[windowReason] : undefined);
+        const blocked = blockedByPid.get(w.pid) ?? (ctx.selfPids?.has(w.pid) ? BLOCK_REASON_TEXT.wmux : undefined);
         if (!blocked && agent.key && this.grants.get(grantKey(agent, w.appId)) === true) return w;
         // A folder location says as much as a title, so it needs the same consent.
         const hidden: WindowInfo & { blocked?: string } = { ...w, title: '', ...(blocked && { blocked }) };
@@ -317,14 +308,6 @@ export class ComputerService {
     const keys = this.resolveKeys(params);
     // Consent may have been revoked (abort clears grants) since the snapshot.
     await this.vet(agent, snap.app, snap.window, generation);
-    // A folder window can navigate (same window, new location) after the
-    // snapshot, so where the rule depends on the location, vet it live.
-    if (windowRuleDependsOnLocation(snap.app)) {
-      const live = await helper.request('resolveTarget', { app: `pid:${snap.window.pid}`, window: snap.window.id });
-      assertConsistent(live.app, live.window);
-      if (live.window.id !== snap.window.id) fail('window_not_found', 'the snapshot\'s window is gone; call getAppState again');
-      await this.vet(agent, live.app, live.window, generation);
-    }
     // Consent can take minutes; the clock and the stop key may both have
     // moved, so the snapshot and the cooldown are checked again on a fresh
     // clock before the lock and the rate slot are taken.
@@ -435,9 +418,7 @@ export class ComputerService {
       fail('invalid_argument', `${params.action} takes no modifiers; use hotkey for a chord (e.g. ["ctrl","s"]) or click with modifiers`);
     }
     if (params.action === 'click') {
-      const modifiers = validModifiers(params.modifiers);
-      const why = osPointerModifierRefusal(this.deps.platform ?? process.platform, modifiers);
-      if (why) fail('shortcut_blocked', `${[...modifiers, 'click'].join('+')} is refused because ${why}`);
+      validModifiers(params.modifiers);
       return null;
     }
     let resolved: { modifiers: Modifier[]; key: Key };
@@ -470,7 +451,7 @@ export class ComputerService {
   }
 
   private async vet(agent: ComputerAgent, app: AppInfo, window: WindowInfo, generation: number): Promise<void> {
-    const reason = blockReasonFor(app, this.deps.blockContext()) ?? windowBlockReasonFor(app, window);
+    const reason = blockReasonFor(app, this.deps.blockContext());
     if (reason) fail('app_blocked', `${app.name}: ${BLOCK_REASON_TEXT[reason]}`);
     if (window.elevated) {
       fail('target_elevated', `${app.name} runs as administrator; Windows blocks input from wmux into it`);
