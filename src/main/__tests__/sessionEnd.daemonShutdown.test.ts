@@ -47,7 +47,11 @@ describe('A5 — session-end (WM_ENDSESSION) handler invariants', () => {
     const regIdx = adopt.indexOf("win.on('session-end',");
     expect(guardIdx).toBeGreaterThan(0);
     expect(regIdx).toBeGreaterThan(guardIdx);
-    expect(adopt.slice(regIdx, regIdx + 120)).toMatch(/onWindowsSessionEnd\(\)/);
+    // The event is passed through: the handler needs its `reasons` to tell a
+    // Restart Manager close from a logoff or shutdown.
+    expect(adopt.slice(regIdx, regIdx + 120)).toMatch(
+      /win\.on\('session-end',\s*\((\w+)\)\s*=>\s*\{\s*void onWindowsSessionEnd\(\1\)/,
+    );
   });
 
   it('every main window goes through adoptMainWindow', () => {
@@ -70,6 +74,60 @@ describe('A5 — session-end (WM_ENDSESSION) handler invariants', () => {
     // dispatched while the first is still awaiting, returns at once.
     expect(flushIdx).toBeGreaterThan(setIdx);
     expect(src).toMatch(/let\s+sessionEndHandled\s*=\s*false\s*;/);
+  });
+
+  it('ignores a Restart Manager close-app without consuming the once-flag', () => {
+    // ENDSESSION_CLOSEAPP alone does not end the session or terminate wmux.
+    // Running the handler would shut the daemon down and leave wmux open
+    // with no daemon, so it must return before anything else happens.
+    const handler = extractHandler();
+    const ignoreIdx = handler.indexOf("reasons.every((r) => r === 'close-app')");
+    const guardIdx = handler.indexOf('if (sessionEndHandled) return;');
+    const setIdx = handler.indexOf('sessionEndHandled = true;');
+    expect(ignoreIdx, 'close-app check not found').toBeGreaterThan(0);
+    // Only a non-empty list made of close-app alone is skipped; logoff,
+    // shutdown, critical, or no reasons at all run the full handler.
+    expect(handler.slice(ignoreIdx - 40, ignoreIdx)).toMatch(/reasons\.length\s*>\s*0\s*&&\s*$/);
+    // The check comes before the once-guard and the flag flip, so a later
+    // real logoff still finds the flag clear and runs the handler once.
+    expect(ignoreIdx).toBeLessThan(guardIdx);
+    expect(ignoreIdx).toBeLessThan(setIdx);
+
+    // The ignore branch returns without touching the flag, the session
+    // file or the daemon.
+    const branchStart = handler.indexOf('{', ignoreIdx);
+    const branchEnd = handler.indexOf('return;', branchStart);
+    expect(branchEnd).toBeGreaterThan(branchStart);
+    const branch = handler.slice(branchStart, branchEnd);
+    expect(branch).not.toMatch(/sessionEndHandled/);
+    expect(branch).not.toMatch(/flushSync|raceDaemonShutdown|disconnectSync/);
+    expect(branch).not.toMatch(/session-end received/);
+    // Nothing between the top of the handler and the close-app check sets
+    // the flag either.
+    expect(handler.slice(0, ignoreIdx)).not.toMatch(/sessionEndHandled\s*=/);
+  });
+
+  it('a logoff after an ignored close-app still runs the handler once', () => {
+    // After the close-app early return the flag is still false, so the next
+    // session-end whose reasons are not close-app alone reaches the once-guard,
+    // flips the flag and runs the save; any later call returns at the guard.
+    const handler = extractHandler();
+    const ignoreReturnIdx = handler.indexOf(
+      'return;',
+      handler.indexOf("reasons.every((r) => r === 'close-app')"),
+    );
+    const guardIdx = handler.indexOf('if (sessionEndHandled) return;');
+    const setIdx = handler.indexOf('sessionEndHandled = true;');
+    const logIdx = handler.indexOf('session-end received');
+    const flushIdx = handler.indexOf('sessionManager.flushSync()');
+    expect(ignoreReturnIdx).toBeGreaterThan(0);
+    expect(ignoreReturnIdx).toBeLessThan(guardIdx);
+    expect(guardIdx).toBeLessThan(setIdx);
+    expect(setIdx).toBeLessThan(logIdx);
+    expect(logIdx).toBeLessThan(flushIdx);
+    // The flag is set in exactly one place, so it can be consumed only by
+    // a run that gets past the close-app check.
+    expect(src.match(/sessionEndHandled\s*=\s*true/g)?.length).toBe(1);
   });
 
   it('flushes synchronously before the first await', () => {

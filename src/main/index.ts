@@ -2493,8 +2493,8 @@ function adoptMainWindow(win: BrowserWindow): void {
   // Electron emits 'session-end' on the BrowserWindow that received it and
   // never on `app`, so this has to be wired on every main window.
   if (process.platform === 'win32') {
-    win.on('session-end', () => {
-      void onWindowsSessionEnd();
+    win.on('session-end', (event) => {
+      void onWindowsSessionEnd(event);
     });
   }
 
@@ -2938,7 +2938,24 @@ app.on('before-quit', async (e) => {
 // Only the synchronous part before the first `await` is guaranteed to run:
 // Windows may end the process as soon as the window returns from
 // WM_ENDSESSION, so the daemon race below is best effort.
-async function onWindowsSessionEnd(): Promise<void> {
+//
+// A Restart Manager close (lParam ENDSESSION_CLOSEAPP, reasons ['close-app'])
+// is ignored. It asks the app to close, for example so an installer can
+// replace a file, and does not end the session or terminate wmux. Running the
+// handler would shut the daemon down and leave wmux running with no daemon
+// until it is restarted. The once-flag is left untouched so a later real
+// logoff or shutdown still runs the handler. Empty or unknown reasons run it.
+async function onWindowsSessionEnd(event?: Electron.WindowSessionEndEvent): Promise<void> {
+  let reasons: readonly string[] = [];
+  try {
+    reasons = Array.isArray(event?.reasons) ? event.reasons : [];
+  } catch {
+    // Never let reading the event cost the emergency save below.
+  }
+  if (reasons.length > 0 && reasons.every((r) => r === 'close-app')) {
+    console.log('[Main] session-end close-app (Restart Manager) ignored');
+    return;
+  }
   if (sessionEndHandled) return;
   sessionEndHandled = true;
   console.log('[Main] session-end received — flush pending session write + daemon race');
