@@ -26,9 +26,29 @@ describe('buildPaneResumeCommand', () => {
     });
   });
 
-  it('skip-permissions ON also rides the cwd-relative fallback (a launch pref, not conversation-scoped)', () => {
-    const out = buildPaneResumeCommand(claude(), ['/Users/me/OTHER'], true);
-    expect(out).toMatchObject({ command: 'claude --dangerously-skip-permissions --continue', exact: false });
+  it('skip-permissions ON never rides the cwd-relative fallback (#1916)', () => {
+    const out = buildPaneResumeCommand(claude({ permissionMode: 'bypassPermissions' }), ['/Users/me/OTHER'], true);
+    expect(out).toMatchObject({ command: 'claude --continue', exact: false });
+  });
+
+  it('skip-permissions OFF drops a captured bypassPermissions on an EXACT resume (#1916)', () => {
+    const out = buildPaneResumeCommand(claude({ permissionMode: 'bypassPermissions' }), ['/Users/me/proj'], false);
+    expect(out).toMatchObject({
+      command: 'claude --resume a1b2c3d4-0000-0000-0000-9f8e7d6c5b4a',
+      exact: true,
+    });
+  });
+
+  it('the cwd-relative fallback withholds a role skip flag for every agent (#1916)', () => {
+    const claudeOut = buildPaneResumeCommand(claude(), ['/Users/me/OTHER'], true, { agent: 'claude', skipPermissions: true });
+    expect(claudeOut?.command).toBe('claude --continue');
+    const codexOut = buildPaneResumeCommand(
+      claude({ agent: 'codex', sessionId: 'sess-77' }),
+      ['/Users/me/OTHER'],
+      false,
+      { agent: 'codex', skipPermissions: true },
+    );
+    expect(codexOut?.command).toBe('codex resume --last');
   });
 
   it('skip-permissions OFF + default mode → plain exact resume, no permission flag', () => {
@@ -155,9 +175,10 @@ describe('buildPaneResumeCommand', () => {
     expect(buildPaneResumeCommand(binding, [], true, undefined, true)?.command)
       .toBe('claude --dangerously-skip-permissions --resume conv-1');
     // Host says it no longer matches → the cwd-relative fallback, even though
-    // a naive local compare of two empty strings would have said "exact".
+    // a naive local compare of two empty strings would have said "exact". The
+    // fallback carries no bypass flag (#1916).
     expect(buildPaneResumeCommand(binding, [''], true, undefined, false)?.command)
-      .toBe('claude --dangerously-skip-permissions --continue');
+      .toBe('claude --continue');
   });
 });
 

@@ -5,8 +5,9 @@ import { isPaneAgentBusy } from '../../stores/selectors/fleet';
 import {
   type ResumeBinding,
   agentSupportsPermissionFlag,
-  permissionFlagFor,
+  defaultResumeSkipPermissions,
   resumeGrammarFor,
+  resumePermissionFlag,
 } from '../../../shared/agentResume';
 import { applyRoleBinding, type RoleBinding } from '../../../shared/orchestratorRole';
 
@@ -31,18 +32,21 @@ import { applyRoleBinding, type RoleBinding } from '../../../shared/orchestrator
  * auto-runs — the user presses Enter); a false negative silently resumes the
  * WRONG conversation. Loud beats silent.
  *
- * `skipPermissions` (the pane toggle, default on) forces
- * `--dangerously-skip-permissions` for Claude regardless of the captured mode;
- * when off, the captured permission mode (acceptEdits/plan) is restored if any.
- * Unlike the exact `<id>`, this launch preference is NOT conversation-scoped, so
- * it rides EITHER grammar branch (exact `--resume` and fallback `--continue`).
- * Codex takes no permission flag, so the toggle is inert there.
+ * `skipPermissions` (the pane toggle) forces `--dangerously-skip-permissions`
+ * for Claude on an EXACT resume; when off, the captured permission mode
+ * (acceptEdits/plan) is restored if any, and a captured bypassPermissions is
+ * not. #1916: the cwd-relative fallback (`--continue`) never carries a
+ * permission flag — it resumes whatever is newest in the folder, which may be
+ * unrelated to this pane, so bypass requires an exact binding
+ * (resumePermissionFlag). Codex takes no permission flag, so the toggle is inert
+ * there.
  *
  * A role binding's `skipPermissions` does NOT override an explicit OFF: when the
  * toggle is offered (Claude) and off, the role's skip flag is withheld (and
  * dropped from the role's args, #1681), so the restored mode is what runs (`--dangerously-skip-permissions` beats
  * `--permission-mode` on the same line). The role's model, effort and args still
- * apply. Where the toggle is inert (Codex) the role's skip flag applies as usual.
+ * apply. Where the toggle is inert (Codex) the role's skip flag applies as usual
+ * on an exact resume. On the fallback it is withheld for every agent (#1916).
  *
  * Returns `null` for a non-resumable agent (no grammar). Pure + exported so the
  * exact-vs-fallback decision is unit-testable without rendering.
@@ -67,15 +71,15 @@ export function buildPaneResumeCommand(
   // run this comparison at all; the host answers the question instead and the
   // caller passes its verdict through. Local callers leave it undefined.
   const exact = exactOverride ?? paneCwds.some((c) => !!c && normCwd(c) === target);
-  // Explicit toggle (default on) → force --dangerously-skip-permissions on
-  // EITHER branch (a launch preference, not conversation-scoped). Toggle off →
-  // restore the captured permission mode, but only on an EXACT resume (that
-  // mode belongs to the exact conversation; a cwd-relative --continue drops it).
-  const permFlag = agentSupportsPermissionFlag(binding.agent)
-    ? (skipPermissions
-        ? permissionFlagFor('bypassPermissions')
-        : (exact ? permissionFlagFor(binding.permissionMode) : ''))
-    : '';
+  // #1916: a permission flag only on an EXACT resume. Toggle on → bypass;
+  // toggle off → the captured mode, never a captured bypass. The cwd-relative
+  // --continue carries none.
+  const permFlag = resumePermissionFlag({
+    agent: binding.agent,
+    exact,
+    recordedMode: binding.permissionMode,
+    skipPermissions,
+  });
   const resumeArg = exact ? grammar.withId(binding.sessionId) : grammar.fallback;
   const base = `${binding.agent}${permFlag ? ` ${permFlag}` : ''} ${resumeArg}`;
   // D2 — re-assert the role's enforced model on resume. The reconstruction above
@@ -85,7 +89,8 @@ export function buildPaneResumeCommand(
   // `roleRewritten` is reported rather than logged here so this stays a pure
   // function (it runs on every render of the chip); the caller emits the audit
   // line once, from an effect.
-  const toggledOff = agentSupportsPermissionFlag(binding.agent) && !skipPermissions;
+  // The fallback withholds the role's skip flag for every agent (#1916).
+  const toggledOff = !exact || (agentSupportsPermissionFlag(binding.agent) && !skipPermissions);
   const rewrite = applyRoleBinding(base, roleBinding, { suppressSkipPermissions: toggledOff });
   return { command: rewrite.command, exact, roleRewritten: rewrite.changed };
 }
@@ -125,13 +130,19 @@ export default function ResumeInfoChip(props: {
   const t = useT();
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
-  // Default ON — the owner routinely resumes with --dangerously-skip-permissions,
-  // so the chip pre-checks it. Claude-only (Codex has no such flag).
-  const canSkipPermissions = agentSupportsPermissionFlag(binding.agent);
-  const [skipPermissions, setSkipPermissions] = useState(true);
-
-  const built = buildPaneResumeCommand(binding, paneCwds, skipPermissions, roleBinding, exactOverride);
-  if (!built) return null; // not a resumable agent — nothing to offer
+  // #1916: holds only the user's explicit choice. Until they make one, the
+  // toggle is on only for an exact resume of a session recorded in
+  // bypassPermissions mode. Claude-only (Codex has no such flag), and not
+  // offered on the cwd-relative fallback, which never carries the flag.
+  const [skipOverride, setSkipOverride] = useState<boolean | undefined>(undefined);
+  // The exact-vs-fallback decision does not depend on the toggle.
+  const probe = buildPaneResumeCommand(binding, paneCwds, false, roleBinding, exactOverride);
+  if (!probe) return null; // not a resumable agent — nothing to offer
+  const skipPermissions = skipOverride ?? defaultResumeSkipPermissions(binding.permissionMode, probe.exact);
+  const canSkipPermissions = agentSupportsPermissionFlag(binding.agent) && probe.exact;
+  const built = skipPermissions
+    ? buildPaneResumeCommand(binding, paneCwds, true, roleBinding, exactOverride) ?? probe
+    : probe;
   const { command } = built;
 
   const agentName = binding.agent.charAt(0).toUpperCase() + binding.agent.slice(1);
@@ -249,9 +260,10 @@ export default function ResumeInfoChip(props: {
             </button>
           </div>
 
-          {/* Skip-permissions toggle (Claude only) — default on. Forces
-              --dangerously-skip-permissions onto the resume line; the preview
-              below updates live as it toggles. */}
+          {/* Skip-permissions toggle (Claude only, exact resume only, #1916).
+              Starts at the recorded mode. Forces --dangerously-skip-permissions
+              onto the resume line; the preview below updates live as it
+              toggles. */}
           {canSkipPermissions && (
             <label
               style={{
@@ -267,7 +279,7 @@ export default function ResumeInfoChip(props: {
               <input
                 type="checkbox"
                 checked={skipPermissions}
-                onChange={(e) => setSkipPermissions(e.target.checked)}
+                onChange={(e) => setSkipOverride(e.target.checked)}
                 style={{ accentColor: 'var(--accent-cursor)', cursor: 'pointer', margin: 0 }}
               />
               <span style={{ fontFamily: 'ui-monospace, monospace' }}>--dangerously-skip-permissions</span>
@@ -290,6 +302,16 @@ export default function ResumeInfoChip(props: {
           >
             {command}
           </code>
+          {/* #1916: the folder the line runs in (the shell's tracked cwd).
+              A remote pane passes no local cwd, so nothing is shown there. */}
+          {paneCwds[0] && (
+            <span style={{ color: 'var(--text-muted)', overflowWrap: 'anywhere' }}>
+              {t('resume.runsIn', { cwd: paneCwds[0] })}
+            </span>
+          )}
+          {!built.exact && (
+            <span style={{ color: 'var(--text-muted)' }}>{t('resume.continueNote')}</span>
+          )}
 
           {/* 복구 — type the command into THIS pane (no auto-Enter). */}
           <button
@@ -359,6 +381,9 @@ export function ResumeInfoChipGate(props: {
   if (agentBusy) return null;
   return (
     <ResumeInfoChip
+      // A new conversation in this pane starts from its own recorded mode,
+      // not from a toggle choice made for the previous one (#1916).
+      key={binding.sessionId}
       ptyId={ptyId}
       binding={binding}
       paneCwds={paneCwds}

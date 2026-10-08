@@ -112,6 +112,42 @@ export function permissionFlagFor(mode: PermissionMode | undefined): string {
 }
 
 /**
+ * #1916 — where the resume pill's and chip's skip-permissions toggle starts:
+ * on only when the line resumes the EXACT recorded conversation and that
+ * conversation ran with `bypassPermissions`. Everything else starts off,
+ * including a binding that only reaches the cwd-relative fallback.
+ */
+export function defaultResumeSkipPermissions(
+  recordedMode: PermissionMode | undefined,
+  exact: boolean,
+): boolean {
+  return exact && recordedMode === 'bypassPermissions';
+}
+
+/**
+ * #1916 — the permission flag a user-typed resume line carries.
+ *
+ * - The cwd-relative fallback (`--continue` / `resume --last`) carries NO flag.
+ *   It resumes whatever conversation is newest in the shell's folder, which may
+ *   be unrelated to the pane, so it must never be combined with
+ *   `--dangerously-skip-permissions`. Bypass needs an exact binding.
+ * - On an exact resume, the toggle ON types `--dangerously-skip-permissions`.
+ *   The toggle OFF restores the recorded mode, except a recorded
+ *   `bypassPermissions`: OFF means no bypass.
+ * - An agent with no permission-mode flag (Codex) gets ''.
+ */
+export function resumePermissionFlag(args: {
+  agent: string;
+  exact: boolean;
+  recordedMode: PermissionMode | undefined;
+  skipPermissions: boolean;
+}): string {
+  if (!args.exact || !agentSupportsPermissionFlag(args.agent)) return '';
+  if (args.skipPermissions) return PERMISSION_FLAG.bypassPermissions;
+  return args.recordedMode === 'bypassPermissions' ? '' : permissionFlagFor(args.recordedMode);
+}
+
+/**
  * Whether an agent accepts a permission-mode launch flag. Claude only in v1 —
  * `PERMISSION_FLAG` is a Claude Code concept; Codex has no equivalent (its
  * `permissionMode` is never captured). Gates the resume chip's

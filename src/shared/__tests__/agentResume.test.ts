@@ -14,7 +14,40 @@ import {
   type PermissionMode,
   isPlausibleResumeSessionId,
   parseCodexRolloutStem,
+  defaultResumeSkipPermissions,
+  resumePermissionFlag,
 } from '../agentResume';
+
+// #1916 — the resume toggle's default and the flag a user-typed resume line carries.
+describe('defaultResumeSkipPermissions / resumePermissionFlag (#1916)', () => {
+  const BYPASS = '--dangerously-skip-permissions';
+  it('defaults ON only for an exact resume of a bypassPermissions session', () => {
+    expect(defaultResumeSkipPermissions('bypassPermissions', true)).toBe(true);
+    expect(defaultResumeSkipPermissions('bypassPermissions', false)).toBe(false);
+    expect(defaultResumeSkipPermissions(undefined, true)).toBe(false);
+    for (const mode of ['default', 'plan', 'acceptEdits', 'auto'] as const) {
+      expect(defaultResumeSkipPermissions(mode, true)).toBe(false);
+    }
+  });
+
+  it('the cwd-relative fallback never carries a permission flag', () => {
+    for (const recordedMode of [undefined, 'bypassPermissions', 'plan'] as const) {
+      for (const skipPermissions of [true, false]) {
+        expect(resumePermissionFlag({ agent: 'claude', exact: false, recordedMode, skipPermissions })).toBe('');
+      }
+    }
+  });
+
+  it('an exact resume: ON → bypass; OFF → the recorded mode, never a recorded bypass', () => {
+    expect(resumePermissionFlag({ agent: 'claude', exact: true, recordedMode: undefined, skipPermissions: true })).toBe(BYPASS);
+    expect(resumePermissionFlag({ agent: 'claude', exact: true, recordedMode: 'bypassPermissions', skipPermissions: false })).toBe('');
+    expect(resumePermissionFlag({ agent: 'claude', exact: true, recordedMode: 'plan', skipPermissions: false })).toBe('--permission-mode plan');
+  });
+
+  it('an agent without a permission flag (codex) gets none', () => {
+    expect(resumePermissionFlag({ agent: 'codex', exact: true, recordedMode: 'bypassPermissions', skipPermissions: true })).toBe('');
+  });
+});
 
 const CWD = 'D:\\wmux';
 const binding = (over: Partial<ResumeBinding> = {}): ResumeBinding => ({

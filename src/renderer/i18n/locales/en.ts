@@ -967,6 +967,11 @@ export const en = {
   // resume. The user presses Enter to run.
   'resume.addSession': 'resume this session',
   'resume.addSessionTooltip': 'Also resume the exact previous conversation (--resume <id>); press Enter to run',
+  // #1916 — the folder the resume line runs in, and what it types.
+  'resume.inCwd': 'in {cwd}',
+  'resume.typesLine': 'Types: {command}',
+  'resume.runsIn': 'Runs in: {cwd}',
+  'resume.continueNote': 'No saved conversation matches this folder, so this resumes the newest conversation here, with no permission-bypass flag.',
 
   // Browser
   'browser.urlPlaceholder': 'Enter URL...',

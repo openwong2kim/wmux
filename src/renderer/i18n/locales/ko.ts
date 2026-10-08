@@ -685,6 +685,10 @@ export const ko = {
   // 이 두 번째 클릭은 정확한 세션 복원을 덧붙입니다. 실행은 사용자가 Enter.
   'resume.addSession': '이 세션 복원',
   'resume.addSessionTooltip': '이전 대화를 정확히 이어가기 (--resume <id>); 실행하려면 Enter',
+  'resume.inCwd': '{cwd}',
+  'resume.typesLine': '입력할 명령: {command}',
+  'resume.runsIn': '실행 폴더: {cwd}',
+  'resume.continueNote': '이 폴더와 맞는 저장된 대화가 없어 이 폴더의 가장 최근 대화를 이어갑니다. 권한 우회 플래그는 붙이지 않습니다.',
 
   // Browser
   'browser.urlPlaceholder': 'URL 입력...',

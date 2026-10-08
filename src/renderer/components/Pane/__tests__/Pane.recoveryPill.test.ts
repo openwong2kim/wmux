@@ -16,7 +16,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { claimAutoResume, markResumePillUsed, planAutoResume, planRecoveryPillType } from '../Pane';
+import { claimAutoResume, markResumePillUsed, planAutoResume, planRecoveryPillType, resolveRecoveryPillPermissions } from '../Pane';
 import type { RoleBinding } from '../../../../shared/orchestratorRole';
 
 const SID = 'a1b2c3d4-0000-0000-0000-9f8e7d6c5b4a';
@@ -41,7 +41,7 @@ describe('planRecoveryPillType — role model on the launcher-prefixed variants'
     });
   });
 
-  it('forceSkip cwd-relative fallback (no session) still injects --model', () => {
+  it('cwd-relative fallback (no session) injects --model but ignores forceSkip (#1916)', () => {
     const plan = planRecoveryPillType({
       launcher: 'claude',
       sessionId: undefined,
@@ -50,7 +50,7 @@ describe('planRecoveryPillType — role model on the launcher-prefixed variants'
       resumeStage: 0,
       roleBinding: reviewer,
     });
-    expect(plan?.text).toBe('claude --model haiku --dangerously-skip-permissions --continue');
+    expect(plan?.text).toBe('claude --model haiku --continue');
     expect(plan?.rewritten).toBe(true);
   });
 
@@ -349,5 +349,104 @@ describe('automatic resume vs the Resume pill', () => {
     const source = readFileSync(resolve(__dirname, '../Pane.tsx'), 'utf8');
     expect(source).toMatch(/markResumePillUsed\(ptyId\);[\s\S]{0,600}?if \(plan\.clearHint\) typeAndClear\(plan\.text\);/);
     expect(source).toMatch(/if \(!claimAutoResume\(ptyId\)\) return;[^\n]*\n\s*window\.electronAPI\.pty\.write\(ptyId, `\$\{line\}\\r`\);/);
+  });
+});
+
+// #1916 — the pill's skip toggle starts at the recorded mode, and the
+// cwd-relative fallback never carries --dangerously-skip-permissions.
+describe('recovery pill permissions (#1916)', () => {
+  const BYPASS = '--dangerously-skip-permissions';
+  // What one primary click types, from the pill's own inputs.
+  const typed = (args: {
+    launcher?: string;
+    sessionId: string | undefined;
+    recordedMode?: Parameters<typeof resolveRecoveryPillPermissions>[0]['recordedMode'];
+    skipOverride?: boolean;
+    roleBinding?: RoleBinding;
+  }) => {
+    const launcher = args.launcher ?? 'claude';
+    const perms = resolveRecoveryPillPermissions({
+      launcher, sessionId: args.sessionId, recordedMode: args.recordedMode, skipOverride: args.skipOverride,
+    });
+    const plan = planRecoveryPillType({
+      launcher, sessionId: args.sessionId, permFlag: perms.permFlag, forceSkip: perms.forceSkip,
+      resumeStage: 0, roleBinding: args.roleBinding,
+    });
+    return { perms, text: plan?.text };
+  };
+
+  it('no binding: the toggle is not offered and the pill types plain --continue', () => {
+    const { perms, text } = typed({ sessionId: undefined });
+    expect(perms).toEqual({ canSkip: false, skipChecked: false, forceSkip: false, permFlag: '' });
+    expect(text).toBe('claude --continue');
+  });
+
+  it('no binding: even a checked toggle cannot put bypass on --continue', () => {
+    const { perms, text } = typed({ sessionId: undefined, recordedMode: 'bypassPermissions', skipOverride: true });
+    expect(perms.forceSkip).toBe(false);
+    expect(perms.permFlag).toBe('');
+    expect(text).toBe('claude --continue');
+  });
+
+  it('no binding: a role skip flag (option or args) is withheld on --continue', () => {
+    expect(typed({ sessionId: undefined, roleBinding: { agent: 'claude', skipPermissions: true } }).text)
+      .toBe('claude --continue');
+    expect(typed({ sessionId: undefined, roleBinding: { agent: 'claude', args: `${BYPASS} --verbose` } }).text)
+      .toBe('claude --continue --verbose');
+  });
+
+  it('no binding, codex: the role skip flag is withheld on resume --last too', () => {
+    expect(typed({ launcher: 'codex', sessionId: undefined, roleBinding: { agent: 'codex', skipPermissions: true } }).text)
+      .toBe('codex resume --last');
+  });
+
+  it('binding without a permission mode: toggle offered, OFF by default, plain --resume', () => {
+    const { perms, text } = typed({ sessionId: SID });
+    expect(perms).toMatchObject({ canSkip: true, skipChecked: false, forceSkip: false, permFlag: '' });
+    expect(text).toBe(`claude --resume ${SID}`);
+  });
+
+  it('binding recorded as default mode: OFF by default, plain --resume', () => {
+    const { perms, text } = typed({ sessionId: SID, recordedMode: 'default' });
+    expect(perms.skipChecked).toBe(false);
+    expect(text).toBe(`claude --resume ${SID}`);
+  });
+
+  it('binding recorded as bypassPermissions: ON by default, one line with bypass', () => {
+    const { perms, text } = typed({ sessionId: SID, recordedMode: 'bypassPermissions' });
+    expect(perms).toMatchObject({ canSkip: true, skipChecked: true, forceSkip: true, permFlag: BYPASS });
+    expect(text).toBe(`claude ${BYPASS} --resume ${SID}`);
+  });
+
+  it('binding recorded as bypassPermissions, toggle switched OFF: no bypass at all', () => {
+    const { perms, text } = typed({ sessionId: SID, recordedMode: 'bypassPermissions', skipOverride: false });
+    expect(perms.permFlag).toBe('');
+    expect(text).toBe(`claude --resume ${SID}`);
+  });
+
+  it('binding recorded as plan: OFF by default, the plan mode is restored (staged base)', () => {
+    const { perms, text } = typed({ sessionId: SID, recordedMode: 'plan' });
+    expect(perms.skipChecked).toBe(false);
+    expect(perms.permFlag).toBe('--permission-mode plan');
+    expect(text).toBe('claude --permission-mode plan');
+  });
+
+  it('binding recorded as plan, toggle switched ON: bypass on the exact resume', () => {
+    expect(typed({ sessionId: SID, recordedMode: 'plan', skipOverride: true }).text)
+      .toBe(`claude ${BYPASS} --resume ${SID}`);
+  });
+
+  it('codex: no toggle, no permission flag', () => {
+    const perms = resolveRecoveryPillPermissions({
+      launcher: 'codex', sessionId: 'sess-77', recordedMode: 'bypassPermissions', skipOverride: undefined,
+    });
+    expect(perms.canSkip).toBe(false);
+    expect(perms.permFlag).toBe('');
+  });
+
+  it('the pill holds only an explicit override, not a default-on toggle', () => {
+    const src = readFileSync(resolve(__dirname, '../Pane.tsx'), 'utf8');
+    expect(src).not.toContain('useState(true);\n  // Never carry a stale stage/toggle');
+    expect(src).toContain('const [resumeSkipOverride, setResumeSkipOverride] = useState<boolean | undefined>(undefined);');
   });
 });

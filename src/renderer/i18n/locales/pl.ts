@@ -958,6 +958,10 @@ export const pl = {
   // resume. The user presses Enter to run.
   'resume.addSession': 'wznów tę sesję',
   'resume.addSessionTooltip': 'Wznów też dokładnie tę samą wcześniejszą rozmowę (--resume <id>); naciśnij Enter, aby uruchomić',
+  'resume.inCwd': 'w {cwd}',
+  'resume.typesLine': 'Wpisze: {command}',
+  'resume.runsIn': 'Uruchomi w: {cwd}',
+  'resume.continueNote': 'Żadna zapisana rozmowa nie pasuje do tego folderu, więc wznowiona zostanie najnowsza rozmowa w tym folderze, bez flagi pomijania uprawnień.',
 
   // Browser
   'browser.urlPlaceholder': 'Wprowadź URL...',
