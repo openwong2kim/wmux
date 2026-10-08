@@ -47,7 +47,8 @@ export interface RecoveryPane {
    *  typed request is the explicit user intent D6 requires). */
   command: string;
   /** Whether the command resumes the EXACT origin conversation (`--resume <id>`)
-   *  or falls back to the cwd-relative form (`--continue` / `resume --last`). */
+   *  or opens the agent's session picker (`--resume` / `resume`) for the user to
+   *  choose from (#1946). */
   exact: boolean;
 }
 
@@ -63,7 +64,9 @@ export interface RecoveryPane {
  *     appears on the card once it comes up.
  *   - the exact-session form additionally requires the binding to be for the
  *     SAME agent and the pane's live cwd to still match the binding's origin
- *     cwd (`--resume` is cwd-scoped) — otherwise the cwd-relative fallback.
+ *     cwd (`--resume` is cwd-scoped) — otherwise the agent's session picker.
+ *     Never `--continue` / `resume --last`: recovered panes often share a
+ *     folder, and each would reopen the same newest conversation (#1946).
  * Panes whose ptyId no longer maps to a live pane are skipped.
  */
 export function buildRecoveryPanes(args: {
@@ -99,12 +102,12 @@ export function buildRecoveryPanes(args: {
         const exact = cwdMatches && binding?.agent === agent;
         // Exact-session form restores the recorded permission mode on the SAME
         // line as the resume flag (F6 — both must land in one command). The
-        // fallback carries no mode: with no trusted binding there is nothing
+        // picker carries no mode: with no trusted binding there is nothing
         // recorded to restore.
         const permFlag = exact ? permissionFlagFor(binding?.permissionMode) : '';
         const command = exact
           ? `${agent}${permFlag ? ` ${permFlag}` : ''} ${grammar.withId(binding.sessionId)}`
-          : `${agent} ${grammar.fallback}`;
+          : `${agent} ${grammar.picker}`;
 
         const autoName = computePaneAutoName(wsOrdinal, leaf.ordinal ?? 0, agent);
         out.push({
@@ -122,6 +125,18 @@ export function buildRecoveryPanes(args: {
   return out;
 }
 
+/** #1946: what the brain is told about a pane whose command opens a picker. */
+const PICKER_NOTE =
+  'Panes marked (pick) have no saved conversation bound to them, so their command ' +
+  "opens the agent's session picker. Do not choose an entry or press any key in " +
+  'it: the user picks the conversation. Report those panes as waiting for the user.';
+
+/** A pane's mark in the brain's lists, placed BEFORE its command so it is never
+ *  read as part of it: ` (pick)` when the command opens a picker. */
+function pickerMark(p: RecoveryPane): string {
+  return p.exact ? '' : ' (pick)';
+}
+
 /**
  * The canned prompt the greeting card's button sends to the brain (also what a
  * typed "recover the fleet" resolves to, via the fleet-context lines below).
@@ -135,10 +150,11 @@ export function buildRecoveryPrompt(panes: RecoveryPane[]): string {
     'terminal_read to confirm the agent came back. Run each command EXACTLY as',
     'given — never add or remove flags. When done, summarize per pane: did it',
     'resume, and what was it working on (from its restored conversation).',
+    ...(panes.some((p) => !p.exact) ? [PICKER_NOTE] : []),
     '',
     ...panes.map(
       (p) =>
-        `- pane ${p.autoName}${p.label !== p.autoName ? ` ("${p.label}")` : ''} in "${p.workspaceName}" — ptyId ${p.ptyId} — run: ${p.command}`,
+        `- pane ${p.autoName}${p.label !== p.autoName ? ` ("${p.label}")` : ''} in "${p.workspaceName}" — ptyId ${p.ptyId} —${pickerMark(p)} run: ${p.command}`,
     ),
   ];
   return lines.join('\n');
@@ -154,6 +170,7 @@ export function buildRecoveryContextLines(panes: RecoveryPane[]): string {
     `Reboot recovery: ${panes.length} pane(s) had agents running before the last`,
     'shutdown; each can be brought back by typing its resume command into it',
     '(terminal_send with submit: true, run the command exactly as given):',
-    ...panes.map((p) => `- ${p.autoName} — ptyId ${p.ptyId} — ${p.command}`),
+    ...(panes.some((p) => !p.exact) ? [PICKER_NOTE] : []),
+    ...panes.map((p) => `- ${p.autoName} — ptyId ${p.ptyId} —${pickerMark(p)} ${p.command}`),
   ].join('\n');
 }

@@ -464,6 +464,30 @@ describe('resumeGrammarFor (#1342 — slugs now arrive from another machine)', (
   });
 });
 
+// #1946 — a person-driven resume without an exact session opens the agent's
+// own session picker; only the unattended replay keeps the latest-in-folder form.
+describe('resume picker grammar (#1946)', () => {
+  it("names each agent's session picker", () => {
+    expect(resumeGrammarFor('claude')?.picker).toBe('--resume');
+    expect(resumeGrammarFor('codex')?.picker).toBe('resume');
+  });
+
+  it('the unattended replay still resumes the latest conversation, never a picker nobody can drive', () => {
+    expect(toResumeCommand('claude')).toBe('claude --continue');
+    expect(toResumeCommand('codex')).toBe('codex resume --last');
+    const codexBinding: ResumeBinding = { agent: 'codex', sessionId: '0199a1b2-0000-7000-8000-9f8e7d6c5b4a', cwd: 'D:/repo', ts: 1 };
+    expect(toResumeCommand('codex', codexBinding, 'D:/elsewhere')).toBe('codex resume --last');
+    expect(toResumeCommand('codex', codexBinding, 'd:\\repo')).toBe(`codex resume ${codexBinding.sessionId}`);
+  });
+
+  it('no permission flag rides a line without an exact session', () => {
+    for (const recordedMode of ['bypassPermissions', 'acceptEdits', 'plan', undefined] as const) {
+      expect(resumePermissionFlag({ agent: 'claude', exact: false, recordedMode, skipPermissions: true })).toBe('');
+      expect(resumePermissionFlag({ agent: 'claude', exact: false, recordedMode, skipPermissions: false })).toBe('');
+    }
+  });
+});
+
 describe('isProvisionalCapture (#1624 — Codex first-turn title thread)', () => {
   const REAL = '01a0e712-ff3d-77f3-834b-4854dcc549f1';
   const TITLE = '01a0e713-2a61-7593-9d58-782daa920c8d';

@@ -84,8 +84,16 @@ export interface AgentMcpTargetSpec {
 
 /** Session resume grammar as data. `{id}` in `exact` stands for the session id. */
 export interface AgentResumeSpec {
-  /** Inserted after the launcher when no exact session applies (latest in cwd). */
+  /** Inserted after the launcher when no exact session applies (latest in cwd).
+   *  Used only where no person is at the keyboard (supervised replay, phone
+   *  launches); a pane the user resumes by hand gets `picker` instead (#1946). */
   readonly latest: string;
+  /** Inserted after the launcher to open the agent's own session picker, which
+   *  lists the folder's conversations and lets the user choose. Typed by the
+   *  resume pill, chip and Deck when no exact session is bound, because several
+   *  panes can share a folder and `latest` would reopen the same one in each
+   *  (#1946). */
+  readonly picker: string;
   /** Inserted after the launcher to resume one exact session. */
   readonly exact: string;
   /** The shape a stored session id must have before it is offered. */
@@ -171,7 +179,7 @@ export const AGENT_IDENTITIES = [
     slug: 'claude',
     display: 'Claude Code',
     modelFlag: '--model',
-    resume: { latest: '--continue', exact: '--resume {id}', idFormat: 'uuid' },
+    resume: { latest: '--continue', picker: '--resume', exact: '--resume {id}', idFormat: 'uuid' },
     permissions: 'permission-mode',
     process: { packages: ['claude-code', '@anthropic-ai/claude-code'] },
     detect: 'screen',
@@ -189,7 +197,7 @@ export const AGENT_IDENTITIES = [
     slug: 'codex',
     display: 'Codex CLI',
     modelFlag: '--model',
-    resume: { latest: 'resume --last', exact: 'resume {id}', idFormat: 'uuid' },
+    resume: { latest: 'resume --last', picker: 'resume', exact: 'resume {id}', idFormat: 'uuid' },
     detect: 'screen',
     hooks: 'codex',
     mcp: {

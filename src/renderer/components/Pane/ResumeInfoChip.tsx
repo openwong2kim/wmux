@@ -19,25 +19,28 @@ import { applyRoleBinding, type RoleBinding } from '../../../shared/orchestrator
  *     binding's origin cwd still matches one of the pane's cwd candidates
  *     (`--resume` is cwd-scoped); the permission flag rides the SAME line
  *     (both must land together);
- *   - otherwise the cwd-relative fallback (Claude `--continue` / Codex
- *     `resume --last`), which carries no recorded mode.
+ *   - otherwise the agent's session picker (Claude `--resume` / Codex
+ *     `resume`), which carries no recorded mode. Never the cwd-relative
+ *     `--continue` / `resume --last`: several panes can share a folder, and
+ *     each would reopen the same newest conversation (#1946).
  *
  * Why candidates, not a single cwd (2026-07-21, live-observed): surface.cwd is
  * the SHELL's tracked cwd and goes stale across `cd X; claude` one-liners (no
  * prompt render → no OSC 7) — the shell truly sat in the binding's cwd, yet the
  * gate compared against the stale value and wrongly downgraded a legitimate
- * exact resume to `--continue` (dropping the permission flag with it). The
+ * exact resume to the fallback (dropping the permission flag with it). The
  * workspace's hook-reported agent cwd (metadata.cwd) is the second candidate.
  * A false positive types a `--resume` that claude rejects visibly (nothing
  * auto-runs — the user presses Enter); a false negative silently resumes the
- * WRONG conversation. Loud beats silent.
+ * WRONG conversation. Loud beats silent. (Since #1946 a false negative opens
+ * the picker instead, which is no longer silent but still costs a choice.)
  *
  * `skipPermissions` (the pane toggle) forces `--dangerously-skip-permissions`
  * for Claude on an EXACT resume; when off, the captured permission mode
  * (acceptEdits/plan) is restored if any, and a captured bypassPermissions is
- * not. #1916: the cwd-relative fallback (`--continue`) never carries a
- * permission flag — it resumes whatever is newest in the folder, which may be
- * unrelated to this pane, so bypass requires an exact binding
+ * not. #1916: the session picker never carries a permission flag — the user
+ * may pick any conversation in the folder, which may be unrelated to this
+ * pane, so bypass requires an exact binding
  * (resumePermissionFlag). Codex takes no permission flag, so the toggle is inert
  * there.
  *
@@ -46,7 +49,7 @@ import { applyRoleBinding, type RoleBinding } from '../../../shared/orchestrator
  * dropped from the role's args, #1681), so the restored mode is what runs (`--dangerously-skip-permissions` beats
  * `--permission-mode` on the same line). The role's model, effort and args still
  * apply. Where the toggle is inert (Codex) the role's skip flag applies as usual
- * on an exact resume. On the fallback it is withheld for every agent (#1916).
+ * on an exact resume. On the picker it is withheld for every agent (#1916).
  *
  * Returns `null` for a non-resumable agent (no grammar). Pure + exported so the
  * exact-vs-fallback decision is unit-testable without rendering.
@@ -72,15 +75,15 @@ export function buildPaneResumeCommand(
   // caller passes its verdict through. Local callers leave it undefined.
   const exact = exactOverride ?? paneCwds.some((c) => !!c && normCwd(c) === target);
   // #1916: a permission flag only on an EXACT resume. Toggle on → bypass;
-  // toggle off → the captured mode, never a captured bypass. The cwd-relative
-  // --continue carries none.
+  // toggle off → the captured mode, never a captured bypass. The session
+  // picker carries none.
   const permFlag = resumePermissionFlag({
     agent: binding.agent,
     exact,
     recordedMode: binding.permissionMode,
     skipPermissions,
   });
-  const resumeArg = exact ? grammar.withId(binding.sessionId) : grammar.fallback;
+  const resumeArg = exact ? grammar.withId(binding.sessionId) : grammar.picker;
   const base = `${binding.agent}${permFlag ? ` ${permFlag}` : ''} ${resumeArg}`;
   // D2 — re-assert the role's enforced model on resume. The reconstruction above
   // rebuilds from the agent stem + resume/permission flags only, so a bound
@@ -89,8 +92,8 @@ export function buildPaneResumeCommand(
   // `roleRewritten` is reported rather than logged here so this stays a pure
   // function (it runs on every render of the chip); the caller emits the audit
   // line once, from an effect.
-  // The fallback withholds the role's skip flag and the permission choices in
-  // its args, for every agent (#1916).
+  // The picker line withholds the role's skip flag and the permission choices
+  // in its args, for every agent (#1916).
   const toggledOff = !exact || (agentSupportsPermissionFlag(binding.agent) && !skipPermissions);
   const rewrite = applyRoleBinding(base, roleBinding, {
     suppressSkipPermissions: toggledOff,
@@ -137,7 +140,7 @@ export default function ResumeInfoChip(props: {
   // #1916: holds only the user's explicit choice. Until they make one, the
   // toggle is on only for an exact resume of a session recorded in
   // bypassPermissions mode. Claude-only (Codex has no such flag), and not
-  // offered on the cwd-relative fallback, which never carries the flag.
+  // offered on the session picker line, which never carries the flag.
   const [skipOverride, setSkipOverride] = useState<boolean | undefined>(undefined);
   // The exact-vs-fallback decision does not depend on the toggle.
   const probe = buildPaneResumeCommand(binding, paneCwds, false, roleBinding, exactOverride);
@@ -314,7 +317,7 @@ export default function ResumeInfoChip(props: {
             </span>
           )}
           {!built.exact && (
-            <span style={{ color: 'var(--text-muted)' }}>{t('resume.continueNote')}</span>
+            <span style={{ color: 'var(--text-muted)' }}>{t('resume.pickerNote')}</span>
           )}
 
           {/* 복구 — type the command into THIS pane (no auto-Enter). */}
@@ -333,7 +336,9 @@ export default function ResumeInfoChip(props: {
               cursor: 'pointer',
             }}
           >
-            ↩ {t('resume.label', { agent: agentName })}
+            ↩ {built.exact
+              ? t('resume.label', { agent: agentName })
+              : t('resume.pickLabel', { agent: agentName })}
           </button>
         </div>
       )}

@@ -40,16 +40,29 @@ import { AGENT_ROWS, agentRow } from './agentIdentity';
 
 /**
  * Per-launcher resume grammar. Two shapes, expressed uniformly as
- * {fallback, withId} so the insertion logic stays agent-agnostic:
- *   - flag form (Claude): fallback `--continue`, exact `--resume <id>`.
- *   - subcommand form (Codex): fallback `resume --last`, exact `resume <id>`.
+ * {fallback, picker, withId} so the insertion logic stays agent-agnostic:
+ *   - flag form (Claude): fallback `--continue`, picker `--resume`, exact
+ *     `--resume <id>`.
+ *   - subcommand form (Codex): fallback `resume --last`, picker `resume`, exact
+ *     `resume <id>`.
  * `withId` returns the tokens inserted right after the launcher token;
  * `fallback` is used when no exact binding applies (no capture, cwd mismatch,
- * or a purged/dead transcript). Membership here also gates the resume pill.
+ * or a purged/dead transcript) on a path with no person at the keyboard;
+ * `picker` is what a person-driven resume types instead (#1946). Membership
+ * here also gates the resume pill.
  */
 interface ResumeGrammar {
-  /** Insertion when no exact-session binding applies (latest-in-cwd). */
+  /** Insertion when no exact-session binding applies (latest-in-cwd). Only for
+   *  unattended replay: it cannot tell apart panes that share a folder. */
   readonly fallback: string;
+  /**
+   * #1946: insertion that opens the agent's own session picker (Claude
+   * `--resume`, Codex `resume`), filtered to the shell's folder. What the resume
+   * pill, chip and Deck type when no exact session is bound: several panes can
+   * share a folder, and `fallback` would reopen the same newest conversation in
+   * every one of them.
+   */
+  readonly picker: string;
   /** Insertion that resumes the EXACT origin session id. */
   readonly withId: (sessionId: string) => string;
 }
@@ -62,7 +75,9 @@ interface ResumeGrammar {
 const RESUME_BY_LAUNCHER: ReadonlyMap<string, ResumeGrammar> = new Map(
   AGENT_ROWS.flatMap((row): [string, ResumeGrammar][] => {
     const spec = row.resume;
-    return spec ? [[row.slug, { fallback: spec.latest, withId: (id) => spec.exact.split('{id}').join(id) }]] : [];
+    return spec
+      ? [[row.slug, { fallback: spec.latest, picker: spec.picker, withId: (id) => spec.exact.split('{id}').join(id) }]]
+      : [];
   }),
 );
 
@@ -127,9 +142,9 @@ export function defaultResumeSkipPermissions(
 /**
  * #1916 — the permission flag a user-typed resume line carries.
  *
- * - The cwd-relative fallback (`--continue` / `resume --last`) carries NO flag.
- *   It resumes whatever conversation is newest in the shell's folder, which may
- *   be unrelated to the pane, so it must never be combined with
+ * - A line without an exact session (the session picker, #1946, or the
+ *   unattended `--continue` / `resume --last`) carries NO flag. The conversation
+ *   it reaches is not one wmux can vouch for, so it must never be combined with
  *   `--dangerously-skip-permissions`. Bypass needs an exact binding.
  * - On an exact resume, the toggle ON types `--dangerously-skip-permissions`.
  *   The toggle OFF restores the recorded mode, except a recorded
@@ -413,6 +428,10 @@ function resumeInsertion(
  * (`--resume <id>`); otherwise falls back to `--continue` (latest-in-cwd, still
  * correct for the single-session case). Permission-mode restore is opt-in via
  * `options.restorePermissionMode` (default OFF — D6 fail-safe).
+ *
+ * Unattended paths only (supervised replay): nobody is there to drive a
+ * picker. The resume pill, chip and Deck type the grammar's `picker` instead
+ * when no exact session is bound (#1946).
  *
  * Idempotent: re-applying never double-adds the flag (`--resume`/`--continue`
  * are both skip tokens).

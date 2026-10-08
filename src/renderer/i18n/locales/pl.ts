@@ -961,7 +961,8 @@ export const pl = {
   'resume.inCwd': 'w {cwd}',
   'resume.typesLine': 'Wpisze: {command}',
   'resume.runsIn': 'Uruchomi w: {cwd}',
-  'resume.continueNote': 'Żadna zapisana rozmowa nie pasuje do tego folderu, więc wznowiona zostanie najnowsza rozmowa w tym folderze, bez flagi pomijania uprawnień.',
+  'resume.pickLabel': 'Wybierz sesję {agent}',
+  'resume.pickerNote': 'Z tym panelem nie jest powiązana żadna zapisana rozmowa, więc zamiast zgadywać otworzy się lista sesji dla tego folderu: inne panele mogą korzystać z tego samego folderu. Wybierz tam rozmowę. Flaga pomijania uprawnień nie zostanie dodana.',
 
   // Browser
   'browser.urlPlaceholder': 'Wprowadź URL...',

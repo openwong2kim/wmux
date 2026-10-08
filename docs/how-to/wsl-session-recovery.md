@@ -88,9 +88,11 @@ Resume can then type `codex resume <thread-id>`, including when several panes
 share the same project. Press Enter to execute the typed recovery command.
 
 Capture requires a completed turn; merely opening Codex does not emit this
-notification. Existing panes without a binding still offer `codex resume --last`.
-In a new pane, use `codex resume` to select the correct old conversation and
-complete one turn to bind it. The integration matches the reported UUID to its
+notification. A pane without a binding offers **Pick a Codex session**, which
+types `codex resume` and opens Codex's picker for that folder. It never types
+`codex resume --last`, because panes sharing a folder would all reopen the same
+newest thread. Select the correct old conversation there and complete one turn
+to bind it. The integration matches the reported UUID to its
 rollout filename under `CODEX_HOME/sessions/YYYY/MM/DD` and checks only the first
 `session_meta` record for a top-level CLI session. It does not guess the newest
 session in a shared directory. This rejects notifications from temporary title

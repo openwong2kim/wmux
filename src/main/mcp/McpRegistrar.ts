@@ -526,11 +526,12 @@ export class McpRegistrar {
 
     const result = registerCodexNotify(this.home, dest);
     if (result.skipped === 'foreign') {
-      // The user's own notify is preserved; Codex resume falls back to the
-      // pill's `codex resume --last`. Also queryable via getStatus().
+      // The user's own notify is preserved; with no captured thread the
+      // resume pill opens `codex resume`'s picker (#1946). Also queryable via
+      // getStatus().
       console.warn(
         `[McpRegistrar] Codex notify: skipped — a foreign notify occupies the slot in ${result.configPath}. ` +
-        'Codex resume auto-capture is OFF; the resume pill falls back to `codex resume --last`.',
+        'Codex resume auto-capture is OFF; the resume pill opens the `codex resume` picker instead.',
       );
     } else if (result.skipped === 'malformed') {
       console.warn(`[McpRegistrar] Codex notify: malformed config left untouched at ${result.configPath}`);

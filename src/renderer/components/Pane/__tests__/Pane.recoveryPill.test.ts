@@ -41,7 +41,7 @@ describe('planRecoveryPillType — role model on the launcher-prefixed variants'
     });
   });
 
-  it('cwd-relative fallback (no session) injects --model but ignores forceSkip (#1916)', () => {
+  it('session picker (no session) injects --model but ignores forceSkip (#1916, #1946)', () => {
     const plan = planRecoveryPillType({
       launcher: 'claude',
       sessionId: undefined,
@@ -50,7 +50,7 @@ describe('planRecoveryPillType — role model on the launcher-prefixed variants'
       resumeStage: 0,
       roleBinding: reviewer,
     });
-    expect(plan?.text).toBe('claude --model haiku --continue');
+    expect(plan?.text).toBe('claude --model haiku --resume');
     expect(plan?.rewritten).toBe(true);
   });
 
@@ -71,7 +71,7 @@ describe('planRecoveryPillType — role model on the launcher-prefixed variants'
     });
   });
 
-  it('no-binding cwd-relative fallback (--continue) injects --model', () => {
+  it('no-binding session picker (--resume) injects --model', () => {
     const plan = planRecoveryPillType({
       launcher: 'claude',
       sessionId: undefined,
@@ -80,7 +80,7 @@ describe('planRecoveryPillType — role model on the launcher-prefixed variants'
       resumeStage: 0,
       roleBinding: reviewer,
     });
-    expect(plan?.text).toBe('claude --model haiku --continue');
+    expect(plan?.text).toBe('claude --model haiku --resume');
     expect(plan?.clearHint).toBe(true);
   });
 });
@@ -185,7 +185,7 @@ describe('planRecoveryPillType — role skipPermissions vs the toggle', () => {
       launcher: 'claude', sessionId: undefined, permFlag: '',
       forceSkip: false, resumeStage: 0, roleBinding: argsRole,
     });
-    expect(oneLine?.text).toBe('claude --model haiku --continue --verbose');
+    expect(oneLine?.text).toBe('claude --model haiku --resume --verbose');
   });
 
   it('codex (no toggle) keeps a skip flag in the role args', () => {
@@ -260,11 +260,16 @@ describe('planAutoResume — Claude panes resume themselves on app start', () =>
       .toBe(`claude --resume ${SID}`);
   });
 
-  it('falls back to cwd-relative --continue without a matching binding', () => {
+  // #1946: `claude --continue` would reopen the same newest conversation in
+  // every recovered pane sharing the folder. Without an exact binding nothing
+  // is typed; the pill stays up and offers the session picker.
+  it('types nothing without a matching binding, leaving the pill', () => {
     expect(planAutoResume({ enabled: true, agent: 'claude', binding: undefined, paneCwds: ['C:/git/wmux'], roleBinding: undefined }))
-      .toBe('claude --continue');
+      .toBeNull();
     expect(planAutoResume({ enabled: true, agent: 'claude', binding, paneCwds: ['C:/elsewhere'], roleBinding: undefined }))
-      .toBe('claude --continue');
+      .toBeNull();
+    expect(planAutoResume({ enabled: true, agent: 'claude', binding: { ...binding, agent: 'codex' }, paneCwds: ['C:/git/wmux'], roleBinding: undefined }))
+      .toBeNull();
   });
 
   it('restores the captured permission mode on one line, and never adds bypass', () => {
@@ -279,7 +284,7 @@ describe('planAutoResume — Claude panes resume themselves on app start', () =>
     expect(line).toContain('acceptEdits');
     expect(line).not.toContain('--dangerously-skip-permissions');
     expect(planAutoResume({ enabled: true, agent: 'claude', binding, paneCwds: [], roleBinding: undefined }))
-      .not.toContain('--dangerously-skip-permissions');
+      .toBeNull();
   });
 
   it('never adds --dangerously-skip-permissions for a saved bypassPermissions mode', () => {
@@ -323,13 +328,13 @@ describe('planAutoResume — the opt-in setting (#1826)', () => {
 });
 
 describe('planAutoResume — session id validation', () => {
-  it('types only a well-formed session id, otherwise falls back to --continue', () => {
+  it('types only a well-formed session id, otherwise types nothing (#1946)', () => {
     const base = { enabled: true, agent: 'claude', paneCwds: ['C:/git/wmux'], roleBinding: undefined };
     expect(planAutoResume({ ...base, binding: { agent: 'claude', cwd: 'C:/git/wmux', sessionId: SID } }))
       .toBe(`claude --resume ${SID}`);
     for (const sessionId of ['not a session id', `${SID} extra`, 'rollout-2026-10-01', SID.toUpperCase(), '']) {
       expect(planAutoResume({ ...base, binding: { agent: 'claude', cwd: 'C:/git/wmux', sessionId, permissionMode: 'acceptEdits' } }))
-        .toBe('claude --continue');
+        .toBeNull();
     }
   });
 });
@@ -353,7 +358,7 @@ describe('automatic resume vs the Resume pill', () => {
 });
 
 // #1916 — the pill's skip toggle starts at the recorded mode, and the
-// cwd-relative fallback never carries --dangerously-skip-permissions.
+// session picker (#1946) never carries --dangerously-skip-permissions.
 describe('recovery pill permissions (#1916)', () => {
   const BYPASS = '--dangerously-skip-permissions';
   // What one primary click types, from the pill's own inputs.
@@ -375,29 +380,29 @@ describe('recovery pill permissions (#1916)', () => {
     return { perms, text: plan?.text };
   };
 
-  it('no binding: the toggle is not offered and the pill types plain --continue', () => {
+  it('no binding: the toggle is not offered and the pill opens the plain picker', () => {
     const { perms, text } = typed({ sessionId: undefined });
     expect(perms).toEqual({ canSkip: false, skipChecked: false, forceSkip: false, permFlag: '' });
-    expect(text).toBe('claude --continue');
+    expect(text).toBe('claude --resume');
   });
 
-  it('no binding: even a checked toggle cannot put bypass on --continue', () => {
+  it('no binding: even a checked toggle cannot put bypass on the picker', () => {
     const { perms, text } = typed({ sessionId: undefined, recordedMode: 'bypassPermissions', skipOverride: true });
     expect(perms.forceSkip).toBe(false);
     expect(perms.permFlag).toBe('');
-    expect(text).toBe('claude --continue');
+    expect(text).toBe('claude --resume');
   });
 
-  it('no binding: a role skip flag (option or args) is withheld on --continue', () => {
+  it('no binding: a role skip flag (option or args) is withheld on the picker', () => {
     expect(typed({ sessionId: undefined, roleBinding: { agent: 'claude', skipPermissions: true } }).text)
-      .toBe('claude --continue');
+      .toBe('claude --resume');
     expect(typed({ sessionId: undefined, roleBinding: { agent: 'claude', args: `${BYPASS} --verbose` } }).text)
-      .toBe('claude --continue --verbose');
+      .toBe('claude --resume --verbose');
   });
 
-  it('no binding, codex: the role skip flag is withheld on resume --last too', () => {
+  it('no binding, codex: the role skip flag is withheld on the codex picker too', () => {
     expect(typed({ launcher: 'codex', sessionId: undefined, roleBinding: { agent: 'codex', skipPermissions: true } }).text)
-      .toBe('codex resume --last');
+      .toBe('codex resume');
   });
 
   it('binding without a permission mode: toggle offered, OFF by default, plain --resume', () => {
@@ -450,11 +455,11 @@ describe('recovery pill permissions (#1916)', () => {
     expect(src).toContain('const [resumeSkipOverride, setResumeSkipOverride] = useState<boolean | undefined>(undefined);');
   });
 
-  it('no binding: a permission choice in the role args is withheld on the fallback too', () => {
+  it('no binding: a permission choice in the role args is withheld on the picker too', () => {
     expect(typed({ sessionId: undefined, roleBinding: { agent: 'claude', args: '--permission-mode bypassPermissions --verbose' } }).text)
-      .toBe('claude --continue --verbose');
+      .toBe('claude --resume --verbose');
     expect(typed({ sessionId: undefined, roleBinding: { agent: 'claude', args: '--permission-mode acceptEdits' } }).text)
-      .toBe('claude --continue');
+      .toBe('claude --resume');
   });
 
   it('an exact resume keeps the role args as before', () => {
@@ -472,5 +477,76 @@ describe('recovery pill permissions (#1916)', () => {
   it('the toggle is locked after the staged first click', () => {
     const src = readFileSync(resolve(__dirname, '../Pane.tsx'), 'utf8');
     expect(src).toContain('disabled={resumeStage === 1}');
+  });
+});
+
+// #1946 — several recovered Codex panes in one folder each typed
+// `codex resume --last`, so every one of them reopened the same newest thread.
+// Without an exact binding the pill now opens the agent's session picker.
+describe('recovery pill without an exact session opens the picker (#1946)', () => {
+  const THREAD = '0199a1b2-0000-7000-8000-9f8e7d6c5b4a';
+  const BYPASS = '--dangerously-skip-permissions';
+  const pill = (launcher: string, sessionId: string | undefined, over: {
+    recordedMode?: Parameters<typeof resolveRecoveryPillPermissions>[0]['recordedMode'];
+    skipOverride?: boolean;
+    roleBinding?: RoleBinding;
+  } = {}) => {
+    const perms = resolveRecoveryPillPermissions({
+      launcher, sessionId, recordedMode: over.recordedMode, skipOverride: over.skipOverride,
+    });
+    return planRecoveryPillType({
+      launcher, sessionId, permFlag: perms.permFlag, forceSkip: perms.forceSkip,
+      resumeStage: 0, roleBinding: over.roleBinding,
+    });
+  };
+
+  it('bound: the exact thread, unchanged', () => {
+    expect(pill('codex', THREAD)?.text).toBe(`codex resume ${THREAD}`);
+    expect(pill('claude', SID)?.text).toBe(`claude --resume ${SID}`);
+  });
+
+  it('unbound, a single pane: the picker', () => {
+    expect(pill('codex', undefined)).toMatchObject({ text: 'codex resume', clearHint: true, advanceStage: false });
+    expect(pill('claude', undefined)).toMatchObject({ text: 'claude --resume', clearHint: true, advanceStage: false });
+  });
+
+  it('unbound, three panes sharing a folder: each opens the picker, none types --last', () => {
+    // The pill is planned per pane from that pane's own binding only, so panes
+    // sharing a folder cannot all land on the same newest thread.
+    const lines = ['p1', 'p2', 'p3'].map(() => pill('codex', undefined)?.text);
+    expect(lines).toEqual(['codex resume', 'codex resume', 'codex resume']);
+    for (const line of lines) expect(line).not.toMatch(/--last|--continue/);
+  });
+
+  it('one pane bound, its siblings not: the bound one gets its thread, the others the picker', () => {
+    expect([pill('codex', THREAD), pill('codex', undefined), pill('codex', undefined)].map((p) => p?.text))
+      .toEqual([`codex resume ${THREAD}`, 'codex resume', 'codex resume']);
+  });
+
+  it('no bypass flag ever rides the picker (#1916)', () => {
+    for (const recordedMode of ['bypassPermissions', 'plan', undefined] as const) {
+      for (const skipOverride of [true, false, undefined]) {
+        const text = pill('claude', undefined, {
+          recordedMode, skipOverride, roleBinding: { agent: 'claude', skipPermissions: true, args: `${BYPASS} --permission-mode plan` },
+        })?.text;
+        expect(text).toBe('claude --resume');
+      }
+    }
+    expect(pill('codex', undefined, { roleBinding: { agent: 'codex', skipPermissions: true } })?.text).toBe('codex resume');
+  });
+
+  it('a role model lands before the picker, leaving no bare word after resume', () => {
+    // `codex resume <word>` and `claude --resume <word>` would read the word as
+    // a session id / search term, so nothing may follow the picker token bare.
+    expect(pill('codex', undefined, { roleBinding: { agent: 'codex', model: 'gpt-5' } })?.text)
+      .toBe('codex --model gpt-5 resume');
+    expect(pill('claude', undefined, { roleBinding: { agent: 'claude', model: 'haiku', effort: 'low' } })?.text)
+      .toBe('claude --model haiku --effort low --resume');
+  });
+
+  it('the pill labels the picker as a choice, not a resume', () => {
+    const src = readFileSync(resolve(__dirname, '../Pane.tsx'), 'utf8');
+    expect(src).toMatch(/sessionId\s*\?\s*`▶ \$\{t\('resume\.label', \{ agent: agentName \}\)\}`\s*:\s*`▶ \$\{t\('resume\.pickLabel', \{ agent: agentName \}\)\}`/);
+    expect(src).toContain("!sessionId ? t('resume.pickerNote') : ''");
   });
 });

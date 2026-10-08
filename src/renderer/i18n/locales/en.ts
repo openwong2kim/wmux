@@ -971,7 +971,10 @@ export const en = {
   'resume.inCwd': 'in {cwd}',
   'resume.typesLine': 'Types: {command}',
   'resume.runsIn': 'Runs in: {cwd}',
-  'resume.continueNote': 'No saved conversation matches this folder, so this resumes the newest conversation here, with no permission-bypass flag.',
+  // #1946 — no saved conversation is bound to the pane: the pill opens the
+  // agent's session picker instead of guessing the newest conversation.
+  'resume.pickLabel': 'Pick a {agent} session',
+  'resume.pickerNote': 'No saved conversation is bound to this pane, so this opens the session picker for this folder instead of guessing: other panes may share the folder. Choose the conversation there. No permission-bypass flag is added.',
 
   // Browser
   'browser.urlPlaceholder': 'Enter URL...',

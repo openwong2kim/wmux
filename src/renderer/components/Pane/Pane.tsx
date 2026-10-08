@@ -219,7 +219,7 @@ export function planRecoveryPillType(args: {
   permFlag: string;
   /** Toggle-ON path: type the whole `--dangerously-skip-permissions` line at
    *  once (no progressive stage). Ignored without `sessionId` (#1916): the
-   *  cwd-relative fallback never carries a skip flag. */
+   *  session picker never carries a skip flag. */
   forceSkip: boolean;
   /** Progressive-assembly stage: 0 = nothing typed yet, 1 = base typed. */
   resumeStage: number;
@@ -235,8 +235,8 @@ export function planRecoveryPillType(args: {
   // With the skip toggle offered (Claude) and OFF, the user's explicit choice
   // wins over the role's skipPermissions: the role's skip flag is withheld (and
   // dropped from the role's args, #1681) so the restored mode is what runs. forceSkip is exactly `canSkip && toggle`.
-  // #1916: without an exact session the line is the cwd-relative fallback,
-  // which resumes whatever is newest in the shell's folder. It never carries a
+  // #1916: without an exact session the line does not name a conversation
+  // wmux can vouch for (#1946: it opens the session picker). It never carries a
   // permission flag: not the toggle's, and none of the role's (skip flag or a
   // permission choice in its args), for any agent.
   const toggledOff = !sessionId || (!forceSkip && agentSupportsPermissionFlag(launcher));
@@ -248,9 +248,11 @@ export function planRecoveryPillType(args: {
     return { text: r.command, rewritten: r.changed };
   };
   if (!sessionId) {
-    // No binding → cwd-relative fallback (Claude `--continue`, Codex
-    // `resume --last`), with no permission flag (#1916).
-    const { text, rewritten } = rewrite(`${launcher} ${grammar.fallback}`);
+    // No exact binding → the agent's own session picker (Claude `--resume`,
+    // Codex `resume`), with no permission flag (#1916). Never the cwd-relative
+    // `--continue` / `resume --last`: several recovered panes can share a
+    // folder, and each would reopen the same newest conversation (#1946).
+    const { text, rewritten } = rewrite(`${launcher} ${grammar.picker}`);
     return { text, clearHint: true, advanceStage: false, rewritten };
   }
   if (resumeStage === 1) {
@@ -280,9 +282,9 @@ export function planRecoveryPillType(args: {
  * #1916 — the recovery pill's skip-permissions toggle and permission flag.
  *
  * `--dangerously-skip-permissions` needs an exact session. Without one the pill
- * types the cwd-relative fallback (`claude --continue`), which resumes whatever
- * conversation is newest in the shell's folder, possibly an unrelated one, so
- * the toggle is not offered (`canSkip` false) and no permission flag is typed.
+ * opens the session picker (`claude --resume`, #1946), where the user may pick
+ * any conversation in the folder, so the toggle is not offered (`canSkip`
+ * false) and no permission flag is typed.
  * On an exact resume the toggle starts at the session's recorded mode (on only
  * for `bypassPermissions`) until the user sets it (`skipOverride`); OFF
  * restores the recorded mode without bypass.
@@ -329,11 +331,15 @@ export function claimAutoResume(ptyId: string): boolean {
 
 /**
  * The line to run when a recovered Claude pane is resumed on app start, or null
- * when it should be left alone. Same assembly as the Resume pill — the exact
- * conversation when the saved binding still matches the pane's cwd, otherwise
- * the cwd-relative `claude --continue` — with the permission mode that session
- * had restored. `--dangerously-skip-permissions` is never added here: that is
- * the pill toggle's explicit choice, not something to grant on every start.
+ * when it should be left alone. Same assembly as the Resume pill, with the
+ * permission mode that session had restored. Only the EXACT conversation is
+ * resumed automatically, when the saved binding still matches the pane's cwd.
+ * Without one this returns null and the pill stays up, offering the session
+ * picker (#1946): `claude --continue` would reopen the same newest conversation
+ * in every recovered pane sharing the folder, and opening a picker in each pane
+ * on start is not a resume. `--dangerously-skip-permissions` is never added
+ * here: that is the pill toggle's explicit choice, not something to grant on
+ * every start.
  */
 export function planAutoResume(args: {
   /** The user's opt-in setting (`claudeResumeOnStart`); off means the pill only. */
@@ -346,19 +352,20 @@ export function planAutoResume(args: {
   if (!args.enabled || args.agent !== 'claude') return null;
   const { binding } = args;
   // Validate the session id before typing it: only a well-formed Claude session
-  // id is ever put on the line; anything else falls back to `--continue`.
+  // id is ever put on the line; anything else leaves the pane to the pill.
   const sessionId = binding?.sessionId && CHATV2_PROVIDER_SESSION_ID.test(binding.sessionId)
     ? binding.sessionId
     : undefined;
   const exact = !!binding && !!sessionId && binding.agent === 'claude' &&
     args.paneCwds.some((c) => !!c && normalizeResumeCwd(binding.cwd) === normalizeResumeCwd(c));
+  if (!binding || !sessionId || !exact) return null; // #1946: the pill offers the picker
   const plan = planRecoveryPillType({
     launcher: 'claude',
-    sessionId: exact ? sessionId : undefined,
+    sessionId,
     // A saved bypassPermissions mode restores as the default mode here: only
     // the pill's explicit toggle may type --dangerously-skip-permissions.
-    permFlag: exact && binding?.permissionMode !== 'bypassPermissions'
-      ? permissionFlagFor(binding?.permissionMode)
+    permFlag: binding.permissionMode !== 'bypassPermissions'
+      ? permissionFlagFor(binding.permissionMode)
       : '',
     forceSkip: false,
     // Both flags land on one line: the staged click flow does not apply here.
@@ -690,8 +697,8 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   // X6 ③: the pill TYPES the command (no Enter) and assembles progressively —
   // click 1 restores the permission mode (Claude only), an optional click 2
   // appends the EXACT-session resume; the user presses Enter to run. With no
-  // binding it falls back to the agent's cwd-relative form (Claude `--continue`,
-  // Codex `resume --last`).
+  // exact binding it opens the agent's session picker (Claude `--resume`, Codex
+  // `resume`) rather than the newest conversation in the folder (#1946).
   const resumeHint = useStore((s) =>
     activeSurfacePtyId ? s.resumeHintByPtyId[activeSurfacePtyId] : undefined,
   );
@@ -971,7 +978,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         // exact-session resume when the binding's origin cwd still matches the
         // pane's LIVE cwd. The daemon checks this at recovery, but the shell can
         // `cd` afterwards (OSC 7 updates surface.cwd) — re-validate here so a
-        // post-recovery cd drops to the cwd-relative `--continue` (plan line 220).
+        // post-recovery cd drops to the session picker (plan line 220, #1946).
         const normCwd = (p: string | undefined) => {
           // Lowercase ONLY a leading Windows drive letter — drive letters are
           // case-insensitive, but POSIX paths are fully case-sensitive, so a blanket
@@ -983,7 +990,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         };
         // Candidates, not a single cwd (2026-07-21): surface.cwd goes stale
         // across `cd X; claude` one-liners (no prompt render → no OSC 7), which
-        // wrongly downgraded a legitimate exact resume to `--continue`. The
+        // wrongly downgraded a legitimate exact resume to the fallback. The
         // workspace's hook-reported agent cwd (metadata.cwd) is the second
         // candidate — same rationale as buildPaneResumeCommand (ResumeInfoChip).
         const paneCwdCandidates = [
@@ -1058,16 +1065,21 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
 
         // The two-stage progressive assembly only applies to the toggle-OFF
         // captured-mode path; with the toggle ON, one click types everything.
+        // #1946: without an exact session the click opens the agent's session
+        // picker, and the label says so instead of promising a resume.
         const primaryLabel = resumeStage === 1
           ? `+ ${t('resume.addSession')}`
-          : `▶ ${t('resume.label', { agent: agentName })}`;
+          : sessionId
+            ? `▶ ${t('resume.label', { agent: agentName })}`
+            : `▶ ${t('resume.pickLabel', { agent: agentName })}`;
         // #1916: the tooltip names the line this click types and the folder it
-        // runs in; the cwd-relative fallback also says why it carries no bypass.
+        // runs in; the picker line also says why it opens a picker and carries
+        // no bypass (#1946).
         const primaryTooltip = [
           resumeStage === 1 ? t('resume.addSessionTooltip') : t('resume.tooltip'),
           plan ? t('resume.typesLine', { command: plan.text.trim() }) : '',
           runCwd ? t('resume.runsIn', { cwd: runCwd }) : '',
-          !sessionId ? t('resume.continueNote') : '',
+          !sessionId ? t('resume.pickerNote') : '',
         ].filter(Boolean).join('\n');
 
         return (
