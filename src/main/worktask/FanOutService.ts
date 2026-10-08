@@ -667,7 +667,7 @@ export class FanOutService {
     const env = await this.resolveEnvironment(req.repoPath, n);
     const workerMode = req.workerPermissionMode ?? this.workerPermissionMode();
     const requester = sanitizeFanoutOrigin(req.caller);
-    const launchFailures = lateLaunchFailureSink();
+    const launchFailures = lateLaunchFailureSink(this.launchConfirmMs);
 
     // ── 태스크 순차 처리(직렬 큐가 이미 강제하지만, 스폰 부하도 직렬로) ──
     const common = (k: number) => ({
@@ -946,7 +946,7 @@ export class FanOutService {
     }
     const workerMode = req.workerPermissionMode ?? this.workerPermissionMode();
     const requester = sanitizeFanoutOrigin(req.caller);
-    const launchFailures = lateLaunchFailureSink();
+    const launchFailures = lateLaunchFailureSink(this.launchConfirmMs);
     const tasks: FanOutTaskResult[] = [];
     const spawnAt = (k: number, done: FanOutTaskResult[]): Promise<FanOutTaskResult> =>
       this.spawnOne({
@@ -1478,8 +1478,10 @@ export class FanOutService {
       const seconds = Math.round(confirmMs / 1000);
       task.launchFailed = true;
       task.ok = false;
+      // The line itself goes in the task's error only: on Windows it is a
+      // long PowerShell expression, and the warning should stay one readable line.
       task.error =
-        `the agent did not start in pane ${ptyId} within ${seconds}s` +
+        `${launchFailedHeadline(ptyId, seconds)}` +
         (task.initialCommand ? `; re-run the launch line there: ${task.initialCommand}` : '');
       await this.markLaunchFailed(task.taskId, ownerWorkspaceId, ptyId, seconds);
       try {
@@ -1723,7 +1725,12 @@ function errorCode(err: unknown): string {
  * check can conclude before the result object exists (a test with a zero
  * bound) or long after it was returned, so failures queue until `attach`.
  */
-function lateLaunchFailureSink(): {
+/** #1919 — the one-line statement of a failed launch. */
+function launchFailedHeadline(ptyId: string, seconds: number): string {
+  return `the agent did not start in pane ${ptyId} within ${seconds}s`;
+}
+
+function lateLaunchFailureSink(confirmMs: number): {
   notify: (task: FanOutTaskResult) => void;
   attach: (result: FanOutResult) => void;
 } {
@@ -1731,10 +1738,8 @@ function lateLaunchFailureSink(): {
   const early: FanOutTaskResult[] = [];
   const apply = (result: FanOutResult, task: FanOutTaskResult): void => {
     result.ok = result.tasks.every((t) => t.ok || t.pending);
-    addWarning(
-      result,
-      `task ${task.index + 1} (${task.title}): ${task.error ?? 'the agent did not start'}`,
-    );
+    const where = task.ptyId ? launchFailedHeadline(task.ptyId, Math.round(confirmMs / 1000)) : 'the agent did not start';
+    addWarning(result, `task ${task.index + 1} (${task.title}): ${where}; its error carries the line to re-run`);
   };
   return {
     notify: (task) => {
