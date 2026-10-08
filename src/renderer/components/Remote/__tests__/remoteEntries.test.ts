@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildRemoteEntries, serverReach, shortId, type RemoteSources } from '../remoteEntries';
+import { buildRemoteEntries, paneNamesByPty, serverReach, shortId, type RemoteSources } from '../remoteEntries';
 
 const base: RemoteSources = { devices: null, info: null, hosts: null, hostStatus: {}, peers: null, openByHost: {} };
 
@@ -24,6 +24,30 @@ describe('Remote page entries', () => {
     expect(tablet).toMatchObject({ kind: 'device', live: false, status: 'offline', access: 'view' });
     expect(host).toMatchObject({ kind: 'host', live: true, address: 'office.example:9600', viewing: ['api'], access: 'input', lastSeenAt: null });
     expect(peer).toMatchObject({ kind: 'peer', live: false, status: 'unknown', lastSeenAt: null, access: 'messages' });
+  });
+
+  it('names what each phone is viewing from this PC\'s panes, dropping ids it cannot name', () => {
+    const ws = {
+      id: 'w1', name: 'api', wsOrdinal: 1, activePaneId: 'p1',
+      rootPane: {
+        id: 'p1', type: 'leaf', ordinal: 1, metadata: { label: 'claude' }, activeSurfaceId: 's1',
+        surfaces: [{ id: 's1', ptyId: 'pty-1' }, { id: 's2', ptyId: 'pty-2' }],
+      },
+    };
+    const names = paneNamesByPty([ws as never]);
+    expect(names).toEqual({ 'pty-1': 'api / claude', 'pty-2': 'api / claude' });
+    const [watching, idle, old] = buildRemoteEntries({
+      ...base,
+      paneNameByPty: names,
+      devices: [
+        { deviceId: 'd-1', name: 'Phone', createdAt: 1, lastSeenAt: 3, allowInput: true, activeNow: true, viewingSessions: ['pty-1', 'pty-2', 'gone'] },
+        { deviceId: 'd-2', name: 'Idle', createdAt: 1, lastSeenAt: 2, allowInput: true, activeNow: true, viewingSessions: [] },
+        { deviceId: 'd-3', name: 'Old', createdAt: 1, lastSeenAt: 1, allowInput: true },
+      ],
+    });
+    expect(watching.viewing).toEqual(['api / claude']);
+    expect(idle.viewing).toEqual([]);
+    expect(old.viewing).toBeNull();
   });
 
   it('never carries a full id into what it shows', () => {

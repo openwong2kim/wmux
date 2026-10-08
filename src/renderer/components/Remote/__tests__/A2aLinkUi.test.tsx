@@ -1,14 +1,14 @@
 // @vitest-environment jsdom
 //
 // Cross-PC pane link UI: the matching dialog (same-repo panes first, repo
-// mismatch warning, directions) and the Remote page's request cards and link
-// list. Pure views, rendered with stub `t`.
+// mismatch warning, directions) and the Remote page's request rows (Needs
+// you) and nested link rows. Pure views, rendered with stub `t`.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { act, createElement, type ReactElement } from 'react';
 import type { A2aExposedPane, A2aLinkRecordV1 } from '../../../../shared/a2aRemote';
 import { A2aLinkDialogView, type A2aLinkDialogViewProps } from '../A2aLinkDialog';
-import { A2aLinksView, type A2aLinksViewProps } from '../A2aLinksPanel';
+import { A2aLinkRequestRow, A2aLinkRow, type A2aLinkRequestRowProps, type A2aLinkRowProps } from '../A2aLinksPanel';
 import { autoPickPane, rankExposedPanes, remoteAlias, repoMismatch } from '../a2aLinkModel';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -160,86 +160,91 @@ const link = (over: Partial<A2aLinkRecordV1> = {}): A2aLinkRecordV1 => ({
   ...over,
 });
 
-function linksProps(over: Partial<A2aLinksViewProps> = {}): A2aLinksViewProps {
+function requestProps(over: Partial<A2aLinkRequestRowProps> = {}): A2aLinkRequestRowProps {
   return {
-    links: [], pcNames: { [HOST]: 'DESK' }, workspaces: [], localRepos: {}, busy: null, confirming: null, error: null,
-    onAccept: () => undefined, onReject: () => undefined, onAskRevoke: () => undefined, onCancelRevoke: () => undefined,
-    onRevoke: () => undefined, onCheck: () => undefined, t, ...over,
+    link: link(), pcName: 'DESK', names: { workspaces: [] }, now: Date.parse('2026-10-07T00:02:00.000Z'),
+    primary: true, busy: false, onAccept: () => undefined, onReject: () => undefined, t, ...over,
   };
 }
+const inList = (el: ReactElement) => createElement('ul', null, el);
 
-describe('A2aLinksView', () => {
-  it('draws nothing with no link', () => {
-    const el = document.createElement('div');
-    roots.push({ root: createRoot(el), el });
-    act(() => roots[roots.length - 1].root.render(createElement(A2aLinksView, linksProps())));
-    expect(el.innerHTML).toBe('');
-  });
-
-  it('a request card shows both sides, the direction and a repo mismatch, and accepts', () => {
+describe('A2aLinkRequestRow', () => {
+  it('names both ends in one sentence with the evidence, flags a repo mismatch, and accepts', () => {
     const onAccept = vi.fn();
-    const body = render(createElement(A2aLinksView, linksProps({
-      links: [link()], localRepos: { 'w1/p1': 'x/o/api' }, onAccept,
-    })));
-    const card = body.querySelector('[data-testid="a2a-link-requests"]')!;
-    expect(card.textContent).toContain('a2aLink.requestTitle(DESK)');
-    expect(card.textContent).toContain('DESK/Web/w2-1');
-    expect(card.textContent).toContain('a2aLink.dirSend');
-    expect(body.querySelector('[data-testid="a2a-link-request-mismatch"]')).not.toBeNull();
-    act(() => (body.querySelector('[data-testid="a2a-link-accept"]') as HTMLButtonElement).click());
-    expect(onAccept).toHaveBeenCalledWith(link().linkId);
+    const body = render(inList(createElement(A2aLinkRequestRow, requestProps({ localRepo: 'x/o/api', fingerprint: '3F:9A:12:C0:7B:E4:91:0D', onAccept }))));
+    const row = body.querySelector('[data-testid="a2a-link-request"]')!;
+    expect(row.textContent).toContain('remotePage.needs.linkSentence(DESK,Web/w2-1,w1 / p1)');
+    expect(row.textContent).toContain('3F:9A:12:C0:7B:E4…');
+    expect(row.textContent).toContain('a2aLink.dirSend');
+    expect(row.querySelector('[data-testid="a2a-link-request-mismatch"]')?.textContent).toBe('a2aLink.repoMismatch(x/o/api,x/o/web)');
+    expect(row.querySelector('[data-testid="a2a-link-same-repo"]')).toBeNull();
+    const accept = row.querySelector('[data-testid="a2a-link-accept"]') as HTMLButtonElement;
+    expect(accept.className).toContain('ui-btn-primary');
+    act(() => accept.click());
+    expect(onAccept).toHaveBeenCalledOnce();
   });
 
-  it('a request card marks the other PC\'s fields as reported, renders them as text, and names this PC\'s pane by the stored ids', () => {
+  it('says so when the panes share a repo; a later request is not the primary', () => {
+    const body = render(inList(createElement(A2aLinkRequestRow, requestProps({ localRepo: 'x/o/web', primary: false }))));
+    expect(body.querySelector('[data-testid="a2a-link-same-repo"]')?.textContent).toBe('remotePage.needs.sameRepo(x/o/web)');
+    expect(body.querySelector('[data-testid="a2a-link-request-mismatch"]')).toBeNull();
+    expect((body.querySelector('[data-testid="a2a-link-accept"]') as HTMLElement).className).not.toContain('ui-btn-primary');
+  });
+
+  it('renders what the other PC reports as text, marked as theirs, and names this PC\'s pane by the stored ids', () => {
     const ws = {
       id: 'w1', name: 'API', wsOrdinal: 3, activePaneId: 'p1',
       rootPane: { id: 'p1', type: 'leaf' as const, surfaces: [], activeSurfaceId: '', ordinal: 2, metadata: { label: 'build' } },
     };
-    const body = render(createElement(A2aLinksView, linksProps({
-      links: [link({ remote: { hostId: HOST, kind: 'pane', workspaceId: 'rw', paneId: 'rp', label: '<b>x</b>' } })],
-      workspaces: [ws as never],
-    })));
-    const card = body.querySelector('[data-testid="a2a-link-requests"]')!;
-    expect(card.querySelector('[data-testid="a2a-link-reported"]')?.textContent).toBe('a2aLink.reportedBy(DESK)');
-    expect(card.querySelector('b')).toBeNull();
-    expect(card.textContent).toContain('<b>x</b>');
-    expect(card.textContent).toContain('a2aLink.yourPane(API / build)');
+    const body = render(inList(createElement(A2aLinkRequestRow, requestProps({
+      link: link({ remote: { hostId: HOST, kind: 'pane', workspaceId: 'rw', paneId: 'rp', label: '<b>x</b>' } }),
+      names: { workspaces: [ws as never] },
+    }))));
+    const row = body.querySelector('[data-testid="a2a-link-request"]')!;
+    expect(row.querySelector('[data-testid="a2a-link-reported"]')?.textContent).toBe('remotePage.needs.reported(DESK)');
+    expect(row.querySelector('b')?.textContent).toBe('DESK');
+    expect(row.textContent).toContain('rw/<b>x</b>');
+    expect(row.textContent).toContain('API / build');
   });
 
-  it('offers Check on a live link this PC proposed, not on one it received', () => {
-    const body = render(createElement(A2aLinksView, linksProps({
-      links: [link({ state: 'active', proposer: 'local' }), link({ linkId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', state: 'active', proposer: 'remote', local: { kind: 'pane', workspaceId: 'w2', paneId: 'p2' } })],
-    })));
-    const checks = [...body.querySelectorAll('[data-testid="a2a-link-list"] button')].filter((b) => b.textContent === 'a2aLink.check');
-    expect(checks).toHaveLength(1);
+  it('a Moa request says Moa with Moa', () => {
+    const body = render(inList(createElement(A2aLinkRequestRow, requestProps({
+      link: link({ local: { kind: 'brain', workspaceId: 'hq' }, remote: { hostId: HOST, kind: 'brain', workspaceId: 'rhq' } }),
+    }))));
+    expect(body.textContent).toContain('remotePage.needs.moaSentence(DESK)');
+  });
+});
+
+function rowProps(over: Partial<A2aLinkRowProps> = {}): A2aLinkRowProps {
+  return {
+    link: link({ state: 'active' }), pcName: 'DESK', names: { workspaces: [] }, confirming: false, busy: false,
+    onCheck: () => undefined, onAskUnlink: () => undefined, onCancelUnlink: () => undefined, onUnlink: () => undefined, t, ...over,
+  };
+}
+
+describe('A2aLinkRow', () => {
+  it('shows a live link with its direction; Unlink asks first', () => {
+    const onAskUnlink = vi.fn();
+    const body = render(inList(createElement(A2aLinkRow, rowProps({ onAskUnlink }))));
+    const row = body.querySelector('[data-testid="a2a-link-row"]')!;
+    expect(row.textContent).toContain('w1 / p1 ↔ DESK/Web/w2-1 · a2aLink.dirSend');
+    expect([...row.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['a2aLink.unlink']);
+    act(() => row.querySelector('button')!.click());
+    expect(onAskUnlink).toHaveBeenCalledOnce();
   });
 
-  it('a Moa request card says Moa <-> Moa', () => {
-    const body = render(createElement(A2aLinksView, linksProps({
-      links: [link({ local: { kind: 'brain', workspaceId: 'hq' }, remote: { hostId: HOST, kind: 'brain', workspaceId: 'rhq' } })],
-    })));
-    const card = body.querySelector('[data-testid="a2a-link-requests"]')!;
-    expect(card.textContent).toContain('a2aLink.moaRequestTitle(DESK)');
-    expect(card.textContent).toContain('DESK/Moa');
-    expect(card.textContent).toContain('a2aLink.thisMoa');
+  it('a link this PC proposed waits for the other PC, with Check', () => {
+    const body = render(inList(createElement(A2aLinkRow, rowProps({ link: link({ state: 'proposed-out', proposer: 'local' }) }))));
+    const row = body.querySelector('[data-testid="a2a-link-row"]')!;
+    expect(row.getAttribute('data-state')).toBe('pending');
+    expect(row.textContent).toContain('remotePage.linkWaiting(DESK)');
+    expect([...row.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['a2aLink.check', 'a2aLink.unlink']);
   });
 
-  it('offers "Link Moa" only when this PC has a Moa, even with no link yet', () => {
-    const onLinkMoa = vi.fn();
-    const body = render(createElement(A2aLinksView, linksProps({ onLinkMoa })));
-    act(() => (body.querySelector('[data-testid="a2a-link-moa"]') as HTMLButtonElement).click());
-    expect(onLinkMoa).toHaveBeenCalledOnce();
-  });
-
-  it('lists links with their state; unlinking asks twice', () => {
-    const onAskRevoke = vi.fn();
-    const active = link({ state: 'active', version: 2 });
-    const body = render(createElement(A2aLinksView, linksProps({ links: [active, link({ linkId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', state: 'broken', endedReason: 'pane-closed' })], onAskRevoke })));
-    const list = body.querySelector('[data-testid="a2a-link-list"]')!;
-    expect([...list.querySelectorAll('[data-state]')].map((b) => b.getAttribute('data-state'))).toEqual(['active', 'broken']);
-    expect(list.textContent).toContain('a2aLink.ended.pane-closed');
-    const unlink = [...list.querySelectorAll('button')].find((b) => b.textContent === 'a2aLink.unlink')!;
-    act(() => unlink.click());
-    expect(onAskRevoke).toHaveBeenCalledWith(active.linkId);
+  it('the confirm unlinks', () => {
+    const onUnlink = vi.fn();
+    const body = render(inList(createElement(A2aLinkRow, rowProps({ confirming: true, onUnlink }))));
+    act(() => (body.querySelector('[data-testid="a2a-link-row"] .ui-btn-danger') as HTMLButtonElement).click());
+    expect(onUnlink).toHaveBeenCalledOnce();
   });
 });
