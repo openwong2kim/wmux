@@ -1688,6 +1688,89 @@ describe('PlaywrightEngine ensureConnected workspace switch (Phase 2.5)', () => 
 });
 
 
+// ── Per-pane Chrome profiles: the reuse key is (workspace, profile) ─────────
+describe('PlaywrightEngine ensureConnected profile switch', () => {
+  beforeEach(() => {
+    (PlaywrightEngine as unknown as { instance: PlaywrightEngine | null }).instance = null;
+    __resetSurfaceRoutingForTesting();
+    mockSendRpc.mockReset();
+    mockConnectOverCDP.mockReset();
+  });
+
+  /** A main whose answer for ws-a is whatever `current` says right now. */
+  function mainReporting(current: { profile?: string; port: number }) {
+    mockSendRpc.mockImplementation((method: string) =>
+      method === 'browser.cdp.info'
+        ? Promise.resolve({
+            cdpPort: current.port,
+            ...(current.profile !== undefined && { profile: current.profile }),
+            workspaceBackend: 'chrome',
+            targetsScoped: true,
+            targets: [],
+          })
+        : Promise.resolve({}),
+    );
+  }
+  const cdpInfoCalls = () => mockSendRpc.mock.calls.filter((c) => c[0] === 'browser.cdp.info').length;
+
+  it('drops the old Chrome and attaches to the new port when the pane\'s profile changes', async () => {
+    const current = { profile: 'work', port: 18910 };
+    mainReporting(current);
+    const first = makeFakeBrowser([]);
+    const second = makeFakeBrowser([]);
+    mockConnectOverCDP.mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+
+    const engine = PlaywrightEngine.getInstance();
+    await engine.ensureConnected('ws-a');
+    // The user rebinds this pane: same workspace, another profile and port.
+    current.profile = 'personal';
+    current.port = 18911;
+    await engine.ensureConnected('ws-a');
+
+    expect(mockConnectOverCDP).toHaveBeenCalledTimes(2);
+    expect(mockConnectOverCDP).toHaveBeenLastCalledWith('http://localhost:18911');
+    expect(first.close).toHaveBeenCalled();
+    expect(await engine.getBrowser()).toBe(second);
+  });
+
+  it('reuses the connection while the profile is unchanged (asking main each time)', async () => {
+    mainReporting({ profile: 'work', port: 18910 });
+    mockConnectOverCDP.mockResolvedValue(makeFakeBrowser([]));
+
+    const engine = PlaywrightEngine.getInstance();
+    await engine.ensureConnected('ws-a');
+    await engine.ensureConnected('ws-a');
+
+    expect(mockConnectOverCDP).toHaveBeenCalledTimes(1);
+    expect(cdpInfoCalls()).toBe(2);
+  });
+
+  it('keeps the live connection when only the profile check fails', async () => {
+    mainReporting({ profile: 'work', port: 18910 });
+    mockConnectOverCDP.mockResolvedValue(makeFakeBrowser([]));
+    const engine = PlaywrightEngine.getInstance();
+    await engine.ensureConnected('ws-a');
+
+    mockSendRpc.mockRejectedValueOnce(new Error('RPC timeout: browser.cdp.info (10000ms)'));
+    await engine.ensureConnected('ws-a');
+
+    expect(mockConnectOverCDP).toHaveBeenCalledTimes(1);
+    expect(cdpInfoCalls()).toBe(2);
+  });
+
+  it('keeps the free reuse path against a main that reports no profile', async () => {
+    mainReporting({ port: 18910 });
+    mockConnectOverCDP.mockResolvedValue(makeFakeBrowser([]));
+
+    const engine = PlaywrightEngine.getInstance();
+    await engine.ensureConnected('ws-a');
+    await engine.ensureConnected('ws-a');
+
+    expect(mockConnectOverCDP).toHaveBeenCalledTimes(1);
+    expect(cdpInfoCalls()).toBe(1);
+  });
+});
+
 // ── Phase 3: live-Chrome attach (wsEndpoint from cdp.info) ─────────────────
 describe('PlaywrightEngine live-Chrome ws endpoint (Phase 3)', () => {
   beforeEach(() => {
