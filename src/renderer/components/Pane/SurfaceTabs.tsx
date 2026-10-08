@@ -10,7 +10,8 @@ import {
 } from '../../utils/sessionInfoMarkdown';
 import { tokenAttrs } from '../../themes';
 import UsageLimitChip from './UsageLimitChip';
-import { computePaneAutoName, paneDisplayName, paneLabelRejectionKey } from '../../utils/paneNaming';
+import { computePaneAutoName, paneDisplayName, paneLabelRejectionKey, paneTag } from '../../utils/paneNaming';
+import { beginPaneTagDrag, endPaneTagDrag } from '../../utils/paneTagDrag';
 import { findPane } from '../../../shared/paneUtils';
 import PaneDragGrip from './PaneDragGrip';
 import { FOCUS_RING } from '../focusRing';
@@ -837,6 +838,11 @@ export default function SurfaceTabs({
     const md = buildPaneMarkdown(workspace, paneId, state.surfaceAgent, state, state.paneLabel);
     e.dataTransfer.setData('text/plain', md);
     e.dataTransfer.effectAllowed = 'copy';
+    // Dropped on a wmux terminal, the drag types just `#w1-2 ` (paneTagDrag.ts);
+    // text/plain above stays the full markdown for every other drop target.
+    if (leaf && leaf.type === 'leaf' && typeof workspace.wsOrdinal === 'number' && typeof leaf.ordinal === 'number') {
+      beginPaneTagDrag(md, paneTag(workspace, leaf));
+    }
     setTerminalTextDropDragActive(true);
   };
 
@@ -962,7 +968,10 @@ export default function SurfaceTabs({
           key={s.id}
           draggable={!readOnly && editingId !== s.id}
           onDragStart={handleDragStart}
-          onDragEnd={() => setTerminalTextDropDragActive(false)}
+          onDragEnd={() => {
+            endPaneTagDrag();
+            setTerminalTextDropDragActive(false);
+          }}
           // Tab pill: 30px, 6px radius, centered in the 40px strip. Active =
           // --selection fill + full text; inactive = 50% text, hover fill.
           // pr-3 keeps the 12px right padding the close button's refund uses.

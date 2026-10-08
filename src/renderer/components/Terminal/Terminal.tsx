@@ -17,6 +17,7 @@ import SearchBar from './SearchBar';
 import BookmarkIndicator from './BookmarkIndicator';
 import ContextMenu from './ContextMenu';
 import ScrollToBottomButton from './ScrollToBottomButton';
+import { paneTagDropText } from '../../utils/paneTagDrag';
 import '@xterm/xterm/css/xterm.css';
 
 const ChatView = lazy(() => import('../Chat/ChatView'));
@@ -442,9 +443,10 @@ export default function TerminalComponent({ chatView = false, ptyId: externalPty
     e.preventDefault();
     const terminal = terminalRef.current;
     const modes = (terminal as unknown as { modes?: { bracketedPasteMode?: boolean } })?.modes;
+    // A pane header dropped here types its tag (`#w1-2 `), not its markdown.
     void pastePtyChunked(
       (d) => window.electronAPI.pty.write(ptyId, d),
-      text,
+      paneTagDropText(text) ?? text,
       modes ?? null,
     ).catch((err) => console.error('[wmux:terminal-drop] paste failed:', err));
   }, [ptyId, terminalRef]);
