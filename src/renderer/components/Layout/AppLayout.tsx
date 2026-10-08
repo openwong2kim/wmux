@@ -58,6 +58,7 @@ import { useTerminalCopyShortcut } from '../../hooks/useTerminalCopyShortcut';
 import { useNotificationListener } from '../../hooks/useNotificationListener';
 import { useRpcBridge } from '../../hooks/useRpcBridge';
 import { useA2aLinkRequestToast, useA2aRemoteSnapshot } from '../../hooks/useA2aRemoteSnapshot';
+import { useA2aRemoteBridge } from '../../hooks/useA2aRemoteBridge';
 import { useCloseTabOnShellExit } from '../../hooks/useCloseTabOnShellExit';
 import AgentMentionPicker from '../Palette/AgentMentionPicker';
 import HandoffPopover from '../Git/HandoffPopover';
@@ -904,6 +905,9 @@ export default function AppLayout() {
   // Cross-host A2A: the pane tree for exposure and gone-pane link breaks.
   useA2aRemoteSnapshot();
   useA2aLinkRequestToast(t);
+  // The other PCs' links, connections and held work: the one subscription
+  // behind the Remote page and its rail badge.
+  useA2aRemoteBridge();
   // `exit` in a shell closes its tab (clean exit only).
   useCloseTabOnShellExit();
   // Keep the main-process WorkspaceMirror warm: push the workspace tree +
