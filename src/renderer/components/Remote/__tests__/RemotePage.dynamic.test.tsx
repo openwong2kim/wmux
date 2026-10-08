@@ -246,7 +246,15 @@ describe('Remote page', () => {
     const menu = pc.querySelector<HTMLButtonElement>('[data-remote-menu]')!;
     expect(menu.getAttribute('aria-label')).toBe('DESK: more actions');
     act(() => menu.click());
-    expect([...container.querySelectorAll('[data-remote-menu-item]')].map((i) => i.getAttribute('data-remote-menu-item'))).toEqual(['link', 'remove']);
+    expect([...document.querySelectorAll('[data-remote-menu-item]')].map((i) => i.getAttribute('data-remote-menu-item'))).toEqual(['link', 'remove']);
+    // The menu is portalled out of the list's clip, and the button points at it.
+    const pop = document.querySelector('[role="menu"]')!;
+    expect(container.contains(pop)).toBe(false);
+    expect(menu.getAttribute('aria-controls')).toBe(pop.id);
+    // Escape on the button closes the menu and stays on the page.
+    act(() => { menu.focus(); menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); });
+    expect(document.querySelector('[role="menu"]')).toBeNull();
+    expect(useStore.getState().appRoute).toBe('remote');
     const linkRow = $('[data-testid="a2a-link-row"]')!;
     expect(linkRow.textContent).toContain('api / build ↔ DESK/Web/claude · Both ways');
     act(() => byText('[data-testid="a2a-link-row"] button', 'Unlink')!.click());
@@ -282,7 +290,7 @@ describe('Remote page', () => {
     await render();
     const removeVia = async (hostId: string) => {
       act(() => $(`[data-remote-pc="${hostId}"] [data-remote-menu]`)!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
-      act(() => $<HTMLButtonElement>('[data-remote-menu-item="remove"]')!.click());
+      act(() => document.querySelector<HTMLButtonElement>('[data-remote-menu-item="remove"]')!.click());
       await act(async () => { $<HTMLButtonElement>(`[data-remote-pc="${hostId}"] [data-remote-confirm="pc"]`)!.click(); });
     };
     await removeVia(HOST);
@@ -297,7 +305,7 @@ describe('Remote page', () => {
     api.a2aRemote.peersRevoke.mockResolvedValue({ ok: false });
     await render();
     act(() => $(`[data-remote-pc="${PEER_HOST}"] [data-remote-menu]`)!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
-    act(() => $<HTMLButtonElement>('[data-remote-menu-item="remove"]')!.click());
+    act(() => document.querySelector<HTMLButtonElement>('[data-remote-menu-item="remove"]')!.click());
     await act(async () => { $<HTMLButtonElement>(`[data-remote-pc="${PEER_HOST}"] [data-remote-confirm="pc"]`)!.click(); });
     expect(api.a2aRemote.peersRevoke).toHaveBeenCalledWith(`peer-${PEER_HOST}`);
     expect($('[data-remote-notice]')?.textContent).toBe('office-win can still connect to this PC: revoking its pairing here failed. Try Remove again.');

@@ -891,7 +891,7 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-remote-link-what { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wmux-remote-confirm { font-size: 12px; color: var(--text-main); }
 .wmux-remote-menu { position: relative; display: inline-flex; }
-.wmux-remote-menu-pop { position: absolute; top: calc(100% + 4px); right: 0; z-index: 30; display: flex; flex-direction: column; gap: 1px; min-width: 200px; padding: 6px; }
+.wmux-remote-menu-pop { position: fixed; z-index: var(--z-popover-top); display: flex; flex-direction: column; gap: 1px; min-width: 200px; padding: 6px; }
 .wmux-remote-empty { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; font-size: 13px; color: var(--text-sub); }
 .wmux-remote-empty p { flex: 1 1 260px; margin: 0; }
 .wmux-remote-activity-row { display: flex; justify-content: space-between; gap: 12px; min-height: 30px; align-items: center; padding: 0 12px; font-size: 12px; color: var(--text-sub); }
