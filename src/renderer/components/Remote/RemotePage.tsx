@@ -404,9 +404,9 @@ export default function RemotePage() {
     const paneLinks = pc.links.filter((l) => l.remote.kind === 'pane').length;
     const moaLink = pc.links.some((l) => l.remote.kind === 'brain');
     const meta = [
-      pc.address,
       paneLinks > 0 ? t('remotePage.paneLinks', { count: paneLinks }) : '',
       moaLink ? t('remotePage.moaLink') : '',
+      pc.pending > 0 ? t('remotePage.toSend', { count: pc.pending }) : '',
     ].filter(Boolean).join(' · ');
     const menu: RemoteRowMenuItem[] = [
       ...(pc.joined ? [{ id: 'link', label: t('remotePage.menu.linkPanes'), onSelect: () => setLinkDialog({ hostId: pc.hostId }) }] : []),
@@ -419,12 +419,14 @@ export default function RemotePage() {
         <span className="wmux-remote-ic" aria-hidden="true"><IconComputer size={16} /></span>
         <span className="wmux-remote-nm"><span className="truncate">{pc.name}</span></span>
         <span className="wmux-remote-meta">
-          {meta && <span className={pc.address ? 'ui-code' : undefined}>{meta}</span>}
-          {pc.pending > 0 && <span className="wmux-remote-hi">{(meta ? ' · ' : '') + t('remotePage.toSend', { count: pc.pending })}</span>}
+          {pc.address && <span className="ui-code">{pc.address}</span>}
+          {pc.address && meta ? ' · ' : ''}
+          {meta}
         </span>
         {statusCell(pc.word, pc.word === 'connected', pc.lastSeenAt)}
         <span className="wmux-remote-acts">
-          {isConfirming('pc', pc.hostId)
+          {/* A PC whose certificate changed confirms its removal in the Needs you block. */}
+          {isConfirming('pc', pc.hostId) && !pc.identityChanged
             ? twoStep(pc.hostId, 'pc', '', t('remotePage.removeConfirm'), () => void removePc(pc), 'pc')
             : <RemoteRowMenu label={t('remotePage.menu.label', { name: pc.name })} items={menu} />}
         </span>

@@ -881,7 +881,6 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-remote-ic { grid-area: ic; display: grid; place-items: center; color: var(--text-sub); }
 .wmux-remote-nm { grid-area: nm; display: flex; min-width: 0; font-weight: 500; color: var(--text-main); }
 .wmux-remote-meta { grid-area: meta; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text-sub); }
-.wmux-remote-hi { color: var(--text-main); }
 .wmux-remote-st { grid-area: st; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-size: 12px; color: var(--text-sub); }
 .wmux-remote-row[data-live="true"] .wmux-remote-st { color: var(--text-main); }
 .wmux-remote-acts { grid-area: acts; display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
