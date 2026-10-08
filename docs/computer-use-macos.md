@@ -23,7 +23,10 @@ npm run test:computer-use-macos                       # Swift unit tests
 the path a dev build of wmux spawns, and stages a copy at
 `dist/computer-use-macos/`, which forge ships as
 `Contents/Resources/computer-use-macos/` (an `extraResource`, added only when
-the staged copy exists).
+the staged copy exists). It also makes `Contents/Resources/AppIcon.icns` from
+`assets/icon.png` with `sips` and `iconutil` (`CFBundleIconFile` in
+`Support/Info.plist`), so the helper has an icon in the Privacy lists of
+System Settings; the signature seals it.
 
 The package targets Swift tools 5.9 / Swift 5 mode because the release runner
 (`macos-14`) ships Xcode 15.
@@ -31,10 +34,11 @@ The package targets Swift tools 5.9 / Swift 5 mode because the release runner
 Sources:
 
 - `Sources/ComputerUseCore`: pure logic with no AX, CGEvent or TCC: tree
-  walking and rendering, the key table, screenshot scale. The unit tests cover
-  this target.
+  walking and rendering, the key table, screenshot scale, the pointer
+  hit-test verdict and the screen-coordinate flips. The unit tests cover this
+  target.
 - `Sources/wmux-computer-use`: the executable (the AX adapter, input, capture,
-  the request loop).
+  activation, `openApp`, the agent overlay, the request loop).
 
 ## Signing
 
@@ -100,6 +104,12 @@ runtime:
 - `wmux-computer-use --request-permissions` is for onboarding only: it shows
   the system prompts, which add "wmux Computer Use" to both lists. Settings is
   expected to run it on an explicit button press.
+- `capabilities` (and the hello) read both grants again on every call; nothing
+  is cached, so a grant given while the helper runs shows up without a
+  restart. `CGPreflightScreenCaptureAccess` can keep answering `false` for the
+  life of the process after a grant, so Screen Recording also counts as
+  granted when the live window list shows the title of a normal window of
+  another process (titles are withheld without the grant).
 
 A grant stays on whatever signature the helper had when its row was created.
 An ad-hoc row is pinned to a cdhash. If a rebuild, or a switch between ad-hoc
@@ -187,21 +197,50 @@ is not re-walked.
   explicitly. A Cmd or Shift the person is physically holding never merges
   into an agent's keystroke. Local-event suppression is set to 0, so the
   person's own mouse is never frozen.
+- Bringing the target forward: every input action (`click` by point or by an
+  index that falls through to the pointer, `scroll`, `type`, `pressKey`,
+  `hotkey`) first brings the target forward when it is not the frontmost app
+  with the target window focused. The window is un-minimized, the app is
+  activated (`NSRunningApplication.activate`, then `kAXFrontmostAttribute`,
+  which is what works for a process that is never active itself), the window
+  is made main and raised (`AXRaise`), and the helper waits up to 500 ms for
+  the app to be frontmost with that window focused. None of this is input.
+  The helper never activates itself. `setValue` and a click that `AXPress`
+  handles need no activation and get none. `type` with an index brings the
+  app forward before focusing the element, because focusing an element of a
+  background app often does not take.
 - Targets (`ControlTarget`, per protocol): keyboard batches need the target
-  window to be the focused window of the frontmost app. Pointer batches need
-  the target window itself under the point, or a menu or popover of the same
-  app (a window above the normal layer); another normal window of the same app
-  does not count. No window is skipped for being wmux's: when the agent-cursor
-  overlay lands, main must name its window ids, because "content-protected
-  window of the parent" also matches real wmux windows. A covered window is
-  first raised through AX (`AXFrontmost`, `AXRaise`; neither counts as input).
-  When the check fails, nothing is sent and the call returns
+  window to be the focused window of the frontmost app after that. Pointer
+  batches need the point to land on the target window; the hit test is below.
+  When a check fails, nothing is sent and the call returns
   `window_not_focused`.
+- Pointer hit test (`pointerVerdict` in `ComputerUseCore`, unit-tested):
+  - AX first: `AXUIElementCopyElementAtPosition` on the system-wide element.
+    An element of the target app counts when its window is the target window,
+    or when it sits in a menu, popover or sheet of that app, or its window is
+    above the normal layer (a menu the previous click opened). Another normal
+    window of the same app refuses. An element of another app refuses only
+    when that app owns a normal (layer 0) window under the point.
+  - Otherwise (no AX answer, an answer from the helper's own overlay, or
+    another app with no normal window there) the on-screen window list
+    decides, front to back. It skips fully transparent windows, the helper's
+    own windows and every window of another process above the normal layer.
+    macOS 26's Dock keeps a full-screen, layer-20 window on screen at all
+    times that real clicks pass through; taking it at face value refused
+    every click and scroll. The window list needs no Screen Recording grant.
+  - A refused point gets one more `AXRaise` and 500 ms of re-checks before
+    the call fails. The error names the app whose window covers the point.
+  - Actions run off the main thread, so an AX hit test that lands on the
+    helper's own overlay is answered instead of waiting out the messaging
+    timeout.
 - Re-checks inside a batch: before every typed chunk and every repeated key,
   the helper checks again that the screen is not locked, the target app is in
   front, its focused window is the target window, and no password field has
-  focus. Before every scroll notch, the point must still hit the target. The
-  batch stops at the first failure and says how far it got.
+  focus (if focus moves away mid-typing, typing stops and the error says how
+  many characters were sent). Before every scroll notch, the window list is
+  read again (no AX round trip per notch), and the batch stops when its
+  verdict changes from what it was once AX had accepted the point. The batch
+  stops at the first failure and says how far it got.
 - Action ladder: a plain left click on an element with `AXPress` is pressed
   through accessibility. `setValue` is `AXValue` followed by a read-back, which
   counts as `verified`. Everything else is synthetic.
@@ -251,9 +290,68 @@ is not re-walked.
   instead of exiting in the middle of the release.
 
 While the screen is locked, AX reports no windows for any app and the lock
-screen owns the keyboard. Every method except `capabilities`, `listApps` and
-`releaseInput` then answers `window_not_focused` and says the screen is
-locked.
+screen owns the keyboard. Every method except `capabilities`, `listApps`,
+`releaseInput` and `configure` then answers `window_not_focused` and says
+the screen is locked.
+
+## openApp
+
+`openApp { app }` is an optional method (protocol `OPTIONAL_HELPER_METHODS`),
+listed in `capabilities.actions`. It needs Accessibility.
+
+- `app` resolves as a running app first: a listApps id, a pid, a bundle id,
+  or a name compared case-insensitively with the localized name, the bundle's
+  file name and its `CFBundleName` (the English name on a localized system).
+  Otherwise as an installed app: a bundle id
+  (`NSWorkspace.urlForApplication(withBundleIdentifier:)`), an absolute
+  `.app` path, or a name (file name, then the localized display name) in
+  `/Applications`, `/System/Applications`, `/System/Applications/Utilities`
+  and `~/Applications`. Nothing matches: `app_not_found`. The helper itself:
+  `app_blocked`.
+- `NSWorkspace.openApplication` launches or activates it
+  (`activates = true`, no prompts, not added to recent items), and
+  `kAXFrontmostAttribute` backs the activation up. A launch that has not
+  reported back after 3.5 s uses an instance of the bundle that is running by
+  then, or answers `timeout`.
+- An app with no window is opened again. Opening an app that is already
+  running makes LaunchServices send it the reopen event
+  (`kAEReopenApplication`, what a Dock click sends), so the helper sends no
+  Apple Event itself: it carries no entitlements, and the hardened runtime
+  denies Apple Events without `com.apple.security.automation.apple-events`.
+  The window then gets up to 3 s to appear.
+- The result is `{app, window}`, with the window brought forward as above.
+  `window` is `null` when the app still has none (a menu-bar-only app). The
+  whole call stays inside main's 8 s helper timeout.
+
+## Agent overlay
+
+While an input action runs, the helper draws:
+
+- a halo around the target window: a 2 px rounded border with a soft glow in
+  the attention orange of DESIGN.md (`#FF8A3D`), and a pill on its top edge
+  reading `wmux agent · Stop ⌃⌥⇧Esc` (ink `#0B0C0E`). The pill shows the
+  default stop chord; `configure` carries no chord;
+- for `click` and `scroll`, an agent cursor that moves to the point (150 ms,
+  ease-out) before the input is sent, and a ring that pulses out from it on
+  a click. Keyboard actions show the halo only.
+
+The overlay fades 1.5 s after the last action, and goes at once on
+`releaseInput` (what main sends on the stop key), on
+`configure { overlay: false }`, and when the helper exits. With Reduce motion
+on (`accessibilityDisplayShouldReduceMotion`) the cursor jumps instead of
+moving, there is no pulse and no fade: the halo is static and disappears.
+
+The overlay is one borderless, transparent `NSPanel` per display (with
+separate Spaces, a window that spans displays shows on only one), created on
+first use and rebuilt when the display set changes. The panels ignore the
+mouse, can never become key or main, never activate the helper, join every
+Space including full-screen ones, sit just above the pop-up menu level, are
+not accessibility elements and are left out of screen captures
+(`sharingType = .none`). The hit test skips them as the helper's own windows.
+
+`configure { overlay }` is an optional method, listed in
+`capabilities.actions`. The overlay is on until `configure` says otherwise.
+It answers `{ok: true}`, and works while the screen is locked.
 
 ## Who may drive the helper
 
@@ -277,9 +375,13 @@ and logs that it did. The release job never passes the flag, and
 
 A single AX messaging timeout of 1.5 s is set on the system-wide element, so
 it covers every element. NSApplication is initialized with the prohibited
-activation policy, because ScreenCaptureKit needs a window-server connection.
-Requests are handled one at a time on the main thread; the main run loop keeps
-`NSWorkspace`'s app list current. The helper exits on stdin EOF, and after
+activation policy, because ScreenCaptureKit needs a window-server connection;
+that policy keeps the helper out of the Dock and the app switcher and never
+active, and its overlay panels still show. Requests are read one at a time;
+the main run loop (`RunLoop.main.run()`, not `NSApp.run()`) keeps
+`NSWorkspace`'s app list current and commits the overlay's Core Animation
+transactions. Input actions run off the main thread, while the overlay is
+driven on it. The helper exits on stdin EOF, and after
 6 minutes without a request, releasing held input first. That is longer than
 main's 5-minute idle timer, so main always closes an idle helper first. stdout is written
 unbuffered, one JSON line per message. stderr carries short diagnostics only.
