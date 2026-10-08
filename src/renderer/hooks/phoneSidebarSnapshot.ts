@@ -23,6 +23,8 @@
 //                   tab order, active tab) and `activePaneId`
 //   - HQ / moa:     `state.moa` (main's Moa state), as `isMoaHqWorkspace`
 //                   reads it
+//   - moaWakeBlocked: the HQ workspace's agent mode (DECK_MODE_GET), passed
+//                   in by the caller: `off` refuses every brain turn there
 //   - moaHandoff:   main's pending decisions (DECK_MOA_DECISIONS), passed in
 //                   by the caller: a pending hand-off card in that slot
 //   - moaDelegations: Fleet's own tickets (`buildFleetTickets` over main's
@@ -67,6 +69,7 @@ import { selectWorkspaceAgentRoster, agentSurfaceTitle } from '../stores/selecto
 import { isTaskReadyForReview } from '../stores/selectors/reviewQueue';
 import { buildFleetTickets, type FleetTicket } from '../components/FleetView/fleetTickets';
 import type { WorkLink } from '../../shared/workLink';
+import type { AgentMode } from '../../main/deck/deckAutonomyStore';
 import { agentSlugToDisplay, isAgentSlug } from '../../shared/agentIdentity';
 
 function nonEmpty(value: string | undefined): string | undefined {
@@ -245,6 +248,7 @@ export function buildPhoneSidebarSnapshot(
   onDrop: SidebarDropReporter = () => undefined,
   moaDecisions?: readonly MoaPendingDecision[],
   workLinks?: { links: readonly WorkLink[]; now: number },
+  hqMode?: { workspaceId: string; mode: AgentMode },
 ): PhoneSidebarSnapshot {
   const workspaces = state.workspaces;
   let handoffs = new Map<string, PhoneSidebarMoaHandoff>();
@@ -422,6 +426,9 @@ export function buildPhoneSidebarSnapshot(
   }
 
   const moaOn = state.moa?.config.enabled === true && state.moa.hq.state === 'ok' && hqWorkspaceId !== undefined && liveIds.has(hqWorkspaceId);
+  // A wake would end 409 `moa-mode-off`: say so only for the HQ this snapshot
+  // names, and only on a mode main actually answered (no read → no claim).
+  const wakeBlocked = moaOn && hqMode?.workspaceId === hqWorkspaceId && hqMode.mode === 'off';
 
   return {
     activeWorkspaceId: state.activeWorkspaceId && liveIds.has(state.activeWorkspaceId) ? state.activeWorkspaceId : null,
@@ -429,6 +436,7 @@ export function buildPhoneSidebarSnapshot(
     panes: paneRows,
     ...(hqWorkspaceId !== undefined ? { hqWorkspaceId } : {}),
     ...(moaOn ? { moa: true as const } : {}),
+    ...(wakeBlocked ? { moaWakeBlocked: 'moa-mode-off' as const } : {}),
     ...(moaDelegations ? { moaDelegations } : {}),
   };
 }

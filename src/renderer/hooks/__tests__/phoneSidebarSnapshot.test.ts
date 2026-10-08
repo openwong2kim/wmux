@@ -457,6 +457,22 @@ describe('buildPhoneSidebarSnapshot — the Moa HQ', () => {
     const answered = buildPhoneSidebarSnapshot({ ...withMoa(moa(null, true, 'unset')), moaHqSeed: 'hq' } as StoreState);
     expect(answered).not.toHaveProperty('hqWorkspaceId');
   });
+
+  it('says a wake is blocked only when Moa is on and the HQ\'s agent mode reads off', () => {
+    const build = (m: MoaState | null, hqMode?: Parameters<typeof buildPhoneSidebarSnapshot>[4]) =>
+      buildPhoneSidebarSnapshot(withMoa(m), undefined, undefined, undefined, hqMode);
+    const blocked = build(moa('hq', true), { workspaceId: 'hq', mode: 'off' });
+    expect(blocked).toMatchObject({ moa: true, moaWakeBlocked: 'moa-mode-off' });
+    expect(parsePhoneSidebarSnapshot(JSON.parse(JSON.stringify(blocked)))).toEqual(blocked);
+    // Mode on, Moa off, a mode for some other workspace, or no read at all
+    // (a failed DECK_MODE_GET): no claim, so the daemon keeps today's answer.
+    expect(build(moa('hq', true), { workspaceId: 'hq', mode: 'assist' })).not.toHaveProperty('moaWakeBlocked');
+    expect(build(moa('hq', false), { workspaceId: 'hq', mode: 'off' })).not.toHaveProperty('moaWakeBlocked');
+    expect(build(moa('hq', true), { workspaceId: 'a', mode: 'off' })).not.toHaveProperty('moaWakeBlocked');
+    const unread = build(moa('hq', true));
+    expect(unread.moa).toBe(true);
+    expect(unread).not.toHaveProperty('moaWakeBlocked');
+  });
 });
 
 describe('buildPhoneSidebarSnapshot — pending Moa hand-off notice', () => {

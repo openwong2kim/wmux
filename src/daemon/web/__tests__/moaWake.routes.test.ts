@@ -66,6 +66,8 @@ describe('POST/GET /api/moa/messages', () => {
   let requests: number;
   let audits: Array<{ deviceId: string; route: string }>;
   let logs: string[];
+  /** What main's `workspaces.list` carries as the sidebar snapshot; null = none. */
+  let sidebarReply: Record<string, unknown> | null;
 
   beforeEach(() => {
     moa = null;
@@ -79,6 +81,7 @@ describe('POST/GET /api/moa/messages', () => {
     requests = 0;
     audits = [];
     logs = [];
+    sidebarReply = null;
     dir = fs.mkdtempSync(path.join(isolatedHome, 'wmux-dir-'));
     const handler = createMoaWakeHandler({
       refuse: () => refuse,
@@ -93,7 +96,14 @@ describe('POST/GET /api/moa/messages', () => {
       },
     });
     bridge = new DesktopPhoneBridge((clientId, event) => {
-      const data = (event as { data: { requestId: string; payload: Record<string, unknown> } }).data;
+      const data = (event as { data: { requestId: string; command?: string; payload: Record<string, unknown> } }).data;
+      // The sidebar poll /api/config rides on: not a wake.
+      if (data.command === 'workspaces.list') {
+        queueMicrotask(() => bridge.complete(clientId, {
+          requestId: data.requestId, ok: true, result: { workspaces: [], ...(sidebarReply ? { sidebar: sidebarReply } : {}) },
+        }));
+        return true;
+      }
       requests++;
       if (mainMode === 'silent') return true;
       // Main handles each request as it arrives, like installPhoneBridge.
@@ -401,6 +411,63 @@ describe('POST/GET /api/moa/messages', () => {
     expect(op).toMatchObject({ status: 202, body: { state: 'accepted' } });
     expect(logs.some((l) => l.includes('operator'))).toBe(true);
     expect(audits).toEqual([]);
+  });
+
+  describe('/api/config: moaWake vs moaWakeBlocked', () => {
+    const snapshot = (extra: Record<string, unknown> = {}) => ({
+      activeWorkspaceId: null, workspaces: [], panes: [], hqWorkspaceId: 'ws-hq', moa: true, ...extra,
+    });
+    const config = async (h: Record<string, string>) => {
+      const r = await fetch(`${base()}/api/config`, { headers: h });
+      expect(r.status).toBe(200);
+      return r.json() as Promise<Record<string, unknown>>;
+    };
+
+    it('agent mode off: no moaWake, moaWakeBlocked says why; the POST still refuses moa-mode-off', async () => {
+      sidebarReply = snapshot({ moaWakeBlocked: 'moa-mode-off' });
+      await start();
+      const h = device('d1');
+      const cfg = await config(h);
+      expect(cfg).toMatchObject({ moa: true, moaWakeBlocked: 'moa-mode-off' });
+      expect(cfg).not.toHaveProperty('moaWake');
+      // The race backstop is unchanged: main still refuses the turn.
+      refuse = 'mode_off';
+      expect(await post(h, { clientMessageId: freshId(), text: 'hi' })).toMatchObject({ status: 409, body: { error: 'moa-mode-off' } });
+    });
+
+    it('agent mode on: moaWake as before, no moaWakeBlocked', async () => {
+      sidebarReply = snapshot();
+      await start();
+      const cfg = await config(device('d1'));
+      expect(cfg).toMatchObject({ moa: true, moaWake: true });
+      expect(cfg).not.toHaveProperty('moaWakeBlocked');
+    });
+
+    it('another moaWake gate failing: neither field, mode off or not', async () => {
+      sidebarReply = snapshot({ moaWakeBlocked: 'moa-mode-off' });
+      await start();
+      // A caller the chat write gates refuse (read-only pairing).
+      let cfg = await config(device('ro', false));
+      expect('moaWake' in cfg || 'moaWakeBlocked' in cfg).toBe(false);
+      // The Moa pane is already up: messages take the chat path, not a wake.
+      moa = { ...HQ };
+      cfg = await config(device('d1'));
+      expect(cfg.moaSessionId).toBe('brain-hq');
+      expect('moaWake' in cfg || 'moaWakeBlocked' in cfg).toBe(false);
+      moa = null;
+      // A desktop that did not announce moa.wake.
+      bridge.register('main');
+      cfg = await config(device('d1'));
+      expect(cfg.moa).toBe(true);
+      expect('moaWake' in cfg || 'moaWakeBlocked' in cfg).toBe(false);
+    });
+
+    it('Moa off: neither field, even if a desktop sent moaWakeBlocked', async () => {
+      sidebarReply = { ...snapshot({ moaWakeBlocked: 'moa-mode-off' }), moa: undefined };
+      await start();
+      const cfg = await config(device('d1'));
+      expect('moa' in cfg || 'moaWake' in cfg || 'moaWakeBlocked' in cfg).toBe(false);
+    });
   });
 
   it('without --allow-transcript both routes refuse', async () => {

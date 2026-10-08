@@ -191,6 +191,21 @@ describe('parsePhoneSidebarSnapshot', () => {
     expect(reasons).toEqual([]);
   });
 
+  it('keeps moaWakeBlocked only as the one known reason, dropping anything else alone', () => {
+    expect(parsePhoneSidebarSnapshot({ ...valid, moa: true, moaWakeBlocked: 'moa-mode-off' }))
+      .toMatchObject({ moa: true, moaWakeBlocked: 'moa-mode-off' });
+    for (const moaWakeBlocked of ['moa-off', 'MOA-MODE-OFF', '', true, 1, null, {}]) {
+      const reasons: string[] = [];
+      const parsed = parsePhoneSidebarSnapshot({ ...valid, moa: true, moaWakeBlocked }, (r) => reasons.push(r));
+      expect(parsed).not.toHaveProperty('moaWakeBlocked');
+      expect(parsed?.moa).toBe(true);
+      expect(reasons).toEqual(['moaWakeBlocked']);
+    }
+    const reasons: string[] = [];
+    expect(parsePhoneSidebarSnapshot({ ...valid, moa: true }, (r) => reasons.push(r))).not.toHaveProperty('moaWakeBlocked');
+    expect(reasons).toEqual([]);
+  });
+
   it('caps the row counts', () => {
     const many = Array.from({ length: PHONE_SIDEBAR_LIMITS.panes + 10 }, (_, i) => ({ ptyId: `p${i}`, workspaceId: 'w' }));
     expect(parsePhoneSidebarSnapshot({ activeWorkspaceId: null, workspaces: [], panes: many })?.panes).toHaveLength(PHONE_SIDEBAR_LIMITS.panes);

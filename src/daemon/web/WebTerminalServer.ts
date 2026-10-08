@@ -2682,9 +2682,16 @@ export class WebTerminalServer {
         // `POST /api/moa/messages` can start Moa's brain: Moa on, no Moa pane
         // yet, an attached desktop that announced `moa.wake`, and a caller
         // the chat write gates admit. Omitted otherwise.
+        //
+        // Where every one of those holds but the desktop says the HQ's agent
+        // mode is off, the wake would only end 409 `moa-mode-off`: serve
+        // `moaWakeBlocked` with that reason INSTEAD of `moaWake`, so the phone
+        // can say why rather than offer a send that fails. Never both.
         ...(sidebar?.moa === true && this.moaSessionIdField().moaSessionId === undefined &&
           this.deps.moaWake && this.availableDesktop()?.supports(MOA_WAKE_COMMAND) &&
-          this.chatWriteRefusal(principal) === null ? { moaWake: true } : {}),
+          this.chatWriteRefusal(principal) === null
+          ? (sidebar.moaWakeBlocked === 'moa-mode-off' ? { moaWakeBlocked: 'moa-mode-off' } : { moaWake: true })
+          : {}),
         // Phone channel Inbox (§9): the four `/api/channels*` routes answer
         // here. OMITTED, not false, exactly when they would answer 503
         // `channels-unavailable` — the shape a pre-channels daemon serves.

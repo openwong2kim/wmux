@@ -234,6 +234,14 @@ export interface PhoneSidebarSnapshot {
   /** Moa is on and its HQ workspace exists. Absent otherwise. */
   moa?: true;
   /**
+   * Why a wake of Moa from the phone would be refused right now, though Moa is
+   * on: `'moa-mode-off'` while the HQ workspace's agent mode is off (main
+   * refuses every brain turn there). Only beside `moa`. Absent when nothing
+   * blocks a wake, when the mode could not be read, and from an older desktop
+   * — all of which leave the daemon advertising `moaWake` as before.
+   */
+  moaWakeBlocked?: 'moa-mode-off';
+  /**
    * Moa's delegated jobs, newest first: every open one plus those that ended
    * within PHONE_MOA_DELEGATION_RECENT_MS, at most `moaDelegations`. Present
    * (possibly empty) whenever the desktop computed it; absent from an older
@@ -625,6 +633,8 @@ export function parsePhoneSidebarSnapshot(value: unknown, onDrop?: SidebarDropRe
   else if (value.hqWorkspaceId !== undefined) drop('hqWorkspaceId');
   if (value.moa === true) snapshot.moa = true;
   else if (value.moa !== undefined) drop('moa');
+  if (value.moaWakeBlocked === 'moa-mode-off') snapshot.moaWakeBlocked = 'moa-mode-off';
+  else if (value.moaWakeBlocked !== undefined) drop('moaWakeBlocked');
   if (Array.isArray(value.moaDelegations)) snapshot.moaDelegations = parseMoaDelegations(value.moaDelegations, drop);
   else if (value.moaDelegations !== undefined) drop('moaDelegations');
   return snapshot;

@@ -68,6 +68,8 @@ import { findActivePtyId, buildWorkspaceListEntries } from './workspaceMirrorSna
 import { buildPhoneSidebarSnapshot } from './phoneSidebarSnapshot';
 import type { MoaPendingDecision } from '../../shared/moa';
 import type { WorkLink } from '../../shared/workLink';
+import type { AgentMode } from '../../main/deck/deckAutonomyStore';
+import { moaHqId } from '../stores/slices/moaSlice';
 import { createSidebarDropLog } from '../../shared/phoneFleetSidebar';
 import { buildFleetTriage, fleetTriageScopeError } from '../utils/fleetTriage';
 import { workspaceCloseRefusal } from '../components/Moa/moaHqGuard';
@@ -1130,7 +1132,19 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     } catch {
       drops.report('moa.workLinks');
     }
-    const snapshot = buildPhoneSidebarSnapshot(store, drops.report, moaDecisions, workLinks);
+    // The HQ's agent mode: `off` means a wake from the phone would be refused.
+    // A failed read, or a null mode, makes no claim (the phone keeps `moaWake`).
+    let hqMode: { workspaceId: string; mode: AgentMode } | undefined;
+    const hqId = moaHqId(store);
+    if (hqId) {
+      try {
+        const reply = await window.electronAPI?.deck?.mode?.get(hqId);
+        if (reply?.mode) hqMode = { workspaceId: hqId, mode: reply.mode };
+      } catch {
+        drops.report('moa.mode');
+      }
+    }
+    const snapshot = buildPhoneSidebarSnapshot(store, drops.report, moaDecisions, workLinks, hqMode);
     const dropped = drops.summary();
     if (dropped) console.warn(`[phone] sidebar projection left out: ${dropped}`);
     return snapshot;

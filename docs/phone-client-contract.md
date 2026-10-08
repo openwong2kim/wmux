@@ -378,7 +378,8 @@ GET /api/events?since=<cursor>     (Bearer)
 
 ```
 GET /api/config    → {allowInput, allowUpload, allowTranscript, inlineImages?, liveActivityPush?,
-                      gatedTools, gateEnabled?, fleetSidebar?, moaDelegations?, moa?, moaSessionId?, channels?, terminalPromptDetail?,
+                      gatedTools, gateEnabled?, fleetSidebar?, moaDelegations?, moa?, moaSessionId?, moaWake?,
+                      moaWakeBlocked?, channels?, terminalPromptDetail?,
                       terminalPromptDecline?, protocolVersion, minProtocolVersion,
                       serverVersion, hostPlatform}
 GET /api/sessions  → {sessions: [{id, cwd, spawnCwd?, cols, rows, state, agent, lastActivity,
@@ -3522,6 +3523,23 @@ GET /api/config → { ..., moa: true, moaWake: true }
   caller holds input (the same gates as a chat send). Omitted, never `false`,
   otherwise. With `moaSessionId` present the same route still works (below);
   `moaWake` only says the brain can be started from here.
+- `moaWakeBlocked` — a string naming why a wake would be refused right now,
+  served **instead of** `moaWake` (never both) where every `moaWake` gate above
+  holds but the desktop knows the wake would fail. Today the only value is
+  `"moa-mode-off"`: the HQ workspace's agent mode is off, so the wake would
+  end `409 moa-mode-off`. Show that reason (for example "Turn on Moa's agent
+  mode on the desktop") instead of offering a send that fails. Treat an
+  unknown value as blocked with a generic reason. Omitted when nothing blocks
+  the wake, when any other `moaWake` gate fails, when the desktop could not
+  read the mode, and by older daemons or desktops — read its absence as
+  today's `moaWake` rule. Like `moa`, it reflects the desktop's sidebar
+  snapshot, so a mode change on the desktop shows up within a poll or two;
+  `POST /api/moa/messages` still answers `409 moa-mode-off` if the mode
+  turned off in between.
+
+```
+GET /api/config → { ..., moa: true, moaWakeBlocked: "moa-mode-off" }
+```
 
 **`POST /api/moa/messages`** `{clientMessageId, text}` — a message to Moa
 whether or not its brain runs yet. Exactly these two fields (another field is
