@@ -74,6 +74,8 @@ final class Overlay {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for d in displays {
+            // Cancels a fade under way, which would otherwise finish and snap back.
+            d.root.removeAnimation(forKey: "opacity")
             d.root.opacity = 1
             if let window {
                 d.halo.frame = local(window, on: d).insetBy(dx: -3, dy: -3)
