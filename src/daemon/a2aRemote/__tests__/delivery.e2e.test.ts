@@ -322,7 +322,8 @@ describe('cross-host delivery, end to end', () => {
     await until(() => a.remoteHosts.get(b.hostId)?.addresses[0] === '127.0.0.1');
     expect(a.remoteHosts.get(b.hostId)?.addresses).toEqual(['127.0.0.1', 'no-such-host.invalid']);
     // And it is persisted, so a restart dials it first too.
-    expect(new RemoteHostStore({ dir: path.join(a.dir, 'a2a') }).get(b.hostId)?.addresses[0]).toBe('127.0.0.1');
+    const saved = JSON.parse(fs.readFileSync(a.remoteHosts.filePath, 'utf8')) as { hosts: Array<{ hostId: string; addresses: string[] }> };
+    expect(saved.hosts.find((h) => h.hostId === b.hostId)?.addresses).toEqual(['127.0.0.1', 'no-such-host.invalid']);
   });
 
   it('a send while B is down is delivered once B is back; B resumes its stream from the cursor without duplicates', async () => {

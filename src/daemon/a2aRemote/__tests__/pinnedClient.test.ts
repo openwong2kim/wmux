@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import https from 'node:https';
@@ -248,6 +248,22 @@ describe('PinnedTlsClient — addresses and proxies', () => {
     // A throwing callback does not break the connection.
     const out = await client({ port, addresses: ['127.0.0.1'], onConnected: () => { throw new Error('boom'); } }).requestJson('GET', '/x');
     expect(out.status).toBe(200);
+  }, 15_000);
+
+  it('one client instance dials the address that last got through first (a stream\'s acks never re-wait a dead one)', async () => {
+    const { port } = await httpsServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('{"ok":true}');
+    });
+    const dial = vi.spyOn(tls, 'connect');
+    try {
+      const c = client({ port, addresses: ['::1', '127.0.0.1'] });
+      for (let i = 0; i < 3; i++) expect((await c.requestJson('GET', '/x')).status).toBe(200);
+      const hosts = dial.mock.calls.map((args) => (args[0] as tls.ConnectionOptions).host);
+      expect(hosts).toEqual(['::1', '127.0.0.1', '127.0.0.1', '127.0.0.1']);
+    } finally {
+      dial.mockRestore();
+    }
   }, 15_000);
 
   it('reports connect-failed, with nothing sent, when no address answers', async () => {
