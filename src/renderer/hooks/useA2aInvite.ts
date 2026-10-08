@@ -47,6 +47,9 @@ export interface A2aInviteState {
   forget: () => void;
 }
 
+/** How long Copy reads "Copied" after a copy, made by hand or on open. */
+export const COPIED_MS = 1500;
+
 export function useA2aInvite(): A2aInviteState {
   const { invoke: ipcInvoke } = useIpc({ silent: ['NOT_FOUND', 'UNKNOWN', 'DAEMON_DISCONNECTED'] });
   const api = window.electronAPI?.a2aRemote;
@@ -79,7 +82,7 @@ export function useA2aInvite(): A2aInviteState {
     try {
       await window.clipboardAPI.writeText(value);
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      setTimeout(() => setCopied(false), COPIED_MS);
       return true;
     } catch {
       setFailed(true);

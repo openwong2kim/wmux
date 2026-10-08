@@ -130,6 +130,9 @@ describe('Remote page', () => {
     act(() => $<HTMLButtonElement>('[data-remote-details]')!.click());
     expect($('[data-remote-address]')?.textContent).toBe('http://127.0.0.1:7681');
     expect($('[data-remote-fingerprint]')?.textContent).toBe('A7:0D:5E:91:C2:38:4B:F0');
+    // The port is a plain mono value, and connecting a computer lives in Connect a PC only.
+    expect($('[data-remote-a2a-port]')?.tagName).toBe('CODE');
+    expect($('[data-remote-add-host]')).toBeNull();
     const text = container.textContent ?? '';
     expect(text).not.toContain(DEVICE_ID);
     expect(text).not.toContain('SECRET-TOKEN');
@@ -309,5 +312,23 @@ describe('Remote page', () => {
     await act(async () => { $<HTMLButtonElement>(`[data-remote-pc="${PEER_HOST}"] [data-remote-confirm="pc"]`)!.click(); });
     expect(api.a2aRemote.peersRevoke).toHaveBeenCalledWith(`peer-${PEER_HOST}`);
     expect($('[data-remote-notice]')?.textContent).toBe('office-win can still connect to this PC: revoking its pairing here failed. Try Remove again.');
+  });
+
+  it('says A2A is listening as soon as Connect a PC turns it on, not at the next poll', async () => {
+    stub([]);
+    const off = { enabled: false, port: 45660, listening: false, hostId: 'me', name: 'MacBook', fingerprint256: null, lastError: null };
+    api.a2aRemote.status.mockResolvedValue(off);
+    api.a2aRemote.configure = vi.fn(async () => ({ ...off, enabled: true, listening: true }));
+    api.a2aRemote.pairBegin = vi.fn(async () => ({ invite: 'wmux-a2a://x:45660/K7M2QX9P#AA', expiresAt: Date.now() + 600_000, addresses: [] }));
+    api.a2aRemote.pairStatus = vi.fn(async () => ({ active: true, expiresAt: null, attemptsLeft: 3, lockedUntil: null }));
+    await render();
+    expect($('[data-remote-a2a]')?.textContent).toBe('A2A off');
+    await act(async () => { $<HTMLButtonElement>('[data-remote-connect]')!.click(); });
+    for (let i = 0; i < 4; i++) await act(async () => { await Promise.resolve(); });
+    const invite = [...document.querySelectorAll<HTMLButtonElement>('[data-testid="remote-connect-tabs"] button')].find((b) => b.textContent === 'Invite this PC')!;
+    await act(async () => { invite.click(); });
+    for (let i = 0; i < 4; i++) await act(async () => { await Promise.resolve(); });
+    expect(api.a2aRemote.configure).toHaveBeenCalledWith({ enabled: true });
+    expect($('[data-remote-a2a]')?.textContent).toBe('A2A :45660 listening');
   });
 });

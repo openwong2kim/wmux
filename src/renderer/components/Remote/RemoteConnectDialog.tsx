@@ -11,15 +11,19 @@ import { formatRemaining } from '../Settings/A2aRemoteSection';
 import { INPUT_ERROR } from '../StatusBar/OtherComputersSection';
 import { pairReasonMessage } from '../Sidebar/AttachRemoteModal';
 import { maskPairInput, parseRemotePairInput } from '../../../shared/remotePairInput';
+import type { A2aRemoteStatus } from '../../../shared/rpc';
 
 // ─── "Connect a PC…" on the Remote page ──────────────────────────────────────
 //
-// One dialog, two tabs. "Invite this PC" turns the A2A listener on when it is
-// off, opens an invite and copies it at once; when a PC redeems it, the
-// dialog turns into that PC's "what it can see" checklist (nothing ticked).
-// "Paste an invite" takes a `wmux-a2a://` invite (A2A join) or a wmux pairing
-// link (the remote-host pair / add path), routed by its shape. Nothing
-// connects until the person presses Connect.
+// One dialog, two tabs. It opens on "Invite this PC" only when the A2A
+// listener is already up (then the invite is opened and copied at once);
+// otherwise it opens on "Paste an invite", and choosing the Invite tab is
+// what turns the listener on. When a PC redeems the invite, the dialog turns
+// into that PC's "what it can see" checklist (nothing ticked). "Paste an
+// invite" takes a `wmux-a2a://` invite (A2A join) or any shape the remote-host
+// pairing takes (a pairing link, a `wmux web` token URL, an address and a
+// code), routed by its shape. The clipboard is read only on its Paste button,
+// and nothing connects until the person presses Connect.
 
 export type ConnectTab = 'invite' | 'paste';
 
@@ -43,19 +47,21 @@ export function maskPasted(text: string): string {
 }
 
 export interface RemoteConnectDialogProps {
-  /** Open on this tab. Absent: the clipboard decides (an invite in it opens Paste, prefilled). */
+  /** Open on this tab. Absent: Invite when A2A is already listening, else Paste. */
   initialTab?: ConnectTab;
   onClose: () => void;
+  /** The dialog changed the A2A listener (turned it on): the page's line follows at once. */
+  onA2aStatus?: (status: A2aRemoteStatus) => void;
   /** An A2A join succeeded and the person wants to link a pane with that PC. */
   onLinkPane: (hostId: string) => void;
 }
 
-export default function RemoteConnectDialog({ initialTab, onClose, onLinkPane }: RemoteConnectDialogProps) {
+export default function RemoteConnectDialog({ initialTab, onClose, onLinkPane, onA2aStatus }: RemoteConnectDialogProps) {
   const t = useT();
   const api = window.electronAPI?.a2aRemote;
   const invite = useA2aInvite();
   const { applyPairStatus } = invite;
-  // null until the clipboard has been looked at (once, on open).
+  // null until the listener's state is known (it picks the first tab).
   const [tab, setTab] = useState<ConnectTab | null>(initialTab ?? null);
   const [paste, setPaste] = useState('');
   const [masked, setMasked] = useState(false);
@@ -70,32 +76,40 @@ export default function RemoteConnectDialog({ initialTab, onClose, onLinkPane }:
   const knownPeers = useRef<Set<string> | null>(null);
   const started = useRef(false);
   const mounted = useRef(true);
-  useEffect(() => () => { mounted.current = false; }, []);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
-  // The clipboard is read once, here: opening this dialog is the request to
-  // connect, and a copied invite is what it is most likely for. It is never
-  // stored, logged or sent anywhere until Connect.
+  // Opening the dialog changes nothing: Invite (which opens and copies an
+  // invite) is the first tab only when the listener is already up.
   useEffect(() => {
     if (initialTab) return;
     let live = true;
     void (async () => {
-      let text = '';
-      try {
-        text = (await window.clipboardAPI?.readText()) ?? '';
-      } catch {
-        /* clipboard busy: start on Invite */
-      }
-      if (!live) return;
-      if (pastedKind(text)) {
-        setPaste(text.trim());
-        setMasked(true);
-        setTab('paste');
-      } else {
-        setTab('invite');
-      }
+      const status = await api?.status().catch(() => null);
+      if (live) setTab(status?.enabled && status.listening ? 'invite' : 'paste');
     })();
     return () => { live = false; };
-  }, [initialTab]);
+  }, [initialTab, api]);
+
+  /**
+   * Read the clipboard ONLY here, on the Paste button: what it holds is the
+   * person's, and a pairing link in it is a credential. Shown masked, never
+   * stored or logged, sent nowhere until Connect.
+   */
+  const pasteFromClipboard = useCallback(async () => {
+    try {
+      const text = await window.clipboardAPI?.readText();
+      if (typeof text === 'string' && text.trim() && mounted.current) {
+        setPaste(text.trim());
+        setMasked(true);
+        setMessage(null);
+      }
+    } catch {
+      /* clipboard busy: the field still takes a normal paste */
+    }
+  }, []);
 
   // Invite tab, first visit: listener on, invite open, invite copied.
   const startInvite = useCallback(async () => {
@@ -107,6 +121,7 @@ export default function RemoteConnectDialog({ initialTab, onClose, onLinkPane }:
       if (!status.enabled) {
         status = await api.configure({ enabled: true });
         if (mounted.current) setTurnedOn(true);
+        onA2aStatus?.(status);
       }
       if (!status.listening) {
         if (mounted.current) setInviteError(status.lastError ?? t('settings.a2aRemoteActionFailed'));
@@ -117,14 +132,14 @@ export default function RemoteConnectDialog({ initialTab, onClose, onLinkPane }:
       const text = await invite.create();
       if (!mounted.current) return;
       if (!text) { setInviteError(t('settings.a2aRemoteActionFailed')); return; }
-      await invite.copy(text);
+      if (!(await invite.copy(text)) && mounted.current) setInviteError(t('remotePage.connect.copyFailed'));
       copyRef.current?.focus();
     } catch {
       if (mounted.current) setInviteError(t('settings.a2aRemoteActionFailed'));
     } finally {
       if (mounted.current) setCreating(false);
     }
-  }, [api, invite, t]);
+  }, [api, invite, t, onA2aStatus]);
   useEffect(() => {
     if (tab !== 'invite' || started.current) return;
     started.current = true;
@@ -287,6 +302,7 @@ export default function RemoteConnectDialog({ initialTab, onClose, onLinkPane }:
                 <Button variant="ghost" size="md" onClick={() => { setPaste(''); setMasked(false); }}>{t('remotePage.connect.clear')}</Button>
               </div>
             ) : (
+              <div className="flex items-center gap-2">
               <Input
                 type="text"
                 value={paste}
@@ -299,9 +315,13 @@ export default function RemoteConnectDialog({ initialTab, onClose, onLinkPane }:
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.nativeEvent.isComposing && paste.trim() && !working) { e.preventDefault(); void connect(); }
                 }}
-                className="font-mono"
+                className="font-mono flex-1 min-w-0"
                 data-testid="remote-connect-input"
               />
+              <Button variant="secondary" size="md" onClick={() => void pasteFromClipboard()} data-testid="remote-connect-paste-button">
+                {t('remotePage.connect.paste')}
+              </Button>
+              </div>
             )}
             <p className="wmux-remote-connect-note">{masked ? t('remotePage.connect.fromClipboard') : t('remotePage.connect.pasteHint')}</p>
             {message && (

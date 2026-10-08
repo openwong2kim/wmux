@@ -285,8 +285,9 @@ One page, Tailnet first, on the sheet beside the tools dock with 28px sides
   and a **Details** toggle. While phone access is off, Share & pair sits on
   the line (its popover holds Start). Details unfolds in place: the phone
   address without its token (copy), whether input is allowed, Share & pair,
-  the A2A port, the full fingerprint (wrapping anywhere, copy) and Connect
-  to a computer… (workspace shares).
+  the A2A port and the full fingerprint (plain mono values; the fingerprint
+  wraps anywhere, copy). Connecting another computer, by A2A or as a
+  workspace share, starts only from Connect a PC….
 - **Needs you** — drawn only while something waits, inside an
   `aria-live="polite"` region: ONE block with a 1px `--attention-hairline`
   border over `--selection-subtle` (no wash), rows split by `--stroke`
@@ -296,7 +297,9 @@ One page, Tailnet first, on the sheet beside the tools dock with 28px sides
   are the other PC's report, the other PC's fingerprint prefix when known,
   same repo or the repo-mismatch warning, the direction; Decline, Accept);
   held remote work (the quoted task, why it is held; Send back, Deliver to
-  the pane now — never re-routed on its own); a PC whose certificate changed
+  the pane now — never re-routed on its own; a hold for Moa clears by itself,
+  so it is a quiet muted line under the block, not a row and not counted);
+  a PC whose certificate changed
   (how many links removing it ends; Remove asking twice, Pair again…, which
   opens Connect a PC on Paste when this PC joined that one and on Invite when
   it joined this one). There is no pane picker on a request: the request
@@ -306,7 +309,10 @@ One page, Tailnet first, on the sheet beside the tools dock with 28px sides
   heading and count:
   - **Other PCs** — every A2A-paired PC (either role): its address, link
     counts and "Messages to send N", the status, and a ⋯ menu named after it
-    (Link panes…, Link Moa…, What this PC can see…, Remove). Its live links
+    (Link panes…, Link Moa…, What this PC can see…, Remove; portalled so the
+    list's clip never cuts it, Escape on its button closes it first). Removing
+    a PC says when the other PC was not told, and which side is left after a
+    partial failure. Its live links
     sit nested under it (an elbow, `mine ↔ PC/theirs · direction`, or
     "waiting for PC to accept" with Check; Unlink asks twice). Then the
     workspace shares (remote hosts): Open unfolds that host's workspaces in
@@ -323,24 +329,28 @@ One page, Tailnet first, on the sheet beside the tools dock with 28px sides
     of explanation and Connect a PC… as the primary.
 - **Recent activity:** its own short list (paired, revoked, host added,
   connects seen while the page is open).
-- **Connect a PC dialog:** two tabs. Opening it reads the clipboard once: a
-  `wmux-a2a://` invite or a wmux pairing link opens **Paste an invite** with
-  the field filled and masked (nothing connects before Connect); otherwise
-  **Invite this PC**, which turns the A2A listener on if it was off (one
-  muted line says so), opens an invite and copies it at once (Copy is the
-  primary and stays for re-copying), lists the addresses the other PC tries
-  in order with "Tailscale" beside the tailnet ones, and counts down to
-  expiry with Discard code. When a PC redeems the invite, the dialog turns
-  into "<PC> joined. Choose what it can see" with the exposure checklist,
-  nothing ticked. Paste routes by prefix: `wmux-a2a://` joins over A2A (then
-  offers Link a pane now), a pairing link pairs a workspace share.
+- **Connect a PC dialog:** two tabs, and opening it has no side effect. It
+  opens on **Invite this PC** only while the A2A listener is already up;
+  otherwise on **Paste an invite**, and choosing Invite is what turns the
+  listener on (one muted line says so, and the page's line follows at once).
+  Invite opens an invite and copies it at once (Copy reads "Copied" for
+  1.5 s, is the primary and stays for re-copying), lists the addresses the
+  other PC tries in order with "Tailscale" beside the tailnet ones, and
+  counts down to expiry with Discard code. When a PC redeems the invite, the
+  dialog turns into "<PC> joined. Choose what it can see" with the exposure
+  checklist, nothing ticked. Paste reads the clipboard only on its Paste
+  button and shows it masked; it routes by shape: `wmux-a2a://` joins over
+  A2A (then offers Link a pane now), and every remote-host shape — a pairing
+  link, a `wmux web` URL with its token, an address and a code — pairs a
+  workspace share. Nothing connects before Connect.
 - **Link dialog from this page:** picks the PC when there is one, picks the
   other PC's pane when there is one choice or one on the same repo, and
   offers this PC's pane with the focused one preselected.
 - **Orange budget:** one event, two marks at most — the Needs you block's
   hairline and the Remote rail item's number badge (link requests + held
   work + PCs whose certificate changed, the same count from one store
-  slice). The summary line, headings and activity stay neutral. The page's
+  slice, cleared while the daemon is away). Link request toasts offer Review
+  only: the repo a request names is the other PC's claim. The summary line, headings and activity stay neutral. The page's
   one primary is the first Accept, else (empty page) Connect a PC….
 - Ids show only as needed and never in full; tokens and invite codes render
   only inside the dialog that made them.

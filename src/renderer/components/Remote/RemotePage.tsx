@@ -5,7 +5,6 @@ import { useT } from '../../hooks/useT';
 import Button from '../ui/Button';
 import Dialog, { DialogBody, DialogFooter, DialogHeader } from '../ui/Dialog';
 import WebToggle, { webPairUrl } from '../StatusBar/WebToggle';
-import AttachRemoteModal from '../Sidebar/AttachRemoteModal';
 import { revokeFailureMessage } from '../StatusBar/PairedDevicesModal';
 import { A2aExposureChecklist } from '../Settings/A2aExposureChecklist';
 import { IconChevron, IconComputer, IconCopy, IconMessage, IconPhone, IconServer } from '../icons';
@@ -111,7 +110,6 @@ export default function RemotePage() {
   const [hosts, setHosts] = useState<RemoteHostPublic[] | null>(null);
   const [hostStatus, setHostStatus] = useState<Record<string, RemoteHostStatus>>({});
   const [peers, setPeers] = useState<LanLinkPeerSummary[] | null>(null);
-  const [attach, setAttach] = useState<{ hostId?: string } | null>(null);
   const [connect, setConnect] = useState<{ tab?: ConnectTab } | null>(null);
   const [linkDialog, setLinkDialog] = useState<{ hostId: string; moa?: boolean } | null>(null);
   const [exposure, setExposure] = useState<{ hostId: string; name: string } | null>(null);
@@ -395,7 +393,7 @@ export default function RemotePage() {
     : !a2aStatus.enabled ? t('remotePage.a2aOff')
       : a2aStatus.listening ? t('remotePage.a2aListening', { port: a2aStatus.port })
         : t('remotePage.a2aError', { error: a2aStatus.lastError ?? t('remotePage.unknown') });
-  const dialogOpen = !!(attach || connect || linkDialog || exposure);
+  const dialogOpen = !!(connect || linkDialog || exposure);
   const isConfirming = (kind: NonNullable<Confirm>['kind'], id: string) => confirming?.kind === kind && confirming.id === id;
   const rowError = (key: string) => (error?.key === key ? <p className="wmux-remote-row-error" role="alert">{error.message}</p> : null);
   const statusCell = (word: StatusWord, live: boolean, since: number | null) => (
@@ -655,7 +653,7 @@ export default function RemotePage() {
             {a2aStatus && (
               <>
                 <dt>{t('remotePage.a2aPort')}</dt>
-                <dd className="ui-code">{a2aStatus.port}</dd>
+                <dd><code className="ui-code" data-remote-a2a-port>{a2aStatus.port}</code></dd>
                 <dd />
               </>
             )}
@@ -670,9 +668,6 @@ export default function RemotePage() {
                 </dd>
               </>
             )}
-            <dt>{t('remotePage.workspaceShares')}</dt>
-            <dd>{t('remotePage.workspaceSharesDesc')}</dd>
-            <dd><Button size="sm" variant="ghost" onClick={() => setAttach({})} data-remote-add-host>{t('remotePage.addHost')}</Button></dd>
           </dl>
         )}
       </div>
@@ -765,15 +760,10 @@ export default function RemotePage() {
         </ul>
       )}
 
-      {attach && (
-        <AttachRemoteModal
-          initialHostId={attach.hostId}
-          onClose={() => { setAttach(null); void refresh(); }}
-        />
-      )}
       {connect && (
         <RemoteConnectDialog
           initialTab={connect.tab}
+          onA2aStatus={setA2aStatus}
           onClose={() => { setConnect(null); void refresh(); }}
           onLinkPane={(hostId) => { setConnect(null); setLinkDialog({ hostId }); }}
         />
