@@ -345,15 +345,25 @@ $global:__wmux_osc7 = {
 # An action the user already set is kept: it is chained while ours is armed and
 # restored when ours disarms.
 $global:__wmux_lookup_busy = $false
+$global:__wmux_lookup_absorb = $false
 $global:__wmux_prev_lookup = $null
 $global:__wmux_lookup = {
     param($__wmux_name, $__wmux_event)
+    # $? as the command line left it. Every statement below resets $? to true.
+    # After a terminating error or a Ctrl+C the host looks up Out-Default and
+    # prompt with this action still armed, so the prompt saw true and reported
+    # the failed command as D;0. It is re-created at the end of this body.
+    $__wmux_ok = $?
+    # The Write-Error at the end of this body is a lookup too and lands here.
+    if ($global:__wmux_lookup_absorb) { $global:__wmux_lookup_absorb = $false; return }
     # Lookups made by the chained action land here again; neither it nor this
     # body may run for those.
     if ($global:__wmux_lookup_busy) { return }
     $global:__wmux_lookup_busy = $true
     try {
-        if ($global:__wmux_prev_lookup) { try { & $global:__wmux_prev_lookup $__wmux_name $__wmux_event } catch { } }
+        # The property returns a delegate, not the scriptblock that was set,
+        # and '&' cannot invoke a delegate. .Invoke() takes either.
+        if ($global:__wmux_prev_lookup) { try { $global:__wmux_prev_lookup.Invoke($__wmux_name, $__wmux_event) } catch { } }
         $type = if ($__wmux_event.Command) { [string]$__wmux_event.Command.CommandType } else { '' }
         if ($__wmux_event.CommandOrigin -ne 'Runspace' -or $type -eq 'Application' -or $type -eq 'ExternalScript') {
             & $global:__wmux_disarm_lookup
@@ -366,8 +376,16 @@ $global:__wmux_lookup = {
     } finally {
         $global:__wmux_lookup_busy = $false
     }
+    if (-not $__wmux_ok) {
+        if ($ExecutionContext.InvokeCommand.PostCommandLookupAction -eq $global:__wmux_lookup) { $global:__wmux_lookup_absorb = $true }
+        # The prompt's idiom: -ErrorAction Ignore sets $? to false and records
+        # nothing in $Error. It must stay the last statement.
+        Write-Error -Message 'wmux: last command failed' -ErrorAction Ignore
+    }
 }
 $global:__wmux_arm_lookup = {
+    $global:__wmux_lookup_busy = $false
+    $global:__wmux_lookup_absorb = $false
     $current = $ExecutionContext.InvokeCommand.PostCommandLookupAction
     if ($current -ne $global:__wmux_lookup) {
         $global:__wmux_prev_lookup = $current

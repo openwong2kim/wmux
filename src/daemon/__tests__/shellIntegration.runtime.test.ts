@@ -421,7 +421,54 @@ describe.runIf(hasPowerShell)('mid-line cwd report — powershell.exe (#1941)', 
     managed.ptyProcess.write('$global:userAction = { $global:userHits++ }; $ExecutionContext.InvokeCommand.PostCommandLookupAction = $global:userAction\r');
     const kept = 'Write-Output "ARMED[$(($ExecutionContext.InvokeCommand.PostCommandLookupAction -eq $global:userAction) -and $global:userHits -gt 0)]"';
     expect((await probe(`& "${CMD_EXE}" /c rem; ${kept}\r`, 'the user action after ours disarmed'))[1]).toBe('True');
-  }, EVENT_TIMEOUT_MS * 4 + 2000);
+
+    // ...and it keeps running while ours is armed. The property hands back a
+    // delegate, which '&' cannot invoke, so the chained call failed silently
+    // and the user's action missed every lookup of the armed window.
+    const chained = '$h = $global:userHits; Get-Date > $null; Get-Date > $null; Write-Output "ARMED[$($global:userHits - $h -ge 2)]"';
+    expect((await probe(`${chained}\r`, 'the user action while ours is armed'))[1]).toBe('True');
+  }, EVENT_TIMEOUT_MS * 5 + 2000);
+
+  // A user action that runs commands of its own: those lookups land in our
+  // action while it is armed and must be absorbed there, not chained into the
+  // user's action again. The counter bounds the user's own recursion once ours
+  // has disarmed (PowerShell itself does not guard a lookup action).
+  it('runs a chained user action once per lookup when it makes lookups itself', async () => {
+    const { managed, start } = startPane('reentry');
+    await waitForCwd(managed, start, 'the first prompt');
+    managed.ptyProcess.write('$ExecutionContext.InvokeCommand.PostCommandLookupAction = { $global:userHits++; if ($global:userHits -lt 50) { Get-Date > $null; Get-Date > $null } }\r');
+    // Two lookups between the reset and the snapshot: the two Get-Date calls.
+    managed.ptyProcess.write('$global:userHits = 0; Get-Date > $null; Get-Date > $null; $global:snap = $global:userHits\r');
+    const before = managed.ringBuffer.readAll().length;
+    managed.ptyProcess.write('Write-Output "HITS[$global:snap]"\r');
+    const hits = await waitForOutputAfter(managed, before, /HITS\[(\d+)\]/, 'the user action hit count');
+    expect(hits[1]).toBe('2');
+  }, EVENT_TIMEOUT_MS * 2 + 2000);
+
+  // The action runs statements, and every statement sets $? to true. After a
+  // terminating error the host looks up Out-Default and prompt with the action
+  // still armed, so the prompt read $? = true and reported D;0.
+  it('reports a line that ends in a terminating error as failed', async () => {
+    const { managed, start } = startPane('status');
+    await waitForCwd(managed, start, 'the first prompt');
+    const baseline = managed.promptLog.size;
+    managed.ptyProcess.write("throw 'wmux-1942'\r");
+    const cmdStart = await waitForEventAfter(managed, baseline, (e) => e.type === 'command_start', 'command_start');
+    const cmdEnd = await waitForEventAfter(
+      managed,
+      baseline,
+      (e) => e.type === 'command_end' && e.byteOffset >= cmdStart.byteOffset,
+      'command_end for the throw',
+    );
+    expect(cmdEnd.exitCode).toBe(1);
+
+    // The status is re-created without an extra record in $Error: the user's
+    // own error stays $Error[0].
+    const before = managed.ringBuffer.readAll().length;
+    managed.ptyProcess.write('$Error.Clear(); Get-Item Q:\\nope-1942 2>$null; Get-Date > $null; Write-Output "ERRS[$($Error.Count)]"\r');
+    const errs = await waitForOutputAfter(managed, before, /ERRS\[(\d+)\]/, 'the $Error count');
+    expect(errs[1]).toBe('1');
+  }, EVENT_TIMEOUT_MS * 3 + 2000);
 });
 
 describe.runIf(hasGitBash)('OSC 133 runtime — bash.exe (Git Bash)', () => {

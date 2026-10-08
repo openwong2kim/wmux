@@ -207,7 +207,9 @@ describe('PWSH_INIT — mid-line cwd report (#1941)', () => {
   });
 
   it('chains and restores an action the user already set', () => {
-    expect(PWSH_INIT).toContain('& $global:__wmux_prev_lookup $__wmux_name $__wmux_event');
+    // The property returns a delegate; '&' cannot invoke one, .Invoke() can.
+    expect(PWSH_INIT).toContain('$global:__wmux_prev_lookup.Invoke($__wmux_name, $__wmux_event)');
+    expect(PWSH_INIT).not.toContain('& $global:__wmux_prev_lookup');
     expect(PWSH_INIT).toContain('$ExecutionContext.InvokeCommand.PostCommandLookupAction = $global:__wmux_prev_lookup');
   });
 
@@ -215,7 +217,12 @@ describe('PWSH_INIT — mid-line cwd report (#1941)', () => {
     const start = PWSH_INIT.indexOf('$global:__wmux_osc7 = {');
     const end = PWSH_INIT.indexOf('$global:__wmux_arm_at_prompt = $true');
     const hookCode = PWSH_INIT.slice(start, end).split('\n').filter((line) => !line.trim().startsWith('#')).join('\n');
-    expect(hookCode).not.toMatch(/ForEach-Object|Where-Object|Get-|Set-|Write-|Out-/);
+    // The one exception runs only after a failed command, to hand $? back as
+    // the command line left it; its own lookup is absorbed by
+    // $global:__wmux_lookup_absorb.
+    const restoreStatus = "Write-Error -Message 'wmux: last command failed' -ErrorAction Ignore";
+    expect(hookCode.split(restoreStatus)).toHaveLength(2);
+    expect(hookCode.replace(restoreStatus, '')).not.toMatch(/ForEach-Object|Where-Object|Get-|Set-|Write-|Out-/);
   });
 });
 
