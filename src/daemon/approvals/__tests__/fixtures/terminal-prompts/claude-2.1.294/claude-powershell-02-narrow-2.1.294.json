@@ -9,7 +9,7 @@
   "  Ran 1 shell command",
   "  ⎿  Interrupted · What should Claude do instead?",
   "",
-  "✻ Sautéed for 3s · done 오후 7:50",
+  "✻ Sautéed for 3s · done PM 7:50",
   "",
   "❯ Use the PowerShell tool to run exactly this command and nothing else:",
   "  Set-Content -Path fx-b-narrow-pane-check.txt -Value key-test-narrow",
