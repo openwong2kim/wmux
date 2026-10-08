@@ -236,7 +236,7 @@ describe('ApprovalRegistry — lifecycle', () => {
 
     await h.registry.resolve({ id: 'req-1', decision: 'deny', resolvedBy: 'phone' });
 
-    // A bare ESC is held by conhost as the start of a sequence; the record is a key.
+    // Measured on Windows: a bare ESC left the picker up, the record closed it.
     expect(h.writes).toEqual([{ sessionId: 'pty-a', data: '\x1b[27;1;27;1;0;1_\x1b[27;1;0;0;0;1_' }]);
     expect(panes).toEqual(['pty-a']);
   });

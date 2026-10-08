@@ -11,7 +11,8 @@
 // row stood in front of the description, so the dialog never bound to its
 // call: the record carried no choices and no fingerprint, and the phone got
 // `unsupported-shape`. #1915: on a Windows pane the decline's Esc is a
-// win32-input-mode key record, because conhost holds a bare ESC byte.
+// win32-input-mode key record; a bare ESC byte was measured to leave the
+// dialog up.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';

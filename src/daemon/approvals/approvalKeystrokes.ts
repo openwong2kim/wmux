@@ -94,11 +94,11 @@ export function keystrokesForAgent(agentSlug: string): ApprovalKeystrokes | null
 /**
  * The bytes that press one answer key in a pane, at write time.
  *
- * A pane whose input conhost parses as win32-input-mode records (every ConPTY
- * pane on Windows) holds a lone ESC byte as the possible start of an escape
- * sequence, so Esc goes out as its key record pair there (#1915, measured on
- * Claude Code 2.1.293: the bare byte left the AskUserQuestion picker and the
- * Bash permission dialog up, the record closed both). Everything else is
+ * On a pane whose input conhost parses as win32-input-mode records (every
+ * ConPTY pane on Windows) Esc goes out as its key record pair (#1915,
+ * measured on Claude Code 2.1.293: the bare byte left the AskUserQuestion
+ * picker and the Bash permission dialog up, the record closed both; see
+ * shared/win32InputKeys.ts for the likely reason). Everything else is
  * unchanged, also measured on that pane: a digit, a lone `\r` and the VT arrow
  * `ESC [ B` each pressed their key as plain bytes, because none of them is
  * ambiguous to conhost's input parser. The keys the registry reasons about

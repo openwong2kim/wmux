@@ -98,7 +98,7 @@ Bash dialog draws `Tip: auto mode handles these prompts for you — choose
 | Bytes | Effect |
 | --- | --- |
 | `1` / `4` | Act immediately, as above |
-| lone `ESC` (`\x1b`) | Nothing: the dialog (and an AskUserQuestion picker) stays up. conhost reads input as win32-input-mode records and holds a bare ESC as the start of a sequence |
+| lone `ESC` (`\x1b`) | Nothing: the dialog (and an AskUserQuestion picker) stays up. ConPTY runs the pane's input in win32-input-mode; the likely reason (not observed) is that conhost holds a bare ESC as the start of a sequence |
 | `CSI 27;1;27;1;0;1 _` `CSI 27;1;0;0;0;1 _` (the Esc key record pair) | Cancels at once: the Bash dialog interrupts the turn, the picker answers "User declined to answer questions" |
 | lone `\r`, `ESC [ B` | Enter and Down on the picker, as in the table above |
 
