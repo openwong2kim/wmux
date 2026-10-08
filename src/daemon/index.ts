@@ -28,6 +28,8 @@ import { AUTOMATION_EVENT } from '../shared/automation';
 import { InputReceiptStore } from './web/InputReceiptStore';
 import { PhoneWorktreeService } from './web/phoneWorktree';
 import { AnswerReceiptStore } from './approvals/AnswerReceiptStore';
+import { MoaWakeService } from './phone/MoaWakeService';
+import { isMoaWakeFailure } from '../shared/moaWake';
 import { coercePhoneDecisions } from './approvals/decisionConfig';
 import { createOpenCodeDecisions } from './approvals/openCodeDecisions';
 import { isNativeDecision } from './approvals/types';
@@ -233,6 +235,16 @@ function getPhoneWorktrees(sessionManager: DaemonSessionManager): PhoneWorktreeS
 let answerReceipts: AnswerReceiptStore | null = null;
 function getAnswerReceipts(): AnswerReceiptStore {
   return answerReceipts ??= new AnswerReceiptStore(getWmuxDir());
+}
+// The phone's first message to Moa when no Moa pane exists yet (`moa.wake`).
+// Its own receipt file, so a wake id never meets an approval answer's.
+let moaWakeReceipts: AnswerReceiptStore | null = null;
+let moaWake: MoaWakeService | null = null;
+function getMoaWake(): MoaWakeService {
+  return moaWake ??= new MoaWakeService({
+    receipts: () => moaWakeReceipts ??= new AnswerReceiptStore(getWmuxDir(), Date.now, undefined, 'phone-moa-wake-receipts.json'),
+    desktop: () => desktopPhoneBridge,
+  });
 }
 /**
  * The `decision-v2` forms this daemon answers: the plan dialog and Claude's
@@ -834,6 +846,7 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         // The Moa (HQ brain) pane main last vouched for, read per request so a
         // withdrawal closes the next check. See web/moaPane.ts.
         moaPane: currentMoaPane,
+        moaWake: getMoaWake,
         auditMoaSend: (entry) => getDeviceStore().recordMoaSend(entry),
         // #1772 — a refused answer to the Moa prompt looks at the screen once.
         moaPromptRefused: (sessionId) => moaPrompt?.noteRefusedPress(sessionId),
@@ -3153,6 +3166,7 @@ function registerRpcHandlers(
       auditSentFile: (entry) => getDeviceStore().recordSentFile(entry),
       // See the restore path.
       moaPane: currentMoaPane,
+      moaWake: getMoaWake,
       auditMoaSend: (entry) => getDeviceStore().recordMoaSend(entry),
       moaPromptRefused: (sessionId) => moaPrompt?.noteRefusedPress(sessionId),
       // See the restore path: lazy projector for the phone turn view (#782).
@@ -4473,6 +4487,9 @@ function registerRpcHandlers(
         // First, and for every push (withdrawals included): the Moa prompt
         // record follows the dialog, and its expiries are queued right here.
         prompt.onChanged(next, pane);
+        // The phone's global `moa` event, withdrawals included (deduped on
+        // the resolved id inside the server).
+        webTerminalServer?.emitMoaChanged();
         if (!next || !pane) return;
         // The brain's hooks go to main, so none of the hook paths that attach
         // the process watch ever runs for this pane, and a chat send needs the
@@ -4483,7 +4500,8 @@ function registerRpcHandlers(
         // reading this pane: the brain's hooks never reach the daemon's own
         // transcript nudge path, so the push is that path.
         const sameBinding = prev?.sessionId === next.sessionId && JSON.stringify(prev.binding) === JSON.stringify(next.binding);
-        const sameDialog = prev?.sessionId === next.sessionId && JSON.stringify(prev.dialog) === JSON.stringify(next.dialog);
+        const sameDialog = prev?.sessionId === next.sessionId && JSON.stringify(prev.dialog) === JSON.stringify(next.dialog)
+          && prev.blockedOnTui === next.blockedOnTui;
         if (!sameBinding) transcriptProjector?.rebind(next.sessionId);
         if (!sameBinding || !sameDialog) webTerminalServer?.emitTranscriptNudge(next.sessionId);
       },
@@ -4505,6 +4523,17 @@ function registerRpcHandlers(
   pipeServer.onRpc('daemon.moa.answerPrompt', async (params, ctx) => {
     if (!firstPartyOnly(ctx.clientId, 'daemon.moa.answerPrompt')) return { ok: false, reason: 'first-party-only' };
     return moaPromptRpc ? moaPromptRpc.answer(params) : { ok: false, reason: 'not-pending' };
+  });
+  // A phone wake main accepted and then learned the brain never took (it
+  // stopped on a startup screen, or never came up): recorded on the wake's
+  // receipt. First-party only and token-only, like the two above.
+  pipeServer.onRpc('daemon.moa.wakeResult', async (params, ctx) => {
+    if (!firstPartyOnly(ctx.clientId, 'daemon.moa.wakeResult')) return { ok: false, reason: 'first-party-only' };
+    const p = (params ?? {}) as { actor?: unknown; clientMessageId?: unknown; failure?: unknown };
+    if (typeof p.actor !== 'string' || typeof p.clientMessageId !== 'string' || !isMoaWakeFailure(p.failure)) {
+      return { ok: false, reason: 'invalid' };
+    }
+    return { ok: await getMoaWake().recordFailure(p.actor, p.clientMessageId, p.failure) };
   });
   // The prompt of an agent Moa delegated work to, answered from Moa's panel.
   // First-party only like the two above: main scopes it to Moa's delegated

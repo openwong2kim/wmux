@@ -69,7 +69,7 @@ describe('the Moa pane on the phone routes', () => {
   let panes: Map<string, Pane>;
   let roster: Map<string, { secret: string; allowInput: boolean }>;
   let moa: MoaPaneFact | null;
-  let audits: Array<{ deviceId: string; sessionId: string; route: 'chat' | 'input' }>;
+  let audits: Array<{ deviceId: string; sessionId: string; route: 'chat' | 'input' | 'wake' }>;
   let resolveGate: (() => Promise<void>) | null;
   let sendHook: ((req: ChatSendRequest) => Promise<void>) | null;
   let destroyed: string[];
