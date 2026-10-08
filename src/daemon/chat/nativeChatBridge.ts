@@ -1807,6 +1807,15 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     send: (req) => sendWith(req, true),
     cancel,
     receipt: receiptView,
+    priorSend: (owner, clientMessageId, text) => {
+      const entry = deps.receipts?.lookup(owner, clientMessageId);
+      const paneId = entry?.paneId ?? queueStore?.get(owner, clientMessageId)?.paneId;
+      if (!paneId) return undefined;
+      const sameText = text === undefined ? undefined
+        : entry ? entry.fingerprint === ChatSendReceiptStore.fingerprint(entry.paneId, entry.agentSessionId, entry.historyEpoch, text)
+          : true; // a queue record alone keeps no text fingerprint
+      return { paneId, view: receiptView(owner, paneId, clientMessageId), ...(sameText !== undefined ? { sameText } : {}) };
+    },
     launch,
     skills: (id, agent) => skillsWith(id, agent, 'spawnCwd'),
     watch: (id) => deps.terminalChat()?.subscribe(WEB_BRIDGE_CLIENT, id),

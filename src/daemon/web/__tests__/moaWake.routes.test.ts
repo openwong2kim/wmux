@@ -111,6 +111,8 @@ describe('POST/GET /api/moa/messages', () => {
     const store = new AnswerReceiptStore(dir, Date.now, undefined, 'phone-moa-wake-receipts.json');
     wakeService = new MoaWakeService({ receipts: () => store, desktop: () => bridge });
     const resolution: ChatResolution = { source: 'file', status: status() };
+    // The chat send receipts, keyed by (owner, id) and pane-agnostic like ChatSendReceiptStore.
+    const chatReceipts = new Map<string, { paneId: string; text: string }>();
     chat = {
       resolve: vi.fn(async () => resolution),
       managedSnapshot: vi.fn(() => null),
@@ -123,7 +125,17 @@ describe('POST/GET /api/moa/messages', () => {
         if (req.authorized && !(await req.authorized('submit'))) {
           return { clientMessageId: req.clientMessageId, replayed: false, error: 'authorization-expired', result: 'error', effect: 'uncertain' };
         }
+        chatReceipts.set(`${req.owner}|${req.clientMessageId}`, { paneId: req.id, text: req.text });
         return { clientMessageId: req.clientMessageId, replayed: false, result: 'sent', effect: 'submitted' };
+      }),
+      priorSend: vi.fn((owner: string, cmid: string, text?: string) => {
+        const row = chatReceipts.get(`${owner}|${cmid}`);
+        if (!row) return undefined;
+        return {
+          paneId: row.paneId,
+          view: { clientMessageId: cmid, state: 'submitted' as const, result: 'sent' as const, agentSessionId: 'sess-a' },
+          ...(text !== undefined ? { sameText: text === row.text } : {}),
+        };
       }),
       cancel: vi.fn(),
       receipt: vi.fn((_o, _id, cmid: string) => ({ clientMessageId: cmid, state: 'unknown' as const })),
@@ -229,6 +241,38 @@ describe('POST/GET /api/moa/messages', () => {
     expect(await post(h, { clientMessageId: id, text: 'status?' })).toMatchObject({ status: 202, body: { result: 'sent', clientMessageId: id } });
     expect(chat.send).toHaveBeenCalledTimes(1);
     expect(chat.send.mock.calls[0][0]).toMatchObject({ id: 'brain-hq', clientMessageId: id, agentSessionId: 'sess-a', text: 'status?' });
+    expect(requests).toBe(0);
+  });
+
+  it('a chat send whose Moa pane has gone away replays on retry: no wake, no second send; GET finds it', async () => {
+    moa = { ...HQ };
+    await start();
+    const h = device('d1');
+    const id = freshId();
+    expect(await post(h, { clientMessageId: id, text: 'status?' })).toMatchObject({ status: 202, body: { result: 'sent' } });
+    // The Moa pane closes; Moa itself stays on.
+    moa = null;
+    server.emitMoaChanged();
+    expect(await post(h, { clientMessageId: id, text: 'status?' }))
+      .toMatchObject({ status: 200, body: { result: 'sent', replayed: true, effect: 'submitted', clientMessageId: id } });
+    expect(requests).toBe(0);
+    expect(turns).toEqual([]);
+    expect(chat.send).toHaveBeenCalledTimes(1);
+    expect(await receipt(h, id)).toEqual({ status: 200, body: { clientMessageId: id, state: 'accepted' } });
+    // The same id with other text is refused, never woken.
+    expect(await post(h, { clientMessageId: id, text: 'something else' })).toMatchObject({ status: 409, body: { error: 'message-id-reused' } });
+    expect(requests).toBe(0);
+  });
+
+  it('an id a chat send spent on an ordinary pane is not a message to Moa', async () => {
+    await start();
+    const h = device('d1');
+    const id = freshId();
+    (chat.priorSend as ReturnType<typeof vi.fn>).mockReturnValue({
+      paneId: 's1', view: { clientMessageId: id, state: 'submitted', result: 'sent' }, sameText: true,
+    });
+    expect(await post(h, { clientMessageId: id, text: 'hi' })).toMatchObject({ status: 409, body: { error: 'message-id-reused' } });
+    expect(await receipt(h, id)).toMatchObject({ status: 404, body: { error: 'unknown-message' } });
     expect(requests).toBe(0);
   });
 

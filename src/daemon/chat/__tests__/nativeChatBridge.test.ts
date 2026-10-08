@@ -218,6 +218,17 @@ describe('send', () => {
     expect(f.written).toHaveLength(2);
   });
 
+  it('finds the owner\'s send under an id without naming the pane (priorSend)', async () => {
+    const f = fixture(); f.liveClaude();
+    const req = phoneSend();
+    await f.bridge.send(req);
+    expect(f.bridge.priorSend?.('device:a', req.clientMessageId, req.text))
+      .toMatchObject({ paneId: 'pane', sameText: true, view: { state: 'submitted', result: 'sent' } });
+    expect(f.bridge.priorSend?.('device:a', req.clientMessageId, 'other')?.sameText).toBe(false);
+    expect(f.bridge.priorSend?.('device:a', req.clientMessageId)).not.toHaveProperty('sameText');
+    expect(f.bridge.priorSend?.('device:b', req.clientMessageId, req.text)).toBeUndefined();
+  });
+
   it('dispatches once for two concurrent sends with the same id', async () => {
     const f = fixture(); f.liveClaude();
     let release!: () => void; f.gateAlive(new Promise<void>(resolve => { release = resolve; }));

@@ -329,6 +329,14 @@ export interface ChatBridge {
   cancel(request: ChatCancelRequest): Promise<ChatCancelOutcome>;
   /** Owner-bound receipt read; never dispatches. `unknown` when absent, for another owner or another pane. */
   receipt(owner: ChatOwner, id: string, clientMessageId: string): ChatSendReceiptView;
+  /**
+   * The owner's send under this id on ANY pane (receipt or daemon queue), or
+   * undefined. For `/api/moa/messages`, whose pane can go away between a send
+   * and its retry. `sameText` is false only when the stored fingerprint
+   * proves another text; it is omitted when no text was given.
+   */
+  priorSend?(owner: ChatOwner, clientMessageId: string, text?: string):
+    { paneId: string; view: ChatSendReceiptView; sameText?: boolean } | undefined;
   launch(request: ChatLaunchRequest): Promise<ChatLaunchOutcome>;
   /** Whether `resume:true` would continue the pane's own binding now (`/turns` `chat.resumable`). */
   resumable?(id: string): Promise<boolean>;

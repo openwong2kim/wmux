@@ -3544,6 +3544,11 @@ The daemon answers, in this order:
    appeared since. Same id with different text: `409
    {error:"message-id-reused"}`. Still in flight: `202 {state:"pending",
    replayed:true}`.
+   **The id was already used for a chat send to a Moa pane** (step 2 below),
+   even one that has gone away since: that send's answer again, exactly as the
+   chat route replays it (`200 {result:"sent", replayed:true, effect, …}`) —
+   never a wake, never a second send. Same id with different text, or an id
+   this caller spent on an ordinary pane: `409 {error:"message-id-reused"}`.
 2. **`moaSessionId` resolves:** the message takes the chat send path for the
    Moa pane with the same `clientMessageId` (the daemon fills in
    `agentSessionId` / `historyEpoch` itself), so every answer is the one
@@ -3592,7 +3597,8 @@ another device's id reads as unknown.
     (folder trust, sign-in) before it read the message. It needs an answer on
     the desktop; then send again with a new id.
   - `spawn-failed` — Moa's terminal never came up.
-  For a message the chat path carried, `code` is its chat error tag.
+  For a message the chat path carried, `code` is its chat error tag. Such a
+  message is found by id even after the Moa pane it went to has gone away.
 - `moaSessionId` — whenever the Moa pane is up, in any state (a `failed:
   tui-dialog` wake has a pane stopped on its startup screen). Use it for the
   pane's `/turns` and chat routes as usual.

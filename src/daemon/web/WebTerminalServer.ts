@@ -94,7 +94,7 @@ import {
   scanSkillCatalog,
   type SkillCatalogEntry,
 } from '../../main/deck/skillCatalogScan';
-import { ENV_KEYS, isBrainPty } from '../../shared/constants';
+import { ENV_KEYS, isBrainPty, isBrainPtyId } from '../../shared/constants';
 import { resolveMoaPane, type MoaPaneFact } from './moaPane';
 import {
   DEVICE_KIND_HEADER,
@@ -5208,6 +5208,10 @@ export class WebTerminalServer {
         const wake = this.deps.moaWake?.() ?? null;
         const seen = wake?.peek(owner, cmid, text);
         if (seen) return this.moaWire(res, seen);
+        // A send the chat path already carried — maybe to a Moa pane that has
+        // since gone away — replays; it never becomes a wake or a second send.
+        const prior = this.moaPriorSend(owner, cmid, text);
+        if (prior) return this.json(res, prior.status, prior.body);
         const sessionId = this.moaSessionIdField().moaSessionId;
         if (sessionId !== undefined) return this.moaDelegateSend(req, res, url, principal, caller, sessionId, cmid, text);
         if (!wake) return this.json(res, 503, { error: 'desktop-unavailable', clientMessageId: cmid });
@@ -5229,6 +5233,33 @@ export class WebTerminalServer {
     }, CHAT_SEND_MAX_BODY_BYTES);
   }
 
+  /**
+   * A chat send this caller already made under `clientMessageId`, on any pane,
+   * as the chat route's replay would answer it; null when there is none. Moa
+   * panes come and go, so the pane it went to need not be the current one —
+   * but it must be a brain pane: an id spent on an ordinary pane, or on other
+   * text, is reused.
+   */
+  private moaPriorSend(owner: ChatOwner, clientMessageId: string, text: string): WireResponse | null {
+    const prior = this.deps.chat?.()?.priorSend?.(owner, clientMessageId, text);
+    if (!prior || prior.view.state === 'unknown') return null;
+    if (!isBrainPtyId(prior.paneId) || prior.sameText === false) {
+      return { status: 409, body: { error: 'message-id-reused', clientMessageId } };
+    }
+    const view = prior.view;
+    if (view.queue) {
+      return sendResponse({ clientMessageId, replayed: true, queueState: view.queue.state, ...(view.queue.reason ? { queueReason: view.queue.reason } : {}) }, clientMessageId);
+    }
+    if (view.state === 'pending' || view.state === 'queued') return sendResponse({ clientMessageId, replayed: true, pending: true }, clientMessageId);
+    const effect = view.state === 'submitted' ? 'submitted' : view.state === 'refused' ? 'none' : 'uncertain';
+    return sendResponse({
+      clientMessageId, replayed: true, effect,
+      ...(view.result ? { result: view.result } : {}),
+      ...(view.error ? { error: view.error } : {}),
+      ...(view.queued ? { queued: true as const } : {}),
+    }, clientMessageId);
+  }
+
   /** The Moa pane exists: the chat send path, with the conversation the daemon resolves itself. */
   private async moaDelegateSend(
     req: http.IncomingMessage, res: http.ServerResponse, url: URL, principal: WebPrincipal,
@@ -5244,16 +5275,9 @@ export class WebTerminalServer {
       const blocked = sendResponse({ clientMessageId, replayed: false, result: 'blocked', effect: 'none', error: 'chat-blocked', blockedBy: 'terminal' }, clientMessageId);
       return this.json(res, blocked.status, blocked.body);
     }
-    const owner = chatOwner(fresh);
-    // A send this id already made answers from its own receipt, whatever the conversation is now.
-    const prior = chat.receipt(owner, sessionId, clientMessageId);
-    let agentSessionId = prior.state !== 'unknown' ? prior.agentSessionId : undefined;
-    let historyEpoch = prior.state !== 'unknown' ? prior.historyEpoch : undefined;
-    if (agentSessionId === undefined) {
-      const resolution = await chat.resolve(sessionId);
-      agentSessionId = hasConversation(resolution) ? resolutionAgentSessionId(resolution) : undefined;
-      historyEpoch = resolutionEpoch(resolution);
-    }
+    const resolution = await chat.resolve(sessionId);
+    const agentSessionId = hasConversation(resolution) ? resolutionAgentSessionId(resolution) : undefined;
+    const historyEpoch = resolutionEpoch(resolution);
     // The pane is up but the brain has not reported its conversation yet.
     if (!agentSessionId) {
       return this.json(res, 409, { error: 'moa-starting', clientMessageId }, { 'Retry-After': MOA_WAKE_RETRY_AFTER.starting });
@@ -5282,8 +5306,9 @@ export class WebTerminalServer {
         ...withPane,
       });
     }
-    const chat = this.deps.chat?.() ?? null;
-    const sent = sessionId !== undefined && chat ? chat.receipt(owner, sessionId, clientMessageId) : null;
+    const prior = this.deps.chat?.()?.priorSend?.(owner, clientMessageId);
+    // Only a send to a Moa (brain) pane is a message to Moa; the pane may be gone.
+    const sent = prior && isBrainPtyId(prior.paneId) ? prior.view : null;
     if (!sent || sent.state === 'unknown') return this.json(res, 404, { error: 'unknown-message', clientMessageId });
     const state = sent.state === 'submitted' ? 'accepted'
       : sent.state === 'refused' ? 'failed'
