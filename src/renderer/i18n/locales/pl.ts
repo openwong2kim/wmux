@@ -1298,7 +1298,7 @@ export const pl = {
   'settings.computerUseStopKeyDesc': 'Naciśnij go w dowolnym miejscu, aby zatrzymać wszystkich agentów naraz. Gdy włączone jest Pytaj o każdą aplikację, potem muszą ponownie poprosić o każdą aplikację.',
   'settings.computerUseStopKeyUnavailable': 'Niedostępny',
   'settings.computerUseStopKeyUnavailableDesc': 'Inna aplikacja używa tego skrótu, więc wmux nie może przejąć klawisza zatrzymania.',
-  'settings.computerUseStopKeyUnavailableNote': 'Dopóki klawisz zatrzymania jest niedostępny, agenci nie mogą obsługiwać aplikacji; za Twoją zgodą nadal mogą je oglądać. Zamknij aplikację, która używa {key}. wmux spróbuje ponownie przy następnym wywołaniu agenta lub po ponownym otwarciu tej karty.',
+  'settings.computerUseStopKeyUnavailableNote': 'Dopóki klawisz zatrzymania jest niedostępny, agenci nie mogą obsługiwać aplikacji; nadal mogą je oglądać. Zamknij aplikację, która używa {key}. wmux spróbuje ponownie przy następnym wywołaniu agenta lub po ponownym otwarciu tej karty.',
   'settings.computerUseSafety': 'Bezpieczeństwo',
   'settings.computerUseConsent': 'Pytaj o każdą aplikację',
   'settings.computerUseConsentDesc': 'Gdy agent po raz pierwszy chce zobaczyć lub obsłużyć aplikację, wmux pyta Ciebie; odpowiedź obowiązuje do ponownego uruchomienia wmux lub naciśnięcia klawisza zatrzymania. Wyłączone: agenci mogą używać każdej niezablokowanej aplikacji.',

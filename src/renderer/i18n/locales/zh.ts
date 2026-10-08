@@ -1432,7 +1432,7 @@ export const zh = {
   'settings.computerUseStopKeyDesc': '在任何地方按下即可一次停止所有代理。开启“每个应用先询问”时，之后它们需要重新为每个应用请求许可。',
   'settings.computerUseStopKeyUnavailable': '不可用',
   'settings.computerUseStopKeyUnavailableDesc': '另一个应用正在使用此快捷键，wmux 无法占用停止键。',
-  'settings.computerUseStopKeyUnavailableNote': '停止键不可用期间，代理无法操作应用；经你许可后仍可查看。请关闭正在使用 {key} 的应用。wmux 会在下一次代理调用或你重新打开此标签页时再次尝试。',
+  'settings.computerUseStopKeyUnavailableNote': '停止键不可用期间，代理无法操作应用；仍可查看。请关闭正在使用 {key} 的应用。wmux 会在下一次代理调用或你重新打开此标签页时再次尝试。',
   'settings.computerUseSafety': '安全',
   'settings.computerUseConsent': '每个应用先询问',
   'settings.computerUseConsentDesc': '代理第一次想查看或操作某个应用时，wmux 会询问你；答复在 wmux 重启或按下停止键之前一直有效。关闭时，代理可以使用任何未被阻止的应用。',

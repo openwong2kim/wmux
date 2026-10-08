@@ -1315,7 +1315,7 @@ export const en = {
   'settings.computerUseStopKeyDesc': 'Press it anywhere to stop all agents at once. With Ask before each app on, they must ask again for each app afterwards.',
   'settings.computerUseStopKeyUnavailable': 'Unavailable',
   'settings.computerUseStopKeyUnavailableDesc': 'Another app is using this shortcut, so wmux cannot hold the stop key.',
-  'settings.computerUseStopKeyUnavailableNote': 'Agents cannot control apps while the stop key is unavailable; they can still look at them with your consent. Close the app that uses {key}. wmux tries again on the next agent call or when you reopen this tab.',
+  'settings.computerUseStopKeyUnavailableNote': 'Agents cannot control apps while the stop key is unavailable; they can still look at them. Close the app that uses {key}. wmux tries again on the next agent call or when you reopen this tab.',
   'settings.computerUseSafety': 'Safety',
   'settings.computerUseConsent': 'Ask before each app',
   'settings.computerUseConsentDesc': 'The first time an agent wants to see or control an app, wmux asks you; the answer lasts until wmux restarts or you press the stop key. Off: agents may use any app that is not blocked.',
