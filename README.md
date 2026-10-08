@@ -4,7 +4,9 @@
 
 # wmux
 
-### The workspace for AI agents.
+### The ADE for AI agents.
+
+**Automate everything else. Do your true work.**
 
 Run Claude Code, Codex, Gemini, or any CLI agent side by side — native on **Windows and macOS** — and answer them from your **iPhone**.
 
