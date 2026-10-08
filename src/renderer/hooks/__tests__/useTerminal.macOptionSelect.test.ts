@@ -46,8 +46,10 @@ describe('#1437 — the installed xterm still behaves as this relies on', () => 
   for (const entry of [pkg.main, pkg.module] as string[]) {
     it(`${entry}: Option forces selection only with the flag; alt-click-move is option-gated`, () => {
       const bundle = fs.readFileSync(path.join(pkgDir, entry), 'utf-8');
+      // 6.1 leads with the `mouseEventsRequireAlt` branch; wmux never sets
+      // that option (default false), so the platform branch below decides.
       expect(bundle).toMatch(
-        /shouldForceSelection\(\w+\)\{return [\w.]+\?\w+\.altKey&&this\._optionsService\.rawOptions\.macOptionClickForcesSelection:\w+\.shiftKey\}/,
+        /shouldForceSelection\(\w+\)\{return this\._optionsService\.rawOptions\.mouseEventsRequireAlt&&this\._mouseStateService\.areMouseEventsActive\?!\w+\.altKey:[\w.]+\?\w+\.altKey&&this\._optionsService\.rawOptions\.macOptionClickForcesSelection:\w+\.shiftKey\}/,
       );
       expect(bundle).toMatch(/_handleMouseUp\(\w+\)\{[^}]*\w+\.altKey&&this\._optionsService\.rawOptions\.altClickMovesCursor\)/);
     });

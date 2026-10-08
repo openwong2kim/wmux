@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { installCanvas2dStub } from '../../../test-utils/canvas2dStub';
 import { Terminal } from '@xterm/xterm';
 import { forceCharSizeMeasure, onCharSizeChange } from '../charSizeRefit';
 
@@ -13,6 +14,7 @@ import { forceCharSizeMeasure, onCharSizeChange } from '../charSizeRefit';
 
 const terminals: Terminal[] = [];
 beforeAll(() => {
+  installCanvas2dStub();
   // open() watches devicePixelRatio through matchMedia, which jsdom lacks.
   window.matchMedia ??= ((query: string) => ({
     matches: false, media: query, onchange: null,

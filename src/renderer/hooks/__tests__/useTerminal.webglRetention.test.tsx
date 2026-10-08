@@ -9,6 +9,7 @@
 // WebGL addon that counts constructions and disposals.
 
 import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
+import { installCanvas2dStub } from '../../../test-utils/canvas2dStub';
 import { act, useRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
@@ -27,6 +28,7 @@ vi.mock('@xterm/addon-webgl', () => ({
 const unsub = () => () => undefined;
 
 beforeAll(() => {
+  installCanvas2dStub();
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
     value: {

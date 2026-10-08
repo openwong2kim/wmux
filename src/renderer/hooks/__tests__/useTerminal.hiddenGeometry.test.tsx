@@ -11,6 +11,7 @@
 // Mounts the REAL useTerminal against a real xterm under jsdom.
 
 import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
+import { installCanvas2dStub } from '../../../test-utils/canvas2dStub';
 import { act, useRef, type MutableRefObject } from 'react';
 import type { Terminal } from '@xterm/xterm';
 import { createRoot, type Root } from 'react-dom/client';
@@ -31,6 +32,7 @@ const unsub = () => () => undefined;
 let layoutSize = 0;
 
 beforeAll(() => {
+  installCanvas2dStub();
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
     value: {

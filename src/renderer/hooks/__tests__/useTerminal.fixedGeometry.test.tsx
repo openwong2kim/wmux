@@ -7,6 +7,7 @@
 // Mounts the REAL useTerminal against a real xterm under jsdom.
 
 import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
+import { installCanvas2dStub } from '../../../test-utils/canvas2dStub';
 import { act, useRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { FitAddon } from '@xterm/addon-fit';
@@ -23,6 +24,7 @@ const setViewerVisibility = vi.fn();
 const unsub = () => () => undefined;
 
 beforeAll(() => {
+  installCanvas2dStub();
   Object.defineProperty(window, 'electronAPI', {
     configurable: true,
     value: {

@@ -120,7 +120,7 @@ describe('shared terminal bundle (wmuxTerminalShared)', () => {
 
   it('the build refuses a bundle that drops one of these exports', () => {
     const build = readSource(join(repoRoot, 'scripts', 'build-daemon-web.mjs'));
-    expect(build).toContain("['staleReplayResetLevel', 'gateUserInput', 'capSixelImageSize', 'installShellPromptModeReset', 'shellPromptModeResetFor']");
+    expect(build).toContain("['staleReplayResetLevel', 'gateUserInput', 'capSixelImageSize', 'installShellPromptModeReset', 'shellPromptModeResetFor', 'holdNewXtermReplies']");
   });
 });
 

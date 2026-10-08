@@ -59,6 +59,7 @@ import { formatModifiers, modifiersOf, sharedModifierPressTracker } from '../ter
 import { awaitParseBarrier } from '../terminal/parseBarrier';
 import { STALE_REPLAY_INPUT_MODE_RESETS, STALE_REPLAY_ALIVE_SHELL_RESETS, STALE_REPLAY_DISPLAY_RESETS, staleReplayResetLevel } from '../../shared/terminal/staleReplayModeReset';
 import { installShellPromptModeReset, shellPromptModeResetFor } from '../../shared/terminal/shellPromptModeReset';
+import { holdNewXtermReplies } from '../../shared/terminal/replyParity';
 import { paneForegroundProbe } from '../terminal/paneForegroundProbe';
 import { attachAltScreenWheel, PAGE_SCROLL_AGENTS } from '../terminal/altScreenWheel';
 import { RestingCursorGuard } from '../terminal/restingCursor';
@@ -1377,6 +1378,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // two sides ever measure differently, a restored snapshot paints
       // cell-shifted against the live screen.
       applyUnicodeWidthModel(terminal);
+      holdNewXtermReplies(terminal);
       terminal.open(container);
     }
     // Grok lives on the alt screen, where xterm has no scrollback and turns the

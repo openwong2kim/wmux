@@ -119,11 +119,11 @@ describe('atlas coherence model', () => {
     expect(b()).toBe(false);
   });
 
-  it('installed addon-webgl 0.19.0 still has the I1/I3 patch', () => {
+  it('installed addon-webgl 0.20.0-beta.300 still has the I1/I3 patch', () => {
     const pkg = JSON.parse(
       readFileSync('node_modules/@xterm/addon-webgl/package.json', 'utf8'),
     ) as { version: string };
-    expect(pkg.version).toBe('0.19.0');
+    expect(pkg.version).toBe('0.20.0-beta.300');
     const src = readFileSync(
       'node_modules/@xterm/addon-webgl/src/TextureAtlas.ts',
       'utf8',

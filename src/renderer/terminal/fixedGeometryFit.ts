@@ -57,9 +57,9 @@ function availableBox(term: Terminal): { width: number; height: number } | null 
   const ps = window.getComputedStyle(parent);
   const es = window.getComputedStyle(el);
   const px = (v: string) => parseInt(v, 10) || 0;
-  const scrollbar = term.options.scrollback === 0
+  const scrollbar = term.options.scrollback === 0 || term.options.scrollbar?.showScrollbar === false
     ? 0
-    : (term.options.overviewRuler?.width || DEFAULT_SCROLL_BAR_WIDTH);
+    : (term.options.scrollbar?.width ?? DEFAULT_SCROLL_BAR_WIDTH);
   const width = Math.max(0, px(ps.getPropertyValue('width')))
     - px(es.getPropertyValue('padding-left')) - px(es.getPropertyValue('padding-right')) - scrollbar;
   const height = px(ps.getPropertyValue('height'))

@@ -110,7 +110,7 @@ const terminalSharedJs = buildSync({
 {
   const sandbox = {};
   runInNewContext(terminalSharedJs, sandbox);
-  for (const name of ['staleReplayResetLevel', 'gateUserInput', 'capSixelImageSize', 'installShellPromptModeReset', 'shellPromptModeResetFor']) {
+  for (const name of ['staleReplayResetLevel', 'gateUserInput', 'capSixelImageSize', 'installShellPromptModeReset', 'shellPromptModeResetFor', 'holdNewXtermReplies']) {
     if (typeof sandbox.wmuxTerminalShared?.[name] !== 'function') {
       console.error(`build-daemon-web: the shared terminal bundle does not export ${name}()`);
       process.exit(1);

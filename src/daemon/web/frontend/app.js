@@ -251,6 +251,9 @@
   function withPromptModeReset(t) {
     var shared = window.wmuxTerminalShared;
     if (shared && shared.installShellPromptModeReset) shared.installShellPromptModeReset(t);
+    // Keep xterm 6.1 from answering the queries 6.0 left unanswered
+    // (src/shared/terminal/replyParity.ts).
+    if (shared && shared.holdNewXtermReplies) shared.holdNewXtermReplies(t);
     return t;
   }
 

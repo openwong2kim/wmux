@@ -160,7 +160,14 @@ class CoherentFakeAtlas {
     // Idle the existing pages first so clearAtlasTexture's in-place
     // postcondition (held on the pre-call array) still holds.
     for (const p of this.pages) p.currentRow = { x: 0, y: 0 };
+    // addon-webgl 0.20 wipes through `_evictAllPages`, which fires the removal
+    // event once per dropped page — on a wipe the guard asked for as well as
+    // on a self-eviction.
+    const dropped = this.pages.length;
     this.pages = [{ currentRow: { x: 0, y: 0 } }];
+    for (let i = 0; i < dropped; i++) {
+      for (const l of this.removalListeners) l({});
+    }
     this.clearModelGeneration++;
   }
   /** I2: grow by appending; at the cap, evict-all then place on page 0. */
@@ -832,7 +839,9 @@ describe('atlasGuard', () => {
         .map((c) => String(c[0]))
         .filter((l) => /\[wmux:atlas-guard] prevent/.test(l));
       expect(cures).toHaveLength(1);
-      expect(cures[0]).toMatch(/self-eviction: gen/);
+      // addon-webgl 0.20 fires the removal event on an eviction as well, so
+      // the line cannot tell an eviction from a merge any more.
+      expect(cures[0]).toMatch(/merge\/evict: gen/);
       expect(prevents).toHaveLength(0);
       expect(atlas.clearCalls).toBe(1);
       expect(pane.refreshes()).toBe(1);
