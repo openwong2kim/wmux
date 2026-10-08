@@ -50,7 +50,7 @@ process of the same user, at the same integrity level, can already call
 - **The helper is not a privilege boundary.** It does what its stdin says,
   with the user's own rights, and checks nothing about its parent. A process
   that could drive the helper could drive the desktop without it. wmux's
-  safety lives in main (consent per app, blocklist, input lock, stop key,
+  safety lives in main (opt-in consent per app, blocklist, input lock, stop key,
   rate cap) and in the helper's own refusals below.
 - **That holds only while the helper runs with the user's ordinary rights.**
   The manifest says `asInvoker` and `uiAccess="false"` (no UIPI bypass), and
@@ -158,14 +158,16 @@ monitors at negative coordinates work.
   lists the windows of all of them and a window id is found in any of them.
   A name or title that matches windows in more than one process answers
   `invalid_argument`; pass a window id from `listWindows` or `pid:N`.
-- Main judges explorer.exe per window (`windowBlockReasonFor` in
-  `src/shared/computer/blocklist.ts`): only folder windows whose
-  `shellLocation` is a filesystem path may be driven; every other shell
-  window is a shell system surface and is refused, as is a folder window
-  whose location cannot be read. Before input, main re-reads the live
-  location, because a folder window can navigate after the snapshot.
-  `listWindows` hides a folder's location, like its title, until the person
-  consented to Explorer.
+- Main no longer judges explorer.exe per window (owner decision 2026-10-08:
+  the blocklist is down to password managers, wmux and credential prompts,
+  see docs/computer-use-design.md › Safety). The helper still reports
+  `className` and `shellLocation`; `listWindows` hides a folder's location,
+  like its title, until the person consented to Explorer while Settings ›
+  Computer use › Ask before each app is on.
+- The Windows helper does not implement the optional `openApp` and
+  `configure` methods yet. Its hello does not list them, so main answers
+  `openApp` with `unsupported_action` and skips `configure`: no agent cursor
+  or halo on Windows for now.
 
 ## Input
 
