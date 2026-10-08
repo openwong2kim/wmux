@@ -26,6 +26,7 @@ import { classifyWorkspaceListResult, type WorkspaceLiveness } from './workspace
 import { PlaywrightEngine } from './playwright/PlaywrightEngine';
 import { getOpenerKey, noteOpenedSurface } from './playwright/surfaceRouting';
 import { registerNavigationTools } from './playwright/tools/navigation';
+import { paneProfileRefusal } from './playwright/paneProfileRefusal';
 import { registerInteractionTools } from './playwright/tools/interaction';
 import { registerInspectionTools } from './playwright/tools/inspection';
 import { registerStateTools } from './playwright/tools/state';
@@ -895,7 +896,8 @@ async function callRpc(
     if (isStaleIdentityResult(err instanceof Error ? err.message : String(err))) {
       invalidateStaleRoute(pinnedRouteAtDispatch);
     }
-    throw err;
+    // browser_open / browser_close: main's pane-profile refusal, explained.
+    throw paneProfileRefusal(err) ?? err;
   }
 }
 

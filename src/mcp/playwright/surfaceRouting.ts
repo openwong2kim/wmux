@@ -1,7 +1,7 @@
 import * as crypto from 'crypto';
 import { sendRpc } from '../wmux-client';
 import { getConnectionScope } from '../connectionScope';
-import { WorkspaceScopeUnresolvedError } from './browserScope';
+import { paneProfileRefusal, WorkspaceScopeUnresolvedError } from './browserScope';
 
 /**
  * Which browser surface a call that omitted `surfaceId` belongs to.
@@ -542,6 +542,9 @@ export async function resolveDefaultSurface(
       openerKey: getOpenerKey(),
     })) as RoutableCdpInfo;
   } catch (err) {
+    // main answered, and the answer is a refusal — not "unavailable".
+    const refusal = paneProfileRefusal(err);
+    if (refusal) throw refusal;
     throw new WorkspaceScopeUnresolvedError(
       `browser.cdp.info unavailable: ${err instanceof Error ? err.message : String(err)}`,
     );

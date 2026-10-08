@@ -1,3 +1,5 @@
+import { paneProfileRefusal } from './paneProfileRefusal';
+
 /**
  * Agent-facing error text for browser tool results.
  *
@@ -35,6 +37,9 @@ const CALL_PATH_PREFIX = /^([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*):[ \t]+/;
  * as `browser.type.humanlike:`, which name a wire method the agent never calls.
  */
 export function describeToolError(error: unknown): string {
+  // main's raw pane-profile refusal becomes the explanation an agent can act on.
+  const refusal = paneProfileRefusal(error);
+  if (refusal) return refusal.message;
   const message = error instanceof Error ? error.message : String(error);
   const match = CALL_PATH_PREFIX.exec(message);
   if (!match) return message;

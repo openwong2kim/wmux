@@ -1,6 +1,7 @@
 import type { RpcMethod } from '../../shared/rpc';
 import { sendRpc } from '../wmux-client';
 import { isAgentWindowScopeError } from '../../shared/liveWriteScope';
+import { paneProfileRefusal } from './paneProfileRefusal';
 // Cycle-safe: surfaceRouting imports the refusal type from here, and both
 // sides touch the other only from inside function bodies, never at module
 // evaluation time.
@@ -10,6 +11,8 @@ import {
   resolveDefaultSurface,
   SurfaceNotRegisteredError,
 } from './surfaceRouting';
+
+export { PaneProfileUnresolvedError, paneProfileRefusal } from './paneProfileRefusal';
 
 /** Stable error code for browser operations whose caller cannot be scoped. */
 export const WORKSPACE_SCOPE_UNRESOLVED_CODE = 'WORKSPACE_SCOPE_UNRESOLVED';
@@ -51,6 +54,9 @@ export function isWorkspaceScopeUnresolvedError(error: unknown): boolean {
  */
 export function allowScopedRpcFallback(error: unknown): null {
   if (isWorkspaceScopeUnresolvedError(error)) throw error;
+  // Nor a pane-profile refusal: main refuses the RPC lane for the same reason.
+  const refusal = paneProfileRefusal(error);
+  if (refusal) throw refusal;
   if (isAgentWindowScopeError(error)) throw error;
   return null;
 }
@@ -128,7 +134,11 @@ export async function requireBrowserTargetScope(
   let resolved: Awaited<ReturnType<typeof resolveDefaultSurface>> | null = null;
   try {
     resolved = await resolveDefaultSurface(workspaceId);
-  } catch {
+  } catch (err) {
+    // A refusal, not a routing failure: proceeding on the pin would drive the
+    // pane's browser under whichever profile main falls back to.
+    const refusal = paneProfileRefusal(err);
+    if (refusal) throw refusal;
     // Routing failed rather than answered. Swallowing this into "no surface"
     // would silently restore the pre-fix behavior — permanently, on a build
     // with CDP disabled — so the connection's own pin answers instead, and
@@ -280,7 +290,13 @@ export async function sendScopedBrowserRpc<T = unknown>(
   const surfaceId = scope.surfaceId ?? (await surfaceForScopedRpc(method, scope));
   if (surfaceId) scopedParams.surfaceId = surfaceId;
   else delete scopedParams.surfaceId;
-  return rejectErrorPayload(await sendRpc(method, scopedParams)) as T;
+  let result: unknown;
+  try {
+    result = await sendRpc(method, scopedParams);
+  } catch (err) {
+    throw paneProfileRefusal(err) ?? err;
+  }
+  return rejectErrorPayload(result) as T;
 }
 
 /**
