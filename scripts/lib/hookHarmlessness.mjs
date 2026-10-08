@@ -58,6 +58,9 @@ import {
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
+// The shared Claude-compatible bridge is inert on import; its flavour table is
+// what the shared-path cases below are derived from.
+import { FLAVOURS as COMPAT_FLAVOURS } from '../../integrations/shared/bin/wmux-hooks-bridge.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = join(HERE, '..', '..');
@@ -145,6 +148,17 @@ export const HOST_CONTRACTS = {
   codexHook(exitCode, stdout) {
     if (stdout !== '') return 'stdout-noise';
     if (exitCode !== 0) return 'nonzero-exit-blocks-host';
+    return 'none';
+  },
+
+  // The shared Claude-compatible bridge's hosts (GitHub Copilot CLI, Gemini
+  // CLI). Both document exit 0 + stdout parsed as JSON, and exit 2 as a block;
+  // Copilot additionally fails CLOSED on any other non-zero exit from
+  // preToolUse. So a printing or failing observation hook could steer either
+  // host — the same strictness as codexHook, for the same reason.
+  compatHook(exitCode, stdout) {
+    if (stdout !== '') return 'stdout-noise';
+    if (exitCode !== 0) return 'nonzero-exit-may-block-host';
     return 'none';
   },
 };
@@ -440,6 +454,38 @@ export function buildCases(payloadOpts) {
       stdin: 'json',
       payload,
     });
+  }
+
+  // The shared Claude-compatible bridge (#1904). Kiro already runs through it
+  // via its own entry point above; the other flavours are invoked the way their
+  // installer registers them: `node <bridge> <flavour> <Event>`. Derived from
+  // the bridge's own flavour table, plus one event no flavour maps, so a row
+  // added there is covered here the moment it is added.
+  const compatScript = join(REPO_ROOT, 'integrations', 'shared', 'bin', 'wmux-hooks-bridge.mjs');
+  const compatCwd = payloadOpts?.cwd ?? '/tmp/harness';
+  for (const [flavour, row] of Object.entries(COMPAT_FLAVOURS)) {
+    if (flavour === 'kiro') continue;
+    for (const event of [...Object.keys(row.events), 'PreToolUse']) {
+      const rule = row.events[event];
+      cases.push({
+        agent: row.agent,
+        contract: 'compatHook',
+        id: `${flavour}:${event}`,
+        event,
+        matcher: event,
+        script: compatScript,
+        args: [flavour, event],
+        stdin: 'json',
+        payload: {
+          hook_event_name: event,
+          session_id: `harness-${flavour}-session`,
+          cwd: compatCwd,
+          // Content fields the bridge must never forward.
+          prompt: 'the user typed this',
+          ...(rule?.when ? { [rule.when.field]: rule.when.equals } : {}),
+        },
+      });
+    }
   }
   return cases;
 }

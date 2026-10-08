@@ -20,6 +20,7 @@ const destDir = join(repoRoot, 'dist', 'cli-bundle');
 //   - Claude Code hook/statusline bridges
 //   - Codex lifecycle notify + hooks bridges
 //   - OpenCode lifecycle plugin (renamed in the bundle to avoid generic wmux.js)
+//   - the shared Claude-compatible hook bridge (Copilot, Gemini, Kiro flavours)
 const bridges = [
   { src: join(repoRoot, 'integrations', 'codex', 'bin', 'wmux-codex-thread.mjs'), dest: 'wmux-codex-thread.mjs' },
   { src: join(repoRoot, 'integrations', 'opencode', 'plugins', 'wmux-chat-tui.mjs'), dest: 'wmux-chat-tui.mjs' },
@@ -42,6 +43,12 @@ const bridges = [
   {
     src: join(repoRoot, 'integrations', 'opencode', 'plugins', 'wmux.js'),
     dest: 'wmux-opencode-plugin.js',
+  },
+  // Shared Claude-compatible hook bridge (#1904): `wmux setup-hooks --agent`
+  // copies it to ~/.wmux/hooks/ for every flavour it serves.
+  {
+    src: join(repoRoot, 'integrations', 'shared', 'bin', 'wmux-hooks-bridge.mjs'),
+    dest: 'wmux-hooks-bridge.mjs',
   },
   {
     src: join(repoRoot, 'integrations', 'agy', 'bin', 'quota-sink.js'),

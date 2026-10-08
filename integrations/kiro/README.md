@@ -47,9 +47,19 @@ metadata-only, so the envelope builder reads `hook_event_name` and `cwd` and
 nothing else. The test asserts on the serialized envelope, so a future field
 that happens to carry content fails it too.
 
+## How it runs
+
+`bin/wmux-kiro-bridge.mjs` is a small entry point onto the shared
+Claude-compatible hook bridge (`integrations/shared/bin/wmux-hooks-bridge.mjs`,
+flavour `kiro`; see `integrations/shared/README.md`). The mapping, the
+privacy rule, the pane rule and the log file (`~/.wmux/kiro-bridge.log`) are
+the same as before the move. The command in the agent config does not change.
+
 ## Manual setup
 
-1. Put the bridge somewhere stable, e.g. `~/.wmux/hooks/wmux-kiro-bridge.mjs`.
+1. Put **both** `wmux-kiro-bridge.mjs` and `wmux-hooks-bridge.mjs` in the same
+   stable directory, e.g. `~/.wmux/hooks/`. The Kiro entry point loads the
+   shared bridge from beside itself.
 2. Write `~/.kiro/agents/wmux.json` with the config
    `agent/wmuxAgent.mjs` builds, pointing `command` at that path:
 
@@ -86,8 +96,9 @@ Confirm Kiro picked it up with `kiro-cli agent list` — it appears under
 `Global`, and the `*` stays on `kiro_default`, because this does not change
 your default agent.
 
-**Re-copy the bridge when you update wmux.** Nothing refreshes a hand-placed
-copy. A copy taken before #1111 sends no `clientName`, so once your wmux
+**Re-copy both files when you update wmux.** Nothing refreshes a hand-placed
+copy. A copy of `wmux-kiro-bridge.mjs` taken before the move to the shared
+bridge is self-contained and keeps working on its own. A copy taken before #1111 sends no `clientName`, so once your wmux
 includes that change its main-pipe fallback (`hooks.signal`, used when the
 daemon is unreachable or `WMUX_HOOKS_TO_MAIN=1`) is refused. Its default
 route, the daemon pipe, is unaffected.

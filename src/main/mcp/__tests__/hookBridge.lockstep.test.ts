@@ -30,7 +30,9 @@ const BRIDGES = [
   // #1107: the hooks bridge carried a local duplicate of this guard in
   // codexHookEnvelope.test.ts until this list existed; both now run.
   path.join('codex', 'bin', 'wmux-codex-hooks-bridge.mjs'),
-  path.join('kiro', 'bin', 'wmux-kiro-bridge.mjs'),
+  // #1904: the Kiro entry point is now a shim onto the shared bridge, which
+  // carries the transport (and so the clientName) for every flavour.
+  path.join('shared', 'bin', 'wmux-hooks-bridge.mjs'),
   path.join('openclaude', 'bin', 'wmux-bridge.mjs'),
   path.join('opencode', 'plugins', 'wmux.js'),
 ];
