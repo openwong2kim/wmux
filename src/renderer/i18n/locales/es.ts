@@ -124,6 +124,12 @@ export const es = {
   'browser.close': 'Cerrar',
   'browser.devToolsTooltip': 'Abrir DevTools (F12)',
   'browser.title': 'Navegador',
+  'palette.cmd.openPrivateBrowser': "Abrir pestaña de navegador privada",
+  'settings.sc.openPrivateBrowser': "Abrir pestaña de navegador privada",
+  'pane.newPrivateBrowser': "Pestaña de navegador privada",
+  'browser.private': "Privada",
+  'browser.privateTab': "Pestaña privada",
+  'browser.privateTooltip': "Pestaña privada: las cookies y los datos de sitios solo se guardan en memoria y se borran al cerrar la última pestaña privada. No se restaura tras reiniciar.",
 
   // VI copy mode
   'viCopy.mode': '-- MODO COPIA --',

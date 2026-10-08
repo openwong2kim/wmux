@@ -124,6 +124,12 @@ export const ar = {
   'browser.close': 'إغلاق',
   'browser.devToolsTooltip': 'فتح DevTools (F12)',
   'browser.title': 'المتصفح',
+  'palette.cmd.openPrivateBrowser': "فتح علامة تبويب متصفح خاصة",
+  'settings.sc.openPrivateBrowser': "فتح علامة تبويب متصفح خاصة",
+  'pane.newPrivateBrowser': "علامة تبويب متصفح خاصة",
+  'browser.private': "خاص",
+  'browser.privateTab': "علامة تبويب خاصة",
+  'browser.privateTooltip': "علامة تبويب خاصة: تبقى ملفات تعريف الارتباط وبيانات المواقع في الذاكرة فقط وتُمحى عند إغلاق آخر علامة تبويب خاصة. لا تتم استعادتها بعد إعادة التشغيل.",
 
   // VI copy mode
   'viCopy.mode': '-- وضع النسخ --',

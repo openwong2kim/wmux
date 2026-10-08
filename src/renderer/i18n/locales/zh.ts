@@ -367,6 +367,12 @@ export const zh = {
   'browser.close': '关闭',
   'browser.devToolsTooltip': '打开开发者工具 (F12)',
   'browser.title': '浏览器',
+  'palette.cmd.openPrivateBrowser': "打开无痕浏览器标签页",
+  'settings.sc.openPrivateBrowser': "打开无痕浏览器标签页",
+  'pane.newPrivateBrowser': "无痕浏览器标签页",
+  'browser.private': "无痕",
+  'browser.privateTab': "无痕标签页",
+  'browser.privateTooltip': "无痕标签页：Cookie 和网站数据仅保存在内存中，关闭最后一个无痕标签页时清除。重启后不会恢复。",
 
   // VI copy mode
   'viCopy.mode': '-- 复制模式 --',

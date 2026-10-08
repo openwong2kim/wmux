@@ -124,6 +124,12 @@ export const da = {
   'browser.close': 'Luk',
   'browser.devToolsTooltip': 'Åbn DevTools (F12)',
   'browser.title': 'Browser',
+  'palette.cmd.openPrivateBrowser': "Åbn privat browserfane",
+  'settings.sc.openPrivateBrowser': "Åbn privat browserfane",
+  'pane.newPrivateBrowser': "Privat browserfane",
+  'browser.private': "Privat",
+  'browser.privateTab': "Privat fane",
+  'browser.privateTooltip': "Privat fane: cookies og webstedsdata findes kun i hukommelsen og slettes, når den sidste private fane lukkes. Gendannes ikke efter genstart.",
 
   // VI copy mode
   'viCopy.mode': '-- KOPIERINGSTILSTAND --',

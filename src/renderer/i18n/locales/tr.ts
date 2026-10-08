@@ -124,6 +124,12 @@ export const tr = {
   'browser.close': 'Kapat',
   'browser.devToolsTooltip': 'DevTools\'u aç (F12)',
   'browser.title': 'Tarayıcı',
+  'palette.cmd.openPrivateBrowser': "Gizli tarayıcı sekmesi aç",
+  'settings.sc.openPrivateBrowser': "Gizli tarayıcı sekmesi aç",
+  'pane.newPrivateBrowser': "Gizli tarayıcı sekmesi",
+  'browser.private': "Gizli",
+  'browser.privateTab': "Gizli sekme",
+  'browser.privateTooltip': "Gizli sekme: çerezler ve site verileri yalnızca bellekte tutulur ve son gizli sekme kapatıldığında silinir. Yeniden başlatmadan sonra geri yüklenmez.",
 
   // VI copy mode
   'viCopy.mode': '-- KOPYALA MODU --',

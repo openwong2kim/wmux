@@ -124,6 +124,12 @@ export const ptBR = {
   'browser.close': 'Fechar',
   'browser.devToolsTooltip': 'Abrir DevTools (F12)',
   'browser.title': 'Navegador',
+  'palette.cmd.openPrivateBrowser': "Abrir aba privada do navegador",
+  'settings.sc.openPrivateBrowser': "Abrir aba privada do navegador",
+  'pane.newPrivateBrowser': "Aba privada do navegador",
+  'browser.private': "Privada",
+  'browser.privateTab': "Aba privada",
+  'browser.privateTooltip': "Aba privada: cookies e dados de sites ficam só na memória e são apagados quando a última aba privada é fechada. Não é restaurada após reiniciar.",
 
   // VI copy mode
   'viCopy.mode': '-- MODO CÓPIA --',

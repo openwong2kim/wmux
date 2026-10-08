@@ -5,6 +5,7 @@ import { createPaneSlice, type PaneSlice, MAX_PANES_PER_WORKSPACE } from '../../
 import { createSurfaceSlice, type SurfaceSlice } from '../../stores/slices/surfaceSlice';
 import { createWorkspace, createLeafPane, type Workspace } from '../../../shared/types';
 import { getLeafPanes, findLeaf } from '../../../shared/paneUtils';
+import { PRIVATE_BROWSER_PARTITION } from '../../../shared/privateBrowser';
 import {
   isSafeBrowserUrl,
   isLocalhostUrl,
@@ -461,6 +462,71 @@ describe('openUrlInBrowserPaneImpl', () => {
       expect(surface.browserUrl).toBe('http://localhost:4000');
       expect(leaf.activeSurfaceId).toBe(surface.id);
       expect(dispatched).toEqual([{ surfaceId: surface.id, url: 'http://localhost:4000' }]);
+    });
+  });
+
+  describe('private tabs never cross the reuse boundary', () => {
+    it('a private open creates a private surface instead of reusing a normal tab', () => {
+      const { deps } = makeDeps(store);
+      const rootId = activeWs(store).rootPane.id;
+      store.getState().addBrowserSurface(rootId, 'https://logged-in.example');
+
+      const result = openUrlInBrowserPaneImpl(
+        'https://secret.example',
+        { partition: PRIVATE_BROWSER_PARTITION },
+        deps,
+      );
+
+      expect(result.ok && result.reused).toBe(false);
+      const browsers = getLeafPanes(activeWs(store).rootPane)
+        .flatMap((leaf) => leaf.surfaces)
+        .filter((sf) => sf.surfaceType === 'browser');
+      expect(browsers.map((sf) => [sf.browserUrl, sf.browserPartition])).toEqual([
+        ['https://logged-in.example', 'persist:wmux-default'],
+        ['https://secret.example', PRIVATE_BROWSER_PARTITION],
+      ]);
+    });
+
+    it('a normal open never reuses (or converts) a private tab', () => {
+      const { deps } = makeDeps(store);
+      const rootId = activeWs(store).rootPane.id;
+      store.getState().addBrowserSurface(rootId, 'https://secret.example', PRIVATE_BROWSER_PARTITION);
+      const privateId = firstBrowser(activeWs(store)).surface.id;
+
+      const result = openUrlInBrowserPaneImpl('http://localhost:3000', { partition: 'persist:wmux-default' }, deps);
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.reused).toBe(false);
+      expect(result.surfaceId).not.toBe(privateId);
+      const privateSurface = findLeaf(activeWs(store).rootPane, rootId)?.surfaces.find((sf) => sf.id === privateId);
+      expect(privateSurface?.browserPartition).toBe(PRIVATE_BROWSER_PARTITION);
+      expect(privateSurface?.browserUrl).toBe('https://secret.example');
+    });
+
+    it('a private open reuses an existing private tab', () => {
+      const { deps } = makeDeps(store);
+      const rootId = activeWs(store).rootPane.id;
+      store.getState().addBrowserSurface(rootId, 'https://normal.example');
+      store.getState().addBrowserSurface(rootId, 'https://secret.example', PRIVATE_BROWSER_PARTITION);
+      const privateId = findLeaf(activeWs(store).rootPane, rootId)?.surfaces[1]?.id;
+
+      const result = openUrlInBrowserPaneImpl('https://next.example', { partition: PRIVATE_BROWSER_PARTITION }, deps);
+
+      expect(result.ok && result.reused && result.surfaceId).toBe(privateId);
+    });
+
+    it('a profile switch (no surfaceId) leaves private tabs on the private partition', () => {
+      const rootId = activeWs(store).rootPane.id;
+      store.getState().addBrowserSurface(rootId, 'https://normal.example');
+      store.getState().addBrowserSurface(rootId, 'https://secret.example', PRIVATE_BROWSER_PARTITION);
+
+      store.getState().updateBrowserPartition('persist:wmux-login');
+
+      const partitions = findLeaf(activeWs(store).rootPane, rootId)?.surfaces
+        .filter((sf) => sf.surfaceType === 'browser')
+        .map((sf) => sf.browserPartition);
+      expect(partitions).toEqual(['persist:wmux-login', PRIVATE_BROWSER_PARTITION]);
     });
   });
 });

@@ -124,6 +124,12 @@ export const ru = {
   'browser.close': 'Закрыть',
   'browser.devToolsTooltip': 'Открыть DevTools (F12)',
   'browser.title': 'Браузер',
+  'palette.cmd.openPrivateBrowser': "Открыть приватную вкладку браузера",
+  'settings.sc.openPrivateBrowser': "Открыть приватную вкладку браузера",
+  'pane.newPrivateBrowser': "Приватная вкладка браузера",
+  'browser.private': "Приватно",
+  'browser.privateTab': "Приватная вкладка",
+  'browser.privateTooltip': "Приватная вкладка: cookie и данные сайтов хранятся только в памяти и удаляются при закрытии последней приватной вкладки. После перезапуска не восстанавливается.",
 
   // VI copy mode
   'viCopy.mode': '-- РЕЖИМ КОПИРОВАНИЯ --',

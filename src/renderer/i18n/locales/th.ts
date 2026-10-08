@@ -124,6 +124,12 @@ export const th = {
   'browser.close': 'ปิด',
   'browser.devToolsTooltip': 'เปิด DevTools (F12)',
   'browser.title': 'เบราว์เซอร์',
+  'palette.cmd.openPrivateBrowser': "เปิดแท็บเบราว์เซอร์ส่วนตัว",
+  'settings.sc.openPrivateBrowser': "เปิดแท็บเบราว์เซอร์ส่วนตัว",
+  'pane.newPrivateBrowser': "แท็บเบราว์เซอร์ส่วนตัว",
+  'browser.private': "ส่วนตัว",
+  'browser.privateTab': "แท็บส่วนตัว",
+  'browser.privateTooltip': "แท็บส่วนตัว: คุกกี้และข้อมูลเว็บไซต์อยู่ในหน่วยความจำเท่านั้น และจะถูกลบเมื่อปิดแท็บส่วนตัวสุดท้าย ไม่กู้คืนหลังรีสตาร์ท",
 
   // VI copy mode
   'viCopy.mode': '-- โหมดคัดลอก --',

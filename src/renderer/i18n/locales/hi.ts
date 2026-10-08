@@ -124,6 +124,12 @@ export const hi = {
   'browser.close': 'बंद करें',
   'browser.devToolsTooltip': 'DevTools खोलें (F12)',
   'browser.title': 'ब्राउज़र',
+  'palette.cmd.openPrivateBrowser': "निजी ब्राउज़र टैब खोलें",
+  'settings.sc.openPrivateBrowser': "निजी ब्राउज़र टैब खोलें",
+  'pane.newPrivateBrowser': "निजी ब्राउज़र टैब",
+  'browser.private': "निजी",
+  'browser.privateTab': "निजी टैब",
+  'browser.privateTooltip': "निजी टैब: कुकी और साइट डेटा केवल मेमोरी में रहते हैं और आखिरी निजी टैब बंद होने पर मिट जाते हैं। पुनः आरंभ के बाद बहाल नहीं होता।",
 
   // VI copy mode
   'viCopy.mode': '-- कॉपी मोड --',

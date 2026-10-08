@@ -9,6 +9,7 @@
 // browserPaneActions.ts.
 
 import type { Pane, PaneLeaf, Surface } from '../../shared/types';
+import { isPrivateBrowserPartition, isPrivateBrowserSurface } from '../../shared/privateBrowser';
 
 /** CustomEvent name BrowserPanel listens on for imperative navigation. */
 export const BROWSER_NAVIGATE_EVENT = 'wmux:browser-navigate';
@@ -130,13 +131,20 @@ export type OpenUrlResult =
   | { ok: true; surfaceId: string; paneId: string; url: string; reused: boolean }
   | { ok: false; error: 'workspace-not-found' | 'pane-cap' | 'invalid-url' };
 
-function findFirstBrowserSurface(root: Pane): { paneId: string; surface: Surface } | null {
+/** First browser surface of the requested kind: a private open only ever
+ * reuses a private tab, and every other open only ever reuses a normal one. */
+function findFirstBrowserSurface(
+  root: Pane,
+  wantPrivate: boolean,
+): { paneId: string; surface: Surface } | null {
   if (root.type === 'leaf') {
-    const surface = root.surfaces.find((s) => s.surfaceType === 'browser');
+    const surface = root.surfaces.find(
+      (s) => s.surfaceType === 'browser' && isPrivateBrowserSurface(s) === wantPrivate,
+    );
     return surface ? { paneId: root.id, surface } : null;
   }
   for (const child of root.children) {
-    const found = findFirstBrowserSurface(child);
+    const found = findFirstBrowserSurface(child, wantPrivate);
     if (found) return found;
   }
   return null;
@@ -188,7 +196,7 @@ export function openUrlInBrowserPaneImpl(
   const focusPane = opts.focusPane ?? true;
 
   if (!opts.forceNew) {
-    const existing = findFirstBrowserSurface(ws.rootPane);
+    const existing = findFirstBrowserSurface(ws.rootPane, isPrivateBrowserPartition(opts.partition));
     if (existing) {
       const { paneId, surface } = existing;
       if (targetUrl) state.updateBrowserUrl(surface.id, targetUrl);

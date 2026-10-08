@@ -124,6 +124,12 @@ export const zhTW = {
   'browser.close': '關閉',
   'browser.devToolsTooltip': '開啟開發人員工具 (F12)',
   'browser.title': '瀏覽器',
+  'palette.cmd.openPrivateBrowser': "開啟無痕瀏覽器分頁",
+  'settings.sc.openPrivateBrowser': "開啟無痕瀏覽器分頁",
+  'pane.newPrivateBrowser': "無痕瀏覽器分頁",
+  'browser.private': "無痕",
+  'browser.privateTab': "無痕分頁",
+  'browser.privateTooltip': "無痕分頁：Cookie 與網站資料只保存在記憶體中，關閉最後一個無痕分頁時會清除。重新啟動後不會還原。",
 
   // VI copy mode
   'viCopy.mode': '-- 複製模式 --',

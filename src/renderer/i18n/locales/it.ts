@@ -124,6 +124,12 @@ export const it = {
   'browser.close': 'Chiudi',
   'browser.devToolsTooltip': 'Apri DevTools (F12)',
   'browser.title': 'Browser',
+  'palette.cmd.openPrivateBrowser': "Apri scheda del browser privata",
+  'settings.sc.openPrivateBrowser': "Apri scheda del browser privata",
+  'pane.newPrivateBrowser': "Scheda del browser privata",
+  'browser.private': "Privata",
+  'browser.privateTab': "Scheda privata",
+  'browser.privateTooltip': "Scheda privata: cookie e dati dei siti restano solo in memoria e vengono cancellati alla chiusura dell’ultima scheda privata. Non viene ripristinata dopo il riavvio.",
 
   // VI copy mode
   'viCopy.mode': '-- MODALITÀ COPIA --',

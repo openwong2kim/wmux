@@ -124,6 +124,12 @@ export const vi = {
   'browser.close': 'Đóng',
   'browser.devToolsTooltip': 'Mở DevTools (F12)',
   'browser.title': 'Trình duyệt',
+  'palette.cmd.openPrivateBrowser': "Mở tab trình duyệt riêng tư",
+  'settings.sc.openPrivateBrowser': "Mở tab trình duyệt riêng tư",
+  'pane.newPrivateBrowser': "Tab trình duyệt riêng tư",
+  'browser.private': "Riêng tư",
+  'browser.privateTab': "Tab riêng tư",
+  'browser.privateTooltip': "Tab riêng tư: cookie và dữ liệu trang chỉ lưu trong bộ nhớ và bị xóa khi đóng tab riêng tư cuối cùng. Không được khôi phục sau khi khởi động lại.",
 
   // VI copy mode
   'viCopy.mode': '-- CHẾ ĐỘ SAO CHÉP --',

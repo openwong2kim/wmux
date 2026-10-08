@@ -217,6 +217,26 @@ describe('resolveShortcut', () => {
   });
 });
 
+describe('openPrivateBrowser (Ctrl+Shift+N)', () => {
+  it('is a default row, and the only binding on its combo on every platform', () => {
+    const rows = WMUX_KEYMAP.filter((e) => e.action === 'openPrivateBrowser');
+    expect(rows.map((e) => e.combo)).toEqual(['Ctrl+Shift+N']);
+    for (const platform of ['win32', 'darwin', 'linux'] as const) {
+      const bindings = defaultBindings(platform);
+      const combo = bindings.find((b) => b.action === 'openPrivateBrowser')?.combo;
+      expect(bindings.filter((b) => b.combo === combo)).toHaveLength(1);
+    }
+  });
+
+  it('fires on Ctrl+Shift+N, and on ⌘⇧N on macOS', () => {
+    const n = { key: 'N', code: 'KeyN', shiftKey: true };
+    expect(resolveShortcut(ev(n), win)).toBe('openPrivateBrowser');
+    expect(resolveShortcut(ev({ ...n, ctrlKey: false, metaKey: true }), mac)).toBe('openPrivateBrowser');
+    // Plain Ctrl+N stays New workspace.
+    expect(resolveShortcut(ev({ key: 'n', code: 'KeyN' }), win)).toBe('newWorkspace');
+  });
+});
+
 describe('effectiveBindings — the user\'s overrides', () => {
   const upAlt = ev({ key: 'ArrowUp', code: 'ArrowUp', ctrlKey: false, altKey: true });
 

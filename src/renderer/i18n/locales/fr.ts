@@ -124,6 +124,12 @@ export const fr = {
   'browser.close': 'Fermer',
   'browser.devToolsTooltip': 'Ouvrir les DevTools (F12)',
   'browser.title': 'Navigateur',
+  'palette.cmd.openPrivateBrowser': "Ouvrir un onglet de navigation privée",
+  'settings.sc.openPrivateBrowser': "Ouvrir un onglet de navigation privée",
+  'pane.newPrivateBrowser': "Onglet de navigation privée",
+  'browser.private': "Privé",
+  'browser.privateTab': "Onglet privé",
+  'browser.privateTooltip': "Onglet privé : les cookies et données de site restent en mémoire et sont effacés à la fermeture du dernier onglet privé. Non restauré après un redémarrage.",
 
   // VI copy mode
   'viCopy.mode': '-- MODE COPIE --',

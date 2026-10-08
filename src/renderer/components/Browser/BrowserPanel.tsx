@@ -9,6 +9,7 @@ import {
   isSafeBrowserUrl,
   type BrowserNavigateDetail,
 } from '../../utils/browserPane';
+import { isPrivateBrowserPartition } from '../../../shared/privateBrowser';
 
 // The <webview> intrinsic comes from @types/react's built-in
 // WebViewHTMLAttributes — with the automatic JSX runtime (React.JSX
@@ -534,6 +535,7 @@ export default function BrowserPanel({ surfaceId, workspaceId, initialUrl, parti
         canGoBack={canGoBack}
         canGoForward={canGoForward}
         isActive={isActive}
+        isPrivate={isPrivateBrowserPartition(partition)}
         inspecting={inspecting}
         onNavigate={handleNavigate}
         onBack={handleBack}

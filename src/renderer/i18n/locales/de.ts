@@ -124,6 +124,12 @@ export const de = {
   'browser.close': 'Schließen',
   'browser.devToolsTooltip': 'DevTools öffnen (F12)',
   'browser.title': 'Browser',
+  'palette.cmd.openPrivateBrowser': "Privaten Browser-Tab öffnen",
+  'settings.sc.openPrivateBrowser': "Privaten Browser-Tab öffnen",
+  'pane.newPrivateBrowser': "Privater Browser-Tab",
+  'browser.private': "Privat",
+  'browser.privateTab': "Privater Tab",
+  'browser.privateTooltip': "Privater Tab: Cookies und Websitedaten bleiben nur im Speicher und werden gelöscht, wenn der letzte private Tab geschlossen wird. Wird nach einem Neustart nicht wiederhergestellt.",
 
   // VI copy mode
   'viCopy.mode': '-- KOPIERMODUS --',

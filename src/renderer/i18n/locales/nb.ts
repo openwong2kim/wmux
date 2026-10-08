@@ -124,6 +124,12 @@ export const nb = {
   'browser.close': 'Lukk',
   'browser.devToolsTooltip': 'Åpne DevTools (F12)',
   'browser.title': 'Nettleser',
+  'palette.cmd.openPrivateBrowser': "Åpne privat nettleserfane",
+  'settings.sc.openPrivateBrowser': "Åpne privat nettleserfane",
+  'pane.newPrivateBrowser': "Privat nettleserfane",
+  'browser.private': "Privat",
+  'browser.privateTab': "Privat fane",
+  'browser.privateTooltip': "Privat fane: informasjonskapsler og nettstedsdata finnes bare i minnet og slettes når den siste private fanen lukkes. Gjenopprettes ikke etter omstart.",
 
   // VI copy mode
   'viCopy.mode': '-- KOPIMODUS --',

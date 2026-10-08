@@ -126,6 +126,12 @@ export const ja = {
   'browser.close': '閉じる',
   'browser.devToolsTooltip': 'DevToolsを開く (F12)',
   'browser.title': 'ブラウザ',
+  'palette.cmd.openPrivateBrowser': "シークレットタブを開く",
+  'settings.sc.openPrivateBrowser': "シークレットタブを開く",
+  'pane.newPrivateBrowser': "シークレットタブ",
+  'browser.private': "シークレット",
+  'browser.privateTab': "シークレットタブ",
+  'browser.privateTooltip': "シークレットタブ: Cookie とサイトデータはメモリ上にのみ保持され、最後のシークレットタブを閉じると消去されます。再起動後は復元されません。",
 
   // VI copy mode
   'viCopy.mode': '-- コピーモード --',

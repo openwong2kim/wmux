@@ -54,7 +54,7 @@ export const SHORTCUT_ACTION_IDS = [
   'focusUp', 'focusDown', 'focusLeft', 'focusRight',
   'focusUpAlt', 'focusDownAlt', 'focusLeftAlt', 'focusRightAlt',
   'toggleSidebar', 'openSettings', 'toggleFleetView', 'toggleCompanyView',
-  'clearMultiview', 'openBrowser', 'addBookmark', 'toggleMessageFeed',
+  'clearMultiview', 'openBrowser', 'openPrivateBrowser', 'addBookmark', 'toggleMessageFeed',
   'zoomIn', 'zoomOut', 'zoomReset',
   'mentionAgent',
   // Unbound by default (UNBOUND_SHORTCUTS): command-palette commands a user
@@ -176,6 +176,8 @@ export const WMUX_KEYMAP: readonly KeymapEntry[] = [
   { action: 'toggleCompanyView', combo: 'Ctrl+Shift+O', descriptionKey: 'settings.sc.toggleCompanyView' },
   { action: 'clearMultiview', combo: 'Ctrl+Shift+G', descriptionKey: 'settings.sc.clearMultiview' },
   { action: 'openBrowser', combo: 'Ctrl+Shift+L', descriptionKey: 'settings.sc.openBrowser' },
+  // Chrome's incognito key (⌘⇧N on macOS).
+  { action: 'openPrivateBrowser', combo: 'Ctrl+Shift+N', descriptionKey: 'settings.sc.openPrivateBrowser' },
   // Bookmark / message-feed convention → literal Ctrl on every OS.
   { action: 'addBookmark', combo: 'Ctrl+M', literalCtrl: true, descriptionKey: 'settings.sc.addBookmark' },
   { action: 'toggleMessageFeed', combo: 'Ctrl+Shift+M', literalCtrl: true, descriptionKey: 'settings.sc.toggleMessageFeed' },

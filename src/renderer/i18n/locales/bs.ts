@@ -124,6 +124,12 @@ export const bs = {
   'browser.close': 'Zatvori',
   'browser.devToolsTooltip': 'Otvori DevTools (F12)',
   'browser.title': 'Preglednik',
+  'palette.cmd.openPrivateBrowser': "Otvori privatnu karticu preglednika",
+  'settings.sc.openPrivateBrowser': "Otvori privatnu karticu preglednika",
+  'pane.newPrivateBrowser': "Privatna kartica preglednika",
+  'browser.private': "Privatno",
+  'browser.privateTab': "Privatna kartica",
+  'browser.privateTooltip': "Privatna kartica: kolačići i podaci stranica čuvaju se samo u memoriji i brišu se kada se zatvori posljednja privatna kartica. Ne vraća se nakon ponovnog pokretanja.",
 
   // VI copy mode
   'viCopy.mode': '-- REŽIM KOPIRANJA --',

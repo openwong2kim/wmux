@@ -15,7 +15,8 @@ import { findPane } from '../../../shared/paneUtils';
 import PaneDragGrip from './PaneDragGrip';
 import { FOCUS_RING } from '../focusRing';
 import { HIT_TARGET_24 } from '../hitArea';
-import { IconSplitRight, IconSplitDown, IconBrowser, IconExternalLink, IconEyeOff, IconPencil, IconGrid, IconComputer } from '../icons';
+import { IconSplitRight, IconSplitDown, IconBrowser, IconExternalLink, IconEyeOff, IconPencil, IconGrid, IconComputer, IconLock } from '../icons';
+import { isPrivateBrowserSurface } from '../../../shared/privateBrowser';
 import A2aLinkDialog from '../Remote/A2aLinkDialog';
 import { displayPath } from '../../utils/displayPath';
 import { workspaceColorHex } from '../../../shared/workspaceColors';
@@ -341,6 +342,9 @@ interface SurfaceTabsProps {
   onAddTerminal: () => void;
   /** New browser surface (tab) in this pane. */
   onAddBrowser: () => void;
+  /** New PRIVATE browser surface (tab) in this pane. Optional for standalone
+   *  mounts (tests); omitted just drops the menu item. */
+  onAddPrivateBrowser?: () => void;
   /** #1086/#1091 — new remote-terminal surface (tab) in this pane, mirroring
    *  a session on one of the user's paired hosts. Optional so existing
    *  callers/tests that mount this component standalone keep working
@@ -377,6 +381,7 @@ export default function SurfaceTabs({
   onSplitVertical,
   onAddTerminal,
   onAddBrowser,
+  onAddPrivateBrowser,
   onAddRemote,
   onSplitHorizontalRemote,
   onSplitVerticalRemote,
@@ -661,6 +666,12 @@ export default function SurfaceTabs({
       icon: <IconBrowser size={14} />,
       onSelect: onAddBrowser,
     },
+    ...(onAddPrivateBrowser ? [{
+      key: 'new-private-browser',
+      label: t('pane.newPrivateBrowser'),
+      icon: <IconLock size={14} />,
+      onSelect: onAddPrivateBrowser,
+    }] : []),
     ...(onAddRemote ? [{
       key: 'new-remote',
       label: t('pane.newRemote'),
@@ -732,7 +743,7 @@ export default function SurfaceTabs({
       onSelect: () => { useStore.getState().snapToLayoutTemplate(tmpl.id); },
     })),
   ], [
-    t, onSplitHorizontal, onSplitVertical, onAddBrowser, onAddRemote,
+    t, onSplitHorizontal, onSplitVertical, onAddBrowser, onAddPrivateBrowser, onAddRemote,
     onSplitHorizontalRemote, onSplitVerticalRemote, startPaneRename,
     menuTabSurface, startRename, canLinkRemote,
     stashChord, stashDisabled, stashTooltip, stashThisPane, isZoomed, toggleZoom,
@@ -912,6 +923,12 @@ export default function SurfaceTabs({
               action and the tab it produces read as one thing. */}
           {s.surfaceType === 'remote-terminal' && (
             <RemoteSurfaceGlyph label={t('surface.remoteTerminal')} />
+          )}
+          {/* Private browser tab: the same padlock a private channel carries. */}
+          {isPrivateBrowserSurface(s) && (
+            <span className="shrink-0" role="img" aria-label={t('browser.privateTab')} data-private-browser-tab>
+              <IconLock size={12} />
+            </span>
           )}
           {editingId === s.id ? (
             <input

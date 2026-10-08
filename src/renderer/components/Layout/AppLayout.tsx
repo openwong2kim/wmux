@@ -20,6 +20,7 @@ import { openModalLayerCount, subscribeModalLayers } from '../ui/modalLayer';
 import { registerSessionSaver, saveSessionNow } from '../../utils/sessionSaveBridge';
 import { resolveReconcileRebind } from '../../hooks/resolveReconcileRebind';
 import { getLeafPanes, getWorkspaceLeafPanes } from '../../../shared/paneUtils';
+import { sessionLayoutWithoutPrivate, stashedPanesWithoutPrivate } from '../../../shared/privateBrowser';
 import NotificationPanel from '../Notification/NotificationPanel';
 import RailPage from './RailPage';
 import AutoUpdatePrompt from './AutoUpdatePrompt';
@@ -61,6 +62,7 @@ import { useCloseTabOnShellExit } from '../../hooks/useCloseTabOnShellExit';
 import AgentMentionPicker from '../Palette/AgentMentionPicker';
 import HandoffPopover from '../Git/HandoffPopover';
 import { useWorkspaceMirrorPush } from '../../hooks/useWorkspaceMirrorPush';
+import { usePrivateBrowserCleanup } from '../../hooks/usePrivateBrowserCleanup';
 import { useMoaSync } from '../../hooks/useMoaSync';
 import { useResizeGuard } from '../../hooks/useResizeGuard';
 import { useApprovalInboxBridge } from '../../hooks/useApprovalInboxBridge';
@@ -300,7 +302,9 @@ function cloneStashedPanes(
   ws: Workspace,
   dumped: Map<string, boolean>,
 ): StashedPane[] | undefined {
-  const stashed = ws.stashedPanes;
+  // Private browser tabs are not saved; a stashed pane that held only private
+  // tabs is left out on purpose (this is not the failure path below).
+  const stashed = ws.stashedPanes && stashedPanesWithoutPrivate(ws.stashedPanes);
   if (!stashed || stashed.length === 0) return undefined;
   return stashed.map((entry) => {
     try {
@@ -367,16 +371,22 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
   const state = useStore.getState();
   const companySafe = state.company ? { ...state.company, skipPermissions: undefined } : null;
   return {
-    workspaces: state.workspaces.map((ws) => ({
-      ...ws,
-      // #1135: never persist listeningPorts. It describes processes that are
-      // alive right now; a saved value outlives them and the daemon's
-      // PortWatcher cannot contradict it (its first empty observation for a
-      // session is a deliberate no-op), so the sidebar chip survived restarts.
-      ...(ws.metadata ? { metadata: stripLivePorts(ws.metadata) } : {}),
-      rootPane: cloneWithScrollback(ws.rootPane, dumped),
-      stashedPanes: cloneStashedPanes(ws, dumped),
-    })),
+    workspaces: state.workspaces.map((ws) => {
+      // Private browser tabs never reach the saved session (no restore after
+      // a restart); a pane that held only private tabs is dropped with them.
+      const layout = sessionLayoutWithoutPrivate(ws.rootPane, ws.activePaneId);
+      return {
+        ...ws,
+        // #1135: never persist listeningPorts. It describes processes that are
+        // alive right now; a saved value outlives them and the daemon's
+        // PortWatcher cannot contradict it (its first empty observation for a
+        // session is a deliberate no-op), so the sidebar chip survived restarts.
+        ...(ws.metadata ? { metadata: stripLivePorts(ws.metadata) } : {}),
+        rootPane: cloneWithScrollback(layout.rootPane, dumped),
+        activePaneId: layout.activePaneId,
+        stashedPanes: cloneStashedPanes(ws, dumped),
+      };
+    }),
     activeWorkspaceId: state.activeWorkspaceId,
     // #1011 — archived snapshots ride the session; restore lists them again.
     ...(state.archivedWorkspaces.length > 0 ? { archivedWorkspaces: state.archivedWorkspaces } : {}),
@@ -899,6 +909,8 @@ export default function AppLayout() {
   // per-pane agent status whenever it changes, so main resolves hooks/routing
   // locally instead of round-tripping workspace.list back to the renderer.
   useWorkspaceMirrorPush();
+  // Wipe the private-tab session when the last private browser tab closes.
+  usePrivateBrowserCleanup();
   useMoaSync();
   // S-C2 Approval Inbox bridge: the SINGLE owner of permissionPrompt.onOpen /
   // onClosed (guard #2). Always-on (not gated on fleetViewVisible) so MCP

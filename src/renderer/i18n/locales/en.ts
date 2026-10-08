@@ -972,6 +972,12 @@ export const en = {
   'browser.close': 'Close',
   'browser.devToolsTooltip': 'Open DevTools (F12)',
   'browser.title': 'Browser',
+  'palette.cmd.openPrivateBrowser': "Open Private Browser Tab",
+  'settings.sc.openPrivateBrowser': "Open private browser tab",
+  'pane.newPrivateBrowser': "Private browser tab",
+  'browser.private': "Private",
+  'browser.privateTab': "Private tab",
+  'browser.privateTooltip': "Private tab: cookies and site data stay in memory and are erased when the last private tab closes. Not restored after a restart.",
   'browser.discarded': 'Suspended to save memory — click to reload',
   // browser_request_help — the in-pane bar. 'someone talking' copy: the agent's
   // own prompt carries the ask, so these are only the verbs and the label.

@@ -4,6 +4,7 @@ import type { Pane, PaneLeaf, Surface, Workspace } from '../../../shared/types';
 import { createRemoteSurface, createSurface, generateId } from '../../../shared/types';
 import { isPlausibleCwd } from '../../../shared/cwdShape';
 import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
+import { isPrivateBrowserPartition, isPrivateBrowserSurface } from '../../../shared/privateBrowser';
 import { dropStalePaneFoldKeys } from '../../utils/sidebarLayout';
 import { isSafeBrowserUrl } from '../../utils/browserPane';
 import { clearNudgesFor } from '../../hooks/channelMentionRateLimit';
@@ -559,6 +560,10 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
           for (const surface of pane.surfaces) {
             if (surface.surfaceType !== 'browser') continue;
             if (surfaceId && surface.id !== surfaceId) continue;
+            // A profile switch never turns a private tab into a normal one or
+            // back: that would move its browsing into (or out of) a persistent
+            // session.
+            if (isPrivateBrowserSurface(surface) !== isPrivateBrowserPartition(partition)) continue;
             surface.browserPartition = partition;
             updated = true;
           }

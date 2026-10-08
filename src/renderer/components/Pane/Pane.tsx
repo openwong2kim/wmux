@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useState, useMemo, useRef } fr
 import { Panel, Group, Separator } from 'react-resizable-panels';
 import type { PaneLeaf, Workspace } from '../../../shared/types';
 import { maybeDelegateExternalBrowser } from '../../utils/browserPaneActions';
+import { PRIVATE_BROWSER_PARTITION } from '../../../shared/privateBrowser';
 import { createTerminalSurface } from '../../utils/createTerminalSurface';
 import { destroyRemoteSessions, destroySurfaceRemoteSession } from '../../utils/remoteSessionTeardown';
 import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
@@ -501,6 +502,12 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
     addBrowserSurface(pane.id, undefined, undefined, workspace.id);
   }, [addBrowserSurface, pane.id, workspace.id]);
 
+  // Never delegated to the external backend: the OS browser cannot honour
+  // "private", so a private tab always opens in the app's own webview.
+  const handleAddPrivateBrowser = useCallback(() => {
+    addBrowserSurface(pane.id, undefined, PRIVATE_BROWSER_PARTITION, workspace.id);
+  }, [addBrowserSurface, pane.id, workspace.id]);
+
   const handleAddRemote = useCallback(() => {
     remoteSplitDirectionRef.current = null;
     setAddRemoteModalOpen(true);
@@ -897,6 +904,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         onSplitVertical={handleSplitVertical}
         onAddTerminal={handleAddTerminal}
         onAddBrowser={handleAddBrowser}
+        onAddPrivateBrowser={handleAddPrivateBrowser}
         onAddRemote={handleAddRemote}
         onSplitHorizontalRemote={handleSplitRemoteHorizontal}
         onSplitVerticalRemote={handleSplitRemoteVertical}

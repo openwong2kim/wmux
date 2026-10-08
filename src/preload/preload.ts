@@ -1249,6 +1249,9 @@ const electronAPI = {
     // #517 slice C — memory relief (discard long-invisible guests)
     setDiscard: (enabled: boolean) =>
       ipcRenderer.invoke('browser:set-discard', enabled),
+    // Private tabs: wipe the shared in-memory session once the last one closes.
+    clearPrivateSession: (): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('browser:clear-private-session'),
     // #517 backend choice — main owns the persisted value; renderer mirrors it
     getBackend: (): Promise<'builtin' | 'external' | 'chrome'> =>
       ipcRenderer.invoke('browser:get-backend'),

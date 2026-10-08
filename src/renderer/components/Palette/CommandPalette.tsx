@@ -8,6 +8,7 @@ import { useIpc } from '../../hooks/useIpc';
 import { resolveStartupCwd, withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
 import { pastePtyChunked } from '../../utils/clipboardChunk';
 import { openUrlInBrowserPane } from '../../utils/browserPaneActions';
+import { PRIVATE_BROWSER_PARTITION } from '../../../shared/privateBrowser';
 import { hasAdoptableTaskDiff, openTaskDiff } from '../../utils/openTaskDiff';
 import { tokenAttrs } from '../../themes';
 import { usePlugins } from '../../plugins/usePlugins';
@@ -366,6 +367,15 @@ export default function CommandPalette() {
           // forceNew: the explicit "Open Browser" command always creates a
           // fresh split — reuse is for link/port clicks (browserPaneActions).
           openUrlInBrowserPane(undefined, { forceNew: true });
+          showWorkspaces(useStore.getState());
+          setVisible(false);
+        },
+      },
+      {
+        label: t('palette.cmd.openPrivateBrowser'),
+        shortcut: 'openPrivateBrowser',
+        action: () => {
+          openUrlInBrowserPane(undefined, { forceNew: true, partition: PRIVATE_BROWSER_PARTITION });
           showWorkspaces(useStore.getState());
           setVisible(false);
         },

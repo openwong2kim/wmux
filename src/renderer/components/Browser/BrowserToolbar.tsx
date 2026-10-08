@@ -1,6 +1,7 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
 import { useT } from '../../hooks/useT';
 import { isSafeBrowserUrl } from '../../utils/browserPane';
+import Badge from '../ui/Badge';
 
 // ---------------------------------------------------------------------------
 // SVG Icon components
@@ -79,6 +80,8 @@ interface BrowserToolbarProps {
   canGoBack: boolean;
   canGoForward: boolean;
   isActive: boolean;
+  /** Private tab: a neutral "Private" badge sits beside the URL bar. */
+  isPrivate?: boolean;
   inspecting: boolean;
   onNavigate: (url: string) => void;
   onBack: () => void;
@@ -99,6 +102,7 @@ export default function BrowserToolbar({
   canGoBack,
   canGoForward,
   isActive,
+  isPrivate = false,
   inspecting,
   onNavigate,
   onBack,
@@ -246,6 +250,12 @@ export default function BrowserToolbar({
           />
         </div>
       </form>
+
+      {isPrivate && (
+        <Badge className="shrink-0" title={t('browser.privateTooltip')} data-private-browser-badge>
+          {t('browser.private')}
+        </Badge>
+      )}
 
       {/* Inspector */}
       <button

@@ -9,6 +9,7 @@ import { isPrefixTrigger, resolveShortcut, type ShortcutActionId } from '../../s
 import { currentShortcutBindings, shortcutPressGuard } from '../utils/shortcutBindings';
 import { createTerminalSurface } from '../utils/createTerminalSurface';
 import { openUrlInBrowserPane } from '../utils/browserPaneActions';
+import { PRIVATE_BROWSER_PARTITION } from '../../shared/privateBrowser';
 import {
   destroyPaneTreeRemoteSessions,
   destroyWorkspaceRemoteSessions,
@@ -85,7 +86,7 @@ export const WORKSPACES_ONLY_ACTIONS: ReadonlySet<ShortcutActionId> = new Set<Sh
   'nextSurface', 'prevSurface', 'nextPane', 'prevPane',
   'focusUp', 'focusDown', 'focusLeft', 'focusRight',
   'focusUpAlt', 'focusDownAlt', 'focusLeftAlt', 'focusRightAlt',
-  'clearMultiview', 'openBrowser', 'addBookmark', 'zoomIn', 'zoomOut', 'zoomReset',
+  'clearMultiview', 'openBrowser', 'openPrivateBrowser', 'addBookmark', 'zoomIn', 'zoomOut', 'zoomReset',
   'stashPane', 'movePaneLeft', 'movePaneRight', 'movePaneUp', 'movePaneDown',
   'multiTask', 'showGitDiff', 'renameTab',
 ]);
@@ -536,6 +537,10 @@ export function useKeyboard() {
       // explicit-creation semantics — link/port clicks reuse an existing
       // browser pane, but this shortcut always makes another one.
       openBrowser: () => { openUrlInBrowserPane(undefined, { forceNew: true }); },
+      // Same, as a private tab (in-memory session, never restored).
+      openPrivateBrowser: () => {
+        openUrlInBrowserPane(undefined, { forceNew: true, partition: PRIVATE_BROWSER_PARTITION });
+      },
       // Scrollback bookmark at the current scroll position.
       addBookmark: () => {
         const state = store.getState();

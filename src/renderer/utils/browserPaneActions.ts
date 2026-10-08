@@ -15,6 +15,7 @@ import {
   type OpenUrlOptions,
   type OpenUrlResult,
 } from './browserPane';
+import { isPrivateBrowserPartition } from '../../shared/privateBrowser';
 
 /**
  * #517 external backend: when the browser backend is 'external', every request
@@ -42,7 +43,9 @@ export function openUrlInBrowserPane(url?: string, opts: OpenUrlOptions = {}): O
   // External backend short-circuit: never mount a webview; hand the URL to the
   // OS browser. Reported as a successful open with no surface (surfaceId '')
   // so link/badge callers treat it as handled and don't fall back.
-  if (maybeDelegateExternalBrowser(url)) {
+  // A private tab is never delegated: the OS browser cannot honour "private",
+  // so it opens in the app's own webview whatever the backend.
+  if (!isPrivateBrowserPartition(opts.partition) && maybeDelegateExternalBrowser(url)) {
     return { ok: true, surfaceId: '', paneId: '', url: url ?? DEFAULT_BROWSER_URL, reused: false };
   }
   return openUrlInBrowserPaneImpl(url, opts, {

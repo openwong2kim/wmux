@@ -124,6 +124,12 @@ export const ms = {
   'browser.close': 'Tutup',
   'browser.devToolsTooltip': 'Buka DevTools (F12)',
   'browser.title': 'Pelayar',
+  'palette.cmd.openPrivateBrowser': "Buka tab pelayar peribadi",
+  'settings.sc.openPrivateBrowser': "Buka tab pelayar peribadi",
+  'pane.newPrivateBrowser': "Tab pelayar peribadi",
+  'browser.private': "Peribadi",
+  'browser.privateTab': "Tab peribadi",
+  'browser.privateTooltip': "Tab peribadi: kuki dan data laman hanya disimpan dalam memori dan dipadam apabila tab peribadi terakhir ditutup. Tidak dipulihkan selepas dimulakan semula.",
 
   // VI copy mode
   'viCopy.mode': '-- MOD SALIN --',

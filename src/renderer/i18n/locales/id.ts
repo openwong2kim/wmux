@@ -124,6 +124,12 @@ export const id = {
   'browser.close': 'Tutup',
   'browser.devToolsTooltip': 'Buka DevTools (F12)',
   'browser.title': 'Peramban',
+  'palette.cmd.openPrivateBrowser': "Buka tab browser privat",
+  'settings.sc.openPrivateBrowser': "Buka tab browser privat",
+  'pane.newPrivateBrowser': "Tab browser privat",
+  'browser.private': "Privat",
+  'browser.privateTab': "Tab privat",
+  'browser.privateTooltip': "Tab privat: cookie dan data situs hanya disimpan di memori dan dihapus saat tab privat terakhir ditutup. Tidak dipulihkan setelah mulai ulang.",
 
   // VI copy mode
   'viCopy.mode': '-- MODE SALIN --',
