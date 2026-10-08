@@ -26,12 +26,12 @@
 // whether it has been measured against a live CLI. A `docs` row is a promise
 // read off a page, not an observed behaviour — say so wherever it surfaces.
 
-import type { AgentSlug } from '../agentIdentity';
+import { agentHooksFlavour, type AgentHooksFlavour, type AgentSlug } from '../agentIdentity';
 import type { AgentSignalKind } from './signal-types';
 
 /** Every flavour the shared bridge serves. A subset of the registry's
- *  `AgentHooksFlavour` (#1904 item 1), which also names the bespoke bridges. */
-export type CompatHookFlavourId = 'kiro' | 'copilot' | 'gemini';
+ *  `AgentHooksFlavour`, which also names the bespoke bridges. */
+export type CompatHookFlavourId = Extract<AgentHooksFlavour, 'kiro' | 'copilot' | 'gemini'>;
 
 /** One dialect event → one wmux signal kind, optionally only when a payload
  *  field equals a value. */
@@ -199,19 +199,11 @@ export function isCompatHookFlavourId(value: unknown): value is CompatHookFlavou
   return typeof value === 'string' && Object.prototype.hasOwnProperty.call(COMPAT_HOOK_FLAVOURS, value);
 }
 
-// TODO(#1904 item 1): read `AGENT_IDENTITIES[i].hooks` (agentHooksFlavour) once
-// the capability registry lands, and delete this map. Until then it is the one
-// place a registry slug is tied to a shared-bridge flavour.
-const FLAVOUR_BY_AGENT: Readonly<Partial<Record<AgentSlug, CompatHookFlavourId>>> = {
-  kiro: 'kiro',
-  copilot: 'copilot',
-  gemini: 'gemini',
-};
-
 /** The shared-bridge flavour serving an agent, or undefined (a bespoke bridge,
- *  or no hooks at all). */
+ *  or no hooks at all). Read from the agent's registry row (`hooks`). */
 export function compatHookFlavourForAgent(agent: AgentSlug): CompatHookFlavourId | undefined {
-  return FLAVOUR_BY_AGENT[agent];
+  const flavour = agentHooksFlavour(agent);
+  return isCompatHookFlavourId(flavour) ? flavour : undefined;
 }
 
 /**
