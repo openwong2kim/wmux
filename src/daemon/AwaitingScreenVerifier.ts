@@ -41,8 +41,8 @@
 //     stays awaiting whatever the screen shows. A pane nobody has shown can be
 //     a few columns wide, and its dialog then wraps word by word, so no screen
 //     test can see it (#1901). The record ends when the tool returns, the turn
-//     ends or the next prompt is submitted, so it cannot hold the pane past
-//     the question.
+//     ends, the next prompt is submitted or the agent's command exits, so it
+//     cannot hold the pane past the question.
 
 import { capSnapshot } from './web/snapshotWindow';
 import { screenShowsActiveDialog, screenShowsPermissionDialog } from './transcript/chatScreenGate';

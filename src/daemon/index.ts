@@ -6037,10 +6037,13 @@ function wireEvents(
       .some((request) => request.sessionId === id && request.kind === 'terminal_prompt' && !isNativeDecision(request)) === true,
     // #1901 — an AskUserQuestion still in flight: a card carrying the question.
     // A question-less card only says "waiting on you" and is expired by this
-    // very release, so it must not hold the pane.
-    holdsQuestion: (id) => approvalRegistry?.list().pending
-      .some((request) => request.sessionId === id && request.kind === 'awaiting_input' && !isNativeDecision(request)
-        && (!!request.question || !!request.form || (request.choices?.length ?? 0) > 0 || (request.options?.length ?? 0) > 0)) === true,
+    // very release, so it must not hold the pane. Nor does a card whose agent
+    // is gone: no hook ends the record when the process is killed, but the
+    // shell reporting its command finished (OSC 133) does say so.
+    holdsQuestion: (id) => sessionManager.getSession(id)?.promptLog.commandRunningIfKnown() !== false
+      && approvalRegistry?.list().pending
+        .some((request) => request.sessionId === id && request.kind === 'awaiting_input' && !isNativeDecision(request)
+          && (!!request.question || !!request.form || (request.choices?.length ?? 0) > 0 || (request.options?.length ?? 0) > 0)) === true,
     log: (level, message) => log(level, message),
   });
   const forgetAwaiting = (payload: { id: string }): void => awaitingVerifier.forget(payload.id);
