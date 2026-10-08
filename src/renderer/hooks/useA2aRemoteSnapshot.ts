@@ -3,6 +3,7 @@ import { useStore } from '../stores';
 import type { Workspace } from '../../shared/types';
 import type { AgentSlug } from '../../shared/events';
 import type { A2aRemotePaneSnapshot } from '../../shared/rpc';
+import type { A2aLinkRecordV1 } from '../../shared/a2aRemote';
 import type { MoaState } from '../../shared/moa';
 import { getWorkspaceLeafPanes } from '../../shared/paneUtils';
 import { leafDisplayName } from '../utils/paneNaming';
@@ -123,20 +124,53 @@ export function useA2aRemoteSnapshot(): void {
 }
 
 /**
- * A link request from another PC waits on this PC's human: say so once, with
- * a jump to the Remote page where the request card is.
+ * Whether a link request can be accepted straight from its toast: a pane
+ * link whose other end is on the same repo as this PC's pane. Anything else
+ * (a Moa link, another repo, a repo not known on either side) is reviewed on
+ * the Remote page.
+ */
+export function sameRepoPaneRequest(link: A2aLinkRecordV1, localRepo: string | null): boolean {
+  return link.local.kind === 'pane' && link.remote.kind === 'pane'
+    && !!link.remote.gitRemote && !!localRepo && link.remote.gitRemote === localRepo;
+}
+
+/**
+ * A link request from another PC waits on this PC's human: say so once. The
+ * toast offers Accept only for a same-repo pane link; otherwise it jumps to
+ * the Remote page, where the request sits in the Needs you block.
  */
 export function useA2aLinkRequestToast(t: (key: string) => string): void {
   useEffect(() => {
     const api = window.electronAPI?.a2aRemote;
     if (!api?.onLinkEvent) return;
+    const review = { label: t('a2aLink.requestToastOpen'), onClick: () => useStore.getState().setAppRoute('remote') };
     return api.onLinkEvent((event) => {
       if (event.type !== 'a2a.remote.link.proposed') return;
-      useStore.getState().pushToast({
-        message: t('a2aLink.requestToast'),
-        level: 'info',
-        action: { label: t('a2aLink.requestToastOpen'), onClick: () => useStore.getState().setAppRoute('remote') },
-      });
+      void (async () => {
+        let action = review;
+        try {
+          const link = (await api.linksList())?.links?.find((l) => l.linkId === event.linkId);
+          const s = useStore.getState();
+          const pane = link?.local.kind === 'pane'
+            ? buildPaneSnapshot({ workspaces: s.workspaces, surfaceAgent: s.surfaceAgent })
+              .workspaces.find((w) => w.id === link.local.workspaceId)?.panes.find((x) => x.paneId === link.local.paneId)
+            : undefined;
+          const repo = pane?.cwd ? (await window.electronAPI?.github?.repoKey(pane.cwd).catch(() => null))?.key ?? null : null;
+          if (link && sameRepoPaneRequest(link, repo)) {
+            action = {
+              label: t('a2aLink.accept'),
+              onClick: () => {
+                void api.linksAccept(event.linkId).then((r) => {
+                  if (!r.ok) useStore.getState().pushToast({ message: t('a2aLink.error.failed'), level: 'error', action: review });
+                }, () => undefined);
+              },
+            };
+          }
+        } catch {
+          /* the daemon is away: Review still leads to the page */
+        }
+        useStore.getState().pushToast({ message: t('a2aLink.requestToast'), level: 'info', action });
+      })();
     });
   }, [t]);
 }
