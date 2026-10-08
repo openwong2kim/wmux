@@ -5238,6 +5238,12 @@ export class WebTerminalServer {
     const chat = this.deps.chat?.() ?? null;
     if (!pane) return this.json(res, 409, { error: 'moa-starting', clientMessageId }, { 'Retry-After': MOA_WAKE_RETRY_AFTER.starting });
     if (!chat) return this.json(res, 503, { error: 'chat-unavailable', clientMessageId });
+    // Stopped on its own dialog or a startup screen: say so, not "starting" —
+    // only the desktop can answer it, and the brain has no conversation yet.
+    if (this.moaDialogUp(sessionId)) {
+      const blocked = sendResponse({ clientMessageId, replayed: false, result: 'blocked', effect: 'none', error: 'chat-blocked', blockedBy: 'terminal' }, clientMessageId);
+      return this.json(res, blocked.status, blocked.body);
+    }
     const owner = chatOwner(fresh);
     // A send this id already made answers from its own receipt, whatever the conversation is now.
     const prior = chat.receipt(owner, sessionId, clientMessageId);

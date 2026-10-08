@@ -51,7 +51,7 @@ describe('POST/GET /api/moa/messages', () => {
   let server: WebTerminalServer;
   let moa: MoaPaneFact | null;
   let roster: Map<string, { secret: string; allowInput: boolean }>;
-  let chat: ChatBridge & { send: ReturnType<typeof vi.fn> };
+  let chat: ChatBridge & { send: ReturnType<typeof vi.fn>; resolve: ReturnType<typeof vi.fn> };
   let bridge: DesktopPhoneBridge;
   let wakeService: MoaWakeService;
   let dir: string;
@@ -320,6 +320,9 @@ describe('POST/GET /api/moa/messages', () => {
     });
     expect(blocked.status).toBe(409);
     expect(await blocked.json()).toMatchObject({ error: 'chat-blocked', blockedBy: 'terminal' });
+    expect(await post(h, { clientMessageId: freshId(), text: 'yes' })).toMatchObject({ status: 409, body: { error: 'chat-blocked' } });
+    // Live shape: the screen fired no hook, so there is no conversation either — still blocked, not starting.
+    chat.resolve.mockResolvedValue({ source: 'none', status: { ...status(), available: false, reason: 'no-binding' }, launch: {} } as unknown as ChatResolution);
     expect(await post(h, { clientMessageId: freshId(), text: 'yes' })).toMatchObject({ status: 409, body: { error: 'chat-blocked' } });
     expect(chat.send).not.toHaveBeenCalled();
   });
