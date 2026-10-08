@@ -20,7 +20,11 @@
 //     hook), so the daemon can refuse typed input that would answer it, and
 //     the hook's evidence for that dialog (tool name, whole tool input, the
 //     hook's tool_use / session / prompt ids), so the daemon can raise it as a
-//     `terminal_prompt` approval record bound to that exact call (#1772).
+//     `terminal_prompt` approval record bound to that exact call (#1772);
+//   - whether the brain's TUI is stuck on a startup screen of its own (folder
+//     trust, sign-in) that fired no hook at all (`blockedOnTui`). Kept apart
+//     from `dialog`: it fences typed input the same way, but it is not a tool
+//     call and must never become an approval card.
 //
 // Never pushed: the commander token, the brain's env or its hook/MCP config.
 // The payload is the two ids, the transcript binding and the dialog.
@@ -72,7 +76,7 @@ export interface MoaPaneDialog {
 }
 
 export type MoaPanePayload =
-  | { sessionId: string; workspaceId: string; binding?: MoaPaneBinding; dialog?: MoaPaneDialog }
+  | { sessionId: string; workspaceId: string; binding?: MoaPaneBinding; dialog?: MoaPaneDialog; blockedOnTui?: true }
   | null;
 
 type Push = (pane: MoaPanePayload, seq: number) => Promise<unknown>;
@@ -81,6 +85,8 @@ interface BrainState {
   binding?: MoaPaneBinding;
   /** The permission dialog that is up, if one is. */
   dialog?: MoaPaneDialog;
+  /** The TUI is stopped on a startup screen that fired no hook. */
+  blockedOnTui?: true;
 }
 
 /** A brain pty is one per workspace and an HQ means one live brain, so a
@@ -185,6 +191,11 @@ export function noteBrainHookSignal(signal: BrainHookSignal): void {
   if (!ptyId || signal.agent !== 'claude') return;
   const state = stateFor(ptyId);
   let changed = false;
+  // Any hook at all means the TUI got past its startup screen (the adapter's rule too).
+  if (state.blockedOnTui) {
+    delete state.blockedOnTui;
+    changed = true;
+  }
   if (signal.kind === 'agent.awaiting_input') {
     // The brain profile maps only PermissionRequest to this kind, so for a
     // brain it is its own permission dialog drawn on screen.
@@ -230,13 +241,26 @@ export function noteBrainHookSignal(signal: BrainHookSignal): void {
 }
 
 /**
- * The HQ brain's own permission dialog is on screen. The one source for both
- * the phone's typed-input fence (via the published payload) and Moa's desktop
- * chat (its transcript status reads `awaiting_input`).
+ * The brain adapter's report that a pty is (or is no longer) stopped on a
+ * startup screen — folder trust, sign-in — before any hook fired.
+ */
+export function noteBrainBlockedOnTui(ptyId: string, blocked: boolean): void {
+  const state = stateFor(ptyId);
+  if (blocked === (state.blockedOnTui === true)) return;
+  if (blocked) state.blockedOnTui = true;
+  else delete state.blockedOnTui;
+  if (currentSource()?.sessionId === ptyId) void publishMoaPane();
+}
+
+/**
+ * The HQ brain's own permission dialog, or a startup screen, is on screen.
+ * The one source for both the phone's typed-input fence (via the published
+ * payload) and Moa's desktop chat (its transcript status reads `awaiting_input`).
  */
 export function moaDialogUp(): boolean {
   const src = currentSource();
-  return !!src && brains.get(src.sessionId)?.dialog !== undefined;
+  const state = src ? brains.get(src.sessionId) : undefined;
+  return state?.dialog !== undefined || state?.blockedOnTui === true;
 }
 
 /** A brain pty is gone: its binding and dialog go with it. */
@@ -287,6 +311,7 @@ export function buildMoaPanePayload(): MoaPanePayload {
     workspaceId: pane.workspaceId,
     ...(binding ? { binding } : {}),
     ...(state?.dialog ? { dialog: { ...state.dialog } } : {}),
+    ...(state?.blockedOnTui ? { blockedOnTui: true as const } : {}),
   };
 }
 

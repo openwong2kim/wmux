@@ -5,6 +5,8 @@ import { handlePhoneBrowser } from './phone/PhoneBrowser';
 import { handlePhoneWorkspaces } from './phone/PhoneWorkspaces';
 import { handlePhoneQuickCommands } from './quickCommands/QuickCommandStore';
 import { installPhoneBridge } from './phone/installPhoneBridge';
+import { handlePhoneMoaWake } from './deck/moaWake';
+import { MOA_WAKE_COMMAND } from '../shared/moaWake';
 import { handlePhoneAccounts } from './phone/PhoneAccounts';
 // #582: Suppress Electron's dev-only "Insecure Content-Security-Policy"
 // warning at the earliest possible point — before `app` ready and before any
@@ -1908,7 +1910,10 @@ app.on('ready', async () => {
         .then(() => {
           reportDesktopPresence(() => client, focusedPrimaryWindow() !== null);
           disposePhoneBridge?.();
-          disposePhoneBridge = installPhoneBridge(client,(command,payload) => command.startsWith('browser.') ? handlePhoneBrowser(command,payload,{
+          disposePhoneBridge = installPhoneBridge(client,(command,payload) => command === MOA_WAKE_COMMAND
+            // A failure main learns after the accept goes back on the receipt.
+            ? Promise.resolve(handlePhoneMoaWake(payload,report => { void client.rpc('daemon.moa.wakeResult',{...report}).catch(() => { /* receipt stays accepted */ }); }))
+            : command.startsWith('browser.') ? handlePhoneBrowser(command,payload,{
             backend: () => browserBackendStore.get(),
             clearViewport: async id => {
               const wc = phoneWebContents.fromId(id);

@@ -816,6 +816,10 @@ export interface ClaudePtyBrainAdapterDeps {
    *  can embed the live terminal, and with `null` on every teardown so the
    *  deck retires a terminal that no longer exists. */
   onPtySpawned?: (ptyId: string | null) => void;
+  /** Fired when the live pty starts or stops being stuck on a startup dialog
+   *  (`blockedOnDialog`), so the phone's Moa pane can refuse typed input that
+   *  would answer it. Teardown is reported through `onPtySpawned(null)`. */
+  onBlockedOnTui?: (ptyId: string, blocked: boolean) => void;
   /** Fired when a turn the ADAPTER did not start begins. UserPromptSubmit carries
    *  the exact human prompt in `payload.prompt`; the deck uses it to create or
    *  extend the durable active-work record before the foreign turn can finish. */
@@ -1066,6 +1070,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
    *  backstop. */
   private onHookSignal(signal: AgentSignal): void | BrainPtyHookBlock | BrainPtyHookContext {
     // Any hook at all means the TUI is past its startup dialog.
+    if (this.blockedOnDialog) this.reportBlockedOnTui(false);
     this.blockedOnDialog = false;
     if (this.deps.onTranscriptHint) {
       try {
@@ -1712,6 +1717,16 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
     return { ok: true, blockedOnTui: !this.sessionStartSeen && this.banner.length > 0 };
   }
 
+  private reportBlockedOnTui(blocked: boolean): void {
+    const ptyId = this.ptyId;
+    if (!ptyId) return;
+    try {
+      this.deps.onBlockedOnTui?.(ptyId, blocked);
+    } catch {
+      /* the phone fence is fed best-effort — never fail a turn on it */
+    }
+  }
+
   /** True when the spawn banner says the `--resume` id is dead. */
   private async sawStaleResume(): Promise<boolean> {
     const seen = (): boolean => this.banner.toLowerCase().includes(STALE_RESUME_MARKER);
@@ -1823,7 +1838,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
       // terminate its iterator silently (the manager's for-await unwinds).
       if (this._disposed) return;
       if ('error' in spawned) {
-        yield { type: 'error', message: spawned.error };
+        yield { type: 'error', message: spawned.error, spawnFailed: true };
         return;
       }
       // Soft-fail resume (same contract as the SDK/ACP adapters): a persisted
@@ -1841,7 +1856,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
         const fresh = await this.spawn(null);
         if (this._disposed) return;
         if ('error' in fresh) {
-          yield { type: 'error', message: fresh.error };
+          yield { type: 'error', message: fresh.error, spawnFailed: true };
           return;
         }
         spawned = fresh;
@@ -1864,6 +1879,7 @@ export class ClaudePtyBrainAdapter implements BrainAdapter {
       // the pty stays alive so the next send() reuses the answered session.
       // A SessionStart that landed while the resume probe waited clears it.
       this.blockedOnDialog = spawned.blockedOnTui && !this.sessionStartSeen;
+      if (this.blockedOnDialog) this.reportBlockedOnTui(true);
     }
 
     // Checked on EVERY send, not only the one that spawned: the pty outlives
