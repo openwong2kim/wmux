@@ -971,8 +971,7 @@ export class ChromeLauncher implements ChromeBackendClient {
   /**
    * Bring a wmux-opened tab, and its window, to the front. `/json/activate` is
    * the HTTP form of CDP `Target.activateTarget`: it needs no socket (the
-   * watcher can be off), and Chrome raises the tab's window along with it. A
-   * minimized window is restored over the watcher socket when one is open.
+   * watcher can be off), and Chrome raises the tab's window along with it.
    */
   async selectSurface(surfaceId: string): Promise<boolean> {
     const record = this.surfaces.get(surfaceId);
@@ -982,14 +981,18 @@ export class ChromeLauncher implements ChromeBackendClient {
     } catch {
       return false;
     }
-    await this.restoreWindowOf(record.targetId);
     return true;
   }
 
-  /** Best effort: un-minimize the window holding `targetId`. */
-  private async restoreWindowOf(targetId: string): Promise<void> {
+  /**
+   * Best effort: un-minimize the window holding a surface, over the watcher
+   * socket when one is open. Only for a person's explicit "Show in Chrome" —
+   * an agent selecting a tab must not undo a window the user minimized.
+   */
+  async restoreWindow(surfaceId: string): Promise<void> {
+    const targetId = this.surfaces.get(surfaceId)?.targetId;
     const socket = this.watcher;
-    if (!socket?.isOpen()) return;
+    if (!targetId || !socket?.isOpen()) return;
     try {
       const reply = (await socket.send('Browser.getWindowForTarget', { targetId })) as {
         windowId?: number;
@@ -1209,9 +1212,11 @@ export class ChromeLauncherRegistry {
     const tabs = await launcher.listTargets(workspaceId);
     const newest = tabs[tabs.length - 1];
     if (!newest) return { ok: false, error: `no open wmux tab in the Chrome for profile "${profile}"` };
-    return (await launcher.selectSurface(newest.surfaceId))
-      ? { ok: true }
-      : { ok: false, error: 'Chrome did not bring the tab to the front' };
+    if (!(await launcher.selectSurface(newest.surfaceId))) {
+      return { ok: false, error: 'Chrome did not bring the tab to the front' };
+    }
+    await launcher.restoreWindow(newest.surfaceId);
+    return { ok: true };
   }
 
   /**

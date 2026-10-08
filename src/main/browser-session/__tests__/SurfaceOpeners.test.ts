@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ChromeSurfaceStore, getChromeSurfacesPath } from '../ChromeSurfaceStore';
-import { surfaceOpeners } from '../SurfaceOpeners';
+import { openerVerdict, surfaceOpeners } from '../SurfaceOpeners';
 
 /**
  * The opener of a browser surface is memory only.
@@ -28,7 +28,7 @@ describe('SurfaceOpeners', () => {
   it('never reaches the persisted chrome surface file', async () => {
     const store = new ChromeSurfaceStore(dir);
     const now = Date.now();
-    surfaceOpeners.note('chrome-1', 'opener-abcd');
+    surfaceOpeners.note('chrome-1', 'opener-abcd', 'daemon-pty-1');
 
     await store.saveNow('default', [
       { surfaceId: 'chrome-1', targetId: 'tgt-1', url: 'https://a.test/', createdAt: now, lastSeenAt: now },
@@ -37,6 +37,7 @@ describe('SurfaceOpeners', () => {
     const raw = readFileSync(getChromeSurfacesPath(dir), 'utf8');
     expect(raw).toContain('chrome-1');
     expect(raw).not.toContain('opener');
+    expect(raw).not.toContain('daemon-pty-1');
     // And a restart reads the record back with no owner, so it is adoptable.
     expect(new ChromeSurfaceStore(dir).listForProfile('default')[0]).not.toHaveProperty('openerKey');
   });
@@ -76,5 +77,24 @@ describe('SurfaceOpeners', () => {
       expect(surfaceOpeners.get('surf-live')).toBe('opener-a');
     }
     expect(surfaceOpeners.get('surf-live')).toBe('opener-a');
+  });
+
+  it('R4: inside a pane-bound profile the opener terminal counts as the caller; elsewhere only the key does', () => {
+    const rec = { openerKey: 'key-old', ptyId: 'pty-1' };
+    // A restarted agent in the same terminal: new key, same PTY.
+    expect(openerVerdict(rec, { openerKey: 'key-new', ptyId: 'pty-1', paneBound: true })).toBe('mine');
+    // A second terminal tab in the same pane.
+    expect(openerVerdict(rec, { openerKey: 'key-new', ptyId: 'pty-2', paneBound: true })).toBe('other');
+    // A workspace profile is shared, so the PTY alone never claims there.
+    expect(openerVerdict(rec, { openerKey: 'key-new', ptyId: 'pty-1', paneBound: false })).toBe('other');
+    expect(openerVerdict(rec, { openerKey: 'key-old' })).toBe('mine');
+    // No record: unclaimed, adoptable.
+    expect(openerVerdict(undefined, { openerKey: 'key-new', ptyId: 'pty-1', paneBound: true })).toBeUndefined();
+    // An opener that sent no PTY is never matched by one.
+    expect(openerVerdict({ openerKey: 'k' }, { openerKey: 'x', paneBound: true })).toBe('other');
+
+    surfaceOpeners.note('surf-9', 'key-old', 'pty-1');
+    expect(surfaceOpeners.verdict('surf-9', { openerKey: 'key-new', ptyId: 'pty-1', paneBound: true })).toBe('mine');
+    expect(surfaceOpeners.get('surf-9')).toBe('key-old');
   });
 });

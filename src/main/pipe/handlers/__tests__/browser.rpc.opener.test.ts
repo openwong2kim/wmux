@@ -87,7 +87,14 @@ function fakeChromeRegistry() {
     hasSurface: vi.fn((surfaceId: string) => tabs.has(surfaceId)),
     dispose: vi.fn(),
   };
-  return { client, registry: { forWorkspace: vi.fn(() => client), forProfile: vi.fn(() => client), ownerOfSurface: vi.fn(() => null), disposeAll: vi.fn() } };
+  return { client, registry: {
+    profileFor: vi.fn(() => 'default'),
+    hasPaneBindings: vi.fn(() => false),
+    isPaneBound: vi.fn(() => false),
+    forProfile: vi.fn(() => client),
+    ownerOfSurface: vi.fn(() => null),
+    disposeAll: vi.fn(),
+  } };
 }
 
 function registerChrome(registry: unknown): RpcRouter {

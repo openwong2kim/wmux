@@ -170,7 +170,9 @@ function register(options: {
     liveWriteScope: () => options.writeScopeSetting ?? ('agent' as LiveWriteScope),
   };
   const registry = {
-    forWorkspace: vi.fn(() => live),
+    profileFor: vi.fn(() => 'live'),
+    hasPaneBindings: vi.fn(() => false),
+    isPaneBound: vi.fn(() => false),
     forProfile: vi.fn(() => live),
     ownerOfSurface: vi.fn(() => null),
     disposeAll: vi.fn(),
@@ -659,7 +661,9 @@ describe('browser_tabs borrow / return', () => {
       undefined,
       undefined,
       {
-        forWorkspace: () => live,
+        profileFor: () => 'live',
+        hasPaneBindings: () => false,
+        isPaneBound: () => false,
         forProfile: () => live,
         ownerOfSurface: () => null,
         disposeAll: vi.fn(),

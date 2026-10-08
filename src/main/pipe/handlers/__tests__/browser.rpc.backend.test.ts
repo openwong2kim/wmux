@@ -95,6 +95,7 @@ function register(opts: { backend?: Backend; hasTarget?: boolean; withStore?: bo
     ensureAwake: vi.fn(async () => null),
     setCaptureCleanup: vi.fn(),
     setCaptureAttach: vi.fn(),
+    isDiscarded: vi.fn(() => false),
     withAutomationLease: vi.fn(async (_s: string, fn: () => Promise<unknown>) => fn()),
     acquireRpcLease: vi.fn(() => 'lease-1'),
     renewRpcLease: vi.fn(() => true),
@@ -378,16 +379,20 @@ function makeFakeRegistry(perWorkspace?: Record<string, ReturnType<typeof makeFa
   const all = [fallback, ...Object.values(perWorkspace ?? {})];
   return {
     fallback,
-    forWorkspace: vi.fn((ws?: string) => (ws && perWorkspace?.[ws]) || fallback),
-    forProfile: vi.fn(() => fallback),
+    // One profile per bound workspace, named after it; everyone else 'default'.
+    profileFor: vi.fn((ws?: string) => (ws && perWorkspace?.[ws] ? ws : 'default')),
+    hasPaneBindings: vi.fn(() => false),
+    isPaneBound: vi.fn(() => false),
+    forProfile: vi.fn((profile: string) => perWorkspace?.[profile] || fallback),
     ownerOfSurface: vi.fn((surfaceId: string) => {
       for (const client of all) {
         const record = client.tabs.get(surfaceId);
-        if (record) return { workspaceId: record.workspaceId, client };
+        const profile = Object.entries(perWorkspace ?? {}).find(([, c]) => c === client)?.[0] ?? 'default';
+        if (record) return { workspaceId: record.workspaceId, profile, client };
       }
       return null;
     }),
-    statusForWorkspace: vi.fn(
+    statusForProfile: vi.fn(
       (): { profile: string; running: boolean; cdpPort: number | null; liveAttach?: boolean } => ({
         profile: 'default',
         running: true,
@@ -404,7 +409,7 @@ describe('chrome backend', () => {
     const { router } = register({ backend: 'chrome', launcher: registry });
     const { result } = await dispatch(router, 'browser.open', { url: 'https://a.test/', workspaceId: 'ws-1' });
     expect(result).toMatchObject({ ok: true, backend: 'chrome', surfaceId: 'sfc-1', url: 'https://a.test/' });
-    expect(registry.forWorkspace).toHaveBeenCalledWith('ws-1');
+    expect(registry.profileFor).toHaveBeenCalledWith('ws-1');
     expect(registry.fallback.openTab).toHaveBeenCalledWith('https://a.test/', 'ws-1');
     expect(sendToRendererMock).not.toHaveBeenCalled();
     expect(openExternalMock).not.toHaveBeenCalled();
@@ -499,7 +504,9 @@ describe('chrome backend', () => {
       dispose: vi.fn(),
     };
     const registry = {
-      forWorkspace: vi.fn(() => live),
+      profileFor: vi.fn(() => 'live'),
+      hasPaneBindings: vi.fn(() => false),
+      isPaneBound: vi.fn(() => false),
       forProfile: vi.fn(() => live),
       ownerOfSurface: vi.fn(() => null),
       disposeAll: vi.fn(),
@@ -663,8 +670,8 @@ describe('browser.session.status backend reporting', () => {
       persistent: null,
     });
     // A status probe must be a pure read: no launcher lookup that could spawn.
-    expect(registry.forWorkspace).not.toHaveBeenCalled();
-    expect(registry.statusForWorkspace).toHaveBeenCalled();
+    expect(registry.forProfile).not.toHaveBeenCalled();
+    expect(registry.statusForProfile).toHaveBeenCalledWith('default');
   });
 
   it('keeps the builtin shape and adds the backend field', async () => {
@@ -673,12 +680,12 @@ describe('browser.session.status backend reporting', () => {
     const { result } = await dispatch(router, 'browser.session.status', {});
     expect(result).toMatchObject({ backend: 'builtin', profile: expect.any(String) });
     expect((result as Record<string, unknown>)['partition']).toBeTruthy();
-    expect(registry.statusForWorkspace).not.toHaveBeenCalled();
+    expect(registry.statusForProfile).not.toHaveBeenCalled();
   });
 
   it('propagates liveAttach from the registry so running:false reads as chrome://inspect, not start', async () => {
     const registry = makeFakeRegistry();
-    registry.statusForWorkspace.mockReturnValue({
+    registry.statusForProfile.mockReturnValue({
       profile: 'live',
       running: false,
       cdpPort: null,
