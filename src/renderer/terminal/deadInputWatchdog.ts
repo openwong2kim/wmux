@@ -21,9 +21,22 @@
 //   - Modifier / lock / function keys (Shift/Ctrl/Alt/Meta/CapsLock/F-keys),
 //     which never produce shell input and so are not evidence of dead input.
 //
+// #1950 added what the first field report could not tell apart: the modifier
+// flags each key carried (and whether a press of that modifier was ever seen —
+// a stale Meta silences Space and letters in every pane), whether the key was
+// already defaultPrevented, and which part of wmux's key handler, if any,
+// declined it. See DeadInputWatchdogKey.
+//
 // This module NEVER mutates terminal state or attempts recovery. It only
 // reports. Pure logic (timers via injected clock) so it is unit-testable
 // without a DOM. Rate-limited so one dead-input episode logs once, not per key.
+
+import {
+  isPrefixTrigger,
+  resolveShortcut,
+  type ShortcutBinding,
+  type ShortcutKeyEventLike,
+} from '../../shared/keymap';
 
 /** Keys that never produce shell input, so their keydowns are not dead-input
  *  evidence: the modifier/lock keys and the function row. Arrow/Tab/Enter DO
@@ -41,6 +54,21 @@ export interface DeadInputWatchdogKey {
   isComposing: boolean;
   /** Physical key code (diagnostic + non-input-key filter). */
   code: string;
+  // The fields below are diagnostics only (#1950). They never change whether
+  // or when a report fires.
+  /** `KeyboardEvent.key`. Reported only as a kind: a typed character is
+   *  `char`, never its value, so the log does not carry what the user typed. */
+  key?: string;
+  /** The modifier flags the keydown carried, e.g. `none` or `Meta`. */
+  mods?: string;
+  /** Flags carried with no press of that modifier seen since focus-in
+   *  (see modifierPressTracker), e.g. `Meta`; empty when none. */
+  staleMods?: string;
+  /** `defaultPrevented` when the keydown reached the watchdog. */
+  defaultPrevented?: boolean;
+  /** Which part of wmux's key handler declined the key, or `none` when the
+   *  handler passed it to xterm. */
+  verdict?: string;
 }
 
 export interface DeadInputReport {
@@ -52,6 +80,63 @@ export interface DeadInputReport {
   codes: string[];
   /** Span from the first unanswered keydown to the report, in ms. */
   spanMs: number;
+  /** Distinct key kinds (`char`, or a named key such as `Dead`, `Process`). */
+  keyKinds: string[];
+  /** Distinct modifier sets the keys carried (`none`, `Meta`, ...). */
+  mods: string[];
+  /** Distinct stale modifier sets (empty when every flag had a real press). */
+  staleMods: string[];
+  /** How many of the keys were already defaultPrevented. */
+  defaultPrevented: number;
+  /** Distinct key-handler verdicts (`none` = passed to xterm). */
+  verdicts: string[];
+}
+
+/**
+ * xterm's own composition flags (`CompositionHelper._isComposing` /
+ * `_isSendingComposition`) as `composing/sending`, e.g. `0/0`. Private API,
+ * read for the log only: `?` when this xterm build does not have them.
+ */
+export function readXtermCompositionState(terminal: unknown): string {
+  try {
+    const helper = (terminal as {
+      _core?: { _compositionHelper?: { _isComposing?: unknown; _isSendingComposition?: unknown } };
+    })._core?._compositionHelper;
+    if (!helper || typeof helper._isComposing !== 'boolean') return '?';
+    return `${helper._isComposing ? 1 : 0}/${helper._isSendingComposition ? 1 : 0}`;
+  } catch {
+    return '?';
+  }
+}
+
+export interface DeclinedKeyContext {
+  /** ShortcutPressGuard.isDuplicate — stable for an event it already matched. */
+  isPressDuplicate: (e: ShortcutKeyEventLike) => boolean;
+  /** The effective shortcut bindings the key handler resolved against. */
+  bindings: readonly ShortcutBinding[];
+  /** prefixConfig.key (a KeyboardEvent.code). */
+  prefixKeyCode: string;
+}
+
+/**
+ * Why useTerminal's key handler most likely declined a keydown it did not
+ * hand to xterm, for the dead-input log only. Mirrors the handler's
+ * swallow-without-writing branches in order; everything else (a byte the
+ * handler wrote itself, clipboard chords, a custom keybinding) is `handler`.
+ */
+export function describeDeclinedKey(e: ShortcutKeyEventLike, ctx: DeclinedKeyContext): string {
+  if (ctx.isPressDuplicate(e)) return 'pressGuard';
+  const shortcut = resolveShortcut(e, ctx.bindings);
+  if (shortcut !== null) return `shortcut:${shortcut}`;
+  if (isPrefixTrigger(e, ctx.prefixKeyCode)) return 'prefixTrigger';
+  if (e.ctrlKey && e.shiftKey && e.code !== 'KeyC' && e.code !== 'KeyV') return 'ctrlShift';
+  return 'handler';
+}
+
+/** A typed character is `char`; a named key keeps its name. */
+export function keyKind(key: string | undefined): string {
+  if (key === undefined) return 'unknown';
+  return [...key].length === 1 ? 'char' : key;
 }
 
 export interface DeadInputWatchdogOptions {
@@ -95,6 +180,11 @@ export function createDeadInputWatchdog(options: DeadInputWatchdogOptions): Dead
   let firstAt = 0;
   const keyCodes = new Set<number>();
   const codes = new Set<string>();
+  const keyKinds = new Set<string>();
+  const mods = new Set<string>();
+  const staleMods = new Set<string>();
+  const verdicts = new Set<string>();
+  let defaultPrevented = 0;
   let lastReportAt = -Infinity;
 
   const reset = (): void => {
@@ -102,6 +192,11 @@ export function createDeadInputWatchdog(options: DeadInputWatchdogOptions): Dead
     firstAt = 0;
     keyCodes.clear();
     codes.clear();
+    keyKinds.clear();
+    mods.clear();
+    staleMods.clear();
+    verdicts.clear();
+    defaultPrevented = 0;
   };
 
   return {
@@ -119,6 +214,11 @@ export function createDeadInputWatchdog(options: DeadInputWatchdogOptions): Dead
       count += 1;
       keyCodes.add(key.keyCode);
       codes.add(key.code);
+      keyKinds.add(keyKind(key.key));
+      if (key.mods !== undefined) mods.add(key.mods);
+      if (key.staleMods) staleMods.add(key.staleMods);
+      if (key.verdict !== undefined) verdicts.add(key.verdict);
+      if (key.defaultPrevented) defaultPrevented += 1;
       const spanMs = t - firstAt;
       if (count >= threshold && spanMs >= windowMs && t - lastReportAt >= cooldownMs) {
         lastReportAt = t;
@@ -127,6 +227,11 @@ export function createDeadInputWatchdog(options: DeadInputWatchdogOptions): Dead
           keyCodes: [...keyCodes],
           codes: [...codes],
           spanMs,
+          keyKinds: [...keyKinds],
+          mods: [...mods],
+          staleMods: [...staleMods],
+          defaultPrevented,
+          verdicts: [...verdicts],
         };
         // Keep lastReportAt (do not clear it in reset) so a still-stuck episode
         // does not re-log every key — only after the cooldown.

@@ -54,7 +54,8 @@ import { createGlyphRepaintScheduler, type GlyphRepaintScheduler } from '../term
 import { atlasGuard } from '../terminal/atlasGuard';
 import { decideViewerVisibility } from '../terminal/viewerVisibility';
 import { useWindowDisplayed } from './useWindowDisplayed';
-import { createDeadInputWatchdog } from '../terminal/deadInputWatchdog';
+import { createDeadInputWatchdog, describeDeclinedKey, readXtermCompositionState } from '../terminal/deadInputWatchdog';
+import { formatModifiers, modifiersOf, sharedModifierPressTracker } from '../terminal/modifierPressTracker';
 import { awaitParseBarrier } from '../terminal/parseBarrier';
 import { STALE_REPLAY_INPUT_MODE_RESETS, STALE_REPLAY_ALIVE_SHELL_RESETS, STALE_REPLAY_DISPLAY_RESETS, staleReplayResetLevel } from '../../shared/terminal/staleReplayModeReset';
 import { installShellPromptModeReset, shellPromptModeResetFor } from '../../shared/terminal/shellPromptModeReset';
@@ -1551,22 +1552,48 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // mirrored into the main-side log by src/main/index.ts's console-message
     // listener, so it lands in the file the user can share.
     const deadInputWatchdog = createDeadInputWatchdog({
-      report: ({ keydownCount, keyCodes, codes, spanMs }) => {
+      report: (r) => {
         const active = document.activeElement;
         const activeDesc = active
           ? `${active.tagName.toLowerCase()}.${(active.className || '').toString().slice(0, 40)}`
           : 'null';
         // ptyIdRef.current, not the captured ptyId, so a reconnect that swaps
         // the pty still attributes the log to the live session.
+        //
+        // #1950: the rest of the line tells the remaining causes apart.
+        // mods/stale: the modifier flags the keys carried, and those with no
+        // press of that modifier seen since focus-in (a stale Meta silences
+        // Space and letters in xterm on Windows).
+        // verdict: which branch of our key handler declined the keys (`none`
+        // = handed to xterm). prevented: keys already defaultPrevented when
+        // they got here — xterm's textarea listener is capture-phase and runs
+        // first, so `none` + 0 prevented means xterm encoded no byte at all.
+        // xtermComposing: CompositionHelper's own flags, private API.
         console.warn(
-          `[wmux:dead-input] pty=${ptyIdRef.current} ${keydownCount} keys in ${spanMs}ms reached no onData ` +
-          `keyCodes=[${keyCodes.join(',')}] codes=[${codes.join(',')}] activeElement=${activeDesc}`,
+          `[wmux:dead-input] pty=${ptyIdRef.current} ${r.keydownCount} keys in ${r.spanMs}ms reached no onData ` +
+          `keyCodes=[${r.keyCodes.join(',')}] codes=[${r.codes.join(',')}] activeElement=${activeDesc} ` +
+          `keyKinds=[${r.keyKinds.join(',')}] mods=[${r.mods.join(',')}] stale=[${r.staleMods.join(',')}] ` +
+          `verdict=[${r.verdicts.join(',')}] prevented=${r.defaultPrevented} ` +
+          `xtermComposing=${readXtermCompositionState(terminal)} docFocus=${document.hasFocus() ? 1 : 0}`,
         );
       },
     });
+    const modifierPresses = sharedModifierPressTracker();
+    // The key handler's verdict on the latest keydown (set by the wrapper
+    // around attachCustomKeyEventHandler below), read by the watchdog.
+    let keyVerdict: { event: KeyboardEvent; by: string } | null = null;
     const onWatchdogKeyDown = (e: Event): void => {
       const ke = e as KeyboardEvent;
-      deadInputWatchdog.onKeyDown({ keyCode: ke.keyCode, isComposing: ke.isComposing, code: ke.code });
+      deadInputWatchdog.onKeyDown({
+        keyCode: ke.keyCode,
+        isComposing: ke.isComposing,
+        code: ke.code,
+        key: ke.key,
+        mods: formatModifiers(modifiersOf(ke)),
+        staleMods: modifierPresses.staleModifiers(ke).join('+'),
+        defaultPrevented: ke.defaultPrevented,
+        verdict: keyVerdict?.event === ke ? keyVerdict.by : 'unseen',
+      });
     };
     terminal.textarea?.addEventListener('keydown', onWatchdogKeyDown);
 
@@ -2022,8 +2049,25 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       }
     };
 
-    // Clipboard + shortcut handling
+    // Clipboard + shortcut handling. The wrapper records, for the
+    // dead-input watchdog only, whether each keydown was handed to xterm and,
+    // if not, roughly why (#1950). It never changes the handler's answer.
     terminal.attachCustomKeyEventHandler((e) => {
+      const pass = handleTerminalKey(e);
+      if (e.type === 'keydown') {
+        keyVerdict = {
+          event: e,
+          by: pass ? 'none' : describeDeclinedKey(e, {
+            isPressDuplicate: (ev) => shortcutPressGuard.isDuplicate(ev),
+            bindings: currentShortcutBindings(),
+            prefixKeyCode: useStore.getState().prefixConfig.key,
+          }),
+        };
+      }
+      return pass;
+    });
+    // Runs only from xterm's key events, after this effect has finished.
+    const handleTerminalKey = (e: KeyboardEvent): boolean => {
       if (e.type !== 'keydown') return true;
 
       // The IME's plain-key follow-up of a press already acted on (a
@@ -2327,7 +2371,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       }
 
       return true;
-    });
+    };
 
     // Right-click behavior (Windows Terminal style):
     //  • On a link → show small context menu (open / copy link)

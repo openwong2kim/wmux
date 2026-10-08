@@ -5,7 +5,11 @@ import {
   DEAD_INPUT_THRESHOLD_DEFAULT,
   DEAD_INPUT_WINDOW_MS_DEFAULT,
   DEAD_INPUT_COOLDOWN_MS_DEFAULT,
+  describeDeclinedKey,
+  keyKind,
+  readXtermCompositionState,
   type DeadInputReport,
+  type DeadInputWatchdogKey,
 } from '../deadInputWatchdog';
 
 describe('deadInputWatchdog', () => {
@@ -119,5 +123,107 @@ describe('deadInputWatchdog', () => {
     expect(DEAD_INPUT_THRESHOLD_DEFAULT).toBeGreaterThanOrEqual(2);
     expect(DEAD_INPUT_WINDOW_MS_DEFAULT).toBeGreaterThan(0);
     expect(DEAD_INPUT_COOLDOWN_MS_DEFAULT).toBeGreaterThanOrEqual(1000);
+  });
+});
+
+// #1950: the field log could not tell a handler swallow from xterm encoding
+// nothing, nor say which modifiers the dead keys carried.
+describe('deadInputWatchdog diagnostics (#1950)', () => {
+  const setup = () => {
+    let t = 0;
+    const reports: DeadInputReport[] = [];
+    const w = createDeadInputWatchdog({ report: (r) => reports.push(r), now: () => t });
+    const press = (k: Partial<DeadInputWatchdogKey>) => {
+      w.onKeyDown({ keyCode: 32, isComposing: false, code: 'Space', ...k });
+      t += 200;
+    };
+    return { w, reports, press };
+  };
+
+  it('reports the shape of the field episode: Space with a stale Meta, handed to xterm', () => {
+    const { reports, press } = setup();
+    const k = { key: ' ', mods: 'Meta', staleMods: 'Meta', defaultPrevented: false, verdict: 'none' };
+    press(k); press(k); press(k); press(k);
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toMatchObject({
+      keyCodes: [32],
+      codes: ['Space'],
+      keyKinds: ['char'],
+      mods: ['Meta'],
+      staleMods: ['Meta'],
+      defaultPrevented: 0,
+      verdicts: ['none'],
+    });
+  });
+
+  it('collects distinct values and counts prevented keys', () => {
+    const { reports, press } = setup();
+    press({ keyCode: 70, code: 'KeyF', key: 'f', mods: 'none', staleMods: '', verdict: 'none' });
+    press({ keyCode: 65, code: 'KeyA', key: 'a', mods: 'none', staleMods: '', verdict: 'none' });
+    press({ keyCode: 66, code: 'KeyB', key: 'Dead', mods: 'Ctrl+Shift', staleMods: 'Ctrl+Shift', defaultPrevented: true, verdict: 'ctrlShift' });
+    press({ keyCode: 76, code: 'KeyL', key: 'l', mods: 'none', staleMods: '', defaultPrevented: true, verdict: 'handler' });
+    expect(reports).toHaveLength(1);
+    expect(reports[0].keyKinds).toEqual(['char', 'Dead']);
+    expect(reports[0].mods).toEqual(['none', 'Ctrl+Shift']);
+    expect(reports[0].staleMods).toEqual(['Ctrl+Shift']); // an empty set is not listed
+    expect(reports[0].defaultPrevented).toBe(2);
+    expect(reports[0].verdicts).toEqual(['none', 'ctrlShift', 'handler']);
+  });
+
+  it('never carries the typed characters themselves', () => {
+    const { reports, press } = setup();
+    press({ key: 'p', code: 'KeyP', keyCode: 80 });
+    press({ key: 'w', code: 'KeyW', keyCode: 87 });
+    press({ key: 'ą', code: 'KeyA', keyCode: 65 });
+    press({ key: 'd', code: 'KeyD', keyCode: 68 });
+    expect(reports[0].keyKinds).toEqual(['char']);
+    expect(JSON.stringify(reports[0])).not.toMatch(/"[pwąd]"/);
+  });
+
+  it('a new episode after onData does not inherit the previous diagnostics', () => {
+    const { w, reports, press } = setup();
+    press({ mods: 'Meta', staleMods: 'Meta', verdict: 'ctrlShift', defaultPrevented: true });
+    w.onData();
+    for (let i = 0; i < 4; i++) press({ key: ' ', mods: 'none', staleMods: '', verdict: 'none' });
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toMatchObject({ mods: ['none'], staleMods: [], verdicts: ['none'], defaultPrevented: 0 });
+  });
+
+  it('keyKind names keys and hides characters', () => {
+    expect(keyKind('a')).toBe('char');
+    expect(keyKind(' ')).toBe('char');
+    expect(keyKind('😀')).toBe('char');
+    expect(keyKind('Process')).toBe('Process');
+    expect(keyKind('Unidentified')).toBe('Unidentified');
+    expect(keyKind(undefined)).toBe('unknown');
+  });
+
+  it('readXtermCompositionState reads xterm private flags defensively', () => {
+    expect(readXtermCompositionState({ _core: { _compositionHelper: { _isComposing: true, _isSendingComposition: false } } })).toBe('1/0');
+    expect(readXtermCompositionState({ _core: { _compositionHelper: { _isComposing: false, _isSendingComposition: true } } })).toBe('0/1');
+    expect(readXtermCompositionState({})).toBe('?');
+    expect(readXtermCompositionState(null)).toBe('?');
+  });
+});
+
+describe('describeDeclinedKey (#1950)', () => {
+  const ev = (over: Partial<{ key: string; code: string; ctrlKey: boolean; shiftKey: boolean; altKey: boolean; metaKey: boolean }>) => ({
+    key: 'a', code: 'KeyA', ctrlKey: false, shiftKey: false, altKey: false, metaKey: false, ...over,
+  });
+  const ctx = {
+    isPressDuplicate: () => false,
+    bindings: [{ action: 'searchTerminal' as const, combo: 'Ctrl+F' }],
+    prefixKeyCode: 'KeyB',
+  };
+
+  it('names the branch that swallowed the key', () => {
+    expect(describeDeclinedKey(ev({ key: 'f', code: 'KeyF', ctrlKey: true }), ctx)).toBe('shortcut:searchTerminal');
+    expect(describeDeclinedKey(ev({ key: 'b', code: 'KeyB', ctrlKey: true }), ctx)).toBe('prefixTrigger');
+    expect(describeDeclinedKey(ev({ key: 'A', code: 'KeyA', ctrlKey: true, shiftKey: true }), ctx)).toBe('ctrlShift');
+    expect(describeDeclinedKey(ev({}), { ...ctx, isPressDuplicate: () => true })).toBe('pressGuard');
+  });
+
+  it('falls back to `handler` for branches that write their own byte', () => {
+    expect(describeDeclinedKey(ev({ key: 'c', code: 'KeyC', ctrlKey: true }), ctx)).toBe('handler');
   });
 });
