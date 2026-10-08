@@ -156,6 +156,17 @@ describe('computer.rpc', () => {
     );
   });
 
+  it('routes openApp on computer.act to the service by selector, with the caller identity', async () => {
+    const control = vi.fn();
+    const openApp = vi.fn(async () => ({ app: { id: 'com.apple.TextEdit' }, window: null }));
+    const { call } = setup({ control, openApp } as never);
+    await call('computer.act', { action: 'openApp', app: 'TextEdit', senderPtyId: 'pty-a1' }, { clientName: 'c' });
+    expect(openApp).toHaveBeenCalledWith({ key: 'c @ ws-a/pty-a1', label: 'c in workspace "api"' }, { app: 'TextEdit' });
+    expect(control).not.toHaveBeenCalled();
+    expect((await errorOf(call('computer.act', { action: 'openApp', senderPtyId: 'pty-a1' }, { clientName: 'c' })))?.code).toBe('invalid_argument');
+    expect(openApp).toHaveBeenCalledTimes(1);
+  });
+
   it('encodes service errors as [code] message and wraps unknown ones as internal', async () => {
     const { call } = setup({
       listApps: vi.fn(async () => { throw new ComputerError('permission_missing', 'accessibility'); }),
@@ -189,6 +200,7 @@ describe('computer.rpc with the real service', () => {
     const prompts: Array<{ key: string; label: string }> = [];
     const service = new ComputerService({
       isEnabled: () => true,
+      askPerApp: () => true,
       createHelper: () => helper,
       requestConsent: async ({ agent }) => {
         prompts.push(agent);

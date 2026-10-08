@@ -4,7 +4,12 @@
 import { app, globalShortcut, ipcMain } from 'electron';
 import { platformChoice } from '../../shared/platform';
 import { IPC } from '../../shared/constants';
-import { readComputerUseEnabled, type ComputerUseSettingsPayload } from '../../shared/computer/config';
+import {
+  readComputerUseAskPerApp,
+  readComputerUseEnabled,
+  readComputerUseOverlay,
+  type ComputerUseSettingsPayload,
+} from '../../shared/computer/config';
 import { ComputerError } from '../../shared/computer/errors';
 import { helperStatus as rawHelperStatus, writeComputerUseEnabled, type ComputerHelperStatus } from './settings';
 import { ComputerService, computerUseShutDown, type ConsentRequester, type HelperLike } from './ComputerService';
@@ -13,7 +18,7 @@ import { StopKey } from './stopKey';
 import { createHelperVerifier } from './verifyHelper';
 import { WINDOWS_HELPER_PIN, effectiveHelperStatus, helperUnsignedNotice } from './helperPin';
 import { isSelfElevated } from './selfElevation';
-import { resolveHelperPathFor, type HelperSpec } from './helperPath';
+import { helperAppBundlePath, permissionMissingHelp, resolveHelperPathFor, type HelperSpec } from './helperPath';
 
 // The macOS helper is a separately signed .app so TCC grants attach to it and
 // survive wmux updates; main execs its binary directly so the helper, not
@@ -86,6 +91,7 @@ const SPAWN_FAILURE = /\b(ENOENT|EACCES|EPERM|UNKNOWN)\b|could not start the com
  * stops the running process; spawn failures read as a missing helper.
  */
 function lazyHelper(command: string, ready: () => boolean): HelperLike & { reset(): boolean } {
+  const appPath = helperAppBundlePath(command);
   let proc: HelperProcess | null = null;
   const reset = () => {
     const had = proc !== null;
@@ -99,7 +105,12 @@ function lazyHelper(command: string, ready: () => boolean): HelperLike & { reset
         reset();
         throw notReadyError(command);
       }
-      proc ??= new HelperProcess({ command, verify: verifyHelper, log: (m) => console.warn(m) });
+      proc ??= new HelperProcess({
+        command,
+        verify: verifyHelper,
+        configure: () => ({ overlay: readComputerUseOverlay() }),
+        log: (m) => console.warn(m),
+      });
       try {
         return await proc.request(method, params);
       } catch (err) {
@@ -112,9 +123,14 @@ function lazyHelper(command: string, ready: () => boolean): HelperLike & { reset
           reset();
           throw elevatedError();
         }
+        if (err instanceof ComputerError && err.code === 'permission_missing' && appPath) {
+          throw new ComputerError('permission_missing', `${err.message.replace(/[.\s]+$/, '')}. ${permissionMissingHelp(appPath)}`);
+        }
         throw err;
       }
     },
+    supports: (method) => proc?.supports(method),
+    reconfigure: async () => { await proc?.reconfigure(); },
     abort: (reason) => proc?.abort(reason),
     dispose: () => { reset(); },
     reset,
@@ -182,6 +198,7 @@ export function createComputerService(deps: { requestConsent: ConsentRequester }
 
   const service: ComputerService = new ComputerService({
     isEnabled: () => readComputerUseEnabled(),
+    askPerApp: () => readComputerUseAskPerApp(),
     createHelper: helper && (() => helper),
     requestConsent: deps.requestConsent,
     // No helper, no chord. Every call arms the key before it reaches the

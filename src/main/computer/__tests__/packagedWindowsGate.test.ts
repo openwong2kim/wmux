@@ -25,12 +25,19 @@ vi.mock('electron', () => ({
     handle: (channel: string, fn: (event: unknown, ...args: unknown[]) => unknown) => { h.handlers.set(channel, fn); },
   },
 }));
-vi.mock('../../../shared/computer/config', () => ({ readComputerUseEnabled: () => h.enabled.value }));
+vi.mock('../../../shared/computer/config', () => ({
+  readComputerUseEnabled: () => h.enabled.value,
+  readComputerUseAskPerApp: () => false,
+  readComputerUseOverlay: () => true,
+}));
 vi.mock('../settings', () => ({
   helperStatus: () => 'ready',
   writeComputerUseEnabled: (enabled: boolean) => { h.enabled.value = enabled; return enabled; },
 }));
-vi.mock('../helperPath', () => ({ resolveHelperPathFor: () => h.helperPath.value }));
+vi.mock('../helperPath', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../helperPath')>()),
+  resolveHelperPathFor: () => h.helperPath.value,
+}));
 vi.mock('../selfElevation', () => ({ isSelfElevated: () => false }));
 vi.mock('../helperPin', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../helperPin')>()),

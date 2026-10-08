@@ -38,3 +38,24 @@ export function resolveHelperPathFor(opts: {
     : path.join(opts.appPath, 'native', opts.spec.dir, 'dist');
   return path.join(base, opts.spec.exe);
 }
+
+/**
+ * The macOS helper's .app bundle for a binary path inside it
+ * (`…/wmux Computer Use.app/Contents/MacOS/wmux-computer-use`), which is
+ * what the person sees in the Privacy & Security lists. Null for a path that
+ * is not inside a bundle (Windows, a bare dev binary).
+ */
+export function helperAppBundlePath(binaryPath: string | null): string | null {
+  if (!binaryPath) return null;
+  const marker = binaryPath.lastIndexOf('.app/Contents/MacOS/');
+  return marker === -1 ? null : binaryPath.slice(0, marker + '.app'.length);
+}
+
+/**
+ * What a permission_missing error adds for the person: where the helper is,
+ * and the fix for a stale grant (a row that reads on but no longer matches the
+ * installed helper's signature, so macOS silently denies it).
+ */
+export function permissionMissingHelp(appPath: string): string {
+  return `The helper app is "${appPath}". If it is already switched on there, remove it with "−" and add it again, or use Settings › Computer use › Reset access in wmux`;
+}

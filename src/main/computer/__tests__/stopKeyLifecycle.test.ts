@@ -16,6 +16,7 @@ const h = vi.hoisted(() => {
     helper: { value: 'ready' as 'ready' | 'missing' | 'unsupported' },
     helperError: { value: null as Error | null },
     helperCreated: { count: 0 },
+    helperPath: { value: 'C:/wmux/fake-helper.exe' },
     register: vi.fn((accel: string, cb: () => void) => {
       if (!h.chordFree.value) return false;
       shortcuts.set(accel, cb);
@@ -33,7 +34,11 @@ vi.mock('electron', () => ({
     handle: (channel: string, fn: (event: unknown, ...args: unknown[]) => unknown) => { h.handlers.set(channel, fn); },
   },
 }));
-vi.mock('../../../shared/computer/config', () => ({ readComputerUseEnabled: () => h.enabled.value }));
+vi.mock('../../../shared/computer/config', () => ({
+  readComputerUseEnabled: () => h.enabled.value,
+  readComputerUseAskPerApp: () => false,
+  readComputerUseOverlay: () => true,
+}));
 // Never spawn anything: every helper request fails as a missing binary would.
 vi.mock('../HelperProcess', () => ({
   HelperProcess: class {
@@ -45,7 +50,10 @@ vi.mock('../HelperProcess', () => ({
 }));
 // A helper path on every OS, so the lifecycle runs the same on Linux CI (whose
 // real path resolves to null → unsupported_platform before the stop key).
-vi.mock('../helperPath', () => ({ resolveHelperPathFor: () => 'C:/wmux/fake-helper.exe' }));
+vi.mock('../helperPath', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../helperPath')>()),
+  resolveHelperPathFor: () => h.helperPath.value,
+}));
 // CI's Windows runner is an elevated admin; these tests are about the stop key.
 vi.mock('../selfElevation', () => ({ isSelfElevated: () => false }));
 vi.mock('../settings', () => ({
@@ -86,6 +94,7 @@ beforeEach(() => {
   h.helper.value = 'ready';
   h.helperError.value = null;
   h.helperCreated.count = 0;
+  h.helperPath.value = 'C:/wmux/fake-helper.exe';
 });
 
 describe('computer-use stop key lifecycle', () => {
@@ -235,6 +244,19 @@ describe('computer use without a helper binary', () => {
     expect(err.code).toBe('helper_unavailable');
     expect(err.message).toMatch(/does not include the computer-use helper/);
     expect(err.message).not.toMatch(/EACCES|\/opt/);
+  });
+
+  it('adds the helper .app path and the stale-grant fix to a permission_missing error', async () => {
+    h.enabled.value = true;
+    h.helperPath.value = '/Applications/wmux.app/Contents/Resources/computer-use-macos/wmux Computer Use.app/Contents/MacOS/wmux-computer-use';
+    const { create } = await load();
+    const { ComputerError } = await import('../../../shared/computer/errors');
+    h.helperError.value = new ComputerError('permission_missing', 'macOS has not granted Accessibility to "wmux Computer Use".');
+    const err = (await create().listApps().catch((e: unknown) => e)) as { code?: string; message?: string };
+    expect(err.code).toBe('permission_missing');
+    expect(err.message).toContain('has not granted Accessibility');
+    expect(err.message).toContain('"/Applications/wmux.app/Contents/Resources/computer-use-macos/wmux Computer Use.app"');
+    expect(err.message).toContain('remove it with "−" and add it again, or use Settings › Computer use › Reset access');
   });
 
   it('uses a helper that appears after a call found it missing', async () => {

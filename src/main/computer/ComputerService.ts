@@ -5,22 +5,27 @@
 // Order of checks for anything that touches an app:
 //   1. opt-in switch (~/.wmux/computer-use.json) — read per call, not cached
 //   2. blocklist, on the helper-resolved app identity (exe path / bundle id)
-//   3. per (agent, app) consent from the person, remembered for this run
+//   3. per (agent, app) consent from the person, remembered for this run —
+//      only while `askPerApp` is on (opt-in, read per call); otherwise every
+//      app that passed 2 counts as consented (owner decision 2026-10-08)
 // and, for input, additionally:
 //   4. abort cooldown, input lock (one agent drives at a time), rate cap
 //
 // Control actions must name a snapshot this class recorded, so the target app
 // of every click is one that already passed 2 and 3; a helper cannot be talked
-// into acting on an app main never vetted.
+// into acting on an app main never vetted. openApp has no snapshot: it checks
+// the selector before the launch and the launched app after it.
 
 import { ComputerError } from '../../shared/computer/errors';
 import {
   BLOCK_REASON_TEXT,
   blockReasonFor,
   osChordRefusal,
+  selectorBlockReasonFor,
   type BlockContext,
 } from '../../shared/computer/blocklist';
 import {
+  COMPUTER_CONTROL_ACTIONS,
   MODIFIERS,
   OBSERVATION_MODES,
   SNAPSHOT_TTL_MS,
@@ -50,7 +55,16 @@ export interface HelperLike {
   request<M extends HelperMethod>(method: M, params: HelperMethods[M]['params']): Promise<HelperMethods[M]['result']>;
   abort(reason?: string): void;
   dispose(): void;
+  /** Whether the running helper's hello listed `method`; undefined while none runs. */
+  supports?(method: HelperMethod): boolean | undefined;
+  /** Pushes Settings to a running helper that lists `configure`; never starts one. */
+  reconfigure?(): Promise<void>;
+  /** Ends the running helper (a stale permission verdict); the next call starts a fresh one. */
+  reset?(): void;
 }
+
+/** What `capabilities` tells an agent: the helper's answer minus what cannot work. */
+export type AgentCapabilities = HelperCapabilities & { missingPermissions?: Array<'accessibility' | 'screenRecording'> };
 
 /**
  * How a consent prompt ended. Only `approved` and `denied` are the person's
@@ -86,6 +100,8 @@ export type ConsentRequester = (request: {
 
 export interface ComputerServiceDeps {
   isEnabled: () => boolean;
+  /** Settings › Computer use › Ask before each app. Read per call; off by default. */
+  askPerApp: () => boolean;
   /** Null when this OS has no helper (unsupported_platform). */
   createHelper: (() => HelperLike) | null;
   requestConsent: ConsentRequester;
@@ -194,8 +210,24 @@ export class ComputerService {
     return this.helper;
   }
 
-  async capabilities(): Promise<HelperCapabilities> {
-    return this.ensureReady().request('capabilities', {});
+  async capabilities(): Promise<AgentCapabilities> {
+    return capabilitiesForAgent(await this.ensureReady().request('capabilities', {}));
+  }
+
+  /** Settings changed (the overlay): tell a running helper. Never starts one. */
+  async reconfigure(): Promise<void> {
+    if (this.disposed) return;
+    await this.helper?.reconfigure?.();
+  }
+
+  /**
+   * Ends the running helper so the next call starts one with a fresh TCC
+   * verdict (after Reset access or Request access). Stops its work first.
+   */
+  resetHelper(): void {
+    if (this.disposed || !this.helper) return;
+    this.abort();
+    this.helper.reset?.();
   }
 
   async listApps(): Promise<{ apps: Array<AppInfo & { blocked?: string }> }> {
@@ -212,11 +244,12 @@ export class ComputerService {
   }
 
   /**
-   * Window titles leak content (a vault entry, a mail subject) and this call
-   * asks for no consent, so a title is sent only for apps this agent already
-   * has the person's consent for; every other window keeps its id and bounds
-   * with a blank title. Pass an agent with an empty key when the caller is not
-   * identified: no title at all is sent then.
+   * Window titles leak content (a vault entry, a mail subject). With
+   * `askPerApp` off every unblocked app counts as consented and its titles are
+   * sent. With it on, this call asks for no consent, so a title is sent only
+   * for apps this agent already has the person's consent for; every other
+   * window keeps its id and bounds with a blank title, and an agent with an
+   * empty key (caller not identified) gets no title at all.
    */
   async listWindows(agent: ComputerAgent, app?: string): Promise<{ windows: Array<WindowInfo & { blocked?: string }> }> {
     const helper = this.ensureReady();
@@ -227,6 +260,7 @@ export class ComputerService {
     // Blocked apps are marked so an agent learns why it cannot ask for them;
     // their titles are blank like any app without consent.
     const ctx = this.deps.blockContext();
+    const askPerApp = this.deps.askPerApp();
     const blockedByPid = new Map<number, string>();
     for (const a of apps) {
       const reason = blockReasonFor(a, ctx);
@@ -235,7 +269,7 @@ export class ComputerService {
     return {
       windows: windows.map((w) => {
         const blocked = blockedByPid.get(w.pid) ?? (ctx.selfPids?.has(w.pid) ? BLOCK_REASON_TEXT.wmux : undefined);
-        if (!blocked && agent.key && this.grants.get(grantKey(agent, w.appId)) === true) return w;
+        if (!blocked && (!askPerApp || (agent.key && this.grants.get(grantKey(agent, w.appId)) === true))) return w;
         // A folder location says as much as a title, so it needs the same consent.
         const hidden: WindowInfo & { blocked?: string } = { ...w, title: '', ...(blocked && { blocked }) };
         delete hidden.shellLocation;
@@ -292,6 +326,7 @@ export class ComputerService {
         'the computer-use stop key could not be registered (another app probably uses the same shortcut), so wmux does not let agents drive other apps',
       );
     }
+    if (params.action === 'openApp') fail('invalid_argument', 'openApp takes an app, not a snapshot');
     const generation = this.generation;
     if (!params.snapshotId) fail('invalid_argument', 'snapshotId is required; call getAppState first');
     const snapshotId = params.snapshotId;
@@ -368,6 +403,66 @@ export class ComputerService {
       default:
         return fail('invalid_argument', `unknown action ${String((params as { action: unknown }).action)}`);
     }
+  }
+
+  /**
+   * Launches the app if needed, brings it forward and makes sure it has a
+   * window (helper `openApp`, optional). Input like the other control
+   * actions: it needs the stop key, the input lock and a rate slot. The
+   * selector is checked against the blocklist before anything launches, and
+   * the app the helper opened is checked again after.
+   */
+  async openApp(agent: ComputerAgent, params: { app: string }): Promise<{ app: AppInfo; window: WindowInfo | null }> {
+    const helper = this.ensureReady();
+    if (!this.deps.stopKey.arm()) {
+      fail(
+        'stop_key_unavailable',
+        'the computer-use stop key could not be registered (another app probably uses the same shortcut), so wmux does not let agents drive other apps',
+      );
+    }
+    const generation = this.generation;
+    if (typeof params.app !== 'string' || !params.app.trim()) fail('invalid_argument', 'openApp needs app');
+    const coolingMs = this.abortedUntil - this.now();
+    if (coolingMs > 0) fail('aborted', 'computer use was just stopped by the user');
+    const ctx = this.deps.blockContext();
+    const named = selectorBlockReasonFor(params.app, ctx);
+    if (named) fail('app_blocked', `${params.app}: ${BLOCK_REASON_TEXT[named]}`);
+    if (!(await this.helperSupports(helper, 'openApp'))) {
+      fail('unsupported_action', 'this computer-use helper cannot open apps yet; open the app another way (or ask the user to), then use getAppState');
+    }
+    this.assertCurrent(generation);
+    // With consent on, an app that is already running is asked about before
+    // it is brought forward. One that is not running has nothing to show the
+    // person yet, so it is asked about right after the launch.
+    if (this.deps.askPerApp()) {
+      const running = await helper.request('resolveTarget', { app: params.app }).catch(() => null);
+      this.assertCurrent(generation);
+      if (running) {
+        assertConsistent(running.app, running.window);
+        await this.vet(agent, running.app, running.window, generation);
+      }
+    }
+    const now = this.now();
+    this.takeInputLock(agent, now);
+    this.checkRate(agent.key, now);
+    const opened = await helper.request('openApp', { app: params.app });
+    this.assertCurrent(generation);
+    const reason = blockReasonFor(opened.app, this.deps.blockContext());
+    if (reason) fail('app_blocked', `${opened.app.name}: ${BLOCK_REASON_TEXT[reason]}`);
+    if (opened.window) {
+      assertConsistent(opened.app, opened.window);
+      await this.vet(agent, opened.app, opened.window, generation);
+      this.deps.onControl?.({ agent, action: 'openApp', window: opened.window });
+    }
+    return opened;
+  }
+
+  /** Whether the helper's hello listed an optional method; starts the helper to find out. */
+  private async helperSupports(helper: HelperLike, method: HelperMethod): Promise<boolean> {
+    const known = helper.supports?.(method);
+    if (known !== undefined) return known;
+    const caps = await helper.request('capabilities', {});
+    return helper.supports?.(method) ?? caps.actions.includes(method);
   }
 
   /**
@@ -456,6 +551,8 @@ export class ComputerService {
     if (window.elevated) {
       fail('target_elevated', `${app.name} runs as administrator; Windows blocks input from wmux into it`);
     }
+    // Consent is opt-in: off, every app that passed the blocklist counts as consented.
+    if (!this.deps.askPerApp()) return;
     const key = grantKey(agent, app.id);
     const granted = this.grants.get(key);
     if (granted === true) return;
@@ -543,6 +640,27 @@ export class ComputerService {
       if (this.snapshots.size <= SNAPSHOT_RECORD_LIMIT) break;
     }
   }
+}
+
+/**
+ * Drops what cannot work without a missing OS permission, so an agent learns
+ * up front instead of from a permission_missing error: no Accessibility, no
+ * input (openApp included) and no tree; no Screen Recording, no screenshot.
+ * getAppState goes when no observation mode is left.
+ */
+export function capabilitiesForAgent(caps: HelperCapabilities): AgentCapabilities {
+  const missing: Array<'accessibility' | 'screenRecording'> = [];
+  if (!caps.permissions.accessibility) missing.push('accessibility');
+  if (!caps.permissions.screenRecording) missing.push('screenRecording');
+  if (missing.length === 0) return caps;
+  const control: ReadonlySet<string> = new Set(COMPUTER_CONTROL_ACTIONS);
+  const modes = caps.modes.filter((m) =>
+    m === 'ax' ? caps.permissions.accessibility
+      : m === 'vision' ? caps.permissions.screenRecording
+        : caps.permissions.accessibility && caps.permissions.screenRecording);
+  const actions = caps.actions.filter((a) =>
+    (caps.permissions.accessibility || !control.has(a)) && (a !== 'getAppState' || modes.length > 0));
+  return { ...caps, actions, modes, missingPermissions: missing };
 }
 
 /** A window the helper reports must belong to the app it reports with it. */
