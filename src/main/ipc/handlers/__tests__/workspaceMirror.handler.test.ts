@@ -202,4 +202,10 @@ describe('parseWorkspaceMirrorPayload — panePtys passthrough', () => {
     expect(parsed?.panePtys).toEqual({ 'daemon-1': 'pane-1' });
     expect(parseWorkspaceMirrorPayload({ entries: [], fleets: [] })).not.toHaveProperty('panePtys');
   });
+
+  it('forwards paneIds (plausible ids only) and keeps an absent list absent', () => {
+    expect(parseWorkspaceMirrorPayload({ entries: [], fleets: [], paneIds: ['pane-1', 7, 'bad id!'] })?.paneIds)
+      .toEqual(['pane-1']);
+    expect(parseWorkspaceMirrorPayload({ entries: [], fleets: [] })).not.toHaveProperty('paneIds');
+  });
 });

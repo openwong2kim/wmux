@@ -131,6 +131,8 @@ export const nb = {
   'pane.browserProfileNew': "Ny profil for denne ruten",
   'pane.browserProfileUseWorkspace': "Bruk arbeidsområdets profil",
   'pane.browserProfileFailed': "Kunne ikke endre nettleserprofilen.",
+  'pane.browserProfileInUseWorkspace': "Brukes av et arbeidsområde",
+  'pane.browserProfileInUsePane': "Brukes av en annen rute",
   'pane.showInChrome': "Vis i Chrome",
   'pane.showInChromeFailed': "Kunne ikke vise denne ruten i Chrome.",
   'browser.private': "Privat",

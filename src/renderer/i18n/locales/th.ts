@@ -131,6 +131,8 @@ export const th = {
   'pane.browserProfileNew': "โปรไฟล์ใหม่สำหรับแพนนี้",
   'pane.browserProfileUseWorkspace': "ใช้โปรไฟล์ของเวิร์กสเปซ",
   'pane.browserProfileFailed': "ไม่สามารถเปลี่ยนโปรไฟล์เบราว์เซอร์ได้",
+  'pane.browserProfileInUseWorkspace': "เวิร์กสเปซใช้งานอยู่",
+  'pane.browserProfileInUsePane': "แพนอื่นใช้งานอยู่",
   'pane.showInChrome': "แสดงใน Chrome",
   'pane.showInChromeFailed': "ไม่สามารถแสดงแพนนี้ใน Chrome ได้",
   'browser.private': "ส่วนตัว",

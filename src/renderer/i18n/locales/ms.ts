@@ -131,6 +131,8 @@ export const ms = {
   'pane.browserProfileNew': "Profil baharu untuk anak tetingkap ini",
   'pane.browserProfileUseWorkspace': "Guna profil ruang kerja",
   'pane.browserProfileFailed': "Tidak dapat menukar profil pelayar.",
+  'pane.browserProfileInUseWorkspace': "Digunakan oleh ruang kerja",
+  'pane.browserProfileInUsePane': "Digunakan oleh anak tetingkap lain",
   'pane.showInChrome': "Tunjukkan dalam Chrome",
   'pane.showInChromeFailed': "Tidak dapat menunjukkan anak tetingkap ini dalam Chrome.",
   'browser.private': "Peribadi",

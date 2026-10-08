@@ -131,6 +131,8 @@ export const fr = {
   'pane.browserProfileNew': "Nouveau profil pour ce volet",
   'pane.browserProfileUseWorkspace': "Utiliser le profil de l’espace de travail",
   'pane.browserProfileFailed': "Impossible de changer le profil du navigateur.",
+  'pane.browserProfileInUseWorkspace': "Utilisé par un espace de travail",
+  'pane.browserProfileInUsePane': "Utilisé par un autre volet",
   'pane.showInChrome': "Afficher dans Chrome",
   'pane.showInChromeFailed': "Impossible d’afficher ce volet dans Chrome.",
   'browser.private': "Privé",

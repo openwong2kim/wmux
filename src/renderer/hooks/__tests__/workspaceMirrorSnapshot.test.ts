@@ -7,6 +7,7 @@ import {
   buildWorkspaceMirrorPayload,
   buildRoleBindings,
   buildPanePtys,
+  buildPaneIds,
 } from '../workspaceMirrorSnapshot';
 import type { Workspace, Pane, Surface, AgentStatus } from '../../../shared/types';
 import type { FleetSelectorState } from '../../stores/selectors/fleet';
@@ -472,6 +473,12 @@ describe('buildPanePtys — per-pane Chrome profiles', () => {
     // An unspawned surface (empty ptyId) is no key at all.
     expect(buildPanePtys([workspace('ws-e', 'e', leaf('p-e', [surface('s-e', '')]), 'p-e')])).toEqual({});
     expect(buildWorkspaceMirrorPayload(state(), () => 1).panePtys).toEqual(buildPanePtys([w1, w2]));
+  });
+
+  it('paneIds lists every pane, PTY-less and stashed ones included', () => {
+    const ptyLess = workspace('ws-e', 'e', leaf('p-e', [surface('s-e', '')]), 'p-e');
+    expect(buildPaneIds([w2, stashedWorkspace(), ptyLess])).toEqual(['p2a', 'p2b', 'p-vis', 'p-st', 'p-e']);
+    expect(buildWorkspaceMirrorPayload(state(), () => 1).paneIds).toEqual(['p1', 'p2a', 'p2b']);
   });
 });
 

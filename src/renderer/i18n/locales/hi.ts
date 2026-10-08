@@ -131,6 +131,8 @@ export const hi = {
   'pane.browserProfileNew': "इस पेन के लिए नई प्रोफ़ाइल",
   'pane.browserProfileUseWorkspace': "वर्कस्पेस प्रोफ़ाइल का उपयोग करें",
   'pane.browserProfileFailed': "ब्राउज़र प्रोफ़ाइल नहीं बदली जा सकी।",
+  'pane.browserProfileInUseWorkspace': "एक वर्कस्पेस द्वारा उपयोग में",
+  'pane.browserProfileInUsePane': "दूसरे पेन द्वारा उपयोग में",
   'pane.showInChrome': "Chrome में दिखाएँ",
   'pane.showInChromeFailed': "इस पेन को Chrome में नहीं दिखाया जा सका।",
   'browser.private': "निजी",

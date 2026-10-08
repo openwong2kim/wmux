@@ -133,6 +133,8 @@ export const ja = {
   'pane.browserProfileNew': "このペイン用の新しいプロファイル",
   'pane.browserProfileUseWorkspace': "ワークスペースのプロファイルを使用",
   'pane.browserProfileFailed': "ブラウザプロファイルを変更できませんでした。",
+  'pane.browserProfileInUseWorkspace': "ワークスペースで使用中",
+  'pane.browserProfileInUsePane': "別のペインで使用中",
   'pane.showInChrome': "Chrome で表示",
   'pane.showInChromeFailed': "このペインを Chrome で表示できませんでした。",
   'browser.private': "シークレット",

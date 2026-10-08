@@ -374,6 +374,8 @@ export const zh = {
   'pane.browserProfileNew': "为此窗格新建配置文件",
   'pane.browserProfileUseWorkspace': "使用工作区配置文件",
   'pane.browserProfileFailed': "无法更改浏览器配置文件。",
+  'pane.browserProfileInUseWorkspace': "已被工作区使用",
+  'pane.browserProfileInUsePane': "已被其他窗格使用",
   'pane.showInChrome': "在 Chrome 中显示",
   'pane.showInChromeFailed': "无法在 Chrome 中显示此窗格。",
   'browser.private': "无痕",

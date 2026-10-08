@@ -134,13 +134,17 @@ async function call(
   method: string,
   params: Record<string, unknown>,
   callerPtyId?: string,
+  opts?: { operator: true },
 ): Promise<{ result?: unknown; error?: string }> {
-  const response = await router.dispatch({
-    id: '1',
-    method,
-    params,
-    ...(callerPtyId !== undefined && { callerPtyId }),
-  } as never);
+  const response = await router.dispatch(
+    {
+      id: '1',
+      method,
+      params,
+      ...(callerPtyId !== undefined && { callerPtyId }),
+    } as never,
+    opts,
+  );
   if (response.ok) return { result: (response as { result?: unknown }).result };
   return { error: String((response as { error?: unknown }).error ?? '') };
 }
@@ -231,6 +235,16 @@ describe('which Chrome a call drives', () => {
     });
     // Nothing was opened anywhere: failing closed means no launcher at all.
     expect(registry.forProfile).not.toHaveBeenCalled();
+  });
+
+  it('the human operator (no PTY) gets the workspace profile; an agent with no PTY stays refused', async () => {
+    const registry = makeRegistry(store);
+    const router = register(registry);
+    const human = await call(router, 'browser.cdp.info', { workspaceId: 'ws-1' }, undefined, { operator: true });
+    expect(human.result).toMatchObject({ profile: 'default' });
+    expect(sendToRendererMock).not.toHaveBeenCalled();
+    const agent = await call(router, 'browser.cdp.info', { workspaceId: 'ws-1' });
+    expect(agent.error).toContain(PANE_PROFILE_UNRESOLVED_CODE);
   });
 
   it('a workspace WITHOUT pane bindings never looks up the pane', async () => {

@@ -103,6 +103,13 @@ export interface WorkspaceMirrorPushPayload {
    */
   panePtys?: Record<string, string>;
   /**
+   * Every pane id in the layout, stashed panes included — a pane with no PTY
+   * (browser-only, mid-respawn) too, which `panePtys` cannot name. COMPLETE
+   * when present; `undefined` (old renderer) means unknown, so main never
+   * prunes a pane binding from its absence.
+   */
+  paneIds?: string[];
+  /**
    * True once this renderer has installed a SAVED session's workspaces (the
    * ids came from session.json). False after a failed or empty session load,
    * where the tree is a freshly generated default workspace whose id matches

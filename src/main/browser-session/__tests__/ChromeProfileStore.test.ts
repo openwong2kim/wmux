@@ -7,7 +7,7 @@ import {
   DEFAULT_CHROME_PROFILE,
   LIVE_CHROME_PROFILE,
   getChromeProfilesPath,
-  prunePaneBindingsFromMirror,
+  reconcilePaneBindingsFromMirror,
 } from '../ChromeProfileStore';
 import { WorkspaceMirror } from '../../workspace/WorkspaceMirror';
 
@@ -154,7 +154,7 @@ describe('ChromeProfileStore', () => {
     });
   });
 
-  it('prunePanes drops orphans only, and writes nothing when there are none', async () => {
+  it('reconcilePanes drops orphans only, and writes nothing when nothing changed', async () => {
     const store = new ChromeProfileStore(dir);
     await store.create('p1');
     await store.create('p2');
@@ -162,33 +162,75 @@ describe('ChromeProfileStore', () => {
     await store.setPaneBinding('pane-b', 'ws-1', 'p2');
 
     const before = readFileSync(getChromeProfilesPath(dir), 'utf8');
-    expect(await store.prunePanes(new Set(['pane-a', 'pane-b', 'pane-z']))).toBe(0);
+    const same = new Map([['pane-a', 'ws-1']]);
+    expect(await store.reconcilePanes(new Set(['pane-a', 'pane-b', 'pane-z']), same)).toEqual({ pruned: 0, rehomed: 0 });
     expect(readFileSync(getChromeProfilesPath(dir), 'utf8')).toBe(before);
 
-    expect(await store.prunePanes(new Set(['pane-a']))).toBe(1);
+    expect(await store.reconcilePanes(new Set(['pane-a']), same)).toEqual({ pruned: 1, rehomed: 0 });
     expect(new ChromeProfileStore(dir).getPaneBindings()).toEqual({
       'pane-a': { workspaceId: 'ws-1', profile: 'p1' },
     });
   });
 
-  it('mirror pushes prune only from a restored session that sent the pane map', async () => {
-    const store = new ChromeProfileStore(dir);
-    await store.create('p1');
-    await store.setPaneBinding('pane-a', 'ws-1', 'p1');
-    const mirror = new WorkspaceMirror();
-    const push = (extra: { sessionRestored?: boolean; panePtys?: Record<string, string> }) =>
-      mirror.setSnapshot({ ts: 1, entries: [{ id: 'ws-1', name: 'w' }], fleets: [], ...extra });
+  describe('mirror-driven reconcile', () => {
+    type Extra = { sessionRestored?: boolean; panePtys?: Record<string, string>; paneIds?: string[] };
+    const pushTo = (mirror: WorkspaceMirror, extra: Extra, entries = [{ id: 'ws-1', name: 'w' }]) =>
+      mirror.setSnapshot({ ts: 1, entries, fleets: [], ...extra });
 
-    // A fresh default tree after a failed session load: never prune.
-    push({ panePtys: { 'pty-new': 'pane-new' } });
-    expect(await prunePaneBindingsFromMirror(store, mirror)).toBe(0);
-    // An old renderer that sends no map: unknown, never prune.
-    push({ sessionRestored: true });
-    expect(await prunePaneBindingsFromMirror(store, mirror)).toBe(0);
-    expect(store.getPaneBindings()).toHaveProperty('pane-a');
+    it('acts only on a restored session that sent the complete pane list', async () => {
+      const store = new ChromeProfileStore(dir);
+      await store.create('p1');
+      await store.setPaneBinding('pane-a', 'ws-1', 'p1');
+      const mirror = new WorkspaceMirror();
+      const none = { pruned: 0, rehomed: 0 };
 
-    push({ sessionRestored: true, panePtys: { 'pty-new': 'pane-new' } });
-    expect(await prunePaneBindingsFromMirror(store, mirror)).toBe(1);
-    expect(new ChromeProfileStore(dir).getPaneBindings()).toEqual({});
+      // A fresh default tree after a failed session load: never prune.
+      pushTo(mirror, { paneIds: ['pane-new'] });
+      expect(await reconcilePaneBindingsFromMirror(store, mirror)).toEqual(none);
+      // A renderer that sends no pane list (panePtys alone is not complete): unknown.
+      pushTo(mirror, { sessionRestored: true, panePtys: { 'pty-new': 'pane-new' } });
+      expect(await reconcilePaneBindingsFromMirror(store, mirror)).toEqual(none);
+      expect(store.getPaneBindings()).toHaveProperty('pane-a');
+
+      pushTo(mirror, { sessionRestored: true, paneIds: ['pane-new'], panePtys: {} });
+      expect(await reconcilePaneBindingsFromMirror(store, mirror)).toEqual({ pruned: 1, rehomed: 0 });
+      expect(new ChromeProfileStore(dir).getPaneBindings()).toEqual({});
+    });
+
+    it('a bound pane with no PTY (browser-only) survives a push', async () => {
+      const store = new ChromeProfileStore(dir);
+      await store.create('p1');
+      await store.setPaneBinding('pane-browser', 'ws-1', 'p1');
+      const mirror = new WorkspaceMirror();
+      pushTo(mirror, { sessionRestored: true, paneIds: ['pane-term', 'pane-browser'], panePtys: { 'pty-1': 'pane-term' } });
+      expect(await reconcilePaneBindingsFromMirror(store, mirror)).toEqual({ pruned: 0, rehomed: 0 });
+      expect(new ChromeProfileStore(dir).getPaneBindings()).toEqual({
+        'pane-browser': { workspaceId: 'ws-1', profile: 'p1' },
+      });
+    });
+
+    it('a bound pane moved to another workspace is re-homed, so the old one stops reporting it', async () => {
+      const store = new ChromeProfileStore(dir);
+      await store.create('p1');
+      await store.setPaneBinding('pane-a', 'ws-1', 'p1');
+      const mirror = new WorkspaceMirror();
+      const entries = [
+        { id: 'ws-1', name: 'one', ptyIds: ['pty-other'] },
+        { id: 'ws-2', name: 'two', ptyIds: ['pty-a'] },
+      ];
+      const extra = { paneIds: ['pane-a', 'pane-other'], panePtys: { 'pty-a': 'pane-a', 'pty-other': 'pane-other' } };
+
+      // Not from an unrestored session.
+      pushTo(mirror, extra, entries);
+      expect(await reconcilePaneBindingsFromMirror(store, mirror)).toEqual({ pruned: 0, rehomed: 0 });
+      expect(store.profileFor('ws-2', 'pane-a')).toBe(DEFAULT_CHROME_PROFILE);
+
+      pushTo(mirror, { ...extra, sessionRestored: true }, entries);
+      expect(await reconcilePaneBindingsFromMirror(store, mirror)).toEqual({ pruned: 0, rehomed: 1 });
+      const fresh = new ChromeProfileStore(dir);
+      expect(fresh.profileFor('ws-2', 'pane-a')).toBe('p1');
+      expect(fresh.hasPaneBindings('ws-1')).toBe(false);
+      expect(fresh.hasPaneBindings('ws-2')).toBe(true);
+    });
   });
 });

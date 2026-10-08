@@ -988,6 +988,8 @@ export const en = {
   'pane.browserProfileNew': "New profile for this pane",
   'pane.browserProfileUseWorkspace': "Use workspace profile",
   'pane.browserProfileFailed': "Could not change the browser profile.",
+  'pane.browserProfileInUseWorkspace': "In use by a workspace",
+  'pane.browserProfileInUsePane': "In use by another pane",
   'pane.showInChrome': "Show in Chrome",
   'pane.showInChromeFailed': "Could not show this pane in Chrome.",
   'browser.private': "Private",

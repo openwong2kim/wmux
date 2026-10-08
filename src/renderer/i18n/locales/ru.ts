@@ -131,6 +131,8 @@ export const ru = {
   'pane.browserProfileNew': "Новый профиль для этой панели",
   'pane.browserProfileUseWorkspace': "Использовать профиль рабочего пространства",
   'pane.browserProfileFailed': "Не удалось изменить профиль браузера.",
+  'pane.browserProfileInUseWorkspace': "Используется рабочим пространством",
+  'pane.browserProfileInUsePane': "Используется другой панелью",
   'pane.showInChrome': "Показать в Chrome",
   'pane.showInChromeFailed': "Не удалось показать эту панель в Chrome.",
   'browser.private': "Приватно",

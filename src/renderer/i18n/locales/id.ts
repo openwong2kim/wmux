@@ -131,6 +131,8 @@ export const id = {
   'pane.browserProfileNew': "Profil baru untuk panel ini",
   'pane.browserProfileUseWorkspace': "Gunakan profil ruang kerja",
   'pane.browserProfileFailed': "Tidak dapat mengubah profil browser.",
+  'pane.browserProfileInUseWorkspace': "Digunakan oleh ruang kerja",
+  'pane.browserProfileInUsePane': "Digunakan oleh panel lain",
   'pane.showInChrome': "Tampilkan di Chrome",
   'pane.showInChromeFailed': "Tidak dapat menampilkan panel ini di Chrome.",
   'browser.private': "Privat",

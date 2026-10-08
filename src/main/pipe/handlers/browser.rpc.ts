@@ -837,7 +837,11 @@ export function registerBrowserRpc(
       throw new Error(`${method}: browser backend is 'chrome' but no Chrome launcher is wired in this build.`);
     }
     const callerPtyId = ctx?.callerPtyId;
-    if (!workspaceId || !chromeRegistry.hasPaneBindings(workspaceId)) {
+    // The human at the UI (operator lane) is not any pane's agent: with no
+    // PTY to speak for, their action runs in the workspace's profile. Only
+    // agents and wire callers fail closed below.
+    const operatorWithoutPane = ctx?.operator === true && !callerPtyId;
+    if (!workspaceId || operatorWithoutPane || !chromeRegistry.hasPaneBindings(workspaceId)) {
       return { profile: chromeRegistry.profileFor(workspaceId), paneBound: false, ...(callerPtyId && { callerPtyId }) };
     }
     let paneId: string | null = null;

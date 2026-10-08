@@ -978,6 +978,8 @@ export const pl = {
   'pane.browserProfileNew': "Nowy profil dla tego panelu",
   'pane.browserProfileUseWorkspace': "Użyj profilu obszaru roboczego",
   'pane.browserProfileFailed': "Nie udało się zmienić profilu przeglądarki.",
+  'pane.browserProfileInUseWorkspace': "Używany przez obszar roboczy",
+  'pane.browserProfileInUsePane': "Używany przez inny panel",
   'pane.showInChrome': "Pokaż w Chrome",
   'pane.showInChromeFailed': "Nie udało się pokazać tego panelu w Chrome.",
   'browser.private': "Prywatna",

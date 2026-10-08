@@ -131,6 +131,8 @@ export const ptBR = {
   'pane.browserProfileNew': "Novo perfil para este painel",
   'pane.browserProfileUseWorkspace': "Usar o perfil do espaço de trabalho",
   'pane.browserProfileFailed': "Não foi possível alterar o perfil do navegador.",
+  'pane.browserProfileInUseWorkspace': "Em uso por um espaço de trabalho",
+  'pane.browserProfileInUsePane': "Em uso por outro painel",
   'pane.showInChrome': "Mostrar no Chrome",
   'pane.showInChromeFailed': "Não foi possível mostrar este painel no Chrome.",
   'browser.private': "Privada",
