@@ -342,9 +342,17 @@ $global:__wmux_osc7 = {
 # stay armed into one. LocationChangedAction would be simpler but does not
 # exist in Windows PowerShell 5.1.
 #
+# A loop typed at the prompt (for/foreach/while) is the exception: its body's
+# lookups are top level too, so the hook would stay armed for the whole loop
+# (a 20,000-command loop ran about 1.7-2x slower). It therefore also disarms
+# after 64 lookups on one line. A hand-typed line makes far fewer, and 64 armed
+# lookups cost a few milliseconds. The consequence: a cd placed after the first
+# 64 lookups on one line is reported at the next prompt, not immediately.
+#
 # An action the user already set is kept: it is chained while ours is armed and
 # restored when ours disarms.
 $global:__wmux_lookup_busy = $false
+$global:__wmux_lookup_n = 0
 $global:__wmux_lookup_absorb = $false
 $global:__wmux_prev_lookup = $null
 $global:__wmux_lookup = {
@@ -360,12 +368,13 @@ $global:__wmux_lookup = {
     # body may run for those.
     if ($global:__wmux_lookup_busy) { return }
     $global:__wmux_lookup_busy = $true
+    $global:__wmux_lookup_n++
     try {
         # The property returns a delegate, not the scriptblock that was set,
         # and '&' cannot invoke a delegate. .Invoke() takes either.
         if ($global:__wmux_prev_lookup) { try { $global:__wmux_prev_lookup.Invoke($__wmux_name, $__wmux_event) } catch { } }
         $type = if ($__wmux_event.Command) { [string]$__wmux_event.Command.CommandType } else { '' }
-        if ($__wmux_event.CommandOrigin -ne 'Runspace' -or $type -eq 'Application' -or $type -eq 'ExternalScript') {
+        if ($__wmux_event.CommandOrigin -ne 'Runspace' -or $type -eq 'Application' -or $type -eq 'ExternalScript' -or $global:__wmux_lookup_n -ge 64) {
             & $global:__wmux_disarm_lookup
         }
         $loc = $executionContext.SessionState.Path.CurrentLocation
@@ -386,6 +395,7 @@ $global:__wmux_lookup = {
 $global:__wmux_arm_lookup = {
     $global:__wmux_lookup_busy = $false
     $global:__wmux_lookup_absorb = $false
+    $global:__wmux_lookup_n = 0
     $current = $ExecutionContext.InvokeCommand.PostCommandLookupAction
     if ($current -ne $global:__wmux_lookup) {
         $global:__wmux_prev_lookup = $current

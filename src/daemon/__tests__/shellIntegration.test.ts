@@ -202,8 +202,11 @@ describe('PWSH_INIT — mid-line cwd report (#1941)', () => {
     expect(disarm).toBeGreaterThan(snapshot);
   });
 
-  it('disarms itself on a program or script launch and on any non-top-level lookup', () => {
-    expect(PWSH_INIT).toContain("if ($__wmux_event.CommandOrigin -ne 'Runspace' -or $type -eq 'Application' -or $type -eq 'ExternalScript') {");
+  it('disarms itself on a program or script launch, on any non-top-level lookup, and after 64 lookups', () => {
+    expect(PWSH_INIT).toContain("if ($__wmux_event.CommandOrigin -ne 'Runspace' -or $type -eq 'Application' -or $type -eq 'ExternalScript' -or $global:__wmux_lookup_n -ge 64) {");
+    // The count restarts with every line.
+    const arm = PWSH_INIT.slice(PWSH_INIT.indexOf('$global:__wmux_arm_lookup = {'), PWSH_INIT.indexOf('$global:__wmux_disarm_lookup = {'));
+    expect(arm).toContain('$global:__wmux_lookup_n = 0');
   });
 
   it('chains and restores an action the user already set', () => {

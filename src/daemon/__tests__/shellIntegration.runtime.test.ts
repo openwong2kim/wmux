@@ -445,6 +445,62 @@ describe.runIf(hasPowerShell)('mid-line cwd report — powershell.exe (#1941)', 
     expect(hits[1]).toBe('2');
   }, EVENT_TIMEOUT_MS * 2 + 2000);
 
+  // A for/foreach loop typed at the prompt makes top-level lookups, so nothing
+  // in its body disarmed the hook and the loop paid for it on every command.
+  // The hook now disarms after 64 lookups on one line. A cd before that is
+  // still reported at once; a cd after it waits for the next prompt.
+  it('disarms after 64 lookups on one line and reports a later cd at the prompt', async () => {
+    const { managed, start, target } = startPane('cap');
+    await waitForCwd(managed, start, 'the first prompt');
+    const probe = (line: string, label: string) => {
+      const before = managed.ringBuffer.readAll().length;
+      managed.ptyProcess.write(line);
+      return waitForOutputAfter(managed, before, /CAP\[(\w+)\]/, label);
+    };
+    const isOurs = '$($ExecutionContext.InvokeCommand.PostCommandLookupAction -eq $global:__wmux_lookup)';
+
+    // Below the cap the hook stays armed for the whole line...
+    expect((await probe(`for ($i = 0; $i -lt 20; $i++) { Get-Date > $null }; Write-Output "CAP[${isOurs}]"\r`, 'armed below the cap'))[1]).toBe('True');
+    // ...and the cap disarms it inside a long loop typed at the prompt.
+    expect((await probe(`for ($i = 0; $i -lt 200; $i++) { Get-Date > $null }; Write-Output "CAP[${isOurs}]"\r`, 'disarmed by the cap'))[1]).toBe('False');
+
+    // The line's status survives the cap: the prompt reports the failure.
+    const baseline = managed.promptLog.size;
+    managed.ptyProcess.write("for ($i = 0; $i -lt 200; $i++) { Get-Date > $null }; throw 'wmux-cap'\r");
+    const cmdStart = await waitForEventAfter(managed, baseline, (e) => e.type === 'command_start', 'command_start');
+    const cmdEnd = await waitForEventAfter(
+      managed,
+      baseline,
+      (e) => e.type === 'command_end' && e.byteOffset >= cmdStart.byteOffset,
+      'command_end after the cap',
+    );
+    expect(cmdEnd.exitCode).toBe(1);
+
+    // A user action set before the line ran on every lookup, armed or not, and
+    // is the one left in place when the cap disarms ours.
+    managed.ptyProcess.write('$global:userAction = { $global:userHits++ }; $ExecutionContext.InvokeCommand.PostCommandLookupAction = $global:userAction\r');
+    const restored = `$global:userHits = 0; for ($i = 0; $i -lt 200; $i++) { Get-Date > $null }; $h = $global:userHits; Get-Date > $null; Write-Output "CAP[$(($ExecutionContext.InvokeCommand.PostCommandLookupAction -eq $global:userAction) -and $global:userHits -gt $h -and $h -ge 200)]"\r`;
+    expect((await probe(restored, 'the user action after the cap'))[1]).toBe('True');
+
+    // A cd after the cap, then a program that is still running: meta.cwd
+    // stays put until the prompt after the program reports the new folder.
+    const base1 = managed.promptLog.size;
+    managed.ptyProcess.write('$ExecutionContext.InvokeCommand.PostCommandLookupAction = $null\r');
+    const end1 = await waitForEventAfter(managed, base1, (e) => e.type === 'command_end', 'command_end of the reset');
+    await waitForEventAfter(managed, base1, (e) => e.type === 'prompt_end' && e.byteOffset >= end1.byteOffset, 'the prompt after the reset');
+    const base2 = managed.promptLog.size;
+    managed.ptyProcess.write(`for ($i = 0; $i -lt 200; $i++) { Get-Date > $null }; cd '${target}'; & "${CMD_EXE}" /c "ping -n 8 127.0.0.1 > nul"\r`);
+    const start2 = await waitForEventAfter(managed, base2, (e) => e.type === 'command_start', 'command_start of the capped line');
+    // ping -n 8 runs about 7 s; the loop itself well under 1 s.
+    await new Promise((r) => setTimeout(r, 2000));
+    const running = !managed.promptLog.snapshot().slice(base2)
+      .some((e) => e.type === 'command_end' && e.byteOffset >= start2.byteOffset);
+    expect(running).toBe(true);
+    expect(real(managed.meta.cwd)).toBe(real(start));
+    await waitForEventAfter(managed, base2, (e) => e.type === 'command_end' && e.byteOffset >= start2.byteOffset, 'command_end of the capped line');
+    await waitForCwd(managed, target, 'the prompt report after the capped line');
+  }, EVENT_TIMEOUT_MS * 8 + 2000);
+
   // The action runs statements, and every statement sets $? to true. After a
   // terminating error the host looks up Out-Default and prompt with the action
   // still armed, so the prompt read $? = true and reported D;0.
