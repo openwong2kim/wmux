@@ -99,7 +99,7 @@ import {
   CHROME_BACKEND_RPC_UNSUPPORTED_MESSAGE,
   type ExternalOpenResult,
 } from '../../../shared/browserBackend';
-import type { RpcContext, RpcMethod } from '../../../shared/rpc';
+import { isHostedCaller, type RpcContext, type RpcMethod } from '../../../shared/rpc';
 import type {
   BrowserScopeShadowInput,
   BrowserScopeShadowReason,
@@ -837,11 +837,11 @@ export function registerBrowserRpc(
       throw new Error(`${method}: browser backend is 'chrome' but no Chrome launcher is wired in this build.`);
     }
     const callerPtyId = ctx?.callerPtyId;
-    // The human at the UI (operator lane) is not any pane's agent: with no
-    // PTY to speak for, their action runs in the workspace's profile. Only
-    // agents and wire callers fail closed below.
-    const operatorWithoutPane = ctx?.operator === true && !callerPtyId;
-    if (!workspaceId || operatorWithoutPane || !chromeRegistry.hasPaneBindings(workspaceId)) {
+    // The human at the UI (operator lane) and an approved in-process plugin
+    // (hosted lane) are not any pane's agent: with no PTY to speak for, they
+    // act in the workspace's profile. Only wire callers fail closed below.
+    const inProcessWithoutPane = (ctx?.operator === true || isHostedCaller(ctx)) && !callerPtyId;
+    if (!workspaceId || inProcessWithoutPane || !chromeRegistry.hasPaneBindings(workspaceId)) {
       return { profile: chromeRegistry.profileFor(workspaceId), paneBound: false, ...(callerPtyId && { callerPtyId }) };
     }
     let paneId: string | null = null;
@@ -2374,7 +2374,19 @@ export function registerBrowserRpc(
     // A Chrome surface is judged by the same rule `browser.cdp.info` reported
     // it with, so a restarted agent can re-claim its pane's tab.
     const chrome =
-      backend() === 'chrome' ? await resolveChromeProfile('browser.surface.adopt', ctx, workspaceId) : undefined;
+      backend() === 'chrome' ? await resolveChromeClient('browser.surface.adopt', ctx, workspaceId) : undefined;
+    // Only a tab the caller could have been offered: one its own Chrome holds
+    // for this workspace. Without this, a claim on any id — another pane's,
+    // another workspace's — would be recorded and later read back as `mine`.
+    if (chrome) {
+      const offered = await chrome.client.cdpInfoTargets(workspaceId);
+      if (!offered.some((t) => t.surfaceId === surfaceId && t.workspaceId === workspaceId)) {
+        throw new Error(
+          `browser.surface.adopt: "${surfaceId}" is not a Chrome tab of this workspace in the calling ` +
+            "pane's browser profile.",
+        );
+      }
+    }
     if (!isUnclaimedBy(surfaceId, openerCaller(openerKey, chrome))) {
       return { ok: true, owner: 'other' as const };
     }
@@ -2580,18 +2592,33 @@ export function registerBrowserRpc(
         // Only the owning workspace may close it — a cross-workspace close is
         // exactly the tear-down-someone-else's-browser hazard #810 exists for.
         const owner = chromeRegistry?.ownerOfSurface(surfaceId);
-        // A pane's exclusive Chrome is that pane's alone: the same workspace
-        // is not enough, and neither is an undefined scope.
-        const otherPanes =
-          !!owner && owner.profile !== caller.profile && !!chromeRegistry?.isPaneBound(owner.profile);
+        const sameWorkspace =
+          !!owner && (scope === undefined || (owner.workspaceId !== undefined && owner.workspaceId === scope));
+        // A pane's exclusive Chrome is that pane's alone, in both directions:
+        // a pane-bound caller may not reach into the workspace's Chrome, and
+        // nobody else may reach into a pane's. The old cross-profile fallback
+        // (a workspace whose binding changed) survives only when neither side
+        // is pane-bound.
+        const crossesPane =
+          !!owner
+          && owner.profile !== caller.profile
+          && (caller.paneBound || !!chromeRegistry?.isPaneBound(owner.profile));
+        if (owner && crossesPane && sameWorkspace) {
+          // Said plainly rather than folded into "not found": the caller can
+          // see this tab in its workspace and would otherwise retry forever.
+          throw new Error(
+            scope === undefined && !!chromeRegistry?.isPaneBound(owner.profile)
+              ? `browser.close: Chrome tab "${surfaceId}" is in a pane's own Chrome profile and this call ` +
+                  'names no workspace, so it cannot be shown to come from that pane. Close it from the pane ' +
+                  'that owns it.'
+              : `browser.close: Chrome tab "${surfaceId}" is in another pane's Chrome profile; only that ` +
+                  'pane can close it. Do not retry.',
+          );
+        }
         // An undefined scope (shadow mode, caller sent no workspaceId) closes
         // unfiltered — the same meaning the primary path's listTargets(scope)
         // gives it — so an unbound/stale handle stays retirable there too.
-        if (
-          owner
-          && !otherPanes
-          && (scope === undefined || (owner.workspaceId !== undefined && owner.workspaceId === scope))
-        ) {
+        if (owner && !crossesPane && sameWorkspace) {
           if (await owner.client.closeSurface(surfaceId)) {
             surfaceOpeners.forget(surfaceId);
             return { ok: true, backend: 'chrome', closed: true, surfaceId };

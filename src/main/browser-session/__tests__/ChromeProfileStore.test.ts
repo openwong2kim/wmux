@@ -233,4 +233,24 @@ describe('ChromeProfileStore', () => {
       expect(fresh.hasPaneBindings('ws-2')).toBe(true);
     });
   });
+
+  it('profile names are one identity regardless of case (one user-data-dir on macOS/Windows)', async () => {
+    const store = new ChromeProfileStore(dir);
+    await store.create('Foo');
+    await expect(store.create('Foo')).resolves.toBe('Foo'); // exact repeat stays idempotent
+    await expect(store.create('foo')).rejects.toThrow('already exists');
+    await expect(store.create('DEFAULT')).rejects.toThrow('already exists');
+    await expect(store.create('Live')).rejects.toThrow('reserved');
+    await expect(store.setPaneBinding('pane-a', 'ws-1', 'Default')).rejects.toThrow();
+
+    await store.setPaneBinding('pane-a', 'ws-1', 'Foo');
+    expect(store.isPaneBound('FOO')).toBe(true);
+
+    // A hand-edited file that lists both spellings keeps the first.
+    writeFileSync(
+      getChromeProfilesPath(dir),
+      JSON.stringify({ version: 2, profiles: ['default', 'Bar', 'bar', 'LIVE'], bindings: {}, paneBindings: {} }),
+    );
+    expect(new ChromeProfileStore(dir).listProfiles()).toEqual(['default', 'Bar']);
+  });
 });

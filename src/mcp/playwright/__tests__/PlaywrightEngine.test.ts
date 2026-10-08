@@ -1745,17 +1745,21 @@ describe('PlaywrightEngine ensureConnected profile switch', () => {
     expect(cdpInfoCalls()).toBe(2);
   });
 
-  it('keeps the live connection when only the profile check fails', async () => {
+  it('drops the live connection when the profile check fails, never keeping the old account', async () => {
     mainReporting({ profile: 'work', port: 18910 });
-    mockConnectOverCDP.mockResolvedValue(makeFakeBrowser([]));
+    const first = makeFakeBrowser([]);
+    const second = makeFakeBrowser([]);
+    mockConnectOverCDP.mockResolvedValueOnce(first).mockResolvedValueOnce(second);
     const engine = PlaywrightEngine.getInstance();
     await engine.ensureConnected('ws-a');
 
     mockSendRpc.mockRejectedValueOnce(new Error('RPC timeout: browser.cdp.info (10000ms)'));
     await engine.ensureConnected('ws-a');
 
-    expect(mockConnectOverCDP).toHaveBeenCalledTimes(1);
-    expect(cdpInfoCalls()).toBe(2);
+    // The failed check closed the old browser; the retry attached afresh.
+    expect(first.close).toHaveBeenCalled();
+    expect(mockConnectOverCDP).toHaveBeenCalledTimes(2);
+    expect(await engine.getBrowser()).toBe(second);
   });
 
   it('keeps the free reuse path against a main that reports no profile', async () => {

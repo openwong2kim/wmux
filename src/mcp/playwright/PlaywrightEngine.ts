@@ -547,12 +547,10 @@ export class PlaywrightEngine {
         // A refusal, like the one above: retrying cannot change main's answer.
         const refusal = paneProfileRefusal(err);
         if (refusal) throw refusal;
-        // Only the profile check failed: a main that cannot answer cannot have
-        // rebound this pane either, so the live connection stays.
-        if (reusable && this.browser?.isConnected()) {
-          console.error('[PlaywrightEngine] cdp.info unavailable; keeping the live connection');
-          return;
-        }
+        // The profile check itself failed. A rebind may have landed in the same
+        // moment, so the live connection cannot be proven to be this pane's
+        // account any more: drop it, and let the retry (or the call) decide.
+        if (reusable && this.browser) await this.disconnect();
         lastError = err;
         console.error(
           `[PlaywrightEngine] Connection attempt ${attempt}/${MAX_CONNECT_RETRIES} failed:`,

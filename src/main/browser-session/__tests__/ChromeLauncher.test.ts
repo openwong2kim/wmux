@@ -304,6 +304,7 @@ describe('ChromeLauncherRegistry', () => {
         return fetchOk([
           { id: 'tgt-1', url: 'https://x.test/', title: 'one', type: 'page' },
           { id: 'tgt-2', url: 'https://x.test/', title: 'two', type: 'page' },
+          { id: 'tgt-3', url: 'https://x.test/', title: 'unattributed', type: 'page' },
         ]);
       }
       return fetchOk({});
@@ -322,6 +323,8 @@ describe('ChromeLauncherRegistry', () => {
     const launcher = registry.forProfile('pane-prof');
     await launcher.openTab('https://x.test/', 'ws-a');
     await launcher.openTab('https://x.test/', 'ws-a');
+    // Newest of all, but no workspace on record: never what a pane's reveal raises.
+    await launcher.openTab('https://x.test/');
     expect(await registry.revealNewest('pane-prof', 'ws-a')).toEqual({ ok: true });
     const activated = fetchMock.mock.calls.map(([u]) => String(u)).filter((u) => u.includes('/json/activate/'));
     expect(activated).toEqual([expect.stringMatching(/\/json\/activate\/tgt-2$/)]);

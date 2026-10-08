@@ -134,7 +134,7 @@ async function call(
   method: string,
   params: Record<string, unknown>,
   callerPtyId?: string,
-  opts?: { operator: true },
+  opts?: { operator: true } | { firstParty: true; hostedWorkspace: string },
 ): Promise<{ result?: unknown; error?: string }> {
   const response = await router.dispatch(
     {
@@ -247,6 +247,13 @@ describe('which Chrome a call drives', () => {
     expect(agent.error).toContain(PANE_PROFILE_UNRESOLVED_CODE);
   });
 
+  it('an approved in-process plugin (hosted lane, no PTY) gets the workspace profile too', async () => {
+    const router = register(makeRegistry(store));
+    const hosted = await call(router, 'browser.cdp.info', { workspaceId: 'ws-1' }, undefined, { firstParty: true, hostedWorkspace: 'ws-1' });
+    // Scoped to ws-1 (which HAS pane bindings), yet answered without a pane.
+    expect(hosted.result).toMatchObject({ profile: 'default', targetsScoped: true });
+  });
+
   it('a workspace WITHOUT pane bindings never looks up the pane', async () => {
     const registry = makeRegistry(store);
     const router = register(registry);
@@ -279,11 +286,34 @@ describe("one pane cannot tear down another pane's Chrome", () => {
     // pane-b resolves to 'default'; the tab lives in pane-a's 'pa' Chrome. The
     // cross-launcher fallback used to accept it because the workspace matched.
     const fromB = await call(router, 'browser.close', { surfaceId, workspaceId: 'ws-1' }, 'pty-b');
-    expect(fromB.error).toContain('no wmux-opened Chrome tab');
+    expect(fromB.error).toContain("another pane's Chrome profile");
     expect(registry.launchers.get('pa')?.tabs.has(surfaceId)).toBe(true);
 
     const fromA = await call(router, 'browser.close', { surfaceId, workspaceId: 'ws-1' }, 'pty-a');
     expect(fromA.result).toMatchObject({ ok: true, closed: true, surfaceId });
+  });
+
+  it("a pane-bound caller cannot reach into the workspace's Chrome either", async () => {
+    const registry = makeRegistry(store);
+    const router = register(registry);
+    const opened = await call(router, 'browser.open', { url: 'https://b.test/', workspaceId: 'ws-1' }, 'pty-b');
+    const surfaceId = (opened.result as { surfaceId: string }).surfaceId;
+    expect(surfaceId).toMatch(/^default-sfc-/);
+
+    const fromA = await call(router, 'browser.close', { surfaceId, workspaceId: 'ws-1' }, 'pty-a');
+    expect(fromA.error).toContain("another pane's Chrome profile");
+    expect(registry.launchers.get('default')?.tabs.has(surfaceId)).toBe(true);
+  });
+
+  it("a call with no workspace is told why it cannot close a pane's tab", async () => {
+    const registry = makeRegistry(store);
+    const router = register(registry);
+    const opened = await call(router, 'browser.open', { url: 'https://a.test/', workspaceId: 'ws-1' }, 'pty-a');
+    const surfaceId = (opened.result as { surfaceId: string }).surfaceId;
+
+    const unscoped = await call(router, 'browser.close', { surfaceId });
+    expect(unscoped.error).toContain('names no workspace');
+    expect(registry.launchers.get('pa')?.tabs.has(surfaceId)).toBe(true);
   });
 });
 
@@ -302,6 +332,26 @@ describe('a pane-bound profile inside a live-bound workspace', () => {
     // pane-b is on the workspace's live Chrome, where the tab is the user's.
     const fromB = await call(router, 'browser.close', { surfaceId: 'user-tab', workspaceId: 'ws-1' }, 'pty-b');
     expect(fromB.error).toMatch(/agent_window_scope/);
+  });
+});
+
+describe('browser.surface.adopt only claims a tab the caller was offered', () => {
+  it("refuses another pane's tab and another workspace's tab", async () => {
+    await store.create('pc');
+    await store.setPaneBinding('pane-c', 'ws-2', 'pc');
+    const router = register(makeRegistry(store));
+    const a = await call(router, 'browser.open', { url: 'https://a.test/', workspaceId: 'ws-1' }, 'pty-a');
+    const aTab = (a.result as { surfaceId: string }).surfaceId;
+
+    // pane-b's Chrome is the workspace's 'default': pane-a's tab is not in it.
+    const fromB = await call(router, 'browser.surface.adopt', { workspaceId: 'ws-1', surfaceId: aTab, openerKey: 'k-b' }, 'pty-b');
+    expect(fromB.error).toContain('is not a Chrome tab of this workspace');
+    const fromC = await call(router, 'browser.surface.adopt', { workspaceId: 'ws-2', surfaceId: aTab, openerKey: 'k-c' }, 'pty-c');
+    expect(fromC.error).toContain('is not a Chrome tab of this workspace');
+    expect(surfaceOpeners.get(aTab)).toBeUndefined();
+
+    const fromA = await call(router, 'browser.surface.adopt', { workspaceId: 'ws-1', surfaceId: aTab, openerKey: 'k-a' }, 'pty-a');
+    expect(fromA.result).toEqual({ ok: true, owner: 'mine' });
   });
 });
 

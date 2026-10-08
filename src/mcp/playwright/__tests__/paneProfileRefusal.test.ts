@@ -44,21 +44,24 @@ beforeEach(() => {
 });
 
 describe('paneProfileRefusal', () => {
-  it('explains main\'s raw refusal and keeps its detail', () => {
+  it('explains main\'s raw refusal once, without repeating main\'s own text', () => {
     const refusal = paneProfileRefusal(new Error(RAW));
     expect(refusal).toBeInstanceOf(PaneProfileUnresolvedError);
     expect(refusal?.message).toMatch(/^PANE_PROFILE_UNRESOLVED: the browser profile for this pane could not be resolved/);
     expect(refusal?.message).toMatch(/Do not retry through another browser, profile or account/);
-    expect(refusal?.message).toContain('(pty-9 is not owned by any pane of ws-1)');
+    expect(refusal?.message).not.toContain('pty-9');
+    expect(refusal?.message.match(/PANE_PROFILE_UNRESOLVED/g)).toHaveLength(1);
   });
 
-  it('finds it inside a wrapper, without repeating the explanation', () => {
-    const once = paneProfileRefusal(new Error(RAW));
-    const twice = paneProfileRefusal(new Error(`browser.cdp.info unavailable: ${once?.message}`));
-    expect(twice?.message).toBe(once?.message);
+  it('recognizes main\'s `<method>: CODE:` shape and the typed error', () => {
+    expect(paneProfileRefusal(new Error(`browser.cdp.info: ${RAW}`))).toBeInstanceOf(PaneProfileUnresolvedError);
+    const typed = new PaneProfileUnresolvedError();
+    expect(paneProfileRefusal(typed)).toBe(typed);
   });
 
-  it('ignores every other failure', () => {
+  it('never reclassifies an error that merely quotes the code', () => {
+    expect(paneProfileRefusal(new Error(`Timeout waiting for title "${RAW}"`))).toBeNull();
+    expect(paneProfileRefusal(new Error(`a: b.c: ${RAW}`))).toBeNull();
     expect(paneProfileRefusal(new Error('WORKSPACE_SCOPE_UNRESOLVED: nope'))).toBeNull();
     expect(paneProfileRefusal(undefined)).toBeNull();
   });

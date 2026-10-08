@@ -57,6 +57,15 @@ function emptyFile(): ChromeProfilesFile {
   return { version: SCHEMA_VERSION, profiles: [DEFAULT_CHROME_PROFILE], bindings: {}, paneBindings: {} };
 }
 
+/**
+ * Profile identity is case-INSENSITIVE: on macOS and Windows "Foo" and "foo"
+ * are one user-data-dir, so they are one Chrome and one set of logins. Every
+ * uniqueness and exclusivity check goes through this.
+ */
+function sameProfile(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
 function isValidProfileName(name: unknown): name is string {
   if (typeof name !== 'string') return false;
   try {
@@ -75,7 +84,12 @@ function sanitizeFile(raw: unknown, knownWorkspaceIds?: ReadonlySet<string>): Ch
   const r = raw as Record<string, unknown>;
   if (Array.isArray(r.profiles)) {
     for (const p of r.profiles) {
-      if (isValidProfileName(p) && !file.profiles.includes(p) && file.profiles.length < MAX_PROFILES) {
+      if (
+        isValidProfileName(p)
+        && !sameProfile(p, LIVE_CHROME_PROFILE)
+        && !file.profiles.some((q) => sameProfile(q, p))
+        && file.profiles.length < MAX_PROFILES
+      ) {
         file.profiles.push(p);
       }
     }
@@ -116,13 +130,13 @@ function sanitizeFile(raw: unknown, knownWorkspaceIds?: ReadonlySet<string>): Ch
  * caller's check — the message for it differs by path.
  */
 function paneBindRefusal(file: ChromeProfilesFile, paneId: string, profile: string): string | null {
-  if (profile === DEFAULT_CHROME_PROFILE || profile === LIVE_CHROME_PROFILE) {
+  if (sameProfile(profile, DEFAULT_CHROME_PROFILE) || sameProfile(profile, LIVE_CHROME_PROFILE)) {
     return `the "${profile}" Chrome profile cannot be bound to a single pane; create a new profile for this pane`;
   }
-  if (Object.values(file.bindings).includes(profile)) {
+  if (Object.values(file.bindings).some((p) => sameProfile(p, profile))) {
     return `Chrome profile "${profile}" is bound to a workspace; create a new profile for this pane`;
   }
-  const holder = Object.entries(file.paneBindings).find(([id, b]) => id !== paneId && b.profile === profile);
+  const holder = Object.entries(file.paneBindings).find(([id, b]) => id !== paneId && sameProfile(b.profile, profile));
   if (holder) {
     return `Chrome profile "${profile}" is bound to another pane; create a new profile for this pane`;
   }
@@ -206,7 +220,7 @@ export class ChromeProfileStore {
 
   /** Whether `profile` is some pane's exclusive profile. */
   isPaneBound(profile: string): boolean {
-    return Object.values(this.ensureCache().paneBindings).some((b) => b.profile === profile);
+    return Object.values(this.ensureCache().paneBindings).some((b) => sameProfile(b.profile, profile));
   }
 
   // ── Mutations (serialized) ────────────────────────────────────────────────
@@ -229,11 +243,17 @@ export class ChromeProfileStore {
 
   async create(name: string): Promise<string> {
     validateBrowserProfileName(name); // throws its user-facing message
-    if (name === LIVE_CHROME_PROFILE) {
+    if (sameProfile(name, LIVE_CHROME_PROFILE)) {
       throw new ChromeProfileError('invalid', `"${LIVE_CHROME_PROFILE}" is reserved for live-Chrome attach`);
     }
     return this.mutate((file) => {
       if (file.profiles.includes(name)) return name; // idempotent
+      // Same directory on a case-insensitive filesystem: a second name for one
+      // Chrome would let one account sit under two bindings.
+      const twin = file.profiles.find((p) => sameProfile(p, name));
+      if (twin) {
+        throw new ChromeProfileError('conflict', `Chrome profile "${twin}" already exists (names ignore case)`);
+      }
       if (file.profiles.length >= MAX_PROFILES) {
         throw new ChromeProfileError('limit', `at most ${MAX_PROFILES} Chrome profiles`);
       }
@@ -260,7 +280,7 @@ export class ChromeProfileStore {
       }
       // A pane's profile is that pane's alone; sharing it with a whole
       // workspace would put every other pane on the same account.
-      if (Object.values(file.paneBindings).some((b) => b.profile === profileName)) {
+      if (Object.values(file.paneBindings).some((b) => sameProfile(b.profile, profileName))) {
         throw new ChromeProfileError(
           'conflict',
           `Chrome profile "${profileName}" is bound to a pane; unbind it there first`,
