@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isDeviceActiveNow, withActivity } from '../deviceActivity';
+import { isDeviceActiveNow, withActivity, withViewingSessions } from '../deviceActivity';
 import { DEVICE_ACTIVE_WINDOW_MS } from '../../../shared/web';
 
 /**
@@ -49,5 +49,29 @@ describe('withActivity', () => {
       ['Revoked', false],
     ]);
     expect(rows.filter((r) => r.activeNow)).toHaveLength(1);
+  });
+});
+
+describe('withViewingSessions', () => {
+  it('stamps the panes each device streams, [] for one watching nothing, and never for a revoked one', () => {
+    const live = new Map([
+      ['a', ['pty-1', 'pty-2']],
+      ['c', ['pty-3']],
+    ]);
+    const rows = withViewingSessions(
+      [
+        { deviceId: 'a', lastSeenAt: NOW, name: 'Phone' },
+        { deviceId: 'b', lastSeenAt: NOW, name: 'Idle' },
+        { deviceId: 'c', lastSeenAt: NOW, name: 'Revoked', revokedAt: NOW },
+      ],
+      live,
+    );
+    expect(rows.map((r) => [r.name, r.viewingSessions])).toEqual([
+      ['Phone', ['pty-1', 'pty-2']],
+      ['Idle', []],
+      ['Revoked', []],
+    ]);
+    // A copy, so a caller mutating the row cannot reach the server's map.
+    expect(rows[0].viewingSessions).not.toBe(live.get('a'));
   });
 });

@@ -41,3 +41,19 @@ export function withActivity<T extends ActivityInput>(
 ): Array<T & { activeNow: boolean }> {
   return devices.map((d) => ({ ...d, activeNow: isDeviceActiveNow(d, liveDeviceIds, now) }));
 }
+
+/**
+ * Stamp `viewingSessions` (the pty session ids a device is streaming right
+ * now) onto every roster row. List time only, never persisted. Always present
+ * so the renderer can tell "watching nothing" (`[]`) from a daemon that
+ * predates the field (absent); a revoked device is never watching.
+ */
+export function withViewingSessions<T extends ActivityInput>(
+  devices: readonly T[],
+  liveSessionsByDevice: ReadonlyMap<string, readonly string[]>,
+): Array<T & { viewingSessions: string[] }> {
+  return devices.map((d) => ({
+    ...d,
+    viewingSessions: d.revokedAt !== undefined ? [] : [...(liveSessionsByDevice.get(d.deviceId) ?? [])],
+  }));
+}

@@ -187,7 +187,7 @@ import { GateBroker } from './approvals/GateBroker';
 import { coerceGate } from './approvals/gateConfig';
 import { DeviceStore, type DeviceBatchRevocationCause } from './web/DeviceStore';
 import { revokeDeviceAndDisconnect } from './web/deviceRevoke';
-import { withActivity } from './web/deviceActivity';
+import { withActivity, withViewingSessions } from './web/deviceActivity';
 import { buildWebPaneEnv } from './web/webPaneEnv';
 import { makeChannelPhoneApi, type ChannelPhoneApi } from './web/channelsApi';
 import type { ApprovalDecision, DecisionFormKind, NativeDecisionOutcome, NativeDecisionRef, NativeDecisionReply } from './approvals/types';
@@ -3404,8 +3404,10 @@ function registerRpcHandlers(
   pipeServer.onRpc('daemon.web.deviceList', async () => {
     await afterRestore();
     // `activeNow` is computed here, at list time, from the store's in-memory
-    // `lastSeenAt` and the server's live streams. Never persisted.
-    return { devices: withActivity(getDeviceStore().list(), webServer.liveDeviceIds(), Date.now()) };
+    // `lastSeenAt` and the server's live streams. Never persisted. Same for
+    // `viewingSessions`: the panes each device is streaming right now.
+    const devices = withActivity(getDeviceStore().list(), webServer.liveDeviceIds(), Date.now());
+    return { devices: withViewingSessions(devices, webServer.liveSessionsByDevice()) };
   });
 
   pipeServer.onRpc('daemon.web.deviceSetInput', async (params) => {

@@ -2096,6 +2096,22 @@ export class WebTerminalServer {
   }
 
   /**
+   * Which panes each device is watching right now, by pty session id.
+   * Device principals only (the operator's own streams are not a "phone"),
+   * deduplicated per device. A device with no pane stream is absent.
+   */
+  liveSessionsByDevice(): Map<string, string[]> {
+    const byDevice = new Map<string, Set<string>>();
+    for (const client of this.clients) {
+      if (client.principal.kind !== 'device') continue;
+      const ids = byDevice.get(client.principal.deviceId) ?? new Set<string>();
+      ids.add(client.sessionId);
+      byDevice.set(client.principal.deviceId, ids);
+    }
+    return new Map([...byDevice].map(([deviceId, ids]) => [deviceId, [...ids]]));
+  }
+
+  /**
    * End every live SSE stream held by one device, right now.
    *
    * This is the teardown half of revocation (§5), and it is a METHOD rather

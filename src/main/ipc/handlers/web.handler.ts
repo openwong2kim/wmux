@@ -481,6 +481,11 @@ export function registerWebHandlers(
       // yields a complete roster rather than a 'malformed' one.
       kind: normalizeDeviceKind(d['kind']),
       activeNow: d['activeNow'] === true,
+      // Absent from an older daemon, and kept absent: the renderer reads that
+      // as "unknown", which an empty list would turn into "watching nothing".
+      ...(Array.isArray(d['viewingSessions'])
+        ? { viewingSessions: d['viewingSessions'].filter((id): id is string => typeof id === 'string' && id !== '') }
+        : {}),
     };
   };
 
