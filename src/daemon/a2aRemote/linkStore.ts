@@ -5,7 +5,11 @@ import { scheduleTokenFileReHarden } from '../../shared/security';
 import {
   A2A_REMOTE_RECORD_V,
   isA2aRemoteMessageKind,
+  isAllowedEndpointPair,
+  isConsistentEndpoint,
   isHostId,
+  type A2aEndpoint,
+  type A2aEndpointKind,
   type A2aLinkProposeRequest,
   type A2aLinkRecordV1,
   type A2aLinkState,
@@ -20,6 +24,7 @@ import {
   isSafeId,
   loadStore,
   sanitizeName,
+  sanitizeRepoKey,
   storeUnavailable,
   type StoreLog,
 } from './storeFile';
@@ -40,8 +45,9 @@ import {
  *                                                notice must name EXACTLY ours + 1)
  *   proposed-*|active --forgetHost---> revoked  (revoked-remote; peer revoked here)
  *
- * Limits: at most one non-terminal link per (local pane, remote host, remote
- * pane); at most `LINKS_PER_HOST_MAX` non-terminal links per remote host; the
+ * Ends are a pane or the host's Moa (`brain`); only like with like
+ * (`isAllowedEndpointPair`). Limits: at most one non-terminal link per (local
+ * end, remote host, remote end), and per remote host's Moa; at most `LINKS_PER_HOST_MAX` non-terminal links per remote host; the
  * newest `TERMINAL_KEEP` terminal links are kept, older ones are pruned.
  *
  * Corrupt file (bad JSON, bad record, two live links on one pane triple):
@@ -62,7 +68,7 @@ export const LINKS_PER_HOST_MAX = 64;
 export const TERMINAL_KEEP = 256;
 
 type EndedReason = NonNullable<A2aLinkRecordV1['endedReason']>;
-export type BrokenReason = Extract<EndedReason, 'pane-closed' | 'pane-moved' | 'workspace-gone'>;
+export type BrokenReason = Extract<EndedReason, 'pane-closed' | 'pane-moved' | 'workspace-gone' | 'exposure-revoked'>;
 /** The `link` field of a lifecycle envelope. */
 export type LinkNotice = NonNullable<A2aRemoteEnvelope['link']>;
 
@@ -70,7 +76,8 @@ export type LinkNotice = NonNullable<A2aRemoteEnvelope['link']>;
 export type NewLinkInput = Pick<A2aLinkRecordV1, 'local' | 'remote' | 'allow'>;
 
 export type LinkCheckResult =
-  | { ok: true; link: A2aLinkRecordV1 }
+  /** `kind` is the link's end kind (both ends share it: isAllowedEndpointPair). */
+  | { ok: true; link: A2aLinkRecordV1; kind: A2aEndpointKind }
   | {
       ok: false;
       error: Extract<
@@ -86,7 +93,9 @@ export type LinkCheckResult =
     };
 
 const TERMINAL: ReadonlySet<A2aLinkState> = new Set(['revoked', 'broken']);
-const BROKEN_REASONS: ReadonlySet<string> = new Set(['pane-closed', 'pane-moved', 'workspace-gone']);
+const BROKEN_REASONS: ReadonlySet<string> = new Set(['pane-closed', 'pane-moved', 'workspace-gone', 'exposure-revoked']);
+/** A `proposed-in` link nobody decided on is dropped after this long. */
+export const PROPOSAL_TTL_MS = 24 * 60 * 60 * 1000;
 const REVOKED_REASONS: ReadonlySet<string> = new Set(['revoked-local', 'revoked-remote']);
 const STATES: ReadonlySet<string> = new Set(['proposed-out', 'proposed-in', 'active', 'revoked', 'broken']);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -99,12 +108,13 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export function linkFromProposal(hostId: HostId, req: A2aLinkProposeRequest): NewLinkInput & { linkId: string } {
   return {
     linkId: req.linkId,
-    local: { workspaceId: req.to.workspaceId, paneId: req.to.paneId },
+    local: endpointOf(req.to),
     remote: {
       hostId,
-      workspaceId: req.from.workspaceId,
-      paneId: req.from.paneId,
+      ...endpointOf(req.from),
       ...(req.from.label !== undefined ? { label: req.from.label } : {}),
+      ...(req.from.workspaceName !== undefined ? { workspaceName: req.from.workspaceName } : {}),
+      ...(req.from.gitRemote !== undefined ? { gitRemote: req.from.gitRemote } : {}),
     },
     allow: { outbound: req.allow.inbound, inbound: req.allow.outbound },
   };
@@ -121,6 +131,12 @@ export interface LinkStoreOptions {
   scheduleHarden?: (filePath: string) => void;
   /** Test seam for `proposeOut` link ids (must return UUIDs). */
   mintId?: () => string;
+  /**
+   * Called after every state change of an existing link (accept, revoke,
+   * broken, the host cascade) — also when the write failed but the change
+   * stands in memory. The delivery layer ends the link's tasks from here.
+   */
+  onTransition?: (link: A2aLinkRecordV1) => void;
 }
 
 export class LinkStore {
@@ -130,6 +146,7 @@ export class LinkStore {
   private readonly write: (filePath: string, data: unknown) => void;
   private readonly scheduleHarden: (filePath: string) => void;
   private readonly mintId: () => string;
+  private readonly onTransition: (link: A2aLinkRecordV1) => void;
   private readonly links = new Map<string, A2aLinkRecordV1>();
   private writable = true;
 
@@ -140,6 +157,7 @@ export class LinkStore {
     this.write = opts.write ?? ((p, d): void => atomicWriteJSONSync(p, d));
     this.scheduleHarden = opts.scheduleHarden ?? scheduleTokenFileReHarden;
     this.mintId = opts.mintId ?? ((): string => crypto.randomUUID());
+    this.onTransition = opts.onTransition ?? ((): void => undefined);
     this.load();
   }
 
@@ -161,12 +179,17 @@ export class LinkStore {
   /** Every ACTIVE link on a local pane (a pane may link to several remote panes). */
   findActiveByLocalPane(workspaceId: string, paneId: string): A2aLinkRecordV1[] {
     return this.list().filter(
-      (r) => r.state === 'active' && r.local.workspaceId === workspaceId && r.local.paneId === paneId,
+      (r) => r.state === 'active' && r.local.kind === 'pane' && r.local.workspaceId === workspaceId && r.local.paneId === paneId,
     );
   }
 
+  /** Every ACTIVE link on this host's Moa (the brain of HQ `hqWorkspaceId`). */
+  findActiveByLocalBrain(hqWorkspaceId: string): A2aLinkRecordV1[] {
+    return this.list().filter((r) => r.state === 'active' && r.local.kind === 'brain' && r.local.workspaceId === hqWorkspaceId);
+  }
+
   /** Every ACTIVE link to one remote pane (it may link to several local panes). */
-  findActiveByRemote(hostId: HostId, workspaceId: string, paneId: string): A2aLinkRecordV1[] {
+  findActiveByRemote(hostId: HostId, workspaceId: string, paneId: string | undefined): A2aLinkRecordV1[] {
     return this.list().filter(
       (r) =>
         r.state === 'active' &&
@@ -192,6 +215,42 @@ export class LinkStore {
     if (typeof input.linkId !== 'string' || !UUID_RE.test(input.linkId)) throw new Error('link: invalid linkId');
     if (this.links.has(input.linkId)) throw new Error(`link ${input.linkId}: duplicate linkId`);
     return this.create(input.linkId, input, 'proposed-in');
+  }
+
+  /**
+   * Drop a `proposed-out` link the other side never acknowledged (its
+   * proposal POST failed). Not a transition: the link never existed there.
+   */
+  discard(linkId: string): void {
+    const rec = this.require(linkId, ['proposed-out'], 'discard');
+    this.links.delete(linkId);
+    try {
+      this.persist();
+    } catch (err) {
+      this.links.set(linkId, rec);
+      throw err;
+    }
+  }
+
+  /**
+   * Drop (`revoked-local`) every `proposed-in` link older than `ttlMs` that
+   * nobody accepted or declined, so a proposal whose sender went silent does
+   * not stay acceptable forever. Returns the links it ended.
+   */
+  expireProposals(ttlMs: number = PROPOSAL_TTL_MS): A2aLinkRecordV1[] {
+    const cutoff = this.now() - ttlMs;
+    const stale = [...this.links.values()].filter((r) => r.state === 'proposed-in' && Date.parse(r.createdAt) < cutoff);
+    const ended: A2aLinkRecordV1[] = [];
+    for (const rec of stale) {
+      try {
+        ended.push(this.revoke(rec.linkId, 'local'));
+      } catch (err) {
+        this.log('error', `[a2a-remote] expired proposal ${rec.linkId} not persisted: ${err instanceof Error ? err.message : String(err)}`);
+        const now = this.links.get(rec.linkId);
+        if (now) ended.push(structuredClone(now));
+      }
+    }
+    return ended;
   }
 
   /** Our human accepted a `proposed-in` link. */
@@ -248,15 +307,18 @@ export class LinkStore {
     this.assertWritable();
     const at = new Date(this.now()).toISOString();
     let ended = 0;
+    const changed: A2aLinkRecordV1[] = [];
     for (const rec of [...this.links.values()]) {
       if (rec.remote.hostId !== hostId || TERMINAL.has(rec.state)) continue;
-      this.links.set(rec.linkId, {
+      const next: A2aLinkRecordV1 = {
         ...rec,
         state: 'revoked',
         version: rec.version + 1,
         endedReason: 'revoked-remote',
         updatedAt: at,
-      });
+      };
+      this.links.set(rec.linkId, next);
+      changed.push(next);
       ended += 1;
     }
     if (ended === 0) return 0;
@@ -264,8 +326,10 @@ export class LinkStore {
       this.persist();
     } catch (err) {
       this.log('error', `[a2a-remote] ${ended} link(s) to host ${hostId} are revoked in memory but could not be persisted`);
+      this.announce(changed);
       throw err;
     }
+    this.announce(changed);
     return ended;
   }
 
@@ -316,14 +380,14 @@ export class LinkStore {
       if (TERMINAL.has(rec.state)) return { ok: false, error: 'link-not-active' };
       switch (notice.state) {
         case 'revoked':
-          return { ok: true, link: structuredClone(rec) };
+          return { ok: true, link: structuredClone(rec), kind: rec.local.kind };
         case 'active':
           if (rec.state !== 'proposed-out') return { ok: false, error: 'link-not-active' };
           if (notice.version !== rec.version + 1) return { ok: false, error: 'stale-link-version' };
-          return { ok: true, link: structuredClone(rec) };
+          return { ok: true, link: structuredClone(rec), kind: rec.local.kind };
         case 'broken':
           if (notice.version !== rec.version + 1) return { ok: false, error: 'stale-link-version' };
-          return { ok: true, link: structuredClone(rec) };
+          return { ok: true, link: structuredClone(rec), kind: rec.local.kind };
         default:
           return { ok: false, error: 'bad-request' };
       }
@@ -337,7 +401,7 @@ export class LinkStore {
     } else if (task?.onThisLink !== true) {
       return { ok: false, error: 'unknown-task' };
     }
-    return { ok: true, link: structuredClone(rec) };
+    return { ok: true, link: structuredClone(rec), kind: rec.local.kind };
   }
 
   // --- internals --------------------------------------------------------------
@@ -346,14 +410,15 @@ export class LinkStore {
     const clean = cleanNewLink(input);
     if (typeof clean === 'string') throw new Error(`link ${linkId}: ${clean}`);
     const live = [...this.links.values()].filter((r) => !TERMINAL.has(r.state));
-    const clash = live.find((r) => sameTriple(r, clean));
+    const clash = live.find((r) => sameEnds(r, clean));
     if (clash) throw new Error(`link ${linkId}: pane pair already linked by ${clash.linkId} (${clash.state})`);
     if (live.filter((r) => r.remote.hostId === clean.remote.hostId).length >= LINKS_PER_HOST_MAX) {
       throw new Error(`link ${linkId}: host ${clean.remote.hostId} already holds ${LINKS_PER_HOST_MAX} live links`);
     }
 
     const at = new Date(this.now()).toISOString();
-    const rec: A2aLinkRecordV1 = { v: A2A_REMOTE_RECORD_V, linkId, version: 1, state, ...clean, createdAt: at, updatedAt: at };
+    const proposer = state === 'proposed-out' ? 'local' : 'remote';
+    const rec: A2aLinkRecordV1 = { v: A2A_REMOTE_RECORD_V, linkId, version: 1, state, ...clean, proposer, createdAt: at, updatedAt: at };
     this.links.set(linkId, rec);
     try {
       this.persist();
@@ -384,10 +449,25 @@ export class LinkStore {
       this.persist();
     } catch (err) {
       if (rollback) this.links.set(rec.linkId, rec);
-      else this.log('error', `[a2a-remote] link ${rec.linkId} is ${next.state} in memory but could not be persisted`);
+      else {
+        this.log('error', `[a2a-remote] link ${rec.linkId} is ${next.state} in memory but could not be persisted`);
+        this.announce([next]);
+      }
       throw err;
     }
+    this.announce([next]);
     return structuredClone(next);
+  }
+
+  /** Tell `onTransition` (a throwing listener never undoes a transition). */
+  private announce(changed: A2aLinkRecordV1[]): void {
+    for (const rec of changed) {
+      try {
+        this.onTransition(structuredClone(rec));
+      } catch (err) {
+        this.log('error', `[a2a-remote] link ${rec.linkId} transition listener failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
   }
 
   private assertWritable(): void {
@@ -423,14 +503,24 @@ export class LinkStore {
   }
 }
 
-function sameTriple(a: NewLinkInput, b: NewLinkInput): boolean {
-  return (
-    a.local.workspaceId === b.local.workspaceId &&
-    a.local.paneId === b.local.paneId &&
-    a.remote.hostId === b.remote.hostId &&
-    a.remote.workspaceId === b.remote.workspaceId &&
-    a.remote.paneId === b.remote.paneId
-  );
+/** A link end without the display fields (kind + workspaceId + paneId when a pane). */
+function endpointOf(e: { kind: A2aEndpointKind; workspaceId: string; paneId?: string }): A2aEndpoint {
+  return e.kind === 'pane' ? { kind: 'pane', workspaceId: e.workspaceId, paneId: e.paneId } : { kind: 'brain', workspaceId: e.workspaceId };
+}
+
+function sameEnd(a: A2aEndpoint, b: A2aEndpoint): boolean {
+  return a.kind === b.kind && a.workspaceId === b.workspaceId && a.paneId === b.paneId;
+}
+
+/**
+ * Would `b` duplicate live link `a`? The same (local end, remote host, remote
+ * end); and for Moa, any second link with the same remote host's Moa — an HQ
+ * that was recreated (new workspaceId) must not open a parallel link.
+ */
+function sameEnds(a: NewLinkInput, b: NewLinkInput): boolean {
+  if (a.remote.hostId !== b.remote.hostId) return false;
+  if (a.remote.kind === 'brain' && b.remote.kind === 'brain') return true;
+  return sameEnd(a.local, b.local) && sameEnd(a.remote, b.remote);
 }
 
 /**
@@ -438,30 +528,40 @@ function sameTriple(a: NewLinkInput, b: NewLinkInput): boolean {
  * control characters (they may come from a remote host); the label follows
  * the display-name rule and is dropped when empty.
  */
+/** A bounded end: known kind, safe workspaceId, and a safe paneId exactly when it is a pane. */
+function isSafeEnd(e: Record<string, unknown>): boolean {
+  return isConsistentEndpoint(e) && isSafeId(e['workspaceId']) && (e['kind'] !== 'pane' || isSafeId(e['paneId']));
+}
+
 function cleanNewLink(input: unknown): NewLinkInput | string {
   if (!isPlainObject(input)) return 'invalid link';
   const { local, remote, allow } = input;
-  if (!isPlainObject(local) || !isSafeId(local['workspaceId']) || !isSafeId(local['paneId'])) return 'invalid local pane';
+  if (!isPlainObject(local) || !isSafeEnd(local)) return 'invalid local end';
   if (
     !isPlainObject(remote) ||
     !isHostId(remote['hostId']) ||
-    !isSafeId(remote['workspaceId']) ||
-    !isSafeId(remote['paneId']) ||
-    (remote['label'] !== undefined && typeof remote['label'] !== 'string')
+    !isSafeEnd(remote) ||
+    (remote['label'] !== undefined && typeof remote['label'] !== 'string') ||
+    (remote['workspaceName'] !== undefined && typeof remote['workspaceName'] !== 'string') ||
+    (remote['gitRemote'] !== undefined && typeof remote['gitRemote'] !== 'string')
   ) {
-    return 'invalid remote pane';
+    return 'invalid remote end';
   }
+  if (!isAllowedEndpointPair(local['kind'] as A2aEndpointKind, remote['kind'] as A2aEndpointKind)) return 'endpoint pair not allowed';
   if (!isPlainObject(allow) || typeof allow['outbound'] !== 'boolean' || typeof allow['inbound'] !== 'boolean') {
     return 'invalid allow flags';
   }
   const label = remote['label'] === undefined ? '' : sanitizeName(remote['label'], '');
+  const workspaceName = remote['workspaceName'] === undefined ? '' : sanitizeName(remote['workspaceName'], '');
+  const gitRemote = sanitizeRepoKey(remote['gitRemote']);
   return {
-    local: { workspaceId: local['workspaceId'], paneId: local['paneId'] },
+    local: endpointOf(local as unknown as A2aEndpoint),
     remote: {
       hostId: remote['hostId'],
-      workspaceId: remote['workspaceId'],
-      paneId: remote['paneId'],
+      ...endpointOf(remote as unknown as A2aEndpoint),
       ...(label ? { label } : {}),
+      ...(workspaceName ? { workspaceName } : {}),
+      ...(gitRemote ? { gitRemote } : {}),
     },
     allow: { outbound: allow['outbound'], inbound: allow['inbound'] },
   };
@@ -478,7 +578,9 @@ function coerceFile(raw: unknown): A2aLinkRecordV1[] | null {
   const seen = new Set<string>();
   for (const r of raw['links']) {
     if (!isPlainObject(r) || r['v'] !== 1) return null;
-    const { linkId, version, state, endedReason, createdAt, updatedAt } = r;
+    const { linkId, version, state, endedReason, proposer, createdAt, updatedAt } = r;
+    if (proposer !== 'local' && proposer !== 'remote') return null;
+    if ((state === 'proposed-out' && proposer !== 'local') || (state === 'proposed-in' && proposer !== 'remote')) return null;
     if (typeof linkId !== 'string' || !UUID_RE.test(linkId) || seen.has(linkId)) return null;
     if (typeof version !== 'number' || !Number.isInteger(version) || version < 1) return null;
     if (typeof state !== 'string' || !STATES.has(state)) return null;
@@ -488,7 +590,7 @@ function coerceFile(raw: unknown): A2aLinkRecordV1[] | null {
     }
     const clean = cleanNewLink(r);
     if (typeof clean === 'string') return null;
-    if (!TERMINAL.has(state as A2aLinkState) && out.some((o) => !TERMINAL.has(o.state) && sameTriple(o, clean))) return null;
+    if (!TERMINAL.has(state as A2aLinkState) && out.some((o) => !TERMINAL.has(o.state) && sameEnds(o, clean))) return null;
     seen.add(linkId);
     out.push({
       v: 1,
@@ -496,6 +598,7 @@ function coerceFile(raw: unknown): A2aLinkRecordV1[] | null {
       version,
       state: state as A2aLinkState,
       ...clean,
+      proposer,
       createdAt,
       updatedAt,
       ...(endedReason !== undefined ? { endedReason: endedReason as EndedReason } : {}),

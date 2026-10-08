@@ -78,6 +78,8 @@ interface PeersFileV1 {
 }
 
 const UNNAMED_PEER = 'Unnamed host';
+/** Revoked rows kept per host (newest first); older ones are dropped on the next revoke. */
+export const REVOKED_KEPT_PER_HOST = 3;
 /** Wrong-secret budget per peerId. */
 export const FAILURE_WINDOW_MS = 1000;
 export const FAILURES_PER_WINDOW = 5;
@@ -232,6 +234,11 @@ export class PeerStore {
    * Revoke a peer. Returns false when it is unknown or already revoked. On a
    * failed write the revocation STAYS in memory (the peer is refused until
    * restart) and the error is rethrown.
+   *
+   * Every re-pair revokes the host's previous peer, so revoked rows would pile
+   * up per host: only the `REVOKED_KEPT_PER_HOST` most recent revoked rows of
+   * that host are kept. A pruned peerId then answers `unknown` instead of
+   * `revoked` — still at once, without a derivation.
    */
   revoke(peerId: string): boolean {
     if (!this.writable) throw storeUnavailable(PEERS_FILE);
@@ -239,6 +246,7 @@ export class PeerStore {
     if (!rec || rec.revokedAt !== undefined) return false;
     rec.revokedAt = new Date(this.now()).toISOString();
     this.verified.delete(peerId);
+    this.pruneRevoked(rec.hostId);
     try {
       this.persist();
     } catch (err) {
@@ -254,6 +262,18 @@ export class PeerStore {
   }
 
   // --- internals --------------------------------------------------------------
+
+  private pruneRevoked(hostId: HostId): void {
+    const revoked = [...this.peers.values()]
+      .filter((r) => r.hostId === hostId && r.revokedAt !== undefined)
+      .sort((a, b) => (b.revokedAt ?? '').localeCompare(a.revokedAt ?? '') || b.createdAt.localeCompare(a.createdAt));
+    for (const old of revoked.slice(REVOKED_KEPT_PER_HOST)) {
+      this.peers.delete(old.peerId);
+      this.verified.delete(old.peerId);
+      this.lastSeenPersistedAt.delete(old.peerId);
+      this.failures.delete(old.peerId);
+    }
+  }
 
   private assertHostFree(hostId: HostId): void {
     const live = [...this.peers.values()].find((r) => r.hostId === hostId && r.revokedAt === undefined);

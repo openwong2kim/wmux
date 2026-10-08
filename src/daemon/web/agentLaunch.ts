@@ -3,10 +3,14 @@ import { constants } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { runCli } from '../../shared/runCli';
+import type { AgentSlug } from '../../shared/agentIdentity';
 import { agentExecEnv, LOGIN_PATH_RETRY_MS, resolveLoginShellPath } from '../../shared/execEnv';
 
-export interface AgentLaunchChoice { agent: 'claude' | 'codex'; model?: string; effort?: string }
-export interface AgentLaunchOptions { agent: 'claude' | 'codex'; models: string[]; efforts: string[]; modelEfforts?: Record<string,string[]>; catalogState?: 'cached' | 'unavailable' }
+// TODO(#1904): option discovery parses these two CLIs' `--help`; another agent
+// needs its own parser before it can join.
+type WebLaunchAgent = Extract<AgentSlug, 'claude' | 'codex'>;
+export interface AgentLaunchChoice { agent: WebLaunchAgent; model?: string; effort?: string }
+export interface AgentLaunchOptions { agent: WebLaunchAgent; models: string[]; efforts: string[]; modelEfforts?: Record<string,string[]>; catalogState?: 'cached' | 'unavailable' }
 const MODELS = ['sonnet', 'opus', 'haiku', 'fable'];
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 

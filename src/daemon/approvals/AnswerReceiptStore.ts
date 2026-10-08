@@ -73,8 +73,11 @@ export class AnswerReceiptStore {
     directory: string,
     private readonly now: () => number = Date.now,
     private readonly perOwnerMax = ANSWER_RECEIPTS_PER_OWNER_MAX,
+    // The phone's Moa wake keeps its own file (phone-moa-wake-receipts.json)
+    // with the same rules, so its ids never meet an approval answer's.
+    fileName = 'phone-answer-receipts.json',
   ) {
-    this.file = path.join(directory, 'phone-answer-receipts.json');
+    this.file = path.join(directory, fileName);
     const saved = atomicReadJSONSync<{ version?: unknown; entries?: unknown }>(this.file);
     if (saved === null) return;
     if (saved.version !== 1 || !saved.entries || typeof saved.entries !== 'object' || Array.isArray(saved.entries)) {
@@ -156,6 +159,32 @@ export class AnswerReceiptStore {
       // still in flight (a restart reads that as uncertain). Say the same now,
       // rather than a final result the disk does not hold.
       if (this.rows.get(key) === next) this.rows.set(key, { ...row, state: 'uncertain' });
+    }
+  }
+
+  /**
+   * Replace the response of a FINISHED (`done`) id with a final outcome
+   * learned later — an accepted Moa wake whose brain then never took the
+   * message. In-flight, refused and uncertain rows are left alone. A failed
+   * write keeps the old response, which is what the disk still holds.
+   */
+  async revise(
+    owner: string,
+    clientAnswerId: string,
+    state: Exclude<AnswerReceiptState, 'inFlight'>,
+    result: AnswerReceiptResponse,
+  ): Promise<boolean> {
+    const key = receiptHash([owner, clientAnswerId]);
+    const row = this.rows.get(key);
+    if (!row || row.state !== 'done') return false;
+    const next: Row = { ...row, state, result };
+    this.rows.set(key, next);
+    try {
+      await this.save();
+      return true;
+    } catch {
+      if (this.rows.get(key) === next) this.rows.set(key, row);
+      return false;
     }
   }
 

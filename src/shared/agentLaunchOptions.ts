@@ -37,6 +37,8 @@
 //                   (#1610). `/clear` also clears the terminal; `/new` is the
 //                   one that only starts a new chat.
 
+import type { AgentSlug } from './agentIdentity';
+
 /** How an agent starts a fresh conversation inside a running session. */
 export interface FreshContextGrammar {
   /** The slash command typed into the agent's composer. */
@@ -74,6 +76,13 @@ export interface AgentLaunchGrammar {
   freshContext?: FreshContextGrammar;
 }
 
+/**
+ * Keyed by registry slug. Partial on purpose: an agent absent here has no
+ * verified launch grammar and is offered none of these options. The grammar
+ * holds functions, so it stays beside its consumers rather than on the
+ * import-free registry row; `satisfies` makes a key that is not a slug a
+ * compile error.
+ */
 export const LAUNCH_GRAMMAR_BY_AGENT: Readonly<Record<string, AgentLaunchGrammar>> = {
   claude: {
     effortFlag: (e) => ['--effort', e],
@@ -98,7 +107,7 @@ export const LAUNCH_GRAMMAR_BY_AGENT: Readonly<Record<string, AgentLaunchGrammar
     skipPermissionsFlag: '--dangerously-skip-permissions',
     effortInModelId: true,
   },
-};
+} satisfies Partial<Record<AgentSlug, AgentLaunchGrammar>>;
 
 // hasOwnProperty, not Object.hasOwn: orchestratorRole imports this file and is
 // compiled into the MCP bundle, whose tsconfig targets ES2020.

@@ -58,6 +58,11 @@ describe('parseMoaPane', () => {
       .toEqual({ sessionId: 'brain-abc', workspaceId: 'hq', dialog: { fingerprint: 'unknown' } });
   });
 
+  it('keeps a startup-screen flag apart from the dialog, and only when it is exactly true', () => {
+    expect(parseMoaPane({ sessionId: 'brain-abc', workspaceId: 'hq', blockedOnTui: true })).toEqual({ sessionId: 'brain-abc', workspaceId: 'hq', blockedOnTui: true });
+    expect(parseMoaPane({ sessionId: 'brain-abc', workspaceId: 'hq', blockedOnTui: 'yes' })).toEqual({ sessionId: 'brain-abc', workspaceId: 'hq' });
+  });
+
   it('copies only the binding fields it knows', () => {
     const parsed = parseMoaPane({ sessionId: 'brain-abc', workspaceId: 'hq', extra: 'x',
       binding: { agent: 'claude', sessionId: 'c', cwd: '/x', ts: 1, permissionMode: 'bypassPermissions', token: 'secret' } });

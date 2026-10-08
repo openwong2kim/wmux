@@ -170,3 +170,17 @@ describe('ExposureStore', () => {
     expect(() => make().set('not-a-uuid', { workspaceIds: [] })).toThrow();
   });
 });
+
+describe('ExposureStore Moa flag', () => {
+  it('is off by default, persists when on and survives a reload', () => {
+    const s = make();
+    expect(s.isBrainExposed(HOST)).toBe(false);
+    s.set(HOST, { workspaceIds: [] });
+    expect(s.isBrainExposed(HOST)).toBe(false);
+    expect(s.get(HOST)).not.toHaveProperty('brain');
+    s.set(HOST, { workspaceIds: [], brain: true });
+    expect(make().isBrainExposed(HOST)).toBe(true);
+    s.set(HOST, { workspaceIds: [], brain: false });
+    expect(make().isBrainExposed(HOST)).toBe(false);
+  });
+});

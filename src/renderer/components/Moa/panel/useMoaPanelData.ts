@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { MoaPendingDecision } from '../../../../shared/moa';
 import type { MoaAutoHandoffReceipt } from '../../../../shared/moaHandoff';
+import type { MoaRemoteTask } from '../../../../shared/a2aRemoteDelivery';
 import { deriveLinkState, type WorkLink, type WorkLinkFilter } from '../../../../shared/workLink';
 
 export interface MoaDecisionsApi {
@@ -143,4 +144,34 @@ export function useMoaHandoffReceipts(api: MoaHandoffReceiptsApi | undefined) {
     EMPTY_RECEIPTS,
   );
   return { receipts: value, refresh };
+}
+
+export interface MoaRemoteTasksApi {
+  remoteTasks: () => Promise<{ tasks: MoaRemoteTask[] }>;
+  onChanged?: (cb: () => void) => () => void;
+}
+
+const EMPTY_REMOTE_TASKS: MoaRemoteTask[] = [];
+/** Moa sending to another PC raises no panel signal: a slow re-read covers it. */
+export const MOA_REMOTE_TASKS_REREAD_MS = 15_000;
+
+export const defaultRemoteTasksApi = (): MoaRemoteTasksApi | undefined => {
+  const moa = window.electronAPI?.deck?.moa;
+  return moa?.remoteTasks ? { remoteTasks: moa.remoteTasks, onChanged: moa.onChanged } : undefined;
+};
+
+/** Work between this PC's Moa and other PCs' Moa, newest first. */
+export function useMoaRemoteTasks(api: MoaRemoteTasksApi | undefined): MoaRemoteTask[] {
+  const listFn = api?.remoteTasks;
+  const onChanged = api?.onChanged;
+  const read = useCallback(() => listFn!().then((r) => r?.tasks ?? []), [listFn]);
+  const subscribe = useCallback((cb: () => void) => {
+    const off = onChanged?.(cb);
+    const timer = setInterval(cb, MOA_REMOTE_TASKS_REREAD_MS);
+    return () => {
+      off?.();
+      clearInterval(timer);
+    };
+  }, [onChanged]);
+  return useReread<MoaRemoteTask[]>(listFn ? read : null, listFn ? subscribe : null, EMPTY_REMOTE_TASKS).value;
 }

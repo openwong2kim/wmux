@@ -12,6 +12,7 @@ import {
 import { getWindowsDefaultShell } from '../shared/shellResolution';
 import { assertNotLiveWmuxDataDir, dataSuffix, getDaemonSocketPath, getLegacyDaemonSocketPath } from '../shared/constants';
 import { coerceLanLinkConfig, defaultLanLinkConfig } from '../shared/lanlink';
+import { coerceA2aRemoteConfig, defaultA2aRemoteConfig } from './a2aRemote/controller';
 import {
   DESKTOP_PRESENCE_STALE_AFTER_MS,
   DESKTOP_PRESENCE_STALE_CAP_MS,
@@ -138,6 +139,8 @@ export function createDefaultConfig(): DaemonConfig {
     // LanLink control plane (PR-3) — OFF by default, explicit opt-in. NIC null
     // until the user selects one; port omitted (PR-4 picks a default).
     lanlink: defaultLanLinkConfig(),
+    // Cross-host A2A listener — OFF by default, explicit opt-in.
+    a2aRemote: defaultA2aRemoteConfig(),
     // Browser automation control (issue #613). CDP remote-debugging port is
     // enabled by default — it drives webview-based browser automation, a core
     // feature. The slice exists so the port can be closed by config without an
@@ -470,6 +473,8 @@ export function loadConfig(): DaemonConfig {
     // OFF default WITHOUT touching any sibling field (a malformed lanlink must not
     // nuke pipeName). enabled defaults OFF — explicit opt-in.
     config.lanlink = coerceLanLinkConfig(config.lanlink, defaults.lanlink ?? defaultLanLinkConfig());
+    // Cross-host A2A listener: same per-field backfill, OFF by default.
+    config.a2aRemote = coerceA2aRemoteConfig(config.a2aRemote, defaults.a2aRemote ?? defaultA2aRemoteConfig());
 
     // ── Channel retention: per-field backfill (same discipline as lanlink) ──
     config.channels = coerceChannelRetention(
@@ -521,6 +526,21 @@ export function loadConfig(): DaemonConfig {
 
 /** Atomic write: .tmp then rename (mirrors SessionManager pattern) */
 export function saveConfig(config: DaemonConfig): void {
+  // A directory that cannot be created still throws, as it always did.
+  const dir = path.dirname(getConfigPath());
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  try {
+    saveConfigOrThrow(config);
+  } catch (err) {
+    console.error('[daemon/config] Failed to save config:', err);
+  }
+}
+
+/**
+ * `saveConfig` that reports failure: for callers that must not change their
+ * in-memory state unless the write landed.
+ */
+export function saveConfigOrThrow(config: DaemonConfig): void {
   const configPath = getConfigPath();
   const tmpPath = configPath + '.tmp';
   const dir = path.dirname(configPath);
@@ -534,12 +554,12 @@ export function saveConfig(config: DaemonConfig): void {
     fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2), { encoding: 'utf-8', mode: 0o600 });
     fs.renameSync(tmpPath, configPath);
   } catch (err) {
-    console.error('[daemon/config] Failed to save config:', err);
     try {
       if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
     } catch {
       // ignore cleanup errors
     }
+    throw err;
   }
 }
 

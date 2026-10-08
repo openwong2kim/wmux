@@ -48,10 +48,14 @@ import {
 import { isVerifiedTaskSender } from '../../shared/a2aReopen';
 import { isReceiverPaneGone } from '../../shared/a2aOrphanedTask';
 import type {
+  A2aRemoteMarkPayload,
   A2aTaskCancelPayload,
   A2aTaskCreatePayload,
+  A2aTaskMessagePayload,
   A2aTaskTransitionPayload,
 } from '../../shared/a2aEventlog';
+import type { A2aRemoteReceipt, A2aRemoteTaskMarkerV1 } from '../../shared/a2aRemote';
+import { localSideOf, type A2aRemoteHeldReason, type A2aRemoteInboxItem, type A2aRemoteTaskState } from '../../shared/a2aRemoteDelivery';
 
 /** a2aSlice 현행 값 준수(캐시와 동일 시멘틱). */
 const GC_MAX_AGE_MS = 30 * 60 * 1000; // 30분
@@ -111,10 +115,21 @@ export interface PaneAddr {
 export interface CreateTaskInput {
   id?: string;
   title: string;
-  from: { workspaceId: string; name: string; paneId?: string; surfaceId?: string };
+  from: { workspaceId: string; name: string; paneId?: string; surfaceId?: string; ptyId?: string };
   to: { workspaceId: string; name: string; paneId?: string; surfaceId?: string; ptyId?: string };
   history?: Message[];
   artifacts?: Artifact[];
+  /** Cross-host A2A: stored as `metadata.remote` (and replayed with the task). */
+  remote?: A2aRemoteTaskMarkerV1;
+}
+
+export interface CreateTaskOptions {
+  /**
+   * Cross-host A2A only: an existing task with the same id whose first message
+   * text differs is a `conflict` (same idempotency key, different payload),
+   * instead of the default "keep the existing task".
+   */
+  conflictOnBodyMismatch?: boolean;
 }
 
 export interface TransitionInput {
@@ -167,7 +182,12 @@ export type OpErr = { ok: false; error: string };
  */
 export type TransitionOk = { ok: true; verifiedItemCount?: number; task: Task };
 export type CancelOk = { ok: true; task: Task };
-export type CreateOk = { ok: true; taskId: string; task: Task };
+/** `existed`: the id was already present and nothing was appended (idempotent create). */
+export type CreateOk = { ok: true; taskId: string; task: Task; existed?: true };
+/** Same id, different payload (only with `conflictOnBodyMismatch` / remote ops). */
+export type ConflictErr = { ok: false; error: string; conflict: true };
+/** Remote op result: `duplicate` = the same message was already applied, nothing appended. */
+export type RemoteOpOk = { ok: true; task: Task; duplicate: boolean };
 export type ReopenOk = { ok: true; reopened: boolean; task: Task };
 
 export interface QueryFilters {
@@ -175,6 +195,9 @@ export interface QueryFilters {
   role?: 'user' | 'agent';
   updatedSince?: string;
 }
+
+/** Peer state message ids remembered per task (dedupe window). */
+export const REMOTE_STATE_IDS_MAX = 64;
 
 export class A2aTaskService {
   private readonly log: A2aLogLike;
@@ -187,6 +210,8 @@ export class A2aTaskService {
   private readonly locks = new Map<string, Promise<unknown>>();
   /** §4 멱등: streamId(taskId) → (idempotencyKey → 원본 결과). LRU cap. */
   private readonly idempotency = new Map<string, Map<string, TransitionOk | CancelOk>>();
+  /** Cross-host A2A: taskId → (peer messageId → state it asked for). Dedupe + conflict. */
+  private readonly remoteStates = new Map<string, Map<string, TaskState>>();
 
   constructor(opts: A2aTaskServiceOptions) {
     this.log = opts.log;
@@ -205,6 +230,7 @@ export class A2aTaskService {
       if (rec.domain !== 'a2a') continue;
       this.applyPayload(rec.payload);
       this.restoreIdempotency(rec); // E: 크로스-재시작 멱등 재시드
+      this.restoreRemoteState(rec.payload);
     }
     // A: 부트 직후 GC — 30분 경과 종단 태스크를 즉시 정리한다. 로그는 영구이므로
     // 이게 없으면 restore가 역대 전 종단 태스크를 매 부트 부활시켜(projection 무한
@@ -240,6 +266,18 @@ export class A2aTaskService {
     );
   }
 
+  /** Re-seed the remote-state dedupe from a replayed transition/cancel. */
+  private restoreRemoteState(payload: unknown): void {
+    const p = payload as { kind?: unknown; taskId?: unknown; to?: unknown; remoteMessageId?: unknown } | null;
+    if (!p || typeof p.taskId !== 'string' || typeof p.remoteMessageId !== 'string') return;
+    if (!this.tasks.has(p.taskId)) return;
+    if (p.kind === 'task.transition' && typeof p.to === 'string') {
+      this.recordRemoteState(p.taskId, p.remoteMessageId, p.to as TaskState);
+    } else if (p.kind === 'task.cancel') {
+      this.recordRemoteState(p.taskId, p.remoteMessageId, 'canceled');
+    }
+  }
+
   /**
    * payload를 projection에 적용(append 성공 후에만 호출). kind가 닫힌 union이라
    * 미지 kind(executor-lifecycle 예약 슬롯 등)는 안전하게 무시한다(fail-closed).
@@ -265,6 +303,12 @@ export class A2aTaskService {
         ...(t.evidence ? { evidence: t.evidence } : {}),
       };
       task.metadata.updatedAt = t.timestamp;
+      if (t.remoteMessageId) {
+        addInboxItem(task, t.remoteMessageId, 'state');
+        // The peer told us this state: nothing to tell it back.
+        const m = remoteMarkerOf(task);
+        if (m) m.stateSync = t.to;
+      }
       return;
     }
     if (p.kind === 'task.cancel') {
@@ -273,6 +317,61 @@ export class A2aTaskService {
       if (!task) return;
       task.status = { state: 'canceled', timestamp: c.timestamp };
       task.metadata.updatedAt = c.timestamp;
+      if (c.remoteMessageId) {
+        addInboxItem(task, c.remoteMessageId, 'state');
+        const m = remoteMarkerOf(task);
+        if (m) m.stateSync = 'canceled';
+      }
+      return;
+    }
+    if (p.kind === 'task.message') {
+      const m = payload as A2aTaskMessagePayload;
+      const task = this.tasks.get(m.taskId);
+      if (!task || !m.message || typeof m.message.messageId !== 'string') return;
+      if (task.history.some((h) => h.messageId === m.message.messageId)) return;
+      task.history.push(m.message);
+      task.metadata.updatedAt = m.timestamp;
+      if (m.remoteInbound) addInboxItem(task, m.message.messageId, 'reply');
+      return;
+    }
+    if (p.kind === 'remote.mark') {
+      const r = payload as A2aRemoteMarkPayload;
+      const task = this.tasks.get(r.taskId);
+      const marker = remoteMarkerOf(task);
+      if (!task || !marker) return;
+      const target: A2aRemoteTaskState | A2aRemoteInboxItem | undefined = r.messageId
+        ? marker.inbox?.find((i) => i.messageId === r.messageId)
+        : marker;
+      if (!target) return;
+      if (r.stateSync !== undefined || r.sent !== undefined || r.read || r.receiptSync !== undefined || r.remoteReceipt !== undefined) {
+        if (r.stateSync !== undefined) marker.stateSync = r.stateSync;
+        if (r.sent !== undefined && !(marker.sent ?? []).includes(r.sent)) (marker.sent ??= []).push(r.sent);
+        if (r.read && !marker.readAt) marker.readAt = r.timestamp;
+        if (r.receiptSync !== undefined) marker.receiptSync = r.receiptSync;
+        // A read implies the hand-over, even when the peer's 'delivered' never came.
+        if (r.remoteReceipt !== undefined && !marker.remoteDeliveredAt) marker.remoteDeliveredAt = r.timestamp;
+        if (r.remoteReceipt === 'read' && !marker.remoteReadAt) marker.remoteReadAt = r.timestamp;
+        return;
+      }
+      if (r.attempted !== undefined) {
+        if (r.attempted) target.attempted = true;
+        else delete target.attempted;
+        return;
+      }
+      if (r.delivered === true) {
+        target.delivered = true;
+        delete target.attempted;
+        delete target.held;
+        delete target.heldAt;
+        if (r.note) target.note = r.note;
+        // The pty written to is the local pane's occupant from now on.
+        if (r.ptyId) task.metadata[localSideOf(task)].ptyId = r.ptyId;
+      } else if (r.held) {
+        target.delivered = false;
+        delete target.attempted;
+        if (target.held !== r.held || !target.heldAt) target.heldAt = r.timestamp;
+        target.held = r.held;
+      }
       return;
     }
     // executor-lifecycle / 미지 kind: 예약 슬롯 — projection 무시.
@@ -284,12 +383,19 @@ export class A2aTaskService {
    * 태스크 생성 → `task.create` envelope append → projection 시드.
    * 멱등(A3): 동일 id가 이미 있으면 append 없이 기존 유지(완료 태스크 부활 방지).
    */
-  createTask(input: CreateTaskInput): Promise<CreateOk | OpErr> {
+  createTask(input: CreateTaskInput, opts: CreateTaskOptions = {}): Promise<CreateOk | ConflictErr | OpErr> {
     const id = input.id ?? this.generateTaskId();
     return this.withTaskLock(id, async () => {
       // A3 멱등: 결정적 id(chmention-*) 재배달은 기존 상태를 보존.
       const existing = this.tasks.get(id);
-      if (existing) return { ok: true, taskId: id, task: existing };
+      if (existing) {
+        // Checked inside the task lock, so two concurrent deliveries of one
+        // message cannot both pass as "new".
+        if (opts.conflictOnBodyMismatch && firstMessageText(existing.history) !== firstMessageText(input.history ?? [])) {
+          return { ok: false, error: `a2a.task.create: conflict: task ${id} exists with a different body`, conflict: true };
+        }
+        return { ok: true, taskId: id, task: existing, existed: true };
+      }
 
       const nowIso = this.isoNow();
       const metadata: WmuxTaskMetadata = {
@@ -298,6 +404,7 @@ export class A2aTaskService {
         to: input.to,
         createdAt: nowIso,
         updatedAt: nowIso,
+        ...(input.remote ? { remote: { ...input.remote } } : {}),
       };
       const task: Task = {
         kind: 'task',
@@ -590,6 +697,315 @@ export class A2aTaskService {
     return failed;
   }
 
+  // ── cross-host A2A ─────────────────────────────────────────────────
+
+  /**
+   * Record main's delivery outcome for an inbound remote task (no
+   * `messageId`; inbound only) or for one reply/state item the peer sent into a
+   * remote task (`messageId`): `delivered` (clears a hold; `note` and the pty
+   * written to ride along) or a `held` reason. A mark that changes nothing
+   * appends nothing. `updatedAt` is left alone: this is delivery bookkeeping,
+   * not a task change an agent's incremental query should see.
+   */
+  markRemote(input: {
+    taskId: string;
+    messageId?: string;
+    delivered?: boolean;
+    held?: A2aRemoteHeldReason;
+    note?: 'pasted-not-submitted';
+    ptyId?: string;
+    attempted?: boolean;
+    stateSync?: TaskState;
+    sent?: string;
+    /** Inbound: our side read it (first time only). */
+    read?: true;
+    /** Inbound: this receipt was queued for the peer. */
+    receiptSync?: A2aRemoteReceipt;
+    /** Outbound: the peer's receipt arrived. */
+    remoteReceipt?: A2aRemoteReceipt;
+  }): Promise<{ ok: true; task: Task } | OpErr> {
+    return this.withTaskLock(input.taskId, async () => {
+      const task = this.tasks.get(input.taskId);
+      const marker = remoteMarkerOf(task);
+      if (!task || !marker) return { ok: false, error: `a2a.remote.mark: remote task not found: ${input.taskId}` };
+      let target: A2aRemoteTaskState | A2aRemoteInboxItem | undefined = marker;
+      if (input.messageId !== undefined) {
+        target = marker.inbox?.find((i) => i.messageId === input.messageId);
+        if (!target) return { ok: false, error: `a2a.remote.mark: no inbound item ${input.messageId} on ${input.taskId}` };
+      } else if (marker.direction !== 'inbound' && input.stateSync === undefined && input.sent === undefined && input.remoteReceipt === undefined) {
+        return { ok: false, error: 'a2a.remote.mark: only an inbound remote task has a delivery state' };
+      }
+      if ((input.read || input.receiptSync !== undefined) && marker.direction !== 'inbound') {
+        return { ok: false, error: 'a2a.remote.mark: only an inbound remote task is read or acknowledged' };
+      }
+      if (input.remoteReceipt !== undefined && marker.direction !== 'outbound') {
+        return { ok: false, error: 'a2a.remote.mark: only an outbound remote task takes the peer\'s receipt' };
+      }
+      const receipts = input.read === true || input.receiptSync !== undefined || input.remoteReceipt !== undefined;
+      const bookkeeping = input.stateSync !== undefined || input.sent !== undefined || receipts;
+      if (bookkeeping && input.messageId !== undefined) return { ok: false, error: 'a2a.remote.mark: stateSync/sent/receipts are task-level' };
+      if (input.delivered !== true && !input.held && input.attempted === undefined && !bookkeeping) {
+        return { ok: false, error: 'a2a.remote.mark: nothing to mark' };
+      }
+      const side = task.metadata[localSideOf(task)];
+      let unchanged: boolean;
+      let body: Partial<A2aRemoteMarkPayload>;
+      if (bookkeeping) {
+        unchanged = (input.stateSync === undefined || marker.stateSync === input.stateSync)
+          && (input.sent === undefined || (marker.sent ?? []).includes(input.sent))
+          && (input.read !== true || !!marker.readAt)
+          && (input.receiptSync === undefined || receiptRank(marker.receiptSync) >= receiptRank(input.receiptSync))
+          && (input.remoteReceipt === undefined || (input.remoteReceipt === 'read' ? !!marker.remoteReadAt : !!marker.remoteDeliveredAt));
+        body = {
+          ...(input.stateSync !== undefined ? { stateSync: input.stateSync } : {}),
+          ...(input.sent !== undefined ? { sent: input.sent } : {}),
+          ...(input.read ? { read: true as const } : {}),
+          ...(input.receiptSync !== undefined ? { receiptSync: input.receiptSync } : {}),
+          ...(input.remoteReceipt !== undefined ? { remoteReceipt: input.remoteReceipt } : {}),
+        };
+      } else if (input.delivered === true) {
+        unchanged = target.delivered === true && (!input.note || target.note === input.note) && (!input.ptyId || side.ptyId === input.ptyId);
+        body = { delivered: true, ...(input.note ? { note: input.note } : {}), ...(input.ptyId ? { ptyId: input.ptyId } : {}) };
+      } else if (input.held) {
+        unchanged = target.delivered !== true && target.held === input.held;
+        body = { held: input.held };
+      } else {
+        // An attempt only matters while the unit is still owed.
+        if (target.delivered === true || target.held) return { ok: true, task };
+        unchanged = (target.attempted === true) === input.attempted;
+        body = { attempted: input.attempted };
+      }
+      if (unchanged) return { ok: true, task };
+      const payload: A2aRemoteMarkPayload = {
+        kind: 'remote.mark',
+        taskId: input.taskId,
+        ...(input.messageId !== undefined ? { messageId: input.messageId } : {}),
+        ...body,
+        timestamp: this.isoNow(),
+      };
+      const ws = side.workspaceId;
+      const committed = await this.log.append(this.envelope(payload, ws, this.derivePrincipalId(task, localSideOf(task), ws)));
+      if (!committed) return { ok: false, error: 'a2a.remote.mark: daemon log append failed (uncommitted)' };
+      this.applyPayload(payload);
+      return { ok: true, task };
+    });
+  }
+
+  /**
+   * Remote tasks with delivery work main can do now: an inbound task neither
+   * delivered nor held (and not ended), or any reply/state item the peer sent
+   * that is neither delivered nor held. Held work is NOT here: it waits for a
+   * person (`listRemoteHeld`) or the hold TTL, never for the backstop — except
+   * a `brain-unavailable` hold, which waits only for Moa.
+   */
+  listRemotePending(): Task[] {
+    const out: Task[] = [];
+    for (const task of this.tasks.values()) {
+      const marker = remoteMarkerOf(task);
+      if (!marker) continue;
+      const ended = (TERMINAL_STATES as readonly string[]).includes(task.status.state);
+      // `brain-unavailable` waits for Moa, not for a person: main retries it
+      // as soon as Moa can take it, so it stays listed here.
+      const open = (held: string | undefined): boolean => !held || held === 'brain-unavailable';
+      const taskWork = marker.direction === 'inbound' && marker.delivered !== true && open(marker.held) && !ended;
+      const itemWork = (marker.inbox ?? []).some((i) => i.delivered !== true && open(i.held));
+      if (taskWork || itemWork) out.push(task);
+    }
+    return out;
+  }
+
+  /** Remote tasks, not ended, holding a task-level or item-level hold. */
+  listRemoteHeld(): Task[] {
+    const out: Task[] = [];
+    for (const task of this.tasks.values()) {
+      const marker = remoteMarkerOf(task);
+      if (!marker || (TERMINAL_STATES as readonly string[]).includes(task.status.state)) continue;
+      if (marker.held || (marker.inbox ?? []).some((i) => !!i.held)) out.push(task);
+    }
+    return out;
+  }
+
+  /** Every remote task, ended or not (the outbound sync walks these). */
+  listRemote(): Task[] {
+    return [...this.tasks.values()].filter((t) => remoteMarkerOf(t) !== undefined);
+  }
+
+  /** Remote tasks on `linkId` that have not ended. */
+  listRemoteByLink(linkId: string): Task[] {
+    return [...this.tasks.values()].filter(
+      (t) => remoteMarkerOf(t)?.linkId === linkId && !(TERMINAL_STATES as readonly string[]).includes(t.status.state),
+    );
+  }
+
+  /**
+   * Fail a remote task that can no longer be served here: a hold a person
+   * rejected (or that expired), or its link ended. Like
+   * failTasksForWorkspaceRemoved this bypasses VALID_TRANSITIONS and the
+   * evidence gate (submitted -> failed is not a graph edge), and the receiver
+   * authz: either side ends its own copy. An ended task is left as it is.
+   */
+  forceFailRemote(input: {
+    taskId: string;
+    reason: string;
+    forced: 'remote_held_rejected' | 'remote_link_ended' | 'remote_refused';
+  }): Promise<{ ok: true; task: Task; failed: boolean } | OpErr> {
+    return this.withTaskLock(input.taskId, async () => {
+      const task = this.tasks.get(input.taskId);
+      if (!task || !remoteMarkerOf(task)) return { ok: false, error: `a2a.remote.fail: remote task not found: ${input.taskId}` };
+      if ((TERMINAL_STATES as readonly string[]).includes(task.status.state)) return { ok: true, task, failed: false };
+      const payload: A2aTaskTransitionPayload = {
+        kind: 'task.transition',
+        taskId: input.taskId,
+        to: 'failed',
+        timestamp: this.isoNow(),
+        forced: input.forced,
+        evidence: { summary: input.reason, items: [] },
+      };
+      const side = localSideOf(task);
+      const ws = task.metadata[side].workspaceId;
+      const committed = await this.log.append(this.envelope(payload, ws, this.derivePrincipalId(task, side, ws)));
+      if (!committed) return { ok: false, error: 'a2a.remote.fail: daemon log append failed (uncommitted)' };
+      this.applyPayload(payload);
+      return { ok: true, task, failed: true };
+    });
+  }
+
+  /**
+   * Append one message to a remote task on `linkId` (a reply, either way).
+   * `actorWorkspaceId` is the side writing it: `remote:<linkId>` for one the
+   * peer sent, the local workspace for one of ours. Keyed by
+   * `message.messageId`: the same id with the same text is a duplicate, with a
+   * different text a conflict.
+   */
+  appendRemoteMessage(input: {
+    taskId: string;
+    linkId: string;
+    actorWorkspaceId: string;
+    message: Message;
+  }): Promise<RemoteOpOk | ConflictErr | OpErr> {
+    return this.withTaskLock(input.taskId, async () => {
+      const task = this.tasks.get(input.taskId);
+      if (!task || remoteMarkerOf(task)?.linkId !== input.linkId) {
+        return { ok: false, error: `a2a.remote.message: no task ${input.taskId} on link ${input.linkId}` };
+      }
+      const seen = task.history.find((h) => h.messageId === input.message.messageId);
+      if (seen) {
+        if (firstMessageText([seen]) === firstMessageText([input.message])) return { ok: true, task, duplicate: true };
+        return { ok: false, error: `a2a.remote.message: conflict: message ${input.message.messageId} exists with a different body`, conflict: true };
+      }
+      const payload: A2aTaskMessagePayload = {
+        kind: 'task.message',
+        taskId: input.taskId,
+        message: input.message,
+        timestamp: this.isoNow(),
+        ...(input.actorWorkspaceId === `remote:${input.linkId}` ? { remoteInbound: true as const } : {}),
+      };
+      const side = task.metadata.from.workspaceId === input.actorWorkspaceId ? 'from' : 'to';
+      const committed = await this.log.append(
+        this.envelope(payload, input.actorWorkspaceId, this.derivePrincipalId(task, side, input.actorWorkspaceId)),
+      );
+      if (!committed) return { ok: false, error: 'a2a.remote.message: daemon log append failed (uncommitted)' };
+      this.applyPayload(payload);
+      return { ok: true, task, duplicate: false };
+    });
+  }
+
+  /**
+   * Apply a state change the PEER host sent for a task on `linkId`, acting as
+   * `remote:<linkId>` under the ordinary rules: `canceled` needs the peer to be
+   * the task's sender or receiver; any other state needs it to be the
+   * receiver, and VALID_TRANSITIONS holds.
+   *
+   * The completion-evidence gate is bypassed on purpose, like
+   * failTasksForWorkspaceRemoved: the wire carries no evidence (it stays on the
+   * host that did the work), so a terminal state is recorded with a
+   * summary-only evidence and `forced: 'remote_state'`. Requiring items here
+   * would make every remote completion unrecordable; inventing items would be
+   * a false claim.
+   *
+   * Keyed by the peer's `messageId`: the same id asking for the same state is a
+   * duplicate, a different state a conflict.
+   */
+  applyRemoteState(input: {
+    taskId: string;
+    linkId: string;
+    messageId: string;
+    to: TaskState;
+    summary?: string;
+  }): Promise<RemoteOpOk | ConflictErr | OpErr> {
+    return this.withTaskLock(input.taskId, async () => {
+      const task = this.tasks.get(input.taskId);
+      if (!task || remoteMarkerOf(task)?.linkId !== input.linkId) {
+        return { ok: false, error: `a2a.remote.state: no task ${input.taskId} on link ${input.linkId}` };
+      }
+      const prior = this.remoteStates.get(input.taskId)?.get(input.messageId);
+      if (prior !== undefined) {
+        if (prior === input.to) return { ok: true, task, duplicate: true };
+        return { ok: false, error: `a2a.remote.state: conflict: message ${input.messageId} already asked for ${prior}`, conflict: true };
+      }
+      const remoteWs = `remote:${input.linkId}`;
+      const timestamp = this.isoNow();
+      if (input.to === 'canceled') {
+        const isSender = task.metadata.from.workspaceId === remoteWs;
+        if (!isSender && task.metadata.to.workspaceId !== remoteWs) {
+          return { ok: false, error: 'a2a.remote.state: the peer is not a party to this task' };
+        }
+        // Already over: nothing changes, and the id is not kept (a peer
+        // repeating cancels under new ids must not grow memory).
+        if ((TERMINAL_STATES as readonly string[]).includes(task.status.state)) {
+          return { ok: true, task, duplicate: true };
+        }
+        const payload: A2aTaskCancelPayload = { kind: 'task.cancel', taskId: input.taskId, timestamp, remoteMessageId: input.messageId };
+        const committed = await this.log.append(
+          this.envelope(payload, remoteWs, this.derivePrincipalId(task, isSender ? 'from' : 'to', remoteWs)),
+        );
+        if (!committed) return { ok: false, error: 'a2a.remote.state: daemon log append failed (uncommitted)' };
+        this.applyPayload(payload);
+        this.recordRemoteState(input.taskId, input.messageId, input.to);
+        return { ok: true, task, duplicate: false };
+      }
+      if (task.metadata.to.workspaceId !== remoteWs) {
+        return { ok: false, error: 'a2a.remote.state: only the receiver may move this task' };
+      }
+      // A receiver's `failed` is taken from any open state: the peer ends the
+      // task on its side (e.g. a person rejected it while it was still
+      // `submitted`, which has no graph edge to `failed`), and our copy must
+      // not stay open behind it.
+      if (input.to !== 'failed' && !validateTransition(task.status.state, input.to)) {
+        return { ok: false, error: `a2a.remote.state: invalid transition ${task.status.state} -> ${input.to}` };
+      }
+      if ((TERMINAL_STATES as readonly string[]).includes(task.status.state)) {
+        return { ok: false, error: `a2a.remote.state: invalid transition ${task.status.state} -> ${input.to}` };
+      }
+      const terminal = input.to === 'completed' || input.to === 'failed';
+      const summary = input.summary?.trim() || `${input.to} on the remote host (evidence stays there)`;
+      const payload: A2aTaskTransitionPayload = {
+        kind: 'task.transition',
+        taskId: input.taskId,
+        to: input.to,
+        timestamp,
+        ...(terminal ? { forced: 'remote_state' as const, evidence: { summary, items: [] } } : {}),
+        remoteMessageId: input.messageId,
+      };
+      const committed = await this.log.append(this.envelope(payload, remoteWs, this.derivePrincipalId(task, 'to', remoteWs)));
+      if (!committed) return { ok: false, error: 'a2a.remote.state: daemon log append failed (uncommitted)' };
+      this.applyPayload(payload);
+      this.recordRemoteState(input.taskId, input.messageId, input.to);
+      return { ok: true, task, duplicate: false };
+    });
+  }
+
+  private recordRemoteState(taskId: string, messageId: string, to: TaskState): void {
+    let seen = this.remoteStates.get(taskId);
+    if (!seen) {
+      seen = new Map();
+      this.remoteStates.set(taskId, seen);
+    }
+    seen.set(messageId, to);
+    // Bounded per task: the oldest ids go first (a resend that old is a new state).
+    while (seen.size > REMOTE_STATE_IDS_MAX) seen.delete(seen.keys().next().value as string);
+  }
+
   // ── read ───────────────────────────────────────────────────────────
 
   getTask(taskId: string): Task | undefined {
@@ -637,6 +1053,7 @@ export class A2aTaskService {
       ) {
         this.tasks.delete(id);
         this.idempotency.delete(id);
+        this.remoteStates.delete(id);
       }
     }
     if (this.tasks.size <= GC_MAX_TASKS) return;
@@ -649,6 +1066,7 @@ export class A2aTaskService {
       if (toRemove <= 0) break;
       this.tasks.delete(task.id);
       this.idempotency.delete(task.id);
+      this.remoteStates.delete(task.id);
       toRemove--;
     }
   }
@@ -773,4 +1191,32 @@ export class A2aTaskService {
     });
     return run;
   }
+}
+
+/** The cross-host marker on a task, or undefined (only a well-formed v1 marker counts). */
+function remoteMarkerOf(task: Task | undefined): A2aRemoteTaskState | undefined {
+  const m = task?.metadata.remote as A2aRemoteTaskState | undefined;
+  return m && typeof m === 'object' && m.v === 1 && typeof m.linkId === 'string' ? m : undefined;
+}
+
+/** Owe the local pane one delivery for a reply/state the peer sent (idempotent). */
+function addInboxItem(task: Task, messageId: string, kind: A2aRemoteInboxItem['kind']): void {
+  const marker = remoteMarkerOf(task);
+  if (!marker) return;
+  const inbox = marker.inbox ?? (marker.inbox = []);
+  if (!inbox.some((i) => i.messageId === messageId)) inbox.push({ messageId, kind, delivered: false });
+}
+
+/** The text parts of a history's first message, joined — the "body" a remote id dedupes on. */
+function firstMessageText(history: Message[]): string {
+  const first = history[0];
+  if (!first || !Array.isArray(first.parts)) return '';
+  return first.parts
+    .map((p) => (p && p.kind === 'text' && typeof p.text === 'string' ? p.text : ''))
+    .join('');
+}
+
+/** delivered < read: a receipt only ever moves forward. */
+function receiptRank(r: A2aRemoteReceipt | undefined): number {
+  return r === 'read' ? 2 : r === 'delivered' ? 1 : 0;
 }

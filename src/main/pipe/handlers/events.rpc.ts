@@ -31,6 +31,7 @@ const TYPE_SET = new Set<WmuxEventType>(WMUX_EVENT_TYPES);
  */
 const PRIVATE_EVENT_TYPES: ReadonlySet<WmuxEventType> = new Set<WmuxEventType>([
   'a2a.task',
+  'a2a.received',
   'channel.message',
   'channel.catalog',
   'channel.nudgeExhausted',
@@ -460,6 +461,10 @@ export function registerEventsRpc(
         if (ce.recipientWorkspaceIds.includes('*')) return true;
         if (privateSet.has(ce.workspaceId)) return true;
         return ce.recipientWorkspaceIds.some((r) => privateSet.has(r));
+      }
+      if (e.type === 'a2a.received') {
+        // Cross-host work for this PC's Moa: the HQ workspace (base scope) only.
+        return privateScoped && privateSet.has(e.workspaceId);
       }
       if (e.type === 'channel.nudgeExhausted') {
         // Channels v2 — same drop discipline as the other channel.* events

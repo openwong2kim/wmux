@@ -16,6 +16,7 @@
 //                                   parsing is defensive and never throws).
 //   claude no list command        → the static list in shared/claudeModels.
 
+import { agentSlugsWith, type AgentSlugWith } from './agentIdentity';
 import { CLAUDE_EFFORT_LEVELS, CLAUDE_MODEL_OPTIONS } from './claudeModels';
 
 export interface CatalogModel {
@@ -41,8 +42,9 @@ export interface ModelCatalogResult {
   fetchedAt: number;
 }
 
-/** Agents with a discovery source (static or CLI). */
-export const CATALOG_AGENTS = ['claude', 'codex', 'agy'] as const;
+/** Agents with a discovery source (static or CLI): the registry rows that
+ *  declare `modelCatalog` (src/shared/agentIdentity.ts). */
+export const CATALOG_AGENTS: readonly AgentSlugWith<'modelCatalog'>[] = agentSlugsWith('modelCatalog');
 
 const AGY_EFFORT_SUFFIX = /-(low|medium|high)$/;
 

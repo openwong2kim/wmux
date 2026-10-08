@@ -49,6 +49,16 @@ export const A2A_REMOTE_RECORD_V = 1;
 export const A2A_ROUTE_PREFIX = '/api/a2a/';
 
 export const A2A_ROUTES = Object.freeze({
+  /**
+   * POST — redeem a one-shot invite code for a peer credential (layer 1).
+   * Body: A2aPairRequest. The ONLY peer route that takes no credential.
+   */
+  pair: '/api/a2a/pair',
+  /**
+   * POST — the joiner withdraws its own pairing: the server revokes the
+   * calling peer and ends its links and exposure. Peer credential required.
+   */
+  unpair: '/api/a2a/unpair',
   /** GET  — the server's identity + protocol (lets a joiner re-verify after an address change). */
   hello: '/api/a2a/hello',
   /** GET  — what the server exposes to THIS peer (layer 2). */
@@ -64,6 +74,12 @@ export const A2A_ROUTES = Object.freeze({
   /** POST — joiner acknowledges stream events up to a cursor. Body: A2aStreamAck. */
   ack: '/api/a2a/ack',
 } as const);
+
+/**
+ * Default port of the dedicated A2A listener. Clear of the web server (7681)
+ * and LanLink (45651) defaults; the operator can change it in Settings.
+ */
+export const A2A_REMOTE_DEFAULT_PORT = 45660;
 
 /** True iff `pathname` is a peer route (prefix match on the canonical path). */
 export function isA2aRoute(pathname: string): boolean {
@@ -143,9 +159,11 @@ export function looksLikePeerCredential(bearer: unknown): boolean {
 /**
  * Paste-only invite string (there is NO `wmux-a2a:` protocol handler):
  *
- *   wmux-a2a://<host>:<port>/<CODE>#sha256=<fingerprint256>
+ *   wmux-a2a://<host>:<port>/<CODE>#sha256=<fingerprint256>[&alt=<ipv4>,<ipv4>]
  *
  * `host` is the server's machine name first (company DNS), an IPv4 otherwise.
+ * `alt` (optional, at most `INVITE_ALT_MAX` canonical IPv4s) lists more
+ * addresses to try in order when `host` does not resolve or answer.
  * `CODE` is the server's one-shot pairing code (same alphabet and slot as the
  * existing pair flows). The fingerprint is what the joiner pins BEFORE sending
  * any credential-bearing byte.
@@ -157,26 +175,37 @@ export interface A2aInvite {
   port: number;
   code: string;
   fingerprint256: CertFingerprint256;
+  /** Fallback IPv4s, tried after `host` in order. Absent when there are none. */
+  alt?: string[];
 }
+
+export const INVITE_ALT_MAX = 4;
 
 const INVITE_CODE_RE = /^[A-HJ-NP-Z2-9]{8}$/;
 const HOSTNAME_RE = /^(?=.{1,253}$)[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?(?:\.[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?)*$/;
 const IPV4_RE = /^(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
 
-export type InviteParseError = 'empty' | 'scheme' | 'host' | 'port' | 'code' | 'fingerprint';
+export type InviteParseError = 'empty' | 'scheme' | 'host' | 'port' | 'code' | 'fingerprint' | 'alt';
+
+/** Canonical dotted-quad IPv4 (no leading zeros). */
+export function isCanonicalIpv4(v: string): boolean {
+  return IPV4_RE.test(v) && v.split('.').map(Number).join('.') === v;
+}
 
 export function formatInvite(i: A2aInvite): string {
-  return `wmux-a2a://${i.host}:${i.port}/${i.code}#sha256=${i.fingerprint256}`;
+  const alt = i.alt && i.alt.length > 0 ? `&alt=${i.alt.join(',')}` : '';
+  return `wmux-a2a://${i.host}:${i.port}/${i.code}#sha256=${i.fingerprint256}${alt}`;
 }
 
 export function parseInvite(raw: unknown): { ok: true; invite: A2aInvite } | { ok: false; error: InviteParseError } {
   if (typeof raw !== 'string' || !raw.trim()) return { ok: false, error: 'empty' };
   // Structure only: field boundaries, so each field below reports its OWN
-  // error. Anything after the fingerprint must start with '&' (reserved for
-  // fragment extensions) and is not interpreted here.
-  const m = /^wmux-a2a:\/\/([^/:#?\s]*):([^/#?\s]*)\/([^/#?\s]*)#sha256=([^&\s]*)(?:&\S*)?$/.exec(raw.trim());
+  // error. The optional `&alt=` extension is captured; anything else after
+  // the fingerprint must start with '&' (reserved for fragment extensions)
+  // and is not interpreted here.
+  const m = /^wmux-a2a:\/\/([^/:#?\s]*):([^/#?\s]*)\/([^/#?\s]*)#sha256=([^&\s]*)(?:&alt=([^&\s]*))?(?:&\S*)?$/.exec(raw.trim());
   if (!m) return { ok: false, error: raw.trim().startsWith(INVITE_SCHEME) ? 'host' : 'scheme' };
-  const [, host, portStr, code, fpRaw] = m;
+  const [, host, portStr, code, fpRaw, altRaw] = m;
   if (!HOSTNAME_RE.test(host) && !IPV4_RE.test(host)) return { ok: false, error: 'host' };
   // Digits only: `Number` would also accept '0x1f', '1e3' and ' 80'.
   const port = /^\d{1,5}$/.test(portStr) ? Number(portStr) : NaN;
@@ -184,8 +213,48 @@ export function parseInvite(raw: unknown): { ok: true; invite: A2aInvite } | { o
   if (!INVITE_CODE_RE.test(code)) return { ok: false, error: 'code' };
   const fingerprint256 = normalizeFingerprint256(fpRaw);
   if (!fingerprint256) return { ok: false, error: 'fingerprint' };
-  return { ok: true, invite: { host, port, code, fingerprint256 } };
+  if (altRaw === undefined) return { ok: true, invite: { host, port, code, fingerprint256 } };
+  const alt = altRaw.split(',');
+  if (alt.length > INVITE_ALT_MAX || !alt.every(isCanonicalIpv4)) return { ok: false, error: 'alt' };
+  return { ok: true, invite: { host, port, code, fingerprint256, alt } };
 }
+
+/** `POST /api/a2a/pair` body. The joiner reports its own identity. */
+export interface A2aPairRequest {
+  code: string;
+  /** The joiner's own HostId. */
+  hostId: HostId;
+  /** The joiner's display name. */
+  name: string;
+  protocol: number;
+}
+
+/**
+ * `POST /api/a2a/pair` success. Carries a PEER credential and nothing else —
+ * never an operator token or a device credential.
+ */
+export interface A2aPairResponse {
+  /** `formatPeerCredential` form. */
+  credential: string;
+  /** The server's HostId. */
+  hostId: HostId;
+  name: string;
+  protocol: number;
+}
+
+/**
+ * Why a pairing was refused (`reason` on a non-200 `/api/a2a/pair` answer),
+ * so the joiner can tell the user what to do next.
+ */
+export type A2aPairRefusal =
+  /** No invite is open, or it ran out of time or attempts. */
+  | 'expired'
+  /** The code does not match the open invite. */
+  | 'invalid-code'
+  /** The joiner presented this server's own hostId. */
+  | 'self'
+  /** Too many failed pairings from this address; wait and retry (HTTP 429). */
+  | 'rate-limited';
 
 // ─── Persisted records ──────────────────────────────────────────────────────
 
@@ -227,7 +296,59 @@ export interface A2aExposureV1 {
   workspaceIds: string[];
   /** Optional per-workspace pane allow-list; absent key = every pane of that workspace. */
   paneIds?: Record<string, string[]>;
+  /** This host's Moa (brain end) is visible to that host. Absent = false. */
+  brain?: boolean;
   updatedAt: string;
+}
+
+/**
+ * What a link end is. `pane`: one workspace pane (`paneId` required).
+ * `brain`: the host's Moa — the HQ workspace's orchestrator brain, which is
+ * not a pane of any tree, so it has NO `paneId` (the field is absent, never
+ * empty); `workspaceId` is the HQ workspace's id.
+ *
+ * Remote pairs (`isAllowedEndpointPair`): pane<->pane and brain<->brain only.
+ * brain<->pane is refused in v1: Moa may not hand work straight to another
+ * workspace's agent (locally that needs the owner's hand-off card), and no
+ * policy exists yet for a remote agent writing to Moa.
+ */
+export type A2aEndpointKind = 'pane' | 'brain';
+
+export const A2A_ENDPOINT_KINDS: readonly A2aEndpointKind[] = Object.freeze(['pane', 'brain']);
+
+/** One link end as stored and as sent. */
+export interface A2aEndpoint {
+  kind: A2aEndpointKind;
+  workspaceId: string;
+  /** Present iff `kind` is 'pane'. */
+  paneId?: string;
+}
+
+/** `kind` is known and `paneId` matches it: required (non-empty) for a pane, absent for a brain. */
+export function isConsistentEndpoint(e: { kind?: unknown; paneId?: unknown }): boolean {
+  if (e.kind === 'pane') return typeof e.paneId === 'string' && e.paneId.length > 0;
+  if (e.kind === 'brain') return e.paneId === undefined;
+  return false;
+}
+
+/** May these two kinds be linked across hosts? Only like with like (see A2aEndpointKind). */
+export function isAllowedEndpointPair(a: A2aEndpointKind, b: A2aEndpointKind): boolean {
+  return (a === 'pane' && b === 'pane') || (a === 'brain' && b === 'brain');
+}
+
+/** Display name of a host's Moa in aliases. */
+export const A2A_BRAIN_ALIAS = 'Moa';
+
+/**
+ * A remote end's alias: `<PC>/<workspace>/<pane>` for a pane, `<PC>/Moa` for
+ * a brain. Names fall back to ids.
+ */
+export function a2aEndpointAlias(
+  pcName: string,
+  end: { kind: A2aEndpointKind; workspaceId: string; paneId?: string; workspaceName?: string; label?: string },
+): string {
+  if (end.kind === 'brain') return `${pcName}/${A2A_BRAIN_ALIAS}`;
+  return [pcName, end.workspaceName ?? end.workspaceId, end.label ?? end.paneId ?? ''].join('/');
 }
 
 export type A2aLinkState =
@@ -253,8 +374,19 @@ export interface A2aLinkRecordV1 {
   /** Bumped on every accepted change; a message naming an older version is refused. */
   version: number;
   state: A2aLinkState;
-  local: { workspaceId: string; paneId: string };
-  remote: { hostId: HostId; workspaceId: string; paneId: string; label?: string };
+  /** This host's end. A brain end has no `paneId` (isConsistentEndpoint). */
+  local: { kind: A2aEndpointKind; workspaceId: string; paneId?: string };
+  remote: {
+    hostId: HostId;
+    kind: A2aEndpointKind;
+    workspaceId: string;
+    paneId?: string;
+    label?: string;
+    /** Display only, for the `<PC>/<workspace>/<pane>` alias. */
+    workspaceName?: string;
+    /** Display only: the pane's normalized `host/owner/repo` key, never a raw remote URL. */
+    gitRemote?: string;
+  };
   allow: {
     /** This side may start new tasks toward the remote pane. */
     outbound: boolean;
@@ -264,7 +396,13 @@ export interface A2aLinkRecordV1 {
   createdAt: string;
   updatedAt: string;
   /** Why the link ended, for 'revoked' / 'broken'. */
-  endedReason?: 'revoked-local' | 'revoked-remote' | 'pane-closed' | 'pane-moved' | 'workspace-gone';
+  endedReason?: 'revoked-local' | 'revoked-remote' | 'pane-closed' | 'pane-moved' | 'workspace-gone' | 'exposure-revoked';
+  /**
+   * Which side proposed it: 'remote' means this host is the SERVER of the
+   * pair for this link (it received the proposal and its human accepts);
+   * 'local' means this host is the joiner. Exposure applies to 'remote' links.
+   */
+  proposer: 'local' | 'remote';
 }
 
 // ─── Layer 2/3 wire ─────────────────────────────────────────────────────────
@@ -275,11 +413,17 @@ export interface A2aHelloResponse {
   name: string;
 }
 
-/** One exposed pane, enough for a human to pick the RIGHT one. */
+/**
+ * One exposed end, enough for a human to pick the RIGHT one. A `brain` entry
+ * is the host's Moa: `workspaceId` is its HQ workspace, there is no `paneId`,
+ * and only the name fields apply.
+ */
 export interface A2aExposedPane {
+  kind: A2aEndpointKind;
   workspaceId: string;
   workspaceName: string;
-  paneId: string;
+  /** Present iff `kind` is 'pane'. */
+  paneId?: string;
   label?: string;
   /** e.g. 'claude' | 'codex' | 'shell' — display only. */
   agent?: string;
@@ -295,10 +439,16 @@ export interface A2aExposedResponse {
 export interface A2aLinkProposeRequest {
   /** Minted by the proposer; the receiver refuses a duplicate id. */
   linkId: string;
-  /** Proposer's pane (the receiver stores it as `remote`). */
-  from: { workspaceId: string; paneId: string; label?: string };
-  /** Receiver's pane (must be exposed to the proposer). */
-  to: { workspaceId: string; paneId: string };
+  /**
+   * Proposer's pane (the receiver stores it as `remote`). The names and the
+   * repo key are display-only, sanitized and bounded by the receiver.
+   */
+  from: { kind: A2aEndpointKind; workspaceId: string; paneId?: string; label?: string; workspaceName?: string; gitRemote?: string };
+  /**
+   * Receiver's end (must be exposed to the proposer; a brain end must be the
+   * receiver's current HQ). The two kinds must pass isAllowedEndpointPair.
+   */
+  to: { kind: A2aEndpointKind; workspaceId: string; paneId?: string };
   /** Directions from the PROPOSER's point of view. */
   allow: { outbound: boolean; inbound: boolean };
 }
@@ -306,6 +456,24 @@ export interface A2aLinkProposeRequest {
 export interface A2aLinkProposeResponse {
   linkId: string;
   state: 'proposed-in';
+}
+
+/** `GET /api/a2a/links/:linkId` — the link from the SERVER's perspective. */
+export interface A2aLinkStatusResponse {
+  linkId: string;
+  state: A2aLinkState;
+  version: number;
+  endedReason?: A2aLinkRecordV1['endedReason'];
+}
+
+/**
+ * `/api/a2a/links/:linkId` — the per-link path. GET answers the link's state as
+ * the SERVER sees it (A2aLinkStatusResponse): the joiner polls it ("refresh")
+ * until the server's stream carries the accept notice. `+ linkRevokeSuffix`
+ * is the joiner's revoke.
+ */
+export function a2aLinkPath(linkId: string): string {
+  return `${A2A_ROUTES.links}/${encodeURIComponent(linkId)}`;
 }
 
 // ─── Layer 4 wire ───────────────────────────────────────────────────────────
@@ -318,9 +486,14 @@ export type A2aRemoteMessageKind =
   /** A task state transition. */
   | 'state'
   /** Link lifecycle notice (accept / revoke / broken) — no task. */
-  | 'link';
+  | 'link'
+  /** The receiver's acknowledgement of a task it got: handed over, or read. Never a state change. */
+  | 'receipt';
 
-export const A2A_REMOTE_MESSAGE_KINDS: readonly A2aRemoteMessageKind[] = Object.freeze(['task', 'reply', 'state', 'link']);
+export const A2A_REMOTE_MESSAGE_KINDS: readonly A2aRemoteMessageKind[] = Object.freeze(['task', 'reply', 'state', 'link', 'receipt']);
+
+/** How far the receiver got with a task: handed to its agent (or Moa), or read by it. */
+export type A2aRemoteReceipt = 'delivered' | 'read';
 
 export function isA2aRemoteMessageKind(v: unknown): v is A2aRemoteMessageKind {
   return typeof v === 'string' && (A2A_REMOTE_MESSAGE_KINDS as readonly string[]).includes(v);
@@ -352,6 +525,8 @@ export interface A2aRemoteEnvelope {
   state?: TaskState;
   /** For 'link'. */
   link?: { state: 'active' | 'revoked' | 'broken'; version: number; reason?: A2aLinkRecordV1['endedReason'] };
+  /** For 'receipt' (with `taskId`). */
+  receipt?: A2aRemoteReceipt;
   sentAt: string;
 }
 
@@ -431,9 +606,34 @@ export interface A2aRemoteTaskMarkerV1 {
   direction: 'inbound' | 'outbound';
   /** Inbound only: false until main confirms the gated delivery. */
   delivered?: boolean;
-  /** Inbound only: why delivery is held. */
-  held?: 'occupant-changed' | 'pane-missing' | 'link-not-active';
+  /**
+   * Why delivery is held. `brain-unavailable`: the work is for this PC's Moa,
+   * which cannot take it right now (Moa off, no HQ, or not started); it is
+   * delivered as soon as Moa can.
+   */
+  held?:
+    | 'occupant-changed'
+    | 'pane-missing'
+    | 'link-not-active'
+    | 'brain-delivery-pending'
+    | 'brain-unavailable'
+    /** A paste was attempted but never confirmed (main restarted mid-delivery): a person decides. */
+    | 'delivery-unconfirmed'
+    /** The pane kept having no agent to deliver to. */
+    | 'no-agent';
+  /**
+   * This side's link endpoint kind when the task was stored. `brain` = the
+   * task is this PC's Moa's, delivered as a wake, never to a pane. Absent on a
+   * task stored before it was recorded (treated as a pane task).
+   */
+  kind?: A2aEndpointKind;
 }
+
+/**
+ * A message id the peer chose. It ends up in task ids, ledger keys and the
+ * text that wakes Moa, so only a plain token is accepted.
+ */
+export const A2A_REMOTE_MESSAGE_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
 export const A2A_REMOTE_TASK_ID_PREFIX = 'rt-';
 

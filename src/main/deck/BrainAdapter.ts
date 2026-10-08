@@ -93,6 +93,9 @@ export type BrainEvent =
        *  terminal can answer. `excerpt` is a short plain-text tail of what the
        *  dialog says, so the chat can show it next to a way to the terminal. */
       tuiDialog?: { excerpt: string };
+      /** Set when the brain process never came up (spawn or attach failed,
+       *  or it died during startup), so the prompt was never typed. */
+      spawnFailed?: true;
     }
   // Main changed this workspace's decision slot outside a brain turn (Moa's
   // issue proposals). Carries nothing: the decision card refetches.

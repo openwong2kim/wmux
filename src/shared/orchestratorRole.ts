@@ -1,3 +1,4 @@
+import { AGENT_ROWS, agentLauncherStem } from './agentIdentity';
 import { launcherStem, tokenize } from './agentResume';
 import {
   EFFORT_TOKEN_RE, freshContextGrammarFor, hasPermissionChoice, isSkipPermissionsToken, launchGrammarFor,
@@ -119,36 +120,28 @@ export type WmuxTools = (typeof WMUX_TOOLS)[number];
 /** Operator-level, cross-workspace. Keyed by role name (ORCH_ROLES ∪ custom). */
 export type OrchestratorRoleBindings = Record<string, RoleBinding>;
 
-/** Per-agent model-flag grammar (sibling of agentResume's RESUME_BY_LAUNCHER).
- *  ONLY agents whose `--model` grammar is empirically verified live here; an
- *  absent agent (gemini/aider/opencode) yields a no-op + advisory note rather
- *  than a guessed, possibly-broken flag. claude + codex `--model <m>` are
- *  verified in agentResume.test.ts (`codex --model gpt-5.5`, `claude --model`). */
+/** Per-agent model-flag grammar (sibling of agentResume's resume grammar).
+ *  Derived from the registry's `modelFlag` (src/shared/agentIdentity.ts), and
+ *  ONLY agents whose model flag is empirically verified declare one; an absent
+ *  agent (gemini/aider/opencode) yields a no-op + advisory note rather than a
+ *  guessed, possibly-broken flag. claude + codex `--model <m>` are verified in
+ *  agentResume.test.ts (`codex --model gpt-5.5`, `claude --model`); grok and
+ *  agy carry their verification dates on their rows. grok is a fan-out-only
+ *  launcher (`roleBinding: false`), so a role binding never reaches it. */
 interface ModelFlagGrammar {
   /** Render the model flag tokens inserted right after the launcher token. */
   flag: (model: string) => string;
 }
-const MODEL_FLAG_BY_LAUNCHER: Readonly<Record<string, ModelFlagGrammar>> = {
-  claude: { flag: (m) => `--model ${m}` },
-  codex: { flag: (m) => `--model ${m}` },
-  // grok (1.0.x) is a fan-out-only launcher (see shared/fanoutPreset.ts), not a
-  // KNOWN_AGENT_STEMS entry, so a role binding never reaches it. Verified
-  // 2026-09-26: `grok --model grok-4.7-build-fast` runs, an unknown id is refused.
-  grok: { flag: (m) => `--model ${m}` },
-  // agy (Antigravity CLI 1.2.13). Verified 2026-09-29: `agy --model
-  // gemini-3.8-flash-low` runs; an unknown id is refused with the model list.
-  // The id must be a full `agy models` id (the effort suffix included) — a bare
-  // family name such as `gemini-3.8-flash` also demands `--effort`.
-  agy: { flag: (m) => `--model ${m}` },
-  // opencode/gemini/aider deliberately absent — their `--model` CLI grammar is
-  // NOT verified anywhere in the repo (integrations/ + agentResume both cover
-  // only claude/codex). Binding a role to them is a no-op + note (D-5), never a
-  // fabricated flag. Add them here once their grammar is confirmed.
-};
+const MODEL_FLAG_BY_LAUNCHER: ReadonlyMap<string, ModelFlagGrammar> = new Map(
+  AGENT_ROWS.flatMap((row): [string, ModelFlagGrammar][] => {
+    const modelFlag = row.modelFlag;
+    return modelFlag ? [[agentLauncherStem(row), { flag: (m) => `${modelFlag} ${m}` }]] : [];
+  }),
+);
 
 /** Whether wmux knows how to inject a model flag for a launcher stem. */
 export function launcherSupportsModelFlag(stem: string): boolean {
-  return stem in MODEL_FLAG_BY_LAUNCHER;
+  return MODEL_FLAG_BY_LAUNCHER.has(stem);
 }
 
 /**
@@ -207,23 +200,19 @@ export function applyRoleAgent(
   // a flag gets that flag right before the argument (agy: `-i "<prompt>"`);
   // later rewrites insert their flags after the launcher, so `-i` stays adjacent.
   const rest = command.slice(tokens[0].end);
-  const promptFlag = PROMPT_FLAG_BY_STEM[agent];
+  const promptFlag = PROMPT_FLAG_BY_STEM.get(agent)?.flag;
   if (promptFlag && tokens.length > 1) return { command: `${agent} ${promptFlag}${rest}`, changed: true };
   return { command: agent + rest, changed: true };
 }
 
-/** Agent CLIs that refuse a positional first prompt, with the flag that takes it
- *  instead. The fan-out worker line is `<agent> "$(cat <prompt file>)"`; agy
- *  answers a bare argument with "Prompts are read only from -p/--print,
- *  -i/--prompt-interactive, or stdin", while `agy -i "<prompt>"` runs the prompt
- *  and keeps the session open. Verified 2026-09-30 in a real PTY, agy 1.2.14. */
-const PROMPT_FLAG_BY_STEM: Readonly<Record<string, string>> = { agy: '-i' };
-
-/** Every flag such a CLI reads its first prompt from (agy: "-p/--print,
- *  -i/--prompt-interactive"). A line already carrying one needs no other. */
-const PROMPT_TAKING_FLAGS_BY_STEM: Readonly<Record<string, readonly string[]>> = {
-  agy: ['-i', '--prompt-interactive', '-p', '--print'],
-};
+/** Agent CLIs that refuse a positional first prompt, keyed by launcher stem: the
+ *  flag that takes the prompt instead, and every flag the CLI reads a first
+ *  prompt from (a line already carrying one needs no other). The fan-out worker
+ *  line is `<agent> "$(cat <prompt file>)"`. Derived from the registry's
+ *  `promptFlag` (agy, verified 2026-09-30 in a real PTY). */
+const PROMPT_FLAG_BY_STEM: ReadonlyMap<string, { readonly flag: string; readonly accepts: readonly string[] }> = new Map(
+  AGENT_ROWS.flatMap((row) => (row.promptFlag ? [[agentLauncherStem(row), row.promptFlag] as const] : [])),
+);
 
 /** Stem of the raw first word: tokenize() treats `\` as an escape, which would
  *  mangle a Windows launcher path (`C:\Tools\agy.exe`). */
@@ -232,7 +221,7 @@ function rawLauncherStem(command: string): string {
 }
 
 function hasPromptTakingFlag(stem: string, args: readonly { value: string; quoted: boolean }[]): boolean {
-  const flags = PROMPT_TAKING_FLAGS_BY_STEM[stem] ?? [];
+  const flags = PROMPT_FLAG_BY_STEM.get(stem)?.accepts ?? [];
   return args.some((t) => !t.quoted && flags.some((f) => t.value === f || t.value.startsWith(`${f}=`)));
 }
 
@@ -247,7 +236,7 @@ export function promptFlagForLauncher(agentCmd: string): string | undefined {
   const tokens = tokenize(agentCmd);
   if (tokens.length === 0) return undefined;
   const stem = rawLauncherStem(agentCmd);
-  const flag = PROMPT_FLAG_BY_STEM[stem];
+  const flag = PROMPT_FLAG_BY_STEM.get(stem)?.flag;
   if (!flag) return undefined;
   return hasPromptTakingFlag(stem, tokens.slice(1)) ? undefined : flag;
 }
@@ -264,7 +253,7 @@ export function launchRefusesPositionalPrompt(command: string): boolean {
   const tokens = tokenize(command);
   if (tokens.length < 2) return false;
   const stem = rawLauncherStem(command);
-  if (!PROMPT_FLAG_BY_STEM[stem]) return false;
+  if (!PROMPT_FLAG_BY_STEM.has(stem)) return false;
   return !hasPromptTakingFlag(stem, tokens.slice(1));
 }
 
@@ -341,19 +330,12 @@ export function bindingEnforcesFreshContext(binding: RoleBinding | undefined): b
  *  way, so `git commit -m "wip"` and `npm test` in a bound pane come back
  *  byte-identical. It also decides whether a mismatch is worth reporting —
  *  launching a DIFFERENT known agent than the role names is a policy deviation
- *  the operator should hear about. Mirrors the AgentSlug vocabulary
- *  (shared/events.ts). */
-export const KNOWN_AGENT_STEMS: ReadonlySet<string> = new Set([
-  'claude',
-  'codex',
-  'gemini',
-  'aider',
-  'opencode',
-  'copilot',
-  'openclaude',
-  'kiro-cli',
-  'agy',
-]);
+ *  the operator should hear about. Derived from the registry
+ *  (shared/agentIdentity.ts): every row's launcher stem (`kiro-cli` for kiro),
+ *  except a fan-out-only launcher (`roleBinding: false`, grok). */
+export const KNOWN_AGENT_STEMS: ReadonlySet<string> = new Set(
+  AGENT_ROWS.filter((row) => row.roleBinding !== false).map(agentLauncherStem),
+);
 
 /** Max lengths for the binding fields at the normalization boundary. `args` is
  *  the widest surface (arbitrary flags) so it gets the command-sized cap. */
@@ -710,7 +692,7 @@ export function applyRoleBinding(
     };
   }
 
-  const grammar = MODEL_FLAG_BY_LAUNCHER[stem];
+  const grammar = MODEL_FLAG_BY_LAUNCHER.get(stem);
   let note: string | undefined;
   let injectModel = false;
 

@@ -32,7 +32,9 @@ import type { AgentSignalKind } from './hooks/signal-types';
  *  adapter with the Hermes Agent spawn spec; 'claude-pty' = the user's own
  *  Claude Code binary driven as an interactive TUI inside a deck-embedded pty
  *  (the subscription-safe hedge — see ClaudePtyBrainAdapter). New ACP vendors
- *  extend this union + a spawn spec — no new adapter code. */
+ *  extend this union + a spawn spec — no new adapter code.
+ *  TODO(#1904): brain runtime ids, not agent slugs (`hermes` and `claude-pty`
+ *  have no registry row), so this union is not derived from agentIdentity.ts. */
 export type BrainVendor = 'claude' | 'hermes' | 'claude-pty';
 
 export type AgentPreset = _AgentPreset;
@@ -1200,7 +1202,10 @@ export interface WmuxTaskMetadata {
   // sides optional — a ws-only side keeps active-pane delivery / ws-level role.
   // Always ws-scoped: the id must belong to its own `workspaceId` (validated at
   // delivery; cross-ws is refused).
-  from: { workspaceId: string; name: string; paneId?: string; surfaceId?: string };
+  // `from.ptyId` (optional): cross-host A2A only — the sender pane's pty when a
+  // remote task was sent, so a reply from the other host is held instead of
+  // landing on a different agent that took the pane since.
+  from: { workspaceId: string; name: string; paneId?: string; surfaceId?: string; ptyId?: string };
   // `to.ptyId` (optional) is a delivery-time pty SNAPSHOT — channel-mention
   // autoresponse stores it so a deferred flush can fail closed if the pane
   // restarted (successor agent now holds the paneId) before delivery.

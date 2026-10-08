@@ -26,7 +26,7 @@ returns `EPERM`. Wire framing: newline-delimited JSON, one object per line.
 
 ## RPC methods
 
-Total: **200** methods (`ALL_RPC_METHODS` in
+Total: **231** methods (`ALL_RPC_METHODS` in
 `src/shared/rpc.ts`). Capability and risk class are read from
 `src/main/mcp/methodCapabilityMap.ts`:
 
@@ -185,6 +185,37 @@ Total: **200** methods (`ALL_RPC_METHODS` in
 
 | Method | Capability | Risk class |
 |---|---|---|
+| `a2a.remote.status` | `wmux.internal` |  |
+| `a2a.remote.configure` | `wmux.internal` |  |
+| `a2a.remote.pair.begin` | `wmux.internal` |  |
+| `a2a.remote.pair.cancel` | `wmux.internal` |  |
+| `a2a.remote.pair.status` | `wmux.internal` |  |
+| `a2a.remote.join` | `wmux.internal` |  |
+| `a2a.remote.hosts.list` | `wmux.internal` |  |
+| `a2a.remote.hosts.remove` | `wmux.internal` |  |
+| `a2a.remote.peers.list` | `wmux.internal` |  |
+| `a2a.remote.peers.revoke` | `wmux.internal` |  |
+| `a2a.remote.exposure.publish` | `wmux.internal` |  |
+| `a2a.remote.exposure.get` | `wmux.internal` |  |
+| `a2a.remote.exposure.list` | `wmux.internal` |  |
+| `a2a.remote.exposure.set` | `wmux.internal` |  |
+| `a2a.remote.hosts.exposed` | `wmux.internal` |  |
+| `a2a.remote.links.list` | `wmux.internal` |  |
+| `a2a.remote.links.propose` | `wmux.internal` |  |
+| `a2a.remote.links.accept` | `wmux.internal` |  |
+| `a2a.remote.links.reject` | `wmux.internal` |  |
+| `a2a.remote.links.revoke` | `wmux.internal` |  |
+| `a2a.remote.links.refresh` | `wmux.internal` |  |
+| `a2a.remote.local.paneGone` | `wmux.internal` |  |
+| `a2a.remote.pending` | `wmux.internal` |  |
+| `a2a.remote.mark` | `wmux.internal` |  |
+| `a2a.remote.targets` | `wmux.internal` |  |
+| `a2a.remote.sendTask` | `wmux.internal` |  |
+| `a2a.remote.reply` | `wmux.internal` |  |
+| `a2a.remote.state` | `wmux.internal` |  |
+| `a2a.remote.held` | `wmux.internal` |  |
+| `a2a.remote.rejectHeld` | `wmux.internal` |  |
+| `a2a.remote.hosts.status` | `wmux.internal` |  |
 | `a2a.resolve.identity` | `a2a.read` | `a2a` |
 | `a2a.whoami` | `a2a.read` | `a2a` |
 | `a2a.discover` | `a2a.read` | `a2a` |
@@ -337,7 +368,7 @@ Total: **200** methods (`ALL_RPC_METHODS` in
 
 ## Event types
 
-The EventBus exposes **20** event types
+The EventBus exposes **21** event types
 (`WMUX_EVENT_TYPES` in `src/shared/events.ts`), polled via `events.poll`.
 Wire shapes (the fields beyond the common `seq` / `ts` / `workspaceId` /
 `type`) are documented in [`inventory.md`](./inventory.md#event-types) and
@@ -359,6 +390,7 @@ typed in `src/shared/events.ts`.
 | `pane.restarted` |
 | `pane.supervision` |
 | `a2a.task` |
+| `a2a.received` |
 | `channel.message` |
 | `channel.catalog` |
 | `channel.nudgeExhausted` |

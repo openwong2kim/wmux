@@ -112,7 +112,7 @@ import {
 } from '../../deck/deckHqStore';
 import { loadLedgerGateEnabled, setLedgerGateEnabled } from '../../deck/deckLedgerGateStore';
 import { resolveViewContext } from '../../deck/viewContext';
-import { forgetBrainPty, publishMoaPane, setMoaPaneSource } from '../../deck/moaPaneFeed';
+import { forgetBrainPty, noteBrainBlockedOnTui, publishMoaPane, setMoaPaneSource } from '../../deck/moaPaneFeed';
 import {
   buildDeckLedgerSummary,
   createLedgerPushCoalescer,
@@ -151,6 +151,7 @@ import {
 } from '../../deck/deckDecisionStore';
 import { startMoaIssueProposals } from '../../deck/moaIssueProposalsHost';
 import { setMoaHandoffService } from '../../deck/moaHandoff';
+import { createMoaWakeHandler, setMoaWakeHandler } from '../../deck/moaWake';
 import { createMoaHandoffService } from '../../deck/moaHandoffHost';
 import { HANDOFF_NOTICE_OPTION, HANDOFF_OPTIONS, type MoaHandoffResolveResult } from '../../../shared/moaHandoff';
 import { MoaTranscript, type MoaTranscriptHint } from '../../deck/moaTranscript';
@@ -162,6 +163,9 @@ import { getAccountStore } from '../../account/accountStore';
 import type { MoaApproval, MoaApprovalAnswerResult, MoaDelegatedApproval, MoaPendingDecision } from '../../../shared/moa';
 import { selectDelegatedApprovals } from '../../deck/moaDelegatedApprovals';
 import { resultFromTask, type MoaTaskResult } from '../../../shared/moaResult';
+import { canonicalPcName, moaRemoteTasks, type MoaRemoteTask } from '../../../shared/a2aRemoteDelivery';
+import { isRemoteTaskId } from '../../../shared/a2aRemote';
+import { brainReceiverReady, notifyBrainReceiverChanged, setBrainReceiver } from '../../a2a/brainReceiver';
 import {
   beginOrContinueDeckWork,
   clearActiveDeckWork,
@@ -470,6 +474,8 @@ export function registerDeckHandler(
             host: createBrainPtyHost(client),
             bridgePath: resolveBrainBridgePath(),
             onPtySpawned: adapterOpts.onPtySpawned,
+            // A startup screen fences the phone's Moa pane input (moaPaneFeed).
+            onBlockedOnTui: noteBrainBlockedOnTui,
             onForeignTurnStart: adapterOpts.onForeignTurnStart,
             // The Stop gate: the orchestrator may not end a turn while worker
             // panes are still running or waiting on it. The mirror lookup lives
@@ -752,8 +758,14 @@ export function registerDeckHandler(
     moaTranscript.sync();
     const win = getWindow();
     if (win && !win.isDestroyed()) win.webContents.send(IPC.DECK_MOA_CHANGED, {});
+    // Moa on/off or the HQ came and went: cross-host work held for Moa may go.
+    notifyBrainReceiverChanged();
   };
 
+  // One observer per workspace for the turn runHumanTurn is running (the
+  // phone wake classifies its failure from these). One turn at a time per
+  // workspace, so one slot is enough.
+  const turnTaps = new Map<string, (event: BrainEvent) => void>();
   const emit = (workspaceId: string, event: BrainEvent): void => {
     const win = getWindow();
     if (win && !win.isDestroyed()) {
@@ -1097,7 +1109,17 @@ export function registerDeckHandler(
         ...(moaProposalsDir ? { moaProposalsDir } : {}),
         ...(moaReadGate ? { moaReadGate: true } : {}),
       }),
-      sink: (event) => emit(workspaceId, event),
+      sink: (event) => {
+        const tap = turnTaps.get(workspaceId);
+        if (tap) {
+          try {
+            tap(event);
+          } catch {
+            /* an observer never breaks the stream */
+          }
+        }
+        emit(workspaceId, event);
+      },
       startOptions: {
         // Bake the brain's REAL memory-folder paths into the write policy (M1b)
         // so it persists learnings to an absolute path, not a guessed one.
@@ -1309,6 +1331,90 @@ export function registerDeckHandler(
     return `${blocks.join('\n\n')}\n\n${text}`;
   };
 
+  /**
+   * One human turn: the DECK_SEND body, shared with the phone's `moa.wake`.
+   * Nothing between the idle check and `mgr.send` awaits, and the manager
+   * flips to busy synchronously inside `send`, so a caller that checked idle
+   * just before calling this is the only turn that starts.
+   */
+  const runHumanTurn = async (
+    workspaceId: string,
+    text: string,
+    opts: {
+      source: 'desktop' | 'phone';
+      /** Who sent it (the daemon's chat owner for a phone). Logging only. */
+      actor?: string;
+      fleetContext?: string;
+      model?: string;
+      /** Sees this turn's events, before the renderer does. */
+      onEvent?: (event: BrainEvent) => void;
+    },
+  ): Promise<CommanderSendResult> => {
+    // Mode `off`: no brain, so nothing to send to. The composer is disabled
+    // in that state, so this is the race/stale-renderer path.
+    const refusal = refuseWhenModeOff(workspaceId);
+    if (refusal) return refusal;
+    const mgr = ensureManager(workspaceId, opts.fleetContext, opts.model ?? brainModel);
+    // Human input resets this workspace's auto-wake budget and subsumes any
+    // buffered push events (the human's own turn re-observes live state) —
+    // but ONLY when the send will actually be accepted. A busy reject (e.g.
+    // racing an in-flight auto-wake turn) must not consume buffered events:
+    // that stop may be the very completion the loop is waiting on, and
+    // subsuming it on a turn that never ran would silently stall the loop
+    // (dogfood finding, 2026-07-12). Status check + send are one synchronous
+    // sequence, so nothing can interleave (same basis as runTurnForWorkspace).
+    const idle = mgr.getStatus().status === 'idle';
+    if (idle) {
+      beginTrackedWork(workspaceId, text);
+      coalescer?.notifyHumanSend(workspaceId);
+    }
+    // Awaits the full turn (events stream over DECK_STREAM meanwhile); the
+    // resolved value is only the accept/reject verdict. The loop + decision
+    // blocks ride in front of the typed text — invisible to the renderer's
+    // optimistic user bubble, visible to the brain. If this human turn carried
+    // a resolved decision's block, consume it (id-scoped) so it never re-injects.
+    const injectedDecision = loadBrainDecision(workspaceId);
+    // A human at the composer: no double-check delay — they are waiting on it,
+    // and a turn they typed themselves cannot be racing their own TUI input.
+    moaTranscript.notePrompt(workspaceId, text);
+    // A turn the phone sent has no optimistic bubble in the desktop deck, so
+    // open it there the way a scheduled run does.
+    if (idle && opts.source === 'phone') {
+      emit(workspaceId, { type: 'turn-start', prompt: text, vendor: vendorForWorkspace(workspaceId) });
+    }
+    const tap = idle ? opts.onEvent : undefined;
+    if (tap) turnTaps.set(workspaceId, tap);
+    let verdict: CommanderSendResult;
+    try {
+      verdict = await mgr.send(withLoopContext(workspaceId, text), { origin: 'human' });
+    } finally {
+      if (tap && turnTaps.get(workspaceId) === tap) turnTaps.delete(workspaceId);
+    }
+    settleAmbient(workspaceId, verdict);
+    if (verdict.ok && injectedDecision?.status === 'resolved') {
+      void clearResolvedDecision(workspaceId, injectedDecision.id).catch(() => { /* ignore */ });
+    }
+    return verdict;
+  };
+
+  // The phone's first message to Moa when no Moa pane exists yet (moaWake.ts):
+  // the same human turn on the HQ brain, answered on accept.
+  setMoaWakeHandler(createMoaWakeHandler({
+    refuse: () => {
+      if (!isMoaEnabled()) return 'moa_off';
+      const hq = getHqWorkspaceId();
+      if (!hq) return 'not_hq';
+      const refusal = refuseWhenModeOff(hq);
+      if (!refusal) return null;
+      // A task workspace never runs a brain; for the phone that is "no HQ brain".
+      return refusal.code === 'task_workspace' ? 'not_hq' : refusal.code;
+    },
+    hqWorkspaceId: () => getHqWorkspaceId(),
+    vendor: () => resolveEffectiveVendor(brainVendor),
+    idle: (workspaceId) => ensureManager(workspaceId, undefined, brainModel).getStatus().status === 'idle',
+    run: (workspaceId, text, { actor, onEvent }) => runHumanTurn(workspaceId, text, { source: 'phone', actor, onEvent }),
+  }));
+
   ipcMain.removeHandler(IPC.DECK_SEND);
   ipcMain.handle(
     IPC.DECK_SEND,
@@ -1323,10 +1429,6 @@ export function registerDeckHandler(
       if (!text.trim()) return { ok: false, code: 'empty' };
       const workspaceId = readWorkspaceId(req);
       if (!workspaceId) return { ok: false, code: 'invalid_workspace' };
-      // Mode `off`: no brain, so nothing to send to. The composer is disabled
-      // in that state, so this is the race/stale-renderer path.
-      const refusal = refuseWhenModeOff(workspaceId);
-      if (refusal) return refusal;
       let fleetContext = typeof req.fleetContext === 'string' ? req.fleetContext : undefined;
       if (fleetContext && fleetContext.length > FLEET_CONTEXT_MAX_CHARS) {
         fleetContext = fleetContext.slice(0, FLEET_CONTEXT_MAX_CHARS) + '\n…(truncated)';
@@ -1336,34 +1438,7 @@ export function registerDeckHandler(
       // authority so a payload that omits it does not silently reset the brain
       // to the vendor default.
       const model = sanitizeModel(req.model) || brainModel;
-      const mgr = ensureManager(workspaceId, fleetContext, model);
-      // Human input resets this workspace's auto-wake budget and subsumes any
-      // buffered push events (the human's own turn re-observes live state) —
-      // but ONLY when the send will actually be accepted. A busy reject (e.g.
-      // racing an in-flight auto-wake turn) must not consume buffered events:
-      // that stop may be the very completion the loop is waiting on, and
-      // subsuming it on a turn that never ran would silently stall the loop
-      // (dogfood finding, 2026-07-12). Status check + send are one synchronous
-      // sequence, so nothing can interleave (same basis as runTurnForWorkspace).
-      if (mgr.getStatus().status === 'idle') {
-        beginTrackedWork(workspaceId, text);
-        coalescer?.notifyHumanSend(workspaceId);
-      }
-      // Awaits the full turn (events stream over DECK_STREAM meanwhile); the
-      // resolved value is only the accept/reject verdict. The loop + decision
-      // blocks ride in front of the typed text — invisible to the renderer's
-      // optimistic user bubble, visible to the brain. If this human turn carried
-      // a resolved decision's block, consume it (id-scoped) so it never re-injects.
-      const injectedDecision = loadBrainDecision(workspaceId);
-      // A human at the composer: no double-check delay — they are waiting on it,
-      // and a turn they typed themselves cannot be racing their own TUI input.
-      moaTranscript.notePrompt(workspaceId, text);
-      const verdict = await mgr.send(withLoopContext(workspaceId, text), { origin: 'human' });
-      settleAmbient(workspaceId, verdict);
-      if (verdict.ok && injectedDecision?.status === 'resolved') {
-        void clearResolvedDecision(workspaceId, injectedDecision.id).catch(() => { /* ignore */ });
-      }
-      return verdict;
+      return runHumanTurn(workspaceId, text, { source: 'desktop', ...(fleetContext ? { fleetContext } : {}), model });
     }),
   );
 
@@ -2155,6 +2230,35 @@ export function registerDeckHandler(
       coalescer?.push(receipt);
       return;
     }
+    // Cross-host A2A: another PC's Moa sent this PC's Moa work (brain link).
+    // Only the current HQ is woken, through the same gates as any receipt.
+    if (ev.type === 'a2a.received') {
+      // The bridge sends this only once the probe below says Moa can take it.
+      // A race with Moa switching off or its HQ changing parks it under the
+      // HQ the link names, replayed when a brain boots there.
+      const hq = getHqWorkspaceId();
+      if (ev.workspaceId !== ev.to || !isRemoteTaskId(ev.taskId)) return;
+      emitMoaChanged();
+      const receipt: CoalescerInput = {
+        workspaceId: ev.to,
+        // One subject per item kind: a reply buffered with its task keeps both.
+        ptyId: `a2a:${ev.taskId}#${ev.item}`,
+        kind: 'a2a.received',
+        source: 'a2a',
+        agent: null,
+        seq: ev.seq,
+        ts: ev.ts,
+        a2a: { taskId: ev.taskId, from: ev.from, to: ev.to, state: ev.state, remote: { host: canonicalPcName(ev.host), item: ev.item } },
+      };
+      if (hq !== ev.to || hqPresence(hq) !== 'present' || !coalescer) {
+        void getTaskLedger()
+          .recordOrphanedEvent({ ownerWorkspaceId: ev.to, seq: ev.seq, payload: receipt })
+          .catch((err) => console.warn(`[deck] could not park a remote Moa receipt for HQ ${ev.to}: ${String(err)}`));
+        return;
+      }
+      coalescer.push(receipt);
+      return;
+    }
     // AO-style CI feedback (owner decision 2026-07-18): a pane's PR went red.
     // Route it into the SAME coalescer as lifecycle events so it inherits the
     // mode/budget/decision-gate policy — auto drives a fix, assist reports, off
@@ -2752,6 +2856,24 @@ export function registerDeckHandler(
       const list = Array.isArray(tasks) ? tasks : tasks ? [tasks] : [];
       const task = list.find((t) => !!t && typeof t === 'object' && (t as { id?: unknown }).id === taskId);
       return { result: resultFromTask(task) };
+    }),
+  );
+
+  // Work between this PC's Moa and other PCs' Moa, for the Moa panel: the HQ's
+  // newest task summaries in the daemon ledger, narrowed to brain-link tasks.
+  ipcMain.removeHandler(IPC.DECK_MOA_REMOTE_TASKS);
+  ipcMain.handle(
+    IPC.DECK_MOA_REMOTE_TASKS,
+    wrapHandler(IPC.DECK_MOA_REMOTE_TASKS, async (): Promise<{ tasks: MoaRemoteTask[] }> => {
+      const hq = getHqWorkspaceId();
+      const dc = opts.getDaemonClient?.() ?? null;
+      if (!hq || !dc) return { tasks: [] };
+      try {
+        const answer = (await dc.rpc('a2a.task.query', { workspaceId: hq, view: 'page' })) as { tasks?: unknown } | null;
+        return { tasks: moaRemoteTasks(Array.isArray(answer?.tasks) ? answer.tasks : []) };
+      } catch {
+        return { tasks: [] };
+      }
     }),
   );
 
@@ -3834,6 +3956,7 @@ export function registerDeckHandler(
   let offMirror: (() => void) | null = null;
   const startRuntime = (): void => {
     if (!offBus) offBus = eventBus.subscribe(onBusEvent);
+    notifyBrainReceiverChanged();
     if (!offMirror) offMirror = getWorkspaceMirror().onSnapshot(onHqMirrorUpdate);
     scheduler.start();
     heartbeat.start();
@@ -3863,6 +3986,19 @@ export function registerDeckHandler(
     globalTurnGate.cancelWaiters();
     for (const workspaceId of [...managers.keys()]) retireBrain(workspaceId);
   };
+  // Cross-host work for Moa (RemoteA2aBridge) is marked delivered only when
+  // this says Moa would see it: on, its HQ present and the one the link names,
+  // and the bus subscription that feeds the coalescer running.
+  setBrainReceiver((linkHq) => {
+    const hq = getHqWorkspaceId();
+    return brainReceiverReady({
+      moaEnabled: isMoaEnabled(),
+      runtimeStarted: offBus !== null,
+      coalescerReady: !!coalescer,
+      hqWorkspaceId: hq,
+      hqPresent: hq !== null && hqPresence(hq) === 'present',
+    }, linkHq);
+  });
   if (isMoaEnabled()) startRuntime();
   // A proposal left from the last run gets its card (or a card left while
   // Moa was switched off is cleared).
@@ -3881,7 +4017,9 @@ export function registerDeckHandler(
     app.removeListener('before-quit', disposeAll);
     moaIssueProposals.dispose();
     setMoaHandoffService(null);
+    setMoaWakeHandler(null);
     setMoaReadRootsRefresher(null);
+    setBrainReceiver(null);
     ipcMain.removeHandler(IPC.DECK_MOA_HANDOFF_RESOLVE);
     ipcMain.removeHandler(IPC.DECK_MOA_HANDOFF_RECEIPTS);
     ipcMain.removeHandler(IPC.DECK_MOA_HANDOFF_STOP);
@@ -3909,6 +4047,7 @@ export function registerDeckHandler(
     ipcMain.removeHandler(IPC.DECK_MOA_DELEGATED_APPROVALS);
     ipcMain.removeHandler(IPC.DECK_MOA_DELEGATED_ANSWER);
     ipcMain.removeHandler(IPC.DECK_MOA_TASK_RESULT);
+    ipcMain.removeHandler(IPC.DECK_MOA_REMOTE_TASKS);
     ipcMain.removeHandler(IPC.DECK_MOA_TRANSCRIPT_STATUS);
     ipcMain.removeHandler(IPC.DECK_MOA_TRANSCRIPT_SNAPSHOT);
     ipcMain.removeHandler(IPC.DECK_MOA_TRANSCRIPT_SUBSCRIBE);

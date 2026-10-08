@@ -435,6 +435,11 @@ const AGENT_PATTERNS: AgentPattern[] = [
   },
 ];
 
+/** The slugs that have a screen profile above. The registry's `detect` field
+ *  (src/shared/agentIdentity.ts) must name exactly these; a test holds them
+ *  together. */
+export const DETECTOR_PROFILE_SLUGS: readonly AgentSlug[] = AGENT_PATTERNS.map((ap) => ap.slug);
+
 // Derive the Claude waiting patterns from the table above so the gate replay
 // and the ordinary pattern pass can never disagree about which fragment a line
 // matched. Order is preserved: the pattern pass takes the first entry that

@@ -14,6 +14,7 @@
 
 import type { RpcRouter } from '../RpcRouter';
 import type { RpcContext } from '../../../shared/rpc';
+import type { AgentSlug } from '../../../shared/agentIdentity';
 import {
   MOA_ASK_RPC,
   MOA_ASK_STATUS_RPC,
@@ -34,8 +35,10 @@ export interface MoaRpcDeps {
 }
 
 /** The agent slug for an MCP client name (the same slugs the daemon stamps on
- *  approval records, so a moa_ask and a shadow record hash alike). */
-export function agentSlugOf(clientName: string | undefined): string {
+ *  approval records, so a moa_ask and a shadow record hash alike). Substring
+ *  order is deliberate (an `openclaude` client reads as claude); the return
+ *  type ties every answer to a registry slug. */
+export function agentSlugOf(clientName: string | undefined): AgentSlug | 'unknown' {
   const n = (clientName ?? '').toLowerCase();
   if (n.includes('claude')) return 'claude';
   if (n.includes('codex')) return 'codex';

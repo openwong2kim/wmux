@@ -551,7 +551,7 @@ export class DeviceStore {
    * Repeats of the same device, pane and route within `MOA_SEND_COALESCE_MS`
    * write one line.
    */
-  recordMoaSend(entry: { deviceId: string; sessionId: string; route: 'chat' | 'input' }): void {
+  recordMoaSend(entry: { deviceId: string; sessionId: string; route: 'chat' | 'input' | 'wake' }): void {
     this.audit.append(
       { event: 'moa-send', deviceId: entry.deviceId, sessionId: entry.sessionId, reason: entry.route },
       { coalesceKey: JSON.stringify([entry.deviceId, entry.sessionId, entry.route]) },

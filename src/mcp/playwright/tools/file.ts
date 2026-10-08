@@ -16,7 +16,7 @@ import {
   type EffectProbe,
 } from '../resultTrailer';
 import { getWmuxDir } from '../../../daemon/config';
-import { fromAgentPath, toAgentPath, wslMountRoot } from '../../wslPaths';
+import { fromAgentPath, toAgentPath, win32AliasedName, wslMountRoot } from '../../wslPaths';
 
 // Optional surfaceId schema reused across tools
 const optionalSurfaceId = z
@@ -148,7 +148,7 @@ function displayRoot(root: string): string {
  * function RETURNED — the realpath'd, root-checked value — and never the
  * caller's raw input. Both call sites below use `safePaths` only.
  *
- * Four ways out of the root, and what stops each:
+ * Five ways out of the root, and what stops each:
  *  - `..` segments — path.resolve() normalises them before any check.
  *  - a symlink/junction inside the root pointing out of it — realpathSync()
  *    resolves it, so the relative check runs against the true target.
@@ -157,7 +157,11 @@ function displayRoot(root: string): string {
  *  - a path that does not exist, where realpath cannot run: it stays lexical,
  *    but a path Chrome cannot open is a path Chrome cannot leak. fs.existsSync
  *    resolves links exactly as the browser would, so "exists" and "openable"
- *    are the same question here.
+ *    are the same question here — with one exception, refused up front:
+ *  - on Windows, a name ending in a dot or space, or a device name. Node asks
+ *    through the `\\?\` namespace, where `uploads\link.\f` does not exist, so
+ *    realpath never runs; Chrome opens it as `uploads\link\f` and follows the
+ *    junction out of the root (measured on NTFS with Electron 41).
  *
  * Note what is NOT on that list: a path that EXISTS and whose realpath still
  * cannot be computed. Every guarantee above rests on resolving links first, so
@@ -186,6 +190,15 @@ function validateUploadPath(input: string): string {
     );
   }
   const abs = path.resolve(hostInput);
+  if (process.platform === 'win32') {
+    const aliased = win32AliasedName(abs);
+    if (aliased !== undefined) {
+      throw new Error(
+        `browser_file_upload blocked: "${input}" has a name (${JSON.stringify(aliased)}) that Windows opens as a different file ` +
+        `(a trailing dot or space, or a device name), so it cannot be checked against the upload root.`,
+      );
+    }
+  }
   let resolved = abs;
   try {
     if (fs.existsSync(abs)) resolved = fs.realpathSync(abs);

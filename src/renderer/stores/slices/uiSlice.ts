@@ -496,6 +496,14 @@ export interface UISlice {
   // every real workspace as an orphan.
   sessionRestored: boolean;
   markSessionRestored: () => void;
+  /**
+   * The startup session load has finished, whatever it found (a saved
+   * session, none at all, or one that failed to load). Unlike
+   * `sessionRestored` (true only when saved workspaces came back), this is
+   * the point from which the live tree is the real one.
+   */
+  sessionLoadSettled: boolean;
+  markSessionLoadSettled: () => void;
 
   // #517 backend choice (default 'builtin'). NON-PERSISTED renderer mirror:
   // main owns the authoritative value (userData JSON, read synchronously at
@@ -1563,6 +1571,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   markSessionRestored: () => set((state) => {
     state.sessionRestored = true;
+  }),
+
+  sessionLoadSettled: false,
+
+  markSessionLoadSettled: () => set((state) => {
+    state.sessionLoadSettled = true;
   }),
 
   markSessionSettingsLoaded: () => set((state) => {

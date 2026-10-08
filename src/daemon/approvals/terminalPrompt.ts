@@ -8,15 +8,17 @@
 // awaiting-state screen verifier, which releases a pane once the dialog has
 // gone from its screen.
 
+import { agentRow } from '../../shared/agentIdentity';
+
 /**
  * The agents whose dialog shape the screen predicates and the
- * `terminal_prompt` record are built for. Codex and OpenCode draw different
- * dialogs and are out of scope until their shapes are captured from a live TUI.
+ * `terminal_prompt` record are built for: the rows declaring
+ * `dialogs: 'claude'` (src/shared/agentIdentity.ts). Codex and OpenCode draw
+ * different dialogs and are out of scope until their shapes are captured from
+ * a live TUI.
  */
-const CLAUDE_FAMILY: ReadonlySet<string> = new Set(['claude', 'openclaude']);
-
 export function isClaudeFamilyAgent(slug: string | null | undefined): boolean {
-  return typeof slug === 'string' && CLAUDE_FAMILY.has(slug);
+  return agentRow(slug)?.dialogs === 'claude';
 }
 
 /**

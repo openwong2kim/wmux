@@ -53,6 +53,7 @@ import {
 import { shortcutPressGuard } from '../../utils/shortcutBindings';
 import { describeShortcut, rebindProblemText } from '../../utils/shortcutRebind';
 import { CLAUDE_EFFORT_LEVELS } from '../../../shared/claudeModels';
+import type { AgentSlug } from '../../../shared/agentIdentity';
 import {
   agyEffortOf,
   agyFamilyOf,
@@ -73,6 +74,7 @@ import { McpStatusSection } from './McpStatusSection';
 import { AccountsSection } from './AccountsSection';
 import { AgyAccountsSection } from './AgyAccountsSection';
 import { FanoutPresetsSection } from './FanoutPresetsSection';
+import { A2aRemoteSection } from './A2aRemoteSection';
 import { terminalFontFamilyCss } from '../../utils/terminalFont';
 import { hasBareFunctionKeyBinding } from '../../utils/functionKeyBinding';
 import { Icon, IconX, IconCheck, IconChevron, IconExternalLink, IconBrowser, IconComputer, IconUsers, IconRobot, IconRemoteDevices, IconPlus, IconWarning } from '../icons';
@@ -658,8 +660,10 @@ function disposeWorkspacePtys(ws: Workspace) {
 // no-op'ing silently. Model entry is a datalist combobox, not a <select>: only
 // claude's aliases are known to us, and a codex model id (`gpt-5.5`) must be
 // typeable. agy takes its fan-out prompt through `-i` (applyRoleAgent) and its
-// task folder is pre-trusted by main (main/agents/agyTrust).
-const ROLE_BINDING_AGENTS = ['claude', 'codex', 'opencode', 'gemini', 'agy'] as const;
+// task folder is pre-trusted by main (main/agents/agyTrust). A curated, ORDERED
+// picker subset, so it is a literal list rather than derived from the registry;
+// `satisfies` rejects any entry that is not a registry slug.
+const ROLE_BINDING_AGENTS = ['claude', 'codex', 'opencode', 'gemini', 'agy'] as const satisfies readonly AgentSlug[];
 
 // Model ids and CLI args are machine evidence, so the free-text fields are mono.
 const ROLE_BINDING_FIELD_CLASS = 'settings-input font-mono';
@@ -5420,7 +5424,7 @@ export default function SettingsPanel({ initialTab }: { initialTab?: string }) {
                     {activeTab === 'browser'            && <TabBrowser />}
                     {activeTab === 'computer-use'       && <TabComputerUse />}
                     {activeTab === 'remote'             && <TabRemote />}
-                    {activeTab === 'lanlink'            && <><LanLinkSection /><LanLinkPairingSection /></>}
+                    {activeTab === 'lanlink'            && <><LanLinkSection /><LanLinkPairingSection /><A2aRemoteSection /></>}
                     {activeTab === 'about'              && <TabAbout />}
                   </div>
                 </>

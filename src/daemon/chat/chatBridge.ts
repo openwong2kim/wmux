@@ -120,8 +120,10 @@ export interface ChatSendRequest {
    * turn (or behind a non-empty pane queue) is held by the daemon and
    * delivered after the turn ends. `authorized` is the deferred
    * re-authorization, run before each write long after this request ended.
+   * `deliver: 'steer'` (Claude only) types it into the running turn instead,
+   * where Claude's own composer queue applies it at the next tool boundary.
    */
-  queue?: { authorized: (stage?: 'first-write' | 'submit') => Promise<boolean> };
+  queue?: { authorized: (stage?: 'first-write' | 'submit') => Promise<boolean>; deliver?: ChatQueueDeliver };
 }
 
 /** HTTP-facing error tags a send can end in (contract §6.2 table). */
@@ -156,6 +158,8 @@ export interface ChatSendOutcome {
   /** The daemon queue holds (or held) this message; the outcome has no `effect` of its own. */
   queueState?: ChatQueueState;
   queueReason?: ChatQueueReason;
+  /** How the daemon queue delivers it (with `queueState`). */
+  queueDeliver?: ChatQueueDeliver;
 }
 
 /** `queued`: the daemon queue holds the message (only for a `chat-queue` sender). */
@@ -176,11 +180,20 @@ export interface ChatSendReceiptView {
   queue?: { state: ChatQueueState; reason?: ChatQueueReason };
 }
 
+/**
+ * When a queued message is typed: `next-turn` after the running turn ends,
+ * `steer` into the running turn (Claude's composer queue). Memory-only; a
+ * Codex or OpenCode item is always `next-turn`.
+ */
+export type ChatQueueDeliver = 'next-turn' | 'steer';
+
 /** One `/turns` `chat.queue[]` entry. `preview` is memory-only (absent after a restart). */
 export interface ChatQueueItemView {
   clientMessageId: string;
   state: ChatQueueState;
   reason?: ChatQueueReason;
+  /** Absent after a restart (the item is final by then). */
+  deliver?: ChatQueueDeliver;
   queuedAt: number;
   at: number;
   preview?: string;
@@ -193,11 +206,18 @@ export interface ChatQueueEvent {
   clientMessageId: string;
   state: ChatQueueState;
   reason?: ChatQueueReason;
+  deliver?: ChatQueueDeliver;
   at: number;
 }
 
 export type ChatDequeueResult =
   | { ok: true }
+  | { ok: false; error: 'queue-item-not-found' | 'already-delivered' | 'delivery-in-progress' | 'queue-item-final';
+      state?: ChatQueueState; reason?: ChatQueueReason };
+
+/** `PATCH .../chat/queue/:clientMessageId {deliver:"steer"}`: `deliver` is what the item does now (`next-turn` on Codex/OpenCode). */
+export type ChatSteerResult =
+  | { ok: true; state: ChatQueueState; deliver: ChatQueueDeliver }
   | { ok: false; error: 'queue-item-not-found' | 'already-delivered' | 'delivery-in-progress' | 'queue-item-final';
       state?: ChatQueueState; reason?: ChatQueueReason };
 
@@ -309,6 +329,14 @@ export interface ChatBridge {
   cancel(request: ChatCancelRequest): Promise<ChatCancelOutcome>;
   /** Owner-bound receipt read; never dispatches. `unknown` when absent, for another owner or another pane. */
   receipt(owner: ChatOwner, id: string, clientMessageId: string): ChatSendReceiptView;
+  /**
+   * The owner's send under this id on ANY pane (receipt or daemon queue), or
+   * undefined. For `/api/moa/messages`, whose pane can go away between a send
+   * and its retry. `sameText` is false only when the stored fingerprint
+   * proves another text; it is omitted when no text was given.
+   */
+  priorSend?(owner: ChatOwner, clientMessageId: string, text?: string):
+    { paneId: string; view: ChatSendReceiptView; sameText?: boolean } | undefined;
   launch(request: ChatLaunchRequest): Promise<ChatLaunchOutcome>;
   /** Whether `resume:true` would continue the pane's own binding now (`/turns` `chat.resumable`). */
   resumable?(id: string): Promise<boolean>;
@@ -332,6 +360,8 @@ export interface ChatBridge {
   queue?(owner: ChatOwner, id: string): ChatQueueItemView[];
   /** `DELETE .../chat/queue/:clientMessageId`: owner-bound; a canceled item answers ok again. */
   dequeue?(owner: ChatOwner, id: string, clientMessageId: string): ChatDequeueResult;
+  /** Switch a waiting item to `steer` ("send now"); owner-bound, repeatable. */
+  steer?(owner: ChatOwner, id: string, clientMessageId: string): ChatSteerResult;
   /**
    * Cancel every queued item whose owner matches: `authorization-revoked`
    * (device unpaired, grant withdrawn, server stopped by the operator) or

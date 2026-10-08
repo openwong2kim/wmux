@@ -28,6 +28,8 @@ import { AUTOMATION_EVENT } from '../shared/automation';
 import { InputReceiptStore } from './web/InputReceiptStore';
 import { PhoneWorktreeService } from './web/phoneWorktree';
 import { AnswerReceiptStore } from './approvals/AnswerReceiptStore';
+import { MoaWakeService } from './phone/MoaWakeService';
+import { isMoaWakeFailure } from '../shared/moaWake';
 import { coercePhoneDecisions } from './approvals/decisionConfig';
 import { createOpenCodeDecisions } from './approvals/openCodeDecisions';
 import { isNativeDecision } from './approvals/types';
@@ -39,6 +41,7 @@ import os from 'node:os';
 import {
   loadConfig,
   saveConfig,
+  saveConfigOrThrow,
   getWmuxDir,
   readNotifySinks,
   readPushPresenceSuppression,
@@ -80,6 +83,19 @@ import { LanLinkController } from './lanlink/controller';
 import { LanLinkServer } from './lanlink/server';
 import { PeerStore } from './lanlink/peers';
 import { coerceLanLinkPatch } from '../shared/lanlink';
+import { A2aRemoteController } from './a2aRemote/controller';
+import { A2aServer } from './a2aRemote/server';
+import { forgetHostCascade, registerA2aRemoteRpc } from './a2aRemote/rpc';
+import { PeerStore as A2aPeerStore } from './a2aRemote/peerStore';
+import { RemoteHostStore } from './a2aRemote/remoteHostStore';
+import { LinkStore } from './a2aRemote/linkStore';
+import { ExposureStore } from './a2aRemote/exposureStore';
+import { ExposedPaneCache } from './a2aRemote/exposedPanes';
+import { createA2aRoutes } from './a2aRemote/routes';
+import { registerA2aLinkRpc } from './a2aRemote/linkRpc';
+import { A2aRemoteDelivery } from './a2aRemote/delivery';
+import { isRemoteTaskId } from '../shared/a2aRemote';
+import type { A2aRemoteLinkEvent } from '../shared/rpc';
 import { ChannelService, ChannelStateWriter, ChannelWakeWorker, wakeAgentSlug, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope, stampChannelCaller, type CallerFieldSpec, type ChannelServiceEventLog } from './channels';
 import { AppendOnlyLog } from './eventlog/AppendOnlyLog';
 import { SnapshotStore, SNAPSHOT_DIRNAME } from './eventlog/SnapshotStore';
@@ -90,9 +106,10 @@ import { isPrincipalUpsertInput } from '../shared/principals';
 import { DEFAULT_COMPANY_ID, CHANNELS_EPOCH } from '../shared/channels';
 // envelope PR4 (§5 D11): A2A 태스크 정본을 렌더러 인메모리에서 데몬 이벤트 로그로.
 // (로그·machineId는 채널 부트 게이트 산출물 공유 — 별도 개방 금지.)
-import { A2aTaskService, type CreateTaskInput } from './a2a/A2aTaskService';
+import { A2aTaskService } from './a2a/A2aTaskService';
+import { parsePublicCreateTask } from './a2a/publicCreateParams';
 import { WorkTaskService } from './worktask/WorkTaskService';
-import { isTaskState, type AgentStatus, type Message, type Task } from '../shared/types';
+import { isTaskState, type AgentStatus, type Task } from '../shared/types';
 import { ProcessMonitor } from './ProcessMonitor';
 import { AgentProcessTracker } from './AgentProcessTracker';
 import { checkWslAgentRunning, reportedAgentForPane, WslPidWatcher } from './wslAgentProcess';
@@ -225,6 +242,16 @@ function getPhoneWorktrees(sessionManager: DaemonSessionManager): PhoneWorktreeS
 let answerReceipts: AnswerReceiptStore | null = null;
 function getAnswerReceipts(): AnswerReceiptStore {
   return answerReceipts ??= new AnswerReceiptStore(getWmuxDir());
+}
+// The phone's first message to Moa when no Moa pane exists yet (`moa.wake`).
+// Its own receipt file, so a wake id never meets an approval answer's.
+let moaWakeReceipts: AnswerReceiptStore | null = null;
+let moaWake: MoaWakeService | null = null;
+function getMoaWake(): MoaWakeService {
+  return moaWake ??= new MoaWakeService({
+    receipts: () => moaWakeReceipts ??= new AnswerReceiptStore(getWmuxDir(), Date.now, undefined, 'phone-moa-wake-receipts.json'),
+    desktop: () => desktopPhoneBridge,
+  });
 }
 /**
  * The `decision-v2` forms this daemon answers: the plan dialog and Claude's
@@ -826,6 +853,7 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         // The Moa (HQ brain) pane main last vouched for, read per request so a
         // withdrawal closes the next check. See web/moaPane.ts.
         moaPane: currentMoaPane,
+        moaWake: getMoaWake,
         auditMoaSend: (entry) => getDeviceStore().recordMoaSend(entry),
         // #1772 — a refused answer to the Moa prompt looks at the screen once.
         moaPromptRefused: (sessionId) => moaPrompt?.noteRefusedPress(sessionId),
@@ -3145,6 +3173,7 @@ function registerRpcHandlers(
       auditSentFile: (entry) => getDeviceStore().recordSentFile(entry),
       // See the restore path.
       moaPane: currentMoaPane,
+      moaWake: getMoaWake,
       auditMoaSend: (entry) => getDeviceStore().recordMoaSend(entry),
       moaPromptRefused: (sessionId) => moaPrompt?.noteRefusedPress(sessionId),
       // See the restore path: lazy projector for the phone turn view (#782).
@@ -4465,6 +4494,9 @@ function registerRpcHandlers(
         // First, and for every push (withdrawals included): the Moa prompt
         // record follows the dialog, and its expiries are queued right here.
         prompt.onChanged(next, pane);
+        // The phone's global `moa` event, withdrawals included (deduped on
+        // the resolved id inside the server).
+        webTerminalServer?.emitMoaChanged();
         if (!next || !pane) return;
         // The brain's hooks go to main, so none of the hook paths that attach
         // the process watch ever runs for this pane, and a chat send needs the
@@ -4475,7 +4507,8 @@ function registerRpcHandlers(
         // reading this pane: the brain's hooks never reach the daemon's own
         // transcript nudge path, so the push is that path.
         const sameBinding = prev?.sessionId === next.sessionId && JSON.stringify(prev.binding) === JSON.stringify(next.binding);
-        const sameDialog = prev?.sessionId === next.sessionId && JSON.stringify(prev.dialog) === JSON.stringify(next.dialog);
+        const sameDialog = prev?.sessionId === next.sessionId && JSON.stringify(prev.dialog) === JSON.stringify(next.dialog)
+          && prev.blockedOnTui === next.blockedOnTui;
         if (!sameBinding) transcriptProjector?.rebind(next.sessionId);
         if (!sameBinding || !sameDialog) webTerminalServer?.emitTranscriptNudge(next.sessionId);
       },
@@ -4497,6 +4530,17 @@ function registerRpcHandlers(
   pipeServer.onRpc('daemon.moa.answerPrompt', async (params, ctx) => {
     if (!firstPartyOnly(ctx.clientId, 'daemon.moa.answerPrompt')) return { ok: false, reason: 'first-party-only' };
     return moaPromptRpc ? moaPromptRpc.answer(params) : { ok: false, reason: 'not-pending' };
+  });
+  // A phone wake main accepted and then learned the brain never took (it
+  // stopped on a startup screen, or never came up): recorded on the wake's
+  // receipt. First-party only and token-only, like the two above.
+  pipeServer.onRpc('daemon.moa.wakeResult', async (params, ctx) => {
+    if (!firstPartyOnly(ctx.clientId, 'daemon.moa.wakeResult')) return { ok: false, reason: 'first-party-only' };
+    const p = (params ?? {}) as { actor?: unknown; clientMessageId?: unknown; failure?: unknown };
+    if (typeof p.actor !== 'string' || typeof p.clientMessageId !== 'string' || !isMoaWakeFailure(p.failure)) {
+      return { ok: false, reason: 'invalid' };
+    }
+    return { ok: await getMoaWake().recordFailure(p.actor, p.clientMessageId, p.failure) };
   });
   // The prompt of an agent Moa delegated work to, answered from Moa's panel.
   // First-party only like the two above: main scopes it to Moa's delegated
@@ -4628,7 +4672,11 @@ function registerRpcHandlers(
     return { agentName: readDaemonAgentState(id).agentName, bracketedPaste };
   });
   const readChatAgentState = (id: string) => {
-    const live = readDaemonAgentState(id);
+    const keyed = sessionManager.getSession(id)?.bridge;
+    // A chat send fences on keys only: a pointer drifting over a mouse-tracking
+    // TUI (Claude's fullscreen renderer) writes motion reports, not text.
+    const live = { ...readDaemonAgentState(id),
+      ...(keyed ? { keyInputQuiet: keyed.isKeyInputQuiet(), keyInputRevision: keyed.getKeyInputRevision() } : {}) };
     // A chat-v2 driver reports its own run state from its stream, not from
     // hooks or the screen.
     const driverStatus = chatV2Host?.statusForPane(id);
@@ -5570,21 +5618,12 @@ function registerRpcHandlers(
   // 30분 GC)라 로그 부재가 파국이 아니다.
   pipeServer.onRpc('a2a.task.create', async (rawParams) => {
     if (!a2aTaskService) return { ok: false, error: 'a2a.task.create: task log unavailable' };
-    const p = rawParams as Record<string, unknown>;
-    const from = p.from as CreateTaskInput['from'] | undefined;
-    const to = p.to as CreateTaskInput['to'] | undefined;
-    if (!from?.workspaceId || !to?.workspaceId || typeof p.title !== 'string') {
-      return { ok: false, error: 'a2a.task.create: from{workspaceId}, to{workspaceId}, and title are required' };
-    }
-    return a2aTaskService.createTask({
-      ...(typeof p.id === 'string' ? { id: p.id } : {}),
-      title: p.title,
-      from,
-      to,
-      // 초기 히스토리(첫 메시지)는 생성 envelope에 실려 내구화된다. 이후 증분
-      // 히스토리(reply) 내구화는 §6.F 몫 — 전이·생성·취소가 이 PR의 로그 정본.
-      ...(Array.isArray(p.history) ? { history: p.history as Message[] } : {}),
-    });
+    // 초기 히스토리(첫 메시지)는 생성 envelope에 실려 내구화된다. 이후 증분
+    // 히스토리(reply) 내구화는 §6.F 몫 — 전이·생성·취소가 이 PR의 로그 정본.
+    // A caller's `remote` marker never passes, and an rt- id is refused.
+    const parsed = parsePublicCreateTask(rawParams as Record<string, unknown>);
+    if (!parsed.ok) return parsed;
+    return a2aTaskService.createTask(parsed.input);
   });
 
   pipeServer.onRpc('a2a.task.update', async (rawParams, ctx) => {
@@ -5602,7 +5641,7 @@ function registerRpcHandlers(
     // Only the app's main process reads the pane tree; take the list from it
     // alone. Anything else leaves it unknown (no relaxation).
     const livePaneIds = pipeServer.isFirstParty(ctx.clientId) ? normalizeLivePaneIds(p.livePaneIds) : undefined;
-    return a2aTaskService.transition({
+    const moved = await a2aTaskService.transition({
       taskId,
       to: status,
       callerWorkspaceId: workspaceId,
@@ -5624,6 +5663,9 @@ function registerRpcHandlers(
       ...(p.evidence !== undefined ? { evidence: p.evidence } : {}),
       ...(typeof p.idempotencyKey === 'string' ? { idempotencyKey: p.idempotencyKey } : {}),
     });
+    // A cross-host task: the peer hears this state in the same call (ledger first, then outbox).
+    if (moved.ok && isRemoteTaskId(taskId)) await a2aDeliveryRef?.syncTask(taskId);
+    return moved;
   });
 
   pipeServer.onRpc('a2a.task.cancel', async (rawParams) => {
@@ -5632,11 +5674,13 @@ function registerRpcHandlers(
     const taskId = typeof p.taskId === 'string' ? p.taskId : '';
     const workspaceId = typeof p.workspaceId === 'string' ? p.workspaceId : '';
     if (!taskId || !workspaceId) return { ok: false, error: 'a2a.task.cancel: taskId and workspaceId are required' };
-    return a2aTaskService.cancelTask({
+    const canceled = await a2aTaskService.cancelTask({
       taskId,
       callerWorkspaceId: workspaceId,
       ...(typeof p.idempotencyKey === 'string' ? { idempotencyKey: p.idempotencyKey } : {}),
     });
+    if (canceled.ok && isRemoteTaskId(taskId)) await a2aDeliveryRef?.syncTask(taskId);
+    return canceled;
   });
 
   pipeServer.onRpc('a2a.task.reopen', async (rawParams) => {
@@ -6721,6 +6765,9 @@ let paneSupervisorRef: PaneSupervisor | null = null;
 // Module-level so the standalone shutdown() can dispose the LanLink listener
 // (close the net.Server, drop live connections, remove the firewall rules).
 let lanLinkServerRef: LanLinkServer | null = null;
+// Same for the cross-host A2A listener.
+let a2aServerRef: A2aServer | null = null;
+let a2aDeliveryRef: A2aRemoteDelivery | null = null;
 
 // Channels v2 — wake worker handle for shutdown + the emit fast path.
 let channelWakeWorkerRef: ChannelWakeWorker | null = null;
@@ -6896,6 +6943,8 @@ async function shutdown(
   // LanLink PR-4: close the listener, drop live AEAD connections, remove firewall
   // rules. Best-effort — must never block the shutdown path.
   try { lanLinkServerRef?.dispose(); } catch { /* best effort */ }
+  try { void a2aDeliveryRef?.stop(); } catch { /* best effort */ }
+  try { a2aServerRef?.dispose(); } catch { /* best effort */ }
   paneSupervisorRef = null;
 
   // Stop X1 context watchers (port poll timer + git fs.watch handles)
@@ -7908,6 +7957,102 @@ async function main(): Promise<void> {
       }),
   });
   lanLinkServerRef = lanLinkServer;
+
+  // Cross-host A2A — a DEDICATED HTTPS listener (not the phone web server),
+  // OFF until enabled in Settings. Its stores live under <wmux dir>/a2a. A
+  // failure here must not take the daemon down: the `a2a.remote.*` RPCs then
+  // stay unregistered and Settings shows the section as unavailable.
+  try {
+    const a2aDir = path.join(wmuxDir, 'a2a');
+    const a2aLog = (level: 'info' | 'warn' | 'error', msg: string): void => log(level, msg);
+    const a2aPeers = new A2aPeerStore({ dir: a2aDir, log: a2aLog });
+    // The delivery layer (below) ends a link's tasks on every link transition.
+    let a2aDelivery: A2aRemoteDelivery | null = null;
+    const a2aLinks = new LinkStore({ dir: a2aDir, log: a2aLog, onTransition: (l) => a2aDelivery?.onLinkTransition(l) });
+    const a2aExposures = new ExposureStore({ dir: a2aDir, log: a2aLog });
+    const a2aExposedPanes = new ExposedPaneCache();
+    const a2aRemoteHosts = new RemoteHostStore({ dir: a2aDir, log: a2aLog });
+    const a2aForgetHost = forgetHostCascade({ links: a2aLinks, exposures: a2aExposures }, a2aLog);
+    const a2aCascade = (hostId: string): void => {
+      a2aForgetHost(hostId);
+      a2aDelivery?.onPeerRevoked(hostId);
+    };
+    // Link nudges for the app (a proposal to accept, a state change to show).
+    const a2aBroadcast = (event: A2aRemoteLinkEvent): void =>
+      pipeServer.broadcast({ type: event.type, sessionId: '', data: event });
+    const a2aRemoteController = new A2aRemoteController({ config, persist: saveConfigOrThrow });
+    const a2aRoutes = createA2aRoutes({
+        exposures: a2aExposures,
+        panes: a2aExposedPanes,
+        links: a2aLinks,
+        broadcast: a2aBroadcast,
+        expireProposals: () => {
+          for (const l of a2aLinks.expireProposals()) a2aBroadcast({ type: 'a2a.remote.link.changed', linkId: l.linkId, state: l.state });
+        },
+        log: a2aLog,
+      });
+    const a2aServer = new A2aServer({
+      controller: a2aRemoteController,
+      identityDir: a2aDir,
+      peers: a2aPeers,
+      onPeerRevoked: a2aCascade,
+      routes: a2aRoutes,
+      log: a2aLog,
+    });
+    a2aServerRef = a2aServer;
+    const onA2aRpc = (method: string, handler: (params: Record<string, unknown>) => Promise<unknown>): void =>
+      pipeServer.onRpc(method, handler);
+    registerA2aRemoteRpc(onA2aRpc, {
+      controller: a2aRemoteController,
+      server: a2aServer,
+      peers: a2aPeers,
+      remoteHosts: a2aRemoteHosts,
+      cascade: a2aCascade,
+      log: a2aLog,
+    });
+    // Link control RPCs. Their handlers are also kept here: the delivery
+    // layer's link reconcile reuses `a2a.remote.links.refresh` as is.
+    const a2aLinkHandlers = new Map<string, (params: Record<string, unknown>) => Promise<unknown>>();
+    registerA2aLinkRpc(
+      (method, handler) => {
+        a2aLinkHandlers.set(method, handler);
+        onA2aRpc(method, handler);
+      },
+      {
+        links: a2aLinks,
+        exposures: a2aExposures,
+        panes: a2aExposedPanes,
+        remoteHosts: a2aRemoteHosts,
+        broadcast: a2aBroadcast,
+        // Accept / reject / revoke / broken reach the other PC through the outbox.
+        notifyLinkChange: (...args) => a2aDelivery?.notifyLinkChange(...args),
+        log: a2aLog,
+      },
+    );
+    // Delivery (layer 4) needs the task ledger; without it links still work
+    // but nothing is carried, and the delivery RPCs stay unregistered.
+    if (a2aTaskService) {
+      const refresh = a2aLinkHandlers.get('a2a.remote.links.refresh');
+      a2aDelivery = new A2aRemoteDelivery({
+        dir: a2aDir,
+        links: a2aLinks,
+        taskService: a2aTaskService,
+        peers: a2aPeers,
+        remoteHosts: a2aRemoteHosts,
+        broadcast: (event) => pipeServer.broadcast(event),
+        refreshLink: (linkId) => (refresh ? refresh({ linkId }) : Promise.resolve(null)),
+        log: a2aLog,
+      });
+      a2aDelivery.registerRoutes(a2aRoutes);
+      a2aDelivery.registerRpc(onA2aRpc);
+      a2aDelivery.start();
+      a2aDeliveryRef = a2aDelivery;
+    } else {
+      log('warn', '[a2a-remote] task ledger unavailable: messages between PCs are not carried this run');
+    }
+  } catch (err) {
+    log('error', `[a2a-remote] disabled for this run: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   // Idle-shutdown config. Defaults: 5 min idle window + 60 s grace.
   // `WMUX_IDLE_SHUTDOWN_MS` and `WMUX_IDLE_GRACE_MS` env vars override

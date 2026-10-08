@@ -40,3 +40,28 @@ export function paneDisplayName(label: string | undefined, autoName: string): st
   const trimmed = label?.trim();
   return trimmed && trimmed.length > 0 ? trimmed : autoName;
 }
+
+/**
+ * A pane's name exactly as its header shows it: the user's label (the
+ * `paneLabel` mirror, else the leaf's own) or the auto coordinate with the
+ * agent suffix. Everything that names a pane to another PC (exposure, link
+ * cards, the remote alias) uses this one, so the names never drift apart.
+ */
+export function leafDisplayName(
+  paneLabel: Record<string, string> | undefined,
+  ws: { wsOrdinal?: number },
+  leaf: { id: string; ordinal?: number; metadata?: { label?: string } },
+  agentSlug?: AgentSlug | null,
+): string {
+  return paneDisplayName(paneLabel?.[leaf.id] ?? leaf.metadata?.label, computePaneAutoName(ws.wsOrdinal ?? 0, leaf.ordinal ?? 0, agentSlug));
+}
+
+/** The agent slug of a leaf's active surface (the header's name suffix). */
+export function activeAgentSlug(
+  surfaceAgent: Record<string, { slug?: AgentSlug }> | undefined,
+  leaf: { activeSurfaceId?: string; surfaces: Array<{ id: string; ptyId?: string }> },
+): AgentSlug | undefined {
+  const surface = leaf.surfaces.find((x) => x.id === leaf.activeSurfaceId) ?? leaf.surfaces[0];
+  return surface?.ptyId ? surfaceAgent?.[surface.ptyId]?.slug : undefined;
+}
+

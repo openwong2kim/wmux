@@ -42,6 +42,8 @@
 // not truth — the deliveryStatus dead-code audit finding is not coming
 // back as a schema field).
 
+import { agentRow } from '../../shared/agentIdentity';
+
 export interface WakeUnreadEntry {
   channelId: string;
   name: string;
@@ -256,21 +258,11 @@ export function bodyPreview(body: string | undefined): string {
  * Agents whose pane is a TUI chat box, where a pasted line lands in a composer
  * rather than a command interpreter. The body preview rides only into these:
  * an unknown or absent agent means the pane may be a bare shell, and a bare
- * shell would RUN the other workspace's text.
+ * shell would RUN the other workspace's text. Declared per agent as
+ * `tuiComposer` on its registry row (src/shared/agentIdentity.ts).
  */
-const BODY_PREVIEW_AGENTS: ReadonlySet<string> = new Set([
-  'claude',
-  'codex',
-  'gemini',
-  'agy',
-  'aider',
-  'opencode',
-  'copilot',
-]);
-
-/** Whether a nudge into this pane may carry the message body at all. */
 export function mayCarryBody(detectedAgent: string | undefined): boolean {
-  return !!detectedAgent && BODY_PREVIEW_AGENTS.has(detectedAgent);
+  return agentRow(detectedAgent)?.tuiComposer === true;
 }
 
 /**

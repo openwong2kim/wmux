@@ -5,6 +5,7 @@ import type { DaemonSupervisionPolicy } from '../shared/rpc';
 import type { AgentSlug } from '../shared/events';
 import type { ResumeBinding } from '../shared/agentResume';
 import type { LanLinkConfig } from '../shared/lanlink';
+import type { A2aRemoteConfig } from './a2aRemote/controller';
 import type { GateConfig } from './approvals/gateConfig';
 import type { PhoneDecisionsConfig } from './approvals/decisionConfig';
 import type { NotifySinkConfig } from './push/WebhookSink';
@@ -275,6 +276,12 @@ export interface DaemonConfig {
    * IP. Always present at runtime after `loadConfig` normalises it.
    */
   lanlink?: LanLinkConfig;
+  /**
+   * Cross-host A2A listener (`A2aRemoteController`). OPTIONAL and ignored by
+   * `validateConfig`, like `lanlink`; `loadConfig` backfills it per field to
+   * OFF. Always present at runtime after `loadConfig`.
+   */
+  a2aRemote?: A2aRemoteConfig;
   /**
    * Browser automation control. OPTIONAL — old config.json files predate it
    * and must keep loading, so `validateConfig` deliberately ignores this field

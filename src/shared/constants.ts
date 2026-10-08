@@ -375,6 +375,9 @@ export const IPC = {
   // A delegated task's result from its A2A completion evidence ({ workspaceId,
   // taskId } → { result: MoaTaskResult | null }), for Moa's result card.
   DECK_MOA_TASK_RESULT: 'deck:moa:task-result',
+  // Tasks between this PC's Moa and other PCs' Moa (brain links), newest
+  // first (invoke → { tasks: MoaRemoteTask[] }). Re-read on DECK_MOA_CHANGED.
+  DECK_MOA_REMOTE_TASKS: 'deck:moa:remote-tasks',
   //   DECK_MOA_HANDOFF_RESOLVE (invoke MoaHandoffResolveRequest): answer a
   //   hand-off card by id (main reads the body from its own store; an edited
   //   body is the operator's own input). DECK_MOA_HANDOFF_RECEIPTS (invoke):
@@ -804,6 +807,38 @@ export const IPC = {
   LANLINK_SEND: 'lanlink:send',
   LANLINK_PEERS_LIST: 'lanlink:peers:list',
   LANLINK_PEERS_REMOVE: 'lanlink:peers:remove',
+  // Cross-host A2A control plane (Settings → LAN → renderer → main → daemon
+  // control pipe `a2a.remote.*`).
+  A2A_REMOTE_STATUS: 'a2aRemote:status',
+  A2A_REMOTE_CONFIGURE: 'a2aRemote:configure',
+  A2A_REMOTE_PAIR_BEGIN: 'a2aRemote:pair:begin',
+  A2A_REMOTE_PAIR_CANCEL: 'a2aRemote:pair:cancel',
+  A2A_REMOTE_PAIR_STATUS: 'a2aRemote:pair:status',
+  A2A_REMOTE_JOIN: 'a2aRemote:join',
+  A2A_REMOTE_HOSTS_LIST: 'a2aRemote:hosts:list',
+  A2A_REMOTE_HOSTS_REMOVE: 'a2aRemote:hosts:remove',
+  A2A_REMOTE_PEERS_LIST: 'a2aRemote:peers:list',
+  A2A_REMOTE_PEERS_REVOKE: 'a2aRemote:peers:revoke',
+  // Exposure and pane links. SNAPSHOT is the renderer's whole pane tree (main
+  // diffs it for gone panes and publishes the exposed part); LINK_EVENT is the
+  // main → renderer push of daemon link nudges.
+  A2A_REMOTE_SNAPSHOT: 'a2aRemote:snapshot',
+  A2A_REMOTE_EXPOSURE_GET: 'a2aRemote:exposure:get',
+  A2A_REMOTE_EXPOSURE_SET: 'a2aRemote:exposure:set',
+  A2A_REMOTE_HOSTS_EXPOSED: 'a2aRemote:hosts:exposed',
+  A2A_REMOTE_LINKS_LIST: 'a2aRemote:links:list',
+  A2A_REMOTE_LINKS_PROPOSE: 'a2aRemote:links:propose',
+  A2A_REMOTE_LINKS_ACCEPT: 'a2aRemote:links:accept',
+  A2A_REMOTE_LINKS_REJECT: 'a2aRemote:links:reject',
+  A2A_REMOTE_LINKS_REVOKE: 'a2aRemote:links:revoke',
+  A2A_REMOTE_LINKS_REFRESH: 'a2aRemote:links:refresh',
+  A2A_REMOTE_LINK_EVENT: 'a2aRemote:link-event',
+  // Delivery: per-PC connection state, and remote work held for a person.
+  A2A_REMOTE_HOSTS_STATUS: 'a2aRemote:hosts:status',
+  A2A_REMOTE_HOST_STATUS_EVENT: 'a2aRemote:host-status-event',
+  A2A_REMOTE_HELD_LIST: 'a2aRemote:held:list',
+  A2A_REMOTE_HELD_RETRY: 'a2aRemote:held:retry',
+  A2A_REMOTE_HELD_REJECT: 'a2aRemote:held:reject',
   // Scheduled runs (renderer → main → daemon `automation.*`). Invoke channels
   // resolve even with no daemon (empty lists / `{ ok:false }`). AUTOMATION_PUSH
   // carries daemon events and connect-time snapshots main → renderer;

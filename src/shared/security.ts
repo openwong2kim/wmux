@@ -982,21 +982,28 @@ export function reHardenTokenFileAcl(filePath: string): HardenOutcome {
  */
 export function scheduleTokenFileReHarden(filePath: string): void {
   setImmediate(() => {
-    void (async () => {
-      const aclStart = Date.now();
-      try {
-        if (process.platform !== 'win32') {
-          await fs.promises.chmod(filePath, 0o600);
-          return;
-        }
-        await rewriteThroughFreshInodeAsync(filePath);
-      } catch (err) {
-        console.warn(`[scheduleTokenFileReHarden] could not re-harden ${filePath}:`, err);
-      } finally {
-        console.log(
-          `[security] deferred token ACL re-harden took ${Date.now() - aclStart}ms (${path.basename(filePath)})`,
-        );
-      }
-    })();
+    void reHardenTokenFile(filePath);
   });
+}
+
+/**
+ * The re-harden itself, awaitable: an owner of the file that must not leave
+ * it (or its directory) open past its own shutdown awaits this instead of
+ * scheduling it blind. Never rejects.
+ */
+export async function reHardenTokenFile(filePath: string): Promise<void> {
+  const aclStart = Date.now();
+  try {
+    if (process.platform !== 'win32') {
+      await fs.promises.chmod(filePath, 0o600);
+      return;
+    }
+    await rewriteThroughFreshInodeAsync(filePath);
+  } catch (err) {
+    console.warn(`[scheduleTokenFileReHarden] could not re-harden ${filePath}:`, err);
+  } finally {
+    console.log(
+      `[security] deferred token ACL re-harden took ${Date.now() - aclStart}ms (${path.basename(filePath)})`,
+    );
+  }
 }

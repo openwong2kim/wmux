@@ -20,6 +20,7 @@
 // asked to write landed in the task's folder. Anything else is listed with the
 // reason it is not selectable, and is refused rather than launched on a guess.
 
+import type { AgentSlug } from './agentIdentity';
 import { EFFORT_TOKEN_RE, launchGrammarFor } from './agentLaunchOptions';
 import { KNOWN_AGENT_STEMS, ROLE_BINDING_MODEL_MAX, type RoleBinding } from './orchestratorRole';
 import { FANOUT_MAX_TASKS } from './workTask';
@@ -88,6 +89,10 @@ export interface FanoutAgentSpec {
  * Verified 2026-09-26 on macOS (claude 2.x, codex-cli 0.157.0, grok 1.0.30):
  * each launched as `<cli> [flags] "<prompt>"` in an empty non-repo folder and
  * asked to write hello.txt.
+ *
+ * A per-CLI verification record in Settings order, so it is a literal list
+ * rather than derived from the registry; `satisfies` rejects a stem that is
+ * not a registry slug. An agent absent here is not offered by fan-out.
  */
 export const FANOUT_AGENTS: readonly FanoutAgentSpec[] = [
   { stem: 'claude', label: 'Claude Code', selectable: true, modelFlag: true, unattendedFlags: '' },
@@ -115,7 +120,7 @@ export const FANOUT_AGENTS: readonly FanoutAgentSpec[] = [
     modelFlag: true,
     unattendedFlags: '--dangerously-skip-permissions',
   },
-];
+] satisfies readonly (FanoutAgentSpec & { stem: AgentSlug })[];
 
 /** Stems fan-out may launch that the generic role-binding rewrite does not know
  *  (it recognises KNOWN_AGENT_STEMS only). Passed to it as an allow list, so

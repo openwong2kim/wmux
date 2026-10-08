@@ -26,6 +26,7 @@ import {
   type ChatSendOutcome,
   type ChatSendReceiptView,
   type ChatSendRequest,
+  type ChatSteerResult,
   type ChatTurn,
 } from '../../chat/chatBridge';
 import type { ChatSkillCatalog } from '../../../shared/transcript/chatSkills';
@@ -1531,12 +1532,14 @@ describe('native chat routes (contract v0.3.1)', () => {
     const QUEUE_CAP = { 'x-wmux-client-caps': 'chat-queue' };
     const item = (over: Partial<ChatQueueItemView> = {}): ChatQueueItemView =>
       ({ clientMessageId: freshId(), state: 'queued', queuedAt: 1, at: 2, preview: 'first eighty', ...over });
-    const wireQueue = (over: { dequeue?: (owner: ChatOwner, id: string, cmid: string) => ChatDequeueResult } = {}) => {
+    const wireQueue = (over: { dequeue?: (owner: ChatOwner, id: string, cmid: string) => ChatDequeueResult;
+      steer?: (owner: ChatOwner, id: string, cmid: string) => ChatSteerResult } = {}) => {
       const queue = vi.fn((_owner: ChatOwner, _id: string): ChatQueueItemView[] => []);
       const fns = {
         queueEnabled: vi.fn(() => true),
         queue,
         dequeue: vi.fn(over.dequeue ?? ((): ChatDequeueResult => ({ ok: true }))),
+        steer: vi.fn(over.steer ?? ((): ChatSteerResult => ({ ok: true, state: 'queued', deliver: 'steer' }))),
         dropQueue: vi.fn((_match: (owner: ChatOwner) => boolean, _reason: 'authorization-revoked') => undefined),
         delivered: vi.fn((_owner: ChatOwner, _id: string) => [] as Array<{ clientMessageId: string; text: string; at: number }>),
       };
@@ -1649,6 +1652,70 @@ describe('native chat routes (contract v0.3.1)', () => {
       expect(fns.dequeue).toHaveBeenLastCalledWith('device:dev-2', 's1', queued);
       // GET on the queue path is not a route.
       expect((await fetch(`${base()}/api/sessions/s1/chat/queue/${queued}`, { headers: h })).status).toBe(404);
+    });
+
+    it('send: deliver is passed to the queue and echoed; an unknown value is 400', async () => {
+      await start();
+      wireQueue();
+      const seen: ChatSendRequest[] = [];
+      chatBox.send = async (req) => {
+        seen.push(req);
+        return { clientMessageId: req.clientMessageId, replayed: false, queueState: 'queued', queueDeliver: req.queue?.deliver ?? 'next-turn' };
+      };
+      const url = `${base()}/api/sessions/s1/chat/messages`;
+      const body = { ...sendBody(), deliver: 'steer' };
+      const res = await postJson(url, { ...device('dev-1'), ...QUEUE_CAP }, body);
+      expect([res.status, await res.json()]).toEqual([202,
+        { state: 'queued', deliver: 'steer', replayed: false, clientMessageId: body.clientMessageId, effect: 'queued' }]);
+      expect(seen[0].queue?.deliver).toBe('steer');
+      expect(seen[0]).not.toHaveProperty('deliver');
+      const bad = await postJson(url, { ...device('dev-1'), ...QUEUE_CAP }, { ...sendBody(), deliver: 'now' });
+      expect([bad.status, (await bad.json()).error]).toEqual([400, 'invalid-chat-request']);
+    });
+
+    it('PATCH {deliver:"steer"}: every status code, owner-bound, input required, exact body', async () => {
+      await start();
+      const answers: Record<string, ChatSteerResult> = {};
+      const fns = wireQueue({ steer: (_owner, _id, cmid) => answers[cmid] ?? { ok: false, error: 'queue-item-not-found' } });
+      const [queued, codex, delivered, canceled] = [freshId(), freshId(), freshId(), freshId()];
+      answers[queued] = { ok: true, state: 'queued', deliver: 'steer' };
+      answers[codex] = { ok: true, state: 'queued', deliver: 'next-turn' };
+      answers[delivered] = { ok: false, error: 'already-delivered', state: 'delivered' };
+      answers[canceled] = { ok: false, error: 'queue-item-final', state: 'canceled', reason: 'user' };
+      const patch = (id: string, cmid: string, h: Record<string, string>, body: unknown = { deliver: 'steer' }) =>
+        fetch(`${base()}/api/sessions/${id}/chat/queue/${cmid}`, { method: 'PATCH', headers: { ...h, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      const h = device('dev-1');
+      const ok = await patch('s1', queued, h);
+      expect([ok.status, ok.headers.get('cache-control'), await ok.json()]).toEqual([200, 'no-store', { state: 'queued', deliver: 'steer', clientMessageId: queued }]);
+      expect(fns.steer).toHaveBeenCalledWith('device:dev-1', 's1', queued);
+      expect(await (await patch('s1', codex, h)).json()).toMatchObject({ deliver: 'next-turn' });
+      const d1 = await patch('s1', delivered, h);
+      expect([d1.status, await d1.json()]).toEqual([409, { error: 'already-delivered', state: 'delivered', clientMessageId: delivered }]);
+      const d2 = await patch('s1', canceled, h);
+      expect([d2.status, await d2.json()]).toEqual([409, { error: 'queue-item-final', state: 'canceled', reason: 'user', clientMessageId: canceled }]);
+      expect([(await patch('s1', freshId(), h)).status, (await patch('nope', queued, h)).status]).toEqual([404, 404]);
+      expect((await patch('s1', queued, device('ro', false))).status).toBe(403);
+      for (const body of [{}, { deliver: 'next-turn' }, { deliver: 'steer', extra: 1 }, ['steer']]) {
+        expect((await patch('s1', queued, h, body)).status).toBe(400);
+      }
+      expect(fns.steer).toHaveBeenCalledTimes(5);
+    });
+
+    it('/api/config advertises chatSteer only beside a working queue with the steer operation', async () => {
+      const info = await start();
+      const config = async (h: Record<string, string>) => (await fetch(`${base()}/api/config`, { headers: h })).json() as Promise<Record<string, unknown>>;
+      expect(await config(bearer(info.token as string))).not.toHaveProperty('chatSteer');
+      const fns = wireQueue();
+      expect((await config(bearer(info.token as string))).chatSteer).toBe(true);
+      expect(await config(device('ro', false))).not.toHaveProperty('chatSteer');
+      fns.queueEnabled.mockReturnValue(false);
+      expect(await config(bearer(info.token as string))).not.toHaveProperty('chatSteer');
+      // Never without chatQueue: a bridge with steer but no dequeue advertises neither.
+      fns.queueEnabled.mockReturnValue(true);
+      delete (chat as Partial<ChatBridge>).dequeue;
+      const noDequeue = await config(bearer(info.token as string));
+      expect(noDequeue.chatQueue).toBe(false);
+      expect(noDequeue).not.toHaveProperty('chatSteer');
     });
 
     it('SSE chat.queue goes live to the owner among the pane watchers only', async () => {

@@ -94,7 +94,7 @@ import {
   scanSkillCatalog,
   type SkillCatalogEntry,
 } from '../../main/deck/skillCatalogScan';
-import { ENV_KEYS, isBrainPty } from '../../shared/constants';
+import { ENV_KEYS, isBrainPty, isBrainPtyId } from '../../shared/constants';
 import { resolveMoaPane, type MoaPaneFact } from './moaPane';
 import {
   DEVICE_KIND_HEADER,
@@ -126,10 +126,13 @@ import { startSseHeartbeat } from './sseHeartbeat';
 import { StreamResponseLimits } from './StreamResponseLimits';
 import {
   CHAT_LAUNCH_RETENTION_MS,
+  CHAT_MESSAGE_RETENTION_MS,
+  CHAT_SEND_MAX_UNITS,
   checkChatId,
   projectChatBlocked,
   type ChatBlocked,
   type ChatBridge,
+  type ChatDeliveredMessage,
   type ChatOwner,
   type ChatQueueEvent,
   type ChatResolution,
@@ -152,17 +155,22 @@ import {
   chatV2Page,
   chatV2SendResponse,
   dequeueResponse,
+  steerResponse,
   hasConversation,
   launchResponse,
   parseCancelBody,
   parseLaunchBody,
   parseSendBody,
+  parseSteerBody,
   resolutionAgentSessionId,
   resolutionEpoch,
   sendResponse,
   type ChatV2PhoneHost,
+  type SendBody,
   type WireResponse,
 } from './chatWire';
+import { MOA_WAKE_RETRY_AFTER, type MoaWakeService, type MoaWakeWire } from '../phone/MoaWakeService';
+import { MOA_WAKE_COMMAND } from '../../shared/moaWake';
 import type { ChatV2Binding } from '../../shared/chatv2/ipc';
 import { buildWebCsp, WEB_APP_FONT_FILE } from './webCsp';
 // Type only — the channel service implementation stays out of this module.
@@ -758,7 +766,9 @@ interface WebTerminalServerDeps {
    */
   moaPane?: () => MoaPaneFact | null;
   /** Records one phone send to the Moa pane (the device audit log). */
-  auditMoaSend?: (entry: { deviceId: string; sessionId: string; route: 'chat' | 'input' }) => void;
+  auditMoaSend?: (entry: { deviceId: string; sessionId: string; route: 'chat' | 'input' | 'wake' }) => void;
+  /** `POST /api/moa/messages` before the Moa pane exists (`moa.wake`). Absent: the route answers 503. */
+  moaWake?: () => MoaWakeService;
   /**
    * #1772 — an answer or decline to the Moa pane's `terminal_prompt` was
    * refused as `prompt-changed`: the daemon looks at the screen once, so a
@@ -1383,6 +1393,8 @@ export class WebTerminalServer {
   private readonly clients = new Set<SseClient>();
   /** Live `/api/events` subscribers — fleet attention, no pane stream attached. */
   private readonly eventClients = new Set<EventClient>();
+  /** The Moa pane id the last `moa` event carried. */
+  private lastMoaEventId: string | null = null;
   /**
    * #782 — devices that opened a pane's turn view, keyed by pane. The
    * non-recording transcript nudge is delivered ONLY to these, so a busy pane's
@@ -2667,6 +2679,12 @@ export class WebTerminalServer {
         // TUI (see moaSession): omitted with Moa off, the HQ missing or
         // changed, or before the brain's first turn has started its TUI.
         ...(sidebar?.moa === true ? this.moaSessionIdField() : {}),
+        // `POST /api/moa/messages` can start Moa's brain: Moa on, no Moa pane
+        // yet, an attached desktop that announced `moa.wake`, and a caller
+        // the chat write gates admit. Omitted otherwise.
+        ...(sidebar?.moa === true && this.moaSessionIdField().moaSessionId === undefined &&
+          this.deps.moaWake && this.availableDesktop()?.supports(MOA_WAKE_COMMAND) &&
+          this.chatWriteRefusal(principal) === null ? { moaWake: true } : {}),
         // Phone channel Inbox (§9): the four `/api/channels*` routes answer
         // here. OMITTED, not false, exactly when they would answer 503
         // `channels-unavailable` — the shape a pre-channels daemon serves.
@@ -2693,7 +2711,10 @@ export class WebTerminalServer {
               ...(this.chatWritable(principal) && this.deps.chat?.()?.cancelOutcomeEnabled?.() === true ? { chatCancelOutcome: true } : {}),
               // Whether this caller's `chat-queue` sends are held by the daemon,
               // and DELETE …/chat/queue/:id (which needs `dequeue`) answers.
-              chatQueue: this.chatWritable(principal) && this.deps.chat?.()?.queueEnabled?.() === true && typeof this.deps.chat?.()?.dequeue === 'function',
+              chatQueue: this.chatQueueWorks(principal),
+              // `deliver:"steer"` on a queued send, and PATCH …/chat/queue/:id (which needs `steer`):
+              // only beside a working queue.
+              ...(this.chatQueueWorks(principal) && typeof this.deps.chat?.()?.steer === 'function' ? { chatSteer: true } : {}),
             }
           : {}),
         protocolVersion: PHONE_PROTOCOL_VERSION,
@@ -2724,6 +2745,12 @@ export class WebTerminalServer {
     if (req.method === 'POST' && p === '/api/sessions') {
       return this.handleSessionCreate(req, res, principal, url);
     }
+    if (p === '/api/moa/messages' && req.method === 'POST') {
+      return this.handleMoaSend(req, res, url, principal);
+    }
+    if (req.method === 'GET' && p.startsWith('/api/moa/messages/')) {
+      return this.handleMoaSendReceipt(res, p.slice('/api/moa/messages/'.length), principal);
+    }
     if (p.startsWith('/api/sessions/')) {
       const rest = p.slice('/api/sessions/'.length);
       // Native chat writes and their receipts nest under the pane (contract
@@ -2733,6 +2760,7 @@ export class WebTerminalServer {
         const [, rawId, kind, rawReceipt] = chatRoute;
         if (kind === 'queue') {
           if (req.method === 'DELETE' && rawReceipt !== undefined) return this.handleChatDequeue(res, rawId, rawReceipt, principal);
+          if (req.method === 'PATCH' && rawReceipt !== undefined) return this.handleChatSteer(req, res, rawId, rawReceipt, principal);
         } else if (kind === 'cancel') {
           if (req.method === 'POST' && rawReceipt === undefined) return this.handleChatCancel(req, res, rawId, url, principal);
           if (req.method === 'GET' && rawReceipt !== undefined) return this.handleChatCancelReceipt(res, rawId, rawReceipt, principal);
@@ -4407,7 +4435,10 @@ export class WebTerminalServer {
       : resolution.source === 'tui' ? resolution.turn : undefined;
     const owner = chatOwner(principal);
     const queue = caps.chatQueue === true && chat.queueEnabled?.() === true ? chat.queue?.(owner, sessionId) ?? [] : undefined;
-    const events = queue !== undefined ? this.tagDeliveredRows(chat, sessionId, owner, body.events) : body.events;
+    // A Moa wake's row is tagged for any caller: it never went through chat.send.
+    const wakeRows = this.moaWakeRows(sessionId, owner);
+    const events = queue !== undefined || wakeRows.length > 0
+      ? this.tagDeliveredRows(chat, sessionId, owner, body.events, queue !== undefined) : body.events;
     // Only a terminal binding whose agent is not alive can be resumable; skip the lookup otherwise.
     const resumable = resolution.source === 'file' && resolution.status.agentAlive !== true
       ? await chat.resumable?.(sessionId).catch(() => false) ?? false : false;
@@ -4514,8 +4545,12 @@ export class WebTerminalServer {
    * the first matching one at or after it was typed. Rows are copied, never
    * mutated (the projector may hand out shared objects).
    */
-  private tagDeliveredRows(chat: ChatBridge, sessionId: string, owner: ChatOwner, events: unknown): unknown {
-    const delivered = chat.delivered?.(owner, sessionId) ?? [];
+  private tagDeliveredRows(chat: ChatBridge, sessionId: string, owner: ChatOwner, events: unknown, queued = true): unknown {
+    const delivered = [
+      ...(queued ? chat.delivered?.(owner, sessionId) ?? [] : []),
+      // The phone's first message to Moa went through main, not chat.send.
+      ...this.moaWakeRows(sessionId, owner),
+    ];
     if (!Array.isArray(events) || delivered.length === 0) return events;
     const unused = [...delivered];
     return events.map((event: Record<string, unknown>) => {
@@ -4527,6 +4562,11 @@ export class WebTerminalServer {
       const [match] = unused.splice(index, 1);
       return { ...event, clientMessageId: match.clientMessageId };
     });
+  }
+
+  /** The owner's accepted Moa wake texts, when `sessionId` is the Moa pane. */
+  private moaWakeRows(sessionId: string, owner: ChatOwner): ChatDeliveredMessage[] {
+    return this.moaSession(sessionId) ? this.deps.moaWake?.().deliveredFor(owner) ?? [] : [];
   }
 
   /** The `/turns` page for a resolved binding, read synchronously; undefined once answered (503). */
@@ -5007,6 +5047,27 @@ export class WebTerminalServer {
   }
 
   /**
+   * `PATCH /api/sessions/:id/chat/queue/:clientMessageId {deliver:"steer"}`:
+   * "send now" for a waiting item. Same gates and owner binding as DELETE.
+   */
+  private handleChatSteer(req: http.IncomingMessage, res: http.ServerResponse, rawId: string, rawMessageId: string, principal: WebPrincipal): void {
+    res.setHeader('Cache-Control', 'no-store');
+    const refusal = this.chatWriteRefusal(principal);
+    if (refusal === 'transcript') return this.refuseTranscript(res);
+    if (refusal === 'input') return this.refuseInput(res, principal, 'Sending a queued message now types into this pane');
+    const id = decodePathSegment(rawId);
+    if (id === null || !this.conversableSession(id)) return this.json(res, 404, { error: 'pane-not-found' });
+    const chat = this.deps.chat?.() ?? null;
+    if (!chat?.steer || chat.queueEnabled?.() !== true) return this.json(res, 503, { error: 'chat-unavailable' });
+    const clientMessageId = decodePathSegment(rawMessageId) ?? '';
+    this.readJsonBody(req, res, (body) => {
+      if (!parseSteerBody(body)) return this.json(res, 400, { error: 'invalid-chat-request', detail: 'body must be {"deliver":"steer"}', clientMessageId });
+      const wire = steerResponse(chat.steer!(chatOwner(principal), id, clientMessageId), clientMessageId);
+      return this.json(res, wire.status, wire.body);
+    }, CHAT_CANCEL_MAX_BODY_BYTES);
+  }
+
+  /**
    * `POST /api/sessions/:id/chat/messages` (N4). The route adds the principal
    * gates and the wire mapping; binding, identity, receipts and the guarded
    * write are the daemon's shared send path, the same one the desktop uses.
@@ -5042,42 +5103,241 @@ export class WebTerminalServer {
             ...(parsed.clientMessageId !== undefined ? { clientMessageId: parsed.clientMessageId } : {}),
           });
         }
-        const { clientMessageId } = parsed.value;
-        // A chat-v2 record is read + approve only on the phone, like a managed one.
-        if (this.chatV2For(id)) {
-          const refused = chatV2SendResponse(clientMessageId);
-          return this.json(res, refused.status, refused.body);
-        }
-        if (!chat) return this.json(res, 503, { error: 'chat-unavailable' });
-        // Moa's own permission dialog is up: Enter would answer it, and its only
-        // answer path is the desktop. Same refusal as a dialog the screen shows.
-        if (this.moaDialogUp(id)) {
-          const blocked = sendResponse({ clientMessageId, replayed: false, result: 'blocked', effect: 'none', error: 'chat-blocked', blockedBy: 'terminal' }, clientMessageId);
-          return this.json(res, blocked.status, blocked.body);
-        }
-        let outcome;
-        try {
-          // The cap on THIS request opts it into the daemon queue.
-          const queue = clientCaps(req).chatQueue === true && chat.queueEnabled?.() === true
-            ? { authorized: this.queuedChatAuthorizer(fresh, id, pane, incarnation) } : undefined;
-          outcome = await chat.send({
-            owner: chatOwner(fresh),
-            id,
-            ...parsed.value,
-            managedReadOnly: true,
-            authorized: this.chatWriteAuthorizer(req, res, url, principal, id, pane, incarnation),
-            ...(queue ? { queue } : {}),
-          });
-        } catch (err) {
-          // No `effect`: the write stage is unknown, and the client's rule for a
-          // 5xx without one is "unknown — ask the receipt", never "nothing sent".
-          this.deps.log('warn', `[web] chat send threw for ${id}: ${errMsg(err)}`);
-          return this.json(res, 500, { error: 'chat-send-failed', clientMessageId });
-        }
-        const wire = sendResponse(outcome, clientMessageId);
-        this.json(res, wire.status, wire.body);
+        return this.dispatchChatSend(req, res, url, principal, fresh, id, pane, incarnation, parsed.value);
       })().catch((err: unknown) => this.failRequest(res, err));
     }, CHAT_SEND_MAX_BODY_BYTES);
+  }
+
+  /**
+   * The chat send after the body parsed and the caller was re-authorized: the
+   * pane's refusals, the daemon queue opt-in, the shared send path and the
+   * wire mapping. `POST /api/moa/messages` delegates here once the Moa pane exists.
+   */
+  private async dispatchChatSend(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    url: URL,
+    principal: WebPrincipal,
+    fresh: WebPrincipal,
+    id: string,
+    pane: ManagedSession,
+    incarnation: string | undefined,
+    value: Omit<SendBody, 'historyEpoch'> & { historyEpoch?: string },
+  ): Promise<void> {
+    const chat = this.deps.chat?.() ?? null;
+    const { clientMessageId } = value;
+    // A chat-v2 record is read + approve only on the phone, like a managed one.
+    if (this.chatV2For(id)) {
+      const refused = chatV2SendResponse(clientMessageId);
+      return this.json(res, refused.status, refused.body);
+    }
+    if (!chat) return this.json(res, 503, { error: 'chat-unavailable' });
+    // Moa's own permission dialog is up: Enter would answer it, and its only
+    // answer path is the desktop. Same refusal as a dialog the screen shows.
+    if (this.moaDialogUp(id)) {
+      const blocked = sendResponse({ clientMessageId, replayed: false, result: 'blocked', effect: 'none', error: 'chat-blocked', blockedBy: 'terminal' }, clientMessageId);
+      return this.json(res, blocked.status, blocked.body);
+    }
+    let outcome;
+    try {
+      // The cap on THIS request opts it into the daemon queue.
+      const { deliver, ...send } = value;
+      const queue = clientCaps(req).chatQueue === true && chat.queueEnabled?.() === true
+        ? { authorized: this.queuedChatAuthorizer(fresh, id, pane, incarnation), ...(deliver ? { deliver } : {}) } : undefined;
+      outcome = await chat.send({
+        owner: chatOwner(fresh),
+        id,
+        ...send,
+        managedReadOnly: true,
+        authorized: this.chatWriteAuthorizer(req, res, url, principal, id, pane, incarnation),
+        ...(queue ? { queue } : {}),
+      });
+    } catch (err) {
+      // No `effect`: the write stage is unknown, and the client's rule for a
+      // 5xx without one is "unknown — ask the receipt", never "nothing sent".
+      this.deps.log('warn', `[web] chat send threw for ${id}: ${errMsg(err)}`);
+      return this.json(res, 500, { error: 'chat-send-failed', clientMessageId });
+    }
+    const wire = sendResponse(outcome, clientMessageId);
+    this.json(res, wire.status, wire.body);
+  }
+
+  private moaWire(res: http.ServerResponse, wire: MoaWakeWire): void {
+    return this.json(res, wire.status, wire.body, wire.headers);
+  }
+
+  /**
+   * `POST /api/moa/messages` `{clientMessageId, text}`: a message to Moa
+   * whether or not its brain runs yet. Same gates as a chat send. A wake
+   * receipt for the id answers first, so a retry after the pane appeared is
+   * never a second turn; with the Moa pane up the message takes the chat send
+   * path (same id, recorded in the chat receipt); without it, main starts the
+   * brain with it (`moa.wake`, MoaWakeService).
+   */
+  private handleMoaSend(req: http.IncomingMessage, res: http.ServerResponse, url: URL, principal: WebPrincipal): void {
+    res.setHeader('Cache-Control', 'no-store');
+    const refusal = this.chatWriteRefusal(principal);
+    if (refusal === 'transcript') return this.refuseTranscript(res);
+    if (refusal === 'input') return this.refuseInput(res, principal, 'Sending to Moa types into its pane');
+    this.readJsonBody(req, res, (body) => {
+      void (async () => {
+        const fresh = await this.authenticate(req, url, false).catch(() => ({ ok: false as const }));
+        if (!fresh.ok || !sameCaller(principal, fresh.principal)) return this.json(res, 401, { error: 'authorization-expired' });
+        if (this.chatWriteRefusal(fresh.principal) !== null) return this.refuseInput(res, fresh.principal, 'Input permission changed');
+        const caller = fresh.principal;
+        const o = body && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : null;
+        const cmid = typeof o?.clientMessageId === 'string' ? o.clientMessageId : undefined;
+        const invalid = (detail: string) => this.json(res, 400, {
+          error: 'invalid-chat-request', detail, effect: 'none', ...(cmid !== undefined ? { clientMessageId: cmid } : {}),
+        });
+        if (!o) return invalid('body must be a JSON object');
+        const extra = Object.keys(o).find((k) => k !== 'clientMessageId' && k !== 'text');
+        if (extra !== undefined) return invalid(`unknown field: ${extra.slice(0, 64)}`);
+        if (cmid === undefined) return invalid('clientMessageId must be a string');
+        if (typeof o.text !== 'string') return invalid('text must be a string');
+        const text = o.text;
+        const idCheck = checkChatId(cmid, this.now(), CHAT_MESSAGE_RETENTION_MS);
+        if (idCheck === 'invalid') return invalid('clientMessageId');
+        if (idCheck === 'expired') return this.json(res, 400, { error: 'message-id-expired', effect: 'none', clientMessageId: cmid });
+        if (!text.trim()) return invalid('text');
+        // The chat send limit and its refusal, so a client has one rule.
+        if (text.length > CHAT_SEND_MAX_UNITS) {
+          return this.json(res, 400, { error: 'text-too-long', result: 'error', limit: 'units', effect: 'none', clientMessageId: cmid });
+        }
+        const owner = chatOwner(caller);
+        const wake = this.deps.moaWake?.() ?? null;
+        const seen = wake?.peek(owner, cmid, text);
+        if (seen) return this.moaWire(res, seen);
+        // A send the chat path already carried — maybe to a Moa pane that has
+        // since gone away — replays; it never becomes a wake or a second send.
+        const prior = this.moaPriorSend(owner, cmid, text);
+        if (prior) return this.json(res, prior.status, prior.body);
+        const sessionId = this.moaSessionIdField().moaSessionId;
+        if (sessionId !== undefined) return this.moaDelegateSend(req, res, url, principal, caller, sessionId, cmid, text);
+        if (!wake) return this.json(res, 503, { error: 'desktop-unavailable', clientMessageId: cmid });
+        // An accepted wake is starting the brain and its pane is not up yet:
+        // a second message cannot reach it either way, so it waits.
+        if (wake.isStarting()) {
+          return this.json(res, 409, { error: 'moa-starting', clientMessageId: cmid }, { 'Retry-After': MOA_WAKE_RETRY_AFTER.starting });
+        }
+        // The audit line is written before the request leaves, like a chat send's.
+        if (caller.kind === 'device') {
+          try { this.deps.auditMoaSend?.({ deviceId: caller.deviceId, sessionId: 'moa-wake', route: 'wake' }); } catch { /* best-effort */ }
+        } else {
+          this.deps.log('info', '[web] Moa wake requested by the operator');
+        }
+        return this.moaWire(res, await wake.wake({
+          owner, clientMessageId: cmid, text, ...(caller.kind === 'device' ? { deviceId: caller.deviceId } : {}),
+        }));
+      })().catch((err: unknown) => this.failRequest(res, err));
+    }, CHAT_SEND_MAX_BODY_BYTES);
+  }
+
+  /**
+   * A chat send this caller already made under `clientMessageId`, on any pane,
+   * as the chat route's replay would answer it; null when there is none. Moa
+   * panes come and go, so the pane it went to need not be the current one —
+   * but it must be a brain pane: an id spent on an ordinary pane, or on other
+   * text, is reused.
+   */
+  private moaPriorSend(owner: ChatOwner, clientMessageId: string, text: string): WireResponse | null {
+    const prior = this.deps.chat?.()?.priorSend?.(owner, clientMessageId, text);
+    if (!prior || prior.view.state === 'unknown') return null;
+    if (!isBrainPtyId(prior.paneId) || prior.sameText === false) {
+      return { status: 409, body: { error: 'message-id-reused', clientMessageId } };
+    }
+    const view = prior.view;
+    if (view.queue) {
+      return sendResponse({ clientMessageId, replayed: true, queueState: view.queue.state, ...(view.queue.reason ? { queueReason: view.queue.reason } : {}) }, clientMessageId);
+    }
+    if (view.state === 'pending' || view.state === 'queued') return sendResponse({ clientMessageId, replayed: true, pending: true }, clientMessageId);
+    const effect = view.state === 'submitted' ? 'submitted' : view.state === 'refused' ? 'none' : 'uncertain';
+    return sendResponse({
+      clientMessageId, replayed: true, effect,
+      ...(view.result ? { result: view.result } : {}),
+      ...(view.error ? { error: view.error } : {}),
+      ...(view.queued ? { queued: true as const } : {}),
+    }, clientMessageId);
+  }
+
+  /** The Moa pane exists: the chat send path, with the conversation the daemon resolves itself. */
+  private async moaDelegateSend(
+    req: http.IncomingMessage, res: http.ServerResponse, url: URL, principal: WebPrincipal,
+    fresh: WebPrincipal, sessionId: string, clientMessageId: string, text: string,
+  ): Promise<void> {
+    const pane = this.moaSession(sessionId);
+    const chat = this.deps.chat?.() ?? null;
+    if (!pane) return this.json(res, 409, { error: 'moa-starting', clientMessageId }, { 'Retry-After': MOA_WAKE_RETRY_AFTER.starting });
+    if (!chat) return this.json(res, 503, { error: 'chat-unavailable', clientMessageId });
+    // Stopped on its own dialog or a startup screen: say so, not "starting" —
+    // only the desktop can answer it, and the brain has no conversation yet.
+    if (this.moaDialogUp(sessionId)) {
+      const blocked = sendResponse({ clientMessageId, replayed: false, result: 'blocked', effect: 'none', error: 'chat-blocked', blockedBy: 'terminal' }, clientMessageId);
+      return this.json(res, blocked.status, blocked.body);
+    }
+    const resolution = await chat.resolve(sessionId);
+    const agentSessionId = hasConversation(resolution) ? resolutionAgentSessionId(resolution) : undefined;
+    const historyEpoch = resolutionEpoch(resolution);
+    // The pane is up but the brain has not reported its conversation yet.
+    if (!agentSessionId) {
+      return this.json(res, 409, { error: 'moa-starting', clientMessageId }, { 'Retry-After': MOA_WAKE_RETRY_AFTER.starting });
+    }
+    return this.dispatchChatSend(req, res, url, principal, fresh, sessionId, pane, pane.meta.incarnationId, {
+      agentSessionId, ...(historyEpoch !== undefined ? { historyEpoch } : {}), clientMessageId, text,
+    });
+  }
+
+  /**
+   * `GET /api/moa/messages/:clientMessageId`: the caller's own message to
+   * Moa, a wake or one the chat path carried. Transcript, not input, like
+   * the chat receipt. `moaSessionId` rides along whenever the pane is up.
+   */
+  private handleMoaSendReceipt(res: http.ServerResponse, rawMessageId: string, principal: WebPrincipal): void {
+    res.setHeader('Cache-Control', 'no-store');
+    if (this.opts?.allowTranscript !== true) return this.refuseTranscript(res);
+    const clientMessageId = decodePathSegment(rawMessageId) ?? '';
+    const owner = chatOwner(principal);
+    const sessionId = this.moaSessionIdField().moaSessionId;
+    const withPane = sessionId !== undefined ? { moaSessionId: sessionId } : {};
+    const view = this.deps.moaWake?.().view(owner, clientMessageId) ?? null;
+    if (view) {
+      return this.json(res, 200, {
+        clientMessageId, state: view.state, ...(view.code ? { code: view.code } : {}),
+        ...withPane,
+      });
+    }
+    const prior = this.deps.chat?.()?.priorSend?.(owner, clientMessageId);
+    // Only a send to a Moa (brain) pane is a message to Moa; the pane may be gone.
+    const sent = prior && isBrainPtyId(prior.paneId) ? prior.view : null;
+    if (!sent || sent.state === 'unknown') return this.json(res, 404, { error: 'unknown-message', clientMessageId });
+    const state = sent.state === 'submitted' ? 'accepted'
+      : sent.state === 'refused' ? 'failed'
+        : sent.state === 'uncertain' ? 'uncertain' : 'pending';
+    return this.json(res, 200, {
+      clientMessageId, state,
+      ...(state === 'failed' && sent.error ? { code: sent.error } : {}),
+      ...withPane,
+    });
+  }
+
+  /**
+   * The global `moa` event: `{moaSessionId}` when the Moa pane appears or
+   * changes, `{moaSessionId:null}` when it goes away. Index calls this on
+   * every Moa pane push; it fires only when the resolved id changed.
+   */
+  emitMoaChanged(): void {
+    const sessionId = this.moaSessionIdField().moaSessionId ?? null;
+    if (sessionId === this.lastMoaEventId) return;
+    this.lastMoaEventId = sessionId;
+    if (sessionId !== null) this.deps.moaWake?.().paneAppeared();
+    const body = JSON.stringify({ moaSessionId: sessionId });
+    for (const client of this.eventClients) {
+      try {
+        writeSse(client.res, 'moa', body);
+      } catch {
+        /* client stream broken — its own 'close' handler cleans up */
+      }
+    }
   }
 
   /**
@@ -5153,6 +5413,12 @@ export class WebTerminalServer {
     if (this.opts?.allowTranscript !== true) return 'transcript';
     if (!this.mayInput(principal)) return 'input';
     return null;
+  }
+
+  /** `/api/config` `chatQueue`: chat writes pass, the queue loaded, and DELETE …/chat/queue/:id answers. */
+  private chatQueueWorks(principal: WebPrincipal): boolean {
+    const chat = this.deps.chat?.();
+    return this.chatWritable(principal) && chat?.queueEnabled?.() === true && typeof chat?.dequeue === 'function';
   }
 
   /** Whether a chat write gets past every gate that does not depend on the pane (the caller's, and a bridge). */
@@ -5433,9 +5699,10 @@ export class WebTerminalServer {
     return sessionId !== undefined && this.moaSession(sessionId) ? { moaSessionId: sessionId } : {};
   }
 
-  /** The Moa pane's own permission dialog is on screen (main's flag, see moaPane.ts). */
+  /** The Moa pane's own permission dialog, or a startup screen, is on screen (main's flags, see moaPane.ts). */
   private moaDialogUp(sessionId: string): boolean {
-    return this.deps.moaPane?.()?.dialog !== undefined && !!this.moaSession(sessionId);
+    const fact = this.deps.moaPane?.();
+    return (fact?.dialog !== undefined || fact?.blockedOnTui === true) && !!this.moaSession(sessionId);
   }
 
   /** `readableSession`, plus the Moa pane: the turn and chat routes only. */
@@ -8403,7 +8670,7 @@ export class WebTerminalServer {
   emitChatQueue(event: ChatQueueEvent): void {
     if (!this.server || this.opts?.allowTranscript !== true) return;
     const body = JSON.stringify({ sessionId: event.sessionId, clientMessageId: event.clientMessageId, state: event.state,
-      ...(event.reason ? { reason: event.reason } : {}), at: event.at });
+      ...(event.reason ? { reason: event.reason } : {}), ...(event.deliver ? { deliver: event.deliver } : {}), at: event.at });
     this.deliverChatEvent(event.sessionId, () => ({ event: 'chat.queue', body }), (principal) => chatOwner(principal) === event.owner);
   }
 

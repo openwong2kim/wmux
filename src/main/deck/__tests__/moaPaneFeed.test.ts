@@ -9,6 +9,8 @@ import {
   buildMoaPanePayload,
   claudeProjectSlug,
   forgetBrainPty,
+  moaDialogUp,
+  noteBrainBlockedOnTui,
   noteBrainHookSignal,
   publishMoaPane,
   setMoaPanePush,
@@ -167,6 +169,19 @@ describe('moaPaneFeed', () => {
     expect(dialogOf()).toBeDefined();
     noteBrainHookSignal(signal({ kind: 'agent.activity', payload: {} }));
     expect(buildMoaPanePayload()).not.toHaveProperty('dialog');
+  });
+
+  it('flags a startup screen apart from the dialog, fences input with it, and drops it on the first hook', async () => {
+    current = HQ;
+    noteBrainBlockedOnTui('brain-1', true);
+    await publishMoaPane();
+    expect(pushes.at(-1)?.pane).toEqual({ sessionId: 'brain-1', workspaceId: 'ws-hq', blockedOnTui: true });
+    expect(dialogOf()).toBeUndefined();
+    expect(moaDialogUp()).toBe(true);
+    noteBrainHookSignal(signal({ kind: 'agent.session_start' }));
+    await publishMoaPane();
+    expect((pushes.at(-1)?.pane as { blockedOnTui?: true }).blockedOnTui).toBeUndefined();
+    expect(moaDialogUp()).toBe(false);
   });
 
   it('drops a brain\'s binding and dialog once its pty is gone', () => {

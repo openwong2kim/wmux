@@ -66,6 +66,10 @@ export type WmuxEventType =
   // A2A (agent-to-agent) task lifecycle tee. See A2aTaskEvent below — a
   // dual-party event (from/to) where the base workspaceId always equals `from`.
   | 'a2a.task'
+  // Cross-host A2A: another PC's Moa sent this PC's Moa a task, a reply or a
+  // state change. Main-only (never published by the renderer); scoped to the
+  // HQ workspace alone. See A2aReceivedEvent.
+  | 'a2a.received'
   // A2A channels (per-recipient scoped). A channel post may have N recipients
   // in M workspaces (vs. a2a.task's fixed 2 workspaces). The event is fanned
   // out to every workspace in `recipientWorkspaceIds` plus the sender, with
@@ -119,6 +123,7 @@ export const WMUX_EVENT_TYPES: readonly WmuxEventType[] = [
   'pane.restarted',
   'pane.supervision',
   'a2a.task',
+  'a2a.received',
   'channel.message',
   'channel.catalog',
   'channel.nudgeExhausted',
@@ -407,6 +412,28 @@ export interface A2aTaskEvent extends WmuxEventBase {
   verifiedItemCount?: number;
 }
 
+/**
+ * Cross-host A2A: work for this PC's Moa arrived from another PC's Moa over a
+ * brain link. Emitted by main's RemoteA2aBridge only — a brain owns no pane, so
+ * this event (waking Moa through the commander coalescer) IS the delivery.
+ * Pointer-only: Moa reads the task with a2a_task_query. The base `workspaceId`
+ * is the HQ workspace (=== `to`), the only party that may see it.
+ */
+export interface A2aReceivedEvent extends WmuxEventBase {
+  type: 'a2a.received';
+  taskId: string;
+  /** The sender's alias, `<PC>/Moa`. Display only. */
+  from: string;
+  /** This PC's HQ workspace. */
+  to: string;
+  /** What arrived: a new task, a reply on a task, or a state change the peer made. */
+  item: 'task' | 'reply' | 'state';
+  /** The task's state after the item (its own state for a new task). */
+  state: TaskState;
+  /** The sending PC's name. */
+  host: string;
+}
+
 import type { ChannelMessage } from './channels';
 
 /**
@@ -557,6 +584,7 @@ export type WmuxEvent =
   | PaneRestartedEvent
   | PaneSupervisionEvent
   | A2aTaskEvent
+  | A2aReceivedEvent
   | ChannelMessageEvent
   | ChannelCatalogEvent
   | ChannelNudgeExhaustedEvent

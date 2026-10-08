@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import type { AgentSlug } from '../../shared/agentIdentity';
 import { checkTranscriptPath, type TranscriptPathCheck } from '../hooks/transcriptPathGuard';
 import { parseTranscriptLineDetailed, type ParsedTranscriptLine } from './parseEntry';
 import { parseCodexLineDetailed } from './parseCodexEntry';
@@ -12,10 +13,13 @@ export interface FileTranscriptProvider {
   parse(line: string, offset: number): ParsedTranscriptLine;
   check(file: string, nativeSessionId: string, env?: Record<string, string>): TranscriptPathCheck;
 }
+// Keyed by registry slug; Partial on purpose: an agent without a file
+// transcript reader is `unsupported-agent`. Parsers are code, so the table
+// stays here rather than on the registry row.
 const providers: Readonly<Record<string, FileTranscriptProvider>> = {
   claude: { parse: parseTranscriptLineDetailed, check: checkTranscriptPath },
   codex: { parse: parseCodexLineDetailed, check: checkCodexTranscriptPath },
-};
+} satisfies Partial<Record<AgentSlug, FileTranscriptProvider>>;
 export function fileTranscriptProvider(agent: string): FileTranscriptProvider | undefined {
   return Object.hasOwn(providers, agent) ? providers[agent] : undefined;
 }

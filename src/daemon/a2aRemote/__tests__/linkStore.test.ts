@@ -9,6 +9,7 @@ import {
   LINKS_FILE,
   LINKS_PER_HOST_MAX,
   LinkStore,
+  PROPOSAL_TTL_MS,
   TERMINAL_KEEP,
   linkFromProposal,
   type LinkNotice,
@@ -31,12 +32,12 @@ const make = (o: Partial<LinkStoreOptions> = {}): LinkStore =>
   new LinkStore({ dir, now: () => clock, scheduleHarden: () => undefined, write: flakyWrite, ...o });
 
 const input = (o: Partial<NewLinkInput> = {}): NewLinkInput => ({
-  local: { workspaceId: 'ws1', paneId: 'p1' },
-  remote: { hostId: HOST, workspaceId: 'rws', paneId: 'rp', label: 'remote claude' },
+  local: { kind: 'pane', workspaceId: 'ws1', paneId: 'p1' },
+  remote: { hostId: HOST, kind: 'pane', workspaceId: 'rws', paneId: 'rp', label: 'remote claude' },
   allow: { outbound: true, inbound: false },
   ...o,
 });
-const at = (n: number): Partial<NewLinkInput> => ({ local: { workspaceId: `ws${n}`, paneId: `p${n}` } });
+const at = (n: number): Partial<NewLinkInput> => ({ local: { kind: 'pane', workspaceId: `ws${n}`, paneId: `p${n}` } });
 
 beforeEach(() => {
   fail = false;
@@ -143,8 +144,8 @@ describe('LinkStore transitions', () => {
     const id = linkIn(s, 'proposed-out');
     expect(() => s.proposeOut(input())).toThrow(/already linked/);
     expect(() => s.receiveProposal({ ...input(), linkId: uuid() })).toThrow(/already linked/);
-    expect(() => s.proposeOut(input({ remote: { hostId: HOST2, workspaceId: 'rws', paneId: 'rp' } }))).not.toThrow();
-    expect(() => s.proposeOut(input({ remote: { hostId: HOST, workspaceId: 'rws', paneId: 'rp2' } }))).not.toThrow();
+    expect(() => s.proposeOut(input({ remote: { hostId: HOST2, kind: 'pane', workspaceId: 'rws', paneId: 'rp' } }))).not.toThrow();
+    expect(() => s.proposeOut(input({ remote: { hostId: HOST, kind: 'pane', workspaceId: 'rws', paneId: 'rp2' } }))).not.toThrow();
     s.revoke(id, 'local');
     expect(() => s.proposeOut(input())).not.toThrow();
   });
@@ -154,7 +155,7 @@ describe('LinkStore transitions', () => {
     for (let i = 0; i < LINKS_PER_HOST_MAX; i++) s.receiveProposal({ ...input(at(i)), linkId: uuid() });
     expect(() => s.receiveProposal({ ...input(at(999)), linkId: uuid() })).toThrow(/live links/);
     // Another host is unaffected; ending one frees a slot.
-    expect(() => s.proposeOut(input({ ...at(999), remote: { hostId: HOST2, workspaceId: 'a', paneId: 'b' } }))).not.toThrow();
+    expect(() => s.proposeOut(input({ ...at(999), remote: { hostId: HOST2, kind: 'pane', workspaceId: 'a', paneId: 'b' } }))).not.toThrow();
     s.revoke(s.listByHost(HOST)[0].linkId, 'local');
     expect(() => s.receiveProposal({ ...input(at(999)), linkId: uuid() })).not.toThrow();
   });
@@ -162,23 +163,23 @@ describe('LinkStore transitions', () => {
   it('bounds remote ids and sanitizes the label', () => {
     const s = make();
     const long = 'x'.repeat(129);
-    expect(() => s.receiveProposal({ ...input({ remote: { hostId: HOST, workspaceId: long, paneId: 'p' } }), linkId: uuid() })).toThrow(/remote/);
-    expect(() => s.receiveProposal({ ...input({ remote: { hostId: HOST, workspaceId: 'w', paneId: 'p\n1' } }), linkId: uuid() })).toThrow(/remote/);
-    expect(() => s.receiveProposal({ ...input({ local: { workspaceId: 'w\u0000', paneId: 'p' } }), linkId: uuid() })).toThrow(/local/);
+    expect(() => s.receiveProposal({ ...input({ remote: { hostId: HOST, kind: 'pane', workspaceId: long, paneId: 'p' } }), linkId: uuid() })).toThrow(/remote/);
+    expect(() => s.receiveProposal({ ...input({ remote: { hostId: HOST, kind: 'pane', workspaceId: 'w', paneId: 'p\n1' } }), linkId: uuid() })).toThrow(/remote/);
+    expect(() => s.receiveProposal({ ...input({ local: { kind: 'pane', workspaceId: 'w\u0000', paneId: 'p' } }), linkId: uuid() })).toThrow(/local/);
     const rec = s.receiveProposal({
-      ...input({ remote: { hostId: HOST, workspaceId: 'w', paneId: 'p', label: ` a\u001b[31m${'b'.repeat(100)}` } }),
+      ...input({ remote: { hostId: HOST, kind: 'pane', workspaceId: 'w', paneId: 'p', label: ` a\u001b[31m${'b'.repeat(100)}` } }),
       linkId: uuid(),
     });
     expect(rec.remote.label).toMatch(/^a \[31mb+$/);
     expect(rec.remote.label).toHaveLength(64);
-    const blank = s.receiveProposal({ ...input({ ...at(3), remote: { hostId: HOST, workspaceId: 'w', paneId: 'p', label: '  ' } }), linkId: uuid() });
+    const blank = s.receiveProposal({ ...input({ ...at(3), remote: { hostId: HOST, kind: 'pane', workspaceId: 'w', paneId: 'p', label: '  ' } }), linkId: uuid() });
     expect(blank.remote).not.toHaveProperty('label');
   });
 
   it('rejects malformed input', () => {
     const s = make();
-    expect(() => s.proposeOut(input({ remote: { hostId: 'nope', workspaceId: 'a', paneId: 'b' } }))).toThrow(/remote/);
-    expect(() => s.proposeOut(input({ local: { workspaceId: '', paneId: 'b' } }))).toThrow(/local/);
+    expect(() => s.proposeOut(input({ remote: { hostId: 'nope', kind: 'pane', workspaceId: 'a', paneId: 'b' } }))).toThrow(/remote/);
+    expect(() => s.proposeOut(input({ local: { kind: 'pane', workspaceId: '', paneId: 'b' } }))).toThrow(/local/);
     expect(() => s.markBroken(linkIn(s, 'active'), 'revoked-local' as never)).toThrow(/reason/);
   });
 
@@ -202,7 +203,7 @@ describe('LinkStore.forgetHost (revoke cascade)', () => {
     const b = linkIn(s, 'proposed-in', at(2));
     const c = linkIn(s, 'proposed-out', at(3));
     const done = linkIn(s, 'broken', at(4));
-    const other = linkIn(s, 'active', { ...at(5), remote: { hostId: HOST2, workspaceId: 'x', paneId: 'y' } });
+    const other = linkIn(s, 'active', { ...at(5), remote: { hostId: HOST2, kind: 'pane', workspaceId: 'x', paneId: 'y' } });
     expect(s.forgetHost(HOST)).toBe(3);
     for (const id of [a, b, c]) expect(s.get(id)).toMatchObject({ state: 'revoked', endedReason: 'revoked-remote' });
     expect(s.get(done)?.state).toBe('broken');
@@ -224,8 +225,8 @@ describe('LinkStore queries', () => {
   it('listByHost and findActive* return every matching link', () => {
     const s = make();
     const a = linkIn(s, 'active');
-    const b = linkIn(s, 'active', { remote: { hostId: HOST2, workspaceId: 'rws', paneId: 'rp' } });
-    linkIn(s, 'proposed-in', { remote: { hostId: HOST, workspaceId: 'rws', paneId: 'other' } });
+    const b = linkIn(s, 'active', { remote: { hostId: HOST2, kind: 'pane', workspaceId: 'rws', paneId: 'rp' } });
+    linkIn(s, 'proposed-in', { remote: { hostId: HOST, kind: 'pane', workspaceId: 'rws', paneId: 'other' } });
     expect(s.listByHost(HOST)).toHaveLength(2);
     expect(s.findActiveByLocalPane('ws1', 'p1').map((r) => r.linkId).sort()).toEqual([a, b].sort());
     expect(s.findActiveByRemote(HOST, 'rws', 'rp').map((r) => r.linkId)).toEqual([a]);
@@ -345,14 +346,14 @@ describe('linkFromProposal', () => {
   it('flips perspective and directions', () => {
     const got = linkFromProposal(HOST, {
       linkId: 'L',
-      from: { workspaceId: 'their-ws', paneId: 'their-p', label: 'codex' },
-      to: { workspaceId: 'our-ws', paneId: 'our-p' },
+      from: { kind: 'pane', workspaceId: 'their-ws', paneId: 'their-p', label: 'codex' },
+      to: { kind: 'pane', workspaceId: 'our-ws', paneId: 'our-p' },
       allow: { outbound: true, inbound: false },
     });
     expect(got).toEqual({
       linkId: 'L',
-      local: { workspaceId: 'our-ws', paneId: 'our-p' },
-      remote: { hostId: HOST, workspaceId: 'their-ws', paneId: 'their-p', label: 'codex' },
+      local: { kind: 'pane', workspaceId: 'our-ws', paneId: 'our-p' },
+      remote: { hostId: HOST, kind: 'pane', workspaceId: 'their-ws', paneId: 'their-p', label: 'codex' },
       allow: { outbound: false, inbound: true },
     });
   });
@@ -365,9 +366,10 @@ describe('LinkStore persistence', () => {
     linkId: uuid(),
     version: 1,
     state: 'active',
-    local: { workspaceId: 'ws1', paneId: 'p1' },
-    remote: { hostId: HOST, workspaceId: 'rws', paneId: 'rp' },
+    local: { kind: 'pane', workspaceId: 'ws1', paneId: 'p1' },
+    remote: { hostId: HOST, kind: 'pane', workspaceId: 'rws', paneId: 'rp' },
     allow: { outbound: true, inbound: true },
+    proposer: 'local',
     createdAt: new Date(clock).toISOString(),
     updatedAt: new Date(clock).toISOString(),
     ...o,
@@ -387,6 +389,11 @@ describe('LinkStore persistence', () => {
     const t = make();
     expect(t.list()).toEqual(s.list());
     expect(t.checkMessage(a, 2, HOST, 'outbound', 'task')).toMatchObject({ ok: true });
+  });
+
+  it('a record without a proposer, or one that contradicts its state, is rejected', () => {
+    expectRejected([{ ...rawLink(), proposer: undefined }]);
+    expectRejected([rawLink({ state: 'proposed-in', proposer: 'local' })]);
   });
 
   it('a hand-written valid file loads', () => {
@@ -464,5 +471,99 @@ describe('LinkStore persistence', () => {
     expect(() => s.markBroken(b, 'pane-closed')).toThrow('disk full');
     expect(s.get(b)?.state).toBe('broken');
     expect(log).toHaveBeenCalledWith('error', expect.stringContaining('could not be persisted'));
+  });
+});
+
+describe('LinkStore display fields and discard (PR2b)', () => {
+  it('keeps the remote workspace name and repo key across a reload, sanitized', () => {
+    const s = make();
+    const id = s.proposeOut(input({
+      remote: { hostId: HOST, kind: 'pane', workspaceId: 'rws', paneId: 'rp', workspaceName: '  API\u0007 server ', gitRemote: 'github.com/acme/api' },
+    })).linkId;
+    expect(make().get(id)?.remote).toMatchObject({ workspaceName: 'API server', gitRemote: 'github.com/acme/api' });
+    // A repo key with whitespace is dropped, not stored.
+    const bad = s.proposeOut(input({ ...at(2), remote: { hostId: HOST, kind: 'pane', workspaceId: 'rws', paneId: 'rp', gitRemote: 'a b' } })).linkId;
+    expect(s.get(bad)?.remote.gitRemote).toBeUndefined();
+  });
+
+  it('discard drops only an unacknowledged proposal, and rolls back on a failed write', () => {
+    const s = make();
+    const out = linkIn(s, 'proposed-out');
+    const inn = linkIn(s, 'proposed-in', at(2));
+    expect(() => s.discard(inn)).toThrow(/not allowed/);
+    fail = true;
+    expect(() => s.discard(out)).toThrow('disk full');
+    expect(s.get(out)?.state).toBe('proposed-out');
+    fail = false;
+    s.discard(out);
+    expect(s.get(out)).toBeUndefined();
+    expect(make().get(out)).toBeUndefined();
+  });
+});
+
+describe('LinkStore Moa (brain) ends', () => {
+  const brainIn = (o: { hq?: string; rhq?: string; host?: string } = {}): NewLinkInput => ({
+    local: { kind: 'brain', workspaceId: o.hq ?? 'hq' },
+    remote: { hostId: o.host ?? HOST, kind: 'brain', workspaceId: o.rhq ?? 'rhq' },
+    allow: { outbound: true, inbound: true },
+  });
+
+  it('stores a brain link without a paneId and finds it by HQ', () => {
+    const s = make();
+    const id = linkIn(s, 'active', brainIn());
+    expect(s.get(id)!.local).toEqual({ kind: 'brain', workspaceId: 'hq' });
+    expect(s.get(id)!.remote).not.toHaveProperty('paneId');
+    expect(s.findActiveByLocalBrain('hq').map((l) => l.linkId)).toEqual([id]);
+    expect(s.findActiveByLocalPane('hq', 'p1')).toEqual([]);
+    expect(s.checkMessage(id, 2, HOST, 'inbound', 'task')).toMatchObject({ ok: true, kind: 'brain' });
+    expect(make().get(id)?.local.kind).toBe('brain');
+  });
+
+  it('refuses brain <-> pane, a brain with a paneId and a pane without one', () => {
+    const s = make();
+    expect(() => s.proposeOut({ ...brainIn(), remote: { hostId: HOST, kind: 'pane', workspaceId: 'w', paneId: 'p' } })).toThrow(/not allowed/);
+    expect(() => s.proposeOut({ ...brainIn(), local: { kind: 'brain', workspaceId: 'hq', paneId: 'p' } })).toThrow(/local/);
+    expect(() => s.proposeOut(input({ local: { kind: 'pane', workspaceId: 'w' } }))).toThrow(/local/);
+  });
+
+  it('allows one live link per remote host\'s Moa, even across a recreated HQ', () => {
+    const s = make();
+    linkIn(s, 'proposed-out', brainIn());
+    expect(() => s.proposeOut(brainIn({ hq: 'hq2', rhq: 'rhq2' }))).toThrow(/already linked/);
+    expect(() => s.proposeOut(brainIn({ host: HOST2 }))).not.toThrow();
+  });
+
+  it('rejects a stored brain end that carries a paneId', () => {
+    const s = make();
+    const id = linkIn(s, 'active', brainIn());
+    const raw = JSON.parse(fs.readFileSync(path.join(dir, LINKS_FILE), 'utf8')) as { links: Array<{ local: Record<string, unknown> }> };
+    raw.links[0].local['paneId'] = 'p';
+    fs.writeFileSync(path.join(dir, LINKS_FILE), JSON.stringify(raw));
+    expect(make().get(id)).toBeUndefined();
+  });
+});
+
+describe('LinkStore proposal expiry and proposer', () => {
+  it('records who proposed, and drops undecided incoming proposals after the TTL', () => {
+    const s = make();
+    const out = linkIn(s, 'proposed-out');
+    const inn = linkIn(s, 'proposed-in', at(2));
+    const act = linkIn(s, 'active', at(3));
+    expect(s.get(out)?.proposer).toBe('local');
+    expect(s.get(inn)?.proposer).toBe('remote');
+    clock += PROPOSAL_TTL_MS - 1;
+    expect(s.expireProposals()).toEqual([]);
+    clock += 2;
+    expect(s.expireProposals().map((l) => l.linkId)).toEqual([inn]);
+    expect(s.get(inn)).toMatchObject({ state: 'revoked', endedReason: 'revoked-local' });
+    expect(s.get(out)?.state).toBe('proposed-out');
+    expect(s.get(act)?.state).toBe('active');
+  });
+
+  it('breaks with exposure-revoked', () => {
+    const s = make();
+    const id = linkIn(s, 'active');
+    expect(s.markBroken(id, 'exposure-revoked')).toMatchObject({ state: 'broken', endedReason: 'exposure-revoked' });
+    expect(make().get(id)?.endedReason).toBe('exposure-revoked');
   });
 });

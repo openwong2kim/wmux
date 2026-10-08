@@ -40,10 +40,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { claudeProjectRoots } from '../hooks/transcriptPathGuard';
 import { watchTarget } from '../../shared/watchTarget';
+import type { AgentSlug } from '../../shared/agentIdentity';
 
 /** Only Claude Code publishes a transcript wmux can discover today. */
 export const DISCOVERABLE_AGENT = 'claude';
-export type DiscoverableAgent = 'claude' | 'codex';
+// TODO(#1904): transcript roots are per-agent code (rootsFor below).
+export type DiscoverableAgent = Extract<AgentSlug, 'claude' | 'codex'>;
 import { checkNativeTranscriptPath, codexSessionRoot } from './providers';
 const rootsFor = (agent: DiscoverableAgent, env?: Record<string, string>) => agent === 'codex' ? [codexSessionRoot(env)] : claudeProjectRoots(env);
 

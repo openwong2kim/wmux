@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fromAgentPath, toAgentPath, wslMountRoot, wslPathToHost } from '../wslPaths';
+import { fromAgentPath, toAgentPath, win32AliasedName, wslMountRoot, wslPathToHost } from '../wslPaths';
 
 const wsl = (mount?: string): NodeJS.ProcessEnv => ({
   WMUX_WSL_DISTRO: 'Ubuntu',
@@ -149,3 +149,33 @@ describe('wslPathToHost refuses Linux names Windows would read differently', () 
     }
   });
 });
+
+describe('win32AliasedName', () => {
+  // Shared by wslPathToHost, the browser_file_upload root check and the REPL
+  // cwd: the names a plain Win32 open reads as another file.
+  it('finds a trailing dot or space in any segment, on either separator', () => {
+    expect(win32AliasedName('C:\\x\\link.\\f')).toBe('link.');
+    expect(win32AliasedName('C:\\x\\f.txt ')).toBe('f.txt ');
+    expect(win32AliasedName('/mnt/d/x/alias./y')).toBe('alias.');
+    expect(win32AliasedName('D:/x/a..')).toBe('a..');
+  });
+
+  it('finds a device name, with or without an extension', () => {
+    expect(win32AliasedName('C:\\x\\NUL.txt')).toBe('NUL.txt');
+    expect(win32AliasedName('C:\\x\\com1\\y')).toBe('com1');
+  });
+
+  it('passes drive, UNC and verbatim prefixes, dot segments, and look-alikes', () => {
+    for (const p of [
+      'C:\\Users\\me\\.wmux\\uploads\\a.b.mp4',
+      '\\\\server\\share\\x',
+      '\\\\?\\C:\\x',
+      'C:\\x\\..\\.\\y',
+      '/mnt/d/x/console/com10/.git',
+      'C:\\',
+    ]) {
+      expect(win32AliasedName(p), p).toBeUndefined();
+    }
+  });
+});
+

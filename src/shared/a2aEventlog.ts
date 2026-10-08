@@ -14,6 +14,7 @@
  */
 
 import type { Task, TaskState, Message, CompletionEvidence } from './types';
+import type { A2aRemoteReceipt, A2aRemoteTaskMarkerV1 } from './a2aRemote';
 
 /**
  * A2A 로그 payload 판별 union. kind가 닫힌 enum이라 projection이 미지 kind를
@@ -25,7 +26,9 @@ export type A2aEventPayload =
   | A2aTaskCreatePayload
   | A2aTaskTransitionPayload
   | A2aTaskCancelPayload
-  | A2aExecutorLifecyclePayload;
+  | A2aExecutorLifecyclePayload
+  | A2aTaskMessagePayload
+  | A2aRemoteMarkPayload;
 
 /** 태스크 생성 — 정본 레코드 1건을 통째로 실어 projection 시드. */
 export interface A2aTaskCreatePayload {
@@ -60,7 +63,13 @@ export interface A2aTaskTransitionPayload {
    * input-required→failed는 그래프상 불가한데 수신자 소멸로 어떤 non-terminal도
    * 전진 불가하므로 정당). 일반 transition API로는 이 값이 실리지 않는다.
    */
-  forced?: 'workspace_removed';
+  forced?: 'workspace_removed' | 'remote_state' | 'remote_held_rejected' | 'remote_link_ended' | 'remote_refused';
+  /**
+   * Cross-host A2A: the peer's messageId when this transition came from the
+   * other host (`forced: 'remote_state'` for a terminal one). Replay re-seeds the
+   * per-task remote-message dedupe from it.
+   */
+  remoteMessageId?: string;
   /**
    * Reopen marker. `'sender_message'` = the sender wrote to a task that had
    * already ended, so it went back to `submitted` for the receiver
@@ -74,6 +83,52 @@ export interface A2aTaskTransitionPayload {
 export interface A2aTaskCancelPayload {
   kind: 'task.cancel';
   taskId: string;
+  timestamp: string;
+  /** Cross-host A2A: the peer's messageId when the cancel came from the other host. */
+  remoteMessageId?: string;
+}
+
+/**
+ * Cross-host A2A: one message appended to a remote task's history (a reply in
+ * either direction). `message.messageId` is the envelope's messageId, which is
+ * the dedupe key for a redelivered reply.
+ */
+export interface A2aTaskMessagePayload {
+  kind: 'task.message';
+  taskId: string;
+  message: Message;
+  timestamp: string;
+  /** The peer host wrote it: it is owed a delivery to our local pane. */
+  remoteInbound?: true;
+}
+
+/**
+ * Cross-host A2A: main's delivery outcome for an inbound remote task.
+ * `delivered: true` clears any hold; a `held` reason keeps it undelivered.
+ */
+export interface A2aRemoteMarkPayload {
+  kind: 'remote.mark';
+  taskId: string;
+  /** Set: the mark is for this inbound reply/state item, not the task itself. */
+  messageId?: string;
+  delivered?: boolean;
+  held?: NonNullable<A2aRemoteTaskMarkerV1['held']>;
+  /** With `delivered`: the paste stayed in the composer (Enter withheld). */
+  note?: 'pasted-not-submitted';
+  /** With `delivered`: the pty written to — the local pane's new occupant snapshot. */
+  ptyId?: string;
+  /** true: main is about to paste (recorded BEFORE the write); false: that attempt wrote nothing. */
+  attempted?: boolean;
+  /** Task-level: this state was queued for the peer (it no longer owes it). */
+  stateSync?: TaskState;
+  /** Task-level: this reply of ours was queued for the peer. */
+  sent?: string;
+  /** Task-level, inbound: our side read the task now. */
+  read?: true;
+  /** Task-level, inbound: this receipt was queued for the peer. */
+  receiptSync?: A2aRemoteReceipt;
+  /** Task-level, outbound: the peer sent this receipt. */
+  remoteReceipt?: A2aRemoteReceipt;
   timestamp: string;
 }
 

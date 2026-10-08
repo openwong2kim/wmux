@@ -601,6 +601,20 @@ describe('events.rpc — a2a.task dual-party scoping', () => {
 // grade cross while dropping forged/malformed values. Without this, the renderer
 // could emit the field but the server would silently strip it — the event poller
 // could never distinguish an unverified completion (count 0) from a verified one.
+describe('events.rpc — a2a.received (remote Moa) scoping', () => {
+  beforeEach(() => {
+    eventBus.reset();
+    eventBus.emit({ type: 'a2a.received', workspaceId: 'ws-hq', taskId: 'rt-1', from: 'PC2/Moa', to: 'ws-hq', item: 'task', state: 'submitted', host: 'PC2' });
+  });
+
+  it('only the HQ workspace sees it; another workspace and an unscoped poll see none', async () => {
+    const router = setupRouter();
+    expect((await pollEvents(router, { workspaceId: 'ws-hq' })).filter((e) => e.type === 'a2a.received')).toHaveLength(1);
+    expect((await pollEvents(router, { workspaceId: 'ws-other' })).filter((e) => e.type === 'a2a.received')).toHaveLength(0);
+    expect((await pollEvents(router, {})).filter((e) => e.type === 'a2a.received')).toHaveLength(0);
+  });
+});
+
 describe('events.rpc — a2a.task verifiedItemCount allow-list (§6.M PR-C)', () => {
   const FROM = 'ws-sender';
   const TO = 'ws-receiver';

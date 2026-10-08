@@ -14,6 +14,23 @@ import type {
   LanLinkSendArgs,
   LanLinkPeersListResult,
 } from '../shared/lanlink';
+import type {
+  A2aExposureCandidate,
+  A2aRemoteExposureGetResult,
+  A2aRemoteExposureListResult,
+  A2aRemoteHostsExposedResult,
+  A2aRemoteLinkProposeParams,
+  A2aRemoteLinkResult,
+  A2aRemoteLinksListResult,
+  A2aRemotePaneGoneParams,
+  A2aRemoteHostsListResult,
+  A2aRemoteHostsRemoveResult,
+  A2aRemoteJoinResult,
+  A2aRemotePairBeginResult,
+  A2aRemotePairStatus,
+  A2aRemotePeersListResult,
+  A2aRemoteStatus,
+} from '../shared/rpc';
 import { stripReplayQuerySequences } from '../shared/replayQuerySanitizer';
 import { createSessionPipeMarkers } from '../daemon/sessionPipeMarkers';
 import { SessionPipeStreamScanner } from './daemon/sessionPipeStreamScanner';
@@ -559,6 +576,91 @@ export class DaemonClient extends EventEmitter {
     return result as { ok: true };
   }
 
+  // === Cross-host A2A control plane (`a2a.remote.*`) ===
+  //
+  // Thin pass-throughs; validation lives daemon-side. `join` does a pinned TLS
+  // pairing plus a hello round trip, so it gets 30s like lanlinkPairJoin; the
+  // daemon answers a structured `{ ok:false, error }` long before that.
+
+  async a2aRemoteStatus(): Promise<A2aRemoteStatus> {
+    return (await this.rpc('a2a.remote.status', {})) as A2aRemoteStatus;
+  }
+
+  async a2aRemoteConfigure(patch: { enabled?: boolean; port?: number }): Promise<A2aRemoteStatus> {
+    return (await this.rpc('a2a.remote.configure', patch as Record<string, unknown>)) as A2aRemoteStatus;
+  }
+
+  async a2aRemotePairBegin(): Promise<A2aRemotePairBeginResult> {
+    return (await this.rpc('a2a.remote.pair.begin', {})) as A2aRemotePairBeginResult;
+  }
+
+  async a2aRemotePairCancel(): Promise<{ ok: true }> {
+    return (await this.rpc('a2a.remote.pair.cancel', {})) as { ok: true };
+  }
+
+  async a2aRemotePairStatus(): Promise<A2aRemotePairStatus> {
+    return (await this.rpc('a2a.remote.pair.status', {})) as A2aRemotePairStatus;
+  }
+
+  async a2aRemoteJoin(invite: string): Promise<A2aRemoteJoinResult> {
+    return (await this.rpc('a2a.remote.join', { invite }, { timeoutMs: 30_000 })) as A2aRemoteJoinResult;
+  }
+
+  async a2aRemoteHostsList(): Promise<A2aRemoteHostsListResult> {
+    return (await this.rpc('a2a.remote.hosts.list', {})) as A2aRemoteHostsListResult;
+  }
+
+  /** Also tells the other PC (best effort, over the pinned connection), hence 30s. */
+  async a2aRemoteHostsRemove(hostId: string): Promise<A2aRemoteHostsRemoveResult> {
+    return (await this.rpc('a2a.remote.hosts.remove', { hostId }, { timeoutMs: 30_000 })) as A2aRemoteHostsRemoveResult;
+  }
+
+  async a2aRemotePeersList(): Promise<A2aRemotePeersListResult> {
+    return (await this.rpc('a2a.remote.peers.list', {})) as A2aRemotePeersListResult;
+  }
+
+  async a2aRemotePeersRevoke(peerId: string): Promise<{ ok: boolean }> {
+    return (await this.rpc('a2a.remote.peers.revoke', { peerId })) as { ok: boolean };
+  }
+
+  async a2aRemoteExposurePublish(panes: A2aExposureCandidate[]): Promise<{ ok: true; count: number }> {
+    return (await this.rpc('a2a.remote.exposure.publish', { panes })) as { ok: true; count: number };
+  }
+
+  async a2aRemoteExposureList(): Promise<A2aRemoteExposureListResult> {
+    return (await this.rpc('a2a.remote.exposure.list', {})) as A2aRemoteExposureListResult;
+  }
+
+  async a2aRemoteExposureGet(hostId: string): Promise<A2aRemoteExposureGetResult> {
+    return (await this.rpc('a2a.remote.exposure.get', { hostId })) as A2aRemoteExposureGetResult;
+  }
+
+  async a2aRemoteExposureSet(hostId: string, workspaceIds: string[], paneIds: Record<string, string[]>, brain: boolean): Promise<A2aRemoteExposureGetResult> {
+    return (await this.rpc('a2a.remote.exposure.set', { hostId, workspaceIds, paneIds, brain })) as A2aRemoteExposureGetResult;
+  }
+
+  /** Reaches the other PC over the pinned connection, hence 30s. */
+  async a2aRemoteHostsExposed(hostId: string): Promise<A2aRemoteHostsExposedResult> {
+    return (await this.rpc('a2a.remote.hosts.exposed', { hostId }, { timeoutMs: 30_000 })) as A2aRemoteHostsExposedResult;
+  }
+
+  async a2aRemoteLinksList(): Promise<A2aRemoteLinksListResult> {
+    return (await this.rpc('a2a.remote.links.list', {})) as A2aRemoteLinksListResult;
+  }
+
+  /** propose / revoke / refresh may reach the other PC, hence 30s. */
+  async a2aRemoteLinksPropose(params: A2aRemoteLinkProposeParams): Promise<A2aRemoteLinkResult> {
+    return (await this.rpc('a2a.remote.links.propose', params as unknown as Record<string, unknown>, { timeoutMs: 30_000 })) as A2aRemoteLinkResult;
+  }
+
+  async a2aRemoteLinkAction(action: 'accept' | 'reject' | 'revoke' | 'refresh', linkId: string): Promise<A2aRemoteLinkResult> {
+    return (await this.rpc(`a2a.remote.links.${action}`, { linkId }, { timeoutMs: 30_000 })) as A2aRemoteLinkResult;
+  }
+
+  async a2aRemotePaneGone(params: A2aRemotePaneGoneParams): Promise<{ ok: true; broken: number }> {
+    return (await this.rpc('a2a.remote.local.paneGone', params as unknown as Record<string, unknown>)) as { ok: true; broken: number };
+  }
+
   /**
    * daemon AgentDetector가 gate로 확정한 에이전트 표시명을 조회한다(없으면 null).
    * renderer detection pull의 권위 소스 — session:agent emit 전파 race를 우회한다.
@@ -1005,6 +1107,12 @@ export class DaemonClient extends EventEmitter {
           this.emit('lanlink:nudge', { seq: data?.seq ?? 0 });
           break;
         }
+        case 'a2a.remote.inbound':
+          // Cross-host A2A — a peer's task landed in the ledger, undelivered.
+          // A NUDGE only: RemoteA2aBridge re-pulls a2a.remote.pending (it also
+          // listens on the generic 'event' above); its backstop covers a drop.
+          this.emit('a2a:remoteInbound', { data: event.data });
+          break;
         case 'channel.message':
           // A2A channels (a2a-channels U4) — every successful post on the
           // daemon side is broadcast as `channel.message` with the full

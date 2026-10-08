@@ -26,6 +26,10 @@
 //     approval record for the Moa pane only (see moaPrompt.ts). The evidence is
 //     a claim like any hook payload: the registry still binds an answer to the
 //     pane's own Claude session and re-proves the dialog on screen.
+//   - `blockedOnTui` says the brain's TUI stopped on a startup screen of its
+//     own (folder trust, sign-in) before any hook fired. It fences typed
+//     input exactly like `dialog`, but it is not a tool call, so it never
+//     becomes an approval record.
 //   - The transcript binding rides along because the brain's hooks go to main,
 //     never to the daemon, so the daemon has no resume binding for that pane.
 //     It is held in memory only and never written to the pane's persisted
@@ -45,6 +49,8 @@ export interface MoaPaneFact {
   binding?: ResumeBinding;
   /** Present while the brain's own permission dialog is up. */
   dialog?: MoaPaneDialogFact;
+  /** The TUI is stopped on a startup screen (trust, sign-in) that fired no hook. */
+  blockedOnTui?: true;
 }
 
 /** The dialog main reports, with the PermissionRequest hook's evidence for it. */
@@ -92,6 +98,7 @@ export function parseMoaPane(raw: unknown): MoaPaneFact | null | 'invalid' {
   if (!boundedString(r.sessionId, MAX_ID_CHARS) || !isBrainPtyId(r.sessionId)) return 'invalid';
   if (!boundedString(r.workspaceId, MAX_ID_CHARS)) return 'invalid';
   const fact: MoaPaneFact = { sessionId: r.sessionId, workspaceId: r.workspaceId };
+  if (r.blockedOnTui === true) fact.blockedOnTui = true;
   const dialog = r.dialog as Record<string, unknown> | undefined;
   if (dialog !== undefined) {
     // A malformed dialog is still a dialog: refuse input rather than drop it.

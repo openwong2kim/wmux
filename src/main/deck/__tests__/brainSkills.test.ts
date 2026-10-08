@@ -227,3 +227,12 @@ describe('syncBrainContractFile writes atomically', () => {
     }
   });
 });
+
+describe('Moa on another PC', () => {
+  it('tells Moa not to raise a waiting card once a sent task shows a receipt', () => {
+    const text = buildBrainSkills().map((f) => f.content).join('\n');
+    expect(text).toContain('Do not raise a decision card to ask whether to keep waiting or to be\nwoken');
+    expect(text).toContain('remoteReceipt');
+  });
+});
+

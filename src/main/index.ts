@@ -5,6 +5,8 @@ import { handlePhoneBrowser } from './phone/PhoneBrowser';
 import { handlePhoneWorkspaces } from './phone/PhoneWorkspaces';
 import { handlePhoneQuickCommands } from './quickCommands/QuickCommandStore';
 import { installPhoneBridge } from './phone/installPhoneBridge';
+import { handlePhoneMoaWake } from './deck/moaWake';
+import { MOA_WAKE_COMMAND } from '../shared/moaWake';
 import { handlePhoneAccounts } from './phone/PhoneAccounts';
 // #582: Suppress Electron's dev-only "Insecure Content-Security-Policy"
 // warning at the earliest possible point — before `app` ready and before any
@@ -162,6 +164,10 @@ import { migrateScrollbackOnce } from './scrollback/legacyMigration';
 import { DaemonNotificationRouter } from './notification/DaemonNotificationRouter';
 import { markRendererNotificationListenerNotReady } from './notification/rendererNotificationReadiness';
 import { RemoteInboxBridge } from './lanlink/RemoteInboxBridge';
+import { RemoteA2aBridge } from './a2a/RemoteA2aBridge';
+import { daemonRemoteA2aRpcDeps } from './a2a/remoteA2aRpcDeps';
+import { setA2aRemoteBridge } from './ipc/handlers/a2aRemote.handler';
+import { sendToRenderer } from './pipe/handlers/_bridge';
 import { AutomationBridge } from './automation/AutomationBridge';
 import { AutomationClient } from './automation/AutomationClient';
 import { toastManager } from './notification/ToastManager';
@@ -453,6 +459,11 @@ let isQuitting = false;
 // tells before-quit to additionally tear the daemon down (daemon.shutdown +
 // pid-kill backstop) for an explicit full exit.
 let fullShutdownRequested = false;
+// Windows sends WM_ENDSESSION to every top-level window, so a logoff can
+// reach more than one main window's 'session-end' listener (an update-recovery
+// window adopted while the old one is still being torn down). The emergency
+// save and daemon race must run once.
+let sessionEndHandled = false;
 
 // Prevent multiple instances — focus existing window instead
 const gotLock = app.requestSingleInstanceLock();
@@ -645,6 +656,8 @@ async function refreshTraySessionCount(): Promise<void> {
 // the notification pipeline 100% inert (Codex 2nd review #1).
 let daemonNotificationRouter: DaemonNotificationRouter | null = null;
 let remoteInboxBridge: RemoteInboxBridge | null = null;
+// Cross-host A2A: hands remote tasks/replies the daemon holds to the renderer.
+let remoteA2aBridge: RemoteA2aBridge | null = null;
 // Scheduled runs: daemon automation events → renderer + OS toasts.
 const automationBridge = new AutomationBridge(
   () => mainWindow,
@@ -1038,7 +1051,11 @@ ipcMain.handle(
 
 /** Set once the ApprovalQueue exists (below). Read lazily by browser.rpc. */
 let liveBorrowRequester: BorrowApprovalRequester | null = null;
-registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker, { getDaemonClient: () => daemonClient });
+registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker, {
+  getDaemonClient: () => daemonClient,
+  // Cross-host A2A: a remote pane's alias and rt- tasks go through the daemon's outbox.
+  remote: daemonRemoteA2aRpcDeps(() => daemonClient),
+});
 registerA2aChannelRpc(rpcRouter, () => daemonClient, () => mainWindow);
 registerCompanyRpc(rpcRouter, () => mainWindow);
 registerEventsRpc(rpcRouter, () => mainWindow, (clientName) => getPluginTrustStore().get(clientName));
@@ -1908,7 +1925,10 @@ app.on('ready', async () => {
         .then(() => {
           reportDesktopPresence(() => client, focusedPrimaryWindow() !== null);
           disposePhoneBridge?.();
-          disposePhoneBridge = installPhoneBridge(client,(command,payload) => command.startsWith('browser.') ? handlePhoneBrowser(command,payload,{
+          disposePhoneBridge = installPhoneBridge(client,(command,payload) => command === MOA_WAKE_COMMAND
+            // A failure main learns after the accept goes back on the receipt.
+            ? Promise.resolve(handlePhoneMoaWake(payload,report => { void client.rpc('daemon.moa.wakeResult',{...report}).catch(() => { /* receipt stays accepted */ }); }))
+            : command.startsWith('browser.') ? handlePhoneBrowser(command,payload,{
             backend: () => browserBackendStore.get(),
             clearViewport: async id => {
               const wc = phoneWebContents.fromId(id);
@@ -2006,6 +2026,21 @@ app.on('ready', async () => {
       remoteInboxBridge?.stop();
       remoteInboxBridge = new RemoteInboxBridge(() => mainWindow);
       remoteInboxBridge.start(client);
+      // Cross-host A2A — remote tasks/replies the daemon holds, pulled on the
+      // daemon's nudge, on every (re)connect (start pulls at once) and on a
+      // backstop; never through the router, so the approval gate applies.
+      remoteA2aBridge?.stop();
+      remoteA2aBridge = new RemoteA2aBridge({
+        daemonRpc: (method, params) => client.rpc(method, params),
+        sendToRenderer: (method, params, opts) => sendToRenderer(() => mainWindow, method, params, opts),
+        onDaemonEvent: (listener) => {
+          client.on('event', listener);
+          return () => { client.off('event', listener); };
+        },
+        log: (level, msg) => logLine(level, 'a2a-remote', msg),
+      });
+      remoteA2aBridge.start();
+      setA2aRemoteBridge(remoteA2aBridge);
       automationBridge.start(client);
       // X1 — context fold (git branch / worktree / ports / PR badge).
       workspaceContextRouter?.stop();
@@ -2042,6 +2077,9 @@ app.on('ready', async () => {
       daemonNotificationRouter = null;
       remoteInboxBridge?.stop();
       remoteInboxBridge = null;
+      remoteA2aBridge?.stop();
+      remoteA2aBridge = null;
+      setA2aRemoteBridge(null);
       automationBridge.stop();
       workspaceContextRouter?.stop();
       workspaceContextRouter = null;
@@ -2489,6 +2527,15 @@ function adoptMainWindow(win: BrowserWindow): void {
   attachWindowRecovery(win);
   resetPollCacheOnRendererLoad(win);
 
+  // Windows logoff/shutdown/restart. WM_ENDSESSION is a per-window message:
+  // Electron emits 'session-end' on the BrowserWindow that received it and
+  // never on `app`, so this has to be wired on every main window.
+  if (process.platform === 'win32') {
+    win.on('session-end', (event) => {
+      void onWindowsSessionEnd(event);
+    });
+  }
+
   win.on('closed', () => {
     // Guarded: a recovery window may be adopted while the old reference is
     // still being torn down, and only the current one may clear the binding.
@@ -2919,56 +2966,83 @@ app.on('before-quit', async (e) => {
 // Electron fires 'session-end' on WM_ENDSESSION, which is the last reliable
 // signal before Windows force-kills the process. The 'before-quit' async
 // handler may not complete in time, so we do a synchronous emergency save here.
-if (process.platform === 'win32') {
-  app.on('session-end' as any, async () => {
-    console.log('[Main] session-end received — flush pending session write + daemon race');
-    try {
-      // v2 RCA fix (reboot-reattach): the previous block built a FRESH
-      // `new SessionManager()`, `load()`ed the on-disk snapshot, and `save()`d
-      // it back. That did NOT capture the renderer's latest layout — it merely
-      // re-confirmed whatever stale (possibly `.bak`-fallback fossil) snapshot
-      // was already on disk, overwriting nothing useful and resurrecting fossils.
-      // The renderer now persists ptyId changes the instant they happen
-      // (event-driven session.save → synchronous main-side write), so disk
-      // already holds the latest layout here. Flush the LIVE singleton's
-      // pending debounced write as a safety net — a no-op today (saveDebounced
-      // has no production callers; SESSION_SAVE goes through sync save()), but
-      // it keeps this path correct if a debounced producer ever appears. Never
-      // reload-and-resave stale state.
-      //
-      // Use the module-level `sessionManager` (imported at top) directly — the
-      // former `require('./ipc/handlers/session.handler')` here was left literal
-      // in the bundle and threw MODULE_NOT_FOUND at runtime (same bundling bug
-      // as #463), silently failing this flush on every shutdown.
-      sessionManager.flushSync();
-    } catch (err) {
-      console.error('[Main] session-end flushSync failed:', err);
-    }
+//
+// WM_ENDSESSION is delivered per window, and Electron emits 'session-end' only
+// on BaseWindow/BrowserWindow (electron_api_base_window.cc), never on `app`.
+// The listener therefore lives in adoptMainWindow(); an earlier listener on
+// `app`, cast through `as any` because the type had no such event, never ran,
+// so a logoff skipped this save entirely.
+//
+// Only the synchronous part before the first `await` is guaranteed to run:
+// Windows may end the process as soon as the window returns from
+// WM_ENDSESSION, so the daemon race below is best effort.
+//
+// A Restart Manager close (lParam ENDSESSION_CLOSEAPP, reasons ['close-app'])
+// is ignored. It asks the app to close, for example so an installer can
+// replace a file, and does not end the session or terminate wmux. Running the
+// handler would shut the daemon down and leave wmux running with no daemon
+// until it is restarted. The once-flag is left untouched so a later real
+// logoff or shutdown still runs the handler. Empty or unknown reasons run it.
+async function onWindowsSessionEnd(event?: Electron.WindowSessionEndEvent): Promise<void> {
+  let reasons: readonly string[] = [];
+  try {
+    reasons = Array.isArray(event?.reasons) ? event.reasons : [];
+  } catch {
+    // Never let reading the event cost the emergency save below.
+  }
+  if (reasons.length > 0 && reasons.every((r) => r === 'close-app')) {
+    console.log('[Main] session-end close-app (Restart Manager) ignored');
+    return;
+  }
+  if (sessionEndHandled) return;
+  sessionEndHandled = true;
+  console.log('[Main] session-end received — flush pending session write + daemon race');
+  try {
+    // v2 RCA fix (reboot-reattach): the previous block built a FRESH
+    // `new SessionManager()`, `load()`ed the on-disk snapshot, and `save()`d
+    // it back. That did NOT capture the renderer's latest layout — it merely
+    // re-confirmed whatever stale (possibly `.bak`-fallback fossil) snapshot
+    // was already on disk, overwriting nothing useful and resurrecting fossils.
+    // The renderer now persists ptyId changes the instant they happen
+    // (event-driven session.save → synchronous main-side write), so disk
+    // already holds the latest layout here. Flush the LIVE singleton's
+    // pending debounced write as a safety net — a no-op today (saveDebounced
+    // has no production callers; SESSION_SAVE goes through sync save()), but
+    // it keeps this path correct if a debounced producer ever appears. Never
+    // reload-and-resave stale state.
+    //
+    // Use the module-level `sessionManager` (imported at top) directly — the
+    // former `require('./ipc/handlers/session.handler')` here was left literal
+    // in the bundle and threw MODULE_NOT_FOUND at runtime (same bundling bug
+    // as #463), silently failing this flush on every shutdown.
+    sessionManager.flushSync();
+  } catch (err) {
+    console.error('[Main] session-end flushSync failed:', err);
+  }
 
-    if (daemonClient?.isConnected) {
-      // Phase A — A5. Race daemon.shutdown against the WM_ENDSESSION budget
-      // (~5 s before Windows SIGKILLs us) so the daemon can complete its
-      // atomic RingBuffer dumps before we tear down the pipe. Leave a 1 s
-      // safety margin for disconnectSync + Electron's own teardown.
-      //
-      // 4 s is the documented floor pending the T5 dynamic test
-      // measurement (Task #15). The harness exists at
-      // scripts/daemon-shutdown-dynamic.mjs; rerun on the target box and
-      // adjust if measured p99 latency calls for a smaller value.
-      const A5_TIMEOUT_MS = 4_000;
-      const race = await raceDaemonShutdown(daemonClient, A5_TIMEOUT_MS);
-      if (!race.ok) {
-        console.warn(
-          `[Main] session-end daemon.shutdown race failed (${A5_TIMEOUT_MS} ms): ${race.error}`,
-        );
-      }
-      try {
-        daemonClient.disconnectSync();
-      } catch {
-        // best effort — process is about to die
-      }
+  if (daemonClient?.isConnected) {
+    // Phase A — A5. Race daemon.shutdown against the WM_ENDSESSION budget
+    // (~5 s before Windows SIGKILLs us) so the daemon can complete its
+    // atomic RingBuffer dumps before we tear down the pipe. Leave a 1 s
+    // safety margin for disconnectSync + Electron's own teardown.
+    //
+    // 4 s is the documented floor pending the T5 dynamic test
+    // measurement (Task #15). The harness exists at
+    // scripts/daemon-shutdown-dynamic.mjs; rerun on the target box and
+    // adjust if measured p99 latency calls for a smaller value.
+    const A5_TIMEOUT_MS = 4_000;
+    const race = await raceDaemonShutdown(daemonClient, A5_TIMEOUT_MS);
+    if (!race.ok) {
+      console.warn(
+        `[Main] session-end daemon.shutdown race failed (${A5_TIMEOUT_MS} ms): ${race.error}`,
+      );
     }
-  });
+    try {
+      daemonClient.disconnectSync();
+    } catch {
+      // best effort — process is about to die
+    }
+  }
 }
 
 app.on('activate', () => {

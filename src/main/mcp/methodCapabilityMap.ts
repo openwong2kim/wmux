@@ -452,6 +452,43 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'lanlink.send':            { capability: 'wmux.internal' },
   'lanlink.peers.list':      { capability: 'wmux.internal' },
   'lanlink.peers.remove':    { capability: 'wmux.internal' },
+  // Cross-host A2A control plane (Settings → LAN). Same posture as lanlink.*:
+  // daemon control pipe only, never RpcRouter or the A2A listener. A plugin or
+  // MCP caller must not open an invite, join a PC, or revoke a pairing.
+  'a2a.remote.status':      { capability: 'wmux.internal' },
+  'a2a.remote.configure':   { capability: 'wmux.internal' },
+  'a2a.remote.pair.begin':  { capability: 'wmux.internal' },
+  'a2a.remote.pair.cancel': { capability: 'wmux.internal' },
+  'a2a.remote.pair.status': { capability: 'wmux.internal' },
+  'a2a.remote.join':        { capability: 'wmux.internal' },
+  'a2a.remote.hosts.list':  { capability: 'wmux.internal' },
+  'a2a.remote.hosts.remove': { capability: 'wmux.internal' },
+  'a2a.remote.peers.list':  { capability: 'wmux.internal' },
+  'a2a.remote.peers.revoke': { capability: 'wmux.internal' },
+  // Exposure and pane links: the same posture — only the app's own human
+  // exposes panes or accepts a link, never a plugin or an agent.
+  'a2a.remote.exposure.publish': { capability: 'wmux.internal' },
+  'a2a.remote.exposure.get': { capability: 'wmux.internal' },
+  'a2a.remote.exposure.list': { capability: 'wmux.internal' },
+  'a2a.remote.exposure.set': { capability: 'wmux.internal' },
+  'a2a.remote.hosts.exposed': { capability: 'wmux.internal' },
+  'a2a.remote.links.list': { capability: 'wmux.internal' },
+  'a2a.remote.links.propose': { capability: 'wmux.internal' },
+  'a2a.remote.links.accept': { capability: 'wmux.internal' },
+  'a2a.remote.links.reject': { capability: 'wmux.internal' },
+  'a2a.remote.links.revoke': { capability: 'wmux.internal' },
+  'a2a.remote.links.refresh': { capability: 'wmux.internal' },
+  'a2a.remote.local.paneGone': { capability: 'wmux.internal' },
+  // Delivery: main's bridge and the a2a handlers only, never a plugin or MCP caller.
+  'a2a.remote.pending': { capability: 'wmux.internal' },
+  'a2a.remote.mark': { capability: 'wmux.internal' },
+  'a2a.remote.targets': { capability: 'wmux.internal' },
+  'a2a.remote.sendTask': { capability: 'wmux.internal' },
+  'a2a.remote.reply': { capability: 'wmux.internal' },
+  'a2a.remote.state': { capability: 'wmux.internal' },
+  'a2a.remote.held': { capability: 'wmux.internal' },
+  'a2a.remote.rejectHeld': { capability: 'wmux.internal' },
+  'a2a.remote.hosts.status': { capability: 'wmux.internal' },
 
   // --- A2A (agent-to-agent) ---
   'a2a.resolve.identity': { capability: 'a2a.read',    riskClass: 'a2a' },

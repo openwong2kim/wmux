@@ -59,6 +59,27 @@ import type {
   LanLinkPeersListResult,
 } from '../shared/lanlink';
 import type {
+  A2aRemoteExposureGetResult,
+  A2aRemoteHeldListResult,
+  A2aRemoteHeldRejectResult,
+  A2aRemoteHeldRetryResult,
+  A2aRemoteHostStatus,
+  A2aRemoteHostsStatusResult,
+  A2aRemoteHostsExposedResult,
+  A2aRemoteLinkEvent,
+  A2aRemoteLinkProposeParams,
+  A2aRemoteLinkResult,
+  A2aRemoteLinksListResult,
+  A2aRemotePaneSnapshot,
+  A2aRemoteHostsListResult,
+  A2aRemoteHostsRemoveResult,
+  A2aRemoteJoinResult,
+  A2aRemotePairBeginResult,
+  A2aRemotePairStatus,
+  A2aRemotePeersListResult,
+  A2aRemoteStatus,
+} from '../shared/rpc';
+import type {
   PairFlow,
   WebDeviceListError,
   WebDeviceRevokeResult,
@@ -861,6 +882,9 @@ const electronAPI = {
         ipcRenderer.invoke(IPC.DECK_MOA_DECISIONS) as Promise<{ decisions: import('../shared/moa').MoaPendingDecision[] }>,
       taskResult: (args: { workspaceId: string; taskId: string }) =>
         ipcRenderer.invoke(IPC.DECK_MOA_TASK_RESULT, args) as Promise<{ result: import('../shared/moaResult').MoaTaskResult | null }>,
+      // Work exchanged with other PCs' Moa (cross-host A2A brain links).
+      remoteTasks: () =>
+        ipcRenderer.invoke(IPC.DECK_MOA_REMOTE_TASKS) as Promise<{ tasks: import('../shared/a2aRemoteDelivery').MoaRemoteTask[] }>,
       delegatedApprovals: () =>
         ipcRenderer.invoke(IPC.DECK_MOA_DELEGATED_APPROVALS) as Promise<{ approvals: import('../shared/moa').MoaDelegatedApproval[] }>,
       delegatedAnswer: (args: { approvalId: string; choiceKey: string; promptFingerprint: string }) =>
@@ -2008,6 +2032,52 @@ document.addEventListener('DOMContentLoaded', () => {
   peersList: () => ipcRenderer.invoke(IPC.LANLINK_PEERS_LIST) as Promise<LanLinkPeersListResult>,
   peersRemove: (peerUuid: string) =>
     ipcRenderer.invoke(IPC.LANLINK_PEERS_REMOVE, peerUuid) as Promise<{ ok: true }>,
+};
+
+// Cross-host A2A control plane (Settings → LAN). Request/response via invoke,
+// mirroring .lanlink above; the daemon re-validates every argument.
+(electronAPI as Record<string, unknown>).a2aRemote = {
+  status: () => ipcRenderer.invoke(IPC.A2A_REMOTE_STATUS) as Promise<A2aRemoteStatus>,
+  configure: (patch: { enabled?: boolean; port?: number }) =>
+    ipcRenderer.invoke(IPC.A2A_REMOTE_CONFIGURE, patch) as Promise<A2aRemoteStatus>,
+  pairBegin: () => ipcRenderer.invoke(IPC.A2A_REMOTE_PAIR_BEGIN) as Promise<A2aRemotePairBeginResult>,
+  pairCancel: () => ipcRenderer.invoke(IPC.A2A_REMOTE_PAIR_CANCEL) as Promise<{ ok: true }>,
+  pairStatus: () => ipcRenderer.invoke(IPC.A2A_REMOTE_PAIR_STATUS) as Promise<A2aRemotePairStatus>,
+  join: (invite: string) => ipcRenderer.invoke(IPC.A2A_REMOTE_JOIN, invite) as Promise<A2aRemoteJoinResult>,
+  hostsList: () => ipcRenderer.invoke(IPC.A2A_REMOTE_HOSTS_LIST) as Promise<A2aRemoteHostsListResult>,
+  hostsRemove: (hostId: string) =>
+    ipcRenderer.invoke(IPC.A2A_REMOTE_HOSTS_REMOVE, hostId) as Promise<A2aRemoteHostsRemoveResult>,
+  peersList: () => ipcRenderer.invoke(IPC.A2A_REMOTE_PEERS_LIST) as Promise<A2aRemotePeersListResult>,
+  peersRevoke: (peerId: string) => ipcRenderer.invoke(IPC.A2A_REMOTE_PEERS_REVOKE, peerId) as Promise<{ ok: boolean }>,
+  snapshot: (snapshot: A2aRemotePaneSnapshot) =>
+    ipcRenderer.invoke(IPC.A2A_REMOTE_SNAPSHOT, snapshot) as Promise<{ ok: boolean }>,
+  exposureGet: (hostId: string) =>
+    ipcRenderer.invoke(IPC.A2A_REMOTE_EXPOSURE_GET, hostId) as Promise<A2aRemoteExposureGetResult>,
+  exposureSet: (hostId: string, workspaceIds: string[], paneIds: Record<string, string[]>, brain: boolean) =>
+    ipcRenderer.invoke(IPC.A2A_REMOTE_EXPOSURE_SET, hostId, workspaceIds, paneIds, brain) as Promise<A2aRemoteExposureGetResult>,
+  hostsExposed: (hostId: string) =>
+    ipcRenderer.invoke(IPC.A2A_REMOTE_HOSTS_EXPOSED, hostId) as Promise<A2aRemoteHostsExposedResult>,
+  linksList: () => ipcRenderer.invoke(IPC.A2A_REMOTE_LINKS_LIST) as Promise<A2aRemoteLinksListResult>,
+  linksPropose: (params: A2aRemoteLinkProposeParams) =>
+    ipcRenderer.invoke(IPC.A2A_REMOTE_LINKS_PROPOSE, params) as Promise<A2aRemoteLinkResult>,
+  linksAccept: (linkId: string) => ipcRenderer.invoke(IPC.A2A_REMOTE_LINKS_ACCEPT, linkId) as Promise<A2aRemoteLinkResult>,
+  linksReject: (linkId: string) => ipcRenderer.invoke(IPC.A2A_REMOTE_LINKS_REJECT, linkId) as Promise<A2aRemoteLinkResult>,
+  linksRevoke: (linkId: string) => ipcRenderer.invoke(IPC.A2A_REMOTE_LINKS_REVOKE, linkId) as Promise<A2aRemoteLinkResult>,
+  linksRefresh: (linkId: string) => ipcRenderer.invoke(IPC.A2A_REMOTE_LINKS_REFRESH, linkId) as Promise<A2aRemoteLinkResult>,
+  onLinkEvent: (callback: (event: A2aRemoteLinkEvent) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: A2aRemoteLinkEvent) => callback(payload);
+    ipcRenderer.on(IPC.A2A_REMOTE_LINK_EVENT, listener);
+    return () => { ipcRenderer.removeListener(IPC.A2A_REMOTE_LINK_EVENT, listener); };
+  },
+  hostsStatus: () => ipcRenderer.invoke(IPC.A2A_REMOTE_HOSTS_STATUS) as Promise<A2aRemoteHostsStatusResult>,
+  onHostStatus: (callback: (status: A2aRemoteHostStatus) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: A2aRemoteHostStatus) => callback(payload);
+    ipcRenderer.on(IPC.A2A_REMOTE_HOST_STATUS_EVENT, listener);
+    return () => { ipcRenderer.removeListener(IPC.A2A_REMOTE_HOST_STATUS_EVENT, listener); };
+  },
+  heldList: () => ipcRenderer.invoke(IPC.A2A_REMOTE_HELD_LIST) as Promise<A2aRemoteHeldListResult>,
+  heldRetry: (taskId: string) => ipcRenderer.invoke(IPC.A2A_REMOTE_HELD_RETRY, taskId) as Promise<A2aRemoteHeldRetryResult>,
+  heldReject: (taskId: string) => ipcRenderer.invoke(IPC.A2A_REMOTE_HELD_REJECT, taskId) as Promise<A2aRemoteHeldRejectResult>,
 };
 
 // wmux web — titlebar toggle bridge (renderer → main → daemon control pipe).

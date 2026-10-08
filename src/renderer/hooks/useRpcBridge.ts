@@ -57,6 +57,8 @@ import type { FreshContextReply } from '../../shared/freshContext';
 import { paneAddressOfPty, paneHasOtherOpenA2aTask } from './a2aFreshContext';
 import { publishA2aTask } from '../events/publisher';
 import { isReceiverPaneGone } from '../../shared/a2aOrphanedTask';
+import { isRemoteTaskId, type A2aRemoteTaskMarkerV1 } from '../../shared/a2aRemote';
+import { A2A_REMOTE_NOTIFY_METHOD, isRemoteWorkspaceId, localSideOf, remoteWorkspaceId, sanitizeRemoteText, type A2aRemoteDeliveryResult, type A2aRemoteHeldReason, type A2aRemoteTaskState } from '../../shared/a2aRemoteDelivery';
 import { resolvePaneAddress, activePaneTerminalPty, resolveUnaddressedDelivery, paneHasDetectedAgent, describeAmbiguousDelivery, wsMetadataMayStandIn, NO_AGENT_PANE_HINT, decideSameWsSend, decideReplyDelivery, REPLY_SUPPRESS_HINTS, submitReceiptFields, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, detectedAgentTuiSlug, type PaneAddress } from './a2aAddressing';
 import { resolveWorkspaceTarget } from './workspaceTargeting';
 import { destroyRemoteSessions, destroySurfaceRemoteSession, destroyWorkspaceRemoteSessions } from '../utils/remoteSessionTeardown';
@@ -878,6 +880,181 @@ function emitA2aTaskEvent(
       ? evidence.items.filter(isVerifiedItem).length
       : undefined;
   publishA2aTask(from, to, taskId, effectiveState, kind, undefined, verifiedItemCount);
+}
+
+// ---------------------------------------------------------------------------
+// Cross-host A2A: a task another wmux host sent to a linked pane here. Only
+// main's RemoteA2aBridge reaches this (main strips `remoteMarker` /
+// `remoteFrom` from every pipe caller). Unlike a local send, the target is
+// exactly the link's pane: no workspace-name matching, no unaddressed pick, no
+// sibling pane. A pane that is gone, or now holds another pty than the one
+// snapshotted when the task was stored here, HOLDS the task instead.
+// ---------------------------------------------------------------------------
+
+function isInboundRemoteMarker(v: unknown): v is A2aRemoteTaskMarkerV1 {
+  if (!v || typeof v !== 'object') return false;
+  const m = v as Partial<A2aRemoteTaskMarkerV1>;
+  return m.v === 1 && m.direction === 'inbound' && typeof m.linkId === 'string' && !!m.linkId
+    && typeof m.hostId === 'string' && typeof m.messageId === 'string' && !!m.messageId;
+}
+
+type RemoteAnchor = { workspaceId: string; paneId?: string; ptyId?: string };
+
+/**
+ * Where a remote delivery for `anchor` (our local side of the task) may go:
+ * the pinned pane's snapshotted pty, or — with `resnapshot`, a person having
+ * approved it — whatever terminal the pane holds now. Otherwise the reason it
+ * is held: the pane is gone, or another pty holds it now.
+ */
+function remoteAnchorTarget(
+  anchor: RemoteAnchor,
+  resnapshot: boolean,
+): { ws: Workspace; pty: string; surfaceId: string } | { held: A2aRemoteHeldReason } {
+  const ws = useStore.getState().workspaces.find((w) => w.id === anchor.workspaceId);
+  if (!ws || !anchor.paneId) return { held: 'pane-missing' };
+  const addr = resolvePaneAddress(getWorkspaceLeafPanes(ws), anchor.paneId, '');
+  if ('error' in addr) return { held: 'pane-missing' };
+  if (resnapshot) return { ws, pty: addr.ptyId, surfaceId: addr.surfaceId };
+  const leaf = getWorkspaceLeafPanes(ws).find((l) => l.id === anchor.paneId);
+  const snap = leaf?.surfaces.find((su) => su.surfaceType !== 'browser' && !!su.ptyId && su.ptyId === anchor.ptyId);
+  return snap && anchor.ptyId ? { ws, pty: anchor.ptyId, surfaceId: snap.id } : { held: 'occupant-changed' };
+}
+
+/**
+ * One gated write of a remote delivery to `pty`, with the outcome in the
+ * bridge's terms. A paste left in the composer (Enter withheld, not cleared)
+ * counts as delivered: pasting it again would duplicate it.
+ */
+async function writeRemoteDelivery(
+  anchor: RemoteAnchor,
+  target: { ws: Workspace; pty: string },
+  write: () => Promise<A2aPtyWrite>,
+): Promise<A2aRemoteDeliveryResult> {
+  if (!a2aTargetHasAgent(target.ws, target.pty)) return { ok: true, delivered: false, reason: 'no_agent_pane' };
+  const res = await write();
+  if (res.ptyId) return { ok: true, delivered: true, ptyId: res.ptyId };
+  if (res.refused?.pasted && !res.refused.cleared) return { ok: true, delivered: true, ptyId: target.pty, note: 'pasted-not-submitted' };
+  // The pane may have changed while the delivery waited.
+  const after = remoteAnchorTarget({ ...anchor, ptyId: target.pty }, false);
+  if ('held' in after) return { ok: true, delivered: false, held: after.held };
+  return { ok: true, delivered: false, reason: res.refused?.reason ?? 'no_target_pty' };
+}
+
+async function handleRemoteTaskSend(params: RpcParams): Promise<A2aRemoteDeliveryResult> {
+  const marker = params.remoteMarker;
+  const from = params.remoteFrom as { workspaceId?: unknown; name?: unknown } | undefined;
+  const taskId = typeof params.presetTaskId === 'string' ? params.presetTaskId : '';
+  const resnapshot = params.resnapshot === true;
+  if (!isInboundRemoteMarker(marker)) return { error: 'a2a.task.send: invalid remote task marker' };
+  // An rt- id is accepted only here, next to its marker.
+  if (!isRemoteTaskId(taskId)) return { error: 'a2a.task.send: a remote task needs its rt- id' };
+  if (!from || !isRemoteWorkspaceId(from.workspaceId) || from.workspaceId !== remoteWorkspaceId(marker.linkId)
+      || typeof from.name !== 'string' || !from.name) {
+    return { error: 'a2a.task.send: a remote sender must be its link\'s remote: workspace' };
+  }
+
+  let store = useStore.getState();
+  let task = store.getTask(taskId);
+  if (task) {
+    const stored = task.metadata.remote as A2aRemoteTaskMarkerV1 | undefined;
+    if (!stored || stored.linkId !== marker.linkId) return { error: `a2a.task.send: task id ${taskId} is taken` };
+    if (stored.delivered === true) return { ok: true, delivered: true, duplicate: true };
+  } else {
+    const rawMessage = typeof params.message === 'string' ? params.message : '';
+    let message: string;
+    try { message = validateMessage(sanitizeRemoteText(rawMessage)); } catch (e) {
+      return { error: `a2a.task.send: ${e instanceof Error ? e.message : 'invalid'}` };
+    }
+    const toWsId = typeof params.to === 'string' ? params.to : '';
+    const paneId = typeof params.paneId === 'string' ? params.paneId : '';
+    const target = store.workspaces.find((w) => w.id === toWsId);
+    const addr = target && paneId ? resolvePaneAddress(getWorkspaceLeafPanes(target), paneId, '') : null;
+    // Nothing is stored for a pane that is not there: a later attempt
+    // snapshots whatever pty the pane has then, before any write.
+    if (!target || !addr || 'error' in addr) return { ok: true, delivered: false, held: 'pane-missing' };
+    const title = typeof params.title === 'string' && params.title ? params.title : message.slice(0, 100);
+    store.createA2aTask({
+      id: taskId,
+      title,
+      from: { workspaceId: from.workspaceId, name: from.name },
+      to: { workspaceId: target.id, name: target.name, paneId: addr.paneId, surfaceId: addr.surfaceId, ptyId: addr.ptyId },
+      history: [{ kind: 'message', messageId: marker.messageId, role: 'user', parts: [{ kind: 'text', text: message }] }],
+      artifacts: [],
+      remote: { ...marker, delivered: false },
+    });
+    store = useStore.getState();
+    task = store.getTask(taskId);
+    if (!task) return { error: 'a2a.task.send: the remote task could not be stored' };
+    emitA2aTaskEvent(task, 'created');
+  }
+
+  const target = remoteAnchorTarget(task.metadata.to, resnapshot);
+  if ('held' in target) return { ok: true, delivered: false, held: target.held };
+  if (resnapshot && target.pty !== task.metadata.to.ptyId) {
+    // A person approved the pane's current occupant: it is the snapshot now.
+    store.setRemoteTaskTarget(taskId, target.pty, target.surfaceId);
+  }
+  const t = useStore.getState().getTask(taskId) as Task;
+  const pty = target.pty;
+  // Peer text, filtered again right before the pane write (the daemon filtered it on receipt).
+  const senderName = sanitizeRemoteText(t.metadata.from.name);
+  const firstPart = t.history[0]?.parts.find((p) => p.kind === 'text');
+  const body = sanitizeRemoteText(firstPart && firstPart.kind === 'text' ? firstPart.text : '');
+  const liveMeta = deliveryLiveMeta(store.surfaceAgent, pty, target.ws.metadata);
+  // Always the gated delivery: wait for the person to stop typing, re-check
+  // the agent before the paste and the Enter, never past main's deadline.
+  const gated: NewTaskDelivery = {
+    taskId,
+    waitQuiet: true,
+    ...(liveMeta?.agentName ? { expectAgent: liveMeta.agentName } : {}),
+    ...(typeof params.deliveryDeadlineAt === 'number' ? { deadlineAt: params.deliveryDeadlineAt } : {}),
+  };
+  const result = await writeRemoteDelivery({ ...t.metadata.to }, target, () => (isLiveTuiAgent(liveMeta)
+    ? deliverPtyNudge(target.ws, (p) => buildA2aNudge(taskId, senderName, 'new', a2aFormatOptionsFor(p).multiline ? t.metadata.title : undefined), pty, false, gated)
+    : deliverPtyNotification(target.ws, senderName, body, pty, false, gated)));
+  if (result.ok === true && result.delivered) useStore.getState().markRemoteTaskDelivered(taskId);
+  return result;
+}
+
+/**
+ * Cross-host A2A: one reply or state change the peer sent into a remote task
+ * (`task` is the daemon's snapshot, `messageId` names the item). Main's
+ * RemoteA2aBridge only. A reply is written to our local pane the way a local
+ * reply is (a one-line pointer to a live agent, the body otherwise), held under
+ * the same pane rules as a new remote task. A state change follows the local
+ * convention for status updates: no pane write, the event-bus pointer only.
+ */
+async function handleRemoteNotify(params: RpcParams): Promise<A2aRemoteDeliveryResult> {
+  const task = params.task as Task | undefined;
+  const messageId = typeof params.messageId === 'string' ? params.messageId : '';
+  if (!task || typeof task !== 'object' || !isRemoteTaskId(task.id) || !task.metadata) {
+    return { error: `${A2A_REMOTE_NOTIFY_METHOD}: invalid task` };
+  }
+  const marker = task.metadata.remote as A2aRemoteTaskState | undefined;
+  const item = marker?.inbox?.find((i) => i.messageId === messageId);
+  if (!marker || marker.v !== 1 || !item) return { error: `${A2A_REMOTE_NOTIFY_METHOD}: no such item` };
+
+  if (item.kind === 'state') {
+    useStore.getState().applyDaemonTaskUpdate(task);
+    const cached = useStore.getState().getTask(task.id) ?? task;
+    const state = task.status.state;
+    emitA2aTaskEvent(cached, state === 'canceled' ? 'cancelled' : 'updated', state);
+    return { ok: true, delivered: true };
+  }
+
+  const side = localSideOf(task);
+  const anchor = task.metadata[side];
+  const target = remoteAnchorTarget(anchor, params.resnapshot === true);
+  if ('held' in target) return { ok: true, delivered: false, held: target.held };
+  const msg = task.history.find((h) => h.messageId === messageId);
+  const part = msg?.parts.find((p) => p.kind === 'text');
+  const text = sanitizeRemoteText(part && part.kind === 'text' ? part.text : '');
+  if (!text) return { error: `${A2A_REMOTE_NOTIFY_METHOD}: the reply has no text` };
+  const senderName = sanitizeRemoteText(task.metadata[side === 'from' ? 'to' : 'from'].name);
+  const liveMeta = deliveryLiveMeta(useStore.getState().surfaceAgent, target.pty, target.ws.metadata);
+  return writeRemoteDelivery({ ...anchor, ptyId: target.pty }, target, () => (isLiveTuiAgent(liveMeta)
+    ? deliverPtyNudge(target.ws, buildA2aNudge(task.id, senderName, 'reply'), target.pty, false)
+    : deliverPtyNotification(target.ws, senderName, text, target.pty, false)));
 }
 
 // ---------------------------------------------------------------------------
@@ -2750,7 +2927,10 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     };
   }
 
+  if (method === A2A_REMOTE_NOTIFY_METHOD) return handleRemoteNotify(params);
+
   if (method === 'a2a.task.send') {
+    if (params.remoteMarker !== undefined || params.remoteFrom !== undefined) return handleRemoteTaskSend(params);
     const operator = a2aOperatorOrigin(params);
     const taskId = typeof params.taskId === 'string' ? params.taskId : '';
     const executeRequested = params.execute === true;

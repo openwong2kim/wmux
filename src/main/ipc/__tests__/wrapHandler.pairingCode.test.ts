@@ -42,6 +42,18 @@ describe('pairing codes stay out of the IPC error log', () => {
     expect(buildArgsSummary([`https://h.ts.net/pair?code=${CODE}`])).not.toContain(CODE);
   });
 
+  it('a failing cross-PC join logs no arguments (the invite carries a live code)', async () => {
+    const invite = `wmux-a2a://desk:45660/${CODE}#sha256=${'AB:'.repeat(31)}AB`;
+    const join = wrapHandler('a2aRemote:join', (_e: unknown, _invite: string) => {
+      throw new Error('DaemonClient not connected');
+    });
+    await expect(join({} as never, invite)).rejects.toThrow();
+    const entry = JSON.parse(lines[0]) as Record<string, unknown>;
+    expect(entry.channel).toBe('a2aRemote:join');
+    expect(entry.args_summary).toBeUndefined();
+    expect(lines.join('')).not.toContain(CODE);
+  });
+
   it('leaves text without credentials alone', () => {
     expect(maskInlineCredentials('https://h.ts.net/pair')).toBe('https://h.ts.net/pair');
     expect(maskInlineCredentials(`x #wmux-desktop-code=${CODE}&y=1`)).toBe('x #wmux-desktop-code=[redacted]&y=1');

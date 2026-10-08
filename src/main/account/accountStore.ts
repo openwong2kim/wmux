@@ -26,8 +26,12 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { getWmuxDir } from '../../daemon/config';
 import { atomicReadJSONSync, atomicWriteJSON } from '../../daemon/util/atomicWrite';
+import type { AgentSlug } from '../../shared/agentIdentity';
 
-export type Vendor = 'claude' | 'codex';
+// TODO(#1904): the registry rows with `accounts: 'account-store'`. Not derived
+// yet: the store's config-dir handling (CLAUDE_CONFIG_DIR / CODEX_HOME) is
+// per-vendor code, so a new member needs that code before the type can open.
+export type Vendor = Extract<AgentSlug, 'claude' | 'codex'>;
 
 export interface Account {
   id: string;

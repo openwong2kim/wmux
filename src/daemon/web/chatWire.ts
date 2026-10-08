@@ -10,6 +10,8 @@ import {
   type ChatCancelTag,
   type ChatOwner,
   type ChatDequeueResult,
+  type ChatQueueDeliver,
+  type ChatSteerResult,
   type ChatQueueItemView,
   type ChatLaunchOutcome,
   type ChatResolution,
@@ -25,6 +27,7 @@ import {
 } from '../../shared/transcript/terminalChat';
 import type { MetaEvent, ToolBody, TurnEvent } from '../../shared/transcript/turnEvents';
 import type { AgentStatus } from '../../shared/types';
+import { agentRow } from '../../shared/agentIdentity';
 import { chatV2HistoryEpoch, type ChatV2Binding, type ChatV2Status } from '../../shared/chatv2/ipc';
 import { truncateUtf8, utf8Bytes } from '../../shared/chatv2/limits';
 import { HARNESS_TITLE, type Block, type Session, type ToolPreview, type TurnOutcome } from '../../shared/chatv2/session';
@@ -147,9 +150,10 @@ export function buildChatObject(
   const terminal = status.terminal;
   const agent = terminal?.agent;
   // `queue` is passed only for a `chat-queue` caller on a daemon whose queue
-  // loaded: all three agents then queue in the daemon, so `send` stays open
+  // loaded: every agent whose registry row declares `sendQueue` (claude, codex,
+  // opencode) then queues in the daemon, so `send` stays open
   // while a turn runs. Without it the capabilities are today's, byte for byte.
-  const queueing = opts.queue !== undefined && status.agentAlive === true && !!agent && QUEUE_AGENTS.includes(agent);
+  const queueing = opts.queue !== undefined && status.agentAlive === true && agentRow(agent)?.sendQueue === true;
   const capabilities = terminal ? phoneTerminalCapabilities(terminal.capabilities, opts.chatCancel === true) : closed;
   return {
     binding: 'terminal',
@@ -183,9 +187,6 @@ export function buildChatObject(
   };
 }
 
-/** The agents whose sends the daemon queue can hold. */
-const QUEUE_AGENTS: readonly string[] = ['claude', 'codex', 'opencode'];
-
 /**
  * The desktop's terminal capabilities, minus what the phone has no route for:
  * image attachments (`images`), and Stop (`cancel`) unless the caller declared
@@ -206,25 +207,32 @@ export interface SendBody {
   historyEpoch: string;
   clientMessageId: string;
   text: string;
+  /** Optional: how a `chat-queue` send is delivered if the daemon queue holds it. */
+  deliver?: ChatQueueDeliver;
 }
 
 const SEND_KEYS = ['agentSessionId', 'historyEpoch', 'clientMessageId', 'text'] as const;
 
 /**
- * Exactly the four string fields. Anything else (`mode`, `agent`, `cwd`, …) is
- * refused rather than ignored: a key the route does not understand is a
- * client that believes it is asking for something this route never does.
+ * Exactly the four string fields, plus an optional `deliver`. Anything else
+ * (`mode`, `agent`, `cwd`, …) is refused rather than ignored: a key the route
+ * does not understand is a client that believes it is asking for something
+ * this route never does.
  */
 export function parseSendBody(body: unknown): { ok: true; value: SendBody } | { ok: false; detail: string; clientMessageId?: string } {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return { ok: false, detail: 'body must be a JSON object' };
   const o = body as Record<string, unknown>;
   const cmid = typeof o.clientMessageId === 'string' ? o.clientMessageId : undefined;
-  const extra = Object.keys(o).filter((k) => !(SEND_KEYS as readonly string[]).includes(k));
+  const extra = Object.keys(o).filter((k) => !(SEND_KEYS as readonly string[]).includes(k) && k !== 'deliver');
   if (extra.length > 0) return { ok: false, detail: `unknown field: ${extra[0].slice(0, 64)}`, clientMessageId: cmid };
   for (const key of SEND_KEYS) {
     if (typeof o[key] !== 'string') return { ok: false, detail: `${key} must be a string`, clientMessageId: cmid };
   }
-  return { ok: true, value: { agentSessionId: o.agentSessionId as string, historyEpoch: o.historyEpoch as string, clientMessageId: o.clientMessageId as string, text: o.text as string } };
+  if (o.deliver !== undefined && o.deliver !== 'next-turn' && o.deliver !== 'steer') {
+    return { ok: false, detail: 'deliver must be "next-turn" or "steer"', clientMessageId: cmid };
+  }
+  return { ok: true, value: { agentSessionId: o.agentSessionId as string, historyEpoch: o.historyEpoch as string, clientMessageId: o.clientMessageId as string, text: o.text as string,
+    ...(o.deliver !== undefined ? { deliver: o.deliver as ChatQueueDeliver } : {}) } };
 }
 
 function sendStatus(tag: ChatSendTag): number {
@@ -237,6 +245,18 @@ function sendStatus(tag: ChatSendTag): number {
     case 'queue-full': return 429;
     default: return 409;
   }
+}
+
+/** `PATCH /api/sessions/:id/chat/queue/:clientMessageId` body: exactly `{deliver:"steer"}`. */
+export function parseSteerBody(body: unknown): boolean {
+  return !!body && typeof body === 'object' && !Array.isArray(body) &&
+    Object.keys(body).length === 1 && (body as Record<string, unknown>).deliver === 'steer';
+}
+
+/** `PATCH /api/sessions/:id/chat/queue/:clientMessageId`: same refusals as DELETE. */
+export function steerResponse(result: ChatSteerResult, clientMessageId: string): WireResponse {
+  if (result.ok) return { status: 200, body: { state: result.state, deliver: result.deliver, clientMessageId } };
+  return dequeueResponse(result, clientMessageId);
 }
 
 /** `DELETE /api/sessions/:id/chat/queue/:clientMessageId`. */
@@ -262,7 +282,8 @@ export function sendResponse(outcome: ChatSendOutcome, clientMessageId: string):
       : state === 'delivered' ? 'submitted' : state === 'uncertain' ? 'uncertain' : 'none';
     return {
       status: outcome.replayed ? 200 : 202,
-      body: { state, ...(outcome.queueReason ? { reason: outcome.queueReason } : {}), replayed: outcome.replayed, clientMessageId, effect },
+      body: { state, ...(outcome.queueReason ? { reason: outcome.queueReason } : {}),
+        ...(outcome.queueDeliver ? { deliver: outcome.queueDeliver } : {}), replayed: outcome.replayed, clientMessageId, effect },
     };
   }
   if (outcome.pending) {

@@ -63,6 +63,8 @@
 // clients keep working. See ApprovalRegistry.resolve and the phone-client
 // contract (`docs/phone-client-contract.md`, "choices" / "choiceKey").
 
+import { agentRow, type AgentDialogFamily } from '../../shared/agentIdentity';
+
 /** The two byte sequences for one agent. Single presses — never a CR chaser. */
 export interface ApprovalKeystrokes {
   approve: string;
@@ -71,21 +73,21 @@ export interface ApprovalKeystrokes {
 
 /**
  * Keystroke map v1 — the Claude Code family ONLY. openclaude is a fork of
- * Claude Code that draws the same AskUserQuestion select, so it shares the map
- * (the same set `isClaudeFamilyAgent` names). Every other slug is
- * `unsupported-agent` rather than a guess: pressing the wrong byte into a TUI
- * is not a recoverable error, and a codex/gemini/opencode pane has neither the
- * same prompt shape nor the same hook wiring. Measured key semantics per TUI:
- * `__tests__/fixtures/terminal-prompts/KEYS.md`.
+ * Claude Code that draws the same AskUserQuestion select, so it shares the map:
+ * the map is keyed by dialog family, and an agent's family is `dialogs` on its
+ * registry row (the same field `isClaudeFamilyAgent` reads). Every other slug
+ * is `unsupported-agent` rather than a guess: pressing the wrong byte into a
+ * TUI is not a recoverable error, and a codex/gemini/opencode pane has neither
+ * the same prompt shape nor the same hook wiring. Measured key semantics per
+ * TUI: `__tests__/fixtures/terminal-prompts/KEYS.md`.
  */
-const CLAUDE_KEYSTROKES: ApprovalKeystrokes = { approve: '1', deny: '\x1b' };
-const KEYSTROKES_BY_AGENT: Readonly<Record<string, ApprovalKeystrokes>> = {
-  claude: CLAUDE_KEYSTROKES,
-  openclaude: CLAUDE_KEYSTROKES,
-};
+const KEYSTROKES_BY_DIALOG_FAMILY = {
+  claude: { approve: '1', deny: '\x1b' },
+} as const satisfies Record<AgentDialogFamily, ApprovalKeystrokes>;
 
 export function keystrokesForAgent(agentSlug: string): ApprovalKeystrokes | null {
-  return KEYSTROKES_BY_AGENT[agentSlug] ?? null;
+  const family = agentRow(agentSlug)?.dialogs;
+  return family ? KEYSTROKES_BY_DIALOG_FAMILY[family] : null;
 }
 
 /**

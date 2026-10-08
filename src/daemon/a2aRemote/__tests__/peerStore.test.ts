@@ -5,7 +5,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { formatPeerCredential, parsePeerCredential } from '../../../shared/a2aRemote';
 import { atomicWriteJSONSync } from '../../util/atomicWrite';
 import { LAST_SEEN_PERSIST_MS } from '../../web/DeviceStore';
-import { FAILURES_PER_WINDOW, FAILURE_WINDOW_MS, PEERS_FILE, PeerStore, type PeerStoreOptions } from '../peerStore';
+import {
+  FAILURES_PER_WINDOW,
+  FAILURE_WINDOW_MS,
+  PEERS_FILE,
+  PeerStore,
+  REVOKED_KEPT_PER_HOST,
+  type PeerStoreOptions,
+} from '../peerStore';
 
 const HOST = '11111111-1111-4111-8111-111111111111';
 const HOST2 = '22222222-2222-4222-8222-222222222222';
@@ -99,6 +106,30 @@ describe('PeerStore', () => {
     expect(await s.resolve(c.peerId, c.secret)).toEqual({ ok: false, reason: 'revoked' });
     expect(await s.resolve(c.peerId, 'wrong')).toEqual({ ok: false, reason: 'revoked' });
     expect(await make().resolve(c.peerId, c.secret)).toEqual({ ok: false, reason: 'revoked' });
+  });
+
+  it('keeps only the newest revoked rows per host; a pruned id still answers at once', async () => {
+    const s = make();
+    const other = await s.mint({ hostId: HOST2, name: 'other' });
+    s.revoke(other.peerId);
+    const issued: Array<{ peerId: string; secret: string }> = [];
+    for (let i = 0; i < REVOKED_KEPT_PER_HOST + 2; i++) {
+      clock += 1000;
+      const c = await s.mint({ hostId: HOST, name: `round ${i}` });
+      issued.push(c);
+      clock += 1000;
+      s.revoke(c.peerId);
+    }
+    const kept = s.listByHost(HOST).map((r) => r.peerId);
+    expect(kept).toHaveLength(REVOKED_KEPT_PER_HOST);
+    expect(kept.sort()).toEqual(issued.slice(-REVOKED_KEPT_PER_HOST).map((c) => c.peerId).sort());
+    // Another host's revoked row is untouched, and the file matches memory.
+    expect(s.listByHost(HOST2)).toHaveLength(1);
+    expect(make().listByHost(HOST)).toHaveLength(REVOKED_KEPT_PER_HOST);
+    const derivations = s.stats().derivations;
+    expect(await s.resolve(issued[0].peerId, issued[0].secret)).toEqual({ ok: false, reason: 'unknown' });
+    expect(await s.resolve(issued.at(-1)!.peerId, issued.at(-1)!.secret)).toEqual({ ok: false, reason: 'revoked' });
+    expect(s.stats().derivations).toBe(derivations);
   });
 
   it('list never exposes hash, salt or kdf', async () => {

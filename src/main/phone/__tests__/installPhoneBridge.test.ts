@@ -19,7 +19,7 @@ describe('desktop phone listener lifetime', () => {
     expect(handle).toHaveBeenCalledTimes(1);
     expect(client.rpc).toHaveBeenCalledWith('daemon.phone.complete', { requestId: 'r1', ok: true, result: { accounts: [] } });
     // The desktop announces the optional commands it handles at register.
-    expect(client.rpc).toHaveBeenCalledWith('daemon.phone.register', { commands: ['accounts.envForAccount'] });
+    expect(client.rpc).toHaveBeenCalledWith('daemon.phone.register', { commands: ['accounts.envForAccount', 'moa.wake'] });
     dispose();
     client.emit('event', { ...event, data: { ...event.data, requestId: 'r2' } });
     expect(handle).toHaveBeenCalledTimes(1);
@@ -29,6 +29,14 @@ describe('desktop phone listener lifetime', () => {
     const { client, handle, dispose, event } = fixture();
     for (const expiresAt of [0, NaN, Infinity]) client.emit('event', { ...event, data: { ...event.data, expiresAt } });
     expect(handle).not.toHaveBeenCalled();
+    dispose();
+  });
+  it('answers a generic failure when a handler throws synchronously, without throwing out of the listener', async () => {
+    const { client, handle, dispose, event } = fixture();
+    handle.mockImplementationOnce(() => { throw new Error('invalid moa.wake payload'); });
+    expect(() => client.emit('event', event)).not.toThrow();
+    await Promise.resolve();
+    expect(client.rpc).toHaveBeenCalledWith('daemon.phone.complete', { requestId: 'r1', ok: false });
     dispose();
   });
   it('returns only a generic failure when a local operation fails', async () => {

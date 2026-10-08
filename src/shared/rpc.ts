@@ -510,6 +510,37 @@ export type RpcMethod =
   | 'lanlink.send'
   | 'lanlink.peers.list'
   | 'lanlink.peers.remove'
+  | 'a2a.remote.status'
+  | 'a2a.remote.configure'
+  | 'a2a.remote.pair.begin'
+  | 'a2a.remote.pair.cancel'
+  | 'a2a.remote.pair.status'
+  | 'a2a.remote.join'
+  | 'a2a.remote.hosts.list'
+  | 'a2a.remote.hosts.remove'
+  | 'a2a.remote.peers.list'
+  | 'a2a.remote.peers.revoke'
+  | 'a2a.remote.exposure.publish'
+  | 'a2a.remote.exposure.get'
+  | 'a2a.remote.exposure.list'
+  | 'a2a.remote.exposure.set'
+  | 'a2a.remote.hosts.exposed'
+  | 'a2a.remote.links.list'
+  | 'a2a.remote.links.propose'
+  | 'a2a.remote.links.accept'
+  | 'a2a.remote.links.reject'
+  | 'a2a.remote.links.revoke'
+  | 'a2a.remote.links.refresh'
+  | 'a2a.remote.local.paneGone'
+  | 'a2a.remote.pending'
+  | 'a2a.remote.mark'
+  | 'a2a.remote.targets'
+  | 'a2a.remote.sendTask'
+  | 'a2a.remote.reply'
+  | 'a2a.remote.state'
+  | 'a2a.remote.held'
+  | 'a2a.remote.rejectHeld'
+  | 'a2a.remote.hosts.status'
   | 'a2a.resolve.identity'
   | 'a2a.whoami'
   | 'a2a.discover'
@@ -753,6 +784,37 @@ export const ALL_RPC_METHODS = [
   'lanlink.send',
   'lanlink.peers.list',
   'lanlink.peers.remove',
+  'a2a.remote.status',
+  'a2a.remote.configure',
+  'a2a.remote.pair.begin',
+  'a2a.remote.pair.cancel',
+  'a2a.remote.pair.status',
+  'a2a.remote.join',
+  'a2a.remote.hosts.list',
+  'a2a.remote.hosts.remove',
+  'a2a.remote.peers.list',
+  'a2a.remote.peers.revoke',
+  'a2a.remote.exposure.publish',
+  'a2a.remote.exposure.get',
+  'a2a.remote.exposure.list',
+  'a2a.remote.exposure.set',
+  'a2a.remote.hosts.exposed',
+  'a2a.remote.links.list',
+  'a2a.remote.links.propose',
+  'a2a.remote.links.accept',
+  'a2a.remote.links.reject',
+  'a2a.remote.links.revoke',
+  'a2a.remote.links.refresh',
+  'a2a.remote.local.paneGone',
+  'a2a.remote.pending',
+  'a2a.remote.mark',
+  'a2a.remote.targets',
+  'a2a.remote.sendTask',
+  'a2a.remote.reply',
+  'a2a.remote.state',
+  'a2a.remote.held',
+  'a2a.remote.rejectHeld',
+  'a2a.remote.hosts.status',
   'a2a.resolve.identity',
   'a2a.whoami',
   'a2a.discover',
@@ -917,6 +979,17 @@ export interface DaemonEvent {
     // LANLINK_SENTINEL_SESSION_ID — no PTY session backs a remote message.
     //   lanlink.remote.received → { seq: number }
     | 'lanlink.remote.received'
+    // Cross-host A2A link nudges (`A2aRemoteLinkEvent`, `sessionId` ''): a
+    // proposal arrived or a link changed state. Re-read the link list.
+    | 'a2a.remote.link.proposed'
+    | 'a2a.remote.link.changed'
+    // Cross-host A2A delivery (`sessionId` ''). `a2a.remote.inbound`: a peer's
+    // task landed in the ledger, undelivered — main's RemoteA2aBridge re-pulls
+    // `a2a.remote.pending` (a nudge; the pull is the guarantee). `data` is
+    // A2aRemoteInboundEvent. `a2a.remote.hosts.status`: a paired PC's
+    // connection state changed. `data` is A2aRemoteHostStatus.
+    | 'a2a.remote.inbound'
+    | 'a2a.remote.hosts.status'
     // A2A channels (a2a-channels U4) — daemon broadcasts every successful
     // post as `channel.message`. `sessionId` is not meaningful here (no
     // session owns the event) so the field is set to '' (the rest of the
@@ -1255,3 +1328,275 @@ export type McpDeclarePermissionsResult =
       ok: false;
       errors: PermissionRejection[];
     };
+
+// ─── Cross-host A2A control plane (`a2a.remote.*`) ──────────────────────────
+//
+// Machine-local daemon control-pipe RPCs behind Settings → LAN. `wmux.internal`
+// in the capability map: no plugin or MCP caller can declare them.
+
+import type {
+  A2aEndpointKind,
+  A2aExposedPane,
+  A2aExposureV1,
+  A2aLinkRecordV1,
+  A2aLinkState,
+  A2aPeerRecordV1,
+  A2aRemoteErrorCode,
+  A2aRemoteHostRecordV1,
+} from './a2aRemote';
+
+/** `a2a.remote.status` (and the echo of `a2a.remote.configure`). */
+export interface A2aRemoteStatus {
+  enabled: boolean;
+  /** The port the listener uses (configured, or the default). */
+  port: number;
+  listening: boolean;
+  /** This PC's identity; null until it has been loaded once. */
+  hostId: string | null;
+  name: string;
+  fingerprint256: string | null;
+  /** Why the listener is not running although enabled (bind or identity failure). */
+  lastError: string | null;
+}
+
+/** `a2a.remote.pair.begin` */
+export interface A2aRemotePairBeginResult {
+  invite: string;
+  /** Epoch ms. */
+  expiresAt: number;
+  /** The addresses the invite offers, in the order the other PC tries them. */
+  addresses: string[];
+}
+
+/** `a2a.remote.pair.status` */
+export interface A2aRemotePairStatus {
+  active: boolean;
+  expiresAt: number | null;
+  attemptsLeft: number;
+  /**
+   * Epoch ms until which some address is locked out after repeated failures
+   * (even the right code from it is refused until then); null when none is.
+   */
+  lockedUntil: number | null;
+}
+
+/** Why `a2a.remote.join` failed, worded for the person pasting the invite. */
+export type A2aRemoteJoinError =
+  /** The invite string does not parse. */
+  | 'invite-invalid'
+  /** The invite points at this PC. */
+  | 'self'
+  /** The PC answered with another certificate: a different PC, or its identity was renewed — get a new invite. */
+  | 'fingerprint-mismatch'
+  /** The PC refused the connection: A2A is off there or the port is wrong. */
+  | 'connect-refused'
+  /** No answer in time: likely a firewall, or the PC is offline. */
+  | 'timeout'
+  /** The host name in the invite does not resolve. */
+  | 'not-found'
+  /** The invite expired, was cancelled, or ran out of attempts. */
+  | 'code-expired'
+  /** The code does not match the PC's open invite. */
+  | 'code-invalid'
+  /** Two pairings for this PC raced on that PC; try again. */
+  | 'already-paired'
+  /** Too many failed attempts from this PC; wait a little and retry. */
+  | 'rate-limited'
+  /** The PC answered something this version does not understand. */
+  | 'protocol'
+  /** Anything else (network failure mid-request, local store failure). */
+  | 'failed';
+
+/** `a2a.remote.join` */
+export type A2aRemoteJoinResult =
+  | { ok: true; host: A2aRemoteHostRecordV1 }
+  | {
+      ok: false;
+      error: A2aRemoteJoinError;
+      detail?: string;
+      /** For `rate-limited`: how long until the other PC accepts another try. */
+      retryAfterMs?: number;
+    };
+
+/** `a2a.remote.hosts.list` — PCs this PC joined. Never carries a credential. */
+export interface A2aRemoteHostsListResult {
+  hosts: A2aRemoteHostRecordV1[];
+}
+
+/** `a2a.remote.hosts.remove` */
+export interface A2aRemoteHostsRemoveResult {
+  /** Removed here (false: it was not paired). */
+  ok: boolean;
+  /** The other PC confirmed it revoked this PC's pairing too. */
+  remoteRevoked: boolean;
+}
+
+/** `a2a.remote.peers.list` — PCs that joined this PC (revoked ones included). */
+export interface A2aRemotePeersListResult {
+  peers: A2aPeerRecordV1[];
+}
+
+// ─── Cross-host A2A exposure and links (`a2a.remote.exposure.*`, `.links.*`) ─
+
+/**
+ * Daemon -> app nudges about links (`DaemonEvent.data`, forwarded to the
+ * renderer on `IPC.A2A_REMOTE_LINK_EVENT`). A nudge only: the receiver
+ * re-reads `a2a.remote.links.list`.
+ */
+export type A2aRemoteLinkEvent =
+  /** Another PC proposed a link to one of this PC's panes: our human decides. */
+  | { type: 'a2a.remote.link.proposed'; linkId: string }
+  | { type: 'a2a.remote.link.changed'; linkId: string; state: A2aLinkState };
+
+/**
+ * One paired PC's delivery connection (`a2a.remote.hosts.status`, and the
+ * daemon event of the same name). `joiner`: this PC dials that one (it is in
+ * the remote-host store); `server`: that PC dials this one. Connected means
+ * the stream is up — the joiner holds it open, the server is serving it.
+ * `identity-changed`: the other PC answered with another certificate; nothing
+ * was sent and the pairing must be redone.
+ */
+export interface A2aRemoteHostStatus {
+  hostId: string;
+  name: string;
+  role: 'joiner' | 'server';
+  state: 'connected' | 'connecting' | 'disconnected' | 'identity-changed';
+  /** Messages still owed to that PC (pending or outcome-unknown). */
+  pending: number;
+  /** ISO time the stream last came up. */
+  connectedAt?: string;
+  lastError?: string;
+}
+
+/** `a2a.remote.hosts.status` */
+export interface A2aRemoteHostsStatusResult {
+  hosts: A2aRemoteHostStatus[];
+}
+
+/** Remote work held for a person (`a2a.remote.held`): the ledger tasks. */
+export interface A2aRemoteHeldListResult {
+  tasks: import('./types').Task[];
+}
+
+/** A person's "deliver to the pane as it is now" on a held remote task. */
+export interface A2aRemoteHeldRetryResult {
+  ok: boolean;
+  results: Array<{ messageId?: string; outcome: 'delivered' | 'not-delivered' | NonNullable<import('./a2aRemote').A2aRemoteTaskMarkerV1['held']> }>;
+  error?: string;
+}
+
+/** A person's reject of a held remote task (`a2a.remote.rejectHeld`). */
+export type A2aRemoteHeldRejectResult =
+  | { ok: true; taskId: string; state: 'failed' | 'canceled'; queued: boolean }
+  | { ok: false; error: string };
+
+/** One pane the app offers for exposure (`a2a.remote.exposure.publish`); main adds the git fields. */
+export type A2aExposureCandidate = A2aExposedPane;
+
+/** `a2a.remote.exposure.list` — every PC's exposure (what main publishes candidates for). */
+export interface A2aRemoteExposureListResult {
+  exposures: A2aExposureV1[];
+}
+
+/** `a2a.remote.exposure.get` — null when nothing is exposed to that PC. */
+export interface A2aRemoteExposureGetResult {
+  exposure: A2aExposureV1 | null;
+}
+
+/**
+ * Why a call that reaches the other PC failed. The `A2aRemoteErrorCode`
+ * values are what the other PC answered; the rest happened on the way.
+ */
+export type A2aRemoteCallError =
+  | A2aRemoteErrorCode
+  /** This PC is not paired with that PC (or its credential is gone). */
+  | 'not-paired'
+  /** No address answered: the PC is off, A2A is off there, or a firewall. */
+  | 'unreachable'
+  /** That PC answered with another certificate: pair again. */
+  | 'fingerprint-mismatch'
+  | 'timeout'
+  /** The link is not in a state this action applies to. */
+  | 'invalid-state'
+  | 'failed';
+
+/** `a2a.remote.hosts.exposed` — a paired server's panes, as it shows them to this PC. */
+export type A2aRemoteHostsExposedResult =
+  | { ok: true; panes: A2aExposedPane[] }
+  | { ok: false; error: A2aRemoteCallError };
+
+/** `a2a.remote.links.list` */
+export interface A2aRemoteLinksListResult {
+  links: A2aLinkRecordV1[];
+}
+
+/**
+ * `a2a.remote.links.propose|accept|reject|revoke|refresh`. `remoteNotified`
+ * (revoke from the joiner side) says whether the other PC confirmed.
+ */
+export type A2aRemoteLinkResult =
+  | { ok: true; link: A2aLinkRecordV1; remoteNotified?: boolean }
+  /**
+   * `uncertain` (propose only): the request went out but no answer came back,
+   * so the other PC may hold it. `link` stays `proposed-out` here; Check
+   * (`refresh`) settles it.
+   */
+  | { ok: false; error: A2aRemoteCallError; message?: string; uncertain?: boolean; link?: A2aLinkRecordV1 };
+
+/** One end of a joiner's proposal; names and repo are display only on the other PC. */
+export interface A2aRemoteProposePane {
+  kind: A2aEndpointKind;
+  workspaceId: string;
+  /** A pane end only; absent for Moa (`brain`). */
+  paneId?: string;
+  label?: string;
+  workspaceName?: string;
+  gitRemote?: string;
+}
+
+/** `a2a.remote.links.propose` params. */
+export interface A2aRemoteLinkProposeParams {
+  hostId: string;
+  /** Both ends must be the same kind (`isAllowedEndpointPair`). */
+  local: A2aRemoteProposePane;
+  remote: A2aRemoteProposePane;
+  /** From THIS PC's point of view. */
+  allow: { outbound: boolean; inbound: boolean };
+}
+
+/** `a2a.remote.local.paneGone` params: a bound pane or workspace went away here. */
+export interface A2aRemotePaneGoneParams {
+  workspaceId: string;
+  /** Absent for `workspace-gone` (every pane of it) and for `endpoint: 'brain'`. */
+  paneId?: string;
+  reason: 'pane-closed' | 'pane-moved' | 'workspace-gone';
+  /**
+   * 'brain': this PC's Moa went away (Moa turned off, or its HQ is gone):
+   * only the Moa links on HQ `workspaceId` break, as `workspace-gone`.
+   */
+  endpoint?: 'brain';
+}
+
+/**
+ * Renderer -> main (`IPC.A2A_REMOTE_SNAPSHOT`): every workspace and pane of
+ * this window, exposed or not. Main diffs consecutive snapshots for gone or
+ * moved panes (`a2a.remote.local.paneGone`) and publishes the panes of
+ * exposed workspaces, with their git remote, as `a2a.remote.exposure.publish`.
+ */
+export interface A2aRemotePaneSnapshot {
+  workspaces: Array<{
+    id: string;
+    name: string;
+    panes: Array<{ paneId: string; label?: string; agent?: string; cwd?: string; gitBranch?: string }>;
+  }>;
+  /** This PC's Moa: present while Moa is on and its HQ workspace exists. */
+  brain?: { workspaceId: string; name: string };
+  /**
+   * How sure the renderer is about Moa: 'present' (brain above), 'off'
+   * (turned off, or no HQ: its links may break), 'unknown' (state not read
+   * yet, or the HQ briefly missing: keep the last known Moa for a while).
+   */
+  brainState?: 'present' | 'off' | 'unknown';
+  /** Sent once the saved session is restored: an empty tree then is real. */
+  sessionRestored?: true;
+}

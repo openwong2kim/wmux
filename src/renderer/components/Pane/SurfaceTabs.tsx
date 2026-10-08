@@ -15,7 +15,8 @@ import { findPane } from '../../../shared/paneUtils';
 import PaneDragGrip from './PaneDragGrip';
 import { FOCUS_RING } from '../focusRing';
 import { HIT_TARGET_24 } from '../hitArea';
-import { IconSplitRight, IconSplitDown, IconBrowser, IconExternalLink, IconEyeOff, IconPencil, IconGrid } from '../icons';
+import { IconSplitRight, IconSplitDown, IconBrowser, IconExternalLink, IconEyeOff, IconPencil, IconGrid, IconComputer } from '../icons';
+import A2aLinkDialog from '../Remote/A2aLinkDialog';
 import { displayPath } from '../../utils/displayPath';
 import { workspaceColorHex } from '../../../shared/workspaceColors';
 import PaneActionsMenu, { PANE_ACTIONS_MENU_WIDTH, type PaneActionItem } from './PaneActionsMenu';
@@ -636,6 +637,9 @@ export default function SurfaceTabs({
   const menuTabSurface = readOnly
     ? undefined
     : (surfaces.find((s) => s.id === menuTabId) ?? activeSurface);
+  // Cross-PC pane link: only where the daemon's a2a.remote bridge exists.
+  const [linkDialogOpen, setLinkDialogOpen] = useState(false);
+  const canLinkRemote = !readOnly && !!window.electronAPI?.a2aRemote?.linksPropose;
   const menuItems: PaneActionItem[] = useMemo(() => [
     {
       key: 'split-right',
@@ -687,6 +691,12 @@ export default function SurfaceTabs({
       icon: <IconPencil size={14} />,
       onSelect: startPaneRename,
     },
+    ...(canLinkRemote ? [{
+      key: 'link-remote-pane',
+      label: t('a2aLink.menu'),
+      icon: <IconComputer size={14} />,
+      onSelect: () => setLinkDialogOpen(true),
+    }] : []),
     {
       key: 'stash',
       label: t('pane.stash'),
@@ -724,7 +734,7 @@ export default function SurfaceTabs({
   ], [
     t, onSplitHorizontal, onSplitVertical, onAddBrowser, onAddRemote,
     onSplitHorizontalRemote, onSplitVerticalRemote, startPaneRename,
-    menuTabSurface, startRename,
+    menuTabSurface, startRename, canLinkRemote,
     stashChord, stashDisabled, stashTooltip, stashThisPane, isZoomed, toggleZoom,
     layoutTemplates,
   ]);
@@ -1186,6 +1196,9 @@ export default function SurfaceTabs({
           items={menuItems}
           onClose={closeMenu}
         />
+      )}
+      {linkDialogOpen && (
+        <A2aLinkDialog local={{ kind: 'pane', workspaceId: workspace.id, paneId }} onClose={() => setLinkDialogOpen(false)} />
       )}
     </div>
   );

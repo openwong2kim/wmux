@@ -12,9 +12,10 @@ import type { MoaPendingDecision } from '../../../../shared/moa';
 import type { MoaDecision } from '../../../../shared/moaDecision';
 import { MoaDockContext, MoaWaitingOnYou, answeredElsewhere, useDelegatedApprovals, type DelegatedApprovalsApi, type ResolveDecision } from './MoaWaitingOnYou';
 import { MoaTaskCards } from './MoaTaskCards';
-import { defaultReceiptsApi, selectTaskCards, useWorkLinks, type MoaHandoffReceiptsApi, type WorkLinksApi } from './useMoaPanelData';
+import { defaultReceiptsApi, defaultRemoteTasksApi, selectTaskCards, useWorkLinks, type MoaHandoffReceiptsApi, type MoaRemoteTasksApi, type WorkLinksApi } from './useMoaPanelData';
 import { defaultHandoffResolve, type HandoffResolve } from './MoaHandoffCard';
 import { MoaHandoffReceipts } from './MoaHandoffReceipts';
+import { MoaRemoteTasks } from './MoaRemoteTasks';
 import { MoaDelegateActivity, MoaDelegateTicketRow } from './MoaDelegateCards';
 import { defaultDelegateApi, selectAutoRules, selectDeliveryRows, selectEffectRows, selectOpenTickets, selectUnreceipted, selectWaitingWhileOff, useMoaDelegate, type MoaDelegateApi } from './moaDelegateData';
 import { focusNotificationTarget, focusPaneByPtyId, type FocusTargetState } from '../../../hooks/useNotificationListener';
@@ -46,6 +47,7 @@ export function MoaPanelTop({
   receiptsApi,
   onOpenPane = openMoaPane,
   approvalsApi,
+  remoteTasksApi = defaultRemoteTasksApi(),
   delegateApi,
   t,
 }: {
@@ -59,6 +61,8 @@ export function MoaPanelTop({
   onOpenPane?: (workspaceId: string, paneId?: string) => void;
   /** Injected in tests; defaults to the preload. */
   approvalsApi?: DelegatedApprovalsApi;
+  /** Work exchanged with other PCs' Moa; defaults to the preload. */
+  remoteTasksApi?: MoaRemoteTasksApi;
   /** Moa's delegate (moa_ask tickets); injected in tests, defaults to the preload. */
   delegateApi?: MoaDelegateApi;
   t: T;
@@ -163,6 +167,7 @@ export function MoaPanelTop({
       )}
       <MoaTaskCards links={cards} pendingDecisions={decisions} workspaceName={workspaceName}
         conversationTaskId={conversationTaskId} onOpenConversation={openConversation} onOpenPane={onOpenPane} t={t} />
+      <MoaRemoteTasks api={remoteTasksApi} t={t} />
     </div>
   );
 }

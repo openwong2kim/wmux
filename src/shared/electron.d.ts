@@ -35,6 +35,27 @@ import type {
   LanLinkPeersListResult,
 } from './lanlink';
 import type {
+  A2aRemoteExposureGetResult,
+  A2aRemoteHeldListResult,
+  A2aRemoteHeldRejectResult,
+  A2aRemoteHeldRetryResult,
+  A2aRemoteHostStatus,
+  A2aRemoteHostsStatusResult,
+  A2aRemoteHostsExposedResult,
+  A2aRemoteLinkEvent,
+  A2aRemoteLinkProposeParams,
+  A2aRemoteLinkResult,
+  A2aRemoteLinksListResult,
+  A2aRemotePaneSnapshot,
+  A2aRemoteHostsListResult,
+  A2aRemoteHostsRemoveResult,
+  A2aRemoteJoinResult,
+  A2aRemotePairBeginResult,
+  A2aRemotePairStatus,
+  A2aRemotePeersListResult,
+  A2aRemoteStatus,
+} from './rpc';
+import type {
   PairFlow,
   WebDeviceListError,
   WebDeviceRevokeResult,
@@ -183,6 +204,53 @@ declare global {
         peersList: () => Promise<LanLinkPeersListResult>;
         /** PR-5 — revoke a peer (live destroy of its AEAD connection). */
         peersRemove: (peerUuid: string) => Promise<{ ok: true }>;
+      };
+      /** Cross-host A2A control plane (Settings → LAN). Daemon mode only. */
+      a2aRemote?: {
+        status: () => Promise<A2aRemoteStatus>;
+        configure: (patch: { enabled?: boolean; port?: number }) => Promise<A2aRemoteStatus>;
+        /** Open a one-shot invite (10 minutes, 5 attempts). Fails while the listener is down. */
+        pairBegin: () => Promise<A2aRemotePairBeginResult>;
+        pairCancel: () => Promise<{ ok: true }>;
+        pairStatus: () => Promise<A2aRemotePairStatus>;
+        /** Pair with another PC from its pasted invite. Never rejects for a pairing failure. */
+        join: (invite: string) => Promise<A2aRemoteJoinResult>;
+        /** PCs this PC joined. */
+        hostsList: () => Promise<A2aRemoteHostsListResult>;
+        /** Removes here and tells that PC (best effort); `remoteRevoked` says whether it confirmed. */
+        hostsRemove: (hostId: string) => Promise<A2aRemoteHostsRemoveResult>;
+        /** PCs that joined this PC. */
+        peersList: () => Promise<A2aRemotePeersListResult>;
+        peersRevoke: (peerId: string) => Promise<{ ok: boolean }>;
+        /** This window's whole pane tree; main diffs it and publishes the exposed part. */
+        snapshot: (snapshot: A2aRemotePaneSnapshot) => Promise<{ ok: boolean }>;
+        exposureGet: (hostId: string) => Promise<A2aRemoteExposureGetResult>;
+        /**
+         * Always an explicit pane list per workspace; a workspace without one
+         * exposes no pane. `brain`: this PC's Moa is visible to that PC.
+         */
+        exposureSet: (hostId: string, workspaceIds: string[], paneIds: Record<string, string[]>, brain: boolean) => Promise<A2aRemoteExposureGetResult>;
+        /** The panes a PC this PC joined shows to it. */
+        hostsExposed: (hostId: string) => Promise<A2aRemoteHostsExposedResult>;
+        linksList: () => Promise<A2aRemoteLinksListResult>;
+        linksPropose: (params: A2aRemoteLinkProposeParams) => Promise<A2aRemoteLinkResult>;
+        linksAccept: (linkId: string) => Promise<A2aRemoteLinkResult>;
+        linksReject: (linkId: string) => Promise<A2aRemoteLinkResult>;
+        linksRevoke: (linkId: string) => Promise<A2aRemoteLinkResult>;
+        /** Re-read a link's state from the PC it was proposed to. */
+        linksRefresh: (linkId: string) => Promise<A2aRemoteLinkResult>;
+        /** Daemon link nudges (a proposal arrived, a link changed). Returns unsubscribe. */
+        onLinkEvent: (callback: (event: A2aRemoteLinkEvent) => void) => () => void;
+        /** Connection state of every paired PC. */
+        hostsStatus: () => Promise<A2aRemoteHostsStatusResult>;
+        /** A paired PC's connection changed. Returns unsubscribe. */
+        onHostStatus: (callback: (status: A2aRemoteHostStatus) => void) => () => void;
+        /** Remote work held for a person (pane gone, another agent in it). */
+        heldList: () => Promise<A2aRemoteHeldListResult>;
+        /** Deliver a held task to its pane as the pane is now. */
+        heldRetry: (taskId: string) => Promise<A2aRemoteHeldRetryResult>;
+        /** Reject a held task; the other PC is told. */
+        heldReject: (taskId: string) => Promise<A2aRemoteHeldRejectResult>;
       };
       /**
        * wmux web — titlebar toggle for the daemon-hosted browser/PWA terminal

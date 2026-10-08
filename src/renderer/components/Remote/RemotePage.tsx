@@ -14,6 +14,8 @@ import type { RemoteHostPublic, RemoteHostStatus } from '../../../shared/remoteH
 import type { LanLinkPeerSummary } from '../../../shared/lanlink';
 import { buildRemoteEntries, serverReach, type RemoteEntry, type ServerReach } from './remoteEntries';
 import { selectRemoteInbox } from '../../stores/selectors/remoteInbox';
+import A2aLinksPanel from './A2aLinksPanel';
+import A2aDeliveryPanel from './A2aDeliveryPanel';
 
 /** How often the page re-reads the roster, the hosts and the server state. */
 export const REMOTE_PAGE_POLL_MS = 10_000;
@@ -261,6 +263,10 @@ export default function RemotePage() {
           ) : (
             <ul className="wmux-remote-grid">{connected.map(card)}</ul>
           )}
+          {/* Cross-PC pane links: requests to accept and the links themselves. */}
+          <A2aLinksPanel />
+          {/* Cross-PC delivery: each PC's connection, and remote work held for a person. */}
+          <A2aDeliveryPanel />
         </section>
 
         <aside className="wmux-remote-machine" aria-labelledby="remote-machine-title" data-remote-machine>

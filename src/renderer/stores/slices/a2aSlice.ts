@@ -8,6 +8,7 @@ import { isChannelMentionTask } from '../../hooks/channelMentionFlush';
 import { recordApprovalRemoval } from './approvalInboxSlice';
 import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import { isReceiverPaneGone } from '../../../shared/a2aOrphanedTask';
+import type { A2aRemoteTaskMarkerV1 } from '../../../shared/a2aRemote';
 
 const GC_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
 const GC_MAX_TASKS = 500;
@@ -116,7 +117,13 @@ export interface A2aSlice {
     to: { workspaceId: string; name: string; paneId?: string; surfaceId?: string; ptyId?: string };
     history: Message[];
     artifacts: Artifact[];
+    /** Cross-host A2A: stored as `metadata.remote` (main's bridge only). */
+    remote?: A2aRemoteTaskMarkerV1;
   }) => string;
+  /** Cross-host A2A: the remote task was written to its pinned pane. */
+  markRemoteTaskDelivered: (taskId: string) => void;
+  /** Cross-host A2A: a person approved the pinned pane's current occupant. */
+  setRemoteTaskTarget: (taskId: string, ptyId: string, surfaceId: string) => void;
   addTaskMessage: (taskId: string, message: Message) => void;
   // P2 (S-C2): `callerAddr` is the caller's verified pane. When present AND the
   // task is pinned to a specific receiver pane (`to.paneId`), the status update
@@ -246,11 +253,25 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
           to: input.to,
           createdAt: now,
           updatedAt: now,
+          ...(input.remote ? { remote: { ...input.remote } } : {}),
         },
       };
     });
     return id;
   },
+
+  setRemoteTaskTarget: (taskId, ptyId, surfaceId) => set((state: StoreState) => {
+    const task = state.a2aTasks[taskId];
+    if (!task?.metadata.remote) return;
+    task.metadata.to = { ...task.metadata.to, ptyId, surfaceId };
+  }),
+
+  markRemoteTaskDelivered: (taskId) => set((state: StoreState) => {
+    const marker = state.a2aTasks[taskId]?.metadata.remote as A2aRemoteTaskMarkerV1 | undefined;
+    if (!marker) return;
+    marker.delivered = true;
+    delete marker.held;
+  }),
 
   addTaskMessage: (taskId, message) => set((state: StoreState) => {
     const task = state.a2aTasks[taskId];

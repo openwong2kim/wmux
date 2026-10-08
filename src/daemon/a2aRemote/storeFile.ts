@@ -155,6 +155,21 @@ export function sanitizeName(name: unknown, fallback: string): string {
   return cleaned.length > NAME_MAX ? cleaned.slice(0, NAME_MAX) : cleaned;
 }
 
+/** Max length of a repo key (`host/owner/repo`) taken from a remote host. */
+export const REPO_KEY_MAX = 256;
+
+/**
+ * A display-only repo key from remote input: trimmed, no control characters
+ * or whitespace, bounded. Anything else is dropped ('').
+ */
+export function sanitizeRepoKey(v: unknown): string {
+  if (typeof v !== 'string') return '';
+  const key = v.trim();
+  // eslint-disable-next-line no-control-regex -- matching control characters is the point
+  if (!key || key.length > REPO_KEY_MAX || /[\u0000-\u001f\u007f\s]/.test(key)) return '';
+  return key;
+}
+
 export function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }

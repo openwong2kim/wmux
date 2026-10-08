@@ -1,3 +1,6 @@
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { z } from 'zod';
 import { toolInputSchema } from '../../toolCatalog';
@@ -21,6 +24,7 @@ import type { CollectedTool } from '../../playwright/toolCollector';
 import { REPL_RUNNER_SOURCE, buildRunnerBootstrap } from '../replRunnerSource';
 import { DEFAULT_SESSION_NAME, isValidSessionName } from '../replRegistry';
 import { truncateText } from '../truncate';
+import { toAgentPath } from '../../wslPaths';
 
 describe('repl tool catalog', () => {
   const catalog = createReplToolCatalog();
@@ -308,4 +312,39 @@ describe('repl_run cwd for a WSL caller', () => {
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toContain('cwd does not exist: /mnt/c/wmux-no-such-dir');
   });
+
+  // A WSL caller can create `alias.` next to `alias` on a drive mount. Node's
+  // stat (through `\\?\`) finds `alias.`, but CreateProcess starts the
+  // runtime in `alias` — measured on NTFS. Refused for any caller.
+  it.runIf(process.platform === 'win32')(
+    'refuses a cwd whose name ends in a dot or space, in the spelling the caller used',
+    async () => {
+      const base = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-repl-alias-'));
+      const verbatim = (p: string) => `\\\\?\\${p}`;
+      const dotted = path.join(base, 'alias.');
+      fs.mkdirSync(path.join(base, 'alias'));
+      fs.mkdirSync(verbatim(dotted));
+      try {
+        const run = createReplToolCatalog()[0];
+        type Res = { content: { type: string; text: string }[]; isError?: boolean };
+
+        const fromWindows = (await run.invoke({ code: '1', session: 'alias-win', cwd: dotted }, {} as never)) as Res;
+        expect(fromWindows.isError).toBe(true);
+        expect(fromWindows.content[0].text).toContain('that Windows reads as a different directory');
+
+        process.env.WMUX_WSL_DISTRO = 'Ubuntu';
+        process.env.WMUX_WSL_MOUNT = '/mnt/c/';
+        const agentCwd = toAgentPath(dotted);
+        expect(agentCwd.startsWith('/mnt/')).toBe(true);
+        const fromWsl = (await run.invoke({ code: '1', session: 'alias-wsl', cwd: agentCwd }, {} as never)) as Res;
+        expect(fromWsl.isError).toBe(true);
+        expect(fromWsl.content[0].text).toContain(`"alias.") that Windows reads as a different directory`);
+        expect(fromWsl.content[0].text).toContain(agentCwd);
+      } finally {
+        fs.rmdirSync(verbatim(dotted));
+        fs.rmdirSync(path.join(base, 'alias'));
+        fs.rmdirSync(base);
+      }
+    },
+  );
 });

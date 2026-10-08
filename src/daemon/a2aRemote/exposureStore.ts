@@ -71,7 +71,7 @@ export class ExposureStore {
    * `workspaceIds` are dropped (they could never match). An empty pane list
    * means "no pane of that workspace", NOT "every pane".
    */
-  set(hostId: HostId, input: { workspaceIds: string[]; paneIds?: Record<string, string[]> }): A2aExposureV1 {
+  set(hostId: HostId, input: { workspaceIds: string[]; paneIds?: Record<string, string[]>; brain?: boolean }): A2aExposureV1 {
     this.assertWritable();
     if (!isHostId(hostId)) throw new Error('exposure: invalid hostId');
     const workspaceIds = uniqueStrings(input.workspaceIds);
@@ -92,6 +92,8 @@ export class ExposureStore {
       }
       rec.paneIds = paneIds;
     }
+    if (input.brain !== undefined && typeof input.brain !== 'boolean') throw new Error('exposure: brain must be boolean');
+    if (input.brain === true) rec.brain = true;
 
     const previous = this.exposures.get(hostId);
     this.exposures.set(hostId, rec);
@@ -124,6 +126,11 @@ export class ExposureStore {
     if (!rec || !rec.workspaceIds.includes(workspaceId)) return false;
     if (!rec.paneIds || !Object.hasOwn(rec.paneIds, workspaceId)) return true;
     return rec.paneIds[workspaceId].includes(paneId);
+  }
+
+  /** Is this host's Moa visible to `hostId`? Default false. */
+  isBrainExposed(hostId: HostId): boolean {
+    return this.exposures.get(hostId)?.brain === true;
   }
 
   /** The peer for `hostId` was revoked: drop everything exposed to it. Entry point of the revoke cascade. */
@@ -217,6 +224,10 @@ function coerceFile(raw: unknown): A2aExposureV1[] | null {
         paneIds[ws] = list;
       }
       rec.paneIds = paneIds;
+    }
+    if (r['brain'] !== undefined) {
+      if (typeof r['brain'] !== 'boolean') return null;
+      if (r['brain']) rec.brain = true;
     }
     seen.add(rec.hostId);
     out.push(rec);

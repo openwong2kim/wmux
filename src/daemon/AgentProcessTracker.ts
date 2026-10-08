@@ -51,7 +51,7 @@ import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { AGENT_SLUG_SET, type AgentSlug } from '../shared/agentIdentity';
+import { AGENT_ROWS, AGENT_SLUG_SET, type AgentSlug } from '../shared/agentIdentity';
 import type { WslAgentLocation, WslReportedAgent, WslWatchedAgent } from './wslAgentProcess';
 
 const execFileAsync = promisify(execFile);
@@ -86,26 +86,22 @@ const RUNTIME_STEMS: ReadonlySet<string> = new Set(['node', 'bun', 'deno', 'pyth
  *  (`npx -y gemini`, `python -m aider`). */
 const RUNNER_STEMS: ReadonlySet<string> = new Set(['npx', 'npx-cli', 'bunx', 'yarn']);
 
-/** Launcher-package spellings → slug. Keys are npm package names, values are
- *  table slugs — the aliases belong here (they are launcher trivia), not in
- *  agentIdentity.ts. */
-const ALIAS_TO_SLUG: ReadonlyMap<string, AgentSlug> = new Map([
-  ['claude-code', 'claude'],
-  ['@anthropic-ai/claude-code', 'claude'],
-  ['gemini-cli', 'gemini'],
-  ['@google/gemini-cli', 'gemini'],
-  // The Kiro integration ships a `kiro-cli` executable (see KNOWN_AGENT_STEMS
-  // in orchestratorRole.ts); its slug in the identity table is `kiro`.
-  ['kiro-cli', 'kiro'],
-]);
+/** Launcher spellings → slug: every npm package name and native executable
+ *  name a registry row declares under `process` (agentIdentity.ts). The
+ *  Kiro integration ships a `kiro-cli` executable; its slug is `kiro`. */
+const ALIAS_TO_SLUG: ReadonlyMap<string, AgentSlug> = new Map(
+  AGENT_ROWS.flatMap((row) =>
+    [...(row.process?.packages ?? []), ...(row.process?.executables ?? [])].map((name) => [name, row.slug] as const),
+  ),
+);
 
 /** Native executable stems whose binary name differs from the slug — the
  *  selectAgentProcess image-stem check consults this alongside the slug set
  *  (a `kiro-cli` process IS the kiro agent even though `kiro-cli` is not a
- *  slug). */
-const NATIVE_STEM_TO_SLUG: ReadonlyMap<string, AgentSlug> = new Map([
-  ['kiro-cli', 'kiro'],
-]);
+ *  slug). The registry rows' `process.executables`. */
+const NATIVE_STEM_TO_SLUG: ReadonlyMap<string, AgentSlug> = new Map(
+  AGENT_ROWS.flatMap((row) => (row.process?.executables ?? []).map((name) => [name, row.slug] as const)),
+);
 
 /** How long an unattributable/failed probe keeps `arm()` from re-enumerating
  *  (#919 panel: without this, a chatty banner re-runs `ps` per event). */

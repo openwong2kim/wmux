@@ -40,6 +40,7 @@ import { registerTokenUsageQuotaHandlers } from './handlers/tokenUsageQuota.hand
 import { registerTokenUsageSurfaceHandlers } from './handlers/tokenUsageSurface.handler';
 import { registerTokenUsageProfilesHandlers } from './handlers/tokenUsageProfiles.handler';
 import { registerLanLinkHandlers } from './handlers/lanlink.handler';
+import { registerA2aRemoteHandlers } from './handlers/a2aRemote.handler';
 import { registerPaneResourcesHandlers } from './handlers/paneResources.handler';
 import { registerChatHandlers } from './handlers/chat.handler';
 import { registerChatV2Handlers } from './handlers/chatv2.handler';
@@ -214,6 +215,8 @@ export function registerAllHandlers(
   // the daemon). Without a DaemonClient there is no control pipe to forward to, so
   // the handlers stay unregistered and the Settings section hides itself.
   const cleanupLanLink = daemonClient ? registerLanLinkHandlers(daemonClient) : null;
+  // Cross-host A2A control plane — daemon-mode only, same reason as LanLink.
+  const cleanupA2aRemote = daemonClient ? registerA2aRemoteHandlers(daemonClient) : null;
 
   // TASK-6 Fleet View resource attribution — daemon-mode only (the shell PIDs
   // live in the daemon session list). Renderer polls this ONLY while Fleet View
@@ -443,6 +446,8 @@ export function registerAllHandlers(
     const obj = input as Record<string, unknown>;
     const type = obj['type'];
     if (typeof type !== 'string' || !EVENT_TYPE_SET.has(type as WmuxEventType)) return;
+    // Main-only: the event that wakes Moa for another PC's work.
+    if (type === 'a2a.received') return;
 
     // a2a.task is the access-control anchor: `from`/`to` are the dual-party
     // scoping key (events.rpc.ts), so this type gets a dedicated, ALLOW-LISTED
@@ -537,6 +542,7 @@ export function registerAllHandlers(
     cleanupTokenUsageSurface();
     cleanupTokenUsageProfiles();
     if (cleanupLanLink) cleanupLanLink();
+    if (cleanupA2aRemote) cleanupA2aRemote();
     if (cleanupPaneResources) cleanupPaneResources();
     cleanupWeb();
     cleanupAutomation();
