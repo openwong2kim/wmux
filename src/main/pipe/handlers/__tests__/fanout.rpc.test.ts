@@ -40,6 +40,7 @@ import type { RpcRouter } from '../../RpcRouter';
 import { FanOutGuards } from '../../../worktask/fanoutGuards';
 import type { FanoutPreset } from '../../../../shared/fanoutPreset';
 import type { DaemonClient } from '../../../DaemonClient';
+import { validateFanoutTaskGraph } from '../../../../shared/fanoutTaskGraph';
 
 const CALLER_WS = 'ws-caller';
 // Resolved to NATIVE form. The handler runs the caller's cwd through
@@ -459,6 +460,27 @@ describe('files and dependsOn travel with the tasks', () => {
     expect(h.request().files).toEqual([['src/a'], ['src/b/**']]);
     expect(h.request().dependsOn).toEqual([[], [0]]);
     expect(h.preview()).toContain('[files: src/b/**] [after: task 1]');
+  });
+
+  it('forwards only the fields the caller sent, so the service accepts what the handler accepted (#1919)', async () => {
+    // dependsOn without files: the handler validated it and answered
+    // `accepted`, then forwarded the normalized `files: [[], []]`, which the
+    // service's own validation refused — reported only on a later poll.
+    const h = setup();
+    await h.call(goodParams({ idempotencyKey: 'k-deps-only', titles: ['a', 'b'], dependsOn: [[], [0]] }));
+    await h.flush();
+    const deps = h.request();
+    expect(deps.files).toBeUndefined();
+    expect(deps.dependsOn).toEqual([[], [0]]);
+    expect(validateFanoutTaskGraph(deps.files, deps.dependsOn, deps.titles.length)).not.toHaveProperty('error');
+
+    const h2 = setup();
+    await h2.call(goodParams({ idempotencyKey: 'k-files-only', titles: ['a', 'b'], files: [['src/a'], ['src/b']] }));
+    await h2.flush();
+    const files = h2.request();
+    expect(files.files).toEqual([['src/a'], ['src/b']]);
+    expect(files.dependsOn).toBeUndefined();
+    expect(validateFanoutTaskGraph(files.files, files.dependsOn, files.titles.length)).not.toHaveProperty('error');
   });
 
   it('refuses overlapping scopes and cycles before asking anyone', async () => {

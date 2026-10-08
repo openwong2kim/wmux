@@ -704,6 +704,23 @@ export class WorkTaskService {
     return false;
   }
 
+  /**
+   * #1920 — is `workspaceId` the materialized task workspace (paneGroupId) of
+   * an OPEN task whose mission channel is `channelId`? The channel join gate
+   * reads this to let a fan-out worker whose invite was lost seat itself in
+   * its own mission channel. Projection data only — the paneGroupId was
+   * written by the task owner's task.mission.update, never by the worker.
+   */
+  isMissionTaskSeat(channelId: string, workspaceId: string): boolean {
+    if (!channelId || !workspaceId) return false;
+    for (const task of this.tasks.values()) {
+      if (task.status === 'open' && task.missionChannelId === channelId && task.paneGroupId === workspaceId) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /** 관측용(테스트/디버그): 현재 projection 태스크 수. */
   get taskCount(): number {
     return this.tasks.size;

@@ -99,7 +99,8 @@ export function notifyFanoutCaller(
 
 /**
  * Tell the caller when a WORKER moves its own row to review_requested or
- * failed while the owner has no brain. Returns the unsubscribe.
+ * failed, or wmux moves it to input_required, while the owner has no brain.
+ * Returns the unsubscribe.
  */
 export function installFanoutCallerLedgerNotify(
   hasBrain: (ownerWorkspaceId: string) => boolean,
@@ -107,7 +108,13 @@ export function installFanoutCallerLedgerNotify(
   instance?: TaskLedger,
 ): () => void {
   return (instance ?? getTaskLedger()).onTransition((t) => {
-    if (t.by.kind !== 'worker' || (t.to !== 'failed' && t.to !== 'review_requested')) return;
+    // A worker's own failed / review_requested, or wmux itself moving the row
+    // to input_required: the worker's agent never started (#1919) or sits on a
+    // first-run screen. Either way nobody is working the task until someone
+    // looks, and a worker that never started will never send a Stop.
+    const byWorker = t.by.kind === 'worker' && (t.to === 'failed' || t.to === 'review_requested');
+    const bySystem = t.by.kind === 'system' && t.to === 'input_required';
+    if (!byWorker && !bySystem) return;
     try {
       if (hasBrain(t.entry.ownerWorkspaceId)) return;
       notify(t.entry.ownerWorkspaceId, t.entry.taskWorkspaceId, t.entry.id, `ledger.${t.to}`, t.entry.rev);

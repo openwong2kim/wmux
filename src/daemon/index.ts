@@ -7597,6 +7597,11 @@ async function main(): Promise<void> {
     // this service, so the closure reads the binding at sweep time and treats
     // "not built yet / log unavailable" as "nothing anchored".
     isChannelRetained: (channelId) => workTaskService?.hasOpenTaskForChannel(channelId) === true,
+    // #1920 — a fan-out worker may join its own mission channel. Late-bound
+    // for the same reason as the anchor above; before WorkTaskService is up
+    // (or on a legacy boot) nobody holds such a seat.
+    isMissionTaskSeat: (channelId, workspaceId) =>
+      workTaskService?.isMissionTaskSeat(channelId, workspaceId) === true,
     emit: (event) => {
       // Wrap the ChannelMessageEvent in the canonical DaemonEvent envelope
       // before broadcasting on the control pipe. The helper lives in

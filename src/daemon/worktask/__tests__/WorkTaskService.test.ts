@@ -427,6 +427,31 @@ describe('hasOpenTaskForChannel — keeps the sweep off the channel of a live mi
   });
 });
 
+describe('isMissionTaskSeat (#1920) — the mission channel seat a fan-out worker may take', () => {
+  it('names only the materialized task workspace of an open mission, and only for its own channel', async () => {
+    const writer = makeFakeWriter();
+    const channelSvc = newChannelService(writer);
+    const svc = newWorkTaskService(newLog(), channelSvc as unknown as WorkTaskChannelPort);
+    await svc.boot();
+
+    const started = await svc.startMission({ title: 'Seat me', verifiedWorkspaceId: 'ws-owner', memberId: 'lead' });
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    // Not materialized yet: nobody holds the seat.
+    expect(svc.isMissionTaskSeat(started.channelId, 'ws-task')).toBe(false);
+
+    const updated = await svc.updateMission({ taskId: started.taskId, verifiedWorkspaceId: 'ws-owner', paneGroupId: 'ws-task' });
+    expect(updated.ok).toBe(true);
+    expect(svc.isMissionTaskSeat(started.channelId, 'ws-task')).toBe(true);
+    expect(svc.isMissionTaskSeat(started.channelId, 'ws-other')).toBe(false);
+    expect(svc.isMissionTaskSeat('chan-unrelated', 'ws-task')).toBe(false);
+    expect(svc.isMissionTaskSeat('', '')).toBe(false);
+
+    await svc.closeMission({ taskId: started.taskId, verifiedWorkspaceId: 'ws-owner' });
+    expect(svc.isMissionTaskSeat(started.channelId, 'ws-task')).toBe(false);
+  });
+});
+
 // ═══ §3 멱등 (start 재시도 · 재close) ═══════════════════════════════════
 
 describe('§3 멱등', () => {

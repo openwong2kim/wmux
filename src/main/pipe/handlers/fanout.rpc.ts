@@ -1043,7 +1043,13 @@ export function registerFanOutRpc(
       // Who asked, for each task's lineage stamp — resolved above, the same
       // origin for every task. An unresolvable pane records no requester.
       ...(callerOrigin ? { caller: callerOrigin } : {}),
-      ...(hasGraph ? { files: graph.files, dependsOn: graph.dependsOn } : {}),
+      // Each field only when the caller sent it (#1919). The validated graph
+      // fills an absent one with empty lists, and the service re-validates
+      // what it is handed: `files: [[], …]` from a dependsOn-only call failed
+      // there ("files[0] must be a non-empty array") AFTER this handler had
+      // already answered `accepted`.
+      ...(params['files'] !== undefined ? { files: graph.files } : {}),
+      ...(params['dependsOn'] !== undefined ? { dependsOn: graph.dependsOn } : {}),
     };
     const presetName = selection.kind === 'preset' ? selection.preset.name : undefined;
 

@@ -10,6 +10,8 @@ import {
   type FanoutCallerEvent,
 } from '../fanoutCallerNotify';
 import type { FanoutOrigin } from '../../../shared/fanoutOrigin';
+import { buildFanoutCallerNudge, isFanoutCallerNudge, moreSevereKind } from '../../../shared/fanoutCallerNudge';
+import { isCallerNudge } from '../../../shared/prOwnerNudge';
 
 const PANE: FanoutOrigin = { kind: 'pane', paneId: 'pane-a', surfaceId: 'surf-a', label: 'w1 · caller' };
 
@@ -116,5 +118,33 @@ describe('installFanoutCallerLedgerNotify', () => {
     brain = false;
     await ledger.update({ id: 'wtask-1', status: 'failed', actor: { kind: 'brain', workspaceId: 'ws-parent' }, expectedRev: 3 });
     expect(calls).toEqual([]);
+  });
+
+  it('tells the caller when wmux itself moves the row to input_required (#1919: the agent never started)', async () => {
+    const calls: unknown[][] = [];
+    installFanoutCallerLedgerNotify(() => false, (...a) => { calls.push(a); }, ledger);
+    await ledger.update({
+      id: 'wtask-1',
+      status: 'input_required',
+      actor: { kind: 'system', workspaceId: 'ws-parent' },
+      expectedRev: 1,
+      summary: 'launch failed',
+    });
+    // A system move to anything else is not a caller event.
+    await ledger.update({ id: 'wtask-1', status: 'working', actor: { kind: 'system', workspaceId: 'ws-parent' }, expectedRev: 2 });
+    expect(calls).toEqual([['ws-parent', 'ws-task', 'wtask-1', 'ledger.input_required', 2]]);
+  });
+});
+
+describe('the input_required kind (#1919)', () => {
+  it('is a caller kind whose nudge line passes the shared validators', () => {
+    expect(run(STAMPED, 'ledger.input_required').sent).toHaveLength(1);
+    const line = buildFanoutCallerNudge([{ taskId: 'wtask-muyap1aa-evshoujp', kind: 'ledger.input_required' }]);
+    expect(line).toBe('[wmux] fan-out task evshoujp needs input — channel_mission_list');
+    expect(isFanoutCallerNudge(line)).toBe(true);
+    expect(isCallerNudge(line)).toBe(true);
+    // Ranked between a hard failure and a review request.
+    expect(moreSevereKind('ledger.input_required', 'ledger.review_requested')).toBe('ledger.input_required');
+    expect(moreSevereKind('ledger.input_required', 'ledger.failed')).toBe('ledger.failed');
   });
 });

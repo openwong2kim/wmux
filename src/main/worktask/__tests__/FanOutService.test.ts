@@ -720,6 +720,8 @@ describe('§0 E2E 부분 실패 — 2번째 worktree add 실패', () => {
       daemon: daemon.port,
       renderer: makeRendererFake().port,
       worktrees: makeWorktreesFake(),
+      // Every attempt fails here; no real waits between the retries.
+      wiringRetryDelaysMs: [0, 0],
     });
     const res = await svc.start(baseReq());
     expect(res.tasks[1].ok).toBe(false);
@@ -734,6 +736,7 @@ describe('§0 E2E 부분 실패 — 2번째 worktree add 실패', () => {
       daemon: daemon.port,
       renderer: makeRendererFake().port,
       worktrees: makeWorktreesFake(),
+      wiringRetryDelaysMs: [0, 0],
     });
     const res = await svc.start(baseReq({ titles: ['Only'] }));
     expect(res.tasks[0].ok).toBe(true);

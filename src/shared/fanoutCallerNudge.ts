@@ -6,13 +6,21 @@
 // not match the template is refused at both checks.
 
 /** What happened to a fan-out task, as told to the pane that started it. */
-export type FanoutCallerKind = 'agent.stop' | 'agent.stop_failure' | 'ledger.review_requested' | 'ledger.failed';
+export type FanoutCallerKind =
+  | 'agent.stop'
+  | 'agent.stop_failure'
+  | 'ledger.review_requested'
+  | 'ledger.failed'
+  // wmux itself moved the row to input_required: the worker's agent never
+  // started (#1919) or is frozen on a first-run screen.
+  | 'ledger.input_required';
 
 export const FANOUT_CALLER_KINDS: readonly FanoutCallerKind[] = [
   'agent.stop',
   'agent.stop_failure',
   'ledger.review_requested',
   'ledger.failed',
+  'ledger.input_required',
 ];
 
 export function isFanoutCallerKind(v: unknown): v is FanoutCallerKind {
@@ -20,7 +28,13 @@ export function isFanoutCallerKind(v: unknown): v is FanoutCallerKind {
 }
 
 /** Most severe first: a task with several pending kinds is told the first. */
-const SEVERITY: readonly FanoutCallerKind[] = ['ledger.failed', 'agent.stop_failure', 'ledger.review_requested', 'agent.stop'];
+const SEVERITY: readonly FanoutCallerKind[] = [
+  'ledger.failed',
+  'agent.stop_failure',
+  'ledger.input_required',
+  'ledger.review_requested',
+  'agent.stop',
+];
 
 export function moreSevereKind(a: FanoutCallerKind, b: FanoutCallerKind): FanoutCallerKind {
   return SEVERITY.indexOf(a) <= SEVERITY.indexOf(b) ? a : b;
@@ -29,6 +43,7 @@ export function moreSevereKind(a: FanoutCallerKind, b: FanoutCallerKind): Fanout
 const PHRASE: Record<FanoutCallerKind, string> = {
   'ledger.failed': 'failed',
   'agent.stop_failure': 'stopped on an error',
+  'ledger.input_required': 'needs input',
   'ledger.review_requested': 'ready for review',
   'agent.stop': 'updated',
 };

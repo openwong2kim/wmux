@@ -271,6 +271,15 @@ export interface ChannelServiceDeps {
    * anchored.
    */
   isChannelRetained?: (channelId: string) => boolean;
+  /**
+   * #1920 — is `workspaceId` the task workspace of the OPEN mission whose
+   * channel is `channelId`? Answered from the daemon's own WorkTask projection
+   * (the mission's materialized `paneGroupId`, written by the owner's
+   * task.mission.update), never from a caller claim. Lets a fan-out worker
+   * whose invite was lost join its own private mission channel. Absent
+   * (tests, legacy construction) = no such seat.
+   */
+  isMissionTaskSeat?: (channelId: string, workspaceId: string) => boolean;
   /** Event sink. Called once per successful post. */
   emit: ChannelServiceEmit;
   /** Time source. Defaults to `Date.now`. Override in tests for stable seq. */
@@ -586,6 +595,7 @@ export class ChannelService {
   private readonly trashTtlHours: number;
   private readonly autoTrashArchivedHours: number;
   private readonly isChannelRetained: ((channelId: string) => boolean) | undefined;
+  private readonly isMissionTaskSeat: ((channelId: string, workspaceId: string) => boolean) | undefined;
   private readonly emit: ChannelServiceEmit;
   private readonly now: () => number;
   private readonly resolvePrincipalDisplay?: (principalId: string) => string | undefined;
@@ -662,6 +672,7 @@ export class ChannelService {
       CHANNEL_AUTO_TRASH_ARCHIVED_HOURS_DEFAULT,
     );
     this.isChannelRetained = deps.isChannelRetained;
+    this.isMissionTaskSeat = deps.isMissionTaskSeat;
     this.emit = deps.emit;
     this.now = deps.now ?? (() => Date.now());
     this.resolvePrincipalDisplay = deps.resolvePrincipalDisplay;
@@ -1559,7 +1570,18 @@ export class ChannelService {
       // with get()/getMembers()/getMessages(), which hide private existence from
       // non-members. An existing member of a private channel passes this gate
       // (they're visible) and falls through to the precise DUPLICATE_MEMBER below.
-      if (!this.isVisibleTo(channel, params.verifiedWorkspaceId)) {
+      //
+      // #1920 — one more seat: the task workspace of the open mission this
+      // channel belongs to. Fan-out invites it right after materialization;
+      // when that invite is lost, the worker could neither post (NOT_A_MEMBER)
+      // nor join (this gate), and needed a human to add it. The answer comes
+      // from the daemon's WorkTask projection (the mission's paneGroupId), so a
+      // caller cannot claim it. Only this gate is widened: archived and
+      // duplicate checks below still apply.
+      if (
+        !this.isVisibleTo(channel, params.verifiedWorkspaceId) &&
+        this.isMissionTaskSeat?.(channel.id, params.verifiedWorkspaceId) !== true
+      ) {
         return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: `No such channel: ${params.channelId}` } };
       }
       // A10: reject join on a read-only (archived) channel — mirrors invite()'s
