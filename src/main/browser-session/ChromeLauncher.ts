@@ -1037,7 +1037,7 @@ export class ChromeLauncherRegistry {
       defaultDir: string;
       /** Named profiles live under <profilesDir>/<name>. */
       profilesDir: string;
-      store: Pick<ChromeProfileStore, 'profileFor'>;
+      store: Pick<ChromeProfileStore, 'profileFor' | 'hasPaneBindings' | 'isPaneBound'>;
       /** Persistence for stable surface ids. Optional — omitted keeps the
        *  pre-store in-memory behavior (older wirings, unit tests). */
       surfaceStore?: ChromeSurfaceStore;
@@ -1074,6 +1074,28 @@ export class ChromeLauncherRegistry {
     return this.forProfile(this.opts.store.profileFor(workspaceId));
   }
 
+  /** The profile a call runs in: the pane's own binding (same workspace only),
+   *  else the workspace's, else 'default'. Pure read — creates nothing. */
+  profileFor(workspaceId: string | undefined, paneId?: string): string {
+    return this.opts.store.profileFor(workspaceId, paneId);
+  }
+
+  /** Whether resolving the profile needs to know the calling pane at all. */
+  hasPaneBindings(workspaceId: string | undefined): boolean {
+    return this.opts.store.hasPaneBindings(workspaceId);
+  }
+
+  /** Whether `profile` is some pane's exclusive profile. */
+  isPaneBound(profile: string): boolean {
+    return this.opts.store.isPaneBound(profile);
+  }
+
+  /** The launcher for `profile` if one was ever created, without creating it —
+   *  for paths that must never spawn Chrome (reveal, status). */
+  peekLauncher(profile: string): ChromeBackendClient | undefined {
+    return profile === LIVE_CHROME_PROFILE ? (this.live ?? undefined) : this.launchers.get(profile);
+  }
+
   /**
    * Read-only status for browser.session.status: which profile the workspace is
    * bound to and whether its instance is up. It must NEVER create a launcher or
@@ -1085,7 +1107,13 @@ export class ChromeLauncherRegistry {
   async statusForWorkspace(
     workspaceId: string | undefined,
   ): Promise<{ profile: string; running: boolean; cdpPort: number | null; liveAttach?: boolean }> {
-    const profile = this.opts.store.profileFor(workspaceId);
+    return this.statusForProfile(this.opts.store.profileFor(workspaceId));
+  }
+
+  /** `statusForWorkspace` for an already resolved profile (a pane's own). */
+  async statusForProfile(
+    profile: string,
+  ): Promise<{ profile: string; running: boolean; cdpPort: number | null; liveAttach?: boolean }> {
     if (profile === LIVE_CHROME_PROFILE) {
       // `running` here means the user's remote-debugging endpoint is LISTENING —
       // not the old "did we lazily new-up a LiveChromeClient" (an object the
@@ -1117,12 +1145,16 @@ export class ChromeLauncherRegistry {
    * browser.close checks the returned workspaceId against the caller's scope
    * before acting, so this lookup discloses ownership, it does not grant it.
    */
-  ownerOfSurface(surfaceId: string): { workspaceId?: string; client: ChromeBackendClient } | null {
-    for (const launcher of this.launchers.values()) {
+  ownerOfSurface(
+    surfaceId: string,
+  ): { workspaceId?: string; profile: string; client: ChromeBackendClient } | null {
+    for (const [profile, launcher] of this.launchers) {
       if (!launcher.hasSurface(surfaceId)) continue;
       const workspaceId =
         launcher instanceof ChromeLauncher ? launcher.recordFor(surfaceId)?.workspaceId : undefined;
-      return { ...(workspaceId !== undefined && { workspaceId }), client: launcher };
+      // The profile lets browser.close refuse a pane's exclusive Chrome to a
+      // caller in any other pane, even one in the same workspace.
+      return { ...(workspaceId !== undefined && { workspaceId }), profile, client: launcher };
     }
     return null;
   }

@@ -233,7 +233,11 @@ import { ChromeLauncherRegistry } from '../ChromeLauncher';
 
 describe('ChromeLauncherRegistry', () => {
   function makeStore(bindings: Record<string, string>) {
-    return { profileFor: (ws?: string) => (ws && bindings[ws]) || 'default' };
+    return {
+      profileFor: (ws?: string) => (ws && bindings[ws]) || 'default',
+      hasPaneBindings: () => false,
+      isPaneBound: () => false,
+    };
   }
 
   it('bound workspaces get distinct launchers with distinct dirs; unbound share default', () => {
@@ -279,8 +283,8 @@ describe('ChromeLauncherRegistry', () => {
 
     // Ownership resolves by the stable surfaceId, and reports the owning
     // workspace so browser.close can refuse a cross-workspace close.
-    expect(registry.ownerOfSurface(openedA.surfaceId)).toEqual({ workspaceId: 'ws-a', client: a });
-    expect(registry.ownerOfSurface(openedB.surfaceId)).toEqual({ workspaceId: 'ws-b', client: b });
+    expect(registry.ownerOfSurface(openedA.surfaceId)).toEqual({ workspaceId: 'ws-a', profile: 'pa', client: a });
+    expect(registry.ownerOfSurface(openedB.surfaceId)).toEqual({ workspaceId: 'ws-b', profile: 'pb', client: b });
     expect(registry.ownerOfSurface('chrome-nope')).toBeNull();
     // A raw CDP target id is not a surface handle.
     expect(registry.ownerOfSurface('tgt-a')).toBeNull();
