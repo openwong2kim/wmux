@@ -119,7 +119,7 @@ describe('Remote page', () => {
     await render();
     expect($('[data-remote-summary]')?.textContent).toBe('1 of 1 phones connected');
     expect($('[data-remote-machine]')?.textContent).toContain('MacBook');
-    expect($('[data-remote-server]')?.textContent).toBe('Phone access This computer only');
+    expect($('[data-remote-server]')?.textContent).toBe('Phone access: This computer only');
     expect($('[data-remote-a2a]')?.textContent).toBe('A2A :45660 listening');
     const phone = $('[data-remote-entry="phone"]')!;
     expect(phone.getAttribute('data-live')).toBe('true');

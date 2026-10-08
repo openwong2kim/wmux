@@ -4130,7 +4130,7 @@ export const en = {
   'remotePage.sumPhones': "{n} of {total} phones connected",
   'remotePage.sumNothing': "Nothing connected yet",
   'remotePage.thisComputer': "This computer",
-  'remotePage.phoneAccess': "Phone access {reach}",
+  'remotePage.phoneAccess': "Phone access: {reach}",
   'remotePage.a2aOff': "A2A off",
   'remotePage.a2aListening': "A2A :{port} listening",
   'remotePage.a2aError': "A2A: {error}",
