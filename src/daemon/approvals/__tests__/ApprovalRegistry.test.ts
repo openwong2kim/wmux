@@ -614,6 +614,55 @@ describe('ApprovalRegistry — supersede and expire', () => {
     expect(h.registry.list().recentlyResolved[0]?.localAnswer).toBeUndefined();
   });
 
+  // #1918: Copilot fires no hook when its permission prompt is cancelled with
+  // Esc. The pane's answered path is the only thing that knows it is over.
+  it('the pane answered at the terminal expires its question-less card', async () => {
+    const h = makeRegistry();
+    await h.registry.noteHookAwaitingInput({ sessionId: 'pty-cop', agent: 'copilot', workspaceId: 'ws-1', attribution: 'exact' });
+    await settle();
+    expect(h.registry.list().pending).toHaveLength(1);
+
+    expect(await h.registry.expireAnsweredInformational('pty-cop', 'answered-locally')).toBe(1);
+    expect(h.registry.list().pending).toHaveLength(0);
+    expect(h.registry.list().recentlyResolved[0]).toMatchObject({ sessionId: 'pty-cop', kind: 'awaiting_input', state: 'expired' });
+    expect(h.events.map((e) => e.type)).toEqual(['create', 'expire']);
+  });
+
+  it('the screen check finding the dialog gone expires a question-less card too', async () => {
+    const h = makeRegistry();
+    await h.registry.noteHookAwaitingInput({ sessionId: 'pty-cop', agent: 'copilot' });
+    await settle();
+    expect(await h.registry.expireAnsweredInformational('pty-cop', 'screen-cleared')).toBe(1);
+    expect(h.registry.list().pending).toHaveLength(0);
+  });
+
+  it('the answered sweep leaves a question card, a keyed card and other panes alone', async () => {
+    const h = makeRegistry();
+    // An AskUserQuestion picker: one key can release the pane while the
+    // picker is still up, and Claude reports the answer itself.
+    await awaitingInput(h.registry, 'pty-q');
+    // A card the agent settles by its own request id (OpenCode).
+    await h.registry.noteHookAwaitingInput({ sessionId: 'pty-oc', agent: 'opencode', requestId: 'per_1' });
+    // Options with no question text are still something to answer.
+    await h.registry.noteHookAwaitingInput({ sessionId: 'pty-opt', agent: 'claude', options: ['Yes', 'No'] });
+    // Another pane's informational card.
+    await h.registry.noteHookAwaitingInput({ sessionId: 'pty-other', agent: 'copilot' });
+    await settle();
+
+    for (const id of ['pty-q', 'pty-oc', 'pty-opt']) {
+      expect(await h.registry.expireAnsweredInformational(id, 'answered-locally'), id).toBe(0);
+    }
+    expect(h.registry.list().pending.map((r) => r.sessionId).sort()).toEqual(['pty-oc', 'pty-opt', 'pty-other', 'pty-q']);
+  });
+
+  it('the answered sweep never touches a permission gate', async () => {
+    const h = makeRegistry();
+    h.registry.noteGateAwaiting({ sessionId: 'pty-g', agent: 'claude', toolName: 'Bash', toolInputSummary: 'npm test' });
+    await settle();
+    expect(await h.registry.expireAnsweredInformational('pty-g', 'answered-locally')).toBe(0);
+    expect(h.registry.list().pending).toHaveLength(1);
+  });
+
   it('expiring a pane with nothing pending emits nothing', async () => {
     const h = makeRegistry();
     await h.registry.expireForSession('pty-a', 'pane-gone');

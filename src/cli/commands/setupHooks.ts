@@ -60,9 +60,9 @@ HOOK PROFILE (install only; mutually exclusive)
 OTHER AGENTS (opt-in; touches only that CLI's hook config)
   --agent copilot  Install, --remove or --status the shared Claude-compatible
                    hook bridge for GitHub Copilot CLI: wmux writes its own
-                   ~/.copilot/hooks/wmux.json and never edits your settings.
-                   Built from Copilot's published hook docs; not yet verified
-                   against a live Copilot CLI.
+                   ~/.copilot/hooks/wmux.json ($COPILOT_HOME/hooks/wmux.json
+                   when COPILOT_HOME is set; run it with the same COPILOT_HOME
+                   Copilot uses) and never edits your settings.
 
 GLOBAL FLAGS
   --json       Output raw JSON (useful for scripting).
@@ -1498,7 +1498,12 @@ async function handleCompatAgentHooks(
       console.log(JSON.stringify(outcome, null, 2));
     } else {
       printAssetStatus('shared hooks bridge', outcome.bridge);
-      console.log(`${flavour} hooks: ${outcome.config} (${outcome.configPath})`);
+      // Say so when an env var (COPILOT_HOME) chose the directory, so the
+      // path is not mistaken for the default one.
+      const install = flavours.COMPAT_HOOK_FLAVOURS[flavour].install;
+      const envName = install?.strategy === 'owned-file' ? install.configDirEnv : null;
+      const from = outcome.configDirSource === 'env' && envName ? `, from ${envName}` : '';
+      console.log(`${flavour} hooks: ${outcome.config} (${outcome.configPath}${from})`);
       if (outcome.verified === 'docs') {
         console.log(`${flavour} hooks follow the CLI's published docs; wmux has not yet seen this CLI load them.`);
       }

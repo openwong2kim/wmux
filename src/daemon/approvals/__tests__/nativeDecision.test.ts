@@ -544,6 +544,18 @@ describe('native decision records', () => {
     expect(h.registry.list().pending.map((r) => r.id)).toEqual([native.id]);
   });
 
+  // #1918: the pane's answered sweep is screen-inferred, so it never settles
+  // a native record, nor a card keyed to the agent's own request id.
+  it('expireAnsweredInformational leaves native records and keyed cards pending', async () => {
+    const h = makeRegistry();
+    const native = await nativePermission(h);
+    await h.registry.noteHookAwaitingInput({ sessionId: 'pty-oc', agent: 'opencode', requestId: 'per_x' });
+    expect(await h.registry.expireAnsweredInformational('pty-oc', 'answered-locally')).toBe(0);
+    expect(await h.registry.expireAnsweredInformational('pty-oc', 'screen-cleared')).toBe(0);
+    expect(h.registry.list().pending.map((r) => r.id)).toContain(native.id);
+    expect(h.registry.list().pending).toHaveLength(2);
+  });
+
   it('an adapter that lost the answer after it left reports uncertain, not unavailable', async () => {
     const h = makeRegistry();
     const record = await nativePermission(h);

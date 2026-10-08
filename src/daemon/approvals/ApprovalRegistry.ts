@@ -1085,6 +1085,40 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     });
   }
 
+  /**
+   * The pane left `awaiting_input` at the terminal (a recognised answer key,
+   * Esc included, or the screen check found the dialog gone). Expire its
+   * question-less `awaiting_input` cards: a card that only said "this pane is
+   * waiting on you" is false once the pane is not waiting.
+   *
+   * #1918: GitHub Copilot CLI fires no hook when its permission prompt is
+   * cancelled with Esc, so its card stayed pending until the next prompt and
+   * refused every automated key into the pane meanwhile.
+   *
+   * Only cards with nothing to answer. A card carrying a question, choices or
+   * a form is an AskUserQuestion picker: one key can release the pane while
+   * the picker is still up, and the agent reports what was answered
+   * (`agent.input_answered`), which a screen-inferred expiry here would beat
+   * to the record. A card keyed to the agent's own request id (OpenCode) is
+   * settled by that agent's report, and a native record by its server.
+   */
+  expireAnsweredInformational(sessionId: string, reason: 'answered-locally' | 'screen-cleared'): Promise<number> {
+    return this.mutate<number>(() => {
+      const events = this.expirePendingWhere(
+        (r) => r.sessionId === sessionId
+          && r.kind === 'awaiting_input'
+          && !isNative(r)
+          && r.hookRequestId === undefined
+          && !r.question
+          && !r.form
+          && !(r.choices && r.choices.length > 0)
+          && !(r.options && r.options.length > 0),
+        reason,
+      );
+      return { events, result: events.length };
+    });
+  }
+
   private decisionChannels(): PhoneDecisionsConfig {
     try {
       return this.deps.phoneDecisions?.() ?? { native: true, stepwise: true };

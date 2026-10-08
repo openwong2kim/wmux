@@ -45,7 +45,11 @@ map and payload fields). The bridge cannot import from `src/`.
 
 `wmux setup-hooks --agent copilot` (with `--status` or `--remove`) writes
 `~/.copilot/hooks/wmux.json`, a file wmux owns, and copies the bridge to
-`~/.wmux/hooks/`. It never edits a settings file you also edit. A file at that
+`~/.wmux/hooks/`. When `COPILOT_HOME` is set, the file goes to
+`$COPILOT_HOME/hooks/wmux.json` instead, which is where Copilot reads user hooks
+from ([hooks reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-hooks-reference)).
+Run the command with the same `COPILOT_HOME` that Copilot sees; `--status`
+names the directory it checked. It never edits a settings file you also edit. A file at that
 path that wmux did not write is reported and left alone. The plain
 `wmux setup-hooks` run does not touch Copilot.
 
@@ -65,7 +69,7 @@ not yet seen working.
 |---|---|---|---|---|---|---|
 | Claude Code (`claude`) | [hooks](https://code.claude.com/docs/en/hooks) | `~/.claude/settings.json` `hooks` | The reference set: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Notification`, `Stop`, `SessionEnd`, … | `session_id` / `cwd` | shell, or exec form (`command` + `args`, 2.1.139+) | Own bridge (`integrations/claude`); gates and approval cards need it. Not moved. |
 | Codex CLI (`codex`) | `integrations/codex/README.md` | `$CODEX_HOME/config.toml` `[[hooks.*]]` | Claude's names | `session_id` / `cwd` | `command` + `commandWindows` | Own bridge. Claude-compatible on the wire, but its bridge also does thread attribution, sub-agent reclassification and the resume spool, and hooks must be trusted inside Codex. Not moved. |
-| GitHub Copilot CLI (`copilot`) | [hooks reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-hooks-reference) | `~/.copilot/hooks/*.json`, `~/.copilot/settings.json` `hooks`, repo `.github/hooks/*.json` | camelCase (`sessionStart`, `agentStop`, …) **or** Claude's PascalCase names, which switch the payload to snake_case | `session_id` (PascalCase mode; `sessionId` in camelCase) / `cwd` | `bash` / `powershell` / `command`, or `exec` + `args` with no shell | **Shared bridge, flavour `copilot`.** Registers `SessionStart`, `UserPromptSubmit`, `Stop`, `PermissionRequest`. Opt-in installer. Docs only. |
+| GitHub Copilot CLI (`copilot`) | [hooks reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-hooks-reference) | `~/.copilot/hooks/*.json`, `~/.copilot/settings.json` `hooks`, repo `.github/hooks/*.json` | camelCase (`sessionStart`, `agentStop`, …) **or** Claude's PascalCase names, which switch the payload to snake_case | `session_id` (PascalCase mode; `sessionId` in camelCase) / `cwd` | `bash` / `powershell` / `command`, or `exec` + `args` with no shell | **Shared bridge, flavour `copilot`.** Registers `SessionStart`, `UserPromptSubmit`, `Stop`, `PermissionRequest`. Opt-in installer (honours `COPILOT_HOME`). Live, 1.0.93 on Windows. |
 | Gemini CLI (`gemini`) | [hooks](https://geminicli.com/docs/hooks/), [reference](https://geminicli.com/docs/hooks/reference/) | `~/.gemini/settings.json` `hooks` (also project and `/etc/gemini-cli/`) | Its own: `SessionStart`, `SessionEnd`, `BeforeAgent`, `AfterAgent`, `BeforeTool`, `AfterTool`, `BeforeModel`, `AfterModel`, `BeforeToolSelection`, `Notification`, `PreCompress` | `session_id` / `cwd` (also `GEMINI_SESSION_ID` in the env) | `command` only. The docs' Windows examples are PowerShell. | **Shared bridge, flavour `gemini`**: `BeforeAgent` → working, `AfterAgent` → done, `Notification` with `notification_type: "ToolPermission"` → waiting. No installer yet, because the hooks would be merged into your own `settings.json`. Docs only. |
 | Kiro CLI 2.x (`kiro`) | [2.x hooks](https://kiro.dev/docs/cli/2x-reference/#hooks) | An agent config, `~/.kiro/agents/<name>.json` | camelCase: `agentSpawn`, `userPromptSubmit`, `preToolUse`, `postToolUse`, `stop` | No session id / `cwd` | `command` (shell) | **Shared bridge, flavour `kiro`** (moved from its own bridge; same envelopes). Manual install, see `integrations/kiro/README.md`. Live, 2.15.1. |
 | Kiro, unified hooks | [hooks](https://kiro.dev/docs/hooks/) | `.kiro/hooks/*.json` | `PromptSubmit`/`promptSubmit`, `AgentStop`/`agentStop`, `SessionStart`, `SessionEnd`, `preToolUse`, … | Not documented | Not documented | Not supported yet. The stdin fields are not documented. |
@@ -80,11 +84,17 @@ Claude Code hooks are configured there, those CLIs run the **Claude** bridge,
 which reports `agent: "claude"` for a pane that is not running Claude. Not
 fixed here; it is the same class of problem as #1823.
 
+### Measured on a live CLI
+
+- Copilot CLI 1.0.93 on Windows (2026-10-08): loads `~/.copilot/hooks/wmux.json`
+  and fires PascalCase `SessionStart`, `UserPromptSubmit`, `PermissionRequest`
+  and `Stop` with `session_id` and `cwd`. `exec` finds `node` on `PATH`. With
+  `COPILOT_HOME` set it does not read `~/.copilot/hooks/`. Cancelling a
+  permission prompt with Esc fires no hook at all, so wmux clears the pane's
+  waiting card when it sees the prompt answered at the terminal (#1918).
+
 ### Unknowns to settle on a live CLI
 
-- Copilot: that `~/.copilot/hooks/wmux.json` is loaded, that PascalCase `Stop`
-  and `PermissionRequest` fire with the documented fields, and that `exec`
-  resolves `node` from `PATH` on Windows.
 - Gemini: whether hooks need an enable switch in some versions, and which
   shell runs a hook command on Windows.
 - Kiro unified hooks: the stdin payload.

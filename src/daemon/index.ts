@@ -6562,6 +6562,12 @@ function wireEvents(
       payload.reason === 'screen-cleared' ? 'screen-cleared' : 'answered-locally',
       'terminal_prompt',
     ).catch((err: unknown) => log('warn', `[approvals] answered sweep failed for ${payload.sessionId}: ${String(err)}`));
+    // A card that only said "waiting on you" is over too (#1918: Copilot sends
+    // no hook when its permission prompt is cancelled with Esc).
+    approvalRegistry?.expireAnsweredInformational(
+      payload.sessionId,
+      payload.reason === 'screen-cleared' ? 'screen-cleared' : 'answered-locally',
+    ).catch((err: unknown) => log('warn', `[approvals] answered card sweep failed for ${payload.sessionId}: ${String(err)}`));
     const managed = sessionManager.getSession(payload.sessionId);
     const screenAgent = managed?.bridge.getLastAgent() ?? null;
     const slug = (screenAgent ? agentDisplayToSlug(screenAgent) : undefined) ?? managed?.meta.lastDetectedAgent;

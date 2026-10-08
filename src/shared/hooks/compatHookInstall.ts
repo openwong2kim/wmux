@@ -28,6 +28,7 @@ import {
 } from '../lifecycleIntegrations';
 import {
   COMPAT_HOOK_FLAVOURS,
+  COMPAT_HOOK_FLAVOUR_IDS,
   SHARED_HOOKS_BRIDGE_BASENAME,
   SHARED_HOOKS_BRIDGE_MARKER,
   compatHookExecArgs,
@@ -49,15 +50,61 @@ export type CompatHookConfigState =
   /** The flavour has no wired installer. */
   | 'unsupported';
 
+/** Where a flavour's config directory came from. */
+export type CompatHookConfigDirSource =
+  /** The flavour's default directory under the user's home. */
+  | 'home'
+  /** The flavour's `configDirEnv` (Copilot's COPILOT_HOME). */
+  | 'env';
+
+export interface CompatHookConfigDir {
+  dir: string;
+  source: CompatHookConfigDirSource;
+}
+
 export interface CompatHookPaths {
   home: string;
   /** The shared bridge, copied to ~/.wmux/hooks/ so the path survives updates. */
   bridge: LifecycleAssetSpec;
+  /**
+   * Each owned-file flavour's config directory, resolved ONCE from the
+   * environment this run was given, so install, remove and status all agree
+   * on the directory the CLI itself reads.
+   */
+  configDirs: Partial<Record<CompatHookFlavourId, CompatHookConfigDir>>;
 }
 
-export function resolveCompatHookPaths(home: string, startDir: string): CompatHookPaths {
+/**
+ * The config directory a flavour's CLI reads: its env override when that is
+ * set to a non-blank path (resolved against the cwd, as the CLI started from
+ * the same shell would), else the default under `home`. Null for a flavour
+ * with no owned-file installer.
+ */
+export function resolveCompatHookConfigDir(
+  flavourId: CompatHookFlavourId,
+  home: string,
+  env: Readonly<Record<string, string | undefined>>,
+): CompatHookConfigDir | null {
+  const install = COMPAT_HOOK_FLAVOURS[flavourId].install;
+  if (!install || install.strategy !== 'owned-file') return null;
+  const override = install.configDirEnv ? env[install.configDirEnv]?.trim() : undefined;
+  if (override) return { dir: path.resolve(override), source: 'env' };
+  return { dir: path.join(home, ...install.configDir), source: 'home' };
+}
+
+export function resolveCompatHookPaths(
+  home: string,
+  startDir: string,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): CompatHookPaths {
+  const configDirs: Partial<Record<CompatHookFlavourId, CompatHookConfigDir>> = {};
+  for (const id of COMPAT_HOOK_FLAVOUR_IDS) {
+    const resolved = resolveCompatHookConfigDir(id, home, env);
+    if (resolved) configDirs[id] = resolved;
+  }
   return {
     home,
+    configDirs,
     bridge: {
       sourcePath: findLifecycleAssetSourceFrom(
         startDir,
@@ -71,10 +118,14 @@ export function resolveCompatHookPaths(home: string, startDir: string): CompatHo
 }
 
 /** Where a flavour's wmux entry lives, or null when the flavour has no wired installer. */
-export function compatHookConfigPath(flavourId: CompatHookFlavourId, home: string): string | null {
+export function compatHookConfigPath(
+  flavourId: CompatHookFlavourId,
+  paths: Pick<CompatHookPaths, 'configDirs'>,
+): string | null {
   const install = COMPAT_HOOK_FLAVOURS[flavourId].install;
-  if (!install || install.strategy !== 'owned-file') return null;
-  return path.join(home, ...install.userFile);
+  const configDir = paths.configDirs[flavourId];
+  if (!install || install.strategy !== 'owned-file' || !configDir) return null;
+  return path.join(configDir.dir, ...install.file);
 }
 
 interface ExecLeaf {
@@ -142,10 +193,10 @@ function isOwnedHookFile(parsed: unknown, flavourId: CompatHookFlavourId): boole
 
 export function inspectCompatHookConfig(
   flavourId: CompatHookFlavourId,
-  home: string,
+  paths: Pick<CompatHookPaths, 'configDirs'>,
   bridgePath: string,
 ): { state: CompatHookConfigState; configPath: string | null } {
-  const configPath = compatHookConfigPath(flavourId, home);
+  const configPath = compatHookConfigPath(flavourId, paths);
   if (!configPath) return { state: 'unsupported', configPath: null };
   let raw: string;
   try {
@@ -181,7 +232,7 @@ export interface CompatHookInstallOutcome {
  * file pointing at it. Never overwrites a foreign or malformed file.
  */
 export function installCompatHooks(flavourId: CompatHookFlavourId, paths: CompatHookPaths): CompatHookInstallOutcome {
-  const configPath = compatHookConfigPath(flavourId, paths.home);
+  const configPath = compatHookConfigPath(flavourId, paths);
   const bridgeDest = paths.bridge.destinationPath;
   const base = { flavour: flavourId, configPath };
   if (!configPath) {
@@ -189,7 +240,7 @@ export function installCompatHooks(flavourId: CompatHookFlavourId, paths: Compat
     return { ...base, ok: false, bridge, before: 'unsupported', action: 'none', error: null };
   }
   const bridge = installLifecycleAsset(paths.bridge);
-  const { state: before } = inspectCompatHookConfig(flavourId, paths.home, bridgeDest);
+  const { state: before } = inspectCompatHookConfig(flavourId, paths, bridgeDest);
   if (bridge.state !== 'current') {
     // A config pointing at a bridge that is not there would spawn `node` on a
     // missing file for every event. Write nothing.
@@ -221,7 +272,7 @@ export interface CompatHookRemoveOutcome {
  * place. The shared bridge copy stays: other flavours may run it.
  */
 export function removeCompatHooks(flavourId: CompatHookFlavourId, paths: CompatHookPaths): CompatHookRemoveOutcome {
-  const { state: before, configPath } = inspectCompatHookConfig(flavourId, paths.home, paths.bridge.destinationPath);
+  const { state: before, configPath } = inspectCompatHookConfig(flavourId, paths, paths.bridge.destinationPath);
   const base = { flavour: flavourId, configPath, before };
   if (before !== 'current' && before !== 'stale') {
     return { ...base, ok: before !== 'unsupported', removed: false, error: null };
@@ -239,16 +290,20 @@ export interface CompatHookStatus {
   verified: 'live' | 'docs';
   bridge: LifecycleAssetStatus;
   configPath: string | null;
+  /** Whether `configPath` came from the CLI's env override (COPILOT_HOME) or the
+   *  default under the home directory. Null when the flavour has no installer. */
+  configDirSource: CompatHookConfigDirSource | null;
   config: CompatHookConfigState;
 }
 
 export function statusCompatHooks(flavourId: CompatHookFlavourId, paths: CompatHookPaths): CompatHookStatus {
-  const { state, configPath } = inspectCompatHookConfig(flavourId, paths.home, paths.bridge.destinationPath);
+  const { state, configPath } = inspectCompatHookConfig(flavourId, paths, paths.bridge.destinationPath);
   return {
     flavour: flavourId,
     verified: COMPAT_HOOK_FLAVOURS[flavourId].verified,
     bridge: inspectLifecycleAsset(paths.bridge),
     configPath,
+    configDirSource: paths.configDirs[flavourId]?.source ?? null,
     config: state,
   };
 }

@@ -22,14 +22,16 @@ let paths: CompatHookPaths;
 
 beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-compat-hooks-'));
-  paths = resolveCompatHookPaths(home, REPO_ROOT);
+  // An empty env: a COPILOT_HOME on the machine running the tests must not
+  // move the file these cases look for.
+  paths = resolveCompatHookPaths(home, REPO_ROOT, {});
 });
 
 afterEach(() => {
   fs.rmSync(home, { recursive: true, force: true });
 });
 
-const configFile = () => compatHookConfigPath('copilot', home) as string;
+const configFile = () => compatHookConfigPath('copilot', paths) as string;
 const readConfig = () => JSON.parse(fs.readFileSync(configFile(), 'utf8'));
 
 describe('resolveCompatHookPaths', () => {
@@ -43,8 +45,58 @@ describe('resolveCompatHookPaths', () => {
   });
 
   it('has no installer for flavours that stay manual or unverified', () => {
-    expect(compatHookConfigPath('kiro', home)).toBeNull();
-    expect(compatHookConfigPath('gemini', home)).toBeNull();
+    expect(compatHookConfigPath('kiro', paths)).toBeNull();
+    expect(compatHookConfigPath('gemini', paths)).toBeNull();
+  });
+});
+
+// #1918: "If COPILOT_HOME is set, it is $COPILOT_HOME/hooks/" (Copilot CLI
+// hooks reference). COPILOT_HOME replaces the whole ~/.copilot path.
+describe('COPILOT_HOME', () => {
+  let copilotHome: string;
+  beforeEach(() => {
+    copilotHome = path.join(home, 'elsewhere', 'copilot-config');
+  });
+
+  it('puts the hook file under $COPILOT_HOME/hooks, not ~/.copilot', () => {
+    const moved = resolveCompatHookPaths(home, REPO_ROOT, { COPILOT_HOME: copilotHome });
+    expect(compatHookConfigPath('copilot', moved)).toBe(path.join(copilotHome, 'hooks', 'wmux.json'));
+    expect(moved.configDirs.copilot).toEqual({ dir: copilotHome, source: 'env' });
+    // The bridge copy stays under ~/.wmux: COPILOT_HOME is Copilot's, not wmux's.
+    expect(moved.bridge.destinationPath).toBe(path.join(home, '.wmux', 'hooks', 'wmux-hooks-bridge.mjs'));
+  });
+
+  it('treats a blank COPILOT_HOME as unset', () => {
+    for (const blank of ['', '   ']) {
+      const p = resolveCompatHookPaths(home, REPO_ROOT, { COPILOT_HOME: blank });
+      expect(compatHookConfigPath('copilot', p)).toBe(path.join(home, '.copilot', 'hooks', 'wmux.json'));
+      expect(p.configDirs.copilot?.source).toBe('home');
+    }
+  });
+
+  it('resolves a relative COPILOT_HOME to an absolute path', () => {
+    const p = resolveCompatHookPaths(home, REPO_ROOT, { COPILOT_HOME: 'rel-copilot' });
+    expect(p.configDirs.copilot?.dir).toBe(path.resolve('rel-copilot'));
+  });
+
+  it('installs, reports and removes in the directory Copilot reads', () => {
+    const moved = resolveCompatHookPaths(home, REPO_ROOT, { COPILOT_HOME: copilotHome });
+    const target = path.join(copilotHome, 'hooks', 'wmux.json');
+    expect(installCompatHooks('copilot', moved)).toMatchObject({ ok: true, action: 'installed', configPath: target });
+    expect(fs.existsSync(target)).toBe(true);
+    expect(fs.existsSync(path.join(home, '.copilot'))).toBe(false);
+    expect(statusCompatHooks('copilot', moved)).toMatchObject({ config: 'current', configPath: target, configDirSource: 'env' });
+    // The same machine without COPILOT_HOME sees nothing at the default path:
+    // a file Copilot does not read is never reported as current.
+    expect(statusCompatHooks('copilot', paths)).toMatchObject({ config: 'absent', configDirSource: 'home' });
+    expect(removeCompatHooks('copilot', moved)).toMatchObject({ ok: true, removed: true, configPath: target });
+    expect(fs.existsSync(target)).toBe(false);
+  });
+
+  it('a hook file under ~/.copilot does not count once COPILOT_HOME points elsewhere', () => {
+    installCompatHooks('copilot', paths);
+    const moved = resolveCompatHookPaths(home, REPO_ROOT, { COPILOT_HOME: copilotHome });
+    expect(statusCompatHooks('copilot', moved).config).toBe('absent');
   });
 });
 
@@ -148,8 +200,8 @@ describe('removeCompatHooks / statusCompatHooks', () => {
     expect(fs.existsSync(configFile())).toBe(true);
   });
 
-  it('reports written state and that the flavour is docs-verified only', () => {
-    expect(statusCompatHooks('copilot', paths)).toMatchObject({ config: 'absent', verified: 'docs' });
+  it('reports written state and that the flavour was verified live', () => {
+    expect(statusCompatHooks('copilot', paths)).toMatchObject({ config: 'absent', verified: 'live', configDirSource: 'home' });
     installCompatHooks('copilot', paths);
     const status = statusCompatHooks('copilot', paths);
     expect(status.config).toBe('current');

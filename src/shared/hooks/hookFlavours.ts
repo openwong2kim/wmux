@@ -56,8 +56,14 @@ export interface CompatHookEventRule {
 export type CompatHookInstall =
   | {
     readonly strategy: 'owned-file';
-    /** Path segments under the user's home directory (same on every OS). */
-    readonly userFile: readonly string[];
+    /** The CLI's config directory, as path segments under the user's home
+     *  directory (same on every OS). */
+    readonly configDir: readonly string[];
+    /** An env var that, when set to a non-blank path, replaces `configDir`
+     *  entirely (Copilot's COPILOT_HOME), or null. */
+    readonly configDirEnv: string | null;
+    /** wmux's own file, as path segments under the config directory. */
+    readonly file: readonly string[];
     /** Events written to the file. Must be events the bridge maps. */
     readonly register: readonly string[];
     /** `exec`: spawned with an argv and no shell (works under any host shell). */
@@ -130,8 +136,13 @@ export const COMPAT_HOOK_FLAVOURS: Readonly<Record<CompatHookFlavourId, CompatHo
     docs: [
       'https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-hooks-reference',
       'https://docs.github.com/en/copilot/concepts/agents/hooks',
+      'https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference',
     ],
-    verified: 'docs',
+    // Copilot CLI 1.0.93 on Windows, 2026-10-08 (#1912): loaded
+    // ~/.copilot/hooks/wmux.json and fired SessionStart, UserPromptSubmit,
+    // PermissionRequest and Stop with session_id and cwd, as documented.
+    // An Esc-cancelled permission prompt fires no hook at all (#1918).
+    verified: 'live',
     // PascalCase names are the documented Claude-compatible mode; the docs say
     // it switches payload fields to snake_case (session_id, cwd).
     events: {
@@ -144,13 +155,17 @@ export const COMPAT_HOOK_FLAVOURS: Readonly<Record<CompatHookFlavourId, CompatHo
     cwdFields: ['cwd'],
     sourceField: 'source',
     configLocations: [
-      '~/.copilot/hooks/*.json (user; %USERPROFILE%\\.copilot\\hooks on Windows)',
+      '~/.copilot/hooks/*.json (user; %USERPROFILE%\\.copilot\\hooks on Windows; $COPILOT_HOME/hooks when COPILOT_HOME is set)',
       '~/.copilot/settings.json `hooks` (user)',
       '.github/hooks/*.json, .github/copilot/settings.json `hooks` (repository)',
     ],
     install: {
       strategy: 'owned-file',
-      userFile: ['.copilot', 'hooks', 'wmux.json'],
+      // "If COPILOT_HOME is set, it is $COPILOT_HOME/hooks/" (cli-hooks-reference);
+      // COPILOT_HOME replaces the whole ~/.copilot path (cli-config-dir-reference).
+      configDir: ['.copilot'],
+      configDirEnv: 'COPILOT_HOME',
+      file: ['hooks', 'wmux.json'],
       register: ['SessionStart', 'UserPromptSubmit', 'Stop', 'PermissionRequest'],
       // `exec` + `args` is spawned without a shell, so the same entry runs on
       // Windows whether the host would have used PowerShell or bash (#1882).
