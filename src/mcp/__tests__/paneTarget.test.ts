@@ -17,6 +17,10 @@ describe('classifyPaneRef', () => {
     ['brain-0123abcd', 'id'],
     ['auto-run-1', 'id'],
     ['remote:host-1:sess-1', 'id'],
+    // Legal labels that merely share an id prefix are still names.
+    ['pane-build', 'maybe'],
+    ['daemon-api', 'maybe'],
+    ['pty-runner', 'maybe'],
     ['w1-2', 'maybe'],
     ['backend', 'maybe'],
   ])('%s → %s', (value, kind) => {

@@ -51,6 +51,11 @@ describe('MetadataStore label policy', () => {
     expect(rejectionCode(() => store.set('p-2', { label: '  backend ' }))).toBe('duplicate');
   });
 
+  it('stores the label trimmed, as the policy checked it', () => {
+    store.set('p-1', { label: '  backend ' });
+    expect(store.get('p-1').metadata.label).toBe('backend');
+  });
+
   it('ignores a label held by a pane that is no longer live', () => {
     store.set('p-gone', { label: 'backend' });
     const live = new Set(['p-1', 'p-2']);

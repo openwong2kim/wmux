@@ -25,9 +25,12 @@ export type PaneNameRpc = (method: RpcMethod, params: Record<string, unknown>) =
  * through name resolution: `generateId` (`pane-<uuid>`, `surface-<uuid>`),
  * daemon sessions (`daemon-<hex>`), local-mode PTYManager (`pty-<n>`), brain
  * and automation ptys (`brain-…`, `auto-…`) and the colon-keyed remote / A2A
- * pseudo-ptys (`remote:host:session`, `a2a:…`).
+ * pseudo-ptys (`remote:host:session`, `a2a:…`). Matched on the full shape, not
+ * the prefix: a legal label such as `pane-build` or `daemon-api` must still be
+ * tried as a name, and a shape this misses only costs a 'maybe' round trip.
  */
-const ID_SHAPE_RE = /^(?:pane|surface|daemon|pty|brain|auto)-|:/;
+const ID_SHAPE_RE =
+  /^(?:(?:pane|surface)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|(?:daemon|brain)-[0-9a-f]+|pty-\d+|auto-.+)$|:/i;
 
 /**
  * - 'name': starts with `#` — always resolved, and a miss is an error.

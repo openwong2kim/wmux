@@ -939,12 +939,15 @@ export default function SurfaceTabs({
           {...(paneRenameError ? tokenAttrs('danger', 'border') : tokenAttrs('accent', 'border'))}
           style={paneRenameError ? { borderColor: 'var(--accent-red)' } : undefined}
         />
+        {/* Absolute, so it escapes the tab strip's horizontal scroll: inline,
+            a narrow pane clipped the reason down to its first letter. The
+            containing block is the pane root, just under the 40px header. */}
         {paneRenameError && (
           <span
             id={`pane-rename-error-${paneId}`}
             role="alert"
             data-pane-rename-error
-            className="shrink-0 truncate max-w-[220px] text-[10px] text-[var(--accent-red)]"
+            className="absolute left-2 top-11 z-20 max-w-[calc(100%-16px)] rounded border border-[var(--accent-red)] bg-[var(--bg-overlay)] px-2 py-1 text-[11px] leading-snug text-[var(--accent-red)]"
             title={paneRenameError}
             {...tokenAttrs('danger', 'text')}
           >

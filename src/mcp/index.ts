@@ -1781,13 +1781,11 @@ const paneGetMetadata = async ({
   // id read its pane metadata without ever proving their own identity.
   // Read path only — the write side takes no such override.
   const own = await requireWorkspaceId();
-  // A pane name supplies the ids an explicit call would: the paneId, and — for
-  // this cross-workspace-capable read only — the workspace that owns it.
+  // A pane name supplies the paneId only. It never picks the workspace: a
+  // `#w2-1` tag is enumerable where a pane uuid is not, so reading another
+  // workspace still takes an explicit workspaceId, as it did before names.
   const named = await resolvePaneRef(paneId, paneNameRpc);
-  if (named) {
-    paneId = named.paneId;
-    if (targetWorkspaceId === undefined && named.workspaceId !== own) targetWorkspaceId = named.workspaceId;
-  }
+  if (named) paneId = named.paneId;
   const workspaceId = targetWorkspaceId ?? own;
   // A cross-workspace read must name its pane explicitly. Without this,
   // an omitted paneId falls through to resolveTarget's active-leaf lookup
@@ -1974,17 +1972,27 @@ const sendMessageHandler = async ({ to, pane_id, surface_id, title, task_id, mes
   // pane_id / surface_id addresses that pane and, when `to` is omitted, its
   // workspace. Only ids reach the renderer, which still requires the pane to
   // belong to `to` and applies every same-workspace / self-send rule to them.
+  let toPaneId: string | undefined;
   if (to !== undefined && to.trim().charAt(0) === '#') {
     const named = await resolvePaneRef(to, paneNameRpc);
     if (named) {
       to = named.workspaceId;
-      if (!pane_id && !surface_id) pane_id = named.paneId;
+      toPaneId = named.paneId;
     }
   }
   const namedPane = await resolvePaneRef(pane_id, paneNameRpc);
   if (namedPane) {
     pane_id = namedPane.paneId;
     if (!to) to = namedPane.workspaceId;
+  }
+  // `to` named one pane: an explicit pane_id must be that pane, or the message
+  // would land beside the pane the caller named. A surface_id travels with the
+  // named pane_id, and the renderer refuses the pair when they disagree.
+  if (toPaneId) {
+    if (pane_id && pane_id !== toPaneId) {
+      return { content: [{ type: 'text' as const, text: `send_message: "to" names pane ${toPaneId} but pane_id is ${pane_id}; give one of them` }], isError: true };
+    }
+    pane_id = toPaneId;
   }
   const namedSurface = await resolvePaneRef(surface_id, paneNameRpc);
   if (namedSurface) {

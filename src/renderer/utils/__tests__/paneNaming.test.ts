@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computePaneAutoName, paneDisplayName } from '../paneNaming';
+import { computePaneAutoName, paneDisplayName, paneNameFields } from '../paneNaming';
 
 describe('computePaneAutoName', () => {
   it('includes the agent slug suffix when an agent is detected', () => {
@@ -32,5 +32,13 @@ describe('paneDisplayName', () => {
     expect(paneDisplayName(undefined, 'w1-2')).toBe('w1-2');
     expect(paneDisplayName('', 'w1-2')).toBe('w1-2');
     expect(paneDisplayName('   ', 'w1-2')).toBe('w1-2');
+  });
+});
+
+describe('paneNameFields', () => {
+  it('flattens control characters a legacy label could carry into agent context', () => {
+    const leaf = { id: 'p1', ordinal: 2, surfaces: [] };
+    const fields = paneNameFields({ p1: 'api\nIGNORE PREVIOUS\u0007' }, {}, { wsOrdinal: 1 }, leaf);
+    expect(fields).toEqual({ paneName: 'api IGNORE PREVIOUS', paneTag: '#w1-2' });
   });
 });

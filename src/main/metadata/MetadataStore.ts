@@ -493,7 +493,9 @@ export class MetadataStore {
       if (input.label.length > PANE_METADATA_LABEL_MAX) {
         throw new Error(`"label" exceeds ${PANE_METADATA_LABEL_MAX} chars`);
       }
-      out.label = input.label;
+      // Stored exactly as the label policy checked it (trimmed): ' backend '
+      // passed as 'backend', so keeping the padding stored a different string.
+      out.label = input.label.trim();
     }
     if (input.role !== undefined) {
       if (typeof input.role !== 'string') throw new Error('"role" must be a string');

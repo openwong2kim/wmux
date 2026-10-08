@@ -86,8 +86,13 @@ export function paneNameFields(
   ws: { wsOrdinal?: number },
   leaf: { id: string; ordinal?: number; metadata?: { label?: string }; activeSurfaceId?: string; surfaces: Array<{ id: string; ptyId?: string }> },
 ): { paneName: string; paneTag: string } {
+  // The label reaches agent context as data. A label stored before the label
+  // policy may hold control characters (a newline can forge an instruction
+  // line), so flatten them the way sanitizePaneTitle does for pane titles.
+  const name = leafDisplayName(paneLabel, ws, leaf, activeAgentSlug(surfaceAgent, leaf));
   return {
-    paneName: leafDisplayName(paneLabel, ws, leaf, activeAgentSlug(surfaceAgent, leaf)),
+    // eslint-disable-next-line no-control-regex
+    paneName: name.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim(),
     paneTag: paneTag(ws, leaf),
   };
 }
