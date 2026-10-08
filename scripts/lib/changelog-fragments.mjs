@@ -125,9 +125,12 @@ export function applyToChangelog(input, merged) {
   return crlf ? folded.replace(/\n/g, '\r\n') : folded;
 }
 
+// A whole `## [Unreleased]` heading line, not a mention of the text inside an entry.
+const UNRELEASED_HEADING = /^## \[Unreleased\][ \t]*$/m;
+
 /** Add an empty `## [Unreleased]` above the first `## ` heading when absent (LF input). */
 export function ensureUnreleased(changelog) {
-  if (changelog.includes('## [Unreleased]')) return changelog;
+  if (UNRELEASED_HEADING.test(changelog)) return changelog;
   const first = /^## /m.exec(changelog);
   if (first) {
     return `${changelog.slice(0, first.index)}## [Unreleased]\n\n${changelog.slice(first.index)}`;
@@ -137,7 +140,7 @@ export function ensureUnreleased(changelog) {
 }
 
 function foldUnreleased(changelog, merged) {
-  const start = changelog.indexOf('## [Unreleased]');
+  const start = UNRELEASED_HEADING.exec(changelog).index;
   const after = changelog.indexOf('\n## ', start + 1);
   const end = after === -1 ? changelog.length : after + 1;
 

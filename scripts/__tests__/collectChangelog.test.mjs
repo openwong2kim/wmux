@@ -95,6 +95,12 @@ describe('applyToChangelog', () => {
     expect(out).toBe('# Changelog\n\n## [Unreleased]\n\n### Added\n\n- new\n\n## [1.0.0]\n\n- old\n');
   });
 
+  it('creates the heading when a released entry only mentions [Unreleased]', () => {
+    const input = '## [1.0.0]\n\n### Fixed\n\n- Text such as `## [Unreleased]` in an entry is not the heading.\n';
+    const out = applyToChangelog(input, { Added: ['- new'] });
+    expect(out).toBe(`## [Unreleased]\n\n### Added\n\n- new\n\n${input}`);
+  });
+
   it('creates [Unreleased] at the very top when there is no title', () => {
     const out = applyToChangelog('## [4.1.0] — 2026-10-08\n\n### Added\n\n- shipped\n', {});
     expect(out.startsWith('## [Unreleased]\n\n## [4.1.0] — 2026-10-08\n')).toBe(true);
