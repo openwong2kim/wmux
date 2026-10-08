@@ -74,10 +74,20 @@ function refusalWire(code: MoaWakeRefusalCode, clientMessageId: string): { wire:
   }
 }
 
+function failureResponse(failure: MoaWakeFailure, clientMessageId: string): AnswerReceiptResponse {
+  return { status: 409, body: { state: 'failed', error: 'moa-wake-failed', code: failure, clientMessageId } };
+}
+
 export class MoaWakeService {
   private readonly now: () => number;
   private starting: { at: number; owner: string; clientMessageId: string } | null = null;
   private delivered: Array<ChatDeliveredMessage & { owner: string }> = [];
+  /**
+   * Failures main reported before this daemon finished recording the accept.
+   * A brain that fails at once (no claude binary) sends its report right
+   * behind the accept, and the pipe can hand both lines over in one read.
+   */
+  private earlyFailures = new Map<string, MoaWakeFailure>();
 
   constructor(private readonly deps: MoaWakeDeps) {
     this.now = deps.now ?? Date.now;
@@ -156,6 +166,14 @@ export class MoaWakeService {
     const result = parseMoaWakeResult(raw);
     if (!result) return this.finish(store, owner, clientMessageId, 'uncertain', { status: 202, body: { state: 'uncertain', clientMessageId } });
     if (result.ok) {
+      const early = this.earlyFailures.get(receiptHash([owner, clientMessageId]));
+      if (early) {
+        this.earlyFailures.delete(receiptHash([owner, clientMessageId]));
+        await store.finish(owner, clientMessageId, 'done', { status: 202, body: { state: 'accepted', clientMessageId } });
+        const failed = failureResponse(early, clientMessageId);
+        await store.revise(owner, clientMessageId, 'refused', failed);
+        return { status: failed.status, body: { ...failed.body, replayed: false } };
+      }
       this.starting = { at: this.now(), owner, clientMessageId };
       this.delivered.push({ owner, clientMessageId, text, at: this.now() });
       if (this.delivered.length > DELIVERED_MAX) this.delivered.splice(0, this.delivered.length - DELIVERED_MAX);
@@ -187,10 +205,12 @@ export class MoaWakeService {
     if (!store) return false;
     if (this.starting?.owner === owner && this.starting.clientMessageId === clientMessageId) this.starting = null;
     this.delivered = this.delivered.filter((d) => !(d.owner === owner && d.clientMessageId === clientMessageId));
-    return store.revise(owner, clientMessageId, 'refused', {
-      status: 409,
-      body: { state: 'failed', error: 'moa-wake-failed', code: failure, clientMessageId },
-    });
+    if (await store.revise(owner, clientMessageId, 'refused', failureResponse(failure, clientMessageId))) return true;
+    // The accept is still on its way in: hold the failure for wake() to apply.
+    if (store.lookup(owner, clientMessageId)?.state !== 'inFlight') return false;
+    this.earlyFailures.set(receiptHash([owner, clientMessageId]), failure);
+    if (this.earlyFailures.size > DELIVERED_MAX) this.earlyFailures.delete(this.earlyFailures.keys().next().value!);
+    return true;
   }
 
   /** `GET /api/moa/messages/:id`: the owner's own wake, or null when unknown. */

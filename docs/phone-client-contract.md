@@ -3566,6 +3566,7 @@ The daemon answers, in this order:
 | `429 {error:"desktop-busy"}`, `Retry-After: 2` | The desktop bridge is full. Nothing ran; nothing recorded. | same id, after the delay |
 | `202 {state:"uncertain"}` | The request reached the desktop and no answer came back (timeout, disconnect, an answer the daemon could not read). Moa may have the message. **Never re-sent** — retrying this id answers `uncertain` again. | read the receipt; send again only with a new id, and only if the user wants to |
 | `409 {error:"message-history-full"}` | This caller holds the most live wake ids (512). | later |
+| `409 {error:"moa-wake-failed", code, state:"failed"}` | The desktop accepted, then reported before this answer was sent that Moa never took the message (`code` as on the receipt below: `tui-dialog`, `spawn-failed`). Also the replay of any wake that failed after its accept. | new id, after fixing the cause |
 
 Every recorded answer carries `clientMessageId`; a replay adds `replayed:
 true`. Only the requests that never reached the desktop, and Moa's

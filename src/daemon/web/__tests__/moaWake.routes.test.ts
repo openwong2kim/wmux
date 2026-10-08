@@ -61,8 +61,8 @@ describe('POST/GET /api/moa/messages', () => {
   let turns: string[];
   let turnDone: Array<(v: CommanderSendResult) => void>;
   let reports: MoaWakeReport[];
-  /** 'answer' = main answers; 'silent' = main never answers (timeout). */
-  let mainMode: 'answer' | 'silent';
+  /** 'answer' = main answers; 'silent' = main never answers (timeout); 'fail-first' = its failure report lands before its accept. */
+  let mainMode: 'answer' | 'silent' | 'fail-first';
   let requests: number;
   let audits: Array<{ deviceId: string; route: string }>;
   let logs: string[];
@@ -100,6 +100,8 @@ describe('POST/GET /api/moa/messages', () => {
       queueMicrotask(() => {
         const p = data.payload as { clientMessageId: string; text: string; actor: string };
         const result: MoaWakeResult = handler(p, (r) => reports.push(r));
+        // Both lines in one pipe read: the report is handled before the accept's continuation runs.
+        if (mainMode === 'fail-first') void wakeService.recordFailure(p.actor, p.clientMessageId, 'spawn-failed');
         bridge.complete(clientId, { requestId: data.requestId, ok: true, result });
       });
       return true;
@@ -320,6 +322,21 @@ describe('POST/GET /api/moa/messages', () => {
     expect(await blocked.json()).toMatchObject({ error: 'chat-blocked', blockedBy: 'terminal' });
     expect(await post(h, { clientMessageId: freshId(), text: 'yes' })).toMatchObject({ status: 409, body: { error: 'chat-blocked' } });
     expect(chat.send).not.toHaveBeenCalled();
+  });
+
+  it('a failure reported before the accept was recorded still lands, and does not hold the start open', async () => {
+    mainMode = 'fail-first';
+    await start();
+    const h = device('d1');
+    const id = freshId();
+    expect(await post(h, { clientMessageId: id, text: 'wake' }))
+      .toMatchObject({ status: 409, body: { state: 'failed', error: 'moa-wake-failed', code: 'spawn-failed' } });
+    expect((await receipt(h, id)).body).toEqual({ clientMessageId: id, state: 'failed', code: 'spawn-failed' });
+    // No stuck "starting" window: the next id goes straight to main.
+    turnDone[0]({ ok: true, code: 'errored' });
+    await settle();
+    mainMode = 'answer';
+    expect(await post(h, { clientMessageId: freshId(), text: 'again' })).toMatchObject({ status: 202, body: { state: 'accepted' } });
   });
 
   it('same limits and gates as chat send; operators allowed and logged; unknown ids 404', async () => {
