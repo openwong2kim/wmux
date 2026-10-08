@@ -27,7 +27,14 @@ export function appBundleSelector(selector: string): string | null {
 }
 
 /** CFBundleIdentifier of the bundle at `appPath`, or null when it cannot be read. */
-export function readAppBundleId(appPath: string, execFile: ExecFileText = defaultExecFile): Promise<string | null> {
+export function readAppBundleId(
+  appPath: string,
+  execFile: ExecFileText = defaultExecFile,
+  platform: string = process.platform,
+): Promise<string | null> {
+  // Off macOS there is no plutil, and on Windows `/usr/bin/plutil` is
+  // drive-relative: it would run whatever sits at <cwd drive>:\usr\bin\plutil.exe.
+  if (platform !== 'darwin') return Promise.resolve(null);
   return new Promise((resolve) => {
     try {
       execFile(
