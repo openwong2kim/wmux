@@ -239,6 +239,7 @@ JSON backlog fetch (Bearer only).
 | `agent.liveness` | `{sessionId, state, tool?, agent, at, failure?}` — what the pane is doing right now; `failure` only on the `idle` frame that ends a failed turn (contract v-next item 1) |
 | `gate.state` | `{gateEnabled}` — the permission gate was armed or disarmed |
 | `channel.mention` | `{channelId, seq, fromMemberName, text, postedAt, tier}` — a channel message mentioned the operator row; re-fetch `/api/channels` (§9). Recorded, not live-only |
+| `moa` | `{moaSessionId}` — the Moa pane appeared (an id) or went away (`null`); see *Waking Moa from the phone*. Live only |
 
 `phase` is `create` / `resolve` / `expire` / `supersede`.
 
@@ -3415,7 +3416,8 @@ GET /api/config → { ..., moa: true, moaSessionId: "brain-<24 hex>" }
   otherwise: Moa off, no HQ, the HQ changed or missing, no desktop attached,
   an older daemon, or before Moa's first turn (the brain terminal starts on
   its first turn, not when Moa is switched on — show "Moa has not started
-  yet" rather than an error). Treat it as opaque: never derive or guess it,
+  yet" rather than an error, and with `moaWake: true` offer to start it, see
+  *Waking Moa from the phone* below). Treat it as opaque: never derive or guess it,
   and re-read `/api/config` rather than caching it across launches; a new
   brain terminal gets a new id.
 - Only a live pane qualifies: a Moa terminal that has exited is gone at
@@ -3503,6 +3505,124 @@ admission but withdrawn before its first write answers
 `{error:"authorization-expired", effect:"none"}`; a queued message is dropped
 at delivery; a `/turns` read answers `404`. On any of these, re-read
 `/api/config`: no `moaSessionId` means Moa is closed.
+
+#### Waking Moa from the phone (`moaWake`, `/api/moa/messages`)
+
+`moaSessionId` exists only once Moa's brain terminal runs, and the desktop
+starts that terminal on Moa's first turn. A phone can be that first turn: its
+first message starts the brain and becomes the brain's first prompt.
+
+```
+GET /api/config → { ..., moa: true, moaWake: true }
+```
+
+- `moaWake: true` — `POST /api/moa/messages` can start Moa here. Present only
+  when **all** hold: `moa: true`, no `moaSessionId` yet, the attached desktop
+  supports the wake (it announced `moa.wake`), `--allow-transcript`, and this
+  caller holds input (the same gates as a chat send). Omitted, never `false`,
+  otherwise. With `moaSessionId` present the same route still works (below);
+  `moaWake` only says the brain can be started from here.
+
+**`POST /api/moa/messages`** `{clientMessageId, text}` — a message to Moa
+whether or not its brain runs yet. Exactly these two fields (another field is
+`400 invalid-chat-request`). Requires transcript and input, like
+`POST …/chat/messages`; the operator token may use it too (logged as the
+operator, not as a device). `clientMessageId` follows the chat send rules
+(`<13-digit ms>-<lowercase uuid>`, unused for 24 h): malformed is `400
+{error:"invalid-chat-request", detail:"clientMessageId", effect:"none"}`,
+too old is `400 {error:"message-id-expired"}`. `text` has the chat send limit
+and the same refusal: more than 16,000 UTF-16 code units is `400
+{error:"text-too-long", result:"error", limit:"units", effect:"none"}`; blank is
+`400 invalid-chat-request` (`detail:"text"`). All of these are checked before
+anything is recorded or sent. Send the text as typed: the daemon and the
+desktop add nothing to it.
+
+The daemon answers, in this order:
+
+1. **The id was already used for a wake** (same caller): the recorded answer
+   again, with `replayed: true` — never a second turn, even when the Moa pane
+   appeared since. Same id with different text: `409
+   {error:"message-id-reused"}`. Still in flight: `202 {state:"pending",
+   replayed:true}`.
+2. **`moaSessionId` resolves:** the message takes the chat send path for the
+   Moa pane with the same `clientMessageId` (the daemon fills in
+   `agentSessionId` / `historyEpoch` itself), so every answer is the one
+   `POST /api/sessions/:moaSessionId/chat/messages` documents — `202
+   {result:"sent", …}`, `409 chat-busy`, `409 chat-blocked`, … — and the id is
+   in that pane's chat receipt too. The `chat-queue` capability applies as
+   on the chat route. The pane is up but Moa has not reported its
+   conversation yet: `409 {error:"moa-starting"}` with `Retry-After: 3`.
+3. **No Moa pane:** the desktop starts Moa's brain with this message.
+
+| Answer | Meaning | Retry |
+|---|---|---|
+| `202 {state:"accepted", clientMessageId}` | The desktop accepted the message as Moa's next turn and is starting the brain. It answers on accept, not when the turn ends (a cold start takes 20 s or more). | — |
+| `409 {error:"moa-starting"}`, `Retry-After: 3` | An accepted wake is still starting the brain and its pane is not up yet. Nothing recorded. | same id, after the delay |
+| `409 {error:"moa-busy", state:"failed"}`, `Retry-After: 5` | Moa is mid-turn (for example someone typed on the desktop). Nothing ran; the id is released. | same id, after the delay |
+| `409 {error:"moa-off", state:"failed"}` | Moa is switched off on the desktop. Final for this id. | new id, after Moa is on |
+| `409 {error:"moa-mode-off", state:"failed"}` | The HQ workspace's agent mode is off. Final for this id. | new id |
+| `409 {error:"no-hq", reason, state:"failed"}` | No HQ, or it is not ready: `reason` is `not-hq`, `hq-missing` or `hq-unknown`. Final for this id. | new id |
+| `503 {error:"desktop-unavailable"}` | No desktop attached, a desktop without the wake, or Moa's brain is not the terminal brain (`reason:"unsupported-vendor"`). Nothing ran; nothing recorded. | same id, later |
+| `429 {error:"desktop-busy"}`, `Retry-After: 2` | The desktop bridge is full. Nothing ran; nothing recorded. | same id, after the delay |
+| `202 {state:"uncertain"}` | The request reached the desktop and no answer came back (timeout, disconnect, an answer the daemon could not read). Moa may have the message. **Never re-sent** — retrying this id answers `uncertain` again. | read the receipt; send again only with a new id, and only if the user wants to |
+| `409 {error:"message-history-full"}` | This caller holds the most live wake ids (512). | later |
+
+Every recorded answer carries `clientMessageId`; a replay adds `replayed:
+true`. Only the requests that never reached the desktop, and Moa's
+`moa-busy` / `unsupported-vendor` answers (nothing ran, and the client is told
+to retry), are released, so the same id can try again; every other answer is
+the id's final one.
+
+**`GET /api/moa/messages/:clientMessageId`** — the caller's own message to
+Moa, whichever path carried it. Transcript only (like the chat receipt, so a
+device whose input grant was withdrawn still learns how its send ended);
+another device's id reads as unknown.
+
+```
+200 {clientMessageId, state, code?, moaSessionId?}
+```
+
+- `state`: `pending` (still in flight), `accepted` (Moa took it), `failed`
+  (Moa did not; `code` says why), `uncertain` (may or may not have reached
+  Moa; never re-sent).
+- `code` on `failed`: the refusal's `error` above (`moa-off`, `moa-mode-off`,
+  `no-hq`), or a failure the desktop learned after it accepted:
+  - `tui-dialog` — Moa's terminal stopped on a startup screen of its own
+    (folder trust, sign-in) before it read the message. It needs an answer on
+    the desktop; then send again with a new id.
+  - `spawn-failed` — Moa's terminal never came up.
+  For a message the chat path carried, `code` is its chat error tag.
+- `moaSessionId` — on an `accepted` wake, as soon as the Moa pane is up (and
+  on any message the chat path carried). Use it for the pane's `/turns` and
+  chat routes as usual.
+- An id the daemon has no record of for this caller: `404
+  {error:"unknown-message", clientMessageId}`.
+
+Wake receipts are kept **24 hours** — the chat send receipt retention — in
+their own file (the text is never stored, only a hash of it), and survive a
+daemon restart; a wake that was in flight when the daemon stopped reads
+`uncertain`.
+
+**The wake's row in `/turns`.** Once the Moa pane is up, the wake's message is
+the brain's first `user_text` row, and on `GET /api/sessions/:moaSessionId/turns`
+it carries the wake's `clientMessageId`, exactly like a row a chat send typed
+(best effort, matched on text and time) — so the phone can retire its
+"sending" bubble by id.
+
+**The `moa` event** on the global `GET /api/events` stream:
+`{moaSessionId: "brain-…"}` when the Moa pane appears (or is replaced by a
+new one), and `{moaSessionId: null}` when it goes away (Moa switched off, the
+HQ changed, the brain exited, the desktop disconnected). Live only, like
+`gate.state`: a client that reconnects re-reads `/api/config`. Every client
+of the stream receives it.
+
+**A startup screen is a dialog too.** While Moa's terminal is stopped on a
+startup screen (folder trust, sign-in), the Moa pane is fenced exactly as for
+its permission dialog above — `/turns` `chat.blocked` `{by:"terminal"}`,
+`POST …/chat/messages` and `POST /api/moa/messages` answer `409
+{error:"chat-blocked", blockedBy:"terminal"}`, `POST /api/input` refuses
+anything but ESC or Ctrl-C — but no approval record is raised for it: it is
+not a tool call, and only the desktop can answer it.
 
 Every send that reaches the Moa pane from a paired device writes one
 `moa-send` line to the device audit log with the device id, the pane and the
