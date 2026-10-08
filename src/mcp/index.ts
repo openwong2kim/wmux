@@ -155,6 +155,7 @@ const BROWSER_OPEN_SHAPE = {
   // did — it opens about:blank. Only the builtin panel has a start page, and
   // only when it has to create a pane.
   url: z.string().optional().describe('Omit for a blank page (the builtin panel shows its start page).'),
+  private: z.boolean().optional().describe('Open a private tab: in-memory session, never restored.'),
 };
 
 const BROWSER_CLOSE_SHAPE = {
@@ -1319,7 +1320,7 @@ server.tool(
   'browser_open',
   'Open a browser panel in the active pane when no browser surface exists yet. The opened surface becomes the default target for browser tools you call without a surfaceId. A surface another agent opened is never reused — you get your own.',
   BROWSER_OPEN_SHAPE,
-  async ({ url }) => {
+  async ({ url, private: isPrivate }) => {
     // requireWorkspaceId (NOT the weak resolveWorkspaceId) so a failed identity
     // resolution THROWS instead of returning '' — which `...(workspaceId && …)`
     // would drop, letting the renderer (useRpcBridge.ts) fall back to
@@ -1332,7 +1333,7 @@ server.tool(
     // caller may keep driving without naming it again.
     return callRpc(
       'browser.open',
-      { ...(url && { url }), workspaceId, openerKey: getOpenerKey() },
+      { ...(url && { url }), ...(isPrivate === true && { private: true }), workspaceId, openerKey: getOpenerKey() },
       undefined,
       (result) => {
         const surfaceId = (result as { surfaceId?: unknown } | null | undefined)?.surfaceId;

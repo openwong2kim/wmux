@@ -29,3 +29,19 @@ describe('browser_open url description (#1360)', () => {
     expect(described.toLowerCase()).toContain('blank');
   });
 });
+
+describe('browser_open private flag', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'index.ts'), 'utf-8');
+  const shape = src.slice(
+    src.indexOf('const BROWSER_OPEN_SHAPE'),
+    src.indexOf('const BROWSER_CLOSE_SHAPE'),
+  );
+
+  it('declares an optional boolean `private` parameter', () => {
+    expect(shape).toMatch(/\bprivate: z\.boolean\(\)\.optional\(\)\.describe\(/);
+  });
+
+  it('forwards it to browser.open only when set', () => {
+    expect(src).toContain("...(isPrivate === true && { private: true })");
+  });
+});

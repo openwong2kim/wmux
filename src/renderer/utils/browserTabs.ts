@@ -12,6 +12,7 @@ import {
   type OpenUrlOptions,
   type OpenUrlResult,
 } from './browserPane';
+import { isPrivateBrowserSurface } from '../../shared/privateBrowser';
 
 export interface BrowserTabsStoreLike {
   workspaces: Workspace[];
@@ -49,6 +50,7 @@ function descriptor(target: BrowserTabTarget): BrowserTabDescriptor {
     selected:
       target.workspace.activePaneId === target.pane.id
       && target.pane.activeSurfaceId === target.surface.id,
+    ...(isPrivateBrowserSurface(target.surface) && { private: true }),
   };
 }
 

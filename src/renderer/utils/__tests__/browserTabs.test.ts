@@ -8,6 +8,7 @@ import {
   type BrowserTabsStoreLike,
 } from '../browserTabs';
 import type { OpenUrlOptions, OpenUrlResult } from '../browserPane';
+import { PRIVATE_BROWSER_PARTITION } from '../../../shared/privateBrowser';
 
 function surface(
   id: string,
@@ -115,6 +116,18 @@ describe('workspace-scoped browser tab inventory', () => {
         title: 'Browser',
         selected: false,
       },
+    ]);
+  });
+
+  it('lists a private tab like any other, flagged private: true', () => {
+    const { state, paneA2 } = fixtures();
+    paneA2.surfaces[0].browserPartition = PRIVATE_BROWSER_PARTITION;
+
+    const tabs = listBrowserTabs(state.workspaces, 'ws-a');
+
+    expect(tabs?.map((tab) => [tab.surfaceId, tab.private])).toEqual([
+      ['browser-a1', undefined],
+      ['browser-a2', true],
     ]);
   });
 

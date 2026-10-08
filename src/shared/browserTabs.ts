@@ -34,6 +34,9 @@ export interface BrowserTabDescriptor {
    *  targeting — a browser tool with no surfaceId resolves a surface in the
    *  workspace regardless. Always false on the chrome backend (#1082). */
   selected: boolean;
+  /** True on a private tab: in-memory session, wiped when the last private tab
+   *  closes, never restored after a restart. Absent on a normal tab. */
+  private?: boolean;
   /**
    * Whether the CALLING connection opened this surface, as main recorded it.
    * Absent when nobody claims it: restored after a restart, opened by a

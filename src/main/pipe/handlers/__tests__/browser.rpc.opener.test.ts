@@ -4,6 +4,7 @@ import { RpcRouter } from '../../RpcRouter';
 import { registerBrowserRpc } from '../browser.rpc';
 import { surfaceOpeners } from '../../../browser-session/SurfaceOpeners';
 import type { BrowserBackendStore } from '../../../browser-session/BrowserBackendStore';
+import { PRIVATE_BROWSER_PARTITION } from '../../../../shared/privateBrowser';
 
 /**
  * Who opened a browser surface, and what main does with that.
@@ -501,5 +502,75 @@ describe('browser.surface.adopt', () => {
       openerKey: OPENER_A,
     })) as { error?: string };
     expect(result.error).toContain('surfaceId');
+  });
+});
+
+describe('builtin browser.open private:true', () => {
+  /** Renderer double whose list carries the given tabs (private flag included). */
+  function rendererListing(tabs: Array<{ surfaceId: string; private?: boolean }>) {
+    sendToRendererMock.mockImplementation(async (_w: unknown, method: string, params: Record<string, unknown>) => {
+      if (method === 'browser.tabs' && params.action === 'list') {
+        return {
+          ok: true,
+          action: 'list',
+          tabs: tabs.map((t) => ({ ...t, paneId: `pane-${t.surfaceId}`, url: 'https://x.test/', title: 'Browser', selected: false })),
+        };
+      }
+      if (method === 'browser.open') return { ok: true, surfaceId: 'surf-opened', url: params.url };
+      return { ok: true };
+    });
+  }
+  const partitionSentWith = (method: string) =>
+    sendToRendererMock.mock.calls.find((call) => call[1] === method)?.[2]?.partition;
+
+  it('opens the surface on the private partition', async () => {
+    const router = register();
+    rendererListing([]);
+
+    await dispatch(router, 'browser.open', { workspaceId: 'ws-1', private: true });
+
+    expect(partitionSentWith('browser.open')).toBe(PRIVATE_BROWSER_PARTITION);
+  });
+
+  it('keeps the active profile partition when private is absent', async () => {
+    const router = register();
+    rendererListing([]);
+
+    await dispatch(router, 'browser.open', { workspaceId: 'ws-1' });
+
+    expect(partitionSentWith('browser.open')).toBe('persist:wmux-default');
+  });
+
+  it('never drives a normal tab the caller owns for a private open', async () => {
+    const router = register();
+    rendererListing([{ surfaceId: 'surf-other' }, { surfaceId: 'surf-mine' }]);
+    surfaceOpeners.note('surf-other', OPENER_A);
+    surfaceOpeners.note('surf-mine', OPENER_B);
+
+    await dispatch(router, 'browser.open', {
+      workspaceId: 'ws-1', url: 'https://secret.test/', private: true, openerKey: OPENER_B,
+    });
+
+    // Without the split, surf-mine (owned, not first) would be navigated
+    // directly — the private page loading in a normal, persistent session.
+    expect(rendererCalls()).toEqual(['browser.tabs:list', 'browser.open']);
+    expect(partitionSentWith('browser.open')).toBe(PRIVATE_BROWSER_PARTITION);
+  });
+
+  it('never drives a private tab the caller owns for a normal open', async () => {
+    const router = register();
+    rendererListing([
+      { surfaceId: 'surf-other', private: true },
+      { surfaceId: 'surf-mine', private: true },
+    ]);
+    surfaceOpeners.note('surf-other', OPENER_A);
+    surfaceOpeners.note('surf-mine', OPENER_B);
+
+    await dispatch(router, 'browser.open', {
+      workspaceId: 'ws-1', url: 'https://normal.test/', openerKey: OPENER_B,
+    });
+
+    expect(rendererCalls()).toEqual(['browser.tabs:list', 'browser.open']);
+    expect(partitionSentWith('browser.open')).toBe('persist:wmux-default');
   });
 });

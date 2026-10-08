@@ -79,6 +79,7 @@ const DEVICE_PROBE_EXPRESSION =
   + ' touch: navigator.maxTouchPoints })';
 import { refererFor } from '../../../shared/referer';
 import { buildUserAgentOverride } from '../../../shared/uaMetadata';
+import { PRIVATE_BROWSER_PARTITION } from '../../../shared/privateBrowser';
 import { WebviewCdpManager } from '../../browser-session/WebviewCdpManager';
 import { BrowserCaptureManager } from '../../browser-session/BrowserCaptureManager';
 import { validateResolvedNavigationUrl } from '../../security/navigationPolicy';
@@ -986,13 +987,14 @@ export function registerBrowserRpc(
   const reusableBuiltinSurface = async (
     workspaceId: string,
     callerKey: string,
+    wantPrivate: boolean,
   ): Promise<
     | { kind: 'mine'; surfaceId: string; url: string; first: boolean }
     | { kind: 'empty' }
     | { kind: 'blocked' }
   > => {
     let listed:
-      | { ok?: unknown; action?: unknown; tabs?: Array<{ surfaceId?: unknown; url?: unknown }> }
+      | { ok?: unknown; action?: unknown; tabs?: Array<{ surfaceId?: unknown; url?: unknown; private?: unknown }> }
       | undefined;
     try {
       listed = (await sendToRenderer(getWindow, 'browser.tabs', {
@@ -1005,8 +1007,13 @@ export function registerBrowserRpc(
     if (listed?.ok !== true || listed.action !== 'list' || !Array.isArray(listed.tabs)) {
       return { kind: 'blocked' };
     }
+    // Only tabs of the requested kind are candidates: a private open never
+    // reuses a normal tab and a normal open never reuses a private one — the
+    // same split the renderer's own reuse makes, so `first` still means "the
+    // one the renderer would pick".
     const tabs = listed.tabs.filter(
-      (tab): tab is { surfaceId: string; url?: unknown } => typeof tab?.surfaceId === 'string',
+      (tab): tab is { surfaceId: string; url?: unknown } =>
+        typeof tab?.surfaceId === 'string' && (tab.private === true) === wantPrivate,
     );
     if (tabs.length === 0) return { kind: 'empty' };
     const index = tabs.findIndex((tab) => isUnclaimedBy(tab.surfaceId, callerKey));
@@ -2276,10 +2283,13 @@ export function registerBrowserRpc(
   /**
    * browser.open
    * Opens a new browser surface in the active pane.
-   * params: { url?: string }
+   * params: { url?: string, private?: boolean }
    */
   router.register('browser.open', async (params, ctx) => {
     const url = typeof params['url'] === 'string' ? params['url'] : undefined;
+    // A private tab lives on the one in-memory partition every private tab
+    // shares. It is chosen by this flag, never by a caller-named partition.
+    const wantPrivate = params['private'] === true;
     // #922 PR-C — `browser.open` joins the lane table its siblings already use.
     //
     // It was left out on purpose while `declared` accepted any named workspace:
@@ -2298,8 +2308,11 @@ export function registerBrowserRpc(
     // keeping it would be the only thing holding this file's "no handler reads
     // workspaceId out of the body" invariant open.
     const workspaceId =
-      backend() === 'external' ? undefined : scopeFor('browser.open', params, ctx);
+      backend() === 'external' && !wantPrivate ? undefined : scopeFor('browser.open', params, ctx);
     const openerKey = openerKeyOf(params);
+    if (wantPrivate && backend() === 'chrome') {
+      throw new Error('browser.open: private tabs need the builtin browser backend.');
+    }
     if (backend() === 'chrome') {
       // Dedicated-Chrome open: a tracked tab with a real handle — unlike
       // 'external', about:blank is a valid open here (auto-open path). Always a
@@ -2312,7 +2325,9 @@ export function registerBrowserRpc(
       // contract AND survives Chrome swapping the target behind the tab.
       return { ok: true, backend: 'chrome', surfaceId: opened.surfaceId, url: opened.url };
     }
-    if (backend() === 'external') {
+    // A private open on the 'external' backend stays in the app: the OS
+    // browser cannot honour "private", and the builtin webview always exists.
+    if (backend() === 'external' && !wantPrivate) {
       // Missing url is an argument error, not the backend contract error —
       // conflating them makes agents "work around" a tool that would succeed
       // with a url (GLM P3). There is no about:blank to open externally.
@@ -2336,7 +2351,7 @@ export function registerBrowserRpc(
     // when it is not the first in the tree. A caller with no opener key (the
     // CLI, a person's pane button) keeps the old behavior exactly.
     if (openerKey && workspaceId) {
-      const reusable = await reusableBuiltinSurface(workspaceId, openerKey);
+      const reusable = await reusableBuiltinSurface(workspaceId, openerKey, wantPrivate);
       if (reusable.kind === 'blocked' || (reusable.kind === 'mine' && !reusable.first)) {
         // `blocked` also covers a list we could not read: opening blind is
         // exactly the case this guard exists for, so it fails CLOSED.
@@ -2365,7 +2380,7 @@ export function registerBrowserRpc(
           action: 'new',
           workspaceId,
           ...(url !== undefined && { url }),
-          partition: getActivePartition(),
+          partition: wantPrivate ? PRIVATE_BROWSER_PARTITION : getActivePartition(),
         });
         const tab = (created as { ok?: unknown; tab?: { surfaceId?: unknown; url?: unknown } })?.ok === true
           ? (created as { tab?: { surfaceId?: unknown; url?: unknown } }).tab
@@ -2384,7 +2399,7 @@ export function registerBrowserRpc(
       }
     }
     const opened = await sendToRenderer(getWindow, 'browser.open', {
-      partition: getActivePartition(),
+      partition: wantPrivate ? PRIVATE_BROWSER_PARTITION : getActivePartition(),
       ...(url && { url }),
       // The workspace now comes from `scopeFor` above, not straight from the
       // request. It is still dropped when absent, and the renderer then falls
