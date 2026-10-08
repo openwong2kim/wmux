@@ -1216,7 +1216,9 @@ export class ChromeLauncherRegistry {
     if (!(launcher instanceof ChromeLauncher) || !launcher.isRunning()) {
       return { ok: false, error: `the Chrome for profile "${profile}" is not running` };
     }
-    const tabs = await launcher.listTargets(workspaceId);
+    // listTargets lets an unattributed record through; "Show in Chrome" for a
+    // pane must only ever raise a tab this workspace provably opened.
+    const tabs = (await launcher.listTargets(workspaceId)).filter((t) => t.workspaceId === workspaceId);
     const newest = tabs[tabs.length - 1];
     if (!newest) return { ok: false, error: `no open wmux tab in the Chrome for profile "${profile}"` };
     if (!(await launcher.selectSurface(newest.surfaceId))) {
