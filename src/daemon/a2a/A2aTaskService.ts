@@ -728,6 +728,12 @@ export class A2aTaskService {
     remoteReceipt?: A2aRemoteReceipt;
     /** The peer acked every reply / state of ours queued on this task (#1922). */
     replyAcked?: true;
+    /**
+     * With `replyAcked`: true while something of ours on the task is still
+     * owed. Asked inside the task lock, so a reply queued after the ack keeps
+     * the task undelivered.
+     */
+    stillOwed?: () => boolean;
   }): Promise<{ ok: true; task: Task } | OpErr> {
     return this.withTaskLock(input.taskId, async () => {
       const task = this.tasks.get(input.taskId);
@@ -752,6 +758,7 @@ export class A2aTaskService {
       if (input.delivered !== true && !input.held && input.attempted === undefined && !bookkeeping) {
         return { ok: false, error: 'a2a.remote.mark: nothing to mark' };
       }
+      if (input.replyAcked && input.stillOwed?.()) return { ok: true, task };
       const side = task.metadata[localSideOf(task)];
       let unchanged: boolean;
       let body: Partial<A2aRemoteMarkPayload>;

@@ -119,8 +119,8 @@ woken: you are woken automatically when it replies or completes. End your turn
 and wait.
 
 Your own replies and state changes on a task between PCs are queued first.
-\`replyDeliveredAt\` in \`a2a_task_query\` says the other PC has all of them;
-until it shows, they are still on their way.
+\`replyDeliveredAt\` in \`a2a_task_query\` says the other PC received all of
+them; until it shows, they are still on their way.
 `;
 
 const FANOUT_SKILL = `---

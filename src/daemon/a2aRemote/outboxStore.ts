@@ -156,6 +156,11 @@ export class OutboxStore {
     return n;
   }
 
+  /** Records no longer owed (acked or refused) and not pruned yet, every host. */
+  settled(): A2aOutboxRecordV1[] {
+    return [...this.records.values()].filter((r) => !OPEN.has(r.state)).map((r) => structuredClone(r));
+  }
+
   get(hostId: HostId, seq: number): A2aOutboxRecordV1 | undefined {
     const rec = this.records.get(key(hostId, seq));
     return rec ? structuredClone(rec) : undefined;
