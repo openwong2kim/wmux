@@ -89,9 +89,13 @@ export function buildPaneResumeCommand(
   // `roleRewritten` is reported rather than logged here so this stays a pure
   // function (it runs on every render of the chip); the caller emits the audit
   // line once, from an effect.
-  // The fallback withholds the role's skip flag for every agent (#1916).
+  // The fallback withholds the role's skip flag and the permission choices in
+  // its args, for every agent (#1916).
   const toggledOff = !exact || (agentSupportsPermissionFlag(binding.agent) && !skipPermissions);
-  const rewrite = applyRoleBinding(base, roleBinding, { suppressSkipPermissions: toggledOff });
+  const rewrite = applyRoleBinding(base, roleBinding, {
+    suppressSkipPermissions: toggledOff,
+    suppressPermissionChoices: !exact,
+  });
   return { command: rewrite.command, exact, roleRewritten: rewrite.changed };
 }
 

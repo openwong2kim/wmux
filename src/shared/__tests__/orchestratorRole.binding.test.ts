@@ -696,6 +696,24 @@ describe('role skip permissions versus an explicit permission choice (#1681)', (
     );
   });
 
+  // #1916 — a cwd-relative resume fallback carries none of the role's permission settings.
+  it('suppressPermissionChoices withholds the skip flag and every permission choice in the args', () => {
+    const b: RoleBinding = {
+      agent: 'claude', model: 'haiku', skipPermissions: true,
+      args: '--verbose --permission-mode bypassPermissions --dangerously-skip-permissions',
+    };
+    expect(fixpoint('claude --continue', b, { suppressPermissionChoices: true })).toBe(
+      'claude --model haiku --continue --verbose',
+    );
+    expect(fixpoint('claude --continue', { agent: 'claude', args: '--permission-mode acceptEdits' }, {
+      suppressPermissionChoices: true,
+    })).toBe('claude --continue');
+    // Without the option the role's args apply as written.
+    expect(fixpoint('claude --continue', { agent: 'claude', args: '--permission-mode acceptEdits' })).toBe(
+      'claude --continue --permission-mode acceptEdits',
+    );
+  });
+
   it('drops the args skip under suppression even when the binding names no agent', () => {
     expect(fixpoint('claude --continue', { args: '--dangerously-skip-permissions --verbose' }, {
       suppressSkipPermissions: true,

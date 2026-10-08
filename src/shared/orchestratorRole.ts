@@ -640,6 +640,14 @@ export interface ApplyRoleBindingOptions {
    * and a skip flag already on the line is left alone.
    */
   suppressSkipPermissions?: boolean;
+  /**
+   * #1916: the line is a cwd-relative resume fallback (`claude --continue`,
+   * `codex resume --last`), which may continue an unrelated conversation. The
+   * role's permission settings are withheld entirely: its skip flag, and every
+   * permission choice in its args (`--permission-mode ...`, `-a never`, ...),
+   * as well as the skip spellings. Model, effort and the other args still apply.
+   */
+  suppressPermissionChoices?: boolean;
 }
 
 /** The launch options a rewrite ACTUALLY spliced in, each present only when it
@@ -729,12 +737,13 @@ export function applyRoleBinding(
     : tokens;
   const userChosePermission = !!stemGrammar &&
     hasPermissionChoice(stemGrammar, userTokens.slice(1).map((t) => t.value));
-  const withholdRoleSkip = !!options?.suppressSkipPermissions || userChosePermission;
+  const fallbackLine = !!options?.suppressPermissionChoices;
+  const withholdRoleSkip = !!options?.suppressSkipPermissions || userChosePermission || fallbackLine;
   let args = roleArgs;
   let argsPermissionDropped = false;
   if (args && withholdRoleSkip && stemGrammar) {
     const argValues = tokenize(args).map((t) => t.value);
-    const choices = userChosePermission ? permissionChoiceIndexes(stemGrammar, argValues) : [];
+    const choices = userChosePermission || fallbackLine ? permissionChoiceIndexes(stemGrammar, argValues) : [];
     const kept = dropArgTokens(
       args,
       (v, i) => isSkipPermissionsToken(stemGrammar, v) || choices.indexOf(i) !== -1,

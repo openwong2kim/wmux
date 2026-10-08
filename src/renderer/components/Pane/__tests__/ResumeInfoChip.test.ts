@@ -39,6 +39,17 @@ describe('buildPaneResumeCommand', () => {
     });
   });
 
+  it('the cwd-relative fallback withholds the permission choices in the role args (#1916)', () => {
+    const out = buildPaneResumeCommand(claude(), ['/Users/me/OTHER'], false, {
+      agent: 'claude', args: '--permission-mode bypassPermissions --verbose',
+    });
+    expect(out?.command).toBe('claude --continue --verbose');
+    const exactOut = buildPaneResumeCommand(claude(), ['/Users/me/proj'], false, {
+      agent: 'claude', args: '--permission-mode acceptEdits',
+    });
+    expect(exactOut?.command).toBe('claude --resume a1b2c3d4-0000-0000-0000-9f8e7d6c5b4a --permission-mode acceptEdits');
+  });
+
   it('the cwd-relative fallback withholds a role skip flag for every agent (#1916)', () => {
     const claudeOut = buildPaneResumeCommand(claude(), ['/Users/me/OTHER'], true, { agent: 'claude', skipPermissions: true });
     expect(claudeOut?.command).toBe('claude --continue');

@@ -237,10 +237,14 @@ export function planRecoveryPillType(args: {
   // dropped from the role's args, #1681) so the restored mode is what runs. forceSkip is exactly `canSkip && toggle`.
   // #1916: without an exact session the line is the cwd-relative fallback,
   // which resumes whatever is newest in the shell's folder. It never carries a
-  // skip flag: not the toggle's, and not the role's (for any agent).
+  // permission flag: not the toggle's, and none of the role's (skip flag or a
+  // permission choice in its args), for any agent.
   const toggledOff = !sessionId || (!forceSkip && agentSupportsPermissionFlag(launcher));
   const rewrite = (cmd: string): { text: string; rewritten: boolean } => {
-    const r = applyRoleBinding(cmd, roleBinding, { suppressSkipPermissions: toggledOff });
+    const r = applyRoleBinding(cmd, roleBinding, {
+      suppressSkipPermissions: toggledOff,
+      suppressPermissionChoices: !sessionId,
+    });
     return { text: r.command, rewritten: r.changed };
   };
   if (!sessionId) {
@@ -248,6 +252,13 @@ export function planRecoveryPillType(args: {
     // `resume --last`), with no permission flag (#1916).
     const { text, rewritten } = rewrite(`${launcher} ${grammar.fallback}`);
     return { text, clearHint: true, advanceStage: false, rewritten };
+  }
+  if (resumeStage === 1) {
+    // Click 2: append the exact-session resume to the already-typed base. NOT
+    // launcher-prefixed, so it is never independently rewritten (the model is
+    // already on the base line typed in stage 0). Checked before forceSkip: a
+    // whole line appended to the typed base would be malformed.
+    return { text: ` ${grammar.withId(sessionId)}`, clearHint: true, advanceStage: false, rewritten: false };
   }
   if (forceSkip) {
     // Toggle ON: the WHOLE line at once so both flags land together (F6).
@@ -260,15 +271,9 @@ export function planRecoveryPillType(args: {
     const { text, rewritten } = rewrite(`${launcher} ${permFlag}`);
     return { text, clearHint: false, advanceStage: true, rewritten };
   }
-  if (resumeStage === 0) {
-    // Default mode (no permission flag) → one click types the full id-resume.
-    const { text, rewritten } = rewrite(`${launcher} ${grammar.withId(sessionId)}`);
-    return { text, clearHint: true, advanceStage: false, rewritten };
-  }
-  // Click 2: append the exact-session resume to the already-typed base. NOT
-  // launcher-prefixed, so it is never independently rewritten (the model is
-  // already on the base line typed in stage 0).
-  return { text: ` ${grammar.withId(sessionId)}`, clearHint: true, advanceStage: false, rewritten: false };
+  // Default mode (no permission flag) → one click types the full id-resume.
+  const { text, rewritten } = rewrite(`${launcher} ${grammar.withId(sessionId)}`);
+  return { text, clearHint: true, advanceStage: false, rewritten };
 }
 
 /**
@@ -1119,6 +1124,9 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
                 <input
                   type="checkbox"
                   checked={skipChecked}
+                  // Locked after the staged first click: the base line is
+                  // already typed, so the toggle can no longer change it.
+                  disabled={resumeStage === 1}
                   onChange={(e) => setResumeSkipOverride(e.target.checked)}
                   style={{ accentColor: 'var(--accent-cursor)', cursor: 'pointer', margin: 0, flexShrink: 0 }}
                 />

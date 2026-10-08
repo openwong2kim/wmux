@@ -449,4 +449,28 @@ describe('recovery pill permissions (#1916)', () => {
     expect(src).not.toContain('useState(true);\n  // Never carry a stale stage/toggle');
     expect(src).toContain('const [resumeSkipOverride, setResumeSkipOverride] = useState<boolean | undefined>(undefined);');
   });
+
+  it('no binding: a permission choice in the role args is withheld on the fallback too', () => {
+    expect(typed({ sessionId: undefined, roleBinding: { agent: 'claude', args: '--permission-mode bypassPermissions --verbose' } }).text)
+      .toBe('claude --continue --verbose');
+    expect(typed({ sessionId: undefined, roleBinding: { agent: 'claude', args: '--permission-mode acceptEdits' } }).text)
+      .toBe('claude --continue');
+  });
+
+  it('an exact resume keeps the role args as before', () => {
+    expect(typed({ sessionId: SID, roleBinding: { agent: 'claude', args: '--permission-mode acceptEdits' } }).text)
+      .toBe(`claude --resume ${SID} --permission-mode acceptEdits`);
+  });
+
+  it('stage 1 always appends the bare resume arg, even if the toggle was switched ON meanwhile', () => {
+    const plan = planRecoveryPillType({
+      launcher: 'claude', sessionId: SID, permFlag: BYPASS, forceSkip: true, resumeStage: 1, roleBinding: undefined,
+    });
+    expect(plan).toMatchObject({ text: ` --resume ${SID}`, clearHint: true, advanceStage: false });
+  });
+
+  it('the toggle is locked after the staged first click', () => {
+    const src = readFileSync(resolve(__dirname, '../Pane.tsx'), 'utf8');
+    expect(src).toContain('disabled={resumeStage === 1}');
+  });
 });
