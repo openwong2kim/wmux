@@ -1982,6 +1982,7 @@ export const en = {
   'a2aLink.requestTitle': "{pc} asks to link a pane",
   'a2aLink.theirPane': "Their pane: {pane}",
   'a2aLink.yourPane': "Your pane: {pane}",
+  'a2aLink.yourPaneLabel': "Your pane",
   'a2aLink.dirBoth': "Both ways",
   'a2aLink.dirSend': "This PC sends only",
   'a2aLink.dirReceive': "This PC receives only",

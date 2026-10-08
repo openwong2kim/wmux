@@ -10,7 +10,10 @@ import UiButton from '../ui/Button';
 import Checkbox from '../ui/Checkbox';
 import Badge from '../ui/Badge';
 import { FOCUS_RING } from '../focusRing';
-import { rankExposedPanes, repoMismatch, type RankedPane } from './a2aLinkModel';
+import { autoPickPane, rankExposedPanes, repoMismatch, type RankedPane } from './a2aLinkModel';
+import Select from '../ui/Select';
+import { isMoaHqWorkspace } from '../../stores/slices/moaSlice';
+import { activeAgentSlug, leafDisplayName } from '../../utils/paneNaming';
 import { buildPaneSnapshot } from '../../hooks/useA2aRemoteSnapshot';
 
 // ─── "Link with a pane on another PC…" ───────────────────────────────────────
@@ -46,6 +49,10 @@ export interface A2aLinkDialogViewProps {
   outcome: { ok: true } | { ok: false; error: A2aRemoteCallError; uncertain?: boolean } | null;
   onPropose: () => void;
   onClose: () => void;
+  /** Opened without a pane (the Remote page): which of this PC's panes to link. */
+  localChoices?: Array<{ key: string; label: string }>;
+  localKey?: string;
+  onPickLocal?: (key: string) => void;
   t: T;
 }
 
@@ -66,6 +73,18 @@ export function A2aLinkDialogView(p: A2aLinkDialogViewProps) {
         closeLabel={t('a2aLink.close')}
       />
       <DialogBody className="flex flex-col gap-3">
+        {p.localChoices && p.onPickLocal && (
+          <label className="flex flex-col gap-1 text-[12px] text-[var(--text-sub)]">
+            {t('a2aLink.yourPaneLabel')}
+            <Select
+              value={p.localKey ?? ''}
+              onChange={(e) => p.onPickLocal?.(e.target.value)}
+              data-testid="a2a-link-local"
+            >
+              {p.localChoices.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
+            </Select>
+          </label>
+        )}
         {p.hosts.length === 0 ? (
           <p className="wmux-a2a-note" data-testid="a2a-link-no-hosts">{t('a2aLink.noHosts')}</p>
         ) : (
@@ -167,13 +186,43 @@ export function A2aLinkDialogView(p: A2aLinkDialogViewProps) {
   );
 }
 
+type LocalEnd = { kind: 'pane'; workspaceId: string; paneId: string } | { kind: 'brain'; workspaceId: string };
+
 export interface A2aLinkDialogProps {
-  /** My end: a pane (from the pane menu) or this PC's Moa (its HQ workspace, from the Remote page). */
-  local: { kind: 'pane'; workspaceId: string; paneId: string } | { kind: 'brain'; workspaceId: string };
+  /**
+   * My end: a pane (from the pane menu) or this PC's Moa (its HQ workspace).
+   * Absent (the Remote page): the dialog offers this PC's panes, starting on
+   * the active workspace's focused pane.
+   */
+  local?: LocalEnd;
+  /** Start on this PC (otherwise the only one, when there is one). */
+  initialHostId?: string;
   onClose: () => void;
 }
 
-export default function A2aLinkDialog({ local: end, onClose }: A2aLinkDialogProps) {
+export default function A2aLinkDialog({ local: fixed, initialHostId, onClose }: A2aLinkDialogProps) {
+  // This PC's panes, for the picker shown when no end was handed in. The
+  // Moa HQ is left out: Moa links through its own entry.
+  const workspaces = useStore((s) => s.workspaces);
+  const paneLabels = useStore((s) => s.paneLabel);
+  const agents = useStore((s) => s.surfaceAgent);
+  const hqView = useStore(useShallow((s) => ({ moa: s.moa, moaHqSeed: s.moaHqSeed })));
+  const localChoices = useMemo(() => (fixed ? undefined : workspaces
+    .filter((ws) => !isMoaHqWorkspace(hqView, ws.id))
+    .flatMap((ws) => getWorkspaceLeafPanes(ws).map((leaf) => ({
+      key: `${ws.id}/${leaf.id}`,
+      label: `${ws.name} / ${leafDisplayName(paneLabels, ws, leaf, activeAgentSlug(agents, leaf))}`,
+    })))), [fixed, workspaces, paneLabels, agents, hqView]);
+  const [pickedKey, setPickedKey] = useState<string | null>(() => {
+    if (fixed) return null;
+    const s = useStore.getState();
+    const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
+    return ws?.activePaneId ? `${ws.id}/${ws.activePaneId}` : null;
+  });
+  const localKey = localChoices?.some((c) => c.key === pickedKey) ? pickedKey : localChoices?.[0]?.key ?? null;
+  const end: LocalEnd = fixed ?? (localKey
+    ? { kind: 'pane', workspaceId: localKey.split('/')[0], paneId: localKey.slice(localKey.indexOf('/') + 1) }
+    : { kind: 'pane', workspaceId: '', paneId: '' });
   const workspaceId = end.workspaceId;
   const paneId = end.kind === 'pane' ? end.paneId : '';
   const t = useT();
@@ -203,10 +252,11 @@ export default function A2aLinkDialog({ local: end, onClose }: A2aLinkDialogProp
     void api?.hostsList().then((r) => {
       if (!live || !Array.isArray(r?.hosts)) return;
       setHosts(r.hosts);
-      if (r.hosts.length === 1) setHostId(r.hosts[0].hostId);
+      if (initialHostId && r.hosts.some((h) => h.hostId === initialHostId)) setHostId(initialHostId);
+      else if (r.hosts.length === 1) setHostId(r.hosts[0].hostId);
     }).catch(() => undefined);
     return () => { live = false; };
-  }, [api]);
+  }, [api, initialHostId]);
 
   const cwd = local.cwd;
   useEffect(() => {
@@ -229,6 +279,11 @@ export default function A2aLinkDialog({ local: end, onClose }: A2aLinkDialogProp
   }, [api, hostId]);
 
   const ranked = useMemo(() => (exposed ? rankExposedPanes(exposed, myRemote) : null), [exposed, myRemote]);
+  // One choice, or one on my repo: picked already, the person only confirms.
+  const autoPane = useMemo(() => autoPickPane(ranked, end.kind), [ranked, end.kind]);
+  useEffect(() => {
+    if (autoPane) setSelected((cur) => cur ?? autoPane);
+  }, [autoPane]);
 
   const onPropose = useCallback(async () => {
     if (!api || !hostId || !selected || !local.found) return;
@@ -286,6 +341,7 @@ export default function A2aLinkDialog({ local: end, onClose }: A2aLinkDialogProp
       outcome={outcome}
       onPropose={() => void onPropose()}
       onClose={onClose}
+      {...(localChoices ? { localChoices, localKey: localKey ?? '', onPickLocal: setPickedKey } : {})}
       t={t}
     />
   );

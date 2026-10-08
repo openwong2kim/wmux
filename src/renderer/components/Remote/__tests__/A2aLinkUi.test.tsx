@@ -9,7 +9,7 @@ import { act, createElement, type ReactElement } from 'react';
 import type { A2aExposedPane, A2aLinkRecordV1 } from '../../../../shared/a2aRemote';
 import { A2aLinkDialogView, type A2aLinkDialogViewProps } from '../A2aLinkDialog';
 import { A2aLinksView, type A2aLinksViewProps } from '../A2aLinksPanel';
-import { rankExposedPanes, remoteAlias, repoMismatch } from '../a2aLinkModel';
+import { autoPickPane, rankExposedPanes, remoteAlias, repoMismatch } from '../a2aLinkModel';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -48,6 +48,17 @@ describe('rankExposedPanes', () => {
     expect(repoMismatch('a', 'b')).toBe(true);
     expect(repoMismatch('a', 'a')).toBe(false);
     expect(repoMismatch(null, 'b')).toBe(false);
+  });
+
+  it('picks a pane by itself only when there is one choice or one on my repo', () => {
+    expect(autoPickPane(rankExposedPanes([pane('a', 'x/o/web')], 'x/o/api'), 'pane')?.paneId).toBe('a');
+    expect(autoPickPane(rankExposedPanes([pane('a', 'x/o/web'), pane('b', 'x/o/api')], 'x/o/api'), 'pane')?.paneId).toBe('b');
+    expect(autoPickPane(rankExposedPanes([pane('a', 'x/o/api'), pane('b', 'x/o/api')], 'x/o/api'), 'pane')).toBeNull();
+    expect(autoPickPane(rankExposedPanes([pane('a'), pane('b')], null), 'pane')).toBeNull();
+    // Moa links only with Moa: the panes do not count as choices.
+    const moa: A2aExposedPane = { kind: 'brain', workspaceId: 'hq', workspaceName: 'Moa' };
+    expect(autoPickPane(rankExposedPanes([moa, pane('a')], null), 'brain')).toBe(moa);
+    expect(autoPickPane(null, 'pane')).toBeNull();
   });
 
   it('builds the <PC>/<workspace>/<pane> alias', () => {
@@ -117,6 +128,21 @@ describe('A2aLinkDialogView', () => {
     const body = render(createElement(A2aLinkDialogView, dialogProps({ selected: pane('same', 'x/o/api'), outcome: { ok: false, error: 'timeout', uncertain: true } })));
     expect(body.querySelector('[data-testid="a2a-link-outcome"]')?.textContent).toBe('a2aLink.uncertain');
     expect(body.querySelector('[data-testid="a2a-link-propose"]')).toBeNull();
+  });
+
+  it('offers this PC\'s panes when opened without one, and reports the pick', () => {
+    const onPickLocal = vi.fn();
+    const body = render(createElement(A2aLinkDialogView, dialogProps({
+      localChoices: [{ key: 'w1/p1', label: 'API / build' }, { key: 'w2/p2', label: 'Web / w2-1' }],
+      localKey: 'w1/p1', onPickLocal,
+    })));
+    const select = body.querySelector('[data-testid="a2a-link-local"]') as HTMLSelectElement;
+    expect(select.value).toBe('w1/p1');
+    act(() => {
+      select.value = 'w2/p2';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    expect(onPickLocal).toHaveBeenCalledWith('w2/p2');
   });
 
   it('says so when that PC shows nothing', () => {

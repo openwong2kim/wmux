@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { A2aPeerRecordV1, A2aRemoteHostRecordV1 } from '../../../shared/a2aRemote';
 import type { A2aRemoteJoinError, A2aRemoteStatus } from '../../../shared/rpc';
+import { useA2aInvite } from '../../hooks/useA2aInvite';
 import { useT } from '../../hooks/useT';
 import { useIpc } from '../../hooks/useIpc';
 import UiButton from '../ui/Button';
@@ -295,19 +296,10 @@ export function A2aRemoteSection() {
   const [unavailable, setUnavailable] = useState(false);
   const [busy, setBusy] = useState(false);
   const [portDraft, setPortDraft] = useState('');
-  const [invite, setInvite] = useState<string | null>(null);
-  const [inviteAddresses, setInviteAddresses] = useState<string[]>([]);
-  const [inviteTailnet, setInviteTailnet] = useState<string[]>([]);
+  const invite = useA2aInvite();
+  const { applyPairStatus, forget: forgetInvite } = invite;
   const [removed, setRemoved] = useState<{ name: string; remoteRevoked: boolean } | null>(null);
-  const [deadline, setDeadline] = useState<number | null>(null);
-  const [now, setNow] = useState(() => Date.now());
-  const [copied, setCopied] = useState(false);
   const [joinInput, setJoinInput] = useState('');
-  const [joinBusy, setJoinBusy] = useState(false);
-  const [joinResult, setJoinResult] = useState<
-    { ok: true; name: string } | { ok: false; error: A2aRemoteJoinError; retryUntil?: number } | null
-  >(null);
-  const [lockedUntil, setLockedUntil] = useState<number | null>(null);
   const [fingerprintCopied, setFingerprintCopied] = useState(false);
   const [hosts, setHosts] = useState<A2aRemoteHostRecordV1[]>([]);
   const [peers, setPeers] = useState<A2aPeerRecordV1[]>([]);
@@ -340,9 +332,8 @@ export function A2aRemoteSection() {
     if (h.ok && Array.isArray(h.data?.hosts)) setHosts(h.data.hosts);
     if (p.ok && Array.isArray(p.data?.peers)) setPeers(p.data.peers.filter((x) => x.revokedAt === undefined));
     // The invite was redeemed, cancelled or burned on the daemon side.
-    if (pair.ok && pair.data?.active === false) { setInvite(null); setDeadline(null); }
-    if (pair.ok) setLockedUntil(typeof pair.data?.lockedUntil === 'number' ? pair.data.lockedUntil : null);
-  }, [api, ipcInvoke, applyStatus]);
+    if (pair.ok) applyPairStatus(pair.data);
+  }, [api, ipcInvoke, applyStatus, applyPairStatus]);
 
   useEffect(() => {
     void refresh();
@@ -355,15 +346,9 @@ export function A2aRemoteSection() {
     return () => { off?.(); clearInterval(poll); };
   }, [refresh]);
 
-  // A 1s tick only while something counts down.
-  const retryUntil = joinResult && !joinResult.ok ? joinResult.retryUntil ?? null : null;
-  const counting = deadline != null || (lockedUntil != null && lockedUntil > now) || (retryUntil != null && retryUntil > now);
   useEffect(() => {
-    if (!counting) return;
-    setNow(Date.now());
-    const tick = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(tick);
-  }, [counting]);
+    if (invite.failed) setError(t('settings.a2aRemoteActionFailed'));
+  }, [invite.failed, t]);
 
   const configure = useCallback(async (patch: { enabled?: boolean; port?: number }) => {
     if (!api) return;
@@ -376,8 +361,8 @@ export function A2aRemoteSection() {
       setBusy(false);
     }
     // A stop or rebind drops the open invite daemon-side.
-    setInvite(null); setDeadline(null);
-  }, [api, ipcInvoke, applyStatus, t]);
+    forgetInvite();
+  }, [api, ipcInvoke, applyStatus, t, forgetInvite]);
 
   const onPortCommit = useCallback(() => {
     if (!status) return;
@@ -386,56 +371,13 @@ export function A2aRemoteSection() {
     if (n !== status.port) void configure({ port: n });
   }, [status, portDraft, configure]);
 
-  const onCreateInvite = useCallback(async () => {
-    if (!api) return;
-    setError(null); setCopied(false);
-    const r = await ipcInvoke(() => api.pairBegin());
-    if (r.ok) {
-      setInvite(r.data.invite);
-      setInviteAddresses(Array.isArray(r.data.addresses) ? r.data.addresses : []);
-      setInviteTailnet(Array.isArray(r.data.tailnet) ? r.data.tailnet : []);
-      setDeadline(r.data.expiresAt);
-      setNow(Date.now());
-    }
-    else setError(t('settings.a2aRemoteActionFailed'));
-  }, [api, ipcInvoke, t]);
-
-  const onCancelInvite = useCallback(async () => {
-    if (!api) return;
-    const r = await ipcInvoke(() => api.pairCancel());
-    if (r.ok) { setInvite(null); setDeadline(null); }
-  }, [api, ipcInvoke]);
-
-  const onCopyInvite = useCallback(async () => {
-    if (!invite) return;
-    try {
-      await window.clipboardAPI.writeText(invite);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      setError(t('settings.a2aRemoteActionFailed'));
-    }
-  }, [invite, t]);
-
   const onJoin = useCallback(async () => {
-    if (!api || !joinInput.trim()) return;
-    setJoinBusy(true); setJoinResult(null);
-    const r = await ipcInvoke(() => api.join(joinInput.trim()));
-    setJoinBusy(false);
-    if (!r.ok) { setJoinResult({ ok: false, error: 'failed' }); return; }
-    if (r.data.ok) {
-      setJoinResult({ ok: true, name: r.data.host.name });
+    const r = await invite.join(joinInput);
+    if (r?.ok) {
       setJoinInput('');
       void refresh();
-    } else {
-      const after = r.data.retryAfterMs;
-      setJoinResult({
-        ok: false,
-        error: r.data.error,
-        ...(typeof after === 'number' && after > 0 ? { retryUntil: Date.now() + after } : {}),
-      });
     }
-  }, [api, ipcInvoke, joinInput, refresh]);
+  }, [invite, joinInput, refresh]);
 
   const onCopyFingerprint = useCallback(async () => {
     if (!status?.fingerprint256) return;
@@ -481,41 +423,31 @@ export function A2aRemoteSection() {
 
   const platform: A2aRemotePlatform =
     window.electronAPI?.platform === 'darwin' ? 'darwin' : window.electronAPI?.platform === 'linux' ? 'linux' : 'win32';
-  const joinOutcome: A2aRemoteJoinOutcome = !joinResult
-    ? null
-    : joinResult.ok
-      ? joinResult
-      : {
-          ok: false,
-          error: joinResult.error,
-          ...(joinResult.retryUntil != null ? { retryAfterSec: Math.ceil((joinResult.retryUntil - now) / 1000) } : {}),
-        };
-
   return (
     <A2aRemoteView
       status={status}
       platform={platform}
       fingerprintCopied={fingerprintCopied}
       onCopyFingerprint={() => void onCopyFingerprint()}
-      lockedSec={lockedUntil != null ? Math.ceil((lockedUntil - now) / 1000) : null}
+      lockedSec={invite.lockedSec}
       busy={busy}
       onToggleEnabled={(v) => void configure({ enabled: v })}
       portDraft={portDraft}
       onPortDraft={setPortDraft}
       onPortCommit={onPortCommit}
-      invite={invite}
-      inviteAddresses={inviteAddresses}
-      inviteTailnet={inviteTailnet}
-      remainingSec={deadline != null ? Math.ceil((deadline - now) / 1000) : null}
-      copied={copied}
-      onCreateInvite={() => void onCreateInvite()}
-      onCopyInvite={() => void onCopyInvite()}
-      onCancelInvite={() => void onCancelInvite()}
+      invite={invite.invite}
+      inviteAddresses={invite.addresses}
+      inviteTailnet={invite.tailnet}
+      remainingSec={invite.remainingSec}
+      copied={invite.copied}
+      onCreateInvite={() => { setError(null); void invite.create(); }}
+      onCopyInvite={() => void invite.copy()}
+      onCancelInvite={() => void invite.cancel()}
       joinInput={joinInput}
       onJoinInput={setJoinInput}
       onJoin={() => void onJoin()}
-      joinBusy={joinBusy}
-      joinOutcome={joinOutcome}
+      joinBusy={invite.joinBusy}
+      joinOutcome={invite.joinOutcome}
       hosts={hosts}
       peers={peers}
       confirming={confirming}
