@@ -129,6 +129,28 @@ describe('RemoteHostStore', () => {
     expect(t.get(HOST)?.addresses).toEqual(['desk-pc', '100.64.0.2', '10.0.0.5']);
   });
 
+  it('a failed promotion write (Windows) keeps every pairing and the old order, and the store stays usable', () => {
+    const removed: string[] = [];
+    const s = make({ win32: true, remove: (p) => removed.push(p) });
+    s.add(host({ addresses: ['10.0.0.5', '100.64.0.2'] }), { peerId: PEER, secret: SECRET });
+    s.add(host({ hostId: HOST2, peerId: PEER2 }), { peerId: PEER2, secret: SECRET2 });
+    removed.length = 0;
+    fail = true;
+    expect(() => s.promoteAddress(HOST, '100.64.0.2')).toThrow('disk full');
+    expect(removed).toEqual([]); // no scrub
+    expect(s.get(HOST)?.addresses).toEqual(['10.0.0.5', '100.64.0.2']);
+    expect(s.credentialFor(HOST)).toEqual({ peerId: PEER, secret: SECRET });
+    expect(s.credentialFor(HOST2)).toEqual({ peerId: PEER2, secret: SECRET2 });
+    // Still writable: the next promotion lands once the file is free again.
+    fail = false;
+    expect(s.promoteAddress(HOST, '100.64.0.2')).toBe(true);
+    expect(make().get(HOST)?.addresses).toEqual(['100.64.0.2', '10.0.0.5']);
+    // Control: the credential mutations keep their fail-closed scrub.
+    fail = true;
+    expect(() => s.updateAddresses(HOST, ['10.0.0.9'])).toThrow('disk full');
+    expect(s.list()).toEqual([]);
+  });
+
   it('addressPromoter logs a failed write instead of throwing into the connect', () => {
     const s = make();
     s.add(host({ addresses: ['10.0.0.5', '100.64.0.2'] }), { peerId: PEER, secret: SECRET });

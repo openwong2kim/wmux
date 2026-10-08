@@ -23,7 +23,7 @@ function props(over: Partial<A2aRemoteViewProps> = {}): A2aRemoteViewProps {
     },
     platform: 'darwin', fingerprintCopied: false, onCopyFingerprint: () => undefined, lockedSec: null,
     busy: false, onToggleEnabled: () => undefined, portDraft: '45660', onPortDraft: () => undefined, onPortCommit: () => undefined,
-    invite: null, inviteAddresses: [], remainingSec: null, copied: false,
+    invite: null, inviteAddresses: [], inviteTailnet: [], remainingSec: null, copied: false,
     onCreateInvite: () => undefined, onCopyInvite: () => undefined, onCancelInvite: () => undefined,
     joinInput: '', onJoinInput: () => undefined, onJoin: () => undefined, joinBusy: false, joinOutcome: null,
     hosts: [], peers: [], confirming: null, removed: null,
@@ -126,13 +126,17 @@ describe('A2aRemoteView — addresses and outcomes', () => {
     expect(html).toContain('settings.a2aRemoteInviteAddresses(desk, 10.0.0.5)');
   });
 
-  it('labels the tailnet address so the invite reads as working over Tailscale too', () => {
+  it('labels only the addresses the daemon flagged as tailnet, not every 100.64/10 one', () => {
     const html = render(props({
-      invite: 'wmux-a2a://desk:45660/ABCDEFGH#sha256=x&alt=10.0.0.5,100.64.0.2',
-      inviteAddresses: ['desk', '10.0.0.5', '100.64.0.2'],
+      invite: 'wmux-a2a://desk:45660/ABCDEFGH#sha256=x&alt=10.0.0.5,100.64.0.2,100.100.0.7',
+      // 100.100.0.7: CGNAT on some other virtual adapter, offered but not a tailnet address.
+      inviteAddresses: ['desk', '10.0.0.5', '100.64.0.2', '100.100.0.7'],
+      inviteTailnet: ['100.64.0.2'],
       remainingSec: 30,
     }));
-    expect(html).toContain('settings.a2aRemoteInviteAddresses(desk, 10.0.0.5, settings.a2aRemoteInviteTailnetAddress(100.64.0.2))');
+    expect(html).toContain(
+      'settings.a2aRemoteInviteAddresses(desk, 10.0.0.5, settings.a2aRemoteInviteTailnetAddress(100.64.0.2), 100.100.0.7)',
+    );
   });
 
   it('says whether a removed PC was told', () => {

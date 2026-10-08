@@ -194,9 +194,8 @@ export function isCanonicalIpv4(v: string): boolean {
 
 /**
  * 100.64.0.0/10: carrier-grade NAT, and the range Tailscale assigns tailnet
- * addresses from. An invite only offers such an address when it sits on a
- * Tailscale adapter (or when this PC has nothing better), so the UI labels
- * one in an invite as the tailnet address.
+ * addresses from. The range alone does not make a tailnet address; the
+ * listener also checks that it sits on a Tailscale adapter.
  */
 export function isTailnetIpv4(v: string): boolean {
   if (!IPV4_RE.test(v)) return false;

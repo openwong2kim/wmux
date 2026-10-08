@@ -93,6 +93,11 @@ export interface A2aServerDeps {
   hostname?: () => string;
   /** The IPv4s another PC should try, best first. Default `inviteIpv4s()`. */
   ipv4s?: () => string[];
+  /**
+   * This PC's tailnet IPv4s (100.64/10 on a Tailscale adapter). Default: from
+   * `rankedExternalIpv4s()`, or none when `ipv4s` is overridden.
+   */
+  tailnetIpv4s?: () => string[];
   /** Bind address. Default `0.0.0.0` (PoC); tests bind loopback. */
   bindHost?: string;
   /** Clock for the invite's lifetime and the pairing backoff. Default `Date.now`. */
@@ -169,11 +174,12 @@ export function inviteIpv4s(ranked: RankedIpv4[] = rankedExternalIpv4s()): strin
  * goes to a tailnet address instead, so a PC with many adapters is still
  * reachable over the tailnet.
  */
-export function inviteAlt(ips: readonly string[], host: string): string[] {
+export function inviteAlt(ips: readonly string[], host: string, tailnet: ReadonlySet<string>): string[] {
+  const isTailnet = (ip: string): boolean => tailnet.has(ip);
   const rest = ips.filter((ip) => ip !== host);
   const alt = rest.slice(0, INVITE_ALT_MAX);
-  const tailnet = rest.find(isTailnetIpv4);
-  if (tailnet && !isTailnetIpv4(host) && !alt.some(isTailnetIpv4)) alt[alt.length - 1] = tailnet;
+  const reserve = rest.find(isTailnet);
+  if (reserve && !isTailnet(host) && !alt.some(isTailnet)) alt[alt.length - 1] = reserve;
   return alt;
 }
 
@@ -181,6 +187,7 @@ export class A2aServer {
   private readonly deps: A2aServerDeps;
   private readonly hostname: () => string;
   private readonly ipv4s: () => string[];
+  private readonly tailnetIpv4s: () => string[];
   private readonly now: () => number;
   private readonly loadIdentity: (opts: HostIdentityOptions) => HostIdentity;
   private readonly log: A2aServerLog;
@@ -200,6 +207,9 @@ export class A2aServer {
     this.deps = deps;
     this.hostname = deps.hostname ?? ((): string => os.hostname());
     this.ipv4s = deps.ipv4s ?? ((): string[] => inviteIpv4s());
+    this.tailnetIpv4s =
+      deps.tailnetIpv4s ??
+      (deps.ipv4s ? (): string[] => [] : (): string[] => rankedExternalIpv4s().filter((r) => r.tailnet).map((r) => r.address));
     this.now = deps.now ?? Date.now;
     this.loadIdentity = deps.loadIdentity ?? loadOrCreateHostIdentity;
     this.pairing = new PairingSlot({ now: this.now });
@@ -257,9 +267,11 @@ export class A2aServer {
     const ips = this.ipv4s();
     const host = inviteHost(this.hostname(), ips);
     if (!host) throw new Error('a2a.remote.pair.begin: this PC has no usable name or IPv4 address');
-    const alt = inviteAlt(ips, host);
+    const tailnet = new Set(this.tailnetIpv4s());
+    const alt = inviteAlt(ips, host, tailnet);
     const opened = this.pairing.begin({ host, port: this.port, fingerprint256: this.identity.fingerprint256, alt });
-    return { ...opened, addresses: [host, ...alt] };
+    const addresses = [host, ...alt];
+    return { ...opened, addresses, tailnet: addresses.filter((a) => tailnet.has(a)) };
   }
 
   cancelPairing(): void {

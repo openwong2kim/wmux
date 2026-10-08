@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { isTailnetIpv4, type A2aPeerRecordV1, type A2aRemoteHostRecordV1 } from '../../../shared/a2aRemote';
+import type { A2aPeerRecordV1, A2aRemoteHostRecordV1 } from '../../../shared/a2aRemote';
 import type { A2aRemoteJoinError, A2aRemoteStatus } from '../../../shared/rpc';
 import { useT } from '../../hooks/useT';
 import { useIpc } from '../../hooks/useIpc';
@@ -56,6 +56,8 @@ export interface A2aRemoteViewProps {
   invite: string | null;
   /** The addresses the open invite offers, in the order the other PC tries them. */
   inviteAddresses: string[];
+  /** Those of `inviteAddresses` that are this PC's tailnet addresses (labelled "(Tailscale)"). */
+  inviteTailnet: string[];
   remainingSec: number | null;
   copied: boolean;
   onCreateInvite: () => void;
@@ -94,7 +96,7 @@ export function formatRemaining(sec: number): string {
 export function A2aRemoteView(props: A2aRemoteViewProps) {
   const {
     status, platform, fingerprintCopied, onCopyFingerprint, lockedSec, busy, onToggleEnabled, portDraft, onPortDraft, onPortCommit,
-    invite, inviteAddresses, remainingSec, copied, onCreateInvite, onCopyInvite, onCancelInvite,
+    invite, inviteAddresses, inviteTailnet, remainingSec, copied, onCreateInvite, onCopyInvite, onCancelInvite,
     joinInput, onJoinInput, onJoin, joinBusy, joinOutcome,
     hosts, peers, confirming, removed, onAsk, onConfirm, onCancelConfirm, exposureOpen, onToggleExposure, renderExposure, error, t,
   } = props;
@@ -183,7 +185,7 @@ export function A2aRemoteView(props: A2aRemoteViewProps) {
           <SettingNote data-testid="a2a-remote-invite-addresses">
             {t('settings.a2aRemoteInviteAddresses', {
               addresses: inviteAddresses
-                .map((a) => (isTailnetIpv4(a) ? t('settings.a2aRemoteInviteTailnetAddress', { address: a }) : a))
+                .map((a) => (inviteTailnet.includes(a) ? t('settings.a2aRemoteInviteTailnetAddress', { address: a }) : a))
                 .join(', '),
             })}
           </SettingNote>
@@ -295,6 +297,7 @@ export function A2aRemoteSection() {
   const [portDraft, setPortDraft] = useState('');
   const [invite, setInvite] = useState<string | null>(null);
   const [inviteAddresses, setInviteAddresses] = useState<string[]>([]);
+  const [inviteTailnet, setInviteTailnet] = useState<string[]>([]);
   const [removed, setRemoved] = useState<{ name: string; remoteRevoked: boolean } | null>(null);
   const [deadline, setDeadline] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -390,6 +393,7 @@ export function A2aRemoteSection() {
     if (r.ok) {
       setInvite(r.data.invite);
       setInviteAddresses(Array.isArray(r.data.addresses) ? r.data.addresses : []);
+      setInviteTailnet(Array.isArray(r.data.tailnet) ? r.data.tailnet : []);
       setDeadline(r.data.expiresAt);
       setNow(Date.now());
     }
@@ -501,6 +505,7 @@ export function A2aRemoteSection() {
       onPortCommit={onPortCommit}
       invite={invite}
       inviteAddresses={inviteAddresses}
+      inviteTailnet={inviteTailnet}
       remainingSec={deadline != null ? Math.ceil((deadline - now) / 1000) : null}
       copied={copied}
       onCreateInvite={() => void onCreateInvite()}

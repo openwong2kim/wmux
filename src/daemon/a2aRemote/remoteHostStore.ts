@@ -48,7 +48,9 @@ import { errMsg, isIsoString, isPlainObject, loadStore, sanitizeName, storeUnava
  * leaves the store unavailable and the original untouched.
  *
  * Write failure: `add` / `updateAddresses` / `updateFingerprint` roll memory
- * back and throw. `remove` keeps the in-memory removal and throws (#658: a
+ * back and throw. `promoteAddress` (automatic, on reconnect) also rolls back
+ * and throws, but never scrubs the store: a transient lock on the file must
+ * not wipe every pairing over a dial-order optimisation. `remove` keeps the in-memory removal and throws (#658: a
  * removal that un-happens on a disk error would keep presenting a credential
  * the operator meant to drop).
  */
@@ -205,13 +207,25 @@ export class RemoteHostStore {
    * dial it first next time. Writes only when the order changes; false when
    * nothing changed (already first, or not one of the host's addresses — a
    * connect never adds an address).
+   *
+   * Runs on its own during a background reconnect and is only an
+   * optimisation, so a failed write does NOT take the fail-closed path of the
+   * other mutations (scrubbing every pairing on Windows): the previous order
+   * is restored in memory, the store stays usable, and the error is thrown
+   * for the caller to log.
    */
   promoteAddress(hostId: HostId, address: string): boolean {
     const rec = this.hosts.get(hostId);
-    if (!rec) return false;
+    if (!rec || !this.writable) return false;
     const i = rec.addresses.findIndex((a) => a.toLowerCase() === address.toLowerCase());
     if (i <= 0) return false;
-    this.updateAddresses(hostId, [rec.addresses[i], ...rec.addresses.filter((_, j) => j !== i)]);
+    this.hosts.set(hostId, { ...rec, addresses: [rec.addresses[i], ...rec.addresses.filter((_, j) => j !== i)] });
+    try {
+      this.persist({ scrubOnFailure: false });
+    } catch (err) {
+      this.hosts.set(hostId, rec);
+      throw err;
+    }
     return true;
   }
 
@@ -271,7 +285,7 @@ export class RemoteHostStore {
     if (!this.writable) throw storeUnavailable(REMOTE_HOSTS_FILE);
   }
 
-  private persist(): void {
+  private persist({ scrubOnFailure = true }: { scrubOnFailure?: boolean } = {}): void {
     const file: RemoteHostsFileV1 = {
       v: A2A_REMOTE_RECORD_V,
       hosts: [...this.hosts.values()],
@@ -280,7 +294,7 @@ export class RemoteHostStore {
     try {
       this.write(this.filePath, file);
     } catch (err) {
-      if (this.win32) this.scrubAfterFailedWrite();
+      if (this.win32 && scrubOnFailure) this.scrubAfterFailedWrite();
       throw err;
     }
     // POSIX: the write rotated the previous generation to `.bak`. This store

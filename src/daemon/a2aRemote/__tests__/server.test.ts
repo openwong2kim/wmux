@@ -266,4 +266,13 @@ describe('A2aServer — pairing', () => {
       fingerprint256: pc.server.status().fingerprint256,
     });
   });
+
+  it('pair.begin flags only the tailnet addresses it was told about, not every 100.64/10 one', async () => {
+    const pc = await makePc('PC A', {
+      deps: { ipv4s: () => ['127.0.0.1', '100.64.0.2', '100.100.0.7'], tailnetIpv4s: () => ['100.64.0.2'] },
+    });
+    const begun = pc.server.beginPairing();
+    expect(begun.addresses).toEqual(['127.0.0.1', '100.64.0.2', '100.100.0.7']);
+    expect(begun.tailnet).toEqual(['100.64.0.2']);
+  });
 });

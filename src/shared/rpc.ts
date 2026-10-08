@@ -1383,6 +1383,8 @@ export interface A2aRemotePairBeginResult {
   expiresAt: number;
   /** The addresses the invite offers, in the order the other PC tries them. */
   addresses: string[];
+  /** Those of `addresses` that are this PC's tailnet (Tailscale) addresses. Absent from an older daemon. */
+  tailnet?: string[];
 }
 
 /** `a2a.remote.pair.status` */

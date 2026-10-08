@@ -113,17 +113,20 @@ describe('invite addresses', () => {
 
   it('alt keeps the last slot for a tailnet address when LAN addresses would fill every slot', () => {
     const many = ['10.0.0.1', '10.0.0.2', '10.0.0.3', '10.0.0.4', '10.0.0.5'];
+    const tail = new Set(['100.64.0.2']);
     // Name host: 4 slots, LAN would fill them all.
-    expect(inviteAlt([...many, '100.64.0.2'], 'desk-pc')).toEqual(['10.0.0.1', '10.0.0.2', '10.0.0.3', '100.64.0.2']);
+    expect(inviteAlt([...many, '100.64.0.2'], 'desk-pc', tail)).toEqual(['10.0.0.1', '10.0.0.2', '10.0.0.3', '100.64.0.2']);
     // IP host (no usable name): host + 4 alt, still one of them the tailnet address.
-    expect(inviteAlt([...many, '100.64.0.2'], '10.0.0.1')).toEqual(['10.0.0.2', '10.0.0.3', '10.0.0.4', '100.64.0.2']);
+    expect(inviteAlt([...many, '100.64.0.2'], '10.0.0.1', tail)).toEqual(['10.0.0.2', '10.0.0.3', '10.0.0.4', '100.64.0.2']);
     // No tailnet address: LAN behaviour unchanged (host + 4).
-    expect(inviteAlt(many, 'desk-pc')).toEqual(many.slice(0, 4));
-    expect(inviteAlt(many, '10.0.0.1')).toEqual(many.slice(1, 5));
+    expect(inviteAlt(many, 'desk-pc', new Set())).toEqual(many.slice(0, 4));
+    expect(inviteAlt(many, '10.0.0.1', new Set())).toEqual(many.slice(1, 5));
+    // A CGNAT address that is not a tailnet one gets no reserved slot.
+    expect(inviteAlt([...many, '100.100.0.7'], 'desk-pc', tail)).toEqual(many.slice(0, 4));
     // Room to spare: nothing is replaced.
-    expect(inviteAlt(['10.0.0.1', '100.64.0.2'], 'desk-pc')).toEqual(['10.0.0.1', '100.64.0.2']);
+    expect(inviteAlt(['10.0.0.1', '100.64.0.2'], 'desk-pc', tail)).toEqual(['10.0.0.1', '100.64.0.2']);
     // The tailnet address is the host itself: no slot reserved.
-    expect(inviteAlt(['100.64.0.2', ...many], '100.64.0.2')).toEqual(many.slice(0, 4));
+    expect(inviteAlt(['100.64.0.2', ...many], '100.64.0.2', tail)).toEqual(many.slice(0, 4));
   });
 
   it('an invite carries the name as host and the ranked IPv4s as alt', () => {
