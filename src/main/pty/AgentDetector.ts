@@ -506,15 +506,109 @@ function candidateLines(text: string): string[] {
  * The WebFetch dialog asks `Do you want to allow Claude to fetch this
  * content?` (Claude Code 2.1.292); a narrow pane wraps it after `fetch` or
  * `this`, and the rest is read off the next row like a wrapped filename.
+ *
+ * #1931 — the diff can skip LETTERS too. A cell that already shows the right
+ * character is passed over with a cursor-forward (`CSI n C`) instead of being
+ * written again. For a space that never mattered (stripping the escape only
+ * closes the gap), but a skipped letter drops out of the row: the second Bash
+ * dialog of a Windows session arrived as `pr ESC[1C ceed?`, read as
+ * `prceed?`, and nothing ever raised it. So the scan keeps one SKIPPED_CELL per
+ * skipped cell, and the question and first-option patterns accept one
+ * wherever a character is expected. A bound on how many letters may be
+ * missing keeps a row the renderer skipped wholesale from reading as a dialog.
  */
-const DIALOG_FRAME = '[\\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]';
+const SKIPPED_CELL = '￿';
+const SKIPPED_CELL_G = /￿/g;
+// eslint-disable-next-line no-control-regex
+const CURSOR_FORWARD_G = /\u001b\[(\d{0,4})C/g;
+/** A cursor-forward wider than this is a layout jump, not a run of skipped cells. */
+const MAX_SKIPPED_RUN = 512;
+/** Most letters of the question's fixed words a match may be missing. */
+const MAX_SKIPPED_QUESTION_LETTERS = 3;
+/** Most of the first option's five cells (`❯`, `1`, `Yes`) a match may be missing. */
+const MAX_SKIPPED_OPTION_CELLS = 2;
+const DIALOG_FRAME = `[\\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·${SKIPPED_CELL}]`;
+/**
+ * Between two words: nothing (a CHA/CUP gap), spaces, or skipped cells. Lazy,
+ * so a run of skipped cells is first offered to the letters after it: greedy,
+ * `to ESC[7C ?` (all of "proceed" skipped) matched as `to` + gap + a fully
+ * skipped `create`, and the right reading was never tried.
+ */
+const DIALOG_GAP = `[\\s${SKIPPED_CELL}]*?`;
+/** `phrase` as a pattern where every character may also be a skipped cell. */
+function skippable(phrase: string): string {
+  return phrase.split(' ')
+    .map((word) => [...word].map((ch) => `[${ch.replace(/[\\\]^-]/g, '\\$&')}${SKIPPED_CELL}]`).join(''))
+    .join(DIALOG_GAP);
+}
+const DIALOG_EDIT_VERBS = ['create', 'overwrite', 'make this edit to'].map((verb) => ({ verb, re: new RegExp(`^${skippable(verb)}$`) }));
 const DIALOG_QUESTION_RE = new RegExp(
-  `(?:^|${DIALOG_FRAME})(Do\\s*you\\s*want\\s*to\\s*(?:(proceed\\?|allow\\s*Claude\\s*to\\s*fetch(?:\\s*this(?:\\s*content\\?)?)?)|(?:create|overwrite|make\\s*this\\s*edit\\s*to)(?:\\s*\\S[^?]*\\?)?))`,
+  `(?:^|${DIALOG_FRAME})(${skippable('Do you want to')}${DIALOG_GAP}(?:`
+  + `(?<proceed>${skippable('proceed?')})`
+  + `|(?<fetch>${skippable('allow Claude to fetch')}(?:${DIALOG_GAP}(?<fetchThis>${skippable('this')})(?:${DIALOG_GAP}(?<fetchContent>${skippable('content?')}))?)?)`
+  + `|(?<edit>${DIALOG_EDIT_VERBS.map((v) => skippable(v.verb)).join('|')})(?:${DIALOG_GAP}(?<file>\\S[^?]*\\?))?`
+  + '))',
   'g',
 );
-const DIALOG_OPTION_RE = new RegExp(`^${DIALOG_FRAME}*❯\\s*1\\.?\\s*Yes\\b`);
+const DIALOG_OPTION_RE = new RegExp(
+  `^${DIALOG_FRAME}*(?<cursor>[❯${SKIPPED_CELL}])${DIALOG_GAP}(?<one>[1${SKIPPED_CELL}])[.${SKIPPED_CELL}]?${DIALOG_GAP}`
+  + `(?<yes>[Y${SKIPPED_CELL}][e${SKIPPED_CELL}][s${SKIPPED_CELL}])(?![A-Za-z0-9_])`,
+);
 const DIALOG_BLANK_RE = new RegExp(`^${DIALOG_FRAME}*$`);
 const DIALOG_FILENAME_RE = new RegExp(`^${DIALOG_FRAME}*(\\S[^?]*\\?)`);
+
+/** A completed row as the dialog scan reads it: escapes stripped, each skipped cell kept as SKIPPED_CELL. */
+function dialogRowText(row: string): string {
+  if (!row.includes('\u001b')) return row;
+  return row
+    .replace(CURSOR_FORWARD_G, (_, n: string) => {
+      const cells = Number(n) || 1;
+      return cells > MAX_SKIPPED_RUN ? '' : SKIPPED_CELL.repeat(cells);
+    })
+    .replace(ANSI_STRIP, '');
+}
+
+/** Characters actually drawn: no whitespace, no skipped cells. */
+function drawnLength(text: string): number {
+  return text.replace(/[\s￿]/g, '').length;
+}
+
+/** Cheap pre-check: a question row keeps at least one of these words whole. */
+function mayHoldDialogQuestion(row: string): boolean {
+  return row.includes('want') || row.includes('proceed');
+}
+
+/**
+ * The question a DIALOG_QUESTION_RE match stands for, spelled out in full, or
+ * null when too many letters of its fixed words were skipped. The full
+ * spelling is also the emission dedup value, so a partial redraw of the same
+ * question cannot count as a new one.
+ */
+function dialogQuestionText(m: RegExpExecArray): string | null {
+  const g = m.groups ?? {};
+  let words: string;
+  if (g.proceed !== undefined) words = 'proceed?';
+  else if (g.fetch !== undefined) {
+    words = 'allow Claude to fetch';
+    if (g.fetchThis !== undefined) words += g.fetchContent !== undefined ? ' this content?' : ' this';
+  } else {
+    const verb = DIALOG_EDIT_VERBS.find((v) => v.re.test(g.edit ?? ''));
+    if (!verb) return null;
+    words = verb.verb;
+  }
+  const canonical = `Do you want to ${words}`;
+  const file = g.file ?? '';
+  const missing = drawnLength(canonical) - (drawnLength(m[1]) - drawnLength(file));
+  if (missing > MAX_SKIPPED_QUESTION_LETTERS) return null;
+  return file ? `${canonical} ${file.replace(SKIPPED_CELL_G, '')}` : canonical;
+}
+
+/** Whether `row` (from its start) is the dialog's first option, `❯ 1. Yes`. */
+function isDialogOption(row: string): boolean {
+  const g = DIALOG_OPTION_RE.exec(row)?.groups;
+  if (!g) return false;
+  return 5 - drawnLength(`${g.cursor}${g.one}${g.yes}`) <= MAX_SKIPPED_OPTION_CELLS;
+}
 const ROW_BREAK_G = new RegExp(ROW_BREAK_RE.source, 'g');
 /** Longest incomplete row the dialog scan carries between chunks. */
 const MAX_DIALOG_ROW = 4096;
@@ -793,33 +887,38 @@ export class AgentDetector {
     const tail = rows.pop() ?? '';
     this.dialogRow = tail.length > MAX_DIALOG_ROW ? tail.slice(-MAX_DIALOG_ROW) : tail;
     for (const row of rows) {
-      if (!this.dialogQuestion && !row.includes('want')) continue;
-      const clean = stripAnsi(row).trim();
-      if (!clean) continue;
+      if (!this.dialogQuestion && !mayHoldDialogQuestion(row)) continue;
+      const clean = dialogRowText(row).trim();
+      // Nothing drawn (or only skipped cells): a pending question waits on.
+      if (drawnLength(clean) === 0) continue;
       const q = this.dialogQuestion;
       this.dialogQuestion = null;
       if (q) {
-        if (!q.needsFilename && DIALOG_OPTION_RE.test(clean)) {
+        if (!q.needsFilename && isDialogOption(clean)) {
           this.emitDialog(q);
           continue;
         }
         if (q.needsFilename) {
           const m = DIALOG_FILENAME_RE.exec(clean);
           if (m) {
-            this.afterQuestion({ ...q, text: `${q.text} ${m[1]}`, needsFilename: false }, clean.slice(m[0].length));
+            this.afterQuestion({ ...q, text: `${q.text} ${m[1].replace(SKIPPED_CELL_G, '')}`, needsFilename: false }, clean.slice(m[0].length));
             continue;
           }
         }
       }
-      if (!clean.includes('want')) continue;
-      let last: RegExpExecArray | null = null;
+      if (!mayHoldDialogQuestion(clean)) continue;
+      let last: { match: RegExpExecArray; text: string } | null = null;
       DIALOG_QUESTION_RE.lastIndex = 0;
-      for (let m = DIALOG_QUESTION_RE.exec(clean); m; m = DIALOG_QUESTION_RE.exec(clean)) last = m;
+      for (let m = DIALOG_QUESTION_RE.exec(clean); m; m = DIALOG_QUESTION_RE.exec(clean)) {
+        const text = dialogQuestionText(m);
+        if (text !== null) last = { match: m, text };
+      }
       if (!last) continue;
-      const text = last[1];
+      const { match, text } = last;
+      const groups = match.groups ?? {};
       this.afterQuestion(
-        { text, proceed: last[2] !== undefined, needsFilename: !text.endsWith('?'), reported: approvalEmitted },
-        clean.slice(last.index + last[0].length),
+        { text, proceed: groups.proceed !== undefined || groups.fetch !== undefined, needsFilename: !text.endsWith('?'), reported: approvalEmitted },
+        clean.slice(match.index + match[0].length),
       );
     }
   }
@@ -828,7 +927,7 @@ export class AgentDetector {
   private afterQuestion(q: DialogQuestion, rest: string): void {
     if (DIALOG_BLANK_RE.test(rest)) {
       this.dialogQuestion = q;
-    } else if (!q.needsFilename && DIALOG_OPTION_RE.test(rest)) {
+    } else if (!q.needsFilename && isDialogOption(rest)) {
       this.emitDialog(q);
     }
   }

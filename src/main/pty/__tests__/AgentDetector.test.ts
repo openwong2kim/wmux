@@ -1234,6 +1234,64 @@ describe('AgentDetector', () => {
         });
       });
 
+      describe('#1931 — a dialog drawn over cells that already held its characters', () => {
+        // The second Bash dialog of a session, copied byte-for-byte from a
+        // 100x30 Windows pane (Claude Code 2.1.294, isolated daemon, no
+        // PermissionRequest hook). The renderer moves the cursor forward over
+        // a cell that already shows the right character instead of writing it
+        // again, so the `o` of "proceed" (and the `t` of "to" in the
+        // description) never reach the wire: `pr ESC[1C ceed?`. Only the
+        // working-directory path was replaced.
+        const H = '─'.repeat(100);
+        const D = '╌'.repeat(100);
+        const SECOND_DIALOG =
+          `\u001b[17;1H${H}\u001b[18;2HBash\u001b[1Ccommand\r\n Tip: auto mode handles these prompts\u001b[1Cf\u001b[2C you\u001b[1C— choose "switch\u001b[1Cto\u001b[1Cauto\u001b[1Cmode"\u001b[1Cbelow`
+          + `\u001b[20;2HWrite\u001b[1Ckey-test \u001b[1Co fx-d.txt in the\u001b[1Cworking\u001b[1Cdirectory\r\n${D}`
+          + `\u001b[22;2Hecho\u001b[1Ckey-test\u001b[1C>\u001b[1Cfx-d.txt\r\n${D}`
+          + '\u001b[24;2HDo\u001b[1Cyou want to pr\u001b[1Cceed?\u001b[1C\u001b[K\u001b[25;2H❯\u001b[1C1.\u001b[1CYes\r\n'
+          + '   2. Yes, and always allow access to C:\\work from this project     \u001b[1C3.\u001b[1CYes,\u001b[1Cand\u001b[1Cswitch\u001b[1Cto\u001b[1Cauto\u001b[1Cmode\u001b[1C·\u001b[1Cauto\u001b[1Cmode\u001b[1Chandles\u001b[1Cthese\u001b[1Cprompts\u001b[1Cfor\u001b[1Cyou\r\n'
+          + `   4. No${' '.repeat(92)}\u001b[29;3H\u001b[K\u001b[30;2HEsc to cancel · Tab\u001b[1Cto amend\u001b[K`;
+
+        it('emits awaiting_input once, however the frame is chunked', () => {
+          for (const size of [SECOND_DIALOG.length, 1, 7, 64, 512]) {
+            const { det, cb } = claudeGated();
+            for (let i = 0; i < SECOND_DIALOG.length; i += size) det.feed(SECOND_DIALOG.slice(i, i + size));
+            expect(statuses(cb)).toEqual(APPROVAL);
+          }
+        });
+
+        it('a full draw and a later partial redraw of the same dialog emit once', () => {
+          const { det, cb } = claudeGated();
+          det.feed('\u001b[24;2HDo\u001b[1Cyou\u001b[1Cwant\u001b[1Cto\u001b[1Cproceed?\u001b[K\u001b[25;2H❯\u001b[1C1.\u001b[1CYes\r\n');
+          det.feed('\u001b[24;2HDo\u001b[1Cyou want to pr\u001b[1Cceed?\u001b[1C\u001b[K\u001b[25;2H❯\u001b[1C1.\u001b[1CYes\r\n');
+          expect(statuses(cb)).toEqual(APPROVAL);
+        });
+
+        it('a skipped cell in the option row still reads as the option', () => {
+          for (const option of ['❯\u001b[1C1\u001b[2CYes', '\u001b[1C\u001b[1C1.\u001b[1CYes', '❯\u001b[1C1.\u001b[1CY\u001b[1Cs']) {
+            const { det, cb } = claudeGated();
+            det.feed(`\u001b[24;2HDo\u001b[1Cyou\u001b[1Cwant\u001b[1Cto\u001b[1Cproceed?\u001b[K\u001b[25;2H${option}\r\n`);
+            expect(statuses(cb)).toEqual(APPROVAL);
+          }
+        });
+
+        it.each([
+          ['every cell of both rows skipped', '\u001b[24;2H\u001b[23C\u001b[K\u001b[25;2H\u001b[8C\r\n'],
+          ['"proceed" skipped but its "?"', '\u001b[24;2HDo\u001b[1Cyou\u001b[1Cwant\u001b[1Cto\u001b[1C\u001b[6C?\u001b[K\u001b[25;2H❯\u001b[1C1.\u001b[1CYes\r\n'],
+          ['the option row skipped but its "."', '\u001b[24;2HDo\u001b[1Cyou\u001b[1Cwant\u001b[1Cto\u001b[1Cproceed?\u001b[K\u001b[25;2H\u001b[3C.\u001b[4C\r\n'],
+        ])('a row made mostly of skipped cells stays silent: %s', (_, frame) => {
+          const { det, cb } = claudeGated();
+          det.feed(frame);
+          expect(cb).not.toHaveBeenCalled();
+        });
+
+        it('a quoted question with skipped cells inside a sentence stays silent', () => {
+          const { det, cb } = claudeGated();
+          det.feed('\u001b[12;2HIf\u001b[1Cit\u001b[1Casks\u001b[1C"Do\u001b[1Cyou want to pr\u001b[1Cceed?"\u001b[1Csay\u001b[1Cno\u001b[13;2H❯\u001b[1C1.\u001b[1CYes\r\n');
+          expect(cb).not.toHaveBeenCalled();
+        });
+      });
+
       it('a dialog row redrawn before the answer does not re-raise the dialog when a clear completes its line', () => {
         const { det, cb } = claudeGated();
         // The dialog is drawn, then laid out again two rows lower (diff redraw
