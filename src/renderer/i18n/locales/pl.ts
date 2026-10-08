@@ -1319,7 +1319,7 @@ export const pl = {
   'settings.navGroupApp': 'Aplikacja',
   'settings.navGroupAgents': 'Agenci',
   'settings.navGroupSystem': 'System',
-  'settings.tabKeyboard': 'Klawiatura',
+  'settings.tabKeyboard': 'Skróty Klawiatury',
   'settings.tabClaudeCode': 'Claude Code',
   'settings.tabOrchestrator': 'Orkiestrator',
   'settings.tabMoa': "Moa",

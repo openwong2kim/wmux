@@ -56,6 +56,12 @@ describe('pl locale coverage (#997 follow-up: en/ko/zh are the only verified-com
     expect(mismatches).toEqual([]);
   });
 
+  // #1822: the Settings nav item and page title for the shortcuts page come
+  // from settings.tabKeyboard. "Klawiatura" read as device keyboard settings.
+  it('names the shortcuts page as keyboard shortcuts, not the keyboard itself', () => {
+    expect(pl['settings.tabKeyboard']).toBe('Skróty Klawiatury');
+  });
+
   it('never returns an empty string for a real key', () => {
     const blank = plKeys.filter((k) => pl[k as keyof typeof pl].trim().length === 0);
     expect(blank).toEqual([]);
