@@ -3593,9 +3593,9 @@ another device's id reads as unknown.
     the desktop; then send again with a new id.
   - `spawn-failed` — Moa's terminal never came up.
   For a message the chat path carried, `code` is its chat error tag.
-- `moaSessionId` — on an `accepted` wake, as soon as the Moa pane is up (and
-  on any message the chat path carried). Use it for the pane's `/turns` and
-  chat routes as usual.
+- `moaSessionId` — whenever the Moa pane is up, in any state (a `failed:
+  tui-dialog` wake has a pane stopped on its startup screen). Use it for the
+  pane's `/turns` and chat routes as usual.
 - An id the daemon has no record of for this caller: `404
   {error:"unknown-message", clientMessageId}`.
 

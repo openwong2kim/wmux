@@ -15,7 +15,12 @@ export function installPhoneBridge(client: DaemonClient, handle: (command: strin
     const requestId = data.requestId;
     seen.add(requestId);
     if (seen.size > 1024) seen.delete(seen.values().next().value!);
-    void handle(data.command,data.payload as Record<string,unknown>).then(
+    // A handler that throws synchronously is a failed request, never an
+    // exception out of this event listener.
+    let pending: Promise<unknown>;
+    try { pending = handle(data.command,data.payload as Record<string,unknown>); }
+    catch (err) { pending = Promise.reject(err); }
+    void pending.then(
       result => client.rpc('daemon.phone.complete',{requestId,ok:true,result}),
       () => client.rpc('daemon.phone.complete',{requestId,ok:false}),
     ).catch(() => { /* Caller observes timeout/disconnect; never retry a write. */ });

@@ -31,6 +31,14 @@ describe('desktop phone listener lifetime', () => {
     expect(handle).not.toHaveBeenCalled();
     dispose();
   });
+  it('answers a generic failure when a handler throws synchronously, without throwing out of the listener', async () => {
+    const { client, handle, dispose, event } = fixture();
+    handle.mockImplementationOnce(() => { throw new Error('invalid moa.wake payload'); });
+    expect(() => client.emit('event', event)).not.toThrow();
+    await Promise.resolve();
+    expect(client.rpc).toHaveBeenCalledWith('daemon.phone.complete', { requestId: 'r1', ok: false });
+    dispose();
+  });
   it('returns only a generic failure when a local operation fails', async () => {
     const { client, handle, dispose, event } = fixture();
     handle.mockRejectedValueOnce(new Error('/private/account secret'));

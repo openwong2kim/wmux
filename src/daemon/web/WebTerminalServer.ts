@@ -5266,7 +5266,7 @@ export class WebTerminalServer {
   /**
    * `GET /api/moa/messages/:clientMessageId`: the caller's own message to
    * Moa, a wake or one the chat path carried. Transcript, not input, like
-   * the chat receipt. `moaSessionId` rides along as soon as the pane is up.
+   * the chat receipt. `moaSessionId` rides along whenever the pane is up.
    */
   private handleMoaSendReceipt(res: http.ServerResponse, rawMessageId: string, principal: WebPrincipal): void {
     res.setHeader('Cache-Control', 'no-store');
@@ -5279,7 +5279,7 @@ export class WebTerminalServer {
     if (view) {
       return this.json(res, 200, {
         clientMessageId, state: view.state, ...(view.code ? { code: view.code } : {}),
-        ...(view.state === 'accepted' ? withPane : {}),
+        ...withPane,
       });
     }
     const chat = this.deps.chat?.() ?? null;

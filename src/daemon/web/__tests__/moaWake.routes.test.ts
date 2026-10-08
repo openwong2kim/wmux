@@ -312,7 +312,7 @@ describe('POST/GET /api/moa/messages', () => {
     moa = { ...HQ, blockedOnTui: true };
     server.emitMoaChanged();
     expect(await wakeService.recordFailure('device:d1', id, 'tui-dialog')).toBe(true);
-    expect((await receipt(h, id)).body).toEqual({ clientMessageId: id, state: 'failed', code: 'tui-dialog' });
+    expect((await receipt(h, id)).body).toEqual({ clientMessageId: id, state: 'failed', code: 'tui-dialog', moaSessionId: 'brain-hq' });
     const blocked = await fetch(`${base()}/api/sessions/brain-hq/chat/messages`, {
       method: 'POST',
       headers: { ...h, 'Content-Type': 'application/json' },
