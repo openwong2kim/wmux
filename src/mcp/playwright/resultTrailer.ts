@@ -221,7 +221,7 @@ const MESSAGE_CODES: ReadonlyArray<readonly [RegExp, ToolErrorCode]> = [
     // `agent_window_scope` is the Live Chrome write refusal (AgentWindowScopeError):
     // a refusal to write to a tab this workspace does not own is a scope
     // refusal like the others, and the one an agent most needs to branch on.
-    /WORKSPACE_SCOPE_UNRESOLVED|BROWSER_SCOPE_REFUSED|BROWSER_NO_OWN_SURFACE|BROWSER_SURFACE_NOT_REGISTERED|agent_window_scope/,
+    /WORKSPACE_SCOPE_UNRESOLVED|PANE_PROFILE_UNRESOLVED|BROWSER_SCOPE_REFUSED|BROWSER_NO_OWN_SURFACE|BROWSER_SURFACE_NOT_REGISTERED|agent_window_scope/,
     'scope_refused',
   ],
   [

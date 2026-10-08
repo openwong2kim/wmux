@@ -21,6 +21,7 @@ import A2aLinkDialog from '../Remote/A2aLinkDialog';
 import { displayPath } from '../../utils/displayPath';
 import { workspaceColorHex } from '../../../shared/workspaceColors';
 import PaneActionsMenu, { PANE_ACTIONS_MENU_WIDTH, type PaneActionItem } from './PaneActionsMenu';
+import { PANE_BROWSER_PROFILE_KEY, usePaneChromeProfileMenu } from './usePaneChromeProfileMenu';
 import {
   bindingEnforcesModel, bindingEnforcesSkipPermissions, bindingSkipPermissionsFlag, type RoleBinding,
 } from '../../../shared/orchestratorRole';
@@ -484,12 +485,28 @@ export default function SurfaceTabs({
   const [menuAnchor, setMenuAnchor] = useState<
     { top: number; left: number; right: number; bottom: number } | null
   >(null);
-  const [menuOpen, setMenuOpen] = useState(false);
+  // 'main' is the action list; 'browser-profile' its Chrome profile submenu,
+  // shown in the same popover (the Moa header menu's Model/Mode idiom).
+  const [menu, setMenu] = useState<null | 'main' | 'browser-profile'>(null);
+  const menuOpen = menu !== null;
+  // Where focus was when the menu opened. The submenu remounts the popover, so
+  // its own "focus on open" is a main-menu item that is gone by close time.
+  const menuOpenerRef = useRef<HTMLElement | null>(null);
+  const [menuFocusKey, setMenuFocusKey] = useState<string | undefined>(undefined);
   // The tab a right-click landed on, which "Rename tab" renames. Null when the
   // menu came from the ⋮ trigger or the bare header: the active tab then.
   const [menuTabId, setMenuTabId] = useState<string | null>(null);
   const overflowBtnRef = useRef<HTMLButtonElement>(null);
-  const closeMenu = useCallback(() => setMenuOpen(false), []);
+  // An item that opens the submenu sets it in onSelect; the menu's own close
+  // runs right after and must not undo that.
+  const closeMenu = useCallback(() => setMenu((m) => (m === 'main' ? null : m)), []);
+  const closeSubmenu = useCallback(() => setMenu(null), []);
+  const openBrowserProfileMenu = useCallback(() => setMenu('browser-profile'), []);
+  // Escape in the submenu steps back to the main menu, on the item that opened it.
+  const backToMainMenu = useCallback(() => {
+    setMenuFocusKey(PANE_BROWSER_PROFILE_KEY);
+    setMenu('main');
+  }, []);
 
   const openMenuAt = useCallback((
     rect: { top: number; left: number; right: number; bottom: number },
@@ -497,7 +514,9 @@ export default function SurfaceTabs({
   ) => {
     setMenuAnchor(rect);
     setMenuTabId(tabId);
-    setMenuOpen(true);
+    menuOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setMenuFocusKey(undefined);
+    setMenu('main');
   }, []);
 
   // Right-click anywhere on the header — tabs included — opens the same menu
@@ -645,6 +664,18 @@ export default function SurfaceTabs({
   // Cross-PC pane link: only where the daemon's a2a.remote bridge exists.
   const [linkDialogOpen, setLinkDialogOpen] = useState(false);
   const canLinkRemote = !readOnly && !!window.electronAPI?.a2aRemote?.linksPropose;
+  // Per-pane Chrome profile (chrome backend only — the hook gates itself).
+  const chromeProfile = usePaneChromeProfileMenu({
+    paneId,
+    workspaceId: workspace.id,
+    paneLabel: paneDisplay,
+    allowed: !readOnly,
+    openSubmenu: openBrowserProfileMenu,
+  });
+  const reloadChromeProfiles = chromeProfile.reload;
+  useEffect(() => {
+    if (menu === 'main') reloadChromeProfiles();
+  }, [menu, reloadChromeProfiles]);
   const menuItems: PaneActionItem[] = useMemo(() => [
     {
       key: 'split-right',
@@ -672,6 +703,7 @@ export default function SurfaceTabs({
       icon: <IconLock size={14} />,
       onSelect: onAddPrivateBrowser,
     }] : []),
+    ...chromeProfile.mainItems,
     ...(onAddRemote ? [{
       key: 'new-remote',
       label: t('pane.newRemote'),
@@ -743,7 +775,7 @@ export default function SurfaceTabs({
       onSelect: () => { useStore.getState().snapToLayoutTemplate(tmpl.id); },
     })),
   ], [
-    t, onSplitHorizontal, onSplitVertical, onAddBrowser, onAddPrivateBrowser, onAddRemote,
+    t, onSplitHorizontal, onSplitVertical, onAddBrowser, onAddPrivateBrowser, chromeProfile.mainItems, onAddRemote,
     onSplitHorizontalRemote, onSplitVerticalRemote, startPaneRename,
     menuTabSurface, startRename, canLinkRemote,
     stashChord, stashDisabled, stashTooltip, stashThisPane, isZoomed, toggleZoom,
@@ -1192,7 +1224,8 @@ export default function SurfaceTabs({
             className={`ui-icon-btn ${FOCUS_RING} w-6 h-6 ${menuOpen ? 'ui-icon-btn-active' : ''}`}
             onClick={(e) => {
               e.stopPropagation();
-              if (menuOpen) { closeMenu(); return; }
+              // closeSubmenu, not closeMenu: it closes from the submenu too.
+              if (menuOpen) { closeSubmenu(); return; }
               openMenuAt(e.currentTarget.getBoundingClientRect());
             }}
             title={t('pane.moreActions')}
@@ -1206,12 +1239,16 @@ export default function SurfaceTabs({
         </div>
       )}
 
-      {menuOpen && (
+      {menu && (
         <PaneActionsMenu
+          key={menu}
           anchor={menuAnchor}
           triggerRef={overflowBtnRef}
-          items={menuItems}
-          onClose={closeMenu}
+          items={menu === 'browser-profile' ? chromeProfile.subItems : menuItems}
+          onClose={menu === 'main' ? closeMenu : closeSubmenu}
+          onEscape={menu === 'main' ? undefined : backToMainMenu}
+          initialFocusKey={menu === 'main' ? menuFocusKey : undefined}
+          restoreFocusTo={menuOpenerRef}
         />
       )}
       {linkDialogOpen && (
