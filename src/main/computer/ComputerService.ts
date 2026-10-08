@@ -49,6 +49,7 @@ import {
   type WindowInfo,
 } from '../../shared/computer/protocol';
 import { screenshotPointToWindow } from '../../shared/computer/scale';
+import { appBundleSelector } from './appBundleId';
 
 /** What main needs from a helper; HelperProcess implements it. */
 export interface HelperLike {
@@ -115,6 +116,12 @@ export interface ComputerServiceDeps {
   now?: () => number;
   /** Picks the OS-wide chord rules (blocklist.ts); defaults to this process's OS. */
   platform?: string;
+  /**
+   * CFBundleIdentifier of a .app on disk (appBundleId.ts), or null when it
+   * cannot be read. openApp reads it for an absolute .app path before the
+   * launch, because the path's file name says nothing about the bundle.
+   */
+  readBundleId?: (appPath: string) => Promise<string | null>;
   /** Fires on every accepted control action (drives the agent-cursor overlay). */
   onControl?: (event: { agent: ComputerAgent; action: ComputerControlAction; window: WindowInfo }) => void;
 }
@@ -427,6 +434,18 @@ export class ComputerService {
     const ctx = this.deps.blockContext();
     const named = selectorBlockReasonFor(params.app, ctx);
     if (named) fail('app_blocked', `${params.app}: ${BLOCK_REASON_TEXT[named]}`);
+    // A .app path can be named anything: judge it by its bundle id, and open
+    // nothing whose bundle id cannot be read.
+    const bundlePath = appBundleSelector(params.app);
+    if (bundlePath) {
+      const bundleId = this.deps.readBundleId ? await this.deps.readBundleId(bundlePath).catch(() => null) : null;
+      this.assertCurrent(generation);
+      if (!bundleId) {
+        fail('app_not_found', `wmux could not read the bundle id of ${bundlePath}, so it does not open it; use the app's name or its listApps id`);
+      }
+      const byId = selectorBlockReasonFor(bundleId, ctx);
+      if (byId) fail('app_blocked', `${params.app}: ${BLOCK_REASON_TEXT[byId]}`);
+    }
     if (!(await this.helperSupports(helper, 'openApp'))) {
       fail('unsupported_action', 'this computer-use helper cannot open apps yet; open the app another way (or ask the user to), then use getAppState');
     }
