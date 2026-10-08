@@ -57,6 +57,13 @@ HOOK PROFILE (install only; mutually exclusive)
   --with-gate     Install the full profile, gate included (the default for a
                   fresh install). Use this to undo --signals-only.
 
+OTHER AGENTS (opt-in; touches only that CLI's hook config)
+  --agent copilot  Install, --remove or --status the shared Claude-compatible
+                   hook bridge for GitHub Copilot CLI: wmux writes its own
+                   ~/.copilot/hooks/wmux.json and never edits your settings.
+                   Built from Copilot's published hook docs; not yet verified
+                   against a live Copilot CLI.
+
 GLOBAL FLAGS
   --json       Output raw JSON (useful for scripting).
 `.trimStart();
@@ -1453,6 +1460,84 @@ function printCodexHooksStatus(status: {
 
 // ----- Dispatch -----------------------------------------------------------
 
+/**
+ * `wmux setup-hooks --agent <flavour> [--remove | --status]` — the shared
+ * Claude-compatible hook bridge for one CLI (#1904). Only flavours with a wired
+ * installer are accepted; the rest are documented in
+ * integrations/shared/README.md and set up by hand.
+ */
+async function handleCompatAgentHooks(
+  args: string[],
+  agentIndex: number,
+  mode: { remove: boolean; status: boolean },
+  jsonMode: boolean,
+): Promise<void> {
+  const flavours = await import('../../shared/hooks/hookFlavours');
+  const installer = await import('../../shared/hooks/compatHookInstall');
+  const flavour = args[agentIndex + 1];
+  const wired = flavours.COMPAT_HOOK_FLAVOUR_IDS.filter((id) => flavours.COMPAT_HOOK_FLAVOURS[id].install?.strategy === 'owned-file');
+  if (!flavours.isCompatHookFlavourId(flavour) || !wired.includes(flavour)) {
+    console.error(
+      `--agent needs one of: ${wired.join(', ')}. Other Claude-compatible CLIs are set up by hand; ` +
+      'see integrations/shared/README.md.',
+    );
+    process.exit(1);
+    return;
+  }
+  const unknown = args.filter((a, i) => i !== agentIndex && i !== agentIndex + 1 && a !== '--remove' && a !== '--status');
+  if (unknown.length > 0) {
+    console.error(`Unknown argument(s) with --agent: ${unknown.join(', ')}. Run 'wmux setup-hooks --help' for usage.`);
+    process.exit(1);
+    return;
+  }
+
+  const paths = installer.resolveCompatHookPaths(os.homedir(), __dirname);
+  if (mode.status) {
+    const outcome = installer.statusCompatHooks(flavour, paths);
+    if (jsonMode) {
+      console.log(JSON.stringify(outcome, null, 2));
+    } else {
+      printAssetStatus('shared hooks bridge', outcome.bridge);
+      console.log(`${flavour} hooks: ${outcome.config} (${outcome.configPath})`);
+      if (outcome.verified === 'docs') {
+        console.log(`${flavour} hooks follow the CLI's published docs; wmux has not yet seen this CLI load them.`);
+      }
+    }
+    return;
+  }
+  if (mode.remove) {
+    const outcome = installer.removeCompatHooks(flavour, paths);
+    if (jsonMode) {
+      console.log(JSON.stringify(outcome, null, 2));
+    } else if (outcome.removed) {
+      console.log(`${flavour} hooks: removed ${outcome.configPath}`);
+    } else if (outcome.before === 'foreign' || outcome.before === 'malformed') {
+      console.warn(`${flavour} hooks: ${outcome.configPath} is not wmux's (${outcome.before}); left untouched`);
+    } else {
+      console.log(`${flavour} hooks: nothing to remove (${outcome.configPath})`);
+    }
+    if (!outcome.ok) process.exit(1);
+    return;
+  }
+  const outcome = installer.installCompatHooks(flavour, paths);
+  if (jsonMode) {
+    console.log(JSON.stringify(outcome, null, 2));
+  } else {
+    printAssetInstall('shared hooks bridge', outcome.bridge);
+    if (outcome.before === 'foreign' || outcome.before === 'malformed') {
+      console.warn(`${flavour} hooks: ${outcome.configPath} is not wmux's (${outcome.before}); left untouched`);
+    } else if (outcome.action === 'none' && outcome.ok) {
+      console.log(`${flavour} hooks: already written (${outcome.configPath})`);
+    } else if (outcome.ok) {
+      console.log(`${flavour} hooks: written to ${outcome.configPath}`);
+      console.log(`Restart running ${flavour} sessions so they load it. The first signal lands in ~/.wmux/${flavour}-hooks.log.`);
+    } else {
+      console.warn(`${flavour} hooks: not written${outcome.error ? ` (${outcome.error})` : ''}`);
+    }
+  }
+  if (!outcome.ok) process.exit(1);
+}
+
 export async function handleSetupHooks(args: string[], jsonMode: boolean): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) {
     process.stdout.write(HELP_TEXT);
@@ -1465,6 +1550,14 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
   if (remove && status) {
     console.error('--remove and --status are mutually exclusive.');
     process.exit(1);
+    return;
+  }
+
+  // #1904 — `--agent <flavour>` is its own opt-in lane: it touches only that
+  // CLI's hook config and the shared bridge, never Claude/Codex/OpenCode.
+  const agentIndex = args.indexOf('--agent');
+  if (agentIndex !== -1) {
+    await handleCompatAgentHooks(args, agentIndex, { remove, status }, jsonMode);
     return;
   }
 
