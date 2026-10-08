@@ -11,30 +11,34 @@ const EXPLANATION =
 /**
  * main's fail-closed refusal for a workspace with pane-bound browser profiles
  * when it cannot tell which pane the caller is (src/shared/chromePaneBinding.ts).
- * Carries the agent-facing explanation; main's own detail rides along.
+ * Carries only the agent-facing explanation: main's own text says the same
+ * thing, and repeating it reads as two errors.
  */
 export class PaneProfileUnresolvedError extends Error {
   readonly code = PANE_PROFILE_UNRESOLVED_CODE;
 
-  constructor(detail?: string) {
-    super(`${PANE_PROFILE_UNRESOLVED_CODE}: ${EXPLANATION}${detail ? ` (${detail})` : ''}`);
+  constructor() {
+    super(`${PANE_PROFILE_UNRESOLVED_CODE}: ${EXPLANATION}`);
     this.name = 'PaneProfileUnresolvedError';
   }
 }
 
 /**
- * The pane-profile refusal hidden in `error`, or null. Recognizes the typed
- * error and main's raw `PANE_PROFILE_UNRESOLVED: …` message, also when another
- * layer wrapped it, and turns the latter into the typed one.
+ * The code as a message PREFIX, optionally after one `<rpc.method>: ` segment
+ * (main answers `${method}: PANE_PROFILE_UNRESOLVED: …`). Never a substring
+ * anywhere else: a page title or URL quoted inside some other error must not
+ * turn that error into this refusal.
+ */
+const REFUSAL_PREFIX = new RegExp(
+  `^(?:[A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)*:[ \\t]+)?${PANE_PROFILE_UNRESOLVED_CODE}:`,
+);
+
+/**
+ * The pane-profile refusal `error` carries, or null: the typed error itself, or
+ * main's raw message turned into the typed one.
  */
 export function paneProfileRefusal(error: unknown): PaneProfileUnresolvedError | null {
   if (error instanceof PaneProfileUnresolvedError) return error;
   const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
-  const at = message.indexOf(`${PANE_PROFILE_UNRESOLVED_CODE}:`);
-  if (at < 0) return null;
-  let detail = message.slice(at + PANE_PROFILE_UNRESOLVED_CODE.length + 1).trim();
-  // Already explained once (a layer re-wrapped the typed error): keep only
-  // main's detail, so the explanation is never repeated.
-  if (detail.startsWith(EXPLANATION)) detail = detail.slice(EXPLANATION.length).trim().replace(/^\((.*)\)$/s, '$1');
-  return new PaneProfileUnresolvedError(detail.slice(0, 200) || undefined);
+  return REFUSAL_PREFIX.test(message) ? new PaneProfileUnresolvedError() : null;
 }
