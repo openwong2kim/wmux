@@ -102,6 +102,11 @@ export interface ComputerUseSettingsPayload {
    * when the helper could not be asked (off, missing, unsupported).
    */
   permissions?: { accessibility: boolean; screenRecording: boolean };
+  /**
+   * macOS: the helper's .app bundle, the entry the person looks for in the
+   * Privacy & Security lists. Absent where the helper is not a bundle.
+   */
+  helperAppPath?: string;
   /** Set when the last write failed; the switch shows the state on disk. */
   error?: string;
 }

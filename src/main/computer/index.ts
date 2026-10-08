@@ -1,19 +1,26 @@
 // Electron wiring for computer use: the one place that knows which native
 // helper this OS runs and where the build put it.
 
-import { app, globalShortcut, ipcMain } from 'electron';
+import { execFile as nodeExecFile, spawn as nodeSpawn } from 'node:child_process';
+import { app, globalShortcut, ipcMain, shell } from 'electron';
 import { platformChoice } from '../../shared/platform';
 import { IPC } from '../../shared/constants';
-import { readComputerUseEnabled, type ComputerUseSettingsPayload } from '../../shared/computer/config';
+import {
+  readComputerUseAskPerApp,
+  readComputerUseEnabled,
+  readComputerUseOverlay,
+  type ComputerUseSettingsPayload,
+} from '../../shared/computer/config';
 import { ComputerError } from '../../shared/computer/errors';
-import { helperStatus as rawHelperStatus, writeComputerUseEnabled, type ComputerHelperStatus } from './settings';
+import { helperStatus as rawHelperStatus, writeComputerUseSettings, type ComputerHelperStatus, type ComputerUseSettingsPatch } from './settings';
+import { isPermissionOp, requestHelperPermissions, resetHelperPermissions, revealHelper } from './permissions';
 import { ComputerService, computerUseShutDown, type ConsentRequester, type HelperLike } from './ComputerService';
 import { HelperProcess } from './HelperProcess';
 import { StopKey } from './stopKey';
 import { createHelperVerifier } from './verifyHelper';
 import { WINDOWS_HELPER_PIN, effectiveHelperStatus, helperUnsignedNotice } from './helperPin';
 import { isSelfElevated } from './selfElevation';
-import { resolveHelperPathFor, type HelperSpec } from './helperPath';
+import { helperAppBundlePath, permissionMissingHelp, resolveHelperPathFor, type HelperSpec } from './helperPath';
 
 // The macOS helper is a separately signed .app so TCC grants attach to it and
 // survive wmux updates; main execs its binary directly so the helper, not
@@ -86,6 +93,7 @@ const SPAWN_FAILURE = /\b(ENOENT|EACCES|EPERM|UNKNOWN)\b|could not start the com
  * stops the running process; spawn failures read as a missing helper.
  */
 function lazyHelper(command: string, ready: () => boolean): HelperLike & { reset(): boolean } {
+  const appPath = helperAppBundlePath(command);
   let proc: HelperProcess | null = null;
   const reset = () => {
     const had = proc !== null;
@@ -99,7 +107,12 @@ function lazyHelper(command: string, ready: () => boolean): HelperLike & { reset
         reset();
         throw notReadyError(command);
       }
-      proc ??= new HelperProcess({ command, verify: verifyHelper, log: (m) => console.warn(m) });
+      proc ??= new HelperProcess({
+        command,
+        verify: verifyHelper,
+        configure: () => ({ overlay: readComputerUseOverlay() }),
+        log: (m) => console.warn(m),
+      });
       try {
         return await proc.request(method, params);
       } catch (err) {
@@ -112,9 +125,14 @@ function lazyHelper(command: string, ready: () => boolean): HelperLike & { reset
           reset();
           throw elevatedError();
         }
+        if (err instanceof ComputerError && err.code === 'permission_missing' && appPath) {
+          throw new ComputerError('permission_missing', `${err.message.replace(/[.\s]+$/, '')}. ${permissionMissingHelp(appPath)}`);
+        }
         throw err;
       }
     },
+    supports: (method) => proc?.supports(method),
+    reconfigure: async () => { await proc?.reconfigure(); },
     abort: (reason) => proc?.abort(reason),
     dispose: () => { reset(); },
     reset,
@@ -182,6 +200,7 @@ export function createComputerService(deps: { requestConsent: ConsentRequester }
 
   const service: ComputerService = new ComputerService({
     isEnabled: () => readComputerUseEnabled(),
+    askPerApp: () => readComputerUseAskPerApp(),
     createHelper: helper && (() => helper),
     requestConsent: deps.requestConsent,
     // No helper, no chord. Every call arms the key before it reaches the
@@ -222,16 +241,58 @@ export function disposeComputerUse(service: ComputerService | null): void {
   }
 }
 
+/** How long Settings waits for a helper to report its permissions. */
+const PERMISSION_PROBE_TIMEOUT_MS = 5_000;
+
+/**
+ * The helper's OS grants as a fresh helper sees them. A short-lived process of
+ * its own, not the running one: macOS answers the Screen Recording check from
+ * a per-process cache, so a helper started before a grant keeps reading the
+ * old answer. Verified like every other spawn. Undefined when it cannot be
+ * asked.
+ */
+async function probeHelperPermissions(helperPath: string): Promise<ComputerUseSettingsPayload['permissions']> {
+  const probe = new HelperProcess({ command: helperPath, verify: verifyHelper, helloTimeoutMs: PERMISSION_PROBE_TIMEOUT_MS });
+  try {
+    const { permissions } = await probe.request('capabilities', {});
+    return { accessibility: permissions.accessibility === true, screenRecording: permissions.screenRecording === true };
+  } catch {
+    return undefined;
+  } finally {
+    probe.dispose();
+  }
+}
+
+function patchFrom(value: unknown): ComputerUseSettingsPatch {
+  // A bare boolean is the original call shape: the on/off switch.
+  if (typeof value === 'boolean') return { enabled: value };
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('expected a settings patch');
+  const patch: ComputerUseSettingsPatch = {};
+  for (const key of ['enabled', 'askPerApp', 'overlay'] as const) {
+    const v = (value as Record<string, unknown>)[key];
+    if (v === undefined) continue;
+    if (typeof v !== 'boolean') throw new Error(`${key} must be a boolean`);
+    patch[key] = v;
+  }
+  return patch;
+}
+
 /**
  * Settings › Computer use. `getService` returns the service only if one was
- * ever built, so opening Settings never spawns a helper; turning the switch
- * off stops whatever an agent is doing right now instead of waiting for its
- * next call to notice.
+ * ever built, so opening Settings never spawns the agents' helper; turning the
+ * switch off stops whatever an agent is doing right now instead of waiting for
+ * its next call to notice. On macOS, while the switch is on, the tab reads the
+ * helper's grants from a short-lived probe (probeHelperPermissions).
  */
-export function registerComputerUseIpc(getExistingService: () => ComputerService | null): void {
-  const snapshot = (error?: string): ComputerUseSettingsPayload => {
+export function registerComputerUseIpc(
+  getExistingService: () => ComputerService | null,
+  platform: NodeJS.Platform = process.platform,
+): void {
+  const isMac = platform === 'darwin';
+  const snapshot = async (error?: string): Promise<ComputerUseSettingsPayload> => {
     const enabled = readComputerUseEnabled();
-    const helper = helperStatus(resolveHelperPath());
+    const helperPath = resolveHelperPath();
+    const helper = helperStatus(helperPath);
     // The key is held exactly while the switch is on and a helper exists.
     // Taking it here (Settings is open, so the app is ready) lets the tab say
     // whether the chord is free before any agent calls; turning the switch off
@@ -245,12 +306,20 @@ export function registerComputerUseIpc(getExistingService: () => ComputerService
       if (enabled && key.status() === 'held') getExistingService()?.abort();
       key.release();
     }
+    const appPath = isMac ? helperAppBundlePath(helperPath) : null;
+    const permissions = isMac && enabled && helper === 'ready' && helperPath && !computerUseShutDown()
+      ? await probeHelperPermissions(helperPath)
+      : undefined;
     return {
       enabled,
       helper,
       ...(helper === 'ready' && helperUnsignedNotice({ platform: process.platform, isPackaged: app.isPackaged, pin: WINDOWS_HELPER_PIN }) && { helperUnsigned: true }),
       stopKey: COMPUTER_ABORT_ACCELERATOR,
       stopKeyStatus: key.status(),
+      askPerApp: readComputerUseAskPerApp(),
+      overlay: readComputerUseOverlay(),
+      ...(permissions && { permissions }),
+      ...(appPath && { helperAppPath: appPath }),
       ...(error && { error }),
     };
   };
@@ -259,18 +328,52 @@ export function registerComputerUseIpc(getExistingService: () => ComputerService
   ipcMain.handle(IPC.COMPUTER_USE_GET, () => snapshot());
 
   ipcMain.removeHandler(IPC.COMPUTER_USE_SET);
-  ipcMain.handle(IPC.COMPUTER_USE_SET, (_event, enabled: unknown) => {
-    if (typeof enabled !== 'boolean') throw new Error('enabled must be a boolean');
+  ipcMain.handle(IPC.COMPUTER_USE_SET, async (_event, value: unknown) => {
+    const patch = patchFrom(value);
     // Settings disables the switch too; this covers any other caller, which
     // sees `enabled: false` with the helper status that explains it. Turning
     // it off is always allowed.
-    if (enabled && helperStatus(resolveHelperPath()) !== 'ready') return snapshot();
+    if (patch.enabled && helperStatus(resolveHelperPath()) !== 'ready') delete patch.enabled;
+    const overlayBefore = readComputerUseOverlay();
     try {
-      writeComputerUseEnabled(enabled);
+      if (Object.keys(patch).length > 0) writeComputerUseSettings(patch);
     } catch (err) {
       return snapshot(err instanceof Error ? err.message : String(err));
     }
-    if (!enabled) getExistingService()?.abort();
+    if (patch.enabled === false) getExistingService()?.abort();
+    // A running helper draws (or stops drawing) the cursor and halo now; one
+    // started later reads the setting on its hello.
+    if (readComputerUseOverlay() !== overlayBefore) {
+      await getExistingService()?.reconfigure().catch(() => undefined);
+    }
+    return snapshot();
+  });
+
+  ipcMain.removeHandler(IPC.COMPUTER_USE_PERMISSIONS);
+  ipcMain.handle(IPC.COMPUTER_USE_PERMISSIONS, async (_event, request: unknown) => {
+    const op = (request as { op?: unknown } | null)?.op;
+    if (!isPermissionOp(op)) throw new Error('op must be request, reset or reveal');
+    if (!isMac) throw new Error('permission buttons are macOS only');
+    const helperPath = resolveHelperPath();
+    if (helperStatus(helperPath) !== 'ready') throw new Error('this wmux build has no computer-use helper');
+    const deps = {
+      helperPath,
+      verify: verifyHelper,
+      spawn: (command: string, args: readonly string[]) => nodeSpawn(command, [...args], { stdio: 'ignore' }),
+      execFile: (file: string, args: readonly string[]) =>
+        new Promise<void>((resolve, reject) => {
+          nodeExecFile(file, [...args], { timeout: 10_000 }, (err) => (err ? reject(err) : resolve()));
+        }),
+      showItemInFolder: (fullPath: string) => shell.showItemInFolder(fullPath),
+    };
+    if (op === 'reveal') {
+      revealHelper(deps);
+      return snapshot();
+    }
+    if (op === 'request') await requestHelperPermissions(deps, (m) => console.warn(m));
+    else await resetHelperPermissions(deps);
+    // The agents' helper holds the old verdict; the next call starts a fresh one.
+    getExistingService()?.resetHelper();
     return snapshot();
   });
 }

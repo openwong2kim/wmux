@@ -29,7 +29,7 @@ vi.mock('../codexThreadIdentity', async (importOriginal) => {
   return { ...actual, readParentChain: parentChain, codexOwnerIndexAvailable: () => ownerIndex.value };
 });
 
-vi.mock('../../shared/computer/config', () => ({ readComputerUseEnabled: () => true }));
+vi.mock('../../shared/computer/config', () => ({ readComputerUseEnabled: () => true, readComputerUseAskPerApp: () => false }));
 
 import { createWmuxServer } from '../index';
 

@@ -444,7 +444,11 @@ const electronAPI = {
   // whether this build has the native helper for this OS.
   computerUse: {
     get: () => ipcRenderer.invoke(IPC.COMPUTER_USE_GET) as Promise<ComputerUseSettingsPayload>,
-    set: (enabled: boolean) => ipcRenderer.invoke(IPC.COMPUTER_USE_SET, enabled) as Promise<ComputerUseSettingsPayload>,
+    set: (patch: { enabled?: boolean; askPerApp?: boolean; overlay?: boolean }) =>
+      ipcRenderer.invoke(IPC.COMPUTER_USE_SET, patch) as Promise<ComputerUseSettingsPayload>,
+    // macOS: Request access, Reset access, Show helper in Finder.
+    permissions: (op: 'request' | 'reset' | 'reveal') =>
+      ipcRenderer.invoke(IPC.COMPUTER_USE_PERMISSIONS, { op }) as Promise<ComputerUseSettingsPayload>,
   },
   quickLaunch: {
     settingsGet: () => ipcRenderer.invoke(IPC.QUICK_LAUNCH_SETTINGS_GET) as Promise<QuickLaunchSettingsPayload>,

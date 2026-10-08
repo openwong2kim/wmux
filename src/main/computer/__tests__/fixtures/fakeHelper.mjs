@@ -15,6 +15,8 @@
 //   hang-releasehang  like hang, and never answers releaseInput either
 //   eof-release hangs on click; on stdin EOF logs "eof-release" before exiting
 //               (a helper releasing held input on EOF)
+//   configurable  normal, but its hello also lists the optional `configure`
+//               and `openApp`; configure params go to `<argv[3]>.configure`
 // Every request is appended to the file named by argv[3] (if given), so tests
 // can see what the helper received, including across restarts; releaseInput
 // params go to `<argv[3]>.params`, one JSON line each.
@@ -34,7 +36,7 @@ if (mode !== 'silent') {
     protocolVersion: mode === 'old' ? 0 : 2,
     os: 'win32',
     helperVersion: 'fake',
-    capabilities: { actions: ['click'], modes: ['ax'], permissions: { accessibility: true, screenRecording: true } },
+    capabilities: { actions: mode === 'configurable' ? ['click', 'configure', 'openApp'] : ['click'], modes: ['ax'], permissions: { accessibility: true, screenRecording: true } },
   });
 }
 
@@ -43,6 +45,7 @@ rl.on('line', (line) => {
   const req = JSON.parse(line);
   if (logFile) fs.appendFileSync(logFile, req.method + '\n');
   if (logFile && req.method === 'releaseInput') fs.appendFileSync(`${logFile}.params`, JSON.stringify(req.params) + '\n');
+  if (logFile && req.method === 'configure') fs.appendFileSync(`${logFile}.configure`, JSON.stringify(req.params) + '\n');
   if (mode === 'garbage') return process.stdout.write('not json\n');
   if (mode === 'wrong-id') return send({ id: req.id + 100, ok: true, result: {} });
   if (mode.startsWith('hang') && ['click', 'pressKey', 'hotkey'].includes(req.method)) return;

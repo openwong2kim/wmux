@@ -1,6 +1,6 @@
 import * as path from 'path';
 import { describe, expect, it } from 'vitest';
-import { resolveHelperPathFor, type HelperSpec } from '../helperPath';
+import { helperAppBundlePath, permissionMissingHelp, resolveHelperPathFor, type HelperSpec } from '../helperPath';
 
 const spec: HelperSpec = { dir: 'computer-use-windows', exe: 'wmux-computer-use.exe' };
 const resourcesPath = path.resolve('/Program Files/wmux/resources');
@@ -31,5 +31,21 @@ describe('computer-use helper path', () => {
   it('dev builds without an override use the helper project output', () => {
     expect(resolveHelperPathFor({ spec, isPackaged: false, resourcesPath, appPath, env: {} }))
       .toBe(path.join(appPath, 'native', 'computer-use-windows', 'dist', 'wmux-computer-use.exe'));
+  });
+});
+
+describe('helperAppBundlePath / permissionMissingHelp', () => {
+  it('finds the .app bundle around the helper binary, and nothing outside one', () => {
+    expect(helperAppBundlePath('/Applications/wmux.app/Contents/Resources/computer-use-macos/wmux Computer Use.app/Contents/MacOS/wmux-computer-use'))
+      .toBe('/Applications/wmux.app/Contents/Resources/computer-use-macos/wmux Computer Use.app');
+    expect(helperAppBundlePath('C:\\wmux\\resources\\computer-use-windows\\wmux-computer-use.exe')).toBeNull();
+    expect(helperAppBundlePath(null)).toBeNull();
+  });
+
+  it('names the full path and the remove-and-re-add / Reset access fix', () => {
+    const text = permissionMissingHelp('/x/wmux Computer Use.app');
+    expect(text).toContain('"/x/wmux Computer Use.app"');
+    expect(text).toContain('remove it with "−" and add it again');
+    expect(text).toContain('Settings › Computer use › Reset access');
   });
 });

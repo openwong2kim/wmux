@@ -7,6 +7,7 @@ import { createComputerConsentRequester } from '../computerConsent';
 import {
   ABORT_COOLDOWN_MS,
   ComputerService,
+  capabilitiesForAgent,
   INPUT_LOCK_IDLE_MS,
   computerUseShutDown,
   type ComputerAgent,
@@ -72,6 +73,7 @@ function makeService(opts: {
   elevated?: boolean;
   stopKeyHolds?: boolean;
   platform?: string;
+  askPerApp?: boolean;
 } = {}) {
   let now = 1_000_000;
   const { helper, calls } = fakeHelper({
@@ -85,6 +87,7 @@ function makeService(opts: {
   });
   const service = new ComputerService({
     isEnabled: () => opts.enabled ?? true,
+    askPerApp: () => opts.askPerApp ?? true,
     createHelper: () => helper,
     requestConsent: consent,
     stopKey,
@@ -133,6 +136,7 @@ describe('ComputerService', () => {
   it('reports an unsupported platform when there is no helper', async () => {
     const service = new ComputerService({
       isEnabled: () => true,
+      askPerApp: () => true,
       createHelper: null,
       requestConsent: async () => 'approved',
       stopKey: fakeStopKey(),
@@ -277,45 +281,45 @@ describe('ComputerService', () => {
     expect(calls.length).toBe(before);
   });
 
-  it('refuses OS-wide chords on Windows before consent, lock or helper', async () => {
+  it('refuses only lock, sign-out and force-quit chords on Windows, before consent, lock or helper', async () => {
     const { service, calls, consent } = makeService({ platform: 'win32' });
     const { snapshotId } = await service.getAppState(AGENT_A, { app: 'Notepad' });
     consent.mockClear();
     const before = calls.length;
-    for (const keys of [['win', 'r'], ['meta', 'd'], ['alt', 'tab'], ['alt', 'shift', 'Tab'], ['alt', 'esc'], ['ctrl', 'Escape'], ['ctrl', 'shift', 'esc'], ['ctrl', 'alt', 'shift', 'esc'], ['ctrl', 'alt', 'delete']]) {
+    for (const keys of [['win', 'l'], ['meta', 'x'], ['ctrl', 'shift', 'esc'], ['ctrl', 'alt', 'shift', 'esc'], ['ctrl', 'alt', 'delete']]) {
       const err = await service.control(AGENT_A, { action: 'hotkey', snapshotId, keys }).catch((e: unknown) => e);
       expect(err, keys.join('+')).toBeInstanceOf(ComputerError);
       expect((err as ComputerError).code).toBe('shortcut_blocked');
     }
     expect(calls.length).toBe(before);
     expect(service.inputHolder()).toBeNull();
-    // App-level chords still go through.
-    for (const keys of [['ctrl', 's'], ['alt', 'F4'], ['ctrl', 'shift', 'Tab']]) {
-      expect(await codeOf(service.control(AGENT_A, { action: 'hotkey', snapshotId, keys }))).toBe('resolved');
-    }
-  });
-
-  it('refuses OS-wide chords on macOS but keeps Cmd shortcuts', async () => {
-    const { service } = makeService({ platform: 'darwin' });
-    const { snapshotId } = await service.getAppState(AGENT_A, { app: 'Notepad' });
-    for (const keys of [['cmd', 'tab'], ['cmd', 'space'], ['ctrl', 'space'], ['cmd', 'option', 'esc'], ['ctrl', 'cmd', 'q'], ['cmd', 'shift', 'q'], ['cmd', 'opt', 'd'], ['cmd', 'shift', '4'], ['ctrl', 'up'], ['ctrl', 'F2'], ['ctrl', 'alt', 'shift', 'esc']]) {
-      expect(await codeOf(service.control(AGENT_A, { action: 'hotkey', snapshotId, keys })), keys.join('+')).toBe('shortcut_blocked');
-    }
-    for (const keys of [['cmd', 's'], ['cmd', 'q'], ['ctrl', 'cmd', 'f'], ['cmd', 'shift', 't'], ['alt', 'tab']]) {
+    // App-level chords, app switching and Start go through.
+    for (const keys of [['ctrl', 's'], ['alt', 'F4'], ['ctrl', 'shift', 'Tab'], ['alt', 'tab'], ['win', 'r'], ['ctrl', 'Escape']]) {
       expect(await codeOf(service.control(AGENT_A, { action: 'hotkey', snapshotId, keys })), keys.join('+')).toBe('resolved');
     }
   });
 
-  it('refuses modifiers on actions that would drop them, and a Windows-key click', async () => {
+  it('refuses only lock, log-out and force-quit chords on macOS', async () => {
+    const { service } = makeService({ platform: 'darwin' });
+    const { snapshotId } = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    for (const keys of [['cmd', 'option', 'esc'], ['ctrl', 'cmd', 'q'], ['cmd', 'shift', 'q'], ['ctrl', 'alt', 'shift', 'esc']]) {
+      expect(await codeOf(service.control(AGENT_A, { action: 'hotkey', snapshotId, keys })), keys.join('+')).toBe('shortcut_blocked');
+    }
+    for (const keys of [['cmd', 's'], ['cmd', 'q'], ['ctrl', 'cmd', 'f'], ['cmd', 'shift', 't'], ['alt', 'tab'], ['cmd', 'tab'], ['cmd', 'space'], ['ctrl', 'up']]) {
+      expect(await codeOf(service.control(AGENT_A, { action: 'hotkey', snapshotId, keys })), keys.join('+')).toBe('resolved');
+    }
+  });
+
+  it('refuses modifiers on actions that would drop them, and sends modified clicks', async () => {
     const { service, calls } = makeService({ platform: 'win32' });
     const { snapshotId } = await service.getAppState(AGENT_A, { app: 'Notepad' });
     const before = calls.length;
     expect(await codeOf(service.control(AGENT_A, { action: 'pressKey', snapshotId, key: 'a', modifiers: ['ctrl'] }))).toBe('invalid_argument');
     expect(await codeOf(service.control(AGENT_A, { action: 'type', snapshotId, text: 'x', modifiers: ['shift'] }))).toBe('invalid_argument');
     expect(await codeOf(service.control(AGENT_A, { action: 'scroll', snapshotId, index: 1, modifiers: ['ctrl'] }))).toBe('invalid_argument');
-    expect(await codeOf(service.control(AGENT_A, { action: 'click', snapshotId, index: 1, modifiers: ['meta'] }))).toBe('shortcut_blocked');
     expect(calls.length).toBe(before);
     expect(await codeOf(service.control(AGENT_A, { action: 'click', snapshotId, index: 1, modifiers: ['ctrl'] }))).toBe('resolved');
+    expect(await codeOf(service.control(AGENT_A, { action: 'click', snapshotId, index: 1, modifiers: ['meta'] }))).toBe('resolved');
   });
 
   it('re-checks the snapshot and the stop cooldown after a long consent wait', async () => {
@@ -356,6 +360,7 @@ describe('ComputerService', () => {
     const stopKey = fakeStopKey();
     const service = new ComputerService({
       isEnabled: () => true,
+      askPerApp: () => true,
       createHelper: () => { created += 1; return fakeHelper({}).helper; },
       requestConsent: async () => 'approved',
       stopKey,
@@ -523,6 +528,7 @@ describe('ComputerService with the real approval queue', () => {
     const { helper } = fakeHelper({ Notepad: { app: notepad, window: win(notepad) } });
     const service = new ComputerService({
       isEnabled: () => true,
+      askPerApp: () => true,
       createHelper: () => helper,
       requestConsent: createComputerConsentRequester({ queue: () => queue, deadlineMs }),
       stopKey: fakeStopKey(),
@@ -605,47 +611,204 @@ describe('ComputerService with the real approval queue', () => {
 describe('explorer.exe windows', () => {
   const explorer: AppInfo = { id: 'c:\\windows\\explorer.exe', name: 'Explorer', pid: 20, path: 'C:\\Windows\\explorer.exe' };
   const folder = win(explorer, { className: 'CabinetWClass', shellLocation: 'C:\\Users\\me\\Documents' });
-  const controlPanel = win(explorer, { id: 'w-21', className: 'CabinetWClass', shellLocation: '::{26EE0668-A00A-44D7-9371-BEB064C98683}' });
   const runDialog = win(explorer, { id: 'w-22', className: '#32770', ownerId: '65552' });
 
-  function explorerService(live: () => WindowInfo) {
-    const { helper, calls } = fakeHelper({ Explorer: { app: explorer, window: folder } });
+  it('are ordinary windows now, with locations still behind consent', async () => {
+    const { helper } = fakeHelper({ Explorer: { app: explorer, window: folder } });
     const request = helper.request;
-    helper.request = (async (method: HelperMethod, params: Record<string, unknown>) => {
-      if (method === 'listWindows') return { windows: [folder, controlPanel, runDialog] };
-      if (method === 'resolveTarget' && String(params.app).startsWith('pid:')) {
-        calls.push({ method, params });
-        return { app: explorer, window: live() };
-      }
-      return (request as (m: HelperMethod, p: unknown) => Promise<unknown>)(method, params);
-    }) as HelperLike['request'];
+    helper.request = (async (method: HelperMethod, params: Record<string, unknown>) =>
+      method === 'listWindows'
+        ? { windows: [folder, runDialog] }
+        : (request as (m: HelperMethod, p: unknown) => Promise<unknown>)(method, params)) as HelperLike['request'];
     const service = new ComputerService({
       isEnabled: () => true,
+      askPerApp: () => true,
       createHelper: () => helper,
       requestConsent: vi.fn(async () => 'approved' as ConsentAnswer),
       stopKey: fakeStopKey(),
       blockContext: () => ({}),
       platform: 'win32',
     });
-    return { service, calls };
-  }
-
-  it('lists only folder windows on a filesystem path as usable, and keeps locations behind consent', async () => {
-    const { service } = explorerService(() => folder);
     const { windows } = await service.listWindows(AGENT_A);
-    expect(windows.find((w) => w.id === folder.id)?.blocked).toBeUndefined();
-    expect(windows.find((w) => w.id === controlPanel.id)?.blocked).toBeTruthy();
-    expect(windows.find((w) => w.id === runDialog.id)?.blocked).toBeTruthy();
+    expect(windows.every((w) => w.blocked === undefined)).toBe(true);
     expect(windows.every((w) => w.shellLocation === undefined && w.title === '')).toBe(true);
-  });
-
-  it('re-checks the live location before input, since a folder window can navigate', async () => {
-    let live = folder;
-    const { service, calls } = explorerService(() => live);
     const state = await service.getAppState(AGENT_A, { app: 'Explorer' });
     expect(await codeOf(service.control(AGENT_A, { action: 'click', snapshotId: state.snapshotId, index: 1 }))).toBe('resolved');
-    live = { ...folder, shellLocation: controlPanel.shellLocation };
-    expect(await codeOf(service.control(AGENT_A, { action: 'click', snapshotId: state.snapshotId, index: 1 }))).toBe('app_blocked');
-    expect(calls.filter((c) => c.method === 'click')).toHaveLength(1);
+  });
+});
+
+describe('consent is opt-in (askPerApp)', () => {
+  it('asks no one and sends every unblocked title while askPerApp is off', async () => {
+    const { service, consent, calls } = makeService({ askPerApp: false });
+    const { windows } = await service.listWindows({ key: '', label: 'anon' });
+    expect(windows.find((w) => w.pid === notepad.pid)?.title).toBe('Notepad window');
+    // A blocked app stays blank and marked.
+    expect(windows.find((w) => w.pid === keepass.pid)).toMatchObject({ title: '', blocked: expect.any(String) });
+    const { snapshotId } = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    expect(await codeOf(service.control(AGENT_A, { action: 'click', snapshotId, index: 1 }))).toBe('resolved');
+    expect(consent).not.toHaveBeenCalled();
+    expect(calls.some((c) => c.method === 'click')).toBe(true);
+    // The blocklist still applies.
+    expect(await codeOf(service.getAppState(AGENT_A, { app: 'KeePassXC' }))).toBe('app_blocked');
+  });
+
+  it('asks once per agent and app while askPerApp is on', async () => {
+    const { service, consent } = makeService({ askPerApp: true });
+    await service.getAppState(AGENT_A, { app: 'Notepad' });
+    await service.getAppState(AGENT_A, { app: 'Notepad' });
+    expect(consent).toHaveBeenCalledTimes(1);
+    const { windows } = await service.listWindows({ key: '', label: 'anon' });
+    expect(windows.every((w) => w.title === '')).toBe(true);
+  });
+});
+
+describe('openApp', () => {
+  const textEdit: AppInfo = { id: 'com.apple.TextEdit', name: 'TextEdit', pid: 30, path: '/System/Applications/TextEdit.app', bundleId: 'com.apple.TextEdit' };
+  const passwords: AppInfo = { id: 'com.apple.Passwords', name: 'Passwords', pid: 31, path: '/System/Applications/Passwords.app', bundleId: 'com.apple.Passwords' };
+
+  function openAppService(opts: { actions?: string[]; opens?: AppInfo; askPerApp?: boolean; running?: boolean } = {}) {
+    const calls: Array<{ method: HelperMethod; params: unknown }> = [];
+    const opened = opts.opens ?? textEdit;
+    const window = win(opened);
+    const helper: HelperLike = {
+      request: (async (method: HelperMethod, params: unknown) => {
+        calls.push({ method, params });
+        if (method === 'capabilities') {
+          return { actions: opts.actions ?? ['capabilities', 'openApp'], modes: ['ax'], permissions: { accessibility: true, screenRecording: true } };
+        }
+        if (method === 'resolveTarget') {
+          if (!opts.running) throw new ComputerError('app_not_found', 'not running');
+          return { app: opened, window };
+        }
+        if (method === 'openApp') return { app: opened, window };
+        throw new Error(`unexpected ${method}`);
+      }) as HelperLike['request'],
+      abort: vi.fn(),
+      dispose: vi.fn(),
+    };
+    const consent = vi.fn(async (): Promise<ConsentAnswer> => 'approved');
+    const service = new ComputerService({
+      isEnabled: () => true,
+      askPerApp: () => opts.askPerApp ?? false,
+      createHelper: () => helper,
+      requestConsent: consent,
+      stopKey: fakeStopKey(),
+      blockContext: () => ({}),
+      platform: 'darwin',
+    });
+    return { service, calls, consent };
+  }
+
+  it('refuses a blocked selector before anything launches', async () => {
+    const { service, calls } = openAppService();
+    for (const app of ['1Password', 'com.apple.Passwords', '/Applications/Bitwarden.app', 'wmux']) {
+      expect(await codeOf(service.openApp(AGENT_A, { app })), app).toBe('app_blocked');
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it('answers unsupported_action when the helper does not list openApp', async () => {
+    const { service, calls } = openAppService({ actions: ['capabilities', 'click'] });
+    expect(await codeOf(service.openApp(AGENT_A, { app: 'TextEdit' }))).toBe('unsupported_action');
+    expect(calls.map((c) => c.method)).toEqual(['capabilities']);
+  });
+
+  it('opens an app and returns what the helper opened, without asking while askPerApp is off', async () => {
+    const { service, calls, consent } = openAppService();
+    const result = await service.openApp(AGENT_A, { app: 'TextEdit' });
+    expect(result.app.id).toBe('com.apple.TextEdit');
+    expect(calls.map((c) => c.method)).toEqual(['capabilities', 'openApp']);
+    expect(calls[1].params).toEqual({ app: 'TextEdit' });
+    expect(consent).not.toHaveBeenCalled();
+    expect(service.inputHolder()).toBe('agent-a');
+  });
+
+  it('uses the hello the helper already gave instead of asking for capabilities', async () => {
+    const { service, calls } = openAppService();
+    const helper = (service as unknown as { deps: { createHelper: () => HelperLike } }).deps.createHelper();
+    helper.supports = () => true;
+    await service.openApp(AGENT_A, { app: 'TextEdit' });
+    expect(calls.map((c) => c.method)).toEqual(['openApp']);
+  });
+
+  it('refuses after the fact when the opened app turns out to be blocked', async () => {
+    const { service } = openAppService({ opens: passwords });
+    expect(await codeOf(service.openApp(AGENT_A, { app: 'Keys' }))).toBe('app_blocked');
+  });
+
+  it('asks consent like other control actions while askPerApp is on', async () => {
+    const running = openAppService({ askPerApp: true, running: true });
+    await running.service.openApp(AGENT_A, { app: 'TextEdit' });
+    // Asked before bringing a running app forward, and not again after.
+    expect(running.consent).toHaveBeenCalledTimes(1);
+    expect(running.calls.map((c) => c.method)).toEqual(['capabilities', 'resolveTarget', 'openApp']);
+
+    const denied = openAppService({ askPerApp: true, running: true });
+    denied.consent.mockResolvedValue('denied');
+    expect(await codeOf(denied.service.openApp(AGENT_A, { app: 'TextEdit' }))).toBe('app_blocked');
+    expect(denied.calls.some((c) => c.method === 'openApp')).toBe(false);
+
+    // Not running yet: asked right after the launch.
+    const cold = openAppService({ askPerApp: true });
+    await cold.service.openApp(AGENT_A, { app: 'TextEdit' });
+    expect(cold.consent).toHaveBeenCalledTimes(1);
+  });
+
+  it('is refused on computer.act-style control calls that carry a snapshot', async () => {
+    const { service } = openAppService();
+    expect(await codeOf(service.control(AGENT_A, { action: 'openApp', snapshotId: 's1' }))).toBe('invalid_argument');
+  });
+});
+
+describe('capabilities for the agent', () => {
+  const caps = (accessibility: boolean, screenRecording: boolean) => ({
+    actions: ['capabilities', 'listApps', 'listWindows', 'getAppState', 'openApp', 'click', 'type', 'scroll'],
+    modes: ['ax', 'vision', 'both'] as Array<'ax' | 'vision' | 'both'>,
+    permissions: { accessibility, screenRecording },
+  });
+
+  it('passes a fully granted helper through unchanged', () => {
+    expect(capabilitiesForAgent(caps(true, true))).toEqual(caps(true, true));
+  });
+
+  it('drops input and the tree without Accessibility', () => {
+    const out = capabilitiesForAgent(caps(false, true));
+    expect(out.missingPermissions).toEqual(['accessibility']);
+    expect(out.actions).toEqual(['capabilities', 'listApps', 'listWindows', 'getAppState']);
+    expect(out.modes).toEqual(['vision']);
+  });
+
+  it('drops screenshots without Screen Recording, and getAppState with neither', () => {
+    expect(capabilitiesForAgent(caps(true, false))).toMatchObject({ missingPermissions: ['screenRecording'], modes: ['ax'] });
+    const none = capabilitiesForAgent(caps(false, false));
+    expect(none.missingPermissions).toEqual(['accessibility', 'screenRecording']);
+    expect(none.actions).toEqual(['capabilities', 'listApps', 'listWindows']);
+    expect(none.modes).toEqual([]);
+  });
+
+  it('is what service.capabilities() answers', async () => {
+    const { service, helperRef } = makeService();
+    helperRef.request = (async () => caps(false, true)) as HelperLike['request'];
+    expect((await service.capabilities()).missingPermissions).toEqual(['accessibility']);
+  });
+});
+
+describe('settings push', () => {
+  it('forwards reconfigure to a helper that exists, and starts none', async () => {
+    const reconfigure = vi.fn(async () => undefined);
+    const createHelper = vi.fn((): HelperLike => ({ request: vi.fn() as never, abort: vi.fn(), dispose: vi.fn(), reconfigure }));
+    const service = new ComputerService({
+      isEnabled: () => true,
+      askPerApp: () => false,
+      createHelper,
+      requestConsent: vi.fn(),
+      stopKey: fakeStopKey(),
+      blockContext: () => ({}),
+    });
+    await service.reconfigure();
+    expect(createHelper).not.toHaveBeenCalled();
+    await service.capabilities().catch(() => undefined);
+    await service.reconfigure();
+    expect(reconfigure).toHaveBeenCalledTimes(1);
   });
 });

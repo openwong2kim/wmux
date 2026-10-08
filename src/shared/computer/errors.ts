@@ -12,6 +12,7 @@ export const COMPUTER_ERROR_CODES = [
   'element_not_found',
   'element_stale',
   'action_not_supported',
+  'unsupported_action',
   'value_not_settable',
   'snapshot_unknown',
   'permission_missing',
@@ -40,7 +41,7 @@ export function isComputerErrorCode(value: unknown): value is ComputerErrorCode 
 export const COMPUTER_ERROR_NEXT_STEPS: Record<ComputerErrorCode, readonly string[]> = {
   app_not_found: ['Call listApps and use an app name or id exactly as listed.'],
   app_blocked: [
-    'This app is blocked for computer use (password managers, terminals, wmux itself, system settings and script or process tools). Do not retry.',
+    'This app is blocked for computer use (password managers, wmux itself, system sign-in and administrator prompts). Do not retry.',
     'Ask the user to do this step themselves.',
   ],
   window_not_found: ['Call listWindows for the app and pass a window id from the result.'],
@@ -53,17 +54,20 @@ export const COMPUTER_ERROR_NEXT_STEPS: Record<ComputerErrorCode, readonly strin
     'The element changed since the snapshot was taken. Call getAppState and use the new index.',
   ],
   action_not_supported: ['Try click on the element, or coordinates from a screenshot.'],
+  unsupported_action: [
+    'This computer-use helper cannot do that action. Use listApps and getAppState instead, or ask the user to open the app.',
+  ],
   value_not_settable: ['Click the field and use type instead.'],
   snapshot_unknown: ['Snapshots expire after two minutes. Call getAppState for a fresh snapshotId.'],
   permission_missing: [
-    'The operating system has not granted the permission this needs. Tell the user which permission is missing; do not retry until they confirm.',
+    'The operating system has not granted the permission this needs. Tell the user which permission is missing and pass on the steps in the message; do not retry until they confirm.',
   ],
   target_elevated: [
     'The target runs as administrator, and Windows blocks input from a normal process. Ask the user to do this step.',
   ],
   input_busy: ['Another agent holds desktop input. Wait for it to finish, then retry.'],
   shortcut_blocked: [
-    'This shortcut acts on the whole system (switching apps, Start or Spotlight, locking the screen), not the app you were given. Do not retry it.',
+    'This shortcut locks the screen, logs out or force-quits apps. Do not retry it.',
     'Reach the goal inside the app (click an element, use its menus), or ask the user to do this step.',
   ],
   stop_key_unavailable: [

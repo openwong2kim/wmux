@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { RpcRouter } from '../RpcRouter';
 import type { RpcContext } from '../../../shared/rpc';
 import { ComputerError, encodeComputerErrorMessage } from '../../../shared/computer/errors';
-import { isControlAction, type ObservationMode } from '../../../shared/computer/protocol';
+import { COMPUTER_CONTROL_ACTIONS, isControlAction, type ObservationMode } from '../../../shared/computer/protocol';
 import type { ComputerAgent, ComputerService, ControlParams } from '../../computer/ComputerService';
 
 /**
@@ -66,9 +66,16 @@ export function registerComputerRpc(
     });
   }, 'required'));
 
-  router.register('computer.act', wrap((params, agent) => {
+  router.register('computer.act', wrap((params, agent): Promise<unknown> => {
     if (typeof params.action !== 'string' || !isControlAction(params.action)) {
-      throw new ComputerError('invalid_argument', 'action must be one of click, setValue, type, pressKey, hotkey, scroll');
+      throw new ComputerError('invalid_argument', `action must be one of ${COMPUTER_CONTROL_ACTIONS.join(', ')}`);
+    }
+    // openApp addresses its app by selector; every other input action by snapshot.
+    if (params.action === 'openApp') {
+      if (typeof params.app !== 'string' || params.app.trim().length === 0) {
+        throw new ComputerError('invalid_argument', 'openApp needs app');
+      }
+      return getService().openApp(agent, { app: params.app });
     }
     const control = { ...params };
     delete control.senderPtyId;

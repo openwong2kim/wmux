@@ -184,8 +184,10 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'browserlight', tab: 'browser', labelKey: 'settings.browserLightweight', descKey: 'settings.browserLightweightDesc', synonyms: 'browser throttle cpu lightweight' },
   { id: 'sitememory', tab: 'browser', labelKey: 'settings.siteMemory', descKey: 'settings.siteMemoryDesc', synonyms: 'browser site memory domain replay failure remember' },
   { id: 'computeruse', tab: 'computer-use', labelKey: 'settings.computerUse', descKey: 'settings.computerUseDesc', synonyms: 'computer use desktop control apps screenshot click automation 컴퓨터 사용 데스크톱 조작' },
-  { id: 'computerusehelper', tab: 'computer-use', labelKey: 'settings.computerUseHelper', descKey: 'settings.computerUseHelperDesc', synonyms: 'computer use helper native uia accessibility 헬퍼' },
+  { id: 'computerusehelper', tab: 'computer-use', labelKey: 'settings.computerUseHelper', descKey: 'settings.computerUseHelperDesc', synonyms: 'computer use helper native uia accessibility screen recording permissions reset access tcc 헬퍼 권한 화면 기록' },
   { id: 'computerusestop', tab: 'computer-use', labelKey: 'settings.computerUseStopKey', descKey: 'settings.computerUseStopKeyDesc', synonyms: 'computer use stop abort kill emergency hotkey 정지 중단' },
+  { id: 'computeruseask', tab: 'computer-use', labelKey: 'settings.computerUseConsent', descKey: 'settings.computerUseConsentDesc', synonyms: 'computer use consent ask each app prompt permission 앱마다 묻기 동의' },
+  { id: 'computeruseoverlay', tab: 'computer-use', labelKey: 'settings.computerUseOverlay', descKey: 'settings.computerUseOverlayDesc', synonyms: 'computer use agent cursor halo overlay highlight 테두리' },
   { id: 'siteguides', tab: 'browser', labelKey: 'settings.siteGuides', descKey: 'settings.siteGuidesDesc', synonyms: 'browser site guides notes chrome agent' },
 
   { id: 'paireddevices', tab: 'remote', labelKey: 'web.devicesTitle', descKey: 'web.devicesSubtitle', synonyms: 'phone mobile device paired revoke remote web 휴대폰 기기' },

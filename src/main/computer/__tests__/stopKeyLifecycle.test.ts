@@ -16,6 +16,7 @@ const h = vi.hoisted(() => {
     helper: { value: 'ready' as 'ready' | 'missing' | 'unsupported' },
     helperError: { value: null as Error | null },
     helperCreated: { count: 0 },
+    helperPath: { value: 'C:/wmux/fake-helper.exe' },
     register: vi.fn((accel: string, cb: () => void) => {
       if (!h.chordFree.value) return false;
       shortcuts.set(accel, cb);
@@ -33,7 +34,11 @@ vi.mock('electron', () => ({
     handle: (channel: string, fn: (event: unknown, ...args: unknown[]) => unknown) => { h.handlers.set(channel, fn); },
   },
 }));
-vi.mock('../../../shared/computer/config', () => ({ readComputerUseEnabled: () => h.enabled.value }));
+vi.mock('../../../shared/computer/config', () => ({
+  readComputerUseEnabled: () => h.enabled.value,
+  readComputerUseAskPerApp: () => false,
+  readComputerUseOverlay: () => true,
+}));
 // Never spawn anything: every helper request fails as a missing binary would.
 vi.mock('../HelperProcess', () => ({
   HelperProcess: class {
@@ -45,12 +50,15 @@ vi.mock('../HelperProcess', () => ({
 }));
 // A helper path on every OS, so the lifecycle runs the same on Linux CI (whose
 // real path resolves to null → unsupported_platform before the stop key).
-vi.mock('../helperPath', () => ({ resolveHelperPathFor: () => 'C:/wmux/fake-helper.exe' }));
+vi.mock('../helperPath', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../helperPath')>()),
+  resolveHelperPathFor: () => h.helperPath.value,
+}));
 // CI's Windows runner is an elevated admin; these tests are about the stop key.
 vi.mock('../selfElevation', () => ({ isSelfElevated: () => false }));
 vi.mock('../settings', () => ({
   helperStatus: () => h.helper.value,
-  writeComputerUseEnabled: (enabled: boolean) => { h.enabled.value = enabled; return enabled; },
+  writeComputerUseSettings: (patch: { enabled?: boolean }) => { if (typeof patch.enabled === 'boolean') h.enabled.value = patch.enabled; },
 }));
 
 // Control, not Cmd, on macOS (Cmd+Option+Shift+Esc force-quits the front app).
@@ -67,8 +75,8 @@ async function load() {
     if (!fn) throw new Error(`no handler for ${channel}`);
     return fn;
   };
-  const get = () => handler(IPC.COMPUTER_USE_GET)({}) as { stopKeyStatus: string; enabled: boolean };
-  const set = (on: boolean) => handler(IPC.COMPUTER_USE_SET)({}, on) as { stopKeyStatus: string; enabled: boolean };
+  const get = () => handler(IPC.COMPUTER_USE_GET)({}) as Promise<{ stopKeyStatus: string; enabled: boolean }>;
+  const set = (on: boolean) => handler(IPC.COMPUTER_USE_SET)({}, on) as Promise<{ stopKeyStatus: string; enabled: boolean }>;
   const create = () => {
     service = mod.createComputerService({ requestConsent: async () => 'approved' });
     return service;
@@ -86,12 +94,13 @@ beforeEach(() => {
   h.helper.value = 'ready';
   h.helperError.value = null;
   h.helperCreated.count = 0;
+  h.helperPath.value = 'C:/wmux/fake-helper.exe';
 });
 
 describe('computer-use stop key lifecycle', () => {
   it('is not claimed while computer use is off', async () => {
     const { get } = await load();
-    expect(get().stopKeyStatus).toBe('off');
+    expect((await get()).stopKeyStatus).toBe('off');
     expect(h.register).not.toHaveBeenCalled();
   });
 
@@ -99,12 +108,12 @@ describe('computer-use stop key lifecycle', () => {
     const { set, create } = await load();
     const service = create();
     const abort = vi.spyOn(service, 'abort');
-    expect(set(true)).toMatchObject({ enabled: true, stopKeyStatus: 'held' });
+    expect(await set(true)).toMatchObject({ enabled: true, stopKeyStatus: 'held' });
     expect(h.shortcuts.has(ACCEL)).toBe(true);
     // The chord reaches the live service.
     h.shortcuts.get(ACCEL)?.();
     expect(abort).toHaveBeenCalledTimes(1);
-    expect(set(false)).toMatchObject({ enabled: false, stopKeyStatus: 'off' });
+    expect(await set(false)).toMatchObject({ enabled: false, stopKeyStatus: 'off' });
     expect(h.unregister).toHaveBeenCalledWith(ACCEL);
     expect(h.shortcuts.has(ACCEL)).toBe(false);
     // Turning it off also stopped what was in flight.
@@ -114,7 +123,7 @@ describe('computer-use stop key lifecycle', () => {
   it('tells Settings when the chord is taken, and refuses input (fail closed)', async () => {
     h.chordFree.value = false;
     const { set, create } = await load();
-    expect(set(true).stopKeyStatus).toBe('unavailable');
+    expect((await set(true)).stopKeyStatus).toBe('unavailable');
     const service = create();
     const err = await service.control({ key: 'k', label: 'k' }, { action: 'click', snapshotId: 's', index: 1 }).catch((e: unknown) => e);
     expect((err as { code?: string }).code).toBe('stop_key_unavailable');
@@ -136,7 +145,7 @@ describe('computer-use stop key lifecycle', () => {
     const { mod, set, create } = await load();
     const service = create();
     const dispose = vi.spyOn(service, 'dispose');
-    set(true);
+    await set(true);
     mod.disposeComputerUse(service);
     expect(dispose).toHaveBeenCalledTimes(1);
     expect(h.unregister).toHaveBeenCalledWith(ACCEL);
@@ -145,12 +154,12 @@ describe('computer-use stop key lifecycle', () => {
   it('is not taken again by Settings once quit has disposed the service', async () => {
     const { mod, get, set, create } = await load();
     const service = create();
-    set(true);
+    await set(true);
     expect(h.shortcuts.has(ACCEL)).toBe(true);
     mod.disposeComputerUse(service);
     expect(h.shortcuts.has(ACCEL)).toBe(false);
     h.register.mockClear();
-    expect(get().stopKeyStatus).not.toBe('held');
+    expect((await get()).stopKeyStatus).not.toBe('held');
     expect(h.register).not.toHaveBeenCalled();
     expect(h.shortcuts.has(ACCEL)).toBe(false);
   });
@@ -159,7 +168,7 @@ describe('computer-use stop key lifecycle', () => {
     h.helper.value = 'missing';
     h.enabled.value = true;
     const { get, create } = await load();
-    expect(get()).toMatchObject({ enabled: true, stopKeyStatus: 'off' });
+    expect(await get()).toMatchObject({ enabled: true, stopKeyStatus: 'off' });
     const service = create();
     await service.listApps().catch(() => undefined);
     await service.control({ key: 'k', label: 'k' }, { action: 'click', snapshotId: 's', index: 1 }).catch(() => undefined);
@@ -170,11 +179,11 @@ describe('computer-use stop key lifecycle', () => {
     h.helper.value = 'missing';
     const { set } = await load();
     // A refusal, not a failed save: the helper status explains it.
-    const refused = set(true) as unknown as { enabled: boolean; error?: string; helper: string };
+    const refused = (await set(true)) as unknown as { enabled: boolean; error?: string; helper: string };
     expect(refused).toMatchObject({ enabled: false, helper: 'missing' });
     expect(refused.error).toBeUndefined();
     h.enabled.value = true; // already on from 3.65.0
-    expect(set(false)).toMatchObject({ enabled: false, stopKeyStatus: 'off' });
+    expect(await set(false)).toMatchObject({ enabled: false, stopKeyStatus: 'off' });
   });
 });
 
@@ -218,10 +227,10 @@ describe('computer use without a helper binary', () => {
     expect(h.shortcuts.has(ACCEL)).toBe(false);
     // The Settings path does the same.
     h.helper.value = 'ready';
-    expect(get().stopKeyStatus).toBe('held');
+    expect((await get()).stopKeyStatus).toBe('held');
     abort.mockClear();
     h.helper.value = 'missing';
-    expect(get().stopKeyStatus).toBe('off');
+    expect((await get()).stopKeyStatus).toBe('off');
     expect(abort).toHaveBeenCalledTimes(1);
   });
 
@@ -235,6 +244,19 @@ describe('computer use without a helper binary', () => {
     expect(err.code).toBe('helper_unavailable');
     expect(err.message).toMatch(/does not include the computer-use helper/);
     expect(err.message).not.toMatch(/EACCES|\/opt/);
+  });
+
+  it('adds the helper .app path and the stale-grant fix to a permission_missing error', async () => {
+    h.enabled.value = true;
+    h.helperPath.value = '/Applications/wmux.app/Contents/Resources/computer-use-macos/wmux Computer Use.app/Contents/MacOS/wmux-computer-use';
+    const { create } = await load();
+    const { ComputerError } = await import('../../../shared/computer/errors');
+    h.helperError.value = new ComputerError('permission_missing', 'macOS has not granted Accessibility to "wmux Computer Use".');
+    const err = (await create().listApps().catch((e: unknown) => e)) as { code?: string; message?: string };
+    expect(err.code).toBe('permission_missing');
+    expect(err.message).toContain('has not granted Accessibility');
+    expect(err.message).toContain('"/Applications/wmux.app/Contents/Resources/computer-use-macos/wmux Computer Use.app"');
+    expect(err.message).toContain('remove it with "−" and add it again, or use Settings › Computer use › Reset access');
   });
 
   it('uses a helper that appears after a call found it missing', async () => {

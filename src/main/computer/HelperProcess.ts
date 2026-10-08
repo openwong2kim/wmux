@@ -66,6 +66,12 @@ export interface HelperProcessOptions {
    * (verifyHelper.ts: the packaged macOS helper's code signature).
    */
   verify?: (command: string) => Promise<void>;
+  /**
+   * Runtime switches for the optional `configure` method (protocol.ts), read
+   * when a helper says hello and on reconfigure(). Sent only to a helper whose
+   * hello lists `configure`; others are skipped silently.
+   */
+  configure?: () => HelperMethods['configure']['params'];
   /** Per-method timeout override, mainly for tests. */
   timeoutFor?: (method: HelperMethod) => number;
   log?: (message: string) => void;
@@ -134,7 +140,11 @@ function mergeRelease(a: ReleaseInputParams | null, b: ReleaseInputParams): Rele
   return { ...(keys && { keys }), ...(modifiers && { modifiers }), ...(buttons && { buttons }) };
 }
 
+/** A cold launch (a large IDE) plus waiting for its first window. */
+const OPEN_APP_TIMEOUT_MS = 30_000;
+
 function defaultTimeout(method: HelperMethod): number {
+  if (method === 'openApp') return OPEN_APP_TIMEOUT_MS;
   return method === 'getAppState' ? HELPER_TIMEOUT_MS.getAppState : HELPER_TIMEOUT_MS.default;
 }
 
@@ -163,6 +173,27 @@ export class HelperProcess {
   /** The running helper's hello, if one is up. */
   get hello(): HelperHello | null {
     return this.running?.hello ?? null;
+  }
+
+  /** Whether the running helper's hello listed `method`; undefined while none runs. */
+  supports(method: HelperMethod): boolean | undefined {
+    return this.running ? this.running.hello.capabilities.actions.includes(method) : undefined;
+  }
+
+  /**
+   * Pushes the current `configure` params to the running helper (a Settings
+   * change). Never starts a helper: one that starts later is configured on
+   * its hello. A failure is logged, never thrown.
+   */
+  reconfigure(): Promise<void> {
+    const run = async (): Promise<void> => {
+      const running = this.running;
+      if (this.disposed || !running) return;
+      await this.sendConfigure(running);
+    };
+    const result = this.queue.then(run, run);
+    this.queue = result.catch(() => undefined);
+    return result;
   }
 
   get lastStderr(): string {
@@ -344,7 +375,23 @@ export class HelperProcess {
       await this.opts.verify(this.opts.command);
       if (this.disposed) throw new ComputerError('helper_unavailable', 'computer use is shutting down');
     }
-    return this.spawnHelper();
+    const running = await this.spawnHelper();
+    // Before the request that started it, so its first action already runs
+    // with the person's settings (the overlay).
+    await this.sendConfigure(running);
+    if (this.running !== running) {
+      throw new ComputerError('helper_unavailable', 'the computer-use helper stopped while starting');
+    }
+    return running;
+  }
+
+  private async sendConfigure(running: Running): Promise<void> {
+    if (!this.opts.configure || !running.hello.capabilities.actions.includes('configure')) return;
+    try {
+      await this.send(running, 'configure', this.opts.configure());
+    } catch (err) {
+      this.log(`configure failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   private spawnHelper(): Promise<Running> {

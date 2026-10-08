@@ -30,7 +30,8 @@ function makeHelper(mode: string, extra: Partial<ConstructorParameters<typeof He
   const lines = (file: string) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').slice(0, -1) : []);
   const requests = () => lines(logFile);
   const releases = () => lines(`${logFile}.params`).map((l) => JSON.parse(l) as Record<string, unknown>);
-  return { helper, requests, releases };
+  const configures = () => lines(`${logFile}.configure`).map((l) => JSON.parse(l) as Record<string, unknown>);
+  return { helper, requests, releases, configures };
 }
 
 async function codeOf(promise: Promise<unknown>): Promise<string> {
@@ -61,6 +62,30 @@ describe('HelperProcess', () => {
     const caps = await helper.request('capabilities', {});
     expect(caps.actions).toEqual(['click']);
     expect(helper.hello?.helperVersion).toBe('fake');
+  });
+
+  it('configures a helper that lists configure right after its hello, before the first request', async () => {
+    let overlay = true;
+    const { helper, requests, configures } = makeHelper('configurable', { configure: () => ({ overlay }) });
+    await helper.request('listApps', {});
+    expect(requests()).toEqual(['configure', 'listApps']);
+    expect(configures()).toEqual([{ overlay: true }]);
+    expect(helper.supports('openApp')).toBe(true);
+    // A Settings change reaches the running helper.
+    overlay = false;
+    await helper.reconfigure();
+    expect(configures()).toEqual([{ overlay: true }, { overlay: false }]);
+  });
+
+  it('skips configure for a helper whose hello does not list it, and never starts one to configure', async () => {
+    const { helper, requests } = makeHelper('ok', { configure: () => ({ overlay: true }) });
+    await helper.reconfigure();
+    expect(helper.supports('configure')).toBeUndefined();
+    expect(requests()).toEqual([]);
+    await helper.request('listApps', {});
+    await helper.reconfigure();
+    expect(requests()).toEqual(['listApps']);
+    expect(helper.supports('configure')).toBe(false);
   });
 
   it('serialises concurrent requests and matches each response', async () => {

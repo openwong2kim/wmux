@@ -25,12 +25,19 @@ vi.mock('electron', () => ({
     handle: (channel: string, fn: (event: unknown, ...args: unknown[]) => unknown) => { h.handlers.set(channel, fn); },
   },
 }));
-vi.mock('../../../shared/computer/config', () => ({ readComputerUseEnabled: () => h.enabled.value }));
+vi.mock('../../../shared/computer/config', () => ({
+  readComputerUseEnabled: () => h.enabled.value,
+  readComputerUseAskPerApp: () => false,
+  readComputerUseOverlay: () => true,
+}));
 vi.mock('../settings', () => ({
   helperStatus: () => 'ready',
-  writeComputerUseEnabled: (enabled: boolean) => { h.enabled.value = enabled; return enabled; },
+  writeComputerUseSettings: (patch: { enabled?: boolean }) => { if (typeof patch.enabled === 'boolean') h.enabled.value = patch.enabled; },
 }));
-vi.mock('../helperPath', () => ({ resolveHelperPathFor: () => h.helperPath.value }));
+vi.mock('../helperPath', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../helperPath')>()),
+  resolveHelperPathFor: () => h.helperPath.value,
+}));
 vi.mock('../selfElevation', () => ({ isSelfElevated: () => false }));
 vi.mock('../helperPin', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../helperPin')>()),
@@ -89,15 +96,15 @@ async function load() {
 describe('packaged Windows build, helper without a release signature', () => {
   it('reports the helper ready, turns the switch on and runs a helper that matches the pin', async () => {
     const { get, set, service } = await load();
-    expect(get()).toMatchObject({ helper: 'ready', helperUnsigned: true });
-    expect(set(true)).toMatchObject({ enabled: true, helper: 'ready', stopKeyStatus: 'held' });
+    expect(await get()).toMatchObject({ helper: 'ready', helperUnsigned: true });
+    expect(await set(true)).toMatchObject({ enabled: true, helper: 'ready', stopKeyStatus: 'held' });
     await service().listApps().catch(() => undefined);
     expect(h.spawned.count).toBe(1);
   });
 
   it('still refuses a helper whose bytes do not match the pin', async () => {
     const { set, service } = await load();
-    set(true);
+    await set(true);
     await fs.appendFile(h.helperPath.value, 'x');
     const err = (await service().listApps().catch((e: unknown) => e)) as { code?: string; message?: string };
     expect(err.code).toBe('helper_unavailable');
@@ -108,7 +115,7 @@ describe('packaged Windows build, helper without a release signature', () => {
   it('carries no unsigned note once the helper is release-signed', async () => {
     h.pin.releaseSigned = true;
     const { get } = await load();
-    expect(get().helper).toBe('ready');
-    expect(get().helperUnsigned).toBeUndefined();
+    expect((await get()).helper).toBe('ready');
+    expect((await get()).helperUnsigned).toBeUndefined();
   });
 });

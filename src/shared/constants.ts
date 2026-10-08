@@ -733,6 +733,8 @@ export const IPC = {
   // anything in flight.
   COMPUTER_USE_GET: 'computer-use:get',
   COMPUTER_USE_SET: 'computer-use:set',
+  // macOS permission buttons: { op: 'request' | 'reset' | 'reveal' }, returns GET's shape.
+  COMPUTER_USE_PERMISSIONS: 'computer-use:permissions',
   // Global quick launch (Settings › Shortcuts, and the floating composer).
   // SETTINGS_GET/SET return QuickLaunchSettingsPayload; the rest are the
   // composer window's own calls, refused from any other sender. The strings
