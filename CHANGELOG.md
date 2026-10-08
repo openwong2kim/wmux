@@ -1,4 +1,111 @@
-## [Unreleased]
+## [4.2.0] — 2026-10-08
+
+### Added
+
+- **Agents can open apps.** The computer tool's new `openApp` action launches an app (by name, bundle id or path) or brings it forward, so an agent no longer depends on the app already running.
+
+- **An agent cursor and a halo.** While an agent drives an app, a second cursor shows where it acts and a halo outlines the window it works in. Turn it off in Settings › Computer use › Show agent cursor and halo.
+
+- **Permission buttons on macOS.** Settings › Computer use shows whether Accessibility and Screen Recording are allowed, with Request access, Reset access (for an entry that reads as on but no longer works) and Show helper in Finder. When a permission is missing, the message now names where the helper app is.
+
+- **A Chrome profile can belong to one pane, so two panes in one workspace can be signed into two different accounts.** On the Chrome browser backend, the pane menu (⋮ or right-click on the pane header) now has **Browser profile** — pick a profile, create a new one named after the pane, or go back to the workspace profile — and **Show in Chrome**, which brings that pane's Chrome window to the front. Before, a profile could only be bound to a whole workspace, so every pane in it shared one Chrome and one set of logins. Each pane's agent now drives its own Chrome; its logins survive agent and app restarts, and a restarted agent keeps using its pane's tab instead of opening a new one. A profile bound to a pane is exclusive to it: the default and live profiles, a workspace's profile and another pane's profile cannot be bound, and one pane cannot close or take over another pane's tabs. In a workspace that has pane-bound profiles, an agent whose pane cannot be identified is refused instead of falling back to the workspace profile, which would act as a different signed-in account. Downgrading to an earlier version drops pane bindings (profiles and their logins are kept). (#1945)
+
+- **Cross-PC A2A also works over Tailscale.** Two of your own PCs on one tailnet can now pair and stay connected when they are not on the same LAN, for example a desktop at the office and a laptop at home. An invite lists the PC's LAN addresses first and then its tailnet address, marked "(Tailscale)" in Settings › LAN › Cross-PC A2A. Before, an invite from a PC with a LAN address never included its tailnet address, and an address that did not answer while pairing was forgotten, so a laptop moving between the office and home lost the connection. The joining PC now keeps every address from the invite. When a connection gets through at an address that is not first in the list, that address is tried first from then on, so after a move only the first reconnect waits for the address that no longer answers. The certificate pin and the rule that only people create links are unchanged, and networks without Tailscale behave as before. (#1949)
+
+### Changed
+
+- **The phone knows when Moa's agent mode blocks a wake.** When Moa is on but
+  its HQ workspace's agent mode is off, the daemon no longer offers the phone a
+  wake that could only fail: `/api/config` now says `moaWakeBlocked:
+  "moa-mode-off"` instead of `moaWake: true`, so the phone can tell you to turn
+  the mode on rather than send a message that comes back refused. (#1928)
+
+- **The Polish Settings page for keyboard shortcuts is called "Skróty
+  Klawiatury".** It used to say "Klawiatura", which read like settings for the
+  keyboard itself rather than the page that sets shortcuts. (#1937)
+
+- **Copilot CLI hooks are marked as verified on a live CLI** (Copilot 1.0.93).
+  `wmux setup-hooks --agent copilot --status` no longer says wmux has not seen
+  Copilot load them. (#1938)
+
+- **Computer use no longer asks before each app.** Once you turn computer use on, an agent can drive any app that is not blocked without a consent prompt per app. Before, every new app raised a prompt, so doing the task by hand was often faster. The prompt is still there as an option: Settings › Computer use › Ask before each app.
+
+- **A shorter blocklist.** Agents may now drive terminals, System Settings, Xcode and other agent apps. Only password managers, wmux itself and system sign-in or administrator prompts stay blocked. Keyboard shortcuts are refused only when they lock the screen, log out or force-quit apps; app switching, Start, Spotlight and Mission Control now work.
+
+- **Apps are brought forward automatically.** Clicking or typing into an app that is behind other windows used to fail with "window not focused"; the app now comes to the front first.
+
+- **Clicks work on macOS 26.** On macOS 26 every click and scroll by position failed with "another window covers that point", because the Dock keeps an invisible full-screen window on top. Those clicks land again.
+
+### Fixed
+
+- **The Resume pill no longer resumes an unrelated conversation with permission prompts off.** After a daemon loss, the pill's `--dangerously-skip-permissions` toggle was on by default. On a pane with no saved conversation for its folder, one click typed `claude --dangerously-skip-permissions --continue`, which continues whatever conversation is newest in the shell's folder. The toggle now starts at the mode the session was recorded with: on only for an exact resume of a session that ran in bypass mode. The `--continue` fallback never carries the bypass flag. Switching the toggle off now really drops the flag. The pill also shows the folder the command will run in, and its tooltip shows the exact line it types. The per-pane resume chip follows the same rules. (#1926)
+
+- **The phone can answer Claude Code 2.1.293's permission dialog again.** That
+  version draws a "Tip: auto mode handles these prompts…" row above the
+  command's description. wmux could no longer tie the dialog to the agent's
+  call, so answering from the phone failed with "answer in terminal". wmux now
+  reads the new layout and offers Yes and No again. The new "Yes, and switch to
+  auto mode" option stays in the terminal on purpose: one tap there would
+  change every later prompt in the session. (#1927)
+
+- **Deny and decline now close the dialog on Windows.** Cancelling a Claude
+  Code question or declining a permission dialog from the phone or the desktop
+  marked it answered, but the dialog stayed open in the pane. On Windows wmux
+  now sends Escape the way the console expects a key press. (#1927)
+
+- **Text no longer disappears after a sixel image on Windows 10.** On Windows 10 the first inline sixel image turned the whole pane black except for the image. TUIs that use sixel, such as omp, went blank as soon as they drew one. The terminal buffer always held the text: the image addon's overlay canvas was created in a low-latency "desynchronized" mode, and Windows displayed it without its transparency, so it hid the text underneath. The overlay is now an ordinary canvas, the same change xterm.js made upstream. Images and text show together, and inline images stay on for Windows 10. (#1929)
+
+- **A fan-out now tells you when a worker's agent never started.** A fan-out
+  task could answer `accepted` while its pane sat at a bare shell prompt
+  because the launch line never ran, and nothing told the caller. wmux now
+  checks that an agent appears in the pane within 45 seconds. If none does
+  and the pane's shell is idle with no process running in it, the task's
+  poll result says `launchFailed` and names the line to re-run, the
+  fan-out result gets a warning, and the task's ledger row moves to
+  `input_required`. A call that sends `depends_on` without `files` is also no
+  longer refused after it was accepted. (#1933)
+
+- **Fan-out workers keep their channel seat, and their caller can read their
+  panes.** If one daemon write failed while a task was being set up, its
+  worker could end up outside its own mission channel (`NOT_A_MEMBER`, and
+  `CHANNEL_NOT_FOUND` on join), and the caller could not `terminal_read` its
+  pane. Those writes are now retried, and the ledger row and channel seat no
+  longer depend on each other. A worker that still has no seat can join its
+  own mission channel. (#1933)
+
+- **A second permission dialog in a row reaches the phone again.** On Windows,
+  Claude Code sometimes redraws a dialog without resending letters that were
+  already on screen in the same place. wmux reads the dialog off the screen
+  when Claude's permission hook is not installed. It then missed the
+  "Do you want to proceed?" row, so the dialog got no approval and could only
+  be answered in the terminal. wmux now reads the row even when a few letters
+  were skipped. (#1935)
+
+- **Copilot hooks follow `COPILOT_HOME`.** `wmux setup-hooks --agent copilot`
+  always wrote `~/.copilot/hooks/wmux.json`, so with `COPILOT_HOME` set Copilot
+  never loaded it, yet `--status` still said `current`. Install, `--status` and
+  `--remove` now use `$COPILOT_HOME/hooks/` when it is set, and `--status` says
+  when `COPILOT_HOME` chose the directory. (#1938)
+
+- **A Copilot permission prompt cancelled with Esc no longer leaves the pane
+  "waiting on you".** Copilot sends no hook on cancel, so its approval card
+  stayed pending until the next prompt and wmux refused automated input into
+  the pane. A card that only says the pane is waiting now clears as soon as
+  the prompt is answered or dismissed at the terminal. (#1938)
+
+- **Claude's PowerShell-tool permission prompts can be answered from the phone.** On Windows, Claude Code often runs shell commands through its PowerShell tool instead of Bash. Those permission dialogs showed up on the phone and in Deck without any choices, so they could only be answered in the terminal. They now offer Yes and No like a Bash dialog does, and only when the dialog on screen matches the exact command waiting for approval. "Always allow" stays in the terminal. (#1940)
+
+- **A shortcut no longer takes a custom keybinding's key without asking.**
+  Recording a built-in shortcut on a key a custom keybinding uses, such as the
+  default F7 that types `claude --dangerously-skip-permissions`, used to be
+  accepted silently, and the custom keybinding stopped working because
+  built-ins run first. Settings › Keyboard and the command palette now name the
+  custom keybinding that would stop working and offer Use anyway or Cancel.
+  Recording a custom keybinding on a key a built-in owns asks the same way,
+  since it would never fire. (#1944)
+
+- **The "needs a modifier" hint no longer names ⌘ on Windows and Linux.** It
+  says Ctrl or Alt there, and Ctrl, ⌘ or ⌥ on macOS. (#1944)
 
 ## [4.1.0] — 2026-10-08
 
