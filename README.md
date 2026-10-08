@@ -27,7 +27,7 @@ wmux is a desktop app where your coding agents work side by side, each in its ow
 
 - **Any CLI agent, natively on Windows and macOS.** Claude Code, Codex, Gemini, agy (Antigravity), and any other CLI agent run side by side in real PTYs — no WSL needed on Windows.
 - **Sessions owned by your own daemon.** Closing the app, a crash, or a reboot does not end your agents' sessions.
-- **Answer agents from your iPhone.** The iOS app pairs directly with the daemon on your machine, with no third-party relay.
+- **Answer agents from your iPhone.** The iOS app pairs directly with the daemon on your machine: terminal output and your answers travel between the two without a cloud service in the middle.
 - **One prompt, fanned out into git worktrees.** Each task gets its own worktree and agent, and you review the results hunk by hunk.
 
 ## Install
@@ -52,7 +52,7 @@ winget install openwong2kim.wmux    # or: choco install wmux
 
 ### Answer from your phone
 
-When an agent stops to ask you something — a Claude Code question (single or multi-select, several questions, or an "Other" answer) or a permission prompt — it lands on your iPhone as a push notification. Answer it in the Inbox and the pane on your desktop moves on. Terminals and agent output travel straight from the daemon on your machine to your phone. Push notifications pass through the project's relay as sealed envelopes it cannot read; only the lock-screen Live Activity carries a few plain counts. Details: [the phone client contract](docs/phone-client-contract.md).
+When an agent stops to ask you something — a Claude Code question (single or multi-select, several questions, or an "Other" answer) or a permission prompt — it reaches your iPhone as a push notification when you are away from the desk. Answer it in the Inbox and the pane on your desktop moves on. Terminals and agent output travel straight from the daemon on your machine to your phone. Push notifications pass through the project's relay as sealed envelopes it cannot read; only the lock-screen Live Activity carries a few counts and your computer's name in plain text. Details: [the phone client contract](docs/phone-client-contract.md).
 
 <img alt="An agent's question in the iPhone Inbox is answered by picking Three dots; the desktop pane receives the answer and the agent edits, tests and commits while the Inbox reads Nothing is waiting on you" src="docs/readme/phone.gif" width="900" />
 
@@ -98,7 +98,7 @@ A standalone daemon owns every terminal, so quitting the app leaves your session
 
 <img alt="wmux quits while an agent and a counter are running; after reopening, the counter kept counting and the agent finished its turn" src="docs/readme/survive-quit.gif" width="900" />
 
-After a crash or a reboot, a recovered pane offers **Resume**: it types the agent command back in, with the exact conversation when wmux knows which one the pane held. Panes declared in `wmux.json` are supervised and restarted automatically.
+After a crash or a reboot, a recovered pane offers **Resume**: it types the agent command back in, with the exact conversation when wmux knows which one the pane held. Panes declared in `wmux.json` with a restart policy are supervised and restarted automatically.
 
 <img alt="After a crash, the recovered pane offers Resume Claude, then resume this session, and the exact conversation comes back" src="docs/readme/survive-resume.gif" width="900" />
 
@@ -113,7 +113,7 @@ When Claude Code or Codex hits its usage limit, the pane pauses: its header and 
 | Area | What you get |
 |------|--------------|
 | Agents | Claude Code, Codex CLI, Gemini CLI, agy, Aider, OpenCode, GitHub Copilot CLI, Kiro CLI and more are detected for status; any other CLI runs in a pane too. |
-| MCP tools | Browser, terminal, pane, channel, A2A and fan-out tools register themselves in `full`, `core` and `commander` profiles — [inventory](docs/api/inventory.md). |
+| MCP tools | Browser, terminal, pane, channel, A2A and fan-out tools register themselves; the `full` profile has all of them, the slimmer `core` and `commander` profiles leave out the browser tools — [inventory](docs/api/inventory.md). |
 | CLI & API | Script the `wmux` CLI or the token-authenticated socket — [connect to wmux](docs/how-to/connect-to-wmux.md), [react to events](docs/how-to/react-to-events.md). |
 | Delegation | Hand work to an agent in another pane and know whether it arrived — [delegate to agents](docs/how-to/delegate-to-agents.md). |
 | Schedules | Queue an exact prompt for one agent session; it waits until the session is idle — [prompt schedules](docs/how-to/session-prompt-scheduling.md). |
@@ -139,7 +139,7 @@ When Claude Code or Codex hits its usage limit, the pane pauses: its header and 
 | `Ctrl+Shift+X` | Vi copy mode | `` Ctrl+` `` | Floating pane |
 | `Ctrl+B` → key | Prefix mode | `Ctrl+Shift+B` | Toggle sidebar |
 
-<sub>On **macOS**, app shortcuts use `⌘` instead of `Ctrl` (prefix mode, `Ctrl+Shift+B` and `Ctrl+M` keep literal `Ctrl`), so `Ctrl+C`, `Ctrl+D` and friends pass through to the shell. Every shortcut can be changed in Settings.</sub>
+<sub>On **macOS**, app shortcuts use `⌘` instead of `Ctrl` (a few bindings, such as prefix mode, `Ctrl+Shift+B` and `Ctrl+M`, keep literal `Ctrl`), so `Ctrl+C`, `Ctrl+D` and friends pass through to the shell. Every shortcut can be changed in Settings.</sub>
 
 </details>
 
