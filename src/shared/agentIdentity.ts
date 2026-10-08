@@ -97,6 +97,8 @@ export interface AgentTerminalChatSpec {
   readonly send?: true;
   readonly cancel?: true;
   readonly images?: true;
+  /** The agent's own composer queues a prompt typed mid-turn, so a queued
+   *  phone message can also be steered into the running turn. */
   readonly queue?: true;
 }
 

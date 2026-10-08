@@ -998,8 +998,9 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     if (inserted === 'exists') return heldReplay(queueStore!.get(owner, clientMessageId)!, id, fingerprint, undefined);
     if (inserted === 'full') return refuse(clientMessageId, 'queue-full');
     if (inserted === 'persist-failed') return refuse(clientMessageId, 'chat-persist-failed');
-    // Only Claude's composer queues a prompt typed mid-turn; elsewhere `steer` is `next-turn`.
-    const steerable = source === 'file' && slugOf(deps.chatAgentState(id)) === 'claude';
+    // Only a composer that queues a prompt typed mid-turn (`terminalChat.queue` on
+    // the registry row: Claude Code) can be steered; elsewhere `steer` is `next-turn`.
+    const steerable = source === 'file' && agentRow(slugOf(deps.chatAgentState(id)))?.terminalChat?.queue === true;
     queueMemo.set(memoKey(owner, clientMessageId), {
       fingerprint, preview: Array.from(req.text).slice(0, QUEUE_PREVIEW_CHARS).join(''), text: req.text,
       agentSessionId: req.agentSessionId, ...(req.historyEpoch !== undefined ? { historyEpoch: req.historyEpoch } : {}),
