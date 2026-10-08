@@ -95,6 +95,14 @@ export interface WorkspaceMirrorPushPayload {
    */
   roleBindings?: Record<string, unknown>;
   /**
+   * ptyId → paneId for EVERY live surface, stashed panes included. COMPLETE
+   * when present, so main can resolve a caller's pane (per-pane Chrome
+   * profile, `ChromeProfileStore.paneBindings`) without a renderer round-trip.
+   * An old renderer omits it: `undefined` means "unknown, round-trip", never
+   * "no panes".
+   */
+  panePtys?: Record<string, string>;
+  /**
    * True once this renderer has installed a SAVED session's workspaces (the
    * ids came from session.json). False after a failed or empty session load,
    * where the tree is a freshly generated default workspace whose id matches

@@ -3,6 +3,7 @@ import type { ChatBridgeApi } from '../shared/transcript/turnEvents';
 import { CHATV2_IPC, type ChatV2BridgeApi, type ChatV2EventsPush, type ChatV2ResyncPush } from '../shared/chatv2/ipc';
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { IPC } from '../shared/constants';
+import { CHROME_PANE_IPC, type ChromePaneBindings } from '../shared/chromePaneBinding';
 import type {
   AgySensorInstallResult,
   AgySensorStatus,
@@ -1264,12 +1265,24 @@ const electronAPI = {
       ipcRenderer.invoke('browser:set-backend', backend),
     // Phase 2.5 — chrome-backend profiles + workspace bindings.
     chromeProfiles: {
-      list: (): Promise<{ profiles: string[]; bindings: Record<string, string> }> =>
-        ipcRenderer.invoke('browser:chrome-profiles:list'),
+      list: (): Promise<{
+        profiles: string[];
+        bindings: Record<string, string>;
+        paneBindings?: ChromePaneBindings;
+      }> => ipcRenderer.invoke('browser:chrome-profiles:list'),
       create: (name: string): Promise<{ ok: boolean; error?: string }> =>
         ipcRenderer.invoke('browser:chrome-profiles:create', name),
       bind: (workspaceId: string, profileName: string | null): Promise<{ ok: boolean; error?: string }> =>
         ipcRenderer.invoke('browser:chrome-profiles:bind', { workspaceId, profileName }),
+      // Per-pane binding (src/shared/chromePaneBinding.ts).
+      bindPane: (
+        paneId: string,
+        workspaceId: string,
+        profileName: string | null,
+      ): Promise<{ ok: boolean; error?: string }> =>
+        ipcRenderer.invoke(CHROME_PANE_IPC.bind, { paneId, workspaceId, profileName }),
+      revealPane: (paneId: string, workspaceId: string): Promise<{ ok: boolean; error?: string }> =>
+        ipcRenderer.invoke(CHROME_PANE_IPC.reveal, { paneId, workspaceId }),
     },
     onDiscarded: (callback: (surfaceId: string) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, surfaceId: string) => callback(surfaceId);

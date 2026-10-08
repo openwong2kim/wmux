@@ -51,6 +51,18 @@ export interface RpcRequest {
    * `lookupWorkspaceClaim` returns three states instead of a nullable).
    */
   workspaceToken?: string;
+  /**
+   * The PTY the calling MCP server runs in — its pane's terminal — stamped by
+   * the bundled client on every envelope (wmux-client `setCallerPtyId`), never
+   * taken from tool arguments. Main maps it to a pane to pick that pane's
+   * Chrome profile (`ChromeProfileStore.paneBindings`).
+   *
+   * ADVISORY attribution under the #113 same-user ceiling, exactly like
+   * a2a's `senderPtyId`: a same-user process can name a sibling pane's PTY.
+   * It only ever narrows a caller already scoped to a workspace onto one of
+   * that workspace's panes; a PTY outside the scoped workspace is ignored.
+   */
+  callerPtyId?: string;
 }
 
 /**
@@ -296,6 +308,11 @@ export interface RpcContext {
    * into `unclaimed` and makes the demotion the easy thing to write.
    */
   workspaceClaim?: { kind: 'bound'; workspaceId: string } | { kind: 'stale' };
+  /**
+   * The envelope's `callerPtyId`, copied verbatim by RpcRouter (trimmed, empty
+   * dropped). Advisory — see `RpcRequest.callerPtyId`.
+   */
+  callerPtyId?: string;
 }
 
 /**
